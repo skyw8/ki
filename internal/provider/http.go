@@ -53,8 +53,32 @@ func CompletionsBody(req loop.Request) map[string]any {
 	if req.System != "" {
 		msgs = append(msgs, map[string]any{"role": "system", "content": req.System})
 	}
-	for _, m := range req.Messages {
-		msgs = append(msgs, toOpenAIMessage(m))
+	// Completions 的 role:tool 只能是字符串，图必须另走 user 的 image_url。
+	// 但不能「每条 toolResult 立刻跟一条带图 user」：同一次 assistant.tool_calls
+	// 对应的 role:tool 必须连在一起，中间插 user 多数网关会 400。
+	//
+	// 对齐 pi packages/ai/src/api/openai-completions.ts：
+	//   1. 连续 toolResult（同一次并行工具）先全部编成 role:tool（纯文本）。
+	//   2. 这一组里的图攒成一条 user，跟在这组 tool 后面。
+	//   3. 更早轮次的图仍待在当时那一组后面，不挪到整段对话末尾
+	//      （前缀字节稳定，才能命中 prompt cache）。
+	// 无图时不插 user，行为和改之前的纯文本路径相同。
+	for i := 0; i < len(req.Messages); i++ {
+		m := req.Messages[i]
+		if m.Role != "toolResult" {
+			msgs = append(msgs, toOpenAIMessage(m))
+			continue
+		}
+		var imgs []map[string]any
+		for ; i < len(req.Messages) && req.Messages[i].Role == "toolResult"; i++ {
+			tm := req.Messages[i]
+			msgs = append(msgs, toOpenAIMessage(tm))
+			imgs = append(imgs, openAIImageURLs(tm)...)
+		}
+		i--
+		if extra := openAIToolImageFollowup(imgs); extra != nil {
+			msgs = append(msgs, extra)
+		}
 	}
 	body := map[string]any{
 		"model":    req.Model,
@@ -110,10 +134,13 @@ func ResponsesBody(req loop.Request) map[string]any {
 func toResponsesItems(m types.Message) []any {
 	switch m.Role {
 	case "toolResult":
+		// Responses 允许 function_call_output.output 为 input_text+input_image
+		// 数组（pi / Codex 都这么做），图留在这条 output 里，不另插 user，
+		// 并行多条 output 才能连在一起。
 		return []any{map[string]any{
 			"type":    "function_call_output",
 			"call_id": m.ToolCallID,
-			"output":  m.Text(),
+			"output":  responsesToolOutput(m),
 		}}
 	case "assistant":
 		var items []any
@@ -145,6 +172,13 @@ func toResponsesItems(m types.Message) []any {
 		}
 		return items
 	default:
+		if content := responsesUserContent(m); content != nil {
+			return []any{map[string]any{
+				"type":    "message",
+				"role":    "user",
+				"content": content,
+			}}
+		}
 		return []any{map[string]any{
 			"type":    "message",
 			"role":    "user",
@@ -156,8 +190,20 @@ func toResponsesItems(m types.Message) []any {
 // AnthropicBody is the Anthropic Messages payload.
 func AnthropicBody(req loop.Request) map[string]any {
 	var msgs []map[string]any
-	for _, m := range req.Messages {
-		msgs = append(msgs, toAnthropicMessage(m))
+	// 对齐 pi：连续 toolResult 收成一条 user，里面多个 tool_result。
+	// 图放在各自的 tool_result.content 里（Anthropic 允许），不拆成跟班 user。
+	for i := 0; i < len(req.Messages); i++ {
+		m := req.Messages[i]
+		if m.Role != "toolResult" {
+			msgs = append(msgs, toAnthropicMessage(m))
+			continue
+		}
+		var blocks []map[string]any
+		for ; i < len(req.Messages) && req.Messages[i].Role == "toolResult"; i++ {
+			blocks = append(blocks, anthropicToolResultBlock(req.Messages[i]))
+		}
+		i--
+		msgs = append(msgs, map[string]any{"role": "user", "content": blocks})
 	}
 	body := map[string]any{
 		"model":      req.Model,
@@ -189,10 +235,14 @@ func AnthropicBody(req loop.Request) map[string]any {
 func toOpenAIMessage(m types.Message) map[string]any {
 	switch m.Role {
 	case "toolResult":
+		text := m.Text()
+		if text == "" && hasImage(m) {
+			text = "(see attached image)"
+		}
 		return map[string]any{
 			"role":         "tool",
 			"tool_call_id": m.ToolCallID,
-			"content":      m.Text(),
+			"content":      text,
 		}
 	case "assistant":
 		out := map[string]any{"role": "assistant"}
@@ -225,20 +275,162 @@ func toOpenAIMessage(m types.Message) map[string]any {
 		}
 		return out
 	default:
+		if parts := openAIContentParts(m); parts != nil {
+			return map[string]any{"role": "user", "content": parts}
+		}
 		return map[string]any{"role": "user", "content": m.Text()}
+	}
+}
+
+func openAIContentParts(m types.Message) []map[string]any {
+	var parts []map[string]any
+	hasMedia := false
+	for _, c := range m.Content {
+		switch c.Type {
+		case "image":
+			if c.Data == "" {
+				continue
+			}
+			hasMedia = true
+			mime := c.MIMEType
+			if mime == "" {
+				mime = "image/png"
+			}
+			parts = append(parts, map[string]any{
+				"type": "image_url",
+				"image_url": map[string]any{
+					"url": "data:" + mime + ";base64," + c.Data,
+				},
+			})
+		case "text", "":
+			if c.Text != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": c.Text})
+			}
+		}
+	}
+	if !hasMedia {
+		return nil
+	}
+	return parts
+}
+
+func hasImage(m types.Message) bool {
+	for _, c := range m.Content {
+		if c.Type == "image" && c.Data != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIImageURLs(m types.Message) []map[string]any {
+	var imgs []map[string]any
+	for _, p := range openAIContentParts(m) {
+		if p["type"] == "image_url" {
+			imgs = append(imgs, p)
+		}
+	}
+	return imgs
+}
+
+func openAIToolImageFollowup(imgs []map[string]any) map[string]any {
+	if len(imgs) == 0 {
+		return nil
+	}
+	content := append([]map[string]any{{
+		"type": "text",
+		"text": "Attached image(s) from tool result:",
+	}}, imgs...)
+	return map[string]any{"role": "user", "content": content}
+}
+
+func responsesToolOutput(m types.Message) any {
+	text := m.Text()
+	imgs := responsesImageParts(m)
+	if len(imgs) == 0 {
+		if text == "" {
+			return "(no tool output)"
+		}
+		return text
+	}
+	var out []map[string]any
+	if text == "" {
+		text = "(see attached image)"
+	}
+	out = append(out, map[string]any{"type": "input_text", "text": text})
+	out = append(out, imgs...)
+	return out
+}
+
+func responsesUserContent(m types.Message) []map[string]any {
+	var content []map[string]any
+	hasMedia := false
+	for _, c := range m.Content {
+		switch c.Type {
+		case "image":
+			if c.Data == "" {
+				continue
+			}
+			hasMedia = true
+			mime := c.MIMEType
+			if mime == "" {
+				mime = "image/png"
+			}
+			content = append(content, map[string]any{
+				"type":      "input_image",
+				"image_url": "data:" + mime + ";base64," + c.Data,
+			})
+		case "text", "":
+			if c.Text != "" {
+				content = append(content, map[string]any{"type": "input_text", "text": c.Text})
+			}
+		}
+	}
+	if !hasMedia {
+		return nil
+	}
+	return content
+}
+
+func responsesImageParts(m types.Message) []map[string]any {
+	c := responsesUserContent(m)
+	if c == nil {
+		return nil
+	}
+	var imgs []map[string]any
+	for _, p := range c {
+		if p["type"] == "input_image" {
+			imgs = append(imgs, p)
+		}
+	}
+	return imgs
+}
+
+func anthropicToolResultBlock(m types.Message) map[string]any {
+	content := any(m.Text())
+	if media := anthropicMediaBlocks(m); len(media) > 0 {
+		var blocks []map[string]any
+		if text := m.Text(); text != "" {
+			blocks = append(blocks, map[string]any{"type": "text", "text": text})
+		} else {
+			blocks = append(blocks, map[string]any{"type": "text", "text": "(see attached image)"})
+		}
+		blocks = append(blocks, media...)
+		content = blocks
+	}
+	return map[string]any{
+		"type":        "tool_result",
+		"tool_use_id": m.ToolCallID,
+		"content":     content,
+		"is_error":    m.IsError,
 	}
 }
 
 func toAnthropicMessage(m types.Message) map[string]any {
 	if m.Role == "toolResult" {
 		return map[string]any{
-			"role": "user",
-			"content": []map[string]any{{
-				"type":        "tool_result",
-				"tool_use_id": m.ToolCallID,
-				"content":     m.Text(),
-				"is_error":    m.IsError,
-			}},
+			"role":    "user",
+			"content": []map[string]any{anthropicToolResultBlock(m)},
 		}
 	}
 	if m.Role == "assistant" {
@@ -262,7 +454,39 @@ func toAnthropicMessage(m types.Message) map[string]any {
 		}
 		return map[string]any{"role": "assistant", "content": blocks}
 	}
+	if media := anthropicMediaBlocks(m); len(media) > 0 {
+		var blocks []map[string]any
+		for _, c := range m.Content {
+			if (c.Type == "text" || c.Type == "") && c.Text != "" {
+				blocks = append(blocks, map[string]any{"type": "text", "text": c.Text})
+			}
+		}
+		blocks = append(blocks, media...)
+		return map[string]any{"role": "user", "content": blocks}
+	}
 	return map[string]any{"role": "user", "content": m.Text()}
+}
+
+func anthropicMediaBlocks(m types.Message) []map[string]any {
+	var out []map[string]any
+	for _, c := range m.Content {
+		if c.Type != "image" || c.Data == "" {
+			continue
+		}
+		mime := c.MIMEType
+		if mime == "" {
+			mime = "image/png"
+		}
+		out = append(out, map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type":       "base64",
+				"media_type": mime,
+				"data":       c.Data,
+			},
+		})
+	}
+	return out
 }
 
 func (l *Live) streamCompletions(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {

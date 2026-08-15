@@ -75,6 +75,161 @@ func TestAnthropicBodyUsesCacheControlAndToolUse(t *testing.T) {
 	}
 }
 
+func TestAnthropicBodyBatchesConsecutiveToolResults(t *testing.T) {
+	body := AnthropicBody(loop.Request{
+		Model: "claude-sonnet-4-5",
+		Messages: []types.Message{
+			{Role: "assistant", Content: []types.Content{
+				{Type: "toolCall", ID: "c1", Name: "Read"},
+				{Type: "toolCall", ID: "c2", Name: "Read"},
+			}},
+			{Role: "toolResult", ToolCallID: "c1", Content: []types.Content{
+				{Type: "text", Text: "Read image file [image/png]"},
+				{Type: "image", Data: "AAA", MIMEType: "image/png"},
+			}},
+			{Role: "toolResult", ToolCallID: "c2", Content: []types.Content{
+				{Type: "text", Text: "ok"},
+			}},
+		},
+	})
+	msgs := body["messages"].([]map[string]any)
+	if len(msgs) != 2 {
+		t.Fatalf("want assistant + one user, got %d: %+v", len(msgs), msgs)
+	}
+	if msgs[1]["role"] != "user" {
+		t.Fatalf("last role: %+v", msgs[1])
+	}
+	blocks, ok := msgs[1]["content"].([]map[string]any)
+	if !ok || len(blocks) != 2 {
+		t.Fatalf("tool_result blocks: %#v", msgs[1]["content"])
+	}
+	if blocks[0]["type"] != "tool_result" || blocks[1]["type"] != "tool_result" {
+		t.Fatalf("blocks: %+v", blocks)
+	}
+	inner, ok := blocks[0]["content"].([]map[string]any)
+	if !ok {
+		t.Fatalf("image tool_result should be blocks: %#v", blocks[0]["content"])
+	}
+	var kinds []string
+	for _, p := range inner {
+		kinds = append(kinds, fmt.Sprint(p["type"]))
+	}
+	if !strings.Contains(strings.Join(kinds, ","), "image") {
+		t.Fatalf("missing image in tool_result: %v", kinds)
+	}
+}
+
+func TestCompletionsBodyForwardsImages(t *testing.T) {
+	body := CompletionsBody(loop.Request{
+		Model: "qwen3.7-plus",
+		Messages: []types.Message{
+			{Role: "user", Content: []types.Content{
+				{Type: "text", Text: "what color"},
+				{Type: "image", Data: "AAA", MIMEType: "image/png"},
+			}},
+			{Role: "assistant", Content: []types.Content{
+				{Type: "toolCall", ID: "c1", Name: "Read", Arguments: map[string]any{"file_path": "/a.png"}},
+			}},
+			{Role: "toolResult", ToolCallID: "c1", ToolName: "Read", Content: []types.Content{
+				{Type: "text", Text: "Read image file [image/png]"},
+				{Type: "image", Data: "BBB", MIMEType: "image/png"},
+			}},
+		},
+	})
+	msgs := body["messages"].([]map[string]any)
+	user := msgs[0]
+	parts, ok := user["content"].([]map[string]any)
+	if !ok {
+		t.Fatalf("user content should be multimodal parts: %#v", user["content"])
+	}
+	if parts[0]["type"] != "text" {
+		t.Fatalf("user text part: %+v", parts[0])
+	}
+	img := parts[1]["image_url"].(map[string]any)
+	if img["url"] != "data:image/png;base64,AAA" {
+		t.Fatalf("user image: %+v", img)
+	}
+
+	var sawTool, sawFollowup bool
+	for _, m := range msgs {
+		if m["role"] == "tool" {
+			sawTool = true
+			if m["content"] != "Read image file [image/png]" {
+				t.Fatalf("tool text: %+v", m)
+			}
+		}
+		if m["role"] != "user" {
+			continue
+		}
+		extra, ok := m["content"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, p := range extra {
+			if p["type"] != "image_url" {
+				continue
+			}
+			u := p["image_url"].(map[string]any)
+			if u["url"] == "data:image/png;base64,BBB" {
+				sawFollowup = true
+			}
+		}
+	}
+	if !sawTool || !sawFollowup {
+		t.Fatalf("tool=%v followup=%v msgs=%+v", sawTool, sawFollowup, msgs)
+	}
+}
+
+func TestCompletionsBodyBatchesParallelToolImages(t *testing.T) {
+	body := CompletionsBody(loop.Request{
+		Model: "qwen3.7-plus",
+		Messages: []types.Message{
+			{Role: "user", Content: []types.Content{{Type: "text", Text: "colors"}}},
+			{Role: "assistant", Content: []types.Content{
+				{Type: "toolCall", ID: "c1", Name: "Read", Arguments: map[string]any{"file_path": "/a.png"}},
+				{Type: "toolCall", ID: "c2", Name: "Read", Arguments: map[string]any{"file_path": "/b.png"}},
+			}},
+			{Role: "toolResult", ToolCallID: "c1", ToolName: "Read", Content: []types.Content{
+				{Type: "text", Text: "Read image file [image/png]"},
+				{Type: "image", Data: "AAA", MIMEType: "image/png"},
+			}},
+			{Role: "toolResult", ToolCallID: "c2", ToolName: "Read", Content: []types.Content{
+				{Type: "text", Text: "Read image file [image/png]"},
+				{Type: "image", Data: "BBB", MIMEType: "image/png"},
+			}},
+			{Role: "user", Content: []types.Content{{Type: "text", Text: "thanks"}}},
+		},
+	})
+	var roles []string
+	var followup []map[string]any
+	for _, m := range body["messages"].([]map[string]any) {
+		role, _ := m["role"].(string)
+		roles = append(roles, role)
+		if role == "user" {
+			if parts, ok := m["content"].([]map[string]any); ok {
+				for _, p := range parts {
+					if p["type"] == "image_url" {
+						followup = append(followup, p)
+					}
+				}
+			}
+		}
+	}
+	got := strings.Join(roles, ",")
+	want := "user,assistant,tool,tool,user,user"
+	if got != want {
+		t.Fatalf("roles %s want %s\n%+v", got, want, body["messages"])
+	}
+	if len(followup) != 2 {
+		t.Fatalf("expected 2 images in one followup, got %d: %+v", len(followup), followup)
+	}
+	u0 := followup[0]["image_url"].(map[string]any)["url"]
+	u1 := followup[1]["image_url"].(map[string]any)["url"]
+	if u0 != "data:image/png;base64,AAA" || u1 != "data:image/png;base64,BBB" {
+		t.Fatalf("urls %v %v", u0, u1)
+	}
+}
+
 func TestResponsesBodyUsesInstructions(t *testing.T) {
 	body := ResponsesBody(loop.Request{System: "S", Model: "gpt-4o", Messages: []types.Message{
 		{Role: "user", Content: []types.Content{{Type: "text", Text: "q"}}},
@@ -122,6 +277,44 @@ func TestResponsesBodyUsesFunctionCallOutput(t *testing.T) {
 	joined := strings.Join(kinds, ",")
 	if !strings.Contains(joined, "function_call") || !strings.Contains(joined, "function_call_output") {
 		t.Fatalf("items: %s", joined)
+	}
+}
+
+func TestResponsesBodyEmbedsToolImages(t *testing.T) {
+	body := ResponsesBody(loop.Request{
+		Model: "gpt-4o",
+		Messages: []types.Message{
+			{Role: "toolResult", ToolCallID: "c1", Content: []types.Content{
+				{Type: "text", Text: "Read image file [image/png]"},
+				{Type: "image", Data: "AAA", MIMEType: "image/png"},
+			}},
+			{Role: "toolResult", ToolCallID: "c2", Content: []types.Content{
+				{Type: "text", Text: "Read image file [image/png]"},
+				{Type: "image", Data: "BBB", MIMEType: "image/png"},
+			}},
+		},
+	})
+	input := body["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("want 2 outputs, no extra user, got %d: %+v", len(input), input)
+	}
+	for i, raw := range input {
+		item := raw.(map[string]any)
+		if item["type"] != "function_call_output" {
+			t.Fatalf("item %d: %+v", i, item)
+		}
+		out, ok := item["output"].([]map[string]any)
+		if !ok {
+			t.Fatalf("output should be multimodal array: %#v", item["output"])
+		}
+		var types []string
+		for _, p := range out {
+			types = append(types, fmt.Sprint(p["type"]))
+		}
+		joined := strings.Join(types, ",")
+		if !strings.Contains(joined, "input_text") || !strings.Contains(joined, "input_image") {
+			t.Fatalf("item %d parts: %s", i, joined)
+		}
 	}
 }
 

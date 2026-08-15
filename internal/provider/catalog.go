@@ -39,8 +39,10 @@ func Catalog() []Model {
 		{Provider: "deepseek", ID: "deepseek-reasoner", API: "completions", ContextWindow: 128000, BaseURL: "https://api.deepseek.com"},
 		{Provider: "dashscope", ID: "qwen-plus", API: "completions", ContextWindow: 131072, BaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"},
 		{Provider: "dashscope", ID: "qwen-max", API: "completions", ContextWindow: 32768, BaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"},
+		{Provider: "dashscope", ID: "qwen3.7-plus", API: "completions", ContextWindow: 1000000, BaseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"},
 		{Provider: "dashscope-cn", ID: "qwen-plus", API: "completions", ContextWindow: 131072, BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
 		{Provider: "dashscope-cn", ID: "qwen-max", API: "completions", ContextWindow: 32768, BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+		{Provider: "dashscope-cn", ID: "qwen3.7-plus", API: "completions", ContextWindow: 1000000, BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"},
 	}
 }
 

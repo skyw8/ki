@@ -6,5 +6,7 @@
 // turn after a tool result is HTTP 400.
 // Streamed tool arguments are concatenated as raw JSON then Unmarshal'd.
 //
-// Protocol table and DeepSeek bases: docs/provider.md.
+// Completions tool images: consecutive toolResults stay adjacent; one
+// follow-up user carries that group's images (pi). Responses embed
+// images in function_call_output. See docs/provider.md.
 package provider

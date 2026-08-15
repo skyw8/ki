@@ -4,7 +4,7 @@
 
 | 工具 | 参数 | 结果 |
 |---|---|---|
-| `Read` | `file_path`、`offset`、`limit`、`pages` | 原文，**不打** `cat -n`；超限提示 `offset=`。图 / PDF / `.ipynb` 单独处理 |
+| `Read` | `file_path`、`offset`、`limit`、`pages` | 原文，**不打** `cat -n`；超限提示 `offset=`。图回 `image` 块（base64 + mime）；PDF 抽文本；`.ipynb` 按 cell |
 | `Write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 Read |
 | `Edit` | `file_path`、`old_string`、`new_string`、`replace_all` | 精确替换；不唯一则失败。无 `edits[]` |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | stdout+stderr 混排；非 0 当 error。无 sandbox |
