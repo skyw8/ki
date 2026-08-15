@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -144,5 +145,15 @@ func TestReadNotebookAndPDFPages(t *testing.T) {
 	res = r.Execute(context.Background(), map[string]any{"file_path": "a.pdf", "pages": "1-2"})
 	if !strings.Contains(res.Content[0].Text, "pages=1-2") {
 		t.Fatalf("pdf pages: %s", res.Content[0].Text)
+	}
+
+	marker := "KI-PDF-MARKER-42"
+	stream := "BT /F1 18 Tf 20 60 Td (" + marker + ") Tj ET\n"
+	real := "%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
+		"4 0 obj<</Length " + strconv.Itoa(len(stream)) + ">>stream\n" + stream + "endstream\nendobj\n"
+	_ = os.WriteFile(filepath.Join(cwd, "real.pdf"), []byte(real), 0o644)
+	res = r.Execute(context.Background(), map[string]any{"file_path": "real.pdf"})
+	if !strings.Contains(res.Content[0].Text, marker) {
+		t.Fatalf("real pdf extract: %s", res.Content[0].Text)
 	}
 }

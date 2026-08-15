@@ -270,6 +270,10 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "text required", 400)
 		return
 	}
+	if _, err := s.open(id); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
 	s.mu.Lock()
 	if st, busy := s.runs[id]; busy {
 		select {

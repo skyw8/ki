@@ -11,6 +11,7 @@ A lean and extensible agent runtime designed for easy integration.
 ```
 ki/
 ├── cmd/ki/              唯一二进制入口
+├── e2e/                 CLI 端到端：假模型默认跑；-tags live 打真模型
 ├── docs/
 │   ├── prd/             需求与拍板（agent-loop / problem / plan）
 │   ├── architecture.md  一次 prompt：CLI → HTTP → loop
@@ -51,6 +52,9 @@ ki/
 | [docs/prd/agent-loop.md](docs/prd/agent-loop.md) | 主循环、工具、会话、compaction、供应商、分层 prompt |
 | [docs/prd/problem.md](docs/prd/problem.md) | 未决问题与已拍结论 |
 | [docs/prd/plan.md](docs/prd/plan.md) | 分阶段实现计划 |
+
+假模型：`go test ./e2e`（`KI_FAKE=1`，覆盖 CLI 主路径、`serve`、`-d`、双 session 并行）。  
+真模型：`go test -tags live -timeout 5m ./e2e -run Live`（读 `DASHSCOPE_CN_API_KEY` 或 `~/.ki/ki.toml` 的 dashscope-cn，默认 `qwen3.7-plus`；含图片 / PDF）。
 
 ## constraint
 

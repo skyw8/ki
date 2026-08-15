@@ -48,7 +48,19 @@ func TestAuthAndCreateGetFork(t *testing.T) {
 	}
 
 	id := createSession(t, hs, t.TempDir())
-	req, _ := http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/ffffffffffffffffffffffffffffffff/prompt", strings.NewReader(`{"text":"x"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing session prompt: %d", res.StatusCode)
+	}
+
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
