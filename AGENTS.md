@@ -1,5 +1,5 @@
 ## description
-An extensible agent runtime designed for easy integration with other applications.
+A lean and extensible agent runtime designed for easy integration.
 
 ## tech stack
 - go
