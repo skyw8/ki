@@ -1,0 +1,365 @@
+package loop
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"ki/internal/types"
+)
+
+// EventType is one of the ten documented loop events.
+type EventType string
+
+const (
+	AgentStart          EventType = "agent_start"
+	AgentEnd            EventType = "agent_end"
+	TurnStart           EventType = "turn_start"
+	TurnEnd             EventType = "turn_end"
+	MessageStart        EventType = "message_start"
+	MessageUpdate       EventType = "message_update"
+	MessageEnd          EventType = "message_end"
+	ToolExecutionStart  EventType = "tool_execution_start"
+	ToolExecutionUpdate EventType = "tool_execution_update"
+	ToolExecutionEnd    EventType = "tool_execution_end"
+)
+
+// Event is a loop event (pi field names).
+type Event struct {
+	Type                  EventType       `json:"type"`
+	Message               *types.Message  `json:"message,omitempty"`
+	Messages              []types.Message `json:"messages,omitempty"`
+	ToolResults           []types.Message `json:"toolResults,omitempty"`
+	AssistantMessageEvent *AssistantDelta `json:"assistantMessageEvent,omitempty"`
+	ToolCallID            string          `json:"toolCallId,omitempty"`
+	ToolName              string          `json:"toolName,omitempty"`
+	Args                  map[string]any  `json:"args,omitempty"`
+	PartialResult         any             `json:"partialResult,omitempty"`
+	Result                any             `json:"result,omitempty"`
+	IsError               bool            `json:"isError,omitempty"`
+}
+
+// AssistantDelta is a streaming increment (pi assistantMessageEvent).
+type AssistantDelta struct {
+	Type    string        `json:"type"`
+	Delta   string        `json:"delta,omitempty"`
+	Partial types.Message `json:"partial"`
+}
+
+// Tool is something the model can call.
+type Tool interface {
+	Name() string
+	Description() string
+	Prompt() string
+	Snippet() string
+	Parameters() map[string]any
+	Execute(ctx context.Context, args map[string]any) ToolResult
+}
+
+// ToolResult is one tool execution outcome.
+type ToolResult struct {
+	Content []types.Content
+	IsError bool
+	Details any
+}
+
+// Streamer produces an assistant message (and stream deltas).
+type Streamer interface {
+	Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error)
+}
+
+// Request is one provider call.
+type Request struct {
+	System   string
+	Messages []types.Message
+	Tools    []ToolSpec
+	Provider string
+	Model    string
+	API      string
+}
+
+// ToolSpec is the schema sent to the provider.
+type ToolSpec struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+}
+
+// Hooks are awaited interception points.
+type Hooks struct {
+	BeforeRun        func(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error)
+	TransformContext func(ctx context.Context, msgs []types.Message) ([]types.Message, error)
+	BeforeTool       func(ctx context.Context, name string, args map[string]any) (map[string]any, bool, string, error)
+	AfterTool        func(ctx context.Context, name string, args map[string]any, res ToolResult) (ToolResult, error)
+	BeforeCompaction func(ctx context.Context) error
+}
+
+// Config is loop runtime options.
+type Config struct {
+	Streamer   Streamer
+	Tools      []Tool
+	Hooks      Hooks
+	MaxRetries int
+	BaseDelay  time.Duration
+	Parallel   bool
+	Provider   string
+	Model      string
+	API        string
+	System     string
+}
+
+// Run executes one user prompt against the current messages.
+func Run(ctx context.Context, prompt string, history []types.Message, cfg Config, emit func(Event) error) ([]types.Message, error) {
+	if cfg.MaxRetries <= 0 {
+		cfg.MaxRetries = 5
+	}
+	if cfg.BaseDelay <= 0 {
+		cfg.BaseDelay = 2 * time.Second
+	}
+	if emit == nil {
+		emit = func(Event) error { return nil }
+	}
+	newMsgs := []types.Message{}
+	user := types.Message{
+		Role:      "user",
+		Content:   []types.Content{{Type: "text", Text: prompt}},
+		Timestamp: time.Now().UnixMilli(),
+	}
+	if err := emit(Event{Type: AgentStart}); err != nil {
+		return nil, err
+	}
+	if err := emit(Event{Type: TurnStart}); err != nil {
+		return nil, err
+	}
+	if err := emit(Event{Type: MessageStart, Message: &user}); err != nil {
+		return nil, err
+	}
+	if err := emit(Event{Type: MessageEnd, Message: &user}); err != nil {
+		return nil, err
+	}
+	newMsgs = append(newMsgs, user)
+	history = append(append([]types.Message{}, history...), user)
+
+	system := cfg.System
+	if cfg.Hooks.BeforeRun != nil {
+		s, msgs, err := cfg.Hooks.BeforeRun(ctx, system, history)
+		if err != nil {
+			return newMsgs, err
+		}
+		system = s
+		history = msgs
+	}
+
+	var specs []ToolSpec
+	for _, t := range cfg.Tools {
+		specs = append(specs, ToolSpec{Name: t.Name(), Description: t.Description() + "\n\n" + t.Prompt(), Parameters: t.Parameters()})
+	}
+
+	firstTurn := true
+	for {
+		if ctx.Err() != nil {
+			_ = emit(Event{Type: AgentEnd, Messages: newMsgs})
+			return newMsgs, ctx.Err()
+		}
+		if !firstTurn {
+			if err := emit(Event{Type: TurnStart}); err != nil {
+				return newMsgs, err
+			}
+		}
+		firstTurn = false
+
+		msgs := history
+		if cfg.Hooks.TransformContext != nil {
+			m, err := cfg.Hooks.TransformContext(ctx, msgs)
+			if err != nil {
+				return newMsgs, err
+			}
+			msgs = m
+		}
+
+		asst, err := streamWithRetry(ctx, cfg, Request{
+			System:   system,
+			Messages: msgs,
+			Tools:    specs,
+			Provider: cfg.Provider,
+			Model:    cfg.Model,
+			API:      cfg.API,
+		}, emit)
+		if err != nil {
+			_ = emit(Event{Type: AgentEnd, Messages: newMsgs})
+			return newMsgs, err
+		}
+		newMsgs = append(newMsgs, asst)
+		history = append(history, asst)
+
+		calls := asst.ToolCalls()
+		var results []types.Message
+		if len(calls) > 0 {
+			results = executeTools(ctx, cfg, calls, emit)
+			for _, r := range results {
+				rr := r
+				if err := emit(Event{Type: MessageStart, Message: &rr}); err != nil {
+					return newMsgs, err
+				}
+				if err := emit(Event{Type: MessageEnd, Message: &rr}); err != nil {
+					return newMsgs, err
+				}
+				newMsgs = append(newMsgs, rr)
+				history = append(history, rr)
+			}
+		}
+		if err := emit(Event{Type: TurnEnd, Message: &asst, ToolResults: results}); err != nil {
+			return newMsgs, err
+		}
+		if len(calls) == 0 || asst.StopReason == "error" || asst.StopReason == "aborted" {
+			break
+		}
+	}
+	if err := emit(Event{Type: AgentEnd, Messages: newMsgs}); err != nil {
+		return newMsgs, err
+	}
+	return newMsgs, nil
+}
+
+func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Event) error) (types.Message, error) {
+	var last types.Message
+	var lastErr error
+	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
+		if attempt > 0 {
+			d := cfg.BaseDelay * time.Duration(1<<uint(attempt-1))
+			select {
+			case <-ctx.Done():
+				return last, ctx.Err()
+			case <-time.After(d):
+			}
+		}
+		started := time.Now()
+		var firstDelta time.Time
+		partial := types.Message{Role: "assistant", Provider: cfg.Provider, Model: cfg.Model, Timestamp: time.Now().UnixMilli()}
+		if err := emit(Event{Type: MessageStart, Message: &partial}); err != nil {
+			return partial, err
+		}
+		asst, err := cfg.Streamer.Stream(ctx, req, func(d AssistantDelta) error {
+			if firstDelta.IsZero() {
+				firstDelta = time.Now()
+			}
+			m := d.Partial
+			return emit(Event{Type: MessageUpdate, Message: &m, AssistantMessageEvent: &d})
+		})
+		if err != nil {
+			lastErr = err
+			if ctx.Err() != nil {
+				asst = types.Message{Role: "assistant", StopReason: "aborted", ErrorMessage: ctx.Err().Error()}
+				_ = emit(Event{Type: MessageEnd, Message: &asst})
+				return asst, err
+			}
+			continue
+		}
+		asst.LatencyMs = time.Since(started).Milliseconds()
+		if !firstDelta.IsZero() {
+			asst.TTFTMs = firstDelta.Sub(started).Milliseconds()
+		}
+		if asst.Timestamp == 0 {
+			asst.Timestamp = time.Now().UnixMilli()
+		}
+		if asst.Provider == "" {
+			asst.Provider = cfg.Provider
+		}
+		if asst.Model == "" {
+			asst.Model = cfg.Model
+		}
+		if err := emit(Event{Type: MessageEnd, Message: &asst}); err != nil {
+			return asst, err
+		}
+		if asst.StopReason == "error" {
+			last = asst
+			lastErr = fmt.Errorf("%s", asst.ErrorMessage)
+			continue
+		}
+		return asst, nil
+	}
+	if last.Role == "" {
+		last = types.Message{Role: "assistant", StopReason: "error", ErrorMessage: fmt.Sprint(lastErr)}
+		_ = emit(Event{Type: MessageStart, Message: &last})
+		_ = emit(Event{Type: MessageEnd, Message: &last})
+	}
+	return last, lastErr
+}
+
+func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit func(Event) error) []types.Message {
+	byName := map[string]Tool{}
+	for _, t := range cfg.Tools {
+		byName[t.Name()] = t
+	}
+	out := make([]types.Message, len(calls))
+	run := func(i int) {
+		c := calls[i]
+		args := c.Arguments
+		if args == nil {
+			args = map[string]any{}
+		}
+		_ = emit(Event{Type: ToolExecutionStart, ToolCallID: c.ID, ToolName: c.Name, Args: args})
+		block := false
+		reason := ""
+		if cfg.Hooks.BeforeTool != nil {
+			a, b, r, err := cfg.Hooks.BeforeTool(ctx, c.Name, args)
+			if err != nil {
+				block, reason = true, err.Error()
+			} else {
+				args, block, reason = a, b, r
+			}
+		}
+		var res ToolResult
+		start := time.Now()
+		if block {
+			res = ToolResult{Content: []types.Content{{Type: "text", Text: reason}}, IsError: true}
+		} else if t, ok := byName[c.Name]; ok {
+			res = t.Execute(ctx, args)
+		} else {
+			res = ToolResult{Content: []types.Content{{Type: "text", Text: "unknown tool " + c.Name}}, IsError: true}
+		}
+		if cfg.Hooks.AfterTool != nil && !block {
+			if nr, err := cfg.Hooks.AfterTool(ctx, c.Name, args, res); err == nil {
+				res = nr
+			}
+		}
+		dur := time.Since(start).Milliseconds()
+		msg := types.Message{
+			Role:       "toolResult",
+			ToolCallID: c.ID,
+			ToolName:   c.Name,
+			Content:    res.Content,
+			IsError:    res.IsError,
+			DurationMs: dur,
+			Timestamp:  time.Now().UnixMilli(),
+		}
+		_ = emit(Event{Type: ToolExecutionEnd, ToolCallID: c.ID, ToolName: c.Name, Args: args, Result: res, IsError: res.IsError})
+		out[i] = msg
+	}
+	if !cfg.Parallel {
+		for i := range calls {
+			run(i)
+		}
+		return out
+	}
+	var wg sync.WaitGroup
+	for i := range calls {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			run(i)
+		}(i)
+	}
+	wg.Wait()
+	return out
+}
+
+// EventOrder is the sequence of types in events, for tests.
+func EventOrder(evs []Event) []string {
+	var s []string
+	for _, e := range evs {
+		s = append(s, string(e.Type))
+	}
+	return s
+}

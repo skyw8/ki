@@ -1,0 +1,65 @@
+package types
+
+// Content is one block inside a message.
+type Content struct {
+	Type         string         `json:"type"`
+	Text         string         `json:"text,omitempty"`
+	Data         string         `json:"data,omitempty"`
+	MIMEType     string         `json:"mimeType,omitempty"`
+	Thinking     string         `json:"thinking,omitempty"`
+	ID           string         `json:"id,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Arguments    map[string]any `json:"arguments,omitempty"`
+	ItemID       string         `json:"-"`
+	ArgumentsRaw string         `json:"-"`
+}
+
+// Usage is provider token accounting.
+type Usage struct {
+	Input       int `json:"input"`
+	Output      int `json:"output"`
+	CacheRead   int `json:"cacheRead"`
+	CacheWrite  int `json:"cacheWrite"`
+	TotalTokens int `json:"totalTokens"`
+}
+
+// Message is a conversation item (user / assistant / toolResult).
+type Message struct {
+	Role         string    `json:"role"`
+	Content      []Content `json:"content"`
+	Timestamp    int64     `json:"timestamp,omitempty"`
+	API          string    `json:"api,omitempty"`
+	Provider     string    `json:"provider,omitempty"`
+	Model        string    `json:"model,omitempty"`
+	Usage        *Usage    `json:"usage,omitempty"`
+	StopReason   string    `json:"stopReason,omitempty"`
+	ErrorMessage string    `json:"errorMessage,omitempty"`
+	ToolCallID   string    `json:"toolCallId,omitempty"`
+	ToolName     string    `json:"toolName,omitempty"`
+	IsError      bool      `json:"isError,omitempty"`
+	LatencyMs    int64     `json:"latencyMs,omitempty"`
+	TTFTMs       int64     `json:"ttftMs,omitempty"`
+	DurationMs   int64     `json:"durationMs,omitempty"`
+}
+
+// Text returns concatenated text blocks.
+func (m Message) Text() string {
+	var s string
+	for _, c := range m.Content {
+		if c.Type == "text" || c.Type == "" {
+			s += c.Text
+		}
+	}
+	return s
+}
+
+// ToolCalls returns toolCall content blocks.
+func (m Message) ToolCalls() []Content {
+	var out []Content
+	for _, c := range m.Content {
+		if c.Type == "toolCall" {
+			out = append(out, c)
+		}
+	}
+	return out
+}

@@ -1,0 +1,90 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestLoadMergesGlobalProjectAndEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KI_HOME", home)
+	t.Setenv("OPENAI_API_KEY", "from-env")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	if err := os.WriteFile(filepath.Join(home, "ki.toml"), []byte(`
+[defaults]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+
+[providers.anthropic]
+api_key = "global-ant"
+base_url = "https://api.anthropic.com"
+
+[providers.openai]
+api_key = "global-oai"
+
+[compaction]
+reserve_tokens = 1000
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, ".ki"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, ".ki", "ki.toml"), []byte(`
+[defaults]
+model = "claude-opus-4"
+
+[providers.anthropic]
+api_key = "project-ant"
+
+[server]
+addr = "127.0.0.1:19999"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Defaults.Provider != "anthropic" {
+		t.Fatalf("provider: %q", cfg.Defaults.Provider)
+	}
+	if cfg.Defaults.Model != "claude-opus-4" {
+		t.Fatalf("project should override model, got %q", cfg.Defaults.Model)
+	}
+	if cfg.Providers["anthropic"].APIKey != "project-ant" {
+		t.Fatalf("project key: %q", cfg.Providers["anthropic"].APIKey)
+	}
+	if cfg.Providers["openai"].APIKey != "from-env" {
+		t.Fatalf("env should override openai key, got %q", cfg.Providers["openai"].APIKey)
+	}
+	if cfg.Server.Addr != "127.0.0.1:19999" {
+		t.Fatalf("addr: %q", cfg.Server.Addr)
+	}
+	if cfg.Compaction.ReserveTokens != 1000 {
+		t.Fatalf("reserve: %d", cfg.Compaction.ReserveTokens)
+	}
+	if cfg.Sessions.Root != filepath.Join(home, "sessions") {
+		t.Fatalf("sessions root: %q", cfg.Sessions.Root)
+	}
+}
+
+func TestLoadMissingFilesUsesBuiltin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KI_HOME", home)
+	cfg, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 16384 {
+		t.Fatalf("builtin compaction: %+v", cfg.Compaction)
+	}
+	if cfg.Server.Addr != "127.0.0.1:19800" {
+		t.Fatalf("addr: %q", cfg.Server.Addr)
+	}
+}
