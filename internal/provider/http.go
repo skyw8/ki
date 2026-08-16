@@ -63,15 +63,16 @@ func CompletionsBody(req loop.Request) map[string]any {
 	//   3. 更早轮次的图仍待在当时那一组后面，不挪到整段对话末尾
 	//      （前缀字节稳定，才能命中 prompt cache）。
 	// 无图时不插 user，行为和改之前的纯文本路径相同。
-	for i := 0; i < len(req.Messages); i++ {
-		m := req.Messages[i]
+	history := replayable(req.Messages)
+	for i := 0; i < len(history); i++ {
+		m := history[i]
 		if m.Role != "toolResult" {
 			msgs = append(msgs, toOpenAIMessage(m))
 			continue
 		}
 		var imgs []map[string]any
-		for ; i < len(req.Messages) && req.Messages[i].Role == "toolResult"; i++ {
-			tm := req.Messages[i]
+		for ; i < len(history) && history[i].Role == "toolResult"; i++ {
+			tm := history[i]
 			msgs = append(msgs, toOpenAIMessage(tm))
 			imgs = append(imgs, openAIImageURLs(tm)...)
 		}
@@ -105,7 +106,7 @@ func CompletionsBody(req loop.Request) map[string]any {
 // ResponsesBody is the OpenAI Responses API payload.
 func ResponsesBody(req loop.Request) map[string]any {
 	var input []any
-	for _, m := range req.Messages {
+	for _, m := range replayable(req.Messages) {
 		input = append(input, toResponsesItems(m)...)
 	}
 	body := map[string]any{
@@ -192,15 +193,16 @@ func AnthropicBody(req loop.Request) map[string]any {
 	var msgs []map[string]any
 	// 对齐 pi：连续 toolResult 收成一条 user，里面多个 tool_result。
 	// 图放在各自的 tool_result.content 里（Anthropic 允许），不拆成跟班 user。
-	for i := 0; i < len(req.Messages); i++ {
-		m := req.Messages[i]
+	history := replayable(req.Messages)
+	for i := 0; i < len(history); i++ {
+		m := history[i]
 		if m.Role != "toolResult" {
 			msgs = append(msgs, toAnthropicMessage(m))
 			continue
 		}
 		var blocks []map[string]any
-		for ; i < len(req.Messages) && req.Messages[i].Role == "toolResult"; i++ {
-			blocks = append(blocks, anthropicToolResultBlock(req.Messages[i]))
+		for ; i < len(history) && history[i].Role == "toolResult"; i++ {
+			blocks = append(blocks, anthropicToolResultBlock(history[i]))
 		}
 		i--
 		msgs = append(msgs, map[string]any{"role": "user", "content": blocks})
@@ -230,6 +232,94 @@ func AnthropicBody(req loop.Request) map[string]any {
 		body["tools"] = tools
 	}
 	return body
+}
+
+// replayable drops assistant turns providers reject on replay (pi transformMessages):
+// aborted/error whole turns, and assistants with no text/thinking/toolCall.
+// Tool results that belonged to a dropped assistant are dropped too.
+// A kept assistant with unmatched tool calls gets a synthetic error result
+// so Completions/Anthropic do not 400 on a missing role:tool.
+func replayable(msgs []types.Message) []types.Message {
+	skipIDs := map[string]bool{}
+	for _, m := range msgs {
+		if m.Role != "assistant" || !skipAssistant(m) {
+			continue
+		}
+		for _, c := range m.ToolCalls() {
+			if c.ID != "" {
+				skipIDs[c.ID] = true
+			}
+		}
+	}
+	out := make([]types.Message, 0, len(msgs))
+	var pending []types.Content
+	have := map[string]bool{}
+	flushOrphans := func() {
+		for _, c := range pending {
+			if c.ID == "" || have[c.ID] {
+				continue
+			}
+			out = append(out, types.Message{
+				Role:       "toolResult",
+				ToolCallID: c.ID,
+				ToolName:   c.Name,
+				Content:    []types.Content{{Type: "text", Text: "No result provided"}},
+				IsError:    true,
+			})
+		}
+		pending = nil
+		have = map[string]bool{}
+	}
+	for _, m := range msgs {
+		switch m.Role {
+		case "assistant":
+			if skipAssistant(m) {
+				continue
+			}
+			flushOrphans()
+			pending = m.ToolCalls()
+			have = map[string]bool{}
+			out = append(out, m)
+		case "toolResult":
+			if skipIDs[m.ToolCallID] {
+				continue
+			}
+			have[m.ToolCallID] = true
+			out = append(out, m)
+		case "user":
+			flushOrphans()
+			out = append(out, m)
+		default:
+			out = append(out, m)
+		}
+	}
+	flushOrphans()
+	return out
+}
+
+func skipAssistant(m types.Message) bool {
+	if m.StopReason == "aborted" || m.StopReason == "error" {
+		return true
+	}
+	return !assistantHasReplayableContent(m)
+}
+
+func assistantHasReplayableContent(m types.Message) bool {
+	for _, c := range m.Content {
+		switch c.Type {
+		case "text", "":
+			if c.Text != "" {
+				return true
+			}
+		case "thinking":
+			if c.Thinking != "" {
+				return true
+			}
+		case "toolCall":
+			return true
+		}
+	}
+	return false
 }
 
 func toOpenAIMessage(m types.Message) map[string]any {

@@ -39,6 +39,8 @@ ki/
 
 Cross-package notes are in `docs/`. Package invariants are in each `doc.go`. Keep this file free of `todo` paths and of per-file inventories under those directories.
 
+Dev run: `scripts/run.sh` builds `./ki` and starts `ki serve` inside a tmux session named `ki`: window `server` runs the daemon, window `cli` is a shell for operating it. Re-run to rebuild and respawn; real tests operate through the script or `tmux attach -t ki`. `--web` rebuilds `web/dist`; `--fake` uses the canned model.
+
 Fake model: `go test ./e2e` (`KI_FAKE=1`; CLI main path, `serve`, `-d`, two sessions in parallel, WebUI Playwright).
 WebUI: `cd web && npm run test:e2e` (starts a fake `ki serve`). Requires `npx playwright install chromium`.
 Live model: `go test -tags live -timeout 5m ./e2e -run Live` (reads `DASHSCOPE_CN_API_KEY` or `~/.ki/ki.toml` dashscope-cn; default `qwen3.7-plus`; images / PDF / WebUI Playwright).

@@ -11,6 +11,9 @@ go build -o ki ./cmd/ki
 ## Run
 
 ```bash
+# dev loop: build + run in a tmux session (window `server`, shell `cli`)
+scripts/run.sh
+
 # foreground server (writes ~/.ki/server.json); open http://127.0.0.1:19800/
 ./ki serve --addr 127.0.0.1:19800
 

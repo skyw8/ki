@@ -8,5 +8,9 @@
 //
 // Completions tool images: consecutive toolResults stay adjacent; one
 // follow-up user carries that group's images (pi). Responses embed
-// images in function_call_output. See docs/provider.md.
+// images in function_call_output.
+//
+// Replay skips aborted/error/empty assistants (and their toolResults)
+// and synthesizes missing tool results. Session jsonl is unchanged.
+// See docs/provider.md.
 package provider
