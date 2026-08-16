@@ -1155,8 +1155,8 @@
 .tool-row .tool-preview.err { color: var(--dsw-alias-state-error); }
 .state-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .state-dot.err { background: var(--dsw-alias-state-error); }
-.tool-row-body { margin: 4px 0 4px 4px; max-height: 260px; overflow: auto; }
-.tool-read { margin: 0; padding: 8px 10px; font-family: var(--ds-font-family-code); font-size: 12px; white-space: pre; overflow: auto; background: var(--dsw-alias-markdown-code); border-radius: 10px; }
+.tool-row-body { margin: 4px 0 4px 4px; }
+.tool-read { margin: 0; padding: 8px 10px; font-family: var(--ds-font-family-code); font-size: 12px; white-space: pre; overflow: auto; max-height: 260px; background: var(--dsw-alias-markdown-code); border-radius: 10px; }
 .tool-term { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; }
 .tool-term-cmd { padding: 6px 10px; font-family: var(--ds-font-family-code); font-size: 12px; background: var(--dsw-alias-bg-layer-1); }
 .io-card { border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-markdown-code-block, var(--dsw-alias-markdown-code)); }
@@ -1165,8 +1165,8 @@
 .io-txt { white-space: pre-wrap; word-break: break-word; font-size: 12px; font-family: var(--ds-font-family-code); color: var(--dsw-alias-label-secondary); }
 .io-txt.err { color: var(--dsw-alias-state-error); }
 .io-div { height: 1px; background: var(--dsw-alias-border-l2); }
-.insp-pill { margin: 4px 0 0 4px; padding: 2px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; font-size: 11px; color: var(--dsw-alias-label-secondary); opacity: 0; }
-.tool-row:hover .insp-pill, .insp-pill:focus-visible { opacity: 1; }
+.insp-pill { margin: 4px 0 0 4px; padding: 2px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.insp-pill:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 
 .to-bottom-slot { position: sticky; bottom: 16px; z-index: 4; height: 0; display: flex; justify-content: flex-end; padding-right: 24px; pointer-events: none; }
 .to-bottom {
