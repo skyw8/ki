@@ -79,6 +79,39 @@ export type SessionInfo = {
   parent?: string
   title: string
   running?: boolean
+  workspaceId?: string
+  pinned?: boolean
+  pinnedAt?: string
+}
+
+export type WorkspaceInfo = {
+  id: string
+  path: string
+  title: string
+  createdAt?: string
+  updatedAt?: string
+  status?: string
+  temp?: boolean
+  sessionIds?: string[]
+}
+
+export type FsEntry = { name: string; path: string; hidden: boolean }
+
+export type FsListing = {
+  path: string
+  home: string
+  separator: string
+  crumbs: FsEntry[]
+  entries: FsEntry[]
+  truncated: boolean
+}
+
+export type SearchHit = {
+  id: string
+  title: string
+  workspaceId?: string
+  workspaceTitle?: string
+  snippet?: string
 }
 
 export type SessionDetail = SessionInfo & {

@@ -24,6 +24,7 @@ import (
 	"ki/internal/session"
 	"ki/internal/tools"
 	"ki/internal/types"
+	"ki/internal/workspace"
 )
 
 // Options constructs a Server.
@@ -40,6 +41,7 @@ type Server struct {
 	streamer loop.Streamer
 	mu       sync.Mutex
 	runs     map[string]*runState
+	ws       *workspace.Store
 	ln       net.Listener
 	http     *http.Server
 }
@@ -69,11 +71,19 @@ func New(opt Options) *Server {
 	if st == nil {
 		st = liveFromConfig(opt.Config)
 	}
+	ws := workspace.Open(opt.Config.Home, opt.Config.Sessions.Root)
+	infos, _ := session.List(opt.Config.Sessions.Root)
+	cwds := make([]string, 0, len(infos))
+	for _, info := range infos {
+		cwds = append(cwds, info.CWD)
+	}
+	_ = ws.Bootstrap(cwds)
 	return &Server{
 		cfg:      opt.Config,
 		token:    tok,
 		streamer: st,
 		runs:     map[string]*runState{},
+		ws:       ws,
 	}
 }
 
@@ -116,13 +126,23 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /v1/meta", s.auth(s.meta))
 	api.HandleFunc("GET /v1/sessions", s.auth(s.list))
 	api.HandleFunc("POST /v1/sessions", s.auth(s.create))
+	api.HandleFunc("GET /v1/sessions/search", s.auth(s.searchSessions))
 	api.HandleFunc("GET /v1/sessions/{id}", s.auth(s.get))
 	api.HandleFunc("PATCH /v1/sessions/{id}", s.auth(s.patch))
+	api.HandleFunc("DELETE /v1/sessions/{id}", s.auth(s.deleteSession))
 	api.HandleFunc("POST /v1/sessions/{id}/prompt", s.auth(s.prompt))
 	api.HandleFunc("GET /v1/sessions/{id}/events", s.auth(s.events))
 	api.HandleFunc("POST /v1/sessions/{id}/abort", s.auth(s.abort))
 	api.HandleFunc("POST /v1/sessions/{id}/compact", s.auth(s.doCompact))
 	api.HandleFunc("POST /v1/sessions/{id}/fork", s.auth(s.fork))
+	api.HandleFunc("GET /v1/workspaces", s.auth(s.listWorkspaces))
+	api.HandleFunc("POST /v1/workspaces", s.auth(s.createWorkspace))
+	api.HandleFunc("PATCH /v1/workspaces/{id}", s.auth(s.patchWorkspace))
+	api.HandleFunc("DELETE /v1/workspaces/{id}", s.auth(s.deleteWorkspace))
+	api.HandleFunc("POST /v1/workspaces/{id}/move", s.auth(s.moveWorkspace))
+	api.HandleFunc("POST /v1/workspaces/{id}/sessions/move", s.auth(s.moveWorkspaceSession))
+	api.HandleFunc("GET /v1/fs", s.auth(s.listFS))
+	api.HandleFunc("POST /v1/fs", s.auth(s.createFS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1" || strings.HasPrefix(r.URL.Path, "/v1/") {
 			api.ServeHTTP(w, r)
@@ -205,16 +225,21 @@ func ReadServerFile(home string) (File, error) {
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		CWD   string `json:"cwd"`
-		Model string `json:"model"`
+		CWD         string `json:"cwd"`
+		WorkspaceID string `json:"workspaceId"`
+		Model       string `json:"model"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	cwd := body.CWD
-	if cwd == "" {
-		cwd, _ = os.Getwd()
+	rec, err := s.resolveWorkspace(body.WorkspaceID, body.CWD)
+	if err != nil {
+		code := 400
+		if workspace.NotFound(err) {
+			code = 404
+		}
+		http.Error(w, err.Error(), code)
+		return
 	}
-	cfg, _ := config.Load(cwd)
-	// merge already-loaded home from s.cfg for tests
+	cfg, _ := config.Load(rec.Path)
 	if s.cfg.Home != "" {
 		cfg.Home = s.cfg.Home
 		if s.cfg.Sessions.Root != "" {
@@ -232,19 +257,14 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	if root == "" {
 		root = cfg.Sessions.Root
 	}
-	sess, err := session.Create(root, cwd, p, m)
+	sess, err := session.Create(root, rec.Path, p, m)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	defer sess.Close()
-	writeJSON(w, 200, map[string]any{
-		"id":       sess.ID(),
-		"cwd":      sess.Header.CWD,
-		"provider": sess.Config.Provider,
-		"model":    sess.Config.Model,
-		"dir":      sess.Dir,
-	})
+	_ = s.ws.AttachSession(rec.ID, sess.ID())
+	writeJSON(w, 200, s.sessionMap(sess, nil))
 }
 
 func (s *Server) open(id string) (*session.Session, error) {
@@ -262,21 +282,13 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer sess.Close()
-	writeJSON(w, 200, map[string]any{
-		"id":       sess.ID(),
-		"cwd":      sess.Header.CWD,
-		"provider": sess.Config.Provider,
-		"model":    sess.Config.Model,
+	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
 		"leafId":   sess.LeafID(),
-		"dir":      sess.Dir,
-		"parent":   sess.Header.ParentSession,
-		"title":    session.TitleOf(sess),
-		"running":  s.running(sess.ID()),
 		"entries":  sess.Entries(),
 		"messages": sess.MessagesToLeaf(),
 		"skills":   sess.Config.Skills,
 		"mcp":      sess.Config.MCP,
-	})
+	}))
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
@@ -295,9 +307,9 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
-	cwd, _ := os.Getwd()
+	home, _ := os.UserHomeDir()
 	writeJSON(w, 200, map[string]any{
-		"cwd":      cwd,
+		"home":     home,
 		"provider": s.cfg.Defaults.Provider,
 		"model":    s.cfg.Defaults.Model,
 	})
@@ -312,6 +324,8 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 	defer sess.Close()
 	var body struct {
 		Model  string          `json:"model"`
+		Title  *string         `json:"title"`
+		Pinned *bool           `json:"pinned"`
 		Skills *session.Toggle `json:"skills"`
 		MCP    *session.Toggle `json:"mcp"`
 	}
@@ -326,19 +340,42 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if body.Title != nil {
+		if err := sess.SetTitle(*body.Title); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+	}
+	if body.Pinned != nil {
+		if err := sess.SetPinned(*body.Pinned); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		if rec, ok := s.ws.Match(sess.Header.CWD); ok && *body.Pinned {
+			first := ""
+			if len(rec.SessionIDs) > 0 {
+				first = rec.SessionIDs[0]
+			}
+			if first != sess.ID() {
+				if first == "" {
+					_ = s.ws.AttachSession(rec.ID, sess.ID())
+				} else {
+					_ = s.ws.AttachSession(rec.ID, sess.ID())
+					_ = s.ws.InsertSessionBefore(rec.ID, sess.ID(), first)
+				}
+			}
+		}
+	}
 	if body.Skills != nil || body.MCP != nil {
 		if err := sess.SetToggles(body.Skills, body.MCP); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
 	}
-	writeJSON(w, 200, map[string]any{
-		"id":       sess.ID(),
-		"provider": sess.Config.Provider,
-		"model":    sess.Config.Model,
-		"skills":   sess.Config.Skills,
-		"mcp":      sess.Config.MCP,
-	})
+	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
+		"skills": sess.Config.Skills,
+		"mcp":    sess.Config.MCP,
+	}))
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -349,17 +386,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(infos))
 	for _, info := range infos {
-		out = append(out, map[string]any{
-			"id":        info.ID,
-			"cwd":       info.CWD,
-			"dir":       info.Dir,
-			"provider":  info.Provider,
-			"model":     info.Model,
-			"timestamp": info.Timestamp,
-			"parent":    info.ParentSession,
-			"title":     info.Title,
-			"running":   s.running(info.ID),
-		})
+		out = append(out, s.infoMap(info))
 	}
 	writeJSON(w, 200, out)
 }
@@ -616,13 +643,10 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer dst.Close()
-	writeJSON(w, 200, map[string]any{
-		"id":            dst.ID(),
-		"parentSession": dst.Header.ParentSession,
-		"dir":           dst.Dir,
-		"provider":      dst.Config.Provider,
-		"model":         dst.Config.Model,
-	})
+	if rec, ok := s.ws.Match(dst.Header.CWD); ok {
+		_ = s.ws.AttachSession(rec.ID, dst.ID())
+	}
+	writeJSON(w, 200, s.sessionMap(dst, map[string]any{"parentSession": dst.Header.ParentSession}))
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

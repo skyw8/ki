@@ -26,6 +26,7 @@ ki/
 │   ├── config/          merge ki.toml and env
 │   ├── skills/          discover SKILL.md
 │   ├── mcp/             .mcp.json → loop.Tool
+│   ├── workspace/       workspace registry
 │   ├── types/           Message / Usage IR
 │   ├── idgen/           session / entry id
 │   └── klog/            stderr + ki.log
@@ -45,6 +46,9 @@ WebUI live: `cd web && npm run test:e2e:live`.
 
 ## constraint
 
+- Keep this list concise.
+- Port-forwarded WebUI is a first-class client: same-origin relative `/v1` and `/assets` only; never navigate the browser to a host filesystem path; never use a native OS file picker.
+- Cross-platform (Linux, macOS, Windows): `filepath` for joins; host-absolute paths; no POSIX-only roots, separators, or hidden-file rules.
 - Write this file in English.
 - Do not name `docs/prd`, `docs/todo`, or files under them in this file.
 - Package comments go in that package's `doc.go`. Cross-package explanation stays in `docs/`.

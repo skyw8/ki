@@ -5,5 +5,6 @@
 // line is the leaf. Revert moves the leaf; old rows are never deleted.
 //
 // request_header entries store the system+tools snapshot for a turn.
+// config.json may override title and pin. Remove deletes the session directory.
 // List walks the session root. On-disk layout: docs/session.md.
 package session

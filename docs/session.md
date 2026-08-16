@@ -20,4 +20,6 @@
 - revert 只改内存 leaf，旧行不删。
 - `MessagesToLeaf` 沿 parent 走到根；若路径上有 compaction，先注入 summary，再从 `firstKeptEntryId` 往后取。
 - fork：整目录拷贝，改 header 的 `id` 和 `parentSession`。
-- `config.json`：该 session 的 `provider`/`model`，以及 skills/mcp 的 `only` / `disabled`。
+- `config.json`：该 session 的 `provider`/`model`，可选 `title` / `pinned` / `pinnedAt`，以及 skills/mcp 的 `only` / `disabled`。
+
+会话 cwd 来自工作区 path（或临时 `{KI_HOME}/workspace/tmp+<时间戳>`），不是进程 Getwd。标题优先用 `config.title`。`Remove` 删除整个会话目录。工作区见 [workspace.md](workspace.md)。

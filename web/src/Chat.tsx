@@ -69,70 +69,68 @@ function argStr(args: unknown, key: string): string {
   return v == null ? '' : String(v)
 }
 
-function ReadCard({ node }: { node: Extract<ChatNode, { kind: 'tool' }> }) {
-  const path = argStr(node.args, 'file_path')
-  return (
-    <div className={`tool-spec read${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool="Read">
-      <div className="tool-spec-h">
-        {node.running ? <span className="spin" /> : <IWrench />}
-        <strong>Read</strong>
-        <span className="tool-preview">{path}</span>
-        {node.durationMs != null ? <span className="asst-meta">{(node.durationMs / 1000).toFixed(2)}s</span> : null}
-      </div>
-      {node.result ? <pre className="tool-out">{node.result}</pre> : null}
-    </div>
-  )
+function firstLine(s: string): string {
+  return s.split('\n').find(l => l.trim()) ?? s
 }
 
-function EditCard({ node }: { node: Extract<ChatNode, { kind: 'tool' }> }) {
-  const path = argStr(node.args, 'file_path')
+function prettyArgs(args: unknown): string {
+  if (args == null) return ''
+  if (typeof args === 'string') return args
+  return JSON.stringify(args, null, 2)
+}
+
+function ToolRow({
+  node, title, summary, onInspect,
+}: {
+  node: Extract<ChatNode, { kind: 'tool' }>
+  title: string
+  summary: string
+  onInspect?: (n: ChatNode) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const name = node.name
+  const cmd = argStr(node.args, 'command')
   const oldS = argStr(node.args, 'old_string')
   const newS = argStr(node.args, 'new_string')
+  const content = argStr(node.args, 'content')
+  const offset = Number(argStr(node.args, 'offset') || '1') || 1
+  const state = node.running ? 'running' : node.isError ? 'error' : 'ok'
+  const fail = state === 'error' && node.result ? firstLine(node.result) : ''
+  const line = fail || summary
+  const bodyIn = name === 'Write' ? content : name === 'Bash' ? cmd : prettyArgs(node.args)
+  const expandable = !!(node.result || bodyIn || oldS || newS)
   return (
-    <div className={`tool-spec edit${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool="Edit">
-      <div className="tool-spec-h">
-        {node.running ? <span className="spin" /> : <IWrench />}
-        <strong>Edit</strong>
-        <span className="tool-preview">{path}</span>
-      </div>
-      <div className="diff">
-        {oldS ? <pre className="diff-old">{oldS}</pre> : null}
-        {newS ? <pre className="diff-new">{newS}</pre> : null}
-      </div>
-      {node.result ? <div className="asst-meta">{node.result}</div> : null}
-    </div>
-  )
-}
-
-function BashCard({ node }: { node: Extract<ChatNode, { kind: 'tool' }> }) {
-  const cmd = argStr(node.args, 'command')
-  return (
-    <div className={`tool-spec bash${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool="Bash">
-      <div className="tool-spec-h">
-        {node.running ? <span className="spin" /> : <IWrench />}
-        <strong>Bash</strong>
-        <span className="tool-preview">{cmd}</span>
-      </div>
-      {node.result ? <pre className="tool-out term">{node.result}</pre> : null}
-    </div>
-  )
-}
-
-function GenericTool({ node, onOpen }: { node: Extract<ChatNode, { kind: 'tool' }>; onOpen?: (n: ChatNode) => void }) {
-  const [open, setOpen] = useState(false)
-  const args = node.args == null ? '' : typeof node.args === 'string' ? node.args : JSON.stringify(node.args, null, 2)
-  return (
-    <div className={`tool${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool={node.name}>
-      <button type="button" className="tool-btn" onClick={() => { setOpen(v => !v); onOpen?.(node) }}>
-        {node.running ? <span className="spin" /> : <IWrench />}
-        <span className="tool-name">{node.name}</span>
-        <span className="tool-preview">{node.result || args}</span>
-        {node.durationMs != null ? <span className="asst-meta">{(node.durationMs / 1000).toFixed(2)}s</span> : null}
+    <div className={`tool-row${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool={name} data-state={state}>
+      <button type="button" className="tool-row-h" onClick={() => expandable && setOpen(v => !v)}>
+        {state === 'error' ? <span className="state-dot err" /> : node.running ? <span className="spin" /> : <IWrench />}
+        <span className="tool-name">{title}</span>
+        {line ? <span className="tool-sep" aria-hidden /> : null}
+        <span className={`tool-preview${fail ? ' err' : ''}`}>{line}</span>
       </button>
-      {open ? (
-        <div className="tool-body">
-          {args ? <pre>{args}</pre> : null}
-          {node.result ? <pre>{node.result}</pre> : null}
+      {open && expandable ? (
+        <div className="tool-row-body">
+          {name === 'Read' && node.result ? (
+            <pre className="tool-read">{node.result.split('\n').map((ln, i) => `${String(offset + i).padStart(4, ' ')}  ${ln}`).join('\n')}</pre>
+          ) : name === 'Edit' && (oldS || newS) ? (
+            <div className="diff">
+              {oldS ? <pre className="diff-old">{oldS}</pre> : null}
+              {newS ? <pre className="diff-new">{newS}</pre> : null}
+            </div>
+          ) : name === 'Bash' ? (
+            <div className="tool-term">
+              {cmd ? <div className="tool-term-cmd">{cmd}</div> : null}
+              {node.result ? <pre className="tool-out term">{node.result}</pre> : null}
+            </div>
+          ) : (
+            <div className="io-card">
+              {bodyIn ? <div className="io-sec"><span className="io-lab">IN</span><span className="io-txt">{bodyIn}</span></div> : null}
+              {bodyIn && node.result ? <span className="io-div" /> : null}
+              {node.result ? <div className="io-sec"><span className="io-lab">OUT</span><span className={`io-txt${node.isError ? ' err' : ''}`}>{node.result}</span></div> : null}
+            </div>
+          )}
+          {onInspect ? (
+            <button type="button" className="insp-pill" data-testid="tool-inspect" onClick={() => onInspect(node)}>Inspect</button>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -207,10 +205,19 @@ export function ChatView({ nodes, busy, onSelect }: { nodes: ChatNode[]; busy: b
         }
         if (n.kind === 'tool') {
           const name = n.name
-          if (name === 'Read') return <div key={n.id} onClick={() => onSelect?.(n)}><ReadCard node={n} /></div>
-          if (name === 'Edit') return <div key={n.id} onClick={() => onSelect?.(n)}><EditCard node={n} /></div>
-          if (name === 'Bash') return <div key={n.id} onClick={() => onSelect?.(n)}><BashCard node={n} /></div>
-          return <GenericTool key={n.id} node={n} onOpen={onSelect} />
+          const path = argStr(n.args, 'file_path')
+          const summary = name === 'Bash'
+            ? (argStr(n.args, 'description') || argStr(n.args, 'command'))
+            : path || firstLine(n.result || prettyArgs(n.args))
+          return (
+            <ToolRow
+              key={n.id}
+              node={n}
+              title={name === 'Read' || name === 'Edit' || name === 'Write' || name === 'Bash' ? name : name}
+              summary={summary}
+              onInspect={onSelect}
+            />
+          )
         }
         return <Compaction key={n.id} node={n} />
       })}
