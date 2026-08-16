@@ -113,6 +113,51 @@ func TestCreateReloadFork(t *testing.T) {
 	}
 }
 
+func TestRequestHeaderAndTogglesReload(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Create(root, cwd, "anthropic", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendRequestHeader("sys-body", []ToolSchema{{
+		Name: "Read", Description: "r", Parameters: map[string]any{"type": "object"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetToggles(&Toggle{Disabled: []string{"foo"}}, &Toggle{Only: []string{"bar"}}); err != nil {
+		t.Fatal(err)
+	}
+	dir := s.Dir
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	var hdr *Entry
+	for i := range s2.Entries() {
+		e := s2.Entries()[i]
+		if e.Type == "request_header" {
+			hdr = &e
+		}
+	}
+	if hdr == nil || hdr.System != "sys-body" || len(hdr.Tools) != 1 || hdr.Tools[0].Name != "Read" {
+		t.Fatalf("header: %+v", hdr)
+	}
+	if len(s2.Config.Skills.Disabled) != 1 || s2.Config.Skills.Disabled[0] != "foo" {
+		t.Fatalf("skills: %+v", s2.Config.Skills)
+	}
+	if len(s2.Config.MCP.Only) != 1 || s2.Config.MCP.Only[0] != "bar" {
+		t.Fatalf("mcp: %+v", s2.Config.MCP)
+	}
+}
+
 func TestList(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")

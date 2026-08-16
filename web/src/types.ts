@@ -46,6 +46,14 @@ export type Entry = {
   usage?: Usage | null
   provider?: string
   modelId?: string
+  system?: string
+  tools?: ToolSchema[]
+}
+
+export type ToolSchema = {
+  name: string
+  description?: string
+  parameters?: Record<string, unknown>
 }
 
 export type LoopEvent = {
@@ -57,6 +65,8 @@ export type LoopEvent = {
   result?: unknown
   isError?: boolean
   assistantMessageEvent?: { type: string; delta?: string; partial?: Message }
+  system?: string
+  tools?: ToolSchema[]
 }
 
 export type SessionInfo = {
@@ -75,15 +85,27 @@ export type SessionDetail = SessionInfo & {
   leafId?: string
   entries?: Entry[]
   messages?: Message[]
+  skills?: Toggle
+  mcp?: Toggle
+}
+
+export type Toggle = { only?: string[]; disabled?: string[] }
+
+export type ModelInfo = {
+  provider: string
+  id: string
+  api?: string
+  contextWindow?: number
+  spec: string
 }
 
 export type ChatNode =
   | { kind: 'user'; id: string; text: string; ts?: number }
-  | { kind: 'assistant'; id: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string }
+  | { kind: 'assistant'; id: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; images?: { data: string; mimeType: string }[]; ts?: number }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; isError?: boolean; durationMs?: number; running?: boolean }
   | { kind: 'compaction'; id: string; summary: string; tokensBefore?: number }
 
-export type TrajKind = 'user' | 'assistant' | 'tool' | 'compacted'
+export type TrajKind = 'user' | 'assistant' | 'tool' | 'compacted' | 'system'
 
 export type TrajRecord = {
   id: string
@@ -99,6 +121,10 @@ export type TrajRecord = {
   running?: boolean
   name?: string
   error?: boolean
+  system?: string
+  tools?: ToolSchema[]
+  previousSystem?: string
+  previousTools?: ToolSchema[]
 }
 
 export type ViewState = {
@@ -112,4 +138,6 @@ export type ViewState = {
   title: string
   turn: number
   replayed?: number
+  skills?: Toggle
+  mcp?: Toggle
 }

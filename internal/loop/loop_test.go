@@ -76,7 +76,7 @@ func TestRunEventOrderAndPersistPoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(EventOrder(evs), ",")
-	want := "agent_start,turn_start,message_start,message_end,message_start,message_update,message_end,turn_end,agent_end"
+	want := "agent_start,turn_start,message_start,message_end,request_header,message_start,message_update,message_end,turn_end,agent_end"
 	if got != want {
 		t.Fatalf("order\n got %s\nwant %s", got, want)
 	}
@@ -132,5 +132,36 @@ func TestRunToolThenSecondTurn(t *testing.T) {
 	}
 	if tr == nil || tr.Text() != "file-ok" {
 		t.Fatalf("tool result: %+v", tr)
+	}
+}
+
+func TestRequestHeaderCarriesSystemAndTools(t *testing.T) {
+	var evs []Event
+	_, err := Run(context.Background(), "hello", nil, Config{
+		Streamer: echo{},
+		System:   "you are ki",
+		Tools:    []Tool{oneTool{}},
+	}, func(e Event) error {
+		evs = append(evs, e)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hdr *Event
+	for i := range evs {
+		if evs[i].Type == RequestHeader {
+			hdr = &evs[i]
+			break
+		}
+	}
+	if hdr == nil {
+		t.Fatal("missing request_header")
+	}
+	if hdr.System != "you are ki" {
+		t.Fatalf("system: %q", hdr.System)
+	}
+	if len(hdr.Tools) != 1 || hdr.Tools[0].Name != "Read" || hdr.Tools[0].Description == "" {
+		t.Fatalf("tools: %+v", hdr.Tools)
 	}
 }

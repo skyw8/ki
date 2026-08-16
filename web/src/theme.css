@@ -4,7 +4,7 @@
   --ds-font-family-code: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
     'Liberation Mono', Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
   --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
@@ -51,7 +51,8 @@ body {
   --dsw-static-neutral-bluish-1000: rgb(15, 17, 21);
 }
 
-body {
+body[data-theme='dark'] {
+  color-scheme: dark;
   --dsw-alias-bg-base: var(--dsw-static-neutral-bluish-950);
   --dsw-alias-bg-layer-1: var(--dsw-static-neutral-bluish-875);
   --dsw-alias-bg-layer-2: var(--dsw-static-neutral-bluish-850);
@@ -73,6 +74,10 @@ body {
   --dsw-alias-state-success: var(--dsw-static-green-500);
   --dsw-alias-state-success-bg: var(--dsw-static-green-900);
   --dsw-alias-state-warn: var(--dsw-static-amber-500);
+  --dsw-alias-state-tool: #f5b045;
+  --dsw-alias-state-tool-bg: rgba(245, 158, 11, 0.24);
+  --dsw-alias-state-system: #b7adff;
+  --dsw-alias-state-system-bg: rgba(107, 92, 231, 0.22);
   --dsw-alias-markdown-code: var(--dsw-static-neutral-bluish-900);
   --dsw-alias-markdown-inline: var(--dsw-static-neutral-bluish-850);
   --dsw-specific-bubble: var(--dsw-static-neutral-bluish-850);
@@ -83,7 +88,7 @@ body {
   --dsw-shadow-lv2: 0 8px 24px rgba(0, 0, 0, 0.28);
 }
 
-body[data-theme='light'] {
+body {
   color-scheme: light;
   --dsw-alias-bg-base: var(--dsw-static-neutral-bluish-00);
   --dsw-alias-bg-layer-1: var(--dsw-static-neutral-bluish-00);
@@ -105,6 +110,10 @@ body[data-theme='light'] {
   --dsw-alias-state-error: var(--dsw-static-red-600);
   --dsw-alias-state-success: var(--dsw-static-green-500);
   --dsw-alias-state-success-bg: var(--dsw-static-green-100);
+  --dsw-alias-state-tool: #c05621;
+  --dsw-alias-state-tool-bg: #ffedd5;
+  --dsw-alias-state-system: #5b4cdb;
+  --dsw-alias-state-system-bg: #ece9ff;
   --dsw-alias-markdown-code: var(--dsw-static-neutral-bluish-50);
   --dsw-alias-markdown-inline: var(--dsw-static-neutral-bluish-100);
   --dsw-specific-bubble: var(--dsw-static-deepseek-50);

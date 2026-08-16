@@ -55,6 +55,15 @@ type Entry struct {
 	Details          any            `json:"details,omitempty"`
 	Provider         string         `json:"provider,omitempty"`
 	ModelID          string         `json:"modelId,omitempty"`
+	System           string         `json:"system,omitempty"`
+	Tools            []ToolSchema   `json:"tools,omitempty"`
+}
+
+// ToolSchema is the model-visible tool list on a request_header entry.
+type ToolSchema struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
 // Session is an open conversation directory.
@@ -371,6 +380,41 @@ func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, 
 		return Entry{}, err
 	}
 	return e, nil
+}
+
+// AppendRequestHeader records the system prompt and tools sent on one turn.
+func (s *Session) AppendRequestHeader(system string, tools []ToolSchema) (Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	used := map[string]struct{}{}
+	for id := range s.byID {
+		used[id] = struct{}{}
+	}
+	e := Entry{
+		Type:      "request_header",
+		ID:        idgen.EntryID(used),
+		ParentID:  s.leafID,
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		System:    system,
+		Tools:     tools,
+	}
+	if err := s.appendLocked(e); err != nil {
+		return Entry{}, err
+	}
+	return e, nil
+}
+
+// SetToggles writes skills/mcp filters to config.json.
+func (s *Session) SetToggles(skills, mcp *Toggle) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if skills != nil {
+		s.Config.Skills = *skills
+	}
+	if mcp != nil {
+		s.Config.MCP = *mcp
+	}
+	return s.writeConfig()
 }
 
 // SetModel updates config.json and appends model_change.

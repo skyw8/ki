@@ -69,6 +69,8 @@ export function loadHistory(detail: SessionDetail): ViewState {
   s.cwd = detail.cwd ?? ''
   s.title = detail.title ?? ''
   s.busy = !!detail.running
+  s.skills = detail.skills
+  s.mcp = detail.mcp
   const entries = detail.entries ?? []
   if (entries.length === 0 && detail.messages) {
     for (const m of detail.messages) applyMessage(s, m, crypto.randomUUID(), undefined)
@@ -78,7 +80,50 @@ export function loadHistory(detail: SessionDetail): ViewState {
   return s
 }
 
+function lastSystem(s: ViewState): TrajRecord | undefined {
+  for (let i = s.records.length - 1; i >= 0; i--) {
+    if (s.records[i].kind === 'system') return s.records[i]
+  }
+  return undefined
+}
+
+function normalizeTools(raw?: TrajRecord['tools'] | unknown): TrajRecord['tools'] {
+  if (!Array.isArray(raw)) return raw as TrajRecord['tools']
+  return raw.map(item => {
+    if (!item || typeof item !== 'object') return { name: String(item) }
+    const o = item as Record<string, unknown>
+    const parameters = o.parameters ?? o.Parameters
+    return {
+      name: String(o.name ?? o.Name ?? ''),
+      description: o.description != null || o.Description != null ? String(o.description ?? o.Description) : undefined,
+      parameters: parameters && typeof parameters === 'object' ? parameters as Record<string, unknown> : undefined,
+    }
+  })
+}
+
+function applyRequestHeader(s: ViewState, id: string, system: string, tools: TrajRecord['tools'], stamp?: string) {
+  const prev = lastSystem(s)
+  tools = normalizeTools(tools)
+  s.records.push({
+    id,
+    kind: 'system',
+    turn: s.turn || 1,
+    preview: previewOf(system || `${tools?.length ?? 0} tools`),
+    system,
+    tools,
+    previousSystem: prev?.system,
+    previousTools: prev?.tools,
+    input: system,
+    output: tools,
+    startedAt: tsMs(undefined, stamp),
+  })
+}
+
 function applyEntry(s: ViewState, e: Entry) {
+  if (e.type === 'request_header') {
+    applyRequestHeader(s, e.id, e.system ?? '', e.tools, e.timestamp)
+    return
+  }
   if (e.type === 'message' && e.message) {
     applyMessage(s, e.message, e.id, e.timestamp)
     return
@@ -126,6 +171,8 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string) {
       ttftMs: m.ttftMs,
       latencyMs: m.latencyMs,
       error: m.errorMessage,
+      ts: tsMs(m, stamp),
+      images: (m.content ?? []).filter(c => c.type === 'image' && c.data).map(c => ({ data: c.data!, mimeType: c.mimeType || 'image/png' })),
     })
     s.records.push({
       id,
@@ -241,6 +288,12 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
       )
       next.records = next.records.map(r => r.running ? { ...r, running: false } : r)
       break
+    case 'request_header': {
+      const prev = lastSystem(next)
+      if (prev && prev.system === (ev.system ?? '') && JSON.stringify(prev.tools) === JSON.stringify(ev.tools)) break
+      applyRequestHeader(next, `live-sys-${next.records.length}`, ev.system ?? '', ev.tools)
+      break
+    }
     case 'message_start':
     case 'message_end':
     case 'message_update':
