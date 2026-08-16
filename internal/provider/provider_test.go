@@ -230,6 +230,99 @@ func TestCompletionsBodyBatchesParallelToolImages(t *testing.T) {
 	}
 }
 
+func TestReplayableDropsAbortedAndEmptyAssistants(t *testing.T) {
+	// tmp3: 你好 → abort (empty assistant) → 你好. Empty aborted assistant
+	// must not be replayed or Completions/Anthropic 400.
+	hist := []types.Message{
+		{Role: "user", Content: []types.Content{{Type: "text", Text: "你好"}}},
+		{Role: "assistant", StopReason: "aborted", ErrorMessage: "context canceled"},
+		{Role: "user", Content: []types.Content{{Type: "text", Text: "你好"}}},
+	}
+	comp := CompletionsBody(loop.Request{Model: "deepseek-v4-flash", Messages: hist})
+	var roles []string
+	for _, m := range comp["messages"].([]map[string]any) {
+		roles = append(roles, fmt.Sprint(m["role"]))
+		if m["role"] == "assistant" {
+			t.Fatalf("aborted assistant leaked into completions: %+v", m)
+		}
+	}
+	if strings.Join(roles, ",") != "user,user" {
+		t.Fatalf("completions roles %s", strings.Join(roles, ","))
+	}
+
+	anth := AnthropicBody(loop.Request{Model: "claude-sonnet-4-5", Messages: hist})
+	roles = nil
+	for _, m := range anth["messages"].([]map[string]any) {
+		roles = append(roles, fmt.Sprint(m["role"]))
+		if m["role"] == "assistant" {
+			t.Fatalf("aborted assistant leaked into anthropic: %+v", m)
+		}
+	}
+	if strings.Join(roles, ",") != "user,user" {
+		t.Fatalf("anthropic roles %s", strings.Join(roles, ","))
+	}
+
+	resp := ResponsesBody(loop.Request{Model: "gpt-4o", Messages: hist})
+	var kinds []string
+	for _, raw := range resp["input"].([]any) {
+		item := raw.(map[string]any)
+		kinds = append(kinds, fmt.Sprintf("%s/%s", item["type"], item["role"]))
+	}
+	if strings.Join(kinds, ",") != "message/user,message/user" {
+		t.Fatalf("responses items %s", strings.Join(kinds, ","))
+	}
+}
+
+func TestReplayableDropsErrorEmptyAndOrphanToolResults(t *testing.T) {
+	hist := []types.Message{
+		{Role: "user", Content: []types.Content{{Type: "text", Text: "a"}}},
+		{Role: "assistant", StopReason: "error", ErrorMessage: "400", Content: []types.Content{
+			{Type: "toolCall", ID: "c1", Name: "Read"},
+		}},
+		{Role: "toolResult", ToolCallID: "c1", Content: []types.Content{{Type: "text", Text: "partial"}}},
+		{Role: "assistant"}, // empty, no stopReason
+		{Role: "user", Content: []types.Content{{Type: "text", Text: "b"}}},
+	}
+	got := replayable(hist)
+	if len(got) != 2 || got[0].Role != "user" || got[1].Role != "user" {
+		t.Fatalf("want two users, got %+v", got)
+	}
+}
+
+func TestReplayableSynthesizesMissingToolResults(t *testing.T) {
+	hist := []types.Message{
+		{Role: "user", Content: []types.Content{{Type: "text", Text: "a"}}},
+		{Role: "assistant", Content: []types.Content{
+			{Type: "toolCall", ID: "c1", Name: "Read"},
+			{Type: "toolCall", ID: "c2", Name: "Read"},
+		}},
+		{Role: "toolResult", ToolCallID: "c1", Content: []types.Content{{Type: "text", Text: "ok"}}},
+		{Role: "user", Content: []types.Content{{Type: "text", Text: "b"}}},
+	}
+	got := replayable(hist)
+	if len(got) != 5 {
+		t.Fatalf("len %d: %+v", len(got), got)
+	}
+	if got[3].Role != "toolResult" || got[3].ToolCallID != "c2" || !got[3].IsError {
+		t.Fatalf("synthetic: %+v", got[3])
+	}
+	if got[3].Text() != "No result provided" {
+		t.Fatalf("synthetic text: %q", got[3].Text())
+	}
+}
+
+func TestReplayableKeepsThinkingOnlyAssistant(t *testing.T) {
+	hist := []types.Message{
+		{Role: "user", Content: []types.Content{{Type: "text", Text: "a"}}},
+		{Role: "assistant", Content: []types.Content{{Type: "thinking", Thinking: "hmm"}}},
+		{Role: "user", Content: []types.Content{{Type: "text", Text: "b"}}},
+	}
+	got := replayable(hist)
+	if len(got) != 3 || got[1].Role != "assistant" {
+		t.Fatalf("thinking assistant dropped: %+v", got)
+	}
+}
+
 func TestResponsesBodyUsesInstructions(t *testing.T) {
 	body := ResponsesBody(loop.Request{System: "S", Model: "gpt-4o", Messages: []types.Message{
 		{Role: "user", Content: []types.Content{{Type: "text", Text: "q"}}},
