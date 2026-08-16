@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -298,6 +299,16 @@ func TestListHistoryAndUI(t *testing.T) {
 	if !strings.Contains(string(body), `"token":"tok"`) {
 		t.Fatalf("index missing injected token:\n%s", body)
 	}
+
+	res, err = http.Get(hs.URL + "/home/someone/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostBody, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != 200 || !strings.Contains(string(hostBody), `"token":"tok"`) {
+		t.Fatalf("host path should still serve SPA: %d", res.StatusCode)
+	}
 }
 
 func TestRequestHeaderPersistAndPatch(t *testing.T) {
@@ -434,6 +445,208 @@ func createSession(t *testing.T, hs *httptest.Server, cwd string) string {
 		t.Fatalf("no id: %s", b)
 	}
 	return id
+}
+
+func TestWorkspacesFSSearch(t *testing.T) {
+	srv, hs := testServer(t)
+	proj := t.TempDir()
+	id := createSession(t, hs, proj)
+
+	req, _ := http.NewRequest("GET", hs.URL+"/v1/meta", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&meta)
+	res.Body.Close()
+	if _, ok := meta["cwd"]; ok {
+		t.Fatalf("meta still has cwd: %+v", meta)
+	}
+	if meta["home"] == nil {
+		t.Fatal("meta home")
+	}
+
+	req, _ = http.NewRequest("POST", hs.URL+"/v1/sessions", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tmpSess map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&tmpSess)
+	res.Body.Close()
+	cwd, _ := tmpSess["cwd"].(string)
+	if !strings.Contains(cwd, filepath.Join("workspace", "tmp+")) {
+		t.Fatalf("temp cwd %q", cwd)
+	}
+	if tmpSess["workspaceId"] == "" {
+		t.Fatal("temp workspaceId")
+	}
+
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/workspaces", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spaces []map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&spaces)
+	res.Body.Close()
+	if len(spaces) < 2 {
+		t.Fatalf("workspaces: %+v", spaces)
+	}
+
+	other := filepath.Join(t.TempDir(), "fresh")
+	body, _ := json.Marshal(map[string]any{"path": other, "title": "Fresh"})
+	req, _ = http.NewRequest("POST", hs.URL+"/v1/workspaces", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 201 {
+		t.Fatalf("create ws %d", res.StatusCode)
+	}
+	var ws map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&ws)
+	res.Body.Close()
+	wsID, _ := ws["id"].(string)
+
+	req, _ = http.NewRequest("POST", hs.URL+"/v1/sessions", bytes.NewReader([]byte(`{"workspaceId":"`+wsID+`"}`)))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inWS map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&inWS)
+	res.Body.Close()
+	if inWS["cwd"] != other && !strings.HasPrefix(fmt.Sprint(inWS["cwd"]), other) {
+		// Normalize may EvalSymlinks
+		if inWS["workspaceId"] != wsID {
+			t.Fatalf("create in ws: %+v", inWS)
+		}
+	}
+
+	patch, _ := json.Marshal(map[string]any{"title": "Renamed", "pinned": true})
+	req, _ = http.NewRequest("PATCH", hs.URL+"/v1/sessions/"+id, bytes.NewReader(patch))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var patched map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&patched)
+	res.Body.Close()
+	if patched["title"] != "Renamed" || patched["pinned"] != true {
+		t.Fatalf("patch: %+v", patched)
+	}
+
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/fs?path="+proj, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listing map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&listing)
+	res.Body.Close()
+	if listing["separator"] == nil || listing["home"] == nil {
+		t.Fatalf("listing: %+v", listing)
+	}
+	crumbs, _ := listing["crumbs"].([]any)
+	if len(crumbs) == 0 {
+		t.Fatal("crumbs")
+	}
+
+	child := map[string]any{"path": proj, "name": "nested"}
+	b, _ := json.Marshal(child)
+	req, _ = http.NewRequest("POST", hs.URL+"/v1/fs", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 200 {
+		t.Fatalf("mkdir %d", res.StatusCode)
+	}
+	res.Body.Close()
+	req, _ = http.NewRequest("POST", hs.URL+"/v1/fs", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 409 {
+		t.Fatalf("dup mkdir %d", res.StatusCode)
+	}
+	res.Body.Close()
+
+	req, _ = http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"searchable unique token xyzzy"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/search?q=xyzzy", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&found)
+	res.Body.Close()
+	items, _ := found["items"].([]any)
+	if len(items) == 0 {
+		t.Fatalf("search: %+v", found)
+	}
+
+	req, _ = http.NewRequest("DELETE", hs.URL+"/v1/sessions/"+fmt.Sprint(inWS["id"]), nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 204 {
+		t.Fatalf("del session %d", res.StatusCode)
+	}
+	res.Body.Close()
+
+	req, _ = http.NewRequest("DELETE", hs.URL+"/v1/workspaces/"+wsID, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != 204 {
+		b, _ := io.ReadAll(res.Body)
+		t.Fatalf("del ws %d %s", res.StatusCode, b)
+	}
+	res.Body.Close()
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("workspace dir must remain: %v", err)
+	}
+	_ = srv
 }
 
 func firstLine(t *testing.T, path string) map[string]any {

@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"os"
 	"strings"
 
 	"ki/web"
@@ -23,13 +22,15 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/")
-	if path == "" || !strings.Contains(path, ".") {
+	if path == "" {
 		s.writeIndex(w, root)
 		return
 	}
 	f, err := root.Open(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			// Host paths like /data/hgy/tmp are not assets. Serve the SPA
+			// here (do not 302 — a full navigation must not go blank).
 			s.writeIndex(w, root)
 			return
 		}
@@ -61,8 +62,7 @@ func (s *Server) writeIndex(w http.ResponseWriter, root fs.FS) {
 		http.Error(w, "web ui not built (cd web && npm run build)", http.StatusServiceUnavailable)
 		return
 	}
-	cwd, _ := os.Getwd()
-	boot, _ := json.Marshal(map[string]string{"token": s.token, "cwd": cwd})
+	boot, _ := json.Marshal(map[string]string{"token": s.token})
 	html := strings.Replace(string(b), "__KI_BOOT__", string(boot), 1)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

@@ -236,3 +236,55 @@ func TestToggleAllowed(t *testing.T) {
 		t.Fatal("only")
 	}
 }
+
+func TestTitlePinRemove(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Create(root, cwd, "anthropic", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(types.Message{
+		Role:    "user",
+		Content: []types.Content{{Type: "text", Text: "auto title"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if TitleOf(s) != "auto title" {
+		t.Fatalf("auto: %q", TitleOf(s))
+	}
+	if err := s.SetTitle("pinned name"); err != nil {
+		t.Fatal(err)
+	}
+	if TitleOf(s) != "pinned name" {
+		t.Fatalf("override: %q", TitleOf(s))
+	}
+	if err := s.SetPinned(true); err != nil {
+		t.Fatal(err)
+	}
+	dir := s.Dir
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s2.Config.Pinned || s2.Config.PinnedAt == "" || TitleOf(s2) != "pinned name" {
+		t.Fatalf("reload: %+v", s2.Config)
+	}
+	s2.Close()
+	if err := Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); err == nil {
+		t.Fatal("open after remove")
+	}
+	infos, err := List(root)
+	if err != nil || len(infos) != 0 {
+		t.Fatalf("list after remove: %v %+v", err, infos)
+	}
+}

@@ -175,13 +175,17 @@ function lineDiff(a: string, b: string): { kind: 'same' | 'del' | 'add'; text: s
 }
 
 export function TrajectoryView({
-  records, onSelect,
+  records, onSelect, selectId,
 }: {
   records: TrajRecord[]
   onSelect?: (r: TrajRecord | null) => void
+  selectId?: string | null
 }) {
   const [q, setQ] = useState('')
   const [sel, setSel] = useState<string | null>(null)
+  useEffect(() => {
+    if (selectId) setSel(selectId)
+  }, [selectId])
   const [tab, setTab] = useState<InspTab>('summary')
   const [actualDur, setActualDur] = useState(true)
   const [foldedTurns, setFoldedTurns] = useState<Set<number>>(new Set())

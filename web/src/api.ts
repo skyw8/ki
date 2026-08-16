@@ -1,10 +1,10 @@
-import type { LoopEvent, SessionDetail, SessionInfo } from './types'
+import type { FsListing, LoopEvent, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
 
-export type Boot = { token: string; cwd: string }
+export type Boot = { token: string }
 
 export function boot(): Boot {
   const raw = window.__KI__ ?? {}
-  return { token: raw.token ?? '', cwd: raw.cwd ?? '' }
+  return { token: raw.token ?? '' }
 }
 
 export class ApiError extends Error {
@@ -25,7 +25,7 @@ export class Client {
   }
 
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(path, {
+    const res = await fetch(path, { // same-origin relative; works behind a port-forward
       ...init,
       headers: { ...this.headers(init?.body != null), ...(init?.headers ?? {}) },
     })
@@ -45,8 +45,52 @@ export class Client {
     return this.json(`/v1/sessions/${id}`)
   }
 
-  create(cwd: string, model?: string): Promise<SessionInfo> {
-    return this.json('/v1/sessions', { method: 'POST', body: JSON.stringify({ cwd, model }) })
+  create(opts?: { cwd?: string; workspaceId?: string; model?: string }): Promise<SessionInfo> {
+    return this.json('/v1/sessions', { method: 'POST', body: JSON.stringify(opts ?? {}) })
+  }
+
+  deleteSession(id: string): Promise<void> {
+    return this.json(`/v1/sessions/${id}`, { method: 'DELETE' })
+  }
+
+  workspaces(): Promise<WorkspaceInfo[]> {
+    return this.json('/v1/workspaces')
+  }
+
+  createWorkspace(path: string, title?: string): Promise<WorkspaceInfo> {
+    return this.json('/v1/workspaces', { method: 'POST', body: JSON.stringify({ path, title }) })
+  }
+
+  patchWorkspace(id: string, body: { title: string }): Promise<WorkspaceInfo> {
+    return this.json(`/v1/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+  }
+
+  deleteWorkspace(id: string): Promise<void> {
+    return this.json(`/v1/workspaces/${id}`, { method: 'DELETE' })
+  }
+
+  moveWorkspace(id: string, beforeId?: string | null): Promise<WorkspaceInfo[]> {
+    return this.json(`/v1/workspaces/${id}/move`, { method: 'POST', body: JSON.stringify({ beforeId: beforeId ?? null }) })
+  }
+
+  moveSession(wsId: string, sessionId: string, beforeId?: string | null): Promise<WorkspaceInfo> {
+    return this.json(`/v1/workspaces/${wsId}/sessions/move`, {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, beforeId: beforeId ?? null }),
+    })
+  }
+
+  listFS(path?: string, signal?: AbortSignal): Promise<FsListing> {
+    const q = path ? `?path=${encodeURIComponent(path)}` : ''
+    return this.json(`/v1/fs${q}`, { signal })
+  }
+
+  createFS(path: string, name: string): Promise<{ path: string }> {
+    return this.json('/v1/fs', { method: 'POST', body: JSON.stringify({ path, name }) })
+  }
+
+  search(q: string, signal?: AbortSignal): Promise<{ items: SearchHit[]; hasMore: boolean }> {
+    return this.json(`/v1/sessions/search?q=${encodeURIComponent(q)}`, { signal })
   }
 
   prompt(id: string, text: string, model?: string): Promise<void> {
@@ -72,7 +116,7 @@ export class Client {
     return this.json('/v1/models')
   }
 
-  patch(id: string, body: { model?: string; skills?: import('./types').Toggle; mcp?: import('./types').Toggle }): Promise<SessionInfo & { skills?: import('./types').Toggle; mcp?: import('./types').Toggle }> {
+  patch(id: string, body: { model?: string; title?: string; pinned?: boolean; skills?: import('./types').Toggle; mcp?: import('./types').Toggle }): Promise<SessionInfo & { skills?: import('./types').Toggle; mcp?: import('./types').Toggle }> {
     return this.json(`/v1/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
   }
 

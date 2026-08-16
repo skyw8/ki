@@ -2,18 +2,16 @@
 
 `ki serve` 同域出页面：一个二进制，静态资源嵌在 `web/dist`，API 仍是 `/v1/*`。
 
-浏览器打开 `http://127.0.0.1:19800/`。token 写进 `index.html`，前端用 Bearer 调 API、用 `fetch` 读 SSE。
+浏览器打开 `http://127.0.0.1:19800/`，或经 SSH/IDE **端口转发** 打开同一端口。token 写进 `index.html`，前端只用同域相对路径调 `/v1/*` 和 `/assets/*`，不把宿主文件路径写进 `href`，也不用系统选目录。
 
 ## 页面
 
-- 侧栏：新会话、按 cwd 分组的列表、设置入口（无主题切换）
-- 对话：气泡、Markdown（含表格）、Think、Read/Edit/Bash 专用卡、用量脚注（in→out / cache read/write）下常亮 copy/fork/regen、用户气泡右下 copy/edit、压缩、composer
-- 轨迹：SYSTEM / USER / ASSISTANT / TOOL / COMPACTED 各有色标；时长/折工具/跟尾为带 tip 的图标；检查器标题为 Turn N · Step/Message，详情对齐 Summary / Preview / Raw（SYSTEM 仍是 System Prompt / Tools / Context）
-- 设置 / 选模型：各自弹窗；外观（默认浅色）只在设置里改；对话输入条上的模型芯片打开模型列表
+- 侧栏：工作区树（创建 / 重命名 / 删除登记和会话日志、组内 `+`、pin、拖拽、每组默认 5 条「显示更多」）、Miller 选目录、标题+正文搜索、未分组只给旧脏数据
+- 对话：气泡、Markdown、Think、默认折叠的工具行（Read 行号 / Edit diff / Bash 终端 / IN·OUT、Inspect）、用量脚注下 copy/fork/regen、离底「回到底部」、composer（cwd 芯片来自当前会话）
+- 轨迹：SYSTEM / USER / ASSISTANT / TOOL / COMPACTED 各有色标；检查器 Summary / Preview / Raw
+- 设置 / 选模型：各自弹窗；外观（默认浅色）只在设置里改
 
-数据来自 session jsonl（`GET /{id}` 的 `entries` / `messages`）和本次 run 的 SSE，不走模型厂商 SDK。
-
-这不是 DSH WebUI 的一比一复刻。差距见 [docs/prd/webui-parity.md](prd/webui-parity.md)。下一步能对齐什么见 [docs/prd/webui-next.md](prd/webui-next.md)。
+数据来自 session jsonl 和本次 run 的 SSE。工作区见 [workspace.md](workspace.md)。
 
 ## 构建
 

@@ -37,6 +37,9 @@ type Toggle struct {
 type Config struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	Title    string `json:"title,omitempty"`
+	Pinned   bool   `json:"pinned,omitempty"`
+	PinnedAt string `json:"pinnedAt,omitempty"`
 	Skills   Toggle `json:"skills"`
 	MCP      Toggle `json:"mcp"`
 }
@@ -97,11 +100,7 @@ func EncodeCWD(cwd string) string {
 // Create makes a new session directory under root.
 func Create(root, cwd, provider, model string) (*Session, error) {
 	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return nil, err
-		}
+		return nil, fmt.Errorf("cwd required")
 	}
 	cwd, err := filepath.Abs(cwd)
 	if err != nil {
@@ -420,6 +419,35 @@ func (s *Session) SetToggles(skills, mcp *Toggle) error {
 // SetModel updates config.json and appends model_change.
 func (s *Session) SetModel(provider, model string) error {
 	return s.AppendModelChange(provider, model)
+}
+
+// SetTitle writes a pinned display title (empty clears the override).
+func (s *Session) SetTitle(title string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Config.Title = strings.TrimSpace(title)
+	return s.writeConfig()
+}
+
+// SetPinned writes the pin flag. pinnedAt is stamped on the first pin.
+func (s *Session) SetPinned(on bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if on {
+		s.Config.Pinned = true
+		if s.Config.PinnedAt == "" {
+			s.Config.PinnedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+	} else {
+		s.Config.Pinned = false
+		s.Config.PinnedAt = ""
+	}
+	return s.writeConfig()
+}
+
+// Remove closes and deletes a session directory.
+func Remove(dir string) error {
+	return os.RemoveAll(dir)
 }
 
 func (s *Session) appendLocked(e Entry) error {

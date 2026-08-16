@@ -83,6 +83,56 @@ export const ITail = () => (
     <path d="M3.6 13.2h8.8" />
   </Icon>
 )
+export const IPin = () => (
+  <Icon>
+    <path d="M8 13.2V8.2" />
+    <path d="M5 8.2h6L10 3.4H6L5 8.2Z" />
+  </Icon>
+)
+export const ITrash = () => (
+  <Icon>
+    <path d="M3.5 4.5h9M6 4.5V3.4h4v1.1M5.2 4.5l.5 8.2h4.6l.5-8.2" />
+  </Icon>
+)
+export const IDots = () => (
+  <Icon>
+    <circle cx="4" cy="8" r="0.9" fill="currentColor" stroke="none" />
+    <circle cx="8" cy="8" r="0.9" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="8" r="0.9" fill="currentColor" stroke="none" />
+  </Icon>
+)
+export const IFolder = () => (
+  <Icon>
+    <path d="M2.8 4.4h3.2l1.2 1.4h6v6.8H2.8V4.4Z" />
+  </Icon>
+)
+export const IFolderOpen = () => (
+  <Icon>
+    <path d="M2.6 6.2 3.8 12h8.8l1.4-5.8H2.6Z" />
+    <path d="M3.2 6.2V4.6h3l1.1 1.2H12" />
+  </Icon>
+)
+export const IPencil = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="M9.1 3.2 12.8 6.9 6.2 13.5H2.5v-3.7L9.1 3.2Z" />
+    <path d="m8 4.3 3.7 3.7" />
+  </svg>
+)
+export const IChevRight = () => (
+  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
+    <path d="m6 3.5 5 4.5-5 4.5" />
+  </svg>
+)
+export const ICheck = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
+    <path d="m3.4 8.2 3 3.2 6.2-6.8" />
+  </svg>
+)
+export const IChevDown = () => (
+  <Icon>
+    <path d="m4 6.2 4 4 4-4" />
+  </Icon>
+)
 export const IChev = ({ open }: { open?: boolean }) => (
   <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" style={{ transform: open ? 'rotate(90deg)' : undefined, transition: 'transform .15s' }} aria-hidden>
     <path d="m6 3.5 5 4.5-5 4.5" />

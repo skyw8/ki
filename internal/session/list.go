@@ -18,6 +18,8 @@ type Info struct {
 	Timestamp     string `json:"timestamp"`
 	ParentSession string `json:"parent,omitempty"`
 	Title         string `json:"title"`
+	Pinned        bool   `json:"pinned,omitempty"`
+	PinnedAt      string `json:"pinnedAt,omitempty"`
 }
 
 // List walks the session root and returns every readable session, newest first.
@@ -56,6 +58,8 @@ func List(root string) ([]Info, error) {
 				Timestamp:     s.Header.Timestamp,
 				ParentSession: s.Header.ParentSession,
 				Title:         TitleOf(s),
+				Pinned:        s.Config.Pinned,
+				PinnedAt:      s.Config.PinnedAt,
 			})
 			_ = s.Close()
 		}
@@ -64,8 +68,11 @@ func List(root string) ([]Info, error) {
 	return out, nil
 }
 
-// TitleOf is the first user message, truncated.
+// TitleOf prefers config.json title, else the first user message, truncated.
 func TitleOf(s *Session) string {
+	if t := strings.TrimSpace(s.Config.Title); t != "" {
+		return t
+	}
 	for _, e := range s.Entries() {
 		if e.Type != "message" || e.Message == nil || e.Message.Role != "user" {
 			continue
