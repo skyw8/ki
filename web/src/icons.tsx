@@ -1,140 +1,76 @@
-import type { ReactNode } from 'react'
+import type { ComponentType } from 'react'
+import {
+  ArrowDownToLine,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Copy,
+  Folder,
+  FolderOpen,
+  GitFork,
+  ListCollapse,
+  ListMinus,
+  Moon,
+  MoreHorizontal,
+  PanelLeft,
+  Pencil,
+  Pin,
+  Plus,
+  RefreshCcw,
+  Search,
+  SendHorizontal,
+  Settings,
+  Sparkles,
+  Square,
+  Sun,
+  Trash2,
+  User,
+  Wrench,
+  X,
+  type LucideProps,
+} from 'lucide-react'
 
-export function Icon({ children }: { children: ReactNode }) {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      {children}
-    </svg>
-  )
+type IconProps = Omit<LucideProps, 'size'>
+
+function sized(C: ComponentType<LucideProps>, size: number) {
+  return function SizedIcon(props: IconProps) {
+    return <C size={size} {...props} />
+  }
 }
 
-export const IPlus = () => <Icon><path d="M8 3v10M3 8h10" /></Icon>
-export const IPanel = () => <Icon><rect x="2.5" y="2.5" width="11" height="11" rx="2" /><path d="M6.5 3v10" /></Icon>
-export const ISun = () => <Icon><circle cx="8" cy="8" r="2.4" /><path d="M8 2.5v1.4M8 12.1v1.4M2.5 8h1.4M12.1 8h1.4M4.1 4.1l1 1M10.9 10.9l1 1M4.1 11.9l1-1M10.9 5.1l1-1" /></Icon>
-export const IMoon = () => <Icon><path d="M10.5 2.8A5.5 5.5 0 1 0 13.2 10 4.3 4.3 0 0 1 10.5 2.8Z" /></Icon>
-export const IGear = () => (
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
-    <path fillRule="evenodd" d="M6.35 1.7h3.3l.4 1.58c.4.13.78.33 1.13.58l1.55-.52 1.65 2.86-1.26 1.02c.07.4.12.8.12 1.18s-.05.78-.12 1.18l1.26 1.02-1.65 2.86-1.55-.52a5.1 5.1 0 0 1-1.13.58l-.4 1.58h-3.3l-.4-1.58a5.1 5.1 0 0 1-1.13-.58l-1.55.52-1.65-2.86 1.26-1.02A5.7 5.7 0 0 1 2.85 8c0-.38.05-.78.12-1.18L1.71 5.8l1.65-2.86 1.55.52c.35-.25.73-.45 1.13-.58l.4-1.58ZM8 5.85A2.15 2.15 0 1 0 8 10.15 2.15 2.15 0 0 0 8 5.85Z" />
-  </svg>
-)
-export const ISend = () => <Icon><path d="M3 8h10M9 4.5 13 8l-4 3.5" /></Icon>
-export const IStop = () => <Icon><rect x="4.5" y="4.5" width="7" height="7" rx="1.2" fill="currentColor" stroke="none" /></Icon>
-export const IFork = () => <Icon><circle cx="4.5" cy="4" r="1.4" /><circle cx="4.5" cy="12" r="1.4" /><circle cx="11.5" cy="8" r="1.4" /><path d="M4.5 5.4v5.2M4.5 8h5.4" /></Icon>
-export const ISearch = () => <Icon><circle cx="7" cy="7" r="3.4" /><path d="m12.5 12.5-2.4-2.4" /></Icon>
-export const IClose = () => <Icon><path d="m4 4 8 8M12 4 4 12" /></Icon>
-export const IWrench = () => (
-  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="M14 3.3a3.8 3.8 0 0 1-4.8 4.8l-5.1 5.1a1.6 1.6 0 1 1-2.3-2.3l5.1-5.1A3.8 3.8 0 0 1 11.7 1l-2.3 2.3 2.3 2.3L14 3.3Z" />
-  </svg>
-)
-export const ISpark = () => (
-  <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
-    <path d="M8 1.4 9.2 6.1 14 8 9.2 9.9 8 14.6 6.8 9.9 2 8l4.8-1.9L8 1.4Z" />
-  </svg>
-)
-export const IUser = () => (
-  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden>
-    <circle cx="8" cy="5.5" r="2.3" />
-    <path d="M3.4 13c.7-2.3 2.4-3.4 4.6-3.4s3.9 1.1 4.6 3.4" />
-  </svg>
-)
-export const ICompact = () => (
-  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="m2.5 2.5 3.75 3.75M3 6.25h3.25V3" />
-    <path d="m13.5 2.5-3.75 3.75M13 6.25H9.75V3" />
-    <path d="m2.5 13.5 3.75-3.75M3 9.75h3.25V13" />
-    <path d="m13.5 13.5-3.75-3.75M13 9.75H9.75V13" />
-  </svg>
-)
-export const ICopy = () => (
-  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <rect x="5.5" y="5.5" width="8" height="8" rx="1.4" />
-    <path d="M10.5 5.4V4.2A1.2 1.2 0 0 0 9.3 3H3.7A1.2 1.2 0 0 0 2.5 4.2v5.6A1.2 1.2 0 0 0 3.7 11h1.2" />
-  </svg>
-)
-export const IEdit = () => (
-  <Icon>
-    <path d="M9.1 3.2 12.8 6.9 6.2 13.5H2.5v-3.7L9.1 3.2Z" />
-    <path d="m8 4.3 3.7 3.7" />
-  </Icon>
-)
-export const IRegen = () => (
-  <Icon>
-    <path d="M13.2 8A5.2 5.2 0 1 1 11.3 3.9" />
-    <path d="M11.2 2.2v2.6h2.6" />
-  </Icon>
-)
-export const IClock = () => (
-  <Icon>
-    <circle cx="8" cy="8" r="5.2" />
-    <path d="M8 5v3.2l2.2 1.3" />
-  </Icon>
-)
-export const IFold = () => (
-  <Icon>
-    <path d="M3 4.2h10M3 8h7M3 11.8h10" />
-    <path d="m11.2 6.4 2.4 1.6-2.4 1.6" />
-  </Icon>
-)
-export const ITail = () => (
-  <Icon>
-    <path d="M8 2.8v8" />
-    <path d="m4.8 8.4 3.2 3.2 3.2-3.2" />
-    <path d="M3.6 13.2h8.8" />
-  </Icon>
-)
-export const IPin = () => (
-  <Icon>
-    <path d="M8 13.2V8.2" />
-    <path d="M5 8.2h6L10 3.4H6L5 8.2Z" />
-  </Icon>
-)
-export const ITrash = () => (
-  <Icon>
-    <path d="M3.5 4.5h9M6 4.5V3.4h4v1.1M5.2 4.5l.5 8.2h4.6l.5-8.2" />
-  </Icon>
-)
-export const IDots = () => (
-  <Icon>
-    <circle cx="4" cy="8" r="0.9" fill="currentColor" stroke="none" />
-    <circle cx="8" cy="8" r="0.9" fill="currentColor" stroke="none" />
-    <circle cx="12" cy="8" r="0.9" fill="currentColor" stroke="none" />
-  </Icon>
-)
-export const IFolder = () => (
-  <Icon>
-    <path d="M2.8 4.4h3.2l1.2 1.4h6v6.8H2.8V4.4Z" />
-  </Icon>
-)
-export const IFolderOpen = () => (
-  <Icon>
-    <path d="M2.6 6.2 3.8 12h8.8l1.4-5.8H2.6Z" />
-    <path d="M3.2 6.2V4.6h3l1.1 1.2H12" />
-  </Icon>
-)
-export const IPencil = () => (
-  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="M9.1 3.2 12.8 6.9 6.2 13.5H2.5v-3.7L9.1 3.2Z" />
-    <path d="m8 4.3 3.7 3.7" />
-  </svg>
-)
-export const IChevRight = () => (
-  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
-    <path d="m6 3.5 5 4.5-5 4.5" />
-  </svg>
-)
-export const ICheck = () => (
-  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
-    <path d="m3.4 8.2 3 3.2 6.2-6.8" />
-  </svg>
-)
-export const IChevDown = () => (
-  <Icon>
-    <path d="m4 6.2 4 4 4-4" />
-  </Icon>
-)
+export const IPlus = sized(Plus, 16)
+export const IPanel = sized(PanelLeft, 16)
+export const ISun = sized(Sun, 16)
+export const IMoon = sized(Moon, 16)
+export const IGear = sized(Settings, 16)
+export const ISend = sized(SendHorizontal, 16)
+export const IStop = (props: IconProps) => <Square size={16} fill="currentColor" {...props} />
+export const IFork = sized(GitFork, 16)
+export const ISearch = sized(Search, 16)
+export const IClose = sized(X, 16)
+export const IWrench = sized(Wrench, 14)
+export const ISpark = sized(Sparkles, 14)
+export const IUser = sized(User, 14)
+export const ICompact = sized(ListMinus, 14)
+export const ICopy = sized(Copy, 14)
+export const IEdit = sized(Pencil, 16)
+export const IRegen = sized(RefreshCcw, 16)
+export const IClock = sized(Clock, 16)
+export const IFold = sized(ListCollapse, 16)
+export const ITail = sized(ArrowDownToLine, 16)
+export const IPin = sized(Pin, 16)
+export const ITrash = sized(Trash2, 16)
+export const IDots = sized(MoreHorizontal, 16)
+export const IFolder = sized(Folder, 16)
+export const IFolderOpen = sized(FolderOpen, 16)
+export const IPencil = sized(Pencil, 14)
+export const IChevRight = sized(ChevronRight, 12)
+export const ICheck = sized(Check, 14)
+export const IChevDown = sized(ChevronDown, 16)
 export const IChev = ({ open }: { open?: boolean }) => (
-  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" style={{ transform: open ? 'rotate(90deg)' : undefined, transition: 'transform .15s' }} aria-hidden>
-    <path d="m6 3.5 5 4.5-5 4.5" />
-  </svg>
+  <ChevronRight
+    size={12}
+    style={{ transform: open ? 'rotate(90deg)' : undefined, transition: 'transform .15s' }}
+  />
 )
