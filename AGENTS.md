@@ -55,6 +55,7 @@ WebUI live: `cd web && npm run test:e2e:live`.
 - Do not name  `docs/todo`, or files under them in this file.
 - Package comments go in that package's `doc.go`. Cross-package explanation stays in `docs/`.
 - When changing code, update the related docs that already describe that contract (`docs/*.md` and the owning `doc.go`). Do not add new todo filenames here.
+- Bugs and pitfalls get a why-comment at the fix site explaining why the code is written that way. A problem that recurs gets a retrospective entry under `docs/postmortem/`.
 - One binary: `ki serve` serves API and the embedded SPA on the same origin. Rebuild `web/dist` then `go build` after frontend changes; serve does not run npm.
 - Do not vendor the DeepSeek Harness client (cordis, Host WebSocket, plugin tree). The WebUI is a thin SPA on ki HTTP/SSE.
 - Do not invent REST routes for data the loop already has. Extend `loop.Event` and jsonl (and existing SSE / `GET /v1/sessions/{id}`) instead.
