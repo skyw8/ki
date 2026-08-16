@@ -4,7 +4,7 @@ import { ApiError, Client, boot } from './api'
 import { ChatView } from './Chat'
 import { DirectoryBrowser } from './DirectoryBrowser'
 import { SessionConfig } from './SessionConfig'
-import { IChev, IChevDown, IClose, IDots, IFolder, IGear, IPanel, IPin, IPlus, ISearch, ISend, IStop, ITrash } from './icons'
+import { IChev, IChevDown, IClose, IDots, IEdit, IFolder, IGear, IPanel, IPin, IPlus, ISearch, ISend, IStop, ITrash } from './icons'
 import { appendOptimisticUser, applyEvent, emptyView, loadHistory } from './model'
 import type { ChatNode, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
@@ -554,7 +554,16 @@ export function App() {
           ) : null}
         </div>
         <div className="sidebar-foot">
-          <button type="button" className="icon-btn" data-testid="open-settings" onClick={() => setSettingsOpen(true)} aria-label={t('settings.open')}><IGear /></button>
+          <button
+            type="button"
+            className="settings-btn"
+            data-testid="open-settings"
+            onClick={() => setSettingsOpen(true)}
+            aria-label={t('settings.open')}
+            title={t('settings.open')}
+          >
+            <IGear />{wide ? <span className="wide-only">{t('settings.open')}</span> : null}
+          </button>
         </div>
       </aside>
 
@@ -636,7 +645,7 @@ export function App() {
                   setMenu(null)
                 }}
                 >
-                  {t('workspace.rename')}
+                  <IEdit /> {t('workspace.rename')}
                 </button>
                 <button type="button" className="danger" onClick={() => {
                   const ws = workspaces.find(w => w.id === menu.id)
@@ -664,7 +673,7 @@ export function App() {
                   setMenu(null)
                 }}
                 >
-                  {t('session.rename')}
+                  <IEdit /> {t('session.rename')}
                 </button>
                 <button type="button" className="danger" onClick={() => {
                   const s = byId.get(menu.id)
