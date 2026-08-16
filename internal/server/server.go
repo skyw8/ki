@@ -112,9 +112,12 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})
+	api.HandleFunc("GET /v1/models", s.auth(s.models))
+	api.HandleFunc("GET /v1/meta", s.auth(s.meta))
 	api.HandleFunc("GET /v1/sessions", s.auth(s.list))
 	api.HandleFunc("POST /v1/sessions", s.auth(s.create))
 	api.HandleFunc("GET /v1/sessions/{id}", s.auth(s.get))
+	api.HandleFunc("PATCH /v1/sessions/{id}", s.auth(s.patch))
 	api.HandleFunc("POST /v1/sessions/{id}/prompt", s.auth(s.prompt))
 	api.HandleFunc("GET /v1/sessions/{id}/events", s.auth(s.events))
 	api.HandleFunc("POST /v1/sessions/{id}/abort", s.auth(s.abort))
@@ -271,6 +274,70 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		"running":  s.running(sess.ID()),
 		"entries":  sess.Entries(),
 		"messages": sess.MessagesToLeaf(),
+		"skills":   sess.Config.Skills,
+		"mcp":      sess.Config.MCP,
+	})
+}
+
+func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+	cat := provider.Catalog()
+	out := make([]map[string]any, 0, len(cat))
+	for _, m := range cat {
+		out = append(out, map[string]any{
+			"provider":      m.Provider,
+			"id":            m.ID,
+			"api":           m.API,
+			"contextWindow": m.ContextWindow,
+			"spec":          m.Provider + "/" + m.ID,
+		})
+	}
+	writeJSON(w, 200, out)
+}
+
+func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
+	cwd, _ := os.Getwd()
+	writeJSON(w, 200, map[string]any{
+		"cwd":      cwd,
+		"provider": s.cfg.Defaults.Provider,
+		"model":    s.cfg.Defaults.Model,
+	})
+}
+
+func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.open(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), 404)
+		return
+	}
+	defer sess.Close()
+	var body struct {
+		Model  string          `json:"model"`
+		Skills *session.Toggle `json:"skills"`
+		MCP    *session.Toggle `json:"mcp"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", 400)
+		return
+	}
+	if body.Model != "" {
+		p, m := provider.Resolve(s.cfg, sess.Config.Provider, sess.Config.Model, body.Model)
+		if err := sess.SetModel(p, m); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+	}
+	if body.Skills != nil || body.MCP != nil {
+		if err := sess.SetToggles(body.Skills, body.MCP); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+	}
+	writeJSON(w, 200, map[string]any{
+		"id":       sess.ID(),
+		"provider": sess.Config.Provider,
+		"model":    sess.Config.Model,
+		"skills":   sess.Config.Skills,
+		"mcp":      sess.Config.MCP,
 	})
 }
 
@@ -379,6 +446,15 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	emit := func(ev loop.Event) error {
 		if ev.Type == loop.MessageEnd && ev.Message != nil {
 			if _, err := sess.AppendMessage(*ev.Message); err != nil {
+				return err
+			}
+		}
+		if ev.Type == loop.RequestHeader {
+			tools := make([]session.ToolSchema, 0, len(ev.Tools))
+			for _, t := range ev.Tools {
+				tools = append(tools, session.ToolSchema{Name: t.Name, Description: t.Description, Parameters: t.Parameters})
+			}
+			if _, err := sess.AppendRequestHeader(ev.System, tools); err != nil {
 				return err
 			}
 		}

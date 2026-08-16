@@ -6,12 +6,14 @@
 
 ## 页面
 
-- 侧栏：新会话、按 cwd 分组的列表、主题切换
-- 对话：用户气泡、助手 Markdown、Think、工具卡、压缩行、composer
-- 轨迹：turn 表、时间条、选中检查器（概览 / Input / Output）
-- 设置：空页
+- 侧栏：新会话、按 cwd 分组的列表、设置入口（无主题切换）
+- 对话：气泡、Markdown（含表格）、Think、Read/Edit/Bash 专用卡、用量脚注（in→out / cache read/write）下常亮 copy/fork/regen、用户气泡右下 copy/edit、压缩、composer
+- 轨迹：SYSTEM / USER / ASSISTANT / TOOL / COMPACTED 各有色标；时长/折工具/跟尾为带 tip 的图标；检查器标题为 Turn N · Step/Message，详情对齐 Summary / Preview / Raw（SYSTEM 仍是 System Prompt / Tools / Context）
+- 设置 / 选模型：各自弹窗；外观（默认浅色）只在设置里改；对话输入条上的模型芯片打开模型列表
 
 数据来自 session jsonl（`GET /{id}` 的 `entries` / `messages`）和本次 run 的 SSE，不走模型厂商 SDK。
+
+这不是 DSH WebUI 的一比一复刻。差距见 [docs/prd/webui-parity.md](prd/webui-parity.md)。下一步能对齐什么见 [docs/prd/webui-next.md](prd/webui-next.md)。
 
 ## 构建
 

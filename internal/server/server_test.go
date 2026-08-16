@@ -300,6 +300,119 @@ func TestListHistoryAndUI(t *testing.T) {
 	}
 }
 
+func TestRequestHeaderPersistAndPatch(t *testing.T) {
+	_, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"snap"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawHeader bool
+	sc := bufio.NewScanner(res.Body)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var ev loop.Event
+		_ = json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev)
+		if ev.Type == loop.RequestHeader && ev.System != "" {
+			sawHeader = true
+		}
+		if ev.Type == loop.AgentEnd {
+			break
+		}
+	}
+	res.Body.Close()
+	if !sawHeader {
+		t.Fatal("SSE missing request_header with system")
+	}
+
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&got)
+	res.Body.Close()
+	ents, _ := got["entries"].([]any)
+	var found bool
+	for _, raw := range ents {
+		m, _ := raw.(map[string]any)
+		if m["type"] == "request_header" {
+			sys, _ := m["system"].(string)
+			if sys == "" {
+				t.Fatalf("empty system in entry: %+v", m)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("entries missing request_header: %+v", ents)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"model":  "openai/gpt-4o",
+		"skills": map[string]any{"disabled": []string{"x"}},
+		"mcp":    map[string]any{"only": []string{"y"}},
+	})
+	req, _ = http.NewRequest("PATCH", hs.URL+"/v1/sessions/"+id, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var patched map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&patched)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("patch %d %+v", res.StatusCode, patched)
+	}
+	if patched["model"] != "gpt-4o" {
+		t.Fatalf("model: %+v", patched)
+	}
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var again map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&again)
+	res.Body.Close()
+	skills, _ := again["skills"].(map[string]any)
+	dis, _ := skills["disabled"].([]any)
+	if len(dis) != 1 || dis[0] != "x" {
+		t.Fatalf("skills reload: %+v", again["skills"])
+	}
+
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var models []map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&models)
+	res.Body.Close()
+	if len(models) == 0 || models[0]["spec"] == "" {
+		t.Fatalf("models: %+v", models)
+	}
+}
+
 func createSession(t *testing.T, hs *httptest.Server, cwd string) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{"cwd": cwd})

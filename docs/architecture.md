@@ -16,9 +16,12 @@
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
+| GET | `/v1/models` | 内置 catalog（已有进程数据） |
+| GET | `/v1/meta` | 默认模型、进程 cwd |
 | GET | `/v1/sessions` | 列出全部 session（含 title / running） |
 | POST | `/v1/sessions` | 新建；可选 `cwd` / `model` |
-| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running |
+| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、skills/mcp |
+| PATCH | `/v1/sessions/{id}` | 写 session 的 `model` / skills / mcp |
 | POST | `/v1/sessions/{id}/prompt` | `202` 开跑；同一 session 未结束再来 **409** |
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件 |
 | POST | `/v1/sessions/{id}/abort` | cancel |
@@ -32,7 +35,9 @@
 ```
 agent_start
   turn_start
-    message_start → message_update* → message_end     # user / assistant
+    message_start → message_end                       # user（仅首 turn）
+    request_header                                    # system + tools 快照
+    message_start → message_update* → message_end     # assistant
     tool_execution_start → … → tool_execution_end
     message_start / message_end                       # toolResult
   turn_end

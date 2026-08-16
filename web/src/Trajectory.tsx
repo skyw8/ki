@@ -1,22 +1,88 @@
-import { Fragment, useMemo, useState } from 'react'
-import { IClose, ICompact, ISearch, ISpark, IUser, IWrench } from './icons'
-import type { TrajKind, TrajRecord } from './types'
+import { Fragment, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
+import { applyFollowTail } from './follow-tail'
+import { IChev, IClock, IClose, ICompact, IFold, ISearch, ISpark, ITail, IUser, IWrench } from './icons'
+import { renderMarkdown } from './markdown'
+import type { ToolSchema, TrajKind, TrajRecord } from './types'
+
+type InspTab = 'summary' | 'preview' | 'raw' | 'system-prompt' | 'tools' | 'context'
+
+type TabItem = { id: InspTab; label: string }
+
+function tabsFor(kind: TrajKind): TabItem[] {
+  if (kind === 'system') {
+    return [
+      { id: 'system-prompt', label: 'System Prompt' },
+      { id: 'tools', label: 'Tools' },
+      { id: 'context', label: 'Context' },
+    ]
+  }
+  return [
+    { id: 'summary', label: 'Summary' },
+    { id: 'preview', label: 'Preview' },
+    { id: 'raw', label: 'Raw' },
+  ]
+}
+
+function groupOf(kind: TrajKind, step?: number): string {
+  if (kind === 'user') return 'Message'
+  if (kind === 'system') return 'System'
+  if (kind === 'compacted') return 'Compacted'
+  return `Step ${step ?? 1}`
+}
+
+function locate(records: TrajRecord[]): Map<string, { turn: number; step?: number; group: string }> {
+  const out = new Map<string, { turn: number; step?: number; group: string }>()
+  const stepByTurn = new Map<number, number>()
+  for (const r of records) {
+    if (r.kind === 'assistant') {
+      const n = (stepByTurn.get(r.turn) ?? 0) + 1
+      stepByTurn.set(r.turn, n)
+      out.set(r.id, { turn: r.turn, step: n, group: groupOf(r.kind, n) })
+      continue
+    }
+    if (r.kind === 'tool') {
+      const n = stepByTurn.get(r.turn) ?? 1
+      out.set(r.id, { turn: r.turn, step: n, group: groupOf(r.kind, n) })
+      continue
+    }
+    out.set(r.id, { turn: r.turn, group: groupOf(r.kind) })
+  }
+  return out
+}
+
+function recordText(r: TrajRecord): string {
+  if (r.kind === 'system') return r.system || ''
+  if (r.kind === 'tool') {
+    const bits = [r.name ? `# ${r.name}` : '', pretty(r.input), pretty(r.output)].filter(Boolean)
+    return bits.join('\n\n')
+  }
+  if (typeof r.output === 'string' && r.output) return r.output
+  if (typeof r.input === 'string' && r.input) return r.input
+  return r.preview || ''
+}
+
+function MarkdownBody({ text }: { text: string }) {
+  if (!text) return <p className="insp-empty">—</p>
+  return <div className="insp-md md" dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />
+}
 
 const KIND_LABEL: Record<TrajKind, string> = {
   user: 'USER',
   assistant: 'ASSISTANT',
   tool: 'TOOL',
   compacted: 'COMPACTED',
+  system: 'SYSTEM',
 }
 
 function KindIcon({ kind }: { kind: TrajKind }) {
   if (kind === 'user') return <IUser />
   if (kind === 'tool') return <IWrench />
   if (kind === 'compacted') return <ICompact />
+  if (kind === 'system') return <ISpark />
   return <ISpark />
 }
 
-function fmtDur(ms?: number): string {
+export function fmtDur(ms?: number): string {
   if (ms == null) return ''
   if (ms < 1000) return `${Math.round(ms)} ms`
   return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`
@@ -35,63 +101,263 @@ function pretty(v: unknown): string {
   try { return JSON.stringify(v, null, 2) } catch { return String(v) }
 }
 
-export function TrajectoryView({ records }: { records: TrajRecord[] }) {
+function schemaType(schema: unknown): string {
+  if (!schema || typeof schema !== 'object') return typeof schema
+  const s = schema as Record<string, unknown>
+  if (typeof s.type === 'string') return s.type
+  if (Array.isArray(s.type)) return s.type.map(String).join(' | ')
+  if (Array.isArray(s.enum)) return 'enum'
+  if (s.anyOf) return 'anyOf'
+  return 'object'
+}
+
+function SchemaView({ schema }: { schema: unknown }) {
+  if (!schema || typeof schema !== 'object') return <pre>{pretty(schema) || '—'}</pre>
+  const s = schema as Record<string, unknown>
+  const props = s.properties && typeof s.properties === 'object' ? s.properties as Record<string, unknown> : null
+  const required = new Set(Array.isArray(s.required) ? s.required.map(String) : [])
+  if (!props) return <pre>{pretty(schema)}</pre>
+  return (
+    <div className="schema">
+      {Object.entries(props).map(([name, raw]) => {
+        const p = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+        return (
+          <div key={name} className="schema-prop">
+            <div className="schema-h">
+              <code>{name}</code>
+              <span className="schema-type">{schemaType(p)}</span>
+              {required.has(name) ? <span className="schema-req">必填</span> : null}
+            </div>
+            {typeof p.description === 'string' ? <p className="schema-d">{p.description}</p> : null}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ToolCatalog({ tools }: { tools?: ToolSchema[] }) {
+  if (!tools?.length) return <p className="insp-empty" data-testid="system-tools">没有工具</p>
+  return (
+    <div className="tool-cat" data-testid="system-tools">
+      {tools.map((tool, i) => (
+        <details key={`${tool.name}-${i}`} className="tool-cat-item">
+          <summary className="tool-cat-sum">
+            <IChev open={false} />
+            <IWrench />
+            <span className="tool-cat-name">{tool.name}</span>
+            {tool.description ? <span className="tool-cat-preview">{tool.description}</span> : null}
+          </summary>
+          <div className="tool-cat-body">
+            {tool.description ? <p className="tool-cat-desc">{tool.description}</p> : null}
+            <div className="tool-cat-label">参数</div>
+            <SchemaView schema={tool.parameters} />
+          </div>
+        </details>
+      ))}
+    </div>
+  )
+}
+
+function lineDiff(a: string, b: string): { kind: 'same' | 'del' | 'add'; text: string }[] {
+  const al = a.split('\n')
+  const bl = b.split('\n')
+  const out: { kind: 'same' | 'del' | 'add'; text: string }[] = []
+  const max = Math.max(al.length, bl.length)
+  for (let i = 0; i < max; i++) {
+    if (i < al.length && i < bl.length && al[i] === bl[i]) out.push({ kind: 'same', text: al[i] })
+    else {
+      if (i < al.length) out.push({ kind: 'del', text: al[i] })
+      if (i < bl.length) out.push({ kind: 'add', text: bl[i] })
+    }
+  }
+  return out
+}
+
+export function TrajectoryView({
+  records, onSelect,
+}: {
+  records: TrajRecord[]
+  onSelect?: (r: TrajRecord | null) => void
+}) {
   const [q, setQ] = useState('')
   const [sel, setSel] = useState<string | null>(null)
-  const [tab, setTab] = useState<'overview' | 'input' | 'output'>('overview')
+  const [tab, setTab] = useState<InspTab>('summary')
+  const [actualDur, setActualDur] = useState(true)
+  const [foldedTurns, setFoldedTurns] = useState<Set<number>>(new Set())
+  const [foldTools, setFoldTools] = useState(false)
+  const [zoom, setZoom] = useState(1)
+  const [range, setRange] = useState<[number, number] | null>(null)
+  const [follow, setFollow] = useState(true)
+  const tableRef = useRef<HTMLDivElement>(null)
+  const drag = useRef<{ i: number } | null>(null)
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase()
-    if (!s) return records
-    return records.filter(r =>
-      r.preview.toLowerCase().includes(s)
-      || r.kind.includes(s)
-      || (r.name ?? '').toLowerCase().includes(s),
-    )
-  }, [records, q])
+    let list = records
+    if (s) {
+      list = list.filter(r =>
+        r.preview.toLowerCase().includes(s)
+        || r.kind.includes(s)
+        || (r.name ?? '').toLowerCase().includes(s)
+        || (r.system ?? '').toLowerCase().includes(s),
+      )
+    }
+    if (range) {
+      const [a, b] = range[0] < range[1] ? range : [range[1], range[0]]
+      list = list.filter((_, i) => i >= a && i <= b)
+    }
+    return list
+  }, [records, q, range])
 
   const selected = records.find(r => r.id === sel) ?? null
+  const locations = useMemo(() => locate(records), [records])
+  const selectedLoc = selected ? locations.get(selected.id) : undefined
+  const selectedTabs = selected ? tabsFor(selected.kind) : []
+
+  const visible = useMemo(() => {
+    return filtered.filter(r => {
+      if (foldedTurns.has(r.turn) && r.kind !== 'user' && r.kind !== 'system') return false
+      if (foldTools && r.kind === 'tool') return false
+      return true
+    })
+  }, [filtered, foldedTurns, foldTools])
+
+  useEffect(() => {
+    applyFollowTail(tableRef.current, follow)
+  }, [follow, records, visible])
 
   const grouped: { turn: number; rows: { rec: TrajRecord; index: number }[] }[] = []
-  filtered.forEach((rec, i) => {
+  visible.forEach((rec) => {
+    const index = records.indexOf(rec)
     const last = grouped[grouped.length - 1]
-    if (!last || last.turn !== rec.turn) grouped.push({ turn: rec.turn, rows: [{ rec, index: i }] })
-    else last.rows.push({ rec, index: i })
+    if (!last || last.turn !== rec.turn) grouped.push({ turn: rec.turn, rows: [{ rec, index }] })
+    else last.rows.push({ rec, index })
   })
+
+  function pick(r: TrajRecord) {
+    setSel(r.id)
+    const next = tabsFor(r.kind)
+    setTab(t => (next.some(x => x.id === t) ? t : next[0].id))
+    onSelect?.(r)
+  }
+
+  function onWheel(e: WheelEvent) {
+    if (!e.ctrlKey && !e.metaKey) return
+    e.preventDefault()
+    setZoom(z => Math.min(4, Math.max(0.4, z * (e.deltaY > 0 ? 0.9 : 1.1))))
+  }
 
   return (
     <div className="traj" data-testid="trajectory">
       <div className="traj-toolbar">
         <ISearch />
         <input className="traj-search" placeholder="搜索轨迹" value={q} onChange={e => setQ(e.target.value)} />
-        <span className="asst-meta">{filtered.length} 条记录</span>
+        <button
+          type="button"
+          className={`chip-icon${actualDur ? ' active' : ''}`}
+          data-testid="traj-duration"
+          aria-pressed={actualDur}
+          aria-label={actualDur ? '真实时长' : '等宽'}
+          title={actualDur ? '真实时长' : '等宽'}
+          onClick={() => setActualDur(v => !v)}
+        >
+          <IClock />
+        </button>
+        <button
+          type="button"
+          className={`chip-icon${foldTools ? ' active' : ''}`}
+          data-testid="traj-fold-tools"
+          aria-pressed={foldTools}
+          aria-label={foldTools ? '展开工具' : '折工具'}
+          title={foldTools ? '展开工具' : '折工具'}
+          onClick={() => setFoldTools(v => !v)}
+        >
+          <IFold />
+        </button>
+        <button
+          type="button"
+          className={`chip-icon${follow ? ' active' : ''}`}
+          data-testid="traj-follow"
+          aria-pressed={follow}
+          aria-label={follow ? '跟尾' : '取消跟尾'}
+          title={follow ? '跟尾' : '取消跟尾'}
+          onClick={() => {
+            setFollow(v => {
+              const next = !v
+              if (next) applyFollowTail(tableRef.current, true)
+              return next
+            })
+          }}
+        >
+          <ITail />
+        </button>
+        <span className="asst-meta">{visible.length} 条记录</span>
       </div>
-      <div className="timeline" aria-hidden>
-        {records.map(r => (
+      <div
+        className="timeline"
+        data-testid="traj-timeline"
+        onWheel={onWheel}
+        onMouseDown={e => {
+          const i = Number((e.target as HTMLElement).dataset.i)
+          if (Number.isFinite(i)) drag.current = { i }
+        }}
+        onMouseUp={e => {
+          if (!drag.current) return
+          const i = Number((e.target as HTMLElement).dataset.i)
+          if (Number.isFinite(i) && i !== drag.current.i) setRange([drag.current.i, i])
+          drag.current = null
+        }}
+        onContextMenu={e => { e.preventDefault(); setRange(null); setZoom(1) }}
+      >
+        {records.map((r, i) => (
           <button
             key={r.id}
             type="button"
+            data-i={i}
             className={`tl-bar ${r.kind}${sel === r.id ? ' on' : ''}${q && !filtered.includes(r) ? ' dim' : ''}`}
-            style={{ flexGrow: Math.max(1, Math.round((r.durationMs ?? 400) / 200)) }}
+            style={{ flexGrow: actualDur ? Math.max(1, Math.round(((r.durationMs ?? 400) * zoom) / 200)) : Math.max(1, zoom) }}
             title={`${KIND_LABEL[r.kind]} ${r.preview}`}
-            onClick={() => { setSel(r.id); setTab('overview') }}
+            onClick={() => pick(r)}
           />
         ))}
       </div>
+      {range ? <button type="button" className="chip" onClick={() => setRange(null)}>清除框选</button> : null}
       <div className={`traj-split${selected ? '' : ' no-insp'}`}>
-        <div className="traj-table-wrap">
+        <div
+          className="traj-table-wrap"
+          data-testid="traj-table-wrap"
+          ref={tableRef}
+          onScroll={e => {
+            const el = e.currentTarget
+            const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8
+            setFollow(atBottom)
+          }}
+        >
           <table className="traj-table">
             <tbody>
               {grouped.map(g => (
                 <Fragment key={`t-${g.turn}`}>
-                  <tr className="turn-h"><td>TURN {g.turn}</td></tr>
+                  <tr className="turn-h">
+                    <td>
+                      <button type="button" className="turn-fold" onClick={() => setFoldedTurns(s => {
+                        const n = new Set(s)
+                        if (n.has(g.turn)) n.delete(g.turn)
+                        else n.add(g.turn)
+                        return n
+                      })}
+                      >
+                        <IChev open={!foldedTurns.has(g.turn)} /> TURN {g.turn}
+                      </button>
+                    </td>
+                  </tr>
                   {g.rows.map(({ rec, index }) => (
                     <tr
                       key={rec.id}
                       className={`traj-row${sel === rec.id ? ' sel' : ''}`}
                       data-testid="traj-row"
                       data-kind={rec.kind}
-                      onClick={() => { setSel(rec.id); setTab('overview') }}
+                      onClick={() => pick(rec)}
                     >
                       <td>
                         <div className="cell">
@@ -105,44 +371,99 @@ export function TrajectoryView({ records }: { records: TrajRecord[] }) {
                   ))}
                 </Fragment>
               ))}
-              {filtered.length === 0 ? (
+              {visible.length === 0 ? (
                 <tr><td><div className="cell"><span className="preview">没有匹配的记录</span></div></td></tr>
               ) : null}
             </tbody>
           </table>
         </div>
         {selected ? (
-          <aside className="insp">
+          <aside className="insp" data-testid="traj-inspector">
             <div className="insp-head">
               <span className={`tag ${selected.kind}`}>{KIND_LABEL[selected.kind]}</span>
-              <div className="grow">{selected.name || KIND_LABEL[selected.kind]}</div>
-              <button type="button" className="icon-btn" onClick={() => setSel(null)} aria-label="关闭"><IClose /></button>
+              <div className="grow insp-loc" data-testid="insp-loc">
+                {selectedLoc
+                  ? `Turn ${selectedLoc.turn} · ${selectedLoc.group}`
+                  : `Turn ${selected.turn}`}
+              </div>
+              <button type="button" className="icon-btn" onClick={() => { setSel(null); onSelect?.(null) }} aria-label="关闭"><IClose /></button>
             </div>
             <div className="insp-tabs">
-              {(['overview', 'input', 'output'] as const).map(id => (
-                <button key={id} type="button" className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>
-                  {id === 'overview' ? '概览' : id === 'input' ? 'Input' : 'Output'}
+              {selectedTabs.map(item => (
+                <button key={item.id} type="button" className={tab === item.id ? 'on' : ''} onClick={() => setTab(item.id)}>
+                  {item.label}
                 </button>
               ))}
             </div>
             <div className="insp-body">
-              {tab === 'overview' ? (
+              {tab === 'summary' ? (
                 <dl>
+                  <div><dt>Status</dt><dd>{selected.running ? '进行中' : selected.error ? '错误' : '完成'}</dd></div>
+                  {selected.name ? <div><dt>Name</dt><dd>{selected.name}</dd></div> : null}
                   <div><dt>Started</dt><dd>{fmtTime(selected.startedAt)}</dd></div>
                   <div><dt>Duration</dt><dd>{selected.running ? '进行中' : (fmtDur(selected.durationMs) || '—')}</dd></div>
-                  {selected.ttftMs != null ? <div><dt>TTFT</dt><dd>{fmtDur(selected.ttftMs)}</dd></div> : null}
+                  {selected.ttftMs != null ? <div><dt>TTFT</dt><dd data-testid="traj-ttft">{fmtDur(selected.ttftMs)}</dd></div> : null}
                   {selected.usage ? (
                     <>
                       <div><dt>Input tokens</dt><dd>{selected.usage.input ?? 0}</dd></div>
                       <div><dt>Output tokens</dt><dd>{selected.usage.output ?? 0}</dd></div>
                       <div><dt>Cache read</dt><dd>{selected.usage.cacheRead ?? 0}</dd></div>
+                      <div><dt>Cache write</dt><dd>{selected.usage.cacheWrite ?? 0}</dd></div>
                     </>
                   ) : null}
-                  {selected.error ? <div><dt>Status</dt><dd>error</dd></div> : null}
                 </dl>
               ) : null}
-              {tab === 'input' ? <pre>{pretty(selected.input) || '—'}</pre> : null}
-              {tab === 'output' ? <pre>{pretty(selected.output) || '—'}</pre> : null}
+              {tab === 'preview' ? (
+                selected.kind === 'tool' ? (
+                  <div className="insp-split">
+                    {selected.input != null && selected.input !== '' ? (
+                      <section>
+                        <div className="ctx-label">Payload</div>
+                        <pre>{pretty(selected.input)}</pre>
+                      </section>
+                    ) : null}
+                    <section>
+                      <div className="ctx-label">Result</div>
+                      {typeof selected.output === 'string' && selected.output
+                        ? <MarkdownBody text={selected.output} />
+                        : <pre>{pretty(selected.output) || '—'}</pre>}
+                    </section>
+                  </div>
+                ) : (
+                  <div className="insp-split">
+                    {selected.kind === 'assistant' && typeof selected.input === 'string' && selected.input ? (
+                      <section>
+                        <div className="ctx-label">Thinking</div>
+                        <pre>{selected.input}</pre>
+                      </section>
+                    ) : null}
+                    <MarkdownBody text={typeof selected.output === 'string' ? selected.output : recordText(selected)} />
+                  </div>
+                )
+              ) : null}
+              {tab === 'raw' ? <pre>{recordText(selected) || '—'}</pre> : null}
+              {tab === 'system-prompt' ? <pre data-testid="system-prompt">{selected.system || '—'}</pre> : null}
+              {tab === 'tools' ? <ToolCatalog tools={selected.tools} /> : null}
+              {tab === 'context' ? (
+                <div className="ctx-panel" data-testid="system-diff">
+                  <div className="ctx-label">System</div>
+                  <pre className="sys-diff">
+                    {lineDiff(selected.previousSystem ?? '', selected.system ?? '').map((l, i) => (
+                      <div key={i} className={`diff-line ${l.kind}`}>{l.kind === 'del' ? '- ' : l.kind === 'add' ? '+ ' : '  '}{l.text}</div>
+                    ))}
+                  </pre>
+                  {selected.previousTools || selected.tools ? (
+                    <>
+                      <div className="ctx-label">Tools</div>
+                      <pre className="sys-diff">
+                        {lineDiff(pretty(selected.previousTools) || '', pretty(selected.tools) || '').map((l, i) => (
+                          <div key={i} className={`diff-line ${l.kind}`}>{l.kind === 'del' ? '- ' : l.kind === 'add' ? '+ ' : '  '}{l.text}</div>
+                        ))}
+                      </pre>
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </aside>
         ) : null}

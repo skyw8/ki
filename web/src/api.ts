@@ -68,6 +68,14 @@ export class Client {
     return this.json(`/v1/sessions/${id}/fork`, { method: 'POST' })
   }
 
+  models(): Promise<import('./types').ModelInfo[]> {
+    return this.json('/v1/models')
+  }
+
+  patch(id: string, body: { model?: string; skills?: import('./types').Toggle; mcp?: import('./types').Toggle }): Promise<SessionInfo & { skills?: import('./types').Toggle; mcp?: import('./types').Toggle }> {
+    return this.json(`/v1/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+  }
+
   async *events(id: string, signal?: AbortSignal): AsyncGenerator<LoopEvent> {
     const res = await fetch(`/v1/sessions/${id}/events`, {
       headers: this.headers(),

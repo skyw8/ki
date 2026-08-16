@@ -9,7 +9,7 @@ import (
 	"ki/internal/types"
 )
 
-// EventType is one of the ten documented loop events.
+// EventType is a documented loop event.
 type EventType string
 
 const (
@@ -17,6 +17,7 @@ const (
 	AgentEnd            EventType = "agent_end"
 	TurnStart           EventType = "turn_start"
 	TurnEnd             EventType = "turn_end"
+	RequestHeader       EventType = "request_header"
 	MessageStart        EventType = "message_start"
 	MessageUpdate       EventType = "message_update"
 	MessageEnd          EventType = "message_end"
@@ -38,6 +39,8 @@ type Event struct {
 	PartialResult         any             `json:"partialResult,omitempty"`
 	Result                any             `json:"result,omitempty"`
 	IsError               bool            `json:"isError,omitempty"`
+	System                string          `json:"system,omitempty"`
+	Tools                 []ToolSpec      `json:"tools,omitempty"`
 }
 
 // AssistantDelta is a streaming increment (pi assistantMessageEvent).
@@ -81,9 +84,9 @@ type Request struct {
 
 // ToolSpec is the schema sent to the provider.
 type ToolSpec struct {
-	Name        string
-	Description string
-	Parameters  map[string]any
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
 // Hooks are awaited interception points.
@@ -176,6 +179,10 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 				return newMsgs, err
 			}
 			msgs = m
+		}
+
+		if err := emit(Event{Type: RequestHeader, System: system, Tools: append([]ToolSpec(nil), specs...)}); err != nil {
+			return newMsgs, err
 		}
 
 		asst, err := streamWithRetry(ctx, cfg, Request{

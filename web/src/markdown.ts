@@ -45,6 +45,28 @@ export function renderMarkdown(src: string): string {
         continue
       }
     }
+    if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-/.test(lines[i + 1])) {
+      flushP()
+      const rows: string[][] = []
+      while (i < lines.length && /^\s*\|/.test(lines[i])) {
+        const cells = lines[i].trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim())
+        if (!/^\s*:?-/.test(cells.join(''))) rows.push(cells)
+        i++
+      }
+      if (rows.length) {
+        const head = rows[0]
+        out.push('<table><thead><tr>' + head.map(c => `<th>${inline(c)}</th>`).join('') + '</tr></thead>')
+        if (rows.length > 1) {
+          out.push('<tbody>')
+          for (const row of rows.slice(1)) {
+            out.push('<tr>' + row.map(c => `<td>${inline(c)}</td>`).join('') + '</tr>')
+          }
+          out.push('</tbody>')
+        }
+        out.push('</table>')
+      }
+      continue
+    }
     if (/^\s*[-*]\s+/.test(line)) {
       flushP()
       out.push('<ul>')

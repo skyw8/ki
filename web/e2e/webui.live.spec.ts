@@ -35,7 +35,7 @@ test('live tool call shows in chat and trajectory', async ({ page }) => {
   await expect(page.getByTestId('hero')).toBeVisible()
   await sendPrompt(page, prompt)
 
-  await expect(page.getByTestId('tool-card')).toBeVisible()
+  await expect(page.locator('[data-testid="tool-card"][data-tool="Read"]')).toBeVisible()
   await expect(page.getByTestId('assistant-message').last()).toContainText('KI-LIVE-MARKER-77')
 
   await page.getByTestId('tab-trajectory').click()
