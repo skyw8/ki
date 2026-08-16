@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react'
-import { IChev, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from './icons'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { IChev, IChevDown, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from './icons'
 import { useI18n } from './i18n'
 import { renderMarkdown } from './markdown'
 import type { ChatNode } from './types'
@@ -79,6 +79,43 @@ function prettyArgs(args: unknown): string {
   if (args == null) return ''
   if (typeof args === 'string') return args
   return JSON.stringify(args, null, 2)
+}
+
+function UserBubble({ text }: { text: string }) {
+  const { t } = useI18n()
+  const ref = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [overflow, setOverflow] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    if (open) {
+      setOverflow(false)
+      return
+    }
+    // The collapsed bubble is line-clamped; if its content is taller than the
+    // clamp, the message is genuinely too long and needs the expand toggle.
+    // (Measuring keeps short bubbles button-free and long ones toggleable.)
+    setOverflow(el.scrollHeight > el.clientHeight + 1)
+  }, [text, open])
+  const folded = !open
+  return (
+    <div className="user-bubble" data-testid="user-bubble">
+      <div ref={ref} className={`bubble-text${folded ? ' clamped' : ''}`}>{text}</div>
+      {overflow || open ? (
+        <button
+          type="button"
+          className="bubble-toggle"
+          data-testid="user-bubble-toggle"
+          aria-label={open ? t('chat.collapse') : t('chat.expand')}
+          title={open ? t('chat.collapse') : t('chat.expand')}
+          onClick={() => setOpen(v => !v)}
+        >
+          <IChevDown className={open ? 'up' : undefined} />
+        </button>
+      ) : null}
+    </div>
+  )
 }
 
 function ToolRow({
@@ -164,7 +201,7 @@ export function ChatView({ nodes, busy, onSelect }: { nodes: ChatNode[]; busy: b
           return (
             <div key={n.id} className="user-row">
               <div className="user-stack">
-                <div className="user-bubble" data-testid="user-bubble">{n.text}</div>
+                <UserBubble text={n.text} />
                 <div className="msg-foot">
                   {n.ts ? <div className="msg-stats">{fmtTs(n.ts)}</div> : null}
                   <div className="msg-actions" data-testid="user-actions">

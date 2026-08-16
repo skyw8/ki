@@ -399,9 +399,41 @@
   padding: 10px 16px;
   font-size: 16px;
   line-height: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.bubble-text {
+  width: 100%;
+  min-width: 0;
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* Long historical user messages fold to 6 lines; the chevron re-expands. */
+.bubble-text.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* Small chevron anchored inside the bubble's bottom-right corner. */
+.bubble-toggle {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin: -4px -6px -6px 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+.bubble-toggle svg { transition: transform 150ms ease; }
+.bubble-toggle svg.up { transform: rotate(180deg); }
+.bubble-toggle:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 
 .asst {
   display: flex;
@@ -1204,9 +1236,16 @@
 .insp-pill { margin: 4px 0 0 4px; padding: 2px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; font-size: 11px; color: var(--dsw-alias-label-secondary); }
 .insp-pill:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 
-.to-bottom-slot { position: sticky; bottom: 16px; z-index: 4; height: 0; display: flex; justify-content: flex-end; padding-right: 24px; pointer-events: none; }
+.to-bottom-slot {
+  /* Center to the same width as the composer, then right-align the button so
+     it sits at the input box's top-right corner instead of the window edge. */
+  position: relative; z-index: 4; height: 0;
+  width: 100%; max-width: var(--composer-max); margin: 0 auto;
+  display: flex; justify-content: flex-end; padding-right: 12px;
+  pointer-events: none;
+}
 .to-bottom {
-  width: 34px; height: 34px; margin-top: -34px; border-radius: 100px;
+  width: 34px; height: 34px; margin-top: -30px; border-radius: 100px;
   border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1);
   display: grid; place-items: center; pointer-events: auto; box-shadow: 0 4px 16px rgba(0,0,0,.12);
 }
