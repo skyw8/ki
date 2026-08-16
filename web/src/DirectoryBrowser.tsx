@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ICheck, IChevRight, IFolder, IFolderOpen, IPencil, IPlus } from './icons'
 import type { Client } from './api'
+import { useI18n } from './i18n'
 import type { FsEntry, FsListing } from './types'
 
 const PREVIEW_MS = 250
@@ -12,11 +13,11 @@ function samePath(a: string, b: string): boolean {
   return n(a) === n(b)
 }
 
-function displayCrumbs(listing: FsListing): FsEntry[] {
+function displayCrumbs(listing: FsListing, homeName: string): FsEntry[] {
   const crumbs = listing.crumbs ?? []
   const homeIndex = crumbs.findIndex(c => samePath(c.path, listing.home))
   if (homeIndex === -1) return crumbs
-  return [{ name: '主目录', path: listing.home, hidden: false }, ...crumbs.slice(homeIndex + 1)]
+  return [{ name: homeName, path: listing.home, hidden: false }, ...crumbs.slice(homeIndex + 1)]
 }
 
 function levelDir(listing: FsListing): string {
@@ -88,6 +89,8 @@ export function DirectoryBrowser({
   onOpen: (path: string) => void
   onClose: () => void
 }) {
+  const { t } = useI18n()
+  const homeName = t('dir.home')
   const [parent, setParent] = useState<FsListing | null>(null)
   const [selected, setSelected] = useState<FsEntry | null>(null)
   const [child, setChild] = useState<FsListing | null>(null)
@@ -125,7 +128,7 @@ export function DirectoryBrowser({
     if (closeEditor) setErr(null)
     p.then(async target => {
       if (n !== seq.current) return
-      const crumbs = displayCrumbs(target)
+      const crumbs = displayCrumbs(target, homeName)
       if (crumbs.length < 2) {
         setParent(target)
         setSelected(null)
@@ -169,7 +172,7 @@ export function DirectoryBrowser({
       setLoading(false)
       if (closeEditor) setErr(e instanceof Error ? e.message : String(e))
     })
-  }, [api, list])
+  }, [api, homeName, list])
 
   const navigate = useCallback((path?: string) => { land(path, true) }, [land])
 
@@ -237,7 +240,7 @@ export function DirectoryBrowser({
   }, [draft, land])
 
   const crumbSource = child ?? parent
-  const crumbs = crumbSource ? displayCrumbs(crumbSource) : []
+  const crumbs = crumbSource ? displayCrumbs(crumbSource, homeName) : []
   useEffect(() => {
     const el = crumbRef.current
     if (el) el.scrollLeft = el.scrollWidth
@@ -295,7 +298,7 @@ export function DirectoryBrowser({
         data-testid="dir-browser"
         onClick={e => e.stopPropagation()}
         role="dialog"
-        aria-label="选择工作区目录"
+        aria-label={t('dir.title')}
         onKeyDown={e => {
           if (e.key !== 'Escape' || draft === null) return
           e.stopPropagation()
@@ -304,14 +307,14 @@ export function DirectoryBrowser({
         }}
       >
         <div className="dir-head">
-          <h2>选择工作区目录</h2>
+          <h2>{t('dir.title')}</h2>
           <div className={`dir-crumb-bar${editing ? ' editing' : ''}`}>
             {editing ? (
               <input
                 ref={inputRef}
                 className="dir-path-input"
                 data-testid="dir-path"
-                aria-label="编辑路径"
+                aria-label={t('dir.editPath')}
                 autoFocus
                 value={draft}
                 disabled={inert}
@@ -337,8 +340,8 @@ export function DirectoryBrowser({
                   type="button"
                   className="dir-edit-zone"
                   data-testid="dir-path"
-                  aria-label="编辑路径"
-                  title="编辑路径"
+                  aria-label={t('dir.editPath')}
+                  title={t('dir.editPath')}
                   disabled={inert}
                   onClick={startEdit}
                 >
@@ -372,7 +375,7 @@ export function DirectoryBrowser({
               />
             ) : null}
           </div>
-          {loading && slow ? <div className="dir-loading-float">加载中…</div> : null}
+          {loading && slow ? <div className="dir-loading-float">{t('dir.loading')}</div> : null}
           {err ? <div className="dir-error">{err}</div> : null}
         </div>
         <div className="dir-foot">
@@ -391,14 +394,14 @@ export function DirectoryBrowser({
                 setMkdir(true)
               }}
             >
-              <IPlus /> 新建文件夹
+              <IPlus /> {t('dir.newFolder')}
             </button>
             <button type="button" className={`dir-hidden${hidden ? ' on' : ''}`} aria-pressed={hidden} disabled={inert} onClick={() => setHidden(v => !v)}>
-              显示隐藏文件{hidden ? <ICheck /> : null}
+              {t('dir.showHidden')}{hidden ? <ICheck /> : null}
             </button>
           </div>
           <div className="dir-foot-right">
-            <button type="button" className="dir-cancel" disabled={inert} onClick={onClose}>取消</button>
+            <button type="button" className="dir-cancel" disabled={inert} onClick={onClose}>{t('dir.cancel')}</button>
             <button
               type="button"
               className="primary-btn"
@@ -406,7 +409,7 @@ export function DirectoryBrowser({
               disabled={!target || loading || inert || editing}
               onClick={ev => { ev.preventDefault(); if (target) onOpen(target) }}
             >
-              打开
+              {t('dir.open')}
             </button>
           </div>
         </div>
@@ -419,12 +422,12 @@ export function DirectoryBrowser({
 
   const createDlg = mkdir ? (
     <div className="dir-create-mask" data-testid="dir-create" onClick={() => { if (!creating) setMkdir(false) }}>
-      <div className="dir-create" role="dialog" aria-label="新建文件夹" onClick={e => e.stopPropagation()}>
-        <h3>新建文件夹</h3>
-        <p>在 {selected?.name ?? crumbs.at(-1)?.name ?? '主目录'} 中创建</p>
+      <div className="dir-create" role="dialog" aria-label={t('dir.createTitle')} onClick={e => e.stopPropagation()}>
+        <h3>{t('dir.createTitle')}</h3>
+        <p>{t('dir.createIn', { name: selected?.name ?? crumbs.at(-1)?.name ?? homeName })}</p>
         <input
           data-testid="dir-new-name"
-          placeholder="未命名文件夹"
+          placeholder={t('dir.untitledFolder')}
           autoFocus
           disabled={creating}
           value={newName}
@@ -436,8 +439,8 @@ export function DirectoryBrowser({
         />
         {createErr ? <div className="dir-error">{createErr}</div> : null}
         <div className="dir-create-actions">
-          <button type="button" disabled={creating} onClick={() => setMkdir(false)}>取消</button>
-          <button type="button" className="primary-btn" disabled={creating || !newName.trim()} onClick={() => void createFolder()}>创建</button>
+          <button type="button" disabled={creating} onClick={() => setMkdir(false)}>{t('dir.cancel')}</button>
+          <button type="button" className="primary-btn" disabled={creating || !newName.trim()} onClick={() => void createFolder()}>{t('dir.create')}</button>
         </div>
       </div>
     </div>

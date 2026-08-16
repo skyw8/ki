@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from 'react'
+import { I18nContext } from './i18n'
 
 export class ErrorBoundary extends Component<{ children: ReactNode }, { err: string | null }> {
   state = { err: null as string | null }
@@ -10,11 +11,15 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { err: str
   render() {
     if (this.state.err) {
       return (
-        <div style={{ padding: 24, maxWidth: 640 }}>
-          <h1 style={{ fontSize: 18 }}>页面出错</h1>
-          <pre style={{ whiteSpace: 'pre-wrap' }}>{this.state.err}</pre>
-          <button type="button" onClick={() => { this.setState({ err: null }); window.location.href = '/' }}>回到首页</button>
-        </div>
+        <I18nContext.Consumer>
+          {({ t }) => (
+            <div style={{ padding: 24, maxWidth: 640 }}>
+              <h1 style={{ fontSize: 18 }}>{t('error.title')}</h1>
+              <pre style={{ whiteSpace: 'pre-wrap' }}>{this.state.err}</pre>
+              <button type="button" onClick={() => { this.setState({ err: null }); window.location.href = '/' }}>{t('error.home')}</button>
+            </div>
+          )}
+        </I18nContext.Consumer>
       )
     }
     return this.props.children

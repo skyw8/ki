@@ -6,7 +6,7 @@ A lean and extensible agent runtime designed for easy integration.
 
 ## directory structure
 
-Package invariants live in each directory's `doc.go` (`go doc ./internal/session`). Cross-package notes live under `docs/` only. Do not list `docs/prd`, `docs/todo`, or individual files from those trees here.
+Package invariants live in each directory's `doc.go` (`go doc ./internal/session`). Cross-package notes live under `docs/` only. Do not list `docs/todo`, or individual files from those trees here.
 
 ```
 ki/
@@ -37,7 +37,7 @@ ki/
 
 ## docs
 
-Cross-package notes are in `docs/`. Package invariants are in each `doc.go`. Keep this file free of `prd` / `todo` paths and of per-file inventories under those directories.
+Cross-package notes are in `docs/`. Package invariants are in each `doc.go`. Keep this file free of `todo` paths and of per-file inventories under those directories.
 
 Fake model: `go test ./e2e` (`KI_FAKE=1`; CLI main path, `serve`, `-d`, two sessions in parallel, WebUI Playwright).
 WebUI: `cd web && npm run test:e2e` (starts a fake `ki serve`). Requires `npx playwright install chromium`.
@@ -50,9 +50,9 @@ WebUI live: `cd web && npm run test:e2e:live`.
 - Port-forwarded WebUI is a first-class client: same-origin relative `/v1` and `/assets` only; never navigate the browser to a host filesystem path; never use a native OS file picker.
 - Cross-platform (Linux, macOS, Windows): `filepath` for joins; host-absolute paths; no POSIX-only roots, separators, or hidden-file rules.
 - Write this file in English.
-- Do not name `docs/prd`, `docs/todo`, or files under them in this file.
+- Do not name  `docs/todo`, or files under them in this file.
 - Package comments go in that package's `doc.go`. Cross-package explanation stays in `docs/`.
-- When changing code, update the related docs that already describe that contract (`docs/*.md` and the owning `doc.go`). Do not add new prd/todo filenames here.
+- When changing code, update the related docs that already describe that contract (`docs/*.md` and the owning `doc.go`). Do not add new todo filenames here.
 - One binary: `ki serve` serves API and the embedded SPA on the same origin. Rebuild `web/dist` then `go build` after frontend changes; serve does not run npm.
 - Do not vendor the DeepSeek Harness client (cordis, Host WebSocket, plugin tree). The WebUI is a thin SPA on ki HTTP/SSE.
 - Do not invent REST routes for data the loop already has. Extend `loop.Event` and jsonl (and existing SSE / `GET /v1/sessions/{id}`) instead.

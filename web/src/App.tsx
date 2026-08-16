@@ -3,12 +3,14 @@ import { createPortal } from 'react-dom'
 import { ApiError, Client, boot } from './api'
 import { ChatView } from './Chat'
 import { DirectoryBrowser } from './DirectoryBrowser'
+import { SessionConfig } from './SessionConfig'
 import { IChev, IChevDown, IClose, IDots, IFolder, IGear, IPanel, IPin, IPlus, ISearch, ISend, IStop, ITrash } from './icons'
 import { appendOptimisticUser, applyEvent, emptyView, loadHistory } from './model'
 import type { ChatNode, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
+import { useI18n } from './i18n'
 
-type Tab = 'conversation' | 'trajectory'
+type Tab = 'conversation' | 'trajectory' | 'config'
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
 
@@ -18,20 +20,13 @@ function basename(p: string): string {
   return i >= 0 ? s.slice(i + 1) : s
 }
 
-function csv(list?: string[]): string {
-  return (list ?? []).join(', ')
-}
-
-function parseCsv(s: string): string[] {
-  return s.split(/[, \n]+/).map(x => x.trim()).filter(Boolean)
-}
-
 function loadExpanded(): Record<string, boolean> {
   try { return JSON.parse(localStorage.getItem(EXPAND_KEY) || '{}') as Record<string, boolean> }
   catch { return {} }
 }
 
 function Modal({ title, onClose, children, testid }: { title: string; onClose: () => void; children: ReactNode; testid?: string }) {
+  const { t } = useI18n()
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
@@ -46,7 +41,7 @@ function Modal({ title, onClose, children, testid }: { title: string; onClose: (
       <div className="modal" data-testid={testid} onClick={e => e.stopPropagation()} role="dialog" aria-label={title}>
         <div className="modal-head">
           <h2>{title}</h2>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭对话框"><IClose /></button>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label={t('dialog.close')}><IClose /></button>
         </div>
         <div className="modal-body">{children}</div>
       </div>
@@ -70,6 +65,7 @@ function Composer({
   err?: string | null
   onPickModel?: () => void
 }) {
+  const { t } = useI18n()
   const ref = useRef<HTMLTextAreaElement>(null)
   useEffect(() => {
     const el = ref.current
@@ -85,7 +81,7 @@ function Composer({
           ref={ref}
           data-testid="composer-input"
           rows={1}
-          placeholder={disabled ? '选择或新建会话' : '给 ki 发送消息'}
+          placeholder={disabled ? t('composer.placeholderDisabled') : t('composer.placeholder')}
           value={value}
           disabled={disabled}
           onChange={e => onChange(e.target.value)}
@@ -100,13 +96,13 @@ function Composer({
         <div className="composer-row">
           {cwd ? <span className="cwd-chip" title={cwd}>{basename(cwd)}</span> : null}
           <button type="button" className="model-chip" data-testid="open-model" onClick={onPickModel}>
-            {model || '选择模型'}
+            {model || t('composer.pickModel')}
           </button>
           <span className="grow" />
           {busy ? (
-            <button type="button" className="send stop" data-testid="composer-stop" onClick={onStop} aria-label="停止"><IStop /></button>
+            <button type="button" className="send stop" data-testid="composer-stop" onClick={onStop} aria-label={t('composer.stop')}><IStop /></button>
           ) : (
-            <button type="button" className="send" data-testid="composer-send" disabled={disabled || !value.trim()} onClick={onSend} aria-label="发送"><ISend /></button>
+            <button type="button" className="send" data-testid="composer-send" disabled={disabled || !value.trim()} onClick={onSend} aria-label={t('composer.send')}><ISend /></button>
           )}
         </div>
       </div>
@@ -115,6 +111,8 @@ function Composer({
 }
 
 export function App() {
+  const { t, lang, setLang } = useI18n()
+  const untitled = t('session.untitled')
   const cfg = useMemo(() => boot(), [])
   const api = useMemo(() => new Client(cfg.token), [cfg.token])
   const [dark, setDark] = useState(() => localStorage.getItem('ki-theme') === 'dark')
@@ -137,9 +135,6 @@ export function App() {
   const [draft, setDraft] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [models, setModels] = useState<ModelInfo[]>([])
-  const [skillDis, setSkillDis] = useState('')
-  const [mcpOnly, setMcpOnly] = useState('')
-  const [mcpDis, setMcpDis] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [dirOpen, setDirOpen] = useState(false)
@@ -258,9 +253,6 @@ export function App() {
       const next = loadHistory(detail)
       setView(next)
       setSelectedWs(detail.workspaceId ?? null)
-      setSkillDis(csv(next.skills?.disabled))
-      setMcpOnly(csv(next.mcp?.only))
-      setMcpDis(csv(next.mcp?.disabled))
       if (detail.workspaceId) setExpanded(e => ({ ...e, [detail.workspaceId!]: true }))
       if (detail.running) void listen(id)
     } catch (e) {
@@ -332,20 +324,6 @@ export function App() {
     }
   }, [api, currentId, view.provider])
 
-  const saveToggles = useCallback(async () => {
-    if (!currentId) return
-    try {
-      const out = await api.patch(currentId, {
-        skills: { disabled: parseCsv(skillDis) },
-        mcp: { only: parseCsv(mcpOnly), disabled: parseCsv(mcpDis) },
-      })
-      setView(v => ({ ...v, skills: out.skills, mcp: out.mcp }))
-      setSettingsOpen(false)
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
-    }
-  }, [api, currentId, skillDis, mcpOnly, mcpDis])
-
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
 
   const trees = useMemo(() => {
@@ -376,14 +354,14 @@ export function App() {
     const map = new Map<string, { id: string; title: string; workspace?: string; snippet?: string }>()
     for (const s of localHits) {
       const ws = workspaces.find(w => w.id === s.workspaceId)
-      map.set(s.id, { id: s.id, title: s.title || '新会话', workspace: ws?.title })
+      map.set(s.id, { id: s.id, title: s.title || untitled, workspace: ws?.title })
     }
     for (const h of hits) {
       const prev = map.get(h.id)
-      map.set(h.id, { id: h.id, title: h.title || prev?.title || '新会话', workspace: h.workspaceTitle || prev?.workspace, snippet: h.snippet })
+      map.set(h.id, { id: h.id, title: h.title || prev?.title || untitled, workspace: h.workspaceTitle || prev?.workspace, snippet: h.snippet })
     }
     return [...map.values()].slice(0, 20)
-  }, [hits, localHits, workspaces])
+  }, [hits, localHits, untitled, workspaces])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -426,28 +404,28 @@ export function App() {
       >
         <div className="sidebar-top">
           {wide ? <div className="wordmark wide-only">ki</div> : null}
-          <button type="button" className="icon-btn" onClick={() => setCollapsed(v => !v)} aria-label={collapsed ? '打开侧栏' : '折叠侧栏'} title={collapsed ? '打开侧栏' : '折叠侧栏'}><IPanel /></button>
+          <button type="button" className="icon-btn" onClick={() => setCollapsed(v => !v)} aria-label={collapsed ? t('sidebar.open') : t('sidebar.collapse')} title={collapsed ? t('sidebar.open') : t('sidebar.collapse')}><IPanel /></button>
         </div>
         <button type="button" className="new-session" data-testid="new-session" onClick={() => void newSession()}>
-          <IPlus />{wide ? <span className="wide-only">新会话</span> : null}
+          <IPlus />{wide ? <span className="wide-only">{t('session.new')}</span> : null}
         </button>
         {wide ? (
           <div className="ws-toolbar">
-            <span className={`ws-label${searchOpen || filter ? ' hidden' : ''}`}>工作区</span>
+            <span className={`ws-label${searchOpen || filter ? ' hidden' : ''}`}>{t('workspace.label')}</span>
             <div className={`search-slot${searchOpen || filter ? ' expanded' : ''}`}>
               <div
                 ref={searchRootRef}
                 className={`search-cap${searchOpen || filter ? ' expanded' : ''}`}
                 onClick={() => setSearchOpen(true)}
               >
-                <button type="button" className="search-btn" aria-label="搜索会话" aria-expanded={searchOpen || !!filter} title="搜索会话" onClick={() => setSearchOpen(true)}>
+                <button type="button" className="search-btn" aria-label={t('search.sessions')} aria-expanded={searchOpen || !!filter} title={t('search.sessions')} onClick={() => setSearchOpen(true)}>
                   <ISearch />
                 </button>
                 <input
                   ref={searchInputRef}
                   className="session-search"
                   data-testid="session-search"
-                  placeholder="搜索会话"
+                  placeholder={t('search.sessions')}
                   value={filter}
                   tabIndex={searchOpen || filter ? 0 : -1}
                   onChange={e => setFilter(e.target.value)}
@@ -458,14 +436,14 @@ export function App() {
                   }}
                 />
                 {searchOpen || filter ? (
-                  <button type="button" className="search-clear" aria-label="清除搜索" onClick={e => { e.stopPropagation(); setFilter(''); setSearchOpen(false) }}>
+                  <button type="button" className="search-clear" aria-label={t('search.clear')} onClick={e => { e.stopPropagation(); setFilter(''); setSearchOpen(false) }}>
                     <IClose />
                   </button>
                 ) : null}
               </div>
             </div>
             <div className={`header-actions${searchOpen || filter ? ' hidden' : ''}`}>
-              <button type="button" className="icon-btn" data-testid="add-workspace" onClick={() => setDirOpen(true)} aria-label="添加工作区" title="添加工作区"><IFolder /></button>
+              <button type="button" className="icon-btn" data-testid="add-workspace" onClick={() => setDirOpen(true)} aria-label={t('workspace.add')} title={t('workspace.add')}><IFolder /></button>
             </div>
           </div>
         ) : (
@@ -473,13 +451,13 @@ export function App() {
             <button
               type="button"
               className="icon-btn"
-              aria-label="搜索会话"
-              title="搜索会话"
+              aria-label={t('search.sessions')}
+              title={t('search.sessions')}
               onClick={() => { setSearchOpen(true); setCollapsed(false) }}
             >
               <ISearch />
             </button>
-            <button type="button" className="icon-btn" data-testid="add-workspace" onClick={() => setDirOpen(true)} aria-label="添加工作区" title="添加工作区"><IFolder /></button>
+            <button type="button" className="icon-btn" data-testid="add-workspace" onClick={() => setDirOpen(true)} aria-label={t('workspace.add')} title={t('workspace.add')}><IFolder /></button>
           </div>
         )}
         <div className="session-list">
@@ -493,8 +471,8 @@ export function App() {
                   </span>
                 </button>
               ))}
-              {searchErr ? <div className="cwd-label">内容搜索失败</div> : null}
-              {searchMore ? <div className="cwd-label">结果太多，请缩小范围</div> : null}
+              {searchErr ? <div className="cwd-label">{t('search.failed')}</div> : null}
+              {searchMore ? <div className="cwd-label">{t('search.tooMany')}</div> : null}
             </>
           ) : null}
           {wide && !filter.trim() && trees.groups.map(({ ws, rows }) => {
@@ -521,10 +499,10 @@ export function App() {
                   <button type="button" className="ws-toggle" onClick={() => { setSelectedWs(ws.id); setExpanded(e => ({ ...e, [ws.id]: !open })) }}>
                     <IChev open={open} />
                     <IFolder />
-                    <span className="title">{ws.title}{ws.temp ? ' · 临时' : ''}</span>
+                    <span className="title">{ws.title}{ws.temp ? ` · ${t('workspace.temp')}` : ''}</span>
                   </button>
-                  <button type="button" className="icon-btn tiny" aria-label="工作区菜单" onClick={() => setMenu({ kind: 'ws', id: ws.id })}><IDots /></button>
-                  <button type="button" className="icon-btn tiny" data-testid="ws-new-session" aria-label="新会话" onClick={() => void newSession(ws.id)}><IPlus /></button>
+                  <button type="button" className="icon-btn tiny" aria-label={t('workspace.menu')} onClick={() => setMenu({ kind: 'ws', id: ws.id })}><IDots /></button>
+                  <button type="button" className="icon-btn tiny" data-testid="ws-new-session" aria-label={t('session.new')} onClick={() => void newSession(ws.id)}><IPlus /></button>
                 </div>
                 {shown.map((s, i) => (
                   <div
@@ -545,29 +523,29 @@ export function App() {
                   >
                     <button type="button" className="session-main" onClick={() => void openSession(s.id)}>
                       <span className={`dot${s.running ? ' on' : ''}`} />
-                      {s.pinned ? <span className="pin-mark" aria-label="已置顶"><IPin /></span> : null}
+                      {s.pinned ? <span className="pin-mark" aria-label={t('session.pinned')}><IPin /></span> : null}
                       <span className="meta">
-                        <div className="title" data-testid="session-title">{s.title || '新会话'}</div>
+                        <div className="title" data-testid="session-title">{s.title || untitled}</div>
                         <div className="sub">{s.model}</div>
                       </span>
                     </button>
-                    <button type="button" className="icon-btn tiny" aria-label="会话菜单" onClick={() => setMenu({ kind: 'sess', id: s.id })}><IDots /></button>
+                    <button type="button" className="icon-btn tiny" aria-label={t('session.menu')} onClick={() => setMenu({ kind: 'sess', id: s.id })}><IDots /></button>
                   </div>
                 ))}
                 {open && rows.length > shown.length ? (
-                  <button type="button" className="show-more" data-testid="show-more" onClick={() => setShowAll(a => ({ ...a, [ws.id]: true }))}>显示更多</button>
+                  <button type="button" className="show-more" data-testid="show-more" onClick={() => setShowAll(a => ({ ...a, [ws.id]: true }))}>{t('session.showMore')}</button>
                 ) : null}
               </div>
             )
           })}
           {wide && !filter.trim() && trees.ungrouped.length ? (
             <div>
-              <div className="cwd-label">未分组</div>
+              <div className="cwd-label">{t('session.ungrouped')}</div>
               {trees.ungrouped.map(s => (
                 <button key={s.id} type="button" className={`session-row${s.id === currentId ? ' active' : ''}`} data-testid="session-row" onClick={() => void openSession(s.id)}>
                   <span className={`dot${s.running ? ' on' : ''}`} />
                   <span className="meta">
-                    <div className="title" data-testid="session-title">{s.title || '新会话'}</div>
+                    <div className="title" data-testid="session-title">{s.title || untitled}</div>
                     <div className="sub">{s.model}</div>
                   </span>
                 </button>
@@ -576,22 +554,33 @@ export function App() {
           ) : null}
         </div>
         <div className="sidebar-foot">
-          <button type="button" className="icon-btn" data-testid="open-settings" onClick={() => setSettingsOpen(true)} aria-label="设置"><IGear /></button>
+          <button type="button" className="icon-btn" data-testid="open-settings" onClick={() => setSettingsOpen(true)} aria-label={t('settings.open')}><IGear /></button>
         </div>
       </aside>
 
       <main className="main">
         <header className="conv-header">
           <div className="title-row">
-            <div className="conv-title">{view.title || (currentId ? '新会话' : 'ki')}</div>
+            <div className="conv-title">{view.title || (currentId ? untitled : 'ki')}</div>
           </div>
           <div className="tabs">
-            <button type="button" className={`tab${tab === 'conversation' ? ' active' : ''}`} data-testid="tab-conversation" onClick={() => setTab('conversation')}>对话</button>
-            <button type="button" className={`tab${tab === 'trajectory' ? ' active' : ''}`} data-testid="tab-trajectory" onClick={() => setTab('trajectory')}>轨迹</button>
+            <button type="button" className={`tab${tab === 'conversation' ? ' active' : ''}`} data-testid="tab-conversation" onClick={() => setTab('conversation')}>{t('tab.conversation')}</button>
+            <button type="button" className={`tab${tab === 'trajectory' ? ' active' : ''}`} data-testid="tab-trajectory" onClick={() => setTab('trajectory')}>{t('tab.trajectory')}</button>
+            <button type="button" className={`tab${tab === 'config' ? ' active' : ''}`} data-testid="tab-config" onClick={() => setTab('config')}>{t('tab.config')}</button>
           </div>
         </header>
 
-        {tab === 'trajectory' ? (
+        {tab === 'config' ? (
+          <div className="conv-body">
+            <SessionConfig
+              api={api}
+              sessionId={currentId}
+              workspaceTitle={workspaces.find(w => w.id === (selectedWs ?? sessions.find(s => s.id === currentId)?.workspaceId))?.title}
+              busy={view.busy}
+              onError={setErr}
+            />
+          </div>
+        ) : tab === 'trajectory' ? (
           <div className="conv-body">
             <TrajectoryView records={view.records} selectId={inspId} />
             {composer}
@@ -600,7 +589,7 @@ export function App() {
           <div className="conv-body">
             {empty ? (
               <div className="hero" data-testid="hero">
-                <h1>开始对话</h1>
+                <h1>{t('hero.title')}</h1>
                 <div className="hero-composer">{composer}</div>
               </div>
             ) : (
@@ -618,7 +607,7 @@ export function App() {
                 </div>
                 {!atBottom ? (
                   <div className="to-bottom-slot">
-                    <button type="button" className="to-bottom" data-testid="to-bottom" aria-label="回到底部" onClick={() => {
+                    <button type="button" className="to-bottom" data-testid="to-bottom" aria-label={t('chat.toBottom')} onClick={() => {
                       const el = scrollRef.current
                       if (!el) return
                       el.scrollTop = el.scrollHeight
@@ -647,16 +636,16 @@ export function App() {
                   setMenu(null)
                 }}
                 >
-                  重命名
+                  {t('workspace.rename')}
                 </button>
                 <button type="button" className="danger" onClick={() => {
                   const ws = workspaces.find(w => w.id === menu.id)
                   const n = sessions.filter(s => s.workspaceId === menu.id).length
-                  setConfirmDel({ kind: 'ws', id: menu.id, label: ws?.title ?? '', extra: `${n} 个会话记录（不删除磁盘目录 ${ws?.path}）` })
+                  setConfirmDel({ kind: 'ws', id: menu.id, label: ws?.title ?? '', extra: t('delete.workspaceExtra', { n, path: ws?.path ?? '' }) })
                   setMenu(null)
                 }}
                 >
-                  <ITrash /> 删除工作区
+                  <ITrash /> {t('workspace.delete')}
                 </button>
               </>
             ) : (
@@ -667,7 +656,7 @@ export function App() {
                   setMenu(null)
                 }}
                 >
-                  <IPin /> {byId.get(menu.id)?.pinned ? '取消置顶' : '置顶'}
+                  <IPin /> {byId.get(menu.id)?.pinned ? t('session.unpin') : t('session.pin')}
                 </button>
                 <button type="button" onClick={() => {
                   const s = byId.get(menu.id)
@@ -675,15 +664,15 @@ export function App() {
                   setMenu(null)
                 }}
                 >
-                  重命名
+                  {t('session.rename')}
                 </button>
                 <button type="button" className="danger" onClick={() => {
                   const s = byId.get(menu.id)
-                  setConfirmDel({ kind: 'sess', id: menu.id, label: s?.title || '新会话' })
+                  setConfirmDel({ kind: 'sess', id: menu.id, label: s?.title || untitled })
                   setMenu(null)
                 }}
                 >
-                  <ITrash /> 删除
+                  <ITrash /> {t('session.delete')}
                 </button>
               </>
             )}
@@ -692,7 +681,7 @@ export function App() {
       ) : null}
 
       {rename ? (
-        <Modal title="重命名" onClose={() => setRename(null)} testid="rename-dialog">
+        <Modal title={t('rename.title')} onClose={() => setRename(null)} testid="rename-dialog">
           <input className="session-search" data-testid="rename-input" value={rename.title} onChange={e => setRename({ ...rename, title: e.target.value })} />
           <div className="modal-actions">
             <button
@@ -706,19 +695,19 @@ export function App() {
                   .catch(e => setErr(e instanceof Error ? e.message : String(e)))
               }}
             >
-              确定
+              {t('rename.ok')}
             </button>
           </div>
         </Modal>
       ) : null}
 
       {confirmDel ? (
-        <Modal title="确认删除" onClose={() => setConfirmDel(null)} testid="confirm-del">
+        <Modal title={t('delete.title')} onClose={() => setConfirmDel(null)} testid="confirm-del">
           <p>
             {confirmDel.kind === 'ws'
-              ? `将删除工作区「${confirmDel.label}」及其中的会话日志。磁盘上的项目目录和文件会保留。`
-              : `将永久删除「${confirmDel.label}」。此操作不可恢复。`}
-            {confirmDel.kind === 'ws' && confirmDel.extra ? ` ${confirmDel.extra}。` : ''}
+              ? t('delete.workspace', { label: confirmDel.label })
+              : t('delete.session', { label: confirmDel.label })}
+            {confirmDel.kind === 'ws' && confirmDel.extra ? ` ${confirmDel.extra}` : ''}
           </p>
           <div className="modal-actions">
             <button
@@ -745,7 +734,7 @@ export function App() {
                   .catch(e => setErr(e instanceof Error ? e.message : String(e)))
               }}
             >
-              删除
+              {t('delete.ok')}
             </button>
           </div>
         </Modal>
@@ -771,7 +760,7 @@ export function App() {
       />
 
       {modelOpen ? (
-        <Modal title="选择模型" onClose={() => setModelOpen(false)} testid="model-dialog">
+        <Modal title={t('model.title')} onClose={() => setModelOpen(false)} testid="model-dialog">
           <ul className="model-list">
             {models.map(m => {
               const on = view.provider === m.provider && view.model === m.id
@@ -795,44 +784,32 @@ export function App() {
       ) : null}
 
       {settingsOpen ? (
-        <Modal title="设置" onClose={() => setSettingsOpen(false)} testid="settings">
+        <Modal title={t('settings.title')} onClose={() => setSettingsOpen(false)} testid="settings">
           <div className="set-block">
-            <div className="set-label">外观</div>
+            <div className="set-label">{t('settings.appearance')}</div>
             <div className="theme-picks" data-testid="settings-theme">
               <button type="button" className={`theme-pick${!dark ? ' on' : ''}`} onClick={() => setDark(false)}>
                 <span className="theme-swatch light" aria-hidden />
-                <span>浅色</span>
+                <span>{t('settings.themeLight')}</span>
               </button>
               <button type="button" className={`theme-pick${dark ? ' on' : ''}`} onClick={() => setDark(true)}>
                 <span className="theme-swatch dark" aria-hidden />
-                <span>深色</span>
+                <span>{t('settings.themeDark')}</span>
               </button>
             </div>
-            <p className="set-hint">立即生效，只保存在本浏览器。</p>
           </div>
           <div className="set-block">
-            <div className="set-label">工作目录</div>
-            <p className="set-path">{view.cwd || '未选择会话'}</p>
-          </div>
-          <div className={`set-group${!currentId ? ' disabled' : ''}`}>
-            <div className="set-group-h">本会话</div>
-            <div className="set-block">
-              <div className="set-label">关闭的 Skills</div>
-              <input data-testid="settings-skills" placeholder="逗号分隔，如 skill-a, skill-b" value={skillDis} disabled={!currentId} onChange={e => setSkillDis(e.target.value)} />
+            <div className="set-label">{t('settings.language')}</div>
+            <div className="lang-picks" data-testid="settings-lang">
+              <button type="button" className={`lang-pick${lang === 'zh' ? ' on' : ''}`} data-testid="lang-zh" onClick={() => setLang('zh')}>
+                {t('settings.langZh')}
+              </button>
+              <button type="button" className={`lang-pick${lang === 'en' ? ' on' : ''}`} data-testid="lang-en" onClick={() => setLang('en')}>
+                {t('settings.langEn')}
+              </button>
             </div>
-            <div className="set-block">
-              <div className="set-label">仅启用的 MCP</div>
-              <input data-testid="settings-mcp-only" placeholder="留空表示全部" value={mcpOnly} disabled={!currentId} onChange={e => setMcpOnly(e.target.value)} />
-            </div>
-            <div className="set-block">
-              <div className="set-label">关闭的 MCP</div>
-              <input data-testid="settings-mcp-dis" placeholder="逗号分隔" value={mcpDis} disabled={!currentId} onChange={e => setMcpDis(e.target.value)} />
-            </div>
-            {!currentId ? <p className="set-hint">先选择或新建会话后再改这些开关。</p> : null}
           </div>
-          <div className="modal-actions">
-            <button type="button" className="primary-btn" data-testid="settings-save" disabled={!currentId} onClick={() => void saveToggles()}>保存</button>
-          </div>
+          <p className="set-hint">{t('settings.hint')}</p>
         </Modal>
       ) : null}
     </div>

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"ki/internal/prompt"
 	"ki/internal/provider"
 	"ki/internal/session"
+	"ki/internal/skills"
 	"ki/internal/tools"
 	"ki/internal/types"
 	"ki/internal/workspace"
@@ -39,6 +41,7 @@ type Server struct {
 	cfg      config.Config
 	token    string
 	streamer loop.Streamer
+	mcp      *mcp.Pool
 	mu       sync.Mutex
 	runs     map[string]*runState
 	ws       *workspace.Store
@@ -82,6 +85,7 @@ func New(opt Options) *Server {
 		cfg:      opt.Config,
 		token:    tok,
 		streamer: st,
+		mcp:      mcp.NewPool(opt.Config.Home), // serve-wide; not per session / per prompt
 		runs:     map[string]*runState{},
 		ws:       ws,
 	}
@@ -192,8 +196,11 @@ func (s *Server) Addr() string {
 	return s.ln.Addr().String()
 }
 
-// Shutdown stops the HTTP server.
+// Shutdown stops the HTTP server and MCP clients (pool children outlive a prompt).
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.mcp != nil {
+		s.mcp.Close()
+	}
 	if s.http == nil {
 		return nil
 	}
@@ -282,13 +289,51 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer sess.Close()
+	sk, mc := s.sessionCatalog(sess)
 	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
-		"leafId":   sess.LeafID(),
-		"entries":  sess.Entries(),
-		"messages": sess.MessagesToLeaf(),
-		"skills":   sess.Config.Skills,
-		"mcp":      sess.Config.MCP,
+		"leafId":          sess.LeafID(),
+		"entries":         sess.Entries(),
+		"messages":        sess.MessagesToLeaf(),
+		"skills":          sess.Config.Skills,
+		"mcp":             sess.Config.MCP,
+		"availableSkills": sk,
+		"availableMcp":    mc,
 	}))
+}
+
+func (s *Server) sessionCatalog(sess *session.Session) ([]map[string]any, []map[string]any) {
+	sk := []map[string]any{}
+	for _, item := range skills.List(s.cfg.Home, sess.Header.CWD) {
+		sk = append(sk, map[string]any{
+			"name":        item.Name,
+			"description": item.Description,
+			"path":        item.FilePath,
+			"source":      item.Source,
+			"enabled":     sess.Config.Skills.Allowed(item.Name),
+		})
+	}
+	sort.Slice(sk, func(i, j int) bool {
+		a, _ := sk[i]["name"].(string)
+		b, _ := sk[j]["name"].(string)
+		return a < b
+	})
+	mc := []map[string]any{}
+	for _, item := range mcp.List(mcp.Load(s.cfg.Home, sess.Header.CWD), sess.Config.MCP) {
+		row := map[string]any{
+			"name":    item.Name,
+			"command": item.Command,
+			"source":  item.Source,
+			"enabled": item.Enabled,
+		}
+		if len(item.Args) > 0 {
+			row["args"] = item.Args
+		}
+		if item.URL != "" {
+			row["url"] = item.URL
+		}
+		mc = append(mc, row)
+	}
+	return sk, mc
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
@@ -467,7 +512,16 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	jobs := tools.NewJobStore()
 	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs}.All()
 	mcpFile := mcp.Load(cfg.Home, sess.Header.CWD)
-	tls = append(tls, mcp.Tools(ctx, mcpFile, sess.Config.MCP)...)
+	// Bind is cache-only. Waiting here for mcp.Tools() spawn used to leave the
+	// UI on running with no SSE until every enabled server finished handshake.
+	tls = append(tls, s.mcp.Bind(mcpFile, sess.Config.MCP)...)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), mcp.HandshakeTimeout)
+		defer cancel()
+		s.mcp.Prefetch(ctx, mcpFile, sess.Config.MCP)
+	}()
+	// One Build: After compact the *next* prompt rebuilds. A BeforeRun rebuild
+	// only repeated Discover on the same turn.
 	sys, _ := prompt.Build(prompt.Input{Home: cfg.Home, CWD: sess.Header.CWD, Tools: tls, Toggle: sess.Config.Skills})
 
 	emit := func(ev loop.Event) error {
@@ -504,13 +558,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		MaxRetries: 5,
 		BaseDelay:  2 * time.Second,
 		Parallel:   true,
-		Hooks: loop.Hooks{
-			BeforeRun: func(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error) {
-				// Rebuild prefix each run (and after compact via maybeCompact + next request).
-				sys2, _ := prompt.Build(prompt.Input{Home: cfg.Home, CWD: sess.Header.CWD, Tools: tls, Toggle: sess.Config.Skills})
-				return sys2, msgs, nil
-			},
-		},
 	}, emit)
 	st.err = err
 }

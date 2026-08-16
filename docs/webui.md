@@ -9,7 +9,8 @@
 - 侧栏：工作区树（创建 / 重命名 / 删除登记和会话日志、组内 `+`、pin、拖拽、每组默认 5 条「显示更多」）、Miller 选目录、标题+正文搜索、未分组只给旧脏数据
 - 对话：气泡、Markdown、Think、默认折叠的工具行（Read 行号 / Edit diff / Bash 终端 / IN·OUT、Inspect）、用量脚注下 copy/fork/regen、离底「回到底部」、composer（cwd 芯片来自当前会话）
 - 轨迹：SYSTEM / USER / ASSISTANT / TOOL / COMPACTED 各有色标；检查器 Summary / Preview / Raw
-- 设置 / 选模型：各自弹窗；外观（默认浅色）只在设置里改
+- 配置：本会话只读元数据（cwd / 模型 / id）；列出当前发现到的 skills 和 MCP server，勾选即时写入 `disabled`（下次发送生效）
+- 设置 / 选模型：各自弹窗；外观（默认浅色）和语言（中 / 英）只在设置里改，存在本浏览器 `localStorage`
 
 数据来自 session jsonl 和本次 run 的 SSE。工作区见 [workspace.md](workspace.md)。
 
