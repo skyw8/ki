@@ -238,6 +238,68 @@ func TestPromptModelWriteback(t *testing.T) {
 	}
 }
 
+func TestListHistoryAndUI(t *testing.T) {
+	_, hs := testServer(t)
+	cwd := t.TempDir()
+	id := createSession(t, hs, cwd)
+	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello ui"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed []map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&listed)
+	res.Body.Close()
+	if len(listed) != 1 || listed[0]["id"] != id || listed[0]["title"] != "hello ui" {
+		t.Fatalf("list: %+v", listed)
+	}
+
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&got)
+	res.Body.Close()
+	msgs, _ := got["messages"].([]any)
+	if len(msgs) < 2 {
+		t.Fatalf("history messages: %+v", got["messages"])
+	}
+
+	res, err = http.Get(hs.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("ui %d", res.StatusCode)
+	}
+	if !strings.Contains(string(body), `"token":"tok"`) {
+		t.Fatalf("index missing injected token:\n%s", body)
+	}
+}
+
 func createSession(t *testing.T, hs *httptest.Server, cwd string) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{"cwd": cwd})

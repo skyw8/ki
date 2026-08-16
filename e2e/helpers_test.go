@@ -228,10 +228,36 @@ func childEnv(home string) []string {
 	return out
 }
 
+func liveChildEnv(home string) []string {
+	env := os.Environ()
+	var out []string
+	for _, e := range env {
+		if strings.HasPrefix(e, "KI_HOME=") || strings.HasPrefix(e, "KI_FAKE=") || strings.HasPrefix(e, "KI_SERVER_ADDR=") {
+			continue
+		}
+		out = append(out, e)
+	}
+	out = append(out, "KI_HOME="+home, "KI_FAKE=")
+	return out
+}
+
 func startServe(t *testing.T, home string) server.File {
 	t.Helper()
+	return startServeEnv(t, home, "", childEnv(home))
+}
+
+func startServeLive(t *testing.T, home, dir string) server.File {
+	t.Helper()
+	return startServeEnv(t, home, dir, liveChildEnv(home))
+}
+
+func startServeEnv(t *testing.T, home, dir string, env []string) server.File {
+	t.Helper()
 	cmd := exec.Command(builtKI(t), "serve", "--addr", "127.0.0.1:0")
-	cmd.Env = childEnv(home)
+	cmd.Env = env
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

@@ -113,6 +113,63 @@ func TestCreateReloadFork(t *testing.T) {
 	}
 }
 
+func TestList(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s1, err := Create(root, cwd, "anthropic", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s1.AppendMessage(types.Message{
+		Role:    "user",
+		Content: []types.Content{{Type: "text", Text: "first prompt"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	id1 := s1.ID()
+	if err := s1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Create(root, cwd, "openai", "gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id2 := s2.ID()
+	if err := s2.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	infos, err := List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 2 {
+		t.Fatalf("list: %+v", infos)
+	}
+	if infos[0].ID != id2 {
+		t.Fatalf("newest first: %+v", infos)
+	}
+	var found bool
+	for _, info := range infos {
+		if info.ID == id1 {
+			found = true
+			if info.Title != "first prompt" || info.CWD != cwd {
+				t.Fatalf("info: %+v", info)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing first session")
+	}
+	empty, err := List(filepath.Join(root, "missing"))
+	if err != nil || empty != nil {
+		t.Fatalf("missing root: %v %#v", err, empty)
+	}
+}
+
 func TestEncodeCWD(t *testing.T) {
 	got := EncodeCWD("/home/hgy/proj")
 	if !strings.HasPrefix(got, "--") || !strings.HasSuffix(got, "--") {

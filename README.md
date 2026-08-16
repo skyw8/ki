@@ -11,7 +11,7 @@ go build -o ki ./cmd/ki
 ## Run
 
 ```bash
-# foreground server (writes ~/.ki/server.json)
+# foreground server (writes ~/.ki/server.json); open http://127.0.0.1:19800/
 ./ki serve --addr 127.0.0.1:19800
 
 # detach
@@ -32,6 +32,8 @@ Auth is a Bearer token in `~/.ki/server.json` (or `KI_HOME/server.json`). Config
 ```bash
 go test ./...
 go test ./e2e
+cd web && npm run test:e2e
+cd web && npm run test:e2e:live
 go test -tags live -timeout 5m ./e2e -run Live
 ```
 

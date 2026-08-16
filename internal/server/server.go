@@ -108,23 +108,33 @@ func (s *Server) Token() string { return s.token }
 
 // Handler returns the HTTP handler.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
+	api := http.NewServeMux()
+	api.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})
-	mux.HandleFunc("POST /v1/sessions", s.auth(s.create))
-	mux.HandleFunc("GET /v1/sessions/{id}", s.auth(s.get))
-	mux.HandleFunc("POST /v1/sessions/{id}/prompt", s.auth(s.prompt))
-	mux.HandleFunc("GET /v1/sessions/{id}/events", s.auth(s.events))
-	mux.HandleFunc("POST /v1/sessions/{id}/abort", s.auth(s.abort))
-	mux.HandleFunc("POST /v1/sessions/{id}/compact", s.auth(s.doCompact))
-	mux.HandleFunc("POST /v1/sessions/{id}/fork", s.auth(s.fork))
-	return mux
+	api.HandleFunc("GET /v1/sessions", s.auth(s.list))
+	api.HandleFunc("POST /v1/sessions", s.auth(s.create))
+	api.HandleFunc("GET /v1/sessions/{id}", s.auth(s.get))
+	api.HandleFunc("POST /v1/sessions/{id}/prompt", s.auth(s.prompt))
+	api.HandleFunc("GET /v1/sessions/{id}/events", s.auth(s.events))
+	api.HandleFunc("POST /v1/sessions/{id}/abort", s.auth(s.abort))
+	api.HandleFunc("POST /v1/sessions/{id}/compact", s.auth(s.doCompact))
+	api.HandleFunc("POST /v1/sessions/{id}/fork", s.auth(s.fork))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1" || strings.HasPrefix(r.URL.Path, "/v1/") {
+			api.ServeHTTP(w, r)
+			return
+		}
+		s.serveUI(w, r)
+	})
 }
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if got == "" {
+			got = r.URL.Query().Get("token")
+		}
 		if got == "" || got != s.token {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -257,7 +267,49 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		"leafId":   sess.LeafID(),
 		"dir":      sess.Dir,
 		"parent":   sess.Header.ParentSession,
+		"title":    session.TitleOf(sess),
+		"running":  s.running(sess.ID()),
+		"entries":  sess.Entries(),
+		"messages": sess.MessagesToLeaf(),
 	})
+}
+
+func (s *Server) list(w http.ResponseWriter, r *http.Request) {
+	infos, err := session.List(s.cfg.Sessions.Root)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	out := make([]map[string]any, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, map[string]any{
+			"id":        info.ID,
+			"cwd":       info.CWD,
+			"dir":       info.Dir,
+			"provider":  info.Provider,
+			"model":     info.Model,
+			"timestamp": info.Timestamp,
+			"parent":    info.ParentSession,
+			"title":     info.Title,
+			"running":   s.running(info.ID),
+		})
+	}
+	writeJSON(w, 200, out)
+}
+
+func (s *Server) running(id string) bool {
+	s.mu.Lock()
+	st := s.runs[id]
+	s.mu.Unlock()
+	if st == nil {
+		return false
+	}
+	select {
+	case <-st.done:
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {

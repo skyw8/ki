@@ -2,3 +2,9 @@
 /var/
 *.test
 *.out
+web/node_modules
+web/dist/*.map
+web/test-results
+web/playwright-report
+web/blob-report
+web/playwright/.cache

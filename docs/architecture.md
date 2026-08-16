@@ -12,12 +12,13 @@
 
 ## HTTP
 
-除 `GET /v1/health` 外都要 `Authorization: Bearer`。
+除 `GET /v1/health` 外都要 `Authorization: Bearer`（也认 `?token=`）。非 `/v1` 路径是同域 WebUI，`index.html` 注入 token。
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
+| GET | `/v1/sessions` | 列出全部 session（含 title / running） |
 | POST | `/v1/sessions` | 新建；可选 `cwd` / `model` |
-| GET | `/v1/sessions/{id}` | header、leaf、当前模型 |
+| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running |
 | POST | `/v1/sessions/{id}/prompt` | `202` 开跑；同一 session 未结束再来 **409** |
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件 |
 | POST | `/v1/sessions/{id}/abort` | cancel |

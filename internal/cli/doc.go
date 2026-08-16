@@ -1,7 +1,7 @@
 // Package cli is the command-line shell: load config, start or attach to
 // the local HTTP server, stream SSE to the terminal.
 //
-//	ki serve [--addr]   foreground server; writes ~/.ki/server.json
+//	ki serve [--addr]   foreground server + WebUI; writes ~/.ki/server.json
 //	ki -d               detach a serve process (setsid)
 //	ki [flags] <text>   client: create/resume session, POST prompt, print events
 //
