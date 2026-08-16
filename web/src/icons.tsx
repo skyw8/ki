@@ -11,6 +11,7 @@ import {
   GitFork,
   ListCollapse,
   ListMinus,
+  ListTree,
   Moon,
   MoreHorizontal,
   PanelLeft,
@@ -59,6 +60,7 @@ export const IRegen = sized(RefreshCcw, 16)
 export const IClock = sized(Clock, 16)
 export const IFold = sized(ListCollapse, 16)
 export const ITail = sized(ArrowDownToLine, 16)
+export const ITraj = sized(ListTree, 16)
 export const IPin = sized(Pin, 16)
 export const ITrash = sized(Trash2, 16)
 export const IDots = sized(MoreHorizontal, 16)

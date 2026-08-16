@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { IChev, ICompact, ICopy, IEdit, IFork, IRegen, IWrench } from './icons'
+import { IChev, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from './icons'
 import { renderMarkdown } from './markdown'
 import type { ChatNode } from './types'
 
@@ -174,7 +174,7 @@ export function ChatView({ nodes, busy, onSelect }: { nodes: ChatNode[]; busy: b
         if (n.kind === 'assistant') {
           const hasStats = !n.streaming && !!(n.ts || n.latencyMs || n.ttftMs || n.usage)
           return (
-            <div key={n.id} className="asst" data-testid="assistant-message" onClick={() => onSelect?.(n)}>
+            <div key={n.id} className="asst" data-testid="assistant-message">
               <div className="asst-body">
                 {n.thinking ? <Think text={n.thinking} streaming={n.streaming} /> : null}
                 {n.images?.map((img, i) => (
@@ -197,6 +197,7 @@ export function ChatView({ nodes, busy, onSelect }: { nodes: ChatNode[]; busy: b
                     <IconBtn label="复制" testid="copy-msg" onClick={() => copyText(n.text || n.thinking || '')}><ICopy /></IconBtn>
                     <IconBtn label="Fork" testid="fork-msg"><IFork /></IconBtn>
                     <IconBtn label="重新生成" testid="regen-msg"><IRegen /></IconBtn>
+                    <IconBtn label="在轨迹中定位" testid="traj-msg" onClick={() => onSelect?.(n)}><ITraj /></IconBtn>
                   </div>
                 </div>
               ) : null}

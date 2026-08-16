@@ -231,6 +231,26 @@ export function TrajectoryView({
     applyFollowTail(tableRef.current, follow)
   }, [follow, records, visible])
 
+  useEffect(() => {
+    if (!sel) return
+    const rec = records.find(r => r.id === sel)
+    if (!rec) return
+    setFoldedTurns(s => {
+      if (s.has(rec.turn)) {
+        const n = new Set(s)
+        n.delete(rec.turn)
+        return n
+      }
+      return s
+    })
+  }, [sel, records])
+
+  useEffect(() => {
+    if (!sel) return
+    const row = tableRef.current?.querySelector(`[data-rid="${sel}"]`)
+    row?.scrollIntoView({ block: 'nearest' })
+  }, [sel, visible])
+
   const grouped: { turn: number; rows: { rec: TrajRecord; index: number }[] }[] = []
   visible.forEach((rec) => {
     const index = records.indexOf(rec)
@@ -358,6 +378,7 @@ export function TrajectoryView({
                   {g.rows.map(({ rec, index }) => (
                     <tr
                       key={rec.id}
+                      data-rid={rec.id}
                       className={`traj-row${sel === rec.id ? ' sel' : ''}`}
                       data-testid="traj-row"
                       data-kind={rec.kind}
