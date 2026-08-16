@@ -116,7 +116,7 @@ export class Client {
     return this.json('/v1/models')
   }
 
-  patch(id: string, body: { model?: string; title?: string; pinned?: boolean; skills?: import('./types').Toggle; mcp?: import('./types').Toggle }): Promise<SessionInfo & { skills?: import('./types').Toggle; mcp?: import('./types').Toggle }> {
+  patch(id: string, body: { model?: string; title?: string; pinned?: boolean; skills?: import('./types').Toggle; mcp?: import('./types').Toggle }): Promise<SessionDetail> {
     return this.json(`/v1/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
   }
 

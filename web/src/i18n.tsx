@@ -1,0 +1,344 @@
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+
+export type Lang = 'zh' | 'en'
+
+export const LANG_KEY = 'ki-lang'
+
+const zh = {
+  'settings.title': '设置',
+  'settings.appearance': '外观',
+  'settings.themeLight': '浅色',
+  'settings.themeDark': '深色',
+  'settings.language': '语言',
+  'settings.langZh': '中文',
+  'settings.langEn': 'English',
+  'settings.hint': '立即生效，只保存在本浏览器。',
+  'settings.open': '设置',
+  'dialog.close': '关闭对话框',
+  'close': '关闭',
+
+  'theme.light': '浅色',
+  'theme.dark': '深色',
+
+  'sidebar.open': '打开侧栏',
+  'sidebar.collapse': '折叠侧栏',
+  'session.new': '新会话',
+  'session.untitled': '新会话',
+  'session.menu': '会话菜单',
+  'session.pinned': '已置顶',
+  'session.pin': '置顶',
+  'session.unpin': '取消置顶',
+  'session.rename': '重命名',
+  'session.delete': '删除',
+  'session.showMore': '显示更多',
+  'session.ungrouped': '未分组',
+  'workspace.label': '工作区',
+  'workspace.add': '添加工作区',
+  'workspace.menu': '工作区菜单',
+  'workspace.temp': '临时',
+  'workspace.rename': '重命名',
+  'workspace.delete': '删除工作区',
+  'search.sessions': '搜索会话',
+  'search.clear': '清除搜索',
+  'search.failed': '内容搜索失败',
+  'search.tooMany': '结果太多，请缩小范围',
+
+  'tab.conversation': '对话',
+  'tab.trajectory': '轨迹',
+  'tab.config': '配置',
+
+  'hero.title': '开始对话',
+  'composer.placeholder': '给 ki 发送消息',
+  'composer.placeholderDisabled': '选择或新建会话',
+  'composer.pickModel': '选择模型',
+  'composer.send': '发送',
+  'composer.stop': '停止',
+  'chat.toBottom': '回到底部',
+
+  'model.title': '选择模型',
+  'rename.title': '重命名',
+  'rename.ok': '确定',
+  'delete.title': '确认删除',
+  'delete.ok': '删除',
+  'delete.session': '将永久删除「{label}」。此操作不可恢复。',
+  'delete.workspace': '将删除工作区「{label}」及其中的会话日志。磁盘上的项目目录和文件会保留。',
+  'delete.workspaceExtra': '{n} 个会话记录（不删除磁盘目录 {path}）',
+
+  'dir.title': '选择工作区目录',
+  'dir.home': '主目录',
+  'dir.editPath': '编辑路径',
+  'dir.loading': '加载中…',
+  'dir.newFolder': '新建文件夹',
+  'dir.showHidden': '显示隐藏文件',
+  'dir.cancel': '取消',
+  'dir.open': '打开',
+  'dir.createTitle': '新建文件夹',
+  'dir.createIn': '在 {name} 中创建',
+  'dir.untitledFolder': '未命名文件夹',
+  'dir.create': '创建',
+
+  'chat.thinking': '思考',
+  'chat.thinkingNow': '思考中…',
+  'chat.copy': '复制',
+  'chat.edit': '编辑',
+  'chat.fork': 'Fork',
+  'chat.regen': '重新生成',
+  'chat.locate': '在轨迹中定位',
+  'chat.running': '正在运行…',
+  'chat.compacted': '上下文已压缩',
+  'chat.compactedTokens': '约 {n} tokens',
+  'chat.inspect': 'Inspect',
+
+  'cfg.needSession': '先选择或新建会话后再改本会话配置。',
+  'cfg.session': '会话',
+  'cfg.cwd': '工作目录',
+  'cfg.workspace': '工作区',
+  'cfg.model': '模型',
+  'cfg.id': 'Session',
+  'cfg.parent': '来源',
+  'cfg.created': '创建',
+  'cfg.skills': 'Skills',
+  'cfg.skillsEmpty': '没有发现 skill。把 SKILL.md 放到 KI_HOME/skills、~/.agents/skills 或项目 .ki/skills。',
+  'cfg.mcp': 'MCP',
+  'cfg.mcpEmpty': '没有登记 MCP server。写在 ~/.ki/.mcp.json 或项目 .ki/.mcp.json。',
+  'cfg.hint': '更改将在下次发送时生效。',
+  'cfg.hintBusy': '当前对话还在跑。开关会在下次发送时生效。',
+  'cfg.src.home': 'KI_HOME',
+  'cfg.src.user-agents': '~/.agents',
+  'cfg.src.project': '项目',
+  'cfg.src.ancestor-agents': '祖先 .agents',
+
+  'traj.search': '搜索轨迹',
+  'traj.actualDur': '真实时长',
+  'traj.equalDur': '等宽',
+  'traj.expandTools': '展开工具',
+  'traj.foldTools': '折工具',
+  'traj.follow': '跟尾',
+  'traj.unfollow': '取消跟尾',
+  'traj.records': '{n} 条记录',
+  'traj.clearRange': '清除框选',
+  'traj.empty': '没有匹配的记录',
+  'traj.required': '必填',
+  'traj.noTools': '没有工具',
+  'traj.params': '参数',
+  'traj.tab.summary': 'Summary',
+  'traj.tab.preview': 'Preview',
+  'traj.tab.raw': 'Raw',
+  'traj.tab.system': 'System Prompt',
+  'traj.tab.tools': 'Tools',
+  'traj.tab.context': 'Context',
+  'traj.group.message': 'Message',
+  'traj.group.system': 'System',
+  'traj.group.compacted': 'Compacted',
+  'traj.group.step': 'Step {n}',
+  'traj.loc': 'Turn {turn} · {group}',
+  'traj.locTurn': 'Turn {turn}',
+  'traj.status': 'Status',
+  'traj.statusRunning': '进行中',
+  'traj.statusError': '错误',
+  'traj.statusDone': '完成',
+  'traj.name': 'Name',
+  'traj.started': 'Started',
+  'traj.duration': 'Duration',
+  'traj.payload': 'Payload',
+  'traj.result': 'Result',
+  'traj.thinking': 'Thinking',
+
+  'error.title': '页面出错',
+  'error.home': '回到首页',
+} as const
+
+export type MsgKey = keyof typeof zh
+
+const en: Record<MsgKey, string> = {
+  'settings.title': 'Settings',
+  'settings.appearance': 'Appearance',
+  'settings.themeLight': 'Light',
+  'settings.themeDark': 'Dark',
+  'settings.language': 'Language',
+  'settings.langZh': '中文',
+  'settings.langEn': 'English',
+  'settings.hint': 'Applies immediately and stays in this browser.',
+  'settings.open': 'Settings',
+  'dialog.close': 'Close dialog',
+  'close': 'Close',
+
+  'theme.light': 'Light',
+  'theme.dark': 'Dark',
+
+  'sidebar.open': 'Open sidebar',
+  'sidebar.collapse': 'Collapse sidebar',
+  'session.new': 'New session',
+  'session.untitled': 'New session',
+  'session.menu': 'Session menu',
+  'session.pinned': 'Pinned',
+  'session.pin': 'Pin',
+  'session.unpin': 'Unpin',
+  'session.rename': 'Rename',
+  'session.delete': 'Delete',
+  'session.showMore': 'Show more',
+  'session.ungrouped': 'Ungrouped',
+  'workspace.label': 'Workspaces',
+  'workspace.add': 'Add workspace',
+  'workspace.menu': 'Workspace menu',
+  'workspace.temp': 'temp',
+  'workspace.rename': 'Rename',
+  'workspace.delete': 'Delete workspace',
+  'search.sessions': 'Search sessions',
+  'search.clear': 'Clear search',
+  'search.failed': 'Content search failed',
+  'search.tooMany': 'Too many results. Narrow the query.',
+
+  'tab.conversation': 'Chat',
+  'tab.trajectory': 'Trace',
+  'tab.config': 'Config',
+
+  'hero.title': 'Start chatting',
+  'composer.placeholder': 'Message ki',
+  'composer.placeholderDisabled': 'Select or create a session',
+  'composer.pickModel': 'Choose model',
+  'composer.send': 'Send',
+  'composer.stop': 'Stop',
+  'chat.toBottom': 'Jump to bottom',
+
+  'model.title': 'Choose model',
+  'rename.title': 'Rename',
+  'rename.ok': 'OK',
+  'delete.title': 'Confirm delete',
+  'delete.ok': 'Delete',
+  'delete.session': 'Permanently delete “{label}”. This cannot be undone.',
+  'delete.workspace': 'Delete workspace “{label}” and its session logs. The project directory on disk is kept.',
+  'delete.workspaceExtra': '{n} session records (disk directory {path} is not deleted)',
+
+  'dir.title': 'Choose workspace folder',
+  'dir.home': 'Home',
+  'dir.editPath': 'Edit path',
+  'dir.loading': 'Loading…',
+  'dir.newFolder': 'New folder',
+  'dir.showHidden': 'Show hidden files',
+  'dir.cancel': 'Cancel',
+  'dir.open': 'Open',
+  'dir.createTitle': 'New folder',
+  'dir.createIn': 'Create in {name}',
+  'dir.untitledFolder': 'Untitled folder',
+  'dir.create': 'Create',
+
+  'chat.thinking': 'Thinking',
+  'chat.thinkingNow': 'Thinking…',
+  'chat.copy': 'Copy',
+  'chat.edit': 'Edit',
+  'chat.fork': 'Fork',
+  'chat.regen': 'Regenerate',
+  'chat.locate': 'Show in trace',
+  'chat.running': 'Running…',
+  'chat.compacted': 'Context compacted',
+  'chat.compactedTokens': '~{n} tokens',
+  'chat.inspect': 'Inspect',
+
+  'cfg.needSession': 'Select or create a session to edit its config.',
+  'cfg.session': 'Session',
+  'cfg.cwd': 'Working directory',
+  'cfg.workspace': 'Workspace',
+  'cfg.model': 'Model',
+  'cfg.id': 'Session',
+  'cfg.parent': 'Parent',
+  'cfg.created': 'Created',
+  'cfg.skills': 'Skills',
+  'cfg.skillsEmpty': 'No skills found. Put SKILL.md in KI_HOME/skills, ~/.agents/skills, or the project .ki/skills.',
+  'cfg.mcp': 'MCP',
+  'cfg.mcpEmpty': 'No MCP servers registered. Add them in ~/.ki/.mcp.json or the project .ki/.mcp.json.',
+  'cfg.hint': 'Changes apply on the next send.',
+  'cfg.hintBusy': 'This session is still running. Changes apply on the next send.',
+  'cfg.src.home': 'KI_HOME',
+  'cfg.src.user-agents': '~/.agents',
+  'cfg.src.project': 'project',
+  'cfg.src.ancestor-agents': 'ancestor .agents',
+
+  'traj.search': 'Search trace',
+  'traj.actualDur': 'Real duration',
+  'traj.equalDur': 'Equal width',
+  'traj.expandTools': 'Expand tools',
+  'traj.foldTools': 'Fold tools',
+  'traj.follow': 'Follow tail',
+  'traj.unfollow': 'Stop following',
+  'traj.records': '{n} records',
+  'traj.clearRange': 'Clear selection',
+  'traj.empty': 'No matching records',
+  'traj.required': 'required',
+  'traj.noTools': 'No tools',
+  'traj.params': 'Parameters',
+  'traj.tab.summary': 'Summary',
+  'traj.tab.preview': 'Preview',
+  'traj.tab.raw': 'Raw',
+  'traj.tab.system': 'System Prompt',
+  'traj.tab.tools': 'Tools',
+  'traj.tab.context': 'Context',
+  'traj.group.message': 'Message',
+  'traj.group.system': 'System',
+  'traj.group.compacted': 'Compacted',
+  'traj.group.step': 'Step {n}',
+  'traj.loc': 'Turn {turn} · {group}',
+  'traj.locTurn': 'Turn {turn}',
+  'traj.status': 'Status',
+  'traj.statusRunning': 'Running',
+  'traj.statusError': 'Error',
+  'traj.statusDone': 'Done',
+  'traj.name': 'Name',
+  'traj.started': 'Started',
+  'traj.duration': 'Duration',
+  'traj.payload': 'Payload',
+  'traj.result': 'Result',
+  'traj.thinking': 'Thinking',
+
+  'error.title': 'Something went wrong',
+  'error.home': 'Back to home',
+}
+
+const dict: Record<Lang, Record<MsgKey, string>> = { zh, en }
+
+export function detectLang(): Lang {
+  try {
+    const saved = localStorage.getItem(LANG_KEY)
+    if (saved === 'zh' || saved === 'en') return saved
+  } catch { /* ignore */ }
+  const nav = (typeof navigator !== 'undefined' ? navigator.language : '') || ''
+  return nav.toLowerCase().startsWith('zh') ? 'zh' : 'en'
+}
+
+export function applyLang(lang: Lang) {
+  try { localStorage.setItem(LANG_KEY, lang) } catch { /* ignore */ }
+  if (typeof document !== 'undefined') document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en'
+}
+
+export function interpolate(s: string, vars?: Record<string, string | number>): string {
+  if (!vars) return s
+  return s.replace(/\{(\w+)\}/g, (_, k: string) => (vars[k] == null ? `{${k}}` : String(vars[k])))
+}
+
+export type TFn = (key: MsgKey, vars?: Record<string, string | number>) => string
+
+type Ctx = { lang: Lang; setLang: (lang: Lang) => void; t: TFn }
+
+const I18nContext = createContext<Ctx>({
+  lang: 'zh',
+  setLang: () => {},
+  t: (key, vars) => interpolate(zh[key] ?? key, vars),
+})
+
+export function I18nProvider({ children }: { children: ReactNode }) {
+  const [lang, setLangState] = useState<Lang>(detectLang)
+  const setLang = useCallback((next: Lang) => {
+    setLangState(next)
+    applyLang(next)
+  }, [])
+  useEffect(() => { applyLang(lang) }, [lang])
+  const t = useCallback<TFn>((key, vars) => interpolate(dict[lang][key] ?? key, vars), [lang])
+  const value = useMemo(() => ({ lang, setLang, t }), [lang, setLang, t])
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>
+}
+
+export function useI18n(): Ctx {
+  return useContext(I18nContext)
+}
+
+export { I18nContext }

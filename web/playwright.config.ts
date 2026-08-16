@@ -12,6 +12,7 @@ export default defineConfig({
   use: {
     baseURL,
     browserName: 'chromium',
+    locale: 'zh-CN',
     headless: true,
     trace: 'retain-on-failure',
   },

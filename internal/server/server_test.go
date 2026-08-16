@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ki/internal/config"
 	"ki/internal/loop"
@@ -34,6 +36,7 @@ func testServer(t *testing.T) (*Server, *httptest.Server) {
 	})
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv, hs
 }
 
@@ -422,6 +425,168 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	if len(models) == 0 || models[0]["spec"] == "" {
 		t.Fatalf("models: %+v", models)
 	}
+}
+
+func TestPromptNotBlockedBySlowMCP(t *testing.T) {
+	srv, hs := testServer(t)
+	marker := filepath.Join(t.TempDir(), "spawned")
+	cmd, args := markerCmd(t, marker)
+	body, _ := json.Marshal(map[string]any{
+		"mcpServers": map[string]any{
+			"slow": map[string]any{"command": cmd, "args": args},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(srv.cfg.Home, ".mcp.json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := createSession(t, hs, t.TempDir())
+	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 202 {
+		t.Fatalf("prompt %d", res.StatusCode)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ = http.NewRequestWithContext(ctx, "GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("events blocked on MCP: %v", err)
+	}
+	defer res.Body.Close()
+	var types []string
+	sc := bufio.NewScanner(res.Body)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var ev loop.Event
+		_ = json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev)
+		types = append(types, string(ev.Type))
+		if ev.Type == loop.AgentEnd {
+			break
+		}
+	}
+	if !strings.Contains(strings.Join(types, ","), "agent_start") {
+		t.Fatalf("no agent_start: %v", types)
+	}
+}
+
+func TestSessionCatalogNoSpawn(t *testing.T) {
+	srv, hs := testServer(t)
+	home := srv.cfg.Home
+	cwd := t.TempDir()
+	skillDir := filepath.Join(home, "skills", "alpha")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: alpha\ndescription: a skill\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(cwd, ".ki", "skills", "beta")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "SKILL.md"), []byte("---\nname: beta\ndescription: project skill\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "spawned")
+	cmd, args := markerCmd(t, marker)
+	mcpBody, _ := json.Marshal(map[string]any{
+		"mcpServers": map[string]any{
+			"exa":       map[string]any{"command": cmd, "args": args},
+			"context7":  map[string]any{"command": "true"},
+			"keep-open": map[string]any{"command": "true"},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(home, ".mcp.json"), mcpBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	id := createSession(t, hs, cwd)
+	body, _ := json.Marshal(map[string]any{
+		"skills": map[string]any{"disabled": []string{"alpha"}},
+		"mcp":    map[string]any{"disabled": []string{"exa"}},
+	})
+	req, _ := http.NewRequest("PATCH", hs.URL+"/v1/sessions/"+id, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("patch %d", res.StatusCode)
+	}
+
+	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&got)
+	res.Body.Close()
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("GET spawned MCP command")
+	}
+
+	skills, _ := got["availableSkills"].([]any)
+	sk := map[string]map[string]any{}
+	for _, raw := range skills {
+		m, _ := raw.(map[string]any)
+		name, _ := m["name"].(string)
+		sk[name] = m
+	}
+	if sk["alpha"]["enabled"] != false || sk["alpha"]["source"] != "home" {
+		t.Fatalf("alpha: %+v", sk["alpha"])
+	}
+	if sk["beta"]["enabled"] != true || sk["beta"]["source"] != "project" {
+		t.Fatalf("beta: %+v", sk["beta"])
+	}
+
+	mcps, _ := got["availableMcp"].([]any)
+	if len(mcps) < 3 {
+		t.Fatalf("mcp: %+v", got["availableMcp"])
+	}
+	mc := map[string]map[string]any{}
+	for _, raw := range mcps {
+		m, _ := raw.(map[string]any)
+		name, _ := m["name"].(string)
+		mc[name] = m
+	}
+	if mc["exa"]["enabled"] != false || mc["context7"]["enabled"] != true {
+		t.Fatalf("mcp enabled: %+v", mc)
+	}
+	if mc["exa"]["source"] != "home" || mc["context7"]["command"] != "true" {
+		t.Fatalf("mcp meta: %+v", mc)
+	}
+}
+
+func markerCmd(t *testing.T, marker string) (string, []string) {
+	t.Helper()
+	if os.PathSeparator == '\\' {
+		bat := filepath.Join(t.TempDir(), "mark.bat")
+		if err := os.WriteFile(bat, []byte("@echo spawned > \""+marker+"\"\r\nping -n 20 127.0.0.1 >nul\r\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return bat, nil
+	}
+	sh := filepath.Join(t.TempDir(), "mark.sh")
+	if err := os.WriteFile(sh, []byte("#!/bin/sh\nprintf spawned > \"$1\"\nsleep 20\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return sh, []string{marker}
 }
 
 func createSession(t *testing.T, hs *httptest.Server, cwd string) string {

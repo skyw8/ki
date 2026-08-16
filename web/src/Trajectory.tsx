@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
 import { applyFollowTail } from './follow-tail'
+import { useI18n, type TFn } from './i18n'
 import { IChev, IClock, IClose, ICompact, IFold, ISearch, ISpark, ITail, IUser, IWrench } from './icons'
 import { renderMarkdown } from './markdown'
 import type { ToolSchema, TrajKind, TrajRecord } from './types'
@@ -8,44 +9,44 @@ type InspTab = 'summary' | 'preview' | 'raw' | 'system-prompt' | 'tools' | 'cont
 
 type TabItem = { id: InspTab; label: string }
 
-function tabsFor(kind: TrajKind): TabItem[] {
+function tabsFor(kind: TrajKind, t: TFn): TabItem[] {
   if (kind === 'system') {
     return [
-      { id: 'system-prompt', label: 'System Prompt' },
-      { id: 'tools', label: 'Tools' },
-      { id: 'context', label: 'Context' },
+      { id: 'system-prompt', label: t('traj.tab.system') },
+      { id: 'tools', label: t('traj.tab.tools') },
+      { id: 'context', label: t('traj.tab.context') },
     ]
   }
   return [
-    { id: 'summary', label: 'Summary' },
-    { id: 'preview', label: 'Preview' },
-    { id: 'raw', label: 'Raw' },
+    { id: 'summary', label: t('traj.tab.summary') },
+    { id: 'preview', label: t('traj.tab.preview') },
+    { id: 'raw', label: t('traj.tab.raw') },
   ]
 }
 
-function groupOf(kind: TrajKind, step?: number): string {
-  if (kind === 'user') return 'Message'
-  if (kind === 'system') return 'System'
-  if (kind === 'compacted') return 'Compacted'
-  return `Step ${step ?? 1}`
+function groupOf(kind: TrajKind, t: TFn, step?: number): string {
+  if (kind === 'user') return t('traj.group.message')
+  if (kind === 'system') return t('traj.group.system')
+  if (kind === 'compacted') return t('traj.group.compacted')
+  return t('traj.group.step', { n: step ?? 1 })
 }
 
-function locate(records: TrajRecord[]): Map<string, { turn: number; step?: number; group: string }> {
+function locate(records: TrajRecord[], t: TFn): Map<string, { turn: number; step?: number; group: string }> {
   const out = new Map<string, { turn: number; step?: number; group: string }>()
   const stepByTurn = new Map<number, number>()
   for (const r of records) {
     if (r.kind === 'assistant') {
       const n = (stepByTurn.get(r.turn) ?? 0) + 1
       stepByTurn.set(r.turn, n)
-      out.set(r.id, { turn: r.turn, step: n, group: groupOf(r.kind, n) })
+      out.set(r.id, { turn: r.turn, step: n, group: groupOf(r.kind, t, n) })
       continue
     }
     if (r.kind === 'tool') {
       const n = stepByTurn.get(r.turn) ?? 1
-      out.set(r.id, { turn: r.turn, step: n, group: groupOf(r.kind, n) })
+      out.set(r.id, { turn: r.turn, step: n, group: groupOf(r.kind, t, n) })
       continue
     }
-    out.set(r.id, { turn: r.turn, group: groupOf(r.kind) })
+    out.set(r.id, { turn: r.turn, group: groupOf(r.kind, t) })
   }
   return out
 }
@@ -112,6 +113,7 @@ function schemaType(schema: unknown): string {
 }
 
 function SchemaView({ schema }: { schema: unknown }) {
+  const { t } = useI18n()
   if (!schema || typeof schema !== 'object') return <pre>{pretty(schema) || '—'}</pre>
   const s = schema as Record<string, unknown>
   const props = s.properties && typeof s.properties === 'object' ? s.properties as Record<string, unknown> : null
@@ -126,7 +128,7 @@ function SchemaView({ schema }: { schema: unknown }) {
             <div className="schema-h">
               <code>{name}</code>
               <span className="schema-type">{schemaType(p)}</span>
-              {required.has(name) ? <span className="schema-req">必填</span> : null}
+              {required.has(name) ? <span className="schema-req">{t('traj.required')}</span> : null}
             </div>
             {typeof p.description === 'string' ? <p className="schema-d">{p.description}</p> : null}
           </div>
@@ -137,7 +139,8 @@ function SchemaView({ schema }: { schema: unknown }) {
 }
 
 function ToolCatalog({ tools }: { tools?: ToolSchema[] }) {
-  if (!tools?.length) return <p className="insp-empty" data-testid="system-tools">没有工具</p>
+  const { t } = useI18n()
+  if (!tools?.length) return <p className="insp-empty" data-testid="system-tools">{t('traj.noTools')}</p>
   return (
     <div className="tool-cat" data-testid="system-tools">
       {tools.map((tool, i) => (
@@ -150,7 +153,7 @@ function ToolCatalog({ tools }: { tools?: ToolSchema[] }) {
           </summary>
           <div className="tool-cat-body">
             {tool.description ? <p className="tool-cat-desc">{tool.description}</p> : null}
-            <div className="tool-cat-label">参数</div>
+            <div className="tool-cat-label">{t('traj.params')}</div>
             <SchemaView schema={tool.parameters} />
           </div>
         </details>
@@ -181,6 +184,7 @@ export function TrajectoryView({
   onSelect?: (r: TrajRecord | null) => void
   selectId?: string | null
 }) {
+  const { t } = useI18n()
   const [q, setQ] = useState('')
   const [sel, setSel] = useState<string | null>(null)
   useEffect(() => {
@@ -215,9 +219,9 @@ export function TrajectoryView({
   }, [records, q, range])
 
   const selected = records.find(r => r.id === sel) ?? null
-  const locations = useMemo(() => locate(records), [records])
+  const locations = useMemo(() => locate(records, t), [records, t])
   const selectedLoc = selected ? locations.get(selected.id) : undefined
-  const selectedTabs = selected ? tabsFor(selected.kind) : []
+  const selectedTabs = selected ? tabsFor(selected.kind, t) : []
 
   const visible = useMemo(() => {
     return filtered.filter(r => {
@@ -261,7 +265,7 @@ export function TrajectoryView({
 
   function pick(r: TrajRecord) {
     setSel(r.id)
-    const next = tabsFor(r.kind)
+    const next = tabsFor(r.kind, t)
     setTab(t => (next.some(x => x.id === t) ? t : next[0].id))
     onSelect?.(r)
   }
@@ -276,14 +280,14 @@ export function TrajectoryView({
     <div className="traj" data-testid="trajectory">
       <div className="traj-toolbar">
         <ISearch />
-        <input className="traj-search" placeholder="搜索轨迹" value={q} onChange={e => setQ(e.target.value)} />
+        <input className="traj-search" placeholder={t('traj.search')} value={q} onChange={e => setQ(e.target.value)} />
         <button
           type="button"
           className={`chip-icon${actualDur ? ' active' : ''}`}
           data-testid="traj-duration"
           aria-pressed={actualDur}
-          aria-label={actualDur ? '真实时长' : '等宽'}
-          title={actualDur ? '真实时长' : '等宽'}
+          aria-label={actualDur ? t('traj.actualDur') : t('traj.equalDur')}
+          title={actualDur ? t('traj.actualDur') : t('traj.equalDur')}
           onClick={() => setActualDur(v => !v)}
         >
           <IClock />
@@ -293,8 +297,8 @@ export function TrajectoryView({
           className={`chip-icon${foldTools ? ' active' : ''}`}
           data-testid="traj-fold-tools"
           aria-pressed={foldTools}
-          aria-label={foldTools ? '展开工具' : '折工具'}
-          title={foldTools ? '展开工具' : '折工具'}
+          aria-label={foldTools ? t('traj.expandTools') : t('traj.foldTools')}
+          title={foldTools ? t('traj.expandTools') : t('traj.foldTools')}
           onClick={() => setFoldTools(v => !v)}
         >
           <IFold />
@@ -304,8 +308,8 @@ export function TrajectoryView({
           className={`chip-icon${follow ? ' active' : ''}`}
           data-testid="traj-follow"
           aria-pressed={follow}
-          aria-label={follow ? '跟尾' : '取消跟尾'}
-          title={follow ? '跟尾' : '取消跟尾'}
+          aria-label={follow ? t('traj.follow') : t('traj.unfollow')}
+          title={follow ? t('traj.follow') : t('traj.unfollow')}
           onClick={() => {
             setFollow(v => {
               const next = !v
@@ -316,7 +320,7 @@ export function TrajectoryView({
         >
           <ITail />
         </button>
-        <span className="asst-meta">{visible.length} 条记录</span>
+        <span className="asst-meta">{t('traj.records', { n: visible.length })}</span>
       </div>
       <div
         className="timeline"
@@ -346,7 +350,7 @@ export function TrajectoryView({
           />
         ))}
       </div>
-      {range ? <button type="button" className="chip" onClick={() => setRange(null)}>清除框选</button> : null}
+      {range ? <button type="button" className="chip" onClick={() => setRange(null)}>{t('traj.clearRange')}</button> : null}
       <div className={`traj-split${selected ? '' : ' no-insp'}`}>
         <div
           className="traj-table-wrap"
@@ -397,7 +401,7 @@ export function TrajectoryView({
                 </Fragment>
               ))}
               {visible.length === 0 ? (
-                <tr><td><div className="cell"><span className="preview">没有匹配的记录</span></div></td></tr>
+                <tr><td><div className="cell"><span className="preview">{t('traj.empty')}</span></div></td></tr>
               ) : null}
             </tbody>
           </table>
@@ -408,14 +412,14 @@ export function TrajectoryView({
               <span className={`tag ${selected.kind}`}>{KIND_LABEL[selected.kind]}</span>
               <div className="grow insp-loc" data-testid="insp-loc">
                 {selectedLoc
-                  ? `Turn ${selectedLoc.turn} · ${selectedLoc.group}`
-                  : `Turn ${selected.turn}`}
+                  ? t('traj.loc', { turn: selectedLoc.turn, group: selectedLoc.group })
+                  : t('traj.locTurn', { turn: selected.turn })}
               </div>
-              <button type="button" className="icon-btn" onClick={() => { setSel(null); onSelect?.(null) }} aria-label="关闭"><IClose /></button>
+              <button type="button" className="icon-btn" onClick={() => { setSel(null); onSelect?.(null) }} aria-label={t('close')}><IClose /></button>
             </div>
             <div className="insp-tabs">
               {selectedTabs.map(item => (
-                <button key={item.id} type="button" className={tab === item.id ? 'on' : ''} onClick={() => setTab(item.id)}>
+                <button key={item.id} type="button" className={tab === item.id ? 'on' : ''} data-testid={`insp-tab-${item.id}`} onClick={() => setTab(item.id)}>
                   {item.label}
                 </button>
               ))}
@@ -423,10 +427,10 @@ export function TrajectoryView({
             <div className="insp-body">
               {tab === 'summary' ? (
                 <dl>
-                  <div><dt>Status</dt><dd>{selected.running ? '进行中' : selected.error ? '错误' : '完成'}</dd></div>
-                  {selected.name ? <div><dt>Name</dt><dd>{selected.name}</dd></div> : null}
-                  <div><dt>Started</dt><dd>{fmtTime(selected.startedAt)}</dd></div>
-                  <div><dt>Duration</dt><dd>{selected.running ? '进行中' : (fmtDur(selected.durationMs) || '—')}</dd></div>
+                  <div><dt>{t('traj.status')}</dt><dd>{selected.running ? t('traj.statusRunning') : selected.error ? t('traj.statusError') : t('traj.statusDone')}</dd></div>
+                  {selected.name ? <div><dt>{t('traj.name')}</dt><dd>{selected.name}</dd></div> : null}
+                  <div><dt>{t('traj.started')}</dt><dd>{fmtTime(selected.startedAt)}</dd></div>
+                  <div><dt>{t('traj.duration')}</dt><dd>{selected.running ? t('traj.statusRunning') : (fmtDur(selected.durationMs) || '—')}</dd></div>
                   {selected.ttftMs != null ? <div><dt>TTFT</dt><dd data-testid="traj-ttft">{fmtDur(selected.ttftMs)}</dd></div> : null}
                   {selected.usage ? (
                     <>
@@ -443,12 +447,12 @@ export function TrajectoryView({
                   <div className="insp-split">
                     {selected.input != null && selected.input !== '' ? (
                       <section>
-                        <div className="ctx-label">Payload</div>
+                        <div className="ctx-label">{t('traj.payload')}</div>
                         <pre>{pretty(selected.input)}</pre>
                       </section>
                     ) : null}
                     <section>
-                      <div className="ctx-label">Result</div>
+                      <div className="ctx-label">{t('traj.result')}</div>
                       {typeof selected.output === 'string' && selected.output
                         ? <MarkdownBody text={selected.output} />
                         : <pre>{pretty(selected.output) || '—'}</pre>}
@@ -458,7 +462,7 @@ export function TrajectoryView({
                   <div className="insp-split">
                     {selected.kind === 'assistant' && typeof selected.input === 'string' && selected.input ? (
                       <section>
-                        <div className="ctx-label">Thinking</div>
+                        <div className="ctx-label">{t('traj.thinking')}</div>
                         <pre>{selected.input}</pre>
                       </section>
                     ) : null}

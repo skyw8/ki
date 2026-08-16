@@ -1,5 +1,8 @@
 import { expect, test, type Page } from '@playwright/test'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { applyFollowTail } from '../src/follow-tail.ts'
+import { statePath } from './global-setup.ts'
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
@@ -18,6 +21,15 @@ test('page boots and settings stub is empty', async ({ page }) => {
   await page.getByTestId('open-settings').click()
   await expect(page.getByTestId('settings')).toContainText('外观')
   await expect(page.getByTestId('settings-theme')).toBeVisible()
+  await expect(page.getByTestId('settings-lang')).toBeVisible()
+  await expect(page.getByTestId('settings')).not.toContainText('Skills')
+  await expect(page.getByTestId('settings')).not.toContainText('MCP')
+  await page.getByTestId('lang-en').click()
+  await expect(page.getByTestId('settings')).toContainText('Appearance')
+  await expect(page.getByTestId('tab-conversation')).toHaveText('Chat')
+  await page.getByTestId('lang-zh').click()
+  await expect(page.getByTestId('settings')).toContainText('外观')
+  await expect(page.getByTestId('tab-conversation')).toHaveText('对话')
   await page.getByTestId('settings-mask').click({ position: { x: 4, y: 4 } })
   await expect(page.getByTestId('settings')).toHaveCount(0)
   await page.getByTestId('open-model').click()
@@ -56,14 +68,14 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await page.locator('[data-testid="traj-row"][data-kind="assistant"]').first().click()
   await expect(page.getByTestId('insp-loc')).toContainText('Turn')
   await expect(page.getByTestId('insp-loc')).toContainText('Step')
-  await expect(page.getByRole('button', { name: 'Summary' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Preview' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Raw' })).toBeVisible()
+  await expect(page.getByTestId('insp-tab-summary')).toBeVisible()
+  await expect(page.getByTestId('insp-tab-preview')).toBeVisible()
+  await expect(page.getByTestId('insp-tab-raw')).toBeVisible()
   await page.locator('[data-testid="traj-row"][data-kind="system"]').first().click()
   await expect(page.getByTestId('system-prompt')).not.toHaveText('—')
-  await page.getByRole('button', { name: 'Tools' }).click()
+  await page.getByTestId('insp-tab-tools').click()
   await expect(page.getByTestId('system-tools')).toContainText('Read')
-  await page.getByRole('button', { name: 'Context' }).click()
+  await page.getByTestId('insp-tab-context').click()
   await expect(page.getByTestId('system-diff')).toBeVisible()
 
   await expect(page.getByTestId('traj-follow')).toHaveAttribute('aria-pressed', 'true')
@@ -128,4 +140,46 @@ test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }
   await expect(page.getByTestId('to-bottom')).toBeVisible()
   await page.getByTestId('to-bottom').click()
   await expect(page.getByTestId('to-bottom')).toHaveCount(0)
+})
+
+test('session config lists skills and mcp toggles', async ({ page }) => {
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const skillDir = join(home, 'skills', 'demo-skill')
+  mkdirSync(skillDir, { recursive: true })
+  writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: demo-skill\ndescription: e2e skill\n---\n')
+  writeFileSync(join(home, '.mcp.json'), JSON.stringify({
+    mcpServers: {
+      context7: { command: 'true' },
+      exa: { command: 'true' },
+    },
+  }))
+
+  await page.goto('/')
+  await sendPrompt(page, `cfg-e2e ${Date.now()}`)
+  await expect(page.getByTestId('assistant-message')).toContainText('ok')
+
+  await page.getByTestId('tab-config').click()
+  await expect(page.getByTestId('session-config')).toBeVisible()
+  await expect(page.getByTestId('cfg-skill').filter({ hasText: 'demo-skill' })).toBeVisible()
+  await expect(page.getByTestId('cfg-mcp').filter({ hasText: 'context7' })).toBeVisible()
+  await expect(page.getByTestId('cfg-mcp').filter({ hasText: 'exa' })).toBeVisible()
+  await expect(page.getByTestId('mcp-on-exa')).toHaveAttribute('aria-checked', 'true')
+
+  await page.getByTestId('mcp-on-exa').click()
+  await expect(page.getByTestId('mcp-on-exa')).toHaveAttribute('aria-checked', 'false')
+
+  const disabled = await page.evaluate(async () => {
+    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
+    const listed = await fetch('/v1/sessions', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()) as Array<{ id: string; title?: string }>
+    const id = listed.find(s => (s.title ?? '').includes('cfg-e2e'))?.id
+    if (!id) throw new Error('session missing')
+    const detail = await fetch(`/v1/sessions/${id}`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()) as {
+      mcp?: { disabled?: string[] }
+      availableMcp?: Array<{ name: string; enabled: boolean }>
+    }
+    return detail
+  })
+  expect(disabled.mcp?.disabled).toContain('exa')
+  expect(disabled.availableMcp?.find(s => s.name === 'exa')?.enabled).toBe(false)
+  expect(disabled.availableMcp?.find(s => s.name === 'context7')?.enabled).toBe(true)
 })

@@ -129,7 +129,7 @@ function applyEntry(s: ViewState, e: Entry) {
     return
   }
   if (e.type === 'compaction') {
-    const summary = e.summary || '上下文已压缩'
+    const summary = e.summary || ''
     s.nodes.push({ kind: 'compaction', id: e.id, summary, tokensBefore: e.tokensBefore })
     s.records.push({
       id: e.id,

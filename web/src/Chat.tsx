@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { IChev, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from './icons'
+import { useI18n } from './i18n'
 import { renderMarkdown } from './markdown'
 import type { ChatNode } from './types'
 
@@ -26,6 +27,7 @@ function fmtTs(ts?: number): string {
 }
 
 function Think({ text, streaming }: { text: string; streaming?: boolean }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const first = text.split('\n').find(l => l.trim()) ?? ''
   return (
@@ -33,7 +35,7 @@ function Think({ text, streaming }: { text: string; streaming?: boolean }) {
       <button type="button" className="think-btn" onClick={() => setOpen(v => !v)}>
         <span className="think-head">
           <IChev open={open} />
-          <span className="think-label">{streaming ? '思考中…' : '思考'}</span>
+          <span className="think-label">{streaming ? t('chat.thinkingNow') : t('chat.thinking')}</span>
         </span>
         {!open && first ? <span className="think-preview">{first}</span> : null}
       </button>
@@ -87,6 +89,7 @@ function ToolRow({
   summary: string
   onInspect?: (n: ChatNode) => void
 }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const name = node.name
   const cmd = argStr(node.args, 'command')
@@ -129,7 +132,7 @@ function ToolRow({
             </div>
           )}
           {onInspect ? (
-            <button type="button" className="insp-pill" data-testid="tool-inspect" onClick={() => onInspect(node)}>Inspect</button>
+            <button type="button" className="insp-pill" data-testid="tool-inspect" onClick={() => onInspect(node)}>{t('chat.inspect')}</button>
           ) : null}
         </div>
       ) : null}
@@ -138,13 +141,14 @@ function ToolRow({
 }
 
 function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   return (
     <div className="compact-row">
       <button type="button" className="compact-btn" onClick={() => setOpen(v => !v)}>
         <ICompact />
-        上下文已压缩
-        {node.tokensBefore ? <span>· 约 {node.tokensBefore} tokens</span> : null}
+        {t('chat.compacted')}
+        {node.tokensBefore ? <span>· {t('chat.compactedTokens', { n: node.tokensBefore })}</span> : null}
       </button>
       {open ? <div className="compact-body">{node.summary}</div> : null}
     </div>
@@ -152,6 +156,7 @@ function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> 
 }
 
 export function ChatView({ nodes, busy, onSelect }: { nodes: ChatNode[]; busy: boolean; onSelect?: (n: ChatNode) => void }) {
+  const { t } = useI18n()
   return (
     <div className="chat-col" data-testid="chat">
       {nodes.map(n => {
@@ -163,8 +168,8 @@ export function ChatView({ nodes, busy, onSelect }: { nodes: ChatNode[]; busy: b
                 <div className="msg-foot">
                   {n.ts ? <div className="msg-stats">{fmtTs(n.ts)}</div> : null}
                   <div className="msg-actions" data-testid="user-actions">
-                    <IconBtn label="复制" testid="copy-msg" onClick={() => copyText(n.text)}><ICopy /></IconBtn>
-                    <IconBtn label="编辑" testid="edit-msg"><IEdit /></IconBtn>
+                    <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => copyText(n.text)}><ICopy /></IconBtn>
+                    <IconBtn label={t('chat.edit')} testid="edit-msg"><IEdit /></IconBtn>
                   </div>
                 </div>
               </div>
@@ -194,10 +199,10 @@ export function ChatView({ nodes, busy, onSelect }: { nodes: ChatNode[]; busy: b
                     </div>
                   ) : null}
                   <div className="msg-actions" data-testid="asst-actions">
-                    <IconBtn label="复制" testid="copy-msg" onClick={() => copyText(n.text || n.thinking || '')}><ICopy /></IconBtn>
-                    <IconBtn label="Fork" testid="fork-msg"><IFork /></IconBtn>
-                    <IconBtn label="重新生成" testid="regen-msg"><IRegen /></IconBtn>
-                    <IconBtn label="在轨迹中定位" testid="traj-msg" onClick={() => onSelect?.(n)}><ITraj /></IconBtn>
+                    <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => copyText(n.text || n.thinking || '')}><ICopy /></IconBtn>
+                    <IconBtn label={t('chat.fork')} testid="fork-msg"><IFork /></IconBtn>
+                    <IconBtn label={t('chat.regen')} testid="regen-msg"><IRegen /></IconBtn>
+                    <IconBtn label={t('chat.locate')} testid="traj-msg" onClick={() => onSelect?.(n)}><ITraj /></IconBtn>
                   </div>
                 </div>
               ) : null}
@@ -223,7 +228,7 @@ export function ChatView({ nodes, busy, onSelect }: { nodes: ChatNode[]; busy: b
         return <Compaction key={n.id} node={n} />
       })}
       {busy && !nodes.some(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running)) ? (
-        <div className="status-line">正在运行…</div>
+        <div className="status-line">{t('chat.running')}</div>
       ) : null}
     </div>
   )

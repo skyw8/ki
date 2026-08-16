@@ -114,12 +114,30 @@ export type SearchHit = {
   snippet?: string
 }
 
+export type CatalogSkill = {
+  name: string
+  description?: string
+  path?: string
+  source?: string
+  enabled: boolean
+}
+
+export type CatalogMcp = {
+  name: string
+  command?: string
+  args?: string[]
+  source?: string
+  enabled: boolean
+}
+
 export type SessionDetail = SessionInfo & {
   leafId?: string
   entries?: Entry[]
   messages?: Message[]
   skills?: Toggle
   mcp?: Toggle
+  availableSkills?: CatalogSkill[]
+  availableMcp?: CatalogMcp[]
 }
 
 export type Toggle = { only?: string[]; disabled?: string[] }

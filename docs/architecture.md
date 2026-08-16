@@ -21,7 +21,7 @@
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned） |
 | POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…` |
 | GET | `/v1/sessions/search` | 正文字面搜索，最多 20 条 |
-| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、skills/mcp |
+| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、skills/mcp、`availableSkills` / `availableMcp` |
 | PATCH | `/v1/sessions/{id}` | 写 `model` / `title` / `pinned` / skills / mcp |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
 | POST | `/v1/sessions/{id}/prompt` | `202` 开跑；同一 session 未结束再来 **409** |
@@ -38,7 +38,7 @@
 | GET | `/v1/fs` | 列目录（`path` / `home` / `separator` / `crumbs` / `entries`） |
 | POST | `/v1/fs` | 在已有目录下建子文件夹 |
 
-`message_end` 上 await 写 jsonl。`agent_end` 上按阈值自动 compact。SSE 在 run `done` 后先排空剩余事件，再结束。
+`message_end` 上 await 写 jsonl。`agent_end` 上按阈值自动 compact。SSE 在 run `done` 后先排空剩余事件，再结束。MCP 连接在 serve 级池里，prompt 只按 Toggle 绑缓存 schema，工具调用时才 ensure。
 
 ## 循环事件
 

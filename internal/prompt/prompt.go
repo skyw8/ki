@@ -44,6 +44,7 @@ func Build(in Input) (string, []skills.Skill) {
 	b.WriteString("\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\n")
 	b.WriteString("Guidelines:\n- Be concise in your responses\n- Show file paths clearly when working with files\n")
 
+	// Toggle already dropped disabled names; this is listing, not a process.
 	sk := skills.Discover(in.Home, in.CWD, in.Toggle)
 	if hasRead && len(sk) > 0 {
 		b.WriteString("\n\nThe following skills provide specialized instructions for specific tasks.\n")

@@ -4,8 +4,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"ki/internal/session"
+)
+
+type discEnt struct {
+	at     time.Time
+	skills []Skill
+}
+
+var (
+	discMu    sync.Mutex
+	discCache = map[string]discEnt{}
 )
 
 // Skill is one discovered skill.
@@ -13,19 +25,109 @@ type Skill struct {
 	Name        string
 	Description string
 	FilePath    string
+	Source      string
+}
+
+type scanDir struct {
+	path   string
+	source string
+}
+
+// List discovers all skills without applying a session toggle.
+func List(home, cwd string) []Skill {
+	return Discover(home, cwd, session.Toggle{})
 }
 
 // Discover walks the standard skill directories and applies the session toggle.
 func Discover(home, cwd string, toggle session.Toggle) []Skill {
-	var dirs []string
+	var out []Skill
+	for _, s := range listCached(home, cwd) {
+		if toggle.Allowed(s.Name) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func listCached(home, cwd string) []Skill {
+	key := home + "\x00" + cwd
+	discMu.Lock()
+	defer discMu.Unlock()
+	// Short TTL: prompt.Build used to scan twice per message; keep that off the
+	// disk path without pinning a serve-long snapshot if the user adds a skill.
+	if e, ok := discCache[key]; ok && time.Since(e.at) < 30*time.Second {
+		return e.skills
+	}
+	all := scanAll(home, cwd)
+	discCache[key] = discEnt{at: time.Now(), skills: all}
+	return all
+}
+
+func scanAll(home, cwd string) []Skill {
+	seen := map[string]bool{}
+	var out []Skill
+	for _, dir := range scanDirs(home, cwd) {
+		walkSkillRoot(dir.path, func(path string) {
+			s, err := load(path)
+			if err != nil || s.Name == "" || seen[s.Name] {
+				return
+			}
+			s.Source = dir.source
+			seen[s.Name] = true
+			out = append(out, s)
+		})
+	}
+	return out
+}
+
+// walkSkillRoot visits SKILL.md in each top-level package (symlinks followed).
+//
+// Do not filepath.Walk the package: office skills ship large xsd/script trees,
+// and that walk ran on every prompt. The model loads extra files via Read.
+func walkSkillRoot(root string, visit func(path string)) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		p := filepath.Join(root, e.Name())
+		info, err := os.Stat(p)
+		if err != nil || info == nil {
+			continue
+		}
+		if !info.IsDir() {
+			if strings.EqualFold(info.Name(), "skill.md") {
+				visit(p)
+			}
+			continue
+		}
+		dir := p
+		// filepath.Walk does not follow a skill dir that is a symlink
+		// ({KI_HOME}/skills/docx -> elsewhere).
+		if resolved, err := filepath.EvalSymlinks(p); err == nil && resolved != "" {
+			dir = resolved
+		}
+		for _, name := range []string{"SKILL.md", "skill.md"} {
+			md := filepath.Join(dir, name)
+			st, err := os.Stat(md)
+			if err == nil && st != nil && !st.IsDir() {
+				visit(md)
+				break
+			}
+		}
+	}
+}
+
+func scanDirs(home, cwd string) []scanDir {
+	var dirs []scanDir
 	if home != "" {
-		dirs = append(dirs, filepath.Join(home, "skills"))
+		dirs = append(dirs, scanDir{filepath.Join(home, "skills"), "home"})
 	}
 	if user, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, filepath.Join(user, ".agents", "skills"))
+		dirs = append(dirs, scanDir{filepath.Join(user, ".agents", "skills"), "user-agents"})
 	}
 	if cwd != "" {
-		dirs = append(dirs, filepath.Join(cwd, ".ki", "skills"))
+		dirs = append(dirs, scanDir{filepath.Join(cwd, ".ki", "skills"), "project"})
 		// ancestors' .agents/skills up to git root (or cwd only if no git)
 		root := gitRoot(cwd)
 		stop := cwd
@@ -34,7 +136,7 @@ func Discover(home, cwd string, toggle session.Toggle) []Skill {
 		}
 		d := cwd
 		for {
-			dirs = append(dirs, filepath.Join(d, ".agents", "skills"))
+			dirs = append(dirs, scanDir{filepath.Join(d, ".agents", "skills"), "ancestor-agents"})
 			if root == "" || sameDir(d, stop) {
 				break
 			}
@@ -45,38 +147,7 @@ func Discover(home, cwd string, toggle session.Toggle) []Skill {
 			d = parent
 		}
 	}
-	seen := map[string]bool{}
-	var out []Skill
-	for _, dir := range dirs {
-		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil || info.IsDir() {
-				return nil
-			}
-			base := strings.ToLower(info.Name())
-			if base != "skill.md" && !(filepath.Dir(path) == dir && strings.HasSuffix(base, ".md") && strings.Contains(dir, string(filepath.Separator)+"skills")) {
-				// root .md in ~/.ki/skills and .ki/skills count; SKILL.md anywhere
-				if base != "skill.md" {
-					if !strings.HasSuffix(dir, "skills") || filepath.Dir(path) != dir || !strings.HasSuffix(base, ".md") {
-						return nil
-					}
-					if strings.Contains(dir, string(filepath.Join(".agents", "skills"))) {
-						return nil
-					}
-				}
-			}
-			s, err := load(path)
-			if err != nil || s.Name == "" {
-				return nil
-			}
-			if seen[s.Name] || !toggle.Allowed(s.Name) {
-				return nil
-			}
-			seen[s.Name] = true
-			out = append(out, s)
-			return nil
-		})
-	}
-	return out
+	return dirs
 }
 
 func load(path string) (Skill, error) {
