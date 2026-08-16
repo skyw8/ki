@@ -53,10 +53,15 @@ function toolResultText(result: unknown): string {
   return String(result)
 }
 
-function tsMs(m?: Message, fallback?: string): number | undefined {
+// Message timestamps come from two places: the SSE event's message.timestamp
+// (server clock, authoritative) and a fallback. The fallback is either a
+// number (client Date.now() for optimistic nodes, live path) or a string
+// (jsonl entry.timestamp, history path) — accepting both keeps one function
+// for both paths.
+function tsMs(m?: Message, fallback?: string | number): number | undefined {
   if (m?.timestamp) return m.timestamp
-  if (fallback) {
-    const n = Date.parse(fallback)
+  if (fallback != null) {
+    const n = typeof fallback === 'number' ? fallback : Date.parse(fallback)
     if (!Number.isNaN(n)) return n
   }
   return undefined
@@ -346,7 +351,30 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
   if (!m) return
   if (m.role === 'user') {
     const text = messageText(m)
-    if (lastUserText(s) === text) return
+    if (lastUserText(s) === text) {
+      // Same text is already on screen. Two cases:
+      //   1. history replay: loadHistory already read the jsonl entry, which
+      //      has the same timestamp the event carries — nothing to do.
+      //   2. optimistic append: the bubble was drawn before the request was
+      //      sent, so its ts is a client-side guess (or absent). We must NOT
+      //      skip the event entirely: the event's timestamp is the server's
+      //      authoritative one and is what a reload would show. Backfill it so
+      //      the live view matches the reloaded view. (This was the bug where
+      //      the time under a just-sent message only appeared after refresh.)
+      if (m.timestamp) {
+        for (let i = s.nodes.length - 1; i >= 0; i--) {
+          const n = s.nodes[i]
+          if (n.kind === 'user' && n.text === text) {
+            s.nodes[i] = { ...n, ts: m.timestamp }
+            // Keep the trajectory record in sync so the detail panel shows the
+            // same start time as the chat bubble.
+            s.records = s.records.map(r => (r.id === n.id ? { ...r, startedAt: m.timestamp } : r))
+            break
+          }
+        }
+      }
+      return
+    }
     applyMessage(s, m, `live-user-${s.nodes.length}`, undefined)
     return
   }
@@ -368,12 +396,18 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
       }
     }
     const id = `live-asst-${s.nodes.length}`
+    // The assistant has no optimistic placeholder — this event is the first
+    // sight of the reply, so its timestamp is the earliest we can show and
+    // matches what a reload would display. Recording it at start means the
+    // bubble and the trajectory panel show it even while streaming.
+    const ts = m.timestamp
     s.nodes.push({
       kind: 'assistant',
       id,
       text: messageText(m),
       thinking: messageThinking(m),
       streaming: true,
+      ts,
     })
     s.records.push({
       id,
@@ -381,7 +415,9 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
       turn: s.turn || 1,
       preview: previewOf(messageText(m) || messageThinking(m) || '…'),
       running: true,
-      startedAt: Date.now(),
+      // Fall back to the local clock only if the event somehow carries no
+      // timestamp; server time is preferred for cross-client consistency.
+      startedAt: ts ?? Date.now(),
     })
     return
   }
@@ -403,6 +439,10 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
     ...node,
     text,
     thinking,
+    // Streaming deltas (message_update) usually carry no timestamp, so keep
+    // the one from message_start; message_end carries the final authoritative
+    // value, which wins when present.
+    ts: m.timestamp ?? node.ts,
     usage: m.usage ?? node.usage,
     ttftMs: m.ttftMs ?? node.ttftMs,
     latencyMs: m.latencyMs ?? node.latencyMs,
@@ -415,6 +455,7 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
         preview: previewOf(text || thinking || r.preview),
         output: text,
         input: thinking || r.input,
+        startedAt: m.timestamp ?? r.startedAt,
         usage: m.usage ?? r.usage,
         durationMs: m.latencyMs ?? r.durationMs,
         ttftMs: m.ttftMs ?? r.ttftMs,
@@ -451,7 +492,11 @@ function lastStreamingAssistant(s: ViewState): number {
 
 export function appendOptimisticUser(s: ViewState, text: string): ViewState {
   const next = { ...s, nodes: s.nodes.slice(), records: s.records.slice(), busy: true, error: null }
-  applyMessage(next, { role: 'user', content: [{ type: 'text', text }] }, `opt-user-${Date.now()}`)
+  // The bubble is drawn before the server confirms, so there is no real
+  // timestamp yet. Date.now() (a number, not a string) lets tsMs use the local
+  // clock so the time shows immediately; the SSE event later backfills the
+  // server's authoritative timestamp.
+  applyMessage(next, { role: 'user', content: [{ type: 'text', text }] }, Date.now())
   return next
 }
 
