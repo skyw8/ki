@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -132,6 +133,165 @@ func TestRunToolThenSecondTurn(t *testing.T) {
 	}
 	if tr == nil || tr.Text() != "file-ok" {
 		t.Fatalf("tool result: %+v", tr)
+	}
+}
+
+// overflowStreamer fails once with a context-overflow error, then succeeds.
+type overflowStreamer struct {
+	n int
+}
+
+func (s *overflowStreamer) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+	s.n++
+	if s.n == 1 {
+		return types.Message{
+			Role:         "assistant",
+			StopReason:   "error",
+			ErrorMessage: "prompt is too long: 999999 tokens > 200000 maximum",
+		}, ErrContextOverflow
+	}
+	m := types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "retried ok"}}, StopReason: "stop"}
+	_ = emit(AssistantDelta{Type: "text_delta", Delta: m.Text(), Partial: m})
+	return m, nil
+}
+
+func TestRunOverflowRecovery(t *testing.T) {
+	var evs []Event
+	hooked := false
+	_, err := Run(context.Background(), "hello", nil, Config{
+		Streamer: &overflowStreamer{},
+		Hooks: Hooks{
+			OnContextOverflow: func(ctx context.Context) ([]types.Message, error) {
+				hooked = true
+				return []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "compacted"}}}}, nil
+			},
+		},
+	}, func(e Event) error {
+		evs = append(evs, e)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hooked {
+		t.Fatal("OnContextOverflow was not called")
+	}
+	order := EventOrder(evs)
+	has := func(t EventType) bool {
+		for _, s := range order {
+			if s == string(t) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, need := range []EventType{CompactionStart, CompactionEnd, AgentEnd} {
+		if !has(need) {
+			t.Fatalf("missing %s in %v", need, order)
+		}
+	}
+	var asst *types.Message
+	for _, e := range evs {
+		if e.Type == MessageEnd && e.Message != nil && e.Message.Role == "assistant" {
+			asst = e.Message
+		}
+	}
+	if asst == nil || asst.Text() != "retried ok" {
+		t.Fatalf("retried assistant: %+v", asst)
+	}
+	// Compaction events must be ordered around the recovery, before the retry.
+	iStart, iEnd := -1, -1
+	for i, e := range evs {
+		if e.Type == CompactionStart {
+			iStart = i
+		}
+		if e.Type == CompactionEnd && e.OK {
+			iEnd = i
+		}
+	}
+	if iStart < 0 || iEnd < iStart {
+		t.Fatalf("compaction events misplaced: %v", order)
+	}
+}
+
+// alwaysOverflowStreamer always fails with overflow; the recovery must run at
+// most once (pi _overflowRecoveryAttempted) and then give up.
+type alwaysOverflowStreamer struct{}
+
+func (alwaysOverflowStreamer) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+	return types.Message{
+		Role:         "assistant",
+		StopReason:   "error",
+		ErrorMessage: "exceeds the context window of this model",
+	}, ErrContextOverflow
+}
+
+func TestRunOverflowRecoveryRunsOnce(t *testing.T) {
+	hooks := 0
+	_, err := Run(context.Background(), "hello", nil, Config{
+		Streamer: alwaysOverflowStreamer{},
+		Hooks: Hooks{
+			OnContextOverflow: func(ctx context.Context) ([]types.Message, error) {
+				hooks++
+				return []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "c"}}}}, nil
+			},
+		},
+	}, func(e Event) error { return nil })
+	if !errors.Is(err, ErrContextOverflow) {
+		t.Fatalf("err = %v, want ErrContextOverflow", err)
+	}
+	if hooks != 1 {
+		t.Fatalf("OnContextOverflow called %d times, want 1", hooks)
+	}
+}
+
+// lengthToolStreamer returns a truncated (length) message with a tool call on
+// the first attempt, then a normal reply (model re-issuing after rejection).
+type lengthToolStreamer struct {
+	n int
+}
+
+func (s *lengthToolStreamer) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+	s.n++
+	if s.n == 1 {
+		m := types.Message{
+			Role: "assistant",
+			Content: []types.Content{{
+				Type: "toolCall", ID: "1", Name: "Read", Arguments: map[string]any{"file_path": "/a"},
+			}},
+			StopReason: "length",
+		}
+		_ = emit(AssistantDelta{Type: "toolcall_delta", Partial: m})
+		return m, nil
+	}
+	m := types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "done after retry"}}, StopReason: "stop"}
+	_ = emit(AssistantDelta{Type: "text_delta", Delta: m.Text(), Partial: m})
+	return m, nil
+}
+
+func TestRunLengthRejectsToolCalls(t *testing.T) {
+	var evs []Event
+	_, err := Run(context.Background(), "read it", nil, Config{
+		Streamer: &lengthToolStreamer{},
+		Tools:    []Tool{oneTool{}},
+	}, func(e Event) error {
+		evs = append(evs, e)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tr *types.Message
+	for _, e := range evs {
+		if e.Type == MessageEnd && e.Message != nil && e.Message.Role == "toolResult" {
+			tr = e.Message
+		}
+	}
+	if tr == nil {
+		t.Fatal("missing rejected toolResult")
+	}
+	if !tr.IsError || !strings.Contains(tr.Text(), "not executed") {
+		t.Fatalf("toolResult should be a rejection: %+v", tr)
 	}
 }
 

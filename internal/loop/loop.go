@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -24,6 +25,8 @@ const (
 	ToolExecutionStart  EventType = "tool_execution_start"
 	ToolExecutionUpdate EventType = "tool_execution_update"
 	ToolExecutionEnd    EventType = "tool_execution_end"
+	CompactionStart     EventType = "compaction_start"
+	CompactionEnd       EventType = "compaction_end"
 )
 
 // Event is a loop event (pi field names).
@@ -41,6 +44,8 @@ type Event struct {
 	IsError               bool            `json:"isError,omitempty"`
 	System                string          `json:"system,omitempty"`
 	Tools                 []ToolSpec      `json:"tools,omitempty"`
+	Reason                string          `json:"reason,omitempty"`
+	OK                    bool            `json:"ok,omitempty"`
 }
 
 // AssistantDelta is a streaming increment (pi assistantMessageEvent).
@@ -95,8 +100,16 @@ type Hooks struct {
 	TransformContext func(ctx context.Context, msgs []types.Message) ([]types.Message, error)
 	BeforeTool       func(ctx context.Context, name string, args map[string]any) (map[string]any, bool, string, error)
 	AfterTool        func(ctx context.Context, name string, args map[string]any, res ToolResult) (ToolResult, error)
-	BeforeCompaction func(ctx context.Context) error
+	// OnContextOverflow compacts and returns the new context when a request
+	// failed with a context-overflow error. Runs at most once per Run (the
+	// compact-and-retry guard), inside the same Run so events are not replayed.
+	OnContextOverflow func(ctx context.Context) ([]types.Message, error)
 }
+
+// ErrContextOverflow marks a request failure caused by context overflow.
+// streamWithRetry does not retry it (a resend of the same oversized prompt
+// cannot succeed); Run recovers via Hooks.OnContextOverflow instead.
+var ErrContextOverflow = errors.New("context overflow")
 
 // Config is loop runtime options.
 type Config struct {
@@ -160,6 +173,7 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 	}
 
 	firstTurn := true
+	overflowRecovered := false // compact-and-retry runs at most once per Run (pi _overflowRecoveryAttempted)
 	for {
 		if ctx.Err() != nil {
 			_ = emit(Event{Type: AgentEnd, Messages: newMsgs})
@@ -194,6 +208,21 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 			API:      cfg.API,
 		}, emit)
 		if err != nil {
+			// Context overflow: compact once (server-side, via hook) and retry
+			// with the new context inside the same Run. The failed assistant
+			// message stays in session history but is dropped by provider
+			// replayable on the retry (skipAssistant skips stopReason error).
+			if errors.Is(err, ErrContextOverflow) && !overflowRecovered && cfg.Hooks.OnContextOverflow != nil {
+				overflowRecovered = true
+				_ = emit(Event{Type: CompactionStart, Reason: "overflow"})
+				newHistory, herr := cfg.Hooks.OnContextOverflow(ctx)
+				if herr == nil {
+					history = newHistory
+					_ = emit(Event{Type: CompactionEnd, Reason: "overflow", OK: true})
+					continue
+				}
+				_ = emit(Event{Type: CompactionEnd, Reason: "overflow", OK: false})
+			}
 			_ = emit(Event{Type: AgentEnd, Messages: newMsgs})
 			return newMsgs, err
 		}
@@ -203,7 +232,14 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 		calls := asst.ToolCalls()
 		var results []types.Message
 		if len(calls) > 0 {
-			results = executeTools(ctx, cfg, calls, emit)
+			if asst.StopReason == "length" {
+				// Output hit the token limit: streamed tool-call arguments may be
+				// truncated. Refuse to run them so the model re-issues (pi
+				// failToolCallsFromTruncatedMessage).
+				results = rejectToolCalls(calls, emit)
+			} else {
+				results = executeTools(ctx, cfg, calls, emit)
+			}
 			for _, r := range results {
 				rr := r
 				if err := emit(Event{Type: MessageStart, Message: &rr}); err != nil {
@@ -261,6 +297,14 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				_ = emit(Event{Type: MessageEnd, Message: &asst})
 				return asst, err
 			}
+			// Context overflow (provider 4xx carries the error message on asst):
+			// a backoff retry of the same oversized prompt cannot succeed. Emit
+			// the end marker and let Run recover via Hooks.OnContextOverflow.
+			if asst.StopReason == "error" && IsContextOverflow(asst) {
+				last = asst
+				_ = emit(Event{Type: MessageEnd, Message: &asst})
+				return last, ErrContextOverflow
+			}
 			continue
 		}
 		asst.LatencyMs = time.Since(started).Milliseconds()
@@ -282,6 +326,12 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 		if asst.StopReason == "error" {
 			last = asst
 			lastErr = fmt.Errorf("%s", asst.ErrorMessage)
+			// An overflow resend of the same oversized prompt cannot succeed;
+			// let Run recover via Hooks.OnContextOverflow instead of burning
+			// MaxRetries on backoff.
+			if IsContextOverflow(asst) {
+				return last, ErrContextOverflow
+			}
 			continue
 		}
 		return asst, nil
@@ -359,6 +409,29 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 		}(i)
 	}
 	wg.Wait()
+	return out
+}
+
+// rejectToolCalls turns every tool call into an error result without executing
+// it. Used when an assistant message was truncated by the output token limit:
+// streamed arguments may be incomplete, so none are safe to run (pi
+// failToolCallsFromTruncatedMessage). The model sees the errors and re-issues.
+func rejectToolCalls(calls []types.Content, emit func(Event) error) []types.Message {
+	out := make([]types.Message, 0, len(calls))
+	for _, c := range calls {
+		msg := types.Message{
+			Role:       "toolResult",
+			ToolCallID: c.ID,
+			ToolName:   c.Name,
+			Content: []types.Content{{Type: "text", Text: fmt.Sprintf(
+				"Tool call %q was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.", c.Name)}},
+			IsError:    true,
+			Timestamp:  time.Now().UnixMilli(),
+		}
+		_ = emit(Event{Type: ToolExecutionStart, ToolCallID: c.ID, ToolName: c.Name, Args: c.Arguments})
+		_ = emit(Event{Type: ToolExecutionEnd, ToolCallID: c.ID, ToolName: c.Name, IsError: true})
+		out = append(out, msg)
+	}
 	return out
 }
 

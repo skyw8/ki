@@ -4,30 +4,41 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"ki/internal/config"
 	"ki/internal/session"
 	"ki/internal/types"
 )
 
-// Summarizer produces a structured summary of older messages.
+// Summarizer produces a structured summary. compact builds the full prompt
+// (system + user), aligned with pi: SUMMARIZATION / UPDATE / TURN_PREFIX.
 type Summarizer interface {
-	Summarize(ctx context.Context, transcript string) (string, *types.Usage, error)
+	Summarize(ctx context.Context, system, user string) (string, *types.Usage, error)
 }
 
-// EstimateTokens is a coarse char/4 estimate.
-func EstimateTokens(msgs []types.Message) int {
+// EstimateTokens estimates context tokens for messages, preferring real usage
+// (input + cacheRead, aligned with pi calculateContextTokens) from the newest
+// assistant message. recentCompaction is the unix-ms timestamp of the latest
+// compaction entry: usage from a message older than it reflects the
+// pre-compaction (larger) context and would falsely re-trigger compaction right
+// after one finished — fall back to the char/4 lower-bound estimate instead.
+func EstimateTokens(msgs []types.Message, recentCompaction int64) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role != "assistant" || m.Usage == nil {
+			continue
+		}
+		if recentCompaction == 0 || m.Timestamp > recentCompaction {
+			if t := m.Usage.Input + m.Usage.CacheRead; t > 0 {
+				return t
+			}
+		}
+		break
+	}
 	n := 0
 	for _, m := range msgs {
 		n += (len(m.Text()) + 3) / 4
-		if m.Usage != nil && m.Usage.TotalTokens > n {
-			// prefer last assistant total as context size when present
-		}
-	}
-	if len(msgs) > 0 {
-		if a := msgs[len(msgs)-1]; a.Role == "assistant" && a.Usage != nil && a.Usage.TotalTokens > 0 {
-			return a.Usage.TotalTokens
-		}
 	}
 	return n
 }
@@ -43,64 +54,357 @@ func ShouldRun(tokens, contextWindow int, cfg config.Compaction) bool {
 	return tokens > contextWindow-cfg.ReserveTokens
 }
 
-// Run summarizes older entries, appends a compaction record, and returns the new system-facing history.
-func Run(ctx context.Context, s *session.Session, sum Summarizer, cfg config.Compaction) (session.Entry, error) {
-	entries := s.Entries()
-	msgs := s.MessagesToLeaf()
-	tokensBefore := EstimateTokens(msgs)
+// Preparation is the pure-function output of Prepare, ready for Execute
+// (aligned with pi CompactionPreparation: cut, segments, iterative summary).
+type Preparation struct {
+	FirstKeptEntryID    string
+	MessagesToSummarize []types.Message
+	TurnPrefixMessages  []types.Message
+	RetainedTail        []types.Message
+	IsSplitTurn         bool
+	TokensBefore        int
+	PreviousSummary     string
+}
+
+// Prepare computes everything needed for one compaction without calling the
+// model or writing anything. entries must be the leaf-chain entries
+// (root → leaf, session.LeafEntries). It finds the previous compaction for the
+// incremental summary, virtually expands its retained tail into the cut search
+// (pi virtualRetainedEntries), picks a cut point that never splits a tool
+// result, and detects a split turn (cut inside a turn → prefix summarized
+// separately).
+func Prepare(entries []session.Entry, cfg config.Compaction) (*Preparation, error) {
 	keep := cfg.KeepRecentTokens
 	if keep <= 0 {
 		keep = 20000
 	}
-	// Walk newest→oldest until we have ~keep tokens; cut there.
-	acc := 0
-	cut := 0
+	prevCompIdx := -1
 	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].Type != "message" || entries[i].Message == nil {
-			continue
-		}
-		acc += (len(entries[i].Message.Text()) + 3) / 4
-		if acc >= keep {
-			cut = i
+		if entries[i].Type == "compaction" {
+			prevCompIdx = i
 			break
 		}
 	}
-	firstKept := ""
-	if cut < len(entries) {
-		firstKept = entries[cut].ID
-	}
-	var old []string
-	for i := 0; i < cut; i++ {
-		if entries[i].Type == "message" && entries[i].Message != nil {
-			old = append(old, entries[i].Message.Role+": "+entries[i].Message.Text())
+	previousSummary := ""
+	lastCompactionAt := int64(0)
+	var virtual []session.Entry
+	if prevCompIdx >= 0 {
+		previousSummary = entries[prevCompIdx].Summary
+		if t, err := parseTime(entries[prevCompIdx].Timestamp); err == nil {
+			lastCompactionAt = t
+		}
+		for i, m := range entries[prevCompIdx].RetainedTail {
+			m := m
+			virtual = append(virtual, session.Entry{
+				Type:    "message",
+				ID:      fmt.Sprintf("%s:retained:%d", entries[prevCompIdx].ID, i),
+				Message: &m,
+			})
 		}
 	}
-	transcript := strings.Join(old, "\n")
-	if transcript == "" {
-		transcript = "(empty)"
+	compactable := append(append([]session.Entry{}, virtual...), entries[prevCompIdx+1:]...)
+
+	// tokensBefore: previous summary + all messages, usage-aware with the
+	// stale guard (usage from before the last compaction is ignored).
+	msgs := []types.Message{}
+	if previousSummary != "" {
+		msgs = append(msgs, types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "Previous conversation summary:\n" + previousSummary}}})
 	}
-	summary, usage, err := sum.Summarize(ctx, transcript)
+	for _, e := range compactable {
+		if e.Type == "message" && e.Message != nil {
+			msgs = append(msgs, *e.Message)
+		}
+	}
+	tokensBefore := EstimateTokens(msgs, lastCompactionAt)
+
+	// Valid cut points: user/assistant messages; never a toolResult (a kept
+	// toolResult without its toolCall is semantically broken, pi
+	// findValidCutPoints).
+	var cutPoints []int
+	for i, e := range compactable {
+		if e.Type == "message" && e.Message != nil && e.Message.Role != "toolResult" {
+			cutPoints = append(cutPoints, i)
+		}
+	}
+	if len(cutPoints) == 0 {
+		return &Preparation{TokensBefore: tokensBefore, PreviousSummary: previousSummary}, nil
+	}
+
+	// Walk newest → oldest until the recent-token budget is filled; cut at the
+	// earliest valid cut point not older than the budget position.
+	acc := 0
+	cutIndex := cutPoints[0]
+	for i := len(compactable) - 1; i >= 0; i-- {
+		e := compactable[i]
+		if e.Type != "message" || e.Message == nil {
+			continue
+		}
+		acc += (len(e.Message.Text()) + 3) / 4
+		if acc >= keep {
+			for _, c := range cutPoints {
+				if c >= i {
+					cutIndex = c
+					break
+				}
+			}
+			break
+		}
+	}
+	// Never walk the cut back past a message or compaction boundary.
+	for cutIndex > 0 {
+		prev := compactable[cutIndex-1]
+		if prev.Type == "compaction" || prev.Type == "message" {
+			break
+		}
+		cutIndex--
+	}
+
+	// Map the cut index back to a real entry id (virtual entries map into the
+	// entries slice right after the previous compaction).
+	var firstKept string
+	switch {
+	case cutIndex < len(virtual):
+		firstKept = entries[prevCompIdx+1+cutIndex].ID
+	case cutIndex >= len(virtual):
+		firstKept = entries[prevCompIdx+1+cutIndex-len(virtual)].ID
+	}
+
+	// Split turn: cut lands inside a turn (cut entry is not a user message).
+	cutEntry := compactable[cutIndex]
+	isUserCut := cutEntry.Type == "message" && cutEntry.Message != nil && cutEntry.Message.Role == "user"
+	historyEnd := cutIndex
+	isSplitTurn := false
+	if !isUserCut {
+		for i := cutIndex; i >= 0; i-- {
+			if e := compactable[i]; e.Type == "message" && e.Message != nil && e.Message.Role == "user" {
+				historyEnd = i
+				isSplitTurn = true
+				break
+			}
+		}
+	}
+
+	var messagesToSummarize, turnPrefix, retainedTail []types.Message
+	collect := func(from, to int) []types.Message {
+		var out []types.Message
+		for i := from; i < to; i++ {
+			if e := compactable[i]; e.Type == "message" && e.Message != nil {
+				out = append(out, *e.Message)
+			}
+		}
+		return out
+	}
+	messagesToSummarize = collect(0, historyEnd)
+	if isSplitTurn {
+		turnPrefix = collect(historyEnd, cutIndex)
+	}
+	retainedTail = collect(cutIndex, len(compactable))
+
+	return &Preparation{
+		FirstKeptEntryID:    firstKept,
+		MessagesToSummarize: messagesToSummarize,
+		TurnPrefixMessages:  turnPrefix,
+		RetainedTail:        retainedTail,
+		IsSplitTurn:         isSplitTurn,
+		TokensBefore:        tokensBefore,
+		PreviousSummary:     previousSummary,
+	}, nil
+}
+
+// Execute generates the compaction summary for a Preparation (the only stage
+// that calls the model). Returns the summary text and combined usage.
+func Execute(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.Compaction) (string, *types.Usage, error) {
+	var summary string
+	var usage *types.Usage
+	if prep.IsSplitTurn && len(prep.TurnPrefixMessages) > 0 {
+		historyText := "No prior history."
+		if len(prep.MessagesToSummarize) > 0 {
+			s, u, err := summarize(ctx, sum, cfg, prep.MessagesToSummarize, prep.PreviousSummary, false)
+			if err != nil {
+				return "", nil, err
+			}
+			historyText = s
+			usage = u
+		}
+		ts, u, err := summarize(ctx, sum, cfg, prep.TurnPrefixMessages, "", true)
+		if err != nil {
+			return "", nil, err
+		}
+		summary = historyText + "\n\n---\n\n**Turn Context (split turn):**\n\n" + ts
+		usage = combineUsage(usage, u)
+	} else {
+		s, u, err := summarize(ctx, sum, cfg, prep.MessagesToSummarize, prep.PreviousSummary, false)
+		if err != nil {
+			return "", nil, err
+		}
+		summary, usage = s, u
+	}
+	return summary, usage, nil
+}
+
+// Run is the one-step convenience entry (used by the /compact endpoint):
+// Prepare + Execute + AppendCompaction.
+func Run(ctx context.Context, s *session.Session, sum Summarizer, cfg config.Compaction) (session.Entry, error) {
+	prep, err := Prepare(s.LeafEntries(), cfg)
 	if err != nil {
 		return session.Entry{}, err
 	}
-	return s.AppendCompaction(summary, firstKept, tokensBefore, usage)
+	summary, usage, err := Execute(ctx, prep, sum, cfg)
+	if err != nil {
+		return session.Entry{}, err
+	}
+	return s.AppendCompaction(summary, prep.FirstKeptEntryID, prep.TokensBefore, usage, prep.RetainedTail)
+}
+
+// summarize builds the prompt (aligned with pi prompts) and calls the model.
+// splitTurn selects the turn-prefix prompt; otherwise previousSummary selects
+// the incremental UPDATE prompt.
+func summarize(ctx context.Context, sum Summarizer, cfg config.Compaction, msgs []types.Message, previousSummary string, splitTurn bool) (string, *types.Usage, error) {
+	transcript := strings.Builder{}
+	for _, m := range msgs {
+		transcript.WriteString(m.Role + ": " + m.Text() + "\n")
+	}
+	t := transcript.String()
+	if t == "" {
+		t = "(empty)"
+	}
+	system := SystemPrompt
+	user := "<conversation>\n" + t + "\n</conversation>\n\n"
+	switch {
+	case splitTurn:
+		user += TurnPrefixSummarizationPrompt
+	case previousSummary != "":
+		system += "\n\n" + UpdateSystemPrompt
+		user += "<previous-summary>\n" + previousSummary + "\n</previous-summary>\n\n" + UpdateSummarizationPrompt
+	default:
+		user += SummarizationPrompt
+	}
+	return sum.Summarize(ctx, system, user)
+}
+
+func combineUsage(a, b *types.Usage) *types.Usage {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return &types.Usage{
+		Input:       a.Input + b.Input,
+		Output:      a.Output + b.Output,
+		CacheRead:   a.CacheRead + b.CacheRead,
+		CacheWrite:  a.CacheWrite + b.CacheWrite,
+		TotalTokens: a.TotalTokens + b.TotalTokens,
+	}
+}
+
+func parseTime(ts string) (int64, error) {
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return 0, err
+	}
+	return t.UnixMilli(), nil
 }
 
 // Static is a test summarizer.
 type Static struct{ Text string }
 
 // Summarize implements Summarizer.
-func (s Static) Summarize(ctx context.Context, transcript string) (string, *types.Usage, error) {
+func (s Static) Summarize(ctx context.Context, system, user string) (string, *types.Usage, error) {
 	t := s.Text
 	if t == "" {
 		t = "Summary of earlier conversation."
 	}
-	return t + "\n" + fmt.Sprintf("(source chars=%d)", len(transcript)), &types.Usage{Output: 20, TotalTokens: 20}, nil
+	return t + "\n" + fmt.Sprintf("(source chars=%d)", len(user)), &types.Usage{Output: 20, TotalTokens: 20}, nil
 }
 
 const SystemPrompt = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`
+
+// UpdateSystemPrompt is appended to SystemPrompt for incremental summaries
+// (pi UPDATE_SUMMARIZATION_PROMPT semantics).
+const UpdateSystemPrompt = `
+Update the existing summary with the NEW conversation messages provided in the <conversation> tags, preserving the <previous-summary> content. PRESERVE all existing information, ADD new progress, decisions, and context, and PRESERVE exact file paths, function names, and error messages.`
+
+const SummarizationPrompt = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+
+Use this EXACT format:
+
+## Goal
+[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned by user]
+- [Or "(none)" if none were mentioned]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Ordered list of what should happen next]
+
+## Critical Context
+- [Any data, examples, or references needed to continue]
+- [Or "(none)" if not applicable]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages.`
+
+const UpdateSummarizationPrompt = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+
+Use this EXACT format:
+
+## Goal
+[Preserve existing goals, add new ones if the task expanded]
+
+## Constraints & Preferences
+- [Preserve existing, add new ones discovered]
+
+## Progress
+### Done
+- [x] [Include previously done items AND newly completed items]
+
+### In Progress
+- [ ] [Current work - update based on progress]
+
+### Blocked
+- [Current blockers - remove if resolved]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale] (preserve all previous, add new)
+
+## Next Steps
+1. [Update based on current state]
+
+## Critical Context
+- [Preserve important context, add new if needed]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages.`
+
+const TurnPrefixSummarizationPrompt = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+
+Summarize the prefix to provide context for the retained suffix:
+
+## Original Request
+[What did the user ask for in this turn?]
+
+## Early Progress
+- [Key decisions and work done in the prefix]
+
+## Context for Suffix
+- [Information needed to understand the kept suffix]
+
+Be concise. Focus on what's needed to understand the kept suffix.`
 
 // StreamSummarizer asks a Streamer to summarize.
 type StreamSummarizer struct {
@@ -108,9 +412,9 @@ type StreamSummarizer struct {
 }
 
 // Summarize implements Summarizer.
-func (s StreamSummarizer) Summarize(ctx context.Context, transcript string) (string, *types.Usage, error) {
+func (s StreamSummarizer) Summarize(ctx context.Context, system, user string) (string, *types.Usage, error) {
 	if s.Stream == nil {
-		return Static{}.Summarize(ctx, transcript)
+		return Static{}.Summarize(ctx, system, user)
 	}
-	return s.Stream(ctx, SystemPrompt, "Summarize the following conversation:\n\n"+transcript)
+	return s.Stream(ctx, system, user)
 }

@@ -625,11 +625,12 @@ func (l *Live) postStream(ctx context.Context, url string, body any, hdr http.He
 	defer res.Body.Close()
 	if res.StatusCode >= 400 {
 		b, _ := io.ReadAll(res.Body)
+		msg := fmt.Sprintf("http %d: %s", res.StatusCode, truncate(string(b), 500))
 		return types.Message{
 			Role:         "assistant",
 			StopReason:   "error",
-			ErrorMessage: fmt.Sprintf("http %d: %s", res.StatusCode, truncate(string(b), 500)),
-		}, fmt.Errorf("http %d", res.StatusCode)
+			ErrorMessage: msg,
+		}, fmt.Errorf("%s", msg)
 	}
 	acc := types.Message{Role: "assistant"}
 	sc := bufio.NewScanner(res.Body)

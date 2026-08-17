@@ -72,6 +72,7 @@ const KIND_LABEL: Record<TrajKind, string> = {
   assistant: 'ASSISTANT',
   tool: 'TOOL',
   compacted: 'COMPACTED',
+  compact: 'COMPACT',
   system: 'SYSTEM',
 }
 

@@ -542,7 +542,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	// only repeated Discover on the same turn.
 	sys, _ := prompt.Build(prompt.Input{Home: cfg.Home, CWD: sess.Header.CWD, Tools: tls, Toggle: sess.Config.Skills})
 
-	emit := func(ev loop.Event) error {
+	var emit func(loop.Event) error
+	emit = func(ev loop.Event) error {
 		if ev.Type == loop.MessageEnd && ev.Message != nil {
 			if _, err := sess.AppendMessage(*ev.Message); err != nil {
 				return err
@@ -557,15 +558,45 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 				return err
 			}
 		}
+		// Compaction progress is persisted too (decision: jsonl + SSE) so a
+		// session replay shows when compaction happened.
+		if ev.Type == loop.CompactionStart || ev.Type == loop.CompactionEnd {
+			if _, err := sess.AppendEvent(string(ev.Type), ev.Reason, ev.OK); err != nil {
+				return err
+			}
+		}
 		st.mu.Lock()
 		st.evs = append(st.evs, ev)
 		st.wait.Broadcast()
 		st.mu.Unlock()
 		if ev.Type == loop.AgentEnd {
-			s.maybeCompact(ctx, sess, info.ContextWindow)
+			// D: threshold check after the run finished.
+			if s.shouldCompact(sess, info.ContextWindow) {
+				_ = emit(loop.Event{Type: loop.CompactionStart, Reason: "threshold"})
+				if _, err := s.compactSession(ctx, sess); err != nil {
+					slog.Warn("auto compact", "err", err)
+					_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "threshold", OK: false})
+				} else {
+					_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "threshold", OK: true})
+				}
+			}
 		}
 		return nil
 	}
+
+	// A: preflight — a resumed session or an already-large context may exceed
+	// the window before this run starts (pi "catches aborted responses").
+	// Not blocking: a failed compact only warns.
+	if s.shouldCompact(sess, info.ContextWindow) {
+		_ = emit(loop.Event{Type: loop.CompactionStart, Reason: "preflight"})
+		if _, err := s.compactSession(ctx, sess); err != nil {
+			slog.Warn("preflight compact", "err", err)
+			_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "preflight", OK: false})
+		} else {
+			_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "preflight", OK: true})
+		}
+	}
+
 	_, err = loop.Run(ctx, text, sess.MessagesToLeaf(), loop.Config{
 		Streamer:   s.streamer,
 		Tools:      tls,
@@ -576,6 +607,14 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		MaxRetries: 5,
 		BaseDelay:  2 * time.Second,
 		Parallel:   true,
+		Hooks: loop.Hooks{
+			// C: compact-and-retry on context overflow, same Run (no event
+			// replay). The failed assistant stays in history but provider
+			// replayable drops stopReason-error turns on the retry.
+			OnContextOverflow: func(ctx context.Context) ([]types.Message, error) {
+				return s.compactSession(ctx, sess)
+			},
+		},
 	}, emit)
 	st.err = err
 }
@@ -595,16 +634,27 @@ func (s *Server) summarizer() compact.Summarizer {
 	}
 }
 
-func (s *Server) maybeCompact(ctx context.Context, sess *session.Session, window int) {
+func (s *Server) shouldCompact(sess *session.Session, window int) bool {
 	msgs := sess.MessagesToLeaf()
-	tok := compact.EstimateTokens(msgs)
-	if !compact.ShouldRun(tok, window, s.cfg.Compaction) {
-		return
-	}
-	_, err := compact.Run(ctx, sess, s.summarizer(), s.cfg.Compaction)
+	return compact.ShouldRun(compact.EstimateTokens(msgs, sess.LastCompactionAt()), window, s.cfg.Compaction)
+}
+
+// compactSession runs one compaction (Prepare + Execute + AppendCompaction)
+// and returns the new model-facing context. Shared by preflight (A), overflow
+// recovery (C) and threshold (D) paths.
+func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]types.Message, error) {
+	prep, err := compact.Prepare(sess.LeafEntries(), s.cfg.Compaction)
 	if err != nil {
-		slog.Warn("auto compact", "err", err)
+		return nil, err
 	}
+	summary, usage, err := compact.Execute(ctx, prep, s.summarizer(), s.cfg.Compaction)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := sess.AppendCompaction(summary, prep.FirstKeptEntryID, prep.TokensBefore, usage, prep.RetainedTail); err != nil {
+		return nil, err
+	}
+	return sess.MessagesToLeaf(), nil
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {

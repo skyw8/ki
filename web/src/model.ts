@@ -145,10 +145,44 @@ function applyEntry(s: ViewState, e: Entry) {
       usage: e.usage,
       startedAt: tsMs(undefined, e.timestamp),
     })
+    return
+  }
+  // compaction_start/end entries are persisted alongside SSE; show them as a
+  // compact record on replay.
+  if (e.type === 'compaction_start' || e.type === 'compaction_end') {
+    applyCompactEvent(s, e.id, e.type, e.details, e.timestamp)
   }
 }
 
-function applyMessage(s: ViewState, m: Message, id: string, stamp?: string) {
+function compactReason(details?: unknown): string {
+  if (details && typeof details === 'object') {
+    const d = details as { reason?: string; ok?: boolean }
+    return d.reason || ''
+  }
+  return ''
+}
+
+function applyCompactEvent(s: ViewState, id: string, type: string, details?: unknown, stamp?: string) {
+  const reason = compactReason(details)
+  if (type === 'compaction_start') {
+    s.records.push({
+      id,
+      kind: 'compact',
+      turn: s.turn || 1,
+      preview: `Compacting (${reason || 'auto'})…`,
+      running: true,
+      startedAt: tsMs(undefined, stamp),
+    })
+    return
+  }
+  const rec = s.records.find(r => r.id === id)
+  if (rec && rec.kind === 'compact') {
+    rec.running = false
+    rec.preview = `Compacted (${reason || 'auto'})`
+  }
+}
+
+function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | number) {
   if (m.role === 'user') {
     const text = messageText(m)
     s.turn += 1
@@ -330,6 +364,28 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
         }
       }
       break
+    case 'compaction_start':
+    case 'compaction_end': {
+      // id is not part of the wire event; match by kind+order on the live path.
+      const stamp = Date.now()
+      if (ev.type === 'compaction_start') {
+        next.records.push({
+          id: `compact-live-${stamp}`,
+          kind: 'compact',
+          turn: next.turn || 1,
+          preview: `Compacting (${ev.reason || 'auto'})…`,
+          running: true,
+          startedAt: stamp,
+        })
+      } else {
+        const rec = [...next.records].reverse().find(r => r.kind === 'compact' && r.running)
+        if (rec) {
+          rec.running = false
+          rec.preview = `Compacted (${ev.reason || 'auto'})${ev.ok === false ? ' (failed)' : ''}`
+        }
+      }
+      break
+    }
     case 'tool_execution_end':
       if (ev.toolCallId) {
         patchTool(next, ev.toolCallId, {
@@ -496,7 +552,7 @@ export function appendOptimisticUser(s: ViewState, text: string): ViewState {
   // timestamp yet. Date.now() (a number, not a string) lets tsMs use the local
   // clock so the time shows immediately; the SSE event later backfills the
   // server's authoritative timestamp.
-  applyMessage(next, { role: 'user', content: [{ type: 'text', text }] }, Date.now())
+  applyMessage(next, { role: 'user', content: [{ type: 'text', text }] }, `opt-user-${Date.now()}`, Date.now())
   return next
 }
 
