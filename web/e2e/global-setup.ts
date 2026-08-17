@@ -63,7 +63,18 @@ function dashscopeKey(): string {
 }
 
 export default async function globalSetup(): Promise<void> {
-  if (process.env.KI_SKIP_SERVER === '1') return
+  if (process.env.KI_SKIP_SERVER === '1') {
+    // The Go harness (go test ./e2e) started the server itself and set
+    // KI_HOME; keep the fixture home discoverable so specs can still drop
+    // skills / .mcp.json fixtures next to the real session dir.
+    writeFileSync(statePath, JSON.stringify({
+      pid: 0,
+      home: process.env.KI_HOME ?? '',
+      addr: '',
+      cwd: '',
+    }))
+    return
+  }
 
   const live = process.env.KI_LIVE === '1'
   const addr = process.env.KI_SERVE_ADDR || (live ? '127.0.0.1:19833' : '127.0.0.1:19832')

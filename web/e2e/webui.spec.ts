@@ -135,7 +135,13 @@ test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }
   await page.getByTestId('composer-input').fill(tall)
   await page.getByTestId('composer-send').click()
   await expect(page.getByTestId('user-bubble').nth(1)).toBeVisible()
+  // Long user bubbles are clamped to 6 lines; expand so the chat overflows.
+  await page.getByTestId('user-bubble-toggle').click()
+  await expect(page.getByTestId('user-bubble-toggle')).toHaveAttribute('aria-label', '收起')
   const scroll = page.getByTestId('chat-scroll')
+  // Expanding grows scrollHeight without firing a scroll event, so jump to the
+  // bottom first, then up, to make the container report a real scroll position.
+  await scroll.evaluate(el => { el.scrollTop = el.scrollHeight })
   await scroll.evaluate(el => { el.scrollTop = 0 })
   await expect(page.getByTestId('to-bottom')).toBeVisible()
   await page.getByTestId('to-bottom').click()
