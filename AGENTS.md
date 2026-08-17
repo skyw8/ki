@@ -35,21 +35,32 @@ ki/
 
 ## docs
 
-Cross-package notes are in `docs/`. Package invariants are in each `doc.go` (`go doc ./internal/session`). Keep this file free of `todo` paths and of per-file inventories under those directories.
+- Cross-package notes live in `docs/`, one file per topic:
+  - `architecture.md` — prompt flow across cli → server → loop
+  - `session.md` — session dir layout, append-only jsonl tree
+  - `provider.md` — provider protocol shapes (Completions / Responses / Anthropic)
+  - `tools.md` — tool contract (names/schemas follow Claude Code, results follow pi)
+  - `webui.md` — same-origin WebUI serving contract
+  - `workspace.md` — workspace registry (`{KI_HOME}/workspaces.json`)
+  - `postmortem/` — retrospective entries
+- Package invariants are in each package's `doc.go` (`go doc ./internal/session`). Keep this file free of `todo` paths and of per-file inventories under those directories.
 
-Dev run: `scripts/run.sh` builds `./ki` and starts `ki serve` inside a tmux session named `ki`: window `server` runs the daemon, window `cli` is a shell for operating it. Re-run to rebuild and respawn; real tests operate through the script or `tmux attach -t ki`. `--web` rebuilds `web/dist`; `--fake` uses the canned model.
+## guide
 
-Fake model: `go test ./e2e` (`KI_FAKE=1`; CLI main path, `serve`, `-d`, two sessions in parallel, WebUI Playwright).
+- Dev run: `scripts/run.sh` builds `./ki` and starts `ki serve` inside a tmux session named `ki`: window `server` runs the daemon, window `cli` is a shell for operating it. Re-run to rebuild and respawn; real tests operate through the script or `tmux attach -t ki`. `--web` rebuilds `web/dist`; `--fake` uses the canned model.
+
+- Fake model: `go test ./e2e` (`KI_FAKE=1`; CLI main path, `serve`, `-d`, two sessions in parallel, WebUI Playwright).
 WebUI: `cd web && npm run test:e2e` (starts a fake `ki serve`). Requires `npx playwright install chromium`.
-Live model: `go test -tags live -timeout 5m ./e2e -run Live` (reads `DASHSCOPE_CN_API_KEY` or `~/.ki/ki.toml` dashscope-cn; default `qwen3.7-plus`; images / PDF / WebUI Playwright).
+- Live model: `go test -tags live -timeout 5m ./e2e -run Live` (reads `DASHSCOPE_CN_API_KEY` or `~/.ki/ki.toml` dashscope-cn; default `qwen3.7-plus`; images / PDF / WebUI Playwright).
 WebUI live: `cd web && npm run test:e2e:live`.
 
-## constraint
+## constraints
 
 - Keep this list concise.
+- Write this file in English.
+- Create PlantUML diagrams when necessary. When creating diagrams, only include PlantUML code blocks in Markdown files.
 - Port-forwarded WebUI is a first-class client: same-origin relative `/v1` and `/assets` only; never navigate the browser to a host filesystem path; never use a native OS file picker.
 - Cross-platform (Linux, macOS, Windows): `filepath` for joins; host-absolute paths; no POSIX-only roots, separators, or hidden-file rules.
-- Write this file in English.
 - Do not name  `docs/todo`, or files under them in this file.
 - Package comments go in that package's `doc.go`. Cross-package explanation stays in `docs/`.
 - When changing code, update the related docs that already describe that contract (`docs/*.md` and the owning `doc.go`). Do not add new todo filenames here.
