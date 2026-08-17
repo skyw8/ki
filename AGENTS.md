@@ -12,6 +12,7 @@ ki/
 ├── web/                 Vite+React SPA; go:embed dist; same-origin from serve
 ├── e2e/                 CLI e2e: fake model by default; -tags live for a real model
 ├── docs/                cross-package notes (architecture, session, provider, tools, webui)
+├── spec/                TLA+ formal specs (events-wait: SSE close-before-broadcast ordering)
 ├── internal/
 │   ├── cli/             flags; start/attach server; SSE to the terminal
 │   ├── server/          HTTP orchestration + embedded WebUI

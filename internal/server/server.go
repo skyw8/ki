@@ -595,7 +595,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	st := s.runs[id]
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-cache") // 防止代理/浏览器缓冲导致事件延迟到达
 	if st == nil {
 		w.WriteHeader(200)
 		return
@@ -606,7 +606,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		st.wait.Broadcast()
 		st.mu.Unlock()
-	}()
+	}() //客户端断开不泄漏 goroutine
 	idx := 0
 	for {
 		if r.Context().Err() != nil {
@@ -616,21 +616,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		for idx >= len(st.evs) {
 			select {
 			case <-st.done:
-				if idx < len(st.evs) {
-					continue
-				}
 				st.mu.Unlock()
 				return
 			case <-r.Context().Done():
-				st.mu.Unlock()
-				return
-			default:
-			}
-			select {
-			case <-st.done:
-				if idx < len(st.evs) {
-					continue
-				}
 				st.mu.Unlock()
 				return
 			default:
