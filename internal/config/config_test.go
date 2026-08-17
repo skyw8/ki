@@ -26,6 +26,7 @@ api_key = "global-oai"
 
 [compaction]
 reserve_tokens = 1000
+max_context_tokens = 25000
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -40,6 +41,7 @@ model = "claude-opus-4"
 
 [providers.anthropic]
 api_key = "project-ant"
+api = "anthropic"
 
 [server]
 addr = "127.0.0.1:19999"
@@ -68,6 +70,12 @@ addr = "127.0.0.1:19999"
 	}
 	if cfg.Compaction.ReserveTokens != 1000 {
 		t.Fatalf("reserve: %d", cfg.Compaction.ReserveTokens)
+	}
+	if cfg.Compaction.MaxContextTokens != 25000 {
+		t.Fatalf("max_context_tokens: %d", cfg.Compaction.MaxContextTokens)
+	}
+	if cfg.Providers["anthropic"].API != "anthropic" {
+		t.Fatalf("api override: %q", cfg.Providers["deepseek"].API)
 	}
 	if cfg.Sessions.Root != filepath.Join(home, "sessions") {
 		t.Fatalf("sessions root: %q", cfg.Sessions.Root)

@@ -2,6 +2,7 @@ package compact
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -23,6 +24,19 @@ type Summarizer interface {
 // compaction entry: usage from a message older than it reflects the
 // pre-compaction (larger) context and would falsely re-trigger compaction right
 // after one finished — fall back to the char/4 lower-bound estimate instead.
+// ErrNothingToCompact reports that Prepare found no messages worth
+// summarizing (the conversation fits entirely inside the recent-token
+// budget). Aligned with pi prepareCompaction returning undefined: the
+// compaction is skipped, no model call happens.
+var ErrNothingToCompact = errors.New("nothing to compact")
+
+// EstimateTokens estimates the model-facing context size. Primary source is
+// the newest assistant message with usage (pi calculateContextTokens:
+// totalTokens, falling back to input+output+cacheRead+cacheWrite), plus
+// char/4 for any trailing messages after it (pi trailingTokens). Falls back
+// to pure char/4 when no usable usage exists. recentCompaction guards stale
+// usage: a usage recorded before the last compaction reflects the old,
+// larger context and would falsely re-trigger compaction.
 func EstimateTokens(msgs []types.Message, recentCompaction int64) int {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
@@ -30,12 +44,27 @@ func EstimateTokens(msgs []types.Message, recentCompaction int64) int {
 			continue
 		}
 		if recentCompaction == 0 || m.Timestamp > recentCompaction {
-			if t := m.Usage.Input + m.Usage.CacheRead; t > 0 {
-				return t
+			if t := m.Usage.TotalTokens; t > 0 {
+				return t + trailingTokens(msgs[i+1:])
+			}
+			if t := m.Usage.Input + m.Usage.Output + m.Usage.CacheRead + m.Usage.CacheWrite; t > 0 {
+				return t + trailingTokens(msgs[i+1:])
 			}
 		}
 		break
 	}
+	return char4(msgs)
+}
+
+func trailingTokens(msgs []types.Message) int {
+	n := 0
+	for _, m := range msgs {
+		n += (len(m.Text()) + 3) / 4
+	}
+	return n
+}
+
+func char4(msgs []types.Message) int {
 	n := 0
 	for _, m := range msgs {
 		n += (len(m.Text()) + 3) / 4
@@ -50,6 +79,12 @@ func ShouldRun(tokens, contextWindow int, cfg config.Compaction) bool {
 	}
 	if contextWindow <= 0 {
 		contextWindow = 128000
+	}
+	// Global floor: MaxContextTokens caps the model window so a small value
+	// triggers compaction early (e.g. low-cost testing). Min semantics: the
+	// model window never inflates past the configured cap.
+	if cfg.MaxContextTokens > 0 && cfg.MaxContextTokens < contextWindow {
+		contextWindow = cfg.MaxContextTokens
 	}
 	return tokens > contextWindow-cfg.ReserveTokens
 }
@@ -127,7 +162,7 @@ func Prepare(entries []session.Entry, cfg config.Compaction) (*Preparation, erro
 		}
 	}
 	if len(cutPoints) == 0 {
-		return &Preparation{TokensBefore: tokensBefore, PreviousSummary: previousSummary}, nil
+		return nil, ErrNothingToCompact
 	}
 
 	// Walk newest → oldest until the recent-token budget is filled; cut at the
@@ -200,6 +235,9 @@ func Prepare(entries []session.Entry, cfg config.Compaction) (*Preparation, erro
 	}
 	retainedTail = collect(cutIndex, len(compactable))
 
+	if messagesToSummarize == nil && turnPrefix == nil {
+		return nil, ErrNothingToCompact
+	}
 	return &Preparation{
 		FirstKeptEntryID:    firstKept,
 		MessagesToSummarize: messagesToSummarize,
@@ -243,11 +281,15 @@ func Execute(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.
 }
 
 // Run is the one-step convenience entry (used by the /compact endpoint):
-// Prepare + Execute + AppendCompaction.
+// Prepare + Execute + AppendCompaction. Returns ErrNothingToCompact when the
+// session has nothing worth summarizing.
 func Run(ctx context.Context, s *session.Session, sum Summarizer, cfg config.Compaction) (session.Entry, error) {
 	prep, err := Prepare(s.LeafEntries(), cfg)
 	if err != nil {
 		return session.Entry{}, err
+	}
+	if prep == nil {
+		return session.Entry{}, ErrNothingToCompact
 	}
 	summary, usage, err := Execute(ctx, prep, sum, cfg)
 	if err != nil {

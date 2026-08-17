@@ -168,12 +168,15 @@ func TestCompactCLI(t *testing.T) {
 		t.Fatalf("first: %d %s %s", code, out, errOut)
 	}
 	id := mustSessionID(t, out, errOut)
+	// A tiny session has nothing worth summarizing: compact must refuse with a
+	// clear error (pi "Nothing to compact (session too small)") instead of
+	// stamping an empty summary over the context.
 	out, errOut, code = runKI(t, "--session", id, "compact")
-	if code != 0 {
-		t.Fatalf("compact: %d %s %s", code, out, errOut)
+	if code == 0 {
+		t.Fatalf("compact on tiny session should fail, got: %s", out)
 	}
-	if !strings.Contains(out, "compacted") {
-		t.Fatalf("compact stdout: %s", out)
+	if !strings.Contains(errOut, "nothing to compact") {
+		t.Fatalf("compact stderr: %s", errOut)
 	}
 	_ = home
 }

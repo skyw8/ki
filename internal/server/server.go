@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -107,7 +108,13 @@ func (r *router) Stream(ctx context.Context, req loop.Request, emit func(loop.As
 	if base == "" {
 		base = m.BaseURL
 	}
-	api := req.API
+	// Protocol precedence: per-provider config override (ki.toml `api =`,
+	// e.g. a completions-only vendor's Anthropic-compatible endpoint) beats
+	// the catalog. req.API is the catalog's value already resolved upstream.
+	api := p.API
+	if api == "" {
+		api = req.API
+	}
 	if api == "" {
 		api = m.API
 	}
@@ -570,10 +577,10 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		st.wait.Broadcast()
 		st.mu.Unlock()
 		if ev.Type == loop.AgentEnd {
-			// D: threshold check after the run finished.
+			// agent_end 后：threshold 检查——上下文超窗口就压缩。
 			if s.shouldCompact(sess, info.ContextWindow) {
 				_ = emit(loop.Event{Type: loop.CompactionStart, Reason: "threshold"})
-				if _, err := s.compactSession(ctx, sess); err != nil {
+				if _, err := s.compactSession(ctx, sess); err != nil && !errors.Is(err, compact.ErrNothingToCompact) {
 					slog.Warn("auto compact", "err", err)
 					_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "threshold", OK: false})
 				} else {
@@ -584,12 +591,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		return nil
 	}
 
-	// A: preflight — a resumed session or an already-large context may exceed
-	// the window before this run starts (pi "catches aborted responses").
-	// Not blocking: a failed compact only warns.
+	// 运行前 preflight：resume 会话或超大 prompt 可能已超窗口，loop.Run
+	// 之前先压缩一次。不阻断：压缩失败只 warn。
 	if s.shouldCompact(sess, info.ContextWindow) {
 		_ = emit(loop.Event{Type: loop.CompactionStart, Reason: "preflight"})
-		if _, err := s.compactSession(ctx, sess); err != nil {
+		if _, err := s.compactSession(ctx, sess); err != nil && !errors.Is(err, compact.ErrNothingToCompact) {
 			slog.Warn("preflight compact", "err", err)
 			_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "preflight", OK: false})
 		} else {
@@ -608,9 +614,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		BaseDelay:  2 * time.Second,
 		Parallel:   true,
 		Hooks: loop.Hooks{
-			// C: compact-and-retry on context overflow, same Run (no event
-			// replay). The failed assistant stays in history but provider
-			// replayable drops stopReason-error turns on the retry.
+			// 溢出恢复：请求报上下文溢出时，同 Run 内压缩后重试（事件不重放）。
+			// 失败的 assistant 留在 history，但 provider replayable 会在重试时
+			// 丢弃 stopReason=error 的轮次。
 			OnContextOverflow: func(ctx context.Context) ([]types.Message, error) {
 				return s.compactSession(ctx, sess)
 			},
@@ -619,10 +625,12 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	st.err = err
 }
 
-func (s *Server) summarizer() compact.Summarizer {
+func (s *Server) summarizer(provider, model string) compact.Summarizer {
 	return compact.StreamSummarizer{
 		Stream: func(ctx context.Context, system, user string) (string, *types.Usage, error) {
 			m, err := s.streamer.Stream(ctx, loop.Request{
+				Provider: provider,
+				Model:    model,
 				System:   system,
 				Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: user}}}},
 			}, func(loop.AssistantDelta) error { return nil })
@@ -640,14 +648,18 @@ func (s *Server) shouldCompact(sess *session.Session, window int) bool {
 }
 
 // compactSession runs one compaction (Prepare + Execute + AppendCompaction)
-// and returns the new model-facing context. Shared by preflight (A), overflow
-// recovery (C) and threshold (D) paths.
+// and returns the new model-facing context. Shared by preflight、溢出恢复和
+// threshold 三条路径。Returns ErrNothingToCompact when the
+// conversation fits inside the recent-token budget (no model call is made).
 func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]types.Message, error) {
 	prep, err := compact.Prepare(sess.LeafEntries(), s.cfg.Compaction)
 	if err != nil {
 		return nil, err
 	}
-	summary, usage, err := compact.Execute(ctx, prep, s.summarizer(), s.cfg.Compaction)
+	if prep == nil {
+		return nil, compact.ErrNothingToCompact
+	}
+	summary, usage, err := compact.Execute(ctx, prep, s.summarizer(sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 	if err != nil {
 		return nil, err
 	}
@@ -725,8 +737,13 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer sess.Close()
-	e, err := compact.Run(r.Context(), sess, s.summarizer(), s.cfg.Compaction)
+	e, err := compact.Run(r.Context(), sess, s.summarizer(sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 	if err != nil {
+		// Not a server failure: the session is too small or already compacted.
+		if errors.Is(err, compact.ErrNothingToCompact) {
+			http.Error(w, "nothing to compact (session too small)", 409)
+			return
+		}
 		http.Error(w, err.Error(), 500)
 		return
 	}

@@ -415,6 +415,61 @@ type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) Do(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestUsageParsingPerProtocol(t *testing.T) {
+	// Completions: prompt_cache_hit_tokens → CacheRead; TotalTokens is the
+	// four-part sum computed by the streamer.
+	t.Run("completions", func(t *testing.T) {
+		sse := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"prompt_cache_hit_tokens\":30}}\n\n" +
+			"data: [DONE]\n"
+		live := NewLive("completions", "https://api.deepseek.com", "sk", roundTrip(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBufferString(sse)), Header: make(http.Header)}, nil
+		}))
+		m, err := live.Stream(context.Background(), loop.Request{Model: "x", Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "hey"}}}}}, func(loop.AssistantDelta) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		u := m.Usage
+		if u.Input != 100 || u.Output != 20 || u.CacheRead != 30 || u.TotalTokens != 150 {
+			t.Fatalf("completions usage: %+v", u)
+		}
+	})
+	// Responses: cached_tokens → CacheRead, total_tokens comes straight from
+	// the API (may not equal the four-part sum).
+	t.Run("responses", func(t *testing.T) {
+		sse := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":20,\"cached_tokens\":30,\"total_tokens\":150}}}\n\n" +
+			"event: response.completed\ndata: [DONE]\n"
+		live := NewLive("responses", "https://api.openai.com/v1", "sk", roundTrip(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBufferString(sse)), Header: make(http.Header)}, nil
+		}))
+		m, err := live.Stream(context.Background(), loop.Request{Model: "x", Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "hey"}}}}}, func(loop.AssistantDelta) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		u := m.Usage
+		if u.Input != 100 || u.Output != 20 || u.CacheRead != 30 || u.TotalTokens != 150 {
+			t.Fatalf("responses usage: %+v", u)
+		}
+	})
+	// Anthropic: cache_read_input_tokens on message_start + message_delta;
+	// TotalTokens is the four-part sum.
+	t.Run("anthropic", func(t *testing.T) {
+		sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":20,\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		live := NewLive("anthropic", "https://api.anthropic.com", "sk", roundTrip(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBufferString(sse)), Header: make(http.Header)}, nil
+		}))
+		m, err := live.Stream(context.Background(), loop.Request{Model: "x", Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "hey"}}}}}, func(loop.AssistantDelta) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		u := m.Usage
+		if u.Input != 100 || u.Output != 20 || u.CacheRead != 30 || u.CacheWrite != 5 || u.TotalTokens != 155 {
+			t.Fatalf("anthropic usage: %+v", u)
+		}
+	})
+}
+
 func TestLiveCompletionsPostsChatCompletions(t *testing.T) {
 	var gotURL string
 	var gotAuth string

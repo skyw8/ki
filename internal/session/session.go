@@ -333,9 +333,17 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 		})
 	}
 	// New entries carry the verbatim retained tail; old jsonl without it falls
-	// back to slicing chrono from FirstKeptEntryID.
+	// back to slicing chrono from FirstKeptEntryID. In both cases entries AFTER
+	// the compaction (messages appended since it ran) must still be included.
 	if len(comp.RetainedTail) > 0 {
-		return append(msgs, comp.RetainedTail...)
+		msgs = append(msgs, comp.RetainedTail...)
+		start := compIdx + 1
+		for _, e := range chrono[start:] {
+			if e.Type == "message" && e.Message != nil {
+				msgs = append(msgs, *e.Message)
+			}
+		}
+		return msgs
 	}
 	start := compIdx + 1
 	if comp.FirstKeptEntryID != "" {

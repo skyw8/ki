@@ -3,6 +3,7 @@ package session
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -212,6 +213,44 @@ func TestCompactionRetainedTailReload(t *testing.T) {
 	}
 	if s2.LastCompactionAt() <= 0 {
 		t.Fatal("LastCompactionAt should return the compaction timestamp")
+	}
+}
+
+func TestMessagesToLeafIncludesMessagesAfterCompaction(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Create(root, cwd, "openai", "gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for i := 0; i < 4; i++ {
+		_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: fmt.Sprintf("u%d", i)}}})
+		_, _ = s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: fmt.Sprintf("a%d", i)}}})
+	}
+	// Compact, keeping the last two messages as the retained tail.
+	tail := []types.Message{
+		{Role: "user", Content: []types.Content{{Type: "text", Text: "u1"}}},
+		{Role: "assistant", Content: []types.Content{{Type: "text", Text: "a1"}}},
+		{Role: "user", Content: []types.Content{{Type: "text", Text: "u2"}}},
+		{Role: "assistant", Content: []types.Content{{Type: "text", Text: "a2"}}},
+	}
+	if _, err := s.AppendCompaction("SUM", "", 10, &types.Usage{Input: 10, TotalTokens: 10}, tail); err != nil {
+		t.Fatal(err)
+	}
+	// Messages sent AFTER the compaction must still reach the model-facing
+	// context; the retained tail is the head, not a terminator.
+	_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "u3"}}})
+	_, _ = s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "a3"}}})
+	hist := s.MessagesToLeaf()
+	if len(hist) != 7 {
+		t.Fatalf("want summary+4 tail+2 new = 7 messages, got %d: %+v", len(hist), hist)
+	}
+	if !strings.Contains(hist[0].Text(), "SUM") || hist[len(hist)-1].Text() != "a3" {
+		t.Fatalf("history order: first=%q last=%q", hist[0].Text(), hist[len(hist)-1].Text())
 	}
 }
 

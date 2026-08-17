@@ -2,6 +2,7 @@ package compact
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -38,6 +39,96 @@ func TestShouldRunAndAppendRebuildsHistory(t *testing.T) {
 	hist := s.MessagesToLeaf()
 	if len(hist) == 0 || hist[0].Text() == "" || !strings.Contains(hist[0].Text(), "PREV") {
 		t.Fatalf("history should start with summary: %+v", hist)
+	}
+}
+
+func TestShouldRunMaxContextTokensCapsWindow(t *testing.T) {
+	// Global floor: a small MaxContextTokens triggers compaction way before the
+	// model window (128k) is reached.
+	cfg := config.Compaction{Enabled: true, ReserveTokens: 1000, MaxContextTokens: 6000}
+	if ShouldRun(500, 128000, cfg) {
+		t.Fatal("below capped threshold should not compact")
+	}
+	if !ShouldRun(5500, 128000, cfg) {
+		t.Fatal("above capped threshold should compact")
+	}
+	// Without the cap, 5500 tokens is far below the model window.
+	if ShouldRun(5500, 128000, config.Compaction{Enabled: true, ReserveTokens: 1000}) {
+		t.Fatal("uncapped small context should not compact")
+	}
+	// Cap larger than the model window must not inflate it.
+	big := config.Compaction{Enabled: true, ReserveTokens: 1000, MaxContextTokens: 1 << 20}
+	if ShouldRun(120000, 128000, big) {
+		t.Fatal("cap above window must not inflate the window")
+	}
+	// Cap applies to the default window when the model window is unknown.
+	if !ShouldRun(5500, 0, cfg) {
+		t.Fatal("cap should apply to the default window too")
+	}
+	// Disabled still wins.
+	if ShouldRun(1<<20, 128000, config.Compaction{Enabled: false, MaxContextTokens: 6000}) {
+		t.Fatal("disabled must never compact")
+	}
+}
+
+func TestPrepareNothingToCompactWhenUnderBudget(t *testing.T) {
+	// Tiny session: char/4 budget never reaches keepRecentTokens, so there is
+	// nothing to summarize. Prepare must report it (pi returns undefined)
+	// instead of producing an empty summary.
+	root := t.TempDir()
+	s, err := session.Create(root, t.TempDir(), "openai", "gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "hello"}}})
+	_, _ = s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "hi"}}})
+
+	prep, err := Prepare(s.LeafEntries(), config.Compaction{KeepRecentTokens: 20000})
+	if !errors.Is(err, ErrNothingToCompact) || prep != nil {
+		t.Fatalf("want ErrNothingToCompact + nil prep, got prep=%+v err=%v", prep, err)
+	}
+
+	// With a tiny budget the same session compacts fine (the user message lands
+	// in the turn prefix of a split turn).
+	prep, err = Prepare(s.LeafEntries(), config.Compaction{KeepRecentTokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prep == nil || (len(prep.MessagesToSummarize) == 0 && len(prep.TurnPrefixMessages) == 0) {
+		t.Fatalf("tiny budget should produce a preparation: %+v", prep)
+	}
+}
+
+func TestEstimateTokensUsagePriorityAndTrailing(t *testing.T) {
+	text := func(s string) []types.Content {
+		return []types.Content{{Type: "text", Text: s}}
+	}
+	// Four-part sum is the fallback when TotalTokens is 0, plus trailing
+	// messages after the usage-bearing assistant add char/4 (pi
+	// estimateContextTokens: usageTokens + trailingTokens).
+	msgs := []types.Message{
+		{Role: "user", Content: text("aaaa")}, // 1 token
+		{Role: "assistant", Usage: &types.Usage{Input: 100, Output: 20, CacheRead: 30, CacheWrite: 5}},
+		{Role: "user", Content: text("bbbbbbbb")}, // 2 tokens trailing
+	}
+	if got := EstimateTokens(msgs, 0); got != 157 {
+		t.Fatalf("four-part sum + trailing: %d, want 157", got)
+	}
+	// TotalTokens wins when present (responses API provides it directly).
+	msgs[1].Usage.TotalTokens = 200
+	if got := EstimateTokens(msgs, 0); got != 202 {
+		t.Fatalf("totalTokens + trailing: %d, want 202", got)
+	}
+	// No usage at all → pure char/4 over everything (1 + 0 + 2).
+	msgs[1].Usage = nil
+	if got := EstimateTokens(msgs, 0); got != 3 {
+		t.Fatalf("char/4 fallback: %d, want 3", got)
+	}
+	// All-zero usage can't contribute: falls back to char/4 (0 here).
+	zero := []types.Message{{Role: "assistant", Usage: &types.Usage{}}}
+	if got := EstimateTokens(zero, 0); got != 0 {
+		t.Fatalf("zero usage → char/4: %d, want 0", got)
 	}
 }
 

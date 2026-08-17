@@ -28,6 +28,9 @@ type Defaults struct {
 type Provider struct {
 	APIKey  string
 	BaseURL string
+	// API overrides the protocol shape from the model catalog
+	// ("completions" | "responses" | "anthropic"). Empty = catalog decides.
+	API string
 }
 
 // Sessions holds session storage settings.
@@ -40,6 +43,11 @@ type Compaction struct {
 	Enabled          bool
 	ReserveTokens    int
 	KeepRecentTokens int
+	// MaxContextTokens caps the context window used for the threshold check
+	// (min of model window and this value; 0 = model window only). A small
+	// value triggers compaction early, useful for low-cost testing without
+	// burning tokens on huge contexts.
+	MaxContextTokens int
 }
 
 // Server is the local HTTP bind address.
@@ -215,6 +223,10 @@ func applyKey(cfg *Config, section, key, val string) {
 			if n, err := strconv.Atoi(val); err == nil {
 				cfg.Compaction.KeepRecentTokens = n
 			}
+		case "max_context_tokens":
+			if n, err := strconv.Atoi(val); err == nil {
+				cfg.Compaction.MaxContextTokens = n
+			}
 		}
 	case "server":
 		if key == "addr" && val != "" {
@@ -235,6 +247,8 @@ func applyKey(cfg *Config, section, key, val string) {
 				p.APIKey = val
 			case "base_url":
 				p.BaseURL = val
+			case "api":
+				p.API = val
 			}
 			cfg.Providers[id] = p
 		}
