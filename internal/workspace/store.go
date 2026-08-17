@@ -399,6 +399,7 @@ func (s *Store) indexLocked(id string) int {
 	return -1
 }
 
+//write-to-temp-then-rename
 func (s *Store) writeLocked() error {
 	if err := os.MkdirAll(s.home, 0o755); err != nil {
 		return err

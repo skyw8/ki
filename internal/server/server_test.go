@@ -21,6 +21,7 @@ import (
 	"ki/internal/config"
 	"ki/internal/loop"
 	"ki/internal/provider"
+	"ki/internal/session"
 	"ki/internal/types"
 )
 
@@ -594,6 +595,12 @@ func markerCmd(t *testing.T, marker string) (string, []string) {
 		t.Fatal(err)
 	}
 	return sh, []string{marker}
+}
+
+func authedGet(hs *httptest.Server, path string) (*http.Response, error) {
+	req, _ := http.NewRequest("GET", hs.URL+path, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	return http.DefaultClient.Do(req)
 }
 
 func createSession(t *testing.T, hs *httptest.Server, cwd string) string {
@@ -1202,4 +1209,94 @@ func firstLine(t *testing.T, path string) map[string]any {
 		t.Fatal(err)
 	}
 	return m
+}
+
+func TestOpenIndexLifecycle(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	if _, ok := srv.sidx.Lookup(id); !ok {
+		t.Fatal("create must index the new session")
+	}
+
+	// DELETE drops the index entry (dir removal succeeded).
+	req, _ := http.NewRequest("DELETE", hs.URL+"/v1/sessions/"+id, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 204 {
+		t.Fatalf("delete: %d", res.StatusCode)
+	}
+	if _, ok := srv.sidx.Lookup(id); ok {
+		t.Fatal("delete must drop the index entry")
+	}
+
+	// A session created outside the server (direct session.Create) is an index
+	// miss: open falls back to a scan and self-heals.
+	root := srv.cfg.Sessions.Root
+	ext, err := session.Create(root, t.TempDir(), "anthropic", "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	extID := ext.ID()
+	ext.Close()
+	if _, ok := srv.sidx.Lookup(extID); ok {
+		t.Fatal("external session must not be indexed yet")
+	}
+	res2, err := authedGet(hs, "/v1/sessions/"+extID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2.Body.Close()
+	if res2.StatusCode != 200 {
+		t.Fatalf("external get: %d", res2.StatusCode)
+	}
+	if _, ok := srv.sidx.Lookup(extID); !ok {
+		t.Fatal("fallback must self-heal the index")
+	}
+
+	// Stale entry (dir deleted behind the server's back) heals on open too.
+	dir, _ := srv.sidx.Lookup(extID)
+	if err := session.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	res3, err := authedGet(hs, "/v1/sessions/"+extID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res3.Body.Close()
+	if res3.StatusCode != 404 {
+		t.Fatalf("stale get: %d", res3.StatusCode)
+	}
+	if _, ok := srv.sidx.Lookup(extID); ok {
+		t.Fatal("stale entry must be dropped after failed open")
+	}
+}
+
+func TestForkIndexesChild(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/fork", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("fork: %d", res.StatusCode)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	child, _ := out["id"].(string)
+	if child == "" {
+		t.Fatal("fork response missing id")
+	}
+	if _, ok := srv.sidx.Lookup(child); !ok {
+		t.Fatal("fork must index the child session")
+	}
 }
