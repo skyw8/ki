@@ -21,6 +21,7 @@
 - `MessagesToLeaf` 沿 parent 走到根；若路径上有 compaction，先注入 summary，再从 `firstKeptEntryId` 往后取。
 - fork：整目录拷贝，改 header 的 `id` 和 `parentSession`。
 - `config.json`：该 session 的 `provider`/`model`，可选 `title` / `pinned` / `pinnedAt`，以及 skills/mcp 的 `only` / `disabled`。
+- 按 id 定位目录：serve 进程内维护 `session.Index`（id→dir 内存 map，见 `internal/session/index.go`），启动时由 `List` 的同一次 walk 顺路建好，零额外读盘。create/fork 后 `Add`、delete 后 `Remove`。命中即 O(1)；miss（别的进程建的会话、或目录被外部删除）回退到 `Find` 扫描并自愈，文件系统始终是唯一事实来源。
 - `GET /v1/sessions/{id}` 在 Toggle 之外带 `availableSkills` / `availableMcp`（按 cwd 现算的目录，含 `enabled` / `source`）。列举 MCP 不 spawn。Prompt 用 serve 级池的缓存 schema 组 tools，真 call 才连。
 
 会话 cwd 来自工作区 path（或临时 `{KI_HOME}/workspace/tmp+<时间戳>`），不是进程 Getwd。标题优先用 `config.title`。`Remove` 删除整个会话目录。工作区见 [workspace.md](workspace.md)。

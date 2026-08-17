@@ -45,6 +45,7 @@ type Server struct {
 	mu       sync.Mutex
 	runs     map[string]*runState
 	ws       *workspace.Store
+	sidx     *session.Index
 	ln       net.Listener
 	http     *http.Server
 }
@@ -81,6 +82,7 @@ func New(opt Options) *Server {
 		cwds = append(cwds, info.CWD)
 	}
 	_ = ws.Bootstrap(cwds)
+	sidx := session.NewIndex(infos) // reuse the List walk: zero extra reads
 	return &Server{
 		cfg:      opt.Config,
 		token:    tok,
@@ -88,6 +90,7 @@ func New(opt Options) *Server {
 		mcp:      mcp.NewPool(opt.Config.Home), // serve-wide; not per session / per prompt
 		runs:     map[string]*runState{},
 		ws:       ws,
+		sidx:     sidx,
 	}
 }
 
@@ -271,14 +274,29 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	}
 	defer sess.Close()
 	_ = s.ws.AttachSession(rec.ID, sess.ID())
+	s.sidx.Add(sess.ID(), sess.Dir)
 	writeJSON(w, 200, s.sessionMap(sess, nil))
 }
 
 func (s *Server) open(id string) (*session.Session, error) {
-	dir, err := session.Find(s.cfg.Sessions.Root, id)
+	root := s.cfg.Sessions.Root
+	if dir, ok := s.sidx.Lookup(id); ok {
+		sess, err := session.Open(dir)
+		if err == nil {
+			return sess, nil
+		}
+		// Stale entry (dir deleted or renamed outside the server): drop it so
+		// the next lookup rescans instead of failing on a dead path forever.
+		s.sidx.Remove(id)
+		return nil, err
+	}
+	// Index miss (session created by another process, or stale): fall back to
+	// a scan, then self-heal so the next lookup is O(1).
+	dir, err := session.Find(root, id)
 	if err != nil {
 		return nil, err
 	}
+	s.sidx.Add(id, dir)
 	return session.Open(dir)
 }
 
@@ -681,6 +699,7 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	if rec, ok := s.ws.Match(dst.Header.CWD); ok {
 		_ = s.ws.AttachSession(rec.ID, dst.ID())
 	}
+	s.sidx.Add(dst.ID(), dst.Dir)
 	writeJSON(w, 200, s.sessionMap(dst, map[string]any{"parentSession": dst.Header.ParentSession}))
 }
 

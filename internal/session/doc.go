@@ -6,5 +6,6 @@
 //
 // request_header entries store the system+tools snapshot for a turn.
 // config.json may override title, pin, and skills/mcp toggles. Remove deletes the session directory.
-// List walks the session root. On-disk layout: docs/session.md.
+// List walks the session root. Index caches id→dir for O(1) lookup; the
+// filesystem stays the source of truth and misses fall back to Find. On-disk layout: docs/session.md.
 package session

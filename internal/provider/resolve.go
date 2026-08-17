@@ -1,6 +1,9 @@
 package provider
 
-import "ki/internal/config"
+import (
+	"ki/internal/config"
+	"strings"
+)
 
 // Resolve picks provider/model following pi: session/request → toml defaults → default table → first with key.
 func Resolve(cfg config.Config, sessionProvider, sessionModel, requestModel string) (provider, model string) {
@@ -29,10 +32,10 @@ func Resolve(cfg config.Config, sessionProvider, sessionModel, requestModel stri
 }
 
 func splitModel(spec, fallbackP, defaultP string) (string, string) {
-	for i := 0; i < len(spec); i++ {
-		if spec[i] == '/' {
-			return spec[:i], spec[i+1:]
-		}
+	// strings.Cut is assembly-optimized (SIMD) and clearer than a hand-rolled
+	// byte scan; split at the first '/' only, model names may contain more.
+	if p, m, ok := strings.Cut(spec, "/"); ok {
+		return p, m
 	}
 	if fallbackP != "" {
 		return fallbackP, spec

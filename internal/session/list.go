@@ -2,7 +2,6 @@ package session
 
 import (
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -24,45 +23,32 @@ type Info struct {
 
 // List walks the session root and returns every readable session, newest first.
 func List(root string) ([]Info, error) {
-	encs, err := os.ReadDir(root)
+	var out []Info
+	err := walkSessionDirs(root, func(dir string) bool {
+		s, err := Open(dir)
+		if err != nil {
+			return true
+		}
+		out = append(out, Info{
+			ID:            s.ID(),
+			CWD:           s.Header.CWD,
+			Dir:           s.Dir,
+			Provider:      s.Config.Provider,
+			Model:         s.Config.Model,
+			Timestamp:     s.Header.Timestamp,
+			ParentSession: s.Header.ParentSession,
+			Title:         TitleOf(s),
+			Pinned:        s.Config.Pinned,
+			PinnedAt:      s.Config.PinnedAt,
+		})
+		_ = s.Close()
+		return true
+	})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
-	}
-	var out []Info
-	for _, enc := range encs {
-		if !enc.IsDir() {
-			continue
-		}
-		inner := filepath.Join(root, enc.Name())
-		subs, err := os.ReadDir(inner)
-		if err != nil {
-			continue
-		}
-		for _, sub := range subs {
-			if !sub.IsDir() {
-				continue
-			}
-			s, err := Open(filepath.Join(inner, sub.Name()))
-			if err != nil {
-				continue
-			}
-			out = append(out, Info{
-				ID:            s.ID(),
-				CWD:           s.Header.CWD,
-				Dir:           s.Dir,
-				Provider:      s.Config.Provider,
-				Model:         s.Config.Model,
-				Timestamp:     s.Header.Timestamp,
-				ParentSession: s.Header.ParentSession,
-				Title:         TitleOf(s),
-				Pinned:        s.Config.Pinned,
-				PinnedAt:      s.Config.PinnedAt,
-			})
-			_ = s.Close()
-		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp > out[j].Timestamp })
 	return out, nil

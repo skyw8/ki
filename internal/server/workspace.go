@@ -241,6 +241,7 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
+	s.sidx.Remove(id) // only after the dir is actually gone
 	w.WriteHeader(http.StatusNoContent)
 }
 

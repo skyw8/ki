@@ -188,34 +188,26 @@ func Open(dir string) (*Session, error) {
 
 // Find looks up a session id under root.
 func Find(root, id string) (string, error) {
-	encs, err := os.ReadDir(root)
+	suffix := "_" + id
+	found := ""
+	err := walkSessionDirs(root, func(dir string) bool {
+		name := filepath.Base(dir)
+		if name == id || strings.HasSuffix(name, suffix) {
+			found = dir
+			return false
+		}
+		return true
+	})
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", fmt.Errorf("session %s not found", id)
 		}
 		return "", err
 	}
-	suffix := "_" + id
-	for _, enc := range encs {
-		if !enc.IsDir() {
-			continue
-		}
-		inner := filepath.Join(root, enc.Name())
-		subs, err := os.ReadDir(inner)
-		if err != nil {
-			continue
-		}
-		for _, sub := range subs {
-			if !sub.IsDir() {
-				continue
-			}
-			name := sub.Name()
-			if name == id || strings.HasSuffix(name, suffix) {
-				return filepath.Join(inner, name), nil
-			}
-		}
+	if found == "" {
+		return "", fmt.Errorf("session %s not found", id)
 	}
-	return "", fmt.Errorf("session %s not found", id)
+	return found, nil
 }
 
 // Close closes the jsonl file.
