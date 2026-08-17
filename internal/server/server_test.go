@@ -48,6 +48,94 @@ func testServerWith(t *testing.T, st loop.Streamer) (*Server, *httptest.Server) 
 	return srv, hs
 }
 
+// waitAgentEnd reads the events SSE until agent_end (the prompt turn finished
+// and the session is fully persisted).
+func waitAgentEnd(t *testing.T, hs *httptest.Server, id string) []string {
+	t.Helper()
+	req, _ := http.NewRequest("GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var types []string
+	sc := bufio.NewScanner(res.Body)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var ev loop.Event
+		_ = json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev)
+		types = append(types, string(ev.Type))
+		if ev.Type == loop.AgentEnd {
+			break
+		}
+	}
+	return types
+}
+
+// reqRecorder captures every Stream request so tests can assert what the
+// server passes through (provider/model on the compaction summarizer).
+type reqRecorder struct {
+	reqs []loop.Request
+}
+
+func (r *reqRecorder) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
+	r.reqs = append(r.reqs, req)
+	return types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "summary"}}, StopReason: "stop", Usage: &types.Usage{TotalTokens: 3}}, nil
+}
+
+func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KI_HOME", home)
+	cfg := config.Builtin(home)
+	cfg.Sessions.Root = filepath.Join(home, "sessions")
+	cfg.Compaction.KeepRecentTokens = 1 // tiny budget: any session compacts
+	cfg.Providers = map[string]config.Provider{"anthropic": {APIKey: "x"}}
+	cfg.Defaults = config.Defaults{Provider: "anthropic", Model: "claude-sonnet-4-5"}
+	rec := &reqRecorder{}
+	srv := New(Options{Config: cfg, Token: "tok", Streamer: rec})
+	hs := httptest.NewServer(srv.Handler())
+	defer hs.Close()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	id := createSession(t, hs, t.TempDir())
+	// Prompt is async (goroutine); wait for agent_end via the events stream so
+	// the assistant turn is persisted before compacting.
+	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res0, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res0.Body.Close()
+	waitAgentEnd(t, hs, id)
+	// Manual compact drives compactSession, whose summarizer must call the
+	// streamer with the session's provider/model — otherwise liveFromConfig
+	// resolves an empty base URL and the summarization request fails.
+	req, _ = http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/compact", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode != 200 {
+		t.Fatalf("compact %d %s", res.StatusCode, b)
+	}
+	if len(rec.reqs) < 2 {
+		t.Fatalf("streamer calls: %d, want prompt + summarizer", len(rec.reqs))
+	}
+	last := rec.reqs[len(rec.reqs)-1]
+	if last.Provider != "anthropic" || last.Model != "claude-sonnet-4-5" {
+		t.Fatalf("summarizer request must carry session provider/model, got %q/%q", last.Provider, last.Model)
+	}
+}
+
 func TestAuthAndCreateGetFork(t *testing.T) {
 	_, hs := testServer(t)
 	res, err := http.Post(hs.URL+"/v1/sessions", "application/json", strings.NewReader(`{"cwd":"`+t.TempDir()+`"}`))
@@ -210,9 +298,9 @@ func TestAbortAndCompact(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer res.Body.Close()
-	if res.StatusCode != 200 {
+	if res.StatusCode != 409 {
 		b, _ := io.ReadAll(res.Body)
-		t.Fatalf("compact %d %s", res.StatusCode, b)
+		t.Fatalf("compact tiny session: %d %s (want 409 nothing to compact)", res.StatusCode, b)
 	}
 }
 
