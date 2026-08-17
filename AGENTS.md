@@ -6,8 +6,6 @@ A lean and extensible agent runtime designed for easy integration.
 
 ## directory structure
 
-Package invariants live in each directory's `doc.go` (`go doc ./internal/session`). Cross-package notes live under `docs/` only. Do not list `docs/todo`, or individual files from those trees here.
-
 ```
 ki/
 ├── cmd/ki/              sole binary
@@ -37,7 +35,7 @@ ki/
 
 ## docs
 
-Cross-package notes are in `docs/`. Package invariants are in each `doc.go`. Keep this file free of `todo` paths and of per-file inventories under those directories.
+Cross-package notes are in `docs/`. Package invariants are in each `doc.go` (`go doc ./internal/session`). Keep this file free of `todo` paths and of per-file inventories under those directories.
 
 Dev run: `scripts/run.sh` builds `./ki` and starts `ki serve` inside a tmux session named `ki`: window `server` runs the daemon, window `cli` is a shell for operating it. Re-run to rebuild and respawn; real tests operate through the script or `tmux attach -t ki`. `--web` rebuilds `web/dist`; `--fake` uses the canned model.
 
@@ -57,7 +55,5 @@ WebUI live: `cd web && npm run test:e2e:live`.
 - When changing code, update the related docs that already describe that contract (`docs/*.md` and the owning `doc.go`). Do not add new todo filenames here.
 - Bugs and pitfalls get a why-comment at the fix site explaining why the code is written that way. A problem that recurs gets a retrospective entry under `docs/postmortem/`.
 - One binary: `ki serve` serves API and the embedded SPA on the same origin. Rebuild `web/dist` then `go build` after frontend changes; serve does not run npm.
-- Do not vendor the DeepSeek Harness client (cordis, Host WebSocket, plugin tree). The WebUI is a thin SPA on ki HTTP/SSE.
 - Do not invent REST routes for data the loop already has. Extend `loop.Event` and jsonl (and existing SSE / `GET /v1/sessions/{id}`) instead.
 - A second prompt on a busy session is **409**. Resume requires `--session`. `--model` is per-session `config.json`, not toml.
-- Tools are Read / Write / Edit / Bash only unless a new tool is an explicit request.
