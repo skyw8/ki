@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -259,6 +260,17 @@ func (t lazyTool) Parameters() map[string]any {
 		return t.ts.InputSchema
 	}
 	return map[string]any{"type": "object"}
+}
+
+// Validate checks the model-supplied arguments against the cached MCP input
+// schema before any tools/call round-trip, so a malformed call fails with a
+// readable validation error instead of an opaque "mcp http 400" (pi
+// validateToolArguments).
+func (t lazyTool) Validate(args map[string]any) error {
+	if msg := loop.SchemaErrors(t.Parameters(), t.ts.Name, args); msg != "" {
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
 }
 
 func (t lazyTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {

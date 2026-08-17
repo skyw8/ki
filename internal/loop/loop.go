@@ -70,6 +70,9 @@ type ToolResult struct {
 	Content []types.Content
 	IsError bool
 	Details any
+	// Terminate hints the agent to stop after this tool batch when every
+	// finalized result in the batch sets it (pi result.terminate).
+	Terminate bool
 }
 
 // Streamer produces an assistant message (and stream deltas).
@@ -98,7 +101,9 @@ type ToolSpec struct {
 type Hooks struct {
 	BeforeRun        func(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error)
 	TransformContext func(ctx context.Context, msgs []types.Message) ([]types.Message, error)
-	BeforeTool       func(ctx context.Context, name string, args map[string]any) (map[string]any, bool, string, error)
+	// BeforeTool may rewrite args, block the call (with reason), and signal
+	// terminate (stop after this batch when every call in the batch terminates).
+	BeforeTool       func(ctx context.Context, name string, args map[string]any) (map[string]any, bool, string, bool, error)
 	AfterTool        func(ctx context.Context, name string, args map[string]any, res ToolResult) (ToolResult, error)
 	// OnContextOverflow compacts and returns the new context when a request
 	// failed with a context-overflow error. Runs at most once per Run (the
@@ -231,6 +236,7 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 
 		calls := asst.ToolCalls()
 		var results []types.Message
+		terminate := false
 		if len(calls) > 0 {
 			if asst.StopReason == "length" {
 				// Output hit the token limit: streamed tool-call arguments may be
@@ -238,7 +244,7 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 				// failToolCallsFromTruncatedMessage).
 				results = rejectToolCalls(calls, emit)
 			} else {
-				results = executeTools(ctx, cfg, calls, emit)
+				results, terminate = executeTools(ctx, cfg, calls, emit)
 			}
 			for _, r := range results {
 				rr := r
@@ -255,7 +261,7 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 		if err := emit(Event{Type: TurnEnd, Message: &asst, ToolResults: results}); err != nil {
 			return newMsgs, err
 		}
-		if len(calls) == 0 || asst.StopReason == "error" || asst.StopReason == "aborted" {
+		if len(calls) == 0 || asst.StopReason == "error" || asst.StopReason == "aborted" || terminate {
 			break
 		}
 	}
@@ -344,72 +350,138 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 	return last, lastErr
 }
 
-func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit func(Event) error) []types.Message {
+// ToolValidator is the optional pre-execution schema check (P0, pi
+// validateToolArguments). Tools may implement it to reject malformed
+// arguments before any execution starts.
+type ToolValidator interface {
+	Validate(args map[string]any) error
+}
+
+// executeTools runs a batch of tool calls in two phases (pi prepare/execute):
+//
+//  1. prepare (synchronous): resolve the tool, schema-validate via the
+//     optional ToolValidator, and run the BeforeTool hook. Failures become
+//     immediate error results — nothing is executed for them.
+//  2. execute: run the prepared calls (parallel or sequential).
+//
+// The second return value is the batch terminate signal: true when every call
+// in the batch terminated (BeforeTool terminate or ToolResult.Terminate), so
+// the main loop can stop instead of requesting the model again (pi
+// shouldTerminateToolBatch).
+func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit func(Event) error) ([]types.Message, bool) {
 	byName := map[string]Tool{}
 	for _, t := range cfg.Tools {
 		byName[t.Name()] = t
 	}
 	out := make([]types.Message, len(calls))
-	run := func(i int) {
-		c := calls[i]
+
+	// Phase 1: prepare (synchronous, no side effects).
+	type prep struct {
+		call      types.Content
+		args      map[string]any
+		tool      Tool
+		immediate *types.Message // set → skip execute
+		terminate bool
+	}
+	preps := make([]prep, len(calls))
+	for i, c := range calls {
+		_ = emit(Event{Type: ToolExecutionStart, ToolCallID: c.ID, ToolName: c.Name, Args: c.Arguments})
+		p := prep{call: c}
 		args := c.Arguments
 		if args == nil {
 			args = map[string]any{}
 		}
-		_ = emit(Event{Type: ToolExecutionStart, ToolCallID: c.ID, ToolName: c.Name, Args: args})
-		block := false
-		reason := ""
-		if cfg.Hooks.BeforeTool != nil {
-			a, b, r, err := cfg.Hooks.BeforeTool(ctx, c.Name, args)
-			if err != nil {
-				block, reason = true, err.Error()
-			} else {
-				args, block, reason = a, b, r
+		t, ok := byName[c.Name]
+		if !ok {
+			m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, Content: []types.Content{{Type: "text", Text: "unknown tool " + c.Name}}, IsError: true}
+			p.immediate = &m
+			preps[i] = p
+			continue
+		}
+		if v, ok := t.(ToolValidator); ok {
+			if err := v.Validate(args); err != nil {
+				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
+				p.immediate = &m
+				preps[i] = p
+				continue
 			}
 		}
-		var res ToolResult
-		start := time.Now()
-		if block {
-			res = ToolResult{Content: []types.Content{{Type: "text", Text: reason}}, IsError: true}
-		} else if t, ok := byName[c.Name]; ok {
-			res = t.Execute(ctx, args)
-		} else {
-			res = ToolResult{Content: []types.Content{{Type: "text", Text: "unknown tool " + c.Name}}, IsError: true}
+		if cfg.Hooks.BeforeTool != nil {
+			a, b, r, term, err := cfg.Hooks.BeforeTool(ctx, c.Name, args)
+			if err != nil {
+				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
+				p.immediate = &m
+				p.terminate = term
+				preps[i] = p
+				continue
+			}
+			args, p.terminate = a, term
+			if b {
+				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, Content: []types.Content{{Type: "text", Text: r}}, IsError: true}
+				p.immediate = &m
+				preps[i] = p
+				continue
+			}
 		}
-		if cfg.Hooks.AfterTool != nil && !block {
-			if nr, err := cfg.Hooks.AfterTool(ctx, c.Name, args, res); err == nil {
+		p.args, p.tool = args, t
+		preps[i] = p
+	}
+
+	// Phase 2: execute.
+	run := func(i int) {
+		p := preps[i]
+		if p.immediate != nil {
+			out[i] = *p.immediate
+			_ = emit(Event{Type: ToolExecutionEnd, ToolCallID: p.call.ID, ToolName: p.call.Name, IsError: true})
+			return
+		}
+		start := time.Now()
+		res := p.tool.Execute(ctx, p.args)
+		if cfg.Hooks.AfterTool != nil {
+			if nr, err := cfg.Hooks.AfterTool(ctx, p.call.Name, p.args, res); err == nil {
 				res = nr
 			}
 		}
 		dur := time.Since(start).Milliseconds()
 		msg := types.Message{
 			Role:       "toolResult",
-			ToolCallID: c.ID,
-			ToolName:   c.Name,
+			ToolCallID: p.call.ID,
+			ToolName:   p.call.Name,
 			Content:    res.Content,
 			IsError:    res.IsError,
 			DurationMs: dur,
 			Timestamp:  time.Now().UnixMilli(),
 		}
-		_ = emit(Event{Type: ToolExecutionEnd, ToolCallID: c.ID, ToolName: c.Name, Args: args, Result: res, IsError: res.IsError})
 		out[i] = msg
+		p.terminate = p.terminate || res.Terminate
+		preps[i] = p
+		_ = emit(Event{Type: ToolExecutionEnd, ToolCallID: p.call.ID, ToolName: p.call.Name, Args: p.args, Result: res, IsError: res.IsError})
 	}
-	if !cfg.Parallel {
+	if cfg.Parallel {
+		var wg sync.WaitGroup
+		for i := range calls {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				run(i)
+			}(i)
+		}
+		wg.Wait()
+	} else {
 		for i := range calls {
 			run(i)
 		}
-		return out
 	}
-	var wg sync.WaitGroup
-	for i := range calls {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			run(i)
-		}(i)
+
+	// Batch terminate: every call terminated (pi shouldTerminateToolBatch).
+	terminate := len(calls) > 0
+	for _, p := range preps {
+		if !p.terminate {
+			terminate = false
+			break
+		}
 	}
-	wg.Wait()
-	return out
+	return out, terminate
 }
 
 // rejectToolCalls turns every tool call into an error result without executing

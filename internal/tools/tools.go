@@ -136,6 +136,12 @@ func (readTool) Parameters() map[string]any {
 	}
 }
 
+// Validate checks the model-supplied arguments against the tool schema before
+// any execution (pi validateToolArguments; loop ToolValidator).
+func (t readTool) Validate(args map[string]any) error {
+	return validateArgs(t.Parameters(), t.Name(), args)
+}
+
 func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
 	path, _ := args["file_path"].(string)
 	if path == "" {
@@ -331,6 +337,10 @@ func (writeTool) Parameters() map[string]any {
 	}
 }
 
+func (t writeTool) Validate(args map[string]any) error {
+	return validateArgs(t.Parameters(), t.Name(), args)
+}
+
 func (t writeTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
 	path, _ := args["file_path"].(string)
 	content, _ := args["content"].(string)
@@ -375,6 +385,10 @@ func (editTool) Parameters() map[string]any {
 			"replace_all": map[string]any{"type": "boolean", "description": "Replace all occurrences of old_string (default false)"},
 		},
 	}
+}
+
+func (t editTool) Validate(args map[string]any) error {
+	return validateArgs(t.Parameters(), t.Name(), args)
 }
 
 func (t editTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
@@ -461,6 +475,10 @@ func (bashTool) Parameters() map[string]any {
 			"run_in_background": map[string]any{"type": "boolean", "description": "Set to true to run this command in the background. Use Read to read the output later."},
 		},
 	}
+}
+
+func (t bashTool) Validate(args map[string]any) error {
+	return validateArgs(t.Parameters(), t.Name(), args)
 }
 
 func (t bashTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
@@ -601,6 +619,14 @@ func asInt(v any) (int, bool) {
 
 func errRes(s string) loop.ToolResult {
 	return loop.ToolResult{Content: []types.Content{{Type: "text", Text: s}}, IsError: true}
+}
+
+// validateArgs runs the tool schema against model arguments (loop ToolValidator).
+func validateArgs(schema map[string]any, name string, args map[string]any) error {
+	if msg := loop.SchemaErrors(schema, name, args); msg != "" {
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
 }
 func okRes(s string) loop.ToolResult {
 	return txt(s)

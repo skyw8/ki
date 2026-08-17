@@ -6,7 +6,11 @@
 // Events follow pi names: agent_*, turn_*, message_*, tool_execution_*,
 // compaction_start/end (reason + ok), plus request_header (system + tools
 // snapshot after turn_start, before stream).
-// BeforeTool errors fail closed (block the tool). Tools default to parallel.
+// Tools run in two phases (pi prepare/execute): synchronous prepare resolves
+// the tool, runs the optional ToolValidator schema check (validate.go), and
+// the BeforeTool hook; failures become immediate error results. Then execute
+// runs the prepared calls (parallel by default). BeforeTool/ToolResult may
+// set Terminate: when every call in a batch terminates, the loop stops.
 // Provider errors retry up to 5 times with exponential backoff from 2s, except
 // context-overflow errors (IsContextOverflow, patterns in overflow.go): those
 // return ErrContextOverflow without retry, and Run recovers once via
