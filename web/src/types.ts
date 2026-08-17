@@ -44,6 +44,7 @@ export type Entry = {
   firstKeptEntryId?: string
   tokensBefore?: number
   usage?: Usage | null
+  details?: unknown
   provider?: string
   modelId?: string
   system?: string
@@ -67,6 +68,8 @@ export type LoopEvent = {
   assistantMessageEvent?: { type: string; delta?: string; partial?: Message }
   system?: string
   tools?: ToolSchema[]
+  reason?: string
+  ok?: boolean
 }
 
 export type SessionInfo = {
@@ -156,7 +159,7 @@ export type ChatNode =
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; isError?: boolean; durationMs?: number; running?: boolean }
   | { kind: 'compaction'; id: string; summary: string; tokensBefore?: number }
 
-export type TrajKind = 'user' | 'assistant' | 'tool' | 'compacted' | 'system'
+export type TrajKind = 'user' | 'assistant' | 'tool' | 'compacted' | 'compact' | 'system'
 
 export type TrajRecord = {
   id: string

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -155,6 +156,134 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 	}
 	if len(s2.Config.MCP.Only) != 1 || s2.Config.MCP.Only[0] != "bar" {
 		t.Fatalf("mcp: %+v", s2.Config.MCP)
+	}
+}
+
+func TestCompactionRetainedTailReload(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Create(root, cwd, "openai", "gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1 := types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "one"}}}
+	m2 := types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "two"}}}
+	if _, err := s.AppendMessage(m1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(m2); err != nil {
+		t.Fatal(err)
+	}
+	// Append a compaction whose retained tail duplicates the kept messages.
+	tail := []types.Message{m2}
+	if _, err := s.AppendCompaction("SUM", "", 10, &types.Usage{Input: 10, TotalTokens: 10}, tail); err != nil {
+		t.Fatal(err)
+	}
+	// New-style: MessagesToLeaf uses the persisted retained tail verbatim.
+	hist := s.MessagesToLeaf()
+	if len(hist) != 2 || !strings.Contains(hist[0].Text(), "SUM") || hist[1].Text() != "two" {
+		t.Fatalf("history: %+v", hist)
+	}
+	// Reload: retained tail survives jsonl round-trip.
+	dir := s.Dir
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	var comp *Entry
+	for i := range s2.Entries() {
+		e := s2.Entries()[i]
+		if e.Type == "compaction" {
+			comp = &e
+		}
+	}
+	if comp == nil || len(comp.RetainedTail) != 1 || comp.RetainedTail[0].Text() != "two" {
+		t.Fatalf("compaction entry: %+v", comp)
+	}
+	if got := s2.MessagesToLeaf(); len(got) != 2 || got[1].Text() != "two" {
+		t.Fatalf("reloaded history: %+v", got)
+	}
+	if s2.LastCompactionAt() <= 0 {
+		t.Fatal("LastCompactionAt should return the compaction timestamp")
+	}
+}
+
+func TestCompactionRetainedTailFallback(t *testing.T) {
+	// Old jsonl without retainedTail falls back to FirstKeptEntryID slicing.
+	root := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Create(root, cwd, "openai", "gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var first string
+	for i := 0; i < 3; i++ {
+		e, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "u" + strconv.Itoa(i)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 1 {
+			first = e.ID
+		}
+	}
+	if _, err := s.AppendCompaction("SUM", first, 10, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	hist := s.MessagesToLeaf()
+	if len(hist) != 3 || hist[1].Text() != "u1" || hist[2].Text() != "u2" {
+		t.Fatalf("fallback history: %+v", hist)
+	}
+}
+
+func TestCompactionEventsPersist(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Create(root, cwd, "openai", "gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.AppendEvent("compaction_start", "overflow", false); err != nil {
+		t.Fatal(err)
+	}
+	hist := s.MessagesToLeaf() // must ignore event entries
+	if len(hist) != 0 {
+		t.Fatalf("event entries leaked into history: %+v", hist)
+	}
+	dir := s.Dir
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	found := false
+	for _, e := range s2.Entries() {
+		if e.Type == "compaction_start" {
+			found = true
+			if d, ok := e.Details.(map[string]any); !ok || d["reason"] != "overflow" {
+				t.Fatalf("details: %+v", e.Details)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("compaction_start not persisted")
 	}
 }
 

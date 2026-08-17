@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,7 @@ type Entry struct {
 	FirstKeptEntryID string         `json:"firstKeptEntryId,omitempty"`
 	TokensBefore     int            `json:"tokensBefore,omitempty"`
 	Usage            *types.Usage   `json:"usage,omitempty"`
+	RetainedTail     []types.Message `json:"retainedTail,omitempty"`
 	Details          any            `json:"details,omitempty"`
 	Provider         string         `json:"provider,omitempty"`
 	ModelID          string         `json:"modelId,omitempty"`
@@ -239,6 +241,51 @@ func (s *Session) Entries() []Entry {
 	return out
 }
 
+// LeafEntries returns leaf-chain entries in chronological order (root → leaf),
+// for compaction preparation (pure-function input, no session dependency).
+func (s *Session) LeafEntries() []Entry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.leafEntriesLocked(s.leafID)
+}
+
+func (s *Session) leafEntriesLocked(leaf string) []Entry {
+	var rev []Entry
+	id := leaf
+	seen := map[string]bool{}
+	for id != "" && !seen[id] {
+		seen[id] = true
+		e, ok := s.byID[id]
+		if !ok {
+			break
+		}
+		rev = append(rev, e)
+		id = e.ParentID
+	}
+	slices.Reverse(rev)
+	return rev
+}
+
+// LastCompactionAt returns the unix-ms timestamp of the most recent compaction
+// entry, or 0 when none exists. Used for the stale-usage guard: usage from a
+// message older than the last compaction reflects the pre-compaction (larger)
+// context and would falsely trigger compaction right after one finished.
+func (s *Session) LastCompactionAt() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.entries) - 1; i >= 0; i-- {
+		if s.entries[i].Type != "compaction" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, s.entries[i].Timestamp)
+		if err != nil {
+			return 0
+		}
+		return t.UnixMilli()
+	}
+	return 0
+}
+
 // MessagesToLeaf walks parent links from leaf to root and returns messages in order.
 func (s *Session) MessagesToLeaf() []types.Message {
 	s.mu.Lock()
@@ -259,11 +306,9 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 		rev = append(rev, e)
 		id = e.ParentID
 	}
-	// chronological root → leaf
-	chrono := make([]Entry, 0, len(rev))
-	for i := len(rev) - 1; i >= 0; i-- {
-		chrono = append(chrono, rev[i])
-	}
+	// chronological root → leaf (rev is dead after this point, reverse in place)
+	slices.Reverse(rev)
+	chrono := rev
 	compIdx := -1
 	for i, e := range chrono {
 		if e.Type == "compaction" {
@@ -286,6 +331,11 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 			Role:    "user",
 			Content: []types.Content{{Type: "text", Text: "Previous conversation summary:\n" + comp.Summary}},
 		})
+	}
+	// New entries carry the verbatim retained tail; old jsonl without it falls
+	// back to slicing chrono from FirstKeptEntryID.
+	if len(comp.RetainedTail) > 0 {
+		return append(msgs, comp.RetainedTail...)
 	}
 	start := compIdx + 1
 	if comp.FirstKeptEntryID != "" {
@@ -349,8 +399,10 @@ func (s *Session) AppendModelChange(provider, model string) error {
 	return s.writeConfig()
 }
 
-// AppendCompaction records a compaction checkpoint.
-func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, usage *types.Usage) (Entry, error) {
+// AppendCompaction records a compaction checkpoint. retainedTail is the
+// recent messages kept verbatim after the cut (pi retainedTail); old entries
+// without it fall back to FirstKeptEntryID slicing in MessagesToLeaf.
+func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, usage *types.Usage, retainedTail []types.Message) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	used := map[string]struct{}{}
@@ -366,6 +418,30 @@ func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, 
 		FirstKeptEntryID: firstKept,
 		TokensBefore:     tokensBefore,
 		Usage:            usage,
+		RetainedTail:     retainedTail,
+	}
+	if err := s.appendLocked(e); err != nil {
+		return Entry{}, err
+	}
+	return e, nil
+}
+
+// AppendEvent records a non-message event entry (compaction_start/end) so
+// replay of the session shows when compaction happened. MessagesToLeaf ignores
+// these types.
+func (s *Session) AppendEvent(typ, reason string, ok bool) (Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	used := map[string]struct{}{}
+	for id := range s.byID {
+		used[id] = struct{}{}
+	}
+	e := Entry{
+		Type:      typ,
+		ID:        idgen.EntryID(used),
+		ParentID:  s.leafID,
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Details:   map[string]any{"reason": reason, "ok": ok},
 	}
 	if err := s.appendLocked(e); err != nil {
 		return Entry{}, err

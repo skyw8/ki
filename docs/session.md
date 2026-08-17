@@ -12,13 +12,13 @@
 ## jsonl
 
 第一行 header：`type=session`，含 `id` / `cwd` / `parentSession`。  
-之后每行 `{type,id,parentId,timestamp,…}`：`message`、`compaction`、`model_change`、`request_header`（`system` + `tools[]`）。entry id 为 8 位 hex。
+之后每行 `{type,id,parentId,timestamp,…}`：`message`、`compaction`、`model_change`、`request_header`（`system` + `tools[]`）、`compaction_start`/`compaction_end`（`details.reason` + `details.ok`，回放可见）。entry id 为 8 位 hex。
 
 ## 细节
 
 - leaf 只在内存；新行永远 append 在文件末尾。重载：最后一条非 header 即当前 leaf。
 - revert 只改内存 leaf，旧行不删。
-- `MessagesToLeaf` 沿 parent 走到根；若路径上有 compaction，先注入 summary，再从 `firstKeptEntryId` 往后取。
+- `MessagesToLeaf` 沿 parent 走到根；若路径上有 compaction，先注入 summary，再取 `retainedTail`（新条目，压缩时最近消息原文落盘）；旧 jsonl 无 `retainedTail` 时回退 `firstKeptEntryId` 截断。`LastCompactionAt` 返回最近 compaction 时间戳（stale-usage 防护用）。
 - fork：整目录拷贝，改 header 的 `id` 和 `parentSession`。
 - `config.json`：该 session 的 `provider`/`model`，可选 `title` / `pinned` / `pinnedAt`，以及 skills/mcp 的 `only` / `disabled`。
 - 按 id 定位目录：serve 进程内维护 `session.Index`（id→dir 内存 map，见 `internal/session/index.go`），启动时由 `List` 的同一次 walk 顺路建好，零额外读盘。create/fork 后 `Add`、delete 后 `Remove`。命中即 O(1)；miss（别的进程建的会话、或目录被外部删除）回退到 `Find` 扫描并自愈，文件系统始终是唯一事实来源。
