@@ -45,6 +45,11 @@ api = "anthropic"
 
 [server]
 addr = "127.0.0.1:19999"
+
+[log]
+level = "debug"
+max_size_mb = 2
+max_backups = 4
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +72,9 @@ addr = "127.0.0.1:19999"
 	}
 	if cfg.Server.Addr != "127.0.0.1:19999" {
 		t.Fatalf("addr: %q", cfg.Server.Addr)
+	}
+	if cfg.Log.Level != "debug" || cfg.Log.MaxSizeMB != 2 || cfg.Log.MaxBackups != 4 {
+		t.Fatalf("log: %+v", cfg.Log)
 	}
 	if cfg.Compaction.ReserveTokens != 1000 {
 		t.Fatalf("reserve: %d", cfg.Compaction.ReserveTokens)
@@ -94,5 +102,8 @@ func TestLoadMissingFilesUsesBuiltin(t *testing.T) {
 	}
 	if cfg.Server.Addr != "127.0.0.1:19800" {
 		t.Fatalf("addr: %q", cfg.Server.Addr)
+	}
+	if cfg.Log.Level != "info" || cfg.Log.MaxSizeMB != 10 || cfg.Log.MaxBackups != 3 {
+		t.Fatalf("builtin log: %+v", cfg.Log)
 	}
 }

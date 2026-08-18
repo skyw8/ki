@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,24 +17,41 @@ import (
 	"time"
 
 	"ki/internal/config"
-	"ki/internal/klog"
+	"ki/internal/logging"
 	"ki/internal/loop"
 	"ki/internal/provider"
 	"ki/internal/server"
 )
 
 // Main is the process entrypoint.
-func Main(args []string) int {
+func Main(args []string) (exitCode int) {
 	cwd, _ := os.Getwd()
 	cfg, err := config.Load(cwd)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if _, err := klog.Setup(cfg.Home, cfg.Log.Level); err != nil {
+	role := "client"
+	if len(args) > 0 && args[0] == "serve" {
+		role = "server"
+	}
+	logCloser, err := logging.Setup(logging.Options{
+		Home:       cfg.Home,
+		Level:      cfg.Log.Level,
+		Role:       role,
+		MaxSizeMB:  cfg.Log.MaxSizeMB,
+		MaxBackups: cfg.Log.MaxBackups,
+	})
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	defer func() { _ = logCloser.Close() }()
+	defer func() {
+		if logging.Recover("process panic") {
+			exitCode = 1
+		}
+	}()
 	if len(args) > 0 && args[0] == "serve" {
 		return runServe(cfg, args[1:])
 	}
@@ -107,7 +125,7 @@ func runServe(cfg config.Config, args []string) int {
 	st := streamer(cfg)
 	srv := server.New(server.Options{Config: cfg, Streamer: st})
 	if err := srv.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
-		fmt.Fprintln(os.Stderr, err)
+		slog.Error("server stopped", "err", err)
 		return 1
 	}
 	return 0
@@ -125,6 +143,8 @@ func runDetach(cfg config.Config, f flags) int {
 	}
 	cmd := exec.Command(self, "serve", "--addr", addr)
 	cmd.Env = os.Environ()
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -223,7 +243,10 @@ func ensureServer(cfg config.Config, f flags) (base, token string, stop func(), 
 		addr = f.Addr
 	}
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe(addr) }()
+	go func() {
+		defer logging.Recover("in-process server panic")
+		errCh <- srv.ListenAndServe(addr)
+	}()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if a := srv.Addr(); a != "" {

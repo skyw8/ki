@@ -57,7 +57,9 @@ type Server struct {
 
 // Log is process log settings.
 type Log struct {
-	Level string
+	Level      string
+	MaxSizeMB  int
+	MaxBackups int
 }
 
 // Builtin returns compiled-in defaults.
@@ -85,7 +87,7 @@ func Builtin(home string) Config {
 			KeepRecentTokens: 20000,
 		},
 		Server: Server{Addr: "127.0.0.1:19800"},
-		Log:    Log{Level: "info"},
+		Log:    Log{Level: "info", MaxSizeMB: 10, MaxBackups: 3},
 	}
 }
 
@@ -233,8 +235,19 @@ func applyKey(cfg *Config, section, key, val string) {
 			cfg.Server.Addr = val
 		}
 	case "log":
-		if key == "level" && val != "" {
-			cfg.Log.Level = val
+		switch key {
+		case "level":
+			if val != "" {
+				cfg.Log.Level = val
+			}
+		case "max_size_mb":
+			if n, err := strconv.Atoi(val); err == nil {
+				cfg.Log.MaxSizeMB = n
+			}
+		case "max_backups":
+			if n, err := strconv.Atoi(val); err == nil {
+				cfg.Log.MaxBackups = n
+			}
 		}
 	default:
 		if id, ok := strings.CutPrefix(section, "providers."); ok {

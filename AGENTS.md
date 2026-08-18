@@ -28,7 +28,7 @@ ki/
 │   ├── workspace/       workspace registry
 │   ├── types/           Message / Usage IR
 │   ├── idgen/           session / entry id
-│   └── klog/            stderr + ki.log
+│   └── logging/         JSONL stderr + rotated ki.log
 ├── AGENTS.md
 ├── README.md
 └── go.mod

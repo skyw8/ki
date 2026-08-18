@@ -19,6 +19,7 @@ import (
 
 	"ki/internal/compact"
 	"ki/internal/config"
+	"ki/internal/logging"
 	"ki/internal/loop"
 	"ki/internal/mcp"
 	"ki/internal/prompt"
@@ -157,12 +158,25 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /v1/workspaces/{id}/sessions/move", s.auth(s.moveWorkspaceSession))
 	api.HandleFunc("GET /v1/fs", s.auth(s.listFS))
 	api.HandleFunc("POST /v1/fs", s.auth(s.createFS))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return recoverHTTP(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1" || strings.HasPrefix(r.URL.Path, "/v1/") {
 			api.ServeHTTP(w, r)
 			return
 		}
 		s.serveUI(w, r)
+	}))
+}
+
+func recoverHTTP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			// Recover here so handler panics become structured JSONL records instead
+			// of net/http's stderr-only unstructured output.
+			if logging.Recover("http handler panic", "method", r.Method, "path", r.URL.Path) {
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -513,6 +527,9 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel string) {
 	defer func() {
+		// A prompt panic must still close done, otherwise SSE clients stay busy
+		// forever waiting for a run that can no longer produce events.
+		logging.Recover("prompt panic", "session_id", id)
 		close(st.done)
 		st.mu.Lock()
 		if st.wait != nil {
@@ -530,7 +547,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	if reqModel != "" {
 		p, m := provider.Resolve(cfg, sess.Config.Provider, sess.Config.Model, reqModel)
 		if err := sess.SetModel(p, m); err != nil {
-			slog.Warn("set model", "err", err)
+			slog.Warn("set model", "session_id", id, "provider", p, "model", m, "err", err)
 		}
 	}
 	info := provider.Lookup(sess.Config.Provider, sess.Config.Model)
@@ -541,6 +558,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	// UI on running with no SSE until every enabled server finished handshake.
 	tls = append(tls, s.mcp.Bind(mcpFile, sess.Config.MCP)...)
 	go func() {
+		defer logging.Recover("mcp prefetch panic", "session_id", id)
 		ctx, cancel := context.WithTimeout(context.Background(), mcp.HandshakeTimeout)
 		defer cancel()
 		s.mcp.Prefetch(ctx, mcpFile, sess.Config.MCP)
@@ -581,7 +599,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 			if s.shouldCompact(sess, info.ContextWindow) {
 				_ = emit(loop.Event{Type: loop.CompactionStart, Reason: "threshold"})
 				if _, err := s.compactSession(ctx, sess); err != nil && !errors.Is(err, compact.ErrNothingToCompact) {
-					slog.Warn("auto compact", "err", err)
+					slog.Warn("auto compact", "session_id", id, "err", err)
 					_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "threshold", OK: false})
 				} else {
 					_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "threshold", OK: true})
@@ -596,7 +614,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	if s.shouldCompact(sess, info.ContextWindow) {
 		_ = emit(loop.Event{Type: loop.CompactionStart, Reason: "preflight"})
 		if _, err := s.compactSession(ctx, sess); err != nil && !errors.Is(err, compact.ErrNothingToCompact) {
-			slog.Warn("preflight compact", "err", err)
+			slog.Warn("preflight compact", "session_id", id, "err", err)
 			_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "preflight", OK: false})
 		} else {
 			_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "preflight", OK: true})
