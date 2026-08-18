@@ -29,6 +29,7 @@ type Live struct {
 	APIKey string
 	Base   string
 	API    string // completions | responses | anthropic
+	Model  *Model
 }
 
 func marshalArguments(v any) string {
@@ -47,16 +48,41 @@ func NewLive(api, base, key string, doer HTTPDoer) *Live {
 	return &Live{Doer: doer, APIKey: key, Base: strings.TrimRight(base, "/"), API: api}
 }
 
+func NewLiveModel(model Model, key string, doer HTTPDoer) *Live {
+	l := NewLive(model.API, model.BaseURL, key, doer)
+	l.Model = &model
+	return l
+}
+
 // Stream implements loop.Streamer.
 func (l *Live) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
+	var msg types.Message
+	var err error
 	switch l.API {
 	case "anthropic":
-		return l.streamAnthropic(ctx, req, emit)
+		msg, err = l.streamAnthropic(ctx, req, emit)
 	case "responses":
-		return l.streamResponses(ctx, req, emit)
+		msg, err = l.streamResponses(ctx, req, emit)
 	default:
-		return l.streamCompletions(ctx, req, emit)
+		msg, err = l.streamCompletions(ctx, req, emit)
 	}
+	if err == nil && msg.Usage != nil && l.Model != nil {
+		CalculateCost(*l.Model, msg.Usage)
+	}
+	return msg, err
+}
+
+func mappedThinking(req loop.Request) string {
+	if req.ThinkingEffort == "" {
+		return ""
+	}
+	if v, ok := req.ThinkingLevelMap[req.ThinkingEffort]; ok {
+		if v == nil {
+			return ""
+		}
+		return *v
+	}
+	return req.ThinkingEffort
 }
 
 // CompletionsBody is the OpenAI chat completions payload (exported for tests).
@@ -98,6 +124,33 @@ func CompletionsBody(req loop.Request) map[string]any {
 		"messages": msgs,
 		"stream":   true,
 	}
+	if req.MaxTokens > 0 {
+		field := req.MaxTokensField
+		if field == "" {
+			field = "max_tokens"
+		}
+		body[field] = req.MaxTokens
+	}
+	effort := mappedThinking(req)
+	if req.ThinkingEffort != "" {
+		on := req.ThinkingEffort != "off"
+		switch req.ThinkingFormat {
+		case "qwen":
+			body["enable_thinking"] = on
+			if on && req.SupportsReasoningEffort {
+				body["reasoning_effort"] = effort
+			}
+		case "deepseek", "zai":
+			body["thinking"] = map[string]any{"type": map[bool]string{true: "enabled", false: "disabled"}[on]}
+			if on && req.SupportsReasoningEffort {
+				body["reasoning_effort"] = effort
+			}
+		default:
+			if req.SupportsReasoningEffort {
+				body["reasoning_effort"] = effort
+			}
+		}
+	}
 	if len(req.Tools) > 0 {
 		var tools []map[string]any
 		for _, t := range req.Tools {
@@ -125,6 +178,12 @@ func ResponsesBody(req loop.Request) map[string]any {
 		"model":  req.Model,
 		"input":  input,
 		"stream": true,
+	}
+	if req.MaxTokens > 0 {
+		body["max_output_tokens"] = req.MaxTokens
+	}
+	if effort := mappedThinking(req); effort != "" {
+		body["reasoning"] = map[string]any{"effort": effort}
 	}
 	if req.System != "" {
 		body["instructions"] = req.System
@@ -218,11 +277,35 @@ func AnthropicBody(req loop.Request) map[string]any {
 		i--
 		msgs = append(msgs, map[string]any{"role": "user", "content": blocks})
 	}
+	maxTokens := req.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 8192
+	}
 	body := map[string]any{
 		"model":      req.Model,
-		"max_tokens": 8192,
+		"max_tokens": maxTokens,
 		"messages":   msgs,
 		"stream":     true,
+	}
+	if req.ThinkingEffort != "" {
+		if req.ThinkingEffort == "off" {
+			body["thinking"] = map[string]any{"type": "disabled"}
+		} else if req.ForceAdaptiveThinking {
+			body["thinking"] = map[string]any{"type": "adaptive"}
+			body["output_config"] = map[string]any{"effort": mappedThinking(req)}
+		} else {
+			budgets := map[string]int{"minimal": 1024, "low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768, "max": 65536}
+			budget := budgets[req.ThinkingEffort]
+			if budget == 0 {
+				budget = 8192
+			}
+			if budget >= maxTokens {
+				budget = maxTokens - 1024
+			}
+			if budget > 0 {
+				body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
+			}
+		}
 	}
 	if req.System != "" {
 		body["system"] = []map[string]any{{
@@ -699,16 +782,23 @@ func parseCompletionsSSE(_, data string, acc *types.Message) (loop.AssistantDelt
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 			PromptCacheHit   int `json:"prompt_cache_hit_tokens"`
+			PromptDetails    struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
 	}
 	if json.Unmarshal([]byte(data), &chunk) != nil {
 		return loop.AssistantDelta{}, false
 	}
 	if chunk.Usage != nil {
+		cached := chunk.Usage.PromptCacheHit
+		if cached == 0 {
+			cached = chunk.Usage.PromptDetails.CachedTokens
+		}
 		acc.Usage = &types.Usage{
 			Input:     chunk.Usage.PromptTokens,
 			Output:    chunk.Usage.CompletionTokens,
-			CacheRead: chunk.Usage.PromptCacheHit,
+			CacheRead: cached,
 		}
 	}
 	if len(chunk.Choices) == 0 {
@@ -802,10 +892,14 @@ func parseResponsesSSE(event, data string, acc *types.Message) (loop.AssistantDe
 		}
 		if resp, ok := obj["response"].(map[string]any); ok {
 			if u, ok := resp["usage"].(map[string]any); ok {
+				cached := asInt(u["cached_tokens"])
+				if details, ok := u["input_tokens_details"].(map[string]any); ok {
+					cached = asInt(details["cached_tokens"])
+				}
 				acc.Usage = &types.Usage{
 					Input:       asInt(u["input_tokens"]),
 					Output:      asInt(u["output_tokens"]),
-					CacheRead:   asInt(u["cached_tokens"]),
+					CacheRead:   cached,
 					TotalTokens: asInt(u["total_tokens"]),
 				}
 			}

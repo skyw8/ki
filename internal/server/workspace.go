@@ -38,17 +38,18 @@ func (s *Server) resolveWorkspace(id, cwd string) (workspace.Record, error) {
 
 func (s *Server) sessionMap(sess *session.Session, extra map[string]any) map[string]any {
 	m := map[string]any{
-		"id":        sess.ID(),
-		"cwd":       sess.Header.CWD,
-		"provider":  sess.Config.Provider,
-		"model":     sess.Config.Model,
-		"dir":       sess.Dir,
-		"parent":    sess.Header.ParentSession,
-		"title":     session.TitleOf(sess),
-		"running":   s.running(sess.ID()),
-		"pinned":    sess.Config.Pinned,
-		"pinnedAt":  sess.Config.PinnedAt,
-		"timestamp": sess.Header.Timestamp,
+		"id":             sess.ID(),
+		"cwd":            sess.Header.CWD,
+		"provider":       sess.Config.Provider,
+		"model":          sess.Config.Model,
+		"thinkingEffort": sess.Config.ThinkingEffort,
+		"dir":            sess.Dir,
+		"parent":         sess.Header.ParentSession,
+		"title":          session.TitleOf(sess),
+		"running":        s.running(sess.ID()),
+		"pinned":         sess.Config.Pinned,
+		"pinnedAt":       sess.Config.PinnedAt,
+		"timestamp":      sess.Header.Timestamp,
 	}
 	if rec, ok := s.ws.Match(sess.Header.CWD); ok {
 		m["workspaceId"] = rec.ID

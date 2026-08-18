@@ -12,10 +12,11 @@ function copyText(text: string) {
   void navigator.clipboard?.writeText(text)
 }
 
-function fmtUsage(u: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }): string {
+function fmtUsage(u: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total: number } }): string {
   let s = `${u.input ?? 0}→${u.output ?? 0}`
   if (u.cacheRead) s += ` cache ${u.cacheRead}`
   if (u.cacheWrite) s += ` +${u.cacheWrite}`
+	if (u.cost) s += ` · $${u.cost.total < .01 ? u.cost.total.toFixed(4) : u.cost.total.toFixed(2)}`
   return s
 }
 

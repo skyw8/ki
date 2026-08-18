@@ -12,5 +12,8 @@
 //
 // Replay skips aborted/error/empty assistants (and their toolResults)
 // and synthesizes missing tool results. Session jsonl is unchanged.
+// Registry merges the embedded offline catalog with {KI_HOME}/models.json;
+// credentials.json and provider environment variables supply secrets. There
+// is deliberately no remote model-list refresh.
 // See docs/provider.md.
 package provider

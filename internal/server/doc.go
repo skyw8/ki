@@ -2,14 +2,15 @@
 // persist, tools, and providers. The same process serves the embedded WebUI.
 //
 // Auth is Bearer token except GET /v1/health. Query ?token= is also accepted.
-// GET /v1/models and GET /v1/meta expose catalog/defaults and the user home.
+// Provider CRUD manages the offline registry and credentials; GET /v1/models
+// is its flat selectable view. GET /v1/meta exposes defaults and user home.
 // Workspaces live in {KI_HOME}/workspaces.json. Session cwd comes from a
 // workspace (or a tmp+ workspace). GET /v1/sessions/{id} includes
 // availableSkills / availableMcp (no MCP spawn). PATCH /v1/sessions/{id}
-// writes model / title / pin / skills / mcp. Prompt binds MCP from the
+// writes model / thinking effort / title / pin / skills / mcp. Prompt binds MCP from the
 // serve-level pool (cached schemas; connect on tool call). GET|POST /v1/fs
 // lists and creates directories.
-// request_header events persist the system+tools snapshot on jsonl/SSE.
+// request_header and context_usage events persist on jsonl/SSE.
 // Non-/v1 paths serve the SPA at "/"; other unknown paths redirect to "/".
 // index.html gets the token injected. The UI is used behind port-forwards.
 // A second prompt on a busy session returns 409. message_end awaits jsonl

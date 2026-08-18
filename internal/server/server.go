@@ -36,20 +36,23 @@ type Options struct {
 	Config   config.Config
 	Token    string
 	Streamer loop.Streamer
+	Registry *provider.Registry
 }
 
 // Server is the HTTP API.
 type Server struct {
-	cfg      config.Config
-	token    string
-	streamer loop.Streamer
-	mcp      *mcp.Pool
-	mu       sync.Mutex
-	runs     map[string]*runState
-	ws       *workspace.Store
-	sidx     *session.Index
-	ln       net.Listener
-	http     *http.Server
+	cfg                    config.Config
+	token                  string
+	streamer               loop.Streamer
+	registry               *provider.Registry
+	requireModelCredential bool
+	mcp                    *mcp.Pool
+	mu                     sync.Mutex
+	runs                   map[string]*runState
+	ws                     *workspace.Store
+	sidx                   *session.Index
+	ln                     net.Listener
+	http                   *http.Server
 }
 
 type runState struct {
@@ -68,14 +71,23 @@ type File struct {
 }
 
 // New builds a server (does not listen).
-func New(opt Options) *Server {
+func New(opt Options) (*Server, error) {
 	tok := opt.Token
 	if tok == "" {
 		tok = newToken()
 	}
+	reg := opt.Registry
+	if reg == nil {
+		var err error
+		reg, err = provider.NewRegistry(opt.Config.Home)
+		if err != nil {
+			return nil, fmt.Errorf("load provider registry: %w", err)
+		}
+	}
+	requireCredential := opt.Streamer == nil
 	st := opt.Streamer
 	if st == nil {
-		st = liveFromConfig(opt.Config)
+		st = liveFromRegistry(reg)
 	}
 	ws := workspace.Open(opt.Config.Home, opt.Config.Sessions.Root)
 	infos, _ := session.List(opt.Config.Sessions.Root)
@@ -86,40 +98,30 @@ func New(opt Options) *Server {
 	_ = ws.Bootstrap(cwds)
 	sidx := session.NewIndex(infos) // reuse the List walk: zero extra reads
 	return &Server{
-		cfg:      opt.Config,
-		token:    tok,
-		streamer: st,
-		mcp:      mcp.NewPool(opt.Config.Home), // serve-wide; not per session / per prompt
-		runs:     map[string]*runState{},
-		ws:       ws,
-		sidx:     sidx,
-	}
+		cfg:                    opt.Config,
+		token:                  tok,
+		streamer:               st,
+		registry:               reg,
+		requireModelCredential: requireCredential,
+		mcp:                    mcp.NewPool(opt.Config.Home), // serve-wide; not per session / per prompt
+		runs:                   map[string]*runState{},
+		ws:                     ws,
+		sidx:                   sidx,
+	}, nil
 }
 
-func liveFromConfig(cfg config.Config) loop.Streamer {
-	return &router{cfg: cfg}
+func liveFromRegistry(reg *provider.Registry) loop.Streamer {
+	return &router{registry: reg}
 }
 
-type router struct{ cfg config.Config }
+type router struct{ registry *provider.Registry }
 
 func (r *router) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
-	m := provider.Lookup(req.Provider, req.Model)
-	p := r.cfg.Providers[req.Provider]
-	base := p.BaseURL
-	if base == "" {
-		base = m.BaseURL
+	_, m, key, err := r.registry.Resolve(req.Provider, req.Model)
+	if err != nil {
+		return types.Message{}, err
 	}
-	// Protocol precedence: per-provider config override (ki.toml `api =`,
-	// e.g. a completions-only vendor's Anthropic-compatible endpoint) beats
-	// the catalog. req.API is the catalog's value already resolved upstream.
-	api := p.API
-	if api == "" {
-		api = req.API
-	}
-	if api == "" {
-		api = m.API
-	}
-	msg, err := provider.NewLive(api, base, p.APIKey, nil).Stream(ctx, req, emit)
+	msg, err := provider.NewLiveModel(m, key, nil).Stream(ctx, req, emit)
 	if err != nil {
 		return msg, fmt.Errorf("stream live provider: %w", err)
 	}
@@ -142,6 +144,15 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})
 	api.HandleFunc("GET /v1/models", s.auth(s.models))
+	api.HandleFunc("GET /v1/providers", s.auth(s.providers))
+	api.HandleFunc("POST /v1/providers", s.auth(s.createProvider))
+	api.HandleFunc("PATCH /v1/providers/{id}", s.auth(s.patchProvider))
+	api.HandleFunc("DELETE /v1/providers/{id}", s.auth(s.deleteProvider))
+	api.HandleFunc("PUT /v1/providers/{id}/credential", s.auth(s.putProviderCredential))
+	api.HandleFunc("POST /v1/providers/{id}/models", s.auth(s.createProviderModel))
+	api.HandleFunc("PATCH /v1/providers/{id}/models", s.auth(s.patchProviderModel))
+	api.HandleFunc("DELETE /v1/providers/{id}/models", s.auth(s.deleteProviderModel))
+	api.HandleFunc("PUT /v1/default-model", s.auth(s.putDefaultModel))
 	api.HandleFunc("GET /v1/meta", s.auth(s.meta))
 	api.HandleFunc("GET /v1/sessions", s.auth(s.list))
 	api.HandleFunc("POST /v1/sessions", s.auth(s.create))
@@ -274,9 +285,10 @@ func ReadServerFile(home string) (File, error) {
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		CWD         string `json:"cwd"`
-		WorkspaceID string `json:"workspaceId"`
-		Model       string `json:"model"`
+		CWD            string `json:"cwd"`
+		WorkspaceID    string `json:"workspaceId"`
+		Model          string `json:"model"`
+		ThinkingEffort string `json:"thinkingEffort"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	rec, err := s.resolveWorkspace(body.WorkspaceID, body.CWD)
@@ -288,25 +300,20 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), code)
 		return
 	}
-	cfg, _ := config.Load(rec.Path)
-	if s.cfg.Home != "" {
-		cfg.Home = s.cfg.Home
-		if s.cfg.Sessions.Root != "" {
-			cfg.Sessions.Root = s.cfg.Sessions.Root
-		}
-		if cfg.Providers == nil {
-			cfg.Providers = s.cfg.Providers
-		}
-		if cfg.Defaults.Provider == "" {
-			cfg.Defaults = s.cfg.Defaults
-		}
+	ref, selectedModel, err := s.registry.ResolveSpec(body.Model, "")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
 	}
-	p, m := provider.Resolve(cfg, "", "", body.Model)
 	root := s.cfg.Sessions.Root
-	if root == "" {
-		root = cfg.Sessions.Root
+	effort := body.ThinkingEffort
+	if effort == "" {
+		effort = provider.DefaultThinking(selectedModel)
+	} else if effort, err = provider.ClampThinking(selectedModel, effort); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
 	}
-	sess, err := session.Create(root, rec.Path, p, m)
+	sess, err := session.Create(root, rec.Path, ref.Provider, ref.Model, effort)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -398,15 +405,22 @@ func (s *Server) sessionCatalog(sess *session.Session) ([]map[string]any, []map[
 }
 
 func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
-	cat := provider.Catalog()
+	cat := s.registry.Models(s.requireModelCredential)
 	out := make([]map[string]any, 0, len(cat))
 	for _, m := range cat {
 		out = append(out, map[string]any{
-			"provider":      m.Provider,
-			"id":            m.ID,
-			"api":           m.API,
-			"contextWindow": m.ContextWindow,
-			"spec":          m.Provider + "/" + m.ID,
+			"provider":       m.Provider,
+			"id":             m.ID,
+			"name":           m.Name,
+			"api":            m.API,
+			"contextWindow":  m.ContextWindow,
+			"maxTokens":      m.MaxTokens,
+			"input":          m.Input,
+			"reasoning":      m.Reasoning,
+			"thinkingLevels": provider.SupportedThinkingLevels(m),
+			"builtin":        m.Builtin,
+			"customized":     m.Customized,
+			"spec":           m.Provider + "/" + m.ID,
 		})
 	}
 	writeJSON(w, 200, out)
@@ -414,10 +428,11 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) meta(w http.ResponseWriter, _ *http.Request) {
 	home, _ := os.UserHomeDir()
+	def := s.registry.Default()
 	writeJSON(w, 200, map[string]any{
 		"home":     home,
-		"provider": s.cfg.Defaults.Provider,
-		"model":    s.cfg.Defaults.Model,
+		"provider": def.Provider,
+		"model":    def.Model,
 	})
 }
 
@@ -429,19 +444,41 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = sess.Close() }()
 	var body struct {
-		Model  string          `json:"model"`
-		Title  *string         `json:"title"`
-		Pinned *bool           `json:"pinned"`
-		Skills *session.Toggle `json:"skills"`
-		MCP    *session.Toggle `json:"mcp"`
+		Model          string          `json:"model"`
+		ThinkingEffort *string         `json:"thinkingEffort"`
+		Title          *string         `json:"title"`
+		Pinned         *bool           `json:"pinned"`
+		Skills         *session.Toggle `json:"skills"`
+		MCP            *session.Toggle `json:"mcp"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if body.Model != "" {
-		p, m := provider.Resolve(s.cfg, sess.Config.Provider, sess.Config.Model, body.Model)
-		if err := sess.SetModel(p, m); err != nil {
+	if body.Model != "" || body.ThinkingEffort != nil {
+		spec := body.Model
+		if spec == "" {
+			spec = sess.Config.Model
+		}
+		ref, model, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		effort := sess.Config.ThinkingEffort
+		if body.ThinkingEffort != nil {
+			effort = *body.ThinkingEffort
+		}
+		if effort == "" {
+			effort = provider.DefaultThinking(model)
+		} else {
+			effort, err = provider.ClampThinking(model, effort)
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		if err := sess.SetModelAndThinking(ref.Provider, ref.Model, effort); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -522,8 +559,27 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "text required", http.StatusBadRequest)
 		return
 	}
-	if _, err := s.open(id); err != nil {
+	sess, err := s.open(id)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if s.running(id) {
+		_ = sess.Close()
+		http.Error(w, "session busy", http.StatusConflict)
+		return
+	}
+	spec := body.Model
+	if spec == "" {
+		spec = sess.Config.Model
+	}
+	ref, _, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
+	if err == nil && s.requireModelCredential {
+		_, _, _, err = s.registry.Resolve(ref.Provider, ref.Model)
+	}
+	_ = sess.Close()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	s.mu.Lock()
@@ -570,12 +626,37 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	defer func() { _ = sess.Close() }()
 	cfg := s.cfg
 	if reqModel != "" {
-		p, m := provider.Resolve(cfg, sess.Config.Provider, sess.Config.Model, reqModel)
-		if err := sess.SetModel(p, m); err != nil {
-			slog.Warn("set model", "session_id", id, "provider", p, "model", m, "err", err)
+		ref, nextModel, resolveErr := s.registry.ResolveSpec(reqModel, sess.Config.Provider)
+		if resolveErr != nil {
+			st.err = resolveErr
+			return
+		}
+		effort := sess.Config.ThinkingEffort
+		if effort == "" {
+			effort = provider.DefaultThinking(nextModel)
+		} else if effort, resolveErr = provider.ClampThinking(nextModel, effort); resolveErr != nil {
+			st.err = resolveErr
+			return
+		}
+		if err := sess.SetModelAndThinking(ref.Provider, ref.Model, effort); err != nil {
+			slog.Warn("set model", "session_id", id, "provider", ref.Provider, "model", ref.Model, "err", err)
 		}
 	}
-	info := provider.Lookup(sess.Config.Provider, sess.Config.Model)
+	_, info, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
+	if !ok {
+		st.err = fmt.Errorf("model %q/%q is unavailable", sess.Config.Provider, sess.Config.Model)
+		return
+	}
+	runStreamer := s.streamer
+	if s.requireModelCredential {
+		_, resolved, key, resolveErr := s.registry.Resolve(sess.Config.Provider, sess.Config.Model)
+		if resolveErr != nil {
+			st.err = resolveErr
+			return
+		}
+		info = resolved
+		runStreamer = provider.NewLiveModel(resolved, key, nil)
+	}
 	jobs := tools.NewJobStore()
 	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs}.All()
 	mcpFile := mcp.Load(cfg.Home, sess.Header.CWD)
@@ -604,7 +685,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 			for _, t := range ev.Tools {
 				tools = append(tools, session.ToolSchema{Name: t.Name, Description: t.Description, Parameters: t.Parameters})
 			}
-			if _, err := sess.AppendRequestHeader(ev.System, tools); err != nil {
+			if _, err := sess.AppendRequestHeader(ev.System, tools, session.RequestMeta{Provider: sess.Config.Provider, Model: sess.Config.Model, ThinkingEffort: sess.Config.ThinkingEffort, CatalogVersion: provider.CatalogVersion, Pricing: info.Cost}); err != nil {
 				return fmt.Errorf("append request header: %w", err)
 			}
 		}
@@ -619,6 +700,27 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		st.evs = append(st.evs, ev)
 		st.wait.Broadcast()
 		st.mu.Unlock()
+		if ev.Type == loop.RequestHeader || (ev.Type == loop.MessageEnd && ev.Message != nil && ev.Message.Role == "assistant") {
+			messages := sess.MessagesToLeaf()
+			used := compact.EstimateTokens(messages, sess.LastCompactionAt())
+			if ev.Type == loop.RequestHeader && !hasUsableContextUsage(messages, sess.LastCompactionAt()) {
+				toolJSON, _ := json.Marshal(ev.Tools)
+				used += (len(ev.System) + len(toolJSON) + 3) / 4
+			}
+			window := info.ContextWindow
+			if cap := cfg.Compaction.MaxContextTokens; cap > 0 && cap < window {
+				window = cap
+			}
+			estimated := ev.Type == loop.RequestHeader || ev.Message == nil || !usableUsage(ev.Message.Usage)
+			if _, err := sess.AppendContextUsage(used, window, estimated); err != nil {
+				return fmt.Errorf("append context usage: %w", err)
+			}
+			contextEvent := loop.Event{Type: loop.ContextUsage, Provider: sess.Config.Provider, Model: sess.Config.Model, CatalogVersion: provider.CatalogVersion, UsedTokens: used, ContextWindow: window, Estimated: estimated}
+			st.mu.Lock()
+			st.evs = append(st.evs, contextEvent)
+			st.wait.Broadcast()
+			st.mu.Unlock()
+		}
 		if ev.Type == loop.AgentEnd {
 			// agent_end 后：threshold 检查——上下文超窗口就压缩。
 			if s.shouldCompact(sess, info.ContextWindow) {
@@ -647,15 +749,22 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	}
 
 	_, err = loop.Run(ctx, text, sess.MessagesToLeaf(), loop.Config{
-		Streamer:   s.streamer,
-		Tools:      tls,
-		System:     sys,
-		Provider:   sess.Config.Provider,
-		Model:      sess.Config.Model,
-		API:        info.API,
-		MaxRetries: 5,
-		BaseDelay:  2 * time.Second,
-		Parallel:   true,
+		Streamer:                runStreamer,
+		Tools:                   tls,
+		System:                  sys,
+		Provider:                sess.Config.Provider,
+		Model:                   sess.Config.Model,
+		API:                     info.API,
+		MaxTokens:               info.MaxTokens,
+		ThinkingEffort:          sess.Config.ThinkingEffort,
+		ThinkingFormat:          info.Compat.ThinkingFormat,
+		MaxTokensField:          info.Compat.MaxTokensField,
+		SupportsReasoningEffort: info.Compat.SupportsReasoningEffort,
+		ForceAdaptiveThinking:   info.Compat.ForceAdaptiveThinking,
+		ThinkingLevelMap:        info.ThinkingLevelMap,
+		MaxRetries:              5,
+		BaseDelay:               2 * time.Second,
+		Parallel:                true,
 		Hooks: loop.Hooks{
 			// 溢出恢复：请求报上下文溢出时，同 Run 内压缩后重试（事件不重放）。
 			// 失败的 assistant 留在 history，但 provider replayable 会在重试时
@@ -666,6 +775,21 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		},
 	}, emit)
 	st.err = err
+}
+
+func usableUsage(usage *types.Usage) bool {
+	return usage != nil && (usage.TotalTokens > 0 || usage.Input+usage.Output+usage.CacheRead+usage.CacheWrite > 0)
+}
+
+func hasUsableContextUsage(messages []types.Message, after int64) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if m.Role != "assistant" {
+			continue
+		}
+		return (after == 0 || m.Timestamp > after) && usableUsage(m.Usage)
+	}
+	return false
 }
 
 func (s *Server) summarizer(provider, model string) compact.Summarizer {

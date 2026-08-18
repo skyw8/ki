@@ -12,28 +12,11 @@ import (
 
 // Config is the merged runtime configuration.
 type Config struct {
-	Home       string              `mapstructure:"-"`
-	Defaults   Defaults            `mapstructure:"defaults"`
-	Providers  map[string]Provider `mapstructure:"providers"`
-	Sessions   Sessions            `mapstructure:"sessions"`
-	Compaction Compaction          `mapstructure:"compaction"`
-	Server     Server              `mapstructure:"server"`
-	Log        Log                 `mapstructure:"log"`
-}
-
-// Defaults is the cross-session default model.
-type Defaults struct {
-	Provider string `mapstructure:"provider"`
-	Model    string `mapstructure:"model"`
-}
-
-// Provider is one model vendor's connection settings.
-type Provider struct {
-	APIKey  string `mapstructure:"api_key"`
-	BaseURL string `mapstructure:"base_url"`
-	// API overrides the protocol shape from the model catalog
-	// ("completions" | "responses" | "anthropic"). Empty = catalog decides.
-	API string `mapstructure:"api"`
+	Home       string     `mapstructure:"-"`
+	Sessions   Sessions   `mapstructure:"sessions"`
+	Compaction Compaction `mapstructure:"compaction"`
+	Server     Server     `mapstructure:"server"`
+	Log        Log        `mapstructure:"log"`
 }
 
 // Sessions holds session storage settings.
@@ -72,15 +55,6 @@ func Builtin(home string) Config {
 	}
 	return Config{
 		Home: home,
-		Providers: map[string]Provider{
-			"openai":       {},
-			"anthropic":    {},
-			"zhipu":        {},
-			"zhipu-cn":     {},
-			"deepseek":     {},
-			"dashscope":    {},
-			"dashscope-cn": {},
-		},
 		Sessions: Sessions{
 			Root: filepath.Join(home, "sessions"),
 		},
@@ -155,13 +129,6 @@ func LoadWithViper(cwd string, settings *viper.Viper) (Config, error) {
 }
 
 func setDefaults(settings *viper.Viper, cfg Config) {
-	settings.SetDefault("defaults.provider", cfg.Defaults.Provider)
-	settings.SetDefault("defaults.model", cfg.Defaults.Model)
-	for id, p := range cfg.Providers {
-		settings.SetDefault("providers."+id+".api_key", p.APIKey)
-		settings.SetDefault("providers."+id+".base_url", p.BaseURL)
-		settings.SetDefault("providers."+id+".api", p.API)
-	}
 	settings.SetDefault("sessions.root", cfg.Sessions.Root)
 	settings.SetDefault("compaction.enabled", cfg.Compaction.Enabled)
 	settings.SetDefault("compaction.reserve_tokens", cfg.Compaction.ReserveTokens)
@@ -174,34 +141,7 @@ func setDefaults(settings *viper.Viper, cfg Config) {
 }
 
 func mergeEnv(settings *viper.Viper) error {
-	providers := map[string]any{}
-	setProviderKey := func(env, id string) {
-		if value := strings.TrimSpace(os.Getenv(env)); value != "" {
-			providers[id] = map[string]any{"api_key": value}
-		}
-	}
-	setProviderKey("OPENAI_API_KEY", "openai")
-	setProviderKey("ANTHROPIC_API_KEY", "anthropic")
-	if value := firstEnv("ZHIPU_API_KEY", "ZAI_API_KEY"); value != "" {
-		providers["zhipu"] = map[string]any{"api_key": value}
-	}
-	setProviderKey("ZAI_CODING_CN_API_KEY", "zhipu-cn")
-	setProviderKey("DEEPSEEK_API_KEY", "deepseek")
-	setProviderKey("DASHSCOPE_API_KEY", "dashscope")
-
-	// CN dashscope shares DASHSCOPE_API_KEY only when neither a dedicated env
-	// value nor a TOML value already supplies dashscope-cn credentials.
-	if value := strings.TrimSpace(os.Getenv("DASHSCOPE_CN_API_KEY")); value != "" {
-		providers["dashscope-cn"] = map[string]any{"api_key": value}
-	} else if value := strings.TrimSpace(os.Getenv("DASHSCOPE_API_KEY")); value != "" &&
-		strings.TrimSpace(settings.GetString("providers.dashscope-cn.api_key")) == "" {
-		providers["dashscope-cn"] = map[string]any{"api_key": value}
-	}
-
 	envSettings := map[string]any{}
-	if len(providers) > 0 {
-		envSettings["providers"] = providers
-	}
 	if value := strings.TrimSpace(os.Getenv("KI_SERVER_ADDR")); value != "" {
 		envSettings["server"] = map[string]any{"addr": value}
 	}
@@ -212,15 +152,6 @@ func mergeEnv(settings *viper.Viper) error {
 		return fmt.Errorf("merge environment config: %w", err)
 	}
 	return nil
-}
-
-func firstEnv(names ...string) string {
-	for _, name := range names {
-		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func mergeFile(settings *viper.Viper, path string) error {
@@ -244,10 +175,4 @@ func mergeFile(settings *viper.Viper, path string) error {
 		return fmt.Errorf("merge file config: %w", err)
 	}
 	return nil
-}
-
-// HasKey reports whether a provider has an API key after merge.
-func (c Config) HasKey(id string) bool {
-	p, ok := c.Providers[id]
-	return ok && strings.TrimSpace(p.APIKey) != ""
 }

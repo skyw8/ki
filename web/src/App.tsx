@@ -1,16 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ApiError, Client, boot } from './api'
 import { ChatView } from './Chat'
 import { DirectoryBrowser } from './DirectoryBrowser'
 import { SessionConfig } from './SessionConfig'
-import { IChev, IChevDown, IClose, IDots, IEdit, IFolder, IGear, IPanel, IPin, IPlus, ISearch, ISend, IStop, ITrash } from './icons'
+import { ProviderSettings } from './ProviderSettings'
+import { Select } from './Select'
+import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFolder, IGear, IPanel, IPin, IPlus, ISearch, ISend, IStop, ITrash } from './icons'
 import { appendOptimisticUser, applyEvent, emptyView, loadHistory } from './model'
 import type { ChatNode, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
+type SettingsPage = 'providers' | 'appearance'
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
 
@@ -23,6 +26,23 @@ function basename(p: string): string {
 function loadExpanded(): Record<string, boolean> {
   try { return JSON.parse(localStorage.getItem(EXPAND_KEY) || '{}') as Record<string, boolean> }
   catch { return {} }
+}
+
+function fuzzyTextMatch(value: string, query: string): boolean {
+  const haystack = value.normalize('NFKC').toLocaleLowerCase()
+  const needle = query.normalize('NFKC').toLocaleLowerCase()
+  if (haystack.includes(needle)) return true
+  let cursor = 0
+  for (const char of haystack) {
+    if (char === needle[cursor]) cursor++
+    if (cursor === needle.length) return true
+  }
+  return needle.length === 0
+}
+
+function modelMatches(model: ModelInfo, query: string): boolean {
+  const fields = [model.provider, model.id, model.name, model.spec, `${model.provider}/${model.id}`]
+  return query.trim().split(/\s+/).every(token => fields.some(field => fuzzyTextMatch(field || '', token)))
 }
 
 function Modal({ title, onClose, children, testid }: { title: string; onClose: () => void; children: ReactNode; testid?: string }) {
@@ -38,7 +58,7 @@ function Modal({ title, onClose, children, testid }: { title: string; onClose: (
   }, [onClose])
   return createPortal(
     <div className="modal-mask" onClick={onClose} data-testid={testid ? `${testid}-mask` : undefined}>
-      <div className="modal" data-testid={testid} onClick={e => e.stopPropagation()} role="dialog" aria-label={title}>
+      <div className={`modal${testid === 'settings' ? ' settings-modal' : ''}`} data-testid={testid} onClick={e => e.stopPropagation()} role="dialog" aria-label={title}>
         <div className="modal-head">
           <h2>{title}</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label={t('dialog.close')}><IClose /></button>
@@ -51,7 +71,7 @@ function Modal({ title, onClose, children, testid }: { title: string; onClose: (
 }
 
 function Composer({
-  value, onChange, onSend, onStop, busy, disabled, hero, cwd, model, err, onPickModel,
+  value, onChange, onSend, onStop, busy, disabled, hero, cwd, model, err, onPickModel, thinkingLevels, thinkingEffort, onThinking, contextUsage,
 }: {
   value: string
   onChange: (v: string) => void
@@ -64,6 +84,10 @@ function Composer({
   model?: string
   err?: string | null
   onPickModel?: () => void
+	thinkingLevels?: string[]
+	thinkingEffort?: string
+	onThinking?: (effort: string) => void
+	contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
 }) {
   const { t } = useI18n()
   const ref = useRef<HTMLTextAreaElement>(null)
@@ -98,7 +122,15 @@ function Composer({
           <button type="button" className="model-chip" data-testid="open-model" onClick={onPickModel}>
             {model || t('composer.pickModel')}
           </button>
+		  {thinkingLevels && thinkingLevels.length > 1 ? <Select
+			className="thinking-select"
+			ariaLabel="Thinking effort"
+			value={thinkingEffort || thinkingLevels[0]}
+			options={thinkingLevels.map(level => ({ value: level, label: level }))}
+			onChange={value => onThinking?.(value)}
+		  /> : null}
           <span className="grow" />
+		  {contextUsage?.contextWindow ? <span className="context-meter" title={`${contextUsage.estimated ? '~' : ''}${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens`} style={{ '--context-pct': `${Math.min(100, contextUsage.usedTokens / contextUsage.contextWindow * 100)}%` } as CSSProperties}>{contextUsage.estimated ? '~' : ''}{Math.round(contextUsage.usedTokens / contextUsage.contextWindow * 100)}%</span> : null}
           {busy ? (
             <button type="button" className="send stop" data-testid="composer-stop" onClick={onStop} aria-label={t('composer.stop')}><IStop /></button>
           ) : (
@@ -136,7 +168,9 @@ export function App() {
   const [err, setErr] = useState<string | null>(null)
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
+	const [settingsPage, setSettingsPage] = useState<SettingsPage>('providers')
   const [modelOpen, setModelOpen] = useState(false)
+  const [modelQuery, setModelQuery] = useState('')
   const [dirOpen, setDirOpen] = useState(false)
   const [dirBusy, setDirBusy] = useState(false)
   const [menu, setMenu] = useState<{ kind: 'ws' | 'sess'; id: string } | null>(null)
@@ -149,6 +183,7 @@ export function App() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const searchRootRef = useRef<HTMLDivElement>(null)
+  const modelSearchRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     document.body.dataset.theme = dark ? 'dark' : 'light'
@@ -157,6 +192,11 @@ export function App() {
   }, [dark])
 
   useEffect(() => { localStorage.setItem(EXPAND_KEY, JSON.stringify(expanded)) }, [expanded])
+
+  useEffect(() => {
+    if (!modelOpen) return
+    requestAnimationFrame(() => modelSearchRef.current?.focus())
+  }, [modelOpen])
 
   useEffect(() => {
     if (!collapsed) {
@@ -188,6 +228,7 @@ export function App() {
   useEffect(() => {
     void api.models().then(setModels).catch(() => setModels([]))
   }, [api])
+	const refreshModels = useCallback(() => { void api.models().then(setModels).catch(() => setModels([])) }, [api])
 
   const refreshList = useCallback(async () => {
     try {
@@ -265,7 +306,7 @@ export function App() {
     await refreshList()
     setCurrentId(s.id)
     setSelectedWs(s.workspaceId ?? workspaceId ?? null)
-    setView({ ...emptyView(), cwd: s.cwd, model: s.model, provider: s.provider })
+    setView({ ...emptyView(), cwd: s.cwd, model: s.model, provider: s.provider, thinkingEffort: s.thinkingEffort ?? '' })
     setTab('conversation')
     if (s.workspaceId) {
       setExpanded(e => ({ ...e, [s.workspaceId!]: true }))
@@ -315,14 +356,26 @@ export function App() {
     const [p, m] = spec.includes('/') ? spec.split('/') : [view.provider, spec]
     setView(v => ({ ...v, provider: p || v.provider, model: m || v.model }))
     setModelOpen(false)
+    setModelQuery('')
     if (!currentId) return
     try {
       const out = await api.patch(currentId, { model: spec })
-      setView(v => ({ ...v, model: out.model, provider: out.provider }))
+	  setView(v => ({ ...v, model: out.model, provider: out.provider, thinkingEffort: out.thinkingEffort ?? '' }))
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
   }, [api, currentId, view.provider])
+
+  const selectedModel = useMemo(() => models.find(m => m.provider === view.provider && m.id === view.model), [models, view.model, view.provider])
+	const filteredModels = useMemo(() => modelQuery.trim() ? models.filter(model => modelMatches(model, modelQuery)) : models, [modelQuery, models])
+	const switchThinking = useCallback(async (thinkingEffort: string) => {
+		setView(v => ({ ...v, thinkingEffort }))
+		if (!currentId) return
+		try {
+			const out = await api.patch(currentId, { thinkingEffort })
+			setView(v => ({ ...v, thinkingEffort: out.thinkingEffort ?? thinkingEffort }))
+		} catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+	}, [api, currentId])
 
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
 
@@ -385,7 +438,11 @@ export function App() {
       cwd={view.cwd}
       model={view.model}
       err={err}
-      onPickModel={() => setModelOpen(true)}
+      onPickModel={() => { setModelQuery(''); setModelOpen(true) }}
+	  thinkingLevels={selectedModel?.thinkingLevels}
+	  thinkingEffort={view.thinkingEffort}
+	  onThinking={effort => void switchThinking(effort)}
+	  contextUsage={view.contextUsage}
     />
   )
 
@@ -769,9 +826,22 @@ export function App() {
       />
 
       {modelOpen ? (
-        <Modal title={t('model.title')} onClose={() => setModelOpen(false)} testid="model-dialog">
+        <Modal title={t('model.title')} onClose={() => { setModelOpen(false); setModelQuery('') }} testid="model-dialog">
+          <div className="model-search-wrap">
+            <ISearch />
+            <input
+              ref={modelSearchRef}
+              type="search"
+              data-testid="model-search"
+              aria-label={t('model.search')}
+              placeholder={t('model.searchPlaceholder')}
+              value={modelQuery}
+              onChange={event => setModelQuery(event.target.value)}
+            />
+            {modelQuery ? <button type="button" aria-label={t('model.clearSearch')} onClick={() => { setModelQuery(''); modelSearchRef.current?.focus() }}><IClose /></button> : null}
+          </div>
           <ul className="model-list">
-            {models.map(m => {
+            {filteredModels.map(m => {
               const on = view.provider === m.provider && view.model === m.id
               return (
                 <li key={m.spec}>
@@ -782,43 +852,45 @@ export function App() {
                     data-spec={m.spec}
                     onClick={() => void switchModel(m.spec)}
                   >
-                    <span className="model-opt-id">{m.id}</span>
-                    <span className="model-opt-p">{m.provider}</span>
+                    <span className="model-opt-copy"><strong>{m.name || m.id}</strong><small>{m.name && m.name !== m.id ? `${m.provider} / ${m.id}` : m.provider}</small></span>
+                    {on ? <ICheck /> : null}
                   </button>
                 </li>
               )
             })}
           </ul>
+          {!filteredModels.length ? <div className="model-search-empty" data-testid="model-search-empty"><ISearch /><span>{t('model.noResults')}</span></div> : null}
         </Modal>
       ) : null}
 
       {settingsOpen ? (
         <Modal title={t('settings.title')} onClose={() => setSettingsOpen(false)} testid="settings">
-          <div className="set-block">
-            <div className="set-label">{t('settings.appearance')}</div>
-            <div className="theme-picks" data-testid="settings-theme">
-              <button type="button" className={`theme-pick${!dark ? ' on' : ''}`} onClick={() => setDark(false)}>
-                <span className="theme-swatch light" aria-hidden />
-                <span>{t('settings.themeLight')}</span>
-              </button>
-              <button type="button" className={`theme-pick${dark ? ' on' : ''}`} onClick={() => setDark(true)}>
-                <span className="theme-swatch dark" aria-hidden />
-                <span>{t('settings.themeDark')}</span>
-              </button>
-            </div>
-          </div>
-          <div className="set-block">
-            <div className="set-label">{t('settings.language')}</div>
-            <div className="lang-picks" data-testid="settings-lang">
-              <button type="button" className={`lang-pick${lang === 'zh' ? ' on' : ''}`} data-testid="lang-zh" onClick={() => setLang('zh')}>
-                {t('settings.langZh')}
-              </button>
-              <button type="button" className={`lang-pick${lang === 'en' ? ' on' : ''}`} data-testid="lang-en" onClick={() => setLang('en')}>
-                {t('settings.langEn')}
-              </button>
-            </div>
-          </div>
-          <p className="set-hint">{t('settings.hint')}</p>
+		  <nav className="settings-tabs" role="tablist" aria-label={t('settings.title')}>
+			<button type="button" role="tab" aria-selected={settingsPage === 'providers'} className={settingsPage === 'providers' ? 'on' : ''} data-testid="settings-tab-providers" onClick={() => setSettingsPage('providers')}>{t('settings.providers')}</button>
+			<button type="button" role="tab" aria-selected={settingsPage === 'appearance'} className={settingsPage === 'appearance' ? 'on' : ''} data-testid="settings-tab-appearance" onClick={() => setSettingsPage('appearance')}>{t('settings.appearanceLanguage')}</button>
+		  </nav>
+		  <div className="settings-page">
+			{settingsPage === 'providers' ? <ProviderSettings api={api} onChanged={refreshModels} /> : (
+			  <div className="preference-page" data-testid="appearance-settings">
+				<header className="settings-page-title"><h3>{t('settings.appearanceLanguage')}</h3><p>{t('settings.preferenceHint')}</p></header>
+				<section className="preference-section">
+				  <div className="preference-copy"><h4>{t('settings.appearance')}</h4><p>{t('settings.themeHint')}</p></div>
+				  <div className="theme-picks" data-testid="settings-theme" role="radiogroup" aria-label={t('settings.appearance')}>
+					<button type="button" role="radio" aria-checked={!dark} className={`theme-pick${!dark ? ' on' : ''}`} onClick={() => setDark(false)}><span className="theme-swatch light" aria-hidden /><span>{t('settings.themeLight')}</span></button>
+					<button type="button" role="radio" aria-checked={dark} className={`theme-pick${dark ? ' on' : ''}`} onClick={() => setDark(true)}><span className="theme-swatch dark" aria-hidden /><span>{t('settings.themeDark')}</span></button>
+				  </div>
+				</section>
+				<section className="preference-section inline">
+				  <div className="preference-copy"><h4>{t('settings.language')}</h4><p>{t('settings.languageHint')}</p></div>
+				  <div className="lang-picks" data-testid="settings-lang" role="radiogroup" aria-label={t('settings.language')}>
+					<button type="button" role="radio" aria-checked={lang === 'zh'} className={`lang-pick${lang === 'zh' ? ' on' : ''}`} data-testid="lang-zh" onClick={() => setLang('zh')}>{t('settings.langZh')}</button>
+					<button type="button" role="radio" aria-checked={lang === 'en'} className={`lang-pick${lang === 'en' ? ' on' : ''}`} data-testid="lang-en" onClick={() => setLang('en')}>{t('settings.langEn')}</button>
+				  </div>
+				</section>
+				<p className="preference-footnote">{t('settings.hint')}</p>
+			  </div>
+			)}
+		  </div>
         </Modal>
       ) : null}
     </div>

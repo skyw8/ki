@@ -13,27 +13,133 @@ async function sendPrompt(page: Page, text: string) {
 
 test.describe.configure({ mode: 'serial' })
 
-test('page boots and settings stub is empty', async ({ page }) => {
+test('settings navigation and controls are consistent', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
   await expect(page.getByRole('heading', { name: '开始对话' })).toBeVisible()
   await expect(page.getByTestId('composer-input')).toBeVisible()
   await page.getByTestId('open-settings').click()
-  await expect(page.getByTestId('settings')).toContainText('外观')
+  await expect(page.getByTestId('settings-tab-providers')).toHaveText('模型供应商')
+  await expect(page.getByTestId('settings-tab-appearance')).toHaveText('主题和语言')
+  await expect(page.getByTestId('provider-settings')).toContainText('Anthropic')
+  await expect(page.getByTestId('settings-theme')).toHaveCount(0)
+
+  const baseURL = page.getByTestId('provider-base-url')
+  const apiProtocol = page.getByTestId('provider-api')
+  await expect(baseURL).toBeVisible()
+  await expect(apiProtocol).toBeVisible()
+  const controlMetrics = await Promise.all([baseURL, apiProtocol].map(locator => locator.evaluate(element => {
+    const style = getComputedStyle(element)
+    return { height: style.height, fontSize: style.fontSize, lineHeight: style.lineHeight, fontFamily: style.fontFamily }
+  })))
+  expect(controlMetrics[0]).toEqual(controlMetrics[1])
+  expect(controlMetrics[0].height).toBe('40px')
+  expect(controlMetrics[0].fontSize).toBe('14px')
+  await apiProtocol.click()
+  const apiListbox = page.getByRole('listbox', { name: 'API 协议' })
+  await expect(apiListbox).toBeVisible()
+  await expect(apiListbox.locator('[role="option"][aria-selected="true"]')).toHaveCount(1)
+  await apiProtocol.press('ArrowDown')
+  await apiProtocol.press('Escape')
+  await expect(page.getByRole('listbox', { name: 'API 协议' })).toHaveCount(0)
+
+  const providerList = page.locator('.provider-nav')
+  const providerContent = page.locator('.provider-content')
+  const scrollLayout = await page.evaluate(() => {
+    const outer = document.querySelector<HTMLElement>('.settings-page')!
+    const left = document.querySelector<HTMLElement>('.provider-nav')!
+    const right = document.querySelector<HTMLElement>('.provider-content')!
+    return {
+      outerOverflow: getComputedStyle(outer).overflow,
+      leftOverflow: getComputedStyle(left).overflowY,
+      rightOverflow: getComputedStyle(right).overflowY,
+      leftScrollable: left.scrollHeight > left.clientHeight,
+      rightScrollable: right.scrollHeight > right.clientHeight,
+    }
+  })
+  expect(scrollLayout).toEqual({ outerOverflow: 'hidden', leftOverflow: 'auto', rightOverflow: 'auto', leftScrollable: true, rightScrollable: true })
+  await providerList.evaluate(element => { element.scrollTop = 120 })
+  expect(await providerList.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+  expect(await providerContent.evaluate(element => element.scrollTop)).toBe(0)
+  const leftScroll = await providerList.evaluate(element => element.scrollTop)
+  await providerContent.evaluate(element => { element.scrollTop = 120 })
+  expect(await providerContent.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+  expect(await providerList.evaluate(element => element.scrollTop)).toBe(leftScroll)
+
+  await page.getByTestId('settings-tab-appearance').click()
+  await expect(page.getByTestId('appearance-settings')).toBeVisible()
   await expect(page.getByTestId('settings-theme')).toBeVisible()
   await expect(page.getByTestId('settings-lang')).toBeVisible()
   await expect(page.getByTestId('settings')).not.toContainText('Skills')
   await expect(page.getByTestId('settings')).not.toContainText('MCP')
   await page.getByTestId('lang-en').click()
-  await expect(page.getByTestId('settings')).toContainText('Appearance')
+  await expect(page.getByTestId('settings-tab-appearance')).toHaveText('Theme & language')
   await expect(page.getByTestId('tab-conversation')).toHaveText('Chat')
   await page.getByTestId('lang-zh').click()
-  await expect(page.getByTestId('settings')).toContainText('外观')
+  await expect(page.getByTestId('settings-tab-appearance')).toHaveText('主题和语言')
   await expect(page.getByTestId('tab-conversation')).toHaveText('对话')
   await page.getByTestId('settings-mask').click({ position: { x: 4, y: 4 } })
   await expect(page.getByTestId('settings')).toHaveCount(0)
   await page.getByTestId('open-model').click()
   await expect(page.getByTestId('model-dialog')).toBeVisible()
+  const modelSearch = page.getByTestId('model-search')
+  await expect(modelSearch).toBeFocused()
+  await modelSearch.fill('anthr snnt')
+  await expect(page.getByTestId('model-option')).not.toHaveCount(0)
+  for (const spec of await page.getByTestId('model-option').evaluateAll(options => options.map(option => option.getAttribute('data-spec') || ''))) {
+    expect(spec.toLowerCase()).toContain('anthropic/')
+    expect(spec.toLowerCase()).toContain('sonnet')
+  }
+  await modelSearch.fill('provider-model-that-does-not-exist')
+  await expect(page.getByTestId('model-search-empty')).toBeVisible()
+  await page.getByRole('button', { name: '清除模型搜索' }).click()
+  await expect(page.getByTestId('model-option')).not.toHaveCount(0)
+})
+
+test('provider settings supports a complete add and edit flow', async ({ page }) => {
+  const providerID = `pw-provider-${Date.now()}`
+  const modelID = `pw-model-${Date.now()}`
+  await page.goto('/')
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('add-provider').click()
+
+  await expect(page.getByTestId('new-provider-dialog')).toBeVisible()
+  await expect(page.getByTestId('new-provider-form').getByLabel('供应商 ID')).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('new-provider-dialog')).toHaveCount(0)
+  await expect(page.getByTestId('settings')).toBeVisible()
+  await page.getByTestId('add-provider').click()
+
+  const create = page.getByTestId('new-provider-form')
+  await create.getByLabel('供应商 ID').fill(providerID)
+  await create.getByLabel('显示名称').fill('Playwright Provider')
+  await create.getByLabel('Base URL').fill('https://example.test/v1')
+  await create.getByRole('combobox', { name: 'API 协议' }).click()
+  await page.getByRole('option', { name: 'Responses' }).click()
+  await create.getByLabel('首个模型 ID').fill('starter-model')
+  await create.getByRole('button', { name: '创建供应商' }).click()
+
+  await expect(page.getByTestId('new-provider-dialog')).toHaveCount(0)
+  await expect(page.getByRole('option', { name: new RegExp(providerID) })).toBeVisible()
+  const connection = page.getByTestId('provider-connection-form')
+  await expect(connection.getByLabel('供应商 ID')).toHaveValue(providerID)
+  await connection.getByLabel('显示名称').fill('Playwright Provider Edited')
+  await connection.getByLabel('Base URL').fill('https://example.test/responses/v1')
+  await connection.getByRole('button', { name: '保存更改' }).click()
+  await expect(page.getByRole('heading', { name: 'Playwright Provider Edited' })).toBeVisible()
+  await expect(connection.getByLabel('Base URL')).toHaveValue('https://example.test/responses/v1')
+
+  await page.getByTestId('add-model').click()
+  const model = page.getByTestId('new-model-form')
+  await model.getByLabel('模型 ID').fill(modelID)
+  await model.getByLabel('显示名称').fill('Playwright Model')
+  await model.getByLabel('上下文窗口').fill('64000')
+  await model.getByLabel('最大输出').fill('8192')
+  await model.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(page.getByTestId('provider-model-row').filter({ hasText: modelID })).toContainText('64,000 ctx')
+
+  await page.getByRole('button', { name: '删除供应商' }).click()
+  await expect(page.getByRole('option', { name: new RegExp(providerID) })).toHaveCount(0)
 })
 
 test('chat and trajectory talk to the fake runtime', async ({ page }) => {
