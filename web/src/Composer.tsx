@@ -4,6 +4,14 @@ import type { Client } from './api'
 import { AttachmentImage } from './AttachmentImage'
 import { Select } from './Select'
 import { useI18n } from './i18n'
+import {
+  cacheHitPercent,
+  formatCost,
+  formatDuration,
+  formatTokens,
+  formatTokensPerSecond,
+  type SessionStats,
+} from './model'
 import type { Content } from './types'
 
 export type Draft = { text: string; attachments: Content[] }
@@ -21,7 +29,40 @@ function fileKind(content: Content): string {
   return name.slice(dot + 1).toLocaleUpperCase().slice(0, 5)
 }
 
-export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFiles, onCancel, busy, uploading, disabled, hero, cwd, model, err, onPickModel, thinkingLevels, thinkingEffort, onThinking, contextUsage, mode = 'new' }: {
+function SessionStatsLine({ stats, t }: { stats: SessionStats; t: ReturnType<typeof useI18n>['t'] }) {
+  const groups: string[] = []
+  if (stats.turns > 0 || stats.steps > 0) {
+    groups.push(t('stats.counts', { turns: stats.turns, steps: stats.steps }))
+  }
+  const speeds: string[] = []
+  if (stats.ttftSteps > 0) {
+    speeds.push(t('stats.ttft', { duration: formatDuration(stats.ttftMs / stats.ttftSteps) }))
+  }
+  if (stats.decodeMs > 0) {
+    speeds.push(t('stats.tps', { tps: formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1_000)) }))
+  }
+  if (speeds.length > 0) groups.push(speeds.join(' · '))
+  const hit = cacheHitPercent(stats)
+  if (hit !== null) groups.push(t('stats.cacheHit', { percent: hit }))
+  if (stats.input > 0 || stats.output > 0) {
+    groups.push(t('stats.tokens', { input: formatTokens(stats.input), output: formatTokens(stats.output) }))
+  }
+  if (stats.hasCost) groups.push(t('stats.cost', { amount: formatCost(stats.cost) }))
+  if (groups.length === 0) return null
+  const line = groups.join(' | ')
+  return (
+    <div className="session-stats" data-testid="session-stats" title={line}>
+      {groups.map((group, i) => (
+        <span key={`${i}:${group}`} className="session-stats-g">
+          {i > 0 ? <span className="session-stats-sep" aria-hidden>|</span> : null}
+          {group}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFiles, onCancel, busy, uploading, disabled, hero, cwd, model, err, onPickModel, thinkingLevels, thinkingEffort, onThinking, contextUsage, stats, mode = 'new' }: {
   api: Client
   draft: Draft
   onChange: (draft: Draft) => void
@@ -42,6 +83,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
   thinkingEffort?: string
   onThinking?: (effort: string) => void
   contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
+  stats?: SessionStats
   mode?: 'new' | 'edit'
 }) {
   const { t } = useI18n()
@@ -104,6 +146,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
           {busy && mode === 'new' ? <button type="button" className="send stop" data-testid="composer-stop" onClick={onStop} aria-label={t('composer.stop')}><IStop /></button> : <button type="button" className="send" data-testid={mode === 'edit' ? 'edit-send' : 'composer-send'} disabled={disabled || !canSend || busy} onClick={onSend} aria-label={mode === 'edit' ? t('composer.sendEdit') : t('composer.send')}><ISend /></button>}
         </div>
       </div>
+      {mode === 'new' && !hero && stats ? <SessionStatsLine stats={stats} t={t} /> : null}
     </div>
   )
 }
