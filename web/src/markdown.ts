@@ -2,16 +2,58 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
-function inline(s: string): string {
-  return escapeHtml(s)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
+// Models sometimes emit fullwidth backticks; treat them as ASCII so
+// `code` spans are not left visible in the bubble.
+function normalize(src: string): string {
+  return src.replace(/\r\n/g, '\n').replace(/\uFF40/g, '`')
+}
+
+function decorate(escaped: string): string {
+  return escaped
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
     .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
 }
 
+// Tokenize code spans first (CommonMark: matching backtick runs) so
+// emphasis and links cannot rewrite the inside of `code`.
+function inline(src: string): string {
+  let out = ''
+  let i = 0
+  while (i < src.length) {
+    if (src[i] === '`') {
+      let n = 0
+      while (i + n < src.length && src[i + n] === '`') n++
+      const fence = src.slice(i, i + n)
+      const close = src.indexOf(fence, i + n)
+      if (close !== -1 && src[close + n] !== '`') {
+        let body = src.slice(i + n, close)
+        if (body.length >= 2 && body.startsWith(' ') && body.endsWith(' ')) body = body.slice(1, -1)
+        out += `<code>${escapeHtml(body)}</code>`
+        i = close + n
+        continue
+      }
+      out += escapeHtml(fence)
+      i += n
+      continue
+    }
+    let j = i + 1
+    while (j < src.length && src[j] !== '`') j++
+    out += decorate(escapeHtml(src.slice(i, j)))
+    i = j
+  }
+  return out
+}
+
+const OPEN_FENCE = /^( {0,3})(`{3,}|~{3,})(.*)$/
+const CLOSE_FENCE = /^( {0,3})(`{3,}|~{3,})\s*$/
+const ATX = /^( {0,3})(#{1,4})\s+(.*)$/
+const HR = /^( {0,3})(?:[-*_]\s*){3,}$/
+const QUOTE = /^( {0,3})>\s?(.*)$/
+
 export function renderMarkdown(src: string): string {
-  const lines = src.replace(/\r\n/g, '\n').split('\n')
+  const lines = normalize(src).split('\n')
   const out: string[] = []
   let i = 0
   let para: string[] = []
@@ -22,28 +64,51 @@ export function renderMarkdown(src: string): string {
   }
   while (i < lines.length) {
     const line = lines[i]
-    if (line.startsWith('```')) {
-      flushP()
-      const lang = escapeHtml(line.slice(3).trim())
-      const buf: string[] = []
-      i++
-      while (i < lines.length && !lines[i].startsWith('```')) {
-        buf.push(lines[i])
+    const open = OPEN_FENCE.exec(line)
+    if (open) {
+      const marker = open[2][0]
+      const len = open[2].length
+      const info = open[3].trim()
+      // A backtick fence cannot have backticks in the info string.
+      if (marker !== '`' || !info.includes('`')) {
+        flushP()
+        const buf: string[] = []
         i++
+        while (i < lines.length) {
+          const close = CLOSE_FENCE.exec(lines[i])
+          if (close && close[2][0] === marker && close[2].length >= len) break
+          buf.push(lines[i])
+          i++
+        }
+        const lang = escapeHtml((info.split(/\s+/)[0] || ''))
+        out.push(`<pre><code class="lang-${lang}">${escapeHtml(buf.join('\n'))}</code></pre>`)
+        if (i < lines.length) i++
+        continue
       }
-      out.push(`<pre><code class="lang-${lang}">${escapeHtml(buf.join('\n'))}</code></pre>`)
+    }
+    const heading = ATX.exec(line)
+    if (heading) {
+      flushP()
+      const lv = heading[2].length
+      out.push(`<h${lv}>${inline(heading[3])}</h${lv}>`)
       i++
       continue
     }
-    if (line.startsWith('#')) {
+    if (HR.test(line) && line.trim().length >= 3) {
       flushP()
-      const m = /^(#{1,4})\s+(.*)$/.exec(line)
-      if (m) {
-        const lv = m[1].length
-        out.push(`<h${lv}>${inline(m[2])}</h${lv}>`)
+      out.push('<hr />')
+      i++
+      continue
+    }
+    if (QUOTE.test(line)) {
+      flushP()
+      const buf: string[] = []
+      while (i < lines.length && QUOTE.test(lines[i])) {
+        buf.push(QUOTE.exec(lines[i])![2])
         i++
-        continue
       }
+      out.push(`<blockquote>${inline(buf.join('\n'))}</blockquote>`)
+      continue
     }
     if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-/.test(lines[i + 1])) {
       flushP()
