@@ -26,6 +26,13 @@ type Input struct {
 func Build(in Input) (string, []skills.Skill) {
 	var b strings.Builder
 	b.WriteString("You are a helpful assistant operating inside ki, a agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\n")
+	// Ki self-configuration (the single-binary analogue of pi's docs section):
+	// one short line the model reads when asked where to change server/MCP/skills
+	// settings. Keep the list in sync with docs/*.md.
+	if in.Home != "" {
+		home := filepath.ToSlash(in.Home)
+		fmt.Fprintf(&b, "Ki configuration (KI_HOME: %s, default ~/.ki): ki.toml = server/compaction/log, .mcp.json = MCP servers, skills/ = SKILL.md packages, models.json + credentials.json = providers; project overrides in <cwd>/.ki/; `ki config path` prints the locations.\n\n", home)
+	}
 	b.WriteString("Available tools:\n")
 	hasRead := false
 	if len(in.Tools) == 0 {

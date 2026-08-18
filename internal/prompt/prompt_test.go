@@ -67,6 +67,9 @@ func TestBuildLayers(t *testing.T) {
 	if !strings.Contains(sys, "use tabs") {
 		t.Fatal("agents.md")
 	}
+	if !strings.Contains(sys, "Ki configuration") || !strings.Contains(sys, filepath.ToSlash(home)) {
+		t.Fatalf("config layout: %s", sys)
+	}
 	if !strings.Contains(sys, "Current date: 2026-08-15") {
 		t.Fatalf("date: %s", sys)
 	}
