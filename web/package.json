@@ -11,10 +11,12 @@
     "test:shots": "playwright test --project=shots"
   },
   "dependencies": {
+    "@streamdown/cjk": "^1.0.3",
     "lucide-react": "^1.31.0",
     "pdfjs-dist": "^6.2.108",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "streamdown": "^2.5.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
