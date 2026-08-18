@@ -4,13 +4,17 @@ import "strings"
 
 // Content is one block inside a message.
 type Content struct {
-	Type         string         `json:"type"`
-	Text         string         `json:"text,omitempty"`
-	Data         string         `json:"data,omitempty"`
-	MIMEType     string         `json:"mimeType,omitempty"`
-	Thinking     string         `json:"thinking,omitempty"`
-	ID           string         `json:"id,omitempty"`
-	Name         string         `json:"name,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MIMEType string `json:"mimeType,omitempty"`
+	Thinking string `json:"thinking,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name,omitempty"`
+	// ToolType and Input are persisted: Responses rejects a resumed custom
+	// call if it is replayed as a function call or loses its raw input.
+	ToolType     string         `json:"toolType,omitempty"`
+	Input        string         `json:"input,omitempty"`
 	Arguments    map[string]any `json:"arguments,omitempty"`
 	ItemID       string         `json:"-"`
 	ArgumentsRaw string         `json:"-"`
@@ -47,10 +51,12 @@ type Message struct {
 	ErrorMessage string    `json:"errorMessage,omitempty"`
 	ToolCallID   string    `json:"toolCallId,omitempty"`
 	ToolName     string    `json:"toolName,omitempty"`
-	IsError      bool      `json:"isError,omitempty"`
-	LatencyMs    int64     `json:"latencyMs,omitempty"`
-	TTFTMs       int64     `json:"ttftMs,omitempty"`
-	DurationMs   int64     `json:"durationMs,omitempty"`
+	// ToolType selects the matching function/custom output wire item.
+	ToolType   string `json:"toolType,omitempty"`
+	IsError    bool   `json:"isError,omitempty"`
+	LatencyMs  int64  `json:"latencyMs,omitempty"`
+	TTFTMs     int64  `json:"ttftMs,omitempty"`
+	DurationMs int64  `json:"durationMs,omitempty"`
 }
 
 // Text returns concatenated text blocks.

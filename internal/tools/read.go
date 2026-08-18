@@ -16,36 +16,44 @@ import (
 type readTool struct {
 	cwd  string
 	jobs *JobStore
+	rich bool
 }
 
 func (readTool) Name() string        { return "Read" }
 func (readTool) Description() string { return "Read a file from the local filesystem." }
 func (readTool) Snippet() string     { return "Read file contents" }
-func (readTool) Prompt() string {
-	return `Reads a file from the local filesystem. You can access any file directly by using this tool.
+func (t readTool) Prompt() string {
+	base := `Reads a file from the local filesystem. You can access any file directly by using this tool.
 Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
 - The file_path parameter must be an absolute path, not a relative path
 - By default, it reads up to 2000 lines starting from the beginning of the file
-- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters
+- You can optionally specify a line offset and limit (especially handy for long files), but it's recommended to read the whole file by not providing these parameters`
+	if t.rich {
+		base += `
 - This tool allows reading images (eg PNG, JPG, etc).
-- This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). Maximum 20 pages per request.
+- This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). Maximum 20 pages per request.`
+	}
+	return base + `
 - This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.
 - This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.`
 }
 
-func (readTool) Parameters() map[string]any {
+func (t readTool) Parameters() map[string]any {
+	properties := map[string]any{
+		"file_path": map[string]any{"type": "string", "description": "The absolute path to the file to read"},
+		"offset":    map[string]any{"type": "integer", "description": "The line number to start reading from. Only provide if the file is too large to read at once"},
+		"limit":     map[string]any{"type": "integer", "description": "The number of lines to read. Only provide if the file is too large to read at once."},
+	}
+	if t.rich {
+		properties["pages"] = map[string]any{"type": "string", "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Only applicable to PDF files. Maximum 20 pages per request."}
+	}
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
 		"required":             []any{"file_path"},
-		"properties": map[string]any{
-			"file_path": map[string]any{"type": "string", "description": "The absolute path to the file to read"},
-			"offset":    map[string]any{"type": "integer", "description": "The line number to start reading from. Only provide if the file is too large to read at once"},
-			"limit":     map[string]any{"type": "integer", "description": "The number of lines to read. Only provide if the file is too large to read at once."},
-			"pages":     map[string]any{"type": "string", "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Only applicable to PDF files. Maximum 20 pages per request."},
-		},
+		"properties":           properties,
 	}
 }
 
@@ -84,6 +92,11 @@ func (t readTool) Execute(_ context.Context, args map[string]any) loop.ToolResul
 		return errRes(err.Error())
 	}
 	if mime := imageMIME(data); mime != "" {
+		if !t.rich {
+			// The execution guard matters for stale calls from a previous model
+			// turn: schema hiding alone cannot prevent replayed rich Read args.
+			return errRes("image files are unavailable for the selected text-only model")
+		}
 		return loop.ToolResult{Content: []types.Content{
 			{Type: "text", Text: "Read image file [" + mime + "]"},
 			{Type: "image", Data: base64.StdEncoding.EncodeToString(data), MIMEType: mime},
@@ -95,6 +108,9 @@ func (t readTool) Execute(_ context.Context, args map[string]any) loop.ToolResul
 		return txt(text + note)
 	}
 	if bytes.HasPrefix(data, []byte("%PDF")) {
+		if !t.rich {
+			return errRes("PDF files are unavailable for the selected text-only model")
+		}
 		pages, _ := args["pages"].(string)
 		text := extractPDFText(data, pages)
 		text, note := truncateHead(text)

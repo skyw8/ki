@@ -1,19 +1,23 @@
 # 工具契约
 
-对外名字和 input schema 跟 Claude Code；文本结果跟 pi。包入口见 `internal/tools/doc.go`。
+普通工具的对外名字和 input schema 跟 Claude Code；文本结果跟 pi。内置工具由已解析模型对应的 `ToolProfile` 选择，包入口见 `internal/tools/doc.go`。
 
 工具执行两段化（对齐 pi prepare/execute）：先**prepare**（找工具 → 可选 `ToolValidator.Validate` schema 校验 → `BeforeTool` hook，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` 变换结果）。`BeforeTool` 和 `ToolResult.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。
 
 | 工具 | 参数 | 结果 |
 |---|---|---|
-| `Read` | `file_path`、`offset`、`limit`、`pages` | 原文，**不打** `cat -n`；超限提示 `offset=`。图回 `image` 块（base64 + mime）；PDF 抽文本；`.ipynb` 按 cell |
+| `Read` | 文本模型：`file_path`、`offset`、`limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；超限提示 `offset=`。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
 | `Write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 Read |
 | `Edit` | `file_path`、`old_string`、`new_string`、`replace_all` | 精确替换；不唯一则失败。无 `edits[]` |
+| `apply_patch` | Responses custom freeform + Lark grammar | Codex 补丁格式：新增、删除、更新、移动；返回 `A/M/D` 摘要 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | stdout+stderr 混排；非 0 当 error。无 sandbox |
 
 ## 细节
 
 - 相对路径按 session cwd resolve。
+- `ToolProfile` 从模型元数据生成：`input` 是否含 `image` 决定文本/富媒体 `Read`；`applyPatchToolType=freeform` 注入 `apply_patch`，否则注入 `Write` + `Edit`。两个编辑器族不会同时出现。
+- 文本 `Read` 不只裁剪提示和 schema，执行时也拒绝图片/PDF，防止复用上一模型回合的旧调用。
+- `apply_patch` 对齐 Codex 的 `*** Begin Patch` / `*** End Patch` 语法，默认将更新文件规范化为 LF；所有路径用 `filepath` 相对 session cwd 解析。
 - 每次 Bash 新进程，cwd 固定为 session cwd；`cd` 不跨命令。
 - `run_in_background`：立刻回 task id 和 `output_file`，之后用 Read 看输出。
 - 文本截断：2000 行或 50KB。Read 留头，Bash 留尾。

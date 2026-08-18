@@ -18,6 +18,40 @@ func TestBuiltinCatalogHasSupportedProviders(t *testing.T) {
 	}
 }
 
+func TestBuiltinGPTModelsAdvertiseFreeformApplyPatch(t *testing.T) {
+	for _, p := range BuiltinProviders() {
+		if p.ID != "openai" {
+			continue
+		}
+		for _, model := range p.Models {
+			if model.ApplyPatchToolType != "freeform" || model.API != "responses" {
+				t.Fatalf("OpenAI model %+v does not advertise Responses freeform apply_patch", model)
+			}
+		}
+		return
+	}
+	t.Fatal("openai provider missing")
+}
+
+func TestRegistryRejectsFreeformApplyPatchOutsideResponses(t *testing.T) {
+	r, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	on := true
+	reasoning := false
+	err = r.Update(func(cfg *ModelsFile) error {
+		cfg.Providers["bad"] = ProviderConfig{
+			Name: "Bad", API: "completions", BaseURL: "http://127.0.0.1/v1", Enabled: &on,
+			Models: []ModelSeed{{ID: "bad", Input: []string{"text"}, ApplyPatchToolType: "freeform", Reasoning: &reasoning}},
+		}
+		return nil
+	})
+	if err == nil {
+		t.Fatal("freeform apply_patch on completions model must fail")
+	}
+}
+
 func TestRegistryPersistsCustomProviderAndCredential(t *testing.T) {
 	home := t.TempDir()
 	r, err := NewRegistry(home)

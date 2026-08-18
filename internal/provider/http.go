@@ -154,6 +154,9 @@ func CompletionsBody(req loop.Request) map[string]any {
 	if len(req.Tools) > 0 {
 		var tools []map[string]any
 		for _, t := range req.Tools {
+			if t.Type == "custom" {
+				continue
+			}
 			tools = append(tools, map[string]any{
 				"type": "function",
 				"function": map[string]any{
@@ -191,12 +194,20 @@ func ResponsesBody(req loop.Request) map[string]any {
 	if len(req.Tools) > 0 {
 		var tools []map[string]any
 		for _, t := range req.Tools {
-			tools = append(tools, map[string]any{
-				"type":        "function",
-				"name":        t.Name,
-				"description": t.Description,
-				"parameters":  t.Parameters,
-			})
+			if t.Type == "custom" {
+				tool := map[string]any{"type": "custom", "name": t.Name, "description": t.Description}
+				if t.Format != nil {
+					tool["format"] = t.Format
+				}
+				tools = append(tools, tool)
+			} else {
+				tools = append(tools, map[string]any{
+					"type":        "function",
+					"name":        t.Name,
+					"description": t.Description,
+					"parameters":  t.Parameters,
+				})
+			}
 		}
 		body["tools"] = tools
 	}
@@ -209,8 +220,12 @@ func toResponsesItems(m types.Message) []any {
 		// Responses 允许 function_call_output.output 为 input_text+input_image
 		// 数组（pi / Codex 都这么做），图留在这条 output 里，不另插 user，
 		// 并行多条 output 才能连在一起。
+		outputType := "function_call_output"
+		if m.ToolType == "custom" {
+			outputType = "custom_tool_call_output"
+		}
 		return []any{map[string]any{
-			"type":    "function_call_output",
+			"type":    outputType,
 			"call_id": m.ToolCallID,
 			"output":  responsesToolOutput(m),
 		}}
@@ -222,11 +237,13 @@ func toResponsesItems(m types.Message) []any {
 			case "text", "":
 				text.WriteString(c.Text)
 			case "toolCall":
-				item := map[string]any{
-					"type":      "function_call",
-					"call_id":   c.ID,
-					"name":      c.Name,
-					"arguments": marshalArguments(c.Arguments),
+				item := map[string]any{"call_id": c.ID, "name": c.Name}
+				if c.ToolType == "custom" {
+					item["type"] = "custom_tool_call"
+					item["input"] = c.Input
+				} else {
+					item["type"] = "function_call"
+					item["arguments"] = marshalArguments(c.Arguments)
 				}
 				if c.ItemID != "" {
 					item["id"] = c.ItemID
@@ -317,6 +334,9 @@ func AnthropicBody(req loop.Request) map[string]any {
 	if len(req.Tools) > 0 {
 		var tools []map[string]any
 		for _, t := range req.Tools {
+			if t.Type == "custom" {
+				continue
+			}
 			tools = append(tools, map[string]any{
 				"name":         t.Name,
 				"description":  t.Description,
@@ -357,6 +377,7 @@ func replayable(msgs []types.Message) []types.Message {
 				Role:       "toolResult",
 				ToolCallID: c.ID,
 				ToolName:   c.Name,
+				ToolType:   c.ToolType,
 				Content:    []types.Content{{Type: "text", Text: "No result provided"}},
 				IsError:    true,
 			})
@@ -847,7 +868,8 @@ func parseResponsesSSE(event, data string, acc *types.Message) (loop.AssistantDe
 		return loop.AssistantDelta{Type: "text_delta", Delta: delta, Partial: *acc}, true
 	case "response.output_item.added", "response.output_item.done":
 		if item, ok := obj["item"].(map[string]any); ok {
-			if t, _ := item["type"].(string); t == "function_call" {
+			itemType, _ := item["type"].(string)
+			if itemType == "function_call" {
 				itemID, _ := item["id"].(string)
 				callID, _ := item["call_id"].(string)
 				name, _ := item["name"].(string)
@@ -863,8 +885,42 @@ func parseResponsesSSE(event, data string, acc *types.Message) (loop.AssistantDe
 				if typ == "response.output_item.done" && len(acc.ToolCalls()) > 0 {
 					acc.StopReason = "toolUse"
 				}
+			} else if itemType == "custom_tool_call" {
+				itemID, _ := item["id"].(string)
+				callID, _ := item["call_id"].(string)
+				name, _ := item["name"].(string)
+				input, _ := item["input"].(string)
+				id := callID
+				if id == "" {
+					id = itemID
+				}
+				c := findOrAddToolCall(acc, id, itemID, name, -1)
+				c.ToolType = "custom"
+				if input != "" {
+					c.Input = input
+				}
+				if typ == "response.output_item.done" {
+					acc.StopReason = "toolUse"
+				}
 			}
 		}
+	case "response.custom_tool_call_input.delta":
+		itemID, _ := obj["item_id"].(string)
+		callID, _ := obj["call_id"].(string)
+		delta, _ := obj["delta"].(string)
+		c := findOrAddToolCall(acc, callID, itemID, "", -1)
+		c.ToolType = "custom"
+		c.Input += delta
+	case "response.custom_tool_call_input.done":
+		itemID, _ := obj["item_id"].(string)
+		callID, _ := obj["call_id"].(string)
+		input, _ := obj["input"].(string)
+		c := findOrAddToolCall(acc, callID, itemID, "", -1)
+		c.ToolType = "custom"
+		if input != "" {
+			c.Input = input
+		}
+		acc.StopReason = "toolUse"
 	case "response.function_call_arguments.delta":
 		itemID, _ := obj["item_id"].(string)
 		delta, _ := obj["delta"].(string)

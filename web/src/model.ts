@@ -234,7 +234,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
     })
     for (const c of m.content ?? []) {
       if (c.type !== 'toolCall' || !c.id) continue
-      const args = c.arguments
+	  const args = c.arguments ?? (c.input !== undefined ? { input: c.input } : undefined)
       s.nodes.push({
         kind: 'tool',
         id: c.id,
@@ -533,13 +533,14 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
     for (const c of m.content ?? []) {
       if (c.type !== 'toolCall' || !c.id) continue
       if (s.nodes.some(n => n.kind === 'tool' && n.id === c.id)) continue
-      s.nodes.push({ kind: 'tool', id: c.id, name: c.name || 'tool', args: c.arguments })
+	  const args = c.arguments ?? (c.input !== undefined ? { input: c.input } : undefined)
+	  s.nodes.push({ kind: 'tool', id: c.id, name: c.name || 'tool', args })
       s.records.push({
         id: c.id,
         kind: 'tool',
         turn: s.turn || 1,
-        preview: previewOf((c.name || 'tool') + ' ' + compactArgs(c.arguments)),
-        input: c.arguments,
+		preview: previewOf((c.name || 'tool') + ' ' + compactArgs(args)),
+		input: args,
         name: c.name,
         startedAt: Date.now(),
       })

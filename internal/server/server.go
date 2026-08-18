@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -409,18 +410,19 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 	out := make([]map[string]any, 0, len(cat))
 	for _, m := range cat {
 		out = append(out, map[string]any{
-			"provider":       m.Provider,
-			"id":             m.ID,
-			"name":           m.Name,
-			"api":            m.API,
-			"contextWindow":  m.ContextWindow,
-			"maxTokens":      m.MaxTokens,
-			"input":          m.Input,
-			"reasoning":      m.Reasoning,
-			"thinkingLevels": provider.SupportedThinkingLevels(m),
-			"builtin":        m.Builtin,
-			"customized":     m.Customized,
-			"spec":           m.Provider + "/" + m.ID,
+			"provider":           m.Provider,
+			"id":                 m.ID,
+			"name":               m.Name,
+			"api":                m.API,
+			"contextWindow":      m.ContextWindow,
+			"maxTokens":          m.MaxTokens,
+			"input":              m.Input,
+			"applyPatchToolType": m.ApplyPatchToolType,
+			"reasoning":          m.Reasoning,
+			"thinkingLevels":     provider.SupportedThinkingLevels(m),
+			"builtin":            m.Builtin,
+			"customized":         m.Customized,
+			"spec":               m.Provider + "/" + m.ID,
 		})
 	}
 	writeJSON(w, 200, out)
@@ -658,7 +660,14 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		runStreamer = provider.NewLiveModel(resolved, key, nil)
 	}
 	jobs := tools.NewJobStore()
-	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs}.All()
+	profile := tools.Profile{
+		RichRead: slices.Contains(info.Input, "image"),
+		Editor:   tools.EditorWriteEdit,
+	}
+	if info.ApplyPatchToolType == "freeform" {
+		profile.Editor = tools.EditorApplyPatch
+	}
+	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs}.Build(profile)
 	mcpFile := mcp.Load(cfg.Home, sess.Header.CWD)
 	// Bind is cache-only. Waiting here for mcp.Tools() spawn used to leave the
 	// UI on running with no SSE until every enabled server finished handshake.
@@ -683,7 +692,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		if ev.Type == loop.RequestHeader {
 			tools := make([]session.ToolSchema, 0, len(ev.Tools))
 			for _, t := range ev.Tools {
-				tools = append(tools, session.ToolSchema{Name: t.Name, Description: t.Description, Parameters: t.Parameters})
+				var format *session.ToolFormat
+				if t.Format != nil {
+					format = &session.ToolFormat{Type: t.Format.Type, Syntax: t.Format.Syntax, Definition: t.Format.Definition}
+				}
+				tools = append(tools, session.ToolSchema{Type: t.Type, Name: t.Name, Description: t.Description, Parameters: t.Parameters, Format: format})
 			}
 			if _, err := sess.AppendRequestHeader(ev.System, tools, session.RequestMeta{Provider: sess.Config.Provider, Model: sess.Config.Model, ThinkingEffort: sess.Config.ThinkingEffort, CatalogVersion: provider.CatalogVersion, Pricing: info.Cost}); err != nil {
 				return fmt.Errorf("append request header: %w", err)
@@ -762,6 +775,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		SupportsReasoningEffort: info.Compat.SupportsReasoningEffort,
 		ForceAdaptiveThinking:   info.Compat.ForceAdaptiveThinking,
 		ThinkingLevelMap:        info.ThinkingLevelMap,
+		TextOnly:                !slices.Contains(info.Input, "image"),
 		MaxRetries:              5,
 		BaseDelay:               2 * time.Second,
 		Parallel:                true,
