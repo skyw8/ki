@@ -29,6 +29,6 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 - 切换到不含 `image` 输入模态的模型时，loop 在最终请求边界移除历史图片块；这同时兜底旧 Read 结果和返回图片的 MCP 工具。
 - 模型解析顺序是显式 `provider/model` → session provider 下的模型 ID → registry 全局默认。新会话固定该引用；禁用后的已有会话保留历史，但下次请求明确失败。
 - `thinkingEffort` 使用 `off/minimal/low/medium/high/xhigh/max`，按模型映射到 OpenAI effort、Qwen `enable_thinking`、DeepSeek/Z.AI `thinking` 或 Anthropic adaptive/budget 形状。切换模型时夹到最近的可用等级。
-- usage 先归一为互斥的 uncached input/cache read/cache write/output，再按目录每百万 token 单价计算；`cost=null` 表示未知而不是免费。长上下文 tier 命中最高阈值。
+- usage 先归一为互斥的 uncached input/cache read/cache write/output，再按目录每百万 token 单价计算；`cost=null` 表示未知而不是免费。长上下文 tier 命中最高阈值。DeepSeek 官方有高峰/空闲两套价，内置目录用高峰（空闲是一半）；目录不按时段切换。
 - 流式工具参数：function 碎片拼成完整 JSON 再 `Unmarshal`；Responses custom tool 的 `response.custom_tool_call_input.*` 保留原始文本。回放时严格保持 function/custom 的 call-output 配对。
 - `Scripted`：测试和 `KI_FAKE=1` 用。

@@ -1,4 +1,4 @@
-import type { ChatNode, Entry, LoopEvent, Message, SessionDetail, TrajRecord, ViewState } from './types'
+import type { ChatNode, Entry, LoopEvent, Message, SessionDetail, TrajRecord, Usage, ViewState } from './types'
 
 export function emptyView(): ViewState {
   return {
@@ -590,15 +590,130 @@ export function appendOptimisticUser(s: ViewState, content: import('./types').Co
   return next
 }
 
-export function usageTotals(s: ViewState): { input: number; output: number; cacheRead: number } {
-  let input = 0
-  let output = 0
-  let cacheRead = 0
-  for (const n of s.nodes) {
-    if (n.kind !== 'assistant' || !n.usage) continue
-    input += n.usage.input ?? 0
-    output += n.usage.output ?? 0
-    cacheRead += n.usage.cacheRead ?? 0
+export type SessionStats = {
+  turns: number
+  steps: number
+  /** Uncached + cache read + cache write. */
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  hasCost: boolean
+  cost: number
+  ttftMs: number
+  ttftSteps: number
+  decodeMs: number
+  decodeTokens: number
+}
+
+function emptyStats(): SessionStats {
+  return {
+    turns: 0, steps: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+    hasCost: false, cost: 0, ttftMs: 0, ttftSteps: 0, decodeMs: 0, decodeTokens: 0,
   }
-  return { input, output, cacheRead }
+}
+
+function addUsage(out: SessionStats, usage?: Usage | null, timing?: { ttftMs?: number; latencyMs?: number }) {
+  if (usage) {
+    out.input += (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
+    out.output += usage.output ?? 0
+    out.cacheRead += usage.cacheRead ?? 0
+    out.cacheWrite += usage.cacheWrite ?? 0
+    if (usage.cost) {
+      out.hasCost = true
+      out.cost += usage.cost.total
+    }
+  }
+  if (timing?.ttftMs != null && Number.isFinite(timing.ttftMs) && timing.ttftMs > 0) {
+    out.ttftMs += timing.ttftMs
+    out.ttftSteps += 1
+  }
+  // Decode span is first-token → message_end. A step missing TTFT is dropped
+  // rather than treating the whole latency as decode (that would inflate TPS).
+  if (timing?.latencyMs != null && timing.ttftMs != null && usage && (usage.output ?? 0) > 0) {
+    const decodeMs = Math.max(0, timing.latencyMs - timing.ttftMs)
+    if (decodeMs > 0) {
+      out.decodeMs += decodeMs
+      out.decodeTokens += usage.output ?? 0
+    }
+  }
+}
+
+function activePath(s: ViewState): Entry[] {
+  if (s.allEntries.length === 0) return []
+  const byId = new Map(s.allEntries.map(e => [e.id, e]))
+  const path: Entry[] = []
+  const seen = new Set<string>()
+  let id = s.leafId || s.allEntries.at(-1)?.id
+  while (id && !seen.has(id)) {
+    seen.add(id)
+    const entry = byId.get(id)
+    if (!entry) break
+    path.push(entry)
+    id = entry.parentId
+  }
+  return path
+}
+
+/** Whole-branch session figures. Walks the current leaf path so compacted
+ * assistants still count, then adds live nodes that are not yet in jsonl. */
+export function sessionStats(s: ViewState): SessionStats {
+  const out = emptyStats()
+  const counted = new Set<string>()
+  for (const e of activePath(s)) {
+    counted.add(e.id)
+    if (e.type === 'message' && e.message?.role === 'user') {
+      out.turns += 1
+      continue
+    }
+    if (e.type === 'message' && e.message?.role === 'assistant') {
+      out.steps += 1
+      addUsage(out, e.message.usage, { ttftMs: e.message.ttftMs, latencyMs: e.message.latencyMs })
+      continue
+    }
+    if (e.type === 'compaction' && e.usage) {
+      out.steps += 1
+      addUsage(out, e.usage)
+    }
+  }
+  for (const n of s.nodes) {
+    if (counted.has(n.id)) continue
+    if (n.kind === 'user') {
+      out.turns += 1
+      continue
+    }
+    if (n.kind !== 'assistant' || n.streaming) continue
+    out.steps += 1
+    addUsage(out, n.usage, { ttftMs: n.ttftMs, latencyMs: n.latencyMs })
+  }
+  return out
+}
+
+export function cacheHitPercent(s: SessionStats): number | null {
+  if (s.input <= 0 || s.cacheRead <= 0) return null
+  return Math.round(s.cacheRead / s.input * 100)
+}
+
+export function formatTokens(n: number): string {
+  const scaled = (v: number): string => (v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
+  if (n < 1_000) return String(n)
+  if (n < 1_000_000) return `${scaled(n / 1_000)}K`
+  return `${scaled(n / 1_000_000)}M`
+}
+
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, ms) / 1_000
+  if (s < 60) return `${Math.round(s * 10) / 10}s`
+  const whole = Math.round(s)
+  return `${Math.floor(whole / 60)}m${String(whole % 60).padStart(2, '0')}s`
+}
+
+export function formatTokensPerSecond(tps: number): string {
+  const clamped = Math.max(0, tps)
+  return clamped >= 10 ? String(Math.round(clamped)) : String(Math.round(clamped * 10) / 10)
+}
+
+export function formatCost(total: number): string {
+  const n = Math.max(0, total)
+  return n < 0.01 ? n.toFixed(4) : n.toFixed(2)
 }

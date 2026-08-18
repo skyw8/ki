@@ -8,7 +8,7 @@ import { DirectoryBrowser } from './DirectoryBrowser'
 import { SessionConfig } from './SessionConfig'
 import { ProviderSettings } from './ProviderSettings'
 import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
-import { appendOptimisticUser, applyEvent, emptyView, loadHistory } from './model'
+import { appendOptimisticUser, applyEvent, emptyView, loadHistory, sessionStats } from './model'
 import type { ChatNode, Content, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
@@ -508,6 +508,7 @@ export function App() {
 	}, [api, currentId, openSession, view.allEntries, view.busy])
 
   const empty = view.nodes.length === 0
+  const stats = useMemo(() => sessionStats(view), [view])
   const composer = (
     <Composer
 	  api={api}
@@ -527,6 +528,7 @@ export function App() {
 	  thinkingEffort={view.thinkingEffort}
 	  onThinking={effort => void switchThinking(effort)}
 	  contextUsage={view.contextUsage}
+	  stats={stats}
     />
   )
 
