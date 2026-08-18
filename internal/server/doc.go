@@ -20,5 +20,10 @@
 // append; agent_end may auto-compact. SSE replays runState.evs and drains
 // after done.
 //
+// Skills and AGENTS/CLAUDE context files are cached per session (home, cwd,
+// session id). Every successful compaction calls Reload(), which drops both
+// caches so the next prompt build re-reads disk. Reload is also the hook a
+// future /reload command (or signal) calls.
+//
 // Routes and run lifecycle: docs/architecture.md.
 package server

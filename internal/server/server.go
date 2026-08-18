@@ -139,6 +139,16 @@ func newToken() string {
 // Token is the bearer secret.
 func (s *Server) Token() string { return s.token }
 
+// Reload drops the cached prompt resources (skills and AGENTS/CLAUDE context
+// files) so the next prompt.Build re-reads disk. Called after every successful
+// compaction (compactSession and doCompact) — the context was rebuilt, so a
+// stale serve-long snapshot would be wrong — and is the single entry point a
+// future /reload command (or signal) calls.
+func (s *Server) Reload() {
+	skills.InvalidateAll()
+	prompt.InvalidateAgentsAll()
+}
+
 // Handler returns the HTTP handler.
 func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
@@ -374,7 +384,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) sessionCatalog(sess *session.Session) ([]map[string]any, []map[string]any) {
 	sk := []map[string]any{}
-	for _, item := range skills.List(s.cfg.Home, sess.Header.CWD) {
+	for _, item := range skills.List(s.cfg.Home, sess.Header.CWD, sess.ID()) {
 		sk = append(sk, map[string]any{
 			"name":        item.Name,
 			"description": item.Description,
@@ -837,7 +847,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}()
 	// One Build: After compact the *next* prompt rebuilds. A BeforeRun rebuild
 	// only repeated Discover on the same turn.
-	sys, _ := prompt.Build(prompt.Input{Home: cfg.Home, CWD: sess.Header.CWD, Tools: tls, Toggle: sess.Config.Skills})
+	sys, _ := prompt.Build(prompt.Input{Home: cfg.Home, CWD: sess.Header.CWD, SessionID: sess.ID(), Tools: tls, Toggle: sess.Config.Skills})
 
 	var emit func(loop.Event) error
 	emit = func(ev loop.Event) error {
@@ -992,6 +1002,10 @@ func (s *Server) shouldCompact(sess *session.Session, window int) bool {
 // and returns the new model-facing context. Shared by preflight、溢出恢复和
 // threshold 三条路径。Returns ErrNothingToCompact when the
 // conversation fits inside the recent-token budget (no model call is made).
+//
+// A successful compaction invalidates the cached prompt resources (skills and
+// AGENTS/CLAUDE context files): the context was rebuilt, so the *next* prompt
+// build re-reads disk instead of serving a stale serve-long snapshot.
 func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]types.Message, error) {
 	prep, err := compact.Prepare(sess.LeafEntries(), s.cfg.Compaction)
 	if err != nil {
@@ -1007,6 +1021,7 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]t
 	if _, err := sess.AppendCompaction(summary, prep.FirstKeptEntryID, prep.TokensBefore, usage, prep.RetainedTail); err != nil {
 		return nil, fmt.Errorf("append compaction: %w", err)
 	}
+	s.Reload()
 	return sess.MessagesToLeaf(), nil
 }
 
@@ -1092,6 +1107,9 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Manual compact is also a reload point: the next prompt build re-reads
+	// skills and AGENTS/CLAUDE context files (same contract as compactSession).
+	s.Reload()
 	writeJSON(w, 200, map[string]any{"id": e.ID, "type": e.Type, "firstKeptEntryId": e.FirstKeptEntryID})
 }
 

@@ -18,6 +18,8 @@
 
 系统提示词由 `internal/prompt` 分层组装，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、.mcp.json、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）。模型被问及"去哪改 server / MCP / skills 设置"时读这段，配合 `ki config path`。
 
+skills 发现结果（`skills.Discover`）和 AGENTS/CLAUDE 上下文文件（`prompt.CollectAgents`）都按 session 缓存（键含 session id）：同一 workspace 新开 session 会重读磁盘，同 session 内的消息命中缓存。`prompt.Build` 每轮都跑，所以磁盘只在上述键缺失时读。两者都 pinned 到 `server.Reload()`（每次成功压缩后调用，也是未来 `/reload` 命令的入口）才整体重读。
+
 Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` 的合并结果。自定义 provider/model 和协议兼容字段通过设置 UI 或 provider API 管理；不从网络刷新目录。`--model provider/model` 只写回 session 配置。
 
 每轮 `runPrompt` 解析模型后，将 `input` 和 `applyPatchToolType` 映射为 provider-neutral `tools.Profile`，再一次性构造本轮内置工具。`input` 含 `image` 才使用富媒体 `Read`；`applyPatchToolType=freeform` 使用 `apply_patch`，否则使用 `Write` + `Edit`。同一份工具集进入 prompt、loop 和 `request_header`，模型切换后的下一轮立即重建。
@@ -62,6 +64,8 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 3. **threshold**：`agent_end` 后估算超阈值 → 压缩。估算优先用最后一条 assistant 的 usage（pi `calculateContextTokens`：`totalTokens`，回退 `input+output+cacheRead+cacheWrite`）再加 trailing 消息的 char/4，且带 stale 防护（usage 早于最近 compaction 则回退 char/4，避免刚压缩完再压缩）。
 
 压缩三段化：`compact.Prepare`（纯函数：切点避开 toolResult、split-turn 前缀单独摘要、上次 retainedTail 虚拟展开参与切点、previousSummary 增量）→ `compact.Execute`（调模型）→ `session.AppendCompaction`（summary + retainedTail 落盘）。`compaction_start/end` 事件同时写 jsonl 与 SSE（`reason`: preflight/overflow/threshold）。
+
+每次成功压缩（自动或手动 `/compact`）都会调 `server.Reload()` 清掉 skills 与 AGENTS/CLAUDE 上下文文件的缓存——上下文已重建，下一次 `prompt.Build` 必须重读磁盘，不能继续用 serve 长存的快照。`Reload` 同时是未来 `/reload` 命令（或信号）的唯一入口。
 
 阈值判定 `compact.ShouldRun(tokens, contextWindow, cfg)`：`tokens > contextWindow - reserveTokens`，窗口缺省 128000。`cfg.MaxContextTokens`（ki.toml `[compaction] max_context_tokens`）取 min 兜底——小于模型窗口时以它为准，小值让压缩提前触发（低成本测试不烧 token），0 = 只用模型窗口。
 
