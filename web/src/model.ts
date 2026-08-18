@@ -12,6 +12,7 @@ export function emptyView(): ViewState {
     title: '',
     turn: 0,
 	thinkingEffort: '',
+	allEntries: [],
   }
 }
 
@@ -79,11 +80,25 @@ export function loadHistory(detail: SessionDetail): ViewState {
   s.mcp = detail.mcp
 	s.thinkingEffort = detail.thinkingEffort ?? ''
   const entries = detail.entries ?? []
+	s.allEntries = entries
+	s.leafId = detail.leafId
   if (entries.length === 0 && detail.messages) {
     for (const m of detail.messages) applyMessage(s, m, crypto.randomUUID(), undefined)
     return s
   }
-  for (const e of entries) applyEntry(s, e)
+	const byId = new Map(entries.map(e => [e.id, e]))
+	const active: Entry[] = []
+	let id = detail.leafId || entries.at(-1)?.id
+	const seen = new Set<string>()
+	while (id && !seen.has(id)) {
+		seen.add(id)
+		const entry = byId.get(id)
+		if (!entry) break
+		active.push(entry)
+		id = entry.parentId
+	}
+	active.reverse()
+	for (const e of active) applyEntry(s, e)
   return s
 }
 
@@ -136,7 +151,7 @@ function applyEntry(s: ViewState, e: Entry) {
     return
   }
   if (e.type === 'message' && e.message) {
-    applyMessage(s, e.message, e.id, e.timestamp)
+    applyMessage(s, e.message, e.id, e.timestamp, e.parentId)
     return
   }
   if (e.type === 'compaction') {
@@ -188,13 +203,14 @@ function applyCompactEvent(s: ViewState, id: string, type: string, details?: unk
   }
 }
 
-function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | number) {
+function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | number, parentId?: string) {
   if (m.role === 'user') {
     const text = messageText(m)
     s.turn += 1
-    s.nodes.push({ kind: 'user', id, text, ts: tsMs(m, stamp) })
+    s.nodes.push({ kind: 'user', id, parentId, text, content: m.content ?? [], ts: tsMs(m, stamp) })
     s.records.push({
       id,
+	  parentId,
       kind: 'user',
       turn: s.turn,
       preview: previewOf(text),
@@ -210,12 +226,14 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
     s.nodes.push({
       kind: 'assistant',
       id,
+	  parentId,
       text,
       thinking,
       usage: m.usage,
       ttftMs: m.ttftMs,
       latencyMs: m.latencyMs,
       error: m.errorMessage,
+	  stopReason: m.stopReason,
       ts: tsMs(m, stamp),
       images: (m.content ?? []).filter(c => c.type === 'image' && c.data).map(c => ({ data: c.data!, mimeType: c.mimeType || 'image/png' })),
     })
@@ -430,10 +448,11 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
         for (let i = s.nodes.length - 1; i >= 0; i--) {
           const n = s.nodes[i]
           if (n.kind === 'user' && n.text === text) {
-            s.nodes[i] = { ...n, ts: m.timestamp }
+			const nextId = ev.entryId || n.id
+            s.nodes[i] = { ...n, id: nextId, content: m.content ?? n.content, ts: m.timestamp }
             // Keep the trajectory record in sync so the detail panel shows the
             // same start time as the chat bubble.
-            s.records = s.records.map(r => (r.id === n.id ? { ...r, startedAt: m.timestamp } : r))
+			s.records = s.records.map(r => (r.id === n.id ? { ...r, id: nextId, startedAt: m.timestamp } : r))
             break
           }
         }
@@ -512,11 +531,16 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
     ttftMs: m.ttftMs ?? node.ttftMs,
     latencyMs: m.latencyMs ?? node.latencyMs,
     error: m.errorMessage || node.error,
+	stopReason: m.stopReason || node.stopReason,
     streaming: ev.type !== 'message_end',
   }
+	if (ev.type === 'message_end' && ev.entryId) {
+		s.nodes[idx] = { ...s.nodes[idx] as Extract<ChatNode, { kind: 'assistant' }>, id: ev.entryId }
+	}
   s.records = s.records.map(r => r.id === node.id
     ? {
         ...r,
+		id: ev.type === 'message_end' && ev.entryId ? ev.entryId : r.id,
         preview: previewOf(text || thinking || r.preview),
         output: text,
         input: thinking || r.input,
@@ -556,13 +580,13 @@ function lastStreamingAssistant(s: ViewState): number {
   return -1
 }
 
-export function appendOptimisticUser(s: ViewState, text: string): ViewState {
+export function appendOptimisticUser(s: ViewState, content: import('./types').Content[]): ViewState {
   const next = { ...s, nodes: s.nodes.slice(), records: s.records.slice(), busy: true, error: null }
   // The bubble is drawn before the server confirms, so there is no real
   // timestamp yet. Date.now() (a number, not a string) lets tsMs use the local
   // clock so the time shows immediately; the SSE event later backfills the
   // server's authoritative timestamp.
-  applyMessage(next, { role: 'user', content: [{ type: 'text', text }] }, `opt-user-${Date.now()}`, Date.now())
+  applyMessage(next, { role: 'user', content }, `opt-user-${Date.now()}`, Date.now())
   return next
 }
 

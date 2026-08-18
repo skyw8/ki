@@ -19,7 +19,8 @@
 // Hooks.OnContextOverflow (server compacts and returns the new context; same
 // Run, so events are not replayed). stopReason "length" rejects tool calls
 // (truncated arguments) instead of executing them.
-// TextOnly removes image blocks at the final model-facing boundary.
+// RunMessage accepts provider-neutral structured user content. TextOnly
+// removes image blocks at the final model-facing boundary.
 //
 // Event order: docs/architecture.md.
 package loop

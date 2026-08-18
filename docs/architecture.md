@@ -34,20 +34,21 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 | POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…` |
 | GET | `/v1/sessions/search` | 正文字面搜索，最多 20 条 |
 | GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、skills/mcp、`availableSkills` / `availableMcp` |
-| PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / skills / mcp |
+| PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / skills / mcp |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
-| POST | `/v1/sessions/{id}/prompt` | `202` 开跑；同一 session 未结束再来 **409** |
+| POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId`；`202` 开跑，同一 session 未结束再来 **409** |
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件 |
 | POST | `/v1/sessions/{id}/abort` | cancel |
 | POST | `/v1/sessions/{id}/compact` | 手动 compaction |
-| POST | `/v1/sessions/{id}/fork` | 整目录拷走 |
+| POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径 |
+| POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |
 | GET | `/v1/workspaces` | 工作区登记（含 `sessionIds` / `temp`） |
 | POST | `/v1/workspaces` | 登记 path（可 mkdir） |
 | PATCH | `/v1/workspaces/{id}` | 改 title |
 | DELETE | `/v1/workspaces/{id}` | 删组内会话日志和登记，不删工作区磁盘目录 |
 | POST | `/v1/workspaces/{id}/move` | 工作区排序 |
 | POST | `/v1/workspaces/{id}/sessions/move` | 组内会话排序 |
-| GET | `/v1/fs` | 列目录（`path` / `home` / `separator` / `crumbs` / `entries`） |
+| GET | `/v1/fs` | 列目录；`files=1` 时也列普通文件供附件选择 |
 | POST | `/v1/fs` | 在已有目录下建子文件夹 |
 
 `message_end` 上 await 写 jsonl。`agent_end` 上按阈值自动 compact。SSE 在 run `done` 后先排空剩余事件，再结束（等待循环"先 `close(done)` 后 `Broadcast()`"的顺序协议有 TLA+ 模型验证，见 `spec/events-wait`）。MCP 连接在 serve 级池里，prompt 只按 Toggle 绑缓存 schema，工具调用时才 ensure。
@@ -96,10 +97,10 @@ participant "loop.Run\n(事件源)" as L
 participant "session jsonl\n(落盘)" as F
 participant "events handler\n(SSE)" as E
 
-C -> S : POST /v1/sessions/{id}/prompt\n{text:"你好"}
+C -> S : POST /v1/sessions/{id}/prompt\n{content:[{type:"text",text:"你好"}], parentId?}
 S -> S : 查 runs 表\n运行中 → 409；空闲 → 建 runState
 S --> C : 202 Accepted（立刻返回，不等待运行）
-S -> R : go runPrompt(ctx, st, id, text)
+S -> R : go runPrompt(ctx, st, id, content, parentId)
 
 R -> L : loop.Run(..., emit 回调)
 loop 每次事件

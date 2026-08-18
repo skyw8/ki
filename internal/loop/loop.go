@@ -49,6 +49,7 @@ const (
 // Event is a loop event (pi field names).
 type Event struct {
 	Type                  EventType       `json:"type"`
+	EntryID               string          `json:"entryId,omitempty"`
 	Message               *types.Message  `json:"message,omitempty"`
 	Messages              []types.Message `json:"messages,omitempty"`
 	ToolResults           []types.Message `json:"toolResults,omitempty"`
@@ -197,6 +198,11 @@ type Config struct {
 
 // Run executes one user prompt against the current messages.
 func Run(ctx context.Context, prompt string, history []types.Message, cfg Config, emit func(Event) error) ([]types.Message, error) {
+	return RunMessage(ctx, types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: prompt}}}, history, cfg, emit)
+}
+
+// RunMessage executes one structured user message against the current history.
+func RunMessage(ctx context.Context, user types.Message, history []types.Message, cfg Config, emit func(Event) error) ([]types.Message, error) {
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 5
 	}
@@ -207,10 +213,9 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 		emit = func(Event) error { return nil }
 	}
 	newMsgs := []types.Message{}
-	user := types.Message{
-		Role:      "user",
-		Content:   []types.Content{{Type: "text", Text: prompt}},
-		Timestamp: time.Now().UnixMilli(),
+	user.Role = "user"
+	if user.Timestamp == 0 {
+		user.Timestamp = time.Now().UnixMilli()
 	}
 	if err := emit(Event{Type: AgentStart}); err != nil {
 		return nil, err

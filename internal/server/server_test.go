@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -56,6 +58,86 @@ func testServerWith(t *testing.T, st loop.Streamer) (*Server, *httptest.Server) 
 	t.Cleanup(hs.Close)
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv, hs
+}
+
+func TestFSPreview(t *testing.T) {
+	_, hs := testServer(t)
+	dir := t.TempDir()
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/fs?files=1&path="+url.QueryEscape(dir), nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var empty struct {
+		Entries []fsEntry `json:"entries"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&empty); err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if empty.Entries == nil {
+		t.Fatal("empty directory entries must encode as [] rather than null")
+	}
+	imagePath := filepath.Join(dir, "preview.png")
+	want := []byte("\x89PNG\r\n\x1a\npreview")
+	if err := os.WriteFile(imagePath, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/fs?preview=1&path="+url.QueryEscape(imagePath), nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "image/png" || !bytes.Equal(got, want) {
+		t.Fatalf("preview status=%d content-type=%q body=%q", res.StatusCode, res.Header.Get("Content-Type"), got)
+	}
+	textPath := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(textPath, []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/fs?preview=1&path="+url.QueryEscape(textPath), nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ = io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || !strings.HasPrefix(res.Header.Get("Content-Type"), "text/plain") || string(got) != "not an image" {
+		t.Fatalf("text preview status=%d content-type=%q body=%q", res.StatusCode, res.Header.Get("Content-Type"), got)
+	}
+	pdfPath := filepath.Join(dir, "document.pdf")
+	if err := os.WriteFile(pdfPath, []byte("%PDF-1.4\nfixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/fs?preview=1&path="+url.QueryEscape(pdfPath), nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "application/pdf" {
+		t.Fatalf("pdf preview status=%d content-type=%q", res.StatusCode, res.Header.Get("Content-Type"))
+	}
+	binaryPath := filepath.Join(dir, "blob.bin")
+	if err := os.WriteFile(binaryPath, []byte{'a', 0, 'b'}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/fs?preview=1&path="+url.QueryEscape(binaryPath), nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("binary preview status=%d", res.StatusCode)
+	}
 }
 
 // waitAgentEnd reads the events SSE until agent_end (the prompt turn finished
@@ -1146,6 +1228,130 @@ func prompt202(t *testing.T, hs *httptest.Server, id, text string) {
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusAccepted {
 		t.Fatalf("prompt %d", res.StatusCode)
+	}
+}
+
+func TestEditBranchesInPlaceAndForkAtCreatesPathSession(t *testing.T) {
+	srv, hs := testServerWith(t, &provider.Scripted{})
+	id := createSession(t, hs, t.TempDir())
+	prompt202(t, hs, id, "original")
+	waitAgentEnd(t, hs, id)
+
+	post := func(body map[string]any) {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", bytes.NewReader(b))
+		req.Header.Set("Authorization", "Bearer tok")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusAccepted {
+			t.Fatalf("edit prompt = %d", res.StatusCode)
+		}
+	}
+	post(map[string]any{"parentId": "", "content": []map[string]any{{"type": "text", "text": "edited"}}})
+	waitAgentEnd(t, hs, id)
+
+	dir, ok := srv.sidx.Lookup(id)
+	if !ok {
+		t.Fatal("source session missing from index")
+	}
+	src, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = src.Close() }()
+	var users, assistants []session.Entry
+	for _, e := range src.Entries() {
+		if e.Type != "message" || e.Message == nil {
+			continue
+		}
+		switch e.Message.Role {
+		case "user":
+			users = append(users, e)
+		case "assistant":
+			assistants = append(assistants, e)
+		}
+	}
+	if len(users) != 2 || users[0].ParentID != "" || users[1].ParentID != "" {
+		t.Fatalf("user branches: %+v", users)
+	}
+	if src.MessagesToLeaf()[0].Text() != "edited" {
+		t.Fatalf("active branch: %+v", src.MessagesToLeaf())
+	}
+
+	b, _ := json.Marshal(map[string]any{"entryId": assistants[0].ID})
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/fork", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("fork = %d", res.StatusCode)
+	}
+	var child struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&child); err != nil {
+		t.Fatal(err)
+	}
+	childDir, ok := srv.sidx.Lookup(child.ID)
+	if !ok || childDir == dir {
+		t.Fatalf("fork directory = %q source = %q", childDir, dir)
+	}
+	forked, err := session.Open(childDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = forked.Close() }()
+	if forked.Header.ParentSession != id {
+		t.Fatalf("fork parent = %q", forked.Header.ParentSession)
+	}
+	if got := forked.MessagesToLeaf(); len(got) != 2 || got[0].Text() != "original" {
+		t.Fatalf("fork path: %+v", got)
+	}
+}
+
+func TestUploadAttachmentStoresContentAddressedBlob(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("file", "pasted.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("fake-image")); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/attachments", &body)
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("upload = %d", res.StatusCode)
+	}
+	var got types.Content
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := srv.sidx.Lookup(id)
+	if got.ID == "" || got.Name != "pasted.png" || !strings.HasPrefix(got.Path, filepath.Join(dir, "attachments")) {
+		t.Fatalf("attachment: %+v", got)
+	}
+	if b, err := os.ReadFile(got.Path); err != nil || string(b) != "fake-image" {
+		t.Fatalf("stored blob = %q, %v", b, err)
 	}
 }
 

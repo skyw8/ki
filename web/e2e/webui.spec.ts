@@ -199,6 +199,97 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
 })
 
+test('edit branches in place with attachments and fork opens a new session', async ({ page }) => {
+  const original = `branch-original-${Date.now()}`
+  const edited = `branch-edited-${Date.now()}`
+  await page.goto('/')
+  await sendPrompt(page, original)
+  await expect(page.getByTestId('assistant-message')).toContainText('ok')
+
+  const before = await page.evaluate(async () => {
+    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
+    const headers = { Authorization: `Bearer ${token}` }
+    const sessions = await fetch('/v1/sessions', { headers }).then(r => r.json()) as Array<{ id: string; cwd: string; title?: string }>
+    return { count: sessions.length, cwd: sessions.find(s => (s.title ?? '').includes('branch-original'))!.cwd }
+  })
+  writeFileSync(join(before.cwd, 'edit-attachment.txt'), 'attachment marker')
+  writeFileSync(join(before.cwd, 'preview.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'))
+  mkdirSync(join(before.cwd, 'Pictures'))
+
+  await page.getByTestId('edit-msg').click()
+  await page.getByTestId('edit-input').fill(edited)
+  await page.getByRole('button', { name: '添加图片或文件' }).click()
+  await page.getByRole('button', { name: 'Pictures' }).click()
+  await expect(page.getByText('这个目录中没有文件')).toBeVisible()
+  await expect(page.getByRole('dialog', { name: '选择图片或文件' })).toBeVisible()
+  await page.locator('.attachment-crumb button').nth(-2).click()
+  await page.getByRole('button', { name: /preview\.png/ }).click()
+  await expect(page.locator('.attachment-preview img')).toBeVisible()
+  await expect.poll(() => page.locator('.attachment-preview img').evaluate(img => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(page.locator('.composer-image img')).toBeVisible()
+  await expect(page.locator('.attachment-draft-image')).not.toContainText('preview.png')
+  await page.getByRole('button', { name: '放大查看图片' }).click()
+  await expect(page.getByRole('dialog', { name: '图片预览' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: '图片预览' })).toHaveCount(0)
+  await page.getByRole('button', { name: '添加图片或文件' }).click()
+  await page.getByRole('button', { name: /edit-attachment\.txt/ }).click()
+  await expect(page.locator('.attachment-text-preview pre')).toContainText('attachment marker')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(page.locator('.attachment-draft-file[title="edit-attachment.txt"]')).toBeVisible()
+	await page.getByTestId('edit-input').evaluate(input => {
+	  const transfer = new DataTransfer()
+	  transfer.items.add(new File(['pasted attachment'], 'pasted.txt', { type: 'text/plain' }))
+	  const event = new Event('paste', { bubbles: true, cancelable: true })
+	  Object.defineProperty(event, 'clipboardData', { value: transfer })
+	  input.dispatchEvent(event)
+	})
+	await expect(page.locator('.attachment-draft-file[title="pasted.txt"]')).toBeVisible()
+	await page.evaluate(() => {
+	  const transfer = new DataTransfer()
+	  transfer.items.add(new File(['global drop'], 'global-drop.go', { type: 'text/plain' }))
+	  ;(window as unknown as { __dropTransfer?: DataTransfer }).__dropTransfer = transfer
+	  document.body.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: transfer }))
+	})
+	await expect(page.getByTestId('global-drop-overlay')).toContainText('添加到编辑消息')
+	await page.evaluate(() => {
+	  const transfer = (window as unknown as { __dropTransfer?: DataTransfer }).__dropTransfer!
+	  document.body.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }))
+	})
+	await expect(page.getByTestId('global-drop-overlay')).toHaveCount(0)
+	await expect(page.locator('.attachment-draft-file[title="global-drop.go"]')).toBeVisible()
+  await page.getByTestId('edit-send').click()
+  await expect(page.getByTestId('user-bubble')).toContainText(edited)
+  await expect(page.getByTestId('user-bubble').locator('.message-image img')).toBeVisible()
+  await expect(page.getByTestId('user-bubble').locator('.message-images')).toBeVisible()
+  await expect(page.getByTestId('user-bubble').locator('.user-text-bubble')).toHaveText(edited)
+  await page.getByTestId('user-bubble').getByRole('button', { name: '放大查看图片' }).click()
+  await expect(page.getByRole('dialog', { name: '图片预览' })).toBeVisible()
+  await page.getByRole('button', { name: '关闭图片预览' }).click()
+  await expect(page.getByTestId('assistant-message')).toContainText('ok')
+  await expect(page.locator('.branch-nav')).toContainText('2 / 2')
+
+  await page.locator('.branch-nav button').first().click()
+  await expect(page.getByTestId('user-bubble')).toContainText(original)
+  await page.locator('.branch-nav button').last().click()
+  await expect(page.getByTestId('user-bubble')).toContainText(edited)
+
+  await page.getByTestId('fork-msg').click()
+  await expect.poll(async () => page.evaluate(async () => {
+    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
+    return (await fetch('/v1/sessions', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()) as unknown[]).length
+  })).toBe(before.count + 1)
+  await expect(page.getByTestId('user-bubble')).toContainText(edited)
+
+  await page.getByTestId('regen-msg').click()
+  await expect(page.locator('.branch-nav')).toContainText('2 / 2')
+  await expect.poll(async () => page.evaluate(async () => {
+    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
+    return (await fetch('/v1/sessions', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()) as unknown[]).length
+  })).toBe(before.count + 1)
+})
+
 test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }) => {
   await page.goto('/')
   await sendPrompt(page, `ws-e2e ${Date.now()}`)
