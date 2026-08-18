@@ -46,6 +46,7 @@ type Config struct {
 	Provider       string `json:"provider"`
 	Model          string `json:"model"`
 	ThinkingEffort string `json:"thinkingEffort,omitempty"`
+	ActiveLeafID   string `json:"activeLeafId,omitempty"`
 	Title          string `json:"title,omitempty"`
 	Pinned         bool   `json:"pinned,omitempty"`
 	PinnedAt       string `json:"pinnedAt,omitempty"`
@@ -227,6 +228,12 @@ func Open(dir string) (*Session, error) {
 	if s.Header.ID == "" {
 		return nil, fmt.Errorf("%w: %s", errSessionHeader, dir)
 	}
+	if s.Config.ActiveLeafID != "" {
+		if _, ok := s.byID[s.Config.ActiveLeafID]; !ok {
+			return nil, fmt.Errorf("active leaf %q not found", s.Config.ActiveLeafID)
+		}
+		s.leafID = s.Config.ActiveLeafID
+	}
 	return s, nil
 }
 
@@ -291,6 +298,35 @@ func (s *Session) LeafEntries() []Entry {
 	return s.leafEntriesLocked(s.leafID)
 }
 
+// EntriesTo returns the root-to-leaf entry path for an entry in this session.
+func (s *Session) EntriesTo(leaf string) ([]Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if leaf != "" {
+		if _, ok := s.byID[leaf]; !ok {
+			return nil, fmt.Errorf("entry %q not found", leaf)
+		}
+	}
+	return slices.Clone(s.leafEntriesLocked(leaf)), nil
+}
+
+// SetLeaf selects the active branch without rewriting or deleting old rows.
+// Persisting it is required because the server opens a fresh Session for each
+// request; an in-memory-only revert would silently jump back to the last
+// physical jsonl row on the next request.
+func (s *Session) SetLeaf(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id != "" {
+		if _, ok := s.byID[id]; !ok {
+			return fmt.Errorf("entry %q not found", id)
+		}
+	}
+	s.leafID = id
+	s.Config.ActiveLeafID = id
+	return s.writeConfig()
+}
+
 func (s *Session) leafEntriesLocked(leaf string) []Entry {
 	var rev []Entry
 	id := leaf
@@ -315,7 +351,9 @@ func (s *Session) leafEntriesLocked(leaf string) []Entry {
 func (s *Session) LastCompactionAt() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, v := range slices.Backward(s.entries) {
+	// Compactions on abandoned edit branches must not affect stale-usage checks
+	// for the selected branch.
+	for _, v := range slices.Backward(s.leafEntriesLocked(s.leafID)) {
 		if v.Type != "compaction" {
 			continue
 		}
@@ -333,6 +371,18 @@ func (s *Session) MessagesToLeaf() []types.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.messagesLocked(s.leafID)
+}
+
+// MessagesTo returns model-facing history for an arbitrary branch point.
+func (s *Session) MessagesTo(leaf string) ([]types.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if leaf != "" {
+		if _, ok := s.byID[leaf]; !ok {
+			return nil, fmt.Errorf("entry %q not found", leaf)
+		}
+	}
+	return s.messagesLocked(leaf), nil
 }
 
 func (s *Session) messagesLocked(leaf string) []types.Message {
@@ -606,7 +656,8 @@ func (s *Session) appendLocked(e Entry) error {
 	s.entries = append(s.entries, e)
 	s.byID[e.ID] = e
 	s.leafID = e.ID
-	return nil
+	s.Config.ActiveLeafID = e.ID
+	return s.writeConfig()
 }
 
 func (s *Session) writeLine(v any) error {
@@ -635,35 +686,166 @@ func (s *Session) SaveConfig() error {
 	return s.writeConfig()
 }
 
-// Fork copies the whole directory to a new session id.
+// Fork creates a new session containing the current active path.
 func Fork(root string, src *Session) (*Session, error) {
+	return ForkAt(root, src, src.LeafID())
+}
+
+// ForkAt creates a new session directory containing only root -> target.
+func ForkAt(root string, src *Session, target string) (*Session, error) {
 	src.mu.Lock()
 	cwd := src.Header.CWD
-	parent := src.Dir
+	parent := src.Header.ID
+	cfg := src.Config
+	if target == "" {
+		target = src.leafID
+	}
+	if target != "" {
+		if _, ok := src.byID[target]; !ok {
+			src.mu.Unlock()
+			return nil, fmt.Errorf("entry %q not found", target)
+		}
+	}
+	entries := slices.Clone(src.leafEntriesLocked(target))
+	sourceDir := src.Dir
 	src.mu.Unlock()
-	_ = src.jsonl.Sync()
 
-	id, err := idgen.NewV7()
-	if err != nil {
-		return nil, fmt.Errorf("generate fork session ID: %w", err)
-	}
-	ts := idgen.FileTimestamp(time.Now())
-	dir := filepath.Join(root, EncodeCWD(cwd), ts+"_"+id)
-	if err := copyDir(src.Dir, dir); err != nil {
-		return nil, err
-	}
-	dst, err := Open(dir)
+	dst, err := Create(root, cwd, cfg.Provider, cfg.Model, cfg.ThinkingEffort)
 	if err != nil {
 		return nil, err
 	}
-	dst.Header.ID = id
-	dst.Header.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
-	dst.Header.ParentSession = parent
-	if err := rewriteHeader(dst); err != nil {
+	dir := dst.Dir
+	attachmentRefs := referencedAttachments(entries, sourceDir)
+	for i := range entries {
+		rewriteEntryAttachmentPaths(&entries[i], sourceDir, dir)
+	}
+	fail := func(err error) (*Session, error) {
 		_ = dst.Close()
+		_ = os.RemoveAll(dir)
 		return nil, err
+	}
+	dst.Config = cfg
+	dst.Config.ActiveLeafID = ""
+	dst.Header.ParentSession = parent
+	if err := dst.writeConfig(); err != nil {
+		return fail(err)
+	}
+	if err := rewriteHeader(dst); err != nil {
+		return fail(err)
+	}
+	if err := dst.Close(); err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	dst, err = Open(dir)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	for _, e := range entries {
+		dst.mu.Lock()
+		err = dst.appendLocked(e)
+		dst.mu.Unlock()
+		if err != nil {
+			return fail(err)
+		}
+	}
+	if len(attachmentRefs) > 0 {
+		if err := copyAttachmentRefs(filepath.Join(sourceDir, "attachments"), filepath.Join(dir, "attachments"), attachmentRefs); err != nil {
+			return fail(err)
+		}
 	}
 	return dst, nil
+}
+
+func referencedAttachments(entries []Entry, sourceDir string) []string {
+	set := map[string]bool{}
+	add := func(m *types.Message) {
+		if m == nil {
+			return
+		}
+		for _, c := range m.Content {
+			rel, err := filepath.Rel(filepath.Join(sourceDir, "attachments"), c.Path)
+			if c.Path != "" && err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				set[rel] = true
+			}
+		}
+	}
+	for i := range entries {
+		add(entries[i].Message)
+		for j := range entries[i].RetainedTail {
+			add(&entries[i].RetainedTail[j])
+		}
+	}
+	out := make([]string, 0, len(set))
+	for rel := range set {
+		out = append(out, rel)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func copyAttachmentRefs(src, dst string, refs []string) error {
+	root, err := os.OpenRoot(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	for _, rel := range refs {
+		in, err := root.Open(rel)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			_ = in.Close()
+			return err
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // destination is confined to a generated session dir
+		if err != nil {
+			_ = in.Close()
+			return err
+		}
+		_, copyErr := io.Copy(out, in)
+		closeErr := out.Close()
+		_ = in.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	return nil
+}
+
+func rewriteEntryAttachmentPaths(e *Entry, sourceDir, destDir string) {
+	rewrite := func(m *types.Message) {
+		if m == nil {
+			return
+		}
+		m.Content = slices.Clone(m.Content)
+		for i := range m.Content {
+			path := m.Content[i].Path
+			if path == "" {
+				continue
+			}
+			rel, err := filepath.Rel(filepath.Join(sourceDir, "attachments"), path)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				continue
+			}
+			m.Content[i].Path = filepath.Join(destDir, "attachments", rel)
+		}
+	}
+	if e.Message != nil {
+		copyMessage := *e.Message
+		e.Message = &copyMessage
+		rewrite(e.Message)
+	}
+	e.RetainedTail = slices.Clone(e.RetainedTail)
+	for i := range e.RetainedTail {
+		rewrite(&e.RetainedTail[i])
+	}
 }
 
 func rewriteHeader(s *Session) error {
@@ -719,49 +901,6 @@ func rewriteHeader(s *Session) error {
 	s.jsonl = nf
 	_, _ = s.jsonl.Seek(0, io.SeekEnd)
 	return nil
-}
-
-func copyDir(src, dst string) error {
-	root, err := os.OpenRoot(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = root.Close() }()
-
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode())
-		}
-		// Open through the source root so a symlink cannot redirect the copy
-		// outside the session tree between Walk and Open.
-		in, err := root.Open(rel)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = in.Close() }()
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			return err
-		}
-		//nolint:gosec // target is confined to the destination session directory.
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			return err
-		}
-		_, err = io.Copy(out, in)
-		cerr := out.Close()
-		if err != nil {
-			return err
-		}
-		return cerr
-	})
 }
 
 // Allowed reports whether name is enabled by t.

@@ -8,6 +8,8 @@ type Content struct {
 	Text     string `json:"text,omitempty"`
 	Data     string `json:"data,omitempty"`
 	MIMEType string `json:"mimeType,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Size     int64  `json:"size,omitempty"`
 	Thinking string `json:"thinking,omitempty"`
 	ID       string `json:"id,omitempty"`
 	Name     string `json:"name,omitempty"`

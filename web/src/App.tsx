@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ApiError, Client, boot } from './api'
 import { ChatView } from './Chat'
+import { Composer, type Draft } from './Composer'
+import { AttachmentBrowser } from './AttachmentBrowser'
 import { DirectoryBrowser } from './DirectoryBrowser'
 import { SessionConfig } from './SessionConfig'
 import { ProviderSettings } from './ProviderSettings'
-import { Select } from './Select'
-import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFolder, IGear, IPanel, IPin, IPlus, ISearch, ISend, IStop, ITrash } from './icons'
+import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
 import { appendOptimisticUser, applyEvent, emptyView, loadHistory } from './model'
-import type { ChatNode, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
+import type { ChatNode, Content, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
 
@@ -16,12 +17,6 @@ type Tab = 'conversation' | 'trajectory' | 'config'
 type SettingsPage = 'providers' | 'appearance'
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
-
-function basename(p: string): string {
-  const s = p.replace(/[\\/]+$/, '')
-  const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'))
-  return i >= 0 ? s.slice(i + 1) : s
-}
 
 function loadExpanded(): Record<string, boolean> {
   try { return JSON.parse(localStorage.getItem(EXPAND_KEY) || '{}') as Record<string, boolean> }
@@ -70,78 +65,6 @@ function Modal({ title, onClose, children, testid }: { title: string; onClose: (
   )
 }
 
-function Composer({
-  value, onChange, onSend, onStop, busy, disabled, hero, cwd, model, err, onPickModel, thinkingLevels, thinkingEffort, onThinking, contextUsage,
-}: {
-  value: string
-  onChange: (v: string) => void
-  onSend: () => void
-  onStop: () => void
-  busy: boolean
-  disabled?: boolean
-  hero?: boolean
-  cwd?: string
-  model?: string
-  err?: string | null
-  onPickModel?: () => void
-	thinkingLevels?: string[]
-	thinkingEffort?: string
-	onThinking?: (effort: string) => void
-	contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
-}) {
-  const { t } = useI18n()
-  const ref = useRef<HTMLTextAreaElement>(null)
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 180)}px`
-  }, [value])
-  return (
-    <div className={`composer-wrap${hero ? ' hero-pos' : ''}`}>
-      {err ? <div className="notice" data-testid="notice">{err}</div> : null}
-      <div className="composer">
-        <textarea
-          ref={ref}
-          data-testid="composer-input"
-          rows={1}
-          placeholder={disabled ? t('composer.placeholderDisabled') : t('composer.placeholder')}
-          value={value}
-          disabled={disabled}
-          onChange={e => onChange(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              if (busy) onStop()
-              else onSend()
-            }
-          }}
-        />
-        <div className="composer-row">
-          {cwd ? <span className="cwd-chip" title={cwd}>{basename(cwd)}</span> : null}
-          <button type="button" className="model-chip" data-testid="open-model" onClick={onPickModel}>
-            {model || t('composer.pickModel')}
-          </button>
-		  {thinkingLevels && thinkingLevels.length > 1 ? <Select
-			className="thinking-select"
-			ariaLabel="Thinking effort"
-			value={thinkingEffort || thinkingLevels[0]}
-			options={thinkingLevels.map(level => ({ value: level, label: level }))}
-			onChange={value => onThinking?.(value)}
-		  /> : null}
-          <span className="grow" />
-		  {contextUsage?.contextWindow ? <span className="context-meter" title={`${contextUsage.estimated ? '~' : ''}${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens`} style={{ '--context-pct': `${Math.min(100, contextUsage.usedTokens / contextUsage.contextWindow * 100)}%` } as CSSProperties}>{contextUsage.estimated ? '~' : ''}{Math.round(contextUsage.usedTokens / contextUsage.contextWindow * 100)}%</span> : null}
-          {busy ? (
-            <button type="button" className="send stop" data-testid="composer-stop" onClick={onStop} aria-label={t('composer.stop')}><IStop /></button>
-          ) : (
-            <button type="button" className="send" data-testid="composer-send" disabled={disabled || !value.trim()} onClick={onSend} aria-label={t('composer.send')}><ISend /></button>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
-
 export function App() {
   const { t, lang, setLang } = useI18n()
   const untitled = t('session.untitled')
@@ -164,7 +87,11 @@ export function App() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>(loadExpanded)
   const [showAll, setShowAll] = useState<Record<string, boolean>>({})
   const [view, setView] = useState<ViewState>(emptyView)
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useState<Draft>({ text: '', attachments: [] })
+	const [edit, setEdit] = useState<{ messageId: string; parentId: string; draft: Draft } | null>(null)
+	const [attachmentTarget, setAttachmentTarget] = useState<'new' | 'edit' | null>(null)
+	const [uploading, setUploading] = useState(false)
+	const [fileDragActive, setFileDragActive] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -280,6 +207,9 @@ export function App() {
     } finally {
       if (abortRef.current === ac) {
         setView(v => ({ ...v, busy: false }))
+		void api.get(id).then(detail => {
+		  if (abortRef.current === ac) setView(loadHistory(detail))
+		}).catch(() => {})
         void refreshList()
       }
     }
@@ -288,7 +218,9 @@ export function App() {
   const openSession = useCallback(async (id: string) => {
     setCurrentId(id)
     setErr(null)
+	setEdit(null)
     abortRef.current?.abort()
+	abortRef.current = null
     try {
       const detail = await api.get(id)
       const next = loadHistory(detail)
@@ -308,6 +240,7 @@ export function App() {
     setSelectedWs(s.workspaceId ?? workspaceId ?? null)
     setView({ ...emptyView(), cwd: s.cwd, model: s.model, provider: s.provider, thinkingEffort: s.thinkingEffort ?? '' })
     setTab('conversation')
+	setEdit(null)
     if (s.workspaceId) {
       setExpanded(e => ({ ...e, [s.workspaceId!]: true }))
       setShowAll(a => ({ ...a, [s.workspaceId!]: true }))
@@ -315,15 +248,75 @@ export function App() {
     return s
   }, [api, refreshList])
 
+	const uploadClientFiles = useCallback(async (target: 'new' | 'edit', files: File[]) => {
+	  if (!files.length || uploading) return
+	  setUploading(true)
+	  setErr(null)
+	  try {
+		let id = currentId
+		if (!id) id = (await makeSession(selectedWs)).id
+		const added = await Promise.all(files.map(file => api.uploadAttachment(id!, file)))
+		if (target === 'edit') {
+		  setEdit(e => e ? { ...e, draft: { ...e.draft, attachments: [...e.draft.attachments, ...added.filter(a => !e.draft.attachments.some(old => old.id === a.id))] } } : e)
+		} else {
+		  setDraft(d => ({ ...d, attachments: [...d.attachments, ...added.filter(a => !d.attachments.some(old => old.id === a.id))] }))
+		}
+	  } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+	  finally { setUploading(false) }
+	}, [api, currentId, makeSession, selectedWs, uploading])
+
+	useEffect(() => {
+	  let depth = 0
+	  const hasFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files')
+	  const reset = () => { depth = 0; setFileDragActive(false) }
+	  const onDragEnter = (event: DragEvent) => {
+		if (!hasFiles(event)) return
+		event.preventDefault()
+		depth++
+		if (!view.busy && !uploading) setFileDragActive(true)
+	  }
+	  const onDragOver = (event: DragEvent) => {
+		if (!hasFiles(event)) return
+		event.preventDefault()
+		if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+	  }
+	  const onDragLeave = (event: DragEvent) => {
+		if (!hasFiles(event)) return
+		event.preventDefault()
+		depth = Math.max(0, depth - 1)
+		if (depth === 0) setFileDragActive(false)
+	  }
+	  const onDrop = (event: DragEvent) => {
+		if (!hasFiles(event)) return
+		event.preventDefault()
+		const files = Array.from(event.dataTransfer?.files ?? [])
+		reset()
+		if (!files.length || view.busy || uploading) return
+		setAttachmentTarget(null)
+		void uploadClientFiles(edit ? 'edit' : 'new', files)
+	  }
+	  window.addEventListener('dragenter', onDragEnter)
+	  window.addEventListener('dragover', onDragOver)
+	  window.addEventListener('dragleave', onDragLeave)
+	  window.addEventListener('drop', onDrop)
+	  window.addEventListener('dragend', reset)
+	  return () => {
+		window.removeEventListener('dragenter', onDragEnter)
+		window.removeEventListener('dragover', onDragOver)
+		window.removeEventListener('dragleave', onDragLeave)
+		window.removeEventListener('drop', onDrop)
+		window.removeEventListener('dragend', reset)
+	  }
+	}, [edit, uploadClientFiles, uploading, view.busy])
+
   const newSession = useCallback(async (wsId?: string) => {
     setErr(null)
     try { await makeSession(wsId ?? selectedWs) }
     catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
   }, [makeSession, selectedWs])
 
-  const send = useCallback(async () => {
-    const text = draft.trim()
-    if (!text) return
+  const sendContent = useCallback(async (content: Content[], parentId?: string, editedMessageId?: string) => {
+	if (!content.some(c => (c.type === 'text' && !!c.text?.trim()) || c.type !== 'text')) return
     setErr(null)
     try {
       let id = currentId
@@ -331,19 +324,41 @@ export function App() {
         const s = await makeSession(selectedWs)
         id = s.id
       }
-      setDraft('')
-      setView(v => appendOptimisticUser(v, text))
       try {
         const spec = view.provider && view.model ? `${view.provider}/${view.model}` : view.model
-        await api.prompt(id, text, spec || undefined)
+		await api.prompt(id, content, spec || undefined, parentId)
       } catch (e) {
         if (!(e instanceof ApiError && e.status === 409)) throw e
       }
+	  if (editedMessageId) {
+		setEdit(null)
+		setView(v => {
+		  const cut = v.nodes.findIndex(n => n.id === editedMessageId)
+		  // Hide the abandoned descendant path immediately; the authoritative
+		  // tree is reloaded after SSE completes, so failed requests never lose
+		  // the editor draft or mutate the visible branch.
+		  return appendOptimisticUser({ ...v, nodes: cut >= 0 ? v.nodes.slice(0, cut) : v.nodes }, content)
+		})
+	  } else {
+		setDraft({ text: '', attachments: [] })
+		setView(v => appendOptimisticUser(v, content))
+	  }
       void listen(id)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
-  }, [api, currentId, draft, listen, makeSession, selectedWs, view.model, view.provider])
+	}, [api, currentId, listen, makeSession, selectedWs, view.model, view.provider])
+
+	const send = useCallback(() => {
+	  const content: Content[] = [...(draft.text.trim() ? [{ type: 'text', text: draft.text } as Content] : []), ...draft.attachments]
+	  return sendContent(content)
+	}, [draft, sendContent])
+
+	const sendEdit = useCallback(() => {
+	  if (!edit) return Promise.resolve()
+	  const content: Content[] = [...(edit.draft.text.trim() ? [{ type: 'text', text: edit.draft.text } as Content] : []), ...edit.draft.attachments]
+	  return sendContent(content, edit.parentId, edit.messageId)
+	}, [edit, sendContent])
 
   const stop = useCallback(async () => {
     if (!currentId) return
@@ -427,13 +442,82 @@ export function App() {
     setTab('trajectory')
   }
 
+	const startEdit = useCallback((node: Extract<ChatNode, { kind: 'user' }>) => {
+	  if (view.busy) return
+	  setEdit({
+		messageId: node.id,
+		parentId: node.parentId ?? '',
+		draft: { text: node.text, attachments: node.content.filter(c => c.type === 'image' || c.type === 'file' || c.type === 'workspace_file') },
+	  })
+	}, [view.busy])
+
+	const forkMessage = useCallback(async (node: Extract<ChatNode, { kind: 'assistant' }>) => {
+	  if (!currentId || view.busy) return
+	  setErr(null)
+	  try {
+		const child = await api.fork(currentId, node.id)
+		await refreshList()
+		await openSession(child.id)
+	  } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+	}, [api, currentId, openSession, refreshList, view.busy])
+
+	const regenerate = useCallback((node: Extract<ChatNode, { kind: 'assistant' }>) => {
+	  const idx = view.nodes.findIndex(n => n.id === node.id)
+	  for (let i = idx - 1; i >= 0; i--) {
+		const candidate = view.nodes[i]
+		if (candidate.kind !== 'user') continue
+		void sendContent(candidate.content, candidate.parentId ?? '', candidate.id)
+		return
+	  }
+	}, [sendContent, view.nodes])
+
+	const branchInfo = useMemo(() => {
+	  const groups = new Map<string, string[]>()
+	  for (const entry of view.allEntries) {
+		if (entry.type !== 'message' || entry.message?.role !== 'user') continue
+		const key = entry.parentId ?? ''
+		groups.set(key, [...(groups.get(key) ?? []), entry.id])
+	  }
+	  const out: Record<string, { index: number; total: number }> = {}
+	  for (const ids of groups.values()) ids.forEach((id, index) => { out[id] = { index, total: ids.length } })
+	  return out
+	}, [view.allEntries])
+
+	const switchBranch = useCallback(async (node: Extract<ChatNode, { kind: 'user' }>, delta: number) => {
+	  if (!currentId || view.busy) return
+	  const siblings = view.allEntries.filter(e => e.type === 'message' && e.message?.role === 'user' && (e.parentId ?? '') === (node.parentId ?? ''))
+	  const at = siblings.findIndex(e => e.id === node.id)
+	  const target = siblings[at + delta]
+	  if (!target) return
+	  const byId = new Map(view.allEntries.map(e => [e.id, e]))
+	  let leaf = target.id
+	  // A branch selection targets its newest descendant so tool/result pairs
+	  // remain complete instead of exposing an arbitrary physical jsonl tail.
+	  for (let i = view.allEntries.length - 1; i >= 0; i--) {
+		let id: string | undefined = view.allEntries[i].id
+		while (id) {
+		  if (id === target.id) { leaf = view.allEntries[i].id; id = undefined; break }
+		  id = byId.get(id)?.parentId
+		}
+		if (leaf !== target.id) break
+	  }
+	  try {
+		await api.patch(currentId, { leafId: leaf })
+		await openSession(currentId)
+	  } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+	}, [api, currentId, openSession, view.allEntries, view.busy])
+
   const empty = view.nodes.length === 0
   const composer = (
     <Composer
-      value={draft}
-      onChange={setDraft}
+	  api={api}
+	  draft={draft}
+	  onChange={setDraft}
       onSend={() => void send()}
       onStop={() => void stop()}
+	  onAttach={() => setAttachmentTarget('new')}
+	  onFiles={files => void uploadClientFiles('new', files)}
+	  uploading={uploading}
       busy={view.busy}
       cwd={view.cwd}
       model={view.model}
@@ -454,7 +538,12 @@ export function App() {
   }
 
   return (
-    <div className={`app${collapsed ? ' sidebar-collapsed' : ''}${(settingsOpen || modelOpen || dirOpen) ? ' modal-open' : ''}`}>
+    <div className={`app${collapsed ? ' sidebar-collapsed' : ''}${(settingsOpen || modelOpen || dirOpen || attachmentTarget) ? ' modal-open' : ''}`}>
+	  {fileDragActive ? createPortal(<div className="global-drop-overlay" data-testid="global-drop-overlay">
+		<div className="global-drop-visual"><span><IImage /></span><span><IFile /></span><span><IPlus /></span></div>
+		<strong>{edit ? t('drop.editTitle') : t('drop.newTitle')}</strong>
+		<p>{t('drop.hint')}</p>
+	  </div>, document.body) : null}
       <aside
         className={`sidebar${collapsed && wide ? ' fading' : ''}${!wide ? ' rail' : ''}${!wide && everWide.current ? ' rail-in' : ''}`}
         style={wide ? { width: 280 } : undefined}
@@ -669,7 +758,24 @@ export function App() {
                     setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80)
                   }}
                 >
-                  <ChatView nodes={view.nodes} busy={view.busy} onSelect={inspect} />
+				  <ChatView
+					api={api}
+					nodes={view.nodes}
+					busy={view.busy}
+					onSelect={inspect}
+					edit={edit}
+					onStartEdit={startEdit}
+					onEditChange={draft => setEdit(e => e ? { ...e, draft } : e)}
+					onCancelEdit={() => setEdit(null)}
+					onSendEdit={() => void sendEdit()}
+					onAttachEdit={() => setAttachmentTarget('edit')}
+					onFilesEdit={files => void uploadClientFiles('edit', files)}
+					uploading={uploading}
+					onFork={node => void forkMessage(node)}
+					onRegen={regenerate}
+					branches={branchInfo}
+					onBranch={(node, delta) => void switchBranch(node, delta)}
+				  />
                 </div>
                 {!atBottom ? (
                   <div className="to-bottom-slot">
@@ -684,7 +790,7 @@ export function App() {
                     </button>
                   </div>
                 ) : null}
-                {composer}
+				{!edit ? composer : null}
               </>
             )}
           </div>
@@ -824,6 +930,19 @@ export function App() {
             .finally(() => setDirBusy(false))
         }}
       />
+	  <AttachmentBrowser
+		api={api}
+		open={attachmentTarget !== null}
+		startPath={view.cwd || undefined}
+		onClose={() => setAttachmentTarget(null)}
+		onPick={content => {
+		  if (attachmentTarget === 'edit') {
+			setEdit(e => e && !e.draft.attachments.some(a => a.path === content.path) ? { ...e, draft: { ...e.draft, attachments: [...e.draft.attachments, content] } } : e)
+		  } else {
+			setDraft(d => d.attachments.some(a => a.path === content.path) ? d : { ...d, attachments: [...d.attachments, content] })
+		  }
+		}}
+	  />
 
       {modelOpen ? (
         <Modal title={t('model.title')} onClose={() => { setModelOpen(false); setModelQuery('') }} testid="model-dialog">

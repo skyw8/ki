@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -166,6 +167,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /v1/sessions/{id}/abort", s.auth(s.abort))
 	api.HandleFunc("POST /v1/sessions/{id}/compact", s.auth(s.doCompact))
 	api.HandleFunc("POST /v1/sessions/{id}/fork", s.auth(s.fork))
+	api.HandleFunc("POST /v1/sessions/{id}/attachments", s.auth(s.uploadAttachment))
 	api.HandleFunc("GET /v1/workspaces", s.auth(s.listWorkspaces))
 	api.HandleFunc("POST /v1/workspaces", s.auth(s.createWorkspace))
 	api.HandleFunc("PATCH /v1/workspaces/{id}", s.auth(s.patchWorkspace))
@@ -452,6 +454,7 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 		Pinned         *bool           `json:"pinned"`
 		Skills         *session.Toggle `json:"skills"`
 		MCP            *session.Toggle `json:"mcp"`
+		LeafID         *string         `json:"leafId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -482,6 +485,16 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := sess.SetModelAndThinking(ref.Provider, ref.Model, effort); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if body.LeafID != nil {
+		if s.running(sess.ID()) {
+			http.Error(w, "session busy", http.StatusConflict)
+			return
+		}
+		if err := sess.SetLeaf(*body.LeafID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 	}
@@ -554,11 +567,20 @@ func (s *Server) running(id string) bool {
 func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Text  string `json:"text"`
-		Model string `json:"model"`
+		Text     string          `json:"text"`
+		Content  []types.Content `json:"content"`
+		ParentID *string         `json:"parentId"`
+		Model    string          `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Text) == "" {
-		http.Error(w, "text required", http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if len(body.Content) == 0 && strings.TrimSpace(body.Text) != "" {
+		body.Content = []types.Content{{Type: "text", Text: body.Text}}
+	}
+	if err := validateUserContent(body.Content); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	sess, err := s.open(id)
@@ -571,13 +593,34 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session busy", http.StatusConflict)
 		return
 	}
+	if body.ParentID != nil && *body.ParentID != "" {
+		messages, err := sess.MessagesTo(*body.ParentID)
+		if err != nil {
+			_ = sess.Close()
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if hasUnresolvedToolCalls(messages) {
+			_ = sess.Close()
+			http.Error(w, "parent leaves unresolved tool calls", http.StatusBadRequest)
+			return
+		}
+	}
 	spec := body.Model
 	if spec == "" {
 		spec = sess.Config.Model
 	}
-	ref, _, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
+	ref, selectedModel, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
 	if err == nil && s.requireModelCredential {
-		_, _, _, err = s.registry.Resolve(ref.Provider, ref.Model)
+		_, selectedModel, _, err = s.registry.Resolve(ref.Provider, ref.Model)
+	}
+	if err == nil && !slices.Contains(selectedModel.Input, "image") {
+		for _, c := range body.Content {
+			if c.Type == "image" {
+				err = errors.New("selected model does not support image input")
+				break
+			}
+		}
 	}
 	_ = sess.Close()
 	if err != nil {
@@ -604,11 +647,108 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	// The prompt must continue after the HTTP response closes; abort is the
 	// explicit cancellation path for a running session.
 	//nolint:contextcheck // this context intentionally outlives the request
-	go s.runPrompt(ctx, st, id, body.Text, body.Model)
+	go s.runPrompt(ctx, st, id, body.Content, body.ParentID, body.Model)
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": true})
 }
 
-func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel string) {
+func validateUserContent(content []types.Content) error {
+	const maxInlineImage = 20 << 20
+	usable := false
+	for i := range content {
+		c := &content[i]
+		switch c.Type {
+		case "", "text":
+			if strings.TrimSpace(c.Text) != "" {
+				usable = true
+			}
+		case "image", "file", "workspace_file":
+			if c.Path == "" && c.Data == "" {
+				return fmt.Errorf("content[%d]: attachment path required", i)
+			}
+			if c.Path != "" {
+				abs, err := filepath.Abs(c.Path)
+				if err != nil {
+					return fmt.Errorf("content[%d]: invalid attachment path", i)
+				}
+				// The WebUI intentionally selects host files through the authenticated
+				// server-side browser; re-stat the normalized absolute path so a stale
+				// or directory selection cannot enter persisted model context.
+				st, err := os.Stat(abs)
+				if err != nil || !st.Mode().IsRegular() {
+					return fmt.Errorf("content[%d]: attachment unreadable", i)
+				}
+				c.Path = abs
+				c.Size = st.Size()
+				// Images are materialized into base64 for provider requests. Bound the
+				// read here so a selected disk image cannot multiply into an unbounded
+				// request allocation; ordinary file references are never inlined.
+				if c.Type == "image" && st.Size() > maxInlineImage {
+					return fmt.Errorf("content[%d]: image exceeds 20 MiB", i)
+				}
+				if c.Name == "" {
+					c.Name = filepath.Base(abs)
+				}
+			}
+			usable = true
+		default:
+			return fmt.Errorf("content[%d]: unsupported type %q", i, c.Type)
+		}
+	}
+	if !usable {
+		return errors.New("text or attachment required")
+	}
+	return nil
+}
+
+func materializeAttachments(_ context.Context, messages []types.Message) ([]types.Message, error) {
+	out := make([]types.Message, len(messages))
+	for i, m := range messages {
+		out[i] = m
+		out[i].Content = make([]types.Content, 0, len(m.Content))
+		for _, c := range m.Content {
+			switch c.Type {
+			case "file", "workspace_file":
+				label := c.Name
+				if label == "" {
+					label = filepath.Base(c.Path)
+				}
+				out[i].Content = append(out[i].Content, types.Content{Type: "text", Text: fmt.Sprintf("\nAttached file %q is available at: %s", label, c.Path)})
+			case "image":
+				if c.Data == "" && c.Path != "" {
+					b, err := os.ReadFile(c.Path) //nolint:gosec // authenticated host file selected by the user
+					if err != nil {
+						return nil, fmt.Errorf("read attachment %q: %w", c.Path, err)
+					}
+					c.Data = base64.StdEncoding.EncodeToString(b)
+					if c.MIMEType == "" {
+						c.MIMEType = http.DetectContentType(b)
+					}
+				}
+				out[i].Content = append(out[i].Content, c)
+			default:
+				out[i].Content = append(out[i].Content, c)
+			}
+		}
+	}
+	return out, nil
+}
+
+func hasUnresolvedToolCalls(messages []types.Message) bool {
+	pending := map[string]bool{}
+	for _, m := range messages {
+		for _, call := range m.ToolCalls() {
+			if call.ID != "" {
+				pending[call.ID] = true
+			}
+		}
+		if m.Role == "toolResult" && m.ToolCallID != "" {
+			delete(pending, m.ToolCallID)
+		}
+	}
+	return len(pending) != 0
+}
+
+func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content []types.Content, parentID *string, reqModel string) {
 	defer func() {
 		// A prompt panic must still close done, otherwise SSE clients stay busy
 		// forever waiting for a run that can no longer produce events.
@@ -626,6 +766,12 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		return
 	}
 	defer func() { _ = sess.Close() }()
+	if parentID != nil {
+		if err := sess.SetLeaf(*parentID); err != nil {
+			st.err = err
+			return
+		}
+	}
 	cfg := s.cfg
 	if reqModel != "" {
 		ref, nextModel, resolveErr := s.registry.ResolveSpec(reqModel, sess.Config.Provider)
@@ -640,8 +786,19 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 			st.err = resolveErr
 			return
 		}
-		if err := sess.SetModelAndThinking(ref.Provider, ref.Model, effort); err != nil {
-			slog.Warn("set model", "session_id", id, "provider", ref.Provider, "model", ref.Model, "err", err)
+		if ref.Provider != sess.Config.Provider || ref.Model != sess.Config.Model || effort != sess.Config.ThinkingEffort {
+			if err := sess.SetModelAndThinking(ref.Provider, ref.Model, effort); err != nil {
+				slog.Warn("set model", "session_id", id, "provider", ref.Provider, "model", ref.Model, "err", err)
+			}
+		}
+	}
+	if parentID != nil {
+		// A per-request model change is metadata, not the parent of an edited
+		// user message. Re-select the requested base so user alternatives remain
+		// true siblings and branch navigation does not depend on model settings.
+		if err := sess.SetLeaf(*parentID); err != nil {
+			st.err = err
+			return
 		}
 	}
 	_, info, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
@@ -685,9 +842,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	var emit func(loop.Event) error
 	emit = func(ev loop.Event) error {
 		if ev.Type == loop.MessageEnd && ev.Message != nil {
-			if _, err := sess.AppendMessage(*ev.Message); err != nil {
+			e, err := sess.AppendMessage(*ev.Message)
+			if err != nil {
 				return fmt.Errorf("append message: %w", err)
 			}
+			ev.EntryID = e.ID
 		}
 		if ev.Type == loop.RequestHeader {
 			tools := make([]session.ToolSchema, 0, len(ev.Tools))
@@ -761,7 +920,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		}
 	}
 
-	_, err = loop.Run(ctx, text, sess.MessagesToLeaf(), loop.Config{
+	_, err = loop.RunMessage(ctx, types.Message{Role: "user", Content: content}, sess.MessagesToLeaf(), loop.Config{
 		Streamer:                runStreamer,
 		Tools:                   tls,
 		System:                  sys,
@@ -780,6 +939,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		BaseDelay:               2 * time.Second,
 		Parallel:                true,
 		Hooks: loop.Hooks{
+			TransformContext: materializeAttachments,
 			// 溢出恢复：请求报上下文溢出时，同 Run 内压缩后重试（事件不重放）。
 			// 失败的 assistant 留在 history，但 provider replayable 会在重试时
 			// 丢弃 stopReason=error 的轮次。
@@ -936,13 +1096,28 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
+	if s.running(r.PathValue("id")) {
+		// Each HTTP request opens its own Session and therefore has a different
+		// mutex. Reject a live writer instead of copying a half-finished tool turn.
+		http.Error(w, "session busy", http.StatusConflict)
+		return
+	}
 	sess, err := s.open(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	defer func() { _ = sess.Close() }()
-	dst, err := session.Fork(s.cfg.Sessions.Root, sess)
+	var body struct {
+		EntryID string `json:"entryId"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+	}
+	dst, err := session.ForkAt(s.cfg.Sessions.Root, sess, body.EntryID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

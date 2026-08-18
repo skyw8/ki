@@ -80,9 +80,19 @@ export class Client {
     })
   }
 
-  listFS(path?: string, signal?: AbortSignal): Promise<FsListing> {
-    const q = path ? `?path=${encodeURIComponent(path)}` : ''
+  listFS(path?: string, signal?: AbortSignal, files = false): Promise<FsListing> {
+	const p = new URLSearchParams()
+	if (path) p.set('path', path)
+	if (files) p.set('files', '1')
+	const q = p.size ? `?${p}` : ''
     return this.json(`/v1/fs${q}`, { signal })
+  }
+
+  async previewFS(path: string, signal?: AbortSignal): Promise<Blob> {
+	const p = new URLSearchParams({ path, preview: '1' })
+	const res = await fetch(`/v1/fs?${p}`, { headers: this.headers(), signal })
+	if (!res.ok) throw new ApiError(res.status, (await res.text()).trim() || res.statusText)
+	return res.blob()
   }
 
   createFS(path: string, name: string): Promise<{ path: string }> {
@@ -93,10 +103,10 @@ export class Client {
     return this.json(`/v1/sessions/search?q=${encodeURIComponent(q)}`, { signal })
   }
 
-  prompt(id: string, text: string, model?: string): Promise<void> {
+  prompt(id: string, content: import('./types').Content[], model?: string, parentId?: string): Promise<void> {
     return this.json(`/v1/sessions/${id}/prompt`, {
       method: 'POST',
-      body: JSON.stringify({ text, model }),
+	  body: JSON.stringify({ content, model, ...(parentId !== undefined ? { parentId } : {}) }),
     })
   }
 
@@ -108,15 +118,23 @@ export class Client {
     return this.json(`/v1/sessions/${id}/compact`, { method: 'POST' })
   }
 
-  fork(id: string): Promise<SessionInfo> {
-    return this.json(`/v1/sessions/${id}/fork`, { method: 'POST' })
+  fork(id: string, entryId: string): Promise<SessionInfo> {
+	return this.json(`/v1/sessions/${id}/fork`, { method: 'POST', body: JSON.stringify({ entryId }) })
+  }
+
+  async uploadAttachment(id: string, file: File): Promise<import('./types').Content> {
+	const body = new FormData()
+	body.append('file', file, file.name)
+	const res = await fetch(`/v1/sessions/${id}/attachments`, { method: 'POST', headers: this.headers(), body })
+	if (!res.ok) throw new ApiError(res.status, (await res.text()).trim() || res.statusText)
+	return res.json() as Promise<import('./types').Content>
   }
 
   models(): Promise<import('./types').ModelInfo[]> {
     return this.json('/v1/models')
   }
 
-  patch(id: string, body: { model?: string; thinkingEffort?: string; title?: string; pinned?: boolean; skills?: import('./types').Toggle; mcp?: import('./types').Toggle }): Promise<SessionDetail> {
+  patch(id: string, body: { model?: string; thinkingEffort?: string; title?: string; pinned?: boolean; leafId?: string; skills?: import('./types').Toggle; mcp?: import('./types').Toggle }): Promise<SessionDetail> {
     return this.json(`/v1/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
   }
 

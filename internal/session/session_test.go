@@ -99,7 +99,7 @@ func TestCreateReloadFork(t *testing.T) {
 	if forked.ID() == s2.ID() {
 		t.Fatal("fork should mint new id")
 	}
-	if forked.Header.ParentSession != s2.Dir {
+	if forked.Header.ParentSession != s2.ID() {
 		t.Fatalf("parentSession: %q", forked.Header.ParentSession)
 	}
 	if len(forked.MessagesToLeaf()) != 2 {
@@ -113,6 +113,76 @@ func TestCreateReloadFork(t *testing.T) {
 	defer func() { _ = s3.Close() }()
 	if s3.ID() == id {
 		t.Fatal("second create must be a new session")
+	}
+}
+
+func TestBranchLeafPersistsAndForkAtCopiesOnlyActivePath(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Create(root, cwd, "openai", "gpt-4o")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachmentDir := filepath.Join(s.Dir, "attachments")
+	if err := os.MkdirAll(attachmentDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	attachment := filepath.Join(attachmentDir, "blob.txt")
+	if err := os.WriteFile(attachment, []byte("blob"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u1, _ := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "one"}, {Type: "file", Path: attachment, Name: "blob.txt"}}})
+	a1, _ := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "old"}}})
+	if err := s.SetLeaf(u1.ID); err != nil {
+		t.Fatal(err)
+	}
+	a2, err := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "new"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a2.ParentID != u1.ID || a1.ParentID != u1.ID {
+		t.Fatalf("siblings: old=%q new=%q user=%q", a1.ParentID, a2.ParentID, u1.ID)
+	}
+	dir := s.Dir
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if s.LeafID() != a2.ID {
+		t.Fatalf("leaf after reload = %q, want %q", s.LeafID(), a2.ID)
+	}
+	msgs := s.MessagesToLeaf()
+	if len(msgs) != 2 || msgs[1].Text() != "new" {
+		t.Fatalf("active messages: %+v", msgs)
+	}
+
+	forked, err := ForkAt(root, s, a1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = forked.Close() }()
+	if forked.Dir == s.Dir || forked.Header.ParentSession != s.ID() {
+		t.Fatalf("fork dir=%q parent=%q", forked.Dir, forked.Header.ParentSession)
+	}
+	if got := forked.MessagesToLeaf(); len(got) != 2 || got[1].Text() != "old" {
+		t.Fatalf("fork messages: %+v", got)
+	}
+	if len(forked.Entries()) != 2 {
+		t.Fatalf("fork copied sibling entries: %+v", forked.Entries())
+	}
+	path := forked.MessagesToLeaf()[0].Content[1].Path
+	if filepath.Dir(filepath.Dir(path)) != forked.Dir {
+		t.Fatalf("fork attachment path = %q, dir = %q", path, forked.Dir)
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != "blob" {
+		t.Fatalf("fork attachment = %q, %v", b, err)
 	}
 }
 

@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { IChev, IChevDown, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from './icons'
+import { IFile } from './icons'
+import { Composer, type Draft } from './Composer'
+import { AttachmentImage } from './AttachmentImage'
+import type { Client } from './api'
 import { useI18n } from './i18n'
 import { renderMarkdown } from './markdown'
 import type { ChatNode } from './types'
@@ -25,6 +29,13 @@ function fmtTs(ts?: number): string {
   const d = new Date(ts)
   const p = (n: number) => String(n).padStart(2, '0')
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+function fmtFileSize(size?: number): string {
+  if (size == null) return ''
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${Math.ceil(size / 1024)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
 function Think({ text, streaming }: { text: string; streaming?: boolean }) {
@@ -82,7 +93,7 @@ function prettyArgs(args: unknown): string {
   return JSON.stringify(args, null, 2)
 }
 
-function UserBubble({ text }: { text: string }) {
+function UserBubble({ api, node }: { api: Client; node: Extract<ChatNode, { kind: 'user' }> }) {
   const { t } = useI18n()
   const ref = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -98,23 +109,34 @@ function UserBubble({ text }: { text: string }) {
     // clamp, the message is genuinely too long and needs the expand toggle.
     // (Measuring keeps short bubbles button-free and long ones toggleable.)
     setOverflow(el.scrollHeight > el.clientHeight + 1)
-  }, [text, open])
+  }, [node.text, open])
   const folded = !open
+  const images = node.content.filter(c => c.type === 'image')
+  const files = node.content.filter(c => c.type === 'file' || c.type === 'workspace_file')
+  const imageLayout = images.length <= 4 ? `count-${images.length}` : 'count-many'
   return (
-    <div className="user-bubble" data-testid="user-bubble">
-      <div ref={ref} className={`bubble-text${folded ? ' clamped' : ''}`}>{text}</div>
-      {overflow || open ? (
-        <button
-          type="button"
-          className="bubble-toggle"
-          data-testid="user-bubble-toggle"
-          aria-label={open ? t('chat.collapse') : t('chat.expand')}
-          title={open ? t('chat.collapse') : t('chat.expand')}
-          onClick={() => setOpen(v => !v)}
-        >
-          <IChevDown className={open ? 'up' : undefined} />
-        </button>
-      ) : null}
+    <div className="user-message" data-testid="user-bubble">
+      {images.length ? <div className={`message-images ${imageLayout}`}>
+        {images.map((c, i) => <AttachmentImage api={api} content={c} className="message-image" expandable key={`${c.path || c.name}-${i}`} />)}
+      </div> : null}
+      {files.length ? <div className="message-files">
+		{files.map((c, i) => <span className="message-file" key={`${c.path || c.name}-${i}`} title={c.path}><span className="message-file-icon"><IFile /></span><span className="message-file-copy"><strong>{c.name || c.path}</strong>{c.size != null ? <small>{fmtFileSize(c.size)}</small> : null}</span></span>)}
+	  </div> : null}
+      {node.text ? <div className="user-text-bubble">
+        <div ref={ref} className={`bubble-text${folded ? ' clamped' : ''}`}>{node.text}</div>
+        {overflow || open ? (
+          <button
+            type="button"
+            className="bubble-toggle"
+            data-testid="user-bubble-toggle"
+            aria-label={open ? t('chat.collapse') : t('chat.expand')}
+            title={open ? t('chat.collapse') : t('chat.expand')}
+            onClick={() => setOpen(v => !v)}
+          >
+            <IChevDown className={open ? 'up' : undefined} />
+          </button>
+        ) : null}
+      </div> : null}
     </div>
   )
 }
@@ -193,7 +215,24 @@ function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> 
   )
 }
 
-export function ChatView({ nodes, busy, onSelect }: { nodes: ChatNode[]; busy: boolean; onSelect?: (n: ChatNode) => void }) {
+export function ChatView({ api, nodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch }: {
+	api: Client
+	nodes: ChatNode[]
+	busy: boolean
+	uploading?: boolean
+	onSelect?: (n: ChatNode) => void
+	edit?: { messageId: string; draft: Draft } | null
+	onStartEdit?: (n: Extract<ChatNode, { kind: 'user' }>) => void
+	onEditChange?: (draft: Draft) => void
+	onCancelEdit?: () => void
+	onSendEdit?: () => void
+	onAttachEdit?: () => void
+	onFilesEdit?: (files: File[]) => void
+	onFork?: (n: Extract<ChatNode, { kind: 'assistant' }>) => void
+	onRegen?: (n: Extract<ChatNode, { kind: 'assistant' }>) => void
+	branches?: Record<string, { index: number; total: number }>
+	onBranch?: (n: Extract<ChatNode, { kind: 'user' }>, delta: number) => void
+}) {
   const { t } = useI18n()
   return (
     <div className="chat-col" data-testid="chat">
@@ -202,12 +241,13 @@ export function ChatView({ nodes, busy, onSelect }: { nodes: ChatNode[]; busy: b
           return (
             <div key={n.id} className="user-row">
               <div className="user-stack">
-                <UserBubble text={n.text} />
+				{edit?.messageId === n.id ? <Composer api={api} mode="edit" draft={edit.draft} onChange={d => onEditChange?.(d)} onSend={() => onSendEdit?.()} onAttach={() => onAttachEdit?.()} onFiles={onFilesEdit} onCancel={onCancelEdit} busy={busy} uploading={uploading} /> : <UserBubble api={api} node={n} />}
                 <div className="msg-foot">
                   {n.ts ? <div className="msg-stats">{fmtTs(n.ts)}</div> : null}
                   <div className="msg-actions" data-testid="user-actions">
                     <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => copyText(n.text)}><ICopy /></IconBtn>
-                    <IconBtn label={t('chat.edit')} testid="edit-msg"><IEdit /></IconBtn>
+					{branches?.[n.id]?.total && branches[n.id].total > 1 ? <span className="branch-nav"><button type="button" onClick={() => onBranch?.(n, -1)}>‹</button>{branches[n.id].index + 1} / {branches[n.id].total}<button type="button" onClick={() => onBranch?.(n, 1)}>›</button></span> : null}
+					<IconBtn label={t('chat.edit')} testid="edit-msg" onClick={() => onStartEdit?.(n)}><IEdit /></IconBtn>
                   </div>
                 </div>
               </div>
@@ -238,8 +278,8 @@ export function ChatView({ nodes, busy, onSelect }: { nodes: ChatNode[]; busy: b
                   ) : null}
                   <div className="msg-actions" data-testid="asst-actions">
                     <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => copyText(n.text || n.thinking || '')}><ICopy /></IconBtn>
-                    <IconBtn label={t('chat.fork')} testid="fork-msg"><IFork /></IconBtn>
-                    <IconBtn label={t('chat.regen')} testid="regen-msg"><IRegen /></IconBtn>
+					{n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.fork')} testid="fork-msg" onClick={() => onFork?.(n)}><IFork /></IconBtn> : null}
+					{n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.regen')} testid="regen-msg" onClick={() => onRegen?.(n)}><IRegen /></IconBtn> : null}
                     <IconBtn label={t('chat.locate')} testid="traj-msg" onClick={() => onSelect?.(n)}><ITraj /></IconBtn>
                   </div>
                 </div>

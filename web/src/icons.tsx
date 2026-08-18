@@ -8,6 +8,9 @@ import {
   Copy,
   Folder,
   FolderOpen,
+	File,
+	Image,
+	Paperclip,
   GitFork,
   ListCollapse,
   ListMinus,
@@ -66,6 +69,9 @@ export const ITrash = sized(Trash2, 16)
 export const IDots = sized(MoreHorizontal, 16)
 export const IFolder = sized(Folder, 16)
 export const IFolderOpen = sized(FolderOpen, 16)
+export const IFile = sized(File, 16)
+export const IImage = sized(Image, 16)
+export const IAttach = sized(Paperclip, 16)
 export const IPencil = sized(Pencil, 14)
 export const IChevRight = sized(ChevronRight, 12)
 export const ICheck = sized(Check, 14)

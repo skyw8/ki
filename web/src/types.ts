@@ -15,6 +15,8 @@ export type Content = {
   mimeType?: string
   id?: string
   name?: string
+	path?: string
+	size?: number
 	toolType?: string
 	input?: string
   arguments?: Record<string, unknown>
@@ -69,6 +71,7 @@ export type ToolSchema = {
 
 export type LoopEvent = {
   type: string
+	entryId?: string
   message?: Message
   toolCallId?: string
   toolName?: string
@@ -115,7 +118,7 @@ export type WorkspaceInfo = {
   sessionIds?: string[]
 }
 
-export type FsEntry = { name: string; path: string; hidden: boolean }
+export type FsEntry = { name: string; path: string; hidden: boolean; directory?: boolean; size?: number }
 
 export type FsListing = {
   path: string
@@ -209,8 +212,8 @@ export type ProviderCatalog = {
 }
 
 export type ChatNode =
-  | { kind: 'user'; id: string; text: string; ts?: number }
-  | { kind: 'assistant'; id: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; images?: { data: string; mimeType: string }[]; ts?: number }
+  | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number }
+  | { kind: 'assistant'; id: string; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; isError?: boolean; durationMs?: number; running?: boolean }
   | { kind: 'compaction'; id: string; summary: string; tokensBefore?: number }
 
@@ -218,6 +221,7 @@ export type TrajKind = 'user' | 'assistant' | 'tool' | 'compacted' | 'compact' |
 
 export type TrajRecord = {
   id: string
+	parentId?: string
   kind: TrajKind
   turn: number
   preview: string
@@ -251,4 +255,6 @@ export type ViewState = {
   mcp?: Toggle
 	thinkingEffort: string
 	contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
+	leafId?: string
+	allEntries: Entry[]
 }

@@ -1,8 +1,9 @@
 // Package session is the append-only jsonl conversation tree.
 //
-// One session is one directory: events.jsonl + config.json. The leaf pointer
-// is in memory only; new rows always append. On reload the last non-header
-// line is the leaf. Revert moves the leaf; old rows are never deleted.
+// One session is one directory: events.jsonl + config.json. New rows always
+// append; config.activeLeafId persists the selected branch across opens.
+// SetLeaf moves the leaf without deleting old rows. ForkAt creates a new
+// directory containing only the root-to-target path.
 //
 // request_header entries store system/tools plus provider, model, thinking,
 // catalog, and pricing snapshots. context_usage entries store model-facing
