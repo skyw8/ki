@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 
 	"ki/internal/config"
 	"ki/internal/logging"
@@ -49,7 +50,7 @@ func newRootCommand() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return withConfig("client", runDefault)
+			return withConfig("client", nil, runDefault)
 		},
 	}
 	root.Version = Version
@@ -58,9 +59,9 @@ func newRootCommand() *cobra.Command {
 	return root
 }
 
-func withConfig(role string, fn func(config.Config) error) error {
+func withConfig(role string, settings *viper.Viper, fn func(config.Config) error) error {
 	cwd, _ := os.Getwd()
-	cfg, err := config.Load(cwd)
+	cfg, err := config.LoadWithViper(cwd, settings)
 	if err != nil {
 		return err
 	}
@@ -79,27 +80,27 @@ func withConfig(role string, fn func(config.Config) error) error {
 }
 
 func newServeCommand() *cobra.Command {
-	var (
-		detach bool
-		addr   string
-	)
+	var detach bool
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the HTTP server and embedded WebUI",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return withConfig("server", func(cfg config.Config) error {
-				if addr == "" {
-					addr = cfg.Server.Addr
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			settings := viper.New()
+			if cmd.Flags().Changed("addr") {
+				if err := settings.BindPFlag("server.addr", cmd.Flags().Lookup("addr")); err != nil {
+					return err
 				}
+			}
+			return withConfig("server", settings, func(cfg config.Config) error {
 				if detach {
-					return runDetach(cfg, flags{Addr: addr})
+					return runDetach(cfg, flags{Addr: cfg.Server.Addr})
 				}
-				return runServe(cfg, addr)
+				return runServe(cfg, cfg.Server.Addr)
 			})
 		},
 	}
 	cmd.Flags().BoolVarP(&detach, "detach", "d", false, "run the server in the background")
-	cmd.Flags().StringVar(&addr, "addr", "", "listen address")
+	cmd.Flags().String("addr", "", "listen address")
 	return cmd
 }
 
@@ -110,7 +111,7 @@ func newRunCommand() *cobra.Command {
 		Short: "Send a prompt and stream the agent run",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return withConfig("client", func(cfg config.Config) error {
+			return withConfig("client", nil, func(cfg config.Config) error {
 				return runClient(cfg, f, strings.Join(args, " "))
 			})
 		},
@@ -145,7 +146,7 @@ func newConfigCommand() *cobra.Command {
 		Short: "Print the configuration file locations",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return withConfig("client", func(cfg config.Config) error {
+			return withConfig("client", nil, func(cfg config.Config) error {
 				cwd, _ := os.Getwd()
 				fmt.Fprintf(os.Stdout, "home: %s\n", cfg.Home)
 				fmt.Fprintf(os.Stdout, "global: %s\n", filepath.Join(cfg.Home, "ki.toml"))
@@ -177,7 +178,7 @@ func newSessionCommand() *cobra.Command {
 				if id == "" {
 					return fmt.Errorf("--session is required")
 				}
-				return withConfig("client", func(cfg config.Config) error {
+				return withConfig("client", nil, func(cfg config.Config) error {
 					return runSessionAction(cfg, id, action)
 				})
 			},

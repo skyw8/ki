@@ -31,8 +31,10 @@ func Recover(message string, attrs ...any) bool {
 
 // Options controls process logging.
 type Options struct {
-	Home       string
-	Level      string
+	Home  string
+	Level string
+	// Role identifies the process role in shared JSONL logs, for example
+	// "client", "server", or "test". It is a log field, not a permission.
 	Role       string
 	MaxSizeMB  int
 	MaxBackups int

@@ -10,6 +10,7 @@
 - `ki run [flags] <text>`：client。`server.json` health 通则连；否则本进程听 `127.0.0.1:0`，退出带走。
 - `ki session compact|fork --session <id>`：对已有 session 执行管理操作。
 - `ki config path` / `ki version`：查看配置位置和版本。
+- CLI 命令和 flags 由 Cobra 管理；TOML 由 Viper 解析，配置按编译默认值 → 全局文件 → 项目文件 → 环境变量合并。`ki serve --addr` 通过 Cobra flag 绑定到 Viper 的 `server.addr`，优先级高于配置文件和环境变量。
 
 进程诊断日志由 `internal/logging` 初始化为 JSONL，同时写 stderr 和 `{KI_HOME}/ki.jsonl`；日志按大小轮转，默认保留 3 个备份，可由 `[log]` 的 `max_size_mb` / `max_backups` 调整。日志带 `pid` / `role`，禁止记录 API key、token、prompt 和文件内容。HTTP、prompt 后台任务和进程入口会记录 panic 值与 stack。
 

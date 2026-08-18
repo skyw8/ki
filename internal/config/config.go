@@ -1,65 +1,68 @@
 package config
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
+
+	"github.com/spf13/viper"
 )
 
 // Config is the merged runtime configuration.
 type Config struct {
-	Home       string
-	Defaults   Defaults
-	Providers  map[string]Provider
-	Sessions   Sessions
-	Compaction Compaction
-	Server     Server
-	Log        Log
+	Home       string              `mapstructure:"-"`
+	Defaults   Defaults            `mapstructure:"defaults"`
+	Providers  map[string]Provider `mapstructure:"providers"`
+	Sessions   Sessions            `mapstructure:"sessions"`
+	Compaction Compaction          `mapstructure:"compaction"`
+	Server     Server              `mapstructure:"server"`
+	Log        Log                 `mapstructure:"log"`
 }
 
 // Defaults is the cross-session default model.
 type Defaults struct {
-	Provider string
-	Model    string
+	Provider string `mapstructure:"provider"`
+	Model    string `mapstructure:"model"`
 }
 
 // Provider is one model vendor's connection settings.
 type Provider struct {
-	APIKey  string
-	BaseURL string
+	APIKey  string `mapstructure:"api_key"`
+	BaseURL string `mapstructure:"base_url"`
 	// API overrides the protocol shape from the model catalog
 	// ("completions" | "responses" | "anthropic"). Empty = catalog decides.
-	API string
+	API string `mapstructure:"api"`
 }
 
 // Sessions holds session storage settings.
 type Sessions struct {
-	Root string
+	Root string `mapstructure:"root"`
 }
 
 // Compaction holds auto-compaction thresholds (pi defaults).
 type Compaction struct {
-	Enabled          bool
-	ReserveTokens    int
-	KeepRecentTokens int
+	Enabled          bool `mapstructure:"enabled"`
+	ReserveTokens    int  `mapstructure:"reserve_tokens"`
+	KeepRecentTokens int  `mapstructure:"keep_recent_tokens"`
 	// MaxContextTokens caps the context window used for the threshold check
 	// (min of model window and this value; 0 = model window only). A small
 	// value triggers compaction early, useful for low-cost testing without
 	// burning tokens on huge contexts.
-	MaxContextTokens int
+	MaxContextTokens int `mapstructure:"max_context_tokens"`
 }
 
 // Server is the local HTTP bind address.
 type Server struct {
-	Addr string
+	Addr string `mapstructure:"addr"`
 }
 
 // Log is process log settings.
 type Log struct {
-	Level      string
-	MaxSizeMB  int
-	MaxBackups int
+	Level      string `mapstructure:"level"`
+	MaxSizeMB  int    `mapstructure:"max_size_mb"`
+	MaxBackups int    `mapstructure:"max_backups"`
 }
 
 // Builtin returns compiled-in defaults.
@@ -105,68 +108,119 @@ func HomeDir() string {
 
 // Load merges builtin ← global ki.toml ← project ki.toml ← env keys.
 func Load(cwd string) (Config, error) {
+	return LoadWithViper(cwd, nil)
+}
+
+// LoadWithViper is Load with an optional Viper instance supplied by the CLI.
+// A caller can bind Cobra/pflag values to this instance before loading so
+// command-line overrides participate in the same final decode.
+func LoadWithViper(cwd string, settings *viper.Viper) (Config, error) {
 	home := HomeDir()
-	cfg := Builtin(home)
+	builtin := Builtin(home)
+	if settings == nil {
+		settings = viper.New()
+	}
+	setDefaults(settings, builtin)
 	global := filepath.Join(home, "ki.toml")
-	if err := mergeFile(&cfg, global); err != nil {
+	if err := mergeFile(settings, global); err != nil {
 		return Config{}, err
 	}
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
 	if cwd != "" {
-		if err := mergeFile(&cfg, filepath.Join(cwd, ".ki", "ki.toml")); err != nil {
+		if err := mergeFile(settings, filepath.Join(cwd, ".ki", "ki.toml")); err != nil {
 			return Config{}, err
 		}
 	}
-	applyEnv(&cfg)
+	if err := mergeEnv(settings); err != nil {
+		return Config{}, err
+	}
+
+	var cfg Config
+	if err := settings.UnmarshalExact(&cfg); err != nil {
+		return Config{}, err
+	}
+	cfg.Home = home
 	if cfg.Sessions.Root == "" {
 		cfg.Sessions.Root = filepath.Join(cfg.Home, "sessions")
 	}
 	if cfg.Server.Addr == "" {
 		cfg.Server.Addr = "127.0.0.1:19800"
 	}
+	if cfg.Log.Level == "" {
+		cfg.Log.Level = builtin.Log.Level
+	}
 	return cfg, nil
 }
 
-func applyEnv(cfg *Config) {
-	envKeys := map[string]string{
-		"OPENAI_API_KEY":        "openai",
-		"ANTHROPIC_API_KEY":     "anthropic",
-		"ZHIPU_API_KEY":         "zhipu",
-		"ZAI_API_KEY":           "zhipu",
-		"ZAI_CODING_CN_API_KEY": "zhipu-cn",
-		"DEEPSEEK_API_KEY":      "deepseek",
-		"DASHSCOPE_API_KEY":     "dashscope",
+func setDefaults(settings *viper.Viper, cfg Config) {
+	settings.SetDefault("defaults.provider", cfg.Defaults.Provider)
+	settings.SetDefault("defaults.model", cfg.Defaults.Model)
+	for id, p := range cfg.Providers {
+		settings.SetDefault("providers."+id+".api_key", p.APIKey)
+		settings.SetDefault("providers."+id+".base_url", p.BaseURL)
+		settings.SetDefault("providers."+id+".api", p.API)
 	}
-	if cfg.Providers == nil {
-		cfg.Providers = map[string]Provider{}
-	}
-	for env, id := range envKeys {
-		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
-			p := cfg.Providers[id]
-			p.APIKey = v
-			cfg.Providers[id] = p
-		}
-	}
-	// CN dashscope shares DASHSCOPE_API_KEY unless a dedicated one is set.
-	if v := strings.TrimSpace(os.Getenv("DASHSCOPE_CN_API_KEY")); v != "" {
-		p := cfg.Providers["dashscope-cn"]
-		p.APIKey = v
-		cfg.Providers["dashscope-cn"] = p
-	} else if v := strings.TrimSpace(os.Getenv("DASHSCOPE_API_KEY")); v != "" {
-		p := cfg.Providers["dashscope-cn"]
-		if p.APIKey == "" {
-			p.APIKey = v
-			cfg.Providers["dashscope-cn"] = p
-		}
-	}
-	if v := strings.TrimSpace(os.Getenv("KI_SERVER_ADDR")); v != "" {
-		cfg.Server.Addr = v
-	}
+	settings.SetDefault("sessions.root", cfg.Sessions.Root)
+	settings.SetDefault("compaction.enabled", cfg.Compaction.Enabled)
+	settings.SetDefault("compaction.reserve_tokens", cfg.Compaction.ReserveTokens)
+	settings.SetDefault("compaction.keep_recent_tokens", cfg.Compaction.KeepRecentTokens)
+	settings.SetDefault("compaction.max_context_tokens", cfg.Compaction.MaxContextTokens)
+	settings.SetDefault("server.addr", cfg.Server.Addr)
+	settings.SetDefault("log.level", cfg.Log.Level)
+	settings.SetDefault("log.max_size_mb", cfg.Log.MaxSizeMB)
+	settings.SetDefault("log.max_backups", cfg.Log.MaxBackups)
 }
 
-func mergeFile(cfg *Config, path string) error {
+func mergeEnv(settings *viper.Viper) error {
+	providers := map[string]any{}
+	setProviderKey := func(env, id string) {
+		if value := strings.TrimSpace(os.Getenv(env)); value != "" {
+			providers[id] = map[string]any{"api_key": value}
+		}
+	}
+	setProviderKey("OPENAI_API_KEY", "openai")
+	setProviderKey("ANTHROPIC_API_KEY", "anthropic")
+	if value := firstEnv("ZHIPU_API_KEY", "ZAI_API_KEY"); value != "" {
+		providers["zhipu"] = map[string]any{"api_key": value}
+	}
+	setProviderKey("ZAI_CODING_CN_API_KEY", "zhipu-cn")
+	setProviderKey("DEEPSEEK_API_KEY", "deepseek")
+	setProviderKey("DASHSCOPE_API_KEY", "dashscope")
+
+	// CN dashscope shares DASHSCOPE_API_KEY only when neither a dedicated env
+	// value nor a TOML value already supplies dashscope-cn credentials.
+	if value := strings.TrimSpace(os.Getenv("DASHSCOPE_CN_API_KEY")); value != "" {
+		providers["dashscope-cn"] = map[string]any{"api_key": value}
+	} else if value := strings.TrimSpace(os.Getenv("DASHSCOPE_API_KEY")); value != "" &&
+		strings.TrimSpace(settings.GetString("providers.dashscope-cn.api_key")) == "" {
+		providers["dashscope-cn"] = map[string]any{"api_key": value}
+	}
+
+	envSettings := map[string]any{}
+	if len(providers) > 0 {
+		envSettings["providers"] = providers
+	}
+	if value := strings.TrimSpace(os.Getenv("KI_SERVER_ADDR")); value != "" {
+		envSettings["server"] = map[string]any{"addr": value}
+	}
+	if len(envSettings) == 0 {
+		return nil
+	}
+	return settings.MergeConfigMap(envSettings)
+}
+
+func firstEnv(names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func mergeFile(settings *viper.Viper, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -174,110 +228,15 @@ func mergeFile(cfg *Config, path string) error {
 		}
 		return err
 	}
-	return mergeTOML(cfg, string(data))
-}
 
-// mergeTOML applies a restricted TOML subset used by ki.toml.
-func mergeTOML(cfg *Config, src string) error {
-	section := ""
-	for _, raw := range strings.Split(src, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.TrimSpace(line[1 : len(line)-1])
-			continue
-		}
-		key, val, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		val = unquote(strings.TrimSpace(val))
-		applyKey(cfg, section, key, val)
+	fileSettings := viper.New()
+	fileSettings.SetConfigType("toml")
+	if err := fileSettings.ReadConfig(bytes.NewReader(data)); err != nil {
+		return fmt.Errorf("read config %s: %w", path, err)
 	}
-	return nil
-}
-
-func applyKey(cfg *Config, section, key, val string) {
-	switch section {
-	case "defaults":
-		switch key {
-		case "provider":
-			cfg.Defaults.Provider = val
-		case "model":
-			cfg.Defaults.Model = val
-		}
-	case "sessions":
-		if key == "root" && val != "" {
-			cfg.Sessions.Root = val
-		}
-	case "compaction":
-		switch key {
-		case "enabled":
-			cfg.Compaction.Enabled = val == "true" || val == "1"
-		case "reserve_tokens":
-			if n, err := strconv.Atoi(val); err == nil {
-				cfg.Compaction.ReserveTokens = n
-			}
-		case "keep_recent_tokens":
-			if n, err := strconv.Atoi(val); err == nil {
-				cfg.Compaction.KeepRecentTokens = n
-			}
-		case "max_context_tokens":
-			if n, err := strconv.Atoi(val); err == nil {
-				cfg.Compaction.MaxContextTokens = n
-			}
-		}
-	case "server":
-		if key == "addr" && val != "" {
-			cfg.Server.Addr = val
-		}
-	case "log":
-		switch key {
-		case "level":
-			if val != "" {
-				cfg.Log.Level = val
-			}
-		case "max_size_mb":
-			if n, err := strconv.Atoi(val); err == nil {
-				cfg.Log.MaxSizeMB = n
-			}
-		case "max_backups":
-			if n, err := strconv.Atoi(val); err == nil {
-				cfg.Log.MaxBackups = n
-			}
-		}
-	default:
-		if id, ok := strings.CutPrefix(section, "providers."); ok {
-			if cfg.Providers == nil {
-				cfg.Providers = map[string]Provider{}
-			}
-			p := cfg.Providers[id]
-			switch key {
-			case "api_key":
-				p.APIKey = val
-			case "base_url":
-				p.BaseURL = val
-			case "api":
-				p.API = val
-			}
-			cfg.Providers[id] = p
-		}
-	}
-}
-
-func unquote(s string) string {
-	if len(s) >= 2 {
-		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
-			s = s[1 : len(s)-1]
-		}
-	}
-	if i := strings.Index(s, " #"); i >= 0 {
-		s = strings.TrimSpace(s[:i])
-	}
-	return s
+	// MergeConfigMap recursively overlays tables; this preserves provider
+	// fields from the global file when the project file only changes one key.
+	return settings.MergeConfigMap(fileSettings.AllSettings())
 }
 
 // HasKey reports whether a provider has an API key after merge.

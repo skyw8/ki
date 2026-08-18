@@ -2,7 +2,9 @@
 A lean and extensible agent runtime designed for easy integration.
 
 ## tech stack
-- go
+- Go: backend
+- CLI: Cobra + Viper
+- WebUI: Vite + React
 
 ## directory structure
 

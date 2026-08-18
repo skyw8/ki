@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 )
 
 func TestLoadMergesGlobalProjectAndEnv(t *testing.T) {
@@ -85,8 +88,58 @@ max_backups = 4
 	if cfg.Providers["anthropic"].API != "anthropic" {
 		t.Fatalf("api override: %q", cfg.Providers["deepseek"].API)
 	}
+	if cfg.Providers["anthropic"].BaseURL != "https://api.anthropic.com" {
+		t.Fatalf("project merge should preserve global base url: %q", cfg.Providers["anthropic"].BaseURL)
+	}
 	if cfg.Sessions.Root != filepath.Join(home, "sessions") {
 		t.Fatalf("sessions root: %q", cfg.Sessions.Root)
+	}
+}
+
+func TestLoadRejectsInvalidAndUnknownTOML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KI_HOME", home)
+	path := filepath.Join(home, "ki.toml")
+
+	if err := os.WriteFile(path, []byte("[server\naddr = \"127.0.0.1:1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(t.TempDir()); err == nil {
+		t.Fatal("invalid TOML should return an error")
+	}
+
+	if err := os.WriteFile(path, []byte("[server]\nunknown = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(t.TempDir()); err == nil {
+		t.Fatal("unknown configuration key should return an error")
+	}
+}
+
+func TestLoadWithViperFlagOverridesEnvAndTOML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KI_HOME", home)
+	t.Setenv("KI_SERVER_ADDR", "127.0.0.1:20001")
+	if err := os.WriteFile(filepath.Join(home, "ki.toml"), []byte("[server]\naddr = \"127.0.0.1:20002\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	flags.String("addr", "", "listen address")
+	if err := flags.Set("addr", "127.0.0.1:20003"); err != nil {
+		t.Fatal(err)
+	}
+	settings := viper.New()
+	if err := settings.BindPFlag("server.addr", flags.Lookup("addr")); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadWithViper(t.TempDir(), settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.Addr != "127.0.0.1:20003" {
+		t.Fatalf("flag should override env and TOML, got %q", cfg.Server.Addr)
 	}
 }
 
