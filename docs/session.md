@@ -12,7 +12,7 @@
 ## jsonl
 
 第一行 header：`type=session`，含 `id` / `cwd` / `parentSession`。  
-之后每行 `{type,id,parentId,timestamp,…}`：`message`、`compaction`、`model_change`、`request_header`（`system` + `tools[]`）、`compaction_start`/`compaction_end`（`details.reason` + `details.ok`，回放可见）。entry id 为 8 位 hex。
+之后每行 `{type,id,parentId,timestamp,…}`：`message`、`compaction`、`model_change`、`request_header`（`system` + `tools[]`）、`compaction_start`/`compaction_end`（`details.reason` + `details.ok`，回放可见）。entry id 为无连字符的 32 位 hex UUIDv7。
 
 ## 细节
 

@@ -108,8 +108,12 @@ func (s *Store) Create(path, title string) (Record, bool, error) {
 		title = filepath.Base(norm)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	id, err := idgen.NewV7()
+	if err != nil {
+		return Record{}, false, err
+	}
 	rec := Record{
-		ID:        idgen.NewV7(),
+		ID:        id,
 		Path:      norm,
 		Title:     title,
 		CreatedAt: now,
@@ -399,7 +403,7 @@ func (s *Store) indexLocked(id string) int {
 	return -1
 }
 
-//write-to-temp-then-rename
+// write-to-temp-then-rename
 func (s *Store) writeLocked() error {
 	if err := os.MkdirAll(s.home, 0o755); err != nil {
 		return err
