@@ -8,6 +8,8 @@
 - `ki -d`：setsid 拉起 `serve`，CLI 退出 server 还在。
 - `ki [flags] <text>`：client。`server.json` health 通则连；否则本进程听 `127.0.0.1:0`，退出带走。
 
+进程诊断日志由 `internal/logging` 初始化为 JSONL，同时写 stderr 和 `{KI_HOME}/ki.log`；日志按大小轮转，默认保留 3 个备份，可由 `[log]` 的 `max_size_mb` / `max_backups` 调整。日志带 `pid` / `role`，禁止记录 API key、token、prompt 和文件内容。HTTP、prompt 后台任务和进程入口会记录 panic 值与 stack。
+
 续聊必须 `--session <id>`。`--model` 随 prompt 发给 server，写回**该 session** 的 `config.json`，不改 toml。`KI_FAKE=1` 用假模型。
 
 Provider 协议形状来自模型 catalog（`internal/provider/catalog.go`），可用 ki.toml 覆盖：`[providers.<name>] api = "completions" | "responses" | "anthropic"` 配合 `base_url` 走兼容端点（如 DeepSeek 的 `https://api.deepseek.com/anthropic` + `api = "anthropic"`）。catalog 里没有的 provider（如 `deepseek-anthropic`）直接以 toml 的 base_url/api 为准，model 名仍用 catalog 认识的 ID（`deepseek-v4-flash`），`--model provider/model` 指定。
