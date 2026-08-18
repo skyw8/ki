@@ -316,7 +316,12 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 	defer stopSig()
 	go func() {
 		<-ctx.Done()
-		_ = doJSONContext(ctx, base, token, "POST", "/v1/sessions/"+id+"/abort", nil, nil)
+		// Why Background: ctx is already canceled (that's why this goroutine
+		// woke). Reusing it would cancel the abort HTTP request before serve
+		// sees it, so Ctrl+C would never reach POST /abort.
+		abortCtx, abortCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer abortCancel()
+		_ = doJSONContext(abortCtx, base, token, "POST", "/v1/sessions/"+id+"/abort", nil, nil)
 	}()
 	if err := doJSON(base, token, "POST", "/v1/sessions/"+id+"/prompt", map[string]any{"text": prompt, "model": f.Model}, nil); err != nil {
 		return err

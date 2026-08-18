@@ -119,7 +119,7 @@ end
 R -> R : loop.Run 返回\ndefer: close(st.done) + Broadcast
 E -> E : done 已关 → 排空剩余 → 关 SSE
 
-C -> S : POST /v1/sessions/{id}/abort（可选）\n→ st.cancel() → 提前发 agent_end
+C -> S : POST /v1/sessions/{id}/abort（可选）\n→ st.cancel() → Bash 杀进程组 → loop 返回 → agent_end
 @enduml
 ```
 

@@ -10,7 +10,7 @@
 | `Write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 Read |
 | `Edit` | `file_path`、`old_string`、`new_string`、`replace_all` | 精确替换；不唯一则失败。无 `edits[]` |
 | `apply_patch` | Responses custom freeform + Lark grammar | Codex 补丁格式：新增、删除、更新、移动；返回 `A/M/D` 摘要 |
-| `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | stdout+stderr 混排；非 0 当 error。无 sandbox |
+| `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | stdout+stderr 混排；非 0 当 error。abort/timeout 杀进程组。无 sandbox |
 
 ## 细节
 
@@ -19,6 +19,7 @@
 - 文本 `Read` 不只裁剪提示和 schema，执行时也拒绝图片/PDF，防止复用上一模型回合的旧调用。
 - `apply_patch` 对齐 Codex 的 `*** Begin Patch` / `*** End Patch` 语法，默认将更新文件规范化为 LF；所有路径用 `filepath` 相对 session cwd 解析。
 - 每次 Bash 新进程，cwd 固定为 session cwd；`cd` 不跨命令。
+- Abort / `timeout` 杀掉整个进程组（`bash -lc` 及其子进程、管道），不是只杀 bash。中断结果是 `Command aborted`；超时是 `Command timed out after N seconds`。`run_in_background` 的作业不跟 abort 走。
 - `run_in_background`：立刻回 task id 和 `output_file`，之后用 Read 看输出。
 - 文本截断：2000 行或 50KB。Read 留头，Bash 留尾。
 - 内置工具（Read/Write/Edit/Bash）和 MCP 工具都实现 `ToolValidator`（`internal/loop/validate.go` 的最小 JSON Schema 子集：required + 类型检查），参数错误在 execute 前拦截，MCP 工具不再把坏参数透传给 server 等 400。
