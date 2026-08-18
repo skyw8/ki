@@ -11,6 +11,7 @@ export function emptyView(): ViewState {
     cwd: '',
     title: '',
     turn: 0,
+	thinkingEffort: '',
   }
 }
 
@@ -76,6 +77,7 @@ export function loadHistory(detail: SessionDetail): ViewState {
   s.busy = !!detail.running
   s.skills = detail.skills
   s.mcp = detail.mcp
+	s.thinkingEffort = detail.thinkingEffort ?? ''
   const entries = detail.entries ?? []
   if (entries.length === 0 && detail.messages) {
     for (const m of detail.messages) applyMessage(s, m, crypto.randomUUID(), undefined)
@@ -125,6 +127,10 @@ function applyRequestHeader(s: ViewState, id: string, system: string, tools: Tra
 }
 
 function applyEntry(s: ViewState, e: Entry) {
+	if (e.type === 'context_usage') {
+		s.contextUsage = { usedTokens: e.usedTokens ?? 0, contextWindow: e.contextWindow ?? 0, estimated: !!e.estimated }
+		return
+	}
   if (e.type === 'request_header') {
     applyRequestHeader(s, e.id, e.system ?? '', e.tools, e.timestamp)
     return
@@ -316,6 +322,9 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     records: s.records.slice(),
   }
   switch (ev.type) {
+	case 'context_usage':
+		next.contextUsage = { usedTokens: ev.usedTokens ?? 0, contextWindow: ev.contextWindow ?? 0, estimated: !!ev.estimated }
+		break
     case 'agent_start':
       next.busy = true
       next.error = null

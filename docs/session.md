@@ -12,7 +12,9 @@
 ## jsonl
 
 第一行 header：`type=session`，含 `id` / `cwd` / `parentSession`。  
-之后每行 `{type,id,parentId,timestamp,…}`：`message`、`compaction`、`model_change`、`request_header`（`system` + `tools[]`）、`compaction_start`/`compaction_end`（`details.reason` + `details.ok`，回放可见）。entry id 为无连字符的 32 位 hex UUIDv7。
+之后每行 `{type,id,parentId,timestamp,…}`：`message`、`compaction`、`model_change`、`request_header`、`context_usage`、`compaction_start`/`compaction_end`。entry id 为无连字符的 32 位 hex UUIDv7。
+
+`request_header` 固定该轮的 `system`、`tools[]`、provider/model、thinking effort、catalog version 和价格快照。`context_usage` 保存 `usedTokens`、有效 `contextWindow` 与 `estimated`，同时沿 SSE 到 WebUI。
 
 ## 细节
 
@@ -20,7 +22,7 @@
 - revert 只改内存 leaf，旧行不删。
 - `MessagesToLeaf` 沿 parent 走到根；若路径上有 compaction，先注入 summary，再取 `retainedTail`（新条目，压缩时最近消息原文落盘）；旧 jsonl 无 `retainedTail` 时回退 `firstKeptEntryId` 截断。`LastCompactionAt` 返回最近 compaction 时间戳（stale-usage 防护用）。
 - fork：整目录拷贝，改 header 的 `id` 和 `parentSession`。
-- `config.json`：该 session 的 `provider`/`model`，可选 `title` / `pinned` / `pinnedAt`，以及 skills/mcp 的 `only` / `disabled`。
+- `config.json`：该 session 的 `provider` / `model` / `thinkingEffort`，可选 `title` / `pinned` / `pinnedAt`，以及 skills/mcp 的 `only` / `disabled`。
 - 按 id 定位目录：serve 进程内维护 `session.Index`（id→dir 内存 map，见 `internal/session/index.go`），启动时由 `List` 的同一次 walk 顺路建好，零额外读盘。create/fork 后 `Add`、delete 后 `Remove`。命中即 O(1)；miss（别的进程建的会话、或目录被外部删除）回退到 `Find` 扫描并自愈，文件系统始终是唯一事实来源。
 - `GET /v1/sessions/{id}` 在 Toggle 之外带 `availableSkills` / `availableMcp`（按 cwd 现算的目录，含 `enabled` / `source`）。列举 MCP 不 spawn。Prompt 用 serve 级池的缓存 schema 组 tools，真 call 才连。
 

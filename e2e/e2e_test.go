@@ -93,8 +93,7 @@ func TestCWDEncodesSessionPath(t *testing.T) {
 
 func TestModelWritebackIsSessionOnly(t *testing.T) {
 	home, proj := isolate(t)
-	toml := filepath.Join(home, "ki.toml")
-	_ = os.WriteFile(toml, []byte("[defaults]\nprovider = \"anthropic\"\nmodel = \"claude-sonnet-4-5\"\n"), 0o600)
+	modelsFile := filepath.Join(home, "models.json")
 
 	out, errOut, code := runKI(t, "--cwd", proj, "hello")
 	if code != 0 {
@@ -102,22 +101,22 @@ func TestModelWritebackIsSessionOnly(t *testing.T) {
 	}
 	id := mustSessionID(t, out, errOut)
 	cfg := readSessionConfig(t, sessionDir(t, home, id))
-	if cfg["model"] == "gpt-4o" {
-		t.Fatalf("first model already gpt-4o: %+v", cfg)
+	if cfg["model"] == "gpt-5.6-terra" {
+		t.Fatalf("first model already gpt-5.6-terra: %+v", cfg)
 	}
 
-	out, errOut, code = runKI(t, "--session", id, "--model", "openai/gpt-4o", "switch")
+	out, errOut, code = runKI(t, "--session", id, "--model", "openai/gpt-5.6-terra", "switch")
 	if code != 0 {
 		t.Fatalf("switch: %d %s %s", code, out, errOut)
 	}
 	cfg = readSessionConfig(t, sessionDir(t, home, id))
-	if cfg["provider"] != "openai" || cfg["model"] != "gpt-4o" {
+	if cfg["provider"] != "openai" || cfg["model"] != "gpt-5.6-terra" {
 		t.Fatalf("writeback: %+v", cfg)
 	}
 	//nolint:gosec // the config path is created inside the isolated temp home.
-	raw, _ := os.ReadFile(toml)
-	if strings.Contains(string(raw), "gpt-4o") {
-		t.Fatalf("toml should be unchanged:\n%s", raw)
+	raw, err := os.ReadFile(modelsFile)
+	if err == nil && strings.Contains(string(raw), "gpt-5.6-terra") {
+		t.Fatalf("global models.json should be unchanged:\n%s", raw)
 	}
 }
 

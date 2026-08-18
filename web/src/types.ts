@@ -4,6 +4,7 @@ export type Usage = {
   cacheRead?: number
   cacheWrite?: number
   totalTokens?: number
+	 cost?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
 }
 
 export type Content = {
@@ -49,6 +50,10 @@ export type Entry = {
   modelId?: string
   system?: string
   tools?: ToolSchema[]
+	thinkingEffort?: string
+	usedTokens?: number
+	contextWindow?: number
+	estimated?: boolean
 }
 
 export type ToolSchema = {
@@ -70,6 +75,12 @@ export type LoopEvent = {
   tools?: ToolSchema[]
   reason?: string
   ok?: boolean
+	provider?: string
+	model?: string
+	catalogVersion?: number
+	usedTokens?: number
+	contextWindow?: number
+	estimated?: boolean
 }
 
 export type SessionInfo = {
@@ -85,6 +96,7 @@ export type SessionInfo = {
   workspaceId?: string
   pinned?: boolean
   pinnedAt?: string
+	thinkingEffort?: string
 }
 
 export type WorkspaceInfo = {
@@ -148,9 +160,45 @@ export type Toggle = { only?: string[]; disabled?: string[] }
 export type ModelInfo = {
   provider: string
   id: string
+	name: string
   api?: string
   contextWindow?: number
+	maxTokens?: number
+	input?: string[]
+	reasoning?: boolean
+	thinkingLevels?: string[]
+	builtin?: boolean
+	customized?: boolean
   spec: string
+}
+
+export type ProviderModel = Omit<ModelInfo, 'spec' | 'thinkingLevels'> & {
+	enabled: boolean
+	builtin: boolean
+	customized?: boolean
+	baseUrl: string
+	cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
+	thinkingLevelMap?: Record<string, string | null>
+	compat?: Record<string, unknown>
+}
+
+export type ProviderView = {
+	id: string
+	name: string
+	api: 'completions' | 'responses' | 'anthropic'
+	baseUrl: string
+	enabled: boolean
+	builtin: boolean
+	customized?: boolean
+	defaultModel: string
+	models: ProviderModel[]
+	credential: { configured: boolean; source?: string }
+}
+
+export type ProviderCatalog = {
+	version: number
+	default: { provider: string; model: string }
+	providers: ProviderView[]
 }
 
 export type ChatNode =
@@ -194,4 +242,6 @@ export type ViewState = {
   replayed?: number
   skills?: Toggle
   mcp?: Toggle
+	thinkingEffort: string
+	contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
 }

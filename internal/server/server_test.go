@@ -44,13 +44,14 @@ func testServerWith(t *testing.T, st loop.Streamer) (*Server, *httptest.Server) 
 	t.Setenv("KI_HOME", home)
 	cfg := config.Builtin(home)
 	cfg.Sessions.Root = filepath.Join(home, "sessions")
-	cfg.Providers = map[string]config.Provider{"anthropic": {APIKey: "x"}}
-	cfg.Defaults = config.Defaults{Provider: "anthropic", Model: "claude-sonnet-4-5"}
-	srv := New(Options{
+	srv, err := New(Options{
 		Config:   cfg,
 		Token:    "tok",
 		Streamer: st,
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -107,10 +108,11 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 	cfg := config.Builtin(home)
 	cfg.Sessions.Root = filepath.Join(home, "sessions")
 	cfg.Compaction.KeepRecentTokens = 1 // tiny budget: any session compacts
-	cfg.Providers = map[string]config.Provider{"anthropic": {APIKey: "x"}}
-	cfg.Defaults = config.Defaults{Provider: "anthropic", Model: "claude-sonnet-4-5"}
 	rec := &reqRecorder{}
-	srv := New(Options{Config: cfg, Token: "tok", Streamer: rec})
+	srv, err := New(Options{Config: cfg, Token: "tok", Streamer: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
 	hs := httptest.NewServer(srv.Handler())
 	defer hs.Close()
 	defer func() { _ = srv.Shutdown(context.Background()) }()
@@ -145,7 +147,7 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 		t.Fatalf("streamer calls: %d, want prompt + summarizer", len(rec.reqs))
 	}
 	last := rec.reqs[len(rec.reqs)-1]
-	if last.Provider != "anthropic" || last.Model != "claude-sonnet-4-5" {
+	if last.Provider != "anthropic" || last.Model != "claude-sonnet-5" {
 		t.Fatalf("summarizer request must carry session provider/model, got %q/%q", last.Provider, last.Model)
 	}
 }
@@ -219,6 +221,45 @@ func TestAuthAndCreateGetFork(t *testing.T) {
 	_ = res.Body.Close()
 	if fork["id"] == id || fork["parentSession"] == nil {
 		t.Fatalf("fork: %+v", fork)
+	}
+}
+
+func TestProviderConfigurationAPI(t *testing.T) {
+	_, hs := testServer(t)
+	call := func(method, path, body string) (*http.Response, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(t.Context(), method, hs.URL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer tok")
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		var out map[string]any
+		if res.StatusCode != http.StatusNoContent {
+			_ = json.NewDecoder(res.Body).Decode(&out)
+		}
+		return res, out
+	}
+
+	res, _ := call(http.MethodPost, "/v1/providers", `{"id":"local","name":"Local","api":"completions","baseUrl":"http://127.0.0.1:11434/v1","enabled":true,"models":[{"id":"local/model","contextWindow":8192,"maxTokens":1024,"input":["text"],"reasoning":false,"cost":null}]}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("create provider: %d", res.StatusCode)
+	}
+	res, out := call(http.MethodPut, "/v1/providers/local/credential", `{"apiKey":"secret"}`)
+	if res.StatusCode != http.StatusOK || strings.Contains(fmt.Sprint(out), "secret") {
+		t.Fatalf("credential response: %d %+v", res.StatusCode, out)
+	}
+	res, _ = call(http.MethodPut, "/v1/default-model", `{"provider":"local","model":"local/model"}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("set default: %d", res.StatusCode)
+	}
+	res, _ = call(http.MethodPatch, "/v1/providers/local", `{"enabled":false}`)
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("disable default: %d", res.StatusCode)
 	}
 }
 
@@ -330,7 +371,7 @@ func TestAbortAndCompact(t *testing.T) {
 func TestPromptModelWriteback(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
-	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hi","model":"openai/gpt-4o"}`))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hi","model":"openai/gpt-5.6-terra"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
@@ -356,7 +397,7 @@ func TestPromptModelWriteback(t *testing.T) {
 	var got map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&got)
 	_ = res.Body.Close()
-	if got["provider"] != "openai" || got["model"] != "gpt-4o" {
+	if got["provider"] != "openai" || got["model"] != "gpt-5.6-terra" {
 		t.Fatalf("writeback: %+v", got)
 	}
 }
@@ -458,7 +499,7 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sawHeader bool
+	var sawHeader, sawContext bool
 	sc := bufio.NewScanner(res.Body)
 	for sc.Scan() {
 		line := sc.Text()
@@ -470,6 +511,9 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 		if ev.Type == loop.RequestHeader && ev.System != "" {
 			sawHeader = true
 		}
+		if ev.Type == loop.ContextUsage && ev.ContextWindow > 0 {
+			sawContext = true
+		}
 		if ev.Type == loop.AgentEnd {
 			break
 		}
@@ -478,8 +522,8 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = res.Body.Close()
-	if !sawHeader {
-		t.Fatal("SSE missing request_header with system")
+	if !sawHeader || !sawContext {
+		t.Fatalf("SSE metadata: header=%v context=%v", sawHeader, sawContext)
 	}
 
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
@@ -500,6 +544,9 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 			if sys == "" {
 				t.Fatalf("empty system in entry: %+v", m)
 			}
+			if m["provider"] != "anthropic" || m["modelId"] != "claude-sonnet-5" || m["catalogVersion"] != float64(provider.CatalogVersion) || m["pricing"] == nil {
+				t.Fatalf("request metadata: %+v", m)
+			}
 			found = true
 		}
 	}
@@ -508,7 +555,7 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	}
 
 	body, _ := marshalJSON(map[string]any{
-		"model":  "openai/gpt-4o",
+		"model":  "openai/gpt-5.6-terra",
 		"skills": map[string]any{"disabled": []string{"x"}},
 		"mcp":    map[string]any{"only": []string{"y"}},
 	})
@@ -525,7 +572,7 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("patch %d %+v", res.StatusCode, patched)
 	}
-	if patched["model"] != "gpt-4o" {
+	if patched["model"] != "gpt-5.6-terra" {
 		t.Fatalf("model: %+v", patched)
 	}
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
@@ -1022,7 +1069,9 @@ func wantSSE() []string {
 		"turn_start",
 		"message_start:user", "message_end:user",
 		"request_header",
+		"context_usage",
 		"message_start:assistant", "message_update", "message_end:assistant",
+		"context_usage",
 		"turn_end",
 		"agent_end",
 	}
@@ -1198,14 +1247,14 @@ func TestEventsWaitPathSingleReader(t *testing.T) {
 
 	gate.arm()
 	prompt202(t, hs, id, "hello")
-	waitBuffered(t, srv, id, 5) // 运行冻在流式输出前，缓冲恰 5 条
+	waitBuffered(t, srv, id, 6) // request_header 后还会发布 context_usage
 
 	res := mustOpenEvents(t, hs, id)
 	defer func() { _ = res.Body.Close() }()
 	sc := bufio.NewScanner(res.Body)
 	// 读到第 5 条时，服务端 reader 已重放完缓冲、必然在 Cond.Wait 里：
 	// gate 未放行 → 不可能有新事件；run 未结束 → done 不可能关闭。
-	first := scanN(t, sc, 5)
+	first := scanN(t, sc, 6)
 	gate.release() // 放行运行：reader 必须被 Broadcast 唤醒
 	rest := scanAll(t, sc)
 
@@ -1224,14 +1273,14 @@ func TestEventsMultiReader(t *testing.T) {
 
 	gate.arm()
 	prompt202(t, hs, id, "hello")
-	waitBuffered(t, srv, id, 5)
+	waitBuffered(t, srv, id, 6)
 
 	ready1 := make(chan struct{}, 1)
 	ready2 := make(chan struct{}, 1)
 	r1 := make(chan sseResult, 1)
 	r2 := make(chan sseResult, 1)
-	go func() { r1 <- readSSE(hs, id, 5, ready1) }()
-	go func() { r2 <- readSSE(hs, id, 5, ready2) }()
+	go func() { r1 <- readSSE(hs, id, 6, ready1) }()
+	go func() { r2 <- readSSE(hs, id, 6, ready2) }()
 	for i, ready := range []<-chan struct{}{ready1, ready2} {
 		select {
 		case <-ready:
@@ -1263,7 +1312,7 @@ func TestEventsClientDisconnect(t *testing.T) {
 
 	gate.arm()
 	prompt202(t, hs, id, "hello")
-	waitBuffered(t, srv, id, 5)
+	waitBuffered(t, srv, id, 6)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
@@ -1273,13 +1322,13 @@ func TestEventsClientDisconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	sc := bufio.NewScanner(res.Body)
-	scanN(t, sc, 5) // reader 已重放 5 条并进入等待
+	scanN(t, sc, 6) // reader 已重放 request_header/context_usage 并进入等待
 	cancel()        // 客户端断开 → 服务端哨兵广播 → reader 退出
 	_ = res.Body.Close()
 	gate.release() // 运行照常完成
 
 	// 断开不影响运行本身：事件已全部进缓冲，完整重放仍可用。
-	waitBuffered(t, srv, id, 10)
+	waitBuffered(t, srv, id, 12)
 	//nolint:bodyclose // collectSSE owns and closes the response body.
 	if replay := collectSSE(t, mustOpenEvents(t, hs, id)); !slices.Equal(replay, wantSSE()) {
 		t.Fatalf("replay after disconnect: %v", replay)

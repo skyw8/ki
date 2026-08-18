@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"ki/internal/config"
 	"ki/internal/loop"
 	"ki/internal/types"
 )
@@ -23,18 +22,7 @@ import (
 // Hits DashScope with two consecutive image tool results in one Completions
 // turn — the packing that used to insert user between role:tool messages.
 func TestLiveCompletionsAcceptsBatchedToolImages(t *testing.T) {
-	cfg := loadLiveDashScope(t)
-	p := cfg.Providers["dashscope-cn"]
-	if p.APIKey == "" {
-		p = cfg.Providers["dashscope"]
-	}
-	if p.APIKey == "" {
-		t.Skip("no dashscope key")
-	}
-	base := p.BaseURL
-	if base == "" {
-		base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-	}
+	model, key := loadLiveDashScope(t)
 
 	red := solidPNG(t, color.RGBA{R: 200, G: 16, B: 16, A: 255})
 	blue := solidPNG(t, color.RGBA{R: 16, G: 16, B: 200, A: 255})
@@ -71,7 +59,7 @@ func TestLiveCompletionsAcceptsBatchedToolImages(t *testing.T) {
 		t.Fatalf("unexpected live wire roles: %s", strings.Join(roles, ","))
 	}
 
-	live := NewLive("completions", base, p.APIKey, nil)
+	live := NewLiveModel(model, key, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	got, err := live.Stream(ctx, req, func(loop.AssistantDelta) error { return nil })
@@ -105,24 +93,19 @@ func solidPNG(t *testing.T, c color.RGBA) string {
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-func loadLiveDashScope(t *testing.T) config.Config {
+func loadLiveDashScope(t *testing.T) (Model, string) {
 	t.Helper()
-	if v := strings.TrimSpace(os.Getenv("DASHSCOPE_CN_API_KEY")); v != "" {
-		return config.Config{Providers: map[string]config.Provider{"dashscope-cn": {APIKey: v, BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"}}}
-	}
-	if v := strings.TrimSpace(os.Getenv("DASHSCOPE_API_KEY")); v != "" {
-		return config.Config{Providers: map[string]config.Provider{"dashscope-cn": {APIKey: v}}}
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip(err)
 	}
-	old := os.Getenv("KI_HOME")
-	t.Setenv("KI_HOME", filepath.Join(home, ".ki"))
-	cfg, err := config.Load("")
-	t.Setenv("KI_HOME", old)
+	reg, err := NewRegistry(filepath.Join(home, ".ki"))
 	if err != nil {
 		t.Skip(err)
 	}
-	return cfg
+	_, model, key, err := reg.Resolve("dashscope-cn", "qwen3.7-plus")
+	if err != nil {
+		t.Skip("no dashscope key")
+	}
+	return model, key
 }

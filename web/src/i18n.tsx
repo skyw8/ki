@@ -6,7 +6,12 @@ export const LANG_KEY = 'ki-lang'
 
 const zh = {
   'settings.title': '设置',
+	'settings.providers': '模型供应商',
+	'settings.appearanceLanguage': '主题和语言',
   'settings.appearance': '外观',
+	'settings.preferenceHint': '调整界面的显示方式和语言。',
+	'settings.themeHint': '选择更适合当前环境的明暗主题。',
+	'settings.languageHint': '选择界面显示语言。',
   'settings.themeLight': '浅色',
   'settings.themeDark': '深色',
   'settings.language': '语言',
@@ -56,6 +61,10 @@ const zh = {
   'chat.toBottom': '回到底部',
 
   'model.title': '选择模型',
+  'model.search': '搜索模型',
+  'model.searchPlaceholder': '搜索供应商或模型',
+  'model.clearSearch': '清除模型搜索',
+  'model.noResults': '没有匹配的供应商或模型',
   'rename.title': '重命名',
   'rename.ok': '确定',
   'delete.title': '确认删除',
@@ -154,7 +163,12 @@ export type MsgKey = keyof typeof zh
 
 const en: Record<MsgKey, string> = {
   'settings.title': 'Settings',
+	'settings.providers': 'Model providers',
+	'settings.appearanceLanguage': 'Theme & language',
   'settings.appearance': 'Appearance',
+	'settings.preferenceHint': 'Choose how the interface looks and reads.',
+	'settings.themeHint': 'Select the theme that suits your environment.',
+	'settings.languageHint': 'Choose the interface language.',
   'settings.themeLight': 'Light',
   'settings.themeDark': 'Dark',
   'settings.language': 'Language',
@@ -204,6 +218,10 @@ const en: Record<MsgKey, string> = {
   'chat.toBottom': 'Jump to bottom',
 
   'model.title': 'Choose model',
+  'model.search': 'Search models',
+  'model.searchPlaceholder': 'Search provider or model',
+  'model.clearSearch': 'Clear model search',
+  'model.noResults': 'No matching providers or models',
   'rename.title': 'Rename',
   'rename.ok': 'OK',
   'delete.title': 'Confirm delete',

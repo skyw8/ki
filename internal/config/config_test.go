@@ -12,21 +12,9 @@ import (
 func TestLoadMergesGlobalProjectAndEnv(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KI_HOME", home)
-	t.Setenv("OPENAI_API_KEY", "from-env")
-	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("KI_SERVER_ADDR", "127.0.0.1:18888")
 
 	if err := os.WriteFile(filepath.Join(home, "ki.toml"), []byte(`
-[defaults]
-provider = "anthropic"
-model = "claude-sonnet-4-5"
-
-[providers.anthropic]
-api_key = "global-ant"
-base_url = "https://api.anthropic.com"
-
-[providers.openai]
-api_key = "global-oai"
-
 [compaction]
 reserve_tokens = 1000
 max_context_tokens = 25000
@@ -39,13 +27,6 @@ max_context_tokens = 25000
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(cwd, ".ki", "ki.toml"), []byte(`
-[defaults]
-model = "claude-opus-4"
-
-[providers.anthropic]
-api_key = "project-ant"
-api = "anthropic"
-
 [server]
 addr = "127.0.0.1:19999"
 
@@ -61,19 +42,7 @@ max_backups = 4
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Defaults.Provider != "anthropic" {
-		t.Fatalf("provider: %q", cfg.Defaults.Provider)
-	}
-	if cfg.Defaults.Model != "claude-opus-4" {
-		t.Fatalf("project should override model, got %q", cfg.Defaults.Model)
-	}
-	if cfg.Providers["anthropic"].APIKey != "project-ant" {
-		t.Fatalf("project key: %q", cfg.Providers["anthropic"].APIKey)
-	}
-	if cfg.Providers["openai"].APIKey != "from-env" {
-		t.Fatalf("env should override openai key, got %q", cfg.Providers["openai"].APIKey)
-	}
-	if cfg.Server.Addr != "127.0.0.1:19999" {
+	if cfg.Server.Addr != "127.0.0.1:18888" {
 		t.Fatalf("addr: %q", cfg.Server.Addr)
 	}
 	if cfg.Log.Level != "debug" || cfg.Log.MaxSizeMB != 2 || cfg.Log.MaxBackups != 4 {
@@ -84,12 +53,6 @@ max_backups = 4
 	}
 	if cfg.Compaction.MaxContextTokens != 25000 {
 		t.Fatalf("max_context_tokens: %d", cfg.Compaction.MaxContextTokens)
-	}
-	if cfg.Providers["anthropic"].API != "anthropic" {
-		t.Fatalf("api override: %q", cfg.Providers["deepseek"].API)
-	}
-	if cfg.Providers["anthropic"].BaseURL != "https://api.anthropic.com" {
-		t.Fatalf("project merge should preserve global base url: %q", cfg.Providers["anthropic"].BaseURL)
 	}
 	if cfg.Sessions.Root != filepath.Join(home, "sessions") {
 		t.Fatalf("sessions root: %q", cfg.Sessions.Root)

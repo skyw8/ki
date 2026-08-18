@@ -10,13 +10,13 @@
 - `ki run [flags] <text>`：client。`server.json` health 通则连；否则本进程听 `127.0.0.1:0`，退出带走。
 - `ki session compact|fork --session <id>`：对已有 session 执行管理操作。
 - `ki config path` / `ki version`：查看配置位置和版本。
-- CLI 命令和 flags 由 Cobra 管理；TOML 由 Viper 解析，配置按编译默认值 → 全局文件 → 项目文件 → 环境变量合并。`ki serve --addr` 通过 Cobra flag 绑定到 Viper 的 `server.addr`，优先级高于配置文件和环境变量。
+- CLI 命令和 flags 由 Cobra 管理；TOML 由 Viper 解析，只管理 server、session、compaction 和 logging 等运行参数。模型与供应商由 provider registry 的 `models.json` / `credentials.json` 管理。`ki serve --addr` 通过 Cobra flag 绑定到 Viper 的 `server.addr`，优先级高于配置文件和环境变量。
 
 进程诊断日志由 `internal/logging` 初始化为 JSONL，同时写 stderr 和 `{KI_HOME}/ki.jsonl`；日志按大小轮转，默认保留 3 个备份，可由 `[log]` 的 `max_size_mb` / `max_backups` 调整。日志带 `pid` / `role`，禁止记录 API key、token、prompt 和文件内容。HTTP、prompt 后台任务和进程入口会记录 panic 值与 stack。
 
 续聊必须 `--session <id>`。`--model` 随 prompt 发给 server，写回**该 session** 的 `config.json`，不改 toml。`KI_FAKE=1` 用假模型。
 
-Provider 协议形状来自模型 catalog（`internal/provider/catalog.go`），可用 ki.toml 覆盖：`[providers.<name>] api = "completions" | "responses" | "anthropic"` 配合 `base_url` 走兼容端点（如 DeepSeek 的 `https://api.deepseek.com/anthropic` + `api = "anthropic"`）。catalog 里没有的 provider（如 `deepseek-anthropic`）直接以 toml 的 base_url/api 为准，model 名仍用 catalog 认识的 ID（`deepseek-v4-flash`），`--model provider/model` 指定。
+Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` 的合并结果。自定义 provider/model 和协议兼容字段通过设置 UI 或 provider API 管理；不从网络刷新目录。`--model provider/model` 只写回 session 配置。
 
 ## HTTP
 
@@ -24,13 +24,15 @@ Provider 协议形状来自模型 catalog（`internal/provider/catalog.go`），
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| GET | `/v1/models` | 内置 catalog（已有进程数据） |
+| GET | `/v1/models` | registry 的可选模型扁平视图 |
+| GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential 和 model 管理 |
+| PUT | `/v1/default-model` | 修改全局默认模型 |
 | GET | `/v1/meta` | 默认模型、用户 home（无进程 cwd） |
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned） |
 | POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…` |
 | GET | `/v1/sessions/search` | 正文字面搜索，最多 20 条 |
 | GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、skills/mcp、`availableSkills` / `availableMcp` |
-| PATCH | `/v1/sessions/{id}` | 写 `model` / `title` / `pinned` / skills / mcp |
+| PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / skills / mcp |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
 | POST | `/v1/sessions/{id}/prompt` | `202` 开跑；同一 session 未结束再来 **409** |
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件 |
@@ -66,8 +68,10 @@ Provider 协议形状来自模型 catalog（`internal/provider/catalog.go`），
 agent_start
   turn_start
     message_start → message_end                       # user（仅首 turn）
-    request_header                                    # system + tools 快照
+    request_header                                    # system + tools + 模型/价格快照
+    context_usage                                     # 请求前上下文占用
     message_start → message_update* → message_end     # assistant
+    context_usage                                     # usage 返回后的上下文占用
     tool_execution_start → … → tool_execution_end
     message_start / message_end                       # toolResult
   turn_end
@@ -98,7 +102,7 @@ S -> R : go runPrompt(ctx, st, id, text)
 R -> L : loop.Run(..., emit 回调)
 loop 每次事件
   L -> R : emit(Event)
-  R -> F : message_end → AppendMessage\nrequest_header → AppendRequestHeader
+  R -> F : message_end → AppendMessage\nrequest_header → AppendRequestHeader\ncontext_usage → AppendContextUsage
   R -> R : st.evs = append(st.evs, ev)\nst.wait.Broadcast()
 end
 
@@ -171,7 +175,7 @@ EV ..> RUNS : 读 runs
 
 ' ---- 运行期数据流 ----
 RUN --> RUNP : emit(Event)
-RUNP --> JSONL : message_end / request_header 落盘
+RUNP --> JSONL : message_end / request_header / context_usage 落盘
 RUNP --> RS : append + Broadcast
 RS --> EV : 游标重放
 EV --> CLI : SSE event:/data: 帧

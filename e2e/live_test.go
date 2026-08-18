@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,14 +138,9 @@ func isolateLive(t *testing.T) (home, proj string) {
 	t.Setenv("KI_SERVER_ADDR", "")
 	t.Setenv("DASHSCOPE_CN_API_KEY", key)
 	t.Setenv("DASHSCOPE_API_KEY", key)
-	writeHomeTOML(t, home, ""+
-		"[defaults]\n"+
-		"provider = \"dashscope-cn\"\n"+
-		"model = \"qwen3.7-plus\"\n"+
-		"\n"+
-		"[providers.dashscope-cn]\n"+
-		"api_key = \""+key+"\"\n"+
-		"base_url = \"https://dashscope.aliyuncs.com/compatible-mode/v1\"\n")
+	if err := os.WriteFile(filepath.Join(home, "models.json"), []byte(`{"version":1,"default":{"provider":"dashscope-cn","model":"qwen3.7-plus"},"providers":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	t.Chdir(proj)
 	return home, proj
 }
@@ -161,39 +157,22 @@ func liveDashScopeKey(t *testing.T) string {
 		t.Skip(err)
 	}
 	//nolint:gosec // this is the user's explicit private Ki configuration path.
-	b, err := os.ReadFile(filepath.Join(userHome, ".ki", "ki.toml"))
+	b, err := os.ReadFile(filepath.Join(userHome, ".ki", "credentials.json"))
 	if err != nil {
-		t.Skip("no dashscope-cn key; set DASHSCOPE_CN_API_KEY or ~/.ki/ki.toml")
+		t.Skip("no dashscope-cn key; set DASHSCOPE_CN_API_KEY or configure it in Ki settings")
 	}
-	section := ""
-	fallback := ""
-	for raw := range strings.SplitSeq(string(b), "\n") {
-		line := strings.TrimSpace(raw)
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.TrimSpace(line[1 : len(line)-1])
-			continue
-		}
-		if !strings.HasPrefix(line, "api_key") {
-			continue
-		}
-		_, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		v = strings.Trim(strings.TrimSpace(v), `"'`)
-		if v == "" {
-			continue
-		}
-		if section == "providers.dashscope-cn" {
-			return v
-		}
-		if section == "providers.dashscope" && fallback == "" {
-			fallback = v
+	var credentials struct {
+		Providers map[string]struct {
+			APIKey string `json:"apiKey"`
+		} `json:"providers"`
+	}
+	if json.Unmarshal(b, &credentials) == nil {
+		for _, id := range []string{"dashscope-cn", "dashscope"} {
+			if key := strings.TrimSpace(credentials.Providers[id].APIKey); key != "" {
+				return key
+			}
 		}
 	}
-	if fallback != "" {
-		return fallback
-	}
-	t.Skip("no dashscope-cn key; set DASHSCOPE_CN_API_KEY or ~/.ki/ki.toml")
+	t.Skip("no dashscope-cn key; set DASHSCOPE_CN_API_KEY or configure it in Ki settings")
 	return ""
 }

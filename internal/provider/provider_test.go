@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"ki/internal/config"
 	"ki/internal/loop"
 	"ki/internal/types"
 )
@@ -58,6 +57,27 @@ func TestCompletionsBodyShapesToolsAndRoles(t *testing.T) {
 		t.Fatalf("tool name: %v", fn["name"])
 	}
 }
+
+func TestThinkingAndMaxTokenRequestShapes(t *testing.T) {
+	qwen := CompletionsBody(loop.Request{Model: "qwen", MaxTokens: 4096, ThinkingEffort: "high", ThinkingFormat: "qwen", SupportsReasoningEffort: true})
+	if qwen["max_tokens"] != 4096 || qwen["enable_thinking"] != true || qwen["reasoning_effort"] != "high" {
+		t.Fatalf("qwen body: %+v", qwen)
+	}
+	openai := ResponsesBody(loop.Request{Model: "gpt", MaxTokens: 2048, ThinkingEffort: "high", ThinkingLevelMap: map[string]*string{"high": ptr("xhigh")}})
+	if openai["max_output_tokens"] != 2048 {
+		t.Fatalf("responses body: %+v", openai)
+	}
+	reasoning := mustType[map[string]any](t, openai["reasoning"])
+	if reasoning["effort"] != "xhigh" {
+		t.Fatalf("reasoning: %+v", reasoning)
+	}
+	anthropic := AnthropicBody(loop.Request{Model: "claude", MaxTokens: 8192, ThinkingEffort: "medium", ForceAdaptiveThinking: true})
+	if mustType[map[string]any](t, anthropic["thinking"])["type"] != "adaptive" {
+		t.Fatalf("anthropic body: %+v", anthropic)
+	}
+}
+
+func ptr(s string) *string { return &s }
 
 func TestAnthropicBodyUsesCacheControlAndToolUse(t *testing.T) {
 	body := AnthropicBody(loop.Request{
@@ -511,31 +531,5 @@ func TestLiveCompletionsPostsChatCompletions(t *testing.T) {
 	}
 	if m.Text() != "hi" {
 		t.Fatalf("text: %q", m.Text())
-	}
-}
-
-func TestResolvePrefersSessionThenTomlThenFirstKey(t *testing.T) {
-	cfg := config.Builtin(t.TempDir())
-	cfg.Providers = map[string]config.Provider{
-		"openai":    {APIKey: "o"},
-		"anthropic": {APIKey: "a"},
-	}
-	cfg.Defaults = config.Defaults{Provider: "openai", Model: "gpt-4o"}
-	p, m := Resolve(cfg, "anthropic", "claude-sonnet-4-5", "")
-	if p != "anthropic" || m != "claude-sonnet-4-5" {
-		t.Fatalf("session win: %s/%s", p, m)
-	}
-	p, m = Resolve(cfg, "", "", "zhipu-cn/glm-4.5")
-	if p != "zhipu-cn" || m != "glm-4.5" {
-		t.Fatalf("explicit: %s/%s", p, m)
-	}
-	p, m = Resolve(cfg, "", "", "")
-	if p != "openai" || m != "gpt-4o" {
-		t.Fatalf("toml default: %s/%s", p, m)
-	}
-	empty := config.Builtin(t.TempDir())
-	p, m = Resolve(empty, "", "", "")
-	if p == "" || m == "" {
-		t.Fatalf("fallback empty: %s/%s", p, m)
 	}
 }

@@ -1,4 +1,4 @@
-import type { FsListing, LoopEvent, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
+import type { FsListing, LoopEvent, ProviderCatalog, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
 
 export type Boot = { token: string }
 
@@ -116,8 +116,34 @@ export class Client {
     return this.json('/v1/models')
   }
 
-  patch(id: string, body: { model?: string; title?: string; pinned?: boolean; skills?: import('./types').Toggle; mcp?: import('./types').Toggle }): Promise<SessionDetail> {
+  patch(id: string, body: { model?: string; thinkingEffort?: string; title?: string; pinned?: boolean; skills?: import('./types').Toggle; mcp?: import('./types').Toggle }): Promise<SessionDetail> {
     return this.json(`/v1/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
+  }
+
+  providers(): Promise<ProviderCatalog> { return this.json('/v1/providers') }
+  createProvider(body: Record<string, unknown>): Promise<ProviderCatalog> {
+	return this.json('/v1/providers', { method: 'POST', body: JSON.stringify(body) })
+  }
+  patchProvider(id: string, body: Record<string, unknown>): Promise<ProviderCatalog> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) })
+  }
+  deleteProvider(id: string): Promise<void> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+  setCredential(id: string, apiKey: string | null): Promise<ProviderCatalog> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}/credential`, { method: 'PUT', body: JSON.stringify({ apiKey }) })
+  }
+  createModel(id: string, body: Record<string, unknown>): Promise<ProviderCatalog> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}/models`, { method: 'POST', body: JSON.stringify(body) })
+  }
+  patchModel(id: string, body: Record<string, unknown>): Promise<ProviderCatalog> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}/models`, { method: 'PATCH', body: JSON.stringify(body) })
+  }
+  deleteModel(id: string, model: string): Promise<void> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}/models?model=${encodeURIComponent(model)}`, { method: 'DELETE' })
+  }
+  setDefault(provider: string, model: string): Promise<ProviderCatalog> {
+	return this.json('/v1/default-model', { method: 'PUT', body: JSON.stringify({ provider, model }) })
   }
 
   async *events(id: string, signal?: AbortSignal): AsyncGenerator<LoopEvent> {

@@ -206,7 +206,10 @@ var (
 
 func runServe(cfg config.Config, addr string) error {
 	st := streamer(cfg)
-	srv := server.New(server.Options{Config: cfg, Streamer: st})
+	srv, err := server.New(server.Options{Config: cfg, Streamer: st})
+	if err != nil {
+		return err
+	}
 	if err := srv.ListenAndServe(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server stopped", "err", err)
 		return fmt.Errorf("serve HTTP: %w", err)
@@ -287,7 +290,7 @@ func streamer(_ config.Config) loop.Streamer {
 	if os.Getenv("KI_FAKE") == "1" {
 		return &provider.Scripted{}
 	}
-	return nil // Server uses liveFromConfig
+	return nil // Server builds the live router from the provider registry.
 }
 
 func runClient(cfg config.Config, f flags, prompt string) error {
@@ -352,7 +355,10 @@ func ensureServer(cfg config.Config, f flags) (base, token string, stop func(), 
 		}
 	}
 	// in-process
-	srv := server.New(server.Options{Config: cfg, Streamer: streamer(cfg)})
+	srv, err := server.New(server.Options{Config: cfg, Streamer: streamer(cfg)})
+	if err != nil {
+		return "", "", nil, err
+	}
 	addr := "127.0.0.1:0"
 	if f.Addr != "" {
 		addr = f.Addr

@@ -43,13 +43,14 @@ type Toggle struct {
 
 // Config is session-level config.json.
 type Config struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Title    string `json:"title,omitempty"`
-	Pinned   bool   `json:"pinned,omitempty"`
-	PinnedAt string `json:"pinnedAt,omitempty"`
-	Skills   Toggle `json:"skills"`
-	MCP      Toggle `json:"mcp"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	ThinkingEffort string `json:"thinkingEffort,omitempty"`
+	Title          string `json:"title,omitempty"`
+	Pinned         bool   `json:"pinned,omitempty"`
+	PinnedAt       string `json:"pinnedAt,omitempty"`
+	Skills         Toggle `json:"skills"`
+	MCP            Toggle `json:"mcp"`
 }
 
 // Entry is one jsonl record after the header.
@@ -67,6 +68,12 @@ type Entry struct {
 	Details          any             `json:"details,omitempty"`
 	Provider         string          `json:"provider,omitempty"`
 	ModelID          string          `json:"modelId,omitempty"`
+	ThinkingEffort   string          `json:"thinkingEffort,omitempty"`
+	CatalogVersion   int             `json:"catalogVersion,omitempty"`
+	UsedTokens       int             `json:"usedTokens,omitempty"`
+	ContextWindow    int             `json:"contextWindow,omitempty"`
+	Estimated        bool            `json:"estimated,omitempty"`
+	Pricing          any             `json:"pricing,omitempty"`
 	System           string          `json:"system,omitempty"`
 	Tools            []ToolSchema    `json:"tools,omitempty"`
 }
@@ -76,6 +83,15 @@ type ToolSchema struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
+// RequestMeta pins catalog identity used to build a provider request.
+type RequestMeta struct {
+	Provider       string
+	Model          string
+	ThinkingEffort string
+	CatalogVersion int
+	Pricing        any
 }
 
 // Session is an open conversation directory.
@@ -107,7 +123,7 @@ func EncodeCWD(cwd string) string {
 }
 
 // Create makes a new session directory under root.
-func Create(root, cwd, provider, model string) (*Session, error) {
+func Create(root, cwd, provider, model string, thinking ...string) (*Session, error) {
 	if cwd == "" {
 		return nil, errCWDRequired
 	}
@@ -125,6 +141,10 @@ func Create(root, cwd, provider, model string) (*Session, error) {
 		return nil, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	cfg := Config{Provider: provider, Model: model}
+	if len(thinking) > 0 {
+		cfg.ThinkingEffort = thinking[0]
+	}
 	s := &Session{
 		Dir: dir,
 		Header: Header{
@@ -134,7 +154,7 @@ func Create(root, cwd, provider, model string) (*Session, error) {
 			Timestamp: now,
 			CWD:       cwd,
 		},
-		Config: Config{Provider: provider, Model: model},
+		Config: cfg,
 		byID:   map[string]Entry{},
 	}
 	if err := s.writeConfig(); err != nil {
@@ -397,7 +417,7 @@ func (s *Session) AppendMessage(m types.Message) (Entry, error) {
 }
 
 // AppendModelChange records a session default model update.
-func (s *Session) AppendModelChange(provider, model string) error {
+func (s *Session) AppendModelChange(provider, model string, efforts ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, err := idgen.EntryID()
@@ -412,11 +432,17 @@ func (s *Session) AppendModelChange(provider, model string) error {
 		Provider:  provider,
 		ModelID:   model,
 	}
+	if len(efforts) > 0 {
+		e.ThinkingEffort = efforts[0]
+	}
 	if err := s.appendLocked(e); err != nil {
 		return err
 	}
 	s.Config.Provider = provider
 	s.Config.Model = model
+	if len(efforts) > 0 {
+		s.Config.ThinkingEffort = efforts[0]
+	}
 	return s.writeConfig()
 }
 
@@ -471,7 +497,7 @@ func (s *Session) AppendEvent(typ, reason string, ok bool) (Entry, error) {
 }
 
 // AppendRequestHeader records the system prompt and tools sent on one turn.
-func (s *Session) AppendRequestHeader(system string, tools []ToolSchema) (Entry, error) {
+func (s *Session) AppendRequestHeader(system string, tools []ToolSchema, metadata ...RequestMeta) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, err := idgen.EntryID()
@@ -485,6 +511,13 @@ func (s *Session) AppendRequestHeader(system string, tools []ToolSchema) (Entry,
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		System:    system,
 		Tools:     tools,
+	}
+	if len(metadata) > 0 {
+		e.Provider = metadata[0].Provider
+		e.ModelID = metadata[0].Model
+		e.ThinkingEffort = metadata[0].ThinkingEffort
+		e.CatalogVersion = metadata[0].CatalogVersion
+		e.Pricing = metadata[0].Pricing
 	}
 	if err := s.appendLocked(e); err != nil {
 		return Entry{}, err
@@ -508,6 +541,24 @@ func (s *Session) SetToggles(skills, mcp *Toggle) error {
 // SetModel updates config.json and appends model_change.
 func (s *Session) SetModel(provider, model string) error {
 	return s.AppendModelChange(provider, model)
+}
+
+func (s *Session) SetModelAndThinking(provider, model, effort string) error {
+	return s.AppendModelChange(provider, model, effort)
+}
+
+func (s *Session) AppendContextUsage(used, window int, estimated bool) (Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, err := idgen.EntryID()
+	if err != nil {
+		return Entry{}, err
+	}
+	e := Entry{Type: "context_usage", ID: id, ParentID: s.leafID, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), UsedTokens: used, ContextWindow: window, Estimated: estimated}
+	if err := s.appendLocked(e); err != nil {
+		return Entry{}, err
+	}
+	return e, nil
 }
 
 // SetTitle writes a pinned display title (empty clears the override).

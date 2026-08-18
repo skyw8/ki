@@ -42,6 +42,8 @@ const (
 	CompactionStart EventType = "compaction_start"
 	// CompactionEnd ends context compaction.
 	CompactionEnd EventType = "compaction_end"
+	// ContextUsage reports the current model-facing context pressure.
+	ContextUsage EventType = "context_usage"
 )
 
 // Event is a loop event (pi field names).
@@ -61,6 +63,12 @@ type Event struct {
 	Tools                 []ToolSpec      `json:"tools,omitempty"`
 	Reason                string          `json:"reason,omitempty"`
 	OK                    bool            `json:"ok,omitempty"`
+	Provider              string          `json:"provider,omitempty"`
+	Model                 string          `json:"model,omitempty"`
+	CatalogVersion        int             `json:"catalogVersion,omitempty"`
+	UsedTokens            int             `json:"usedTokens,omitempty"`
+	ContextWindow         int             `json:"contextWindow,omitempty"`
+	Estimated             bool            `json:"estimated,omitempty"`
 }
 
 // AssistantDelta is a streaming increment (pi assistantMessageEvent).
@@ -97,12 +105,19 @@ type Streamer interface {
 
 // Request is one provider call.
 type Request struct {
-	System   string
-	Messages []types.Message
-	Tools    []ToolSpec
-	Provider string
-	Model    string
-	API      string
+	System                  string
+	Messages                []types.Message
+	Tools                   []ToolSpec
+	Provider                string
+	Model                   string
+	API                     string
+	MaxTokens               int
+	ThinkingEffort          string
+	ThinkingFormat          string
+	MaxTokensField          string
+	SupportsReasoningEffort bool
+	ForceAdaptiveThinking   bool
+	ThinkingLevelMap        map[string]*string
 }
 
 // ToolSpec is the schema sent to the provider.
@@ -133,16 +148,23 @@ var ErrContextOverflow = errors.New("context overflow")
 
 // Config is loop runtime options.
 type Config struct {
-	Streamer   Streamer
-	Tools      []Tool
-	Hooks      Hooks
-	MaxRetries int
-	BaseDelay  time.Duration
-	Parallel   bool
-	Provider   string
-	Model      string
-	API        string
-	System     string
+	Streamer                Streamer
+	Tools                   []Tool
+	Hooks                   Hooks
+	MaxRetries              int
+	BaseDelay               time.Duration
+	Parallel                bool
+	Provider                string
+	Model                   string
+	API                     string
+	MaxTokens               int
+	ThinkingEffort          string
+	ThinkingFormat          string
+	MaxTokensField          string
+	SupportsReasoningEffort bool
+	ForceAdaptiveThinking   bool
+	ThinkingLevelMap        map[string]*string
+	System                  string
 }
 
 // Run executes one user prompt against the current messages.
@@ -215,17 +237,24 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 			msgs = m
 		}
 
-		if err := emit(Event{Type: RequestHeader, System: system, Tools: append([]ToolSpec(nil), specs...)}); err != nil {
+		if err := emit(Event{Type: RequestHeader, System: system, Tools: append([]ToolSpec(nil), specs...), Provider: cfg.Provider, Model: cfg.Model}); err != nil {
 			return newMsgs, err
 		}
 
 		asst, err := streamWithRetry(ctx, cfg, Request{
-			System:   system,
-			Messages: msgs,
-			Tools:    specs,
-			Provider: cfg.Provider,
-			Model:    cfg.Model,
-			API:      cfg.API,
+			System:                  system,
+			Messages:                msgs,
+			Tools:                   specs,
+			Provider:                cfg.Provider,
+			Model:                   cfg.Model,
+			API:                     cfg.API,
+			MaxTokens:               cfg.MaxTokens,
+			ThinkingEffort:          cfg.ThinkingEffort,
+			ThinkingFormat:          cfg.ThinkingFormat,
+			MaxTokensField:          cfg.MaxTokensField,
+			SupportsReasoningEffort: cfg.SupportsReasoningEffort,
+			ForceAdaptiveThinking:   cfg.ForceAdaptiveThinking,
+			ThinkingLevelMap:        cfg.ThinkingLevelMap,
 		}, emit)
 		if err != nil {
 			// Context overflow: compact once (server-side, via hook) and retry

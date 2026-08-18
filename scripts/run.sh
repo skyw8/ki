@@ -59,8 +59,9 @@ if ! tmux has-session -t "$SESSION" 2>/dev/null; then
   tmux new-window -t "$SESSION" -n cli -c "$ROOT"
 else
   for w in server cli; do
-    tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$w" \
-      || tmux new-window -t "$SESSION" -n "$w" -c "$ROOT"
+    if ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$w"; then
+      tmux new-window -t "$SESSION" -n "$w" -c "$ROOT"
+    fi
   done
 fi
 
@@ -69,9 +70,8 @@ cmd=""
 cmd+="./ki serve --addr $ADDR"
 [[ ${#SERVE_ARGS[@]} -gt 0 ]] && cmd+=" ${SERVE_ARGS[*]}"
 
-# Graceful stop of any running server, then respawn it in the server window.
-tmux send-keys -t "$SESSION:server" C-c || true
-sleep 1
+# Respawn atomically: sending Ctrl-C first lets tmux destroy a window whose
+# sole command is the server, leaving no target for the subsequent respawn.
 tmux respawn-window -k -t "$SESSION:server" -c "$ROOT" "$cmd"
 tmux select-window -t "$SESSION:server"
 
