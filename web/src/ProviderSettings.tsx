@@ -17,7 +17,7 @@ const apiOptions = [
 const copy = {
   zh: {
     title: '模型供应商', subtitle: '管理连接、凭据和模型。目录保存在本地，不会自动联网刷新。', addProvider: '添加供应商',
-    providers: '供应商', configured: '已配置', missingKey: '缺少密钥', builtIn: '内置', custom: '自定义', enabled: '启用', disabled: '已停用',
+    providers: '供应商', missingKey: '缺少密钥', builtIn: '内置', custom: '自定义', enabled: '启用', disabled: '已停用',
     connection: '连接设置', connectionHint: '修改连接后，新请求会立即使用新配置。', displayName: '显示名称', providerID: '供应商 ID', baseURL: 'Base URL', apiProtocol: 'API 协议', saveChanges: '保存更改',
     credential: 'API 凭据', credentialHint: '密钥只保存在本机，页面不会回显。', apiKey: 'API key', saveKey: '保存密钥', clear: '清除', stored: '已保存凭据',
     models: '模型', modelCount: '{n} 个模型', addModel: '添加模型', modelID: '模型 ID', modelName: '显示名称', contextWindow: '上下文窗口', maxOutput: '最大输出', add: '添加',
@@ -29,7 +29,7 @@ const copy = {
   },
   en: {
     title: 'Model providers', subtitle: 'Manage connections, credentials, and models. The catalog stays local and never refreshes online.', addProvider: 'Add provider',
-    providers: 'Providers', configured: 'Configured', missingKey: 'API key needed', builtIn: 'Built-in', custom: 'Custom', enabled: 'Enabled', disabled: 'Disabled',
+    providers: 'Providers', missingKey: 'Missing key', builtIn: 'Built-in', custom: 'Custom', enabled: 'Enabled', disabled: 'Disabled',
     connection: 'Connection', connectionHint: 'New requests use saved connection changes immediately.', displayName: 'Display name', providerID: 'Provider ID', baseURL: 'Base URL', apiProtocol: 'API protocol', saveChanges: 'Save changes',
     credential: 'API credential', credentialHint: 'The key stays on this machine and is never shown again.', apiKey: 'API key', saveKey: 'Save key', clear: 'Clear', stored: 'Credential configured',
     models: 'Models', modelCount: '{n} models', addModel: 'Add model', modelID: 'Model ID', modelName: 'Display name', contextWindow: 'Context window', maxOutput: 'Max output', add: 'Add model',
@@ -119,10 +119,10 @@ export function ProviderSettings({ api, onChanged }: Props) {
           <div className="provider-sidebar-head"><span>{c.providers}</span><span>{data?.providers.length ?? 0}</span></div>
           <div className="provider-nav" role="listbox" aria-label={c.providers}>
             {data?.providers.map(provider => (
-              <button type="button" role="option" aria-selected={provider.id === selected} key={provider.id} className={provider.id === selected ? 'on' : ''} onClick={() => setSelected(provider.id)}>
+              // Name only: id + "API key needed" read as a second grey copy of the same row.
+              <button type="button" role="option" aria-selected={provider.id === selected} key={provider.id} data-provider-id={provider.id} className={provider.id === selected ? 'on' : ''} title={provider.name} onClick={() => setSelected(provider.id)}>
                 <span className={`provider-status-dot${provider.credential.configured ? ' ready' : ''}`} aria-hidden />
-                <span className="provider-nav-copy"><strong>{provider.name}</strong><small>{provider.id}</small></span>
-                <span className={`status-label${provider.credential.configured ? ' ready' : ''}`}>{provider.credential.configured ? c.configured : c.missingKey}</span>
+                <span className="provider-nav-copy">{provider.name}</span>
               </button>
             ))}
           </div>

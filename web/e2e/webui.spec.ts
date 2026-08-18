@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { applyFollowTail } from '../src/follow-tail.ts'
+import { renderMarkdown } from '../src/markdown.ts'
 import { statePath } from './global-setup.ts'
 
 async function sendPrompt(page: Page, text: string) {
@@ -22,6 +23,9 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('settings-tab-providers')).toHaveText('模型供应商')
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('主题和语言')
   await expect(page.getByTestId('provider-settings')).toContainText('Anthropic')
+  await expect(page.locator('.provider-nav [data-provider-id="anthropic"]')).toHaveText('Anthropic')
+  await expect(page.locator('.provider-nav')).not.toContainText('缺少密钥')
+  await expect(page.locator('.provider-nav')).not.toContainText('API key needed')
   await expect(page.getByTestId('settings-theme')).toHaveCount(0)
 
   const baseURL = page.getByTestId('provider-base-url')
@@ -120,7 +124,7 @@ test('provider settings supports a complete add and edit flow', async ({ page })
   await create.getByRole('button', { name: '创建供应商' }).click()
 
   await expect(page.getByTestId('new-provider-dialog')).toHaveCount(0)
-  await expect(page.getByRole('option', { name: new RegExp(providerID) })).toBeVisible()
+  await expect(page.locator(`.provider-nav [data-provider-id="${providerID}"]`)).toHaveText('Playwright Provider')
   const connection = page.getByTestId('provider-connection-form')
   await expect(connection.getByLabel('供应商 ID')).toHaveValue(providerID)
   await connection.getByLabel('显示名称').fill('Playwright Provider Edited')
@@ -139,7 +143,16 @@ test('provider settings supports a complete add and edit flow', async ({ page })
   await expect(page.getByTestId('provider-model-row').filter({ hasText: modelID })).toContainText('64,000 ctx')
 
   await page.getByRole('button', { name: '删除供应商' }).click()
-  await expect(page.getByRole('option', { name: new RegExp(providerID) })).toHaveCount(0)
+  await expect(page.locator(`.provider-nav [data-provider-id="${providerID}"]`)).toHaveCount(0)
+})
+
+test('markdown renders fences, headers, and inline code', () => {
+  expect(renderMarkdown('use the `Read` tool')).toBe('<p>use the <code>Read</code> tool</p>')
+  expect(renderMarkdown('see `` `nested` `` here')).toBe('<p>see <code>`nested`</code> here</p>')
+  expect(renderMarkdown('path: \uFF40internal/mcp\uFF40')).toBe('<p>path: <code>internal/mcp</code></p>')
+  expect(renderMarkdown('  ## Title\n\n  ```go\nfmt.Println("hi")\n  ```\n')).toBe('<h2>Title</h2><pre><code class="lang-go">fmt.Println(&quot;hi&quot;)</code></pre>')
+  expect(renderMarkdown('> quoted `x`')).toBe('<blockquote>quoted <code>x</code></blockquote>')
+  expect(renderMarkdown('**bold** and *em*')).toBe('<p><strong>bold</strong> and <em>em</em></p>')
 })
 
 test('chat and trajectory talk to the fake runtime', async ({ page }) => {

@@ -986,14 +986,14 @@ export function App() {
 
       {settingsOpen ? (
         <Modal title={t('settings.title')} onClose={() => setSettingsOpen(false)} testid="settings">
-		  <nav className="settings-tabs" role="tablist" aria-label={t('settings.title')}>
-			<button type="button" role="tab" aria-selected={settingsPage === 'providers'} className={settingsPage === 'providers' ? 'on' : ''} data-testid="settings-tab-providers" onClick={() => setSettingsPage('providers')}>{t('settings.providers')}</button>
-			<button type="button" role="tab" aria-selected={settingsPage === 'appearance'} className={settingsPage === 'appearance' ? 'on' : ''} data-testid="settings-tab-appearance" onClick={() => setSettingsPage('appearance')}>{t('settings.appearanceLanguage')}</button>
+		  <nav className="tabs settings-tabs" role="tablist" aria-label={t('settings.title')}>
+			<button type="button" role="tab" aria-selected={settingsPage === 'providers'} className={`tab${settingsPage === 'providers' ? ' active' : ''}`} data-testid="settings-tab-providers" onClick={() => setSettingsPage('providers')}>{t('settings.providers')}</button>
+			<button type="button" role="tab" aria-selected={settingsPage === 'appearance'} className={`tab${settingsPage === 'appearance' ? ' active' : ''}`} data-testid="settings-tab-appearance" onClick={() => setSettingsPage('appearance')}>{t('settings.appearanceLanguage')}</button>
 		  </nav>
 		  <div className="settings-page">
 			{settingsPage === 'providers' ? <ProviderSettings api={api} onChanged={refreshModels} /> : (
 			  <div className="preference-page" data-testid="appearance-settings">
-				<header className="settings-page-title"><h3>{t('settings.appearanceLanguage')}</h3><p>{t('settings.preferenceHint')}</p></header>
+				<header className="settings-page-title"><div><h3>{t('settings.appearanceLanguage')}</h3><p>{t('settings.preferenceHint')}</p></div></header>
 				<section className="preference-section">
 				  <div className="preference-copy"><h4>{t('settings.appearance')}</h4><p>{t('settings.themeHint')}</p></div>
 				  <div className="theme-picks" data-testid="settings-theme" role="radiogroup" aria-label={t('settings.appearance')}>
