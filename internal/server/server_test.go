@@ -82,6 +82,11 @@ func waitAgentEnd(t *testing.T, hs *httptest.Server, id string) []string {
 			break
 		}
 	}
+	// Scan returns false for both clean EOF and read errors, so inspect Err
+	// after the loop to avoid treating a truncated event stream as complete.
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
 	return types
 }
 
@@ -251,6 +256,9 @@ func TestPromptSSEAndPersist(t *testing.T) {
 		if ev.Type == loop.AgentEnd {
 			break
 		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
 	}
 	joined := strings.Join(types, ",")
 	if !strings.Contains(joined, "agent_start") || !strings.Contains(joined, "agent_end") {
@@ -466,6 +474,9 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 			break
 		}
 	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
 	_ = res.Body.Close()
 	if !sawHeader {
 		t.Fatal("SSE missing request_header with system")
@@ -592,6 +603,9 @@ func TestPromptNotBlockedBySlowMCP(t *testing.T) {
 		if ev.Type == loop.AgentEnd {
 			break
 		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
 	}
 	if !strings.Contains(strings.Join(types, ","), "agent_start") {
 		t.Fatalf("no agent_start: %v", types)
@@ -1113,11 +1127,15 @@ func scanAll(t *testing.T, sc *bufio.Scanner) []string {
 			break
 		}
 	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
 	return out
 }
 
 // collectSSE 把一条 SSE 响应完整读到 agent_end。
-func collectSSE(res *http.Response) []string {
+func collectSSE(t *testing.T, res *http.Response) []string {
+	t.Helper()
 	defer func() { _ = res.Body.Close() }()
 	var out []string
 	sc := bufio.NewScanner(res.Body)
@@ -1131,6 +1149,9 @@ func collectSSE(res *http.Response) []string {
 		if s == "agent_end" {
 			break
 		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
 	}
 	return out
 }
@@ -1164,7 +1185,7 @@ func readSSE(hs *httptest.Server, id string, n int, ready chan<- struct{}) sseRe
 			break
 		}
 	}
-	return sseResult{stream: out}
+	return sseResult{stream: out, err: sc.Err()}
 }
 
 // TestEventsWaitPathSingleReader：reader 在运行中途连接，缓冲读空后必须
@@ -1260,14 +1281,14 @@ func TestEventsClientDisconnect(t *testing.T) {
 	// 断开不影响运行本身：事件已全部进缓冲，完整重放仍可用。
 	waitBuffered(t, srv, id, 10)
 	//nolint:bodyclose // collectSSE owns and closes the response body.
-	if replay := collectSSE(mustOpenEvents(t, hs, id)); !slices.Equal(replay, wantSSE()) {
+	if replay := collectSSE(t, mustOpenEvents(t, hs, id)); !slices.Equal(replay, wantSSE()) {
 		t.Fatalf("replay after disconnect: %v", replay)
 	}
 
 	// 新 prompt 照常工作（说明没有 goroutine 持锁阻塞新运行）。
 	prompt202(t, hs, id, "again")
 	//nolint:bodyclose // collectSSE owns and closes the response body.
-	if got := collectSSE(mustOpenEvents(t, hs, id)); len(got) == 0 || got[len(got)-1] != "agent_end" {
+	if got := collectSSE(t, mustOpenEvents(t, hs, id)); len(got) == 0 || got[len(got)-1] != "agent_end" {
 		t.Fatalf("run after disconnect: %v", got)
 	}
 
@@ -1289,12 +1310,12 @@ func TestEventsReplayAfterDone(t *testing.T) {
 	id := createSession(t, hs, t.TempDir())
 	prompt202(t, hs, id, "hi")
 	//nolint:bodyclose // collectSSE owns and closes the response body.
-	first := collectSSE(mustOpenEvents(t, hs, id))
+	first := collectSSE(t, mustOpenEvents(t, hs, id))
 	if want := wantSSE(); !slices.Equal(first, want) {
 		t.Fatalf("first stream: %v", first)
 	}
 	//nolint:bodyclose // collectSSE owns and closes the response body.
-	second := collectSSE(mustOpenEvents(t, hs, id))
+	second := collectSSE(t, mustOpenEvents(t, hs, id))
 	if want := wantSSE(); !slices.Equal(second, want) {
 		t.Fatalf("replay after done: %v", second)
 	}
