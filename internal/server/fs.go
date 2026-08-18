@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -45,17 +46,20 @@ func (s *Server) listFS(w http.ResponseWriter, r *http.Request) {
 	}
 	path, err := workspace.Normalize(raw, home)
 	if err != nil {
-		http.Error(w, "directory-unreadable", 400)
+		http.Error(w, "directory-unreadable", http.StatusBadRequest)
 		return
 	}
+	// workspace.Normalize intentionally permits the host-absolute paths exposed
+	// by the directory browser; this is not an archive extraction boundary.
+	//nolint:gosec // the normalized browser path is an intentional user selection
 	st, err := os.Stat(path)
 	if err != nil || !st.IsDir() {
-		http.Error(w, "directory-unreadable", 400)
+		http.Error(w, "directory-unreadable", http.StatusBadRequest)
 		return
 	}
 	ents, err := os.ReadDir(path)
 	if err != nil {
-		http.Error(w, "directory-unreadable", 400)
+		http.Error(w, "directory-unreadable", http.StatusBadRequest)
 		return
 	}
 	var dirs []fsEntry
@@ -68,6 +72,8 @@ func (s *Server) listFS(w http.ResponseWriter, r *http.Request) {
 		isDir := e.IsDir()
 		if !isDir {
 			if resolved, err := filepath.EvalSymlinks(child); err == nil {
+				// The symlink target is inspected only to classify a browser entry.
+				//nolint:gosec // this is a normalized, user-selected browser path
 				if st, err := os.Stat(resolved); err == nil && st.IsDir() {
 					isDir = true
 				}
@@ -111,8 +117,8 @@ func crumbsOf(path string) []fsEntry {
 		d = parent
 	}
 	out := make([]fsEntry, 0, len(chain))
-	for i := len(chain) - 1; i >= 0; i-- {
-		p := chain[i]
+	for _, v := range slices.Backward(chain) {
+		p := v
 		name := filepath.Base(p)
 		if p == "/" || p == vol || p == vol+string(os.PathSeparator) || p == vol+"/" {
 			name = p
@@ -128,22 +134,22 @@ func (s *Server) createFS(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid json", 400)
+		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
 	if err := checkDirName(body.Name); err != nil {
-		http.Error(w, err.Error(), 400)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	home := userHome()
 	parent, err := workspace.Normalize(body.Path, home)
 	if err != nil {
-		http.Error(w, "directory-create-failed", 400)
+		http.Error(w, "directory-create-failed", http.StatusBadRequest)
 		return
 	}
 	st, err := os.Stat(parent)
 	if err != nil || !st.IsDir() {
-		http.Error(w, "directory-create-failed", 400)
+		http.Error(w, "directory-create-failed", http.StatusBadRequest)
 		return
 	}
 	dest := filepath.Join(parent, body.Name)
@@ -151,8 +157,8 @@ func (s *Server) createFS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "directory-exists", http.StatusConflict)
 		return
 	}
-	if err := os.Mkdir(dest, 0o755); err != nil {
-		http.Error(w, "directory-create-failed", 400)
+	if err := os.Mkdir(dest, 0o700); err != nil {
+		http.Error(w, "directory-create-failed", http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"path": dest})
@@ -172,8 +178,8 @@ func checkDirName(name string) error {
 	return nil
 }
 
-type badName string
+type badNameError string
 
-func (e badName) Error() string { return string(e) }
+func (e badNameError) Error() string { return string(e) }
 
-const errBadName badName = "invalid name"
+const errBadName badNameError = "invalid name"

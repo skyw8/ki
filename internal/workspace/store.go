@@ -17,6 +17,16 @@ import (
 
 const version = 1
 
+var (
+	errNotDirectory          = errors.New("workspace path is not a directory")
+	errTempWorkspace         = errors.New("temporary workspace limit reached")
+	errTitleRequired         = errors.New("workspace title required")
+	errSessionNotInWorkspace = errors.New("session not in workspace")
+	errEmptyPath             = errors.New("empty workspace path")
+	errRelativePath          = errors.New("relative workspace path")
+	errRefuseDelete          = errors.New("refusing to delete workspace root")
+)
+
 // Record is one registered workspace.
 type Record struct {
 	ID         string   `json:"id"`
@@ -88,11 +98,11 @@ func (s *Store) Create(path, title string) (Record, bool, error) {
 		if !os.IsNotExist(err) {
 			return Record{}, false, err
 		}
-		if err := os.MkdirAll(norm, 0o755); err != nil {
+		if err := os.MkdirAll(norm, 0o700); err != nil {
 			return Record{}, false, err
 		}
 	} else if !st.IsDir() {
-		return Record{}, false, fmt.Errorf("not a directory: %s", norm)
+		return Record{}, false, fmt.Errorf("%w: %s", errNotDirectory, norm)
 	}
 	if resolved, err := filepath.EvalSymlinks(norm); err == nil {
 		norm = resolved
@@ -110,7 +120,7 @@ func (s *Store) Create(path, title string) (Record, bool, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	id, err := idgen.NewV7()
 	if err != nil {
-		return Record{}, false, err
+		return Record{}, false, fmt.Errorf("generate workspace ID: %w", err)
 	}
 	rec := Record{
 		ID:        id,
@@ -130,17 +140,17 @@ func (s *Store) Create(path, title string) (Record, bool, error) {
 // EnsureTemp creates {home}/workspace/tmp+<timestamp> and registers it.
 func (s *Store) EnsureTemp() (Record, error) {
 	parent := filepath.Join(s.home, "workspace")
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return Record{}, err
 	}
 	base := "tmp+" + idgen.FileTimestamp(time.Now())
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		name := base
 		if i > 0 {
 			name = base + "-" + strconv.Itoa(i)
 		}
 		dir := filepath.Join(parent, name)
-		if err := os.Mkdir(dir, 0o755); err != nil {
+		if err := os.Mkdir(dir, 0o700); err != nil {
 			if os.IsExist(err) {
 				continue
 			}
@@ -149,14 +159,14 @@ func (s *Store) EnsureTemp() (Record, error) {
 		rec, _, err := s.Create(dir, filepath.Base(dir))
 		return rec, err
 	}
-	return Record{}, errors.New("temp workspace")
+	return Record{}, errTempWorkspace
 }
 
 // SetTitle updates the display title.
 func (s *Store) SetTitle(id, title string) error {
 	title = strings.TrimSpace(title)
 	if title == "" {
-		return errors.New("title required")
+		return errTitleRequired
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -183,7 +193,10 @@ func (s *Store) InsertBefore(id, beforeID string) error {
 	rec := s.data.Workspaces[from]
 	rest := append(append([]Record{}, s.data.Workspaces[:from]...), s.data.Workspaces[from+1:]...)
 	if beforeID == "" {
-		s.data.Workspaces = append(rest, rec)
+		out := make([]Record, 0, len(rest)+1)
+		out = append(out, rest...)
+		out = append(out, rec)
+		s.data.Workspaces = out
 	} else {
 		to := -1
 		for i, r := range rest {
@@ -195,7 +208,11 @@ func (s *Store) InsertBefore(id, beforeID string) error {
 		if to < 0 {
 			return errNotFound
 		}
-		s.data.Workspaces = append(rest[:to], append([]Record{rec}, rest[to:]...)...)
+		out := make([]Record, 0, len(rest)+1)
+		out = append(out, rest[:to]...)
+		out = append(out, rec)
+		out = append(out, rest[to:]...)
+		s.data.Workspaces = out
 	}
 	return s.writeLocked()
 }
@@ -211,7 +228,7 @@ func (s *Store) InsertSessionBefore(wsID, sid, beforeID string) error {
 	ids := append([]string{}, s.data.Workspaces[i].SessionIDs...)
 	from := indexOf(ids, sid)
 	if from < 0 {
-		return fmt.Errorf("session not in workspace")
+		return errSessionNotInWorkspace
 	}
 	if beforeID != "" && indexOf(ids, beforeID) < 0 {
 		return errNotFound
@@ -257,7 +274,10 @@ func (s *Store) DetachSession(wsID, sid string) error {
 	if n < 0 {
 		return nil
 	}
-	s.data.Workspaces[i].SessionIDs = append(ids[:n], ids[n+1:]...)
+	out := make([]string, 0, len(ids)-1)
+	out = append(out, ids[:n]...)
+	out = append(out, ids[n+1:]...)
+	s.data.Workspaces[i].SessionIDs = out
 	s.data.Workspaces[i].UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return s.writeLocked()
 }
@@ -341,7 +361,7 @@ func SafeToRemoveDir(path, home, sessionsRoot string) error {
 	vol := filepath.VolumeName(norm)
 	root := vol + string(os.PathSeparator)
 	if norm == "/" || norm == vol || norm == root || norm == vol+"/" {
-		return errors.New("refusing to delete volume root")
+		return errRefuseDelete
 	}
 	userHome, _ := os.UserHomeDir()
 	for _, p := range []string{userHome, home, sessionsRoot} {
@@ -353,7 +373,7 @@ func SafeToRemoveDir(path, home, sessionsRoot string) error {
 			continue
 		}
 		if SamePath(norm, n) {
-			return fmt.Errorf("refusing to delete %s", n)
+			return fmt.Errorf("%w: %s", errRefuseDelete, n)
 		}
 	}
 	return nil
@@ -363,11 +383,11 @@ func SafeToRemoveDir(path, home, sessionsRoot string) error {
 func Normalize(path, base string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return "", errors.New("empty path")
+		return "", errEmptyPath
 	}
 	if !filepath.IsAbs(path) {
 		if base == "" {
-			return "", errors.New("relative path")
+			return "", errRelativePath
 		}
 		path = filepath.Join(base, path)
 	}
@@ -405,7 +425,7 @@ func (s *Store) indexLocked(id string) int {
 
 // write-to-temp-then-rename
 func (s *Store) writeLocked() error {
-	if err := os.MkdirAll(s.home, 0o755); err != nil {
+	if err := os.MkdirAll(s.home, 0o700); err != nil {
 		return err
 	}
 	s.data.Version = version
@@ -414,7 +434,7 @@ func (s *Store) writeLocked() error {
 		return err
 	}
 	tmp := s.path() + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, s.path())

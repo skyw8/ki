@@ -64,8 +64,8 @@ func TestLiveCompletionsAcceptsBatchedToolImages(t *testing.T) {
 	// Guard the wire shape before we spend a live call.
 	body := CompletionsBody(req)
 	var roles []string
-	for _, m := range body["messages"].([]map[string]any) {
-		roles = append(roles, m["role"].(string))
+	for _, m := range mustType[[]map[string]any](t, body["messages"]) {
+		roles = append(roles, mustType[string](t, m["role"]))
 	}
 	if strings.Join(roles, ",") != "system,user,assistant,tool,tool,user" {
 		t.Fatalf("unexpected live wire roles: %s", strings.Join(roles, ","))
@@ -93,8 +93,8 @@ func TestLiveCompletionsAcceptsBatchedToolImages(t *testing.T) {
 func solidPNG(t *testing.T, c color.RGBA) string {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
-	for y := 0; y < 32; y++ {
-		for x := 0; x < 32; x++ {
+	for y := range 32 {
+		for x := range 32 {
 			img.SetRGBA(x, y, c)
 		}
 	}

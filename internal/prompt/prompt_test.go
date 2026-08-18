@@ -13,18 +13,18 @@ import (
 
 func TestCollectAgentsStopsAtGitRoot(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	outside := filepath.Dir(root)
-	_ = os.WriteFile(filepath.Join(outside, "AGENTS.md"), []byte("OUTSIDE"), 0o644)
-	_ = os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("ROOT"), 0o644)
+	_ = os.WriteFile(filepath.Join(outside, "AGENTS.md"), []byte("OUTSIDE"), 0o600)
+	_ = os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("ROOT"), 0o600)
 	nested := filepath.Join(root, "pkg")
-	_ = os.MkdirAll(nested, 0o755)
-	_ = os.WriteFile(filepath.Join(nested, "CLAUDE.md"), []byte("NEST"), 0o644)
+	_ = os.MkdirAll(nested, 0o700)
+	_ = os.WriteFile(filepath.Join(nested, "CLAUDE.md"), []byte("NEST"), 0o600)
 
 	home := t.TempDir()
-	_ = os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte("GLOBAL"), 0o644)
+	_ = os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte("GLOBAL"), 0o600)
 
 	files := CollectAgents(home, nested)
 	var texts []string
@@ -43,9 +43,9 @@ func TestCollectAgentsStopsAtGitRoot(t *testing.T) {
 func TestBuildLayers(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
-	_ = os.MkdirAll(filepath.Join(home, "skills", "demo"), 0o755)
-	_ = os.WriteFile(filepath.Join(home, "skills", "demo", "SKILL.md"), []byte("---\nname: demo\ndescription: do demo\n---\n# hi\n"), 0o644)
-	_ = os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("use tabs"), 0o644)
+	_ = os.MkdirAll(filepath.Join(home, "skills", "demo"), 0o700)
+	_ = os.WriteFile(filepath.Join(home, "skills", "demo", "SKILL.md"), []byte("---\nname: demo\ndescription: do demo\n---\n# hi\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("use tabs"), 0o600)
 	sys, _ := Build(Input{
 		Home:  home,
 		CWD:   cwd,

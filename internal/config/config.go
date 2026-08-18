@@ -139,7 +139,7 @@ func LoadWithViper(cwd string, settings *viper.Viper) (Config, error) {
 
 	var cfg Config
 	if err := settings.UnmarshalExact(&cfg); err != nil {
-		return Config{}, err
+		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
 	cfg.Home = home
 	if cfg.Sessions.Root == "" {
@@ -208,7 +208,10 @@ func mergeEnv(settings *viper.Viper) error {
 	if len(envSettings) == 0 {
 		return nil
 	}
-	return settings.MergeConfigMap(envSettings)
+	if err := settings.MergeConfigMap(envSettings); err != nil {
+		return fmt.Errorf("merge environment config: %w", err)
+	}
+	return nil
 }
 
 func firstEnv(names ...string) string {
@@ -221,6 +224,7 @@ func firstEnv(names ...string) string {
 }
 
 func mergeFile(settings *viper.Viper, path string) error {
+	//nolint:gosec // path comes from the bounded config discovery locations.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -236,7 +240,10 @@ func mergeFile(settings *viper.Viper, path string) error {
 	}
 	// MergeConfigMap recursively overlays tables; this preserves provider
 	// fields from the global file when the project file only changes one key.
-	return settings.MergeConfigMap(fileSettings.AllSettings())
+	if err := settings.MergeConfigMap(fileSettings.AllSettings()); err != nil {
+		return fmt.Errorf("merge file config: %w", err)
+	}
+	return nil
 }
 
 // HasKey reports whether a provider has an API key after merge.

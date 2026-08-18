@@ -15,6 +15,15 @@ import (
 	"ki/internal/types"
 )
 
+func mustType[T any](t *testing.T, value any) T {
+	t.Helper()
+	got, ok := value.(T)
+	if !ok {
+		t.Fatalf("unexpected JSON type %T", value)
+	}
+	return got
+}
+
 func TestCompletionsBodyShapesToolsAndRoles(t *testing.T) {
 	body := CompletionsBody(loop.Request{
 		System: "sys",
@@ -36,15 +45,15 @@ func TestCompletionsBodyShapesToolsAndRoles(t *testing.T) {
 	if body["model"] != "deepseek-chat" {
 		t.Fatalf("model: %v", body["model"])
 	}
-	msgs := body["messages"].([]map[string]any)
+	msgs := mustType[[]map[string]any](t, body["messages"])
 	if msgs[0]["role"] != "system" || msgs[0]["content"] != "sys" {
 		t.Fatalf("system: %+v", msgs[0])
 	}
 	if msgs[len(msgs)-1]["role"] != "tool" {
 		t.Fatalf("tool result role: %+v", msgs[len(msgs)-1])
 	}
-	tools := body["tools"].([]map[string]any)
-	fn := tools[0]["function"].(map[string]any)
+	tools := mustType[[]map[string]any](t, body["tools"])
+	fn := mustType[map[string]any](t, tools[0]["function"])
 	if fn["name"] != "Read" {
 		t.Fatalf("tool name: %v", fn["name"])
 	}
@@ -59,14 +68,14 @@ func TestAnthropicBodyUsesCacheControlAndToolUse(t *testing.T) {
 		},
 		Tools: []loop.ToolSpec{{Name: "Bash", Description: "sh", Parameters: map[string]any{"type": "object"}}},
 	})
-	sys := body["system"].([]map[string]any)
+	sys := mustType[[]map[string]any](t, body["system"])
 	if sys[0]["text"] != "layered" {
 		t.Fatalf("system: %+v", sys[0])
 	}
 	if _, ok := sys[0]["cache_control"]; !ok {
 		t.Fatal("expected cache_control on system")
 	}
-	tools := body["tools"].([]map[string]any)
+	tools := mustType[[]map[string]any](t, body["tools"])
 	if tools[0]["name"] != "Bash" {
 		t.Fatalf("tool: %+v", tools[0])
 	}
@@ -92,7 +101,7 @@ func TestAnthropicBodyBatchesConsecutiveToolResults(t *testing.T) {
 			}},
 		},
 	})
-	msgs := body["messages"].([]map[string]any)
+	msgs := mustType[[]map[string]any](t, body["messages"])
 	if len(msgs) != 2 {
 		t.Fatalf("want assistant + one user, got %d: %+v", len(msgs), msgs)
 	}
@@ -136,7 +145,7 @@ func TestCompletionsBodyForwardsImages(t *testing.T) {
 			}},
 		},
 	})
-	msgs := body["messages"].([]map[string]any)
+	msgs := mustType[[]map[string]any](t, body["messages"])
 	user := msgs[0]
 	parts, ok := user["content"].([]map[string]any)
 	if !ok {
@@ -145,7 +154,7 @@ func TestCompletionsBodyForwardsImages(t *testing.T) {
 	if parts[0]["type"] != "text" {
 		t.Fatalf("user text part: %+v", parts[0])
 	}
-	img := parts[1]["image_url"].(map[string]any)
+	img := mustType[map[string]any](t, parts[1]["image_url"])
 	if img["url"] != "data:image/png;base64,AAA" {
 		t.Fatalf("user image: %+v", img)
 	}
@@ -169,7 +178,7 @@ func TestCompletionsBodyForwardsImages(t *testing.T) {
 			if p["type"] != "image_url" {
 				continue
 			}
-			u := p["image_url"].(map[string]any)
+			u := mustType[map[string]any](t, p["image_url"])
 			if u["url"] == "data:image/png;base64,BBB" {
 				sawFollowup = true
 			}
@@ -202,7 +211,7 @@ func TestCompletionsBodyBatchesParallelToolImages(t *testing.T) {
 	})
 	var roles []string
 	var followup []map[string]any
-	for _, m := range body["messages"].([]map[string]any) {
+	for _, m := range mustType[[]map[string]any](t, body["messages"]) {
 		role, _ := m["role"].(string)
 		roles = append(roles, role)
 		if role == "user" {
@@ -223,8 +232,8 @@ func TestCompletionsBodyBatchesParallelToolImages(t *testing.T) {
 	if len(followup) != 2 {
 		t.Fatalf("expected 2 images in one followup, got %d: %+v", len(followup), followup)
 	}
-	u0 := followup[0]["image_url"].(map[string]any)["url"]
-	u1 := followup[1]["image_url"].(map[string]any)["url"]
+	u0 := mustType[map[string]any](t, followup[0]["image_url"])["url"]
+	u1 := mustType[map[string]any](t, followup[1]["image_url"])["url"]
 	if u0 != "data:image/png;base64,AAA" || u1 != "data:image/png;base64,BBB" {
 		t.Fatalf("urls %v %v", u0, u1)
 	}
@@ -240,7 +249,7 @@ func TestReplayableDropsAbortedAndEmptyAssistants(t *testing.T) {
 	}
 	comp := CompletionsBody(loop.Request{Model: "deepseek-v4-flash", Messages: hist})
 	var roles []string
-	for _, m := range comp["messages"].([]map[string]any) {
+	for _, m := range mustType[[]map[string]any](t, comp["messages"]) {
 		roles = append(roles, fmt.Sprint(m["role"]))
 		if m["role"] == "assistant" {
 			t.Fatalf("aborted assistant leaked into completions: %+v", m)
@@ -252,7 +261,7 @@ func TestReplayableDropsAbortedAndEmptyAssistants(t *testing.T) {
 
 	anth := AnthropicBody(loop.Request{Model: "claude-sonnet-4-5", Messages: hist})
 	roles = nil
-	for _, m := range anth["messages"].([]map[string]any) {
+	for _, m := range mustType[[]map[string]any](t, anth["messages"]) {
 		roles = append(roles, fmt.Sprint(m["role"]))
 		if m["role"] == "assistant" {
 			t.Fatalf("aborted assistant leaked into anthropic: %+v", m)
@@ -264,8 +273,8 @@ func TestReplayableDropsAbortedAndEmptyAssistants(t *testing.T) {
 
 	resp := ResponsesBody(loop.Request{Model: "gpt-4o", Messages: hist})
 	var kinds []string
-	for _, raw := range resp["input"].([]any) {
-		item := raw.(map[string]any)
+	for _, raw := range mustType[[]any](t, resp["input"]) {
+		item := mustType[map[string]any](t, raw)
 		kinds = append(kinds, fmt.Sprintf("%s/%s", item["type"], item["role"]))
 	}
 	if strings.Join(kinds, ",") != "message/user,message/user" {
@@ -333,8 +342,8 @@ func TestResponsesBodyUsesInstructions(t *testing.T) {
 	if body["model"] != "gpt-4o" {
 		t.Fatalf("model: %v", body["model"])
 	}
-	input := body["input"].([]any)
-	first := input[0].(map[string]any)
+	input := mustType[[]any](t, body["input"])
+	first := mustType[map[string]any](t, input[0])
 	if first["type"] != "message" || first["role"] != "user" {
 		t.Fatalf("user item: %+v", first)
 	}
@@ -351,10 +360,10 @@ func TestResponsesBodyUsesFunctionCallOutput(t *testing.T) {
 			{Role: "toolResult", ToolCallID: "call_1", ToolName: "Write", Content: []types.Content{{Type: "text", Text: "ok"}}},
 		},
 	})
-	input := body["input"].([]any)
+	input := mustType[[]any](t, body["input"])
 	var kinds []string
 	for _, raw := range input {
-		item := raw.(map[string]any)
+		item := mustType[map[string]any](t, raw)
 		kinds = append(kinds, fmt.Sprint(item["type"]))
 		if item["type"] == "function_call" {
 			if item["call_id"] != "call_1" || item["name"] != "Write" || item["id"] != "fc_1" {
@@ -387,12 +396,12 @@ func TestResponsesBodyEmbedsToolImages(t *testing.T) {
 			}},
 		},
 	})
-	input := body["input"].([]any)
+	input := mustType[[]any](t, body["input"])
 	if len(input) != 2 {
 		t.Fatalf("want 2 outputs, no extra user, got %d: %+v", len(input), input)
 	}
 	for i, raw := range input {
-		item := raw.(map[string]any)
+		item := mustType[map[string]any](t, raw)
 		if item["type"] != "function_call_output" {
 			t.Fatalf("item %d: %+v", i, item)
 		}
@@ -421,8 +430,8 @@ func TestUsageParsingPerProtocol(t *testing.T) {
 	t.Run("completions", func(t *testing.T) {
 		sse := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"prompt_cache_hit_tokens\":30}}\n\n" +
 			"data: [DONE]\n"
-		live := NewLive("completions", "https://api.deepseek.com", "sk", roundTrip(func(r *http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBufferString(sse)), Header: make(http.Header)}, nil
+		live := NewLive("completions", "https://api.deepseek.com", "sk", roundTrip(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewBufferString(sse)), Header: make(http.Header)}, nil
 		}))
 		m, err := live.Stream(context.Background(), loop.Request{Model: "x", Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "hey"}}}}}, func(loop.AssistantDelta) error { return nil })
 		if err != nil {
@@ -438,8 +447,8 @@ func TestUsageParsingPerProtocol(t *testing.T) {
 	t.Run("responses", func(t *testing.T) {
 		sse := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":20,\"cached_tokens\":30,\"total_tokens\":150}}}\n\n" +
 			"event: response.completed\ndata: [DONE]\n"
-		live := NewLive("responses", "https://api.openai.com/v1", "sk", roundTrip(func(r *http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBufferString(sse)), Header: make(http.Header)}, nil
+		live := NewLive("responses", "https://api.openai.com/v1", "sk", roundTrip(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewBufferString(sse)), Header: make(http.Header)}, nil
 		}))
 		m, err := live.Stream(context.Background(), loop.Request{Model: "x", Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "hey"}}}}}, func(loop.AssistantDelta) error { return nil })
 		if err != nil {
@@ -456,8 +465,8 @@ func TestUsageParsingPerProtocol(t *testing.T) {
 		sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}}\n\n" +
 			"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":20,\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}\n\n" +
 			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
-		live := NewLive("anthropic", "https://api.anthropic.com", "sk", roundTrip(func(r *http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewBufferString(sse)), Header: make(http.Header)}, nil
+		live := NewLive("anthropic", "https://api.anthropic.com", "sk", roundTrip(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewBufferString(sse)), Header: make(http.Header)}, nil
 		}))
 		m, err := live.Stream(context.Background(), loop.Request{Model: "x", Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "hey"}}}}}, func(loop.AssistantDelta) error { return nil })
 		if err != nil {
@@ -481,7 +490,7 @@ func TestLiveCompletionsPostsChatCompletions(t *testing.T) {
 		_ = json.Unmarshal(b, &gotBody)
 		sse := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n"
 		return &http.Response{
-			StatusCode: 200,
+			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewBufferString(sse)),
 			Header:     make(http.Header),
 		}, nil

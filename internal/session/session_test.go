@@ -16,7 +16,7 @@ import (
 func TestCreateReloadFork(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	s, err := Create(root, cwd, "anthropic", "claude-sonnet-4-5")
@@ -43,6 +43,7 @@ func TestCreateReloadFork(t *testing.T) {
 	}
 
 	// events.jsonl starts with session header
+	//nolint:gosec // dir is the test's isolated session directory.
 	f, err := os.Open(filepath.Join(dir, "events.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +56,7 @@ func TestCreateReloadFork(t *testing.T) {
 	if err := json.Unmarshal(sc.Bytes(), &hdr); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 	if hdr.Type != "session" || hdr.ID != id {
 		t.Fatalf("header: %+v", hdr)
 	}
@@ -71,7 +72,7 @@ func TestCreateReloadFork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	if s2.LeafID() == "" {
 		t.Fatal("leaf empty after reload")
 	}
@@ -94,7 +95,7 @@ func TestCreateReloadFork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer forked.Close()
+	defer func() { _ = forked.Close() }()
 	if forked.ID() == s2.ID() {
 		t.Fatal("fork should mint new id")
 	}
@@ -109,7 +110,7 @@ func TestCreateReloadFork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s3.Close()
+	defer func() { _ = s3.Close() }()
 	if s3.ID() == id {
 		t.Fatal("second create must be a new session")
 	}
@@ -118,7 +119,7 @@ func TestCreateReloadFork(t *testing.T) {
 func TestRequestHeaderAndTogglesReload(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	s, err := Create(root, cwd, "anthropic", "claude-sonnet-4-5")
@@ -141,7 +142,7 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	var hdr *Entry
 	for i := range s2.Entries() {
 		e := s2.Entries()[i]
@@ -163,7 +164,7 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 func TestCompactionRetainedTailReload(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	s, err := Create(root, cwd, "openai", "gpt-4o")
@@ -197,7 +198,7 @@ func TestCompactionRetainedTailReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	var comp *Entry
 	for i := range s2.Entries() {
 		e := s2.Entries()[i]
@@ -219,15 +220,15 @@ func TestCompactionRetainedTailReload(t *testing.T) {
 func TestMessagesToLeafIncludesMessagesAfterCompaction(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	s, err := Create(root, cwd, "openai", "gpt-4o")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
-	for i := 0; i < 4; i++ {
+	defer func() { _ = s.Close() }()
+	for i := range 4 {
 		_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: fmt.Sprintf("u%d", i)}}})
 		_, _ = s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: fmt.Sprintf("a%d", i)}}})
 	}
@@ -258,16 +259,16 @@ func TestCompactionRetainedTailFallback(t *testing.T) {
 	// Old jsonl without retainedTail falls back to FirstKeptEntryID slicing.
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	s, err := Create(root, cwd, "openai", "gpt-4o")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	var first string
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		e, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "u" + strconv.Itoa(i)}}})
 		if err != nil {
 			t.Fatal(err)
@@ -288,14 +289,14 @@ func TestCompactionRetainedTailFallback(t *testing.T) {
 func TestCompactionEventsPersist(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	s, err := Create(root, cwd, "openai", "gpt-4o")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if _, err := s.AppendEvent("compaction_start", "overflow", false); err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +312,7 @@ func TestCompactionEventsPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	found := false
 	for _, e := range s2.Entries() {
 		if e.Type == "compaction_start" {
@@ -329,7 +330,7 @@ func TestCompactionEventsPersist(t *testing.T) {
 func TestList(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	s1, err := Create(root, cwd, "anthropic", "claude-sonnet-4-5")
@@ -408,7 +409,7 @@ func TestToggleAllowed(t *testing.T) {
 func TestTitlePinRemove(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	s, err := Create(root, cwd, "anthropic", "claude-sonnet-4-5")
@@ -444,7 +445,7 @@ func TestTitlePinRemove(t *testing.T) {
 	if !s2.Config.Pinned || s2.Config.PinnedAt == "" || TitleOf(s2) != "pinned name" {
 		t.Fatalf("reload: %+v", s2.Config)
 	}
-	s2.Close()
+	_ = s2.Close()
 	if err := Remove(dir); err != nil {
 		t.Fatal(err)
 	}

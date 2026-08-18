@@ -7,7 +7,7 @@ import (
 
 func TestValidateSchema(t *testing.T) {
 	schema := map[string]any{
-		"type": "object",
+		"type":     "object",
 		"required": []any{"file_path", "content"},
 		"properties": map[string]any{
 			"file_path": map[string]any{"type": "string"},

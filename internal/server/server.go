@@ -119,7 +119,11 @@ func (r *router) Stream(ctx context.Context, req loop.Request, emit func(loop.As
 	if api == "" {
 		api = m.API
 	}
-	return provider.NewLive(api, base, p.APIKey, nil).Stream(ctx, req, emit)
+	msg, err := provider.NewLive(api, base, p.APIKey, nil).Stream(ctx, req, emit)
+	if err != nil {
+		return msg, fmt.Errorf("stream live provider: %w", err)
+	}
+	return msg, nil
 }
 
 func newToken() string {
@@ -134,7 +138,7 @@ func (s *Server) Token() string { return s.token }
 // Handler returns the HTTP handler.
 func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
-	api.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
+	api.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})
 	api.HandleFunc("GET /v1/models", s.auth(s.models))
@@ -199,25 +203,35 @@ func (s *Server) ListenAndServe(addr string) error {
 	if addr == "" {
 		addr = s.cfg.Server.Addr
 	}
-	ln, err := net.Listen("tcp", addr)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", addr)
 	if err != nil {
-		return err
+		return fmt.Errorf("listen on %s: %w", addr, err)
 	}
+	httpSrv := &http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	s.mu.Lock()
 	s.ln = ln
-	s.http = &http.Server{Handler: s.Handler()}
+	s.http = httpSrv
+	s.mu.Unlock()
 	if err := WriteServerFile(s.cfg.Home, File{Addr: ln.Addr().String(), Token: s.token}); err != nil {
 		slog.Warn("server.json", "err", err)
 	}
 	slog.Info("listen", "addr", ln.Addr().String())
-	return s.http.Serve(ln)
+	return httpSrv.Serve(ln)
 }
 
 // Addr is the bound address.
 func (s *Server) Addr() string {
-	if s.ln == nil {
+	s.mu.Lock()
+	ln := s.ln
+	s.mu.Unlock()
+	if ln == nil {
 		return ""
 	}
-	return s.ln.Addr().String()
+	return ln.Addr().String()
 }
 
 // Shutdown stops the HTTP server and MCP clients (pool children outlive a prompt).
@@ -225,15 +239,18 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.mcp != nil {
 		s.mcp.Close()
 	}
-	if s.http == nil {
+	s.mu.Lock()
+	httpSrv := s.http
+	s.mu.Unlock()
+	if httpSrv == nil {
 		return nil
 	}
-	return s.http.Shutdown(ctx)
+	return httpSrv.Shutdown(ctx)
 }
 
 // WriteServerFile persists addr+token.
 func WriteServerFile(home string, f File) error {
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(f, "", "  ")
@@ -245,6 +262,7 @@ func WriteServerFile(home string, f File) error {
 
 // ReadServerFile loads ~/.ki/server.json.
 func ReadServerFile(home string) (File, error) {
+	//nolint:gosec // home is the configured private Ki directory.
 	b, err := os.ReadFile(filepath.Join(home, "server.json"))
 	if err != nil {
 		return File{}, err
@@ -290,10 +308,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, err := session.Create(root, rec.Path, p, m)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	_ = s.ws.AttachSession(rec.ID, sess.ID())
 	s.sidx.Add(sess.ID(), sess.Dir)
 	writeJSON(w, 200, s.sessionMap(sess, nil))
@@ -309,25 +327,29 @@ func (s *Server) open(id string) (*session.Session, error) {
 		// Stale entry (dir deleted or renamed outside the server): drop it so
 		// the next lookup rescans instead of failing on a dead path forever.
 		s.sidx.Remove(id)
-		return nil, err
+		return nil, fmt.Errorf("open indexed session: %w", err)
 	}
 	// Index miss (session created by another process, or stale): fall back to
 	// a scan, then self-heal so the next lookup is O(1).
 	dir, err := session.Find(root, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find session: %w", err)
 	}
 	s.sidx.Add(id, dir)
-	return session.Open(dir)
+	sess, err := session.Open(dir)
+	if err != nil {
+		return nil, fmt.Errorf("open session: %w", err)
+	}
+	return sess, nil
 }
 
 func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.open(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, err.Error(), 404)
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	sk, mc := s.sessionCatalog(sess)
 	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
 		"leafId":          sess.LeafID(),
@@ -375,7 +397,7 @@ func (s *Server) sessionCatalog(sess *session.Session) ([]map[string]any, []map[
 	return sk, mc
 }
 
-func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 	cat := provider.Catalog()
 	out := make([]map[string]any, 0, len(cat))
 	for _, m := range cat {
@@ -390,7 +412,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
+func (s *Server) meta(w http.ResponseWriter, _ *http.Request) {
 	home, _ := os.UserHomeDir()
 	writeJSON(w, 200, map[string]any{
 		"home":     home,
@@ -402,10 +424,10 @@ func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
 func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.open(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, err.Error(), 404)
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	var body struct {
 		Model  string          `json:"model"`
 		Title  *string         `json:"title"`
@@ -414,25 +436,25 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 		MCP    *session.Toggle `json:"mcp"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid json", 400)
+		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
 	if body.Model != "" {
 		p, m := provider.Resolve(s.cfg, sess.Config.Provider, sess.Config.Model, body.Model)
 		if err := sess.SetModel(p, m); err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 	if body.Title != nil {
 		if err := sess.SetTitle(*body.Title); err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 	if body.Pinned != nil {
 		if err := sess.SetPinned(*body.Pinned); err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if rec, ok := s.ws.Match(sess.Header.CWD); ok && *body.Pinned {
@@ -452,7 +474,7 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Skills != nil || body.MCP != nil {
 		if err := sess.SetToggles(body.Skills, body.MCP); err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
@@ -462,10 +484,10 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 	}))
 }
 
-func (s *Server) list(w http.ResponseWriter, r *http.Request) {
+func (s *Server) list(w http.ResponseWriter, _ *http.Request) {
 	infos, err := session.List(s.cfg.Sessions.Root)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	out := make([]map[string]any, 0, len(infos))
@@ -497,7 +519,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		Model string `json:"model"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Text) == "" {
-		http.Error(w, "text required", 400)
+		http.Error(w, "text required", http.StatusBadRequest)
 		return
 	}
 	if _, err := s.open(id); err != nil {
@@ -521,6 +543,9 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	s.runs[id] = st
 	s.mu.Unlock()
 
+	// The prompt must continue after the HTTP response closes; abort is the
+	// explicit cancellation path for a running session.
+	//nolint:contextcheck // this context intentionally outlives the request
 	go s.runPrompt(ctx, st, id, body.Text, body.Model)
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": true})
 }
@@ -542,7 +567,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 		st.err = err
 		return
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	cfg := s.cfg
 	if reqModel != "" {
 		p, m := provider.Resolve(cfg, sess.Config.Provider, sess.Config.Model, reqModel)
@@ -559,7 +584,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	tls = append(tls, s.mcp.Bind(mcpFile, sess.Config.MCP)...)
 	go func() {
 		defer logging.Recover("mcp prefetch panic", "session_id", id)
-		ctx, cancel := context.WithTimeout(context.Background(), mcp.HandshakeTimeout)
+		ctx, cancel := context.WithTimeout(ctx, mcp.HandshakeTimeout)
 		defer cancel()
 		s.mcp.Prefetch(ctx, mcpFile, sess.Config.MCP)
 	}()
@@ -571,7 +596,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 	emit = func(ev loop.Event) error {
 		if ev.Type == loop.MessageEnd && ev.Message != nil {
 			if _, err := sess.AppendMessage(*ev.Message); err != nil {
-				return err
+				return fmt.Errorf("append message: %w", err)
 			}
 		}
 		if ev.Type == loop.RequestHeader {
@@ -580,14 +605,14 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id, text, reqModel
 				tools = append(tools, session.ToolSchema{Name: t.Name, Description: t.Description, Parameters: t.Parameters})
 			}
 			if _, err := sess.AppendRequestHeader(ev.System, tools); err != nil {
-				return err
+				return fmt.Errorf("append request header: %w", err)
 			}
 		}
 		// Compaction progress is persisted too (decision: jsonl + SSE) so a
 		// session replay shows when compaction happened.
 		if ev.Type == loop.CompactionStart || ev.Type == loop.CompactionEnd {
 			if _, err := sess.AppendEvent(string(ev.Type), ev.Reason, ev.OK); err != nil {
-				return err
+				return fmt.Errorf("append loop event: %w", err)
 			}
 		}
 		st.mu.Lock()
@@ -653,7 +678,7 @@ func (s *Server) summarizer(provider, model string) compact.Summarizer {
 				Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: user}}}},
 			}, func(loop.AssistantDelta) error { return nil })
 			if err != nil {
-				return "", nil, err
+				return "", nil, fmt.Errorf("stream summarizer: %w", err)
 			}
 			return m.Text(), m.Usage, nil
 		},
@@ -672,17 +697,17 @@ func (s *Server) shouldCompact(sess *session.Session, window int) bool {
 func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]types.Message, error) {
 	prep, err := compact.Prepare(sess.LeafEntries(), s.cfg.Compaction)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("prepare compaction: %w", err)
 	}
 	if prep == nil {
 		return nil, compact.ErrNothingToCompact
 	}
 	summary, usage, err := compact.Execute(ctx, prep, s.summarizer(sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("execute compaction: %w", err)
 	}
 	if _, err := sess.AppendCompaction(summary, prep.FirstKeptEntryID, prep.TokensBefore, usage, prep.RetainedTail); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("append compaction: %w", err)
 	}
 	return sess.MessagesToLeaf(), nil
 }
@@ -695,7 +720,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache") // 防止代理/浏览器缓冲导致事件延迟到达
 	if st == nil {
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	fl, _ := w.(http.Flusher)
@@ -704,7 +729,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		st.wait.Broadcast()
 		st.mu.Unlock()
-	}() //客户端断开不泄漏 goroutine
+	}() // 客户端断开不泄漏 goroutine
 	idx := 0
 	for {
 		if r.Context().Err() != nil {
@@ -726,8 +751,12 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		ev := st.evs[idx]
 		idx++
 		st.mu.Unlock()
-		b, _ := json.Marshal(ev)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b)
+		b, err := json.Marshal(ev)
+		if err != nil {
+			slog.Error("marshal SSE event", "err", err)
+			return
+		}
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b)
 		if fl != nil {
 			fl.Flush()
 		}
@@ -751,18 +780,18 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.open(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, err.Error(), 404)
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	e, err := compact.Run(r.Context(), sess, s.summarizer(sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 	if err != nil {
 		// Not a server failure: the session is too small or already compacted.
 		if errors.Is(err, compact.ErrNothingToCompact) {
-			http.Error(w, "nothing to compact (session too small)", 409)
+			http.Error(w, "nothing to compact (session too small)", http.StatusConflict)
 			return
 		}
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"id": e.ID, "type": e.Type, "firstKeptEntryId": e.FirstKeptEntryID})
@@ -771,16 +800,16 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.open(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, err.Error(), 404)
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	dst, err := session.Fork(s.cfg.Sessions.Root, sess)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer dst.Close()
+	defer func() { _ = dst.Close() }()
 	if rec, ok := s.ws.Match(dst.Header.CWD); ok {
 		_ = s.ws.AttachSession(rec.ID, dst.ID())
 	}
@@ -791,5 +820,7 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("write JSON response", "err", err)
+	}
 }

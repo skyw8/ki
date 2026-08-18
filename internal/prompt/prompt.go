@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -127,8 +128,8 @@ func CollectAgents(home, cwd string) []File {
 		d = p
 	}
 	// global first, then root→cwd (stack is cwd→root)
-	for i := len(stack) - 1; i >= 0; i-- {
-		add(stack[i])
+	for _, v := range slices.Backward(stack) {
+		add(v)
 	}
 	return out
 }
@@ -140,6 +141,7 @@ func loadOne(dir string) *File {
 		if err != nil || st.IsDir() {
 			continue
 		}
+		//nolint:gosec // p was discovered under the configured prompt roots.
 		b, err := os.ReadFile(p)
 		if err != nil {
 			continue

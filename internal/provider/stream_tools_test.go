@@ -13,9 +13,9 @@ import (
 )
 
 func sseDoer(body string) HTTPDoer {
-	return roundTrip(func(r *http.Request) (*http.Response, error) {
+	return roundTrip(func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{
-			StatusCode: 200,
+			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewBufferString(body)),
 			Header:     make(http.Header),
 		}, nil

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+)
+
+var (
+	errEmptyCommand = errors.New("empty command")
+	errMCPEOF       = errors.New("MCP EOF")
+	errEmptyURL     = errors.New("empty URL")
+	errMCPResponse  = errors.New("MCP response error")
+	errMCPSSEE      = errors.New("MCP SSE EOF")
 )
 
 const (
@@ -35,11 +44,11 @@ type toolSpec struct {
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
-func startTransport(spec ServerSpec) (transport, error) {
+func startTransport(ctx context.Context, spec ServerSpec) (transport, error) {
 	if url := httpURL(spec); url != "" {
 		return newHTTP(url, spec.Headers)
 	}
-	return newStdio(spec)
+	return newStdio(ctx, spec)
 }
 
 func handshake(ctx context.Context, t transport) ([]toolSpec, error) {
@@ -72,13 +81,15 @@ type stdioClient struct {
 	id     atomic.Int64
 }
 
-func newStdio(spec ServerSpec) (*stdioClient, error) {
+func newStdio(ctx context.Context, spec ServerSpec) (*stdioClient, error) {
 	if spec.Command == "" {
-		return nil, fmt.Errorf("empty command")
+		return nil, errEmptyCommand
 	}
 	// Not CommandContext(prompt): the client outlives one turn in the serve pool.
 	// Prompt cancel must not SIGKILL a shared npx/node child.
-	cmd := exec.Command(spec.Command, spec.Args...)
+	// MCP commands are explicitly supplied by the user in .mcp.json.
+	//nolint:gosec // executing configured MCP commands is the feature contract
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), spec.Command, spec.Args...)
 	detachCmd(cmd)
 	if len(spec.Env) > 0 {
 		cmd.Env = os.Environ()
@@ -88,15 +99,15 @@ func newStdio(spec ServerSpec) (*stdioClient, error) {
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open MCP stdin: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open MCP stdout: %w", err)
 	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("start MCP command: %w", err)
 	}
 	c := &stdioClient{cmd: cmd, stdin: json.NewEncoder(stdin), stdout: bufio.NewScanner(stdout)}
 	c.stdout.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
@@ -156,14 +167,14 @@ func (c *stdioClient) doCall(method string, params any) (json.RawMessage, error)
 			continue
 		}
 		if msg.Error != nil {
-			return nil, fmt.Errorf("%s", msg.Error.Message)
+			return nil, fmt.Errorf("%w: %s", errMCPResponse, msg.Error.Message)
 		}
 		return msg.Result, nil
 	}
 	if err := c.stdout.Err(); err != nil {
 		return nil, err
 	}
-	return nil, fmt.Errorf("mcp eof")
+	return nil, errMCPEOF
 }
 
 type httpClient struct {
@@ -177,7 +188,7 @@ type httpClient struct {
 
 func newHTTP(url string, headers map[string]string) (*httpClient, error) {
 	if url == "" {
-		return nil, fmt.Errorf("empty url")
+		return nil, errEmptyURL
 	}
 	return &httpClient{
 		url:     url,
@@ -223,13 +234,13 @@ func (c *httpClient) call(ctx context.Context, method string, params any) (json.
 	if err != nil {
 		return nil, err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if sid := res.Header.Get("Mcp-Session-Id"); sid != "" {
 		c.session = sid
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 2048))
-		return nil, fmt.Errorf("mcp http %d: %s", res.StatusCode, bytes.TrimSpace(b))
+		return nil, fmt.Errorf("%w: HTTP %d: %s", errMCPResponse, res.StatusCode, bytes.TrimSpace(b))
 	}
 	if id == nil {
 		_, _ = io.Copy(io.Discard, res.Body)
@@ -246,8 +257,8 @@ func decodeRPC(contentType string, r io.Reader) (json.RawMessage, error) {
 		var data []string
 		for sc.Scan() {
 			line := sc.Text()
-			if strings.HasPrefix(line, "data:") {
-				data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			if after, ok := strings.CutPrefix(line, "data:"); ok {
+				data = append(data, strings.TrimSpace(after))
 				continue
 			}
 			if line != "" || len(data) == 0 {
@@ -268,7 +279,7 @@ func decodeRPC(contentType string, r io.Reader) (json.RawMessage, error) {
 		if err := sc.Err(); err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("mcp sse eof")
+		return nil, errMCPSSEE
 	}
 	b, err := io.ReadAll(r)
 	if err != nil {
@@ -288,7 +299,7 @@ func parseRPCResult(b []byte) (json.RawMessage, error) {
 		return nil, err
 	}
 	if msg.Error != nil {
-		return nil, fmt.Errorf("%s", msg.Error.Message)
+		return nil, fmt.Errorf("%w: %s", errMCPResponse, msg.Error.Message)
 	}
 	return msg.Result, nil
 }

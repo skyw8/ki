@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 
 type echo struct{}
 
-func (echo) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+func (echo) Stream(_ context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
 	m := types.Message{
 		Role:       "assistant",
 		Content:    []types.Content{{Type: "text", Text: "echo:" + lastUser(req.Messages)}},
@@ -24,9 +25,9 @@ func (echo) Stream(ctx context.Context, req Request, emit func(AssistantDelta) e
 }
 
 func lastUser(msgs []types.Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" {
-			return msgs[i].Text()
+	for _, v := range slices.Backward(msgs) {
+		if v.Role == "user" {
+			return v.Text()
 		}
 	}
 	return ""
@@ -41,7 +42,7 @@ func (oneTool) Snippet() string     { return "s" }
 func (oneTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
-func (oneTool) Execute(ctx context.Context, args map[string]any) ToolResult {
+func (oneTool) Execute(_ context.Context, _ map[string]any) ToolResult {
 	return ToolResult{Content: []types.Content{{Type: "text", Text: "file-ok"}}}
 }
 
@@ -49,7 +50,7 @@ type scripted struct {
 	n int
 }
 
-func (s *scripted) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+func (s *scripted) Stream(_ context.Context, _ Request, _ func(AssistantDelta) error) (types.Message, error) {
 	s.n++
 	if s.n == 1 {
 		m := types.Message{
@@ -114,12 +115,7 @@ func TestRunToolThenSecondTurn(t *testing.T) {
 	}
 	order := EventOrder(evs)
 	has := func(t EventType) bool {
-		for _, s := range order {
-			if s == string(t) {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(order, string(t))
 	}
 	for _, need := range []EventType{ToolExecutionStart, ToolExecutionEnd, AgentEnd} {
 		if !has(need) {
@@ -142,7 +138,7 @@ type overflowStreamer struct {
 	n int
 }
 
-func (s *overflowStreamer) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+func (s *overflowStreamer) Stream(_ context.Context, _ Request, emit func(AssistantDelta) error) (types.Message, error) {
 	s.n++
 	if s.n == 1 {
 		return types.Message{
@@ -162,7 +158,7 @@ func TestRunOverflowRecovery(t *testing.T) {
 	_, err := Run(context.Background(), "hello", nil, Config{
 		Streamer: &overflowStreamer{},
 		Hooks: Hooks{
-			OnContextOverflow: func(ctx context.Context) ([]types.Message, error) {
+			OnContextOverflow: func(_ context.Context) ([]types.Message, error) {
 				hooked = true
 				return []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "compacted"}}}}, nil
 			},
@@ -179,12 +175,7 @@ func TestRunOverflowRecovery(t *testing.T) {
 	}
 	order := EventOrder(evs)
 	has := func(t EventType) bool {
-		for _, s := range order {
-			if s == string(t) {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(order, string(t))
 	}
 	for _, need := range []EventType{CompactionStart, CompactionEnd, AgentEnd} {
 		if !has(need) {
@@ -219,7 +210,7 @@ func TestRunOverflowRecovery(t *testing.T) {
 // most once (pi _overflowRecoveryAttempted) and then give up.
 type alwaysOverflowStreamer struct{}
 
-func (alwaysOverflowStreamer) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+func (alwaysOverflowStreamer) Stream(_ context.Context, _ Request, _ func(AssistantDelta) error) (types.Message, error) {
 	return types.Message{
 		Role:         "assistant",
 		StopReason:   "error",
@@ -232,12 +223,12 @@ func TestRunOverflowRecoveryRunsOnce(t *testing.T) {
 	_, err := Run(context.Background(), "hello", nil, Config{
 		Streamer: alwaysOverflowStreamer{},
 		Hooks: Hooks{
-			OnContextOverflow: func(ctx context.Context) ([]types.Message, error) {
+			OnContextOverflow: func(_ context.Context) ([]types.Message, error) {
 				hooks++
 				return []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "c"}}}}, nil
 			},
 		},
-	}, func(e Event) error { return nil })
+	}, func(_ Event) error { return nil })
 	if !errors.Is(err, ErrContextOverflow) {
 		t.Fatalf("err = %v, want ErrContextOverflow", err)
 	}
@@ -252,7 +243,7 @@ type lengthToolStreamer struct {
 	n int
 }
 
-func (s *lengthToolStreamer) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+func (s *lengthToolStreamer) Stream(_ context.Context, _ Request, emit func(AssistantDelta) error) (types.Message, error) {
 	s.n++
 	if s.n == 1 {
 		m := types.Message{
@@ -311,11 +302,11 @@ func (t *validatingTool) Parameters() map[string]any {
 }
 func (t *validatingTool) Validate(args map[string]any) error {
 	if msg := SchemaErrors(t.Parameters(), t.Name(), args); msg != "" {
-		return fmt.Errorf("%s", msg)
+		return fmt.Errorf("%w: %s", errAssistant, msg)
 	}
 	return nil
 }
-func (t *validatingTool) Execute(ctx context.Context, args map[string]any) ToolResult {
+func (t *validatingTool) Execute(_ context.Context, _ map[string]any) ToolResult {
 	t.executed = true
 	return ToolResult{Content: []types.Content{{Type: "text", Text: "ran"}}}
 }
@@ -326,7 +317,7 @@ type badArgsStreamer struct {
 	n int
 }
 
-func (s *badArgsStreamer) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+func (s *badArgsStreamer) Stream(_ context.Context, _ Request, emit func(AssistantDelta) error) (types.Message, error) {
 	s.n++
 	if s.n == 1 {
 		m := types.Message{
@@ -378,7 +369,7 @@ type terminateToolStreamer struct {
 	n int
 }
 
-func (s *terminateToolStreamer) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+func (s *terminateToolStreamer) Stream(_ context.Context, _ Request, emit func(AssistantDelta) error) (types.Message, error) {
 	s.n++
 	m := types.Message{
 		Role: "assistant",
@@ -397,11 +388,11 @@ func TestRunBeforeToolTerminateStopsLoop(t *testing.T) {
 		Streamer: st,
 		Tools:    []Tool{oneTool{}},
 		Hooks: Hooks{
-			BeforeTool: func(ctx context.Context, name string, args map[string]any) (map[string]any, bool, string, bool, error) {
+			BeforeTool: func(_ context.Context, _ string, args map[string]any) (map[string]any, bool, string, bool, error) {
 				return args, false, "", true, nil // terminate after this batch
 			},
 		},
-	}, func(e Event) error { return nil })
+	}, func(_ Event) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

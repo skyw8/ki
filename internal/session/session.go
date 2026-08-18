@@ -3,6 +3,7 @@ package session
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,12 @@ import (
 )
 
 const version = 1
+
+var (
+	errCWDRequired     = errors.New("cwd required")
+	errSessionHeader   = errors.New("session header missing")
+	errSessionNotFound = errors.New("session not found")
+)
 
 // Header is the first jsonl line.
 type Header struct {
@@ -102,7 +109,7 @@ func EncodeCWD(cwd string) string {
 // Create makes a new session directory under root.
 func Create(root, cwd, provider, model string) (*Session, error) {
 	if cwd == "" {
-		return nil, fmt.Errorf("cwd required")
+		return nil, errCWDRequired
 	}
 	cwd, err := filepath.Abs(cwd)
 	if err != nil {
@@ -110,11 +117,11 @@ func Create(root, cwd, provider, model string) (*Session, error) {
 	}
 	id, err := idgen.NewV7()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("generate session ID: %w", err)
 	}
 	ts := idgen.FileTimestamp(time.Now())
 	dir := filepath.Join(root, EncodeCWD(cwd), ts+"_"+id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -133,7 +140,8 @@ func Create(root, cwd, provider, model string) (*Session, error) {
 	if err := s.writeConfig(); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_CREATE|os.O_RDWR|os.O_EXCL, 0o644)
+	//nolint:gosec // dir is an internally generated session directory.
+	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_CREATE|os.O_RDWR|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +155,7 @@ func Create(root, cwd, provider, model string) (*Session, error) {
 // Open loads an existing session directory.
 func Open(dir string) (*Session, error) {
 	s := &Session{Dir: dir, byID: map[string]Entry{}}
+	//nolint:gosec // dir is an internally generated session directory.
 	cfgb, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {
 		return nil, err
@@ -154,7 +163,8 @@ func Open(dir string) (*Session, error) {
 	if err := json.Unmarshal(cfgb, &s.Config); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_RDWR, 0o644)
+	//nolint:gosec // dir is an internally generated session directory.
+	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +196,7 @@ func Open(dir string) (*Session, error) {
 		return nil, err
 	}
 	if s.Header.ID == "" {
-		return nil, fmt.Errorf("session header missing in %s", dir)
+		return nil, fmt.Errorf("%w: %s", errSessionHeader, dir)
 	}
 	return s, nil
 }
@@ -205,12 +215,12 @@ func Find(root, id string) (string, error) {
 	})
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("session %s not found", id)
+			return "", fmt.Errorf("%w: %s", errSessionNotFound, id)
 		}
 		return "", err
 	}
 	if found == "" {
-		return "", fmt.Errorf("session %s not found", id)
+		return "", fmt.Errorf("%w: %s", errSessionNotFound, id)
 	}
 	return found, nil
 }
@@ -276,11 +286,11 @@ func (s *Session) leafEntriesLocked(leaf string) []Entry {
 func (s *Session) LastCompactionAt() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := len(s.entries) - 1; i >= 0; i-- {
-		if s.entries[i].Type != "compaction" {
+	for _, v := range slices.Backward(s.entries) {
+		if v.Type != "compaction" {
 			continue
 		}
-		t, err := time.Parse(time.RFC3339Nano, s.entries[i].Timestamp)
+		t, err := time.Parse(time.RFC3339Nano, v.Timestamp)
 		if err != nil {
 			return 0
 		}
@@ -371,7 +381,7 @@ func (s *Session) AppendMessage(m types.Message) (Entry, error) {
 	defer s.mu.Unlock()
 	id, err := idgen.EntryID()
 	if err != nil {
-		return Entry{}, err
+		return Entry{}, fmt.Errorf("generate entry ID: %w", err)
 	}
 	e := Entry{
 		Type:      "message",
@@ -392,7 +402,7 @@ func (s *Session) AppendModelChange(provider, model string) error {
 	defer s.mu.Unlock()
 	id, err := idgen.EntryID()
 	if err != nil {
-		return err
+		return fmt.Errorf("generate entry ID: %w", err)
 	}
 	e := Entry{
 		Type:      "model_change",
@@ -418,7 +428,7 @@ func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, 
 	defer s.mu.Unlock()
 	id, err := idgen.EntryID()
 	if err != nil {
-		return Entry{}, err
+		return Entry{}, fmt.Errorf("generate entry ID: %w", err)
 	}
 	e := Entry{
 		Type:             "compaction",
@@ -445,7 +455,7 @@ func (s *Session) AppendEvent(typ, reason string, ok bool) (Entry, error) {
 	defer s.mu.Unlock()
 	id, err := idgen.EntryID()
 	if err != nil {
-		return Entry{}, err
+		return Entry{}, fmt.Errorf("generate entry ID: %w", err)
 	}
 	e := Entry{
 		Type:      typ,
@@ -466,7 +476,7 @@ func (s *Session) AppendRequestHeader(system string, tools []ToolSchema) (Entry,
 	defer s.mu.Unlock()
 	id, err := idgen.EntryID()
 	if err != nil {
-		return Entry{}, err
+		return Entry{}, fmt.Errorf("generate entry ID: %w", err)
 	}
 	e := Entry{
 		Type:      "request_header",
@@ -555,7 +565,7 @@ func (s *Session) writeConfig() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.Dir, "config.json"), append(b, '\n'), 0o644)
+	return os.WriteFile(filepath.Join(s.Dir, "config.json"), append(b, '\n'), 0o600)
 }
 
 // SaveConfig writes config.json (skills/mcp toggles).
@@ -575,7 +585,7 @@ func Fork(root string, src *Session) (*Session, error) {
 
 	id, err := idgen.NewV7()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("generate fork session ID: %w", err)
 	}
 	ts := idgen.FileTimestamp(time.Now())
 	dir := filepath.Join(root, EncodeCWD(cwd), ts+"_"+id)
@@ -590,7 +600,7 @@ func Fork(root string, src *Session) (*Session, error) {
 	dst.Header.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	dst.Header.ParentSession = parent
 	if err := rewriteHeader(dst); err != nil {
-		dst.Close()
+		_ = dst.Close()
 		return nil, err
 	}
 	return dst, nil
@@ -598,6 +608,7 @@ func Fork(root string, src *Session) (*Session, error) {
 
 func rewriteHeader(s *Session) error {
 	path := filepath.Join(s.Dir, "events.jsonl")
+	//nolint:gosec // path is the session file selected by the session index.
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -614,32 +625,34 @@ func rewriteHeader(s *Session) error {
 		rest = append(rest, sc.Bytes()...)
 		rest = append(rest, '\n')
 	}
-	f.Close()
+	_ = f.Close()
 	if err := sc.Err(); err != nil {
 		return err
 	}
-	out, err := os.Create(path)
+	//nolint:gosec // path is the session file selected by the session index.
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
 	hb, err := json.Marshal(s.Header)
 	if err != nil {
-		out.Close()
+		_ = out.Close()
 		return err
 	}
 	if _, err := out.Write(append(hb, '\n')); err != nil {
-		out.Close()
+		_ = out.Close()
 		return err
 	}
 	if _, err := out.Write(rest); err != nil {
-		out.Close()
+		_ = out.Close()
 		return err
 	}
 	if err := out.Close(); err != nil {
 		return err
 	}
-	s.jsonl.Close()
-	nf, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	_ = s.jsonl.Close()
+	//nolint:gosec // path is the session file selected by the session index.
+	nf, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
@@ -649,6 +662,12 @@ func rewriteHeader(s *Session) error {
 }
 
 func copyDir(src, dst string) error {
+	root, err := os.OpenRoot(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -661,15 +680,18 @@ func copyDir(src, dst string) error {
 		if info.IsDir() {
 			return os.MkdirAll(target, info.Mode())
 		}
-		in, err := os.Open(path)
+		// Open through the source root so a symlink cannot redirect the copy
+		// outside the session tree between Walk and Open.
+		in, err := root.Open(rel)
 		if err != nil {
 			return err
 		}
-		defer in.Close()
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		defer func() { _ = in.Close() }()
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return err
 		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+		//nolint:gosec // target is confined to the destination session directory.
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 		if err != nil {
 			return err
 		}
@@ -685,17 +707,7 @@ func copyDir(src, dst string) error {
 // Allowed reports whether name is enabled by t.
 func (t Toggle) Allowed(name string) bool {
 	if len(t.Only) > 0 {
-		for _, n := range t.Only {
-			if n == name {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(t.Only, name)
 	}
-	for _, n := range t.Disabled {
-		if n == name {
-			return false
-		}
-	}
-	return true
+	return !slices.Contains(t.Disabled, name)
 }

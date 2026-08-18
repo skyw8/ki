@@ -17,6 +17,12 @@ import (
 
 const redacted = "[REDACTED]"
 
+var (
+	errMaxSize         = errors.New("log max_size_mb must be positive")
+	errMaxBackups      = errors.New("log max_backups must be positive")
+	errInvalidLogLevel = errors.New("invalid log level")
+)
+
 // Recover logs a recovered panic with its stack. It is intended for deferred
 // boundary handlers; callers should decide whether the surrounding operation
 // can safely continue after recovery.
@@ -52,6 +58,8 @@ type rotatingFile struct {
 }
 
 func newRotatingFile(path, lockPath string, maxBytes int64, maxBackups int) (*rotatingFile, error) {
+	// path is constructed from the configured Ki home and never from request data.
+	//nolint:gosec // the logger must open the configured absolute log path
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
@@ -69,9 +77,9 @@ func (f *rotatingFile) Write(p []byte) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.lock.Lock(); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("lock log file: %w", err)
 	}
-	defer f.lock.Unlock()
+	defer func() { _ = f.lock.Unlock() }()
 
 	if err := f.reopen(); err != nil {
 		return 0, err
@@ -150,7 +158,7 @@ func (f *rotatingFile) Close() error {
 			f.closeErr = err
 			return
 		}
-		defer f.lock.Unlock()
+		defer func() { _ = f.lock.Unlock() }()
 		if f.file != nil {
 			f.closeErr = f.file.Close()
 		}
@@ -173,7 +181,9 @@ func Setup(opts Options) (io.Closer, error) {
 	if home == "" {
 		home = os.Getenv("KI_HOME")
 	}
-	if err := os.MkdirAll(home, 0o755); err != nil {
+	// home is the configured Ki home, not an attacker-controlled request path.
+	//nolint:gosec // create the configured logging directory
+	if err := os.MkdirAll(home, 0o700); err != nil {
 		return nil, err
 	}
 	level, err := parseLevel(opts.Level)
@@ -184,10 +194,10 @@ func Setup(opts Options) (io.Closer, error) {
 		level = slog.LevelDebug
 	}
 	if opts.MaxSizeMB <= 0 {
-		return nil, errors.New("log max_size_mb must be positive")
+		return nil, errMaxSize
 	}
 	if opts.MaxBackups <= 0 {
-		return nil, errors.New("log max_backups must be positive")
+		return nil, errMaxBackups
 	}
 	logFile, err := newRotatingFile(
 		filepath.Join(home, "ki.jsonl"),
@@ -221,7 +231,7 @@ func parseLevel(raw string) (slog.Level, error) {
 	case "error":
 		return slog.LevelError, nil
 	default:
-		return 0, errors.New("invalid log level " + strconv.Quote(raw))
+		return 0, fmt.Errorf("%w: %s", errInvalidLogLevel, strconv.Quote(raw))
 	}
 }
 

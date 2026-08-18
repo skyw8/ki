@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -63,7 +64,7 @@ func withConfig(role string, settings *viper.Viper, fn func(config.Config) error
 	cwd, _ := os.Getwd()
 	cfg, err := config.LoadWithViper(cwd, settings)
 	if err != nil {
-		return err
+		return fmt.Errorf("load config: %w", err)
 	}
 	logCloser, err := logging.Setup(logging.Options{
 		Home:       cfg.Home,
@@ -73,7 +74,7 @@ func withConfig(role string, settings *viper.Viper, fn func(config.Config) error
 		MaxBackups: cfg.Log.MaxBackups,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("setup logging: %w", err)
 	}
 	defer func() { _ = logCloser.Close() }()
 	return fn(cfg)
@@ -88,7 +89,7 @@ func newServeCommand() *cobra.Command {
 			settings := viper.New()
 			if cmd.Flags().Changed("addr") {
 				if err := settings.BindPFlag("server.addr", cmd.Flags().Lookup("addr")); err != nil {
-					return err
+					return fmt.Errorf("bind server address flag: %w", err)
 				}
 			}
 			return withConfig("server", settings, func(cfg config.Config) error {
@@ -128,7 +129,7 @@ func newVersionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Fprintln(cmd.OutOrStdout(), Version)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), Version)
 		},
 	}
 }
@@ -148,9 +149,9 @@ func newConfigCommand() *cobra.Command {
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return withConfig("client", nil, func(cfg config.Config) error {
 				cwd, _ := os.Getwd()
-				fmt.Fprintf(os.Stdout, "home: %s\n", cfg.Home)
-				fmt.Fprintf(os.Stdout, "global: %s\n", filepath.Join(cfg.Home, "ki.toml"))
-				fmt.Fprintf(os.Stdout, "project: %s\n", filepath.Join(cwd, ".ki", "ki.toml"))
+				_, _ = fmt.Fprintf(os.Stdout, "home: %s\n", cfg.Home)
+				_, _ = fmt.Fprintf(os.Stdout, "global: %s\n", filepath.Join(cfg.Home, "ki.toml"))
+				_, _ = fmt.Fprintf(os.Stdout, "project: %s\n", filepath.Join(cwd, ".ki", "ki.toml"))
 				return nil
 			})
 		},
@@ -168,7 +169,6 @@ func newSessionCommand() *cobra.Command {
 	}
 
 	for _, action := range []string{"compact", "fork"} {
-		action := action
 		var id string
 		sub := &cobra.Command{
 			Use:   action,
@@ -176,7 +176,7 @@ func newSessionCommand() *cobra.Command {
 			Args:  cobra.NoArgs,
 			RunE: func(_ *cobra.Command, _ []string) error {
 				if id == "" {
-					return fmt.Errorf("--session is required")
+					return errSessionRequired
 				}
 				return withConfig("client", nil, func(cfg config.Config) error {
 					return runSessionAction(cfg, id, action)
@@ -196,12 +196,20 @@ type flags struct {
 	Addr    string
 }
 
+var (
+	errSessionRequired     = errors.New("--session is required")
+	errServerDidNotComeUp  = errors.New("server did not come up")
+	errPromptRequired      = errors.New("prompt is required")
+	errInProcessServerBind = errors.New("in-process server failed to bind")
+	errHTTPResponse        = errors.New("HTTP request failed")
+)
+
 func runServe(cfg config.Config, addr string) error {
 	st := streamer(cfg)
 	srv := server.New(server.Options{Config: cfg, Streamer: st})
-	if err := srv.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
+	if err := srv.ListenAndServe(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server stopped", "err", err)
-		return err
+		return fmt.Errorf("serve HTTP: %w", err)
 	}
 	return nil
 }
@@ -252,13 +260,14 @@ func startDetached(cfg config.Config, addr string) (sf server.File, pid int, sta
 	if addr == "" {
 		addr = cfg.Server.Addr
 	}
-	cmd := exec.Command(self, "serve", "--addr", addr)
+	//nolint:gosec // self is the current executable resolved by os.Executable.
+	cmd := exec.CommandContext(context.Background(), self, "serve", "--addr", addr)
 	cmd.Env = os.Environ()
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
-		return server.File{}, 0, false, err
+		return server.File{}, 0, false, fmt.Errorf("start detached server: %w", err)
 	}
 	// Wait for both the child to publish a fresh server file and the endpoint
 	// to answer. Checking only file existence lets a stale server.json report a
@@ -271,10 +280,10 @@ func startDetached(cfg config.Config, addr string) (sf server.File, pid int, sta
 		time.Sleep(50 * time.Millisecond)
 	}
 	_ = cmd.Process.Kill()
-	return server.File{}, 0, false, fmt.Errorf("server did not come up")
+	return server.File{}, 0, false, errServerDidNotComeUp
 }
 
-func streamer(cfg config.Config) loop.Streamer {
+func streamer(_ config.Config) loop.Streamer {
 	if os.Getenv("KI_FAKE") == "1" {
 		return &provider.Scripted{}
 	}
@@ -296,17 +305,15 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 			return err
 		}
 		id, _ = created["id"].(string)
-	} else if f.Model != "" {
-		// model writeback happens on prompt
 	}
 	if strings.TrimSpace(prompt) == "" {
-		return fmt.Errorf("prompt is required")
+		return errPromptRequired
 	}
 	ctx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stopSig()
 	go func() {
 		<-ctx.Done()
-		_ = doJSON(base, token, "POST", "/v1/sessions/"+id+"/abort", nil, nil)
+		_ = doJSONContext(ctx, base, token, "POST", "/v1/sessions/"+id+"/abort", nil, nil)
 	}()
 	if err := doJSON(base, token, "POST", "/v1/sessions/"+id+"/prompt", map[string]any{"text": prompt, "model": f.Model}, nil); err != nil {
 		return err
@@ -314,7 +321,7 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 	if err := streamEvents(ctx, base, token, id); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "\nsession_id: %s\n", id)
+	_, _ = fmt.Fprintf(os.Stdout, "\nsession_id: %s\n", id)
 	return nil
 }
 
@@ -371,26 +378,36 @@ func ensureServer(cfg config.Config, f flags) (base, token string, stop func(), 
 			time.Sleep(20 * time.Millisecond)
 		}
 	}
-	return "", "", nil, fmt.Errorf("in-process server failed to bind")
+	return "", "", nil, errInProcessServerBind
 }
 
-func ping(base, token string) bool {
-	req, _ := http.NewRequest("GET", base+"/v1/health", nil)
+func ping(base, _ string) bool {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, base+"/v1/health", nil)
+	if err != nil {
+		return false
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return false
 	}
-	res.Body.Close()
-	return res.StatusCode == 200
+	_ = res.Body.Close()
+	return res.StatusCode == http.StatusOK
 }
 
 func doJSON(base, token, method, path string, body any, out any) error {
+	return doJSONContext(context.Background(), base, token, method, path, body, out)
+}
+
+func doJSONContext(ctx context.Context, base, token, method, path string, body any, out any) error {
 	var rdr io.Reader
 	if body != nil {
-		b, _ := json.Marshal(body)
+		b, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("marshal request body: %w", err)
+		}
 		rdr = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, base+path, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, base+path, rdr)
 	if err != nil {
 		return err
 	}
@@ -400,10 +417,10 @@ func doJSON(base, token, method, path string, body any, out any) error {
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	b, _ := io.ReadAll(res.Body)
 	if res.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: %d %s", method, path, res.StatusCode, string(b))
+		return fmt.Errorf("%w: %s %s: %d %s", errHTTPResponse, method, path, res.StatusCode, string(b))
 	}
 	if out != nil && len(b) > 0 {
 		return json.Unmarshal(b, out)
@@ -412,7 +429,7 @@ func doJSON(base, token, method, path string, body any, out any) error {
 }
 
 func streamEvents(ctx context.Context, base, token, id string) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", base+"/v1/sessions/"+id+"/events", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/sessions/"+id+"/events", nil)
 	if err != nil {
 		return err
 	}
@@ -421,7 +438,7 @@ func streamEvents(ctx context.Context, base, token, id string) error {
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	sc := bufio.NewScanner(res.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -445,15 +462,15 @@ func printEvent(ev loop.Event) {
 	switch ev.Type {
 	case loop.MessageUpdate:
 		if ev.AssistantMessageEvent != nil && ev.AssistantMessageEvent.Delta != "" {
-			fmt.Fprint(os.Stdout, ev.AssistantMessageEvent.Delta)
+			_, _ = fmt.Fprint(os.Stdout, ev.AssistantMessageEvent.Delta)
 		}
 	case loop.ToolExecutionStart:
-		fmt.Fprintf(os.Stdout, "\n[%s %s]\n", ev.ToolName, ev.ToolCallID)
+		_, _ = fmt.Fprintf(os.Stdout, "\n[%s %s]\n", ev.ToolName, ev.ToolCallID)
 	case loop.ToolExecutionEnd:
-		fmt.Fprintf(os.Stdout, "[%s done err=%v]\n", ev.ToolName, ev.IsError)
-	case loop.MessageEnd:
-		if ev.Message != nil && ev.Message.Role == "assistant" && ev.AssistantMessageEvent == nil {
-			// final text already streamed via updates
-		}
+		_, _ = fmt.Fprintf(os.Stdout, "[%s done err=%v]\n", ev.ToolName, ev.IsError)
+	case loop.AgentStart, loop.AgentEnd, loop.TurnStart, loop.TurnEnd,
+		loop.RequestHeader, loop.MessageStart, loop.MessageEnd,
+		loop.ToolExecutionUpdate, loop.CompactionStart, loop.CompactionEnd:
+		return
 	}
 }

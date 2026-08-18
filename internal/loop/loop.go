@@ -13,20 +13,35 @@ import (
 // EventType is a documented loop event.
 type EventType string
 
+var errAssistant = errors.New("assistant error")
+
 const (
-	AgentStart          EventType = "agent_start"
-	AgentEnd            EventType = "agent_end"
-	TurnStart           EventType = "turn_start"
-	TurnEnd             EventType = "turn_end"
-	RequestHeader       EventType = "request_header"
-	MessageStart        EventType = "message_start"
-	MessageUpdate       EventType = "message_update"
-	MessageEnd          EventType = "message_end"
-	ToolExecutionStart  EventType = "tool_execution_start"
+	// AgentStart begins an agent run.
+	AgentStart EventType = "agent_start"
+	// AgentEnd ends an agent run.
+	AgentEnd EventType = "agent_end"
+	// TurnStart begins a model turn.
+	TurnStart EventType = "turn_start"
+	// TurnEnd ends a model turn.
+	TurnEnd EventType = "turn_end"
+	// RequestHeader announces the request context.
+	RequestHeader EventType = "request_header"
+	// MessageStart begins a message.
+	MessageStart EventType = "message_start"
+	// MessageUpdate carries a message delta.
+	MessageUpdate EventType = "message_update"
+	// MessageEnd ends a message.
+	MessageEnd EventType = "message_end"
+	// ToolExecutionStart begins tool execution.
+	ToolExecutionStart EventType = "tool_execution_start"
+	// ToolExecutionUpdate carries a tool execution update.
 	ToolExecutionUpdate EventType = "tool_execution_update"
-	ToolExecutionEnd    EventType = "tool_execution_end"
-	CompactionStart     EventType = "compaction_start"
-	CompactionEnd       EventType = "compaction_end"
+	// ToolExecutionEnd ends tool execution.
+	ToolExecutionEnd EventType = "tool_execution_end"
+	// CompactionStart begins context compaction.
+	CompactionStart EventType = "compaction_start"
+	// CompactionEnd ends context compaction.
+	CompactionEnd EventType = "compaction_end"
 )
 
 // Event is a loop event (pi field names).
@@ -103,8 +118,8 @@ type Hooks struct {
 	TransformContext func(ctx context.Context, msgs []types.Message) ([]types.Message, error)
 	// BeforeTool may rewrite args, block the call (with reason), and signal
 	// terminate (stop after this batch when every call in the batch terminates).
-	BeforeTool       func(ctx context.Context, name string, args map[string]any) (map[string]any, bool, string, bool, error)
-	AfterTool        func(ctx context.Context, name string, args map[string]any, res ToolResult) (ToolResult, error)
+	BeforeTool func(ctx context.Context, name string, args map[string]any) (map[string]any, bool, string, bool, error)
+	AfterTool  func(ctx context.Context, name string, args map[string]any, res ToolResult) (ToolResult, error)
 	// OnContextOverflow compacts and returns the new context when a request
 	// failed with a context-overflow error. Runs at most once per Run (the
 	// compact-and-retry guard), inside the same Run so events are not replayed.
@@ -301,7 +316,7 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 			if ctx.Err() != nil {
 				asst = types.Message{Role: "assistant", StopReason: "aborted", ErrorMessage: ctx.Err().Error()}
 				_ = emit(Event{Type: MessageEnd, Message: &asst})
-				return asst, err
+				return asst, fmt.Errorf("stream assistant response: %w", err)
 			}
 			// Context overflow (provider 4xx carries the error message on asst):
 			// a backoff retry of the same oversized prompt cannot succeed. Emit
@@ -331,7 +346,7 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 		}
 		if asst.StopReason == "error" {
 			last = asst
-			lastErr = fmt.Errorf("%s", asst.ErrorMessage)
+			lastErr = fmt.Errorf("%w: %s", errAssistant, asst.ErrorMessage)
 			// An overflow resend of the same oversized prompt cannot succeed;
 			// let Run recover via Hooks.OnContextOverflow instead of burning
 			// MaxRetries on backoff.
@@ -497,8 +512,8 @@ func rejectToolCalls(calls []types.Content, emit func(Event) error) []types.Mess
 			ToolName:   c.Name,
 			Content: []types.Content{{Type: "text", Text: fmt.Sprintf(
 				"Tool call %q was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.", c.Name)}},
-			IsError:    true,
-			Timestamp:  time.Now().UnixMilli(),
+			IsError:   true,
+			Timestamp: time.Now().UnixMilli(),
 		}
 		_ = emit(Event{Type: ToolExecutionStart, ToolCallID: c.ID, ToolName: c.Name, Args: c.Arguments})
 		_ = emit(Event{Type: ToolExecutionEnd, ToolCallID: c.ID, ToolName: c.Name, IsError: true})

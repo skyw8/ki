@@ -2,6 +2,7 @@ package idgen
 
 import (
 	"encoding/hex"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 func NewV7() (string, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("generate UUIDv7: %w", err)
 	}
 	return hex.EncodeToString(id[:]), nil
 }

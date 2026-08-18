@@ -52,6 +52,7 @@ func TestReadWriteEditRelativeAndNoLineNumbers(t *testing.T) {
 	if ed.IsError {
 		t.Fatalf("edit: %+v", ed)
 	}
+	//nolint:gosec // cwd is an isolated test directory.
 	b, _ := os.ReadFile(filepath.Join(cwd, "a.txt"))
 	if !strings.HasPrefix(string(b), "hi\n") {
 		t.Fatalf("file: %q", b)
@@ -61,7 +62,7 @@ func TestReadWriteEditRelativeAndNoLineNumbers(t *testing.T) {
 func TestEditReplaceAllAndUniqueFailure(t *testing.T) {
 	cwd := t.TempDir()
 	p := filepath.Join(cwd, "b.txt")
-	_ = os.WriteFile(p, []byte("x x x"), 0o644)
+	_ = os.WriteFile(p, []byte("x x x"), 0o600)
 	ed := editTool{cwd: cwd}
 	res := ed.Execute(context.Background(), map[string]any{
 		"file_path": p, "old_string": "x", "new_string": "y",
@@ -75,6 +76,7 @@ func TestEditReplaceAllAndUniqueFailure(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("%+v", res)
 	}
+	//nolint:gosec // p is created inside the isolated test directory.
 	b, _ := os.ReadFile(p)
 	if string(b) != "y y y" {
 		t.Fatalf("got %q", b)
@@ -88,10 +90,10 @@ func TestBashNonZeroIsErrorAndCwdReset(t *testing.T) {
 	if !res.IsError || !strings.Contains(res.Content[0].Text, "exited with code 7") {
 		t.Fatalf("nonzero: %+v", res)
 	}
-	_ = os.WriteFile(filepath.Join(cwd, "here.txt"), []byte("ok"), 0o644)
+	_ = os.WriteFile(filepath.Join(cwd, "here.txt"), []byte("ok"), 0o600)
 	res = b.Execute(context.Background(), map[string]any{"command": "cd / && cat here.txt"})
 	if !res.IsError {
-		// cat from / should fail; cwd reset next command
+		t.Fatal("cat from / should fail; cwd must reset next command")
 	}
 	res = b.Execute(context.Background(), map[string]any{"command": "cat here.txt"})
 	if res.IsError || !strings.Contains(res.Content[0].Text, "ok") {
@@ -120,8 +122,8 @@ func TestBashBackgroundAndRead(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	var got string
 	for time.Now().Before(deadline) {
-		idx := strings.Index(text, "output_file: ")
-		path := strings.TrimSpace(strings.Split(text[idx+len("output_file: "):], "\n")[0])
+		_, after, _ := strings.Cut(text, "output_file: ")
+		path := strings.TrimSpace(strings.Split(after, "\n")[0])
 		r := read.Execute(context.Background(), map[string]any{"file_path": path})
 		got = r.Content[0].Text
 		if strings.Contains(got, "bg-out") {
@@ -136,12 +138,12 @@ func TestReadNotebookAndPDFPages(t *testing.T) {
 	cwd := t.TempDir()
 	r := readTool{cwd: cwd}
 	nb := `{"cells":[{"cell_type":"code","source":["print(1)\n"],"outputs":[]}]}`
-	_ = os.WriteFile(filepath.Join(cwd, "n.ipynb"), []byte(nb), 0o644)
+	_ = os.WriteFile(filepath.Join(cwd, "n.ipynb"), []byte(nb), 0o600)
 	res := r.Execute(context.Background(), map[string]any{"file_path": "n.ipynb"})
 	if !strings.Contains(res.Content[0].Text, "cell 0") {
 		t.Fatalf("ipynb: %s", res.Content[0].Text)
 	}
-	_ = os.WriteFile(filepath.Join(cwd, "a.pdf"), []byte("%PDF-1.4\n(HelloPDF)\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(cwd, "a.pdf"), []byte("%PDF-1.4\n(HelloPDF)\n"), 0o600)
 	res = r.Execute(context.Background(), map[string]any{"file_path": "a.pdf", "pages": "1-2"})
 	if !strings.Contains(res.Content[0].Text, "pages=1-2") {
 		t.Fatalf("pdf pages: %s", res.Content[0].Text)
@@ -149,9 +151,9 @@ func TestReadNotebookAndPDFPages(t *testing.T) {
 
 	marker := "KI-PDF-MARKER-42"
 	stream := "BT /F1 18 Tf 20 60 Td (" + marker + ") Tj ET\n"
-	real := "%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
+	pdfContent := "%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
 		"4 0 obj<</Length " + strconv.Itoa(len(stream)) + ">>stream\n" + stream + "endstream\nendobj\n"
-	_ = os.WriteFile(filepath.Join(cwd, "real.pdf"), []byte(real), 0o644)
+	_ = os.WriteFile(filepath.Join(cwd, "real.pdf"), []byte(pdfContent), 0o600)
 	res = r.Execute(context.Background(), map[string]any{"file_path": "real.pdf"})
 	if !strings.Contains(res.Content[0].Text, marker) {
 		t.Fatalf("real pdf extract: %s", res.Content[0].Text)

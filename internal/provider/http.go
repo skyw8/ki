@@ -5,14 +5,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"ki/internal/loop"
 	"ki/internal/types"
 )
+
+var errProviderHTTP = errors.New("provider HTTP error")
 
 // HTTPDoer is the transport used by live streamers.
 type HTTPDoer interface {
@@ -25,6 +29,14 @@ type Live struct {
 	APIKey string
 	Base   string
 	API    string // completions | responses | anthropic
+}
+
+func marshalArguments(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("<marshal arguments: %v>", err)
+	}
+	return string(b)
 }
 
 // NewLive builds a live streamer. doer nil uses http.DefaultClient.
@@ -145,18 +157,17 @@ func toResponsesItems(m types.Message) []any {
 		}}
 	case "assistant":
 		var items []any
-		var text string
+		var text strings.Builder
 		for _, c := range m.Content {
 			switch c.Type {
 			case "text", "":
-				text += c.Text
+				text.WriteString(c.Text)
 			case "toolCall":
-				args, _ := json.Marshal(c.Arguments)
 				item := map[string]any{
 					"type":      "function_call",
 					"call_id":   c.ID,
 					"name":      c.Name,
-					"arguments": string(args),
+					"arguments": marshalArguments(c.Arguments),
 				}
 				if c.ItemID != "" {
 					item["id"] = c.ItemID
@@ -164,11 +175,11 @@ func toResponsesItems(m types.Message) []any {
 				items = append(items, item)
 			}
 		}
-		if text != "" {
+		if text.String() != "" {
 			items = append([]any{map[string]any{
 				"type":    "message",
 				"role":    "assistant",
-				"content": []map[string]any{{"type": "output_text", "text": text}},
+				"content": []map[string]any{{"type": "output_text", "text": text.String()}},
 			}}, items...)
 		}
 		return items
@@ -336,29 +347,28 @@ func toOpenAIMessage(m types.Message) map[string]any {
 		}
 	case "assistant":
 		out := map[string]any{"role": "assistant"}
-		var text string
+		var text strings.Builder
 		var calls []map[string]any
 		for _, c := range m.Content {
 			switch c.Type {
 			case "text", "":
-				text += c.Text
+				text.WriteString(c.Text)
 			case "thinking":
 				// OpenAI-compat reasoning_content
 				out["reasoning_content"] = c.Thinking
 			case "toolCall":
-				args, _ := json.Marshal(c.Arguments)
 				calls = append(calls, map[string]any{
 					"id":   c.ID,
 					"type": "function",
 					"function": map[string]any{
 						"name":      c.Name,
-						"arguments": string(args),
+						"arguments": marshalArguments(c.Arguments),
 					},
 				})
 			}
 		}
-		if text != "" {
-			out["content"] = text
+		if text.String() != "" {
+			out["content"] = text.String()
 		}
 		if len(calls) > 0 {
 			out["tool_calls"] = calls
@@ -593,9 +603,9 @@ func (l *Live) streamAnthropic(ctx context.Context, req loop.Request, emit func(
 	url := l.Base + "/v1/messages"
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")
-	h.Set("x-api-key", l.APIKey)
-	h.Set("anthropic-version", "2023-06-01")
-	h.Set("anthropic-beta", "prompt-caching-2024-07-31")
+	h.Set("X-Api-Key", l.APIKey)
+	h.Set("Anthropic-Version", "2023-06-01")
+	h.Set("Anthropic-Beta", "prompt-caching-2024-07-31")
 	return l.postStream(ctx, url, AnthropicBody(req), h, emit, parseAnthropicSSE)
 }
 
@@ -620,9 +630,9 @@ func (l *Live) postStream(ctx context.Context, url string, body any, hdr http.He
 	httpReq.Header = hdr
 	res, err := l.Doer.Do(httpReq)
 	if err != nil {
-		return types.Message{}, err
+		return types.Message{}, fmt.Errorf("send provider request: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode >= 400 {
 		b, _ := io.ReadAll(res.Body)
 		msg := fmt.Sprintf("http %d: %s", res.StatusCode, truncate(string(b), 500))
@@ -630,7 +640,7 @@ func (l *Live) postStream(ctx context.Context, url string, body any, hdr http.He
 			Role:         "assistant",
 			StopReason:   "error",
 			ErrorMessage: msg,
-		}, fmt.Errorf("%s", msg)
+		}, fmt.Errorf("%w: %s", errProviderHTTP, msg)
 	}
 	acc := types.Message{Role: "assistant"}
 	sc := bufio.NewScanner(res.Body)
@@ -638,8 +648,8 @@ func (l *Live) postStream(ctx context.Context, url string, body any, hdr http.He
 	var evName string
 	for sc.Scan() {
 		line := sc.Text()
-		if strings.HasPrefix(line, "event:") {
-			evName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		if after, ok := strings.CutPrefix(line, "event:"); ok {
+			evName = strings.TrimSpace(after)
 			continue
 		}
 		if !strings.HasPrefix(line, "data:") {
@@ -842,8 +852,7 @@ func parseAnthropicSSE(event, data string, acc *types.Message) (loop.AssistantDe
 					case map[string]any:
 						if len(v) > 0 {
 							c.Arguments = v
-							raw, _ := json.Marshal(v)
-							c.ArgumentsRaw = string(raw)
+							c.ArgumentsRaw = marshalArguments(v)
 						}
 					case string:
 						appendToolArgs(c, v)
@@ -956,7 +965,7 @@ func findOrAddToolCall(m *types.Message, id, itemID, name string, index int) *ty
 		}
 	}
 	if id == "" && itemID == "" && index < 0 {
-		for i := len(m.Content) - 1; i >= 0; i-- {
+		for i := range slices.Backward(m.Content) {
 			if m.Content[i].Type == "toolCall" {
 				if name != "" {
 					m.Content[i].Name = name
