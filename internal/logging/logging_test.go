@@ -35,6 +35,7 @@ func TestSetupAndClose(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("log mode = %o, want 600", got)
 	}
+	//nolint:gosec // path is a file created under the test's temporary home.
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile(%q) error = %v", path, err)
@@ -92,6 +93,7 @@ func TestSensitiveAttributesAreRedacted(t *testing.T) {
 	if err := closer.Close(); err != nil {
 		t.Fatal(err)
 	}
+	//nolint:gosec // home is the isolated temporary test directory.
 	b, err := os.ReadFile(filepath.Join(home, "ki.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +112,7 @@ func TestLogRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 12000; i++ {
+	for range 12000 {
 		slog.Info("rotation", "payload", strings.Repeat("x", 120))
 	}
 	if err := closer.Close(); err != nil {
@@ -142,6 +144,7 @@ func TestRecoverLogsPanicAndStack(t *testing.T) {
 	if err := closer.Close(); err != nil {
 		t.Fatal(err)
 	}
+	//nolint:gosec // home is the isolated temporary test directory.
 	b, err := os.ReadFile(filepath.Join(home, "ki.jsonl"))
 	if err != nil {
 		t.Fatal(err)

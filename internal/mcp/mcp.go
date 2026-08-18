@@ -40,6 +40,7 @@ type ServerInfo struct {
 func Load(home, cwd string) File {
 	out := File{MCPServers: map[string]ServerSpec{}, Sources: map[string]string{}}
 	merge := func(path, source string) {
+		//nolint:gosec // path is one of the bounded MCP discovery locations.
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return

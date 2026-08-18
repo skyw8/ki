@@ -24,8 +24,8 @@ func TestShouldRunAndAppendRebuildsHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
-	for i := 0; i < 6; i++ {
+	defer func() { _ = s.Close() }()
+	for range 6 {
 		_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "aaaaaaaaaa"}}})
 		_, _ = s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "bbbbbbbbbb"}}})
 	}
@@ -80,7 +80,7 @@ func TestPrepareNothingToCompactWhenUnderBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "hello"}}})
 	_, _ = s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "hi"}}})
 

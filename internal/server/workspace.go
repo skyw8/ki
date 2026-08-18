@@ -2,8 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -21,9 +24,16 @@ func (s *Server) resolveWorkspace(id, cwd string) (workspace.Record, error) {
 	}
 	if strings.TrimSpace(cwd) != "" {
 		rec, _, err := s.ws.Create(cwd, "")
-		return rec, err
+		if err != nil {
+			return workspace.Record{}, fmt.Errorf("create workspace: %w", err)
+		}
+		return rec, nil
 	}
-	return s.ws.EnsureTemp()
+	rec, err := s.ws.EnsureTemp()
+	if err != nil {
+		return workspace.Record{}, fmt.Errorf("create temporary workspace: %w", err)
+	}
+	return rec, nil
 }
 
 func (s *Server) sessionMap(sess *session.Session, extra map[string]any) map[string]any {
@@ -43,9 +53,7 @@ func (s *Server) sessionMap(sess *session.Session, extra map[string]any) map[str
 	if rec, ok := s.ws.Match(sess.Header.CWD); ok {
 		m["workspaceId"] = rec.ID
 	}
-	for k, v := range extra {
-		m[k] = v
-	}
+	maps.Copy(m, extra)
 	return m
 }
 
@@ -86,7 +94,7 @@ func (s *Server) workspaceJSON(rec workspace.Record) map[string]any {
 	}
 }
 
-func (s *Server) listWorkspaces(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listWorkspaces(w http.ResponseWriter, _ *http.Request) {
 	recs := s.ws.List()
 	out := make([]map[string]any, 0, len(recs))
 	for _, rec := range recs {
@@ -101,12 +109,12 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		Title string `json:"title"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Path) == "" {
-		http.Error(w, "path required", 400)
+		http.Error(w, "path required", http.StatusBadRequest)
 		return
 	}
 	rec, created, err := s.ws.Create(body.Path, body.Title)
 	if err != nil {
-		http.Error(w, err.Error(), 400)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	code := 200
@@ -121,7 +129,7 @@ func (s *Server) patchWorkspace(w http.ResponseWriter, r *http.Request) {
 		Title string `json:"title"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid json", 400)
+		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
 	if err := s.ws.SetTitle(r.PathValue("id"), body.Title); err != nil {
@@ -140,25 +148,25 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	rec, ok := s.ws.Get(id)
 	if !ok {
-		http.Error(w, "not found", 404)
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	infos, err := session.List(s.cfg.Sessions.Root)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	for _, info := range infos {
 		if m, ok := s.ws.Match(info.CWD); ok && m.ID == rec.ID {
 			s.abortRun(info.ID)
 			if err := session.Remove(info.Dir); err != nil {
-				http.Error(w, err.Error(), 500)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 		}
 	}
 	if _, err := s.ws.Delete(id); err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -190,7 +198,7 @@ func (s *Server) moveWorkspaceSession(w http.ResponseWriter, r *http.Request) {
 		BeforeID  *string `json:"beforeId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.SessionID == "" {
-		http.Error(w, "sessionId required", 400)
+		http.Error(w, "sessionId required", http.StatusBadRequest)
 		return
 	}
 	before := ""
@@ -199,15 +207,9 @@ func (s *Server) moveWorkspaceSession(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if rec, ok := s.ws.Get(id); ok {
-		found := false
-		for _, sid := range rec.SessionIDs {
-			if sid == body.SessionID {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(rec.SessionIDs, body.SessionID)
 		if !found {
-			http.Error(w, "session not in workspace", 400)
+			http.Error(w, "session not in workspace", http.StatusBadRequest)
 			return
 		}
 	}
@@ -226,19 +228,19 @@ func (s *Server) moveWorkspaceSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.open(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, err.Error(), 404)
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	id := sess.ID()
 	dir := sess.Dir
 	cwd := sess.Header.CWD
-	sess.Close()
+	_ = sess.Close()
 	s.abortRun(id)
 	if rec, ok := s.ws.Match(cwd); ok {
 		_ = s.ws.DetachSession(rec.ID, id)
 	}
 	if err := session.Remove(dir); err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.sidx.Remove(id) // only after the dir is actually gone
@@ -260,7 +262,7 @@ func (s *Server) searchSessions(w http.ResponseWriter, r *http.Request) {
 	q := strings.ReplaceAll(r.URL.Query().Get("q"), "\x00", "")
 	q = strings.TrimSpace(q)
 	if q == "" {
-		http.Error(w, "q required", 400)
+		http.Error(w, "q required", http.StatusBadRequest)
 		return
 	}
 	if utf8.RuneCountInString(q) > 500 {
@@ -269,7 +271,7 @@ func (s *Server) searchSessions(w http.ResponseWriter, r *http.Request) {
 	ql := strings.ToLower(q)
 	infos, err := session.List(s.cfg.Sessions.Root)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	const limit = 20
@@ -291,7 +293,7 @@ func (s *Server) searchSessions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		snip, ok := sessionSnippet(sess, ql)
-		sess.Close()
+		_ = sess.Close()
 		if !ok {
 			continue
 		}
@@ -344,14 +346,8 @@ func snippetAround(text, ql string) (string, bool) {
 	runes := []rune(text)
 	// map byte index to rune index approximately via prefix
 	prefix := []rune(text[:i])
-	start := len(prefix) - 40
-	if start < 0 {
-		start = 0
-	}
-	end := len(prefix) + utf8.RuneCountInString(ql) + 40
-	if end > len(runes) {
-		end = len(runes)
-	}
+	start := max(len(prefix)-40, 0)
+	end := min(len(prefix)+utf8.RuneCountInString(ql)+40, len(runes))
 	s := strings.Join(strings.Fields(string(runes[start:end])), " ")
 	if start > 0 {
 		s = "…" + s

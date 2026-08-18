@@ -1,5 +1,7 @@
 package types
 
+import "strings"
+
 // Content is one block inside a message.
 type Content struct {
 	Type         string         `json:"type"`
@@ -44,13 +46,13 @@ type Message struct {
 
 // Text returns concatenated text blocks.
 func (m Message) Text() string {
-	var s string
+	var s strings.Builder
 	for _, c := range m.Content {
 		if c.Type == "text" || c.Type == "" {
-			s += c.Text
+			s.WriteString(c.Text)
 		}
 	}
-	return s
+	return s.String()
 }
 
 // ToolCalls returns toolCall content blocks.

@@ -25,7 +25,16 @@ import (
 	"ki/internal/types"
 )
 
+func marshalJSON(v any) ([]byte, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
 func testServer(t *testing.T) (*Server, *httptest.Server) {
+	t.Helper()
 	return testServerWith(t, &provider.Scripted{Steps: []types.Message{{Content: []types.Content{{Type: "text", Text: "hi there"}}}}})
 }
 
@@ -52,13 +61,13 @@ func testServerWith(t *testing.T, st loop.Streamer) (*Server, *httptest.Server) 
 // and the session is fully persisted).
 func waitAgentEnd(t *testing.T, hs *httptest.Server, id string) []string {
 	t.Helper()
-	req, _ := http.NewRequest("GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	var types []string
 	sc := bufio.NewScanner(res.Body)
 	for sc.Scan() {
@@ -82,7 +91,7 @@ type reqRecorder struct {
 	reqs []loop.Request
 }
 
-func (r *reqRecorder) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
+func (r *reqRecorder) Stream(_ context.Context, req loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {
 	r.reqs = append(r.reqs, req)
 	return types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "summary"}}, StopReason: "stop", Usage: &types.Usage{TotalTokens: 3}}, nil
 }
@@ -104,27 +113,27 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 	id := createSession(t, hs, t.TempDir())
 	// Prompt is async (goroutine); wait for agent_end via the events stream so
 	// the assistant turn is persisted before compacting.
-	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res0, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res0.Body.Close()
+	_ = res0.Body.Close()
 	waitAgentEnd(t, hs, id)
 	// Manual compact drives compactSession, whose summarizer must call the
 	// streamer with the session's provider/model — otherwise liveFromConfig
 	// resolves an empty base URL and the summarization request fails.
-	req, _ = http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/compact", nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/compact", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	b, _ := io.ReadAll(res.Body)
-	if res.StatusCode != 200 {
+	if res.StatusCode != http.StatusOK {
 		t.Fatalf("compact %d %s", res.StatusCode, b)
 	}
 	if len(rec.reqs) < 2 {
@@ -138,29 +147,34 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 
 func TestAuthAndCreateGetFork(t *testing.T) {
 	_, hs := testServer(t)
-	res, err := http.Post(hs.URL+"/v1/sessions", "application/json", strings.NewReader(`{"cwd":"`+t.TempDir()+`"}`))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions", strings.NewReader(`{"cwd":"`+t.TempDir()+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("no token: %d", res.StatusCode)
 	}
 
 	id := createSession(t, hs, t.TempDir())
-	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/ffffffffffffffffffffffffffffffff/prompt", strings.NewReader(`{"text":"x"}`))
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/ffffffffffffffffffffffffffffffff/prompt", strings.NewReader(`{"text":"x"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("missing session prompt: %d", res.StatusCode)
 	}
 
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -168,7 +182,7 @@ func TestAuthAndCreateGetFork(t *testing.T) {
 	}
 	var got map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&got)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if got["id"] != id || got["model"] == "" {
 		t.Fatalf("get: %+v", got)
 	}
@@ -189,7 +203,7 @@ func TestAuthAndCreateGetFork(t *testing.T) {
 		t.Fatal("second create must differ")
 	}
 
-	req, _ = http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/fork", nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/fork", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -197,7 +211,7 @@ func TestAuthAndCreateGetFork(t *testing.T) {
 	}
 	var fork map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&fork)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if fork["id"] == id || fork["parentSession"] == nil {
 		t.Fatalf("fork: %+v", fork)
 	}
@@ -206,24 +220,24 @@ func TestAuthAndCreateGetFork(t *testing.T) {
 func TestPromptSSEAndPersist(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
-	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	if res.StatusCode != 202 {
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
 		t.Fatalf("prompt status %d", res.StatusCode)
 	}
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	var types []string
 	sc := bufio.NewScanner(res.Body)
 	for sc.Scan() {
@@ -245,7 +259,7 @@ func TestPromptSSEAndPersist(t *testing.T) {
 	if !strings.Contains(joined, "message_start") {
 		t.Fatalf("missing message: %s", joined)
 	}
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -253,8 +267,9 @@ func TestPromptSSEAndPersist(t *testing.T) {
 	}
 	var meta map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&meta)
-	res.Body.Close()
+	_ = res.Body.Close()
 	dir, _ := meta["dir"].(string)
+	//nolint:gosec // dir is a session directory created by this test.
 	raw, err := os.ReadFile(filepath.Join(dir, "events.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -264,41 +279,41 @@ func TestPromptSSEAndPersist(t *testing.T) {
 	}
 
 	// concurrent prompt 409
-	req, _ = http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"again"}`))
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"again"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	// after done, should be 202 not 409
 	res2, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res2.StatusCode == 409 {
+	if res2.StatusCode == http.StatusConflict {
 		t.Fatal("run should have finished")
 	}
-	res2.Body.Close()
+	_ = res2.Body.Close()
 }
 
 func TestAbortAndCompact(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
-	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/abort", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/abort", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StatusCode != 200 {
+	if res.StatusCode != http.StatusOK {
 		t.Fatalf("abort %d", res.StatusCode)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 
-	req, _ = http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/compact", nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/compact", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
-	if res.StatusCode != 409 {
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusConflict {
 		b, _ := io.ReadAll(res.Body)
 		t.Fatalf("compact tiny session: %d %s (want 409 nothing to compact)", res.StatusCode, b)
 	}
@@ -307,24 +322,24 @@ func TestAbortAndCompact(t *testing.T) {
 func TestPromptModelWriteback(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
-	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hi","model":"openai/gpt-4o"}`))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hi","model":"openai/gpt-4o"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	_ = res.Body.Close()
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.Copy(io.Discard, res.Body)
-	res.Body.Close()
+	_, _ = io.Copy(io.Discard, res.Body)
+	_ = res.Body.Close()
 
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -332,7 +347,7 @@ func TestPromptModelWriteback(t *testing.T) {
 	}
 	var got map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&got)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if got["provider"] != "openai" || got["model"] != "gpt-4o" {
 		t.Fatalf("writeback: %+v", got)
 	}
@@ -342,24 +357,24 @@ func TestListHistoryAndUI(t *testing.T) {
 	_, hs := testServer(t)
 	cwd := t.TempDir()
 	id := createSession(t, hs, cwd)
-	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello ui"}`))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello ui"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	_ = res.Body.Close()
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.Copy(io.Discard, res.Body)
-	res.Body.Close()
+	_, _ = io.Copy(io.Discard, res.Body)
+	_ = res.Body.Close()
 
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions", nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -367,12 +382,12 @@ func TestListHistoryAndUI(t *testing.T) {
 	}
 	var listed []map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&listed)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if len(listed) != 1 || listed[0]["id"] != id || listed[0]["title"] != "hello ui" {
 		t.Fatalf("list: %+v", listed)
 	}
 
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -380,32 +395,40 @@ func TestListHistoryAndUI(t *testing.T) {
 	}
 	var got map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&got)
-	res.Body.Close()
+	_ = res.Body.Close()
 	msgs, _ := got["messages"].([]any)
 	if len(msgs) < 2 {
 		t.Fatalf("history messages: %+v", got["messages"])
 	}
 
-	res, err = http.Get(hs.URL + "/")
+	req, err = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(res.Body)
-	res.Body.Close()
-	if res.StatusCode != 200 {
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
 		t.Fatalf("ui %d", res.StatusCode)
 	}
 	if !strings.Contains(string(body), `"token":"tok"`) {
 		t.Fatalf("index missing injected token:\n%s", body)
 	}
 
-	res, err = http.Get(hs.URL + "/home/someone/proj")
+	req, err = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/home/someone/proj", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hostBody, _ := io.ReadAll(res.Body)
-	res.Body.Close()
-	if res.StatusCode != 200 || !strings.Contains(string(hostBody), `"token":"tok"`) {
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(hostBody), `"token":"tok"`) {
 		t.Fatalf("host path should still serve SPA: %d", res.StatusCode)
 	}
 }
@@ -413,15 +436,15 @@ func TestListHistoryAndUI(t *testing.T) {
 func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
-	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"snap"}`))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"snap"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	_ = res.Body.Close()
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -443,12 +466,12 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 			break
 		}
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if !sawHeader {
 		t.Fatal("SSE missing request_header with system")
 	}
 
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -456,7 +479,7 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	}
 	var got map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&got)
-	res.Body.Close()
+	_ = res.Body.Close()
 	ents, _ := got["entries"].([]any)
 	var found bool
 	for _, raw := range ents {
@@ -473,12 +496,12 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 		t.Fatalf("entries missing request_header: %+v", ents)
 	}
 
-	body, _ := json.Marshal(map[string]any{
+	body, _ := marshalJSON(map[string]any{
 		"model":  "openai/gpt-4o",
 		"skills": map[string]any{"disabled": []string{"x"}},
 		"mcp":    map[string]any{"only": []string{"y"}},
 	})
-	req, _ = http.NewRequest("PATCH", hs.URL+"/v1/sessions/"+id, bytes.NewReader(body))
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/sessions/"+id, bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err = http.DefaultClient.Do(req)
@@ -487,14 +510,14 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	}
 	var patched map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&patched)
-	res.Body.Close()
-	if res.StatusCode != 200 {
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
 		t.Fatalf("patch %d %+v", res.StatusCode, patched)
 	}
 	if patched["model"] != "gpt-4o" {
 		t.Fatalf("model: %+v", patched)
 	}
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -502,14 +525,14 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	}
 	var again map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&again)
-	res.Body.Close()
+	_ = res.Body.Close()
 	skills, _ := again["skills"].(map[string]any)
 	dis, _ := skills["disabled"].([]any)
 	if len(dis) != 1 || dis[0] != "x" {
 		t.Fatalf("skills reload: %+v", again["skills"])
 	}
 
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/models", nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -517,7 +540,7 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	}
 	var models []map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&models)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if len(models) == 0 || models[0]["spec"] == "" {
 		t.Fatalf("models: %+v", models)
 	}
@@ -527,35 +550,35 @@ func TestPromptNotBlockedBySlowMCP(t *testing.T) {
 	srv, hs := testServer(t)
 	marker := filepath.Join(t.TempDir(), "spawned")
 	cmd, args := markerCmd(t, marker)
-	body, _ := json.Marshal(map[string]any{
+	body, _ := marshalJSON(map[string]any{
 		"mcpServers": map[string]any{
 			"slow": map[string]any{"command": cmd, "args": args},
 		},
 	})
-	if err := os.WriteFile(filepath.Join(srv.cfg.Home, ".mcp.json"), body, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(srv.cfg.Home, ".mcp.json"), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	id := createSession(t, hs, t.TempDir())
-	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	if res.StatusCode != 202 {
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
 		t.Fatalf("prompt %d", res.StatusCode)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	req, _ = http.NewRequestWithContext(ctx, "GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("events blocked on MCP: %v", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	var types []string
 	sc := bufio.NewScanner(res.Body)
 	for sc.Scan() {
@@ -580,51 +603,51 @@ func TestSessionCatalogNoSpawn(t *testing.T) {
 	home := srv.cfg.Home
 	cwd := t.TempDir()
 	skillDir := filepath.Join(home, "skills", "alpha")
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: alpha\ndescription: a skill\n---\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: alpha\ndescription: a skill\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	proj := filepath.Join(cwd, ".ki", "skills", "beta")
-	if err := os.MkdirAll(proj, 0o755); err != nil {
+	if err := os.MkdirAll(proj, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(proj, "SKILL.md"), []byte("---\nname: beta\ndescription: project skill\n---\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(proj, "SKILL.md"), []byte("---\nname: beta\ndescription: project skill\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	marker := filepath.Join(t.TempDir(), "spawned")
 	cmd, args := markerCmd(t, marker)
-	mcpBody, _ := json.Marshal(map[string]any{
+	mcpBody, _ := marshalJSON(map[string]any{
 		"mcpServers": map[string]any{
 			"exa":       map[string]any{"command": cmd, "args": args},
 			"context7":  map[string]any{"command": "true"},
 			"keep-open": map[string]any{"command": "true"},
 		},
 	})
-	if err := os.WriteFile(filepath.Join(home, ".mcp.json"), mcpBody, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".mcp.json"), mcpBody, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	id := createSession(t, hs, cwd)
-	body, _ := json.Marshal(map[string]any{
+	body, _ := marshalJSON(map[string]any{
 		"skills": map[string]any{"disabled": []string{"alpha"}},
 		"mcp":    map[string]any{"disabled": []string{"exa"}},
 	})
-	req, _ := http.NewRequest("PATCH", hs.URL+"/v1/sessions/"+id, bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/sessions/"+id, bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	if res.StatusCode != 200 {
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
 		t.Fatalf("patch %d", res.StatusCode)
 	}
 
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id, nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -632,7 +655,7 @@ func TestSessionCatalogNoSpawn(t *testing.T) {
 	}
 	var got map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&got)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("GET spawned MCP command")
 	}
@@ -673,36 +696,37 @@ func markerCmd(t *testing.T, marker string) (string, []string) {
 	t.Helper()
 	if os.PathSeparator == '\\' {
 		bat := filepath.Join(t.TempDir(), "mark.bat")
-		if err := os.WriteFile(bat, []byte("@echo spawned > \""+marker+"\"\r\nping -n 20 127.0.0.1 >nul\r\n"), 0o644); err != nil {
+		if err := os.WriteFile(bat, []byte("@echo spawned > \""+marker+"\"\r\nping -n 20 127.0.0.1 >nul\r\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return bat, nil
 	}
 	sh := filepath.Join(t.TempDir(), "mark.sh")
-	if err := os.WriteFile(sh, []byte("#!/bin/sh\nprintf spawned > \"$1\"\nsleep 20\n"), 0o755); err != nil {
+	if err := os.WriteFile(sh, []byte("#!/bin/sh\nprintf spawned > \"$1\"\nsleep 20\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return sh, []string{marker}
+	return "sh", []string{sh, marker}
 }
 
-func authedGet(hs *httptest.Server, path string) (*http.Response, error) {
-	req, _ := http.NewRequest("GET", hs.URL+path, nil)
+func authedGet(t *testing.T, hs *httptest.Server, path string) (*http.Response, error) {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+path, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	return http.DefaultClient.Do(req)
 }
 
 func createSession(t *testing.T, hs *httptest.Server, cwd string) string {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"cwd": cwd})
-	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions", bytes.NewReader(body))
+	body, _ := marshalJSON(map[string]any{"cwd": cwd})
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	b, _ := io.ReadAll(res.Body)
-	if res.StatusCode != 200 {
+	if res.StatusCode != http.StatusOK {
 		t.Fatalf("create %d %s", res.StatusCode, b)
 	}
 	var out map[string]any
@@ -719,7 +743,7 @@ func TestWorkspacesFSSearch(t *testing.T) {
 	proj := t.TempDir()
 	id := createSession(t, hs, proj)
 
-	req, _ := http.NewRequest("GET", hs.URL+"/v1/meta", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/meta", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -727,7 +751,7 @@ func TestWorkspacesFSSearch(t *testing.T) {
 	}
 	var meta map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&meta)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if _, ok := meta["cwd"]; ok {
 		t.Fatalf("meta still has cwd: %+v", meta)
 	}
@@ -735,7 +759,7 @@ func TestWorkspacesFSSearch(t *testing.T) {
 		t.Fatal("meta home")
 	}
 
-	req, _ = http.NewRequest("POST", hs.URL+"/v1/sessions", strings.NewReader(`{}`))
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions", strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err = http.DefaultClient.Do(req)
@@ -744,7 +768,7 @@ func TestWorkspacesFSSearch(t *testing.T) {
 	}
 	var tmpSess map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&tmpSess)
-	res.Body.Close()
+	_ = res.Body.Close()
 	cwd, _ := tmpSess["cwd"].(string)
 	if !strings.Contains(cwd, filepath.Join("workspace", "tmp+")) {
 		t.Fatalf("temp cwd %q", cwd)
@@ -753,7 +777,7 @@ func TestWorkspacesFSSearch(t *testing.T) {
 		t.Fatal("temp workspaceId")
 	}
 
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/workspaces", nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -761,29 +785,29 @@ func TestWorkspacesFSSearch(t *testing.T) {
 	}
 	var spaces []map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&spaces)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if len(spaces) < 2 {
 		t.Fatalf("workspaces: %+v", spaces)
 	}
 
 	other := filepath.Join(t.TempDir(), "fresh")
-	body, _ := json.Marshal(map[string]any{"path": other, "title": "Fresh"})
-	req, _ = http.NewRequest("POST", hs.URL+"/v1/workspaces", bytes.NewReader(body))
+	body, _ := marshalJSON(map[string]any{"path": other, "title": "Fresh"})
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/workspaces", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StatusCode != 201 {
+	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("create ws %d", res.StatusCode)
 	}
 	var ws map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&ws)
-	res.Body.Close()
+	_ = res.Body.Close()
 	wsID, _ := ws["id"].(string)
 
-	req, _ = http.NewRequest("POST", hs.URL+"/v1/sessions", bytes.NewReader([]byte(`{"workspaceId":"`+wsID+`"}`)))
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions", bytes.NewReader([]byte(`{"workspaceId":"`+wsID+`"}`)))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err = http.DefaultClient.Do(req)
@@ -792,7 +816,7 @@ func TestWorkspacesFSSearch(t *testing.T) {
 	}
 	var inWS map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&inWS)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if inWS["cwd"] != other && !strings.HasPrefix(fmt.Sprint(inWS["cwd"]), other) {
 		// Normalize may EvalSymlinks
 		if inWS["workspaceId"] != wsID {
@@ -800,8 +824,8 @@ func TestWorkspacesFSSearch(t *testing.T) {
 		}
 	}
 
-	patch, _ := json.Marshal(map[string]any{"title": "Renamed", "pinned": true})
-	req, _ = http.NewRequest("PATCH", hs.URL+"/v1/sessions/"+id, bytes.NewReader(patch))
+	patch, _ := marshalJSON(map[string]any{"title": "Renamed", "pinned": true})
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/sessions/"+id, bytes.NewReader(patch))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err = http.DefaultClient.Do(req)
@@ -810,12 +834,12 @@ func TestWorkspacesFSSearch(t *testing.T) {
 	}
 	var patched map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&patched)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if patched["title"] != "Renamed" || patched["pinned"] != true {
 		t.Fatalf("patch: %+v", patched)
 	}
 
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/fs?path="+proj, nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/fs?path="+proj, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -823,7 +847,7 @@ func TestWorkspacesFSSearch(t *testing.T) {
 	}
 	var listing map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&listing)
-	res.Body.Close()
+	_ = res.Body.Close()
 	if listing["separator"] == nil || listing["home"] == nil {
 		t.Fatalf("listing: %+v", listing)
 	}
@@ -833,48 +857,48 @@ func TestWorkspacesFSSearch(t *testing.T) {
 	}
 
 	child := map[string]any{"path": proj, "name": "nested"}
-	b, _ := json.Marshal(child)
-	req, _ = http.NewRequest("POST", hs.URL+"/v1/fs", bytes.NewReader(b))
+	b, _ := marshalJSON(child)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/fs", bytes.NewReader(b))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StatusCode != 200 {
+	if res.StatusCode != http.StatusOK {
 		t.Fatalf("mkdir %d", res.StatusCode)
 	}
-	res.Body.Close()
-	req, _ = http.NewRequest("POST", hs.URL+"/v1/fs", bytes.NewReader(b))
+	_ = res.Body.Close()
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/fs", bytes.NewReader(b))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StatusCode != 409 {
+	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("dup mkdir %d", res.StatusCode)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 
-	req, _ = http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"searchable unique token xyzzy"}`))
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"searchable unique token xyzzy"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	_ = res.Body.Close()
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	io.Copy(io.Discard, res.Body)
-	res.Body.Close()
+	_, _ = io.Copy(io.Discard, res.Body)
+	_ = res.Body.Close()
 
-	req, _ = http.NewRequest("GET", hs.URL+"/v1/sessions/search?q=xyzzy", nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/search?q=xyzzy", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -882,34 +906,34 @@ func TestWorkspacesFSSearch(t *testing.T) {
 	}
 	var found map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&found)
-	res.Body.Close()
+	_ = res.Body.Close()
 	items, _ := found["items"].([]any)
 	if len(items) == 0 {
 		t.Fatalf("search: %+v", found)
 	}
 
-	req, _ = http.NewRequest("DELETE", hs.URL+"/v1/sessions/"+fmt.Sprint(inWS["id"]), nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodDelete, hs.URL+"/v1/sessions/"+fmt.Sprint(inWS["id"]), nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StatusCode != 204 {
+	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("del session %d", res.StatusCode)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 
-	req, _ = http.NewRequest("DELETE", hs.URL+"/v1/workspaces/"+wsID, nil)
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodDelete, hs.URL+"/v1/workspaces/"+wsID, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.StatusCode != 204 {
+	if res.StatusCode != http.StatusNoContent {
 		b, _ := io.ReadAll(res.Body)
 		t.Fatalf("del ws %d %s", res.StatusCode, b)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if _, err := os.Stat(other); err != nil {
 		t.Fatalf("workspace dir must remain: %v", err)
 	}
@@ -950,14 +974,22 @@ func (g *gateStreamer) Stream(ctx context.Context, req loop.Request, emit func(l
 	ch := g.gate
 	g.mu.Unlock()
 	if ch == nil {
-		return g.inner.Stream(ctx, req, emit)
+		msg, err := g.inner.Stream(ctx, req, emit)
+		if err != nil {
+			return msg, fmt.Errorf("stream gated provider: %w", err)
+		}
+		return msg, nil
 	}
 	select {
 	case <-ctx.Done():
 		return types.Message{}, ctx.Err()
 	case <-ch:
 	}
-	return g.inner.Stream(ctx, req, emit)
+	msg, err := g.inner.Stream(ctx, req, emit)
+	if err != nil {
+		return msg, fmt.Errorf("stream gated provider: %w", err)
+	}
+	return msg, nil
 }
 
 func (g *gateStreamer) release() {
@@ -984,16 +1016,16 @@ func wantSSE() []string {
 
 func prompt202(t *testing.T, hs *httptest.Server, id, text string) {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"text": text})
-	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/prompt", bytes.NewReader(body))
+	body, _ := marshalJSON(map[string]any{"text": text})
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	if res.StatusCode != 202 {
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
 		t.Fatalf("prompt %d", res.StatusCode)
 	}
 }
@@ -1024,7 +1056,7 @@ func waitBuffered(t *testing.T, srv *Server, id string, n int) {
 }
 
 func openEventsRaw(hs *httptest.Server, id string) (*http.Response, error) {
-	req, _ := http.NewRequest("GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	return http.DefaultClient.Do(req)
 }
@@ -1086,7 +1118,7 @@ func scanAll(t *testing.T, sc *bufio.Scanner) []string {
 
 // collectSSE 把一条 SSE 响应完整读到 agent_end。
 func collectSSE(res *http.Response) []string {
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	var out []string
 	sc := bufio.NewScanner(res.Body)
 	for sc.Scan() {
@@ -1115,7 +1147,7 @@ func readSSE(hs *httptest.Server, id string, n int, ready chan<- struct{}) sseRe
 	if err != nil {
 		return sseResult{err: err}
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	var out []string
 	sc := bufio.NewScanner(res.Body)
 	for sc.Scan() {
@@ -1148,7 +1180,7 @@ func TestEventsWaitPathSingleReader(t *testing.T) {
 	waitBuffered(t, srv, id, 5) // 运行冻在流式输出前，缓冲恰 5 条
 
 	res := mustOpenEvents(t, hs, id)
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	sc := bufio.NewScanner(res.Body)
 	// 读到第 5 条时，服务端 reader 已重放完缓冲、必然在 Cond.Wait 里：
 	// gate 未放行 → 不可能有新事件；run 未结束 → done 不可能关闭。
@@ -1213,7 +1245,7 @@ func TestEventsClientDisconnect(t *testing.T) {
 	waitBuffered(t, srv, id, 5)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	req, _ := http.NewRequestWithContext(ctx, "GET", hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1222,17 +1254,19 @@ func TestEventsClientDisconnect(t *testing.T) {
 	sc := bufio.NewScanner(res.Body)
 	scanN(t, sc, 5) // reader 已重放 5 条并进入等待
 	cancel()        // 客户端断开 → 服务端哨兵广播 → reader 退出
-	res.Body.Close()
+	_ = res.Body.Close()
 	gate.release() // 运行照常完成
 
 	// 断开不影响运行本身：事件已全部进缓冲，完整重放仍可用。
 	waitBuffered(t, srv, id, 10)
+	//nolint:bodyclose // collectSSE owns and closes the response body.
 	if replay := collectSSE(mustOpenEvents(t, hs, id)); !slices.Equal(replay, wantSSE()) {
 		t.Fatalf("replay after disconnect: %v", replay)
 	}
 
 	// 新 prompt 照常工作（说明没有 goroutine 持锁阻塞新运行）。
 	prompt202(t, hs, id, "again")
+	//nolint:bodyclose // collectSSE owns and closes the response body.
 	if got := collectSSE(mustOpenEvents(t, hs, id)); len(got) == 0 || got[len(got)-1] != "agent_end" {
 		t.Fatalf("run after disconnect: %v", got)
 	}
@@ -1254,10 +1288,12 @@ func TestEventsReplayAfterDone(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
 	prompt202(t, hs, id, "hi")
+	//nolint:bodyclose // collectSSE owns and closes the response body.
 	first := collectSSE(mustOpenEvents(t, hs, id))
 	if want := wantSSE(); !slices.Equal(first, want) {
 		t.Fatalf("first stream: %v", first)
 	}
+	//nolint:bodyclose // collectSSE owns and closes the response body.
 	second := collectSSE(mustOpenEvents(t, hs, id))
 	if want := wantSSE(); !slices.Equal(second, want) {
 		t.Fatalf("replay after done: %v", second)
@@ -1272,8 +1308,8 @@ func TestEventsNoRunEmptyStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", res.StatusCode)
 	}
 	sc := bufio.NewScanner(res.Body)
@@ -1287,6 +1323,7 @@ func TestEventsNoRunEmptyStream(t *testing.T) {
 
 func firstLine(t *testing.T, path string) map[string]any {
 	t.Helper()
+	//nolint:gosec // path is created inside the test's temporary workspace.
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1307,14 +1344,14 @@ func TestOpenIndexLifecycle(t *testing.T) {
 	}
 
 	// DELETE drops the index entry (dir removal succeeded).
-	req, _ := http.NewRequest("DELETE", hs.URL+"/v1/sessions/"+id, nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodDelete, hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	if res.StatusCode != 204 {
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete: %d", res.StatusCode)
 	}
 	if _, ok := srv.sidx.Lookup(id); ok {
@@ -1329,16 +1366,16 @@ func TestOpenIndexLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	extID := ext.ID()
-	ext.Close()
+	_ = ext.Close()
 	if _, ok := srv.sidx.Lookup(extID); ok {
 		t.Fatal("external session must not be indexed yet")
 	}
-	res2, err := authedGet(hs, "/v1/sessions/"+extID)
+	res2, err := authedGet(t, hs, "/v1/sessions/"+extID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res2.Body.Close()
-	if res2.StatusCode != 200 {
+	_ = res2.Body.Close()
+	if res2.StatusCode != http.StatusOK {
 		t.Fatalf("external get: %d", res2.StatusCode)
 	}
 	if _, ok := srv.sidx.Lookup(extID); !ok {
@@ -1350,12 +1387,12 @@ func TestOpenIndexLifecycle(t *testing.T) {
 	if err := session.Remove(dir); err != nil {
 		t.Fatal(err)
 	}
-	res3, err := authedGet(hs, "/v1/sessions/"+extID)
+	res3, err := authedGet(t, hs, "/v1/sessions/"+extID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res3.Body.Close()
-	if res3.StatusCode != 404 {
+	_ = res3.Body.Close()
+	if res3.StatusCode != http.StatusNotFound {
 		t.Fatalf("stale get: %d", res3.StatusCode)
 	}
 	if _, ok := srv.sidx.Lookup(extID); ok {
@@ -1366,14 +1403,14 @@ func TestOpenIndexLifecycle(t *testing.T) {
 func TestForkIndexesChild(t *testing.T) {
 	srv, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
-	req, _ := http.NewRequest("POST", hs.URL+"/v1/sessions/"+id+"/fork", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/fork", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
 		t.Fatalf("fork: %d", res.StatusCode)
 	}
 	var out map[string]any

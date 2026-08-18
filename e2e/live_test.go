@@ -108,7 +108,7 @@ func TestLiveWebUIPlaywright(t *testing.T) {
 		t.Skip("web/node_modules/@playwright/test missing; cd web && npm install")
 	}
 	home, proj := isolateLive(t)
-	if err := os.WriteFile(filepath.Join(proj, "pw-live.txt"), []byte("KI-LIVE-MARKER-77\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(proj, "pw-live.txt"), []byte("KI-LIVE-MARKER-77\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sf := startServeLive(t, home, proj)
@@ -160,13 +160,14 @@ func liveDashScopeKey(t *testing.T) string {
 	if err != nil {
 		t.Skip(err)
 	}
+	//nolint:gosec // this is the user's explicit private Ki configuration path.
 	b, err := os.ReadFile(filepath.Join(userHome, ".ki", "ki.toml"))
 	if err != nil {
 		t.Skip("no dashscope-cn key; set DASHSCOPE_CN_API_KEY or ~/.ki/ki.toml")
 	}
 	section := ""
 	fallback := ""
-	for _, raw := range strings.Split(string(b), "\n") {
+	for raw := range strings.SplitSeq(string(b), "\n") {
 		line := strings.TrimSpace(raw)
 		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
 			section = strings.TrimSpace(line[1 : len(line)-1])

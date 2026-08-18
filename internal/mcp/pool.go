@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"ki/internal/session"
 	"ki/internal/types"
 )
+
+var errMCPTool = errors.New("MCP tool error")
 
 // Pool is a serve-lifetime MCP connection and schema cache.
 //
@@ -63,7 +66,6 @@ func (p *Pool) Bind(file File, toggle session.Toggle) []loop.Tool {
 		tools := append([]toolSpec(nil), e.tools...)
 		e.mu.Unlock()
 		for _, ts := range tools {
-			ts := ts
 			out = append(out, lazyTool{pool: p, name: name, spec: spec, ts: ts})
 		}
 	}
@@ -89,7 +91,6 @@ func (p *Pool) Prefetch(ctx context.Context, file File, toggle session.Toggle) {
 		if !need {
 			continue
 		}
-		name, spec := name, spec
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -156,7 +157,7 @@ func (p *Pool) ensure(ctx context.Context, name string, spec ServerSpec) (transp
 		}
 		break
 	}
-	t, err := startTransport(spec)
+	t, err := startTransport(ctx, spec)
 	if err != nil {
 		e.mu.Unlock()
 		return nil, err
@@ -219,14 +220,14 @@ func (p *Pool) saveDisk(key, name string, tools []toolSpec) {
 		return
 	}
 	dir := filepath.Join(p.home, "mcp-cache")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
 	b, err := json.Marshal(diskCache{Key: key, Tools: tools})
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(p.cachePath(name), append(b, '\n'), 0o644)
+	_ = os.WriteFile(p.cachePath(name), append(b, '\n'), 0o600)
 }
 
 func (p *Pool) cachePath(name string) string {
@@ -268,7 +269,7 @@ func (t lazyTool) Parameters() map[string]any {
 // validateToolArguments).
 func (t lazyTool) Validate(args map[string]any) error {
 	if msg := loop.SchemaErrors(t.Parameters(), t.ts.Name, args); msg != "" {
-		return fmt.Errorf("%s", msg)
+		return fmt.Errorf("%w: %s", errMCPTool, msg)
 	}
 	return nil
 }

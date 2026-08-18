@@ -29,7 +29,7 @@ func TestCreateNormalizeAndDuplicate(t *testing.T) {
 		t.Fatal("duplicate must keep title")
 	}
 	file := filepath.Join(home, "notdir")
-	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.Create(file, ""); err == nil {
@@ -115,8 +115,8 @@ func TestBootstrapOnce(t *testing.T) {
 	s := Open(home, filepath.Join(home, "sessions"))
 	d1 := filepath.Join(home, "p1")
 	d2 := filepath.Join(home, "p2")
-	_ = os.MkdirAll(d1, 0o755)
-	_ = os.MkdirAll(d2, 0o755)
+	_ = os.MkdirAll(d1, 0o700)
+	_ = os.MkdirAll(d2, 0o700)
 	if err := s.Bootstrap([]string{d1, d2, d1}); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestSafeToRemoveDir(t *testing.T) {
 		t.Fatal("root")
 	}
 	ok := filepath.Join(home, "proj")
-	_ = os.MkdirAll(ok, 0o755)
+	_ = os.MkdirAll(ok, 0o700)
 	if err := SafeToRemoveDir(ok, home, sessions); err != nil {
 		t.Fatal(err)
 	}

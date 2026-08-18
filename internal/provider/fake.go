@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"ki/internal/loop"
@@ -68,5 +69,9 @@ func (r *Recording) Stream(ctx context.Context, req loop.Request, emit func(loop
 	if r.Inner == nil {
 		return (&Scripted{}).Stream(ctx, req, emit)
 	}
-	return r.Inner.Stream(ctx, req, emit)
+	msg, err := r.Inner.Stream(ctx, req, emit)
+	if err != nil {
+		return msg, fmt.Errorf("stream wrapped provider: %w", err)
+	}
+	return msg, nil
 }

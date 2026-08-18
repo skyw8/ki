@@ -151,6 +151,7 @@ func scanDirs(home, cwd string) []scanDir {
 }
 
 func load(path string) (Skill, error) {
+	//nolint:gosec // path was discovered under the configured skill roots.
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return Skill{}, err
@@ -161,7 +162,7 @@ func load(path string) (Skill, error) {
 		if i := strings.Index(text[3:], "---"); i >= 0 {
 			fm := text[3 : 3+i]
 			text = text[3+i+3:]
-			for _, line := range strings.Split(fm, "\n") {
+			for line := range strings.SplitSeq(fm, "\n") {
 				line = strings.TrimSpace(line)
 				if k, v, ok := strings.Cut(line, ":"); ok {
 					v = strings.TrimSpace(strings.Trim(v, `"'`))
@@ -176,7 +177,7 @@ func load(path string) (Skill, error) {
 		}
 	}
 	if s.Description == "" {
-		for _, line := range strings.Split(text, "\n") {
+		for line := range strings.SplitSeq(text, "\n") {
 			line = strings.TrimSpace(line)
 			if line != "" && !strings.HasPrefix(line, "#") {
 				s.Description = line

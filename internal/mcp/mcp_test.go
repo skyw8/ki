@@ -22,13 +22,13 @@ func TestLoadProjectOverridesGlobalAndToggle(t *testing.T) {
 	    "github": {"command": "npx", "args": ["-y", "gh"]},
 	    "old": {"command": "true"}
 	  }
-	}`), 0o644)
-	_ = os.MkdirAll(filepath.Join(cwd, ".ki"), 0o755)
+	}`), 0o600)
+	_ = os.MkdirAll(filepath.Join(cwd, ".ki"), 0o700)
 	_ = os.WriteFile(filepath.Join(cwd, ".ki", ".mcp.json"), []byte(`{
 	  "mcpServers": {
 	    "github": {"command": "echo", "args": ["hi"]}
 	  }
-	}`), 0o644)
+	}`), 0o600)
 	f := Load(home, cwd)
 	if f.MCPServers["github"].Command != "echo" {
 		t.Fatalf("project should win: %+v", f.MCPServers["github"])
@@ -108,7 +108,7 @@ func TestPoolHTTPReuseAndToggle(t *testing.T) {
 			inits.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{}})
 		case "notifications/initialized":
-			w.WriteHeader(202)
+			w.WriteHeader(http.StatusAccepted)
 		case "tools/list":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"jsonrpc": "2.0", "id": msg.ID,
@@ -120,7 +120,7 @@ func TestPoolHTTPReuseAndToggle(t *testing.T) {
 				"result": map[string]any{"content": []map[string]any{{"type": "text", "text": "pong"}}},
 			})
 		default:
-			w.WriteHeader(204)
+			w.WriteHeader(http.StatusNoContent)
 		}
 	}))
 	defer hs.Close()
@@ -166,14 +166,14 @@ func markerCmd(t *testing.T, marker string) (string, []string) {
 	t.Helper()
 	if os.PathSeparator == '\\' {
 		bat := filepath.Join(t.TempDir(), "mark.bat")
-		if err := os.WriteFile(bat, []byte("@echo spawned > \""+marker+"\"\r\nping -n 20 127.0.0.1 >nul\r\n"), 0o644); err != nil {
+		if err := os.WriteFile(bat, []byte("@echo spawned > \""+marker+"\"\r\nping -n 20 127.0.0.1 >nul\r\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return bat, nil
 	}
 	sh := filepath.Join(t.TempDir(), "mark.sh")
-	if err := os.WriteFile(sh, []byte("#!/bin/sh\nprintf spawned > \"$1\"\nsleep 20\n"), 0o755); err != nil {
+	if err := os.WriteFile(sh, []byte("#!/bin/sh\nprintf spawned > \"$1\"\nsleep 20\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return sh, []string{marker}
+	return "sh", []string{sh, marker}
 }

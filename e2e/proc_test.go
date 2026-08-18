@@ -17,21 +17,28 @@ func TestServeReuseAndAuth(t *testing.T) {
 	home, proj := isolate(t)
 	sf := startServe(t, home)
 
-	res, err := http.Get("http://" + sf.Addr + "/v1/health")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+sf.Addr+"/v1/health", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	if res.StatusCode != 200 {
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
 		t.Fatalf("health %d", res.StatusCode)
 	}
 
-	req, _ := http.NewRequest("GET", "http://"+sf.Addr+"/v1/sessions/x", nil)
+	req, err = http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+sf.Addr+"/v1/sessions/x", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("no token: %d", res.StatusCode)
 	}
@@ -53,7 +60,9 @@ func TestServeReuseAndAuth(t *testing.T) {
 
 func TestDetachLeavesServer(t *testing.T) {
 	home, proj := isolate(t)
-	cmd := exec.Command(builtKI(t), "serve", "-d", "--addr", "127.0.0.1:0")
+	// The executable is the test-built Ki binary and all arguments are fixed.
+	//nolint:gosec // this subprocess is intentionally the e2e system under test
+	cmd := exec.CommandContext(t.Context(), builtKI(t), "serve", "-d", "--addr", "127.0.0.1:0")
 	cmd.Env = childEnv(home)
 	b, err := cmd.CombinedOutput()
 	if err != nil {
@@ -74,7 +83,13 @@ func TestDetachLeavesServer(t *testing.T) {
 	} else {
 		t.Cleanup(func() {
 			if sf, err := server.ReadServerFile(home); err == nil && sf.Addr != "" {
-				_, _ = http.Get("http://" + sf.Addr + "/v1/health")
+				req, reqErr := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+sf.Addr+"/v1/health", nil)
+				if reqErr == nil {
+					res, doErr := http.DefaultClient.Do(req)
+					if doErr == nil {
+						_ = res.Body.Close()
+					}
+				}
 			}
 		})
 	}
@@ -91,12 +106,16 @@ func TestDetachLeavesServer(t *testing.T) {
 	if sf.Addr == "" {
 		t.Fatal("detach did not write server.json")
 	}
-	res, err := http.Get("http://" + sf.Addr + "/v1/health")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+sf.Addr+"/v1/health", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Body.Close()
-	if res.StatusCode != 200 {
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
 		t.Fatalf("health after detach: %d", res.StatusCode)
 	}
 

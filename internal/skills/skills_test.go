@@ -11,10 +11,10 @@ import (
 func TestDiscoverHonorsToggle(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, "skills", "foo")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: foo\ndescription: bar\n---\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: foo\ndescription: bar\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got := Discover(home, t.TempDir(), session.Toggle{})
@@ -31,17 +31,17 @@ func TestListKeepsDisabledAndTagsSource(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	dir := filepath.Join(home, "skills", "foo")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: foo\ndescription: bar\n---\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: foo\ndescription: bar\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	proj := filepath.Join(cwd, ".ki", "skills", "baz")
-	if err := os.MkdirAll(proj, 0o755); err != nil {
+	if err := os.MkdirAll(proj, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(proj, "SKILL.md"), []byte("---\nname: baz\ndescription: project\n---\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(proj, "SKILL.md"), []byte("---\nname: baz\ndescription: project\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got := List(home, cwd)
@@ -59,15 +59,15 @@ func TestListKeepsDisabledAndTagsSource(t *testing.T) {
 
 func TestListFollowsSkillDirSymlink(t *testing.T) {
 	home := t.TempDir()
-	real := t.TempDir()
-	dir := filepath.Join(real, "linked")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	realDir := t.TempDir()
+	dir := filepath.Join(realDir, "linked")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: linked\ndescription: via symlink\n---\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: linked\ndescription: via symlink\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(home, "skills"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, "skills"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(dir, filepath.Join(home, "skills", "linked")); err != nil {
@@ -88,13 +88,13 @@ func TestListFollowsSkillDirSymlink(t *testing.T) {
 func TestDiscoverIgnoresNestedNonSkillFiles(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, "skills", "foo")
-	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: foo\ndescription: real\n---\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: foo\ndescription: real\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "scripts", "evil.md"), []byte("---\nname: evil\ndescription: should not load\n---\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "evil.md"), []byte("---\nname: evil\ndescription: should not load\n---\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got := Discover(home, t.TempDir(), session.Toggle{})

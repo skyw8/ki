@@ -30,12 +30,12 @@ api_key = "global-oai"
 [compaction]
 reserve_tokens = 1000
 max_context_tokens = 25000
-`), 0o644); err != nil {
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	cwd := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(cwd, ".ki"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(cwd, ".ki"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(cwd, ".ki", "ki.toml"), []byte(`
@@ -53,7 +53,7 @@ addr = "127.0.0.1:19999"
 level = "debug"
 max_size_mb = 2
 max_backups = 4
-`), 0o644); err != nil {
+`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,14 +101,14 @@ func TestLoadRejectsInvalidAndUnknownTOML(t *testing.T) {
 	t.Setenv("KI_HOME", home)
 	path := filepath.Join(home, "ki.toml")
 
-	if err := os.WriteFile(path, []byte("[server\naddr = \"127.0.0.1:1\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("[server\naddr = \"127.0.0.1:1\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(t.TempDir()); err == nil {
 		t.Fatal("invalid TOML should return an error")
 	}
 
-	if err := os.WriteFile(path, []byte("[server]\nunknown = true\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("[server]\nunknown = true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(t.TempDir()); err == nil {
@@ -120,7 +120,7 @@ func TestLoadWithViperFlagOverridesEnvAndTOML(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KI_HOME", home)
 	t.Setenv("KI_SERVER_ADDR", "127.0.0.1:20001")
-	if err := os.WriteFile(filepath.Join(home, "ki.toml"), []byte("[server]\naddr = \"127.0.0.1:20002\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "ki.toml"), []byte("[server]\naddr = \"127.0.0.1:20002\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

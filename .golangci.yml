@@ -1,0 +1,72 @@
+version: "2"
+
+linters:
+  # Keep the official default set and add checks with a good signal-to-noise
+  # ratio for this service and its CLI.
+  default: standard
+  enable:
+    - bodyclose
+    - canonicalheader
+    - copyloopvar
+    - contextcheck
+    - durationcheck
+    - errcheck
+    - err113
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - forcetypeassert
+    - gocritic
+    - gosec
+    - modernize
+    - nilerr
+    - nilnil
+    - nilnesserr
+    - noctx
+    - nolintlint
+    - predeclared
+    - revive
+    - thelper
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+    - wrapcheck
+
+  settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    wrapcheck:
+      # Standard-library plumbing is intentionally propagated; package and
+      # third-party errors still require contextual wrapping.
+      ignore-package-globs:
+        - bufio
+        - context
+        - encoding/*
+        - io
+        - net/*
+        - os
+        - path/*
+        - strings
+        - time
+  exclusions:
+    generated: strict
+    warn-unused: true
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      simplify: true
+
+run:
+  timeout: 5m
+  tests: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

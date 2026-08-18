@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os/exec"
 	"runtime"
 )
+
+var errBrowserUnavailable = errors.New("browser opener unavailable")
 
 func browserURL(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
@@ -31,11 +35,12 @@ func openBrowser(url string) error {
 	}
 	path, err := exec.LookPath(name)
 	if err != nil {
-		return fmt.Errorf("%s is unavailable", name)
+		return fmt.Errorf("%w: %s", errBrowserUnavailable, name)
 	}
-	cmd := exec.Command(path, args...)
+	//nolint:gosec // path is the OS browser opener selected by LookPath.
+	cmd := exec.CommandContext(context.Background(), path, args...)
 	if err := cmd.Start(); err != nil {
-		return err
+		return fmt.Errorf("start browser opener: %w", err)
 	}
 	return nil
 }

@@ -114,6 +114,7 @@ func TestModelWritebackIsSessionOnly(t *testing.T) {
 	if cfg["provider"] != "openai" || cfg["model"] != "gpt-4o" {
 		t.Fatalf("writeback: %+v", cfg)
 	}
+	//nolint:gosec // the config path is created inside the isolated temp home.
 	raw, _ := os.ReadFile(toml)
 	if strings.Contains(string(raw), "gpt-4o") {
 		t.Fatalf("toml should be unchanged:\n%s", raw)

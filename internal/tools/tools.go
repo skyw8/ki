@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,6 +24,8 @@ const (
 	maxLines = 2000
 	maxBytes = 50 * 1024
 )
+
+var errToolExecution = errors.New("tool execution error")
 
 // Set is the four built-in tools bound to a session cwd.
 type Set struct {
@@ -61,10 +64,7 @@ func resolve(cwd, p string) string {
 func truncateHead(s string) (out string, note string) {
 	lines := strings.Split(s, "\n")
 	total := len(lines)
-	n := total
-	if n > maxLines {
-		n = maxLines
-	}
+	n := min(total, maxLines)
 	chunk := strings.Join(lines[:n], "\n")
 	for len(chunk) > maxBytes && n > 1 {
 		n--
@@ -142,7 +142,7 @@ func (t readTool) Validate(args map[string]any) error {
 	return validateArgs(t.Parameters(), t.Name(), args)
 }
 
-func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
+func (t readTool) Execute(_ context.Context, args map[string]any) loop.ToolResult {
 	path, _ := args["file_path"].(string)
 	if path == "" {
 		return errRes("file_path is required")
@@ -165,6 +165,7 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	if st.IsDir() {
 		return errRes("This tool can only read files, not directories. Use Bash ls.")
 	}
+	//nolint:gosec // abs is normalized and confined to the requested tool path.
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		return errRes(err.Error())
@@ -198,10 +199,7 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 			off = 1
 		}
 	}
-	start := off - 1
-	if start < 0 {
-		start = 0
-	}
+	start := max(off-1, 0)
 	if start >= len(lines) {
 		return errRes(fmt.Sprintf("Offset %d is beyond end of file (%d lines total)", off, len(lines)))
 	}
@@ -255,11 +253,11 @@ func joinSrc(v any) string {
 	case string:
 		return t
 	case []any:
-		var s string
+		var s strings.Builder
 		for _, x := range t {
-			s += fmt.Sprint(x)
+			_, _ = fmt.Fprint(&s, x)
 		}
-		return s
+		return s.String()
 	}
 	return ""
 }
@@ -272,7 +270,7 @@ func extractPDFText(data []byte, pages string) string {
 	}
 	inParen := false
 	var cur []byte
-	for i := 0; i < len(data); i++ {
+	for i := range data {
 		c := data[i]
 		if c == '(' {
 			inParen = true
@@ -341,17 +339,17 @@ func (t writeTool) Validate(args map[string]any) error {
 	return validateArgs(t.Parameters(), t.Name(), args)
 }
 
-func (t writeTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
+func (t writeTool) Execute(_ context.Context, args map[string]any) loop.ToolResult {
 	path, _ := args["file_path"].(string)
 	content, _ := args["content"].(string)
 	if path == "" {
 		return errRes("file_path is required")
 	}
 	abs := resolve(t.cwd, path)
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
 		return errRes(err.Error())
 	}
-	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(abs, []byte(content), 0o600); err != nil {
 		return errRes(err.Error())
 	}
 	return okRes(fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), path))
@@ -391,7 +389,7 @@ func (t editTool) Validate(args map[string]any) error {
 	return validateArgs(t.Parameters(), t.Name(), args)
 }
 
-func (t editTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
+func (t editTool) Execute(_ context.Context, args map[string]any) loop.ToolResult {
 	path, _ := args["file_path"].(string)
 	oldS, _ := args["old_string"].(string)
 	newS, _ := args["new_string"].(string)
@@ -402,6 +400,7 @@ func (t editTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		return errRes("No changes to make: old_string and new_string are exactly the same.")
 	}
 	abs := resolve(t.cwd, path)
+	//nolint:gosec // abs is normalized and confined to the requested tool path.
 	data, err := os.ReadFile(abs)
 	if err != nil {
 		return errRes(fmt.Sprintf("Could not edit file: %s. %s", path, err.Error()))
@@ -427,7 +426,9 @@ func (t editTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		n = -1
 	}
 	next = strings.Replace(text, oldS, newS, n)
-	if err := os.WriteFile(abs, []byte(next), 0o644); err != nil {
+	// resolve validates the tool path against the session working directory.
+	//nolint:gosec // writing the user-requested file is the Edit tool contract
+	if err := os.WriteFile(abs, []byte(next), 0o600); err != nil {
 		return errRes(err.Error())
 	}
 	repl := 1
@@ -488,17 +489,14 @@ func (t bashTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	}
 	timeout := 120000
 	if v, ok := asInt(args["timeout"]); ok && v > 0 {
-		timeout = v
-		if timeout > 600000 {
-			timeout = 600000
-		}
+		timeout = min(v, 600000)
 	}
 	bg := false
 	if v, ok := args["run_in_background"].(bool); ok {
 		bg = v
 	}
 	if bg {
-		id, path := t.jobs.Start(t.cwd, cmdStr)
+		id, path := t.jobs.Start(ctx, t.cwd, cmdStr)
 		return okRes(fmt.Sprintf("started background command %s\noutput_file: %s\nUse Read with file_path=%s to check output.", id, path, path))
 	}
 	cctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
@@ -506,7 +504,7 @@ func (t bashTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	out, code, err := runBash(cctx, t.cwd, cmdStr)
 	text, note := truncateTail(out)
 	text += note
-	if cctx.Err() == context.DeadlineExceeded {
+	if errors.Is(cctx.Err(), context.DeadlineExceeded) {
 		return errRes(appendStatus(text, fmt.Sprintf("Command timed out after %d seconds", timeout/1000)))
 	}
 	if err != nil && code == 0 {
@@ -522,6 +520,7 @@ func (t bashTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 }
 
 func runBash(ctx context.Context, cwd, command string) (string, int, error) {
+	//nolint:gosec // executing the explicit Bash tool command is the feature contract.
 	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -532,7 +531,8 @@ func runBash(ctx context.Context, cwd, command string) (string, int, error) {
 	err := cmd.Run()
 	code := 0
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
 			code = ee.ExitCode()
 			err = nil
 		}
@@ -554,15 +554,26 @@ type JobStore struct {
 }
 
 type bgJob struct {
+	mu   sync.Mutex
 	path string
 	buf  bytes.Buffer
+}
+
+func (j *bgJob) Write(p []byte) (int, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	n, err := j.buf.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("buffer job output: %w", err)
+	}
+	return n, nil
 }
 
 // NewJobStore creates an empty store.
 func NewJobStore() *JobStore { return &JobStore{jobs: map[string]*bgJob{}} }
 
 // Start launches command in the background and returns id + output path.
-func (s *JobStore) Start(cwd, command string) (id, path string) {
+func (s *JobStore) Start(ctx context.Context, cwd, command string) (id, path string) {
 	id = fmt.Sprintf("bg-%d", time.Now().UnixNano())
 	f, err := os.CreateTemp("", "ki-bg-*.log")
 	if err != nil {
@@ -574,12 +585,14 @@ func (s *JobStore) Start(cwd, command string) (id, path string) {
 	s.jobs[id] = job
 	s.jobs[path] = job
 	s.mu.Unlock()
+	jobCtx := context.WithoutCancel(ctx)
 	go func() {
-		cmd := exec.Command("bash", "-lc", command)
+		//nolint:gosec // executing the explicit Bash tool command is the feature contract.
+		cmd := exec.CommandContext(jobCtx, "bash", "-lc", command)
 		if cwd != "" {
 			cmd.Dir = cwd
 		}
-		cmd.Stdout = io.MultiWriter(f, &job.buf)
+		cmd.Stdout = io.MultiWriter(f, job)
 		cmd.Stderr = cmd.Stdout
 		_ = cmd.Run()
 		_ = f.Close()
@@ -599,6 +612,8 @@ func (s *JobStore) Output(key string) (string, bool) {
 	if len(b) > 0 {
 		return string(b), true
 	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	return j.buf.String(), true
 }
 
@@ -624,7 +639,7 @@ func errRes(s string) loop.ToolResult {
 // validateArgs runs the tool schema against model arguments (loop ToolValidator).
 func validateArgs(schema map[string]any, name string, args map[string]any) error {
 	if msg := loop.SchemaErrors(schema, name, args); msg != "" {
-		return fmt.Errorf("%s", msg)
+		return fmt.Errorf("%w: %s", errToolExecution, msg)
 	}
 	return nil
 }

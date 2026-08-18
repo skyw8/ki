@@ -18,7 +18,7 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 	}
 	root, err := fs.Sub(web.Dist, "dist")
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/")
@@ -34,10 +34,10 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 			s.writeIndex(w, root)
 			return
 		}
-		http.Error(w, err.Error(), 500)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	stat, err := f.Stat()
 	if err != nil || stat.IsDir() {
 		s.writeIndex(w, root)
@@ -47,7 +47,7 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		b, err := io.ReadAll(f)
 		if err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		http.ServeContent(w, r, path, stat.ModTime(), strings.NewReader(string(b)))
@@ -62,7 +62,11 @@ func (s *Server) writeIndex(w http.ResponseWriter, root fs.FS) {
 		http.Error(w, "web ui not built (cd web && npm run build)", http.StatusServiceUnavailable)
 		return
 	}
-	boot, _ := json.Marshal(map[string]string{"token": s.token})
+	boot, err := json.Marshal(map[string]string{"token": s.token})
+	if err != nil {
+		http.Error(w, "failed to render web UI", http.StatusInternalServerError)
+		return
+	}
 	html := strings.Replace(string(b), "__KI_BOOT__", string(boot), 1)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
