@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"ki/internal/loop"
@@ -15,11 +16,15 @@ import (
 
 // Input is everything needed to assemble the system prompt.
 type Input struct {
-	Home   string
-	CWD    string
-	Tools  []loop.Tool
-	Toggle session.Toggle
-	Now    time.Time
+	Home string
+	CWD  string
+	// SessionID scopes the AGENTS/CLAUDE context cache per session: a new
+	// session re-reads disk even when its workspace (home, cwd) is shared,
+	// while messages within one session hit the cache.
+	SessionID string
+	Tools     []loop.Tool
+	Toggle    session.Toggle
+	Now       time.Time
 }
 
 // Build returns the layered system prompt (recomputed after compaction).
@@ -53,7 +58,7 @@ func Build(in Input) (string, []skills.Skill) {
 	b.WriteString("Guidelines:\n- Be concise in your responses\n- Show file paths clearly when working with files\n")
 
 	// Toggle already dropped disabled names; this is listing, not a process.
-	sk := skills.Discover(in.Home, in.CWD, in.Toggle)
+	sk := skills.Discover(in.Home, in.CWD, in.SessionID, in.Toggle)
 	if hasRead && len(sk) > 0 {
 		b.WriteString("\n\nThe following skills provide specialized instructions for specific tasks.\n")
 		b.WriteString("Use the read tool to load a skill's file when the task matches its description.\n")
@@ -66,7 +71,7 @@ func Build(in Input) (string, []skills.Skill) {
 		b.WriteString("</available_skills>\n")
 	}
 
-	files := CollectAgents(in.Home, in.CWD)
+	files := CollectAgents(in.Home, in.CWD, in.SessionID)
 	if len(files) > 0 {
 		b.WriteString("\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n")
 		for _, f := range files {
@@ -98,8 +103,48 @@ type File struct {
 
 var candidates = []string{"AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"}
 
+var (
+	agentsMu    sync.Mutex
+	agentsCache = map[string][]File{}
+)
+
 // CollectAgents loads global then cwd→git root (inclusive).
-func CollectAgents(home, cwd string) []File {
+//
+// Cache-first, scoped per session: prompt.Build runs on every message, so the
+// disk is read only on a session's first Build (or after invalidation). A new
+// session — even in the same workspace — re-reads disk; messages within one
+// session hit the cache. InvalidateAgents re-scans on demand (a future
+// /reload command).
+func CollectAgents(home, cwd, sessionID string) []File {
+	key := home + "\x00" + cwd + "\x00" + sessionID
+	agentsMu.Lock()
+	defer agentsMu.Unlock()
+	if files, ok := agentsCache[key]; ok {
+		return files
+	}
+	files := collectAgents(home, cwd)
+	agentsCache[key] = files
+	return files
+}
+
+// InvalidateAgents drops the cached context files for one session so the next
+// CollectAgents re-reads disk. A future /reload command should call this
+// (alongside skills.Invalidate) before rebuilding the prompt.
+func InvalidateAgents(home, cwd, session string) {
+	key := home + "\x00" + cwd + "\x00" + session
+	agentsMu.Lock()
+	defer agentsMu.Unlock()
+	delete(agentsCache, key)
+}
+
+// InvalidateAgentsAll drops every cached context file. Useful for a global reload.
+func InvalidateAgentsAll() {
+	agentsMu.Lock()
+	defer agentsMu.Unlock()
+	agentsCache = map[string][]File{}
+}
+
+func collectAgents(home, cwd string) []File {
 	var out []File
 	seen := map[string]bool{}
 	add := func(dir string) {

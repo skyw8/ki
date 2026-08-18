@@ -1757,3 +1757,161 @@ func TestForkIndexesChild(t *testing.T) {
 		t.Fatal("fork must index the child session")
 	}
 }
+
+// TestReloadInvalidatesCachedResources pins the server-level reload entry
+// point: skills and AGENTS.md discovered once stay pinned until srv.Reload(),
+// after which the next session catalog sees disk changes.
+func TestReloadInvalidatesCachedResources(t *testing.T) {
+	srv, hs := testServer(t)
+	cwd := t.TempDir()
+	home := srv.cfg.Home
+
+	// Seed one home skill before first discovery.
+	skillDir := filepath.Join(home, "skills", "alpha")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: alpha\ndescription: first\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte("GLOBAL-ONE"), 0o600)
+	_ = os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("CWD-ONE"), 0o600)
+
+	id := createSession(t, hs, cwd)
+	names := func() map[string]bool {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
+		req.Header.Set("Authorization", "Bearer tok")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		var got map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		avail, _ := got["availableSkills"].([]any)
+		out := map[string]bool{}
+		for _, a := range avail {
+			m, _ := a.(map[string]any)
+			if n, _ := m["name"].(string); n != "" {
+				out[n] = true
+			}
+		}
+		return out
+	}
+
+	if got := names(); !got["alpha"] {
+		t.Fatalf("first catalog: %+v", got)
+	}
+
+	// Disk changes after first discovery: cache must stay pinned.
+	beta := filepath.Join(home, "skills", "beta")
+	if err := os.MkdirAll(beta, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beta, "SKILL.md"), []byte("---\nname: beta\ndescription: added later\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("CWD-TWO"), 0o600)
+	if got := names(); got["beta"] {
+		t.Fatalf("catalog picked up disk change before reload: %+v", got)
+	}
+
+	// srv.Reload() invalidates both caches; next catalog sees beta.
+	srv.Reload()
+	if got := names(); !got["beta"] {
+		t.Fatalf("catalog stale after reload: %+v", got)
+	}
+}
+
+// TestCompactInvalidatesCachedResources pins the contract that a successful
+// compaction is a reload point: the next prompt build re-reads skills and
+// AGENTS/CLAUDE from disk instead of the serve-long snapshot.
+func TestCompactInvalidatesCachedResources(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KI_HOME", home)
+	cfg := config.Builtin(home)
+	cfg.Sessions.Root = filepath.Join(home, "sessions")
+	cfg.Compaction.KeepRecentTokens = 1 // tiny budget: any session compacts
+	rec := &reqRecorder{}
+	srv, err := New(Options{Config: cfg, Token: "tok", Streamer: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv.Handler())
+	defer hs.Close()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	cwd := t.TempDir()
+	// Seed one skill and one AGENTS.md before first discovery.
+	skillDir := filepath.Join(home, "skills", "alpha")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: alpha\ndescription: first\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("CWD-ONE"), 0o600)
+
+	id := createSession(t, hs, cwd)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res0, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res0.Body.Close()
+	waitAgentEnd(t, hs, id) // first prompt discovered the cached snapshot
+
+	// Add a skill on disk after discovery; the running snapshot must not see it.
+	beta := filepath.Join(home, "skills", "beta")
+	if err := os.MkdirAll(beta, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beta, "SKILL.md"), []byte("---\nname: beta\ndescription: added later\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("CWD-TWO"), 0o600)
+
+	// Manual compact succeeds and must invalidate the caches.
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/compact", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("compact %d %s", res.StatusCode, b)
+	}
+
+	// Next prompt must rebuild the prompt from disk: beta visible now.
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"again"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res1, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res1.Body.Close()
+	waitAgentEnd(t, hs, id)
+
+	// The rebuilt system prompt must carry beta and the new AGENTS content.
+	if len(rec.reqs) == 0 {
+		t.Fatal("no stream requests captured")
+	}
+	sys := rec.reqs[len(rec.reqs)-1].System
+	if sys == "" {
+		t.Fatal("no system prompt captured")
+	}
+	if !strings.Contains(sys, "beta") {
+		t.Fatalf("beta missing after compact reload: %s", sys)
+	}
+	if !strings.Contains(sys, "CWD-TWO") {
+		t.Fatalf("AGENTS.md stale after compact reload: %s", sys)
+	}
+}

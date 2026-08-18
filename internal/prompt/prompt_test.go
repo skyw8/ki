@@ -26,7 +26,7 @@ func TestCollectAgentsStopsAtGitRoot(t *testing.T) {
 	home := t.TempDir()
 	_ = os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte("GLOBAL"), 0o600)
 
-	files := CollectAgents(home, nested)
+	files := CollectAgents(home, nested, "s1")
 	var texts []string
 	for _, f := range files {
 		texts = append(texts, f.Content)
@@ -79,5 +79,60 @@ func TestBuildNoSkillsWithoutRead(t *testing.T) {
 	sys, _ := Build(Input{Tools: []loop.Tool{}})
 	if strings.Contains(sys, "<available_skills>") {
 		t.Fatal("skills without Read")
+	}
+}
+
+// TestAgentsCacheScopedPerSession pins the session-scoped cache contract:
+// within one session a (home, cwd) pair is read once and pinned; a new
+// session in the same workspace re-reads disk; InvalidateAgents re-reads
+// only the target session.
+func TestAgentsCacheScopedPerSession(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	_ = os.WriteFile(filepath.Join(home, "AGENTS.md"), []byte("GLOBAL"), 0o600)
+
+	writeCwd := func(content string) {
+		if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeCwd("FIRST")
+	s1 := "session-1"
+	first := CollectAgents(home, cwd, s1)
+	if !strings.Contains(first[0].Content, "GLOBAL") || !strings.Contains(first[1].Content, "FIRST") {
+		t.Fatalf("initial: %+v", first)
+	}
+
+	// New content appears on disk; the same session must not pick it up.
+	writeCwd("SECOND")
+	again := CollectAgents(home, cwd, s1)
+	if !strings.Contains(again[1].Content, "FIRST") {
+		t.Fatalf("same-session cache not pinned: %+v", again)
+	}
+
+	// A new session in the same workspace re-reads disk.
+	s2 := "session-2"
+	fresh := CollectAgents(home, cwd, s2)
+	if !strings.Contains(fresh[1].Content, "SECOND") {
+		t.Fatalf("new session must re-read: %+v", fresh)
+	}
+
+	// InvalidateAgents forces only that session to re-read.
+	writeCwd("THIRD")
+	InvalidateAgents(home, cwd, s1)
+	refreshed := CollectAgents(home, cwd, s1)
+	if !strings.Contains(refreshed[1].Content, "THIRD") {
+		t.Fatalf("after invalidate: %+v", refreshed)
+	}
+	if got := CollectAgents(home, cwd, s2); !strings.Contains(got[1].Content, "SECOND") {
+		t.Fatalf("other session cache dropped: %+v", got)
+	}
+
+	// A different home has its own entry.
+	other := t.TempDir()
+	_ = os.WriteFile(filepath.Join(other, "AGENTS.md"), []byte("OTHER"), 0o600)
+	o := CollectAgents(other, cwd, s1)
+	if !strings.Contains(o[0].Content, "OTHER") {
+		t.Fatalf("other home: %+v", o)
 	}
 }

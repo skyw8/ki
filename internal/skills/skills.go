@@ -5,13 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"ki/internal/session"
 )
 
 type discEnt struct {
-	at     time.Time
 	skills []Skill
 }
 
@@ -34,14 +32,14 @@ type scanDir struct {
 }
 
 // List discovers all skills without applying a session toggle.
-func List(home, cwd string) []Skill {
-	return Discover(home, cwd, session.Toggle{})
+func List(home, cwd, sessionID string) []Skill {
+	return Discover(home, cwd, sessionID, session.Toggle{})
 }
 
 // Discover walks the standard skill directories and applies the session toggle.
-func Discover(home, cwd string, toggle session.Toggle) []Skill {
+func Discover(home, cwd, sessionID string, toggle session.Toggle) []Skill {
 	var out []Skill
-	for _, s := range listCached(home, cwd) {
+	for _, s := range listCached(home, cwd, sessionID) {
 		if toggle.Allowed(s.Name) {
 			out = append(out, s)
 		}
@@ -49,18 +47,36 @@ func Discover(home, cwd string, toggle session.Toggle) []Skill {
 	return out
 }
 
-func listCached(home, cwd string) []Skill {
-	key := home + "\x00" + cwd
+func listCached(home, cwd, sessionID string) []Skill {
+	key := home + "\x00" + cwd + "\x00" + sessionID
 	discMu.Lock()
 	defer discMu.Unlock()
-	// Short TTL: prompt.Build used to scan twice per message; keep that off the
-	// disk path without pinning a serve-long snapshot if the user adds a skill.
-	if e, ok := discCache[key]; ok && time.Since(e.at) < 30*time.Second {
+	// Cache-first, scoped per session: prompt.Build scans on every message;
+	// keep that off the disk path except on a session's first scan (or after
+	// invalidation). A new session — even in the same workspace — re-scans.
+	if e, ok := discCache[key]; ok {
 		return e.skills
 	}
 	all := scanAll(home, cwd)
-	discCache[key] = discEnt{at: time.Now(), skills: all}
+	discCache[key] = discEnt{skills: all}
 	return all
+}
+
+// Invalidate drops the cached scan for one session so the next Discover
+// re-scans the skill directories. A future /reload command should call this
+// before rebuilding the prompt.
+func Invalidate(home, cwd, sessionID string) {
+	key := home + "\x00" + cwd + "\x00" + sessionID
+	discMu.Lock()
+	defer discMu.Unlock()
+	delete(discCache, key)
+}
+
+// InvalidateAll drops every cached scan. Useful for a global reload.
+func InvalidateAll() {
+	discMu.Lock()
+	defer discMu.Unlock()
+	discCache = map[string]discEnt{}
 }
 
 func scanAll(home, cwd string) []Skill {
