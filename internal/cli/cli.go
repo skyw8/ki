@@ -12,9 +12,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"ki/internal/config"
 	"ki/internal/logging"
@@ -25,15 +27,42 @@ import (
 
 // Main is the process entrypoint.
 func Main(args []string) (exitCode int) {
-	cwd, _ := os.Getwd()
-	cfg, err := config.Load(cwd)
-	if err != nil {
+	defer func() {
+		if logging.Recover("process panic") {
+			exitCode = 1
+		}
+	}()
+
+	cmd := newRootCommand()
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	role := "client"
-	if len(args) > 0 && args[0] == "serve" {
-		role = "server"
+	return 0
+}
+
+func newRootCommand() *cobra.Command {
+	root := &cobra.Command{
+		Use:           "ki",
+		Short:         "An extensible agent runtime",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return withConfig("client", runDefault)
+		},
+	}
+	root.Version = Version
+	root.SetVersionTemplate("ki {{.Version}}\n")
+	root.AddCommand(newServeCommand(), newRunCommand(), newConfigCommand(), newSessionCommand(), newVersionCommand())
+	return root
+}
+
+func withConfig(role string, fn func(config.Config) error) error {
+	cwd, _ := os.Getwd()
+	cfg, err := config.Load(cwd)
+	if err != nil {
+		return err
 	}
 	logCloser, err := logging.Setup(logging.Options{
 		Home:       cfg.Home,
@@ -43,101 +72,182 @@ func Main(args []string) (exitCode int) {
 		MaxBackups: cfg.Log.MaxBackups,
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return err
 	}
 	defer func() { _ = logCloser.Close() }()
-	defer func() {
-		if logging.Recover("process panic") {
-			exitCode = 1
+	return fn(cfg)
+}
+
+func newServeCommand() *cobra.Command {
+	var (
+		detach bool
+		addr   string
+	)
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Run the HTTP server and embedded WebUI",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return withConfig("server", func(cfg config.Config) error {
+				if addr == "" {
+					addr = cfg.Server.Addr
+				}
+				if detach {
+					return runDetach(cfg, flags{Addr: addr})
+				}
+				return runServe(cfg, addr)
+			})
+		},
+	}
+	cmd.Flags().BoolVarP(&detach, "detach", "d", false, "run the server in the background")
+	cmd.Flags().StringVar(&addr, "addr", "", "listen address")
+	return cmd
+}
+
+func newRunCommand() *cobra.Command {
+	var f flags
+	cmd := &cobra.Command{
+		Use:   "run [flags] <prompt>",
+		Short: "Send a prompt and stream the agent run",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return withConfig("client", func(cfg config.Config) error {
+				return runClient(cfg, f, strings.Join(args, " "))
+			})
+		},
+	}
+	cmd.Flags().StringVar(&f.Session, "session", "", "resume an existing session")
+	cmd.Flags().StringVar(&f.Model, "model", "", "model or provider/model to use")
+	cmd.Flags().StringVar(&f.CWD, "cwd", "", "working directory for a new session")
+	cmd.Flags().StringVar(&f.Addr, "addr", "", "server listen address when starting one")
+	return cmd
+}
+
+func newVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version information",
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Fprintln(cmd.OutOrStdout(), Version)
+		},
+	}
+}
+
+func newConfigCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Inspect Ki configuration",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "path",
+		Short: "Print the configuration file locations",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return withConfig("client", func(cfg config.Config) error {
+				cwd, _ := os.Getwd()
+				fmt.Fprintf(os.Stdout, "home: %s\n", cfg.Home)
+				fmt.Fprintf(os.Stdout, "global: %s\n", filepath.Join(cfg.Home, "ki.toml"))
+				fmt.Fprintf(os.Stdout, "project: %s\n", filepath.Join(cwd, ".ki", "ki.toml"))
+				return nil
+			})
+		},
+	})
+	return cmd
+}
+
+func newSessionCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "session",
+		Short: "Manage sessions",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+
+	for _, action := range []string{"compact", "fork"} {
+		action := action
+		var id string
+		sub := &cobra.Command{
+			Use:   action,
+			Short: action + " a session",
+			Args:  cobra.NoArgs,
+			RunE: func(_ *cobra.Command, _ []string) error {
+				if id == "" {
+					return fmt.Errorf("--session is required")
+				}
+				return withConfig("client", func(cfg config.Config) error {
+					return runSessionAction(cfg, id, action)
+				})
+			},
 		}
-	}()
-	if len(args) > 0 && args[0] == "serve" {
-		return runServe(cfg, args[1:])
+		sub.Flags().StringVar(&id, "session", "", "session id")
+		cmd.AddCommand(sub)
 	}
-	flags, rest := parseFlags(args)
-	if flags.Detach && flags.Prompt == "" && len(rest) == 0 {
-		return runDetach(cfg, flags)
-	}
-	if flags.Detach {
-		if code := runDetach(cfg, flags); code != 0 {
-			return code
-		}
-	}
-	return runClient(cfg, flags, strings.Join(rest, " "))
+	return cmd
 }
 
 type flags struct {
-	Detach  bool
 	Session string
 	Model   string
 	CWD     string
 	Addr    string
-	Prompt  string
-	Compact bool
-	Fork    bool
 }
 
-func parseFlags(args []string) (flags, []string) {
-	var f flags
-	var rest []string
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "-d" || a == "--detach":
-			f.Detach = true
-		case a == "--session" && i+1 < len(args):
-			i++
-			f.Session = args[i]
-		case strings.HasPrefix(a, "--session="):
-			f.Session = strings.TrimPrefix(a, "--session=")
-		case a == "--model" && i+1 < len(args):
-			i++
-			f.Model = args[i]
-		case strings.HasPrefix(a, "--model="):
-			f.Model = strings.TrimPrefix(a, "--model=")
-		case a == "--cwd" && i+1 < len(args):
-			i++
-			f.CWD = args[i]
-		case a == "--addr" && i+1 < len(args):
-			i++
-			f.Addr = args[i]
-		case a == "compact":
-			f.Compact = true
-		case a == "fork":
-			f.Fork = true
-		case strings.HasPrefix(a, "-"):
-			// ignore unknown
-		default:
-			rest = append(rest, a)
-		}
-	}
-	return f, rest
-}
-
-func runServe(cfg config.Config, args []string) int {
-	addr := cfg.Server.Addr
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--addr" && i+1 < len(args) {
-			addr = args[i+1]
-		}
-	}
+func runServe(cfg config.Config, addr string) error {
 	st := streamer(cfg)
 	srv := server.New(server.Options{Config: cfg, Streamer: st})
 	if err := srv.ListenAndServe(addr); err != nil && err != http.ErrServerClosed {
 		slog.Error("server stopped", "err", err)
-		return 1
+		return err
 	}
-	return 0
+	return nil
 }
 
-func runDetach(cfg config.Config, f flags) int {
+func runDetach(cfg config.Config, f flags) error {
+	sf, pid, started, err := startDetached(cfg, f.Addr)
+	if err != nil {
+		return err
+	}
+	if started {
+		fmt.Fprintf(os.Stderr, "ki server %s pid %d\n", sf.Addr, pid)
+	} else {
+		fmt.Fprintf(os.Stderr, "ki server %s already running\n", sf.Addr)
+	}
+	return nil
+}
+
+func runDefault(cfg config.Config) error {
+	sf, pid, started, err := startDetached(cfg, cfg.Server.Addr)
+	if err != nil {
+		return err
+	}
+	url := browserURL(sf.Addr)
+	if started {
+		fmt.Fprintf(os.Stderr, "ki server %s pid %d\n", sf.Addr, pid)
+	}
+	fmt.Fprintf(os.Stderr, "ki web %s\n", url)
+	if err := openBrowser(url); err != nil {
+		// Browser launch is deliberately best-effort: headless shells and SSH
+		// sessions are valid Ki clients even when no GUI opener is available.
+		fmt.Fprintf(os.Stderr, "could not open browser: %v\n", err)
+	}
+	return nil
+}
+
+func startDetached(cfg config.Config, addr string) (sf server.File, pid int, started bool, err error) {
+	if existing, e := server.ReadServerFile(cfg.Home); e == nil && existing.Addr != "" && ping("http://"+existing.Addr, existing.Token) {
+		return existing, 0, false, nil
+	}
+	oldToken := ""
+	if existing, e := server.ReadServerFile(cfg.Home); e == nil {
+		oldToken = existing.Token
+	}
 	self, err := os.Executable()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return server.File{}, 0, false, err
 	}
-	addr := f.Addr
 	if addr == "" {
 		addr = cfg.Server.Addr
 	}
@@ -145,22 +255,22 @@ func runDetach(cfg config.Config, f flags) int {
 	cmd.Env = os.Environ()
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return server.File{}, 0, false, err
 	}
-	// wait until server.json exists
+	// Wait for both the child to publish a fresh server file and the endpoint
+	// to answer. Checking only file existence lets a stale server.json report a
+	// failed child as healthy.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if sf, err := server.ReadServerFile(cfg.Home); err == nil && sf.Addr != "" {
-			fmt.Fprintf(os.Stderr, "ki server %s pid %d\n", sf.Addr, cmd.Process.Pid)
-			return 0
+		if current, e := server.ReadServerFile(cfg.Home); e == nil && current.Addr != "" && current.Token != oldToken && ping("http://"+current.Addr, current.Token) {
+			return current, cmd.Process.Pid, true, nil
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	fmt.Fprintln(os.Stderr, "server did not come up")
-	return 1
+	_ = cmd.Process.Kill()
+	return server.File{}, 0, false, fmt.Errorf("server did not come up")
 }
 
 func streamer(cfg config.Config) loop.Streamer {
@@ -170,11 +280,10 @@ func streamer(cfg config.Config) loop.Streamer {
 	return nil // Server uses liveFromConfig
 }
 
-func runClient(cfg config.Config, f flags, prompt string) int {
+func runClient(cfg config.Config, f flags, prompt string) error {
 	base, token, stop, err := ensureServer(cfg, f)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return err
 	}
 	if stop != nil {
 		defer stop()
@@ -183,34 +292,14 @@ func runClient(cfg config.Config, f flags, prompt string) int {
 	if id == "" {
 		var created map[string]any
 		if err := doJSON(base, token, "POST", "/v1/sessions", map[string]any{"cwd": f.CWD, "model": f.Model}, &created); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return err
 		}
 		id, _ = created["id"].(string)
 	} else if f.Model != "" {
 		// model writeback happens on prompt
 	}
-	if f.Fork {
-		var out map[string]any
-		if err := doJSON(base, token, "POST", "/v1/sessions/"+id+"/fork", nil, &out); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		fmt.Println(out["id"])
-		return 0
-	}
-	if f.Compact {
-		var out map[string]any
-		if err := doJSON(base, token, "POST", "/v1/sessions/"+id+"/compact", nil, &out); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		fmt.Println("compacted", out["id"])
-		return 0
-	}
 	if strings.TrimSpace(prompt) == "" {
-		fmt.Fprintf(os.Stderr, "session %s\n", id)
-		return 0
+		return fmt.Errorf("prompt is required")
 	}
 	ctx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stopSig()
@@ -219,15 +308,33 @@ func runClient(cfg config.Config, f flags, prompt string) int {
 		_ = doJSON(base, token, "POST", "/v1/sessions/"+id+"/abort", nil, nil)
 	}()
 	if err := doJSON(base, token, "POST", "/v1/sessions/"+id+"/prompt", map[string]any{"text": prompt, "model": f.Model}, nil); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return err
 	}
 	if err := streamEvents(ctx, base, token, id); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return err
 	}
 	fmt.Fprintf(os.Stdout, "\nsession_id: %s\n", id)
-	return 0
+	return nil
+}
+
+func runSessionAction(cfg config.Config, id, action string) error {
+	base, token, stop, err := ensureServer(cfg, flags{})
+	if err != nil {
+		return err
+	}
+	if stop != nil {
+		defer stop()
+	}
+	var out map[string]any
+	if err := doJSON(base, token, "POST", "/v1/sessions/"+id+"/"+action, nil, &out); err != nil {
+		return err
+	}
+	if action == "compact" {
+		fmt.Println("compacted", out["id"])
+	} else {
+		fmt.Println(out["id"])
+	}
+	return nil
 }
 
 func ensureServer(cfg config.Config, f flags) (base, token string, stop func(), err error) {

@@ -128,7 +128,7 @@ func TestForkCopiesHistory(t *testing.T) {
 	}
 	id := mustSessionID(t, out, errOut)
 
-	out, errOut, code = runKI(t, "--session", id, "fork")
+	out, errOut, code = runCommand(t, "session", "fork", "--session", id)
 	if code != 0 {
 		t.Fatalf("fork: %d %s %s", code, out, errOut)
 	}
@@ -171,7 +171,7 @@ func TestCompactCLI(t *testing.T) {
 	// A tiny session has nothing worth summarizing: compact must refuse with a
 	// clear error (pi "Nothing to compact (session too small)") instead of
 	// stamping an empty summary over the context.
-	out, errOut, code = runKI(t, "--session", id, "compact")
+	out, errOut, code = runCommand(t, "session", "compact", "--session", id)
 	if code == 0 {
 		t.Fatalf("compact on tiny session should fail, got: %s", out)
 	}
@@ -181,18 +181,10 @@ func TestCompactCLI(t *testing.T) {
 	_ = home
 }
 
-func TestCreateWithoutPrompt(t *testing.T) {
-	home, proj := isolate(t)
-	out, errOut, code := runKI(t, "--cwd", proj)
-	if code != 0 {
-		t.Fatalf("exit %d %s %s", code, out, errOut)
-	}
-	id := mustSessionID(t, out, errOut)
-	raw := readJSONL(t, sessionDir(t, home, id))
-	if !strings.Contains(raw, `"type":"session"`) {
-		t.Fatalf("header:\n%s", raw)
-	}
-	if strings.Contains(raw, `"role":"user"`) {
-		t.Fatalf("should not persist a user message:\n%s", raw)
+func TestRunRequiresPrompt(t *testing.T) {
+	isolate(t)
+	_, errOut, code := runCommand(t, "run")
+	if code == 0 || !strings.Contains(errOut, "requires at least 1 arg") {
+		t.Fatalf("expected missing prompt error, code=%d stderr=%s", code, errOut)
 	}
 }

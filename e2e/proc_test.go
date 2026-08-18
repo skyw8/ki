@@ -36,7 +36,7 @@ func TestServeReuseAndAuth(t *testing.T) {
 		t.Fatalf("no token: %d", res.StatusCode)
 	}
 
-	out, code := runBin(t, home, "--cwd", proj, "hello")
+	out, code := runBin(t, home, "run", "--cwd", proj, "hello")
 	if code != 0 {
 		t.Fatalf("client: %d %s", code, out)
 	}
@@ -53,7 +53,7 @@ func TestServeReuseAndAuth(t *testing.T) {
 
 func TestDetachLeavesServer(t *testing.T) {
 	home, proj := isolate(t)
-	cmd := exec.Command(builtKI(t), "-d", "--addr", "127.0.0.1:0")
+	cmd := exec.Command(builtKI(t), "serve", "-d", "--addr", "127.0.0.1:0")
 	cmd.Env = childEnv(home)
 	b, err := cmd.CombinedOutput()
 	if err != nil {
@@ -100,7 +100,7 @@ func TestDetachLeavesServer(t *testing.T) {
 		t.Fatalf("health after detach: %d", res.StatusCode)
 	}
 
-	out, code := runBin(t, home, "--cwd", proj, "hello")
+	out, code := runBin(t, home, "run", "--cwd", proj, "hello")
 	if code != 0 {
 		t.Fatalf("client after detach: %d %s", code, out)
 	}
@@ -113,11 +113,11 @@ func TestParallelSessionsOnOneServer(t *testing.T) {
 	home, proj := isolate(t)
 	_ = startServe(t, home)
 
-	outA, code := runBin(t, home, "--cwd", proj)
+	outA, code := runBin(t, home, "run", "--cwd", proj, "alpha")
 	if code != 0 {
 		t.Fatalf("create A: %d %s", code, outA)
 	}
-	outB, code := runBin(t, home, "--cwd", proj)
+	outB, code := runBin(t, home, "run", "--cwd", proj, "beta")
 	if code != 0 {
 		t.Fatalf("create B: %d %s", code, outB)
 	}
@@ -136,11 +136,11 @@ func TestParallelSessionsOnOneServer(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		out1, c1 = runBin(t, home, "--session", idA, "alpha")
+		out1, c1 = runBin(t, home, "run", "--session", idA, "alpha")
 	}()
 	go func() {
 		defer wg.Done()
-		out2, c2 = runBin(t, home, "--session", idB, "beta")
+		out2, c2 = runBin(t, home, "run", "--session", idB, "beta")
 	}()
 	wg.Wait()
 	if c1 != 0 || c2 != 0 {

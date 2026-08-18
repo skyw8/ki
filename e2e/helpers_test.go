@@ -38,6 +38,11 @@ func isolate(t *testing.T) (home, proj string) {
 }
 
 func runKI(t *testing.T, args ...string) (stdout, stderr string, code int) {
+	args = append([]string{"run"}, args...)
+	return runCommand(t, args...)
+}
+
+func runCommand(t *testing.T, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
 	rOut, wOut, err := os.Pipe()
 	if err != nil {
