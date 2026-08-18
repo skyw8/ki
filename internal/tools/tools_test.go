@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -200,6 +201,80 @@ func TestBashNonZeroIsErrorAndCwdReset(t *testing.T) {
 	if res.IsError || !strings.Contains(res.Content[0].Text, "ok") {
 		t.Fatalf("cwd should reset to session: %+v", res)
 	}
+}
+
+func waitPIDFile(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(path)
+		if err == nil {
+			pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if convErr == nil && pid > 0 {
+				return pid
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pid file %s not written", path)
+	return 0
+}
+
+func assertPIDDead(t *testing.T, b bashTool, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		res := b.Execute(context.Background(), map[string]any{
+			"command": fmt.Sprintf("kill -0 %d", pid),
+		})
+		if res.IsError {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("pid %d still alive after cancel/timeout", pid)
+}
+
+func TestBashCancelKillsProcessGroup(t *testing.T) {
+	cwd := t.TempDir()
+	b := bashTool{cwd: cwd, jobs: NewJobStore()}
+	pidPath := filepath.Join(cwd, "child.pid")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan loop.ToolResult, 1)
+	go func() {
+		done <- b.Execute(ctx, map[string]any{
+			"command": "sleep 120 & echo $! > child.pid; wait",
+		})
+	}()
+	pid := waitPIDFile(t, pidPath)
+	cancel()
+	select {
+	case res := <-done:
+		if !res.IsError || !strings.Contains(res.Content[0].Text, "Command aborted") {
+			t.Fatalf("want aborted, got %+v", res)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Execute did not return after cancel (stdout Wait hang?)")
+	}
+	assertPIDDead(t, b, pid)
+}
+
+func TestBashTimeoutKillsProcessGroup(t *testing.T) {
+	cwd := t.TempDir()
+	b := bashTool{cwd: cwd, jobs: NewJobStore()}
+	started := time.Now()
+	res := b.Execute(context.Background(), map[string]any{
+		"command": "sleep 120 & echo $! > child.pid; wait",
+		"timeout": 1000,
+	})
+	if took := time.Since(started); took > 3*time.Second {
+		t.Fatalf("timeout took %s, want ~1s", took)
+	}
+	if !res.IsError || !strings.Contains(res.Content[0].Text, "timed out after 1 seconds") {
+		t.Fatalf("want timeout, got %+v", res)
+	}
+	pid := waitPIDFile(t, filepath.Join(cwd, "child.pid"))
+	assertPIDDead(t, b, pid)
 }
 
 func TestBashBackgroundAndRead(t *testing.T) {

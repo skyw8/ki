@@ -11,6 +11,13 @@ import (
 	"ki/internal/loop"
 )
 
+// bashWaitDelay bounds Wait after we kill the process group. CommandContext
+// only SIGKILLs the bash PID; grandchildren (find, pipelines) keep the stdout
+// pipe open, and with WaitDelay==0 Wait hangs until they exit — abort and the
+// default 120s timeout then look like a no-op.
+// See docs/postmortem/2026-08-18-bash-abort.md.
+const bashWaitDelay = 200 * time.Millisecond
+
 type bashTool struct {
 	cwd  string
 	jobs *JobStore
@@ -80,6 +87,9 @@ func (t bashTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	if errors.Is(cctx.Err(), context.DeadlineExceeded) {
 		return errRes(appendStatus(text, fmt.Sprintf("Command timed out after %d seconds", timeout/1000)))
 	}
+	if errors.Is(cctx.Err(), context.Canceled) {
+		return errRes(appendStatus(text, "Command aborted"))
+	}
 	if err != nil && code == 0 {
 		return errRes(appendStatus(text, err.Error()))
 	}
@@ -91,12 +101,21 @@ func (t bashTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	}
 	return okRes(text)
 }
+
 func runBash(ctx context.Context, cwd, command string) (string, int, error) {
 	//nolint:gosec // executing the explicit Bash tool command is the feature contract.
 	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
+	detachCmd(cmd)
+	// Override CommandContext's default Cancel (Process.Kill only). Kill the
+	// group so pipelines and background children cannot pin Wait on stdout.
+	cmd.Cancel = func() error {
+		killCmd(cmd)
+		return nil
+	}
+	cmd.WaitDelay = bashWaitDelay
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
