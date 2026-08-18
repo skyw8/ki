@@ -1,9 +1,13 @@
-// Package cli is the command-line shell: load config, start or attach to
-// the local HTTP server, stream SSE to the terminal.
+// Package cli is the Cobra command shell: load config, start or attach to the
+// local HTTP server, and stream SSE to the terminal.
 //
-//	ki serve [--addr]   foreground server + WebUI; writes ~/.ki/server.json
-//	ki -d               detach a serve process (setsid)
-//	ki [flags] <text>   client: create/resume session, POST prompt, print events
+//	ki                  detached server + WebUI, then best-effort browser open
+//	ki serve [-d]       foreground or detached server + WebUI
+//	ki run [flags] text create/resume session, POST prompt, print events
+//	ki session compact  compact an existing session
+//	ki session fork     fork an existing session
+//	ki config path      print config file locations
+//	ki version          print the build version
 //
 // If server.json is healthy the client connects; otherwise it listens on
 // 127.0.0.1:0 in-process and tears the server down on exit.

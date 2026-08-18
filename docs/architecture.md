@@ -4,9 +4,12 @@
 
 ## 进程
 
+- `ki`：后台启动或复用 HTTP server，尝试打开同源 WebUI。
 - `ki serve [--addr]`：前台 HTTP，默认 `127.0.0.1:19800`，写 `~/.ki/server.json`（addr + token）。
-- `ki -d`：setsid 拉起 `serve`，CLI 退出 server 还在。
-- `ki [flags] <text>`：client。`server.json` health 通则连；否则本进程听 `127.0.0.1:0`，退出带走。
+- `ki serve -d`：后台启动或复用 server，CLI 退出后 server 继续运行。
+- `ki run [flags] <text>`：client。`server.json` health 通则连；否则本进程听 `127.0.0.1:0`，退出带走。
+- `ki session compact|fork --session <id>`：对已有 session 执行管理操作。
+- `ki config path` / `ki version`：查看配置位置和版本。
 
 进程诊断日志由 `internal/logging` 初始化为 JSONL，同时写 stderr 和 `{KI_HOME}/ki.jsonl`；日志按大小轮转，默认保留 3 个备份，可由 `[log]` 的 `max_size_mb` / `max_backups` 调整。日志带 `pid` / `role`，禁止记录 API key、token、prompt 和文件内容。HTTP、prompt 后台任务和进程入口会记录 panic 值与 stack。
 
