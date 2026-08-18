@@ -47,21 +47,21 @@ type Config struct {
 
 // Entry is one jsonl record after the header.
 type Entry struct {
-	Type             string         `json:"type"`
-	ID               string         `json:"id"`
-	ParentID         string         `json:"parentId"`
-	Timestamp        string         `json:"timestamp"`
-	Message          *types.Message `json:"message,omitempty"`
-	Summary          string         `json:"summary,omitempty"`
-	FirstKeptEntryID string         `json:"firstKeptEntryId,omitempty"`
-	TokensBefore     int            `json:"tokensBefore,omitempty"`
-	Usage            *types.Usage   `json:"usage,omitempty"`
+	Type             string          `json:"type"`
+	ID               string          `json:"id"`
+	ParentID         string          `json:"parentId"`
+	Timestamp        string          `json:"timestamp"`
+	Message          *types.Message  `json:"message,omitempty"`
+	Summary          string          `json:"summary,omitempty"`
+	FirstKeptEntryID string          `json:"firstKeptEntryId,omitempty"`
+	TokensBefore     int             `json:"tokensBefore,omitempty"`
+	Usage            *types.Usage    `json:"usage,omitempty"`
 	RetainedTail     []types.Message `json:"retainedTail,omitempty"`
-	Details          any            `json:"details,omitempty"`
-	Provider         string         `json:"provider,omitempty"`
-	ModelID          string         `json:"modelId,omitempty"`
-	System           string         `json:"system,omitempty"`
-	Tools            []ToolSchema   `json:"tools,omitempty"`
+	Details          any             `json:"details,omitempty"`
+	Provider         string          `json:"provider,omitempty"`
+	ModelID          string          `json:"modelId,omitempty"`
+	System           string          `json:"system,omitempty"`
+	Tools            []ToolSchema    `json:"tools,omitempty"`
 }
 
 // ToolSchema is the model-visible tool list on a request_header entry.
@@ -108,7 +108,10 @@ func Create(root, cwd, provider, model string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	id := idgen.NewV7()
+	id, err := idgen.NewV7()
+	if err != nil {
+		return nil, err
+	}
 	ts := idgen.FileTimestamp(time.Now())
 	dir := filepath.Join(root, EncodeCWD(cwd), ts+"_"+id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -366,13 +369,13 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 func (s *Session) AppendMessage(m types.Message) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	used := map[string]struct{}{}
-	for id := range s.byID {
-		used[id] = struct{}{}
+	id, err := idgen.EntryID()
+	if err != nil {
+		return Entry{}, err
 	}
 	e := Entry{
 		Type:      "message",
-		ID:        idgen.EntryID(used),
+		ID:        id,
 		ParentID:  s.leafID,
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Message:   &m,
@@ -387,13 +390,13 @@ func (s *Session) AppendMessage(m types.Message) (Entry, error) {
 func (s *Session) AppendModelChange(provider, model string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	used := map[string]struct{}{}
-	for id := range s.byID {
-		used[id] = struct{}{}
+	id, err := idgen.EntryID()
+	if err != nil {
+		return err
 	}
 	e := Entry{
 		Type:      "model_change",
-		ID:        idgen.EntryID(used),
+		ID:        id,
 		ParentID:  s.leafID,
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Provider:  provider,
@@ -413,13 +416,13 @@ func (s *Session) AppendModelChange(provider, model string) error {
 func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, usage *types.Usage, retainedTail []types.Message) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	used := map[string]struct{}{}
-	for id := range s.byID {
-		used[id] = struct{}{}
+	id, err := idgen.EntryID()
+	if err != nil {
+		return Entry{}, err
 	}
 	e := Entry{
 		Type:             "compaction",
-		ID:               idgen.EntryID(used),
+		ID:               id,
 		ParentID:         s.leafID,
 		Timestamp:        time.Now().UTC().Format(time.RFC3339Nano),
 		Summary:          summary,
@@ -440,13 +443,13 @@ func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, 
 func (s *Session) AppendEvent(typ, reason string, ok bool) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	used := map[string]struct{}{}
-	for id := range s.byID {
-		used[id] = struct{}{}
+	id, err := idgen.EntryID()
+	if err != nil {
+		return Entry{}, err
 	}
 	e := Entry{
 		Type:      typ,
-		ID:        idgen.EntryID(used),
+		ID:        id,
 		ParentID:  s.leafID,
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Details:   map[string]any{"reason": reason, "ok": ok},
@@ -461,13 +464,13 @@ func (s *Session) AppendEvent(typ, reason string, ok bool) (Entry, error) {
 func (s *Session) AppendRequestHeader(system string, tools []ToolSchema) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	used := map[string]struct{}{}
-	for id := range s.byID {
-		used[id] = struct{}{}
+	id, err := idgen.EntryID()
+	if err != nil {
+		return Entry{}, err
 	}
 	e := Entry{
 		Type:      "request_header",
-		ID:        idgen.EntryID(used),
+		ID:        id,
 		ParentID:  s.leafID,
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		System:    system,
@@ -570,7 +573,10 @@ func Fork(root string, src *Session) (*Session, error) {
 	src.mu.Unlock()
 	_ = src.jsonl.Sync()
 
-	id := idgen.NewV7()
+	id, err := idgen.NewV7()
+	if err != nil {
+		return nil, err
+	}
 	ts := idgen.FileTimestamp(time.Now())
 	dir := filepath.Join(root, EncodeCWD(cwd), ts+"_"+id)
 	if err := copyDir(src.Dir, dir); err != nil {
