@@ -2,23 +2,39 @@ package tools
 
 import "ki/internal/loop"
 
-// Set is the four built-in tools bound to a session cwd.
+// Editor selects the mutually exclusive model-visible editing interface.
+type Editor string
+
+const (
+	EditorWriteEdit  Editor = "write_edit"
+	EditorApplyPatch Editor = "apply_patch_freeform"
+)
+
+// Profile is the provider-neutral subset of model capabilities that affects
+// built-in tool exposure. The server derives it from the resolved model.
+type Profile struct {
+	RichRead bool
+	Editor   Editor
+}
+
+// Set binds built-in tools to a session cwd.
 type Set struct {
 	CWD  string
 	Jobs *JobStore
 }
 
-// All returns the four tools.
-func (s Set) All() []loop.Tool {
+// Build returns the tools exposed for one resolved model.
+func (s Set) Build(profile Profile) []loop.Tool {
 	if s.Jobs == nil {
 		s.Jobs = NewJobStore()
 	}
 	cwd := s.CWD
 	jobs := s.Jobs
-	return []loop.Tool{
-		readTool{cwd: cwd, jobs: jobs},
-		writeTool{cwd: cwd},
-		editTool{cwd: cwd},
-		bashTool{cwd: cwd, jobs: jobs},
+	out := []loop.Tool{readTool{cwd: cwd, jobs: jobs, rich: profile.RichRead}}
+	if profile.Editor == EditorApplyPatch {
+		out = append(out, applyPatchTool{cwd: cwd})
+	} else {
+		out = append(out, writeTool{cwd: cwd}, editTool{cwd: cwd})
 	}
+	return append(out, bashTool{cwd: cwd, jobs: jobs})
 }

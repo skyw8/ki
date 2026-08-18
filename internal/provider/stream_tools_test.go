@@ -154,3 +154,28 @@ func TestLiveResponsesReconstructsFunctionCall(t *testing.T) {
 		t.Fatalf("args: %+v", c.Arguments)
 	}
 }
+
+func TestLiveResponsesReconstructsCustomToolCall(t *testing.T) {
+	sse := "event: response.output_item.added\n" + dataJSON(map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{"id": "ct_1", "type": "custom_tool_call", "name": "apply_patch", "call_id": "call_1", "input": ""},
+	}) + "event: response.custom_tool_call_input.delta\n" + dataJSON(map[string]any{
+		"type": "response.custom_tool_call_input.delta", "item_id": "ct_1", "delta": "*** Begin ",
+	}) + "event: response.custom_tool_call_input.delta\n" + dataJSON(map[string]any{
+		"type": "response.custom_tool_call_input.delta", "item_id": "ct_1", "delta": "Patch",
+	}) + "event: response.output_item.done\n" + dataJSON(map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{"id": "ct_1", "type": "custom_tool_call", "name": "apply_patch", "call_id": "call_1", "input": "*** Begin Patch"},
+	}) + "event: response.completed\n" + dataJSON(map[string]any{
+		"type": "response.completed", "response": map[string]any{"usage": map[string]any{"input_tokens": 4, "output_tokens": 2}},
+	})
+	live := NewLive("responses", "https://api.openai.com/v1", "k", sseDoer(sse))
+	m, err := live.Stream(context.Background(), loop.Request{Model: "gpt-5.6-terra"}, func(loop.AssistantDelta) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := mustTool(t, m, "apply_patch")
+	if c.ToolType != "custom" || c.Input != "*** Begin Patch" || c.ID != "call_1" {
+		t.Fatalf("custom call: %+v", c)
+	}
+}

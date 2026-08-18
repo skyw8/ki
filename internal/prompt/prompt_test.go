@@ -49,7 +49,7 @@ func TestBuildLayers(t *testing.T) {
 	sys, _ := Build(Input{
 		Home:  home,
 		CWD:   cwd,
-		Tools: tools.Set{CWD: cwd}.All(),
+		Tools: tools.Set{CWD: cwd}.Build(tools.Profile{RichRead: true, Editor: tools.EditorWriteEdit}),
 		Now:   time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC),
 	})
 	if !strings.Contains(sys, "operating inside ki") {

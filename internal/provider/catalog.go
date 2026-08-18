@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const CatalogVersion = 1
+const CatalogVersion = 2
 
 // CostRates are USD prices per million tokens.
 type CostRates struct {
@@ -40,21 +40,22 @@ type Compat struct {
 
 // Model is a fully resolved selectable model.
 type Model struct {
-	Provider         string             `json:"provider"`
-	ID               string             `json:"id"`
-	Name             string             `json:"name"`
-	API              string             `json:"api"`
-	BaseURL          string             `json:"baseUrl"`
-	Enabled          bool               `json:"enabled"`
-	Builtin          bool               `json:"builtin"`
-	Customized       bool               `json:"customized,omitempty"`
-	ContextWindow    int                `json:"contextWindow"`
-	MaxTokens        int                `json:"maxTokens"`
-	Input            []string           `json:"input"`
-	Reasoning        bool               `json:"reasoning"`
-	ThinkingLevelMap map[string]*string `json:"thinkingLevelMap,omitempty"`
-	Cost             *Cost              `json:"cost"`
-	Compat           Compat             `json:"compat,omitempty"`
+	Provider           string             `json:"provider"`
+	ID                 string             `json:"id"`
+	Name               string             `json:"name"`
+	API                string             `json:"api"`
+	BaseURL            string             `json:"baseUrl"`
+	Enabled            bool               `json:"enabled"`
+	Builtin            bool               `json:"builtin"`
+	Customized         bool               `json:"customized,omitempty"`
+	ContextWindow      int                `json:"contextWindow"`
+	MaxTokens          int                `json:"maxTokens"`
+	Input              []string           `json:"input"`
+	ApplyPatchToolType string             `json:"applyPatchToolType,omitempty"`
+	Reasoning          bool               `json:"reasoning"`
+	ThinkingLevelMap   map[string]*string `json:"thinkingLevelMap,omitempty"`
+	Cost               *Cost              `json:"cost"`
+	Compat             Compat             `json:"compat,omitempty"`
 }
 
 // Provider describes a connection plus its resolved models.
@@ -89,18 +90,19 @@ type catalogEntry struct {
 
 // ModelSeed is the on-disk model definition used by built-in and user catalogs.
 type ModelSeed struct {
-	ID               string             `json:"id"`
-	Name             string             `json:"name,omitempty"`
-	Enabled          *bool              `json:"enabled,omitempty"`
-	API              string             `json:"api,omitempty"`
-	BaseURL          string             `json:"baseUrl,omitempty"`
-	ContextWindow    int                `json:"contextWindow,omitempty"`
-	MaxTokens        int                `json:"maxTokens,omitempty"`
-	Input            []string           `json:"input,omitempty"`
-	Reasoning        *bool              `json:"reasoning,omitempty"`
-	ThinkingLevelMap map[string]*string `json:"thinkingLevelMap,omitempty"`
-	Cost             *Cost              `json:"cost"`
-	Compat           Compat             `json:"compat,omitempty"`
+	ID                 string             `json:"id"`
+	Name               string             `json:"name,omitempty"`
+	Enabled            *bool              `json:"enabled,omitempty"`
+	API                string             `json:"api,omitempty"`
+	BaseURL            string             `json:"baseUrl,omitempty"`
+	ContextWindow      int                `json:"contextWindow,omitempty"`
+	MaxTokens          int                `json:"maxTokens,omitempty"`
+	Input              []string           `json:"input,omitempty"`
+	ApplyPatchToolType string             `json:"applyPatchToolType,omitempty"`
+	Reasoning          *bool              `json:"reasoning,omitempty"`
+	ThinkingLevelMap   map[string]*string `json:"thinkingLevelMap,omitempty"`
+	Cost               *Cost              `json:"cost"`
+	Compat             Compat             `json:"compat,omitempty"`
 }
 
 //go:embed catalog.json
@@ -190,7 +192,7 @@ func resolveSeed(providerID, providerAPI, providerBase string, seed ModelSeed, b
 	if seed.Reasoning != nil {
 		reasoning = *seed.Reasoning
 	}
-	return Model{Provider: providerID, ID: seed.ID, Name: name, API: api, BaseURL: base, Enabled: enabled, Builtin: builtin, Customized: !builtin, ContextWindow: window, MaxTokens: maxTokens, Input: input, Reasoning: reasoning, ThinkingLevelMap: cloneThinkingMap(seed.ThinkingLevelMap), Cost: cloneCost(seed.Cost), Compat: seed.Compat}
+	return Model{Provider: providerID, ID: seed.ID, Name: name, API: api, BaseURL: base, Enabled: enabled, Builtin: builtin, Customized: !builtin, ContextWindow: window, MaxTokens: maxTokens, Input: input, ApplyPatchToolType: seed.ApplyPatchToolType, Reasoning: reasoning, ThinkingLevelMap: cloneThinkingMap(seed.ThinkingLevelMap), Cost: cloneCost(seed.Cost), Compat: seed.Compat}
 }
 
 func cloneThinkingMap(in map[string]*string) map[string]*string {

@@ -38,17 +38,18 @@ type ProviderConfig struct {
 }
 
 type ModelOverride struct {
-	Name             *string             `json:"name,omitempty"`
-	Enabled          *bool               `json:"enabled,omitempty"`
-	API              *string             `json:"api,omitempty"`
-	BaseURL          *string             `json:"baseUrl,omitempty"`
-	ContextWindow    *int                `json:"contextWindow,omitempty"`
-	MaxTokens        *int                `json:"maxTokens,omitempty"`
-	Input            *[]string           `json:"input,omitempty"`
-	Reasoning        *bool               `json:"reasoning,omitempty"`
-	ThinkingLevelMap *map[string]*string `json:"thinkingLevelMap,omitempty"`
-	Cost             json.RawMessage     `json:"cost,omitempty"`
-	Compat           *Compat             `json:"compat,omitempty"`
+	Name               *string             `json:"name,omitempty"`
+	Enabled            *bool               `json:"enabled,omitempty"`
+	API                *string             `json:"api,omitempty"`
+	BaseURL            *string             `json:"baseUrl,omitempty"`
+	ContextWindow      *int                `json:"contextWindow,omitempty"`
+	MaxTokens          *int                `json:"maxTokens,omitempty"`
+	Input              *[]string           `json:"input,omitempty"`
+	ApplyPatchToolType *string             `json:"applyPatchToolType,omitempty"`
+	Reasoning          *bool               `json:"reasoning,omitempty"`
+	ThinkingLevelMap   *map[string]*string `json:"thinkingLevelMap,omitempty"`
+	Cost               json.RawMessage     `json:"cost,omitempty"`
+	Compat             *Compat             `json:"compat,omitempty"`
 }
 
 type credentialEntry struct {
@@ -188,6 +189,9 @@ func buildRegistryState(user ModelsFile, creds credentialsFile) (*registryState,
 		byID := map[string]Model{}
 		var ids []string
 		for _, m := range p.Models {
+			if err := validateModel(m); err != nil {
+				return nil, err
+			}
 			byID[m.ID] = m
 			ids = append(ids, m.ID)
 		}
@@ -308,6 +312,14 @@ func validateModel(m Model) error {
 	if !slices.Contains(m.Input, "text") {
 		return fmt.Errorf("provider %q model %q: input must include text", m.Provider, m.ID)
 	}
+	if m.ApplyPatchToolType != "" && m.ApplyPatchToolType != "freeform" {
+		return fmt.Errorf("provider %q model %q: invalid applyPatchToolType %q", m.Provider, m.ID, m.ApplyPatchToolType)
+	}
+	if m.ApplyPatchToolType == "freeform" && m.API != "responses" {
+		// Codex freeform calls use Responses custom_tool_call wire items; the
+		// other adapters can only describe JSON function tools.
+		return fmt.Errorf("provider %q model %q: freeform apply_patch requires responses api", m.Provider, m.ID)
+	}
 	for k := range m.ThinkingLevelMap {
 		if !slices.Contains(thinkingLevels, k) {
 			return fmt.Errorf("provider %q model %q: invalid thinking level %q", m.Provider, m.ID, k)
@@ -373,6 +385,9 @@ func applyModelOverride(m Model, o ModelOverride) (Model, error) {
 	}
 	if o.Input != nil {
 		m.Input = slices.Clone(*o.Input)
+	}
+	if o.ApplyPatchToolType != nil {
+		m.ApplyPatchToolType = *o.ApplyPatchToolType
 	}
 	if o.Reasoning != nil {
 		m.Reasoning = *o.Reasoning

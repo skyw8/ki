@@ -21,10 +21,111 @@ func pick(ts []loop.Tool, name string) loop.Tool {
 	return nil
 }
 
+func names(ts []loop.Tool) []string {
+	out := make([]string, 0, len(ts))
+	for _, tool := range ts {
+		out = append(out, tool.Name())
+	}
+	return out
+}
+
+func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
+	set := Set{CWD: t.TempDir()}
+	classic := set.Build(Profile{Editor: EditorWriteEdit})
+	if got := strings.Join(names(classic), ","); got != "Read,Write,Edit,Bash" {
+		t.Fatalf("classic tools = %s", got)
+	}
+	textRead := pick(classic, "Read")
+	if strings.Contains(textRead.Prompt(), "PDF") || textRead.Parameters()["properties"].(map[string]any)["pages"] != nil {
+		t.Fatalf("text Read leaked rich capabilities: %s %+v", textRead.Prompt(), textRead.Parameters())
+	}
+
+	patch := set.Build(Profile{RichRead: true, Editor: EditorApplyPatch})
+	if got := strings.Join(names(patch), ","); got != "Read,apply_patch,Bash" {
+		t.Fatalf("patch tools = %s", got)
+	}
+	if !strings.Contains(pick(patch, "Read").Prompt(), "PDF") {
+		t.Fatal("rich Read omitted PDF capability")
+	}
+	spec := pick(patch, "apply_patch").(loop.ToolSpecProvider).ToolSpec()
+	if spec.Type != "custom" || spec.Format == nil || spec.Format.Syntax != "lark" {
+		t.Fatalf("apply_patch spec = %+v", spec)
+	}
+}
+
+func TestTextReadRejectsImageAndPDF(t *testing.T) {
+	cwd := t.TempDir()
+	imagePath := filepath.Join(cwd, "image.png")
+	pdfPath := filepath.Join(cwd, "file.pdf")
+	_ = os.WriteFile(imagePath, []byte("\x89PNG\r\n\x1a\nbody"), 0o600)
+	_ = os.WriteFile(pdfPath, []byte("%PDF-1.4\n(body)"), 0o600)
+	read := readTool{cwd: cwd}
+	for _, path := range []string{imagePath, pdfPath} {
+		if res := read.Execute(context.Background(), map[string]any{"file_path": path}); !res.IsError {
+			t.Fatalf("text Read accepted %s: %+v", path, res)
+		}
+	}
+}
+
+func TestApplyPatchAddUpdateMoveDelete(t *testing.T) {
+	cwd := t.TempDir()
+	tool := applyPatchTool{cwd: cwd}
+	add := tool.ExecuteRaw(context.Background(), "*** Begin Patch\n*** Add File: a.txt\n+one\n+two\n*** End Patch")
+	if add.IsError {
+		t.Fatalf("add: %+v", add)
+	}
+	update := tool.ExecuteRaw(context.Background(), "*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+ONE\n two\n*** Move to: ignored.txt\n*** End Patch")
+	if !update.IsError {
+		t.Fatal("move marker after chunks must be rejected")
+	}
+	move := tool.ExecuteRaw(context.Background(), "*** Begin Patch\n*** Update File: a.txt\n*** Move to: sub/b.txt\n@@\n-one\n+ONE\n two\n*** End Patch")
+	if move.IsError {
+		t.Fatalf("move: %+v", move)
+	}
+	b, err := os.ReadFile(filepath.Join(cwd, "sub", "b.txt"))
+	if err != nil || string(b) != "ONE\ntwo\n" {
+		t.Fatalf("moved file = %q err=%v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "a.txt")); !os.IsNotExist(err) {
+		t.Fatalf("source still exists: %v", err)
+	}
+	del := tool.ExecuteRaw(context.Background(), "*** Begin Patch\n*** Delete File: sub/b.txt\n*** End Patch")
+	if del.IsError {
+		t.Fatalf("delete: %+v", del)
+	}
+}
+
+func TestApplyPatchNormalizesCRLFAndMatchesWhitespace(t *testing.T) {
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, "a.txt")
+	if err := os.WriteFile(path, []byte("  one  \r\ntwo\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := (applyPatchTool{cwd: cwd}).ExecuteRaw(context.Background(), "*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+ONE\n two\n*** End Patch")
+	if res.IsError {
+		t.Fatalf("patch: %+v", res)
+	}
+	b, _ := os.ReadFile(path)
+	if string(b) != "ONE\ntwo\n" {
+		t.Fatalf("normalized file = %q", b)
+	}
+}
+
+func TestApplyPatchRejectsMalformedInputWithoutWriting(t *testing.T) {
+	cwd := t.TempDir()
+	res := (applyPatchTool{cwd: cwd}).ExecuteRaw(context.Background(), "*** Begin Patch\n*** Add File: bad.txt\nmissing plus\n*** End Patch")
+	if !res.IsError || !strings.Contains(res.Content[0].Text, "verification failed") {
+		t.Fatalf("malformed patch = %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, "bad.txt")); !os.IsNotExist(err) {
+		t.Fatalf("malformed patch wrote file: %v", err)
+	}
+}
+
 func TestReadWriteEditRelativeAndNoLineNumbers(t *testing.T) {
 	cwd := t.TempDir()
 	set := Set{CWD: cwd, Jobs: NewJobStore()}
-	all := set.All()
+	all := set.Build(Profile{RichRead: true, Editor: EditorWriteEdit})
 	read, write, edit := pick(all, "Read"), pick(all, "Write"), pick(all, "Edit")
 	res := write.Execute(context.Background(), map[string]any{
 		"file_path": "a.txt",
@@ -105,7 +206,7 @@ func TestBashBackgroundAndRead(t *testing.T) {
 	cwd := t.TempDir()
 	jobs := NewJobStore()
 	set := Set{CWD: cwd, Jobs: jobs}
-	all := set.All()
+	all := set.Build(Profile{Editor: EditorWriteEdit})
 	bash, read := pick(all, "Bash"), pick(all, "Read")
 	res := bash.Execute(context.Background(), map[string]any{
 		"command":           "echo bg-out",
@@ -136,7 +237,7 @@ func TestBashBackgroundAndRead(t *testing.T) {
 
 func TestReadNotebookAndPDFPages(t *testing.T) {
 	cwd := t.TempDir()
-	r := readTool{cwd: cwd}
+	r := readTool{cwd: cwd, rich: true}
 	nb := `{"cells":[{"cell_type":"code","source":["print(1)\n"],"outputs":[]}]}`
 	_ = os.WriteFile(filepath.Join(cwd, "n.ipynb"), []byte(nb), 0o600)
 	res := r.Execute(context.Background(), map[string]any{"file_path": "n.ipynb"})

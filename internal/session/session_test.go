@@ -127,8 +127,14 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.AppendRequestHeader("sys-body", []ToolSchema{{
-		Name: "Read", Description: "r", Parameters: map[string]any{"type": "object"},
+		Type: "custom", Name: "apply_patch", Description: "patch", Format: &ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"},
 	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "c1", Name: "apply_patch", Input: "PATCH"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(types.Message{Role: "toolResult", ToolType: "custom", ToolCallID: "c1", ToolName: "apply_patch", Content: []types.Content{{Type: "text", Text: "ok"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetToggles(&Toggle{Disabled: []string{"foo"}}, &Toggle{Only: []string{"bar"}}); err != nil {
@@ -150,8 +156,12 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 			hdr = &e
 		}
 	}
-	if hdr == nil || hdr.System != "sys-body" || len(hdr.Tools) != 1 || hdr.Tools[0].Name != "Read" {
+	if hdr == nil || hdr.System != "sys-body" || len(hdr.Tools) != 1 || hdr.Tools[0].Name != "apply_patch" || hdr.Tools[0].Type != "custom" || hdr.Tools[0].Format == nil {
 		t.Fatalf("header: %+v", hdr)
+	}
+	messages := s2.MessagesToLeaf()
+	if len(messages) != 2 || messages[0].ToolCalls()[0].Input != "PATCH" || messages[1].ToolType != "custom" {
+		t.Fatalf("custom tool messages: %+v", messages)
 	}
 	if len(s2.Config.Skills.Disabled) != 1 || s2.Config.Skills.Disabled[0] != "foo" {
 		t.Fatalf("skills: %+v", s2.Config.Skills)

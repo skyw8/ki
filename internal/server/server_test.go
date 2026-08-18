@@ -102,6 +102,62 @@ func (r *reqRecorder) Stream(_ context.Context, req loop.Request, _ func(loop.As
 	return types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "summary"}}, StopReason: "stop", Usage: &types.Usage{TotalTokens: 3}}, nil
 }
 
+func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
+	recorder := &reqRecorder{}
+	_, hs := testServerWith(t, recorder)
+	id := createSession(t, hs, t.TempDir())
+
+	prompt := func(model string) loop.Request {
+		t.Helper()
+		body, _ := json.Marshal(map[string]any{"text": "inspect tools", "model": model})
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer tok")
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusAccepted {
+			t.Fatalf("prompt status = %d", res.StatusCode)
+		}
+		waitAgentEnd(t, hs, id)
+		return recorder.reqs[len(recorder.reqs)-1]
+	}
+
+	gpt := prompt("openai/gpt-5.6-terra")
+	if got := requestToolNames(gpt.Tools); !slices.Equal(got, []string{"Read", "apply_patch", "Bash"}) {
+		t.Fatalf("GPT tools = %v", got)
+	}
+	if gpt.Tools[1].Type != "custom" || gpt.Tools[1].Format == nil {
+		t.Fatalf("GPT apply_patch spec = %+v", gpt.Tools[1])
+	}
+	readProps := gpt.Tools[0].Parameters["properties"].(map[string]any)
+	if readProps["pages"] == nil {
+		t.Fatal("GPT rich Read is missing pages")
+	}
+
+	deepseek := prompt("deepseek/deepseek-v4-flash")
+	if got := requestToolNames(deepseek.Tools); !slices.Equal(got, []string{"Read", "Write", "Edit", "Bash"}) {
+		t.Fatalf("DeepSeek tools = %v", got)
+	}
+	if strings.Contains(deepseek.Tools[0].Description, "PDF") {
+		t.Fatalf("DeepSeek Read leaked PDF description: %s", deepseek.Tools[0].Description)
+	}
+	readProps = deepseek.Tools[0].Parameters["properties"].(map[string]any)
+	if readProps["pages"] != nil {
+		t.Fatalf("DeepSeek Read leaked pages: %+v", readProps)
+	}
+}
+
+func requestToolNames(specs []loop.ToolSpec) []string {
+	out := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		out = append(out, spec.Name)
+	}
+	return out
+}
+
 func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KI_HOME", home)

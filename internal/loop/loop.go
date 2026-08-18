@@ -88,6 +88,17 @@ type Tool interface {
 	Execute(ctx context.Context, args map[string]any) ToolResult
 }
 
+// ToolSpecProvider optionally replaces the default JSON function schema.
+// It is used by grammar-backed Responses custom tools such as apply_patch.
+type ToolSpecProvider interface {
+	ToolSpec() ToolSpec
+}
+
+// FreeformTool executes the raw input of a custom tool call.
+type FreeformTool interface {
+	ExecuteRaw(ctx context.Context, input string) ToolResult
+}
+
 // ToolResult is one tool execution outcome.
 type ToolResult struct {
 	Content []types.Content
@@ -122,9 +133,25 @@ type Request struct {
 
 // ToolSpec is the schema sent to the provider.
 type ToolSpec struct {
+	Type        string         `json:"type,omitempty"`
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+	Format      *ToolFormat    `json:"format,omitempty"`
+}
+
+// ToolFormat describes the grammar accepted by a Responses custom tool.
+type ToolFormat struct {
+	Type       string `json:"type"`
+	Syntax     string `json:"syntax"`
+	Definition string `json:"definition"`
+}
+
+func specForTool(t Tool) ToolSpec {
+	if p, ok := t.(ToolSpecProvider); ok {
+		return p.ToolSpec()
+	}
+	return ToolSpec{Type: "function", Name: t.Name(), Description: t.Description() + "\n\n" + t.Prompt(), Parameters: t.Parameters()}
 }
 
 // Hooks are awaited interception points.
@@ -164,6 +191,7 @@ type Config struct {
 	SupportsReasoningEffort bool
 	ForceAdaptiveThinking   bool
 	ThinkingLevelMap        map[string]*string
+	TextOnly                bool
 	System                  string
 }
 
@@ -211,7 +239,7 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 
 	var specs []ToolSpec
 	for _, t := range cfg.Tools {
-		specs = append(specs, ToolSpec{Name: t.Name(), Description: t.Description() + "\n\n" + t.Prompt(), Parameters: t.Parameters()})
+		specs = append(specs, specForTool(t))
 	}
 
 	firstTurn := true
@@ -235,6 +263,11 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 				return newMsgs, err
 			}
 			msgs = m
+		}
+		if cfg.TextOnly {
+			// Tool schemas cannot constrain old session entries or MCP results;
+			// strip here at the final model-facing boundary as Codex does.
+			msgs = stripImages(msgs)
 		}
 
 		if err := emit(Event{Type: RequestHeader, System: system, Tools: append([]ToolSpec(nil), specs...), Provider: cfg.Provider, Model: cfg.Model}); err != nil {
@@ -313,6 +346,20 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 		return newMsgs, err
 	}
 	return newMsgs, nil
+}
+
+func stripImages(msgs []types.Message) []types.Message {
+	out := make([]types.Message, len(msgs))
+	for i, m := range msgs {
+		out[i] = m
+		out[i].Content = make([]types.Content, 0, len(m.Content))
+		for _, c := range m.Content {
+			if c.Type != "image" {
+				out[i].Content = append(out[i].Content, c)
+			}
+		}
+	}
+	return out
 }
 
 func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Event) error) (types.Message, error) {
@@ -429,22 +476,25 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 	}
 	preps := make([]prep, len(calls))
 	for i, c := range calls {
-		_ = emit(Event{Type: ToolExecutionStart, ToolCallID: c.ID, ToolName: c.Name, Args: c.Arguments})
-		p := prep{call: c}
 		args := c.Arguments
+		if c.ToolType == "custom" {
+			args = map[string]any{"input": c.Input}
+		}
+		_ = emit(Event{Type: ToolExecutionStart, ToolCallID: c.ID, ToolName: c.Name, Args: args})
+		p := prep{call: c}
 		if args == nil {
 			args = map[string]any{}
 		}
 		t, ok := byName[c.Name]
 		if !ok {
-			m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, Content: []types.Content{{Type: "text", Text: "unknown tool " + c.Name}}, IsError: true}
+			m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: "unknown tool " + c.Name}}, IsError: true}
 			p.immediate = &m
 			preps[i] = p
 			continue
 		}
-		if v, ok := t.(ToolValidator); ok {
+		if v, ok := t.(ToolValidator); ok && c.ToolType != "custom" {
 			if err := v.Validate(args); err != nil {
-				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
+				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 				p.immediate = &m
 				preps[i] = p
 				continue
@@ -453,7 +503,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 		if cfg.Hooks.BeforeTool != nil {
 			a, b, r, term, err := cfg.Hooks.BeforeTool(ctx, c.Name, args)
 			if err != nil {
-				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
+				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 				p.immediate = &m
 				p.terminate = term
 				preps[i] = p
@@ -461,7 +511,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			}
 			args, p.terminate = a, term
 			if b {
-				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, Content: []types.Content{{Type: "text", Text: r}}, IsError: true}
+				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: r}}, IsError: true}
 				p.immediate = &m
 				preps[i] = p
 				continue
@@ -480,7 +530,17 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			return
 		}
 		start := time.Now()
-		res := p.tool.Execute(ctx, p.args)
+		var res ToolResult
+		if p.call.ToolType == "custom" {
+			raw, _ := p.args["input"].(string)
+			if ft, ok := p.tool.(FreeformTool); ok {
+				res = ft.ExecuteRaw(ctx, raw)
+			} else {
+				res = ToolResult{Content: []types.Content{{Type: "text", Text: "tool does not accept freeform input"}}, IsError: true}
+			}
+		} else {
+			res = p.tool.Execute(ctx, p.args)
+		}
 		if cfg.Hooks.AfterTool != nil {
 			if nr, err := cfg.Hooks.AfterTool(ctx, p.call.Name, p.args, res); err == nil {
 				res = nr
@@ -491,6 +551,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			Role:       "toolResult",
 			ToolCallID: p.call.ID,
 			ToolName:   p.call.Name,
+			ToolType:   p.call.ToolType,
 			Content:    res.Content,
 			IsError:    res.IsError,
 			DurationMs: dur,
@@ -535,16 +596,21 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 func rejectToolCalls(calls []types.Content, emit func(Event) error) []types.Message {
 	out := make([]types.Message, 0, len(calls))
 	for _, c := range calls {
+		args := c.Arguments
+		if c.ToolType == "custom" {
+			args = map[string]any{"input": c.Input}
+		}
 		msg := types.Message{
 			Role:       "toolResult",
 			ToolCallID: c.ID,
 			ToolName:   c.Name,
+			ToolType:   c.ToolType,
 			Content: []types.Content{{Type: "text", Text: fmt.Sprintf(
 				"Tool call %q was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.", c.Name)}},
 			IsError:   true,
 			Timestamp: time.Now().UnixMilli(),
 		}
-		_ = emit(Event{Type: ToolExecutionStart, ToolCallID: c.ID, ToolName: c.Name, Args: c.Arguments})
+		_ = emit(Event{Type: ToolExecutionStart, ToolCallID: c.ID, ToolName: c.Name, Args: args})
 		_ = emit(Event{Type: ToolExecutionEnd, ToolCallID: c.ID, ToolName: c.Name, IsError: true})
 		out = append(out, msg)
 	}

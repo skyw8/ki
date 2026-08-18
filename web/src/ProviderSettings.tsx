@@ -100,6 +100,7 @@ export function ProviderSettings({ api, onChanged }: Props) {
     setModelJSON(JSON.stringify({
       name: model.name, enabled: model.enabled, api: model.api, baseUrl: model.baseUrl,
       contextWindow: model.contextWindow, maxTokens: model.maxTokens, input: model.input,
+      applyPatchToolType: model.applyPatchToolType,
       reasoning: model.reasoning, thinkingLevelMap: model.thinkingLevelMap, cost: model.cost, compat: model.compat,
     }, null, 2))
   }

@@ -80,9 +80,18 @@ type Entry struct {
 
 // ToolSchema is the model-visible tool list on a request_header entry.
 type ToolSchema struct {
+	Type        string         `json:"type,omitempty"`
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+	Format      *ToolFormat    `json:"format,omitempty"`
+}
+
+// ToolFormat is the persisted grammar format of a custom tool.
+type ToolFormat struct {
+	Type       string `json:"type"`
+	Syntax     string `json:"syntax"`
+	Definition string `json:"definition"`
 }
 
 // RequestMeta pins catalog identity used to build a provider request.

@@ -15,6 +15,8 @@ export type Content = {
   mimeType?: string
   id?: string
   name?: string
+	toolType?: string
+	input?: string
   arguments?: Record<string, unknown>
 }
 
@@ -27,6 +29,7 @@ export type Message = {
   errorMessage?: string
   toolCallId?: string
   toolName?: string
+	toolType?: string
   isError?: boolean
   latencyMs?: number
   ttftMs?: number
@@ -57,9 +60,11 @@ export type Entry = {
 }
 
 export type ToolSchema = {
+	type?: string
   name: string
   description?: string
   parameters?: Record<string, unknown>
+	format?: { type: string; syntax: string; definition: string }
 }
 
 export type LoopEvent = {
@@ -165,6 +170,7 @@ export type ModelInfo = {
   contextWindow?: number
 	maxTokens?: number
 	input?: string[]
+	applyPatchToolType?: 'freeform'
 	reasoning?: boolean
 	thinkingLevels?: string[]
 	builtin?: boolean
@@ -179,6 +185,7 @@ export type ProviderModel = Omit<ModelInfo, 'spec' | 'thinkingLevels'> & {
 	baseUrl: string
 	cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
 	thinkingLevelMap?: Record<string, string | null>
+	applyPatchToolType?: 'freeform'
 	compat?: Record<string, unknown>
 }
 

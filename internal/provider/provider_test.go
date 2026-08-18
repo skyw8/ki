@@ -79,6 +79,37 @@ func TestThinkingAndMaxTokenRequestShapes(t *testing.T) {
 
 func ptr(s string) *string { return &s }
 
+func TestResponsesBodyUsesCustomToolCallAndOutput(t *testing.T) {
+	body := ResponsesBody(loop.Request{
+		Model: "gpt-5.6-terra",
+		Tools: []loop.ToolSpec{{
+			Type: "custom", Name: "apply_patch", Description: "patch",
+			Format: &loop.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"},
+		}},
+		Messages: []types.Message{
+			{Role: "assistant", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "call_1", Name: "apply_patch", Input: "*** Begin Patch"}}},
+			{Role: "toolResult", ToolType: "custom", ToolCallID: "call_1", ToolName: "apply_patch", Content: []types.Content{{Type: "text", Text: "ok"}}},
+		},
+	})
+	tools := mustType[[]map[string]any](t, body["tools"])
+	if tools[0]["type"] != "custom" || tools[0]["name"] != "apply_patch" {
+		t.Fatalf("custom tool: %+v", tools[0])
+	}
+	format := mustType[*loop.ToolFormat](t, tools[0]["format"])
+	if format.Syntax != "lark" {
+		t.Fatalf("format: %+v", format)
+	}
+	items := mustType[[]any](t, body["input"])
+	call := mustType[map[string]any](t, items[0])
+	output := mustType[map[string]any](t, items[1])
+	if call["type"] != "custom_tool_call" || call["input"] != "*** Begin Patch" {
+		t.Fatalf("call: %+v", call)
+	}
+	if output["type"] != "custom_tool_call_output" || output["call_id"] != "call_1" {
+		t.Fatalf("output: %+v", output)
+	}
+}
+
 func TestAnthropicBodyUsesCacheControlAndToolUse(t *testing.T) {
 	body := AnthropicBody(loop.Request{
 		System: "layered",
