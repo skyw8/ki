@@ -307,7 +307,10 @@ func Run(ctx context.Context, s *session.Session, sum Summarizer, cfg config.Com
 func summarize(ctx context.Context, sum Summarizer, _ config.Compaction, msgs []types.Message, previousSummary string, splitTurn bool) (string, *types.Usage, error) {
 	transcript := strings.Builder{}
 	for _, m := range msgs {
-		transcript.WriteString(m.Role + ": " + m.Text() + "\n")
+		transcript.WriteString(m.Role)
+		transcript.WriteString(": ")
+		transcript.WriteString(m.Text())
+		transcript.WriteByte('\n')
 	}
 	t := transcript.String()
 	if t == "" {
