@@ -188,8 +188,8 @@ func Setup(opts Options) (io.Closer, error) {
 		return nil, errors.New("log max_backups must be positive")
 	}
 	logFile, err := newRotatingFile(
-		filepath.Join(home, "ki.log"),
-		filepath.Join(home, "ki.log.lock"),
+		filepath.Join(home, "ki.jsonl"),
+		filepath.Join(home, "ki.jsonl.lock"),
 		int64(opts.MaxSizeMB)*1024*1024,
 		opts.MaxBackups,
 	)

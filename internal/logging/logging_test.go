@@ -27,7 +27,7 @@ func TestSetupAndClose(t *testing.T) {
 		t.Fatalf("second Close() error = %v", err)
 	}
 
-	path := filepath.Join(home, "ki.log")
+	path := filepath.Join(home, "ki.jsonl")
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat(%q) error = %v", path, err)
@@ -92,7 +92,7 @@ func TestSensitiveAttributesAreRedacted(t *testing.T) {
 	if err := closer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(home, "ki.log"))
+	b, err := os.ReadFile(filepath.Join(home, "ki.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,11 +117,11 @@ func TestLogRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, suffix := range []string{"", ".1", ".2"} {
-		if _, err := os.Stat(filepath.Join(home, "ki.log"+suffix)); err != nil {
+		if _, err := os.Stat(filepath.Join(home, "ki.jsonl"+suffix)); err != nil {
 			t.Fatalf("missing rotated log %q: %v", suffix, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(home, "ki.log.3")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, "ki.jsonl.3")); !os.IsNotExist(err) {
 		t.Fatalf("unexpected log beyond max_backups: %v", err)
 	}
 }
@@ -142,7 +142,7 @@ func TestRecoverLogsPanicAndStack(t *testing.T) {
 	if err := closer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(home, "ki.log"))
+	b, err := os.ReadFile(filepath.Join(home, "ki.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
