@@ -25,7 +25,7 @@ type Input struct {
 // Build returns the layered system prompt (recomputed after compaction).
 func Build(in Input) (string, []skills.Skill) {
 	var b strings.Builder
-	b.WriteString("You are an expert coding assistant operating inside ki, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\n")
+	b.WriteString("You are a helpful assistant operating inside ki, a agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\n")
 	b.WriteString("Available tools:\n")
 	hasRead := false
 	if len(in.Tools) == 0 {
