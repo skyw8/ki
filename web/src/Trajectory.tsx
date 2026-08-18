@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type WheelEvent } from 
 import { applyFollowTail } from './follow-tail'
 import { useI18n, type TFn } from './i18n'
 import { IChev, IClock, IClose, ICompact, IFold, ISearch, ISpark, ITail, IUser, IWrench } from './icons'
-import { renderMarkdown } from './markdown'
+import { Markdown } from './Markdown'
 import type { ToolSchema, TrajKind, TrajRecord } from './types'
 
 type InspTab = 'summary' | 'preview' | 'raw' | 'system-prompt' | 'tools' | 'context'
@@ -64,7 +64,7 @@ function recordText(r: TrajRecord): string {
 
 function MarkdownBody({ text }: { text: string }) {
   if (!text) return <p className="insp-empty">—</p>
-  return <div className="insp-md md" dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />
+  return <Markdown className="insp-md" text={text} />
 }
 
 const KIND_LABEL: Record<TrajKind, string> = {

@@ -5,12 +5,8 @@ import { Composer, type Draft } from './Composer'
 import { AttachmentImage } from './AttachmentImage'
 import type { Client } from './api'
 import { useI18n } from './i18n'
-import { renderMarkdown } from './markdown'
+import { Markdown } from './Markdown'
 import type { ChatNode } from './types'
-
-function Markdown({ text }: { text: string }) {
-  return <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }} />
-}
 
 function copyText(text: string) {
   void navigator.clipboard?.writeText(text)
@@ -263,7 +259,7 @@ export function ChatView({ api, nodes, busy, uploading, onSelect, edit, onStartE
                 {n.images?.map((img, i) => (
                   <img key={i} className="msg-img" alt="" src={`data:${img.mimeType};base64,${img.data}`} />
                 ))}
-                {n.text ? <Markdown text={n.text} /> : n.streaming && !n.thinking ? <span className="status-line">…</span> : null}
+                {n.text ? <Markdown text={n.text} streaming={n.streaming} /> : n.streaming && !n.thinking ? <span className="status-line">…</span> : null}
                 {n.error ? <div className="notice">{n.error}</div> : null}
               </div>
               {!n.streaming ? (

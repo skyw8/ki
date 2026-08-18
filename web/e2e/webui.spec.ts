@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { applyFollowTail } from '../src/follow-tail.ts'
-import { renderMarkdown } from '../src/markdown.ts'
+import { nodeTypes, nodeValues, parseMarkdown } from './markdown-parse.ts'
 import { statePath } from './global-setup.ts'
 
 async function sendPrompt(page: Page, text: string) {
@@ -146,13 +146,40 @@ test('provider settings supports a complete add and edit flow', async ({ page })
   await expect(page.locator(`.provider-nav [data-provider-id="${providerID}"]`)).toHaveCount(0)
 })
 
-test('markdown renders fences, headers, and inline code', () => {
-  expect(renderMarkdown('use the `Read` tool')).toBe('<p>use the <code>Read</code> tool</p>')
-  expect(renderMarkdown('see `` `nested` `` here')).toBe('<p>see <code>`nested`</code> here</p>')
-  expect(renderMarkdown('path: \uFF40internal/mcp\uFF40')).toBe('<p>path: <code>internal/mcp</code></p>')
-  expect(renderMarkdown('  ## Title\n\n  ```go\nfmt.Println("hi")\n  ```\n')).toBe('<h2>Title</h2><pre><code class="lang-go">fmt.Println(&quot;hi&quot;)</code></pre>')
-  expect(renderMarkdown('> quoted `x`')).toBe('<blockquote>quoted <code>x</code></blockquote>')
-  expect(renderMarkdown('**bold** and *em*')).toBe('<p><strong>bold</strong> and <em>em</em></p>')
+test('markdown parse keeps fences, emphasis, CJK, and streaming closers', () => {
+  const inline = parseMarkdown('use the `Read` tool')
+  expect(nodeValues(inline, 'inlineCode')).toEqual(['Read'])
+
+  const nested = parseMarkdown('see `` `nested` `` here')
+  expect(nodeValues(nested, 'inlineCode')).toEqual(['`nested`'])
+
+  const fullwidth = parseMarkdown('path: \uFF40internal/mcp\uFF40')
+  expect(nodeValues(fullwidth, 'inlineCode')).toEqual(['internal/mcp'])
+
+  const fence = parseMarkdown('  ## Title\n\n  ```go\nfmt.Println("hi")\n  ```\n')
+  expect(nodeTypes(fence)).toContain('heading')
+  expect(nodeValues(fence, 'code')).toEqual(['fmt.Println("hi")'])
+
+  const quote = parseMarkdown('> quoted `x`')
+  expect(nodeTypes(quote)).toContain('blockquote')
+  expect(nodeValues(quote, 'inlineCode')).toEqual(['x'])
+
+  const em = parseMarkdown('**bold** and *em*')
+  expect(nodeTypes(em)).toEqual(expect.arrayContaining(['strong', 'emphasis']))
+  expect(nodeValues(em, 'text')).toEqual(['bold', ' and ', 'em'])
+
+  // CommonMark drops emphasis next to CJK punctuation; @streamdown/cjk keeps it.
+  const cjk = parseMarkdown('这是**强调。**结尾')
+  expect(nodeTypes(cjk)).toContain('strong')
+  expect(nodeValues(cjk, 'text')).toEqual(['这是', '强调。', '结尾'])
+
+  const streaming = parseMarkdown('before **bold', true)
+  expect(nodeTypes(streaming)).toContain('strong')
+  expect(nodeValues(streaming, 'text')).toEqual(['before ', 'bold'])
+
+  const leftover = parseMarkdown('before **bold', false)
+  expect(nodeTypes(leftover)).not.toContain('strong')
+  expect(nodeValues(leftover, 'text')).toEqual(['before **bold'])
 })
 
 test('chat and trajectory talk to the fake runtime', async ({ page }) => {
@@ -162,7 +189,7 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await sendPrompt(page, prompt)
 
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
-  await expect(page.getByTestId('assistant-message')).toContainText('ok')
+  await expect(page.getByTestId('assistant-message').locator('.md')).toContainText('ok')
   await expect(page.getByTestId('session-stats')).toContainText('1 轮 · 1 步')
   await expect(page.getByTestId('session-stats')).toContainText('输入 8 · 输出 2')
   await expect(page.getByTestId('session-title')).toContainText(prompt)
