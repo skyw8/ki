@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ApiError, Client, boot } from './api'
 import { ChatView } from './Chat'
@@ -38,6 +38,25 @@ function fuzzyTextMatch(value: string, query: string): boolean {
 function modelMatches(model: ModelInfo, query: string): boolean {
   const fields = [model.provider, model.id, model.name, model.spec, `${model.provider}/${model.id}`]
   return query.trim().split(/\s+/).every(token => fields.some(field => fuzzyTextMatch(field || '', token)))
+}
+
+// Why: .pop-menu used to be hard-coded at left:200/top:120, so a click on a
+// lower-row ⋯ opened the menu at the top of the sidebar. Anchor to the trigger
+// and clamp to the viewport so the menu stays under the pointer.
+function popMenuStyle(anchor: DOMRect, menu: HTMLElement): CSSProperties {
+  const gap = 4
+  const pad = 8
+  const mw = menu.offsetWidth
+  const mh = menu.offsetHeight
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  let top = anchor.bottom + gap
+  if (top + mh > vh - pad && anchor.top - gap - mh >= pad) {
+    top = anchor.top - gap - mh
+  }
+  const left = Math.max(pad, Math.min(anchor.left, vw - mw - pad))
+  top = Math.max(pad, Math.min(top, vh - mh - pad))
+  return { left, top }
 }
 
 function Modal({ title, onClose, children, testid }: { title: string; onClose: () => void; children: ReactNode; testid?: string }) {
@@ -101,6 +120,9 @@ export function App() {
   const [dirOpen, setDirOpen] = useState(false)
   const [dirBusy, setDirBusy] = useState(false)
   const [menu, setMenu] = useState<{ kind: 'ws' | 'sess'; id: string } | null>(null)
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({ visibility: 'hidden' })
+  const menuAnchor = useRef<DOMRect | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   const [rename, setRename] = useState<{ kind: 'ws' | 'sess'; id: string; title: string } | null>(null)
   const [confirmDel, setConfirmDel] = useState<{ kind: 'ws' | 'sess'; id: string; label: string; extra?: string } | null>(null)
   const [inspId, setInspId] = useState<string | null>(null)
@@ -111,6 +133,34 @@ export function App() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const searchRootRef = useRef<HTMLDivElement>(null)
   const modelSearchRef = useRef<HTMLInputElement>(null)
+
+  const openMenu = (kind: 'ws' | 'sess', id: string, el: HTMLElement) => {
+    menuAnchor.current = el.getBoundingClientRect()
+    setMenuStyle({ visibility: 'hidden' })
+    setMenu({ kind, id })
+  }
+
+  useLayoutEffect(() => {
+    if (!menu) return
+    const anchor = menuAnchor.current
+    const el = menuRef.current
+    if (!anchor || !el) return
+    setMenuStyle(popMenuStyle(anchor, el))
+  }, [menu])
+
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    window.addEventListener('resize', close)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('resize', close)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
 
   useEffect(() => {
     document.body.dataset.theme = dark ? 'dark' : 'light'
@@ -649,7 +699,7 @@ export function App() {
                     <IFolder />
                     <span className="title">{ws.title}{ws.temp ? ` · ${t('workspace.temp')}` : ''}</span>
                   </button>
-                  <button type="button" className="icon-btn tiny" aria-label={t('workspace.menu')} onClick={() => setMenu({ kind: 'ws', id: ws.id })}><IDots /></button>
+                  <button type="button" className="icon-btn tiny" aria-label={t('workspace.menu')} onClick={e => openMenu('ws', ws.id, e.currentTarget)}><IDots /></button>
                   <button type="button" className="icon-btn tiny" data-testid="ws-new-session" aria-label={t('session.new')} onClick={() => void newSession(ws.id)}><IPlus /></button>
                 </div>
                 {shown.map((s, i) => (
@@ -677,7 +727,7 @@ export function App() {
                         <div className="sub">{s.model}</div>
                       </span>
                     </button>
-                    <button type="button" className="icon-btn tiny" aria-label={t('session.menu')} onClick={() => setMenu({ kind: 'sess', id: s.id })}><IDots /></button>
+                    <button type="button" className="icon-btn tiny" aria-label={t('session.menu')} onClick={e => openMenu('sess', s.id, e.currentTarget)}><IDots /></button>
                   </div>
                 ))}
                 {open && rows.length > shown.length ? (
@@ -801,7 +851,7 @@ export function App() {
 
       {menu ? (
         <div className="menu-mask" onClick={() => setMenu(null)}>
-          <div className="pop-menu" onClick={e => e.stopPropagation()}>
+          <div ref={menuRef} className="pop-menu" data-testid="pop-menu" style={menuStyle} onClick={e => e.stopPropagation()}>
             {menu.kind === 'ws' ? (
               <>
                 <button type="button" onClick={() => {
