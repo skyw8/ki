@@ -149,6 +149,7 @@ function ToolRow({
   const [open, setOpen] = useState(false)
   const name = node.name
   const cmd = argStr(node.args, 'command')
+  const desc = argStr(node.args, 'description')
   const oldS = argStr(node.args, 'old_string')
   const newS = argStr(node.args, 'new_string')
   const content = argStr(node.args, 'content')
@@ -156,18 +157,33 @@ function ToolRow({
   const state = node.running ? 'running' : node.isError ? 'error' : 'ok'
   const fail = state === 'error' && node.result ? firstLine(node.result) : ''
   const line = fail || summary
+  const copyValue = desc || line
   const bodyIn = name === 'Write' ? content : name === 'Bash' ? cmd : prettyArgs(node.args)
-  const expandable = !!(node.result || bodyIn || oldS || newS)
+  const expandable = !!(node.result || bodyIn || oldS || newS || desc)
   return (
     <div className={`tool-row${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool={name} data-state={state}>
-      <button type="button" className="tool-row-h" onClick={() => expandable && setOpen(v => !v)}>
-        {state === 'error' ? <span className="state-dot err" /> : node.running ? <span className="spin" /> : <IWrench />}
-        <span className="tool-name">{title}</span>
+      <div className="tool-row-h">
+        <button
+          type="button"
+          className="tool-row-toggle"
+          aria-expanded={open}
+          aria-label={open ? t('chat.collapse') : t('chat.expand')}
+          disabled={!expandable}
+          onClick={() => expandable && setOpen(v => !v)}
+        >
+          {expandable ? <IChev open={open} /> : null}
+          {state === 'error' ? <span className="state-dot err" /> : node.running ? <span className="spin" /> : <IWrench />}
+          <span className="tool-name">{title}</span>
+        </button>
         {line ? <span className="tool-sep" aria-hidden /> : null}
-        <span className={`tool-preview${fail ? ' err' : ''}`}>{line}</span>
-      </button>
+        {line ? <span className={`tool-preview${fail ? ' err' : ''}`} data-testid="tool-preview" title={line}>{line}</span> : null}
+        {copyValue ? (
+          <IconBtn label={t('chat.copy')} testid="copy-tool" onClick={() => copyText(copyValue)}><ICopy /></IconBtn>
+        ) : null}
+      </div>
       {open && expandable ? (
         <div className="tool-row-body">
+          {desc ? <div className="tool-desc" data-testid="tool-desc">{desc}</div> : null}
           {name === 'Read' && node.result ? (
             <pre className="tool-read">{node.result.split('\n').map((ln, i) => `${String(offset + i).padStart(4, ' ')}  ${ln}`).join('\n')}</pre>
           ) : name === 'Edit' && (oldS || newS) ? (

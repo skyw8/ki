@@ -1,7 +1,7 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type WheelEvent } from 'react'
-import { applyFollowTail } from './follow-tail'
+import { Fragment, useEffect, useMemo, useRef, useState, type UIEvent, type WheelEvent } from 'react'
+import { applyFollowTail, followFromGap } from './follow-tail'
 import { useI18n, type TFn } from './i18n'
-import { IChev, IClock, IClose, ICompact, IFold, ISearch, ISpark, ITail, IUser, IWrench } from './icons'
+import { IChev, IClock, IClose, ICompact, ICopy, IFold, ISearch, ISpark, ITail, IUser, IWrench } from './icons'
 import { Markdown } from './Markdown'
 import type { ToolSchema, TrajKind, TrajRecord } from './types'
 
@@ -139,6 +139,10 @@ function SchemaView({ schema }: { schema: unknown }) {
   )
 }
 
+function copyText(text: string) {
+  void navigator.clipboard?.writeText(text)
+}
+
 function ToolCatalog({ tools }: { tools?: ToolSchema[] }) {
   const { t } = useI18n()
   if (!tools?.length) return <p className="insp-empty" data-testid="system-tools">{t('traj.noTools')}</p>
@@ -153,7 +157,20 @@ function ToolCatalog({ tools }: { tools?: ToolSchema[] }) {
             {tool.description ? <span className="tool-cat-preview">{tool.description}</span> : null}
           </summary>
           <div className="tool-cat-body">
-            {tool.description ? <p className="tool-cat-desc">{tool.description}</p> : null}
+            {tool.description ? (
+              <div className="tool-cat-desc-row">
+                <p className="tool-cat-desc">{tool.description}</p>
+                <button
+                  type="button"
+                  className="msg-icon"
+                  data-testid="copy-tool-desc"
+                  aria-label={t('chat.copy')}
+                  onClick={e => { e.preventDefault(); copyText(tool.description || '') }}
+                >
+                  <ICopy />
+                </button>
+              </div>
+            ) : null}
             <div className="tool-cat-label">{t('traj.params')}</div>
             <SchemaView schema={tool.parameters} />
           </div>
@@ -198,8 +215,14 @@ export function TrajectoryView({
   const [zoom, setZoom] = useState(1)
   const [range, setRange] = useState<[number, number] | null>(null)
   const [follow, setFollow] = useState(true)
+  const followRef = useRef(true)
   const tableRef = useRef<HTMLDivElement>(null)
   const drag = useRef<{ i: number } | null>(null)
+
+  const setFollowOn = (next: boolean) => {
+    followRef.current = next
+    setFollow(next)
+  }
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase()
@@ -233,7 +256,9 @@ export function TrajectoryView({
   }, [filtered, foldedTurns, foldTools])
 
   useEffect(() => {
-    applyFollowTail(tableRef.current, follow)
+    // Why: follow state lags a render behind a wheel/scroll pause. Read the
+    // ref so a live run cannot snap the ledger back before React commits.
+    applyFollowTail(tableRef.current, followRef.current)
   }, [follow, records, visible])
 
   useEffect(() => {
@@ -252,9 +277,16 @@ export function TrajectoryView({
 
   useEffect(() => {
     if (!sel) return
-    const row = tableRef.current?.querySelector(`[data-rid="${sel}"]`)
-    row?.scrollIntoView({ block: 'nearest' })
-  }, [sel, visible])
+    const wrap = tableRef.current
+    const row = wrap?.querySelector(`[data-rid="${sel}"]`) as HTMLElement | null
+    if (!wrap || !row) return
+    const wrapBox = wrap.getBoundingClientRect()
+    const rowBox = row.getBoundingClientRect()
+    const off = rowBox.bottom < wrapBox.top + 4 || rowBox.top > wrapBox.bottom - 4
+    if (!off) return
+    setFollowOn(false)
+    row.scrollIntoView({ block: 'nearest' })
+  }, [sel])
 
   const grouped: { turn: number; rows: { rec: TrajRecord; index: number }[] }[] = []
   visible.forEach((rec) => {
@@ -312,11 +344,9 @@ export function TrajectoryView({
           aria-label={follow ? t('traj.follow') : t('traj.unfollow')}
           title={follow ? t('traj.follow') : t('traj.unfollow')}
           onClick={() => {
-            setFollow(v => {
-              const next = !v
-              if (next) applyFollowTail(tableRef.current, true)
-              return next
-            })
+            const next = !followRef.current
+            setFollowOn(next)
+            if (next) applyFollowTail(tableRef.current, true)
           }}
         >
           <ITail />
@@ -357,10 +387,13 @@ export function TrajectoryView({
           className="traj-table-wrap"
           data-testid="traj-table-wrap"
           ref={tableRef}
-          onScroll={e => {
+          onWheel={e => {
+            if (e.deltaY < 0) setFollowOn(false)
+          }}
+          onScroll={(e: UIEvent<HTMLDivElement>) => {
             const el = e.currentTarget
-            const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8
-            setFollow(atBottom)
+            const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+            setFollowOn(followFromGap(gap, followRef.current))
           }}
         >
           <table className="traj-table">
