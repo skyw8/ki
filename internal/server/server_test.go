@@ -393,11 +393,15 @@ func TestProviderConfigurationAPI(t *testing.T) {
 	}
 	res, _ = call(http.MethodPut, "/v1/default-model", `{"provider":"local","model":"local/model"}`)
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("set default: %d", res.StatusCode)
+		t.Fatalf("set last used: %d", res.StatusCode)
 	}
-	res, _ = call(http.MethodPatch, "/v1/providers/local", `{"enabled":false}`)
-	if res.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("disable default: %d", res.StatusCode)
+	res, out = call(http.MethodPatch, "/v1/providers/local", `{"enabled":false}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("disable last-used provider: %d %+v", res.StatusCode, out)
+	}
+	def, _ := out["default"].(map[string]any)
+	if def["provider"] == "local" {
+		t.Fatalf("disabled last-used must fall back: %+v", out["default"])
 	}
 }
 
@@ -739,6 +743,92 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	_ = res.Body.Close()
 	if len(models) == 0 || models[0]["spec"] == "" {
 		t.Fatalf("models: %+v", models)
+	}
+	if models[0]["thinkingLevels"] == nil || models[0]["defaultThinking"] == nil {
+		t.Fatalf("models missing thinking: %+v", models[0])
+	}
+}
+
+func TestCreateAndForkKeepModelAndThinking(t *testing.T) {
+	_, hs := testServer(t)
+	cwd := t.TempDir()
+	body, _ := marshalJSON(map[string]any{"cwd": cwd, "model": "openai/gpt-5.6-terra", "thinkingEffort": "high"})
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var created map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&created)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("create %d %+v", res.StatusCode, created)
+	}
+	if created["provider"] != "openai" || created["model"] != "gpt-5.6-terra" || created["thinkingEffort"] != "high" {
+		t.Fatalf("create: %+v", created)
+	}
+	id, _ := created["id"].(string)
+
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/meta", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&meta)
+	_ = res.Body.Close()
+	if meta["provider"] != "openai" || meta["model"] != "gpt-5.6-terra" || meta["thinkingEffort"] == "" {
+		t.Fatalf("meta should remember last used: %+v", meta)
+	}
+
+	body, _ = marshalJSON(map[string]any{"cwd": cwd})
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var defSess map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&defSess)
+	_ = res.Body.Close()
+	if defSess["provider"] != "openai" || defSess["model"] != "gpt-5.6-terra" || defSess["thinkingEffort"] != meta["thinkingEffort"] {
+		t.Fatalf("omitted model uses last used %+v want meta %+v", defSess, meta)
+	}
+
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/fork", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fork map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&fork)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("fork %d %+v", res.StatusCode, fork)
+	}
+	if fork["provider"] != "openai" || fork["model"] != "gpt-5.6-terra" || fork["thinkingEffort"] != "high" {
+		t.Fatalf("fork: %+v", fork)
+	}
+
+	body, _ = marshalJSON(map[string]any{"model": "anthropic/claude-sonnet-5"})
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/sessions/"+id, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var patched map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&patched)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("patch %d %+v", res.StatusCode, patched)
+	}
+	if patched["provider"] != "anthropic" || patched["model"] != "claude-sonnet-5" || patched["thinkingEffort"] != "high" {
+		t.Fatalf("switch model must keep thinking: %+v", patched)
 	}
 }
 

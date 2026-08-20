@@ -240,40 +240,70 @@ func buildRegistryState(user ModelsFile, creds credentialsFile) (*registryState,
 		}
 		providers[id] = p
 	}
-	def := user.Default
-	if def.Provider == "" {
-		// With no explicit default, prefer the first enabled provider that is
-		// usable on this machine, then fall back to the stable catalog order.
-		candidates := slices.Clone(ProviderOrder)
-		for _, id := range order {
-			if !slices.Contains(candidates, id) {
-				candidates = append(candidates, id)
-			}
-		}
-		for _, id := range candidates {
-			p := providers[id]
-			if p.Enabled {
-				if _, status := credentialFrom(creds, id, p.EnvVars); status.Configured {
-					def = ModelRef{Provider: id, Model: p.DefaultModel}
-					break
-				}
-			}
-		}
-	}
-	if def.Provider == "" {
-		for _, id := range ProviderOrder {
-			if p, ok := providers[id]; ok {
-				def = ModelRef{Provider: id, Model: p.DefaultModel}
-				break
-			}
-		}
-	}
-	if def.Provider != "" {
-		if err := validateDefault(providers, def); err != nil {
-			return nil, err
-		}
-	}
+	def := pickDefault(providers, order, creds, user.Default)
 	return &registryState{providers: providers, order: order, defaultRef: def, user: user, creds: creds}, nil
+}
+
+// pickDefault treats models.json default as last-used, not a pinned setting.
+// If that ref is missing or disabled, fall back to the first enabled model
+// with credentials, then the first enabled model in catalog order.
+func pickDefault(providers map[string]Provider, order []string, creds credentialsFile, preferred ModelRef) ModelRef {
+	if modelRefEnabled(providers, preferred) {
+		return preferred
+	}
+	candidates := slices.Clone(ProviderOrder)
+	for _, id := range order {
+		if !slices.Contains(candidates, id) {
+			candidates = append(candidates, id)
+		}
+	}
+	firstEnabled := ModelRef{}
+	for _, id := range candidates {
+		ref := firstEnabledModel(providers[id])
+		if ref.Model == "" {
+			continue
+		}
+		if firstEnabled.Provider == "" {
+			firstEnabled = ref
+		}
+		p := providers[id]
+		if _, status := credentialFrom(creds, id, p.EnvVars); status.Configured {
+			return ref
+		}
+	}
+	return firstEnabled
+}
+
+func firstEnabledModel(p Provider) ModelRef {
+	if !p.Enabled {
+		return ModelRef{}
+	}
+	if p.DefaultModel != "" {
+		for _, m := range p.Models {
+			if m.ID == p.DefaultModel && m.Enabled {
+				return ModelRef{Provider: p.ID, Model: m.ID}
+			}
+		}
+	}
+	for _, m := range p.Models {
+		if m.Enabled {
+			return ModelRef{Provider: p.ID, Model: m.ID}
+		}
+	}
+	return ModelRef{}
+}
+
+func modelRefEnabled(providers map[string]Provider, ref ModelRef) bool {
+	p, ok := providers[ref.Provider]
+	if !ok || !p.Enabled {
+		return false
+	}
+	for _, m := range p.Models {
+		if m.ID == ref.Model && m.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func validateProviderShape(p Provider) error {
@@ -350,19 +380,6 @@ func validateRates(r CostRates) error {
 	return nil
 }
 
-func validateDefault(providers map[string]Provider, ref ModelRef) error {
-	p, ok := providers[ref.Provider]
-	if !ok || !p.Enabled {
-		return fmt.Errorf("default provider %q is unavailable", ref.Provider)
-	}
-	for _, m := range p.Models {
-		if m.ID == ref.Model && m.Enabled {
-			return nil
-		}
-	}
-	return fmt.Errorf("default model %q/%q is unavailable", ref.Provider, ref.Model)
-}
-
 func applyModelOverride(m Model, o ModelOverride) (Model, error) {
 	m.Customized = true
 	if o.Name != nil {
@@ -436,6 +453,26 @@ func cloneProvider(p Provider) Provider {
 }
 
 func (r *Registry) Default() ModelRef { r.mu.RLock(); defer r.mu.RUnlock(); return r.state.defaultRef }
+
+// RememberDefault records the last selected model. No-op when unchanged.
+// Why: there is no pinned "set as default"; switching a model is what
+// subsequent creates fall back to, and a stale last-used is skipped by
+// pickDefault instead of blocking disable/delete.
+func (r *Registry) RememberDefault(ref ModelRef) error {
+	if ref.Provider == "" || ref.Model == "" {
+		return nil
+	}
+	r.mu.RLock()
+	cur := r.state.user.Default
+	r.mu.RUnlock()
+	if cur.Provider == ref.Provider && cur.Model == ref.Model {
+		return nil
+	}
+	return r.Update(func(cfg *ModelsFile) error {
+		cfg.Default = ref
+		return nil
+	})
+}
 
 func (r *Registry) FindModel(providerID, modelID string) (Provider, Model, bool) {
 	r.mu.RLock()

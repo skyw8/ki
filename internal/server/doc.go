@@ -3,7 +3,9 @@
 //
 // Auth is Bearer token except GET /v1/health. Query ?token= is also accepted.
 // Provider CRUD manages the offline registry and credentials; GET /v1/models
-// is its flat selectable view. GET /v1/meta exposes defaults and user home.
+// is its flat selectable view. GET /v1/meta exposes the last-used model
+// (or the first available fallback), that model's default thinking
+// effort, and user home.
 // Workspaces live in {KI_HOME}/workspaces.json. Session cwd comes from a
 // workspace (or a tmp+ workspace). GET /v1/sessions/{id} includes
 // availableSkills / availableMcp (no MCP spawn). PATCH /v1/sessions/{id}

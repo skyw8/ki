@@ -30,12 +30,12 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| GET | `/v1/models` | registry 的可选模型扁平视图 |
+| GET | `/v1/models` | registry 的可选模型扁平视图（含 `thinkingLevels` / `defaultThinking`） |
 | GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential 和 model 管理 |
-| PUT | `/v1/default-model` | 修改全局默认模型 |
-| GET | `/v1/meta` | 默认模型、用户 home（无进程 cwd） |
+| PUT | `/v1/default-model` | 显式记住上次选用的模型；WebUI 切模型时 server 也会写 |
+| GET | `/v1/meta` | 上次选用的模型（不可用则第一个可用项）、该模型 default thinking、用户 home（无进程 cwd） |
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned） |
-| POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…` |
+| POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…`；可选 `model` / `thinkingEffort`，省略则用上次选用的模型和该模型 default thinking。WebUI 传入当前 composer 的模型配置 |
 | GET | `/v1/sessions/search` | 正文字面搜索，最多 20 条 |
 | GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、skills/mcp、`availableSkills` / `availableMcp` |
 | PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / skills / mcp |

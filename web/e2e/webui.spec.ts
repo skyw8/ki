@@ -373,6 +373,39 @@ test('edit branches in place with attachments and fork opens a new session', asy
   })).toBe(before.count + 1)
 })
 
+test('new session keeps the current model and thinking effort', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByTestId('hero')).toBeVisible()
+  const chip = page.getByTestId('open-model')
+  await expect(chip).not.toHaveText('选择模型')
+  await expect(page.getByTestId('thinking-select')).toHaveText('medium')
+  await chip.click()
+  await page.getByTestId('model-option').and(page.locator('[data-spec="openai/gpt-5.6-terra"]')).click()
+  await expect(chip).toHaveText('gpt-5.6-terra')
+  const thinking = page.getByTestId('thinking-select')
+  await expect(thinking).toHaveText('medium')
+  await thinking.click()
+  await page.getByRole('option', { name: 'high', exact: true }).click()
+  await expect(thinking).toHaveText('high')
+
+  await page.getByTestId('new-session').click()
+  await expect(chip).toHaveText('gpt-5.6-terra')
+  await expect(thinking).toHaveText('high')
+  const created = await page.evaluate(async () => {
+    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
+    const headers = { Authorization: `Bearer ${token}` }
+    const sessions = await fetch('/v1/sessions', { headers }).then(r => r.json()) as Array<{ id: string }>
+    return fetch(`/v1/sessions/${sessions[0].id}`, { headers }).then(r => r.json()) as Promise<{ provider: string; model: string; thinkingEffort?: string }>
+  })
+  expect(created.provider).toBe('openai')
+  expect(created.model).toBe('gpt-5.6-terra')
+  expect(created.thinkingEffort).toBe('high')
+
+  await page.reload()
+  await expect(page.getByTestId('open-model')).toHaveText('gpt-5.6-terra')
+  await expect(page.getByTestId('thinking-select')).toHaveText('high')
+})
+
 test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }) => {
   await page.goto('/')
   await sendPrompt(page, `ws-e2e ${Date.now()}`)

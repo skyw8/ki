@@ -62,7 +62,7 @@ function SessionStatsLine({ stats, t }: { stats: SessionStats; t: ReturnType<typ
   )
 }
 
-export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFiles, onCancel, busy, uploading, disabled, hero, cwd, model, err, onPickModel, thinkingLevels, thinkingEffort, onThinking, contextUsage, stats, mode = 'new' }: {
+export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFiles, onCancel, busy, uploading, disabled, hero, cwd, model, err, onPickModel, thinkingLevels, thinkingEffort, defaultThinking, onThinking, contextUsage, stats, mode = 'new' }: {
   api: Client
   draft: Draft
   onChange: (draft: Draft) => void
@@ -81,6 +81,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
   onPickModel?: () => void
   thinkingLevels?: string[]
   thinkingEffort?: string
+  defaultThinking?: string
   onThinking?: (effort: string) => void
   contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
   stats?: SessionStats
@@ -138,7 +139,8 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
           <button type="button" className="attach-btn" onClick={onAttach} disabled={disabled || busy} aria-label={t('composer.attach')} title={t('composer.attach')}><IAttach /></button>
           {mode === 'new' && cwd ? <span className="cwd-chip" title={cwd}>{basename(cwd)}</span> : null}
           {mode === 'new' ? <button type="button" className="model-chip" data-testid="open-model" onClick={onPickModel}>{model || t('composer.pickModel')}</button> : null}
-          {mode === 'new' && thinkingLevels && thinkingLevels.length > 1 ? <Select className="thinking-select" ariaLabel="Thinking effort" value={thinkingEffort || thinkingLevels[0]} options={thinkingLevels.map(level => ({ value: level, label: level }))} onChange={value => onThinking?.(value)} /> : null}
+          {/* Why: thinkingLevels[0] is "off"; an omitted effort should show defaultThinking (medium). */}
+          {mode === 'new' && thinkingLevels && thinkingLevels.length > 1 ? <Select className="thinking-select" testid="thinking-select" ariaLabel="Thinking effort" value={thinkingEffort || defaultThinking || thinkingLevels[0]} options={thinkingLevels.map(level => ({ value: level, label: level }))} onChange={value => onThinking?.(value)} /> : null}
           <span className="grow" />
 		  {uploading ? <span className="uploading-label">{t('composer.uploading')}</span> : null}
           {mode === 'edit' ? <button type="button" className="composer-cancel" onClick={onCancel}>{t('composer.cancelEdit')}</button> : null}

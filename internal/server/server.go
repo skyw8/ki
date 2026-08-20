@@ -319,10 +319,8 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	root := s.cfg.Sessions.Root
-	effort := body.ThinkingEffort
-	if effort == "" {
-		effort = provider.DefaultThinking(selectedModel)
-	} else if effort, err = provider.ClampThinking(selectedModel, effort); err != nil {
+	effort, err := resolveThinking(selectedModel, body.ThinkingEffort)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
@@ -334,6 +332,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = sess.Close() }()
 	_ = s.ws.AttachSession(rec.ID, sess.ID())
 	s.sidx.Add(sess.ID(), sess.Dir)
+	s.rememberModel(ref)
 	writeJSON(w, 200, s.sessionMap(sess, nil))
 }
 
@@ -432,6 +431,7 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 			"applyPatchToolType": m.ApplyPatchToolType,
 			"reasoning":          m.Reasoning,
 			"thinkingLevels":     provider.SupportedThinkingLevels(m),
+			"defaultThinking":    provider.DefaultThinking(m),
 			"builtin":            m.Builtin,
 			"customized":         m.Customized,
 			"spec":               m.Provider + "/" + m.ID,
@@ -443,11 +443,15 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) meta(w http.ResponseWriter, _ *http.Request) {
 	home, _ := os.UserHomeDir()
 	def := s.registry.Default()
-	writeJSON(w, 200, map[string]any{
+	out := map[string]any{
 		"home":     home,
 		"provider": def.Provider,
 		"model":    def.Model,
-	})
+	}
+	if _, model, ok := s.registry.FindModel(def.Provider, def.Model); ok {
+		out["thinkingEffort"] = provider.DefaultThinking(model)
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
@@ -484,11 +488,7 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 		if body.ThinkingEffort != nil {
 			effort = *body.ThinkingEffort
 		}
-		if effort == "" {
-			effort = provider.DefaultThinking(model)
-		} else {
-			effort, err = provider.ClampThinking(model, effort)
-		}
+		effort, err = resolveThinking(model, effort)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
@@ -497,6 +497,7 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		s.rememberModel(ref)
 	}
 	if body.LeafID != nil {
 		if s.running(sess.ID()) {
@@ -789,10 +790,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			st.err = resolveErr
 			return
 		}
-		effort := sess.Config.ThinkingEffort
-		if effort == "" {
-			effort = provider.DefaultThinking(nextModel)
-		} else if effort, resolveErr = provider.ClampThinking(nextModel, effort); resolveErr != nil {
+		effort, resolveErr := resolveThinking(nextModel, sess.Config.ThinkingEffort)
+		if resolveErr != nil {
 			st.err = resolveErr
 			return
 		}
@@ -816,6 +815,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		st.err = fmt.Errorf("model %q/%q is unavailable", sess.Config.Provider, sess.Config.Model)
 		return
 	}
+	s.rememberModel(provider.ModelRef{Provider: sess.Config.Provider, Model: sess.Config.Model})
 	runStreamer := s.streamer
 	if s.requireModelCredential {
 		_, resolved, key, resolveErr := s.registry.Resolve(sess.Config.Provider, sess.Config.Model)
@@ -1146,6 +1146,23 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sidx.Add(dst.ID(), dst.Dir)
 	writeJSON(w, 200, s.sessionMap(dst, map[string]any{"parentSession": dst.Header.ParentSession}))
+}
+
+func (s *Server) rememberModel(ref provider.ModelRef) {
+	if err := s.registry.RememberDefault(ref); err != nil {
+		slog.Warn("remember last model", "provider", ref.Provider, "model", ref.Model, "err", err)
+	}
+}
+
+// resolveThinking uses the model's default when the client omits effort,
+// otherwise clamps to the nearest supported level. Why: create/patch/prompt
+// share this so an empty thinkingEffort never silently becomes "off" (the
+// first supported level) and a kept effort survives a model switch.
+func resolveThinking(model provider.Model, requested string) (string, error) {
+	if requested == "" {
+		return provider.DefaultThinking(model), nil
+	}
+	return provider.ClampThinking(model, requested)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

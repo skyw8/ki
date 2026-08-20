@@ -8,7 +8,7 @@ import { DirectoryBrowser } from './DirectoryBrowser'
 import { SessionConfig } from './SessionConfig'
 import { ProviderSettings } from './ProviderSettings'
 import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
-import { appendOptimisticUser, applyEvent, emptyView, loadHistory, sessionStats } from './model'
+import { appendOptimisticUser, applyEvent, clampThinkingEffort, emptyView, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats } from './model'
 import type { ChatNode, Content, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
@@ -105,7 +105,7 @@ export function App() {
   const [selectedWs, setSelectedWs] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>(loadExpanded)
   const [showAll, setShowAll] = useState<Record<string, boolean>>({})
-  const [view, setView] = useState<ViewState>(emptyView)
+  const [view, setView] = useState<ViewState>(initialView)
   const [draft, setDraft] = useState<Draft>({ text: '', attachments: [] })
 	const [edit, setEdit] = useState<{ messageId: string; parentId: string; draft: Draft } | null>(null)
 	const [attachmentTarget, setAttachmentTarget] = useState<'new' | 'edit' | null>(null)
@@ -203,7 +203,24 @@ export function App() {
   }, [searchOpen, filter])
 
   useEffect(() => {
-    void api.models().then(setModels).catch(() => setModels([]))
+    void Promise.all([api.models(), api.meta()]).then(([list, meta]) => {
+      setModels(list)
+      setView(v => {
+        if (v.provider && v.model) {
+          const found = list.find(m => m.provider === v.provider && m.id === v.model)
+          if (found) {
+            const thinkingEffort = clampThinkingEffort(v.thinkingEffort, found)
+            saveLastComposerModel({ provider: v.provider, model: v.model, thinkingEffort })
+            return thinkingEffort === v.thinkingEffort ? v : { ...v, thinkingEffort }
+          }
+          if (v.nodes.length > 0) return v
+        }
+        const picked = pickComposerModel(list, loadLastComposerModel(), meta)
+        saveLastComposerModel(picked)
+        if (v.provider === picked.provider && v.model === picked.model && v.thinkingEffort === picked.thinkingEffort) return v
+        return { ...v, provider: picked.provider, model: picked.model, thinkingEffort: picked.thinkingEffort }
+      })
+    }).catch(() => setModels([]))
   }, [api])
 	const refreshModels = useCallback(() => { void api.models().then(setModels).catch(() => setModels([])) }, [api])
 
@@ -279,6 +296,7 @@ export function App() {
       const detail = await api.get(id)
       const next = loadHistory(detail)
       setView(next)
+      saveLastComposerModel({ provider: next.provider, model: next.model, thinkingEffort: next.thinkingEffort })
       setSelectedWs(detail.workspaceId ?? null)
       if (detail.workspaceId) setExpanded(e => ({ ...e, [detail.workspaceId!]: true }))
       if (detail.running) void listen(id)
@@ -288,11 +306,12 @@ export function App() {
   }, [api, listen])
 
   const makeSession = useCallback(async (workspaceId?: string | null) => {
-    const s = await api.create(workspaceId ? { workspaceId } : {})
+    const s = await api.create(sessionCreateBody(workspaceId, { provider: view.provider, model: view.model, thinkingEffort: view.thinkingEffort }, models))
     await refreshList()
     setCurrentId(s.id)
     setSelectedWs(s.workspaceId ?? workspaceId ?? null)
     setView({ ...emptyView(), cwd: s.cwd, model: s.model, provider: s.provider, thinkingEffort: s.thinkingEffort ?? '' })
+    saveLastComposerModel({ provider: s.provider, model: s.model, thinkingEffort: s.thinkingEffort ?? '' })
     setTab('conversation')
 	setEdit(null)
     if (s.workspaceId) {
@@ -300,7 +319,7 @@ export function App() {
       setShowAll(a => ({ ...a, [s.workspaceId!]: true }))
     }
     return s
-  }, [api, refreshList])
+  }, [api, models, refreshList, view.model, view.provider, view.thinkingEffort])
 
 	const uploadClientFiles = useCallback(async (target: 'new' | 'edit', files: File[]) => {
 	  if (!files.length || uploading) return
@@ -422,29 +441,37 @@ export function App() {
   }, [api, currentId])
 
   const switchModel = useCallback(async (spec: string) => {
+    const next = models.find(m => m.spec === spec)
     const [p, m] = spec.includes('/') ? spec.split('/') : [view.provider, spec]
-    setView(v => ({ ...v, provider: p || v.provider, model: m || v.model }))
+    const provider = next?.provider || p || view.provider
+    const model = next?.id || m || view.model
+    const thinkingEffort = clampThinkingEffort(view.thinkingEffort, next)
+    setView(v => ({ ...v, provider, model, thinkingEffort }))
+    saveLastComposerModel({ provider, model, thinkingEffort })
     setModelOpen(false)
     setModelQuery('')
     if (!currentId) return
     try {
-      const out = await api.patch(currentId, { model: spec })
-	  setView(v => ({ ...v, model: out.model, provider: out.provider, thinkingEffort: out.thinkingEffort ?? '' }))
+      const out = await api.patch(currentId, { model: spec, thinkingEffort })
+	  setView(v => ({ ...v, model: out.model, provider: out.provider, thinkingEffort: out.thinkingEffort ?? thinkingEffort }))
+      saveLastComposerModel({ provider: out.provider, model: out.model, thinkingEffort: out.thinkingEffort ?? thinkingEffort })
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
-  }, [api, currentId, view.provider])
+  }, [api, currentId, models, view.model, view.provider, view.thinkingEffort])
 
   const selectedModel = useMemo(() => models.find(m => m.provider === view.provider && m.id === view.model), [models, view.model, view.provider])
 	const filteredModels = useMemo(() => modelQuery.trim() ? models.filter(model => modelMatches(model, modelQuery)) : models, [modelQuery, models])
 	const switchThinking = useCallback(async (thinkingEffort: string) => {
 		setView(v => ({ ...v, thinkingEffort }))
+		if (view.provider && view.model) saveLastComposerModel({ provider: view.provider, model: view.model, thinkingEffort })
 		if (!currentId) return
 		try {
 			const out = await api.patch(currentId, { thinkingEffort })
 			setView(v => ({ ...v, thinkingEffort: out.thinkingEffort ?? thinkingEffort }))
+			if (view.provider && view.model) saveLastComposerModel({ provider: view.provider, model: view.model, thinkingEffort: out.thinkingEffort ?? thinkingEffort })
 		} catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
-	}, [api, currentId])
+	}, [api, currentId, view.model, view.provider])
 
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
 
@@ -580,6 +607,7 @@ export function App() {
       onPickModel={() => { setModelQuery(''); setModelOpen(true) }}
 	  thinkingLevels={selectedModel?.thinkingLevels}
 	  thinkingEffort={view.thinkingEffort}
+	  defaultThinking={selectedModel?.defaultThinking}
 	  onThinking={effort => void switchThinking(effort)}
 	  contextUsage={view.contextUsage}
 	  stats={stats}
@@ -947,13 +975,13 @@ export function App() {
                   .then(() => {
                     if (confirmDel.kind === 'sess' && currentId === confirmDel.id) {
                       setCurrentId(null)
-                      setView(emptyView())
+                      setView(v => keepComposer(v))
                     }
                     if (confirmDel.kind === 'ws' && selectedWs === confirmDel.id) {
                       setSelectedWs(null)
                       if (sessions.find(s => s.id === currentId)?.workspaceId === confirmDel.id) {
                         setCurrentId(null)
-                        setView(emptyView())
+                        setView(v => keepComposer(v))
                       }
                     }
                     setConfirmDel(null)

@@ -84,11 +84,11 @@ func TestCreateReloadFork(t *testing.T) {
 		t.Fatalf("usage not persisted: %+v", msgs[1].Usage)
 	}
 
-	if err := s2.SetModel("openai", "gpt-4o"); err != nil {
+	if err := s2.SetModelAndThinking("openai", "gpt-4o", "high"); err != nil {
 		t.Fatal(err)
 	}
-	if s2.Config.Model != "gpt-4o" {
-		t.Fatalf("model: %s", s2.Config.Model)
+	if s2.Config.Model != "gpt-4o" || s2.Config.ThinkingEffort != "high" {
+		t.Fatalf("model: %+v", s2.Config)
 	}
 
 	forked, err := Fork(root, s2)
@@ -101,6 +101,9 @@ func TestCreateReloadFork(t *testing.T) {
 	}
 	if forked.Header.ParentSession != s2.ID() {
 		t.Fatalf("parentSession: %q", forked.Header.ParentSession)
+	}
+	if forked.Config.Provider != "openai" || forked.Config.Model != "gpt-4o" || forked.Config.ThinkingEffort != "high" {
+		t.Fatalf("fork config: %+v", forked.Config)
 	}
 	if len(forked.MessagesToLeaf()) != 2 {
 		t.Fatalf("fork messages: %d", len(forked.MessagesToLeaf()))

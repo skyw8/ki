@@ -1,4 +1,99 @@
-import type { ChatNode, Entry, LoopEvent, Message, SessionDetail, TrajRecord, Usage, ViewState } from './types'
+import type { ChatNode, Entry, LoopEvent, Message, Meta, ModelInfo, SessionDetail, TrajRecord, Usage, ViewState } from './types'
+
+const LAST_MODEL_KEY = 'ki-last-model'
+const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
+export type ComposerModel = { provider: string; model: string; thinkingEffort: string }
+
+export function loadLastComposerModel(): ComposerModel | null {
+  try {
+    const raw = localStorage.getItem(LAST_MODEL_KEY)
+    if (!raw) return null
+    const v = JSON.parse(raw) as Partial<ComposerModel>
+    if (!v.provider || !v.model) return null
+    return { provider: v.provider, model: v.model, thinkingEffort: v.thinkingEffort ?? '' }
+  } catch {
+    return null
+  }
+}
+
+export function saveLastComposerModel(cfg: ComposerModel): void {
+  if (!cfg.provider || !cfg.model) return
+  try {
+    localStorage.setItem(LAST_MODEL_KEY, JSON.stringify(cfg))
+  } catch {
+    // Private mode / quota should not block composer updates.
+  }
+}
+
+export function initialView(): ViewState {
+  const last = loadLastComposerModel()
+  if (!last) return emptyView()
+  return { ...emptyView(), provider: last.provider, model: last.model, thinkingEffort: last.thinkingEffort }
+}
+
+export function keepComposer(view: ViewState): ViewState {
+  return { ...emptyView(), provider: view.provider, model: view.model, thinkingEffort: view.thinkingEffort }
+}
+
+// Matches provider.ClampThinking / DefaultThinking so a model switch keeps the
+// nearest effort instead of snapping to thinkingLevels[0] ("off").
+export function clampThinkingEffort(effort: string, model?: Pick<ModelInfo, 'thinkingLevels' | 'defaultThinking'>): string {
+  const levels = model?.thinkingLevels ?? []
+  if (!levels.length) return ''
+  const fallback = model?.defaultThinking && levels.includes(model.defaultThinking) ? model.defaultThinking : levels[0]
+  if (!effort) return fallback
+  if (levels.includes(effort)) return effort
+  const idx = THINKING_LEVELS.indexOf(effort)
+  if (idx < 0) return fallback
+  for (let i = idx; i < THINKING_LEVELS.length; i++) {
+    if (levels.includes(THINKING_LEVELS[i])) return THINKING_LEVELS[i]
+  }
+  for (let i = idx - 1; i >= 0; i--) {
+    if (levels.includes(THINKING_LEVELS[i])) return THINKING_LEVELS[i]
+  }
+  return fallback
+}
+
+export function pickComposerModel(
+  models: ModelInfo[],
+  preferred: ComposerModel | null,
+  fallback?: Pick<Meta, 'provider' | 'model' | 'thinkingEffort'> | null,
+): ComposerModel {
+  const found = (provider?: string, model?: string) =>
+    provider && model ? models.find(m => m.provider === provider && m.id === model) : undefined
+  const chosen = found(preferred?.provider, preferred?.model)
+    ?? found(fallback?.provider, fallback?.model)
+    ?? models[0]
+  const effortHint = preferred?.thinkingEffort || fallback?.thinkingEffort || ''
+  if (!chosen) {
+    return {
+      provider: preferred?.provider || fallback?.provider || '',
+      model: preferred?.model || fallback?.model || '',
+      thinkingEffort: effortHint,
+    }
+  }
+  return {
+    provider: chosen.provider,
+    model: chosen.id,
+    thinkingEffort: clampThinkingEffort(effortHint, chosen),
+  }
+}
+
+export function sessionCreateBody(
+  workspaceId: string | null | undefined,
+  composer: ComposerModel,
+  models: ModelInfo[],
+): { workspaceId?: string; model?: string; thinkingEffort?: string } {
+  const body: { workspaceId?: string; model?: string; thinkingEffort?: string } = {}
+  if (workspaceId) body.workspaceId = workspaceId
+  const found = models.find(m => m.provider === composer.provider && m.id === composer.model)
+  const spec = found?.spec || (composer.provider && composer.model ? `${composer.provider}/${composer.model}` : composer.model)
+  if (spec) body.model = spec
+  const effort = found ? clampThinkingEffort(composer.thinkingEffort, found) : composer.thinkingEffort
+  if (effort) body.thinkingEffort = effort
+  return body
+}
 
 export function emptyView(): ViewState {
   return {
