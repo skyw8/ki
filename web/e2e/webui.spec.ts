@@ -387,6 +387,28 @@ test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }
   await expect(page.getByTestId('to-bottom')).toHaveCount(0)
 })
 
+test('session overflow menu anchors to the clicked row', async ({ page }) => {
+  await page.goto('/')
+  await sendPrompt(page, `menu-anchor ${Date.now()}`)
+  await expect(page.getByTestId('assistant-message')).toContainText('ok')
+  await expect(page.getByTestId('session-row').first()).toBeVisible()
+  const plus = page.getByTestId('ws-new-session').first()
+  for (let i = 0; i < 4; i++) await plus.click()
+  const trigger = page.getByTestId('session-row').last().locator('button[aria-label="会话菜单"]')
+  await trigger.scrollIntoViewIfNeeded()
+  await trigger.click()
+  const menu = page.getByTestId('pop-menu')
+  await expect(menu).toBeVisible()
+  const btnBox = await trigger.boundingBox()
+  const menuBox = await menu.boundingBox()
+  expect(btnBox).toBeTruthy()
+  expect(menuBox).toBeTruthy()
+  expect(Math.abs(menuBox!.x - btnBox!.x)).toBeLessThan(16)
+  const below = menuBox!.y >= btnBox!.y + btnBox!.height - 4
+  const above = menuBox!.y + menuBox!.height <= btnBox!.y + 4
+  expect(below || above).toBe(true)
+})
+
 test('session config lists skills and mcp toggles', async ({ page }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const skillDir = join(home, 'skills', 'demo-skill')
