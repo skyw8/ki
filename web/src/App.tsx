@@ -247,6 +247,10 @@ export function App() {
     abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
+    // Why: the sidebar dot reads sessions[].running, which only refreshList()
+    // updates (after SSE ends or a manual refetch). Light it as soon as this
+    // client starts listening so a live run is green without switching tabs.
+    setSessions(ss => ss.map(s => s.id === id ? { ...s, running: true } : s))
     try {
       for await (const ev of api.events(id, ac.signal)) {
         setView(v => (abortRef.current === ac ? applyEvent(v, ev) : v))

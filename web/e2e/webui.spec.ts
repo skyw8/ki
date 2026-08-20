@@ -140,7 +140,29 @@ test('provider settings supports a complete add and edit flow', async ({ page })
   await model.getByLabel('上下文窗口').fill('64000')
   await model.getByLabel('最大输出').fill('8192')
   await model.getByRole('button', { name: '添加', exact: true }).click()
-  await expect(page.getByTestId('provider-model-row').filter({ hasText: modelID })).toContainText('64,000 ctx')
+  const modelRow = page.getByTestId('provider-model-row').filter({ hasText: modelID })
+  await expect(modelRow).toContainText('64,000 ctx')
+
+  await modelRow.getByTestId('edit-model').click()
+  const editDlg = page.getByTestId('model-advanced')
+  await expect(editDlg).toBeVisible()
+  await expect(editDlg.locator('textarea')).toBeFocused()
+  const parsed = JSON.parse(await editDlg.locator('textarea').inputValue()) as { name?: string; maxTokens?: number }
+  expect(parsed.name).toBe('Playwright Model')
+  await page.keyboard.press('Escape')
+  await expect(editDlg).toHaveCount(0)
+  await expect(page.getByTestId('settings')).toBeVisible()
+
+  await modelRow.getByTestId('edit-model').click()
+  const ta = page.getByTestId('model-advanced').locator('textarea')
+  const body = JSON.parse(await ta.inputValue()) as Record<string, unknown>
+  body.maxTokens = 4096
+  await ta.fill(JSON.stringify(body, null, 2))
+  await page.getByTestId('model-advanced').getByRole('button', { name: '保存' }).click()
+  await expect(page.getByTestId('model-advanced')).toHaveCount(0)
+  await modelRow.getByTestId('edit-model').click()
+  expect((JSON.parse(await page.getByTestId('model-advanced').locator('textarea').inputValue()) as { maxTokens?: number }).maxTokens).toBe(4096)
+  await page.keyboard.press('Escape')
 
   await page.getByRole('button', { name: '删除供应商' }).click()
   await expect(page.locator(`.provider-nav [data-provider-id="${providerID}"]`)).toHaveCount(0)
@@ -186,7 +208,11 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   const prompt = `hello from playwright ${Date.now()}`
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
-  await sendPrompt(page, prompt)
+  const input = page.getByTestId('composer-input')
+  await expect(input).toBeEnabled()
+  await input.fill(prompt)
+  await page.getByTestId('composer-send').click()
+  await expect(page.locator('.session-row.active .dot.on')).toBeVisible()
 
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
   await expect(page.getByTestId('assistant-message').locator('.md')).toContainText('ok')
@@ -223,6 +249,10 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(page.getByTestId('system-prompt')).not.toHaveText('—')
   await page.getByTestId('insp-tab-tools').click()
   await expect(page.getByTestId('system-tools')).toContainText('Read')
+  const readTool = page.getByTestId('system-tools').locator('.tool-cat-item').filter({ has: page.locator('.tool-cat-name', { hasText: /^Read$/ }) })
+  await readTool.locator('summary').click()
+  await expect(readTool.getByTestId('copy-tool-desc')).toBeVisible()
+  await expect(readTool.locator('.tool-cat-desc')).toContainText('Read a file')
   await page.getByTestId('insp-tab-context').click()
   await expect(page.getByTestId('system-diff')).toBeVisible()
 
@@ -234,6 +264,17 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   const atTail = await page.getByTestId('traj-table-wrap').evaluate(el =>
     Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop) < 2)
   expect(atTail).toBeTruthy()
+  await page.getByTestId('traj-table-wrap').evaluate(el => {
+    const node = el as HTMLElement
+    node.style.maxHeight = '48px'
+    node.scrollTop = node.scrollHeight
+  })
+  await expect.poll(async () => page.getByTestId('traj-table-wrap').evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(40)
+  await page.getByTestId('traj-table-wrap').evaluate(el => {
+    el.scrollTop = 0
+    el.dispatchEvent(new Event('scroll'))
+  })
+  await expect(page.getByTestId('traj-follow')).toHaveAttribute('aria-pressed', 'false')
 
   await page.reload()
   await page.getByTestId('session-row').first().click()

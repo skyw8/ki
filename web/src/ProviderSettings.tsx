@@ -61,6 +61,7 @@ export function ProviderSettings({ api, onChanged }: Props) {
   const [form, setForm] = useState({ id: '', name: '', api: 'completions', baseUrl: '', model: '' })
   const [modelForm, setModelForm] = useState({ id: '', name: '', contextWindow: '128000', maxTokens: '16384' })
   const newProviderID = useRef<HTMLInputElement>(null)
+  const modelJSONRef = useRef<HTMLTextAreaElement>(null)
 
   const load = async () => {
     const next = await api.providers()
@@ -77,18 +78,21 @@ export function ProviderSettings({ api, onChanged }: Props) {
     setEditingModel('')
   }, [current?.id, current?.name, current?.api, current?.baseUrl]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (!newProvider) return
-    newProviderID.current?.focus()
+    if (!newProvider && !editingModel) return
+    if (newProvider) newProviderID.current?.focus()
+    else modelJSONRef.current?.focus()
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       // Capture prevents the parent settings dialog from handling the same
       // Escape press and closing both dialog layers at once.
       event.stopImmediatePropagation()
-      if (!busy) setNewProvider(false)
+      if (busy) return
+      if (editingModel) setEditingModel('')
+      else setNewProvider(false)
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [newProvider, busy])
+  }, [newProvider, editingModel, busy])
 
   const run = async (label: string, op: () => Promise<unknown>) => {
     setBusy(label)
@@ -180,7 +184,7 @@ export function ProviderSettings({ api, onChanged }: Props) {
                       <div className="model-main"><strong>{model.name || model.id}</strong><small>{model.id}</small><div className="model-tags"><span>{model.contextWindow?.toLocaleString()} ctx</span>{model.reasoning ? <span>{c.reasoning}</span> : null}{model.input?.includes('image') ? <span>{c.vision}</span> : null}<span>{model.builtin ? c.builtIn : c.custom}</span></div></div>
                       <div className="model-actions">
                         {isDefault ? <span className="default-badge"><ICheck />{c.globalDefault}</span> : <button type="button" className="ui-button ghost small" disabled={!model.enabled || !!busy} onClick={() => void run('default', () => api.setDefault(current.id, model.id))}>{c.setDefault}</button>}
-                        <button type="button" className="icon-text-button" onClick={() => editModel(model)}><IEdit />{c.edit}</button>
+                        <button type="button" className="icon-text-button" data-testid="edit-model" onClick={() => editModel(model)}><IEdit />{c.edit}</button>
                         <label className="compact-switch" title={model.enabled ? c.enabled : c.disabled}><input type="checkbox" checked={model.enabled} disabled={isDefault || !!busy} onChange={e => void run('model-enabled', () => api.patchModel(current.id, { id: model.id, enabled: e.target.checked }))} /><span aria-hidden /></label>
                         {model.builtin && model.customized ? <button type="button" className="icon-text-button" onClick={() => void run('restore-model', () => api.deleteModel(current.id, model.id))}><IRegen />{c.restore}</button> : null}
                         {!model.builtin ? <button type="button" className="icon-text-button danger" disabled={isDefault || !!busy} onClick={() => void run('delete-model', () => api.deleteModel(current.id, model.id))}><ITrash />{c.remove}</button> : null}
@@ -189,17 +193,6 @@ export function ProviderSettings({ api, onChanged }: Props) {
                   })}
                 </div>
 
-                {editingModel ? <form className="model-advanced" data-testid="model-advanced" onSubmit={event => {
-                  event.preventDefault()
-                  try {
-                    const override = JSON.parse(modelJSON) as Record<string, unknown>
-                    void run('edit-model', () => api.patchModel(current.id, { id: editingModel, ...override })).then(ok => { if (ok) setEditingModel('') })
-                  } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
-                }}>
-                  <div className="settings-section-head"><div><h4>{c.advanced}</h4><p>{c.advancedHint}</p></div></div>
-                  <textarea rows={14} value={modelJSON} onChange={e => setModelJSON(e.target.value)} spellCheck={false} />
-                  <div className="form-actions"><button type="button" className="ui-button secondary" onClick={() => setEditingModel('')}>{c.cancel}</button><button className="ui-button primary" type="submit" disabled={!!busy}>{c.save}</button></div>
-                </form> : null}
               </section>
 
               {(current.customized || !current.builtin) ? <section className="settings-section danger-section"><div><h4>{c.dangerZone}</h4></div>{current.builtin ? <button type="button" className="ui-button danger-outline" onClick={() => void run('restore-provider', () => api.deleteProvider(current.id))}>{c.restoreProvider}</button> : <button type="button" className="ui-button danger-outline" onClick={() => void run('delete-provider', () => api.deleteProvider(current.id))}><ITrash />{c.deleteProvider}</button>}</section> : null}
@@ -207,6 +200,32 @@ export function ProviderSettings({ api, onChanged }: Props) {
           )}
         </div>
       </div>
+
+      {editingModel && current ? createPortal(
+        <div className="provider-dialog-mask" data-testid="model-edit-dialog-mask" onMouseDown={() => { if (!busy) setEditingModel('') }}>
+          <div className="provider-dialog model-edit-dialog" data-testid="model-advanced" role="dialog" aria-modal="true" aria-labelledby="model-edit-title" onMouseDown={event => event.stopPropagation()}>
+            <header className="provider-dialog-head">
+              <div>
+                <h3 id="model-edit-title">{c.advanced}</h3>
+                <p>{current.models.find(model => model.id === editingModel)?.name || editingModel} · {c.advancedHint}</p>
+              </div>
+              <button type="button" className="provider-dialog-close" aria-label={c.cancel} disabled={!!busy} onClick={() => setEditingModel('')}>×</button>
+            </header>
+            {error ? <div className="settings-error provider-dialog-error" role="alert"><span>{error}</span></div> : null}
+            <form className="model-advanced" onSubmit={event => {
+              event.preventDefault()
+              try {
+                const override = JSON.parse(modelJSON) as Record<string, unknown>
+                void run('edit-model', () => api.patchModel(current.id, { id: editingModel, ...override })).then(ok => { if (ok) setEditingModel('') })
+              } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+            }}>
+              <textarea ref={modelJSONRef} rows={16} value={modelJSON} onChange={e => setModelJSON(e.target.value)} spellCheck={false} />
+              <div className="form-actions provider-dialog-actions"><button type="button" className="ui-button secondary" disabled={!!busy} onClick={() => setEditingModel('')}>{c.cancel}</button><button className="ui-button primary" type="submit" disabled={!!busy}>{busy ? c.saving : c.save}</button></div>
+            </form>
+          </div>
+        </div>,
+        document.body,
+      ) : null}
 
       {newProvider ? createPortal(
         <div className="provider-dialog-mask" data-testid="new-provider-dialog-mask" onMouseDown={() => { if (!busy) setNewProvider(false) }}>
