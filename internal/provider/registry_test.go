@@ -91,28 +91,69 @@ func TestRegistryPersistsCustomProviderAndCredential(t *testing.T) {
 	}
 }
 
-func TestRegistryRejectsDisablingDefault(t *testing.T) {
+func TestRegistryFallsBackWhenLastUsedUnavailable(t *testing.T) {
 	r, err := NewRegistry(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Update(func(cfg *ModelsFile) error {
-		cfg.Default = ModelRef{Provider: "openai", Model: "gpt-5.6-terra"}
-		return nil
-	}); err != nil {
+	if err := r.RememberDefault(ModelRef{Provider: "openai", Model: "gpt-5.6-terra"}); err != nil {
 		t.Fatal(err)
 	}
+	if got := r.Default(); got.Provider != "openai" || got.Model != "gpt-5.6-terra" {
+		t.Fatalf("last used = %+v", got)
+	}
 	off := false
-	err = r.Update(func(cfg *ModelsFile) error {
+	if err := r.Update(func(cfg *ModelsFile) error {
 		pc := cfg.Providers["openai"]
 		pc.Enabled = &off
 		cfg.Providers["openai"] = pc
 		return nil
-	})
-	if err == nil {
-		t.Fatal("disabling the default provider must fail")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := r.Default()
+	if got.Provider == "openai" || got.Provider == "" || got.Model == "" {
+		t.Fatalf("must fall back from disabled last-used: %+v", got)
 	}
 }
+
+func TestDefaultThinkingPrefersMediumAndClampPicksNearest(t *testing.T) {
+	reasoning := Model{Reasoning: true}
+	if got := DefaultThinking(reasoning); got != "medium" {
+		t.Fatalf("default reasoning = %q", got)
+	}
+	if got := DefaultThinking(Model{}); got != "off" {
+		t.Fatalf("default non-reasoning = %q", got)
+	}
+	skipMedium := Model{Reasoning: true, ThinkingLevelMap: map[string]*string{"medium": nil, "high": ptrLevel("high")}}
+	if got := DefaultThinking(skipMedium); got != "off" {
+		t.Fatalf("default skipped medium = %q", got)
+	}
+	got, err := ClampThinking(reasoning, "high")
+	if err != nil || got != "high" {
+		t.Fatalf("clamp high = %q %v", got, err)
+	}
+	got, err = ClampThinking(reasoning, "max")
+	if err != nil || got != "high" {
+		t.Fatalf("clamp implicit max = %q %v", got, err)
+	}
+	withMax := Model{Reasoning: true, ThinkingLevelMap: map[string]*string{"max": ptrLevel("max")}}
+	got, err = ClampThinking(withMax, "max")
+	if err != nil || got != "max" {
+		t.Fatalf("clamp mapped max = %q %v", got, err)
+	}
+	noMax := Model{Reasoning: true, ThinkingLevelMap: map[string]*string{"xhigh": nil, "max": nil}}
+	got, err = ClampThinking(noMax, "max")
+	if err != nil || got != "high" {
+		t.Fatalf("clamp down = %q %v", got, err)
+	}
+	got, err = ClampThinking(skipMedium, "")
+	if err != nil || got != "" {
+		t.Fatalf("clamp empty = %q %v", got, err)
+	}
+}
+
+func ptrLevel(s string) *string { return &s }
 
 func TestRegistryStrictJSONRejectsTrailingValue(t *testing.T) {
 	home := t.TempDir()

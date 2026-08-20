@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -273,8 +274,11 @@ func (s *Server) putDefaultModel(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &ref) {
 		return
 	}
-	err := s.registry.Update(func(cfg *provider.ModelsFile) error { cfg.Default = ref; return nil })
-	if err != nil {
+	if _, _, ok := s.registry.FindModel(ref.Provider, ref.Model); !ok {
+		http.Error(w, fmt.Sprintf("model %q/%q is unavailable", ref.Provider, ref.Model), http.StatusUnprocessableEntity)
+		return
+	}
+	if err := s.registry.RememberDefault(ref); err != nil {
 		registryError(w, err)
 		return
 	}

@@ -176,12 +176,13 @@ export type ModelInfo = {
 	applyPatchToolType?: 'freeform'
 	reasoning?: boolean
 	thinkingLevels?: string[]
+	defaultThinking?: string
 	builtin?: boolean
 	customized?: boolean
   spec: string
 }
 
-export type ProviderModel = Omit<ModelInfo, 'spec' | 'thinkingLevels'> & {
+export type ProviderModel = Omit<ModelInfo, 'spec' | 'thinkingLevels' | 'defaultThinking'> & {
 	enabled: boolean
 	builtin: boolean
 	customized?: boolean
@@ -209,6 +210,13 @@ export type ProviderCatalog = {
 	version: number
 	default: { provider: string; model: string }
 	providers: ProviderView[]
+}
+
+export type Meta = {
+	home: string
+	provider: string
+	model: string
+	thinkingEffort?: string
 }
 
 export type ChatNode =

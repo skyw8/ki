@@ -21,7 +21,7 @@ const copy = {
     connection: '连接设置', connectionHint: '修改连接后，新请求会立即使用新配置。', displayName: '显示名称', providerID: '供应商 ID', baseURL: 'Base URL', apiProtocol: 'API 协议', saveChanges: '保存更改',
     credential: 'API 凭据', credentialHint: '密钥只保存在本机，页面不会回显。', apiKey: 'API key', saveKey: '保存密钥', clear: '清除', stored: '已保存凭据',
     models: '模型', modelCount: '{n} 个模型', addModel: '添加模型', modelID: '模型 ID', modelName: '显示名称', contextWindow: '上下文窗口', maxOutput: '最大输出', add: '添加',
-    globalDefault: '全局默认', setDefault: '设为默认', edit: '编辑', restore: '恢复', remove: '删除', reasoning: '推理', vision: '视觉',
+    edit: '编辑', restore: '恢复', remove: '删除', reasoning: '推理', vision: '视觉',
     advanced: '模型高级字段', advancedHint: '用于精确配置 thinking map、价格和兼容参数。', cancel: '取消', save: '保存',
     dangerZone: '危险操作', restoreProvider: '恢复供应商内置值', deleteProvider: '删除供应商',
     newProvider: '新供应商', newProviderHint: '先填写连接和首个模型，创建后可继续补充高级字段。', create: '创建供应商', firstModel: '首个模型 ID',
@@ -33,7 +33,7 @@ const copy = {
     connection: 'Connection', connectionHint: 'New requests use saved connection changes immediately.', displayName: 'Display name', providerID: 'Provider ID', baseURL: 'Base URL', apiProtocol: 'API protocol', saveChanges: 'Save changes',
     credential: 'API credential', credentialHint: 'The key stays on this machine and is never shown again.', apiKey: 'API key', saveKey: 'Save key', clear: 'Clear', stored: 'Credential configured',
     models: 'Models', modelCount: '{n} models', addModel: 'Add model', modelID: 'Model ID', modelName: 'Display name', contextWindow: 'Context window', maxOutput: 'Max output', add: 'Add model',
-    globalDefault: 'Global default', setDefault: 'Make default', edit: 'Edit', restore: 'Restore', remove: 'Delete', reasoning: 'Reasoning', vision: 'Vision',
+    edit: 'Edit', restore: 'Restore', remove: 'Delete', reasoning: 'Reasoning', vision: 'Vision',
     advanced: 'Advanced model fields', advancedHint: 'Precisely configure thinking maps, pricing, and compatibility.', cancel: 'Cancel', save: 'Save',
     dangerZone: 'Danger zone', restoreProvider: 'Restore built-in values', deleteProvider: 'Delete provider',
     newProvider: 'New provider', newProviderHint: 'Start with a connection and one model; advanced fields can be added afterward.', create: 'Create provider', firstModel: 'First model ID',
@@ -179,15 +179,13 @@ export function ProviderSettings({ api, onChanged }: Props) {
 
                 <div className="model-table">
                   {current.models.map(model => {
-                    const isDefault = data.default.provider === current.id && data.default.model === model.id
                     return <div className="model-row" key={model.id} data-testid="provider-model-row">
                       <div className="model-main"><strong>{model.name || model.id}</strong><small>{model.id}</small><div className="model-tags"><span>{model.contextWindow?.toLocaleString()} ctx</span>{model.reasoning ? <span>{c.reasoning}</span> : null}{model.input?.includes('image') ? <span>{c.vision}</span> : null}<span>{model.builtin ? c.builtIn : c.custom}</span></div></div>
                       <div className="model-actions">
-                        {isDefault ? <span className="default-badge"><ICheck />{c.globalDefault}</span> : <button type="button" className="ui-button ghost small" disabled={!model.enabled || !!busy} onClick={() => void run('default', () => api.setDefault(current.id, model.id))}>{c.setDefault}</button>}
                         <button type="button" className="icon-text-button" data-testid="edit-model" onClick={() => editModel(model)}><IEdit />{c.edit}</button>
-                        <label className="compact-switch" title={model.enabled ? c.enabled : c.disabled}><input type="checkbox" checked={model.enabled} disabled={isDefault || !!busy} onChange={e => void run('model-enabled', () => api.patchModel(current.id, { id: model.id, enabled: e.target.checked }))} /><span aria-hidden /></label>
+                        <label className="compact-switch" title={model.enabled ? c.enabled : c.disabled}><input type="checkbox" checked={model.enabled} disabled={!!busy} onChange={e => void run('model-enabled', () => api.patchModel(current.id, { id: model.id, enabled: e.target.checked }))} /><span aria-hidden /></label>
                         {model.builtin && model.customized ? <button type="button" className="icon-text-button" onClick={() => void run('restore-model', () => api.deleteModel(current.id, model.id))}><IRegen />{c.restore}</button> : null}
-                        {!model.builtin ? <button type="button" className="icon-text-button danger" disabled={isDefault || !!busy} onClick={() => void run('delete-model', () => api.deleteModel(current.id, model.id))}><ITrash />{c.remove}</button> : null}
+                        {!model.builtin ? <button type="button" className="icon-text-button danger" disabled={!!busy} onClick={() => void run('delete-model', () => api.deleteModel(current.id, model.id))}><ITrash />{c.remove}</button> : null}
                       </div>
                     </div>
                   })}

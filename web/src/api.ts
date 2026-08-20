@@ -1,4 +1,4 @@
-import type { FsListing, LoopEvent, ProviderCatalog, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
+import type { FsListing, LoopEvent, Meta, ProviderCatalog, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
 
 export type Boot = { token: string }
 
@@ -45,8 +45,12 @@ export class Client {
     return this.json(`/v1/sessions/${id}`)
   }
 
-  create(opts?: { cwd?: string; workspaceId?: string; model?: string }): Promise<SessionInfo> {
+  create(opts?: { cwd?: string; workspaceId?: string; model?: string; thinkingEffort?: string }): Promise<SessionInfo> {
     return this.json('/v1/sessions', { method: 'POST', body: JSON.stringify(opts ?? {}) })
+  }
+
+  meta(): Promise<Meta> {
+    return this.json('/v1/meta')
   }
 
   deleteSession(id: string): Promise<void> {
@@ -159,9 +163,6 @@ export class Client {
   }
   deleteModel(id: string, model: string): Promise<void> {
 	return this.json(`/v1/providers/${encodeURIComponent(id)}/models?model=${encodeURIComponent(model)}`, { method: 'DELETE' })
-  }
-  setDefault(provider: string, model: string): Promise<ProviderCatalog> {
-	return this.json('/v1/default-model', { method: 'PUT', body: JSON.stringify({ provider, model }) })
   }
 
   async *events(id: string, signal?: AbortSignal): AsyncGenerator<LoopEvent> {
