@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { Client } from './api'
 import { ICheck, IEdit, IRegen } from './icons'
 import { useI18n, type MsgKey } from './i18n'
+import { toast } from './toast'
 import type { CatalogMcp, CatalogSkill, SessionCommand, SessionDetail } from './types'
 
 const SOURCE_KEY: Record<string, MsgKey> = {
@@ -16,14 +17,12 @@ export function SessionConfig({
   sessionId,
   workspaceTitle,
   busy,
-  onError,
   onEdit,
 }: {
   api: Client
   sessionId: string | null
   workspaceTitle?: string
   busy?: boolean
-  onError: (msg: string | null) => void
   onEdit?: (page: 'skills' | 'mcp') => void
 }) {
   const { t } = useI18n()
@@ -39,11 +38,11 @@ export function SessionConfig({
     try {
       setDetail(await api.get(sessionId))
     } catch (e) {
-      onError(e instanceof Error ? e.message : String(e))
+      toast.from(e)
     } finally {
       setLoading(false)
     }
-  }, [api, onError, sessionId])
+  }, [api, sessionId])
 
   useEffect(() => { void load() }, [load])
 
@@ -63,7 +62,7 @@ export function SessionConfig({
   return (
     <div className="session-config" data-testid="session-info">
       <div className="cfg-actions">
-        <ReloadButton testid="info-reload" onError={onError} run={async () => { await api.reload(); await load() }} />
+        <ReloadButton testid="info-reload" run={async () => { await api.reload(); await load() }} />
         <button type="button" className="cfg-btn" data-testid="info-edit" onClick={() => onEdit?.('skills')}>
           <IEdit /> {t('cfg.edit')}
         </button>
@@ -182,12 +181,10 @@ export function SettingsToggles({
   kind,
   api,
   workspaceId,
-  onError,
 }: {
   kind: 'skills' | 'mcp'
   api: Client
   workspaceId?: string | null
-  onError: (msg: string | null) => void
 }) {
   const { t } = useI18n()
   const [items, setItems] = useState<Array<CatalogSkill | CatalogMcp>>([])
@@ -199,11 +196,11 @@ export function SettingsToggles({
       const next = kind === 'skills' ? await api.skills(workspaceId) : await api.mcpServers(workspaceId)
       setItems(next)
     } catch (e) {
-      onError(e instanceof Error ? e.message : String(e))
+      toast.from(e)
     } finally {
       setLoading(false)
     }
-  }, [api, kind, onError, workspaceId])
+  }, [api, kind, workspaceId])
 
   useEffect(() => { void load() }, [load])
 
@@ -218,7 +215,7 @@ export function SettingsToggles({
       setItems(listed)
     } catch (e) {
       setItems(prev)
-      onError(e instanceof Error ? e.message : String(e))
+      toast.from(e)
     }
   }
 
@@ -230,7 +227,7 @@ export function SettingsToggles({
           <h3>{kind === 'skills' ? t('settings.skills') : t('settings.mcp')}</h3>
           <p>{kind === 'skills' ? t('settings.skillsHint') : t('settings.mcpHint')}</p>
         </div>
-        <ReloadButton testid={`${kind}-reload`} onError={onError} run={async () => { await api.reload(); await load() }} />
+        <ReloadButton testid={`${kind}-reload`} run={async () => { await api.reload(); await load() }} />
       </header>
       {items.length === 0 && !loading ? <p className="cfg-empty">{empty}</p> : (
         <ul className="cfg-list">
@@ -257,7 +254,7 @@ export function SettingsToggles({
   )
 }
 
-function ReloadButton({ testid, run, onError }: { testid: string; run: () => Promise<void>; onError: (msg: string | null) => void }) {
+function ReloadButton({ testid, run }: { testid: string; run: () => Promise<void> }) {
   const { t } = useI18n()
   const [phase, setPhase] = useState<'idle' | 'busy' | 'done'>('idle')
   useEffect(() => {
@@ -274,13 +271,12 @@ function ReloadButton({ testid, run, onError }: { testid: string; run: () => Pro
       aria-busy={phase === 'busy'}
       onClick={() => {
         if (phase === 'busy') return
-        onError(null)
         setPhase('busy')
         void run().then(
           () => setPhase('done'),
           e => {
             setPhase('idle')
-            onError(e instanceof Error ? e.message : String(e))
+            toast.from(e)
           },
         )
       }}

@@ -4,6 +4,7 @@ import type { Client } from './api'
 import { ICheck, IEdit, IPlus, IRegen, ITrash } from './icons'
 import { useI18n } from './i18n'
 import { Select } from './Select'
+import { toast } from './toast'
 import type { ProviderCatalog, ProviderModel } from './types'
 
 type Props = { api: Client; onChanged: () => void }
@@ -69,7 +70,7 @@ export function ProviderSettings({ api, onChanged }: Props) {
     setSelected(id => id && next.providers.some(p => p.id === id) ? id : (next.default.provider || next.providers[0]?.id || ''))
     onChanged()
   }
-  useEffect(() => { void load().catch(e => setError(e instanceof Error ? e.message : String(e))) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load().catch(e => toast.from(e)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const current = useMemo(() => data?.providers.find(p => p.id === selected), [data, selected])
   useEffect(() => {
     if (!current) return
@@ -97,7 +98,7 @@ export function ProviderSettings({ api, onChanged }: Props) {
   const run = async (label: string, op: () => Promise<unknown>) => {
     setBusy(label)
     setError('')
-    try { await op(); await load(); return true } catch (e) { setError(e instanceof Error ? e.message : String(e)); return false } finally { setBusy('') }
+    try { await op(); await load(); return true } catch (e) { toast.from(e); return false } finally { setBusy('') }
   }
   const editModel = (model: ProviderModel) => {
     setEditingModel(model.id)
@@ -115,7 +116,6 @@ export function ProviderSettings({ api, onChanged }: Props) {
         <div><h3>{c.title}</h3><p>{c.subtitle}</p></div>
         <button type="button" className="ui-button primary" data-testid="add-provider" onClick={() => { setError(''); setNewProvider(true) }}><IPlus />{c.addProvider}</button>
       </header>
-      {error ? <div className="settings-error" role="alert"><span>{error}</span><button type="button" onClick={() => setError('')} aria-label="Close">×</button></div> : null}
       {busy ? <div className="settings-progress" role="status">{c.saving}</div> : null}
 
       <div className="provider-workbench">
@@ -232,7 +232,6 @@ export function ProviderSettings({ api, onChanged }: Props) {
               <div><h3 id="new-provider-title">{c.newProvider}</h3><p>{c.newProviderHint}</p></div>
               <button type="button" className="provider-dialog-close" aria-label={c.cancel} disabled={!!busy} onClick={() => setNewProvider(false)}>×</button>
             </header>
-            {error ? <div className="settings-error provider-dialog-error" role="alert"><span>{error}</span></div> : null}
             <form data-testid="new-provider-form" onSubmit={event => {
               event.preventDefault()
               void run('provider', () => api.createProvider({

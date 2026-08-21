@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { ErrorBoundary } from './ErrorBoundary'
 import { I18nProvider } from './i18n'
+import { Toaster } from './toast'
 import './theme.css'
 import './app.css'
 
@@ -13,6 +14,7 @@ createRoot(el).render(
     <I18nProvider>
       <ErrorBoundary>
         <App />
+        <Toaster />
       </ErrorBoundary>
     </I18nProvider>
   </StrictMode>,
