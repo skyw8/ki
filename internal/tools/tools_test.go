@@ -33,7 +33,7 @@ func names(ts []loop.Tool) []string {
 func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
 	set := Set{CWD: t.TempDir()}
 	classic := set.Build(Profile{Editor: EditorWriteEdit})
-	if got := strings.Join(names(classic), ","); got != "Read,Write,Edit,Bash" {
+	if got := strings.Join(names(classic), ","); got != "Read,Write,Edit,Grep,Glob,Bash" {
 		t.Fatalf("classic tools = %s", got)
 	}
 	textRead := pick(classic, "Read")
@@ -42,7 +42,7 @@ func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
 	}
 
 	patch := set.Build(Profile{RichRead: true, Editor: EditorApplyPatch})
-	if got := strings.Join(names(patch), ","); got != "Read,apply_patch,Bash" {
+	if got := strings.Join(names(patch), ","); got != "Read,apply_patch,Grep,Glob,Bash" {
 		t.Fatalf("patch tools = %s", got)
 	}
 	if !strings.Contains(pick(patch, "Read").Prompt(), "PDF") {
@@ -158,6 +158,40 @@ func TestReadWriteEditRelativeAndNoLineNumbers(t *testing.T) {
 	b, _ := os.ReadFile(filepath.Join(cwd, "a.txt"))
 	if !strings.HasPrefix(string(b), "hi\n") {
 		t.Fatalf("file: %q", b)
+	}
+}
+
+func TestGrepAndGlobTools(t *testing.T) {
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "src", "main.go"), []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	set := Set{CWD: cwd}.Build(Profile{Editor: EditorWriteEdit})
+	grep, glob := pick(set, "Grep"), pick(set, "Glob")
+
+	grepResult := grep.Execute(context.Background(), map[string]any{
+		"pattern":     "func main",
+		"path":        "src",
+		"output_mode": "content",
+	})
+	if grepResult.IsError || !strings.Contains(grepResult.Content[0].Text, "main.go:2:") {
+		t.Fatalf("grep result = %+v", grepResult)
+	}
+	filesResult := grep.Execute(context.Background(), map[string]any{"pattern": "func main"})
+	if filesResult.IsError || !strings.Contains(filesResult.Content[0].Text, "src/main.go") {
+		t.Fatalf("grep files result = %+v", filesResult)
+	}
+	countResult := grep.Execute(context.Background(), map[string]any{"pattern": "func main", "output_mode": "count"})
+	if countResult.IsError || !strings.Contains(countResult.Content[0].Text, "src/main.go:1") {
+		t.Fatalf("grep count result = %+v", countResult)
+	}
+
+	globResult := glob.Execute(context.Background(), map[string]any{"pattern": "**/*.go"})
+	if globResult.IsError || globResult.Content[0].Text != "src/main.go" {
+		t.Fatalf("glob result = %+v", globResult)
 	}
 }
 

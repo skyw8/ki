@@ -36,5 +36,5 @@ func (s Set) Build(profile Profile) []loop.Tool {
 	} else {
 		out = append(out, writeTool{cwd: cwd}, editTool{cwd: cwd})
 	}
-	return append(out, bashTool{cwd: cwd, jobs: jobs})
+	return append(out, grepTool{cwd: cwd}, globTool{cwd: cwd}, bashTool{cwd: cwd, jobs: jobs})
 }

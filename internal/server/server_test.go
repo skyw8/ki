@@ -208,7 +208,7 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	}
 
 	gpt := prompt("openai/gpt-5.6-terra")
-	if got := requestToolNames(gpt.Tools); !slices.Equal(got, []string{"Read", "apply_patch", "Bash"}) {
+	if got := requestToolNames(gpt.Tools); !slices.Equal(got, []string{"Read", "apply_patch", "Grep", "Glob", "Bash"}) {
 		t.Fatalf("GPT tools = %v", got)
 	}
 	if gpt.Tools[1].Type != "custom" || gpt.Tools[1].Format == nil {
@@ -220,7 +220,7 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	}
 
 	deepseek := prompt("deepseek/deepseek-v4-flash")
-	if got := requestToolNames(deepseek.Tools); !slices.Equal(got, []string{"Read", "Write", "Edit", "Bash"}) {
+	if got := requestToolNames(deepseek.Tools); !slices.Equal(got, []string{"Read", "Write", "Edit", "Grep", "Glob", "Bash"}) {
 		t.Fatalf("DeepSeek tools = %v", got)
 	}
 	if strings.Contains(deepseek.Tools[0].Description, "PDF") {
