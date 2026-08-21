@@ -35,7 +35,7 @@ scripts/run.sh
 ./ki version
 ```
 
-Auth is a Bearer token in `~/.ki/server.json` (or `KI_HOME/server.json`). Config is `~/.ki/ki.toml` and `<cwd>/.ki/ki.toml`. Set `KI_FAKE=1` to use a canned model for local plumbing tests.
+Auth is a Bearer token in `~/.ki/server.json` (or `KI_HOME/server.json`). Config is `~/.ki/ki.toml` and `<cwd>/.ki/ki.toml`. The configured real provider is used by default; set `KI_FAKE=1` only for local plumbing tests.
 
 ## Test
 

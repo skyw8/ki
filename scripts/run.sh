@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/run.sh — build ki and run it inside a dedicated tmux session.
+# scripts/run.sh — build ki and run the real configured provider inside a dedicated tmux session.
 #
 # The session (default name: ki) has two windows:
 #   server — runs `./ki serve`
@@ -24,7 +24,7 @@ usage() {
   echo "options:"
   echo "  -a, --attach    attach to the tmux session after starting"
   echo "      --web       rebuild web/dist before building"
-  echo "      --fake      run with KI_FAKE=1 (canned model)"
+  echo "      --fake      opt in to KI_FAKE=1 for canned-model tests"
   echo "      --addr A    listen address (default $ADDR)"
   echo "      -h, --help  show this help"
   exit 0
