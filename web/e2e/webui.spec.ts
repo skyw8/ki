@@ -509,6 +509,9 @@ test('session info lists skills and mcp; toggles live in settings', async ({ pag
   await expect(page.getByTestId('cfg-skill').filter({ hasText: 'demo-skill' })).toBeVisible()
   await expect(page.getByTestId('cfg-mcp').filter({ hasText: 'context7' })).toBeVisible()
   await expect(page.getByTestId('cfg-mcp').filter({ hasText: 'exa' })).toBeVisible()
+  await expect(page.getByTestId('info-outline')).toContainText('demo-skill')
+  await expect(page.getByTestId('info-outline')).toContainText('context7')
+  await expect(page.getByTestId('info-outline')).toContainText('exa')
   await expect(page.getByTestId('info-reload')).toBeVisible()
   await expect(page.getByTestId('mcp-on-exa')).toHaveCount(0)
 
