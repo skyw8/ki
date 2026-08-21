@@ -12,6 +12,7 @@ import { appendOptimisticUser, applyEvent, clampThinkingEffort, emptyView, initi
 import type { ChatNode, Content, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
+import { toast } from './toast'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
 type SettingsPage = 'providers' | 'skills' | 'mcp' | 'appearance'
@@ -111,11 +112,9 @@ export function App() {
 	const [attachmentTarget, setAttachmentTarget] = useState<'new' | 'edit' | null>(null)
 	const [uploading, setUploading] = useState(false)
 	const [fileDragActive, setFileDragActive] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>('providers')
-  const [notice, setNotice] = useState<{ kind: 'error' | 'info'; text: string } | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
   const [modelQuery, setModelQuery] = useState('')
   const [dirOpen, setDirOpen] = useState(false)
@@ -231,7 +230,7 @@ export function App() {
       setSessions(ss)
       setWorkspaces(ws)
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      toast.from(e)
     }
   }, [api])
 
@@ -275,7 +274,7 @@ export function App() {
       }
     } catch (e) {
       if ((e as { name?: string }).name === 'AbortError') return
-      setErr(e instanceof Error ? e.message : String(e))
+      toast.from(e)
     } finally {
       if (abortRef.current === ac) {
         setView(v => ({ ...v, busy: false }))
@@ -289,7 +288,6 @@ export function App() {
 
   const openSession = useCallback(async (id: string) => {
     setCurrentId(id)
-    setErr(null)
 	setEdit(null)
     abortRef.current?.abort()
 	abortRef.current = null
@@ -302,7 +300,7 @@ export function App() {
       if (detail.workspaceId) setExpanded(e => ({ ...e, [detail.workspaceId!]: true }))
       if (detail.running) void listen(id)
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      toast.from(e)
     }
   }, [api, listen])
 
@@ -329,7 +327,6 @@ export function App() {
 	const uploadClientFiles = useCallback(async (target: 'new' | 'edit', files: File[]) => {
 	  if (!files.length || uploading) return
 	  setUploading(true)
-	  setErr(null)
 	  try {
 		let id = currentId
 		if (!id) id = (await makeSession(selectedWs)).id
@@ -339,7 +336,7 @@ export function App() {
 		} else {
 		  setDraft(d => ({ ...d, attachments: [...d.attachments, ...added.filter(a => !d.attachments.some(old => old.id === a.id))] }))
 		}
-	  } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+	  } catch (e) { toast.from(e) }
 	  finally { setUploading(false) }
 	}, [api, currentId, makeSession, selectedWs, uploading])
 
@@ -388,15 +385,12 @@ export function App() {
 	}, [edit, uploadClientFiles, uploading, view.busy])
 
   const newSession = useCallback(async (wsId?: string) => {
-    setErr(null)
     try { await makeSession(wsId ?? selectedWs) }
-    catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+    catch (e) { toast.from(e) }
   }, [makeSession, selectedWs])
 
   const sendContent = useCallback(async (content: Content[], parentId?: string, editedMessageId?: string) => {
 	if (!content.some(c => (c.type === 'text' && !!c.text?.trim()) || c.type !== 'text')) return
-    setErr(null)
-    setNotice(null)
     try {
       let id = currentId
       if (!id) {
@@ -407,14 +401,14 @@ export function App() {
         const spec = view.provider && view.model ? `${view.provider}/${view.model}` : view.model
 		const result = await api.prompt(id, content, spec || undefined, parentId)
         if (result?.handled) {
-          setNotice({ kind: result.error ? 'error' : 'info', text: result.notice || '' })
+          if (result.notice) (result.error ? toast.error : toast.info)(result.notice)
           setDraft(d => ({ ...d, text: '' }))
           if (!result.error) await openSession(id)
           return
         }
       } catch (e) {
         if (e instanceof ApiError && e.status === 409) {
-          setNotice({ kind: 'error', text: e.message })
+          toast.error(e.message)
           return
         }
         throw e
@@ -434,7 +428,7 @@ export function App() {
 	  }
       void listen(id)
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      toast.from(e)
     }
 	}, [api, currentId, listen, makeSession, openSession, selectedWs, view.model, view.provider])
 
@@ -452,7 +446,7 @@ export function App() {
   const stop = useCallback(async () => {
     if (!currentId) return
     try { await api.abort(currentId) } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      toast.from(e)
     }
   }, [api, currentId])
 
@@ -472,7 +466,7 @@ export function App() {
 	  setView(v => ({ ...v, model: out.model, provider: out.provider, thinkingEffort: out.thinkingEffort ?? thinkingEffort }))
       saveLastComposerModel({ provider: out.provider, model: out.model, thinkingEffort: out.thinkingEffort ?? thinkingEffort })
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      toast.from(e)
     }
   }, [api, currentId, models, view.model, view.provider, view.thinkingEffort])
 
@@ -486,7 +480,7 @@ export function App() {
 			const out = await api.patch(currentId, { thinkingEffort })
 			setView(v => ({ ...v, thinkingEffort: out.thinkingEffort ?? thinkingEffort }))
 			if (view.provider && view.model) saveLastComposerModel({ provider: view.provider, model: view.model, thinkingEffort: out.thinkingEffort ?? thinkingEffort })
-		} catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+		} catch (e) { toast.from(e) }
 	}, [api, currentId, view.model, view.provider])
 
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
@@ -550,12 +544,11 @@ export function App() {
 
 	const forkMessage = useCallback(async (node: Extract<ChatNode, { kind: 'assistant' }>) => {
 	  if (!currentId || view.busy) return
-	  setErr(null)
 	  try {
 		const child = await api.fork(currentId, node.id)
 		await refreshList()
 		await openSession(child.id)
-	  } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+	  } catch (e) { toast.from(e) }
 	}, [api, currentId, openSession, refreshList, view.busy])
 
 	const regenerate = useCallback((node: Extract<ChatNode, { kind: 'assistant' }>) => {
@@ -601,7 +594,7 @@ export function App() {
 	  try {
 		await api.patch(currentId, { leafId: leaf })
 		await openSession(currentId)
-	  } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+	  } catch (e) { toast.from(e) }
 	}, [api, currentId, openSession, view.allEntries, view.busy])
 
   const empty = view.nodes.length === 0
@@ -619,8 +612,6 @@ export function App() {
       busy={view.busy}
       cwd={view.cwd}
       model={view.model}
-      err={err}
-      notice={notice}
       commands={view.commands ?? []}
       onEnsureSession={async () => { if (!currentId) await makeSession(selectedWs) }}
       onPickModel={() => { setModelQuery(''); setModelOpen(true) }}
@@ -742,7 +733,7 @@ export function App() {
                     const rect = e.currentTarget.getBoundingClientRect()
                     const i = workspaces.findIndex(w => w.id === ws.id)
                     const before = e.clientY < rect.top + rect.height / 2 ? ws.id : workspaces[i + 1]?.id ?? null
-                    void api.moveWorkspace(id, before).then(setWorkspaces).catch(er => setErr(er instanceof Error ? er.message : String(er)))
+                    void api.moveWorkspace(id, before).then(setWorkspaces).catch(er => toast.from(er))
                   }}
                 >
                   <button type="button" className="ws-toggle" onClick={() => { setSelectedWs(ws.id); setExpanded(e => ({ ...e, [ws.id]: !open })) }}>
@@ -767,7 +758,7 @@ export function App() {
                       if (fromWs !== ws.id || !sid || sid === s.id) return
                       const rect = e.currentTarget.getBoundingClientRect()
                       const before = e.clientY < rect.top + rect.height / 2 ? s.id : rows[i + 1]?.id
-                      void api.moveSession(ws.id, sid, before ?? null).then(() => refreshList()).catch(er => setErr(er instanceof Error ? er.message : String(er)))
+                      void api.moveSession(ws.id, sid, before ?? null).then(() => refreshList()).catch(er => toast.from(er))
                     }}
                   >
                     <button type="button" className="session-main" onClick={() => void openSession(s.id)}>
@@ -835,7 +826,6 @@ export function App() {
               sessionId={currentId}
               workspaceTitle={workspaces.find(w => w.id === (selectedWs ?? sessions.find(s => s.id === currentId)?.workspaceId))?.title}
               busy={view.busy}
-              onError={setErr}
               onEdit={page => { setSettingsPage(page); setSettingsOpen(true) }}
             />
           </div>
@@ -968,7 +958,7 @@ export function App() {
                 void (rename.kind === 'ws' ? api.patchWorkspace(rename.id, { title: rename.title }) : api.patch(rename.id, { title: rename.title }))
                   .then(() => refreshList())
                   .then(() => setRename(null))
-                  .catch(e => setErr(e instanceof Error ? e.message : String(e)))
+                  .catch(e => toast.from(e))
               }}
             >
               {t('rename.ok')}
@@ -1007,7 +997,7 @@ export function App() {
                     setConfirmDel(null)
                     return refreshList()
                   })
-                  .catch(e => setErr(e instanceof Error ? e.message : String(e)))
+                  .catch(e => toast.from(e))
               }}
             >
               {t('delete.ok')}
@@ -1030,7 +1020,7 @@ export function App() {
               setExpanded(e => ({ ...e, [ws.id]: true }))
             }
             return refreshList()
-          }).catch(e => setErr(e instanceof Error ? e.message : String(e)))
+          }).catch(e => toast.from(e))
             .finally(() => setDirBusy(false))
         }}
       />
@@ -1096,9 +1086,9 @@ export function App() {
 		  </nav>
 		  <div className="settings-page">
 			{settingsPage === 'providers' ? <ProviderSettings api={api} onChanged={refreshModels} /> : settingsPage === 'skills' ? (
-			  <SettingsToggles kind="skills" api={api} workspaceId={selectedWs} onError={setErr} />
+			  <SettingsToggles kind="skills" api={api} workspaceId={selectedWs} />
 			) : settingsPage === 'mcp' ? (
-			  <SettingsToggles kind="mcp" api={api} workspaceId={selectedWs} onError={setErr} />
+			  <SettingsToggles kind="mcp" api={api} workspaceId={selectedWs} />
 			) : (
 			  <div className="preference-page" data-testid="appearance-settings">
 				<header className="settings-page-title"><div><h3>{t('settings.appearanceLanguage')}</h3><p>{t('settings.preferenceHint')}</p></div></header>

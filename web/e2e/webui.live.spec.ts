@@ -17,7 +17,7 @@ test('live ping through chat and trajectory', async ({ page }) => {
 
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
   await expect(page.getByTestId('assistant-message')).toContainText(/pong/i)
-  await expect(page.getByTestId('notice')).toHaveCount(0)
+  await expect(page.getByTestId('toast')).toHaveCount(0)
 
   await page.getByTestId('tab-trajectory').click()
   await expect(page.getByTestId('trajectory')).toBeVisible()

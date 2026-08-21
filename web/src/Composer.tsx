@@ -64,7 +64,7 @@ function SessionStatsLine({ stats, t }: { stats: SessionStats; t: ReturnType<typ
   )
 }
 
-export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFiles, onCancel, busy, uploading, disabled, hero, cwd: _cwd, model, err, notice, onPickModel, thinkingLevels, thinkingEffort, defaultThinking, onThinking, contextUsage, stats, mode = 'new', commands = [], onEnsureSession }: {
+export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFiles, onCancel, busy, uploading, disabled, hero, cwd: _cwd, model, onPickModel, thinkingLevels, thinkingEffort, defaultThinking, onThinking, contextUsage, stats, mode = 'new', commands = [], onEnsureSession }: {
   api: Client
   draft: Draft
   onChange: (draft: Draft) => void
@@ -79,8 +79,6 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
   hero?: boolean
   cwd?: string
   model?: string
-  err?: string | null
-  notice?: { kind: 'error' | 'info'; text: string } | null
   commands?: SessionCommand[]
   onEnsureSession?: () => Promise<void>
   onPickModel?: () => void
@@ -109,7 +107,6 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
   }, [draft.text, mode])
   const canSend = !uploading && (!!draft.text.trim() || draft.attachments.length > 0)
   const slashDraft = mode === 'new' && draft.text.trim().startsWith('/')
-  const banner = notice ?? (err ? { kind: 'error' as const, text: err } : null)
   const openPalette = () => {
     void onEnsureSession?.()
     if (!draft.text.startsWith('/')) onChange({ ...draft, text: '/' })
@@ -126,7 +123,6 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
   }
   return (
     <div className={`composer-wrap${hero ? ' hero-pos' : ''}${mode === 'edit' ? ' edit-pos' : ''}`}>
-      {banner ? <div className={`notice${banner.kind === 'info' ? ' info' : ''}`} data-testid="notice" data-kind={banner.kind}>{banner.text}</div> : null}
       <div className="composer">
         {draft.attachments.length ? <div className="attachment-strip">
           {draft.attachments.map((a, i) => a.type === 'image' ? (
@@ -169,10 +165,10 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
           }}
         />
         <div className="composer-row">
-          <button type="button" className="attach-btn" onClick={onAttach} disabled={disabled || busy} aria-label={t('composer.attach')} title={t('composer.attach')}><IAttach /></button>
           {mode === 'new' ? (
             <button type="button" ref={cmdBtn} className="attach-btn" data-testid="command-btn" aria-label={t('cmd.open')} title={t('cmd.open')} onClick={openPalette}><ICommand /></button>
           ) : null}
+          <button type="button" className="attach-btn" onClick={onAttach} disabled={disabled || busy} aria-label={t('composer.attach')} title={t('composer.attach')}><IAttach /></button>
           {mode === 'new' ? <button type="button" className="model-chip" data-testid="open-model" onClick={onPickModel}>{model || t('composer.pickModel')}</button> : null}
           {mode === 'new' ? (
             <CommandPalette
