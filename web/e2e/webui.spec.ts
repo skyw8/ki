@@ -21,6 +21,8 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('composer-input')).toBeVisible()
   await page.getByTestId('open-settings').click()
   await expect(page.getByTestId('settings-tab-providers')).toHaveText('模型供应商')
+  await expect(page.getByTestId('settings-tab-skills')).toHaveText('Skills')
+  await expect(page.getByTestId('settings-tab-mcp')).toHaveText('MCP')
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('主题和语言')
   await expect(page.getByTestId('provider-settings')).toContainText('Anthropic')
   await expect(page.locator('.provider-nav [data-provider-id="anthropic"]')).toHaveText('Anthropic')
@@ -74,8 +76,11 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('appearance-settings')).toBeVisible()
   await expect(page.getByTestId('settings-theme')).toBeVisible()
   await expect(page.getByTestId('settings-lang')).toBeVisible()
-  await expect(page.getByTestId('settings')).not.toContainText('Skills')
-  await expect(page.getByTestId('settings')).not.toContainText('MCP')
+  await page.getByTestId('settings-tab-skills').click()
+  await expect(page.getByTestId('skills-settings')).toBeVisible()
+  await page.getByTestId('settings-tab-mcp').click()
+  await expect(page.getByTestId('mcp-settings')).toBeVisible()
+  await page.getByTestId('settings-tab-appearance').click()
   await page.getByTestId('lang-en').click()
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('Theme & language')
   await expect(page.getByTestId('tab-conversation')).toHaveText('Chat')
@@ -483,7 +488,7 @@ test('session overflow menu anchors to the clicked row', async ({ page }) => {
   expect(below || above).toBe(true)
 })
 
-test('session config lists skills and mcp toggles', async ({ page }) => {
+test('session info lists skills and mcp; toggles live in settings', async ({ page }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const skillDir = join(home, 'skills', 'demo-skill')
   mkdirSync(skillDir, { recursive: true })
@@ -500,27 +505,83 @@ test('session config lists skills and mcp toggles', async ({ page }) => {
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
 
   await page.getByTestId('tab-config').click()
-  await expect(page.getByTestId('session-config')).toBeVisible()
+  await expect(page.getByTestId('session-info')).toBeVisible()
   await expect(page.getByTestId('cfg-skill').filter({ hasText: 'demo-skill' })).toBeVisible()
   await expect(page.getByTestId('cfg-mcp').filter({ hasText: 'context7' })).toBeVisible()
   await expect(page.getByTestId('cfg-mcp').filter({ hasText: 'exa' })).toBeVisible()
-  await expect(page.getByTestId('mcp-on-exa')).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByTestId('info-reload')).toBeVisible()
+  await expect(page.getByTestId('mcp-on-exa')).toHaveCount(0)
 
+  await page.getByTestId('info-edit').click()
+  await page.getByTestId('settings-tab-mcp').click()
+  await expect(page.getByTestId('mcp-on-exa')).toHaveAttribute('aria-checked', 'true')
   await page.getByTestId('mcp-on-exa').click()
   await expect(page.getByTestId('mcp-on-exa')).toHaveAttribute('aria-checked', 'false')
 
   const disabled = await page.evaluate(async () => {
     const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
-    const listed = await fetch('/v1/sessions', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()) as Array<{ id: string; title?: string }>
-    const id = listed.find(s => (s.title ?? '').includes('cfg-e2e'))?.id
-    if (!id) throw new Error('session missing')
-    const detail = await fetch(`/v1/sessions/${id}`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()) as {
-      mcp?: { disabled?: string[] }
-      availableMcp?: Array<{ name: string; enabled: boolean }>
+    const listed = await fetch('/v1/mcp', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()) as {
+      items?: Array<{ name: string; enabled: boolean }>
     }
-    return detail
+    return listed
   })
-  expect(disabled.mcp?.disabled).toContain('exa')
-  expect(disabled.availableMcp?.find(s => s.name === 'exa')?.enabled).toBe(false)
-  expect(disabled.availableMcp?.find(s => s.name === 'context7')?.enabled).toBe(true)
+  expect(disabled.items?.find(s => s.name === 'exa')?.enabled).toBe(false)
+  expect(disabled.items?.find(s => s.name === 'context7')?.enabled).toBe(true)
+})
+
+test('command palette is opaque, one-line, and inserts without sending', async ({ page }) => {
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const skillDir = join(home, 'skills', 'long-skill')
+  mkdirSync(skillDir, { recursive: true })
+  writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: long-skill\ndescription: "Create, read, edit, or manipulate Word documents (docx files) or Word templates (dotx files). Triggers include any mention of Word, docx, or word document."\n---\nbody\n')
+
+  await page.goto('/')
+  await sendPrompt(page, `palette-e2e ${Date.now()}`)
+  await expect(page.getByTestId('assistant-message')).toContainText('ok')
+  const bubbles = page.getByTestId('user-bubble')
+  const before = await bubbles.count()
+
+  await page.getByTestId('command-btn').click()
+  const palette = page.getByTestId('command-palette')
+  await expect(palette).toBeVisible()
+  const bg = await palette.evaluate(el => getComputedStyle(el).backgroundColor)
+  const rgba = bg.match(/rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)(?:,\s*([\d.]+))?\)/)
+  expect(rgba, `palette background ${bg}`).toBeTruthy()
+  expect(Number(rgba![4] ?? 1)).toBeGreaterThan(0.9)
+
+  const longItem = page.getByTestId('command-item-skill:long-skill')
+  await expect(longItem).toBeVisible()
+  const metrics = await longItem.locator('.command-desc').evaluate(el => {
+    const style = getComputedStyle(el)
+    return { whiteSpace: style.whiteSpace, height: el.getBoundingClientRect().height, lineHeight: parseFloat(style.lineHeight) }
+  })
+  expect(metrics.whiteSpace).toBe('nowrap')
+  expect(metrics.height).toBeLessThanOrEqual(metrics.lineHeight + 2)
+
+  await page.getByTestId('command-item-reload').click()
+  await expect(palette).toHaveCount(0)
+  await expect(page.getByTestId('composer-input')).toHaveValue('/reload')
+  await expect(bubbles).toHaveCount(before)
+
+  await page.getByTestId('composer-input').press('Enter')
+  await expect(page.getByTestId('notice')).toContainText('reloaded')
+  await expect(bubbles).toHaveCount(before)
+})
+
+test('info reload shows progress then completion', async ({ page }) => {
+  await page.goto('/')
+  await sendPrompt(page, `reload-ui ${Date.now()}`)
+  await expect(page.getByTestId('assistant-message')).toContainText('ok')
+  await page.getByTestId('tab-config').click()
+  const btn = page.getByTestId('info-reload')
+  await expect(btn).toBeVisible()
+
+  await page.route('**/v1/reload', async route => {
+    await new Promise(resolve => setTimeout(resolve, 500))
+    await route.continue()
+  })
+  await btn.click()
+  await expect(page.getByTestId('reload-spin')).toBeVisible()
+  await expect(btn).toContainText('正在重新加载')
+  await expect(btn).toContainText('已重新加载')
 })

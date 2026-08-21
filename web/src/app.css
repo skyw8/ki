@@ -670,6 +670,68 @@
   color: var(--dsw-alias-state-error);
   font-size: 12px;
 }
+.notice.info {
+  background: color-mix(in srgb, var(--dsw-alias-brand) 12%, transparent);
+  color: var(--dsw-alias-label-secondary);
+}
+.command-palette {
+  position: fixed;
+  z-index: 80;
+  overflow: auto;
+  padding: 4px;
+  border-radius: 12px;
+  /* Why: --dsw-alias-bg-elevated is not a theme token, so the old background
+     was invalid and the list painted transparent over the chat. */
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: var(--dsw-shadow-lv2);
+  border: 1px solid var(--dsw-alias-border-l2);
+  overscroll-behavior: contain;
+}
+.command-item {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.command-item.active, .command-item:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.command-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: none;
+  max-width: 46%;
+  min-width: 0;
+}
+.command-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--dsw-alias-label-primary);
+}
+.command-hint { flex: none; font-size: 11px; color: var(--dsw-alias-label-caption); }
+.command-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  text-align: right;
+}
+.command-empty { padding: 10px; font-size: 12px; color: var(--dsw-alias-label-caption); }
 .composer {
   width: 100%;
   max-width: var(--composer-max);
@@ -1701,6 +1763,15 @@
 }
 .cfg-desc { margin: 4px 0 0; font-size: 12px; color: var(--dsw-alias-label-tertiary); word-break: break-all; }
 .cfg-empty, .cfg-hint { margin: 0; font-size: 12px; color: var(--dsw-alias-label-caption); }
+.cfg-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+.cfg-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 8px; border: 0; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); font-size: 12px; cursor: pointer; }
+.cfg-btn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.cfg-btn:disabled { opacity: .75; cursor: default; }
+.cfg-btn.done { color: var(--dsw-alias-state-success); }
+.cfg-btn .spin { width: 12px; height: 12px; }
+.cfg-flag { margin-left: 8px; font-size: 11px; color: var(--dsw-alias-label-caption); }
+.cfg-flag.on { color: var(--dsw-alias-brand); }
+.cfg-tools { margin: 6px 0 0; padding-left: 16px; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
 .cfg-hint { margin-top: 8px; }
 .switch {
   flex: none;

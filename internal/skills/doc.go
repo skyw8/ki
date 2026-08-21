@@ -3,7 +3,7 @@
 // Search union: {KI_HOME}/skills, ~/.agents/skills, <cwd>/.ki/skills,
 // and ancestor .agents/skills up to the git root. Each package is a
 // top-level dir (symlinks followed) containing SKILL.md — the rest of
-// the package is not walked. Session Toggle applies only/disabled.
+// the package is not walked. A process-wide Toggle (toggles.json) applies disabled.
 // List skips the toggle so the config UI can show disabled items.
 // Discover caches the unfiltered table per session (home, cwd, session id):
 // a new session re-scans disk even in the same workspace while messages

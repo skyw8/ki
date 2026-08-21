@@ -5,7 +5,7 @@ import { ChatView } from './Chat'
 import { Composer, type Draft } from './Composer'
 import { AttachmentBrowser } from './AttachmentBrowser'
 import { DirectoryBrowser } from './DirectoryBrowser'
-import { SessionConfig } from './SessionConfig'
+import { SessionConfig, SettingsToggles } from './SessionConfig'
 import { ProviderSettings } from './ProviderSettings'
 import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
 import { appendOptimisticUser, applyEvent, clampThinkingEffort, emptyView, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats } from './model'
@@ -14,7 +14,7 @@ import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
-type SettingsPage = 'providers' | 'appearance'
+type SettingsPage = 'providers' | 'skills' | 'mcp' | 'appearance'
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
 
@@ -115,6 +115,7 @@ export function App() {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>('providers')
+  const [notice, setNotice] = useState<{ kind: 'error' | 'info'; text: string } | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
   const [modelQuery, setModelQuery] = useState('')
   const [dirOpen, setDirOpen] = useState(false)
@@ -310,7 +311,11 @@ export function App() {
     await refreshList()
     setCurrentId(s.id)
     setSelectedWs(s.workspaceId ?? workspaceId ?? null)
-    setView({ ...emptyView(), cwd: s.cwd, model: s.model, provider: s.provider, thinkingEffort: s.thinkingEffort ?? '' })
+    try {
+      setView(loadHistory(await api.get(s.id)))
+    } catch {
+      setView({ ...emptyView(), cwd: s.cwd, model: s.model, provider: s.provider, thinkingEffort: s.thinkingEffort ?? '' })
+    }
     saveLastComposerModel({ provider: s.provider, model: s.model, thinkingEffort: s.thinkingEffort ?? '' })
     setTab('conversation')
 	setEdit(null)
@@ -391,6 +396,7 @@ export function App() {
   const sendContent = useCallback(async (content: Content[], parentId?: string, editedMessageId?: string) => {
 	if (!content.some(c => (c.type === 'text' && !!c.text?.trim()) || c.type !== 'text')) return
     setErr(null)
+    setNotice(null)
     try {
       let id = currentId
       if (!id) {
@@ -399,9 +405,19 @@ export function App() {
       }
       try {
         const spec = view.provider && view.model ? `${view.provider}/${view.model}` : view.model
-		await api.prompt(id, content, spec || undefined, parentId)
+		const result = await api.prompt(id, content, spec || undefined, parentId)
+        if (result?.handled) {
+          setNotice({ kind: result.error ? 'error' : 'info', text: result.notice || '' })
+          setDraft(d => ({ ...d, text: '' }))
+          if (!result.error) await openSession(id)
+          return
+        }
       } catch (e) {
-        if (!(e instanceof ApiError && e.status === 409)) throw e
+        if (e instanceof ApiError && e.status === 409) {
+          setNotice({ kind: 'error', text: e.message })
+          return
+        }
+        throw e
       }
 	  if (editedMessageId) {
 		setEdit(null)
@@ -420,7 +436,7 @@ export function App() {
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
-	}, [api, currentId, listen, makeSession, selectedWs, view.model, view.provider])
+	}, [api, currentId, listen, makeSession, openSession, selectedWs, view.model, view.provider])
 
 	const send = useCallback(() => {
 	  const content: Content[] = [...(draft.text.trim() ? [{ type: 'text', text: draft.text } as Content] : []), ...draft.attachments]
@@ -604,6 +620,9 @@ export function App() {
       cwd={view.cwd}
       model={view.model}
       err={err}
+      notice={notice}
+      commands={view.commands ?? []}
+      onEnsureSession={async () => { if (!currentId) await makeSession(selectedWs) }}
       onPickModel={() => { setModelQuery(''); setModelOpen(true) }}
 	  thinkingLevels={selectedModel?.thinkingLevels}
 	  thinkingEffort={view.thinkingEffort}
@@ -805,7 +824,7 @@ export function App() {
           <div className="tabs">
             <button type="button" className={`tab${tab === 'conversation' ? ' active' : ''}`} data-testid="tab-conversation" onClick={() => setTab('conversation')}>{t('tab.conversation')}</button>
             <button type="button" className={`tab${tab === 'trajectory' ? ' active' : ''}`} data-testid="tab-trajectory" onClick={() => setTab('trajectory')}>{t('tab.trajectory')}</button>
-            <button type="button" className={`tab${tab === 'config' ? ' active' : ''}`} data-testid="tab-config" onClick={() => setTab('config')}>{t('tab.config')}</button>
+            <button type="button" className={`tab${tab === 'config' ? ' active' : ''}`} data-testid="tab-config" onClick={() => setTab('config')}>{t('tab.info')}</button>
           </div>
         </header>
 
@@ -817,6 +836,7 @@ export function App() {
               workspaceTitle={workspaces.find(w => w.id === (selectedWs ?? sessions.find(s => s.id === currentId)?.workspaceId))?.title}
               busy={view.busy}
               onError={setErr}
+              onEdit={page => { setSettingsPage(page); setSettingsOpen(true) }}
             />
           </div>
         ) : tab === 'trajectory' ? (
@@ -1070,10 +1090,16 @@ export function App() {
         <Modal title={t('settings.title')} onClose={() => setSettingsOpen(false)} testid="settings">
 		  <nav className="tabs settings-tabs" role="tablist" aria-label={t('settings.title')}>
 			<button type="button" role="tab" aria-selected={settingsPage === 'providers'} className={`tab${settingsPage === 'providers' ? ' active' : ''}`} data-testid="settings-tab-providers" onClick={() => setSettingsPage('providers')}>{t('settings.providers')}</button>
+			<button type="button" role="tab" aria-selected={settingsPage === 'skills'} className={`tab${settingsPage === 'skills' ? ' active' : ''}`} data-testid="settings-tab-skills" onClick={() => setSettingsPage('skills')}>{t('settings.skills')}</button>
+			<button type="button" role="tab" aria-selected={settingsPage === 'mcp'} className={`tab${settingsPage === 'mcp' ? ' active' : ''}`} data-testid="settings-tab-mcp" onClick={() => setSettingsPage('mcp')}>{t('settings.mcp')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'appearance'} className={`tab${settingsPage === 'appearance' ? ' active' : ''}`} data-testid="settings-tab-appearance" onClick={() => setSettingsPage('appearance')}>{t('settings.appearanceLanguage')}</button>
 		  </nav>
 		  <div className="settings-page">
-			{settingsPage === 'providers' ? <ProviderSettings api={api} onChanged={refreshModels} /> : (
+			{settingsPage === 'providers' ? <ProviderSettings api={api} onChanged={refreshModels} /> : settingsPage === 'skills' ? (
+			  <SettingsToggles kind="skills" api={api} workspaceId={selectedWs} onError={setErr} />
+			) : settingsPage === 'mcp' ? (
+			  <SettingsToggles kind="mcp" api={api} workspaceId={selectedWs} onError={setErr} />
+			) : (
 			  <div className="preference-page" data-testid="appearance-settings">
 				<header className="settings-page-title"><div><h3>{t('settings.appearanceLanguage')}</h3><p>{t('settings.preferenceHint')}</p></div></header>
 				<section className="preference-section">

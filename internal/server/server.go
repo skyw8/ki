@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"ki/internal/command"
 	"ki/internal/compact"
 	"ki/internal/config"
 	"ki/internal/logging"
@@ -28,6 +29,7 @@ import (
 	"ki/internal/provider"
 	"ki/internal/session"
 	"ki/internal/skills"
+	"ki/internal/toggles"
 	"ki/internal/tools"
 	"ki/internal/types"
 	"ki/internal/workspace"
@@ -139,14 +141,16 @@ func newToken() string {
 // Token is the bearer secret.
 func (s *Server) Token() string { return s.token }
 
-// Reload drops the cached prompt resources (skills and AGENTS/CLAUDE context
-// files) so the next prompt.Build re-reads disk. Called after every successful
-// compaction (compactSession and doCompact) — the context was rebuilt, so a
-// stale serve-long snapshot would be wrong — and is the single entry point a
-// future /reload command (or signal) calls.
+// Reload drops every session's discovery caches and MCP connections so the
+// next prompt/GET re-reads disk. Process-wide: there is no per-session reload.
 func (s *Server) Reload() {
 	skills.InvalidateAll()
 	prompt.InvalidateAgentsAll()
+	mcp.InvalidateAll()
+	command.InvalidateAll()
+	if s.mcp != nil {
+		s.mcp.Close()
+	}
 }
 
 // Handler returns the HTTP handler.
@@ -178,6 +182,11 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /v1/sessions/{id}/compact", s.auth(s.doCompact))
 	api.HandleFunc("POST /v1/sessions/{id}/fork", s.auth(s.fork))
 	api.HandleFunc("POST /v1/sessions/{id}/attachments", s.auth(s.uploadAttachment))
+	api.HandleFunc("POST /v1/reload", s.auth(s.doReload))
+	api.HandleFunc("GET /v1/skills", s.auth(s.getSkills))
+	api.HandleFunc("PATCH /v1/skills", s.auth(s.patchSkills))
+	api.HandleFunc("GET /v1/mcp", s.auth(s.getMCP))
+	api.HandleFunc("PATCH /v1/mcp", s.auth(s.patchMCP))
 	api.HandleFunc("GET /v1/workspaces", s.auth(s.listWorkspaces))
 	api.HandleFunc("POST /v1/workspaces", s.auth(s.createWorkspace))
 	api.HandleFunc("PATCH /v1/workspaces/{id}", s.auth(s.patchWorkspace))
@@ -370,18 +379,19 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = sess.Close() }()
 	sk, mc := s.sessionCatalog(sess)
+	tg := toggles.Load(s.cfg.Home)
 	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
 		"leafId":          sess.LeafID(),
 		"entries":         sess.Entries(),
 		"messages":        sess.MessagesToLeaf(),
-		"skills":          sess.Config.Skills,
-		"mcp":             sess.Config.MCP,
 		"availableSkills": sk,
 		"availableMcp":    mc,
+		"commands":        command.Catalog(s.cfg.Home, sess.Header.CWD, sess.ID(), tg.Skills),
 	}))
 }
 
 func (s *Server) sessionCatalog(sess *session.Session) ([]map[string]any, []map[string]any) {
+	tg := toggles.Load(s.cfg.Home)
 	sk := []map[string]any{}
 	for _, item := range skills.List(s.cfg.Home, sess.Header.CWD, sess.ID()) {
 		sk = append(sk, map[string]any{
@@ -389,7 +399,7 @@ func (s *Server) sessionCatalog(sess *session.Session) ([]map[string]any, []map[
 			"description": item.Description,
 			"path":        item.FilePath,
 			"source":      item.Source,
-			"enabled":     sess.Config.Skills.Allowed(item.Name),
+			"enabled":     tg.Skills.Allowed(item.Name),
 		})
 	}
 	sort.Slice(sk, func(i, j int) bool {
@@ -397,13 +407,15 @@ func (s *Server) sessionCatalog(sess *session.Session) ([]map[string]any, []map[
 		b, _ := sk[j]["name"].(string)
 		return a < b
 	})
+	file := mcp.Cached(s.cfg.Home, sess.Header.CWD, sess.ID())
 	mc := []map[string]any{}
-	for _, item := range mcp.List(mcp.Load(s.cfg.Home, sess.Header.CWD), sess.Config.MCP) {
+	for _, item := range mcp.List(file, tg.MCP) {
 		row := map[string]any{
 			"name":    item.Name,
 			"command": item.Command,
 			"source":  item.Source,
 			"enabled": item.Enabled,
+			"tools":   mcpTools(s.mcp, item.Name, file.MCPServers[item.Name]),
 		}
 		if len(item.Args) > 0 {
 			row["args"] = item.Args
@@ -462,13 +474,11 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = sess.Close() }()
 	var body struct {
-		Model          string          `json:"model"`
-		ThinkingEffort *string         `json:"thinkingEffort"`
-		Title          *string         `json:"title"`
-		Pinned         *bool           `json:"pinned"`
-		Skills         *session.Toggle `json:"skills"`
-		MCP            *session.Toggle `json:"mcp"`
-		LeafID         *string         `json:"leafId"`
+		Model          string  `json:"model"`
+		ThinkingEffort *string `json:"thinkingEffort"`
+		Title          *string `json:"title"`
+		Pinned         *bool   `json:"pinned"`
+		LeafID         *string `json:"leafId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -535,16 +545,7 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if body.Skills != nil || body.MCP != nil {
-		if err := sess.SetToggles(body.Skills, body.MCP); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
-		"skills": sess.Config.Skills,
-		"mcp":    sess.Config.MCP,
-	}))
+	writeJSON(w, 200, s.sessionMap(sess, nil))
 }
 
 func (s *Server) list(w http.ResponseWriter, _ *http.Request) {
@@ -594,12 +595,58 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	parsed := command.Parse(contentText(body.Content))
 	sess, err := s.open(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	if s.running(id) {
+	parsed = command.ResolveUnknown(parsed, s.cfg.Home, sess.Header.CWD, sess.ID())
+	tg := toggles.Load(s.cfg.Home)
+	busy := s.running(id)
+	if parsed.Kind != command.KindPrompt {
+		if hasNonText(body.Content) {
+			_ = sess.Close()
+			http.Error(w, "commands do not take attachments", http.StatusBadRequest)
+			return
+		}
+		if parsed.Args != "" && parsed.Kind == command.KindBuiltin {
+			_ = sess.Close()
+			writeHandled(w, "usage: /"+parsed.Name, true)
+			return
+		}
+		if busy && !command.AllowBusy(parsed) {
+			_ = sess.Close()
+			http.Error(w, "session busy", http.StatusConflict)
+			return
+		}
+		switch parsed.Kind {
+		case command.KindBuiltin:
+			_ = sess.Close()
+			s.handleBuiltin(w, r, parsed.Name)
+			return
+		case command.KindSkill:
+			text, ok := command.ExpandSkill(s.cfg.Home, sess.Header.CWD, sess.ID(), tg.Skills, parsed.Name, parsed.Args)
+			if !ok {
+				_ = sess.Close()
+				writeHandled(w, "unknown skill /skill:"+parsed.Name, true)
+				return
+			}
+			body.Content = []types.Content{{Type: "text", Text: text}}
+		case command.KindTemplate:
+			text, ok := command.ExpandTemplate(s.cfg.Home, sess.Header.CWD, sess.ID(), parsed.Name, parsed.Args)
+			if !ok {
+				_ = sess.Close()
+				writeHandled(w, "unknown command /"+parsed.Name, true)
+				return
+			}
+			body.Content = []types.Content{{Type: "text", Text: text}}
+		default:
+			_ = sess.Close()
+			writeHandled(w, "unknown command /"+parsed.Name, true)
+			return
+		}
+	} else if busy {
 		_ = sess.Close()
 		http.Error(w, "session busy", http.StatusConflict)
 		return
@@ -638,28 +685,19 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	s.mu.Lock()
-	if st, busy := s.runs[id]; busy {
-		select {
-		case <-st.done:
-			// previous run finished; replace
-		default:
-			s.mu.Unlock()
-			http.Error(w, "session busy", http.StatusConflict)
-			return
-		}
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	st := &runState{cancel: cancel, done: make(chan struct{})}
-	st.wait = sync.NewCond(&st.mu)
-	s.runs[id] = st
-	s.mu.Unlock()
+	s.startRun(w, id, body.Content, body.ParentID, body.Model)
+}
 
-	// The prompt must continue after the HTTP response closes; abort is the
-	// explicit cancellation path for a running session.
-	//nolint:contextcheck // this context intentionally outlives the request
-	go s.runPrompt(ctx, st, id, body.Content, body.ParentID, body.Model)
-	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": true})
+func (s *Server) handleBuiltin(w http.ResponseWriter, r *http.Request, name string) {
+	switch name {
+	case "reload":
+		s.Reload()
+		writeHandled(w, "reloaded skills, prompts, AGENTS.md, and MCP", false)
+	case "compact":
+		s.doCompact(w, r)
+	default:
+		writeHandled(w, "unknown command /"+name, true)
+	}
 }
 
 func validateUserContent(content []types.Content) error {
@@ -835,19 +873,20 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		profile.Editor = tools.EditorApplyPatch
 	}
 	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs}.Build(profile)
-	mcpFile := mcp.Load(cfg.Home, sess.Header.CWD)
+	tg := toggles.Load(cfg.Home)
+	mcpFile := mcp.Cached(cfg.Home, sess.Header.CWD, sess.ID())
 	// Bind is cache-only. Waiting here for mcp.Tools() spawn used to leave the
 	// UI on running with no SSE until every enabled server finished handshake.
-	tls = append(tls, s.mcp.Bind(mcpFile, sess.Config.MCP)...)
+	tls = append(tls, s.mcp.Bind(mcpFile, tg.MCP)...)
 	go func() {
 		defer logging.Recover("mcp prefetch panic", "session_id", id)
 		ctx, cancel := context.WithTimeout(ctx, mcp.HandshakeTimeout)
 		defer cancel()
-		s.mcp.Prefetch(ctx, mcpFile, sess.Config.MCP)
+		s.mcp.Prefetch(ctx, mcpFile, tg.MCP)
 	}()
 	// One Build: After compact the *next* prompt rebuilds. A BeforeRun rebuild
 	// only repeated Discover on the same turn.
-	sys, _ := prompt.Build(prompt.Input{Home: cfg.Home, CWD: sess.Header.CWD, SessionID: sess.ID(), Tools: tls, Toggle: sess.Config.Skills})
+	sys, _ := prompt.Build(prompt.Input{Home: cfg.Home, CWD: sess.Header.CWD, SessionID: sess.ID(), Tools: tls, Toggle: tg.Skills})
 
 	var emit func(loop.Event) error
 	emit = func(ev loop.Event) error {
@@ -1091,15 +1130,25 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
-	sess, err := s.open(r.PathValue("id"))
+	id := r.PathValue("id")
+	sess, err := s.open(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	defer func() { _ = sess.Close() }()
-	e, err := compact.Run(r.Context(), sess, s.summarizer(sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+	st, ctx, err := s.occupy(id, r.Context())
 	if err != nil {
-		// Not a server failure: the session is too small or already compacted.
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	e, err := compact.Run(ctx, sess, s.summarizer(sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+	s.release(id, st)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		http.Error(w, "compact aborted", http.StatusConflict)
+		return
+	}
+	if err != nil {
 		if errors.Is(err, compact.ErrNothingToCompact) {
 			http.Error(w, "nothing to compact (session too small)", http.StatusConflict)
 			return
@@ -1107,10 +1156,8 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Manual compact is also a reload point: the next prompt build re-reads
-	// skills and AGENTS/CLAUDE context files (same contract as compactSession).
 	s.Reload()
-	writeJSON(w, 200, map[string]any{"id": e.ID, "type": e.Type, "firstKeptEntryId": e.FirstKeptEntryID})
+	writeJSON(w, 200, map[string]any{"id": e.ID, "type": e.Type, "firstKeptEntryId": e.FirstKeptEntryID, "handled": true})
 }
 
 func (s *Server) fork(w http.ResponseWriter, r *http.Request) {

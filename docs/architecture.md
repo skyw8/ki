@@ -18,7 +18,7 @@
 
 系统提示词由 `internal/prompt` 分层组装，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、.mcp.json、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）。模型被问及"去哪改 server / MCP / skills 设置"时读这段，配合 `ki config path`。
 
-skills 发现结果（`skills.Discover`）和 AGENTS/CLAUDE 上下文文件（`prompt.CollectAgents`）都按 session 缓存（键含 session id）：同一 workspace 新开 session 会重读磁盘，同 session 内的消息命中缓存。`prompt.Build` 每轮都跑，所以磁盘只在上述键缺失时读。两者都 pinned 到 `server.Reload()`（每次成功压缩后调用，也是未来 `/reload` 命令的入口）才整体重读。
+skills 发现、AGENTS/CLAUDE、prompt 模板和 `.mcp.json` 合并都按 session 缓存（键含 session id）：同一 workspace 新开 session 会重读磁盘，同 session 内的消息命中缓存。`server.Reload()`（`POST /v1/reload`、`/reload`、压缩成功、PATCH skills/mcp）`InvalidateAll` **所有 session** 并关掉 MCP 连接池。
 
 Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` 的合并结果。自定义 provider/model 和协议兼容字段通过设置 UI 或 provider API 管理；不从网络刷新目录。`--model provider/model` 只写回 session 配置。
 
@@ -37,13 +37,15 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned） |
 | POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…`；可选 `model` / `thinkingEffort`，省略则用上次选用的模型和该模型 default thinking。WebUI 传入当前 composer 的模型配置 |
 | GET | `/v1/sessions/search` | 正文字面搜索，最多 20 条 |
-| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、skills/mcp、`availableSkills` / `availableMcp` |
-| PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / skills / mcp |
+| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、只读 `availableSkills` / `availableMcp` / `commands` |
+| PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
 | POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId`；`202` 开跑，同一 session 未结束再来 **409** |
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件 |
 | POST | `/v1/sessions/{id}/abort` | cancel |
-| POST | `/v1/sessions/{id}/compact` | 手动 compaction |
+| POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
+| POST | `/v1/reload` | 清全部 session 的发现缓存并关掉 MCP 池 |
+| GET/PATCH | `/v1/skills` `/v1/mcp` | 全局启用开关（`toggles.json`） |
 | POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径 |
 | POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |
 | GET | `/v1/workspaces` | 工作区登记（含 `sessionIds` / `temp`） |

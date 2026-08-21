@@ -6,6 +6,7 @@
 //	ki run [flags] text create/resume session, POST prompt, print events
 //	ki session compact  compact an existing session
 //	ki session fork     fork an existing session
+//	ki reload           POST /v1/reload on a live daemon (no in-process serve)
 //	ki config path      print config file locations
 //	ki version          print the build version
 //

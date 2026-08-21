@@ -171,8 +171,7 @@ export function loadHistory(detail: SessionDetail): ViewState {
   s.cwd = detail.cwd ?? ''
   s.title = detail.title ?? ''
   s.busy = !!detail.running
-  s.skills = detail.skills
-  s.mcp = detail.mcp
+  s.commands = detail.commands ?? []
 	s.thinkingEffort = detail.thinkingEffort ?? ''
   const entries = detail.entries ?? []
 	s.allEntries = entries
