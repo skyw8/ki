@@ -49,6 +49,27 @@ func NewPool(home string) *Pool {
 	return &Pool{home: home, by: map[string]*entry{}}
 }
 
+// ToolInfo is one advertised MCP tool from the schema cache (no spawn).
+type ToolInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// CachedTools returns tools/list rows already in memory or mcp-cache.
+func (p *Pool) CachedTools(name string, spec ServerSpec) []ToolInfo {
+	if p == nil {
+		return nil
+	}
+	e := p.entry(name, spec)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]ToolInfo, 0, len(e.tools))
+	for _, ts := range e.tools {
+		out = append(out, ToolInfo{Name: ts.Name, Description: ts.Description})
+	}
+	return out
+}
+
 // Bind returns loop tools from cached schemas. It does not spawn.
 // runPrompt must stay off the initialize/tools/list path or the UI sits on
 // "running" with an empty SSE until npx/HTTP handshake finishes.

@@ -33,6 +33,6 @@ test('capture layout shots', async ({ page }) => {
   await page.screenshot({ path: `${dir}/05-trajectory.png` })
 
   await page.getByTestId('tab-config').click()
-  await expect(page.getByTestId('session-config')).toBeVisible()
+  await expect(page.getByTestId('session-info')).toBeVisible()
   await page.screenshot({ path: `${dir}/06-config.png` })
 })

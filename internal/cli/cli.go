@@ -56,7 +56,7 @@ func newRootCommand() *cobra.Command {
 	}
 	root.Version = Version
 	root.SetVersionTemplate("ki {{.Version}}\n")
-	root.AddCommand(newServeCommand(), newRunCommand(), newConfigCommand(), newSessionCommand(), newVersionCommand())
+	root.AddCommand(newServeCommand(), newRunCommand(), newConfigCommand(), newSessionCommand(), newReloadCommand(), newVersionCommand())
 	return root
 }
 
@@ -122,6 +122,30 @@ func newRunCommand() *cobra.Command {
 	cmd.Flags().StringVar(&f.CWD, "cwd", "", "working directory for a new session")
 	cmd.Flags().StringVar(&f.Addr, "addr", "", "server listen address when starting one")
 	return cmd
+}
+
+func newReloadCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "reload",
+		Short: "Reload skills, prompts, AGENTS.md, and MCP on the running server",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return withConfig("client", nil, runReload)
+		},
+	}
+}
+
+func runReload(cfg config.Config) error {
+	sf, err := server.ReadServerFile(cfg.Home)
+	if err != nil || sf.Addr == "" || !ping("http://"+sf.Addr, sf.Token) {
+		return errNoLiveServer
+	}
+	var out map[string]any
+	if err := doJSON("http://"+sf.Addr, sf.Token, "POST", "/v1/reload", nil, &out); err != nil {
+		return err
+	}
+	fmt.Println("reloaded")
+	return nil
 }
 
 func newVersionCommand() *cobra.Command {
@@ -202,6 +226,7 @@ var (
 	errPromptRequired      = errors.New("prompt is required")
 	errInProcessServerBind = errors.New("in-process server failed to bind")
 	errHTTPResponse        = errors.New("HTTP request failed")
+	errNoLiveServer        = errors.New("ki server is not running")
 )
 
 func runServe(cfg config.Config, addr string) error {

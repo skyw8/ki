@@ -7,9 +7,11 @@
 // (or the first available fallback), that model's default thinking
 // effort, and user home.
 // Workspaces live in {KI_HOME}/workspaces.json. Session cwd comes from a
-// workspace (or a tmp+ workspace). GET /v1/sessions/{id} includes
-// availableSkills / availableMcp (no MCP spawn). PATCH /v1/sessions/{id}
-// writes model / thinking effort / title / pin / active leaf / skills / mcp.
+// workspace (or a tmp+ workspace). GET /v1/sessions/{id} includes a
+// read-only catalog (availableSkills / availableMcp with cached MCP tools,
+// commands[]). PATCH /v1/sessions/{id} writes model / thinking / title /
+// pin / leaf. Skills and MCP enablement is {KI_HOME}/toggles.json via
+// GET/PATCH /v1/skills and /v1/mcp.
 // Prompt accepts content blocks and an optional branch parent, then binds MCP
 // from the serve-level pool (cached schemas; connect on tool call). GET /v1/fs
 // optionally lists files or streams authenticated image, plain-text/code, and
@@ -22,10 +24,10 @@
 // append; agent_end may auto-compact. SSE replays runState.evs and drains
 // after done.
 //
-// Skills and AGENTS/CLAUDE context files are cached per session (home, cwd,
-// session id). Every successful compaction calls Reload(), which drops both
-// caches so the next prompt build re-reads disk. Reload is also the hook a
-// future /reload command (or signal) calls.
+// Skills, AGENTS/CLAUDE, prompt templates, and .mcp.json merges are cached
+// per session (home, cwd, session id). Reload() (POST /v1/reload, /reload,
+// compaction, toggle PATCH) InvalidateAll of those caches and closes the
+// MCP pool so the next prompt/GET re-reads disk.
 //
 // Routes and run lifecycle: docs/architecture.md.
 package server

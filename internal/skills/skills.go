@@ -36,7 +36,7 @@ func List(home, cwd, sessionID string) []Skill {
 	return Discover(home, cwd, sessionID, session.Toggle{})
 }
 
-// Discover walks the standard skill directories and applies the session toggle.
+// Discover walks the standard skill directories and applies a name toggle.
 func Discover(home, cwd, sessionID string, toggle session.Toggle) []Skill {
 	var out []Skill
 	for _, s := range listCached(home, cwd, sessionID) {

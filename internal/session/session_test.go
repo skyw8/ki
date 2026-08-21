@@ -210,9 +210,6 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 	if _, err := s.AppendMessage(types.Message{Role: "toolResult", ToolType: "custom", ToolCallID: "c1", ToolName: "apply_patch", Content: []types.Content{{Type: "text", Text: "ok"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetToggles(&Toggle{Disabled: []string{"foo"}}, &Toggle{Only: []string{"bar"}}); err != nil {
-		t.Fatal(err)
-	}
 	dir := s.Dir
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
@@ -235,12 +232,6 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 	messages := s2.MessagesToLeaf()
 	if len(messages) != 2 || messages[0].ToolCalls()[0].Input != "PATCH" || messages[1].ToolType != "custom" {
 		t.Fatalf("custom tool messages: %+v", messages)
-	}
-	if len(s2.Config.Skills.Disabled) != 1 || s2.Config.Skills.Disabled[0] != "foo" {
-		t.Fatalf("skills: %+v", s2.Config.Skills)
-	}
-	if len(s2.Config.MCP.Only) != 1 || s2.Config.MCP.Only[0] != "bar" {
-		t.Fatalf("mcp: %+v", s2.Config.MCP)
 	}
 }
 

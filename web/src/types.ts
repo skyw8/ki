@@ -149,18 +149,26 @@ export type CatalogMcp = {
   name: string
   command?: string
   args?: string[]
+  url?: string
   source?: string
   enabled: boolean
+  tools?: { name: string; description?: string }[]
+}
+
+export type SessionCommand = {
+  name: string
+  description?: string
+  argumentHint?: string
+  source: 'builtin' | 'prompt' | 'skill' | string
 }
 
 export type SessionDetail = SessionInfo & {
   leafId?: string
   entries?: Entry[]
   messages?: Message[]
-  skills?: Toggle
-  mcp?: Toggle
   availableSkills?: CatalogSkill[]
   availableMcp?: CatalogMcp[]
+  commands?: SessionCommand[]
 }
 
 export type Toggle = { only?: string[]; disabled?: string[] }
@@ -265,4 +273,5 @@ export type ViewState = {
 	contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
 	leafId?: string
 	allEntries: Entry[]
+  commands?: SessionCommand[]
 }

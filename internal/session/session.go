@@ -50,8 +50,6 @@ type Config struct {
 	Title          string `json:"title,omitempty"`
 	Pinned         bool   `json:"pinned,omitempty"`
 	PinnedAt       string `json:"pinnedAt,omitempty"`
-	Skills         Toggle `json:"skills"`
-	MCP            Toggle `json:"mcp"`
 }
 
 // Entry is one jsonl record after the header.
@@ -584,19 +582,6 @@ func (s *Session) AppendRequestHeader(system string, tools []ToolSchema, metadat
 	return e, nil
 }
 
-// SetToggles writes skills/mcp filters to config.json.
-func (s *Session) SetToggles(skills, mcp *Toggle) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if skills != nil {
-		s.Config.Skills = *skills
-	}
-	if mcp != nil {
-		s.Config.MCP = *mcp
-	}
-	return s.writeConfig()
-}
-
 // SetModel updates config.json and appends model_change.
 func (s *Session) SetModel(provider, model string) error {
 	return s.AppendModelChange(provider, model)
@@ -679,7 +664,7 @@ func (s *Session) writeConfig() error {
 	return os.WriteFile(filepath.Join(s.Dir, "config.json"), append(b, '\n'), 0o600)
 }
 
-// SaveConfig writes config.json (skills/mcp toggles).
+// SaveConfig writes config.json.
 func (s *Session) SaveConfig() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

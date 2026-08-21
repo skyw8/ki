@@ -697,9 +697,7 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	}
 
 	body, _ := marshalJSON(map[string]any{
-		"model":  "openai/gpt-5.6-terra",
-		"skills": map[string]any{"disabled": []string{"x"}},
-		"mcp":    map[string]any{"only": []string{"y"}},
+		"model": "openai/gpt-5.6-terra",
 	})
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/sessions/"+id, bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer tok")
@@ -726,12 +724,6 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	var again map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&again)
 	_ = res.Body.Close()
-	skills, _ := again["skills"].(map[string]any)
-	dis, _ := skills["disabled"].([]any)
-	if len(dis) != 1 || dis[0] != "x" {
-		t.Fatalf("skills reload: %+v", again["skills"])
-	}
-
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
@@ -920,11 +912,8 @@ func TestSessionCatalogNoSpawn(t *testing.T) {
 	}
 
 	id := createSession(t, hs, cwd)
-	body, _ := marshalJSON(map[string]any{
-		"skills": map[string]any{"disabled": []string{"alpha"}},
-		"mcp":    map[string]any{"disabled": []string{"exa"}},
-	})
-	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/sessions/"+id, bytes.NewReader(body))
+	body, _ := marshalJSON(map[string]any{"disabled": []string{"alpha"}})
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/skills", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
@@ -933,7 +922,19 @@ func TestSessionCatalogNoSpawn(t *testing.T) {
 	}
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("patch %d", res.StatusCode)
+		t.Fatalf("patch skills %d", res.StatusCode)
+	}
+	body, _ = marshalJSON(map[string]any{"disabled": []string{"exa"}})
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/mcp", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("patch mcp %d", res.StatusCode)
 	}
 
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
@@ -1913,6 +1914,34 @@ func TestReloadInvalidatesCachedResources(t *testing.T) {
 	srv.Reload()
 	if got := names(); !got["beta"] {
 		t.Fatalf("catalog stale after reload: %+v", got)
+	}
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"/reload"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handled map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&handled)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || handled["handled"] != true {
+		t.Fatalf("slash reload %d %+v", res.StatusCode, handled)
+	}
+
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"/nope"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handled = map[string]any{}
+	_ = json.NewDecoder(res.Body).Decode(&handled)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || handled["error"] != true {
+		t.Fatalf("unknown slash %d %+v", res.StatusCode, handled)
 	}
 }
 

@@ -107,11 +107,35 @@ export class Client {
     return this.json(`/v1/sessions/search?q=${encodeURIComponent(q)}`, { signal })
   }
 
-  prompt(id: string, content: import('./types').Content[], model?: string, parentId?: string): Promise<void> {
+  prompt(id: string, content: import('./types').Content[], model?: string, parentId?: string): Promise<{ handled?: boolean; notice?: string; error?: boolean; accepted?: boolean }> {
     return this.json(`/v1/sessions/${id}/prompt`, {
       method: 'POST',
 	  body: JSON.stringify({ content, model, ...(parentId !== undefined ? { parentId } : {}) }),
     })
+  }
+
+  reload(): Promise<{ ok: boolean }> {
+    return this.json('/v1/reload', { method: 'POST' })
+  }
+
+  async skills(workspaceId?: string | null): Promise<import('./types').CatalogSkill[]> {
+    const q = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
+    const got = await this.json<{ items: import('./types').CatalogSkill[] }>(`/v1/skills${q}`)
+    return got.items ?? []
+  }
+
+  async mcpServers(workspaceId?: string | null): Promise<import('./types').CatalogMcp[]> {
+    const q = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
+    const got = await this.json<{ items: import('./types').CatalogMcp[] }>(`/v1/mcp${q}`)
+    return got.items ?? []
+  }
+
+  patchSkills(disabled: string[]): Promise<{ items: import('./types').CatalogSkill[] }> {
+    return this.json('/v1/skills', { method: 'PATCH', body: JSON.stringify({ disabled }) })
+  }
+
+  patchMcp(disabled: string[]): Promise<{ items: import('./types').CatalogMcp[] }> {
+    return this.json('/v1/mcp', { method: 'PATCH', body: JSON.stringify({ disabled }) })
   }
 
   abort(id: string): Promise<void> {
@@ -138,7 +162,7 @@ export class Client {
     return this.json('/v1/models')
   }
 
-  patch(id: string, body: { model?: string; thinkingEffort?: string; title?: string; pinned?: boolean; leafId?: string; skills?: import('./types').Toggle; mcp?: import('./types').Toggle }): Promise<SessionDetail> {
+  patch(id: string, body: { model?: string; thinkingEffort?: string; title?: string; pinned?: boolean; leafId?: string }): Promise<SessionDetail> {
     return this.json(`/v1/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
   }
 

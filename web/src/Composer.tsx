@@ -1,9 +1,11 @@
-import { useEffect, useRef, type CSSProperties } from 'react'
-import { IAttach, IClose, IFile, ISend, IStop } from './icons'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { IAttach, IClose, ICommand, IFile, ISend, IStop } from './icons'
 import type { Client } from './api'
 import { AttachmentImage } from './AttachmentImage'
+import { CommandPalette } from './CommandPalette'
 import { Select } from './Select'
 import { useI18n } from './i18n'
+import type { SessionCommand } from './types'
 import {
   cacheHitPercent,
   formatCost,
@@ -62,7 +64,7 @@ function SessionStatsLine({ stats, t }: { stats: SessionStats; t: ReturnType<typ
   )
 }
 
-export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFiles, onCancel, busy, uploading, disabled, hero, cwd, model, err, onPickModel, thinkingLevels, thinkingEffort, defaultThinking, onThinking, contextUsage, stats, mode = 'new' }: {
+export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFiles, onCancel, busy, uploading, disabled, hero, cwd: _cwd, model, err, notice, onPickModel, thinkingLevels, thinkingEffort, defaultThinking, onThinking, contextUsage, stats, mode = 'new', commands = [], onEnsureSession }: {
   api: Client
   draft: Draft
   onChange: (draft: Draft) => void
@@ -78,6 +80,9 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
   cwd?: string
   model?: string
   err?: string | null
+  notice?: { kind: 'error' | 'info'; text: string } | null
+  commands?: SessionCommand[]
+  onEnsureSession?: () => Promise<void>
   onPickModel?: () => void
   thinkingLevels?: string[]
   thinkingEffort?: string
@@ -89,6 +94,8 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
 }) {
   const { t } = useI18n()
   const ref = useRef<HTMLTextAreaElement>(null)
+  const cmdBtn = useRef<HTMLButtonElement>(null)
+  const [palette, setPalette] = useState(false)
   useEffect(() => {
     const el = ref.current
     if (!el) return
@@ -96,10 +103,30 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`
   }, [draft.text])
   useEffect(() => { if (mode === 'edit') ref.current?.focus({ preventScroll: true }) }, [mode])
+  useEffect(() => {
+    if (mode === 'new' && draft.text === '/') setPalette(true)
+    if (mode === 'new' && !draft.text.startsWith('/')) setPalette(false)
+  }, [draft.text, mode])
   const canSend = !uploading && (!!draft.text.trim() || draft.attachments.length > 0)
+  const slashDraft = mode === 'new' && draft.text.trim().startsWith('/')
+  const banner = notice ?? (err ? { kind: 'error' as const, text: err } : null)
+  const openPalette = () => {
+    void onEnsureSession?.()
+    if (!draft.text.startsWith('/')) onChange({ ...draft, text: '/' })
+    setPalette(true)
+    ref.current?.focus()
+  }
+  const insertCommand = (item: SessionCommand) => {
+    const prefix = `/${item.name}`
+    const already = draft.text === prefix || draft.text.startsWith(`${prefix} `)
+    const text = already ? draft.text : `${prefix}${item.argumentHint || item.source === 'skill' ? ' ' : ''}`
+    onChange({ ...draft, text })
+    setPalette(false)
+    requestAnimationFrame(() => ref.current?.focus())
+  }
   return (
     <div className={`composer-wrap${hero ? ' hero-pos' : ''}${mode === 'edit' ? ' edit-pos' : ''}`}>
-      {err ? <div className="notice" data-testid="notice">{err}</div> : null}
+      {banner ? <div className={`notice${banner.kind === 'info' ? ' info' : ''}`} data-testid="notice" data-kind={banner.kind}>{banner.text}</div> : null}
       <div className="composer">
         {draft.attachments.length ? <div className="attachment-strip">
           {draft.attachments.map((a, i) => a.type === 'image' ? (
@@ -127,18 +154,36 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
 			if (files.length) onFiles?.(files)
 		  }}
           onKeyDown={e => {
+            if (e.key === 'Escape' && palette) { e.preventDefault(); setPalette(false); return }
             if (e.key === 'Escape' && mode === 'edit') { e.preventDefault(); onCancel?.(); return }
             if ((mode === 'new' && e.key === 'Enter' && !e.shiftKey) || (mode === 'edit' && e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
               e.preventDefault()
-              if (busy) onStop?.()
+              if (palette) {
+                setPalette(false)
+                if (canSend) onSend()
+                return
+              }
+              if (busy && !slashDraft) onStop?.()
               else if (canSend) onSend()
             }
           }}
         />
         <div className="composer-row">
           <button type="button" className="attach-btn" onClick={onAttach} disabled={disabled || busy} aria-label={t('composer.attach')} title={t('composer.attach')}><IAttach /></button>
-          {mode === 'new' && cwd ? <span className="cwd-chip" title={cwd}>{basename(cwd)}</span> : null}
+          {mode === 'new' ? (
+            <button type="button" ref={cmdBtn} className="attach-btn" data-testid="command-btn" aria-label={t('cmd.open')} title={t('cmd.open')} onClick={openPalette}><ICommand /></button>
+          ) : null}
           {mode === 'new' ? <button type="button" className="model-chip" data-testid="open-model" onClick={onPickModel}>{model || t('composer.pickModel')}</button> : null}
+          {mode === 'new' ? (
+            <CommandPalette
+              open={palette}
+              query={draft.text}
+              items={commands}
+              anchor={cmdBtn}
+              onClose={() => setPalette(false)}
+              onPick={insertCommand}
+            />
+          ) : null}
           {/* Why: thinkingLevels[0] is "off"; an omitted effort should show defaultThinking (medium). */}
           {mode === 'new' && thinkingLevels && thinkingLevels.length > 1 ? <Select className="thinking-select" testid="thinking-select" ariaLabel="Thinking effort" value={thinkingEffort || defaultThinking || thinkingLevels[0]} options={thinkingLevels.map(level => ({ value: level, label: level }))} onChange={value => onThinking?.(value)} /> : null}
           <span className="grow" />

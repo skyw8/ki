@@ -25,6 +25,7 @@ import {
   Search,
   SendHorizontal,
   Settings,
+  SquareSlash,
   Sparkles,
   Square,
   Sun,
@@ -72,6 +73,7 @@ export const IFolderOpen = sized(FolderOpen, 16)
 export const IFile = sized(File, 16)
 export const IImage = sized(Image, 16)
 export const IAttach = sized(Paperclip, 16)
+export const ICommand = sized(SquareSlash, 16)
 export const IPencil = sized(Pencil, 14)
 export const IChevRight = sized(ChevronRight, 12)
 export const ICheck = sized(Check, 14)

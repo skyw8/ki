@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Client } from './api'
+import { ICheck, IEdit, IRegen } from './icons'
 import { useI18n, type MsgKey } from './i18n'
-import type { CatalogMcp, CatalogSkill, SessionDetail } from './types'
+import type { CatalogMcp, CatalogSkill, SessionCommand, SessionDetail } from './types'
 
 const SOURCE_KEY: Record<string, MsgKey> = {
   home: 'cfg.src.home',
@@ -16,32 +17,27 @@ export function SessionConfig({
   workspaceTitle,
   busy,
   onError,
+  onEdit,
 }: {
   api: Client
   sessionId: string | null
   workspaceTitle?: string
   busy?: boolean
   onError: (msg: string | null) => void
+  onEdit?: (page: 'skills' | 'mcp') => void
 }) {
   const { t } = useI18n()
   const [detail, setDetail] = useState<SessionDetail | null>(null)
-  const [skills, setSkills] = useState<CatalogSkill[]>([])
-  const [mcps, setMcps] = useState<CatalogMcp[]>([])
   const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
     if (!sessionId) {
       setDetail(null)
-      setSkills([])
-      setMcps([])
       return
     }
     setLoading(true)
     try {
-      const next = await api.get(sessionId)
-      setDetail(next)
-      setSkills(next.availableSkills ?? [])
-      setMcps(next.availableMcp ?? [])
+      setDetail(await api.get(sessionId))
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -51,44 +47,27 @@ export function SessionConfig({
 
   useEffect(() => { void load() }, [load])
 
-  const patchSkills = async (next: CatalogSkill[]) => {
-    if (!sessionId) return
-    const prev = skills
-    setSkills(next)
-    try {
-      await api.patch(sessionId, { skills: { disabled: next.filter(s => !s.enabled).map(s => s.name) } })
-    } catch (e) {
-      setSkills(prev)
-      onError(e instanceof Error ? e.message : String(e))
-      void load()
-    }
-  }
-
-  const patchMcp = async (next: CatalogMcp[]) => {
-    if (!sessionId) return
-    const prev = mcps
-    setMcps(next)
-    try {
-      await api.patch(sessionId, { mcp: { disabled: next.filter(s => !s.enabled).map(s => s.name) } })
-    } catch (e) {
-      setMcps(prev)
-      onError(e instanceof Error ? e.message : String(e))
-      void load()
-    }
-  }
-
   if (!sessionId) {
     return (
-      <div className="session-config" data-testid="session-config">
+      <div className="session-config" data-testid="session-info">
         <p className="cfg-empty">{t('cfg.needSession')}</p>
       </div>
     )
   }
 
   const model = detail ? [detail.provider, detail.model].filter(Boolean).join('/') : ''
+  const skills = detail?.availableSkills ?? []
+  const mcps = detail?.availableMcp ?? []
+  const commands = detail?.commands ?? []
 
   return (
-    <div className="session-config" data-testid="session-config">
+    <div className="session-config" data-testid="session-info">
+      <div className="cfg-actions">
+        <ReloadButton testid="info-reload" onError={onError} run={async () => { await api.reload(); await load() }} />
+        <button type="button" className="cfg-btn" data-testid="info-edit" onClick={() => onEdit?.('skills')}>
+          <IEdit /> {t('cfg.edit')}
+        </button>
+      </div>
       <section className="cfg-block">
         <h3 className="cfg-h">{t('cfg.session')}</h3>
         <dl className="cfg-meta">
@@ -135,14 +114,10 @@ export function SessionConfig({
                   <div className="cfg-name">
                     {item.name}
                     {item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
+                    <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
                   </div>
                   {item.description ? <p className="cfg-desc">{item.description}</p> : null}
                 </div>
-                <Switch
-                  testid={`skill-on-${item.name}`}
-                  on={item.enabled}
-                  onChange={on => void patchSkills(skills.map(s => s.name === item.name ? { ...s, enabled: on } : s))}
-                />
               </li>
             ))}
           </ul>
@@ -161,36 +136,167 @@ export function SessionConfig({
                   <div className="cfg-name">
                     {item.name}
                     {item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
+                    <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
                   </div>
-                  <p className="cfg-desc">{[item.command, ...(item.args ?? [])].filter(Boolean).join(' ')}</p>
+                  <p className="cfg-desc">{[item.command, ...(item.args ?? [])].filter(Boolean).join(' ') || item.url}</p>
+                  {item.tools && item.tools.length > 0 ? (
+                    <ul className="cfg-tools">
+                      {item.tools.map(tool => (
+                        <li key={tool.name}><code>{tool.name}</code>{tool.description ? ` — ${tool.description}` : ''}</li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </div>
-                <Switch
-                  testid={`mcp-on-${item.name}`}
-                  on={item.enabled}
-                  onChange={on => void patchMcp(mcps.map(s => s.name === item.name ? { ...s, enabled: on } : s))}
-                />
               </li>
             ))}
           </ul>
         )}
       </section>
 
-      {busy ? <p className="cfg-hint">{t('cfg.hintBusy')}</p> : <p className="cfg-hint">{t('cfg.hint')}</p>}
+      <section className="cfg-block">
+        <h3 className="cfg-h">{t('cfg.commands')}</h3>
+        {commands.length === 0 && !loading ? (
+          <p className="cfg-empty">{t('cfg.commandsEmpty')}</p>
+        ) : (
+          <ul className="cfg-list">
+            {commands.map(item => (
+              <li key={`${item.source}:${item.name}`} className="cfg-row" data-testid="cfg-command" data-name={item.name}>
+                <div className="cfg-copy">
+                  <div className="cfg-name">
+                    /{item.name}
+                    <span className="cfg-src">{item.source}</span>
+                  </div>
+                  {item.description ? <p className="cfg-desc">{item.description}</p> : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      {busy ? <p className="cfg-hint">{t('cfg.hintBusy')}</p> : null}
     </div>
   )
 }
 
-function Switch({ testid, on, onChange }: { testid: string; on: boolean; onChange: (on: boolean) => void }) {
+export function SettingsToggles({
+  kind,
+  api,
+  workspaceId,
+  onError,
+}: {
+  kind: 'skills' | 'mcp'
+  api: Client
+  workspaceId?: string | null
+  onError: (msg: string | null) => void
+}) {
+  const { t } = useI18n()
+  const [items, setItems] = useState<Array<CatalogSkill | CatalogMcp>>([])
+  const [loading, setLoading] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const next = kind === 'skills' ? await api.skills(workspaceId) : await api.mcpServers(workspaceId)
+      setItems(next)
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [api, kind, onError, workspaceId])
+
+  useEffect(() => { void load() }, [load])
+
+  const patch = async (next: Array<CatalogSkill | CatalogMcp>) => {
+    const prev = items
+    setItems(next)
+    try {
+      const disabled = next.filter(s => !s.enabled).map(s => s.name)
+      if (kind === 'skills') await api.patchSkills(disabled)
+      else await api.patchMcp(disabled)
+      const listed = kind === 'skills' ? await api.skills(workspaceId) : await api.mcpServers(workspaceId)
+      setItems(listed)
+    } catch (e) {
+      setItems(prev)
+      onError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const empty = kind === 'skills' ? t('cfg.skillsEmpty') : t('cfg.mcpEmpty')
+  return (
+    <div className="preference-page" data-testid={`${kind}-settings`}>
+      <header className="settings-page-title">
+        <div>
+          <h3>{kind === 'skills' ? t('settings.skills') : t('settings.mcp')}</h3>
+          <p>{kind === 'skills' ? t('settings.skillsHint') : t('settings.mcpHint')}</p>
+        </div>
+        <ReloadButton testid={`${kind}-reload`} onError={onError} run={async () => { await api.reload(); await load() }} />
+      </header>
+      {items.length === 0 && !loading ? <p className="cfg-empty">{empty}</p> : (
+        <ul className="cfg-list">
+          {items.map(item => (
+            <li key={item.name} className="cfg-row" data-testid={`cfg-${kind === 'skills' ? 'skill' : 'mcp'}`} data-name={item.name}>
+              <div className="cfg-copy">
+                <div className="cfg-name">
+                  {item.name}
+                  {item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
+                </div>
+                {'description' in item && item.description ? <p className="cfg-desc">{item.description}</p> : null}
+                {'command' in item ? <p className="cfg-desc">{[item.command, ...(item.args ?? [])].filter(Boolean).join(' ')}</p> : null}
+              </div>
+              <Switch
+                testid={`${kind === 'skills' ? 'skill' : 'mcp'}-on-${item.name}`}
+                on={item.enabled}
+                onChange={on => void patch(items.map(s => s.name === item.name ? { ...s, enabled: on } : s))}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function ReloadButton({ testid, run, onError }: { testid: string; run: () => Promise<void>; onError: (msg: string | null) => void }) {
+  const { t } = useI18n()
+  const [phase, setPhase] = useState<'idle' | 'busy' | 'done'>('idle')
+  useEffect(() => {
+    if (phase !== 'done') return
+    const timer = window.setTimeout(() => setPhase('idle'), 1800)
+    return () => window.clearTimeout(timer)
+  }, [phase])
   return (
     <button
       type="button"
-      className={`switch${on ? ' on' : ''}`}
-      role="switch"
-      aria-checked={on}
+      className={`cfg-btn${phase === 'busy' ? ' busy' : ''}${phase === 'done' ? ' done' : ''}`}
       data-testid={testid}
-      onClick={() => onChange(!on)}
+      disabled={phase === 'busy'}
+      aria-busy={phase === 'busy'}
+      onClick={() => {
+        if (phase === 'busy') return
+        onError(null)
+        setPhase('busy')
+        void run().then(
+          () => setPhase('done'),
+          e => {
+            setPhase('idle')
+            onError(e instanceof Error ? e.message : String(e))
+          },
+        )
+      }}
     >
-      <span className="switch-knob" />
+      {phase === 'busy' ? <span className="spin" data-testid="reload-spin" /> : phase === 'done' ? <ICheck /> : <IRegen />}
+      {phase === 'busy' ? t('cfg.reloading') : phase === 'done' ? t('cfg.reloaded') : t('cfg.reload')}
     </button>
   )
 }
+
+function Switch({ on, onChange, testid }: { on: boolean; onChange: (on: boolean) => void; testid?: string }) {
+  return (
+    <button type="button" role="switch" aria-checked={on} className={`switch${on ? ' on' : ''}`} data-testid={testid} onClick={() => onChange(!on)}>
+      <span className="switch-knob" aria-hidden />
+    </button>
+  )
+}
+
+export type { SessionCommand }

@@ -8,7 +8,8 @@
 // request_header entries store system/tools plus provider, model, thinking,
 // catalog, and pricing snapshots. context_usage entries store model-facing
 // context pressure. config.json owns provider/model/thinking effort plus
-// title, pin, and skills/mcp toggles. Remove deletes the session directory.
+// title and pin. Skills/MCP enablement is process-wide ({KI_HOME}/toggles.json).
+// Remove deletes the session directory.
 // List walks the session root. Index caches id→dir for O(1) lookup; the
 // filesystem stays the source of truth and misses fall back to Find. On-disk layout: docs/session.md.
 package session
