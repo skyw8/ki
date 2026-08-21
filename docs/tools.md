@@ -10,6 +10,8 @@
 | `Write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 Read |
 | `Edit` | `file_path`、`old_string`、`new_string`、`replace_all` | 精确替换；不唯一则失败。无 `edits[]` |
 | `apply_patch` | Responses custom freeform + Lark grammar | Codex 补丁格式：新增、删除、更新、移动；返回 `A/M/D` 摘要 |
+| `Grep` | `pattern`、`path`、`glob`、`output_mode`、上下文/分页/类型参数 | 基于内置 ripgrep；默认返回匹配文件，支持 content/count、正则、`.gitignore` 和取消/超时 |
+| `Glob` | `pattern`、`path` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径，最多 100 个 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | stdout+stderr 混排；非 0 当 error。abort/timeout 杀进程组。无 sandbox |
 
 ## 细节
@@ -21,6 +23,8 @@
 - 每次 Bash 新进程，cwd 固定为 session cwd；`cd` 不跨命令。
 - Abort / `timeout` 杀掉整个进程组（`bash -lc` 及其子进程、管道），不是只杀 bash。中断结果是 `Command aborted`；超时是 `Command timed out after N seconds`。`run_in_background` 的作业不跟 abort 走。
 - `run_in_background`：立刻回 task id 和 `output_file`，之后用 Read 看输出。
+- `Grep` 和 `Glob` 使用编译进 ki 的 ripgrep 15.2.0，不依赖系统 `rg`；运行时只在用户缓存目录物化对应平台的 helper。`KI_USE_SYSTEM_RIPGREP=1` 仅用于显式调试系统版本。
+- `Grep` 使用 ripgrep JSON 输出，`Glob` 使用 NUL 分隔的 `--files` 输出；两者都通过 argv 启动，不经过 shell。默认搜索超时 20 秒，达到结果/输出上限会终止 rg 并返回截断提示。
 - 文本截断：2000 行或 50KB。Read 留头，Bash 留尾。
 - 内置工具（Read/Write/Edit/Bash）和 MCP 工具都实现 `ToolValidator`（`internal/loop/validate.go` 的最小 JSON Schema 子集：required + 类型检查），参数错误在 execute 前拦截，MCP 工具不再把坏参数透传给 server 等 400。
 - 不做 `dangerouslyDisableSandbox`，prompt 里也不写。
