@@ -32,9 +32,21 @@ func names(ts []loop.Tool) []string {
 }
 
 func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
-	set := Set{CWD: t.TempDir()}
+	shells := DiscoverShellRuntime()
+	set := Set{CWD: t.TempDir(), Shells: shells}
 	classic := set.Build(Profile{Editor: EditorWriteEdit})
-	if got := strings.Join(names(classic), ","); got != "Read,Write,Edit,Grep,Glob,Bash,TaskOutput,TaskStop,Monitor" {
+	wantClassic := []string{"Read", "Write", "Edit", "Grep", "Glob"}
+	if shells.BashAvailable() {
+		wantClassic = append(wantClassic, "Bash")
+	}
+	if shells.PowerShellEnabled() {
+		wantClassic = append(wantClassic, "PowerShell")
+	}
+	wantClassic = append(wantClassic, "TaskOutput", "TaskStop")
+	if shells.BashAvailable() {
+		wantClassic = append(wantClassic, "Monitor")
+	}
+	if got := strings.Join(names(classic), ","); got != strings.Join(wantClassic, ",") {
 		t.Fatalf("classic tools = %s", got)
 	}
 	textRead := pick(classic, "Read")
@@ -43,7 +55,18 @@ func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
 	}
 
 	patch := set.Build(Profile{RichRead: true, Editor: EditorApplyPatch})
-	if got := strings.Join(names(patch), ","); got != "Read,apply_patch,Grep,Glob,Bash,TaskOutput,TaskStop,Monitor" {
+	wantPatch := []string{"Read", "apply_patch", "Grep", "Glob"}
+	if shells.BashAvailable() {
+		wantPatch = append(wantPatch, "Bash")
+	}
+	if shells.PowerShellEnabled() {
+		wantPatch = append(wantPatch, "PowerShell")
+	}
+	wantPatch = append(wantPatch, "TaskOutput", "TaskStop")
+	if shells.BashAvailable() {
+		wantPatch = append(wantPatch, "Monitor")
+	}
+	if got := strings.Join(names(patch), ","); got != strings.Join(wantPatch, ",") {
 		t.Fatalf("patch tools = %s", got)
 	}
 	if !strings.Contains(pick(patch, "Read").Prompt(), "PDF") {
@@ -52,6 +75,34 @@ func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
 	spec := pick(patch, "apply_patch").(loop.ToolSpecProvider).ToolSpec()
 	if spec.Type != "custom" || spec.Format == nil || spec.Format.Syntax != "lark" {
 		t.Fatalf("apply_patch spec = %+v", spec)
+	}
+}
+
+func TestBuildPowerShellContract(t *testing.T) {
+	ps := shellSpec{kind: shellPowerShell, path: "pwsh", powerShellEdition: powerShellCore}
+	shells := ShellRuntime{bash: shellSpec{kind: shellBash}, powerShell: &ps}
+	all := Set{CWD: t.TempDir(), Shells: shells}.Build(Profile{Editor: EditorWriteEdit})
+	if pick(all, "Bash") != nil || pick(all, "Monitor") != nil {
+		t.Fatalf("Bash-dependent tools registered without Bash: %v", names(all))
+	}
+	tool := pick(all, "PowerShell")
+	if tool == nil {
+		t.Fatal("PowerShell was not registered")
+	}
+	props := tool.Parameters()["properties"].(map[string]any)
+	for _, name := range []string{"command", "timeout", "description", "run_in_background"} {
+		if props[name] == nil {
+			t.Fatalf("PowerShell missing %s schema", name)
+		}
+	}
+	if strings.Contains(tool.Prompt(), "dangerouslyDisableSandbox") || !strings.Contains(tool.Prompt(), "PowerShell 7+") || !strings.Contains(tool.Prompt(), "is not remembered") {
+		t.Fatalf("PowerShell prompt = %s", tool.Prompt())
+	}
+
+	unavailable := powerShellTool{shell: shellSpec{kind: shellPowerShell}}
+	result := unavailable.Execute(context.Background(), map[string]any{"command": "Get-Location"})
+	if result.IsError || !strings.Contains(result.Content[0].Text, "not available") {
+		t.Fatalf("unavailable result = %+v", result)
 	}
 }
 

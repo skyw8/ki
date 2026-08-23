@@ -2,24 +2,14 @@ package tools
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"strings"
-	"time"
 
 	"ki/internal/loop"
 )
 
-// bashWaitDelay bounds Wait after we kill the process group. CommandContext
-// only SIGKILLs the bash PID; grandchildren (find, pipelines) keep the stdout
-// pipe open, and with WaitDelay==0 Wait hangs until they exit — abort and the
-// default 120s timeout then look like a no-op.
-// See docs/postmortem/2026-08-18-bash-abort.md.
-const bashWaitDelay = 200 * time.Millisecond
-
 type bashTool struct {
-	cwd  string
-	jobs *JobStore
+	cwd   string
+	jobs  *JobStore
+	shell shellSpec
 }
 
 func (bashTool) Name() string { return "Bash" }
@@ -44,17 +34,7 @@ When issuing multiple commands:
 - DO NOT use newlines to separate commands (newlines are ok in quoted strings).`
 }
 func (bashTool) Parameters() map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"required":             []any{"command"},
-		"properties": map[string]any{
-			"command":           map[string]any{"type": "string", "description": "The command to execute"},
-			"timeout":           map[string]any{"type": "number", "description": "Optional timeout in milliseconds (max 600000)"},
-			"description":       map[string]any{"type": "string", "description": "Clear, concise description of what this command does in active voice."},
-			"run_in_background": map[string]any{"type": "boolean", "description": "Set to true to run this command in the background. Use Read to read the output later."},
-		},
-	}
+	return shellParameters("The command to execute")
 }
 
 func (t bashTool) Validate(args map[string]any) error {
@@ -72,62 +52,9 @@ func (t bashTool) ExecuteWithProgress(ctx context.Context, args map[string]any, 
 }
 
 func (t bashTool) execute(ctx context.Context, args map[string]any, emit func(any)) loop.ToolResult {
-	cmdStr, _ := args["command"].(string)
-	if cmdStr == "" {
-		return errRes("command is required")
+	shell := t.shell
+	if !shell.available() {
+		shell = fallbackShellRuntime().bash
 	}
-	timeout := 120000
-	if v, ok := asInt(args["timeout"]); ok && v > 0 {
-		timeout = min(v, 600000)
-	}
-	bg := false
-	if v, ok := args["run_in_background"].(bool); ok {
-		bg = v
-	}
-	if bg {
-		if t.jobs == nil {
-			t.jobs = NewJobStore()
-		}
-		id, path, err := t.jobs.Start(ctx, t.cwd, cmdStr, stringArg(args, "description", cmdStr), "local_bash")
-		if err != nil {
-			return errRes(err.Error())
-		}
-		return okRes(fmt.Sprintf("started background command %s\noutput_file: %s\nUse TaskOutput with task_id=%s to inspect it, or Read with file_path=%s.", id, path, id, path))
-	}
-	if t.jobs == nil {
-		t.jobs = NewJobStore()
-	}
-	cctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
-	defer cancel()
-	var progress func(TaskUpdate)
-	if emit != nil {
-		progress = func(update TaskUpdate) { emit(update) }
-	}
-	snapshot, runErr := t.jobs.RunForeground(cctx, t.cwd, cmdStr, stringArg(args, "description", cmdStr), progress)
-	out, _ := t.jobs.Output(snapshot.TaskID)
-	text, note := truncateTail(out)
-	text += note
-	if errors.Is(runErr, context.DeadlineExceeded) && snapshot.Status == TaskBackground {
-		if strings.HasPrefix(strings.TrimSpace(cmdStr), "sleep") {
-			_, _ = t.jobs.Stop(snapshot.TaskID)
-			return errRes(appendStatus(text, fmt.Sprintf("Command timed out after %d seconds", timeout/1000)))
-		}
-		return okRes(appendStatus(text, fmt.Sprintf("Command timed out after %d seconds and continues in background as %s\noutput_file: %s\nUse TaskOutput with task_id=%s to inspect it, or TaskStop to terminate it.", timeout/1000, snapshot.TaskID, snapshot.OutputFile, snapshot.TaskID)))
-	}
-	if errors.Is(runErr, context.Canceled) || snapshot.Status == TaskKilled {
-		return errRes(appendStatus(text, "Command aborted"))
-	}
-	if runErr != nil {
-		return errRes(appendStatus(text, runErr.Error()))
-	}
-	if snapshot.Status == TaskFailed {
-		if snapshot.ExitCode != nil {
-			return errRes(appendStatus(text, fmt.Sprintf("Command exited with code %d", *snapshot.ExitCode)))
-		}
-		return errRes(appendStatus(text, snapshot.Error))
-	}
-	if text == "" {
-		text = "(no output)"
-	}
-	return okRes(text)
+	return executeShell(ctx, args, emit, shell, t.cwd, t.jobs)
 }

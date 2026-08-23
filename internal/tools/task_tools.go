@@ -11,7 +11,7 @@ import (
 	"ki/internal/loop"
 )
 
-const taskOutputPrompt = `Retrieves output and status for a background task started by Bash or Monitor.
+const taskOutputPrompt = `Retrieves output and status for a background task started by Bash, PowerShell, or Monitor.
 
 Use block=false for an immediate snapshot. Use block=true to wait for completion up to timeout milliseconds. For a running task, output contains the captured output so far and output_file can be read with Read.`
 
@@ -25,7 +25,7 @@ func (taskOutputTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object", "additionalProperties": false, "required": []any{"task_id"},
 		"properties": map[string]any{
-			"task_id": map[string]any{"type": "string", "description": "The task ID returned by Bash or Monitor."},
+			"task_id": map[string]any{"type": "string", "description": "The task ID returned by Bash, PowerShell, or Monitor."},
 			"block":   map[string]any{"type": "boolean", "description": "Whether to wait for the task to finish. Defaults to true."},
 			"timeout": map[string]any{"type": "number", "minimum": 0, "maximum": 600000, "description": "Maximum wait time in milliseconds. Defaults to 30000."},
 		},
@@ -138,8 +138,9 @@ func (t taskStopTool) Execute(_ context.Context, args map[string]any) loop.ToolR
 }
 
 type monitorTool struct {
-	jobs *JobStore
-	cwd  string
+	jobs  *JobStore
+	cwd   string
+	shell shellSpec
 }
 
 func (monitorTool) Name() string        { return "Monitor" }
@@ -174,7 +175,11 @@ func (t monitorTool) ExecuteWithProgress(ctx context.Context, args map[string]an
 		return errRes("command is required")
 	}
 	description := stringArg(args, "description", command)
-	id, _, err := t.jobs.Start(ctx, t.cwd, command, description, "local_bash")
+	shell := t.shell
+	if !shell.available() {
+		shell = fallbackShellRuntime().bash
+	}
+	id, _, err := t.jobs.Start(ctx, shell, t.cwd, command, description, "local_bash")
 	if err != nil {
 		return errRes(err.Error())
 	}

@@ -58,6 +58,7 @@ type Server struct {
 	sidx                   *session.Index
 	ln                     net.Listener
 	http                   *http.Server
+	shells                 tools.ShellRuntime
 }
 
 type runState struct {
@@ -77,6 +78,7 @@ type File struct {
 
 // New builds a server (does not listen).
 func New(opt Options) (*Server, error) {
+	shells := tools.DiscoverShellRuntime()
 	tok := opt.Token
 	if tok == "" {
 		tok = newToken()
@@ -113,6 +115,7 @@ func New(opt Options) (*Server, error) {
 		jobs:                   map[string]*tools.JobStore{},
 		ws:                     ws,
 		sidx:                   sidx,
+		shells:                 shells,
 	}, nil
 }
 
@@ -905,7 +908,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	if info.ApplyPatchToolType == "freeform" {
 		profile.Editor = tools.EditorApplyPatch
 	}
-	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs}.Build(profile)
+	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs, Shells: s.shells}.Build(profile)
 	tg := toggles.Load(cfg.Home)
 	mcpFile := mcp.Cached(cfg.Home, sess.Header.CWD, sess.ID())
 	// Bind is cache-only. Waiting here for mcp.Tools() spawn used to leave the

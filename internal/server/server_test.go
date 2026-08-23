@@ -186,7 +186,7 @@ func (r *reqRecorder) Stream(_ context.Context, req loop.Request, _ func(loop.As
 
 func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	recorder := &reqRecorder{}
-	_, hs := testServerWith(t, recorder)
+	srv, hs := testServerWith(t, recorder)
 	id := createSession(t, hs, t.TempDir())
 
 	prompt := func(model string) loop.Request {
@@ -208,7 +208,18 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	}
 
 	gpt := prompt("openai/gpt-5.6-terra")
-	if got := requestToolNames(gpt.Tools); !slices.Equal(got, []string{"Read", "apply_patch", "Grep", "Glob", "Bash", "TaskOutput", "TaskStop", "Monitor"}) {
+	gptWant := []string{"Read", "apply_patch", "Grep", "Glob"}
+	if srv.shells.BashAvailable() {
+		gptWant = append(gptWant, "Bash")
+	}
+	if srv.shells.PowerShellEnabled() {
+		gptWant = append(gptWant, "PowerShell")
+	}
+	gptWant = append(gptWant, "TaskOutput", "TaskStop")
+	if srv.shells.BashAvailable() {
+		gptWant = append(gptWant, "Monitor")
+	}
+	if got := requestToolNames(gpt.Tools); !slices.Equal(got, gptWant) {
 		t.Fatalf("GPT tools = %v", got)
 	}
 	if gpt.Tools[1].Type != "custom" || gpt.Tools[1].Format == nil {
@@ -220,7 +231,18 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	}
 
 	deepseek := prompt("deepseek/deepseek-v4-flash")
-	if got := requestToolNames(deepseek.Tools); !slices.Equal(got, []string{"Read", "Write", "Edit", "Grep", "Glob", "Bash", "TaskOutput", "TaskStop", "Monitor"}) {
+	deepseekWant := []string{"Read", "Write", "Edit", "Grep", "Glob"}
+	if srv.shells.BashAvailable() {
+		deepseekWant = append(deepseekWant, "Bash")
+	}
+	if srv.shells.PowerShellEnabled() {
+		deepseekWant = append(deepseekWant, "PowerShell")
+	}
+	deepseekWant = append(deepseekWant, "TaskOutput", "TaskStop")
+	if srv.shells.BashAvailable() {
+		deepseekWant = append(deepseekWant, "Monitor")
+	}
+	if got := requestToolNames(deepseek.Tools); !slices.Equal(got, deepseekWant) {
 		t.Fatalf("DeepSeek tools = %v", got)
 	}
 	if strings.Contains(deepseek.Tools[0].Description, "PDF") {

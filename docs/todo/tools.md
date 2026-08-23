@@ -21,6 +21,13 @@
 - [x] `TaskStop` 支持 task id，并兼容 Claude 的 `shell_id`。
 - [x] `Monitor` 启动流式监控脚本，逐行发送输出；一次性等待仍使用 Bash `run_in_background`。
 
+### PowerShell
+
+- [x] 仅在 Windows 注册独立 `PowerShell` 工具，优先使用 `pwsh`，其次使用 `powershell.exe`。
+- [x] 参数、版本化提示词、退出码、流式输出、timeout、后台任务和任务停止对齐 Bash/Claude Code 生命周期。
+- [x] Windows Bash 按环境变量、Git for Windows 标准目录和 PATH 查找；找不到时不注册 `Bash` / `Monitor`，server 仍可启动。
+- [x] 每次调用从 session cwd 启动，不继承上一次 `Set-Location`。
+
 ### Grep / Glob
 
 - [x] 尽量返回 partial results，而不是超时后丢弃全部结果。
@@ -73,7 +80,7 @@
 - 同时保留滚动尾部和完整输出文件：结果返回尾部摘要，超长输出可通过路径继续读取。
 - 按字节和行数截断，保持 UTF-8 边界；清理 ANSI 和不可见控制字符，避免污染模型上下文。
 - 将 timeout、取消、退出码、是否截断和完整输出路径放入结构化结果。
-- 根据平台解析 shell：Unix 支持 bash/sh，Windows 支持 PowerShell/CMD/Git Bash，并允许显式指定 shell。
+- 继续扩展 shell 选择：当前 Windows 已支持独立 PowerShell、Git Bash 和 PATH 中的其他 Bash；Unix 的 sh/zsh、Windows CMD 和显式 shell 参数仍未实现。
 - 跟踪后台进程及其子进程，服务退出时回收仍在运行的任务。
 
 ## codex
@@ -104,10 +111,11 @@
 
 ### Claude Code
 
-#### `PowerShell`
+#### 已引入：`PowerShell`
 
 - 作用：在 Windows 上直接执行 PowerShell 命令，处理 Windows 原生路径、环境变量和系统工具。
-- 必要性：中高。项目目标是跨平台时应引入；可先作为 Bash 的 shell 类型，不一定单独做一套工具。
+- 当前实现：仅 Windows 注册；使用原生 PowerShell 语法和提示词，与 Bash 共用后台任务、进程树、输出和 timeout 生命周期。
+- 必要性：高，已引入。
 
 #### 已引入：`TaskOutput` / `TaskStop` / `Monitor`
 
@@ -121,11 +129,6 @@
 
 - 作用：执行命令；短命令直接返回，长命令保留 session，通过轮询或 stdin 继续操作。
 - 必要性：高。比当前 Bash 的阻塞调用或 `run_in_background` 后再 Read 更完整，建议优先引入或改造现有 Bash。
-
-#### `PowerShell`
-
-- 作用：Codex 的 shell 类型之一，可与 Bash、Zsh、Sh、CMD 统一选择。
-- 必要性：中高。与 Claude Code 的 PowerShell 能力相同，项目目标是跨平台时应引入。
 
 #### `ViewImage`
 

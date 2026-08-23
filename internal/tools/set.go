@@ -19,8 +19,9 @@ type Profile struct {
 
 // Set binds built-in tools to a session cwd.
 type Set struct {
-	CWD  string
-	Jobs *JobStore
+	CWD    string
+	Jobs   *JobStore
+	Shells ShellRuntime
 }
 
 // Build returns the tools exposed for one resolved model.
@@ -30,18 +31,32 @@ func (s Set) Build(profile Profile) []loop.Tool {
 	}
 	cwd := s.CWD
 	jobs := s.Jobs
+	shells := s.Shells
+	if shells.bash.kind == "" {
+		shells = fallbackShellRuntime()
+	}
 	out := []loop.Tool{readTool{cwd: cwd, jobs: jobs, rich: profile.RichRead}}
 	if profile.Editor == EditorApplyPatch {
 		out = append(out, applyPatchTool{cwd: cwd})
 	} else {
 		out = append(out, writeTool{cwd: cwd}, editTool{cwd: cwd})
 	}
-	return append(out,
+	out = append(out,
 		grepTool{cwd: cwd},
 		globTool{cwd: cwd},
-		bashTool{cwd: cwd, jobs: jobs},
+	)
+	if shells.bash.available() {
+		out = append(out, bashTool{cwd: cwd, jobs: jobs, shell: shells.bash})
+	}
+	if shells.powerShell != nil {
+		out = append(out, powerShellTool{cwd: cwd, jobs: jobs, shell: *shells.powerShell})
+	}
+	out = append(out,
 		taskOutputTool{jobs: jobs},
 		taskStopTool{jobs: jobs},
-		monitorTool{cwd: cwd, jobs: jobs},
 	)
+	if shells.bash.available() {
+		out = append(out, monitorTool{cwd: cwd, jobs: jobs, shell: shells.bash})
+	}
+	return out
 }

@@ -27,6 +27,10 @@ const (
 	TaskFailed     TaskStatus = "failed"
 	TaskKilled     TaskStatus = "killed"
 	maxTaskTail               = 64 * 1024
+	// shellWaitDelay bounds Wait after process-tree termination. Killing only
+	// the shell launcher can leave descendants holding output pipes open, which
+	// otherwise makes abort appear to hang. See the Bash abort postmortem.
+	shellWaitDelay = 200 * time.Millisecond
 )
 
 // TaskSnapshot is the stable, model-facing view of a background task.
@@ -70,6 +74,7 @@ type bgJob struct {
 	command     string
 	description string
 	taskType    string
+	shell       shellSpec
 	status      TaskStatus
 	cmd         *exec.Cmd
 	pid         int
@@ -93,8 +98,8 @@ type bgJob struct {
 func NewJobStore() *JobStore { return &JobStore{jobs: map[string]*bgJob{}} }
 
 // Start launches a command that remains independent of the prompt context.
-func (s *JobStore) Start(_ context.Context, cwd, command, description, taskType string) (id, path string, err error) {
-	job, err := s.newJob(cwd, command, description, taskType, TaskBackground)
+func (s *JobStore) Start(_ context.Context, shell shellSpec, cwd, command, description, taskType string) (id, path string, err error) {
+	job, err := s.newJob(shell, cwd, command, description, taskType, TaskBackground)
 	if err != nil {
 		return "", "", err
 	}
@@ -108,8 +113,8 @@ func (s *JobStore) Start(_ context.Context, cwd, command, description, taskType 
 // RunForeground starts a task with a foreground waiting context. If that
 // context expires, the process is deliberately left alive and promoted to a
 // background task. Parent cancellation still stops the process.
-func (s *JobStore) RunForeground(ctx context.Context, cwd, command, description string, emit func(TaskUpdate)) (TaskSnapshot, error) {
-	job, err := s.newJob(cwd, command, description, "local_bash", TaskRunning)
+func (s *JobStore) RunForeground(ctx context.Context, shell shellSpec, cwd, command, description string, emit func(TaskUpdate)) (TaskSnapshot, error) {
+	job, err := s.newJob(shell, cwd, command, description, "local_bash", TaskRunning)
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
@@ -138,7 +143,7 @@ func (s *JobStore) RunForeground(ctx context.Context, cwd, command, description 
 	}
 }
 
-func (s *JobStore) newJob(cwd, command, description, taskType string, status TaskStatus) (*bgJob, error) {
+func (s *JobStore) newJob(shell shellSpec, cwd, command, description, taskType string, status TaskStatus) (*bgJob, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -152,7 +157,7 @@ func (s *JobStore) newJob(cwd, command, description, taskType string, status Tas
 	id := fmt.Sprintf("bg-%d-%d", time.Now().UnixNano(), seq)
 	job := &bgJob{
 		id: id, path: f.Name(), cwd: cwd, command: command,
-		description: description, taskType: taskType, status: status, file: f,
+		description: description, taskType: taskType, shell: shell, status: status, file: f,
 		done: make(chan struct{}), subs: map[chan TaskUpdate]struct{}{}, startedAt: time.Now(),
 	}
 	s.jobs[id] = job
@@ -161,18 +166,25 @@ func (s *JobStore) newJob(cwd, command, description, taskType string, status Tas
 }
 
 func (j *bgJob) start() error {
+	if !j.shell.available() {
+		_ = j.file.Close()
+		return errors.New("command interpreter is unavailable")
+	}
 	jobCtx, cancel := context.WithCancel(context.Background())
-	//nolint:gosec // executing the explicit Bash tool command is the feature contract.
-	cmd := exec.CommandContext(jobCtx, "bash", "-lc", j.command)
+	//nolint:gosec // executing the explicit shell tool command is the feature contract.
+	cmd := exec.CommandContext(jobCtx, j.shell.path, j.shell.args(j.command)...)
 	if j.cwd != "" {
 		cmd.Dir = j.cwd
+	}
+	if env := j.shell.env(); env != nil {
+		cmd.Env = env
 	}
 	detachCmd(cmd)
 	cmd.Cancel = func() error {
 		killCmd(cmd)
 		return nil
 	}
-	cmd.WaitDelay = bashWaitDelay
+	cmd.WaitDelay = shellWaitDelay
 	j.mu.Lock()
 	j.cmd = cmd
 	j.cancel = cancel
