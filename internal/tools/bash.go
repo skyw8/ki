@@ -31,7 +31,7 @@ func (bashTool) Snippet() string { return "Execute bash commands (ls, grep, find
 func (bashTool) Prompt() string {
 	return `Executes a given bash command and returns its output.
 
-The working directory persists between commands, but shell state does not. The shell environment is initialized from the user's profile (bash or zsh).
+Each call starts in the session cwd. 'cd' only affects the current call and is not remembered. Use 'cd <dir> && <command>' when needed. The shell environment is initialized from the user's profile (bash or zsh).
 
 IMPORTANT: Avoid using this tool to run cat, head, tail, sed, awk, or echo commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool.
 
