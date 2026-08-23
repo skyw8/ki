@@ -4,18 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"ki/internal/session"
-)
-
-type discEnt struct {
-	skills []Skill
-}
-
-var (
-	discMu    sync.Mutex
-	discCache = map[string]discEnt{}
 )
 
 // Skill is one discovered skill.
@@ -31,15 +21,10 @@ type scanDir struct {
 	source string
 }
 
-// List discovers all skills without applying a session toggle.
-func List(home, cwd, sessionID string) []Skill {
-	return Discover(home, cwd, sessionID, session.Toggle{})
-}
-
-// Discover walks the standard skill directories and applies a name toggle.
-func Discover(home, cwd, sessionID string, toggle session.Toggle) []Skill {
+// Filter applies a toggle to an already discovered skill snapshot.
+func Filter(all []Skill, toggle session.Toggle) []Skill {
 	var out []Skill
-	for _, s := range listCached(home, cwd, sessionID) {
+	for _, s := range all {
 		if toggle.Allowed(s.Name) {
 			out = append(out, s)
 		}
@@ -47,39 +32,8 @@ func Discover(home, cwd, sessionID string, toggle session.Toggle) []Skill {
 	return out
 }
 
-func listCached(home, cwd, sessionID string) []Skill {
-	key := home + "\x00" + cwd + "\x00" + sessionID
-	discMu.Lock()
-	defer discMu.Unlock()
-	// Cache-first, scoped per session: prompt.Build scans on every message;
-	// keep that off the disk path except on a session's first scan (or after
-	// invalidation). A new session — even in the same workspace — re-scans.
-	if e, ok := discCache[key]; ok {
-		return e.skills
-	}
-	all := scanAll(home, cwd)
-	discCache[key] = discEnt{skills: all}
-	return all
-}
-
-// Invalidate drops the cached scan for one session so the next Discover
-// re-scans the skill directories. A future /reload command should call this
-// before rebuilding the prompt.
-func Invalidate(home, cwd, sessionID string) {
-	key := home + "\x00" + cwd + "\x00" + sessionID
-	discMu.Lock()
-	defer discMu.Unlock()
-	delete(discCache, key)
-}
-
-// InvalidateAll drops every cached scan. Useful for a global reload.
-func InvalidateAll() {
-	discMu.Lock()
-	defer discMu.Unlock()
-	discCache = map[string]discEnt{}
-}
-
-func scanAll(home, cwd string) []Skill {
+// Scan discovers every skill without caching or applying a toggle.
+func Scan(home, cwd string) []Skill {
 	seen := map[string]bool{}
 	var out []Skill
 	for _, dir := range scanDirs(home, cwd) {

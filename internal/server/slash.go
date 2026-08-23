@@ -7,13 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"ki/internal/mcp"
 	"ki/internal/session"
-	"ki/internal/skills"
 	"ki/internal/toggles"
 	"ki/internal/types"
-	"sync"
 )
 
 var errSessionBusy = errors.New("session busy")
@@ -49,8 +48,9 @@ func (s *Server) doReload(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) getSkills(w http.ResponseWriter, r *http.Request) {
 	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
 	tg := toggles.Load(s.cfg.Home)
+	snapshot := s.resources.Scan(cwd)
 	items := []map[string]any{}
-	for _, item := range skills.List(s.cfg.Home, cwd, "__settings__") {
+	for _, item := range snapshot.Skills {
 		items = append(items, map[string]any{
 			"name":        item.Name,
 			"description": item.Description,
@@ -83,7 +83,7 @@ func (s *Server) patchSkills(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getMCP(w http.ResponseWriter, r *http.Request) {
 	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
 	tg := toggles.Load(s.cfg.Home)
-	file := mcp.Load(s.cfg.Home, cwd)
+	file := s.resources.Scan(cwd).MCP
 	items := []map[string]any{}
 	for _, item := range mcp.List(file, tg.MCP) {
 		row := map[string]any{

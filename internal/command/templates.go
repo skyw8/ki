@@ -1,141 +1,27 @@
 package command
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
-)
 
-// Template is one prompts/*.md file.
-type Template struct {
-	Name         string
-	Description  string
-	ArgumentHint string
-	Body         string
-	Source       string
-}
-
-type tmplEnt struct {
-	items []Template
-}
-
-var (
-	tmplMu    sync.Mutex
-	tmplCache = map[string]tmplEnt{}
+	"ki/internal/resources"
 )
 
 var placeholderRe = regexp.MustCompile(`\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)`)
 
-// InvalidateAll drops cached prompt templates.
-func InvalidateAll() {
-	tmplMu.Lock()
-	defer tmplMu.Unlock()
-	tmplCache = map[string]tmplEnt{}
-}
-
-func listTemplates(home, cwd, sessionID string) []Template {
-	key := home + "\x00" + cwd + "\x00" + sessionID
-	tmplMu.Lock()
-	defer tmplMu.Unlock()
-	if e, ok := tmplCache[key]; ok {
-		return e.items
-	}
-	items := scanTemplates(home, cwd)
-	tmplCache[key] = tmplEnt{items: items}
-	return items
-}
-
-func scanTemplates(home, cwd string) []Template {
-	byName := map[string]Template{}
-	loadDir := func(dir, source string) {
-		ents, err := os.ReadDir(dir)
-		if err != nil {
-			return
-		}
-		for _, e := range ents {
-			name := e.Name()
-			if e.IsDir() || !strings.HasSuffix(strings.ToLower(name), ".md") {
-				continue
-			}
-			p := filepath.Join(dir, name)
-			t, err := loadTemplate(p, source)
-			if err != nil || t.Name == "" {
-				continue
-			}
-			if t.Name == "compact" || t.Name == "reload" {
-				continue
-			}
-			byName[t.Name] = t
-		}
-	}
-	if home != "" {
-		loadDir(filepath.Join(home, "prompts"), "home")
-	}
-	if cwd != "" {
-		loadDir(filepath.Join(cwd, ".ki", "prompts"), "project")
-	}
-	out := make([]Template, 0, len(byName))
-	for _, t := range byName {
-		out = append(out, t)
-	}
-	return out
-}
-
-func loadTemplate(path, source string) (Template, error) {
-	b, err := os.ReadFile(path) //nolint:gosec // discovered under prompt roots
-	if err != nil {
-		return Template{}, err
-	}
-	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	t := Template{Name: strings.ToLower(base), Source: source, Body: string(b)}
-	text := string(b)
-	if strings.HasPrefix(text, "---") {
-		if i := strings.Index(text[3:], "---"); i >= 0 {
-			fm := text[3 : 3+i]
-			t.Body = strings.TrimLeft(text[3+i+3:], "\n")
-			for line := range strings.SplitSeq(fm, "\n") {
-				line = strings.TrimSpace(line)
-				k, v, ok := strings.Cut(line, ":")
-				if !ok {
-					continue
-				}
-				v = strings.TrimSpace(strings.Trim(v, `"'`))
-				switch strings.TrimSpace(k) {
-				case "description":
-					t.Description = v
-				case "argument-hint":
-					t.ArgumentHint = v
-				}
-			}
-		}
-	}
-	if t.Description == "" {
-		for line := range strings.SplitSeq(t.Body, "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(line, "#") {
-				t.Description = line
-				break
-			}
-		}
-	}
-	return t, nil
-}
-
-func templateByName(home, cwd, sessionID, name string) (Template, bool) {
-	for _, t := range listTemplates(home, cwd, sessionID) {
+func templateByName(snapshot resources.Snapshot, name string) (resources.PromptTemplate, bool) {
+	for _, t := range snapshot.Prompts {
 		if t.Name == name {
 			return t, true
 		}
 	}
-	return Template{}, false
+	return resources.PromptTemplate{}, false
 }
 
 // ExpandTemplate substitutes $1 / $@ style args. Unknown name returns false.
-func ExpandTemplate(home, cwd, sessionID, name, args string) (string, bool) {
-	t, ok := templateByName(home, cwd, sessionID, name)
+func ExpandTemplate(snapshot resources.Snapshot, name, args string) (string, bool) {
+	t, ok := templateByName(snapshot, name)
 	if !ok {
 		return "", false
 	}

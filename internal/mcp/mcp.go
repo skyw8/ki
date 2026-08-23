@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 
 	"ki/internal/session"
 )
@@ -35,41 +34,6 @@ type ServerInfo struct {
 	URL     string
 	Source  string
 	Enabled bool
-}
-
-type loadEnt struct {
-	file File
-}
-
-var (
-	loadMu    sync.Mutex
-	loadCache = map[string]loadEnt{}
-)
-
-func cacheKey(home, cwd, sessionID string) string {
-	return home + "\x00" + cwd + "\x00" + sessionID
-}
-
-// Cached is session-scoped Load. A new session (even in the same workspace)
-// re-reads disk; messages within one session hit the cache. InvalidateAll
-// drops every entry so the next Cached/prompt re-reads .mcp.json.
-func Cached(home, cwd, sessionID string) File {
-	key := cacheKey(home, cwd, sessionID)
-	loadMu.Lock()
-	defer loadMu.Unlock()
-	if e, ok := loadCache[key]; ok {
-		return e.file
-	}
-	f := Load(home, cwd)
-	loadCache[key] = loadEnt{file: f}
-	return f
-}
-
-// InvalidateAll drops every cached .mcp.json merge.
-func InvalidateAll() {
-	loadMu.Lock()
-	defer loadMu.Unlock()
-	loadCache = map[string]loadEnt{}
 }
 
 // Load merges global then project (project wins on same name).

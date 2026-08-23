@@ -23,6 +23,7 @@ ki/
 │   ├── tools/           Read / Write / Edit / Bash
 │   ├── provider/        Completions / Responses / Anthropic
 │   ├── prompt/          layered system prompt
+│   ├── resources/       session-scoped filesystem resource snapshots
 │   ├── compact/         compaction
 │   ├── config/          merge ki.toml and env
 │   ├── skills/          discover SKILL.md

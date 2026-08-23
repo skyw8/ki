@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"ki/internal/resources"
 	"ki/internal/session"
 )
 
@@ -44,11 +45,12 @@ func TestTemplatesProjectOverridesAndExpand(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(home, "prompts", "review.md"), []byte("---\ndescription: global\n---\nglobal $1\n"), 0o600)
 	_ = os.WriteFile(filepath.Join(cwd, ".ki", "prompts", "review.md"), []byte("---\ndescription: project\nargument-hint: [diff]\n---\nproject $1 $@\n"), 0o600)
 	_ = os.WriteFile(filepath.Join(home, "prompts", "compact.md"), []byte("should not list\n"), 0o600)
-	got, ok := ExpandTemplate(home, cwd, "s1", "review", "a b")
+	snapshot := resources.NewLoader(home).Scan(cwd)
+	got, ok := ExpandTemplate(snapshot, "review", "a b")
 	if !ok || got != "project a a b\n" {
 		t.Fatalf("expand %q %v", got, ok)
 	}
-	items := Catalog(home, cwd, "s1", session.Toggle{})
+	items := Catalog(snapshot, session.Toggle{})
 	var review Item
 	for _, it := range items {
 		if it.Name == "review" {
@@ -61,7 +63,7 @@ func TestTemplatesProjectOverridesAndExpand(t *testing.T) {
 	if review.Description != "project" || review.ArgumentHint != "[diff]" {
 		t.Fatalf("%+v", review)
 	}
-	p := ResolveUnknown(Parse("/review"), home, cwd, "s1")
+	p := ResolveUnknown(Parse("/review"), snapshot)
 	if p.Kind != KindTemplate {
 		t.Fatalf("%+v", p)
 	}

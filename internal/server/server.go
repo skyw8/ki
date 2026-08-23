@@ -27,8 +27,8 @@ import (
 	"ki/internal/mcp"
 	"ki/internal/prompt"
 	"ki/internal/provider"
+	"ki/internal/resources"
 	"ki/internal/session"
-	"ki/internal/skills"
 	"ki/internal/toggles"
 	"ki/internal/tools"
 	"ki/internal/types"
@@ -51,6 +51,7 @@ type Server struct {
 	registry               *provider.Registry
 	requireModelCredential bool
 	mcp                    *mcp.Pool
+	resources              *resources.Loader
 	mu                     sync.Mutex
 	runs                   map[string]*runState
 	jobs                   map[string]*tools.JobStore
@@ -111,6 +112,7 @@ func New(opt Options) (*Server, error) {
 		registry:               reg,
 		requireModelCredential: requireCredential,
 		mcp:                    mcp.NewPool(opt.Config.Home), // serve-wide; not per session / per prompt
+		resources:              resources.NewLoader(opt.Config.Home),
 		runs:                   map[string]*runState{},
 		jobs:                   map[string]*tools.JobStore{},
 		ws:                     ws,
@@ -146,13 +148,10 @@ func newToken() string {
 // Token is the bearer secret.
 func (s *Server) Token() string { return s.token }
 
-// Reload drops every session's discovery caches and MCP connections so the
+// Reload drops every session's resource snapshots and MCP connections so the
 // next prompt/GET re-reads disk. Process-wide: there is no per-session reload.
 func (s *Server) Reload() {
-	skills.InvalidateAll()
-	prompt.InvalidateAgentsAll()
-	mcp.InvalidateAll()
-	command.InvalidateAll()
+	s.resources.InvalidateAll()
 	if s.mcp != nil {
 		s.mcp.Close()
 	}
@@ -414,7 +413,8 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = sess.Close() }()
-	sk, mc := s.sessionCatalog(sess)
+	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
+	sk, mc := s.sessionCatalog(snapshot)
 	tg := toggles.Load(s.cfg.Home)
 	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
 		"leafId":          sess.LeafID(),
@@ -422,14 +422,14 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		"messages":        sess.MessagesToLeaf(),
 		"availableSkills": sk,
 		"availableMcp":    mc,
-		"commands":        command.Catalog(s.cfg.Home, sess.Header.CWD, sess.ID(), tg.Skills),
+		"commands":        command.Catalog(snapshot, tg.Skills),
 	}))
 }
 
-func (s *Server) sessionCatalog(sess *session.Session) ([]map[string]any, []map[string]any) {
+func (s *Server) sessionCatalog(snapshot resources.Snapshot) ([]map[string]any, []map[string]any) {
 	tg := toggles.Load(s.cfg.Home)
 	sk := []map[string]any{}
-	for _, item := range skills.List(s.cfg.Home, sess.Header.CWD, sess.ID()) {
+	for _, item := range snapshot.Skills {
 		sk = append(sk, map[string]any{
 			"name":        item.Name,
 			"description": item.Description,
@@ -443,7 +443,7 @@ func (s *Server) sessionCatalog(sess *session.Session) ([]map[string]any, []map[
 		b, _ := sk[j]["name"].(string)
 		return a < b
 	})
-	file := mcp.Cached(s.cfg.Home, sess.Header.CWD, sess.ID())
+	file := snapshot.MCP
 	mc := []map[string]any{}
 	for _, item := range mcp.List(file, tg.MCP) {
 		row := map[string]any{
@@ -637,7 +637,8 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	parsed = command.ResolveUnknown(parsed, s.cfg.Home, sess.Header.CWD, sess.ID())
+	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
+	parsed = command.ResolveUnknown(parsed, snapshot)
 	tg := toggles.Load(s.cfg.Home)
 	busy := s.running(id)
 	if parsed.Kind != command.KindPrompt {
@@ -662,7 +663,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 			s.handleBuiltin(w, r, parsed.Name)
 			return
 		case command.KindSkill:
-			text, ok := command.ExpandSkill(s.cfg.Home, sess.Header.CWD, sess.ID(), tg.Skills, parsed.Name, parsed.Args)
+			text, ok := command.ExpandSkill(snapshot, tg.Skills, parsed.Name, parsed.Args)
 			if !ok {
 				_ = sess.Close()
 				writeHandled(w, "unknown skill /skill:"+parsed.Name, true)
@@ -670,7 +671,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 			}
 			body.Content = []types.Content{{Type: "text", Text: text}}
 		case command.KindTemplate:
-			text, ok := command.ExpandTemplate(s.cfg.Home, sess.Header.CWD, sess.ID(), parsed.Name, parsed.Args)
+			text, ok := command.ExpandTemplate(snapshot, parsed.Name, parsed.Args)
 			if !ok {
 				_ = sess.Close()
 				writeHandled(w, "unknown command /"+parsed.Name, true)
@@ -910,7 +911,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs, Shells: s.shells}.Build(profile)
 	tg := toggles.Load(cfg.Home)
-	mcpFile := mcp.Cached(cfg.Home, sess.Header.CWD, sess.ID())
+	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
+	mcpFile := snapshot.MCP
 	// Bind is cache-only. Waiting here for mcp.Tools() spawn used to leave the
 	// UI on running with no SSE until every enabled server finished handshake.
 	tls = append(tls, s.mcp.Bind(mcpFile, tg.MCP)...)
@@ -920,9 +922,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		defer cancel()
 		s.mcp.Prefetch(ctx, mcpFile, tg.MCP)
 	}()
-	// One Build: After compact the *next* prompt rebuilds. A BeforeRun rebuild
-	// only repeated Discover on the same turn.
-	sys, _ := prompt.Build(prompt.Input{Home: cfg.Home, CWD: sess.Header.CWD, SessionID: sess.ID(), Tools: tls, Toggle: tg.Skills})
+	// The snapshot is fixed for the session until reload, while the prompt is
+	// rendered per request so tool schemas and runtime metadata stay current.
+	sys := prompt.Build(prompt.Input{Resources: snapshot, Tools: tls, Toggle: tg.Skills})
 
 	var emit func(loop.Event) error
 	emit = func(ev loop.Event) error {

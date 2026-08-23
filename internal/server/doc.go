@@ -24,10 +24,11 @@
 // append; agent_end may auto-compact. SSE replays runState.evs and drains
 // after done.
 //
-// Skills, AGENTS/CLAUDE, prompt templates, and .mcp.json merges are cached
-// per session (home, cwd, session id). Reload() (POST /v1/reload, /reload,
-// compaction, toggle PATCH) InvalidateAll of those caches and closes the
-// MCP pool so the next prompt/GET re-reads disk.
+// One server-owned resources.Loader atomically caches skills, AGENTS/CLAUDE,
+// prompt templates, and merged .mcp.json by session id only. Settings scans
+// are uncached. Reload() (POST /v1/reload, /reload, compaction, toggle PATCH)
+// invalidates every snapshot and closes the MCP pool so the next prompt/GET
+// re-reads disk.
 //
 // Routes and run lifecycle: docs/architecture.md.
 package server

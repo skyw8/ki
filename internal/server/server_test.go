@@ -1872,8 +1872,8 @@ func TestForkIndexesChild(t *testing.T) {
 }
 
 // TestReloadInvalidatesCachedResources pins the server-level reload entry
-// point: skills and AGENTS.md discovered once stay pinned until srv.Reload(),
-// after which the next session catalog sees disk changes.
+// point: one session's resources stay pinned until srv.Reload(), after which
+// the next session catalog sees disk changes.
 func TestReloadInvalidatesCachedResources(t *testing.T) {
 	srv, hs := testServer(t)
 	cwd := t.TempDir()
@@ -1932,7 +1932,7 @@ func TestReloadInvalidatesCachedResources(t *testing.T) {
 		t.Fatalf("catalog picked up disk change before reload: %+v", got)
 	}
 
-	// srv.Reload() invalidates both caches; next catalog sees beta.
+	// srv.Reload() invalidates the unified snapshot; next catalog sees beta.
 	srv.Reload()
 	if got := names(); !got["beta"] {
 		t.Fatalf("catalog stale after reload: %+v", got)

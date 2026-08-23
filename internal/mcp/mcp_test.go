@@ -66,28 +66,6 @@ func TestLoadProjectOverridesGlobalAndToggle(t *testing.T) {
 	}
 }
 
-func TestCachedPinsUntilInvalidate(t *testing.T) {
-	home := t.TempDir()
-	cwd := t.TempDir()
-	_ = os.WriteFile(filepath.Join(home, ".mcp.json"), []byte(`{"mcpServers":{"a":{"command":"true"}}}`), 0o600)
-	f := Cached(home, cwd, "s1")
-	if _, ok := f.MCPServers["a"]; !ok {
-		t.Fatal("missing a")
-	}
-	_ = os.WriteFile(filepath.Join(home, ".mcp.json"), []byte(`{"mcpServers":{"b":{"command":"true"}}}`), 0o600)
-	f2 := Cached(home, cwd, "s1")
-	if _, ok := f2.MCPServers["b"]; ok {
-		t.Fatal("cache should hide b")
-	}
-	if Cached(home, cwd, "s2").MCPServers["b"].Command != "true" {
-		t.Fatal("new session should re-read")
-	}
-	InvalidateAll()
-	if Cached(home, cwd, "s1").MCPServers["b"].Command != "true" {
-		t.Fatal("after invalidate")
-	}
-}
-
 func TestHTTPURLFromMcpRemote(t *testing.T) {
 	u := httpURL(ServerSpec{Command: "npx", Args: []string{"-y", "mcp-remote", "https://mcp.exa.ai/mcp"}})
 	if u != "https://mcp.exa.ai/mcp" {

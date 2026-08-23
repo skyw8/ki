@@ -16,9 +16,9 @@
 
 续聊必须 `--session <id>`。`--model` 随 prompt 发给 server，写回**该 session** 的 `config.json`，不改 toml。`KI_FAKE=1` 用假模型。
 
-系统提示词由 `internal/prompt` 分层组装，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、.mcp.json、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）、运行 OS/架构、cwd 和本地日期时区。模型被问及"去哪改 server / MCP / skills 设置"时读这段，配合 `ki config path`。
+系统提示词由 `internal/prompt` 从预加载的资源快照纯渲染，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、.mcp.json、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）、运行 OS/架构、cwd 和本地日期时区。后面这些运行环境字段在 session 首次加载资源时计算一次，普通消息不会重复探测；reload 后随新快照更新。模型被问及"去哪改 server / MCP / skills 设置"时读这段，配合 `ki config path`。
 
-skills 发现、AGENTS/CLAUDE、prompt 模板和 `.mcp.json` 合并都按 session 缓存（键含 session id）：同一 workspace 新开 session 会重读磁盘，同 session 内的消息命中缓存。`server.Reload()`（`POST /v1/reload`、`/reload`、压缩成功、PATCH skills/mcp）`InvalidateAll` **所有 session** 并关掉 MCP 连接池。
+`internal/resources.Loader` 由 Server 持有，把运行环境、skills、AGENTS/CLAUDE、prompt 模板和 `.mcp.json` 合并成一次完整快照。缓存键**只有真实 session id**：同一 workspace 新开 session 会重读磁盘，同 session 内的 catalog、命令展开、prompt 和 MCP 绑定共用同一快照；设置页没有 session，使用不缓存的 `Scan(cwd)`。工具列表和 Toggle 仍是每轮运行输入，MCP 连接也属于运行状态，不进入快照。`server.Reload()`（`POST /v1/reload`、`/reload`、压缩成功、PATCH skills/mcp）清空**所有 session** 快照并关掉 MCP 连接池。
 
 Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` 的合并结果。自定义 provider/model 和协议兼容字段通过设置 UI 或 provider API 管理；不从网络刷新目录。`--model provider/model` 只写回 session 配置。
 
@@ -44,7 +44,7 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件 |
 | POST | `/v1/sessions/{id}/abort` | cancel |
 | POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
-| POST | `/v1/reload` | 清全部 session 的发现缓存并关掉 MCP 池 |
+| POST | `/v1/reload` | 清全部 session 的资源快照并关掉 MCP 池 |
 | GET/PATCH | `/v1/skills` `/v1/mcp` | 全局启用开关（`toggles.json`） |
 | POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径 |
 | POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |
@@ -67,7 +67,7 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 
 压缩三段化：`compact.Prepare`（纯函数：切点避开 toolResult、split-turn 前缀单独摘要、上次 retainedTail 虚拟展开参与切点、previousSummary 增量）→ `compact.Execute`（调模型）→ `session.AppendCompaction`（summary + retainedTail 落盘）。`compaction_start/end` 事件同时写 jsonl 与 SSE（`reason`: preflight/overflow/threshold）。
 
-每次成功压缩（自动或手动 `/compact`）都会调 `server.Reload()` 清掉 skills 与 AGENTS/CLAUDE 上下文文件的缓存——上下文已重建，下一次 `prompt.Build` 必须重读磁盘，不能继续用 serve 长存的快照。`Reload` 同时是未来 `/reload` 命令（或信号）的唯一入口。
+每次成功压缩（自动或手动 `/compact`）都会调 `server.Reload()` 清掉所有 session 的资源快照——上下文已重建，下一次 `prompt.Build` 必须使用重读磁盘后的快照，不能继续用 serve 长存的版本。`Reload` 同时是 `/reload` 命令和 HTTP reload 的统一入口。
 
 阈值判定 `compact.ShouldRun(tokens, contextWindow, cfg)`：`tokens > contextWindow - reserveTokens`，窗口缺省 128000。`cfg.MaxContextTokens`（ki.toml `[compaction] max_context_tokens`）取 min 兜底——小于模型窗口时以它为准，小值让压缩提前触发（低成本测试不烧 token），0 = 只用模型窗口。
 

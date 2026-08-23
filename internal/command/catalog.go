@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"ki/internal/resources"
 	"ki/internal/session"
 	"ki/internal/skills"
 )
@@ -18,17 +19,17 @@ type Item struct {
 }
 
 // Catalog lists builtins, prompt templates, and enabled skills.
-func Catalog(home, cwd, sessionID string, skillsToggle session.Toggle) []Item {
+func Catalog(snapshot resources.Snapshot, skillsToggle session.Toggle) []Item {
 	out := []Item{
 		{Name: "compact", Description: "Compact this session's context", Source: "builtin"},
 		{Name: "reload", Description: "Reload skills, prompts, AGENTS.md, and MCP config", Source: "builtin"},
 	}
-	for _, t := range listTemplates(home, cwd, sessionID) {
+	for _, t := range snapshot.Prompts {
 		out = append(out, Item{
 			Name: t.Name, Description: t.Description, ArgumentHint: t.ArgumentHint, Source: "prompt",
 		})
 	}
-	for _, sk := range skills.Discover(home, cwd, sessionID, skillsToggle) {
+	for _, sk := range skills.Filter(snapshot.Skills, skillsToggle) {
 		out = append(out, Item{
 			Name: "skill:" + sk.Name, Description: sk.Description, Source: "skill",
 		})
@@ -44,23 +45,23 @@ func Catalog(home, cwd, sessionID string, skillsToggle session.Toggle) []Item {
 }
 
 // ResolveUnknown upgrades KindUnknown to KindTemplate when a prompt file exists.
-func ResolveUnknown(p Parsed, home, cwd, sessionID string) Parsed {
+func ResolveUnknown(p Parsed, snapshot resources.Snapshot) Parsed {
 	if p.Kind != KindUnknown {
 		return p
 	}
-	if _, ok := templateByName(home, cwd, sessionID, p.Name); ok {
+	if _, ok := templateByName(snapshot, p.Name); ok {
 		p.Kind = KindTemplate
 	}
 	return p
 }
 
 // ExpandSkill loads a SKILL.md body. Unknown or disabled names return false.
-func ExpandSkill(home, cwd, sessionID string, toggle session.Toggle, name, args string) (string, bool) {
-	for _, sk := range skills.Discover(home, cwd, sessionID, toggle) {
+func ExpandSkill(snapshot resources.Snapshot, toggle session.Toggle, name, args string) (string, bool) {
+	for _, sk := range skills.Filter(snapshot.Skills, toggle) {
 		if sk.Name != name {
 			continue
 		}
-		b, err := os.ReadFile(sk.FilePath) //nolint:gosec // path from skills.Discover
+		b, err := os.ReadFile(sk.FilePath) //nolint:gosec // path from the resource snapshot
 		if err != nil {
 			return "", false
 		}
