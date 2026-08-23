@@ -91,7 +91,7 @@ func TestCWDEncodesSessionPath(t *testing.T) {
 	}
 }
 
-func TestModelWritebackIsSessionOnly(t *testing.T) {
+func TestModelWritebackIsSessionAndLastUsed(t *testing.T) {
 	home, proj := isolate(t)
 	modelsFile := filepath.Join(home, "models.json")
 
@@ -113,10 +113,24 @@ func TestModelWritebackIsSessionOnly(t *testing.T) {
 	if cfg["provider"] != "openai" || cfg["model"] != "gpt-5.6-terra" {
 		t.Fatalf("writeback: %+v", cfg)
 	}
+	// The session owns the active model, while models.json remembers the last
+	// selected model for the next new session.
 	//nolint:gosec // the config path is created inside the isolated temp home.
 	raw, err := os.ReadFile(modelsFile)
-	if err == nil && strings.Contains(string(raw), "gpt-5.6-terra") {
-		t.Fatalf("global models.json should be unchanged:\n%s", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var models struct {
+		Default struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		} `json:"default"`
+	}
+	if err := json.Unmarshal(raw, &models); err != nil {
+		t.Fatalf("models.json: %v\n%s", err, raw)
+	}
+	if models.Default.Provider != "openai" || models.Default.Model != "gpt-5.6-terra" {
+		t.Fatalf("last-used model: %+v\n%s", models.Default, raw)
 	}
 }
 

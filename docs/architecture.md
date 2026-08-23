@@ -16,7 +16,7 @@
 
 续聊必须 `--session <id>`。`--model` 随 prompt 发给 server，写回**该 session** 的 `config.json`，不改 toml。`KI_FAKE=1` 用假模型。
 
-系统提示词由 `internal/prompt` 分层组装，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、.mcp.json、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）。模型被问及"去哪改 server / MCP / skills 设置"时读这段，配合 `ki config path`。
+系统提示词由 `internal/prompt` 分层组装，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、.mcp.json、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）、运行 OS/架构、cwd 和本地日期时区。模型被问及"去哪改 server / MCP / skills 设置"时读这段，配合 `ki config path`。
 
 skills 发现、AGENTS/CLAUDE、prompt 模板和 `.mcp.json` 合并都按 session 缓存（键含 session id）：同一 workspace 新开 session 会重读磁盘，同 session 内的消息命中缓存。`server.Reload()`（`POST /v1/reload`、`/reload`、压缩成功、PATCH skills/mcp）`InvalidateAll` **所有 session** 并关掉 MCP 连接池。
 

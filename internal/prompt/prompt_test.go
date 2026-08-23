@@ -73,6 +73,54 @@ func TestBuildLayers(t *testing.T) {
 	if !strings.Contains(sys, "Current date: 2026-08-15") {
 		t.Fatalf("date: %s", sys)
 	}
+	if !strings.Contains(sys, "Runtime environment:") || !strings.Contains(sys, "Architecture:") {
+		t.Fatalf("runtime environment: %s", sys)
+	}
+}
+
+func TestDetectOS(t *testing.T) {
+	readFiles := func(files map[string]string) func(string) ([]byte, error) {
+		return func(path string) ([]byte, error) {
+			value, ok := files[path]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			return []byte(value), nil
+		}
+	}
+
+	tests := []struct {
+		name  string
+		goos  string
+		env   map[string]string
+		files map[string]string
+		want  string
+	}{
+		{name: "macOS", goos: "darwin", want: "macOS"},
+		{name: "Windows", goos: "windows", want: "Windows"},
+		{name: "Linux", goos: "linux", want: "Linux"},
+		{
+			name: "WSL environment marker",
+			goos: "linux",
+			env:  map[string]string{"WSL_DISTRO_NAME": "Ubuntu"},
+			want: "WSL",
+		},
+		{
+			name:  "WSL kernel marker",
+			goos:  "linux",
+			files: map[string]string{"/proc/sys/kernel/osrelease": "5.15.90.1-microsoft-standard-WSL2"},
+			want:  "WSL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getenv := func(key string) string { return tt.env[key] }
+			if got := detectOSWith(tt.goos, getenv, readFiles(tt.files)); got != tt.want {
+				t.Fatalf("detectOSWith() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestBuildNoSkillsWithoutRead(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -84,6 +85,7 @@ func Build(in Input) (string, []skills.Skill) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
+	fmt.Fprintf(&b, "\nRuntime environment:\n- OS: %s\n- Architecture: %s\n", detectOS(), runtime.GOARCH)
 	now := in.Now
 	if now.IsZero() {
 		now = time.Now()
@@ -93,6 +95,48 @@ func Build(in Input) (string, []skills.Skill) {
 	fmt.Fprintf(&b, "\nCurrent working directory: %s\n", filepath.ToSlash(cwd))
 	fmt.Fprintf(&b, "Current date: %s\nTimezone: %s (UTC%+d)\n", now.Format("2006-01-02"), tz, offset/3600)
 	return b.String(), sk
+}
+
+func detectOS() string {
+	return detectOSWith(runtime.GOOS, os.Getenv, os.ReadFile)
+}
+
+func detectOSWith(goos string, getenv func(string) string, readFile func(string) ([]byte, error)) string {
+	switch goos {
+	case "darwin":
+		return "macOS"
+	case "windows":
+		return "Windows"
+	case "linux":
+		if isWSL(getenv, readFile) {
+			return "WSL"
+		}
+		return "Linux"
+	default:
+		return goos
+	}
+}
+
+func isWSL(getenv func(string) string, readFile func(string) ([]byte, error)) bool {
+	// WSL runs a Linux userspace, so runtime.GOOS alone cannot distinguish it
+	// from native Linux. Prefer the process markers, then inspect the kernel
+	// identity as a fallback for services that start with a reduced environment.
+	if strings.TrimSpace(getenv("WSL_DISTRO_NAME")) != "" ||
+		strings.TrimSpace(getenv("WSL_INTEROP")) != "" {
+		return true
+	}
+
+	for _, path := range []string{"/proc/sys/kernel/osrelease", "/proc/version"} {
+		data, err := readFile(path)
+		if err != nil {
+			continue
+		}
+		kernel := strings.ToLower(string(data))
+		if strings.Contains(kernel, "microsoft") || strings.Contains(kernel, "wsl") {
+			return true
+		}
+	}
+	return false
 }
 
 // File is one AGENTS/CLAUDE context file.
