@@ -2,7 +2,7 @@
 
 普通工具的对外名字和 input schema 跟 Claude Code；文本结果跟 pi。内置工具由已解析模型对应的 `ToolProfile` 选择，包入口见 `internal/tools/doc.go`。
 
-工具执行两段化（对齐 pi prepare/execute）：先**prepare**（找工具 → 可选 `ToolValidator.Validate` schema 校验 → `BeforeTool` hook，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` 变换结果）。`BeforeTool` 和 `ToolResult.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。
+工具执行两段化（对齐 pi prepare/execute）：先 **prepare**（找工具 → `ToolValidator.Validate` schema 校验 → `BeforeTool` hook，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` 变换结果）。`BeforeTool` 和 `ToolResult.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。内置工具和 MCP 工具都校验 required 和参数类型。
 
 | 工具 | 参数 | 结果 |
 |---|---|---|
@@ -18,26 +18,82 @@
 | `TaskStop` | `task_id`（或兼容的 `shell_id`） | 终止后台任务进程组并返回最终状态 |
 | `Monitor` | `command`、`description` | 启动流式监控任务，逐行发送输出更新；结束时返回任务结果 |
 
-## 细节
+## Read
 
-- 相对路径按 session cwd resolve。
-- `ToolProfile` 从模型元数据生成：`input` 是否含 `image` 决定文本/富媒体 `Read`；`applyPatchToolType=freeform` 注入 `apply_patch`，否则注入 `Write` + `Edit`。两个编辑器族不会同时出现。
-- 文本 `Read` 不只裁剪提示和 schema，执行时也拒绝图片/PDF，防止复用上一模型回合的旧调用。
-- `apply_patch` 对齐 Codex 的 `*** Begin Patch` / `*** End Patch` 语法，默认将更新文件规范化为 LF；所有路径用 `filepath` 相对 session cwd 解析。
-- server 启动时只解析一次 shell。Windows 的 Bash 查找顺序为 `KI_GIT_BASH_PATH`、`CLAUDE_CODE_GIT_BASH_PATH`、`ProgramFiles` / `ProgramFiles(x86)` 下的 Git Bash、PATH 中的 `bash.exe`；因此也接受 MSYS2、Cygwin 或 WSL Bash。Unix 依次检查 `/bin/bash` 和 PATH。
-- 找不到 Bash 时 server 仍正常启动，但不注册 `Bash` 和依赖它的 `Monitor`；Windows 的 `PowerShell`、`TaskOutput` 和 `TaskStop` 不受影响。
-- `PowerShell` 只在 Windows 注册，优先 `pwsh`，其次 `powershell.exe`；两者都找不到时工具仍可见，调用返回 unavailable。PowerShell 使用 `-NoProfile -NonInteractive -Command`，并用 `$LASTEXITCODE` / `$?` 保留 native exe 和 cmdlet 的失败状态。
-- 每次 Bash/PowerShell 调用都是新进程，cwd 固定为 session cwd；`cd` 和 `Set-Location` 都不跨命令。
-- Abort 杀掉整个 shell 进程组及其子进程、管道；结果区分 `Command aborted`、退出码和进程错误。
-- 前台 `timeout` 到达时，普通命令转为 `backgrounded` 并返回 task id 和 `output_file`；Bash 的前导 `sleep` 及 PowerShell 的前导 `Start-Sleep` / `sleep` 仍终止。显式 `run_in_background` 不受 prompt abort 影响。
-- 后台任务注册表属于 session，跨 prompt 保留；删除 session 或关闭 server 时终止仍运行任务并清理临时输出文件。Ki 重启后不恢复任务。
-- `TaskOutput` 默认阻塞等待 30 秒；`block=false` 立即返回快照，超时返回 `retrieval_status=timeout`，不会终止任务。
-- `TaskStop` 使用进程组终止任务；任务完成、失败或已停止后再次停止会返回不可停止错误。
-- `Monitor` 启动独立 Bash 监控任务，每行 stdout/stderr 通过 `ToolExecutionUpdate` 和现有 SSE 发送；PowerShell 长任务直接使用 PowerShell 的 `run_in_background`。
-- `Grep` 和 `Glob` 使用编译进 ki 的 ripgrep 15.2.0，不依赖系统 `rg`；运行时只在用户缓存目录物化对应平台的 helper。`KI_USE_SYSTEM_RIPGREP=1` 仅用于显式调试系统版本。
-- `Grep` 使用 ripgrep JSON 输出，`Glob` 使用 NUL 分隔的 `--files` 输出；两者都通过 argv 启动，不经过 shell。默认搜索超时 20 秒，达到结果/输出上限会终止 rg 并返回截断提示；超时前已经解析的结果保留。
-- ripgrep 返回 `EAGAIN` 或资源暂时不足时，自动用 `-j 1` 重试一次。
-- Grep 结果附带文件数、匹配数和 `truncated`；Glob 结果附带文件数和 `truncated`。
-- 文本截断：2000 行或 50KB。Read 留头，Bash/PowerShell 留尾。
-- 内置工具（Read/Write/Edit/Grep/Glob/Bash/PowerShell/TaskOutput/TaskStop/Monitor）和 MCP 工具都实现 `ToolValidator`（`internal/loop/validate.go` 的最小 JSON Schema 子集：required + 类型检查），参数错误在 execute 前拦截，MCP 工具不再把坏参数透传给 server 等 400。
-- 不做 `dangerouslyDisableSandbox`，prompt 里也不写。
+- 相对路径按 session cwd 解析；返回原文，不添加行号。
+- 超过 2000 行或 50KB 时保留头部，并提示后续读取使用的 `offset`。
+- `ToolProfile.input` 含 `image` 时才支持图片、PDF 和 `pages`；文本模式在执行阶段也会拒绝图片和 PDF。
+- `.ipynb` 按 cell 返回。
+
+## Write
+
+- 相对路径按 session cwd 解析。
+- 直接创建或完整覆盖文件，不要求先调用 `Read`。
+- 返回实际写入的字节数。
+
+## Edit
+
+- 相对路径按 session cwd 解析。
+- 精确匹配 `old_string`；默认要求唯一，`replace_all=true` 时替换全部匹配。
+- 仅未启用 freeform `apply_patch` 的模型注册，与 `apply_patch` 不同时出现。
+
+## apply_patch
+
+- 仅 `applyPatchToolType=freeform` 的模型注册，与 `Write`、`Edit` 不同时出现。
+- 使用 Codex 的 `*** Begin Patch` / `*** End Patch` 格式，支持新增、删除、更新和移动文件。
+- 路径通过 `filepath` 相对 session cwd 解析；更新文件统一为 LF。
+
+## Grep
+
+- 使用编译进 ki 的 ripgrep 15.2.0，不依赖系统 `rg`；helper 按平台物化到用户缓存目录。
+- 通过 argv 启动并解析 JSON 输出，不经过 shell；支持正则、glob、文件类型、上下文和分页。
+- 默认超时 20 秒；达到结果或输出上限时终止搜索，并保留已经解析的部分结果。
+- 资源暂时不足时自动以 `-j 1` 重试一次。
+- 结果包含文件数、匹配数和 `truncated`；`KI_USE_SYSTEM_RIPGREP=1` 仅用于调试。
+
+## Glob
+
+- 使用同一内置 ripgrep 的 `--files` 和 NUL 分隔输出，不依赖 shell。
+- 结果按修改时间排序，并包含文件数、limit 和 `truncated`。
+- 默认超时 20 秒；达到上限时保留部分结果，资源暂时不足时以 `-j 1` 重试一次。
+- `KI_USE_SYSTEM_RIPGREP=1` 仅用于调试。
+
+## Bash
+
+- server 启动时解析一次可执行文件；Unix 依次查找 `/bin/bash` 和 PATH。
+- Windows 依次查找 `KI_GIT_BASH_PATH`、`CLAUDE_CODE_GIT_BASH_PATH`、Git for Windows 安装目录和 PATH 中的 `bash.exe`。
+- 找不到 Bash 时不注册 `Bash` 和 `Monitor`，server 仍正常启动。
+- 每次调用都是新进程，cwd 固定为 session cwd；`cd` 不会影响后续调用。
+- stdout/stderr 混排并流式发送；超过 2000 行或 50KB 时保留尾部，非零退出码返回 error。
+- 前台 timeout 时，普通命令转入后台并返回 task id 和输出文件；以 `sleep` 开头的命令直接终止。
+- abort 终止整个进程组及其子进程、管道；显式后台任务不受 prompt abort 影响。
+- 不提供 sandbox 开关，prompt 中也不声明 `dangerouslyDisableSandbox`。
+
+## PowerShell
+
+- 仅 Windows 注册；优先使用 `pwsh`，其次使用 `powershell.exe`。
+- 两者都找不到时工具仍注册，调用返回 unavailable。
+- 使用 `-NoProfile -NonInteractive -Command`，并通过 `$LASTEXITCODE` 和 `$?` 保留 native exe 与 cmdlet 的失败状态。
+- 每次调用都是新进程，cwd 固定为 session cwd；`Set-Location` 不会影响后续调用。
+- 输出、截断、进程组终止和后台任务生命周期与 `Bash` 一致；前导 `Start-Sleep` 或 `sleep` 在 timeout 时直接终止。
+- 不提供 sandbox 开关，prompt 中也不声明 `dangerouslyDisableSandbox`。
+
+## TaskOutput
+
+- 后台任务属于 session，可跨 prompt 查询；ki 重启后不恢复。
+- 默认最多阻塞等待 30 秒；`block=false` 立即返回当前快照。
+- 等待超时返回 `retrieval_status=timeout`，不会终止任务。
+- 返回任务状态、完整输出、退出码、错误和输出文件。
+- 删除 session 或关闭 server 时终止运行中的任务，并清理临时输出文件。
+
+## TaskStop
+
+- 接受 `task_id`，并兼容 `shell_id`。
+- 终止任务的整个进程组及其子进程、管道。
+- 已完成、失败或停止的任务再次停止时返回不可停止错误。
+
+## Monitor
+
+- 仅找到 Bash 时注册，并启动独立的 Bash 监控任务。
+- stdout/stderr 每行通过 `ToolExecutionUpdate` 和现有 SSE 流式发送。
+- 命令结束后返回最终任务结果；PowerShell 长任务直接使用 `PowerShell.run_in_background`。
