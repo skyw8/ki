@@ -17,17 +17,6 @@ import (
 
 var errSessionBusy = errors.New("session busy")
 
-func mcpTools(p *mcp.Pool, name string, spec mcp.ServerSpec) []mcp.ToolInfo {
-	if p == nil {
-		return []mcp.ToolInfo{}
-	}
-	out := p.CachedTools(name, spec)
-	if out == nil {
-		return []mcp.ToolInfo{}
-	}
-	return out
-}
-
 func (s *Server) workspacePath(id string) string {
 	if id == "" {
 		return ""
@@ -39,10 +28,21 @@ func (s *Server) workspacePath(id string) string {
 	return rec.Path
 }
 
-func (s *Server) doReload(w http.ResponseWriter, _ *http.Request) {
-	s.Reload()
+func (s *Server) doReload(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SessionID string `json:"sessionId"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	queued := false
+	if body.SessionID == "" {
+		queued = s.Reload()
+	} else {
+		queued = s.requestReload(body.SessionID)
+	}
 	slog.Info("reload")
-	writeJSON(w, 200, map[string]any{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true, "queued": queued})
 }
 
 func (s *Server) getSkills(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +91,7 @@ func (s *Server) getMCP(w http.ResponseWriter, r *http.Request) {
 			"command": item.Command,
 			"source":  item.Source,
 			"enabled": item.Enabled,
-			"tools":   mcpTools(s.mcp, item.Name, file.MCPServers[item.Name]),
+			"status":  mcp.StatusUnloaded,
 		}
 		if len(item.Args) > 0 {
 			row["args"] = item.Args
@@ -148,11 +148,16 @@ func (s *Server) release(id string, st *runState) {
 	if s.runs[id] == st {
 		delete(s.runs, id)
 	}
+	pending := s.pendingReload[id]
+	delete(s.pendingReload, id)
 	s.mu.Unlock()
 	close(st.done)
 	st.wait.L.Lock()
 	st.wait.Broadcast()
 	st.wait.L.Unlock()
+	if pending {
+		s.reloadSession(id)
+	}
 }
 
 func writeHandled(w http.ResponseWriter, notice string, isErr bool) {

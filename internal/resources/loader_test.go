@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ki/internal/mcp"
 )
 
 func TestContextFilesStopAtGitRoot(t *testing.T) {
@@ -30,6 +32,24 @@ func TestContextFilesStopAtGitRoot(t *testing.T) {
 	got := strings.Join(contents, ",")
 	if got != "GLOBAL,ROOT,NESTED" {
 		t.Fatalf("context order/boundary = %q", got)
+	}
+}
+
+func TestMCPUpdatesAreRevisionGuardedAndCopyOnWrite(t *testing.T) {
+	loader := NewLoader(t.TempDir())
+	snapshot := loader.Load("session", t.TempDir())
+	updates := map[string]mcp.ServerState{"demo": {Status: mcp.StatusReady, Tools: []mcp.ToolDefinition{{Name: "one"}}}}
+	updated, ok := loader.UpdateMCP("session", snapshot.Revision, updates)
+	if !ok || updated.MCPServers["demo"].Tools[0].Name != "one" {
+		t.Fatalf("update = %+v, ok=%v", updated, ok)
+	}
+	updates["demo"] = mcp.ServerState{Status: mcp.StatusFailed}
+	if loader.Load("session", "").MCPServers["demo"].Status != mcp.StatusReady {
+		t.Fatal("caller mutated cached MCP state")
+	}
+	loader.Invalidate("session")
+	if _, ok := loader.UpdateMCP("session", snapshot.Revision, updates); ok {
+		t.Fatal("stale revision update was accepted")
 	}
 }
 

@@ -65,6 +65,7 @@ type Entry struct {
 	Usage            *types.Usage    `json:"usage,omitempty"`
 	RetainedTail     []types.Message `json:"retainedTail,omitempty"`
 	Details          any             `json:"details,omitempty"`
+	Sideband         bool            `json:"sideband,omitempty"`
 	Provider         string          `json:"provider,omitempty"`
 	ModelID          string          `json:"modelId,omitempty"`
 	ThinkingEffort   string          `json:"thinkingEffort,omitempty"`
@@ -169,7 +170,7 @@ func Create(root, cwd, provider, model string, thinking ...string) (*Session, er
 		return nil, err
 	}
 	//nolint:gosec // dir is an internally generated session directory.
-	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_CREATE|os.O_RDWR|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_CREATE|os.O_RDWR|os.O_APPEND|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +193,7 @@ func Open(dir string) (*Session, error) {
 		return nil, err
 	}
 	//nolint:gosec // dir is an internally generated session directory.
-	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_RDWR, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +219,9 @@ func Open(dir string) (*Session, error) {
 		}
 		s.entries = append(s.entries, e)
 		s.byID[e.ID] = e
-		s.leafID = e.ID
+		if !e.Sideband {
+			s.leafID = e.ID
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
@@ -555,6 +558,36 @@ func (s *Session) AppendDetailsEvent(typ string, details any) (Entry, error) {
 		Details:   details,
 	}
 	if err := s.appendLocked(e); err != nil {
+		return Entry{}, err
+	}
+	return e, nil
+}
+
+// AppendSidebandEvent persists an asynchronous event without advancing the
+// conversation leaf. MCP notifications can arrive while no Session object is
+// open, and making them parents of model messages would corrupt the trajectory.
+func AppendSidebandEvent(dir, typ string, details any) (Entry, error) {
+	id, err := idgen.EntryID()
+	if err != nil {
+		return Entry{}, fmt.Errorf("generate entry ID: %w", err)
+	}
+	e := Entry{Type: typ, ID: id, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Details: details, Sideband: true}
+	b, err := json.Marshal(e)
+	if err != nil {
+		return Entry{}, err
+	}
+	// O_APPEND is required because a live prompt may hold another descriptor.
+	// Without it an idle SDK notification could overwrite that writer's tail.
+	//nolint:gosec // dir comes from the server's indexed session record.
+	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return Entry{}, err
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		return Entry{}, err
+	}
+	if err := f.Sync(); err != nil {
 		return Entry{}, err
 	}
 	return e, nil

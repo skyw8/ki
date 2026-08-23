@@ -52,6 +52,7 @@ export type Entry = {
   tokensBefore?: number
   usage?: Usage | null
   details?: unknown
+	sideband?: boolean
   provider?: string
   modelId?: string
   system?: string
@@ -91,6 +92,9 @@ export type LoopEvent = {
 	usedTokens?: number
 	contextWindow?: number
 	estimated?: boolean
+	server?: string
+	messageText?: string
+	reloadRequired?: boolean
 }
 
 export type SessionInfo = {
@@ -155,6 +159,8 @@ export type CatalogMcp = {
   source?: string
   enabled: boolean
   tools?: { name: string; description?: string }[]
+	status?: 'unloaded' | 'ready' | 'failed' | 'stale'
+	error?: string
 }
 
 export type SessionCommand = {

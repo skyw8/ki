@@ -9,6 +9,8 @@ export type ToastItem = {
   id: number
   kind: ToastKind
   text: string
+	actionLabel?: string
+	onAction?: () => void | Promise<void>
 }
 
 const MAX = 3
@@ -25,11 +27,11 @@ function publish() {
   listeners.forEach(fn => fn(snapshot))
 }
 
-function show(kind: ToastKind, text: string): number {
+function show(kind: ToastKind, text: string, actionLabel?: string, onAction?: () => void | Promise<void>): number {
   const msg = String(text ?? '').trim()
   if (!msg) return 0
   const id = nextId++
-  items = [...items.filter(item => !(item.kind === kind && item.text === msg)), { id, kind, text: msg }].slice(-MAX)
+  items = [...items.filter(item => !(item.kind === kind && item.text === msg)), { id, kind, text: msg, actionLabel, onAction }].slice(-MAX)
   publish()
   return id
 }
@@ -37,6 +39,7 @@ function show(kind: ToastKind, text: string): number {
 export const toast = Object.assign(show, {
   info: (text: string) => show('info', text),
   error: (text: string) => show('error', text),
+	action: (kind: ToastKind, text: string, actionLabel: string, onAction: () => void | Promise<void>) => show(kind, text, actionLabel, onAction),
   from(err: unknown) {
     return show('error', err instanceof Error ? err.message : String(err))
   },
@@ -61,7 +64,7 @@ function ToastCard({ item, closeLabel }: { item: ToastItem; closeLabel: string }
   const close = () => toast.dismiss(item.id)
 
   useEffect(() => {
-    if (item.kind !== 'info') return
+    if (item.kind !== 'info' || item.actionLabel) return
     const arm = (ms: number) => {
       started.current = Date.now()
       timer.current = window.setTimeout(close, ms)
@@ -89,6 +92,7 @@ function ToastCard({ item, closeLabel }: { item: ToastItem; closeLabel: string }
       }}
     >
       <span className="toast-text">{item.text}</span>
+	  {item.actionLabel ? <button type="button" className="toast-action" onClick={() => { close(); void item.onAction?.() }}>{item.actionLabel}</button> : null}
       <button type="button" className="toast-close" aria-label={closeLabel} onClick={close}><IClose /></button>
     </div>
   )

@@ -2,14 +2,14 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
+
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"ki/internal/session"
 )
@@ -17,163 +17,133 @@ import (
 func TestLoadProjectOverridesGlobalAndToggle(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
-	_ = os.WriteFile(filepath.Join(home, ".mcp.json"), []byte(`{
-	  "mcpServers": {
-	    "github": {"command": "npx", "args": ["-y", "gh"]},
-	    "old": {"command": "true"}
-	  }
-	}`), 0o600)
-	_ = os.MkdirAll(filepath.Join(cwd, ".ki"), 0o700)
-	_ = os.WriteFile(filepath.Join(cwd, ".ki", ".mcp.json"), []byte(`{
-	  "mcpServers": {
-	    "github": {"command": "echo", "args": ["hi"]}
-	  }
-	}`), 0o600)
-	f := Load(home, cwd)
-	if f.MCPServers["github"].Command != "echo" {
-		t.Fatalf("project should win: %+v", f.MCPServers["github"])
-	}
-	if _, ok := f.MCPServers["old"]; !ok {
-		t.Fatal("global-only server missing")
-	}
-	names := FilterNames(f, session.Toggle{Disabled: []string{"old"}})
-	for _, n := range names {
-		if n == "old" {
-			t.Fatal("disabled still present")
-		}
-	}
-	only := FilterNames(f, session.Toggle{Only: []string{"github"}})
-	if len(only) != 1 || only[0] != "github" {
-		t.Fatalf("only: %v", only)
-	}
-
-	listed := List(f, session.Toggle{Disabled: []string{"old"}})
-	if len(listed) != 2 {
-		t.Fatalf("list len: %+v", listed)
-	}
-	byName := map[string]ServerInfo{}
-	for _, s := range listed {
-		byName[s.Name] = s
-	}
-	if !byName["github"].Enabled || byName["old"].Enabled {
-		t.Fatalf("enabled: %+v", listed)
-	}
-	if byName["github"].Source != "project" || byName["old"].Source != "home" {
-		t.Fatalf("source: %+v", listed)
-	}
-	if byName["github"].Command != "echo" {
-		t.Fatalf("command: %+v", byName["github"])
-	}
-}
-
-func TestHTTPURLFromMcpRemote(t *testing.T) {
-	u := httpURL(ServerSpec{Command: "npx", Args: []string{"-y", "mcp-remote", "https://mcp.exa.ai/mcp"}})
-	if u != "https://mcp.exa.ai/mcp" {
-		t.Fatalf("url: %q", u)
-	}
-	if httpURL(ServerSpec{Command: "true"}) != "" {
-		t.Fatal("stdio should have empty url")
-	}
-}
-
-func TestPoolBindDoesNotSpawn(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "spawned")
-	cmd, args := markerCmd(t, marker)
-	home := t.TempDir()
-	p := NewPool(home)
-	defer p.Close()
-	file := File{MCPServers: map[string]ServerSpec{
-		"slow": {Command: cmd, Args: args},
-	}}
-	if tools := p.Bind(file, session.Toggle{}); len(tools) != 0 {
-		t.Fatalf("cold bind should have no schemas: %d", len(tools))
-	}
-	time.Sleep(50 * time.Millisecond)
-	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("bind spawned")
-	}
-}
-
-func TestPoolHTTPReuseAndToggle(t *testing.T) {
-	var inits atomic.Int32
-	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var msg struct {
-			ID     any    `json:"id"`
-			Method string `json:"method"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&msg)
-		w.Header().Set("Content-Type", "application/json")
-		switch msg.Method {
-		case "initialize":
-			inits.Add(1)
-			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{}})
-		case "notifications/initialized":
-			w.WriteHeader(http.StatusAccepted)
-		case "tools/list":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"jsonrpc": "2.0", "id": msg.ID,
-				"result": map[string]any{"tools": []map[string]any{{"name": "echo", "description": "e", "inputSchema": map[string]any{"type": "object"}}}},
-			})
-		case "tools/call":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"jsonrpc": "2.0", "id": msg.ID,
-				"result": map[string]any{"content": []map[string]any{{"type": "text", "text": "pong"}}},
-			})
-		default:
-			w.WriteHeader(http.StatusNoContent)
-		}
-	}))
-	defer hs.Close()
-
-	home := t.TempDir()
-	p := NewPool(home)
-	defer p.Close()
-	file := File{MCPServers: map[string]ServerSpec{"exa": {URL: hs.URL}}}
-
-	if n := len(p.Bind(file, session.Toggle{Disabled: []string{"exa"}})); n != 0 {
-		t.Fatalf("disabled bind: %d", n)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	p.Prefetch(ctx, file, session.Toggle{Disabled: []string{"exa"}})
-	if inits.Load() != 0 {
-		t.Fatalf("disabled prefetch spawned: %d", inits.Load())
-	}
-
-	p.Prefetch(ctx, file, session.Toggle{})
-	tools := p.Bind(file, session.Toggle{})
-	if len(tools) != 1 || tools[0].Name() != "echo" {
-		t.Fatalf("bind after prefetch: %+v", tools)
-	}
-	res := tools[0].Execute(ctx, map[string]any{})
-	if res.IsError || len(res.Content) == 0 || res.Content[0].Text != "pong" {
-		t.Fatalf("exec: %+v", res)
-	}
-	_ = tools[0].Execute(ctx, map[string]any{})
-	if inits.Load() != 1 {
-		t.Fatalf("expected one handshake, got %d", inits.Load())
-	}
-
-	p2 := NewPool(home)
-	defer p2.Close()
-	cached := p2.Bind(file, session.Toggle{})
-	if len(cached) != 1 || cached[0].Name() != "echo" {
-		t.Fatalf("disk cache: %+v", cached)
-	}
-}
-
-func markerCmd(t *testing.T, marker string) (string, []string) {
-	t.Helper()
-	if os.PathSeparator == '\\' {
-		bat := filepath.Join(t.TempDir(), "mark.bat")
-		if err := os.WriteFile(bat, []byte("@echo spawned > \""+marker+"\"\r\nping -n 20 127.0.0.1 >nul\r\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return bat, nil
-	}
-	sh := filepath.Join(t.TempDir(), "mark.sh")
-	if err := os.WriteFile(sh, []byte("#!/bin/sh\nprintf spawned > \"$1\"\nsleep 20\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".mcp.json"), []byte(`{"mcpServers":{"github":{"command":"npx"},"old":{"command":"true"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return "sh", []string{sh, marker}
+	if err := os.MkdirAll(filepath.Join(cwd, ".ki"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, ".ki", ".mcp.json"), []byte(`{"mcpServers":{"github":{"command":"echo","args":["hi"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := Load(home, cwd)
+	if f.MCPServers["github"].Command != "echo" || f.Sources["github"] != "project" {
+		t.Fatalf("project override = %+v", f)
+	}
+	if got := FilterNames(f, session.Toggle{Only: []string{"github"}}); len(got) != 1 || got[0] != "github" {
+		t.Fatalf("filtered names = %v", got)
+	}
+}
+
+func TestValidateServerSpecIsExplicit(t *testing.T) {
+	valid := []ServerSpec{{Command: "node"}, {URL: "https://example.com/mcp", Headers: map[string]string{"Authorization": "x"}}}
+	for _, spec := range valid {
+		if err := ValidateServerSpec(spec); err != nil {
+			t.Fatalf("valid spec %+v: %v", spec, err)
+		}
+	}
+	invalid := []ServerSpec{{}, {Command: "node", URL: "https://example.com"}, {URL: "https://example.com", Args: []string{"x"}}, {Command: "node", Headers: map[string]string{"X": "y"}}}
+	for _, spec := range invalid {
+		if err := ValidateServerSpec(spec); err == nil {
+			t.Fatalf("invalid spec accepted: %+v", spec)
+		}
+	}
+}
+
+func TestManagerPrepareAndCallUsesSDK(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "test-server", Version: "1"}, &sdk.ServerOptions{PageSize: 1})
+	type input struct {
+		Text string `json:"text"`
+	}
+	sdk.AddTool(server, &sdk.Tool{Name: "echo", Description: "echo input"}, func(_ context.Context, _ *sdk.CallToolRequest, in input) (*sdk.CallToolResult, any, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: in.Text}}}, nil, nil
+	})
+	sdk.AddTool(server, &sdk.Tool{Name: "second"}, func(context.Context, *sdk.CallToolRequest, struct{}) (*sdk.CallToolResult, any, error) {
+		return &sdk.CallToolResult{}, nil, nil
+	})
+	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{JSONResponse: true})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Test") != "yes" {
+			http.Error(w, "missing header", http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer httpServer.Close()
+
+	manager := NewManager(nil)
+	defer manager.Close()
+	file := File{MCPServers: map[string]ServerSpec{"demo": {URL: httpServer.URL, Headers: map[string]string{"X-Test": "yes"}}}}
+	prepared := manager.Prepare(t.Context(), "session-a", file, session.Toggle{}, nil)
+	state := prepared.States["demo"]
+	if state.Status != StatusReady || len(state.Tools) != 2 || len(prepared.Tools) != 2 {
+		t.Fatalf("prepare = %+v, tools=%d", state, len(prepared.Tools))
+	}
+	var echoTool = prepared.Tools[0]
+	for _, tool := range prepared.Tools {
+		if tool.Name() == "echo" {
+			echoTool = tool
+		}
+	}
+	result := echoTool.Execute(t.Context(), map[string]any{"text": "pong"})
+	if result.IsError || len(result.Content) != 1 || result.Content[0].Text != "pong" {
+		t.Fatalf("call result = %+v", result)
+	}
+
+	manager.Prepare(t.Context(), "session-b", file, session.Toggle{}, nil)
+	manager.mu.Lock()
+	gotSessions := len(manager.by)
+	manager.mu.Unlock()
+	if gotSessions != 2 {
+		t.Fatalf("SDK sessions shared across ki sessions: %d", gotSessions)
+	}
+}
+
+func TestPrepareFailureDoesNotHideSuccess(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "ok", Version: "1"}, nil)
+	sdk.AddTool(server, &sdk.Tool{Name: "ok"}, func(context.Context, *sdk.CallToolRequest, struct{}) (*sdk.CallToolResult, any, error) {
+		return &sdk.CallToolResult{}, nil, nil
+	})
+	httpServer := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{JSONResponse: true}))
+	defer httpServer.Close()
+	manager := NewManager(nil)
+	defer manager.Close()
+	file := File{MCPServers: map[string]ServerSpec{"ok": {URL: httpServer.URL}, "bad": {}}}
+	prepared := manager.Prepare(t.Context(), "session", file, session.Toggle{}, nil)
+	if prepared.States["ok"].Status != StatusReady || prepared.States["bad"].Status != StatusFailed || len(prepared.Tools) != 1 {
+		t.Fatalf("partial prepare = %+v tools=%d", prepared.States, len(prepared.Tools))
+	}
+}
+
+func TestToolListChangedNotifiesWithoutRefreshing(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "dynamic", Version: "1"}, nil)
+	sdk.AddTool(server, &sdk.Tool{Name: "one"}, func(context.Context, *sdk.CallToolRequest, struct{}) (*sdk.CallToolResult, any, error) {
+		return &sdk.CallToolResult{}, nil, nil
+	})
+	httpServer := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil))
+	defer httpServer.Close()
+	notifications := make(chan Notification, 1)
+	manager := NewManager(func(_ string, notification Notification) { notifications <- notification })
+	defer manager.Close()
+	file := File{MCPServers: map[string]ServerSpec{"dynamic": {URL: httpServer.URL}}}
+	prepared := manager.Prepare(t.Context(), "session", file, session.Toggle{}, nil)
+	if len(prepared.States["dynamic"].Tools) != 1 {
+		t.Fatalf("initial tools = %+v", prepared.States)
+	}
+	sdk.AddTool(server, &sdk.Tool{Name: "two"}, func(context.Context, *sdk.CallToolRequest, struct{}) (*sdk.CallToolResult, any, error) {
+		return &sdk.CallToolResult{}, nil, nil
+	})
+	select {
+	case notification := <-notifications:
+		if notification.Kind != "tools_changed" || notification.Server != "dynamic" {
+			t.Fatalf("notification = %+v", notification)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("tools/list_changed was not delivered")
+	}
+	// Manager only reports the change. The resources layer keeps this exact
+	// catalog until explicit reload.
+	if len(prepared.States["dynamic"].Tools) != 1 {
+		t.Fatal("notification mutated the pinned catalog")
+	}
 }

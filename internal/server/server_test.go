@@ -20,8 +20,11 @@ import (
 	"testing"
 	"time"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"ki/internal/config"
 	"ki/internal/loop"
+	"ki/internal/mcp"
 	"ki/internal/provider"
 	"ki/internal/session"
 	"ki/internal/types"
@@ -846,13 +849,12 @@ func TestCreateAndForkKeepModelAndThinking(t *testing.T) {
 	}
 }
 
-func TestPromptNotBlockedBySlowMCP(t *testing.T) {
+func TestPromptWaitsForMCPAndContinuesAfterFailure(t *testing.T) {
 	srv, hs := testServer(t)
-	marker := filepath.Join(t.TempDir(), "spawned")
-	cmd, args := markerCmd(t, marker)
+	defer srv.mcp.Close()
 	body, _ := marshalJSON(map[string]any{
 		"mcpServers": map[string]any{
-			"slow": map[string]any{"command": cmd, "args": args},
+			"broken": map[string]any{},
 		},
 	})
 	if err := os.WriteFile(filepath.Join(srv.cfg.Home, ".mcp.json"), body, 0o600); err != nil {
@@ -870,13 +872,13 @@ func TestPromptNotBlockedBySlowMCP(t *testing.T) {
 	if res.StatusCode != http.StatusAccepted {
 		t.Fatalf("prompt %d", res.StatusCode)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("events blocked on MCP: %v", err)
+		t.Fatalf("events: %v", err)
 	}
 	defer func() { _ = res.Body.Close() }()
 	var types []string
@@ -896,9 +898,129 @@ func TestPromptNotBlockedBySlowMCP(t *testing.T) {
 	if err := sc.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(types, ","), "agent_start") {
-		t.Fatalf("no agent_start: %v", types)
+	joined := strings.Join(types, ",")
+	if !strings.Contains(joined, "mcp_server_failed") || !strings.Contains(joined, "agent_start") {
+		t.Fatalf("failure did not continue prompt: %v", types)
 	}
+}
+
+func TestFirstPromptIncludesFreshMCPTools(t *testing.T) {
+	mcpServer := sdk.NewServer(&sdk.Implementation{Name: "fresh", Version: "1"}, nil)
+	sdk.AddTool(mcpServer, &sdk.Tool{Name: "fresh_tool", Description: "available immediately"}, func(context.Context, *sdk.CallToolRequest, struct{}) (*sdk.CallToolResult, any, error) {
+		return &sdk.CallToolResult{}, nil, nil
+	})
+	mcpHTTP := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return mcpServer }, &sdk.StreamableHTTPOptions{JSONResponse: true}))
+	defer mcpHTTP.Close()
+	srv, hs := testServer(t)
+	defer srv.mcp.Close()
+	body, _ := marshalJSON(map[string]any{"mcpServers": map[string]any{"fresh": map[string]any{"url": mcpHTTP.URL}}})
+	if err := os.WriteFile(filepath.Join(srv.cfg.Home, ".mcp.json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := createSession(t, hs, t.TempDir())
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	found := false
+	scanner := bufio.NewScanner(res.Body)
+	for scanner.Scan() {
+		if !strings.HasPrefix(scanner.Text(), "data:") {
+			continue
+		}
+		var event loop.Event
+		_ = json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(scanner.Text(), "data:"))), &event)
+		if event.Type == loop.RequestHeader {
+			for _, tool := range event.Tools {
+				if tool.Name == "fresh_tool" {
+					found = true
+				}
+			}
+		}
+		if event.Type == loop.AgentEnd {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("fresh MCP tool missing from first request")
+	}
+}
+
+func TestSessionReloadQueuesWhileRunIsBusy(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	sess, err := srv.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := srv.resources.Load(id, sess.Header.CWD)
+	_ = sess.Close()
+	st, _, err := srv.occupy(id, context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srv.requestReload(id) {
+		t.Fatal("busy reload was not queued")
+	}
+	if got := srv.resources.Load(id, before.Environment.CWD); got.Revision != before.Revision {
+		t.Fatal("busy reload invalidated the live snapshot")
+	}
+	srv.release(id, st)
+	after := srv.resources.Load(id, before.Environment.CWD)
+	if after.Revision == before.Revision {
+		t.Fatal("queued reload was not applied after release")
+	}
+}
+
+func TestMCPNotificationStreamReplaysActionableState(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	sess, err := srv.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = srv.resources.Load(id, sess.Header.CWD)
+	_ = sess.Close()
+	srv.publishMCPEvent(id, mcp.Notification{Kind: "tools_changed", Server: "demo", Message: "changed"})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events?notifications=1", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	scanner := bufio.NewScanner(res.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var event loop.Event
+		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type != loop.MCPToolsChanged || event.Server != "demo" || !event.ReloadRequired || event.EntryID == "" {
+			t.Fatalf("event = %+v", event)
+		}
+		return
+	}
+	t.Fatalf("notification stream ended: %v", scanner.Err())
 }
 
 func TestSessionCatalogNoSpawn(t *testing.T) {

@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
+	"time"
 
 	"ki/internal/session"
 )
@@ -16,8 +18,60 @@ type ServerSpec struct {
 	Args    []string          `json:"args"`
 	Env     map[string]string `json:"env"`
 	URL     string            `json:"url"`
-	Type    string            `json:"type"`
 	Headers map[string]string `json:"headers"`
+}
+
+// ToolDefinition is the immutable, model-facing subset of an SDK tool.
+// Raw preserves metadata that ki does not currently consume without keeping
+// mutable SDK pointers in a resources snapshot.
+type ToolDefinition struct {
+	Name         string          `json:"name"`
+	Title        string          `json:"title,omitempty"`
+	Description  string          `json:"description,omitempty"`
+	InputSchema  map[string]any  `json:"inputSchema"`
+	OutputSchema any             `json:"outputSchema,omitempty"`
+	Raw          json.RawMessage `json:"raw,omitempty"`
+}
+
+type ServerStatus string
+
+const (
+	StatusUnloaded ServerStatus = "unloaded"
+	StatusReady    ServerStatus = "ready"
+	StatusFailed   ServerStatus = "failed"
+	StatusStale    ServerStatus = "stale"
+)
+
+// ServerState is the session-scoped discovery result stored by resources.
+// Live SDK sessions and transports deliberately remain in Manager.
+type ServerState struct {
+	Status          ServerStatus     `json:"status"`
+	Tools           []ToolDefinition `json:"tools,omitempty"`
+	Error           string           `json:"error,omitempty"`
+	ProtocolVersion string           `json:"protocolVersion,omitempty"`
+	ServerName      string           `json:"serverName,omitempty"`
+	ServerVersion   string           `json:"serverVersion,omitempty"`
+	Capabilities    json.RawMessage  `json:"capabilities,omitempty"`
+	LoadedAt        time.Time        `json:"loadedAt,omitempty"`
+	EventID         string           `json:"eventId,omitempty"`
+}
+
+var errInvalidServerSpec = errors.New("invalid MCP server configuration")
+
+// ValidateServerSpec selects exactly one standard SDK transport.
+func ValidateServerSpec(spec ServerSpec) error {
+	hasCommand := spec.Command != ""
+	hasURL := spec.URL != ""
+	if hasCommand == hasURL {
+		return fmt.Errorf("%w: set exactly one of command or url", errInvalidServerSpec)
+	}
+	if hasURL && (len(spec.Args) > 0 || len(spec.Env) > 0) {
+		return fmt.Errorf("%w: args/env require command transport", errInvalidServerSpec)
+	}
+	if hasCommand && len(spec.Headers) > 0 {
+		return fmt.Errorf("%w: headers require url transport", errInvalidServerSpec)
+	}
+	return nil
 }
 
 // File is the on-disk .mcp.json document.
@@ -81,7 +135,7 @@ func List(file File, toggle session.Toggle) []ServerInfo {
 			Name:    name,
 			Command: spec.Command,
 			Args:    spec.Args,
-			URL:     httpURL(spec),
+			URL:     spec.URL,
 			Source:  src,
 			Enabled: toggle.Allowed(name),
 		})
@@ -98,28 +152,4 @@ func FilterNames(f File, toggle session.Toggle) []string {
 		}
 	}
 	return n
-}
-
-// httpURL is the remote endpoint if this spec is HTTP, not stdio.
-// Existing installs wrote `npx -y mcp-remote https://…`; treating that as HTTP
-// avoids a new mcp-remote process (OAuth discovery + local tunnel) on every use.
-func httpURL(spec ServerSpec) string {
-	if u := strings.TrimSpace(spec.URL); u != "" {
-		return u
-	}
-	t := strings.ToLower(strings.TrimSpace(spec.Type))
-	if t == "http" || t == "sse" || t == "streamable-http" {
-		return strings.TrimSpace(spec.URL)
-	}
-	for i, a := range spec.Args {
-		if a == "mcp-remote" && i+1 < len(spec.Args) && strings.HasPrefix(spec.Args[i+1], "http") {
-			return spec.Args[i+1]
-		}
-	}
-	return ""
-}
-
-// specKey includes command/url so editing .mcp.json does not reuse a stale client or schema.
-func specKey(name string, spec ServerSpec) string {
-	return strings.Join([]string{name, spec.Command, strings.Join(spec.Args, "\x1f"), httpURL(spec)}, "\x00")
 }

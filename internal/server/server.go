@@ -50,7 +50,7 @@ type Server struct {
 	streamer               loop.Streamer
 	registry               *provider.Registry
 	requireModelCredential bool
-	mcp                    *mcp.Pool
+	mcp                    *mcp.Manager
 	resources              *resources.Loader
 	mu                     sync.Mutex
 	runs                   map[string]*runState
@@ -61,6 +61,8 @@ type Server struct {
 	http                   *http.Server
 	shells                 tools.ShellRuntime
 	mutations              *tools.MutationQueue
+	mcpSubscribers         map[string]map[chan loop.Event]struct{}
+	pendingReload          map[string]bool
 }
 
 type runState struct {
@@ -106,13 +108,12 @@ func New(opt Options) (*Server, error) {
 	}
 	_ = ws.Bootstrap(cwds)
 	sidx := session.NewIndex(infos) // reuse the List walk: zero extra reads
-	return &Server{
+	srv := &Server{
 		cfg:                    opt.Config,
 		token:                  tok,
 		streamer:               st,
 		registry:               reg,
 		requireModelCredential: requireCredential,
-		mcp:                    mcp.NewPool(opt.Config.Home), // serve-wide; not per session / per prompt
 		resources:              resources.NewLoader(opt.Config.Home),
 		runs:                   map[string]*runState{},
 		jobs:                   map[string]*tools.JobStore{},
@@ -120,7 +121,11 @@ func New(opt Options) (*Server, error) {
 		sidx:                   sidx,
 		shells:                 shells,
 		mutations:              tools.NewMutationQueue(),
-	}, nil
+		mcpSubscribers:         map[string]map[chan loop.Event]struct{}{},
+		pendingReload:          map[string]bool{},
+	}
+	srv.mcp = mcp.NewManager(srv.onMCPNotification)
+	return srv, nil
 }
 
 func liveFromRegistry(reg *provider.Registry) loop.Streamer {
@@ -152,10 +157,108 @@ func (s *Server) Token() string { return s.token }
 
 // Reload drops every session's resource snapshots and MCP connections so the
 // next prompt/GET rebuilds resources. Process-wide: there is no per-session reload.
-func (s *Server) Reload() {
-	s.resources.InvalidateAll()
+func (s *Server) Reload() bool {
+	s.mu.Lock()
+	active := make(map[string]bool, len(s.runs))
+	for id, st := range s.runs {
+		select {
+		case <-st.done:
+		default:
+			active[id] = true
+			s.pendingReload[id] = true
+		}
+	}
+	s.mu.Unlock()
+	s.resources.InvalidateAllExcept(active)
 	if s.mcp != nil {
-		s.mcp.Close()
+		s.mcp.CloseExcept(active)
+	}
+	return len(active) > 0
+}
+
+// reloadSession invalidates one idle session. A live run keeps its fixed tool
+// header and connection; callers queue the reload through requestReload.
+func (s *Server) reloadSession(id string) {
+	s.resources.Invalidate(id)
+	if s.mcp != nil {
+		s.mcp.CloseSession(id)
+	}
+}
+
+func (s *Server) requestReload(id string) bool {
+	s.mu.Lock()
+	if st := s.runs[id]; st != nil {
+		select {
+		case <-st.done:
+		default:
+			s.pendingReload[id] = true
+			s.mu.Unlock()
+			return true
+		}
+	}
+	s.mu.Unlock()
+	s.reloadSession(id)
+	return false
+}
+
+func (s *Server) onMCPNotification(sessionID string, notification mcp.Notification) {
+	s.publishMCPEvent(sessionID, notification)
+}
+
+func (s *Server) publishMCPEvent(sessionID string, notification mcp.Notification) {
+	typ := loop.MCPServerFailed
+	status := mcp.StatusFailed
+	if notification.Kind == "tools_changed" {
+		typ = loop.MCPToolsChanged
+		status = mcp.StatusStale
+	}
+	ev := loop.Event{
+		Type: typ, Server: notification.Server, MessageText: notification.Message,
+		ReloadRequired: true,
+	}
+	if dir, ok := s.sidx.Lookup(sessionID); ok {
+		entry, err := session.AppendSidebandEvent(dir, string(typ), map[string]any{
+			"server": notification.Server, "message": notification.Message, "reloadRequired": true,
+		})
+		if err != nil {
+			slog.Warn("persist MCP event", "session_id", sessionID, "server", notification.Server, "err", err)
+		} else {
+			ev.EntryID = entry.ID
+		}
+	}
+	s.resources.MarkMCPStatus(sessionID, notification.Server, status, notification.Message, ev.EntryID)
+	s.mu.Lock()
+	if st := s.runs[sessionID]; st != nil {
+		st.mu.Lock()
+		st.evs = append(st.evs, ev)
+		st.wait.Broadcast()
+		st.mu.Unlock()
+	}
+	for subscriber := range s.mcpSubscribers[sessionID] {
+		select {
+		case subscriber <- ev:
+		default:
+			// A slow browser must not block an SDK notification goroutine.
+		}
+	}
+	s.mu.Unlock()
+}
+
+func (s *Server) subscribeMCP(sessionID string) (<-chan loop.Event, func()) {
+	ch := make(chan loop.Event, 16)
+	s.mu.Lock()
+	if s.mcpSubscribers[sessionID] == nil {
+		s.mcpSubscribers[sessionID] = map[chan loop.Event]struct{}{}
+	}
+	s.mcpSubscribers[sessionID][ch] = struct{}{}
+	s.mu.Unlock()
+	return ch, func() {
+		s.mu.Lock()
+		delete(s.mcpSubscribers[sessionID], ch)
+		if len(s.mcpSubscribers[sessionID]) == 0 {
+			delete(s.mcpSubscribers, sessionID)
+		}
+		s.mu.Unlock()
 	}
 }
 
@@ -273,7 +376,7 @@ func (s *Server) Addr() string {
 	return ln.Addr().String()
 }
 
-// Shutdown stops the HTTP server and MCP clients (pool children outlive a prompt).
+// Shutdown stops the HTTP server and every session-scoped MCP client.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	jobs := make([]*tools.JobStore, 0, len(s.jobs))
@@ -448,12 +551,24 @@ func (s *Server) sessionCatalog(snapshot resources.Snapshot) ([]map[string]any, 
 	file := snapshot.MCP
 	mc := []map[string]any{}
 	for _, item := range mcp.List(file, tg.MCP) {
+		state, ok := snapshot.MCPServers[item.Name]
+		if !ok {
+			state.Status = mcp.StatusUnloaded
+		}
+		toolRows := make([]map[string]any, 0, len(state.Tools))
+		for _, tool := range state.Tools {
+			toolRows = append(toolRows, map[string]any{"name": tool.Name, "description": tool.Description})
+		}
 		row := map[string]any{
 			"name":    item.Name,
 			"command": item.Command,
 			"source":  item.Source,
 			"enabled": item.Enabled,
-			"tools":   mcpTools(s.mcp, item.Name, file.MCPServers[item.Name]),
+			"tools":   toolRows,
+			"status":  state.Status,
+		}
+		if state.Error != "" {
+			row["error"] = state.Error
 		}
 		if len(item.Args) > 0 {
 			row["args"] = item.Args
@@ -730,8 +845,12 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleBuiltin(w http.ResponseWriter, r *http.Request, name string) {
 	switch name {
 	case "reload":
-		s.Reload()
-		writeHandled(w, "reloaded resources and MCP connections", false)
+		queued := s.requestReload(r.PathValue("id"))
+		if queued {
+			writeHandled(w, "reload queued until the current run finishes", false)
+		} else {
+			writeHandled(w, "reloaded session resources and MCP connections", false)
+		}
 	case "compact":
 		s.doCompact(w, r)
 	default:
@@ -914,16 +1033,20 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs, Shells: s.shells, Mutations: s.mutations}.Build(profile)
 	tg := toggles.Load(cfg.Home)
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
-	mcpFile := snapshot.MCP
-	// Bind is cache-only. Waiting here for mcp.Tools() spawn used to leave the
-	// UI on running with no SSE until every enabled server finished handshake.
-	tls = append(tls, s.mcp.Bind(mcpFile, tg.MCP)...)
-	go func() {
-		defer logging.Recover("mcp prefetch panic", "session_id", id)
-		ctx, cancel := context.WithTimeout(ctx, mcp.HandshakeTimeout)
-		defer cancel()
-		s.mcp.Prefetch(ctx, mcpFile, tg.MCP)
-	}()
+	prepared := s.mcp.Prepare(ctx, sess.ID(), snapshot.MCP, tg.MCP, snapshot.MCPServers)
+	if ctx.Err() != nil {
+		st.err = ctx.Err()
+		return
+	}
+	if updated, ok := s.resources.UpdateMCP(sess.ID(), snapshot.Revision, prepared.States); ok {
+		snapshot = updated
+	}
+	for name, state := range prepared.States {
+		if state.Status == mcp.StatusFailed {
+			s.publishMCPEvent(id, mcp.Notification{Kind: "server_failed", Server: name, Message: state.Error})
+		}
+	}
+	tls = append(tls, prepared.Tools...)
 	// The snapshot is fixed for the session until reload, while the prompt is
 	// rendered per request so tool schemas and runtime metadata stay current.
 	sys := prompt.Build(prompt.Input{Resources: snapshot, Tools: tls, Toggle: tg.Skills})
@@ -1112,12 +1235,16 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]t
 	if _, err := sess.AppendCompaction(summary, prep.FirstKeptEntryID, prep.TokensBefore, usage, prep.RetainedTail); err != nil {
 		return nil, fmt.Errorf("append compaction: %w", err)
 	}
-	s.Reload()
+	s.requestReload(sess.ID())
 	return sess.MessagesToLeaf(), nil
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if r.URL.Query().Get("notifications") == "1" {
+		s.mcpEvents(w, r, id)
+		return
+	}
 	s.mu.Lock()
 	st := s.runs[id]
 	s.mu.Unlock()
@@ -1170,6 +1297,61 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) mcpEvents(w http.ResponseWriter, r *http.Request, id string) {
+	ch, unsubscribe := s.subscribeMCP(id)
+	defer unsubscribe()
+	sess, err := s.open(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
+	_ = sess.Close()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	fl, _ := w.(http.Flusher)
+	write := func(ev loop.Event) bool {
+		b, err := json.Marshal(ev)
+		if err != nil {
+			return false
+		}
+		_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b)
+		if fl != nil {
+			fl.Flush()
+		}
+		return err == nil
+	}
+	for name, state := range snapshot.MCPServers {
+		if state.Status != mcp.StatusFailed && state.Status != mcp.StatusStale {
+			continue
+		}
+		typ := loop.MCPServerFailed
+		if state.Status == mcp.StatusStale {
+			typ = loop.MCPToolsChanged
+		}
+		if !write(loop.Event{Type: typ, EntryID: state.EventID, Server: name, MessageText: state.Error, ReloadRequired: true}) {
+			return
+		}
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev := <-ch:
+			if !write(ev) {
+				return
+			}
+		case <-ticker.C:
+			_, _ = fmt.Fprint(w, ": ping\n\n")
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+	}
+}
+
 func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.mu.Lock()
@@ -1208,7 +1390,7 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.Reload()
+	s.reloadSession(id)
 	writeJSON(w, 200, map[string]any{"id": e.ID, "type": e.Type, "firstKeptEntryId": e.FirstKeptEntryID, "handled": true})
 }
 

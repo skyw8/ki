@@ -704,6 +704,7 @@
   border-color: color-mix(in srgb, var(--dsw-alias-state-error) 35%, var(--dsw-alias-border-l2));
 }
 .toast-text { flex: 1; min-width: 0; word-break: break-word; }
+.toast-action { border: 0; border-radius: 6px; padding: 5px 9px; color: inherit; background: color-mix(in srgb, currentColor 12%, transparent); font-weight: 600; }
 .toast-close {
   flex: none;
   width: 24px;

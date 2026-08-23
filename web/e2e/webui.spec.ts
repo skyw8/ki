@@ -503,6 +503,8 @@ test('session info lists skills and mcp; toggles live in settings', async ({ pag
   await page.goto('/')
   await sendPrompt(page, `cfg-e2e ${Date.now()}`)
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
+	await expect(page.locator('.toast.error').first()).toContainText(/context7|exa/)
+	await expect(page.locator('.toast.error').first().getByRole('button', { name: 'Reload' })).toBeVisible()
 
   await page.getByTestId('tab-config').click()
   await expect(page.getByTestId('session-info')).toBeVisible()
@@ -530,6 +532,18 @@ test('session info lists skills and mcp; toggles live in settings', async ({ pag
   })
   expect(disabled.items?.find(s => s.name === 'exa')?.enabled).toBe(false)
   expect(disabled.items?.find(s => s.name === 'context7')?.enabled).toBe(true)
+
+	// This suite is serial and prompt preparation now reports broken MCP
+	// commands synchronously. Remove the fixture and its actionable toasts so
+	// later UI tests do not inherit this test's failed session resources.
+	writeFileSync(join(home, '.mcp.json'), JSON.stringify({ mcpServers: {} }))
+	await page.evaluate(async () => {
+		const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
+		await fetch('/v1/reload', { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+	})
+	for (let i = 0; i < 5 && await page.locator('.toast-close').count(); i++) {
+		await page.locator('.toast-close').first().click()
+	}
 })
 
 test('command palette is opaque, one-line, and inserts without sending', async ({ page }) => {

@@ -47,6 +47,10 @@ const (
 	CompactionEnd EventType = "compaction_end"
 	// ContextUsage reports the current model-facing context pressure.
 	ContextUsage EventType = "context_usage"
+	// MCPServerFailed reports a server omitted from the current prompt.
+	MCPServerFailed EventType = "mcp_server_failed"
+	// MCPToolsChanged reports that an MCP catalog requires an explicit reload.
+	MCPToolsChanged EventType = "mcp_tools_changed"
 )
 
 // Event is a loop event (pi field names).
@@ -73,6 +77,9 @@ type Event struct {
 	UsedTokens            int             `json:"usedTokens,omitempty"`
 	ContextWindow         int             `json:"contextWindow,omitempty"`
 	Estimated             bool            `json:"estimated,omitempty"`
+	Server                string          `json:"server,omitempty"`
+	MessageText           string          `json:"messageText,omitempty"`
+	ReloadRequired        bool            `json:"reloadRequired,omitempty"`
 }
 
 // AssistantDelta is a streaming increment (pi assistantMessageEvent).

@@ -37,6 +37,59 @@ func TestToolMessageDetailsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSidebandEventDoesNotAdvanceConversationLeaf(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "openai", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "hello"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := AppendSidebandEvent(s.Dir, "mcp_tools_changed", map[string]any{"server": "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.ParentID != "" || s.LeafID() != message.ID {
+		t.Fatalf("sideband changed leaf: event=%+v leaf=%q", event, s.LeafID())
+	}
+	if _, err := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "world"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if len(reopened.Entries()) != 3 {
+		t.Fatalf("entries = %+v", reopened.Entries())
+	}
+}
+
+func TestSidebandOnlySessionReopensWithoutConversationLeaf(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "openai", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendSidebandEvent(s.Dir, "mcp_server_failed", map[string]any{"server": "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if reopened.LeafID() != "" {
+		t.Fatalf("sideband became conversation leaf: %q", reopened.LeafID())
+	}
+}
+
 func TestCreateReloadFork(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")

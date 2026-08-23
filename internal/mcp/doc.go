@@ -4,11 +4,11 @@
 // project wins). A process-wide Toggle (toggles.json) filters names — a
 // disabled server is omitted from that turn and is never spawned for it.
 //
-// Load performs an uncached static config merge; internal/resources pins that
-// result per session. Pool lives on ki serve: schemas and connections are
-// process-global runtime state, separate from resource snapshots. Bind uses
-// cached tools/list; Execute / Prefetch call ensure. URL and
-// `npx … mcp-remote <url>` use HTTP so we do not start a tunnel per message.
-// Connect failures are skipped. This is a minimal JSON-RPC client, not a full
-// SDK.
+// Load performs an uncached static config merge; internal/resources pins the
+// config and discovered tool catalog per session. Manager owns only live,
+// session-isolated official SDK ClientSessions. Prompt preparation connects
+// enabled servers in parallel and completes tools/list before model request
+// assembly; one server failure does not hide successful servers or stop the
+// prompt. URL selects Streamable HTTP and command selects stdio; ambiguous
+// specs are rejected. Tool-list changes remain stale until explicit reload.
 package mcp

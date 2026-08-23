@@ -114,8 +114,8 @@ export class Client {
     })
   }
 
-  reload(): Promise<{ ok: boolean }> {
-    return this.json('/v1/reload', { method: 'POST' })
+  reload(sessionId?: string): Promise<{ ok: boolean; queued?: boolean }> {
+	return this.json('/v1/reload', { method: 'POST', body: sessionId ? JSON.stringify({ sessionId }) : undefined })
   }
 
   async skills(workspaceId?: string | null): Promise<import('./types').CatalogSkill[]> {
@@ -189,8 +189,8 @@ export class Client {
 	return this.json(`/v1/providers/${encodeURIComponent(id)}/models?model=${encodeURIComponent(model)}`, { method: 'DELETE' })
   }
 
-  async *events(id: string, signal?: AbortSignal): AsyncGenerator<LoopEvent> {
-    const res = await fetch(`/v1/sessions/${id}/events`, {
+  async *events(id: string, signal?: AbortSignal, notifications = false): AsyncGenerator<LoopEvent> {
+    const res = await fetch(`/v1/sessions/${id}/events${notifications ? '?notifications=1' : ''}`, {
       headers: this.headers(),
       signal,
     })

@@ -12,8 +12,8 @@
 // commands[]). PATCH /v1/sessions/{id} writes model / thinking / title /
 // pin / leaf. Skills and MCP enablement is {KI_HOME}/toggles.json via
 // GET/PATCH /v1/skills and /v1/mcp.
-// Prompt accepts content blocks and an optional branch parent, then binds MCP
-// from the serve-level pool (cached schemas; connect on tool call). GET /v1/fs
+// Prompt accepts content blocks and an optional branch parent, then prepares
+// session-isolated MCP SDK connections before assembling the model request. GET /v1/fs
 // optionally lists files or streams authenticated image, plain-text/code, and
 // PDF previews for the attachment picker; POST creates directories.
 // Session attachment uploads are content-addressed under that session dir.
@@ -27,9 +27,9 @@
 //
 // One server-owned resources.Loader atomically caches runtime environment,
 // skills, AGENTS/CLAUDE, prompt templates, and merged .mcp.json by session id
-// only. Settings scans are uncached. Reload() (POST /v1/reload, /reload,
-// compaction, toggle PATCH) invalidates every snapshot and closes the MCP pool
-// so the next prompt/GET rebuilds resources.
+// and discovered MCP tools. Settings scans are uncached. Session reload closes
+// only that session's MCP clients; global settings reload idle sessions and
+// queues active ones. MCP failures and list changes use jsonl plus SSE events.
 //
 // Routes and run lifecycle: docs/architecture.md.
 package server

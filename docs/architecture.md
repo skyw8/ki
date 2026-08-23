@@ -18,7 +18,7 @@
 
 系统提示词由 `internal/prompt` 从预加载的资源快照纯渲染，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、.mcp.json、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）、运行 OS/架构、cwd 和本地日期时区。后面这些运行环境字段在 session 首次加载资源时计算一次，普通消息不会重复探测；reload 后随新快照更新。模型被问及"去哪改 server / MCP / skills 设置"时读这段，配合 `ki config path`。完整分层与缓存边界见 [system_prompt.md](system_prompt.md)。
 
-`internal/resources.Loader` 由 Server 持有，把运行环境、skills、AGENTS/CLAUDE、prompt 模板和 `.mcp.json` 合并成一次完整快照。缓存键**只有真实 session id**：同一 workspace 新开 session 会重读磁盘，同 session 内的 catalog、命令展开、prompt 和 MCP 绑定共用同一快照；设置页没有 session，使用不缓存的 `Scan(cwd)`。工具列表和 Toggle 仍是每轮运行输入，MCP 连接也属于运行状态，不进入快照。`server.Reload()`（`POST /v1/reload`、`/reload`、压缩成功、PATCH skills/mcp）清空**所有 session** 快照并关掉 MCP 连接池。
+`internal/resources.Loader` 由 Server 持有，把运行环境、skills、AGENTS/CLAUDE、prompt 模板、`.mcp.json` 和已发现的 MCP tools 合并成 session 级不可变快照。MCP 更新使用 revision + copy-on-write，Reload 前启动的迟到握手不能写入新快照；不再有全局磁盘 schema cache。设置页没有 session，只用不缓存的 `Scan(cwd)` 展示配置。活跃的官方 SDK `ClientSession` 不进入快照，由 MCP Manager 按 ki session 隔离。每轮 prompt 在渲染前并行确保启用 server 已连接并完成分页 `tools/list`；失败 server 被跳过并通过 jsonl/SSE 报告。session Reload 只清理当前 session，运行中 Reload 排队到本轮结束；全局 toggle Reload 对所有活跃 session 使用同样的延迟关闭规则。
 
 Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` 的合并结果。自定义 provider/model 和协议兼容字段通过设置 UI 或 provider API 管理；不从网络刷新目录。`--model provider/model` 只写回 session 配置。
 
@@ -57,7 +57,7 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 | GET | `/v1/fs` | 列目录；`files=1` 时也列普通文件供附件选择 |
 | POST | `/v1/fs` | 在已有目录下建子文件夹 |
 
-`message_end` 上 await 写 jsonl。`agent_end` 上按阈值自动 compact。SSE 在 run `done` 后先排空剩余事件，再结束（等待循环"先 `close(done)` 后 `Broadcast()`"的顺序协议有 TLA+ 模型验证，见 `spec/events-wait`）。MCP 连接在 serve 级池里，prompt 只按 Toggle 绑缓存 schema，工具调用时才 ensure。
+`message_end` 上 await 写 jsonl。`agent_end` 上按阈值自动 compact。SSE 在 run `done` 后先排空剩余事件，再结束（等待循环"先 `close(done)` 后 `Broadcast()`"的顺序协议有 TLA+ 模型验证，见 `spec/events-wait`）。MCP Manager 按 ki session 持有 SDK 连接，prompt 在请求头生成前按 Toggle 并行完成连接和工具发现。
 
 压缩有三个触发时机：
 
@@ -132,6 +132,45 @@ C -> S : POST /v1/sessions/{id}/abort（可选）\n→ st.cancel() → Bash 杀�
 ```
 
 `POST /prompt` 只受理（202），后台 goroutine 跑 `loop.Run`；`GET /events` 以 SSE 重放本次 run 的事件。事件先落盘（jsonl）再进缓冲，SSE 见到 `agent_end` 就关流。（见图 1）
+
+MCP 的 `mcp_server_failed` 与 `mcp_tools_changed` 是不推进消息 leaf 的 sideband 事件。WebUI 通过同一路径的 `?notifications=1` 模式在 session 空闲时继续接收；`tools_changed` 只标记当前快照 stale，用户显式 Reload 后才重新获取目录。
+
+```plantuml
+@startuml
+title Session-scoped MCP ownership
+hide circle
+skinparam classAttributeIconSize 0
+
+class Server
+class ResourcesLoader {
+  +Load(sessionID, cwd): Snapshot
+  +UpdateMCP(sessionID, revision, states)
+  +Invalidate(sessionID)
+}
+class Snapshot {
+  +Revision: uint64
+  +MCP: File
+  +MCPServers: map~string, ServerState~
+}
+class MCPManager {
+  +Prepare(ctx, sessionID, file, cached): PrepareResult
+  +CloseSession(sessionID)
+}
+class SDKClientSession {
+  +Tools()
+  +CallTool()
+  +Close()
+}
+class LoopTool
+
+Server --> ResourcesLoader
+ResourcesLoader o-- Snapshot : copy-on-write
+Server --> MCPManager
+MCPManager o-- SDKClientSession : one per ki session/server
+MCPManager --> LoopTool : successful Prepare
+Snapshot ..> LoopTool : immutable schemas
+@enduml
+```
 
 ## 包关系
 

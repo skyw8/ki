@@ -113,6 +113,7 @@ export function App() {
 	const [uploading, setUploading] = useState(false)
 	const [fileDragActive, setFileDragActive] = useState(false)
   const [models, setModels] = useState<ModelInfo[]>([])
+	const mcpEventIDs = useRef(new Set<string>())
   const [settingsOpen, setSettingsOpen] = useState(false)
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>('providers')
   const [modelOpen, setModelOpen] = useState(false)
@@ -285,6 +286,42 @@ export function App() {
       }
     }
   }, [api, refreshList])
+
+	useEffect(() => {
+		if (!currentId) return
+		const ac = new AbortController()
+		void (async () => {
+			while (!ac.signal.aborted) {
+				try {
+					for await (const ev of api.events(currentId, ac.signal, true)) {
+					if (ev.entryId && mcpEventIDs.current.has(ev.entryId)) continue
+					if (ev.entryId) {
+						mcpEventIDs.current.add(ev.entryId)
+						if (mcpEventIDs.current.size > 200) mcpEventIDs.current.delete(mcpEventIDs.current.values().next().value!)
+					}
+					if (ev.type !== 'mcp_server_failed' && ev.type !== 'mcp_tools_changed') continue
+					const message = ev.messageText || `${ev.server || 'MCP'} ${ev.type === 'mcp_tools_changed' ? t('mcp.changed') : t('mcp.failed')}`
+					toast.action(ev.type === 'mcp_server_failed' ? 'error' : 'info', `${ev.server || 'MCP'}: ${message}`, t('mcp.reload'), async () => {
+						try {
+							const result = await api.reload(currentId)
+							toast.info(result.queued ? t('mcp.reloadQueued') : t('mcp.reloaded'))
+						} catch (e) { toast.from(e) }
+					})
+					}
+				} catch (e) {
+					if ((e as { name?: string }).name === 'AbortError' || ac.signal.aborted) return
+				}
+				// The selected session keeps a notification stream while idle. Retry
+				// transient proxy/network closes without creating an error-toast loop.
+				await new Promise<void>(resolve => {
+					const onAbort = () => { window.clearTimeout(timer); resolve() }
+					const timer = window.setTimeout(() => { ac.signal.removeEventListener('abort', onAbort); resolve() }, 1000)
+					ac.signal.addEventListener('abort', onAbort, { once: true })
+				})
+				}
+		})()
+		return () => ac.abort()
+	}, [api, currentId, t])
 
   const openSession = useCallback(async (id: string) => {
     setCurrentId(id)

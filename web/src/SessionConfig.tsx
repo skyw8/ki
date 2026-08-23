@@ -127,7 +127,7 @@ export function SessionConfig({
       <div className="cfg-layout">
         <div className="cfg-main">
           <div className="cfg-actions">
-            <ReloadButton testid="info-reload" run={async () => { await api.reload(); await load() }} />
+            <ReloadButton testid="info-reload" run={async () => { await api.reload(sessionId); await load() }} />
             <button type="button" className="cfg-btn" data-testid="info-edit" onClick={() => onEdit?.('skills')}>
               <IEdit /> {t('cfg.edit')}
             </button>
@@ -179,6 +179,7 @@ export function SessionConfig({
                         {item.name}
                         {item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
                         <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
+						<span className={`cfg-flag${item.status === 'ready' ? ' on' : ''}`}>{item.status ?? 'unloaded'}</span>
                       </div>
                       {item.description ? <p className="cfg-desc">{item.description}</p> : null}
                     </div>
@@ -204,6 +205,7 @@ export function SessionConfig({
                         <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
                       </div>
                       <div className="cfg-endpoint"><code>{[item.command, ...(item.args ?? [])].filter(Boolean).join(' ') || item.url || '—'}</code></div>
+					  {item.error ? <p className="cfg-desc settings-error" role="alert">{item.error}</p> : null}
                       {item.tools && item.tools.length > 0 ? (
                         <div className="cfg-tools-wrap">
                           <div className="cfg-tools-head">
