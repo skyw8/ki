@@ -11,4 +11,5 @@
 // assembly; one server failure does not hide successful servers or stop the
 // prompt. URL selects Streamable HTTP and command selects stdio; ambiguous
 // specs are rejected. Tool-list changes remain stale until explicit reload.
+// Cross-package ownership, events, and reload lifecycle: docs/mcp.md.
 package mcp

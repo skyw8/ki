@@ -13,7 +13,7 @@ ki/
 ├── cmd/ki/              sole binary
 ├── web/                 Vite+React SPA; go:embed dist; same-origin from serve
 ├── e2e/                 CLI e2e: scripted model for tests; -tags live for a real model
-├── docs/                cross-package notes (architecture, session, prompt, provider, tools, webui, workspace)
+├── docs/                cross-package notes (architecture, session, prompt, provider, MCP, tools, webui, workspace)
 ├── spec/                TLA+ formal specs (events-wait: SSE close-before-broadcast ordering)
 ├── internal/
 │   ├── cli/             flags; start/attach server; SSE to the terminal
@@ -44,6 +44,7 @@ ki/
   - `system_prompt.md` — prompt layers, resource cache, dynamic inputs, reload
   - `session.md` — session dir layout, append-only jsonl tree
   - `provider.md` — provider protocol shapes (Completions / Responses / Anthropic)
+  - `mcp.md` — MCP config, session ownership, discovery, events, and reload
   - `tools.md` — tool contract (names/schemas follow Claude Code, results follow pi)
   - `webui.md` — same-origin WebUI serving contract
   - `workspace.md` — workspace registry (`{KI_HOME}/workspaces.json`)

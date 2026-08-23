@@ -31,5 +31,5 @@
 // only that session's MCP clients; global settings reload idle sessions and
 // queues active ones. MCP failures and list changes use jsonl plus SSE events.
 //
-// Routes and run lifecycle: docs/architecture.md.
+// Routes and run lifecycle: docs/architecture.md. MCP lifecycle: docs/mcp.md.
 package server
