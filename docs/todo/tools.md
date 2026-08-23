@@ -9,18 +9,25 @@
 
 ### Bash
 
-- [ ] 启动 shell 时加载用户 profile。
+- [x] 启动 shell 时加载用户 profile。
 
-- [ ] 保留非零退出码，并在结果中区分超时、取消和进程退出。
-- [ ] 前台命令默认有 timeout；timeout 时通常结束进程，但满足自动后台化条件的命令会转入后台；显式 `run_in_background` 时清除前台 timeout。
-- [ ] timeout 到达时，若后台任务未禁用且命令不是以 `sleep` 开头，仍在运行的命令可以转入后台并继续运行，返回 task id 和输出文件。
-- [ ] assistant mode 另有约 15 秒的 blocking budget：前台命令超过该时间仍未结束时会自动转入后台；这不是 timeout 机制。
+- [x] 保留非零退出码，并在结果中区分 timeout、取消和进程退出。
+- [x] 前台命令默认有 timeout；显式 `run_in_background` 时不等待命令完成。
+- [x] timeout 到达时，仍在运行且不是以 `sleep` 开头的前台命令转入后台，返回 task id 和输出文件；`sleep` 命令仍终止。
+- [x] stdout/stderr 持续写入输出文件，并通过节流后的 `ToolExecutionUpdate` 推送增量。
+- [x] 后台任务记录状态、进程组、退出码、错误、字节数、行数和开始/结束时间。
+- [x] session 跨 prompt 保留任务；删除 session 或关闭 server 时终止进程组并清理临时输出。
+- [x] `TaskOutput` 支持 `block`、等待 timeout、partial output 和完成状态。
+- [x] `TaskStop` 支持 task id，并兼容 Claude 的 `shell_id`。
+- [x] `Monitor` 启动流式监控脚本，逐行发送输出；一次性等待仍使用 Bash `run_in_background`。
 
 ### Grep / Glob
 
-- [ ] 尽量返回 partial results，而不是超时后丢弃全部结果。
-- [ ] ripgrep 遇到 `EAGAIN` 时自动用 `-j 1` 重试。
-- [ ] 返回文件数、行数、匹配数、是否截断和分页信息等结构化元数据。
+- [x] 尽量返回 partial results，而不是超时后丢弃全部结果。
+- [x] ripgrep 遇到 `EAGAIN` 或资源不足时自动用 `-j 1` 重试。
+- [x] 返回文件数、匹配数、是否截断和分页元数据。
+- [x] 达到结果上限时尽早停止 ripgrep，保留已解析结果并明确提示截断。
+- [x] 继续使用 JSON 解析匹配、NUL 解析文件名，避免特殊路径破坏结果。
 
 ## pi
 
@@ -102,10 +109,11 @@
 - 作用：在 Windows 上直接执行 PowerShell 命令，处理 Windows 原生路径、环境变量和系统工具。
 - 必要性：中高。项目目标是跨平台时应引入；可先作为 Bash 的 shell 类型，不一定单独做一套工具。
 
-#### `TaskOutput` / `TaskStop` / `Monitor`
+#### 已引入：`TaskOutput` / `TaskStop` / `Monitor`
 
 - 作用：查询后台任务输出、状态和退出码，停止任务，或持续监听长任务。
-- 必要性：中高。只要后台 Bash 保留为常用能力，就应补齐，否则后台任务难以可靠使用。
+- 当前实现：session 级任务注册表、进程组终止、输出文件、任务状态和现有 loop/SSE 进度事件。
+- 必要性：高。后台 Bash 依赖这些工具完成可靠的查询、等待和清理。
 
 ### Codex
 

@@ -53,6 +53,7 @@ type Server struct {
 	mcp                    *mcp.Pool
 	mu                     sync.Mutex
 	runs                   map[string]*runState
+	jobs                   map[string]*tools.JobStore
 	ws                     *workspace.Store
 	sidx                   *session.Index
 	ln                     net.Listener
@@ -109,6 +110,7 @@ func New(opt Options) (*Server, error) {
 		requireModelCredential: requireCredential,
 		mcp:                    mcp.NewPool(opt.Config.Home), // serve-wide; not per session / per prompt
 		runs:                   map[string]*runState{},
+		jobs:                   map[string]*tools.JobStore{},
 		ws:                     ws,
 		sidx:                   sidx,
 	}, nil
@@ -269,6 +271,16 @@ func (s *Server) Addr() string {
 
 // Shutdown stops the HTTP server and MCP clients (pool children outlive a prompt).
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	jobs := make([]*tools.JobStore, 0, len(s.jobs))
+	for id, store := range s.jobs {
+		jobs = append(jobs, store)
+		delete(s.jobs, id)
+	}
+	s.mu.Unlock()
+	for _, store := range jobs {
+		store.Close()
+	}
 	if s.mcp != nil {
 		s.mcp.Close()
 	}
@@ -279,6 +291,27 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return httpSrv.Shutdown(ctx)
+}
+
+func (s *Server) jobsFor(id string) *tools.JobStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if jobs, ok := s.jobs[id]; ok {
+		return jobs
+	}
+	jobs := tools.NewJobStore()
+	s.jobs[id] = jobs
+	return jobs
+}
+
+func (s *Server) closeJobs(id string) {
+	s.mu.Lock()
+	jobs := s.jobs[id]
+	delete(s.jobs, id)
+	s.mu.Unlock()
+	if jobs != nil {
+		jobs.Close()
+	}
 }
 
 // WriteServerFile persists addr+token.
@@ -864,7 +897,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		info = resolved
 		runStreamer = provider.NewLiveModel(resolved, key, nil)
 	}
-	jobs := tools.NewJobStore()
+	jobs := s.jobsFor(id)
 	profile := tools.Profile{
 		RichRead: slices.Contains(info.Input, "image"),
 		Editor:   tools.EditorWriteEdit,
@@ -915,6 +948,12 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		if ev.Type == loop.CompactionStart || ev.Type == loop.CompactionEnd {
 			if _, err := sess.AppendEvent(string(ev.Type), ev.Reason, ev.OK); err != nil {
 				return fmt.Errorf("append loop event: %w", err)
+			}
+		}
+		if ev.Type == loop.ToolExecutionUpdate {
+			progress, _ := json.Marshal(ev.PartialResult)
+			if _, err := sess.AppendEvent(string(ev.Type), string(progress), true); err != nil {
+				return fmt.Errorf("append tool progress: %w", err)
 			}
 		}
 		st.mu.Lock()

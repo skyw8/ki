@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"ki/internal/loop"
@@ -62,7 +63,7 @@ func (t globTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		return errRes(formatSearchError(err))
 	}
 	if len(result.Files) == 0 {
-		return okRes("No files found")
+		return okRes("No files found\n\n[files: 0; truncated: false]")
 	}
 	lines := make([]string, 0, len(result.Files)+1)
 	for _, file := range result.Files {
@@ -76,5 +77,5 @@ func (t globTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 			note += "\n\n[Results are truncated. Consider using a more specific path or pattern.]"
 		}
 	}
-	return okRes(output + note)
+	return okRes(fmt.Sprintf("Found %d files\n%s%s\n\n[files: %d; truncated: %t]", len(result.Files), output, note, len(result.Files), result.Truncated))
 }

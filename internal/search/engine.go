@@ -170,7 +170,15 @@ func (e Engine) Grep(ctx context.Context, req GrepRequest) (GrepResult, error) {
 		return lineBuffer.feed(chunk, consume)
 	})
 	if err != nil {
-		return GrepResult{}, err
+		// Keep data already parsed before a timeout. ripgrep may have produced
+		// useful matches even though the traversal did not finish.
+		if !errors.Is(err, ErrTimeout) || (len(result.Matches) == 0 && len(result.Files) == 0) {
+			return GrepResult{}, err
+		}
+		if flushErr := lineBuffer.flush(consume); flushErr != nil {
+			return GrepResult{}, flushErr
+		}
+		result.Truncated = true
 	}
 	result.Truncated = result.Truncated || runResult.Truncated
 	if !runResult.Truncated {
@@ -207,7 +215,13 @@ func (e Engine) grepFiles(ctx context.Context, req GrepRequest, root string) (Gr
 		return buffer.feed(chunk, consume)
 	})
 	if err != nil {
-		return GrepResult{}, err
+		if !errors.Is(err, ErrTimeout) || len(result.Files) == 0 {
+			return GrepResult{}, err
+		}
+		if flushErr := buffer.flush(consume); flushErr != nil {
+			return GrepResult{}, flushErr
+		}
+		result.Truncated = true
 	}
 	result.Truncated = result.Truncated || runResult.Truncated
 	if !runResult.Truncated {
@@ -316,7 +330,13 @@ func (e Engine) Glob(ctx context.Context, req GlobRequest) (GlobResult, error) {
 		return buffer.feed(chunk, consume)
 	})
 	if err != nil {
-		return GlobResult{}, err
+		if !errors.Is(err, ErrTimeout) || len(result.Files) == 0 {
+			return GlobResult{}, err
+		}
+		if flushErr := buffer.flush(consume); flushErr != nil {
+			return GlobResult{}, flushErr
+		}
+		result.Truncated = true
 	}
 	result.Truncated = result.Truncated || runResult.Truncated
 	if !runResult.Truncated {
@@ -393,6 +413,24 @@ type runResult struct {
 type chunkConsumer func([]byte) (stop bool, err error)
 
 func (e Engine) run(ctx context.Context, dir string, args []string, consume chunkConsumer) (runResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	result, err := e.runOnce(ctx, dir, args, consume)
+	message := ""
+	if err != nil {
+		message = strings.ToLower(err.Error())
+	}
+	if err == nil || ctx.Err() != nil || (!strings.Contains(message, "eagain") && !strings.Contains(message, "resource temporarily unavailable")) {
+		return result, err
+	}
+	// Large repositories can make ripgrep's parallel workers hit EAGAIN. A
+	// serial retry is preferable to turning a valid search into a hard error.
+	retryArgs := append([]string{"-j", "1"}, args...)
+	return e.runOnce(ctx, dir, retryArgs, consume)
+}
+
+func (e Engine) runOnce(ctx context.Context, dir string, args []string, consume chunkConsumer) (runResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

@@ -89,6 +89,15 @@ type Tool interface {
 	Execute(ctx context.Context, args map[string]any) ToolResult
 }
 
+// ProgressTool is implemented by tools that can report incremental output
+// while Execute is still running. The callback is intentionally untyped at the
+// loop boundary: tool-specific progress is persisted as JSON and presented to
+// the model/UI as a partial result.
+type ProgressTool interface {
+	Tool
+	ExecuteWithProgress(ctx context.Context, args map[string]any, emit func(any)) ToolResult
+}
+
 // ToolSpecProvider optionally replaces the default JSON function schema.
 // It is used by grammar-backed Responses custom tools such as apply_patch.
 type ToolSpecProvider interface {
@@ -544,7 +553,20 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 				res = ToolResult{Content: []types.Content{{Type: "text", Text: "tool does not accept freeform input"}}, IsError: true}
 			}
 		} else {
-			res = p.tool.Execute(ctx, p.args)
+			if progress, ok := p.tool.(ProgressTool); ok {
+				progressEmit := func(value any) {
+					_ = emit(Event{
+						Type:          ToolExecutionUpdate,
+						ToolCallID:    p.call.ID,
+						ToolName:      p.call.Name,
+						Args:          p.args,
+						PartialResult: value,
+					})
+				}
+				res = progress.ExecuteWithProgress(ctx, p.args, progressEmit)
+			} else {
+				res = p.tool.Execute(ctx, p.args)
+			}
 		}
 		if cfg.Hooks.AfterTool != nil {
 			if nr, err := cfg.Hooks.AfterTool(ctx, p.call.Name, p.args, res); err == nil {

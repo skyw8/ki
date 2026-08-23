@@ -237,6 +237,7 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	cwd := sess.Header.CWD
 	_ = sess.Close()
 	s.abortRun(id)
+	s.closeJobs(id)
 	if rec, ok := s.ws.Match(cwd); ok {
 		_ = s.ws.DetachSession(rec.ID, id)
 	}

@@ -62,4 +62,17 @@ func TestGrepAndGlobUseEmbeddedRipgrep(t *testing.T) {
 	if len(glob.Files) != 3 {
 		t.Fatalf("glob files = %d, want 3: %v", len(glob.Files), glob.Files)
 	}
+
+	limited, err := (Engine{}).Grep(context.Background(), GrepRequest{
+		Pattern: `func`, Root: root, OutputMode: "content", MaxResults: 1, IncludeHidden: true,
+	})
+	if err != nil || len(limited.Matches) != 1 || !limited.Truncated {
+		t.Fatalf("limited grep = %+v err=%v", limited, err)
+	}
+	limitedGlob, err := (Engine{}).Glob(context.Background(), GlobRequest{
+		Pattern: "**/*", Root: root, MaxResults: 1, NoIgnore: true, IncludeHidden: true,
+	})
+	if err != nil || len(limitedGlob.Files) != 1 || !limitedGlob.Truncated {
+		t.Fatalf("limited glob = %+v err=%v", limitedGlob, err)
+	}
 }

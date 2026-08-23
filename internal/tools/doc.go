@@ -1,14 +1,16 @@
 // Package tools implements model-aware built-ins: Read, Write, Edit,
-// apply_patch, Grep, Glob, and Bash.
+// apply_patch, Grep, Glob, Bash, TaskOutput, TaskStop, and Monitor.
 //
 // Wire names and input schemas follow Claude Code. Text results follow pi
 // (no cat -n; Bash mixes stdout/stderr; non-zero exit is an error). Relative
 // paths resolve against the session cwd. Each Bash is a new process from that
-// cwd. Abort and timeout kill that process group (pipelines and children), not
-// just the bash PID; otherwise Wait hangs on the stdout pipe. Search tools use
-// the same process-tree termination contract and run an embedded ripgrep
-// binary, so an installed ki does not require rg in PATH. run_in_background
-// returns a task id and output_file for a later Read.
+// cwd and cd is not remembered. The session-scoped task store tracks process
+// groups, output files, status, exit code, cancellation, and progress. A
+// foreground timeout promotes a still-running command to a background task;
+// explicit background tasks can be inspected by TaskOutput or stopped by
+// TaskStop. Monitor streams task output through ToolExecutionUpdate. Search
+// tools use the same process-tree termination contract and run an embedded
+// ripgrep binary, so an installed ki does not require rg in PATH.
 // Set.Build selects a text/rich Read and exactly one editor family from the
 // provider-neutral Profile. apply_patch uses the Codex freeform patch grammar.
 //

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,7 +34,7 @@ func names(ts []loop.Tool) []string {
 func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
 	set := Set{CWD: t.TempDir()}
 	classic := set.Build(Profile{Editor: EditorWriteEdit})
-	if got := strings.Join(names(classic), ","); got != "Read,Write,Edit,Grep,Glob,Bash" {
+	if got := strings.Join(names(classic), ","); got != "Read,Write,Edit,Grep,Glob,Bash,TaskOutput,TaskStop,Monitor" {
 		t.Fatalf("classic tools = %s", got)
 	}
 	textRead := pick(classic, "Read")
@@ -42,7 +43,7 @@ func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
 	}
 
 	patch := set.Build(Profile{RichRead: true, Editor: EditorApplyPatch})
-	if got := strings.Join(names(patch), ","); got != "Read,apply_patch,Grep,Glob,Bash" {
+	if got := strings.Join(names(patch), ","); got != "Read,apply_patch,Grep,Glob,Bash,TaskOutput,TaskStop,Monitor" {
 		t.Fatalf("patch tools = %s", got)
 	}
 	if !strings.Contains(pick(patch, "Read").Prompt(), "PDF") {
@@ -190,7 +191,7 @@ func TestGrepAndGlobTools(t *testing.T) {
 	}
 
 	globResult := glob.Execute(context.Background(), map[string]any{"pattern": "**/*.go"})
-	if globResult.IsError || globResult.Content[0].Text != "src/main.go" {
+	if globResult.IsError || !strings.Contains(globResult.Content[0].Text, "src/main.go") || !strings.Contains(globResult.Content[0].Text, "files: 1") {
 		t.Fatalf("glob result = %+v", globResult)
 	}
 }
@@ -293,21 +294,38 @@ func TestBashCancelKillsProcessGroup(t *testing.T) {
 	assertPIDDead(t, b, pid)
 }
 
-func TestBashTimeoutKillsProcessGroup(t *testing.T) {
+func TestBashTimeoutPromotesToBackground(t *testing.T) {
 	cwd := t.TempDir()
-	b := bashTool{cwd: cwd, jobs: NewJobStore()}
+	jobs := NewJobStore()
+	defer jobs.Close()
+	b := bashTool{cwd: cwd, jobs: jobs}
 	started := time.Now()
 	res := b.Execute(context.Background(), map[string]any{
-		"command": "sleep 120 & echo $! > child.pid; wait",
+		"command": "true; sleep 120 & echo $! > child.pid; wait",
 		"timeout": 1000,
 	})
 	if took := time.Since(started); took > 3*time.Second {
 		t.Fatalf("timeout took %s, want ~1s", took)
 	}
-	if !res.IsError || !strings.Contains(res.Content[0].Text, "timed out after 1 seconds") {
-		t.Fatalf("want timeout, got %+v", res)
+	if res.IsError || !strings.Contains(res.Content[0].Text, "continues in background") {
+		t.Fatalf("want background promotion, got %+v", res)
 	}
 	pid := waitPIDFile(t, filepath.Join(cwd, "child.pid"))
+	var taskID string
+	for candidate := range jobs.jobs {
+		if strings.HasPrefix(candidate, "bg-") {
+			if snapshot, ok := jobs.Get(candidate); ok && snapshot.Status == TaskBackground {
+				taskID = candidate
+				break
+			}
+		}
+	}
+	if taskID == "" {
+		t.Fatal("background task was not registered")
+	}
+	if _, err := jobs.Stop(taskID); err != nil {
+		t.Fatal(err)
+	}
 	assertPIDDead(t, b, pid)
 }
 
@@ -342,6 +360,76 @@ func TestBashBackgroundAndRead(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("bg output: %q", got)
+}
+
+func TestTaskOutputAndTaskStopLifecycle(t *testing.T) {
+	cwd := t.TempDir()
+	jobs := NewJobStore()
+	defer jobs.Close()
+	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{Editor: EditorWriteEdit})
+	bash := pick(all, "Bash")
+	outputTool := pick(all, "TaskOutput")
+	stopTool := pick(all, "TaskStop")
+	started := bash.Execute(context.Background(), map[string]any{
+		"command":           "printf 'one\\n'; sleep 0.05; printf 'two\\n'",
+		"run_in_background": true,
+	})
+	if started.IsError {
+		t.Fatalf("start: %+v", started)
+	}
+	id := strings.Fields(strings.Split(started.Content[0].Text, "\n")[0])[3]
+	result := outputTool.Execute(context.Background(), map[string]any{
+		"task_id": id, "block": true, "timeout": 2000,
+	})
+	if result.IsError {
+		t.Fatalf("output: %+v", result)
+	}
+	var response struct {
+		RetrievalStatus string       `json:"retrieval_status"`
+		Task            TaskSnapshot `json:"task"`
+	}
+	if err := json.Unmarshal([]byte(result.Content[0].Text), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.RetrievalStatus != "success" || response.Task.Status != TaskCompleted || response.Task.Output != "one\ntwo\n" {
+		t.Fatalf("task output = %+v", response)
+	}
+
+	started = bash.Execute(context.Background(), map[string]any{
+		"command":           "sleep 120",
+		"run_in_background": true,
+	})
+	id = strings.Fields(strings.Split(started.Content[0].Text, "\n")[0])[3]
+	stopped := stopTool.Execute(context.Background(), map[string]any{"task_id": id})
+	if stopped.IsError || !strings.Contains(stopped.Content[0].Text, "stopped") {
+		t.Fatalf("stop: %+v", stopped)
+	}
+	result = outputTool.Execute(context.Background(), map[string]any{"task_id": id, "block": false})
+	if result.IsError || !strings.Contains(result.Content[0].Text, `"status":"killed"`) {
+		t.Fatalf("stopped output: %+v", result)
+	}
+}
+
+func TestMonitorStreamsOutput(t *testing.T) {
+	jobs := NewJobStore()
+	defer jobs.Close()
+	monitor := monitorTool{cwd: t.TempDir(), jobs: jobs}
+	var updates []string
+	result := monitor.ExecuteWithProgress(context.Background(), map[string]any{
+		"command": "printf 'first\\n'; sleep 0.05; printf 'second\\n'",
+	}, func(value any) {
+		if progress, ok := value.(map[string]any); ok {
+			if text, ok := progress["output"].(string); ok {
+				updates = append(updates, text)
+			}
+		}
+	})
+	if result.IsError || !strings.Contains(result.Content[0].Text, `"status":"completed"`) {
+		t.Fatalf("monitor: %+v", result)
+	}
+	if !strings.Contains(strings.Join(updates, ""), "first") || !strings.Contains(strings.Join(updates, ""), "second") {
+		t.Fatalf("monitor updates = %q", updates)
+	}
 }
 
 func TestReadNotebookAndPDFPages(t *testing.T) {
