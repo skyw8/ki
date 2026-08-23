@@ -8,6 +8,7 @@ import (
 	"image/jpeg"
 	"image/png"
 
+	// Register WebP with the standard image decoder registry.
 	_ "golang.org/x/image/webp"
 	_ "image/gif"
 )
@@ -31,7 +32,7 @@ type imageDetails struct {
 func resizeImageForModel(data []byte, mime string) ([]byte, string, *imageDetails, error) {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, fmt.Errorf("decode image config: %w", err)
 	}
 	details := &imageDetails{OriginalWidth: cfg.Width, OriginalHeight: cfg.Height, Width: cfg.Width, Height: cfg.Height, OriginalBytes: len(data), Bytes: len(data), MIMEType: mime}
 	if cfg.Width <= maxImageDimension && cfg.Height <= maxImageDimension && len(data) <= maxImageBytes {
@@ -39,7 +40,7 @@ func resizeImageForModel(data []byte, mime string) ([]byte, string, *imageDetail
 	}
 	src, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, fmt.Errorf("decode image: %w", err)
 	}
 	w, h := boundedDimensions(cfg.Width, cfg.Height, maxImageDimension)
 	for {
@@ -50,7 +51,7 @@ func resizeImageForModel(data []byte, mime string) ([]byte, string, *imageDetail
 		}
 		if len(encoded) <= maxImageBytes || w <= 1 || h <= 1 {
 			if len(encoded) > maxImageBytes {
-				return nil, "", nil, fmt.Errorf("image remains larger than %d bytes after resizing", maxImageBytes)
+				return nil, "", nil, fmt.Errorf("%w %d bytes after resizing", errImageStillTooLarge, maxImageBytes)
 			}
 			details.Width, details.Height, details.Bytes, details.MIMEType, details.Resized = w, h, len(encoded), outMIME, true
 			return encoded, outMIME, details, nil
@@ -74,9 +75,9 @@ func boundedDimensions(w, h, limit int) (int, int) {
 func scaleImage(src image.Image, width, height int) *image.NRGBA {
 	dst := image.NewNRGBA(image.Rect(0, 0, width, height))
 	b := src.Bounds()
-	for y := 0; y < height; y++ {
+	for y := range height {
 		sy := b.Min.Y + y*b.Dy()/height
-		for x := 0; x < width; x++ {
+		for x := range width {
 			sx := b.Min.X + x*b.Dx()/width
 			dst.Set(x, y, src.At(sx, sy))
 		}

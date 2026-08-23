@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -40,18 +39,18 @@ func registryError(w http.ResponseWriter, err error) {
 func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ID string `json:"id"`
-		provider.ProviderConfig
+		provider.Config
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
 	for _, p := range s.registry.Providers() {
 		if p.ID == body.ID {
-			registryError(w, errors.New("provider already exists"))
+			registryError(w, errProviderAlreadyExists)
 			return
 		}
 	}
-	err := s.registry.Update(func(cfg *provider.ModelsFile) error { cfg.Providers[body.ID] = body.ProviderConfig; return nil })
+	err := s.registry.Update(func(cfg *provider.ModelsFile) error { cfg.Providers[body.ID] = body.Config; return nil })
 	if err != nil {
 		registryError(w, err)
 		return
@@ -82,7 +81,7 @@ func (s *Server) patchProvider(w http.ResponseWriter, r *http.Request) {
 	err := s.registry.Update(func(cfg *provider.ModelsFile) error {
 		pc, ok := cfg.Providers[id]
 		if !ok && !builtinFound {
-			return errors.New("provider not found")
+			return errProviderNotFound
 		}
 		if body.Name != nil {
 			pc.Name = *body.Name
@@ -118,9 +117,9 @@ func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 	err := s.registry.Update(func(cfg *provider.ModelsFile) error {
 		if _, ok := cfg.Providers[id]; !ok {
 			if builtin {
-				return errors.New("provider has no custom settings")
+				return errProviderNoCustomConfig
 			}
-			return errors.New("provider not found")
+			return errProviderNotFound
 		}
 		delete(cfg.Providers, id)
 		return nil
@@ -181,11 +180,11 @@ func (s *Server) createProviderModel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !providerFound {
-		registryError(w, errors.New("provider not found"))
+		registryError(w, errProviderNotFound)
 		return
 	}
 	if modelExists {
-		registryError(w, errors.New("model already exists"))
+		registryError(w, errModelAlreadyExists)
 		return
 	}
 	err := s.registry.Update(func(cfg *provider.ModelsFile) error {
@@ -222,7 +221,7 @@ func (s *Server) patchProviderModel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found {
-		registryError(w, errors.New("model not found"))
+		registryError(w, errModelNotFound)
 		return
 	}
 	err := s.registry.Update(func(cfg *provider.ModelsFile) error {
@@ -250,14 +249,14 @@ func (s *Server) deleteProviderModel(w http.ResponseWriter, r *http.Request) {
 	err := s.registry.Update(func(cfg *provider.ModelsFile) error {
 		pc, ok := cfg.Providers[id]
 		if !ok {
-			return errors.New("model not found")
+			return errModelNotFound
 		}
 		before := len(pc.Models)
 		pc.Models = slices.DeleteFunc(pc.Models, func(m provider.ModelSeed) bool { return m.ID == modelID })
 		_, hadOverride := pc.ModelOverrides[modelID]
 		delete(pc.ModelOverrides, modelID)
 		if len(pc.Models) == before && !hadOverride {
-			return errors.New("model not found")
+			return errModelNotFound
 		}
 		cfg.Providers[id] = pc
 		return nil

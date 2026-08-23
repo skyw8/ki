@@ -117,7 +117,7 @@ func (t editTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	}
 	next := applyEditMatches(text, matches)
 	// resolve validates the tool path against the session working directory.
-	//nolint:gosec // writing the user-requested file is the Edit tool contract
+
 	if err := os.WriteFile(abs, []byte(next), 0o600); err != nil {
 		return errRes(err.Error())
 	}
@@ -133,36 +133,36 @@ func parseEditInputs(args map[string]any) ([]editInput, bool, error) {
 	if hasEdits {
 		raw, ok := rawValue.([]any)
 		if !ok {
-			return nil, true, fmt.Errorf("edits must be an array")
+			return nil, true, errEditsArray
 		}
 		out := make([]editInput, 0, len(raw))
 		for i, value := range raw {
 			item, ok := value.(map[string]any)
 			if !ok {
-				return nil, true, fmt.Errorf("edits[%d] must be an object", i)
+				return nil, true, fmt.Errorf("edits[%d] %w", i, errEditObject)
 			}
 			oldS, _ := item["old_string"].(string)
 			newS, _ := item["new_string"].(string)
 			if oldS == "" {
-				return nil, true, fmt.Errorf("edits[%d].old_string must not be empty", i)
+				return nil, true, fmt.Errorf("edits[%d].%w", i, errEditOldEmpty)
 			}
 			if oldS == newS {
-				return nil, true, fmt.Errorf("edits[%d] makes no change", i)
+				return nil, true, fmt.Errorf("edits[%d] %w", i, errEditNoChange)
 			}
 			out = append(out, editInput{Old: oldS, New: newS})
 		}
 		if len(out) == 0 {
-			return nil, true, fmt.Errorf("edits must contain at least one replacement")
+			return nil, true, errEditsEmpty
 		}
 		return out, true, nil
 	}
 	oldS, _ := args["old_string"].(string)
 	newS, _ := args["new_string"].(string)
 	if oldS == "" {
-		return nil, false, fmt.Errorf("old_string is required")
+		return nil, false, errOldStringRequired
 	}
 	if oldS == newS {
-		return nil, false, fmt.Errorf("No changes to make: old_string and new_string are exactly the same.")
+		return nil, false, errNoChanges
 	}
 	return []editInput{{Old: oldS, New: newS}}, false, nil
 }
@@ -174,13 +174,13 @@ func matchEdits(text string, edits []editInput, batch, replaceAll bool, path str
 	for i, edit := range edits {
 		count := strings.Count(text, edit.Old)
 		if count == 0 {
-			return nil, fmt.Errorf("Could not find old_string for edit %d in %s. It must match exactly including whitespace and newlines.", i, path)
+			return nil, fmt.Errorf("%w for edit %d in %s; it must match exactly including whitespace and newlines", errCouldNotFindOldString, i, path)
 		}
 		if batch && count != 1 {
-			return nil, fmt.Errorf("Found %d occurrences for edits[%d].old_string in %s. Each batch old_string must be unique.", count, i, path)
+			return nil, fmt.Errorf("%w %d occurrences for edits[%d].old_string in %s; each batch old_string must be unique", errFoundOccurrences, count, i, path)
 		}
 		if !batch && count > 1 && !replaceAll {
-			return nil, fmt.Errorf("Found %d occurrences of old_string in %s. Use replace_all or provide more context.", count, path)
+			return nil, fmt.Errorf("%w %d occurrences of old_string in %s; use replace_all or provide more context", errFoundOccurrences, count, path)
 		}
 		from := 0
 		for {
@@ -199,7 +199,7 @@ func matchEdits(text string, edits []editInput, batch, replaceAll bool, path str
 	sort.Slice(matches, func(i, j int) bool { return matches[i].start < matches[j].start })
 	for i := 1; i < len(matches); i++ {
 		if matches[i].start < matches[i-1].end {
-			return nil, fmt.Errorf("edits overlap in %s; merge the overlapping replacements", path)
+			return nil, fmt.Errorf("%w in %s; merge the overlapping replacements", errEditsOverlap, path)
 		}
 	}
 	return matches, nil

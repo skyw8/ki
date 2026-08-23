@@ -57,6 +57,8 @@ func previewPatchChanges(hunks []patchHunk) []applyPatchChangeDetail {
 		switch h.kind {
 		case patchAdd:
 			change.UnifiedDiff, _ = difflib.GetUnifiedDiffString(difflib.UnifiedDiff{B: difflib.SplitLines(h.content), FromFile: h.path + " (new)", ToFile: h.path, Context: 1})
+		case patchDelete:
+			change.UnifiedDiff = ""
 		case patchUpdate:
 			var b strings.Builder
 			for _, chunk := range h.chunks {

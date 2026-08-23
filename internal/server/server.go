@@ -137,7 +137,7 @@ type router struct{ registry *provider.Registry }
 func (r *router) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
 	_, m, key, err := r.registry.Resolve(req.Provider, req.Model)
 	if err != nil {
-		return types.Message{}, err
+		return types.Message{}, fmt.Errorf("resolve provider model: %w", err)
 	}
 	msg, err := provider.NewLiveModel(m, key, nil).Stream(ctx, req, emit)
 	if err != nil {
@@ -795,7 +795,10 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			body.Content = []types.Content{{Type: "text", Text: text}}
-		default:
+		case command.KindPrompt:
+			// The outer condition normally excludes this case; keep the switch
+			// exhaustive so a future parser change follows the normal prompt path.
+		case command.KindUnknown:
 			_ = sess.Close()
 			writeHandled(w, "unknown command /"+parsed.Name, true)
 			return
@@ -829,7 +832,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	if err == nil && !slices.Contains(selectedModel.Input, "image") {
 		for _, c := range body.Content {
 			if c.Type == "image" {
-				err = errors.New("selected model does not support image input")
+				err = errSelectedModelNoImage
 				break
 			}
 		}
@@ -839,7 +842,9 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	s.startRun(w, id, body.Content, body.ParentID, body.Model)
+	// The prompt is accepted asynchronously; detach it from the HTTP request
+	// cancellation while retaining request-scoped values for downstream code.
+	s.startRun(context.WithoutCancel(r.Context()), w, id, body.Content, body.ParentID, body.Model)
 }
 
 func (s *Server) handleBuiltin(w http.ResponseWriter, r *http.Request, name string) {
@@ -870,19 +875,19 @@ func validateUserContent(content []types.Content) error {
 			}
 		case "image", "file", "workspace_file":
 			if c.Path == "" && c.Data == "" {
-				return fmt.Errorf("content[%d]: attachment path required", i)
+				return fmt.Errorf("content[%d]: %w", i, errAttachmentPathRequired)
 			}
 			if c.Path != "" {
 				abs, err := filepath.Abs(c.Path)
 				if err != nil {
-					return fmt.Errorf("content[%d]: invalid attachment path", i)
+					return fmt.Errorf("content[%d]: %w", i, errAttachmentPathInvalid)
 				}
 				// The WebUI intentionally selects host files through the authenticated
 				// server-side browser; re-stat the normalized absolute path so a stale
 				// or directory selection cannot enter persisted model context.
 				st, err := os.Stat(abs)
 				if err != nil || !st.Mode().IsRegular() {
-					return fmt.Errorf("content[%d]: attachment unreadable", i)
+					return fmt.Errorf("content[%d]: %w", i, errAttachmentUnreadable)
 				}
 				c.Path = abs
 				c.Size = st.Size()
@@ -890,7 +895,7 @@ func validateUserContent(content []types.Content) error {
 				// read here so a selected disk image cannot multiply into an unbounded
 				// request allocation; ordinary file references are never inlined.
 				if c.Type == "image" && st.Size() > maxInlineImage {
-					return fmt.Errorf("content[%d]: image exceeds 20 MiB", i)
+					return fmt.Errorf("content[%d]: %w", i, errImageTooLarge)
 				}
 				if c.Name == "" {
 					c.Name = filepath.Base(abs)
@@ -898,11 +903,11 @@ func validateUserContent(content []types.Content) error {
 			}
 			usable = true
 		default:
-			return fmt.Errorf("content[%d]: unsupported type %q", i, c.Type)
+			return fmt.Errorf("content[%d]: %w %q", i, errUnsupportedContent, c.Type)
 		}
 	}
 	if !usable {
-		return errors.New("text or attachment required")
+		return errTextOrAttachment
 	}
 	return nil
 }
@@ -922,7 +927,7 @@ func materializeAttachments(_ context.Context, messages []types.Message) ([]type
 				out[i].Content = append(out[i].Content, types.Content{Type: "text", Text: fmt.Sprintf("\nAttached file %q is available at: %s", label, c.Path)})
 			case "image":
 				if c.Data == "" && c.Path != "" {
-					b, err := os.ReadFile(c.Path) //nolint:gosec // authenticated host file selected by the user
+					b, err := os.ReadFile(c.Path)
 					if err != nil {
 						return nil, fmt.Errorf("read attachment %q: %w", c.Path, err)
 					}
@@ -1008,7 +1013,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	_, info, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
 	if !ok {
-		st.err = fmt.Errorf("model %q/%q is unavailable", sess.Config.Provider, sess.Config.Model)
+		st.err = fmt.Errorf("model %q/%q is %w", sess.Config.Provider, sess.Config.Model, errModelUnavailable)
 		return
 	}
 	s.rememberModel(provider.ModelRef{Provider: sess.Config.Provider, Model: sess.Config.Model})
@@ -1081,7 +1086,10 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			}
 		}
 		if ev.Type == loop.ToolExecutionUpdate {
-			progress, _ := json.Marshal(ev.PartialResult)
+			progress, err := json.Marshal(ev.PartialResult)
+			if err != nil {
+				return fmt.Errorf("marshal tool progress: %w", err)
+			}
 			if _, err := sess.AppendEvent(string(ev.Type), string(progress), true); err != nil {
 				return fmt.Errorf("append tool progress: %w", err)
 			}
@@ -1100,12 +1108,15 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			messages := sess.MessagesToLeaf()
 			used := compact.EstimateTokens(messages, sess.LastCompactionAt())
 			if ev.Type == loop.RequestHeader && !hasUsableContextUsage(messages, sess.LastCompactionAt()) {
-				toolJSON, _ := json.Marshal(ev.Tools)
+				toolJSON, err := json.Marshal(ev.Tools)
+				if err != nil {
+					return fmt.Errorf("marshal tool schemas: %w", err)
+				}
 				used += (len(ev.System) + len(toolJSON) + 3) / 4
 			}
 			window := info.ContextWindow
-			if cap := cfg.Compaction.MaxContextTokens; cap > 0 && cap < window {
-				window = cap
+			if maxContext := cfg.Compaction.MaxContextTokens; maxContext > 0 && maxContext < window {
+				window = maxContext
 			}
 			estimated := ev.Type == loop.RequestHeader || ev.Message == nil || !usableUsage(ev.Message.Usage)
 			if _, err := sess.AppendContextUsage(used, window, estimated); err != nil {
@@ -1180,8 +1191,7 @@ func usableUsage(usage *types.Usage) bool {
 }
 
 func hasUsableContextUsage(messages []types.Message, after int64) bool {
-	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
+	for _, m := range slices.Backward(messages) {
 		if m.Role != "assistant" {
 			continue
 		}
@@ -1371,7 +1381,7 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = sess.Close() }()
-	st, ctx, err := s.occupy(id, r.Context())
+	st, ctx, err := s.occupy(r.Context(), id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -1443,7 +1453,11 @@ func resolveThinking(model provider.Model, requested string) (string, error) {
 	if requested == "" {
 		return provider.DefaultThinking(model), nil
 	}
-	return provider.ClampThinking(model, requested)
+	effort, err := provider.ClampThinking(model, requested)
+	if err != nil {
+		return "", fmt.Errorf("clamp thinking effort: %w", err)
+	}
+	return effort, nil
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

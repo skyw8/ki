@@ -94,7 +94,7 @@ func derivePatchUpdate(contents, path string, chunks []patchChunk) (string, stri
 		if chunk.hasCtx {
 			idx := seekPatchSequence(texts, []string{chunk.context}, cursor, false)
 			if idx < 0 {
-				return "", "", fmt.Errorf("Failed to find context %q in %s", chunk.context, path)
+				return "", "", fmt.Errorf("%w %q in %s", errPatchContextMissing, chunk.context, path)
 			}
 			cursor = idx + 1
 		}
@@ -113,7 +113,7 @@ func derivePatchUpdate(contents, path string, chunks []patchChunk) (string, stri
 			idx = seekPatchSequence(texts, pattern, cursor, chunk.eof)
 		}
 		if idx < 0 {
-			return "", "", fmt.Errorf("Failed to find expected lines in %s:\n%s", path, strings.Join(chunk.old, "\n"))
+			return "", "", fmt.Errorf("%w in %s:\n%s", errPatchLinesMissing, path, strings.Join(chunk.old, "\n"))
 		}
 		newLines := insertedPatchLines(replacement, source.preferred)
 		// Context lines are semantically unchanged. Reuse their source records so
@@ -152,7 +152,7 @@ func seekPatchSequence(lines, pattern []string, start int, eof bool) int {
 	if eof {
 		search = len(lines) - len(pattern)
 	}
-	for mode := 0; mode < 4; mode++ {
+	for mode := range 4 {
 		for i := search; i <= len(lines)-len(pattern); i++ {
 			ok := true
 			for j := range pattern {

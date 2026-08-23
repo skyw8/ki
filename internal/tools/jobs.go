@@ -20,13 +20,19 @@ import (
 type TaskStatus string
 
 const (
-	TaskPending    TaskStatus = "pending"
-	TaskRunning    TaskStatus = "running"
+	// TaskPending is reserved for tasks accepted before process startup.
+	TaskPending TaskStatus = "pending"
+	// TaskRunning identifies a foreground task still attached to the prompt.
+	TaskRunning TaskStatus = "running"
+	// TaskBackground identifies a task promoted or requested to run in background.
 	TaskBackground TaskStatus = "backgrounded"
-	TaskCompleted  TaskStatus = "completed"
-	TaskFailed     TaskStatus = "failed"
-	TaskKilled     TaskStatus = "killed"
-	maxTaskTail               = 64 * 1024
+	// TaskCompleted identifies a task that exited successfully.
+	TaskCompleted TaskStatus = "completed"
+	// TaskFailed identifies a task that exited unsuccessfully.
+	TaskFailed TaskStatus = "failed"
+	// TaskKilled identifies a task explicitly terminated by the user or abort.
+	TaskKilled  TaskStatus = "killed"
+	maxTaskTail            = 64 * 1024
 	// shellWaitDelay bounds Wait after process-tree termination. Killing only
 	// the shell launcher can leave descendants holding output pipes open, which
 	// otherwise makes abort appear to hang. See the Bash abort postmortem.
@@ -47,7 +53,7 @@ type TaskSnapshot struct {
 	Error       string     `json:"error,omitempty"`
 	Bytes       int64      `json:"bytes,omitempty"`
 	Lines       int64      `json:"lines,omitempty"`
-	StartedAt   time.Time  `json:"started_at,omitempty"`
+	StartedAt   time.Time  `json:"started_at,omitzero"`
 	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 }
 
@@ -59,6 +65,7 @@ type TaskUpdate struct {
 	Snapshot TaskSnapshot `json:"task"`
 }
 
+// JobStore owns session-scoped background task processes and their output.
 type JobStore struct {
 	mu     sync.RWMutex
 	jobs   map[string]*bgJob
@@ -99,12 +106,12 @@ type bgJob struct {
 func NewJobStore() *JobStore { return &JobStore{jobs: map[string]*bgJob{}} }
 
 // Start launches a command that remains independent of the prompt context.
-func (s *JobStore) Start(_ context.Context, shell shellSpec, cwd, command, description, taskType string) (id, path string, err error) {
+func (s *JobStore) Start(ctx context.Context, shell shellSpec, cwd, command, description, taskType string) (id, path string, err error) {
 	job, err := s.newJob(shell, cwd, command, description, taskType, TaskBackground)
 	if err != nil {
 		return "", "", err
 	}
-	if err := job.start(); err != nil {
+	if err := job.start(ctx); err != nil {
 		s.remove(job)
 		return "", "", err
 	}
@@ -119,7 +126,7 @@ func (s *JobStore) RunForeground(ctx context.Context, shell shellSpec, cwd, comm
 	if err != nil {
 		return TaskSnapshot{}, err
 	}
-	if err := job.start(); err != nil {
+	if err := job.start(ctx); err != nil {
 		s.remove(job)
 		return TaskSnapshot{}, err
 	}
@@ -148,7 +155,7 @@ func (s *JobStore) newJob(shell shellSpec, cwd, command, description, taskType s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return nil, errors.New("task store is closed")
+		return nil, errTaskStoreClosed
 	}
 	f, err := os.CreateTemp("", "ki-bg-*.log")
 	if err != nil {
@@ -166,12 +173,14 @@ func (s *JobStore) newJob(shell shellSpec, cwd, command, description, taskType s
 	return job, nil
 }
 
-func (j *bgJob) start() error {
+func (j *bgJob) start(parent context.Context) error {
 	if !j.shell.available() {
 		_ = j.file.Close()
-		return errors.New("command interpreter is unavailable")
+		return errInterpreterUnavailable
 	}
-	jobCtx, cancel := context.WithCancel(context.Background())
+	// Background tasks outlive the prompt that launched them, but retain its
+	// context values for logging and tracing.
+	jobCtx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	//nolint:gosec // executing the explicit shell tool command is the feature contract.
 	cmd := exec.CommandContext(jobCtx, j.shell.path, j.shell.args(j.command)...)
 	if j.cwd != "" {
@@ -207,11 +216,10 @@ func (j *bgJob) start() error {
 func (j *bgJob) wait(cmd *exec.Cmd) {
 	err := cmd.Wait()
 	j.mu.Lock()
-	if err == nil {
+	switch {
+	case err == nil:
 		j.status = TaskCompleted
-	} else if j.status == TaskKilled {
-		// Keep the explicit killed state even when the child reports SIGKILL.
-	} else {
+	case j.status != TaskKilled:
 		j.status = TaskFailed
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -244,7 +252,7 @@ func (j *bgJob) Write(p []byte) (int, error) {
 	j.mu.Lock()
 	if j.file == nil {
 		j.mu.Unlock()
-		return 0, errors.New("task output is closed")
+		return 0, errTaskOutputClosed
 	}
 	n, err := j.file.Write(p)
 	if err != nil {
@@ -419,7 +427,7 @@ func (s *JobStore) Stop(id string) (TaskSnapshot, error) {
 	}
 	snapshot := j.snapshot()
 	if isTerminal(snapshot.Status) {
-		return snapshot, errors.New("task is not running")
+		return snapshot, errTaskNotRunning
 	}
 	j.stop(true)
 	return j.snapshot(), nil

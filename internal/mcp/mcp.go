@@ -33,13 +33,18 @@ type ToolDefinition struct {
 	Raw          json.RawMessage `json:"raw,omitempty"`
 }
 
+// ServerStatus is the persisted lifecycle state of an MCP server.
 type ServerStatus string
 
 const (
+	// StatusUnloaded means the server has not been connected in this session.
 	StatusUnloaded ServerStatus = "unloaded"
-	StatusReady    ServerStatus = "ready"
-	StatusFailed   ServerStatus = "failed"
-	StatusStale    ServerStatus = "stale"
+	// StatusReady means discovery completed and the cached tools are usable.
+	StatusReady ServerStatus = "ready"
+	// StatusFailed means connection or discovery failed for the prompt.
+	StatusFailed ServerStatus = "failed"
+	// StatusStale means the server reported changed tools and needs reload.
+	StatusStale ServerStatus = "stale"
 )
 
 // ServerState is the session-scoped discovery result stored by resources.
@@ -52,7 +57,7 @@ type ServerState struct {
 	ServerName      string           `json:"serverName,omitempty"`
 	ServerVersion   string           `json:"serverVersion,omitempty"`
 	Capabilities    json.RawMessage  `json:"capabilities,omitempty"`
-	LoadedAt        time.Time        `json:"loadedAt,omitempty"`
+	LoadedAt        time.Time        `json:"loadedAt,omitzero"`
 	EventID         string           `json:"eventId,omitempty"`
 }
 

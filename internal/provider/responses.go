@@ -197,7 +197,8 @@ func parseResponsesSSE(event, data string, acc *types.Message) (loop.AssistantDe
 	case "response.output_item.added", "response.output_item.done":
 		if item, ok := obj["item"].(map[string]any); ok {
 			itemType, _ := item["type"].(string)
-			if itemType == "function_call" {
+			switch itemType {
+			case "function_call":
 				itemID, _ := item["id"].(string)
 				callID, _ := item["call_id"].(string)
 				name, _ := item["name"].(string)
@@ -213,7 +214,7 @@ func parseResponsesSSE(event, data string, acc *types.Message) (loop.AssistantDe
 				if typ == "response.output_item.done" && len(acc.ToolCalls()) > 0 {
 					acc.StopReason = "toolUse"
 				}
-			} else if itemType == "custom_tool_call" {
+			case "custom_tool_call":
 				itemID, _ := item["id"].(string)
 				callID, _ := item["call_id"].(string)
 				name, _ := item["name"].(string)

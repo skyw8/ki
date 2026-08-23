@@ -29,7 +29,7 @@ func TestToolMessageDetailsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 	messages := reopened.MessagesToLeaf()
 	details, ok := messages[len(messages)-1].Details.(map[string]any)
 	if !ok || details["diff"] != "patch" {
@@ -261,7 +261,7 @@ func TestBranchLeafPersistsAndForkAtCopiesOnlyActivePath(t *testing.T) {
 	if filepath.Dir(filepath.Dir(path)) != forked.Dir {
 		t.Fatalf("fork attachment path = %q, dir = %q", path, forked.Dir)
 	}
-	if b, err := os.ReadFile(path); err != nil || string(b) != "blob" {
+	if b, err := os.ReadFile(path); err != nil || string(b) != "blob" { //nolint:gosec // path is a fork attachment created under t.TempDir
 		t.Fatalf("fork attachment = %q, %v", b, err)
 	}
 }

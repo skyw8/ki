@@ -84,16 +84,10 @@ func substituteArgs(content string, args []string) string {
 			if start < 1 {
 				start = 1
 			}
-			from := start - 1
-			if from > len(args) {
-				from = len(args)
-			}
+			from := min(start-1, len(args))
 			if sub[4] != "" {
 				n, _ := strconv.Atoi(sub[4])
-				end := from + n
-				if end > len(args) {
-					end = len(args)
-				}
+				end := min(from+n, len(args))
 				return strings.Join(args[from:end], " ")
 			}
 			return strings.Join(args[from:], " ")

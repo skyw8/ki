@@ -23,6 +23,8 @@ var (
 	errCWDRequired     = errors.New("cwd required")
 	errSessionHeader   = errors.New("session header missing")
 	errSessionNotFound = errors.New("session not found")
+	errActiveLeaf      = errors.New("active leaf")
+	errEntryNotFound   = errors.New("entry")
 )
 
 // Header is the first jsonl line.
@@ -231,7 +233,7 @@ func Open(dir string) (*Session, error) {
 	}
 	if s.Config.ActiveLeafID != "" {
 		if _, ok := s.byID[s.Config.ActiveLeafID]; !ok {
-			return nil, fmt.Errorf("active leaf %q not found", s.Config.ActiveLeafID)
+			return nil, fmt.Errorf("%w %q not found", errActiveLeaf, s.Config.ActiveLeafID)
 		}
 		s.leafID = s.Config.ActiveLeafID
 	}
@@ -305,7 +307,7 @@ func (s *Session) EntriesTo(leaf string) ([]Entry, error) {
 	defer s.mu.Unlock()
 	if leaf != "" {
 		if _, ok := s.byID[leaf]; !ok {
-			return nil, fmt.Errorf("entry %q not found", leaf)
+			return nil, fmt.Errorf("%w %q not found", errEntryNotFound, leaf)
 		}
 	}
 	return slices.Clone(s.leafEntriesLocked(leaf)), nil
@@ -320,7 +322,7 @@ func (s *Session) SetLeaf(id string) error {
 	defer s.mu.Unlock()
 	if id != "" {
 		if _, ok := s.byID[id]; !ok {
-			return fmt.Errorf("entry %q not found", id)
+			return fmt.Errorf("%w %q not found", errEntryNotFound, id)
 		}
 	}
 	s.leafID = id
@@ -380,7 +382,7 @@ func (s *Session) MessagesTo(leaf string) ([]types.Message, error) {
 	defer s.mu.Unlock()
 	if leaf != "" {
 		if _, ok := s.byID[leaf]; !ok {
-			return nil, fmt.Errorf("entry %q not found", leaf)
+			return nil, fmt.Errorf("%w %q not found", errEntryNotFound, leaf)
 		}
 	}
 	return s.messagesLocked(leaf), nil
@@ -627,16 +629,18 @@ func (s *Session) SetModel(provider, model string) error {
 	return s.AppendModelChange(provider, model)
 }
 
+// SetModelAndThinking updates the selected model and thinking effort together.
 func (s *Session) SetModelAndThinking(provider, model, effort string) error {
 	return s.AppendModelChange(provider, model, effort)
 }
 
+// AppendContextUsage records the model-facing context size for the session.
 func (s *Session) AppendContextUsage(used, window int, estimated bool) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, err := idgen.EntryID()
 	if err != nil {
-		return Entry{}, err
+		return Entry{}, fmt.Errorf("allocate context usage entry id: %w", err)
 	}
 	e := Entry{Type: "context_usage", ID: id, ParentID: s.leafID, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), UsedTokens: used, ContextWindow: window, Estimated: estimated}
 	if err := s.appendLocked(e); err != nil {
@@ -728,7 +732,7 @@ func ForkAt(root string, src *Session, target string) (*Session, error) {
 	if target != "" {
 		if _, ok := src.byID[target]; !ok {
 			src.mu.Unlock()
-			return nil, fmt.Errorf("entry %q not found", target)
+			return nil, fmt.Errorf("%w %q not found", errEntryNotFound, target)
 		}
 	}
 	entries := slices.Clone(src.leafEntriesLocked(target))

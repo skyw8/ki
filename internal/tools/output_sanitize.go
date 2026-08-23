@@ -47,9 +47,10 @@ func (s *outputSanitizer) Filter(input []byte) []byte {
 				s.state = ansiGround
 			}
 		case ansiString:
-			if b == 0x07 {
+			switch b {
+			case 0x07:
 				s.state = ansiGround
-			} else if b == 0x1b {
+			case 0x1b:
 				s.state = ansiStringEscape
 			}
 		case ansiStringEscape:

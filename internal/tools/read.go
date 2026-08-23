@@ -42,7 +42,7 @@ func (localReadOperations) ReadFile(ctx context.Context, path string) ([]byte, e
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // path was normalized and validated by the read tool
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
 	}
@@ -143,7 +143,7 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	if st.IsDir() {
 		return errRes("This tool can only read files, not directories. Use Bash ls.")
 	}
-	//nolint:gosec // abs is normalized and confined to the requested tool path.
+
 	data, err := ops.ReadFile(ctx, abs)
 	if err != nil {
 		return errRes(err.Error())
@@ -231,21 +231,22 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	chunk, note := truncateHead(selected)
 	outputLines := strings.Count(chunk, "\n") + 1
 	d := &truncationDetails{TotalBytes: len(data), TotalLines: len(lines), OutputBytes: len(chunk), OutputLines: outputLines}
-	if note != "" && off > 1 {
+	switch {
+	case note != "" && off > 1:
 		shown := outputLines
 		note = fmt.Sprintf("\n\n[Showing lines %d-%d of %d. Use offset=%d to continue.]", off, off+shown-1, len(lines), off+shown)
 		d.Truncated, d.Reason, d.NextOffset = true, "bytes_or_lines", off+shown
-	} else if end < len(lines) && note == "" {
+	case end < len(lines) && note == "":
 		note = fmt.Sprintf("\n\n[%d more lines in file. Use offset=%d to continue.]", len(lines)-end, end+1)
 		d.Truncated, d.Reason, d.NextOffset = true, "limit", end+1
-	} else if note != "" {
+	case note != "":
 		d.Truncated, d.Reason = true, "bytes_or_lines"
 		if outputLines < len(lines)-start {
 			d.NextOffset = off + outputLines
 		}
 		if outputLines == 1 && len(selected) > len(chunk) {
 			lineStart := 0
-			for i := 0; i < start; i++ {
+			for i := range start {
 				lineStart += len(lines[i]) + 1
 			}
 			d.NextOffset = 0

@@ -34,16 +34,14 @@ func TestEntryIDConcurrentUnique(t *testing.T) {
 	ids := make(chan string, count)
 	var wg sync.WaitGroup
 	for range count {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			id, err := EntryID()
 			if err != nil {
 				t.Errorf("EntryID() error = %v", err)
 				return
 			}
 			ids <- id
-		}()
+		})
 	}
 	wg.Wait()
 	close(ids)

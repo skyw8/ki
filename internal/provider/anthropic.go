@@ -39,12 +39,13 @@ func AnthropicBody(req loop.Request) map[string]any {
 		"stream":     true,
 	}
 	if req.ThinkingEffort != "" {
-		if req.ThinkingEffort == "off" {
+		switch {
+		case req.ThinkingEffort == "off":
 			body["thinking"] = map[string]any{"type": "disabled"}
-		} else if req.ForceAdaptiveThinking {
+		case req.ForceAdaptiveThinking:
 			body["thinking"] = map[string]any{"type": "adaptive"}
 			body["output_config"] = map[string]any{"effort": mappedThinking(req)}
-		} else {
+		default:
 			budgets := map[string]int{"minimal": 1024, "low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768, "max": 65536}
 			budget := budgets[req.ThinkingEffort]
 			if budget == 0 {

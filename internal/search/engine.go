@@ -28,7 +28,9 @@ const (
 )
 
 var (
+	// ErrAborted indicates that a search was canceled before completion.
 	ErrAborted = errors.New("search aborted")
+	// ErrTimeout indicates that a search exceeded its configured timeout.
 	ErrTimeout = errors.New("search timed out")
 )
 
@@ -103,7 +105,7 @@ func (e Engine) Grep(ctx context.Context, req GrepRequest) (GrepResult, error) {
 		return GrepResult{}, err
 	}
 	if req.Pattern == "" {
-		return GrepResult{}, errors.New("pattern is required")
+		return GrepResult{}, errPatternRequired
 	}
 	if req.OutputMode == "files_with_matches" {
 		return e.grepFiles(ctx, req, root)
@@ -114,10 +116,7 @@ func (e Engine) Grep(ctx context.Context, req GrepRequest) (GrepResult, error) {
 	var result GrepResult
 	seenFiles := map[string]int{}
 	lineBuffer := newLineBuffer('\n')
-	stopAfter := req.MaxResults
-	if stopAfter < 0 {
-		stopAfter = 0
-	}
+	stopAfter := max(req.MaxResults, 0)
 	consume := func(line []byte) (bool, error) {
 		line = bytes.TrimSuffix(line, []byte("\r"))
 		if len(bytes.TrimSpace(line)) == 0 {
@@ -203,6 +202,9 @@ func (e Engine) grepFiles(ctx context.Context, req GrepRequest, root string) (Gr
 	buffer := newLineBuffer(0)
 	limit := req.MaxResults
 	consume := func(raw []byte) (bool, error) {
+		if err := ctx.Err(); err != nil {
+			return true, err
+		}
 		if len(raw) == 0 {
 			return false, nil
 		}
@@ -286,13 +288,13 @@ func (e Engine) Glob(ctx context.Context, req GlobRequest) (GlobResult, error) {
 	}
 	st, err := os.Stat(root)
 	if err != nil {
-		return GlobResult{}, fmt.Errorf("path does not exist: %s", root)
+		return GlobResult{}, fmt.Errorf("%w: %s", errPathNotExist, root)
 	}
 	if !st.IsDir() {
-		return GlobResult{}, fmt.Errorf("path is not a directory: %s", root)
+		return GlobResult{}, fmt.Errorf("%w: %s", errPathNotDirectory, root)
 	}
 	if req.Pattern == "" {
-		return GlobResult{}, errors.New("pattern is required")
+		return GlobResult{}, errPatternRequired
 	}
 
 	args := []string{"--files", "--null"}
@@ -321,13 +323,13 @@ func (e Engine) Glob(ctx context.Context, req GlobRequest) (GlobResult, error) {
 	// ripgrep to bypass those rules even when --no-ignore is absent.
 	args = append(args, "--", ".")
 
-	limit := req.MaxResults
-	if limit < 0 {
-		limit = 0
-	}
+	limit := max(req.MaxResults, 0)
 	result := GlobResult{}
 	buffer := newLineBuffer(0)
 	consume := func(raw []byte) (bool, error) {
+		if err := ctx.Err(); err != nil {
+			return true, err
+		}
 		if len(raw) == 0 {
 			return false, nil
 		}
@@ -390,7 +392,7 @@ func (p rgPath) value() (string, error) {
 		return p.Text, nil
 	}
 	if p.Bytes == "" {
-		return "", errors.New("ripgrep returned an empty path")
+		return "", errEmptyRGPath
 	}
 	b, err := base64.StdEncoding.DecodeString(p.Bytes)
 	return string(b), err
@@ -435,9 +437,6 @@ type runResult struct {
 type chunkConsumer func([]byte) (stop bool, err error)
 
 func (e Engine) run(ctx context.Context, dir string, args []string, consume chunkConsumer) (runResult, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	result, err := e.runOnce(ctx, dir, args, consume)
 	message := ""
 	if err != nil {
@@ -453,9 +452,6 @@ func (e Engine) run(ctx context.Context, dir string, args []string, consume chun
 }
 
 func (e Engine) runOnce(ctx context.Context, dir string, args []string, consume chunkConsumer) (runResult, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	timeout := e.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -469,7 +465,7 @@ func (e Engine) runOnce(ctx context.Context, dir string, args []string, consume 
 	}
 	defer cleanup()
 
-	cmd := exec.CommandContext(runCtx, rgPath, args...)
+	cmd := exec.CommandContext(runCtx, rgPath, args...) //nolint:gosec // rgPath is Ki's embedded/system search executable
 	cmd.Dir = dir
 	detachRGCommand(cmd)
 	cmd.Cancel = func() error {
@@ -552,7 +548,7 @@ func (e Engine) runOnce(ctx context.Context, dir string, args []string, consume 
 			return runResult{}, nil
 		}
 		if stderrText != "" {
-			return runResult{}, fmt.Errorf("ripgrep: %s", stderrText)
+			return runResult{}, fmt.Errorf("%w: %s", errRipgrep, stderrText)
 		}
 		return runResult{}, fmt.Errorf("ripgrep: %w", waitErr)
 	}
@@ -568,7 +564,7 @@ func cleanExistingPath(path string) (string, error) {
 		return "", fmt.Errorf("resolve search path: %w", err)
 	}
 	if _, err := os.Stat(abs); err != nil {
-		return "", fmt.Errorf("path does not exist: %s", path)
+		return "", fmt.Errorf("%w: %s", errPathNotExist, path)
 	}
 	return filepath.Clean(abs), nil
 }
@@ -586,7 +582,7 @@ func removeArg(args []string, target string) []string {
 func validateGrepResult(result GrepResult) error {
 	for _, match := range result.Matches {
 		if match.Path == "" || match.LineNumber < 1 {
-			return errors.New("ripgrep returned an invalid match event")
+			return errInvalidRGMatch
 		}
 	}
 	return nil

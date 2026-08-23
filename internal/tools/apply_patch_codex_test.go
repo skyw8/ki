@@ -10,6 +10,11 @@ import (
 	"testing"
 )
 
+var (
+	errInjectedWriteFailure  = errors.New("injected write failure")
+	errInjectedRemoveFailure = errors.New("injected remove failure")
+)
+
 func TestApplyPatchPreflightPreventsPrefixWrites(t *testing.T) {
 	cwd := t.TempDir()
 	if err := os.WriteFile(filepath.Join(cwd, "old.txt"), []byte("old\n"), 0o600); err != nil {
@@ -45,7 +50,7 @@ func TestApplyPatchPreservesMixedLineEndings(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("result = %+v", res)
 	}
-	b, _ := os.ReadFile(path)
+	b, _ := os.ReadFile(path) //nolint:gosec // path is resolved inside the isolated test directory
 	if got, want := string(b), "a\r\nkeep\nnew\r\ntail\r\n"; got != want {
 		t.Fatalf("mixed = %q, want %q", got, want)
 	}
@@ -57,7 +62,7 @@ func TestApplyPatchFailureReturnsCommittedPrefix(t *testing.T) {
 	realWrite := pio.writeFile
 	pio.writeFile = func(path string, data []byte, mode fs.FileMode) error {
 		if filepath.Base(path) == "two.txt" {
-			return errors.New("injected write failure")
+			return errInjectedWriteFailure
 		}
 		return realWrite(path, data, mode)
 	}
@@ -82,13 +87,16 @@ func TestApplyPatchMoveRemoveFailureRecordsDestinationAdd(t *testing.T) {
 		t.Fatal(err)
 	}
 	pio := localPatchIO
-	pio.remove = func(path string) error { return errors.New("injected remove failure") }
+	pio.remove = func(_ string) error { return errInjectedRemoveFailure }
 	patch := "*** Begin Patch\n*** Update File: source.txt\n*** Move to: dest.txt\n@@\n-old\n+new\n*** End Patch"
 	res := (applyPatchTool{cwd: cwd, io: &pio}).ExecuteRaw(context.Background(), patch)
 	if !res.IsError {
 		t.Fatalf("result = %+v", res)
 	}
-	details := res.Details.(applyPatchDetails)
+	details, ok := res.Details.(applyPatchDetails)
+	if !ok {
+		t.Fatalf("details = %#v", res.Details)
+	}
 	if !details.Exact || len(details.Changes) != 1 || details.Changes[0].Kind != "add" || filepath.Base(details.Changes[0].Path) != "dest.txt" {
 		t.Fatalf("details = %#v", details)
 	}
@@ -120,7 +128,14 @@ func TestApplyPatchArgumentConsumerFlushesPendingFinalSnapshot(t *testing.T) {
 	if !ok {
 		t.Fatal("pending final snapshot was not flushed")
 	}
-	changes := value.(map[string]any)["changes"].([]applyPatchChangeDetail)
+	result, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("consumer result = %#v", value)
+	}
+	changes, ok := result["changes"].([]applyPatchChangeDetail)
+	if !ok {
+		t.Fatalf("consumer changes = %#v", result["changes"])
+	}
 	if len(changes) != 2 {
 		t.Fatalf("changes = %#v", changes)
 	}

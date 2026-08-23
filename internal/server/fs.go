@@ -171,7 +171,7 @@ func serveFSPreview(w http.ResponseWriter, r *http.Request, path string) {
 		// selected host file can never execute inside the WebUI origin.
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		if st.Size() > maxTextPreviewBytes {
-			w.Header().Set("X-KI-Preview-Truncated", "1")
+			w.Header().Set("X-Ki-Preview-Truncated", "1")
 		}
 		_, _ = io.Copy(w, io.LimitReader(f, maxTextPreviewBytes))
 		return

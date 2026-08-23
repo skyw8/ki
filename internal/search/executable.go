@@ -3,7 +3,6 @@ package search
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,7 +31,7 @@ func executable() (string, func(), error) {
 
 	data, name := embeddedRG()
 	if len(data) == 0 {
-		return "", func() {}, errors.New("embedded ripgrep is unavailable for this platform")
+		return "", func() {}, errEmbeddedRGMissing
 	}
 	if name == "" {
 		name = "rg"
@@ -123,11 +122,11 @@ func fileMatchesDigest(path string, data []byte, expected string) bool {
 	if err != nil || st.Size() != int64(len(data)) {
 		return false
 	}
-	file, err := os.Open(path)
+	file, err := os.Open(path) //nolint:gosec // path is the Ki-managed cache destination
 	if err != nil {
 		return false
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	h := sha256.New()
 	if _, err := file.WriteTo(h); err != nil {
 		return false

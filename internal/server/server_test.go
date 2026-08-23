@@ -145,7 +145,7 @@ func TestFSPreview(t *testing.T) {
 
 // waitAgentEnd reads the events SSE until agent_end (the prompt turn finished
 // and the session is fully persisted).
-func waitAgentEnd(t *testing.T, hs *httptest.Server, id string) []string {
+func waitAgentEnd(t *testing.T, hs *httptest.Server, id string) {
 	t.Helper()
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
@@ -154,7 +154,6 @@ func waitAgentEnd(t *testing.T, hs *httptest.Server, id string) []string {
 		t.Fatal(err)
 	}
 	defer func() { _ = res.Body.Close() }()
-	var types []string
 	sc := bufio.NewScanner(res.Body)
 	for sc.Scan() {
 		line := sc.Text()
@@ -163,7 +162,6 @@ func waitAgentEnd(t *testing.T, hs *httptest.Server, id string) []string {
 		}
 		var ev loop.Event
 		_ = json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev)
-		types = append(types, string(ev.Type))
 		if ev.Type == loop.AgentEnd {
 			break
 		}
@@ -173,7 +171,6 @@ func waitAgentEnd(t *testing.T, hs *httptest.Server, id string) []string {
 	if err := sc.Err(); err != nil {
 		t.Fatal(err)
 	}
-	return types
 }
 
 // reqRecorder captures every Stream request so tests can assert what the
@@ -194,7 +191,10 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 
 	prompt := func(model string) loop.Request {
 		t.Helper()
-		body, _ := json.Marshal(map[string]any{"text": "inspect tools", "model": model})
+		body, err := marshalJSON(map[string]any{"text": "inspect tools", "model": model})
+		if err != nil {
+			t.Fatal(err)
+		}
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer tok")
 		req.Header.Set("Content-Type", "application/json")
@@ -228,7 +228,10 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	if gpt.Tools[1].Type != "custom" || gpt.Tools[1].Format == nil {
 		t.Fatalf("GPT apply_patch spec = %+v", gpt.Tools[1])
 	}
-	readProps := gpt.Tools[0].Parameters["properties"].(map[string]any)
+	readProps, ok := gpt.Tools[0].Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("GPT Read properties = %#v", gpt.Tools[0].Parameters["properties"])
+	}
 	if readProps["pages"] == nil {
 		t.Fatal("GPT rich Read is missing pages")
 	}
@@ -251,7 +254,10 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	if strings.Contains(deepseek.Tools[0].Description, "PDF") {
 		t.Fatalf("DeepSeek Read leaked PDF description: %s", deepseek.Tools[0].Description)
 	}
-	readProps = deepseek.Tools[0].Parameters["properties"].(map[string]any)
+	readProps, ok = deepseek.Tools[0].Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("DeepSeek Read properties = %#v", deepseek.Tools[0].Parameters["properties"])
+	}
 	if readProps["pages"] != nil {
 		t.Fatalf("DeepSeek Read leaked pages: %+v", readProps)
 	}
@@ -389,7 +395,7 @@ func TestAuthAndCreateGetFork(t *testing.T) {
 
 func TestProviderConfigurationAPI(t *testing.T) {
 	_, hs := testServer(t)
-	call := func(method, path, body string) (*http.Response, map[string]any) {
+	call := func(method, path, body string) (int, map[string]any) {
 		t.Helper()
 		req, _ := http.NewRequestWithContext(t.Context(), method, hs.URL+path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer tok")
@@ -405,24 +411,24 @@ func TestProviderConfigurationAPI(t *testing.T) {
 		if res.StatusCode != http.StatusNoContent {
 			_ = json.NewDecoder(res.Body).Decode(&out)
 		}
-		return res, out
+		return res.StatusCode, out
 	}
 
-	res, _ := call(http.MethodPost, "/v1/providers", `{"id":"local","name":"Local","api":"completions","baseUrl":"http://127.0.0.1:11434/v1","enabled":true,"models":[{"id":"local/model","contextWindow":8192,"maxTokens":1024,"input":["text"],"reasoning":false,"cost":null}]}`)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("create provider: %d", res.StatusCode)
+	status, _ := call(http.MethodPost, "/v1/providers", `{"id":"local","name":"Local","api":"completions","baseUrl":"http://127.0.0.1:11434/v1","enabled":true,"models":[{"id":"local/model","contextWindow":8192,"maxTokens":1024,"input":["text"],"reasoning":false,"cost":null}]}`)
+	if status != http.StatusOK {
+		t.Fatalf("create provider: %d", status)
 	}
-	res, out := call(http.MethodPut, "/v1/providers/local/credential", `{"apiKey":"secret"}`)
-	if res.StatusCode != http.StatusOK || strings.Contains(fmt.Sprint(out), "secret") {
-		t.Fatalf("credential response: %d %+v", res.StatusCode, out)
+	status, out := call(http.MethodPut, "/v1/providers/local/credential", `{"apiKey":"secret"}`)
+	if status != http.StatusOK || strings.Contains(fmt.Sprint(out), "secret") {
+		t.Fatalf("credential response: %d %+v", status, out)
 	}
-	res, _ = call(http.MethodPut, "/v1/default-model", `{"provider":"local","model":"local/model"}`)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("set last used: %d", res.StatusCode)
+	status, _ = call(http.MethodPut, "/v1/default-model", `{"provider":"local","model":"local/model"}`)
+	if status != http.StatusOK {
+		t.Fatalf("set last used: %d", status)
 	}
-	res, out = call(http.MethodPatch, "/v1/providers/local", `{"enabled":false}`)
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("disable last-used provider: %d %+v", res.StatusCode, out)
+	status, out = call(http.MethodPatch, "/v1/providers/local", `{"enabled":false}`)
+	if status != http.StatusOK {
+		t.Fatalf("disable last-used provider: %d %+v", status, out)
 	}
 	def, _ := out["default"].(map[string]any)
 	if def["provider"] == "local" {
@@ -969,7 +975,7 @@ func TestSessionReloadQueuesWhileRunIsBusy(t *testing.T) {
 	}
 	before := srv.resources.Load(id, sess.Header.CWD)
 	_ = sess.Close()
-	st, _, err := srv.occupy(id, context.Background())
+	st, _, err := srv.occupy(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1474,7 +1480,10 @@ func TestEditBranchesInPlaceAndForkAtCreatesPathSession(t *testing.T) {
 
 	post := func(body map[string]any) {
 		t.Helper()
-		b, _ := json.Marshal(body)
+		b, err := marshalJSON(body)
+		if err != nil {
+			t.Fatal(err)
+		}
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", bytes.NewReader(b))
 		req.Header.Set("Authorization", "Bearer tok")
 		res, err := http.DefaultClient.Do(req)
@@ -1517,7 +1526,10 @@ func TestEditBranchesInPlaceAndForkAtCreatesPathSession(t *testing.T) {
 		t.Fatalf("active branch: %+v", src.MessagesToLeaf())
 	}
 
-	b, _ := json.Marshal(map[string]any{"entryId": assistants[0].ID})
+	b, err := marshalJSON(map[string]any{"entryId": assistants[0].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/fork", bytes.NewReader(b))
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
@@ -1895,7 +1907,7 @@ func firstLine(t *testing.T, path string) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	line := strings.SplitN(string(b), "\n", 2)[0]
+	line, _, _ := strings.Cut(string(b), "\n")
 	var m map[string]any
 	if err := json.Unmarshal([]byte(line), &m); err != nil {
 		t.Fatal(err)

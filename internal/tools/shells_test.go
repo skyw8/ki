@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+var errShellNotFound = errors.New("not found")
+
 func fakeDiscovery(goos string, env, paths map[string]string, files map[string]bool) shellDiscovery {
 	return shellDiscovery{
 		goos:   goos,
@@ -15,14 +17,14 @@ func fakeDiscovery(goos string, env, paths map[string]string, files map[string]b
 			if path := paths[name]; path != "" {
 				return path, nil
 			}
-			return "", errors.New("not found")
+			return "", errShellNotFound
 		},
 		exists: func(path string) bool { return files[filepath.Clean(path)] },
 	}
 }
 
 func TestDiscoverShellRuntimeNonWindowsDoesNotExposePowerShell(t *testing.T) {
-	got := discoverShellRuntime(fakeDiscovery("linux", nil, map[string]string{
+	got := discoverShellRuntime(fakeDiscovery("linux", nil, map[string]string{ //nolint:gosec // fake shell paths are test fixtures, not credentials
 		"bash": "/usr/local/bin/bash", "pwsh": "/usr/bin/pwsh",
 	}, map[string]bool{"/usr/local/bin/bash": true}))
 	if got.bash.path != "/usr/local/bin/bash" || got.powerShell != nil {

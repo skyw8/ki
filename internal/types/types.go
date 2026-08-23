@@ -32,6 +32,7 @@ type Usage struct {
 	Cost        *UsageCost `json:"cost,omitempty"`
 }
 
+// UsageCost contains token prices and the resulting request cost in USD.
 type UsageCost struct {
 	Input      float64 `json:"input"`
 	Output     float64 `json:"output"`

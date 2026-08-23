@@ -11,6 +11,11 @@ import (
 	"ki/internal/types"
 )
 
+var (
+	errCustomSpecMissing   = errors.New("custom spec missing")
+	errCustomResultMissing = errors.New("custom result kind missing")
+)
+
 type echo struct{}
 
 func (echo) Stream(_ context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
@@ -76,12 +81,12 @@ func (s *customStreamer) Stream(_ context.Context, req Request, _ func(Assistant
 	s.n++
 	if s.n == 1 {
 		if len(req.Tools) != 1 || req.Tools[0].Type != "custom" {
-			return types.Message{}, fmt.Errorf("custom spec missing: %+v", req.Tools)
+			return types.Message{}, fmt.Errorf("%w: %+v", errCustomSpecMissing, req.Tools)
 		}
 		return types.Message{Role: "assistant", StopReason: "toolUse", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "c1", Name: "apply_patch", Input: "PATCH"}}}, nil
 	}
 	if len(req.Messages) == 0 || req.Messages[len(req.Messages)-1].ToolType != "custom" {
-		return types.Message{}, fmt.Errorf("custom result kind missing: %+v", req.Messages)
+		return types.Message{}, fmt.Errorf("%w: %+v", errCustomResultMissing, req.Messages)
 	}
 	return types.Message{Role: "assistant", StopReason: "stop", Content: []types.Content{{Type: "text", Text: "done"}}}, nil
 }

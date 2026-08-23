@@ -9,10 +9,15 @@ import (
 type Kind int
 
 const (
+	// KindPrompt is ordinary user text rather than a slash command.
 	KindPrompt Kind = iota
+	// KindBuiltin is a built-in slash command handled by the server.
 	KindBuiltin
+	// KindSkill is a discovered skill command.
 	KindSkill
+	// KindTemplate is a discovered prompt template command.
 	KindTemplate
+	// KindUnknown is a slash command with no matching resource.
 	KindUnknown
 )
 

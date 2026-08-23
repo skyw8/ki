@@ -20,6 +20,7 @@ import (
 	"ki/internal/types"
 )
 
+// HandshakeTimeout bounds MCP connection and discovery setup for one server.
 const HandshakeTimeout = 20 * time.Second
 
 var errMCPTool = errors.New("MCP tool error")
@@ -31,6 +32,7 @@ type Notification struct {
 	Message string
 }
 
+// NotifyFunc receives asynchronous MCP catalog notifications for a session.
 type NotifyFunc func(sessionID string, notification Notification)
 
 // Manager owns live SDK sessions. Tool definitions are intentionally absent:
@@ -57,6 +59,7 @@ type PrepareResult struct {
 	States map[string]ServerState
 }
 
+// NewManager creates a manager for session-scoped MCP connections.
 func NewManager(notify NotifyFunc) *Manager {
 	return &Manager{
 		by:       map[string]map[string]*connection{},
@@ -87,14 +90,12 @@ func (m *Manager) Prepare(ctx context.Context, sessionID string, file File, togg
 		if !toggle.Allowed(name) {
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			loadCtx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
 			defer cancel()
 			state, tools := m.prepareServer(loadCtx, sessionID, name, spec, cached[name])
 			ch <- item{name: name, state: state, tools: tools}
-		}()
+		})
 	}
 	wg.Wait()
 	close(ch)
@@ -122,10 +123,9 @@ func (m *Manager) prepareServer(ctx context.Context, sessionID, name string, spe
 		return failedState(err), nil
 	}
 	state := cached
-	if state.Status == StatusStale {
-		// A list-changed notification is advisory until the user explicitly
-		// reloads. Reconnecting must not silently replace the pinned schema.
-	} else if fresh || state.Status != StatusReady {
+	// A list-changed notification is advisory until the user explicitly
+	// reloads. Reconnecting must not silently replace the pinned schema.
+	if state.Status != StatusStale && (fresh || state.Status != StatusReady) {
 		state, err = discover(ctx, conn.session)
 		if err != nil {
 			m.drop(sessionID, name, conn)
@@ -155,7 +155,11 @@ func discover(ctx context.Context, cs *mcp.ClientSession) (ServerState, error) {
 			state.ServerName = init.ServerInfo.Name
 			state.ServerVersion = init.ServerInfo.Version
 		}
-		state.Capabilities, _ = json.Marshal(init.Capabilities)
+		capabilities, err := json.Marshal(init.Capabilities)
+		if err != nil {
+			return ServerState{}, fmt.Errorf("marshal MCP capabilities: %w", err)
+		}
+		state.Capabilities = capabilities
 	}
 	for tool, err := range cs.Tools(ctx, nil) {
 		if err != nil {
@@ -256,7 +260,9 @@ func (m *Manager) connect(ctx context.Context, sessionID, name string, spec Serv
 		hc := &http.Client{Transport: headerTransport{base: http.DefaultTransport, headers: spec.Headers}}
 		transport = &mcp.StreamableClientTransport{Endpoint: spec.URL, HTTPClient: hc}
 	} else {
-		cmd := exec.Command(spec.Command, spec.Args...)
+		// The command and arguments are explicit MCP configuration supplied by
+		// the user or workspace owner.
+		cmd := exec.CommandContext(ctx, spec.Command, spec.Args...) //nolint:gosec // MCP command configuration is the feature contract
 		cmd.Stderr = os.Stderr
 		if len(spec.Env) > 0 {
 			cmd.Env = os.Environ()
@@ -300,6 +306,7 @@ func (m *Manager) drop(sessionID, name string, expected *connection) {
 	}
 }
 
+// CloseSession releases all live connections owned by one session.
 func (m *Manager) CloseSession(sessionID string) {
 	m.mu.Lock()
 	servers := m.by[sessionID]
@@ -320,6 +327,7 @@ func (m *Manager) CloseSession(sessionID string) {
 	}
 }
 
+// Close releases all live MCP connections owned by the manager.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.by))
@@ -403,7 +411,10 @@ func decodeResult(result *mcp.CallToolResult) loop.ToolResult {
 		}
 	}
 	if len(out.Content) == 0 && result.StructuredContent != nil {
-		raw, _ := json.Marshal(result.StructuredContent)
+		raw, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			return errorResult(fmt.Errorf("marshal MCP structured content: %w", err))
+		}
 		out.Content = append(out.Content, types.Content{Type: "text", Text: string(raw)})
 	}
 	if len(out.Content) == 0 {

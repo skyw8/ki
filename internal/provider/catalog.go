@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+// CatalogVersion is the schema version of the embedded provider catalog.
 const CatalogVersion = 2
 
 // CostRates are USD prices per million tokens.
@@ -18,11 +19,13 @@ type CostRates struct {
 	CacheWrite float64 `json:"cacheWrite"`
 }
 
+// CostTier applies rates after a cumulative input-token threshold.
 type CostTier struct {
 	InputTokensAbove int `json:"inputTokensAbove"`
 	CostRates
 }
 
+// Cost contains base rates and optional volume tiers.
 type Cost struct {
 	CostRates
 	Tiers []CostTier `json:"tiers,omitempty"`
@@ -55,7 +58,7 @@ type Model struct {
 	Reasoning          bool               `json:"reasoning"`
 	ThinkingLevelMap   map[string]*string `json:"thinkingLevelMap,omitempty"`
 	Cost               *Cost              `json:"cost"`
-	Compat             Compat             `json:"compat,omitempty"`
+	Compat             Compat             `json:"compat,omitzero"`
 }
 
 // Provider describes a connection plus its resolved models.
@@ -102,7 +105,7 @@ type ModelSeed struct {
 	Reasoning          *bool              `json:"reasoning,omitempty"`
 	ThinkingLevelMap   map[string]*string `json:"thinkingLevelMap,omitempty"`
 	Cost               *Cost              `json:"cost"`
-	Compat             Compat             `json:"compat,omitempty"`
+	Compat             Compat             `json:"compat,omitzero"`
 }
 
 //go:embed catalog.json
@@ -120,11 +123,12 @@ func mustBuiltinCatalog() catalogFile {
 		panic(fmt.Errorf("decode embedded provider catalog: %w", err))
 	}
 	if c.Version != CatalogVersion {
-		panic(fmt.Errorf("provider catalog version %d, want %d", c.Version, CatalogVersion))
+		panic(fmt.Errorf("%w %d, want %d", errCatalogVersion, c.Version, CatalogVersion))
 	}
 	return c
 }
 
+// BuiltinProviders returns a fresh copy of the embedded provider catalog.
 func BuiltinProviders() []Provider {
 	out := make([]Provider, 0, len(builtinCatalog.Providers))
 	for _, p := range builtinCatalog.Providers {
@@ -220,4 +224,5 @@ func cloneCost(in *Cost) *Cost {
 	return &out
 }
 
+// ProviderOrder defines the stable presentation order for provider IDs.
 var ProviderOrder = []string{"anthropic", "openai", "deepseek", "dashscope-cn", "dashscope", "zai-cn", "zai", "moonshot-cn", "moonshot", "minimax-cn", "minimax", "google", "xai"}

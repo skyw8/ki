@@ -25,9 +25,13 @@ func truncateHead(s string) (out string, note string) {
 }
 
 func validUTF8Head(s string, limit int) string {
-	if len(s) <= limit { return s }
+	if len(s) <= limit {
+		return s
+	}
 	end := limit
-	for end > 0 && !utf8.RuneStart(s[end]) { end-- }
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
 	return s[:end]
 }
 

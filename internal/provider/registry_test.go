@@ -41,7 +41,7 @@ func TestRegistryRejectsFreeformApplyPatchOutsideResponses(t *testing.T) {
 	on := true
 	reasoning := false
 	err = r.Update(func(cfg *ModelsFile) error {
-		cfg.Providers["bad"] = ProviderConfig{
+		cfg.Providers["bad"] = Config{
 			Name: "Bad", API: "completions", BaseURL: "http://127.0.0.1/v1", Enabled: &on,
 			Models: []ModelSeed{{ID: "bad", Input: []string{"text"}, ApplyPatchToolType: "freeform", Reasoning: &reasoning}},
 		}
@@ -61,7 +61,7 @@ func TestRegistryPersistsCustomProviderAndCredential(t *testing.T) {
 	on := true
 	reasoning := false
 	err = r.Update(func(cfg *ModelsFile) error {
-		cfg.Providers["local"] = ProviderConfig{
+		cfg.Providers["local"] = Config{
 			Name: "Local", API: "completions", BaseURL: "http://127.0.0.1:11434/v1", Enabled: &on,
 			Models: []ModelSeed{{ID: "example/model", ContextWindow: 8192, MaxTokens: 1024, Input: []string{"text"}, Reasoning: &reasoning}},
 		}

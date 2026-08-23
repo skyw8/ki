@@ -126,10 +126,7 @@ func (t grepTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		return errRes(formatSearchError(err))
 	}
 
-	output, err := formatGrepResult(result, mode, t.cwd, offset, headLimit, before, after, showLine)
-	if err != nil {
-		return errRes(err.Error())
-	}
+	output := formatGrepResult(result, mode, t.cwd, offset, headLimit, before, after, showLine)
 	return okRes(output)
 }
 
@@ -149,20 +146,17 @@ func contextLines(args map[string]any) (before, after int) {
 	return before, after
 }
 
-func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLimit, before, after int, showLine bool) (string, error) {
+func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLimit, before, after int, showLine bool) string {
 	switch mode {
 	case "content":
 		if len(result.Matches) == 0 {
-			return "No matches found" + searchMetadata(result), nil
+			return "No matches found" + searchMetadata(result)
 		}
 		start, end := pageBounds(len(result.Matches), offset, headLimit)
 		var lines []string
 		lineWasTruncated := false
 		for _, match := range result.Matches[start:end] {
-			block, truncated, err := formatMatch(match, cwd, before, after, showLine)
-			if err != nil {
-				return "", err
-			}
+			block, truncated := formatMatch(match, cwd, before, after, showLine)
 			lines = append(lines, block...)
 			lineWasTruncated = lineWasTruncated || truncated
 		}
@@ -174,7 +168,7 @@ func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLi
 		if lineWasTruncated {
 			note = appendSearchNote(note, fmt.Sprintf("Some lines truncated to %d chars. Use Read to see full lines", grepMaxLineLength))
 		}
-		return output + note + searchMetadata(result), nil
+		return output + note + searchMetadata(result)
 
 	case "count":
 		counts := append([]search.Count(nil), result.Counts...)
@@ -186,11 +180,11 @@ func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLi
 			total += count.Count
 		}
 		if len(lines) == 0 {
-			return "No matches found" + searchMetadata(result), nil
+			return "No matches found" + searchMetadata(result)
 		}
 		output, note := limitSearchOutput(strings.Join(lines, "\n"), grepMaxOutput)
 		note = appendSearchNote(note, fmt.Sprintf("Found %d total occurrences across %d files.", total, len(lines)))
-		return output + note + searchMetadata(result), nil
+		return output + note + searchMetadata(result)
 
 	default:
 		files := append([]string(nil), result.Files...)
@@ -204,14 +198,14 @@ func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLi
 		})
 		start, end := pageBounds(len(files), offset, headLimit)
 		if start == end {
-			return "No files found" + searchMetadata(result), nil
+			return "No files found" + searchMetadata(result)
 		}
 		lines := make([]string, 0, end-start+1)
 		for _, file := range files[start:end] {
 			lines = append(lines, displaySearchPath(cwd, file))
 		}
 		output, note := limitSearchOutput(strings.Join(lines, "\n"), grepMaxOutput)
-		return fmt.Sprintf("Found %d files\n%s", len(lines), output) + note + searchMetadata(result), nil
+		return fmt.Sprintf("Found %d files\n%s", len(lines), output) + note + searchMetadata(result)
 	}
 }
 
@@ -219,16 +213,16 @@ func searchMetadata(result search.GrepResult) string {
 	return fmt.Sprintf("\n\n[files: %d; matches: %d; truncated: %t]", len(result.Files), result.TotalMatch, result.Truncated)
 }
 
-func formatMatch(match search.Match, cwd string, before, after int, showLine bool) ([]string, bool, error) {
+func formatMatch(match search.Match, cwd string, before, after int, showLine bool) ([]string, bool) {
 	path := displaySearchPath(cwd, match.Path)
 	if before == 0 && after == 0 {
 		text, truncated := truncateSearchLine(match.Text)
-		return []string{formatSearchLine(path, match.LineNumber, text, showLine)}, truncated, nil
+		return []string{formatSearchLine(path, match.LineNumber, text, showLine)}, truncated
 	}
 	data, err := os.ReadFile(match.Path)
 	if err != nil {
 		text, truncated := truncateSearchLine(match.Text)
-		return []string{fmt.Sprintf("%s:%d: (unable to read file; %s)", path, match.LineNumber, text)}, truncated, nil
+		return []string{fmt.Sprintf("%s:%d: (unable to read file; %s)", path, match.LineNumber, text)}, truncated
 	}
 	content := strings.ReplaceAll(strings.ReplaceAll(string(data), "\r\n", "\n"), "\r", "\n")
 	fileLines := strings.Split(content, "\n")
@@ -245,7 +239,7 @@ func formatMatch(match search.Match, cwd string, before, after int, showLine boo
 			lines = append(lines, fmt.Sprintf("%s-%d- %s", path, lineNumber, text))
 		}
 	}
-	return lines, truncated, nil
+	return lines, truncated
 }
 
 func formatSearchLine(path string, line int, text string, showLine bool) string {
@@ -290,12 +284,12 @@ func splitGlobArguments(value string) []string {
 		return nil
 	}
 	var out []string
-	for _, raw := range strings.Fields(value) {
+	for raw := range strings.FieldsSeq(value) {
 		if strings.Contains(raw, "{") && strings.Contains(raw, "}") {
 			out = append(out, raw)
 			continue
 		}
-		for _, pattern := range strings.Split(raw, ",") {
+		for pattern := range strings.SplitSeq(raw, ",") {
 			if pattern != "" {
 				out = append(out, pattern)
 			}

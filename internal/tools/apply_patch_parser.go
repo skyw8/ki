@@ -49,10 +49,10 @@ func parseApplyPatch(input string) ([]patchHunk, error) {
 		lines = lines[1 : len(lines)-1]
 	}
 	if len(lines) == 0 || strings.TrimSpace(strings.TrimSuffix(lines[0], "\r")) != patchBeginMarker {
-		return nil, fmt.Errorf("invalid patch: The first line of the patch must be '*** Begin Patch'")
+		return nil, errPatchBegin
 	}
 	if strings.TrimSpace(strings.TrimSuffix(lines[len(lines)-1], "\r")) != patchEndMarker {
-		return nil, fmt.Errorf("invalid patch: The last line of the patch must be '*** End Patch'")
+		return nil, errPatchEnd
 	}
 	p := newStreamingPatchParser()
 	if _, err := p.Push(strings.Join(lines, "\n")); err != nil {
@@ -109,7 +109,7 @@ func (p *streamingPatchParser) Finish() ([]patchHunk, error) {
 		}
 	}
 	if p.mode != parserEnded {
-		return nil, fmt.Errorf("invalid patch: The last line of the patch must be '*** End Patch'")
+		return nil, errPatchEnd
 	}
 	return clonePatchHunks(p.hunks), nil
 }
@@ -119,13 +119,13 @@ func (p *streamingPatchParser) process(line string) error {
 	switch p.mode {
 	case parserNotStarted:
 		if trimmed != patchBeginMarker {
-			return fmt.Errorf("invalid patch: The first line of the patch must be '*** Begin Patch'")
+			return errPatchBegin
 		}
 		p.mode = parserStarted
 		return nil
 	case parserEnded:
 		if trimmed != "" {
-			return fmt.Errorf("invalid patch: The last line of the patch must be '*** End Patch'")
+			return errPatchEnd
 		}
 		return nil
 	case parserStarted, parserAdd, parserDelete:
@@ -148,19 +148,19 @@ func (p *streamingPatchParser) process(line string) error {
 				return nil
 			}
 			if updateLine != "@@" && !strings.HasPrefix(updateLine, "@@ ") {
-				return fmt.Errorf("invalid hunk at line %d, expected update hunk to start with a @@ context marker, got: %q", p.line, line)
+				return fmt.Errorf("%w at line %d, expected update hunk to start with a @@ context marker, got: %q", errInvalidHunk, p.line, line)
 			}
 		}
 		if len(h.chunks) == 0 && h.movePath == "" && strings.HasPrefix(updateLine, patchMoveMarker) {
 			h.movePath = strings.TrimPrefix(updateLine, patchMoveMarker)
 			if h.movePath == "" {
-				return fmt.Errorf("invalid hunk at line %d, move path is empty", p.line)
+				return fmt.Errorf("%w at line %d, move path is empty", errInvalidHunk, p.line)
 			}
 			return nil
 		}
 		if updateLine == "@@" || strings.HasPrefix(updateLine, "@@ ") {
 			if len(h.chunks) > 0 && len(h.chunks[len(h.chunks)-1].old) == 0 && len(h.chunks[len(h.chunks)-1].new) == 0 {
-				return fmt.Errorf("invalid hunk at line %d, update hunk does not contain any lines", p.line)
+				return fmt.Errorf("%w at line %d, update hunk does not contain any lines", errInvalidHunk, p.line)
 			}
 			c := patchChunk{}
 			if updateLine != "@@" {
@@ -172,7 +172,7 @@ func (p *streamingPatchParser) process(line string) error {
 		}
 		if updateLine == patchEOFMarker {
 			if len(h.chunks) == 0 || (len(h.chunks[len(h.chunks)-1].old) == 0 && len(h.chunks[len(h.chunks)-1].new) == 0) {
-				return fmt.Errorf("invalid hunk at line %d, update hunk does not contain any lines", p.line)
+				return fmt.Errorf("%w at line %d, update hunk does not contain any lines", errInvalidHunk, p.line)
 			}
 			h.chunks[len(h.chunks)-1].eof = true
 			return nil
@@ -193,7 +193,7 @@ func (p *streamingPatchParser) process(line string) error {
 		case '-':
 			c.old = append(c.old, line[1:])
 		default:
-			return fmt.Errorf("invalid hunk at line %d, unexpected line found in update hunk: %q", p.line, line)
+			return fmt.Errorf("%w at line %d, unexpected line found in update hunk: %q", errInvalidHunk, p.line, line)
 		}
 		return nil
 	}
@@ -222,7 +222,7 @@ func (p *streamingPatchParser) header(line string) (bool, error) {
 			}
 			path := strings.TrimPrefix(line, marker.prefix)
 			if path == "" {
-				return true, fmt.Errorf("invalid hunk at line %d, file path is empty", p.line)
+				return true, fmt.Errorf("%w at line %d, file path is empty", errInvalidHunk, p.line)
 			}
 			p.hunks = append(p.hunks, patchHunk{kind: marker.kind, path: path})
 			p.mode = marker.mode
@@ -241,17 +241,17 @@ func (p *streamingPatchParser) ensureUpdate() error {
 	}
 	h := p.hunks[len(p.hunks)-1]
 	if len(h.chunks) == 0 {
-		return fmt.Errorf("invalid hunk at line %d, update file hunk for path %q is empty", p.updateLine, h.path)
+		return fmt.Errorf("%w at line %d, update file hunk for path %q is empty", errInvalidHunk, p.updateLine, h.path)
 	}
 	last := h.chunks[len(h.chunks)-1]
 	if len(last.old) == 0 && len(last.new) == 0 {
-		return fmt.Errorf("invalid hunk at line %d, update hunk does not contain any lines", p.line)
+		return fmt.Errorf("%w at line %d, update hunk does not contain any lines", errInvalidHunk, p.line)
 	}
 	return nil
 }
 
 func (p *streamingPatchParser) invalidHeader(line string) error {
-	return fmt.Errorf("invalid hunk at line %d, %q is not a valid hunk header", p.line, line)
+	return fmt.Errorf("%w at line %d, %q is not a valid hunk header", errInvalidHunk, p.line, line)
 }
 
 func clonePatchHunks(in []patchHunk) []patchHunk {

@@ -35,7 +35,7 @@ func (s *Server) doReload(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 	}
-	queued := false
+	var queued bool
 	if body.SessionID == "" {
 		queued = s.Reload()
 	} else {
@@ -122,7 +122,7 @@ func (s *Server) patchMCP(w http.ResponseWriter, r *http.Request) {
 	s.getMCP(w, r)
 }
 
-func (s *Server) occupy(id string, parent context.Context) (*runState, context.Context, error) {
+func (s *Server) occupy(parent context.Context, id string) (*runState, context.Context, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if st, ok := s.runs[id]; ok {
@@ -186,13 +186,13 @@ func hasNonText(content []types.Content) bool {
 	return false
 }
 
-func (s *Server) startRun(w http.ResponseWriter, id string, content []types.Content, parentID *string, model string) {
-	st, ctx, err := s.occupy(id, context.Background())
+func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id string, content []types.Content, parentID *string, model string) {
+	st, ctx, err := s.occupy(parent, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	//nolint:contextcheck // prompt outlives the HTTP request; abort is the cancel path
+
 	go s.runPrompt(ctx, st, id, content, parentID, model)
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": true})
 }

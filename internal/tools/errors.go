@@ -1,0 +1,29 @@
+package tools
+
+import "errors"
+
+var (
+	errNoPatchFiles           = errors.New("no files were modified")
+	errMultiplePatchOps       = errors.New("invalid patch: multiple operations target")
+	errPatchDirectory         = errors.New("path is a directory")
+	errPatchBegin             = errors.New("invalid patch: the first line of the patch must be '*** Begin Patch'")
+	errPatchEnd               = errors.New("invalid patch: the last line of the patch must be '*** End Patch'")
+	errInvalidHunk            = errors.New("invalid hunk")
+	errEditsArray             = errors.New("edits must be an array")
+	errEditObject             = errors.New("must be an object")
+	errEditOldEmpty           = errors.New("old_string must not be empty")
+	errEditNoChange           = errors.New("makes no change")
+	errEditsEmpty             = errors.New("edits must contain at least one replacement")
+	errOldStringRequired      = errors.New("old_string is required")
+	errNoChanges              = errors.New("no changes to make: old_string and new_string are exactly the same")
+	errCouldNotFindOldString  = errors.New("could not find old_string")
+	errPatchContextMissing    = errors.New("failed to find context")
+	errPatchLinesMissing      = errors.New("failed to find expected lines")
+	errFoundOccurrences       = errors.New("found")
+	errEditsOverlap           = errors.New("edits overlap")
+	errImageStillTooLarge     = errors.New("image remains larger than")
+	errTaskStoreClosed        = errors.New("task store is closed")
+	errInterpreterUnavailable = errors.New("command interpreter is unavailable")
+	errTaskOutputClosed       = errors.New("task output is closed")
+	errTaskNotRunning         = errors.New("task is not running")
+)

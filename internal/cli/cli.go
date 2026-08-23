@@ -141,7 +141,7 @@ func runReload(cfg config.Config) error {
 		return errNoLiveServer
 	}
 	var out map[string]any
-	if err := doJSON("http://"+sf.Addr, sf.Token, "POST", "/v1/reload", nil, &out); err != nil {
+	if err := doJSON("http://"+sf.Addr, sf.Token, "/v1/reload", nil, &out); err != nil {
 		return err
 	}
 	fmt.Println("reloaded")
@@ -233,7 +233,7 @@ func runServe(cfg config.Config, addr string) error {
 	st := streamer(cfg)
 	srv, err := server.New(server.Options{Config: cfg, Streamer: st})
 	if err != nil {
-		return err
+		return fmt.Errorf("create server: %w", err)
 	}
 	if err := srv.ListenAndServe(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server stopped", "err", err)
@@ -329,7 +329,7 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 	id := f.Session
 	if id == "" {
 		var created map[string]any
-		if err := doJSON(base, token, "POST", "/v1/sessions", map[string]any{"cwd": f.CWD, "model": f.Model}, &created); err != nil {
+		if err := doJSON(base, token, "/v1/sessions", map[string]any{"cwd": f.CWD, "model": f.Model}, &created); err != nil {
 			return err
 		}
 		id, _ = created["id"].(string)
@@ -344,11 +344,13 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 		// Why Background: ctx is already canceled (that's why this goroutine
 		// woke). Reusing it would cancel the abort HTTP request before serve
 		// sees it, so Ctrl+C would never reach POST /abort.
-		abortCtx, abortCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		// WithoutCancel keeps the abort request alive after the signal context
+		// is canceled while retaining any values attached to the client context.
+		abortCtx, abortCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer abortCancel()
 		_ = doJSONContext(abortCtx, base, token, "POST", "/v1/sessions/"+id+"/abort", nil, nil)
 	}()
-	if err := doJSON(base, token, "POST", "/v1/sessions/"+id+"/prompt", map[string]any{"text": prompt, "model": f.Model}, nil); err != nil {
+	if err := doJSON(base, token, "/v1/sessions/"+id+"/prompt", map[string]any{"text": prompt, "model": f.Model}, nil); err != nil {
 		return err
 	}
 	if err := streamEvents(ctx, base, token, id); err != nil {
@@ -367,7 +369,7 @@ func runSessionAction(cfg config.Config, id, action string) error {
 		defer stop()
 	}
 	var out map[string]any
-	if err := doJSON(base, token, "POST", "/v1/sessions/"+id+"/"+action, nil, &out); err != nil {
+	if err := doJSON(base, token, "/v1/sessions/"+id+"/"+action, nil, &out); err != nil {
 		return err
 	}
 	if action == "compact" {
@@ -387,7 +389,7 @@ func ensureServer(cfg config.Config, f flags) (base, token string, stop func(), 
 	// in-process
 	srv, err := server.New(server.Options{Config: cfg, Streamer: streamer(cfg)})
 	if err != nil {
-		return "", "", nil, err
+		return "", "", nil, fmt.Errorf("create in-process server: %w", err)
 	}
 	addr := "127.0.0.1:0"
 	if f.Addr != "" {
@@ -430,8 +432,8 @@ func ping(base, _ string) bool {
 	return res.StatusCode == http.StatusOK
 }
 
-func doJSON(base, token, method, path string, body any, out any) error {
-	return doJSONContext(context.Background(), base, token, method, path, body, out)
+func doJSON(base, token, path string, body any, out any) error {
+	return doJSONContext(context.Background(), base, token, http.MethodPost, path, body, out)
 }
 
 func doJSONContext(ctx context.Context, base, token, method, path string, body any, out any) error {
@@ -506,7 +508,8 @@ func printEvent(ev loop.Event) {
 		_, _ = fmt.Fprintf(os.Stdout, "[%s done err=%v]\n", ev.ToolName, ev.IsError)
 	case loop.AgentStart, loop.AgentEnd, loop.TurnStart, loop.TurnEnd,
 		loop.RequestHeader, loop.MessageStart, loop.MessageEnd,
-		loop.ToolExecutionUpdate, loop.CompactionStart, loop.CompactionEnd:
+		loop.ToolExecutionUpdate, loop.PatchApplyUpdated, loop.CompactionStart, loop.CompactionEnd,
+		loop.ContextUsage, loop.MCPServerFailed, loop.MCPToolsChanged:
 		return
 	}
 }

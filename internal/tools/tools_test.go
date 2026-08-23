@@ -53,7 +53,11 @@ func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
 		t.Fatalf("classic tools = %s", got)
 	}
 	textRead := pick(classic, "Read")
-	if strings.Contains(textRead.Prompt(), "PDF") || textRead.Parameters()["properties"].(map[string]any)["pages"] != nil {
+	properties, ok := textRead.Parameters()["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("text Read properties = %#v", textRead.Parameters()["properties"])
+	}
+	if strings.Contains(textRead.Prompt(), "PDF") || properties["pages"] != nil {
 		t.Fatalf("text Read leaked rich capabilities: %s %+v", textRead.Prompt(), textRead.Parameters())
 	}
 
@@ -75,7 +79,11 @@ func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
 	if !strings.Contains(pick(patch, "Read").Prompt(), "PDF") {
 		t.Fatal("rich Read omitted PDF capability")
 	}
-	spec := pick(patch, "apply_patch").(loop.ToolSpecProvider).ToolSpec()
+	provider, ok := pick(patch, "apply_patch").(loop.ToolSpecProvider)
+	if !ok {
+		t.Fatal("apply_patch does not provide a custom tool spec")
+	}
+	spec := provider.ToolSpec()
 	if spec.Type != "custom" || spec.Format == nil || spec.Format.Syntax != "lark" {
 		t.Fatalf("apply_patch spec = %+v", spec)
 	}
@@ -92,7 +100,10 @@ func TestBuildPowerShellContract(t *testing.T) {
 	if tool == nil {
 		t.Fatal("PowerShell was not registered")
 	}
-	props := tool.Parameters()["properties"].(map[string]any)
+	props, ok := tool.Parameters()["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("PowerShell properties = %#v", tool.Parameters()["properties"])
+	}
 	for _, name := range []string{"command", "timeout", "description", "run_in_background"} {
 		if props[name] == nil {
 			t.Fatalf("PowerShell missing %s schema", name)
@@ -138,7 +149,7 @@ func TestApplyPatchAddUpdateMoveDelete(t *testing.T) {
 	if move.IsError {
 		t.Fatalf("move: %+v", move)
 	}
-	b, err := os.ReadFile(filepath.Join(cwd, "sub", "b.txt"))
+	b, err := os.ReadFile(filepath.Join(cwd, "sub", "b.txt")) //nolint:gosec // path is inside the isolated test directory
 	if err != nil || string(b) != "ONE\ntwo\n" {
 		t.Fatalf("moved file = %q err=%v", b, err)
 	}
@@ -161,7 +172,7 @@ func TestApplyPatchPreservesCRLFAndMatchesWhitespace(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("patch: %+v", res)
 	}
-	b, _ := os.ReadFile(path)
+	b, _ := os.ReadFile(path) //nolint:gosec // path is inside the isolated test directory
 	if string(b) != "ONE\r\ntwo\r\n" {
 		t.Fatalf("preserved file = %q", b)
 	}
@@ -275,8 +286,7 @@ func TestEditReplaceAllAndUniqueFailure(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("%+v", res)
 	}
-	//nolint:gosec // p is created inside the isolated test directory.
-	b, _ := os.ReadFile(p)
+	b, _ := os.ReadFile(p) //nolint:gosec // path is inside the isolated test directory
 	if string(b) != "y y y" {
 		t.Fatalf("got %q", b)
 	}
@@ -302,7 +312,7 @@ func TestEditBatchUsesOneOriginalAndReturnsDiffDetails(t *testing.T) {
 	if !ok || !strings.Contains(details.Patch, "-alpha") || !strings.Contains(details.Patch, "+GAMMA") || details.FirstChangedLine != 1 {
 		t.Fatalf("details: %#v", res.Details)
 	}
-	b, _ := os.ReadFile(p)
+	b, _ := os.ReadFile(p) //nolint:gosec // path is inside the isolated test directory
 	if string(b) != "ALPHA\nbeta\nGAMMA\n" {
 		t.Fatalf("file: %q", b)
 	}
@@ -319,7 +329,11 @@ func TestReadBytePagingAndImageResize(t *testing.T) {
 	_ = os.WriteFile(textPath, []byte(strings.Repeat("你", 20000)), 0o600)
 	read := readTool{cwd: cwd, rich: true}
 	first := read.Execute(context.Background(), map[string]any{"file_path": textPath})
-	details := first.Details.(readDetails).Truncation
+	readDetailsValue, ok := first.Details.(readDetails)
+	if !ok {
+		t.Fatalf("first details = %#v", first.Details)
+	}
+	details := readDetailsValue.Truncation
 	if !details.Truncated || details.NextByteOffset == 0 || !utf8.ValidString(first.Content[0].Text) {
 		t.Fatalf("first page: %+v", first)
 	}
@@ -330,11 +344,15 @@ func TestReadBytePagingAndImageResize(t *testing.T) {
 
 	imagePath := filepath.Join(cwd, "wide.png")
 	img := image.NewNRGBA(image.Rect(0, 0, 2100, 2))
-	f, _ := os.Create(imagePath)
+	f, _ := os.Create(imagePath) //nolint:gosec // path is inside the isolated test directory
 	_ = png.Encode(f, img)
 	_ = f.Close()
 	imageResult := read.Execute(context.Background(), map[string]any{"file_path": imagePath})
-	imageInfo := imageResult.Details.(readDetails).Image
+	imageDetailsValue, ok := imageResult.Details.(readDetails)
+	if !ok {
+		t.Fatalf("image details = %#v", imageResult.Details)
+	}
+	imageInfo := imageDetailsValue.Image
 	if imageResult.IsError || !imageInfo.Resized || imageInfo.Width > maxImageDimension {
 		t.Fatalf("image resize: %+v", imageResult)
 	}
@@ -393,7 +411,7 @@ func waitPIDFile(t *testing.T, path string) int {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		raw, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path) //nolint:gosec // path is a test fixture inside t.TempDir
 		if err == nil {
 			pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw)))
 			if convErr == nil && pid > 0 {
@@ -537,7 +555,7 @@ func TestBashForegroundTruncationSpillsAndReadCanPage(t *testing.T) {
 	if !filepath.IsAbs(path) {
 		t.Fatalf("full output path is not absolute: %q", path)
 	}
-	full, err := os.ReadFile(path)
+	full, err := os.ReadFile(path) //nolint:gosec // path is the test spill file created by the tool
 	if err != nil {
 		t.Fatal(err)
 	}

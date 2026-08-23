@@ -137,7 +137,7 @@ func patchPaths(cwd string, hunks []patchHunk) []string {
 
 func verifyApplyPatch(ctx context.Context, cwd string, hunks []patchHunk, pio *patchFileIO) (verifiedPatch, error) {
 	if len(hunks) == 0 {
-		return verifiedPatch{}, fmt.Errorf("No files were modified.")
+		return verifiedPatch{}, errNoPatchFiles
 	}
 	verified := verifiedPatch{changes: make([]verifiedPatchChange, 0, len(hunks))}
 	seen := map[string]bool{}
@@ -148,7 +148,7 @@ func verifyApplyPatch(ctx context.Context, cwd string, hunks []patchHunk, pio *p
 		path := resolve(cwd, filepath.FromSlash(h.path))
 		key := canonicalMutationPath(path)
 		if seen[key] {
-			return verifiedPatch{}, fmt.Errorf("invalid patch: multiple operations target %s", path)
+			return verifiedPatch{}, fmt.Errorf("%w %s", errMultiplePatchOps, path)
 		}
 		seen[key] = true
 		change := verifiedPatchChange{hunk: h, kind: h.kind, path: path, display: h.path}
@@ -161,13 +161,13 @@ func verifyApplyPatch(ctx context.Context, cwd string, hunks []patchHunk, pio *p
 		case patchDelete:
 			data, err := pio.readFile(path)
 			if err != nil {
-				return verifiedPatch{}, fmt.Errorf("Failed to read %s: %w", path, err)
+				return verifiedPatch{}, fmt.Errorf("failed to read %s: %w", path, err)
 			}
 			change.oldContent = string(data)
 		case patchUpdate:
 			data, err := pio.readFile(path)
 			if err != nil {
-				return verifiedPatch{}, fmt.Errorf("Failed to read file to update %s: %w", path, err)
+				return verifiedPatch{}, fmt.Errorf("failed to read file to update %s: %w", path, err)
 			}
 			next, diff, err := derivePatchUpdate(string(data), path, h.chunks)
 			if err != nil {
@@ -196,7 +196,7 @@ func applyVerifiedPatch(ctx context.Context, verified verifiedPatch, pio *patchF
 				// WriteFile may truncate before returning ENOSPC or another error,
 				// so the observed failure cannot prove the target is unchanged.
 				delta.exact = false
-				return "", delta, fmt.Errorf("Failed to write file %s: %w", path, err)
+				return "", delta, fmt.Errorf("failed to write file %s: %w", path, err)
 			}
 			delta.changes = append(delta.changes, appliedPatchChange{kind: patchAdd, path: path, display: intended.display, newContent: intended.content, overwrittenContent: overwritten})
 			added = append(added, intended.display)
@@ -208,14 +208,14 @@ func applyVerifiedPatch(ctx context.Context, verified verifiedPatch, pio *patchF
 			}
 			st, err := pio.stat(path)
 			if err != nil {
-				return "", delta, fmt.Errorf("Failed to delete file %s: %w", path, err)
+				return "", delta, fmt.Errorf("failed to delete file %s: %w", path, err)
 			}
 			if st.IsDir() {
-				return "", delta, fmt.Errorf("Failed to delete file %s: path is a directory", path)
+				return "", delta, fmt.Errorf("failed to delete file %s: %w", path, errPatchDirectory)
 			}
 			if err := pio.remove(path); err != nil {
 				delta.exact = delta.exact && patchContentUnchanged(path, old, readErr == nil, pio)
-				return "", delta, fmt.Errorf("Failed to delete file %s: %w", path, err)
+				return "", delta, fmt.Errorf("failed to delete file %s: %w", path, err)
 			}
 			if readErr == nil {
 				delta.changes = append(delta.changes, appliedPatchChange{kind: patchDelete, path: path, display: h.path, oldContent: string(old)})
@@ -225,7 +225,7 @@ func applyVerifiedPatch(ctx context.Context, verified verifiedPatch, pio *patchF
 			notePatchPath(path, pio, &delta.exact)
 			data, err := pio.readFile(path)
 			if err != nil {
-				return "", delta, fmt.Errorf("Failed to read file to update %s: %w", path, err)
+				return "", delta, fmt.Errorf("failed to read file to update %s: %w", path, err)
 			}
 			next, _, err := derivePatchUpdate(string(data), path, h.chunks)
 			if err != nil {
@@ -234,7 +234,7 @@ func applyVerifiedPatch(ctx context.Context, verified verifiedPatch, pio *patchF
 			if h.movePath == "" {
 				if err := writePatchFile(path, []byte(next), pio); err != nil {
 					delta.exact = false
-					return "", delta, fmt.Errorf("Failed to write file %s: %w", path, err)
+					return "", delta, fmt.Errorf("failed to write file %s: %w", path, err)
 				}
 				delta.changes = append(delta.changes, appliedPatchChange{kind: patchUpdate, path: path, display: h.path, oldContent: string(data), newContent: next})
 				modified = append(modified, intended.display)
@@ -243,13 +243,13 @@ func applyVerifiedPatch(ctx context.Context, verified verifiedPatch, pio *patchF
 				overwritten := optionalPatchContent(dest, pio, &delta.exact)
 				if err := writePatchFile(dest, []byte(next), pio); err != nil {
 					delta.exact = false
-					return "", delta, fmt.Errorf("Failed to write file %s: %w", dest, err)
+					return "", delta, fmt.Errorf("failed to write file %s: %w", dest, err)
 				}
 				idx := len(delta.changes)
 				delta.changes = append(delta.changes, appliedPatchChange{kind: patchAdd, path: dest, display: h.movePath, newContent: next, overwrittenContent: overwritten})
 				if err := pio.remove(path); err != nil {
 					delta.exact = delta.exact && patchContentUnchanged(path, data, true, pio)
-					return "", delta, fmt.Errorf("Failed to remove original %s: %w", path, err)
+					return "", delta, fmt.Errorf("failed to remove original %s: %w", path, err)
 				}
 				delta.changes[idx] = appliedPatchChange{kind: patchUpdate, path: path, display: h.path, movePath: dest, oldContent: string(data), newContent: next, overwrittenMoveContent: overwritten}
 				modified = append(modified, h.movePath)
@@ -349,6 +349,8 @@ func patchKindName(kind patchKind) string {
 		return "add"
 	case patchDelete:
 		return "delete"
+	case patchUpdate:
+		return "update"
 	default:
 		return "update"
 	}

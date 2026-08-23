@@ -48,6 +48,7 @@ func NewLive(api, base, key string, doer HTTPDoer) *Live {
 	return &Live{Doer: doer, APIKey: key, Base: strings.TrimRight(base, "/"), API: api}
 }
 
+// NewLiveModel creates a live streamer from a resolved model and API key.
 func NewLiveModel(model Model, key string, doer HTTPDoer) *Live {
 	l := NewLive(model.API, model.BaseURL, key, doer)
 	l.Model = &model

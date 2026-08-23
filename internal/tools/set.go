@@ -6,7 +6,9 @@ import "ki/internal/loop"
 type Editor string
 
 const (
-	EditorWriteEdit  Editor = "write_edit"
+	// EditorWriteEdit exposes Write and Edit tools for ordinary function APIs.
+	EditorWriteEdit Editor = "write_edit"
+	// EditorApplyPatch exposes the freeform apply_patch tool for Responses.
 	EditorApplyPatch Editor = "apply_patch_freeform"
 )
 

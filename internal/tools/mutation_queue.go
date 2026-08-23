@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type MutationQueue struct {
 	entries map[string]*mutationEntry
 }
 
+// NewMutationQueue creates an empty path mutation queue.
 func NewMutationQueue() *MutationQueue { return &MutationQueue{entries: map[string]*mutationEntry{}} }
 
 func canonicalMutationPath(path string) string {
@@ -28,8 +30,8 @@ func canonicalMutationPath(path string) string {
 	if err == nil {
 		path = abs
 	}
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		path = real
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
 	} else if parent, parentErr := filepath.EvalSymlinks(filepath.Dir(path)); parentErr == nil {
 		path = filepath.Join(parent, filepath.Base(path))
 	}
@@ -71,6 +73,7 @@ func (q *MutationQueue) drop(key string, e *mutationEntry) {
 	q.mu.Unlock()
 }
 
+// LockPaths acquires all distinct paths in a stable order and returns a release function.
 func (q *MutationQueue) LockPaths(ctx context.Context, paths ...string) (func(), error) {
 	keys := make([]string, 0, len(paths))
 	seen := map[string]bool{}
@@ -86,16 +89,16 @@ func (q *MutationQueue) LockPaths(ctx context.Context, paths ...string) (func(),
 	for _, key := range keys {
 		release, err := q.acquire(ctx, key)
 		if err != nil {
-			for i := len(releases) - 1; i >= 0; i-- {
-				releases[i]()
+			for _, release := range slices.Backward(releases) {
+				release()
 			}
 			return nil, err
 		}
 		releases = append(releases, release)
 	}
 	return func() {
-		for i := len(releases) - 1; i >= 0; i-- {
-			releases[i]()
+		for _, release := range slices.Backward(releases) {
+			release()
 		}
 	}, nil
 }

@@ -55,7 +55,7 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
 	path := filepath.Join(dir, id+ext)
 	// Content-addressed names make retries idempotent. O_EXCL prevents a
 	// concurrent upload from truncating a blob already referenced by a branch.
-	out, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // path is a content-addressed file under the session directory
 	if err == nil {
 		if _, err = out.Write(b); err == nil {
 			err = out.Sync()

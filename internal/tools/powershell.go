@@ -20,12 +20,13 @@ func (t powerShellTool) Prompt() string {
 	edition := `PowerShell edition: unknown — assume Windows PowerShell 5.1 for compatibility.
 - Do not use &&, ||, ternary ?:, null-coalescing ??, or null-conditional ?..
 - Chain conditionally with: A; if ($?) { B }. Chain unconditionally with: A; B.`
-	if t.shell.powerShellEdition == powerShellCore {
+	switch t.shell.powerShellEdition {
+	case powerShellCore:
 		edition = `PowerShell edition: PowerShell 7+ (pwsh).
 - Pipeline chain operators && and || are available. Prefer A && B when B requires A to succeed.
 - Ternary, null-coalescing, and null-conditional operators are available.
 - The default file encoding is UTF-8 without BOM.`
-	} else if t.shell.powerShellEdition == powerShellDesktop {
+	case powerShellDesktop:
 		edition = `PowerShell edition: Windows PowerShell 5.1 (powershell.exe).
 - Pipeline chain operators && and || are not available. Use A; if ($?) { B } for conditional chaining.
 - Ternary, null-coalescing, and null-conditional operators are not available.

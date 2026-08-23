@@ -61,7 +61,7 @@ func ExpandSkill(snapshot resources.Snapshot, toggle session.Toggle, name, args 
 		if sk.Name != name {
 			continue
 		}
-		b, err := os.ReadFile(sk.FilePath) //nolint:gosec // path from the resource snapshot
+		b, err := os.ReadFile(sk.FilePath)
 		if err != nil {
 			return "", false
 		}
