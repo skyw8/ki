@@ -2,14 +2,16 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
-	"unicode"
 
+	"github.com/pmezard/go-difflib/difflib"
 	"ki/internal/loop"
+	"ki/internal/types"
 )
 
 const applyPatchGrammar = `start: begin_patch hunk+ end_patch
@@ -20,21 +22,19 @@ hunk: add_hunk | delete_hunk | update_hunk
 add_hunk: "*** Add File: " filename LF add_line+
 delete_hunk: "*** Delete File: " filename LF
 update_hunk: "*** Update File: " filename LF change_move? change?
-
 filename: /(.+)/
 add_line: "+" /(.*)/ LF -> line
-
 change_move: "*** Move to: " filename LF
 change: (change_context | change_line)+ eof_line?
 change_context: ("@@" | "@@ " /(.+)/) LF
 change_line: ("+" | "-" | " ") /(.*)/ LF
 eof_line: "*** End of File" LF
-
 %import common.LF`
 
 type applyPatchTool struct {
 	cwd       string
 	mutations *MutationQueue
+	io        *patchFileIO
 }
 
 func (applyPatchTool) Name() string { return "apply_patch" }
@@ -48,283 +48,217 @@ func (applyPatchTool) Execute(context.Context, map[string]any) loop.ToolResult {
 	return errRes("apply_patch requires freeform input")
 }
 func (t applyPatchTool) ToolSpec() loop.ToolSpec {
-	return loop.ToolSpec{
-		Type:        "custom",
-		Name:        t.Name(),
-		Description: t.Description(),
-		Format: &loop.ToolFormat{
-			Type:       "grammar",
-			Syntax:     "lark",
-			Definition: applyPatchGrammar,
-		},
-	}
+	return loop.ToolSpec{Type: "custom", Name: t.Name(), Description: t.Description(), Format: &loop.ToolFormat{Type: "grammar", Syntax: "lark", Definition: applyPatchGrammar}}
 }
+
+type patchFileIO struct {
+	readFile  func(string) ([]byte, error)
+	writeFile func(string, []byte, fs.FileMode) error
+	mkdirAll  func(string, fs.FileMode) error
+	remove    func(string) error
+	stat      func(string) (fs.FileInfo, error)
+	lstat     func(string) (fs.FileInfo, error)
+}
+
+var localPatchIO = patchFileIO{readFile: os.ReadFile, writeFile: os.WriteFile, mkdirAll: os.MkdirAll, remove: os.Remove, stat: os.Stat, lstat: os.Lstat}
+
+type verifiedPatch struct {
+	changes []verifiedPatchChange
+}
+type verifiedPatchChange struct {
+	hunk                                               patchHunk
+	kind                                               patchKind
+	path, display, movePath, content, oldContent, diff string
+}
+
+type appliedPatchDelta struct {
+	changes []appliedPatchChange
+	exact   bool
+}
+type appliedPatchChange struct {
+	kind                                            patchKind
+	path, display, movePath, oldContent, newContent string
+	overwrittenContent, overwrittenMoveContent      *string
+}
+
+type applyPatchDetails struct {
+	Status  string                   `json:"status"`
+	Exact   bool                     `json:"exact"`
+	Changes []applyPatchChangeDetail `json:"changes"`
+}
+type applyPatchChangeDetail struct {
+	Path        string `json:"path"`
+	Kind        string `json:"kind"`
+	MovePath    string `json:"move_path,omitempty"`
+	UnifiedDiff string `json:"unified_diff,omitempty"`
+}
+
 func (t applyPatchTool) ExecuteRaw(ctx context.Context, input string) loop.ToolResult {
 	hunks, err := parseApplyPatch(input)
 	if err != nil {
-		return errRes("apply_patch verification failed: " + err.Error())
-	}
-	paths := make([]string, 0, len(hunks)*2)
-	for _, h := range hunks {
-		paths = append(paths, resolve(t.cwd, filepath.FromSlash(h.path)))
-		if h.movePath != "" {
-			paths = append(paths, resolve(t.cwd, filepath.FromSlash(h.movePath)))
-		}
+		return patchResult("apply_patch verification failed: "+err.Error(), true, appliedPatchDelta{exact: true})
 	}
 	queue := t.mutations
 	if queue == nil {
 		queue = NewMutationQueue()
 	}
-	release, err := queue.LockPaths(ctx, paths...)
+	release, err := queue.LockPaths(ctx, patchPaths(t.cwd, hunks)...)
 	if err != nil {
-		return errRes("apply_patch aborted")
+		return patchResult("apply_patch aborted", true, appliedPatchDelta{exact: true})
 	}
 	defer release()
-	summary, err := applyPatchHunks(ctx, t.cwd, hunks)
+	pio := t.io
+	if pio == nil {
+		pio = &localPatchIO
+	}
+	// Verify every deterministic read and context match before the first write;
+	// otherwise a later bad hunk would leave an avoidable committed prefix.
+	verified, err := verifyApplyPatch(ctx, t.cwd, hunks, pio)
 	if err != nil {
-		return errRes(err.Error())
+		return patchResult("apply_patch verification failed: "+err.Error(), true, appliedPatchDelta{exact: true})
 	}
-	return txt(summary)
+	summary, delta, err := applyVerifiedPatch(ctx, verified, pio)
+	if err != nil {
+		return patchResult(err.Error(), true, delta)
+	}
+	return patchResult(summary, false, delta)
 }
 
-type patchKind uint8
-
-const (
-	patchAdd patchKind = iota + 1
-	patchDelete
-	patchUpdate
-)
-
-type patchHunk struct {
-	kind     patchKind
-	path     string
-	movePath string
-	content  string
-	chunks   []patchChunk
-}
-
-type patchChunk struct {
-	context string
-	hasCtx  bool
-	old     []string
-	new     []string
-	eof     bool
-}
-
-func parseApplyPatch(input string) ([]patchHunk, error) {
-	input = strings.TrimSpace(input)
-	lines := strings.Split(strings.ReplaceAll(input, "\r\n", "\n"), "\n")
-	// Codex accepts the common heredoc wrapper in lenient mode.
-	if len(lines) >= 4 && (lines[0] == "<<EOF" || lines[0] == "<<'EOF'" || lines[0] == "<<\"EOF\"") && strings.HasSuffix(lines[len(lines)-1], "EOF") {
-		lines = lines[1 : len(lines)-1]
-	}
-	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "*** Begin Patch" {
-		return nil, fmt.Errorf("invalid patch: The first line of the patch must be '*** Begin Patch'")
-	}
-	if strings.TrimSpace(lines[len(lines)-1]) != "*** End Patch" {
-		return nil, fmt.Errorf("invalid patch: The last line of the patch must be '*** End Patch'")
-	}
-
-	var hunks []patchHunk
-	for i := 1; i < len(lines)-1; {
-		lineNo := i + 1
-		line := strings.TrimSpace(lines[i])
-		switch {
-		case strings.HasPrefix(line, "*** Add File: "):
-			path := strings.TrimPrefix(line, "*** Add File: ")
-			if path == "" {
-				return nil, fmt.Errorf("invalid hunk at line %d, file path is empty", lineNo)
-			}
-			i++
-			var content strings.Builder
-			count := 0
-			for i < len(lines)-1 && !strings.HasPrefix(strings.TrimSpace(lines[i]), "*** ") {
-				if !strings.HasPrefix(lines[i], "+") {
-					return nil, fmt.Errorf("invalid hunk at line %d, add-file lines must start with '+'", i+1)
-				}
-				content.WriteString(strings.TrimPrefix(lines[i], "+"))
-				content.WriteByte('\n')
-				count++
-				i++
-			}
-			if count == 0 {
-				return nil, fmt.Errorf("invalid hunk at line %d, add-file hunk is empty", lineNo)
-			}
-			hunks = append(hunks, patchHunk{kind: patchAdd, path: path, content: content.String()})
-
-		case strings.HasPrefix(line, "*** Delete File: "):
-			path := strings.TrimPrefix(line, "*** Delete File: ")
-			if path == "" {
-				return nil, fmt.Errorf("invalid hunk at line %d, file path is empty", lineNo)
-			}
-			hunks = append(hunks, patchHunk{kind: patchDelete, path: path})
-			i++
-
-		case strings.HasPrefix(line, "*** Update File: "):
-			h := patchHunk{kind: patchUpdate, path: strings.TrimPrefix(line, "*** Update File: ")}
-			if h.path == "" {
-				return nil, fmt.Errorf("invalid hunk at line %d, file path is empty", lineNo)
-			}
-			i++
-			if i < len(lines)-1 && strings.HasPrefix(strings.TrimSpace(lines[i]), "*** Move to: ") {
-				h.movePath = strings.TrimPrefix(strings.TrimSpace(lines[i]), "*** Move to: ")
-				i++
-			}
-			for i < len(lines)-1 && !isPatchFileHeader(strings.TrimSpace(lines[i])) {
-				chunk := patchChunk{}
-				marker := strings.TrimSpace(lines[i])
-				if marker == "@@" {
-					i++
-				} else if strings.HasPrefix(marker, "@@ ") {
-					chunk.context = strings.TrimPrefix(marker, "@@ ")
-					chunk.hasCtx = true
-					i++
-				} else if len(h.chunks) > 0 {
-					return nil, fmt.Errorf("invalid hunk at line %d, expected '@@' context marker", i+1)
-				}
-
-				for i < len(lines)-1 {
-					cur := lines[i]
-					trimmed := strings.TrimSpace(cur)
-					if isPatchFileHeader(trimmed) || trimmed == "@@" || strings.HasPrefix(trimmed, "@@ ") {
-						break
-					}
-					if trimmed == "*** End of File" {
-						chunk.eof = true
-						i++
-						break
-					}
-					if cur == "" {
-						chunk.old = append(chunk.old, "")
-						chunk.new = append(chunk.new, "")
-						i++
-						continue
-					}
-					switch cur[0] {
-					case ' ':
-						chunk.old = append(chunk.old, cur[1:])
-						chunk.new = append(chunk.new, cur[1:])
-					case '+':
-						chunk.new = append(chunk.new, cur[1:])
-					case '-':
-						chunk.old = append(chunk.old, cur[1:])
-					default:
-						return nil, fmt.Errorf("invalid hunk at line %d, every line must start with ' ', '+' or '-'", i+1)
-					}
-					i++
-				}
-				if len(chunk.old) == 0 && len(chunk.new) == 0 {
-					return nil, fmt.Errorf("invalid hunk at line %d, update hunk does not contain any lines", lineNo)
-				}
-				h.chunks = append(h.chunks, chunk)
-			}
-			if len(h.chunks) == 0 {
-				return nil, fmt.Errorf("invalid hunk at line %d, update file hunk for path %q is empty", lineNo, h.path)
-			}
-			hunks = append(hunks, h)
-
-		default:
-			return nil, fmt.Errorf("invalid hunk at line %d, %q is not a valid hunk header", lineNo, line)
+func patchPaths(cwd string, hunks []patchHunk) []string {
+	paths := make([]string, 0, len(hunks)*2)
+	for _, h := range hunks {
+		paths = append(paths, resolve(cwd, filepath.FromSlash(h.path)))
+		if h.movePath != "" {
+			paths = append(paths, resolve(cwd, filepath.FromSlash(h.movePath)))
 		}
 	}
+	return paths
+}
+
+func verifyApplyPatch(ctx context.Context, cwd string, hunks []patchHunk, pio *patchFileIO) (verifiedPatch, error) {
 	if len(hunks) == 0 {
-		return nil, fmt.Errorf("No files were modified.")
+		return verifiedPatch{}, fmt.Errorf("No files were modified.")
 	}
-	return hunks, nil
-}
-
-func isPatchFileHeader(line string) bool {
-	return line == "*** End Patch" || strings.HasPrefix(line, "*** Add File: ") || strings.HasPrefix(line, "*** Delete File: ") || strings.HasPrefix(line, "*** Update File: ")
-}
-
-type patchReplacement struct {
-	start int
-	oldN  int
-	new   []string
-}
-
-func applyPatchHunks(ctx context.Context, cwd string, hunks []patchHunk) (string, error) {
-	var added, modified, deleted []string
+	verified := verifiedPatch{changes: make([]verifiedPatchChange, 0, len(hunks))}
+	seen := map[string]bool{}
 	for _, h := range hunks {
 		if err := ctx.Err(); err != nil {
-			return "", fmt.Errorf("apply_patch aborted: %w", err)
+			return verifiedPatch{}, fmt.Errorf("apply_patch aborted: %w", err)
 		}
 		path := resolve(cwd, filepath.FromSlash(h.path))
+		key := canonicalMutationPath(path)
+		if seen[key] {
+			return verifiedPatch{}, fmt.Errorf("invalid patch: multiple operations target %s", path)
+		}
+		seen[key] = true
+		change := verifiedPatchChange{hunk: h, kind: h.kind, path: path, display: h.path}
+		if h.movePath != "" {
+			change.movePath = resolve(cwd, filepath.FromSlash(h.movePath))
+		}
 		switch h.kind {
 		case patchAdd:
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				return "", fmt.Errorf("Failed to create parent directory for %s: %w", path, err)
-			}
-			if err := ctx.Err(); err != nil {
-				return "", fmt.Errorf("apply_patch aborted: %w", err)
-			}
-			if err := os.WriteFile(path, []byte(h.content), 0o600); err != nil {
-				return "", fmt.Errorf("Failed to write file %s: %w", path, err)
-			}
-			if err := ctx.Err(); err != nil {
-				return "", fmt.Errorf("apply_patch aborted: %w", err)
-			}
-			added = append(added, h.path)
-
+			change.content = h.content
 		case patchDelete:
-			st, err := os.Stat(path)
+			data, err := pio.readFile(path)
 			if err != nil {
-				return "", fmt.Errorf("Failed to delete file %s: %w", path, err)
+				return verifiedPatch{}, fmt.Errorf("Failed to read %s: %w", path, err)
 			}
-			if err := ctx.Err(); err != nil {
-				return "", fmt.Errorf("apply_patch aborted: %w", err)
+			change.oldContent = string(data)
+		case patchUpdate:
+			data, err := pio.readFile(path)
+			if err != nil {
+				return verifiedPatch{}, fmt.Errorf("Failed to read file to update %s: %w", path, err)
+			}
+			next, diff, err := derivePatchUpdate(string(data), path, h.chunks)
+			if err != nil {
+				return verifiedPatch{}, err
+			}
+			change.oldContent, change.content, change.diff = string(data), next, diff
+		}
+		verified.changes = append(verified.changes, change)
+	}
+	return verified, nil
+}
+
+func applyVerifiedPatch(ctx context.Context, verified verifiedPatch, pio *patchFileIO) (string, appliedPatchDelta, error) {
+	delta := appliedPatchDelta{exact: true}
+	var added, modified, deleted []string
+	for _, intended := range verified.changes {
+		h := intended.hunk
+		if err := ctx.Err(); err != nil {
+			return "", delta, fmt.Errorf("apply_patch aborted: %w", err)
+		}
+		path := intended.path
+		switch intended.kind {
+		case patchAdd:
+			overwritten := optionalPatchContent(path, pio, &delta.exact)
+			if err := writePatchFile(path, []byte(intended.content), pio); err != nil {
+				// WriteFile may truncate before returning ENOSPC or another error,
+				// so the observed failure cannot prove the target is unchanged.
+				delta.exact = false
+				return "", delta, fmt.Errorf("Failed to write file %s: %w", path, err)
+			}
+			delta.changes = append(delta.changes, appliedPatchChange{kind: patchAdd, path: path, display: intended.display, newContent: intended.content, overwrittenContent: overwritten})
+			added = append(added, intended.display)
+		case patchDelete:
+			notePatchPath(path, pio, &delta.exact)
+			old, readErr := pio.readFile(path)
+			if readErr != nil {
+				delta.exact = false
+			}
+			st, err := pio.stat(path)
+			if err != nil {
+				return "", delta, fmt.Errorf("Failed to delete file %s: %w", path, err)
 			}
 			if st.IsDir() {
-				return "", fmt.Errorf("Failed to delete file %s: path is a directory", path)
+				return "", delta, fmt.Errorf("Failed to delete file %s: path is a directory", path)
 			}
-			if err := os.Remove(path); err != nil {
-				return "", fmt.Errorf("Failed to delete file %s: %w", path, err)
+			if err := pio.remove(path); err != nil {
+				delta.exact = delta.exact && patchContentUnchanged(path, old, readErr == nil, pio)
+				return "", delta, fmt.Errorf("Failed to delete file %s: %w", path, err)
 			}
-			if err := ctx.Err(); err != nil {
-				return "", fmt.Errorf("apply_patch aborted: %w", err)
+			if readErr == nil {
+				delta.changes = append(delta.changes, appliedPatchChange{kind: patchDelete, path: path, display: h.path, oldContent: string(old)})
 			}
 			deleted = append(deleted, h.path)
-
 		case patchUpdate:
-			data, err := os.ReadFile(path)
+			notePatchPath(path, pio, &delta.exact)
+			data, err := pio.readFile(path)
 			if err != nil {
-				return "", fmt.Errorf("Failed to read file to update %s: %w", path, err)
+				return "", delta, fmt.Errorf("Failed to read file to update %s: %w", path, err)
 			}
-			if err := ctx.Err(); err != nil {
-				return "", fmt.Errorf("apply_patch aborted: %w", err)
-			}
-			next, err := applyUpdateChunks(string(data), path, h.chunks)
+			next, _, err := derivePatchUpdate(string(data), path, h.chunks)
 			if err != nil {
-				return "", err
+				return "", delta, err
 			}
-			dest := path
-			if h.movePath != "" {
-				dest = resolve(cwd, filepath.FromSlash(h.movePath))
-				if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
-					return "", fmt.Errorf("Failed to create parent directory for %s: %w", dest, err)
+			if h.movePath == "" {
+				if err := writePatchFile(path, []byte(next), pio); err != nil {
+					delta.exact = false
+					return "", delta, fmt.Errorf("Failed to write file %s: %w", path, err)
 				}
-				if err := ctx.Err(); err != nil {
-					return "", fmt.Errorf("apply_patch aborted: %w", err)
+				delta.changes = append(delta.changes, appliedPatchChange{kind: patchUpdate, path: path, display: h.path, oldContent: string(data), newContent: next})
+				modified = append(modified, intended.display)
+			} else {
+				dest := intended.movePath
+				overwritten := optionalPatchContent(dest, pio, &delta.exact)
+				if err := writePatchFile(dest, []byte(next), pio); err != nil {
+					delta.exact = false
+					return "", delta, fmt.Errorf("Failed to write file %s: %w", dest, err)
 				}
-			}
-			if err := os.WriteFile(dest, []byte(next), 0o600); err != nil {
-				return "", fmt.Errorf("Failed to write file %s: %w", dest, err)
-			}
-			if err := ctx.Err(); err != nil {
-				return "", fmt.Errorf("apply_patch aborted: %w", err)
-			}
-			if dest != path {
-				if err := os.Remove(path); err != nil {
-					return "", fmt.Errorf("Failed to remove original %s: %w", path, err)
+				idx := len(delta.changes)
+				delta.changes = append(delta.changes, appliedPatchChange{kind: patchAdd, path: dest, display: h.movePath, newContent: next, overwrittenContent: overwritten})
+				if err := pio.remove(path); err != nil {
+					delta.exact = delta.exact && patchContentUnchanged(path, data, true, pio)
+					return "", delta, fmt.Errorf("Failed to remove original %s: %w", path, err)
 				}
-				if err := ctx.Err(); err != nil {
-					return "", fmt.Errorf("apply_patch aborted: %w", err)
-				}
+				delta.changes[idx] = appliedPatchChange{kind: patchUpdate, path: path, display: h.path, movePath: dest, oldContent: string(data), newContent: next, overwrittenMoveContent: overwritten}
+				modified = append(modified, h.movePath)
 			}
-			modified = append(modified, map[bool]string{true: h.movePath, false: h.path}[h.movePath != ""])
+		}
+		if err := ctx.Err(); err != nil {
+			return "", delta, fmt.Errorf("apply_patch aborted: %w", err)
 		}
 	}
-
 	var out strings.Builder
 	out.WriteString("Success. Updated the following files:\n")
 	for _, path := range added {
@@ -336,108 +270,86 @@ func applyPatchHunks(ctx context.Context, cwd string, hunks []patchHunk) (string
 	for _, path := range deleted {
 		fmt.Fprintf(&out, "D %s\n", path)
 	}
-	return out.String(), nil
+	return out.String(), delta, nil
 }
 
-func applyUpdateChunks(contents, path string, chunks []patchChunk) (string, error) {
-	lines := strings.Split(strings.ReplaceAll(contents, "\r\n", "\n"), "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
+func writePatchFile(path string, content []byte, pio *patchFileIO) error {
+	err := pio.writeFile(path, content, 0o600)
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
-	cursor := 0
-	var replacements []patchReplacement
-	for _, chunk := range chunks {
-		if chunk.hasCtx {
-			idx := seekPatchSequence(lines, []string{chunk.context}, cursor, false)
-			if idx < 0 {
-				return "", fmt.Errorf("Failed to find context %q in %s", chunk.context, path)
-			}
-			cursor = idx + 1
-		}
-		if len(chunk.old) == 0 {
-			replacements = append(replacements, patchReplacement{start: len(lines), new: chunk.new})
-			continue
-		}
-		pattern, replacement := chunk.old, chunk.new
-		idx := seekPatchSequence(lines, pattern, cursor, chunk.eof)
-		if idx < 0 && len(pattern) > 0 && pattern[len(pattern)-1] == "" {
-			pattern = pattern[:len(pattern)-1]
-			if len(replacement) > 0 && replacement[len(replacement)-1] == "" {
-				replacement = replacement[:len(replacement)-1]
-			}
-			idx = seekPatchSequence(lines, pattern, cursor, chunk.eof)
-		}
-		if idx < 0 {
-			return "", fmt.Errorf("Failed to find expected lines in %s:\n%s", path, strings.Join(chunk.old, "\n"))
-		}
-		replacements = append(replacements, patchReplacement{start: idx, oldN: len(pattern), new: append([]string(nil), replacement...)})
-		cursor = idx + len(pattern)
+	if err := pio.mkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
 	}
-	sort.Slice(replacements, func(i, j int) bool { return replacements[i].start > replacements[j].start })
-	for _, r := range replacements {
-		next := make([]string, 0, len(lines)-r.oldN+len(r.new))
-		next = append(next, lines[:r.start]...)
-		next = append(next, r.new...)
-		next = append(next, lines[r.start+r.oldN:]...)
-		lines = next
+	return pio.writeFile(path, content, 0o600)
+}
+func notePatchPath(path string, pio *patchFileIO, exact *bool) {
+	st, err := pio.lstat(path)
+	if err == nil && st.Mode().IsRegular() {
+		return
 	}
-	return strings.Join(lines, "\n") + "\n", nil
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	*exact = false
+}
+func optionalPatchContent(path string, pio *patchFileIO, exact *bool) *string {
+	notePatchPath(path, pio, exact)
+	b, err := pio.readFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		*exact = false
+		return nil
+	}
+	s := string(b)
+	return &s
+}
+func patchContentUnchanged(path string, expected []byte, valid bool, pio *patchFileIO) bool {
+	if !valid {
+		return false
+	}
+	got, err := pio.readFile(path)
+	return err == nil && string(got) == string(expected)
 }
 
-func seekPatchSequence(lines, pattern []string, start int, eof bool) int {
-	if len(pattern) == 0 {
-		return start
+func patchResult(text string, failed bool, delta appliedPatchDelta) loop.ToolResult {
+	status := "completed"
+	if failed {
+		status = "failed"
 	}
-	if len(pattern) > len(lines) {
-		return -1
-	}
-	search := start
-	if eof {
-		search = len(lines) - len(pattern)
-	}
-	for mode := 0; mode < 4; mode++ {
-		for i := search; i <= len(lines)-len(pattern); i++ {
-			ok := true
-			for j := range pattern {
-				if normalizePatchLine(lines[i+j], mode) != normalizePatchLine(pattern[j], mode) {
-					ok = false
-					break
-				}
-			}
-			if ok {
-				return i
-			}
-		}
-	}
-	if eof && search != start {
-		return seekPatchSequence(lines, pattern, start, false)
-	}
-	return -1
+	return loop.ToolResult{Content: []types.Content{{Type: "text", Text: text}}, IsError: failed, Details: applyPatchDetails{Status: status, Exact: delta.exact, Changes: patchDeltaDetails(delta)}}
 }
-
-func normalizePatchLine(s string, mode int) string {
-	switch mode {
-	case 1:
-		return strings.TrimRightFunc(s, unicode.IsSpace)
-	case 2:
-		return strings.TrimSpace(s)
-	case 3:
-		var b strings.Builder
-		for _, r := range strings.TrimSpace(s) {
-			switch r {
-			case '‐', '‑', '‒', '–', '—', '―', '−':
-				r = '-'
-			case '‘', '’', '‚', '‛':
-				r = '\''
-			case '“', '”', '„', '‟':
-				r = '"'
-			case '\u00a0', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006', '\u2007', '\u2008', '\u2009', '\u200a', '\u202f', '\u205f', '\u3000':
-				r = ' '
-			}
-			b.WriteRune(r)
+func patchDeltaDetails(delta appliedPatchDelta) []applyPatchChangeDetail {
+	out := make([]applyPatchChangeDetail, 0, len(delta.changes))
+	for _, change := range delta.changes {
+		from, to := change.path, change.path
+		oldContent := change.oldContent
+		if change.kind == patchAdd && change.overwrittenContent != nil {
+			oldContent = *change.overwrittenContent
 		}
-		return b.String()
+		if change.kind == patchAdd && change.overwrittenContent == nil {
+			from = change.path + " (new)"
+		}
+		if change.kind == patchDelete {
+			to = change.path + " (deleted)"
+		}
+		if change.movePath != "" {
+			to = change.movePath
+		}
+		diff, _ := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{A: difflib.SplitLines(oldContent), B: difflib.SplitLines(change.newContent), FromFile: from, ToFile: to, Context: 1})
+		out = append(out, applyPatchChangeDetail{Path: change.path, Kind: patchKindName(change.kind), MovePath: change.movePath, UnifiedDiff: diff})
+	}
+	return out
+}
+func patchKindName(kind patchKind) string {
+	switch kind {
+	case patchAdd:
+		return "add"
+	case patchDelete:
+		return "delete"
 	default:
-		return s
+		return "update"
 	}
 }

@@ -38,6 +38,9 @@ const (
 	ToolExecutionUpdate EventType = "tool_execution_update"
 	// ToolExecutionEnd ends tool execution.
 	ToolExecutionEnd EventType = "tool_execution_end"
+	// PatchApplyUpdated carries a non-executing preview parsed from streamed
+	// apply_patch arguments.
+	PatchApplyUpdated EventType = "patch_apply_updated"
 	// CompactionStart begins context compaction.
 	CompactionStart EventType = "compaction_start"
 	// CompactionEnd ends context compaction.
@@ -74,9 +77,11 @@ type Event struct {
 
 // AssistantDelta is a streaming increment (pi assistantMessageEvent).
 type AssistantDelta struct {
-	Type    string        `json:"type"`
-	Delta   string        `json:"delta,omitempty"`
-	Partial types.Message `json:"partial"`
+	Type       string        `json:"type"`
+	Delta      string        `json:"delta,omitempty"`
+	ToolCallID string        `json:"toolCallId,omitempty"`
+	ToolName   string        `json:"toolName,omitempty"`
+	Partial    types.Message `json:"partial"`
 }
 
 // Tool is something the model can call.
@@ -107,6 +112,19 @@ type ToolSpecProvider interface {
 // FreeformTool executes the raw input of a custom tool call.
 type FreeformTool interface {
 	ExecuteRaw(ctx context.Context, input string) ToolResult
+}
+
+// ToolArgumentDiffConsumer incrementally parses a freeform tool call while
+// the provider is still producing its arguments. Results are client previews;
+// they never authorize or execute the tool.
+type ToolArgumentDiffConsumer interface {
+	Consume(delta string) (any, bool)
+	Finish() (any, bool)
+}
+
+// ToolArgumentDiffProvider creates isolated state for one streamed tool call.
+type ToolArgumentDiffProvider interface {
+	NewArgumentDiffConsumer() ToolArgumentDiffConsumer
 }
 
 // ToolResult is one tool execution outcome.
@@ -390,6 +408,8 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 		}
 		started := time.Now()
 		var firstDelta time.Time
+		argumentConsumers := map[string]ToolArgumentDiffConsumer{}
+		argumentConsumerNames := map[string]string{}
 		partial := types.Message{Role: "assistant", Provider: cfg.Provider, Model: cfg.Model, Timestamp: time.Now().UnixMilli()}
 		if err := emit(Event{Type: MessageStart, Message: &partial}); err != nil {
 			return partial, err
@@ -399,7 +419,31 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				firstDelta = time.Now()
 			}
 			m := d.Partial
-			return emit(Event{Type: MessageUpdate, Message: &m, AssistantMessageEvent: &d})
+			if err := emit(Event{Type: MessageUpdate, Message: &m, AssistantMessageEvent: &d}); err != nil {
+				return err
+			}
+			if d.Type == "custom_tool_call_input_delta" && d.ToolCallID != "" {
+				consumer := argumentConsumers[d.ToolCallID]
+				if consumer == nil {
+					for _, tool := range cfg.Tools {
+						if tool.Name() != d.ToolName {
+							continue
+						}
+						if provider, ok := tool.(ToolArgumentDiffProvider); ok {
+							consumer = provider.NewArgumentDiffConsumer()
+							argumentConsumers[d.ToolCallID] = consumer
+							argumentConsumerNames[d.ToolCallID] = d.ToolName
+						}
+						break
+					}
+				}
+				if consumer != nil {
+					if value, ok := consumer.Consume(d.Delta); ok {
+						return emit(Event{Type: PatchApplyUpdated, ToolCallID: d.ToolCallID, ToolName: d.ToolName, PartialResult: value})
+					}
+				}
+			}
+			return nil
 		})
 		if err != nil {
 			lastErr = err
@@ -417,6 +461,17 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				return last, ErrContextOverflow
 			}
 			continue
+		}
+		for _, call := range asst.ToolCalls() {
+			consumer := argumentConsumers[call.ID]
+			if consumer == nil {
+				continue
+			}
+			if value, ok := consumer.Finish(); ok {
+				if err := emit(Event{Type: PatchApplyUpdated, ToolCallID: call.ID, ToolName: argumentConsumerNames[call.ID], PartialResult: value}); err != nil {
+					return asst, err
+				}
+			}
 		}
 		asst.LatencyMs = time.Since(started).Milliseconds()
 		if !firstDelta.IsZero() {

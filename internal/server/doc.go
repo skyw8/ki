@@ -17,7 +17,8 @@
 // optionally lists files or streams authenticated image, plain-text/code, and
 // PDF previews for the attachment picker; POST creates directories.
 // Session attachment uploads are content-addressed under that session dir.
-// request_header and context_usage events persist on jsonl/SSE.
+// request_header, context_usage, and streamed apply_patch preview events
+// persist on jsonl/SSE.
 // Non-/v1 paths serve the SPA at "/"; other unknown paths redirect to "/".
 // index.html gets the token injected. The UI is used behind port-forwards.
 // A second prompt on a busy session returns 409. message_end awaits jsonl

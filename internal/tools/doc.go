@@ -23,7 +23,11 @@
 // tools use the same process-tree termination contract and run an embedded
 // ripgrep binary, so an installed ki does not require rg in PATH.
 // Set.Build selects a text/rich Read and exactly one editor family from the
-// provider-neutral Profile. apply_patch uses the Codex freeform patch grammar.
+// provider-neutral Profile. apply_patch uses the Codex freeform patch grammar,
+// verifies the complete patch before its first write, preserves mixed line
+// endings, tracks the definitely committed prefix on failure, and exposes
+// throttled argument previews without placing structured details in model
+// context.
 //
 // Parameter and result tables: docs/tools.md.
 package tools

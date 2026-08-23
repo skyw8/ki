@@ -398,6 +398,9 @@ func TestCompactionEventsPersist(t *testing.T) {
 	if _, err := s.AppendEvent("compaction_start", "overflow", false); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.AppendDetailsEvent("patch_apply_updated", map[string]any{"toolCallId": "call-1", "partialResult": map[string]any{"changes": []any{map[string]any{"path": "a.txt"}}}}); err != nil {
+		t.Fatal(err)
+	}
 	hist := s.MessagesToLeaf() // must ignore event entries
 	if len(hist) != 0 {
 		t.Fatalf("event entries leaked into history: %+v", hist)
@@ -412,6 +415,7 @@ func TestCompactionEventsPersist(t *testing.T) {
 	}
 	defer func() { _ = s2.Close() }()
 	found := false
+	previewFound := false
 	for _, e := range s2.Entries() {
 		if e.Type == "compaction_start" {
 			found = true
@@ -419,9 +423,18 @@ func TestCompactionEventsPersist(t *testing.T) {
 				t.Fatalf("details: %+v", e.Details)
 			}
 		}
+		if e.Type == "patch_apply_updated" {
+			previewFound = true
+			if d, ok := e.Details.(map[string]any); !ok || d["toolCallId"] != "call-1" {
+				t.Fatalf("preview details: %+v", e.Details)
+			}
+		}
 	}
 	if !found {
 		t.Fatal("compaction_start not persisted")
+	}
+	if !previewFound {
+		t.Fatal("patch preview event missing after reopen")
 	}
 }
 

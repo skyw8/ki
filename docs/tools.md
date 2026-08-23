@@ -9,7 +9,7 @@
 | `Read` | 文本模型：`file_path`、行分页 `offset` / `limit` 或字节分页 `byte_offset` / `byte_limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
 | `Write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 Read |
 | `Edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。模型只看到简短摘要，diff/patch 在 details |
-| `apply_patch` | Responses custom freeform + Lark grammar | Codex 补丁格式：新增、删除、更新、移动；返回 `A/M/D` 摘要 |
+| `apply_patch` | Responses custom freeform + Lark grammar | Codex 补丁格式：新增、删除、更新、移动；模型只收到 `A/M/D` 摘要或短错误，实际 diff 在 details |
 | `Grep` | `pattern`、`path`、`glob`、`output_mode`、上下文/分页/类型参数 | 基于内置 ripgrep；支持 partial results、JSON/NUL 解析、EAGAIN 降级、正则、`.gitignore`、取消/超时和统计元数据 |
 | `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
@@ -55,7 +55,13 @@
 
 - 仅 `applyPatchToolType=freeform` 的模型注册，与 `Write`、`Edit` 不同时出现。
 - 使用 Codex 的 `*** Begin Patch` / `*** End Patch` 格式，支持新增、删除、更新和移动文件。
-- 路径通过 `filepath` 相对 session cwd 解析；更新文件统一为 LF。
+- 路径通过 `filepath` 相对 session cwd 解析；源路径和 move 目标继续使用主机绝对路径与共享 mutation queue，不引入远程 filesystem 或 environment ID。
+- 第一次写盘前解析并预检整份 patch：读取 delete/update 原文、定位全部 hunk、计算新内容和 unified diff，并拒绝多个操作指向同一规范化源路径。预检不是跨文件事务；I/O 失败仍可能只提交前缀。
+- 执行按 patch 顺序记录 committed delta。失败 details 包含已经确认的变更和 `exact`；写入失败可能已截断目标，因此标为不精确，move 删除源失败则保留已经写入目标的 add。
+- 完整旧/新内容只在执行期内存中用于生成实际 diff；持久化 details 只有 `status`、`exact` 以及有序的 path/kind/move_path/unified_diff，不进入 provider context。
+- 更新保留未触及行原有的 LF、CRLF、单独 CR 和混合换行；新增行采用文件第一个换行符，无换行文件采用 LF。与 Codex 的历史行为一致，update 后保证尾部换行。
+- Responses 的 `custom_tool_call_input.delta` 由增量 parser 转成 `patch_apply_updated` 预览，最多每 500ms 发送一次并补发最终 pending 快照。预览不执行文件操作；事件写入 jsonl、经现有 SSE 发送并由 WebUI 展示，最终 committed details 覆盖预览。
+- 权限、approval、sandbox、多环境、远程/虚拟 workspace，以及从 Bash/PowerShell 拦截 apply_patch 均不属于该工具契约。
 
 ## Grep
 

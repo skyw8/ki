@@ -248,6 +248,11 @@ function applyEntry(s: ViewState, e: Entry) {
     applyMessage(s, e.message, e.id, e.timestamp, e.parentId)
     return
   }
+	if (e.type === 'patch_apply_updated' && e.details && typeof e.details === 'object') {
+		const details = e.details as { toolCallId?: string; toolName?: string; partialResult?: unknown }
+		if (details.toolCallId) patchApplyPreview(s, details.toolCallId, details.toolName, details.partialResult, e.timestamp)
+		return
+	}
   if (e.type === 'compaction') {
     const summary = e.summary || ''
     s.nodes.push({ kind: 'compaction', id: e.id, summary, tokensBefore: e.tokensBefore })
@@ -346,6 +351,10 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
     })
     for (const c of m.content ?? []) {
       if (c.type !== 'toolCall' || !c.id) continue
+	  if (s.nodes.some(n => n.kind === 'tool' && n.id === c.id)) {
+		patchTool(s, c.id, { name: c.name, args: c.arguments ?? (c.input !== undefined ? { input: c.input } : undefined) })
+		continue
+	  }
 	  const args = c.arguments ?? (c.input !== undefined ? { input: c.input } : undefined)
       s.nodes.push({
         kind: 'tool',
@@ -372,11 +381,20 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       result: text,
       isError: m.isError,
       durationMs: m.durationMs,
-	  details: m.details,
+	  details: m.details ?? (m.toolName === 'apply_patch' ? { status: 'failed', exact: true, changes: [] } : undefined),
       running: false,
       name: m.toolName,
     })
   }
+}
+
+function patchApplyPreview(s: ViewState, id: string, name?: string, details?: unknown, stamp?: string | number) {
+	if (!s.nodes.some(n => n.kind === 'tool' && n.id === id)) {
+		s.nodes.push({ kind: 'tool', id, name: name || 'apply_patch', details, running: true })
+		s.records.push({ id, kind: 'tool', turn: s.turn || 1, preview: name || 'apply_patch', name: name || 'apply_patch', details, running: true, startedAt: tsMs(undefined, stamp) ?? Date.now() })
+		return
+	}
+	patchTool(s, id, { name: name || 'apply_patch', details, running: true })
 }
 
 function compactArgs(args: unknown): string {
@@ -487,6 +505,9 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
         }
       }
       break
+	case 'patch_apply_updated':
+		if (ev.toolCallId) patchApplyPreview(next, ev.toolCallId, ev.toolName, ev.partialResult)
+		break
     case 'compaction_start':
     case 'compaction_end': {
       // id is not part of the wire event; match by kind+order on the live path.
@@ -514,12 +535,12 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
 		const resultDetails = ev.result && typeof ev.result === 'object'
 		  ? ((ev.result as Record<string, unknown>).details ?? (ev.result as Record<string, unknown>).Details)
 		  : undefined
-        patchTool(next, ev.toolCallId, {
+		patchTool(next, ev.toolCallId, {
           result: toolResultText(ev.result),
           isError: ev.isError,
           running: false,
           name: ev.toolName,
-		  details: resultDetails,
+		  details: resultDetails ?? (ev.toolName === 'apply_patch' ? { status: 'failed', exact: true, changes: [] } : undefined),
         })
       }
       break

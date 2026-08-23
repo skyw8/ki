@@ -489,7 +489,9 @@ export function TrajectoryView({
                       <div className="ctx-label">{t('traj.result')}</div>
 					  {selected.name === 'Edit' && selected.details && typeof selected.details === 'object' && typeof (selected.details as Record<string, unknown>).diff === 'string'
 						? <pre className="sys-diff">{String((selected.details as Record<string, unknown>).diff)}</pre>
-						: null}
+						: selected.name === 'apply_patch' && selected.details && typeof selected.details === 'object'
+						  ? <pre className="sys-diff">{(((selected.details as Record<string, unknown>).changes as Array<Record<string, unknown>> | undefined) ?? []).map(c => String(c.unified_diff ?? '')).filter(Boolean).join('\n')}</pre>
+						  : null}
                       {typeof selected.output === 'string' && selected.output
                         ? <MarkdownBody text={selected.output} />
                         : <pre>{pretty(selected.output) || '—'}</pre>}

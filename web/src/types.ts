@@ -78,6 +78,7 @@ export type LoopEvent = {
   toolName?: string
   args?: Record<string, unknown>
   result?: unknown
+	partialResult?: unknown
   isError?: boolean
   assistantMessageEvent?: { type: string; delta?: string; partial?: Message }
   system?: string

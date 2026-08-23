@@ -12,9 +12,9 @@
 ## jsonl
 
 第一行 header：`type=session`，含 `id` / `cwd` / `parentSession`。  
-之后每行 `{type,id,parentId,timestamp,…}`：`message`、`compaction`、`model_change`、`request_header`、`context_usage`、`compaction_start`/`compaction_end`。entry id 为无连字符的 32 位 hex UUIDv7。
+之后每行 `{type,id,parentId,timestamp,…}`：`message`、`compaction`、`model_change`、`request_header`、`context_usage`、`patch_apply_updated`、`compaction_start`/`compaction_end`。entry id 为无连字符的 32 位 hex UUIDv7。
 
-`request_header` 固定该轮的 `system`、`tools[]`、provider/model、thinking effort、catalog version 和价格快照。每个工具同时保存 `type`；custom 工具还保存 grammar `format`。消息里的工具调用保存 `toolType` 和 freeform `input`，使 resume 能保持 `custom_tool_call` / `custom_tool_call_output` 配对。`context_usage` 保存 `usedTokens`、有效 `contextWindow` 与 `estimated`，同时沿 SSE 到 WebUI。
+`request_header` 固定该轮的 `system`、`tools[]`、provider/model、thinking effort、catalog version 和价格快照。每个工具同时保存 `type`；custom 工具还保存 grammar `format`。消息里的工具调用保存 `toolType` 和 freeform `input`，使 resume 能保持 `custom_tool_call` / `custom_tool_call_output` 配对。`context_usage` 保存 `usedTokens`、有效 `contextWindow` 与 `estimated`；`patch_apply_updated` 保存模型生成 patch 时的结构化预览。两者都沿 SSE 到 WebUI，且不进入 provider context。
 
 toolResult message 可带结构化 `details`。它随 jsonl 落盘并通过现有 session API/SSE 提供给 WebUI，但 provider 回放只使用模型可见的 `content`，不会把 diff、patch 或任务诊断元数据送回模型。
 

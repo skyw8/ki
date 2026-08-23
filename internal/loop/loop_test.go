@@ -60,6 +60,15 @@ func (t *rawTool) ExecuteRaw(_ context.Context, input string) ToolResult {
 func (t *rawTool) ToolSpec() ToolSpec {
 	return ToolSpec{Type: "custom", Name: t.Name(), Description: t.Description(), Format: &ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"}}
 }
+func (t *rawTool) NewArgumentDiffConsumer() ToolArgumentDiffConsumer { return &rawArgumentConsumer{} }
+
+type rawArgumentConsumer struct{ input string }
+
+func (c *rawArgumentConsumer) Consume(delta string) (any, bool) {
+	c.input += delta
+	return map[string]any{"input": c.input}, true
+}
+func (c *rawArgumentConsumer) Finish() (any, bool) { return nil, false }
 
 type customStreamer struct{ n int }
 
@@ -86,6 +95,33 @@ func TestRunDispatchesFreeformTool(t *testing.T) {
 	if tool.got != "PATCH" {
 		t.Fatalf("raw input = %q", tool.got)
 	}
+}
+
+type streamingCustomStreamer struct{ customStreamer }
+
+func (s *streamingCustomStreamer) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+	if s.n == 0 {
+		partial := types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "c1", Name: "apply_patch", Input: "PATCH"}}}
+		if err := emit(AssistantDelta{Type: "custom_tool_call_input_delta", Delta: "PATCH", ToolCallID: "c1", ToolName: "apply_patch", Partial: partial}); err != nil {
+			return types.Message{}, err
+		}
+	}
+	return s.customStreamer.Stream(ctx, req, emit)
+}
+
+func TestRunEmitsStreamedToolArgumentPreview(t *testing.T) {
+	tool := &rawTool{}
+	var events []Event
+	_, err := Run(context.Background(), "patch", nil, Config{Streamer: &streamingCustomStreamer{}, Tools: []Tool{tool}}, func(event Event) error { events = append(events, event); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == PatchApplyUpdated && event.ToolCallID == "c1" {
+			return
+		}
+	}
+	t.Fatalf("missing patch preview in %+v", events)
 }
 
 type captureMessages struct{ got []types.Message }

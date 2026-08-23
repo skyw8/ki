@@ -5,7 +5,8 @@
 //
 // Events follow pi names: agent_*, turn_*, message_*, tool_execution_*,
 // compaction_start/end (reason + ok), plus request_header (system + tools
-// snapshot after turn_start, before stream).
+// snapshot after turn_start, before stream) and patch_apply_updated for
+// syntax-only previews of streamed apply_patch arguments.
 // Tool specs default to JSON functions; ToolSpecProvider and FreeformTool add
 // grammar-backed custom tools without changing existing function executors.
 // Tools run in two phases (pi prepare/execute): synchronous prepare resolves

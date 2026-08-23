@@ -81,7 +81,7 @@ agent_start
     message_start → message_end                       # user（仅首 turn）
     request_header                                    # system + tools + 模型/价格快照
     context_usage                                     # 请求前上下文占用
-    message_start → message_update* → message_end     # assistant
+    message_start → message_update* → message_end     # assistant；期间可有 patch_apply_updated
     context_usage                                     # usage 返回后的上下文占用
     tool_execution_start → … → tool_execution_end
     message_start / message_end                       # toolResult
@@ -90,7 +90,7 @@ compaction_start / compaction_end                   # 溢出恢复时（reason=o
 agent_end
 ```
 
-字段跟 pi。写盘和 SSE 是 server 挂在 `emit` 上的订阅者，不进 loop 包。
+字段跟 pi；`patch_apply_updated` 是 apply_patch 输入仍在生成时的语法预览，不表示已经执行。写盘和 SSE 是 server 挂在 `emit` 上的订阅者，不进 loop 包。
 
 ## 时序
 

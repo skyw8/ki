@@ -534,6 +534,13 @@ func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, 
 // replay of the session shows when compaction happened. MessagesToLeaf ignores
 // these types.
 func (s *Session) AppendEvent(typ, reason string, ok bool) (Entry, error) {
+	return s.AppendDetailsEvent(typ, map[string]any{"reason": reason, "ok": ok})
+}
+
+// AppendDetailsEvent records a structured non-message event. It keeps streamed
+// tool previews on the same jsonl trajectory as the SSE event without turning
+// them into model-facing messages.
+func (s *Session) AppendDetailsEvent(typ string, details any) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, err := idgen.EntryID()
@@ -545,7 +552,7 @@ func (s *Session) AppendEvent(typ, reason string, ok bool) (Entry, error) {
 		ID:        id,
 		ParentID:  s.leafID,
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-		Details:   map[string]any{"reason": reason, "ok": ok},
+		Details:   details,
 	}
 	if err := s.appendLocked(e); err != nil {
 		return Entry{}, err

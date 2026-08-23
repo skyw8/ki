@@ -170,12 +170,16 @@ func TestLiveResponsesReconstructsCustomToolCall(t *testing.T) {
 		"type": "response.completed", "response": map[string]any{"usage": map[string]any{"input_tokens": 4, "output_tokens": 2}},
 	})
 	live := NewLive("responses", "https://api.openai.com/v1", "k", sseDoer(sse))
-	m, err := live.Stream(context.Background(), loop.Request{Model: "gpt-5.6-terra"}, func(loop.AssistantDelta) error { return nil })
+	var deltas []loop.AssistantDelta
+	m, err := live.Stream(context.Background(), loop.Request{Model: "gpt-5.6-terra"}, func(delta loop.AssistantDelta) error { deltas = append(deltas, delta); return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := mustTool(t, m, "apply_patch")
 	if c.ToolType != "custom" || c.Input != "*** Begin Patch" || c.ID != "call_1" {
 		t.Fatalf("custom call: %+v", c)
+	}
+	if len(deltas) != 2 || deltas[0].Type != "custom_tool_call_input_delta" || deltas[0].ToolCallID != "call_1" || deltas[0].ToolName != "apply_patch" {
+		t.Fatalf("custom deltas: %+v", deltas)
 	}
 }

@@ -239,6 +239,7 @@ func parseResponsesSSE(event, data string, acc *types.Message) (loop.AssistantDe
 		c := findOrAddToolCall(acc, callID, itemID, "", -1)
 		c.ToolType = "custom"
 		c.Input += delta
+		return loop.AssistantDelta{Type: "custom_tool_call_input_delta", Delta: delta, ToolCallID: c.ID, ToolName: c.Name, Partial: *acc}, delta != ""
 	case "response.custom_tool_call_input.done":
 		itemID, _ := obj["item_id"].(string)
 		callID, _ := obj["call_id"].(string)

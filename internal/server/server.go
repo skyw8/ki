@@ -963,6 +963,12 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 				return fmt.Errorf("append tool progress: %w", err)
 			}
 		}
+		if ev.Type == loop.PatchApplyUpdated {
+			details := map[string]any{"toolCallId": ev.ToolCallID, "toolName": ev.ToolName, "partialResult": ev.PartialResult}
+			if _, err := sess.AppendDetailsEvent(string(ev.Type), details); err != nil {
+				return fmt.Errorf("append patch preview: %w", err)
+			}
+		}
 		st.mu.Lock()
 		st.evs = append(st.evs, ev)
 		st.wait.Broadcast()

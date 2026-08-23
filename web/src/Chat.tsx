@@ -157,12 +157,15 @@ function ToolRow({
 	const editDiff = node.details && typeof node.details === 'object'
 	  ? String((node.details as Record<string, unknown>).diff ?? '')
 	  : ''
+	const patchDiff = node.name === 'apply_patch' && node.details && typeof node.details === 'object'
+	  ? (((node.details as Record<string, unknown>).changes as Array<Record<string, unknown>> | undefined) ?? []).map(c => String(c.unified_diff ?? '')).filter(Boolean).join('\n')
+	  : ''
   const state = node.running ? 'running' : node.isError ? 'error' : 'ok'
   const fail = state === 'error' && node.result ? firstLine(node.result) : ''
   const line = fail || summary
   const copyValue = desc || line
   const bodyIn = name === 'Write' ? content : name === 'Bash' ? cmd : prettyArgs(node.args)
-  const expandable = !!(node.result || bodyIn || oldS || newS || desc || editDiff)
+  const expandable = !!(node.result || bodyIn || oldS || newS || desc || editDiff || patchDiff)
   return (
     <div className={`tool-row${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool={name} data-state={state}>
       <div className="tool-row-h">
@@ -191,6 +194,8 @@ function ToolRow({
             <pre className="tool-read">{node.result.split('\n').map((ln, i) => `${String(offset + i).padStart(4, ' ')}  ${ln}`).join('\n')}</pre>
           ) : name === 'Edit' && editDiff ? (
 			<pre className="tool-out term">{editDiff}</pre>
+		  ) : name === 'apply_patch' && patchDiff ? (
+			<pre className="tool-out term sys-diff">{patchDiff}</pre>
 		  ) : name === 'Edit' && (oldS || newS) ? (
             <div className="diff">
               {oldS ? <pre className="diff-old">{oldS}</pre> : null}

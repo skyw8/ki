@@ -5,7 +5,8 @@
 // function_call/function_call_output or custom_tool_call/custom_tool_call_output
 // items — never Completions role:tool, or the next turn after a tool result is
 // HTTP 400. Streamed function arguments are accumulated as JSON; custom tool
-// input is accumulated as raw text.
+// input is accumulated as raw text, while Responses raw deltas are also
+// surfaced to the loop for non-executing argument previews.
 //
 // Completions tool images: consecutive toolResults stay adjacent; one
 // follow-up user carries that group's images (pi). Responses embed

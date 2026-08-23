@@ -151,7 +151,7 @@ func TestApplyPatchAddUpdateMoveDelete(t *testing.T) {
 	}
 }
 
-func TestApplyPatchNormalizesCRLFAndMatchesWhitespace(t *testing.T) {
+func TestApplyPatchPreservesCRLFAndMatchesWhitespace(t *testing.T) {
 	cwd := t.TempDir()
 	path := filepath.Join(cwd, "a.txt")
 	if err := os.WriteFile(path, []byte("  one  \r\ntwo\r\n"), 0o600); err != nil {
@@ -162,8 +162,8 @@ func TestApplyPatchNormalizesCRLFAndMatchesWhitespace(t *testing.T) {
 		t.Fatalf("patch: %+v", res)
 	}
 	b, _ := os.ReadFile(path)
-	if string(b) != "ONE\ntwo\n" {
-		t.Fatalf("normalized file = %q", b)
+	if string(b) != "ONE\r\ntwo\r\n" {
+		t.Fatalf("preserved file = %q", b)
 	}
 }
 
