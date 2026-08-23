@@ -16,7 +16,7 @@
 
 续聊必须 `--session <id>`。`--model` 随 prompt 发给 server，写回**该 session** 的 `config.json`，不改 toml。`KI_FAKE=1` 用假模型。
 
-系统提示词由 `internal/prompt` 从预加载的资源快照纯渲染，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、.mcp.json、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）、运行 OS/架构、cwd 和本地日期时区。后面这些运行环境字段在 session 首次加载资源时计算一次，普通消息不会重复探测；reload 后随新快照更新。模型被问及"去哪改 server / MCP / skills 设置"时读这段，配合 `ki config path`。
+系统提示词由 `internal/prompt` 从预加载的资源快照纯渲染，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、.mcp.json、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）、运行 OS/架构、cwd 和本地日期时区。后面这些运行环境字段在 session 首次加载资源时计算一次，普通消息不会重复探测；reload 后随新快照更新。模型被问及"去哪改 server / MCP / skills 设置"时读这段，配合 `ki config path`。完整分层与缓存边界见 [system_prompt.md](system_prompt.md)。
 
 `internal/resources.Loader` 由 Server 持有，把运行环境、skills、AGENTS/CLAUDE、prompt 模板和 `.mcp.json` 合并成一次完整快照。缓存键**只有真实 session id**：同一 workspace 新开 session 会重读磁盘，同 session 内的 catalog、命令展开、prompt 和 MCP 绑定共用同一快照；设置页没有 session，使用不缓存的 `Scan(cwd)`。工具列表和 Toggle 仍是每轮运行输入，MCP 连接也属于运行状态，不进入快照。`server.Reload()`（`POST /v1/reload`、`/reload`、压缩成功、PATCH skills/mcp）清空**所有 session** 快照并关掉 MCP 连接池。
 

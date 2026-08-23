@@ -127,7 +127,7 @@ func newRunCommand() *cobra.Command {
 func newReloadCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reload",
-		Short: "Reload skills, prompts, AGENTS.md, and MCP on the running server",
+		Short: "Reload session resources and MCP connections on the running server",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return withConfig("client", nil, runReload)

@@ -22,7 +22,7 @@ type Item struct {
 func Catalog(snapshot resources.Snapshot, skillsToggle session.Toggle) []Item {
 	out := []Item{
 		{Name: "compact", Description: "Compact this session's context", Source: "builtin"},
-		{Name: "reload", Description: "Reload skills, prompts, AGENTS.md, and MCP config", Source: "builtin"},
+		{Name: "reload", Description: "Reload session resources and MCP connections", Source: "builtin"},
 	}
 	for _, t := range snapshot.Prompts {
 		out = append(out, Item{

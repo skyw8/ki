@@ -149,7 +149,7 @@ func newToken() string {
 func (s *Server) Token() string { return s.token }
 
 // Reload drops every session's resource snapshots and MCP connections so the
-// next prompt/GET re-reads disk. Process-wide: there is no per-session reload.
+// next prompt/GET rebuilds resources. Process-wide: there is no per-session reload.
 func (s *Server) Reload() {
 	s.resources.InvalidateAll()
 	if s.mcp != nil {
@@ -729,7 +729,7 @@ func (s *Server) handleBuiltin(w http.ResponseWriter, r *http.Request, name stri
 	switch name {
 	case "reload":
 		s.Reload()
-		writeHandled(w, "reloaded skills, prompts, AGENTS.md, and MCP", false)
+		writeHandled(w, "reloaded resources and MCP connections", false)
 	case "compact":
 		s.doCompact(w, r)
 	default:
@@ -1086,9 +1086,9 @@ func (s *Server) shouldCompact(sess *session.Session, window int) bool {
 // threshold 三条路径。Returns ErrNothingToCompact when the
 // conversation fits inside the recent-token budget (no model call is made).
 //
-// A successful compaction invalidates the cached prompt resources (skills and
-// AGENTS/CLAUDE context files): the context was rebuilt, so the *next* prompt
-// build re-reads disk instead of serving a stale serve-long snapshot.
+// A successful compaction invalidates every cached resource snapshot: the
+// model context was rebuilt, so the next prompt should also use freshly loaded
+// environment, instructions, skills, templates, and MCP configuration.
 func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]types.Message, error) {
 	prep, err := compact.Prepare(sess.LeafEntries(), s.cfg.Compaction)
 	if err != nil {

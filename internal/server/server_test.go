@@ -1969,7 +1969,7 @@ func TestReloadInvalidatesCachedResources(t *testing.T) {
 
 // TestCompactInvalidatesCachedResources pins the contract that a successful
 // compaction is a reload point: the next prompt build re-reads skills and
-// AGENTS/CLAUDE from disk instead of the serve-long snapshot.
+// AGENTS/CLAUDE from disk instead of the session-pinned snapshot.
 func TestCompactInvalidatesCachedResources(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KI_HOME", home)
