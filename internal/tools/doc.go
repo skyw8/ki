@@ -10,6 +10,8 @@
 // /bin/bash then PATH. When Bash is unavailable, Bash and Monitor are omitted
 // without preventing server startup. The session-scoped task store tracks
 // process groups, output files, status, exit code, cancellation, and progress.
+// Foreground shell results keep only a bounded tail in model context and point
+// truncated results at the complete session-scoped temporary output file.
 // A foreground timeout promotes a still-running command to a background task;
 // explicit background tasks can be inspected by TaskOutput or stopped by
 // TaskStop. Monitor streams Bash output through ToolExecutionUpdate. Search

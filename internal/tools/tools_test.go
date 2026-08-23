@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"ki/internal/loop"
 )
@@ -411,6 +412,71 @@ func TestBashBackgroundAndRead(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("bg output: %q", got)
+}
+
+func TestBashForegroundTruncationSpillsAndReadCanPage(t *testing.T) {
+	cwd := t.TempDir()
+	jobs := NewJobStore()
+	defer jobs.Close()
+	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{Editor: EditorWriteEdit})
+	bash, read := pick(all, "Bash"), pick(all, "Read")
+	result := bash.Execute(context.Background(), map[string]any{
+		"command": "i=1; while [ $i -le 3000 ]; do printf 'line-%04d\\n' \"$i\"; i=$((i+1)); done",
+	})
+	if result.IsError {
+		t.Fatalf("foreground bash: %+v", result)
+	}
+	text := result.Content[0].Text
+	if strings.Contains(text, "line-0001") || !strings.Contains(text, "line-3000") {
+		t.Fatalf("result should contain only the output tail: %q", text)
+	}
+	_, suffix, ok := strings.Cut(text, "Full output: ")
+	if !ok {
+		t.Fatalf("truncated result omitted full output path: %q", text)
+	}
+	path := strings.TrimSuffix(strings.TrimSpace(suffix), "]")
+	if !filepath.IsAbs(path) {
+		t.Fatalf("full output path is not absolute: %q", path)
+	}
+	full, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(full), "line-0001\n") || !strings.Contains(string(full), "line-3000\n") {
+		t.Fatalf("spill file is incomplete: first/last lines missing")
+	}
+
+	page := read.Execute(context.Background(), map[string]any{"file_path": path, "offset": 1, "limit": 2})
+	if page.IsError || !strings.Contains(page.Content[0].Text, "line-0001\nline-0002") {
+		t.Fatalf("Read could not page spill file from its beginning: %+v", page)
+	}
+}
+
+func TestBashForegroundSmallOutputDoesNotExposeSpill(t *testing.T) {
+	jobs := NewJobStore()
+	defer jobs.Close()
+	bash := bashTool{cwd: t.TempDir(), jobs: jobs}
+	result := bash.Execute(context.Background(), map[string]any{"command": "printf small"})
+	if result.IsError || result.Content[0].Text != "small" {
+		t.Fatalf("small foreground result: %+v", result)
+	}
+	if strings.Contains(result.Content[0].Text, "Full output:") {
+		t.Fatalf("untruncated result exposed spill path: %q", result.Content[0].Text)
+	}
+}
+
+func TestTruncateTailBoundsLongUTF8Line(t *testing.T) {
+	input := strings.Repeat("你", maxBytes)
+	out, note := truncateTail(input)
+	if len(out) > maxBytes {
+		t.Fatalf("truncated output has %d bytes, limit %d", len(out), maxBytes)
+	}
+	if !utf8.ValidString(out) {
+		t.Fatal("truncation split a UTF-8 code point")
+	}
+	if note == "" {
+		t.Fatal("long line omitted truncation note")
+	}
 }
 
 func TestTaskOutputAndTaskStopLifecycle(t *testing.T) {

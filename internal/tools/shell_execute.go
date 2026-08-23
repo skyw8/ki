@@ -58,8 +58,7 @@ func executeShell(ctx context.Context, args map[string]any, emit func(any), shel
 		progress = func(update TaskUpdate) { emit(update) }
 	}
 	snapshot, runErr := jobs.RunForeground(cctx, shell, cwd, cmdStr, stringArg(args, "description", cmdStr), progress)
-	out, _ := jobs.Output(snapshot.TaskID)
-	text, note := truncateTail(out)
+	text, note := truncateTaskTail(snapshot.Output, snapshot.Bytes, snapshot.Lines, snapshot.OutputFile)
 	text += note
 	if errors.Is(runErr, context.DeadlineExceeded) && snapshot.Status == TaskBackground {
 		if isLeadingSleep(shell.kind, cmdStr) {

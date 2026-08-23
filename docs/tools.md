@@ -64,7 +64,7 @@
 - Windows 依次查找 `KI_GIT_BASH_PATH`、`CLAUDE_CODE_GIT_BASH_PATH`、Git for Windows 安装目录和 PATH 中的 `bash.exe`。
 - 找不到 Bash 时不注册 `Bash` 和 `Monitor`，server 仍正常启动。
 - 每次调用都是新进程，cwd 固定为 session cwd；`cd` 不会影响后续调用。
-- stdout/stderr 混排并流式发送；超过 2000 行或 50KB 时保留尾部，非零退出码返回 error。
+- stdout/stderr 混排并流式发送；超过 2000 行或 50KB 时只把尾部放进 tool result，并附完整输出临时文件的绝对路径，可用 `Read` 的 `offset` / `limit` 分页读取；非零退出码返回 error。
 - 前台 timeout 时，普通命令转入后台并返回 task id 和输出文件；以 `sleep` 开头的命令直接终止。
 - abort 终止整个进程组及其子进程、管道；显式后台任务不受 prompt abort 影响。
 - 不提供 sandbox 开关，prompt 中也不声明 `dangerouslyDisableSandbox`。

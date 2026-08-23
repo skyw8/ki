@@ -15,7 +15,6 @@ import (
 
 type readTool struct {
 	cwd  string
-	jobs *JobStore
 	rich bool
 }
 
@@ -69,16 +68,6 @@ func (t readTool) Execute(_ context.Context, args map[string]any) loop.ToolResul
 		return errRes("file_path is required")
 	}
 	abs := resolve(t.cwd, path)
-	if t.jobs != nil {
-		if out, ok := t.jobs.Output(path); ok {
-			text, note := truncateTail(out)
-			return txt(text + note)
-		}
-		if out, ok := t.jobs.Output(abs); ok {
-			text, note := truncateTail(out)
-			return txt(text + note)
-		}
-	}
 	st, err := os.Stat(abs)
 	if err != nil {
 		return errRes(err.Error())

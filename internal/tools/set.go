@@ -35,7 +35,7 @@ func (s Set) Build(profile Profile) []loop.Tool {
 	if shells.bash.kind == "" {
 		shells = fallbackShellRuntime()
 	}
-	out := []loop.Tool{readTool{cwd: cwd, jobs: jobs, rich: profile.RichRead}}
+	out := []loop.Tool{readTool{cwd: cwd, rich: profile.RichRead}}
 	if profile.Editor == EditorApplyPatch {
 		out = append(out, applyPatchTool{cwd: cwd})
 	} else {
