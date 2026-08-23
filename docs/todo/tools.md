@@ -1,173 +1,79 @@
-记录工具优化 tricks
+# 工具后续优化
 
-- 参考：`/data/hgy/pi`、`/data/hgy/codex`。
-- 范围：只记录执行、输出、状态、格式、并发和交互；暂不记录安全、权限、sandbox。
+本文按参考实现分别记录尚未完成或只完成一部分的工具优化。已落地的行为统一记录在 `docs/tools.md`，不在这里重复维护完成清单。
 
-## claude code
+范围只包括执行、输出、状态、格式、并发和交互；暂不包括安全、权限和 sandbox。
 
-`/data/hgy/claude-code-source-code`
+## Claude Code
 
-### Bash
+参考：`/data/hgy/claude-code-source-code`。
 
-- [x] 启动 shell 时加载用户 profile。
+Claude Code 的 Bash、PowerShell、后台任务、`TaskOutput`、`TaskStop` 和 `Monitor` 主体生命周期已经引入。剩余工作是约束这些能力产生的模型上下文。
 
-- [x] 保留非零退出码，并在结果中区分 timeout、取消和进程退出。
-- [x] 前台命令默认有 timeout；显式 `run_in_background` 时不等待命令完成。
-- [x] timeout 到达时，仍在运行且不是以 `sleep` 开头的前台命令转入后台，返回 task id 和输出文件；`sleep` 命令仍终止。
-- [x] stdout/stderr 持续写入输出文件，并通过节流后的 `ToolExecutionUpdate` 推送增量。
-- [x] 后台任务记录状态、进程组、退出码、错误、字节数、行数和开始/结束时间。
-- [x] session 跨 prompt 保留任务；删除 session 或关闭 server 时终止进程组并清理临时输出。
-- [x] `TaskOutput` 支持 `block`、等待 timeout、partial output 和完成状态。
-- [x] `TaskStop` 支持 task id，并兼容 Claude 的 `shell_id`。
-- [x] `Monitor` 启动流式监控脚本，逐行发送输出；一次性等待仍使用 Bash `run_in_background`。
+### 后台任务输出
 
-### PowerShell
+- [ ] 限制 `TaskOutput` 返回的完整输出大小；超限时只返回尾部、截断统计和现有 `output_file`，避免把整份日志重新放入 context。
+- [ ] 将任务 timeout、取消、退出码和截断状态统一为结构化结果，减少 Bash、PowerShell、TaskOutput 和 Monitor 各自拼接状态文本。
 
-- [x] 仅在 Windows 注册独立 `PowerShell` 工具，优先使用 `pwsh`，其次使用 `powershell.exe`。
-- [x] 参数、版本化提示词、退出码、流式输出、timeout、后台任务和任务停止对齐 Bash/Claude Code 生命周期。
-- [x] Windows Bash 按环境变量、Git for Windows 标准目录和 PATH 查找；找不到时不注册 `Bash` / `Monitor`，server 仍可启动。
-- [x] 每次调用从 session cwd 启动，不继承上一次 `Set-Location`。
+## Pi
 
-### Grep / Glob
-
-- [x] 尽量返回 partial results，而不是超时后丢弃全部结果。
-- [x] ripgrep 遇到 `EAGAIN` 或资源不足时自动用 `-j 1` 重试。
-- [x] 返回文件数、匹配数、是否截断和分页元数据。
-- [x] 达到结果上限时尽早停止 ripgrep，保留已解析结果并明确提示截断。
-- [x] 继续使用 JSON 解析匹配、NUL 解析文件名，避免特殊路径破坏结果。
-
-## pi
-
-`/data/hgy/pi`
+参考：`/data/hgy/pi`。
 
 ### Read
 
-- 在每个异步文件操作前后检查取消信号，避免取消后继续读文件或更新结果。
-- 统一按字节和行数截断，并返回 `truncated`、总字节数、总行数和下一次读取位置。
-- 超长单行需要给出可执行的替代读取方式，而不是只返回一段不可继续定位的文本。
-- 图片读取前按模型可用尺寸自动缩放，避免直接传输过大的 base64。
-- 将文件读取抽象成可替换的 operations，便于以后接入远程或虚拟文件系统；当前优先级较低。
+- [ ] 在每个异步文件操作前后检查取消信号，避免取消后继续读文件或生成结果。
+- [ ] 返回结构化截断信息：`truncated`、总字节数、总行数和下一次读取位置。
+- [ ] 为超过 50KB 的单行提供可执行的分段读取方式；当前 `offset` 只能按行继续。
+- [ ] 图片进入模型前按模型支持尺寸缩放，避免直接发送过大的 base64。
+- [ ] 将文件读取抽象为可替换 operations，支持远程或虚拟文件系统；优先级较低。
 
-### Write
+### Write / Edit
 
-- 对同一文件的 Write/Edit/apply_patch 使用按路径的 mutation queue，避免并行工具调用互相覆盖。
-- 目录创建和写入前后都检查取消信号；取消时要等当前文件系统操作完成后再释放该文件的队列锁。
-- 保留“新建文件或完整重写用 Write，局部修改用 Edit”的提示词约束。
+- [ ] 对同一路径的 Write、Edit 和 apply_patch 使用共享 mutation queue；不同文件仍可并行。
+- [ ] 文件操作在目录创建、读取、写入及异步等待前后检查取消；取消后等当前原子步骤结束再释放路径锁。
+- [ ] Edit 支持一次提交多个 `{oldText,newText}`；所有替换基于同一份原文校验唯一性和重叠，再一次写入。
+- [ ] Edit 的模型可见 `content` 只返回替换数和路径；统一 diff、patch 和首个变更行放入结构化 `details` 供 UI/session 使用，不进入 provider context。
 
-### Edit
+### Grep / Glob
 
-- 支持 `edits[]`，一次请求提交多个 `{oldText,newText}`，减少连续工具调用。
-- 所有替换基于同一份原始内容计算，校验唯一性、重叠和上下文后再一次写入。
-- 保留 BOM 和原始换行符，避免编辑后无关的整文件 diff。
-- 返回替换数量、统一 diff、首个变更行和截断信息，方便模型继续修正。
-- 支持取消检查和按文件串行化；这是当前并行 loop 最容易产生竞态的地方。
-
-### Grep
-
-- 逐行解析 ripgrep 的 JSON 输出，并在达到 limit 后尽早停止进程。
-- 将匹配、上下文、文件读取和最终截断分开处理，结果中明确说明达到匹配上限或输出上限。
-- 保留无匹配退出码为正常结果，并区分命令错误、取消和超时。
-- 对超长匹配行单独截断，不能让一行异常放大整个结果。
-
-### Glob
-
-- 结果提供稳定排序、limit、是否截断和搜索根目录等元数据。
-- 可增加 `respect_gitignore` 等模式，但不要改变当前 Glob 已有语义作为隐式行为。
+- [ ] Grep 的单行和最终字节截断保持 UTF-8 边界；当前直接按字节切片。
+- [ ] Glob 在结果元数据中增加搜索根目录。
+- [ ] 如果增加 `respect_gitignore` 等模式，必须显式参数化，不能隐式改变当前 `--no-ignore` 语义。
 
 ### Bash
 
-- 流式消费 stdout/stderr，并用节流后的进度事件更新调用方；不要等进程结束才看到输出。
-- 同时保留滚动尾部和完整输出文件：结果返回尾部摘要，超长输出可通过路径继续读取。
-- 按字节和行数截断，保持 UTF-8 边界；清理 ANSI 和不可见控制字符，避免污染模型上下文。
-- 将 timeout、取消、退出码、是否截断和完整输出路径放入结构化结果。
-- 继续扩展 shell 选择：当前 Windows 已支持独立 PowerShell、Git Bash 和 PATH 中的其他 Bash；Unix 的 sh/zsh、Windows CMD 和显式 shell 参数仍未实现。
-- 跟踪后台进程及其子进程，服务退出时回收仍在运行的任务。
+- [ ] 清理 ANSI 转义和不可见控制字符，同时保留换行和制表符。
+- [ ] 将 timeout、取消、退出码、截断统计和完整输出路径写入结构化 tool result；当前最终 shell result 主要依赖文本。
 
-## codex
+### 可选工具
 
-`/data/hgy/codex`
+- [ ] `Ls`：Bash 已可替代，只有需要固定格式和更小上下文时再引入；优先级低。
+- [ ] `Find`：现有 Glob 已覆盖主要需求，除非需要兼容 pi 命名；优先级低。
 
-### Bash / unified exec
+## Codex
 
-- 将“等待多久返回”和“命令最多运行多久”分开：`yield_time_ms` 到期时返回 live session，而不是立即终止进程。
-- 配套 `write_stdin`，支持轮询输出、向交互式进程写入 stdin，以及取得最终退出状态。
-- 支持 `cwd`、shell 路径、login、TTY、环境变量和 `max_output_tokens` 等执行参数。
-- 持续发送 stdout/stderr 事件，并保留结构化的退出码、取消、超时和输出截断状态。
-- 为同一 session 保存 shell environment snapshot，使后续命令可以继承必要的 shell 初始化状态。
-- 把 shell 类型和参数构造独立出来，统一处理 Bash、Zsh、Sh、PowerShell 和 CMD。
+参考：`/data/hgy/codex`。
 
-### Read / Write / Edit
+### Unified exec
 
-- 文件工具共享取消和执行上下文，异步等待后再次检查状态。
-- apply patch 的解析、校验和执行分层；所有 hunk 校验通过后再提交文件变更，失败时不留下半成品。
-- 工具结果尽量携带机器可读状态，同时提供模型可读的简短摘要。
+- [ ] 将“等待多久返回”和“命令最多运行多久”拆开：等待到期返回 live session，运行上限才终止进程。
+- [ ] 提供与 `write_stdin` 等价的继续接口，支持轮询、写 stdin 和获取最终退出状态。
+- [ ] 支持 TTY、显式 shell/login、环境变量和输出预算等执行参数。
+- [ ] 为同一 session 保存必要的 shell environment snapshot，而不是每次仅重新执行 login shell。
+- [ ] 扩展 `shellSpec` 的解释器类型和参数构造，覆盖 Unix sh/zsh、Windows CMD 和显式 shell 路径。该项只在出现对应使用需求时实施，不要求增加多个模型可见工具。
 
-### 并发与结果
+### 文件变更与并发
 
-- 将只读工具和文件变更工具区分开：只读操作可并行，同一路径的变更必须串行。
-- 为长任务、取消、超时、后台完成等状态定义统一事件，避免每个工具各自发明状态文本。
+- [ ] apply_patch 先解析并验证所有文件和 hunk，再统一提交；当前跨文件 patch 中途失败可能留下前面已应用的修改。
+- [ ] 文件工具结果增加机器可读状态，同时保留简短的模型可读摘要。
+- [ ] 将只读工具和文件变更工具显式分类：只读操作可并行，同一路径的变更必须串行。
+- [ ] 为取消、timeout、后台完成和长任务建立跨工具统一的结构化事件。
 
-## 本项目没有的工具
+### 可选工具
 
-### Claude Code
-
-#### 已引入：`PowerShell`
-
-- 作用：在 Windows 上直接执行 PowerShell 命令，处理 Windows 原生路径、环境变量和系统工具。
-- 当前实现：仅 Windows 注册；使用原生 PowerShell 语法和提示词，与 Bash 共用后台任务、进程树、输出和 timeout 生命周期。
-- 必要性：高，已引入。
-
-#### 已引入：`TaskOutput` / `TaskStop` / `Monitor`
-
-- 作用：查询后台任务输出、状态和退出码，停止任务，或持续监听长任务。
-- 当前实现：session 级任务注册表、进程组终止、输出文件、任务状态和现有 loop/SSE 进度事件。
-- 必要性：高。后台 Bash 依赖这些工具完成可靠的查询、等待和清理。
-
-### Codex
-
-#### `exec_command` + `write_stdin`
-
-- 作用：执行命令；短命令直接返回，长命令保留 session，通过轮询或 stdin 继续操作。
-- 必要性：高。比当前 Bash 的阻塞调用或 `run_in_background` 后再 Read 更完整，建议优先引入或改造现有 Bash。
-
-#### `ViewImage`
-
-- 作用：单独查看本地图片并返回模型可消费的图像内容。
-- 必要性：低。Ki 的 Read 已支持图片读取，优先完善 Read 的缩放和结果元数据。
-
-#### `Plan`
-
-- 作用：创建、更新和展示多步骤任务计划及其状态。
-- 必要性：中。长任务和 WebUI 需要展示进度时有价值；当前单一 loop 可以暂不引入。
-
-#### `RequestUserInput`
-
-- 作用：以结构化选项暂停任务并向用户收集必要参数。
-- 必要性：中。WebUI 有明确的交互需求时再引入，普通 CLI 可先用文本提问。
-
-#### `ToolSearch`
-
-- 作用：工具数量较多时按需发现和加载工具，减少每轮提示词体积。
-- 必要性：低。当前内置工具和 MCP 工具规模可控，暂不需要动态发现。
-
-#### `Agent` / 多代理
-
-- 作用：把独立子任务交给其他 agent 并行执行，再汇总结果。
-- 必要性：低。当前先完善单 agent 的工具生命周期；只有确实需要并行探索或分工时再引入。
-
-#### `Sleep` / `CurrentTime`
-
-- 作用：无命令等待，以及获取当前时间。
-- 必要性：低。可由 Bash 或服务端直接完成，除非需要无副作用的等待和时间工具。
-
-### Pi
-
-#### `Ls`
-
-- 作用：稳定列出目录内容，显示目录标记并限制结果数量。
-- 必要性：低。Bash 已能完成；若需要节省上下文并固定输出格式，可以引入。
-
-#### `Find`
-
-- 作用：按文件名模式查找文件，通常是 Glob 的简化接口。
-- 必要性：低。Ki 已有 Glob，除非需要兼容 pi 的工具命名，否则不必重复引入。
+- [ ] `Plan`：为长任务和 WebUI 提供结构化步骤及状态；优先级中。
+- [ ] `RequestUserInput`：WebUI 需要结构化选项交互时引入；优先级中。
+- [ ] `ViewImage`：现有 Read 已能读图，先完成缩放；优先级低。
+- [ ] `ToolSearch`：工具数量显著增长后再按需加载；优先级低。
+- [ ] `Agent` / 多代理：单 agent 生命周期稳定后再评估；优先级低。
+- [ ] `Sleep` / `CurrentTime`：只有需要无副作用等待或取时才引入；优先级低。

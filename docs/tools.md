@@ -21,7 +21,7 @@
 ## Read
 
 - 相对路径按 session cwd 解析；返回原文，不添加行号。
-- 超过 2000 行或 50KB 时保留头部，并提示后续读取使用的 `offset`。
+- 普通文本和 shell spill 文件共用 `offset` / `limit` 分页；超过 2000 行或 50KB 时保留头部，并提示下一次读取的 `offset`。
 - `ToolProfile.input` 含 `image` 时才支持图片、PDF 和 `pages`；文本模式在执行阶段也会拒绝图片和 PDF。
 - `.ipynb` 按 cell 返回。
 
@@ -30,11 +30,13 @@
 - 相对路径按 session cwd 解析。
 - 直接创建或完整覆盖文件，不要求先调用 `Read`。
 - 返回实际写入的字节数。
+- 提示词要求新建或完整重写使用 `Write`，修改已有文件优先使用 `Edit`。
 
 ## Edit
 
 - 相对路径按 session cwd 解析。
 - 精确匹配 `old_string`；默认要求唯一，`replace_all=true` 时替换全部匹配。
+- 基于原始字节做精确替换，未触及的 BOM 和换行符保持不变。
 - 仅未启用 freeform `apply_patch` 的模型注册，与 `apply_patch` 不同时出现。
 
 ## apply_patch
@@ -46,15 +48,17 @@
 ## Grep
 
 - 使用编译进 ki 的 ripgrep 15.2.0，不依赖系统 `rg`；helper 按平台物化到用户缓存目录。
-- 通过 argv 启动并解析 JSON 输出，不经过 shell；支持正则、glob、文件类型、上下文和分页。
-- 默认超时 20 秒；达到结果或输出上限时终止搜索，并保留已经解析的部分结果。
+- 通过 argv 启动并逐行解析 JSON 输出，不经过 shell；支持正则、glob、文件类型、上下文和分页。
+- 默认超时 20 秒；达到结果或原始输出上限时立即终止子进程，并保留已经解析的 partial results。
 - 资源暂时不足时自动以 `-j 1` 重试一次。
-- 结果包含文件数、匹配数和 `truncated`；`KI_USE_SYSTEM_RIPGREP=1` 仅用于调试。
+- 无匹配的退出码 1 是正常空结果；取消、超时和命令错误分别返回对应错误，已有结果的超时标为截断而不是全部丢弃。
+- content 模式单行最多 500 字节、最终文本最多 20KB；匹配上限与文本上限分别提示。
+- 结果包含文件数、匹配数和 `truncated`；路径来自 JSON 字段，不解析人类可读文本。`KI_USE_SYSTEM_RIPGREP=1` 仅用于调试。
 
 ## Glob
 
-- 使用同一内置 ripgrep 的 `--files` 和 NUL 分隔输出，不依赖 shell。
-- 结果按修改时间排序，并包含文件数、limit 和 `truncated`。
+- 使用同一内置 ripgrep 的 `--files` 和 NUL 分隔输出，不依赖 shell，特殊文件名不会破坏解析。
+- 默认最多返回 100 个结果、最终文本最多 100KB；结果按修改时间排序，并包含文件数、limit 和 `truncated`。
 - 默认超时 20 秒；达到上限时保留部分结果，资源暂时不足时以 `-j 1` 重试一次。
 - `KI_USE_SYSTEM_RIPGREP=1` 仅用于调试。
 
@@ -63,8 +67,10 @@
 - server 启动时解析一次可执行文件；Unix 依次查找 `/bin/bash` 和 PATH。
 - Windows 依次查找 `KI_GIT_BASH_PATH`、`CLAUDE_CODE_GIT_BASH_PATH`、Git for Windows 安装目录和 PATH 中的 `bash.exe`。
 - 找不到 Bash 时不注册 `Bash` 和 `Monitor`，server 仍正常启动。
-- 每次调用都是新进程，cwd 固定为 session cwd；`cd` 不会影响后续调用。
-- stdout/stderr 混排并流式发送；超过 2000 行或 50KB 时只把尾部放进 tool result，并附完整输出临时文件的绝对路径，可用 `Read` 的 `offset` / `limit` 分页读取；非零退出码返回 error。
+- 每次调用都是新的 `bash -lc` 进程，会加载用户 login profile；cwd 固定为 session cwd，`cd` 不会影响后续调用。
+- stdout/stderr 混排并持续写入无损临时文件；实时增量最多每 100ms 通过 `ToolExecutionUpdate` 推送一次。
+- 超过 2000 行或 50KB 时只把 JobStore 的滚动尾部放进 tool result，并附完整输出临时文件的绝对路径，可用 `Read` 的 `offset` / `limit` 分页读取；生成最终结果不会重新把完整 spill 文件载入内存。
+- 非零退出码、timeout 和取消分别返回 error、后台接管提示或 aborted 状态。
 - 前台 timeout 时，普通命令转入后台并返回 task id 和输出文件；以 `sleep` 开头的命令直接终止。
 - abort 终止整个进程组及其子进程、管道；显式后台任务不受 prompt abort 影响。
 - 不提供 sandbox 开关，prompt 中也不声明 `dangerouslyDisableSandbox`。
@@ -83,7 +89,7 @@
 - 后台任务属于 session，可跨 prompt 查询；ki 重启后不恢复。
 - 默认最多阻塞等待 30 秒；`block=false` 立即返回当前快照。
 - 等待超时返回 `retrieval_status=timeout`，不会终止任务。
-- 返回任务状态、完整输出、退出码、错误和输出文件。
+- 返回 task id/type、状态、描述、命令、PID、完整输出、输出文件、退出码、错误、字节数、行数和开始/结束时间；运行中的快照可包含 partial output。
 - 删除 session 或关闭 server 时终止运行中的任务，并清理临时输出文件。
 
 ## TaskStop
