@@ -74,7 +74,11 @@ func (t taskOutputTool) Execute(ctx context.Context, args map[string]any) loop.T
 		cancel()
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			if errors.Is(err, context.Canceled) {
-				return errRes("TaskOutput aborted")
+				details := detailsForTask(snapshot, "cancelled")
+				details.Cancelled = true
+				res := errRes("TaskOutput aborted")
+				res.Details = details
+				return res
 			}
 			return errRes(err.Error())
 		}
@@ -83,10 +87,10 @@ func (t taskOutputTool) Execute(ctx context.Context, args map[string]any) loop.T
 			status = "timeout"
 		}
 	}
-	if output, ok := t.jobs.Output(id); ok {
-		snapshot.Output = output
-	}
-	return taskResult(taskOutputResponse{RetrievalStatus: status, Task: &snapshot})
+	details := detailsForTask(snapshot, status)
+	details.TimedOut = status == "timeout"
+	snapshot, _ = boundedTaskSnapshot(snapshot)
+	return taskResult(taskOutputResponse{RetrievalStatus: status, Task: &snapshot}, details)
 }
 
 type taskStopTool struct{ jobs *JobStore }
@@ -134,7 +138,7 @@ func (t taskStopTool) Execute(_ context.Context, args map[string]any) loop.ToolR
 		"task_type": snapshot.TaskType,
 		"status":    snapshot.Status,
 		"command":   snapshot.Command,
-	})
+	}, detailsForTask(snapshot, "success"))
 }
 
 type monitorTool struct {
@@ -211,23 +215,30 @@ func (t monitorTool) ExecuteWithProgress(ctx context.Context, args map[string]an
 					}
 				default:
 					snapshot, _ := t.jobs.Get(id)
-					if output, ok := t.jobs.Output(id); ok {
-						snapshot.Output = output
-					}
-					return taskResult(snapshot)
+					details := detailsForTask(snapshot, "success")
+					snapshot, _ = boundedTaskSnapshot(snapshot)
+					return taskResult(snapshot, details)
 				}
 			}
 		case <-ctx.Done():
-			_, _ = t.jobs.Stop(id)
-			return errRes("Monitor aborted")
+			snapshot, _ := t.jobs.Stop(id)
+			details := detailsForTask(snapshot, "cancelled")
+			details.Cancelled = true
+			res := errRes("Monitor aborted")
+			res.Details = details
+			return res
 		}
 	}
 }
 
-func taskResult(value any) loop.ToolResult {
+func taskResult(value any, details ...any) loop.ToolResult {
 	b, err := json.Marshal(value)
 	if err != nil {
 		return errRes(err.Error())
 	}
-	return okRes(string(b))
+	res := okRes(string(b))
+	if len(details) > 0 {
+		res.Details = details[0]
+	}
+	return res
 }

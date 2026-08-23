@@ -19,9 +19,11 @@ type Profile struct {
 
 // Set binds built-in tools to a session cwd.
 type Set struct {
-	CWD    string
-	Jobs   *JobStore
-	Shells ShellRuntime
+	CWD       string
+	Jobs      *JobStore
+	Shells    ShellRuntime
+	ReadOps   ReadOperations
+	Mutations *MutationQueue
 }
 
 // Build returns the tools exposed for one resolved model.
@@ -29,17 +31,20 @@ func (s Set) Build(profile Profile) []loop.Tool {
 	if s.Jobs == nil {
 		s.Jobs = NewJobStore()
 	}
+	if s.Mutations == nil {
+		s.Mutations = NewMutationQueue()
+	}
 	cwd := s.CWD
 	jobs := s.Jobs
 	shells := s.Shells
 	if shells.bash.kind == "" {
 		shells = fallbackShellRuntime()
 	}
-	out := []loop.Tool{readTool{cwd: cwd, rich: profile.RichRead}}
+	out := []loop.Tool{readTool{cwd: cwd, rich: profile.RichRead, ops: s.ReadOps}}
 	if profile.Editor == EditorApplyPatch {
-		out = append(out, applyPatchTool{cwd: cwd})
+		out = append(out, applyPatchTool{cwd: cwd, mutations: s.Mutations})
 	} else {
-		out = append(out, writeTool{cwd: cwd}, editTool{cwd: cwd})
+		out = append(out, writeTool{cwd: cwd, mutations: s.Mutations}, editTool{cwd: cwd, mutations: s.Mutations})
 	}
 	out = append(out,
 		grepTool{cwd: cwd},

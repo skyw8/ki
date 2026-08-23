@@ -13,6 +13,30 @@ import (
 	"ki/internal/types"
 )
 
+func TestToolMessageDetailsRoundTrip(t *testing.T) {
+	cwd := t.TempDir()
+	s, err := Create(t.TempDir(), cwd, "openai", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.AppendMessage(types.Message{Role: "toolResult", ToolCallID: "call", ToolName: "Edit", Content: []types.Content{{Type: "text", Text: "ok"}}, Details: map[string]any{"diff": "patch"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := s.Dir
+	_ = s.Close()
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	messages := reopened.MessagesToLeaf()
+	details, ok := messages[len(messages)-1].Details.(map[string]any)
+	if !ok || details["diff"] != "patch" {
+		t.Fatalf("details = %#v", messages[len(messages)-1].Details)
+	}
+}
+
 func TestCreateReloadFork(t *testing.T) {
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")

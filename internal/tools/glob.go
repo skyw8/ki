@@ -7,6 +7,7 @@ import (
 
 	"ki/internal/loop"
 	"ki/internal/search"
+	"ki/internal/types"
 )
 
 const globPrompt = `Fast file pattern matching tool that works with any codebase size
@@ -31,8 +32,9 @@ func (globTool) Parameters() map[string]any {
 		"additionalProperties": false,
 		"required":             []any{"pattern"},
 		"properties": map[string]any{
-			"pattern": map[string]any{"type": "string", "description": "The glob pattern to match files against"},
-			"path":    map[string]any{"type": "string", "description": "The directory to search in. If not specified, the current working directory will be used. Must be a valid directory path if provided."},
+			"pattern":           map[string]any{"type": "string", "description": "The glob pattern to match files against"},
+			"path":              map[string]any{"type": "string", "description": "The directory to search in. If not specified, the current working directory will be used. Must be a valid directory path if provided."},
+			"respect_gitignore": map[string]any{"type": "boolean", "description": "Respect .gitignore rules. Defaults to false, preserving the no-ignore search behavior."},
 		},
 	}
 }
@@ -51,11 +53,12 @@ func (t globTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		root = absoluteRoot
 		pattern = relativePattern
 	}
+	respectGitignore, _ := args["respect_gitignore"].(bool)
 	result, err := (search.Engine{}).Glob(ctx, search.GlobRequest{
 		Pattern:       pattern,
 		Root:          root,
 		MaxResults:    defaultGlobLimit,
-		NoIgnore:      true,
+		NoIgnore:      !respectGitignore,
 		IncludeHidden: true,
 		SortModified:  true,
 	})
@@ -63,7 +66,7 @@ func (t globTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		return errRes(formatSearchError(err))
 	}
 	if len(result.Files) == 0 {
-		return okRes("No files found\n\n[files: 0; truncated: false]")
+		return globResult("No files found", root, 0, false)
 	}
 	lines := make([]string, 0, len(result.Files)+1)
 	for _, file := range result.Files {
@@ -77,5 +80,17 @@ func (t globTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 			note += "\n\n[Results are truncated. Consider using a more specific path or pattern.]"
 		}
 	}
-	return okRes(fmt.Sprintf("Found %d files\n%s%s\n\n[files: %d; truncated: %t]", len(result.Files), output, note, len(result.Files), result.Truncated))
+	return globResult(fmt.Sprintf("Found %d files\n%s%s", len(result.Files), output, note), root, len(result.Files), result.Truncated)
+}
+
+type globDetails struct {
+	Root      string `json:"root"`
+	Files     int    `json:"files"`
+	Limit     int    `json:"limit"`
+	Truncated bool   `json:"truncated"`
+}
+
+func globResult(text, root string, files int, truncated bool) loop.ToolResult {
+	meta := fmt.Sprintf("\n\n[root: %s; files: %d; limit: %d; truncated: %t]", root, files, defaultGlobLimit, truncated)
+	return loop.ToolResult{Content: []types.Content{{Type: "text", Text: text + meta}}, Details: globDetails{Root: root, Files: files, Limit: defaultGlobLimit, Truncated: truncated}}
 }

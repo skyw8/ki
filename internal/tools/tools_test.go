@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -243,8 +245,16 @@ func TestGrepAndGlobTools(t *testing.T) {
 	}
 
 	globResult := glob.Execute(context.Background(), map[string]any{"pattern": "**/*.go"})
-	if globResult.IsError || !strings.Contains(globResult.Content[0].Text, "src/main.go") || !strings.Contains(globResult.Content[0].Text, "files: 1") {
+	if globResult.IsError || !strings.Contains(globResult.Content[0].Text, "src/main.go") || !strings.Contains(globResult.Content[0].Text, "files: 1") || !strings.Contains(globResult.Content[0].Text, "root:") {
 		t.Fatalf("glob result = %+v", globResult)
+	}
+	_ = os.WriteFile(filepath.Join(cwd, ".gitignore"), []byte("ignored.go\n"), 0o600)
+	_ = os.Mkdir(filepath.Join(cwd, ".git"), 0o700)
+	_ = os.WriteFile(filepath.Join(cwd, "ignored.go"), []byte("package ignored\n"), 0o600)
+	defaultIgnored := glob.Execute(context.Background(), map[string]any{"pattern": "**/ignored.go"})
+	respected := glob.Execute(context.Background(), map[string]any{"pattern": "**/ignored.go", "respect_gitignore": true})
+	if !strings.Contains(defaultIgnored.Content[0].Text, "ignored.go") || strings.Contains(respected.Content[0].Text, "ignored.go\n") {
+		t.Fatalf("gitignore behavior: default=%q respected=%q", defaultIgnored.Content[0].Text, respected.Content[0].Text)
 	}
 }
 
@@ -269,6 +279,95 @@ func TestEditReplaceAllAndUniqueFailure(t *testing.T) {
 	b, _ := os.ReadFile(p)
 	if string(b) != "y y y" {
 		t.Fatalf("got %q", b)
+	}
+}
+
+func TestEditBatchUsesOneOriginalAndReturnsDiffDetails(t *testing.T) {
+	cwd := t.TempDir()
+	p := filepath.Join(cwd, "batch.txt")
+	_ = os.WriteFile(p, []byte("alpha\nbeta\ngamma\n"), 0o600)
+	ed := editTool{cwd: cwd, mutations: NewMutationQueue()}
+	args := map[string]any{"file_path": p, "edits": []any{
+		map[string]any{"old_string": "alpha", "new_string": "ALPHA"},
+		map[string]any{"old_string": "gamma", "new_string": "GAMMA"},
+	}}
+	if err := ed.Validate(args); err != nil {
+		t.Fatal(err)
+	}
+	res := ed.Execute(context.Background(), args)
+	if res.IsError || !strings.Contains(res.Content[0].Text, "2 block") {
+		t.Fatalf("batch edit: %+v", res)
+	}
+	details, ok := res.Details.(editDetails)
+	if !ok || !strings.Contains(details.Patch, "-alpha") || !strings.Contains(details.Patch, "+GAMMA") || details.FirstChangedLine != 1 {
+		t.Fatalf("details: %#v", res.Details)
+	}
+	b, _ := os.ReadFile(p)
+	if string(b) != "ALPHA\nbeta\nGAMMA\n" {
+		t.Fatalf("file: %q", b)
+	}
+
+	mixed := map[string]any{"file_path": p, "old_string": "beta", "new_string": "BETA", "edits": []any{map[string]any{"old_string": "beta", "new_string": "B"}}}
+	if err := ed.Validate(mixed); err == nil {
+		t.Fatal("mixed edit modes must fail")
+	}
+}
+
+func TestReadBytePagingAndImageResize(t *testing.T) {
+	cwd := t.TempDir()
+	textPath := filepath.Join(cwd, "long.txt")
+	_ = os.WriteFile(textPath, []byte(strings.Repeat("你", 20000)), 0o600)
+	read := readTool{cwd: cwd, rich: true}
+	first := read.Execute(context.Background(), map[string]any{"file_path": textPath})
+	details := first.Details.(readDetails).Truncation
+	if !details.Truncated || details.NextByteOffset == 0 || !utf8.ValidString(first.Content[0].Text) {
+		t.Fatalf("first page: %+v", first)
+	}
+	next := read.Execute(context.Background(), map[string]any{"file_path": textPath, "byte_offset": details.NextByteOffset})
+	if next.IsError || !utf8.ValidString(next.Content[0].Text) {
+		t.Fatalf("byte page: %+v", next)
+	}
+
+	imagePath := filepath.Join(cwd, "wide.png")
+	img := image.NewNRGBA(image.Rect(0, 0, 2100, 2))
+	f, _ := os.Create(imagePath)
+	_ = png.Encode(f, img)
+	_ = f.Close()
+	imageResult := read.Execute(context.Background(), map[string]any{"file_path": imagePath})
+	imageInfo := imageResult.Details.(readDetails).Image
+	if imageResult.IsError || !imageInfo.Resized || imageInfo.Width > maxImageDimension {
+		t.Fatalf("image resize: %+v", imageResult)
+	}
+}
+
+func TestMutationQueueSerializesSamePathAndCancelsWait(t *testing.T) {
+	q := NewMutationQueue()
+	path := filepath.Join(t.TempDir(), "a")
+	release, err := q.LockPaths(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := q.LockPaths(ctx, path); done <- err }()
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("cancelled waiter acquired the path")
+	}
+	release()
+	otherRelease, err := q.LockPaths(context.Background(), path+"-other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRelease()
+}
+
+func TestOutputSanitizerHandlesSplitANSIAndControls(t *testing.T) {
+	var sanitizer outputSanitizer
+	first := sanitizer.Filter([]byte("a\x1b[3"))
+	second := sanitizer.Filter([]byte("1mred\x1b[0m\x01\t\n"))
+	if got := string(append(first, second...)); got != "ared\t\n" {
+		t.Fatalf("sanitized = %q", got)
 	}
 }
 
@@ -524,6 +623,23 @@ func TestTaskOutputAndTaskStopLifecycle(t *testing.T) {
 	result = outputTool.Execute(context.Background(), map[string]any{"task_id": id, "block": false})
 	if result.IsError || !strings.Contains(result.Content[0].Text, `"status":"killed"`) {
 		t.Fatalf("stopped output: %+v", result)
+	}
+}
+
+func TestTaskOutputKeepsLargeLogsOnDisk(t *testing.T) {
+	jobs := NewJobStore()
+	defer jobs.Close()
+	all := Set{CWD: t.TempDir(), Jobs: jobs}.Build(Profile{Editor: EditorWriteEdit})
+	bash, outputTool := pick(all, "Bash"), pick(all, "TaskOutput")
+	started := bash.Execute(context.Background(), map[string]any{"command": "i=1; while [ $i -le 8000 ]; do printf 'task-%05d\\n' \"$i\"; i=$((i+1)); done", "run_in_background": true})
+	id := strings.Fields(strings.Split(started.Content[0].Text, "\n")[0])[3]
+	result := outputTool.Execute(context.Background(), map[string]any{"task_id": id, "block": true, "timeout": 5000})
+	if result.IsError || len(result.Content[0].Text) > maxBytes+5000 || strings.Contains(result.Content[0].Text, "task-00001") || !strings.Contains(result.Content[0].Text, "task-08000") {
+		t.Fatalf("bounded TaskOutput: size=%d result=%+v", len(result.Content[0].Text), result)
+	}
+	details, ok := result.Details.(taskDetails)
+	if !ok || details.Truncation == nil || !details.Truncation.Truncated || details.OutputFile == "" {
+		t.Fatalf("task details: %#v", result.Details)
 	}
 }
 

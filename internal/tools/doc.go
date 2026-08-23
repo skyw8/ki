@@ -10,10 +10,15 @@
 // /bin/bash then PATH. When Bash is unavailable, Bash and Monitor are omitted
 // without preventing server startup. The session-scoped task store tracks
 // process groups, output files, status, exit code, cancellation, and progress.
-// Foreground shell results keep only a bounded tail in model context and point
+// File mutations share a server-scoped per-path queue; Edit additionally
+// supports non-overlapping batch replacements against one original. Structured
+// result details are persisted for clients but omitted by provider adapters.
+// Read exposes line and UTF-8-safe byte paging, injectable operations, and
+// bounded image processing. Foreground shell results keep only a bounded,
+// ANSI-free tail in model context and point
 // truncated results at the complete session-scoped temporary output file.
 // A foreground timeout promotes a still-running command to a background task;
-// explicit background tasks can be inspected by TaskOutput or stopped by
+// explicit background tasks can be inspected by bounded TaskOutput or stopped by
 // TaskStop. Monitor streams Bash output through ToolExecutionUpdate. Search
 // tools use the same process-tree termination contract and run an embedded
 // ripgrep binary, so an installed ki does not require rg in PATH.

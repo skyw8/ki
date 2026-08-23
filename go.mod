@@ -3,11 +3,14 @@ module ki
 go 1.24
 
 require (
+	github.com/gobwas/glob v0.2.3
 	github.com/gofrs/flock v0.8.0
 	github.com/google/uuid v1.6.0
+	github.com/pmezard/go-difflib v1.0.0
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
+	golang.org/x/image v0.28.0
 	golang.org/x/sys v0.29.0
 )
 

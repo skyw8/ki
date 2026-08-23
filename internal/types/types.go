@@ -53,6 +53,9 @@ type Message struct {
 	ErrorMessage string    `json:"errorMessage,omitempty"`
 	ToolCallID   string    `json:"toolCallId,omitempty"`
 	ToolName     string    `json:"toolName,omitempty"`
+	// Details is persisted for clients and diagnostics but provider adapters
+	// deliberately omit it from model requests.
+	Details any `json:"details,omitempty"`
 	// ToolType selects the matching function/custom output wire item.
 	ToolType   string `json:"toolType,omitempty"`
 	IsError    bool   `json:"isError,omitempty"`

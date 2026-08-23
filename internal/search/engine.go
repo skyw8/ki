@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	globmatch "github.com/gobwas/glob"
 )
 
 const (
@@ -293,7 +295,18 @@ func (e Engine) Glob(ctx context.Context, req GlobRequest) (GlobResult, error) {
 		return GlobResult{}, errors.New("pattern is required")
 	}
 
-	args := []string{"--files", "--null", "--glob", req.Pattern}
+	args := []string{"--files", "--null"}
+	var matcher globmatch.Glob
+	if req.NoIgnore {
+		args = append(args, "--glob", req.Pattern)
+	} else {
+		// An explicit ripgrep --glob whitelist overrides ignore files. Filter
+		// the already ignored file list instead when respect-ignore is enabled.
+		matcher, err = globmatch.Compile(filepath.ToSlash(req.Pattern), '/')
+		if err != nil {
+			return GlobResult{}, fmt.Errorf("invalid glob pattern: %w", err)
+		}
+	}
 	if req.SortModified {
 		args = append(args, "--sort=modified")
 	}
@@ -303,7 +316,10 @@ func (e Engine) Glob(ctx context.Context, req GlobRequest) (GlobResult, error) {
 	if req.IncludeHidden {
 		args = append(args, "--hidden")
 	}
-	args = append(args, "--", root)
+	// Run from root and search "." so ripgrep discovers repository ignore
+	// files. Passing the same directory as an explicit absolute operand causes
+	// ripgrep to bypass those rules even when --no-ignore is absent.
+	args = append(args, "--", ".")
 
 	limit := req.MaxResults
 	if limit < 0 {
@@ -316,6 +332,12 @@ func (e Engine) Glob(ctx context.Context, req GlobRequest) (GlobResult, error) {
 			return false, nil
 		}
 		path := string(raw)
+		if matcher != nil {
+			rel := strings.TrimPrefix(filepath.ToSlash(path), "./")
+			if !matcher.Match(rel) {
+				return false, nil
+			}
+		}
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(root, filepath.FromSlash(path))
 		}

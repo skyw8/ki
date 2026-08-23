@@ -32,7 +32,10 @@ eof_line: "*** End of File" LF
 
 %import common.LF`
 
-type applyPatchTool struct{ cwd string }
+type applyPatchTool struct {
+	cwd       string
+	mutations *MutationQueue
+}
 
 func (applyPatchTool) Name() string { return "apply_patch" }
 func (applyPatchTool) Description() string {
@@ -56,12 +59,28 @@ func (t applyPatchTool) ToolSpec() loop.ToolSpec {
 		},
 	}
 }
-func (t applyPatchTool) ExecuteRaw(_ context.Context, input string) loop.ToolResult {
+func (t applyPatchTool) ExecuteRaw(ctx context.Context, input string) loop.ToolResult {
 	hunks, err := parseApplyPatch(input)
 	if err != nil {
 		return errRes("apply_patch verification failed: " + err.Error())
 	}
-	summary, err := applyPatchHunks(t.cwd, hunks)
+	paths := make([]string, 0, len(hunks)*2)
+	for _, h := range hunks {
+		paths = append(paths, resolve(t.cwd, filepath.FromSlash(h.path)))
+		if h.movePath != "" {
+			paths = append(paths, resolve(t.cwd, filepath.FromSlash(h.movePath)))
+		}
+	}
+	queue := t.mutations
+	if queue == nil {
+		queue = NewMutationQueue()
+	}
+	release, err := queue.LockPaths(ctx, paths...)
+	if err != nil {
+		return errRes("apply_patch aborted")
+	}
+	defer release()
+	summary, err := applyPatchHunks(ctx, t.cwd, hunks)
 	if err != nil {
 		return errRes(err.Error())
 	}
@@ -224,17 +243,26 @@ type patchReplacement struct {
 	new   []string
 }
 
-func applyPatchHunks(cwd string, hunks []patchHunk) (string, error) {
+func applyPatchHunks(ctx context.Context, cwd string, hunks []patchHunk) (string, error) {
 	var added, modified, deleted []string
 	for _, h := range hunks {
+		if err := ctx.Err(); err != nil {
+			return "", fmt.Errorf("apply_patch aborted: %w", err)
+		}
 		path := resolve(cwd, filepath.FromSlash(h.path))
 		switch h.kind {
 		case patchAdd:
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				return "", fmt.Errorf("Failed to create parent directory for %s: %w", path, err)
 			}
+			if err := ctx.Err(); err != nil {
+				return "", fmt.Errorf("apply_patch aborted: %w", err)
+			}
 			if err := os.WriteFile(path, []byte(h.content), 0o600); err != nil {
 				return "", fmt.Errorf("Failed to write file %s: %w", path, err)
+			}
+			if err := ctx.Err(); err != nil {
+				return "", fmt.Errorf("apply_patch aborted: %w", err)
 			}
 			added = append(added, h.path)
 
@@ -243,11 +271,17 @@ func applyPatchHunks(cwd string, hunks []patchHunk) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("Failed to delete file %s: %w", path, err)
 			}
+			if err := ctx.Err(); err != nil {
+				return "", fmt.Errorf("apply_patch aborted: %w", err)
+			}
 			if st.IsDir() {
 				return "", fmt.Errorf("Failed to delete file %s: path is a directory", path)
 			}
 			if err := os.Remove(path); err != nil {
 				return "", fmt.Errorf("Failed to delete file %s: %w", path, err)
+			}
+			if err := ctx.Err(); err != nil {
+				return "", fmt.Errorf("apply_patch aborted: %w", err)
 			}
 			deleted = append(deleted, h.path)
 
@@ -255,6 +289,9 @@ func applyPatchHunks(cwd string, hunks []patchHunk) (string, error) {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return "", fmt.Errorf("Failed to read file to update %s: %w", path, err)
+			}
+			if err := ctx.Err(); err != nil {
+				return "", fmt.Errorf("apply_patch aborted: %w", err)
 			}
 			next, err := applyUpdateChunks(string(data), path, h.chunks)
 			if err != nil {
@@ -266,13 +303,22 @@ func applyPatchHunks(cwd string, hunks []patchHunk) (string, error) {
 				if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
 					return "", fmt.Errorf("Failed to create parent directory for %s: %w", dest, err)
 				}
+				if err := ctx.Err(); err != nil {
+					return "", fmt.Errorf("apply_patch aborted: %w", err)
+				}
 			}
 			if err := os.WriteFile(dest, []byte(next), 0o600); err != nil {
 				return "", fmt.Errorf("Failed to write file %s: %w", dest, err)
 			}
+			if err := ctx.Err(); err != nil {
+				return "", fmt.Errorf("apply_patch aborted: %w", err)
+			}
 			if dest != path {
 				if err := os.Remove(path); err != nil {
 					return "", fmt.Errorf("Failed to remove original %s: %w", path, err)
+				}
+				if err := ctx.Err(); err != nil {
+					return "", fmt.Errorf("apply_patch aborted: %w", err)
 				}
 			}
 			modified = append(modified, map[bool]string{true: h.movePath, false: h.path}[h.movePath != ""])

@@ -77,6 +77,24 @@ func TestThinkingAndMaxTokenRequestShapes(t *testing.T) {
 	}
 }
 
+func TestToolResultDetailsNeverEnterProviderRequests(t *testing.T) {
+	message := types.Message{Role: "toolResult", ToolCallID: "c1", ToolName: "Edit", Content: []types.Content{{Type: "text", Text: "edited"}}, Details: map[string]any{"diff": "DETAIL_SECRET"}}
+	requests := []any{
+		toOpenAIMessage(message),
+		toResponsesItems(message),
+		anthropicToolResultBlock(message),
+	}
+	for _, body := range requests {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(encoded, []byte("DETAIL_SECRET")) {
+			t.Fatalf("details leaked into provider request: %s", encoded)
+		}
+	}
+}
+
 func ptr(s string) *string { return &s }
 
 func TestResponsesBodyUsesCustomToolCallAndOutput(t *testing.T) {

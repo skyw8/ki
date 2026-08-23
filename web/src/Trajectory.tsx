@@ -54,7 +54,7 @@ function locate(records: TrajRecord[], t: TFn): Map<string, { turn: number; step
 function recordText(r: TrajRecord): string {
   if (r.kind === 'system') return r.system || ''
   if (r.kind === 'tool') {
-    const bits = [r.name ? `# ${r.name}` : '', pretty(r.input), pretty(r.output)].filter(Boolean)
+	const bits = [r.name ? `# ${r.name}` : '', pretty(r.input), pretty(r.output), r.details ? `Details\n${pretty(r.details)}` : ''].filter(Boolean)
     return bits.join('\n\n')
   }
   if (typeof r.output === 'string' && r.output) return r.output
@@ -487,6 +487,9 @@ export function TrajectoryView({
                     ) : null}
                     <section>
                       <div className="ctx-label">{t('traj.result')}</div>
+					  {selected.name === 'Edit' && selected.details && typeof selected.details === 'object' && typeof (selected.details as Record<string, unknown>).diff === 'string'
+						? <pre className="sys-diff">{String((selected.details as Record<string, unknown>).diff)}</pre>
+						: null}
                       {typeof selected.output === 'string' && selected.output
                         ? <MarkdownBody text={selected.output} />
                         : <pre>{pretty(selected.output) || '—'}</pre>}

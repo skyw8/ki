@@ -36,6 +36,7 @@ export type Message = {
   latencyMs?: number
   ttftMs?: number
   durationMs?: number
+	details?: unknown
   model?: string
   provider?: string
 }
@@ -230,7 +231,7 @@ export type Meta = {
 export type ChatNode =
   | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number }
   | { kind: 'assistant'; id: string; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number }
-  | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; isError?: boolean; durationMs?: number; running?: boolean }
+  | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; running?: boolean }
   | { kind: 'compaction'; id: string; summary: string; tokensBefore?: number }
 
 export type TrajKind = 'user' | 'assistant' | 'tool' | 'compacted' | 'compact' | 'system'
@@ -243,6 +244,7 @@ export type TrajRecord = {
   preview: string
   input?: unknown
   output?: unknown
+	details?: unknown
   usage?: Usage | null
   durationMs?: number
   ttftMs?: number

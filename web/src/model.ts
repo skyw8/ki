@@ -372,6 +372,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       result: text,
       isError: m.isError,
       durationMs: m.durationMs,
+	  details: m.details,
       running: false,
       name: m.toolName,
     })
@@ -403,6 +404,7 @@ function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { 
       error: patch.isError ?? r.error,
       durationMs: patch.durationMs ?? r.durationMs,
       name: patch.name || r.name,
+	  details: patch.details ?? r.details,
       preview: previewOf((patch.name || r.name || 'tool') + ' ' + (result || compactArgs(r.input))),
     }
   })
@@ -509,11 +511,15 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     }
     case 'tool_execution_end':
       if (ev.toolCallId) {
+		const resultDetails = ev.result && typeof ev.result === 'object'
+		  ? ((ev.result as Record<string, unknown>).details ?? (ev.result as Record<string, unknown>).Details)
+		  : undefined
         patchTool(next, ev.toolCallId, {
           result: toolResultText(ev.result),
           isError: ev.isError,
           running: false,
           name: ev.toolName,
+		  details: resultDetails,
         })
       }
       break

@@ -19,9 +19,16 @@ func truncateHead(s string) (out string, note string) {
 		return chunk, fmt.Sprintf("\n\n[Showing lines 1-%d of %d. Use offset=%d to continue.]", n, total, n+1)
 	}
 	if len(chunk) > maxBytes {
-		return chunk[:maxBytes], fmt.Sprintf("\n\n[%d byte limit reached. Use offset to continue.]", maxBytes)
+		return validUTF8Head(chunk, maxBytes), fmt.Sprintf("\n\n[%d byte limit reached. Use offset to continue.]", maxBytes)
 	}
 	return chunk, ""
+}
+
+func validUTF8Head(s string, limit int) string {
+	if len(s) <= limit { return s }
+	end := limit
+	for end > 0 && !utf8.RuneStart(s[end]) { end-- }
+	return s[:end]
 }
 
 func truncateTail(s string) (out, note string) {

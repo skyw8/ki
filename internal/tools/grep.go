@@ -260,7 +260,7 @@ func truncateSearchLine(text string) (string, bool) {
 	if len(text) <= grepMaxLineLength {
 		return text, false
 	}
-	return text[:grepMaxLineLength], true
+	return validUTF8Head(text, grepMaxLineLength), true
 }
 
 func pageBounds(length, offset, limit int) (int, int) {
@@ -275,7 +275,7 @@ func limitSearchOutput(text string, maxBytes int) (string, string) {
 	if len(text) <= maxBytes {
 		return text, ""
 	}
-	return text[:maxBytes], fmt.Sprintf("\n\n[%d byte limit reached. Use a more specific pattern or path.]", maxBytes)
+	return validUTF8Head(text, maxBytes), fmt.Sprintf("\n\n[%d byte limit reached. Use a more specific pattern or path.]", maxBytes)
 }
 
 func appendSearchNote(existing, note string) string {

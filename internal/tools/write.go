@@ -9,7 +9,10 @@ import (
 	"ki/internal/loop"
 )
 
-type writeTool struct{ cwd string }
+type writeTool struct {
+	cwd       string
+	mutations *MutationQueue
+}
 
 func (writeTool) Name() string        { return "Write" }
 func (writeTool) Description() string { return "Write a file to the local filesystem." }
@@ -39,18 +42,36 @@ func (t writeTool) Validate(args map[string]any) error {
 	return validateArgs(t.Parameters(), t.Name(), args)
 }
 
-func (t writeTool) Execute(_ context.Context, args map[string]any) loop.ToolResult {
+func (t writeTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
 	path, _ := args["file_path"].(string)
 	content, _ := args["content"].(string)
 	if path == "" {
 		return errRes("file_path is required")
 	}
 	abs := resolve(t.cwd, path)
+	queue := t.mutations
+	if queue == nil {
+		queue = NewMutationQueue()
+	}
+	release, err := queue.LockPaths(ctx, abs)
+	if err != nil {
+		return errRes("Write aborted")
+	}
+	defer release()
+	if err := ctx.Err(); err != nil {
+		return errRes("Write aborted")
+	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
 		return errRes(err.Error())
 	}
+	if err := ctx.Err(); err != nil {
+		return errRes("Write aborted")
+	}
 	if err := os.WriteFile(abs, []byte(content), 0o600); err != nil {
 		return errRes(err.Error())
+	}
+	if err := ctx.Err(); err != nil {
+		return errRes("Write aborted")
 	}
 	return okRes(fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), path))
 }

@@ -111,7 +111,7 @@ func TestRunStripsImagesForTextOnlyModel(t *testing.T) {
 	}
 }
 func (oneTool) Execute(_ context.Context, _ map[string]any) ToolResult {
-	return ToolResult{Content: []types.Content{{Type: "text", Text: "file-ok"}}}
+	return ToolResult{Content: []types.Content{{Type: "text", Text: "file-ok"}}, Details: map[string]any{"diff": "client-only"}}
 }
 
 type scripted struct {
@@ -198,6 +198,9 @@ func TestRunToolThenSecondTurn(t *testing.T) {
 	}
 	if tr == nil || tr.Text() != "file-ok" {
 		t.Fatalf("tool result: %+v", tr)
+	}
+	if details, ok := tr.Details.(map[string]any); !ok || details["diff"] != "client-only" {
+		t.Fatalf("tool details: %#v", tr.Details)
 	}
 }
 

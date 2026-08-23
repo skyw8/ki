@@ -580,6 +580,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			ToolName:   p.call.Name,
 			ToolType:   p.call.ToolType,
 			Content:    res.Content,
+			Details:    res.Details,
 			IsError:    res.IsError,
 			DurationMs: dur,
 			Timestamp:  time.Now().UnixMilli(),

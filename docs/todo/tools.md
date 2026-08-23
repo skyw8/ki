@@ -4,46 +4,9 @@
 
 范围只包括执行、输出、状态、格式、并发和交互；暂不包括安全、权限和 sandbox。
 
-## Claude Code
-
-参考：`/data/hgy/claude-code-source-code`。
-
-Claude Code 的 Bash、PowerShell、后台任务、`TaskOutput`、`TaskStop` 和 `Monitor` 主体生命周期已经引入。剩余工作是约束这些能力产生的模型上下文。
-
-### 后台任务输出
-
-- [ ] 限制 `TaskOutput` 返回的完整输出大小；超限时只返回尾部、截断统计和现有 `output_file`，避免把整份日志重新放入 context。
-- [ ] 将任务 timeout、取消、退出码和截断状态统一为结构化结果，减少 Bash、PowerShell、TaskOutput 和 Monitor 各自拼接状态文本。
-
 ## Pi
 
 参考：`/data/hgy/pi`。
-
-### Read
-
-- [ ] 在每个异步文件操作前后检查取消信号，避免取消后继续读文件或生成结果。
-- [ ] 返回结构化截断信息：`truncated`、总字节数、总行数和下一次读取位置。
-- [ ] 为超过 50KB 的单行提供可执行的分段读取方式；当前 `offset` 只能按行继续。
-- [ ] 图片进入模型前按模型支持尺寸缩放，避免直接发送过大的 base64。
-- [ ] 将文件读取抽象为可替换 operations，支持远程或虚拟文件系统；优先级较低。
-
-### Write / Edit
-
-- [ ] 对同一路径的 Write、Edit 和 apply_patch 使用共享 mutation queue；不同文件仍可并行。
-- [ ] 文件操作在目录创建、读取、写入及异步等待前后检查取消；取消后等当前原子步骤结束再释放路径锁。
-- [ ] Edit 支持一次提交多个 `{oldText,newText}`；所有替换基于同一份原文校验唯一性和重叠，再一次写入。
-- [ ] Edit 的模型可见 `content` 只返回替换数和路径；统一 diff、patch 和首个变更行放入结构化 `details` 供 UI/session 使用，不进入 provider context。
-
-### Grep / Glob
-
-- [ ] Grep 的单行和最终字节截断保持 UTF-8 边界；当前直接按字节切片。
-- [ ] Glob 在结果元数据中增加搜索根目录。
-- [ ] 如果增加 `respect_gitignore` 等模式，必须显式参数化，不能隐式改变当前 `--no-ignore` 语义。
-
-### Bash
-
-- [ ] 清理 ANSI 转义和不可见控制字符，同时保留换行和制表符。
-- [ ] 将 timeout、取消、退出码、截断统计和完整输出路径写入结构化 tool result；当前最终 shell result 主要依赖文本。
 
 ### 可选工具
 

@@ -91,6 +91,7 @@ type bgJob struct {
 	tail        []byte
 	lastEmit    time.Time
 	pendingEmit []byte
+	sanitizer   outputSanitizer
 	subs        map[chan TaskUpdate]struct{}
 }
 
@@ -233,7 +234,7 @@ func (j *bgJob) wait(cmd *exec.Cmd) {
 	snapshot := j.snapshotLocked()
 	j.mu.Unlock()
 	if len(pending) > 0 {
-		j.publish(TaskUpdate{TaskID: j.id, Delta: string(pending), Snapshot: snapshot})
+		j.publish(TaskUpdate{TaskID: j.id, Delta: cleanUnicodeControls(string(pending)), Snapshot: snapshot})
 	}
 	j.publish(TaskUpdate{TaskID: j.id, Snapshot: snapshot})
 	close(j.done)
@@ -252,11 +253,12 @@ func (j *bgJob) Write(p []byte) (int, error) {
 	}
 	j.bytes += int64(n)
 	j.lines += int64(bytes.Count(p[:n], []byte{'\n'}))
-	j.tail = append(j.tail, p[:n]...)
+	clean := j.sanitizer.Filter(p[:n])
+	j.tail = append(j.tail, clean...)
 	if len(j.tail) > maxTaskTail {
 		j.tail = j.tail[len(j.tail)-maxTaskTail:]
 	}
-	j.pendingEmit = append(j.pendingEmit, p[:n]...)
+	j.pendingEmit = append(j.pendingEmit, clean...)
 	// Keep the output file lossless, but throttle live notifications so a noisy
 	// compiler/log stream cannot turn every line into a model event.
 	shouldEmit := time.Since(j.lastEmit) >= 100*time.Millisecond
@@ -268,7 +270,7 @@ func (j *bgJob) Write(p []byte) (int, error) {
 	}
 	j.mu.Unlock()
 	if len(delta) > 0 {
-		j.publish(TaskUpdate{TaskID: j.id, Delta: string(delta), Snapshot: j.snapshot()})
+		j.publish(TaskUpdate{TaskID: j.id, Delta: cleanUnicodeControls(string(delta)), Snapshot: j.snapshot()})
 	}
 	return n, nil
 }
@@ -335,7 +337,7 @@ func (j *bgJob) snapshotLocked() TaskSnapshot {
 		TaskID: j.id, TaskType: j.taskType, Status: j.status,
 		Description: j.description, Command: j.command, OutputFile: j.path,
 		PID:    j.pid,
-		Output: string(j.tail), ExitCode: j.exitCode, Error: j.errText,
+		Output: cleanUnicodeControls(string(j.tail)), ExitCode: j.exitCode, Error: j.errText,
 		Bytes: j.bytes, Lines: j.lines, StartedAt: j.startedAt, FinishedAt: j.finishedAt,
 	}
 }

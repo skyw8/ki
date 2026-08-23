@@ -60,6 +60,7 @@ type Server struct {
 	ln                     net.Listener
 	http                   *http.Server
 	shells                 tools.ShellRuntime
+	mutations              *tools.MutationQueue
 }
 
 type runState struct {
@@ -118,6 +119,7 @@ func New(opt Options) (*Server, error) {
 		ws:                     ws,
 		sidx:                   sidx,
 		shells:                 shells,
+		mutations:              tools.NewMutationQueue(),
 	}, nil
 }
 
@@ -909,7 +911,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	if info.ApplyPatchToolType == "freeform" {
 		profile.Editor = tools.EditorApplyPatch
 	}
-	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs, Shells: s.shells}.Build(profile)
+	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs, Shells: s.shells, Mutations: s.mutations}.Build(profile)
 	tg := toggles.Load(cfg.Home)
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
 	mcpFile := snapshot.MCP
