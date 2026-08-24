@@ -355,6 +355,40 @@ export function SettingsToggles({
   )
 }
 
+export function MessageSettings({ api }: { api: Client }) {
+  const { t } = useI18n()
+  const [busy, setBusy] = useState<'steer' | 'queue'>('steer')
+  useEffect(() => {
+    void api.message().then(got => setBusy(got.busy)).catch(e => toast.from(e))
+  }, [api])
+  const save = async (next: 'steer' | 'queue') => {
+    const prev = busy
+    setBusy(next)
+    try { await api.patchMessage(next) }
+    catch (e) { setBusy(prev); toast.from(e) }
+  }
+  return (
+    <div className="preference-page" data-testid="message-settings">
+      <header className="settings-page-title">
+        <div>
+          <h3>{t('settings.message')}</h3>
+          <p>{t('settings.messageHint')}</p>
+        </div>
+      </header>
+      <section className="preference-section">
+        <div className="theme-picks" data-testid="settings-busy" role="radiogroup" aria-label={t('settings.busyDelivery')}>
+          <button type="button" role="radio" aria-checked={busy === 'steer'} className={`theme-pick${busy === 'steer' ? ' on' : ''}`} data-testid="busy-steer" onClick={() => void save('steer')}>
+            <span>{t('settings.busySteer')}</span>
+          </button>
+          <button type="button" role="radio" aria-checked={busy === 'queue'} className={`theme-pick${busy === 'queue' ? ' on' : ''}`} data-testid="busy-queue" onClick={() => void save('queue')}>
+            <span>{t('settings.busyQueue')}</span>
+          </button>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function ReloadButton({ testid, run }: { testid: string; run: () => Promise<void> }) {
   const { t } = useI18n()
   const [phase, setPhase] = useState<'idle' | 'busy' | 'done'>('idle')

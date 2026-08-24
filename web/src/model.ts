@@ -108,6 +108,7 @@ export function emptyView(): ViewState {
     turn: 0,
 	thinkingEffort: '',
 	allEntries: [],
+	queued: [],
   }
 }
 
@@ -173,6 +174,7 @@ export function loadHistory(detail: SessionDetail): ViewState {
   s.busy = !!detail.running
   s.commands = detail.commands ?? []
 	s.thinkingEffort = detail.thinkingEffort ?? ''
+	s.queued = detail.queued ?? []
   const entries = detail.entries ?? []
 	s.allEntries = entries
 	s.leafId = detail.leafId
@@ -463,10 +465,17 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
       break
     case 'agent_end':
       next.busy = false
+      next.stopping = false
       next.nodes = next.nodes.map(n =>
         n.kind === 'assistant' && n.streaming ? { ...n, streaming: false } : n.kind === 'tool' && n.running ? { ...n, running: false } : n,
       )
       next.records = next.records.map(r => r.running ? { ...r, running: false } : r)
+      break
+    case 'steer_accepted':
+      if (ev.message?.content) return appendOptimisticUser(s, ev.message.content)
+      break
+    case 'run_aborted':
+      next.stopping = true
       break
     case 'request_header': {
       const prev = lastSystem(next)
@@ -702,6 +711,10 @@ function lastStreamingAssistant(s: ViewState): number {
 }
 
 export function appendOptimisticUser(s: ViewState, content: import('./types').Content[]): ViewState {
+  const text = content.filter(c => c.type === 'text' || c.type === '').map(c => c.text ?? '').join('\n')
+  if (text && lastUserText(s) === text) {
+    return { ...s, busy: true, error: null }
+  }
   const next = { ...s, nodes: s.nodes.slice(), records: s.records.slice(), busy: true, error: null }
   // The bubble is drawn before the server confirms, so there is no real
   // timestamp yet. Date.now() (a number, not a string) lets tsMs use the local

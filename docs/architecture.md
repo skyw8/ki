@@ -37,10 +37,11 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned） |
 | POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…`；可选 `model` / `thinkingEffort`，省略则用上次选用的模型和该模型 default thinking。WebUI 传入当前 composer 的模型配置 |
 | GET | `/v1/sessions/search` | 正文字面搜索，最多 20 条 |
-| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、只读 `availableSkills` / `availableMcp` / `commands` |
-| PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` |
+| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、只读 `availableSkills` / `availableMcp` / `commands` / `queued` |
+| PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / `queued`（保留 id 列表） |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
-| POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId`；`202` 开跑，同一 session 未结束再来 **409** |
+| POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId` / `delivery` / `queueId`；空闲 `202 started`；忙时 `steer` 插入本轮或 `queue` 排队，省略则用 `toggles.json` `message.busy`；`queueId`+`delivery=steer` 从 `queue.json` 取出插入本轮；`parentId` 且 busy 仍 **409** |
+| GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`） |
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件 |
 | POST | `/v1/sessions/{id}/abort` | cancel |
 | POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
@@ -92,7 +93,7 @@ agent_end
 
 字段跟 pi；`patch_apply_updated` 是 apply_patch 输入仍在生成时的语法预览，不表示已经执行。写盘和 SSE 是 server 挂在 `emit` 上的订阅者，不进 loop 包。
 
-MCP 的 `mcp_server_failed` 与 `mcp_tools_changed` 是不推进消息 leaf 的 sideband 事件，沿同一 jsonl/SSE 通道发布；连接空闲通知与 stale 处理见 [mcp.md](mcp.md#事件与-reload)。
+MCP 的 `mcp_server_failed` 与 `mcp_tools_changed`、以及 `queue_changed` / `run_aborted` 是不推进消息 leaf 的 sideband 事件，沿同一 jsonl/SSE 通道发布；`steer_accepted` 只进当前 run 的 SSE（Inbox 收下、尚未 drain）。连接空闲通知与 stale 处理见 [mcp.md](mcp.md#事件与-reload)。
 
 ## 时序
 
@@ -108,7 +109,7 @@ participant "session jsonl\n(落盘)" as F
 participant "events handler\n(SSE)" as E
 
 C -> S : POST /v1/sessions/{id}/prompt\n{content:[{type:"text",text:"你好"}], parentId?}
-S -> S : 查 runs 表\n运行中 → 409；空闲 → 建 runState
+S -> S : 查 runs 表\n空闲 → occupy；忙 + steer → Inbox；忙 + queue → queue.json；queueId → Take 再 Inbox
 S --> C : 202 Accepted（立刻返回，不等待运行）
 S -> R : go runPrompt(ctx, st, id, content, parentId)
 
@@ -199,4 +200,4 @@ RUNP --> COMPACT : agent_end 时同步压缩
 @enduml
 ```
 
-事件流方向与 import 方向相反：loop 只产事件（仅依赖 `types`），落盘、压缩、SSE 都是 server 挂在 `emit` 回调上的订阅者；模型实现经 `loop.Streamer` 接口注入。runState 是 server 包内类型，由 `runs` map 持有，新 prompt 替换旧的（运行中返回 409）。（见图 2）
+事件流方向与 import 方向相反：loop 只产事件（仅依赖 `types`），落盘、压缩、SSE 都是 server 挂在 `emit` 回调上的订阅者；模型实现经 `loop.Streamer` 接口注入。runState 是 server 包内类型，由 `runs` map 持有。空闲新 prompt occupy 并替换已结束的 runState；忙时 steer 写入 Inbox，queue 写入 `queue.json`，`queueId` 把已入队条目原子提升进 Inbox（原 occupy 已结束则放回头并 `queued` 或新 occupy），`parentId` 仍 409。（见图 2）

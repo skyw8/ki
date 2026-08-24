@@ -22,6 +22,12 @@
 // (truncated arguments) instead of executing them.
 // RunMessage accepts provider-neutral structured user content. TextOnly
 // removes image blocks at the final model-facing boundary.
+// Config.Inbox injects extra user messages into the same Run after the
+// current stream and tools finish; it does not cancel an in-flight HTTP
+// request. Completions, Responses, and Anthropic all see a normal extra user
+// message on the next request.
 //
-// Event order: docs/architecture.md.
+// QueueChanged and RunAborted are session sideband notifications.
+// SteerAccepted is live-run only (Inbox accepted a user; drain later emits
+// message_*). Event order: docs/architecture.md.
 package loop

@@ -9,10 +9,30 @@ import (
 	"ki/internal/session"
 )
 
+// BusySteer inserts a busy prompt into the current loop.Run.
+const BusySteer = "steer"
+
+// BusyQueue persists a busy prompt until the current run releases.
+const BusyQueue = "queue"
+
+// Message is the process-wide default for a prompt while a session is busy.
+type Message struct {
+	Busy string `json:"busy,omitempty"`
+}
+
+// BusyDelivery returns steer or queue. Empty defaults to steer.
+func (m Message) BusyDelivery() string {
+	if m.Busy == BusyQueue {
+		return BusyQueue
+	}
+	return BusySteer
+}
+
 // File is {KI_HOME}/toggles.json.
 type File struct {
-	Skills session.Toggle `json:"skills"`
-	MCP    session.Toggle `json:"mcp"`
+	Skills  session.Toggle `json:"skills"`
+	MCP     session.Toggle `json:"mcp"`
+	Message Message        `json:"message"`
 }
 
 func path(home string) string { return filepath.Join(home, "toggles.json") }

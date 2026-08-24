@@ -17,8 +17,9 @@ func TestLoadMissingIsEmpty(t *testing.T) {
 func TestSaveRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	want := File{
-		Skills: session.Toggle{Disabled: []string{"alpha"}},
-		MCP:    session.Toggle{Disabled: []string{"exa"}},
+		Skills:  session.Toggle{Disabled: []string{"alpha"}},
+		MCP:     session.Toggle{Disabled: []string{"exa"}},
+		Message: Message{Busy: BusyQueue},
 	}
 	if err := Save(home, want); err != nil {
 		t.Fatal(err)
@@ -29,6 +30,9 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if got.MCP.Allowed("exa") {
 		t.Fatalf("mcp %+v", got.MCP)
+	}
+	if got.Message.BusyDelivery() != BusyQueue {
+		t.Fatalf("message %+v", got.Message)
 	}
 	if _, err := filepath.Rel(home, path(home)); err != nil {
 		t.Fatal(err)

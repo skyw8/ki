@@ -1,0 +1,160 @@
+package session
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"ki/internal/idgen"
+	"ki/internal/types"
+)
+
+// MaxQueueItems is the per-session FIFO cap.
+const MaxQueueItems = 100
+
+var (
+	// ErrQueueFull means enqueue was refused because the session already has MaxQueueItems.
+	ErrQueueFull = errors.New("session queue is full")
+	// ErrQueueItemNotFound means TakeQueueID did not match a live item.
+	ErrQueueItemNotFound = errors.New("queue item not found")
+)
+
+// QueuedItem is one user turn waiting for the current run to finish.
+type QueuedItem struct {
+	ID      string          `json:"id"`
+	Content []types.Content `json:"content"`
+}
+
+func queuePath(dir string) string { return filepath.Join(dir, "queue.json") }
+
+// ReadQueue loads the durable FIFO. A missing file is empty.
+func ReadQueue(dir string) ([]QueuedItem, error) {
+	b, err := os.ReadFile(queuePath(dir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read queue: %w", err)
+	}
+	var items []QueuedItem
+	if err := json.Unmarshal(b, &items); err != nil {
+		return nil, fmt.Errorf("decode queue: %w", err)
+	}
+	return items, nil
+}
+
+func writeQueue(dir string, items []QueuedItem) error {
+	if len(items) == 0 {
+		if err := os.Remove(queuePath(dir)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove queue: %w", err)
+		}
+		return nil
+	}
+	b, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode queue: %w", err)
+	}
+	return os.WriteFile(queuePath(dir), append(b, '\n'), 0o600)
+}
+
+// Enqueue appends a user turn. The session directory must already exist.
+func Enqueue(dir string, content []types.Content) (QueuedItem, error) {
+	items, err := ReadQueue(dir)
+	if err != nil {
+		return QueuedItem{}, err
+	}
+	if len(items) >= MaxQueueItems {
+		return QueuedItem{}, ErrQueueFull
+	}
+	id, err := idgen.NewV7()
+	if err != nil {
+		return QueuedItem{}, fmt.Errorf("queue id: %w", err)
+	}
+	item := QueuedItem{ID: id, Content: content}
+	items = append(items, item)
+	if err := writeQueue(dir, items); err != nil {
+		return QueuedItem{}, err
+	}
+	return item, nil
+}
+
+// EnqueueFront puts an item back at the head after a failed dispatch.
+func EnqueueFront(dir string, item QueuedItem) error {
+	items, err := ReadQueue(dir)
+	if err != nil {
+		return err
+	}
+	if len(items) >= MaxQueueItems {
+		return ErrQueueFull
+	}
+	return writeQueue(dir, append([]QueuedItem{item}, items...))
+}
+
+// Dequeue removes and returns the head item.
+func Dequeue(dir string) (QueuedItem, bool, error) {
+	items, err := ReadQueue(dir)
+	if err != nil {
+		return QueuedItem{}, false, err
+	}
+	if len(items) == 0 {
+		return QueuedItem{}, false, nil
+	}
+	head := items[0]
+	if err := writeQueue(dir, items[1:]); err != nil {
+		return QueuedItem{}, false, err
+	}
+	return head, true, nil
+}
+
+// TakeQueueID removes one item by id. Remaining items keep their order.
+func TakeQueueID(dir, id string) (QueuedItem, error) {
+	items, err := ReadQueue(dir)
+	if err != nil {
+		return QueuedItem{}, err
+	}
+	idx := -1
+	for i, item := range items {
+		if item.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return QueuedItem{}, ErrQueueItemNotFound
+	}
+	item := items[idx]
+	rest := append(append([]QueuedItem{}, items[:idx]...), items[idx+1:]...)
+	if err := writeQueue(dir, rest); err != nil {
+		return QueuedItem{}, err
+	}
+	return item, nil
+}
+
+// KeepQueueIDs replaces the queue with the listed ids in that order. Unknown
+// ids are skipped. This is the v1 delete/reorder-by-subset API.
+func KeepQueueIDs(dir string, ids []string) ([]QueuedItem, error) {
+	items, err := ReadQueue(dir)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]QueuedItem, len(items))
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	out := make([]QueuedItem, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		item, ok := byID[id]
+		if !ok || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, item)
+	}
+	if err := writeQueue(dir, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

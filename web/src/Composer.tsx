@@ -64,12 +64,13 @@ function SessionStatsLine({ stats, t }: { stats: SessionStats; t: ReturnType<typ
   )
 }
 
-export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFiles, onCancel, busy, uploading, disabled, hero, cwd: _cwd, model, onPickModel, thinkingLevels, thinkingEffort, defaultThinking, onThinking, contextUsage, stats, mode = 'new', commands = [], onEnsureSession }: {
+export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, onAttach, onFiles, onCancel, busy, uploading, disabled, hero, cwd: _cwd, model, onPickModel, thinkingLevels, thinkingEffort, defaultThinking, onThinking, contextUsage, stats, mode = 'new', commands = [], onEnsureSession, hasQueued = false }: {
   api: Client
   draft: Draft
   onChange: (draft: Draft) => void
-  onSend: () => void
+  onSend: (delivery?: 'steer' | 'queue') => void
   onStop?: () => void
+  onSteerQueued?: () => void
   onAttach: () => void
   onFiles?: (files: File[]) => void
   onCancel?: () => void
@@ -89,6 +90,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
   contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
   stats?: SessionStats
   mode?: 'new' | 'edit'
+  hasQueued?: boolean
 }) {
   const { t } = useI18n()
   const ref = useRef<HTMLTextAreaElement>(null)
@@ -152,15 +154,29 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
           onKeyDown={e => {
             if (e.key === 'Escape' && palette) { e.preventDefault(); setPalette(false); return }
             if (e.key === 'Escape' && mode === 'edit') { e.preventDefault(); onCancel?.(); return }
-            if ((mode === 'new' && e.key === 'Enter' && !e.shiftKey) || (mode === 'edit' && e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
+            if (mode === 'new' && e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
               if (palette) {
                 setPalette(false)
                 if (canSend) onSend()
                 return
               }
-              if (busy && !slashDraft) onStop?.()
+              const ctrl = e.ctrlKey || e.metaKey
+              // Why: Ctrl+Enter never aborts. Empty Ctrl+Enter used to call
+              // onStop, which cancelled the live Stream (assistant "context canceled").
+              if (ctrl) {
+                if (busy && canSend && !slashDraft) onSend('steer')
+                else if (busy && !canSend && !slashDraft && hasQueued) onSteerQueued?.()
+                else if (canSend) onSend()
+                return
+              }
+              if (busy && !canSend && !slashDraft) onStop?.()
               else if (canSend) onSend()
+              return
+            }
+            if (mode === 'edit' && e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault()
+              if (canSend) onSend()
             }
           }}
         />
@@ -186,7 +202,8 @@ export function Composer({ api, draft, onChange, onSend, onStop, onAttach, onFil
 		  {uploading ? <span className="uploading-label">{t('composer.uploading')}</span> : null}
           {mode === 'edit' ? <button type="button" className="composer-cancel" onClick={onCancel}>{t('composer.cancelEdit')}</button> : null}
           {mode === 'new' && contextUsage?.contextWindow ? <span className="context-meter" title={`${contextUsage.estimated ? '~' : ''}${contextUsage.usedTokens.toLocaleString()} / ${contextUsage.contextWindow.toLocaleString()} tokens`} style={{ '--context-pct': `${Math.min(100, contextUsage.usedTokens / contextUsage.contextWindow * 100)}%` } as CSSProperties}>{contextUsage.estimated ? '~' : ''}{Math.round(contextUsage.usedTokens / contextUsage.contextWindow * 100)}%</span> : null}
-          {busy && mode === 'new' ? <button type="button" className="send stop" data-testid="composer-stop" onClick={onStop} aria-label={t('composer.stop')}><IStop /></button> : <button type="button" className="send" data-testid={mode === 'edit' ? 'edit-send' : 'composer-send'} disabled={disabled || !canSend || busy} onClick={onSend} aria-label={mode === 'edit' ? t('composer.sendEdit') : t('composer.send')}><ISend /></button>}
+          {mode === 'new' && busy ? <button type="button" className="send stop" data-testid="composer-stop" onClick={onStop} aria-label={t('composer.stop')}><IStop /></button> : null}
+          {mode === 'edit' ? <button type="button" className="send" data-testid="edit-send" disabled={disabled || !canSend} onClick={() => onSend()} aria-label={t('composer.sendEdit')}><ISend /></button> : <button type="button" className="send" data-testid="composer-send" disabled={disabled || !canSend} onClick={() => onSend()} aria-label={t('composer.send')}><ISend /></button>}
         </div>
       </div>
       {mode === 'new' && !hero && stats ? <SessionStatsLine stats={stats} t={t} /> : null}

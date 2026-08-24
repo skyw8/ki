@@ -21,7 +21,9 @@
 // persist on jsonl/SSE.
 // Non-/v1 paths serve the SPA at "/"; other unknown paths redirect to "/".
 // index.html gets the token injected. The UI is used behind port-forwards.
-// A second prompt on a busy session returns 409. message_end awaits jsonl
+// A second prompt on a busy session steers or queues (toggles message.busy,
+// overridable with delivery). queueId + delivery=steer takes that queued item
+// into the captured run's Inbox. parentId while busy is 409. message_end awaits jsonl
 // append; agent_end may auto-compact. SSE replays runState.evs and drains
 // after done.
 //

@@ -1,6 +1,7 @@
 // Package session is the append-only jsonl conversation tree.
 //
-// One session is one directory: events.jsonl + config.json. New rows always
+// One session is one directory: events.jsonl + config.json, plus queue.json
+// for user turns waiting on the current run. New rows always
 // append; config.activeLeafId persists the selected branch across opens.
 // SetLeaf moves the leaf without deleting old rows. ForkAt creates a new
 // directory containing only the root-to-target path.

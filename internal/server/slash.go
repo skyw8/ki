@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"ki/internal/loop"
 	"ki/internal/mcp"
 	"ki/internal/session"
 	"ki/internal/toggles"
@@ -164,6 +165,124 @@ func (s *Server) release(id string, st *runState) {
 	if pending {
 		s.reloadSession(id)
 	}
+	s.dispatchQueue(id)
+}
+
+func (s *Server) getMessage(w http.ResponseWriter, _ *http.Request) {
+	tg := toggles.Load(s.cfg.Home)
+	writeJSON(w, 200, map[string]any{"busy": tg.Message.BusyDelivery()})
+}
+
+func (s *Server) patchMessage(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Busy string `json:"busy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if body.Busy != toggles.BusySteer && body.Busy != toggles.BusyQueue {
+		http.Error(w, "busy must be steer or queue", http.StatusBadRequest)
+		return
+	}
+	f := toggles.Load(s.cfg.Home)
+	f.Message.Busy = body.Busy
+	if err := toggles.Save(s.cfg.Home, f); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.getMessage(w, r)
+}
+
+// pushSteerRun writes Inbox on this occupy only. Using the captured runState
+// avoids steering a later occupy that replaced s.runs[id] after TakeQueueID.
+func (s *Server) pushSteerRun(st *runState, content []types.Content) bool {
+	if st == nil || st.inbox == nil {
+		return false
+	}
+	select {
+	case <-st.done:
+		return false
+	default:
+	}
+	msg := types.Message{Role: "user", Content: content}
+	st.inbox.Push(msg)
+	st.mu.Lock()
+	st.evs = append(st.evs, loop.Event{Type: loop.SteerAccepted, Message: &msg})
+	st.wait.Broadcast()
+	st.mu.Unlock()
+	return true
+}
+
+func (s *Server) runAt(id string) *runState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runs[id]
+}
+
+func (s *Server) publishRunAborted(sessionID string) {
+	s.publishSideband(sessionID, loop.Event{Type: loop.RunAborted}, true)
+}
+
+func (s *Server) publishQueueChanged(sessionID string) {
+	s.publishSideband(sessionID, loop.Event{Type: loop.QueueChanged}, true)
+}
+
+func (s *Server) publishSideband(sessionID string, ev loop.Event, persist bool) {
+	if persist {
+		if dir, ok := s.sidx.Lookup(sessionID); ok {
+			entry, err := session.AppendSidebandEvent(dir, string(ev.Type), map[string]any{})
+			if err != nil {
+				slog.Warn("persist sideband event", "session_id", sessionID, "type", ev.Type, "err", err)
+			} else {
+				ev.EntryID = entry.ID
+			}
+		}
+	}
+	s.mu.Lock()
+	if st := s.runs[sessionID]; st != nil {
+		st.mu.Lock()
+		st.evs = append(st.evs, ev)
+		st.wait.Broadcast()
+		st.mu.Unlock()
+	}
+	for subscriber := range s.mcpSubscribers[sessionID] {
+		select {
+		case subscriber <- ev:
+		default:
+		}
+	}
+	s.mu.Unlock()
+}
+
+func (s *Server) dispatchQueue(id string) {
+	if s.running(id) {
+		return
+	}
+	dir, ok := s.sidx.Lookup(id)
+	if !ok {
+		return
+	}
+	item, ok, err := session.Dequeue(dir)
+	if err != nil {
+		slog.Warn("dequeue", "session_id", id, "err", err)
+		return
+	}
+	if !ok {
+		return
+	}
+	s.publishQueueChanged(id)
+	st, ctx, err := s.occupy(context.Background(), id)
+	if err != nil {
+		if err := session.EnqueueFront(dir, item); err != nil {
+			slog.Warn("requeue", "session_id", id, "err", err)
+		} else {
+			s.publishQueueChanged(id)
+		}
+		return
+	}
+	st.inbox = &loop.Inbox{}
+	go s.runPrompt(ctx, st, id, item.Content, nil, "")
 }
 
 func writeHandled(w http.ResponseWriter, notice string, isErr bool) {
@@ -199,7 +318,8 @@ func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id stri
 		return
 	}
 
+	st.inbox = &loop.Inbox{}
 	// runPrompt's defer release returns this occupy slot.
 	go s.runPrompt(ctx, st, id, content, parentID, model)
-	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": true})
+	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started"})
 }

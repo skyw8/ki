@@ -545,3 +545,57 @@ func TestRequestHeaderCarriesSystemAndTools(t *testing.T) {
 		t.Fatalf("tools: %+v", hdr.Tools)
 	}
 }
+
+type gatedEcho struct {
+	started chan struct{}
+	release chan struct{}
+	n       int
+	last    []types.Message
+}
+
+func (g *gatedEcho) Stream(_ context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
+	g.n++
+	if g.n == 1 {
+		close(g.started)
+		<-g.release
+	}
+	g.last = append([]types.Message(nil), req.Messages...)
+	text := "echo:" + lastUser(req.Messages)
+	m := types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: text}}, StopReason: "stop"}
+	_ = emit(AssistantDelta{Type: "text_delta", Delta: text, Partial: m})
+	return m, nil
+}
+
+func TestRunDrainsInboxAfterCurrentStream(t *testing.T) {
+	g := &gatedEcho{started: make(chan struct{}), release: make(chan struct{})}
+	inbox := &Inbox{}
+	done := make(chan error, 1)
+	go func() {
+		_, err := Run(context.Background(), "first", nil, Config{Streamer: g, Inbox: inbox}, func(Event) error { return nil })
+		done <- err
+	}()
+	<-g.started
+	if g.n != 1 {
+		t.Fatalf("first stream should still be in flight, n=%d", g.n)
+	}
+	inbox.Push(types.Message{Content: []types.Content{{Type: "text", Text: "steer"}}})
+	close(g.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if g.n != 2 {
+		t.Fatalf("expected a second stream after steer, n=%d", g.n)
+	}
+	if lastUser(g.last) != "steer" {
+		t.Fatalf("second request last user = %q", lastUser(g.last))
+	}
+	foundFirst := false
+	for _, m := range g.last {
+		if m.Role == "user" && m.Text() == "first" {
+			foundFirst = true
+		}
+	}
+	if !foundFirst {
+		t.Fatalf("original user missing from second request: %+v", g.last)
+	}
+}

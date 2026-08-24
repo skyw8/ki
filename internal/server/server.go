@@ -72,6 +72,7 @@ type runState struct {
 	wait   *sync.Cond
 	done   chan struct{}
 	err    error
+	inbox  *loop.Inbox
 }
 
 // File is ~/.ki/server.json
@@ -297,6 +298,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PATCH /v1/skills", s.auth(s.patchSkills))
 	api.HandleFunc("GET /v1/mcp", s.auth(s.getMCP))
 	api.HandleFunc("PATCH /v1/mcp", s.auth(s.patchMCP))
+	api.HandleFunc("GET /v1/message", s.auth(s.getMessage))
+	api.HandleFunc("PATCH /v1/message", s.auth(s.patchMessage))
 	api.HandleFunc("GET /v1/workspaces", s.auth(s.listWorkspaces))
 	api.HandleFunc("POST /v1/workspaces", s.auth(s.createWorkspace))
 	api.HandleFunc("PATCH /v1/workspaces/{id}", s.auth(s.patchWorkspace))
@@ -522,6 +525,14 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
 	sk, mc := s.sessionCatalog(snapshot)
 	tg := toggles.Load(s.cfg.Home)
+	queued, err := session.ReadQueue(sess.Dir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if queued == nil {
+		queued = []session.QueuedItem{}
+	}
 	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
 		"leafId":          sess.LeafID(),
 		"entries":         sess.Entries(),
@@ -529,6 +540,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		"availableSkills": sk,
 		"availableMcp":    mc,
 		"commands":        command.Catalog(snapshot, tg.Skills),
+		"queued":          queued,
 	}))
 }
 
@@ -628,11 +640,12 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = sess.Close() }()
 	var body struct {
-		Model          string  `json:"model"`
-		ThinkingEffort *string `json:"thinkingEffort"`
-		Title          *string `json:"title"`
-		Pinned         *bool   `json:"pinned"`
-		LeafID         *string `json:"leafId"`
+		Model          string    `json:"model"`
+		ThinkingEffort *string   `json:"thinkingEffort"`
+		Title          *string   `json:"title"`
+		Pinned         *bool     `json:"pinned"`
+		LeafID         *string   `json:"leafId"`
+		Queued         *[]string `json:"queued"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -678,6 +691,13 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+	if body.Queued != nil {
+		if _, err := session.KeepQueueIDs(sess.Dir, *body.Queued); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.publishQueueChanged(sess.ID())
 	}
 	if body.Pinned != nil {
 		if err := sess.SetPinned(*body.Pinned); err != nil {
@@ -737,17 +757,39 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		Content  []types.Content `json:"content"`
 		ParentID *string         `json:"parentId"`
 		Model    string          `json:"model"`
+		Delivery string          `json:"delivery"`
+		QueueID  string          `json:"queueId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if len(body.Content) == 0 && strings.TrimSpace(body.Text) != "" {
-		body.Content = []types.Content{{Type: "text", Text: body.Text}}
-	}
-	if err := validateUserContent(body.Content); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	queueID := strings.TrimSpace(body.QueueID)
+	delivery := strings.TrimSpace(body.Delivery)
+	if queueID != "" {
+		if delivery == "" {
+			delivery = toggles.BusySteer
+		}
+		if delivery != toggles.BusySteer {
+			http.Error(w, errQueueIDRequiresSteer.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.ParentID != nil && *body.ParentID != "" {
+			http.Error(w, errQueueIDWithParent.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(body.Content) > 0 || strings.TrimSpace(body.Text) != "" {
+			http.Error(w, errQueueIDWithContent.Error(), http.StatusBadRequest)
+			return
+		}
+	} else {
+		if len(body.Content) == 0 && strings.TrimSpace(body.Text) != "" {
+			body.Content = []types.Content{{Type: "text", Text: body.Text}}
+		}
+		if err := validateUserContent(body.Content); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	parsed := command.Parse(contentText(body.Content))
 	sess, err := s.open(id)
@@ -759,7 +801,8 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	parsed = command.ResolveUnknown(parsed, snapshot)
 	tg := toggles.Load(s.cfg.Home)
 	busy := s.running(id)
-	if parsed.Kind != command.KindPrompt {
+	live := s.runAt(id)
+	if queueID == "" && parsed.Kind != command.KindPrompt {
 		if hasNonText(body.Content) {
 			_ = sess.Close()
 			http.Error(w, "commands do not take attachments", http.StatusBadRequest)
@@ -804,12 +847,13 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 			writeHandled(w, "unknown command /"+parsed.Name, true)
 			return
 		}
-	} else if busy {
-		_ = sess.Close()
-		http.Error(w, "session busy", http.StatusConflict)
-		return
 	}
 	if body.ParentID != nil && *body.ParentID != "" {
+		if busy {
+			_ = sess.Close()
+			http.Error(w, "session busy", http.StatusConflict)
+			return
+		}
 		messages, err := sess.MessagesTo(*body.ParentID)
 		if err != nil {
 			_ = sess.Close()
@@ -821,6 +865,10 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "parent leaves unresolved tool calls", http.StatusBadRequest)
 			return
 		}
+	}
+	if queueID != "" {
+		s.promoteQueued(w, r, id, sess, live, queueID, body.Model)
+		return
 	}
 	spec := body.Model
 	if spec == "" {
@@ -838,14 +886,110 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	_ = sess.Close()
 	if err != nil {
+		_ = sess.Close()
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	if delivery == "" {
+		delivery = tg.Message.BusyDelivery()
+	}
+	if delivery != toggles.BusySteer && delivery != toggles.BusyQueue {
+		_ = sess.Close()
+		http.Error(w, "delivery must be steer or queue", http.StatusBadRequest)
+		return
+	}
+	if busy {
+		dir := sess.Dir
+		_ = sess.Close()
+		if delivery == toggles.BusySteer && s.pushSteerRun(live, body.Content) {
+			writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "steered"})
+			return
+		}
+		if _, err := session.Enqueue(dir, body.Content); err != nil {
+			if errors.Is(err, session.ErrQueueFull) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.publishQueueChanged(id)
+		writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "queued"})
+		return
+	}
+	_ = sess.Close()
 	// The prompt is accepted asynchronously; detach it from the HTTP request
 	// cancellation while retaining request-scoped values for downstream code.
 	s.startRun(context.WithoutCancel(r.Context()), w, id, body.Content, body.ParentID, body.Model)
+}
+
+// promoteQueued takes a durable queue item and inserts it into the captured
+// run. If that occupy has already ended, the item goes back to the head so
+// dispatchQueue can start it; it is not steered into a replacement run.
+func (s *Server) promoteQueued(w http.ResponseWriter, r *http.Request, id string, sess *session.Session, live *runState, queueID, model string) {
+	dir := sess.Dir
+	item, err := session.TakeQueueID(dir, queueID)
+	if err != nil {
+		_ = sess.Close()
+		if errors.Is(err, session.ErrQueueItemNotFound) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	putBack := func() {
+		if err := session.EnqueueFront(dir, item); err != nil {
+			slog.Warn("requeue after failed promote", "session_id", id, "err", err)
+			return
+		}
+		s.publishQueueChanged(id)
+	}
+	if err := validateUserContent(item.Content); err != nil {
+		_ = sess.Close()
+		putBack()
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	spec := model
+	if spec == "" {
+		spec = sess.Config.Model
+	}
+	ref, selectedModel, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
+	if err == nil && s.requireModelCredential {
+		_, selectedModel, _, err = s.registry.Resolve(ref.Provider, ref.Model)
+	}
+	if err == nil && !slices.Contains(selectedModel.Input, "image") {
+		for _, c := range item.Content {
+			if c.Type == "image" {
+				err = errSelectedModelNoImage
+				break
+			}
+		}
+	}
+	if err != nil {
+		_ = sess.Close()
+		putBack()
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	_ = sess.Close()
+	if s.pushSteerRun(live, item.Content) {
+		s.publishQueueChanged(id)
+		writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "steered"})
+		return
+	}
+	st, ctx, err := s.occupy(context.WithoutCancel(r.Context()), id)
+	if err != nil {
+		putBack()
+		writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "queued"})
+		return
+	}
+	st.inbox = &loop.Inbox{}
+	go s.runPrompt(ctx, st, id, item.Content, nil, model)
+	s.publishQueueChanged(id)
+	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started"})
 }
 
 func (s *Server) handleBuiltin(w http.ResponseWriter, r *http.Request, name string) {
@@ -1171,6 +1315,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		MaxRetries:              5,
 		BaseDelay:               2 * time.Second,
 		Parallel:                true,
+		Inbox:                   st.inbox,
 		Hooks: loop.Hooks{
 			TransformContext: materializeAttachments,
 			// 溢出恢复：请求报上下文溢出时，同 Run 内压缩后重试（事件不重放）。
@@ -1368,6 +1513,7 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	st := s.runs[id]
 	s.mu.Unlock()
 	if st != nil {
+		s.publishRunAborted(id)
 		st.cancel()
 	}
 	writeJSON(w, 200, map[string]any{"aborted": true})

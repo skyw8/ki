@@ -5,7 +5,7 @@ import { ChatView } from './Chat'
 import { Composer, type Draft } from './Composer'
 import { AttachmentBrowser } from './AttachmentBrowser'
 import { DirectoryBrowser } from './DirectoryBrowser'
-import { SessionConfig, SettingsToggles } from './SessionConfig'
+import { MessageSettings, SessionConfig, SettingsToggles } from './SessionConfig'
 import { ProviderSettings } from './ProviderSettings'
 import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
 import { appendOptimisticUser, applyEvent, clampThinkingEffort, emptyView, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats } from './model'
@@ -15,7 +15,7 @@ import { useI18n } from './i18n'
 import { toast } from './toast'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
-type SettingsPage = 'providers' | 'skills' | 'mcp' | 'appearance'
+type SettingsPage = 'providers' | 'skills' | 'mcp' | 'message' | 'appearance'
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
 
@@ -236,7 +236,6 @@ export function App() {
   }, [api])
 
   useEffect(() => { void refreshList() }, [refreshList])
-
   useEffect(() => {
     const q = filter.trim()
     if (!q) {
@@ -278,10 +277,13 @@ export function App() {
       toast.from(e)
     } finally {
       if (abortRef.current === ac) {
-        setView(v => ({ ...v, busy: false }))
-		void api.get(id).then(detail => {
-		  if (abortRef.current === ac) setView(loadHistory(detail))
-		}).catch(() => {})
+        const detail = await api.get(id).catch(() => null)
+        if (abortRef.current === ac && detail) {
+          setView(loadHistory(detail))
+          if (detail.running) void listen(id)
+        } else if (abortRef.current === ac) {
+          setView(v => ({ ...v, busy: false }))
+        }
         void refreshList()
       }
     }
@@ -298,6 +300,19 @@ export function App() {
 					if (ev.entryId) {
 						mcpEventIDs.current.add(ev.entryId)
 						if (mcpEventIDs.current.size > 200) mcpEventIDs.current.delete(mcpEventIDs.current.values().next().value!)
+					}
+					if (ev.type === 'run_aborted') {
+					  setView(v => applyEvent(v, ev))
+					  continue
+					}
+					if (ev.type === 'queue_changed') {
+					  try {
+					    const detail = await api.get(currentId)
+					    if (ac.signal.aborted) return
+					    setView(v => ({ ...loadHistory(detail), busy: v.busy || !!detail.running }))
+					    if (detail.running) void listen(currentId)
+					  } catch (e) { toast.from(e) }
+					  continue
 					}
 					if (ev.type !== 'mcp_server_failed' && ev.type !== 'mcp_tools_changed') continue
 					const message = ev.messageText || `${ev.server || 'MCP'} ${ev.type === 'mcp_tools_changed' ? t('mcp.changed') : t('mcp.failed')}`
@@ -321,7 +336,7 @@ export function App() {
 				}
 		})()
 		return () => ac.abort()
-	}, [api, currentId, t])
+	}, [api, currentId, listen, t])
 
   const openSession = useCallback(async (id: string) => {
     setCurrentId(id)
@@ -426,7 +441,7 @@ export function App() {
     catch (e) { toast.from(e) }
   }, [makeSession, selectedWs])
 
-  const sendContent = useCallback(async (content: Content[], parentId?: string, editedMessageId?: string) => {
+  const sendContent = useCallback(async (content: Content[], parentId?: string, editedMessageId?: string, delivery?: 'steer' | 'queue') => {
 	if (!content.some(c => (c.type === 'text' && !!c.text?.trim()) || c.type !== 'text')) return
     try {
       let id = currentId
@@ -434,9 +449,10 @@ export function App() {
         const s = await makeSession(selectedWs)
         id = s.id
       }
+      let result: { handled?: boolean; notice?: string; error?: boolean; accepted?: boolean | string } | undefined
       try {
         const spec = view.provider && view.model ? `${view.provider}/${view.model}` : view.model
-		const result = await api.prompt(id, content, spec || undefined, parentId)
+		result = await api.prompt(id, content, spec || undefined, parentId, delivery)
         if (result?.handled) {
           if (result.notice) (result.error ? toast.error : toast.info)(result.notice)
           setDraft(d => ({ ...d, text: '' }))
@@ -450,6 +466,19 @@ export function App() {
         }
         throw e
       }
+	  if (result?.accepted === 'queued') {
+		setDraft({ text: '', attachments: [] })
+		try {
+		  const detail = await api.get(id)
+		  setView(v => ({ ...loadHistory(detail), busy: true }))
+		} catch (e) { toast.from(e) }
+		return
+	  }
+	  if (result?.accepted === 'steered') {
+		setDraft({ text: '', attachments: [] })
+		setView(v => appendOptimisticUser(v, content))
+		return
+	  }
 	  if (editedMessageId) {
 		setEdit(null)
 		setView(v => {
@@ -469,10 +498,29 @@ export function App() {
     }
 	}, [api, currentId, listen, makeSession, openSession, selectedWs, view.model, view.provider])
 
-	const send = useCallback(() => {
+	const send = useCallback((delivery?: 'steer' | 'queue') => {
 	  const content: Content[] = [...(draft.text.trim() ? [{ type: 'text', text: draft.text } as Content] : []), ...draft.attachments]
-	  return sendContent(content)
+	  return sendContent(content, undefined, undefined, delivery)
 	}, [draft, sendContent])
+
+	const steerQueued = useCallback(async (queueId?: string) => {
+	  const items = view.queued ?? []
+	  const item = queueId ? items.find(q => q.id === queueId) : items.at(-1)
+	  if (!currentId || !item) return
+	  try {
+	    const spec = view.provider && view.model ? `${view.provider}/${view.model}` : view.model
+	    const result = await api.prompt(currentId, [], spec || undefined, undefined, 'steer', item.id)
+	    if (result?.accepted === 'steered') {
+	      setView(v => ({
+	        ...appendOptimisticUser(v, item.content ?? []),
+	        queued: (v.queued ?? []).filter(q => q.id !== item.id),
+	      }))
+	      return
+	    }
+	    const detail = await api.get(currentId)
+	    setView(v => ({ ...v, queued: detail.queued ?? [], busy: v.busy || !!detail.running }))
+	  } catch (e) { toast.from(e) }
+	}, [api, currentId, view.model, view.provider, view.queued])
 
 	const sendEdit = useCallback(() => {
 	  if (!edit) return Promise.resolve()
@@ -636,17 +684,44 @@ export function App() {
 
   const empty = view.nodes.length === 0
   const stats = useMemo(() => sessionStats(view), [view])
+  const queued = view.queued ?? []
+  const steerShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘+Enter' : t('queue.steerHint')
   const composer = (
+    <>
+    {queued.length ? (
+      <ul className="queued-list" data-testid="queued-list">
+        {queued.map((item, i) => {
+          const text = (item.content ?? []).filter(c => c.type === 'text').map(c => c.text).join(' ')
+          const tail = i === queued.length - 1
+          return (
+            <li key={item.id} className="queued-item" data-testid="queued-item">
+              <span className="queued-text">{text || t('queue.attachment')}</span>
+              {tail ? <kbd className="queued-kbd" title={t('queue.steerAria')}>{steerShortcut}</kbd> : null}
+              <button type="button" className="queued-steer" data-testid="queued-steer" onClick={() => void steerQueued(item.id)}>{t('queue.steer')}</button>
+              <button type="button" className="queued-remove" data-testid="queued-remove" aria-label={t('queue.remove')} onClick={() => {
+                if (!currentId) return
+                const ids = queued.filter(q => q.id !== item.id).map(q => q.id)
+                void api.patch(currentId, { queued: ids }).then(() => api.get(currentId)).then(detail => {
+                  setView(v => ({ ...v, queued: detail.queued ?? [] }))
+                }).catch(e => toast.from(e))
+              }}><IClose /></button>
+            </li>
+          )
+        })}
+      </ul>
+    ) : null}
     <Composer
 	  api={api}
 	  draft={draft}
 	  onChange={setDraft}
-      onSend={() => void send()}
+      onSend={d => void send(d)}
       onStop={() => void stop()}
+      onSteerQueued={() => void steerQueued()}
 	  onAttach={() => setAttachmentTarget('new')}
 	  onFiles={files => void uploadClientFiles('new', files)}
 	  uploading={uploading}
       busy={view.busy}
+      hasQueued={queued.length > 0}
       cwd={view.cwd}
       model={view.model}
       commands={view.commands ?? []}
@@ -659,6 +734,7 @@ export function App() {
 	  contextUsage={view.contextUsage}
 	  stats={stats}
     />
+    </>
   )
 
   const visibleRows = (wsId: string, rows: SessionInfo[]) => {
@@ -1119,6 +1195,7 @@ export function App() {
 			<button type="button" role="tab" aria-selected={settingsPage === 'providers'} className={`tab${settingsPage === 'providers' ? ' active' : ''}`} data-testid="settings-tab-providers" onClick={() => setSettingsPage('providers')}>{t('settings.providers')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'skills'} className={`tab${settingsPage === 'skills' ? ' active' : ''}`} data-testid="settings-tab-skills" onClick={() => setSettingsPage('skills')}>{t('settings.skills')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'mcp'} className={`tab${settingsPage === 'mcp' ? ' active' : ''}`} data-testid="settings-tab-mcp" onClick={() => setSettingsPage('mcp')}>{t('settings.mcp')}</button>
+			<button type="button" role="tab" aria-selected={settingsPage === 'message'} className={`tab${settingsPage === 'message' ? ' active' : ''}`} data-testid="settings-tab-message" onClick={() => setSettingsPage('message')}>{t('settings.message')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'appearance'} className={`tab${settingsPage === 'appearance' ? ' active' : ''}`} data-testid="settings-tab-appearance" onClick={() => setSettingsPage('appearance')}>{t('settings.appearanceLanguage')}</button>
 		  </nav>
 		  <div className="settings-page">
@@ -1126,6 +1203,8 @@ export function App() {
 			  <SettingsToggles kind="skills" api={api} workspaceId={selectedWs} />
 			) : settingsPage === 'mcp' ? (
 			  <SettingsToggles kind="mcp" api={api} workspaceId={selectedWs} />
+			) : settingsPage === 'message' ? (
+			  <MessageSettings api={api} />
 			) : (
 			  <div className="preference-page" data-testid="appearance-settings">
 				<header className="settings-page-title"><div><h3>{t('settings.appearanceLanguage')}</h3><p>{t('settings.preferenceHint')}</p></div></header>

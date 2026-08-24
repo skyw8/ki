@@ -121,6 +121,8 @@ func newRunCommand() *cobra.Command {
 	cmd.Flags().StringVar(&f.Model, "model", "", "model or provider/model to use")
 	cmd.Flags().StringVar(&f.CWD, "cwd", "", "working directory for a new session")
 	cmd.Flags().StringVar(&f.Addr, "addr", "", "server listen address when starting one")
+	cmd.Flags().BoolVar(&f.Steer, "steer", false, "insert into the current run when the session is busy")
+	cmd.Flags().BoolVar(&f.Queue, "queue", false, "queue until the current run finishes when the session is busy")
 	return cmd
 }
 
@@ -218,12 +220,15 @@ type flags struct {
 	Model   string
 	CWD     string
 	Addr    string
+	Steer   bool
+	Queue   bool
 }
 
 var (
 	errSessionRequired     = errors.New("--session is required")
 	errServerDidNotComeUp  = errors.New("server did not come up")
 	errPromptRequired      = errors.New("prompt is required")
+	errSteerQueueExclusive = errors.New("--steer and --queue are mutually exclusive")
 	errInProcessServerBind = errors.New("in-process server failed to bind")
 	errHTTPResponse        = errors.New("HTTP request failed")
 	errNoLiveServer        = errors.New("ki server is not running")
@@ -350,7 +355,17 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 		defer abortCancel()
 		_ = doJSONContext(abortCtx, base, token, "POST", "/v1/sessions/"+id+"/abort", nil, nil)
 	}()
-	if err := doJSON(base, token, "/v1/sessions/"+id+"/prompt", map[string]any{"text": prompt, "model": f.Model}, nil); err != nil {
+	if f.Steer && f.Queue {
+		return errSteerQueueExclusive
+	}
+	body := map[string]any{"text": prompt, "model": f.Model}
+	if f.Steer {
+		body["delivery"] = "steer"
+	}
+	if f.Queue {
+		body["delivery"] = "queue"
+	}
+	if err := doJSON(base, token, "/v1/sessions/"+id+"/prompt", body, nil); err != nil {
 		return err
 	}
 	if err := streamEvents(ctx, base, token, id); err != nil {

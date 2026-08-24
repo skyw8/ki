@@ -1,10 +1,12 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -219,4 +221,50 @@ func startServeEnv(t *testing.T, home, dir string, env []string) server.File {
 	}
 	t.Fatal("server.json not written")
 	return server.File{}
+}
+
+func serveJSON(t *testing.T, sf server.File, method, path string, body any) (int, map[string]any) {
+	t.Helper()
+	var r io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), method, "http://"+sf.Addr+path, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+sf.Token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, _ := io.ReadAll(res.Body)
+	out := map[string]any{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &out)
+	}
+	return res.StatusCode, out
+}
+
+func waitSessionRunning(t *testing.T, sf server.File, id string, running bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status, got := serveJSON(t, sf, http.MethodGet, "/v1/sessions/"+id, nil)
+		if status == http.StatusOK {
+			if on, _ := got["running"].(bool); on == running {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("session %s running=%v not reached", id, running)
 }

@@ -51,6 +51,14 @@ const (
 	MCPServerFailed EventType = "mcp_server_failed"
 	// MCPToolsChanged reports that an MCP catalog requires an explicit reload.
 	MCPToolsChanged EventType = "mcp_tools_changed"
+	// QueueChanged reports that the session user-message FIFO changed.
+	QueueChanged EventType = "queue_changed"
+	// SteerAccepted reports a user message accepted into the live Inbox.
+	// It is not a jsonl leaf; drain later emits message_start/end.
+	SteerAccepted EventType = "steer_accepted"
+	// RunAborted reports that abort cancelled the occupy context. AgentEnd
+	// still follows when the loop actually returns.
+	RunAborted EventType = "run_aborted"
 )
 
 // Event is a loop event (pi field names).
@@ -208,6 +216,46 @@ type Hooks struct {
 // cannot succeed); Run recovers via Hooks.OnContextOverflow instead.
 var ErrContextOverflow = errors.New("context overflow")
 
+// Inbox holds user messages injected into a live Run (steer). It is
+// process-local and is not part of a resources snapshot.
+type Inbox struct {
+	mu      sync.Mutex
+	pending []types.Message
+}
+
+// Push appends a user message to be consumed on the next model request.
+func (i *Inbox) Push(m types.Message) {
+	if i == nil {
+		return
+	}
+	m.Role = "user"
+	i.mu.Lock()
+	i.pending = append(i.pending, m)
+	i.mu.Unlock()
+}
+
+// Take returns and clears pending steer messages.
+func (i *Inbox) Take() []types.Message {
+	if i == nil {
+		return nil
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	out := i.pending
+	i.pending = nil
+	return out
+}
+
+// Has reports whether any steer message is waiting.
+func (i *Inbox) Has() bool {
+	if i == nil {
+		return false
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return len(i.pending) > 0
+}
+
 // Config is loop runtime options.
 type Config struct {
 	Streamer                Streamer
@@ -228,6 +276,9 @@ type Config struct {
 	ThinkingLevelMap        map[string]*string
 	TextOnly                bool
 	System                  string
+	// Inbox receives same-run user messages. Drain happens after the current
+	// stream/tools turn, before the next streamWithRetry. A nil Inbox is idle.
+	Inbox *Inbox
 }
 
 // Run executes one user prompt against the current messages.
@@ -294,6 +345,12 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 			}
 		}
 		firstTurn = false
+
+		var err error
+		newMsgs, history, err = drainInbox(cfg.Inbox, emit, newMsgs, history)
+		if err != nil {
+			return newMsgs, err
+		}
 
 		msgs := history
 		if cfg.Hooks.TransformContext != nil {
@@ -377,7 +434,10 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		if err := emit(Event{Type: TurnEnd, Message: &asst, ToolResults: results}); err != nil {
 			return newMsgs, err
 		}
-		if len(calls) == 0 || asst.StopReason == "error" || asst.StopReason == "aborted" || terminate {
+		if asst.StopReason == "error" || asst.StopReason == "aborted" || terminate {
+			break
+		}
+		if len(calls) == 0 && !cfg.Inbox.Has() {
 			break
 		}
 	}
@@ -385,6 +445,25 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		return newMsgs, err
 	}
 	return newMsgs, nil
+}
+
+func drainInbox(inbox *Inbox, emit func(Event) error, newMsgs, history []types.Message) ([]types.Message, []types.Message, error) {
+	for _, user := range inbox.Take() {
+		user.Role = "user"
+		if user.Timestamp == 0 {
+			user.Timestamp = time.Now().UnixMilli()
+		}
+		u := user
+		if err := emit(Event{Type: MessageStart, Message: &u}); err != nil {
+			return newMsgs, history, err
+		}
+		if err := emit(Event{Type: MessageEnd, Message: &u}); err != nil {
+			return newMsgs, history, err
+		}
+		newMsgs = append(newMsgs, user)
+		history = append(history, user)
+	}
+	return newMsgs, history, nil
 }
 
 func stripImages(msgs []types.Message) []types.Message {

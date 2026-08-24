@@ -1069,6 +1069,417 @@ func TestPromptReleaseAppliesQueuedReload(t *testing.T) {
 	}
 }
 
+func promptJSON(t *testing.T, hs *httptest.Server, id, text string, extra map[string]any) (int, map[string]any) {
+	t.Helper()
+	body := map[string]any{}
+	if text != "" {
+		body["text"] = text
+	}
+	for k, v := range extra {
+		body[k] = v
+	}
+	raw, _ := marshalJSON(body)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	_ = res.Body.Close()
+	return res.StatusCode, out
+}
+
+func sessionGET(t *testing.T, hs *httptest.Server, id string) map[string]any {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET session %d %+v", res.StatusCode, out)
+	}
+	return out
+}
+
+func TestMessageBusyToggle(t *testing.T) {
+	_, hs := testServer(t)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/message", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&got)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || got["busy"] != "steer" {
+		t.Fatalf("default message %+v %d", got, res.StatusCode)
+	}
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/message", strings.NewReader(`{"busy":"queue"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = map[string]any{}
+	_ = json.NewDecoder(res.Body).Decode(&got)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || got["busy"] != "queue" {
+		t.Fatalf("patched message %+v %d", got, res.StatusCode)
+	}
+}
+
+func TestBusyPromptSteersSameRun(t *testing.T) {
+	gate := &gateStreamer{inner: &provider.Scripted{}}
+	srv, hs := testServerWith(t, gate)
+	id := createSession(t, hs, t.TempDir())
+	gate.arm()
+	prompt202(t, hs, id, "first")
+	waitBuffered(t, srv, id, 6)
+	status, out := promptJSON(t, hs, id, "steer-me", map[string]any{"delivery": "steer"})
+	if status != http.StatusAccepted || out["accepted"] != "steered" {
+		t.Fatalf("steer %d %+v", status, out)
+	}
+	if !srv.running(id) {
+		t.Fatal("steer must not start a second occupy")
+	}
+	gate.release()
+	waitAgentEnd(t, hs, id)
+	waitRunIdle(t, srv, id)
+	detail := sessionGET(t, hs, id)
+	raw, _ := json.Marshal(detail["messages"])
+	if !strings.Contains(string(raw), "first") || !strings.Contains(string(raw), "steer-me") {
+		t.Fatalf("messages missing steered user: %s", raw)
+	}
+}
+
+func TestBusyPromptQueuesUntilRelease(t *testing.T) {
+	gate := &gateStreamer{inner: &provider.Scripted{}}
+	srv, hs := testServerWith(t, gate)
+	id := createSession(t, hs, t.TempDir())
+	gate.arm()
+	prompt202(t, hs, id, "first")
+	waitBuffered(t, srv, id, 6)
+	status, out := promptJSON(t, hs, id, "queued-me", map[string]any{"delivery": "queue"})
+	if status != http.StatusAccepted || out["accepted"] != "queued" {
+		t.Fatalf("queue %d %+v", status, out)
+	}
+	detail := sessionGET(t, hs, id)
+	queued, _ := detail["queued"].([]any)
+	if len(queued) != 1 {
+		t.Fatalf("queued = %+v", detail["queued"])
+	}
+	gate.release()
+	waitAgentEnd(t, hs, id)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		detail = sessionGET(t, hs, id)
+		queued, _ = detail["queued"].([]any)
+		raw, _ := json.Marshal(detail["messages"])
+		if len(queued) == 0 && strings.Contains(string(raw), "queued-me") && !srv.running(id) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queued follow-up did not run: queued=%+v messages=%s running=%v", queued, raw, srv.running(id))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestBusyParentIDStillConflicts(t *testing.T) {
+	gate := &gateStreamer{inner: &provider.Scripted{}}
+	srv, hs := testServerWith(t, gate)
+	id := createSession(t, hs, t.TempDir())
+	gate.arm()
+	prompt202(t, hs, id, "first")
+	waitBuffered(t, srv, id, 6)
+	status, _ := promptJSON(t, hs, id, "branch", map[string]any{"parentId": "nope"})
+	if status != http.StatusConflict {
+		t.Fatalf("parentId busy status %d", status)
+	}
+	gate.release()
+	waitAgentEnd(t, hs, id)
+}
+
+func TestQueueDefaultEnterSteerOverride(t *testing.T) {
+	gate := &gateStreamer{inner: &provider.Scripted{}}
+	srv, hs := testServerWith(t, gate)
+	id := createSession(t, hs, t.TempDir())
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/message", strings.NewReader(`{"busy":"queue"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	gate.arm()
+	prompt202(t, hs, id, "first")
+	waitBuffered(t, srv, id, 6)
+	status, out := promptJSON(t, hs, id, "queued-default", nil)
+	if status != http.StatusAccepted || out["accepted"] != "queued" {
+		t.Fatalf("default queue %d %+v", status, out)
+	}
+	status, out = promptJSON(t, hs, id, "enter-steer", map[string]any{"delivery": "steer"})
+	if status != http.StatusAccepted || out["accepted"] != "steered" {
+		t.Fatalf("enter steer override %d %+v", status, out)
+	}
+	found := false
+	srv.mu.Lock()
+	st := srv.runs[id]
+	srv.mu.Unlock()
+	if st != nil {
+		st.mu.Lock()
+		for _, ev := range st.evs {
+			if ev.Type == loop.SteerAccepted {
+				found = true
+				break
+			}
+		}
+		st.mu.Unlock()
+	}
+	if !found {
+		t.Fatal("missing steer_accepted on live run")
+	}
+	gate.release()
+	waitAgentEnd(t, hs, id)
+}
+
+func TestBusyPromptPromotesQueueId(t *testing.T) {
+	gate := &gateStreamer{inner: &provider.Scripted{}}
+	srv, hs := testServerWith(t, gate)
+	id := createSession(t, hs, t.TempDir())
+	gate.arm()
+	prompt202(t, hs, id, "first")
+	waitBuffered(t, srv, id, 6)
+	if status, out := promptJSON(t, hs, id, "keep-queued", map[string]any{"delivery": "queue"}); status != http.StatusAccepted || out["accepted"] != "queued" {
+		t.Fatalf("queue keep %d %+v", status, out)
+	}
+	if status, out := promptJSON(t, hs, id, "promote-me", map[string]any{"delivery": "queue"}); status != http.StatusAccepted || out["accepted"] != "queued" {
+		t.Fatalf("queue promote %d %+v", status, out)
+	}
+	detail := sessionGET(t, hs, id)
+	queued, _ := detail["queued"].([]any)
+	if len(queued) != 2 {
+		t.Fatalf("queued = %+v", detail["queued"])
+	}
+	tail, _ := queued[1].(map[string]any)
+	tailID, _ := tail["id"].(string)
+	status, out := promptJSON(t, hs, id, "", map[string]any{"delivery": "steer", "queueId": tailID})
+	if status != http.StatusAccepted || out["accepted"] != "steered" {
+		t.Fatalf("promote %d %+v", status, out)
+	}
+	detail = sessionGET(t, hs, id)
+	queued, _ = detail["queued"].([]any)
+	if len(queued) != 1 {
+		t.Fatalf("after promote queued = %+v", detail["queued"])
+	}
+	keep, _ := queued[0].(map[string]any)
+	if keep["id"] == tailID {
+		t.Fatal("promoted tail still in queue")
+	}
+	found := false
+	srv.mu.Lock()
+	st := srv.runs[id]
+	srv.mu.Unlock()
+	if st != nil {
+		st.mu.Lock()
+		for _, ev := range st.evs {
+			if ev.Type == loop.SteerAccepted {
+				found = true
+				break
+			}
+		}
+		st.mu.Unlock()
+	}
+	if !found {
+		t.Fatal("missing steer_accepted on live run")
+	}
+	if !srv.running(id) {
+		t.Fatal("promote must not occupy a second run")
+	}
+	gate.release()
+	waitAgentEnd(t, hs, id)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		detail = sessionGET(t, hs, id)
+		queued, _ = detail["queued"].([]any)
+		raw, _ := json.Marshal(detail["messages"])
+		if len(queued) == 0 && strings.Contains(string(raw), "promote-me") && strings.Contains(string(raw), "keep-queued") && !srv.running(id) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("promote follow-up: queued=%+v messages=%s running=%v", queued, raw, srv.running(id))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestPromoteQueueIdRejectsUnknownAndContent(t *testing.T) {
+	gate := &gateStreamer{inner: &provider.Scripted{}}
+	srv, hs := testServerWith(t, gate)
+	id := createSession(t, hs, t.TempDir())
+	gate.arm()
+	prompt202(t, hs, id, "first")
+	waitBuffered(t, srv, id, 6)
+	status, _ := promptJSON(t, hs, id, "", map[string]any{"delivery": "steer", "queueId": "missing"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing queueId status %d", status)
+	}
+	status, _ = promptJSON(t, hs, id, "also-body", map[string]any{"delivery": "steer", "queueId": "x"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("queueId+content status %d", status)
+	}
+	status, _ = promptJSON(t, hs, id, "", map[string]any{"delivery": "queue", "queueId": "x"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("queueId+queue delivery status %d", status)
+	}
+	status, _ = promptJSON(t, hs, id, "", map[string]any{"delivery": "steer", "queueId": "x", "parentId": "y"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("queueId+parentId status %d", status)
+	}
+	gate.release()
+	waitAgentEnd(t, hs, id)
+}
+
+func TestIdlePromoteQueueIdStartsRun(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	dir, ok := srv.sidx.Lookup(id)
+	if !ok {
+		t.Fatal("session dir")
+	}
+	item, err := session.Enqueue(dir, []types.Content{{Type: "text", Text: "from-queue"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, out := promptJSON(t, hs, id, "", map[string]any{"delivery": "steer", "queueId": item.ID})
+	if status != http.StatusAccepted || out["accepted"] != "started" {
+		t.Fatalf("idle promote %d %+v", status, out)
+	}
+	waitAgentEnd(t, hs, id)
+	waitRunIdle(t, srv, id)
+	detail := sessionGET(t, hs, id)
+	queued, _ := detail["queued"].([]any)
+	raw, _ := json.Marshal(detail["messages"])
+	if len(queued) != 0 || !strings.Contains(string(raw), "from-queue") {
+		t.Fatalf("idle promote result queued=%+v messages=%s", queued, raw)
+	}
+}
+
+func TestCompactPromoteQueueIdRestoresHead(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	st, _, err := srv.occupy(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, ok := srv.sidx.Lookup(id)
+	if !ok {
+		t.Fatal("session dir")
+	}
+	item, err := session.Enqueue(dir, []types.Content{{Type: "text", Text: "during-compact"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, out := promptJSON(t, hs, id, "", map[string]any{"delivery": "steer", "queueId": item.ID})
+	if status != http.StatusAccepted || out["accepted"] != "queued" {
+		t.Fatalf("compact promote %d %+v", status, out)
+	}
+	left, err := session.ReadQueue(dir)
+	if err != nil || len(left) != 1 || left[0].ID != item.ID {
+		t.Fatalf("restored %+v %v", left, err)
+	}
+	srv.release(id, st)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		detail := sessionGET(t, hs, id)
+		queued, _ := detail["queued"].([]any)
+		raw, _ := json.Marshal(detail["messages"])
+		if len(queued) == 0 && strings.Contains(string(raw), "during-compact") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("compact promote dispatch: queued=%+v messages=%s", queued, raw)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestAbortEmitsRunAborted(t *testing.T) {
+	gate := &gateStreamer{inner: &provider.Scripted{}}
+	srv, hs := testServerWith(t, gate)
+	id := createSession(t, hs, t.TempDir())
+	gate.arm()
+	prompt202(t, hs, id, "first")
+	waitBuffered(t, srv, id, 6)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/abort", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("abort %d", res.StatusCode)
+	}
+	found := false
+	srv.mu.Lock()
+	st := srv.runs[id]
+	srv.mu.Unlock()
+	if st != nil {
+		st.mu.Lock()
+		for _, ev := range st.evs {
+			if ev.Type == loop.RunAborted {
+				found = true
+				break
+			}
+		}
+		st.mu.Unlock()
+	}
+	if !found {
+		t.Fatal("missing run_aborted on live run")
+	}
+	gate.release()
+	waitAgentEnd(t, hs, id)
+}
+
+func TestCompactOccupySteersAsQueue(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	st, _, err := srv.occupy(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, out := promptJSON(t, hs, id, "during-compact", map[string]any{"delivery": "steer"})
+	if status != http.StatusAccepted || out["accepted"] != "queued" {
+		t.Fatalf("compact steer %d %+v", status, out)
+	}
+	srv.release(id, st)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		detail := sessionGET(t, hs, id)
+		queued, _ := detail["queued"].([]any)
+		raw, _ := json.Marshal(detail["messages"])
+		if len(queued) == 0 && strings.Contains(string(raw), "during-compact") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("compact queue not dispatched: queued=%+v messages=%s", queued, raw)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestMCPNotificationStreamReplaysActionableState(t *testing.T) {
 	srv, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())

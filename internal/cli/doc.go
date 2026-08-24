@@ -13,7 +13,8 @@
 // If server.json is healthy the client connects; otherwise it listens on
 // 127.0.0.1:0 in-process and tears the server down on exit.
 // --session is required to resume. --model is sent with the prompt and
-// persisted on that session only. KI_FAKE=1 injects provider.Scripted.
+// persisted on that session only. --steer / --queue override the busy-message
+// default from toggles.json. KI_FAKE=1 injects provider.Scripted.
 //
 // Request flow: docs/architecture.md.
 package cli

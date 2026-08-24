@@ -3,11 +3,17 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"ki/internal/loop"
 	"ki/internal/types"
 )
+
+// HoldToken in the latest user message makes Scripted wait until the
+// request context is canceled. Playwright and CLI e2e use it to keep a
+// fake run busy; it is a no-op for the live provider.
+const HoldToken = "e2e-hold"
 
 // Streamer is the provider-facing alias of loop.Streamer.
 type Streamer = loop.Streamer
@@ -19,8 +25,21 @@ type Scripted struct {
 	i     int
 }
 
+func lastUserHolds(req loop.Request) bool {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			return strings.Contains(req.Messages[i].Text(), HoldToken)
+		}
+	}
+	return false
+}
+
 // Stream returns the next scripted assistant message.
 func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
+	if lastUserHolds(req) {
+		<-ctx.Done()
+		return types.Message{}, ctx.Err()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.i >= len(s.Steps) {

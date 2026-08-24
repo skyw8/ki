@@ -16,4 +16,7 @@ var (
 	errUnsupportedContent     = errors.New("unsupported type")
 	errTextOrAttachment       = errors.New("text or attachment required")
 	errModelUnavailable       = errors.New("unavailable")
+	errQueueIDRequiresSteer   = errors.New("queueId requires delivery=steer")
+	errQueueIDWithContent     = errors.New("queueId cannot include content")
+	errQueueIDWithParent      = errors.New("queueId cannot be used with parentId")
 )

@@ -107,11 +107,24 @@ export class Client {
     return this.json(`/v1/sessions/search?q=${encodeURIComponent(q)}`, { signal })
   }
 
-  prompt(id: string, content: import('./types').Content[], model?: string, parentId?: string): Promise<{ handled?: boolean; notice?: string; error?: boolean; accepted?: boolean }> {
+  prompt(id: string, content: import('./types').Content[], model?: string, parentId?: string, delivery?: 'steer' | 'queue', queueId?: string): Promise<{ handled?: boolean; notice?: string; error?: boolean; accepted?: boolean | string }> {
     return this.json(`/v1/sessions/${id}/prompt`, {
       method: 'POST',
-	  body: JSON.stringify({ content, model, ...(parentId !== undefined ? { parentId } : {}) }),
+	  body: JSON.stringify({
+		...(queueId ? { queueId } : { content }),
+		model,
+		...(parentId !== undefined ? { parentId } : {}),
+		...(delivery ? { delivery } : {}),
+	  }),
     })
+  }
+
+  message(): Promise<{ busy: 'steer' | 'queue' }> {
+    return this.json('/v1/message')
+  }
+
+  patchMessage(busy: 'steer' | 'queue'): Promise<{ busy: 'steer' | 'queue' }> {
+    return this.json('/v1/message', { method: 'PATCH', body: JSON.stringify({ busy }) })
   }
 
   reload(sessionId?: string): Promise<{ ok: boolean; queued?: boolean }> {
@@ -162,7 +175,7 @@ export class Client {
     return this.json('/v1/models')
   }
 
-  patch(id: string, body: { model?: string; thinkingEffort?: string; title?: string; pinned?: boolean; leafId?: string }): Promise<SessionDetail> {
+  patch(id: string, body: { model?: string; thinkingEffort?: string; title?: string; pinned?: boolean; leafId?: string; queued?: string[] }): Promise<SessionDetail> {
     return this.json(`/v1/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
   }
 

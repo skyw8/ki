@@ -23,6 +23,7 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('settings-tab-providers')).toHaveText('模型供应商')
   await expect(page.getByTestId('settings-tab-skills')).toHaveText('Skills')
   await expect(page.getByTestId('settings-tab-mcp')).toHaveText('MCP')
+  await expect(page.getByTestId('settings-tab-message')).toHaveText('Message')
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('主题和语言')
   await expect(page.getByTestId('provider-settings')).toContainText('Anthropic')
   await expect(page.locator('.provider-nav [data-provider-id="anthropic"]')).toHaveText('Anthropic')
@@ -80,6 +81,13 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('skills-settings')).toBeVisible()
   await page.getByTestId('settings-tab-mcp').click()
   await expect(page.getByTestId('mcp-settings')).toBeVisible()
+  await page.getByTestId('settings-tab-message').click()
+  await expect(page.getByTestId('message-settings')).toBeVisible()
+  await expect(page.getByTestId('busy-steer')).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByTestId('busy-steer')).toHaveText('Steer')
+  await expect(page.getByTestId('busy-queue')).toHaveText('Queue')
+  await page.getByTestId('busy-queue').click()
+  await expect(page.getByTestId('busy-queue')).toHaveAttribute('aria-checked', 'true')
   await page.getByTestId('settings-tab-appearance').click()
   await page.getByTestId('lang-en').click()
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('Theme & language')
@@ -216,7 +224,7 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   const input = page.getByTestId('composer-input')
   await expect(input).toBeEnabled()
   await input.fill(prompt)
-  await page.getByTestId('composer-send').click()
+  await input.press('Enter')
   await expect(page.locator('.session-row.active .dot.on')).toBeVisible()
 
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
@@ -623,4 +631,59 @@ test('info reload failure shows a toast on the info page', async ({ page }) => {
   await expect(toast).toHaveAttribute('data-kind', 'error')
   await expect(toast).toContainText('reload failed')
   await expect(page.getByTestId('session-info')).toBeVisible()
+})
+
+async function sessionQueue(page: Page): Promise<{ running: boolean; texts: string[] }> {
+  return page.evaluate(async () => {
+    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
+    const headers = { Authorization: `Bearer ${token}` }
+    const list = await fetch('/v1/sessions', { headers }).then(r => r.json()) as Array<{ id: string; running?: boolean; title?: string }>
+    const s = list.find(x => x.running) || list.find(x => (x.title ?? '').includes('e2e-hold')) || list[0]
+    const d = await fetch(`/v1/sessions/${s.id}`, { headers }).then(r => r.json()) as { running?: boolean; queued?: Array<{ content?: Array<{ text?: string }> }> }
+    return {
+      running: !!d.running,
+      texts: (d.queued ?? []).map(q => (q.content ?? []).map(c => c.text ?? '').join(' ')),
+    }
+  })
+}
+
+test('busy enter queues and ctrl+enter promotes the tail', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-message').click()
+  await page.getByTestId('busy-queue').click()
+  await expect(page.getByTestId('busy-queue')).toHaveAttribute('aria-checked', 'true')
+  await page.getByTestId('settings-mask').click({ position: { x: 4, y: 4 } })
+  await page.getByTestId('new-session').click()
+  const input = page.getByTestId('composer-input')
+  await expect(input).toBeEnabled()
+  await input.fill('e2e-hold')
+  await page.getByTestId('composer-send').click()
+  await expect(page.getByTestId('composer-stop')).toBeVisible()
+  await expect.poll(async () => (await sessionQueue(page)).running).toBe(true)
+  try {
+    await input.fill('queued-keep')
+    await input.press('Enter')
+    await expect(input).toHaveValue('')
+    await expect.poll(async () => (await sessionQueue(page)).texts).toEqual(['queued-keep'])
+    await expect(page.getByTestId('queued-list')).toContainText('queued-keep')
+    await input.fill('queued-promote')
+    await input.press('Enter')
+    await expect(input).toHaveValue('')
+    await expect.poll(async () => (await sessionQueue(page)).texts).toEqual(['queued-keep', 'queued-promote'])
+    await expect(page.getByTestId('queued-item')).toHaveCount(2)
+    await expect(page.getByTestId('queued-steer')).toHaveCount(2)
+    await expect(page.getByTestId('queued-item').last()).toContainText('Ctrl+Enter')
+    await input.press('Control+Enter')
+    await expect.poll(async () => (await sessionQueue(page)).texts).toEqual(['queued-keep'])
+    await expect(page.getByTestId('queued-item')).toHaveCount(1)
+    await expect(page.getByTestId('queued-list')).not.toContainText('queued-promote')
+    await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-promote' })).toBeVisible()
+  } finally {
+    const stop = page.getByTestId('composer-stop')
+    if (await stop.count()) await stop.click()
+  }
+  await expect(page.getByTestId('composer-stop')).toHaveCount(0)
+  await expect.poll(async () => (await sessionQueue(page)).texts).toEqual([])
+  await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-keep' })).toBeVisible()
 })

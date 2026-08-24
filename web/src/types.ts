@@ -170,6 +170,11 @@ export type SessionCommand = {
   source: 'builtin' | 'prompt' | 'skill' | string
 }
 
+export type QueuedItem = {
+  id: string
+  content?: Content[]
+}
+
 export type SessionDetail = SessionInfo & {
   leafId?: string
   entries?: Entry[]
@@ -177,6 +182,7 @@ export type SessionDetail = SessionInfo & {
   availableSkills?: CatalogSkill[]
   availableMcp?: CatalogMcp[]
   commands?: SessionCommand[]
+  queued?: QueuedItem[]
 }
 
 export type Toggle = { only?: string[]; disabled?: string[] }
@@ -269,6 +275,7 @@ export type ViewState = {
   nodes: ChatNode[]
   records: TrajRecord[]
   busy: boolean
+  stopping?: boolean
   error: string | null
   model: string
   provider: string
@@ -283,4 +290,5 @@ export type ViewState = {
 	leafId?: string
 	allEntries: Entry[]
   commands?: SessionCommand[]
+  queued?: QueuedItem[]
 }
