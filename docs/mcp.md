@@ -72,8 +72,8 @@ MCP 运行状态通过 `mcp_server_failed` 和 `mcp_tools_changed` 发布。两�
 
 - `mcp_tools_changed` 只把当前 server 状态标成 `stale`，保留已经固定的工具 schema；不会在后台静默替换本轮或当前快照的工具目录。用户显式 Reload 后才重新发现。
 - MCP 工具调用发生 transport error 时，Manager 丢弃该连接并发布 `mcp_server_failed`。调用不会自动重试，因为服务端可能已经执行了非幂等操作；下一轮 prompt 再重连。
-- session Reload 使该 session 的资源快照失效并关闭它的 MCP 连接。若 session 正在运行，Reload 排队到本轮释放固定 request header 后执行。
-- 全局 Reload 立即清理空闲 session；活跃 session 使用相同的排队规则。`POST /v1/reload`、MCP/Skills Toggle 变化和成功 compaction 都会触发全局 Reload。
+- session Reload 使该 session 的资源快照失效并关闭它的 MCP 连接。若 session 正在运行（prompt 或 compact），Reload 记入 `pendingReload`，本轮 `occupy` 结束时由 `release` 执行。
+- 全局 Reload 立即清理空闲 session；活跃 session 使用相同的排队规则。prompt 通过 `runPrompt` 的 `defer release` 落地排队的 Reload；compact 在 `compact.Run` 之后 `release`。`POST /v1/reload`、MCP/Skills Toggle 变化触发全局 Reload；成功 compaction 对该 session `requestReload`。
 - 删除 session 或 workspace 中的 session 时，同时关闭对应的 MCP 连接。
 
 ## 工具调用

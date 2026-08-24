@@ -992,6 +992,83 @@ func TestSessionReloadQueuesWhileRunIsBusy(t *testing.T) {
 	}
 }
 
+func waitRunIdle(t *testing.T, srv *Server, id string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		srv.mu.Lock()
+		pending := srv.pendingReload[id]
+		srv.mu.Unlock()
+		if !srv.running(id) && !pending {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run %s did not become idle (running=%v pending=%v)", id, srv.running(id), pending)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func TestPromptReleaseMarksRunIdle(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	prompt202(t, hs, id, "hello")
+	waitAgentEnd(t, hs, id)
+	waitRunIdle(t, srv, id)
+	srv.mu.Lock()
+	st := srv.runs[id]
+	srv.mu.Unlock()
+	if st == nil {
+		t.Fatal("finished run must remain in s.runs for SSE replay")
+	}
+}
+
+func TestPromptReleaseAppliesQueuedReload(t *testing.T) {
+	gate := &gateStreamer{inner: &provider.Scripted{}}
+	srv, hs := testServerWith(t, gate)
+	cwd := t.TempDir()
+	id := createSession(t, hs, cwd)
+	sess, err := srv.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := srv.resources.Load(id, sess.Header.CWD)
+	_ = sess.Close()
+
+	gate.arm()
+	prompt202(t, hs, id, "hello")
+	waitBuffered(t, srv, id, 6)
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"/reload"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handled map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&handled)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || handled["handled"] != true {
+		t.Fatalf("busy /reload %d %+v", res.StatusCode, handled)
+	}
+	if !strings.Contains(fmt.Sprint(handled["notice"]), "queued") {
+		t.Fatalf("expected queued notice: %+v", handled)
+	}
+	if got := srv.resources.Load(id, before.Environment.CWD); got.Revision != before.Revision {
+		t.Fatal("busy reload invalidated the live snapshot")
+	}
+
+	gate.release()
+	waitAgentEnd(t, hs, id)
+	waitRunIdle(t, srv, id)
+
+	after := srv.resources.Load(id, before.Environment.CWD)
+	if after.Revision == before.Revision {
+		t.Fatal("queued reload was not applied after prompt release")
+	}
+}
+
 func TestMCPNotificationStreamReplaysActionableState(t *testing.T) {
 	srv, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())

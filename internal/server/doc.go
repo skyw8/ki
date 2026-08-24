@@ -29,7 +29,8 @@
 // skills, AGENTS/CLAUDE, prompt templates, and merged .mcp.json by session id
 // and discovered MCP tools. Settings scans are uncached. Session reload closes
 // only that session's MCP clients; global settings reload idle sessions and
-// queues active ones. MCP failures and list changes use jsonl plus SSE events.
+// queues active ones until occupy's matching release (prompt and compact).
+// MCP failures and list changes use jsonl plus SSE events.
 //
 // Routes and run lifecycle: docs/architecture.md. MCP lifecycle: docs/mcp.md.
 package server

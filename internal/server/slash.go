@@ -122,6 +122,10 @@ func (s *Server) patchMCP(w http.ResponseWriter, r *http.Request) {
 	s.getMCP(w, r)
 }
 
+// occupy claims exclusive run ownership for id. The caller must pair it with
+// release: runPrompt defers that; doCompact calls it after compact.Run.
+// A second occupy while done is still open returns 409. A finished run stays
+// in s.runs until the next occupy overwrites it (SSE replay after done).
 func (s *Server) occupy(parent context.Context, id string) (*runState, context.Context, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -139,15 +143,17 @@ func (s *Server) occupy(parent context.Context, id string) (*runState, context.C
 	return st, ctx, nil
 }
 
+// release ends occupy: cancel the run, close done so SSE drains and
+// running() is false, then apply a reload queued while this run held the
+// fixed request header. The finished runState stays in s.runs so late SSE
+// subscribers can replay until the next occupy overwrites it. close(done)
+// before Broadcast is the events-wait protocol.
 func (s *Server) release(id string, st *runState) {
 	if st == nil {
 		return
 	}
 	st.cancel()
 	s.mu.Lock()
-	if s.runs[id] == st {
-		delete(s.runs, id)
-	}
 	pending := s.pendingReload[id]
 	delete(s.pendingReload, id)
 	s.mu.Unlock()
@@ -193,6 +199,7 @@ func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id stri
 		return
 	}
 
+	// runPrompt's defer release returns this occupy slot.
 	go s.runPrompt(ctx, st, id, content, parentID, model)
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": true})
 }

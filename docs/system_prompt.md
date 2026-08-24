@@ -25,7 +25,7 @@ Prompt templates 不直接进入 system prompt，只用于 slash command 展开�
 - skills 或 MCP Toggle 修改成功。
 - 自动或手动 compaction 成功。
 
-Reload 会清空所有 session 的资源快照，并关闭 MCP 连接池。删除 session 时只清理该 session 的快照。
+Reload 会清空空闲 session 的资源快照并关闭 MCP 连接。正在跑 prompt 或 compact 的 session 把 reload 排到 `occupy` 对应的 `release` 之后。删除 session 时只清理该 session 的快照。
 
 Compaction 会重建模型上下文，此时旧 prompt 缓存可视为失效；同步 reload 可以让下一轮使用最新的项目指令、skills、prompt templates、MCP 配置和运行环境。
 

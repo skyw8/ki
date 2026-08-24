@@ -177,7 +177,8 @@ func (s *Server) Reload() bool {
 }
 
 // reloadSession invalidates one idle session. A live run keeps its fixed tool
-// header and connection; callers queue the reload through requestReload.
+// header and connection; requestReload records pendingReload, and release
+// applies it after occupy ends (prompt defer or compact).
 func (s *Server) reloadSession(id string) {
 	s.resources.Invalidate(id)
 	if s.mcp != nil {
@@ -962,15 +963,12 @@ func hasUnresolvedToolCalls(messages []types.Message) bool {
 
 func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content []types.Content, parentID *string, reqModel string) {
 	defer func() {
-		// A prompt panic must still close done, otherwise SSE clients stay busy
-		// forever waiting for a run that can no longer produce events.
+		// Why: occupy must be paired with release. Closing done here used to
+		// mark SSE idle without consuming pendingReload, so a /reload during
+		// the prompt never invalidated the snapshot. release closes done (and
+		// Broadcasts) itself; a second close panics.
 		logging.Recover("prompt panic", "session_id", id)
-		close(st.done)
-		st.mu.Lock()
-		if st.wait != nil {
-			st.wait.Broadcast()
-		}
-		st.mu.Unlock()
+		s.release(id, st)
 	}()
 	sess, err := s.open(id)
 	if err != nil {
@@ -1227,9 +1225,9 @@ func (s *Server) shouldCompact(sess *session.Session, window int) bool {
 // threshold 三条路径。Returns ErrNothingToCompact when the
 // conversation fits inside the recent-token budget (no model call is made).
 //
-// A successful compaction invalidates every cached resource snapshot: the
-// model context was rebuilt, so the next prompt should also use freshly loaded
-// environment, instructions, skills, templates, and MCP configuration.
+// A successful compaction requestReloads this session: the model context was
+// rebuilt, so the next prompt should use freshly loaded environment,
+// instructions, skills, templates, and MCP configuration.
 func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]types.Message, error) {
 	prep, err := compact.Prepare(sess.LeafEntries(), s.cfg.Compaction)
 	if err != nil {
@@ -1245,6 +1243,8 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]t
 	if _, err := sess.AppendCompaction(summary, prep.FirstKeptEntryID, prep.TokensBefore, usage, prep.RetainedTail); err != nil {
 		return nil, fmt.Errorf("append compaction: %w", err)
 	}
+	// compactSession runs inside an occupied prompt, so this queues until
+	// runPrompt's release instead of closing this turn's MCP connections.
 	s.requestReload(sess.ID())
 	return sess.MessagesToLeaf(), nil
 }
