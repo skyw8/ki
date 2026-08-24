@@ -46,6 +46,13 @@ func Build(in Input) string {
 	}
 	b.WriteString("\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\n")
 	b.WriteString("Guidelines:\n- Be concise in your responses\n- Show file paths clearly when working with files\n")
+	// Keep the supplement after Ki's built-in guidance and before task-scoped
+	// resources. This gives operators a stable layer for extra global/project
+	// instructions without allowing it to replace the base prompt.
+	if in.Resources.AppendSystemPrompt != "" {
+		b.WriteString("\n\n")
+		b.WriteString(in.Resources.AppendSystemPrompt)
+	}
 
 	// Toggle already dropped disabled names; this is listing, not a process.
 	sk := skills.Filter(in.Resources.Skills, in.Toggle)

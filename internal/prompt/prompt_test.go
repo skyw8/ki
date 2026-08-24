@@ -23,8 +23,9 @@ func TestBuildLayers(t *testing.T) {
 			Date:         "2026-08-15",
 			Timezone:     "UTC (UTC+0)",
 		},
-		ContextFiles: []resources.ContextFile{{Path: filepath.Join(cwd, "AGENTS.md"), Content: "use tabs"}},
-		Skills:       []skills.Skill{{Name: "demo", Description: "do demo", FilePath: filepath.Join(home, "skills", "demo", "SKILL.md")}},
+		AppendSystemPrompt: "extra operator instructions",
+		ContextFiles:       []resources.ContextFile{{Path: filepath.Join(cwd, "AGENTS.md"), Content: "use tabs"}},
+		Skills:             []skills.Skill{{Name: "demo", Description: "do demo", FilePath: filepath.Join(home, "skills", "demo", "SKILL.md")}},
 	}
 	sys := Build(Input{
 		Resources: snapshot,
@@ -38,6 +39,12 @@ func TestBuildLayers(t *testing.T) {
 	}
 	if strings.Contains(sys, "cat -n") {
 		t.Fatal("long CC prompt leaked into system")
+	}
+	if !strings.Contains(sys, "extra operator instructions") {
+		t.Fatal("append system prompt")
+	}
+	if appendAt, skillsAt := strings.Index(sys, "extra operator instructions"), strings.Index(sys, "<available_skills>"); appendAt < 0 || skillsAt < 0 || appendAt >= skillsAt {
+		t.Fatalf("append system prompt position: append=%d skills=%d", appendAt, skillsAt)
 	}
 	if !strings.Contains(sys, "<available_skills>") || !strings.Contains(sys, "<name>demo</name>") {
 		t.Fatalf("skills: %s", sys)

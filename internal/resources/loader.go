@@ -11,13 +11,14 @@ import (
 
 // Snapshot is the complete immutable resource view pinned to one session.
 type Snapshot struct {
-	Environment  Environment
-	ContextFiles []ContextFile
-	Skills       []skills.Skill
-	Prompts      []PromptTemplate
-	MCP          mcp.File
-	MCPServers   map[string]mcp.ServerState
-	Revision     uint64
+	Environment        Environment
+	ContextFiles       []ContextFile
+	AppendSystemPrompt string
+	Skills             []skills.Skill
+	Prompts            []PromptTemplate
+	MCP                mcp.File
+	MCPServers         map[string]mcp.ServerState
+	Revision           uint64
 }
 
 // Loader caches complete snapshots by real session id. It belongs to one
@@ -58,12 +59,13 @@ func (l *Loader) Scan(cwd string) Snapshot {
 
 func (l *Loader) scan(cwd string) Snapshot {
 	return Snapshot{
-		Environment:  loadEnvironment(l.home, cwd, time.Now()),
-		ContextFiles: collectContextFiles(l.home, cwd),
-		Skills:       skills.Scan(l.home, cwd),
-		Prompts:      scanPromptTemplates(l.home, cwd),
-		MCP:          mcp.Load(l.home, cwd),
-		MCPServers:   map[string]mcp.ServerState{},
+		Environment:        loadEnvironment(l.home, cwd, time.Now()),
+		ContextFiles:       collectContextFiles(l.home, cwd),
+		AppendSystemPrompt: loadAppendSystemPrompt(l.home, cwd),
+		Skills:             skills.Scan(l.home, cwd),
+		Prompts:            scanPromptTemplates(l.home, cwd),
+		MCP:                mcp.Load(l.home, cwd),
+		MCPServers:         map[string]mcp.ServerState{},
 	}
 }
 

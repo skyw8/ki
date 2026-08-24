@@ -35,6 +35,37 @@ func TestContextFilesStopAtGitRoot(t *testing.T) {
 	}
 }
 
+func TestAppendSystemPromptProjectOverridesGlobal(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	cwd := filepath.Join(base, "repo")
+	writeFile(t, filepath.Join(home, "prompt", "APPEND_SYSTEM.md"), "GLOBAL")
+
+	loader := NewLoader(home)
+	if got := loader.Scan(cwd).AppendSystemPrompt; got != "GLOBAL" {
+		t.Fatalf("global append system prompt = %q, want GLOBAL", got)
+	}
+
+	writeFile(t, filepath.Join(cwd, ".ki", "prompt", "APPEND_SYSTEM.md"), "PROJECT")
+	if got := loader.Scan(cwd).AppendSystemPrompt; got != "PROJECT" {
+		t.Fatalf("project append system prompt = %q, want PROJECT", got)
+	}
+}
+
+func TestAppendSystemPromptIgnoresDirectories(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	cwd := filepath.Join(base, "repo")
+	if err := os.MkdirAll(filepath.Join(cwd, ".ki", "prompt"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(home, "prompt", "APPEND_SYSTEM.md"), "GLOBAL")
+
+	if got := NewLoader(home).Scan(cwd).AppendSystemPrompt; got != "GLOBAL" {
+		t.Fatalf("directory prompt fallback = %q, want GLOBAL", got)
+	}
+}
+
 func TestMCPUpdatesAreRevisionGuardedAndCopyOnWrite(t *testing.T) {
 	loader := NewLoader(t.TempDir())
 	snapshot := loader.Load("session", t.TempDir())
