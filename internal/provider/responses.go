@@ -55,9 +55,9 @@ func ResponsesBody(req loop.Request) map[string]any {
 func toResponsesItems(m types.Message) []any {
 	switch m.Role {
 	case "toolResult":
-		// Responses 允许 function_call_output.output 为 input_text+input_image
-		// 数组（pi / Codex 都这么做），图留在这条 output 里，不另插 user，
-		// 并行多条 output 才能连在一起。
+		// Responses allows function_call_output.output to be an input_text plus
+		// input_image array (as pi and Codex do). Keep images in this output rather
+		// than inserting another user message, and keep parallel outputs together.
 		outputType := "function_call_output"
 		if m.ToolType == "custom" {
 			outputType = "custom_tool_call_output"

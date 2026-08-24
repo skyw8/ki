@@ -12,8 +12,9 @@ import (
 // AnthropicBody is the Anthropic Messages payload.
 func AnthropicBody(req loop.Request) map[string]any {
 	var msgs []map[string]any
-	// 对齐 pi：连续 toolResult 收成一条 user，里面多个 tool_result。
-	// 图放在各自的 tool_result.content 里（Anthropic 允许），不拆成跟班 user。
+	// Follow pi: combine consecutive toolResults into one user message containing
+	// multiple tool_result blocks. Anthropic permits images in each
+	// tool_result.content, so do not split them into trailing user messages.
 	history := replayable(req.Messages)
 	for i := 0; i < len(history); i++ {
 		m := history[i]

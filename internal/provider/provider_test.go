@@ -309,7 +309,7 @@ func TestCompletionsBodyBatchesParallelToolImages(t *testing.T) {
 }
 
 func TestReplayableDropsAbortedAndEmptyAssistants(t *testing.T) {
-	// tmp3: 你好 → abort (empty assistant) → 你好. Empty aborted assistant
+	// tmp3: hello -> abort (empty assistant) -> hello. Empty aborted assistant
 	// must not be replayed or Completions/Anthropic 400.
 	hist := []types.Message{
 		{Role: "user", Content: []types.Content{{Type: "text", Text: "你好"}}},

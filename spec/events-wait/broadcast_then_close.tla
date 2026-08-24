@@ -1,14 +1,15 @@
 ---- MODULE broadcast_then_close ----
 (*
-  server.go events 等待循环的 TLA+ 模型 —— 错误顺序（对照组）。
-  对应 spec/events-wait/README.md 的抽象映射。
+  TLA+ model of the server.go events wait loop -- incorrect order (control case).
+  Implements the abstraction described in spec/events-wait/README.md.
 
-  本模型固定 writer 收尾顺序为（与 close_then_broadcast.tla 的唯一区别）：
-    1. Broadcast()          （先广播）
-    2. close(done)          （后关灯）
-  要检查的性质：reader 绝不因错过最后一次广播而永远等待。
-  预期结果：TLC 找到反例（丢失唤醒），证明"先 close(done) 后 Broadcast()"
-  是必要顺序。
+  This model fixes the writer finalization order (the only difference from
+  close_then_broadcast.tla):
+    1. Broadcast()          (broadcast first)
+    2. close(done)          (close afterward)
+  Property: a reader must never wait forever after missing the final broadcast.
+  Expected result: TLC finds a counterexample (a lost wakeup), showing that
+  "close(done) before Broadcast()" is the necessary order.
 *)
 EXTENDS Naturals
 
@@ -26,14 +27,14 @@ Init ==
   /\ woken = FALSE
   /\ phase = 0
 
-(* writer: emit 回调里 append 一个事件 *)
+(* writer: append an event from the emit callback *)
 Append ==
   /\ done = FALSE
   /\ buf < MaxEvents
   /\ buf' = buf + 1
   /\ UNCHANGED <<read, done, waiting, woken, phase>>
 
-(* writer 收尾：先 Broadcast，后 close(done) —— 错误顺序 *)
+(* writer finalization: Broadcast first, then close(done) -- incorrect order *)
 BroadcastFirst ==
   /\ phase = 0
   /\ done = FALSE
@@ -48,7 +49,7 @@ CloseAfter ==
   /\ phase' = 2
   /\ UNCHANGED <<buf, read, waiting, woken>>
 
-(* reader: 登记等待（进 Wait）。真实代码里必须在 done 未关闭时才会去等 *)
+(* reader: register to wait (enter Wait). Real code waits only while done is open. *)
 StartWait ==
   /\ done = FALSE
   /\ waiting = FALSE
@@ -57,7 +58,7 @@ StartWait ==
   /\ woken' = FALSE
   /\ UNCHANGED <<buf, read, done, phase>>
 
-(* reader: 被广播叫醒后重查条件：done 关了就走，没关就重新登记再等 *)
+(* reader: recheck after broadcast; leave if done is closed, otherwise register and wait again *)
 Recheck ==
   /\ waiting = TRUE
   /\ woken = TRUE
@@ -66,7 +67,7 @@ Recheck ==
   /\ woken' = FALSE
   /\ UNCHANGED <<buf, read, done, phase>>
 
-(* reader: 消费一个事件（排空） *)
+(* reader: consume one event (drain the buffer) *)
 ReadEvent ==
   /\ read < buf
   /\ read' = read + 1
@@ -82,7 +83,7 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
-(* 同 close_then_broadcast.tla：收尾完成后 reader 不得永远等待 *)
+(* As in close_then_broadcast.tla: the reader must not wait forever after finalization. *)
 NoLostWakeup ==
   [] ~(waiting /\ done /\ woken = FALSE /\ phase = 2)
 

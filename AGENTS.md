@@ -63,6 +63,7 @@ WebUI live: `cd web && npm run test:e2e:live`.
 
 - Keep this list concise.
 - Write this file in English.
+- Write source-code comments in English.
 - Do not consider backward compatibility. Prioritize refactoring legacy code and improving the existing implementation.
 - Create PlantUML diagrams when necessary. When creating diagrams, only include PlantUML code blocks in Markdown files.
 - Port-forwarded WebUI is a first-class client: same-origin relative `/v1` and `/assets` only; never navigate the browser to a host filesystem path; never use a native OS file picker.

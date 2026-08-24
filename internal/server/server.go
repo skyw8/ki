@@ -1271,7 +1271,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			st.mu.Unlock()
 		}
 		if ev.Type == loop.AgentEnd {
-			// agent_end 后：threshold 检查——上下文超窗口就压缩。
+			// After agent_end, apply the threshold check and compact an oversized context.
 			if s.shouldCompact(sess, info.ContextWindow) {
 				_ = emit(loop.Event{Type: loop.CompactionStart, Reason: "threshold"})
 				if _, err := s.compactSession(ctx, sess); err != nil && !errors.Is(err, compact.ErrNothingToCompact) {
@@ -1285,8 +1285,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		return nil
 	}
 
-	// 运行前 preflight：resume 会话或超大 prompt 可能已超窗口，loop.Run
-	// 之前先压缩一次。不阻断：压缩失败只 warn。
+	// Preflight before running: a resumed session or a very large prompt may already
+	// exceed the context window, so compact once before loop.Run. This is non-blocking:
+	// a compaction failure only emits a warning.
 	if s.shouldCompact(sess, info.ContextWindow) {
 		_ = emit(loop.Event{Type: loop.CompactionStart, Reason: "preflight"})
 		if _, err := s.compactSession(ctx, sess); err != nil && !errors.Is(err, compact.ErrNothingToCompact) {
@@ -1318,9 +1319,10 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		Inbox:                   st.inbox,
 		Hooks: loop.Hooks{
 			TransformContext: materializeAttachments,
-			// 溢出恢复：请求报上下文溢出时，同 Run 内压缩后重试（事件不重放）。
-			// 失败的 assistant 留在 history，但 provider replayable 会在重试时
-			// 丢弃 stopReason=error 的轮次。
+			// Overflow recovery: when the request reports a context overflow, compact
+			// and retry within the same Run (without replaying events). The failed
+			// assistant remains in history, but provider replayable drops turns with
+			// stopReason=error during the retry.
 			OnContextOverflow: func(ctx context.Context) ([]types.Message, error) {
 				return s.compactSession(ctx, sess)
 			},
@@ -1366,8 +1368,8 @@ func (s *Server) shouldCompact(sess *session.Session, window int) bool {
 }
 
 // compactSession runs one compaction (Prepare + Execute + AppendCompaction)
-// and returns the new model-facing context. Shared by preflight、溢出恢复和
-// threshold 三条路径。Returns ErrNothingToCompact when the
+// and returns the new model-facing context. Shared by the preflight, overflow
+// recovery, and threshold paths. Returns ErrNothingToCompact when the
 // conversation fits inside the recent-token budget (no model call is made).
 //
 // A successful compaction requestReloads this session: the model context was
@@ -1404,7 +1406,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	st := s.runs[id]
 	s.mu.Unlock()
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache") // 防止代理/浏览器缓冲导致事件延迟到达
+	w.Header().Set("Cache-Control", "no-cache") // Prevent proxy/browser buffering from delaying events.
 	if st == nil {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -1415,7 +1417,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		st.wait.Broadcast()
 		st.mu.Unlock()
-	}() // 客户端断开不泄漏 goroutine
+	}() // Prevent a client disconnect from leaking the goroutine.
 	idx := 0
 	for {
 		if r.Context().Err() != nil {

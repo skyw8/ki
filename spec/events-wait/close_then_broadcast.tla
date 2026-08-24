@@ -1,21 +1,21 @@
 ---- MODULE close_then_broadcast ----
 (*
-  server.go events 等待循环的 TLA+ 模型 —— 正确顺序。
-  对应 spec/events-wait/README.md 的抽象映射。
+  TLA+ model of the server.go events wait loop -- correct order.
+  Implements the abstraction described in spec/events-wait/README.md.
 
-  本模型固定 writer 收尾顺序为：
-    1. close(done)          （server.go: defer 里的第一行，无锁）
-    2. Broadcast()          （随后在 st.mu 内广播）
-  要检查的性质：reader 绝不因错过最后一次广播而永远等待。
-  （错误顺序的对照模型见 broadcast_then_close.tla。）
+  This model fixes the writer finalization order:
+    1. close(done)          (server.go: first line in defer, without a lock)
+    2. Broadcast()          (broadcast afterward while holding st.mu)
+  Property: a reader must never wait forever after missing the final broadcast.
+  (See broadcast_then_close.tla for the control model with the incorrect order.)
 
-  抽象映射：
-    buf     = len(st.evs)（已追加的事件数）
-    read    = reader 的游标 idx
-    done    = st.done 已关闭
-    waiting = reader 正在 Cond.Wait() 中
-    woken   = 本次等待期间是否收到过 Broadcast
-    phase   = writer 收尾进度：0 未开始 / 1 中间步 / 2 全部完成
+  Abstraction mapping:
+    buf     = len(st.evs) (number of appended events)
+    read    = the reader cursor idx
+    done    = st.done is closed
+    waiting = the reader is in Cond.Wait()
+    woken   = whether Broadcast was received during this wait
+    phase   = writer finalization progress: 0 not started / 1 intermediate / 2 complete
 *)
 EXTENDS Naturals
 
@@ -33,14 +33,14 @@ Init ==
   /\ woken = FALSE
   /\ phase = 0
 
-(* writer: emit 回调里 append 一个事件 *)
+(* writer: append an event from the emit callback *)
 Append ==
   /\ done = FALSE
   /\ buf < MaxEvents
   /\ buf' = buf + 1
   /\ UNCHANGED <<read, done, waiting, woken, phase>>
 
-(* writer 收尾：先 close(done)，后 Broadcast *)
+(* writer finalization: close(done) first, then Broadcast *)
 CloseFirst ==
   /\ phase = 0
   /\ done = FALSE
@@ -54,7 +54,7 @@ BroadcastAfter ==
   /\ phase' = 2
   /\ UNCHANGED <<buf, read, done, waiting>>
 
-(* reader: 登记等待（进 Wait）。真实代码里必须在 done 未关闭时才会去等 *)
+(* reader: register to wait (enter Wait). Real code waits only while done is open. *)
 StartWait ==
   /\ done = FALSE
   /\ waiting = FALSE
@@ -63,7 +63,7 @@ StartWait ==
   /\ woken' = FALSE
   /\ UNCHANGED <<buf, read, done, phase>>
 
-(* reader: 被广播叫醒后重查条件：done 关了就走，没关就重新登记再等 *)
+(* reader: recheck after broadcast; leave if done is closed, otherwise register and wait again *)
 Recheck ==
   /\ waiting = TRUE
   /\ woken = TRUE
@@ -72,7 +72,7 @@ Recheck ==
   /\ woken' = FALSE
   /\ UNCHANGED <<buf, read, done, phase>>
 
-(* reader: 消费一个事件（排空） *)
+(* reader: consume one event (drain the buffer) *)
 ReadEvent ==
   /\ read < buf
   /\ read' = read + 1
@@ -89,9 +89,10 @@ Next ==
 Spec == Init /\ [][Next]_vars
 
 (*
-  要检查的性质（safety 表述的 liveness）：
-  writer 收尾完成（phase=2）且 done 已关闭后，reader 绝不允许处于
-  "还在等待且从未被唤醒"的状态 —— 那意味着它错过了最后一次广播。
+  Property (liveness expressed as a safety invariant):
+  after writer finalization is complete (phase=2) and done is closed, the reader
+  must never be in the state "waiting and never woken" -- that means it missed
+  the final broadcast.
 *)
 NoLostWakeup ==
   [] ~(waiting /\ done /\ woken = FALSE /\ phase = 2)

@@ -1869,22 +1869,26 @@ func TestWorkspacesFSSearch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// events（SSE）等待循环专项测试
+// Dedicated tests for the events (SSE) wait loop.
 //
-// 目标：确定性走到 events handler 等待循环的三条关键路径——
-//  1) Wait 路径：reader 在运行中途连接，缓冲里没有新事件时必须睡在 Cond 上；
-//  2) 多读者广播：一个 run 被两个 SSE 读者同时订阅，各自收到完整一致的事件流；
-//  3) 客户端断开：reader 被哨兵唤醒退出，不泄漏 goroutine、不阻塞后续运行。
-// 配合 `go test -race`：-race 验证锁纪律（数据竞争），这些测试验证行为。
-// 注意：测试无法"证明"并发正确性（那要靠不变式 / 模型检查，见
-// tmp/tla-demo），它们的作用是回归保护——重构等待循环后行为必须逐字节不变。
+// Deterministically exercise the three key paths in the events handler wait loop:
+//  1) Wait path: a reader connects mid-run and waits on Cond when the buffer is empty;
+//  2) Multi-reader broadcast: two SSE readers subscribe to one run and each receives
+//     the same complete event stream;
+//  3) Client disconnect: the reader is awakened by the sentinel and exits without
+//     leaking a goroutine or blocking later runs.
+// Together with `go test -race`, -race verifies lock discipline while these tests
+// verify behavior. The tests cannot prove concurrent correctness; that requires
+// invariants/model checking (see tmp/tla-demo). They provide regression protection:
+// refactoring the wait loop must preserve the byte-for-byte behavior.
 // ---------------------------------------------------------------------------
 
-// gateStreamer 在 Stream 内阻塞直到 release()，让测试把一次运行"冻"在
-// 流式输出前：此时缓冲里只有 agent_start..request_header 五个事件，之后
-// 连接 SSE 的 reader 必然走进 Cond.Wait 的等待路径（闸门不放开，reader
-// 不可能有别的状态）。arm() 为下一次运行装上新闸门；release() 放行并把
-// 闸门置空，之后的运行直接通过。
+// gateStreamer blocks in Stream until release(), allowing a test to freeze a run
+// before streaming output. At that point the buffer contains only the five events
+// from agent_start through request_header, so an SSE reader connecting afterward
+// must enter the Cond.Wait path (without releasing the gate, it cannot be elsewhere).
+// arm() installs a gate for the next run; release() opens it and clears the gate so
+// later runs pass through directly.
 type gateStreamer struct {
 	inner loop.Streamer
 	mu    sync.Mutex
@@ -1929,7 +1933,8 @@ func (g *gateStreamer) release() {
 	g.mu.Unlock()
 }
 
-// wantSSE 是 gate 版 Scripted 一次完整 prompt 的事件序列（type[:role]）。
+// wantSSE is the event sequence (type[:role]) for one complete prompt using the
+// gated Scripted model.
 func wantSSE() []string {
 	return []string{
 		"agent_start",
@@ -2090,8 +2095,8 @@ func TestUploadAttachmentStoresContentAddressedBlob(t *testing.T) {
 	}
 }
 
-// waitBuffered 轮询直到 runState 的缓冲里至少有 n 个事件（同包直接读内部状态，
-// 注意按 srv.mu / st.mu 的顺序加锁）。
+// waitBuffered polls until the runState buffer contains at least n events. It reads
+// internal state in this package, locking in srv.mu / st.mu order.
 func waitBuffered(t *testing.T, srv *Server, id string, n int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -2130,7 +2135,7 @@ func mustOpenEvents(t *testing.T, hs *httptest.Server, id string) *http.Response
 	return res
 }
 
-// sseLabel 把一条 data: 行压成 "type[:role]"。
+// sseLabel reduces a data: line to "type[:role]".
 func sseLabel(line string) string {
 	var ev loop.Event
 	_ = json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev)
@@ -2141,7 +2146,7 @@ func sseLabel(line string) string {
 	return s
 }
 
-// scanN 从 scanner 读 n 条 SSE 事件（只数 data: 行）。
+// scanN reads n SSE events from scanner, counting only data: lines.
 func scanN(t *testing.T, sc *bufio.Scanner, n int) []string {
 	t.Helper()
 	var out []string
@@ -2158,7 +2163,7 @@ func scanN(t *testing.T, sc *bufio.Scanner, n int) []string {
 	return out
 }
 
-// scanAll 读到 agent_end（或流结束）。
+// scanAll reads through agent_end, or until the stream ends.
 func scanAll(t *testing.T, sc *bufio.Scanner) []string {
 	t.Helper()
 	var out []string
@@ -2179,7 +2184,7 @@ func scanAll(t *testing.T, sc *bufio.Scanner) []string {
 	return out
 }
 
-// collectSSE 把一条 SSE 响应完整读到 agent_end。
+// collectSSE reads an entire SSE response through agent_end.
 func collectSSE(t *testing.T, res *http.Response) []string {
 	t.Helper()
 	defer func() { _ = res.Body.Close() }()
@@ -2202,8 +2207,9 @@ func collectSSE(t *testing.T, res *http.Response) []string {
 	return out
 }
 
-// readSSE 异步读完整事件流；读完前 n 条后向 ready 发一次信号
-// （用于确定两个 reader 都重放完缓冲、进入等待后再放行运行）。
+// readSSE asynchronously reads the complete event stream and signals ready after
+// reading the first n events. This lets the test confirm both readers replayed the
+// buffer and entered the wait before releasing the run.
 type sseResult struct {
 	stream []string
 	err    error
@@ -2234,9 +2240,10 @@ func readSSE(hs *httptest.Server, id string, n int, ready chan<- struct{}) sseRe
 	return sseResult{stream: out, err: sc.Err()}
 }
 
-// TestEventsWaitPathSingleReader：reader 在运行中途连接，缓冲读空后必须
-// 睡在 Cond.Wait 上；放行后必须被 Broadcast 唤醒并收到剩余事件。
-// 这条路径正是 events 等待循环的核心（单 select 版本）。
+// TestEventsWaitPathSingleReader: a reader connecting mid-run must wait on Cond
+// after draining the buffer, then be awakened by Broadcast and receive the
+// remaining events. This is the core path of the events wait loop (single-select
+// version).
 func TestEventsWaitPathSingleReader(t *testing.T) {
 	gate := &gateStreamer{inner: &provider.Scripted{}}
 	srv, hs := testServerWith(t, gate)
@@ -2244,15 +2251,16 @@ func TestEventsWaitPathSingleReader(t *testing.T) {
 
 	gate.arm()
 	prompt202(t, hs, id, "hello")
-	waitBuffered(t, srv, id, 6) // request_header 后还会发布 context_usage
+	waitBuffered(t, srv, id, 6) // context_usage is published after request_header.
 
 	res := mustOpenEvents(t, hs, id)
 	defer func() { _ = res.Body.Close() }()
 	sc := bufio.NewScanner(res.Body)
-	// 读到第 5 条时，服务端 reader 已重放完缓冲、必然在 Cond.Wait 里：
-	// gate 未放行 → 不可能有新事件；run 未结束 → done 不可能关闭。
+	// After reading the fifth event, the server reader has replayed the buffer and
+	// must be in Cond.Wait: the gate is closed, so no new event is possible, and the
+	// run is unfinished, so done cannot be closed.
 	first := scanN(t, sc, 6)
-	gate.release() // 放行运行：reader 必须被 Broadcast 唤醒
+	gate.release() // Release the run; Broadcast must awaken the reader.
 	rest := scanAll(t, sc)
 
 	got := append(append([]string{}, first...), rest...)
@@ -2261,8 +2269,8 @@ func TestEventsWaitPathSingleReader(t *testing.T) {
 	}
 }
 
-// TestEventsMultiReader：一个 run 被两个 SSE 读者同时订阅（WebUI + CLI 场景），
-// 一次 Broadcast 唤醒全部，各自收到完整一致的事件流。
+// TestEventsMultiReader: two SSE readers subscribe to one run (the WebUI + CLI
+// scenario); one Broadcast wakes both, and each receives the same complete stream.
 func TestEventsMultiReader(t *testing.T) {
 	gate := &gateStreamer{inner: &provider.Scripted{}}
 	srv, hs := testServerWith(t, gate)
@@ -2285,7 +2293,7 @@ func TestEventsMultiReader(t *testing.T) {
 			t.Fatalf("reader %d never replayed 5 events", i)
 		}
 	}
-	gate.release() // 两个 reader 都已在 Cond.Wait 里
+	gate.release() // Both readers are now in Cond.Wait.
 
 	want := wantSSE()
 	for i, rc := range []<-chan sseResult{r1, r2} {
@@ -2299,8 +2307,9 @@ func TestEventsMultiReader(t *testing.T) {
 	}
 }
 
-// TestEventsClientDisconnect：客户端读到一半断开，reader 必须被哨兵广播
-// 唤醒并退出——不泄漏 goroutine、不阻塞后续运行、缓冲重放不受影响。
+// TestEventsClientDisconnect: after a client disconnects halfway through the
+// stream, the sentinel broadcast must wake and exit the reader without leaking a
+// goroutine, blocking later runs, or affecting buffer replay.
 func TestEventsClientDisconnect(t *testing.T) {
 	gate := &gateStreamer{inner: &provider.Scripted{}}
 	srv, hs := testServerWith(t, gate)
@@ -2319,26 +2328,27 @@ func TestEventsClientDisconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	sc := bufio.NewScanner(res.Body)
-	scanN(t, sc, 6) // reader 已重放 request_header/context_usage 并进入等待
-	cancel()        // 客户端断开 → 服务端哨兵广播 → reader 退出
+	scanN(t, sc, 6) // The reader replayed request_header/context_usage and is waiting.
+	cancel()        // Client disconnects; the sentinel broadcasts and the reader exits.
 	_ = res.Body.Close()
-	gate.release() // 运行照常完成
+	gate.release() // The run completes normally.
 
-	// 断开不影响运行本身：事件已全部进缓冲，完整重放仍可用。
+	// Disconnecting does not affect the run: all events are buffered and remain
+	// available for complete replay.
 	waitBuffered(t, srv, id, 12)
 	//nolint:bodyclose // collectSSE owns and closes the response body.
 	if replay := collectSSE(t, mustOpenEvents(t, hs, id)); !slices.Equal(replay, wantSSE()) {
 		t.Fatalf("replay after disconnect: %v", replay)
 	}
 
-	// 新 prompt 照常工作（说明没有 goroutine 持锁阻塞新运行）。
+	// A new prompt works normally, showing that no goroutine holds a lock that blocks it.
 	prompt202(t, hs, id, "again")
 	//nolint:bodyclose // collectSSE owns and closes the response body.
 	if got := collectSSE(t, mustOpenEvents(t, hs, id)); len(got) == 0 || got[len(got)-1] != "agent_end" {
 		t.Fatalf("run after disconnect: %v", got)
 	}
 
-	// 断开的 reader goroutine 应已退出，回到基线。
+	// The disconnected reader goroutine should have exited, returning to the baseline.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if runtime.NumGoroutine() <= baseline+2 {
@@ -2349,8 +2359,9 @@ func TestEventsClientDisconnect(t *testing.T) {
 	t.Fatalf("goroutines leaked: baseline=%d now=%d", baseline, runtime.NumGoroutine())
 }
 
-// TestEventsReplayAfterDone：运行结束后 runState 仍留在 runs 表里，
-// 再次连接仍能从头重放完整事件（前端刷新 / 断线重连依赖这个行为）。
+// TestEventsReplayAfterDone: after a run ends, runState remains in the runs table,
+// so a new connection can replay the complete event stream from the beginning
+// (frontend refresh and reconnect depend on this behavior).
 func TestEventsReplayAfterDone(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
@@ -2367,7 +2378,8 @@ func TestEventsReplayAfterDone(t *testing.T) {
 	}
 }
 
-// TestEventsNoRunEmptyStream：没有运行（st == nil）时返回空的 200 流。
+// TestEventsNoRunEmptyStream: when there is no run (st == nil), return an empty
+// 200 stream.
 func TestEventsNoRunEmptyStream(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())

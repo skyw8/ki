@@ -15,16 +15,20 @@ func CompletionsBody(req loop.Request) map[string]any {
 	if req.System != "" {
 		msgs = append(msgs, map[string]any{"role": "system", "content": req.System})
 	}
-	// Completions 的 role:tool 只能是字符串，图必须另走 user 的 image_url。
-	// 但不能「每条 toolResult 立刻跟一条带图 user」：同一次 assistant.tool_calls
-	// 对应的 role:tool 必须连在一起，中间插 user 多数网关会 400。
+	// Completions role:tool accepts only a string, so images must use a user image_url.
+	// We cannot append an image-bearing user message after every toolResult: the
+	// role:tool messages for one assistant.tool_calls batch must remain contiguous;
+	// inserting a user message between them causes most gateways to return 400.
 	//
-	// 对齐 pi packages/ai/src/api/openai-completions.ts：
-	//   1. 连续 toolResult（同一次并行工具）先全部编成 role:tool（纯文本）。
-	//   2. 这一组里的图攒成一条 user，跟在这组 tool 后面。
-	//   3. 更早轮次的图仍待在当时那一组后面，不挪到整段对话末尾
-	//      （前缀字节稳定，才能命中 prompt cache）。
-	// 无图时不插 user，行为和改之前的纯文本路径相同。
+	// This follows pi packages/ai/src/api/openai-completions.ts:
+	//   1. Encode consecutive toolResults from one parallel batch as role:tool
+	//      messages first, using plain text only.
+	//   2. Collect that batch's images in one user message after the tool group.
+	//   3. Keep images from earlier turns after their original group rather than
+	//      moving them to the end of the conversation (stable prefix bytes preserve
+	//      prompt-cache hits).
+	// When there are no images, do not insert a user message; this matches the
+	// previous plain-text path.
 	history := replayable(req.Messages)
 	for i := 0; i < len(history); i++ {
 		m := history[i]
