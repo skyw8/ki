@@ -389,8 +389,34 @@ func TestAuthAndCreateGetFork(t *testing.T) {
 	var fork map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&fork)
 	_ = res.Body.Close()
-	if fork["id"] == id || fork["parentSession"] == nil {
+	if fork["id"] == id || fork["parentSessionId"] != id || fork["forkMode"] != session.ForkModeFlat {
 		t.Fatalf("fork: %+v", fork)
+	}
+	if fork["parent"] != nil || fork["parentSession"] != nil {
+		t.Fatalf("fork response still exposes legacy parent fields: %+v", fork)
+	}
+	childID, _ := fork["id"].(string)
+	res, err = authedGet(t, hs, "/v1/sessions/"+childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detail map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&detail)
+	_ = res.Body.Close()
+	if detail["parentSessionId"] != id || detail["forkMode"] != session.ForkModeFlat {
+		t.Fatalf("detail fork metadata: %+v", detail)
+	}
+	res, err = authedGet(t, hs, "/v1/sessions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed []map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&listed)
+	_ = res.Body.Close()
+	for _, item := range listed {
+		if item["id"] == childID && (item["parentSessionId"] != id || item["forkMode"] != session.ForkModeFlat) {
+			t.Fatalf("list fork metadata: %+v", item)
+		}
 	}
 }
 
@@ -2505,6 +2531,82 @@ func TestForkIndexesChild(t *testing.T) {
 	}
 	if _, ok := srv.sidx.Lookup(child); !ok {
 		t.Fatal("fork must index the child session")
+	}
+}
+
+func TestForkModeCascadeDelete(t *testing.T) {
+	srv, hs := testServer(t)
+	root := createSession(t, hs, t.TempDir())
+	fork := func(parent, mode string) string {
+		t.Helper()
+		body, _ := marshalJSON(map[string]any{"forkMode": mode})
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+parent+"/fork", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer tok")
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		var out map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("fork %s: %d %+v", mode, res.StatusCode, out)
+		}
+		if out["forkMode"] != mode || out["parentSessionId"] != parent {
+			t.Fatalf("fork metadata: %+v", out)
+		}
+		return out["id"].(string)
+	}
+
+	treeChild := fork(root, session.ForkModeTree)
+	grandchild := fork(treeChild, session.ForkModeTree)
+	flatChild := fork(grandchild, session.ForkModeFlat)
+	invalidBody := strings.NewReader(`{"forkMode":"unknown"}`)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+root+"/fork", invalidBody)
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid fork mode: %d", res.StatusCode)
+	}
+
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodDelete, hs.URL+"/v1/sessions/"+root, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete root: %d", res.StatusCode)
+	}
+	for _, id := range []string{root, treeChild, grandchild} {
+		got, err := authedGet(t, hs, "/v1/sessions/"+id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = got.Body.Close()
+		if got.StatusCode != http.StatusNotFound {
+			t.Fatalf("tree descendant %s survived: %d", id, got.StatusCode)
+		}
+	}
+	got, err := authedGet(t, hs, "/v1/sessions/"+flatChild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = got.Body.Close()
+	if got.StatusCode != http.StatusOK {
+		t.Fatalf("flat child must survive tree cascade: %d", got.StatusCode)
+	}
+	if _, ok := srv.sidx.Lookup(flatChild); !ok {
+		t.Fatal("flat child index must survive tree cascade")
 	}
 }
 

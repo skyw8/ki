@@ -173,8 +173,8 @@ export class Client {
     return this.json(`/v1/sessions/${id}/compact`, { method: 'POST' })
   }
 
-  fork(id: string, entryId: string): Promise<SessionInfo> {
-	return this.json(`/v1/sessions/${id}/fork`, { method: 'POST', body: JSON.stringify({ entryId }) })
+  fork(id: string, entryId: string, forkMode: 'flat' | 'tree' = 'flat'): Promise<SessionInfo> {
+	return this.json(`/v1/sessions/${id}/fork`, { method: 'POST', body: JSON.stringify({ entryId, forkMode }) })
   }
 
   async uploadAttachment(id: string, file: File): Promise<import('./types').Content> {

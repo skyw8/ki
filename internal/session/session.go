@@ -19,6 +19,11 @@ import (
 
 const version = 1
 
+const (
+	ForkModeFlat = "flat"
+	ForkModeTree = "tree"
+)
+
 var (
 	errCWDRequired     = errors.New("cwd required")
 	errSessionHeader   = errors.New("session header missing")
@@ -35,6 +40,28 @@ type Header struct {
 	Timestamp     string `json:"timestamp"`
 	CWD           string `json:"cwd"`
 	ParentSession string `json:"parentSession,omitempty"`
+	ForkMode      string `json:"forkMode,omitempty"`
+}
+
+// NormalizeForkMode validates a fork handling mode and supplies the default
+// for ordinary forks and sessions created before the mode was persisted.
+func NormalizeForkMode(mode string) (string, error) {
+	if mode == "" {
+		return ForkModeFlat, nil
+	}
+	if mode != ForkModeFlat && mode != ForkModeTree {
+		return "", fmt.Errorf("forkMode must be %q or %q", ForkModeFlat, ForkModeTree)
+	}
+	return mode, nil
+}
+
+// EffectiveForkMode treats an absent mode in an old header as a flat session.
+func (h Header) EffectiveForkMode() string {
+	mode, err := NormalizeForkMode(h.ForkMode)
+	if err != nil {
+		return ForkModeFlat
+	}
+	return mode
 }
 
 // Toggle filters discovered skills or MCP servers.
@@ -164,6 +191,7 @@ func Create(root, cwd, provider, model string, thinking ...string) (*Session, er
 			ID:        id,
 			Timestamp: now,
 			CWD:       cwd,
+			ForkMode:  ForkModeFlat,
 		},
 		Config: cfg,
 		byID:   map[string]Entry{},
@@ -752,7 +780,15 @@ func Fork(root string, src *Session) (*Session, error) {
 }
 
 // ForkAt creates a new session directory containing only root -> target.
-func ForkAt(root string, src *Session, target string) (*Session, error) {
+func ForkAt(root string, src *Session, target string, requestedMode ...string) (*Session, error) {
+	forkMode := ForkModeFlat
+	if len(requestedMode) > 0 {
+		var err error
+		forkMode, err = NormalizeForkMode(requestedMode[0])
+		if err != nil {
+			return nil, err
+		}
+	}
 	src.mu.Lock()
 	cwd := src.Header.CWD
 	parent := src.Header.ID
@@ -787,6 +823,7 @@ func ForkAt(root string, src *Session, target string) (*Session, error) {
 	dst.Config = cfg
 	dst.Config.ActiveLeafID = ""
 	dst.Header.ParentSession = parent
+	dst.Header.ForkMode = forkMode
 	if err := dst.writeConfig(); err != nil {
 		return fail(err)
 	}

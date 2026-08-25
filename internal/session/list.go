@@ -9,16 +9,17 @@ import (
 
 // Info is a session row for listing.
 type Info struct {
-	ID            string `json:"id"`
-	CWD           string `json:"cwd"`
-	Dir           string `json:"dir"`
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	Timestamp     string `json:"timestamp"`
-	ParentSession string `json:"parent,omitempty"`
-	Title         string `json:"title"`
-	Pinned        bool   `json:"pinned,omitempty"`
-	PinnedAt      string `json:"pinnedAt,omitempty"`
+	ID              string `json:"id"`
+	CWD             string `json:"cwd"`
+	Dir             string `json:"dir"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	Timestamp       string `json:"timestamp"`
+	ParentSessionID string `json:"parentSessionId,omitempty"`
+	ForkMode        string `json:"forkMode"`
+	Title           string `json:"title"`
+	Pinned          bool   `json:"pinned,omitempty"`
+	PinnedAt        string `json:"pinnedAt,omitempty"`
 }
 
 // List walks the session root and returns every readable session, newest first.
@@ -30,16 +31,17 @@ func List(root string) ([]Info, error) {
 			return true
 		}
 		out = append(out, Info{
-			ID:            s.ID(),
-			CWD:           s.Header.CWD,
-			Dir:           s.Dir,
-			Provider:      s.Config.Provider,
-			Model:         s.Config.Model,
-			Timestamp:     s.Header.Timestamp,
-			ParentSession: s.Header.ParentSession,
-			Title:         TitleOf(s),
-			Pinned:        s.Config.Pinned,
-			PinnedAt:      s.Config.PinnedAt,
+			ID:              s.ID(),
+			CWD:             s.Header.CWD,
+			Dir:             s.Dir,
+			Provider:        s.Config.Provider,
+			Model:           s.Config.Model,
+			Timestamp:       s.Header.Timestamp,
+			ParentSessionID: s.Header.ParentSession,
+			ForkMode:        s.Header.EffectiveForkMode(),
+			Title:           TitleOf(s),
+			Pinned:          s.Config.Pinned,
+			PinnedAt:        s.Config.PinnedAt,
 		})
 		_ = s.Close()
 		return true

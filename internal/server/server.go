@@ -1821,7 +1821,8 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = sess.Close() }()
 	var body struct {
-		EntryID string `json:"entryId"`
+		EntryID  string `json:"entryId"`
+		ForkMode string `json:"forkMode"`
 	}
 	if r.Body != nil && r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1829,7 +1830,12 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	dst, err := session.ForkAt(s.cfg.Sessions.Root, sess, body.EntryID)
+	forkMode, err := session.NormalizeForkMode(body.ForkMode)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	dst, err := session.ForkAt(s.cfg.Sessions.Root, sess, body.EntryID, forkMode)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1839,7 +1845,7 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 		_ = s.ws.AttachSession(rec.ID, dst.ID())
 	}
 	s.sidx.Add(dst.ID(), dst.Dir)
-	writeJSON(w, 200, s.sessionMap(dst, map[string]any{"parentSession": dst.Header.ParentSession}))
+	writeJSON(w, 200, s.sessionMap(dst, nil))
 	s.kickWarmup(dst.ID(), dst.Header.CWD)
 }
 

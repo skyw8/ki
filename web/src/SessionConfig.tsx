@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Client } from './api'
-import { ICheck, IEdit, IRegen, IWrench } from './icons'
+import { ICheck, IEdit, IRegen, ITraj, IWrench } from './icons'
 import { useI18n, type MsgKey } from './i18n'
 import { toast } from './toast'
 import type { CatalogExtension, CatalogMcp, CatalogSkill, SessionCommand, SessionDetail } from './types'
@@ -36,12 +36,16 @@ export function SessionConfig({
   workspaceTitle,
   busy,
   onEdit,
+  treeAvailable,
+  onTreeOpen,
 }: {
   api: Client
   sessionId: string | null
   workspaceTitle?: string
   busy?: boolean
   onEdit?: (page: 'skills' | 'mcp' | 'extensions') => void
+  treeAvailable?: boolean
+  onTreeOpen?: () => void
 }) {
   const { t } = useI18n()
   const [detail, setDetail] = useState<SessionDetail | null>(null)
@@ -138,6 +142,11 @@ export function SessionConfig({
             <button type="button" className="cfg-btn" data-testid="info-edit" onClick={() => onEdit?.('skills')}>
               <IEdit /> {t('cfg.edit')}
             </button>
+            {treeAvailable ? (
+              <button type="button" className="cfg-btn" data-testid="info-tree" onClick={onTreeOpen}>
+                <ITraj /> {t('tree.open')}
+              </button>
+            ) : null}
           </div>
           <section className="cfg-block" id="info-session">
             <h3 className="cfg-h">{t('cfg.session')}</h3>
@@ -158,10 +167,10 @@ export function SessionConfig({
                 <dt>{t('cfg.id')}</dt>
                 <dd data-testid="cfg-id">{detail?.id || sessionId}</dd>
               </div>
-              {detail?.parent ? (
+              {detail?.parentSessionId ? (
                 <div>
                   <dt>{t('cfg.parent')}</dt>
-                  <dd>{detail.parent}</dd>
+                  <dd>{detail.parentSessionId}</dd>
                 </div>
               ) : null}
               {detail?.timestamp ? (

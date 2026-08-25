@@ -106,7 +106,8 @@ export type SessionInfo = {
   provider: string
   model: string
   timestamp?: string
-  parent?: string
+  parentSessionId?: string
+  forkMode?: 'flat' | 'tree'
   title: string
   running?: boolean
   workspaceId?: string

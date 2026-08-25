@@ -4,7 +4,8 @@
 // for user turns waiting on the current run. New rows always
 // append; config.activeLeafId persists the selected branch across opens.
 // SetLeaf moves the leaf without deleting old rows. ForkAt creates a new
-// directory containing only the root-to-target path.
+// directory containing only the root-to-target path and records the parent and
+// fork mode in the header. The server owns tree-mode cascade deletion.
 //
 // request_header entries store system/tools plus provider, model, thinking,
 // catalog, and pricing snapshots. context_usage entries store model-facing

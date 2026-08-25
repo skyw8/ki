@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -38,18 +39,19 @@ func (s *Server) resolveWorkspace(id, cwd string) (workspace.Record, error) {
 
 func (s *Server) sessionMap(sess *session.Session, extra map[string]any) map[string]any {
 	m := map[string]any{
-		"id":             sess.ID(),
-		"cwd":            sess.Header.CWD,
-		"provider":       sess.Config.Provider,
-		"model":          sess.Config.Model,
-		"thinkingEffort": sess.Config.ThinkingEffort,
-		"dir":            sess.Dir,
-		"parent":         sess.Header.ParentSession,
-		"title":          session.TitleOf(sess),
-		"running":        s.running(sess.ID()),
-		"pinned":         sess.Config.Pinned,
-		"pinnedAt":       sess.Config.PinnedAt,
-		"timestamp":      sess.Header.Timestamp,
+		"id":              sess.ID(),
+		"cwd":             sess.Header.CWD,
+		"provider":        sess.Config.Provider,
+		"model":           sess.Config.Model,
+		"thinkingEffort":  sess.Config.ThinkingEffort,
+		"dir":             sess.Dir,
+		"parentSessionId": sess.Header.ParentSession,
+		"forkMode":        sess.Header.EffectiveForkMode(),
+		"title":           session.TitleOf(sess),
+		"running":         s.running(sess.ID()),
+		"pinned":          sess.Config.Pinned,
+		"pinnedAt":        sess.Config.PinnedAt,
+		"timestamp":       sess.Header.Timestamp,
 	}
 	if rec, ok := s.ws.Match(sess.Header.CWD); ok {
 		m["workspaceId"] = rec.ID
@@ -60,17 +62,18 @@ func (s *Server) sessionMap(sess *session.Session, extra map[string]any) map[str
 
 func (s *Server) infoMap(info session.Info) map[string]any {
 	m := map[string]any{
-		"id":        info.ID,
-		"cwd":       info.CWD,
-		"dir":       info.Dir,
-		"provider":  info.Provider,
-		"model":     info.Model,
-		"timestamp": info.Timestamp,
-		"parent":    info.ParentSession,
-		"title":     info.Title,
-		"running":   s.running(info.ID),
-		"pinned":    info.Pinned,
-		"pinnedAt":  info.PinnedAt,
+		"id":              info.ID,
+		"cwd":             info.CWD,
+		"dir":             info.Dir,
+		"provider":        info.Provider,
+		"model":           info.Model,
+		"timestamp":       info.Timestamp,
+		"parentSessionId": info.ParentSessionID,
+		"forkMode":        info.ForkMode,
+		"title":           info.Title,
+		"running":         s.running(info.ID),
+		"pinned":          info.Pinned,
+		"pinnedAt":        info.PinnedAt,
 	}
 	if rec, ok := s.ws.Match(info.CWD); ok {
 		m["workspaceId"] = rec.ID
@@ -159,15 +162,9 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, info := range infos {
 		if m, ok := s.ws.Match(info.CWD); ok && m.ID == rec.ID {
-			s.abortRun(info.ID)
-			if err := session.Remove(info.Dir); err != nil {
+			if err := s.removeSessionInfo(info); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
-			}
-			s.resources.Invalidate(info.ID)
-			s.mcp.CloseSession(info.ID)
-			if s.ext != nil {
-				s.ext.CloseSession(info.ID)
 			}
 		}
 	}
@@ -237,27 +234,93 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	id := sess.ID()
-	dir := sess.Dir
-	cwd := sess.Header.CWD
-	_ = sess.Close()
-	s.abortRun(id)
-	s.closeJobs(id)
-	if rec, ok := s.ws.Match(cwd); ok {
-		_ = s.ws.DetachSession(rec.ID, id)
+	targetID := sess.ID()
+	target := session.Info{
+		ID:              sess.ID(),
+		CWD:             sess.Header.CWD,
+		Dir:             sess.Dir,
+		ParentSessionID: sess.Header.ParentSession,
+		ForkMode:        sess.Header.EffectiveForkMode(),
 	}
-	if err := session.Remove(dir); err != nil {
+	_ = sess.Close()
+
+	infos, err := session.List(s.cfg.Sessions.Root)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.sidx.Remove(id) // only after the dir is actually gone
-	s.resources.Invalidate(id)
-	s.mcp.CloseSession(id)
-	if s.ext != nil {
-		s.ext.CloseSession(id)
+	byID := make(map[string]session.Info, len(infos)+1)
+	for _, info := range infos {
+		byID[info.ID] = info
 	}
-	s.resetRuntime(id)
+	byID[targetID] = target
+	children := make(map[string][]session.Info)
+	for _, info := range infos {
+		if info.ParentSessionID == "" || info.ForkMode != session.ForkModeTree {
+			continue
+		}
+		parent, ok := byID[info.ParentSessionID]
+		if !ok || !sameSessionWorkspace(s, parent, info) {
+			continue
+		}
+		children[info.ParentSessionID] = append(children[info.ParentSessionID], info)
+	}
+	var targets []session.Info
+	seen := make(map[string]bool)
+	var collect func(string)
+	collect = func(id string) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		info, ok := byID[id]
+		if !ok {
+			return
+		}
+		targets = append(targets, info)
+		for _, child := range children[id] {
+			collect(child.ID)
+		}
+	}
+	collect(targetID)
+	for i := len(targets) - 1; i >= 0; i-- {
+		if err := s.removeSessionInfo(targets[i]); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func sameSessionWorkspace(s *Server, a, b session.Info) bool {
+	// Why: a parent id alone must not make a tree edge cross workspace
+	// boundaries; cross-workspace children are orphaned and must survive a
+	// cascade from the other workspace.
+	ar, aok := s.ws.Match(a.CWD)
+	br, bok := s.ws.Match(b.CWD)
+	if aok && bok {
+		return ar.ID == br.ID
+	}
+	return filepath.Clean(a.CWD) == filepath.Clean(b.CWD)
+}
+
+func (s *Server) removeSessionInfo(info session.Info) error {
+	s.abortRun(info.ID)
+	s.closeJobs(info.ID)
+	if rec, ok := s.ws.Match(info.CWD); ok {
+		_ = s.ws.DetachSession(rec.ID, info.ID)
+	}
+	if err := session.Remove(info.Dir); err != nil {
+		return err
+	}
+	s.sidx.Remove(info.ID) // only after the dir is actually gone
+	s.resources.Invalidate(info.ID)
+	s.mcp.CloseSession(info.ID)
+	if s.ext != nil {
+		s.ext.CloseSession(info.ID)
+	}
+	s.resetRuntime(info.ID)
+	return nil
 }
 
 func (s *Server) abortRun(id string) {
@@ -300,6 +363,11 @@ func (s *Server) searchSessions(w http.ResponseWriter, r *http.Request) {
 	for _, info := range infos {
 		if r.Context().Err() != nil {
 			return
+		}
+		// Why: tree children are deliberately discoverable through the Tree
+		// browser, not through the persistent sidebar/search navigation.
+		if info.ForkMode == session.ForkModeTree {
+			continue
 		}
 		sess, err := session.Open(info.Dir)
 		if err != nil {

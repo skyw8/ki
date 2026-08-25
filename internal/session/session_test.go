@@ -179,6 +179,9 @@ func TestCreateReloadFork(t *testing.T) {
 	if forked.Header.ParentSession != s2.ID() {
 		t.Fatalf("parentSession: %q", forked.Header.ParentSession)
 	}
+	if forked.Header.ForkMode != ForkModeFlat {
+		t.Fatalf("forkMode: %q", forked.Header.ForkMode)
+	}
 	if forked.Config.Provider != "openai" || forked.Config.Model != "gpt-4o" || forked.Config.ThinkingEffort != "high" {
 		t.Fatalf("fork config: %+v", forked.Config)
 	}
@@ -250,6 +253,9 @@ func TestBranchLeafPersistsAndForkAtCopiesOnlyActivePath(t *testing.T) {
 	defer func() { _ = forked.Close() }()
 	if forked.Dir == s.Dir || forked.Header.ParentSession != s.ID() {
 		t.Fatalf("fork dir=%q parent=%q", forked.Dir, forked.Header.ParentSession)
+	}
+	if forked.Header.ForkMode != ForkModeFlat {
+		t.Fatalf("forkMode: %q", forked.Header.ForkMode)
 	}
 	if got := forked.MessagesToLeaf(); len(got) != 2 || got[1].Text() != "old" {
 		t.Fatalf("fork messages: %+v", got)

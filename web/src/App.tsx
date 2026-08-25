@@ -5,9 +5,10 @@ import { ChatView } from './Chat'
 import { Composer, type Draft } from './Composer'
 import { AttachmentBrowser } from './AttachmentBrowser'
 import { DirectoryBrowser } from './DirectoryBrowser'
+import { SessionTreeBrowser } from './SessionTreeBrowser'
 import { MessageSettings, SessionConfig, SettingsToggles } from './SessionConfig'
 import { ProviderSettings } from './ProviderSettings'
-import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
+import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
 import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats } from './model'
 import type { ChatNode, Content, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
@@ -40,6 +41,18 @@ function fuzzyTextMatch(value: string, query: string): boolean {
 function modelMatches(model: ModelInfo, query: string): boolean {
   const fields = [model.provider, model.id, model.name, model.spec, `${model.provider}/${model.id}`]
   return query.trim().split(/\s+/).every(token => fields.some(field => fuzzyTextMatch(field || '', token)))
+}
+
+function sessionPathLabel(id: string, byId: Map<string, SessionInfo>, fallback: string): string {
+  const labels: string[] = []
+  const seen = new Set<string>()
+  let current: SessionInfo | undefined = byId.get(id)
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id)
+    labels.unshift(current.title || fallback)
+    current = current.parentSessionId ? byId.get(current.parentSessionId) : undefined
+  }
+  return labels.join(' / ')
 }
 
 // Why: .pop-menu used to be hard-coded at left:200/top:120, so a click on a
@@ -106,6 +119,11 @@ export function App() {
   const [searchMore, setSearchMore] = useState(false)
   const [searchErr, setSearchErr] = useState<string | null>(null)
   const [currentId, setCurrentId] = useState<string | null>(null)
+  // Why: Tree reveals are navigation context, not a durable preference. Keep
+  // them for the lifetime of App so ordinary navigation can return to them,
+  // while a full page reload naturally starts with no temporary children.
+  const [temporaryTreeRevealIds, setTemporaryTreeRevealIds] = useState<string[]>([])
+  const [treeOpen, setTreeOpen] = useState(false)
   const [selectedWs, setSelectedWs] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>(loadExpanded)
   const [showAll, setShowAll] = useState<Record<string, boolean>>({})
@@ -137,6 +155,7 @@ export function App() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const searchRootRef = useRef<HTMLDivElement>(null)
   const modelSearchRef = useRef<HTMLInputElement>(null)
+  const sessionRowRefs = useRef(new Map<string, HTMLButtonElement>())
 
   const openMenu = (kind: 'ws' | 'sess', id: string, el: HTMLElement) => {
     menuAnchor.current = el.getBoundingClientRect()
@@ -239,6 +258,12 @@ export function App() {
   }, [api])
 
   useEffect(() => { void refreshList() }, [refreshList])
+  useEffect(() => {
+    if (!temporaryTreeRevealIds.length) return
+    const available = new Set(sessions.map(session => session.id))
+    const next = temporaryTreeRevealIds.filter(id => available.has(id))
+    if (next.length !== temporaryTreeRevealIds.length) setTemporaryTreeRevealIds(next)
+  }, [sessions, temporaryTreeRevealIds])
   useEffect(() => {
     const q = filter.trim()
     if (!q) {
@@ -364,7 +389,7 @@ export function App() {
 		return () => ac.abort()
 	}, [api, currentId, listen, t])
 
-  const openSession = useCallback(async (id: string) => {
+  const openSession = useCallback(async (id: string): Promise<boolean> => {
     setCurrentId(id)
 	setEdit(null)
     abortRef.current?.abort()
@@ -377,8 +402,10 @@ export function App() {
       setSelectedWs(detail.workspaceId ?? null)
       if (detail.workspaceId) setExpanded(e => ({ ...e, [detail.workspaceId!]: true }))
       if (detail.running) void listen(id)
+      return true
     } catch (e) {
       toast.from(e)
+      return false
     }
   }, [api, listen])
 
@@ -654,23 +681,90 @@ export function App() {
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
 
   const trees = useMemo(() => {
+    const temporary = temporaryTreeRevealIds.map(id => byId.get(id)).filter((s): s is SessionInfo => !!s)
+    const displayRows = (workspaceId: string | undefined, rows: SessionInfo[]) => {
+      const regular = rows.filter(session => session.forkMode !== 'tree')
+      const selected = temporary.filter(session => session.forkMode === 'tree' && session.workspaceId === workspaceId)
+      if (!selected.length) return regular
+
+      const regularIds = new Set(regular.map(session => session.id))
+      const selectedIds = new Set(selected.map(session => session.id))
+      const anchorOf = (session: SessionInfo): string | null => {
+        const seen = new Set<string>()
+        let anchor = session.parentSessionId
+        while (anchor && !seen.has(anchor)) {
+          if (regularIds.has(anchor) || selectedIds.has(anchor)) return anchor
+          seen.add(anchor)
+          anchor = byId.get(anchor)?.parentSessionId
+        }
+        return null
+      }
+      const children = new Map<string | null, SessionInfo[]>()
+      for (const session of selected) {
+        const anchor = anchorOf(session)
+        children.set(anchor, [...(children.get(anchor) ?? []), session])
+      }
+      const out: SessionInfo[] = []
+      const appendSelected = (anchor: string | null, ancestors = new Set<string>()) => {
+        for (const session of children.get(anchor) ?? []) {
+          if (ancestors.has(session.id)) continue
+          out.push(session)
+          const nextAncestors = new Set(ancestors)
+          nextAncestors.add(session.id)
+          appendSelected(session.id, nextAncestors)
+        }
+      }
+      for (const session of regular) {
+        out.push(session)
+        appendSelected(session.id)
+      }
+      appendSelected(null)
+      return out
+    }
     const used = new Set<string>()
     const groups = workspaces.map(ws => {
       const order = ws.sessionIds?.length
         ? [...ws.sessionIds, ...sessions.filter(s => s.workspaceId === ws.id && !ws.sessionIds!.includes(s.id)).map(s => s.id)]
         : sessions.filter(s => s.workspaceId === ws.id).map(s => s.id)
-      const rows = order.map(id => byId.get(id)).filter((s): s is SessionInfo => !!s)
-      rows.forEach(s => used.add(s.id))
+      const allRows = order.map(id => byId.get(id)).filter((s): s is SessionInfo => !!s)
+      allRows.forEach(s => used.add(s.id))
+      const rows = displayRows(ws.id, allRows)
       return { ws, rows }
     })
-    const ungrouped = sessions.filter(s => !used.has(s.id))
+    const ungrouped = displayRows(undefined, sessions.filter(s => !used.has(s.id)))
     return { groups, ungrouped }
-  }, [byId, sessions, workspaces])
+  }, [byId, sessions, temporaryTreeRevealIds, workspaces])
+
+  const treeAvailable = useMemo(() => {
+    if (!currentId) return false
+    const current = byId.get(currentId)
+    return current?.forkMode === 'tree' || sessions.some(session => (
+      session.forkMode === 'tree' && session.parentSessionId === currentId
+    ))
+  }, [byId, currentId, sessions])
+
+  const selectTreeSession = useCallback(async (id: string): Promise<boolean> => {
+    const target = byId.get(id)
+    if (!target) {
+      toast.error(t('tree.missing'))
+      return false
+    }
+    setTemporaryTreeRevealIds(current => current.includes(id) ? current : [...current, id])
+    if (target.workspaceId) {
+      setExpanded(value => ({ ...value, [target.workspaceId!]: true }))
+      setShowAll(value => ({ ...value, [target.workspaceId!]: true }))
+    }
+    const opened = await openSession(id)
+    if (!opened) setTemporaryTreeRevealIds(current => current.filter(item => item !== id))
+    else setTab('conversation')
+    return opened
+  }, [byId, openSession, t])
 
   const localHits = useMemo(() => {
     const q = filter.trim().toLowerCase()
     if (!q) return []
     return sessions.filter(s => {
+      if (s.forkMode === 'tree') return false
       if (!s.title) return false
       const ws = workspaces.find(w => w.id === s.workspaceId)
       return s.title.toLowerCase().includes(q) || s.id.includes(q) || (ws?.title.toLowerCase().includes(q) ?? false) || s.cwd.toLowerCase().includes(q)
@@ -684,11 +778,12 @@ export function App() {
       map.set(s.id, { id: s.id, title: s.title || untitled, workspace: ws?.title })
     }
     for (const h of hits) {
+      if (byId.get(h.id)?.forkMode === 'tree') continue
       const prev = map.get(h.id)
       map.set(h.id, { id: h.id, title: h.title || prev?.title || untitled, workspace: h.workspaceTitle || prev?.workspace, snippet: h.snippet })
     }
     return [...map.values()].slice(0, 20)
-  }, [hits, localHits, untitled, workspaces])
+  }, [byId, hits, localHits, untitled, workspaces])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -843,8 +938,23 @@ export function App() {
     return rows.slice(0, n)
   }
 
+  const rememberSessionRow = useCallback((id: string, element: HTMLButtonElement | null) => {
+    if (element) sessionRowRefs.current.set(id, element)
+    else sessionRowRefs.current.delete(id)
+  }, [])
+
+  useEffect(() => {
+    if (!currentId || !temporaryTreeRevealIds.includes(currentId)) return
+    const frame = requestAnimationFrame(() => {
+      const row = sessionRowRefs.current.get(currentId)
+      row?.scrollIntoView({ block: 'nearest' })
+      row?.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [currentId, temporaryTreeRevealIds, trees])
+
   return (
-    <div className={`app${collapsed ? ' sidebar-collapsed' : ''}${(settingsOpen || modelOpen || dirOpen || attachmentTarget || extOpen) ? ' modal-open' : ''}`}>
+    <div className={`app${collapsed ? ' sidebar-collapsed' : ''}${(settingsOpen || modelOpen || dirOpen || attachmentTarget || extOpen || treeOpen) ? ' modal-open' : ''}`}>
 	  {fileDragActive ? createPortal(<div className="global-drop-overlay" data-testid="global-drop-overlay">
 		<div className="global-drop-visual"><span><IImage /></span><span><IFile /></span><span><IPlus /></span></div>
 		<strong>{edit ? t('drop.editTitle') : t('drop.newTitle')}</strong>
@@ -959,26 +1069,35 @@ export function App() {
                 {shown.map((s, i) => (
                   <div
                     key={s.id}
-                    className={`session-row${s.id === currentId ? ' active' : ''}`}
+                    className={`session-row${s.id === currentId ? ' active' : ''}${temporaryTreeRevealIds.includes(s.id) ? ' tree-focus' : ''}`}
                     data-testid="session-row"
-                    draggable
-                    onDragStart={e => { e.dataTransfer.setData('text/sess', `${ws.id}:${s.id}`) }}
+                    data-tree-focus={temporaryTreeRevealIds.includes(s.id) || undefined}
+                    draggable={!temporaryTreeRevealIds.includes(s.id)}
+                    onDragStart={e => { if (!temporaryTreeRevealIds.includes(s.id)) e.dataTransfer.setData('text/sess', `${ws.id}:${s.id}`) }}
                     onDragOver={e => e.preventDefault()}
                     onDrop={e => {
+                      if (temporaryTreeRevealIds.includes(s.id)) return
                       const raw = e.dataTransfer.getData('text/sess')
                       const [fromWs, sid] = raw.split(':')
                       if (fromWs !== ws.id || !sid || sid === s.id) return
                       const rect = e.currentTarget.getBoundingClientRect()
-                      const before = e.clientY < rect.top + rect.height / 2 ? s.id : rows[i + 1]?.id
+                      const before = e.clientY < rect.top + rect.height / 2 ? s.id : shown[i + 1]?.id
                       void api.moveSession(ws.id, sid, before ?? null).then(() => refreshList()).catch(er => toast.from(er))
                     }}
                   >
-                    <button type="button" className="session-main" onClick={() => void openSession(s.id)}>
+                    <button
+                      ref={element => rememberSessionRow(s.id, element)}
+                      type="button"
+                      className="session-main"
+                      aria-current={s.id === currentId ? 'page' : undefined}
+                      onClick={() => { if (s.forkMode === 'tree') setTab('conversation'); void openSession(s.id) }}
+                    >
                       <span className={`dot${s.running ? ' on' : ''}`} />
-                      {s.pinned ? <span className="pin-mark" aria-label={t('session.pinned')}><IPin /></span> : null}
+                      {s.pinned && s.forkMode !== 'tree' ? <span className="pin-mark" aria-label={t('session.pinned')}><IPin /></span> : null}
+                      {temporaryTreeRevealIds.includes(s.id) ? <span className="tree-session-mark" aria-hidden><IFork /></span> : null}
                       <span className="meta">
                         <div className="title" data-testid="session-title">{s.title || untitled}</div>
-                        <div className="sub">{s.model}</div>
+                        <div className="sub">{temporaryTreeRevealIds.includes(s.id) ? `${t('tree.label')} · ${sessionPathLabel(s.id, byId, untitled)}` : s.model}</div>
                       </span>
                     </button>
                     <button type="button" className="icon-btn tiny" aria-label={t('session.menu')} onClick={e => openMenu('sess', s.id, e.currentTarget)}><IDots /></button>
@@ -994,11 +1113,21 @@ export function App() {
             <div>
               <div className="cwd-label">{t('session.ungrouped')}</div>
               {trees.ungrouped.map(s => (
-                <button key={s.id} type="button" className={`session-row${s.id === currentId ? ' active' : ''}`} data-testid="session-row" onClick={() => void openSession(s.id)}>
+                <button
+                  key={s.id}
+                  ref={element => rememberSessionRow(s.id, element)}
+                  type="button"
+                  className={`session-row${s.id === currentId ? ' active' : ''}${temporaryTreeRevealIds.includes(s.id) ? ' tree-focus' : ''}`}
+                  data-testid="session-row"
+                  data-tree-focus={temporaryTreeRevealIds.includes(s.id) || undefined}
+                  aria-current={s.id === currentId ? 'page' : undefined}
+                    onClick={() => { if (s.forkMode === 'tree') setTab('conversation'); void openSession(s.id) }}
+                >
                   <span className={`dot${s.running ? ' on' : ''}`} />
+                  {temporaryTreeRevealIds.includes(s.id) ? <span className="tree-session-mark" aria-hidden><IFork /></span> : null}
                   <span className="meta">
                     <div className="title" data-testid="session-title">{s.title || untitled}</div>
-                    <div className="sub">{s.model}</div>
+                    <div className="sub">{temporaryTreeRevealIds.includes(s.id) ? `${t('tree.label')} · ${sessionPathLabel(s.id, byId, untitled)}` : s.model}</div>
                   </span>
                 </button>
               ))}
@@ -1065,6 +1194,8 @@ export function App() {
               workspaceTitle={workspaces.find(w => w.id === (selectedWs ?? sessions.find(s => s.id === currentId)?.workspaceId))?.title}
               busy={view.busy}
               onEdit={page => { setSettingsPage(page); setSettingsOpen(true) }}
+              treeAvailable={treeAvailable}
+              onTreeOpen={() => setTreeOpen(true)}
             />
           </div>
         ) : tab === 'trajectory' ? (
@@ -1154,14 +1285,16 @@ export function App() {
               </>
             ) : (
               <>
-                <button type="button" onClick={() => {
-                  const s = byId.get(menu.id)
-                  void api.patch(menu.id, { pinned: !s?.pinned }).then(() => refreshList())
-                  setMenu(null)
-                }}
-                >
-                  <IPin /> {byId.get(menu.id)?.pinned ? t('session.unpin') : t('session.pin')}
-                </button>
+                {byId.get(menu.id)?.forkMode !== 'tree' ? (
+                  <button type="button" onClick={() => {
+                    const s = byId.get(menu.id)
+                    void api.patch(menu.id, { pinned: !s?.pinned }).then(() => refreshList())
+                    setMenu(null)
+                  }}
+                  >
+                    <IPin /> {byId.get(menu.id)?.pinned ? t('session.unpin') : t('session.pin')}
+                  </button>
+                ) : null}
                 <button type="button" onClick={() => {
                   const s = byId.get(menu.id)
                   setRename({ kind: 'sess', id: menu.id, title: s?.title ?? '' })
@@ -1312,6 +1445,14 @@ export function App() {
             .finally(() => setDirBusy(false))
         }}
       />
+	  <SessionTreeBrowser
+		open={treeOpen}
+		sessions={sessions}
+		workspaces={workspaces}
+		currentId={currentId}
+		onClose={() => setTreeOpen(false)}
+		onSelect={selectTreeSession}
+	  />
 	  <AttachmentBrowser
 		api={api}
 		open={attachmentTarget !== null}
