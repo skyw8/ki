@@ -3,6 +3,7 @@ package provider
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -31,6 +32,28 @@ func TestBuiltinGPTModelsAdvertiseFreeformApplyPatch(t *testing.T) {
 		return
 	}
 	t.Fatal("openai provider missing")
+}
+
+func TestBuiltinDeepSeekVisionModelAdvertisesImageInput(t *testing.T) {
+	for _, p := range BuiltinProviders() {
+		if p.ID != "deepseek" {
+			continue
+		}
+		for _, model := range p.Models {
+			if model.ID != "deepseek-v4-flash-vision-exp" {
+				continue
+			}
+			if !slices.Contains(model.Input, "image") {
+				t.Fatalf("DeepSeek vision model input = %v, want image", model.Input)
+			}
+			if model.API != "completions" || model.BaseURL != "https://api.deepseek.com" {
+				t.Fatalf("DeepSeek vision model endpoint = %s %s", model.API, model.BaseURL)
+			}
+			return
+		}
+		t.Fatal("DeepSeek vision model missing")
+	}
+	t.Fatal("deepseek provider missing")
 }
 
 func TestRegistryRejectsFreeformApplyPatchOutsideResponses(t *testing.T) {

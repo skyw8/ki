@@ -26,6 +26,7 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 
 - 发给模型前丢掉不该回放的 assistant（对齐 pi `transformMessages`）：`stopReason` 为 `aborted` / `error` 的整条跳过；无 text / thinking / toolCall 的空 assistant 也跳过。它们后面的对应 toolResult 一并丢掉。留下的 assistant 若有 toolCall 没结果，补一条 `No result provided`。会话 jsonl 仍保留这些行给 UI。
 - 图片（对齐 pi）：user 里的 `image` 编成 Completions `image_url` / Responses `input_image` / Anthropic `image`。Completions 的 `role:tool` 只放文本；**连续** toolResult 先全部写出，这一组的图攒成一条 user 跟在这组后面（不要每张图插一条 user，否则并行 Read 会把 tool 拆开导致 400）。历史里更早的图仍待在当时那一组后面。Responses 图进 `function_call_output.output` 数组。Anthropic 图进 `tool_result`，连续结果收成一条 user。
+- DeepSeek 的内置视觉模型为 `deepseek-v4-flash-vision-exp`（实验性，OpenAI Chat Completions，1M 上下文，输入支持 `text` + `image`）；它复用上述 Completions `image_url` 编码。模型名和发布信息以 [DeepSeek 更新日志](https://api-docs.deepseek.com/zh-cn/updates/) 为准。
 - 切换到不含 `image` 输入模态的模型时，loop 在最终请求边界移除历史图片块；这同时兜底旧 Read 结果和返回图片的 MCP 工具。
 - 模型解析顺序是显式 `provider/model` → session provider 下的模型 ID → 上次选用（不可用则第一个可用模型）。新会话固定该引用；禁用后的已有会话保留历史，但下次请求明确失败。
 - `thinkingEffort` 使用 `off/minimal/low/medium/high/xhigh/max`，按模型映射到 OpenAI effort、Qwen `enable_thinking`、DeepSeek/Z.AI `thinking` 或 Anthropic adaptive/budget 形状。未指定时用该模型的 default thinking（优先 `medium`）。切换模型时夹到最近的可用等级，而不是回到 default。`GET /v1/models` 每项带 `thinkingLevels` 与 `defaultThinking`。
