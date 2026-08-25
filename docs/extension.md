@@ -42,13 +42,15 @@ my-ext/
   "skills": ["skills"],
   "commands": ["commands"],
   "mcp": { "mcpServers": { "time": { "command": "uvx", "args": ["mcp-server-time"] } } },
-  "runtime": { "kind": "rpc", "command": "bin/extension", "args": [], "env": {} }
+  "runtime": { "kind": "rpc", "command": "bin/extension", "args": [], "install": [], "env": {} }
 }
 ```
 
 - `capabilities`：门闸。未声明的能力：对应字段忽略；`initialize` 多报的 tools/commands 丢弃并 `extension_error`。
 - `failClosed`：缺省 `false`。仅 **sync** 生命周期入口：`tool_call` 失败 → 合成 block；`before_provider_request` 失败 → canned stop。
 - `runtime.kind`：`none`（缺省）| `rpc`。`rpc` 须声明 `tool` / `lifecycle` / `command` / `bus` 之一。
+- `runtime.command`：与 MCP 相同。无路径分隔符（`node` / `npx`）走 **PATH**；带 `/` 的相对路径相对包根（`bin/extension`）；绝对路径原样用。
+- `runtime.install`：可选 argv，sidecar **启动前**在包根执行（装依赖）。stdout 并进 stderr，避免污染 NDJSON。失败则不拉起 sidecar。
 
 ## 支持的能力
 

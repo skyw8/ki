@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,27 +67,12 @@ type rpcClient struct {
 }
 
 func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, host SessionHost) (*rpcClient, error) {
-	cmdPath := d.manifest.Runtime.Command
-	if !filepath.IsAbs(cmdPath) {
-		cmdPath = filepath.Join(d.root, cmdPath)
+	env := sidecarEnv(d, sessionID, home, cwd)
+	if err := runInstall(d.root, d.manifest.Runtime.Install, env); err != nil {
+		return nil, err
 	}
-	cmd := exec.Command(cmdPath, d.manifest.Runtime.Args...)
+	cmd := exec.Command(resolveRuntimeCommand(d.root, d.manifest.Runtime.Command), d.manifest.Runtime.Args...) //nolint:gosec // command comes from the extension manifest
 	cmd.Dir = d.root
-	env := []string{
-		"KI_EXTENSION=" + d.Name,
-		"KI_SESSION_ID=" + sessionID,
-		"KI_CWD=" + cwd,
-		"KI_HOME=" + home,
-		"KI_EXTENSION_ROOT=" + d.root,
-	}
-	for _, key := range []string{"PATH", "HOME", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "PATHEXT", "COMSPEC"} {
-		if v := os.Getenv(key); v != "" {
-			env = append(env, key+"="+v)
-		}
-	}
-	for k, v := range d.manifest.Runtime.Env {
-		env = append(env, k+"="+v)
-	}
 	cmd.Env = env
 	tools.AttachProcessGroup(cmd)
 	tools.SetWaitDelay(cmd)
@@ -134,6 +120,54 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 	c.registration = reg
 	c.fallback = reg.Fallback
 	return c, nil
+}
+
+func sidecarEnv(d Descriptor, sessionID, home, cwd string) []string {
+	env := []string{
+		"KI_EXTENSION=" + d.Name,
+		"KI_SESSION_ID=" + sessionID,
+		"KI_CWD=" + cwd,
+		"KI_HOME=" + home,
+		"KI_EXTENSION_ROOT=" + d.root,
+	}
+	for _, key := range []string{"PATH", "HOME", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "PATHEXT", "COMSPEC"} {
+		if v := os.Getenv(key); v != "" {
+			env = append(env, key+"="+v)
+		}
+	}
+	for k, v := range d.manifest.Runtime.Env {
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
+// resolveRuntimeCommand matches MCP: a name with no slash is looked up on
+// PATH (node, npx). A relative path is joined to the package root (bin/extension).
+func resolveRuntimeCommand(root, command string) string {
+	if command == "" || filepath.IsAbs(command) {
+		return command
+	}
+	if !strings.Contains(filepath.ToSlash(command), "/") {
+		return command
+	}
+	return filepath.Join(root, filepath.FromSlash(command))
+}
+
+func runInstall(root string, argv []string, env []string) error {
+	if len(argv) == 0 {
+		return nil
+	}
+	cmd := exec.Command(resolveRuntimeCommand(root, argv[0]), argv[1:]...) //nolint:gosec // install argv comes from the extension manifest
+	cmd.Dir = root
+	cmd.Env = env
+	// stdout would corrupt the sidecar NDJSON stream if it shared the pipe;
+	// install runs first and both streams go to the ki process stderr.
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("runtime.install: %w", err)
+	}
+	return nil
 }
 
 func gateSubscriptions(caps []string, reg *Registration) error {

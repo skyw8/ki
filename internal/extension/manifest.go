@@ -53,6 +53,7 @@ type RuntimeSpec struct {
 	Kind    string            `json:"kind"`
 	Command string            `json:"command"`
 	Args    []string          `json:"args"`
+	Install []string          `json:"install"`
 	Env     map[string]string `json:"env"`
 }
 

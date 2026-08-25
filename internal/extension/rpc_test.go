@@ -166,3 +166,74 @@ func TestPrepareOrderFollowsDiscoverEnabled(t *testing.T) {
 		t.Fatalf("Prepare/items order %s,%s want zeta,alpha (Discover chain, not name-sorted All)", items[0].name, items[1].name)
 	}
 }
+
+func TestResolveRuntimeCommand(t *testing.T) {
+	root := "/pkg"
+	if got := resolveRuntimeCommand(root, "node"); got != "node" {
+		t.Fatalf("PATH name %q", got)
+	}
+	if got := resolveRuntimeCommand(root, "npx"); got != "npx" {
+		t.Fatalf("PATH name %q", got)
+	}
+	got := resolveRuntimeCommand(root, "bin/extension")
+	want := filepath.Join(root, "bin", "extension")
+	if got != want {
+		t.Fatalf("package-relative %q want %q", got, want)
+	}
+	abs := filepath.Join(root, "sidecar")
+	if got := resolveRuntimeCommand(root, abs); got != abs {
+		t.Fatalf("absolute %q", got)
+	}
+}
+
+func TestRuntimeInstallRunsBeforeStart(t *testing.T) {
+	bin := buildTestSidecar(t)
+	root := t.TempDir()
+	marker := filepath.Join(root, "installed")
+	d := Descriptor{
+		Name: "protected-paths", Path: root, Enabled: true,
+		Capabilities: []string{"lifecycle"}, root: root,
+		manifest: Manifest{
+			Name: "protected-paths", Capabilities: []string{"lifecycle"},
+			Runtime: RuntimeSpec{
+				Kind: runtimeRPC, Command: bin,
+				Install: []string{"sh", "-c", "echo yes > installed"},
+			},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.close()
+	body, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "yes\n" && string(body) != "yes\r\n" {
+		t.Fatalf("install marker %q", body)
+	}
+}
+
+func TestRuntimeInstallFailureStopsSidecar(t *testing.T) {
+	bin := buildTestSidecar(t)
+	root := t.TempDir()
+	d := Descriptor{
+		Name: "protected-paths", Path: root, Enabled: true,
+		Capabilities: []string{"lifecycle"}, root: root,
+		manifest: Manifest{
+			Name: "protected-paths", Capabilities: []string{"lifecycle"},
+			Runtime: RuntimeSpec{
+				Kind: runtimeRPC, Command: bin,
+				Install: []string{"false"},
+			},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil); err == nil {
+		t.Fatal("expected install error")
+	}
+}
