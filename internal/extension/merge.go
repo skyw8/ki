@@ -21,7 +21,7 @@ func PromptLayers(enabled []Descriptor) []PromptLayer {
 }
 
 // SkillRoots returns extra skill directories: project packages then home
-// packages, matching docs/todo/extension.md scan order.
+// packages, matching docs/extension.md skill root order.
 func SkillRoots(enabled []Descriptor) []skills.Root {
 	var project, home []skills.Root
 	for _, d := range enabled {
