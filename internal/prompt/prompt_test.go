@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"ki/internal/extension"
 	"ki/internal/loop"
 	"ki/internal/resources"
 	"ki/internal/skills"
@@ -46,6 +47,9 @@ func TestBuildLayers(t *testing.T) {
 	if appendAt, skillsAt := strings.Index(sys, "extra operator instructions"), strings.Index(sys, "<available_skills>"); appendAt < 0 || skillsAt < 0 || appendAt >= skillsAt {
 		t.Fatalf("append system prompt position: append=%d skills=%d", appendAt, skillsAt)
 	}
+	if strings.Contains(sys, "<extension_instructions") {
+		t.Fatal("no extension dirs must keep prompt without extension layer")
+	}
 	if !strings.Contains(sys, "<available_skills>") || !strings.Contains(sys, "<name>demo</name>") {
 		t.Fatalf("skills: %s", sys)
 	}
@@ -60,6 +64,21 @@ func TestBuildLayers(t *testing.T) {
 	}
 	if !strings.Contains(sys, "Runtime environment:") || !strings.Contains(sys, "Architecture:") {
 		t.Fatalf("runtime environment: %s", sys)
+	}
+}
+
+func TestBuildExtensionLayerAfterUserAppend(t *testing.T) {
+	sys := Build(Input{
+		Resources: resources.Snapshot{
+			AppendSystemPrompt: "USER-APPEND",
+			ExtensionPrompts:   []extension.PromptLayer{{ExtensionID: "alpha", Text: "EXT-LAYER"}},
+			Environment:        resources.Environment{Date: "2026-08-24", Timezone: "UTC"},
+		},
+		Tools: []loop.Tool{},
+	})
+	user, ext, skills := strings.Index(sys, "USER-APPEND"), strings.Index(sys, "<extension_instructions name=\"alpha\">"), strings.Index(sys, "Runtime environment:")
+	if user < 0 || ext < 0 || user > ext || ext > skills {
+		t.Fatalf("order user=%d ext=%d runtime=%d\n%s", user, ext, skills, sys)
 	}
 }
 

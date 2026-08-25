@@ -59,6 +59,8 @@ const (
 	// RunAborted reports that abort cancelled the occupy context. AgentEnd
 	// still follows when the loop actually returns.
 	RunAborted EventType = "run_aborted"
+	// ExtensionError reports a sidecar or intercept failure as a sideband.
+	ExtensionError EventType = "extension_error"
 )
 
 // Event is a loop event (pi field names).

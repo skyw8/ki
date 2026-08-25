@@ -53,6 +53,12 @@ func Build(in Input) string {
 		b.WriteString("\n\n")
 		b.WriteString(in.Resources.AppendSystemPrompt)
 	}
+	for _, layer := range in.Resources.ExtensionPrompts {
+		if strings.TrimSpace(layer.Text) == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "\n\n<extension_instructions name=%q>\n%s\n</extension_instructions>\n", layer.ExtensionID, layer.Text)
+	}
 
 	// Toggle already dropped disabled names; this is listing, not a process.
 	sk := skills.Filter(in.Resources.Skills, in.Toggle)

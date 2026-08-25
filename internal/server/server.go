@@ -22,6 +22,7 @@ import (
 	"ki/internal/command"
 	"ki/internal/compact"
 	"ki/internal/config"
+	"ki/internal/extension"
 	"ki/internal/logging"
 	"ki/internal/loop"
 	"ki/internal/mcp"
@@ -51,6 +52,7 @@ type Server struct {
 	registry               *provider.Registry
 	requireModelCredential bool
 	mcp                    *mcp.Manager
+	ext                    *extension.Manager
 	resources              *resources.Loader
 	mu                     sync.Mutex
 	runs                   map[string]*runState
@@ -126,6 +128,7 @@ func New(opt Options) (*Server, error) {
 		pendingReload:          map[string]bool{},
 	}
 	srv.mcp = mcp.NewManager(srv.onMCPNotification)
+	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
 	return srv, nil
 }
 
@@ -174,6 +177,9 @@ func (s *Server) Reload() bool {
 	if s.mcp != nil {
 		s.mcp.CloseExcept(active)
 	}
+	if s.ext != nil {
+		s.ext.CloseExcept(active)
+	}
 	return len(active) > 0
 }
 
@@ -184,6 +190,9 @@ func (s *Server) reloadSession(id string) {
 	s.resources.Invalidate(id)
 	if s.mcp != nil {
 		s.mcp.CloseSession(id)
+	}
+	if s.ext != nil {
+		s.ext.CloseSession(id)
 	}
 }
 
@@ -298,6 +307,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PATCH /v1/skills", s.auth(s.patchSkills))
 	api.HandleFunc("GET /v1/mcp", s.auth(s.getMCP))
 	api.HandleFunc("PATCH /v1/mcp", s.auth(s.patchMCP))
+	api.HandleFunc("GET /v1/extensions", s.auth(s.getExtensions))
+	api.HandleFunc("PATCH /v1/extensions", s.auth(s.patchExtensions))
 	api.HandleFunc("GET /v1/message", s.auth(s.getMessage))
 	api.HandleFunc("PATCH /v1/message", s.auth(s.patchMessage))
 	api.HandleFunc("GET /v1/workspaces", s.auth(s.listWorkspaces))
@@ -525,6 +536,12 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
 	sk, mc := s.sessionCatalog(snapshot)
 	tg := toggles.Load(s.cfg.Home)
+	cmds := command.Catalog(snapshot, tg.Skills)
+	if s.ext != nil {
+		for _, spec := range s.ext.RuntimeCommands(sess.ID()) {
+			cmds = append(cmds, command.Item{Name: spec.Name, Description: spec.Description, ArgumentHint: spec.ArgumentHint, Source: "extension"})
+		}
+	}
 	queued, err := session.ReadQueue(sess.Dir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -534,13 +551,14 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		queued = []session.QueuedItem{}
 	}
 	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
-		"leafId":          sess.LeafID(),
-		"entries":         sess.Entries(),
-		"messages":        sess.MessagesToLeaf(),
-		"availableSkills": sk,
-		"availableMcp":    mc,
-		"commands":        command.Catalog(snapshot, tg.Skills),
-		"queued":          queued,
+		"leafId":              sess.LeafID(),
+		"entries":             sess.Entries(),
+		"messages":            sess.MessagesToLeaf(),
+		"availableSkills":     sk,
+		"availableMcp":        mc,
+		"availableExtensions": s.extensionCatalog(snapshot),
+		"commands":            cmds,
+		"queued":              queued,
 	}))
 }
 
@@ -798,7 +816,16 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
-	parsed = command.ResolveUnknown(parsed, snapshot)
+	runtimeCmds := map[string]struct{}{}
+	parsed = command.ResolveCommand(parsed, snapshot, runtimeCmds)
+	if parsed.Kind == command.KindUnknown && s.ext != nil {
+		tgPre := toggles.Load(s.cfg.Home)
+		s.ext.Prepare(context.Background(), id, sess.Header.CWD, extension.Enabled(snapshot.Extensions, tgPre.Extensions)) // chain order via Enabled
+		for name := range s.ext.RuntimeCommands(id) {
+			runtimeCmds[name] = struct{}{}
+		}
+		parsed = command.ResolveCommand(command.Parse(contentText(body.Content)), snapshot, runtimeCmds)
+	}
 	tg := toggles.Load(s.cfg.Home)
 	busy := s.running(id)
 	live := s.runAt(id)
@@ -839,6 +866,29 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			body.Content = []types.Content{{Type: "text", Text: text}}
+		case command.KindExtension:
+			if s.ext == nil {
+				_ = sess.Close()
+				writeHandled(w, "unknown command /"+parsed.Name, true)
+				return
+			}
+			handled, notice, promptText, err := s.ext.InvokeCommand(r.Context(), id, parsed.Name, parsed.Args)
+			if err != nil {
+				_ = sess.Close()
+				writeHandled(w, err.Error(), true)
+				return
+			}
+			if handled {
+				_ = sess.Close()
+				writeHandled(w, notice, false)
+				return
+			}
+			if strings.TrimSpace(promptText) == "" {
+				_ = sess.Close()
+				writeHandled(w, "unknown command /"+parsed.Name, true)
+				return
+			}
+			body.Content = []types.Content{{Type: "text", Text: promptText}}
 		case command.KindPrompt:
 			// The outer condition normally excludes this case; keep the switch
 			// exhaustive so a future parser change follows the normal prompt path.
@@ -1159,6 +1209,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		return
 	}
 	s.rememberModel(provider.ModelRef{Provider: sess.Config.Provider, Model: sess.Config.Model})
+	var liveKey string
+	var liveModel provider.Model
 	runStreamer := s.streamer
 	if s.requireModelCredential {
 		_, resolved, key, resolveErr := s.registry.Resolve(sess.Config.Provider, sess.Config.Model)
@@ -1167,7 +1219,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			return
 		}
 		info = resolved
-		runStreamer = provider.NewLiveModel(resolved, key, nil)
+		liveModel = resolved
+		liveKey = key
 	}
 	jobs := s.jobsFor(id)
 	profile := tools.Profile{
@@ -1180,6 +1233,10 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs, Shells: s.shells, Mutations: s.mutations}.Build(profile)
 	tg := toggles.Load(cfg.Home)
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
+	// snapshot.Extensions is Discover.All (name-sorted catalog). Enabled
+	// reorders to the intercept chain: global-by-name then project-by-name.
+	extTools := s.ext.Prepare(context.Background(), sess.ID(), sess.Header.CWD, extension.Enabled(snapshot.Extensions, tg.Extensions))
+	tls = append(tls, extTools...)
 	prepared := s.mcp.Prepare(ctx, sess.ID(), snapshot.MCP, tg.MCP, snapshot.MCPServers)
 	if ctx.Err() != nil {
 		st.err = ctx.Err()
@@ -1194,6 +1251,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 	}
 	tls = append(tls, prepared.Tools...)
+	occ := s.ext.Occupy(id)
+	if s.requireModelCredential {
+		runStreamer = provider.NewLiveModel(liveModel, liveKey, occ.HTTPDoer())
+		runStreamer = occ.WrapStreamer(runStreamer)
+	}
 	// The snapshot is fixed for the session until reload, while the prompt is
 	// rendered per request so tool schemas and runtime metadata stay current.
 	sys := prompt.Build(prompt.Input{Resources: snapshot, Tools: tls, Toggle: tg.Skills})
@@ -1246,6 +1308,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		st.evs = append(st.evs, ev)
 		st.wait.Broadcast()
 		st.mu.Unlock()
+		switch ev.Type {
+		case loop.MessageUpdate, loop.ToolExecutionUpdate, loop.ContextUsage, loop.PatchApplyUpdated, loop.ExtensionError:
+		default:
+			go s.ext.OnEvent(id, extension.RedactEvent(ev, id))
+		}
 		if ev.Type == loop.RequestHeader || (ev.Type == loop.MessageEnd && ev.Message != nil && ev.Message.Role == "assistant") {
 			messages := sess.MessagesToLeaf()
 			used := compact.EstimateTokens(messages, sess.LastCompactionAt())
@@ -1317,16 +1384,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		BaseDelay:               2 * time.Second,
 		Parallel:                true,
 		Inbox:                   st.inbox,
-		Hooks: loop.Hooks{
-			TransformContext: materializeAttachments,
-			// Overflow recovery: when the request reports a context overflow, compact
-			// and retry within the same Run (without replaying events). The failed
-			// assistant remains in history, but provider replayable drops turns with
-			// stopReason=error during the retry.
-			OnContextOverflow: func(ctx context.Context) ([]types.Message, error) {
-				return s.compactSession(ctx, sess)
-			},
-		},
+		Hooks:                   s.composeHooks(sess, occ),
 	}, emit)
 	st.err = err
 }
@@ -1345,11 +1403,48 @@ func hasUsableContextUsage(messages []types.Message, after int64) bool {
 	return false
 }
 
-func (s *Server) summarizer(provider, model string) compact.Summarizer {
+func (s *Server) composeHooks(sess *session.Session, occ *extension.Occupy) loop.Hooks {
+	var extHooks loop.Hooks
+	if occ != nil {
+		extHooks = occ.Hooks()
+	}
+	return loop.Hooks{
+		BeforeRun: extHooks.BeforeRun,
+		TransformContext: func(ctx context.Context, msgs []types.Message) ([]types.Message, error) {
+			msgs, err := materializeAttachments(ctx, msgs)
+			if err != nil {
+				return nil, err
+			}
+			if extHooks.TransformContext == nil {
+				return msgs, nil
+			}
+			return extHooks.TransformContext(ctx, msgs)
+		},
+		BeforeTool: extHooks.BeforeTool,
+		AfterTool:  extHooks.AfterTool,
+		OnContextOverflow: func(ctx context.Context) ([]types.Message, error) {
+			return s.compactSession(ctx, sess)
+		},
+	}
+}
+
+func (s *Server) liveSummarizer(sessionID, prov, model string) loop.Streamer {
+	if !s.requireModelCredential {
+		return s.streamer
+	}
+	_, resolved, key, err := s.registry.Resolve(prov, model)
+	if err != nil {
+		return s.streamer
+	}
+	return provider.NewLiveModel(resolved, key, s.ext.HTTPDoer(sessionID))
+}
+
+func (s *Server) summarizer(sessionID, prov, model string) compact.Summarizer {
+	stream := s.liveSummarizer(sessionID, prov, model)
 	return compact.StreamSummarizer{
 		Stream: func(ctx context.Context, system, user string) (string, *types.Usage, error) {
-			m, err := s.streamer.Stream(ctx, loop.Request{
-				Provider: provider,
+			m, err := stream.Stream(ctx, loop.Request{
+				Provider: prov,
 				Model:    model,
 				System:   system,
 				Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: user}}}},
@@ -1383,7 +1478,7 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]t
 	if prep == nil {
 		return nil, compact.ErrNothingToCompact
 	}
-	summary, usage, err := compact.Execute(ctx, prep, s.summarizer(sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+	summary, usage, err := compact.Execute(ctx, prep, s.summarizer(sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 	if err != nil {
 		return nil, fmt.Errorf("execute compaction: %w", err)
 	}
@@ -1517,6 +1612,9 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	if st != nil {
 		s.publishRunAborted(id)
 		st.cancel()
+		if s.ext != nil {
+			s.ext.CloseSession(id)
+		}
 	}
 	writeJSON(w, 200, map[string]any{"aborted": true})
 }
@@ -1534,7 +1632,7 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	e, err := compact.Run(ctx, sess, s.summarizer(sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+	e, err := compact.Run(ctx, sess, s.summarizer(sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 	s.release(id, st)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		http.Error(w, "compact aborted", http.StatusConflict)

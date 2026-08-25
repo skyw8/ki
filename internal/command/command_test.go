@@ -68,3 +68,29 @@ func TestTemplatesProjectOverridesAndExpand(t *testing.T) {
 		t.Fatalf("%+v", p)
 	}
 }
+
+func TestResolveCommandUserPromptBeatsExtensionHandler(t *testing.T) {
+	snapshot := resources.Snapshot{
+		Prompts: []resources.PromptTemplate{{Name: "ship", Body: "USER-SHIP", Extension: ""}},
+	}
+	p := ResolveCommand(Parse("/ship extra"), snapshot, map[string]struct{}{"ship": {}})
+	if p.Kind != KindTemplate || p.Name != "ship" {
+		t.Fatalf("%+v", p)
+	}
+}
+
+func TestResolveCommandRuntimeBeatsExtensionMarkdown(t *testing.T) {
+	snapshot := resources.Snapshot{
+		Prompts: []resources.PromptTemplate{{Name: "ship", Body: "EXT-MD", Extension: "slashy"}},
+	}
+	p := ResolveCommand(Parse("/ship"), snapshot, map[string]struct{}{"ship": {}})
+	if p.Kind != KindExtension {
+		t.Fatalf("%+v", p)
+	}
+}
+
+func TestAllowBusyExtensionIsFalse(t *testing.T) {
+	if AllowBusy(Parsed{Kind: KindExtension, Name: "ship"}) {
+		t.Fatal("executable slash must 409 while busy")
+	}
+}

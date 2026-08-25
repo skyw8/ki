@@ -35,6 +35,17 @@ func TestLoadProjectOverridesGlobalAndToggle(t *testing.T) {
 	}
 }
 
+func TestApplyExtensionToolNames(t *testing.T) {
+	got := applyExtensionToolNames([]ToolDefinition{{Name: "now"}}, "extension:time")
+	if len(got) != 1 || got[0].Name != "time/now" || got[0].WireName != "now" {
+		t.Fatalf("%+v", got)
+	}
+	plain := applyExtensionToolNames([]ToolDefinition{{Name: "now"}}, "home")
+	if plain[0].Name != "now" || plain[0].WireName != "" {
+		t.Fatalf("user mcp should stay bare: %+v", plain)
+	}
+}
+
 func TestValidateServerSpecIsExplicit(t *testing.T) {
 	valid := []ServerSpec{{Command: "node"}, {URL: "https://example.com/mcp", Headers: map[string]string{"Authorization": "x"}}}
 	for _, spec := range valid {

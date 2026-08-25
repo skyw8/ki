@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -2689,4 +2690,130 @@ func TestCompactInvalidatesCachedResources(t *testing.T) {
 	if !strings.Contains(sys, "CWD-TWO") {
 		t.Fatalf("AGENTS.md stale after compact reload: %s", sys)
 	}
+}
+
+func TestExtensionsHTTPToggle(t *testing.T) {
+	srv, hs := testServer(t)
+	home := srv.cfg.Home
+	dir := filepath.Join(home, "extensions", "alpha")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(`{"name":"alpha","capabilities":["prompt.append"],"prompt":{"append":["A.md"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "A.md"), []byte("EXT-APPEND"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/extensions", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || len(listed.Items) != 1 || listed.Items[0]["enabled"] != true {
+		t.Fatalf("get extensions %d %+v", res.StatusCode, listed.Items)
+	}
+	if _, ok := listed.Items[0]["path"].(string); !ok {
+		t.Fatal("path must be a string, not href")
+	}
+	body, _ := marshalJSON(map[string]any{"disabled": []string{"alpha"}})
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/extensions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.NewDecoder(res.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if listed.Items[0]["enabled"] != false {
+		t.Fatalf("patched %+v", listed.Items)
+	}
+	id := createSession(t, hs, t.TempDir())
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sess map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&sess)
+	_ = res.Body.Close()
+	exts, _ := sess["availableExtensions"].([]any)
+	if len(exts) != 1 {
+		t.Fatalf("session catalog %+v", sess["availableExtensions"])
+	}
+}
+
+func TestPromptWithDeclarativeExtensionFinishes(t *testing.T) {
+	srv, hs := testServer(t)
+	home := srv.cfg.Home
+	dir := filepath.Join(home, "extensions", "alpha")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(`{"name":"alpha","capabilities":["prompt.append"],"prompt":{"append":["A.md"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "A.md"), []byte("KEEP-OUT"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := createSession(t, hs, t.TempDir())
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("prompt %d", res.StatusCode)
+	}
+	_ = res.Body.Close()
+	waitAgentEnd(t, hs, id)
+}
+
+func TestPromptWithSidecarExtensionFinishes(t *testing.T) {
+	srv, hs := testServer(t)
+	bin := filepath.Join(t.TempDir(), "sidecar")
+	src := filepath.Join("..", "..", "e2e", "testdata", "extensions", "sidecar")
+	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd.Dir = src
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build sidecar: %v\n%s", err, out)
+	}
+	dir := filepath.Join(srv.cfg.Home, "extensions", "protected-paths")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"protected-paths","capabilities":["prompt.append","intercept"],"intercept":["tool"],"prompt":{"append":["APPEND.md"]},"runtime":{"kind":"rpc","command":"` + bin + `"}}`
+	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "APPEND.md"), []byte("KEEP-OUT"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := createSession(t, hs, t.TempDir())
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("prompt %d", res.StatusCode)
+	}
+	_ = res.Body.Close()
+	waitAgentEnd(t, hs, id)
 }

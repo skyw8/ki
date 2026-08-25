@@ -66,6 +66,47 @@ func TestAppendSystemPromptIgnoresDirectories(t *testing.T) {
 	}
 }
 
+func TestScanWithoutExtensionsMatchesBarePromptFields(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	snapshot := NewLoader(home).Scan(cwd)
+	if len(snapshot.Extensions) != 0 || len(snapshot.ExtensionPrompts) != 0 {
+		t.Fatalf("expected empty extensions: %+v", snapshot.Extensions)
+	}
+}
+
+func TestScanMergesExtensionPromptAndHonorsDisabled(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	dir := filepath.Join(home, "extensions", "alpha")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(`{"name":"alpha","capabilities":["prompt.append"],"prompt":{"append":["A.md"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "A.md"), []byte("FROM-EXT"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap := NewLoader(home).Scan(cwd)
+	if len(snap.ExtensionPrompts) != 1 || snap.ExtensionPrompts[0].Text != "FROM-EXT" {
+		t.Fatalf("%+v", snap.ExtensionPrompts)
+	}
+	if err := os.MkdirAll(filepath.Join(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "toggles.json"), []byte(`{"extensions":{"disabled":["alpha"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap = NewLoader(home).Scan(cwd)
+	if len(snap.ExtensionPrompts) != 0 {
+		t.Fatalf("disabled still merged: %+v", snap.ExtensionPrompts)
+	}
+	if len(snap.Extensions) != 1 || snap.Extensions[0].Enabled {
+		t.Fatalf("listed disabled: %+v", snap.Extensions)
+	}
+}
+
 func TestMCPUpdatesAreRevisionGuardedAndCopyOnWrite(t *testing.T) {
 	loader := NewLoader(t.TempDir())
 	snapshot := loader.Load("session", t.TempDir())

@@ -27,7 +27,7 @@
 // request. Completions, Responses, and Anthropic all see a normal extra user
 // message on the next request.
 //
-// QueueChanged and RunAborted are session sideband notifications.
+// QueueChanged, RunAborted, and ExtensionError are session sideband notifications.
 // SteerAccepted is live-run only (Inbox accepted a user; drain later emits
 // message_*). Event order: docs/architecture.md.
 package loop

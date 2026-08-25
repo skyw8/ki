@@ -166,6 +166,9 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			}
 			s.resources.Invalidate(info.ID)
 			s.mcp.CloseSession(info.ID)
+			if s.ext != nil {
+				s.ext.CloseSession(info.ID)
+			}
 		}
 	}
 	if _, err := s.ws.Delete(id); err != nil {
@@ -250,6 +253,9 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	s.sidx.Remove(id) // only after the dir is actually gone
 	s.resources.Invalidate(id)
 	s.mcp.CloseSession(id)
+	if s.ext != nil {
+		s.ext.CloseSession(id)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

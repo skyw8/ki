@@ -15,6 +15,14 @@ import (
 // fake run busy; it is a no-op for the live provider.
 const HoldToken = "e2e-hold"
 
+// WriteEnvToken makes the default fake assistant issue a Write of .env so
+// extension intercept e2e can prove the call is blocked.
+const WriteEnvToken = "e2e-write-env"
+
+// SleepInterceptToken makes the default fake assistant issue a Bash command
+// that extension intercept e2e holds until abort.
+const SleepInterceptToken = "e2e-sleep-intercept"
+
 // Streamer is the provider-facing alias of loop.Streamer.
 type Streamer = loop.Streamer
 
@@ -26,12 +34,24 @@ type Scripted struct {
 }
 
 func lastUserHolds(req loop.Request) bool {
+	return lastUserContains(req, HoldToken)
+}
+
+func lastUserContains(req loop.Request, token string) bool {
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
-			return strings.Contains(req.Messages[i].Text(), HoldToken)
+			return strings.Contains(req.Messages[i].Text(), token)
 		}
 	}
 	return false
+}
+
+func lastMessageIsUserContaining(req loop.Request, token string) bool {
+	if len(req.Messages) == 0 {
+		return false
+	}
+	last := req.Messages[len(req.Messages)-1]
+	return last.Role == "user" && strings.Contains(last.Text(), token)
 }
 
 // Stream returns the next scripted assistant message.
@@ -39,6 +59,32 @@ func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.
 	if lastUserHolds(req) {
 		<-ctx.Done()
 		return types.Message{}, ctx.Err()
+	}
+	if lastMessageIsUserContaining(req, WriteEnvToken) {
+		m := types.Message{
+			Role: "assistant",
+			Content: []types.Content{{
+				Type: "toolCall", ID: "call-write-env", Name: "Write",
+				Arguments: map[string]any{"path": ".env", "content": "SECRET=1"},
+			}},
+			StopReason: "toolUse",
+			Provider:   req.Provider,
+			Model:      req.Model,
+		}
+		return m, ctx.Err()
+	}
+	if lastMessageIsUserContaining(req, SleepInterceptToken) {
+		m := types.Message{
+			Role: "assistant",
+			Content: []types.Content{{
+				Type: "toolCall", ID: "call-sleep", Name: "Bash",
+				Arguments: map[string]any{"command": "SLEEP_INTERCEPT"},
+			}},
+			StopReason: "toolUse",
+			Provider:   req.Provider,
+			Model:      req.Model,
+		}
+		return m, ctx.Err()
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

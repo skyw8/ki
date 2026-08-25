@@ -26,6 +26,7 @@ type ServerSpec struct {
 // mutable SDK pointers in a resources snapshot.
 type ToolDefinition struct {
 	Name         string          `json:"name"`
+	WireName     string          `json:"wireName,omitempty"`
 	Title        string          `json:"title,omitempty"`
 	Description  string          `json:"description,omitempty"`
 	InputSchema  map[string]any  `json:"inputSchema"`

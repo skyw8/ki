@@ -28,6 +28,7 @@ ki/
 │   ├── config/          merge ki.toml and env
 │   ├── skills/          discover SKILL.md
 │   ├── mcp/             .mcp.json → loop.Tool
+│   ├── extension/       extension.json + NDJSON sidecar
 │   ├── workspace/       workspace registry
 │   ├── types/           Message / Usage IR
 │   ├── idgen/           session / entry id
@@ -45,6 +46,7 @@ ki/
   - `session.md` — session dir layout, append-only jsonl tree
   - `provider.md` — provider protocol shapes (Completions / Responses / Anthropic)
   - `mcp.md` — MCP config, session ownership, discovery, events, and reload
+  - `extension.md` — extension.json packages, toggles, sidecar JSON-RPC, intercept
   - `tools.md` — tool contract (names/schemas follow Claude Code, results follow pi)
   - `webui.md` — same-origin WebUI serving contract
   - `workspace.md` — workspace registry (`{KI_HOME}/workspaces.json`)

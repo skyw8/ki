@@ -37,7 +37,7 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned） |
 | POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…`；可选 `model` / `thinkingEffort`，省略则用上次选用的模型和该模型 default thinking。WebUI 传入当前 composer 的模型配置 |
 | GET | `/v1/sessions/search` | 正文字面搜索，最多 20 条 |
-| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、只读 `availableSkills` / `availableMcp` / `commands` / `queued` |
+| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、只读 `availableSkills` / `availableMcp` / `availableExtensions` / `commands` / `queued` |
 | PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / `queued`（保留 id 列表） |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
 | POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId` / `delivery` / `queueId`；空闲 `202 started`；忙时 `steer` 插入本轮或 `queue` 排队，省略则用 `toggles.json` `message.busy`；`queueId`+`delivery=steer` 从 `queue.json` 取出插入本轮；`parentId` 且 busy 仍 **409** |
@@ -46,7 +46,7 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 | POST | `/v1/sessions/{id}/abort` | cancel |
 | POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
 | POST | `/v1/reload` | 清全部 session 的资源快照并关掉 MCP 池 |
-| GET/PATCH | `/v1/skills` `/v1/mcp` | 全局启用开关（`toggles.json`） |
+| GET/PATCH | `/v1/skills` `/v1/mcp` `/v1/extensions` | 全局启用开关（`toggles.json`） |
 | POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径 |
 | POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |
 | GET | `/v1/workspaces` | 工作区登记（含 `sessionIds` / `temp`） |

@@ -15,7 +15,7 @@ import { useI18n } from './i18n'
 import { toast } from './toast'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
-type SettingsPage = 'providers' | 'skills' | 'mcp' | 'message' | 'appearance'
+type SettingsPage = 'providers' | 'skills' | 'mcp' | 'extensions' | 'message' | 'appearance'
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
 
@@ -313,6 +313,15 @@ export function App() {
 					    if (detail.running) void listen(currentId)
 					  } catch (e) { toast.from(e) }
 					  continue
+					}
+					if (ev.type === 'extension_error') {
+						toast.action('error', `${ev.server || 'extension'}: ${ev.messageText || ev.reason || t('mcp.failed')}`, t('mcp.reload'), async () => {
+							try {
+								const result = await api.reload(id)
+								toast.info(result.queued ? t('mcp.reloadQueued') : t('mcp.reloaded'))
+							} catch (e) { toast.from(e) }
+						})
+						continue
 					}
 					if (ev.type !== 'mcp_server_failed' && ev.type !== 'mcp_tools_changed') continue
 					const message = ev.messageText || `${ev.server || 'MCP'} ${ev.type === 'mcp_tools_changed' ? t('mcp.changed') : t('mcp.failed')}`
@@ -1195,6 +1204,7 @@ export function App() {
 			<button type="button" role="tab" aria-selected={settingsPage === 'providers'} className={`tab${settingsPage === 'providers' ? ' active' : ''}`} data-testid="settings-tab-providers" onClick={() => setSettingsPage('providers')}>{t('settings.providers')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'skills'} className={`tab${settingsPage === 'skills' ? ' active' : ''}`} data-testid="settings-tab-skills" onClick={() => setSettingsPage('skills')}>{t('settings.skills')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'mcp'} className={`tab${settingsPage === 'mcp' ? ' active' : ''}`} data-testid="settings-tab-mcp" onClick={() => setSettingsPage('mcp')}>{t('settings.mcp')}</button>
+			<button type="button" role="tab" aria-selected={settingsPage === 'extensions'} className={`tab${settingsPage === 'extensions' ? ' active' : ''}`} data-testid="settings-tab-extensions" onClick={() => setSettingsPage('extensions')}>{t('settings.extensions')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'message'} className={`tab${settingsPage === 'message' ? ' active' : ''}`} data-testid="settings-tab-message" onClick={() => setSettingsPage('message')}>{t('settings.message')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'appearance'} className={`tab${settingsPage === 'appearance' ? ' active' : ''}`} data-testid="settings-tab-appearance" onClick={() => setSettingsPage('appearance')}>{t('settings.appearanceLanguage')}</button>
 		  </nav>
@@ -1203,6 +1213,8 @@ export function App() {
 			  <SettingsToggles kind="skills" api={api} workspaceId={selectedWs} />
 			) : settingsPage === 'mcp' ? (
 			  <SettingsToggles kind="mcp" api={api} workspaceId={selectedWs} />
+			) : settingsPage === 'extensions' ? (
+			  <SettingsToggles kind="extensions" api={api} workspaceId={selectedWs} />
 			) : settingsPage === 'message' ? (
 			  <MessageSettings api={api} />
 			) : (

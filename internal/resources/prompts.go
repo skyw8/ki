@@ -13,6 +13,7 @@ type PromptTemplate struct {
 	ArgumentHint string
 	Body         string
 	Source       string
+	Extension    string
 }
 
 func scanPromptTemplates(home, cwd string) []PromptTemplate {
@@ -47,6 +48,39 @@ func scanPromptTemplates(home, cwd string) []PromptTemplate {
 	out := make([]PromptTemplate, 0, len(byName))
 	for _, template := range byName {
 		out = append(out, template)
+	}
+	return out
+}
+
+func loadExtensionPromptTemplates(dirs []struct {
+	Path      string
+	Extension string
+}) []PromptTemplate {
+	byName := map[string]PromptTemplate{}
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir.Path)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(strings.ToLower(name), ".md") {
+				continue
+			}
+			template, err := loadPromptTemplate(filepath.Join(dir.Path, name), "prompt")
+			if err != nil || template.Name == "" || template.Name == "compact" || template.Name == "reload" {
+				continue
+			}
+			if _, exists := byName[template.Name]; exists {
+				continue
+			}
+			template.Extension = dir.Extension
+			byName[template.Name] = template
+		}
+	}
+	out := make([]PromptTemplate, 0, len(byName))
+	for _, t := range byName {
+		out = append(out, t)
 	}
 	return out
 }

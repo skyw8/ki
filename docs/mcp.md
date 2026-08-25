@@ -7,6 +7,7 @@ MCP 跨 `server`、`resources`、`mcp`、`session` 和 WebUI：配置及工具�
 - `internal/mcp.Load` 先读 `{KI_HOME}/.mcp.json`，再读 `<cwd>/.ki/.mcp.json`；同名 server 由项目配置覆盖全局配置。
 - 一个 server 必须只配置一种 transport：`url` 使用 Streamable HTTP，可带 `headers`；`command` 使用 stdio，可带 `args` / `env`。两者同时存在或同时缺失都无效。
 - `{KI_HOME}/toggles.json` 是进程级启用状态。禁用的 server 不参与该轮准备，也不会为该轮启动进程或建立连接。
+- 启用的 extension 可在 `extension.json` 里贡献 `mcpServers`；`.mcp.json` 同名优先。扩展贡献的工具名是 `{extensionName}/{wireName}`，`CallTool` 用原始 `WireName`。见 [extension.md](extension.md)。
 - 设置页没有真实 session，使用 `resources.Loader.Scan(cwd)` 展示当前磁盘配置，不创建缓存或连接。
 
 ## 请求前准备

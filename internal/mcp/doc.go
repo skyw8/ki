@@ -4,6 +4,9 @@
 // project wins). A process-wide Toggle (toggles.json) filters names — a
 // disabled server is omitted from that turn and is never spawned for it.
 //
+// Extension packages may contribute extra mcpServers; user .mcp.json wins on
+// name. Tools from extension sources are exposed as {extension}/{wireName}.
+//
 // Load performs an uncached static config merge; internal/resources pins the
 // config and discovered tool catalog per session. Manager owns only live,
 // session-isolated official SDK ClientSessions. Prompt preparation connects

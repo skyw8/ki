@@ -32,11 +32,18 @@ func Filter(all []Skill, toggle session.Toggle) []Skill {
 	return out
 }
 
+// Root is one extra skill directory inserted after project .ki/skills and
+// before ancestor .agents/skills.
+type Root struct {
+	Path   string
+	Source string
+}
+
 // Scan discovers every skill without caching or applying a toggle.
-func Scan(home, cwd string) []Skill {
+func Scan(home, cwd string, extra ...Root) []Skill {
 	seen := map[string]bool{}
 	var out []Skill
-	for _, dir := range scanDirs(home, cwd) {
+	for _, dir := range scanDirs(home, cwd, extra) {
 		walkSkillRoot(dir.path, func(path string) {
 			s, err := load(path)
 			if err != nil || s.Name == "" || seen[s.Name] {
@@ -88,7 +95,7 @@ func walkSkillRoot(root string, visit func(path string)) {
 	}
 }
 
-func scanDirs(home, cwd string) []scanDir {
+func scanDirs(home, cwd string, extra []Root) []scanDir {
 	var dirs []scanDir
 	if home != "" {
 		dirs = append(dirs, scanDir{filepath.Join(home, "skills"), "home"})
@@ -98,6 +105,14 @@ func scanDirs(home, cwd string) []scanDir {
 	}
 	if cwd != "" {
 		dirs = append(dirs, scanDir{filepath.Join(cwd, ".ki", "skills"), "project"})
+	}
+	for _, r := range extra {
+		if r.Path == "" {
+			continue
+		}
+		dirs = append(dirs, scanDir{path: r.Path, source: r.Source})
+	}
+	if cwd != "" {
 		// ancestors' .agents/skills up to git root (or cwd only if no git)
 		root := gitRoot(cwd)
 		stop := cwd

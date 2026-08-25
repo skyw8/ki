@@ -1,4 +1,4 @@
-// Package toggles stores global skills/MCP enablement and the busy-message
+// Package toggles stores global skills/MCP/extension enablement and the busy-message
 // delivery default in {KI_HOME}/toggles.json.
 //
 // Discovery still uses home + cwd; this file only records disabled names

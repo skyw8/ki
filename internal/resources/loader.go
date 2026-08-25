@@ -5,8 +5,10 @@ import (
 	"sync"
 	"time"
 
+	"ki/internal/extension"
 	"ki/internal/mcp"
 	"ki/internal/skills"
+	"ki/internal/toggles"
 )
 
 // Snapshot is the complete immutable resource view pinned to one session.
@@ -14,10 +16,12 @@ type Snapshot struct {
 	Environment        Environment
 	ContextFiles       []ContextFile
 	AppendSystemPrompt string
+	ExtensionPrompts   []extension.PromptLayer
 	Skills             []skills.Skill
 	Prompts            []PromptTemplate
 	MCP                mcp.File
 	MCPServers         map[string]mcp.ServerState
+	Extensions         []extension.Descriptor
 	Revision           uint64
 }
 
@@ -58,14 +62,44 @@ func (l *Loader) Scan(cwd string) Snapshot {
 }
 
 func (l *Loader) scan(cwd string) Snapshot {
+	tg := toggles.Load(l.home)
+	found := extension.Discover(l.home, cwd, tg.Extensions)
+	prompts := scanPromptTemplates(l.home, cwd)
+	var extraDirs []struct {
+		Path      string
+		Extension string
+	}
+	for _, d := range extension.CommandDirs(found.Enabled) {
+		extraDirs = append(extraDirs, struct {
+			Path      string
+			Extension string
+		}{Path: d.Path, Extension: d.Extension})
+	}
+	extPrompts := loadExtensionPromptTemplates(extraDirs)
+	byName := map[string]PromptTemplate{}
+	for _, t := range prompts {
+		byName[t.Name] = t
+	}
+	for _, t := range extPrompts {
+		if _, exists := byName[t.Name]; exists {
+			continue
+		}
+		byName[t.Name] = t
+	}
+	mergedPrompts := make([]PromptTemplate, 0, len(byName))
+	for _, t := range byName {
+		mergedPrompts = append(mergedPrompts, t)
+	}
 	return Snapshot{
 		Environment:        loadEnvironment(l.home, cwd, time.Now()),
 		ContextFiles:       collectContextFiles(l.home, cwd),
 		AppendSystemPrompt: loadAppendSystemPrompt(l.home, cwd),
-		Skills:             skills.Scan(l.home, cwd),
-		Prompts:            scanPromptTemplates(l.home, cwd),
-		MCP:                mcp.Load(l.home, cwd),
+		ExtensionPrompts:   extension.PromptLayers(found.Enabled),
+		Skills:             skills.Scan(l.home, cwd, extension.SkillRoots(found.Enabled)...),
+		Prompts:            mergedPrompts,
+		MCP:                extension.MergeMCP(mcp.Load(l.home, cwd), found.Enabled),
 		MCPServers:         map[string]mcp.ServerState{},
+		Extensions:         found.All,
 	}
 }
 

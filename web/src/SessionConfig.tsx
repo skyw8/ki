@@ -3,7 +3,7 @@ import type { Client } from './api'
 import { ICheck, IEdit, IRegen, IWrench } from './icons'
 import { useI18n, type MsgKey } from './i18n'
 import { toast } from './toast'
-import type { CatalogMcp, CatalogSkill, SessionCommand, SessionDetail } from './types'
+import type { CatalogExtension, CatalogMcp, CatalogSkill, SessionCommand, SessionDetail } from './types'
 
 const SOURCE_KEY: Record<string, MsgKey> = {
   home: 'cfg.src.home',
@@ -16,6 +16,7 @@ const INFO_SECTIONS = [
   { id: 'info-session', label: 'cfg.session', children: [] },
   { id: 'info-skills', label: 'cfg.skills', children: [] },
   { id: 'info-mcp', label: 'cfg.mcp', children: [] },
+  { id: 'info-extensions', label: 'cfg.extensions', children: [] },
   { id: 'info-commands', label: 'cfg.commands', children: [] },
 ] as const
 
@@ -40,7 +41,7 @@ export function SessionConfig({
   sessionId: string | null
   workspaceTitle?: string
   busy?: boolean
-  onEdit?: (page: 'skills' | 'mcp') => void
+  onEdit?: (page: 'skills' | 'mcp' | 'extensions') => void
 }) {
   const { t } = useI18n()
   const [detail, setDetail] = useState<SessionDetail | null>(null)
@@ -50,6 +51,7 @@ export function SessionConfig({
   const model = detail ? [detail.provider, detail.model].filter(Boolean).join('/') : ''
   const skills = detail?.availableSkills ?? []
   const mcps = detail?.availableMcp ?? []
+  const extensions = detail?.availableExtensions ?? []
   const commands = detail?.commands ?? []
   const outlineGroups = useMemo<OutlineItem[]>(() => [
     { id: 'info-session', label: t('cfg.session') },
@@ -68,11 +70,16 @@ export function SessionConfig({
       })),
     },
     {
+      id: 'info-extensions',
+      label: t('cfg.extensions'),
+      children: extensions.map((item, i) => ({ id: `info-extension-${i}`, label: item.name })),
+    },
+    {
       id: 'info-commands',
       label: t('cfg.commands'),
       children: commands.map((item, i) => ({ id: `info-command-${i}`, label: `/${item.name}` })),
     },
-  ], [commands, mcps, skills, t])
+  ], [commands, extensions, mcps, skills, t])
   const outlineItems = useMemo(() => flattenOutline(outlineGroups), [outlineGroups])
 
   const load = useCallback(async () => {
@@ -229,6 +236,29 @@ export function SessionConfig({
             )}
           </section>
 
+          <section className="cfg-block" id="info-extensions">
+            <h3 className="cfg-h">{t('cfg.extensions')}</h3>
+            {extensions.length === 0 && !loading ? (
+              <p className="cfg-empty">{t('cfg.extensionsEmpty')}</p>
+            ) : (
+              <ul className="cfg-list">
+                {extensions.map((item, i) => (
+                  <li key={item.name} id={`info-extension-${i}`} className="cfg-row" data-testid="cfg-extension" data-name={item.name}>
+                    <div className="cfg-copy">
+                      <div className="cfg-name">
+                        {item.name}
+                        {item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
+                        <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
+                      </div>
+                      {item.description ? <p className="cfg-desc">{item.description}</p> : null}
+                      {item.error ? <p className="cfg-desc settings-error" role="alert">{item.error}</p> : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
           <section className="cfg-block" id="info-commands">
             <h3 className="cfg-h">{t('cfg.commands')}</h3>
             {commands.length === 0 && !loading ? (
@@ -283,18 +313,18 @@ export function SettingsToggles({
   api,
   workspaceId,
 }: {
-  kind: 'skills' | 'mcp'
+  kind: 'skills' | 'mcp' | 'extensions'
   api: Client
   workspaceId?: string | null
 }) {
   const { t } = useI18n()
-  const [items, setItems] = useState<Array<CatalogSkill | CatalogMcp>>([])
+  const [items, setItems] = useState<Array<CatalogSkill | CatalogMcp | CatalogExtension>>([])
   const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const next = kind === 'skills' ? await api.skills(workspaceId) : await api.mcpServers(workspaceId)
+      const next = kind === 'skills' ? await api.skills(workspaceId) : kind === 'mcp' ? await api.mcpServers(workspaceId) : await api.extensions(workspaceId)
       setItems(next)
     } catch (e) {
       toast.from(e)
@@ -311,8 +341,9 @@ export function SettingsToggles({
     try {
       const disabled = next.filter(s => !s.enabled).map(s => s.name)
       if (kind === 'skills') await api.patchSkills(disabled)
-      else await api.patchMcp(disabled)
-      const listed = kind === 'skills' ? await api.skills(workspaceId) : await api.mcpServers(workspaceId)
+      else if (kind === 'mcp') await api.patchMcp(disabled)
+      else await api.patchExtensions(disabled)
+      const listed = kind === 'skills' ? await api.skills(workspaceId) : kind === 'mcp' ? await api.mcpServers(workspaceId) : await api.extensions(workspaceId)
       setItems(listed)
     } catch (e) {
       setItems(prev)
@@ -320,20 +351,22 @@ export function SettingsToggles({
     }
   }
 
-  const empty = kind === 'skills' ? t('cfg.skillsEmpty') : t('cfg.mcpEmpty')
+  const empty = kind === 'skills' ? t('cfg.skillsEmpty') : kind === 'mcp' ? t('cfg.mcpEmpty') : t('cfg.extensionsEmpty')
+  const title = kind === 'skills' ? t('settings.skills') : kind === 'mcp' ? t('settings.mcp') : t('settings.extensions')
+  const hint = kind === 'skills' ? t('settings.skillsHint') : kind === 'mcp' ? t('settings.mcpHint') : t('settings.extensionsHint')
   return (
     <div className="preference-page" data-testid={`${kind}-settings`}>
       <header className="settings-page-title">
         <div>
-          <h3>{kind === 'skills' ? t('settings.skills') : t('settings.mcp')}</h3>
-          <p>{kind === 'skills' ? t('settings.skillsHint') : t('settings.mcpHint')}</p>
+          <h3>{title}</h3>
+          <p>{hint}</p>
         </div>
         <ReloadButton testid={`${kind}-reload`} run={async () => { await api.reload(); await load() }} />
       </header>
       {items.length === 0 && !loading ? <p className="cfg-empty">{empty}</p> : (
         <ul className="cfg-list">
           {items.map(item => (
-            <li key={item.name} className="cfg-row" data-testid={`cfg-${kind === 'skills' ? 'skill' : 'mcp'}`} data-name={item.name}>
+            <li key={item.name} className="cfg-row" data-testid={`cfg-${kind === 'skills' ? 'skill' : kind === 'mcp' ? 'mcp' : 'extension'}`} data-name={item.name}>
               <div className="cfg-copy">
                 <div className="cfg-name">
                   {item.name}
@@ -343,7 +376,7 @@ export function SettingsToggles({
                 {'command' in item ? <p className="cfg-desc">{[item.command, ...(item.args ?? [])].filter(Boolean).join(' ')}</p> : null}
               </div>
               <Switch
-                testid={`${kind === 'skills' ? 'skill' : 'mcp'}-on-${item.name}`}
+                testid={`${kind === 'skills' ? 'skill' : kind === 'mcp' ? 'mcp' : 'extension'}-on-${item.name}`}
                 on={item.enabled}
                 onChange={on => void patch(items.map(s => s.name === item.name ? { ...s, enabled: on } : s))}
               />

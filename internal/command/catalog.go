@@ -16,6 +16,7 @@ type Item struct {
 	Description  string `json:"description,omitempty"`
 	ArgumentHint string `json:"argumentHint,omitempty"`
 	Source       string `json:"source"`
+	Extension    string `json:"extension,omitempty"`
 }
 
 // Catalog lists builtins, prompt templates, and enabled skills.
@@ -26,7 +27,7 @@ func Catalog(snapshot resources.Snapshot, skillsToggle session.Toggle) []Item {
 	}
 	for _, t := range snapshot.Prompts {
 		out = append(out, Item{
-			Name: t.Name, Description: t.Description, ArgumentHint: t.ArgumentHint, Source: "prompt",
+			Name: t.Name, Description: t.Description, ArgumentHint: t.ArgumentHint, Source: "prompt", Extension: t.Extension,
 		})
 	}
 	for _, sk := range skills.Filter(snapshot.Skills, skillsToggle) {
@@ -36,7 +37,7 @@ func Catalog(snapshot resources.Snapshot, skillsToggle session.Toggle) []Item {
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Source != out[j].Source {
-			order := map[string]int{"builtin": 0, "prompt": 1, "skill": 2}
+			order := map[string]int{"builtin": 0, "prompt": 1, "extension": 2, "skill": 3}
 			return order[out[i].Source] < order[out[j].Source]
 		}
 		return out[i].Name < out[j].Name
@@ -45,8 +46,34 @@ func Catalog(snapshot resources.Snapshot, skillsToggle session.Toggle) []Item {
 }
 
 // ResolveUnknown upgrades KindUnknown to KindTemplate when a prompt file exists.
+// User/home templates (Extension == "") win over extension markdown.
 func ResolveUnknown(p Parsed, snapshot resources.Snapshot) Parsed {
 	if p.Kind != KindUnknown {
+		return p
+	}
+	if t, ok := templateByName(snapshot, p.Name); ok && t.Extension == "" {
+		p.Kind = KindTemplate
+		return p
+	}
+	if t, ok := templateByName(snapshot, p.Name); ok {
+		p.Kind = KindTemplate
+		_ = t
+	}
+	return p
+}
+
+// ResolveCommand classifies a slash against snapshot templates and runtime
+// handlers. User/home prompt files beat extension CommandSpec.
+func ResolveCommand(p Parsed, snapshot resources.Snapshot, runtimeNames map[string]struct{}) Parsed {
+	if p.Kind != KindUnknown {
+		return p
+	}
+	if t, ok := templateByName(snapshot, p.Name); ok && t.Extension == "" {
+		p.Kind = KindTemplate
+		return p
+	}
+	if _, ok := runtimeNames[p.Name]; ok {
+		p.Kind = KindExtension
 		return p
 	}
 	if _, ok := templateByName(snapshot, p.Name); ok {

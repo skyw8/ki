@@ -6,11 +6,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 
 	"ki/internal/loop"
 	"ki/internal/mcp"
+	"ki/internal/resources"
 	"ki/internal/session"
 	"ki/internal/toggles"
 	"ki/internal/types"
@@ -121,6 +123,87 @@ func (s *Server) patchMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Reload()
 	s.getMCP(w, r)
+}
+
+func (s *Server) getExtensions(w http.ResponseWriter, r *http.Request) {
+	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
+	snapshot := s.resources.Scan(cwd)
+	writeJSON(w, 200, map[string]any{"items": s.extensionCatalog(snapshot)})
+}
+
+func (s *Server) patchExtensions(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Disabled []string `json:"disabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	f := toggles.Load(s.cfg.Home)
+	f.Extensions = session.Toggle{Disabled: body.Disabled}
+	if err := toggles.Save(s.cfg.Home, f); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.Reload()
+	s.getExtensions(w, r)
+}
+
+func (s *Server) extensionCatalog(snapshot resources.Snapshot) []map[string]any {
+	tg := toggles.Load(s.cfg.Home)
+	items := []map[string]any{}
+	for _, d := range snapshot.Extensions {
+		items = append(items, map[string]any{
+			"name":         d.Name,
+			"version":      d.Version,
+			"description":  d.Description,
+			"path":         d.Path,
+			"source":       d.Scope,
+			"enabled":      tg.Extensions.Allowed(d.Name),
+			"capabilities": d.Capabilities,
+			"intercept":    d.Intercept,
+			"error":        d.Error,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		a, _ := items[i]["name"].(string)
+		b, _ := items[j]["name"].(string)
+		return a < b
+	})
+	return items
+}
+
+func (s *Server) onExtensionError(sessionID, name, capability, code, message string) {
+	ev := loop.Event{
+		Type:        loop.ExtensionError,
+		Server:      name,
+		Reason:      code,
+		MessageText: message,
+	}
+	if dir, ok := s.sidx.Lookup(sessionID); ok {
+		entry, err := session.AppendSidebandEvent(dir, string(loop.ExtensionError), map[string]any{
+			"extension": name, "capability": capability, "code": code, "message": message,
+		})
+		if err != nil {
+			slog.Warn("persist extension error", "session_id", sessionID, "extension", name, "err", err)
+		} else {
+			ev.EntryID = entry.ID
+		}
+	}
+	s.mu.Lock()
+	if st := s.runs[sessionID]; st != nil {
+		st.mu.Lock()
+		st.evs = append(st.evs, ev)
+		st.wait.Broadcast()
+		st.mu.Unlock()
+	}
+	for subscriber := range s.mcpSubscribers[sessionID] {
+		select {
+		case subscriber <- ev:
+		default:
+		}
+	}
+	s.mu.Unlock()
 }
 
 // occupy claims exclusive run ownership for id. The caller must pair it with

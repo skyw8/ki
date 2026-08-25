@@ -8,10 +8,10 @@
 // effort, and user home.
 // Workspaces live in {KI_HOME}/workspaces.json. Session cwd comes from a
 // workspace (or a tmp+ workspace). GET /v1/sessions/{id} includes a
-// read-only catalog (availableSkills / availableMcp with cached MCP tools,
-// commands[]). PATCH /v1/sessions/{id} writes model / thinking / title /
-// pin / leaf. Skills and MCP enablement is {KI_HOME}/toggles.json via
-// GET/PATCH /v1/skills and /v1/mcp.
+// read-only catalog (availableSkills / availableMcp / availableExtensions
+// with cached MCP tools, commands[]). PATCH /v1/sessions/{id} writes model /
+// thinking / title / pin / leaf. Skills, MCP, and extension enablement is
+// {KI_HOME}/toggles.json via GET/PATCH /v1/skills, /v1/mcp, and /v1/extensions.
 // Prompt accepts content blocks and an optional branch parent, then prepares
 // session-isolated MCP SDK connections before assembling the model request. GET /v1/fs
 // optionally lists files or streams authenticated image, plain-text/code, and

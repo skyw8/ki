@@ -151,6 +151,16 @@ export class Client {
     return this.json('/v1/mcp', { method: 'PATCH', body: JSON.stringify({ disabled }) })
   }
 
+  async extensions(workspaceId?: string | null): Promise<import('./types').CatalogExtension[]> {
+    const q = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
+    const got = await this.json<{ items: import('./types').CatalogExtension[] }>(`/v1/extensions${q}`)
+    return got.items ?? []
+  }
+
+  patchExtensions(disabled: string[]): Promise<{ items: import('./types').CatalogExtension[] }> {
+    return this.json('/v1/extensions', { method: 'PATCH', body: JSON.stringify({ disabled }) })
+  }
+
   abort(id: string): Promise<void> {
     return this.json(`/v1/sessions/${id}/abort`, { method: 'POST' })
   }

@@ -151,6 +151,18 @@ export type CatalogSkill = {
   enabled: boolean
 }
 
+export type CatalogExtension = {
+  name: string
+  version?: string
+  description?: string
+  path?: string
+  source?: string
+  enabled: boolean
+  capabilities?: string[]
+  intercept?: string[]
+  error?: string
+}
+
 export type CatalogMcp = {
   name: string
   command?: string
@@ -167,7 +179,8 @@ export type SessionCommand = {
   name: string
   description?: string
   argumentHint?: string
-  source: 'builtin' | 'prompt' | 'skill' | string
+  source: 'builtin' | 'prompt' | 'skill' | 'extension' | string
+  extension?: string
 }
 
 export type QueuedItem = {
@@ -181,6 +194,7 @@ export type SessionDetail = SessionInfo & {
   messages?: Message[]
   availableSkills?: CatalogSkill[]
   availableMcp?: CatalogMcp[]
+  availableExtensions?: CatalogExtension[]
   commands?: SessionCommand[]
   queued?: QueuedItem[]
 }

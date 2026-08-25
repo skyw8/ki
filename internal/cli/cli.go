@@ -56,7 +56,7 @@ func newRootCommand() *cobra.Command {
 	}
 	root.Version = Version
 	root.SetVersionTemplate("ki {{.Version}}\n")
-	root.AddCommand(newServeCommand(), newRunCommand(), newConfigCommand(), newSessionCommand(), newReloadCommand(), newVersionCommand())
+	root.AddCommand(newServeCommand(), newRunCommand(), newConfigCommand(), newSessionCommand(), newReloadCommand(), newExtensionCommand(), newVersionCommand())
 	return root
 }
 
@@ -123,6 +123,47 @@ func newRunCommand() *cobra.Command {
 	cmd.Flags().StringVar(&f.Addr, "addr", "", "server listen address when starting one")
 	cmd.Flags().BoolVar(&f.Steer, "steer", false, "insert into the current run when the session is busy")
 	cmd.Flags().BoolVar(&f.Queue, "queue", false, "queue until the current run finishes when the session is busy")
+	return cmd
+}
+
+func newExtensionCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "extension",
+		Short: "List discovered extensions",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+	var workspaceID string
+	list := &cobra.Command{
+		Use:   "list",
+		Short: "List extensions visible to a workspace",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return withConfig("client", nil, func(cfg config.Config) error {
+				sf, err := server.ReadServerFile(cfg.Home)
+				if err != nil || sf.Addr == "" || !ping("http://"+sf.Addr, sf.Token) {
+					return errNoLiveServer
+				}
+				q := "/v1/extensions"
+				if workspaceID != "" {
+					q += "?workspaceId=" + workspaceID
+				}
+				var out struct {
+					Items []map[string]any `json:"items"`
+				}
+				if err := doJSONContext(context.Background(), "http://"+sf.Addr, sf.Token, http.MethodGet, q, nil, &out); err != nil {
+					return err
+				}
+				for _, item := range out.Items {
+					fmt.Printf("%s\tenabled=%v\tsource=%v\n", item["name"], item["enabled"], item["source"])
+				}
+				return nil
+			})
+		},
+	}
+	list.Flags().StringVar(&workspaceID, "workspace-id", "", "workspace id for project extensions")
+	cmd.AddCommand(list)
 	return cmd
 }
 

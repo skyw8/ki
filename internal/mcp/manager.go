@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,7 +94,7 @@ func (m *Manager) Prepare(ctx context.Context, sessionID string, file File, togg
 		wg.Go(func() {
 			loadCtx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
 			defer cancel()
-			state, tools := m.prepareServer(loadCtx, sessionID, name, spec, cached[name])
+			state, tools := m.prepareServer(loadCtx, sessionID, name, spec, file.Sources[name], cached[name])
 			ch <- item{name: name, state: state, tools: tools}
 		})
 	}
@@ -114,7 +115,7 @@ func (m *Manager) Prepare(ctx context.Context, sessionID string, file File, togg
 	return result
 }
 
-func (m *Manager) prepareServer(ctx context.Context, sessionID, name string, spec ServerSpec, cached ServerState) (ServerState, []loop.Tool) {
+func (m *Manager) prepareServer(ctx context.Context, sessionID, name string, spec ServerSpec, source string, cached ServerState) (ServerState, []loop.Tool) {
 	if err := ValidateServerSpec(spec); err != nil {
 		return failedState(err), nil
 	}
@@ -136,11 +137,43 @@ func (m *Manager) prepareServer(ctx context.Context, sessionID, name string, spe
 	if state.Status != StatusStale {
 		state.Status = StatusReady
 	}
+	state.Tools = applyExtensionToolNames(state.Tools, source)
 	tools := make([]loop.Tool, 0, len(state.Tools))
 	for _, definition := range state.Tools {
 		tools = append(tools, sdkTool{manager: m, conn: conn, sessionID: sessionID, server: name, definition: definition})
 	}
 	return state, tools
+}
+
+func applyExtensionToolNames(defs []ToolDefinition, source string) []ToolDefinition {
+	const p = "extension:"
+	if !strings.HasPrefix(source, p) {
+		return defs
+	}
+	ext := strings.TrimPrefix(source, p)
+	if ext == "" {
+		return defs
+	}
+	out := make([]ToolDefinition, 0, len(defs))
+	seen := map[string]bool{}
+	for _, def := range defs {
+		wire := def.Name
+		if def.WireName != "" {
+			wire = def.WireName
+		}
+		if strings.Contains(wire, "/") {
+			continue
+		}
+		name := ext + "/" + wire
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		def.WireName = wire
+		def.Name = name
+		out = append(out, def)
+	}
+	return out
 }
 
 func failedState(err error) ServerState {
@@ -378,7 +411,11 @@ func (t sdkTool) Validate(args map[string]any) error {
 }
 
 func (t sdkTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
-	result, err := t.conn.session.CallTool(ctx, &mcp.CallToolParams{Name: t.definition.Name, Arguments: args})
+	callName := t.definition.Name
+	if t.definition.WireName != "" {
+		callName = t.definition.WireName
+	}
+	result, err := t.conn.session.CallTool(ctx, &mcp.CallToolParams{Name: callName, Arguments: args})
 	if err != nil {
 		// A transport error does not prove the server skipped execution. Retrying
 		// here can duplicate non-idempotent side effects, so reconnect next prompt.

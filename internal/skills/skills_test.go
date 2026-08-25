@@ -27,6 +27,40 @@ func TestDiscoverHonorsToggle(t *testing.T) {
 	}
 }
 
+func TestScanExtraRootsAfterProjectSkills(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	proj := filepath.Join(cwd, ".ki", "skills", "shared")
+	if err := os.MkdirAll(proj, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "SKILL.md"), []byte("---\nname: shared\ndescription: project\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ext := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ext, "SKILL.md"), []byte("---\nname: shared\ndescription: extension\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := Scan(home, cwd, Root{Path: ext, Source: "extension:pack"})
+	if len(got) != 1 || got[0].Description != "project" {
+		t.Fatalf("project skill should win: %+v", got)
+	}
+	extOnly := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extOnly, "SKILL.md"), []byte("---\nname: fromext\ndescription: e\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got = Scan(home, cwd, Root{Path: extOnly, Source: "extension:pack"})
+	found := false
+	for _, s := range got {
+		if s.Name == "fromext" && s.Source == "extension:pack" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing extra skill: %+v", got)
+	}
+}
+
 func TestListKeepsDisabledAndTagsSource(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()

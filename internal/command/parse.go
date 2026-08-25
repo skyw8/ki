@@ -19,6 +19,8 @@ const (
 	KindTemplate
 	// KindUnknown is a slash command with no matching resource.
 	KindUnknown
+	// KindExtension is a runtime handler registered by an extension sidecar.
+	KindExtension
 )
 
 // Parsed is one slash (or a normal prompt).

@@ -11,10 +11,11 @@ System prompt 按以下顺序组装：
 3. **可用工具**：逐项输出本轮工具的名称和简短说明；没有工具时输出 `(none)`。这里包括内置工具以及已经绑定的 MCP 工具，并补充项目可能提供其他自定义工具。
 4. **通用行为约束**：要求回答简洁，并在操作文件时清晰展示路径。
 5. **追加系统指令**：读取项目级 `<cwd>/.ki/prompt/APPEND_SYSTEM.md`；不存在或不可读时读取全局 `{KI_HOME}/prompt/APPEND_SYSTEM.md`。项目文件覆盖全局文件，内容位于通用行为约束之后、Skills 之前，不替换 Ki 的基础 prompt。
-6. **Skills**：仅当本轮存在 `Read` 工具且至少有一个启用的 skill 时输出。每个 skill 包含名称、描述和 `SKILL.md` 路径，同时说明按需读取及相对路径解析规则。
-7. **项目指令**：输出 AGENTS/CLAUDE 文件的路径和完整内容。先加载 `{KI_HOME}` 下的全局文件，再按 git 仓库根目录到 cwd 的顺序加载；不在 git 仓库中时只加载 cwd。每个目录按 `AGENTS.override.md`、`AGENTS.md`、`AGENTS.MD`、`CLAUDE.md`、`CLAUDE.MD` 的优先级选取一个文件。
-8. **运行系统**：输出 OS（macOS、Windows、Linux 或 WSL）和架构。
-9. **当前环境**：输出 session cwd、资源快照创建日期和时区。
+6. **扩展追加**：启用的 extension `prompt.append` 文件，按全局名序再项目名序，每段 `<extension_instructions name="…">`。用户第 5 层仍覆盖全局 APPEND；扩展层在 Skills 之前。
+7. **Skills**：仅当本轮存在 `Read` 工具且至少有一个启用的 skill 时输出。每个 skill 包含名称、描述和 `SKILL.md` 路径，同时说明按需读取及相对路径解析规则。
+8. **项目指令**：输出 AGENTS/CLAUDE 文件的路径和完整内容。先加载 `{KI_HOME}` 下的全局文件，再按 git 仓库根目录到 cwd 的顺序加载；不在 git 仓库中时只加载 cwd。每个目录按 `AGENTS.override.md`、`AGENTS.md`、`AGENTS.MD`、`CLAUDE.md`、`CLAUDE.MD` 的优先级选取一个文件。
+9. **运行系统**：输出 OS（macOS、Windows、Linux 或 WSL）和架构。
+10. **当前环境**：输出 session cwd、资源快照创建日期和时区。
 
 Prompt templates 不直接进入 system prompt，只用于 slash command 展开。`.mcp.json` 也不直接进入 system prompt；启用并成功绑定的 MCP tools 通过“可用工具”层体现。
 
@@ -23,7 +24,7 @@ Prompt templates 不直接进入 system prompt，只用于 slash command 展开�
 以下情况会执行全局 reload：
 
 - `POST /v1/reload` 或 `/reload`。
-- skills 或 MCP Toggle 修改成功。
+- skills、MCP 或 extensions Toggle 修改成功。
 - 自动或手动 compaction 成功。
 
 Reload 会清空空闲 session 的资源快照并关闭 MCP 连接。正在跑 prompt 或 compact 的 session 把 reload 排到 `occupy` 对应的 `release` 之后。删除 session 时只清理该 session 的快照。
