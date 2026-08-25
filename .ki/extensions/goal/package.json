@@ -1,0 +1,16 @@
+{
+  "name": "ki-goal",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/command.test.ts src/prompts.test.ts src/sidecar.test.ts"
+  },
+  "dependencies": {
+    "tsx": "^4.20.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2"
+  }
+}

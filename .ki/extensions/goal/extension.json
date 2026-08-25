@@ -1,0 +1,13 @@
+{
+  "name": "goal",
+  "version": "0.1.0",
+  "description": "Session-scoped /goal: continue from idle until complete, blocked, paused, or the continuation cap.",
+  "capabilities": ["command", "tool", "lifecycle"],
+  "failClosed": false,
+  "runtime": {
+    "kind": "rpc",
+    "command": "node",
+    "args": ["--import", "tsx", "src/index.ts"],
+    "install": ["npm", "install"]
+  }
+}

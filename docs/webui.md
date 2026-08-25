@@ -83,7 +83,6 @@ Host **不解析** panel 里的业务字段。插件自己决定列哪些 action
 ```json
 {
   "title": "Goal",
-  "summary": "说你好",
   "sections": [
     {
       "heading": "Details",
@@ -108,7 +107,7 @@ Host **不解析** panel 里的业务字段。插件自己决定列哪些 action
 | 字段 | 壳 |
 |---|---|
 | `title` | Modal 标题 |
-| `summary` | 摘要卡片（目标、说明） |
+| `summary` | 只读摘要卡片。和 `fields` 里已有的值不要重复；目标正文放 field，空状态才用 summary 提示 |
 | `sections[].heading` | 小节标题 |
 | `sections[].items[]` | `{label,value}` 属性表；`label` 也认 `key` / `name` |
 | `sections[].kv` | 对象展成属性表 |
