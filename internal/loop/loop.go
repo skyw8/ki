@@ -67,6 +67,9 @@ const (
 	ExtensionUIPrompt EventType = "extension_ui_prompt"
 	// AgentSettled reports occupy wrap-up finished and a new occupy may start.
 	AgentSettled EventType = "agent_settled"
+	// RuntimeReady reports session-open Prepare finished (extensions + MCP).
+	// Failure still counts as ready so the composer can unlock.
+	RuntimeReady EventType = "runtime_ready"
 )
 
 // Event is a loop event (pi field names).

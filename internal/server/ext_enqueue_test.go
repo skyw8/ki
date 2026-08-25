@@ -453,3 +453,150 @@ func TestUIActionHTTP(t *testing.T) {
 		t.Fatalf("action %d", status)
 	}
 }
+
+func waitRuntimeReady(t *testing.T, hs *httptest.Server, id string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(8 * time.Second)
+	var got map[string]any
+	for time.Now().Before(deadline) {
+		_, got = postJSON(t, hs, http.MethodGet, "/v1/sessions/"+id, nil)
+		rt, _ := got["runtime"].(map[string]any)
+		if rt["ready"] == true {
+			return got
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("runtime not ready: %+v", got["runtime"])
+	return got
+}
+
+func installSidecar(t *testing.T, home, name, bin, caps, envJSON string) {
+	t.Helper()
+	dir := filepath.Join(home, "extensions", name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"` + name + `","capabilities":[` + caps + `],"runtime":{"kind":"rpc","command":"` + strings.ReplaceAll(bin, `\`, `\\`) + `"`
+	if envJSON != "" {
+		manifest += `,"env":` + envJSON
+	}
+	manifest += `}}`
+	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGetSessionWarmsRuntimeCommands(t *testing.T) {
+	bin := buildExtSidecar(t)
+	srv, hs := testServer(t)
+	installSidecar(t, srv.cfg.Home, "shipper", bin, `"command"`, "")
+	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{"cwd": t.TempDir()})
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	id, _ := created["id"].(string)
+	got := waitRuntimeReady(t, hs, id)
+	raw, _ := json.Marshal(got["commands"])
+	if !bytes.Contains(raw, []byte(`"ship"`)) {
+		t.Fatalf("commands after GET warmup: %s", raw)
+	}
+}
+
+func TestGetHistoricalSessionWarmsWithoutPrompt(t *testing.T) {
+	bin := buildExtSidecar(t)
+	srv, hs := testServer(t)
+	installSidecar(t, srv.cfg.Home, "goalui", bin, `"lifecycle"`, `{"KI_SET_UI":"1"}`)
+	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{"cwd": t.TempDir()})
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	id, _ := created["id"].(string)
+	waitRuntimeReady(t, hs, id)
+	deadline := time.Now().Add(3 * time.Second)
+	var raw []byte
+	for time.Now().Before(deadline) {
+		_, got := postJSON(t, hs, http.MethodGet, "/v1/sessions/"+id, nil)
+		raw, _ = json.Marshal(got["extensionUi"])
+		if bytes.Contains(raw, []byte("Goal · active")) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("chip missing after open warmup: %s", raw)
+}
+
+func TestListDoesNotWarmRuntime(t *testing.T) {
+	bin := buildExtSidecar(t)
+	srv, hs := testServer(t)
+	marker := filepath.Join(t.TempDir(), "sidecar-spawned")
+	installSidecar(t, srv.cfg.Home, "mark", bin, `"lifecycle"`, `{"KI_MARKER":"`+strings.ReplaceAll(marker, `\`, `\\`)+`"}`)
+	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{"cwd": t.TempDir()})
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	id, _ := created["id"].(string)
+	waitRuntimeReady(t, hs, id)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("create/GET should spawn: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	status, reload := postJSON(t, hs, http.MethodPost, "/v1/reload", map[string]any{})
+	if status != http.StatusOK {
+		t.Fatalf("reload %d %+v", status, reload)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("reload without a watcher must not re-spawn")
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	time.Sleep(200 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("GET /v1/sessions list spawned sidecar")
+	}
+	waitRuntimeReady(t, hs, id)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("GET by id should spawn: %v", err)
+	}
+}
+
+func TestRuntimeReadyNotification(t *testing.T) {
+	bin := buildExtSidecar(t)
+	srv, hs := testServer(t)
+	installSidecar(t, srv.cfg.Home, "slow", bin, `"lifecycle"`, `{"KI_INIT_SLEEP_MS":"200"}`)
+	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{"cwd": t.TempDir()})
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	id, _ := created["id"].(string)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events?notifications=1", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	buf := make([]byte, 4096)
+	got := ""
+	for {
+		n, readErr := res.Body.Read(buf)
+		if n > 0 {
+			got += string(buf[:n])
+			if strings.Contains(got, "runtime_ready") {
+				return
+			}
+		}
+		if readErr != nil {
+			t.Fatalf("no runtime_ready in %q: %v", got, readErr)
+		}
+	}
+}

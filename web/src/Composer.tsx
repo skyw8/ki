@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { IAttach, IClose, ICommand, IFile, ISend, IStop } from './icons'
 import type { Client } from './api'
 import { AttachmentImage } from './AttachmentImage'
-import { CommandPalette } from './CommandPalette'
+import { CommandPalette, type PalettePick } from './CommandPalette'
 import { Select } from './Select'
 import { useI18n } from './i18n'
 import type { SessionCommand } from './types'
@@ -64,7 +64,7 @@ function SessionStatsLine({ stats, t }: { stats: SessionStats; t: ReturnType<typ
   )
 }
 
-export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, onAttach, onFiles, onCancel, busy, uploading, disabled, hero, cwd: _cwd, model, onPickModel, thinkingLevels, thinkingEffort, defaultThinking, onThinking, contextUsage, stats, mode = 'new', commands = [], onEnsureSession, hasQueued = false }: {
+export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, onAttach, onFiles, onCancel, busy, uploading, disabled, loading, hero, cwd: _cwd, model, onPickModel, thinkingLevels, thinkingEffort, defaultThinking, onThinking, contextUsage, stats, mode = 'new', commands = [], onEnsureSession, hasQueued = false }: {
   api: Client
   draft: Draft
   onChange: (draft: Draft) => void
@@ -77,6 +77,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   busy: boolean
   uploading?: boolean
   disabled?: boolean
+  loading?: boolean
   hero?: boolean
   cwd?: string
   model?: string
@@ -95,6 +96,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   const { t } = useI18n()
   const ref = useRef<HTMLTextAreaElement>(null)
   const cmdBtn = useRef<HTMLButtonElement>(null)
+  const card = useRef<HTMLDivElement>(null)
   const [palette, setPalette] = useState(false)
   useEffect(() => {
     const el = ref.current
@@ -103,6 +105,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`
   }, [draft.text])
   useEffect(() => { if (mode === 'edit') ref.current?.focus({ preventScroll: true }) }, [mode])
+  useEffect(() => { if (disabled) setPalette(false) }, [disabled])
   useEffect(() => {
     if (mode === 'new' && draft.text === '/') setPalette(true)
     if (mode === 'new' && !draft.text.startsWith('/')) setPalette(false)
@@ -110,22 +113,32 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   const canSend = !uploading && (!!draft.text.trim() || draft.attachments.length > 0)
   const slashDraft = mode === 'new' && draft.text.trim().startsWith('/')
   const openPalette = () => {
+    if (disabled) return
     void onEnsureSession?.()
     if (!draft.text.startsWith('/')) onChange({ ...draft, text: '/' })
     setPalette(true)
     ref.current?.focus()
   }
-  const insertCommand = (item: SessionCommand) => {
+  // Why: argumentHint is a grey label, not body text. Inserting it (and
+  // completions.join) produced the screenshot capsule `/goal[pause|…]`.
+  const insertCommand = (pick: PalettePick) => {
+    if (pick.kind === 'completion') {
+      onChange({ ...draft, text: `/${pick.item.name} ${pick.value} ` })
+      setPalette(false)
+      requestAnimationFrame(() => ref.current?.focus())
+      return
+    }
+    const item = pick.item
     const prefix = `/${item.name}`
     const already = draft.text === prefix || draft.text.startsWith(`${prefix} `)
-    const text = already ? draft.text : `${prefix}${item.argumentHint || item.source === 'skill' ? ' ' : ''}`
+    const text = already ? draft.text : `${prefix}${item.argumentHint || item.source === 'skill' || item.completions?.length ? ' ' : ''}`
     onChange({ ...draft, text })
-    setPalette(false)
+    if (!item.completions?.length) setPalette(false)
     requestAnimationFrame(() => ref.current?.focus())
   }
   return (
     <div className={`composer-wrap${hero ? ' hero-pos' : ''}${mode === 'edit' ? ' edit-pos' : ''}`}>
-      <div className="composer">
+      <div className="composer" ref={card} data-testid={mode === 'edit' ? 'edit-composer' : 'composer-card'}>
         {draft.attachments.length ? <div className="attachment-strip">
           {draft.attachments.map((a, i) => a.type === 'image' ? (
             <span className="attachment-draft attachment-draft-image" key={`${a.path || a.name}-${i}`} title={a.name || basename(a.path || '')}>
@@ -143,7 +156,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
           ref={ref}
           data-testid={mode === 'edit' ? 'edit-input' : 'composer-input'}
           rows={1}
-          placeholder={disabled ? t('composer.placeholderDisabled') : t('composer.placeholder')}
+          placeholder={loading ? t('composer.placeholderLoading') : disabled ? t('composer.placeholderDisabled') : t('composer.placeholder')}
           value={draft.text}
           disabled={disabled}
           onChange={e => onChange({ ...draft, text: e.target.value })}
@@ -182,16 +195,16 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
         />
         <div className="composer-row">
           {mode === 'new' ? (
-            <button type="button" ref={cmdBtn} className="attach-btn" data-testid="command-btn" aria-label={t('cmd.open')} title={t('cmd.open')} onClick={openPalette}><ICommand /></button>
+            <button type="button" ref={cmdBtn} className="attach-btn" data-testid="command-btn" disabled={disabled} aria-label={t('cmd.open')} title={t('cmd.open')} onClick={openPalette}><ICommand /></button>
           ) : null}
           <button type="button" className="attach-btn" onClick={onAttach} disabled={disabled || busy} aria-label={t('composer.attach')} title={t('composer.attach')}><IAttach /></button>
           {mode === 'new' ? <button type="button" className="model-chip" data-testid="open-model" onClick={onPickModel}>{model || t('composer.pickModel')}</button> : null}
           {mode === 'new' ? (
             <CommandPalette
-              open={palette}
+              open={palette && !disabled}
               query={draft.text}
               items={commands}
-              anchor={cmdBtn}
+              anchor={card}
               onClose={() => setPalette(false)}
               onPick={insertCommand}
             />

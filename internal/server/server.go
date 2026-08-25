@@ -70,6 +70,8 @@ type Server struct {
 	idempotency            map[string]extension.EnqueueResult
 	activeTools            map[string][]string
 	uiAnswers              map[string]chan uiAnswer
+	runtimeMu              sync.Mutex
+	runtime                map[string]*runtimePrep
 }
 
 type runState struct {
@@ -135,6 +137,7 @@ func New(opt Options) (*Server, error) {
 		idempotency:            map[string]extension.EnqueueResult{},
 		activeTools:            map[string][]string{},
 		uiAnswers:              map[string]chan uiAnswer{},
+		runtime:                map[string]*runtimePrep{},
 	}
 	srv.mcp = mcp.NewManager(srv.onMCPNotification)
 	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
@@ -190,6 +193,8 @@ func (s *Server) Reload() bool {
 	if s.ext != nil {
 		s.ext.CloseExcept(active)
 	}
+	s.resetRuntimeExcept(active)
+	s.rewarmWatchers(active)
 	return len(active) > 0
 }
 
@@ -204,6 +209,14 @@ func (s *Server) reloadSession(id string) {
 	if s.ext != nil {
 		s.ext.CloseSession(id)
 	}
+	s.resetRuntime(id)
+	sess, err := s.open(id)
+	if err != nil {
+		return
+	}
+	cwd := sess.Header.CWD
+	_ = sess.Close()
+	s.kickWarmup(id, cwd)
 }
 
 func (s *Server) requestReload(id string) bool {
@@ -526,6 +539,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	s.sidx.Add(sess.ID(), sess.Dir)
 	s.rememberModel(ref)
 	writeJSON(w, 200, s.sessionMap(sess, nil))
+	s.kickWarmup(sess.ID(), sess.Header.CWD)
 }
 
 func (s *Server) open(id string) (*session.Session, error) {
@@ -564,12 +578,6 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
 	sk, mc := s.sessionCatalog(snapshot)
 	tg := toggles.Load(s.cfg.Home)
-	cmds := command.Catalog(snapshot, tg.Skills)
-	if s.ext != nil {
-		for _, spec := range s.ext.RuntimeCommands(sess.ID()) {
-			cmds = append(cmds, command.Item{Name: spec.Name, Description: spec.Description, ArgumentHint: spec.ArgumentHint, Completions: spec.Completions, Source: "extension"})
-		}
-	}
 	queued, err := session.ReadQueue(sess.Dir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -586,6 +594,16 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	if extQueued == nil {
 		extQueued = []session.ExtQueuedItem{}
 	}
+	s.kickWarmup(sess.ID(), sess.Header.CWD)
+	// Why: ready is set after Prepare, so read ready first then RuntimeCommands
+	// to avoid ready:true with an empty slash catalog.
+	ready := s.runtimeReady(sess.ID())
+	cmds := command.Catalog(snapshot, tg.Skills)
+	if s.ext != nil {
+		for _, spec := range s.ext.RuntimeCommands(sess.ID()) {
+			cmds = append(cmds, command.Item{Name: spec.Name, Description: spec.Description, ArgumentHint: spec.ArgumentHint, Completions: spec.Completions, Source: "extension"})
+		}
+	}
 	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
 		"leafId":              sess.LeafID(),
 		"entries":             sess.Entries(),
@@ -597,6 +615,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		"queued":              queued,
 		"extQueued":           extQueued,
 		"extensionUi":         s.extensionUIList(sess.ID()),
+		"runtime":             map[string]any{"ready": ready},
 	}))
 }
 
@@ -1717,6 +1736,11 @@ func (s *Server) mcpEvents(w http.ResponseWriter, r *http.Request, id string) {
 			return
 		}
 	}
+	if s.runtimeReady(id) {
+		if !write(loop.Event{Type: loop.RuntimeReady, OK: true}) {
+			return
+		}
+	}
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -1816,6 +1840,7 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sidx.Add(dst.ID(), dst.Dir)
 	writeJSON(w, 200, s.sessionMap(dst, map[string]any{"parentSession": dst.Header.ParentSession}))
+	s.kickWarmup(dst.ID(), dst.Header.CWD)
 }
 
 func (s *Server) rememberModel(ref provider.ModelRef) {

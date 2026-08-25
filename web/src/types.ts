@@ -203,6 +203,7 @@ export type SessionDetail = SessionInfo & {
   queued?: QueuedItem[]
   extQueued?: QueuedItem[]
   extensionUi?: ExtensionUI[]
+  runtime?: { ready: boolean }
 }
 
 export type ExtensionUI = {
@@ -212,8 +213,9 @@ export type ExtensionUI = {
     title?: string
     summary?: string
     sections?: Array<Record<string, unknown>>
-    actions?: Array<{ id: string; label: string; style?: string }>
+    actions?: Array<{ id: string; label: string; style?: string; disabled?: boolean; title?: string }>
     fields?: Array<{ id: string; label?: string; type?: string; value?: unknown; options?: string[] }>
+    submitLabel?: string
   }
   prompt?: { kind: string; title?: string; message?: string; options?: string[] }
 }
@@ -326,4 +328,5 @@ export type ViewState = {
   queued?: QueuedItem[]
   extQueued?: QueuedItem[]
   extensionUi?: ExtensionUI[]
+  runtimeReady?: boolean
 }

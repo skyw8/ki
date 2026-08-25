@@ -256,6 +256,7 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	if s.ext != nil {
 		s.ext.CloseSession(id)
 	}
+	s.resetRuntime(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 

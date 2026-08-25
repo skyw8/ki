@@ -154,11 +154,13 @@ NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_SESSION_ID`、`KI_CWD`、`KI
 | `session.patch` | — | model / thinkingEffort |
 | `session.setActiveTools` | — | 会话级；未知名 warn，不静默清空 |
 | `tools.register` | `tool` | 下一 occupy 生效 |
-| `ui.setStatus` / `ui.setPanel` / `ui.clearPanel` | — | 内存投影 + SSE；不进 jsonl |
+| `ui.setStatus` / `ui.setPanel` / `ui.clearPanel` | — | 内存投影 + SSE；不进 jsonl。面板是通用壳，不解析业务 |
 | `ui.confirm` / `ui.select` | — | WebUI 弹层；**120s** 超时 = 取消 |
 | `bus.emit` | `bus` | 深拷贝 fan-out；result 为合并后 data |
 | `bus.broadcast` | `bus` | fire-and-forget，不等待 |
 | `bus.subscribe` / `bus.unsubscribe` | `bus` | 运行中改订阅 |
+
+`ui.setPanel` 由 WebUI 按通用壳渲染，Host 不解析插件语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
 
 `origin` 一律 `extension:<name>`，并写进该次 occupy 的 user message（WebUI 气泡可区分）。扩展 FIFO 与用户 `queue.json` **分轨**；occupy release 后 **先用户 queue，再扩展 FIFO**。`when=settled` 在 `agent_settled` 后只写入扩展 FIFO（不直接 occupy），再走同一套 dispatch。`nextTurn` 挂到下次**用户** occupy，注入 messages，不自触发 occupy。`session.setActiveTools` 忽略未知名并发 `extension_notice` warn；全部未知名则保留上一套工具。`session.patch` 与 HTTP PATCH 同一套 ResolveSpec / thinking 校验。`session_before_compact` 可 cancel 或返回定制 summary（跳过模型摘要）。
 
@@ -173,16 +175,18 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 ## 生命周期
 
 1. Scan 只读 Discover。
-2. `runPrompt`：`Prepare` sidecar 与 MCP 并行。
-3. Steer 不重新 Prepare，不重跑 `before_agent_start`。
-4. Reload / Close：杀 sidecar 进程组。忙时 Reload 排到 occupy release 之后。
+2. **打开会话**（`POST /v1/sessions`、`GET /v1/sessions/{id}`、fork）后台 `Prepare` sidecar 与 MCP 并行。List 和 serve 启动不扫 jsonl 去 spawn。
+3. `GET /v1/sessions/{id}` 带 `runtime.ready`；未就绪也可先出 transcript。`runtime_ready` SSE（sideband，不进 jsonl）。失败也算 ready。
+4. `runPrompt` 的 `Prepare` 是 ensure：已预热则 no-op。
+5. Steer 不重新 Prepare，不重跑 `before_agent_start`。
+6. Reload / Close：杀 sidecar 进程组并清 ready。忙时 Reload 排到 occupy release 之后。打开中的会话 Reload 后再预热。
 
 ## HTTP
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET / PATCH | `/v1/extensions?workspaceId=` | 列表 / `disabled` |
-| GET | `/v1/sessions/{id}` | `availableExtensions`、`commands`、`extensionUi`、`queued`、`extQueued` |
+| GET | `/v1/sessions/{id}` | `availableExtensions`、`commands`、`extensionUi`、`queued`、`extQueued`、`runtime.ready` |
 | POST | `/v1/reload` | 关 sidecar |
 
 `path` 只展示，不当 `href`。

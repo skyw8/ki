@@ -111,6 +111,7 @@ export function emptyView(): ViewState {
 	queued: [],
 	extQueued: [],
 	extensionUi: [],
+	runtimeReady: true,
   }
 }
 
@@ -179,6 +180,7 @@ export function loadHistory(detail: SessionDetail): ViewState {
 	s.queued = detail.queued ?? []
 	s.extQueued = detail.extQueued ?? []
 	s.extensionUi = detail.extensionUi ?? []
+	s.runtimeReady = detail.runtime?.ready !== false
   const entries = detail.entries ?? []
 	s.allEntries = entries
 	s.leafId = detail.leafId
@@ -200,6 +202,15 @@ export function loadHistory(detail: SessionDetail): ViewState {
 	active.reverse()
 	for (const e of active) applyEntry(s, e)
   return s
+}
+
+export function applyRuntimeCatalog(s: ViewState, detail: SessionDetail): ViewState {
+  return {
+    ...s,
+    runtimeReady: detail.runtime?.ready !== false,
+    commands: detail.commands ?? s.commands,
+    extensionUi: detail.extensionUi ?? s.extensionUi,
+  }
 }
 
 function lastSystem(s: ViewState): TrajRecord | undefined {
@@ -485,6 +496,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     case 'extension_ui_prompt':
       break
     case 'extension_ui_updated':
+    case 'runtime_ready':
       break
     case 'request_header': {
       const prev = lastSystem(next)

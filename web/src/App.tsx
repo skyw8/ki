@@ -8,11 +8,12 @@ import { DirectoryBrowser } from './DirectoryBrowser'
 import { MessageSettings, SessionConfig, SettingsToggles } from './SessionConfig'
 import { ProviderSettings } from './ProviderSettings'
 import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
-import { appendOptimisticUser, applyEvent, clampThinkingEffort, emptyView, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats } from './model'
-import type { ChatNode, Content, ExtensionUI, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
+import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats } from './model'
+import type { ChatNode, Content, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
 import { toast } from './toast'
+import { ExtensionInspector, seedExtFields, statusChips, visibleStatusChips } from './ExtensionPanel'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
 type SettingsPage = 'providers' | 'skills' | 'mcp' | 'extensions' | 'message' | 'appearance'
@@ -60,7 +61,7 @@ function popMenuStyle(anchor: DOMRect, menu: HTMLElement): CSSProperties {
   return { left, top }
 }
 
-function Modal({ title, onClose, children, testid }: { title: string; onClose: () => void; children: ReactNode; testid?: string }) {
+function Modal({ title, onClose, children, testid, wide, className }: { title: string; onClose: () => void; children: ReactNode; testid?: string; wide?: boolean; className?: string }) {
   const { t } = useI18n()
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -73,7 +74,7 @@ function Modal({ title, onClose, children, testid }: { title: string; onClose: (
   }, [onClose])
   return createPortal(
     <div className="modal-mask" onClick={onClose} data-testid={testid ? `${testid}-mask` : undefined}>
-      <div className={`modal${testid === 'settings' ? ' settings-modal' : ''}`} data-testid={testid} onClick={e => e.stopPropagation()} role="dialog" aria-label={title}>
+      <div className={`modal${testid === 'settings' ? ' settings-modal' : ''}${wide ? ' modal-wide' : ''}${className ? ` ${className}` : ''}`} data-testid={testid} onClick={e => e.stopPropagation()} role="dialog" aria-label={title}>
         <div className="modal-head">
           <h2>{title}</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label={t('dialog.close')}><IClose /></button>
@@ -95,7 +96,7 @@ export function App() {
   const [settled, setSettled] = useState(false)
   const everWide = useRef(true)
   const [tab, setTab] = useState<Tab>('conversation')
-  const [extPanel, setExtPanel] = useState<ExtensionUI | null>(null)
+  const [extOpen, setExtOpen] = useState<string | null>(null)
   const [extFields, setExtFields] = useState<Record<string, string>>({})
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([])
@@ -307,6 +308,14 @@ export function App() {
 					  setView(v => applyEvent(v, ev))
 					  continue
 					}
+					if (ev.type === 'runtime_ready') {
+					  try {
+					    const detail = await api.get(currentId)
+					    if (ac.signal.aborted) return
+					    setView(v => applyRuntimeCatalog(v, detail))
+					  } catch (e) { toast.from(e) }
+					  continue
+					}
 					if (ev.type === 'extension_ui_updated' || ev.type === 'queue_changed') {
 					  try {
 					    const detail = await api.get(currentId)
@@ -373,6 +382,63 @@ export function App() {
     }
   }, [api, listen])
 
+  useEffect(() => {
+    if (!currentId || view.runtimeReady !== false) return
+    const ac = new AbortController()
+    const started = Date.now()
+    void (async () => {
+      while (!ac.signal.aborted && Date.now() - started < 25_000) {
+        await new Promise<void>(resolve => {
+          const onAbort = () => { window.clearTimeout(timer); resolve() }
+          const timer = window.setTimeout(() => { ac.signal.removeEventListener('abort', onAbort); resolve() }, 400)
+          ac.signal.addEventListener('abort', onAbort, { once: true })
+        })
+        if (ac.signal.aborted) return
+        try {
+          const detail = await api.get(currentId)
+          if (ac.signal.aborted) return
+          if (detail.runtime?.ready) {
+            setView(v => applyRuntimeCatalog(v, detail))
+            return
+          }
+        } catch { /* retry until timeout */ }
+      }
+      if (!ac.signal.aborted) setView(v => ({ ...v, runtimeReady: true }))
+    })()
+    return () => ac.abort()
+  }, [api, currentId, view.runtimeReady])
+
+  const extChips = useMemo(() => statusChips(view.extensionUi), [view.extensionUi])
+  const extVisible = useMemo(() => visibleStatusChips(extChips), [extChips])
+  const extHidden = extChips.length - extVisible.length
+  const extSelected = extOpen ? extChips.find(ui => ui.extension === extOpen) ?? null : null
+
+  useEffect(() => {
+    if (!extOpen) return
+    if (extChips.some(ui => ui.extension === extOpen)) return
+    if (!extChips.length) {
+      setExtOpen(null)
+      return
+    }
+    const next = extChips[0]
+    setExtOpen(next.extension)
+    setExtFields(seedExtFields(next))
+  }, [extChips, extOpen])
+
+  const openExt = useCallback((name?: string) => {
+    const chips = statusChips(view.extensionUi)
+    if (!chips.length) return
+    const pick = name && chips.some(ui => ui.extension === name)
+      ? name
+      : (visibleStatusChips(chips).length < chips.length
+        ? chips[visibleStatusChips(chips).length].extension
+        : chips[0].extension)
+    if (pick === extOpen) return
+    const ui = chips.find(item => item.extension === pick)
+    setExtOpen(pick)
+    setExtFields(seedExtFields(ui))
+  }, [view.extensionUi, extOpen])
+
   const makeSession = useCallback(async (workspaceId?: string | null) => {
     const s = await api.create(sessionCreateBody(workspaceId, { provider: view.provider, model: view.model, thinkingEffort: view.thinkingEffort }, models))
     await refreshList()
@@ -417,7 +483,7 @@ export function App() {
 		if (!hasFiles(event)) return
 		event.preventDefault()
 		depth++
-		if (!view.busy && !uploading) setFileDragActive(true)
+		if (!view.busy && !uploading && view.runtimeReady !== false) setFileDragActive(true)
 	  }
 	  const onDragOver = (event: DragEvent) => {
 		if (!hasFiles(event)) return
@@ -435,7 +501,7 @@ export function App() {
 		event.preventDefault()
 		const files = Array.from(event.dataTransfer?.files ?? [])
 		reset()
-		if (!files.length || view.busy || uploading) return
+		if (!files.length || view.busy || uploading || view.runtimeReady === false) return
 		setAttachmentTarget(null)
 		void uploadClientFiles(edit ? 'edit' : 'new', files)
 	  }
@@ -752,6 +818,8 @@ export function App() {
 	  onFiles={files => void uploadClientFiles('new', files)}
 	  uploading={uploading}
       busy={view.busy}
+      disabled={!!currentId && view.runtimeReady === false}
+      loading={!!currentId && view.runtimeReady === false}
       hasQueued={queued.length > 0}
       cwd={view.cwd}
       model={view.model}
@@ -776,7 +844,7 @@ export function App() {
   }
 
   return (
-    <div className={`app${collapsed ? ' sidebar-collapsed' : ''}${(settingsOpen || modelOpen || dirOpen || attachmentTarget) ? ' modal-open' : ''}`}>
+    <div className={`app${collapsed ? ' sidebar-collapsed' : ''}${(settingsOpen || modelOpen || dirOpen || attachmentTarget || extOpen) ? ' modal-open' : ''}`}>
 	  {fileDragActive ? createPortal(<div className="global-drop-overlay" data-testid="global-drop-overlay">
 		<div className="global-drop-visual"><span><IImage /></span><span><IFile /></span><span><IPlus /></span></div>
 		<strong>{edit ? t('drop.editTitle') : t('drop.newTitle')}</strong>
@@ -956,22 +1024,31 @@ export function App() {
           <div className="title-row">
             <div className="conv-title">{view.title || (currentId ? untitled : 'ki')}</div>
             <div className="ext-chips" data-testid="ext-chips">
-              {(view.extensionUi ?? []).map(ui => ui.status?.text ? (
+              {extVisible.map(ui => (
                 <button
                   key={ui.extension}
                   type="button"
-                  className={`ext-chip tone-${ui.status.tone || 'info'}`}
+                  className={`ext-chip tone-${ui.status?.tone || 'info'}${extOpen === ui.extension ? ' on' : ''}`}
                   data-testid={`ext-chip-${ui.extension}`}
-                  onClick={() => {
-                    const fields: Record<string, string> = {}
-                    for (const f of ui.panel?.fields ?? []) fields[f.id] = f.value == null ? '' : String(f.value)
-                    setExtFields(fields)
-                    setExtPanel(ui)
-                  }}
+                  title={ui.status?.text}
+                  onClick={() => openExt(ui.extension)}
                 >
-                  {ui.status.text}
+                  {ui.status?.text}
                 </button>
-              ) : null)}
+              ))}
+              {extChips.length ? (
+                <button
+                  type="button"
+                  className="ext-chip ext-chip-more"
+                  data-testid="ext-chips-more"
+                  title={extHidden ? t('ext.moreCount', { n: extHidden }) : t('ext.more')}
+                  aria-label={extHidden ? t('ext.moreCount', { n: extHidden }) : t('ext.more')}
+                  onClick={() => openExt()}
+                >
+                  <span className="ext-more-wide">{extHidden ? `+${extHidden}` : <IDots />}</span>
+                  <span className="ext-more-narrow">{t('ext.inspector')} · {extChips.length}</span>
+                </button>
+              ) : null}
             </div>
           </div>
           <div className="tabs">
@@ -980,60 +1057,6 @@ export function App() {
             <button type="button" className={`tab${tab === 'config' ? ' active' : ''}`} data-testid="tab-config" onClick={() => setTab('config')}>{t('tab.info')}</button>
           </div>
         </header>
-        {extPanel ? (
-          <div className="ext-drawer" data-testid="ext-drawer">
-            <div className="ext-drawer-head">
-              <strong>{extPanel.panel?.title || extPanel.extension}</strong>
-              <button type="button" className="icon-btn" onClick={() => setExtPanel(null)} aria-label="close"><IClose /></button>
-            </div>
-            {extPanel.panel?.summary ? <p>{extPanel.panel.summary}</p> : null}
-            {(extPanel.panel?.sections ?? []).map((sec, i) => (
-              <pre key={i} className="ext-section">{typeof sec.markdown === 'string' ? sec.markdown : JSON.stringify(sec)}</pre>
-            ))}
-            {(extPanel.panel?.fields ?? []).map(f => (
-              <label key={f.id} className="ext-field">
-                <span>{f.label || f.id}</span>
-                <input
-                  data-testid={`ext-field-${f.id}`}
-                  value={extFields[f.id] ?? (f.value == null ? '' : String(f.value))}
-                  onChange={e => setExtFields(v => ({ ...v, [f.id]: e.target.value }))}
-                />
-              </label>
-            ))}
-            <div className="ext-actions">
-              {(extPanel.panel?.actions ?? []).map(a => (
-                <button
-                  key={a.id}
-                  type="button"
-                  data-testid={`ext-action-${a.id}`}
-                  onClick={() => {
-                    if (!currentId) return
-                    void api.extensionUI(currentId, { kind: 'action', extension: extPanel.extension, value: a.id }).catch(e => toast.from(e))
-                  }}
-                >
-                  {a.label}
-                </button>
-              ))}
-              {(extPanel.panel?.fields ?? []).length ? (
-                <button
-                  type="button"
-                  data-testid="ext-submit"
-                  onClick={() => {
-                    if (!currentId) return
-                    const fields: Record<string, unknown> = { ...extFields }
-                    for (const f of extPanel.panel?.fields ?? []) {
-                      if (fields[f.id] === undefined) fields[f.id] = f.value ?? ''
-                    }
-                    void api.extensionUI(currentId, { kind: 'submit', extension: extPanel.extension, fields }).catch(e => toast.from(e))
-                  }}
-                >
-                  {t('ext.submit')}
-                </button>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-
         {tab === 'config' ? (
           <div className="conv-body">
             <SessionConfig
@@ -1179,6 +1202,26 @@ export function App() {
               {t('rename.ok')}
             </button>
           </div>
+        </Modal>
+      ) : null}
+
+      {extSelected ? (
+        <Modal title={t('ext.inspector')} onClose={() => setExtOpen(null)} testid="ext-panel" className="modal-ext modal-flush">
+          <ExtensionInspector
+            items={extChips}
+            selected={extSelected}
+            fields={extFields}
+            onSelect={openExt}
+            onField={(id, value) => setExtFields(v => ({ ...v, [id]: value }))}
+            onAction={id => {
+              if (!currentId) return
+              void api.extensionUI(currentId, { kind: 'action', extension: extSelected.extension, value: id }).catch(e => toast.from(e))
+            }}
+            onSubmit={fields => {
+              if (!currentId) return
+              void api.extensionUI(currentId, { kind: 'submit', extension: extSelected.extension, fields }).catch(e => toast.from(e))
+            }}
+          />
         </Modal>
       ) : null}
 

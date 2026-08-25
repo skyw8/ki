@@ -58,20 +58,25 @@ type SessionSnapshot struct {
 	Commands    []string `json:"commands,omitempty"`
 }
 
-// UIPanel is the generic detail drawer model.
+// UIPanel is the generic detail model for any extension (not goal-specific).
+// WebUI renders title/summary, then sections (items/kv/markdown/text), fields,
+// then actions. Plugins decide which actions/fields apply; the shell does not.
 type UIPanel struct {
-	Title    string           `json:"title,omitempty"`
-	Summary  string           `json:"summary,omitempty"`
-	Sections []map[string]any `json:"sections,omitempty"`
-	Actions  []UIAction       `json:"actions,omitempty"`
-	Fields   []UIField        `json:"fields,omitempty"`
+	Title       string           `json:"title,omitempty"`
+	Summary     string           `json:"summary,omitempty"`
+	Sections    []map[string]any `json:"sections,omitempty"`
+	Actions     []UIAction       `json:"actions,omitempty"`
+	Fields      []UIField        `json:"fields,omitempty"`
+	SubmitLabel string           `json:"submitLabel,omitempty"`
 }
 
-// UIAction is one panel button.
+// UIAction is one panel button. Disabled is shown but not clickable.
 type UIAction struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-	Style string `json:"style,omitempty"`
+	ID       string `json:"id"`
+	Label    string `json:"label"`
+	Style    string `json:"style,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
+	Title    string `json:"title,omitempty"`
 }
 
 // UIField is one editable field.

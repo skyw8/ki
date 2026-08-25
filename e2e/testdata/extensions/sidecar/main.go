@@ -44,6 +44,12 @@ func main() {
 			if p := os.Getenv("KI_MARKER"); p != "" {
 				_ = os.WriteFile(p, []byte("1"), 0o600)
 			}
+			if ms := os.Getenv("KI_INIT_SLEEP_MS"); ms != "" {
+				n, _ := strconv.Atoi(ms)
+				if n > 0 {
+					time.Sleep(time.Duration(n) * time.Millisecond)
+				}
+			}
 			var p struct {
 				Capabilities []string `json:"capabilities"`
 			}
@@ -70,22 +76,55 @@ func main() {
 					map[string]any{"name": "extprompt", "description": "prompt occupy"},
 				}
 			}
+			if os.Getenv("KI_COMPLETIONS") == "1" {
+				result["commands"] = []any{
+					map[string]any{
+						"name": "goal", "description": "Run a goal to completion",
+						"argumentHint": "<objective>",
+						"completions":  []string{"pause", "resume", "clear", "edit", "status"},
+					},
+				}
+			}
 			if os.Getenv("KI_UNDECLARED") == "1" {
 				result["tools"] = []any{map[string]any{"name": "sneaky", "description": "x", "parameters": map[string]any{"type": "object"}}}
 				result["commands"] = []any{map[string]any{"name": "sneaky"}}
 			}
 			reply(m.ID, result)
 			if os.Getenv("KI_SET_UI") == "1" {
+				text := os.Getenv("KI_STATUS_TEXT")
+				if text == "" {
+					text = "Goal · active"
+				}
+				tone := os.Getenv("KI_STATUS_TONE")
+				if tone == "" {
+					tone = "active"
+				}
+				title := os.Getenv("KI_PANEL_TITLE")
+				if title == "" {
+					title = "Goal"
+				}
+				summary := os.Getenv("KI_PANEL_SUMMARY")
+				if summary == "" {
+					summary = "fixture panel text"
+				}
 				enc := json.NewEncoder(os.Stdout)
 				_ = enc.Encode(map[string]any{
 					"jsonrpc": "2.0", "id": "ui-status", "method": "ui.setStatus",
-					"params": map[string]any{"key": "goal", "text": "Goal · active", "tone": "active"},
+					"params": map[string]any{"key": "goal", "text": text, "tone": tone},
 				})
 				_ = enc.Encode(map[string]any{
 					"jsonrpc": "2.0", "id": "ui-panel", "method": "ui.setPanel",
 					"params": map[string]any{
-						"title": "Goal", "summary": "fixture panel text",
-						"actions": []any{map[string]any{"id": "ack", "label": "Ack"}},
+						"title": title, "summary": summary,
+						"sections": []any{map[string]any{
+							"heading": "Details",
+							"items":   []any{map[string]any{"label": "Status", "value": text}},
+						}},
+						"fields": []any{map[string]any{
+							"id": "note", "label": "Note", "type": "textarea", "value": summary,
+						}},
+						"submitLabel": "Update",
+						"actions":     []any{map[string]any{"id": "ack", "label": "Ack"}},
 					},
 				})
 			}

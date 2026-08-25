@@ -28,28 +28,40 @@ async function sendPrompt(page: Page, text: string) {
   await page.getByTestId('composer-send').click()
 }
 
-test('extension ui.setStatus chip opens panel text', async ({ page, request }) => {
+async function tokenOf(page: Page) {
+  return await page.evaluate(() => (window as unknown as { __KI__?: { token?: string } }).__KI__?.token) || ''
+}
+
+async function reloadServer(page: Page, request: { post: (url: string, opts: { headers: Record<string, string> }) => Promise<unknown> }) {
+  const auth = await tokenOf(page)
+  await request.post('/v1/reload', { headers: { Authorization: `Bearer ${auth}` } })
+}
+
+function writeExt(home: string, name: string, bin: string, extra: Record<string, unknown>) {
+  const dir = join(home, 'extensions', name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'extension.json'), JSON.stringify({
+    name,
+    capabilities: extra.capabilities ?? ['lifecycle'],
+    runtime: { kind: 'rpc', command: bin, env: extra.env ?? {} },
+  }))
+}
+
+test('extension ui.setStatus chip opens panel modal', async ({ page, request }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const bin = join(tmpdir(), 'ki-pw-ext-ui-sidecar')
   execFileSync(goBin(), ['build', '-o', bin, '.'], {
     cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
     stdio: 'inherit',
   })
-  const dir = join(home, 'extensions', 'goalui')
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'extension.json'), JSON.stringify({
-    name: 'goalui',
-    capabilities: ['lifecycle'],
-    runtime: { kind: 'rpc', command: bin, env: { KI_SET_UI: '1' } },
-  }))
+  writeExt(home, 'goalui', bin, { env: { KI_SET_UI: '1' } })
 
   await page.goto('/')
-  const auth = await page.evaluate(() => (window as unknown as { __KI__?: { token?: string } }).__KI__?.token) || ''
-  await request.post('/v1/reload', { headers: { Authorization: `Bearer ${auth}` } })
+  await reloadServer(page, request)
 
   await sendPrompt(page, `ext-ui ${Date.now()}`)
   await expect(page.getByTestId('assistant-message')).toBeVisible({ timeout: 20_000 })
-  const headers = { Authorization: `Bearer ${auth}` }
+  const headers = { Authorization: `Bearer ${await tokenOf(page)}` }
   const listed = await request.get('/v1/sessions', { headers })
   const items = (await listed.json()) as { id?: string }[] | { items?: { id: string }[] }
   const arr = Array.isArray(items) ? items : (items.items ?? [])
@@ -69,9 +81,144 @@ test('extension ui.setStatus chip opens panel text', async ({ page, request }) =
   await page.getByTestId('session-row').first().click()
   await expect(page.getByTestId('ext-chip-goalui')).toBeVisible({ timeout: 15_000 })
   await expect(page.getByTestId('ext-chip-goalui')).toContainText('Goal · active')
+  await expect(page.getByTestId('ext-chips-more')).toBeVisible()
+  await expect(page.getByTestId('ext-drawer')).toHaveCount(0)
   await page.getByTestId('ext-chip-goalui').click()
-  await expect(page.getByTestId('ext-drawer')).toBeVisible()
-  await expect(page.getByTestId('ext-drawer')).toContainText('fixture panel text')
+  await expect(page.getByTestId('ext-panel')).toBeVisible()
+  await expect(page.getByTestId('ext-nav')).toBeVisible()
+  await expect(page.getByTestId('ext-nav-goalui')).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByTestId('ext-panel')).toContainText('fixture panel text')
+  await expect(page.getByTestId('ext-nav-goalui')).toContainText('Goal · active')
   await expect(page.getByTestId('ext-action-ack')).toBeVisible()
   await page.getByTestId('ext-action-ack').click()
+})
+
+test('opening a session locks composer until runtime.ready', async ({ page, request }) => {
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const bin = join(tmpdir(), 'ki-pw-ext-lock-sidecar')
+  execFileSync(goBin(), ['build', '-o', bin, '.'], {
+    cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
+    stdio: 'inherit',
+  })
+  writeExt(home, 'slowboot', bin, { env: { KI_INIT_SLEEP_MS: '1500' } })
+
+  await page.goto('/')
+  await reloadServer(page, request)
+  await page.getByTestId('new-session').click()
+  const input = page.getByTestId('composer-input')
+  await expect(input).toBeDisabled()
+  await expect(input).toHaveAttribute('placeholder', /正在加载扩展和 MCP|Loading extensions and MCP/)
+  await expect(page.getByTestId('command-btn')).toBeDisabled()
+  await expect(input).toBeEnabled({ timeout: 15_000 })
+})
+
+test('slash palette is two-level for completions', async ({ page, request }) => {
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const bin = join(tmpdir(), 'ki-pw-ext-slash-sidecar')
+  execFileSync(goBin(), ['build', '-o', bin, '.'], {
+    cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
+    stdio: 'inherit',
+  })
+  writeExt(home, 'goalcmd', bin, { capabilities: ['command'], env: { KI_COMPLETIONS: '1' } })
+
+  await page.goto('/')
+  await reloadServer(page, request)
+  await page.getByTestId('new-session').click()
+  const input = page.getByTestId('composer-input')
+  await expect(input).toBeEnabled({ timeout: 15_000 })
+
+  await page.getByTestId('command-btn').click()
+  const palette = page.getByTestId('command-palette')
+  await expect(palette).toBeVisible()
+  const palBox = await palette.boundingBox()
+  const cardBox = await page.getByTestId('composer-card').boundingBox()
+  expect(palBox).toBeTruthy()
+  expect(cardBox).toBeTruthy()
+  expect(palBox!.y + palBox!.height).toBeLessThanOrEqual(cardBox!.y + 2)
+  const goal = page.getByTestId('command-item-goal')
+  await expect(goal).toBeVisible()
+  await expect(goal).toContainText('/goal')
+  await expect(goal).toContainText('<objective>')
+  await expect(goal).not.toContainText('pause resume')
+  await expect(goal.locator('.command-desc')).toContainText('Run a goal')
+
+  await goal.click()
+  await expect(input).toHaveValue('/goal ')
+  await expect(page.getByTestId('command-item-goal-pause')).toBeVisible()
+  await expect(page.getByTestId('command-item-goal-edit')).toBeVisible()
+  await expect(page.getByTestId('command-item-goal-status')).toBeVisible()
+  await page.getByTestId('command-item-goal-pause').click()
+  await expect(input).toHaveValue('/goal pause ')
+  await expect(palette).toHaveCount(0)
+})
+
+test('top bar folds extra chips into one inspector modal', async ({ page, request }) => {
+  test.setTimeout(60_000)
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const bin = join(tmpdir(), 'ki-pw-ext-fold-sidecar')
+  execFileSync(goBin(), ['build', '-o', bin, '.'], {
+    cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
+    stdio: 'inherit',
+  })
+  const fixtures = [
+    { name: 'vault', text: 'Vault · error', tone: 'error', title: 'Vault' },
+    { name: 'syncx', text: 'Sync · wait', tone: 'warning', title: 'Sync' },
+    { name: 'goalfold', text: 'Goal · active', tone: 'active', title: 'Goal' },
+    { name: 'indexx', text: 'Index · done', tone: 'success', title: 'Index' },
+    { name: 'notesx', text: 'Notes', tone: 'info', title: 'Notes' },
+  ]
+  for (const row of fixtures) {
+    writeExt(home, row.name, bin, {
+      env: {
+        KI_SET_UI: '1',
+        KI_STATUS_TEXT: row.text,
+        KI_STATUS_TONE: row.tone,
+        KI_PANEL_TITLE: row.title,
+        KI_PANEL_SUMMARY: `${row.title} panel`,
+      },
+    })
+  }
+
+  await page.goto('/')
+  const headers = { Authorization: `Bearer ${await tokenOf(page)}` }
+  const listed = await request.get('/v1/extensions', { headers })
+  const catalog = await listed.json() as { items?: { name: string }[] }
+  const keep = new Set(fixtures.map(row => row.name))
+  const disabled = (catalog.items ?? []).map(item => item.name).filter(name => !keep.has(name))
+  await request.patch('/v1/extensions', { headers, data: { disabled } })
+  await page.reload()
+  await page.getByTestId('new-session').click()
+  await expect(page.getByTestId('composer-input')).toBeEnabled({ timeout: 15_000 })
+  await expect(page.getByTestId('ext-chip-vault')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByTestId('ext-chip-syncx')).toBeVisible()
+  await expect(page.getByTestId('ext-chip-goalfold')).toBeVisible()
+  await expect(page.getByTestId('ext-chip-indexx')).toHaveCount(0)
+  await expect(page.getByTestId('ext-chip-notesx')).toHaveCount(0)
+  await expect(page.getByTestId('ext-chips-more').locator('.ext-more-wide')).toHaveText('+2')
+
+  const shotDir = process.env.KI_SHOT_DIR || 'test-results/ext-inspector'
+  mkdirSync(shotDir, { recursive: true })
+  await page.screenshot({ path: `${shotDir}/01-header.png` })
+
+  await page.getByTestId('ext-chips-more').click()
+  await expect(page.getByTestId('ext-panel')).toBeVisible()
+  await expect(page.getByTestId('ext-nav-indexx')).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByTestId('ext-inspector-main')).toContainText('Index panel')
+  await page.screenshot({ path: `${shotDir}/02-inspector-overflow.png` })
+
+  await page.getByTestId('ext-nav-vault').click()
+  await expect(page.getByTestId('ext-nav-vault')).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByTestId('ext-inspector-main')).toContainText('Vault panel')
+  await page.screenshot({ path: `${shotDir}/03-inspector-vault.png` })
+
+  await page.getByTestId('ext-panel').getByRole('button', { name: '关闭对话框' }).click()
+  await page.getByTestId('ext-chip-goalfold').click()
+  await expect(page.getByTestId('ext-nav-goalfold')).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByTestId('ext-action-ack')).toBeVisible()
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.getByTestId('ext-nav')).toBeVisible()
+  await page.screenshot({ path: `${shotDir}/04-inspector-mobile.png` })
+  await page.getByTestId('ext-panel').getByRole('button', { name: '关闭对话框' }).click()
+  await page.screenshot({ path: `${shotDir}/05-header-mobile.png` })
 })

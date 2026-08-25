@@ -1552,7 +1552,6 @@ func TestSessionCatalogNoSpawn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id := createSession(t, hs, cwd)
 	body, _ := marshalJSON(map[string]any{"disabled": []string{"alpha"}})
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/skills", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer tok")
@@ -1578,6 +1577,7 @@ func TestSessionCatalogNoSpawn(t *testing.T) {
 		t.Fatalf("patch mcp %d", res.StatusCode)
 	}
 
+	id := createSession(t, hs, cwd)
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
