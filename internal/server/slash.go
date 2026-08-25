@@ -241,10 +241,11 @@ func (s *Server) release(id string, st *runState) {
 	pending := s.pendingReload[id]
 	delete(s.pendingReload, id)
 	s.mu.Unlock()
+	st.mu.Lock()
+	st.steerClosed = true
 	close(st.done)
-	st.wait.L.Lock()
 	st.wait.Broadcast()
-	st.wait.L.Unlock()
+	st.mu.Unlock()
 	if pending {
 		s.reloadSession(id)
 	}
@@ -284,21 +285,26 @@ func (s *Server) patchMessage(w http.ResponseWriter, r *http.Request) {
 // pushSteerRun writes Inbox on this occupy only. Using the captured runState
 // avoids steering a later occupy that replaced s.runs[id] after TakeQueueID.
 func (s *Server) pushSteerRun(st *runState, content []types.Content) bool {
-	if st == nil || st.inbox == nil {
+	if st == nil {
 		return false
-	}
-	select {
-	case <-st.done:
-		return false
-	default:
 	}
 	msg := types.Message{Role: "user", Content: content}
-	st.inbox.Push(msg)
 	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.steerClosed || st.inbox == nil {
+		return false
+	}
+	st.inbox.Push(msg)
 	st.evs = append(st.evs, loop.Event{Type: loop.SteerAccepted, Message: &msg})
 	st.wait.Broadcast()
-	st.mu.Unlock()
 	return true
+}
+
+func enableRunInbox(st *runState) {
+	st.mu.Lock()
+	st.inbox = &loop.Inbox{}
+	st.steerClosed = false
+	st.mu.Unlock()
 }
 
 func (s *Server) runAt(id string) *runState {
@@ -371,7 +377,7 @@ func (s *Server) dispatchQueue(id string) {
 			s.publishQueueChanged(id)
 			return
 		}
-		st.inbox = &loop.Inbox{}
+		enableRunInbox(st)
 		origin := ""
 		if ext.Extension != "" {
 			origin = "extension:" + ext.Extension
@@ -389,7 +395,7 @@ func (s *Server) dispatchQueue(id string) {
 		}
 		return
 	}
-	st.inbox = &loop.Inbox{}
+	enableRunInbox(st)
 	go s.runPrompt(ctx, st, id, item.Content, nil, "", "", s.takeNextTurn(id))
 }
 
@@ -426,7 +432,7 @@ func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id stri
 		return
 	}
 
-	st.inbox = &loop.Inbox{}
+	enableRunInbox(st)
 	// runPrompt's defer release returns this occupy slot.
 	go s.runPrompt(ctx, st, id, content, parentID, model, "", s.takeNextTurn(id))
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started"})

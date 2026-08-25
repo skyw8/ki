@@ -307,6 +307,9 @@ func sameSessionWorkspace(s *Server, a, b session.Info) bool {
 func (s *Server) removeSessionInfo(info session.Info) error {
 	s.abortRun(info.ID)
 	s.closeJobs(info.ID)
+	if s.agentTasks != nil {
+		s.agentTasks.RemoveSession(info.ID)
+	}
 	if rec, ok := s.ws.Match(info.CWD); ok {
 		_ = s.ws.DetachSession(rec.ID, info.ID)
 	}

@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"ki/internal/types"
@@ -32,6 +33,46 @@ func TestQueueEnqueueDequeueAndCap(t *testing.T) {
 	}
 	if _, err := Enqueue(dir, []types.Content{{Type: "text", Text: "overflow"}}); !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("cap: %v", err)
+	}
+}
+
+func TestQueueConcurrentMutationsKeepAllItems(t *testing.T) {
+	dir := t.TempDir()
+	const count = 50
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := Enqueue(dir, []types.Content{{Type: "text", Text: "message"}}); err != nil {
+				t.Errorf("enqueue: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	items, err := ReadQueue(dir)
+	if err != nil || len(items) != count {
+		t.Fatalf("concurrent enqueue: %d items, err=%v", len(items), err)
+	}
+	seen := make(map[string]bool, count)
+	for _, item := range items {
+		if seen[item.ID] {
+			t.Fatalf("duplicate queue id %q", item.ID)
+		}
+		seen[item.ID] = true
+	}
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := Dequeue(dir); err != nil {
+				t.Errorf("dequeue: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if left, err := ReadQueue(dir); err != nil || len(left) != 0 {
+		t.Fatalf("concurrent dequeue: %d items, err=%v", len(left), err)
 	}
 }
 

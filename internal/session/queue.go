@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"ki/internal/idgen"
 	"ki/internal/types"
@@ -19,6 +20,10 @@ var (
 	ErrQueueFull = errors.New("session queue is full")
 	// ErrQueueItemNotFound means TakeQueueID did not match a live item.
 	ErrQueueItemNotFound = errors.New("queue item not found")
+	// Why: completion notifications and queue dispatch can mutate one FIFO
+	// concurrently; serializing the read-modify-write protects items in the
+	// same serve process without adding another API or route.
+	queueGates sync.Map // map[clean session dir]*sync.Mutex
 )
 
 // QueuedItem is one user turn waiting for the current run to finish.
@@ -30,6 +35,12 @@ type QueuedItem struct {
 func queuePath(dir string) string { return filepath.Join(dir, "queue.json") }
 
 func extQueuePath(dir string) string { return filepath.Join(dir, "ext-queue.json") }
+
+func queueGate(dir string) *sync.Mutex {
+	key := filepath.Clean(dir)
+	gate, _ := queueGates.LoadOrStore(key, &sync.Mutex{})
+	return gate.(*sync.Mutex)
+}
 
 // ExtQueuedItem is one extension-origin turn waiting after user queue.
 type ExtQueuedItem struct {
@@ -72,6 +83,9 @@ func writeExtQueue(dir string, items []ExtQueuedItem) error {
 
 // EnqueueExt appends an extension FIFO item.
 func EnqueueExt(dir string, item ExtQueuedItem) (ExtQueuedItem, error) {
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
 	items, err := readExtQueue(dir)
 	if err != nil {
 		return ExtQueuedItem{}, err
@@ -95,6 +109,9 @@ func EnqueueExt(dir string, item ExtQueuedItem) (ExtQueuedItem, error) {
 
 // DequeueExt removes the head extension FIFO item.
 func DequeueExt(dir string) (ExtQueuedItem, bool, error) {
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
 	items, err := readExtQueue(dir)
 	if err != nil {
 		return ExtQueuedItem{}, false, err
@@ -112,6 +129,9 @@ func DequeueExt(dir string) (ExtQueuedItem, bool, error) {
 // DequeueExtOccupy removes the first item that may start an occupy.
 // nextTurn items stay put until a user occupy consumes them.
 func DequeueExtOccupy(dir string) (ExtQueuedItem, bool, error) {
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
 	items, err := readExtQueue(dir)
 	if err != nil {
 		return ExtQueuedItem{}, false, err
@@ -136,6 +156,9 @@ func DequeueExtOccupy(dir string) (ExtQueuedItem, bool, error) {
 
 // TakeNextTurn removes every nextTurn item. User occupy injects them; they never start a run.
 func TakeNextTurn(dir string) ([]ExtQueuedItem, error) {
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
 	items, err := readExtQueue(dir)
 	if err != nil {
 		return nil, err
@@ -158,10 +181,22 @@ func TakeNextTurn(dir string) ([]ExtQueuedItem, error) {
 }
 
 // ReadExtQueue returns the extension FIFO.
-func ReadExtQueue(dir string) ([]ExtQueuedItem, error) { return readExtQueue(dir) }
+func ReadExtQueue(dir string) ([]ExtQueuedItem, error) {
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	return readExtQueue(dir)
+}
 
 // ReadQueue loads the durable FIFO. A missing file is empty.
 func ReadQueue(dir string) ([]QueuedItem, error) {
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	return readQueue(dir)
+}
+
+func readQueue(dir string) ([]QueuedItem, error) {
 	b, err := os.ReadFile(queuePath(dir))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -192,7 +227,10 @@ func writeQueue(dir string, items []QueuedItem) error {
 
 // Enqueue appends a user turn. The session directory must already exist.
 func Enqueue(dir string, content []types.Content) (QueuedItem, error) {
-	items, err := ReadQueue(dir)
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	items, err := readQueue(dir)
 	if err != nil {
 		return QueuedItem{}, err
 	}
@@ -213,7 +251,10 @@ func Enqueue(dir string, content []types.Content) (QueuedItem, error) {
 
 // EnqueueFront puts an item back at the head after a failed dispatch.
 func EnqueueFront(dir string, item QueuedItem) error {
-	items, err := ReadQueue(dir)
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	items, err := readQueue(dir)
 	if err != nil {
 		return err
 	}
@@ -225,7 +266,10 @@ func EnqueueFront(dir string, item QueuedItem) error {
 
 // Dequeue removes and returns the head item.
 func Dequeue(dir string) (QueuedItem, bool, error) {
-	items, err := ReadQueue(dir)
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	items, err := readQueue(dir)
 	if err != nil {
 		return QueuedItem{}, false, err
 	}
@@ -241,7 +285,10 @@ func Dequeue(dir string) (QueuedItem, bool, error) {
 
 // TakeQueueID removes one item by id. Remaining items keep their order.
 func TakeQueueID(dir, id string) (QueuedItem, error) {
-	items, err := ReadQueue(dir)
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	items, err := readQueue(dir)
 	if err != nil {
 		return QueuedItem{}, err
 	}
@@ -266,7 +313,10 @@ func TakeQueueID(dir, id string) (QueuedItem, error) {
 // KeepQueueIDs replaces the queue with the listed ids in that order. Unknown
 // ids are skipped. This is the v1 delete/reorder-by-subset API.
 func KeepQueueIDs(dir string, ids []string) ([]QueuedItem, error) {
-	items, err := ReadQueue(dir)
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	items, err := readQueue(dir)
 	if err != nil {
 		return nil, err
 	}

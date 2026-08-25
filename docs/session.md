@@ -24,6 +24,7 @@ toolResult message 可带结构化 `details`。它随 jsonl 落盘并通过现�
 - `SetLeaf` 只切换 active leaf 并写 config，旧行不删。edit/regenerate 从指定 parent append sibling branch。
 - `MessagesToLeaf` 沿 parent 走到根；若路径上有 compaction，先注入 summary，再取 `retainedTail`（新条目，压缩时最近消息原文落盘）；旧 jsonl 无 `retainedTail` 时回退 `firstKeptEntryId` 截断。`LastCompactionAt` 返回最近 compaction 时间戳（stale-usage 防护用）。
 - fork：`ForkAt` 新建 session 目录，只写 root → target 路径；新 header 使用新 id，`parentSession` 保存源 session id，`forkMode` 保存处理策略。`flat` child 与 parent 独立；`tree` child 由 server 在删除 parent 时递归清理。子 session 复制源的 `provider` / `model` / `thinkingEffort`，不回落到 registry 默认。
+- Agent delegation 使用同一 `ForkAt`，固定传入 `forkMode=tree`，并把 child session 的 `events.jsonl` 作为 `TaskOutput.outputFile`。stable agent/task 状态写入 child 目录的 `agent.json`；serve 重启时运行中记录恢复为 `interrupted`，transcript、header 和 parent/child 关系继续由 session 目录保存。
 - API 对外统一把 header 的 `parentSession` 映射为 `parentSessionId`，并同时返回 `forkMode`。`GET /v1/sessions`、`GET /v1/sessions/{id}` 和 fork response 使用同一组字段；`fork` body 可传 `{"entryId":"...","forkMode":"tree"}`，省略 mode 按 `flat` 处理。
 - `config.json`：该 session 的 `provider` / `model` / `thinkingEffort` / `activeLeafId`，可选 `title` / `pinned` / `pinnedAt`。Skills/MCP/extensions 启用在 `{KI_HOME}/toggles.json`，不在 session 里。
 - user message 可保存结构化 `text`、`workspace_file`、`file` 和带宿主绝对路径的 `image` content。站内浏览器选择的是 workspace 引用；粘贴/拖入文件按 SHA-256 保存到本 session 的 `attachments/`。jsonl 只存引用；server 在 provider 边界读取并编码图片，普通文件变成可供 `Read` 使用的路径说明。fork 复制附件并把新 jsonl 中的路径改到新 session 目录。

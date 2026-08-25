@@ -14,6 +14,10 @@
 // config.json owns provider/model/thinking effort plus
 // title and pin. Skills/MCP enablement is process-wide ({KI_HOME}/toggles.json).
 // Remove deletes the session directory.
+// Agent delegation uses the same ForkAt primitive with forkMode=tree; the child
+// transcript, relationship, and agent.json metadata remain durable so the
+// server can rebuild an agent task after restart. Removing a child also removes
+// its agent record through the server-owned lifecycle.
 // List walks the session root. Index caches id→dir for O(1) lookup; the
 // filesystem stays the source of truth and misses fall back to Find. On-disk layout: docs/session.md.
 package session

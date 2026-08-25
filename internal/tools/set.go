@@ -1,6 +1,11 @@
 package tools
 
-import "ki/internal/loop"
+import (
+	"context"
+	"os"
+
+	"ki/internal/loop"
+)
 
 // Editor selects the mutually exclusive model-visible editing interface.
 type Editor string
@@ -21,11 +26,17 @@ type Profile struct {
 
 // Set binds built-in tools to a session cwd.
 type Set struct {
-	CWD       string
-	Jobs      *JobStore
-	Shells    ShellRuntime
-	ReadOps   ReadOperations
-	Mutations *MutationQueue
+	CWD   string
+	Jobs  *JobStore
+	Agent AgentRuntime
+	// AgentDepth is the current Agent-created child depth. The main session is
+	// depth 0; at MaxAgentDepth the Agent tool is withheld.
+	AgentDepth           int
+	AgentParentSessionID string
+	AgentParentEntryID   string
+	Shells               ShellRuntime
+	ReadOps              ReadOperations
+	Mutations            *MutationQueue
 }
 
 // Build returns the tools exposed for one resolved model.
@@ -35,6 +46,14 @@ func (s Set) Build(profile Profile) []loop.Tool {
 	}
 	if s.Mutations == nil {
 		s.Mutations = NewMutationQueue()
+	}
+	agent := s.Agent
+	if agent != nil && (s.AgentParentSessionID != "" || s.AgentParentEntryID != "") {
+		agent = scopedAgentRuntime{AgentRuntime: agent, sessionID: s.AgentParentSessionID, entryID: s.AgentParentEntryID}
+	}
+	tasks := compositeTaskStore{shell: s.Jobs}
+	if agent != nil {
+		tasks.agent = agent
 	}
 	cwd := s.CWD
 	jobs := s.Jobs
@@ -59,11 +78,84 @@ func (s Set) Build(profile Profile) []loop.Tool {
 		out = append(out, powerShellTool{cwd: cwd, jobs: jobs, shell: *shells.powerShell})
 	}
 	out = append(out,
-		taskOutputTool{jobs: jobs},
-		taskStopTool{jobs: jobs},
+		taskOutputTool{tasks: tasks},
+		taskStopTool{tasks: tasks},
 	)
 	if shells.bash.available() {
 		out = append(out, monitorTool{cwd: cwd, jobs: jobs, shell: shells.bash})
 	}
+	if agent != nil {
+		// Why: a recursive Agent call can otherwise fan out without a bound and
+		// exhaust provider, process, or disk resources. Keep SendMessage for a
+		// deepest child, but withhold only the spawning capability at the limit.
+		if s.AgentDepth < MaxAgentDepth {
+			out = append(out, agentTool{runtime: agent})
+		}
+		if messenger, ok := agent.(AgentMessenger); ok {
+			out = append(out, sendMessageTool{messenger: messenger})
+		}
+	}
 	return out
+}
+
+type scopedAgentRuntime struct {
+	AgentRuntime
+	sessionID string
+	entryID   string
+}
+
+func (s scopedAgentRuntime) SpawnAgent(ctx context.Context, req AgentRequest) (AgentLaunch, error) {
+	req.ParentSessionID = s.sessionID
+	req.ParentEntryID = s.entryID
+	return s.AgentRuntime.SpawnAgent(ctx, req)
+}
+
+func (s scopedAgentRuntime) SendAgentMessage(ctx context.Context, req AgentMessageRequest) (AgentMessageResult, error) {
+	messenger, ok := s.AgentRuntime.(AgentMessenger)
+	if !ok {
+		return AgentMessageResult{}, os.ErrNotExist
+	}
+	req.SenderSessionID = s.sessionID
+	return messenger.SendAgentMessage(ctx, req)
+}
+
+type compositeTaskStore struct {
+	shell *JobStore
+	agent TaskStore
+}
+
+func (s compositeTaskStore) Get(key string) (TaskSnapshot, bool) {
+	if s.shell != nil {
+		if task, ok := s.shell.Get(key); ok {
+			return task, true
+		}
+	}
+	if s.agent != nil {
+		return s.agent.Get(key)
+	}
+	return TaskSnapshot{}, false
+}
+
+func (s compositeTaskStore) Wait(ctx context.Context, id string) (TaskSnapshot, error) {
+	if s.shell != nil {
+		if _, ok := s.shell.Get(id); ok {
+			return s.shell.Wait(ctx, id)
+		}
+	}
+	if s.agent != nil {
+		return s.agent.Wait(ctx, id)
+	}
+	return TaskSnapshot{}, os.ErrNotExist
+}
+
+func (s compositeTaskStore) Stop(id string) (TaskSnapshot, error) {
+	if s.shell != nil {
+		if _, ok := s.shell.Get(id); ok {
+			return s.shell.Stop(id)
+		}
+	}
+	if s.agent != nil {
+		return s.agent.Stop(id)
+	}
+	return TaskSnapshot{}, os.ErrNotExist
 }

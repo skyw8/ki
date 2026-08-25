@@ -24,6 +24,8 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 
 每轮 `runPrompt` 解析模型后，将 `input` 和 `applyPatchToolType` 映射为 provider-neutral `tools.Profile`，再一次性构造本轮内置工具。`input` 含 `image` 才使用富媒体 `Read`；`applyPatchToolType=freeform` 使用 `apply_patch`，否则使用 `Write` + `Edit`。同一份工具集进入 prompt、loop 和 `request_header`，模型切换后的下一轮立即重建。
 
+`Agent` 是同一工具链中的 session-scoped delegation：在工具调用所在 parent leaf 上执行 `session.ForkAt(..., forkMode=tree)`，注册 child 的 stable agent/task id 后由独立 `runState` 运行 `loop.RunMessage`。前台调用等待 child 完成并把最终 assistant 文本作为 tool result；后台调用立即返回 task id/output file，`TaskOutput` / `TaskStop` 通过统一 task store 查询或取消 shell 与 agent 任务。child 自己重新 Prepare 资源并拥有完整内置工具集，所以可递归形成 tree，但主会话为深度 0，Agent child 最多到深度 3，深度 3 不再暴露 `Agent`。`SendMessage` 对 live child 写入 Inbox，对 completed/stopped/interrupted child 复用原 transcript 续跑；child 旁的 `agent.json` 让 server 重启后能重建索引。
+
 ## HTTP
 
 除 `GET /v1/health` 外都要 `Authorization: Bearer`（也认 `?token=`）。非 `/v1` 路径是同域 WebUI，`index.html` 注入 token。

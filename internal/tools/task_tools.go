@@ -11,11 +11,18 @@ import (
 	"ki/internal/loop"
 )
 
-const taskOutputPrompt = `Retrieves output and status for a background task started by Bash, PowerShell, or Monitor.
+const taskOutputPrompt = `Retrieves output and status for a background task started by Agent, Bash, PowerShell, or Monitor.
 
 Use block=false for an immediate snapshot. Use block=true to wait for completion up to timeout milliseconds. For a running task, output contains the captured output so far and output_file can be read with Read.`
 
-type taskOutputTool struct{ jobs *JobStore }
+// TaskStore is the common lifecycle contract for shell and agent tasks.
+type TaskStore interface {
+	Get(key string) (TaskSnapshot, bool)
+	Wait(ctx context.Context, id string) (TaskSnapshot, error)
+	Stop(id string) (TaskSnapshot, error)
+}
+
+type taskOutputTool struct{ tasks TaskStore }
 
 func (taskOutputTool) Name() string        { return "TaskOutput" }
 func (taskOutputTool) Description() string { return "Retrieve output from a background task." }
@@ -41,7 +48,7 @@ type taskOutputResponse struct {
 }
 
 func (t taskOutputTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
-	if t.jobs == nil {
+	if t.tasks == nil {
 		return errRes("task store is unavailable")
 	}
 	id := stringArg(args, "task_id", "")
@@ -52,7 +59,7 @@ func (t taskOutputTool) Execute(ctx context.Context, args map[string]any) loop.T
 	if v, ok := args["block"].(bool); ok {
 		block = v
 	}
-	snapshot, ok := t.jobs.Get(id)
+	snapshot, ok := t.tasks.Get(id)
 	if !ok {
 		return errRes(fmt.Sprintf("task %s not found", id))
 	}
@@ -70,7 +77,7 @@ func (t taskOutputTool) Execute(ctx context.Context, args map[string]any) loop.T
 			timeout = min(parsed, 600000)
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
-		waited, err := t.jobs.Wait(waitCtx, id)
+		waited, err := t.tasks.Wait(waitCtx, id)
 		cancel()
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			if errors.Is(err, context.Canceled) {
@@ -93,7 +100,7 @@ func (t taskOutputTool) Execute(ctx context.Context, args map[string]any) loop.T
 	return taskResult(taskOutputResponse{RetrievalStatus: status, Task: &snapshot}, details)
 }
 
-type taskStopTool struct{ jobs *JobStore }
+type taskStopTool struct{ tasks TaskStore }
 
 func (taskStopTool) Name() string        { return "TaskStop" }
 func (taskStopTool) Description() string { return "Stop a running background task." }
@@ -115,7 +122,7 @@ func (t taskStopTool) Validate(args map[string]any) error {
 }
 
 func (t taskStopTool) Execute(_ context.Context, args map[string]any) loop.ToolResult {
-	if t.jobs == nil {
+	if t.tasks == nil {
 		return errRes("task store is unavailable")
 	}
 	id := stringArg(args, "task_id", "")
@@ -125,7 +132,7 @@ func (t taskStopTool) Execute(_ context.Context, args map[string]any) loop.ToolR
 	if id == "" {
 		return errRes("task_id is required")
 	}
-	snapshot, err := t.jobs.Stop(id)
+	snapshot, err := t.tasks.Stop(id)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return errRes(fmt.Sprintf("task %s not found", id))

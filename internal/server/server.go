@@ -57,6 +57,7 @@ type Server struct {
 	mu                     sync.Mutex
 	runs                   map[string]*runState
 	jobs                   map[string]*tools.JobStore
+	agentTasks             *tools.AgentStore
 	ws                     *workspace.Store
 	sidx                   *session.Index
 	ln                     net.Listener
@@ -82,6 +83,10 @@ type runState struct {
 	done   chan struct{}
 	err    error
 	inbox  *loop.Inbox
+	// steerClosed closes the handoff window after loop.Run has returned. A
+	// message that arrives after that point must become a queued/resumed run,
+	// never a successful write to an Inbox that nobody will drain.
+	steerClosed bool
 }
 
 // File is ~/.ki/server.json
@@ -127,6 +132,7 @@ func New(opt Options) (*Server, error) {
 		resources:              resources.NewLoader(opt.Config.Home),
 		runs:                   map[string]*runState{},
 		jobs:                   map[string]*tools.JobStore{},
+		agentTasks:             tools.NewAgentStore(),
 		ws:                     ws,
 		sidx:                   sidx,
 		shells:                 shells,
@@ -142,6 +148,7 @@ func New(opt Options) (*Server, error) {
 	srv.mcp = mcp.NewManager(srv.onMCPNotification)
 	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
 	srv.ext.SetHost(srv)
+	srv.restoreAgentTasks(infos)
 	return srv, nil
 }
 
@@ -433,6 +440,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.mu.Unlock()
 	for _, store := range jobs {
 		store.Close()
+	}
+	if s.agentTasks != nil {
+		s.agentTasks.Close()
 	}
 	for _, st := range runs {
 		select {
@@ -1104,7 +1114,7 @@ func (s *Server) promoteQueued(w http.ResponseWriter, r *http.Request, id string
 		writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "queued"})
 		return
 	}
-	st.inbox = &loop.Inbox{}
+	enableRunInbox(st)
 	go s.runPrompt(ctx, st, id, item.Content, nil, model, "", s.takeNextTurn(id))
 	s.publishQueueChanged(id)
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started"})
@@ -1298,7 +1308,22 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	if info.ApplyPatchToolType == "freeform" {
 		profile.Editor = tools.EditorApplyPatch
 	}
-	tls := tools.Set{CWD: sess.Header.CWD, Jobs: jobs, Shells: s.shells, Mutations: s.mutations}.Build(profile)
+	agentDepth, depthErr := s.agentDepth(sess)
+	if depthErr != nil {
+		// Fail closed: a damaged ancestry must not silently re-enable recursive
+		// Agent spawning and defeat the resource protection.
+		slog.Warn("resolve agent depth", "session_id", sess.ID(), "err", depthErr)
+		agentDepth = tools.MaxAgentDepth
+	}
+	tls := tools.Set{
+		CWD: sess.Header.CWD, Jobs: jobs, Agent: s, AgentDepth: agentDepth,
+		// Leave the entry unset so SpawnAgent resolves the leaf at the actual
+		// Agent tool-call boundary, after the current user/assistant history has
+		// been appended. Capturing it while assembling tools would fork stale
+		// parent context.
+		AgentParentSessionID: sess.ID(),
+		Shells:               s.shells, Mutations: s.mutations,
+	}.Build(profile)
 	tg := toggles.Load(cfg.Home)
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
 	// snapshot.Extensions is Discover.All (name-sorted catalog). Enabled
@@ -1442,8 +1467,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	if len(nextTurn) > 0 {
 		hooks = s.withNextTurn(sess, st, hooks, nextTurn)
 	}
-	user := types.Message{Role: "user", Content: content, Origin: origin}
-	_, err = loop.RunMessage(ctx, user, sess.MessagesToLeaf(), loop.Config{
+	runCfg := loop.Config{
 		Streamer:                runStreamer,
 		Tools:                   tls,
 		System:                  sys,
@@ -1463,7 +1487,40 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		Parallel:                true,
 		Inbox:                   st.inbox,
 		Hooks:                   hooks,
-	}, emit)
+	}
+	runMessage := func(user types.Message) error {
+		_, runErr := loop.RunMessage(ctx, user, sess.MessagesToLeaf(), runCfg, emit)
+		return runErr
+	}
+	user := types.Message{Role: "user", Content: content, Origin: origin}
+	err = runMessage(user)
+	// loop.Run checks Inbox.Has at the end of a turn. A steer can arrive in
+	// the narrow interval after that check and before Run returns; atomically
+	// close the handoff window only after taking one last Inbox snapshot, then
+	// run any such message as a continuation. If the window is already closed,
+	// SendMessage falls back to AgentStore's durable queue/resume path.
+	for {
+		st.mu.Lock()
+		var steers []types.Message
+		if !st.steerClosed && st.inbox != nil {
+			steers = st.inbox.Take()
+		}
+		if len(steers) == 0 {
+			st.steerClosed = true
+			st.mu.Unlock()
+			break
+		}
+		st.mu.Unlock()
+		for _, steer := range steers {
+			if err != nil && ctx.Err() != nil {
+				break
+			}
+			err = runMessage(steer)
+		}
+		if err != nil && ctx.Err() != nil {
+			break
+		}
+	}
 	st.err = err
 }
 

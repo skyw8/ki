@@ -84,7 +84,6 @@ func (m *Manager) ensure(ctx context.Context, sessionID, cwd string, d Descripto
 		slog.Info("extension sidecar failed", "extension", d.Name, "err", err)
 		return nil
 	}
-	c.host = m.host
 	m.mu.Lock()
 	if m.by[sessionID] == nil {
 		m.by[sessionID] = map[string]*rpcClient{}

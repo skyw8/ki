@@ -31,8 +31,11 @@ const (
 	// TaskFailed identifies a task that exited unsuccessfully.
 	TaskFailed TaskStatus = "failed"
 	// TaskKilled identifies a task explicitly terminated by the user or abort.
-	TaskKilled  TaskStatus = "killed"
-	maxTaskTail            = 64 * 1024
+	TaskKilled TaskStatus = "killed"
+	// TaskInterrupted identifies a task whose server stopped before it reached
+	// a normal terminal state. The durable agent metadata can be resumed later.
+	TaskInterrupted TaskStatus = "interrupted"
+	maxTaskTail                = 64 * 1024
 	// shellWaitDelay bounds Wait after process-tree termination. Killing only
 	// the shell launcher can leave descendants holding output pipes open, which
 	// otherwise makes abort appear to hang. See the Bash abort postmortem.
@@ -41,20 +44,25 @@ const (
 
 // TaskSnapshot is the stable, model-facing view of a background task.
 type TaskSnapshot struct {
-	TaskID      string     `json:"task_id"`
-	TaskType    string     `json:"task_type"`
-	Status      TaskStatus `json:"status"`
-	Description string     `json:"description,omitempty"`
-	Command     string     `json:"command,omitempty"`
-	OutputFile  string     `json:"output_file,omitempty"`
-	PID         int        `json:"pid,omitempty"`
-	Output      string     `json:"output,omitempty"`
-	ExitCode    *int       `json:"exitCode,omitempty"`
-	Error       string     `json:"error,omitempty"`
-	Bytes       int64      `json:"bytes,omitempty"`
-	Lines       int64      `json:"lines,omitempty"`
-	StartedAt   time.Time  `json:"started_at,omitzero"`
-	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+	TaskID       string     `json:"task_id"`
+	TaskType     string     `json:"task_type"`
+	SessionID    string     `json:"session_id,omitempty"`
+	Status       TaskStatus `json:"status"`
+	Description  string     `json:"description,omitempty"`
+	Command      string     `json:"command,omitempty"`
+	OutputFile   string     `json:"output_file,omitempty"`
+	PID          int        `json:"pid,omitempty"`
+	Output       string     `json:"output,omitempty"`
+	ExitCode     *int       `json:"exitCode,omitempty"`
+	Error        string     `json:"error,omitempty"`
+	Prompt       string     `json:"prompt,omitempty"`
+	Result       string     `json:"result,omitempty"`
+	ToolUseCount int        `json:"tool_use_count,omitempty"`
+	TotalTokens  int        `json:"total_tokens,omitempty"`
+	Bytes        int64      `json:"bytes,omitempty"`
+	Lines        int64      `json:"lines,omitempty"`
+	StartedAt    time.Time  `json:"started_at,omitzero"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
 }
 
 // TaskUpdate is emitted while a task writes output. Delta contains only the
@@ -434,7 +442,7 @@ func (s *JobStore) Stop(id string) (TaskSnapshot, error) {
 }
 
 func isTerminal(status TaskStatus) bool {
-	return status == TaskCompleted || status == TaskFailed || status == TaskKilled
+	return status == TaskCompleted || status == TaskFailed || status == TaskKilled || status == TaskInterrupted
 }
 
 func (s *JobStore) remove(j *bgJob) {

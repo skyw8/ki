@@ -37,5 +37,7 @@
 - [ ] `RequestUserInput`：WebUI 需要结构化选项交互时引入；优先级中。
 - [ ] `ViewImage`：现有 Read 已能读图，先完成缩放；优先级低。
 - [ ] `ToolSearch`：工具数量显著增长后再按需加载；优先级低。
-- [ ] `Agent` / 多代理：单 agent 生命周期稳定后再评估；优先级低。
+- [x] `Agent` / 多代理：已接入 `forkMode=tree` child session、前台/后台 task、
+  `TaskOutput`/`TaskStop` 统一生命周期；未完成的 agent definitions、worktree/team
+  能力见 [multi-agent.md](multi-agent.md)。
 - [ ] `Sleep` / `CurrentTime`：只有需要无副作用等待或取时才引入；优先级低。

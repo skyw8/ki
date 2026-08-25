@@ -14,8 +14,10 @@
 | `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
 | `PowerShell` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 仅 Windows 注册；PowerShell 原生命令、退出码、流式输出和后台任务与 Bash 使用同一生命周期 |
-| `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待后台任务；返回有界尾部、截断统计、状态、退出码和完整输出文件路径 |
-| `TaskStop` | `task_id`（或兼容的 `shell_id`） | 终止后台任务进程组并返回最终状态 |
+| `Agent` | `description`、`prompt`；可选 `subagent_type`、`model`、`run_in_background` | 从当前 session branch fork 一个 `forkMode=tree` 子 session；前台返回 `completed`，后台返回 `async_launched` 和 `outputFile` |
+| `SendMessage` | `to`、`message`；可选 `summary` | 按稳定 `agentId` 在当前 run 边界 steer，或从 child transcript 续跑已完成/停止的后台 agent |
+| `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待 shell/agent 后台任务；返回有界输出、状态、结果和输出文件路径 |
+| `TaskStop` | `task_id`（或兼容的 `shell_id`） | 终止 shell/agent 后台任务并返回最终状态 |
 | `Monitor` | `command`、`description` | 启动流式监控任务，逐行发送输出更新；结束时返回任务结果 |
 
 ## Read
@@ -107,11 +109,26 @@
 
 ## TaskOutput
 
-- 后台任务属于 session，可跨 prompt 查询；ki 重启后不恢复。
+- 后台 shell 任务属于当前 serve 进程；agent 任务的 stable `agentId`、child
+  session 和最近结果写入 child 目录的 `agent.json`，serve 重启时重建 agent/task
+  索引。重启前仍在运行的 agent 标记为 `interrupted`，可用 `SendMessage` 续跑。
 - 默认最多阻塞等待 30 秒；`block=false` 立即返回当前快照。
 - 等待超时返回 `retrieval_status=timeout`，不会终止任务。
-- 返回 task id/type、状态、描述、命令、PID、有界输出尾部、输出文件、退出码、错误、字节数、行数和开始/结束时间；超限日志不会被重新完整读入内存或 context。
-- 删除 session 或关闭 server 时终止运行中的任务，并清理临时输出文件。
+- 返回 task id/type、状态、描述、命令、PID、有界输出尾部、输出文件、退出码、错误、agent result、字节数、行数和开始/结束时间；超限日志不会被重新完整读入内存或 context。
+
+## Agent
+
+- `description` 是 3–5 个词的短任务名，`prompt` 是子 agent 的完整任务指令；`subagent_type` 省略时使用 `general-purpose`。
+- `Agent` 在 tool call 所属 parent session 的当前 leaf 上调用 `session.ForkAt`，传入 `forkMode=tree`。子 session 复制 root → leaf 的 history、provider/model/thinking 和附件，然后把 directive 作为新的 user message 运行现有 loop。
+- 子 agent 使用自己的 `runState`、MCP/extension Prepare、工具集和 `events.jsonl`；因此可以递归创建 tree child，且 child 的工具结果不会污染 parent context。主会话为深度 0，最多允许 Agent child 深度 3；深度 3 的 child 保留 `SendMessage`，但不再暴露 `Agent`。
+- `run_in_background=true` 与 parent prompt 脱钩，立即返回 `{"status":"async_launched", "agentId":…, "outputFile":…}`；`TaskOutput` 可等待它，`TaskStop` 可取消它。前台 agent 返回 Claude Code 兼容的 `completed` 结果对象。
+- `model` 覆盖只写入 child 的 `config.json` / `model_change`，不修改 parent session；空值继承 parent。
+- `cwd` override 和 `worktree` isolation 不在模型可见 schema 中；child 始终继承 parent cwd，隔离依靠 session tree，不会静默提供未实现的隔离。
+- 当前 Agent prompt/schema 只描述普通 parent → child delegation；不描述 Agent Teams 的命名成员、`team_name`、permission mode、roster 或 peer messaging。
+- 后台 Agent 返回的 `agentId` 可传给 `SendMessage`；运行中消息在当前 model/tool round 后注入，已完成或停止的 child 从原 session transcript 续跑。`TaskOutput` 只读状态/结果，`TaskStop` 只停止当前 run。
+- 删除 session 会终止并移除其 agent task 记录；关闭 server 会把运行中的 agent
+  标记为 `interrupted`，保留 metadata 供下次启动恢复。shell 临时输出文件仍按
+  原有 JobStore 生命周期清理。
 
 ## TaskStop
 

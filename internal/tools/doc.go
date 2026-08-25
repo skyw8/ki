@@ -1,5 +1,6 @@
 // Package tools implements model-aware built-ins: Read, Write, Edit,
-// apply_patch, Grep, Glob, Bash, PowerShell, TaskOutput, TaskStop, and Monitor.
+// apply_patch, Grep, Glob, Bash, PowerShell, Agent, SendMessage, TaskOutput,
+// TaskStop, and Monitor.
 //
 // Wire names and input schemas follow Claude Code. Text results follow pi
 // (no cat -n; shell tools mix stdout/stderr; non-zero exit is an error). Relative
@@ -10,7 +11,12 @@
 // /bin/bash then PATH. When Bash is unavailable, Bash and Monitor are omitted
 // without preventing server startup. The session-scoped task store tracks
 // process groups, output files, status, exit code, cancellation, and progress.
-// File mutations share a server-scoped per-path queue; Edit additionally
+// Agent delegates through a narrow AgentRuntime supplied by server. Its child
+// session is created with session forkMode=tree and is bounded to three child
+// layers below the main session; SendMessage steers or resumes the stable child
+// task. TaskOutput and TaskStop use a composite task store so shell and agent
+// tasks share the Claude Code-shaped lifecycle schema. File
+// mutations share a server-scoped per-path queue; Edit additionally
 // supports non-overlapping batch replacements against one original. Structured
 // result details are persisted for clients but omitted by provider adapters.
 // Read exposes line and UTF-8-safe byte paging, injectable operations, and

@@ -104,7 +104,7 @@ func (s *Server) acceptExtPrompt(sessionID, extName string, req extension.Enqueu
 		s.publishQueueChanged(sessionID)
 		return extension.EnqueueResult{Accepted: "queued", QueueID: got.ID}, nil
 	}
-	st.inbox = &loop.Inbox{}
+	enableRunInbox(st)
 	go s.runPrompt(ctx, st, sessionID, req.Content, nil, "", "extension:"+extName, nil)
 	return extension.EnqueueResult{Accepted: "started"}, nil
 }

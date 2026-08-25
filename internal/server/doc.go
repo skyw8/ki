@@ -36,6 +36,11 @@
 // only that session's MCP clients; global settings reload idle sessions and
 // queues active ones until occupy's matching release (prompt and compact).
 // MCP failures and list changes use jsonl plus SSE events.
+// Agent tool calls fork tree-mode child sessions and run them through their own
+// runState, bounded to three child layers below the main session. Agent metadata
+// beside the child transcript rebuilds the stable task registry after restart;
+// SendMessage steers a live Inbox or resumes the same child session, while
+// TaskOutput/TaskStop expose the shared task lifecycle.
 //
 // Routes and run lifecycle: docs/architecture.md. MCP lifecycle: docs/mcp.md.
 package server
