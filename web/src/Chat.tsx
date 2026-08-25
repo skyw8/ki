@@ -111,7 +111,8 @@ function UserBubble({ api, node }: { api: Client; node: Extract<ChatNode, { kind
   const files = node.content.filter(c => c.type === 'file' || c.type === 'workspace_file')
   const imageLayout = images.length <= 4 ? `count-${images.length}` : 'count-many'
   return (
-    <div className="user-message" data-testid="user-bubble">
+    <div className={`user-message${node.origin ? ' origin-ext' : ''}`} data-testid="user-bubble">
+      {node.origin ? <div className="user-origin" data-testid="user-origin">{node.origin}</div> : null}
       {images.length ? <div className={`message-images ${imageLayout}`}>
         {images.map((c, i) => <AttachmentImage api={api} content={c} className="message-image" expandable key={`${c.path || c.name}-${i}`} />)}
       </div> : null}

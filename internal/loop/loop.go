@@ -61,6 +61,12 @@ const (
 	RunAborted EventType = "run_aborted"
 	// ExtensionError reports a sidecar or intercept failure as a sideband.
 	ExtensionError EventType = "extension_error"
+	// ExtensionNotice is a non-error toast (info/warn) for the WebUI shell.
+	ExtensionNotice EventType = "extension_notice"
+	// ExtensionUIPrompt asks the WebUI to confirm or select (120s or abort = cancel).
+	ExtensionUIPrompt EventType = "extension_ui_prompt"
+	// AgentSettled reports occupy wrap-up finished and a new occupy may start.
+	AgentSettled EventType = "agent_settled"
 )
 
 // Event is a loop event (pi field names).
@@ -90,6 +96,7 @@ type Event struct {
 	Server                string          `json:"server,omitempty"`
 	MessageText           string          `json:"messageText,omitempty"`
 	ReloadRequired        bool            `json:"reloadRequired,omitempty"`
+	Options               []string        `json:"options,omitempty"`
 }
 
 // AssistantDelta is a streaming increment (pi assistantMessageEvent).

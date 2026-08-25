@@ -157,6 +157,7 @@ export function CommandPalette({
             <span className="command-label">
               <span className="command-name">/{item.name}</span>
               {item.argumentHint ? <span className="command-hint">{item.argumentHint}</span> : null}
+              {item.completions?.length ? <span className="command-hint">{item.completions.join(' ')}</span> : null}
             </span>
             {desc ? <span className="command-desc">{desc}</span> : null}
           </button>

@@ -2031,3 +2031,15 @@
   .cfg-layout { display: block; width: min(720px, 100%); }
   .cfg-outline { display: none; }
 }
+
+.ext-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.ext-chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-l2); }
+.ext-drawer { padding: 12px 16px; border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.ext-drawer-head { display: flex; justify-content: space-between; align-items: center; }
+.ext-section { white-space: pre-wrap; font-size: 13px; }
+.ext-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.ext-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; margin: 8px 0; }
+.ext-field input { padding: 4px 8px; }
+.user-origin { font-size: 11px; opacity: 0.7; margin-bottom: 4px; }
+.user-message.origin-ext .user-text-bubble { border-style: dashed; }
+.ext-select { display: flex; flex-direction: column; gap: 8px; }

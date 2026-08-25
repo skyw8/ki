@@ -39,8 +39,8 @@
 
 ### 0. 订事件（替换 hook / intercept）
 
-- [ ] Host **完整 event 目录表**：每点允许的 mode、sync/async 载荷、超时、链序（全局名→项目名）
-- [ ] 目录至少覆盖并对齐 Pi 语义（名称以规格终稿为准）：
+- [x] Host **完整 event 目录表**：每点允许的 mode、sync/async 载荷、超时、链序（全局名→项目名）
+- [x] 目录至少覆盖并对齐 Pi 语义（名称以规格终稿为准）：
   - 会话：`session_start` 等价（initialize/绑定）、`session_shutdown`、**`session_before_compact`（sync：可 cancel / 定制 summary）**、`session_compact` / compact failed（async）
   - 输入：**`input`（sync：改写或吞掉用户输入）**
   - Agent：`before_agent_start`（sync；**每 occupy 一次**，steer 不重跑）、`agent_start` / `agent_end` / **`agent_settled`**（async；settled 默认不许 sync）
@@ -48,12 +48,12 @@
   - Tool：`tool_call` / `tool_result`（sync）；`tool_execution_start`/`update`/`end`（update 仅 async）
   - Provider：`context`、`before_provider_request`、`before_provider_headers`、`after_provider_response`、`provider_error`（fallback）
   - 其它已有 sideband：`queue_changed`、`steer_accepted`、`run_aborted`、`mcp_*`（async）
-- [ ] `initialize` 只接受 `subscriptions`；未知 event / 不允许的 sync → **拒载该订阅（error）**
-- [ ] RPC：**统一** `lifecycle.invoke`（params 含 `event` + payload）；async 用 notification `lifecycle.event`
-- [ ] sync 载荷带 **紧凑 ctx 快照**：`idle`、`model`、`aborted`（对齐 Pi handler 上的 ctx 子集）；全文 history 不默认下发
-- [ ] `before_agent_start` sync 可见 system 全文；其它点可用 system 哈希/长度；`getSystemPrompt` 语义用 snapshot / 该事件载荷覆盖
-- [ ] **工具批语义**：写清串行/并行下 `tool_call` 顺序、`terminate` 批结束条件（对齐今日 Terminate）
-- [ ] 删除旧 method：`intercept.*`、旧 `event` 通知名若重命名则只保留新名
+- [x] `initialize` 只接受 `subscriptions`；未知 event / 不允许的 sync → **拒载该订阅（error）**
+- [x] RPC：**统一** `lifecycle.invoke`（params 含 `event` + payload）；async 用 notification `lifecycle.event`
+- [x] sync 载荷带 **紧凑 ctx 快照**：`idle`、`model`、`aborted`（对齐 Pi handler 上的 ctx 子集）；全文 history 不默认下发
+- [x] `before_agent_start` sync 可见 system 全文；其它点可用 system 哈希/长度；`getSystemPrompt` 语义用 snapshot / 该事件载荷覆盖
+- [x] **工具批语义**：写清串行/并行下 `tool_call` 顺序、`terminate` 批结束条件（对齐今日 Terminate）
+- [x] 删除旧 method：`intercept.*`、旧 `event` 通知名若重命名则只保留新名
 
 ### 1. 双向 RPC：sidecar → Host
 
@@ -63,13 +63,13 @@
 
 ### 2. 扩展事件总线（对齐 Pi `pi.events`）
 
-- [ ] `bus.emit`：`channel` + `data`；投递本 session 其它订阅 sidecar
-- [ ] **initialize 声明订阅** + **运行中 `bus.subscribe` / unsubscribe**
-- [ ] capability：`bus`
-- [ ] 同步 fan-out：emit 的 RPC 在订阅者处理完后返回；**深拷贝** data，result 带回最终 data（mutex 用）
-- [ ] 另支持 fire-and-forget 广播（规格与同步 emit 分开）
-- [ ] 总线不进 jsonl、不进 LLM context；session 关闭清空
-- [ ] Host 不解析 channel 业务含义
+- [x] `bus.emit`：`channel` + `data`；投递本 session 其它订阅 sidecar
+- [x] **initialize 声明订阅** + **运行中 `bus.subscribe` / unsubscribe**
+- [x] capability：`bus`
+- [x] 同步 fan-out：emit 的 RPC 在订阅者处理完后返回；**深拷贝** data，result 带回最终 data（mutex 用）
+- [x] 另支持 fire-and-forget 广播（规格与同步 emit 分开）
+- [x] 总线不进 jsonl、不进 LLM context；session 关闭清空
+- [x] Host 不解析 channel 业务含义
 
 Workflow 互斥（扩展协议，非 Host API）：
 
@@ -79,37 +79,37 @@ Workflow 互斥（扩展协议，非 Host API）：
 
 ### 3. 投递下一轮（对齐 Pi `sendUserMessage` / `sendMessage`）
 
-- [ ] `session.enqueue`
+- [x] `session.enqueue`
   - `content[]`
   - `deliverAs`：`queue`（默认）、`steer`、`nextTurn`（对照 Pi 三种投递测全）
   - `when`：`now`、`settled`
   - `idempotencyKey`、`origin=extension:<name>`
   - `kind`：`user`（默认）与 `custom`（`customType`/`display`；默认进 provider context 与 transcript）
-- [ ] 与 `POST /prompt` 共享 `AcceptPrompt`
-- [ ] **扩展 FIFO** 与 **用户 queue 分轨**；用户占用结束后 **先用户 queue，再扩展 FIFO**
-- [ ] 未持总线 mutex 的自动工作流不得 enqueue（协议约束 + fixture 覆盖）
+- [x] 与 `POST /prompt` 共享 `AcceptPrompt`
+- [x] **扩展 FIFO** 与 **用户 queue 分轨**；用户占用结束后 **先用户 queue，再扩展 FIFO**
+- [x] 未持总线 mutex 的自动工作流不得 enqueue（协议约束 + fixture 覆盖）
 
 ### 4. 稳定空闲（对齐 Pi `agent_settled` / `waitForIdle`）
 
-- [ ] `agent_settled`：occupy 结束且 auto-compact/内部收尾完成，可接受新 occupy（不含「扩展 FIFO 已空」）
-- [ ] `when=settled` 在 settled 上 flush，按扩展 FIFO 开后续 occupy
-- [ ] `session.snapshot`：`idle`、`running`、queue/扩展 FIFO 长度、model、thinking、**activeTools / allTools / commands**、本扩展 status 键等（覆盖 Pi `isIdle`/`getActiveTools`/`getCommands`）
+- [x] `agent_settled`：occupy 结束且 auto-compact/内部收尾完成，可接受新 occupy（不含「扩展 FIFO 已空」）
+- [x] `when=settled` 在 settled 上 flush，按扩展 FIFO 开后续 occupy
+- [x] `session.snapshot`：`idle`、`running`、queue/扩展 FIFO 长度、model、thinking、**activeTools / allTools / commands**、本扩展 status 键等（覆盖 Pi `isIdle`/`getActiveTools`/`getCommands`）
 
 ### 5. 会话扩展状态（对齐 Pi `appendEntry`）
 
-- [ ] jsonl `type=custom`：`extension`、`customType`、`data`
-- [ ] `session.appendEntry`；不进 provider context；强制只能写自己的 `extension`
-- [ ] reload / fork 复制或回放；sidecar 绑定后读回自己的 entries
+- [x] jsonl `type=custom`：`extension`、`customType`、`data`
+- [x] `session.appendEntry`；不进 provider context；强制只能写自己的 `extension`
+- [x] reload / fork 复制或回放；sidecar 绑定后读回自己的 entries
 
 ### 6. 运行时控制
 
-- [ ] `session.abort`
-- [ ] `session.setActiveTools`（会话级；未知名忽略 + `extension_notice` warn；不得静默清空全部）
-- [ ] `tools.register`：session 内增补/更新；**下一 occupy** 的 Prepare 生效
-- [ ] `session.compact`（与 HTTP compact 同路径）
-- [ ] **`session.patch`**：扩展可改本 session 的 model / thinkingEffort（对齐 Pi setModel/setThinkingLevel；校验与 HTTP PATCH 相同）
-- [ ] async **opt-in 加富**：usage、context 压力、tool-free fingerprint；默认仍不传正文/args/result
-- [ ] sync 失败 → `extension_error` + 本 occupy skip 集（与今日 fail-open/failClosed 规则一致并文档化）
+- [x] `session.abort`
+- [x] `session.setActiveTools`（会话级；未知名忽略 + `extension_notice` warn；不得静默清空全部）
+- [x] `tools.register`：session 内增补/更新；**下一 occupy** 的 Prepare 生效
+- [x] `session.compact`（与 HTTP compact 同路径）
+- [x] **`session.patch`**：扩展可改本 session 的 model / thinkingEffort（对齐 Pi setModel/setThinkingLevel；校验与 HTTP PATCH 相同）
+- [x] async **opt-in 加富**：usage、context 压力、tool-free fingerprint；默认仍不传正文/args/result
+- [x] sync 失败 → `extension_error` + 本 occupy skip 集（与今日 fail-open/failClosed 规则一致并文档化）
 
 ### 7. WebUI 扩展面（Host 契约 + 内置通用壳）
 
@@ -117,29 +117,29 @@ Workflow 互斥（扩展协议，非 Host API）：
 
 | 能力 | 行为 |
 |---|---|
-| [ ] Top bar StatusChip | 短文本 + tone；点击开详情 |
-| [ ] DetailDrawer | panel：sections / actions / fields |
-| [ ] `extension_notice` toast | info/warn |
-| [ ] confirm / select | 超时 **120s** = 取消 |
-| [ ] origin 气泡 | 扩展 enqueue vs 用户 |
-| [ ] queue UI | 用户 queue + 扩展 FIFO 可区分展示 |
-| [ ] **slash 参数补全** | 扩展 `CommandSpec` 可带补全提示/枚举；WebUI command palette 消费（对齐 Pi command completions 子集） |
-| [ ] 设置页扩展列表 | Scan、启停、path 字符串 |
+| [x] Top bar StatusChip | 短文本 + tone；点击开详情 |
+| [x] DetailDrawer | panel：sections / actions / fields |
+| [x] `extension_notice` toast | info/warn |
+| [x] confirm / select | 超时 **120s** = 取消 |
+| [x] origin 气泡 | 扩展 enqueue vs 用户 |
+| [x] queue UI | 用户 queue + 扩展 FIFO 可区分展示 |
+| [x] **slash 参数补全** | 扩展 `CommandSpec` 可带补全提示/枚举；WebUI command palette 消费（对齐 Pi command completions 子集） |
+| [x] 设置页扩展列表 | Scan、启停、path 字符串 |
 
 Sidecar UI RPC：
 
-- [ ] `ui.setStatus` / `ui.setPanel` / clear；投影 `GET session.extensionUi` + SSE `extension_ui_updated`
-- [ ] status/panel **不持久化**；reload 后 sidecar 按 appendEntry 重放
-- [ ] `ui.action` / `ui.submit` / `ui.confirm` / `ui.select`
-- [ ] 多扩展 chip 排序：扩展链序；SSE 推送，CLI 可只展示 notice
+- [x] `ui.setStatus` / `ui.setPanel` / clear；投影 `GET session.extensionUi` + SSE `extension_ui_updated`
+- [x] status/panel **不持久化**；reload 后 sidecar 按 appendEntry 重放
+- [x] `ui.action` / `ui.submit` / `ui.confirm` / `ui.select`
+- [x] 多扩展 chip 排序：扩展链序；SSE 推送，CLI 可只展示 notice
 
 不做：扩展 `web/` 动态加载、iframe 任意页、改 editor/footer/主题、主仓写死 goal/plan 页面。
 
 ### 8. 规格文档
 
-- [ ] `docs/extension.md`：订事件全表、lifecycle/bus/enqueue/state/tools/ui/snapshot/patch、重入、工具批、错误与 skip
-- [ ] `docs/webui.md`：extensionUi、chip/drawer、confirm/select、slash 补全、origin/queue
-- [ ] 删除文档中一切旧 hook/intercept 契约叙述（以新模型为准）
+- [x] `docs/extension.md`：订事件全表、lifecycle/bus/enqueue/state/tools/ui/snapshot/patch、重入、工具批、错误与 skip
+- [x] `docs/webui.md`：extensionUi、chip/drawer、confirm/select、slash 补全、origin/queue
+- [x] 删除文档中一切旧 hook/intercept 契约叙述（以新模型为准）
 
 ---
 

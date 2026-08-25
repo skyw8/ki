@@ -1,6 +1,6 @@
 # 供应商协议
 
-三套协议的请求形状不能混用。包入口见 `internal/provider/doc.go`。Live occupy 可经 extension intercept 包装 Streamer 与 headers-only HTTPDoer；compact 只用 HTTPDoer，看不见 BeforeProvider。见 [extension.md](extension.md)。
+三套协议的请求形状不能混用。包入口见 `internal/provider/doc.go`。Live occupy 可经扩展 `before_provider_request` / `before_provider_headers` 包装 Streamer 与 headers-only HTTPDoer；compact 只用 HTTPDoer，看不见 `before_provider_request`。见 [extension.md](extension.md)。
 
 ## 协议
 

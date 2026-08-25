@@ -28,7 +28,7 @@ func (boom) BeforeTool(context.Context, ToolCall) (ToolCall, *Block, error) {
 
 func TestComposeBeforeToolBlockSkipsExecuteSemantics(t *testing.T) {
 	hooks := ComposeHooks([]namedInterceptor{{
-		name: "protected-paths", points: []string{InterceptTool}, inner: blockWrite{},
+		name: "protected-paths", syncEvents: map[string]bool{EventToolCall: true}, inner: blockWrite{},
 	}}, nil)
 	args, block, reason, _, err := hooks.BeforeTool(context.Background(), "Write", map[string]any{"path": "/tmp/.env"})
 	if err != nil || !block || reason != "blocked .env" {
@@ -43,7 +43,7 @@ func TestComposeBeforeToolBlockSkipsExecuteSemantics(t *testing.T) {
 func TestComposeManagerErrorIsFailOpen(t *testing.T) {
 	var saw string
 	hooks := ComposeHooks([]namedInterceptor{{
-		name: "bad", points: []string{InterceptTool}, inner: boom{},
+		name: "bad", syncEvents: map[string]bool{EventToolCall: true}, inner: boom{},
 	}}, func(name, cap, code, message string) { saw = name })
 	_, block, _, _, err := hooks.BeforeTool(context.Background(), "Write", map[string]any{"path": "a"})
 	if err != nil || block || saw != "bad" {
@@ -53,7 +53,7 @@ func TestComposeManagerErrorIsFailOpen(t *testing.T) {
 
 func TestComposeFailClosedBlocks(t *testing.T) {
 	hooks := ComposeHooks([]namedInterceptor{{
-		name: "bad", failClosed: true, points: []string{InterceptTool}, inner: boom{},
+		name: "bad", failClosed: true, syncEvents: map[string]bool{EventToolCall: true}, inner: boom{},
 	}}, nil)
 	_, block, reason, _, err := hooks.BeforeTool(context.Background(), "Write", map[string]any{})
 	if err != nil || !block || !strings.Contains(reason, "failed closed") {
@@ -65,7 +65,7 @@ func TestUndeclaredProviderPointNotInvoked(t *testing.T) {
 	called := false
 	inner := spyBeforeRun{fn: func() { called = true }}
 	hooks := ComposeHooks([]namedInterceptor{{
-		name: "onlytool", points: []string{InterceptTool}, inner: inner,
+		name: "onlytool", syncEvents: map[string]bool{EventToolCall: true}, inner: inner,
 	}}, nil)
 	_, _, err := hooks.BeforeRun(context.Background(), "sys", nil)
 	if err != nil || called {
@@ -122,7 +122,7 @@ func TestHTTPPatchEmptyHeaderDeletes(t *testing.T) {
 	req.Header.Set("X-Custom", "keep")
 	cap := &captureDoer{}
 	d := wrapHTTPDoer(cap, []namedInterceptor{{
-		name: "h", points: []string{InterceptProviderHTTP}, inner: emptyHeaderPatch{},
+		name: "h", syncEvents: map[string]bool{EventBeforeProviderHeaders: true}, inner: emptyHeaderPatch{},
 	}}, nil, nil)
 	_, err = d.Do(req)
 	if err != nil {
@@ -154,7 +154,7 @@ func (mutateModel) BeforeProvider(_ context.Context, req ProviderRequest) (Provi
 func TestOccupyStreamerKeepsImageDataAndCopiesModel(t *testing.T) {
 	inner := &captureStreamer{}
 	s := wrapStreamer(inner, []namedInterceptor{{
-		name: "p", points: []string{InterceptProvider}, inner: mutateModel{},
+		name: "p", syncEvents: map[string]bool{EventBeforeProviderRequest: true}, inner: mutateModel{},
 	}}, nil, nil)
 	orig := []types.Message{{
 		Role: "user",
@@ -184,7 +184,7 @@ func TestOccupyWideSkipSharedWithStreamer(t *testing.T) {
 	skipped := newSkipSet()
 	called := false
 	hooks := composeHooks([]namedInterceptor{{
-		name: "bad", points: []string{InterceptTool, InterceptProvider}, inner: boom{},
+		name: "bad", syncEvents: map[string]bool{EventToolCall: true, EventBeforeProviderRequest: true}, inner: boom{},
 	}}, skipped, nil)
 	_, block, _, _, err := hooks.BeforeTool(context.Background(), "Write", map[string]any{})
 	if err != nil || block {
@@ -192,7 +192,7 @@ func TestOccupyWideSkipSharedWithStreamer(t *testing.T) {
 	}
 	inner := spyBeforeProvider{fn: func() { called = true }}
 	s := wrapStreamer(&captureStreamer{}, []namedInterceptor{{
-		name: "bad", points: []string{InterceptProvider}, inner: inner,
+		name: "bad", syncEvents: map[string]bool{EventBeforeProviderRequest: true}, inner: inner,
 	}}, skipped, nil)
 	_, err = s.Stream(context.Background(), loop.Request{Model: "m"}, nil)
 	if err != nil {
@@ -215,7 +215,7 @@ func (s spyBeforeProvider) BeforeProvider(_ context.Context, req ProviderRequest
 
 func TestAfterToolErrorIgnoredByLoopContract(t *testing.T) {
 	hooks := ComposeHooks([]namedInterceptor{{
-		name: "x", points: []string{InterceptTool}, inner: boomAfter{},
+		name: "x", syncEvents: map[string]bool{EventToolResult: true}, inner: boomAfter{},
 	}}, nil)
 	res, err := hooks.AfterTool(context.Background(), "Read", nil, loop.ToolResult{Content: []types.Content{{Type: "text", Text: "ok"}}})
 	if err != nil || res.Content[0].Text != "ok" {

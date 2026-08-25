@@ -165,6 +165,10 @@ export class Client {
     return this.json(`/v1/sessions/${id}/abort`, { method: 'POST' })
   }
 
+  extensionUI(id: string, body: { kind: string; extension: string; ok?: boolean; value?: string; fields?: Record<string, unknown> }): Promise<{ ok: boolean }> {
+    return this.json(`/v1/sessions/${id}/extension-ui`, { method: 'POST', body: JSON.stringify(body) })
+  }
+
   compact(id: string): Promise<void> {
     return this.json(`/v1/sessions/${id}/compact`, { method: 'POST' })
   }

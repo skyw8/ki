@@ -231,7 +231,7 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(page.getByTestId('assistant-message').locator('.md')).toContainText('ok')
   await expect(page.getByTestId('session-stats')).toContainText('1 轮 · 1 步')
   await expect(page.getByTestId('session-stats')).toContainText('输入 8 · 输出 2')
-  await expect(page.getByTestId('session-title')).toContainText(prompt)
+  await expect(page.getByTestId('session-title').filter({ hasText: prompt })).toBeVisible()
   const asstActions = page.getByTestId('assistant-message').getByTestId('asst-actions')
   await expect(asstActions.getByTestId('copy-msg')).toBeVisible()
   await expect(asstActions.getByTestId('fork-msg')).toBeVisible()

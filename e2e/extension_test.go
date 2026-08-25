@@ -293,8 +293,7 @@ func installProtected(t *testing.T, home, bin string, env ...map[string]string) 
 	}
 	manifest := `{
   "name": "protected-paths",
-  "capabilities": ["prompt.append", "intercept"],
-  "intercept": ["tool"],
+  "capabilities": ["prompt.append", "lifecycle"],
   "prompt": {"append": ["APPEND.md"]},
   "runtime": {"kind": "rpc", "command": "` + strings.ReplaceAll(bin, `\`, `\\`) + `"` + runtimeEnvJSON(extra) + `}
 }`
@@ -356,8 +355,7 @@ func installSpawner(t *testing.T, home, marker string) {
 	bin := buildSidecar(t)
 	manifest := `{
   "name": "spawner",
-  "capabilities": ["intercept"],
-  "intercept": ["tool"],
+  "capabilities": ["lifecycle"],
   "runtime": {"kind": "rpc", "command": "` + strings.ReplaceAll(bin, `\`, `\\`) + `", "env": {"KI_MARKER": "` + strings.ReplaceAll(marker, `\`, `\\`) + `"}}
 }`
 	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(manifest), 0o600); err != nil {

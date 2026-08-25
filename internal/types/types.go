@@ -58,7 +58,9 @@ type Message struct {
 	// deliberately omit it from model requests.
 	Details any `json:"details,omitempty"`
 	// ToolType selects the matching function/custom output wire item.
-	ToolType   string `json:"toolType,omitempty"`
+	ToolType string `json:"toolType,omitempty"`
+	// Origin marks extension-enqueued user turns (extension:<name>). Empty is the human user.
+	Origin     string `json:"origin,omitempty"`
 	IsError    bool   `json:"isError,omitempty"`
 	LatencyMs  int64  `json:"latencyMs,omitempty"`
 	TTFTMs     int64  `json:"ttftMs,omitempty"`

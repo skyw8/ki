@@ -2,6 +2,7 @@ package extension
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sort"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"ki/internal/loop"
 	"ki/internal/provider"
 	"ki/internal/session"
+	"ki/internal/types"
 )
 
 // Manager owns session-scoped sidecar processes.
@@ -18,10 +20,11 @@ type Manager struct {
 	order map[string][]string
 	onErr ErrorFunc
 	home  string
+	host  SessionHost
 }
 
-// Occupy is one prompt occupy: intercept chain plus the skip set shared by
-// hooks, the occupy Streamer, and the session HTTPDoer for that run.
+// Occupy is one prompt occupy: lifecycle chain plus the skip set shared by
+// the occupy Streamer and the session HTTPDoer for that run.
 type Occupy struct {
 	items   []namedInterceptor
 	skipped *skipSet
@@ -37,6 +40,9 @@ func NewManager(home string, onErr ErrorFunc) *Manager {
 		home:  home,
 	}
 }
+
+// SetHost attaches inbound Host methods (session enqueue, bus, UI).
+func (m *Manager) SetHost(h SessionHost) { m.host = h }
 
 // Prepare starts sidecars for enabled packages that want runtime.
 func (m *Manager) Prepare(ctx context.Context, sessionID, cwd string, enabled []Descriptor) []loop.Tool {
@@ -70,7 +76,7 @@ func (m *Manager) ensure(ctx context.Context, sessionID, cwd string, d Descripto
 		}
 	}
 	m.mu.Unlock()
-	c, err := startRPC(ctx, d, sessionID, m.home, cwd)
+	c, err := startRPC(ctx, d, sessionID, m.home, cwd, m.host)
 	if err != nil {
 		if m.onErr != nil {
 			m.onErr(sessionID, d.Name, "runtime", "sidecar_start", err.Error())
@@ -78,6 +84,7 @@ func (m *Manager) ensure(ctx context.Context, sessionID, cwd string, d Descripto
 		slog.Info("extension sidecar failed", "extension", d.Name, "err", err)
 		return nil
 	}
+	c.host = m.host
 	m.mu.Lock()
 	if m.by[sessionID] == nil {
 		m.by[sessionID] = map[string]*rpcClient{}
@@ -111,7 +118,7 @@ func (m *Manager) items(sessionID string) []namedInterceptor {
 		}
 		seen[name] = true
 		out = append(out, namedInterceptor{
-			name: name, failClosed: c.failClosed, points: c.points, hasHook: c.hasHook, inner: c,
+			name: name, failClosed: c.failClosed, syncEvents: c.registration.syncEvents, inner: c,
 		})
 	}
 	for _, name := range order {
@@ -162,7 +169,7 @@ func (o *Occupy) HTTPDoer() provider.HTTPDoer {
 		return nil
 	}
 	for _, it := range o.items {
-		if it.has(InterceptProviderHTTP) {
+		if it.hasSync(EventBeforeProviderHeaders) {
 			return wrapHTTPDoer(nil, o.items, o.skipped, o.onErr)
 		}
 	}
@@ -174,7 +181,7 @@ func (m *Manager) Hooks(sessionID string) loop.Hooks {
 	return m.Occupy(sessionID).Hooks()
 }
 
-// WrapStreamer wraps the live occupy streamer with provider intercept.
+// WrapStreamer wraps the live occupy streamer with provider lifecycle.
 func (m *Manager) WrapStreamer(sessionID string, inner loop.Streamer) loop.Streamer {
 	return m.Occupy(sessionID).WrapStreamer(inner)
 }
@@ -184,7 +191,7 @@ func (m *Manager) WrapStreamer(sessionID string, inner loop.Streamer) loop.Strea
 func (m *Manager) HTTPDoer(sessionID string) provider.HTTPDoer {
 	items := m.items(sessionID)
 	for _, it := range items {
-		if it.has(InterceptProviderHTTP) {
+		if it.hasSync(EventBeforeProviderHeaders) {
 			return wrapHTTPDoer(nil, items, nil, m.errFn(sessionID))
 		}
 	}
@@ -240,7 +247,7 @@ func (m *Manager) OnEvent(sessionID string, ev Event) {
 	m.mu.Lock()
 	clients := make([]*rpcClient, 0, len(m.by[sessionID]))
 	for _, c := range m.by[sessionID] {
-		if c.hasHook {
+		if len(c.registration.asyncEvents) > 0 {
 			clients = append(clients, c)
 		}
 	}
@@ -281,6 +288,152 @@ func (m *Manager) CloseExcept(active map[string]bool) {
 // Enabled filters snapshot.Extensions (Discover.All) with the live toggle and
 // returns Discover chain order (global-by-name, then project-by-name). Server
 // Prepare must use this (or Discover.Enabled), never a bare name-sorted All.
+// ApplyInput runs sync input subscribers. swallow true means drop the prompt.
+func (m *Manager) ApplyInput(ctx context.Context, sessionID, text string) (string, bool) {
+	for _, it := range m.items(sessionID) {
+		if !it.hasSync(EventInput) {
+			continue
+		}
+		c, ok := it.inner.(*rpcClient)
+		if !ok {
+			continue
+		}
+		next, swallow, err := c.rewriteInput(ctx, text)
+		if err != nil {
+			continue
+		}
+		if swallow {
+			return "", true
+		}
+		text = next
+	}
+	return text, false
+}
+
+// ApplyMessageEnd lets sync subscribers replace a same-role message.
+func (m *Manager) ApplyMessageEnd(ctx context.Context, sessionID string, msg types.Message) types.Message {
+	for _, it := range m.items(sessionID) {
+		if !it.hasSync(EventMessageEnd) {
+			continue
+		}
+		c, ok := it.inner.(*rpcClient)
+		if !ok {
+			continue
+		}
+		next, err := c.rewriteMessageEnd(ctx, msg)
+		if err != nil {
+			continue
+		}
+		if next.Role == msg.Role && next.Role != "" {
+			msg = next
+		}
+	}
+	return msg
+}
+
+// CompactAllowed runs session_before_compact. false means skip compact.
+func (m *Manager) CompactAllowed(ctx context.Context, sessionID string) (bool, string) {
+	for _, it := range m.items(sessionID) {
+		if !it.hasSync(EventSessionBeforeCompact) {
+			continue
+		}
+		c, ok := it.inner.(*rpcClient)
+		if !ok {
+			continue
+		}
+		okc, summary, err := c.beforeCompact(ctx)
+		if err != nil {
+			continue
+		}
+		if !okc {
+			return false, ""
+		}
+		if summary != "" {
+			return true, summary
+		}
+	}
+	return true, ""
+}
+
+// RegisterTools appends tool specs for the next occupy Prepare.
+func (m *Manager) RegisterTools(sessionID, name string, tools []ToolSpec) error {
+	c := m.client(sessionID, name)
+	if c == nil {
+		return errRPC
+	}
+	c.registration.Tools = append(c.registration.Tools, tools...)
+	return nil
+}
+
+// Notify sends a Host→sidecar JSON-RPC notification (ui.action / ui.submit).
+func (m *Manager) Notify(sessionID, name, method string, params any) {
+	c := m.client(sessionID, name)
+	if c == nil {
+		return
+	}
+	c.notify(method, params)
+}
+
+func (m *Manager) client(sessionID, name string) *rpcClient {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.by[sessionID] == nil {
+		return nil
+	}
+	return m.by[sessionID][name]
+}
+
+// BusEmit deep-copies data and fans out to other bus subscribers, returning merged data.
+func (m *Manager) BusEmit(sessionID, from, channel string, data any) (any, error) {
+	cloned := cloneJSON(data)
+	m.mu.Lock()
+	var others []*rpcClient
+	for name, c := range m.by[sessionID] {
+		if name == from {
+			continue
+		}
+		others = append(others, c)
+	}
+	m.mu.Unlock()
+	for _, c := range others {
+		cloned = c.deliverBus(channel, cloned, true)
+	}
+	return cloned, nil
+}
+
+// BusBroadcast fire-and-forget to other subscribers.
+func (m *Manager) BusBroadcast(sessionID, from, channel string, data any) error {
+	cloned := cloneJSON(data)
+	m.mu.Lock()
+	var others []*rpcClient
+	for name, c := range m.by[sessionID] {
+		if name == from {
+			continue
+		}
+		others = append(others, c)
+	}
+	m.mu.Unlock()
+	for _, c := range others {
+		c.deliverBus(channel, cloned, false)
+	}
+	return nil
+}
+
+func cloneJSON(v any) any {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var out any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return v
+	}
+	return out
+}
+
 func Enabled(all []Descriptor, toggle session.Toggle) []Descriptor {
 	var filtered []Descriptor
 	for _, d := range all {

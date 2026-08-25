@@ -12,11 +12,12 @@ import (
 
 // Item is one palette / GET commands[] row.
 type Item struct {
-	Name         string `json:"name"`
-	Description  string `json:"description,omitempty"`
-	ArgumentHint string `json:"argumentHint,omitempty"`
-	Source       string `json:"source"`
-	Extension    string `json:"extension,omitempty"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`
+	ArgumentHint string   `json:"argumentHint,omitempty"`
+	Completions  []string `json:"completions,omitempty"`
+	Source       string   `json:"source"`
+	Extension    string   `json:"extension,omitempty"`
 }
 
 // Catalog lists builtins, prompt templates, and enabled skills.

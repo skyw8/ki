@@ -47,23 +47,25 @@ type rpcClient struct {
 	name         string
 	sessionID    string
 	failClosed   bool
-	points       []string
-	hasHook      bool
 	fallback     bool
 	cmd          *exec.Cmd
 	enc          *json.Encoder
 	mu           sync.Mutex
 	pending      map[string]chan rpcMsg
 	idSeq        atomic.Int64
+	inboundSeq   atomic.Int64
 	closed       chan struct{}
 	progress     map[string]func(any)
 	progressMu   sync.Mutex
 	registration Registration
 	capabilities []string
 	undeclared   []string
+	busChannels  map[string]bool
+	busMu        sync.Mutex
+	host         SessionHost
 }
 
-func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string) (*rpcClient, error) {
+func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, host SessionHost) (*rpcClient, error) {
 	cmdPath := d.manifest.Runtime.Command
 	if !filepath.IsAbs(cmdPath) {
 		cmdPath = filepath.Join(d.root, cmdPath)
@@ -101,16 +103,16 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string) (*
 		return nil, err
 	}
 	c := &rpcClient{
-		name:       d.Name,
-		sessionID:  sessionID,
-		failClosed: d.FailClosed,
-		points:     d.Intercept,
-		hasHook:    hasKind(d.Capabilities, CapHook),
-		cmd:        cmd,
-		enc:        json.NewEncoder(stdin),
-		pending:    map[string]chan rpcMsg{},
-		closed:     make(chan struct{}),
-		progress:   map[string]func(any){},
+		name:        d.Name,
+		sessionID:   sessionID,
+		failClosed:  d.FailClosed,
+		cmd:         cmd,
+		enc:         json.NewEncoder(stdin),
+		pending:     map[string]chan rpcMsg{},
+		closed:      make(chan struct{}),
+		progress:    map[string]func(any){},
+		busChannels: map[string]bool{},
+		host:        host,
 	}
 	go c.readLoop(stdout)
 	initCtx, cancel := context.WithTimeout(context.Background(), timeoutInit)
@@ -124,9 +126,37 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string) (*
 	}
 	c.capabilities = d.Capabilities
 	c.undeclared = applyRegistrationGates(d.Capabilities, &reg)
+	if err := gateSubscriptions(d.Capabilities, &reg); err != nil {
+		c.close()
+		return nil, err
+	}
+	reg.indexSubscriptions()
 	c.registration = reg
 	c.fallback = reg.Fallback
 	return c, nil
+}
+
+func gateSubscriptions(caps []string, reg *Registration) error {
+	if reg == nil {
+		return nil
+	}
+	var kept []Subscription
+	for _, sub := range reg.Subscriptions {
+		if err := AcceptSubscription(sub); err != nil {
+			continue
+		}
+		kept = append(kept, sub)
+	}
+	reg.Subscriptions = kept
+	if hasKind(caps, CapLifecycle) && len(kept) == 0 {
+		return errNoSubscriptions
+	}
+	if !hasKind(caps, CapLifecycle) {
+		reg.Subscriptions = nil
+		reg.syncEvents = map[string]bool{}
+		reg.asyncEvents = map[string]bool{}
+	}
+	return nil
 }
 
 // applyRegistrationGates drops initialize tools/commands whose capability
@@ -176,6 +206,20 @@ func (c *rpcClient) readLoop(r io.Reader) {
 			continue
 		}
 		id, _ := stringifyID(msg.ID)
+		if msg.Method != "" && id != "" {
+			c.mu.Lock()
+			ch := c.pending[id]
+			c.mu.Unlock()
+			if ch == nil {
+				go c.handleInbound(msg)
+				continue
+			}
+			select {
+			case ch <- msg:
+			default:
+			}
+			continue
+		}
 		if id == "" {
 			continue
 		}
@@ -258,8 +302,21 @@ func (c *rpcClient) close() {
 	}
 }
 
+func (c *rpcClient) hasSync(event string) bool {
+	return c.registration.hasSync(event)
+}
+
+func (c *rpcClient) hasAsync(event string) bool {
+	return c.registration.hasAsync(event)
+}
+
+func compactCtx(ctx context.Context, model string, idle bool) CompactCtx {
+	aborted := ctx != nil && ctx.Err() != nil
+	return CompactCtx{Idle: idle, Model: model, Aborted: aborted}
+}
+
 func (c *rpcClient) BeforeRun(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error) {
-	if !hasPoint(c.points, InterceptProvider) {
+	if !c.hasSync(EventBeforeAgentStart) {
 		return system, msgs, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
@@ -268,7 +325,10 @@ func (c *rpcClient) BeforeRun(ctx context.Context, system string, msgs []types.M
 		System   string          `json:"system"`
 		Messages []types.Message `json:"messages"`
 	}
-	err := c.call(ctx, "intercept.provider.beforeRun", map[string]any{"system": system, "messages": redactMessages(msgs)}, &out)
+	err := c.call(ctx, "lifecycle.invoke", map[string]any{
+		"event": EventBeforeAgentStart, "payload": map[string]any{"system": system, "messages": redactMessages(msgs)},
+		"ctx": compactCtx(ctx, "", false),
+	}, &out)
 	if err != nil {
 		return system, msgs, err
 	}
@@ -282,7 +342,7 @@ func (c *rpcClient) BeforeRun(ctx context.Context, system string, msgs []types.M
 }
 
 func (c *rpcClient) TransformContext(ctx context.Context, msgs []types.Message) ([]types.Message, error) {
-	if !hasPoint(c.points, InterceptProvider) {
+	if !c.hasSync(EventContext) {
 		return msgs, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
@@ -290,7 +350,10 @@ func (c *rpcClient) TransformContext(ctx context.Context, msgs []types.Message) 
 	var out struct {
 		Messages []types.Message `json:"messages"`
 	}
-	err := c.call(ctx, "intercept.provider.transformContext", map[string]any{"messages": redactMessages(msgs)}, &out)
+	err := c.call(ctx, "lifecycle.invoke", map[string]any{
+		"event": EventContext, "payload": map[string]any{"messages": redactMessages(msgs)},
+		"ctx": compactCtx(ctx, "", false),
+	}, &out)
 	if err != nil {
 		return msgs, err
 	}
@@ -301,7 +364,7 @@ func (c *rpcClient) TransformContext(ctx context.Context, msgs []types.Message) 
 }
 
 func (c *rpcClient) BeforeTool(ctx context.Context, in ToolCall) (ToolCall, *Block, error) {
-	if !hasPoint(c.points, InterceptTool) {
+	if !c.hasSync(EventToolCall) {
 		return in, nil, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
@@ -312,7 +375,9 @@ func (c *rpcClient) BeforeTool(ctx context.Context, in ToolCall) (ToolCall, *Blo
 		Reason    string         `json:"reason"`
 		Terminate bool           `json:"terminate"`
 	}
-	err := c.call(ctx, "intercept.tool.before", in, &out)
+	err := c.call(ctx, "lifecycle.invoke", map[string]any{
+		"event": EventToolCall, "payload": in, "ctx": compactCtx(ctx, "", false),
+	}, &out)
 	if err != nil {
 		return in, nil, err
 	}
@@ -326,13 +391,16 @@ func (c *rpcClient) BeforeTool(ctx context.Context, in ToolCall) (ToolCall, *Blo
 }
 
 func (c *rpcClient) AfterTool(ctx context.Context, in ToolCall, res ResultPatch) (ResultPatch, error) {
-	if !hasPoint(c.points, InterceptTool) {
+	if !c.hasSync(EventToolResult) {
 		return res, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
 	defer cancel()
 	var out ResultPatch
-	err := c.call(ctx, "intercept.tool.after", map[string]any{"call": in, "result": res}, &out)
+	err := c.call(ctx, "lifecycle.invoke", map[string]any{
+		"event": EventToolResult, "payload": map[string]any{"call": in, "result": res},
+		"ctx": compactCtx(ctx, "", false),
+	}, &out)
 	if err != nil {
 		return res, err
 	}
@@ -340,7 +408,7 @@ func (c *rpcClient) AfterTool(ctx context.Context, in ToolCall, res ResultPatch)
 }
 
 func (c *rpcClient) BeforeProvider(ctx context.Context, req ProviderRequest) (ProviderRequest, *ShortCircuit, error) {
-	if !hasPoint(c.points, InterceptProvider) {
+	if !c.hasSync(EventBeforeProviderRequest) {
 		return req, nil, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
@@ -349,7 +417,9 @@ func (c *rpcClient) BeforeProvider(ctx context.Context, req ProviderRequest) (Pr
 		Request      *ProviderRequest `json:"request"`
 		ShortCircuit *ShortCircuit    `json:"shortCircuit"`
 	}
-	err := c.call(ctx, "intercept.provider.request", req, &out)
+	err := c.call(ctx, "lifecycle.invoke", map[string]any{
+		"event": EventBeforeProviderRequest, "payload": req, "ctx": compactCtx(ctx, req.Model, false),
+	}, &out)
 	if err != nil {
 		return req, nil, err
 	}
@@ -380,41 +450,48 @@ func (c *rpcClient) BeforeProvider(ctx context.Context, req ProviderRequest) (Pr
 }
 
 func (c *rpcClient) BeforeProviderHTTP(ctx context.Context, view HTTPRequestView) (HTTPRequestPatch, error) {
-	if !hasPoint(c.points, InterceptProviderHTTP) {
+	if !c.hasSync(EventBeforeProviderHeaders) {
 		return HTTPRequestPatch{}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
 	defer cancel()
 	var out HTTPRequestPatch
-	err := c.call(ctx, "intercept.provider.http", view, &out)
+	err := c.call(ctx, "lifecycle.invoke", map[string]any{
+		"event": EventBeforeProviderHeaders, "payload": view, "ctx": compactCtx(ctx, "", false),
+	}, &out)
 	return out, err
 }
 
-func (c *rpcClient) AfterProviderHTTP(ctx context.Context, status int, headers map[string]string) error {
-	if !hasPoint(c.points, InterceptProviderHTTP) {
+func (c *rpcClient) AfterProviderHTTP(_ context.Context, status int, headers map[string]string) error {
+	if !c.hasAsync(EventAfterProviderResponse) {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
-	defer cancel()
-	return c.call(ctx, "intercept.provider.http.after", map[string]any{"status": status, "headers": headers}, nil)
+	c.notify("lifecycle.event", map[string]any{
+		"event":   EventAfterProviderResponse,
+		"payload": map[string]any{"status": status, "headers": headers},
+	})
+	return nil
 }
 
 func (c *rpcClient) AfterProviderError(ctx context.Context, errClass string) (Fallback, error) {
-	if !hasPoint(c.points, InterceptProvider) || !c.fallback {
+	if !c.hasSync(EventProviderError) || !c.fallback {
 		return Fallback{}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
 	defer cancel()
 	var out Fallback
-	err := c.call(ctx, "intercept.provider.error", map[string]any{"errClass": errClass}, &out)
+	err := c.call(ctx, "lifecycle.invoke", map[string]any{
+		"event": EventProviderError, "payload": map[string]any{"errClass": errClass},
+		"ctx": compactCtx(ctx, "", false),
+	}, &out)
 	return out, err
 }
 
-func (c *rpcClient) OnEvent(ctx context.Context, ev Event) error {
-	if !c.hasHook {
+func (c *rpcClient) OnEvent(_ context.Context, ev Event) error {
+	if !c.hasAsync(ev.Type) {
 		return nil
 	}
-	c.notify("event", ev)
+	c.notify("lifecycle.event", map[string]any{"event": ev.Type, "payload": ev})
 	return nil
 }
 
@@ -463,6 +540,74 @@ func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, 
 		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 	}
 	return loop.ToolResult{Content: out.Content, IsError: out.IsError, Details: out.Details}
+}
+
+func (c *rpcClient) rewriteInput(ctx context.Context, text string) (string, bool, error) {
+	if !c.hasSync(EventInput) {
+		return text, false, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
+	defer cancel()
+	var out struct {
+		Text    string `json:"text"`
+		Swallow bool   `json:"swallow"`
+	}
+	err := c.call(ctx, "lifecycle.invoke", map[string]any{
+		"event": EventInput, "payload": map[string]any{"text": text}, "ctx": compactCtx(ctx, "", false),
+	}, &out)
+	if err != nil {
+		return text, false, err
+	}
+	if out.Swallow {
+		return "", true, nil
+	}
+	if out.Text != "" {
+		return out.Text, false, nil
+	}
+	return text, false, nil
+}
+
+func (c *rpcClient) rewriteMessageEnd(ctx context.Context, msg types.Message) (types.Message, error) {
+	if !c.hasSync(EventMessageEnd) {
+		return msg, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
+	defer cancel()
+	var out struct {
+		Message *types.Message `json:"message"`
+	}
+	err := c.call(ctx, "lifecycle.invoke", map[string]any{
+		"event": EventMessageEnd, "payload": map[string]any{"message": msg}, "ctx": compactCtx(ctx, "", false),
+	}, &out)
+	if err != nil {
+		return msg, err
+	}
+	if out.Message != nil {
+		return *out.Message, nil
+	}
+	return msg, nil
+}
+
+func (c *rpcClient) beforeCompact(ctx context.Context) (bool, string, error) {
+	if !c.hasSync(EventSessionBeforeCompact) {
+		return true, "", nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
+	defer cancel()
+	var out struct {
+		Cancel  bool   `json:"cancel"`
+		Summary string `json:"summary"`
+	}
+	err := c.call(ctx, "lifecycle.invoke", map[string]any{
+		"event": EventSessionBeforeCompact, "payload": map[string]any{}, "ctx": compactCtx(ctx, "", false),
+	}, &out)
+	if err != nil {
+		return true, "", err
+	}
+	if out.Cancel {
+		return false, "", nil
+	}
+	return true, out.Summary, nil
 }
 
 func (c *rpcClient) invokeCommand(ctx context.Context, name, args string) (handled bool, notice, prompt string, err error) {

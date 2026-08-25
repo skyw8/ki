@@ -25,6 +25,7 @@ export type Content = {
 export type Message = {
   role: string
   content?: Content[]
+  origin?: string
   timestamp?: number
   usage?: Usage | null
   stopReason?: string
@@ -95,6 +96,7 @@ export type LoopEvent = {
 	server?: string
 	messageText?: string
 	reloadRequired?: boolean
+	options?: string[]
 }
 
 export type SessionInfo = {
@@ -179,6 +181,7 @@ export type SessionCommand = {
   name: string
   description?: string
   argumentHint?: string
+  completions?: string[]
   source: 'builtin' | 'prompt' | 'skill' | 'extension' | string
   extension?: string
 }
@@ -186,6 +189,7 @@ export type SessionCommand = {
 export type QueuedItem = {
   id: string
   content?: Content[]
+  extension?: string
 }
 
 export type SessionDetail = SessionInfo & {
@@ -197,6 +201,21 @@ export type SessionDetail = SessionInfo & {
   availableExtensions?: CatalogExtension[]
   commands?: SessionCommand[]
   queued?: QueuedItem[]
+  extQueued?: QueuedItem[]
+  extensionUi?: ExtensionUI[]
+}
+
+export type ExtensionUI = {
+  extension: string
+  status?: { key: string; text: string; tone?: string }
+  panel?: {
+    title?: string
+    summary?: string
+    sections?: Array<Record<string, unknown>>
+    actions?: Array<{ id: string; label: string; style?: string }>
+    fields?: Array<{ id: string; label?: string; type?: string; value?: unknown; options?: string[] }>
+  }
+  prompt?: { kind: string; title?: string; message?: string; options?: string[] }
 }
 
 export type Toggle = { only?: string[]; disabled?: string[] }
@@ -256,7 +275,7 @@ export type Meta = {
 }
 
 export type ChatNode =
-  | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number }
+  | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string }
   | { kind: 'assistant'; id: string; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; running?: boolean }
   | { kind: 'compaction'; id: string; summary: string; tokensBefore?: number }
@@ -305,4 +324,6 @@ export type ViewState = {
 	allEntries: Entry[]
   commands?: SessionCommand[]
   queued?: QueuedItem[]
+  extQueued?: QueuedItem[]
+  extensionUi?: ExtensionUI[]
 }

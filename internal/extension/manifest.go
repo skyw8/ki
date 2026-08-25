@@ -30,7 +30,6 @@ type Manifest struct {
 	Version      string      `json:"version"`
 	Description  string      `json:"description"`
 	Capabilities []string    `json:"capabilities"`
-	Intercept    []string    `json:"intercept"`
 	FailClosed   bool        `json:"failClosed"`
 	Prompt       PromptSpec  `json:"prompt"`
 	Skills       []string    `json:"skills"`
@@ -66,7 +65,6 @@ type Descriptor struct {
 	Scope        string   `json:"source"`
 	Enabled      bool     `json:"enabled"`
 	Capabilities []string `json:"capabilities"`
-	Intercept    []string `json:"intercept,omitempty"`
 	Error        string   `json:"error,omitempty"`
 	FailClosed   bool     `json:"-"`
 	manifest     Manifest
@@ -119,11 +117,11 @@ func Discover(home, cwd string, toggle session.Toggle) Discovery {
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
 	// All stays name-sorted for stable catalog listing. Enabled is the
-	// intercept/prompt chain: remaining global-by-name, then project-by-name.
+	// lifecycle/prompt chain: remaining global-by-name, then project-by-name.
 	return Discovery{All: all, Enabled: chainOrder(all)}
 }
 
-// chainOrder is the intercept and prompt-append order: enabled packages with
+// chainOrder is the lifecycle and prompt-append order: enabled packages with
 // no load error, home scope sorted by name, then project scope sorted by name.
 // Catalog listing uses name-sorted All separately; do not feed All into
 // Prepare without this reorder (Enabled does it).
@@ -173,7 +171,6 @@ func loadPackage(root, scope string) (Descriptor, bool) {
 		Path:         abs,
 		Scope:        scope,
 		Capabilities: m.Capabilities,
-		Intercept:    nil,
 		FailClosed:   m.FailClosed,
 		manifest:     m,
 		root:         abs,
@@ -186,27 +183,7 @@ func loadPackage(root, scope string) (Descriptor, bool) {
 		d.Error = err.Error()
 		return d, true
 	}
-	if hasKind(m.Capabilities, CapIntercept) {
-		d.Intercept = filterIntercept(m.Intercept)
-		if len(d.Intercept) == 0 {
-			d.Error = "intercept declared with no known points"
-			return d, true
-		}
-	}
 	return d, true
-}
-
-func filterIntercept(in []string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, p := range in {
-		if !knownIntercept[p] || seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, p)
-	}
-	return out
 }
 
 func validateManifest(root string, m Manifest) error {
@@ -217,13 +194,13 @@ func validateManifest(root string, m Manifest) error {
 	if kind != runtimeNone && kind != runtimeRPC {
 		return fmt.Errorf("unknown runtime.kind %q", m.Runtime.Kind)
 	}
-	needsCode := hasKind(m.Capabilities, CapTool) || hasKind(m.Capabilities, CapHook) || hasKind(m.Capabilities, CapIntercept)
+	needsCode := needsCodeRuntime(m.Capabilities)
 	if kind == runtimeRPC {
 		if m.Runtime.Command == "" {
 			return fmt.Errorf("runtime.command required")
 		}
 		if !needsCode && !hasKind(m.Capabilities, CapCommand) {
-			return fmt.Errorf("runtime.kind=rpc requires tool, hook, intercept, or command")
+			return fmt.Errorf("runtime.kind=rpc requires tool, lifecycle, bus, or command")
 		}
 	}
 	if needsCode && kind != runtimeRPC {

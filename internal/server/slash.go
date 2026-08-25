@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"ki/internal/extension"
 	"ki/internal/loop"
 	"ki/internal/mcp"
 	"ki/internal/resources"
@@ -161,7 +162,6 @@ func (s *Server) extensionCatalog(snapshot resources.Snapshot) []map[string]any 
 			"source":       d.Scope,
 			"enabled":      tg.Extensions.Allowed(d.Name),
 			"capabilities": d.Capabilities,
-			"intercept":    d.Intercept,
 			"error":        d.Error,
 		})
 	}
@@ -248,6 +248,10 @@ func (s *Server) release(id string, st *runState) {
 	if pending {
 		s.reloadSession(id)
 	}
+	if s.ext != nil {
+		s.ext.OnEvent(id, extension.RedactEvent(loop.Event{Type: loop.AgentSettled}, id))
+	}
+	s.flushSettled(id)
 	s.dispatchQueue(id)
 }
 
@@ -352,6 +356,27 @@ func (s *Server) dispatchQueue(id string) {
 		return
 	}
 	if !ok {
+		ext, eok, eerr := session.DequeueExtOccupy(dir)
+		if eerr != nil {
+			slog.Warn("dequeue ext", "session_id", id, "err", eerr)
+			return
+		}
+		if !eok {
+			return
+		}
+		s.publishQueueChanged(id)
+		st, ctx, oerr := s.occupy(context.Background(), id)
+		if oerr != nil {
+			_, _ = session.EnqueueExt(dir, ext)
+			s.publishQueueChanged(id)
+			return
+		}
+		st.inbox = &loop.Inbox{}
+		origin := ""
+		if ext.Extension != "" {
+			origin = "extension:" + ext.Extension
+		}
+		go s.runPrompt(ctx, st, id, ext.Content, nil, "", origin, nil)
 		return
 	}
 	s.publishQueueChanged(id)
@@ -365,7 +390,7 @@ func (s *Server) dispatchQueue(id string) {
 		return
 	}
 	st.inbox = &loop.Inbox{}
-	go s.runPrompt(ctx, st, id, item.Content, nil, "")
+	go s.runPrompt(ctx, st, id, item.Content, nil, "", "", s.takeNextTurn(id))
 }
 
 func writeHandled(w http.ResponseWriter, notice string, isErr bool) {
@@ -403,6 +428,6 @@ func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id stri
 
 	st.inbox = &loop.Inbox{}
 	// runPrompt's defer release returns this occupy slot.
-	go s.runPrompt(ctx, st, id, content, parentID, model)
+	go s.runPrompt(ctx, st, id, content, parentID, model, "", s.takeNextTurn(id))
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started"})
 }

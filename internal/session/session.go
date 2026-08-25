@@ -232,10 +232,11 @@ func Open(dir string) (*Session, error) {
 		return nil, fmt.Errorf("%w: %s", errSessionHeader, dir)
 	}
 	if s.Config.ActiveLeafID != "" {
-		if _, ok := s.byID[s.Config.ActiveLeafID]; !ok {
-			return nil, fmt.Errorf("%w %q not found", errActiveLeaf, s.Config.ActiveLeafID)
+		if _, ok := s.byID[s.Config.ActiveLeafID]; ok {
+			s.leafID = s.Config.ActiveLeafID
 		}
-		s.leafID = s.Config.ActiveLeafID
+		// If config points at a leaf not yet visible in this jsonl snapshot
+		// (concurrent append), keep the last non-sideband entry already scanned.
 	}
 	return s, nil
 }
@@ -593,6 +594,36 @@ func AppendSidebandEvent(dir, typ string, details any) (Entry, error) {
 		return Entry{}, err
 	}
 	return e, nil
+}
+
+// AppendCustomEntry writes an extension custom row that does not enter provider context.
+func AppendCustomEntry(dir, extensionName, customType string, data any) (Entry, error) {
+	details := map[string]any{"extension": extensionName, "customType": customType, "data": data}
+	return AppendSidebandEvent(dir, "custom", details)
+}
+
+// CustomEntries returns custom jsonl rows for one extension (own data only).
+func CustomEntries(dir, extensionName string) []map[string]any {
+	s, err := Open(dir)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = s.Close() }()
+	var out []map[string]any
+	for _, e := range s.Entries() {
+		if e.Type != "custom" {
+			continue
+		}
+		m, _ := e.Details.(map[string]any)
+		if m == nil {
+			continue
+		}
+		if fmt.Sprint(m["extension"]) != extensionName {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // AppendRequestHeader records the system prompt and tools sent on one turn.

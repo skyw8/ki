@@ -9,14 +9,8 @@ const (
 	CapCommand      Kind = "command"
 	CapMCP          Kind = "mcp"
 	CapTool         Kind = "tool"
-	CapHook         Kind = "hook"
-	CapIntercept    Kind = "intercept"
-)
-
-const (
-	InterceptTool         = "tool"
-	InterceptProvider     = "provider"
-	InterceptProviderHTTP = "provider.http"
+	CapLifecycle    Kind = "lifecycle"
+	CapBus          Kind = "bus"
 )
 
 var knownKinds = map[Kind]bool{
@@ -25,14 +19,8 @@ var knownKinds = map[Kind]bool{
 	CapCommand:      true,
 	CapMCP:          true,
 	CapTool:         true,
-	CapHook:         true,
-	CapIntercept:    true,
-}
-
-var knownIntercept = map[string]bool{
-	InterceptTool:         true,
-	InterceptProvider:     true,
-	InterceptProviderHTTP: true,
+	CapLifecycle:    true,
+	CapBus:          true,
 }
 
 func hasKind(list []string, k Kind) bool {
@@ -44,11 +32,6 @@ func hasKind(list []string, k Kind) bool {
 	return false
 }
 
-func hasPoint(list []string, point string) bool {
-	for _, s := range list {
-		if s == point {
-			return true
-		}
-	}
-	return false
+func needsCodeRuntime(caps []string) bool {
+	return hasKind(caps, CapTool) || hasKind(caps, CapLifecycle) || hasKind(caps, CapBus)
 }

@@ -1406,11 +1406,13 @@ func TestCompactPromoteQueueIdRestoresHead(t *testing.T) {
 		detail := sessionGET(t, hs, id)
 		queued, _ := detail["queued"].([]any)
 		raw, _ := json.Marshal(detail["messages"])
-		if len(queued) == 0 && strings.Contains(string(raw), "during-compact") {
+		running, _ := detail["running"].(bool)
+		// Wait until occupy finished so TempDir cleanup is not racing jsonl writers.
+		if !running && len(queued) == 0 && strings.Contains(string(raw), "during-compact") {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("compact promote dispatch: queued=%+v messages=%s", queued, raw)
+			t.Fatalf("compact promote dispatch: running=%v queued=%+v messages=%s", running, queued, raw)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -2796,7 +2798,7 @@ func TestPromptWithSidecarExtensionFinishes(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"name":"protected-paths","capabilities":["prompt.append","intercept"],"intercept":["tool"],"prompt":{"append":["APPEND.md"]},"runtime":{"kind":"rpc","command":"` + bin + `"}}`
+	manifest := `{"name":"protected-paths","capabilities":["prompt.append","lifecycle"],"prompt":{"append":["APPEND.md"]},"runtime":{"kind":"rpc","command":"` + bin + `"}}`
 	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}

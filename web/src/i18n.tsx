@@ -43,6 +43,10 @@ const zh = {
   'settings.open': '设置',
   'dialog.close': '关闭对话框',
   'close': '关闭',
+  'ext.ok': '确定',
+  'ext.cancel': '取消',
+  'ext.submit': '提交',
+  'ext.origin': '扩展',
 
   'theme.light': '浅色',
   'theme.dark': '深色',
@@ -266,6 +270,10 @@ const en: Record<MsgKey, string> = {
   'settings.open': 'Settings',
   'dialog.close': 'Close dialog',
   'close': 'Close',
+  'ext.ok': 'OK',
+  'ext.cancel': 'Cancel',
+  'ext.submit': 'Submit',
+  'ext.origin': 'Extension',
 
   'theme.light': 'Light',
   'theme.dark': 'Dark',

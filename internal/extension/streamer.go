@@ -23,7 +23,7 @@ func wrapStreamer(inner loop.Streamer, items []namedInterceptor, skipped *skipSe
 	}
 	has := false
 	for _, it := range items {
-		if it.has(InterceptProvider) {
+		if it.hasSync(EventBeforeProviderRequest) {
 			has = true
 			break
 		}
@@ -48,7 +48,7 @@ func cannedStop(emit func(loop.AssistantDelta) error, text string) (types.Messag
 func (s *occupyStreamer) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
 	live := req
 	for _, it := range s.items {
-		if s.skipped.has(it.name) || !it.has(InterceptProvider) {
+		if s.skipped.has(it.name) || !it.hasSync(EventBeforeProviderRequest) {
 			continue
 		}
 		view := ProviderRequest{
@@ -65,7 +65,7 @@ func (s *occupyStreamer) Stream(ctx context.Context, req loop.Request, emit func
 				return cannedStop(emit, "extension "+it.name+" failed closed")
 			}
 			if s.onErr != nil {
-				s.onErr(it.name, string(CapIntercept), "before_provider", err.Error())
+				s.onErr(it.name, string(CapLifecycle), EventBeforeProviderRequest, err.Error())
 			}
 			s.skipped.mark(it.name)
 			continue
@@ -83,13 +83,13 @@ func (s *occupyStreamer) Stream(ctx context.Context, req loop.Request, emit func
 		return msg, err
 	}
 	for _, it := range s.items {
-		if s.skipped.has(it.name) || !it.has(InterceptProvider) {
+		if s.skipped.has(it.name) || !it.hasSync(EventBeforeProviderRequest) {
 			continue
 		}
 		fb, ferr := it.inner.AfterProviderError(ctx, err.Error())
 		if ferr != nil {
 			if s.onErr != nil {
-				s.onErr(it.name, string(CapIntercept), "provider_error", ferr.Error())
+				s.onErr(it.name, string(CapLifecycle), EventProviderError, ferr.Error())
 			}
 			s.skipped.mark(it.name)
 			continue
@@ -132,7 +132,7 @@ func wrapHTTPDoer(inner provider.HTTPDoer, items []namedInterceptor, skipped *sk
 	}
 	has := false
 	for _, it := range items {
-		if it.has(InterceptProviderHTTP) {
+		if it.hasSync(EventBeforeProviderHeaders) {
 			has = true
 			break
 		}
@@ -146,13 +146,13 @@ func wrapHTTPDoer(inner provider.HTTPDoer, items []namedInterceptor, skipped *sk
 func (d *headerDoer) Do(req *http.Request) (*http.Response, error) {
 	view := viewHTTP(req)
 	for _, it := range d.items {
-		if d.skipped.has(it.name) || !it.has(InterceptProviderHTTP) {
+		if d.skipped.has(it.name) || !it.hasSync(EventBeforeProviderHeaders) {
 			continue
 		}
 		patch, err := it.inner.BeforeProviderHTTP(req.Context(), view)
 		if err != nil {
 			if d.onErr != nil {
-				d.onErr(it.name, string(CapIntercept), "provider_http", err.Error())
+				d.onErr(it.name, string(CapLifecycle), EventBeforeProviderHeaders, err.Error())
 			}
 			d.skipped.mark(it.name)
 			continue
@@ -186,7 +186,7 @@ func (d *headerDoer) Do(req *http.Request) (*http.Response, error) {
 		}
 	}
 	for _, it := range d.items {
-		if d.skipped.has(it.name) || !it.has(InterceptProviderHTTP) {
+		if d.skipped.has(it.name) || !it.hasSync(EventBeforeProviderHeaders) {
 			continue
 		}
 		_ = it.inner.AfterProviderHTTP(req.Context(), resp.StatusCode, headers)

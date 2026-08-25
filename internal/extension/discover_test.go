@@ -93,14 +93,14 @@ func TestMergeMCPUserWinsAndPrefixHelper(t *testing.T) {
 	}
 }
 
-func TestInterceptPointsGate(t *testing.T) {
+func TestLifecycleCapabilityLoads(t *testing.T) {
 	home := t.TempDir()
 	writePkg(t, filepath.Join(home, "extensions"), "onlytool", `{
-		"name":"onlytool","capabilities":["intercept"],"intercept":["tool"],
+		"name":"onlytool","capabilities":["lifecycle"],
 		"runtime":{"kind":"rpc","command":"bin/x"}
 	}`)
 	d := Discover(home, t.TempDir(), session.Toggle{})
-	if len(d.Enabled) != 1 || !hasPoint(d.Enabled[0].Intercept, InterceptTool) || hasPoint(d.Enabled[0].Intercept, InterceptProvider) {
+	if len(d.Enabled) != 1 || !hasKind(d.Enabled[0].Capabilities, CapLifecycle) {
 		t.Fatalf("%+v", d.Enabled)
 	}
 }

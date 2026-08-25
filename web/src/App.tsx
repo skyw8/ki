@@ -9,7 +9,7 @@ import { MessageSettings, SessionConfig, SettingsToggles } from './SessionConfig
 import { ProviderSettings } from './ProviderSettings'
 import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
 import { appendOptimisticUser, applyEvent, clampThinkingEffort, emptyView, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats } from './model'
-import type { ChatNode, Content, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
+import type { ChatNode, Content, ExtensionUI, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
 import { toast } from './toast'
@@ -95,6 +95,8 @@ export function App() {
   const [settled, setSettled] = useState(false)
   const everWide = useRef(true)
   const [tab, setTab] = useState<Tab>('conversation')
+  const [extPanel, setExtPanel] = useState<ExtensionUI | null>(null)
+  const [extFields, setExtFields] = useState<Record<string, string>>({})
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([])
   const [filter, setFilter] = useState('')
@@ -305,7 +307,7 @@ export function App() {
 					  setView(v => applyEvent(v, ev))
 					  continue
 					}
-					if (ev.type === 'queue_changed') {
+					if (ev.type === 'extension_ui_updated' || ev.type === 'queue_changed') {
 					  try {
 					    const detail = await api.get(currentId)
 					    if (ac.signal.aborted) return
@@ -313,6 +315,12 @@ export function App() {
 					    if (detail.running) void listen(currentId)
 					  } catch (e) { toast.from(e) }
 					  continue
+					}
+					if (ev.type === 'extension_notice') {
+						const text = ev.messageText || ev.reason || ev.server || 'extension'
+						if (ev.reason === 'warn' || ev.reason === 'error') toast.error(text)
+						else toast.info(text)
+						continue
 					}
 					if (ev.type === 'extension_error') {
 						toast.action('error', `${ev.server || 'extension'}: ${ev.messageText || ev.reason || t('mcp.failed')}`, t('mcp.reload'), async () => {
@@ -694,9 +702,23 @@ export function App() {
   const empty = view.nodes.length === 0
   const stats = useMemo(() => sessionStats(view), [view])
   const queued = view.queued ?? []
+  const extQueued = view.extQueued ?? []
   const steerShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘+Enter' : t('queue.steerHint')
   const composer = (
     <>
+    {extQueued.length ? (
+      <ul className="queued-list ext-queued" data-testid="ext-queued-list">
+        {extQueued.map(item => {
+          const text = (item.content ?? []).filter(c => c.type === 'text').map(c => c.text).join(' ')
+          return (
+            <li key={item.id} className="queued-item" data-testid="ext-queued-item">
+              <span className="queued-origin">ext</span>
+              <span className="queued-text">{text || t('queue.attachment')}</span>
+            </li>
+          )
+        })}
+      </ul>
+    ) : null}
     {queued.length ? (
       <ul className="queued-list" data-testid="queued-list">
         {queued.map((item, i) => {
@@ -933,6 +955,24 @@ export function App() {
         <header className="conv-header">
           <div className="title-row">
             <div className="conv-title">{view.title || (currentId ? untitled : 'ki')}</div>
+            <div className="ext-chips" data-testid="ext-chips">
+              {(view.extensionUi ?? []).map(ui => ui.status?.text ? (
+                <button
+                  key={ui.extension}
+                  type="button"
+                  className={`ext-chip tone-${ui.status.tone || 'info'}`}
+                  data-testid={`ext-chip-${ui.extension}`}
+                  onClick={() => {
+                    const fields: Record<string, string> = {}
+                    for (const f of ui.panel?.fields ?? []) fields[f.id] = f.value == null ? '' : String(f.value)
+                    setExtFields(fields)
+                    setExtPanel(ui)
+                  }}
+                >
+                  {ui.status.text}
+                </button>
+              ) : null)}
+            </div>
           </div>
           <div className="tabs">
             <button type="button" className={`tab${tab === 'conversation' ? ' active' : ''}`} data-testid="tab-conversation" onClick={() => setTab('conversation')}>{t('tab.conversation')}</button>
@@ -940,6 +980,59 @@ export function App() {
             <button type="button" className={`tab${tab === 'config' ? ' active' : ''}`} data-testid="tab-config" onClick={() => setTab('config')}>{t('tab.info')}</button>
           </div>
         </header>
+        {extPanel ? (
+          <div className="ext-drawer" data-testid="ext-drawer">
+            <div className="ext-drawer-head">
+              <strong>{extPanel.panel?.title || extPanel.extension}</strong>
+              <button type="button" className="icon-btn" onClick={() => setExtPanel(null)} aria-label="close"><IClose /></button>
+            </div>
+            {extPanel.panel?.summary ? <p>{extPanel.panel.summary}</p> : null}
+            {(extPanel.panel?.sections ?? []).map((sec, i) => (
+              <pre key={i} className="ext-section">{typeof sec.markdown === 'string' ? sec.markdown : JSON.stringify(sec)}</pre>
+            ))}
+            {(extPanel.panel?.fields ?? []).map(f => (
+              <label key={f.id} className="ext-field">
+                <span>{f.label || f.id}</span>
+                <input
+                  data-testid={`ext-field-${f.id}`}
+                  value={extFields[f.id] ?? (f.value == null ? '' : String(f.value))}
+                  onChange={e => setExtFields(v => ({ ...v, [f.id]: e.target.value }))}
+                />
+              </label>
+            ))}
+            <div className="ext-actions">
+              {(extPanel.panel?.actions ?? []).map(a => (
+                <button
+                  key={a.id}
+                  type="button"
+                  data-testid={`ext-action-${a.id}`}
+                  onClick={() => {
+                    if (!currentId) return
+                    void api.extensionUI(currentId, { kind: 'action', extension: extPanel.extension, value: a.id }).catch(e => toast.from(e))
+                  }}
+                >
+                  {a.label}
+                </button>
+              ))}
+              {(extPanel.panel?.fields ?? []).length ? (
+                <button
+                  type="button"
+                  data-testid="ext-submit"
+                  onClick={() => {
+                    if (!currentId) return
+                    const fields: Record<string, unknown> = { ...extFields }
+                    for (const f of extPanel.panel?.fields ?? []) {
+                      if (fields[f.id] === undefined) fields[f.id] = f.value ?? ''
+                    }
+                    void api.extensionUI(currentId, { kind: 'submit', extension: extPanel.extension, fields }).catch(e => toast.from(e))
+                  }}
+                >
+                  {t('ext.submit')}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
 
         {tab === 'config' ? (
           <div className="conv-body">
@@ -1088,6 +1181,36 @@ export function App() {
           </div>
         </Modal>
       ) : null}
+
+      {(() => {
+        const prompt = (view.extensionUi ?? []).find(u => u.prompt)?.prompt
+        const extName = (view.extensionUi ?? []).find(u => u.prompt)?.extension
+        if (!prompt || !extName || !currentId) return null
+        return (
+          <Modal title={prompt.title || extName} onClose={() => void api.extensionUI(currentId, { kind: prompt.kind, extension: extName, ok: false }).catch(e => toast.from(e))} testid="ext-ui-prompt">
+            {prompt.message ? <p>{prompt.message}</p> : null}
+            {prompt.kind === 'select' ? (
+              <div className="ext-select">
+                {(prompt.options ?? []).map(opt => (
+                  <button
+                    key={opt}
+                    type="button"
+                    data-testid={`ext-select-${opt}`}
+                    onClick={() => void api.extensionUI(currentId, { kind: 'select', extension: extName, ok: true, value: opt }).catch(e => toast.from(e))}
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="modal-actions">
+                <button type="button" data-testid="ext-confirm-cancel" onClick={() => void api.extensionUI(currentId, { kind: 'confirm', extension: extName, ok: false }).catch(e => toast.from(e))}>{t('ext.cancel')}</button>
+                <button type="button" className="primary-btn" data-testid="ext-confirm-ok" onClick={() => void api.extensionUI(currentId, { kind: 'confirm', extension: extName, ok: true }).catch(e => toast.from(e))}>{t('ext.ok')}</button>
+              </div>
+            )}
+          </Modal>
+        )
+      })()}
 
       {confirmDel ? (
         <Modal title={t('delete.title')} onClose={() => setConfirmDel(null)} testid="confirm-del">

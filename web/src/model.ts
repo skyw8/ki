@@ -109,6 +109,8 @@ export function emptyView(): ViewState {
 	thinkingEffort: '',
 	allEntries: [],
 	queued: [],
+	extQueued: [],
+	extensionUi: [],
   }
 }
 
@@ -175,6 +177,8 @@ export function loadHistory(detail: SessionDetail): ViewState {
   s.commands = detail.commands ?? []
 	s.thinkingEffort = detail.thinkingEffort ?? ''
 	s.queued = detail.queued ?? []
+	s.extQueued = detail.extQueued ?? []
+	s.extensionUi = detail.extensionUi ?? []
   const entries = detail.entries ?? []
 	s.allEntries = entries
 	s.leafId = detail.leafId
@@ -308,7 +312,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
   if (m.role === 'user') {
     const text = messageText(m)
     s.turn += 1
-    s.nodes.push({ kind: 'user', id, parentId, text, content: m.content ?? [], ts: tsMs(m, stamp) })
+    s.nodes.push({ kind: 'user', id, parentId, text, content: m.content ?? [], ts: tsMs(m, stamp), origin: m.origin })
     s.records.push({
       id,
 	  parentId,
@@ -477,6 +481,11 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     case 'run_aborted':
       next.stopping = true
       break
+    case 'extension_notice':
+    case 'extension_ui_prompt':
+      break
+    case 'extension_ui_updated':
+      break
     case 'request_header': {
       const prev = lastSystem(next)
       if (prev && prev.system === (ev.system ?? '') && JSON.stringify(prev.tools) === JSON.stringify(ev.tools)) break
@@ -579,7 +588,7 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
           const n = s.nodes[i]
           if (n.kind === 'user' && n.text === text) {
 			const nextId = ev.entryId || n.id
-            s.nodes[i] = { ...n, id: nextId, content: m.content ?? n.content, ts: m.timestamp }
+            s.nodes[i] = { ...n, id: nextId, content: m.content ?? n.content, ts: m.timestamp, origin: m.origin ?? n.origin }
             // Keep the trajectory record in sync so the detail panel shows the
             // same start time as the chat bubble.
 			s.records = s.records.map(r => (r.id === n.id ? { ...r, id: nextId, startedAt: m.timestamp } : r))

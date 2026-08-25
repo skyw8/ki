@@ -36,19 +36,17 @@ func TestStartRPCInitialize(t *testing.T) {
 		Name:         "protected-paths",
 		Path:         root,
 		Enabled:      true,
-		Capabilities: []string{"intercept"},
-		Intercept:    []string{"tool"},
+		Capabilities: []string{"lifecycle"},
 		root:         root,
 		manifest: Manifest{
 			Name:         "protected-paths",
-			Capabilities: []string{"intercept"},
-			Intercept:    []string{"tool"},
+			Capabilities: []string{"lifecycle"},
 			Runtime:      RuntimeSpec{Kind: runtimeRPC, Command: bin},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir())
+	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,19 +64,17 @@ func TestStartRPCDropsUndeclaredInitializeMembers(t *testing.T) {
 		Name:         "onlyintercept",
 		Path:         root,
 		Enabled:      true,
-		Capabilities: []string{"intercept"},
-		Intercept:    []string{"tool"},
+		Capabilities: []string{"lifecycle"},
 		root:         root,
 		manifest: Manifest{
 			Name:         "onlyintercept",
-			Capabilities: []string{"intercept"},
-			Intercept:    []string{"tool"},
+			Capabilities: []string{"lifecycle"},
 			Runtime:      RuntimeSpec{Kind: runtimeRPC, Command: bin, Env: map[string]string{"KI_UNDECLARED": "1"}},
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir())
+	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,13 +94,11 @@ func TestPrepareEmitsUndeclaredExtensionError(t *testing.T) {
 		Name:         "onlyintercept",
 		Path:         root,
 		Enabled:      true,
-		Capabilities: []string{"intercept"},
-		Intercept:    []string{"tool"},
+		Capabilities: []string{"lifecycle"},
 		root:         root,
 		manifest: Manifest{
 			Name:         "onlyintercept",
-			Capabilities: []string{"intercept"},
-			Intercept:    []string{"tool"},
+			Capabilities: []string{"lifecycle"},
 			Runtime:      RuntimeSpec{Kind: runtimeRPC, Command: bin, Env: map[string]string{"KI_UNDECLARED": "1"}},
 		},
 	}
@@ -142,8 +136,7 @@ func TestPrepareOrderFollowsDiscoverEnabled(t *testing.T) {
 		}
 		body := map[string]any{
 			"name":         spec.name,
-			"capabilities": []string{"intercept"},
-			"intercept":    []string{"tool"},
+			"capabilities": []string{"lifecycle"},
 			"runtime":      map[string]any{"kind": "rpc", "command": bin},
 		}
 		raw, err := json.Marshal(body)

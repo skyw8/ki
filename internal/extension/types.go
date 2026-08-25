@@ -24,9 +24,12 @@ type Event struct {
 
 // Registration is the frozen initialize result.
 type Registration struct {
-	Tools    []ToolSpec    `json:"tools"`
-	Commands []CommandSpec `json:"commands"`
-	Fallback bool          `json:"fallback"`
+	Tools         []ToolSpec     `json:"tools"`
+	Commands      []CommandSpec  `json:"commands"`
+	Fallback      bool           `json:"fallback"`
+	Subscriptions []Subscription `json:"subscriptions"`
+	syncEvents    map[string]bool
+	asyncEvents   map[string]bool
 }
 
 // ToolSpec is a sidecar-declared tool schema.
@@ -40,12 +43,13 @@ type ToolSpec struct {
 
 // CommandSpec is a sidecar-declared executable slash handler.
 type CommandSpec struct {
-	Name         string `json:"name"`
-	Description  string `json:"description,omitempty"`
-	ArgumentHint string `json:"argumentHint,omitempty"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`
+	ArgumentHint string   `json:"argumentHint,omitempty"`
+	Completions  []string `json:"completions,omitempty"`
 }
 
-// ToolCall is one intercept.tool.before payload.
+// ToolCall is one tool_call payload.
 type ToolCall struct {
 	ID       string         `json:"id"`
 	Name     string         `json:"name"`
@@ -59,7 +63,7 @@ type Block struct {
 	Terminate bool   `json:"terminate,omitempty"`
 }
 
-// ResultPatch is intercept.tool.after.
+// ResultPatch is tool_result.
 type ResultPatch struct {
 	Content   []types.Content `json:"content,omitempty"`
 	Details   any             `json:"details,omitempty"`
@@ -67,7 +71,7 @@ type ResultPatch struct {
 	Terminate *bool           `json:"terminate,omitempty"`
 }
 
-// ProviderRequest is intercept.provider.request (no System, no keys).
+// ProviderRequest is before_provider_request (no System, no keys).
 type ProviderRequest struct {
 	Messages       []types.Message `json:"messages"`
 	Tools          []loop.ToolSpec `json:"tools"`
@@ -82,7 +86,7 @@ type ShortCircuit struct {
 	Text string `json:"text"`
 }
 
-// Fallback is intercept.provider.error.
+// Fallback is provider_error.
 type Fallback struct {
 	Text string `json:"text,omitempty"`
 	Skip bool   `json:"skip,omitempty"`
@@ -101,7 +105,30 @@ type HTTPRequestPatch struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// Interceptor is the Host-internal sync/async surface implemented by rpcClient
+func (r *Registration) indexSubscriptions() {
+	r.syncEvents = map[string]bool{}
+	r.asyncEvents = map[string]bool{}
+	for _, sub := range r.Subscriptions {
+		if AcceptSubscription(sub) != nil {
+			continue
+		}
+		if Mode(sub.Mode) == ModeSync {
+			r.syncEvents[sub.Event] = true
+		} else {
+			r.asyncEvents[sub.Event] = true
+		}
+	}
+}
+
+func (r Registration) hasSync(event string) bool {
+	return r.syncEvents[event]
+}
+
+func (r Registration) hasAsync(event string) bool {
+	return r.asyncEvents[event]
+}
+
+// Interceptor is the Host-internal surface implemented by rpcClient
 // and _test.go fakes. Authors do not implement this interface.
 type Interceptor interface {
 	BeforeRun(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error)

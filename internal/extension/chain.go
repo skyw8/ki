@@ -12,12 +12,11 @@ import (
 type namedInterceptor struct {
 	name       string
 	failClosed bool
-	points     []string
-	hasHook    bool
+	syncEvents map[string]bool
 	inner      Interceptor
 }
 
-func (n namedInterceptor) has(point string) bool { return hasPoint(n.points, point) }
+func (n namedInterceptor) hasSync(event string) bool { return n.syncEvents[event] }
 
 // skipSet is occupy-wide: a failed interceptor is omitted from later hook
 // and provider intercept points in the same occupy (BeforeTool skip still
@@ -62,17 +61,17 @@ func composeHooks(items []namedInterceptor, skipped *skipSet, onErr func(name, c
 		if onErr != nil {
 			onErr(name, cap, code, message)
 		}
-		slog.Info("extension intercept skipped", "extension", name, "capability", cap, "code", code)
+		slog.Info("extension lifecycle skipped", "extension", name, "capability", cap, "code", code)
 	}
 	return loop.Hooks{
 		BeforeRun: func(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error) {
 			for _, it := range items {
-				if skipped.has(it.name) || !it.has(InterceptProvider) {
+				if skipped.has(it.name) || !it.hasSync(EventBeforeAgentStart) {
 					continue
 				}
 				next, nextMsgs, err := it.inner.BeforeRun(ctx, system, msgs)
 				if err != nil {
-					fail(it.name, string(CapIntercept), "before_run", err.Error())
+					fail(it.name, string(CapLifecycle), EventBeforeAgentStart, err.Error())
 					continue
 				}
 				system, msgs = next, nextMsgs
@@ -81,12 +80,12 @@ func composeHooks(items []namedInterceptor, skipped *skipSet, onErr func(name, c
 		},
 		TransformContext: func(ctx context.Context, msgs []types.Message) ([]types.Message, error) {
 			for _, it := range items {
-				if skipped.has(it.name) || !it.has(InterceptProvider) {
+				if skipped.has(it.name) || !it.hasSync(EventContext) {
 					continue
 				}
 				next, err := it.inner.TransformContext(ctx, msgs)
 				if err != nil {
-					fail(it.name, string(CapIntercept), "transform_context", err.Error())
+					fail(it.name, string(CapLifecycle), EventContext, err.Error())
 					continue
 				}
 				msgs = next
@@ -96,7 +95,7 @@ func composeHooks(items []namedInterceptor, skipped *skipSet, onErr func(name, c
 		BeforeTool: func(ctx context.Context, name string, args map[string]any) (map[string]any, bool, string, bool, error) {
 			call := ToolCall{Name: name, Args: args}
 			for _, it := range items {
-				if skipped.has(it.name) || !it.has(InterceptTool) {
+				if skipped.has(it.name) || !it.hasSync(EventToolCall) {
 					continue
 				}
 				next, block, err := it.inner.BeforeTool(ctx, call)
@@ -104,7 +103,7 @@ func composeHooks(items []namedInterceptor, skipped *skipSet, onErr func(name, c
 					if it.failClosed {
 						return args, true, "extension " + it.name + " failed closed", false, nil
 					}
-					fail(it.name, string(CapIntercept), "before_tool", err.Error())
+					fail(it.name, string(CapLifecycle), EventToolCall, err.Error())
 					continue
 				}
 				if block != nil {
@@ -118,12 +117,12 @@ func composeHooks(items []namedInterceptor, skipped *skipSet, onErr func(name, c
 			patch := ResultPatch{Content: res.Content, Details: res.Details, IsError: boolPtr(res.IsError), Terminate: boolPtr(res.Terminate)}
 			call := ToolCall{Name: name, Args: args}
 			for _, it := range items {
-				if skipped.has(it.name) || !it.has(InterceptTool) {
+				if skipped.has(it.name) || !it.hasSync(EventToolResult) {
 					continue
 				}
 				next, err := it.inner.AfterTool(ctx, call, patch)
 				if err != nil {
-					fail(it.name, string(CapIntercept), "after_tool", err.Error())
+					fail(it.name, string(CapLifecycle), EventToolResult, err.Error())
 					continue
 				}
 				patch = next

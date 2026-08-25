@@ -65,6 +65,11 @@ type Server struct {
 	mutations              *tools.MutationQueue
 	mcpSubscribers         map[string]map[chan loop.Event]struct{}
 	pendingReload          map[string]bool
+	extUI                  map[string]map[string]*extUIState
+	pendingSettled         []settledEnqueue
+	idempotency            map[string]extension.EnqueueResult
+	activeTools            map[string][]string
+	uiAnswers              map[string]chan uiAnswer
 }
 
 type runState struct {
@@ -126,9 +131,14 @@ func New(opt Options) (*Server, error) {
 		mutations:              tools.NewMutationQueue(),
 		mcpSubscribers:         map[string]map[chan loop.Event]struct{}{},
 		pendingReload:          map[string]bool{},
+		extUI:                  map[string]map[string]*extUIState{},
+		idempotency:            map[string]extension.EnqueueResult{},
+		activeTools:            map[string][]string{},
+		uiAnswers:              map[string]chan uiAnswer{},
 	}
 	srv.mcp = mcp.NewManager(srv.onMCPNotification)
 	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
+	srv.ext.SetHost(srv)
 	return srv, nil
 }
 
@@ -299,6 +309,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /v1/sessions/{id}/prompt", s.auth(s.prompt))
 	api.HandleFunc("GET /v1/sessions/{id}/events", s.auth(s.events))
 	api.HandleFunc("POST /v1/sessions/{id}/abort", s.auth(s.abort))
+	api.HandleFunc("POST /v1/sessions/{id}/extension-ui", s.auth(s.extensionUIAnswer))
 	api.HandleFunc("POST /v1/sessions/{id}/compact", s.auth(s.doCompact))
 	api.HandleFunc("POST /v1/sessions/{id}/fork", s.auth(s.fork))
 	api.HandleFunc("POST /v1/sessions/{id}/attachments", s.auth(s.uploadAttachment))
@@ -399,9 +410,26 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		jobs = append(jobs, store)
 		delete(s.jobs, id)
 	}
+	runs := make([]*runState, 0, len(s.runs))
+	for _, st := range s.runs {
+		if st != nil {
+			st.cancel()
+			runs = append(runs, st)
+		}
+	}
 	s.mu.Unlock()
 	for _, store := range jobs {
 		store.Close()
+	}
+	for _, st := range runs {
+		select {
+		case <-st.done:
+		case <-ctx.Done():
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if s.ext != nil {
+		s.ext.CloseExcept(nil)
 	}
 	if s.mcp != nil {
 		s.mcp.Close()
@@ -539,7 +567,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	cmds := command.Catalog(snapshot, tg.Skills)
 	if s.ext != nil {
 		for _, spec := range s.ext.RuntimeCommands(sess.ID()) {
-			cmds = append(cmds, command.Item{Name: spec.Name, Description: spec.Description, ArgumentHint: spec.ArgumentHint, Source: "extension"})
+			cmds = append(cmds, command.Item{Name: spec.Name, Description: spec.Description, ArgumentHint: spec.ArgumentHint, Completions: spec.Completions, Source: "extension"})
 		}
 	}
 	queued, err := session.ReadQueue(sess.Dir)
@@ -550,6 +578,14 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	if queued == nil {
 		queued = []session.QueuedItem{}
 	}
+	extQueued, err := session.ReadExtQueue(sess.Dir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if extQueued == nil {
+		extQueued = []session.ExtQueuedItem{}
+	}
 	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
 		"leafId":              sess.LeafID(),
 		"entries":             sess.Entries(),
@@ -559,6 +595,8 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		"availableExtensions": s.extensionCatalog(snapshot),
 		"commands":            cmds,
 		"queued":              queued,
+		"extQueued":           extQueued,
+		"extensionUi":         s.extensionUIList(sess.ID()),
 	}))
 }
 
@@ -969,6 +1007,17 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = sess.Close()
+	if s.ext != nil {
+		text := contentText(body.Content)
+		next, swallow := s.ext.ApplyInput(r.Context(), id, text)
+		if swallow {
+			writeJSON(w, 200, map[string]any{"handled": true, "notice": "input swallowed by extension"})
+			return
+		}
+		if next != text && next != "" {
+			body.Content = []types.Content{{Type: "text", Text: next}}
+		}
+	}
 	// The prompt is accepted asynchronously; detach it from the HTTP request
 	// cancellation while retaining request-scoped values for downstream code.
 	s.startRun(context.WithoutCancel(r.Context()), w, id, body.Content, body.ParentID, body.Model)
@@ -1037,7 +1086,7 @@ func (s *Server) promoteQueued(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 	st.inbox = &loop.Inbox{}
-	go s.runPrompt(ctx, st, id, item.Content, nil, model)
+	go s.runPrompt(ctx, st, id, item.Content, nil, model, "", s.takeNextTurn(id))
 	s.publishQueueChanged(id)
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started"})
 }
@@ -1155,7 +1204,7 @@ func hasUnresolvedToolCalls(messages []types.Message) bool {
 	return len(pending) != 0
 }
 
-func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content []types.Content, parentID *string, reqModel string) {
+func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content []types.Content, parentID *string, reqModel, origin string, nextTurn []session.ExtQueuedItem) {
 	defer func() {
 		// Why: occupy must be paired with release. Closing done here used to
 		// mark SSE idle without consuming pendingReload, so a /reload during
@@ -1251,6 +1300,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 	}
 	tls = append(tls, prepared.Tools...)
+	tls = s.filterActiveTools(id, tls)
 	occ := s.ext.Occupy(id)
 	if s.requireModelCredential {
 		runStreamer = provider.NewLiveModel(liveModel, liveKey, occ.HTTPDoer())
@@ -1263,6 +1313,10 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	var emit func(loop.Event) error
 	emit = func(ev loop.Event) error {
 		if ev.Type == loop.MessageEnd && ev.Message != nil {
+			if s.ext != nil {
+				rewritten := s.ext.ApplyMessageEnd(ctx, id, *ev.Message)
+				ev.Message = &rewritten
+			}
 			e, err := sess.AppendMessage(*ev.Message)
 			if err != nil {
 				return fmt.Errorf("append message: %w", err)
@@ -1365,7 +1419,12 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 	}
 
-	_, err = loop.RunMessage(ctx, types.Message{Role: "user", Content: content}, sess.MessagesToLeaf(), loop.Config{
+	hooks := s.composeHooks(sess, occ)
+	if len(nextTurn) > 0 {
+		hooks = s.withNextTurn(sess, st, hooks, nextTurn)
+	}
+	user := types.Message{Role: "user", Content: content, Origin: origin}
+	_, err = loop.RunMessage(ctx, user, sess.MessagesToLeaf(), loop.Config{
 		Streamer:                runStreamer,
 		Tools:                   tls,
 		System:                  sys,
@@ -1384,7 +1443,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		BaseDelay:               2 * time.Second,
 		Parallel:                true,
 		Inbox:                   st.inbox,
-		Hooks:                   s.composeHooks(sess, occ),
+		Hooks:                   hooks,
 	}, emit)
 	st.err = err
 }
@@ -1426,6 +1485,67 @@ func (s *Server) composeHooks(sess *session.Session, occ *extension.Occupy) loop
 			return s.compactSession(ctx, sess)
 		},
 	}
+}
+
+func (s *Server) filterActiveTools(id string, tls []loop.Tool) []loop.Tool {
+	s.mu.Lock()
+	active := append([]string{}, s.activeTools[id]...)
+	s.mu.Unlock()
+	if len(active) == 0 {
+		return tls
+	}
+	allow := make(map[string]bool, len(active))
+	for _, n := range active {
+		allow[n] = true
+	}
+	var out []loop.Tool
+	for _, t := range tls {
+		if allow[t.Name()] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (s *Server) takeNextTurn(id string) []session.ExtQueuedItem {
+	dir, ok := s.sidx.Lookup(id)
+	if !ok {
+		return nil
+	}
+	items, err := session.TakeNextTurn(dir)
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+	s.publishQueueChanged(id)
+	return items
+}
+
+// withNextTurn injects deliverAs=nextTurn items after the user message and
+// before before_agent_start. Those items never start their own occupy.
+func (s *Server) withNextTurn(sess *session.Session, st *runState, hooks loop.Hooks, items []session.ExtQueuedItem) loop.Hooks {
+	inner := hooks.BeforeRun
+	hooks.BeforeRun = func(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error) {
+		for _, item := range items {
+			origin := ""
+			if item.Extension != "" {
+				origin = "extension:" + item.Extension
+			}
+			msg := types.Message{Role: "user", Content: item.Content, Origin: origin, Timestamp: time.Now().UnixMilli()}
+			if e, aerr := sess.AppendMessage(msg); aerr == nil {
+				ev := loop.Event{Type: loop.MessageEnd, Message: &msg, EntryID: e.ID}
+				st.mu.Lock()
+				st.evs = append(st.evs, ev)
+				st.wait.Broadcast()
+				st.mu.Unlock()
+			}
+			msgs = append(msgs, msg)
+		}
+		if inner != nil {
+			return inner(ctx, system, msgs)
+		}
+		return system, msgs, nil
+	}
+	return hooks
 }
 
 func (s *Server) liveSummarizer(sessionID, prov, model string) loop.Streamer {
@@ -1471,6 +1591,14 @@ func (s *Server) shouldCompact(sess *session.Session, window int) bool {
 // rebuilt, so the next prompt should use freshly loaded environment,
 // instructions, skills, templates, and MCP configuration.
 func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]types.Message, error) {
+	var customSummary string
+	if s.ext != nil {
+		ok, summary := s.ext.CompactAllowed(ctx, sess.ID())
+		if !ok {
+			return sess.MessagesToLeaf(), nil
+		}
+		customSummary = summary
+	}
 	prep, err := compact.Prepare(sess.LeafEntries(), s.cfg.Compaction)
 	if err != nil {
 		return nil, fmt.Errorf("prepare compaction: %w", err)
@@ -1478,9 +1606,13 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]t
 	if prep == nil {
 		return nil, compact.ErrNothingToCompact
 	}
-	summary, usage, err := compact.Execute(ctx, prep, s.summarizer(sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
-	if err != nil {
-		return nil, fmt.Errorf("execute compaction: %w", err)
+	summary := customSummary
+	var usage *types.Usage
+	if summary == "" {
+		summary, usage, err = compact.Execute(ctx, prep, s.summarizer(sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+		if err != nil {
+			return nil, fmt.Errorf("execute compaction: %w", err)
+		}
 	}
 	if _, err := sess.AppendCompaction(summary, prep.FirstKeptEntryID, prep.TokensBefore, usage, prep.RetainedTail); err != nil {
 		return nil, fmt.Errorf("append compaction: %w", err)
@@ -1616,6 +1748,7 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 			s.ext.CloseSession(id)
 		}
 	}
+	s.cancelUIPrompts(id)
 	writeJSON(w, 200, map[string]any{"aborted": true})
 }
 
