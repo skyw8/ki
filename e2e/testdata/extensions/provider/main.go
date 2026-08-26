@@ -28,6 +28,11 @@ type streamCancel struct {
 	RequestID string `json:"requestId"`
 }
 
+type authRequest struct {
+	RequestID string `json:"requestId"`
+	Provider  string `json:"provider"`
+}
+
 var (
 	writeMu sync.Mutex
 	stops   = map[string]chan struct{}{}
@@ -65,6 +70,17 @@ func done(requestID, model, text string) {
 				"role": "assistant", "api": "fake-api", "provider": "fake-provider", "model": model,
 				"content": []any{map[string]any{"type": "text", "text": text}},
 			},
+		},
+	})
+}
+
+func authComplete(requestID, provider string) {
+	send(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "provider.auth.event",
+		"params": map[string]any{
+			"requestId": requestID, "provider": provider, "type": "completed",
+			"credential": map[string]any{"type": "oauth", "value": map[string]any{"access": "fake-access", "refresh": "fake-refresh"}},
 		},
 	})
 }
@@ -133,6 +149,18 @@ func main() {
 			stopMu.Unlock()
 			reply(msg.ID, map[string]any{"accepted": true})
 			go stream(start)
+		case "provider.auth.start":
+			var auth authRequest
+			if json.Unmarshal(msg.Params, &auth) != nil || auth.RequestID == "" {
+				reply(msg.ID, map[string]any{"accepted": false})
+				continue
+			}
+			reply(msg.ID, map[string]any{"accepted": true})
+			go authComplete(auth.RequestID, auth.Provider)
+		case "provider.auth.input":
+			reply(msg.ID, map[string]any{"accepted": true})
+		case "provider.auth.refresh":
+			reply(msg.ID, map[string]any{"refreshed": false})
 		case "provider.stream.cancel":
 			var cancel streamCancel
 			_ = json.Unmarshal(msg.Params, &cancel)

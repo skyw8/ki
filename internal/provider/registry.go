@@ -91,23 +91,23 @@ type registryState struct {
 
 // Registry owns the offline model catalog and mutable global overlays.
 type Registry struct {
-	mu          sync.RWMutex
-	home        string
-	modelsPath  string
-	credsPath   string
-	state       *registryState
-	plugins     map[string]Provider
-	pluginOrder []string
+	mu                     sync.RWMutex
+	home                   string
+	modelsPath             string
+	credsPath              string
+	state                  *registryState
+	extensionProviders     map[string]Provider
+	extensionProviderOrder []string
 }
 
 // NewRegistry loads the provider catalog and credentials rooted at home.
 func NewRegistry(home string) (*Registry, error) {
 	r := &Registry{
-		home:        home,
-		modelsPath:  filepath.Join(home, "models.json"),
-		credsPath:   filepath.Join(home, "credentials.json"),
-		plugins:     map[string]Provider{},
-		pluginOrder: []string{},
+		home:                   home,
+		modelsPath:             filepath.Join(home, "models.json"),
+		credsPath:              filepath.Join(home, "credentials.json"),
+		extensionProviders:     map[string]Provider{},
+		extensionProviderOrder: []string{},
 	}
 	user := ModelsFile{Version: 1, Providers: map[string]Config{}}
 	if err := readStrictJSON(r.modelsPath, &user); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -137,13 +137,13 @@ func NewRegistry(home string) (*Registry, error) {
 	return r, nil
 }
 
-// ReplacePluginProviders replaces the ephemeral provider catalog supplied by
-// enabled provider extensions. These entries are never written to models.json.
-func (r *Registry) ReplacePluginProviders(specs []PluginSpec) error {
+// ReplaceExtensionProviders replaces the ephemeral provider catalog supplied
+// by enabled extensions. These entries are never written to models.json.
+func (r *Registry) ReplaceExtensionProviders(specs []ExtensionProviderSpec) error {
 	next := make(map[string]Provider, len(specs))
 	order := make([]string, 0, len(specs))
 	for _, spec := range specs {
-		p, err := BuildPluginProvider(spec)
+		p, err := BuildExtensionProvider(spec)
 		if err != nil {
 			return err
 		}
@@ -154,7 +154,7 @@ func (r *Registry) ReplacePluginProviders(specs []PluginSpec) error {
 		order = append(order, p.ID)
 	}
 	r.mu.Lock()
-	// A plugin must not silently replace a built-in or user-configured
+	// An extension provider must not silently replace a built-in or user-configured
 	// provider. Selection would otherwise depend on extension load order.
 	for id := range next {
 		if _, exists := r.state.providers[id]; exists {
@@ -162,18 +162,18 @@ func (r *Registry) ReplacePluginProviders(specs []PluginSpec) error {
 			return fmt.Errorf("provider %q already exists", id)
 		}
 	}
-	r.plugins = next
-	r.pluginOrder = order
+	r.extensionProviders = next
+	r.extensionProviderOrder = order
 	r.state.defaultRef = r.defaultRefLocked()
 	r.mu.Unlock()
 	return nil
 }
 
-// PluginProvider reports whether a provider is implemented by an extension.
-func (r *Registry) PluginProvider(id string) bool {
+// ExtensionProvider reports whether a provider is implemented by an extension.
+func (r *Registry) ExtensionProvider(id string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	_, ok := r.plugins[id]
+	_, ok := r.extensionProviders[id]
 	return ok
 }
 
@@ -181,23 +181,23 @@ func (r *Registry) providerLocked(id string) (Provider, bool) {
 	if p, ok := r.state.providers[id]; ok {
 		return p, true
 	}
-	p, ok := r.plugins[id]
+	p, ok := r.extensionProviders[id]
 	return p, ok
 }
 
 func (r *Registry) providerOrderLocked() []string {
-	order := make([]string, 0, len(r.state.order)+len(r.pluginOrder))
+	order := make([]string, 0, len(r.state.order)+len(r.extensionProviderOrder))
 	order = append(order, r.state.order...)
-	order = append(order, r.pluginOrder...)
+	order = append(order, r.extensionProviderOrder...)
 	return order
 }
 
 func (r *Registry) defaultRefLocked() ModelRef {
-	providers := make(map[string]Provider, len(r.state.providers)+len(r.plugins))
+	providers := make(map[string]Provider, len(r.state.providers)+len(r.extensionProviders))
 	for id, p := range r.state.providers {
 		providers[id] = p
 	}
-	for id, p := range r.plugins {
+	for id, p := range r.extensionProviders {
 		providers[id] = p
 	}
 	return pickDefault(providers, r.providerOrderLocked(), r.state.creds, r.state.user.Default)
@@ -409,10 +409,10 @@ func validAPI(api string) bool {
 	return api == "completions" || api == "responses" || api == "anthropic"
 }
 
-// ValidatePluginSpec validates a provider catalog supplied by an extension.
-// Plugin APIs are intentionally open-ended; the owning sidecar, rather than
+// ValidateExtensionProviderSpec validates a provider catalog supplied by an
+// extension. Extension APIs are intentionally open-ended; the owning sidecar, rather than
 // the built-in HTTP adapters, is responsible for implementing them.
-func ValidatePluginSpec(spec PluginSpec) error {
+func ValidateExtensionProviderSpec(spec ExtensionProviderSpec) error {
 	if !providerIDPattern.MatchString(spec.ID) {
 		return fmt.Errorf("provider %q: %w", spec.ID, errInvalidID)
 	}
@@ -442,7 +442,7 @@ func ValidatePluginSpec(spec PluginSpec) error {
 			return fmt.Errorf("provider %q: %w %q", spec.ID, errDuplicateModel, model.ID)
 		}
 		seenModels[model.ID] = true
-		if err := validatePluginModel(model); err != nil {
+		if err := validateExtensionModel(model); err != nil {
 			return err
 		}
 	}
@@ -452,7 +452,7 @@ func ValidatePluginSpec(spec PluginSpec) error {
 	return nil
 }
 
-func validatePluginModel(m Model) error {
+func validateExtensionModel(m Model) error {
 	if strings.TrimSpace(m.ID) == "" {
 		return fmt.Errorf("provider %q: %w", m.Provider, errModelIDRequired)
 	}

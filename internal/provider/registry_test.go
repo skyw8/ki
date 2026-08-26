@@ -116,18 +116,18 @@ func TestRegistryPersistsCustomProviderAndCredential(t *testing.T) {
 	}
 }
 
-func TestRegistryRegistersPluginProviderAndOpaqueCredential(t *testing.T) {
+func TestRegistryRegistersExtensionProviderAndOpaqueCredential(t *testing.T) {
 	home := t.TempDir()
 	r, err := NewRegistry(home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := PluginSpec{
+	spec := ExtensionProviderSpec{
 		ID: "codex", Name: "Codex", API: "openai-codex-responses", BaseURL: "https://chatgpt.com/backend-api",
 		DefaultModel: "codex-mini", Auth: AuthSpec{Type: AuthOAuth, Name: "Codex", Subscription: true},
 		Models: []ModelSeed{{ID: "codex-mini", ContextWindow: 128000, MaxTokens: 16384, Input: []string{"text"}, ApplyPatchToolType: "freeform"}},
 	}
-	if err := r.ReplacePluginProviders([]PluginSpec{spec}); err != nil {
+	if err := r.ReplaceExtensionProviders([]ExtensionProviderSpec{spec}); err != nil {
 		t.Fatal(err)
 	}
 	views := r.Providers()
@@ -138,8 +138,8 @@ func TestRegistryRegistersPluginProviderAndOpaqueCredential(t *testing.T) {
 			break
 		}
 	}
-	if found == nil || found.Runtime != "plugin" || found.Auth.Type != AuthOAuth || found.Credential.Configured {
-		t.Fatalf("plugin view=%+v", found)
+	if found == nil || found.Runtime != "extension" || found.Auth.Type != AuthOAuth || found.Credential.Configured {
+		t.Fatalf("extension view=%+v", found)
 	}
 	if _, _, _, err := r.Resolve(spec.ID, "codex-mini"); !strings.Contains(err.Error(), "configured credential") {
 		t.Fatalf("missing opaque credential error=%v", err)

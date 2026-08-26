@@ -5,7 +5,7 @@ import { ICheck, IEdit, IPlus, IRegen, ITrash } from './icons'
 import { useI18n } from './i18n'
 import { Select } from './Select'
 import { toast } from './toast'
-import type { ProviderCatalog, ProviderModel } from './types'
+import type { ProviderAuthStatus, ProviderCatalog, ProviderModel } from './types'
 
 type Props = { api: Client; onChanged: () => void }
 
@@ -18,9 +18,9 @@ const apiOptions = [
 const copy = {
   zh: {
     title: '模型供应商', subtitle: '管理连接、凭据和模型。目录保存在本地，不会自动联网刷新。', addProvider: '添加供应商',
-    providers: '供应商', missingKey: '缺少密钥', builtIn: '内置', custom: '自定义', plugin: '插件', enabled: '启用', disabled: '已停用',
+    providers: '供应商', missingKey: '缺少密钥', builtIn: '内置', custom: '自定义', extension: '扩展', enabled: '启用', disabled: '已停用',
     connection: '连接设置', connectionHint: '修改连接后，新请求会立即使用新配置。', displayName: '显示名称', providerID: '供应商 ID', baseURL: 'Base URL', apiProtocol: 'API 协议', saveChanges: '保存更改',
-    credential: 'API 凭据', credentialHint: '密钥只保存在本机，页面不会回显。', apiKey: 'API key', saveKey: '保存密钥', clear: '清除', stored: '已保存凭据', pluginCredentialHint: '凭据由 provider 插件管理；OAuth 登录将在插件认证流程中提供。', noCredential: '此 provider 不需要凭据。',
+    credential: 'API 凭据', credentialHint: '密钥只保存在本机，页面不会回显。', apiKey: 'API key', saveKey: '保存密钥', clear: '清除', stored: '已保存凭据', extensionCredentialHint: '凭据由 provider 扩展管理；OAuth 登录由扩展处理，access token 不会显示在页面。', noCredential: '此 provider 不需要凭据。', login: '登录', browserLogin: '浏览器登录', deviceLogin: '设备码登录', logout: '退出登录', copy: '复制', copied: '已复制', authPending: '等待完成 OAuth 登录…', authDeviceCode: '在下方地址输入设备码：', authManualCode: '也可以粘贴 redirect URL 或授权码：', submit: '提交', cancelLogin: '取消登录', authComplete: 'OAuth 登录成功。', authFailed: 'OAuth 登录失败：',
     models: '模型', modelCount: '{n} 个模型', addModel: '添加模型', modelID: '模型 ID', modelName: '显示名称', contextWindow: '上下文窗口', maxOutput: '最大输出', add: '添加',
     edit: '编辑', restore: '恢复', remove: '删除', reasoning: '推理', vision: '视觉',
     advanced: '模型高级字段', advancedHint: '用于精确配置 thinking map、价格和兼容参数。', cancel: '取消', save: '保存',
@@ -30,9 +30,9 @@ const copy = {
   },
   en: {
     title: 'Model providers', subtitle: 'Manage connections, credentials, and models. The catalog stays local and never refreshes online.', addProvider: 'Add provider',
-    providers: 'Providers', missingKey: 'Missing key', builtIn: 'Built-in', custom: 'Custom', plugin: 'Plugin', enabled: 'Enabled', disabled: 'Disabled',
+    providers: 'Providers', missingKey: 'Missing key', builtIn: 'Built-in', custom: 'Custom', extension: 'Extension', enabled: 'Enabled', disabled: 'Disabled',
     connection: 'Connection', connectionHint: 'New requests use saved connection changes immediately.', displayName: 'Display name', providerID: 'Provider ID', baseURL: 'Base URL', apiProtocol: 'API protocol', saveChanges: 'Save changes',
-    credential: 'API credential', credentialHint: 'The key stays on this machine and is never shown again.', apiKey: 'API key', saveKey: 'Save key', clear: 'Clear', stored: 'Credential configured', pluginCredentialHint: 'The provider plugin owns this credential; OAuth login will be added with the plugin auth flow.', noCredential: 'This provider does not require a credential.',
+    credential: 'API credential', credentialHint: 'The key stays on this machine and is never shown again.', apiKey: 'API key', saveKey: 'Save key', clear: 'Clear', stored: 'Credential configured', extensionCredentialHint: 'The provider extension owns this credential; the access token is never shown in the page.', noCredential: 'This provider does not require a credential.', login: 'Log in', browserLogin: 'Browser login', deviceLogin: 'Device code login', logout: 'Log out', copy: 'Copy', copied: 'Copied', authPending: 'Waiting for OAuth login to finish…', authDeviceCode: 'Enter this device code at the address below:', authManualCode: 'You can also paste the redirect URL or authorization code:', submit: 'Submit', cancelLogin: 'Cancel login', authComplete: 'OAuth login complete.', authFailed: 'OAuth login failed: ',
     models: 'Models', modelCount: '{n} models', addModel: 'Add model', modelID: 'Model ID', modelName: 'Display name', contextWindow: 'Context window', maxOutput: 'Max output', add: 'Add model',
     edit: 'Edit', restore: 'Restore', remove: 'Delete', reasoning: 'Reasoning', vision: 'Vision',
     advanced: 'Advanced model fields', advancedHint: 'Precisely configure thinking maps, pricing, and compatibility.', cancel: 'Cancel', save: 'Save',
@@ -54,6 +54,9 @@ export function ProviderSettings({ api, onChanged }: Props) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
   const [key, setKey] = useState('')
+  const [authStatus, setAuthStatus] = useState<ProviderAuthStatus | null>(null)
+  const [authInput, setAuthInput] = useState('')
+  const [copied, setCopied] = useState(false)
   const [newProvider, setNewProvider] = useState(false)
   const [newModel, setNewModel] = useState(false)
   const [editingModel, setEditingModel] = useState('')
@@ -72,13 +75,40 @@ export function ProviderSettings({ api, onChanged }: Props) {
   }
   useEffect(() => { void load().catch(e => toast.from(e)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const current = useMemo(() => data?.providers.find(p => p.id === selected), [data, selected])
-  const pluginManaged = current?.runtime === 'plugin'
+  const extensionManaged = current?.runtime === 'extension'
   useEffect(() => {
     if (!current) return
     setConnection({ name: current.name, api: current.api, baseUrl: current.baseUrl })
     setKey('')
+    setAuthStatus(null)
+    setAuthInput('')
+    setCopied(false)
     setEditingModel('')
   }, [current?.id, current?.name, current?.api, current?.baseUrl]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!authStatus || authStatus.status !== 'pending' || !current || current.id !== authStatus.provider) return
+    let stopped = false
+    const poll = async () => {
+      try {
+        const next = await api.providerAuthStatus(current.id, authStatus.requestId)
+        if (stopped) return
+        setAuthStatus(next)
+        if (next.status === 'completed') {
+          const catalog = await api.providers()
+          if (!stopped) {
+            setData(catalog)
+            onChanged()
+          }
+        }
+      } catch (e) {
+        if (!stopped) toast.from(e)
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 1000)
+    return () => { stopped = true; window.clearInterval(timer) }
+  }, [api, authStatus?.provider, authStatus?.requestId, authStatus?.status, current?.id, onChanged])
   useEffect(() => {
     if (!newProvider && !editingModel) return
     if (newProvider) newProviderID.current?.focus()
@@ -100,6 +130,50 @@ export function ProviderSettings({ api, onChanged }: Props) {
     setBusy(label)
     setError('')
     try { await op(); await load(); return true } catch (e) { toast.from(e); return false } finally { setBusy('') }
+  }
+  const beginAuth = async (mode: 'browser' | 'device_code') => {
+    setBusy('auth')
+    setError('')
+    setAuthStatus(null)
+    try {
+      setAuthStatus(await api.startProviderAuth(current!.id, mode))
+    } catch (e) {
+      toast.from(e)
+    } finally {
+      setBusy('')
+    }
+  }
+  const sendAuthInput = async () => {
+    if (!current || !authStatus || !authInput.trim()) return
+    setBusy('auth-input')
+    try {
+      await api.providerAuthInput(current.id, authStatus.requestId, authInput.trim())
+      setAuthInput('')
+    } catch (e) {
+      toast.from(e)
+    } finally {
+      setBusy('')
+    }
+  }
+  const cancelAuth = async () => {
+    if (!current || !authStatus) return
+    setBusy('auth-cancel')
+    try {
+      setAuthStatus(await api.cancelProviderAuth(current.id, authStatus.requestId))
+    } catch (e) {
+      toast.from(e)
+    } finally {
+      setBusy('')
+    }
+  }
+  const copyAuthURL = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch (e) {
+      toast.from(e)
+    }
   }
   const editModel = (model: ProviderModel) => {
     setEditingModel(model.id)
@@ -137,24 +211,43 @@ export function ProviderSettings({ api, onChanged }: Props) {
           {!data ? <div className="settings-empty">{c.loading}</div> : !current ? <div className="settings-empty">{c.selectProvider}</div> : (
             <>
               <header className="provider-detail-head">
-                <div><div className="provider-title-line"><h3>{current.name}</h3><span className="type-badge">{pluginManaged ? c.plugin : current.builtin ? c.builtIn : c.custom}</span></div><code>{current.id}</code></div>
-                <label className="setting-switch"><input type="checkbox" checked={current.enabled} disabled={!!busy || pluginManaged} onChange={e => void run('enabled', () => api.patchProvider(current.id, { enabled: e.target.checked }))} /><span className="switch-track" aria-hidden><span /></span><span>{current.enabled ? c.enabled : c.disabled}</span></label>
+                <div><div className="provider-title-line"><h3>{current.name}</h3><span className="type-badge">{extensionManaged ? c.extension : current.builtin ? c.builtIn : c.custom}</span></div><code>{current.id}</code></div>
+                <label className="setting-switch"><input type="checkbox" checked={current.enabled} disabled={!!busy || extensionManaged} onChange={e => void run('enabled', () => api.patchProvider(current.id, { enabled: e.target.checked }))} /><span className="switch-track" aria-hidden><span /></span><span>{current.enabled ? c.enabled : c.disabled}</span></label>
               </header>
 
               <form className="settings-section" data-testid="provider-connection-form" onSubmit={event => { event.preventDefault(); void run('connection', () => api.patchProvider(current.id, connection)) }}>
                 <div className="settings-section-head"><div><h4>{c.connection}</h4><p>{c.connectionHint}</p></div></div>
                 <div className="form-grid two">
-                  <label className="form-control"><span>{c.displayName}</span><input value={connection.name} disabled={pluginManaged} onChange={e => setConnection(value => ({ ...value, name: e.target.value }))} /></label>
+                  <label className="form-control"><span>{c.displayName}</span><input value={connection.name} disabled={extensionManaged} onChange={e => setConnection(value => ({ ...value, name: e.target.value }))} /></label>
                   <label className="form-control"><span>{c.providerID}</span><input value={current.id} readOnly aria-readonly="true" /></label>
-                  <label className="form-control full"><span>{c.baseURL}</span><input data-testid="provider-base-url" type="url" value={connection.baseUrl} disabled={pluginManaged} onChange={e => setConnection(value => ({ ...value, baseUrl: e.target.value }))} /></label>
-                  <label className="form-control"><span>{c.apiProtocol}</span>{pluginManaged ? <code>{current.api}</code> : <Select testid="provider-api" ariaLabel={c.apiProtocol} value={connection.api} options={apiOptions} onChange={api => setConnection(value => ({ ...value, api }))} />}</label>
+                  <label className="form-control full"><span>{c.baseURL}</span><input data-testid="provider-base-url" type="url" value={connection.baseUrl} disabled={extensionManaged} onChange={e => setConnection(value => ({ ...value, baseUrl: e.target.value }))} /></label>
+                  <label className="form-control"><span>{c.apiProtocol}</span>{extensionManaged ? <code>{current.api}</code> : <Select testid="provider-api" ariaLabel={c.apiProtocol} value={connection.api} options={apiOptions} onChange={api => setConnection(value => ({ ...value, api }))} />}</label>
                 </div>
-                {!pluginManaged ? <div className="form-actions"><button className="ui-button primary" type="submit" disabled={!!busy}>{c.saveChanges}</button></div> : null}
+                {!extensionManaged ? <div className="form-actions"><button className="ui-button primary" type="submit" disabled={!!busy}>{c.saveChanges}</button></div> : null}
               </form>
 
               <section className="settings-section credential-section">
-                <div className="settings-section-head"><div><h4>{c.credential}</h4><p>{pluginManaged ? c.pluginCredentialHint : c.credentialHint}</p></div><span className={`credential-badge${current.credential.configured ? ' ready' : ''}`}>{current.credential.configured ? <ICheck /> : null}{current.credential.configured ? c.stored : current.auth?.type === 'none' ? c.stored : c.missingKey}</span></div>
-                {pluginManaged && current.auth?.type !== 'api_key' ? <p>{current.auth?.type === 'none' ? c.noCredential : c.pluginCredentialHint}</p> : (
+                <div className="settings-section-head"><div><h4>{c.credential}</h4><p>{extensionManaged ? c.extensionCredentialHint : c.credentialHint}</p></div><span className={`credential-badge${current.credential.configured ? ' ready' : ''}`}>{current.credential.configured ? <ICheck /> : null}{current.credential.configured ? c.stored : current.auth?.type === 'none' ? c.stored : c.missingKey}</span></div>
+                {extensionManaged && current.auth?.type === 'oauth' ? (
+                  <div className="oauth-control">
+                    <div className="oauth-actions">
+                      <button type="button" className="ui-button primary" disabled={!!busy} onClick={() => void beginAuth('browser')}>{c.browserLogin}</button>
+                      <button type="button" className="ui-button secondary" disabled={!!busy} onClick={() => void beginAuth('device_code')}>{c.deviceLogin}</button>
+                      {current.credential.configured ? <button type="button" className="ui-button ghost danger" disabled={!!busy} onClick={() => void run('logout', async () => { await api.logoutProviderAuth(current.id); setAuthStatus(null) })}>{c.logout}</button> : null}
+                    </div>
+                    {authStatus?.status === 'pending' ? <div className="oauth-status" role="status">
+                      <p>{c.authPending}</p>
+                      {authStatus.authUrl ? <div className="oauth-value"><code>{authStatus.authUrl}</code><button type="button" className="ui-button small secondary" onClick={() => void copyAuthURL(authStatus.authUrl!)}>{copied ? c.copied : c.copy}</button></div> : null}
+                      {authStatus.userCode ? <p>{c.authDeviceCode} <code>{authStatus.userCode}</code></p> : null}
+                      {authStatus.verificationUri ? <div className="oauth-value"><code>{authStatus.verificationUri}</code><button type="button" className="ui-button small secondary" onClick={() => void copyAuthURL(authStatus.verificationUri!)}>{copied ? c.copied : c.copy}</button></div> : null}
+                      {authStatus.instructions ? <p>{authStatus.instructions}</p> : null}
+                      {authStatus.authUrl ? <label className="form-control"><span>{c.authManualCode}</span><input value={authInput} onChange={e => setAuthInput(e.target.value)} placeholder="http://localhost:1455/auth/callback?..." /><button type="button" className="ui-button secondary" disabled={!authInput.trim() || !!busy} onClick={() => void sendAuthInput()}>{c.submit}</button></label> : null}
+                      <button type="button" className="ui-button ghost" disabled={!!busy} onClick={() => void cancelAuth()}>{c.cancelLogin}</button>
+                    </div> : null}
+                    {authStatus?.status === 'completed' ? <p className="oauth-success" role="status">{c.authComplete}</p> : null}
+                    {authStatus?.status === 'error' ? <p className="oauth-error" role="alert">{c.authFailed}{authStatus.error || 'unknown error'}</p> : null}
+                  </div>
+                ) : extensionManaged && current.auth?.type !== 'api_key' ? <p>{current.auth?.type === 'none' ? c.noCredential : c.extensionCredentialHint}</p> : (
                   <div className="credential-control">
                     <label className="form-control"><span>{c.apiKey}</span><input type="password" autoComplete="new-password" placeholder={current.credential.configured ? format(c.source, { source: current.credential.source || 'stored' }) : 'sk-…'} value={key} onChange={e => setKey(e.target.value)} /></label>
                     <button type="button" className="ui-button secondary" disabled={!key || !!busy} onClick={() => void run('credential', () => api.setCredential(current.id, key)).then(ok => { if (ok) setKey('') })}>{c.saveKey}</button>
@@ -164,7 +257,7 @@ export function ProviderSettings({ api, onChanged }: Props) {
               </section>
 
               <section className="settings-section models-section">
-                <div className="settings-section-head"><div><h4>{c.models}</h4><p>{format(c.modelCount, { n: current.models.length })}</p></div>{!pluginManaged ? <button type="button" className="ui-button secondary" data-testid="add-model" onClick={() => setNewModel(value => !value)}><IPlus />{c.addModel}</button> : null}</div>
+                <div className="settings-section-head"><div><h4>{c.models}</h4><p>{format(c.modelCount, { n: current.models.length })}</p></div>{!extensionManaged ? <button type="button" className="ui-button secondary" data-testid="add-model" onClick={() => setNewModel(value => !value)}><IPlus />{c.addModel}</button> : null}</div>
                 {newModel ? (
                   <form className="model-create-form" data-testid="new-model-form" onSubmit={event => {
                     event.preventDefault()
@@ -183,9 +276,9 @@ export function ProviderSettings({ api, onChanged }: Props) {
                 <div className="model-table">
                   {current.models.map(model => {
                     return <div className="model-row" key={model.id} data-testid="provider-model-row">
-                      <div className="model-main"><strong>{model.name || model.id}</strong><small>{model.id}</small><div className="model-tags"><span>{model.contextWindow?.toLocaleString()} ctx</span>{model.reasoning ? <span>{c.reasoning}</span> : null}{model.input?.includes('image') ? <span>{c.vision}</span> : null}<span>{pluginManaged ? c.plugin : model.builtin ? c.builtIn : c.custom}</span></div></div>
+                      <div className="model-main"><strong>{model.name || model.id}</strong><small>{model.id}</small><div className="model-tags"><span>{model.contextWindow?.toLocaleString()} ctx</span>{model.reasoning ? <span>{c.reasoning}</span> : null}{model.input?.includes('image') ? <span>{c.vision}</span> : null}<span>{extensionManaged ? c.extension : model.builtin ? c.builtIn : c.custom}</span></div></div>
                       <div className="model-actions">
-                        {!pluginManaged ? <><button type="button" className="icon-text-button" data-testid="edit-model" onClick={() => editModel(model)}><IEdit />{c.edit}</button>
+                        {!extensionManaged ? <><button type="button" className="icon-text-button" data-testid="edit-model" onClick={() => editModel(model)}><IEdit />{c.edit}</button>
                         <label className="compact-switch" title={model.enabled ? c.enabled : c.disabled}><input type="checkbox" checked={model.enabled} disabled={!!busy} onChange={e => void run('model-enabled', () => api.patchModel(current.id, { id: model.id, enabled: e.target.checked }))} /><span aria-hidden /></label>
                         {model.builtin && model.customized ? <button type="button" className="icon-text-button" onClick={() => void run('restore-model', () => api.deleteModel(current.id, model.id))}><IRegen />{c.restore}</button> : null}
                         {!model.builtin ? <button type="button" className="icon-text-button danger" disabled={!!busy} onClick={() => void run('delete-model', () => api.deleteModel(current.id, model.id))}><ITrash />{c.remove}</button> : null}</> : null}

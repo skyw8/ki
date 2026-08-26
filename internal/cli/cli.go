@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -56,7 +57,7 @@ func newRootCommand() *cobra.Command {
 	}
 	root.Version = Version
 	root.SetVersionTemplate("ki {{.Version}}\n")
-	root.AddCommand(newServeCommand(), newRunCommand(), newConfigCommand(), newSessionCommand(), newReloadCommand(), newExtensionCommand(), newVersionCommand())
+	root.AddCommand(newServeCommand(), newRunCommand(), newConfigCommand(), newSessionCommand(), newReloadCommand(), newExtensionCommand(), newProviderCommand(), newVersionCommand())
 	return root
 }
 
@@ -167,6 +168,40 @@ func newExtensionCommand() *cobra.Command {
 	return cmd
 }
 
+func newProviderCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "provider",
+		Short: "Authenticate provider extensions",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return cmd.Help()
+		},
+	}
+	var deviceCode bool
+	login := &cobra.Command{
+		Use:   "login <provider>",
+		Short: "Log in to a provider extension",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return withConfig("client", nil, func(cfg config.Config) error {
+				return runProviderLogin(cfg, args[0], deviceCode)
+			})
+		},
+	}
+	login.Flags().BoolVar(&deviceCode, "device-code", false, "use a headless device code flow")
+	logout := &cobra.Command{
+		Use:   "logout <provider>",
+		Short: "Remove a provider extension credential",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return withConfig("client", nil, func(cfg config.Config) error {
+				return runProviderLogout(cfg, args[0])
+			})
+		},
+	}
+	cmd.AddCommand(login, logout)
+	return cmd
+}
+
 func newReloadCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reload",
@@ -188,6 +223,100 @@ func runReload(cfg config.Config) error {
 		return err
 	}
 	fmt.Println("reloaded")
+	return nil
+}
+
+type providerAuthCLIStatus struct {
+	Provider         string `json:"provider"`
+	RequestID        string `json:"requestId"`
+	Status           string `json:"status"`
+	AuthURL          string `json:"authUrl"`
+	Instructions     string `json:"instructions"`
+	UserCode         string `json:"userCode"`
+	VerificationURI  string `json:"verificationUri"`
+	IntervalSeconds  int    `json:"intervalSeconds"`
+	ExpiresInSeconds int    `json:"expiresInSeconds"`
+	Error            string `json:"error"`
+}
+
+func runProviderLogin(cfg config.Config, providerID string, deviceCode bool) error {
+	base, token, stop, err := ensureServer(cfg, flags{})
+	if err != nil {
+		return err
+	}
+	if stop != nil {
+		defer stop()
+	}
+	mode := "browser"
+	if deviceCode {
+		mode = "device_code"
+	}
+	var started providerAuthCLIStatus
+	path := "/v1/providers/" + url.PathEscape(providerID) + "/auth/login"
+	if err := doJSONContext(context.Background(), base, token, http.MethodPost, path, map[string]string{"mode": mode}, &started); err != nil {
+		return err
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	deadline := time.NewTimer(20 * time.Minute)
+	defer deadline.Stop()
+	opened := false
+	lastURL, lastCode := "", ""
+	for {
+		var status providerAuthCLIStatus
+		statusPath := "/v1/providers/" + url.PathEscape(providerID) + "/auth/" + url.PathEscape(started.RequestID)
+		if err := doJSONContext(ctx, base, token, http.MethodGet, statusPath, nil, &status); err != nil {
+			return err
+		}
+		if status.AuthURL != "" && status.AuthURL != lastURL {
+			lastURL = status.AuthURL
+			fmt.Fprintf(os.Stderr, "OpenAI login URL: %s\n", status.AuthURL)
+			if !opened {
+				opened = true
+				if err := openBrowser(status.AuthURL); err != nil {
+					fmt.Fprintf(os.Stderr, "could not open browser: %v\n", err)
+				}
+			}
+		}
+		if status.UserCode != "" && status.UserCode != lastCode {
+			lastCode = status.UserCode
+			fmt.Fprintf(os.Stderr, "OpenAI device code: %s\nVisit: %s\n", status.UserCode, status.VerificationURI)
+		}
+		switch status.Status {
+		case "completed":
+			fmt.Printf("logged in to %s\n", providerID)
+			return nil
+		case "error":
+			if status.Error == "" {
+				status.Error = "provider authentication failed"
+			}
+			return errors.New(status.Error)
+		case "cancelled":
+			return errors.New("provider authentication cancelled")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errors.New("provider authentication timed out")
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func runProviderLogout(cfg config.Config, providerID string) error {
+	base, token, stop, err := ensureServer(cfg, flags{})
+	if err != nil {
+		return err
+	}
+	if stop != nil {
+		defer stop()
+	}
+	path := "/v1/providers/" + url.PathEscape(providerID) + "/auth/logout"
+	if err := doJSONContext(context.Background(), base, token, http.MethodPost, path, nil, nil); err != nil {
+		return err
+	}
+	fmt.Printf("logged out of %s\n", providerID)
 	return nil
 }
 
@@ -277,7 +406,8 @@ var (
 
 func runServe(cfg config.Config, addr string) error {
 	st := streamer(cfg)
-	srv, err := server.New(server.Options{Config: cfg, Streamer: st})
+	projectDir, _ := os.Getwd()
+	srv, err := server.New(server.Options{Config: cfg, Streamer: st, ProjectDir: projectDir})
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}
@@ -443,7 +573,8 @@ func ensureServer(cfg config.Config, f flags) (base, token string, stop func(), 
 		}
 	}
 	// in-process
-	srv, err := server.New(server.Options{Config: cfg, Streamer: streamer(cfg)})
+	projectDir, _ := os.Getwd()
+	srv, err := server.New(server.Options{Config: cfg, Streamer: streamer(cfg), ProjectDir: projectDir})
 	if err != nil {
 		return "", "", nil, fmt.Errorf("create in-process server: %w", err)
 	}

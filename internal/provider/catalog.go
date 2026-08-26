@@ -33,9 +33,10 @@ type Credential struct {
 	Value  json.RawMessage `json:"value,omitempty"`
 }
 
-// PluginSpec is the declarative catalog and auth contract contributed by a
-// provider-capable extension. The extension process owns the implementation.
-type PluginSpec struct {
+// ExtensionProviderSpec is the declarative catalog and auth contract
+// contributed by a provider-capable extension. The extension process owns the
+// implementation.
+type ExtensionProviderSpec struct {
 	ID           string      `json:"id"`
 	Name         string      `json:"name"`
 	API          string      `json:"api"`
@@ -147,11 +148,11 @@ type ModelSeed struct {
 	Compat             Compat             `json:"compat,omitzero"`
 }
 
-// BuildPluginProvider resolves a manifest provider into the same selectable
+// BuildExtensionProvider resolves a manifest provider into the same selectable
 // model shape used by the built-in registry. It does not attach executable
 // behavior; the provider-capable extension owns that runtime.
-func BuildPluginProvider(spec PluginSpec) (Provider, error) {
-	if err := ValidatePluginSpec(spec); err != nil {
+func BuildExtensionProvider(spec ExtensionProviderSpec) (Provider, error) {
+	if err := ValidateExtensionProviderSpec(spec); err != nil {
 		return Provider{}, err
 	}
 	auth := spec.Auth
@@ -168,7 +169,7 @@ func BuildPluginProvider(spec PluginSpec) (Provider, error) {
 	}
 	return Provider{
 		ID: spec.ID, Name: spec.Name, API: spec.API, BaseURL: strings.TrimRight(spec.BaseURL, "/"),
-		Auth: auth, Enabled: true, Models: models, DefaultModel: defaultModel, Runtime: "plugin",
+		Auth: auth, Enabled: true, Models: models, DefaultModel: defaultModel, Runtime: "extension",
 	}, nil
 }
 

@@ -35,10 +35,14 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 - toolResult 的 `details` 只供 session 和客户端使用；Completions、Responses、Anthropic 的请求转换都只序列化模型可见 `content` 和错误状态。
 - `Scripted`：测试和 `KI_FAKE=1` 用。
 
-## Provider 插件
+## Provider 扩展
 
-扩展声明 `provider` capability 和 `providers` 目录项后，provider 会以 `runtime.kind=rpc` 的进程级 sidecar 注册到 Registry。provider 的 `api` 可以是内置协议名，也可以是插件自定义字符串；自定义 API 不会落入 ki 的 Completions/Responses/Anthropic HTTP adapter。
+扩展声明 `provider` capability 和 `providers` 目录项后，provider 会以 `runtime.kind=rpc` 的进程级 sidecar 注册到 Registry。扩展可以来自 `{KI_HOME}/extensions` 或当前项目 `.ki/extensions`；后者在当前 server 进程内也按全局 provider runtime 共享。provider 的 `api` 可以是内置协议名，也可以是扩展自定义字符串；自定义 API 不会落入 ki 的 Completions/Responses/Anthropic HTTP adapter。
 
-服务端只做三件事：把 provider/model/auth 元数据并入离线目录、按 provider 解析凭据、把一次完整 `loop.Request` 通过 `provider.stream.start` 交给 sidecar。sidecar 负责完整 request body、headers、网络传输、SSE/WS 解析、provider-specific tool/reasoning 状态和最终 message；Host adapter 只消费紧凑增量、做背压/取消并重建 `loop.AssistantDelta`。因此 Codex 这类需要专用客户端伪装的 streamer 应放在插件里。
+服务端只做三件事：把 provider/model/auth 元数据并入离线目录、按 provider 解析凭据、把一次完整 `loop.Request` 通过 `provider.stream.start` 交给 sidecar。sidecar 负责完整 request body、headers、网络传输、SSE/WS 解析、provider-specific tool/reasoning 状态和最终 message；Host adapter 只消费紧凑增量、做背压/取消并重建 `loop.AssistantDelta`。因此 Codex 这类需要专用客户端伪装的 streamer 应放在 provider 扩展里。
 
-插件 provider 不写入 `models.json`，其目录随扩展启用状态动态替换；provider/model 的 CRUD 端点对这类目录只读。API key 继续使用 `{"apiKey":"..."}`，OAuth 或其他插件凭据使用 `{"type":"oauth","value":{...}}`，`value` 原样保存和私有传递，catalog/status 不包含明文。
+扩展 provider 不写入 `models.json`，其目录随扩展启用状态动态替换；provider/model 的 CRUD 端点对这类目录只读。API key 继续使用 `{"apiKey":"..."}`，OAuth 或其他扩展凭据使用 `{"type":"oauth","value":{...}}`，`value` 原样保存和私有传递，catalog/status 不包含明文。
+
+OAuth provider 的登录/刷新也由 sidecar 完成：`provider.auth.start` 启动 browser 或 `device_code` 流程，`provider.auth.event` 只上报 UI-neutral 的授权 URL、设备码、完成或错误；`provider.auth.input` 接收手工 redirect URL/code，`provider.auth.cancel` 终止流程，`provider.auth.refresh` 在凭据临近过期时返回新的 opaque value。Server 的 `/v1/providers/{id}/auth/*` 只暴露脱敏状态，完成事件才原子写入 `credentials.json`，因此 WebUI 不需要、也不能把 OAuth access token 当 API key 输入。
+
+Responses provider 的 `types.Content.ItemID`、`ArgumentsRaw`、`ThinkingSignature`、`TextSignature` 以及 `types.Message.ResponseID` 会随 jsonl 保存；它们对通用 loop 透明，Codex 扩展可据此重新编码 reasoning/function/custom tool item。流式期间仍只通过 compact delta 传输，raw provider payload 不进入 SSE。

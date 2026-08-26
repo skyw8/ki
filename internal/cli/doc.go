@@ -7,6 +7,8 @@
 //	ki session compact  compact an existing session
 //	ki session fork     fork an existing session
 //	ki reload           POST /v1/reload on a live daemon (no in-process serve)
+//	ki provider login   authenticate a provider extension (browser or device code)
+//	ki provider logout  remove a provider extension credential
 //	ki config path      print config file locations
 //	ki version          print the build version
 //

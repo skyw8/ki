@@ -46,29 +46,32 @@ type rpcError struct {
 }
 
 type rpcClient struct {
-	name             string
-	sessionID        string
-	failClosed       bool
-	fallback         bool
-	cmd              *exec.Cmd
-	enc              *json.Encoder
-	mu               sync.Mutex
-	pending          map[string]chan rpcMsg
-	idSeq            atomic.Int64
-	inboundSeq       atomic.Int64
-	closed           chan struct{}
-	closedOnce       sync.Once
-	closeOnce        sync.Once
-	progress         map[string]func(any)
-	progressMu       sync.Mutex
-	providerStreams  map[string]*providerStreamPipe
-	providerStreamMu sync.Mutex
-	registration     Registration
-	capabilities     []string
-	undeclared       []string
-	busChannels      map[string]bool
-	busMu            sync.Mutex
-	host             SessionHost
+	name               string
+	sessionID          string
+	failClosed         bool
+	fallback           bool
+	cmd                *exec.Cmd
+	enc                *json.Encoder
+	mu                 sync.Mutex
+	pending            map[string]chan rpcMsg
+	idSeq              atomic.Int64
+	inboundSeq         atomic.Int64
+	closed             chan struct{}
+	closedOnce         sync.Once
+	closeOnce          sync.Once
+	progress           map[string]func(any)
+	progressMu         sync.Mutex
+	providerStreams    map[string]*providerStreamPipe
+	providerStreamMu   sync.Mutex
+	providerAuthMu     sync.RWMutex
+	providerAuthFn     func(ProviderAuthEvent)
+	providerAuthEvents chan ProviderAuthEvent
+	registration       Registration
+	capabilities       []string
+	undeclared         []string
+	busChannels        map[string]bool
+	busMu              sync.Mutex
+	host               SessionHost
 }
 
 func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, host SessionHost) (*rpcClient, error) {
@@ -97,18 +100,20 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 		return nil, err
 	}
 	c := &rpcClient{
-		name:            d.Name,
-		sessionID:       sessionID,
-		failClosed:      d.FailClosed,
-		cmd:             cmd,
-		enc:             json.NewEncoder(stdin),
-		pending:         map[string]chan rpcMsg{},
-		closed:          make(chan struct{}),
-		progress:        map[string]func(any){},
-		providerStreams: map[string]*providerStreamPipe{},
-		busChannels:     map[string]bool{},
-		host:            host,
+		name:               d.Name,
+		sessionID:          sessionID,
+		failClosed:         d.FailClosed,
+		cmd:                cmd,
+		enc:                json.NewEncoder(stdin),
+		pending:            map[string]chan rpcMsg{},
+		closed:             make(chan struct{}),
+		progress:           map[string]func(any){},
+		providerStreams:    map[string]*providerStreamPipe{},
+		providerAuthEvents: make(chan ProviderAuthEvent, 32),
+		busChannels:        map[string]bool{},
+		host:               host,
 	}
+	go c.providerAuthLoop()
 	go c.readLoop(stdout)
 	initCtx, cancel := context.WithTimeout(ctx, timeoutInit)
 	defer cancel()
@@ -273,6 +278,20 @@ func (c *rpcClient) readLoop(r io.Reader) {
 			}
 			continue
 		}
+		if msg.Method == "provider.auth.event" {
+			var event ProviderAuthEvent
+			if err := json.Unmarshal(msg.Params, &event); err != nil || event.RequestID == "" {
+				continue
+			}
+			// Queue auth events instead of spawning one goroutine per event. OAuth
+			// progress is ordered (URL/device code must precede completed), while
+			// the worker still keeps filesystem/UI work off the RPC reader.
+			select {
+			case c.providerAuthEvents <- event:
+			case <-c.closed:
+			}
+			continue
+		}
 		id, _ := stringifyID(msg.ID)
 		if msg.Method != "" && id != "" {
 			c.mu.Lock()
@@ -301,6 +320,28 @@ func (c *rpcClient) readLoop(r io.Reader) {
 			}
 		}
 	}
+}
+
+func (c *rpcClient) providerAuthLoop() {
+	for {
+		select {
+		case <-c.closed:
+			return
+		case event := <-c.providerAuthEvents:
+			c.providerAuthMu.RLock()
+			fn := c.providerAuthFn
+			c.providerAuthMu.RUnlock()
+			if fn != nil {
+				fn(event)
+			}
+		}
+	}
+}
+
+func (c *rpcClient) setProviderAuthHandler(fn func(ProviderAuthEvent)) {
+	c.providerAuthMu.Lock()
+	c.providerAuthFn = fn
+	c.providerAuthMu.Unlock()
 }
 
 func stringifyID(id any) (string, bool) {

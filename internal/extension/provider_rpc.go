@@ -130,6 +130,9 @@ func mergeProviderMessage(acc *types.Message, final types.Message) {
 	if final.Model == "" {
 		final.Model = previous.Model
 	}
+	if final.ResponseID == "" {
+		final.ResponseID = previous.ResponseID
+	}
 	if len(final.Content) == 0 {
 		final.Content = previous.Content
 	} else {
@@ -167,6 +170,12 @@ func mergeProviderMessage(acc *types.Message, final types.Message) {
 			}
 			if next.ItemID == "" {
 				next.ItemID = old.ItemID
+			}
+			if next.ThinkingSignature == "" {
+				next.ThinkingSignature = old.ThinkingSignature
+			}
+			if next.TextSignature == "" {
+				next.TextSignature = old.TextSignature
 			}
 		}
 	}
@@ -222,6 +231,15 @@ func applyProviderStreamEvent(acc *types.Message, event ProviderStreamEvent) boo
 			}
 			if incoming.ArgumentsRaw != "" {
 				block.ArgumentsRaw = incoming.ArgumentsRaw
+			}
+			if incoming.ItemID != "" {
+				block.ItemID = incoming.ItemID
+			}
+			if incoming.ThinkingSignature != "" {
+				block.ThinkingSignature = incoming.ThinkingSignature
+			}
+			if incoming.TextSignature != "" {
+				block.TextSignature = incoming.TextSignature
 			}
 		}
 		if block.Type == "" {

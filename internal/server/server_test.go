@@ -1023,7 +1023,7 @@ func TestProviderConfigurationAPI(t *testing.T) {
 		t.Fatalf("disabled last-used must fall back: %+v", out["default"])
 	}
 
-	if err := srv.registry.ReplacePluginProviders([]provider.PluginSpec{{
+	if err := srv.registry.ReplaceExtensionProviders([]provider.ExtensionProviderSpec{{
 		ID: "opaque", Name: "Opaque", API: "opaque-api", BaseURL: "https://example.invalid",
 		Auth:   provider.AuthSpec{Type: provider.AuthOAuth},
 		Models: []provider.ModelSeed{{ID: "opaque-model", ContextWindow: 4096, MaxTokens: 512, Input: []string{"text"}}},
@@ -1037,6 +1037,112 @@ func TestProviderConfigurationAPI(t *testing.T) {
 	credential, statusInfo, err := srv.registry.Credential("opaque")
 	if err != nil || !statusInfo.Configured || string(credential.Value) != `{"access":"secret-token"}` {
 		t.Fatalf("opaque credential=%+v status=%+v err=%v", credential, statusInfo, err)
+	}
+}
+
+func TestProviderOAuthAuthAPI(t *testing.T) {
+	home := t.TempDir()
+	projectDir := t.TempDir()
+	extensionRoot := filepath.Join(projectDir, ".ki", "extensions", "fake-oauth")
+	binDir := filepath.Join(extensionRoot, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	source := filepath.Join(filepath.Dir(file), "..", "..", "e2e", "testdata", "extensions", "provider")
+	bin := filepath.Join(binDir, "provider-sidecar")
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Dir = source
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build auth sidecar: %v\n%s", err, out)
+	}
+	manifest := map[string]any{
+		"name": "fake-oauth", "version": "0.1.0", "description": "fake oauth provider", "capabilities": []string{"provider"},
+		"providers": []map[string]any{{
+			"id": "fake-oauth", "name": "Fake OAuth", "api": "fake-oauth-api", "baseUrl": "https://example.invalid",
+			"auth":   map[string]any{"type": "oauth", "name": "Fake OAuth", "subscription": true},
+			"models": []map[string]any{{"id": "fake-model", "contextWindow": 4096, "maxTokens": 512, "input": []string{"text"}}},
+		}},
+		"runtime": map[string]any{"kind": "rpc", "command": "bin/provider-sidecar"},
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extensionRoot, "extension.json"), manifestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Builtin(home)
+	cfg.Sessions.Root = filepath.Join(home, "sessions")
+	srv, err := New(Options{Config: cfg, Token: "tok", ProjectDir: projectDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+	hs := httptest.NewServer(srv.Handler())
+	t.Cleanup(hs.Close)
+	call := func(method, path, body string, out any) int {
+		t.Helper()
+		request, err := http.NewRequestWithContext(t.Context(), method, hs.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer tok")
+		if body != "" {
+			request.Header.Set("Content-Type", "application/json")
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if out != nil && response.ContentLength != 0 {
+			if err := json.NewDecoder(response.Body).Decode(out); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return response.StatusCode
+	}
+	var started struct {
+		RequestID string `json:"requestId"`
+	}
+	if status := call(http.MethodPost, "/v1/providers/fake-oauth/auth/login", `{"mode":"browser"}`, &started); status != http.StatusAccepted || started.RequestID == "" {
+		t.Fatalf("start status=%d request=%q", status, started.RequestID)
+	}
+	var authStatus struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	path := "/v1/providers/fake-oauth/auth/" + url.PathEscape(started.RequestID)
+	for i := 0; i < 20; i++ {
+		if status := call(http.MethodGet, path, "", &authStatus); status != http.StatusOK {
+			t.Fatalf("auth status=%d", status)
+		}
+		if authStatus.Status == "completed" || authStatus.Status == "error" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if authStatus.Status != "completed" {
+		t.Fatalf("auth status=%+v", authStatus)
+	}
+	var statusView map[string]any
+	if status := call(http.MethodGet, path, "", &statusView); status != http.StatusOK || strings.Contains(fmt.Sprint(statusView), "fake-access") {
+		t.Fatalf("auth status leaked credential: %d %+v", status, statusView)
+	}
+	credential, credentialStatus, err := srv.registry.Credential("fake-oauth")
+	if err != nil || !credentialStatus.Configured || !strings.Contains(string(credential.Value), "fake-access") {
+		t.Fatalf("credential=%s status=%+v err=%v", credential.Value, credentialStatus, err)
+	}
+	if status := call(http.MethodPost, "/v1/providers/fake-oauth/auth/logout", "", nil); status != http.StatusOK {
+		t.Fatalf("logout status=%d", status)
+	}
+	_, credentialStatus, err = srv.registry.Credential("fake-oauth")
+	if err != nil || credentialStatus.Configured {
+		t.Fatalf("logout credential status=%+v err=%v", credentialStatus, err)
 	}
 }
 

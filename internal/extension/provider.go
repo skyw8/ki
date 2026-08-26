@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"time"
 
 	"ki/internal/loop"
 	"ki/internal/provider"
@@ -17,41 +18,69 @@ import (
 // runtimes. Unlike Manager, it is not keyed by session: one provider process
 // can serve concurrent streams from many sessions.
 type ProviderManager struct {
-	mu      sync.Mutex
-	home    string
-	clients map[string]*rpcClient
-	owners  map[string]string
-	descs   map[string]Descriptor
-	specs   map[string]provider.PluginSpec
-	epoch   uint64
+	mu            sync.Mutex
+	home          string
+	clients       map[string]*rpcClient
+	owners        map[string]string
+	descs         map[string]Descriptor
+	specs         map[string]provider.ExtensionProviderSpec
+	refreshLocks  map[string]*sync.Mutex
+	authHandlerMu sync.RWMutex
+	authHandler   func(ProviderAuthEvent)
+	epoch         uint64
 }
 
 // NewProviderManager creates an empty process-level provider runtime manager.
 func NewProviderManager(home string) *ProviderManager {
 	return &ProviderManager{
-		home:    home,
-		clients: map[string]*rpcClient{},
-		owners:  map[string]string{},
-		descs:   map[string]Descriptor{},
-		specs:   map[string]provider.PluginSpec{},
+		home:         home,
+		clients:      map[string]*rpcClient{},
+		owners:       map[string]string{},
+		descs:        map[string]Descriptor{},
+		specs:        map[string]provider.ExtensionProviderSpec{},
+		refreshLocks: map[string]*sync.Mutex{},
 	}
 }
 
-// Replace registers the global provider descriptors from enabled extensions.
-// Project-scoped provider descriptors are ignored intentionally in this first
-// version: provider identity and credentials are process-global.
+// SetProviderAuthHandler installs the process-wide callback for private auth
+// notifications from provider sidecars. The handler must not block the RPC
+// reader; the manager invokes it from a separate goroutine.
+func (m *ProviderManager) SetProviderAuthHandler(fn func(ProviderAuthEvent)) {
+	m.authHandlerMu.Lock()
+	m.authHandler = fn
+	m.authHandlerMu.Unlock()
+	m.mu.Lock()
+	clients := make([]*rpcClient, 0, len(m.clients))
+	for _, c := range m.clients {
+		clients = append(clients, c)
+	}
+	m.mu.Unlock()
+	for _, c := range clients {
+		c.setProviderAuthHandler(m.handleAuthEvent)
+	}
+}
+
+func (m *ProviderManager) handleAuthEvent(event ProviderAuthEvent) {
+	m.authHandlerMu.RLock()
+	fn := m.authHandler
+	m.authHandlerMu.RUnlock()
+	if fn != nil {
+		fn(event)
+	}
+}
+
+// Replace registers provider descriptors from enabled extensions. A provider
+// runtime is process-global even when its descriptor came from the current
+// project, because its catalog and credential are shared by all sessions.
 func (m *ProviderManager) Replace(descriptors []Descriptor) error {
 	nextDescs := map[string]Descriptor{}
-	nextSpecs := map[string]provider.PluginSpec{}
+	nextSpecs := map[string]provider.ExtensionProviderSpec{}
 	for _, d := range descriptors {
 		if d.Error != "" || !d.Enabled || !hasKind(d.Capabilities, CapProvider) {
 			continue
 		}
-		if d.Scope != "" && d.Scope != "home" {
-			continue
-		}
 		for _, spec := range d.Providers {
-			if err := provider.ValidatePluginSpec(spec); err != nil {
+			if err := provider.ValidateExtensionProviderSpec(spec); err != nil {
 				return fmt.Errorf("extension %q: %w", d.Name, err)
 			}
 			if previous, exists := nextDescs[spec.ID]; exists {
@@ -99,7 +128,7 @@ func (m *ProviderManager) clientByName(name string) *rpcClient {
 }
 
 // Specs returns the currently registered provider catalog in stable order.
-func (m *ProviderManager) Specs() []provider.PluginSpec {
+func (m *ProviderManager) Specs() []provider.ExtensionProviderSpec {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ids := make([]string, 0, len(m.specs))
@@ -107,7 +136,7 @@ func (m *ProviderManager) Specs() []provider.PluginSpec {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	out := make([]provider.PluginSpec, 0, len(ids))
+	out := make([]provider.ExtensionProviderSpec, 0, len(ids))
 	for _, id := range ids {
 		spec := m.specs[id]
 		spec.Models = append([]provider.ModelSeed(nil), spec.Models...)
@@ -129,6 +158,129 @@ func (m *ProviderManager) NewStreamer(model provider.Model, credential provider.
 	return &providerSidecarStreamer{manager: m, model: model, credential: credential}
 }
 
+// StartAuth starts a provider-owned login flow. Progress is delivered through
+// the handler installed with SetProviderAuthHandler.
+func (m *ProviderManager) StartAuth(ctx context.Context, providerID, mode string) (string, error) {
+	c, err := m.client(ctx, providerID)
+	if err != nil {
+		return "", err
+	}
+	requestID := "auth-" + fmt.Sprint(c.idSeq.Add(1))
+	var result ProviderAuthResult
+	if err := c.call(ctx, "provider.auth.start", ProviderAuthRequest{
+		RequestID: requestID, Provider: providerID, Mode: mode,
+	}, &result); err != nil {
+		return "", err
+	}
+	if !result.Accepted {
+		return "", fmt.Errorf("provider auth was not accepted")
+	}
+	return requestID, nil
+}
+
+// AuthInput supplies a manual redirect URL or authorization code to a login
+// flow that advertised manual input support.
+func (m *ProviderManager) AuthInput(ctx context.Context, providerID, requestID, value string) error {
+	c, err := m.client(ctx, providerID)
+	if err != nil {
+		return err
+	}
+	var result ProviderAuthResult
+	if err := c.call(ctx, "provider.auth.input", ProviderAuthRequest{
+		RequestID: requestID, Provider: providerID, Value: value,
+	}, &result); err != nil {
+		return err
+	}
+	if !result.Accepted {
+		return fmt.Errorf("provider auth input was not accepted")
+	}
+	return nil
+}
+
+// LockCredential serializes mutations of one provider's credential with
+// refreshes. The returned function releases the lock.
+func (m *ProviderManager) LockCredential(providerID string) func() {
+	m.mu.Lock()
+	lock := m.refreshLocks[providerID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		m.refreshLocks[providerID] = lock
+	}
+	m.mu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
+
+// CancelAuth asks a sidecar to abandon one login flow.
+func (m *ProviderManager) CancelAuth(ctx context.Context, providerID, requestID string) error {
+	c, err := m.client(ctx, providerID)
+	if err != nil {
+		return err
+	}
+	c.notify("provider.auth.cancel", ProviderAuthRequest{RequestID: requestID, Provider: providerID})
+	return nil
+}
+
+// RefreshCredential lets the provider decide whether an opaque credential is
+// near expiry. It serializes refreshes per provider so a rotating refresh
+// token cannot be consumed concurrently by multiple sessions.
+func (m *ProviderManager) RefreshCredential(ctx context.Context, registry *provider.Registry, providerID string, credential provider.Credential) (provider.Credential, error) {
+	if credential.Type != provider.AuthOAuth {
+		return credential, nil
+	}
+	unlockCredential := m.LockCredential(providerID)
+	defer unlockCredential()
+
+	// Re-read after waiting: another session may have persisted a fresh token
+	// while this request was queued on the provider lock.
+	if registry != nil {
+		current, status, err := registry.Credential(providerID)
+		if err != nil {
+			return credential, err
+		}
+		if !status.Configured {
+			return provider.Credential{}, fmt.Errorf("provider %q credential was removed", providerID)
+		}
+		credential = current
+	}
+	c, err := m.client(ctx, providerID)
+	if err != nil {
+		return credential, err
+	}
+	var result ProviderAuthResult
+	refreshCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
+	if err := c.call(refreshCtx, "provider.auth.refresh", ProviderAuthRequest{
+		Provider: providerID, Credential: credential,
+	}, &result); err != nil {
+		return credential, err
+	}
+	if !result.Refreshed || result.Credential == nil || len(result.Credential.Value) == 0 {
+		return credential, nil
+	}
+	if result.Credential.Type != provider.AuthOAuth {
+		return credential, fmt.Errorf("provider returned a non-OAuth credential")
+	}
+	if registry != nil {
+		current, status, err := registry.Credential(providerID)
+		if err != nil {
+			return credential, err
+		}
+		if !status.Configured {
+			return provider.Credential{}, fmt.Errorf("provider %q credential was removed", providerID)
+		}
+		if current.Type != credential.Type || current.APIKey != credential.APIKey || string(current.Value) != string(credential.Value) {
+			// A concurrent login/logout won the credential race. Do not let a
+			// delayed refresh resurrect or overwrite the user's newer choice.
+			return current, nil
+		}
+		if err := registry.SetCredentialValue(providerID, result.Credential.Type, result.Credential.Value); err != nil {
+			return credential, fmt.Errorf("persist refreshed credential: %w", err)
+		}
+	}
+	return *result.Credential, nil
+}
+
 // Close terminates all provider sidecars. It is safe to call more than once.
 func (m *ProviderManager) Close() {
 	// Clear identities before terminating processes so concurrent lookups fail
@@ -139,7 +291,7 @@ func (m *ProviderManager) Close() {
 	m.clients = map[string]*rpcClient{}
 	m.owners = map[string]string{}
 	m.descs = map[string]Descriptor{}
-	m.specs = map[string]provider.PluginSpec{}
+	m.specs = map[string]provider.ExtensionProviderSpec{}
 	m.mu.Unlock()
 	for _, c := range clients {
 		c.close()
@@ -170,6 +322,7 @@ func (m *ProviderManager) client(ctx context.Context, providerID string) (*rpcCl
 	if err != nil {
 		return nil, fmt.Errorf("start provider extension %q: %w", d.Name, err)
 	}
+	c.setProviderAuthHandler(m.handleAuthEvent)
 	m.mu.Lock()
 	if epoch != m.epoch {
 		m.mu.Unlock()

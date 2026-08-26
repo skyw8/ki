@@ -25,11 +25,11 @@ type Event struct {
 
 // Registration is the frozen initialize result.
 type Registration struct {
-	Tools         []ToolSpec            `json:"tools"`
-	Commands      []CommandSpec         `json:"commands"`
-	Providers     []provider.PluginSpec `json:"providers"`
-	Fallback      bool                  `json:"fallback"`
-	Subscriptions []Subscription        `json:"subscriptions"`
+	Tools         []ToolSpec                       `json:"tools"`
+	Commands      []CommandSpec                    `json:"commands"`
+	Providers     []provider.ExtensionProviderSpec `json:"providers"`
+	Fallback      bool                             `json:"fallback"`
+	Subscriptions []Subscription                   `json:"subscriptions"`
 	syncEvents    map[string]bool
 	asyncEvents   map[string]bool
 }
@@ -107,6 +107,41 @@ type ProviderStreamEvent struct {
 	Message      *types.Message `json:"message,omitempty"`
 	Reason       string         `json:"reason,omitempty"`
 	Error        string         `json:"error,omitempty"`
+}
+
+// ProviderAuthRequest starts or advances provider-owned authentication. The
+// host never interprets Credential.Value; it only stores and forwards it.
+type ProviderAuthRequest struct {
+	RequestID  string              `json:"requestId"`
+	Provider   string              `json:"provider"`
+	Mode       string              `json:"mode,omitempty"`
+	Credential provider.Credential `json:"credential,omitzero"`
+	Value      string              `json:"value,omitempty"`
+}
+
+// ProviderAuthEvent is a UI-neutral notification emitted by a provider
+// sidecar. Credential is present only on the private completed event and is
+// never returned by the HTTP status endpoint.
+type ProviderAuthEvent struct {
+	RequestID        string               `json:"requestId"`
+	Provider         string               `json:"provider"`
+	Type             string               `json:"type"`
+	URL              string               `json:"url,omitempty"`
+	Instructions     string               `json:"instructions,omitempty"`
+	UserCode         string               `json:"userCode,omitempty"`
+	VerificationURI  string               `json:"verificationUri,omitempty"`
+	IntervalSeconds  int                  `json:"intervalSeconds,omitempty"`
+	ExpiresInSeconds int                  `json:"expiresInSeconds,omitempty"`
+	Credential       *provider.Credential `json:"credential,omitempty"`
+	Error            string               `json:"error,omitempty"`
+}
+
+// ProviderAuthResult is the response to a provider auth RPC. A refresh that
+// does not need network access returns Refreshed=false and no credential.
+type ProviderAuthResult struct {
+	Accepted   bool                 `json:"accepted,omitempty"`
+	Refreshed  bool                 `json:"refreshed,omitempty"`
+	Credential *provider.Credential `json:"credential,omitempty"`
 }
 
 // ShortCircuit skips the live provider call.

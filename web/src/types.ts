@@ -272,6 +272,20 @@ export type ProviderCatalog = {
 	providers: ProviderView[]
 }
 
+export type ProviderAuthStatus = {
+	provider: string
+	requestId: string
+	status: 'pending' | 'completed' | 'error' | 'cancelled' | string
+	eventType?: string
+	authUrl?: string
+	instructions?: string
+	userCode?: string
+	verificationUri?: string
+	intervalSeconds?: number
+	expiresInSeconds?: number
+	error?: string
+}
+
 export type Meta = {
 	home: string
 	provider: string

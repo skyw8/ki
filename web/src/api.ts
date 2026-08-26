@@ -1,4 +1,4 @@
-import type { FsListing, LoopEvent, Meta, ProviderCatalog, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
+import type { FsListing, LoopEvent, Meta, ProviderAuthStatus, ProviderCatalog, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
 
 export type Boot = { token: string }
 
@@ -208,6 +208,21 @@ export class Client {
   }
   setCredentialValue(id: string, type: string, value: unknown): Promise<ProviderCatalog> {
 	return this.json(`/v1/providers/${encodeURIComponent(id)}/credential`, { method: 'PUT', body: JSON.stringify({ type, value }) })
+  }
+  startProviderAuth(id: string, mode: 'browser' | 'device_code' = 'browser'): Promise<ProviderAuthStatus> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}/auth/login`, { method: 'POST', body: JSON.stringify({ mode }) })
+  }
+  providerAuthStatus(id: string, requestId: string): Promise<ProviderAuthStatus> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}/auth/${encodeURIComponent(requestId)}`)
+  }
+  providerAuthInput(id: string, requestId: string, value: string): Promise<ProviderAuthStatus> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}/auth/${encodeURIComponent(requestId)}/input`, { method: 'POST', body: JSON.stringify({ value }) })
+	}
+  cancelProviderAuth(id: string, requestId: string): Promise<ProviderAuthStatus> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}/auth/${encodeURIComponent(requestId)}/cancel`, { method: 'POST' })
+	}
+  logoutProviderAuth(id: string): Promise<ProviderCatalog> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}/auth/logout`, { method: 'POST' })
   }
   createModel(id: string, body: Record<string, unknown>): Promise<ProviderCatalog> {
 	return this.json(`/v1/providers/${encodeURIComponent(id)}/models`, { method: 'POST', body: JSON.stringify(body) })

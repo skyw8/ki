@@ -17,6 +17,10 @@
 // execute custom streamers in a process-level sidecar; the Registry only
 // resolves catalog entries and opaque credentials, while the host adapter
 // reconstructs loop deltas from compact provider events.
+// Auth login, manual-code input, cancellation, and refresh are private RPCs;
+// the HTTP server exposes only redacted auth status and persists the returned
+// credential atomically. Responses replay metadata is carried by types.Content
+// and types.Message so provider runtimes can restore opaque item state.
 //
 // Replay skips aborted/error/empty assistants (and their toolResults)
 // and synthesizes missing tool results while preserving their call kind.

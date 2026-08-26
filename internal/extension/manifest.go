@@ -27,17 +27,17 @@ var nameRe = regexp.MustCompile(namePattern)
 
 // Manifest is extension.json.
 type Manifest struct {
-	Name         string                `json:"name"`
-	Version      string                `json:"version"`
-	Description  string                `json:"description"`
-	Capabilities []string              `json:"capabilities"`
-	FailClosed   bool                  `json:"failClosed"`
-	Prompt       PromptSpec            `json:"prompt"`
-	Skills       []string              `json:"skills"`
-	Commands     []string              `json:"commands"`
-	MCP          MCPSpec               `json:"mcp"`
-	Providers    []provider.PluginSpec `json:"providers"`
-	Runtime      RuntimeSpec           `json:"runtime"`
+	Name         string                           `json:"name"`
+	Version      string                           `json:"version"`
+	Description  string                           `json:"description"`
+	Capabilities []string                         `json:"capabilities"`
+	FailClosed   bool                             `json:"failClosed"`
+	Prompt       PromptSpec                       `json:"prompt"`
+	Skills       []string                         `json:"skills"`
+	Commands     []string                         `json:"commands"`
+	MCP          MCPSpec                          `json:"mcp"`
+	Providers    []provider.ExtensionProviderSpec `json:"providers"`
+	Runtime      RuntimeSpec                      `json:"runtime"`
 }
 
 // PromptSpec lists files to append as system-prompt layer 6.
@@ -61,16 +61,16 @@ type RuntimeSpec struct {
 
 // Descriptor is one discovered package. It holds no live RPC handles.
 type Descriptor struct {
-	Name         string                `json:"name"`
-	Version      string                `json:"version"`
-	Description  string                `json:"description"`
-	Path         string                `json:"path"`
-	Scope        string                `json:"source"`
-	Enabled      bool                  `json:"enabled"`
-	Capabilities []string              `json:"capabilities"`
-	Providers    []provider.PluginSpec `json:"providers,omitempty"`
-	Error        string                `json:"error,omitempty"`
-	FailClosed   bool                  `json:"-"`
+	Name         string                           `json:"name"`
+	Version      string                           `json:"version"`
+	Description  string                           `json:"description"`
+	Path         string                           `json:"path"`
+	Scope        string                           `json:"source"`
+	Enabled      bool                             `json:"enabled"`
+	Capabilities []string                         `json:"capabilities"`
+	Providers    []provider.ExtensionProviderSpec `json:"providers,omitempty"`
+	Error        string                           `json:"error,omitempty"`
+	FailClosed   bool                             `json:"-"`
 	manifest     Manifest
 	root         string
 }
@@ -216,7 +216,7 @@ func validateManifest(root string, m Manifest) error {
 			return fmt.Errorf("provider capability requires providers")
 		}
 		for _, spec := range m.Providers {
-			if err := provider.ValidatePluginSpec(spec); err != nil {
+			if err := provider.ValidateExtensionProviderSpec(spec); err != nil {
 				return err
 			}
 		}

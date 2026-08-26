@@ -15,12 +15,13 @@
 - 扩展 UI 壳见下一节。打开会话（新会话和点开历史同一套）立刻渲染标题和气泡；`runtime.ready === false` 时锁 composer（输入、附件、`/`、发送），placeholder「正在加载扩展和 MCP…」。就绪或预热失败后解锁。
 - Info：本会话只读元数据、skills、MCP（含已缓存工具）、extensions、slash 命令；内容右侧提供 sticky outline。`path` 只展示字符串，不当 `href`。有 tree parent 或 tree child 时显示 Tree 按钮；弹窗使用已有文件浏览器的 Miller 壳，左列为当前层 sibling、右列为选中 session 的直接 tree children，点击右列后推进层级但始终只有两列。Reload 清资源快照并关闭 MCP 与 extension sidecar。Edit 打开设置。不在此页开关。
 - 设置 / 选模型：各自弹窗。设置页签为「模型供应商」「Skills」「MCP」「Extensions」「Message」「主题和语言」。Skills/MCP/Extensions 开关和 Message 忙碌策略写 `{KI_HOME}/toggles.json`，对应页可 Reload。无信任按钮、无原生文件选择器。选模型支持按 provider、model ID、显示名称和完整 spec 进行不区分大小写的子串 / 顺序模糊搜索。没有「设为默认」：composer 里切模型或 thinking 即记住；server 把上次选用的模型写入 `models.json`，本浏览器另存 thinking。冷启动没有记录时落到第一个可用模型。页签和主按钮与对话页同一套 tab / 主按钮样式。供应商页的外层不滚动，左侧供应商列表只显示名称，与右侧连接、凭据、模型编辑区分别独立滚动，新增供应商和使用「编辑」打开的模型高级 JSON 都用二级弹窗。模型高级 JSON 编辑保留 `input` 和 `applyPatchToolType` 等能力字段。目录只在本机维护，不在线刷新。Base URL、API 协议等表单控件共享尺寸和排版；API 协议与 thinking effort 共用 ARIA combobox/listbox 组件，支持方向键、Enter、Escape，并按可用空间向上或向下展开。主题（默认浅色）和语言（中 / 英）存在本浏览器 `localStorage`
+- 扩展 OAuth：供应商页对 `auth.type=oauth` 的 provider 显示 Browser login、Device code login 和 Logout；登录进度通过同源 `/v1/providers/{id}/auth/{requestId}` 轮询，页面只显示授权 URL、设备码和脱敏错误。Browser flow 还允许粘贴 redirect URL/code，适用于端口转发；不会在页面中打开外部窗口，也不会要求用户填 access token。
 
 数据来自 session jsonl 和本次 run 的 SSE。conversation 和 trajectory 根据 `leafId` 沿 `parentId` 只渲染 active path，全部 entries 保留用于 sibling 索引。`message_end` SSE 带持久化后的 `entryId`，所以刚完成的消息可以立即 edit/fork。工作区见 [workspace.md](workspace.md)。Sidecar 协议见 [extension.md](extension.md)。
 
 ## 扩展 UI 壳
 
-WebUI **不加载扩展 JS**，不 `window.open`，不按插件名写死控件。每个扩展只投一份投影，壳按同一套布局渲染。goal 和以后别的包用同一组接口。
+WebUI **不加载扩展 JS**，不 `window.open`，不按扩展名写死控件。每个扩展只投一份投影，壳按同一套布局渲染。goal 和以后别的包用同一组接口。
 
 ### 面上有什么
 
@@ -76,7 +77,7 @@ SSE（`?notifications=1`，不进 occupy 回放）：
 | `ui.confirm` | `{ title, message }` | 是/否；result `{ ok }`；**120s** |
 | `ui.select` | `{ title, options[] }` | 点一项；result `{ ok, value }`；**120s** |
 
-Host **不解析** panel 里的业务字段。插件自己决定列哪些 action、何时 `disabled`。
+Host **不解析** panel 里的业务字段。扩展自己决定列哪些 action、何时 `disabled`。
 
 ### `ui.setPanel`
 

@@ -33,10 +33,10 @@ func buildProviderSidecar(t *testing.T) string {
 	return bin
 }
 
-func providerTestDescriptor(t *testing.T, bin string) (Descriptor, provider.PluginSpec) {
+func providerTestDescriptor(t *testing.T, bin string) (Descriptor, provider.ExtensionProviderSpec) {
 	t.Helper()
 	root := t.TempDir()
-	spec := provider.PluginSpec{
+	spec := provider.ExtensionProviderSpec{
 		ID: "fake-provider", Name: "Fake Provider", API: "fake-api", BaseURL: "http://127.0.0.1",
 		Auth: provider.AuthSpec{Type: provider.AuthNone},
 		Models: []provider.ModelSeed{
@@ -46,10 +46,10 @@ func providerTestDescriptor(t *testing.T, bin string) (Descriptor, provider.Plug
 	}
 	d := Descriptor{
 		Name: "fake-provider-extension", Path: root, Scope: "home", Enabled: true,
-		Capabilities: []string{string(CapProvider)}, Providers: []provider.PluginSpec{spec},
+		Capabilities: []string{string(CapProvider)}, Providers: []provider.ExtensionProviderSpec{spec},
 		root: root,
 		manifest: Manifest{
-			Name: "fake-provider-extension", Capabilities: []string{string(CapProvider)}, Providers: []provider.PluginSpec{spec},
+			Name: "fake-provider-extension", Capabilities: []string{string(CapProvider)}, Providers: []provider.ExtensionProviderSpec{spec},
 			Runtime: RuntimeSpec{Kind: runtimeRPC, Command: bin},
 		},
 	}
@@ -76,12 +76,12 @@ func TestProviderManagerStreamsConcurrentAndCancels(t *testing.T) {
 	}
 	t.Cleanup(pm.Close)
 
-	plugin, err := provider.BuildPluginProvider(spec)
+	built, err := provider.BuildExtensionProvider(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	models := map[string]provider.Model{}
-	for _, model := range plugin.Models {
+	for _, model := range built.Models {
 		models[model.ID] = model
 	}
 
@@ -140,5 +140,35 @@ func TestProviderManagerStreamsConcurrentAndCancels(t *testing.T) {
 	}
 	if pm.HasProvider(spec.ID) {
 		t.Fatal("removed provider remains registered")
+	}
+}
+
+func TestProviderManagerAuthEvents(t *testing.T) {
+	bin := buildProviderSidecar(t)
+	pm := NewProviderManager(t.TempDir())
+	d, spec := providerTestDescriptor(t, bin)
+	spec.Auth = provider.AuthSpec{Type: provider.AuthOAuth, Name: "Fake OAuth", Subscription: true}
+	d.Providers[0] = spec
+	d.manifest.Providers[0] = spec
+	if err := pm.Replace([]Descriptor{d}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pm.Close)
+	events := make(chan ProviderAuthEvent, 1)
+	pm.SetProviderAuthHandler(func(event ProviderAuthEvent) { events <- event })
+	requestID, err := pm.StartAuth(context.Background(), spec.ID, "browser")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-events:
+		if event.RequestID != requestID || event.Provider != spec.ID || event.Type != "completed" || event.Credential == nil {
+			t.Fatalf("auth event=%+v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for auth event")
+	}
+	if err := pm.AuthInput(context.Background(), spec.ID, requestID, "code"); err != nil {
+		t.Fatalf("auth input: %v", err)
 	}
 }

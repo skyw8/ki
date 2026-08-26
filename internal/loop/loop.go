@@ -171,6 +171,9 @@ type Streamer interface {
 
 // Request is one provider call.
 type Request struct {
+	// SessionID is optional provider cache affinity metadata. Core providers
+	// ignore it; provider extensions may use it for session-scoped protocol state.
+	SessionID               string
 	System                  string
 	Messages                []types.Message
 	Tools                   []ToolSpec
@@ -271,6 +274,7 @@ func (i *Inbox) Has() bool {
 // Config is loop runtime options.
 type Config struct {
 	Streamer                Streamer
+	SessionID               string
 	Tools                   []Tool
 	Hooks                   Hooks
 	MaxRetries              int
@@ -383,6 +387,7 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		}
 
 		asst, err := streamWithRetry(ctx, cfg, Request{
+			SessionID:               cfg.SessionID,
 			System:                  system,
 			Messages:                msgs,
 			Tools:                   specs,

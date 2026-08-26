@@ -38,10 +38,11 @@ import (
 
 // Options constructs a Server.
 type Options struct {
-	Config   config.Config
-	Token    string
-	Streamer loop.Streamer
-	Registry *provider.Registry
+	Config     config.Config
+	Token      string
+	Streamer   loop.Streamer
+	Registry   *provider.Registry
+	ProjectDir string
 }
 
 // Server is the HTTP API.
@@ -50,8 +51,11 @@ type Server struct {
 	token                  string
 	streamer               loop.Streamer
 	registry               *provider.Registry
-	providerPlugins        *extension.ProviderManager
+	providerExtensions     *extension.ProviderManager
+	providerProjectDir     string
 	requireModelCredential bool
+	providerAuthMu         sync.Mutex
+	providerAuth           map[string]*providerAuthState
 	mcp                    *mcp.Manager
 	ext                    *extension.Manager
 	resources              *resources.Loader
@@ -99,6 +103,10 @@ type File struct {
 // New builds a server (does not listen).
 func New(opt Options) (*Server, error) {
 	shells := tools.DiscoverShellRuntime()
+	projectDir := strings.TrimSpace(opt.ProjectDir)
+	if projectDir == "" {
+		projectDir, _ = os.Getwd()
+	}
 	tok := opt.Token
 	if tok == "" {
 		tok = newToken()
@@ -111,20 +119,20 @@ func New(opt Options) (*Server, error) {
 			return nil, fmt.Errorf("load provider registry: %w", err)
 		}
 	}
-	providerPlugins := extension.NewProviderManager(opt.Config.Home)
-	providerDiscovery := extension.Discover(opt.Config.Home, "", toggles.Load(opt.Config.Home).Extensions)
-	if err := providerPlugins.Replace(providerDiscovery.Enabled); err != nil {
-		providerPlugins.Close()
-		return nil, fmt.Errorf("load provider plugins: %w", err)
+	providerExtensions := extension.NewProviderManager(opt.Config.Home)
+	providerDiscovery := extension.Discover(opt.Config.Home, projectDir, toggles.Load(opt.Config.Home).Extensions)
+	if err := providerExtensions.Replace(providerDiscovery.Enabled); err != nil {
+		providerExtensions.Close()
+		return nil, fmt.Errorf("load provider extensions: %w", err)
 	}
-	if err := reg.ReplacePluginProviders(providerPlugins.Specs()); err != nil {
-		providerPlugins.Close()
-		return nil, fmt.Errorf("register provider plugins: %w", err)
+	if err := reg.ReplaceExtensionProviders(providerExtensions.Specs()); err != nil {
+		providerExtensions.Close()
+		return nil, fmt.Errorf("register provider extensions: %w", err)
 	}
 	requireCredential := opt.Streamer == nil
 	st := opt.Streamer
 	if st == nil {
-		st = liveFromRegistry(reg, providerPlugins)
+		st = liveFromRegistry(reg, providerExtensions)
 	}
 	ws := workspace.Open(opt.Config.Home, opt.Config.Sessions.Root)
 	infos, _ := session.List(opt.Config.Sessions.Root)
@@ -139,8 +147,10 @@ func New(opt Options) (*Server, error) {
 		token:                  tok,
 		streamer:               st,
 		registry:               reg,
-		providerPlugins:        providerPlugins,
+		providerExtensions:     providerExtensions,
+		providerProjectDir:     projectDir,
 		requireModelCredential: requireCredential,
+		providerAuth:           map[string]*providerAuthState{},
 		resources:              resources.NewLoader(opt.Config.Home),
 		runs:                   map[string]*runState{},
 		jobs:                   map[string]*tools.JobStore{},
@@ -160,21 +170,22 @@ func New(opt Options) (*Server, error) {
 	srv.mcp = mcp.NewManager(srv.onMCPNotification)
 	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
 	srv.ext.SetHost(srv)
+	srv.providerExtensions.SetProviderAuthHandler(srv.onProviderAuthEvent)
 	srv.restoreAgentTasks(infos)
 	return srv, nil
 }
 
-func liveFromRegistry(reg *provider.Registry, plugins *extension.ProviderManager) loop.Streamer {
-	return &router{registry: reg, plugins: plugins}
+func liveFromRegistry(reg *provider.Registry, extensions *extension.ProviderManager) loop.Streamer {
+	return &router{registry: reg, extensions: extensions}
 }
 
 type router struct {
-	registry *provider.Registry
-	plugins  *extension.ProviderManager
+	registry   *provider.Registry
+	extensions *extension.ProviderManager
 }
 
 func (r *router) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
-	if r.plugins != nil && r.plugins.HasProvider(req.Provider) {
+	if r.extensions != nil && r.extensions.HasProvider(req.Provider) {
 		_, model, _, err := r.registry.Resolve(req.Provider, req.Model)
 		if err != nil {
 			return types.Message{}, fmt.Errorf("resolve provider model: %w", err)
@@ -186,9 +197,13 @@ func (r *router) Stream(ctx context.Context, req loop.Request, emit func(loop.As
 		if !status.Configured {
 			return types.Message{}, fmt.Errorf("provider %q has no configured credential", req.Provider)
 		}
-		msg, err := r.plugins.NewStreamer(model, credential).Stream(ctx, req, emit)
+		credential, err = r.extensions.RefreshCredential(ctx, r.registry, req.Provider, credential)
 		if err != nil {
-			return msg, fmt.Errorf("stream provider plugin: %w", err)
+			return types.Message{}, fmt.Errorf("refresh provider credential: %w", err)
+		}
+		msg, err := r.extensions.NewStreamer(model, credential).Stream(ctx, req, emit)
+		if err != nil {
+			return msg, fmt.Errorf("stream provider extension: %w", err)
 		}
 		return msg, nil
 	}
@@ -233,22 +248,22 @@ func (s *Server) Reload() bool {
 	if s.ext != nil {
 		s.ext.CloseExcept(active)
 	}
-	s.reloadProviderPlugins()
+	s.reloadProviderExtensions()
 	s.resetRuntimeExcept(active)
 	s.rewarmWatchers(active)
 	return len(active) > 0
 }
 
-func (s *Server) reloadProviderPlugins() {
-	if s.providerPlugins == nil {
+func (s *Server) reloadProviderExtensions() {
+	if s.providerExtensions == nil {
 		return
 	}
-	discovery := extension.Discover(s.cfg.Home, "", toggles.Load(s.cfg.Home).Extensions)
-	if err := s.providerPlugins.Replace(discovery.Enabled); err != nil {
-		slog.Warn("reload provider plugins", "err", err)
+	discovery := extension.Discover(s.cfg.Home, s.providerProjectDir, toggles.Load(s.cfg.Home).Extensions)
+	if err := s.providerExtensions.Replace(discovery.Enabled); err != nil {
+		slog.Warn("reload provider extensions", "err", err)
 		return
 	}
-	if err := s.registry.ReplacePluginProviders(s.providerPlugins.Specs()); err != nil {
+	if err := s.registry.ReplaceExtensionProviders(s.providerExtensions.Specs()); err != nil {
 		slog.Warn("reload provider catalog", "err", err)
 	}
 }
@@ -363,6 +378,11 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PATCH /v1/providers/{id}", s.auth(s.patchProvider))
 	api.HandleFunc("DELETE /v1/providers/{id}", s.auth(s.deleteProvider))
 	api.HandleFunc("PUT /v1/providers/{id}/credential", s.auth(s.putProviderCredential))
+	api.HandleFunc("POST /v1/providers/{id}/auth/login", s.auth(s.startProviderAuth))
+	api.HandleFunc("GET /v1/providers/{id}/auth/{requestId}", s.auth(s.providerAuthStatus))
+	api.HandleFunc("POST /v1/providers/{id}/auth/{requestId}/input", s.auth(s.providerAuthInput))
+	api.HandleFunc("POST /v1/providers/{id}/auth/{requestId}/cancel", s.auth(s.cancelProviderAuth))
+	api.HandleFunc("POST /v1/providers/{id}/auth/logout", s.auth(s.logoutProviderAuth))
 	api.HandleFunc("POST /v1/providers/{id}/models", s.auth(s.createProviderModel))
 	api.HandleFunc("PATCH /v1/providers/{id}/models", s.auth(s.patchProviderModel))
 	api.HandleFunc("DELETE /v1/providers/{id}/models", s.auth(s.deleteProviderModel))
@@ -502,8 +522,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.ext != nil {
 		s.ext.CloseExcept(nil)
 	}
-	if s.providerPlugins != nil {
-		s.providerPlugins.Close()
+	if s.providerExtensions != nil {
+		s.providerExtensions.Close()
 	}
 	if s.mcp != nil {
 		s.mcp.Close()
@@ -1356,6 +1376,13 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			st.err = resolveErr
 			return
 		}
+		if s.providerExtensions != nil && s.providerExtensions.HasProvider(liveModel.Provider) {
+			liveCredential, resolveErr = s.providerExtensions.RefreshCredential(ctx, s.registry, liveModel.Provider, liveCredential)
+			if resolveErr != nil {
+				st.err = fmt.Errorf("refresh provider credential: %w", resolveErr)
+				return
+			}
+		}
 	}
 	jobs := s.jobsFor(id)
 	profile := tools.Profile{
@@ -1404,8 +1431,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	tls = s.filterActiveTools(id, tls)
 	occ := s.ext.Occupy(id)
 	if s.requireModelCredential {
-		if s.providerPlugins != nil && s.providerPlugins.HasProvider(liveModel.Provider) {
-			runStreamer = s.providerPlugins.NewStreamer(liveModel, liveCredential)
+		if s.providerExtensions != nil && s.providerExtensions.HasProvider(liveModel.Provider) {
+			runStreamer = s.providerExtensions.NewStreamer(liveModel, liveCredential)
 		} else {
 			runStreamer = provider.NewLiveModel(liveModel, liveKey, occ.HTTPDoer())
 			runStreamer = occ.WrapStreamer(runStreamer)
@@ -1530,6 +1557,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	runCfg := loop.Config{
 		Streamer:                runStreamer,
+		SessionID:               id,
 		Tools:                   tls,
 		System:                  sys,
 		Provider:                sess.Config.Provider,
@@ -1693,12 +1721,16 @@ func (s *Server) liveSummarizer(sessionID, prov, model string) loop.Streamer {
 	if err != nil {
 		return s.streamer
 	}
-	if s.providerPlugins != nil && s.providerPlugins.HasProvider(prov) {
+	if s.providerExtensions != nil && s.providerExtensions.HasProvider(prov) {
 		credential, status, err := s.registry.Credential(prov)
 		if err != nil || !status.Configured {
 			return s.streamer
 		}
-		return s.providerPlugins.NewStreamer(resolved, credential)
+		credential, err = s.providerExtensions.RefreshCredential(context.Background(), s.registry, prov, credential)
+		if err != nil {
+			return s.streamer
+		}
+		return s.providerExtensions.NewStreamer(resolved, credential)
 	}
 	return provider.NewLiveModel(resolved, key, s.ext.HTTPDoer(sessionID))
 }
@@ -1708,10 +1740,11 @@ func (s *Server) summarizer(sessionID, prov, model string) compact.Summarizer {
 	return compact.StreamSummarizer{
 		Stream: func(ctx context.Context, system, user string) (string, *types.Usage, error) {
 			m, err := stream.Stream(ctx, loop.Request{
-				Provider: prov,
-				Model:    model,
-				System:   system,
-				Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: user}}}},
+				Provider:  prov,
+				Model:     model,
+				SessionID: sessionID,
+				System:    system,
+				Messages:  []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: user}}}},
 			}, func(loop.AssistantDelta) error { return nil })
 			if err != nil {
 				return "", nil, fmt.Errorf("stream summarizer: %w", err)

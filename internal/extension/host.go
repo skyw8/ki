@@ -60,7 +60,7 @@ type SessionSnapshot struct {
 
 // UIPanel is the generic detail model for any extension (not goal-specific).
 // WebUI renders title/summary, then sections (items/kv/markdown/text), fields,
-// then actions. Plugins decide which actions/fields apply; the shell does not.
+// then actions. Extensions decide which actions/fields apply; the shell does not.
 type UIPanel struct {
 	Title       string           `json:"title,omitempty"`
 	Summary     string           `json:"summary,omitempty"`

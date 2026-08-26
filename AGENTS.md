@@ -75,6 +75,7 @@ WebUI live: `cd web && npm run test:e2e:live`.
 - When changing code, update the related docs that already describe that contract (`docs/*.md` and the owning `doc.go`). Do not add new todo filenames here.
 - Bugs and pitfalls get a why-comment at the fix site explaining why the code is written that way. A problem that recurs gets a retrospective entry under `docs/postmortem/`.
 - One binary: `ki serve` serves API and the embedded SPA on the same origin. Rebuild `web/dist` then `go build` after frontend changes; serve does not run npm.
+- Naming: `extension` is the installable/runtime bundle; a provider supplied by one is an `extension provider`. Do not use `plugin` for provider code, APIs, runtime values, or UI/docs.
 - Real provider is the default runtime. `KI_FAKE=1` and `scripts/run.sh --fake` are test-only opt-ins and must not be used for normal development or manual verification.
 - Do not invent REST routes for data the loop already has. Extend `loop.Event` and jsonl (and existing SSE / `GET /v1/sessions/{id}`) instead.
 - A second prompt on a busy session steers the current run or queues for the next (`delivery` / `toggles.json` `message.busy`). `parentId` while busy is **409**. Resume requires `--session`. `--model` is per-session `config.json`, not toml.

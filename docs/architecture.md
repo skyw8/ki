@@ -33,7 +33,7 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET | `/v1/models` | registry 的可选模型扁平视图（含 `thinkingLevels` / `defaultThinking`） |
-| GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential 和 model 管理；插件 provider 目录只读 |
+| GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential 和 model 管理；扩展 provider 目录只读 |
 | PUT | `/v1/default-model` | 显式记住上次选用的模型；WebUI 切模型时 server 也会写 |
 | GET | `/v1/meta` | 上次选用的模型（不可用则第一个可用项）、该模型 default thinking、用户 home（无进程 cwd） |
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned / parentSessionId / forkMode） |

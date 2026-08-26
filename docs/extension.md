@@ -151,7 +151,18 @@ NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_SESSION_ID`、`KI_CWD`、`KI
 | `provider.stream.start` | `provider` | `{requestId,request}`；一次传入完整 model、credential 和 loop request，返回 `{accepted:true}` |
 | `provider.stream.cancel` | `provider` | `{requestId}`；取消一个 provider stream |
 
-provider capability 使用进程级 sidecar，不随 session 各拉起一个进程。`providers` 是扩展清单中的离线目录，provider sidecar 只负责对应 provider 的认证/网络/响应解析；宿主只保留模型目录、凭据状态、取消、背压和 loop 适配。一次 stream 的结果通过 sidecar → Host 的 `provider.stream.event` notification 回传：
+Provider auth RPC（同样只发给进程级 provider sidecar）：
+
+| method | 说明 |
+|---|---|
+| `provider.auth.start` | `{requestId,provider,mode}`，`mode` 为 `browser` 或 `device_code`；立即返回 accepted |
+| `provider.auth.input` | `{requestId,provider,value}`；提交 redirect URL 或手工 authorization code |
+| `provider.auth.cancel` | `{requestId,provider}`；取消未完成的登录 |
+| `provider.auth.refresh` | `{provider,credential}`；sidecar 决定是否刷新，返回新的 opaque credential |
+
+sidecar 通过 `provider.auth.event` notification 报告 `auth_url`、`device_code`、`completed`、`error`。`completed` 的 credential 只在 sidecar 与 server auth broker 之间传递，server 对 WebUI/CLI 只返回状态、URL 和设备码。
+
+provider capability 使用进程级 sidecar，不随 session 各拉起一个进程。全局或当前项目 `.ki/extensions` 都可以声明 provider；项目 provider 在当前 server 进程内同样按全局 runtime 共享。`providers` 是扩展清单中的离线目录，provider sidecar 只负责对应 provider 的认证/网络/响应解析；宿主只保留模型目录、凭据状态、取消、背压和 loop 适配。一次 stream 的结果通过 sidecar → Host 的 `provider.stream.event` notification 回传：
 
 ```json
 {"jsonrpc":"2.0","method":"provider.stream.event","params":{"requestId":"stream-1","type":"text_delta","contentIndex":0,"delta":"hello"}}
@@ -181,7 +192,7 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 | `bus.broadcast` | `bus` | fire-and-forget，不等待 |
 | `bus.subscribe` / `bus.unsubscribe` | `bus` | 运行中改订阅 |
 
-`ui.setPanel` 由 WebUI 按通用壳渲染，Host 不解析插件语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
+`ui.setPanel` 由 WebUI 按通用壳渲染，Host 不解析扩展语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
 
 `origin` 一律 `extension:<name>`，并写进该次 occupy 的 user message（WebUI 气泡可区分）。扩展 FIFO 与用户 `queue.json` **分轨**；occupy release 后 **先用户 queue，再扩展 FIFO**。`when=settled` 在 `agent_settled` 后只写入扩展 FIFO（不直接 occupy），再走同一套 dispatch。`nextTurn` 挂到下次**用户** occupy，注入 messages，不自触发 occupy。`session.setActiveTools` 忽略未知名并发 `extension_notice` warn；全部未知名则保留上一套工具。`session.patch` 与 HTTP PATCH 同一套 ResolveSpec / thinking 校验。`session_before_compact` 可 cancel 或返回定制 summary（跳过模型摘要）。
 

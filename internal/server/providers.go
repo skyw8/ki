@@ -71,7 +71,7 @@ func (s *Server) patchProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if s.registry.PluginProvider(id) {
+	if s.registry.ExtensionProvider(id) {
 		registryError(w, errProviderReadOnly)
 		return
 	}
@@ -111,7 +111,7 @@ func (s *Server) patchProvider(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if s.registry.PluginProvider(id) {
+	if s.registry.ExtensionProvider(id) {
 		registryError(w, errProviderReadOnly)
 		return
 	}
@@ -217,7 +217,7 @@ func (s *Server) createProviderModel(w http.ResponseWriter, r *http.Request) {
 		registryError(w, errProviderNotFound)
 		return
 	}
-	if s.registry.PluginProvider(id) {
+	if s.registry.ExtensionProvider(id) {
 		registryError(w, errProviderReadOnly)
 		return
 	}
@@ -247,7 +247,7 @@ func (s *Server) patchProviderModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if s.registry.PluginProvider(id) {
+	if s.registry.ExtensionProvider(id) {
 		registryError(w, errProviderReadOnly)
 		return
 	}
@@ -288,7 +288,7 @@ func (s *Server) deleteProviderModel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "model required", http.StatusBadRequest)
 		return
 	}
-	if s.registry.PluginProvider(id) {
+	if s.registry.ExtensionProvider(id) {
 		registryError(w, errProviderReadOnly)
 		return
 	}

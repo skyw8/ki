@@ -1,0 +1,9 @@
+[project]
+name = "ki-codex-oauth"
+version = "0.1.0"
+description = "Ki OpenAI Codex subscription provider extension"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+package = false
