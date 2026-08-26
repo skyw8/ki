@@ -174,6 +174,9 @@ func mergeProviderMessage(acc *types.Message, final types.Message) {
 			if next.ThinkingSignature == "" {
 				next.ThinkingSignature = old.ThinkingSignature
 			}
+			if next.ThinkingData == "" {
+				next.ThinkingData = old.ThinkingData
+			}
 			if next.TextSignature == "" {
 				next.TextSignature = old.TextSignature
 			}
@@ -237,6 +240,9 @@ func applyProviderStreamEvent(acc *types.Message, event ProviderStreamEvent) boo
 			}
 			if incoming.ThinkingSignature != "" {
 				block.ThinkingSignature = incoming.ThinkingSignature
+			}
+			if incoming.ThinkingData != "" {
+				block.ThinkingData = incoming.ThinkingData
 			}
 			if incoming.TextSignature != "" {
 				block.TextSignature = incoming.TextSignature

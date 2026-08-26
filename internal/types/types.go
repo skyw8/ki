@@ -28,9 +28,15 @@ type Content struct {
 	// ThinkingSignature is opaque provider-owned reasoning state (for example
 	// Codex encrypted reasoning content). Ki never interprets it.
 	ThinkingSignature string `json:"thinkingSignature,omitempty"`
+	// ThinkingData is opaque redacted-thinking content returned by Anthropic.
+	// It is round-tripped without exposing the provider-owned payload to the UI.
+	ThinkingData string `json:"thinkingData,omitempty"`
 	// TextSignature is opaque provider-owned output-text state, when a provider
 	// needs it to replay an assistant item without reconstructing it.
 	TextSignature string `json:"textSignature,omitempty"`
+	// StreamIndex is the provider stream content-block index used while an
+	// Anthropic SSE response is being accumulated. It must not be persisted.
+	StreamIndex int `json:"-"`
 }
 
 // Usage is provider token accounting.

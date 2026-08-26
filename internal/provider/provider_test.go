@@ -67,6 +67,13 @@ func TestThinkingAndMaxTokenRequestShapes(t *testing.T) {
 	if openai["max_output_tokens"] != 2048 {
 		t.Fatalf("responses body: %+v", openai)
 	}
+	if openai["store"] != false {
+		t.Fatalf("responses must use stateless replay: %+v", openai)
+	}
+	include := mustType[[]string](t, openai["include"])
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("responses include: %+v", include)
+	}
 	reasoning := mustType[map[string]any](t, openai["reasoning"])
 	if reasoning["effort"] != "xhigh" {
 		t.Fatalf("reasoning: %+v", reasoning)
@@ -74,6 +81,67 @@ func TestThinkingAndMaxTokenRequestShapes(t *testing.T) {
 	anthropic := AnthropicBody(loop.Request{Model: "claude", MaxTokens: 8192, ThinkingEffort: "medium", ForceAdaptiveThinking: true})
 	if mustType[map[string]any](t, anthropic["thinking"])["type"] != "adaptive" {
 		t.Fatalf("anthropic body: %+v", anthropic)
+	}
+}
+
+func TestCompletionsOpenAIRequestUsesOfficialFields(t *testing.T) {
+	body := CompletionsBody(loop.Request{
+		Provider:  "openai",
+		Model:     "gpt-5.6",
+		MaxTokens: 2048,
+		Messages: []types.Message{{Role: "assistant", Content: []types.Content{{
+			Type: "toolCall", ID: "call_1", Name: "Read", ArgumentsRaw: `{"file_path":"/tmp/a"}`,
+		}}}},
+		Tools: []loop.ToolSpec{{Name: "Read", Parameters: map[string]any{"type": "object"}}},
+	})
+	if body["max_completion_tokens"] != 2048 {
+		t.Fatalf("max completion tokens: %+v", body)
+	}
+	if _, ok := body["max_tokens"]; ok {
+		t.Fatalf("deprecated max_tokens in OpenAI request: %+v", body)
+	}
+	streamOptions := mustType[map[string]any](t, body["stream_options"])
+	if streamOptions["include_usage"] != true {
+		t.Fatalf("stream options: %+v", streamOptions)
+	}
+	msgs := mustType[[]map[string]any](t, body["messages"])
+	call := mustType[[]map[string]any](t, msgs[0]["tool_calls"])[0]
+	fn := mustType[map[string]any](t, call["function"])
+	if fn["arguments"] != `{"file_path":"/tmp/a"}` {
+		t.Fatalf("raw arguments were not preserved: %+v", fn)
+	}
+}
+
+func TestAnthropicBodyReplaysRedactedThinking(t *testing.T) {
+	body := AnthropicBody(loop.Request{Model: "claude-sonnet-4-5", Messages: []types.Message{{
+		Role: "assistant", Content: []types.Content{{Type: "thinking", ThinkingData: "opaque"}, {Type: "text", Text: "answer"}},
+	}}})
+	msgs := mustType[[]map[string]any](t, body["messages"])
+	blocks := mustType[[]map[string]any](t, msgs[0]["content"])
+	if blocks[0]["type"] != "redacted_thinking" || blocks[0]["data"] != "opaque" {
+		t.Fatalf("redacted thinking: %+v", blocks)
+	}
+	if blocks[1]["type"] != "text" || blocks[1]["text"] != "answer" {
+		t.Fatalf("assistant text: %+v", blocks)
+	}
+}
+
+func TestResponsesBodyReplaysEncryptedReasoningItem(t *testing.T) {
+	const signature = `{"type":"reasoning","id":"rs_1","encrypted_content":"opaque"}`
+	body := ResponsesBody(loop.Request{Model: "gpt-5.6", Messages: []types.Message{
+		{Role: "user", Content: []types.Content{{Type: "text", Text: "think"}}},
+		{Role: "assistant", Content: []types.Content{
+			{Type: "thinking", Thinking: "summary", ThinkingSignature: signature},
+			{Type: "text", Text: "answer"},
+		}},
+	}})
+	input := mustType[[]any](t, body["input"])
+	if len(input) != 3 {
+		t.Fatalf("input: %+v", input)
+	}
+	reasoning := mustType[map[string]any](t, input[1])
+	if reasoning["type"] != "reasoning" || reasoning["id"] != "rs_1" || reasoning["encrypted_content"] != "opaque" {
+		t.Fatalf("reasoning replay: %+v", reasoning)
 	}
 }
 
@@ -92,6 +160,28 @@ func TestToolResultDetailsNeverEnterProviderRequests(t *testing.T) {
 		if bytes.Contains(encoded, []byte("DETAIL_SECRET")) {
 			t.Fatalf("details leaked into provider request: %s", encoded)
 		}
+	}
+}
+
+func TestFunctionArgumentsStayValidWhenAStreamWasTruncated(t *testing.T) {
+	call := types.Content{Type: "toolCall", ID: "call_1", Name: "Read", ArgumentsRaw: `{"path"`}
+	openAI := toOpenAIMessage(types.Message{Role: "assistant", Content: []types.Content{call}})
+	openAICalls := mustType[[]map[string]any](t, openAI["tool_calls"])
+	openAIFn := mustType[map[string]any](t, openAICalls[0]["function"])
+	if openAIFn["arguments"] != "{}" {
+		t.Fatalf("Completions invalid arguments: %+v", openAIFn)
+	}
+
+	responses := toResponsesItems(types.Message{Role: "assistant", Content: []types.Content{call}})
+	responseCall := mustType[map[string]any](t, responses[0])
+	if responseCall["arguments"] != "{}" {
+		t.Fatalf("Responses invalid arguments: %+v", responseCall)
+	}
+
+	anthropic := toAnthropicMessage(types.Message{Role: "assistant", Content: []types.Content{call}})
+	anthropicBlocks := mustType[[]map[string]any](t, anthropic["content"])
+	if input := mustType[map[string]any](t, anthropicBlocks[0]["input"]); len(input) != 0 {
+		t.Fatalf("Anthropic invalid arguments: %+v", input)
 	}
 }
 
@@ -401,6 +491,16 @@ func TestReplayableKeepsThinkingOnlyAssistant(t *testing.T) {
 	}
 }
 
+func TestReplayableKeepsEncryptedReasoningOnlyAssistant(t *testing.T) {
+	hist := []types.Message{
+		{Role: "assistant", Content: []types.Content{{Type: "thinking", ThinkingSignature: `{"type":"reasoning","id":"rs_1","encrypted_content":"opaque"}`}}},
+	}
+	got := replayable(hist)
+	if len(got) != 1 || len(got[0].Content) != 1 {
+		t.Fatalf("encrypted reasoning assistant dropped: %+v", got)
+	}
+}
+
 func TestResponsesBodyUsesInstructions(t *testing.T) {
 	body := ResponsesBody(loop.Request{System: "S", Model: "gpt-4o", Messages: []types.Message{
 		{Role: "user", Content: []types.Content{{Type: "text", Text: "q"}}},
@@ -494,10 +594,10 @@ type roundTrip func(*http.Request) (*http.Response, error)
 func (f roundTrip) Do(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestUsageParsingPerProtocol(t *testing.T) {
-	// Completions: prompt_cache_hit_tokens → CacheRead; TotalTokens is the
-	// four-part sum computed by the streamer.
+	// Completions: prompt_tokens includes cached tokens, while the cache detail
+	// is reported separately. Preserve the API total when it is available.
 	t.Run("completions", func(t *testing.T) {
-		sse := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"prompt_cache_hit_tokens\":30}}\n\n" +
+		sse := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120,\"prompt_cache_hit_tokens\":30}}\n\n" +
 			"data: [DONE]\n"
 		live := NewLive("completions", "https://api.deepseek.com", "sk", roundTrip(func(_ *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewBufferString(sse)), Header: make(http.Header)}, nil
@@ -507,7 +607,7 @@ func TestUsageParsingPerProtocol(t *testing.T) {
 			t.Fatal(err)
 		}
 		u := m.Usage
-		if u.Input != 100 || u.Output != 20 || u.CacheRead != 30 || u.TotalTokens != 150 {
+		if u.Input != 100 || u.Output != 20 || u.CacheRead != 30 || u.TotalTokens != 120 {
 			t.Fatalf("completions usage: %+v", u)
 		}
 	})
@@ -531,7 +631,7 @@ func TestUsageParsingPerProtocol(t *testing.T) {
 	// Anthropic: cache_read_input_tokens on message_start + message_delta;
 	// TotalTokens is the four-part sum.
 	t.Run("anthropic", func(t *testing.T) {
-		sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}}\n\n" +
+		sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}}\n\n" +
 			"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":20,\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}\n\n" +
 			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 		live := NewLive("anthropic", "https://api.anthropic.com", "sk", roundTrip(func(_ *http.Request) (*http.Response, error) {

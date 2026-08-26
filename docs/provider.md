@@ -32,6 +32,9 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 - `thinkingEffort` 使用 `off/minimal/low/medium/high/xhigh/max`，按模型映射到 OpenAI effort、Qwen `enable_thinking`、DeepSeek/Z.AI `thinking` 或 Anthropic adaptive/budget 形状。未指定时用该模型的 default thinking（优先 `medium`）。切换模型时夹到最近的可用等级，而不是回到 default。`GET /v1/models` 每项带 `thinkingLevels` 与 `defaultThinking`。
 - usage 先归一为互斥的 uncached input/cache read/cache write/output，再按目录每百万 token 单价计算；`cost=null` 表示未知而不是免费。长上下文 tier 命中最高阈值。DeepSeek 官方有高峰/空闲两套价，内置目录用高峰（空闲是一半）；目录不按时段切换。
 - 流式工具参数：function 碎片拼成完整 JSON 再 `Unmarshal`；Responses custom tool 的 `response.custom_tool_call_input.*` 保留原始文本，并把 delta、call ID 和工具名交给 loop 的参数预览消费者。回放时严格保持 function/custom 的 call-output 配对。
+- Completions 对齐 Chat Completions wire contract：OpenAI provider 使用 `max_completion_tokens` 和 `stream_options.include_usage`；`prompt_tokens` 与 `prompt_tokens_details.cached_tokens` 原样接收，成本计算时再拆成 uncached input/cache read。SSE 消费 `choices[].delta` 的 content/refusal/tool_calls（以及兼容旧网关的 `function_call`），按 `tool_calls[].index` 累积 arguments，并处理 `stop`、`length`、`tool_calls`、`function_call`、`content_filter`。
+- Anthropic Messages 对齐官方 SSE 生命周期：`message_start` → 带 `index` 的 `content_block_start/delta/stop` → `message_delta` → `message_stop`；`error` 事件转为失败。text/thinking/tool input 按 block index 独立累积，保留 thinking signature 和 redacted-thinking data，tool input 必须是 JSON object，未收到终止事件的流视为失败。
+- Responses core adapter 使用 `store:false` 和 `include:["reasoning.encrypted_content"]` 做无状态回放；输出按 `item_id` 关联 message/reasoning/tool item，必须遇到 `response.completed` / `response.failed` / `response.incomplete` 等终止事件才结束流。
 - toolResult 的 `details` 只供 session 和客户端使用；Completions、Responses、Anthropic 的请求转换都只序列化模型可见 `content` 和错误状态。
 - `Scripted`：测试和 `KI_FAKE=1` 用。
 
@@ -39,7 +42,7 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 
 扩展声明 `provider` capability 和 `providers` 目录项后，provider 会以 `runtime.kind=rpc` 的进程级 sidecar 注册到 Registry。provider 扩展只从 `{KI_HOME}/extensions` 全局发现。provider 的 `api` 可以是内置协议名，也可以是扩展自定义字符串；自定义 API 不会落入 ki 的 Completions/Responses/Anthropic HTTP adapter。
 
-服务端只做三件事：把 provider/model/auth 元数据并入离线目录、按 provider 解析凭据、把一次完整 `loop.Request` 通过 `provider.stream.start` 交给 sidecar。RPC 中的 `request` 使用显式 lower camelCase 字段名（如 `messages`、`system`、`maxTokens`），不能依赖 Go 默认 JSON 字段名。sidecar 负责完整 request body、headers、网络传输、SSE/WS 解析、provider-specific tool/reasoning 状态和最终 message；Host adapter 只消费紧凑增量、做背压/取消并重建 `loop.AssistantDelta`。因此 Codex 这类需要专用客户端伪装的 streamer 应放在 provider 扩展里。
+服务端只做三件事：把 provider/model/auth 元数据并入离线目录、按 provider 解析凭据、把一次完整 `loop.Request` 通过 `provider.stream.start` 交给 sidecar。RPC 中的 `request` 使用显式 lower camelCase 字段名（如 `messages`、`system`、`maxTokens`），不能依赖 Go 默认 JSON 字段名。sidecar 负责完整 request body、headers、网络传输、SSE 解析、provider-specific tool/reasoning 状态和最终 message；Host adapter 只消费紧凑增量、做背压/取消并重建 `loop.AssistantDelta`。因此 Codex 这类需要专用客户端伪装的 streamer 应放在 provider 扩展里。
 
 扩展 provider 不写入 `models.json`，其目录随扩展启用状态动态替换；provider/model 的 CRUD 端点对这类目录只读。API key 继续使用 `{"apiKey":"..."}`，OAuth 或其他扩展凭据使用 `{"type":"oauth","value":{...}}`，`value` 原样保存和私有传递，catalog/status 不包含明文。
 

@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 
 	"ki/internal/loop"
@@ -56,8 +58,14 @@ func CompletionsBody(req loop.Request) map[string]any {
 		field := req.MaxTokensField
 		if field == "" {
 			field = "max_tokens"
+			if req.Provider == "openai" {
+				field = "max_completion_tokens"
+			}
 		}
 		body[field] = req.MaxTokens
+	}
+	if req.Provider == "openai" {
+		body["stream_options"] = map[string]any{"include_usage": true}
 	}
 	effort := mappedThinking(req)
 	if req.ThinkingEffort != "" {
@@ -94,7 +102,9 @@ func CompletionsBody(req loop.Request) map[string]any {
 				},
 			})
 		}
-		body["tools"] = tools
+		if len(tools) > 0 {
+			body["tools"] = tools
+		}
 	}
 	return body
 }
@@ -121,14 +131,24 @@ func toOpenAIMessage(m types.Message) map[string]any {
 				text.WriteString(c.Text)
 			case "thinking":
 				// OpenAI-compat reasoning_content
-				out["reasoning_content"] = c.Thinking
+				if c.Thinking != "" {
+					out["reasoning_content"] = c.Thinking
+				}
 			case "toolCall":
+				arguments := validObjectArgumentsRaw(c.ArgumentsRaw)
+				if arguments == "" {
+					input := c.Arguments
+					if input == nil {
+						input = map[string]any{}
+					}
+					arguments = marshalArguments(input)
+				}
 				calls = append(calls, map[string]any{
 					"id":   c.ID,
 					"type": "function",
 					"function": map[string]any{
 						"name":      c.Name,
-						"arguments": marshalArguments(c.Arguments),
+						"arguments": arguments,
 					},
 				})
 			}
@@ -211,15 +231,28 @@ func openAIToolImageFollowup(imgs []map[string]any) map[string]any {
 }
 
 func (l *Live) streamCompletions(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
+	if err := validateCompletionsRequest(req); err != nil {
+		return types.Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, err
+	}
 	url := l.Base + "/chat/completions"
-	return l.postStream(ctx, url, CompletionsBody(req), l.oaHeaders(), emit, parseCompletionsSSE)
+	msg, err := l.postStream(ctx, url, CompletionsBody(req), l.oaHeaders(), emit, parseCompletionsSSE, false)
+	if err == nil && msg.StopReason == "toolUse" {
+		if outputErr := validateCompletionsOutput(&msg); outputErr != nil {
+			msg.StopReason = "error"
+			msg.ErrorMessage = outputErr.Error()
+			return msg, outputErr
+		}
+	}
+	return msg, err
 }
 
-func parseCompletionsSSE(_, data string, acc *types.Message) (loop.AssistantDelta, bool) {
+func parseCompletionsSSE(_, data string, acc *types.Message) sseParseResult {
 	var chunk struct {
+		ID      string `json:"id"`
 		Choices []struct {
 			Delta struct {
 				Content          string `json:"content"`
+				Refusal          string `json:"refusal"`
 				ReasoningContent string `json:"reasoning_content"`
 				ToolCalls        []struct {
 					Index    *int   `json:"index"`
@@ -229,12 +262,17 @@ func parseCompletionsSSE(_, data string, acc *types.Message) (loop.AssistantDelt
 						Arguments string `json:"arguments"`
 					} `json:"function"`
 				} `json:"tool_calls"`
+				FunctionCall *struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function_call"`
 			} `json:"delta"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage *struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
 			PromptCacheHit   int `json:"prompt_cache_hit_tokens"`
 			PromptDetails    struct {
 				CachedTokens int `json:"cached_tokens"`
@@ -242,7 +280,10 @@ func parseCompletionsSSE(_, data string, acc *types.Message) (loop.AssistantDelt
 		} `json:"usage"`
 	}
 	if json.Unmarshal([]byte(data), &chunk) != nil {
-		return loop.AssistantDelta{}, false
+		return sseParseResult{err: errors.New("invalid chat completions SSE JSON")}
+	}
+	if chunk.ID != "" {
+		acc.ResponseID = chunk.ID
 	}
 	if chunk.Usage != nil {
 		cached := chunk.Usage.PromptCacheHit
@@ -250,37 +291,151 @@ func parseCompletionsSSE(_, data string, acc *types.Message) (loop.AssistantDelt
 			cached = chunk.Usage.PromptDetails.CachedTokens
 		}
 		acc.Usage = &types.Usage{
-			Input:     chunk.Usage.PromptTokens,
-			Output:    chunk.Usage.CompletionTokens,
-			CacheRead: cached,
+			// Chat Completions prompt_tokens includes cached tokens. Keep the
+			// provider's counters verbatim here; CalculateCost normalizes them
+			// once the resolved model is available.
+			Input:       chunk.Usage.PromptTokens,
+			Output:      chunk.Usage.CompletionTokens,
+			CacheRead:   cached,
+			TotalTokens: chunk.Usage.TotalTokens,
+		}
+		if acc.Usage.TotalTokens == 0 {
+			acc.Usage.TotalTokens = chunk.Usage.PromptTokens + chunk.Usage.CompletionTokens
 		}
 	}
 	if len(chunk.Choices) == 0 {
-		return loop.AssistantDelta{}, false
+		return sseParseResult{}
 	}
 	d := chunk.Choices[0].Delta
+	var deltas []loop.AssistantDelta
 	if d.Content != "" {
 		appendText(acc, d.Content)
-		return loop.AssistantDelta{Type: "text_delta", Delta: d.Content, Partial: *acc}, true
+		deltas = append(deltas, loop.AssistantDelta{Type: "text_delta", Delta: d.Content, Partial: *acc})
+	}
+	if d.Refusal != "" {
+		appendText(acc, d.Refusal)
+		deltas = append(deltas, loop.AssistantDelta{Type: "text_delta", Delta: d.Refusal, Partial: *acc})
 	}
 	if d.ReasoningContent != "" {
 		appendThinking(acc, d.ReasoningContent)
-		return loop.AssistantDelta{Type: "thinking_delta", Delta: d.ReasoningContent, Partial: *acc}, true
+		deltas = append(deltas, loop.AssistantDelta{Type: "thinking_delta", Delta: d.ReasoningContent, Partial: *acc})
 	}
 	for _, tc := range d.ToolCalls {
-		idx := -1
-		if tc.Index != nil {
-			idx = *tc.Index
+		if tc.Index == nil || *tc.Index < 0 {
+			return sseParseResult{err: errors.New("Chat Completions tool call has no valid index")}
 		}
-		appendToolCallDelta(acc, tc.ID, "", tc.Function.Name, tc.Function.Arguments, idx)
+		idx := *tc.Index
+		id := tc.ID
+		if id == "" {
+			if call := completionToolCallAt(acc, idx); call != nil {
+				id = call.ID
+			}
+			if id == "" {
+				return sseParseResult{err: fmt.Errorf("Chat Completions tool call %d has no id", idx)}
+			}
+		}
+		if tc.Function.Name == "" {
+			if call := completionToolCallAt(acc, idx); call != nil {
+				tc.Function.Name = call.Name
+			}
+		}
+		appendToolCallDelta(acc, id, "", tc.Function.Name, tc.Function.Arguments, idx)
+		call := completionToolCallAt(acc, idx)
+		if call != nil && tc.Function.Arguments != "" {
+			deltas = append(deltas, loop.AssistantDelta{Type: "toolcall_delta", Delta: tc.Function.Arguments, ToolCallID: call.ID, ToolName: call.Name, Partial: *acc})
+		}
+	}
+	if d.FunctionCall != nil {
+		const idx = 0
+		// function_call is the deprecated single-call shape and has no call ID
+		// in the wire contract; keep a stable internal ID for tool-result replay.
+		appendToolCallDelta(acc, "call_completion_0", "", d.FunctionCall.Name, d.FunctionCall.Arguments, idx)
+		call := completionToolCallAt(acc, idx)
+		if call != nil && d.FunctionCall.Arguments != "" {
+			deltas = append(deltas, loop.AssistantDelta{Type: "toolcall_delta", Delta: d.FunctionCall.Arguments, ToolCallID: call.ID, ToolName: call.Name, Partial: *acc})
+		}
 	}
 	switch chunk.Choices[0].FinishReason {
 	case "tool_calls":
+		if err := validateCompletionsOutput(acc); err != nil {
+			return sseParseResult{err: err}
+		}
+		acc.StopReason = "toolUse"
+	case "function_call":
+		if err := validateCompletionsOutput(acc); err != nil {
+			return sseParseResult{err: err}
+		}
 		acc.StopReason = "toolUse"
 	case "length":
 		acc.StopReason = "length"
 	case "stop":
 		acc.StopReason = "stop"
+	case "content_filter":
+		acc.StopReason = "error"
+		acc.ErrorMessage = "OpenAI completion stopped by content filter"
 	}
-	return loop.AssistantDelta{Type: "text_delta", Partial: *acc}, d.Content != "" || d.ReasoningContent != ""
+	return sseParseResult{deltas: deltas}
+}
+
+func completionToolCallAt(m *types.Message, index int) *types.Content {
+	if index < 0 {
+		return nil
+	}
+	position := 0
+	for i := range m.Content {
+		if m.Content[i].Type != "toolCall" {
+			continue
+		}
+		if position == index {
+			return &m.Content[i]
+		}
+		position++
+	}
+	return nil
+}
+
+func validateCompletionsRequest(req loop.Request) error {
+	for _, message := range replayable(req.Messages) {
+		switch message.Role {
+		case "toolResult":
+			if message.ToolCallID == "" {
+				return errors.New("Chat Completions tool message has no tool_call_id")
+			}
+		case "assistant":
+			for _, block := range message.Content {
+				if block.Type != "toolCall" {
+					continue
+				}
+				if block.ToolType == "custom" {
+					return errors.New("Chat Completions does not support custom tool calls")
+				}
+				if block.ID == "" || block.Name == "" {
+					return errors.New("Chat Completions assistant tool call has no id or name")
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateCompletionsOutput(acc *types.Message) error {
+	for _, call := range acc.ToolCalls() {
+		if call.ID == "" || call.Name == "" {
+			return errors.New("Chat Completions tool call is missing id or name")
+		}
+		if call.ArgumentsRaw == "" {
+			if call.Arguments == nil {
+				return fmt.Errorf("Chat Completions tool call %q has no arguments", call.ID)
+			}
+			continue
+		}
+		var args map[string]any
+		if err := json.Unmarshal([]byte(call.ArgumentsRaw), &args); err != nil {
+			return fmt.Errorf("Chat Completions tool call %q has invalid JSON arguments: %w", call.ID, err)
+		}
+		if args == nil {
+			return fmt.Errorf("Chat Completions tool call %q arguments must be a JSON object", call.ID)
+		}
+	}
+	return nil
 }

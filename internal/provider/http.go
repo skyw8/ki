@@ -40,6 +40,20 @@ func marshalArguments(v any) string {
 	return string(b)
 }
 
+func validObjectArgumentsRaw(raw string) string {
+	// A length-truncated assistant tool call is still present in session
+	// history; only replay valid JSON objects or the next provider request can
+	// fail before the model gets the explanatory tool_result.
+	if raw == "" {
+		return ""
+	}
+	var value map[string]any
+	if json.Unmarshal([]byte(raw), &value) != nil || value == nil {
+		return ""
+	}
+	return raw
+}
+
 // NewLive builds a live streamer. doer nil uses http.DefaultClient.
 func NewLive(api, base, key string, doer HTTPDoer) *Live {
 	if doer == nil {
@@ -165,7 +179,7 @@ func assistantHasReplayableContent(m types.Message) bool {
 				return true
 			}
 		case "thinking":
-			if c.Thinking != "" {
+			if c.Thinking != "" || c.ThinkingSignature != "" || c.ThinkingData != "" {
 				return true
 			}
 		case "toolCall":
@@ -182,9 +196,17 @@ func (l *Live) oaHeaders() http.Header {
 	return h
 }
 
-type sseParser func(event, data string, acc *types.Message) (loop.AssistantDelta, bool)
+type sseParseResult struct {
+	delta    loop.AssistantDelta
+	emit     bool
+	deltas   []loop.AssistantDelta
+	terminal bool
+	err      error
+}
 
-func (l *Live) postStream(ctx context.Context, url string, body any, hdr http.Header, emit func(loop.AssistantDelta) error, parse sseParser) (types.Message, error) {
+type sseParser func(event, data string, acc *types.Message) sseParseResult
+
+func (l *Live) postStream(ctx context.Context, url string, body any, hdr http.Header, emit func(loop.AssistantDelta) error, parse sseParser, requireTerminal bool) (types.Message, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return types.Message{}, err
@@ -194,6 +216,7 @@ func (l *Live) postStream(ctx context.Context, url string, body any, hdr http.He
 		return types.Message{}, err
 	}
 	httpReq.Header = hdr
+	httpReq.Header.Set("Accept", "text/event-stream")
 	res, err := l.Doer.Do(httpReq)
 	if err != nil {
 		return types.Message{}, fmt.Errorf("send provider request: %w", err)
@@ -211,24 +234,74 @@ func (l *Live) postStream(ctx context.Context, url string, body any, hdr http.He
 	acc := types.Message{Role: "assistant"}
 	sc := bufio.NewScanner(res.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	var evName string
-	for sc.Scan() {
-		line := sc.Text()
+	var eventName string
+	var dataLines []string
+	terminal := false
+	stopped := false
+	var streamErr error
+	dispatch := func() {
+		if streamErr != nil || len(dataLines) == 0 {
+			return
+		}
+		data := strings.Join(dataLines, "\n")
+		dataLines = nil
+		if strings.TrimSpace(data) == "[DONE]" {
+			stopped = true
+			return
+		}
+		result := parse(eventName, data, &acc)
+		if result.err != nil {
+			streamErr = result.err
+			return
+		}
+		terminal = terminal || result.terminal
+		if emit != nil {
+			deltas := result.deltas
+			if result.emit {
+				deltas = append([]loop.AssistantDelta{result.delta}, deltas...)
+			}
+			for _, delta := range deltas {
+				if err := emit(delta); err != nil {
+					streamErr = err
+					break
+				}
+			}
+		}
+	}
+	for sc.Scan() && streamErr == nil && !stopped && !terminal {
+		line := strings.TrimSuffix(sc.Text(), "\r")
+		if line == "" {
+			dispatch()
+			eventName = ""
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
 		if after, ok := strings.CutPrefix(line, "event:"); ok {
-			evName = strings.TrimSpace(after)
+			eventName = strings.TrimSpace(after)
 			continue
 		}
-		if !strings.HasPrefix(line, "data:") {
-			continue
+		if after, ok := strings.CutPrefix(line, "data:"); ok {
+			// SSE removes one optional leading space from each data field; all
+			// remaining fields are joined with newlines by the SSE contract.
+			dataLines = append(dataLines, strings.TrimPrefix(after, " "))
 		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
-			break
-		}
-		d, ok := parse(evName, data, &acc)
-		if ok {
-			_ = emit(d)
-		}
+	}
+	if streamErr == nil && !stopped && !terminal && len(dataLines) > 0 {
+		dispatch()
+	}
+	if streamErr == nil {
+		streamErr = sc.Err()
+	}
+	if streamErr != nil {
+		return acc, streamErr
+	}
+	if requireTerminal && !terminal {
+		return acc, errors.New("provider SSE stream ended before a terminal response event")
+	}
+	if acc.ErrorMessage != "" {
+		return acc, fmt.Errorf("provider response failed: %s", acc.ErrorMessage)
 	}
 	if acc.StopReason == "" {
 		if len(acc.ToolCalls()) > 0 {
@@ -240,7 +313,9 @@ func (l *Live) postStream(ctx context.Context, url string, body any, hdr http.He
 	if acc.Usage == nil {
 		acc.Usage = &types.Usage{}
 	}
-	acc.Usage.TotalTokens = acc.Usage.Input + acc.Usage.Output + acc.Usage.CacheRead + acc.Usage.CacheWrite
+	if acc.Usage.TotalTokens == 0 {
+		acc.Usage.TotalTokens = acc.Usage.Input + acc.Usage.Output + acc.Usage.CacheRead + acc.Usage.CacheWrite
+	}
 	return acc, sc.Err()
 }
 

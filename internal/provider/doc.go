@@ -7,11 +7,21 @@
 // items — never Completions role:tool, or the next turn after a tool result is
 // HTTP 400. Streamed function arguments are accumulated as JSON; custom tool
 // input is accumulated as raw text, while Responses raw deltas are also
-// surfaced to the loop for non-executing argument previews.
+// surfaced to the loop for non-executing argument previews. Responses replay
+// is stateless: encrypted reasoning items are requested with
+// reasoning.encrypted_content, and a stream is successful only after a
+// terminal response event.
 //
 // Completions tool images: consecutive toolResults stay adjacent; one
 // follow-up user carries that group's images (pi). Responses embed
 // images in function_call_output.
+// Completions follows the Chat Completions SSE shape: content/refusal and
+// indexed tool-call deltas are accumulated, the deprecated single
+// function_call shape remains readable for compatible gateways, and the
+// provider's prompt_tokens/cache detail counters are preserved until cost
+// normalization. Anthropic follows the Messages event lifecycle and requires
+// indexed content blocks, message_stop, valid tool JSON objects, and replayable
+// thinking signatures/redacted-thinking data.
 //
 // Provider-capable extensions register an offline model/auth descriptor and
 // execute custom streamers in a process-level sidecar; the Registry only
