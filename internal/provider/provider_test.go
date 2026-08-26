@@ -12,6 +12,7 @@ import (
 
 	"ki/internal/loop"
 	"ki/internal/types"
+	"ki/pkg/llmprotocol"
 )
 
 func mustType[T any](t *testing.T, value any) T {
@@ -203,7 +204,7 @@ func TestResponsesBodyUsesCustomToolCallAndOutput(t *testing.T) {
 	if tools[0]["type"] != "custom" || tools[0]["name"] != "apply_patch" {
 		t.Fatalf("custom tool: %+v", tools[0])
 	}
-	format := mustType[*loop.ToolFormat](t, tools[0]["format"])
+	format := mustType[*llmprotocol.ToolFormat](t, tools[0]["format"])
 	if format.Syntax != "lark" {
 		t.Fatalf("format: %+v", format)
 	}

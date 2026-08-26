@@ -181,7 +181,10 @@ package "internal/compact" {
   [maybeCompact] as COMPACT
 }
 package "internal/provider" {
-  [router → NewLive] as LIVE
+  [registry + loop adapter → NewLive] as LIVE
+}
+package "pkg/llmprotocol" {
+  [Completions / Responses / Anthropic Client] as PROTOCOL
 }
 
 ' ---- 组合 / 编译期依赖 ----
@@ -198,6 +201,7 @@ EV --> CLI : SSE event:/data: 帧
 EV --> WEB
 ABORT --> RS : cancel()
 RUN --> LIVE : loop.Streamer 接口\n（实现由 server 注入）
+LIVE --> PROTOCOL : neutral Request / Message adapter
 RUNP --> COMPACT : agent_end 时同步压缩
 @enduml
 ```

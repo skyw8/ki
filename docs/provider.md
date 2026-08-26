@@ -1,6 +1,6 @@
 # 供应商协议
 
-三套协议的请求形状不能混用。包入口见 `internal/provider/doc.go`。Live occupy 可经扩展 `before_provider_request` / `before_provider_headers` 包装 Streamer 与 headers-only HTTPDoer；compact 只用 HTTPDoer，看不见 `before_provider_request`。见 [extension.md](extension.md)。
+三套协议的请求形状不能混用。可复用的协议客户端入口见 `pkg/llmprotocol`；Ki 的目录、凭据和运行时适配入口见 `internal/provider/doc.go`。Live occupy 可经扩展 `before_provider_request` / `before_provider_headers` 包装 Streamer 与 headers-only HTTPDoer；compact 只用 HTTPDoer，看不见 `before_provider_request`。见 [extension.md](extension.md)。
 
 ## 协议
 
@@ -37,6 +37,12 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 - Responses core adapter 使用 `store:false` 和 `include:["reasoning.encrypted_content"]` 做无状态回放；输出按 `item_id` 关联 message/reasoning/tool item，必须遇到 `response.completed` / `response.failed` / `response.incomplete` 等终止事件才结束流。
 - toolResult 的 `details` 只供 session 和客户端使用；Completions、Responses、Anthropic 的请求转换都只序列化模型可见 `content` 和错误状态。
 - `Scripted`：测试和 `KI_FAKE=1` 用。
+
+## 公共协议包
+
+`pkg/llmprotocol` 是不依赖 Ki agent loop 的公共 Go 包，提供协议中立的 `Request`、`Message`、`Content`、`Usage`、`AssistantDelta` 和 `Client`，以及 Completions、Responses、Anthropic 的请求编码与 SSE 流解析。它不负责模型目录、凭据、重试、session 或工具执行；调用方负责这些策略。
+
+`internal/provider` 仅把 `loop.Request` / `types.Message` 适配到公共包，并继续负责 Ki 的 catalog、registry、credential、cost 和 extension runtime。协议实现的新增 wire 行为应优先修改 `pkg/llmprotocol`，而不是在适配层复制一份。
 
 ## Provider 扩展
 

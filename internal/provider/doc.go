@@ -1,6 +1,7 @@
-// Package provider contains model IR adapters for three built-in protocols:
-// OpenAI Completions, OpenAI Responses, and Anthropic Messages, plus the
-// runtime/catalog contracts used by provider extensions.
+// Package provider contains Ki's model catalog, registry, credential and
+// extension-runtime contracts. The reusable OpenAI Completions, OpenAI
+// Responses, and Anthropic Messages wire clients live in pkg/llmprotocol;
+// this package adapts them to internal/loop and internal/types.
 //
 // Request shapes must not be mixed. Responses input uses paired
 // function_call/function_call_output or custom_tool_call/custom_tool_call_output

@@ -21,7 +21,7 @@ ki/
 │   ├── loop/            main loop; emit only
 │   ├── session/         jsonl tree
 │   ├── tools/           Read / Write / Edit / Bash
-│   ├── provider/        Completions / Responses / Anthropic
+│   ├── provider/        catalog, registry, credentials, cost, Ki adapter
 │   ├── prompt/          system prompt renderer
 │   ├── resources/       session-scoped runtime and filesystem snapshots
 │   ├── compact/         compaction
@@ -35,6 +35,8 @@ ki/
 │   └── logging/         JSONL stderr + rotated ki.jsonl
 ├── AGENTS.md
 ├── README.md
+├── pkg/
+│   └── llmprotocol/     reusable Completions / Responses / Anthropic clients
 └── go.mod
 ```
 
@@ -44,7 +46,7 @@ ki/
   - `architecture.md` — prompt flow across cli → server → loop
   - `system_prompt.md` — prompt layers, resource cache, dynamic inputs, reload
   - `session.md` — session dir layout, append-only jsonl tree
-  - `provider.md` — provider protocol shapes (Completions / Responses / Anthropic)
+  - `provider.md` — provider registry and protocol shapes (Completions / Responses / Anthropic)
   - `mcp.md` — MCP config, session ownership, discovery, events, and reload
   - `extension.md` — extension.json packages, toggles, sidecar JSON-RPC, lifecycle
   - `tools.md` — tool contract (names/schemas follow Claude Code, results follow pi)
