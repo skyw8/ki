@@ -31,6 +31,7 @@ class CodexExtensionTest(unittest.TestCase):
                 "messages": [
                     {"role": "user", "content": [{"type": "text", "text": "run"}]},
                     {"role": "assistant", "content": [{"type": "toolCall", "id": "call-1", "itemId": "fc-1", "name": "run", "arguments": {"x": 1}}]},
+                    {"role": "toolResult", "toolCallId": "call-1", "toolType": "function", "content": [{"type": "text", "text": "ok"}]},
                 ],
                 "tools": [{"name": "run", "description": "run", "parameters": {"type": "object"}}],
             },
@@ -42,6 +43,20 @@ class CodexExtensionTest(unittest.TestCase):
         self.assertIsNone(body["tools"][0]["strict"])
         self.assertEqual(body["input"][1]["id"], "fc-1")
         self.assertEqual(body["input"][2]["type"], "function_call_output")
+        self.assertEqual(body["input"][2]["call_id"], "call-1")
+
+    def test_build_request_rejects_tool_result_without_call_id(self):
+        payload = {
+            "model": {"id": "gpt-5.4"},
+            "request": {
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "run"}]},
+                    {"role": "toolResult", "content": [{"type": "text", "text": "ok"}]},
+                ],
+            },
+        }
+        with self.assertRaisesRegex(RuntimeError, "no toolCallId"):
+            main.build_request(payload)
 
     def test_build_request_rejects_empty_input(self):
         payload = {"model": {"id": "gpt-5.4"}, "request": {"messages": []}}

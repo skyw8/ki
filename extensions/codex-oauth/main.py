@@ -329,6 +329,9 @@ def input_items(message: dict[str, Any], model: dict[str, Any]) -> list[dict[str
     role = message.get("role")
     allow_image = "image" in model.get("input", [])
     if role == "toolResult":
+        call_id = message.get("toolCallId", "")
+        if not call_id:
+            raise RuntimeError("Codex tool result has no toolCallId")
         output: Any = []
         for item in message.get("content", []):
             if item.get("type") in ("text", ""):
@@ -338,7 +341,7 @@ def input_items(message: dict[str, Any], model: dict[str, Any]) -> list[dict[str
         if len(output) == 1 and output[0].get("type") == "input_text":
             output = output[0]["text"]
         kind = "custom_tool_call_output" if message.get("toolType") == "custom" else "function_call_output"
-        return [{"type": kind, "call_id": message.get("toolCallID", ""), "output": output}]
+        return [{"type": kind, "call_id": call_id, "output": output}]
     if role == "assistant":
         result: list[dict[str, Any]] = []
         for item in message.get("content", []):
