@@ -47,7 +47,12 @@ export function Select({ value, options, onChange, ariaLabel, className = '', te
       const node = event.target as Node
       if (!trigger.current?.contains(node) && !menu.current?.contains(node)) setOpen(false)
     }
-    const closeOnViewportChange = () => setOpen(false)
+    const closeOnViewportChange = (event: Event) => {
+      // Why: the capture listener also receives scroll events from this
+      // portaled menu; closing here prevents its own scrollbar from moving.
+      if (event.target instanceof Node && menu.current?.contains(event.target)) return
+      setOpen(false)
+    }
     document.addEventListener('pointerdown', closeOutside)
     window.addEventListener('resize', closeOnViewportChange)
     window.addEventListener('scroll', closeOnViewportChange, true)

@@ -236,6 +236,25 @@ func TestDefaultThinkingPrefersMediumAndClampPicksNearest(t *testing.T) {
 	}
 }
 
+func TestThinkingLevelsCanHideOffAndMapMinimal(t *testing.T) {
+	luna := Model{
+		Reasoning: true,
+		ThinkingLevelMap: map[string]*string{
+			"off":    nil,
+			"minimal": ptrLevel("low"),
+			"xhigh":  ptrLevel("xhigh"),
+			"max":    ptrLevel("max"),
+		},
+	}
+	want := []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+	if got := SupportedThinkingLevels(luna); !slices.Equal(got, want) {
+		t.Fatalf("supported Luna thinking levels = %v, want %v", got, want)
+	}
+	if got, err := ClampThinking(luna, "off"); err != nil || got != "minimal" {
+		t.Fatalf("clamp hidden off = %q %v, want minimal", got, err)
+	}
+}
+
 func ptrLevel(s string) *string { return &s }
 
 func TestRegistryStrictJSONRejectsTrailingValue(t *testing.T) {

@@ -398,6 +398,17 @@ test('new session keeps the current model and thinking effort', async ({ page })
   const thinking = page.getByTestId('thinking-select')
   await expect(thinking).toHaveText('medium')
   await thinking.click()
+  const thinkingMenu = page.getByRole('listbox', { name: 'Thinking effort' })
+  await expect(thinkingMenu).toBeVisible()
+  const thinkingScroll = await thinkingMenu.evaluate(element => {
+    const menu = element as HTMLElement
+    menu.style.maxHeight = '80px'
+    menu.scrollTop = menu.scrollHeight
+    return { scrollTop: menu.scrollTop, scrollable: menu.scrollHeight > menu.clientHeight }
+  })
+  expect(thinkingScroll.scrollable).toBeTruthy()
+  expect(thinkingScroll.scrollTop).toBeGreaterThan(0)
+  await expect(thinkingMenu).toBeVisible()
   await page.getByRole('option', { name: 'high', exact: true }).click()
   await expect(thinking).toHaveText('high')
 
