@@ -1519,9 +1519,9 @@ export function App() {
 			{settingsPage === 'providers' ? <ProviderSettings api={api} onChanged={refreshModels} /> : settingsPage === 'skills' ? (
 			  <SettingsToggles kind="skills" api={api} workspaceId={selectedWs} />
 			) : settingsPage === 'mcp' ? (
-			  <SettingsToggles kind="mcp" api={api} workspaceId={selectedWs} />
+			  <SettingsToggles kind="mcp" api={api} />
 			) : settingsPage === 'extensions' ? (
-			  <SettingsToggles kind="extensions" api={api} workspaceId={selectedWs} />
+			  <SettingsToggles kind="extensions" api={api} />
 			) : settingsPage === 'message' ? (
 			  <MessageSettings api={api} />
 			) : (

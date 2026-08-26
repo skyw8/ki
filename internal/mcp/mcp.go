@@ -83,7 +83,6 @@ func ValidateServerSpec(spec ServerSpec) error {
 // File is the on-disk .mcp.json document.
 type File struct {
 	MCPServers map[string]ServerSpec `json:"mcpServers"`
-	Sources    map[string]string     `json:"-"`
 }
 
 // ServerInfo is one discovered MCP server without spawning it.
@@ -92,15 +91,14 @@ type ServerInfo struct {
 	Command string
 	Args    []string
 	URL     string
-	Source  string
 	Enabled bool
 }
 
 // Load reads the global MCP configuration. Runtime connections remain
 // session-owned by Manager even though every session sees this same catalog.
-func Load(home string, _ string) File {
-	out := File{MCPServers: map[string]ServerSpec{}, Sources: map[string]string{}}
-	merge := func(path, source string) {
+func Load(home string) File {
+	out := File{MCPServers: map[string]ServerSpec{}}
+	merge := func(path string) {
 		//nolint:gosec // path is one of the bounded MCP discovery locations.
 		b, err := os.ReadFile(path)
 		if err != nil {
@@ -112,11 +110,10 @@ func Load(home string, _ string) File {
 		}
 		for k, v := range f.MCPServers {
 			out.MCPServers[k] = v
-			out.Sources[k] = source
 		}
 	}
 	if home != "" {
-		merge(filepath.Join(home, ".mcp.json"), "home")
+		merge(filepath.Join(home, ".mcp.json"))
 	}
 	return out
 }
@@ -131,16 +128,11 @@ func List(file File, toggle session.Toggle) []ServerInfo {
 	out := make([]ServerInfo, 0, len(names))
 	for _, name := range names {
 		spec := file.MCPServers[name]
-		src := ""
-		if file.Sources != nil {
-			src = file.Sources[name]
-		}
 		out = append(out, ServerInfo{
 			Name:    name,
 			Command: spec.Command,
 			Args:    spec.Args,
 			URL:     spec.URL,
-			Source:  src,
 			Enabled: toggle.Allowed(name),
 		})
 	}

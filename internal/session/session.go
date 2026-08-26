@@ -1002,8 +1002,8 @@ func rewriteHeader(s *Session) error {
 
 // Allowed reports whether name is enabled by t.
 func (t Toggle) Allowed(name string) bool {
-	if len(t.Only) > 0 {
-		return slices.Contains(t.Only, name)
+	if len(t.Only) > 0 && !slices.Contains(t.Only, name) {
+		return false
 	}
 	return !slices.Contains(t.Disabled, name)
 }

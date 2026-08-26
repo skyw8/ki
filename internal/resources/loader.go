@@ -63,7 +63,7 @@ func (l *Loader) Scan(cwd string) Snapshot {
 
 func (l *Loader) scan(cwd string) Snapshot {
 	tg := toggles.Load(l.home)
-	found := extension.Discover(l.home, cwd, tg.Extensions)
+	found := extension.Discover(l.home, tg.Extensions)
 	prompts := scanPromptTemplates(l.home, cwd)
 	var extraDirs []struct {
 		Path      string
@@ -97,7 +97,7 @@ func (l *Loader) scan(cwd string) Snapshot {
 		ExtensionPrompts:   extension.PromptLayers(found.Enabled),
 		Skills:             skills.Scan(l.home, cwd, extension.SkillRoots(found.Enabled)...),
 		Prompts:            mergedPrompts,
-		MCP:                mcp.Load(l.home, cwd),
+		MCP:                mcp.Load(l.home),
 		MCPServers:         map[string]mcp.ServerState{},
 		Extensions:         found.All,
 	}

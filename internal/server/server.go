@@ -74,8 +74,13 @@ type Server struct {
 	idempotency            map[string]extension.EnqueueResult
 	activeTools            map[string][]string
 	uiAnswers              map[string]chan uiAnswer
+	toggleMu               sync.Mutex
 	runtimeMu              sync.Mutex
 	runtime                map[string]*runtimePrep
+	runtimeCtx             context.Context
+	runtimeCancel          context.CancelFunc
+	runtimeWG              sync.WaitGroup
+	runtimeClosed          bool
 }
 
 type runState struct {
@@ -114,7 +119,7 @@ func New(opt Options) (*Server, error) {
 		}
 	}
 	providerExtensions := extension.NewProviderManager(opt.Config.Home)
-	providerDiscovery := extension.Discover(opt.Config.Home, "", toggles.Load(opt.Config.Home).Extensions)
+	providerDiscovery := extension.Discover(opt.Config.Home, toggles.Load(opt.Config.Home).Extensions)
 	if err := providerExtensions.Replace(providerDiscovery.Enabled); err != nil {
 		providerExtensions.Close()
 		return nil, fmt.Errorf("load provider extensions: %w", err)
@@ -136,6 +141,7 @@ func New(opt Options) (*Server, error) {
 	}
 	_ = ws.Bootstrap(cwds)
 	sidx := session.NewIndex(infos) // reuse the List walk: zero extra reads
+	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
 	srv := &Server{
 		cfg:                    opt.Config,
 		token:                  tok,
@@ -159,10 +165,13 @@ func New(opt Options) (*Server, error) {
 		activeTools:            map[string][]string{},
 		uiAnswers:              map[string]chan uiAnswer{},
 		runtime:                map[string]*runtimePrep{},
+		runtimeCtx:             runtimeCtx,
+		runtimeCancel:          runtimeCancel,
 	}
 	srv.mcp = mcp.NewManager(srv.onMCPNotification)
 	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
 	srv.ext.SetHost(srv)
+	srv.providerExtensions.SetErrorHandler(srv.onExtensionError)
 	srv.providerExtensions.SetProviderAuthHandler(srv.onProviderAuthEvent)
 	srv.restoreAgentTasks(infos)
 	return srv, nil
@@ -251,7 +260,7 @@ func (s *Server) reloadProviderExtensions() {
 	if s.providerExtensions == nil {
 		return
 	}
-	discovery := extension.Discover(s.cfg.Home, "", toggles.Load(s.cfg.Home).Extensions)
+	discovery := extension.Discover(s.cfg.Home, toggles.Load(s.cfg.Home).Extensions)
 	if err := s.providerExtensions.Replace(discovery.Enabled); err != nil {
 		slog.Warn("reload provider extensions", "err", err)
 		return
@@ -308,6 +317,10 @@ func (s *Server) publishMCPEvent(sessionID string, notification mcp.Notification
 	if notification.Kind == "tools_changed" {
 		typ = loop.MCPToolsChanged
 		status = mcp.StatusStale
+	} else {
+		// A later connection failure is still a load failure. Persist the global
+		// disablement so every new session does not immediately retry it.
+		s.disableMCPs(notification.Server)
 	}
 	ev := loop.Event{
 		Type: typ, Server: notification.Server, MessageText: notification.Message,
@@ -485,6 +498,17 @@ func (s *Server) Addr() string {
 
 // Shutdown stops the HTTP server and every session-scoped MCP client.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.runtimeMu.Lock()
+	s.runtimeClosed = true
+	runtimeCancel := s.runtimeCancel
+	s.runtimeMu.Unlock()
+	if runtimeCancel != nil {
+		runtimeCancel()
+	}
+	// Why: session creation starts warmup asynchronously, and its failure
+	// events still write to the session directory. Wait before cleanup can
+	// remove that directory underneath a warmup goroutine.
+	s.runtimeWG.Wait()
 	s.mu.Lock()
 	jobs := make([]*tools.JobStore, 0, len(s.jobs))
 	for id, store := range s.jobs {
@@ -724,10 +748,8 @@ func (s *Server) sessionCatalog(snapshot resources.Snapshot) ([]map[string]any, 
 		row := map[string]any{
 			"name":    item.Name,
 			"command": item.Command,
-			"source":  item.Source,
 			"enabled": item.Enabled,
 			"tools":   toolRows,
-			"status":  state.Status,
 		}
 		if state.Error != "" {
 			row["error"] = state.Error
@@ -1403,10 +1425,13 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}.Build(profile)
 	tg := toggles.Load(cfg.Home)
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
+	s.reportManifestErrors(sess.ID(), snapshot.Extensions)
+	tg = toggles.Load(cfg.Home)
 	// snapshot.Extensions is the global Discover.All catalog. Configure
 	// reconciles process-global sidecars; Prepare builds this session's view.
-	s.ext.Configure(snapshot.Extensions)
-	extTools := s.ext.Prepare(context.Background(), sess.ID(), sess.Header.CWD, extension.Enabled(snapshot.Extensions, tg.Extensions))
+	enabledExtensions := extension.Enabled(snapshot.Extensions, tg.Extensions)
+	s.ext.Configure(enabledExtensions)
+	extTools := s.ext.Prepare(context.Background(), sess.ID(), sess.Header.CWD, enabledExtensions)
 	tls = append(tls, extTools...)
 	prepared := s.mcp.Prepare(ctx, sess.ID(), snapshot.MCP, tg.MCP, snapshot.MCPServers)
 	if ctx.Err() != nil {
@@ -1418,6 +1443,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	for name, state := range prepared.States {
 		if state.Status == mcp.StatusFailed {
+			s.disableMCPs(name)
 			s.publishMCPEvent(id, mcp.Notification{Kind: "server_failed", Server: name, Message: state.Error})
 		}
 	}

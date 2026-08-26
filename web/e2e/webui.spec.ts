@@ -538,9 +538,10 @@ test('session info lists skills and mcp; toggles live in settings', async ({ pag
 
   await page.getByTestId('info-edit').click()
   await page.getByTestId('settings-tab-mcp').click()
-  await expect(page.getByTestId('mcp-on-exa')).toHaveAttribute('aria-checked', 'true')
-  await page.getByTestId('mcp-on-exa').click()
+  await expect(page.getByTestId('mcp-status-context7')).toHaveCount(0)
+  await expect(page.getByTestId('mcp-on-context7')).toHaveAttribute('aria-checked', 'false')
   await expect(page.getByTestId('mcp-on-exa')).toHaveAttribute('aria-checked', 'false')
+  await expect(page.getByTestId('mcp-error-context7')).toHaveCount(0)
 
   const disabled = await page.evaluate(async () => {
     const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
@@ -550,7 +551,7 @@ test('session info lists skills and mcp; toggles live in settings', async ({ pag
     return listed
   })
   expect(disabled.items?.find(s => s.name === 'exa')?.enabled).toBe(false)
-  expect(disabled.items?.find(s => s.name === 'context7')?.enabled).toBe(true)
+  expect(disabled.items?.find(s => s.name === 'context7')?.enabled).toBe(false)
 
 	// This suite is serial and prompt preparation now reports broken MCP
 	// commands synchronously. Remove the fixture and its actionable toasts so

@@ -159,7 +159,6 @@ export type CatalogExtension = {
   version?: string
   description?: string
   path?: string
-  source?: string
   enabled: boolean
   capabilities?: string[]
   intercept?: string[]
@@ -171,10 +170,8 @@ export type CatalogMcp = {
   command?: string
   args?: string[]
   url?: string
-  source?: string
   enabled: boolean
   tools?: { name: string; description?: string }[]
-	status?: 'unloaded' | 'ready' | 'failed' | 'stale'
 	error?: string
 }
 

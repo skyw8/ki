@@ -195,7 +195,6 @@ export function SessionConfig({
                         {item.name}
                         {item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
                         <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
-						<span className={`cfg-flag${item.status === 'ready' ? ' on' : ''}`}>{item.status ?? 'unloaded'}</span>
                       </div>
                       {item.description ? <p className="cfg-desc">{item.description}</p> : null}
                     </div>
@@ -217,11 +216,10 @@ export function SessionConfig({
                       <div className="cfg-name cfg-mcp-name">
                         <span className="cfg-mcp-mark" aria-hidden><IWrench /></span>
                         <span className="cfg-mcp-title">{item.name}</span>
-                        {item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
                         <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
                       </div>
                       <div className="cfg-endpoint"><code>{[item.command, ...(item.args ?? [])].filter(Boolean).join(' ') || item.url || '—'}</code></div>
-					  {item.error ? <p className="cfg-desc settings-error" role="alert">{item.error}</p> : null}
+                      {item.error ? <p className="cfg-desc settings-error" role="alert">{item.error}</p> : null}
                       {item.tools && item.tools.length > 0 ? (
                         <div className="cfg-tools-wrap">
                           <div className="cfg-tools-head">
@@ -256,7 +254,6 @@ export function SessionConfig({
                     <div className="cfg-copy">
                       <div className="cfg-name">
                         {item.name}
-                        {item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
                         <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
                       </div>
                       {item.description ? <p className="cfg-desc">{item.description}</p> : null}
@@ -344,7 +341,7 @@ export function SettingsToggles({
 
   useEffect(() => { void load() }, [load])
 
-  const patch = async (next: Array<CatalogSkill | CatalogMcp>) => {
+  const patch = async (next: Array<CatalogSkill | CatalogMcp | CatalogExtension>) => {
     const prev = items
     setItems(next)
     try {
@@ -379,10 +376,11 @@ export function SettingsToggles({
               <div className="cfg-copy">
                 <div className="cfg-name">
                   {item.name}
-                  {item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
+                  {kind === 'skills' && item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
                 </div>
                 {'description' in item && item.description ? <p className="cfg-desc">{item.description}</p> : null}
                 {'command' in item ? <p className="cfg-desc">{[item.command, ...(item.args ?? [])].filter(Boolean).join(' ')}</p> : null}
+                {'error' in item && item.error ? <p className="cfg-desc settings-error-inline" data-testid={`${kind}-error-${item.name}`} role="alert">{item.error}</p> : null}
               </div>
               <Switch
                 testid={`${kind === 'skills' ? 'skill' : kind === 'mcp' ? 'mcp' : 'extension'}-on-${item.name}`}

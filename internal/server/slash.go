@@ -87,14 +87,21 @@ func (s *Server) patchSkills(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getMCP(w http.ResponseWriter, r *http.Request) {
 	tg := toggles.Load(s.cfg.Home)
 	file := s.resources.Scan("").MCP
+	_ = s.invalidMCPError(file)
+	tg = toggles.Load(s.cfg.Home)
 	items := []map[string]any{}
 	for _, item := range mcp.List(file, tg.MCP) {
+		errorText := ""
+		if err := mcp.ValidateServerSpec(file.MCPServers[item.Name]); err != nil {
+			errorText = err.Error()
+		}
 		row := map[string]any{
 			"name":    item.Name,
 			"command": item.Command,
-			"source":  item.Source,
 			"enabled": item.Enabled,
-			"status":  mcp.StatusUnloaded,
+		}
+		if errorText != "" {
+			row["error"] = errorText
 		}
 		if len(item.Args) > 0 {
 			row["args"] = item.Args
@@ -122,11 +129,16 @@ func (s *Server) patchMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Reload()
+	if err := s.invalidMCPError(s.resources.Scan("").MCP); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 	s.getMCP(w, r)
 }
 
 func (s *Server) getExtensions(w http.ResponseWriter, r *http.Request) {
 	snapshot := s.resources.Scan("")
+	_ = s.disableManifestExtensions(snapshot.Extensions)
 	writeJSON(w, 200, map[string]any{"items": s.extensionCatalog(snapshot)})
 }
 
@@ -145,6 +157,10 @@ func (s *Server) patchExtensions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Reload()
+	if err := s.disableManifestExtensions(s.resources.Scan("").Extensions); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 	s.getExtensions(w, r)
 }
 
@@ -152,16 +168,18 @@ func (s *Server) extensionCatalog(snapshot resources.Snapshot) []map[string]any 
 	tg := toggles.Load(s.cfg.Home)
 	items := []map[string]any{}
 	for _, d := range snapshot.Extensions {
+		errorText := d.Error
 		items = append(items, map[string]any{
 			"name":         d.Name,
 			"version":      d.Version,
 			"description":  d.Description,
 			"path":         d.Path,
-			"source":       d.Scope,
 			"enabled":      tg.Extensions.Allowed(d.Name),
 			"capabilities": d.Capabilities,
-			"error":        d.Error,
 		})
+		if errorText != "" {
+			items[len(items)-1]["error"] = errorText
+		}
 	}
 	sort.Slice(items, func(i, j int) bool {
 		a, _ := items[i]["name"].(string)
@@ -172,6 +190,9 @@ func (s *Server) extensionCatalog(snapshot resources.Snapshot) []map[string]any 
 }
 
 func (s *Server) onExtensionError(sessionID, name, capability, code, message string) {
+	if code == "manifest" || code == "sidecar_start" || code == "undeclared" {
+		s.disableExtensions(name)
+	}
 	ev := loop.Event{
 		Type:        loop.ExtensionError,
 		Server:      name,

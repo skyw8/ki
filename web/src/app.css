@@ -1919,6 +1919,7 @@
 .cfg-btn .spin { width: 12px; height: 12px; }
 .cfg-flag { margin-left: 8px; font-size: 11px; color: var(--dsw-alias-label-caption); }
 .cfg-flag.on { color: var(--dsw-alias-brand); }
+.settings-error-inline { margin-top: 8px; color: var(--dsw-alias-state-error); }
 .cfg-mcp-row { padding: 16px 0 18px; }
 .cfg-mcp-name { gap: 8px; }
 .cfg-mcp-name .cfg-flag { margin-left: auto; }

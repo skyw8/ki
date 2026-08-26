@@ -45,7 +45,7 @@ func providerTestDescriptor(t *testing.T, bin string) (Descriptor, provider.Exte
 		},
 	}
 	d := Descriptor{
-		Name: "fake-provider-extension", Path: root, Scope: "home", Enabled: true,
+		Name: "fake-provider-extension", Path: root, Enabled: true,
 		Capabilities: []string{string(CapProvider)}, Providers: []provider.ExtensionProviderSpec{spec},
 		root: root,
 		manifest: Manifest{
@@ -110,7 +110,6 @@ func TestProviderManagerStreamsConcurrentAndCancels(t *testing.T) {
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("sidecar did not start: %v", err)
 	}
-
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	for i := 0; i < 2; i++ {

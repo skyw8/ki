@@ -53,6 +53,10 @@ func (s *Server) kickWarmup(id, cwd string) {
 		return
 	}
 	s.runtimeMu.Lock()
+	if s.runtimeClosed {
+		s.runtimeMu.Unlock()
+		return
+	}
 	st := s.runtime[id]
 	if st == nil {
 		st = &runtimePrep{}
@@ -63,13 +67,17 @@ func (s *Server) kickWarmup(id, cwd string) {
 		return
 	}
 	st.inflight = true
+	s.runtimeWG.Add(1)
 	s.runtimeMu.Unlock()
-	go s.warmupSession(id, cwd, st)
+	go func() {
+		defer s.runtimeWG.Done()
+		s.warmupSession(id, cwd, st)
+	}()
 }
 
 func (s *Server) warmupSession(id, cwd string, st *runtimePrep) {
 	defer s.finishRuntime(id, st)
-	ctx, cancel := context.WithTimeout(context.Background(), warmupTimeout)
+	ctx, cancel := context.WithTimeout(s.runtimeCtx, warmupTimeout)
 	defer cancel()
 	if cwd == "" {
 		sess, err := s.open(id)
@@ -80,6 +88,7 @@ func (s *Server) warmupSession(id, cwd string, st *runtimePrep) {
 		_ = sess.Close()
 	}
 	snapshot := s.resources.Load(id, cwd)
+	s.reportManifestErrors(id, snapshot.Extensions)
 	tg := toggles.Load(s.cfg.Home)
 	mcpFile := snapshot.MCP
 	mcpCached := snapshot.MCPServers
@@ -88,7 +97,7 @@ func (s *Server) warmupSession(id, cwd string, st *runtimePrep) {
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		if s.ext != nil {
-			s.ext.Configure(snapshot.Extensions)
+			s.ext.Configure(enabled)
 			s.ext.Prepare(ctx, id, cwd, enabled)
 		}
 	})
@@ -100,6 +109,7 @@ func (s *Server) warmupSession(id, cwd string, st *runtimePrep) {
 		_, _ = s.resources.UpdateMCP(id, rev, prepared.States)
 		for name, state := range prepared.States {
 			if state.Status == mcp.StatusFailed {
+				s.disableMCPs(name)
 				s.publishMCPEvent(id, mcp.Notification{Kind: "server_failed", Server: name, Message: state.Error})
 			}
 		}

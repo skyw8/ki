@@ -147,7 +147,7 @@ func TestPrepareOrderFollowsDiscoverEnabled(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := Discover(home, cwd, session.Toggle{})
+	got := Discover(home, session.Toggle{})
 	if len(got.Enabled) != 2 || got.Enabled[0].Name != "alpha" || got.Enabled[1].Name != "zeta" {
 		t.Fatalf("Discover.Enabled %v", namesOf(got.Enabled))
 	}

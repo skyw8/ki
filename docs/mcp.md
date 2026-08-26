@@ -7,7 +7,7 @@ MCP 跨 `server`、`resources`、`mcp`、`session` 和 WebUI：配置目录是�
 - `internal/mcp.Load` 只读 `{KI_HOME}/.mcp.json`。项目目录中的 `.mcp.json` 不生效。
 - 一个 server 必须只配置一种 transport：`url` 使用 Streamable HTTP，可带 `headers`；`command` 使用 stdio，可带 `args` / `env`。两者同时存在或同时缺失都无效。
 - `{KI_HOME}/toggles.json` 是进程级启用状态。禁用的 server 不参与该轮准备，也不会为该轮启动进程或建立连接。
-- 设置页没有真实 session，使用 `resources.Loader.Scan(cwd)` 展示当前磁盘配置，不创建缓存或连接。
+- 设置页使用 `resources.Loader.Scan("")` 展示全局磁盘配置，不创建缓存或连接；`GET/PATCH /v1/mcp` 只读写全局 Toggle，不接受 session 参数。
 
 ## 请求前准备
 
@@ -15,7 +15,7 @@ MCP 跨 `server`、`resources`、`mcp`、`session` 和 WebUI：配置目录是�
 
 1. `resources.Loader.Load(sessionID, cwd)` 返回全局 `.mcp.json` 的 session 快照和已有工具发现状态。
 2. `mcp.Manager.Prepare` 按 Toggle 过滤 server，并行建立或复用每个 session/server 的连接；每个 server 独立握手并完成分页 `tools/list`。
-3. 单个 server 失败只产生 failed 状态和 sideband 事件，不隐藏其他 MCP server，也不阻断内置工具或本轮 prompt。
+3. 单个 server 失败会自动写入全局 `disabled` 并产生 sideband 事件，不隐藏其他 MCP server，也不阻断内置工具或本轮 prompt。
 4. `resources.Loader.UpdateMCP` 以 snapshot revision 做 copy-on-write 发布发现结果。Reload 前启动的迟到握手因 revision 不匹配而不能写回新快照。
 5. 成功绑定的 MCP tools 追加到本轮内置工具集；同一份工具集进入 system prompt、loop 和 `request_header`。
 
@@ -82,4 +82,4 @@ MCP 运行状态通过 `mcp_server_failed` 和 `mcp_tools_changed` 发布。两�
 
 MCP 工具实现 `loop.Tool`，与内置工具走相同的 schema 校验和 prepare/execute 生命周期。`CallTool` 的文本、图片、音频和 structured content 转换成 ki 的 `ToolResult`；server 返回的 `isError` 保留为工具错误。图片等历史内容是否能送给当前模型，仍由 provider 输入模态在最终请求边界决定。
 
-会话详情的 `availableMcp` 展示 session 级 server 状态和已缓存工具；设置接口 `GET/PATCH /v1/mcp` 只展示或修改全局 Toggle，不会在无 session 的设置页启动 MCP server。
+会话详情的 `availableMcp` 展示 session 级已缓存工具；设置接口 `GET/PATCH /v1/mcp` 展示或修改全局 Toggle，不会在设置页启动 MCP server。配置无效或连接失败时，server 会自动写入全局 `disabled`，并通过错误提示通知用户；用户重新启用后会再次尝试加载。

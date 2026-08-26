@@ -27,6 +27,7 @@ type ProviderManager struct {
 	refreshLocks  map[string]*sync.Mutex
 	authHandlerMu sync.RWMutex
 	authHandler   func(ProviderAuthEvent)
+	onErr         ErrorFunc
 	epoch         uint64
 }
 
@@ -40,6 +41,13 @@ func NewProviderManager(home string) *ProviderManager {
 		specs:        map[string]provider.ExtensionProviderSpec{},
 		refreshLocks: map[string]*sync.Mutex{},
 	}
+}
+
+// SetErrorHandler installs the callback for provider sidecar startup errors.
+func (m *ProviderManager) SetErrorHandler(fn ErrorFunc) {
+	m.mu.Lock()
+	m.onErr = fn
+	m.mu.Unlock()
 }
 
 // SetProviderAuthHandler installs the process-wide callback for private auth
@@ -319,6 +327,12 @@ func (m *ProviderManager) client(ctx context.Context, providerID string) (*rpcCl
 	// code. The process is then retained and shared by all sessions.
 	c, err := startRPC(ctx, d, "", m.home, "", nil)
 	if err != nil {
+		m.mu.Lock()
+		onErr := m.onErr
+		m.mu.Unlock()
+		if onErr != nil {
+			onErr("", d.Name, string(CapProvider), "sidecar_start", err.Error())
+		}
 		return nil, fmt.Errorf("start provider extension %q: %w", d.Name, err)
 	}
 	c.setProviderAuthHandler(m.handleAuthEvent)

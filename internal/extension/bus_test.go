@@ -61,7 +61,7 @@ func TestBusBroadcastDoesNotWait(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "extension.json"), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := Discover(home, cwd, session.Toggle{})
+	got := Discover(home, session.Toggle{})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = m.Prepare(ctx, "sess", cwd, got.Enabled)
@@ -95,7 +95,7 @@ func TestBusMutexHandshake(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := Discover(home, cwd, session.Toggle{})
+	got := Discover(home, session.Toggle{})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = m.Prepare(ctx, "sess", cwd, got.Enabled)

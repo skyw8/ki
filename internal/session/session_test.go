@@ -574,6 +574,9 @@ func TestToggleAllowed(t *testing.T) {
 	if !(Toggle{Only: []string{"a"}}).Allowed("a") || (Toggle{Only: []string{"a"}}).Allowed("b") {
 		t.Fatal("only")
 	}
+	if (Toggle{Only: []string{"a"}, Disabled: []string{"a"}}).Allowed("a") {
+		t.Fatal("disabled must override only")
+	}
 }
 
 func TestTitlePinRemove(t *testing.T) {

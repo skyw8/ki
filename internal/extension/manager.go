@@ -195,9 +195,7 @@ func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *r
 	m.mu.Unlock()
 	c, err := startRPC(ctx, d, "", home, "", host)
 	if err != nil {
-		if m.onErr != nil {
-			m.onErr(sessionID, d.Name, "runtime", "sidecar_start", err.Error())
-		}
+		m.reportError(sessionID, d.Name, "runtime", "sidecar_start", err.Error())
 		slog.Info("extension sidecar failed", "extension", d.Name, "err", err)
 		return nil
 	}
@@ -210,11 +208,15 @@ func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *r
 	m.by[d.Name] = c
 	m.mu.Unlock()
 	for _, cap := range c.undeclared {
-		if m.onErr != nil {
-			m.onErr(sessionID, d.Name, cap, "undeclared", "initialize returned "+cap+" without capability")
-		}
+		m.reportError(sessionID, d.Name, cap, "undeclared", "initialize returned "+cap+" without capability")
 	}
 	return c
+}
+
+func (m *Manager) reportError(sessionID, name, capability, code, message string) {
+	if m.onErr != nil {
+		m.onErr(sessionID, name, capability, code, message)
+	}
 }
 
 func (m *Manager) items(sessionID string) []namedInterceptor {
@@ -240,9 +242,7 @@ func (m *Manager) items(sessionID string) []namedInterceptor {
 
 func (m *Manager) errFn(sessionID string) func(name, capability, code, message string) {
 	return func(name, cap, code, message string) {
-		if m.onErr != nil {
-			m.onErr(sessionID, name, cap, code, message)
-		}
+		m.reportError(sessionID, name, cap, code, message)
 	}
 }
 

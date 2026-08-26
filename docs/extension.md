@@ -8,7 +8,7 @@
 
 | 位置 | Scope |
 |---|---|
-| `{KI_HOME}/extensions/<name>/` | 全局（`home`） |
+| `{KI_HOME}/extensions/<name>/` | 全局 |
 
 - `name` 是主键。`name` 须匹配 `^[a-z0-9][a-z0-9-]{0,62}$`，禁止 `ki.` 前缀。
 - 启用开关是进程级 `{KI_HOME}/toggles.json` 的 `extensions.disabled`（缺省空 = 全开）。
@@ -215,8 +215,10 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| GET / PATCH | `/v1/extensions` | 全局列表 / `disabled` |
+| GET / PATCH | `/v1/extensions` | 全局列表 / `disabled`；不会启动 sidecar |
 | GET | `/v1/sessions/{id}` | `availableExtensions`、`commands`、`extensionUi`、`queued`、`extQueued`、`runtime.ready` |
 | POST | `/v1/reload` | 关 sidecar |
 
 `path` 只展示，不当 `href`。
+
+扩展 catalog 只展示启用配置和 manifest 错误，不展示 sidecar 运行状态，也不会为了查询而启动 sidecar。manifest 校验或 sidecar 启动失败时，Host 自动把 extension 写入全局 `disabled`，并通过错误提示通知用户；用户重新启用后会再次尝试加载。

@@ -58,7 +58,6 @@ type Descriptor struct {
 	Version      string                           `json:"version"`
 	Description  string                           `json:"description"`
 	Path         string                           `json:"path"`
-	Scope        string                           `json:"source"`
 	Enabled      bool                             `json:"enabled"`
 	Capabilities []string                         `json:"capabilities"`
 	Providers    []provider.ExtensionProviderSpec `json:"providers,omitempty"`
@@ -82,9 +81,9 @@ type Discovery struct {
 
 // Discover reads extension.json from the global extension directory.
 // toggle.Allowed filters Enabled; disabled packages stay in All with Enabled=false.
-func Discover(home, _ string, toggle session.Toggle) Discovery {
+func Discover(home string, toggle session.Toggle) Discovery {
 	byName := map[string]Descriptor{}
-	loadDir := func(dir, scope string) {
+	loadDir := func(dir string) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			return
@@ -94,7 +93,7 @@ func Discover(home, _ string, toggle session.Toggle) Discovery {
 				continue
 			}
 			root := filepath.Join(dir, e.Name())
-			d, ok := loadPackage(root, scope)
+			d, ok := loadPackage(root)
 			if !ok {
 				continue
 			}
@@ -103,7 +102,7 @@ func Discover(home, _ string, toggle session.Toggle) Discovery {
 		}
 	}
 	if home != "" {
-		loadDir(filepath.Join(home, "extensions"), "home")
+		loadDir(filepath.Join(home, "extensions"))
 	}
 	all := make([]Descriptor, 0, len(byName))
 	for _, d := range byName {
@@ -131,7 +130,7 @@ func chainOrder(in []Descriptor) []Descriptor {
 	return out
 }
 
-func loadPackage(root, scope string) (Descriptor, bool) {
+func loadPackage(root string) (Descriptor, bool) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return Descriptor{}, false
@@ -147,7 +146,7 @@ func loadPackage(root, scope string) (Descriptor, bool) {
 	}
 	var m Manifest
 	if err := json.Unmarshal(b, &m); err != nil {
-		d := Descriptor{Name: filepath.Base(abs), Path: abs, Scope: scope, Error: "invalid extension.json"}
+		d := Descriptor{Name: filepath.Base(abs), Path: abs, Error: "invalid extension.json"}
 		return d, true
 	}
 	d := Descriptor{
@@ -155,7 +154,6 @@ func loadPackage(root, scope string) (Descriptor, bool) {
 		Version:      m.Version,
 		Description:  m.Description,
 		Path:         abs,
-		Scope:        scope,
 		Capabilities: m.Capabilities,
 		Providers:    m.Providers,
 		FailClosed:   m.FailClosed,
@@ -275,6 +273,13 @@ func (d Descriptor) wantsSessionSidecar() bool {
 	return hasKind(d.Capabilities, CapTool) || hasKind(d.Capabilities, CapLifecycle) ||
 		hasKind(d.Capabilities, CapCommand) || hasKind(d.Capabilities, CapBus)
 }
+
+// HasRuntime reports whether this descriptor declares an enabled RPC runtime.
+func (d Descriptor) HasRuntime() bool { return d.wantsSidecar() }
+
+// HasSessionRuntime reports whether this descriptor needs the session-scoped
+// sidecar managed by Manager rather than the process-scoped provider runtime.
+func (d Descriptor) HasSessionRuntime() bool { return d.wantsSessionSidecar() }
 
 func (d Descriptor) promptText() string {
 	if !hasKind(d.Capabilities, CapPromptAppend) || !d.Enabled || d.Error != "" {

@@ -13,5 +13,7 @@
 // Enablement is toggles.json extensions.disabled
 // (missing = all on). Host interceptors are test doubles only; production
 // never compiles user extensions into the ki binary.
+// Runtime failures are reported through the server's extension_error event;
+// the server disables the failing package in toggles.json.
 // Cross-package contract: docs/extension.md.
 package extension

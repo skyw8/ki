@@ -16,18 +16,11 @@ import (
 
 func TestLoadGlobalOnlyAndToggle(t *testing.T) {
 	home := t.TempDir()
-	cwd := t.TempDir()
 	if err := os.WriteFile(filepath.Join(home, ".mcp.json"), []byte(`{"mcpServers":{"github":{"command":"npx"},"old":{"command":"true"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(cwd, ".ki"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cwd, ".ki", ".mcp.json"), []byte(`{"mcpServers":{"github":{"command":"echo","args":["hi"]}}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	f := Load(home, cwd)
-	if f.MCPServers["github"].Command != "npx" || f.Sources["github"] != "home" {
+	f := Load(home)
+	if f.MCPServers["github"].Command != "npx" {
 		t.Fatalf("global config = %+v", f)
 	}
 	if _, ok := f.MCPServers["project-only"]; ok {
@@ -35,17 +28,6 @@ func TestLoadGlobalOnlyAndToggle(t *testing.T) {
 	}
 	if got := FilterNames(f, session.Toggle{Only: []string{"github"}}); len(got) != 1 || got[0] != "github" {
 		t.Fatalf("filtered names = %v", got)
-	}
-}
-
-func TestApplyExtensionToolNames(t *testing.T) {
-	got := applyExtensionToolNames([]ToolDefinition{{Name: "now"}}, "extension:time")
-	if len(got) != 1 || got[0].Name != "time/now" || got[0].WireName != "now" {
-		t.Fatalf("%+v", got)
-	}
-	plain := applyExtensionToolNames([]ToolDefinition{{Name: "now"}}, "home")
-	if plain[0].Name != "now" || plain[0].WireName != "" {
-		t.Fatalf("user mcp should stay bare: %+v", plain)
 	}
 }
 

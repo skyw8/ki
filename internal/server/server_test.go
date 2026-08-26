@@ -2326,8 +2326,11 @@ func TestSessionCatalogNoSpawn(t *testing.T) {
 	if mc["exa"]["enabled"] != false || mc["context7"]["enabled"] != true {
 		t.Fatalf("mcp enabled: %+v", mc)
 	}
-	if mc["exa"]["source"] != "home" || mc["context7"]["command"] != "true" {
+	if mc["context7"]["command"] != "true" {
 		t.Fatalf("mcp meta: %+v", mc)
+	}
+	if _, ok := mc["exa"]["source"]; ok {
+		t.Fatal("MCP catalog must not expose a redundant source label")
 	}
 }
 
@@ -2375,6 +2378,112 @@ func createSession(t *testing.T, hs *httptest.Server, cwd string) string {
 		t.Fatalf("no id: %s", b)
 	}
 	return id
+}
+
+func TestMCPSettingsDisableConfigurationError(t *testing.T) {
+	srv, hs := testServer(t)
+	body := []byte(`{"mcpServers":{"broken":{}}}`)
+	if err := os.WriteFile(filepath.Join(srv.cfg.Home, ".mcp.json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := authedGet(t, hs, "/v1/mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	var got struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusOK || len(got.Items) != 1 {
+		t.Fatalf("MCP settings response: status=%d body=%+v", res.StatusCode, got)
+	}
+	if got.Items[0]["name"] != "broken" || got.Items[0]["enabled"] != false || got.Items[0]["error"] == "" {
+		t.Fatalf("MCP settings error = %+v", got.Items[0])
+	}
+	if _, ok := got.Items[0]["status"]; ok {
+		t.Fatalf("MCP settings still exposes runtime status: %+v", got.Items[0])
+	}
+}
+
+func TestExtensionSettingsDisableLoadErrors(t *testing.T) {
+	srv, hs := testServer(t)
+	badDir := filepath.Join(srv.cfg.Home, "extensions", "bad-manifest")
+	if err := os.MkdirAll(badDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "extension.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	brokenDir := filepath.Join(srv.cfg.Home, "extensions", "broken-runtime")
+	if err := os.MkdirAll(brokenDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"broken-runtime","capabilities":["lifecycle"],"runtime":{"kind":"rpc","command":"missing-extension-sidecar"}}`
+	if err := os.WriteFile(filepath.Join(brokenDir, "extension.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := authedGet(t, hs, "/v1/extensions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var global struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&global); err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK || len(global.Items) != 2 {
+		t.Fatalf("extension catalog: status=%d body=%+v", res.StatusCode, global)
+	}
+	items := map[string]map[string]any{}
+	for _, item := range global.Items {
+		name, _ := item["name"].(string)
+		items[name] = item
+		if _, ok := item["status"]; ok {
+			t.Fatalf("extension catalog still exposes runtime status: %+v", item)
+		}
+	}
+	if items["bad-manifest"]["enabled"] != false || items["bad-manifest"]["error"] == "" {
+		t.Fatalf("manifest load error = %+v", items["bad-manifest"])
+	}
+	if items["broken-runtime"]["enabled"] != true {
+		t.Fatalf("runtime extension unexpectedly disabled before loading: %+v", items["broken-runtime"])
+	}
+
+	createSession(t, hs, t.TempDir())
+	var brokenEnabled = true
+	for i := 0; i < 50; i++ {
+		res, err = authedGet(t, hs, "/v1/extensions")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+			_ = res.Body.Close()
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		for _, item := range body.Items {
+			if item["name"] == "broken-runtime" {
+				brokenEnabled, _ = item["enabled"].(bool)
+			}
+		}
+		if !brokenEnabled {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if brokenEnabled {
+		t.Fatal("runtime extension was not disabled after sidecar startup failure")
+	}
 }
 
 func TestWorkspacesFSSearch(t *testing.T) {
@@ -3509,6 +3618,9 @@ func TestExtensionsHTTPToggle(t *testing.T) {
 	}
 	if _, ok := listed.Items[0]["path"].(string); !ok {
 		t.Fatal("path must be a string, not href")
+	}
+	if _, ok := listed.Items[0]["source"]; ok {
+		t.Fatal("extension catalog must not expose a redundant source label")
 	}
 	body, _ := marshalJSON(map[string]any{"disabled": []string{"alpha"}})
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/extensions", bytes.NewReader(body))

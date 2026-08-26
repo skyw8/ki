@@ -8,6 +8,9 @@
 // is its flat selectable view. GET /v1/meta exposes the last-used model
 // (or the first available fallback), that model's default thinking
 // effort, and user home.
+// GET /v1/mcp lists the global MCP catalog without starting a connection.
+// GET /v1/extensions lists the global extension catalog without starting a
+// sidecar.
 // Workspaces live in {KI_HOME}/workspaces.json. Session cwd comes from a
 // workspace (or a tmp+ workspace). GET /v1/sessions/{id} includes a
 // read-only catalog (availableSkills / availableMcp / availableExtensions

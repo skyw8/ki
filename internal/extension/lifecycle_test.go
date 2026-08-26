@@ -161,7 +161,7 @@ func TestDiscoverLifecycleNotIntercept(t *testing.T) {
 	writePkg(t, filepath.Join(home, "extensions"), "a", `{
 		"name":"a","capabilities":["lifecycle"],"runtime":{"kind":"rpc","command":"bin/x"}
 	}`)
-	got := Discover(home, t.TempDir(), session.Toggle{})
+	got := Discover(home, session.Toggle{})
 	if len(got.Enabled) != 1 {
 		t.Fatalf("%+v", got.Enabled)
 	}
