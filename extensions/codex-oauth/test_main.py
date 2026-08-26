@@ -2,6 +2,7 @@ import base64
 import json
 import threading
 import unittest
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import main
@@ -24,6 +25,7 @@ class CodexExtensionTest(unittest.TestCase):
             "request": {
                 "system": "system",
                 "sessionId": "session-1",
+                "maxTokens": 128000,
                 "thinkingEffort": "high",
                 "thinkingLevelMap": {"high": "xhigh"},
                 "messages": [
@@ -35,9 +37,44 @@ class CodexExtensionTest(unittest.TestCase):
         }
         body = main.build_request(payload)
         self.assertEqual(body["prompt_cache_key"], "session-1")
+        self.assertNotIn("max_output_tokens", body)
         self.assertEqual(body["reasoning"]["effort"], "xhigh")
+        self.assertIsNone(body["tools"][0]["strict"])
         self.assertEqual(body["input"][1]["id"], "fc-1")
         self.assertEqual(body["input"][2]["type"], "function_call_output")
+
+    def test_build_request_rejects_empty_input(self):
+        payload = {"model": {"id": "gpt-5.4"}, "request": {"messages": []}}
+        with self.assertRaisesRegex(RuntimeError, "no input messages"):
+            main.build_request(payload)
+
+    def test_http_error_includes_upstream_response_body(self):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                body = b'{"error":{"message":"unsupported parameter: max_output_tokens"}}'
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            payload = {
+                "model": {"id": "gpt-5.4", "baseUrl": f"http://127.0.0.1:{server.server_port}"},
+                "credential": {"value": {"access": "access", "accountId": "acct"}},
+                "request": {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]},
+            }
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                main.stream_codex(threading.Event(), payload, lambda _event: None, "stream-1")
+            self.assertIn("unsupported parameter", main.safe_error(caught.exception))
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_stream_sse(self):
         class Handler(BaseHTTPRequestHandler):

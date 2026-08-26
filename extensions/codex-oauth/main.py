@@ -53,7 +53,21 @@ def redirect_uri() -> str:
 
 
 def safe_error(exc: BaseException) -> str:
-    return str(exc)[:500] or "provider authentication failed"
+    message = str(exc).strip()
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            raw = exc.read()
+        except (OSError, ValueError):
+            raw = b""
+        if raw:
+            detail = raw.decode("utf-8", errors="replace").strip()
+            if detail:
+                try:
+                    detail = json.dumps(json.loads(detail), ensure_ascii=False, separators=(",", ":"))
+                except json.JSONDecodeError:
+                    pass
+                message = f"{message}: {detail}"
+    return message[:1000] or "provider authentication failed"
 
 
 def http_json(method: str, url: str, body: Any, timeout: float = 30) -> tuple[int, Any]:
@@ -365,12 +379,15 @@ def input_items(message: dict[str, Any], model: dict[str, Any]) -> list[dict[str
 def build_request(payload: dict[str, Any]) -> dict[str, Any]:
     request = payload.get("request", {})
     model = payload.get("model", {})
+    input_items_list = [item for message in replayable(request.get("messages", [])) for item in input_items(message, model)]
+    if not input_items_list:
+        raise RuntimeError("Codex request has no input messages")
     body: dict[str, Any] = {
         "model": model.get("id", ""),
         "store": False,
         "stream": True,
         "instructions": request.get("system") or "You are a helpful assistant.",
-        "input": [item for message in replayable(request.get("messages", [])) for item in input_items(message, model)],
+        "input": input_items_list,
         "text": {"verbosity": "low"},
         "include": ["reasoning.encrypted_content"],
         "tool_choice": "auto",
@@ -379,8 +396,6 @@ def build_request(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = request.get("sessionId", "")
     if session_id:
         body["prompt_cache_key"] = session_id[:64]
-    if request.get("maxTokens"):
-        body["max_output_tokens"] = request["maxTokens"]
     effort = request.get("thinkingEffort", "")
     if effort and effort != "off":
         mapped = (request.get("thinkingLevelMap") or {}).get(effort, effort)
@@ -394,7 +409,7 @@ def build_request(payload: dict[str, Any]) -> dict[str, Any]:
                 if tool.get("format") is not None:
                     entry["format"] = tool["format"]
             else:
-                entry = {"type": "function", "name": tool.get("name", ""), "description": tool.get("description", ""), "parameters": tool.get("parameters", {})}
+                entry = {"type": "function", "name": tool.get("name", ""), "description": tool.get("description", ""), "parameters": tool.get("parameters", {}), "strict": None}
             body["tools"].append(entry)
     return body
 

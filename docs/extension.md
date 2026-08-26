@@ -146,7 +146,7 @@ NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` 
 | `session.open` / `session.close` | — | `{sessionId,cwd}` / `{sessionId}`；通知全局 sidecar 建立或释放该 session 的业务视图 |
 | `ui.action` / `ui.submit` | UI 投影 | 用户点了面板 |
 | `bus.event` | `bus` | 他方 emit / 广播 |
-| `provider.stream.start` | `provider` | `{requestId,request}`；一次传入完整 model、credential 和 loop request，返回 `{accepted:true}` |
+| `provider.stream.start` | `provider` | `{requestId,request}`；一次传入完整 model、credential 和 loop request，`request` 使用 lower camelCase 字段名，返回 `{accepted:true}` |
 | `provider.stream.cancel` | `provider` | `{requestId}`；取消一个 provider stream |
 
 Provider auth RPC（同样只发给进程级 provider sidecar）：

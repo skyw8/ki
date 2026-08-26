@@ -39,7 +39,7 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 
 扩展声明 `provider` capability 和 `providers` 目录项后，provider 会以 `runtime.kind=rpc` 的进程级 sidecar 注册到 Registry。provider 扩展只从 `{KI_HOME}/extensions` 全局发现。provider 的 `api` 可以是内置协议名，也可以是扩展自定义字符串；自定义 API 不会落入 ki 的 Completions/Responses/Anthropic HTTP adapter。
 
-服务端只做三件事：把 provider/model/auth 元数据并入离线目录、按 provider 解析凭据、把一次完整 `loop.Request` 通过 `provider.stream.start` 交给 sidecar。sidecar 负责完整 request body、headers、网络传输、SSE/WS 解析、provider-specific tool/reasoning 状态和最终 message；Host adapter 只消费紧凑增量、做背压/取消并重建 `loop.AssistantDelta`。因此 Codex 这类需要专用客户端伪装的 streamer 应放在 provider 扩展里。
+服务端只做三件事：把 provider/model/auth 元数据并入离线目录、按 provider 解析凭据、把一次完整 `loop.Request` 通过 `provider.stream.start` 交给 sidecar。RPC 中的 `request` 使用显式 lower camelCase 字段名（如 `messages`、`system`、`maxTokens`），不能依赖 Go 默认 JSON 字段名。sidecar 负责完整 request body、headers、网络传输、SSE/WS 解析、provider-specific tool/reasoning 状态和最终 message；Host adapter 只消费紧凑增量、做背压/取消并重建 `loop.AssistantDelta`。因此 Codex 这类需要专用客户端伪装的 streamer 应放在 provider 扩展里。
 
 扩展 provider 不写入 `models.json`，其目录随扩展启用状态动态替换；provider/model 的 CRUD 端点对这类目录只读。API key 继续使用 `{"apiKey":"..."}`，OAuth 或其他扩展凭据使用 `{"type":"oauth","value":{...}}`，`value` 原样保存和私有传递，catalog/status 不包含明文。
 

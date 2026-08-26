@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,6 +11,32 @@ import (
 
 	"ki/internal/types"
 )
+
+func TestRequestJSONUsesProviderFieldNames(t *testing.T) {
+	raw, err := json.Marshal(Request{
+		SessionID: "session-1",
+		System:    "system",
+		Messages:  []types.Message{{Role: "user"}},
+		MaxTokens: 128000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"sessionId", "system", "messages", "maxTokens"} {
+		if _, ok := got[field]; !ok {
+			t.Fatalf("missing provider request field %q in %s", field, raw)
+		}
+	}
+	for _, field := range []string{"SessionID", "System", "Messages", "MaxTokens"} {
+		if _, ok := got[field]; ok {
+			t.Fatalf("unexpected Go field name %q in %s", field, raw)
+		}
+	}
+}
 
 var (
 	errCustomSpecMissing   = errors.New("custom spec missing")

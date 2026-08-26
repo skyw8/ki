@@ -169,24 +169,26 @@ type Streamer interface {
 	Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error)
 }
 
-// Request is one provider call.
+// Request is one provider call. It crosses the provider extension NDJSON
+// boundary, so its JSON names must be explicit: encoding/json otherwise emits
+// Go field names (for example, Messages), which sidecars do not consume.
 type Request struct {
 	// SessionID is optional provider cache affinity metadata. Core providers
 	// ignore it; provider extensions may use it for session-scoped protocol state.
-	SessionID               string
-	System                  string
-	Messages                []types.Message
-	Tools                   []ToolSpec
-	Provider                string
-	Model                   string
-	API                     string
-	MaxTokens               int
-	ThinkingEffort          string
-	ThinkingFormat          string
-	MaxTokensField          string
-	SupportsReasoningEffort bool
-	ForceAdaptiveThinking   bool
-	ThinkingLevelMap        map[string]*string
+	SessionID               string             `json:"sessionId"`
+	System                  string             `json:"system"`
+	Messages                []types.Message    `json:"messages"`
+	Tools                   []ToolSpec         `json:"tools"`
+	Provider                string             `json:"provider"`
+	Model                   string             `json:"model"`
+	API                     string             `json:"api"`
+	MaxTokens               int                `json:"maxTokens,omitempty"`
+	ThinkingEffort          string             `json:"thinkingEffort,omitempty"`
+	ThinkingFormat          string             `json:"thinkingFormat,omitempty"`
+	MaxTokensField          string             `json:"maxTokensField,omitempty"`
+	SupportsReasoningEffort bool               `json:"supportsReasoningEffort,omitempty"`
+	ForceAdaptiveThinking   bool               `json:"forceAdaptiveThinking,omitempty"`
+	ThinkingLevelMap        map[string]*string `json:"thinkingLevelMap,omitempty"`
 }
 
 // ToolSpec is the schema sent to the provider.
