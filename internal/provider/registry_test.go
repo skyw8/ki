@@ -174,6 +174,25 @@ func TestRegistryRegistersExtensionProviderAndOpaqueCredential(t *testing.T) {
 	}
 }
 
+func TestExtensionProviderFallsBackToFirstEnabledModel(t *testing.T) {
+	disabled := false
+	p, err := BuildExtensionProvider(ExtensionProviderSpec{
+		ID: "codex", Name: "Codex", API: "openai-codex-responses", BaseURL: "https://chatgpt.com/backend-api",
+		DefaultModel: "deleted-model", Auth: AuthSpec{Type: AuthOAuth},
+		Models: []ModelSeed{
+			{ID: "disabled-model", Enabled: &disabled},
+			{ID: "first-available"},
+			{ID: "later-model"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.DefaultModel != "first-available" {
+		t.Fatalf("default model = %q, want first enabled model", p.DefaultModel)
+	}
+}
+
 func TestRegistryFallsBackWhenLastUsedUnavailable(t *testing.T) {
 	r, err := NewRegistry(t.TempDir())
 	if err != nil {
@@ -240,10 +259,10 @@ func TestThinkingLevelsCanHideOffAndMapMinimal(t *testing.T) {
 	luna := Model{
 		Reasoning: true,
 		ThinkingLevelMap: map[string]*string{
-			"off":    nil,
+			"off":     nil,
 			"minimal": ptrLevel("low"),
-			"xhigh":  ptrLevel("xhigh"),
-			"max":    ptrLevel("max"),
+			"xhigh":   ptrLevel("xhigh"),
+			"max":     ptrLevel("max"),
 		},
 	}
 	want := []string{"minimal", "low", "medium", "high", "xhigh", "max"}

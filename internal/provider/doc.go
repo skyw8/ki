@@ -39,7 +39,9 @@
 // credentials.json and provider environment variables supply secrets. There
 // is deliberately no remote model-list refresh. models.json default is
 // last-used, not a pinned setting: if it is missing or disabled, Default
-// falls back to the first available model. DefaultThinking is the
+// falls back to the first available model. Extension provider defaultModel is
+// only a preference; if it is stale or disabled, the first enabled model is
+// used. DefaultThinking is the
 // per-model fallback (prefer medium) when effort is omitted; ClampThinking
 // maps an unsupported level onto the nearest remaining one.
 // See docs/provider.md.

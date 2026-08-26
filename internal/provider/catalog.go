@@ -37,10 +37,12 @@ type Credential struct {
 // contributed by a provider-capable extension. The extension process owns the
 // implementation.
 type ExtensionProviderSpec struct {
-	ID           string      `json:"id"`
-	Name         string      `json:"name"`
-	API          string      `json:"api"`
-	BaseURL      string      `json:"baseUrl"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	API     string `json:"api"`
+	BaseURL string `json:"baseUrl"`
+	// DefaultModel is an optional preference. A removed or disabled preference
+	// falls back to the first enabled model when the provider is built.
 	DefaultModel string      `json:"defaultModel,omitempty"`
 	Auth         AuthSpec    `json:"auth,omitzero"`
 	Models       []ModelSeed `json:"models"`
@@ -163,14 +165,27 @@ func BuildExtensionProvider(spec ExtensionProviderSpec) (Provider, error) {
 	for _, seed := range spec.Models {
 		models = append(models, resolveSeed(spec.ID, spec.API, spec.BaseURL, seed, false))
 	}
-	defaultModel := spec.DefaultModel
-	if defaultModel == "" {
-		defaultModel = models[0].ID
-	}
+	defaultModel := firstEnabledExtensionModel(models, spec.DefaultModel)
 	return Provider{
 		ID: spec.ID, Name: spec.Name, API: spec.API, BaseURL: strings.TrimRight(spec.BaseURL, "/"),
 		Auth: auth, Enabled: true, Models: models, DefaultModel: defaultModel, Runtime: "extension",
 	}, nil
+}
+
+func firstEnabledExtensionModel(models []Model, preferred string) string {
+	if preferred != "" {
+		for _, model := range models {
+			if model.ID == preferred && model.Enabled {
+				return model.ID
+			}
+		}
+	}
+	for _, model := range models {
+		if model.Enabled {
+			return model.ID
+		}
+	}
+	return ""
 }
 
 //go:embed catalog.json

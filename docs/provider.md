@@ -17,7 +17,7 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 - `catalog.json` 随二进制嵌入，内置 OpenAI、Anthropic、DeepSeek、DashScope、Z.AI、Moonshot、MiniMax、Google 和 xAI；DashScope、Z.AI、Moonshot、MiniMax 另有 `-cn` provider。它只随 Ki 发版更新，不调用供应商模型列表 API。
 - `{KI_HOME}/models.json` 保存上次选用的模型、自定义 provider/model 和内置项覆盖；`{KI_HOME}/credentials.json` 保存 API key 或 provider-owned opaque credential（0600）。密钥解析顺序为 credentials 文件再到 provider 环境变量，API 从不返回明文。
 - registry 按嵌入目录 → 用户配置合并，并在校验成功、原子替换文件后发布新快照。provider/model 可新增、禁用和删除；内置项删除覆盖即恢复基线。上次选用不可用时落到第一个有凭据的可用模型，再不行落到目录里第一个启用项；没有「钉死不能禁用」的 default。
-- provider 和模型可选 `completions` / `responses` / `anthropic`，模型可覆盖 provider 的 API/Base URL。Google 使用官方 OpenAI-compatible 入口。
+- provider 和模型可选 `completions` / `responses` / `anthropic`，模型可覆盖 provider 的 API/Base URL。Google 使用官方 OpenAI-compatible 入口。扩展 provider 的 `defaultModel` 只是可选偏好；缺失、被删除或被禁用时，自动使用第一个启用模型。
 - 模型的 `input` 声明输入模态；可选 `applyPatchToolType=freeform` 声明 Codex grammar-backed `apply_patch`。freeform custom tool 只允许配置在 Responses 模型上，避免生成协议无法表达的工具调用。
 
 配置入口是 `GET/POST/PATCH/DELETE /v1/providers` 及其 `/credential`、`/models` 子资源。创建会话、改模型或发 prompt 会把当前模型记进 `models.json` 的 last-used；`PUT /v1/default-model` 仍可显式写入同一字段。`GET /v1/models` 是同一 registry 的扁平可选视图，不存在第二份目录。

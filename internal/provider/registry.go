@@ -446,9 +446,10 @@ func ValidateExtensionProviderSpec(spec ExtensionProviderSpec) error {
 			return err
 		}
 	}
-	if spec.DefaultModel != "" && !seenModels[spec.DefaultModel] {
-		return fmt.Errorf("provider %q: default model not found %q", spec.ID, spec.DefaultModel)
-	}
+	// The manifest's defaultModel is only a preference. Extensions commonly
+	// trim their model list without updating that field; BuildExtensionProvider
+	// deliberately falls back to the first enabled model instead of making the
+	// entire provider disappear.
 	return nil
 }
 

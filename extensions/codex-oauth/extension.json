@@ -14,7 +14,6 @@
         "name": "OpenAI (ChatGPT Plus/Pro)",
         "subscription": true
       },
-      "defaultModel": "gpt-5.4",
       "models": [
         {
           "id": "gpt-5.5",
