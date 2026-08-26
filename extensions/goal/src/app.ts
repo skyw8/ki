@@ -64,6 +64,10 @@ export class GoalApp {
     private readonly sessionId: string,
   ) {}
 
+  close() {
+    this.waitTimer.clear();
+  }
+
   private exclusive<T>(fn: () => Promise<T>): Promise<T> {
     const run = this.chain.then(fn, fn);
     this.chain = run.then(

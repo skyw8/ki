@@ -85,9 +85,8 @@ func (s *Server) patchSkills(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getMCP(w http.ResponseWriter, r *http.Request) {
-	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
 	tg := toggles.Load(s.cfg.Home)
-	file := s.resources.Scan(cwd).MCP
+	file := s.resources.Scan("").MCP
 	items := []map[string]any{}
 	for _, item := range mcp.List(file, tg.MCP) {
 		row := map[string]any{
@@ -127,8 +126,7 @@ func (s *Server) patchMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getExtensions(w http.ResponseWriter, r *http.Request) {
-	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
-	snapshot := s.resources.Scan(cwd)
+	snapshot := s.resources.Scan("")
 	writeJSON(w, 200, map[string]any{"items": s.extensionCatalog(snapshot)})
 }
 

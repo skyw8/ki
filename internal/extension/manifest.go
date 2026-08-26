@@ -10,7 +10,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"ki/internal/mcp"
 	"ki/internal/provider"
 	"ki/internal/session"
 )
@@ -35,7 +34,6 @@ type Manifest struct {
 	Prompt       PromptSpec                       `json:"prompt"`
 	Skills       []string                         `json:"skills"`
 	Commands     []string                         `json:"commands"`
-	MCP          MCPSpec                          `json:"mcp"`
 	Providers    []provider.ExtensionProviderSpec `json:"providers"`
 	Runtime      RuntimeSpec                      `json:"runtime"`
 }
@@ -43,11 +41,6 @@ type Manifest struct {
 // PromptSpec lists files to append as system-prompt layer 6.
 type PromptSpec struct {
 	Append []string `json:"append"`
-}
-
-// MCPSpec inlines MCP server specs contributed by the package.
-type MCPSpec struct {
-	MCPServers map[string]mcp.ServerSpec `json:"mcpServers"`
 }
 
 // RuntimeSpec describes the optional JSON-RPC sidecar.
@@ -81,15 +74,15 @@ type PromptLayer struct {
 	Text        string
 }
 
-// Discovery is the identity-resolved scan of home then project packages.
+// Discovery is the identity-resolved scan of global packages.
 type Discovery struct {
 	All     []Descriptor
-	Enabled []Descriptor // chain order: remaining global by name, then project by name
+	Enabled []Descriptor // chain order: enabled global packages by name
 }
 
-// Discover reads extension.json from home and cwd. toggle.Allowed filters
-// Enabled; disabled packages stay in All with Enabled=false.
-func Discover(home, cwd string, toggle session.Toggle) Discovery {
+// Discover reads extension.json from the global extension directory.
+// toggle.Allowed filters Enabled; disabled packages stay in All with Enabled=false.
+func Discover(home, _ string, toggle session.Toggle) Discovery {
 	byName := map[string]Descriptor{}
 	loadDir := func(dir, scope string) {
 		entries, err := os.ReadDir(dir)
@@ -112,40 +105,29 @@ func Discover(home, cwd string, toggle session.Toggle) Discovery {
 	if home != "" {
 		loadDir(filepath.Join(home, "extensions"), "home")
 	}
-	if cwd != "" {
-		loadDir(filepath.Join(cwd, ".ki", "extensions"), "project")
-	}
 	all := make([]Descriptor, 0, len(byName))
 	for _, d := range byName {
 		all = append(all, d)
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
-	// All stays name-sorted for stable catalog listing. Enabled is the
-	// lifecycle/prompt chain: remaining global-by-name, then project-by-name.
+	// All and Enabled are both globally name-sorted. Keep separate slices so
+	// callers can use All for catalog listing without re-filtering disabled packages.
 	return Discovery{All: all, Enabled: chainOrder(all)}
 }
 
-// chainOrder is the lifecycle and prompt-append order: enabled packages with
-// no load error, home scope sorted by name, then project scope sorted by name.
-// Catalog listing uses name-sorted All separately; do not feed All into
-// Prepare without this reorder (Enabled does it).
+// chainOrder is the lifecycle and prompt-append order: enabled global packages
+// with no load error, sorted by name.
 func chainOrder(in []Descriptor) []Descriptor {
-	var globals, projects []Descriptor
+	var globals []Descriptor
 	for _, d := range in {
 		if !d.Enabled || d.Error != "" {
 			continue
 		}
-		if d.Scope == "home" {
-			globals = append(globals, d)
-		} else {
-			projects = append(projects, d)
-		}
+		globals = append(globals, d)
 	}
 	sort.Slice(globals, func(i, j int) bool { return globals[i].Name < globals[j].Name })
-	sort.Slice(projects, func(i, j int) bool { return projects[i].Name < projects[j].Name })
-	out := make([]Descriptor, 0, len(globals)+len(projects))
+	out := make([]Descriptor, 0, len(globals))
 	out = append(out, globals...)
-	out = append(out, projects...)
 	return out
 }
 
@@ -192,6 +174,11 @@ func loadPackage(root, scope string) (Descriptor, bool) {
 }
 
 func validateManifest(root string, m Manifest) error {
+	for _, capability := range m.Capabilities {
+		if !knownKinds[Kind(capability)] {
+			return fmt.Errorf("unknown capability %q", capability)
+		}
+	}
 	kind := m.Runtime.Kind
 	if kind == "" {
 		kind = runtimeNone
@@ -236,13 +223,6 @@ func validateManifest(root string, m Manifest) error {
 	for _, rel := range m.Commands {
 		if err := withinRoot(root, rel); err != nil {
 			return err
-		}
-	}
-	if hasKind(m.Capabilities, CapMCP) {
-		for name, spec := range m.MCP.MCPServers {
-			if err := mcp.ValidateServerSpec(spec); err != nil {
-				return fmt.Errorf("mcp %s: %w", name, err)
-			}
 		}
 	}
 	return nil

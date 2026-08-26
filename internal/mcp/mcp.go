@@ -96,8 +96,9 @@ type ServerInfo struct {
 	Enabled bool
 }
 
-// Load merges global then project (project wins on same name).
-func Load(home, cwd string) File {
+// Load reads the global MCP configuration. Runtime connections remain
+// session-owned by Manager even though every session sees this same catalog.
+func Load(home string, _ string) File {
 	out := File{MCPServers: map[string]ServerSpec{}, Sources: map[string]string{}}
 	merge := func(path, source string) {
 		//nolint:gosec // path is one of the bounded MCP discovery locations.
@@ -116,9 +117,6 @@ func Load(home, cwd string) File {
 	}
 	if home != "" {
 		merge(filepath.Join(home, ".mcp.json"), "home")
-	}
-	if cwd != "" {
-		merge(filepath.Join(cwd, ".ki", ".mcp.json"), "project")
 	}
 	return out
 }

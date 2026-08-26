@@ -31,9 +31,52 @@ func hasCap(caps []string, want string) bool {
 	return false
 }
 
+func sendUI(sessionID string) {
+	if os.Getenv("KI_SET_UI") != "1" || sessionID == "" {
+		return
+	}
+	text := os.Getenv("KI_STATUS_TEXT")
+	if text == "" {
+		text = "Goal · active"
+	}
+	tone := os.Getenv("KI_STATUS_TONE")
+	if tone == "" {
+		tone = "active"
+	}
+	title := os.Getenv("KI_PANEL_TITLE")
+	if title == "" {
+		title = "Goal"
+	}
+	summary := os.Getenv("KI_PANEL_SUMMARY")
+	if summary == "" {
+		summary = "fixture panel text"
+	}
+	enc := json.NewEncoder(os.Stdout)
+	_ = enc.Encode(map[string]any{
+		"jsonrpc": "2.0", "id": "ui-status", "method": "ui.setStatus",
+		"params": map[string]any{"sessionId": sessionID, "key": "goal", "text": text, "tone": tone},
+	})
+	_ = enc.Encode(map[string]any{
+		"jsonrpc": "2.0", "id": "ui-panel", "method": "ui.setPanel",
+		"params": map[string]any{
+			"sessionId": sessionID, "title": title, "summary": summary,
+			"sections": []any{map[string]any{
+				"heading": "Details",
+				"items":   []any{map[string]any{"label": "Status", "value": text}},
+			}},
+			"fields": []any{map[string]any{
+				"id": "note", "label": "Note", "type": "textarea", "value": summary,
+			}},
+			"submitLabel": "Update",
+			"actions":     []any{map[string]any{"id": "ack", "label": "Ack"}},
+		},
+	})
+}
+
 func main() {
 	sc := bufio.NewScanner(os.Stdin)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	uiSent := map[string]bool{}
 	for sc.Scan() {
 		var m msg
 		if json.Unmarshal(sc.Bytes(), &m) != nil {
@@ -52,6 +95,7 @@ func main() {
 			}
 			var p struct {
 				Capabilities []string `json:"capabilities"`
+				SessionID    string   `json:"sessionId"`
 			}
 			_ = json.Unmarshal(m.Params, &p)
 			result := map[string]any{"tools": []any{}, "commands": []any{}}
@@ -90,44 +134,7 @@ func main() {
 				result["commands"] = []any{map[string]any{"name": "sneaky"}}
 			}
 			reply(m.ID, result)
-			if os.Getenv("KI_SET_UI") == "1" {
-				text := os.Getenv("KI_STATUS_TEXT")
-				if text == "" {
-					text = "Goal · active"
-				}
-				tone := os.Getenv("KI_STATUS_TONE")
-				if tone == "" {
-					tone = "active"
-				}
-				title := os.Getenv("KI_PANEL_TITLE")
-				if title == "" {
-					title = "Goal"
-				}
-				summary := os.Getenv("KI_PANEL_SUMMARY")
-				if summary == "" {
-					summary = "fixture panel text"
-				}
-				enc := json.NewEncoder(os.Stdout)
-				_ = enc.Encode(map[string]any{
-					"jsonrpc": "2.0", "id": "ui-status", "method": "ui.setStatus",
-					"params": map[string]any{"key": "goal", "text": text, "tone": tone},
-				})
-				_ = enc.Encode(map[string]any{
-					"jsonrpc": "2.0", "id": "ui-panel", "method": "ui.setPanel",
-					"params": map[string]any{
-						"title": title, "summary": summary,
-						"sections": []any{map[string]any{
-							"heading": "Details",
-							"items":   []any{map[string]any{"label": "Status", "value": text}},
-						}},
-						"fields": []any{map[string]any{
-							"id": "note", "label": "Note", "type": "textarea", "value": summary,
-						}},
-						"submitLabel": "Update",
-						"actions":     []any{map[string]any{"id": "ack", "label": "Ack"}},
-					},
-				})
-			}
+			// Global sidecars learn the target session from the lifecycle RPC.
 		case "command.invoke":
 			var p struct {
 				Name string `json:"name"`
@@ -147,10 +154,15 @@ func main() {
 			}
 		case "lifecycle.invoke":
 			var wrap struct {
-				Event   string          `json:"event"`
-				Payload json.RawMessage `json:"payload"`
+				Event     string          `json:"event"`
+				Payload   json.RawMessage `json:"payload"`
+				SessionID string          `json:"sessionId"`
 			}
 			_ = json.Unmarshal(m.Params, &wrap)
+			if !uiSent[wrap.SessionID] {
+				sendUI(wrap.SessionID)
+				uiSent[wrap.SessionID] = true
+			}
 			if wrap.Event == "input" {
 				if os.Getenv("KI_SWALLOW_INPUT") == "1" {
 					reply(m.ID, map[string]any{"swallow": true})
@@ -193,6 +205,24 @@ func main() {
 				}
 			}
 			reply(m.ID, map[string]any{})
+		case "lifecycle.event":
+			var event struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(m.Params, &event)
+			if !uiSent[event.SessionID] {
+				sendUI(event.SessionID)
+				uiSent[event.SessionID] = true
+			}
+		case "session.open":
+			var open struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(m.Params, &open)
+			if !uiSent[open.SessionID] {
+				sendUI(open.SessionID)
+				uiSent[open.SessionID] = true
+			}
 		case "ui.action", "ui.submit":
 			if f := os.Getenv("KI_UI_MARKER"); f != "" {
 				_ = os.WriteFile(f, []byte(m.Method), 0o600)

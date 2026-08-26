@@ -93,7 +93,7 @@ func TestRewriteInputAndCompactCancel(t *testing.T) {
 	rewrite := testLifecycleDesc(t, "rewrite", []string{"lifecycle"}, map[string]string{"KI_REWRITE_INPUT": "rewritten-prompt"})
 	m := NewManager(home, nil)
 	_ = m.Prepare(ctx, "sess-rw", t.TempDir(), []Descriptor{rewrite})
-	defer m.CloseSession("sess-rw")
+	defer m.Close()
 	got, swallow := m.ApplyInput(ctx, "sess-rw", "hello")
 	if swallow || got != "rewritten-prompt" {
 		t.Fatalf("rewrite got %q swallow %v", got, swallow)
@@ -102,7 +102,7 @@ func TestRewriteInputAndCompactCancel(t *testing.T) {
 	swallowD := testLifecycleDesc(t, "swallow", []string{"lifecycle"}, map[string]string{"KI_SWALLOW_INPUT": "1"})
 	ms := NewManager(home, nil)
 	_ = ms.Prepare(ctx, "sess-sw", t.TempDir(), []Descriptor{swallowD})
-	defer ms.CloseSession("sess-sw")
+	defer ms.Close()
 	got, swallow = ms.ApplyInput(ctx, "sess-sw", "hello")
 	if !swallow || got != "" {
 		t.Fatalf("swallow got %q swallow %v", got, swallow)
@@ -111,7 +111,7 @@ func TestRewriteInputAndCompactCancel(t *testing.T) {
 	cancelD := testLifecycleDesc(t, "ccancel", []string{"lifecycle"}, map[string]string{"KI_COMPACT_CANCEL": "1"})
 	mc := NewManager(home, nil)
 	_ = mc.Prepare(ctx, "sess-cc", t.TempDir(), []Descriptor{cancelD})
-	defer mc.CloseSession("sess-cc")
+	defer mc.Close()
 	ok, summary := mc.CompactAllowed(ctx, "sess-cc")
 	if ok || summary != "" {
 		t.Fatalf("cancel compact ok=%v summary=%q", ok, summary)
@@ -120,7 +120,7 @@ func TestRewriteInputAndCompactCancel(t *testing.T) {
 	sumD := testLifecycleDesc(t, "csum", []string{"lifecycle"}, map[string]string{"KI_COMPACT_SUMMARY": "custom-summary"})
 	msum := NewManager(home, nil)
 	_ = msum.Prepare(ctx, "sess-cs", t.TempDir(), []Descriptor{sumD})
-	defer msum.CloseSession("sess-cs")
+	defer msum.Close()
 	ok, summary = msum.CompactAllowed(ctx, "sess-cs")
 	if !ok || summary != "custom-summary" {
 		t.Fatalf("summary compact ok=%v summary=%q", ok, summary)
@@ -133,7 +133,7 @@ func TestRegisterToolsVisibleOnNextPrepare(t *testing.T) {
 	d := testLifecycleDesc(t, "regtools", []string{"lifecycle", "tool"}, nil)
 	m := NewManager(t.TempDir(), nil)
 	first := m.Prepare(ctx, "sess", t.TempDir(), []Descriptor{d})
-	defer m.CloseSession("sess")
+	defer m.Close()
 	for _, tl := range first {
 		if tl.Name() == "ext_ping" {
 			t.Fatal("ext_ping present before register")

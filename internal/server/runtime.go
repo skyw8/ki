@@ -11,9 +11,8 @@ import (
 	"ki/internal/toggles"
 )
 
-// warmupTimeout bounds one open-session Prepare. Extension initialize is 10s
-// and MCP handshake is 20s; they run in parallel. The composer unlocks when
-// this ends, success or failure — do not spin past it.
+// warmupTimeout bounds one open-session resource preparation. Global
+// extensions and session MCP connections are prepared in parallel.
 const warmupTimeout = 25 * time.Second
 
 type runtimePrep struct {
@@ -44,7 +43,7 @@ func (s *Server) resetRuntimeExcept(active map[string]bool) {
 	s.runtimeMu.Unlock()
 }
 
-// kickWarmup starts session-scoped extension + MCP Prepare in the background.
+// kickWarmup starts the global extension Prepare and session MCP Prepare in the background.
 // Why: the warmup boundary is opening this session (create/GET/fork), not
 // List and not serve boot. A sidebar of dozens of jsonl files must not spawn
 // sidecars. GET does not await handshake so a slow npm/uvx install cannot
@@ -82,16 +81,16 @@ func (s *Server) warmupSession(id, cwd string, st *runtimePrep) {
 	}
 	snapshot := s.resources.Load(id, cwd)
 	tg := toggles.Load(s.cfg.Home)
-	enabled := extension.Enabled(snapshot.Extensions, tg.Extensions)
 	mcpFile := snapshot.MCP
 	mcpCached := snapshot.MCPServers
 	rev := snapshot.Revision
+	enabled := extension.Enabled(snapshot.Extensions, tg.Extensions)
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		if s.ext == nil {
-			return
+		if s.ext != nil {
+			s.ext.Configure(snapshot.Extensions)
+			s.ext.Prepare(ctx, id, cwd, enabled)
 		}
-		s.ext.Prepare(ctx, id, cwd, enabled)
 	})
 	wg.Go(func() {
 		if s.mcp == nil {

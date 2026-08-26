@@ -97,7 +97,7 @@ func (l *Loader) scan(cwd string) Snapshot {
 		ExtensionPrompts:   extension.PromptLayers(found.Enabled),
 		Skills:             skills.Scan(l.home, cwd, extension.SkillRoots(found.Enabled)...),
 		Prompts:            mergedPrompts,
-		MCP:                extension.MergeMCP(mcp.Load(l.home, cwd), found.Enabled),
+		MCP:                mcp.Load(l.home, cwd),
 		MCPServers:         map[string]mcp.ServerState{},
 		Extensions:         found.All,
 	}

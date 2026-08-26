@@ -69,9 +69,8 @@ func (m *ProviderManager) handleAuthEvent(event ProviderAuthEvent) {
 	}
 }
 
-// Replace registers provider descriptors from enabled extensions. A provider
-// runtime is process-global even when its descriptor came from the current
-// project, because its catalog and credential are shared by all sessions.
+// Replace registers provider descriptors from globally enabled extensions.
+// A provider runtime and its catalog/credential are shared by all sessions.
 func (m *ProviderManager) Replace(descriptors []Descriptor) error {
 	nextDescs := map[string]Descriptor{}
 	nextSpecs := map[string]provider.ExtensionProviderSpec{}

@@ -109,7 +109,7 @@ func TestPrepareEmitsUndeclaredExtensionError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	tools := m.Prepare(ctx, "sess", t.TempDir(), []Descriptor{d})
-	defer m.CloseSession("sess")
+	defer m.Close()
 	if len(tools) != 0 {
 		t.Fatalf("tools %v", tools)
 	}
@@ -120,15 +120,15 @@ func TestPrepareEmitsUndeclaredExtensionError(t *testing.T) {
 
 func TestPrepareOrderFollowsDiscoverEnabled(t *testing.T) {
 	// Drive the same path server uses: Discover → Enabled(All) → Prepare → items.
-	// Name-sorted All is alpha,zeta; chain (and intercept) is home zeta then project alpha.
+	// Global sidecars are ordered by name.
 	bin := buildTestSidecar(t)
 	home := t.TempDir()
 	cwd := t.TempDir()
 	for _, spec := range []struct {
 		root, name string
 	}{
+		{filepath.Join(home, "extensions"), "alpha"},
 		{filepath.Join(home, "extensions"), "zeta"},
-		{filepath.Join(cwd, ".ki", "extensions"), "alpha"},
 	} {
 		dir := filepath.Join(spec.root, spec.name)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -148,7 +148,7 @@ func TestPrepareOrderFollowsDiscoverEnabled(t *testing.T) {
 		}
 	}
 	got := Discover(home, cwd, session.Toggle{})
-	if len(got.Enabled) != 2 || got.Enabled[0].Name != "zeta" || got.Enabled[1].Name != "alpha" {
+	if len(got.Enabled) != 2 || got.Enabled[0].Name != "alpha" || got.Enabled[1].Name != "zeta" {
 		t.Fatalf("Discover.Enabled %v", namesOf(got.Enabled))
 	}
 	// Mirror server: snapshot.Extensions is All; Prepare gets Enabled(All, toggle).
@@ -157,13 +157,13 @@ func TestPrepareOrderFollowsDiscoverEnabled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = m.Prepare(ctx, "sess", cwd, chain)
-	defer m.CloseSession("sess")
+	defer m.Close()
 	items := m.items("sess")
 	if len(items) != 2 {
 		t.Fatalf("items %d: %+v", len(items), items)
 	}
-	if items[0].name != "zeta" || items[1].name != "alpha" {
-		t.Fatalf("Prepare/items order %s,%s want zeta,alpha (Discover chain, not name-sorted All)", items[0].name, items[1].name)
+	if items[0].name != "alpha" || items[1].name != "zeta" {
+		t.Fatalf("Prepare/items order %s,%s want alpha,zeta", items[0].name, items[1].name)
 	}
 }
 

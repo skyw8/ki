@@ -9,12 +9,11 @@
 | 位置 | Scope |
 |---|---|
 | `{KI_HOME}/extensions/<name>/` | 全局（`home`） |
-| `<cwd>/.ki/extensions/<name>/` | 项目（`project`） |
 
-- `name` 是主键：同名时项目覆盖全局。`name` 须匹配 `^[a-z0-9][a-z0-9-]{0,62}$`，禁止 `ki.` 前缀。
+- `name` 是主键。`name` 须匹配 `^[a-z0-9][a-z0-9-]{0,62}$`，禁止 `ki.` 前缀。
 - 启用开关是进程级 `{KI_HOME}/toggles.json` 的 `extensions.disabled`（缺省空 = 全开）。
-- 禁用的包仍出现在列表（`enabled: false`），但不贡献、不拉起 sidecar / 扩展 MCP。
-- 目录列表按名字排序（`Discover.All`）。**链序**（prompt 追加 / sync 生命周期）是「全局按名 → 项目按名」（`Enabled` / `Discover.Enabled`）。
+- 禁用的包仍出现在列表（`enabled: false`），但不贡献、不拉起 sidecar。
+- 目录列表和 prompt/lifecycle 链均按全局包名排序。
 
 ## 包布局
 
@@ -36,12 +35,11 @@ my-ext/
   "name": "protected-paths",
   "version": "0.1.0",
   "description": "…",
-  "capabilities": ["prompt.append", "skill", "command", "mcp", "tool", "lifecycle", "bus", "provider"],
+  "capabilities": ["prompt.append", "skill", "command", "tool", "lifecycle", "bus", "provider"],
   "failClosed": false,
   "prompt": { "append": ["prompt/APPEND.md"] },
   "skills": ["skills"],
   "commands": ["commands"],
-  "mcp": { "mcpServers": { "time": { "command": "uvx", "args": ["mcp-server-time"] } } },
   "providers": [{
     "id": "example-provider",
     "name": "Example Provider",
@@ -67,7 +65,6 @@ my-ext/
 | `prompt.append` | 声明式 | system 第 6 层 |
 | `skill` | 声明式 | 额外 skill 根 |
 | `command` | 声明式 + 代码 | markdown slash；sidecar `command.invoke` |
-| `mcp` | 声明式 | 内联 `mcpServers` |
 | `tool` | sidecar | `tool.execute`；模型裸名 |
 | `lifecycle` | sidecar | 订事件：`initialize.subscriptions` |
 | `bus` | sidecar | 扩展间总线 |
@@ -94,7 +91,7 @@ my-ext/
 - **sync**：停靠点 `lifecycle.invoke`（`event` + payload + `ctx`），await，应用 result。
 - **async**：persist/SSE **之后** notification `lifecycle.event`；瘦 DTO；fail-open。
 - 同一 event：先 sync 链，再 async（async 见最终态）。
-- 链序：全局按名 → 项目按名。
+- 链序：全局按名。
 - `before_agent_start`：**每个 occupy 一次**；steer 不重跑。每 turn 改 messages 用 `context`。
 - sync 载荷带紧凑 `ctx`：`idle`、`model`、`aborted`。`before_agent_start` 可见 system 全文。
 
@@ -131,7 +128,7 @@ my-ext/
 
 ## Sidecar 协议
 
-NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_SESSION_ID`、`KI_CWD`、`KI_HOME`、`KI_EXTENSION_ROOT` + 平台必需 + `runtime.env`。
+NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` + 平台必需 + `runtime.env`。全局 sidecar 不固定 `KI_SESSION_ID`/`KI_CWD`；session 相关 RPC 显式携带 `sessionId`。
 
 超时：`initialize` 10s；sync 生命周期 2s；`tool.execute` 120s；`command.invoke` 15s；provider stream start 10s。
 
@@ -139,13 +136,14 @@ NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_SESSION_ID`、`KI_CWD`、`KI
 
 | method | 门闸 | 说明 |
 |---|---|---|
-| `initialize` | — | params：session/cwd/home/extensionRoot/capabilities/scope/providers；result：`{tools,commands,fallback,subscriptions}` |
+| `initialize` | — | params：home/extensionRoot/capabilities/scope/providers；全局扩展的 `sessionId`/`cwd` 为空；result：`{tools,commands,fallback,subscriptions}` |
 | `shutdown` | — | 关闭 |
-| `tool.execute` | `tool` | 进度：`tool.progress` |
-| `command.invoke` | `command` | `{handled,notice,prompt}` |
-| `lifecycle.invoke` | `lifecycle` + 该 event sync | 同步改流 |
-| `lifecycle.event` | `lifecycle` + 该 event async | 通知 |
+| `tool.execute` | `tool` | `{sessionId,...}`；进度：`tool.progress` |
+| `command.invoke` | `command` | `{sessionId,name,args}`；result：`{handled,notice,prompt}` |
+| `lifecycle.invoke` | `lifecycle` + 该 event sync | `{sessionId,...}`；同步改流 |
+| `lifecycle.event` | `lifecycle` + 该 event async | `{sessionId,...}` 通知 |
 | `cancel` | — | `{id}` |
+| `session.open` / `session.close` | — | `{sessionId,cwd}` / `{sessionId}`；通知全局 sidecar 建立或释放该 session 的业务视图 |
 | `ui.action` / `ui.submit` | UI 投影 | 用户点了面板 |
 | `bus.event` | `bus` | 他方 emit / 广播 |
 | `provider.stream.start` | `provider` | `{requestId,request}`；一次传入完整 model、credential 和 loop request，返回 `{accepted:true}` |
@@ -162,7 +160,7 @@ Provider auth RPC（同样只发给进程级 provider sidecar）：
 
 sidecar 通过 `provider.auth.event` notification 报告 `auth_url`、`device_code`、`completed`、`error`。`completed` 的 credential 只在 sidecar 与 server auth broker 之间传递，server 对 WebUI/CLI 只返回状态、URL 和设备码。
 
-provider capability 使用进程级 sidecar，不随 session 各拉起一个进程。全局或当前项目 `.ki/extensions` 都可以声明 provider；项目 provider 在当前 server 进程内同样按全局 runtime 共享。`providers` 是扩展清单中的离线目录，provider sidecar 只负责对应 provider 的认证/网络/响应解析；宿主只保留模型目录、凭据状态、取消、背压和 loop 适配。一次 stream 的结果通过 sidecar → Host 的 `provider.stream.event` notification 回传：
+provider capability 使用进程级 sidecar，不随 session 各拉起一个进程。provider 只能从 `{KI_HOME}/extensions` 声明；`providers` 是扩展清单中的离线目录，provider sidecar 只负责对应 provider 的认证/网络/响应解析；宿主只保留模型目录、凭据状态、取消、背压和 loop 适配。一次 stream 的结果通过 sidecar → Host 的 `provider.stream.event` notification 回传：
 
 ```json
 {"jsonrpc":"2.0","method":"provider.stream.event","params":{"requestId":"stream-1","type":"text_delta","contentIndex":0,"delta":"hello"}}
@@ -178,9 +176,9 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 
 | method | 门闸 | 说明 |
 |---|---|---|
-| `session.enqueue` | — | `content`、`deliverAs`=`queue`\|`steer`\|`nextTurn`（默认 queue）、`when`=`now`\|`settled`、`idempotencyKey`、`kind`=`user`\|`custom` |
-| `session.snapshot` | — | idle、running、queues、model、tools、commands |
-| `session.appendEntry` | — | jsonl custom；强制本扩展名；不进 provider context |
+| `session.enqueue` | — | `{sessionId,...}`；`content`、`deliverAs`=`queue`\|`steer`\|`nextTurn`（默认 queue）、`when`=`now`\|`settled`、`idempotencyKey`、`kind`=`user`\|`custom` |
+| `session.snapshot` | — | `{sessionId}`；idle、running、queues、model、tools、commands |
+| `session.appendEntry` | — | `{sessionId,...}`；jsonl custom；强制本扩展名；不进 provider context |
 | `session.abort` | — | 同 POST abort |
 | `session.compact` | — | 同 HTTP compact |
 | `session.patch` | — | model / thinkingEffort |
@@ -192,7 +190,7 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 | `bus.broadcast` | `bus` | fire-and-forget，不等待 |
 | `bus.subscribe` / `bus.unsubscribe` | `bus` | 运行中改订阅 |
 
-`ui.setPanel` 由 WebUI 按通用壳渲染，Host 不解析扩展语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
+上表 inbound 方法都必须带 `sessionId`，bus 订阅也按 session 维护。`session.open` 是 Host→sidecar 的 session 生命周期通知。`ui.setPanel` 由 WebUI 按通用壳渲染，Host 不解析扩展语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
 
 `origin` 一律 `extension:<name>`，并写进该次 occupy 的 user message（WebUI 气泡可区分）。扩展 FIFO 与用户 `queue.json` **分轨**；occupy release 后 **先用户 queue，再扩展 FIFO**。`when=settled` 在 `agent_settled` 后只写入扩展 FIFO（不直接 occupy），再走同一套 dispatch。`nextTurn` 挂到下次**用户** occupy，注入 messages，不自触发 occupy。`session.setActiveTools` 忽略未知名并发 `extension_notice` warn；全部未知名则保留上一套工具。`session.patch` 与 HTTP PATCH 同一套 ResolveSpec / thinking 校验。`session_before_compact` 可 cancel 或返回定制 summary（跳过模型摘要）。
 
@@ -206,18 +204,18 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 
 ## 生命周期
 
-1. Scan 只读 Discover。
-2. **打开会话**（`POST /v1/sessions`、`GET /v1/sessions/{id}`、fork）后台 `Prepare` sidecar 与 MCP 并行。List 和 serve 启动不扫 jsonl 去 spawn。
+1. Scan 只读 Discover；sidecar 是进程级资源，每个扩展最多启动一个。
+2. **打开会话**（`POST /v1/sessions`、`GET /v1/sessions/{id}`、fork）后台 `Prepare` 全局 sidecar 与 session MCP 连接并行，并发送 `session.open`。List 和 serve 启动不扫 jsonl 去 spawn。
 3. `GET /v1/sessions/{id}` 带 `runtime.ready`；未就绪也可先出 transcript。`runtime_ready` SSE（sideband，不进 jsonl）。失败也算 ready。
-4. `runPrompt` 的 `Prepare` 是 ensure：已预热则 no-op。
+4. `runPrompt` 的 `Prepare` 是 ensure：已预热的全局 sidecar 则 no-op，并只重建当前 session 的工具视图。
 5. Steer 不重新 Prepare，不重跑 `before_agent_start`。
-6. Reload / Close：杀 sidecar 进程组并清 ready。忙时 Reload 排到 occupy release 之后。打开中的会话 Reload 后再预热。
+6. Reload / Close：Reload 清理 session 视图；server Close 才杀全局 sidecar 进程组。忙时 Reload 排到 occupy release 之后。打开中的会话 Reload 后再预热 MCP 和扩展视图。
 
 ## HTTP
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| GET / PATCH | `/v1/extensions?workspaceId=` | 列表 / `disabled` |
+| GET / PATCH | `/v1/extensions` | 全局列表 / `disabled` |
 | GET | `/v1/sessions/{id}` | `availableExtensions`、`commands`、`extensionUi`、`queued`、`extQueued`、`runtime.ready` |
 | POST | `/v1/reload` | 关 sidecar |
 

@@ -100,7 +100,7 @@ test("start returns prompt; before_agent_start appends system", async () => {
   try {
     s.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { sessionId: "sess-2", home, capabilities: [] } });
     await s.recv();
-    s.send({ jsonrpc: "2.0", id: 2, method: "command.invoke", params: { name: "goal", args: "fix the tests" } });
+    s.send({ jsonrpc: "2.0", id: 2, method: "command.invoke", params: { sessionId: "sess-2", name: "goal", args: "fix the tests" } });
     const cmd = await s.recv();
     const out = cmd.result as { handled: boolean; prompt?: string };
     assert.equal(out.handled, false);
@@ -109,7 +109,7 @@ test("start returns prompt; before_agent_start appends system", async () => {
       jsonrpc: "2.0",
       id: 3,
       method: "lifecycle.invoke",
-      params: { event: "before_agent_start", payload: { system: "BASE SYSTEM" } },
+      params: { sessionId: "sess-2", event: "before_agent_start", payload: { system: "BASE SYSTEM" } },
     });
     const life = await s.recv();
     const sys = (life.result as { system?: string }).system ?? "";

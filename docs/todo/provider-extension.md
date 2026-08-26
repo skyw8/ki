@@ -6,7 +6,7 @@
 
 - 第一阶段基础设施已完成：`provider` capability、进程级 ProviderManager、provider stream NDJSON RPC、紧凑 delta 到 `loop.AssistantDelta` 的 Host adapter、扩展模型目录和 opaque credential 存储。
 - 已覆盖 provider sidecar 惰性启动、同一进程并发 stream、取消、重载 epoch 防串接、目录冲突和凭据不泄漏到 catalog 的测试。
-- 第二阶段已完成首版：`.ki/extensions/codex-oauth` 提供 OAuth browser/device-code 登录、refresh、Codex Responses SSE streamer、工具/推理回放，以及 WebUI/CLI 登录入口；WebSocket、zstd 压缩和 response continuation 暂留后续优化。
+- 第二阶段已完成首版：全局 `{KI_HOME}/extensions/codex-oauth` 提供 OAuth browser/device-code 登录、refresh、Codex Responses SSE streamer、工具/推理回放，以及 WebUI/CLI 登录入口；WebSocket、zstd 压缩和 response continuation 暂留后续优化。
 
 ## 1. pi 的实现要点
 
@@ -32,7 +32,7 @@ Codex streamer 应该属于 provider 扩展，而不是 ki core 或只负责 OAu
 | provider 目录 | `Registry` 只有固定的 `completions` / `responses` / `anthropic` 和 API key | 不能声明自定义 API、扩展模型或扩展认证 |
 | 路由 | `server.router` 统一 `Resolve` 后构造 `provider.NewLiveModel` | 没有按 provider 绑定 runtime/streamer |
 | 扩展 sidecar | `before_provider_request` 只能改 model/messages/tools，`before_provider_headers` 只能改 URL 和非敏感 headers | 不能改完整 body、接管响应流、实现自定义协议 |
-| 生命周期 | sidecar 按 session 启动 | OAuth/provider 状态无法自然跨 session 复用 |
+| 生命周期 | provider sidecar 按进程启动并跨 session 复用 | OAuth/provider 状态可自然跨 session 复用 |
 | 凭据 | `credentials.json` 只有 `apiKey`，没有 OAuth 类型、刷新锁和交互流程 | 无法安全保存/刷新 Codex subscription token |
 | IR 回放 | `types` 没有持久化 `thinkingSignature`、`responseId`、text signature 等 Responses 元数据 | Codex reasoning 加密内容和连续请求无法可靠回放 |
 | 客户端 | WebUI 只有 API key 表单，CLI 没有 provider login | 无法发起浏览器/device-code OAuth |
@@ -45,7 +45,7 @@ Codex streamer 应该属于 provider 扩展，而不是 ki core 或只负责 OAu
 2. 增加 `provider` capability，但使用独立的、进程级 `ProviderManager`；不要复用当前每 session 的 lifecycle sidecar。provider sidecar 要支持多 session 并发、reload、退出清理和请求取消。
 3. 扩展 NDJSON RPC：初始化返回 provider/model/auth 描述；增加 `auth.login`、`auth.refresh`、`provider.stream.start`、`provider.stream.cancel`，以 `requestId` 标识流。stream 只传输紧凑的 `start`、文本/thinking/tool-call delta、`done`、`error` 事件，不要每个 token 重复传输完整 `Partial`；host adapter 负责累积并还原 ki 的 `AssistantDelta`。
 4. 增加宿主 auth broker：OAuth 的 URL、device code、select、manual code 等 UI-neutral 事件由 server 统一转发到 CLI/WebUI；OAuth 的 endpoint、PKCE、token exchange/refresh 和 account ID 提取由扩展实现，凭据作为 provider-owned opaque value 存储并只在私有 RPC 中传递。凭据文件改为带 `type` 的 API key/OAuth 联合 schema，原子写入、`0600`，刷新按 provider 加锁并双重检查。
-5. 扩展 provider/model 元数据：自定义 API ID、输入模态、thinking 映射、custom tool/freeform 能力、pricing 和 auth 类型；`/v1/providers` 与模型选择只返回非敏感状态。provider runtime 仍按进程共享，但允许当前项目 `.ki/extensions` 提供 provider descriptor，凭据保持全局存储。
+5. 扩展 provider/model 元数据：自定义 API ID、输入模态、thinking 映射、custom tool/freeform 能力、pricing 和 auth 类型；`/v1/providers` 与模型选择只返回非敏感状态。provider runtime 按进程共享，provider descriptor 只从 `{KI_HOME}/extensions` 发现，凭据保持全局存储。
 6. 补齐 Responses 兼容 IR：至少持久化 provider opaque 的 `thinkingSignature` 和 assistant `responseId`，必要时补充 text signature、raw stop reason、end-turn；明确哪些字段进入 jsonl、哪些只在流式期间存在。新增 fake provider/extension，覆盖多 session、取消、断流、重载、错误和 secret 泄漏测试。
 
 ## 4. 第二阶段：Codex OAuth provider 扩展
@@ -62,7 +62,7 @@ Codex streamer 应该属于 provider 扩展，而不是 ki core 或只负责 OAu
 
 ### 首版落地
 
-- 扩展源码与 manifest：`.ki/extensions/codex-oauth/`；sidecar 使用 `uv run --project . main.py` 直接启动，不生成二进制文件，由项目级 extension discovery 直接加载。
+- 扩展源码与 manifest：`extensions/codex-oauth/`；安装到 `{KI_HOME}/extensions/codex-oauth` 后由全局 extension discovery 加载。sidecar 使用 `uv run --project . main.py` 直接启动，不生成二进制文件。
 - sidecar 实现 `provider.auth.start`、`provider.auth.input`、`provider.auth.cancel`、`provider.auth.refresh`；OAuth credential 保持 `{access,refresh,expires,accountId}` opaque，JWT 缺少 `payload["https://api.openai.com/auth"].chatgpt_account_id` 时拒绝保存。
 - Server 暴露 `POST /v1/providers/{id}/auth/login`、`GET /v1/providers/{id}/auth/{requestId}`、`POST .../input`、`POST .../cancel`、`POST .../logout`；状态接口不返回 credential。每次 extension stream 前按 provider 加锁刷新，并在锁后重新读取 credentials。
 - WebUI 供应商页已提供 Browser/Device code/Logout；CLI 增加 `ki provider login <provider> [--device-code]` 与 `ki provider logout <provider>`。端口转发场景可使用 device code 或粘贴 redirect URL。

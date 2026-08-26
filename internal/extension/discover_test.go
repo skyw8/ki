@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"ki/internal/mcp"
 	"ki/internal/session"
 )
 
@@ -20,7 +19,7 @@ func writePkg(t *testing.T, root, name, body string) {
 	}
 }
 
-func TestDiscoverDefaultEnabledAndDisabledOmitsMerge(t *testing.T) {
+func TestDiscoverGlobalOnlyAndDisabledCatalog(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	writePkg(t, filepath.Join(home, "extensions"), "alpha", `{
@@ -30,24 +29,24 @@ func TestDiscoverDefaultEnabledAndDisabledOmitsMerge(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "extensions", "alpha", "APPEND.md"), []byte("ALPHA"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writePkg(t, filepath.Join(cwd, ".ki", "extensions"), "beta", `{
+	writePkg(t, filepath.Join(cwd, "extensions"), "beta", `{
 		"name":"beta","capabilities":["prompt.append"],
 		"prompt":{"append":["APPEND.md"]}
 	}`)
-	if err := os.WriteFile(filepath.Join(cwd, ".ki", "extensions", "beta", "APPEND.md"), []byte("BETA"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cwd, "extensions", "beta", "APPEND.md"), []byte("BETA"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got := Discover(home, cwd, session.Toggle{})
-	if len(got.All) != 2 || !got.All[0].Enabled {
+	if len(got.All) != 1 || got.All[0].Name != "alpha" || !got.All[0].Enabled {
 		t.Fatalf("default on: %+v", got.All)
 	}
 	layers := PromptLayers(got.Enabled)
-	if len(layers) != 2 || layers[0].Text != "ALPHA" || layers[1].Text != "BETA" {
+	if len(layers) != 1 || layers[0].Text != "ALPHA" {
 		t.Fatalf("layers %+v", layers)
 	}
 	got = Discover(home, cwd, session.Toggle{Disabled: []string{"alpha"}})
 	layers = PromptLayers(got.Enabled)
-	if len(layers) != 1 || layers[0].ExtensionID != "beta" {
+	if len(layers) != 0 {
 		t.Fatalf("disabled alpha: %+v", layers)
 	}
 	var listed bool
@@ -61,35 +60,26 @@ func TestDiscoverDefaultEnabledAndDisabledOmitsMerge(t *testing.T) {
 	}
 }
 
-func TestDiscoverProjectReplacesGlobalName(t *testing.T) {
+func TestDiscoverIgnoresProjectExtension(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	writePkg(t, filepath.Join(home, "extensions"), "dup", `{"name":"dup","capabilities":["skill"],"skills":["skills"]}`)
-	writePkg(t, filepath.Join(cwd, ".ki", "extensions"), "dup", `{"name":"dup","capabilities":["skill"],"skills":["skills"]}`)
+	writePkg(t, filepath.Join(cwd, "extensions"), "dup", `{"name":"dup","capabilities":["skill"],"skills":["skills"]}`)
 	got := Discover(home, cwd, session.Toggle{})
-	if len(got.All) != 1 || got.All[0].Scope != "project" {
+	if len(got.All) != 1 || got.All[0].Scope != "home" {
 		t.Fatalf("%+v", got.All)
 	}
 }
 
-func TestMergeMCPUserWinsAndPrefixHelper(t *testing.T) {
+func TestDiscoverRejectsExtensionMCPDeclaration(t *testing.T) {
 	home := t.TempDir()
 	writePkg(t, filepath.Join(home, "extensions"), "time", `{
 		"name":"time","capabilities":["mcp"],
 		"mcp":{"mcpServers":{"clock":{"command":"true"},"dup":{"command":"ext"}}}
 	}`)
-	base := mcp.File{MCPServers: map[string]mcp.ServerSpec{"dup": {Command: "user"}}, Sources: map[string]string{"dup": "home"}}
 	d := Discover(home, t.TempDir(), session.Toggle{})
-	merged := MergeMCP(base, d.Enabled)
-	if merged.MCPServers["dup"].Command != "user" {
-		t.Fatalf("user mcp should win: %+v", merged)
-	}
-	if merged.Sources["clock"] != "extension:time" {
-		t.Fatalf("source %+v", merged.Sources)
-	}
-	prefixed := PrefixMCPTools([]mcp.ToolDefinition{{Name: "now"}}, "time")
-	if len(prefixed) != 1 || prefixed[0].Name != "time/now" || prefixed[0].WireName != "now" {
-		t.Fatalf("%+v", prefixed)
+	if len(d.All) != 1 || d.All[0].Error == "" {
+		t.Fatal("obsolete MCP capability should be rejected")
 	}
 }
 
@@ -135,7 +125,7 @@ func TestDiscoverRejectsProviderWithoutSidecar(t *testing.T) {
 }
 
 func TestEnabledChainOrderMatchesDiscover(t *testing.T) {
-	// Name-sorted All would be alpha then zeta; chain order is home zeta then project alpha.
+	// Global catalog and chain order are both name-sorted.
 	home := t.TempDir()
 	cwd := t.TempDir()
 	writePkg(t, filepath.Join(home, "extensions"), "zeta", `{
@@ -144,25 +134,22 @@ func TestEnabledChainOrderMatchesDiscover(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "extensions", "zeta", "A.md"), []byte("Z"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writePkg(t, filepath.Join(cwd, ".ki", "extensions"), "alpha", `{
+	writePkg(t, filepath.Join(cwd, "extensions"), "alpha", `{
 		"name":"alpha","capabilities":["prompt.append"],"prompt":{"append":["A.md"]}
 	}`)
-	if err := os.WriteFile(filepath.Join(cwd, ".ki", "extensions", "alpha", "A.md"), []byte("A"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cwd, "extensions", "alpha", "A.md"), []byte("A"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got := Discover(home, cwd, session.Toggle{})
-	if len(got.All) != 2 || got.All[0].Name != "alpha" || got.All[1].Name != "zeta" {
+	if len(got.All) != 1 || got.All[0].Name != "zeta" {
 		t.Fatalf("All should be name-sorted: %+v", namesOf(got.All))
 	}
-	if len(got.Enabled) != 2 || got.Enabled[0].Name != "zeta" || got.Enabled[0].Scope != "home" {
-		t.Fatalf("Discover.Enabled want home zeta first: %+v", namesOf(got.Enabled))
-	}
-	if got.Enabled[1].Name != "alpha" || got.Enabled[1].Scope != "project" {
-		t.Fatalf("Discover.Enabled want project alpha second: %+v", namesOf(got.Enabled))
+	if len(got.Enabled) != 1 || got.Enabled[0].Name != "zeta" || got.Enabled[0].Scope != "home" {
+		t.Fatalf("Discover.Enabled want home zeta: %+v", namesOf(got.Enabled))
 	}
 	// Server feeds Prepare with Enabled(snapshot.Extensions) where Extensions is All.
 	ordered := Enabled(got.All, session.Toggle{})
-	if len(ordered) != 2 || ordered[0].Name != "zeta" || ordered[1].Name != "alpha" {
+	if len(ordered) != 1 || ordered[0].Name != "zeta" {
 		t.Fatalf("Enabled(All) must match Discover chain, got %v", namesOf(ordered))
 	}
 	for i := range ordered {
@@ -171,7 +158,7 @@ func TestEnabledChainOrderMatchesDiscover(t *testing.T) {
 		}
 	}
 	layers := PromptLayers(ordered)
-	if len(layers) != 2 || layers[0].Text != "Z" || layers[1].Text != "A" {
+	if len(layers) != 1 || layers[0].Text != "Z" {
 		t.Fatalf("prompt chain order %+v", layers)
 	}
 }

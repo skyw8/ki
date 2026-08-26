@@ -7,7 +7,6 @@ const (
 	CapPromptAppend Kind = "prompt.append"
 	CapSkill        Kind = "skill"
 	CapCommand      Kind = "command"
-	CapMCP          Kind = "mcp"
 	CapTool         Kind = "tool"
 	CapLifecycle    Kind = "lifecycle"
 	CapBus          Kind = "bus"
@@ -18,7 +17,6 @@ var knownKinds = map[Kind]bool{
 	CapPromptAppend: true,
 	CapSkill:        true,
 	CapCommand:      true,
-	CapMCP:          true,
 	CapTool:         true,
 	CapLifecycle:    true,
 	CapBus:          true,

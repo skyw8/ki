@@ -135,10 +135,9 @@ func newExtensionCommand() *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	var workspaceID string
 	list := &cobra.Command{
 		Use:   "list",
-		Short: "List extensions visible to a workspace",
+		Short: "List globally discovered extensions",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return withConfig("client", nil, func(cfg config.Config) error {
@@ -147,9 +146,6 @@ func newExtensionCommand() *cobra.Command {
 					return errNoLiveServer
 				}
 				q := "/v1/extensions"
-				if workspaceID != "" {
-					q += "?workspaceId=" + workspaceID
-				}
 				var out struct {
 					Items []map[string]any `json:"items"`
 				}
@@ -163,7 +159,6 @@ func newExtensionCommand() *cobra.Command {
 			})
 		},
 	}
-	list.Flags().StringVar(&workspaceID, "workspace-id", "", "workspace id for project extensions")
 	cmd.AddCommand(list)
 	return cmd
 }
@@ -406,8 +401,7 @@ var (
 
 func runServe(cfg config.Config, addr string) error {
 	st := streamer(cfg)
-	projectDir, _ := os.Getwd()
-	srv, err := server.New(server.Options{Config: cfg, Streamer: st, ProjectDir: projectDir})
+	srv, err := server.New(server.Options{Config: cfg, Streamer: st})
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}
@@ -573,8 +567,7 @@ func ensureServer(cfg config.Config, f flags) (base, token string, stop func(), 
 		}
 	}
 	// in-process
-	projectDir, _ := os.Getwd()
-	srv, err := server.New(server.Options{Config: cfg, Streamer: streamer(cfg), ProjectDir: projectDir})
+	srv, err := server.New(server.Options{Config: cfg, Streamer: streamer(cfg)})
 	if err != nil {
 		return "", "", nil, fmt.Errorf("create in-process server: %w", err)
 	}

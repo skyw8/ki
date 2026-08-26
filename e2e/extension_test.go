@@ -107,11 +107,10 @@ func TestExtensionAppendInterceptAndDisable(t *testing.T) {
 	}
 }
 
-func TestExtensionAbortKillsSidecarGrandchild(t *testing.T) {
+func TestExtensionAbortKeepsGlobalSidecarAlive(t *testing.T) {
 	home, proj := isolate(t)
 	bin := buildSidecar(t)
-	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
-	installProtected(t, home, bin, map[string]string{"KI_GRANDCHILD_PID_FILE": pidFile})
+	installProtected(t, home, bin, nil)
 	sf := startServe(t, home)
 	status, created := serveJSON(t, sf, http.MethodPost, "/v1/sessions", map[string]any{"cwd": proj})
 	if status != http.StatusOK {
@@ -123,23 +122,11 @@ func TestExtensionAbortKillsSidecarGrandchild(t *testing.T) {
 		t.Fatalf("sleep prompt %d", status)
 	}
 	waitSessionRunning(t, sf, id, true)
-	pid := waitPIDFile(t, pidFile)
 	status, _ = serveJSON(t, sf, http.MethodPost, "/v1/sessions/"+id+"/abort", nil)
 	if status != http.StatusOK {
 		t.Fatalf("abort %d", status)
 	}
 	waitSessionRunning(t, sf, id, false)
-	if runtime.GOOS == "windows" {
-		return
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if !processAlive(pid) {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("sidecar grandchild pid %d still alive after abort", pid)
 }
 
 func TestExtensionExecutableSlash(t *testing.T) {

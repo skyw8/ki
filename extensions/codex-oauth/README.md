@@ -1,10 +1,11 @@
 # Codex OAuth provider extension
 
-This directory is a Ki provider extension source package. It is already under
-the project extension directory. The sidecar is started directly by `uv`:
+This directory is a Ki provider extension source package. Install or copy it
+under `{KI_HOME}/extensions/codex-oauth` for Ki to discover it globally. The
+sidecar is started directly by `uv`:
 
 ```bash
-cd .ki/extensions/codex-oauth
+cd extensions/codex-oauth
 uv run --project . main.py
 ```
 

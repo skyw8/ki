@@ -333,7 +333,7 @@ export function SettingsToggles({
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const next = kind === 'skills' ? await api.skills(workspaceId) : kind === 'mcp' ? await api.mcpServers(workspaceId) : await api.extensions(workspaceId)
+      const next = kind === 'skills' ? await api.skills(workspaceId) : kind === 'mcp' ? await api.mcpServers() : await api.extensions()
       setItems(next)
     } catch (e) {
       toast.from(e)
@@ -352,7 +352,7 @@ export function SettingsToggles({
       if (kind === 'skills') await api.patchSkills(disabled)
       else if (kind === 'mcp') await api.patchMcp(disabled)
       else await api.patchExtensions(disabled)
-      const listed = kind === 'skills' ? await api.skills(workspaceId) : kind === 'mcp' ? await api.mcpServers(workspaceId) : await api.extensions(workspaceId)
+      const listed = kind === 'skills' ? await api.skills(workspaceId) : kind === 'mcp' ? await api.mcpServers() : await api.extensions()
       setItems(listed)
     } catch (e) {
       setItems(prev)

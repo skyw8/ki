@@ -14,7 +14,7 @@ import (
 	"ki/internal/session"
 )
 
-func TestLoadProjectOverridesGlobalAndToggle(t *testing.T) {
+func TestLoadGlobalOnlyAndToggle(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	if err := os.WriteFile(filepath.Join(home, ".mcp.json"), []byte(`{"mcpServers":{"github":{"command":"npx"},"old":{"command":"true"}}}`), 0o600); err != nil {
@@ -27,8 +27,11 @@ func TestLoadProjectOverridesGlobalAndToggle(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := Load(home, cwd)
-	if f.MCPServers["github"].Command != "echo" || f.Sources["github"] != "project" {
-		t.Fatalf("project override = %+v", f)
+	if f.MCPServers["github"].Command != "npx" || f.Sources["github"] != "home" {
+		t.Fatalf("global config = %+v", f)
+	}
+	if _, ok := f.MCPServers["project-only"]; ok {
+		t.Fatal("project MCP config should be ignored")
 	}
 	if got := FilterNames(f, session.Toggle{Only: []string{"github"}}); len(got) != 1 || got[0] != "github" {
 		t.Fatalf("filtered names = %v", got)

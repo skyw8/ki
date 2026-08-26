@@ -5,14 +5,37 @@ import { StdioRpc } from "./rpc.js";
 import { TOOL_SPECS } from "./tools.js";
 
 const rpc = new StdioRpc();
-const host = new Host(rpc);
+const apps = new Map<string, GoalApp>();
+const home = process.env.KI_HOME || "";
 
-let app: GoalApp | undefined;
+async function prepareApp(sessionId: string): Promise<GoalApp | undefined> {
+  if (!sessionId) return undefined;
+  const existing = apps.get(sessionId);
+  if (existing) return existing;
+  const app = new GoalApp(new Host(rpc, sessionId), home, sessionId);
+  apps.set(sessionId, app);
+  if (await app.restore()) app.scheduleRestoreContinue();
+  return app;
+}
+
+function sessionIdOf(params: unknown): string {
+  return str(asRecord(params).sessionId);
+}
 
 rpc.onRequest(async (method, params) => {
   switch (method) {
     case "initialize":
       return initialize(params);
+    case "session.open":
+      await prepareApp(sessionIdOf(params));
+      return {};
+    case "session.close": {
+      const sessionId = sessionIdOf(params);
+      const app = apps.get(sessionId);
+      app?.close();
+      apps.delete(sessionId);
+      return {};
+    }
     case "shutdown":
       return {};
     case "command.invoke":
@@ -38,10 +61,10 @@ rpc.start();
 
 async function initialize(params: unknown) {
   const p = asRecord(params);
+  // Global sidecars receive an empty initialize sessionId. A non-empty value
+  // is retained for direct sidecar tests and older embedded launches.
   const sessionId = str(p.sessionId) || process.env.KI_SESSION_ID || "";
-  const home = str(p.home) || process.env.KI_HOME || "";
-  app = new GoalApp(host, home, sessionId);
-  if (await app.restore()) app.scheduleRestoreContinue();
+  if (sessionId) await prepareApp(sessionId);
   return {
     tools: TOOL_SPECS,
     commands: [
@@ -61,36 +84,42 @@ async function initialize(params: unknown) {
 
 function invokeCommand(params: unknown) {
   const p = asRecord(params);
+  const app = apps.get(str(p.sessionId));
   if (str(p.name) !== "goal" || !app) return { handled: false };
   return app.invokeCommand(str(p.args));
 }
 
 function lifecycleInvoke(params: unknown) {
   const p = asRecord(params);
+  const app = apps.get(str(p.sessionId));
   if (str(p.event) !== "before_agent_start" || !app) return {};
   return app.onBeforeAgentStart(asRecord(p.payload));
 }
 
 function lifecycleEvent(params: unknown) {
   const p = asRecord(params);
+  const app = apps.get(str(p.sessionId));
   if (str(p.event) === "agent_settled" && app) void app.onAgentSettled();
   return {};
 }
 
 function toolExecute(params: unknown) {
   const p = asRecord(params);
+  const app = apps.get(str(p.sessionId));
   if (!app) return { content: [{ type: "text", text: "goal sidecar not ready" }], isError: true };
   return app.executeTool(str(p.name), asRecord(p.args));
 }
 
 function uiAction(params: unknown) {
   const p = asRecord(params);
+  const app = apps.get(str(p.sessionId));
   if (app) void app.onAction(str(p.id));
   return {};
 }
 
 function uiSubmit(params: unknown) {
   const p = asRecord(params);
+  const app = apps.get(str(p.sessionId));
   if (app) void app.onSubmit(asRecord(p.fields));
   return {};
 }

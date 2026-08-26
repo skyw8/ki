@@ -137,9 +137,8 @@ export class Client {
     return got.items ?? []
   }
 
-  async mcpServers(workspaceId?: string | null): Promise<import('./types').CatalogMcp[]> {
-    const q = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
-    const got = await this.json<{ items: import('./types').CatalogMcp[] }>(`/v1/mcp${q}`)
+  async mcpServers(): Promise<import('./types').CatalogMcp[]> {
+    const got = await this.json<{ items: import('./types').CatalogMcp[] }>('/v1/mcp')
     return got.items ?? []
   }
 
@@ -151,9 +150,8 @@ export class Client {
     return this.json('/v1/mcp', { method: 'PATCH', body: JSON.stringify({ disabled }) })
   }
 
-  async extensions(workspaceId?: string | null): Promise<import('./types').CatalogExtension[]> {
-    const q = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
-    const got = await this.json<{ items: import('./types').CatalogExtension[] }>(`/v1/extensions${q}`)
+  async extensions(): Promise<import('./types').CatalogExtension[]> {
+    const got = await this.json<{ items: import('./types').CatalogExtension[] }>('/v1/extensions')
     return got.items ?? []
   }
 

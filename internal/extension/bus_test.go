@@ -65,7 +65,7 @@ func TestBusBroadcastDoesNotWait(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = m.Prepare(ctx, "sess", cwd, got.Enabled)
-	defer m.CloseSession("sess")
+	defer m.Close()
 	start := time.Now()
 	if err := m.BusBroadcast("sess", "other", "workflow:mutex:v1", map[string]any{"busy": false}); err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestBusMutexHandshake(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = m.Prepare(ctx, "sess", cwd, got.Enabled)
-	defer m.CloseSession("sess")
+	defer m.Close()
 	time.Sleep(50 * time.Millisecond)
 	data, err := m.BusEmit("sess", "beta", "workflow:mutex:v1", map[string]any{"sessionId": "sess", "group": "agent-workflow", "busy": false})
 	if err != nil {

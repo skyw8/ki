@@ -31,6 +31,40 @@ const (
 
 var errRPC = errors.New("extension rpc")
 
+type sessionContextKey struct{}
+
+func withSessionID(ctx context.Context, sessionID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, sessionContextKey{}, sessionID)
+}
+
+func sessionIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if id, ok := ctx.Value(sessionContextKey{}).(string); ok {
+		return id
+	}
+	return ""
+}
+
+func withSessionParam(sessionID string, params any) any {
+	if sessionID == "" {
+		return params
+	}
+	var out map[string]any
+	if raw, err := json.Marshal(params); err == nil {
+		_ = json.Unmarshal(raw, &out)
+	}
+	if out == nil {
+		out = map[string]any{}
+	}
+	out["sessionId"] = sessionID
+	return out
+}
+
 type rpcMsg struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      any             `json:"id,omitempty"`
@@ -47,7 +81,6 @@ type rpcError struct {
 
 type rpcClient struct {
 	name               string
-	sessionID          string
 	failClosed         bool
 	fallback           bool
 	cmd                *exec.Cmd
@@ -101,7 +134,6 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 	}
 	c := &rpcClient{
 		name:               d.Name,
-		sessionID:          sessionID,
 		failClosed:         d.FailClosed,
 		cmd:                cmd,
 		enc:                json.NewEncoder(stdin),
@@ -118,9 +150,13 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 	initCtx, cancel := context.WithTimeout(ctx, timeoutInit)
 	defer cancel()
 	var reg Registration
+	scope := map[string]any{"global": sessionID == ""}
+	if host == nil {
+		scope["provider"] = true
+	}
 	if err := c.call(initCtx, "initialize", map[string]any{
 		"sessionId": sessionID, "cwd": cwd, "home": home, "extensionRoot": d.root,
-		"capabilities": d.Capabilities, "scope": map[string]any{"provider": sessionID == ""},
+		"capabilities": d.Capabilities, "scope": scope,
 		"providers": d.Providers,
 	}, &reg); err != nil {
 		c.close()
@@ -141,10 +177,16 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 func sidecarEnv(d Descriptor, sessionID, home, cwd string) []string {
 	env := []string{
 		"KI_EXTENSION=" + d.Name,
-		"KI_SESSION_ID=" + sessionID,
-		"KI_CWD=" + cwd,
 		"KI_HOME=" + home,
 		"KI_EXTENSION_ROOT=" + d.root,
+	}
+	// Global sidecars serve many sessions. Do not pin them to the first
+	// session/cwd; each session-scoped RPC carries its own sessionId instead.
+	if sessionID != "" {
+		env = append(env, "KI_SESSION_ID="+sessionID)
+	}
+	if cwd != "" {
+		env = append(env, "KI_CWD="+cwd)
 	}
 	for _, key := range []string{"PATH", "HOME", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "PATHEXT", "COMSPEC"} {
 		if v := os.Getenv(key); v != "" {
@@ -379,7 +421,7 @@ func (c *rpcClient) call(ctx context.Context, method string, params any, result 
 	var msg rpcMsg
 	select {
 	case <-ctx.Done():
-		c.notify("cancel", map[string]any{"id": id})
+		c.notify("cancel", withSessionParam(sessionIDFromContext(ctx), map[string]any{"id": id}))
 		return ctx.Err()
 	case <-c.closed:
 		return fmt.Errorf("%w: sidecar closed", errRPC)
@@ -445,7 +487,8 @@ func (c *rpcClient) BeforeRun(ctx context.Context, system string, msgs []types.M
 		Messages []types.Message `json:"messages"`
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
-		"event": EventBeforeAgentStart, "payload": map[string]any{"system": system, "messages": redactMessages(msgs)},
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventBeforeAgentStart, "payload": map[string]any{"system": system, "messages": redactMessages(msgs)},
 		"ctx": compactCtx(ctx, "", false),
 	}, &out)
 	if err != nil {
@@ -470,7 +513,8 @@ func (c *rpcClient) TransformContext(ctx context.Context, msgs []types.Message) 
 		Messages []types.Message `json:"messages"`
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
-		"event": EventContext, "payload": map[string]any{"messages": redactMessages(msgs)},
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventContext, "payload": map[string]any{"messages": redactMessages(msgs)},
 		"ctx": compactCtx(ctx, "", false),
 	}, &out)
 	if err != nil {
@@ -495,7 +539,8 @@ func (c *rpcClient) BeforeTool(ctx context.Context, in ToolCall) (ToolCall, *Blo
 		Terminate bool           `json:"terminate"`
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
-		"event": EventToolCall, "payload": in, "ctx": compactCtx(ctx, "", false),
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventToolCall, "payload": in, "ctx": compactCtx(ctx, "", false),
 	}, &out)
 	if err != nil {
 		return in, nil, err
@@ -517,7 +562,8 @@ func (c *rpcClient) AfterTool(ctx context.Context, in ToolCall, res ResultPatch)
 	defer cancel()
 	var out ResultPatch
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
-		"event": EventToolResult, "payload": map[string]any{"call": in, "result": res},
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventToolResult, "payload": map[string]any{"call": in, "result": res},
 		"ctx": compactCtx(ctx, "", false),
 	}, &out)
 	if err != nil {
@@ -537,7 +583,8 @@ func (c *rpcClient) BeforeProvider(ctx context.Context, req ProviderRequest) (Pr
 		ShortCircuit *ShortCircuit    `json:"shortCircuit"`
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
-		"event": EventBeforeProviderRequest, "payload": req, "ctx": compactCtx(ctx, req.Model, false),
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventBeforeProviderRequest, "payload": req, "ctx": compactCtx(ctx, req.Model, false),
 	}, &out)
 	if err != nil {
 		return req, nil, err
@@ -576,18 +623,20 @@ func (c *rpcClient) BeforeProviderHTTP(ctx context.Context, view HTTPRequestView
 	defer cancel()
 	var out HTTPRequestPatch
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
-		"event": EventBeforeProviderHeaders, "payload": view, "ctx": compactCtx(ctx, "", false),
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventBeforeProviderHeaders, "payload": view, "ctx": compactCtx(ctx, "", false),
 	}, &out)
 	return out, err
 }
 
-func (c *rpcClient) AfterProviderHTTP(_ context.Context, status int, headers map[string]string) error {
+func (c *rpcClient) AfterProviderHTTP(ctx context.Context, status int, headers map[string]string) error {
 	if !c.hasAsync(EventAfterProviderResponse) {
 		return nil
 	}
 	c.notify("lifecycle.event", map[string]any{
-		"event":   EventAfterProviderResponse,
-		"payload": map[string]any{"status": status, "headers": headers},
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventAfterProviderResponse,
+		"payload":   map[string]any{"status": status, "headers": headers},
 	})
 	return nil
 }
@@ -600,17 +649,20 @@ func (c *rpcClient) AfterProviderError(ctx context.Context, errClass string) (Fa
 	defer cancel()
 	var out Fallback
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
-		"event": EventProviderError, "payload": map[string]any{"errClass": errClass},
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventProviderError, "payload": map[string]any{"errClass": errClass},
 		"ctx": compactCtx(ctx, "", false),
 	}, &out)
 	return out, err
 }
 
-func (c *rpcClient) OnEvent(_ context.Context, ev Event) error {
+func (c *rpcClient) OnEvent(ctx context.Context, ev Event) error {
 	if !c.hasAsync(ev.Type) {
 		return nil
 	}
-	c.notify("lifecycle.event", map[string]any{"event": ev.Type, "payload": ev})
+	c.notify("lifecycle.event", map[string]any{
+		"sessionId": sessionIDFromContext(ctx), "event": ev.Type, "payload": ev,
+	})
 	return nil
 }
 
@@ -632,7 +684,9 @@ func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, 
 			c.progressMu.Unlock()
 		}()
 	}
-	raw, _ := json.Marshal(map[string]any{"toolCallId": toolCallID, "name": name, "args": args})
+	raw, _ := json.Marshal(map[string]any{
+		"sessionId": sessionIDFromContext(ctx), "toolCallId": toolCallID, "name": name, "args": args,
+	})
 	ch := make(chan rpcMsg, 1)
 	c.mu.Lock()
 	c.pending[id] = ch
@@ -641,7 +695,7 @@ func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, 
 	var msg rpcMsg
 	select {
 	case <-ctx.Done():
-		c.notify("cancel", map[string]any{"id": id})
+		c.notify("cancel", withSessionParam(sessionIDFromContext(ctx), map[string]any{"id": id}))
 		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: ctx.Err().Error()}}, IsError: true}
 	case <-c.closed:
 		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: "sidecar closed"}}, IsError: true}
@@ -672,7 +726,8 @@ func (c *rpcClient) rewriteInput(ctx context.Context, text string) (string, bool
 		Swallow bool   `json:"swallow"`
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
-		"event": EventInput, "payload": map[string]any{"text": text}, "ctx": compactCtx(ctx, "", false),
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventInput, "payload": map[string]any{"text": text}, "ctx": compactCtx(ctx, "", false),
 	}, &out)
 	if err != nil {
 		return text, false, err
@@ -696,7 +751,8 @@ func (c *rpcClient) rewriteMessageEnd(ctx context.Context, msg types.Message) (t
 		Message *types.Message `json:"message"`
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
-		"event": EventMessageEnd, "payload": map[string]any{"message": msg}, "ctx": compactCtx(ctx, "", false),
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventMessageEnd, "payload": map[string]any{"message": msg}, "ctx": compactCtx(ctx, "", false),
 	}, &out)
 	if err != nil {
 		return msg, err
@@ -718,7 +774,8 @@ func (c *rpcClient) beforeCompact(ctx context.Context) (bool, string, error) {
 		Summary string `json:"summary"`
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
-		"event": EventSessionBeforeCompact, "payload": map[string]any{}, "ctx": compactCtx(ctx, "", false),
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventSessionBeforeCompact, "payload": map[string]any{}, "ctx": compactCtx(ctx, "", false),
 	}, &out)
 	if err != nil {
 		return true, "", err
@@ -737,6 +794,8 @@ func (c *rpcClient) invokeCommand(ctx context.Context, name, args string) (handl
 		Notice  string `json:"notice"`
 		Prompt  string `json:"prompt"`
 	}
-	err = c.call(ctx, "command.invoke", map[string]any{"name": name, "args": args}, &out)
+	err = c.call(ctx, "command.invoke", map[string]any{
+		"sessionId": sessionIDFromContext(ctx), "name": name, "args": args,
+	}, &out)
 	return out.Handled, out.Notice, out.Prompt, err
 }

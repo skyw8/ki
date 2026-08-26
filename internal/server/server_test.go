@@ -1042,8 +1042,7 @@ func TestProviderConfigurationAPI(t *testing.T) {
 
 func TestProviderOAuthAuthAPI(t *testing.T) {
 	home := t.TempDir()
-	projectDir := t.TempDir()
-	extensionRoot := filepath.Join(projectDir, ".ki", "extensions", "fake-oauth")
+	extensionRoot := filepath.Join(home, "extensions", "fake-oauth")
 	binDir := filepath.Join(extensionRoot, "bin")
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -1077,7 +1076,7 @@ func TestProviderOAuthAuthAPI(t *testing.T) {
 	}
 	cfg := config.Builtin(home)
 	cfg.Sessions.Root = filepath.Join(home, "sessions")
-	srv, err := New(Options{Config: cfg, Token: "tok", ProjectDir: projectDir})
+	srv, err := New(Options{Config: cfg, Token: "tok"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,7 +3,7 @@
 //
 // Auth is Bearer token except GET /v1/health. Query ?token= is also accepted.
 // Provider CRUD manages the offline registry and credentials; provider
-// global or current-project extensions add process-level sidecar runtimes and read-only catalog entries;
+// globally discovered extensions add process-level sidecar runtimes and read-only catalog entries;
 // GET /v1/models
 // is its flat selectable view. GET /v1/meta exposes the last-used model
 // (or the first available fallback), that model's default thinking
@@ -12,7 +12,7 @@
 // workspace (or a tmp+ workspace). GET /v1/sessions/{id} includes a
 // read-only catalog (availableSkills / availableMcp / availableExtensions
 // with cached MCP tools, commands[]), extensionUi, and runtime.ready.
-// Opening a session (POST create, GET by id, fork) starts extension and MCP
+// Opening a session (POST create, GET by id, fork) prepares global extensions and MCP
 // Prepare in the background; List and serve boot do not. runtime.ready is
 // true when that Prepare finishes (failure still counts). PATCH /v1/sessions/{id} writes model /
 // thinking / title / pin / leaf. Skills, MCP, and extension enablement is
@@ -33,9 +33,9 @@
 // after done.
 //
 // One server-owned resources.Loader atomically caches runtime environment,
-// skills, AGENTS/CLAUDE, prompt templates, and merged .mcp.json by session id
+// skills, AGENTS/CLAUDE, prompt templates, and global .mcp.json by session id
 // and discovered MCP tools. Settings scans are uncached. Session reload closes
-// only that session's MCP clients; global settings reload idle sessions and
+// only that session's MCP clients and extension views; global settings reload idle sessions and
 // queues active ones until occupy's matching release (prompt and compact).
 // MCP failures and list changes use jsonl plus SSE events.
 // Agent tool calls fork tree-mode child sessions and run them through their own

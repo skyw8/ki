@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"sort"
+	"reflect"
 	"sync"
 
 	"ki/internal/loop"
@@ -13,14 +13,63 @@ import (
 	"ki/internal/types"
 )
 
-// Manager owns session-scoped sidecar processes.
+// Manager owns process-global sidecar processes and session-scoped views of
+// their registrations. Session IDs are carried on every RPC that can touch
+// session state, so one sidecar can safely serve multiple sessions.
 type Manager struct {
-	mu    sync.Mutex
-	by    map[string]map[string]*rpcClient
-	order map[string][]string
-	onErr ErrorFunc
-	home  string
-	host  SessionHost
+	mu           sync.Mutex
+	startMu      sync.Mutex
+	by           map[string]*rpcClient
+	order        map[string][]string
+	sessionTools map[string]map[string][]ToolSpec
+	sessionOpen  map[string]bool
+	descs        map[string]Descriptor
+	onErr        ErrorFunc
+	home         string
+	host         SessionHost
+}
+
+// sessionInterceptor binds a global RPC client to one session for all
+// outbound lifecycle calls. The client itself remains shared.
+type sessionInterceptor struct {
+	client    *rpcClient
+	sessionID string
+}
+
+func (s sessionInterceptor) ctx(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return withSessionID(ctx, s.sessionID)
+}
+
+func (s sessionInterceptor) BeforeRun(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error) {
+	return s.client.BeforeRun(s.ctx(ctx), system, msgs)
+}
+func (s sessionInterceptor) TransformContext(ctx context.Context, msgs []types.Message) ([]types.Message, error) {
+	return s.client.TransformContext(s.ctx(ctx), msgs)
+}
+func (s sessionInterceptor) BeforeTool(ctx context.Context, in ToolCall) (ToolCall, *Block, error) {
+	return s.client.BeforeTool(s.ctx(ctx), in)
+}
+func (s sessionInterceptor) AfterTool(ctx context.Context, in ToolCall, res ResultPatch) (ResultPatch, error) {
+	return s.client.AfterTool(s.ctx(ctx), in, res)
+}
+func (s sessionInterceptor) BeforeProvider(ctx context.Context, req ProviderRequest) (ProviderRequest, *ShortCircuit, error) {
+	return s.client.BeforeProvider(s.ctx(ctx), req)
+}
+func (s sessionInterceptor) BeforeProviderHTTP(ctx context.Context, view HTTPRequestView) (HTTPRequestPatch, error) {
+	return s.client.BeforeProviderHTTP(s.ctx(ctx), view)
+}
+func (s sessionInterceptor) AfterProviderHTTP(ctx context.Context, status int, headers map[string]string) error {
+	return s.client.AfterProviderHTTP(s.ctx(ctx), status, headers)
+}
+func (s sessionInterceptor) AfterProviderError(ctx context.Context, errClass string) (Fallback, error) {
+	return s.client.AfterProviderError(s.ctx(ctx), errClass)
+}
+func (s sessionInterceptor) OnEvent(ctx context.Context, ev Event) error {
+	ev.SessionID = s.sessionID
+	return s.client.OnEvent(s.ctx(ctx), ev)
 }
 
 // Occupy is one prompt occupy: lifecycle chain plus the skip set shared by
@@ -34,49 +83,117 @@ type Occupy struct {
 // NewManager creates a manager. onErr may be nil.
 func NewManager(home string, onErr ErrorFunc) *Manager {
 	return &Manager{
-		by:    map[string]map[string]*rpcClient{},
-		order: map[string][]string{},
-		onErr: onErr,
-		home:  home,
+		by:           map[string]*rpcClient{},
+		order:        map[string][]string{},
+		sessionTools: map[string]map[string][]ToolSpec{},
+		sessionOpen:  map[string]bool{},
+		descs:        map[string]Descriptor{},
+		onErr:        onErr,
+		home:         home,
 	}
 }
 
 // SetHost attaches inbound Host methods (session enqueue, bus, UI).
 func (m *Manager) SetHost(h SessionHost) { m.host = h }
 
+// Configure reconciles the process-global sidecars with the latest global
+// catalog. Disabled, removed, or changed packages are no longer available to
+// new session views and their old processes are closed.
+func (m *Manager) Configure(descriptors []Descriptor) {
+	desired := map[string]Descriptor{}
+	for _, d := range descriptors {
+		if d.Enabled && d.Error == "" && d.wantsSessionSidecar() {
+			desired[d.Name] = d
+		}
+	}
+	m.mu.Lock()
+	var closing []*rpcClient
+	for name, c := range m.by {
+		d, ok := desired[name]
+		if ok && sameRuntime(m.descs[name], d) {
+			continue
+		}
+		closing = append(closing, c)
+		delete(m.by, name)
+		for sessionID, tools := range m.sessionTools {
+			delete(tools, name)
+			if len(tools) == 0 {
+				delete(m.sessionTools, sessionID)
+			}
+		}
+	}
+	m.descs = desired
+	m.mu.Unlock()
+	for _, c := range closing {
+		c.close()
+	}
+}
+
+func sameRuntime(a, b Descriptor) bool {
+	return a.Name == b.Name && a.Version == b.Version && a.Path == b.Path &&
+		a.FailClosed == b.FailClosed && reflect.DeepEqual(a.Capabilities, b.Capabilities) &&
+		reflect.DeepEqual(a.manifest.Runtime, b.manifest.Runtime)
+}
+
 // Prepare starts sidecars for enabled packages that want runtime.
 func (m *Manager) Prepare(ctx context.Context, sessionID, cwd string, enabled []Descriptor) []loop.Tool {
 	var tools []loop.Tool
 	var order []string
+	m.mu.Lock()
+	firstPrepare := !m.sessionOpen[sessionID]
+	m.sessionOpen[sessionID] = true
+	m.mu.Unlock()
+	var opened []*rpcClient
 	for _, d := range enabled {
 		if !d.wantsSessionSidecar() {
 			continue
 		}
-		// Store Discover order (global-by-name then project-by-name) so
-		// items() does not range the session map.
 		order = append(order, d.Name)
-		c := m.ensure(ctx, sessionID, cwd, d)
+		c := m.ensure(ctx, sessionID, d)
 		if c == nil {
 			continue
 		}
-		tools = append(tools, toolsFromRegistration(c)...)
+		if firstPrepare {
+			opened = append(opened, c)
+		}
+		tools = append(tools, toolsFromRegistration(c, sessionID)...)
+		m.mu.Lock()
+		dynamic := append([]ToolSpec(nil), m.sessionTools[sessionID][d.Name]...)
+		m.mu.Unlock()
+		tools = append(tools, toolsFromSpecs(c, sessionID, dynamic)...)
 	}
 	m.mu.Lock()
 	m.order[sessionID] = order
 	m.mu.Unlock()
+	if firstPrepare {
+		for _, c := range opened {
+			c.notify("session.open", map[string]any{"sessionId": sessionID, "cwd": cwd})
+		}
+	}
 	return tools
 }
 
-func (m *Manager) ensure(ctx context.Context, sessionID, cwd string, d Descriptor) *rpcClient {
+func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *rpcClient {
 	m.mu.Lock()
-	if m.by[sessionID] != nil {
-		if c := m.by[sessionID][d.Name]; c != nil {
-			m.mu.Unlock()
-			return c
-		}
+	if c := m.by[d.Name]; c != nil {
+		m.mu.Unlock()
+		return c
 	}
 	m.mu.Unlock()
-	c, err := startRPC(ctx, d, sessionID, m.home, cwd, m.host)
+	// Only one goroutine may launch a given global sidecar at a time. The
+	// second lookup after acquiring the lock avoids duplicate processes when
+	// two sessions prepare the same extension concurrently.
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	m.mu.Lock()
+	if c := m.by[d.Name]; c != nil {
+		m.mu.Unlock()
+		return c
+	}
+	host := m.host
+	home := m.home
+	m.mu.Unlock()
+	c, err := startRPC(ctx, d, "", home, "", host)
 	if err != nil {
 		if m.onErr != nil {
 			m.onErr(sessionID, d.Name, "runtime", "sidecar_start", err.Error())
@@ -85,15 +202,12 @@ func (m *Manager) ensure(ctx context.Context, sessionID, cwd string, d Descripto
 		return nil
 	}
 	m.mu.Lock()
-	if m.by[sessionID] == nil {
-		m.by[sessionID] = map[string]*rpcClient{}
-	}
-	if existing := m.by[sessionID][d.Name]; existing != nil {
+	if existing := m.by[d.Name]; existing != nil {
 		m.mu.Unlock()
 		c.close()
 		return existing
 	}
-	m.by[sessionID][d.Name] = c
+	m.by[d.Name] = c
 	m.mu.Unlock()
 	for _, cap := range c.undeclared {
 		if m.onErr != nil {
@@ -106,31 +220,19 @@ func (m *Manager) ensure(ctx context.Context, sessionID, cwd string, d Descripto
 func (m *Manager) items(sessionID string) []namedInterceptor {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	clients := m.by[sessionID]
 	order := m.order[sessionID]
-	seen := map[string]bool{}
 	var out []namedInterceptor
 	appendOne := func(name string) {
-		c := clients[name]
-		if c == nil || seen[name] {
+		c := m.by[name]
+		if c == nil {
 			return
 		}
-		seen[name] = true
 		out = append(out, namedInterceptor{
-			name: name, failClosed: c.failClosed, syncEvents: c.registration.syncEvents, inner: c,
+			name: name, failClosed: c.failClosed, syncEvents: c.registration.syncEvents,
+			inner: sessionInterceptor{client: c, sessionID: sessionID},
 		})
 	}
 	for _, name := range order {
-		appendOne(name)
-	}
-	var extra []string
-	for name := range clients {
-		if !seen[name] {
-			extra = append(extra, name)
-		}
-	}
-	sort.Strings(extra)
-	for _, name := range extra {
 		appendOne(name)
 	}
 	return out
@@ -197,12 +299,17 @@ func (m *Manager) HTTPDoer(sessionID string) provider.HTTPDoer {
 	return nil
 }
 
-// RuntimeCommands lists executable slash handlers from running sidecars.
+// RuntimeCommands lists executable slash handlers from the session's enabled
+// view of the global sidecars.
 func (m *Manager) RuntimeCommands(sessionID string) map[string]CommandSpec {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := map[string]CommandSpec{}
-	for _, c := range m.by[sessionID] {
+	for _, name := range m.order[sessionID] {
+		c := m.by[name]
+		if c == nil {
+			continue
+		}
 		if !hasKind(c.capabilities, CapCommand) {
 			continue
 		}
@@ -223,7 +330,11 @@ func (m *Manager) RuntimeCommands(sessionID string) map[string]CommandSpec {
 func (m *Manager) InvokeCommand(ctx context.Context, sessionID, name, args string) (handled bool, notice, prompt string, err error) {
 	m.mu.Lock()
 	var client *rpcClient
-	for _, c := range m.by[sessionID] {
+	for _, extensionName := range m.order[sessionID] {
+		c := m.by[extensionName]
+		if c == nil {
+			continue
+		}
 		for _, spec := range c.registration.Commands {
 			if spec.Name == name {
 				client = c
@@ -238,42 +349,64 @@ func (m *Manager) InvokeCommand(ctx context.Context, sessionID, name, args strin
 	if client == nil {
 		return false, "", "", errRPC
 	}
-	return client.invokeCommand(ctx, name, args)
+	return client.invokeCommand(withSessionID(ctx, sessionID), name, args)
 }
 
 // OnEvent fans out a redacted event asynchronously.
 func (m *Manager) OnEvent(sessionID string, ev Event) {
 	m.mu.Lock()
-	clients := make([]*rpcClient, 0, len(m.by[sessionID]))
-	for _, c := range m.by[sessionID] {
+	clients := make([]*rpcClient, 0, len(m.order[sessionID]))
+	seen := map[string]bool{}
+	for _, name := range m.order[sessionID] {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		c := m.by[name]
+		if c == nil {
+			continue
+		}
 		if len(c.registration.asyncEvents) > 0 {
 			clients = append(clients, c)
 		}
 	}
 	m.mu.Unlock()
-	ctx := context.Background()
+	ctx := withSessionID(context.Background(), sessionID)
 	for _, c := range clients {
 		_ = c.OnEvent(ctx, ev)
 	}
 }
 
-// CloseSession kills sidecars for one session.
+// CloseSession drops only session state. Global sidecars stay alive until
+// Close, allowing another session to reuse the same process.
 func (m *Manager) CloseSession(sessionID string) {
 	m.mu.Lock()
-	clients := m.by[sessionID]
-	delete(m.by, sessionID)
+	var clients []*rpcClient
+	seen := map[string]bool{}
+	for _, name := range m.order[sessionID] {
+		if seen[name] {
+			continue
+		}
+		if c := m.by[name]; c != nil {
+			clients = append(clients, c)
+		}
+		seen[name] = true
+	}
 	delete(m.order, sessionID)
+	delete(m.sessionTools, sessionID)
+	delete(m.sessionOpen, sessionID)
 	m.mu.Unlock()
 	for _, c := range clients {
-		c.close()
+		c.notify("session.close", map[string]any{"sessionId": sessionID})
 	}
 }
 
-// CloseExcept closes sessions not in active.
+// CloseExcept drops session state for sessions not in active. It does not
+// terminate global sidecars.
 func (m *Manager) CloseExcept(active map[string]bool) {
 	m.mu.Lock()
 	var ids []string
-	for id := range m.by {
+	for id := range m.order {
 		if !active[id] {
 			ids = append(ids, id)
 		}
@@ -284,8 +417,26 @@ func (m *Manager) CloseExcept(active map[string]bool) {
 	}
 }
 
+// Close terminates all process-global sidecars.
+func (m *Manager) Close() {
+	m.mu.Lock()
+	clients := make([]*rpcClient, 0, len(m.by))
+	for _, c := range m.by {
+		clients = append(clients, c)
+	}
+	m.by = map[string]*rpcClient{}
+	m.order = map[string][]string{}
+	m.sessionTools = map[string]map[string][]ToolSpec{}
+	m.sessionOpen = map[string]bool{}
+	m.descs = map[string]Descriptor{}
+	m.mu.Unlock()
+	for _, c := range clients {
+		c.close()
+	}
+}
+
 // Enabled filters snapshot.Extensions (Discover.All) with the live toggle and
-// returns Discover chain order (global-by-name, then project-by-name). Server
+// returns Discover chain order (global-by-name). Server
 // Prepare must use this (or Discover.Enabled), never a bare name-sorted All.
 // ApplyInput runs sync input subscribers. swallow true means drop the prompt.
 func (m *Manager) ApplyInput(ctx context.Context, sessionID, text string) (string, bool) {
@@ -293,11 +444,11 @@ func (m *Manager) ApplyInput(ctx context.Context, sessionID, text string) (strin
 		if !it.hasSync(EventInput) {
 			continue
 		}
-		c, ok := it.inner.(*rpcClient)
+		si, ok := it.inner.(sessionInterceptor)
 		if !ok {
 			continue
 		}
-		next, swallow, err := c.rewriteInput(ctx, text)
+		next, swallow, err := si.client.rewriteInput(withSessionID(ctx, sessionID), text)
 		if err != nil {
 			continue
 		}
@@ -315,11 +466,11 @@ func (m *Manager) ApplyMessageEnd(ctx context.Context, sessionID string, msg typ
 		if !it.hasSync(EventMessageEnd) {
 			continue
 		}
-		c, ok := it.inner.(*rpcClient)
+		si, ok := it.inner.(sessionInterceptor)
 		if !ok {
 			continue
 		}
-		next, err := c.rewriteMessageEnd(ctx, msg)
+		next, err := si.client.rewriteMessageEnd(withSessionID(ctx, sessionID), msg)
 		if err != nil {
 			continue
 		}
@@ -336,11 +487,11 @@ func (m *Manager) CompactAllowed(ctx context.Context, sessionID string) (bool, s
 		if !it.hasSync(EventSessionBeforeCompact) {
 			continue
 		}
-		c, ok := it.inner.(*rpcClient)
+		si, ok := it.inner.(sessionInterceptor)
 		if !ok {
 			continue
 		}
-		okc, summary, err := c.beforeCompact(ctx)
+		okc, summary, err := si.client.beforeCompact(withSessionID(ctx, sessionID))
 		if err != nil {
 			continue
 		}
@@ -354,13 +505,18 @@ func (m *Manager) CompactAllowed(ctx context.Context, sessionID string) (bool, s
 	return true, ""
 }
 
-// RegisterTools appends tool specs for the next occupy Prepare.
+// RegisterTools appends tool specs for this session's next occupy Prepare.
 func (m *Manager) RegisterTools(sessionID, name string, tools []ToolSpec) error {
 	c := m.client(sessionID, name)
 	if c == nil {
 		return errRPC
 	}
-	c.registration.Tools = append(c.registration.Tools, tools...)
+	m.mu.Lock()
+	if m.sessionTools[sessionID] == nil {
+		m.sessionTools[sessionID] = map[string][]ToolSpec{}
+	}
+	m.sessionTools[sessionID][name] = append(m.sessionTools[sessionID][name], tools...)
+	m.mu.Unlock()
 	return nil
 }
 
@@ -370,16 +526,18 @@ func (m *Manager) Notify(sessionID, name, method string, params any) {
 	if c == nil {
 		return
 	}
-	c.notify(method, params)
+	c.notify(method, withSessionParam(sessionID, params))
 }
 
 func (m *Manager) client(sessionID, name string) *rpcClient {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.by[sessionID] == nil {
-		return nil
+	for _, enabled := range m.order[sessionID] {
+		if enabled == name {
+			return m.by[name]
+		}
 	}
-	return m.by[sessionID][name]
+	return nil
 }
 
 // BusEmit deep-copies data and fans out to other bus subscribers, returning merged data.
@@ -387,7 +545,11 @@ func (m *Manager) BusEmit(sessionID, from, channel string, data any) (any, error
 	cloned := cloneJSON(data)
 	m.mu.Lock()
 	var others []*rpcClient
-	for name, c := range m.by[sessionID] {
+	for _, name := range m.order[sessionID] {
+		c := m.by[name]
+		if c == nil {
+			continue
+		}
 		if name == from {
 			continue
 		}
@@ -395,7 +557,7 @@ func (m *Manager) BusEmit(sessionID, from, channel string, data any) (any, error
 	}
 	m.mu.Unlock()
 	for _, c := range others {
-		cloned = c.deliverBus(channel, cloned, true)
+		cloned = c.deliverBus(sessionID, channel, cloned, true)
 	}
 	return cloned, nil
 }
@@ -405,7 +567,11 @@ func (m *Manager) BusBroadcast(sessionID, from, channel string, data any) error 
 	cloned := cloneJSON(data)
 	m.mu.Lock()
 	var others []*rpcClient
-	for name, c := range m.by[sessionID] {
+	for _, name := range m.order[sessionID] {
+		c := m.by[name]
+		if c == nil {
+			continue
+		}
 		if name == from {
 			continue
 		}
@@ -413,7 +579,7 @@ func (m *Manager) BusBroadcast(sessionID, from, channel string, data any) error 
 	}
 	m.mu.Unlock()
 	for _, c := range others {
-		c.deliverBus(channel, cloned, false)
+		c.deliverBus(sessionID, channel, cloned, false)
 	}
 	return nil
 }

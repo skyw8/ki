@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"ki/internal/types"
 )
@@ -128,24 +129,57 @@ func (c *rpcClient) replyResult(id any, result any) {
 	c.mu.Unlock()
 }
 
+func inboundSessionID(params json.RawMessage) (string, error) {
+	var p struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return "", err
+	}
+	if p.SessionID == "" {
+		return "", fmt.Errorf("sessionId required for global extension")
+	}
+	return p.SessionID, nil
+}
+
+func inboundNeedsSession(method string) bool {
+	switch method {
+	case "session.enqueue", "session.snapshot", "session.appendEntry", "session.abort",
+		"session.compact", "session.patch", "session.setActiveTools", "tools.register",
+		"ui.setStatus", "ui.setPanel", "ui.clearPanel", "ui.confirm", "ui.select",
+		"bus.emit", "bus.broadcast", "bus.subscribe", "bus.unsubscribe":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *rpcClient) handleInbound(msg rpcMsg) {
 	if c.host == nil {
 		c.replyError(msg.ID, "host methods unavailable")
 		return
 	}
-	ctx := context.Background()
+	sessionID := ""
+	if inboundNeedsSession(msg.Method) {
+		var err error
+		sessionID, err = inboundSessionID(msg.Params)
+		if err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+	}
 	switch msg.Method {
 	case "session.enqueue":
 		var req EnqueueRequest
 		_ = json.Unmarshal(msg.Params, &req)
-		res, err := c.host.Enqueue(c.sessionID, c.name, req)
+		res, err := c.host.Enqueue(sessionID, c.name, req)
 		if err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}
 		c.replyResult(msg.ID, res)
 	case "session.snapshot":
-		res, err := c.host.Snapshot(c.sessionID, c.name)
+		res, err := c.host.Snapshot(sessionID, c.name)
 		if err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
@@ -157,19 +191,19 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 			Data       any    `json:"data"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
-		if err := c.host.AppendEntry(c.sessionID, c.name, p.CustomType, p.Data); err != nil {
+		if err := c.host.AppendEntry(sessionID, c.name, p.CustomType, p.Data); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}
 		c.replyResult(msg.ID, map[string]any{"ok": true})
 	case "session.abort":
-		if err := c.host.Abort(c.sessionID); err != nil {
+		if err := c.host.Abort(sessionID); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}
 		c.replyResult(msg.ID, map[string]any{"ok": true})
 	case "session.compact":
-		if err := c.host.Compact(c.sessionID); err != nil {
+		if err := c.host.Compact(sessionID); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}
@@ -180,7 +214,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 			Thinking string `json:"thinkingEffort"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
-		if err := c.host.PatchSession(c.sessionID, p.Model, p.Thinking); err != nil {
+		if err := c.host.PatchSession(sessionID, p.Model, p.Thinking); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}
@@ -190,7 +224,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 			Names []string `json:"names"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
-		if err := c.host.SetActiveTools(c.sessionID, c.name, p.Names); err != nil {
+		if err := c.host.SetActiveTools(sessionID, c.name, p.Names); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}
@@ -204,7 +238,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 			Tools []ToolSpec `json:"tools"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
-		if err := c.host.RegisterTools(c.sessionID, c.name, p.Tools); err != nil {
+		if err := c.host.RegisterTools(sessionID, c.name, p.Tools); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}
@@ -216,7 +250,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 			Tone string `json:"tone"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
-		if err := c.host.UISetStatus(c.sessionID, c.name, p.Key, p.Text, p.Tone); err != nil {
+		if err := c.host.UISetStatus(sessionID, c.name, p.Key, p.Text, p.Tone); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}
@@ -224,13 +258,13 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 	case "ui.setPanel":
 		var panel UIPanel
 		_ = json.Unmarshal(msg.Params, &panel)
-		if err := c.host.UISetPanel(c.sessionID, c.name, panel); err != nil {
+		if err := c.host.UISetPanel(sessionID, c.name, panel); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}
 		c.replyResult(msg.ID, map[string]any{"ok": true})
 	case "ui.clearPanel":
-		if err := c.host.UIClearPanel(c.sessionID, c.name); err != nil {
+		if err := c.host.UIClearPanel(sessionID, c.name); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}
@@ -241,7 +275,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 			Message string `json:"message"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
-		ok, err := c.host.UIConfirm(c.sessionID, c.name, p.Title, p.Message)
+		ok, err := c.host.UIConfirm(sessionID, c.name, p.Title, p.Message)
 		if err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
@@ -253,7 +287,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 			Options []string `json:"options"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
-		choice, err := c.host.UISelect(c.sessionID, c.name, p.Title, p.Options)
+		choice, err := c.host.UISelect(sessionID, c.name, p.Title, p.Options)
 		if err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
@@ -269,7 +303,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 			Data    any    `json:"data"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
-		data, err := c.host.BusEmit(c.sessionID, c.name, p.Channel, p.Data)
+		data, err := c.host.BusEmit(sessionID, c.name, p.Channel, p.Data)
 		if err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
@@ -285,7 +319,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 			Data    any    `json:"data"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
-		if err := c.host.BusBroadcast(c.sessionID, c.name, p.Channel, p.Data); err != nil {
+		if err := c.host.BusBroadcast(sessionID, c.name, p.Channel, p.Data); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}
@@ -299,7 +333,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 		if c.busChannels == nil {
 			c.busChannels = map[string]bool{}
 		}
-		c.busChannels[p.Channel] = true
+		c.busChannels[busKey(sessionID, p.Channel)] = true
 		c.busMu.Unlock()
 		c.replyResult(msg.ID, map[string]any{"ok": true})
 	case "bus.unsubscribe":
@@ -308,33 +342,42 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 		}
 		_ = json.Unmarshal(msg.Params, &p)
 		c.busMu.Lock()
-		delete(c.busChannels, p.Channel)
+		delete(c.busChannels, busKey(sessionID, p.Channel))
 		c.busMu.Unlock()
 		c.replyResult(msg.ID, map[string]any{"ok": true})
 	default:
 		c.replyError(msg.ID, fmt.Sprintf("unknown method %s", msg.Method))
 	}
-	_ = ctx
 }
 
-func (c *rpcClient) subscribedBus(channel string) bool {
+func busKey(sessionID, channel string) string { return sessionID + "\x00" + channel }
+
+func (c *rpcClient) subscribedBus(sessionID, channel string) bool {
 	if !hasKind(c.capabilities, CapBus) {
 		return false
 	}
 	c.busMu.Lock()
 	defer c.busMu.Unlock()
-	if len(c.busChannels) == 0 {
+	prefix := sessionID + "\x00"
+	hasSession := false
+	for key := range c.busChannels {
+		if strings.HasPrefix(key, prefix) {
+			hasSession = true
+			break
+		}
+	}
+	if !hasSession {
 		return true
 	}
-	return c.busChannels[channel]
+	return c.busChannels[busKey(sessionID, channel)]
 }
 
-func (c *rpcClient) deliverBus(channel string, data any, wait bool) any {
-	if !c.subscribedBus(channel) {
+func (c *rpcClient) deliverBus(sessionID, channel string, data any, wait bool) any {
+	if !c.subscribedBus(sessionID, channel) {
 		return data
 	}
 	if !wait {
-		c.notify("bus.event", map[string]any{"channel": channel, "data": data})
+		c.notify("bus.event", map[string]any{"sessionId": sessionID, "channel": channel, "data": data})
 		return data
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutHook)
@@ -342,7 +385,7 @@ func (c *rpcClient) deliverBus(channel string, data any, wait bool) any {
 	var out struct {
 		Data any `json:"data"`
 	}
-	err := c.call(ctx, "bus.event", map[string]any{"channel": channel, "data": data}, &out)
+	err := c.call(ctx, "bus.event", map[string]any{"sessionId": sessionID, "channel": channel, "data": data}, &out)
 	if err != nil || out.Data == nil {
 		return data
 	}

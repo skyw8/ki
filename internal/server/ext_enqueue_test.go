@@ -562,8 +562,8 @@ func TestListDoesNotWarmRuntime(t *testing.T) {
 		t.Fatal("GET /v1/sessions list spawned sidecar")
 	}
 	waitRuntimeReady(t, hs, id)
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("GET by id should spawn: %v", err)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("GET by id should reuse the process-global sidecar")
 	}
 }
 

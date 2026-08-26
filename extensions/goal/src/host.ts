@@ -27,34 +27,42 @@ export type UIPanel = {
 };
 
 export class Host {
-  constructor(private readonly rpc: StdioRpc) {}
+  constructor(private readonly rpc: StdioRpc, private readonly sessionId: string) {}
+
+  private params(value: unknown): Record<string, unknown> {
+    const body = value && typeof value === "object" && !Array.isArray(value)
+      ? { ...(value as Record<string, unknown>) }
+      : {};
+    body.sessionId = this.sessionId;
+    return body;
+  }
 
   enqueue(req: EnqueueRequest) {
-    return this.rpc.call("session.enqueue", req);
+    return this.rpc.call("session.enqueue", this.params(req));
   }
 
   snapshot(): Promise<SessionSnapshot> {
-    return this.rpc.call("session.snapshot", {}) as Promise<SessionSnapshot>;
+    return this.rpc.call("session.snapshot", this.params({})) as Promise<SessionSnapshot>;
   }
 
   appendEntry(customType: string, data: unknown) {
-    return this.rpc.call("session.appendEntry", { customType, data });
+    return this.rpc.call("session.appendEntry", this.params({ customType, data }));
   }
 
   setStatus(key: string, text: string, tone: string) {
-    return this.rpc.call("ui.setStatus", { key, text, tone });
+    return this.rpc.call("ui.setStatus", this.params({ key, text, tone }));
   }
 
   setPanel(panel: UIPanel) {
-    return this.rpc.call("ui.setPanel", panel);
+    return this.rpc.call("ui.setPanel", this.params(panel));
   }
 
   clearPanel() {
-    return this.rpc.call("ui.clearPanel", {});
+    return this.rpc.call("ui.clearPanel", this.params({}));
   }
 
   confirm(title: string, message: string): Promise<boolean> {
-    return this.rpc.call("ui.confirm", { title, message }).then((res) => {
+    return this.rpc.call("ui.confirm", this.params({ title, message })).then((res) => {
       const row = res as { ok?: boolean } | null;
       return Boolean(row && row.ok);
     });

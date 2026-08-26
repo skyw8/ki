@@ -38,11 +38,10 @@ import (
 
 // Options constructs a Server.
 type Options struct {
-	Config     config.Config
-	Token      string
-	Streamer   loop.Streamer
-	Registry   *provider.Registry
-	ProjectDir string
+	Config   config.Config
+	Token    string
+	Streamer loop.Streamer
+	Registry *provider.Registry
 }
 
 // Server is the HTTP API.
@@ -52,7 +51,6 @@ type Server struct {
 	streamer               loop.Streamer
 	registry               *provider.Registry
 	providerExtensions     *extension.ProviderManager
-	providerProjectDir     string
 	requireModelCredential bool
 	providerAuthMu         sync.Mutex
 	providerAuth           map[string]*providerAuthState
@@ -103,10 +101,6 @@ type File struct {
 // New builds a server (does not listen).
 func New(opt Options) (*Server, error) {
 	shells := tools.DiscoverShellRuntime()
-	projectDir := strings.TrimSpace(opt.ProjectDir)
-	if projectDir == "" {
-		projectDir, _ = os.Getwd()
-	}
 	tok := opt.Token
 	if tok == "" {
 		tok = newToken()
@@ -120,7 +114,7 @@ func New(opt Options) (*Server, error) {
 		}
 	}
 	providerExtensions := extension.NewProviderManager(opt.Config.Home)
-	providerDiscovery := extension.Discover(opt.Config.Home, projectDir, toggles.Load(opt.Config.Home).Extensions)
+	providerDiscovery := extension.Discover(opt.Config.Home, "", toggles.Load(opt.Config.Home).Extensions)
 	if err := providerExtensions.Replace(providerDiscovery.Enabled); err != nil {
 		providerExtensions.Close()
 		return nil, fmt.Errorf("load provider extensions: %w", err)
@@ -148,7 +142,6 @@ func New(opt Options) (*Server, error) {
 		streamer:               st,
 		registry:               reg,
 		providerExtensions:     providerExtensions,
-		providerProjectDir:     projectDir,
 		requireModelCredential: requireCredential,
 		providerAuth:           map[string]*providerAuthState{},
 		resources:              resources.NewLoader(opt.Config.Home),
@@ -258,7 +251,7 @@ func (s *Server) reloadProviderExtensions() {
 	if s.providerExtensions == nil {
 		return
 	}
-	discovery := extension.Discover(s.cfg.Home, s.providerProjectDir, toggles.Load(s.cfg.Home).Extensions)
+	discovery := extension.Discover(s.cfg.Home, "", toggles.Load(s.cfg.Home).Extensions)
 	if err := s.providerExtensions.Replace(discovery.Enabled); err != nil {
 		slog.Warn("reload provider extensions", "err", err)
 		return
@@ -520,7 +513,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	}
 	if s.ext != nil {
-		s.ext.CloseExcept(nil)
+		s.ext.Close()
 	}
 	if s.providerExtensions != nil {
 		s.providerExtensions.Close()
@@ -1410,8 +1403,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}.Build(profile)
 	tg := toggles.Load(cfg.Home)
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
-	// snapshot.Extensions is Discover.All (name-sorted catalog). Enabled
-	// reorders to the intercept chain: global-by-name then project-by-name.
+	// snapshot.Extensions is the global Discover.All catalog. Configure
+	// reconciles process-global sidecars; Prepare builds this session's view.
+	s.ext.Configure(snapshot.Extensions)
 	extTools := s.ext.Prepare(context.Background(), sess.ID(), sess.Header.CWD, extension.Enabled(snapshot.Extensions, tg.Extensions))
 	tls = append(tls, extTools...)
 	prepared := s.mcp.Prepare(ctx, sess.ID(), snapshot.MCP, tg.MCP, snapshot.MCPServers)
