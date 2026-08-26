@@ -1,9 +1,11 @@
 package provider
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -111,6 +113,64 @@ func TestRegistryPersistsCustomProviderAndCredential(t *testing.T) {
 	}
 	if info, err := os.Stat(filepath.Join(home, "credentials.json")); err != nil || info.Mode().Perm()&0o077 != 0 {
 		t.Fatalf("credential permissions: info=%v err=%v", info, err)
+	}
+}
+
+func TestRegistryRegistersPluginProviderAndOpaqueCredential(t *testing.T) {
+	home := t.TempDir()
+	r, err := NewRegistry(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := PluginSpec{
+		ID: "codex", Name: "Codex", API: "openai-codex-responses", BaseURL: "https://chatgpt.com/backend-api",
+		DefaultModel: "codex-mini", Auth: AuthSpec{Type: AuthOAuth, Name: "Codex", Subscription: true},
+		Models: []ModelSeed{{ID: "codex-mini", ContextWindow: 128000, MaxTokens: 16384, Input: []string{"text"}, ApplyPatchToolType: "freeform"}},
+	}
+	if err := r.ReplacePluginProviders([]PluginSpec{spec}); err != nil {
+		t.Fatal(err)
+	}
+	views := r.Providers()
+	var found *View
+	for i := range views {
+		if views[i].ID == spec.ID {
+			found = &views[i]
+			break
+		}
+	}
+	if found == nil || found.Runtime != "plugin" || found.Auth.Type != AuthOAuth || found.Credential.Configured {
+		t.Fatalf("plugin view=%+v", found)
+	}
+	if _, _, _, err := r.Resolve(spec.ID, "codex-mini"); !strings.Contains(err.Error(), "configured credential") {
+		t.Fatalf("missing opaque credential error=%v", err)
+	}
+	value := json.RawMessage(`{"access":"access-token","refresh":"refresh-token","accountId":"acct"}`)
+	if err := r.SetCredentialValue(spec.ID, AuthOAuth, value); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetCredentialValue(spec.ID, AuthAPIKey, value); err == nil {
+		t.Fatal("wrong credential type must fail")
+	}
+	credential, status, err := r.Credential(spec.ID)
+	if err != nil || !status.Configured || status.Type != AuthOAuth || string(credential.Value) != string(value) || credential.APIKey != "" {
+		t.Fatalf("credential=%+v status=%+v err=%v", credential, status, err)
+	}
+	if _, _, _, err := r.Resolve(spec.ID, "codex-mini"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, "credentials.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "access-token") || !strings.Contains(string(b), "refresh-token") {
+		t.Fatalf("opaque credential was not persisted: %s", b)
+	}
+	catalog, err := json.Marshal(r.Providers())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(catalog), "access-token") || strings.Contains(string(catalog), "refresh-token") {
+		t.Fatalf("provider catalog leaked opaque credential: %s", catalog)
 	}
 }
 

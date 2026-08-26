@@ -105,6 +105,35 @@ func TestLifecycleCapabilityLoads(t *testing.T) {
 	}
 }
 
+func TestDiscoverProviderCapabilityLoadsCatalog(t *testing.T) {
+	home := t.TempDir()
+	writePkg(t, filepath.Join(home, "extensions"), "codex", `{
+		"name":"codex","capabilities":["provider"],
+		"providers":[{"id":"codex","name":"Codex","api":"openai-codex-responses","baseUrl":"https://chatgpt.com/backend-api","auth":{"type":"oauth","subscription":true},"models":[{"id":"codex-mini","contextWindow":128000,"maxTokens":16384,"input":["text"]}]}],
+		"runtime":{"kind":"rpc","command":"bin/codex"}
+	}`)
+	got := Discover(home, t.TempDir(), session.Toggle{})
+	if len(got.Enabled) != 1 || got.Enabled[0].Error != "" {
+		t.Fatalf("provider discovery=%+v", got.Enabled)
+	}
+	d := got.Enabled[0]
+	if !hasKind(d.Capabilities, CapProvider) || len(d.Providers) != 1 || d.Providers[0].Auth.Type != "oauth" {
+		t.Fatalf("provider descriptor=%+v", d)
+	}
+}
+
+func TestDiscoverRejectsProviderWithoutSidecar(t *testing.T) {
+	home := t.TempDir()
+	writePkg(t, filepath.Join(home, "extensions"), "codex", `{
+		"name":"codex","capabilities":["provider"],
+		"providers":[{"id":"codex","name":"Codex","api":"openai-codex-responses","baseUrl":"https://chatgpt.com/backend-api","models":[{"id":"codex-mini","contextWindow":128000,"maxTokens":16384,"input":["text"]}]}]
+	}`)
+	got := Discover(home, t.TempDir(), session.Toggle{})
+	if len(got.All) != 1 || got.All[0].Error == "" {
+		t.Fatalf("provider without sidecar should fail: %+v", got.All)
+	}
+}
+
 func TestEnabledChainOrderMatchesDiscover(t *testing.T) {
 	// Name-sorted All would be alpha then zeta; chain order is home zeta then project alpha.
 	home := t.TempDir()

@@ -11,6 +11,7 @@ const (
 	CapTool         Kind = "tool"
 	CapLifecycle    Kind = "lifecycle"
 	CapBus          Kind = "bus"
+	CapProvider     Kind = "provider"
 )
 
 var knownKinds = map[Kind]bool{
@@ -21,6 +22,7 @@ var knownKinds = map[Kind]bool{
 	CapTool:         true,
 	CapLifecycle:    true,
 	CapBus:          true,
+	CapProvider:     true,
 }
 
 func hasKind(list []string, k Kind) bool {
@@ -33,5 +35,5 @@ func hasKind(list []string, k Kind) bool {
 }
 
 func needsCodeRuntime(caps []string) bool {
-	return hasKind(caps, CapTool) || hasKind(caps, CapLifecycle) || hasKind(caps, CapBus)
+	return hasKind(caps, CapTool) || hasKind(caps, CapLifecycle) || hasKind(caps, CapBus) || hasKind(caps, CapProvider)
 }

@@ -982,7 +982,7 @@ func TestAuthAndCreateGetFork(t *testing.T) {
 }
 
 func TestProviderConfigurationAPI(t *testing.T) {
-	_, hs := testServer(t)
+	srv, hs := testServer(t)
 	call := func(method, path, body string) (int, map[string]any) {
 		t.Helper()
 		req, _ := http.NewRequestWithContext(t.Context(), method, hs.URL+path, strings.NewReader(body))
@@ -1021,6 +1021,22 @@ func TestProviderConfigurationAPI(t *testing.T) {
 	def, _ := out["default"].(map[string]any)
 	if def["provider"] == "local" {
 		t.Fatalf("disabled last-used must fall back: %+v", out["default"])
+	}
+
+	if err := srv.registry.ReplacePluginProviders([]provider.PluginSpec{{
+		ID: "opaque", Name: "Opaque", API: "opaque-api", BaseURL: "https://example.invalid",
+		Auth:   provider.AuthSpec{Type: provider.AuthOAuth},
+		Models: []provider.ModelSeed{{ID: "opaque-model", ContextWindow: 4096, MaxTokens: 512, Input: []string{"text"}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	status, out = call(http.MethodPut, "/v1/providers/opaque/credential", `{"type":"oauth","value":{"access":"secret-token"}}`)
+	if status != http.StatusOK || strings.Contains(fmt.Sprint(out), "secret-token") {
+		t.Fatalf("opaque credential response: %d %+v", status, out)
+	}
+	credential, statusInfo, err := srv.registry.Credential("opaque")
+	if err != nil || !statusInfo.Configured || string(credential.Value) != `{"access":"secret-token"}` {
+		t.Fatalf("opaque credential=%+v status=%+v err=%v", credential, statusInfo, err)
 	}
 }
 

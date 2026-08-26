@@ -36,19 +36,27 @@ my-ext/
   "name": "protected-paths",
   "version": "0.1.0",
   "description": "…",
-  "capabilities": ["prompt.append", "skill", "command", "mcp", "tool", "lifecycle", "bus"],
+  "capabilities": ["prompt.append", "skill", "command", "mcp", "tool", "lifecycle", "bus", "provider"],
   "failClosed": false,
   "prompt": { "append": ["prompt/APPEND.md"] },
   "skills": ["skills"],
   "commands": ["commands"],
   "mcp": { "mcpServers": { "time": { "command": "uvx", "args": ["mcp-server-time"] } } },
+  "providers": [{
+    "id": "example-provider",
+    "name": "Example Provider",
+    "api": "example-responses",
+    "baseUrl": "https://example.invalid/api",
+    "auth": { "type": "oauth", "subscription": true },
+    "models": [{ "id": "example-model", "contextWindow": 128000, "maxTokens": 16384, "input": ["text"] }]
+  }],
   "runtime": { "kind": "rpc", "command": "bin/extension", "args": [], "install": [], "env": {} }
 }
 ```
 
 - `capabilities`：门闸。未声明的能力：对应字段忽略；`initialize` 多报的 tools/commands 丢弃并 `extension_error`。
 - `failClosed`：缺省 `false`。仅 **sync** 生命周期入口：`tool_call` 失败 → 合成 block；`before_provider_request` 失败 → canned stop。
-- `runtime.kind`：`none`（缺省）| `rpc`。`rpc` 须声明 `tool` / `lifecycle` / `command` / `bus` 之一。
+- `runtime.kind`：`none`（缺省）| `rpc`。`rpc` 须声明 `tool` / `lifecycle` / `command` / `bus` / `provider` 之一。
 - `runtime.command`：与 MCP 相同。无路径分隔符（`node` / `npx`）走 **PATH**；带 `/` 的相对路径相对包根（`bin/extension`）；绝对路径原样用。
 - `runtime.install`：可选 argv，sidecar **启动前**在包根执行（装依赖）。stdout 并进 stderr，避免污染 NDJSON。失败则不拉起 sidecar。
 
@@ -63,6 +71,7 @@ my-ext/
 | `tool` | sidecar | `tool.execute`；模型裸名 |
 | `lifecycle` | sidecar | 订事件：`initialize.subscriptions` |
 | `bus` | sidecar | 扩展间总线 |
+| `provider` | 进程级 sidecar | 注册模型/认证元数据并接管 provider stream |
 
 ## 订事件
 
@@ -124,13 +133,13 @@ my-ext/
 
 NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_SESSION_ID`、`KI_CWD`、`KI_HOME`、`KI_EXTENSION_ROOT` + 平台必需 + `runtime.env`。
 
-超时：`initialize` 10s；sync 生命周期 2s；`tool.execute` 120s；`command.invoke` 15s。
+超时：`initialize` 10s；sync 生命周期 2s；`tool.execute` 120s；`command.invoke` 15s；provider stream start 10s。
 
 ### Host → sidecar
 
 | method | 门闸 | 说明 |
 |---|---|---|
-| `initialize` | — | params：session/cwd/home/extensionRoot/capabilities；result：`{tools,commands,fallback,subscriptions}` |
+| `initialize` | — | params：session/cwd/home/extensionRoot/capabilities/scope/providers；result：`{tools,commands,fallback,subscriptions}` |
 | `shutdown` | — | 关闭 |
 | `tool.execute` | `tool` | 进度：`tool.progress` |
 | `command.invoke` | `command` | `{handled,notice,prompt}` |
@@ -139,6 +148,18 @@ NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_SESSION_ID`、`KI_CWD`、`KI
 | `cancel` | — | `{id}` |
 | `ui.action` / `ui.submit` | UI 投影 | 用户点了面板 |
 | `bus.event` | `bus` | 他方 emit / 广播 |
+| `provider.stream.start` | `provider` | `{requestId,request}`；一次传入完整 model、credential 和 loop request，返回 `{accepted:true}` |
+| `provider.stream.cancel` | `provider` | `{requestId}`；取消一个 provider stream |
+
+provider capability 使用进程级 sidecar，不随 session 各拉起一个进程。`providers` 是扩展清单中的离线目录，provider sidecar 只负责对应 provider 的认证/网络/响应解析；宿主只保留模型目录、凭据状态、取消、背压和 loop 适配。一次 stream 的结果通过 sidecar → Host 的 `provider.stream.event` notification 回传：
+
+```json
+{"jsonrpc":"2.0","method":"provider.stream.event","params":{"requestId":"stream-1","type":"text_delta","contentIndex":0,"delta":"hello"}}
+```
+
+事件类型首版为 `start`、`text_start`/`text_delta`/`text_end`、`thinking_start`/`thinking_delta`/`thinking_end`、`toolcall_start`/`toolcall_delta`/`toolcall_end`、`custom_tool_call_input_delta`、`done`、`error`。`done` 可携带完整最终 `message`；普通增量不重复携带完整 `partial`，Host adapter 会在内存中重建 `loop.AssistantDelta`。
+
+provider sidecar 的生命周期、凭据和流都是全局进程级资源；session 只通过 `requestId` 复用同一个 sidecar。Reload 时保留仍注册的 sidecar，移除或禁用的 provider 会关闭对应进程。
 
 ### sidecar → Host（inbound request）
 

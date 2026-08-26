@@ -20,9 +20,9 @@
 
 `internal/resources.Loader` 由 Server 持有，把运行环境、skills、AGENTS/CLAUDE、prompt 模板、`.mcp.json` 和已发现的 MCP tools 合并成 session 级不可变快照。设置页没有 session，只用不缓存的 `Scan(cwd)` 展示配置。每轮 prompt 在渲染前准备该 session 启用的 MCP server；成功发现的工具与内置工具一起进入 prompt、loop 和 `request_header`，单个 server 失败不阻断本轮。MCP 的连接所有权、快照更新、事件和 Reload 生命周期见 [mcp.md](mcp.md)。
 
-Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` 的合并结果。自定义 provider/model 和协议兼容字段通过设置 UI 或 provider API 管理；不从网络刷新目录。`--model provider/model` 只写回 session 配置。
+Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和启用的 provider 扩展目录的合并结果。自定义 provider/model 和协议兼容字段通过设置 UI 或 provider API 管理；不从网络刷新目录。provider 扩展以进程级 sidecar 接管完整 streamer，普通 provider 仍由 ki 内置 HTTP adapter 处理；`--model provider/model` 只写回 session 配置。
 
-每轮 `runPrompt` 解析模型后，将 `input` 和 `applyPatchToolType` 映射为 provider-neutral `tools.Profile`，再一次性构造本轮内置工具。`input` 含 `image` 才使用富媒体 `Read`；`applyPatchToolType=freeform` 使用 `apply_patch`，否则使用 `Write` + `Edit`。同一份工具集进入 prompt、loop 和 `request_header`，模型切换后的下一轮立即重建。
+每轮 `runPrompt` 解析模型后，将 `input` 和 `applyPatchToolType` 映射为 provider-neutral `tools.Profile`，再一次性构造本轮内置工具。`input` 含 `image` 才使用富媒体 `Read`；`applyPatchToolType=freeform` 使用 `apply_patch`，否则使用 `Write` + `Edit`。同一份工具集进入 prompt、loop 和 `request_header`，模型切换后的下一轮立即重建。provider 扩展收到完整 `loop.Request`，在 sidecar 内完成请求构造、传输和响应解析，Host adapter 只把紧凑事件还原成 loop 增量。
 
 `Agent` 是同一工具链中的 session-scoped delegation：在工具调用所在 parent leaf 上执行 `session.ForkAt(..., forkMode=tree)`，注册 child 的 stable agent/task id 后由独立 `runState` 运行 `loop.RunMessage`。前台调用等待 child 完成并把最终 assistant 文本作为 tool result；后台调用立即返回 task id/output file，`TaskOutput` / `TaskStop` 通过统一 task store 查询或取消 shell 与 agent 任务。child 自己重新 Prepare 资源并拥有完整内置工具集，所以可递归形成 tree，但主会话为深度 0，Agent child 最多到深度 3，深度 3 不再暴露 `Agent`。`SendMessage` 对 live child 写入 Inbox，对 completed/stopped/interrupted child 复用原 transcript 续跑；child 旁的 `agent.json` 让 server 重启后能重建索引。
 
@@ -33,7 +33,7 @@ Provider 协议形状来自嵌入式离线 catalog 与 `{KI_HOME}/models.json` �
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET | `/v1/models` | registry 的可选模型扁平视图（含 `thinkingLevels` / `defaultThinking`） |
-| GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential 和 model 管理 |
+| GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential 和 model 管理；插件 provider 目录只读 |
 | PUT | `/v1/default-model` | 显式记住上次选用的模型；WebUI 切模型时 server 也会写 |
 | GET | `/v1/meta` | 上次选用的模型（不可用则第一个可用项）、该模型 default thinking、用户 home（无进程 cwd） |
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned / parentSessionId / forkMode） |

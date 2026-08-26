@@ -15,7 +15,7 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 ## 离线目录与配置
 
 - `catalog.json` 随二进制嵌入，内置 OpenAI、Anthropic、DeepSeek、DashScope、Z.AI、Moonshot、MiniMax、Google 和 xAI；DashScope、Z.AI、Moonshot、MiniMax 另有 `-cn` provider。它只随 Ki 发版更新，不调用供应商模型列表 API。
-- `{KI_HOME}/models.json` 保存上次选用的模型、自定义 provider/model 和内置项覆盖；`{KI_HOME}/credentials.json` 只保存 API key（0600）。密钥解析顺序为 credentials 文件再到 provider 环境变量，API 从不返回明文。
+- `{KI_HOME}/models.json` 保存上次选用的模型、自定义 provider/model 和内置项覆盖；`{KI_HOME}/credentials.json` 保存 API key 或 provider-owned opaque credential（0600）。密钥解析顺序为 credentials 文件再到 provider 环境变量，API 从不返回明文。
 - registry 按嵌入目录 → 用户配置合并，并在校验成功、原子替换文件后发布新快照。provider/model 可新增、禁用和删除；内置项删除覆盖即恢复基线。上次选用不可用时落到第一个有凭据的可用模型，再不行落到目录里第一个启用项；没有「钉死不能禁用」的 default。
 - provider 和模型可选 `completions` / `responses` / `anthropic`，模型可覆盖 provider 的 API/Base URL。Google 使用官方 OpenAI-compatible 入口。
 - 模型的 `input` 声明输入模态；可选 `applyPatchToolType=freeform` 声明 Codex grammar-backed `apply_patch`。freeform custom tool 只允许配置在 Responses 模型上，避免生成协议无法表达的工具调用。
@@ -34,3 +34,11 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 - 流式工具参数：function 碎片拼成完整 JSON 再 `Unmarshal`；Responses custom tool 的 `response.custom_tool_call_input.*` 保留原始文本，并把 delta、call ID 和工具名交给 loop 的参数预览消费者。回放时严格保持 function/custom 的 call-output 配对。
 - toolResult 的 `details` 只供 session 和客户端使用；Completions、Responses、Anthropic 的请求转换都只序列化模型可见 `content` 和错误状态。
 - `Scripted`：测试和 `KI_FAKE=1` 用。
+
+## Provider 插件
+
+扩展声明 `provider` capability 和 `providers` 目录项后，provider 会以 `runtime.kind=rpc` 的进程级 sidecar 注册到 Registry。provider 的 `api` 可以是内置协议名，也可以是插件自定义字符串；自定义 API 不会落入 ki 的 Completions/Responses/Anthropic HTTP adapter。
+
+服务端只做三件事：把 provider/model/auth 元数据并入离线目录、按 provider 解析凭据、把一次完整 `loop.Request` 通过 `provider.stream.start` 交给 sidecar。sidecar 负责完整 request body、headers、网络传输、SSE/WS 解析、provider-specific tool/reasoning 状态和最终 message；Host adapter 只消费紧凑增量、做背压/取消并重建 `loop.AssistantDelta`。因此 Codex 这类需要专用客户端伪装的 streamer 应放在插件里。
+
+插件 provider 不写入 `models.json`，其目录随扩展启用状态动态替换；provider/model 的 CRUD 端点对这类目录只读。API key 继续使用 `{"apiKey":"..."}`，OAuth 或其他插件凭据使用 `{"type":"oauth","value":{...}}`，`value` 原样保存和私有传递，catalog/status 不包含明文。

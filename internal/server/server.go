@@ -50,6 +50,7 @@ type Server struct {
 	token                  string
 	streamer               loop.Streamer
 	registry               *provider.Registry
+	providerPlugins        *extension.ProviderManager
 	requireModelCredential bool
 	mcp                    *mcp.Manager
 	ext                    *extension.Manager
@@ -110,10 +111,20 @@ func New(opt Options) (*Server, error) {
 			return nil, fmt.Errorf("load provider registry: %w", err)
 		}
 	}
+	providerPlugins := extension.NewProviderManager(opt.Config.Home)
+	providerDiscovery := extension.Discover(opt.Config.Home, "", toggles.Load(opt.Config.Home).Extensions)
+	if err := providerPlugins.Replace(providerDiscovery.Enabled); err != nil {
+		providerPlugins.Close()
+		return nil, fmt.Errorf("load provider plugins: %w", err)
+	}
+	if err := reg.ReplacePluginProviders(providerPlugins.Specs()); err != nil {
+		providerPlugins.Close()
+		return nil, fmt.Errorf("register provider plugins: %w", err)
+	}
 	requireCredential := opt.Streamer == nil
 	st := opt.Streamer
 	if st == nil {
-		st = liveFromRegistry(reg)
+		st = liveFromRegistry(reg, providerPlugins)
 	}
 	ws := workspace.Open(opt.Config.Home, opt.Config.Sessions.Root)
 	infos, _ := session.List(opt.Config.Sessions.Root)
@@ -128,6 +139,7 @@ func New(opt Options) (*Server, error) {
 		token:                  tok,
 		streamer:               st,
 		registry:               reg,
+		providerPlugins:        providerPlugins,
 		requireModelCredential: requireCredential,
 		resources:              resources.NewLoader(opt.Config.Home),
 		runs:                   map[string]*runState{},
@@ -152,13 +164,34 @@ func New(opt Options) (*Server, error) {
 	return srv, nil
 }
 
-func liveFromRegistry(reg *provider.Registry) loop.Streamer {
-	return &router{registry: reg}
+func liveFromRegistry(reg *provider.Registry, plugins *extension.ProviderManager) loop.Streamer {
+	return &router{registry: reg, plugins: plugins}
 }
 
-type router struct{ registry *provider.Registry }
+type router struct {
+	registry *provider.Registry
+	plugins  *extension.ProviderManager
+}
 
 func (r *router) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
+	if r.plugins != nil && r.plugins.HasProvider(req.Provider) {
+		_, model, _, err := r.registry.Resolve(req.Provider, req.Model)
+		if err != nil {
+			return types.Message{}, fmt.Errorf("resolve provider model: %w", err)
+		}
+		credential, status, err := r.registry.Credential(req.Provider)
+		if err != nil {
+			return types.Message{}, fmt.Errorf("resolve provider credential: %w", err)
+		}
+		if !status.Configured {
+			return types.Message{}, fmt.Errorf("provider %q has no configured credential", req.Provider)
+		}
+		msg, err := r.plugins.NewStreamer(model, credential).Stream(ctx, req, emit)
+		if err != nil {
+			return msg, fmt.Errorf("stream provider plugin: %w", err)
+		}
+		return msg, nil
+	}
 	_, m, key, err := r.registry.Resolve(req.Provider, req.Model)
 	if err != nil {
 		return types.Message{}, fmt.Errorf("resolve provider model: %w", err)
@@ -200,9 +233,24 @@ func (s *Server) Reload() bool {
 	if s.ext != nil {
 		s.ext.CloseExcept(active)
 	}
+	s.reloadProviderPlugins()
 	s.resetRuntimeExcept(active)
 	s.rewarmWatchers(active)
 	return len(active) > 0
+}
+
+func (s *Server) reloadProviderPlugins() {
+	if s.providerPlugins == nil {
+		return
+	}
+	discovery := extension.Discover(s.cfg.Home, "", toggles.Load(s.cfg.Home).Extensions)
+	if err := s.providerPlugins.Replace(discovery.Enabled); err != nil {
+		slog.Warn("reload provider plugins", "err", err)
+		return
+	}
+	if err := s.registry.ReplacePluginProviders(s.providerPlugins.Specs()); err != nil {
+		slog.Warn("reload provider catalog", "err", err)
+	}
 }
 
 // reloadSession invalidates one idle session. A live run keeps its fixed tool
@@ -453,6 +501,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.ext != nil {
 		s.ext.CloseExcept(nil)
+	}
+	if s.providerPlugins != nil {
+		s.providerPlugins.Close()
 	}
 	if s.mcp != nil {
 		s.mcp.Close()
@@ -1288,6 +1339,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	s.rememberModel(provider.ModelRef{Provider: sess.Config.Provider, Model: sess.Config.Model})
 	var liveKey string
+	var liveCredential provider.Credential
 	var liveModel provider.Model
 	runStreamer := s.streamer
 	if s.requireModelCredential {
@@ -1299,6 +1351,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		info = resolved
 		liveModel = resolved
 		liveKey = key
+		liveCredential, _, resolveErr = s.registry.Credential(sess.Config.Provider)
+		if resolveErr != nil {
+			st.err = resolveErr
+			return
+		}
 	}
 	jobs := s.jobsFor(id)
 	profile := tools.Profile{
@@ -1347,8 +1404,12 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	tls = s.filterActiveTools(id, tls)
 	occ := s.ext.Occupy(id)
 	if s.requireModelCredential {
-		runStreamer = provider.NewLiveModel(liveModel, liveKey, occ.HTTPDoer())
-		runStreamer = occ.WrapStreamer(runStreamer)
+		if s.providerPlugins != nil && s.providerPlugins.HasProvider(liveModel.Provider) {
+			runStreamer = s.providerPlugins.NewStreamer(liveModel, liveCredential)
+		} else {
+			runStreamer = provider.NewLiveModel(liveModel, liveKey, occ.HTTPDoer())
+			runStreamer = occ.WrapStreamer(runStreamer)
+		}
 	}
 	// The snapshot is fixed for the session until reload, while the prompt is
 	// rendered per request so tool schemas and runtime metadata stay current.
@@ -1631,6 +1692,13 @@ func (s *Server) liveSummarizer(sessionID, prov, model string) loop.Streamer {
 	_, resolved, key, err := s.registry.Resolve(prov, model)
 	if err != nil {
 		return s.streamer
+	}
+	if s.providerPlugins != nil && s.providerPlugins.HasProvider(prov) {
+		credential, status, err := s.registry.Credential(prov)
+		if err != nil || !status.Configured {
+			return s.streamer
+		}
+		return s.providerPlugins.NewStreamer(resolved, credential)
 	}
 	return provider.NewLiveModel(resolved, key, s.ext.HTTPDoer(sessionID))
 }

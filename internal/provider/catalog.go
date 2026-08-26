@@ -8,6 +8,43 @@ import (
 	"strings"
 )
 
+// AuthKind identifies the credential protocol owned by a provider runtime.
+type AuthKind string
+
+const (
+	AuthNone   AuthKind = "none"
+	AuthAPIKey AuthKind = "api_key"
+	AuthOAuth  AuthKind = "oauth"
+)
+
+// AuthSpec describes provider authentication without exposing credentials.
+type AuthSpec struct {
+	Type         AuthKind `json:"type,omitempty"`
+	Name         string   `json:"name,omitempty"`
+	Subscription bool     `json:"subscription,omitempty"`
+}
+
+// Credential is the resolved value passed to a provider runtime. Value is
+// provider-owned JSON for credentials such as OAuth; APIKey is kept separate
+// so ordinary API-key providers do not need to decode an envelope.
+type Credential struct {
+	Type   AuthKind        `json:"type,omitempty"`
+	APIKey string          `json:"apiKey,omitempty"`
+	Value  json.RawMessage `json:"value,omitempty"`
+}
+
+// PluginSpec is the declarative catalog and auth contract contributed by a
+// provider-capable extension. The extension process owns the implementation.
+type PluginSpec struct {
+	ID           string      `json:"id"`
+	Name         string      `json:"name"`
+	API          string      `json:"api"`
+	BaseURL      string      `json:"baseUrl"`
+	DefaultModel string      `json:"defaultModel,omitempty"`
+	Auth         AuthSpec    `json:"auth,omitzero"`
+	Models       []ModelSeed `json:"models"`
+}
+
 // CatalogVersion is the schema version of the embedded provider catalog.
 const CatalogVersion = 2
 
@@ -67,9 +104,11 @@ type Provider struct {
 	Name         string   `json:"name"`
 	API          string   `json:"api"`
 	BaseURL      string   `json:"baseUrl"`
+	Auth         AuthSpec `json:"auth,omitzero"`
 	Enabled      bool     `json:"enabled"`
 	Builtin      bool     `json:"builtin"`
 	Customized   bool     `json:"customized,omitempty"`
+	Runtime      string   `json:"runtime,omitempty"`
 	EnvVars      []string `json:"-"`
 	DefaultModel string   `json:"defaultModel"`
 	Models       []Model  `json:"models"`
@@ -108,6 +147,31 @@ type ModelSeed struct {
 	Compat             Compat             `json:"compat,omitzero"`
 }
 
+// BuildPluginProvider resolves a manifest provider into the same selectable
+// model shape used by the built-in registry. It does not attach executable
+// behavior; the provider-capable extension owns that runtime.
+func BuildPluginProvider(spec PluginSpec) (Provider, error) {
+	if err := ValidatePluginSpec(spec); err != nil {
+		return Provider{}, err
+	}
+	auth := spec.Auth
+	if auth.Type == "" {
+		auth.Type = AuthAPIKey
+	}
+	models := make([]Model, 0, len(spec.Models))
+	for _, seed := range spec.Models {
+		models = append(models, resolveSeed(spec.ID, spec.API, spec.BaseURL, seed, false))
+	}
+	defaultModel := spec.DefaultModel
+	if defaultModel == "" {
+		defaultModel = models[0].ID
+	}
+	return Provider{
+		ID: spec.ID, Name: spec.Name, API: spec.API, BaseURL: strings.TrimRight(spec.BaseURL, "/"),
+		Auth: auth, Enabled: true, Models: models, DefaultModel: defaultModel, Runtime: "plugin",
+	}, nil
+}
+
 //go:embed catalog.json
 var catalogFS embed.FS
 
@@ -136,7 +200,11 @@ func BuiltinProviders() []Provider {
 		for _, seed := range p.Models {
 			models = append(models, resolveSeed(p.ID, p.API, p.BaseURL, seed, true))
 		}
-		out = append(out, Provider{ID: p.ID, Name: p.Name, API: p.API, BaseURL: p.BaseURL, Enabled: true, Builtin: true, EnvVars: slices.Clone(p.EnvVars), DefaultModel: p.DefaultModel, Models: models})
+		out = append(out, Provider{
+			ID: p.ID, Name: p.Name, API: p.API, BaseURL: p.BaseURL,
+			Auth: AuthSpec{Type: AuthAPIKey}, Enabled: true, Builtin: true,
+			EnvVars: slices.Clone(p.EnvVars), DefaultModel: p.DefaultModel, Models: models,
+		})
 	}
 	aliases := []struct {
 		source, id, name, base string

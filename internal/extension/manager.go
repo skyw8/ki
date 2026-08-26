@@ -49,7 +49,7 @@ func (m *Manager) Prepare(ctx context.Context, sessionID, cwd string, enabled []
 	var tools []loop.Tool
 	var order []string
 	for _, d := range enabled {
-		if !d.wantsSidecar() {
+		if !d.wantsSessionSidecar() {
 			continue
 		}
 		// Store Discover order (global-by-name then project-by-name) so

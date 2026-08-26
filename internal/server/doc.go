@@ -2,7 +2,9 @@
 // persist, tools, and providers. The same process serves the embedded WebUI.
 //
 // Auth is Bearer token except GET /v1/health. Query ?token= is also accepted.
-// Provider CRUD manages the offline registry and credentials; GET /v1/models
+// Provider CRUD manages the offline registry and credentials; provider
+// extensions add process-level sidecar runtimes and read-only catalog entries;
+// GET /v1/models
 // is its flat selectable view. GET /v1/meta exposes the last-used model
 // (or the first available fallback), that model's default thinking
 // effort, and user home.

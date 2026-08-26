@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"ki/internal/mcp"
+	"ki/internal/provider"
 	"ki/internal/session"
 )
 
@@ -26,16 +27,17 @@ var nameRe = regexp.MustCompile(namePattern)
 
 // Manifest is extension.json.
 type Manifest struct {
-	Name         string      `json:"name"`
-	Version      string      `json:"version"`
-	Description  string      `json:"description"`
-	Capabilities []string    `json:"capabilities"`
-	FailClosed   bool        `json:"failClosed"`
-	Prompt       PromptSpec  `json:"prompt"`
-	Skills       []string    `json:"skills"`
-	Commands     []string    `json:"commands"`
-	MCP          MCPSpec     `json:"mcp"`
-	Runtime      RuntimeSpec `json:"runtime"`
+	Name         string                `json:"name"`
+	Version      string                `json:"version"`
+	Description  string                `json:"description"`
+	Capabilities []string              `json:"capabilities"`
+	FailClosed   bool                  `json:"failClosed"`
+	Prompt       PromptSpec            `json:"prompt"`
+	Skills       []string              `json:"skills"`
+	Commands     []string              `json:"commands"`
+	MCP          MCPSpec               `json:"mcp"`
+	Providers    []provider.PluginSpec `json:"providers"`
+	Runtime      RuntimeSpec           `json:"runtime"`
 }
 
 // PromptSpec lists files to append as system-prompt layer 6.
@@ -59,15 +61,16 @@ type RuntimeSpec struct {
 
 // Descriptor is one discovered package. It holds no live RPC handles.
 type Descriptor struct {
-	Name         string   `json:"name"`
-	Version      string   `json:"version"`
-	Description  string   `json:"description"`
-	Path         string   `json:"path"`
-	Scope        string   `json:"source"`
-	Enabled      bool     `json:"enabled"`
-	Capabilities []string `json:"capabilities"`
-	Error        string   `json:"error,omitempty"`
-	FailClosed   bool     `json:"-"`
+	Name         string                `json:"name"`
+	Version      string                `json:"version"`
+	Description  string                `json:"description"`
+	Path         string                `json:"path"`
+	Scope        string                `json:"source"`
+	Enabled      bool                  `json:"enabled"`
+	Capabilities []string              `json:"capabilities"`
+	Providers    []provider.PluginSpec `json:"providers,omitempty"`
+	Error        string                `json:"error,omitempty"`
+	FailClosed   bool                  `json:"-"`
 	manifest     Manifest
 	root         string
 }
@@ -172,6 +175,7 @@ func loadPackage(root, scope string) (Descriptor, bool) {
 		Path:         abs,
 		Scope:        scope,
 		Capabilities: m.Capabilities,
+		Providers:    m.Providers,
 		FailClosed:   m.FailClosed,
 		manifest:     m,
 		root:         abs,
@@ -206,6 +210,18 @@ func validateManifest(root string, m Manifest) error {
 	}
 	if needsCode && kind != runtimeRPC {
 		return fmt.Errorf("code capabilities require runtime.kind=rpc")
+	}
+	if hasKind(m.Capabilities, CapProvider) {
+		if len(m.Providers) == 0 {
+			return fmt.Errorf("provider capability requires providers")
+		}
+		for _, spec := range m.Providers {
+			if err := provider.ValidatePluginSpec(spec); err != nil {
+				return err
+			}
+		}
+	} else if len(m.Providers) > 0 {
+		return fmt.Errorf("providers require provider capability")
 	}
 	for _, rel := range m.Prompt.Append {
 		if err := withinRoot(root, rel); err != nil {
@@ -267,6 +283,17 @@ func (d Descriptor) wantsSidecar() bool {
 		kind = runtimeNone
 	}
 	return kind == runtimeRPC
+}
+
+func (d Descriptor) wantsSessionSidecar() bool {
+	if !d.wantsSidecar() {
+		return false
+	}
+	// A package may combine provider code with session-scoped tools or
+	// lifecycle hooks. Give those capabilities their normal session process;
+	// the provider manager starts a separate process-level instance.
+	return hasKind(d.Capabilities, CapTool) || hasKind(d.Capabilities, CapLifecycle) ||
+		hasKind(d.Capabilities, CapCommand) || hasKind(d.Capabilities, CapBus)
 }
 
 func (d Descriptor) promptText() string {

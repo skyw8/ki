@@ -17,6 +17,7 @@ import (
 )
 
 var providerIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+var apiIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // ModelRef identifies a provider and one of its models.
 type ModelRef struct {
@@ -58,7 +59,9 @@ type ModelOverride struct {
 }
 
 type credentialEntry struct {
-	APIKey string `json:"apiKey"`
+	Type   AuthKind        `json:"type,omitempty"`
+	APIKey string          `json:"apiKey,omitempty"`
+	Value  json.RawMessage `json:"value,omitempty"`
 }
 type credentialsFile struct {
 	Version   int                        `json:"version"`
@@ -67,8 +70,9 @@ type credentialsFile struct {
 
 // CredentialStatus reports whether a provider credential is available.
 type CredentialStatus struct {
-	Configured bool   `json:"configured"`
-	Source     string `json:"source,omitempty"`
+	Configured bool     `json:"configured"`
+	Source     string   `json:"source,omitempty"`
+	Type       AuthKind `json:"type,omitempty"`
 }
 
 // View combines a provider catalog entry with credential metadata.
@@ -87,16 +91,24 @@ type registryState struct {
 
 // Registry owns the offline model catalog and mutable global overlays.
 type Registry struct {
-	mu         sync.RWMutex
-	home       string
-	modelsPath string
-	credsPath  string
-	state      *registryState
+	mu          sync.RWMutex
+	home        string
+	modelsPath  string
+	credsPath   string
+	state       *registryState
+	plugins     map[string]Provider
+	pluginOrder []string
 }
 
 // NewRegistry loads the provider catalog and credentials rooted at home.
 func NewRegistry(home string) (*Registry, error) {
-	r := &Registry{home: home, modelsPath: filepath.Join(home, "models.json"), credsPath: filepath.Join(home, "credentials.json")}
+	r := &Registry{
+		home:        home,
+		modelsPath:  filepath.Join(home, "models.json"),
+		credsPath:   filepath.Join(home, "credentials.json"),
+		plugins:     map[string]Provider{},
+		pluginOrder: []string{},
+	}
 	user := ModelsFile{Version: 1, Providers: map[string]Config{}}
 	if err := readStrictJSON(r.modelsPath, &user); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -123,6 +135,72 @@ func NewRegistry(home string) (*Registry, error) {
 	}
 	r.state = state
 	return r, nil
+}
+
+// ReplacePluginProviders replaces the ephemeral provider catalog supplied by
+// enabled provider extensions. These entries are never written to models.json.
+func (r *Registry) ReplacePluginProviders(specs []PluginSpec) error {
+	next := make(map[string]Provider, len(specs))
+	order := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		p, err := BuildPluginProvider(spec)
+		if err != nil {
+			return err
+		}
+		if _, exists := next[p.ID]; exists {
+			return fmt.Errorf("provider %q: %w", p.ID, errDuplicateProvider)
+		}
+		next[p.ID] = p
+		order = append(order, p.ID)
+	}
+	r.mu.Lock()
+	// A plugin must not silently replace a built-in or user-configured
+	// provider. Selection would otherwise depend on extension load order.
+	for id := range next {
+		if _, exists := r.state.providers[id]; exists {
+			r.mu.Unlock()
+			return fmt.Errorf("provider %q already exists", id)
+		}
+	}
+	r.plugins = next
+	r.pluginOrder = order
+	r.state.defaultRef = r.defaultRefLocked()
+	r.mu.Unlock()
+	return nil
+}
+
+// PluginProvider reports whether a provider is implemented by an extension.
+func (r *Registry) PluginProvider(id string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.plugins[id]
+	return ok
+}
+
+func (r *Registry) providerLocked(id string) (Provider, bool) {
+	if p, ok := r.state.providers[id]; ok {
+		return p, true
+	}
+	p, ok := r.plugins[id]
+	return p, ok
+}
+
+func (r *Registry) providerOrderLocked() []string {
+	order := make([]string, 0, len(r.state.order)+len(r.pluginOrder))
+	order = append(order, r.state.order...)
+	order = append(order, r.pluginOrder...)
+	return order
+}
+
+func (r *Registry) defaultRefLocked() ModelRef {
+	providers := make(map[string]Provider, len(r.state.providers)+len(r.plugins))
+	for id, p := range r.state.providers {
+		providers[id] = p
+	}
+	for id, p := range r.plugins {
+		providers[id] = p
+	}
+	return pickDefault(providers, r.providerOrderLocked(), r.state.creds, r.state.user.Default)
 }
 
 func readStrictJSON(path string, dst any) error {
@@ -166,7 +244,7 @@ func buildRegistryState(user ModelsFile, creds credentialsFile) (*registryState,
 			if strings.TrimSpace(overlay.Name) == "" || overlay.API == "" || overlay.BaseURL == "" {
 				return nil, fmt.Errorf("provider %q: %w", id, errProviderFieldsRequired)
 			}
-			p = Provider{ID: id, Enabled: true}
+			p = Provider{ID: id, Auth: AuthSpec{Type: AuthAPIKey}, Enabled: true}
 			order = append(order, id)
 		}
 		if overlay.Name != "" {
@@ -331,6 +409,92 @@ func validAPI(api string) bool {
 	return api == "completions" || api == "responses" || api == "anthropic"
 }
 
+// ValidatePluginSpec validates a provider catalog supplied by an extension.
+// Plugin APIs are intentionally open-ended; the owning sidecar, rather than
+// the built-in HTTP adapters, is responsible for implementing them.
+func ValidatePluginSpec(spec PluginSpec) error {
+	if !providerIDPattern.MatchString(spec.ID) {
+		return fmt.Errorf("provider %q: %w", spec.ID, errInvalidID)
+	}
+	if strings.TrimSpace(spec.Name) == "" {
+		return fmt.Errorf("provider %q: %w", spec.ID, errNameRequired)
+	}
+	if !apiIDPattern.MatchString(spec.API) {
+		return fmt.Errorf("provider %q: %w %q", spec.ID, errInvalidAPI, spec.API)
+	}
+	u, err := url.Parse(spec.BaseURL)
+	if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("provider %q: %w", spec.ID, errInvalidBaseURL)
+	}
+	if len(spec.Models) == 0 {
+		return fmt.Errorf("provider %q: %w", spec.ID, errAtLeastOneModel)
+	}
+	if spec.Auth.Type == "" {
+		spec.Auth.Type = AuthAPIKey
+	}
+	if spec.Auth.Type != AuthNone && spec.Auth.Type != AuthAPIKey && spec.Auth.Type != AuthOAuth {
+		return fmt.Errorf("provider %q: unsupported auth type %q", spec.ID, spec.Auth.Type)
+	}
+	seenModels := make(map[string]bool, len(spec.Models))
+	for _, seed := range spec.Models {
+		model := resolveSeed(spec.ID, spec.API, spec.BaseURL, seed, false)
+		if seenModels[model.ID] {
+			return fmt.Errorf("provider %q: %w %q", spec.ID, errDuplicateModel, model.ID)
+		}
+		seenModels[model.ID] = true
+		if err := validatePluginModel(model); err != nil {
+			return err
+		}
+	}
+	if spec.DefaultModel != "" && !seenModels[spec.DefaultModel] {
+		return fmt.Errorf("provider %q: default model not found %q", spec.ID, spec.DefaultModel)
+	}
+	return nil
+}
+
+func validatePluginModel(m Model) error {
+	if strings.TrimSpace(m.ID) == "" {
+		return fmt.Errorf("provider %q: %w", m.Provider, errModelIDRequired)
+	}
+	if !apiIDPattern.MatchString(m.API) {
+		return fmt.Errorf("provider %q model %q: %w", m.Provider, m.ID, errInvalidAPI)
+	}
+	u, err := url.Parse(m.BaseURL)
+	if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("provider %q model %q: %w", m.Provider, m.ID, errInvalidBaseURL)
+	}
+	if m.ContextWindow <= 0 || m.MaxTokens <= 0 {
+		return fmt.Errorf("provider %q model %q: %w", m.Provider, m.ID, errTokenLimitsPositive)
+	}
+	if !slices.Contains(m.Input, "text") {
+		return fmt.Errorf("provider %q model %q: %w", m.Provider, m.ID, errTextInputRequired)
+	}
+	if m.ApplyPatchToolType != "" && m.ApplyPatchToolType != "freeform" {
+		return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidPatchToolType, m.ApplyPatchToolType)
+	}
+	for k := range m.ThinkingLevelMap {
+		if !slices.Contains(thinkingLevels, k) {
+			return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidThinkingLevel, k)
+		}
+	}
+	if m.Cost != nil {
+		if err := validateRates(m.Cost.CostRates); err != nil {
+			return fmt.Errorf("provider %q model %q: %w", m.Provider, m.ID, err)
+		}
+		last := -1
+		for _, tier := range m.Cost.Tiers {
+			if tier.InputTokensAbove <= last {
+				return fmt.Errorf("provider %q model %q: %w", m.Provider, m.ID, errCostTierOrder)
+			}
+			if err := validateRates(tier.CostRates); err != nil {
+				return fmt.Errorf("provider %q model %q tier: %w", m.Provider, m.ID, err)
+			}
+			last = tier.InputTokensAbove
+		}
+	}
+	return nil
+}
+
 var thinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 func validateModel(m Model) error {
@@ -441,10 +605,15 @@ func applyModelOverride(m Model, o ModelOverride) (Model, error) {
 func (r *Registry) Providers() []View {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]View, 0, len(r.state.order))
-	for _, id := range r.state.order {
-		p := cloneProvider(r.state.providers[id])
-		_, status := r.credentialLocked(id, p.EnvVars)
+	order := r.providerOrderLocked()
+	out := make([]View, 0, len(order))
+	for _, id := range order {
+		p, ok := r.providerLocked(id)
+		if !ok {
+			continue
+		}
+		p = cloneProvider(p)
+		_, status := r.credentialLockedFor(p)
 		out = append(out, View{Provider: p, Credential: status})
 	}
 	return out
@@ -488,7 +657,7 @@ func (r *Registry) RememberDefault(ref ModelRef) error {
 func (r *Registry) FindModel(providerID, modelID string) (Provider, Model, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	p, ok := r.state.providers[providerID]
+	p, ok := r.providerLocked(providerID)
 	if !ok || !p.Enabled {
 		return Provider{}, Model{}, false
 	}
@@ -514,7 +683,7 @@ func (r *Registry) ResolveSpec(spec, fallbackProvider string) (ModelRef, Model, 
 			ref.Model = spec
 		}
 	}
-	p, ok := r.state.providers[ref.Provider]
+	p, ok := r.providerLocked(ref.Provider)
 	if !ok || !p.Enabled {
 		return ModelRef{}, Model{}, fmt.Errorf("provider %q is %w", ref.Provider, errUnavailable)
 	}
@@ -530,7 +699,7 @@ func (r *Registry) ResolveSpec(spec, fallbackProvider string) (ModelRef, Model, 
 func (r *Registry) Resolve(providerID, modelID string) (Provider, Model, string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	p, ok := r.state.providers[providerID]
+	p, ok := r.providerLocked(providerID)
 	if !ok || !p.Enabled {
 		return Provider{}, Model{}, "", fmt.Errorf("provider %q is %w", providerID, errUnavailable)
 	}
@@ -539,7 +708,7 @@ func (r *Registry) Resolve(providerID, modelID string) (Provider, Model, string,
 			if !m.Enabled {
 				break
 			}
-			key, status := r.credentialLocked(providerID, p.EnvVars)
+			key, status := r.credentialLockedFor(p)
 			if !status.Configured {
 				return Provider{}, Model{}, "", fmt.Errorf("provider %q %w", providerID, errNoAPIKey)
 			}
@@ -553,16 +722,61 @@ func (r *Registry) credentialLocked(id string, envVars []string) (string, Creden
 	return credentialFrom(r.state.creds, id, envVars)
 }
 
+func (r *Registry) credentialLockedFor(p Provider) (string, CredentialStatus) {
+	if p.Auth.Type == AuthNone {
+		return "", CredentialStatus{Configured: true, Source: "none", Type: AuthNone}
+	}
+	return credentialFrom(r.state.creds, p.ID, p.EnvVars)
+}
+
 func credentialFrom(creds credentialsFile, id string, envVars []string) (string, CredentialStatus) {
 	if c := creds.Providers[id]; strings.TrimSpace(c.APIKey) != "" {
-		return c.APIKey, CredentialStatus{Configured: true, Source: "stored"}
+		typ := c.Type
+		if typ == "" {
+			typ = AuthAPIKey
+		}
+		return c.APIKey, CredentialStatus{Configured: true, Source: "stored", Type: typ}
+	}
+	if c := creds.Providers[id]; c.Type != "" && len(bytes.TrimSpace(c.Value)) > 0 && !bytes.Equal(bytes.TrimSpace(c.Value), []byte("null")) {
+		return "", CredentialStatus{Configured: true, Source: "stored", Type: c.Type}
 	}
 	for _, name := range envVars {
 		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
-			return v, CredentialStatus{Configured: true, Source: name}
+			return v, CredentialStatus{Configured: true, Source: name, Type: AuthAPIKey}
 		}
 	}
 	return "", CredentialStatus{}
+}
+
+// Credential resolves the provider-owned credential without exposing it in
+// provider catalog views. Environment API keys are represented as api_key
+// credentials; opaque values are returned exactly as stored.
+func (r *Registry) Credential(id string) (Credential, CredentialStatus, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.providerLocked(id)
+	if !ok {
+		return Credential{}, CredentialStatus{}, fmt.Errorf("provider %q: %w", id, errProviderNotFound)
+	}
+	if p.Auth.Type == AuthNone {
+		return Credential{Type: AuthNone}, CredentialStatus{Configured: true, Source: "none", Type: AuthNone}, nil
+	}
+	if c := r.state.creds.Providers[id]; strings.TrimSpace(c.APIKey) != "" {
+		typ := c.Type
+		if typ == "" {
+			typ = AuthAPIKey
+		}
+		return Credential{Type: typ, APIKey: c.APIKey}, CredentialStatus{Configured: true, Source: "stored", Type: typ}, nil
+	}
+	if c := r.state.creds.Providers[id]; c.Type != "" && len(bytes.TrimSpace(c.Value)) > 0 && !bytes.Equal(bytes.TrimSpace(c.Value), []byte("null")) {
+		return Credential{Type: c.Type, Value: append(json.RawMessage(nil), c.Value...)}, CredentialStatus{Configured: true, Source: "stored", Type: c.Type}, nil
+	}
+	for _, name := range p.EnvVars {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return Credential{Type: AuthAPIKey, APIKey: v}, CredentialStatus{Configured: true, Source: name, Type: AuthAPIKey}, nil
+		}
+	}
+	return Credential{}, CredentialStatus{}, nil
 }
 
 // Models returns enabled models, optionally limited to credentialed providers.
@@ -570,9 +784,12 @@ func (r *Registry) Models(availableOnly bool) []Model {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var out []Model
-	for _, id := range r.state.order {
-		p := r.state.providers[id]
-		_, auth := r.credentialLocked(id, p.EnvVars)
+	for _, id := range r.providerOrderLocked() {
+		p, ok := r.providerLocked(id)
+		if !ok {
+			continue
+		}
+		_, auth := r.credentialLockedFor(p)
 		if !p.Enabled || (availableOnly && !auth.Configured) {
 			continue
 		}
@@ -620,6 +837,7 @@ func (r *Registry) Update(mut func(*ModelsFile) error) error {
 		return err
 	}
 	r.state = state
+	r.state.defaultRef = r.defaultRefLocked()
 	return nil
 }
 
@@ -627,7 +845,8 @@ func (r *Registry) Update(mut func(*ModelsFile) error) error {
 func (r *Registry) SetCredential(id string, key *string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.state.providers[id]; !ok {
+	p, ok := r.providerLocked(id)
+	if !ok {
 		return fmt.Errorf("provider %q: %w", id, errProviderNotFound)
 	}
 	next := r.state.creds
@@ -638,7 +857,14 @@ func (r *Registry) SetCredential(id string, key *string) error {
 	case strings.TrimSpace(*key) == "":
 		return errAPIKeyRequired
 	default:
-		next.Providers[id] = credentialEntry{APIKey: *key}
+		if p.Auth.Type == AuthOAuth {
+			return fmt.Errorf("provider %q: use an oauth credential value: %w", id, errCredentialType)
+		}
+		typ := p.Auth.Type
+		if typ == "" || typ == AuthNone {
+			typ = AuthAPIKey
+		}
+		next.Providers[id] = credentialEntry{Type: typ, APIKey: *key}
 	}
 	if err := writeJSONAtomic(r.credsPath, next, 0o600); err != nil {
 		return err
@@ -648,6 +874,41 @@ func (r *Registry) SetCredential(id string, key *string) error {
 		return err
 	}
 	r.state = state
+	r.state.defaultRef = r.defaultRefLocked()
+	return nil
+}
+
+// SetCredentialValue stores an opaque provider-owned credential, such as an
+// OAuth token bundle. The value is not interpreted by the registry.
+func (r *Registry) SetCredentialValue(id string, typ AuthKind, value json.RawMessage) error {
+	if typ == "" || typ == AuthNone {
+		return errAPIKeyRequired
+	}
+	trimmed := bytes.TrimSpace(value)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return errAPIKeyRequired
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.providerLocked(id)
+	if !ok {
+		return fmt.Errorf("provider %q: %w", id, errProviderNotFound)
+	}
+	if p.Auth.Type != typ {
+		return fmt.Errorf("provider %q: %w (want %s, got %s)", id, errCredentialType, p.Auth.Type, typ)
+	}
+	next := r.state.creds
+	next.Providers = mapsCloneCredentials(next.Providers)
+	next.Providers[id] = credentialEntry{Type: typ, Value: append(json.RawMessage(nil), trimmed...)}
+	if err := writeJSONAtomic(r.credsPath, next, 0o600); err != nil {
+		return err
+	}
+	state, err := buildRegistryState(r.state.user, next)
+	if err != nil {
+		return err
+	}
+	r.state = state
+	r.state.defaultRef = r.defaultRefLocked()
 	return nil
 }
 func mapsCloneCredentials(in map[string]credentialEntry) map[string]credentialEntry {

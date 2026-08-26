@@ -1,5 +1,6 @@
-// Package provider is the model IR adapters for three protocols:
-// OpenAI Completions, OpenAI Responses, and Anthropic Messages.
+// Package provider contains model IR adapters for three built-in protocols:
+// OpenAI Completions, OpenAI Responses, and Anthropic Messages, plus the
+// runtime/catalog contracts used by provider extensions.
 //
 // Request shapes must not be mixed. Responses input uses paired
 // function_call/function_call_output or custom_tool_call/custom_tool_call_output
@@ -11,6 +12,11 @@
 // Completions tool images: consecutive toolResults stay adjacent; one
 // follow-up user carries that group's images (pi). Responses embed
 // images in function_call_output.
+//
+// Provider-capable extensions register an offline model/auth descriptor and
+// execute custom streamers in a process-level sidecar; the Registry only
+// resolves catalog entries and opaque credentials, while the host adapter
+// reconstructs loop deltas from compact provider events.
 //
 // Replay skips aborted/error/empty assistants (and their toolResults)
 // and synthesizes missing tool results while preserving their call kind.

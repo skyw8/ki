@@ -6,6 +6,7 @@ var (
 	errProviderAlreadyExists  = errors.New("provider already exists")
 	errProviderNotFound       = errors.New("provider not found")
 	errProviderNoCustomConfig = errors.New("provider has no custom settings")
+	errProviderReadOnly       = errors.New("plugin provider catalog is read-only")
 	errModelAlreadyExists     = errors.New("model already exists")
 	errModelNotFound          = errors.New("model not found")
 	errSelectedModelNoImage   = errors.New("selected model does not support image input")

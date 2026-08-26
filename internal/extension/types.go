@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"ki/internal/loop"
+	"ki/internal/provider"
 	"ki/internal/types"
 )
 
@@ -24,10 +25,11 @@ type Event struct {
 
 // Registration is the frozen initialize result.
 type Registration struct {
-	Tools         []ToolSpec     `json:"tools"`
-	Commands      []CommandSpec  `json:"commands"`
-	Fallback      bool           `json:"fallback"`
-	Subscriptions []Subscription `json:"subscriptions"`
+	Tools         []ToolSpec            `json:"tools"`
+	Commands      []CommandSpec         `json:"commands"`
+	Providers     []provider.PluginSpec `json:"providers"`
+	Fallback      bool                  `json:"fallback"`
+	Subscriptions []Subscription        `json:"subscriptions"`
 	syncEvents    map[string]bool
 	asyncEvents   map[string]bool
 }
@@ -79,6 +81,32 @@ type ProviderRequest struct {
 	Model          string          `json:"model"`
 	MaxTokens      int             `json:"maxTokens,omitempty"`
 	ThinkingEffort string          `json:"thinkingEffort,omitempty"`
+}
+
+// ProviderStreamRequest is the complete host-to-provider payload. The
+// provider sidecar receives the model and opaque credential once, then owns
+// request construction and response parsing for the whole stream.
+type ProviderStreamRequest struct {
+	Provider   string              `json:"provider"`
+	Model      provider.Model      `json:"model"`
+	Credential provider.Credential `json:"credential"`
+	Request    loop.Request        `json:"request"`
+}
+
+// ProviderStreamEvent is a compact provider-to-host stream event. Partial
+// messages are intentionally reconstructed by the host adapter rather than
+// serialized once per token.
+type ProviderStreamEvent struct {
+	RequestID    string         `json:"requestId"`
+	Type         string         `json:"type"`
+	Delta        string         `json:"delta,omitempty"`
+	ContentIndex int            `json:"contentIndex,omitempty"`
+	ToolCallID   string         `json:"toolCallId,omitempty"`
+	ToolName     string         `json:"toolName,omitempty"`
+	ToolCall     *types.Content `json:"toolCall,omitempty"`
+	Message      *types.Message `json:"message,omitempty"`
+	Reason       string         `json:"reason,omitempty"`
+	Error        string         `json:"error,omitempty"`
 }
 
 // ShortCircuit skips the live provider call.

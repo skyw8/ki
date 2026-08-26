@@ -6,7 +6,9 @@
 // templates, MCP specs) merge into the session snapshot. Code capabilities
 // (tools, lifecycle subscriptions, executable slash) run in one NDJSON
 // sidecar per enabled package, started when that session is opened (not on
-// List or serve boot). Enablement is toggles.json extensions.disabled
+// List or serve boot). Provider capabilities use a separate process-level
+// sidecar, started lazily on the first stream and shared by all sessions.
+// Enablement is toggles.json extensions.disabled
 // (missing = all on). Host interceptors are test doubles only; production
 // never compiles user extensions into the ki binary.
 // Cross-package contract: docs/extension.md.

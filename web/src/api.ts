@@ -206,6 +206,9 @@ export class Client {
   setCredential(id: string, apiKey: string | null): Promise<ProviderCatalog> {
 	return this.json(`/v1/providers/${encodeURIComponent(id)}/credential`, { method: 'PUT', body: JSON.stringify({ apiKey }) })
   }
+  setCredentialValue(id: string, type: string, value: unknown): Promise<ProviderCatalog> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}/credential`, { method: 'PUT', body: JSON.stringify({ type, value }) })
+  }
   createModel(id: string, body: Record<string, unknown>): Promise<ProviderCatalog> {
 	return this.json(`/v1/providers/${encodeURIComponent(id)}/models`, { method: 'POST', body: JSON.stringify(body) })
   }

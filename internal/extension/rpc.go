@@ -22,10 +22,11 @@ import (
 )
 
 const (
-	timeoutInit    = 10 * time.Second
-	timeoutHook    = 2 * time.Second
-	timeoutTool    = 120 * time.Second
-	timeoutCommand = 15 * time.Second
+	timeoutInit          = 10 * time.Second
+	timeoutHook          = 2 * time.Second
+	timeoutTool          = 120 * time.Second
+	timeoutCommand       = 15 * time.Second
+	timeoutProviderStart = 10 * time.Second
 )
 
 var errRPC = errors.New("extension rpc")
@@ -45,30 +46,37 @@ type rpcError struct {
 }
 
 type rpcClient struct {
-	name         string
-	sessionID    string
-	failClosed   bool
-	fallback     bool
-	cmd          *exec.Cmd
-	enc          *json.Encoder
-	mu           sync.Mutex
-	pending      map[string]chan rpcMsg
-	idSeq        atomic.Int64
-	inboundSeq   atomic.Int64
-	closed       chan struct{}
-	progress     map[string]func(any)
-	progressMu   sync.Mutex
-	registration Registration
-	capabilities []string
-	undeclared   []string
-	busChannels  map[string]bool
-	busMu        sync.Mutex
-	host         SessionHost
+	name             string
+	sessionID        string
+	failClosed       bool
+	fallback         bool
+	cmd              *exec.Cmd
+	enc              *json.Encoder
+	mu               sync.Mutex
+	pending          map[string]chan rpcMsg
+	idSeq            atomic.Int64
+	inboundSeq       atomic.Int64
+	closed           chan struct{}
+	closedOnce       sync.Once
+	closeOnce        sync.Once
+	progress         map[string]func(any)
+	progressMu       sync.Mutex
+	providerStreams  map[string]*providerStreamPipe
+	providerStreamMu sync.Mutex
+	registration     Registration
+	capabilities     []string
+	undeclared       []string
+	busChannels      map[string]bool
+	busMu            sync.Mutex
+	host             SessionHost
 }
 
 func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, host SessionHost) (*rpcClient, error) {
 	env := sidecarEnv(d, sessionID, home, cwd)
-	if err := runInstall(d.root, d.manifest.Runtime.Install, env); err != nil {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := runInstall(ctx, d.root, d.manifest.Runtime.Install, env); err != nil {
 		return nil, err
 	}
 	cmd := exec.Command(resolveRuntimeCommand(d.root, d.manifest.Runtime.Command), d.manifest.Runtime.Args...) //nolint:gosec // command comes from the extension manifest
@@ -89,23 +97,26 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 		return nil, err
 	}
 	c := &rpcClient{
-		name:        d.Name,
-		sessionID:   sessionID,
-		failClosed:  d.FailClosed,
-		cmd:         cmd,
-		enc:         json.NewEncoder(stdin),
-		pending:     map[string]chan rpcMsg{},
-		closed:      make(chan struct{}),
-		progress:    map[string]func(any){},
-		busChannels: map[string]bool{},
-		host:        host,
+		name:            d.Name,
+		sessionID:       sessionID,
+		failClosed:      d.FailClosed,
+		cmd:             cmd,
+		enc:             json.NewEncoder(stdin),
+		pending:         map[string]chan rpcMsg{},
+		closed:          make(chan struct{}),
+		progress:        map[string]func(any){},
+		providerStreams: map[string]*providerStreamPipe{},
+		busChannels:     map[string]bool{},
+		host:            host,
 	}
 	go c.readLoop(stdout)
-	initCtx, cancel := context.WithTimeout(context.Background(), timeoutInit)
+	initCtx, cancel := context.WithTimeout(ctx, timeoutInit)
 	defer cancel()
 	var reg Registration
 	if err := c.call(initCtx, "initialize", map[string]any{
-		"sessionId": sessionID, "cwd": cwd, "home": home, "extensionRoot": d.root, "capabilities": d.Capabilities,
+		"sessionId": sessionID, "cwd": cwd, "home": home, "extensionRoot": d.root,
+		"capabilities": d.Capabilities, "scope": map[string]any{"provider": sessionID == ""},
+		"providers": d.Providers,
 	}, &reg); err != nil {
 		c.close()
 		return nil, err
@@ -153,11 +164,11 @@ func resolveRuntimeCommand(root, command string) string {
 	return filepath.Join(root, filepath.FromSlash(command))
 }
 
-func runInstall(root string, argv []string, env []string) error {
+func runInstall(ctx context.Context, root string, argv []string, env []string) error {
 	if len(argv) == 0 {
 		return nil
 	}
-	cmd := exec.Command(resolveRuntimeCommand(root, argv[0]), argv[1:]...) //nolint:gosec // install argv comes from the extension manifest
+	cmd := exec.CommandContext(ctx, resolveRuntimeCommand(root, argv[0]), argv[1:]...) //nolint:gosec // install argv comes from the extension manifest
 	cmd.Dir = root
 	cmd.Env = env
 	// stdout would corrupt the sidecar NDJSON stream if it shared the pipe;
@@ -208,11 +219,15 @@ func applyRegistrationGates(caps []string, reg *Registration) []string {
 		dropped = append(dropped, string(CapCommand))
 		reg.Commands = nil
 	}
+	if !hasKind(caps, CapProvider) && len(reg.Providers) > 0 {
+		dropped = append(dropped, string(CapProvider))
+		reg.Providers = nil
+	}
 	return dropped
 }
 
 func (c *rpcClient) readLoop(r io.Reader) {
-	defer close(c.closed)
+	defer c.markClosed()
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -236,6 +251,25 @@ func (c *rpcClient) readLoop(r io.Reader) {
 			c.progressMu.Unlock()
 			if fn != nil {
 				fn(p.Partial)
+			}
+			continue
+		}
+		if msg.Method == "provider.stream.event" {
+			var event ProviderStreamEvent
+			if err := json.Unmarshal(msg.Params, &event); err != nil || event.RequestID == "" {
+				continue
+			}
+			c.providerStreamMu.Lock()
+			ch := c.providerStreams[event.RequestID]
+			c.providerStreamMu.Unlock()
+			if ch != nil {
+				// A bounded channel makes a slow loop consumer apply backpressure
+				// to the sidecar without retaining an unbounded token queue.
+				select {
+				case ch.events <- event:
+				case <-ch.done:
+				case <-c.closed:
+				}
 			}
 			continue
 		}
@@ -291,10 +325,13 @@ func (c *rpcClient) call(ctx context.Context, method string, params any, result 
 	ch := make(chan rpcMsg, 1)
 	c.mu.Lock()
 	c.pending[id] = ch
-	c.mu.Unlock()
-	c.mu.Lock()
 	err = c.enc.Encode(rpcMsg{JSONRPC: "2.0", ID: id, Method: method, Params: raw})
 	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+	}()
 	if err != nil {
 		return err
 	}
@@ -307,9 +344,6 @@ func (c *rpcClient) call(ctx context.Context, method string, params any, result 
 		return fmt.Errorf("%w: sidecar closed", errRPC)
 	case msg = <-ch:
 	}
-	c.mu.Lock()
-	delete(c.pending, id)
-	c.mu.Unlock()
 	if msg.Error != nil {
 		return fmt.Errorf("%w: %s", errRPC, msg.Error.Message)
 	}
@@ -330,10 +364,20 @@ func (c *rpcClient) notify(method string, params any) {
 }
 
 func (c *rpcClient) close() {
-	if c.cmd != nil {
-		tools.KillProcessGroup(c.cmd)
-		_ = c.cmd.Wait()
-	}
+	c.closeOnce.Do(func() {
+		// A provider stream may have filled its bounded event queue while its
+		// consumer is being torn down. Signal readers before waiting for the
+		// process so they cannot wait forever for readLoop to reach EOF.
+		c.markClosed()
+		if c.cmd != nil {
+			tools.KillProcessGroup(c.cmd)
+			_ = c.cmd.Wait()
+		}
+	})
+}
+
+func (c *rpcClient) markClosed() {
+	c.closedOnce.Do(func() { close(c.closed) })
 }
 
 func (c *rpcClient) hasSync(event string) bool {

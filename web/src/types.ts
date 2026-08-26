@@ -254,14 +254,16 @@ export type ProviderModel = Omit<ModelInfo, 'spec' | 'thinkingLevels' | 'default
 export type ProviderView = {
 	id: string
 	name: string
-	api: 'completions' | 'responses' | 'anthropic'
+	api: string
 	baseUrl: string
+	auth?: { type?: string; name?: string; subscription?: boolean }
+	runtime?: string
 	enabled: boolean
 	builtin: boolean
 	customized?: boolean
 	defaultModel: string
 	models: ProviderModel[]
-	credential: { configured: boolean; source?: string }
+	credential: { configured: boolean; source?: string; type?: string }
 }
 
 export type ProviderCatalog = {

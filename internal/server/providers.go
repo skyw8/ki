@@ -71,6 +71,10 @@ func (s *Server) patchProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	if s.registry.PluginProvider(id) {
+		registryError(w, errProviderReadOnly)
+		return
+	}
 	builtinFound := false
 	for _, p := range s.registry.Providers() {
 		if p.ID == id && p.Builtin {
@@ -107,6 +111,10 @@ func (s *Server) patchProvider(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if s.registry.PluginProvider(id) {
+		registryError(w, errProviderReadOnly)
+		return
+	}
 	builtin := false
 	for _, p := range s.registry.Providers() {
 		if p.ID == id && p.Builtin {
@@ -137,13 +145,39 @@ func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) putProviderCredential(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		APIKey json.RawMessage `json:"apiKey"`
+		APIKey json.RawMessage   `json:"apiKey"`
+		Type   provider.AuthKind `json:"type"`
+		Value  json.RawMessage   `json:"value"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
+	if body.Value != nil {
+		if body.APIKey != nil {
+			http.Error(w, "apiKey and value are mutually exclusive", http.StatusBadRequest)
+			return
+		}
+		if bytes.Equal(bytes.TrimSpace(body.Value), []byte("null")) {
+			if err := s.registry.SetCredential(r.PathValue("id"), nil); err != nil {
+				registryError(w, err)
+				return
+			}
+			s.providers(w, r)
+			return
+		}
+		if body.Type == "" {
+			http.Error(w, "type required with value", http.StatusBadRequest)
+			return
+		}
+		if err := s.registry.SetCredentialValue(r.PathValue("id"), body.Type, body.Value); err != nil {
+			registryError(w, err)
+			return
+		}
+		s.providers(w, r)
+		return
+	}
 	if body.APIKey == nil {
-		http.Error(w, "apiKey required (string or null)", http.StatusBadRequest)
+		http.Error(w, "apiKey or value required", http.StatusBadRequest)
 		return
 	}
 	var key *string
@@ -183,6 +217,10 @@ func (s *Server) createProviderModel(w http.ResponseWriter, r *http.Request) {
 		registryError(w, errProviderNotFound)
 		return
 	}
+	if s.registry.PluginProvider(id) {
+		registryError(w, errProviderReadOnly)
+		return
+	}
 	if modelExists {
 		registryError(w, errModelAlreadyExists)
 		return
@@ -209,6 +247,10 @@ func (s *Server) patchProviderModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	if s.registry.PluginProvider(id) {
+		registryError(w, errProviderReadOnly)
+		return
+	}
 	found := false
 	for _, p := range s.registry.Providers() {
 		if p.ID == id {
@@ -244,6 +286,10 @@ func (s *Server) deleteProviderModel(w http.ResponseWriter, r *http.Request) {
 	id, modelID := r.PathValue("id"), r.URL.Query().Get("model")
 	if modelID == "" {
 		http.Error(w, "model required", http.StatusBadRequest)
+		return
+	}
+	if s.registry.PluginProvider(id) {
+		registryError(w, errProviderReadOnly)
 		return
 	}
 	err := s.registry.Update(func(cfg *provider.ModelsFile) error {
