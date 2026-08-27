@@ -2,7 +2,7 @@
 
 普通工具的对外名字和 input schema 跟 Claude Code；文本结果跟 pi。内置工具由已解析模型对应的 `ToolProfile` 选择，包入口见 `internal/tools/doc.go`。
 
-工具执行两段化（对齐 pi prepare/execute）：先 **prepare**（找工具 → `ToolValidator.Validate` schema 校验 → `BeforeTool` / lifecycle `tool_call` sync，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` / `tool_result` 变换结果）。扩展订事件见 [extension.md](extension.md)。`BeforeTool` 和 `ToolResult.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。内置工具和 MCP 工具都校验 required 和参数类型。
+工具执行两段化（对齐 pi prepare/execute）：先 **prepare**（找工具 → `ToolValidator.Validate` schema 校验 → `BeforeTool` / lifecycle `tool_call` sync，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` / `tool_result` 变换结果）。扩展订事件见 [extension.md](extension.md)。`BeforeTool` 和 `ToolResult.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。内置工具和扩展工具都校验 required 和参数类型。
 
 | 工具 | 参数 | 结果 |
 |---|---|---|
@@ -120,7 +120,7 @@
 
 - `description` 是 3–5 个词的短任务名，`prompt` 是子 agent 的完整任务指令；`subagent_type` 省略时使用 `general-purpose`。
 - `Agent` 在 tool call 所属 parent session 的当前 leaf 上调用 `session.ForkAt`，传入 `forkMode=tree`。子 session 复制 root → leaf 的 history、provider/model/thinking 和附件，然后把 directive 作为新的 user message 运行现有 loop。
-- 子 agent 使用自己的 `runState`、MCP/extension Prepare、工具集和 `events.jsonl`；因此可以递归创建 tree child，且 child 的工具结果不会污染 parent context。主会话为深度 0，最多允许 Agent child 深度 3；深度 3 的 child 保留 `SendMessage`，但不再暴露 `Agent`。
+- 子 agent 使用自己的 `runState`、extension Prepare、工具集和 `events.jsonl`；因此可以递归创建 tree child，且 child 的工具结果不会污染 parent context。主会话为深度 0，最多允许 Agent child 深度 3；深度 3 的 child 保留 `SendMessage`，但不再暴露 `Agent`。
 - `run_in_background=true` 与 parent prompt 脱钩，立即返回 `{"status":"async_launched", "agentId":…, "outputFile":…}`；`TaskOutput` 可等待它，`TaskStop` 可取消它。前台 agent 返回 Claude Code 兼容的 `completed` 结果对象。
 - `model` 覆盖只写入 child 的 `config.json` / `model_change`，不修改 parent session；空值继承 parent。
 - `cwd` override 和 `worktree` isolation 不在模型可见 schema 中；child 始终继承 parent cwd，隔离依靠 session tree，不会静默提供未实现的隔离。

@@ -9,7 +9,7 @@ import (
 
 func TestLoadMissingIsEmpty(t *testing.T) {
 	f := Load(t.TempDir())
-	if !f.Skills.Allowed("x") || !f.MCP.Allowed("y") {
+	if !f.Skills.Allowed("x") || !f.Extensions.Allowed("y") {
 		t.Fatalf("%+v", f)
 	}
 }
@@ -17,9 +17,9 @@ func TestLoadMissingIsEmpty(t *testing.T) {
 func TestSaveRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	want := File{
-		Skills:  session.Toggle{Disabled: []string{"alpha"}},
-		MCP:     session.Toggle{Disabled: []string{"exa"}},
-		Message: Message{Busy: BusyQueue},
+		Skills:     session.Toggle{Disabled: []string{"alpha"}},
+		Extensions: session.Toggle{Disabled: []string{"telegram-bot"}},
+		Message:    Message{Busy: BusyQueue},
 	}
 	if err := Save(home, want); err != nil {
 		t.Fatal(err)
@@ -28,8 +28,8 @@ func TestSaveRoundTrip(t *testing.T) {
 	if !got.Skills.Allowed("beta") || got.Skills.Allowed("alpha") {
 		t.Fatalf("skills %+v", got.Skills)
 	}
-	if got.MCP.Allowed("exa") {
-		t.Fatalf("mcp %+v", got.MCP)
+	if got.Extensions.Allowed("telegram-bot") {
+		t.Fatalf("extensions %+v", got.Extensions)
 	}
 	if got.Message.BusyDelivery() != BusyQueue {
 		t.Fatalf("message %+v", got.Message)

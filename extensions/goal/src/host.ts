@@ -61,6 +61,18 @@ export class Host {
     return this.rpc.call("ui.clearPanel", this.params({}));
   }
 
+  setGlobalStatus(key: string, text: string, tone: string) {
+    return this.rpc.call("ui.setGlobalStatus", { key, text, tone });
+  }
+
+  setGlobalPanel(panel: UIPanel) {
+    return this.rpc.call("ui.setGlobalPanel", panel);
+  }
+
+  clearGlobalPanel() {
+    return this.rpc.call("ui.clearGlobalPanel", {});
+  }
+
   confirm(title: string, message: string): Promise<boolean> {
     return this.rpc.call("ui.confirm", this.params({ title, message })).then((res) => {
       const row = res as { ok?: boolean } | null;

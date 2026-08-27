@@ -80,11 +80,12 @@ type Message struct {
 	// ToolType selects the matching function/custom output wire item.
 	ToolType string `json:"toolType,omitempty"`
 	// Origin marks extension-enqueued user turns (extension:<name>). Empty is the human user.
-	Origin     string `json:"origin,omitempty"`
-	IsError    bool   `json:"isError,omitempty"`
-	LatencyMs  int64  `json:"latencyMs,omitempty"`
-	TTFTMs     int64  `json:"ttftMs,omitempty"`
-	DurationMs int64  `json:"durationMs,omitempty"`
+	Origin     string            `json:"origin,omitempty"`
+	External   map[string]string `json:"external,omitempty"`
+	IsError    bool              `json:"isError,omitempty"`
+	LatencyMs  int64             `json:"latencyMs,omitempty"`
+	TTFTMs     int64             `json:"ttftMs,omitempty"`
+	DurationMs int64             `json:"durationMs,omitempty"`
 }
 
 // Text returns concatenated text blocks.

@@ -1,0 +1,38 @@
+{
+  "name": "telegram-bot",
+  "version": "0.1.0",
+  "description": "Telegram Managed Bot connector for private chats and @mentioned groups.",
+  "capabilities": ["channel", "lifecycle", "settings"],
+  "config": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["botId", "token"],
+      "properties": {
+        "botId": {
+          "type": "string",
+          "description": "Managed Bot 的数字 ID，按字符串填写以避免精度问题。"
+        },
+        "token": {
+          "type": "string",
+          "secret": true,
+          "description": "从 Manager Bot 或 BotFather 获取的 Managed Bot Token。"
+        },
+        "model": {
+          "type": "string",
+          "description": "Telegram 回复使用的模型规格；留空跟随全局默认模型。"
+        }
+      }
+    },
+    "defaults": {
+      "botId": "",
+      "token": "",
+      "model": ""
+    }
+  },
+  "runtime": {
+    "kind": "rpc",
+    "command": "go",
+    "args": ["run", "."]
+  }
+}

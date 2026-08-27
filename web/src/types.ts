@@ -26,6 +26,7 @@ export type Message = {
   role: string
   content?: Content[]
   origin?: string
+	external?: Record<string, string>
   timestamp?: number
   usage?: Usage | null
   stopReason?: string
@@ -74,6 +75,9 @@ export type ToolSchema = {
 
 export type LoopEvent = {
   type: string
+	role?: string
+	runId?: string
+	external?: Record<string, string>
 	entryId?: string
   message?: Message
   toolCallId?: string
@@ -114,6 +118,7 @@ export type SessionInfo = {
   pinned?: boolean
   pinnedAt?: string
 	thinkingEffort?: string
+	metadata?: Record<string, unknown>
 }
 
 export type WorkspaceInfo = {
@@ -163,16 +168,15 @@ export type CatalogExtension = {
   capabilities?: string[]
   intercept?: string[]
   error?: string
+	configurable?: boolean
+	runtime?: { name: string; state: string; error?: string; capabilities?: string[] }
+	ui?: ExtensionUI
 }
 
-export type CatalogMcp = {
-  name: string
-  command?: string
-  args?: string[]
-  url?: string
-  enabled: boolean
-  tools?: { name: string; description?: string }[]
-	error?: string
+export type ExtensionConfig = {
+	name: string
+	schema: Record<string, unknown>
+	config: Record<string, unknown>
 }
 
 export type SessionCommand = {
@@ -195,7 +199,6 @@ export type SessionDetail = SessionInfo & {
   entries?: Entry[]
   messages?: Message[]
   availableSkills?: CatalogSkill[]
-  availableMcp?: CatalogMcp[]
   availableExtensions?: CatalogExtension[]
   commands?: SessionCommand[]
   queued?: QueuedItem[]
@@ -333,7 +336,6 @@ export type ViewState = {
   turn: number
   replayed?: number
   skills?: Toggle
-  mcp?: Toggle
 	thinkingEffort: string
 	contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
 	leafId?: string

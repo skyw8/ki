@@ -200,7 +200,7 @@ func newProviderCommand() *cobra.Command {
 func newReloadCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reload",
-		Short: "Reload session resources and MCP connections on the running server",
+		Short: "Reload session resources and extensions on the running server",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return withConfig("client", nil, runReload)
@@ -530,8 +530,26 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 	if f.Queue {
 		body["delivery"] = "queue"
 	}
-	if err := doJSON(base, token, "/v1/sessions/"+id+"/prompt", body, nil); err != nil {
+	var result struct {
+		Handled   bool   `json:"handled"`
+		Notice    string `json:"notice"`
+		Error     bool   `json:"error"`
+		SessionID string `json:"sessionId"`
+	}
+	if err := doJSON(base, token, "/v1/sessions/"+id+"/prompt", body, &result); err != nil {
 		return err
+	}
+	if result.Handled {
+		if result.Notice != "" {
+			if result.Error {
+				return errors.New(result.Notice)
+			}
+			fmt.Fprintln(os.Stdout, result.Notice)
+		}
+		if result.SessionID != "" {
+			fmt.Fprintf(os.Stdout, "session_id: %s\n", result.SessionID)
+		}
+		return nil
 	}
 	if err := streamEvents(ctx, base, token, id); err != nil {
 		return err
@@ -689,7 +707,7 @@ func printEvent(ev loop.Event) {
 	case loop.AgentStart, loop.AgentEnd, loop.TurnStart, loop.TurnEnd,
 		loop.RequestHeader, loop.MessageStart, loop.MessageEnd,
 		loop.ToolExecutionUpdate, loop.PatchApplyUpdated, loop.CompactionStart, loop.CompactionEnd,
-		loop.ContextUsage, loop.MCPServerFailed, loop.MCPToolsChanged:
+		loop.ContextUsage:
 		return
 	}
 }

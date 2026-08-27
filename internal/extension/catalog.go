@@ -29,6 +29,7 @@ const (
 	EventTurnStart             = "turn_start"
 	EventTurnEnd               = "turn_end"
 	EventMessageStart          = "message_start"
+	EventMessageUpdate         = "message_update"
 	EventRequestHeader         = "request_header"
 	EventToolExecutionStart    = "tool_execution_start"
 	EventToolExecutionEnd      = "tool_execution_end"
@@ -37,8 +38,6 @@ const (
 	EventQueueChanged          = "queue_changed"
 	EventSteerAccepted         = "steer_accepted"
 	EventRunAborted            = "run_aborted"
-	EventMCPServerFailed       = "mcp_server_failed"
-	EventMCPToolsChanged       = "mcp_tools_changed"
 )
 
 // Mode is a subscription mode.
@@ -78,6 +77,7 @@ var eventCatalog = map[string]eventPolicy{
 	EventTurnStart:             {false, true},
 	EventTurnEnd:               {false, true},
 	EventMessageStart:          {false, true},
+	EventMessageUpdate:         {false, true},
 	EventRequestHeader:         {false, true},
 	EventToolExecutionStart:    {false, true},
 	EventToolExecutionEnd:      {false, true},
@@ -86,8 +86,6 @@ var eventCatalog = map[string]eventPolicy{
 	EventQueueChanged:          {false, true},
 	EventSteerAccepted:         {false, true},
 	EventRunAborted:            {false, true},
-	EventMCPServerFailed:       {false, true},
-	EventMCPToolsChanged:       {false, true},
 }
 
 func catalogPolicy(event string) (eventPolicy, bool) {

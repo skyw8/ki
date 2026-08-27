@@ -333,6 +333,50 @@ func TestExtensionUIProjection(t *testing.T) {
 	}
 }
 
+func TestGlobalExtensionUIProjection(t *testing.T) {
+	srv, hs := testServer(t)
+	dir := filepath.Join(srv.cfg.Home, "extensions", "goal")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"goal","capabilities":[]}`
+	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.GlobalUISetStatus("goal", "goal", "Goal", "info"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.GlobalUISetPanel("goal", extension.UIPanel{Title: "Goal", Summary: "choose a session"}); err != nil {
+		t.Fatal(err)
+	}
+	status, got := postJSON(t, hs, http.MethodGet, "/v1/extensions", nil)
+	if status != http.StatusOK {
+		t.Fatalf("extensions status %d", status)
+	}
+	items, ok := got["items"].([]any)
+	if !ok {
+		t.Fatalf("extensions items %+v", got["items"])
+	}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok || item["name"] != "goal" {
+			continue
+		}
+		ui, ok := item["ui"].(map[string]any)
+		if !ok {
+			t.Fatalf("global ui missing: %+v", item)
+		}
+		if ui["status"].(map[string]any)["text"] != "Goal" {
+			t.Fatalf("global status %+v", ui["status"])
+		}
+		if ui["panel"].(map[string]any)["summary"] != "choose a session" {
+			t.Fatalf("global panel %+v", ui["panel"])
+		}
+		return
+	}
+	t.Fatalf("goal extension missing: %+v", items)
+}
+
 func TestSnapshotFields(t *testing.T) {
 	srv, hs := testServer(t)
 	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{"cwd": t.TempDir()})
@@ -525,7 +569,7 @@ func TestGetHistoricalSessionWarmsWithoutPrompt(t *testing.T) {
 	t.Fatalf("chip missing after open warmup: %s", raw)
 }
 
-func TestListDoesNotWarmRuntime(t *testing.T) {
+func TestServerReloadStartsRuntimeAndListDoesNot(t *testing.T) {
 	bin := buildExtSidecar(t)
 	srv, hs := testServer(t)
 	marker := filepath.Join(t.TempDir(), "sidecar-spawned")
@@ -546,9 +590,18 @@ func TestListDoesNotWarmRuntime(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("reload %d %+v", status, reload)
 	}
-	time.Sleep(150 * time.Millisecond)
-	if _, err := os.Stat(marker); err == nil {
-		t.Fatal("reload without a watcher must not re-spawn")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("reload must start the server-level sidecar: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
 	}
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions", nil)
 	req.Header.Set("Authorization", "Bearer tok")

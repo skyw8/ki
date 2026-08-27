@@ -48,7 +48,7 @@ func Parse(text string) Parsed {
 		name := strings.ToLower(m[1])
 		args := strings.TrimSpace(m[2])
 		switch name {
-		case "compact", "reload":
+		case "compact", "reload", "new", "cwd":
 			return Parsed{Kind: KindBuiltin, Name: name, Args: args}
 		default:
 			return Parsed{Kind: KindUnknown, Name: name, Args: args}

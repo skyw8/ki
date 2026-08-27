@@ -14,9 +14,9 @@
 // the BeforeTool hook; failures become immediate error results. Then execute
 // runs the prepared calls (parallel by default). BeforeTool/ToolResult may
 // set Terminate: when every call in a batch terminates, the loop stops.
-// Provider errors retry up to 5 times with exponential backoff from 2s, except
-// context-overflow errors (IsContextOverflow, patterns in overflow.go): those
-// return ErrContextOverflow without retry, and Run recovers once via
+// Transient provider errors retry up to 5 times with exponential backoff from
+// 2s. Deterministic request/protocol errors and context-overflow errors are not
+// retried; overflow returns ErrContextOverflow and Run recovers once via
 // Hooks.OnContextOverflow (server compacts and returns the new context; same
 // Run, so events are not replayed). stopReason "length" rejects tool calls
 // (truncated arguments) instead of executing them.

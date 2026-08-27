@@ -12,9 +12,9 @@
 - 轨迹：SYSTEM / USER / ASSISTANT / TOOL / COMPACTED 各有色标；检查器 Summary / Preview / Raw。跟尾在用户滚离尾部时暂停（80px 松手、16px 贴回），运行中可以翻看前面的记录；工具 description 可复制
 - 操作结果（slash 回执、parentId/slash 的 409、Reload/切模型/会话操作失败）走右上角 toast，portal 到 `body`，不嵌进 composer。忙时停止和发送并存：发送走 `message.busy` 默认。Enter 带内容按默认发送（queue 则入队）；Ctrl+Enter 带内容为 `delivery=steer`；Ctrl+Enter 空输入且 `queued[]` 非空则 `queueId` 提升队尾进本轮。空输入 Enter 仍 abort；Ctrl+Enter 不 abort。composer 上方列出 `queued[]`（用户）与 `extQueued[]`（扩展 FIFO，标 origin）：队尾标 Ctrl+Enter，每条有 Steer 按钮，可删。`steer_accepted` / `run_aborted` 为 live SSE（后者兼 sideband）。成功约 3.5 秒消失，错误需手动关闭。对话气泡里的模型错误、目录/附件列失败、表单 JSON 校验仍贴在原处。扩展 `enqueue` 的消息带 origin，与用户气泡可区分。
 - slash：命令按钮 + 行首 `/` 打开面板，锚在整块 composer 卡片上、优先出现在输入框**上方**（不挡住 textarea）。数据来自 session `commands[]`；点选只填入输入框，回车才发送。两级：`/` 下列 `/{name}` + description（`argumentHint` 灰色写在名后，不 dump `completions`）；光标在 `/name` 或 `/name ` 且有 `completions` 时换成子命令列表。
-- 扩展 UI 壳见下一节。打开会话（新会话和点开历史同一套）立刻渲染标题和气泡；`runtime.ready === false` 时锁 composer（输入、附件、`/`、发送），placeholder「正在加载扩展和 MCP…」。就绪或预热失败后解锁。
-- Info：本会话只读元数据、skills、MCP（含已缓存工具）、extensions、slash 命令；内容右侧提供 sticky outline。`path` 只展示字符串，不当 `href`。有 tree parent 或 tree child 时显示 Tree 按钮；弹窗使用已有文件浏览器的 Miller 壳，左列为当前层 sibling、右列为选中 session 的直接 tree children，点击右列后推进层级但始终只有两列。Reload 清资源快照并关闭本 session MCP 连接，复用全局 extension sidecar。Edit 打开设置。不在此页开关。
-- 设置 / 选模型：各自弹窗。设置页签为「模型供应商」「Skills」「MCP」「Extensions」「Message」「主题和语言」。Skills/MCP/Extensions 开关和 Message 忙碌策略写 `{KI_HOME}/toggles.json`，对应页可 Reload。无信任按钮、无原生文件选择器。选模型支持按 provider、model ID、显示名称和完整 spec 进行不区分大小写的子串 / 顺序模糊搜索。没有「设为默认」：composer 里切模型或 thinking 即记住；server 把上次选用的模型写入 `models.json`，本浏览器另存 thinking。冷启动没有记录时落到第一个可用模型。页签和主按钮与对话页同一套 tab / 主按钮样式。供应商页的外层不滚动，左侧供应商列表只显示名称，与右侧连接、凭据、模型编辑区分别独立滚动，新增供应商和使用「编辑」打开的模型高级 JSON 都用二级弹窗。模型高级 JSON 编辑保留 `input` 和 `applyPatchToolType` 等能力字段。目录只在本机维护，不在线刷新。Base URL、API 协议等表单控件共享尺寸和排版；API 协议与 thinking effort 共用 ARIA combobox/listbox 组件，支持方向键、Enter、Escape，并按可用空间向上或向下展开。主题（默认浅色）和语言（中 / 英）存在本浏览器 `localStorage`
+- 扩展 UI 壳见下一节。打开会话（新会话和点开历史同一套）立刻渲染标题和气泡；`runtime.ready === false` 时锁 composer（输入、附件、`/`、发送），placeholder「正在加载扩展…」。就绪或预热失败后解锁。
+- Info：本会话只读元数据、skills、extensions、slash 命令；内容右侧提供 sticky outline。`path` 只展示字符串，不当 `href`。有 tree parent 或 tree child 时显示 Tree 按钮；弹窗使用已有文件浏览器的 Miller 壳，左列为当前层 sibling、右列为选中 session 的直接 tree children，点击右列后推进层级但始终只有两列。Reload 清资源快照，复用全局 extension sidecar。Edit 打开设置。不在此页开关。
+- 设置 / 选模型：各自弹窗。设置页签为「模型供应商」「Skills」「Extensions」「Message」「主题和语言」。Skills/Extensions 开关和 Message 忙碌策略写 `{KI_HOME}/toggles.json`；扩展的全局配置只从对话页右上角的全局 extension chip 进入，点击后打开统一的扩展 Modal，左侧可切换全局 UI、当前 session 的 goal 等 panel 和 Telegram 等全局配置，Extensions 设置中的 Configure 复用同一个页面。全局 UI 在没有 session 时也能显示；选中 session 后，session UI 覆盖同名的全局状态。无信任按钮、无原生文件选择器。选模型支持按 provider、model ID、显示名称和完整 spec 进行不区分大小写的子串 / 顺序模糊搜索。没有「设为默认」：composer 里切模型或 thinking 即记住；server 把上次选用的模型写入 `models.json`，本浏览器另存 thinking。冷启动没有记录时落到第一个可用模型。页签和主按钮与对话页同一套 tab / 主按钮样式。供应商页的外层不滚动，左侧供应商列表只显示名称，与右侧连接、凭据、模型编辑区分别独立滚动，新增供应商和使用「编辑」打开的模型高级 JSON 都用二级弹窗。模型高级 JSON 编辑保留 `input` 和 `applyPatchToolType` 等能力字段。目录只在本机维护，不在线刷新目录。Base URL、API 协议等表单控件共享尺寸和排版；API 协议与 thinking effort 共用 ARIA combobox/listbox 组件，支持方向键、Enter、Escape，并按可用空间向上或向下展开。主题（默认浅色）和语言（中 / 英）存在本浏览器 `localStorage`
 - 扩展 OAuth：供应商页对 `auth.type=oauth` 的 provider 显示 Browser login、Device code login 和 Logout；登录进度通过同源 `/v1/providers/{id}/auth/{requestId}` 轮询，页面只显示授权 URL、设备码和脱敏错误。Browser flow 还允许粘贴 redirect URL/code，适用于端口转发；不会在页面中打开外部窗口，也不会要求用户填 access token。
 
 数据来自 session jsonl 和本次 run 的 SSE。conversation 和 trajectory 根据 `leafId` 沿 `parentId` 只渲染 active path，全部 entries 保留用于 sibling 索引。`message_end` SSE 带持久化后的 `entryId`，所以刚完成的消息可以立即 edit/fork。工作区见 [workspace.md](workspace.md)。Sidecar 协议见 [extension.md](extension.md)。
@@ -27,18 +27,19 @@ WebUI **不加载扩展 JS**，不 `window.open`，不按扩展名写死控件�
 
 | 面 | 数据 | 行为 |
 |---|---|---|
-| 顶栏 chip | `status` | 只在 `title-row` 右侧。无 `status.text` 则无 chip。tone：`info` / `active` / `success` / `warning` / `error`。按 tone（error → warning → active → success → info）再按扩展名排；最多 4 颗全展示，超过则留 3 颗加 `+N`。右侧始终有展开钮。窄屏藏单颗 chip，只留「扩展 · N」。 |
-| 详情 Modal | `panel` | 点 chip **或**展开钮打开同一 Modal。左侧导航列出全部 chip（窄屏改成顶部横滑），右侧是当前扩展的 panel。关 Modal **不**卸 chip，也不 `clearPanel` |
+| 全局 extension chip | `/v1/extensions` 中启用且有 global UI 或配置的扩展 | 与当前 session 无关，初始页面也显示在 `title-row` 右侧；点击打开统一扩展 Modal，并定位到该扩展。runtime 状态用于 chip tone；配置入口只有这一处。 |
+| 顶栏 status chip | `status` | 只在 `title-row` 右侧。无 `status.text` 则无 chip。tone：`info` / `active` / `success` / `warning` / `error`。按 tone（error → warning → active → success → info）再按扩展名排；最多 4 颗全展示，超过则留 3 颗加 `+N`。右侧始终有展开钮。窄屏藏单颗 status chip，只留「扩展 · N」。 |
+| 统一扩展 Modal | global `ui` + session `extensionUi` + 全局 config | 点全局 chip、status chip **或**展开钮打开同一 Modal。左侧导航合并全局 UI、全局配置和当前 session 的 panel（窄屏改成顶部横滑）；右侧显示当前扩展的 global/session UI 或配置。global panel 只读；选中 session 后，同名 session UI 覆盖 global UI。关 Modal **不**卸 chip，也不 `clearPanel` |
 | 确认 / 选择 | `prompt` | 叠在详情 Modal 上。120s 或 abort = 取消 |
 | slash | `commands[]` | 见上一节。扩展命令 `source=extension`，`argumentHint` + `completions` |
 | 气泡 origin | user `origin` | `extension:<name>` 与用户气泡可区分 |
 | 就绪锁 | `runtime.ready` | 未就绪不能打字；避免 `/goal` 尚未注册就 404 |
 
-不要在 tabs 下、composer 上再做第二条 status 横条。`status` / `panel` **不进 jsonl**。Reload 后 sidecar 按自己的 `appendEntry` 等状态再 `setStatus` / `setPanel`。
+不要在 tabs 下、composer 上再做第二条 status 横条。全局 chip 不依赖 session；global config、global UI 与 session 的 `status` / `panel` 在同一个扩展 Modal 中呈现；这些 UI 投影 **不进 jsonl**。Reload 后 sidecar 按自己的状态重新发布 global/session UI。
 
 ### 投影
 
-`GET /v1/sessions/{id}` 的 `extensionUi[]`（每个扩展一条）：
+`GET /v1/extensions` 的每个 extension item 可带 global `ui`；`GET /v1/sessions/{id}` 的 `extensionUi[]` 是 session 投影（每个扩展一条）：
 
 ```json
 {

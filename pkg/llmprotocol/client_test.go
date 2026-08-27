@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+type testNonRetryableError interface {
+	NonRetryable() bool
+}
 
 type testDoer func(*http.Request) (*http.Response, error)
 
@@ -105,6 +110,59 @@ func TestClientStreamsResponsesFunctionCall(t *testing.T) {
 	}
 }
 
+func TestClientStreamsResponsesMessageWithoutItemID(t *testing.T) {
+	// Some OpenAI-compatible gateways omit the message item's id but keep the
+	// output index. Text remains usable and can acquire the id from a later
+	// delta without weakening tool/reasoning item validation.
+	sse := "event: response.output_item.added\n" + protocolJSON(map[string]any{
+		"type": "response.output_item.added", "output_index": 0,
+		"item": map[string]any{"type": "message", "role": "assistant"},
+	}) + "event: response.output_text.delta\n" + protocolJSON(map[string]any{
+		"type": "response.output_text.delta", "output_index": 0, "delta": "pong",
+	}) + "event: response.completed\n" + protocolJSON(map[string]any{
+		"type": "response.completed", "response": map[string]any{
+			"id": "resp_1", "status": "completed",
+			"output": []any{map[string]any{
+				"type": "message", "role": "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "pong"}},
+			}},
+		},
+	})
+	client := NewClient(APIResponses, "https://example.test", "key", protocolSSE(sse))
+	message, err := client.Stream(context.Background(), Request{Model: "model"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.ResponseID != "resp_1" || message.Text() != "pong" || message.StopReason != "stop" {
+		t.Fatalf("message: %+v", message)
+	}
+	if len(message.Content) != 1 || message.Content[0].ItemID != "" {
+		t.Fatalf("missing-id message was not kept as one text block: %+v", message.Content)
+	}
+}
+
+func TestClientBindsResponsesTextIDAfterMissingOutputID(t *testing.T) {
+	sse := "event: response.output_item.added\n" + protocolJSON(map[string]any{
+		"type": "response.output_item.added", "output_index": 0,
+		"item": map[string]any{"type": "message", "role": "assistant"},
+	}) + "event: response.output_text.delta\n" + protocolJSON(map[string]any{
+		"type": "response.output_text.delta", "item_id": "msg_1", "delta": "hello",
+	}) + "event: response.completed\n" + protocolJSON(map[string]any{
+		"type": "response.completed", "response": map[string]any{"id": "resp_1", "status": "completed"},
+	})
+	client := NewClient(APIResponses, "https://example.test", "key", protocolSSE(sse))
+	message, err := client.Stream(context.Background(), Request{Model: "model"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(message.Content) != 1 || message.Content[0].ItemID != "msg_1" || message.Text() != "hello" {
+		t.Fatalf("text item was not rebound: %+v", message.Content)
+	}
+	if !strings.Contains(message.Content[0].TextSignature, `"id":"msg_1"`) {
+		t.Fatalf("missing replay id in signature: %q", message.Content[0].TextSignature)
+	}
+}
+
 func TestClientSendsSSEAcceptHeader(t *testing.T) {
 	var accept string
 	client := NewClient(APICompletions, "https://example.test", "key", testDoer(func(r *http.Request) (*http.Response, error) {
@@ -116,5 +174,67 @@ func TestClientSendsSSEAcceptHeader(t *testing.T) {
 	}
 	if accept != "text/event-stream" {
 		t.Fatalf("Accept: %q", accept)
+	}
+}
+
+func TestClientMarksDeterministicHTTPFailureNonRetryable(t *testing.T) {
+	client := NewClient(APIResponses, "https://example.test", "key", testDoer(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"invalid tools"}}`)),
+			Header:     make(http.Header),
+		}, nil
+	}))
+	_, err := client.Stream(context.Background(), Request{Model: "model"}, nil)
+	var marker testNonRetryableError
+	if !errors.As(err, &marker) || !marker.NonRetryable() {
+		t.Fatalf("400 error must be non-retryable: %v", err)
+	}
+}
+
+func TestClientKeepsTransientHTTPFailureRetryable(t *testing.T) {
+	client := NewClient(APIResponses, "https://example.test", "key", testDoer(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"slow down"}}`)),
+			Header:     make(http.Header),
+		}, nil
+	}))
+	_, err := client.Stream(context.Background(), Request{Model: "model"}, nil)
+	var marker testNonRetryableError
+	if err == nil || errors.As(err, &marker) {
+		t.Fatalf("429 error must remain retryable: %v", err)
+	}
+}
+
+func TestClientRetriesGatewayBadResponseStatus(t *testing.T) {
+	client := NewClient(APIResponses, "https://example.test", "key", testDoer(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Body: io.NopCloser(strings.NewReader(
+				`{"error":{"message":"openai_error","type":"bad_response_status_code","code":"bad_response_status_code"}}`,
+			)),
+			Header: make(http.Header),
+		}, nil
+	}))
+	_, err := client.Stream(context.Background(), Request{Model: "model"}, nil)
+	var marker testNonRetryableError
+	if err == nil || errors.As(err, &marker) {
+		t.Fatalf("transient gateway 400 must remain retryable: %v", err)
+	}
+}
+
+func TestResponsesStreamWithoutTerminalEventIsNonRetryable(t *testing.T) {
+	sse := "event: response.output_item.added\n" + protocolJSON(map[string]any{
+		"type": "response.output_item.added", "output_index": 0,
+		"item": map[string]any{"type": "message", "role": "assistant"},
+	}) + "event: response.output_text.delta\n" + protocolJSON(map[string]any{
+		"type": "response.output_text.delta", "output_index": 0, "delta": "partial",
+	}) + "data: [DONE]\n"
+	client := NewClient(APIResponses, "https://example.test", "key", protocolSSE(sse))
+	_, err := client.Stream(context.Background(), Request{Model: "model"}, nil)
+	var marker testNonRetryableError
+	if !errors.As(err, &marker) || !marker.NonRetryable() {
+		t.Fatalf("malformed terminal sequence must be non-retryable: %v", err)
 	}
 }

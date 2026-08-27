@@ -52,6 +52,7 @@ func (s *Server) sessionMap(sess *session.Session, extra map[string]any) map[str
 		"pinned":          sess.Config.Pinned,
 		"pinnedAt":        sess.Config.PinnedAt,
 		"timestamp":       sess.Header.Timestamp,
+		"metadata":        sess.Config.Metadata,
 	}
 	if rec, ok := s.ws.Match(sess.Header.CWD); ok {
 		m["workspaceId"] = rec.ID
@@ -74,6 +75,7 @@ func (s *Server) infoMap(info session.Info) map[string]any {
 		"running":         s.running(info.ID),
 		"pinned":          info.Pinned,
 		"pinnedAt":        info.PinnedAt,
+		"metadata":        info.Metadata,
 	}
 	if rec, ok := s.ws.Match(info.CWD); ok {
 		m["workspaceId"] = rec.ID
@@ -318,7 +320,6 @@ func (s *Server) removeSessionInfo(info session.Info) error {
 	}
 	s.sidx.Remove(info.ID) // only after the dir is actually gone
 	s.resources.Invalidate(info.ID)
-	s.mcp.CloseSession(info.ID)
 	if s.ext != nil {
 		s.ext.CloseSession(info.ID)
 	}

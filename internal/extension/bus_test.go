@@ -16,6 +16,18 @@ type mutexHost struct {
 	m *Manager
 }
 
+func (mutexHost) CreateSession(SessionCreateRequest) (SessionCreateResult, error) {
+	return SessionCreateResult{}, nil
+}
+func (mutexHost) NewSession(string, string) (SessionCreateResult, error) {
+	return SessionCreateResult{}, nil
+}
+func (mutexHost) ReloadSession(string) error { return nil }
+func (mutexHost) ListSessions(map[string]any) ([]SessionSnapshot, error) {
+	return nil, nil
+}
+func (mutexHost) GetSession(string) (SessionSnapshot, error) { return SessionSnapshot{}, nil }
+
 func (h mutexHost) Enqueue(string, string, EnqueueRequest) (EnqueueResult, error) {
 	return EnqueueResult{}, nil
 }
@@ -29,8 +41,11 @@ func (h mutexHost) RegisterTools(string, string, []ToolSpec) error   { return ni
 func (h mutexHost) UISetStatus(string, string, string, string, string) error {
 	return nil
 }
-func (h mutexHost) UISetPanel(string, string, UIPanel) error { return nil }
-func (h mutexHost) UIClearPanel(string, string) error        { return nil }
+func (h mutexHost) UISetPanel(string, string, UIPanel) error               { return nil }
+func (h mutexHost) UIClearPanel(string, string) error                      { return nil }
+func (h mutexHost) GlobalUISetStatus(string, string, string, string) error { return nil }
+func (h mutexHost) GlobalUISetPanel(string, UIPanel) error                 { return nil }
+func (h mutexHost) GlobalUIClearPanel(string) error                        { return nil }
 func (h mutexHost) UIConfirm(string, string, string, string) (bool, error) {
 	return false, nil
 }

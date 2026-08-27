@@ -136,6 +136,16 @@ func TestHTTPPatchEmptyHeaderDeletes(t *testing.T) {
 	}
 }
 
+func TestRedactEventIncludesAssistantFailure(t *testing.T) {
+	message := types.Message{
+		Role: "assistant", StopReason: "error", ErrorMessage: "Responses stream is invalid",
+	}
+	event := RedactEvent(loop.Event{Type: loop.MessageEnd, Message: &message}, "session-1")
+	if !event.IsError || event.StopReason != "error" || event.ErrorMessage != "Responses stream is invalid" {
+		t.Fatalf("redacted failure: %+v", event)
+	}
+}
+
 type captureStreamer struct{ got loop.Request }
 
 func (c *captureStreamer) Stream(_ context.Context, req loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {

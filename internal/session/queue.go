@@ -44,12 +44,13 @@ func queueGate(dir string) *sync.Mutex {
 
 // ExtQueuedItem is one extension-origin turn waiting after user queue.
 type ExtQueuedItem struct {
-	ID         string          `json:"id"`
-	Content    []types.Content `json:"content"`
-	Extension  string          `json:"extension,omitempty"`
-	Kind       string          `json:"kind,omitempty"`
-	CustomType string          `json:"customType,omitempty"`
-	When       string          `json:"when,omitempty"`
+	ID         string            `json:"id"`
+	Content    []types.Content   `json:"content"`
+	Extension  string            `json:"extension,omitempty"`
+	Kind       string            `json:"kind,omitempty"`
+	CustomType string            `json:"customType,omitempty"`
+	When       string            `json:"when,omitempty"`
+	External   map[string]string `json:"external,omitempty"`
 }
 
 func readExtQueue(dir string) ([]ExtQueuedItem, error) {

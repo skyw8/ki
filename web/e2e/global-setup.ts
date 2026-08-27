@@ -66,7 +66,7 @@ export default async function globalSetup(): Promise<void> {
   if (process.env.KI_SKIP_SERVER === '1') {
     // The Go harness (go test ./e2e) started the server itself and set
     // KI_HOME; keep the fixture home discoverable so specs can still drop
-    // skills / .mcp.json fixtures next to the real session dir.
+    // skills and extension fixtures next to the real session dir.
     writeFileSync(statePath, JSON.stringify({
       pid: 0,
       home: process.env.KI_HOME ?? '',

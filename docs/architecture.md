@@ -16,9 +16,9 @@
 
 续聊必须 `--session <id>`。`--model` 随 prompt 发给 server，写回**该 session** 的 `config.json`，不改 toml。`KI_FAKE=1` 用假模型。
 
-系统提示词由 `internal/prompt` 从预加载的资源快照纯渲染，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、.mcp.json、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）、项目/全局追加 system prompt、运行 OS/架构、cwd 和本地日期时区。后面这些运行环境字段在 session 首次加载资源时计算一次，普通消息不会重复探测；reload 后随新快照更新。模型被问及"去哪改 server / MCP / skills 设置"时读这段，配合 `ki config path`。完整分层与缓存边界见 [system_prompt.md](system_prompt.md)。
+系统提示词由 `internal/prompt` 从预加载的资源快照纯渲染，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）、项目/全局追加 system prompt、运行 OS/架构、cwd 和本地日期时区。后面这些运行环境字段在 session 首次加载资源时计算一次，普通消息不会重复探测；reload 后随新快照更新。模型被问及"去哪改 server / 扩展 / skills 设置"时读这段，配合 `ki config path`。完整分层与缓存边界见 [system_prompt.md](system_prompt.md)。
 
-`internal/resources.Loader` 由 Server 持有，把运行环境、skills、AGENTS/CLAUDE、prompt 模板、`.mcp.json` 和已发现的 MCP tools 合并成 session 级不可变快照。设置页没有 session，只用不缓存的 `Scan(cwd)` 展示配置。每轮 prompt 在渲染前准备该 session 启用的 MCP server；成功发现的工具与内置工具一起进入 prompt、loop 和 `request_header`，单个 server 失败不阻断本轮。MCP 的连接所有权、快照更新、事件和 Reload 生命周期见 [mcp.md](mcp.md)。
+`internal/resources.Loader` 由 Server 持有，把运行环境、skills、AGENTS/CLAUDE 和 prompt 模板合并成 session 级不可变快照。设置页没有 session，只用不缓存的 `Scan(cwd)` 展示配置。每轮 prompt 在渲染前准备当前 session 的 extension view；扩展工具与内置工具一起进入 prompt、loop 和 `request_header`，单个扩展失败不阻断本轮。
 
 Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和启用的 provider 扩展目录的合并结果。自定义 provider/model 和协议兼容字段通过设置 UI 或 provider API 管理；不从网络刷新目录。provider 扩展以进程级 sidecar 接管完整 streamer，普通 provider 仍由 ki 内置 HTTP adapter 处理；`--model provider/model` 只写回 session 配置。
 
@@ -39,7 +39,7 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned / parentSessionId / forkMode） |
 | POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…`；可选 `model` / `thinkingEffort`，省略则用上次选用的模型和该模型 default thinking。WebUI 传入当前 composer 的模型配置 |
 | GET | `/v1/sessions/search` | 正文字面搜索普通/flat session，最多 20 条；tree child 通过全量 session list 的 Tree 浏览器访问 |
-| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、只读 `availableSkills` / `availableMcp` / `availableExtensions` / `commands` / `queued` / `runtime.ready`；并后台 Prepare 全局 extension 的 session view / MCP |
+| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、只读 `availableSkills` / `availableExtensions` / `commands` / `queued` / `runtime.ready`；并后台 Prepare 全局 extension 的 session view |
 | PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / `queued`（保留 id 列表） |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
 | POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId` / `delivery` / `queueId`；空闲 `202 started`；忙时 `steer` 插入本轮或 `queue` 排队，省略则用 `toggles.json` `message.busy`；`queueId`+`delivery=steer` 从 `queue.json` 取出插入本轮；`parentId` 且 busy 仍 **409** |
@@ -47,8 +47,8 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件 |
 | POST | `/v1/sessions/{id}/abort` | cancel |
 | POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
-| POST | `/v1/reload` | 清全部 session 的资源快照并关掉 MCP 池 |
-| GET/PATCH | `/v1/skills` `/v1/mcp` `/v1/extensions` | 全局启用开关（`toggles.json`） |
+| POST | `/v1/reload` | 清全部 session 的资源快照并重载 extension catalog |
+| GET/PATCH | `/v1/skills` `/v1/extensions` | 全局启用开关（`toggles.json`） |
 | POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径；body 可传 `forkMode=flat|tree`，返回 `parentSessionId` / `forkMode`，删除时仅沿 tree 边级联 |
 | POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |
 | GET | `/v1/workspaces` | 工作区登记（含 `sessionIds` / `temp`） |
@@ -95,7 +95,7 @@ agent_end
 
 字段跟 pi；`patch_apply_updated` 是 apply_patch 输入仍在生成时的语法预览，不表示已经执行。写盘和 SSE 是 server 挂在 `emit` 上的订阅者，不进 loop 包。
 
-MCP 的 `mcp_server_failed` 与 `mcp_tools_changed`、以及 `queue_changed` / `run_aborted` 是不推进消息 leaf 的 sideband 事件，沿同一 jsonl/SSE 通道发布；`steer_accepted` 只进当前 run 的 SSE（Inbox 收下、尚未 drain）。连接空闲通知与 stale 处理见 [mcp.md](mcp.md#事件与-reload)。
+`queue_changed` / `run_aborted` 是不推进消息 leaf 的 sideband 事件，沿同一 jsonl/SSE 通道发布；`steer_accepted` 只进当前 run 的 SSE（Inbox 收下、尚未 drain）。
 
 ## 时序
 

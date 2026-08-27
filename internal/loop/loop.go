@@ -47,10 +47,6 @@ const (
 	CompactionEnd EventType = "compaction_end"
 	// ContextUsage reports the current model-facing context pressure.
 	ContextUsage EventType = "context_usage"
-	// MCPServerFailed reports a server omitted from the current prompt.
-	MCPServerFailed EventType = "mcp_server_failed"
-	// MCPToolsChanged reports that an MCP catalog requires an explicit reload.
-	MCPToolsChanged EventType = "mcp_tools_changed"
 	// QueueChanged reports that the session user-message FIFO changed.
 	QueueChanged EventType = "queue_changed"
 	// SteerAccepted reports a user message accepted into the live Inbox.
@@ -67,39 +63,41 @@ const (
 	ExtensionUIPrompt EventType = "extension_ui_prompt"
 	// AgentSettled reports occupy wrap-up finished and a new occupy may start.
 	AgentSettled EventType = "agent_settled"
-	// RuntimeReady reports session-open Prepare finished (extensions + MCP).
+	// RuntimeReady reports session-open extension preparation finished.
 	// Failure still counts as ready so the composer can unlock.
 	RuntimeReady EventType = "runtime_ready"
 )
 
 // Event is a loop event (pi field names).
 type Event struct {
-	Type                  EventType       `json:"type"`
-	EntryID               string          `json:"entryId,omitempty"`
-	Message               *types.Message  `json:"message,omitempty"`
-	Messages              []types.Message `json:"messages,omitempty"`
-	ToolResults           []types.Message `json:"toolResults,omitempty"`
-	AssistantMessageEvent *AssistantDelta `json:"assistantMessageEvent,omitempty"`
-	ToolCallID            string          `json:"toolCallId,omitempty"`
-	ToolName              string          `json:"toolName,omitempty"`
-	Args                  map[string]any  `json:"args,omitempty"`
-	PartialResult         any             `json:"partialResult,omitempty"`
-	Result                any             `json:"result,omitempty"`
-	IsError               bool            `json:"isError,omitempty"`
-	System                string          `json:"system,omitempty"`
-	Tools                 []ToolSpec      `json:"tools,omitempty"`
-	Reason                string          `json:"reason,omitempty"`
-	OK                    bool            `json:"ok,omitempty"`
-	Provider              string          `json:"provider,omitempty"`
-	Model                 string          `json:"model,omitempty"`
-	CatalogVersion        int             `json:"catalogVersion,omitempty"`
-	UsedTokens            int             `json:"usedTokens,omitempty"`
-	ContextWindow         int             `json:"contextWindow,omitempty"`
-	Estimated             bool            `json:"estimated,omitempty"`
-	Server                string          `json:"server,omitempty"`
-	MessageText           string          `json:"messageText,omitempty"`
-	ReloadRequired        bool            `json:"reloadRequired,omitempty"`
-	Options               []string        `json:"options,omitempty"`
+	Type                  EventType         `json:"type"`
+	EntryID               string            `json:"entryId,omitempty"`
+	Message               *types.Message    `json:"message,omitempty"`
+	Messages              []types.Message   `json:"messages,omitempty"`
+	ToolResults           []types.Message   `json:"toolResults,omitempty"`
+	AssistantMessageEvent *AssistantDelta   `json:"assistantMessageEvent,omitempty"`
+	ToolCallID            string            `json:"toolCallId,omitempty"`
+	ToolName              string            `json:"toolName,omitempty"`
+	Args                  map[string]any    `json:"args,omitempty"`
+	PartialResult         any               `json:"partialResult,omitempty"`
+	Result                any               `json:"result,omitempty"`
+	IsError               bool              `json:"isError,omitempty"`
+	System                string            `json:"system,omitempty"`
+	Tools                 []ToolSpec        `json:"tools,omitempty"`
+	Reason                string            `json:"reason,omitempty"`
+	OK                    bool              `json:"ok,omitempty"`
+	Provider              string            `json:"provider,omitempty"`
+	Model                 string            `json:"model,omitempty"`
+	CatalogVersion        int               `json:"catalogVersion,omitempty"`
+	UsedTokens            int               `json:"usedTokens,omitempty"`
+	ContextWindow         int               `json:"contextWindow,omitempty"`
+	Estimated             bool              `json:"estimated,omitempty"`
+	Server                string            `json:"server,omitempty"`
+	MessageText           string            `json:"messageText,omitempty"`
+	ReloadRequired        bool              `json:"reloadRequired,omitempty"`
+	Options               []string          `json:"options,omitempty"`
+	RunID                 string            `json:"runId,omitempty"`
+	External              map[string]string `json:"external,omitempty"`
 }
 
 // AssistantDelta is a streaming increment (pi assistantMessageEvent).
@@ -379,10 +377,11 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 			msgs = m
 		}
 		if cfg.TextOnly {
-			// Tool schemas cannot constrain old session entries or MCP results;
+			// Tool schemas cannot constrain old session entries or extension results;
 			// strip here at the final model-facing boundary as Codex does.
 			msgs = stripImages(msgs)
 		}
+		msgs = stripExternal(msgs)
 
 		if err := emit(Event{Type: RequestHeader, System: system, Tools: append([]ToolSpec(nil), specs...), Provider: cfg.Provider, Model: cfg.Model}); err != nil {
 			return newMsgs, err
@@ -464,6 +463,18 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		return newMsgs, err
 	}
 	return newMsgs, nil
+}
+
+func stripExternal(msgs []types.Message) []types.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	out := make([]types.Message, len(msgs))
+	for i, msg := range msgs {
+		msg.External = nil
+		out[i] = msg
+	}
+	return out
 }
 
 func drainInbox(inbox *Inbox, emit func(Event) error, newMsgs, history []types.Message) ([]types.Message, []types.Message, error) {
@@ -565,6 +576,28 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				_ = emit(Event{Type: MessageEnd, Message: &asst})
 				return last, ErrContextOverflow
 			}
+			if nonRetryableStreamError(err) {
+				if asst.Role == "" {
+					asst.Role = "assistant"
+				}
+				if asst.StopReason == "" {
+					asst.StopReason = "error"
+				}
+				if asst.ErrorMessage == "" {
+					asst.ErrorMessage = err.Error()
+				}
+				asst.IsError = true
+				if asst.Provider == "" {
+					asst.Provider = cfg.Provider
+				}
+				if asst.Model == "" {
+					asst.Model = cfg.Model
+				}
+				// End the failed attempt explicitly so clients can discard the
+				// partial stream and show the actual protocol error.
+				_ = emit(Event{Type: MessageEnd, Message: &asst})
+				return asst, err
+			}
 			continue
 		}
 		for _, call := range asst.ToolCalls() {
@@ -591,6 +624,12 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 		if asst.Model == "" {
 			asst.Model = cfg.Model
 		}
+		if asst.StopReason == "error" {
+			asst.IsError = true
+			if asst.ErrorMessage == "" {
+				asst.ErrorMessage = "provider response failed"
+			}
+		}
 		if err := emit(Event{Type: MessageEnd, Message: &asst}); err != nil {
 			return asst, err
 		}
@@ -608,11 +647,23 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 		return asst, nil
 	}
 	if last.Role == "" {
-		last = types.Message{Role: "assistant", StopReason: "error", ErrorMessage: fmt.Sprint(lastErr)}
+		last = types.Message{
+			Role: "assistant", Provider: cfg.Provider, Model: cfg.Model,
+			StopReason: "error", ErrorMessage: fmt.Sprint(lastErr), IsError: true,
+		}
 		_ = emit(Event{Type: MessageStart, Message: &last})
 		_ = emit(Event{Type: MessageEnd, Message: &last})
 	}
 	return last, lastErr
+}
+
+type nonRetryableStreamFailure interface {
+	NonRetryable() bool
+}
+
+func nonRetryableStreamError(err error) bool {
+	var failure nonRetryableStreamFailure
+	return errors.As(err, &failure) && failure.NonRetryable()
 }
 
 // ToolValidator is the optional pre-execution schema check (P0, pi

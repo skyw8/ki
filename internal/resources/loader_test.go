@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"ki/internal/mcp"
 )
 
 func TestContextFilesStopAtGitRoot(t *testing.T) {
@@ -107,24 +105,6 @@ func TestScanMergesExtensionPromptAndHonorsDisabled(t *testing.T) {
 	}
 }
 
-func TestMCPUpdatesAreRevisionGuardedAndCopyOnWrite(t *testing.T) {
-	loader := NewLoader(t.TempDir())
-	snapshot := loader.Load("session", t.TempDir())
-	updates := map[string]mcp.ServerState{"demo": {Status: mcp.StatusReady, Tools: []mcp.ToolDefinition{{Name: "one"}}}}
-	updated, ok := loader.UpdateMCP("session", snapshot.Revision, updates)
-	if !ok || updated.MCPServers["demo"].Tools[0].Name != "one" {
-		t.Fatalf("update = %+v, ok=%v", updated, ok)
-	}
-	updates["demo"] = mcp.ServerState{Status: mcp.StatusFailed}
-	if loader.Load("session", "").MCPServers["demo"].Status != mcp.StatusReady {
-		t.Fatal("caller mutated cached MCP state")
-	}
-	loader.Invalidate("session")
-	if _, ok := loader.UpdateMCP("session", snapshot.Revision, updates); ok {
-		t.Fatal("stale revision update was accepted")
-	}
-}
-
 func TestLoaderPinsCompleteSnapshotBySessionID(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
@@ -169,7 +149,6 @@ func writeResources(t *testing.T, home, cwd, version string) {
 	writeFile(t, filepath.Join(cwd, "AGENTS.md"), version)
 	writeFile(t, filepath.Join(home, "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: "+version+"\n---\n")
 	writeFile(t, filepath.Join(home, "prompts", "review.md"), "---\ndescription: "+version+"\n---\n"+version+"\n")
-	writeFile(t, filepath.Join(home, ".mcp.json"), `{"mcpServers":{"demo":{"command":"`+version+`"}}}`)
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -192,8 +171,5 @@ func assertSnapshotVersion(t *testing.T, snapshot Snapshot, want string) {
 	}
 	if len(snapshot.Prompts) != 1 || snapshot.Prompts[0].Description != want || strings.TrimSpace(snapshot.Prompts[0].Body) != want {
 		t.Fatalf("prompts = %+v, want %q", snapshot.Prompts, want)
-	}
-	if snapshot.MCP.MCPServers["demo"].Command != want {
-		t.Fatalf("mcp = %+v, want %q", snapshot.MCP, want)
 	}
 }

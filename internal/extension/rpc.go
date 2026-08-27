@@ -199,7 +199,7 @@ func sidecarEnv(d Descriptor, sessionID, home, cwd string) []string {
 	return env
 }
 
-// resolveRuntimeCommand matches MCP: a name with no slash is looked up on
+// resolveRuntimeCommand uses PATH for a name with no slash and the extension
 // PATH (node, npx). A relative path is joined to the package root (bin/extension).
 func resolveRuntimeCommand(root, command string) string {
 	if command == "" || filepath.IsAbs(command) {

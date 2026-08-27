@@ -12,6 +12,11 @@ import (
 // SessionHost is implemented by the HTTP server. Sidecar inbound RPCs call it.
 // Methods must return quickly; enqueue must not wait for a full run.
 type SessionHost interface {
+	CreateSession(req SessionCreateRequest) (SessionCreateResult, error)
+	NewSession(sessionID string, cwd string) (SessionCreateResult, error)
+	ReloadSession(sessionID string) error
+	ListSessions(filter map[string]any) ([]SessionSnapshot, error)
+	GetSession(sessionID string) (SessionSnapshot, error)
 	Enqueue(sessionID, extension string, req EnqueueRequest) (EnqueueResult, error)
 	Snapshot(sessionID, extension string) (SessionSnapshot, error)
 	AppendEntry(sessionID, extension, customType string, data any) error
@@ -23,6 +28,9 @@ type SessionHost interface {
 	UISetStatus(sessionID, extension, key, text, tone string) error
 	UISetPanel(sessionID, extension string, panel UIPanel) error
 	UIClearPanel(sessionID, extension string) error
+	GlobalUISetStatus(extension, key, text, tone string) error
+	GlobalUISetPanel(extension string, panel UIPanel) error
+	GlobalUIClearPanel(extension string) error
 	UIConfirm(sessionID, extension, title, message string) (bool, error)
 	UISelect(sessionID, extension, title string, options []string) (string, error)
 	BusEmit(sessionID, from, channel string, data any) (any, error)
@@ -31,13 +39,32 @@ type SessionHost interface {
 
 // EnqueueRequest is session.enqueue params.
 type EnqueueRequest struct {
-	Content        []types.Content `json:"content"`
-	DeliverAs      string          `json:"deliverAs"`
-	When           string          `json:"when"`
-	IdempotencyKey string          `json:"idempotencyKey"`
-	Kind           string          `json:"kind"`
-	CustomType     string          `json:"customType"`
-	Display        *bool           `json:"display"`
+	Content        []types.Content   `json:"content"`
+	DeliverAs      string            `json:"deliverAs"`
+	When           string            `json:"when"`
+	IdempotencyKey string            `json:"idempotencyKey"`
+	Kind           string            `json:"kind"`
+	CustomType     string            `json:"customType"`
+	Display        *bool             `json:"display"`
+	External       map[string]string `json:"external,omitempty"`
+}
+
+// SessionCreateRequest is the channel-safe session creation contract.
+type SessionCreateRequest struct {
+	WorkspaceID    string         `json:"workspaceId,omitempty"`
+	CWD            string         `json:"cwd,omitempty"`
+	Provider       string         `json:"provider,omitempty"`
+	Model          string         `json:"model,omitempty"`
+	ThinkingEffort string         `json:"thinkingEffort,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+}
+
+// SessionCreateResult is returned to a channel after create/new/cwd.
+type SessionCreateResult struct {
+	SessionID   string         `json:"sessionId"`
+	CWD         string         `json:"cwd"`
+	WorkspaceID string         `json:"workspaceId,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 // EnqueueResult is the accept acknowledgement.
@@ -48,15 +75,20 @@ type EnqueueResult struct {
 
 // SessionSnapshot is session.snapshot.
 type SessionSnapshot struct {
-	Idle        bool     `json:"idle"`
-	Running     bool     `json:"running"`
-	Queued      int      `json:"queued"`
-	ExtQueued   int      `json:"extQueued"`
-	Model       string   `json:"model,omitempty"`
-	Thinking    string   `json:"thinking,omitempty"`
-	ActiveTools []string `json:"activeTools,omitempty"`
-	AllTools    []string `json:"allTools,omitempty"`
-	Commands    []string `json:"commands,omitempty"`
+	ID          string         `json:"id,omitempty"`
+	CWD         string         `json:"cwd,omitempty"`
+	WorkspaceID string         `json:"workspaceId,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	Idle        bool           `json:"idle"`
+	Running     bool           `json:"running"`
+	Queued      int            `json:"queued"`
+	ExtQueued   int            `json:"extQueued"`
+	Provider    string         `json:"provider,omitempty"`
+	Model       string         `json:"model,omitempty"`
+	Thinking    string         `json:"thinking,omitempty"`
+	ActiveTools []string       `json:"activeTools,omitempty"`
+	AllTools    []string       `json:"allTools,omitempty"`
+	Commands    []string       `json:"commands,omitempty"`
 }
 
 // UIPanel is the generic detail model for any extension (not goal-specific).
@@ -97,7 +129,9 @@ type UIPrompt struct {
 	Options []string `json:"options,omitempty"`
 }
 
-// ExtensionUI is the session GET projection for one extension.
+// ExtensionUI is the WebUI projection for one extension. Session responses
+// contain session-scoped values; the extension catalog may contain a global
+// value emitted by a process-level sidecar.
 type ExtensionUI struct {
 	Extension string    `json:"extension"`
 	Status    *UIStatus `json:"status,omitempty"`
@@ -145,7 +179,8 @@ func inboundSessionID(params json.RawMessage) (string, error) {
 func inboundNeedsSession(method string) bool {
 	switch method {
 	case "session.enqueue", "session.snapshot", "session.appendEntry", "session.abort",
-		"session.compact", "session.patch", "session.setActiveTools", "tools.register",
+		"session.compact", "session.patch", "session.setActiveTools", "session.new",
+		"session.reload", "tools.register",
 		"ui.setStatus", "ui.setPanel", "ui.clearPanel", "ui.confirm", "ui.select",
 		"bus.emit", "bus.broadcast", "bus.subscribe", "bus.unsubscribe":
 		return true
@@ -169,6 +204,66 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 		}
 	}
 	switch msg.Method {
+	case "session.create":
+		var req SessionCreateRequest
+		if err := json.Unmarshal(msg.Params, &req); err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+		res, err := c.host.CreateSession(req)
+		if err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+		c.replyResult(msg.ID, res)
+	case "session.new":
+		var p struct {
+			CWD string `json:"cwd"`
+		}
+		_ = json.Unmarshal(msg.Params, &p)
+		res, err := c.host.NewSession(sessionID, p.CWD)
+		if err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+		c.replyResult(msg.ID, res)
+	case "session.reload":
+		if err := c.host.ReloadSession(sessionID); err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+		c.replyResult(msg.ID, map[string]any{"ok": true})
+	case "session.list":
+		var p struct {
+			Filter   map[string]any `json:"filter"`
+			Metadata map[string]any `json:"metadata"`
+		}
+		_ = json.Unmarshal(msg.Params, &p)
+		filter := p.Filter
+		if filter == nil {
+			filter = p.Metadata
+		}
+		res, err := c.host.ListSessions(filter)
+		if err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+		c.replyResult(msg.ID, map[string]any{"sessions": res})
+	case "session.get":
+		var p struct {
+			SessionID string `json:"sessionId"`
+		}
+		_ = json.Unmarshal(msg.Params, &p)
+		if p.SessionID == "" {
+			c.replyError(msg.ID, "sessionId required")
+			return
+		}
+		res, err := c.host.GetSession(p.SessionID)
+		if err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+		c.replyResult(msg.ID, res)
 	case "session.enqueue":
 		var req EnqueueRequest
 		_ = json.Unmarshal(msg.Params, &req)
@@ -265,6 +360,32 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 		c.replyResult(msg.ID, map[string]any{"ok": true})
 	case "ui.clearPanel":
 		if err := c.host.UIClearPanel(sessionID, c.name); err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+		c.replyResult(msg.ID, map[string]any{"ok": true})
+	case "ui.setGlobalStatus":
+		var p struct {
+			Key  string `json:"key"`
+			Text string `json:"text"`
+			Tone string `json:"tone"`
+		}
+		_ = json.Unmarshal(msg.Params, &p)
+		if err := c.host.GlobalUISetStatus(c.name, p.Key, p.Text, p.Tone); err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+		c.replyResult(msg.ID, map[string]any{"ok": true})
+	case "ui.setGlobalPanel":
+		var panel UIPanel
+		_ = json.Unmarshal(msg.Params, &panel)
+		if err := c.host.GlobalUISetPanel(c.name, panel); err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+		c.replyResult(msg.ID, map[string]any{"ok": true})
+	case "ui.clearGlobalPanel":
+		if err := c.host.GlobalUIClearPanel(c.name); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}

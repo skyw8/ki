@@ -35,7 +35,15 @@ type Manifest struct {
 	Skills       []string                         `json:"skills"`
 	Commands     []string                         `json:"commands"`
 	Providers    []provider.ExtensionProviderSpec `json:"providers"`
+	Config       ConfigSpec                       `json:"config"`
 	Runtime      RuntimeSpec                      `json:"runtime"`
+}
+
+// ConfigSpec declares the JSON-schema-like form rendered by the generic
+// settings UI. The host stores values separately and never exposes secrets.
+type ConfigSpec struct {
+	Schema   map[string]any `json:"schema,omitempty"`
+	Defaults map[string]any `json:"defaults,omitempty"`
 }
 
 // PromptSpec lists files to append as system-prompt layer 6.
@@ -61,6 +69,7 @@ type Descriptor struct {
 	Enabled      bool                             `json:"enabled"`
 	Capabilities []string                         `json:"capabilities"`
 	Providers    []provider.ExtensionProviderSpec `json:"providers,omitempty"`
+	Config       ConfigSpec                       `json:"config,omitempty"`
 	Error        string                           `json:"error,omitempty"`
 	FailClosed   bool                             `json:"-"`
 	manifest     Manifest
@@ -156,6 +165,7 @@ func loadPackage(root string) (Descriptor, bool) {
 		Path:         abs,
 		Capabilities: m.Capabilities,
 		Providers:    m.Providers,
+		Config:       m.Config,
 		FailClosed:   m.FailClosed,
 		manifest:     m,
 		root:         abs,
@@ -263,23 +273,8 @@ func (d Descriptor) wantsSidecar() bool {
 	return kind == runtimeRPC
 }
 
-func (d Descriptor) wantsSessionSidecar() bool {
-	if !d.wantsSidecar() {
-		return false
-	}
-	// A package may combine provider code with session-scoped tools or
-	// lifecycle hooks. Give those capabilities their normal session process;
-	// the provider manager starts a separate process-level instance.
-	return hasKind(d.Capabilities, CapTool) || hasKind(d.Capabilities, CapLifecycle) ||
-		hasKind(d.Capabilities, CapCommand) || hasKind(d.Capabilities, CapBus)
-}
-
 // HasRuntime reports whether this descriptor declares an enabled RPC runtime.
 func (d Descriptor) HasRuntime() bool { return d.wantsSidecar() }
-
-// HasSessionRuntime reports whether this descriptor needs the session-scoped
-// sidecar managed by Manager rather than the process-scoped provider runtime.
-func (d Descriptor) HasSessionRuntime() bool { return d.wantsSessionSidecar() }
 
 func (d Descriptor) promptText() string {
 	if !hasKind(d.Capabilities, CapPromptAppend) || !d.Enabled || d.Error != "" {

@@ -3,9 +3,13 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
+	"strings"
 	"sync"
+	"time"
 
 	"ki/internal/loop"
 	"ki/internal/provider"
@@ -17,16 +21,30 @@ import (
 // their registrations. Session IDs are carried on every RPC that can touch
 // session state, so one sidecar can safely serve multiple sessions.
 type Manager struct {
-	mu           sync.Mutex
-	startMu      sync.Mutex
-	by           map[string]*rpcClient
-	order        map[string][]string
-	sessionTools map[string]map[string][]ToolSpec
-	sessionOpen  map[string]bool
-	descs        map[string]Descriptor
-	onErr        ErrorFunc
-	home         string
-	host         SessionHost
+	mu            sync.Mutex
+	startMu       sync.Mutex
+	startLocks    map[string]*sync.Mutex
+	by            map[string]*rpcClient
+	order         map[string][]string
+	sessionTools  map[string]map[string][]ToolSpec
+	sessionOpen   map[string]map[string]bool
+	descs         map[string]Descriptor
+	status        map[string]RuntimeStatus
+	watching      map[string]bool
+	runtimeCtx    context.Context
+	runtimeCancel context.CancelFunc
+	providerAuth  func(ProviderAuthEvent)
+	onErr         ErrorFunc
+	home          string
+	host          SessionHost
+}
+
+// RuntimeStatus describes one server-level extension runtime.
+type RuntimeStatus struct {
+	Name         string   `json:"name"`
+	State        string   `json:"state"`
+	Error        string   `json:"error,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // sessionInterceptor binds a global RPC client to one session for all
@@ -84,10 +102,13 @@ type Occupy struct {
 func NewManager(home string, onErr ErrorFunc) *Manager {
 	return &Manager{
 		by:           map[string]*rpcClient{},
+		startLocks:   map[string]*sync.Mutex{},
 		order:        map[string][]string{},
 		sessionTools: map[string]map[string][]ToolSpec{},
-		sessionOpen:  map[string]bool{},
+		sessionOpen:  map[string]map[string]bool{},
 		descs:        map[string]Descriptor{},
+		status:       map[string]RuntimeStatus{},
+		watching:     map[string]bool{},
 		onErr:        onErr,
 		home:         home,
 	}
@@ -96,13 +117,28 @@ func NewManager(home string, onErr ErrorFunc) *Manager {
 // SetHost attaches inbound Host methods (session enqueue, bus, UI).
 func (m *Manager) SetHost(h SessionHost) { m.host = h }
 
+// SetProviderAuthHandler forwards private provider-auth notifications from
+// the shared server-level sidecars to the provider HTTP/UI owner.
+func (m *Manager) SetProviderAuthHandler(fn func(ProviderAuthEvent)) {
+	m.mu.Lock()
+	m.providerAuth = fn
+	clients := make([]*rpcClient, 0, len(m.by))
+	for _, c := range m.by {
+		clients = append(clients, c)
+	}
+	m.mu.Unlock()
+	for _, c := range clients {
+		c.setProviderAuthHandler(fn)
+	}
+}
+
 // Configure reconciles the process-global sidecars with the latest global
 // catalog. Disabled, removed, or changed packages are no longer available to
 // new session views and their old processes are closed.
 func (m *Manager) Configure(descriptors []Descriptor) {
 	desired := map[string]Descriptor{}
 	for _, d := range descriptors {
-		if d.Enabled && d.Error == "" && d.wantsSessionSidecar() {
+		if d.Enabled && d.Error == "" && d.wantsSidecar() {
 			desired[d.Name] = d
 		}
 	}
@@ -121,12 +157,122 @@ func (m *Manager) Configure(descriptors []Descriptor) {
 				delete(m.sessionTools, sessionID)
 			}
 		}
+		for sessionID, opened := range m.sessionOpen {
+			delete(opened, name)
+			if len(opened) == 0 {
+				delete(m.sessionOpen, sessionID)
+			}
+		}
 	}
 	m.descs = desired
+	for name := range m.status {
+		if _, ok := desired[name]; !ok {
+			delete(m.status, name)
+		}
+	}
 	m.mu.Unlock()
 	for _, c := range closing {
 		c.close()
 	}
+}
+
+// Start launches every enabled executable extension after the server has
+// begun listening. It is intentionally independent of session creation.
+// A failed sidecar is recorded and retried while its descriptor remains
+// enabled; one extension never blocks the others.
+func (m *Manager) Start(ctx context.Context, descriptors []Descriptor) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.mu.Lock()
+	if m.runtimeCancel == nil {
+		m.runtimeCtx, m.runtimeCancel = context.WithCancel(ctx)
+	}
+	runtimeCtx := m.runtimeCtx
+	m.mu.Unlock()
+	m.Configure(descriptors)
+	for _, d := range descriptors {
+		if !d.wantsSidecar() {
+			continue
+		}
+		m.mu.Lock()
+		if m.watching[d.Name] {
+			m.mu.Unlock()
+			continue
+		}
+		m.watching[d.Name] = true
+		m.status[d.Name] = RuntimeStatus{Name: d.Name, State: "starting", Capabilities: append([]string(nil), d.Capabilities...)}
+		m.mu.Unlock()
+		go m.watchRuntime(runtimeCtx, d)
+	}
+}
+
+// RuntimeStatuses returns a stable snapshot for the settings page and logs.
+func (m *Manager) RuntimeStatuses() []RuntimeStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]RuntimeStatus, 0, len(m.status))
+	for _, state := range m.status {
+		state.Capabilities = append([]string(nil), state.Capabilities...)
+		out = append(out, state)
+	}
+	slices.SortFunc(out, func(a, b RuntimeStatus) int { return strings.Compare(a.Name, b.Name) })
+	return out
+}
+
+func (m *Manager) watchRuntime(ctx context.Context, d Descriptor) {
+	defer func() {
+		m.mu.Lock()
+		delete(m.watching, d.Name)
+		m.mu.Unlock()
+	}()
+	for {
+		m.mu.Lock()
+		desired, ok := m.descs[d.Name]
+		m.mu.Unlock()
+		if !ok || ctx.Err() != nil {
+			return
+		}
+		// Reload may replace a manifest while this watcher is waiting for the
+		// old process to exit. Re-read the descriptor here so one watcher follows
+		// the replacement instead of leaving the new runtime unstarted.
+		d = desired
+		c := m.ensure(ctx, "", d)
+		if c == nil {
+			m.setRuntimeStatus(d.Name, "failed", "sidecar failed to start", d.Capabilities)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+			continue
+		}
+		m.setRuntimeStatus(d.Name, "ready", "", d.Capabilities)
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.closed:
+		}
+		m.mu.Lock()
+		if current := m.by[d.Name]; current == c {
+			delete(m.by, d.Name)
+			for sessionID, opened := range m.sessionOpen {
+				delete(opened, d.Name)
+				if len(opened) == 0 {
+					delete(m.sessionOpen, sessionID)
+				}
+			}
+		}
+		m.mu.Unlock()
+		c.close()
+		m.setRuntimeStatus(d.Name, "restarting", "sidecar exited", d.Capabilities)
+	}
+}
+
+func (m *Manager) setRuntimeStatus(name, state, message string, caps []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.status[name] = RuntimeStatus{Name: name, State: state, Error: message, Capabilities: append([]string(nil), caps...)}
 }
 
 func sameRuntime(a, b Descriptor) bool {
@@ -135,17 +281,13 @@ func sameRuntime(a, b Descriptor) bool {
 		reflect.DeepEqual(a.manifest.Runtime, b.manifest.Runtime)
 }
 
-// Prepare starts sidecars for enabled packages that want runtime.
+// Prepare opens this session's view over already-running server sidecars.
 func (m *Manager) Prepare(ctx context.Context, sessionID, cwd string, enabled []Descriptor) []loop.Tool {
 	var tools []loop.Tool
 	var order []string
-	m.mu.Lock()
-	firstPrepare := !m.sessionOpen[sessionID]
-	m.sessionOpen[sessionID] = true
-	m.mu.Unlock()
 	var opened []*rpcClient
 	for _, d := range enabled {
-		if !d.wantsSessionSidecar() {
+		if !d.wantsSidecar() {
 			continue
 		}
 		order = append(order, d.Name)
@@ -153,7 +295,7 @@ func (m *Manager) Prepare(ctx context.Context, sessionID, cwd string, enabled []
 		if c == nil {
 			continue
 		}
-		if firstPrepare {
+		if m.markSessionOpen(sessionID, d.Name) {
 			opened = append(opened, c)
 		}
 		tools = append(tools, toolsFromRegistration(c, sessionID)...)
@@ -165,40 +307,77 @@ func (m *Manager) Prepare(ctx context.Context, sessionID, cwd string, enabled []
 	m.mu.Lock()
 	m.order[sessionID] = order
 	m.mu.Unlock()
-	if firstPrepare {
-		for _, c := range opened {
-			c.notify("session.open", map[string]any{"sessionId": sessionID, "cwd": cwd})
-		}
+	for _, c := range opened {
+		c.notify("session.open", map[string]any{"sessionId": sessionID, "cwd": cwd})
 	}
 	return tools
+}
+
+// markSessionOpen records the session view per sidecar. A runtime can fail
+// during the first prepare and become ready later; keeping this state per
+// extension lets the next prepare deliver session.open exactly once.
+func (m *Manager) markSessionOpen(sessionID, name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	opened := m.sessionOpen[sessionID]
+	if opened == nil {
+		opened = map[string]bool{}
+		m.sessionOpen[sessionID] = opened
+	}
+	if opened[name] {
+		return false
+	}
+	opened[name] = true
+	return true
 }
 
 func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *rpcClient {
 	m.mu.Lock()
 	if c := m.by[d.Name]; c != nil {
-		m.mu.Unlock()
-		return c
+		select {
+		case <-c.closed:
+			delete(m.by, d.Name)
+		default:
+			m.mu.Unlock()
+			return c
+		}
 	}
 	m.mu.Unlock()
 	// Only one goroutine may launch a given global sidecar at a time. The
 	// second lookup after acquiring the lock avoids duplicate processes when
 	// two sessions prepare the same extension concurrently.
-	m.startMu.Lock()
-	defer m.startMu.Unlock()
+	startLock := m.startLock(d.Name)
+	startLock.Lock()
+	defer startLock.Unlock()
 	m.mu.Lock()
 	if c := m.by[d.Name]; c != nil {
-		m.mu.Unlock()
-		return c
+		select {
+		case <-c.closed:
+			delete(m.by, d.Name)
+		default:
+			m.mu.Unlock()
+			return c
+		}
 	}
 	host := m.host
 	home := m.home
 	m.mu.Unlock()
 	c, err := startRPC(ctx, d, "", home, "", host)
 	if err != nil {
-		m.reportError(sessionID, d.Name, "runtime", "sidecar_start", err.Error())
+		if sessionID != "" {
+			m.reportError(sessionID, d.Name, "runtime", "sidecar_start", err.Error())
+		}
 		slog.Info("extension sidecar failed", "extension", d.Name, "err", err)
 		return nil
 	}
+	if ctx.Err() != nil {
+		c.close()
+		return nil
+	}
+	m.mu.Lock()
+	providerAuth := m.providerAuth
+	m.mu.Unlock()
+	c.setProviderAuthHandler(providerAuth)
 	m.mu.Lock()
 	if existing := m.by[d.Name]; existing != nil {
 		m.mu.Unlock()
@@ -211,6 +390,41 @@ func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *r
 		m.reportError(sessionID, d.Name, cap, "undeclared", "initialize returned "+cap+" without capability")
 	}
 	return c
+}
+
+func (m *Manager) startLock(name string) *sync.Mutex {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	if lock := m.startLocks[name]; lock != nil {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	m.startLocks[name] = lock
+	return lock
+}
+
+// globalClient returns a shared server-level sidecar for provider requests.
+// The fallback launch keeps direct in-process users working before ListenAndServe;
+// the normal server path has already started every runtime after binding.
+func (m *Manager) globalClient(ctx context.Context, name string) (*rpcClient, error) {
+	m.mu.Lock()
+	c := m.by[name]
+	d, ok := m.descs[name]
+	m.mu.Unlock()
+	if c != nil {
+		select {
+		case <-c.closed:
+		default:
+			return c, nil
+		}
+	}
+	if !ok {
+		return nil, fmt.Errorf("extension %q runtime is not registered", name)
+	}
+	if c = m.ensure(ctx, "", d); c == nil {
+		return nil, fmt.Errorf("extension %q runtime is unavailable", name)
+	}
+	return c, nil
 }
 
 func (m *Manager) reportError(sessionID, name, capability, code, message string) {
@@ -420,6 +634,9 @@ func (m *Manager) CloseExcept(active map[string]bool) {
 // Close terminates all process-global sidecars.
 func (m *Manager) Close() {
 	m.mu.Lock()
+	runtimeCancel := m.runtimeCancel
+	m.runtimeCtx = nil
+	m.runtimeCancel = nil
 	clients := make([]*rpcClient, 0, len(m.by))
 	for _, c := range m.by {
 		clients = append(clients, c)
@@ -427,9 +644,14 @@ func (m *Manager) Close() {
 	m.by = map[string]*rpcClient{}
 	m.order = map[string][]string{}
 	m.sessionTools = map[string]map[string][]ToolSpec{}
-	m.sessionOpen = map[string]bool{}
+	m.sessionOpen = map[string]map[string]bool{}
 	m.descs = map[string]Descriptor{}
+	m.status = map[string]RuntimeStatus{}
+	m.watching = map[string]bool{}
 	m.mu.Unlock()
+	if runtimeCancel != nil {
+		runtimeCancel()
+	}
 	for _, c := range clients {
 		c.close()
 	}
@@ -527,6 +749,18 @@ func (m *Manager) Notify(sessionID, name, method string, params any) {
 		return
 	}
 	c.notify(method, withSessionParam(sessionID, params))
+}
+
+// NotifyGlobal sends a process-level notification to one running sidecar.
+// Extensions that support configuration should reload their private config
+// file after receiving config.updated; a stopped sidecar reads it on startup.
+func (m *Manager) NotifyGlobal(name, method string, params any) {
+	m.mu.Lock()
+	c := m.by[name]
+	m.mu.Unlock()
+	if c != nil {
+		c.notify(method, params)
+	}
 }
 
 func (m *Manager) client(sessionID, name string) *rpcClient {

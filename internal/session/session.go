@@ -64,7 +64,7 @@ func (h Header) EffectiveForkMode() string {
 	return mode
 }
 
-// Toggle filters discovered skills or MCP servers.
+// Toggle filters discovered skills or extensions.
 type Toggle struct {
 	Only     []string `json:"only,omitempty"`
 	Disabled []string `json:"disabled,omitempty"`
@@ -72,13 +72,20 @@ type Toggle struct {
 
 // Config is session-level config.json.
 type Config struct {
-	Provider       string `json:"provider"`
-	Model          string `json:"model"`
-	ThinkingEffort string `json:"thinkingEffort,omitempty"`
-	ActiveLeafID   string `json:"activeLeafId,omitempty"`
-	Title          string `json:"title,omitempty"`
-	Pinned         bool   `json:"pinned,omitempty"`
-	PinnedAt       string `json:"pinnedAt,omitempty"`
+	Provider       string         `json:"provider"`
+	Model          string         `json:"model"`
+	ThinkingEffort string         `json:"thinkingEffort,omitempty"`
+	ActiveLeafID   string         `json:"activeLeafId,omitempty"`
+	Title          string         `json:"title,omitempty"`
+	Pinned         bool           `json:"pinned,omitempty"`
+	PinnedAt       string         `json:"pinnedAt,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+}
+
+// CreateOptions controls optional session metadata at creation time.
+type CreateOptions struct {
+	ThinkingEffort string
+	Metadata       map[string]any
 }
 
 // Entry is one jsonl record after the header.
@@ -162,6 +169,15 @@ func EncodeCWD(cwd string) string {
 
 // Create makes a new session directory under root.
 func Create(root, cwd, provider, model string, thinking ...string) (*Session, error) {
+	opts := CreateOptions{}
+	if len(thinking) > 0 {
+		opts.ThinkingEffort = thinking[0]
+	}
+	return CreateWithOptions(root, cwd, provider, model, opts)
+}
+
+// CreateWithOptions makes a new session and persists its routing metadata.
+func CreateWithOptions(root, cwd, provider, model string, opts CreateOptions) (*Session, error) {
 	if cwd == "" {
 		return nil, errCWDRequired
 	}
@@ -180,8 +196,11 @@ func Create(root, cwd, provider, model string, thinking ...string) (*Session, er
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	cfg := Config{Provider: provider, Model: model}
-	if len(thinking) > 0 {
-		cfg.ThinkingEffort = thinking[0]
+	if opts.ThinkingEffort != "" {
+		cfg.ThinkingEffort = opts.ThinkingEffort
+	}
+	if opts.Metadata != nil {
+		cfg.Metadata = cloneMetadata(opts.Metadata)
 	}
 	s := &Session{
 		Dir: dir,
@@ -209,6 +228,21 @@ func Create(root, cwd, provider, model string, thinking ...string) (*Session, er
 		return nil, err
 	}
 	return s, nil
+}
+
+func cloneMetadata(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if json.Unmarshal(b, &out) != nil {
+		return nil
+	}
+	return out
 }
 
 // Open loads an existing session directory.
@@ -595,7 +629,7 @@ func (s *Session) AppendDetailsEvent(typ string, details any) (Entry, error) {
 }
 
 // AppendSidebandEvent persists an asynchronous event without advancing the
-// conversation leaf. MCP notifications can arrive while no Session object is
+// conversation leaf. Extension notifications can arrive while no Session object is
 // open, and making them parents of model messages would corrupt the trajectory.
 func AppendSidebandEvent(dir, typ string, details any) (Entry, error) {
 	id, err := idgen.EntryID()

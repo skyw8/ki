@@ -6,18 +6,19 @@ import { Composer, type Draft } from './Composer'
 import { AttachmentBrowser } from './AttachmentBrowser'
 import { DirectoryBrowser } from './DirectoryBrowser'
 import { SessionTreeBrowser } from './SessionTreeBrowser'
-import { MessageSettings, SessionConfig, SettingsToggles } from './SessionConfig'
+import { ExtensionConfigEditor, MessageSettings, SessionConfig, SettingsToggles } from './SessionConfig'
+import { ModelPickerDialog } from './ModelPickerDialog'
 import { ProviderSettings } from './ProviderSettings'
-import { ICheck, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
+import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
 import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats } from './model'
-import type { ChatNode, Content, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
+import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
 import { toast } from './toast'
 import { ExtensionInspector, seedExtFields, statusChips, visibleStatusChips } from './ExtensionPanel'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
-type SettingsPage = 'providers' | 'skills' | 'mcp' | 'extensions' | 'message' | 'appearance'
+type SettingsPage = 'providers' | 'skills' | 'extensions' | 'message' | 'appearance'
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
 
@@ -26,21 +27,43 @@ function loadExpanded(): Record<string, boolean> {
   catch { return {} }
 }
 
-function fuzzyTextMatch(value: string, query: string): boolean {
-  const haystack = value.normalize('NFKC').toLocaleLowerCase()
-  const needle = query.normalize('NFKC').toLocaleLowerCase()
-  if (haystack.includes(needle)) return true
-  let cursor = 0
-  for (const char of haystack) {
-    if (char === needle[cursor]) cursor++
-    if (cursor === needle.length) return true
+function extensionRuntimeTone(item: CatalogExtension): string {
+  switch (item.runtime?.state) {
+    case 'ready': return 'success'
+    case 'starting':
+    case 'restarting': return 'warning'
+    case 'failed': return 'error'
+    default: return 'info'
   }
-  return needle.length === 0
 }
 
-function modelMatches(model: ModelInfo, query: string): boolean {
-  const fields = [model.provider, model.id, model.name, model.spec, `${model.provider}/${model.id}`]
-  return query.trim().split(/\s+/).every(token => fields.some(field => fuzzyTextMatch(field || '', token)))
+function extensionRuntimeTitle(item: CatalogExtension): string {
+  const state = item.runtime?.state || (item.enabled ? 'enabled' : 'disabled')
+  return item.runtime?.error ? `${item.name} · ${state}: ${item.runtime.error}` : `${item.name} · ${state}`
+}
+
+function globalExtensionUI(item: CatalogExtension): ExtensionUI | null {
+  if (item.ui) {
+    return {
+      ...item.ui,
+      extension: item.name,
+      status: item.ui.status?.text
+        ? item.ui.status
+        : { key: item.name, text: item.name, tone: extensionRuntimeTone(item) },
+    }
+  }
+  if (!item.configurable) return null
+  return {
+    extension: item.name,
+    status: { key: item.name, text: item.name, tone: extensionRuntimeTone(item) },
+  }
+}
+
+function mergeExtensionUI(globalItems: ExtensionUI[], sessionItems: ExtensionUI[]): ExtensionUI[] {
+  const byName = new Map<string, ExtensionUI>()
+  for (const item of globalItems) byName.set(item.extension, item)
+  for (const item of sessionItems) byName.set(item.extension, item)
+  return statusChips(Array.from(byName.values()))
 }
 
 function sessionPathLabel(id: string, byId: Map<string, SessionInfo>, fallback: string): string {
@@ -132,13 +155,13 @@ export function App() {
 	const [edit, setEdit] = useState<{ messageId: string; parentId: string; draft: Draft } | null>(null)
 	const [attachmentTarget, setAttachmentTarget] = useState<'new' | 'edit' | null>(null)
 	const [uploading, setUploading] = useState(false)
-	const [fileDragActive, setFileDragActive] = useState(false)
+  const [fileDragActive, setFileDragActive] = useState(false)
   const [models, setModels] = useState<ModelInfo[]>([])
-	const mcpEventIDs = useRef(new Set<string>())
+	const [defaultModel, setDefaultModel] = useState('')
+	const [globalExtensions, setGlobalExtensions] = useState<CatalogExtension[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>('providers')
   const [modelOpen, setModelOpen] = useState(false)
-  const [modelQuery, setModelQuery] = useState('')
   const [dirOpen, setDirOpen] = useState(false)
   const [dirBusy, setDirBusy] = useState(false)
   const [menu, setMenu] = useState<{ kind: 'ws' | 'sess'; id: string } | null>(null)
@@ -154,7 +177,6 @@ export function App() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const searchRootRef = useRef<HTMLDivElement>(null)
-  const modelSearchRef = useRef<HTMLInputElement>(null)
   const sessionRowRefs = useRef(new Map<string, HTMLButtonElement>())
 
   const openMenu = (kind: 'ws' | 'sess', id: string, el: HTMLElement) => {
@@ -194,11 +216,6 @@ export function App() {
   useEffect(() => { localStorage.setItem(EXPAND_KEY, JSON.stringify(expanded)) }, [expanded])
 
   useEffect(() => {
-    if (!modelOpen) return
-    requestAnimationFrame(() => modelSearchRef.current?.focus())
-  }, [modelOpen])
-
-  useEffect(() => {
     if (!collapsed) {
       everWide.current = true
       setSettled(false)
@@ -228,6 +245,7 @@ export function App() {
   useEffect(() => {
     void Promise.all([api.models(), api.meta()]).then(([list, meta]) => {
       setModels(list)
+		setDefaultModel(meta.provider && meta.model ? `${meta.provider}/${meta.model}` : '')
       setView(v => {
         if (v.provider && v.model) {
           const found = list.find(m => m.provider === v.provider && m.id === v.model)
@@ -245,7 +263,19 @@ export function App() {
       })
     }).catch(() => setModels([]))
   }, [api])
-	const refreshModels = useCallback(() => { void api.models().then(setModels).catch(() => setModels([])) }, [api])
+	const refreshModels = useCallback(() => {
+		void Promise.all([api.models(), api.meta()]).then(([list, meta]) => {
+			setModels(list)
+			setDefaultModel(meta.provider && meta.model ? `${meta.provider}/${meta.model}` : '')
+		}).catch(() => setModels([]))
+	}, [api])
+	const refreshExtensions = useCallback(async () => {
+		try {
+			setGlobalExtensions(await api.extensions())
+		} catch (e) {
+			toast.from(e)
+		}
+	}, [api])
 
   const refreshList = useCallback(async () => {
     try {
@@ -257,7 +287,14 @@ export function App() {
     }
   }, [api])
 
-  useEffect(() => { void refreshList() }, [refreshList])
+	useEffect(() => { void refreshList() }, [refreshList])
+	useEffect(() => { void refreshExtensions() }, [refreshExtensions])
+	useEffect(() => {
+		const timer = window.setInterval(() => {
+			void api.extensions().then(setGlobalExtensions).catch(() => {})
+		}, 1000)
+		return () => window.clearInterval(timer)
+	}, [api])
   useEffect(() => {
     if (!temporaryTreeRevealIds.length) return
     const available = new Set(sessions.map(session => session.id))
@@ -324,11 +361,6 @@ export function App() {
 			while (!ac.signal.aborted) {
 				try {
 					for await (const ev of api.events(currentId, ac.signal, true)) {
-					if (ev.entryId && mcpEventIDs.current.has(ev.entryId)) continue
-					if (ev.entryId) {
-						mcpEventIDs.current.add(ev.entryId)
-						if (mcpEventIDs.current.size > 200) mcpEventIDs.current.delete(mcpEventIDs.current.values().next().value!)
-					}
 					if (ev.type === 'run_aborted') {
 					  setView(v => applyEvent(v, ev))
 					  continue
@@ -357,22 +389,14 @@ export function App() {
 						continue
 					}
 					if (ev.type === 'extension_error') {
-						toast.action('error', `${ev.server || 'extension'}: ${ev.messageText || ev.reason || t('mcp.failed')}`, t('mcp.reload'), async () => {
+						toast.action('error', `${ev.server || 'extension'}: ${ev.messageText || ev.reason || t('extension.failed')}`, t('extension.reload'), async () => {
 							try {
-								const result = await api.reload(id)
-								toast.info(result.queued ? t('mcp.reloadQueued') : t('mcp.reloaded'))
+								const result = await api.reload(currentId)
+								toast.info(result.queued ? t('extension.reloadQueued') : t('extension.reloaded'))
 							} catch (e) { toast.from(e) }
 						})
 						continue
 					}
-					if (ev.type !== 'mcp_server_failed' && ev.type !== 'mcp_tools_changed') continue
-					const message = ev.messageText || `${ev.server || 'MCP'} ${ev.type === 'mcp_tools_changed' ? t('mcp.changed') : t('mcp.failed')}`
-					toast.action(ev.type === 'mcp_server_failed' ? 'error' : 'info', `${ev.server || 'MCP'}: ${message}`, t('mcp.reload'), async () => {
-						try {
-							const result = await api.reload(currentId)
-							toast.info(result.queued ? t('mcp.reloadQueued') : t('mcp.reloaded'))
-						} catch (e) { toast.from(e) }
-					})
 					}
 				} catch (e) {
 					if ((e as { name?: string }).name === 'AbortError' || ac.signal.aborted) return
@@ -435,25 +459,55 @@ export function App() {
     return () => ac.abort()
   }, [api, currentId, view.runtimeReady])
 
-  const extChips = useMemo(() => statusChips(view.extensionUi), [view.extensionUi])
+  const sessionExtChips = useMemo(() => statusChips(view.extensionUi), [view.extensionUi])
+  const globalExtensionItems = useMemo(
+		() => globalExtensions.filter(item => item.enabled && (item.configurable || item.ui?.status?.text || item.ui?.panel)),
+		[globalExtensions],
+	)
+	const globalExtChips = useMemo(
+		() => globalExtensionItems.flatMap(item => {
+			const ui = globalExtensionUI(item)
+			return ui ? [ui] : []
+		}),
+		[globalExtensionItems],
+	)
+  const extChips = useMemo(() => mergeExtensionUI(globalExtChips, sessionExtChips), [globalExtChips, sessionExtChips])
   const extVisible = useMemo(() => visibleStatusChips(extChips), [extChips])
   const extHidden = extChips.length - extVisible.length
-  const extSelected = extOpen ? extChips.find(ui => ui.extension === extOpen) ?? null : null
+  const extSelected = useMemo(() => {
+		if (!extOpen) return null
+		const sessionUI = sessionExtChips.find(ui => ui.extension === extOpen)
+		if (sessionUI) return sessionUI
+		const globalItem = globalExtensionItems.find(item => item.name === extOpen)
+		return globalItem ? globalExtensionUI(globalItem) : null
+	}, [extOpen, globalExtensionItems, sessionExtChips])
+	const globalConfigExtensions = useMemo(
+		() => globalExtensions.filter(item => item.enabled && item.configurable),
+		[globalExtensions],
+	)
+
+	const selectExtension = useCallback((name: string) => {
+		setExtOpen(name)
+		setExtFields(seedExtFields(extChips.find(ui => ui.extension === name)))
+	}, [extChips])
+
+	const openExtensionConfig = useCallback((name: string) => {
+		setSettingsOpen(false)
+		selectExtension(name)
+	}, [selectExtension])
 
   useEffect(() => {
     if (!extOpen) return
-    if (extChips.some(ui => ui.extension === extOpen)) return
-    if (!extChips.length) {
+    if (extChips.some(ui => ui.extension === extOpen) || globalExtensionItems.some(item => item.name === extOpen)) return
+    if (!extChips.length && !globalExtensionItems.length) {
       setExtOpen(null)
       return
     }
-    const next = extChips[0]
-    setExtOpen(next.extension)
-    setExtFields(seedExtFields(next))
-  }, [extChips, extOpen])
+    selectExtension(extChips[0]?.extension ?? globalExtensionItems[0].name)
+  }, [extChips, extOpen, globalExtensionItems, selectExtension])
 
   const openExt = useCallback((name?: string) => {
-    const chips = statusChips(view.extensionUi)
+    const chips = extChips
     if (!chips.length) return
     const pick = name && chips.some(ui => ui.extension === name)
       ? name
@@ -461,10 +515,8 @@ export function App() {
         ? chips[visibleStatusChips(chips).length].extension
         : chips[0].extension)
     if (pick === extOpen) return
-    const ui = chips.find(item => item.extension === pick)
-    setExtOpen(pick)
-    setExtFields(seedExtFields(ui))
-  }, [view.extensionUi, extOpen])
+	selectExtension(pick)
+	}, [extChips, extOpen, selectExtension])
 
   const makeSession = useCallback(async (workspaceId?: string | null) => {
     const s = await api.create(sessionCreateBody(workspaceId, { provider: view.provider, model: view.model, thinkingEffort: view.thinkingEffort }, models))
@@ -559,14 +611,21 @@ export function App() {
         const s = await makeSession(selectedWs)
         id = s.id
       }
-      let result: { handled?: boolean; notice?: string; error?: boolean; accepted?: boolean | string } | undefined
+      let result: { handled?: boolean; notice?: string; error?: boolean; accepted?: boolean | string; sessionId?: string; cwd?: string; workspaceId?: string } | undefined
       try {
         const spec = view.provider && view.model ? `${view.provider}/${view.model}` : view.model
 		result = await api.prompt(id, content, spec || undefined, parentId, delivery)
         if (result?.handled) {
           if (result.notice) (result.error ? toast.error : toast.info)(result.notice)
           setDraft(d => ({ ...d, text: '' }))
-          if (!result.error) await openSession(id)
+          if (!result.error) {
+            if (result.sessionId && result.sessionId !== id) {
+              await refreshList()
+              await openSession(result.sessionId)
+            } else {
+              await openSession(id)
+            }
+          }
           return
         }
       } catch (e) {
@@ -654,7 +713,6 @@ export function App() {
     setView(v => ({ ...v, provider, model, thinkingEffort }))
     saveLastComposerModel({ provider, model, thinkingEffort })
     setModelOpen(false)
-    setModelQuery('')
     if (!currentId) return
     try {
       const out = await api.patch(currentId, { model: spec, thinkingEffort })
@@ -666,7 +724,6 @@ export function App() {
   }, [api, currentId, models, view.model, view.provider, view.thinkingEffort])
 
   const selectedModel = useMemo(() => models.find(m => m.provider === view.provider && m.id === view.model), [models, view.model, view.provider])
-	const filteredModels = useMemo(() => modelQuery.trim() ? models.filter(model => modelMatches(model, modelQuery)) : models, [modelQuery, models])
 	const switchThinking = useCallback(async (thinkingEffort: string) => {
 		setView(v => ({ ...v, thinkingEffort }))
 		if (view.provider && view.model) saveLastComposerModel({ provider: view.provider, model: view.model, thinkingEffort })
@@ -920,7 +977,7 @@ export function App() {
       model={view.model}
       commands={view.commands ?? []}
       onEnsureSession={async () => { if (!currentId) await makeSession(selectedWs) }}
-      onPickModel={() => { setModelQuery(''); setModelOpen(true) }}
+      onPickModel={() => setModelOpen(true)}
 	  thinkingLevels={selectedModel?.thinkingLevels}
 	  thinkingEffort={view.thinkingEffort}
 	  defaultThinking={selectedModel?.defaultThinking}
@@ -1157,9 +1214,9 @@ export function App() {
                 <button
                   key={ui.extension}
                   type="button"
-                  className={`ext-chip tone-${ui.status?.tone || 'info'}${extOpen === ui.extension ? ' on' : ''}`}
+                  className={`ext-chip${globalExtensionItems.some(item => item.name === ui.extension) ? ' ext-global-chip' : ''} tone-${ui.status?.tone || 'info'}${extOpen === ui.extension ? ' on' : ''}`}
                   data-testid={`ext-chip-${ui.extension}`}
-                  title={ui.status?.text}
+                  title={globalExtensionItems.find(item => item.name === ui.extension) ? extensionRuntimeTitle(globalExtensionItems.find(item => item.name === ui.extension)!) : ui.status?.text}
                   onClick={() => openExt(ui.extension)}
                 >
                   {ui.status?.text}
@@ -1338,22 +1395,25 @@ export function App() {
         </Modal>
       ) : null}
 
-      {extSelected ? (
+      {extOpen ? (
         <Modal title={t('ext.inspector')} onClose={() => setExtOpen(null)} testid="ext-panel" className="modal-ext modal-flush">
           <ExtensionInspector
-            items={extChips}
+            items={sessionExtChips}
+            globalItems={globalExtensionItems}
             selected={extSelected}
+            selectedName={extOpen}
             fields={extFields}
-            onSelect={openExt}
+            onSelect={selectExtension}
             onField={(id, value) => setExtFields(v => ({ ...v, [id]: value }))}
             onAction={id => {
-              if (!currentId) return
+              if (!currentId || !extSelected) return
               void api.extensionUI(currentId, { kind: 'action', extension: extSelected.extension, value: id }).catch(e => toast.from(e))
             }}
             onSubmit={fields => {
-              if (!currentId) return
+              if (!currentId || !extSelected) return
               void api.extensionUI(currentId, { kind: 'submit', extension: extSelected.extension, fields }).catch(e => toast.from(e))
             }}
+			 renderConfig={name => <ExtensionConfigEditor api={api} name={name} onClose={() => setExtOpen(null)} embedded models={models} defaultModel={defaultModel} />}
           />
         </Modal>
       ) : null}
@@ -1467,50 +1527,19 @@ export function App() {
 		}}
 	  />
 
-      {modelOpen ? (
-        <Modal title={t('model.title')} onClose={() => { setModelOpen(false); setModelQuery('') }} testid="model-dialog">
-          <div className="model-search-wrap">
-            <ISearch />
-            <input
-              ref={modelSearchRef}
-              type="search"
-              data-testid="model-search"
-              aria-label={t('model.search')}
-              placeholder={t('model.searchPlaceholder')}
-              value={modelQuery}
-              onChange={event => setModelQuery(event.target.value)}
-            />
-            {modelQuery ? <button type="button" aria-label={t('model.clearSearch')} onClick={() => { setModelQuery(''); modelSearchRef.current?.focus() }}><IClose /></button> : null}
-          </div>
-          <ul className="model-list">
-            {filteredModels.map(m => {
-              const on = view.provider === m.provider && view.model === m.id
-              return (
-                <li key={m.spec}>
-                  <button
-                    type="button"
-                    className={`model-opt${on ? ' on' : ''}`}
-                    data-testid="model-option"
-                    data-spec={m.spec}
-                    onClick={() => void switchModel(m.spec)}
-                  >
-                    <span className="model-opt-copy"><strong>{m.name || m.id}</strong><small>{m.name && m.name !== m.id ? `${m.provider} / ${m.id}` : m.provider}</small></span>
-                    {on ? <ICheck /> : null}
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-          {!filteredModels.length ? <div className="model-search-empty" data-testid="model-search-empty"><ISearch /><span>{t('model.noResults')}</span></div> : null}
-        </Modal>
-      ) : null}
+		<ModelPickerDialog
+			open={modelOpen}
+			models={models}
+			value={view.provider && view.model ? `${view.provider}/${view.model}` : view.model}
+			onSelect={spec => void switchModel(spec)}
+			onClose={() => setModelOpen(false)}
+		/>
 
       {settingsOpen ? (
         <Modal title={t('settings.title')} onClose={() => setSettingsOpen(false)} testid="settings">
 		  <nav className="tabs settings-tabs" role="tablist" aria-label={t('settings.title')}>
 			<button type="button" role="tab" aria-selected={settingsPage === 'providers'} className={`tab${settingsPage === 'providers' ? ' active' : ''}`} data-testid="settings-tab-providers" onClick={() => setSettingsPage('providers')}>{t('settings.providers')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'skills'} className={`tab${settingsPage === 'skills' ? ' active' : ''}`} data-testid="settings-tab-skills" onClick={() => setSettingsPage('skills')}>{t('settings.skills')}</button>
-			<button type="button" role="tab" aria-selected={settingsPage === 'mcp'} className={`tab${settingsPage === 'mcp' ? ' active' : ''}`} data-testid="settings-tab-mcp" onClick={() => setSettingsPage('mcp')}>{t('settings.mcp')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'extensions'} className={`tab${settingsPage === 'extensions' ? ' active' : ''}`} data-testid="settings-tab-extensions" onClick={() => setSettingsPage('extensions')}>{t('settings.extensions')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'message'} className={`tab${settingsPage === 'message' ? ' active' : ''}`} data-testid="settings-tab-message" onClick={() => setSettingsPage('message')}>{t('settings.message')}</button>
 			<button type="button" role="tab" aria-selected={settingsPage === 'appearance'} className={`tab${settingsPage === 'appearance' ? ' active' : ''}`} data-testid="settings-tab-appearance" onClick={() => setSettingsPage('appearance')}>{t('settings.appearanceLanguage')}</button>
@@ -1518,10 +1547,8 @@ export function App() {
 		  <div className="settings-page">
 			{settingsPage === 'providers' ? <ProviderSettings api={api} onChanged={refreshModels} /> : settingsPage === 'skills' ? (
 			  <SettingsToggles kind="skills" api={api} workspaceId={selectedWs} />
-			) : settingsPage === 'mcp' ? (
-			  <SettingsToggles kind="mcp" api={api} />
 			) : settingsPage === 'extensions' ? (
-			  <SettingsToggles kind="extensions" api={api} />
+			  <SettingsToggles kind="extensions" api={api} onConfigure={openExtensionConfig} onChanged={refreshExtensions} />
 			) : settingsPage === 'message' ? (
 			  <MessageSettings api={api} />
 			) : (

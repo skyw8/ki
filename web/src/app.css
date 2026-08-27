@@ -1285,7 +1285,8 @@
   box-shadow: var(--dsw-shadow-lv2);
 }
 .modal.modal-wide { width: min(560px, 100%); }
-.modal.modal-ext { width: min(880px, 100%); height: min(74vh, 680px); max-height: 88vh; }
+.modal.model-picker-modal { width: min(560px, 100%); max-height: min(720px, calc(100vh - 48px)); }
+.modal.modal-ext { width: min(1040px, calc(100vw - 48px)); height: min(82vh, 760px); max-height: calc(100vh - 48px); }
 .modal.modal-flush .modal-head { padding: 12px 16px; border-bottom: 1px solid var(--dsw-alias-border-l2); }
 .modal.modal-flush .modal-body { padding: 0; overflow: hidden; display: flex; min-height: 0; flex: 1; }
 .modal.settings-modal { width: min(980px, 100%); height: min(88vh, 820px); max-height: 88vh; }
@@ -1920,69 +1921,32 @@
 .cfg-flag { margin-left: 8px; font-size: 11px; color: var(--dsw-alias-label-caption); }
 .cfg-flag.on { color: var(--dsw-alias-brand); }
 .settings-error-inline { margin-top: 8px; color: var(--dsw-alias-state-error); }
-.cfg-mcp-row { padding: 16px 0 18px; }
-.cfg-mcp-name { gap: 8px; }
-.cfg-mcp-name .cfg-flag { margin-left: auto; }
-.cfg-mcp-mark {
-  width: 24px;
-  height: 24px;
-  display: inline-grid;
-  place-items: center;
-  flex: none;
-  border-radius: 7px;
-  color: var(--dsw-alias-brand);
-  background: color-mix(in srgb, var(--dsw-alias-brand) 12%, transparent);
+.extension-config-editor { display: flex; flex-direction: column; min-height: 0; margin-top: 20px; padding: 18px 20px 20px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }
+.extension-config-editor.embedded { flex: 1; margin-top: 0; }
+.extension-config-editor > .cfg-name { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.extension-config-editor .cfg-desc { flex: none; margin-top: 8px; line-height: 18px; }
+.extension-config-textarea { display: block; flex: 1; width: 100%; min-height: 320px; margin-top: 16px; padding: 14px; box-sizing: border-box; resize: vertical; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; background: var(--dsw-alias-markdown-code); color: var(--dsw-alias-label-primary); font: 13px/20px var(--ds-font-family-code); }
+.extension-config-editor .cfg-actions { flex: none; justify-content: flex-end; margin: 16px 0 0; padding-top: 14px; border-top: 1px solid var(--dsw-alias-border-l2); }
+.telegram-config-form { display: flex; flex-direction: column; min-height: 0; margin-top: 16px; }
+.telegram-config-form > .cfg-desc { margin: 0; line-height: 18px; }
+.telegram-config-form .form-grid { margin-top: 18px; }
+.form-hint { margin: 0; color: var(--dsw-alias-label-caption); font-size: 11px; line-height: 17px; }
+.telegram-model-trigger {
+  width: 100%; min-width: 0; min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 11px; border: 1px solid var(--dsw-alias-border-l2-thin); border-radius: 8px;
+  background: var(--dsw-specific-input); color: var(--dsw-alias-label-primary); font-family: inherit; text-align: left; cursor: pointer;
 }
-.cfg-mcp-mark svg { width: 14px; height: 14px; }
-.cfg-mcp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.cfg-endpoint {
-  min-width: 0;
-  margin: 10px 0 0 32px;
-  padding: 7px 10px;
-  border-radius: 7px;
-  background: var(--dsw-alias-markdown-code);
-  color: var(--dsw-alias-label-secondary);
-  overflow: hidden;
-}
-.cfg-endpoint code {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--ds-font-family-code);
-  font-size: 11px;
-}
-.cfg-tools-wrap { margin: 14px 0 0 32px; }
-.cfg-tools-head { display: flex; align-items: center; gap: 8px; color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 600; }
-.cfg-tools-count { color: var(--dsw-alias-label-caption); font-size: 11px; font-weight: 400; }
-.cfg-tools {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 8px;
-  margin: 8px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.cfg-tool {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4px;
-  padding: 9px 10px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-2);
-}
-.cfg-tool code {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--dsw-alias-label-primary);
-  font-family: var(--ds-font-family-code);
-  font-size: 12px;
-  font-weight: 600;
-}
-.cfg-tool span { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; word-break: break-word; }
+.telegram-model-trigger:hover:not(:disabled) { border-color: var(--dsw-alias-border-l2); background: var(--dsw-alias-interactive-bg-hover); }
+.telegram-model-trigger:focus-visible { outline: 2px solid var(--dsw-alias-brand); outline-offset: -1px; border-color: transparent; }
+.telegram-model-trigger:disabled { opacity: .55; cursor: not-allowed; }
+.telegram-model-trigger > svg { flex: none; color: var(--dsw-alias-label-tertiary); }
+.telegram-model-value { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.telegram-model-value strong, .telegram-model-value small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.telegram-model-value strong { font-size: 13px; line-height: 19px; font-weight: 500; }
+.telegram-model-value small { color: var(--dsw-alias-label-caption); font-size: 11px; line-height: 16px; }
+.telegram-model-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; }
+.telegram-model-meta .cfg-btn { flex: none; height: 24px; padding: 0 7px; font-size: 11px; }
+.telegram-config-actions { margin: 20px 0 0 !important; padding-top: 16px; }
 .cfg-hint { margin-top: 8px; }
 .cfg-outline {
   position: sticky;
@@ -2181,7 +2145,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  padding: 16px 20px 0;
+  padding: 16px 20px;
 }
 .ext-inspector-head {
   flex: none;
@@ -2296,12 +2260,15 @@
     border-bottom: 1px solid var(--dsw-alias-border-l2);
   }
   .ext-nav-item { flex: 0 0 auto; width: auto; min-width: 156px; }
-  .ext-inspector-main { padding: 14px 16px 0; }
+  .ext-inspector-main { padding: 14px 16px 16px; }
   .ext-prop { grid-template-columns: 1fr; gap: 2px; }
   .ext-prop dt { padding-top: 0; }
   .ext-chips { max-width: none; }
-  .ext-chips .ext-chip:not(.ext-chip-more) { display: none; }
+  .ext-chips .ext-chip:not(.ext-chip-more):not(.ext-global-chip) { display: none; }
   .ext-more-wide { display: none; }
   .ext-more-narrow { display: inline; }
   .ext-chip-more { height: 24px; padding: 0 10px; }
+  .extension-config-editor { padding: 16px; }
+  .extension-config-textarea { min-height: 260px; }
+  .telegram-config-form .form-grid.two { grid-template-columns: 1fr; }
 }

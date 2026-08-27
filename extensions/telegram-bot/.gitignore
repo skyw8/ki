@@ -1,0 +1,10 @@
+# Local secrets and runtime state
+/config.json
+/state.json
+
+# Local build artifacts
+/ki-telegram-bot
+
+# Logs and temporary files
+*.log
+tmp/

@@ -71,18 +71,6 @@ func TestDiscoverIgnoresProjectExtension(t *testing.T) {
 	}
 }
 
-func TestDiscoverRejectsExtensionMCPDeclaration(t *testing.T) {
-	home := t.TempDir()
-	writePkg(t, filepath.Join(home, "extensions"), "time", `{
-		"name":"time","capabilities":["mcp"],
-		"mcp":{"mcpServers":{"clock":{"command":"true"},"dup":{"command":"ext"}}}
-	}`)
-	d := Discover(home, session.Toggle{})
-	if len(d.All) != 1 || d.All[0].Error == "" {
-		t.Fatal("obsolete MCP capability should be rejected")
-	}
-}
-
 func TestLifecycleCapabilityLoads(t *testing.T) {
 	home := t.TempDir()
 	writePkg(t, filepath.Join(home, "extensions"), "onlytool", `{

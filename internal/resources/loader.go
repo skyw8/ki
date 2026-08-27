@@ -1,12 +1,10 @@
 package resources
 
 import (
-	"encoding/json"
 	"sync"
 	"time"
 
 	"ki/internal/extension"
-	"ki/internal/mcp"
 	"ki/internal/skills"
 	"ki/internal/toggles"
 )
@@ -19,8 +17,6 @@ type Snapshot struct {
 	ExtensionPrompts   []extension.PromptLayer
 	Skills             []skills.Skill
 	Prompts            []PromptTemplate
-	MCP                mcp.File
-	MCPServers         map[string]mcp.ServerState
 	Extensions         []extension.Descriptor
 	Revision           uint64
 }
@@ -97,73 +93,8 @@ func (l *Loader) scan(cwd string) Snapshot {
 		ExtensionPrompts:   extension.PromptLayers(found.Enabled),
 		Skills:             skills.Scan(l.home, cwd, extension.SkillRoots(found.Enabled)...),
 		Prompts:            mergedPrompts,
-		MCP:                mcp.Load(l.home),
-		MCPServers:         map[string]mcp.ServerState{},
 		Extensions:         found.All,
 	}
-}
-
-// UpdateMCP atomically publishes discovery results for one snapshot revision.
-// A reload increments the revision, so late SDK handshakes cannot repopulate a
-// newly invalidated session with stale tools.
-func (l *Loader) UpdateMCP(sessionID string, revision uint64, updates map[string]mcp.ServerState) (Snapshot, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	snapshot, ok := l.entries[sessionID]
-	if !ok || snapshot.Revision != revision {
-		return Snapshot{}, false
-	}
-	states := make(map[string]mcp.ServerState, len(snapshot.MCPServers)+len(updates))
-	for name, state := range snapshot.MCPServers {
-		states[name] = cloneMCPState(state)
-	}
-	for name, state := range updates {
-		if previous, exists := states[name]; exists && previous.Status == mcp.StatusStale && state.Status == mcp.StatusReady {
-			state.Status = mcp.StatusStale
-			state.Error = previous.Error
-			state.EventID = previous.EventID
-		}
-		states[name] = cloneMCPState(state)
-	}
-	snapshot.MCPServers = states
-	l.entries[sessionID] = snapshot
-	return snapshot, true
-}
-
-// MarkMCPStatus updates one live server without changing its cached tools.
-func (l *Loader) MarkMCPStatus(sessionID, name string, status mcp.ServerStatus, message, eventID string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	snapshot, ok := l.entries[sessionID]
-	if !ok {
-		return false
-	}
-	states := make(map[string]mcp.ServerState, len(snapshot.MCPServers)+1)
-	for key, state := range snapshot.MCPServers {
-		states[key] = cloneMCPState(state)
-	}
-	state := states[name]
-	state.Status = status
-	state.Error = message
-	state.EventID = eventID
-	states[name] = state
-	snapshot.MCPServers = states
-	l.entries[sessionID] = snapshot
-	return true
-}
-
-func cloneMCPState(state mcp.ServerState) mcp.ServerState {
-	tools := make([]mcp.ToolDefinition, len(state.Tools))
-	for i, tool := range state.Tools {
-		raw, err := json.Marshal(tool)
-		if err == nil && json.Unmarshal(raw, &tools[i]) == nil {
-			continue
-		}
-		tools[i] = tool
-	}
-	state.Tools = tools
-	state.Capabilities = append([]byte(nil), state.Capabilities...)
-	return state
 }
 
 // Invalidate drops one session's snapshot.

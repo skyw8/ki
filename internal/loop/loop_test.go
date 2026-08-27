@@ -236,6 +236,41 @@ func TestRunEventOrderAndPersistPoints(t *testing.T) {
 	}
 }
 
+type testNonRetryableStreamFailure struct{}
+
+func (testNonRetryableStreamFailure) Error() string      { return "malformed provider stream" }
+func (testNonRetryableStreamFailure) NonRetryable() bool { return true }
+
+type malformedStream struct{ calls int }
+
+func (s *malformedStream) Stream(_ context.Context, _ Request, emit func(AssistantDelta) error) (types.Message, error) {
+	s.calls++
+	m := types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "pong"}}}
+	_ = emit(AssistantDelta{Type: "text_delta", Delta: "pong", Partial: m})
+	return m, testNonRetryableStreamFailure{}
+}
+
+func TestRunReportsNonRetryableStreamFailureWithoutRetry(t *testing.T) {
+	stream := &malformedStream{}
+	var events []Event
+	_, err := Run(context.Background(), "ping", nil, Config{Streamer: stream}, func(event Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err == nil || stream.calls != 1 {
+		t.Fatalf("error=%v calls=%d", err, stream.calls)
+	}
+	var failed *types.Message
+	for _, event := range events {
+		if event.Type == MessageEnd && event.Message != nil && event.Message.Role == "assistant" {
+			failed = event.Message
+		}
+	}
+	if failed == nil || !failed.IsError || failed.StopReason != "error" || failed.ErrorMessage != "malformed provider stream" {
+		t.Fatalf("failed assistant: %+v", failed)
+	}
+}
+
 func TestRunToolThenSecondTurn(t *testing.T) {
 	var evs []Event
 	_, err := Run(context.Background(), "read it", nil, Config{

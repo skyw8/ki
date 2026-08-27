@@ -45,7 +45,7 @@ export class Client {
     return this.json(`/v1/sessions/${id}`)
   }
 
-  create(opts?: { cwd?: string; workspaceId?: string; model?: string; thinkingEffort?: string }): Promise<SessionInfo> {
+  create(opts?: { cwd?: string; workspaceId?: string; model?: string; thinkingEffort?: string; metadata?: Record<string, unknown> }): Promise<SessionInfo> {
     return this.json('/v1/sessions', { method: 'POST', body: JSON.stringify(opts ?? {}) })
   }
 
@@ -107,7 +107,7 @@ export class Client {
     return this.json(`/v1/sessions/search?q=${encodeURIComponent(q)}`, { signal })
   }
 
-  prompt(id: string, content: import('./types').Content[], model?: string, parentId?: string, delivery?: 'steer' | 'queue', queueId?: string): Promise<{ handled?: boolean; notice?: string; error?: boolean; accepted?: boolean | string }> {
+  prompt(id: string, content: import('./types').Content[], model?: string, parentId?: string, delivery?: 'steer' | 'queue', queueId?: string): Promise<{ handled?: boolean; notice?: string; error?: boolean; accepted?: boolean | string; sessionId?: string; cwd?: string; workspaceId?: string }> {
     return this.json(`/v1/sessions/${id}/prompt`, {
       method: 'POST',
 	  body: JSON.stringify({
@@ -137,17 +137,8 @@ export class Client {
     return got.items ?? []
   }
 
-  async mcpServers(): Promise<import('./types').CatalogMcp[]> {
-    const got = await this.json<{ items: import('./types').CatalogMcp[] }>('/v1/mcp')
-    return got.items ?? []
-  }
-
   patchSkills(disabled: string[]): Promise<{ items: import('./types').CatalogSkill[] }> {
     return this.json('/v1/skills', { method: 'PATCH', body: JSON.stringify({ disabled }) })
-  }
-
-  patchMcp(disabled: string[]): Promise<{ items: import('./types').CatalogMcp[] }> {
-    return this.json('/v1/mcp', { method: 'PATCH', body: JSON.stringify({ disabled }) })
   }
 
   async extensions(): Promise<import('./types').CatalogExtension[]> {
@@ -157,6 +148,14 @@ export class Client {
 
   patchExtensions(disabled: string[]): Promise<{ items: import('./types').CatalogExtension[] }> {
     return this.json('/v1/extensions', { method: 'PATCH', body: JSON.stringify({ disabled }) })
+  }
+
+  extensionConfig(name: string): Promise<import('./types').ExtensionConfig> {
+	return this.json(`/v1/extensions/${encodeURIComponent(name)}/config`)
+  }
+
+  patchExtensionConfig(name: string, config: Record<string, unknown>): Promise<import('./types').ExtensionConfig> {
+	return this.json(`/v1/extensions/${encodeURIComponent(name)}/config`, { method: 'PATCH', body: JSON.stringify({ config }) })
   }
 
   abort(id: string): Promise<void> {

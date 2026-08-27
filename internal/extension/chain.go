@@ -147,9 +147,10 @@ func composeHooks(items []namedInterceptor, skipped *skipSet, onErr func(name, c
 func boolPtr(v bool) *bool { return &v }
 
 func RedactEvent(ev loop.Event, sessionID string) Event {
-	return Event{
+	out := Event{
 		Type:       string(ev.Type),
 		SessionID:  sessionID,
+		RunID:      ev.RunID,
 		ToolCallID: ev.ToolCallID,
 		ToolName:   ev.ToolName,
 		IsError:    ev.IsError,
@@ -157,5 +158,31 @@ func RedactEvent(ev loop.Event, sessionID string) Event {
 		OK:         ev.OK,
 		Provider:   ev.Provider,
 		Model:      ev.Model,
+		External:   cloneStringMap(ev.External),
 	}
+	if ev.Message != nil {
+		out.Role = ev.Message.Role
+		out.Text = ev.Message.Text()
+		out.StopReason = ev.Message.StopReason
+		out.ErrorMessage = ev.Message.ErrorMessage
+		out.IsError = out.IsError || ev.Message.IsError || ev.Message.StopReason == "error"
+	}
+	if ev.AssistantMessageEvent != nil && ev.AssistantMessageEvent.Delta != "" {
+		out.Text = ev.AssistantMessageEvent.Delta
+	}
+	if ev.ToolName != "" {
+		out.ToolTitle = ev.ToolName
+	}
+	return out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

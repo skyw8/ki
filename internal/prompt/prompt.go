@@ -22,11 +22,11 @@ func Build(in Input) string {
 	var b strings.Builder
 	b.WriteString("You are a helpful assistant operating inside ki, a agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\n")
 	// Ki self-configuration (the single-binary analogue of pi's docs section):
-	// one short line the model reads when asked where to change server/MCP/skills
+	// one short line the model reads when asked where to change server/skills
 	// settings. Keep the list in sync with docs/*.md.
 	env := in.Resources.Environment
 	if env.KIHome != "" {
-		fmt.Fprintf(&b, "Ki configuration (KI_HOME: %s, default ~/.ki): ki.toml = server/compaction/log, .mcp.json = MCP servers, skills/ = SKILL.md packages, models.json + credentials.json = providers; project overrides in <cwd>/.ki/; `ki config path` prints the locations.\n\n", env.KIHome)
+		fmt.Fprintf(&b, "Ki configuration (KI_HOME: %s, default ~/.ki): ki.toml = server/compaction/log, skills/ = SKILL.md packages, models.json + credentials.json = providers; project overrides in <cwd>/.ki/; `ki config path` prints the locations.\n\n", env.KIHome)
 	}
 	b.WriteString("Available tools:\n")
 	hasRead := false

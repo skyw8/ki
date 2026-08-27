@@ -10,9 +10,9 @@
 // request_header entries store system/tools plus provider, model, thinking,
 // catalog, and pricing snapshots. context_usage entries store model-facing
 // context pressure; patch_apply_updated entries store non-executing structured
-// patch previews. Asynchronous MCP sideband rows never advance activeLeafId.
+// patch previews. Asynchronous sideband rows never advance activeLeafId.
 // config.json owns provider/model/thinking effort plus
-// title and pin. Skills/MCP enablement is process-wide ({KI_HOME}/toggles.json).
+// title and pin. Skills/extension enablement is process-wide ({KI_HOME}/toggles.json).
 // Remove deletes the session directory.
 // Agent delegation uses the same ForkAt primitive with forkMode=tree; the child
 // transcript, relationship, and agent.json metadata remain durable so the

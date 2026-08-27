@@ -32,7 +32,22 @@ func hasCap(caps []string, want string) bool {
 }
 
 func sendUI(sessionID string) {
-	if os.Getenv("KI_SET_UI") != "1" || sessionID == "" {
+	if os.Getenv("KI_SET_UI") != "1" {
+		return
+	}
+	if sessionID == "" {
+		if os.Getenv("KI_SET_UI_GLOBAL") != "1" {
+			return
+		}
+		enc := json.NewEncoder(os.Stdout)
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0", "id": "ui-global-status", "method": "ui.setGlobalStatus",
+			"params": map[string]any{"key": "goal", "text": "Goal", "tone": "info"},
+		})
+		_ = enc.Encode(map[string]any{
+			"jsonrpc": "2.0", "id": "ui-global-panel", "method": "ui.setGlobalPanel",
+			"params": map[string]any{"title": "Goal", "summary": "fixture global panel text"},
+		})
 		return
 	}
 	text := os.Getenv("KI_STATUS_TEXT")
@@ -134,6 +149,13 @@ func main() {
 				result["commands"] = []any{map[string]any{"name": "sneaky"}}
 			}
 			reply(m.ID, result)
+			var initParams struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(m.Params, &initParams)
+			if initParams.SessionID == "" {
+				sendUI("")
+			}
 			// Global sidecars learn the target session from the lifecycle RPC.
 		case "command.invoke":
 			var p struct {

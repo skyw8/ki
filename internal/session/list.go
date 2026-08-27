@@ -9,17 +9,18 @@ import (
 
 // Info is a session row for listing.
 type Info struct {
-	ID              string `json:"id"`
-	CWD             string `json:"cwd"`
-	Dir             string `json:"dir"`
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	Timestamp       string `json:"timestamp"`
-	ParentSessionID string `json:"parentSessionId,omitempty"`
-	ForkMode        string `json:"forkMode"`
-	Title           string `json:"title"`
-	Pinned          bool   `json:"pinned,omitempty"`
-	PinnedAt        string `json:"pinnedAt,omitempty"`
+	ID              string         `json:"id"`
+	CWD             string         `json:"cwd"`
+	Dir             string         `json:"dir"`
+	Provider        string         `json:"provider"`
+	Model           string         `json:"model"`
+	Timestamp       string         `json:"timestamp"`
+	ParentSessionID string         `json:"parentSessionId,omitempty"`
+	ForkMode        string         `json:"forkMode"`
+	Title           string         `json:"title"`
+	Pinned          bool           `json:"pinned,omitempty"`
+	PinnedAt        string         `json:"pinnedAt,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
 }
 
 // List walks the session root and returns every readable session, newest first.
@@ -42,6 +43,7 @@ func List(root string) ([]Info, error) {
 			Title:           TitleOf(s),
 			Pinned:          s.Config.Pinned,
 			PinnedAt:        s.Config.PinnedAt,
+			Metadata:        cloneMetadata(s.Config.Metadata),
 		})
 		_ = s.Close()
 		return true

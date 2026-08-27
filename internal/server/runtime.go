@@ -2,17 +2,14 @@ package server
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"ki/internal/extension"
 	"ki/internal/loop"
-	"ki/internal/mcp"
 	"ki/internal/toggles"
 )
 
-// warmupTimeout bounds one open-session resource preparation. Global
-// extensions and session MCP connections are prepared in parallel.
+// warmupTimeout bounds one open-session extension view preparation.
 const warmupTimeout = 25 * time.Second
 
 type runtimePrep struct {
@@ -43,11 +40,10 @@ func (s *Server) resetRuntimeExcept(active map[string]bool) {
 	s.runtimeMu.Unlock()
 }
 
-// kickWarmup starts the global extension Prepare and session MCP Prepare in the background.
+// kickWarmup starts the session extension view preparation in the background.
 // Why: the warmup boundary is opening this session (create/GET/fork), not
-// List and not serve boot. A sidebar of dozens of jsonl files must not spawn
-// sidecars. GET does not await handshake so a slow npm/uvx install cannot
-// block transcript. Prompt ensure is then a no-op.
+// List. The sidecars themselves are started at server boot; this only sends
+// session.open and builds the session-scoped registration view.
 func (s *Server) kickWarmup(id, cwd string) {
 	if id == "" {
 		return
@@ -89,32 +85,10 @@ func (s *Server) warmupSession(id, cwd string, st *runtimePrep) {
 	}
 	snapshot := s.resources.Load(id, cwd)
 	s.reportManifestErrors(id, snapshot.Extensions)
-	tg := toggles.Load(s.cfg.Home)
-	mcpFile := snapshot.MCP
-	mcpCached := snapshot.MCPServers
-	rev := snapshot.Revision
-	enabled := extension.Enabled(snapshot.Extensions, tg.Extensions)
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		if s.ext != nil {
-			s.ext.Configure(enabled)
-			s.ext.Prepare(ctx, id, cwd, enabled)
-		}
-	})
-	wg.Go(func() {
-		if s.mcp == nil {
-			return
-		}
-		prepared := s.mcp.Prepare(ctx, id, mcpFile, tg.MCP, mcpCached)
-		_, _ = s.resources.UpdateMCP(id, rev, prepared.States)
-		for name, state := range prepared.States {
-			if state.Status == mcp.StatusFailed {
-				s.disableMCPs(name)
-				s.publishMCPEvent(id, mcp.Notification{Kind: "server_failed", Server: name, Message: state.Error})
-			}
-		}
-	})
-	wg.Wait()
+	if s.ext != nil {
+		tg := toggles.Load(s.cfg.Home)
+		_ = s.ext.Prepare(ctx, id, cwd, extension.Enabled(snapshot.Extensions, tg.Extensions))
+	}
 }
 
 func (s *Server) finishRuntime(id string, st *runtimePrep) {
@@ -132,7 +106,7 @@ func (s *Server) finishRuntime(id string, st *runtimePrep) {
 	// Putting it on runState.evs prepends it to prompt SSE replay.
 	ev := loop.Event{Type: loop.RuntimeReady, OK: true}
 	s.mu.Lock()
-	for subscriber := range s.mcpSubscribers[id] {
+	for subscriber := range s.eventSubscribers[id] {
 		select {
 		case subscriber <- ev:
 		default:
@@ -144,7 +118,7 @@ func (s *Server) finishRuntime(id string, st *runtimePrep) {
 func (s *Server) rewarmWatchers(active map[string]bool) {
 	s.mu.Lock()
 	var ids []string
-	for id := range s.mcpSubscribers {
+	for id := range s.eventSubscribers {
 		if !active[id] {
 			ids = append(ids, id)
 		}

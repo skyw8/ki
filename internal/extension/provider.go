@@ -29,6 +29,7 @@ type ProviderManager struct {
 	authHandler   func(ProviderAuthEvent)
 	onErr         ErrorFunc
 	epoch         uint64
+	runtime       *Manager
 }
 
 // NewProviderManager creates an empty process-level provider runtime manager.
@@ -50,6 +51,30 @@ func (m *ProviderManager) SetErrorHandler(fn ErrorFunc) {
 	m.mu.Unlock()
 }
 
+// SetRuntimeManager makes provider calls reuse the ordinary extension runtime.
+// This keeps one extension package at one server-level sidecar process even
+// when it declares both provider and channel/lifecycle capabilities.
+func (m *ProviderManager) SetRuntimeManager(runtime *Manager) {
+	m.mu.Lock()
+	m.runtime = runtime
+	var descriptors []Descriptor
+	seen := map[string]bool{}
+	for _, d := range m.descs {
+		if !seen[d.Name] {
+			descriptors = append(descriptors, d)
+			seen[d.Name] = true
+		}
+	}
+	m.mu.Unlock()
+	if runtime != nil {
+		// New wires the managers before ListenAndServe. Configure the provider
+		// descriptors so a direct in-process request can still use the normal
+		// shared client; ListenAndServe later reconciles the complete catalog.
+		runtime.Configure(descriptors)
+		runtime.SetProviderAuthHandler(m.handleAuthEvent)
+	}
+}
+
 // SetProviderAuthHandler installs the process-wide callback for private auth
 // notifications from provider sidecars. The handler must not block the RPC
 // reader; the manager invokes it from a separate goroutine.
@@ -62,7 +87,11 @@ func (m *ProviderManager) SetProviderAuthHandler(fn func(ProviderAuthEvent)) {
 	for _, c := range m.clients {
 		clients = append(clients, c)
 	}
+	runtime := m.runtime
 	m.mu.Unlock()
+	if runtime != nil {
+		runtime.SetProviderAuthHandler(m.handleAuthEvent)
+	}
 	for _, c := range clients {
 		c.setProviderAuthHandler(m.handleAuthEvent)
 	}
@@ -163,6 +192,67 @@ func (m *ProviderManager) HasProvider(id string) bool {
 // NewStreamer creates a host-side adapter for a provider sidecar stream.
 func (m *ProviderManager) NewStreamer(model provider.Model, credential provider.Credential) provider.ProviderStreamer {
 	return &providerSidecarStreamer{manager: m, model: model, credential: credential}
+}
+
+// Start launches provider runtimes together with ordinary extension runtimes.
+// Model listing and the first stream therefore do not determine process
+// startup timing.
+func (m *ProviderManager) Start(ctx context.Context) {
+	m.mu.Lock()
+	if m.runtime != nil {
+		m.mu.Unlock()
+		return
+	}
+	seen := map[string]Descriptor{}
+	for _, d := range m.descs {
+		seen[d.Name] = d
+	}
+	epoch := m.epoch
+	m.mu.Unlock()
+	for _, d := range seen {
+		go m.start(ctx, d, epoch)
+	}
+}
+
+func (m *ProviderManager) start(ctx context.Context, d Descriptor, epoch uint64) {
+	m.mu.Lock()
+	if m.epoch != epoch {
+		m.mu.Unlock()
+		return
+	}
+	for _, c := range m.clients {
+		if c.name == d.Name {
+			m.mu.Unlock()
+			return
+		}
+	}
+	m.mu.Unlock()
+	c, err := startRPC(ctx, d, "", m.home, "", nil)
+	if err != nil {
+		m.mu.Lock()
+		onErr := m.onErr
+		m.mu.Unlock()
+		if onErr != nil {
+			onErr("", d.Name, string(CapProvider), "sidecar_start", err.Error())
+		}
+		return
+	}
+	c.setProviderAuthHandler(m.handleAuthEvent)
+	m.mu.Lock()
+	if m.epoch != epoch {
+		m.mu.Unlock()
+		c.close()
+		return
+	}
+	for _, existing := range m.clients {
+		if existing.name == d.Name {
+			m.mu.Unlock()
+			c.close()
+			return
+		}
+	}
+	m.clients[d.Name] = c
+	m.mu.Unlock()
 }
 
 // StartAuth starts a provider-owned login flow. Progress is delivered through
@@ -299,7 +389,11 @@ func (m *ProviderManager) Close() {
 	m.owners = map[string]string{}
 	m.descs = map[string]Descriptor{}
 	m.specs = map[string]provider.ExtensionProviderSpec{}
+	runtime := m.runtime
 	m.mu.Unlock()
+	if runtime != nil {
+		return
+	}
 	for _, c := range clients {
 		c.close()
 	}
@@ -308,6 +402,7 @@ func (m *ProviderManager) Close() {
 func (m *ProviderManager) client(ctx context.Context, providerID string) (*rpcClient, error) {
 	m.mu.Lock()
 	epoch := m.epoch
+	runtime := m.runtime
 	owner, ok := m.owners[providerID]
 	if !ok {
 		m.mu.Unlock()
@@ -322,9 +417,22 @@ func (m *ProviderManager) client(ctx context.Context, providerID string) (*rpcCl
 	if !ok {
 		return nil, fmt.Errorf("provider %q extension descriptor is unavailable", providerID)
 	}
+	if runtime != nil {
+		c, err := runtime.globalClient(ctx, d.Name)
+		if err != nil {
+			m.mu.Lock()
+			onErr := m.onErr
+			m.mu.Unlock()
+			if onErr != nil {
+				onErr("", d.Name, string(CapProvider), "sidecar_start", err.Error())
+			}
+			return nil, fmt.Errorf("start provider extension %q: %w", d.Name, err)
+		}
+		return c, nil
+	}
 
-	// Startup is lazy so merely listing models does not execute third-party
-	// code. The process is then retained and shared by all sessions.
+	// Standalone ProviderManager users retain lazy startup; the server wires a
+	// shared Manager above and starts it after the HTTP listener is ready.
 	c, err := startRPC(ctx, d, "", m.home, "", nil)
 	if err != nil {
 		m.mu.Lock()

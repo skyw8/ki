@@ -35,7 +35,7 @@ my-ext/
   "name": "protected-paths",
   "version": "0.1.0",
   "description": "…",
-  "capabilities": ["prompt.append", "skill", "command", "tool", "lifecycle", "bus", "provider"],
+  "capabilities": ["prompt.append", "skill", "command", "tool", "lifecycle", "bus", "provider", "channel", "settings"],
   "failClosed": false,
   "prompt": { "append": ["prompt/APPEND.md"] },
   "skills": ["skills"],
@@ -54,8 +54,8 @@ my-ext/
 
 - `capabilities`：门闸。未声明的能力：对应字段忽略；`initialize` 多报的 tools/commands 丢弃并 `extension_error`。
 - `failClosed`：缺省 `false`。仅 **sync** 生命周期入口：`tool_call` 失败 → 合成 block；`before_provider_request` 失败 → canned stop。
-- `runtime.kind`：`none`（缺省）| `rpc`。`rpc` 须声明 `tool` / `lifecycle` / `command` / `bus` / `provider` 之一。
-- `runtime.command`：与 MCP 相同。无路径分隔符（`node` / `npx`）走 **PATH**；带 `/` 的相对路径相对包根（`bin/extension`）；绝对路径原样用。
+- `runtime.kind`：`none`（缺省）| `rpc`。`rpc` 须声明 `tool` / `lifecycle` / `command` / `bus` / `provider` / `channel` / `settings` 之一。
+- `runtime.command`：无路径分隔符（`node` / `npx`）走 **PATH**；带 `/` 的相对路径相对包根（`bin/extension`）；绝对路径原样用。
 - `runtime.install`：可选 argv，sidecar **启动前**在包根执行（装依赖）。stdout 并进 stderr，避免污染 NDJSON。失败则不拉起 sidecar。
 
 ## 支持的能力
@@ -69,6 +69,8 @@ my-ext/
 | `lifecycle` | sidecar | 订事件：`initialize.subscriptions` |
 | `bus` | sidecar | 扩展间总线 |
 | `provider` | 进程级 sidecar | 注册模型/认证元数据并接管 provider stream |
+| `channel` | 进程级 sidecar | 接入外部消息渠道并调用 Host session 能力 |
+| `settings` | 进程级 sidecar | 声明全局配置 schema，由 Host 脱敏、校验和通知变更 |
 
 ## 订事件
 
@@ -89,7 +91,7 @@ my-ext/
 - 未知 `event` 或该点不允许的 `sync`：**该条拒载**。
 - 声明了 `lifecycle` 但没有任何有效订阅：**整包加载失败**。
 - **sync**：停靠点 `lifecycle.invoke`（`event` + payload + `ctx`），await，应用 result。
-- **async**：persist/SSE **之后** notification `lifecycle.event`；瘦 DTO；fail-open。
+- **async**：persist/SSE **之后** notification `lifecycle.event`；瘦 DTO；fail-open。同一 run 的通知保持 loop 产生顺序，尤其 `message_end` 必须先于该 run 的 `agent_settled`。
 - 同一 event：先 sync 链，再 async（async 见最终态）。
 - 链序：全局按名。
 - `before_agent_start`：**每个 occupy 一次**；steer 不重跑。每 turn 改 messages 用 `context`。
@@ -112,12 +114,11 @@ my-ext/
 | `session_before_compact` | 是 | 是 | cancel / 定制 summary |
 | `agent_start` `agent_end` `agent_settled` | 否 | 是 | — |
 | `turn_start` `turn_end` | 否 | 是 | — |
-| `message_start` `request_header` | 否 | 是 | — |
-| `message_update` `tool_execution_update` | 否 | 否（不投） | — |
+| `message_start` `request_header` `message_update` | 否 | 是 | — |
+| `tool_execution_update` | 否 | 否（不投） | — |
 | `tool_execution_start` `tool_execution_end` | 否 | 是 | — |
 | `compaction_start` `compaction_end` | 否 | 是 | — |
 | `queue_changed` `steer_accepted` `run_aborted` | 否 | 是 | — |
-| `mcp_server_failed` `mcp_tools_changed` | 否 | 是 | — |
 | `context_usage` `patch_apply_updated` `extension_error` `extension_notice` | 否 | 否 | — |
 
 `agent_settled`：occupy 结束且 Host 内部收尾（含 auto-compact）完成，可接受新 occupy。**不含**扩展 FIFO 已空。
@@ -149,6 +150,14 @@ NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` 
 | `provider.stream.start` | `provider` | `{requestId,request}`；一次传入完整 model、credential 和 loop request，`request` 使用 lower camelCase 字段名，返回 `{accepted:true}` |
 | `provider.stream.cancel` | `provider` | `{requestId}`；取消一个 provider stream |
 
+`config.updated` 是 Host 发给全局 sidecar 的配置变更通知，参数包含脱敏后的
+`config`；sidecar 应重新读取自己的私有配置文件。
+
+异步消息生命周期事件的瘦 payload 只包含路由和展示所需字段。`message_start`、
+`message_update`、`message_end` 会携带 `role`、`text`；最终消息还可能携带
+`stopReason`、`errorMessage` 和 `isError`。当 `stopReason=error` 时，扩展应丢弃
+已经收到的 partial 文本，并向用户展示错误信息，而不是把 partial 当成最终答案。
+
 Provider auth RPC（同样只发给进程级 provider sidecar）：
 
 | method | 说明 |
@@ -176,21 +185,26 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 
 | method | 门闸 | 说明 |
 |---|---|---|
+| `session.create` | — | 全局创建 session；可传 `workspaceId`、`cwd`、model 和 metadata |
+| `session.list` / `session.get` | — | 查询 session，可按 metadata 过滤；不绑定当前 session |
+| `session.new` | — | 当前 session 创建同配置的新 session，可选新 `cwd` |
+| `session.reload` | — | 重载当前 session 的资源和扩展视图 |
 | `session.enqueue` | — | `{sessionId,...}`；`content`、`deliverAs`=`queue`\|`steer`\|`nextTurn`（默认 queue）、`when`=`now`\|`settled`、`idempotencyKey`、`kind`=`user`\|`custom` |
-| `session.snapshot` | — | `{sessionId}`；idle、running、queues、model、tools、commands |
+| `session.snapshot` | — | `{sessionId}`；idle、running、queues、provider/model、tools、commands |
 | `session.appendEntry` | — | `{sessionId,...}`；jsonl custom；强制本扩展名；不进 provider context |
 | `session.abort` | — | 同 POST abort |
 | `session.compact` | — | 同 HTTP compact |
 | `session.patch` | — | model / thinkingEffort |
 | `session.setActiveTools` | — | 会话级；未知名 warn，不静默清空 |
 | `tools.register` | `tool` | 下一 occupy 生效 |
-| `ui.setStatus` / `ui.setPanel` / `ui.clearPanel` | — | 内存投影 + SSE；不进 jsonl。面板是通用壳，不解析业务 |
+| `ui.setStatus` / `ui.setPanel` / `ui.clearPanel` | — | 当前 session 的内存投影 + SSE；不进 jsonl。面板是通用壳，不解析业务 |
+| `ui.setGlobalStatus` / `ui.setGlobalPanel` / `ui.clearGlobalPanel` | — | server 级内存投影；不进 jsonl；通过 `/v1/extensions` 返回，适合首页可见的全局状态；global panel 只读，配置走 config API |
 | `ui.confirm` / `ui.select` | — | WebUI 弹层；**120s** 超时 = 取消 |
 | `bus.emit` | `bus` | 深拷贝 fan-out；result 为合并后 data |
 | `bus.broadcast` | `bus` | fire-and-forget，不等待 |
 | `bus.subscribe` / `bus.unsubscribe` | `bus` | 运行中改订阅 |
 
-上表 inbound 方法都必须带 `sessionId`，bus 订阅也按 session 维护。`session.open` 是 Host→sidecar 的 session 生命周期通知。`ui.setPanel` 由 WebUI 按通用壳渲染，Host 不解析扩展语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
+除 `session.create`、`session.list`、`session.get` 和 `ui.setGlobal*` / `ui.clearGlobalPanel` 外，上表 inbound 方法都必须带 `sessionId`，bus 订阅也按 session 维护。`session.open` 是 Host→sidecar 的 session 生命周期通知。`ui.setPanel` 和 `ui.setGlobalPanel` 由 WebUI 按通用壳渲染，Host 不解析扩展语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
 
 `origin` 一律 `extension:<name>`，并写进该次 occupy 的 user message（WebUI 气泡可区分）。扩展 FIFO 与用户 `queue.json` **分轨**；occupy release 后 **先用户 queue，再扩展 FIFO**。`when=settled` 在 `agent_settled` 后只写入扩展 FIFO（不直接 occupy），再走同一套 dispatch。`nextTurn` 挂到下次**用户** occupy，注入 messages，不自触发 occupy。`session.setActiveTools` 忽略未知名并发 `extension_notice` warn；全部未知名则保留上一套工具。`session.patch` 与 HTTP PATCH 同一套 ResolveSpec / thinking 校验。`session_before_compact` 可 cancel 或返回定制 summary（跳过模型摘要）。
 
@@ -205,20 +219,21 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 ## 生命周期
 
 1. Scan 只读 Discover；sidecar 是进程级资源，每个扩展最多启动一个。
-2. **打开会话**（`POST /v1/sessions`、`GET /v1/sessions/{id}`、fork）后台 `Prepare` 全局 sidecar 与 session MCP 连接并行，并发送 `session.open`。List 和 serve 启动不扫 jsonl 去 spawn。
+2. **server 完成监听后**，所有启用且声明可执行 runtime 的扩展统一启动，不按能力类别或 session 懒加载；失败状态由 catalog 暴露并自动重试。
 3. `GET /v1/sessions/{id}` 带 `runtime.ready`；未就绪也可先出 transcript。`runtime_ready` SSE（sideband，不进 jsonl）。失败也算 ready。
-4. `runPrompt` 的 `Prepare` 是 ensure：已预热的全局 sidecar 则 no-op，并只重建当前 session 的工具视图。
+4. `Prepare` 只建立当前 session 的扩展视图，复用已运行的 server sidecar，并发送 `session.open`。
 5. Steer 不重新 Prepare，不重跑 `before_agent_start`。
-6. Reload / Close：Reload 清理 session 视图；server Close 才杀全局 sidecar 进程组。忙时 Reload 排到 occupy release 之后。打开中的会话 Reload 后再预热 MCP 和扩展视图。
+6. Reload / Close：Reload 重新扫描 manifest、配置并重启有变化的 sidecar；server Close 才杀全局 sidecar 进程组。忙时 Reload 排到 occupy release 之后。
 
 ## HTTP
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| GET / PATCH | `/v1/extensions` | 全局列表 / `disabled`；不会启动 sidecar |
+| GET / PATCH | `/v1/extensions` | 全局列表 / `disabled`，包含 runtime 状态和全局 `ui` 投影 |
+| GET / PATCH | `/v1/extensions/{name}/config` | 读取脱敏配置 / 校验并保存扩展配置 |
 | GET | `/v1/sessions/{id}` | `availableExtensions`、`commands`、`extensionUi`、`queued`、`extQueued`、`runtime.ready` |
-| POST | `/v1/reload` | 关 sidecar |
+| POST | `/v1/reload` | 重新扫描并协调 sidecar |
 
 `path` 只展示，不当 `href`。
 
-扩展 catalog 只展示启用配置和 manifest 错误，不展示 sidecar 运行状态，也不会为了查询而启动 sidecar。manifest 校验或 sidecar 启动失败时，Host 自动把 extension 写入全局 `disabled`，并通过错误提示通知用户；用户重新启用后会再次尝试加载。
+扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态和 global UI 投影；查询不会启动 sidecar。manifest 校验失败不会拉起 runtime；sidecar 启动失败保持启用并自动重试。配置接口只返回 schema 和脱敏值，敏感字段写入时保留、读取时显示 `<configured>`。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航切换扩展，Extensions 设置中的 Configure 也只负责打开并定位到同一个页面，不在 session Info 或设置页内嵌第二份编辑器。

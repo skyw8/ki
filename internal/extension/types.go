@@ -11,16 +11,23 @@ import (
 
 // Event is the redacted DTO delivered to sidecars. No prompt, args, or bodies.
 type Event struct {
-	Type       string `json:"type"`
-	SessionID  string `json:"sessionId,omitempty"`
-	ToolCallID string `json:"toolCallId,omitempty"`
-	ToolName   string `json:"toolName,omitempty"`
-	IsError    bool   `json:"isError,omitempty"`
-	DurationMs int64  `json:"durationMs,omitempty"`
-	Reason     string `json:"reason,omitempty"`
-	OK         bool   `json:"ok,omitempty"`
-	Provider   string `json:"provider,omitempty"`
-	Model      string `json:"model,omitempty"`
+	Type         string            `json:"type"`
+	SessionID    string            `json:"sessionId,omitempty"`
+	Role         string            `json:"role,omitempty"`
+	ToolCallID   string            `json:"toolCallId,omitempty"`
+	ToolName     string            `json:"toolName,omitempty"`
+	IsError      bool              `json:"isError,omitempty"`
+	DurationMs   int64             `json:"durationMs,omitempty"`
+	Reason       string            `json:"reason,omitempty"`
+	OK           bool              `json:"ok,omitempty"`
+	Provider     string            `json:"provider,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	RunID        string            `json:"runId,omitempty"`
+	Text         string            `json:"text,omitempty"`
+	StopReason   string            `json:"stopReason,omitempty"`
+	ErrorMessage string            `json:"errorMessage,omitempty"`
+	ToolTitle    string            `json:"toolTitle,omitempty"`
+	External     map[string]string `json:"external,omitempty"`
 }
 
 // Registration is the frozen initialize result.

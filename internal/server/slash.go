@@ -11,8 +11,8 @@ import (
 	"sync"
 
 	"ki/internal/extension"
+	"ki/internal/idgen"
 	"ki/internal/loop"
-	"ki/internal/mcp"
 	"ki/internal/resources"
 	"ki/internal/session"
 	"ki/internal/toggles"
@@ -84,58 +84,6 @@ func (s *Server) patchSkills(w http.ResponseWriter, r *http.Request) {
 	s.getSkills(w, r)
 }
 
-func (s *Server) getMCP(w http.ResponseWriter, r *http.Request) {
-	tg := toggles.Load(s.cfg.Home)
-	file := s.resources.Scan("").MCP
-	_ = s.invalidMCPError(file)
-	tg = toggles.Load(s.cfg.Home)
-	items := []map[string]any{}
-	for _, item := range mcp.List(file, tg.MCP) {
-		errorText := ""
-		if err := mcp.ValidateServerSpec(file.MCPServers[item.Name]); err != nil {
-			errorText = err.Error()
-		}
-		row := map[string]any{
-			"name":    item.Name,
-			"command": item.Command,
-			"enabled": item.Enabled,
-		}
-		if errorText != "" {
-			row["error"] = errorText
-		}
-		if len(item.Args) > 0 {
-			row["args"] = item.Args
-		}
-		if item.URL != "" {
-			row["url"] = item.URL
-		}
-		items = append(items, row)
-	}
-	writeJSON(w, 200, map[string]any{"items": items})
-}
-
-func (s *Server) patchMCP(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Disabled []string `json:"disabled"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-	f := toggles.Load(s.cfg.Home)
-	f.MCP = session.Toggle{Disabled: body.Disabled}
-	if err := toggles.Save(s.cfg.Home, f); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.Reload()
-	if err := s.invalidMCPError(s.resources.Scan("").MCP); err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
-	}
-	s.getMCP(w, r)
-}
-
 func (s *Server) getExtensions(w http.ResponseWriter, r *http.Request) {
 	snapshot := s.resources.Scan("")
 	_ = s.disableManifestExtensions(snapshot.Extensions)
@@ -164,8 +112,69 @@ func (s *Server) patchExtensions(w http.ResponseWriter, r *http.Request) {
 	s.getExtensions(w, r)
 }
 
+func (s *Server) extensionDescriptor(name string) (extension.Descriptor, bool) {
+	discovery := extension.Discover(s.cfg.Home, toggles.Load(s.cfg.Home).Extensions)
+	for _, d := range discovery.All {
+		if d.Name == name {
+			return d, true
+		}
+	}
+	return extension.Descriptor{}, false
+}
+
+func (s *Server) getExtensionConfig(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.extensionDescriptor(r.PathValue("name"))
+	if !ok {
+		http.Error(w, "extension not found", http.StatusNotFound)
+		return
+	}
+	values, err := extension.SanitizedConfig(d)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": d.Name, "schema": d.Config.Schema, "config": values})
+}
+
+func (s *Server) patchExtensionConfig(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.extensionDescriptor(r.PathValue("name"))
+	if !ok {
+		http.Error(w, "extension not found", http.StatusNotFound)
+		return
+	}
+	var body map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	configRaw, ok := body["config"]
+	if !ok {
+		configRaw, _ = json.Marshal(body)
+	}
+	var patch map[string]any
+	if err := json.Unmarshal(configRaw, &patch); err != nil || patch == nil {
+		http.Error(w, "config must be a JSON object", http.StatusBadRequest)
+		return
+	}
+	values, err := extension.UpdateConfig(d, patch)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	if s.ext != nil {
+		s.ext.NotifyGlobal(d.Name, "config.updated", map[string]any{"config": values})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": d.Name, "schema": d.Config.Schema, "config": values})
+}
+
 func (s *Server) extensionCatalog(snapshot resources.Snapshot) []map[string]any {
 	tg := toggles.Load(s.cfg.Home)
+	statuses := map[string]extension.RuntimeStatus{}
+	if s.ext != nil {
+		for _, state := range s.ext.RuntimeStatuses() {
+			statuses[state.Name] = state
+		}
+	}
 	items := []map[string]any{}
 	for _, d := range snapshot.Extensions {
 		errorText := d.Error
@@ -176,7 +185,14 @@ func (s *Server) extensionCatalog(snapshot resources.Snapshot) []map[string]any 
 			"path":         d.Path,
 			"enabled":      tg.Extensions.Allowed(d.Name),
 			"capabilities": d.Capabilities,
+			"configurable": len(d.Config.Schema) > 0,
 		})
+		if ui := s.globalExtensionUI(d.Name); ui != nil {
+			items[len(items)-1]["ui"] = ui
+		}
+		if state, ok := statuses[d.Name]; ok {
+			items[len(items)-1]["runtime"] = state
+		}
 		if errorText != "" {
 			items[len(items)-1]["error"] = errorText
 		}
@@ -190,7 +206,7 @@ func (s *Server) extensionCatalog(snapshot resources.Snapshot) []map[string]any 
 }
 
 func (s *Server) onExtensionError(sessionID, name, capability, code, message string) {
-	if code == "manifest" || code == "sidecar_start" || code == "undeclared" {
+	if sessionID != "" && (code == "manifest" || code == "sidecar_start" || code == "undeclared") {
 		s.disableExtensions(name)
 	}
 	ev := loop.Event{
@@ -216,7 +232,7 @@ func (s *Server) onExtensionError(sessionID, name, capability, code, message str
 		st.wait.Broadcast()
 		st.mu.Unlock()
 	}
-	for subscriber := range s.mcpSubscribers[sessionID] {
+	for subscriber := range s.eventSubscribers[sessionID] {
 		select {
 		case subscriber <- ev:
 		default:
@@ -240,7 +256,12 @@ func (s *Server) occupy(parent context.Context, id string) (*runState, context.C
 		}
 	}
 	ctx, cancel := context.WithCancel(parent)
-	st := &runState{cancel: cancel, done: make(chan struct{})}
+	runID, err := idgen.NewV7()
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	st := &runState{cancel: cancel, runID: runID, done: make(chan struct{})}
 	st.wait = sync.NewCond(&st.mu)
 	s.runs[id] = st
 	return st, ctx, nil
@@ -256,6 +277,10 @@ func (s *Server) release(id string, st *runState) {
 		return
 	}
 	st.cancel()
+	st.mu.Lock()
+	runID := st.runID
+	external := cloneExternal(st.external)
+	st.mu.Unlock()
 	s.mu.Lock()
 	pending := s.pendingReload[id]
 	delete(s.pendingReload, id)
@@ -269,7 +294,7 @@ func (s *Server) release(id string, st *runState) {
 		s.reloadSession(id)
 	}
 	if s.ext != nil {
-		s.ext.OnEvent(id, extension.RedactEvent(loop.Event{Type: loop.AgentSettled}, id))
+		s.ext.OnEvent(id, extension.RedactEvent(loop.Event{Type: loop.AgentSettled, RunID: runID, External: external}, id))
 	}
 	s.flushSettled(id)
 	s.dispatchQueue(id)
@@ -303,18 +328,22 @@ func (s *Server) patchMessage(w http.ResponseWriter, r *http.Request) {
 
 // pushSteerRun writes Inbox on this occupy only. Using the captured runState
 // avoids steering a later occupy that replaced s.runs[id] after TakeQueueID.
-func (s *Server) pushSteerRun(st *runState, content []types.Content) bool {
+func (s *Server) pushSteerRun(st *runState, content []types.Content, external ...map[string]string) bool {
 	if st == nil {
 		return false
 	}
-	msg := types.Message{Role: "user", Content: content}
+	var externalMeta map[string]string
+	if len(external) > 0 {
+		externalMeta = cloneExternal(external[0])
+	}
+	msg := types.Message{Role: "user", Content: content, External: externalMeta}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.steerClosed || st.inbox == nil {
 		return false
 	}
 	st.inbox.Push(msg)
-	st.evs = append(st.evs, loop.Event{Type: loop.SteerAccepted, Message: &msg})
+	st.evs = append(st.evs, loop.Event{Type: loop.SteerAccepted, Message: &msg, RunID: st.runID, External: cloneExternal(st.external)})
 	st.wait.Broadcast()
 	return true
 }
@@ -333,7 +362,14 @@ func (s *Server) runAt(id string) *runState {
 }
 
 func (s *Server) publishRunAborted(sessionID string) {
-	s.publishSideband(sessionID, loop.Event{Type: loop.RunAborted}, true)
+	ev := loop.Event{Type: loop.RunAborted}
+	if st := s.runAt(sessionID); st != nil {
+		st.mu.Lock()
+		ev.RunID = st.runID
+		ev.External = cloneExternal(st.external)
+		st.mu.Unlock()
+	}
+	s.publishSideband(sessionID, ev, true)
 }
 
 func (s *Server) publishQueueChanged(sessionID string) {
@@ -358,7 +394,7 @@ func (s *Server) publishSideband(sessionID string, ev loop.Event, persist bool) 
 		st.wait.Broadcast()
 		st.mu.Unlock()
 	}
-	for subscriber := range s.mcpSubscribers[sessionID] {
+	for subscriber := range s.eventSubscribers[sessionID] {
 		select {
 		case subscriber <- ev:
 		default:
@@ -401,7 +437,7 @@ func (s *Server) dispatchQueue(id string) {
 		if ext.Extension != "" {
 			origin = "extension:" + ext.Extension
 		}
-		go s.runPrompt(ctx, st, id, ext.Content, nil, "", origin, nil)
+		go s.runPrompt(ctx, st, id, ext.Content, nil, "", origin, nil, ext.External)
 		return
 	}
 	s.publishQueueChanged(id)

@@ -8,7 +8,7 @@ import (
 // ValidateSchema is a minimal JSON-Schema subset validator used by
 // ToolValidator implementations (P0, pi validateToolArguments): type
 // checking per property, required fields, and a top-level object shape.
-// It intentionally covers the subset providers and MCP servers actually
+// It intentionally covers the subset providers and extensions actually
 // emit — full JSON Schema (draft-07+) would need a dependency.
 //
 // schema follows the OpenAI tool schema shape:

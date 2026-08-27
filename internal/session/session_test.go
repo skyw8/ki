@@ -46,7 +46,7 @@ func TestSidebandEventDoesNotAdvanceConversationLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	event, err := AppendSidebandEvent(s.Dir, "mcp_tools_changed", map[string]any{"server": "demo"})
+	event, err := AppendSidebandEvent(s.Dir, "extension_notice", map[string]any{"extension": "demo"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestSidebandOnlySessionReopensWithoutConversationLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AppendSidebandEvent(s.Dir, "mcp_server_failed", map[string]any{"server": "demo"}); err != nil {
+	if _, err := AppendSidebandEvent(s.Dir, "extension_notice", map[string]any{"extension": "demo"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {

@@ -65,6 +65,7 @@ async function initialize(params: unknown) {
   // is retained for direct sidecar tests and older embedded launches.
   const sessionId = str(p.sessionId) || process.env.KI_SESSION_ID || "";
   if (sessionId) await prepareApp(sessionId);
+  else await syncGlobalUI();
   return {
     tools: TOOL_SPECS,
     commands: [
@@ -80,6 +81,15 @@ async function initialize(params: unknown) {
       { event: "agent_settled", mode: "async" },
     ],
   };
+}
+
+async function syncGlobalUI() {
+  const host = new Host(rpc, "");
+  await host.setGlobalStatus("goal", "Goal", "info");
+  await host.setGlobalPanel({
+    title: "Goal",
+    summary: "选择一个 session 后查看或管理该 session 的 goal。",
+  });
 }
 
 function invokeCommand(params: unknown) {

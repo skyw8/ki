@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react'
-import type { ExtensionUI } from './types'
+import { useEffect, useMemo, useRef, type ReactNode } from 'react'
+import type { CatalogExtension, ExtensionUI } from './types'
 import { Markdown } from './Markdown'
 import { useI18n } from './i18n'
 
@@ -30,6 +30,45 @@ export function statusChips(list: ExtensionUI[] | undefined): ExtensionUI[] {
 export function visibleStatusChips(chips: ExtensionUI[]): ExtensionUI[] {
   if (chips.length <= EXT_CHIP_SOFT) return chips
   return chips.slice(0, EXT_CHIP_HARD)
+}
+
+type InspectorItem = {
+  name: string
+  status?: ExtensionUI['status']
+  ui?: ExtensionUI
+  configurable?: boolean
+}
+
+function runtimeTone(item: CatalogExtension): string {
+  switch (item.runtime?.state) {
+    case 'ready': return 'success'
+    case 'starting':
+    case 'restarting': return 'warning'
+    case 'failed': return 'error'
+    default: return 'info'
+  }
+}
+
+function inspectorItems(items: ExtensionUI[], globalItems: CatalogExtension[]): InspectorItem[] {
+  const byName = new Map<string, InspectorItem>()
+  for (const item of globalItems) {
+    byName.set(item.name, {
+      name: item.name,
+      configurable: item.configurable,
+      status: item.ui?.status ?? { key: item.name, text: item.name, tone: runtimeTone(item) },
+      ui: item.ui,
+    })
+  }
+  for (const ui of items) {
+    const previous = byName.get(ui.extension)
+    byName.set(ui.extension, {
+      name: ui.extension,
+      configurable: previous?.configurable,
+      status: ui.status ?? previous?.status,
+      ui,
+    })
+  }
+  return Array.from(byName.values())
 }
 
 export function seedExtFields(ui: ExtensionUI | undefined): Record<string, string> {
@@ -63,44 +102,52 @@ function sectionItems(sec: Record<string, unknown>): { label: string; value: str
 
 export function ExtensionInspector({
   items,
+  globalItems = [],
   selected,
+  selectedName,
   fields,
   onSelect,
   onField,
   onAction,
   onSubmit,
+  renderConfig,
 }: {
   items: ExtensionUI[]
-  selected: ExtensionUI
+  globalItems?: CatalogExtension[]
+  selected?: ExtensionUI | null
+  selectedName: string
   fields: Record<string, string>
   onSelect: (name: string) => void
   onField: (id: string, value: string) => void
   onAction: (id: string) => void
   onSubmit: (fields: Record<string, unknown>) => void
+  renderConfig?: (name: string) => ReactNode
 }) {
   const { t } = useI18n()
   const navRef = useRef<HTMLElement>(null)
+  const navItems = useMemo(() => inspectorItems(items, globalItems), [globalItems, items])
+  const selectedGlobal = globalItems.find(item => item.name === selectedName)
   useEffect(() => {
     navRef.current?.querySelector<HTMLElement>('.ext-nav-item.on')?.scrollIntoView({ block: 'nearest', inline: 'center' })
-  }, [selected.extension])
+  }, [selectedName])
   return (
     <div className="ext-inspector">
       <nav ref={navRef} className="ext-inspector-nav" aria-label={t('ext.nav')} data-testid="ext-nav">
-        {items.map(ui => {
-          const on = ui.extension === selected.extension
+        {navItems.map(item => {
+          const on = item.name === selectedName
           return (
             <button
-              key={ui.extension}
+              key={item.name}
               type="button"
               className={`ext-nav-item${on ? ' on' : ''}`}
-              data-testid={`ext-nav-${ui.extension}`}
+              data-testid={`ext-nav-${item.name}`}
               aria-current={on ? 'page' : undefined}
-              onClick={() => onSelect(ui.extension)}
+              onClick={() => onSelect(item.name)}
             >
-              <span className={`ext-nav-dot tone-${ui.status?.tone || 'info'}`} aria-hidden />
+              <span className={`ext-nav-dot tone-${item.status?.tone || 'info'}`} aria-hidden />
               <span className="ext-nav-copy">
-                <span className="ext-nav-text">{ui.status?.text || ui.extension}</span>
-                <span className="ext-nav-name">{ui.extension}</span>
+                <span className="ext-nav-text">{item.status?.text || item.name}</span>
+                <span className="ext-nav-name">{item.name}</span>
               </span>
             </button>
           )
@@ -108,9 +155,9 @@ export function ExtensionInspector({
       </nav>
       <div className="ext-inspector-main" data-testid="ext-inspector-main">
         <header className="ext-inspector-head">
-          <h3>{selected.panel?.title || selected.extension}</h3>
+          <h3>{selected?.panel?.title || selectedGlobal?.name || selectedName}</h3>
         </header>
-        {selected.panel ? (
+        {selected?.panel ? (
           <ExtensionPanel
             ui={selected}
             fields={fields}
@@ -119,9 +166,11 @@ export function ExtensionInspector({
             onSubmit={onSubmit}
             hideStatus
           />
-        ) : (
+        ) : null}
+        {selectedGlobal?.configurable && renderConfig ? renderConfig(selectedGlobal.name) : null}
+        {!selected?.panel && !selectedGlobal ? (
           <p className="ext-inspector-empty">{t('ext.empty')}</p>
-        )}
+        ) : null}
       </div>
     </div>
   )

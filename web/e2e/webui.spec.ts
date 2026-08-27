@@ -22,7 +22,7 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await page.getByTestId('open-settings').click()
   await expect(page.getByTestId('settings-tab-providers')).toHaveText('模型供应商')
   await expect(page.getByTestId('settings-tab-skills')).toHaveText('Skills')
-  await expect(page.getByTestId('settings-tab-mcp')).toHaveText('MCP')
+  await expect(page.getByTestId('settings-tab-extensions')).toHaveText('Extensions')
   await expect(page.getByTestId('settings-tab-message')).toHaveText('Message')
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('主题和语言')
   await expect(page.getByTestId('provider-settings')).toContainText('Anthropic')
@@ -79,8 +79,8 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('settings-lang')).toBeVisible()
   await page.getByTestId('settings-tab-skills').click()
   await expect(page.getByTestId('skills-settings')).toBeVisible()
-  await page.getByTestId('settings-tab-mcp').click()
-  await expect(page.getByTestId('mcp-settings')).toBeVisible()
+  await page.getByTestId('settings-tab-extensions').click()
+  await expect(page.getByTestId('extensions-settings')).toBeVisible()
   await page.getByTestId('settings-tab-message').click()
   await expect(page.getByTestId('message-settings')).toBeVisible()
   await expect(page.getByTestId('busy-steer')).toHaveAttribute('aria-checked', 'true')
@@ -188,8 +188,8 @@ test('markdown parse keeps fences, emphasis, CJK, and streaming closers', () => 
   const nested = parseMarkdown('see `` `nested` `` here')
   expect(nodeValues(nested, 'inlineCode')).toEqual(['`nested`'])
 
-  const fullwidth = parseMarkdown('path: \uFF40internal/mcp\uFF40')
-  expect(nodeValues(fullwidth, 'inlineCode')).toEqual(['internal/mcp'])
+  const fullwidth = parseMarkdown('path: \uFF40internal/tools\uFF40')
+  expect(nodeValues(fullwidth, 'inlineCode')).toEqual(['internal/tools'])
 
   const fence = parseMarkdown('  ## Title\n\n  ```go\nfmt.Println("hi")\n  ```\n')
   expect(nodeTypes(fence)).toContain('heading')
@@ -507,63 +507,24 @@ test('session overflow menu anchors to the clicked row', async ({ page }) => {
   expect(below || above).toBe(true)
 })
 
-test('session info lists skills and mcp; toggles live in settings', async ({ page }) => {
+test('session info lists skills and extensions; toggles live in settings', async ({ page }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const skillDir = join(home, 'skills', 'demo-skill')
   mkdirSync(skillDir, { recursive: true })
   writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: demo-skill\ndescription: e2e skill\n---\n')
-  writeFileSync(join(home, '.mcp.json'), JSON.stringify({
-    mcpServers: {
-      context7: { command: 'true' },
-      exa: { command: 'true' },
-    },
-  }))
 
   await page.goto('/')
   await sendPrompt(page, `cfg-e2e ${Date.now()}`)
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
-	await expect(page.locator('.toast.error').first()).toContainText(/context7|exa/)
-	await expect(page.locator('.toast.error').first().getByRole('button', { name: 'Reload' })).toBeVisible()
 
   await page.getByTestId('tab-config').click()
   await expect(page.getByTestId('session-info')).toBeVisible()
   await expect(page.getByTestId('cfg-skill').filter({ hasText: 'demo-skill' })).toBeVisible()
-  await expect(page.getByTestId('cfg-mcp').filter({ hasText: 'context7' })).toBeVisible()
-  await expect(page.getByTestId('cfg-mcp').filter({ hasText: 'exa' })).toBeVisible()
   await expect(page.getByTestId('info-outline')).toContainText('demo-skill')
-  await expect(page.getByTestId('info-outline')).toContainText('context7')
-  await expect(page.getByTestId('info-outline')).toContainText('exa')
   await expect(page.getByTestId('info-reload')).toBeVisible()
-  await expect(page.getByTestId('mcp-on-exa')).toHaveCount(0)
 
   await page.getByTestId('info-edit').click()
-  await page.getByTestId('settings-tab-mcp').click()
-  await expect(page.getByTestId('mcp-status-context7')).toHaveCount(0)
-  await expect(page.getByTestId('mcp-on-context7')).toHaveAttribute('aria-checked', 'false')
-  await expect(page.getByTestId('mcp-on-exa')).toHaveAttribute('aria-checked', 'false')
-  await expect(page.getByTestId('mcp-error-context7')).toHaveCount(0)
-
-  const disabled = await page.evaluate(async () => {
-    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
-    const listed = await fetch('/v1/mcp', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()) as {
-      items?: Array<{ name: string; enabled: boolean }>
-    }
-    return listed
-  })
-  expect(disabled.items?.find(s => s.name === 'exa')?.enabled).toBe(false)
-  expect(disabled.items?.find(s => s.name === 'context7')?.enabled).toBe(false)
-
-	// This suite is serial and prompt preparation now reports broken MCP
-	// commands synchronously. Remove the fixture and its actionable toasts so
-	// later UI tests do not inherit this test's failed session resources.
-	writeFileSync(join(home, '.mcp.json'), JSON.stringify({ mcpServers: {} }))
-	await page.evaluate(async () => {
-		const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
-		await fetch('/v1/reload', { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
-	})
-	for (let i = 0; i < 5 && await page.locator('.toast-close').count(); i++) {
-		await page.locator('.toast-close').first().click()
-	}
+  await expect(page.getByTestId('settings-tab-extensions')).toBeVisible()
 })
 
 test('command palette is opaque, one-line, and inserts without sending', async ({ page }) => {

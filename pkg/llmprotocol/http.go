@@ -15,6 +15,42 @@ import (
 
 var errProviderHTTP = errors.New("provider HTTP error")
 
+// nonRetryableError marks deterministic request and response failures. Retrying
+// the same request cannot repair a client error or wire-format violation and
+// could replay text or tool calls already emitted to clients.
+type nonRetryableError struct {
+	err error
+}
+
+func (e *nonRetryableError) Error() string { return e.err.Error() }
+
+func (e *nonRetryableError) Unwrap() error { return e.err }
+
+func (e *nonRetryableError) NonRetryable() bool { return true }
+
+func retryableProviderResponse(status int, body []byte) bool {
+	switch status {
+	case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly, http.StatusTooManyRequests:
+		return true
+	case http.StatusBadRequest:
+		// Some compatible gateways use this code when their own upstream returns
+		// a transient bad status. The exact same request can succeed immediately
+		// afterwards, unlike schema/auth 4xx failures which must not be replayed.
+		var envelope struct {
+			Error struct {
+				Type string `json:"type"`
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(body, &envelope) == nil {
+			return envelope.Error.Type == "bad_response_status_code" || envelope.Error.Code == "bad_response_status_code"
+		}
+		return false
+	default:
+		return status >= http.StatusInternalServerError
+	}
+}
+
 func marshalArguments(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -187,11 +223,16 @@ func (l *Client) postStream(ctx context.Context, url string, body any, hdr http.
 	if res.StatusCode >= 400 {
 		b, _ := io.ReadAll(res.Body)
 		msg := fmt.Sprintf("http %d: %s", res.StatusCode, truncate(string(b), 500))
-		return Message{
+		out := Message{
 			Role:         "assistant",
 			StopReason:   "error",
 			ErrorMessage: msg,
-		}, fmt.Errorf("%w: %s", errProviderHTTP, msg)
+		}
+		err := fmt.Errorf("%w: %s", errProviderHTTP, msg)
+		if !retryableProviderResponse(res.StatusCode, b) {
+			return out, &nonRetryableError{err: err}
+		}
+		return out, err
 	}
 	acc := Message{Role: "assistant"}
 	sc := bufio.NewScanner(res.Body)
@@ -213,7 +254,7 @@ func (l *Client) postStream(ctx context.Context, url string, body any, hdr http.
 		}
 		result := parse(eventName, data, &acc)
 		if result.err != nil {
-			streamErr = result.err
+			streamErr = &nonRetryableError{err: result.err}
 			return
 		}
 		terminal = terminal || result.terminal
@@ -260,7 +301,7 @@ func (l *Client) postStream(ctx context.Context, url string, body any, hdr http.
 		return acc, streamErr
 	}
 	if requireTerminal && !terminal {
-		return acc, errors.New("provider SSE stream ended before a terminal response event")
+		return acc, &nonRetryableError{err: errors.New("provider SSE stream ended before a terminal response event")}
 	}
 	if acc.ErrorMessage != "" {
 		return acc, fmt.Errorf("provider response failed: %s", acc.ErrorMessage)

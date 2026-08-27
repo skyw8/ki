@@ -251,7 +251,7 @@ func responsesImageParts(m Message) []map[string]any {
 func (l *Client) streamResponses(ctx context.Context, req Request, emit func(AssistantDelta) error) (Message, error) {
 	body := ResponsesBody(req)
 	if err := validateResponsesBody(body); err != nil {
-		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, err
+		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, &nonRetryableError{err: err}
 	}
 	url := l.Base + "/responses"
 	return l.postStream(ctx, url, body, l.oaHeaders(), emit, parseResponsesSSE, true)
@@ -275,9 +275,9 @@ func parseResponsesSSE(event, data string, acc *Message) sseParseResult {
 		if !ok {
 			return sseParseResult{err: errors.New("Responses output item event has no item")}
 		}
-		return applyResponsesOutputItem(acc, item)
+		return applyResponsesOutputItem(acc, item, responseOutputIndex(obj))
 	case "response.content_part.added", "response.content_part.done":
-		itemID, err := requiredResponseItemID(obj)
+		itemID, outputIndex, err := responseTextReference(acc, obj)
 		if err != nil {
 			return sseParseResult{err: err}
 		}
@@ -285,42 +285,42 @@ func parseResponsesSSE(event, data string, acc *Message) sseParseResult {
 		if !ok {
 			return sseParseResult{err: errors.New("Responses content part event has no part")}
 		}
-		return applyResponsesOutputItem(acc, map[string]any{
-			"type":    "message",
-			"id":      itemID,
-			"content": []any{part},
-		})
+		item := map[string]any{"type": "message", "content": []any{part}}
+		if itemID != "" {
+			item["id"] = itemID
+		}
+		return applyResponsesOutputItem(acc, item, outputIndex)
 	case "response.output_text.delta":
-		itemID, err := requiredResponseItemID(obj)
+		itemID, outputIndex, err := responseTextReference(acc, obj)
 		if err != nil {
 			return sseParseResult{err: err}
 		}
 		text, _ := obj["delta"].(string)
-		appendResponseText(acc, itemID, text)
+		appendResponseText(acc, itemID, outputIndex, text)
 		return sseParseResult{delta: AssistantDelta{Type: "text_delta", Delta: text, Partial: *acc}, emit: text != ""}
 	case "response.output_text.done":
-		itemID, err := requiredResponseItemID(obj)
+		itemID, outputIndex, err := responseTextReference(acc, obj)
 		if err != nil {
 			return sseParseResult{err: err}
 		}
 		text, _ := obj["text"].(string)
-		delta := mergeResponseText(acc, itemID, text)
+		delta := mergeResponseText(acc, itemID, outputIndex, text)
 		return sseParseResult{delta: AssistantDelta{Type: "text_delta", Delta: delta, Partial: *acc}, emit: delta != ""}
 	case "response.refusal.delta":
-		itemID, err := requiredResponseItemID(obj)
+		itemID, outputIndex, err := responseTextReference(acc, obj)
 		if err != nil {
 			return sseParseResult{err: err}
 		}
 		text, _ := obj["delta"].(string)
-		appendResponseText(acc, itemID, text)
+		appendResponseText(acc, itemID, outputIndex, text)
 		return sseParseResult{delta: AssistantDelta{Type: "text_delta", Delta: text, Partial: *acc}, emit: text != ""}
 	case "response.refusal.done":
-		itemID, err := requiredResponseItemID(obj)
+		itemID, outputIndex, err := responseTextReference(acc, obj)
 		if err != nil {
 			return sseParseResult{err: err}
 		}
 		text, _ := obj["refusal"].(string)
-		delta := mergeResponseText(acc, itemID, text)
+		delta := mergeResponseText(acc, itemID, outputIndex, text)
 		return sseParseResult{delta: AssistantDelta{Type: "text_delta", Delta: delta, Partial: *acc}, emit: delta != ""}
 	case "response.reasoning_summary_part.added":
 		itemID, err := requiredResponseItemID(obj)
@@ -404,12 +404,16 @@ func parseResponsesSSE(event, data string, acc *Message) sseParseResult {
 		response := responseObject(obj)
 		setResponseID(acc, obj)
 		if output, ok := response["output"].([]any); ok {
-			for _, raw := range output {
+			for index, raw := range output {
 				item, ok := raw.(map[string]any)
 				if !ok {
 					continue
 				}
-				result := applyResponsesOutputItem(acc, item)
+				outputIndex := responseOutputIndex(item)
+				if outputIndex < 0 {
+					outputIndex = index
+				}
+				result := applyResponsesOutputItem(acc, item, outputIndex)
 				if result.err != nil {
 					return result
 				}
@@ -475,21 +479,70 @@ func setResponseID(acc *Message, obj map[string]any) {
 }
 
 func requiredResponseItemID(obj map[string]any) (string, error) {
-	itemID, _ := obj["item_id"].(string)
+	itemID := responseItemID(obj)
 	if strings.TrimSpace(itemID) == "" {
 		return "", errors.New("Responses stream event has empty item_id")
 	}
 	return itemID, nil
 }
 
-func applyResponsesOutputItem(acc *Message, item map[string]any) sseParseResult {
+func responseItemID(obj map[string]any) string {
+	itemID, _ := obj["item_id"].(string)
+	return strings.TrimSpace(itemID)
+}
+
+func responseOutputIndex(obj map[string]any) int {
+	value, ok := obj["output_index"]
+	if !ok {
+		return -1
+	}
+	switch n := value.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		value, err := n.Int64()
+		if err == nil {
+			return int(value)
+		}
+	}
+	return -1
+}
+
+// responseTextReference accepts item_id as the normal identity, but also
+// correlates text by output_index or the sole open text item. Some compatible
+// gateways omit message item ids while still returning the text stream.
+func responseTextReference(acc *Message, obj map[string]any) (string, int, error) {
+	itemID := responseItemID(obj)
+	outputIndex := responseOutputIndex(obj)
+	if itemID != "" || outputIndex >= 0 {
+		return itemID, outputIndex, nil
+	}
+	var candidate *Content
+	for i := range acc.Content {
+		if acc.Content[i].Type != "text" {
+			continue
+		}
+		if candidate != nil {
+			return "", -1, errors.New("Responses text event has no item_id or output_index")
+		}
+		candidate = &acc.Content[i]
+	}
+	if candidate == nil {
+		return "", -1, errors.New("Responses text event has no item_id or output_index")
+	}
+	return candidate.ItemID, candidate.StreamIndex, nil
+}
+
+func applyResponsesOutputItem(acc *Message, item map[string]any, outputIndex int) sseParseResult {
 	itemType, _ := item["type"].(string)
 	itemID, _ := item["id"].(string)
+	itemID = strings.TrimSpace(itemID)
 	switch itemType {
 	case "message":
-		if itemID == "" {
-			return sseParseResult{err: errors.New("Responses message output item has empty id")}
-		}
 		var delta strings.Builder
 		for _, raw := range responseContent(item["content"]) {
 			contentType, _ := raw["type"].(string)
@@ -501,15 +554,23 @@ func applyResponsesOutputItem(acc *Message, item map[string]any) sseParseResult 
 				text, _ = raw["refusal"].(string)
 			}
 			if text != "" {
-				delta.WriteString(mergeResponseText(acc, itemID, text))
+				delta.WriteString(mergeResponseText(acc, itemID, outputIndex, text))
 			}
 		}
-		block := responseTextBlock(acc, itemID)
-		meta := map[string]any{"v": 1, "type": "message", "id": itemID}
+		block := responseTextBlock(acc, itemID, outputIndex)
+		if itemID == "" {
+			itemID = block.ItemID
+		}
+		meta := map[string]any{"v": 1, "type": "message"}
+		if itemID != "" {
+			meta["id"] = itemID
+		}
 		if phase, _ := item["phase"].(string); phase != "" {
 			meta["phase"] = phase
 		}
-		block.TextSignature = marshalArguments(meta)
+		if itemID != "" || meta["phase"] != nil {
+			block.TextSignature = marshalArguments(meta)
+		}
 		textDelta := delta.String()
 		return sseParseResult{delta: AssistantDelta{Type: "text_delta", Delta: textDelta, Partial: *acc}, emit: textDelta != ""}
 	case "function_call", "custom_tool_call":
@@ -571,31 +632,95 @@ func responseContent(value any) []map[string]any {
 	return out
 }
 
-func responseTextBlock(acc *Message, itemID string) *Content {
+func responseTextBlock(acc *Message, itemID string, outputIndex int) *Content {
 	for i := range acc.Content {
-		if acc.Content[i].Type == "text" && (itemID == "" || acc.Content[i].ItemID == itemID) {
-			if itemID != "" {
-				acc.Content[i].ItemID = itemID
+		if acc.Content[i].Type != "text" {
+			continue
+		}
+		if itemID != "" && acc.Content[i].ItemID == itemID {
+			if outputIndex >= 0 {
+				acc.Content[i].StreamIndex = outputIndex
 			}
+			bindResponseTextID(&acc.Content[i], itemID)
 			return &acc.Content[i]
 		}
 	}
-	acc.Content = append(acc.Content, Content{Type: "text", ItemID: itemID})
+	for i := range acc.Content {
+		if acc.Content[i].Type != "text" || outputIndex < 0 || acc.Content[i].StreamIndex != outputIndex {
+			continue
+		}
+		if itemID != "" {
+			acc.Content[i].ItemID = itemID
+			bindResponseTextID(&acc.Content[i], itemID)
+		}
+		return &acc.Content[i]
+	}
+	if itemID != "" {
+		var unbound *Content
+		for i := range acc.Content {
+			if acc.Content[i].Type != "text" || acc.Content[i].ItemID != "" {
+				continue
+			}
+			if unbound != nil {
+				unbound = nil
+				break
+			}
+			unbound = &acc.Content[i]
+		}
+		if unbound != nil {
+			unbound.ItemID = itemID
+			if outputIndex >= 0 {
+				unbound.StreamIndex = outputIndex
+			}
+			bindResponseTextID(unbound, itemID)
+			return unbound
+		}
+	}
+	if itemID == "" && outputIndex >= 0 {
+		for i := range acc.Content {
+			if acc.Content[i].Type == "text" && acc.Content[i].ItemID == "" && acc.Content[i].StreamIndex < 0 {
+				acc.Content[i].StreamIndex = outputIndex
+				return &acc.Content[i]
+			}
+		}
+	}
+	if itemID == "" && outputIndex < 0 {
+		for i := range acc.Content {
+			if acc.Content[i].Type == "text" && acc.Content[i].ItemID == "" {
+				return &acc.Content[i]
+			}
+		}
+	}
+	block := Content{Type: "text", ItemID: itemID, StreamIndex: outputIndex}
+	bindResponseTextID(&block, itemID)
+	acc.Content = append(acc.Content, block)
 	return &acc.Content[len(acc.Content)-1]
 }
 
-func appendResponseText(acc *Message, itemID, delta string) {
+func bindResponseTextID(block *Content, itemID string) {
+	if block == nil || itemID == "" {
+		return
+	}
+	meta := responseOpaqueItem(block.TextSignature, "message")
+	if meta == nil {
+		meta = map[string]any{"v": 1, "type": "message"}
+	}
+	meta["id"] = itemID
+	block.TextSignature = marshalArguments(meta)
+}
+
+func appendResponseText(acc *Message, itemID string, outputIndex int, delta string) {
 	if delta == "" {
 		return
 	}
-	responseTextBlock(acc, itemID).Text += delta
+	responseTextBlock(acc, itemID, outputIndex).Text += delta
 }
 
-func mergeResponseText(acc *Message, itemID, text string) string {
+func mergeResponseText(acc *Message, itemID string, outputIndex int, text string) string {
 	if text == "" {
 		return ""
 	}
-	block := responseTextBlock(acc, itemID)
+	block := responseTextBlock(acc, itemID, outputIndex)
 	if block.Text == text {
 		return ""
 	}

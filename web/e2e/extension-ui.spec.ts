@@ -54,7 +54,7 @@ test('extension ui.setStatus chip opens panel modal', async ({ page, request }) 
     cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
     stdio: 'inherit',
   })
-  writeExt(home, 'goalui', bin, { env: { KI_SET_UI: '1' } })
+  writeExt(home, 'goalui', bin, { env: { KI_SET_UI: '1', KI_SET_UI_GLOBAL: '1' } })
 
   await page.goto('/')
   await reloadServer(page, request)
@@ -112,7 +112,7 @@ test('opening a session locks composer until runtime.ready', async ({ page, requ
   await page.getByTestId('new-session').click()
   const input = page.getByTestId('composer-input')
   await expect(input).toBeDisabled()
-  await expect(input).toHaveAttribute('placeholder', /正在加载扩展和 MCP|Loading extensions and MCP/)
+  await expect(input).toHaveAttribute('placeholder', /正在加载扩展|Loading extensions/)
   await expect(page.getByTestId('command-btn')).toBeDisabled()
   await expect(input).toBeEnabled({ timeout: 15_000 })
 })
@@ -226,4 +226,69 @@ test('top bar folds extra chips into one inspector modal', async ({ page, reques
   await page.screenshot({ path: `${shotDir}/04-inspector-mobile.png` })
   await page.getByTestId('ext-panel').getByRole('button', { name: '关闭对话框' }).click()
   await page.screenshot({ path: `${shotDir}/05-header-mobile.png` })
+})
+
+test('global extension chip opens the same config modal as Configure', async ({ page, request }) => {
+  test.setTimeout(60_000)
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const bin = join(tmpdir(), 'ki-pw-global-config-sidecar')
+  execFileSync(goBin(), ['build', '-o', bin, '.'], {
+    cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
+    stdio: 'inherit',
+  })
+  const name = 'globalcfg'
+  const dir = join(home, 'extensions', name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'extension.json'), JSON.stringify({
+    name,
+    capabilities: ['settings'],
+    config: {
+      schema: { type: 'object', properties: { label: { type: 'string' } } },
+      defaults: { label: 'demo' },
+    },
+    runtime: { kind: 'rpc', command: bin },
+  }))
+  writeExt(home, 'goalui', bin, { env: { KI_SET_UI: '1', KI_SET_UI_GLOBAL: '1' } })
+
+  await page.goto('/')
+  await reloadServer(page, request)
+  const headers = { Authorization: `Bearer ${await tokenOf(page)}` }
+  const listed = await request.get('/v1/extensions', { headers })
+  const catalog = await listed.json() as { items?: { name: string }[] }
+  const keep = new Set([name, 'goalui'])
+  await request.patch('/v1/extensions', {
+    headers,
+    data: { disabled: (catalog.items ?? []).map(item => item.name).filter(item => !keep.has(item)) },
+  })
+  await reloadServer(page, request)
+  await page.reload()
+  const chip = page.getByTestId(`ext-chip-${name}`)
+  await expect(chip).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByTestId('ext-chip-goalui')).toBeVisible({ timeout: 15_000 })
+  await chip.click()
+  await expect(page.getByTestId('ext-panel')).toBeVisible()
+  await expect(page.getByTestId('ext-nav')).toBeVisible()
+  await expect(page.getByTestId(`ext-nav-${name}`)).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByTestId(`extension-config-${name}`)).toBeVisible()
+  await page.getByTestId('ext-panel').getByRole('button', { name: '关闭对话框' }).click()
+  await expect(page.getByTestId('ext-panel')).toHaveCount(0)
+
+  await page.getByTestId('new-session').click()
+  await sendPrompt(page, `unified extension page ${Date.now()}`)
+  await expect(page.getByTestId('assistant-message')).toBeVisible({ timeout: 20_000 })
+  await expect(page.getByTestId('ext-chip-goalui')).toBeVisible({ timeout: 15_000 })
+  await page.getByTestId(`ext-chip-${name}`).click()
+  await expect(page.getByTestId('ext-nav-goalui')).toBeVisible()
+  await expect(page.getByTestId(`ext-nav-${name}`)).toHaveAttribute('aria-current', 'page')
+  await page.getByTestId('ext-nav-goalui').click()
+  await expect(page.getByTestId('ext-panel')).toContainText('fixture panel text')
+  await page.getByTestId('ext-panel').getByRole('button', { name: '关闭对话框' }).click()
+
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-extensions').click()
+  await page.getByTestId(`cfg-configure-${name}`).click()
+  await expect(page.getByTestId('settings')).toHaveCount(0)
+  await expect(page.getByTestId('ext-panel')).toBeVisible()
+  await expect(page.getByTestId(`ext-nav-${name}`)).toHaveAttribute('aria-current', 'page')
+  await expect(page.getByTestId(`extension-config-${name}`)).toBeVisible()
 })
