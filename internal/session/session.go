@@ -94,6 +94,7 @@ type Entry struct {
 	ID               string          `json:"id"`
 	ParentID         string          `json:"parentId"`
 	Timestamp        string          `json:"timestamp"`
+	IdempotencyKey   string          `json:"idempotencyKey,omitempty"`
 	Message          *types.Message  `json:"message,omitempty"`
 	Summary          string          `json:"summary,omitempty"`
 	FirstKeptEntryID string          `json:"firstKeptEntryId,omitempty"`
@@ -522,23 +523,39 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 
 // AppendMessage writes a message as a child of the current leaf.
 func (s *Session) AppendMessage(m types.Message) (Entry, error) {
+	e, _, err := s.AppendMessageWithKey(m, "")
+	return e, err
+}
+
+// AppendMessageWithKey appends a normal model-facing message unless the same
+// idempotency key was already committed. The key is persisted on the entry so
+// a retry after a process crash cannot duplicate an external message.
+func (s *Session) AppendMessageWithKey(m types.Message, key string) (Entry, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if key != "" {
+		for _, existing := range s.entries {
+			if existing.Type == "message" && existing.IdempotencyKey == key {
+				return existing, true, nil
+			}
+		}
+	}
 	id, err := idgen.EntryID()
 	if err != nil {
-		return Entry{}, fmt.Errorf("generate entry ID: %w", err)
+		return Entry{}, false, fmt.Errorf("generate entry ID: %w", err)
 	}
 	e := Entry{
-		Type:      "message",
-		ID:        id,
-		ParentID:  s.leafID,
-		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
-		Message:   &m,
+		Type:           "message",
+		ID:             id,
+		ParentID:       s.leafID,
+		Timestamp:      time.Now().UTC().Format(time.RFC3339Nano),
+		IdempotencyKey: key,
+		Message:        &m,
 	}
 	if err := s.appendLocked(e); err != nil {
-		return Entry{}, err
+		return Entry{}, false, err
 	}
-	return e, nil
+	return e, false, nil
 }
 
 // AppendModelChange records a session default model update.

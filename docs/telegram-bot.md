@@ -8,7 +8,7 @@
 - Telegram 支持流式输出，但 `sendMessageDraft` 是私聊专用、最长约 30 秒的临时预览，客户端会在收到同一 chat/topic 的普通消息或 TTL 到期时移除；最终必须调用 `sendMessage` 固化。群组使用“先发送占位消息，再周期性 `editMessageText`”，或只发送最终结果。
 - Managed Bot 支持由 Telegram 侧限制访问用户：所有者始终可访问，也可以增加最多 10 个数字 `user_id`。该策略不提供群组白名单或命令级权限；本扩展只配置 Managed Bot 的 `botId` 和 `token`，不重复维护安全策略。
 - Managed Bot 的创建需要先准备一个开启 Bot Management Mode 的 Manager Bot，再通过 `https://t.me/newbot/<manager_username>/<suggested_username>?name=<suggested_name>` 创建。Manager Bot 通过 `getManagedBotToken` 获取子 Bot token，扩展使用子 Bot 的 `botId` 和 token；Manager Bot token 不填入扩展。
-- 群组继续保持 Telegram Privacy Mode，并在扩展内再次强制判断：只有明确 @ 当前 Bot，才触发回复。优先使用 `entities` 中的 `mention`、`text_mention` 或 `bot_command`；实体缺失时仅按完整 username 做边界匹配，不使用简单字符串包含判断。
+- 群组需要关闭 Telegram Privacy Mode，或将 Bot 设为群组管理员，才能收到普通消息。普通消息只追加到 session 历史，不触发回复；扩展只在“是否启动 prompt”这一层判断是否明确 @ 当前 Bot。优先使用 `entities` 中的 `mention`、`text_mention` 或 `bot_command`；实体缺失时仅按完整 username 做边界匹配，不使用简单字符串包含判断。
 - Telegram 的 `chat.id`、可选的 `message_thread_id`、`from.id`、用户名/显示名都需要保留。session 按 chat/thread 映射；群组内每条消息额外带紧凑的发送者身份，避免多人共享上下文时无法区分发言人。
 
 ## 现状可行性结论
@@ -180,10 +180,10 @@ Managed Bot 的访问策略在 Telegram 侧配置，不在扩展中重复配置�
 Telegram Update
   → 去重并确认 update_id
   → reaction（可选）
-  → 私聊直接处理 / 群组检查 @Bot
+  → 私聊直接处理 / 群组记录普通消息、检查 @Bot 是否触发
   → 解析 chat/thread/user 身份
   → chat/thread 查找或创建 session
-  → session.enqueue
+  → 普通群组消息 session.appendMessage；@Bot 消息 session.enqueue
   → 接收 ki 输出事件
   → Telegram 草稿/占位消息更新
   → 发送最终回复
@@ -194,7 +194,8 @@ Telegram Update
 - sidecar 使用 Go `net/http` 实现 `getUpdates` 长轮询，持久化 offset，并对 Telegram 429/网络错误做退避重试。
 - 收到 `message` 后先尝试 `setMessageReaction`，默认使用 `👀` 表示已接收；普通 Bot 不执行真正的“已读”操作。
 - 私聊直接接受文本、图片和文件；媒体先通过 Telegram `getFile` 下载，再转换成 ki 的 attachment/content。可访问用户由 Managed Bot 的 Telegram 原生策略决定。
-- 群组仅接受明确 @ 当前 Bot 的消息；优先按 Telegram entities 判断，entities 缺失时按完整 username 做安全兜底；去除 @Bot 文本后再送入模型。即使 Bot 是管理员或关闭了 Privacy Mode，也继续执行该过滤；扩展不额外维护群组白名单。
+- 群组普通消息调用 `session.appendMessage` 写入历史但不回复；明确 @ 当前 Bot 的消息先写入同一历史，再调用 `session.enqueue` 触发 prompt。优先按 Telegram entities 判断，entities 缺失时按完整 username 做安全兜底；去除 @Bot 文本后再送入模型。扩展不额外维护群组白名单。
+- 要收到未 @ 的群组消息，必须在 Telegram 侧关闭 Privacy Mode，或将 Bot 设为群组管理员；本地 mention 判断不能弥补 Telegram 未推送的消息。
 - 群组消息的模型输入包含简短身份信息，例如：
 
   ```text
@@ -209,6 +210,7 @@ Telegram Update
 - 默认映射键：`telegram:<accountId>:<chatId>:<threadId>`；没有 topic 时 `threadId=0`。
 - 私聊通常是一 chat 一 session。
 - 群组所有用户共享一个 chat session，但每条 user message 都带 author 身份。
+- 群组未 @ 消息进入 `context-queue.json`，空闲时立即提交为正常 message entry；运行中则在下一条 @ prompt 的边界前提交。@ prompt 之后到达的普通消息不进入当前 prompt，只进入下一轮。
 - workspace 映射键与 session 映射键一致，并额外包含 Bot `accountId`；`externalKey` 同时决定 session 和默认 workspace，避免不同 chat 复用工作目录。
 - 映射、最近发送消息、Telegram update offset 持久化在扩展自己的状态文件中；不把 Bot token 写入 session jsonl。
 - 首版提供 `/new`、`/cwd`、`/compact`、`/reload`；不在扩展中增加命令级权限配置，统一依赖 Telegram Managed Bot 访问策略。

@@ -94,9 +94,10 @@ func (a *botAPI) getMe(ctx context.Context) (user, error) {
 }
 
 func (a *botAPI) deleteWebhook(ctx context.Context) error {
-	// Long polling and webhook delivery are mutually exclusive. Keep pending
-	// updates when taking ownership so a restart does not silently discard them.
-	return a.call(ctx, "deleteWebhook", map[string]any{"drop_pending_updates": false}, nil)
+	// Long polling and webhook delivery are mutually exclusive. Telegram should
+	// not replay messages sent while this connector was offline; the connector
+	// still persists its offset for retries during one active polling lifecycle.
+	return a.call(ctx, "deleteWebhook", map[string]any{"drop_pending_updates": true}, nil)
 }
 
 func (a *botAPI) getUpdates(ctx context.Context, offset int64) ([]update, error) {

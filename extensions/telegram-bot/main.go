@@ -426,14 +426,13 @@ func (w *telegramWorker) handleUpdate(item update) error {
 		text = msg.Caption
 		entities = msg.CaptionEntities
 	}
-	if group && !mentionsBot(text, entities, w.me) {
-		return nil
-	}
-	if group {
+	addressed := !group || mentionsBot(text, entities, w.me)
+	if group && addressed {
 		text = stripBotMention(text, entities, w.me)
 	}
-	// Telegram enforces Managed Bot access restrictions. Keep only the
-	// connector-specific group mention rule here instead of duplicating policy.
+	// Telegram enforces Managed Bot access restrictions. The mention only
+	// controls whether a group message starts a run; all received group
+	// messages are retained as context for the next addressed message.
 	name, args, slash := parseSlash(text)
 	control := slash && (name == "new" || name == "cwd" || name == "compact" || name == "reload")
 	// Ordinary Bot API updates do not expose a user-client read marker. A
@@ -447,14 +446,6 @@ func (w *telegramWorker) handleUpdate(item update) error {
 	if err != nil {
 		return err
 	}
-	if err := w.applyModel(sess); err != nil {
-		w.sendText(msg.Chat.ID, msg.MessageThreadID, "⚠️ Telegram 回复模型配置无效：\n"+err.Error())
-		return nil
-	}
-	if control {
-		return w.runCommand(name, args, key, sess, msg)
-	}
-
 	contents, err := w.inputContents(text, msg, sess.CWD)
 	if err != nil {
 		return err
@@ -467,6 +458,30 @@ func (w *telegramWorker) handleUpdate(item update) error {
 	}
 	contents = append([]inputContent{{Type: "text", Text: authorPrefix(msg.From, text)}}, contents...)
 	external := w.externalMetadata(msg)
+	if group && !addressed {
+		ctx, cancel := context.WithTimeout(w.ctx, 15*time.Second)
+		var result map[string]any
+		err := w.app.rpc.call(ctx, "session.appendMessage", map[string]any{
+			"sessionId": sess.ID,
+			"message": map[string]any{
+				"role":     "user",
+				"content":  contents,
+				"origin":   "extension:telegram-bot",
+				"external": external,
+			},
+			"idempotencyKey": w.accountID + ":" + strconv.FormatInt(item.UpdateID, 10),
+		}, &result)
+		cancel()
+		return err
+	}
+	if err := w.applyModel(sess); err != nil {
+		w.sendText(msg.Chat.ID, msg.MessageThreadID, "⚠️ Telegram 回复模型配置无效：\n"+err.Error())
+		return nil
+	}
+	if control {
+		return w.runCommand(name, args, key, sess, msg)
+	}
+
 	var result enqueueResult
 	ctx, cancel := context.WithTimeout(w.ctx, 15*time.Second)
 	err = w.app.rpc.call(ctx, "session.enqueue", map[string]any{

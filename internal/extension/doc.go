@@ -7,6 +7,9 @@
 // one NDJSON sidecar per enabled package, owned by the server process. Provider
 // capabilities use the same process-level lifetime and are shared by all
 // sessions.
+// Channel sidecars can call session.appendMessage to persist a normal user
+// message without starting a run; session.appendEntry remains custom and is
+// not model-facing.
 // Provider OAuth progress also uses that process-level sidecar: URL/device-code
 // events are UI-neutral and completed opaque credentials return only through
 // the server auth broker.

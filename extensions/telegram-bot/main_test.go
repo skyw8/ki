@@ -81,6 +81,27 @@ func TestParseSlash(t *testing.T) {
 	}
 }
 
+func TestDeleteWebhookDropsPendingUpdates(t *testing.T) {
+	var method string
+	var params map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.URL.Path[strings.LastIndexByte(r.URL.Path, '/')+1:]
+		if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+	}))
+	defer server.Close()
+
+	api := &botAPI{base: server.URL, token: "test", client: server.Client()}
+	if err := api.deleteWebhook(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if method != "deleteWebhook" || params["drop_pending_updates"] != true {
+		t.Fatalf("deleteWebhook request: method=%q params=%v", method, params)
+	}
+}
+
 func TestTextMessageIsNotDroppedWithoutAttachments(t *testing.T) {
 	if !hasInput("hello", nil) {
 		t.Fatal("text-only input must be accepted")

@@ -10,7 +10,8 @@ import (
 )
 
 // SessionHost is implemented by the HTTP server. Sidecar inbound RPCs call it.
-// Methods must return quickly; enqueue must not wait for a full run.
+// Methods must return quickly; enqueue and appendMessage must not wait for a
+// full model run.
 type SessionHost interface {
 	CreateSession(req SessionCreateRequest) (SessionCreateResult, error)
 	NewSession(sessionID string, cwd string) (SessionCreateResult, error)
@@ -18,6 +19,7 @@ type SessionHost interface {
 	ListSessions(filter map[string]any) ([]SessionSnapshot, error)
 	GetSession(sessionID string) (SessionSnapshot, error)
 	Enqueue(sessionID, extension string, req EnqueueRequest) (EnqueueResult, error)
+	AppendMessage(sessionID, extension string, req AppendMessageRequest) (AppendMessageResult, error)
 	Snapshot(sessionID, extension string) (SessionSnapshot, error)
 	AppendEntry(sessionID, extension, customType string, data any) error
 	Abort(sessionID string) error
@@ -47,6 +49,10 @@ type EnqueueRequest struct {
 	CustomType     string            `json:"customType"`
 	Display        *bool             `json:"display"`
 	External       map[string]string `json:"external,omitempty"`
+	// ContextSequence is assigned by the Host for prompt ordering and is not
+	// supplied by sidecars.
+	ContextSequence uint64 `json:"-"`
+	ContextBoundary bool   `json:"-"`
 }
 
 // SessionCreateRequest is the channel-safe session creation contract.
@@ -71,6 +77,20 @@ type SessionCreateResult struct {
 type EnqueueResult struct {
 	Accepted string `json:"accepted"`
 	QueueID  string `json:"queueId,omitempty"`
+}
+
+// AppendMessageRequest appends a normal user message without starting a run.
+type AppendMessageRequest struct {
+	Message        types.Message `json:"message"`
+	IdempotencyKey string        `json:"idempotencyKey,omitempty"`
+}
+
+// AppendMessageResult reports whether a message was committed or waits for a
+// currently running prompt to release the session transcript.
+type AppendMessageResult struct {
+	Accepted string `json:"accepted"`
+	EntryID  string `json:"entryId,omitempty"`
+	Sequence uint64 `json:"sequence,omitempty"`
 }
 
 // SessionSnapshot is session.snapshot.
@@ -178,7 +198,7 @@ func inboundSessionID(params json.RawMessage) (string, error) {
 
 func inboundNeedsSession(method string) bool {
 	switch method {
-	case "session.enqueue", "session.snapshot", "session.appendEntry", "session.abort",
+	case "session.enqueue", "session.appendMessage", "session.snapshot", "session.appendEntry", "session.abort",
 		"session.compact", "session.patch", "session.setActiveTools", "session.new",
 		"session.reload", "tools.register",
 		"ui.setStatus", "ui.setPanel", "ui.clearPanel", "ui.confirm", "ui.select",
@@ -268,6 +288,18 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 		var req EnqueueRequest
 		_ = json.Unmarshal(msg.Params, &req)
 		res, err := c.host.Enqueue(sessionID, c.name, req)
+		if err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+		c.replyResult(msg.ID, res)
+	case "session.appendMessage":
+		var req AppendMessageRequest
+		if err := json.Unmarshal(msg.Params, &req); err != nil {
+			c.replyError(msg.ID, err.Error())
+			return
+		}
+		res, err := c.host.AppendMessage(sessionID, c.name, req)
 		if err != nil {
 			c.replyError(msg.ID, err.Error())
 			return

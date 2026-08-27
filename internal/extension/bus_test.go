@@ -33,11 +33,14 @@ func (h mutexHost) Enqueue(string, string, EnqueueRequest) (EnqueueResult, error
 }
 func (h mutexHost) Snapshot(string, string) (SessionSnapshot, error) { return SessionSnapshot{}, nil }
 func (h mutexHost) AppendEntry(string, string, string, any) error    { return nil }
-func (h mutexHost) Abort(string) error                               { return nil }
-func (h mutexHost) Compact(string) error                             { return nil }
-func (h mutexHost) PatchSession(string, string, string) error        { return nil }
-func (h mutexHost) SetActiveTools(string, string, []string) error    { return nil }
-func (h mutexHost) RegisterTools(string, string, []ToolSpec) error   { return nil }
+func (h mutexHost) AppendMessage(string, string, AppendMessageRequest) (AppendMessageResult, error) {
+	return AppendMessageResult{}, nil
+}
+func (h mutexHost) Abort(string) error                             { return nil }
+func (h mutexHost) Compact(string) error                           { return nil }
+func (h mutexHost) PatchSession(string, string, string) error      { return nil }
+func (h mutexHost) SetActiveTools(string, string, []string) error  { return nil }
+func (h mutexHost) RegisterTools(string, string, []ToolSpec) error { return nil }
 func (h mutexHost) UISetStatus(string, string, string, string, string) error {
 	return nil
 }

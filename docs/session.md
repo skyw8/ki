@@ -7,7 +7,7 @@
 `{sessions.root}/<encoded-cwd>/<timestamp>_<uuidv7>/`
 
 - `encoded-cwd`：绝对路径去掉盘符，`/` `\` `:` 换成 `-`，两边加 `--`。
-- 目录内：`events.jsonl` + `config.json`，忙时排队的 user 在 `queue.json`（最多 100 条 FIFO，不进消息树直到出队开跑）。
+- 目录内：`events.jsonl` + `config.json`；忙时排队的 user 在 `queue.json`（最多 100 条 FIFO，不进消息树直到出队开跑）；不触发运行但要进入后续 prompt 的正常 user message 暂存于 `context-queue.json`（最多 100 条，按序提交）。
 
 ## jsonl
 
@@ -27,6 +27,7 @@ toolResult message 可带结构化 `details`。它随 jsonl 落盘并通过现�
 - Agent delegation 使用同一 `ForkAt`，固定传入 `forkMode=tree`，并把 child session 的 `events.jsonl` 作为 `TaskOutput.outputFile`。stable agent/task 状态写入 child 目录的 `agent.json`；serve 重启时运行中记录恢复为 `interrupted`，transcript、header 和 parent/child 关系继续由 session 目录保存。
 - API 对外统一把 header 的 `parentSession` 映射为 `parentSessionId`，并同时返回 `forkMode`。`GET /v1/sessions`、`GET /v1/sessions/{id}` 和 fork response 使用同一组字段；`fork` body 可传 `{"entryId":"...","forkMode":"tree"}`，省略 mode 按 `flat` 处理。
 - `config.json`：该 session 的 `provider` / `model` / `thinkingEffort` / `activeLeafId`，可选 `title` / `pinned` / `pinnedAt` / `metadata`。Skills/extensions 启用在 `{KI_HOME}/toggles.json`，不在 session 里。
+- `context-queue.json`：`session.appendMessage` 的持久化暂存队列。消息提交后会变成普通 `message` entry，进入 `MessagesToLeaf()` 和后续 provider prompt；队列项带单调递增序号及可选 `idempotencyKey`。当前 prompt 入队时捕获边界序号，只提交边界之前的 context，之后到达的消息留给下一轮。扩展 prompt 的 `idempotencyKey` 另随 `ext-queue.json` 和首条 user entry 持久化。
 - user message 可保存结构化 `text`、`workspace_file`、`file` 和带宿主绝对路径的 `image` content。站内浏览器选择的是 workspace 引用；粘贴/拖入文件按 SHA-256 保存到本 session 的 `attachments/`。jsonl 只存引用；server 在 provider 边界读取并编码图片，普通文件变成可供 `Read` 使用的路径说明。fork 复制附件并把新 jsonl 中的路径改到新 session 目录。
 - 按 id 定位目录：serve 进程内维护 `session.Index`（id→dir 内存 map，见 `internal/session/index.go`），启动时由 `List` 的同一次 walk 顺路建好，零额外读盘。create/fork 后 `Add`、delete 后 `Remove`。命中即 O(1)；miss（别的进程建的会话、或目录被外部删除）回退到 `Find` 扫描并自愈，文件系统始终是唯一事实来源。
 - `GET /v1/sessions/{id}` 带只读 `availableSkills` / `availableExtensions`、`commands[]`、`queued[]` 和 `runtime.ready`。扩展 sidecar 在 server 监听后统一启动；打开该 session（create / GET by id / fork）只后台 Prepare 当前 session view；`GET /v1/sessions` 不启动 runtime。GET 不 await 握手。`runtime.ready` 在该次 Prepare 结束（失败也算）后为 true，并发 sideband `runtime_ready`。`PATCH` 的 `queued` 是保留的 id 列表（删除未列出的条目）。`POST prompt` 的 `queueId` 按 id 从 `queue.json` 取出并 `delivery=steer` 插入当前 run。`enabled` 来自全局 `toggles.json`。忙碌默认发送策略是 `toggles.json` 的 `message.busy`（`GET/PATCH /v1/message`）。Prompt 的 Prepare 已预热则 no-op；失败项发事件，但不阻断其他 server 或内置工具。

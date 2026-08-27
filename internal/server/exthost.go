@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"ki/internal/compact"
@@ -156,6 +157,13 @@ func matchesMetadata(metadata, filter map[string]any) bool {
 }
 
 func (s *Server) Enqueue(sessionID, extName string, req extension.EnqueueRequest) (extension.EnqueueResult, error) {
+	gate := s.inputGate(sessionID)
+	gate.Lock()
+	defer gate.Unlock()
+	dir, ok := s.sidx.Lookup(sessionID)
+	if !ok {
+		return extension.EnqueueResult{}, fmt.Errorf("session not found")
+	}
 	if req.IdempotencyKey != "" {
 		s.mu.Lock()
 		if prev, ok := s.idempotency[sessionID+"/"+extName+"/"+req.IdempotencyKey]; ok {
@@ -163,7 +171,33 @@ func (s *Server) Enqueue(sessionID, extName string, req extension.EnqueueRequest
 			return prev, nil
 		}
 		s.mu.Unlock()
+		sess, err := session.Open(dir)
+		if err != nil {
+			return extension.EnqueueResult{}, err
+		}
+		for _, entry := range sess.Entries() {
+			if entry.Type == "message" && entry.IdempotencyKey == req.IdempotencyKey {
+				_ = sess.Close()
+				return extension.EnqueueResult{Accepted: "duplicate"}, nil
+			}
+		}
+		_ = sess.Close()
+		queued, err := session.ReadExtQueue(dir)
+		if err != nil {
+			return extension.EnqueueResult{}, err
+		}
+		for _, item := range queued {
+			if item.Extension == extName && item.IdempotencyKey == req.IdempotencyKey {
+				return extension.EnqueueResult{Accepted: "queued", QueueID: item.ID}, nil
+			}
+		}
 	}
+	contextSequence, err := session.PendingContextSequence(dir)
+	if err != nil {
+		return extension.EnqueueResult{}, err
+	}
+	req.ContextSequence = contextSequence
+	req.ContextBoundary = true
 	if req.When == "settled" {
 		if s.running(sessionID) {
 			s.mu.Lock()
@@ -196,7 +230,16 @@ func (s *Server) acceptExtPrompt(sessionID, extName string, req extension.Enqueu
 	if deliver == "" {
 		deliver = toggles.BusyQueue
 	}
-	item := session.ExtQueuedItem{Content: req.Content, Extension: extName, Kind: req.Kind, CustomType: req.CustomType}
+	item := session.ExtQueuedItem{
+		Content:         req.Content,
+		Extension:       extName,
+		Kind:            req.Kind,
+		CustomType:      req.CustomType,
+		When:            req.When,
+		IdempotencyKey:  req.IdempotencyKey,
+		ContextSequence: req.ContextSequence,
+		ContextBoundary: req.ContextBoundary,
+	}
 	item.External = cloneExternal(req.External)
 	if deliver == "nextTurn" {
 		item.When = "nextTurn"
@@ -220,6 +263,11 @@ func (s *Server) acceptExtPrompt(sessionID, extName string, req extension.Enqueu
 		s.publishQueueChanged(sessionID)
 		return extension.EnqueueResult{Accepted: "queued", QueueID: got.ID}, nil
 	}
+	if req.ContextBoundary && req.ContextSequence != 0 {
+		if err := s.flushContextMessages(sessionID, req.ContextSequence); err != nil {
+			return extension.EnqueueResult{}, err
+		}
+	}
 	st, ctx, err := s.occupy(context.Background(), sessionID)
 	if err != nil {
 		got, qerr := session.EnqueueExt(dir, item)
@@ -230,7 +278,7 @@ func (s *Server) acceptExtPrompt(sessionID, extName string, req extension.Enqueu
 		return extension.EnqueueResult{Accepted: "queued", QueueID: got.ID}, nil
 	}
 	enableRunInbox(st)
-	go s.runPrompt(ctx, st, sessionID, req.Content, nil, "", "extension:"+extName, nil, req.External)
+	go s.runPrompt(ctx, st, sessionID, req.Content, nil, "", "extension:"+extName, req.IdempotencyKey, nil, req.External)
 	return extension.EnqueueResult{Accepted: "started"}, nil
 }
 
@@ -283,6 +331,128 @@ func cloneExternal(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func (s *Server) inputGate(sessionID string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	gate := s.inputGates[sessionID]
+	if gate == nil {
+		gate = &sync.Mutex{}
+		s.inputGates[sessionID] = gate
+	}
+	return gate
+}
+
+// flushContextMessages commits context-only messages as normal message entries.
+// The caller must hold the session input gate so a prompt cannot capture a
+// partially flushed transcript.
+func (s *Server) flushContextMessages(sessionID string, maxSequence uint64) error {
+	dir, ok := s.sidx.Lookup(sessionID)
+	if !ok {
+		return fmt.Errorf("session not found")
+	}
+	sess, err := session.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sess.Close() }()
+	return session.DrainContextThrough(dir, maxSequence, func(item session.ContextQueuedItem) error {
+		_, _, err := sess.AppendMessageWithKey(item.Message, item.IdempotencyKey)
+		return err
+	})
+}
+
+// hasPendingOccupy reports queued work that must run before a new context-only
+// message is committed. nextTurn items are intentionally excluded because
+// they are injected into the next user prompt and do not occupy the session.
+func hasPendingOccupy(dir string) (bool, error) {
+	userQueue, err := session.ReadQueue(dir)
+	if err != nil {
+		return false, err
+	}
+	if len(userQueue) > 0 {
+		return true, nil
+	}
+	extQueue, err := session.ReadExtQueue(dir)
+	if err != nil {
+		return false, err
+	}
+	for _, item := range extQueue {
+		if item.When != "nextTurn" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// AppendMessage records a normal user message without starting a model run.
+// When the session is occupied, the message waits in a durable context queue
+// and is committed before the next prompt boundary.
+func (s *Server) AppendMessage(sessionID, extName string, req extension.AppendMessageRequest) (extension.AppendMessageResult, error) {
+	if strings.TrimSpace(extName) == "" {
+		return extension.AppendMessageResult{}, fmt.Errorf("extension required")
+	}
+	if req.Message.Role == "" {
+		req.Message.Role = "user"
+	}
+	if req.Message.Role != "user" {
+		return extension.AppendMessageResult{}, fmt.Errorf("appendMessage only accepts user messages")
+	}
+	if err := validateUserContent(req.Message.Content); err != nil {
+		return extension.AppendMessageResult{}, err
+	}
+	if req.Message.Timestamp == 0 {
+		req.Message.Timestamp = time.Now().UnixMilli()
+	}
+	// The sidecar is not allowed to impersonate another source. Keep the
+	// origin canonical even when a request supplies a conflicting value.
+	req.Message.Origin = "extension:" + extName
+
+	gate := s.inputGate(sessionID)
+	gate.Lock()
+	defer gate.Unlock()
+	dir, ok := s.sidx.Lookup(sessionID)
+	if !ok {
+		return extension.AppendMessageResult{}, fmt.Errorf("session not found")
+	}
+	// Check the transcript before adding a queue item. The queue itself also
+	// deduplicates pending items; both checks are needed across a crash where
+	// the message entry was committed but the queue cleanup was not.
+	if req.IdempotencyKey != "" {
+		sess, err := session.Open(dir)
+		if err != nil {
+			return extension.AppendMessageResult{}, err
+		}
+		for _, entry := range sess.Entries() {
+			if entry.Type == "message" && entry.IdempotencyKey == req.IdempotencyKey {
+				_ = sess.Close()
+				return extension.AppendMessageResult{Accepted: "duplicate", EntryID: entry.ID}, nil
+			}
+		}
+		_ = sess.Close()
+	}
+	item, err := session.EnqueueContext(dir, session.ContextQueuedItem{
+		Message:        req.Message,
+		IdempotencyKey: req.IdempotencyKey,
+	})
+	if err != nil {
+		return extension.AppendMessageResult{}, err
+	}
+	if s.running(sessionID) {
+		return extension.AppendMessageResult{Accepted: "queued", Sequence: item.Sequence}, nil
+	}
+	pending, err := hasPendingOccupy(dir)
+	if err != nil {
+		return extension.AppendMessageResult{}, err
+	}
+	if pending {
+		return extension.AppendMessageResult{Accepted: "queued", Sequence: item.Sequence}, nil
+	}
+	if err := s.flushContextMessages(sessionID, 0); err != nil {
+		return extension.AppendMessageResult{}, err
+	}
+	return extension.AppendMessageResult{Accepted: "appended", Sequence: item.Sequence}, nil
 }
 
 func (s *Server) AppendEntry(sessionID, extName, customType string, data any) error {
@@ -646,6 +816,9 @@ func (s *Server) publishExtUI(sessionID string) {
 }
 
 func (s *Server) flushSettled(sessionID string) {
+	gate := s.inputGate(sessionID)
+	gate.Lock()
+	defer gate.Unlock()
 	s.mu.Lock()
 	var rest []settledEnqueue
 	var due []settledEnqueue
@@ -669,7 +842,14 @@ func (s *Server) flushSettled(sessionID string) {
 	// queue occupies first (E2). Never occupy from settled flush.
 	for _, p := range due {
 		_, _ = session.EnqueueExt(dir, session.ExtQueuedItem{
-			Content: p.Req.Content, Extension: p.Extension, Kind: p.Req.Kind, CustomType: p.Req.CustomType, External: cloneExternal(p.Req.External),
+			Content:         p.Req.Content,
+			Extension:       p.Extension,
+			Kind:            p.Req.Kind,
+			CustomType:      p.Req.CustomType,
+			IdempotencyKey:  p.Req.IdempotencyKey,
+			ContextSequence: p.Req.ContextSequence,
+			ContextBoundary: p.Req.ContextBoundary,
+			External:        cloneExternal(p.Req.External),
 		})
 	}
 	s.publishQueueChanged(sessionID)

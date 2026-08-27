@@ -36,6 +36,8 @@ func queuePath(dir string) string { return filepath.Join(dir, "queue.json") }
 
 func extQueuePath(dir string) string { return filepath.Join(dir, "ext-queue.json") }
 
+func contextQueuePath(dir string) string { return filepath.Join(dir, "context-queue.json") }
+
 func queueGate(dir string) *sync.Mutex {
 	key := filepath.Clean(dir)
 	gate, _ := queueGates.LoadOrStore(key, &sync.Mutex{})
@@ -44,13 +46,32 @@ func queueGate(dir string) *sync.Mutex {
 
 // ExtQueuedItem is one extension-origin turn waiting after user queue.
 type ExtQueuedItem struct {
-	ID         string            `json:"id"`
-	Content    []types.Content   `json:"content"`
-	Extension  string            `json:"extension,omitempty"`
-	Kind       string            `json:"kind,omitempty"`
-	CustomType string            `json:"customType,omitempty"`
-	When       string            `json:"when,omitempty"`
-	External   map[string]string `json:"external,omitempty"`
+	ID             string          `json:"id"`
+	Content        []types.Content `json:"content"`
+	Extension      string          `json:"extension,omitempty"`
+	Kind           string          `json:"kind,omitempty"`
+	CustomType     string          `json:"customType,omitempty"`
+	When           string          `json:"when,omitempty"`
+	IdempotencyKey string          `json:"idempotencyKey,omitempty"`
+	// ContextSequence is the last context-only message that belongs before
+	// this prompt. It prevents later messages from entering this prompt.
+	ContextSequence uint64            `json:"contextSequence,omitempty"`
+	ContextBoundary bool              `json:"contextBoundary,omitempty"`
+	External        map[string]string `json:"external,omitempty"`
+}
+
+// ContextQueuedItem is a normal user message waiting to be committed to the
+// session transcript without starting a model run.
+type ContextQueuedItem struct {
+	ID             string        `json:"id"`
+	Sequence       uint64        `json:"sequence"`
+	Message        types.Message `json:"message"`
+	IdempotencyKey string        `json:"idempotencyKey,omitempty"`
+}
+
+type contextQueueState struct {
+	Next  uint64              `json:"next"`
+	Items []ContextQueuedItem `json:"items"`
 }
 
 func readExtQueue(dir string) ([]ExtQueuedItem, error) {
@@ -82,6 +103,122 @@ func writeExtQueue(dir string, items []ExtQueuedItem) error {
 	return os.WriteFile(extQueuePath(dir), append(b, '\n'), 0o600)
 }
 
+func readContextQueue(dir string) (contextQueueState, error) {
+	b, err := os.ReadFile(contextQueuePath(dir))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return contextQueueState{}, nil
+		}
+		return contextQueueState{}, fmt.Errorf("read context queue: %w", err)
+	}
+	var state contextQueueState
+	if err := json.Unmarshal(b, &state); err != nil {
+		return contextQueueState{}, fmt.Errorf("decode context queue: %w", err)
+	}
+	return state, nil
+}
+
+func writeContextQueue(dir string, state contextQueueState) error {
+	// Keep an empty state after the first write so the sequence remains
+	// monotonic across drains; prompt boundaries may still reference an older
+	// sequence after the queue has temporarily become empty.
+	b, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode context queue: %w", err)
+	}
+	return os.WriteFile(contextQueuePath(dir), append(b, '\n'), 0o600)
+}
+
+// EnqueueContext appends a context-only message and assigns a durable order.
+func EnqueueContext(dir string, item ContextQueuedItem) (ContextQueuedItem, error) {
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	state, err := readContextQueue(dir)
+	if err != nil {
+		return ContextQueuedItem{}, err
+	}
+	if item.IdempotencyKey != "" {
+		for _, existing := range state.Items {
+			if existing.IdempotencyKey == item.IdempotencyKey {
+				return existing, nil
+			}
+		}
+	}
+	if len(state.Items) >= MaxQueueItems {
+		return ContextQueuedItem{}, ErrQueueFull
+	}
+	state.Next++
+	item.Sequence = state.Next
+	if item.ID == "" {
+		id, err := idgen.NewV7()
+		if err != nil {
+			return ContextQueuedItem{}, fmt.Errorf("context queue id: %w", err)
+		}
+		item.ID = id
+	}
+	state.Items = append(state.Items, item)
+	if err := writeContextQueue(dir, state); err != nil {
+		return ContextQueuedItem{}, err
+	}
+	return item, nil
+}
+
+// PendingContextSequence returns the greatest sequence still waiting to be
+// committed. Removed entries are already present in the session transcript.
+func PendingContextSequence(dir string) (uint64, error) {
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	state, err := readContextQueue(dir)
+	if err != nil {
+		return 0, err
+	}
+	if len(state.Items) == 0 {
+		return 0, nil
+	}
+	return state.Items[len(state.Items)-1].Sequence, nil
+}
+
+// DrainContextThrough gives context-only messages to consume in order and
+// removes each item only after the consumer succeeds. A crash between the
+// consumer and queue rewrite is safe when the consumer is idempotent.
+func DrainContextThrough(dir string, maxSequence uint64, consume func(ContextQueuedItem) error) error {
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	state, err := readContextQueue(dir)
+	if err != nil {
+		return err
+	}
+	for len(state.Items) > 0 {
+		item := state.Items[0]
+		if maxSequence != 0 && item.Sequence > maxSequence {
+			break
+		}
+		if err := consume(item); err != nil {
+			return err
+		}
+		state.Items = state.Items[1:]
+		if err := writeContextQueue(dir, state); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ReadContextQueue returns pending context-only messages.
+func ReadContextQueue(dir string) ([]ContextQueuedItem, error) {
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	state, err := readContextQueue(dir)
+	if err != nil {
+		return nil, err
+	}
+	return append([]ContextQueuedItem(nil), state.Items...), nil
+}
+
 // EnqueueExt appends an extension FIFO item.
 func EnqueueExt(dir string, item ExtQueuedItem) (ExtQueuedItem, error) {
 	gate := queueGate(dir)
@@ -106,6 +243,21 @@ func EnqueueExt(dir string, item ExtQueuedItem) (ExtQueuedItem, error) {
 		return ExtQueuedItem{}, err
 	}
 	return item, nil
+}
+
+// EnqueueExtFront restores an extension item after dispatch could not start it.
+func EnqueueExtFront(dir string, item ExtQueuedItem) error {
+	gate := queueGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
+	items, err := readExtQueue(dir)
+	if err != nil {
+		return err
+	}
+	if len(items) >= MaxQueueItems {
+		return ErrQueueFull
+	}
+	return writeExtQueue(dir, append([]ExtQueuedItem{item}, items...))
 }
 
 // DequeueExt removes the head extension FIFO item.

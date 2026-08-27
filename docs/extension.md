@@ -191,6 +191,7 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 | `session.reload` | — | 重载当前 session 的资源和扩展视图 |
 | `session.enqueue` | — | `{sessionId,...}`；`content`、`deliverAs`=`queue`\|`steer`\|`nextTurn`（默认 queue）、`when`=`now`\|`settled`、`idempotencyKey`、`kind`=`user`\|`custom` |
 | `session.snapshot` | — | `{sessionId}`；idle、running、queues、provider/model、tools、commands |
+| `session.appendMessage` | — | `{sessionId,message,idempotencyKey}`；追加正常 user message；不启动模型 |
 | `session.appendEntry` | — | `{sessionId,...}`；jsonl custom；强制本扩展名；不进 provider context |
 | `session.abort` | — | 同 POST abort |
 | `session.compact` | — | 同 HTTP compact |
@@ -207,6 +208,17 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 除 `session.create`、`session.list`、`session.get` 和 `ui.setGlobal*` / `ui.clearGlobalPanel` 外，上表 inbound 方法都必须带 `sessionId`，bus 订阅也按 session 维护。`session.open` 是 Host→sidecar 的 session 生命周期通知。`ui.setPanel` 和 `ui.setGlobalPanel` 由 WebUI 按通用壳渲染，Host 不解析扩展语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
 
 `origin` 一律 `extension:<name>`，并写进该次 occupy 的 user message（WebUI 气泡可区分）。扩展 FIFO 与用户 `queue.json` **分轨**；occupy release 后 **先用户 queue，再扩展 FIFO**。`when=settled` 在 `agent_settled` 后只写入扩展 FIFO（不直接 occupy），再走同一套 dispatch。`nextTurn` 挂到下次**用户** occupy，注入 messages，不自触发 occupy。`session.setActiveTools` 忽略未知名并发 `extension_notice` warn；全部未知名则保留上一套工具。`session.patch` 与 HTTP PATCH 同一套 ResolveSpec / thinking 校验。`session_before_compact` 可 cancel 或返回定制 summary（跳过模型摘要）。
+
+`session.appendMessage` 只接受 `role=user`，追加的是 provider 可见的正常
+`message` entry，但本身不 occupy、不调用模型。Host 会先把消息写入持久化
+`context-queue.json`；session 空闲时立即提交，session 忙时在下一条 prompt 的
+边界前按序提交。请求可带持久化 `idempotencyKey`，Telegram 等外部渠道重试时不
+会重复写入。prompt 入队时记录当时的 context 序号，因此 prompt 之后到达的
+context message 不会泄漏到当前 prompt，只会进入下一次 prompt。
+
+`session.enqueue` 的 `idempotencyKey` 同样会写入扩展 FIFO；prompt 运行后会写入
+首条正常 user entry。重试时 Host 先检查已提交 entry 和持久化 FIFO，再决定返回
+`duplicate` 或原 queue id。
 
 ## 扩展总线
 

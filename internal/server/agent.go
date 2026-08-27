@@ -312,7 +312,7 @@ func (s *Server) runChildAgent(ctx context.Context, id string, req tools.AgentRe
 	enableRunInbox(st)
 	// runPrompt owns the child occupy release and persists the complete child
 	// transcript. The user directive is appended after the forked history.
-	s.runPrompt(runCtx, st, id, []types.Content{{Type: "text", Text: req.Prompt}}, nil, "", "agent", nil)
+	s.runPrompt(runCtx, st, id, []types.Content{{Type: "text", Text: req.Prompt}}, nil, "", "agent", "", nil)
 	if st.err != nil {
 		return tools.AgentCompletion{}, st.err
 	}

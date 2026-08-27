@@ -70,6 +70,22 @@ func waitIdle(t *testing.T, srv *Server, id string) {
 	t.Fatal("session still occupied")
 }
 
+func waitContextQueueEmpty(t *testing.T, srv *Server, id string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		dir, ok := srv.sidx.Lookup(id)
+		if ok {
+			items, err := session.ReadContextQueue(dir)
+			if err == nil && len(items) == 0 {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("context queue is not empty")
+}
+
 func waitPrompts(t *testing.T, g *occupyGateStreamer, n int) []string {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -114,12 +130,131 @@ func TestExtEnqueueIdleStarts(t *testing.T) {
 		t.Fatalf("create %d %+v", status, created)
 	}
 	id, _ := created["id"].(string)
-	res, err := srv.Enqueue(id, "goal", extension.EnqueueRequest{Content: []types.Content{{Type: "text", Text: "go"}}})
+	res, err := srv.Enqueue(id, "goal", extension.EnqueueRequest{
+		Content:        []types.Content{{Type: "text", Text: "go"}},
+		IdempotencyKey: "telegram:update:started",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Accepted != "started" {
 		t.Fatalf("accepted %q", res.Accepted)
+	}
+	waitIdle(t, srv, id)
+	srv.mu.Lock()
+	delete(srv.idempotency, id+"/goal/telegram:update:started")
+	srv.mu.Unlock()
+	duplicate, err := srv.Enqueue(id, "goal", extension.EnqueueRequest{
+		Content:        []types.Content{{Type: "text", Text: "go again"}},
+		IdempotencyKey: "telegram:update:started",
+	})
+	if err != nil || duplicate.Accepted != "duplicate" {
+		t.Fatalf("durable duplicate result=%+v err=%v", duplicate, err)
+	}
+}
+
+func TestAppendMessageCommitsHistoryWithoutStartingRun(t *testing.T) {
+	srv, hs := testServer(t)
+	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{"cwd": t.TempDir()})
+	if status != http.StatusOK {
+		t.Fatalf("create %d %+v", status, created)
+	}
+	id, _ := created["id"].(string)
+	res, err := srv.AppendMessage(id, "telegram-bot", extension.AppendMessageRequest{
+		Message:        types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "group context"}}},
+		IdempotencyKey: "telegram:update:1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Accepted != "appended" || srv.running(id) {
+		t.Fatalf("append result=%+v running=%v", res, srv.running(id))
+	}
+	dir, ok := srv.sidx.Lookup(id)
+	if !ok {
+		t.Fatal("session dir")
+	}
+	sess, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.MessagesToLeaf(); len(got) != 1 || got[0].Text() != "group context" {
+		t.Fatalf("history=%+v", got)
+	}
+	_ = sess.Close()
+	duplicate, err := srv.AppendMessage(id, "telegram-bot", extension.AppendMessageRequest{
+		Message:        types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "duplicate"}}},
+		IdempotencyKey: "telegram:update:1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.Accepted != "duplicate" {
+		t.Fatalf("duplicate result=%+v", duplicate)
+	}
+	sess, _ = session.Open(dir)
+	if got := sess.MessagesToLeaf(); len(got) != 1 {
+		t.Fatalf("duplicate changed history=%+v", got)
+	}
+	_ = sess.Close()
+}
+
+func TestAppendMessagePreservesPromptBoundary(t *testing.T) {
+	gate := make(chan struct{})
+	g := &occupyGateStreamer{gate: gate}
+	srv, hs := testServerWith(t, g)
+	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{"cwd": t.TempDir()})
+	if status != http.StatusOK {
+		t.Fatalf("create %d", status)
+	}
+	id, _ := created["id"].(string)
+	status, _ = postJSON(t, hs, http.MethodPost, "/v1/sessions/"+id+"/prompt", map[string]any{"text": "first"})
+	if status != http.StatusAccepted {
+		t.Fatalf("prompt %d", status)
+	}
+	waitRunning(t, srv, id)
+	before, err := srv.AppendMessage(id, "telegram-bot", extension.AppendMessageRequest{
+		Message:        types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "before mention"}}},
+		IdempotencyKey: "telegram:update:2",
+	})
+	if err != nil || before.Accepted != "queued" {
+		t.Fatalf("before append result=%+v err=%v", before, err)
+	}
+	queued, err := srv.Enqueue(id, "telegram-bot", extension.EnqueueRequest{
+		Content:        []types.Content{{Type: "text", Text: "mentioned"}},
+		DeliverAs:      "queue",
+		IdempotencyKey: "telegram:update:3",
+	})
+	if err != nil || queued.Accepted != "queued" {
+		t.Fatalf("enqueue result=%+v err=%v", queued, err)
+	}
+	after, err := srv.AppendMessage(id, "telegram-bot", extension.AppendMessageRequest{
+		Message:        types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "after mention"}}},
+		IdempotencyKey: "telegram:update:4",
+	})
+	if err != nil || after.Accepted != "queued" {
+		t.Fatalf("after append result=%+v err=%v", after, err)
+	}
+	close(gate)
+	prompts := waitPrompts(t, g, 2)
+	waitIdle(t, srv, id)
+	waitContextQueueEmpty(t, srv, id)
+	if !strings.Contains(prompts[1], "before mention") || !strings.Contains(prompts[1], "mentioned") || strings.Contains(prompts[1], "after mention") {
+		t.Fatalf("prompt boundary lost: %v", prompts)
+	}
+	dir, _ := srv.sidx.Lookup(id)
+	sess, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	var history []string
+	for _, message := range sess.MessagesToLeaf() {
+		history = append(history, message.Text())
+	}
+	joined := strings.Join(history, "|")
+	if !strings.Contains(joined, "before mention") || !strings.Contains(joined, "mentioned") || !strings.Contains(joined, "after mention") {
+		t.Fatalf("history missing context: %v", history)
 	}
 }
 

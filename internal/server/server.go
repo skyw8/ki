@@ -71,6 +71,7 @@ type Server struct {
 	globalExtUI            map[string]*extUIState
 	pendingSettled         []settledEnqueue
 	idempotency            map[string]extension.EnqueueResult
+	inputGates             map[string]*sync.Mutex
 	activeTools            map[string][]string
 	uiAnswers              map[string]chan uiAnswer
 	toggleMu               sync.Mutex
@@ -164,6 +165,7 @@ func New(opt Options) (*Server, error) {
 		extUI:                  map[string]map[string]*extUIState{},
 		globalExtUI:            map[string]*extUIState{},
 		idempotency:            map[string]extension.EnqueueResult{},
+		inputGates:             map[string]*sync.Mutex{},
 		activeTools:            map[string][]string{},
 		uiAnswers:              map[string]chan uiAnswer{},
 		runtime:                map[string]*runtimePrep{},
@@ -1146,7 +1148,7 @@ func (s *Server) promoteQueued(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 	enableRunInbox(st)
-	go s.runPrompt(ctx, st, id, item.Content, nil, model, "", s.takeNextTurn(id))
+	go s.runPrompt(ctx, st, id, item.Content, nil, model, "", "", s.takeNextTurn(id))
 	s.publishQueueChanged(id)
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started"})
 }
@@ -1278,7 +1280,7 @@ func hasUnresolvedToolCalls(messages []types.Message) bool {
 	return len(pending) != 0
 }
 
-func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content []types.Content, parentID *string, reqModel, origin string, nextTurn []session.ExtQueuedItem, external ...map[string]string) {
+func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content []types.Content, parentID *string, reqModel, origin, idempotencyKey string, nextTurn []session.ExtQueuedItem, external ...map[string]string) {
 	defer func() {
 		// Why: occupy must be paired with release. Closing done here used to
 		// mark SSE idle without consuming pendingReload, so a /reload during
@@ -1424,7 +1426,12 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 				rewritten := s.ext.ApplyMessageEnd(ctx, id, *ev.Message)
 				ev.Message = &rewritten
 			}
-			e, err := sess.AppendMessage(*ev.Message)
+			key := ""
+			if ev.Message.Role == "user" && idempotencyKey != "" {
+				key = idempotencyKey
+				idempotencyKey = ""
+			}
+			e, _, err := sess.AppendMessageWithKey(*ev.Message, key)
 			if err != nil {
 				return fmt.Errorf("append message: %w", err)
 			}
@@ -1677,7 +1684,7 @@ func (s *Server) withNextTurn(sess *session.Session, st *runState, hooks loop.Ho
 				origin = "extension:" + item.Extension
 			}
 			msg := types.Message{Role: "user", Content: item.Content, Origin: origin, External: cloneExternal(item.External), Timestamp: time.Now().UnixMilli()}
-			if e, aerr := sess.AppendMessage(msg); aerr == nil {
+			if e, _, aerr := sess.AppendMessageWithKey(msg, item.IdempotencyKey); aerr == nil {
 				ev := loop.Event{Type: loop.MessageEnd, Message: &msg, EntryID: e.ID}
 				st.mu.Lock()
 				st.evs = append(st.evs, ev)

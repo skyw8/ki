@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -106,5 +107,62 @@ func TestKeepQueueIDsDeletes(t *testing.T) {
 	got, err := KeepQueueIDs(dir, []string{b.ID, a.ID, "missing"})
 	if err != nil || len(got) != 2 || got[0].ID != b.ID || got[1].ID != a.ID {
 		t.Fatalf("keep: %+v %v", got, err)
+	}
+}
+
+func TestContextQueueDrainsInOrderAndDeduplicates(t *testing.T) {
+	dir := t.TempDir()
+	first, err := EnqueueContext(dir, ContextQueuedItem{
+		Message:        types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "first"}}},
+		IdempotencyKey: "update-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := EnqueueContext(dir, ContextQueuedItem{
+		Message:        types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "duplicate"}}},
+		IdempotencyKey: "update-1",
+	})
+	if err != nil || duplicate.ID != first.ID || duplicate.Sequence != first.Sequence {
+		t.Fatalf("duplicate: %+v %v", duplicate, err)
+	}
+	second, err := EnqueueContext(dir, ContextQueuedItem{
+		Message: types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "second"}}},
+	})
+	if err != nil || second.Sequence <= first.Sequence {
+		t.Fatalf("second: %+v %v", second, err)
+	}
+
+	var got []string
+	if err := DrainContextThrough(dir, first.Sequence, func(item ContextQueuedItem) error {
+		got = append(got, item.Message.Text())
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "first" {
+		t.Fatalf("partial drain: %v", got)
+	}
+	pending, err := ReadContextQueue(dir)
+	if err != nil || len(pending) != 1 || pending[0].Message.Text() != "second" {
+		t.Fatalf("pending: %+v %v", pending, err)
+	}
+	if err := DrainContextThrough(dir, 0, func(item ContextQueuedItem) error {
+		got = append(got, item.Message.Text())
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "|") != "first|second" {
+		t.Fatalf("drain order: %v", got)
+	}
+	if next, err := PendingContextSequence(dir); err != nil || next != 0 {
+		t.Fatalf("pending sequence after drain: %d %v", next, err)
+	}
+	third, err := EnqueueContext(dir, ContextQueuedItem{
+		Message: types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "third"}}},
+	})
+	if err != nil || third.Sequence <= second.Sequence {
+		t.Fatalf("sequence was not retained: %+v %v", third, err)
 	}
 }

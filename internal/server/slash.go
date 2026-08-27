@@ -404,6 +404,9 @@ func (s *Server) publishSideband(sessionID string, ev loop.Event, persist bool) 
 }
 
 func (s *Server) dispatchQueue(id string) {
+	gate := s.inputGate(id)
+	gate.Lock()
+	defer gate.Unlock()
 	if s.running(id) {
 		return
 	}
@@ -423,6 +426,26 @@ func (s *Server) dispatchQueue(id string) {
 			return
 		}
 		if !eok {
+			if err := s.flushContextMessages(id, 0); err != nil {
+				slog.Warn("flush context queue", "session_id", id, "err", err)
+			}
+			return
+		}
+		if ext.ContextBoundary {
+			if ext.ContextSequence != 0 {
+				if err := s.flushContextMessages(id, ext.ContextSequence); err != nil {
+					if restoreErr := session.EnqueueExtFront(dir, ext); restoreErr != nil {
+						slog.Warn("restore extension queue", "session_id", id, "err", restoreErr)
+					}
+					slog.Warn("flush context queue", "session_id", id, "err", err)
+					return
+				}
+			}
+		} else if err := s.flushContextMessages(id, 0); err != nil {
+			if restoreErr := session.EnqueueExtFront(dir, ext); restoreErr != nil {
+				slog.Warn("restore extension queue", "session_id", id, "err", restoreErr)
+			}
+			slog.Warn("flush context queue", "session_id", id, "err", err)
 			return
 		}
 		s.publishQueueChanged(id)
@@ -437,10 +460,17 @@ func (s *Server) dispatchQueue(id string) {
 		if ext.Extension != "" {
 			origin = "extension:" + ext.Extension
 		}
-		go s.runPrompt(ctx, st, id, ext.Content, nil, "", origin, nil, ext.External)
+		go s.runPrompt(ctx, st, id, ext.Content, nil, "", origin, ext.IdempotencyKey, nil, ext.External)
 		return
 	}
 	s.publishQueueChanged(id)
+	if err := s.flushContextMessages(id, 0); err != nil {
+		if restoreErr := session.EnqueueFront(dir, item); restoreErr != nil {
+			slog.Warn("requeue", "session_id", id, "err", restoreErr)
+		}
+		slog.Warn("flush context queue", "session_id", id, "err", err)
+		return
+	}
 	st, ctx, err := s.occupy(context.Background(), id)
 	if err != nil {
 		if err := session.EnqueueFront(dir, item); err != nil {
@@ -451,7 +481,7 @@ func (s *Server) dispatchQueue(id string) {
 		return
 	}
 	enableRunInbox(st)
-	go s.runPrompt(ctx, st, id, item.Content, nil, "", "", s.takeNextTurn(id))
+	go s.runPrompt(ctx, st, id, item.Content, nil, "", "", "", s.takeNextTurn(id))
 }
 
 func writeHandled(w http.ResponseWriter, notice string, isErr bool) {
@@ -481,6 +511,13 @@ func hasNonText(content []types.Content) bool {
 }
 
 func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id string, content []types.Content, parentID *string, model string) {
+	gate := s.inputGate(id)
+	gate.Lock()
+	defer gate.Unlock()
+	if err := s.flushContextMessages(id, 0); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	st, ctx, err := s.occupy(parent, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -489,6 +526,6 @@ func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id stri
 
 	enableRunInbox(st)
 	// runPrompt's defer release returns this occupy slot.
-	go s.runPrompt(ctx, st, id, content, parentID, model, "", s.takeNextTurn(id))
+	go s.runPrompt(ctx, st, id, content, parentID, model, "", "", s.takeNextTurn(id))
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started"})
 }

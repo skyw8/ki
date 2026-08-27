@@ -145,11 +145,12 @@ Telegram 的用户访问策略由 Managed Bot 在 Telegram 侧控制。扩展不
 ## 4. 使用
 
 - 私聊：由 Telegram Managed Bot 访问设置决定是否可用。
-- 群组：Bot 可以被加入群组，但只有包含明确 `@你的_bot` 的消息才会交给 KI；扩展不维护群组白名单。
+- 群组：需要关闭 Privacy Mode 或将 Bot 设为管理员，才能收到所有群组消息。未 @ Bot 的消息只进入该群组 session 历史，不回复；明确 `@你的_bot` 的消息才触发 KI。扩展不维护群组白名单。
 - 支持 `/new`、`/cwd <path>`、`/compact`、`/reload`。命令不再配置独立权限，访问权限由 Telegram Managed Bot 策略决定。
 - 每个 chat/topic 的 session 映射键为 `telegram:<accountId>:<chatId>:<threadId>`，没有 topic 时 `threadId` 为 `0`。
 - workspace 自动创建在 `{KI_HOME}/workspace/telegram/<accountId>/chat-<chatId>/topic-<threadId>`，不同 chat/topic 不会共用目录。
 - 群组消息会带简短的发送者名称和 `user_id`，用于区分多人发言。
+- 未 @ 的群组消息通过 `session.appendMessage` 进入正常历史，不启动模型；@ 消息通过 `session.enqueue` 触发 prompt，并读取此前已提交的完整历史。
 - 收到消息后扩展会尽力添加 `👀` reaction；私聊使用 Telegram 的 30 秒临时草稿流式更新，并在结束时发送普通消息固化，群组使用占位消息编辑；不会发送 thinking、原始 tool call、参数和完整 tool result。
 - 如果模型或 Responses 流失败，扩展会清理已收到的 partial 文本，并在草稿/占位消息中显示失败原因，不会把 partial 当成正常回复。
 - 普通 4xx 和 Responses 协议格式错误会立即返回，不会重复请求多次；429、5xx、网络错误和网关明确标记的瞬时 `bad_response_status_code` 仍会退避重试。
