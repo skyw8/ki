@@ -151,7 +151,7 @@ Telegram 的用户访问策略由 Managed Bot 在 Telegram 侧控制。扩展不
 - workspace 自动创建在 `{KI_HOME}/workspace/telegram/<accountId>/chat-<chatId>/topic-<threadId>`，不同 chat/topic 不会共用目录。
 - 群组消息会带简短的发送者名称和 `user_id`，用于区分多人发言。
 - 未 @ 的群组消息通过 `session.appendMessage` 进入正常历史，不启动模型；@ 消息通过 `session.enqueue` 触发 prompt，并读取此前已提交的完整历史。
-- 收到消息后扩展会尽力添加 `👀` reaction；私聊使用 Telegram 的 30 秒临时草稿流式更新，并在结束时发送普通消息固化，群组使用占位消息编辑；不会发送 thinking、原始 tool call、参数和完整 tool result。
+- 私聊或群组明确 @ Bot 的消息会尽力添加 `👀` reaction；未 @ 的群组消息不添加 reaction，只记录历史并确认处理。私聊使用 Telegram 的 30 秒临时草稿流式更新，并在结束时发送普通消息固化，群组使用占位消息编辑；不会发送 thinking、原始 tool call、参数和完整 tool result。
 - 如果模型或 Responses 流失败，扩展会清理已收到的 partial 文本，并在草稿/占位消息中显示失败原因，不会把 partial 当成正常回复。
 - 普通 4xx 和 Responses 协议格式错误会立即返回，不会重复请求多次；429、5xx、网络错误和网关明确标记的瞬时 `bad_response_status_code` 仍会退避重试。
 

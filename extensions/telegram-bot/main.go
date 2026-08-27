@@ -430,16 +430,19 @@ func (w *telegramWorker) handleUpdate(item update) error {
 	if group && addressed {
 		text = stripBotMention(text, entities, w.me)
 	}
+	if shouldReact(group, addressed) {
+		// Ordinary Bot API updates have no user-client read marker. A reaction is
+		// only an acknowledgement for private or explicitly addressed messages;
+		// advancing the polling offset acknowledges an ordinary group message.
+		reactionCtx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
+		_ = w.api.setReaction(reactionCtx, msg.Chat.ID, msg.MessageID)
+		cancel()
+	}
 	// Telegram enforces Managed Bot access restrictions. The mention only
 	// controls whether a group message starts a run; all received group
 	// messages are retained as context for the next addressed message.
 	name, args, slash := parseSlash(text)
 	control := slash && (name == "new" || name == "cwd" || name == "compact" || name == "reload")
-	// Ordinary Bot API updates do not expose a user-client read marker. A
-	// reaction is the visible acknowledgement and is deliberately best effort.
-	reactionCtx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
-	_ = w.api.setReaction(reactionCtx, msg.Chat.ID, msg.MessageID)
-	cancel()
 
 	key := w.externalKey(msg.Chat.ID, msg.MessageThreadID)
 	sess, err := w.sessionFor(key, msg)
@@ -507,6 +510,10 @@ type inputContent struct {
 
 func hasInput(text string, contents []inputContent) bool {
 	return len(contents) > 0 || strings.TrimSpace(text) != ""
+}
+
+func shouldReact(group, addressed bool) bool {
+	return !group || addressed
 }
 
 func (w *telegramWorker) inputContents(text string, msg *message, cwd string) ([]inputContent, error) {

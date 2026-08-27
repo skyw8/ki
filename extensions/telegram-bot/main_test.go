@@ -111,6 +111,18 @@ func TestTextMessageIsNotDroppedWithoutAttachments(t *testing.T) {
 	}
 }
 
+func TestGroupReactionPolicy(t *testing.T) {
+	if !shouldReact(false, false) {
+		t.Fatal("private messages should be acknowledged")
+	}
+	if !shouldReact(true, true) {
+		t.Fatal("addressed group messages should be acknowledged")
+	}
+	if shouldReact(true, false) {
+		t.Fatal("ordinary group messages should not receive a reaction")
+	}
+}
+
 func TestFailureReplacesGroupPlaceholderInsteadOfSendingPartialText(t *testing.T) {
 	type call struct {
 		method string

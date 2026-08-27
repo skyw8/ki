@@ -4,7 +4,7 @@
 
 - Telegram 官方 Bot API 是 HTTPS 接口，不依赖 Go 专用 SDK。Go 侧使用标准库 `net/http` 复用一个 `http.Client`，请求地址为 `https://api.telegram.org/bot<token>/METHOD_NAME`，普通请求使用 JSON，文件使用 multipart。
 - 首版采用 `getUpdates` 长轮询：实现简单，不要求公网 HTTPS；用 `offset=update_id+1` 持久化确认进度。`getUpdates` 与 webhook 互斥，后续有公网入口时再支持 `setWebhook`。
-- 普通 Bot 没有通用“标记已读”接口。`getUpdates` 的 offset 只能确认 Bot 已处理更新，不等同于用户客户端的已读状态；`readBusinessMessage` 仅适用于 Business Bot。收到消息后可以调用 `setMessageReaction` 打一个 `👀`/`⏳` reaction，失败不阻断消息处理。
+- 普通 Bot 没有通用“标记已读”接口。`getUpdates` 的 offset 只能确认 Bot 已处理更新，不等同于用户客户端的已读状态；`readBusinessMessage` 仅适用于 Business Bot。当前仅对私聊或群组中明确 @ Bot 的消息调用 `setMessageReaction`；未 @ 的群组消息只推进 offset 并写入历史。
 - Telegram 支持流式输出，但 `sendMessageDraft` 是私聊专用、最长约 30 秒的临时预览，客户端会在收到同一 chat/topic 的普通消息或 TTL 到期时移除；最终必须调用 `sendMessage` 固化。群组使用“先发送占位消息，再周期性 `editMessageText`”，或只发送最终结果。
 - Managed Bot 支持由 Telegram 侧限制访问用户：所有者始终可访问，也可以增加最多 10 个数字 `user_id`。该策略不提供群组白名单或命令级权限；本扩展只配置 Managed Bot 的 `botId` 和 `token`，不重复维护安全策略。
 - Managed Bot 的创建需要先准备一个开启 Bot Management Mode 的 Manager Bot，再通过 `https://t.me/newbot/<manager_username>/<suggested_username>?name=<suggested_name>` 创建。Manager Bot 通过 `getManagedBotToken` 获取子 Bot token，扩展使用子 Bot 的 `botId` 和 token；Manager Bot token 不填入扩展。
@@ -179,7 +179,7 @@ Managed Bot 的访问策略在 Telegram 侧配置，不在扩展中重复配置�
 ```text
 Telegram Update
   → 去重并确认 update_id
-  → reaction（可选）
+  → 私聊/@消息 reaction（可选）
   → 私聊直接处理 / 群组记录普通消息、检查 @Bot 是否触发
   → 解析 chat/thread/user 身份
   → chat/thread 查找或创建 session
@@ -192,7 +192,7 @@ Telegram Update
 ### 入站
 
 - sidecar 使用 Go `net/http` 实现 `getUpdates` 长轮询，持久化 offset，并对 Telegram 429/网络错误做退避重试。
-- 收到 `message` 后先尝试 `setMessageReaction`，默认使用 `👀` 表示已接收；普通 Bot 不执行真正的“已读”操作。
+- 收到私聊或明确 @ Bot 的 `message` 后，尽力调用 `setMessageReaction`，默认使用 `👀` 表示已接收；未 @ 的群组消息不添加 reaction，只在成功处理后推进 `getUpdates` offset。普通 Bot 不执行真正的用户侧“已读”操作。
 - 私聊直接接受文本、图片和文件；媒体先通过 Telegram `getFile` 下载，再转换成 ki 的 attachment/content。可访问用户由 Managed Bot 的 Telegram 原生策略决定。
 - 群组普通消息调用 `session.appendMessage` 写入历史但不回复；明确 @ 当前 Bot 的消息先写入同一历史，再调用 `session.enqueue` 触发 prompt。优先按 Telegram entities 判断，entities 缺失时按完整 username 做安全兜底；去除 @Bot 文本后再送入模型。扩展不额外维护群组白名单。
 - 要收到未 @ 的群组消息，必须在 Telegram 侧关闭 Privacy Mode，或将 Bot 设为群组管理员；本地 mention 判断不能弥补 Telegram 未推送的消息。

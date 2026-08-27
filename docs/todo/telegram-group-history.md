@@ -52,6 +52,8 @@ telegram:<accountId>:<chatId>:<threadId>
 
 Telegram 侧还必须关闭 Privacy Mode，或者将 Bot 设为群组管理员，否则普通群组消息不会推送给 Bot。Privacy Mode 关闭后，扩展不能在入站层直接丢弃未 @ 消息；`mentionsBot` 只能用于判断是否触发回复，不能用于决定是否记录历史。
 
+未 @ 的群组消息不添加 reaction；处理成功后推进 `getUpdates` offset，作为 Bot 侧确认。Telegram 普通 Bot 没有独立的用户侧“标记已读”接口。
+
 ## 三、如何 append history
 
 ### 3.1 不能使用 `session.appendEntry`
