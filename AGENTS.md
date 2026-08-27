@@ -44,6 +44,7 @@ ki/
 
 - Cross-package notes live in `docs/`, one file per topic:
   - `architecture.md` — prompt flow across cli → server → loop
+  - `events.md` — unified loop/SSE, extension, provider, and WebUI event catalog
   - `system_prompt.md` — prompt layers, resource cache, dynamic inputs, reload
   - `session.md` — session dir layout, append-only jsonl tree
   - `provider.md` — provider registry and protocol shapes (Completions / Responses / Anthropic)
