@@ -8,8 +8,8 @@
 
 ## 1. 目标与取舍
 
-实现一个名为 `deep-web-search` 的 Ki extension，提供统一的 `deep_web_search` 能力，并保留
-后续网页抓取、来源核验和摘要审阅的空间。
+实现一个名为 `deep-web-search` 的 Ki extension，提供统一的 `deep_web_search` 能力，并支持
+并行检索、网页抓取、来源核验和可选自动摘要。
 
 | Provider | 认证 | 主要角色 |
 |---|---|---|
@@ -106,11 +106,8 @@ extensions/
         "maxResults": {"type": "integer"},
         "fetchContent": {"type": "boolean"},
         "summaryModel": {"type": "string"},
-        "queryRewriteModel": {"type": "string"},
         "summaryGenerationDeadlineMs": {"type": "integer", "minimum": 1000},
-        "curatorTimeoutSeconds": {"type": "integer", "minimum": 5},
-        "autoOpenBrowser": {"type": "boolean"},
-        "workflow": {"type": "string", "enum": ["none", "summary-review", "auto-summary"]}
+        "workflow": {"type": "string", "enum": ["none", "auto-summary"]}
       }
     },
     "defaults": {
@@ -126,10 +123,7 @@ extensions/
       "maxResults": 5,
       "fetchContent": false,
       "summaryModel": "openai-codex/gpt-5.5",
-      "queryRewriteModel": "",
       "summaryGenerationDeadlineMs": 30000,
-      "curatorTimeoutSeconds": 20,
-      "autoOpenBrowser": true,
       "workflow": "none"
     }
   },
@@ -352,11 +346,11 @@ Deep Web Search
     ├── 结果排序和聚合设置
     ├── 默认结果数
     ├── 是否后台抓取正文
-    ├── 默认工作流：none / summary-review / auto-summary
-    ├── 摘要模型：provider/model-id
-    ├── 查询改写模型：provider/model-id（可选）
+    ├── 默认工作流：none / auto-summary
+    ├── 摘要模型：从当前可用模型弹窗选择（可清除）
+    ├── Codex 搜索模型：仅从 openai-codex 模型弹窗选择
     ├── 摘要超时
-    └── 是否自动打开 curator 浏览器
+    └── 并行查询和 provider 结果聚合
 ~~~
 
 保存行为：
@@ -366,11 +360,16 @@ Deep Web Search
 - 页面不显示原始 Key，不把 Key 放进 ui.setPanel、SSE、URL、日志或错误信息。
 - 状态只显示 configured、missing、error、rate-limited 等，不显示 Key 前缀和长度。
 
-三种 workflow 配置优先级为：单次 `deep_web_search.workflow` 参数 > extension 配置中的
-`workflow` > 默认 `none`。`summaryModel` 和 `queryRewriteModel` 使用
-`provider/model-id` 格式，不是 API Key；Codex 模型直接使用 `credentials.json` 中的
+`workflow` 是用户在 extension 配置页中选择的全局结果工作流，只读取 extension 配置中的
+`workflow`，不暴露为 `deep_web_search` 工具参数，因此模型不能按单次调用覆盖用户设置；未配置时使用默认 `none`。`summaryModel` 使用 `provider/model-id` 格式，不是 API Key；Codex 模型直接使用 `credentials.json` 中的
 OAuth credential。MVP 只保证 `openai-codex/*`，其他模型需要后续增加 Host completion
 能力或对应的 credential 读取方案。
+
+模型选择使用 Host 的 `GET /v1/models` 返回的当前可用模型目录，不在 extension 配置页手工
+维护模型清单。Summary model 弹窗展示该目录中的全部模型，保存完整的 `provider/model` spec；
+Codex search model 弹窗只保留 `provider=openai-codex` 的模型，保存时只写模型 ID，因为 Codex
+搜索始终复用 codex-oauth 的 OAuth endpoint。旧配置中的裸 Summary model 会按
+`openai-codex/<id>` 解释，以便打开弹窗时正确显示选中态。
 
 ### 5.3 Provider toggle
 
@@ -395,7 +394,7 @@ OAuth credential。MVP 只保证 `openai-codex/*`，其他模型需要后续增�
 - `config.updated` 后立即生效；正在执行的请求使用启动时确定的 provider 快照，不中途
   改变并发集合。
 
-### 5.4 三种 workflow 配置示例
+### 5.4 两种 workflow 配置示例
 
 全局默认配置写入 deep-web-search 的 extension config：
 
@@ -405,22 +404,15 @@ OAuth credential。MVP 只保证 `openai-codex/*`，其他模型需要后续增�
 }
 ~~~
 
-单次调用可以覆盖全局配置：
+工具调用不接收 `workflow` 参数。模型始终使用用户在 extension 配置页选择的工作流，
+这样 `none` 不会被模型意外改成 `auto-summary`，也不会因为工具参数变化而改变缓存语义。
 
-~~~typescript
-deep_web_search({ query: "...", workflow: "none" })
-deep_web_search({ query: "...", workflow: "summary-review" })
-deep_web_search({ query: "...", workflow: "auto-summary" })
-~~~
-
-| workflow | curator 页面 | `queryRewriteModel` | `summaryModel` | 无模型时的行为 |
+| workflow | 页面行为 | `summaryModel` | 无模型时的行为 |
 |---|---|---|---|---|
-| `none` | 不启动 | 不调用 | 不调用 | 返回 source pack，由当前会话模型继续回答 |
-| `summary-review` | 启动；`autoOpenBrowser` 控制是否自动弹窗 | 仅点击 AI 改写时调用 | 仅生成摘要草稿时调用 | 可人工发送原始结果；摘要生成失败则确定性 fallback |
-| `auto-summary` | 不启动 | 不调用 | 搜索完成后调用 | 自动切换为 `none`，返回 source pack 并记录 fallback 原因 |
+| `none` | 不启动页面 | 不调用 | 返回 source pack，由当前会话模型继续回答 |
+| `auto-summary` | 不启动页面 | 搜索完成后调用 | 自动切换为 `none`，返回 source pack 并记录 fallback 原因 |
 
-模式配置不改变四个 provider 的搜索、清洗、去重和缓存流程；它只控制搜索结束后的
-curator、查询改写和摘要阶段。
+模式配置不改变四个 provider 的搜索、清洗、去重和缓存流程；它只控制搜索结束后的摘要阶段。
 
 ### 5.5 Workflow fallback 和实际模式
 
@@ -431,13 +423,10 @@ fallback 不只返回一个错误文本，而是完成一次明确的 workflow �
 | 请求模式 | 失败点 | fallback 后模式 | 行为 |
 |---|---|---|---|
 | `none` | 无额外模型 | `none` | 不切换；继续返回 source pack |
-| `summary-review` | `queryRewriteModel` 失败 | `summary-review` | 保留 curator，禁用本次 AI 改写，允许人工修改 query |
-| `summary-review` | `summaryModel` 缺失、超时或失败 | `summary-review` | 保留 curator，允许发送人工选择的原始结果；可生成确定性摘要，但不再重试模型 |
-| `summary-review` | curator 服务启动/连接失败 | `none` | 关闭 curator，直接返回已完成的 source pack |
 | `auto-summary` | `summaryModel` 缺失、超时或失败 | `none` | 不再生成确定性摘要，返回 source pack，由当前会话模型继续回答 |
 
 provider 的 401、429、网络错误和单路失败属于 provider fallback/部分成功，不改变
-workflow；只有 workflow 自身的 curator 或模型阶段失败才触发上表切换。fallback 只执行
+workflow；只有自动摘要模型阶段失败才触发上表切换。fallback 只执行
 一次，不能在 `none` 和 `auto-summary` 之间循环。
 
 ## 6. 四个 provider 的实现边界
@@ -532,7 +521,6 @@ provider 只负责请求、超时、响应解析、字段映射和基础错误�
           {"type": "array", "minItems": 1, "items": {"type": "string", "enum": ["codex", "exa", "tinyfish", "duckduckgo"]}}
         ]
       },
-      "workflow": {"type": "string", "enum": ["none", "summary-review", "auto-summary"]},
       "proxy": {"type": "string"}
     }
   }
@@ -553,8 +541,9 @@ provider 只负责请求、超时、响应解析、字段映射和基础错误�
   `all` 只遍历开启的成员。
 - `includeContent=true` 只触发后台正文抓取，不把长正文塞进初始 tool result；使用返回的
   responseId 调用 `get_search_content` 分片读取。
-- `workflow=none` 返回 source pack；`summary-review` 打开来源审阅；`auto-summary` 由
-  `summaryModel` 生成无搜索摘要。默认 workflow 为 `none`，避免工具调用隐式打开 UI。
+- 用户在 extension 配置中选择 `workflow=none` 时返回 source pack；选择
+  `auto-summary` 时由 `summaryModel` 生成无搜索摘要。默认 workflow 为 `none`，避免
+  工具调用隐式打开 UI；`workflow` 不属于工具参数。
 - `domainFilter` 沿用 pi-web-access 约定，`-example.com` 表示排除域名；不能把域名过滤
   转换成任意 URL 请求。
 - `proxy` 是单次调用级别的 HTTP(S) 代理覆盖项，空字符串表示直连；代理配置不能绕过
@@ -571,8 +560,9 @@ provider 只负责请求、超时、响应解析、字段映射和基础错误�
 - 注册接口保留 `label`、`description`、`promptSnippet`、`parameters` 和 `execute` 五个
   层次；只把对外工具名改为 `deep_web_search`，Codex 上游请求体中的 `web_search` tool
   类型不能改名。
-- `execute(callId, params, signal, onUpdate, ctx)` 先清洗 query；当 `queries` 存在时按
-  顺序保留每条 query 的结果槽位和诊断，provider 请求在每条 query 内按 toggle 并发。
+- `execute(callId, params, signal, onUpdate, ctx)` 先清洗 query；当 `queries` 存在时并行
+  发起所有 query，同时按输入顺序保留每条 query 的结果槽位和诊断；每条 query 内的
+  provider 请求也按 toggle 并发。
 - 组合用户取消信号和内部搜索 AbortController；所有 provider client 都必须传递同一个
   AbortSignal，取消后丢弃 partial answer，不把它当作成功结果。
 - 使用 `allSettled`/等价逻辑保留部分成功和 typed error；`onUpdate` 只发送阶段、进度、
@@ -602,7 +592,9 @@ build provider-specific query/options
     ↓
 filter explicit/default providers by providerToggles
     ↓
-run selected providers concurrently
+run all queries concurrently
+    ↓
+run selected providers concurrently for each query
     ↓
 allSettled: keep successes + typed errors
     ↓
@@ -730,38 +722,25 @@ extension-owned data directory，原子写入并使用 0600 权限。不要把�
 
 ## 10. 汇总、整理和证据核验
 
-### 10.1 三种模式
+### 10.1 两种模式
 
 #### none
 
-- 只返回清洗、去重、排序后的 source pack 和 provider diagnostics，不启动 curator。
-- 不调用 `summaryModel` 或 `queryRewriteModel`；最终回答由当前 Ki 会话模型完成。
+- 只返回清洗、去重、排序后的 source pack 和 provider diagnostics，不启动浏览器。
+- 不调用 `summaryModel`；最终回答由当前 Ki 会话模型完成。
 - `includeContent=true` 仍可后台抓取正文，但只通过 responseId/get_search_content 读取。
-
-#### summary-review
-
-- 启动临时 curator 页面，展示 query、provider 成功/失败、来源和正文状态。
-- 人工选择来源、追加搜索、编辑 query、编辑/批准摘要都不强制调用模型。
-- curator 的 AI 改写按钮调用 `queryRewriteModel`；生成摘要草稿调用 `summaryModel`。
-- 用户可以直接发送所选原始结果，跳过摘要模型；摘要模型超时或不可用时不再重试模型，
-  仍保留 curator 供人工审阅，可选择确定性摘要或发送原始结果。
-- `autoOpenBrowser=false` 只禁止自动弹窗，仍可返回 curator URL 手动打开；要完全跳过
-  curator 必须使用 `workflow=none`。若 curator 服务自身启动/连接失败，自动切换为
-  `none`，返回已完成的 source pack。
-- `ui.action`/`ui.submit` 只提交 source IDs、query 和编辑结果，不提交 token；审阅结果
-  写入 `deep-web-search-review` custom entry。
 
 #### auto-summary
 
-- 不启动 curator 页面；聚合器选出前 N 个来源后调用 `summaryModel` 生成摘要。
+- 不启动浏览器；聚合器选出前 N 个来源后调用 `summaryModel` 生成摘要。
 - 输入只有 query、清洗后的来源和正文片段，不附加上游 `web_search` tool，禁止递归搜索。
 - 每个事实带 `[n]` citation；无证据内容标记不确定，模型只允许使用提供的来源。
 - `summaryModel` 缺失、超时或调用失败时自动切换为 `none`，返回 source pack，由当前
   会话模型继续回答；在 details 中记录 `fallbackFrom=auto-summary`、`fallbackTo=none`、
   `fallbackReason` 和模型状态。
 
-三种模式都保留 provider answer、source pack、原始 rank、去重 provenance 和错误诊断；
-区别只在于是否打开 curator，以及是否额外执行查询改写/摘要模型。
+两种模式都保留 provider answer、source pack、原始 rank、去重 provenance 和错误诊断；
+区别只在于是否额外执行摘要模型。
 
 ### 10.2 source_check
 
@@ -827,9 +806,8 @@ TinyFish 的 Key 缺失不重试；429 读取 Retry-After，最多一次延迟�
 - URL canonicalization、tracking 参数、DDG redirect、近重复去重。
 - RRF、agreement bonus、domain cap、provider error 保留。
 - cache TTL、容量淘汰、offset/limit、findText 和 cache miss 重抓。
-- workflow 配置校验、单次参数覆盖全局配置，以及三种 workflow 的模型调用边界。
-- workflow fallback 状态机：`auto-summary → none`、`summary-review` 的模型失败保留人工
-  审阅、curator 启动失败时 `summary-review → none`，并验证不会循环重试。
+- workflow 配置校验、工具 schema 不暴露 workflow，以及两种 workflow 的模型调用边界。
+- workflow fallback 状态机：`auto-summary → none`，并验证不会循环重试。
 
 ### 12.2 Host/extension/UI 集成测试
 
@@ -838,11 +816,11 @@ TinyFish 的 Key 缺失不重试；429 读取 Retry-After，最多一次延迟�
 - TinyFish/Exa Key 页面输入、保存、刷新后不回显原 Key。
 - Codex OAuth 未安装、未登录、登录成功、refresh、logout 和 sidecar 失败。
 - 四个 provider 分别关闭/开启、显式请求关闭 provider、全部关闭时不发起网络请求。
-- `none` 不启动 curator 且不调用摘要/改写模型；`summary-review` 支持人工原始结果提交、
-  AI 改写和摘要草稿；`auto-summary` 不打开浏览器并验证摘要模型 fallback。
-- `summaryModel`、`queryRewriteModel` 的 `provider/model-id` 校验、Codex credential 复用、
-  超时和敏感信息脱敏。
-- 三种 workflow 的 `requestedWorkflow`/`effectiveWorkflow`/`fallbackTo`/`fallbackReason`
+- `none` 不启动页面且不调用摘要模型；`auto-summary` 不打开浏览器并验证摘要模型 fallback。
+- `summaryModel` 的 `provider/model-id` 校验、Codex credential 复用、超时和敏感信息脱敏。
+- Summary model picker 展示 `/v1/models` 的全部当前可用模型；Codex search model picker 只展示
+  `openai-codex` 模型，并验证选择后的保存格式分别为完整 spec 和裸 Codex model ID。
+- 两种 workflow 的 `requestedWorkflow`/`effectiveWorkflow`/`fallbackTo`/`fallbackReason`
   诊断字段。
 - tool 调用的 session 隔离、取消、provider 独立 timeout 和全局 deadline。
 - deep-web-search-results、deep-web-search-content-ready entry 不进入普通 prompt context。
@@ -881,8 +859,7 @@ HTML 结构变化告警。
   extension-specific i18n key。
 - 四个 provider toggle 的展示、保存、单独生效和 config reload；关闭 provider 不删除其凭据。
 - TinyFish/Exa Key 保存、清除、脱敏和 config reload。
-- workflow、summaryModel、queryRewriteModel、curatorTimeoutSeconds 和 autoOpenBrowser 的
-  保存、脱敏/校验和 config reload。
+- workflow、summaryModel 的保存、脱敏/校验和 config reload。
 - deep-web-search-results/deep-web-search-content-ready jsonl entry。
 - LRU cache、分片读取和 fetch fallback。
 
@@ -912,14 +889,10 @@ HTML 结构变化告警。
 7. 相同 URL 只在最终 source pack 出现一次，但保留 seenBy 和各 provider rank。
 8. 搜索结果进入现有 session/jsonl/SSE 体系，不新增搜索数据 REST 路由。
 9. 正文抓取受到 SSRF、大小、超时、cache TTL 和上下文长度限制。
-10. `none` 不启动 curator、不调用 `summaryModel` 或 `queryRewriteModel`。
-11. `summary-review` 可人工选择并发送原始结果；模型只用于 AI 改写或摘要草稿，
-    `autoOpenBrowser=false` 时不自动弹窗。
-12. `auto-summary` 不启动 curator，使用 `summaryModel` 生成摘要；模型缺失、超时或失败时
+10. `none` 不启动页面、不调用 `summaryModel`。
+11. `auto-summary` 不启动页面，使用 `summaryModel` 生成摘要；模型缺失、超时或失败时
     自动切换为 `none`，返回 source pack 并保留 fallback 诊断。
-13. `summary-review` 的改写/摘要模型失败不会丢失人工审阅能力；curator 启动或连接失败时
-    自动切换为 `none`。
-14. 三种 workflow 均不会递归触发第二轮隐式 web search；Codex、Exa、TinyFish、DuckDuckGo
+12. 两种 workflow 均不会递归触发第二轮隐式 web search；Codex、Exa、TinyFish、DuckDuckGo
     均有独立 WebUI toggle，关闭后不会被默认或显式请求调用。
 
 ## 15. 本次实现结果
@@ -937,14 +910,14 @@ HTML 结构变化告警。
   canonical URL、近重复过滤、RRF 风格排序、域名多样性限制和诊断信息。
 - 已实现搜索缓存、正文抓取、重定向/私网 SSRF 防护、大小和超时限制、TinyFish 正文 fallback，
   以及通过 `responseId` 的正文读取。
-- 已实现三种 workflow：`none` 只返回 source pack；`auto-summary` 调用 summary model，
-  失败后自动切换为 `none`；`summary-review` 启动本地 curator，人工提交后再生成摘要，
-  curator 启动/连接失败时自动切换为 `none`。
+- 已实现两种 workflow：`none` 只返回 source pack；`auto-summary` 调用 summary model，
+  失败后自动切换为 `none`；两种模式都不会启动浏览器。
 - 已实现 evidence passages、offset/hash、claim 的 supported/contradicted/unclear/
   missing-evidence 判定；搜索结果和正文 ready 信号写入现有 session entry，不新增搜索数据
   REST 路由。
 - WebUI 已增加 Exa/TinyFish 密钥配置、脱敏状态、四个 provider toggle、默认 provider、
-  workflow、summary/query-rewrite model、正文抓取和 curator 设置。
+  两种 workflow、可从 `/v1/models` 选择的 summary model、仅限 `openai-codex` 的 Codex
+  search model picker 和正文抓取设置。
 - 四个内置扩展已声明自己的 i18n catalog；Goal 的 session/global UI、扩展描述和
   deep-web-search/Telegram 配置文案会随 WebUI 中英文切换，Host 不再维护扩展专用文案。
 - 本地 `config.json`、`cache.json`、`node_modules` 和运行期临时文件已加入扩展自己的
@@ -970,11 +943,10 @@ go build -o ki ./cmd/ki
 
 ## 16. 后续增强项
 
-当前实现已覆盖方案中的运行主链路；以下是有明确边界的增强，不影响四 provider 和三 workflow
+当前实现已覆盖方案中的运行主链路；以下是有明确边界的增强，不影响四 provider 和两 workflow
 的现有契约：
 
 1. 为四个 provider 增加完全离线的 fixture/contract 测试，避免 CI 依赖外部搜索服务。
 2. 接入跨平台 HTTP proxy dispatcher；在此之前，非空 `proxy` 会返回明确的
    `proxy-unsupported`，不会假装代理已经生效。
-3. curator 增加更丰富的来源正文质量审阅和人工摘要编辑持久化；当前人工选择、追加搜索、
-   查询改写、摘要草稿和提交链路已可用。
+3. 为 query 并行增加 provider 级并发上限、超时分层和更细粒度的进度统计。

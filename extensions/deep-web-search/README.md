@@ -21,16 +21,20 @@ stored in a short-lived private cache. `includeContent` fetches readable public
 HTTP(S) pages with redirect, SSRF, size, and timeout checks; TinyFish Fetch is
 used as a fallback when configured.
 
-The `workflow` option is `none`, `summary-review`, or `auto-summary`:
+The user-configured `workflow` setting is `none` or `auto-summary`. It is kept
+in the extension config and is intentionally not exposed as a
+`deep_web_search` tool argument, so the model cannot override the user's
+choice for an individual call:
 
 - `none` returns a compact source pack and never opens a browser or calls a
   model.
-- `summary-review` starts a local tokenized curator page. It supports source
-  selection, additional search, model-assisted query rewrite, and summary
-  draft generation. A curator timeout/cannot-start fallback returns `none`.
 - `auto-summary` calls the configured `summaryModel` without opening a
   browser. Missing, timed-out, or failed model completion falls back to
   `none` and returns the source pack.
+
+When `queries` contains multiple search strings, all queries are started in
+parallel. Each query also starts all enabled providers in parallel; a provider
+failure is isolated and successful query/provider results are still aggregated.
 
 The source implementation uses only Node standard-library modules. The
 checked-in `dist/main.js` is a small loader so the extension runs without an

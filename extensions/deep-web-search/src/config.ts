@@ -9,10 +9,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   maxResults: 5,
   fetchContent: false,
   summaryModel: "openai-codex/gpt-5.5",
-  queryRewriteModel: "",
   summaryGenerationDeadlineMs: 30_000,
-  curatorTimeoutSeconds: 20,
-  autoOpenBrowser: true,
   workflow: "none",
 });
 
@@ -64,10 +61,9 @@ export function normalizeConfig(config) {
   next.providerToggles = merge(DEFAULT_CONFIG.providerToggles, next.providerToggles);
   next.maxResults = clampInteger(next.maxResults, 1, 20, 5);
   next.summaryGenerationDeadlineMs = clampInteger(next.summaryGenerationDeadlineMs, 1_000, 120_000, 30_000);
-  next.curatorTimeoutSeconds = clampInteger(next.curatorTimeoutSeconds, 5, 600, 20);
   if (!["auto", "all", "codex", "exa", "tinyfish", "duckduckgo"].includes(next.provider)) next.provider = "all";
   if (!["auto", "api", "mcp"].includes(next.exaMode)) next.exaMode = "auto";
-  if (!["none", "summary-review", "auto-summary"].includes(next.workflow)) next.workflow = "none";
+  if (!["none", "auto-summary"].includes(next.workflow)) next.workflow = "none";
   return next;
 }
 

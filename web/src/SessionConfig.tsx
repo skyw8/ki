@@ -371,6 +371,62 @@ type ExtensionConfigEditorProps = {
 	defaultModel?: string
 }
 
+type ExtensionModelPickerProps = {
+	fieldLabel: string
+	hint: string
+	emptyLabel: string
+	emptyDetail: string
+	customDetail: string
+	dialogTitle: string
+	testid: string
+	dialogTestid: string
+	value: string
+	pickerValue?: string
+	models: ModelInfo[]
+	onSelect: (spec: string) => void
+	onClear?: () => void
+	clearLabel?: string
+}
+
+function ExtensionModelPicker({
+	fieldLabel,
+	hint,
+	emptyLabel,
+	emptyDetail,
+	customDetail,
+	dialogTitle,
+	testid,
+	dialogTestid,
+	value,
+	pickerValue = value,
+	models,
+	onSelect,
+	onClear,
+	clearLabel,
+}: ExtensionModelPickerProps) {
+	const [open, setOpen] = useState(false)
+	const selected = models.find(item => item.spec === pickerValue)
+	const modelLabel = selected?.name || value || emptyLabel
+	const modelDetail = selected
+		? (selected.name && selected.name !== selected.id ? `${selected.provider} / ${selected.id}` : selected.provider)
+		: value ? customDetail : emptyDetail
+
+	return (
+		<div className="form-control full">
+			<span>{fieldLabel}</span>
+			<button type="button" className="extension-model-trigger" data-testid={testid} aria-haspopup="dialog" disabled={!models.length} onClick={() => setOpen(true)}>
+				<span className="extension-model-value"><strong>{modelLabel}</strong><small>{modelDetail}</small></span>
+				<IChevDown />
+			</button>
+			<div className="extension-model-meta">
+				<small className="form-hint">{hint}</small>
+				{onClear && value ? <button type="button" className="cfg-btn" onClick={onClear}>{clearLabel}</button> : null}
+			</div>
+			<ModelPickerDialog open={open} models={models} value={pickerValue} onSelect={onSelect} onClose={() => setOpen(false)} testid={dialogTestid} title={dialogTitle} />
+		</div>
+	)
+}
+
 export function ExtensionConfigEditor(props: ExtensionConfigEditorProps) {
 	if (props.name === 'telegram-bot') return <TelegramConfigForm {...props} />
 	if (props.name === 'deep-web-search') return <DeepWebSearchConfigForm {...props} />
@@ -507,17 +563,17 @@ function TelegramConfigForm({ api, name, onClose, embedded = false, models = [],
 							<input data-testid="telegram-bot-token" type="password" value={token} onChange={event => { setToken(event.target.value); setTokenConfigured(false) }} placeholder={tokenConfigured ? copy('config.tokenConfigured') : copy('config.tokenPlaceholder')} autoComplete="new-password" />
 							<small className="form-hint">{copy('config.tokenHint')}</small>
 						</label>
-						<div className="form-control full">
-							<span>{copy('config.model')}</span>
-							<button type="button" className="telegram-model-trigger" data-testid="telegram-model-picker" disabled={!models.length} onClick={() => setModelOpen(true)}>
-								<span className="telegram-model-value"><strong>{modelLabel}</strong><small>{modelDetail}</small></span>
-								<IChevDown />
-							</button>
-							<div className="telegram-model-meta">
-								<small className="form-hint">{copy('config.modelHint')}</small>
-								{model ? <button type="button" className="cfg-btn" onClick={() => setModel('')}>{copy('config.modelReset')}</button> : null}
+							<div className="form-control full">
+								<span>{copy('config.model')}</span>
+								<button type="button" className="extension-model-trigger" data-testid="telegram-model-picker" disabled={!models.length} onClick={() => setModelOpen(true)}>
+									<span className="extension-model-value"><strong>{modelLabel}</strong><small>{modelDetail}</small></span>
+									<IChevDown />
+								</button>
+								<div className="extension-model-meta">
+									<small className="form-hint">{copy('config.modelHint')}</small>
+									{model ? <button type="button" className="cfg-btn" onClick={() => setModel('')}>{copy('config.modelReset')}</button> : null}
+								</div>
 							</div>
-						</div>
 					</div>
 					<div className="cfg-actions telegram-config-actions"><button type="submit" className="primary-btn" data-testid="telegram-config-save" disabled={saving || !config}>{saving ? t('cfg.configSaving') : t('cfg.configSave')}</button></div>
 				</form>
@@ -527,7 +583,7 @@ function TelegramConfigForm({ api, name, onClose, embedded = false, models = [],
 	)
 }
 
-function DeepWebSearchConfigForm({ api, name, onClose, embedded = false }: ExtensionConfigEditorProps) {
+function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models = [] }: ExtensionConfigEditorProps) {
   const { t, lang } = useI18n()
 	const [config, setConfig] = useState<ExtensionConfig | null>(null)
 	const [loading, setLoading] = useState(true)
@@ -543,11 +599,13 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false }: Exten
 	const [maxResults, setMaxResults] = useState(5)
 	const [fetchContent, setFetchContent] = useState(false)
 	const [summaryModel, setSummaryModel] = useState('openai-codex/gpt-5.5')
-	const [queryRewriteModel, setQueryRewriteModel] = useState('')
 	const [workflow, setWorkflow] = useState('none')
-	const [autoOpenBrowser, setAutoOpenBrowser] = useState(true)
-	const [curatorTimeout, setCuratorTimeout] = useState(20)
 	const copy = (key: string) => extensionCopy(config?.i18n, lang, key)
+	const codexModels = useMemo(() => models.filter(item => item.provider === 'openai-codex'), [models])
+	const codexModelSpec = codexModels.some(item => item.id === codexModel) ? `openai-codex/${codexModel}` : codexModel
+	// Keep older bare summary model values selectable after the picker switches
+	// to the canonical provider/model specs returned by /v1/models.
+	const summaryModelSpec = summaryModel && !summaryModel.includes('/') ? `openai-codex/${summaryModel}` : summaryModel
 
 	const apply = (next: Record<string, unknown>, metadata?: ExtensionConfig) => {
 		const rawExa = typeof next.exaApiKey === 'string' ? next.exaApiKey : ''
@@ -558,17 +616,15 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false }: Exten
 		setExaMode(typeof next.exaMode === 'string' ? next.exaMode : 'auto')
 		setTinyfishKey(rawTinyfish === '<configured>' ? '' : rawTinyfish)
 		setTinyfishConfigured(rawTinyfish === '<configured>')
-		setCodexModel(typeof next.codexModel === 'string' ? next.codexModel : 'gpt-5.5')
+		const rawCodexModel = typeof next.codexModel === 'string' ? next.codexModel : 'gpt-5.5'
+		setCodexModel(rawCodexModel.startsWith('openai-codex/') ? rawCodexModel.slice('openai-codex/'.length) : rawCodexModel)
 		setProvider(typeof next.provider === 'string' ? next.provider : 'all')
 		const rawToggles = next.providerToggles && typeof next.providerToggles === 'object' ? next.providerToggles as Record<string, unknown> : {}
 		setToggles({ codex: rawToggles.codex !== false, exa: rawToggles.exa !== false, tinyfish: rawToggles.tinyfish !== false, duckduckgo: rawToggles.duckduckgo !== false })
 		setMaxResults(typeof next.maxResults === 'number' ? next.maxResults : 5)
 		setFetchContent(next.fetchContent === true)
 		setSummaryModel(typeof next.summaryModel === 'string' ? next.summaryModel : 'openai-codex/gpt-5.5')
-		setQueryRewriteModel(typeof next.queryRewriteModel === 'string' ? next.queryRewriteModel : '')
-		setWorkflow(typeof next.workflow === 'string' ? next.workflow : 'none')
-		setAutoOpenBrowser(next.autoOpenBrowser !== false)
-		setCuratorTimeout(typeof next.curatorTimeoutSeconds === 'number' ? next.curatorTimeoutSeconds : 20)
+		setWorkflow(next.workflow === 'auto-summary' ? 'auto-summary' : 'none')
 	}
 
 	useEffect(() => {
@@ -597,10 +653,7 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false }: Exten
 				maxResults: Math.max(1, Math.min(20, Math.floor(maxResults || 5))),
 				fetchContent,
 				summaryModel: summaryModel.trim(),
-				queryRewriteModel: queryRewriteModel.trim(),
 				workflow,
-				autoOpenBrowser,
-				curatorTimeoutSeconds: Math.max(5, Math.min(600, Math.floor(curatorTimeout || 20))),
 			})
 			apply(next.config, next)
 			toast.info(t('cfg.configSaved'))
@@ -639,16 +692,41 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false }: Exten
 						</div>
 						<div className="form-grid two deep-web-search-global-fields">
 							<label className="form-control"><span>{copy('config.provider')}</span><select data-testid="deep-web-search-provider" value={provider} onChange={event => setProvider(event.target.value)}><option value="all">{copy('option.provider.all')}</option><option value="auto">{copy('option.provider.auto')}</option><option value="codex">{copy('option.provider.codex')}</option><option value="exa">{copy('option.provider.exa')}</option><option value="tinyfish">{copy('option.provider.tinyfish')}</option><option value="duckduckgo">{copy('option.provider.duckduckgo')}</option></select></label>
-							<label className="form-control"><span>{copy('config.workflow')}</span><select data-testid="deep-web-search-workflow" value={workflow} onChange={event => setWorkflow(event.target.value)}><option value="none">{copy('option.workflow.none')}</option><option value="summary-review">{copy('option.workflow.summary-review')}</option><option value="auto-summary">{copy('option.workflow.auto-summary')}</option></select></label>
-							<label className="form-control"><span>{copy('config.codexModel')}</span><input data-testid="deep-web-search-codex-model" value={codexModel} onChange={event => setCodexModel(event.target.value)} placeholder="gpt-5.5" /></label>
+							<label className="form-control"><span>{copy('config.workflow')}</span><select data-testid="deep-web-search-workflow" value={workflow} onChange={event => setWorkflow(event.target.value === 'auto-summary' ? 'auto-summary' : 'none')}><option value="none">{copy('option.workflow.none')}</option><option value="auto-summary">{copy('option.workflow.auto-summary')}</option></select></label>
+							<ExtensionModelPicker
+								fieldLabel={copy('config.codexModel')}
+								hint={copy('config.codexModelHint')}
+								emptyLabel={copy('config.modelUnavailable')}
+								emptyDetail={copy('config.modelUnavailable')}
+								customDetail={copy('config.modelCustom')}
+								dialogTitle={copy('config.codexModelPickerTitle')}
+								testid="deep-web-search-codex-model-picker"
+								dialogTestid="deep-web-search-codex-model-dialog"
+								value={codexModel}
+								pickerValue={codexModelSpec}
+								models={codexModels}
+								onSelect={spec => setCodexModel(spec.slice('openai-codex/'.length))}
+							/>
 							<label className="form-control"><span>{copy('config.maxResults')}</span><input data-testid="deep-web-search-max-results" type="number" min={1} max={20} value={maxResults} onChange={event => setMaxResults(Number(event.target.value))} /></label>
-							<label className="form-control"><span>{copy('config.summaryModel')}</span><input data-testid="deep-web-search-summary-model" value={summaryModel} onChange={event => setSummaryModel(event.target.value)} placeholder="openai-codex/gpt-5.5" /></label>
-							<label className="form-control"><span>{copy('config.queryRewriteModel')}</span><input data-testid="deep-web-search-query-rewrite-model" value={queryRewriteModel} onChange={event => setQueryRewriteModel(event.target.value)} placeholder={copy('config.queryRewritePlaceholder')} /></label>
-							<label className="form-control"><span>{copy('config.curatorTimeout')}</span><input data-testid="deep-web-search-curator-timeout" type="number" min={5} max={600} value={curatorTimeout} onChange={event => setCuratorTimeout(Number(event.target.value))} /></label>
+							<ExtensionModelPicker
+								fieldLabel={copy('config.summaryModel')}
+								hint={copy('config.summaryModelHint')}
+								emptyLabel={copy('config.summaryDisabled')}
+								emptyDetail={copy('config.summaryDisabled')}
+								customDetail={copy('config.modelCustom')}
+								dialogTitle={copy('config.summaryModelPickerTitle')}
+								testid="deep-web-search-summary-model-picker"
+								dialogTestid="deep-web-search-summary-model-dialog"
+								value={summaryModel}
+								pickerValue={summaryModelSpec}
+								models={models}
+								onSelect={setSummaryModel}
+								onClear={() => setSummaryModel('')}
+								clearLabel={copy('config.summaryDisable')}
+							/>
 						</div>
 						<div className="deep-web-search-options">
 							<label><input data-testid="deep-web-search-fetch-content" type="checkbox" checked={fetchContent} onChange={event => setFetchContent(event.target.checked)} /> {copy('config.fetchContent')}</label>
-							<label className={workflow === 'summary-review' ? '' : 'is-muted'}><input data-testid="deep-web-search-auto-open" type="checkbox" checked={autoOpenBrowser} onChange={event => setAutoOpenBrowser(event.target.checked)} /> {copy('config.autoOpen')}</label>
 						</div>
 						</section>
 						<section className="deep-web-search-settings-section" aria-labelledby="deep-web-search-providers-title">

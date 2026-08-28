@@ -28,6 +28,7 @@ export function ModelPickerDialog({
   onSelect,
   onClose,
   testid = 'model-dialog',
+  title,
 }: {
   open: boolean
   models: ModelInfo[]
@@ -35,6 +36,7 @@ export function ModelPickerDialog({
   onSelect: (spec: string) => void
   onClose: () => void
   testid?: string
+  title?: string
 }) {
   const { t } = useI18n()
   const [query, setQuery] = useState('')
@@ -70,11 +72,12 @@ export function ModelPickerDialog({
   )
 
   if (!open) return null
+  const dialogTitle = title || t('model.title')
   return createPortal(
     <div className="modal-mask" onClick={onClose} data-testid={`${testid}-mask`}>
-      <div className="modal model-picker-modal" data-testid={testid} onClick={event => event.stopPropagation()} role="dialog" aria-label={t('model.title')}>
+      <div className="modal model-picker-modal" data-testid={testid} onClick={event => event.stopPropagation()} role="dialog" aria-label={dialogTitle}>
         <div className="modal-head">
-          <h2>{t('model.title')}</h2>
+          <h2>{dialogTitle}</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label={t('dialog.close')}><IClose /></button>
         </div>
         <div className="modal-body">

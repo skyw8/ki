@@ -34,6 +34,18 @@ test("sidecar registers the public tools and rejects an empty query", async () =
   await writeFile(join(root, "marker"), "ok");
 });
 
+test("workflow is an extension setting, not a tool argument", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ki-deep-web-search-workflow-"));
+  const output = run([
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+    { jsonrpc: "2.0", id: 2, method: "shutdown", params: {} },
+  ], root);
+  const spec = output.find((item) => String(item.id) === "1").result.tools.find((item) => item.name === "deep_web_search");
+  assert.equal(spec.parameters.properties.workflow, undefined);
+  assert.equal(spec.parameters.additionalProperties, false);
+  assert.doesNotMatch(spec.description, /curator|summary-review/i);
+});
+
 test("all provider toggles are enforced before network access", async () => {
   const extensionRoot = await mkdtemp(join(tmpdir(), "ki-deep-web-search-config-"));
   await writeFile(join(extensionRoot, "config.json"), JSON.stringify({ providerToggles: { codex: false, exa: false, tinyfish: false, duckduckgo: false } }));

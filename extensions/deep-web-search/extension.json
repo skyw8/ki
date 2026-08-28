@@ -1,7 +1,7 @@
 {
   "name": "deep-web-search",
   "version": "0.1.0",
-  "description": "Four-provider web search with source cleaning, content extraction, evidence checks, and workflow fallbacks.",
+  "description": "Four-provider parallel web search with source cleaning, content extraction, evidence checks, and automatic summary fallback.",
   "capabilities": ["tool", "settings"],
   "i18n": {
     "defaultLocale": "en",
@@ -33,11 +33,8 @@
         "maxResults": {"type": "integer", "description": "Maximum distinct sources returned by one query."},
         "fetchContent": {"type": "boolean", "description": "Fetch source bodies in the background."},
         "summaryModel": {"type": "string", "description": "Model spec such as openai-codex/gpt-5.5; empty disables model summaries."},
-        "queryRewriteModel": {"type": "string", "description": "Model spec for curator query rewrite; empty disables the rewrite action."},
         "summaryGenerationDeadlineMs": {"type": "integer", "description": "Summary generation deadline in milliseconds."},
-        "curatorTimeoutSeconds": {"type": "integer", "description": "Maximum time to wait for curator review."},
-        "autoOpenBrowser": {"type": "boolean", "description": "Open the local curator URL automatically."},
-        "workflow": {"type": "string", "enum": ["none", "summary-review", "auto-summary"], "description": "Default result workflow."}
+        "workflow": {"type": "string", "enum": ["none", "auto-summary"], "description": "Result workflow selected by the user."}
       }
     },
     "defaults": {
@@ -48,10 +45,7 @@
       "maxResults": 5,
       "fetchContent": false,
       "summaryModel": "openai-codex/gpt-5.5",
-      "queryRewriteModel": "",
       "summaryGenerationDeadlineMs": 30000,
-      "curatorTimeoutSeconds": 20,
-      "autoOpenBrowser": true,
       "workflow": "none"
     }
   },

@@ -4,20 +4,18 @@ import { SearchCache } from "./cache.js";
 import { aggregateSearch, combineAggregates, sourcePackText } from "./aggregate.js";
 import { fetchContents, fetchOneContent } from "./content.js";
 import { buildEvidence, sourceCheckClaims } from "./evidence.js";
-import { startCurator } from "./curator.js";
-import { generateSummary, deterministicSummary, rewriteQuery } from "./summary.js";
+import { generateSummary } from "./summary.js";
 import { normalizeOptions, normalizeQueries, validateProxy } from "./normalize.js";
 import { fetchTinyfish, tinyfishAvailable } from "./providers/index.js";
 import { StdioRpc, safeError } from "./rpc.js";
 
 const PROVIDER_VALUES = ["auto", "all", "codex", "exa", "tinyfish", "duckduckgo"];
-const WORKFLOW_VALUES = ["none", "summary-review", "auto-summary"];
 const PROVIDER_ARRAY = ["codex", "exa", "tinyfish", "duckduckgo"];
 
 export const TOOL_SPECS = [
   {
     name: "deep_web_search",
-    description: "Search the web through Codex OAuth, Exa, TinyFish, and DuckDuckGo; aggregate and clean distinct sources.",
+    description: "Search the web through Codex OAuth, Exa, TinyFish, and DuckDuckGo in parallel; aggregate and clean distinct sources.",
     snippet: "Search multiple independent web indexes and return a deduplicated evidence pack.",
     timeoutMs: 120_000,
     parameters: {
@@ -31,7 +29,6 @@ export const TOOL_SPECS = [
         recencyFilter: { type: "string", enum: ["day", "week", "month", "year"] },
         domainFilter: { type: "array", items: { type: "string" }, description: "Include domains or exclude them with a leading '-'." },
         provider: { oneOf: [{ type: "string", enum: PROVIDER_VALUES }, { type: "array", items: { type: "string", enum: PROVIDER_ARRAY }, minItems: 1, maxItems: 4 }] },
-        workflow: { type: "string", enum: WORKFLOW_VALUES, description: "none, summary-review, or auto-summary." },
         proxy: { type: "string", description: "Reserved HTTP(S) proxy override; direct fetch is used when empty." },
       },
     },
@@ -56,7 +53,6 @@ export const TOOL_SPECS = [
 const rpc = new StdioRpc();
 const cache = new SearchCache(process.env.KI_EXTENSION_ROOT || process.cwd());
 const activeCalls = new Map();
-const curators = new Set<any>();
 
 function recordProgress(id, toolCallId, partial) {
   if (id === undefined || id === null) return;
@@ -65,10 +61,6 @@ function recordProgress(id, toolCallId, partial) {
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-}
-
-function selectedWorkflow(args, config) {
-  return WORKFLOW_VALUES.includes(args?.workflow) ? args.workflow : WORKFLOW_VALUES.includes(config.workflow) ? config.workflow : "none";
 }
 
 function selectedProvider(args, config) {
@@ -199,7 +191,7 @@ async function sourceCheckTool(args, config, signal, id, toolCallId) {
   const query = typeof args.query === "string" ? args.query.trim() : "";
   const claims = [...(Array.isArray(args.claims) ? args.claims : []), ...(typeof args.claim === "string" ? [args.claim] : [])].filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim()).slice(0, 20);
   if (!query || !claims.length) return sourceResult("source_check requires query and claim or claims", {}, true);
-  const options = mergeOptions({ ...args, includeContent: true, workflow: "none" }, config);
+  const options = mergeOptions({ ...args, includeContent: true }, config);
   const result = await runSearch(query, options, config, signal, id, toolCallId);
   const evidence = buildEvidence(result);
   const assessments = sourceCheckClaims(claims, evidence);
@@ -211,16 +203,47 @@ async function deepSearchTool(args, config, signal, id, toolCallId, sessionId) {
   const queries = normalizeQueries(args);
   if (!queries.length) return sourceResult("deep_web_search requires query or queries", {}, true);
   const options = mergeOptions(args, config);
-  const requestedWorkflow = selectedWorkflow(args, config);
-  const aggregates = [];
-  for (const query of queries) {
+  // Workflow is intentionally read only from extension config. Exposing it in
+  // the tool schema would let the model override the user's global setting.
+  const requestedWorkflow = config.workflow;
+  // Queries are independent research angles. Start them together, but retain
+  // per-query failures so one slow or failed angle cannot discard good results.
+  const settled = await Promise.allSettled(queries.map(async (query) => {
     recordProgress(id, toolCallId, { phase: "query", status: "running", query });
-    aggregates.push(await runSearch(query, options, config, signal, id, toolCallId));
+    try {
+      const aggregate = await runSearch(query, options, config, signal, id, toolCallId);
+      recordProgress(id, toolCallId, { phase: "query", status: "done", query, count: aggregate.results?.length || 0 });
+      return aggregate;
+    } catch (error) {
+      recordProgress(id, toolCallId, { phase: "query", status: "failed", query, error: safeError(error) });
+      throw error;
+    }
+  }));
+  const aggregates = [];
+  const queryFailures = [];
+  settled.forEach((item, index) => {
+    if (item.status === "fulfilled") {
+      aggregates.push(item.value);
+      return;
+    }
+    queryFailures.push({ query: queries[index], error: safeError(item.reason) });
+  });
+  if (!aggregates.length) {
+    throw new Error(`query-failed: ${queryFailures.map((item) => `${item.query}: ${item.error}`).join("; ")}`);
   }
-  let result = aggregates.length === 1 ? aggregates[0] : combineAggregates(queries.join("; "), aggregates, options);
+  let result = queries.length === 1 ? aggregates[0] : combineAggregates(queries.join("; "), aggregates, options);
+  if (queryFailures.length) {
+    result = {
+      ...result,
+      diagnostics: [
+        ...(result.diagnostics || []),
+        ...queryFailures.map((item) => ({ query: item.query, ok: false, category: "query", error: item.error })),
+      ],
+    };
+  }
   cache.response(result.responseId, result);
   if (requestedWorkflow === "none") {
-    const details = detailsFor(requestedWorkflow, "none", result, { sourceCount: result.results.length, contentAvailable: result.results.some((item) => item.content) });
+    const details = detailsFor(requestedWorkflow, "none", result, { sourceCount: result.results.length, contentAvailable: result.results.some((item) => item.content), queryFailures });
     await persistSearchEntry(sessionId, result, details);
     return sourceResult(sourcePackText(result), details);
   }
@@ -228,59 +251,16 @@ async function deepSearchTool(args, config, signal, id, toolCallId, sessionId) {
     try {
       recordProgress(id, toolCallId, { phase: "summary", status: "running" });
       const summary = await generateSummary(result, config, signal);
-      const details = detailsFor(requestedWorkflow, "auto-summary", result, { summary: summary.meta, sourceCount: result.results.length });
+      const details = detailsFor(requestedWorkflow, "auto-summary", result, { summary: summary.meta, sourceCount: result.results.length, queryFailures });
       await persistSearchEntry(sessionId, result, details);
       return sourceResult(summary.text, details);
     } catch (error) {
-      const details = detailsFor(requestedWorkflow, "none", result, { fallbackTo: "none", fallbackReason: safeError(error), summary: { fallbackUsed: true, fallbackReason: safeError(error), phase: "summary" }, sourceCount: result.results.length });
+      const details = detailsFor(requestedWorkflow, "none", result, { fallbackTo: "none", fallbackReason: safeError(error), summary: { fallbackUsed: true, fallbackReason: safeError(error), phase: "summary" }, sourceCount: result.results.length, queryFailures });
       await persistSearchEntry(sessionId, result, details);
       return sourceResult(sourcePackText(result), details);
     }
   }
-  let current = result;
-  let curator;
-  try {
-    curator = await startCurator({
-      queries,
-      result: current,
-      config,
-      onAddSearch: async (query) => {
-        const extra = await runSearch(query, options, config, signal, id, toolCallId);
-        current = combineAggregates([...queries, query].join("; "), [current, extra], options);
-        cache.response(current.responseId, current);
-        return current;
-      },
-      onRewrite: (query) => rewriteQuery(query, config, signal),
-      onSummarize: (selectedUrls) => generateSummary(current, config, signal, selectedUrls),
-    });
-    recordProgress(id, toolCallId, { phase: "curator", status: "ready", url: curator.url });
-    curators.add(curator);
-  } catch (error) {
-    const details = detailsFor(requestedWorkflow, "none", current, { fallbackTo: "none", fallbackReason: safeError(error), sourceCount: current.results.length });
-    await persistSearchEntry(sessionId, current, details);
-    return sourceResult(sourcePackText(current), details);
-  }
-  const review = await curator.wait;
-  curators.delete(curator);
-  result = current;
-  if (review.status !== "submitted") {
-    const details = detailsFor(requestedWorkflow, "none", result, { fallbackTo: "none", fallbackReason: `curator-${review.status}`, sourceCount: result.results.length });
-    await persistSearchEntry(sessionId, result, details);
-    return sourceResult(sourcePackText(result), details);
-  }
-  const selectedUrls = review.selectedUrls?.length ? review.selectedUrls : result.results.map((item) => item.url);
-  try {
-    const summary = await generateSummary(result, config, signal, selectedUrls);
-    const details = detailsFor(requestedWorkflow, "summary-review", result, { selectedUrls, summary: summary.meta, sourceCount: result.results.length });
-    await persistSearchEntry(sessionId, result, details);
-    return sourceResult(summary.text, details);
-  } catch (error) {
-    // A review already completed, so keep the review mode and expose a
-    // deterministic source list for the current model to summarize itself.
-    const details = detailsFor(requestedWorkflow, "summary-review", result, { selectedUrls, fallbackReason: safeError(error), summary: { fallbackUsed: true, fallbackReason: safeError(error), phase: "summary" }, sourceCount: result.results.length });
-    await persistSearchEntry(sessionId, result, details);
-    return sourceResult(deterministicSummary(result, selectedUrls), details);
-  }
+  throw new Error(`workflow-unsupported: ${requestedWorkflow}`);
 }
 
 async function executeTool(params, id) {
@@ -314,7 +294,6 @@ rpc.onRequest(async (method, params, id) => {
     case "tool.execute": return executeTool(params, id);
     case "shutdown":
       for (const controller of activeCalls.values()) controller.abort(new Error("sidecar shutdown"));
-      for (const curator of curators) curator.close();
       return {};
     case "session.open":
     case "session.close":

@@ -27,15 +27,12 @@ export function normalizeOptions(args, config) {
   const domains = Array.isArray(args?.domainFilter)
     ? args.domainFilter.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean).slice(0, 100)
     : [];
-  const allowedWorkflow = ["none", "summary-review", "auto-summary"];
-  const workflow = allowedWorkflow.includes(args?.workflow) ? args.workflow : config.workflow;
   return {
     numResults: clampResults(args?.numResults, clampResults(config?.maxResults, 5)),
     includeContent: args?.includeContent === true || config.fetchContent === true,
     recencyFilter: ["day", "week", "month", "year"].includes(args?.recencyFilter) ? args.recencyFilter : undefined,
     domainFilter: domains,
     provider,
-    workflow: allowedWorkflow.includes(workflow) ? workflow : "none",
     proxy: text(args?.proxy),
   };
 }
