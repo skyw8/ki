@@ -3,6 +3,13 @@
   "version": "0.1.0",
   "description": "OpenAI Codex subscription provider with ChatGPT OAuth",
   "capabilities": ["provider"],
+  "i18n": {
+    "defaultLocale": "en",
+    "resources": {
+      "en": "locales/en.json",
+      "zh": "locales/zh.json"
+    }
+  },
   "providers": [
     {
       "id": "openai-codex",

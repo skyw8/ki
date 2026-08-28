@@ -3,6 +3,8 @@
 //
 // A package is a directory with extension.json under {KI_HOME}/extensions.
 // Declarative contributions (prompt, skills, and slash templates) are global.
+// Optional extension-owned i18n resources are loaded into the read-only catalog
+// and remain opaque to the host; the WebUI resolves their UIText values.
 // Code capabilities (tools, lifecycle subscriptions, executable slash) run in
 // one NDJSON sidecar per enabled package, owned by the server process. Provider
 // capabilities use the same process-level lifetime and are shared by all

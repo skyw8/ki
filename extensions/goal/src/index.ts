@@ -85,10 +85,10 @@ async function initialize(params: unknown) {
 
 async function syncGlobalUI() {
   const host = new Host(rpc, "");
-  await host.setGlobalStatus("goal", "Goal", "info");
+  await host.setGlobalStatus("goal", { key: "title" }, "info");
   await host.setGlobalPanel({
-    title: "Goal",
-    summary: "选择一个 session 后查看或管理该 session 的 goal。",
+    title: { key: "title" },
+    summary: { key: "noSession" },
   });
 }
 

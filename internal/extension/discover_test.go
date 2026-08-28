@@ -100,6 +100,61 @@ func TestDiscoverProviderCapabilityLoadsCatalog(t *testing.T) {
 	}
 }
 
+func TestDiscoverLoadsExtensionI18nCatalog(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "extensions", "localized")
+	writePkg(t, filepath.Join(home, "extensions"), "localized", `{
+		"name":"localized",
+		"capabilities":[],
+		"i18n":{"defaultLocale":"zh-CN","resources":{"en":"locales/en.json","zh-CN":"locales/zh-CN.json"}}
+	}`)
+	if err := os.MkdirAll(filepath.Join(dir, "locales"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "locales", "en.json"), []byte(`{"title":"Title"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "locales", "zh-CN.json"), []byte(`{"title":"标题","count":"{count} 项"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := Discover(home, session.Toggle{})
+	if len(got.All) != 1 || got.All[0].I18n == nil {
+		t.Fatalf("localized catalog missing: %+v", got.All)
+	}
+	catalog := got.All[0].I18n
+	if catalog.DefaultLocale != "zh-CN" {
+		t.Fatalf("default locale = %q", catalog.DefaultLocale)
+	}
+	if catalog.Resources["en"]["title"] != "Title" || catalog.Resources["zh-CN"]["title"] != "标题" {
+		t.Fatalf("resources = %#v", catalog.Resources)
+	}
+}
+
+func TestDiscoverIgnoresBrokenI18nResource(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "extensions", "localized")
+	writePkg(t, filepath.Join(home, "extensions"), "localized", `{
+		"name":"localized",
+		"capabilities":[],
+		"i18n":{"resources":{"en":"locales/en.json","zh":"locales/missing.json"}}
+	}`)
+	if err := os.MkdirAll(filepath.Join(dir, "locales"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "locales", "en.json"), []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := Discover(home, session.Toggle{})
+	if len(got.All) != 1 || got.All[0].Error != "" {
+		t.Fatalf("broken optional resource should not break extension: %+v", got.All)
+	}
+	if got.All[0].I18n != nil {
+		t.Fatalf("expected empty catalog, got %#v", got.All[0].I18n)
+	}
+}
+
 func TestDiscoverRejectsProviderWithoutSidecar(t *testing.T) {
 	home := t.TempDir()
 	writePkg(t, filepath.Join(home, "extensions"), "codex", `{

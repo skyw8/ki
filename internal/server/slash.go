@@ -133,7 +133,7 @@ func (s *Server) getExtensionConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": d.Name, "schema": d.Config.Schema, "config": values})
+	writeJSON(w, http.StatusOK, map[string]any{"name": d.Name, "schema": d.Config.Schema, "config": values, "i18n": d.I18n})
 }
 
 func (s *Server) patchExtensionConfig(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +164,7 @@ func (s *Server) patchExtensionConfig(w http.ResponseWriter, r *http.Request) {
 	if s.ext != nil {
 		s.ext.NotifyGlobal(d.Name, "config.updated", map[string]any{"config": values})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": d.Name, "schema": d.Config.Schema, "config": values})
+	writeJSON(w, http.StatusOK, map[string]any{"name": d.Name, "schema": d.Config.Schema, "config": values, "i18n": d.I18n})
 }
 
 func (s *Server) extensionCatalog(snapshot resources.Snapshot) []map[string]any {
@@ -187,6 +187,9 @@ func (s *Server) extensionCatalog(snapshot resources.Snapshot) []map[string]any 
 			"capabilities": d.Capabilities,
 			"configurable": len(d.Config.Schema) > 0,
 		})
+		if d.I18n != nil {
+			items[len(items)-1]["i18n"] = d.I18n
+		}
 		if ui := s.globalExtensionUI(d.Name); ui != nil {
 			items[len(items)-1]["ui"] = ui
 		}

@@ -3349,10 +3349,16 @@ func TestExtensionsHTTPToggle(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(`{"name":"alpha","capabilities":["prompt.append"],"prompt":{"append":["A.md"]}}`), 0o600); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "locales"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(`{"name":"alpha","capabilities":["prompt.append"],"prompt":{"append":["A.md"]},"i18n":{"defaultLocale":"en","resources":{"en":"locales/en.json"}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "A.md"), []byte("EXT-APPEND"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "locales", "en.json"), []byte(`{"title":"Alpha"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/extensions", nil)
@@ -3376,6 +3382,15 @@ func TestExtensionsHTTPToggle(t *testing.T) {
 	}
 	if _, ok := listed.Items[0]["source"]; ok {
 		t.Fatal("extension catalog must not expose a redundant source label")
+	}
+	i18n, ok := listed.Items[0]["i18n"].(map[string]any)
+	if !ok || i18n["defaultLocale"] != "en" {
+		t.Fatalf("extension catalog must expose extension i18n: %#v", listed.Items[0]["i18n"])
+	}
+	resources, ok := i18n["resources"].(map[string]any)
+	english, englishOK := resources["en"].(map[string]any)
+	if !ok || !englishOK || english["title"] != "Alpha" {
+		t.Fatalf("extension catalog i18n resources: %#v", resources)
 	}
 	body, _ := marshalJSON(map[string]any{"disabled": []string{"alpha"}})
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/extensions", bytes.NewReader(body))

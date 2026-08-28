@@ -3,6 +3,13 @@
   "version": "0.1.0",
   "description": "Session-scoped /goal: continue from idle until complete, blocked, paused, or the continuation cap.",
   "capabilities": ["command", "tool", "lifecycle"],
+  "i18n": {
+    "defaultLocale": "en",
+    "resources": {
+      "en": "locales/en.json",
+      "zh": "locales/zh.json"
+    }
+  },
   "failClosed": false,
   "runtime": {
     "kind": "rpc",

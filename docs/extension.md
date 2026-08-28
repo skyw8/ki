@@ -23,6 +23,8 @@ my-ext/
 ├── prompt/APPEND.md
 ├── skills/…/SKILL.md
 ├── commands/*.md
+├── locales/en.json
+├── locales/zh.json
 └── bin/extension
 ```
 
@@ -40,6 +42,10 @@ my-ext/
   "prompt": { "append": ["prompt/APPEND.md"] },
   "skills": ["skills"],
   "commands": ["commands"],
+  "i18n": {
+    "defaultLocale": "en",
+    "resources": { "en": "locales/en.json", "zh": "locales/zh.json" }
+  },
   "providers": [{
     "id": "example-provider",
     "name": "Example Provider",
@@ -57,6 +63,9 @@ my-ext/
 - `runtime.kind`：`none`（缺省）| `rpc`。`rpc` 须声明 `tool` / `lifecycle` / `command` / `bus` / `provider` / `channel` / `settings` 之一。
 - `runtime.command`：无路径分隔符（`node` / `npx`）走 **PATH**；带 `/` 的相对路径相对包根（`bin/extension`）；绝对路径原样用。
 - `runtime.install`：可选 argv，sidecar **启动前**在包根执行（装依赖）。stdout 并进 stderr，避免污染 NDJSON。失败则不拉起 sidecar。
+- `i18n`：可选的扩展自有文案包。`resources` 将 locale 映射到包内的 UTF-8 JSON 文件；文件内容是扁平的 `key -> string` 字典，扩展可以自行使用点号组织 key。`defaultLocale` 缺省时优先使用 `en`，再使用字典中排序最前的 locale。路径必须留在包根内，单个资源最多 256 KiB。
+- i18n 资源是展示数据。资源文件缺失、格式错误、超限或包含非法 UTF-8 时，该 locale 会被忽略，不能阻止扩展运行；WebUI 会回退到其它 locale、`fallback` 或 key。
+- Host 只读取并转发经过校验的 catalog，不合并扩展 key，也不在 Go 或 WebUI 的 host 字典中维护扩展文案。
 
 ## 支持的能力
 
@@ -198,7 +207,7 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 | `session.patch` | — | model / thinkingEffort |
 | `session.setActiveTools` | — | 会话级；未知名 warn，不静默清空 |
 | `tools.register` | `tool` | 下一 occupy 生效 |
-| `ui.setStatus` / `ui.setPanel` / `ui.clearPanel` | — | 当前 session 的内存投影 + SSE；不进 jsonl。面板是通用壳，不解析业务 |
+| `ui.setStatus` / `ui.setPanel` / `ui.clearPanel` | — | 当前 session 的内存投影 + SSE；不进 jsonl。面板是通用壳，不解析业务。可展示的文案字段接受原始字符串或扩展自有的 `UIText` |
 | `ui.setGlobalStatus` / `ui.setGlobalPanel` / `ui.clearGlobalPanel` | — | server 级内存投影；不进 jsonl；通过 `/v1/extensions` 返回，适合首页可见的全局状态；global panel 只读，配置走 config API |
 | `ui.confirm` / `ui.select` | — | WebUI 弹层；**120s** 超时 = 取消 |
 | `bus.emit` | `bus` | 深拷贝 fan-out；result 为合并后 data |
@@ -248,4 +257,4 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 
 `path` 只展示，不当 `href`。
 
-扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态和 global UI 投影；查询不会启动 sidecar。manifest 校验失败不会拉起 runtime；sidecar 启动失败保持启用并自动重试。配置接口只返回 schema 和脱敏值，敏感字段写入时保留、读取时显示 `<configured>`。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航切换扩展，Extensions 设置中的 Configure 也只负责打开并定位到同一个页面，不在 session Info 或设置页内嵌第二份编辑器。
+扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影和可选 i18n catalog；查询不会启动 sidecar。manifest 校验失败不会拉起 runtime；sidecar 启动失败保持启用并自动重试。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航切换扩展，Extensions 设置中的 Configure 也只负责打开并定位到同一个页面，不在 session Info 或设置页内嵌第二份编辑器。

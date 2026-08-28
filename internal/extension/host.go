@@ -27,14 +27,14 @@ type SessionHost interface {
 	PatchSession(sessionID string, model, thinking string) error
 	SetActiveTools(sessionID, extension string, names []string) error
 	RegisterTools(sessionID, extension string, tools []ToolSpec) error
-	UISetStatus(sessionID, extension, key, text, tone string) error
+	UISetStatus(sessionID, extension, key string, text UIText, tone string) error
 	UISetPanel(sessionID, extension string, panel UIPanel) error
 	UIClearPanel(sessionID, extension string) error
-	GlobalUISetStatus(extension, key, text, tone string) error
+	GlobalUISetStatus(extension, key string, text UIText, tone string) error
 	GlobalUISetPanel(extension string, panel UIPanel) error
 	GlobalUIClearPanel(extension string) error
-	UIConfirm(sessionID, extension, title, message string) (bool, error)
-	UISelect(sessionID, extension, title string, options []string) (string, error)
+	UIConfirm(sessionID, extension string, title, message UIText) (bool, error)
+	UISelect(sessionID, extension string, title UIText, options []string) (string, error)
 	BusEmit(sessionID, from, channel string, data any) (any, error)
 	BusBroadcast(sessionID, from, channel string, data any) error
 }
@@ -111,31 +111,80 @@ type SessionSnapshot struct {
 	Commands    []string       `json:"commands,omitempty"`
 }
 
+// UIText is either a raw string/value or an extension-local translation
+// descriptor such as {"key":"title","params":{"count":2}}. It is kept
+// opaque to the host so a global sidecar can serve clients with different
+// browser locales without racing to rewrite one shared projection.
+type UIText = any
+
+// UITextEmpty reports whether a text payload should clear a status/prompt.
+func UITextEmpty(value UIText) bool {
+	if value == nil {
+		return true
+	}
+	if text, ok := value.(string); ok {
+		return text == ""
+	}
+	if object, ok := value.(map[string]any); ok {
+		key, _ := object["key"].(string)
+		fallback, _ := object["fallback"].(string)
+		return key == "" && fallback == ""
+	}
+	return false
+}
+
+// UITextFallback returns a locale-neutral string for sideband logs. WebUI
+// still receives the original structured value and performs the real lookup.
+func UITextFallback(value UIText) string {
+	if value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return text
+	}
+	if object, ok := value.(map[string]any); ok {
+		if fallback, ok := object["fallback"].(string); ok && fallback != "" {
+			return fallback
+		}
+		if key, ok := object["key"].(string); ok {
+			return key
+		}
+	}
+	if text, ok := value.(fmt.Stringer); ok {
+		return text.String()
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
 // UIPanel is the generic detail model for any extension (not goal-specific).
 // WebUI renders title/summary, then sections (items/kv/markdown/text), fields,
 // then actions. Extensions decide which actions/fields apply; the shell does not.
 type UIPanel struct {
-	Title       string           `json:"title,omitempty"`
-	Summary     string           `json:"summary,omitempty"`
+	Title       UIText           `json:"title,omitempty"`
+	Summary     UIText           `json:"summary,omitempty"`
 	Sections    []map[string]any `json:"sections,omitempty"`
 	Actions     []UIAction       `json:"actions,omitempty"`
 	Fields      []UIField        `json:"fields,omitempty"`
-	SubmitLabel string           `json:"submitLabel,omitempty"`
+	SubmitLabel UIText           `json:"submitLabel,omitempty"`
 }
 
 // UIAction is one panel button. Disabled is shown but not clickable.
 type UIAction struct {
 	ID       string `json:"id"`
-	Label    string `json:"label"`
+	Label    UIText `json:"label"`
 	Style    string `json:"style,omitempty"`
 	Disabled bool   `json:"disabled,omitempty"`
-	Title    string `json:"title,omitempty"`
+	Title    UIText `json:"title,omitempty"`
 }
 
 // UIField is one editable field.
 type UIField struct {
 	ID      string   `json:"id"`
-	Label   string   `json:"label,omitempty"`
+	Label   UIText   `json:"label,omitempty"`
 	Type    string   `json:"type,omitempty"`
 	Value   any      `json:"value,omitempty"`
 	Options []string `json:"options,omitempty"`
@@ -144,8 +193,8 @@ type UIField struct {
 // UIPrompt is a pending confirm/select dialog.
 type UIPrompt struct {
 	Kind    string   `json:"kind"`
-	Title   string   `json:"title,omitempty"`
-	Message string   `json:"message,omitempty"`
+	Title   UIText   `json:"title,omitempty"`
+	Message UIText   `json:"message,omitempty"`
 	Options []string `json:"options,omitempty"`
 }
 
@@ -162,7 +211,7 @@ type ExtensionUI struct {
 // UIStatus is a top-bar chip.
 type UIStatus struct {
 	Key  string `json:"key"`
-	Text string `json:"text"`
+	Text UIText `json:"text"`
 	Tone string `json:"tone,omitempty"`
 }
 
@@ -373,7 +422,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 	case "ui.setStatus":
 		var p struct {
 			Key  string `json:"key"`
-			Text string `json:"text"`
+			Text UIText `json:"text"`
 			Tone string `json:"tone"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
@@ -399,7 +448,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 	case "ui.setGlobalStatus":
 		var p struct {
 			Key  string `json:"key"`
-			Text string `json:"text"`
+			Text UIText `json:"text"`
 			Tone string `json:"tone"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
@@ -424,8 +473,8 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 		c.replyResult(msg.ID, map[string]any{"ok": true})
 	case "ui.confirm":
 		var p struct {
-			Title   string `json:"title"`
-			Message string `json:"message"`
+			Title   UIText `json:"title"`
+			Message UIText `json:"message"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)
 		ok, err := c.host.UIConfirm(sessionID, c.name, p.Title, p.Message)
@@ -436,7 +485,7 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 		c.replyResult(msg.ID, map[string]any{"ok": ok})
 	case "ui.select":
 		var p struct {
-			Title   string   `json:"title"`
+			Title   UIText   `json:"title"`
 			Options []string `json:"options"`
 		}
 		_ = json.Unmarshal(msg.Params, &p)

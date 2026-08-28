@@ -41,18 +41,18 @@ func (h mutexHost) Compact(string) error                           { return nil 
 func (h mutexHost) PatchSession(string, string, string) error      { return nil }
 func (h mutexHost) SetActiveTools(string, string, []string) error  { return nil }
 func (h mutexHost) RegisterTools(string, string, []ToolSpec) error { return nil }
-func (h mutexHost) UISetStatus(string, string, string, string, string) error {
+func (h mutexHost) UISetStatus(string, string, string, UIText, string) error {
 	return nil
 }
 func (h mutexHost) UISetPanel(string, string, UIPanel) error               { return nil }
 func (h mutexHost) UIClearPanel(string, string) error                      { return nil }
-func (h mutexHost) GlobalUISetStatus(string, string, string, string) error { return nil }
+func (h mutexHost) GlobalUISetStatus(string, string, UIText, string) error { return nil }
 func (h mutexHost) GlobalUISetPanel(string, UIPanel) error                 { return nil }
 func (h mutexHost) GlobalUIClearPanel(string) error                        { return nil }
-func (h mutexHost) UIConfirm(string, string, string, string) (bool, error) {
+func (h mutexHost) UIConfirm(string, string, UIText, UIText) (bool, error) {
 	return false, nil
 }
-func (h mutexHost) UISelect(string, string, string, []string) (string, error) {
+func (h mutexHost) UISelect(string, string, UIText, []string) (string, error) {
 	return "", nil
 }
 func (h mutexHost) BusEmit(sessionID, from, channel string, data any) (any, error) {

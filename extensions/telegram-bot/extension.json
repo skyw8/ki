@@ -3,6 +3,13 @@
   "version": "0.1.0",
   "description": "Telegram Managed Bot connector for private chats and @mentioned groups.",
   "capabilities": ["channel", "lifecycle", "settings"],
+  "i18n": {
+    "defaultLocale": "en",
+    "resources": {
+      "en": "locales/en.json",
+      "zh": "locales/zh.json"
+    }
+  },
   "config": {
     "schema": {
       "type": "object",
@@ -11,16 +18,16 @@
       "properties": {
         "botId": {
           "type": "string",
-          "description": "Managed Bot 的数字 ID，按字符串填写以避免精度问题。"
+          "description": "Managed Bot numeric ID. Enter it as a string to avoid precision loss."
         },
         "token": {
           "type": "string",
           "secret": true,
-          "description": "从 Manager Bot 或 BotFather 获取的 Managed Bot Token。"
+          "description": "Managed Bot token from Manager Bot or BotFather."
         },
         "model": {
           "type": "string",
-          "description": "Telegram 回复使用的模型规格；留空跟随全局默认模型。"
+          "description": "Model specification for Telegram replies; leave empty to follow the global default."
         }
       }
     },

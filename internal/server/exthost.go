@@ -565,7 +565,7 @@ func (s *Server) RegisterTools(sessionID, extName string, tools []extension.Tool
 	return s.ext.RegisterTools(sessionID, extName, tools)
 }
 
-func (s *Server) UISetStatus(sessionID, extName, key, text, tone string) error {
+func (s *Server) UISetStatus(sessionID, extName, key string, text extension.UIText, tone string) error {
 	s.mu.Lock()
 	if s.extUI[sessionID] == nil {
 		s.extUI[sessionID] = map[string]*extUIState{}
@@ -575,7 +575,7 @@ func (s *Server) UISetStatus(sessionID, extName, key, text, tone string) error {
 		st = &extUIState{}
 		s.extUI[sessionID][extName] = st
 	}
-	if text == "" {
+	if extension.UITextEmpty(text) {
 		st.Status = nil
 	} else {
 		st.Status = &extension.UIStatus{Key: key, Text: text, Tone: tone}
@@ -615,14 +615,14 @@ func (s *Server) UIClearPanel(sessionID, extName string) error {
 // GlobalUISetStatus stores the process-level projection emitted by a global
 // sidecar during initialize. It is separate from session UI because no
 // session may exist when the server first renders the WebUI.
-func (s *Server) GlobalUISetStatus(extName, key, text, tone string) error {
+func (s *Server) GlobalUISetStatus(extName, key string, text extension.UIText, tone string) error {
 	s.mu.Lock()
 	st := s.globalExtUI[extName]
 	if st == nil {
 		st = &extUIState{}
 		s.globalExtUI[extName] = st
 	}
-	if text == "" {
+	if extension.UITextEmpty(text) {
 		st.Status = nil
 	} else {
 		st.Status = &extension.UIStatus{Key: key, Text: text, Tone: tone}
@@ -647,7 +647,7 @@ func (s *Server) GlobalUISetPanel(extName string, panel extension.UIPanel) error
 	// global configuration remains available through the config editor.
 	p.Actions = nil
 	p.Fields = nil
-	p.SubmitLabel = ""
+	p.SubmitLabel = nil
 	st.Panel = &p
 	s.mu.Unlock()
 	return nil
@@ -662,11 +662,11 @@ func (s *Server) GlobalUIClearPanel(extName string) error {
 	return nil
 }
 
-func (s *Server) UIConfirm(sessionID, extName, title, message string) (bool, error) {
+func (s *Server) UIConfirm(sessionID, extName string, title, message extension.UIText) (bool, error) {
 	ch := make(chan uiAnswer, 1)
 	key := sessionID + "/confirm/" + extName
 	s.setUIPrompt(sessionID, extName, &extension.UIPrompt{Kind: "confirm", Title: title, Message: message}, key, ch)
-	s.publishSideband(sessionID, loop.Event{Type: loop.ExtensionUIPrompt, Server: extName, Reason: "confirm", MessageText: title}, false)
+	s.publishSideband(sessionID, loop.Event{Type: loop.ExtensionUIPrompt, Server: extName, Reason: "confirm", MessageText: extension.UITextFallback(title)}, false)
 	select {
 	case a := <-ch:
 		s.clearUIPrompt(sessionID, extName, key)
@@ -677,12 +677,12 @@ func (s *Server) UIConfirm(sessionID, extName, title, message string) (bool, err
 	}
 }
 
-func (s *Server) UISelect(sessionID, extName, title string, options []string) (string, error) {
+func (s *Server) UISelect(sessionID, extName string, title extension.UIText, options []string) (string, error) {
 	ch := make(chan uiAnswer, 1)
 	key := sessionID + "/select/" + extName
 	s.setUIPrompt(sessionID, extName, &extension.UIPrompt{Kind: "select", Title: title, Options: options}, key, ch)
 	s.publishSideband(sessionID, loop.Event{
-		Type: loop.ExtensionUIPrompt, Server: extName, Reason: "select", MessageText: title, Options: options,
+		Type: loop.ExtensionUIPrompt, Server: extName, Reason: "select", MessageText: extension.UITextFallback(title), Options: options,
 	}, false)
 	select {
 	case a := <-ch:

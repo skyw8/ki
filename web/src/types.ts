@@ -159,6 +159,17 @@ export type CatalogSkill = {
   enabled: boolean
 }
 
+export type ExtensionText = string | number | boolean | {
+  key: string
+  params?: Record<string, string | number>
+  fallback?: string
+}
+
+export type ExtensionI18n = {
+  defaultLocale?: string
+  resources?: Record<string, Record<string, string>>
+}
+
 export type CatalogExtension = {
   name: string
   version?: string
@@ -171,12 +182,14 @@ export type CatalogExtension = {
 	configurable?: boolean
 	runtime?: { name: string; state: string; error?: string; capabilities?: string[] }
 	ui?: ExtensionUI
+	i18n?: ExtensionI18n
 }
 
 export type ExtensionConfig = {
 	name: string
 	schema: Record<string, unknown>
 	config: Record<string, unknown>
+	i18n?: ExtensionI18n
 }
 
 export type SessionCommand = {
@@ -209,16 +222,16 @@ export type SessionDetail = SessionInfo & {
 
 export type ExtensionUI = {
   extension: string
-  status?: { key: string; text: string; tone?: string }
+  status?: { key: string; text: ExtensionText; tone?: string }
   panel?: {
-    title?: string
-    summary?: string
+    title?: ExtensionText
+    summary?: ExtensionText
     sections?: Array<Record<string, unknown>>
-    actions?: Array<{ id: string; label: string; style?: string; disabled?: boolean; title?: string }>
-    fields?: Array<{ id: string; label?: string; type?: string; value?: unknown; options?: string[] }>
-    submitLabel?: string
+    actions?: Array<{ id: string; label: ExtensionText; style?: string; disabled?: boolean; title?: ExtensionText }>
+    fields?: Array<{ id: string; label?: ExtensionText; type?: string; value?: unknown; options?: string[] }>
+    submitLabel?: ExtensionText
   }
-  prompt?: { kind: string; title?: string; message?: string; options?: string[] }
+  prompt?: { kind: string; title?: ExtensionText; message?: ExtensionText; options?: string[] }
 }
 
 export type Toggle = { only?: string[]; disabled?: string[] }

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { Host } from "./host.js";
+import type { Host, UIText } from "./host.js";
 import { parseCommand } from "./command.js";
 import {
   appendSystem,
@@ -52,6 +52,10 @@ type StoreFile = { goal: GoalState | null };
 
 const CUSTOM_TYPE = "goal-state";
 const STATUS_KEY = "goal";
+
+function uiText(key: string): UIText {
+  return { key };
+}
 
 export class GoalApp {
   private goal: GoalState | null = null;
@@ -150,7 +154,7 @@ export class GoalApp {
         return;
       }
       if (id === "clear") {
-        const ok = await this.host.confirm("Clear goal?", this.goal ? this.goal.text : "No active goal.");
+        const ok = await this.host.confirm({ key: "confirmClear" }, this.goal ? this.goal.text : { key: "noActiveGoal" });
         if (!ok) return;
         await this.clear();
       }
@@ -428,16 +432,16 @@ export class GoalApp {
     try {
       const goal = this.goal;
       if (!goal) {
-        await this.host.setStatus(STATUS_KEY, "Goal", "info");
+        await this.host.setStatus(STATUS_KEY, uiText("title"), "info");
         await this.host.setPanel({
-          title: "Goal",
-          summary: "No goal in this session.",
-          fields: [{ id: "objective", label: "Objective", type: "textarea", value: "" }],
-          submitLabel: "Start",
+          title: uiText("title"),
+          summary: uiText("noGoal"),
+          fields: [{ id: "objective", label: uiText("objective"), type: "textarea", value: "" }],
+          submitLabel: uiText("start"),
           actions: [
-            { id: "pause", label: "Pause", disabled: true, title: "No active goal" },
-            { id: "resume", label: "Resume", disabled: true, title: "No paused goal" },
-            { id: "clear", label: "Clear", style: "danger", disabled: true, title: "No goal to clear" },
+            { id: "pause", label: uiText("pause"), disabled: true, title: uiText("noActive") },
+            { id: "resume", label: uiText("resume"), disabled: true, title: uiText("noPaused") },
+            { id: "clear", label: uiText("clear"), style: "danger", disabled: true, title: uiText("noGoalToClear") },
           ],
         });
         return;
@@ -446,30 +450,30 @@ export class GoalApp {
       const label = waiting ? "waiting" : goal.status;
       const tone =
         goal.status === "complete" ? "success" : waiting || goal.status !== "active" ? "warning" : "active";
-      await this.host.setStatus(STATUS_KEY, `Goal · ${label}`, tone);
+      await this.host.setStatus(STATUS_KEY, uiText(`statusLine.${label}`), tone);
       const canPause = goal.status === "active" && !waiting;
       const canResume = goal.status === "paused" || goal.status === "blocked" || waiting;
       const canEdit = goal.status !== "complete";
-      const items: Array<{ label: string; value: string }> = [
-        { label: "Status", value: label },
-        { label: "Turns", value: `${goal.automaticTurns} / ${MAX_AUTOMATIC_TURNS}` },
-        { label: "Started", value: formatTime(goal.startedAt) },
-        { label: "Updated", value: formatTime(goal.updatedAt) },
-        { label: "ID", value: goal.id },
+      const items: Array<{ label: UIText; value: UIText }> = [
+        { label: uiText("status"), value: uiText(`status.${label}`) },
+        { label: uiText("turns"), value: `${goal.automaticTurns} / ${MAX_AUTOMATIC_TURNS}` },
+        { label: uiText("started"), value: formatTime(goal.startedAt) },
+        { label: uiText("updated"), value: formatTime(goal.updatedAt) },
+        { label: uiText("id"), value: goal.id },
       ];
       if (goal.waiting) {
-        items.splice(1, 0, { label: "Waiting", value: goal.waiting.reason });
-        if (goal.waiting.resumeAt) items.splice(2, 0, { label: "Resume at", value: formatTime(goal.waiting.resumeAt) });
+        items.splice(1, 0, { label: uiText("waiting"), value: goal.waiting.reason });
+        if (goal.waiting.resumeAt) items.splice(2, 0, { label: uiText("resumeAt"), value: formatTime(goal.waiting.resumeAt) });
       }
       await this.host.setPanel({
-        title: "Goal",
-        sections: [{ heading: "Details", items }],
-        fields: [{ id: "objective", label: "Objective", type: "textarea", value: goal.text }],
-        submitLabel: canEdit ? "Update" : "Start",
+        title: uiText("title"),
+        sections: [{ heading: uiText("details"), items }],
+        fields: [{ id: "objective", label: uiText("objective"), type: "textarea", value: goal.text }],
+        submitLabel: canEdit ? uiText("update") : uiText("start"),
         actions: [
-          { id: "pause", label: "Pause", disabled: !canPause, title: canPause ? "Pause this goal" : "Only an active goal can pause" },
-          { id: "resume", label: "Resume", disabled: !canResume, title: canResume ? "Resume this goal" : "Nothing to resume" },
-          { id: "clear", label: "Clear", style: "danger", disabled: false, title: "Clear this goal" },
+          { id: "pause", label: uiText("pause"), disabled: !canPause, title: canPause ? uiText("pauseHint") : uiText("onlyActivePause") },
+          { id: "resume", label: uiText("resume"), disabled: !canResume, title: canResume ? uiText("resumeHint") : uiText("nothingToResume") },
+          { id: "clear", label: uiText("clear"), style: "danger", disabled: false, title: uiText("clearHint") },
         ],
       });
     } catch (err) {

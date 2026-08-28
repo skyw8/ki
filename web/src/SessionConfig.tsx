@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { Client } from './api'
 import { ICheck, IChevDown, IEdit, IRegen, ITraj } from './icons'
-import { useI18n, type MsgKey } from './i18n'
+import { useI18n, type Lang, type MsgKey } from './i18n'
 import { ModelPickerDialog } from './ModelPickerDialog'
 import { toast } from './toast'
-import type { CatalogExtension, CatalogSkill, ExtensionConfig, ModelInfo, SessionCommand, SessionDetail } from './types'
+import { localizedExtensionText } from './ExtensionPanel'
+import type { CatalogExtension, CatalogSkill, ExtensionConfig, ExtensionI18n, ModelInfo, SessionCommand, SessionDetail } from './types'
 
 const SOURCE_KEY: Record<string, MsgKey> = {
   home: 'cfg.src.home',
@@ -19,6 +20,15 @@ const INFO_SECTIONS = [
   { id: 'info-extensions', label: 'cfg.extensions', children: [] },
   { id: 'info-commands', label: 'cfg.commands', children: [] },
 ] as const
+
+function extensionCopy(i18n: ExtensionI18n | undefined, lang: Lang, key: string): string {
+  return localizedExtensionText({ key }, i18n, lang)
+}
+
+function extensionDescription(item: { description?: string; i18n?: ExtensionI18n }, lang: Lang): string {
+  if (!item.description && !item.i18n?.resources) return ''
+  return localizedExtensionText({ key: 'manifest.description', fallback: item.description || '' }, item.i18n, lang)
+}
 
 type OutlineItem = {
   id: string
@@ -47,7 +57,7 @@ export function SessionConfig({
   treeAvailable?: boolean
   onTreeOpen?: () => void
 }) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [detail, setDetail] = useState<SessionDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [activeSection, setActiveSection] = useState<string>(INFO_SECTIONS[0].id)
@@ -207,7 +217,7 @@ export function SessionConfig({
                         {item.name}
                         <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
                       </div>
-                      {item.description ? <p className="cfg-desc">{item.description}</p> : null}
+                      {extensionDescription(item, lang) ? <p className="cfg-desc">{extensionDescription(item, lang)}</p> : null}
                       {item.runtime ? <p className="cfg-desc">{t('cfg.runtime')}: {item.runtime.state}</p> : null}
                       {item.error ? <p className="cfg-desc settings-error" role="alert">{item.error}</p> : null}
                     </div>
@@ -279,7 +289,7 @@ export function SettingsToggles({
   onConfigure?: (name: string) => void
   onChanged?: () => void | Promise<void>
 }) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const [items, setItems] = useState<Array<CatalogSkill | CatalogExtension>>([])
   const [loading, setLoading] = useState(false)
 
@@ -334,7 +344,8 @@ export function SettingsToggles({
                   {item.name}
                   {kind === 'skills' && 'source' in item && item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
                 </div>
-	              {'description' in item && item.description ? <p className="cfg-desc">{item.description}</p> : null}
+              {'description' in item && kind === 'extensions' && extensionDescription(item, lang) ? <p className="cfg-desc">{extensionDescription(item, lang)}</p> : null}
+              {'description' in item && kind !== 'extensions' && item.description ? <p className="cfg-desc">{item.description}</p> : null}
 	              {'error' in item && item.error ? <p className="cfg-desc settings-error-inline" data-testid={`${kind}-error-${item.name}`} role="alert">{item.error}</p> : null}
 	              </div>
 	              {kind === 'extensions' && 'configurable' in item && item.configurable ? <button type="button" className="cfg-btn" data-testid={`cfg-configure-${item.name}`} onClick={() => onConfigure?.(item.name)}>{t('cfg.configure')}</button> : null}
@@ -362,6 +373,7 @@ type ExtensionConfigEditorProps = {
 
 export function ExtensionConfigEditor(props: ExtensionConfigEditorProps) {
 	if (props.name === 'telegram-bot') return <TelegramConfigForm {...props} />
+	if (props.name === 'deep-web-search') return <DeepWebSearchConfigForm {...props} />
 	return <JsonExtensionConfigEditor {...props} />
 }
 
@@ -414,7 +426,7 @@ function JsonExtensionConfigEditor({ api, name, onClose, embedded = false }: Ext
 }
 
 function TelegramConfigForm({ api, name, onClose, embedded = false, models = [], defaultModel = '' }: ExtensionConfigEditorProps) {
-	const { t } = useI18n()
+  const { t, lang } = useI18n()
 	const [config, setConfig] = useState<ExtensionConfig | null>(null)
 	const [loading, setLoading] = useState(true)
 	const [saving, setSaving] = useState(false)
@@ -423,6 +435,7 @@ function TelegramConfigForm({ api, name, onClose, embedded = false, models = [],
 	const [tokenConfigured, setTokenConfigured] = useState(false)
 	const [model, setModel] = useState('')
 	const [modelOpen, setModelOpen] = useState(false)
+	const copy = (key: string) => extensionCopy(config?.i18n, lang, key)
 
 	useEffect(() => {
 		let alive = true
@@ -443,12 +456,12 @@ function TelegramConfigForm({ api, name, onClose, embedded = false, models = [],
 		event.preventDefault()
 		const nextBotID = botId.trim()
 		if (!nextBotID) {
-			toast.error(t('cfg.telegram.botIdRequired'))
+			toast.error(copy('config.botIdRequired'))
 			return
 		}
 		const nextToken = token.trim() || (tokenConfigured ? '<configured>' : '')
 		if (!nextToken) {
-			toast.error(t('cfg.telegram.tokenRequired'))
+			toast.error(copy('config.tokenRequired'))
 			return
 		}
 		setSaving(true)
@@ -473,36 +486,36 @@ function TelegramConfigForm({ api, name, onClose, embedded = false, models = [],
 
 	const effectiveModel = model.trim() || defaultModel.trim()
 	const selectedModel = models.find(item => item.spec === effectiveModel)
-	const modelLabel = selectedModel?.name || selectedModel?.id || effectiveModel || t('cfg.telegram.modelDefault')
+	const modelLabel = selectedModel?.name || selectedModel?.id || effectiveModel || copy('config.modelDefault')
 	const modelDetail = selectedModel
 		? (selectedModel.name && selectedModel.name !== selectedModel.id ? `${selectedModel.provider} / ${selectedModel.id}` : selectedModel.provider)
-		: effectiveModel ? t('cfg.telegram.modelCustom') : t('cfg.telegram.modelDefaultHint')
+		: effectiveModel ? copy('config.modelCustom') : copy('config.modelDefaultHint')
 
 	return (
 		<section className={`extension-config-editor telegram-config-editor${embedded ? ' embedded' : ''}`} data-testid={`extension-config-${name}`}>
 			{embedded ? <div className="cfg-name"><span>{t('cfg.config')}</span></div> : <div className="cfg-name"><span>{t('cfg.config')} · {name}</span><button type="button" className="cfg-btn" onClick={onClose}>{t('cfg.configClose')}</button></div>}
 			{loading ? <p className="cfg-empty">{t('file.loading')}</p> : (
 				<form className="telegram-config-form" onSubmit={event => void save(event)}>
-					<p className="cfg-desc">{t('cfg.telegram.hint')}</p>
+					<p className="cfg-desc">{copy('config.hint')}</p>
 					<div className="form-grid two">
 						<label className="form-control">
-							<span>{t('cfg.telegram.botId')}</span>
-							<input data-testid="telegram-bot-id" value={botId} onChange={event => setBotId(event.target.value)} placeholder={t('cfg.telegram.botIdPlaceholder')} inputMode="numeric" autoComplete="off" />
+							<span>{copy('config.botId')}</span>
+							<input data-testid="telegram-bot-id" value={botId} onChange={event => setBotId(event.target.value)} placeholder={copy('config.botIdPlaceholder')} inputMode="numeric" autoComplete="off" />
 						</label>
 						<label className="form-control">
-							<span>{t('cfg.telegram.token')}</span>
-							<input data-testid="telegram-bot-token" type="password" value={token} onChange={event => { setToken(event.target.value); setTokenConfigured(false) }} placeholder={tokenConfigured ? t('cfg.telegram.tokenConfigured') : t('cfg.telegram.tokenPlaceholder')} autoComplete="new-password" />
-							<small className="form-hint">{t('cfg.telegram.tokenHint')}</small>
+							<span>{copy('config.token')}</span>
+							<input data-testid="telegram-bot-token" type="password" value={token} onChange={event => { setToken(event.target.value); setTokenConfigured(false) }} placeholder={tokenConfigured ? copy('config.tokenConfigured') : copy('config.tokenPlaceholder')} autoComplete="new-password" />
+							<small className="form-hint">{copy('config.tokenHint')}</small>
 						</label>
 						<div className="form-control full">
-							<span>{t('cfg.telegram.model')}</span>
+							<span>{copy('config.model')}</span>
 							<button type="button" className="telegram-model-trigger" data-testid="telegram-model-picker" disabled={!models.length} onClick={() => setModelOpen(true)}>
 								<span className="telegram-model-value"><strong>{modelLabel}</strong><small>{modelDetail}</small></span>
 								<IChevDown />
 							</button>
 							<div className="telegram-model-meta">
-								<small className="form-hint">{t('cfg.telegram.modelHint')}</small>
-								{model ? <button type="button" className="cfg-btn" onClick={() => setModel('')}>{t('cfg.telegram.modelReset')}</button> : null}
+								<small className="form-hint">{copy('config.modelHint')}</small>
+								{model ? <button type="button" className="cfg-btn" onClick={() => setModel('')}>{copy('config.modelReset')}</button> : null}
 							</div>
 						</div>
 					</div>
@@ -510,6 +523,164 @@ function TelegramConfigForm({ api, name, onClose, embedded = false, models = [],
 				</form>
 			)}
 			<ModelPickerDialog open={modelOpen} models={models} value={effectiveModel} onSelect={setModel} onClose={() => setModelOpen(false)} testid="telegram-model-dialog" />
+		</section>
+	)
+}
+
+function DeepWebSearchConfigForm({ api, name, onClose, embedded = false }: ExtensionConfigEditorProps) {
+  const { t, lang } = useI18n()
+	const [config, setConfig] = useState<ExtensionConfig | null>(null)
+	const [loading, setLoading] = useState(true)
+	const [saving, setSaving] = useState(false)
+	const [exaKey, setExaKey] = useState('')
+	const [exaConfigured, setExaConfigured] = useState(false)
+	const [exaMode, setExaMode] = useState('auto')
+	const [tinyfishKey, setTinyfishKey] = useState('')
+	const [tinyfishConfigured, setTinyfishConfigured] = useState(false)
+	const [codexModel, setCodexModel] = useState('gpt-5.5')
+	const [provider, setProvider] = useState('all')
+	const [toggles, setToggles] = useState({ codex: true, exa: true, tinyfish: true, duckduckgo: true })
+	const [maxResults, setMaxResults] = useState(5)
+	const [fetchContent, setFetchContent] = useState(false)
+	const [summaryModel, setSummaryModel] = useState('openai-codex/gpt-5.5')
+	const [queryRewriteModel, setQueryRewriteModel] = useState('')
+	const [workflow, setWorkflow] = useState('none')
+	const [autoOpenBrowser, setAutoOpenBrowser] = useState(true)
+	const [curatorTimeout, setCuratorTimeout] = useState(20)
+	const copy = (key: string) => extensionCopy(config?.i18n, lang, key)
+
+	const apply = (next: Record<string, unknown>, metadata?: ExtensionConfig) => {
+		const rawExa = typeof next.exaApiKey === 'string' ? next.exaApiKey : ''
+		const rawTinyfish = typeof next.tinyfishApiKey === 'string' ? next.tinyfishApiKey : ''
+		setConfig(metadata ?? { ...(config ?? { name, schema: {}, config: {} }), config: next })
+		setExaKey(rawExa === '<configured>' ? '' : rawExa)
+		setExaConfigured(rawExa === '<configured>')
+		setExaMode(typeof next.exaMode === 'string' ? next.exaMode : 'auto')
+		setTinyfishKey(rawTinyfish === '<configured>' ? '' : rawTinyfish)
+		setTinyfishConfigured(rawTinyfish === '<configured>')
+		setCodexModel(typeof next.codexModel === 'string' ? next.codexModel : 'gpt-5.5')
+		setProvider(typeof next.provider === 'string' ? next.provider : 'all')
+		const rawToggles = next.providerToggles && typeof next.providerToggles === 'object' ? next.providerToggles as Record<string, unknown> : {}
+		setToggles({ codex: rawToggles.codex !== false, exa: rawToggles.exa !== false, tinyfish: rawToggles.tinyfish !== false, duckduckgo: rawToggles.duckduckgo !== false })
+		setMaxResults(typeof next.maxResults === 'number' ? next.maxResults : 5)
+		setFetchContent(next.fetchContent === true)
+		setSummaryModel(typeof next.summaryModel === 'string' ? next.summaryModel : 'openai-codex/gpt-5.5')
+		setQueryRewriteModel(typeof next.queryRewriteModel === 'string' ? next.queryRewriteModel : '')
+		setWorkflow(typeof next.workflow === 'string' ? next.workflow : 'none')
+		setAutoOpenBrowser(next.autoOpenBrowser !== false)
+		setCuratorTimeout(typeof next.curatorTimeoutSeconds === 'number' ? next.curatorTimeoutSeconds : 20)
+	}
+
+	useEffect(() => {
+		let alive = true
+		setLoading(true)
+		void api.extensionConfig(name).then(next => {
+			if (alive) apply(next.config, next)
+		}).catch(e => toast.from(e)).finally(() => { if (alive) setLoading(false) })
+		return () => { alive = false }
+		// apply only initializes state from the response; including it would make
+		// every field update restart the request.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [api, name])
+
+	const save = async (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault()
+		setSaving(true)
+		try {
+			const next = await api.patchExtensionConfig(name, {
+				exaApiKey: exaKey.trim() || (exaConfigured ? '<configured>' : ''),
+				exaMode,
+				tinyfishApiKey: tinyfishKey.trim() || (tinyfishConfigured ? '<configured>' : ''),
+				codexModel: codexModel.trim(),
+				provider,
+				providerToggles: toggles,
+				maxResults: Math.max(1, Math.min(20, Math.floor(maxResults || 5))),
+				fetchContent,
+				summaryModel: summaryModel.trim(),
+				queryRewriteModel: queryRewriteModel.trim(),
+				workflow,
+				autoOpenBrowser,
+				curatorTimeoutSeconds: Math.max(5, Math.min(600, Math.floor(curatorTimeout || 20))),
+			})
+			apply(next.config, next)
+			toast.info(t('cfg.configSaved'))
+		} catch (e) {
+			toast.from(e)
+		} finally {
+			setSaving(false)
+		}
+	}
+	const providerCopy = {
+		codex: { name: copy('provider.codex'), description: copy('provider.codexDescription') },
+		exa: { name: copy('provider.exa'), description: copy('provider.exaDescription') },
+		tinyfish: { name: copy('provider.tinyfish'), description: copy('provider.tinyfishDescription') },
+		duckduckgo: { name: copy('provider.duckduckgo'), description: copy('provider.duckduckgoDescription') },
+	} as const
+
+	return (
+		<section className={`extension-config-editor deep-web-search-config-editor${embedded ? ' embedded' : ''}`} data-testid={`extension-config-${name}`}>
+			{embedded ? <div className="cfg-name"><span>{t('cfg.config')}</span></div> : <div className="cfg-name"><span>{t('cfg.config')} · {name}</span><button type="button" className="cfg-btn" onClick={onClose}>{t('cfg.configClose')}</button></div>}
+			{loading ? <p className="cfg-empty">{t('file.loading')}</p> : (
+				<form className="deep-web-search-config-form" onSubmit={event => void save(event)}>
+					<div className="deep-web-search-config-scroll">
+						<p className="cfg-desc">{copy('config.hint')}</p>
+						<section className="deep-web-search-settings-section" aria-labelledby="deep-web-search-global-title">
+						<div className="deep-web-search-section-head">
+							<div><h4 id="deep-web-search-global-title">{copy('config.globalTitle')}</h4><p>{copy('config.globalHint')}</p></div>
+						</div>
+						<div className="deep-web-search-provider-toggles" data-testid="deep-web-search-provider-toggles">
+							<div className="deep-web-search-block-head"><strong>{copy('config.toggles')}</strong><small>{copy('config.toggleHint')}</small></div>
+							{(['codex', 'exa', 'tinyfish', 'duckduckgo'] as const).map(key => (
+								<label className="deep-web-search-provider-toggle" key={key}>
+									<span className="deep-web-search-toggle-copy"><strong>{providerCopy[key].name}</strong><small>{toggles[key] ? copy('status.enabled') : copy('status.disabled')}</small></span>
+									<Switch testid={`deep-web-search-toggle-${key}`} on={toggles[key]} onChange={on => setToggles(value => ({ ...value, [key]: on }))} />
+								</label>
+							))}
+						</div>
+						<div className="form-grid two deep-web-search-global-fields">
+							<label className="form-control"><span>{copy('config.provider')}</span><select data-testid="deep-web-search-provider" value={provider} onChange={event => setProvider(event.target.value)}><option value="all">{copy('option.provider.all')}</option><option value="auto">{copy('option.provider.auto')}</option><option value="codex">{copy('option.provider.codex')}</option><option value="exa">{copy('option.provider.exa')}</option><option value="tinyfish">{copy('option.provider.tinyfish')}</option><option value="duckduckgo">{copy('option.provider.duckduckgo')}</option></select></label>
+							<label className="form-control"><span>{copy('config.workflow')}</span><select data-testid="deep-web-search-workflow" value={workflow} onChange={event => setWorkflow(event.target.value)}><option value="none">{copy('option.workflow.none')}</option><option value="summary-review">{copy('option.workflow.summary-review')}</option><option value="auto-summary">{copy('option.workflow.auto-summary')}</option></select></label>
+							<label className="form-control"><span>{copy('config.codexModel')}</span><input data-testid="deep-web-search-codex-model" value={codexModel} onChange={event => setCodexModel(event.target.value)} placeholder="gpt-5.5" /></label>
+							<label className="form-control"><span>{copy('config.maxResults')}</span><input data-testid="deep-web-search-max-results" type="number" min={1} max={20} value={maxResults} onChange={event => setMaxResults(Number(event.target.value))} /></label>
+							<label className="form-control"><span>{copy('config.summaryModel')}</span><input data-testid="deep-web-search-summary-model" value={summaryModel} onChange={event => setSummaryModel(event.target.value)} placeholder="openai-codex/gpt-5.5" /></label>
+							<label className="form-control"><span>{copy('config.queryRewriteModel')}</span><input data-testid="deep-web-search-query-rewrite-model" value={queryRewriteModel} onChange={event => setQueryRewriteModel(event.target.value)} placeholder={copy('config.queryRewritePlaceholder')} /></label>
+							<label className="form-control"><span>{copy('config.curatorTimeout')}</span><input data-testid="deep-web-search-curator-timeout" type="number" min={5} max={600} value={curatorTimeout} onChange={event => setCuratorTimeout(Number(event.target.value))} /></label>
+						</div>
+						<div className="deep-web-search-options">
+							<label><input data-testid="deep-web-search-fetch-content" type="checkbox" checked={fetchContent} onChange={event => setFetchContent(event.target.checked)} /> {copy('config.fetchContent')}</label>
+							<label className={workflow === 'summary-review' ? '' : 'is-muted'}><input data-testid="deep-web-search-auto-open" type="checkbox" checked={autoOpenBrowser} onChange={event => setAutoOpenBrowser(event.target.checked)} /> {copy('config.autoOpen')}</label>
+						</div>
+						</section>
+						<section className="deep-web-search-settings-section" aria-labelledby="deep-web-search-providers-title">
+						<div className="deep-web-search-section-head">
+							<div><h4 id="deep-web-search-providers-title">{copy('config.providersTitle')}</h4><p>{copy('config.providersHint')}</p></div>
+						</div>
+						<div className="deep-web-search-provider-list">
+							<article className="deep-web-search-provider-row">
+								<div className="deep-web-search-provider-copy"><div className="deep-web-search-provider-title"><span className="deep-web-search-provider-mark codex" aria-hidden /> <strong>{providerCopy.codex.name}</strong><span className="deep-web-search-provider-status">{copy('provider.codexStatus')}</span></div><p>{providerCopy.codex.description}</p></div>
+								<div className="deep-web-search-provider-value"><span className="deep-web-search-provider-badge">{copy('status.connected')}</span><code>codex-oauth</code></div>
+							</article>
+							<article className="deep-web-search-provider-row">
+								<div className="deep-web-search-provider-copy"><div className="deep-web-search-provider-title"><span className="deep-web-search-provider-mark exa" aria-hidden /> <strong>{providerCopy.exa.name}</strong></div><p>{providerCopy.exa.description}</p></div>
+								<div className="deep-web-search-provider-controls">
+									<label className="form-control"><span>{copy('config.exaKey')}</span><input data-testid="deep-web-search-exa-key" type="password" value={exaKey} onChange={event => { setExaKey(event.target.value); setExaConfigured(false) }} placeholder={exaConfigured ? copy('config.configured') : copy('config.keyPlaceholder')} autoComplete="new-password" /><small className="form-hint">{copy('config.exaKeyHint')}</small></label>
+									<label className="form-control"><span>{copy('config.exaMode')}</span><select data-testid="deep-web-search-exa-mode" value={exaMode} onChange={event => setExaMode(event.target.value)}><option value="auto">{copy('option.exaMode.auto')}</option><option value="api">{copy('option.exaMode.api')}</option><option value="mcp">{copy('option.exaMode.mcp')}</option></select></label>
+								</div>
+							</article>
+							<article className="deep-web-search-provider-row">
+								<div className="deep-web-search-provider-copy"><div className="deep-web-search-provider-title"><span className="deep-web-search-provider-mark tinyfish" aria-hidden /> <strong>{providerCopy.tinyfish.name}</strong></div><p>{providerCopy.tinyfish.description}</p></div>
+								<div className="deep-web-search-provider-controls single"><label className="form-control"><span>{copy('config.tinyfishKey')}</span><input data-testid="deep-web-search-tinyfish-key" type="password" value={tinyfishKey} onChange={event => { setTinyfishKey(event.target.value); setTinyfishConfigured(false) }} placeholder={tinyfishConfigured ? copy('config.configured') : copy('config.keyPlaceholder')} autoComplete="new-password" /><small className="form-hint">{copy('config.tinyfishKeyHint')}</small></label></div>
+							</article>
+							<article className="deep-web-search-provider-row">
+								<div className="deep-web-search-provider-copy"><div className="deep-web-search-provider-title"><span className="deep-web-search-provider-mark duckduckgo" aria-hidden /> <strong>{providerCopy.duckduckgo.name}</strong></div><p>{providerCopy.duckduckgo.description}</p></div>
+								<div className="deep-web-search-provider-value"><span className="deep-web-search-provider-badge free">{copy('status.noAuth')}</span></div>
+							</article>
+						</div>
+						</section>
+					</div>
+					<div className="cfg-actions deep-web-search-config-actions"><button type="submit" className="primary-btn" data-testid="deep-web-search-config-save" disabled={saving || !config}>{saving ? t('cfg.configSaving') : t('cfg.configSave')}</button></div>
+				</form>
+			)}
 		</section>
 	)
 }

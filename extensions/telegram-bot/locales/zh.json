@@ -1,0 +1,18 @@
+{
+  "manifest.description": "Telegram Managed Bot 连接器，支持私聊和被 @ 提及的群组消息。",
+  "config.hint": "填写 Managed Bot 的基础信息；回复模型可单独选择，留空时跟随全局默认模型。",
+  "config.botId": "Managed Bot ID",
+  "config.botIdPlaceholder": "例如 8733071196",
+  "config.botIdRequired": "请输入 Managed Bot ID。",
+  "config.token": "Bot Token",
+  "config.tokenPlaceholder": "输入 Managed Bot Token",
+  "config.tokenConfigured": "Token 已配置，留空保持不变",
+  "config.tokenHint": "Token 不会回显；修改时直接输入新的 Token。",
+  "config.tokenRequired": "请输入 Bot Token。",
+  "config.model": "回复模型",
+  "config.modelHint": "Telegram 私聊和群组回复都使用此模型。",
+  "config.modelDefault": "跟随全局默认模型",
+  "config.modelDefaultHint": "使用当前全局默认模型",
+  "config.modelCustom": "配置中的模型",
+  "config.modelReset": "跟随全局默认"
+}

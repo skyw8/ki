@@ -17,13 +17,19 @@ export type SessionSnapshot = {
   extQueued?: number;
 };
 
+export type UIText = string | {
+  key: string;
+  params?: Record<string, string | number>;
+  fallback?: string;
+};
+
 export type UIPanel = {
-  title?: string;
-  summary?: string;
+  title?: UIText;
+  summary?: UIText;
   sections?: Array<Record<string, unknown>>;
-  actions?: Array<{ id: string; label: string; style?: string; disabled?: boolean; title?: string }>;
-  fields?: Array<{ id: string; label?: string; type?: string; value?: unknown; options?: string[] }>;
-  submitLabel?: string;
+  actions?: Array<{ id: string; label: UIText; style?: string; disabled?: boolean; title?: UIText }>;
+  fields?: Array<{ id: string; label?: UIText; type?: string; value?: unknown; options?: string[] }>;
+  submitLabel?: UIText;
 };
 
 export class Host {
@@ -49,7 +55,7 @@ export class Host {
     return this.rpc.call("session.appendEntry", this.params({ customType, data }));
   }
 
-  setStatus(key: string, text: string, tone: string) {
+  setStatus(key: string, text: UIText, tone: string) {
     return this.rpc.call("ui.setStatus", this.params({ key, text, tone }));
   }
 
@@ -61,7 +67,7 @@ export class Host {
     return this.rpc.call("ui.clearPanel", this.params({}));
   }
 
-  setGlobalStatus(key: string, text: string, tone: string) {
+  setGlobalStatus(key: string, text: UIText, tone: string) {
     return this.rpc.call("ui.setGlobalStatus", { key, text, tone });
   }
 
@@ -73,7 +79,7 @@ export class Host {
     return this.rpc.call("ui.clearGlobalPanel", {});
   }
 
-  confirm(title: string, message: string): Promise<boolean> {
+  confirm(title: UIText, message: UIText): Promise<boolean> {
     return this.rpc.call("ui.confirm", this.params({ title, message })).then((res) => {
       const row = res as { ok?: boolean } | null;
       return Boolean(row && row.ok);

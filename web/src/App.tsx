@@ -15,7 +15,7 @@ import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, Searc
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
 import { toast } from './toast'
-import { ExtensionInspector, seedExtFields, statusChips, visibleStatusChips } from './ExtensionPanel'
+import { ExtensionInspector, localizedExtensionText, seedExtFields, statusChips, visibleStatusChips } from './ExtensionPanel'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
 type SettingsPage = 'providers' | 'skills' | 'extensions' | 'message' | 'appearance'
@@ -1216,10 +1216,10 @@ export function App() {
                   type="button"
                   className={`ext-chip${globalExtensionItems.some(item => item.name === ui.extension) ? ' ext-global-chip' : ''} tone-${ui.status?.tone || 'info'}${extOpen === ui.extension ? ' on' : ''}`}
                   data-testid={`ext-chip-${ui.extension}`}
-                  title={globalExtensionItems.find(item => item.name === ui.extension) ? extensionRuntimeTitle(globalExtensionItems.find(item => item.name === ui.extension)!) : ui.status?.text}
+                  title={globalExtensionItems.find(item => item.name === ui.extension) ? extensionRuntimeTitle(globalExtensionItems.find(item => item.name === ui.extension)!) : localizedExtensionText(ui.status?.text, globalExtensions.find(item => item.name === ui.extension)?.i18n, lang)}
                   onClick={() => openExt(ui.extension)}
                 >
-                  {ui.status?.text}
+                  {localizedExtensionText(ui.status?.text, globalExtensions.find(item => item.name === ui.extension)?.i18n, lang)}
                 </button>
               ))}
               {extChips.length ? (
@@ -1422,9 +1422,10 @@ export function App() {
         const prompt = (view.extensionUi ?? []).find(u => u.prompt)?.prompt
         const extName = (view.extensionUi ?? []).find(u => u.prompt)?.extension
         if (!prompt || !extName || !currentId) return null
+        const extensionI18n = globalExtensions.find(item => item.name === extName)?.i18n
         return (
-          <Modal title={prompt.title || extName} onClose={() => void api.extensionUI(currentId, { kind: prompt.kind, extension: extName, ok: false }).catch(e => toast.from(e))} testid="ext-ui-prompt">
-            {prompt.message ? <p>{prompt.message}</p> : null}
+          <Modal title={localizedExtensionText(prompt.title || extName, extensionI18n, lang)} onClose={() => void api.extensionUI(currentId, { kind: prompt.kind, extension: extName, ok: false }).catch(e => toast.from(e))} testid="ext-ui-prompt">
+            {prompt.message ? <p>{localizedExtensionText(prompt.message, extensionI18n, lang)}</p> : null}
             {prompt.kind === 'select' ? (
               <div className="ext-select">
                 {(prompt.options ?? []).map(opt => (

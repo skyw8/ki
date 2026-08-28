@@ -3,6 +3,7 @@ package extension
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,11 +19,13 @@ const (
 	namePattern    = `^[a-z0-9][a-z0-9-]{0,62}$`
 	maxPromptFile  = 64 * 1024
 	maxPromptTotal = 256 * 1024
+	maxI18nFile    = 256 * 1024
 	runtimeNone    = "none"
 	runtimeRPC     = "rpc"
 )
 
 var nameRe = regexp.MustCompile(namePattern)
+var localeRe = regexp.MustCompile(`^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$`)
 
 // Manifest is extension.json.
 type Manifest struct {
@@ -36,7 +39,24 @@ type Manifest struct {
 	Commands     []string                         `json:"commands"`
 	Providers    []provider.ExtensionProviderSpec `json:"providers"`
 	Config       ConfigSpec                       `json:"config"`
+	I18n         I18nSpec                         `json:"i18n,omitempty"`
 	Runtime      RuntimeSpec                      `json:"runtime"`
+}
+
+// I18nSpec declares static, extension-owned translation files. The host reads
+// these files as data and exposes the validated bundle to WebUI clients; it
+// never merges extension keys into the host dictionary.
+type I18nSpec struct {
+	DefaultLocale string            `json:"defaultLocale,omitempty"`
+	Resources     map[string]string `json:"resources,omitempty"`
+}
+
+// I18nCatalog is the validated translation bundle exposed in the extension
+// catalog. Resource values are flat keys so an extension can use dots in its
+// own namespace without making the host understand its message hierarchy.
+type I18nCatalog struct {
+	DefaultLocale string                       `json:"defaultLocale,omitempty"`
+	Resources     map[string]map[string]string `json:"resources,omitempty"`
 }
 
 // ConfigSpec declares the JSON-schema-like form rendered by the generic
@@ -70,6 +90,7 @@ type Descriptor struct {
 	Capabilities []string                         `json:"capabilities"`
 	Providers    []provider.ExtensionProviderSpec `json:"providers,omitempty"`
 	Config       ConfigSpec                       `json:"config,omitempty"`
+	I18n         *I18nCatalog                     `json:"i18n,omitempty"`
 	Error        string                           `json:"error,omitempty"`
 	FailClosed   bool                             `json:"-"`
 	manifest     Manifest
@@ -178,6 +199,7 @@ func loadPackage(root string) (Descriptor, bool) {
 		d.Error = err.Error()
 		return d, true
 	}
+	d.I18n = loadI18n(abs, m.I18n)
 	return d, true
 }
 
@@ -233,7 +255,74 @@ func validateManifest(root string, m Manifest) error {
 			return err
 		}
 	}
+	if m.I18n.DefaultLocale != "" && !localeRe.MatchString(m.I18n.DefaultLocale) {
+		return fmt.Errorf("invalid i18n.defaultLocale %q", m.I18n.DefaultLocale)
+	}
+	for locale, rel := range m.I18n.Resources {
+		if !localeRe.MatchString(locale) {
+			return fmt.Errorf("invalid i18n locale %q", locale)
+		}
+		if err := withinRoot(root, rel); err != nil {
+			return fmt.Errorf("i18n resource %q: %w", locale, err)
+		}
+	}
 	return nil
+}
+
+func loadI18n(root string, spec I18nSpec) *I18nCatalog {
+	if len(spec.Resources) == 0 {
+		return nil
+	}
+	locales := make([]string, 0, len(spec.Resources))
+	for locale := range spec.Resources {
+		locales = append(locales, locale)
+	}
+	sort.Strings(locales)
+	catalog := &I18nCatalog{DefaultLocale: spec.DefaultLocale, Resources: map[string]map[string]string{}}
+	for _, locale := range locales {
+		path := filepath.Join(root, filepath.Clean(spec.Resources[locale]))
+		//nolint:gosec // the manifest path was checked by validateManifest.
+		file, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		raw, readErr := io.ReadAll(io.LimitReader(file, maxI18nFile+1))
+		_ = file.Close()
+		// Why: translation assets are optional presentation data. A broken or
+		// oversized locale must not prevent an otherwise usable extension from
+		// starting; WebUI will use the declared fallback/locale key instead.
+		if readErr != nil || len(raw) > maxI18nFile || !utf8.Valid(raw) {
+			continue
+		}
+		var messages map[string]string
+		if err := json.Unmarshal(raw, &messages); err != nil || messages == nil {
+			continue
+		}
+		clean := make(map[string]string, len(messages))
+		for key, value := range messages {
+			if strings.TrimSpace(key) == "" || !utf8.ValidString(value) {
+				continue
+			}
+			clean[key] = value
+		}
+		catalog.Resources[locale] = clean
+	}
+	if len(catalog.Resources) == 0 {
+		return nil
+	}
+	if catalog.DefaultLocale == "" {
+		if _, ok := catalog.Resources["en"]; ok {
+			catalog.DefaultLocale = "en"
+		} else {
+			for _, locale := range locales {
+				if _, ok := catalog.Resources[locale]; ok {
+					catalog.DefaultLocale = locale
+					break
+				}
+			}
+		}
+	}
+	return catalog
 }
 
 func withinRoot(root, rel string) error {

@@ -1,0 +1,63 @@
+{
+  "name": "deep-web-search",
+  "version": "0.1.0",
+  "description": "Four-provider web search with source cleaning, content extraction, evidence checks, and workflow fallbacks.",
+  "capabilities": ["tool", "settings"],
+  "i18n": {
+    "defaultLocale": "en",
+    "resources": {
+      "en": "locales/en.json",
+      "zh": "locales/zh.json"
+    }
+  },
+  "config": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "exaApiKey": {"type": "string", "secret": true, "description": "Optional Exa API key. Without it, Exa MCP is used."},
+        "exaMode": {"type": "string", "enum": ["auto", "api", "mcp"], "description": "Exa transport selection."},
+        "tinyfishApiKey": {"type": "string", "secret": true, "description": "TinyFish API key from the TinyFish console."},
+        "codexModel": {"type": "string", "description": "Codex model used by the web-search provider."},
+        "provider": {"type": "string", "enum": ["auto", "all", "codex", "exa", "tinyfish", "duckduckgo"], "description": "Default provider selection."},
+        "providerToggles": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "codex": {"type": "boolean"},
+            "exa": {"type": "boolean"},
+            "tinyfish": {"type": "boolean"},
+            "duckduckgo": {"type": "boolean"}
+          }
+        },
+        "maxResults": {"type": "integer", "description": "Maximum distinct sources returned by one query."},
+        "fetchContent": {"type": "boolean", "description": "Fetch source bodies in the background."},
+        "summaryModel": {"type": "string", "description": "Model spec such as openai-codex/gpt-5.5; empty disables model summaries."},
+        "queryRewriteModel": {"type": "string", "description": "Model spec for curator query rewrite; empty disables the rewrite action."},
+        "summaryGenerationDeadlineMs": {"type": "integer", "description": "Summary generation deadline in milliseconds."},
+        "curatorTimeoutSeconds": {"type": "integer", "description": "Maximum time to wait for curator review."},
+        "autoOpenBrowser": {"type": "boolean", "description": "Open the local curator URL automatically."},
+        "workflow": {"type": "string", "enum": ["none", "summary-review", "auto-summary"], "description": "Default result workflow."}
+      }
+    },
+    "defaults": {
+      "exaMode": "auto",
+      "codexModel": "gpt-5.5",
+      "provider": "all",
+      "providerToggles": {"codex": true, "exa": true, "tinyfish": true, "duckduckgo": true},
+      "maxResults": 5,
+      "fetchContent": false,
+      "summaryModel": "openai-codex/gpt-5.5",
+      "queryRewriteModel": "",
+      "summaryGenerationDeadlineMs": 30000,
+      "curatorTimeoutSeconds": 20,
+      "autoOpenBrowser": true,
+      "workflow": "none"
+    }
+  },
+  "runtime": {
+    "kind": "rpc",
+    "command": "node",
+    "args": ["dist/main.js"]
+  }
+}

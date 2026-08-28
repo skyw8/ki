@@ -1,0 +1,12 @@
+# Private extension settings and runtime state.
+config.json
+cache.json
+*.tmp
+*.lock
+
+# Local development dependencies.
+node_modules/
+
+# OS/editor files.
+.DS_Store
+*.swp

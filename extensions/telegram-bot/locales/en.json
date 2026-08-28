@@ -1,0 +1,18 @@
+{
+  "manifest.description": "Telegram Managed Bot connector for private chats and @mentioned groups.",
+  "config.hint": "Set the Managed Bot basics here. Choose a reply model, or leave it empty to follow the global default.",
+  "config.botId": "Managed Bot ID",
+  "config.botIdPlaceholder": "For example, 8733071196",
+  "config.botIdRequired": "Managed Bot ID is required.",
+  "config.token": "Bot Token",
+  "config.tokenPlaceholder": "Enter the Managed Bot token",
+  "config.tokenConfigured": "Token configured; leave empty to keep it",
+  "config.tokenHint": "The token is never echoed. Enter a new token to replace it.",
+  "config.tokenRequired": "Bot token is required.",
+  "config.model": "Reply model",
+  "config.modelHint": "Both private and group replies use this model.",
+  "config.modelDefault": "Follow global default",
+  "config.modelDefaultHint": "Use the current global default model",
+  "config.modelCustom": "Configured model",
+  "config.modelReset": "Follow global default"
+}

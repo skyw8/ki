@@ -21,7 +21,7 @@
 
 ## 扩展 UI 壳
 
-WebUI **不加载扩展 JS**，不 `window.open`，不按扩展名写死控件。每个扩展只投一份投影，壳按同一套布局渲染。goal 和以后别的包用同一组接口。
+WebUI **不加载扩展 JS**，不 `window.open`，不按扩展名写死控件。每个扩展只投一份投影，壳按同一套布局渲染。goal 和以后别的包用同一组接口。扩展文案由扩展包自己的 `extension.json -> i18n.resources` 提供，Host 只读取、校验并随 catalog 转发；WebUI 只负责按当前浏览器语言解析通用 `UIText`，不认识任何扩展 key。
 
 ### 面上有什么
 
@@ -124,6 +124,25 @@ Host **不解析** panel 里的业务字段。扩展自己决定列哪些 action
 | `actions[].title` | tooltip（为何 disabled） |
 
 渲染顺序：status chip → summary → sections → fields → 底栏 actions + submit。
+
+扩展需要本地化 WebUI 固定文案时，可在 `title`、`summary`、`status.text`、section 的
+`heading`/`label`/`value`、field label、action label/title 和 `submitLabel` 中发送原始字符串，
+或发送扩展自有的 `UIText`：
+
+```json
+{ "key": "status.connected", "params": { "count": 2 }, "fallback": "Connected" }
+```
+
+壳按以下顺序查找翻译：当前语言、当前语言的 regional/base 变体、扩展
+`defaultLocale`、`en`，最后使用 `fallback` 或 key。`params` 使用 `{name}` 形式插值。
+普通用户输入、业务正文、field 的提交值和 `options[]` 的提交值仍直接发送原文；`options[]`
+是业务值而不是 host 文案。扩展没有必要绑定某一个浏览器语言，缺失 locale/key 只会触发上述
+回退。
+
+扩展配置页的扩展描述同样使用 `manifest.description` key；Telegram、deep-web-search 等
+自定义配置表单通过各自的 i18n catalog 解析字段、提示和选项文案。Host 通用的关闭、提交、
+空状态等壳文案仍属于 WebUI 自己的 `i18n.tsx`，不得写入 `ext.<extension>` 或
+`cfg.<extension>` host key。
 
 ### Sidecar ← Host（用户点了）
 
