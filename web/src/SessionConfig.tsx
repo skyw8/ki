@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import type { Client } from './api'
 import { ICheck, IChevDown, IEdit, IRegen, ITraj } from './icons'
 import { useI18n, type Lang, type MsgKey } from './i18n'
@@ -430,6 +430,7 @@ function ExtensionModelPicker({
 export function ExtensionConfigEditor(props: ExtensionConfigEditorProps) {
 	if (props.name === 'telegram-bot') return <TelegramConfigForm {...props} />
 	if (props.name === 'deep-web-search') return <DeepWebSearchConfigForm {...props} />
+	if (props.name === 'freerouter') return <FreeRouterConfigForm {...props} />
 	return <JsonExtensionConfigEditor {...props} />
 }
 
@@ -836,6 +837,167 @@ function Switch({ on, onChange, testid }: { on: boolean; onChange: (on: boolean)
       <span className="switch-knob" aria-hidden />
     </button>
   )
+}
+
+// Numeric field editing: keep an empty input as NaN until the next keystroke
+// so clearing a field doesn't snap to 0 mid-edit.
+function numberField(value: number, set: (v: number) => void) {
+  return {
+    type: 'number' as const,
+    value: Number.isFinite(value) ? String(value) : '',
+    onChange: (event: ChangeEvent<HTMLInputElement>) => {
+      const next = Number(event.target.value)
+      set(Number.isFinite(next) ? next : NaN)
+    },
+  }
+}
+
+function FreeRouterConfigForm({ api, name, onClose, embedded = false }: ExtensionConfigEditorProps) {
+  const { t, lang } = useI18n()
+	const [config, setConfig] = useState<ExtensionConfig | null>(null)
+	const [loading, setLoading] = useState(true)
+	const [saving, setSaving] = useState(false)
+	const [apiKey, setApiKey] = useState('')
+	const [apiKeyConfigured, setApiKeyConfigured] = useState(false)
+	const [baseUrl, setBaseUrl] = useState('')
+	const [raceWidth, setRaceWidth] = useState(2)
+	const [maxBatches, setMaxBatches] = useState(3)
+	const [exhaustedTtlSec, setExhaustedTtlSec] = useState(90)
+	const [slowTtlSec, setSlowTtlSec] = useState(15)
+	const [firstTokenSec, setFirstTokenSec] = useState(10)
+	const [idleSec, setIdleSec] = useState(30)
+	const [refreshMin, setRefreshMin] = useState(60)
+	const copy = (key: string) => extensionCopy(config?.i18n, lang, key)
+
+	const apply = (next: Record<string, unknown>, metadata?: ExtensionConfig) => {
+		const rawKey = typeof next.apiKey === 'string' ? next.apiKey : ''
+		setConfig(metadata ?? { ...(config ?? { name, schema: {}, config: {} }), config: next })
+		setApiKey(rawKey === '<configured>' ? '' : rawKey)
+		setApiKeyConfigured(rawKey === '<configured>')
+		setBaseUrl(typeof next.baseUrl === 'string' ? next.baseUrl : '')
+		const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback)
+		setRaceWidth(num(next.raceWidth, 2))
+		setMaxBatches(num(next.maxBatches, 3))
+		setExhaustedTtlSec(Math.round(num(next.exhaustedTtlMs, 90000) / 1000))
+		setSlowTtlSec(Math.round(num(next.slowTtlMs, 15000) / 1000))
+		setFirstTokenSec(Math.round(num(next.firstTokenTimeoutMs, 10000) / 1000))
+		setIdleSec(Math.round(num(next.idleTimeoutMs, 30000) / 1000))
+		setRefreshMin(Math.round(num(next.refreshIntervalMs, 3600000) / 60000))
+	}
+
+	useEffect(() => {
+		let alive = true
+		setLoading(true)
+		void api.extensionConfig(name).then(next => {
+			if (alive) apply(next.config, next)
+		}).catch(e => toast.from(e)).finally(() => { if (alive) setLoading(false) })
+		return () => { alive = false }
+		// apply only initializes state from the response; including it would make
+		// every field update restart the request.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [api, name])
+
+	const save = async (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault()
+		const seconds = { exhaustedTtlSec, slowTtlSec, firstTokenSec, idleSec, refreshMin }
+		if (Object.values(seconds).some(v => !Number.isFinite(v) || v <= 0) || raceWidth < 1 || maxBatches < 1) {
+			toast.error(copy('config.invalidNumber'))
+			return
+		}
+		setSaving(true)
+		try {
+			// The host only streams models whose provider credential is configured,
+			// so a fresh key must land there first; the config apiKey is only a
+			// sidecar-side fallback. If the provider credential write fails (e.g.
+			// fixture environments without the provider), keep going via config.
+			let configKey = ''
+			const key = apiKey.trim()
+			if (key && !apiKeyConfigured) {
+				try {
+					await api.setCredential('free-router', key)
+				} catch {
+					configKey = key
+					toast.error(copy('config.keySaveFailed'))
+				}
+			}
+			const next = await api.patchExtensionConfig(name, {
+				apiKey: configKey || (apiKeyConfigured ? '<configured>' : ''),
+				baseUrl: baseUrl.trim(),
+				raceWidth: Math.max(1, Math.min(8, Math.round(raceWidth))),
+				maxBatches: Math.max(1, Math.min(6, Math.round(maxBatches))),
+				exhaustedTtlMs: Math.round(exhaustedTtlSec * 1000),
+				slowTtlMs: Math.round(slowTtlSec * 1000),
+				firstTokenTimeoutMs: Math.round(firstTokenSec * 1000),
+				idleTimeoutMs: Math.round(idleSec * 1000),
+				refreshIntervalMs: Math.round(refreshMin * 60000),
+			})
+			apply(next.config, next)
+			toast.info(t('cfg.configSaved'))
+		} catch (e) {
+			toast.from(e)
+		} finally {
+			setSaving(false)
+		}
+	}
+
+	return (
+		<section className={`extension-config-editor freerouter-config-editor${embedded ? ' embedded' : ''}`} data-testid={`extension-config-${name}`}>
+			{embedded ? <div className="cfg-name"><span>{t('cfg.config')}</span></div> : <div className="cfg-name"><span>{t('cfg.config')} · {name}</span><button type="button" className="cfg-btn" onClick={onClose}>{t('cfg.configClose')}</button></div>}
+			{loading ? <p className="cfg-empty">{t('file.loading')}</p> : (
+				<form className="freerouter-config-form" onSubmit={event => void save(event)}>
+					<div className="deep-web-search-config-scroll">
+						<p className="cfg-desc">{copy('config.hint')}</p>
+						<section className="deep-web-search-settings-section" aria-labelledby="freerouter-auth-title">
+							<div className="deep-web-search-section-head">
+								<div><h4 id="freerouter-auth-title">{copy('config.authTitle')}</h4><p>{copy('config.authHint')}</p></div>
+							</div>
+							<div className="form-grid two">
+								<label className="form-control">
+									<span>{copy('config.apiKey')}</span>
+									<input data-testid="freerouter-api-key" type="password" value={apiKey} onChange={event => { setApiKey(event.target.value); setApiKeyConfigured(false) }} placeholder={apiKeyConfigured ? copy('config.configured') : copy('config.keyPlaceholder')} autoComplete="new-password" />
+								</label>
+								<label className="form-control">
+									<span>{copy('config.baseUrl')}</span>
+									<input data-testid="freerouter-base-url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://openrouter.ai/api/v1" spellCheck={false} />
+									<small className="form-hint">{copy('config.baseUrlHint')}</small>
+								</label>
+							</div>
+						</section>
+						<section className="deep-web-search-settings-section" aria-labelledby="freerouter-routing-title">
+							<div className="deep-web-search-section-head">
+								<div><h4 id="freerouter-routing-title">{copy('config.routingTitle')}</h4><p>{copy('config.routingHint')}</p></div>
+							</div>
+							<div className="form-grid two">
+								<label className="form-control">
+									<span>{copy('config.raceWidth')}</span>
+									<input data-testid="freerouter-race-width" min={1} max={8} step={1} {...numberField(raceWidth, setRaceWidth)} />
+									<small className="form-hint">{copy('config.raceWidthHint')}</small>
+								</label>
+								<label className="form-control">
+									<span>{copy('config.maxBatches')}</span>
+									<input data-testid="freerouter-max-batches" min={1} max={6} step={1} {...numberField(maxBatches, setMaxBatches)} />
+									<small className="form-hint">{copy('config.maxBatchesHint')}</small>
+								</label>
+							</div>
+						</section>
+						<section className="deep-web-search-settings-section" aria-labelledby="freerouter-timeouts-title">
+							<div className="deep-web-search-section-head">
+								<div><h4 id="freerouter-timeouts-title">{copy('config.timeoutsTitle')}</h4><p>{copy('config.timeoutsHint')}</p></div>
+							</div>
+							<div className="form-grid two">
+								<label className="form-control"><span>{copy('config.exhaustedTtl')}</span><input data-testid="freerouter-exhausted-ttl" min={1} step={1} {...numberField(exhaustedTtlSec, setExhaustedTtlSec)} /><small className="form-hint">{copy('config.exhaustedTtlHint')}</small></label>
+								<label className="form-control"><span>{copy('config.slowTtl')}</span><input data-testid="freerouter-slow-ttl" min={1} step={1} {...numberField(slowTtlSec, setSlowTtlSec)} /><small className="form-hint">{copy('config.slowTtlHint')}</small></label>
+								<label className="form-control"><span>{copy('config.firstTokenTimeout')}</span><input data-testid="freerouter-first-token-timeout" min={1} step={1} {...numberField(firstTokenSec, setFirstTokenSec)} /><small className="form-hint">{copy('config.firstTokenTimeoutHint')}</small></label>
+								<label className="form-control"><span>{copy('config.idleTimeout')}</span><input data-testid="freerouter-idle-timeout" min={1} step={1} {...numberField(idleSec, setIdleSec)} /><small className="form-hint">{copy('config.idleTimeoutHint')}</small></label>
+								<label className="form-control"><span>{copy('config.refresh')}</span><input data-testid="freerouter-refresh" min={1} step={1} {...numberField(refreshMin, setRefreshMin)} /><small className="form-hint">{copy('config.refreshHint')}</small></label>
+							</div>
+						</section>
+					</div>
+					<div className="cfg-actions deep-web-search-config-actions"><button type="submit" className="primary-btn" data-testid="freerouter-config-save" disabled={saving || !config}>{saving ? t('cfg.configSaving') : t('cfg.configSave')}</button></div>
+				</form>
+			)}
+		</section>
+	)
 }
 
 export type { SessionCommand }

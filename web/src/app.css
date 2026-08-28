@@ -1923,7 +1923,7 @@
 .settings-error-inline { margin-top: 8px; color: var(--dsw-alias-state-error); }
 .extension-config-editor { display: flex; flex-direction: column; min-height: 0; margin-top: 20px; padding: 18px 20px 20px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); }
 .extension-config-editor.embedded { flex: 1; min-height: 0; margin-top: 0; overflow-y: auto; overscroll-behavior: contain; }
-.deep-web-search-config-editor.embedded { overflow: hidden; }
+.deep-web-search-config-editor.embedded, .freerouter-config-editor.embedded { overflow: hidden; }
 .extension-config-editor > .cfg-name { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .extension-config-editor .cfg-desc { flex: none; margin-top: 8px; line-height: 18px; }
 .extension-config-textarea { display: block; flex: 1; width: 100%; min-height: 320px; margin-top: 16px; padding: 14px; box-sizing: border-box; resize: vertical; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; background: var(--dsw-alias-markdown-code); color: var(--dsw-alias-label-primary); font: 13px/20px var(--ds-font-family-code); }
@@ -1948,7 +1948,7 @@
 .extension-model-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; }
 .extension-model-meta .cfg-btn { flex: none; height: 24px; padding: 0 7px; font-size: 11px; }
 .telegram-config-actions { margin: 20px 0 0 !important; padding-top: 16px; }
-.deep-web-search-config-form { display: flex; flex: 1; flex-direction: column; min-height: 0; margin-top: 16px; overflow: hidden; }
+.deep-web-search-config-form, .freerouter-config-form { display: flex; flex: 1; flex-direction: column; min-height: 0; margin-top: 16px; overflow: hidden; }
 .deep-web-search-config-scroll {
   display: flex;
   flex: 1;
@@ -1964,7 +1964,7 @@
 .deep-web-search-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .deep-web-search-section-head h4 { margin: 0; color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 20px; font-weight: 600; }
 .deep-web-search-section-head p { margin: 3px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
-.deep-web-search-config-form .form-grid { margin-top: 0; }
+.deep-web-search-config-form .form-grid, .freerouter-config-form .form-grid { margin-top: 0; }
 .deep-web-search-config-form select { min-height: 34px; padding: 0 10px; border: 1px solid var(--dsw-alias-border-l2-thin); border-radius: 8px; background: var(--dsw-specific-input); color: var(--dsw-alias-label-primary); font: inherit; }
 .deep-web-search-config-form select:focus-visible { outline: 2px solid var(--dsw-alias-brand); outline-offset: -1px; border-color: transparent; }
 .deep-web-search-provider-toggles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-l2); }

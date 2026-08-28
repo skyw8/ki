@@ -47,6 +47,87 @@ function writeExt(home: string, name: string, bin: string, extra: Record<string,
   }))
 }
 
+// The freerouter config form dispatches on the extension name; a fixture with
+// the same settings schema exercises the whole form round-trip.
+test('freerouter config form edits fields without raw JSON', async ({ page, request }) => {
+  test.setTimeout(60_000)
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const bin = join(tmpdir(), 'freerouter-sidecar')
+  execFileSync(goBin(), ['build', '-o', bin, '.'], {
+    cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
+    stdio: 'inherit',
+  })
+  const name = 'freerouter'
+  const dir = join(home, 'extensions', name)
+  mkdirSync(dir, { recursive: true })
+  const number = (description: string) => ({ type: 'number', description })
+  writeFileSync(join(dir, 'extension.json'), JSON.stringify({
+    name,
+    capabilities: ['settings'],
+    config: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          apiKey: { type: 'string', secret: true },
+          baseUrl: { type: 'string' },
+          raceWidth: { ...number('raced per round'), minimum: 1, maximum: 8 },
+          maxBatches: { ...number('rounds per request'), minimum: 1, maximum: 6 },
+          exhaustedTtlMs: number('quota cooldown'),
+          slowTtlMs: number('slow cooldown'),
+          firstTokenTimeoutMs: number('first token deadline'),
+          idleTimeoutMs: number('stream idle deadline'),
+          refreshIntervalMs: number('model list refresh'),
+        },
+      },
+      defaults: { raceWidth: 2, maxBatches: 3, exhaustedTtlMs: 90000, slowTtlMs: 15000, firstTokenTimeoutMs: 10000, idleTimeoutMs: 30000, refreshIntervalMs: 3600000 },
+    },
+    runtime: { kind: 'rpc', command: bin },
+  }))
+
+  await page.goto('/')
+  await reloadServer(page, request)
+  const headers = { Authorization: `Bearer ${await tokenOf(page)}` }
+  const listed = await request.get('/v1/extensions', { headers })
+  const catalog = await listed.json() as { items?: { name: string }[] }
+  await request.patch('/v1/extensions', {
+    headers,
+    data: { disabled: (catalog.items ?? []).map(item => item.name).filter(item => item !== name) },
+  })
+  await reloadServer(page, request)
+  await page.reload()
+
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-extensions').click()
+  await page.getByTestId(`cfg-configure-${name}`).click()
+  await expect(page.getByTestId(`extension-config-${name}`)).toBeVisible({ timeout: 15_000 })
+
+  // No raw JSON textarea: the form renders dedicated inputs.
+  await expect(page.getByTestId('extension-config-input')).toHaveCount(0)
+  const raceWidth = page.getByTestId('freerouter-race-width')
+  await expect(raceWidth).toBeVisible()
+  await expect(page.getByTestId('freerouter-max-batches')).toBeVisible()
+  await expect(page.getByTestId('freerouter-exhausted-ttl')).toBeVisible()
+  await expect(page.getByTestId('freerouter-api-key')).toBeVisible()
+
+  // Defaults surface in seconds; edit raceWidth and save.
+  await expect(page.getByTestId('freerouter-exhausted-ttl')).toHaveValue('90')
+  await raceWidth.fill('4')
+  await page.getByTestId('freerouter-config-save').click()
+  await expect(page.getByTestId('freerouter-race-width')).toBeVisible()
+
+  // The saved value survives a reload of the editor.
+  await page.reload()
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-extensions').click()
+  await page.getByTestId(`cfg-configure-${name}`).click()
+  await expect(page.getByTestId('freerouter-race-width')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByTestId('freerouter-race-width')).toHaveValue('4')
+
+  // Cleanup: disable the fixture again so other specs start from defaults.
+  await request.patch('/v1/extensions', { headers, data: { disabled: [name] } })
+})
+
 test('extension ui.setStatus chip opens panel modal', async ({ page, request }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const bin = join(tmpdir(), 'ki-pw-ext-ui-sidecar')

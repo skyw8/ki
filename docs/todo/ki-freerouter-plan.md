@@ -1,7 +1,16 @@
-# ki-freerouter 插件方案
+# freerouter 扩展方案
+
+> **状态：已实现**（2026-08）。实现位于 `{KI_HOME}/extensions/freerouter/`（运行中服务实际使用 `/data/hgy/ki/extensions/freerouter`），TypeScript 源码编译为 Node ESM。
+> 与本方案的差异：
+> - settings schema 在 manifest 中的字段名是 `config`（ki 的 `ConfigSpec{schema,defaults}`），能力名仍是 `settings`。
+> - 凭据顺序为：宿主 credential（`PUT /v1/providers/free-router/credential`）→ 扩展 config `apiKey` → `OPENROUTER_API_KEY` 环境变量；宿主凭据未配置时 session run 会被宿主拒绝，因此推荐第一种。
+> - sidecar 事件不含 `partial` 快照（ki 契约），routing 进度放在 contentIndex 0 的 thinking 块，赢家内容块索引整体 +1，最终 message 的 content[0] 回填同一段 thinking 保证与流一致。
+> - 401 类非配额错误按 exhausted 处理（进入 90s 冷却），仅 402 为 fatal。
+> 验证：`node --test test/*.test.mjs` 41/41 通过（含 spawn 真进程 + 本地 mock OpenRouter 的 e2e）；并已接入运行中的 `ki serve` 做真实链路冒烟：竞速、冷却、错误回传（`stopReason=error`）均符合契约。
+> 配置 UI：WebUI 为 `freerouter` 提供了定制表单（`FreeRouterConfigForm`，dispatch 在 `web/src/SessionConfig.tsx`），文案走扩展自带 i18n（manifest `i18n.resources` 指向 `locales/*.json`，注意是 locale→文件路径，不是内联文案表）；时长字段以秒/分钟展示，保存时换算回 ms。Playwright e2e：`web/e2e/extension-ui.spec.ts` 的 "freerouter config form" 用同名 fixture 验证表单往返，不落裸 JSON。
 
 > 前置阅读：[pi-freerouter-analysis.md](pi-freerouter-analysis.md)（原版源码分析）。
-> 目标：仿照 pi-freerouter，为 ki 写一个 provider 扩展 `ki-freerouter`，把请求竞速路由到 OpenRouter 免费模型层。**每轮竞速的候选模型数可配置（`raceWidth`），默认 2。**
+> 目标：仿照 pi-freerouter，为 ki 写一个 provider 扩展 `freerouter`，把请求竞速路由到 OpenRouter 免费模型层。**每轮竞速的候选模型数可配置（`raceWidth`），默认 2。**
 > 结论先行：ki 现有 provider sidecar 契约（`provider.stream.start` / `provider.stream.event` / `provider.stream.cancel`）已覆盖全部所需能力，**不需要改 ki 宿主代码**，纯扩展即可实现。
 
 ## 一、与 pi-freerouter 的宿主差异对照
@@ -20,7 +29,7 @@
 ## 二、包布局与 manifest
 
 ```
-{KI_HOME}/extensions/ki-freerouter/
+{KI_HOME}/extensions/freerouter/
 ├── extension.json
 ├── bin/
 │   └── extension.mjs          # sidecar 入口（编译产物，或直接 ESM 源码）
@@ -37,7 +46,7 @@
 
 ```json
 {
-  "name": "ki-freerouter",
+  "name": "freerouter",
   "version": "0.1.0",
   "description": "Race-routes requests through OpenRouter's free model tier",
   "capabilities": ["provider", "settings"],
@@ -69,7 +78,7 @@
       }
     }
   },
-  "runtime": { "kind": "rpc", "command": "node", "args": ["bin/extension.mjs"] }
+  "runtime": { "kind": "rpc", "command": "node", "args": ["bin/extension.js"] }
 }
 ```
 
@@ -132,7 +141,7 @@ Host → provider.stream.cancel {requestId} → abort 全部在途候选，回 s
 
 ## 四、配置热更新
 
-- Host 在 PATCH `/v1/extensions/ki-freerouter/config` 后发 `config.updated`（脱敏 config）→ sidecar 重新读私有配置文件，**在途请求沿用旧参数，新请求用新值**（每次 `provider.stream.start` 开头快照一次 config，原版"每请求快照 localRouter"的同款手法）。
+- Host 在 PATCH `/v1/extensions/freerouter/config` 后发 `config.updated`（脱敏 config）→ sidecar 重新读私有配置文件，**在途请求沿用旧参数，新请求用新值**（每次 `provider.stream.start` 开头快照一次 config，原版"每请求快照 localRouter"的同款手法）。
 - `raceWidth` 变更即时生效（作用于下一个请求的第一轮），无需重启 sidecar。
 - `refreshIntervalMs` 变更重置定时器。
 
