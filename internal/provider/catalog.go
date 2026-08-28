@@ -309,4 +309,4 @@ func cloneCost(in *Cost) *Cost {
 }
 
 // ProviderOrder defines the stable presentation order for provider IDs.
-var ProviderOrder = []string{"anthropic", "openai", "deepseek", "dashscope-cn", "dashscope", "zai-cn", "zai", "moonshot-cn", "moonshot", "minimax-cn", "minimax", "google", "xai"}
+var ProviderOrder = []string{"openrouter", "anthropic", "openai", "deepseek", "dashscope-cn", "dashscope", "zai-cn", "zai", "moonshot-cn", "moonshot", "minimax-cn", "minimax", "google", "xai"}

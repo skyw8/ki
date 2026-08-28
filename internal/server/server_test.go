@@ -875,7 +875,7 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 		t.Fatalf("streamer calls: %d, want prompt + summarizer", len(rec.reqs))
 	}
 	last := rec.reqs[len(rec.reqs)-1]
-	if last.Provider != "anthropic" || last.Model != "claude-sonnet-5" {
+	if last.Provider != "openrouter" || last.Model != "free" {
 		t.Fatalf("summarizer request must carry session provider/model, got %q/%q", last.Provider, last.Model)
 	}
 }
@@ -1423,7 +1423,7 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 			if sys == "" {
 				t.Fatalf("empty system in entry: %+v", m)
 			}
-			if m["provider"] != "anthropic" || m["modelId"] != "claude-sonnet-5" || m["catalogVersion"] != float64(provider.CatalogVersion) || m["pricing"] == nil {
+			if m["provider"] != "openrouter" || m["modelId"] != "free" || m["catalogVersion"] != float64(provider.CatalogVersion) || m["pricing"] == nil {
 				t.Fatalf("request metadata: %+v", m)
 			}
 			found = true

@@ -14,10 +14,27 @@ func TestBuiltinCatalogHasSupportedProviders(t *testing.T) {
 	for _, p := range BuiltinProviders() {
 		got[p.ID] = true
 	}
-	for _, id := range []string{"openai", "anthropic", "deepseek", "dashscope", "dashscope-cn", "zai", "zai-cn", "moonshot", "moonshot-cn", "minimax", "minimax-cn", "google", "xai"} {
+	for _, id := range []string{"openrouter", "openai", "anthropic", "deepseek", "dashscope", "dashscope-cn", "zai", "zai-cn", "moonshot", "moonshot-cn", "minimax", "minimax-cn", "google", "xai"} {
 		if !got[id] {
 			t.Errorf("missing provider %q", id)
 		}
+	}
+}
+
+func TestBuiltinOpenRouterFreeModelIsFirstDefault(t *testing.T) {
+	providers := BuiltinProviders()
+	if len(providers) == 0 || providers[0].ID != "openrouter" {
+		t.Fatalf("first builtin provider = %+v, want openrouter", providers)
+	}
+	if len(providers[0].Models) != 1 || providers[0].Models[0].ID != "free" {
+		t.Fatalf("openrouter models = %+v, want only free", providers[0].Models)
+	}
+	r, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Default(); got.Provider != "openrouter" || got.Model != "free" {
+		t.Fatalf("default = %+v, want openrouter/free", got)
 	}
 }
 

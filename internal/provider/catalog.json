@@ -2,6 +2,9 @@
   "version": 2,
   "generatedAt": "2026-08-18T00:00:00Z",
   "providers": [
+    {"id":"openrouter","name":"OpenRouter","api":"completions","baseUrl":"https://openrouter.ai/api/v1","envVars":["OPENROUTER_API_KEY"],"defaultModel":"free","models":[
+      {"id":"free","name":"Free Models Router","contextWindow":200000,"maxTokens":32768,"input":["text","image"],"reasoning":true,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}}
+    ]},
     {"id":"openai","name":"OpenAI","api":"responses","baseUrl":"https://api.openai.com/v1","envVars":["OPENAI_API_KEY"],"defaultModel":"gpt-5.6-terra","models":[
       {"id":"gpt-5.6-sol","name":"GPT-5.6 Sol","contextWindow":272000,"maxTokens":128000,"input":["text","image"],"applyPatchToolType":"freeform","reasoning":true,"thinkingLevelMap":{"off":"none","minimal":null,"low":"low","medium":"medium","high":"high","xhigh":"xhigh","max":"max"},"cost":{"input":5,"output":30,"cacheRead":0.5,"cacheWrite":6.25,"tiers":[{"inputTokensAbove":272000,"input":10,"output":45,"cacheRead":1,"cacheWrite":12.5}]},"compat":{"thinkingFormat":"openai","supportsReasoningEffort":true}},
       {"id":"gpt-5.6-terra","name":"GPT-5.6 Terra","contextWindow":272000,"maxTokens":128000,"input":["text","image"],"applyPatchToolType":"freeform","reasoning":true,"thinkingLevelMap":{"off":"none","minimal":null,"low":"low","medium":"medium","high":"high","xhigh":"xhigh","max":"max"},"cost":{"input":2,"output":12,"cacheRead":0.2,"cacheWrite":2.5,"tiers":[{"inputTokensAbove":272000,"input":4,"output":18,"cacheRead":0.4,"cacheWrite":5}]},"compat":{"thinkingFormat":"openai","supportsReasoningEffort":true}},
