@@ -869,6 +869,7 @@ function FreeRouterConfigForm({ api, name, onClose, embedded = false }: Extensio
 	const [firstTokenSec, setFirstTokenSec] = useState(10)
 	const [idleSec, setIdleSec] = useState(30)
 	const [refreshMin, setRefreshMin] = useState(60)
+	const [listen, setListen] = useState('127.0.0.1:18427')
 	const copy = (key: string) => extensionCopy(config?.i18n, lang, key)
 
 	const apply = (next: Record<string, unknown>, metadata?: ExtensionConfig) => {
@@ -877,6 +878,7 @@ function FreeRouterConfigForm({ api, name, onClose, embedded = false }: Extensio
 		setApiKey(rawKey === '<configured>' ? '' : rawKey)
 		setApiKeyConfigured(rawKey === '<configured>')
 		setBaseUrl(typeof next.baseUrl === 'string' ? next.baseUrl : '')
+		setListen(typeof next.listen === 'string' && next.listen.trim() ? next.listen : '127.0.0.1:18427')
 		const num = (v: unknown, fallback: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback)
 		setRaceWidth(num(next.raceWidth, 2))
 		setMaxBatches(num(next.maxBatches, 3))
@@ -925,6 +927,7 @@ function FreeRouterConfigForm({ api, name, onClose, embedded = false }: Extensio
 			const next = await api.patchExtensionConfig(name, {
 				apiKey: configKey || (apiKeyConfigured ? '<configured>' : ''),
 				baseUrl: baseUrl.trim(),
+				listen: listen.trim() || '127.0.0.1:18427',
 				raceWidth: Math.max(1, Math.min(8, Math.round(raceWidth))),
 				maxBatches: Math.max(1, Math.min(6, Math.round(maxBatches))),
 				exhaustedTtlMs: Math.round(exhaustedTtlSec * 1000),
@@ -962,6 +965,11 @@ function FreeRouterConfigForm({ api, name, onClose, embedded = false }: Extensio
 									<span>{copy('config.baseUrl')}</span>
 									<input data-testid="freerouter-base-url" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} placeholder="https://openrouter.ai/api/v1" spellCheck={false} />
 									<small className="form-hint">{copy('config.baseUrlHint')}</small>
+								</label>
+								<label className="form-control">
+									<span>{copy('config.listen')}</span>
+									<input data-testid="freerouter-listen" value={listen} onChange={event => setListen(event.target.value)} placeholder="127.0.0.1:18427" spellCheck={false} />
+									<small className="form-hint">{copy('config.listenHint')}</small>
 								</label>
 							</div>
 						</section>

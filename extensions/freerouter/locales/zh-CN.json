@@ -26,6 +26,8 @@
   "config.invalidNumber": "请输入有效的正数。",
   "config.authTitle": "API 凭据",
   "config.authHint": "在 openrouter.ai/keys 免费获取。推荐使用 provider 凭据（PUT /v1/providers/free-router/credential），此处仅为备用。",
-  "config.apiKeyHint": "保存时自动写入 FreeRouter 的 provider 凭据，模型选择器会立即出现 FreeRouter。免费 key 在 openrouter.ai/keys 获取。",
-  "config.keySaveFailed": "provider 凭据保存失败，已改为存入扩展配置作为备用。"
+  "config.apiKeyHint": "保存时自动写入 freerouter 的 provider 凭据，模型选择器会立即出现 freerouter。免费 key 在 openrouter.ai/keys 获取。",
+  "config.keySaveFailed": "provider 凭据保存失败，已改为存入扩展配置作为备用。",
+  "config.listen": "HTTP 监听地址",
+  "config.listenHint": "常驻 Chat Completions 代理的绑定地址，默认 127.0.0.1:18427。修改后需重新加载扩展。"
 }

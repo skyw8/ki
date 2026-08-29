@@ -26,6 +26,8 @@
   "config.invalidNumber": "Please enter valid positive numbers.",
   "config.authTitle": "API credentials",
   "config.authHint": "Get a free key at openrouter.ai/keys. Prefer the provider credential (PUT /v1/providers/free-router/credential); this field is a fallback.",
-  "config.apiKeyHint": "Saved to the FreeRouter provider credential on save; the model appears in the picker right away. Get a free key at openrouter.ai/keys.",
-  "config.keySaveFailed": "Could not save the provider credential; the key was stored in the extension config instead."
+  "config.apiKeyHint": "Saved to the freerouter provider credential on save; the model appears in the picker right away. Get a free key at openrouter.ai/keys.",
+  "config.keySaveFailed": "Could not save the provider credential; the key was stored in the extension config instead.",
+  "config.listen": "HTTP listen address",
+  "config.listenHint": "Always-on Chat Completions proxy bind address. Default 127.0.0.1:18427. Changing it requires reloading the extension."
 }
