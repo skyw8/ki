@@ -50,5 +50,3 @@ go test -tags live -timeout 5m ./e2e -run Live
 ```
 
 Live tests call DashScope `qwen3.7-plus` (`dashscope-cn`). Put the key in `~/.ki/ki.toml` or `DASHSCOPE_CN_API_KEY`.
-
-See `docs/prd/plan.md` for the first-version scope.
