@@ -301,10 +301,10 @@ func (l *Client) postStream(ctx context.Context, url string, body any, hdr http.
 		return acc, streamErr
 	}
 	if requireTerminal && !terminal {
-		return acc, &nonRetryableError{err: errors.New("provider SSE stream ended before a terminal response event")}
+		return acc, &nonRetryableError{err: errProviderSSEEndedEarly}
 	}
 	if acc.ErrorMessage != "" {
-		return acc, fmt.Errorf("provider response failed: %s", acc.ErrorMessage)
+		return acc, fmt.Errorf("%w: %s", errProviderResponseFailed, acc.ErrorMessage)
 	}
 	if acc.StopReason == "" {
 		if len(acc.ToolCalls()) > 0 {

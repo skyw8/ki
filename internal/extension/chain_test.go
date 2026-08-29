@@ -44,7 +44,7 @@ func TestComposeManagerErrorIsFailOpen(t *testing.T) {
 	var saw string
 	hooks := ComposeHooks([]namedInterceptor{{
 		name: "bad", syncEvents: map[string]bool{EventToolCall: true}, inner: boom{},
-	}}, func(name, cap, code, message string) { saw = name })
+	}}, func(name, _, _, _ string) { saw = name })
 	_, block, _, _, err := hooks.BeforeTool(context.Background(), "Write", map[string]any{"path": "a"})
 	if err != nil || block || saw != "bad" {
 		t.Fatalf("fail-open err=%v block=%v saw=%q", err, block, saw)
@@ -84,7 +84,7 @@ func (s spyBeforeRun) BeforeRun(_ context.Context, system string, msgs []types.M
 }
 
 func TestHTTPViewStripsBodyAndKeys(t *testing.T) {
-	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1", strings.NewReader(`{"secret":1}`))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://example.com/v1", strings.NewReader(`{"secret":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ type captureDoer struct{ req *http.Request }
 
 func (c *captureDoer) Do(req *http.Request) (*http.Response, error) {
 	c.req = req
-	return &http.Response{StatusCode: 200, Header: http.Header{}, Body: http.NoBody}, nil
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: http.NoBody}, nil
 }
 
 type emptyHeaderPatch struct{ NopInterceptor }
@@ -115,23 +115,24 @@ func (emptyHeaderPatch) BeforeProviderHTTP(_ context.Context, _ HTTPRequestView)
 }
 
 func TestHTTPPatchEmptyHeaderDeletes(t *testing.T) {
-	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://example.com/v1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("X-Custom", "keep")
-	cap := &captureDoer{}
-	d := wrapHTTPDoer(cap, []namedInterceptor{{
+	capture := &captureDoer{}
+	d := wrapHTTPDoer(capture, []namedInterceptor{{
 		name: "h", syncEvents: map[string]bool{EventBeforeProviderHeaders: true}, inner: emptyHeaderPatch{},
 	}}, nil, nil)
-	_, err = d.Do(req)
+	resp, err := d.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cap.req.Header.Get("X-Custom") != "" {
-		t.Fatalf("expected delete, got %q", cap.req.Header.Get("X-Custom"))
+	_ = resp.Body.Close()
+	if capture.req.Header.Get("X-Custom") != "" {
+		t.Fatalf("expected delete, got %q", capture.req.Header.Get("X-Custom"))
 	}
-	if _, ok := cap.req.Header["X-Custom"]; ok {
+	if _, ok := capture.req.Header["X-Custom"]; ok {
 		t.Fatal("empty patch must Del, not Set empty")
 	}
 }

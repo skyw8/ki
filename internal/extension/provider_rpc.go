@@ -3,7 +3,6 @@ package extension
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 
@@ -49,7 +48,7 @@ func (c *rpcClient) streamProvider(ctx context.Context, req ProviderStreamReques
 		return types.Message{}, err
 	}
 	if !ack.Accepted {
-		return types.Message{}, fmt.Errorf("provider stream was not accepted")
+		return types.Message{}, errProviderStreamNotAccepted
 	}
 
 	acc := types.Message{
@@ -89,7 +88,7 @@ func (c *rpcClient) streamProvider(ctx context.Context, req ProviderStreamReques
 				if message == "" {
 					message = "provider stream failed"
 				}
-				return acc, errors.New(message)
+				return acc, fmt.Errorf("%w: %s", errProviderStreamFailed, message)
 			default:
 				if event.Message != nil && event.Type == "start" {
 					acc = *event.Message

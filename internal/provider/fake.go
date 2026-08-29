@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -17,14 +18,11 @@ const HoldToken = "e2e-hold"
 
 // WriteEnvToken makes the default fake assistant issue a Write of .env so
 // extension intercept e2e can prove the call is blocked.
-const WriteEnvToken = "e2e-write-env"
+const WriteEnvToken = "e2e-write-env" //nolint:gosec // e2e prompt marker, not a credential
 
 // SleepInterceptToken makes the default fake assistant issue a Bash command
 // that extension intercept e2e holds until abort.
-const SleepInterceptToken = "e2e-sleep-intercept"
-
-// Streamer is the provider-facing alias of loop.Streamer.
-type Streamer = loop.Streamer
+const SleepInterceptToken = "e2e-sleep-intercept" //nolint:gosec // e2e prompt marker, not a credential
 
 // Scripted is a test/dev Streamer with canned steps.
 type Scripted struct {
@@ -38,9 +36,9 @@ func lastUserHolds(req loop.Request) bool {
 }
 
 func lastUserContains(req loop.Request, token string) bool {
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == "user" {
-			return strings.Contains(req.Messages[i].Text(), token)
+	for _, msg := range slices.Backward(req.Messages) {
+		if msg.Role == "user" {
+			return strings.Contains(msg.Text(), token)
 		}
 	}
 	return false

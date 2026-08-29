@@ -181,9 +181,6 @@ func (m *Manager) Configure(descriptors []Descriptor) {
 // A failed sidecar is recorded and retried while its descriptor remains
 // enabled; one extension never blocks the others.
 func (m *Manager) Start(ctx context.Context, descriptors []Descriptor) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	m.mu.Lock()
 	if m.runtimeCancel == nil {
 		m.runtimeCtx, m.runtimeCancel = context.WithCancel(ctx)
@@ -203,6 +200,7 @@ func (m *Manager) Start(ctx context.Context, descriptors []Descriptor) {
 		m.watching[d.Name] = true
 		m.status[d.Name] = RuntimeStatus{Name: d.Name, State: "starting", Capabilities: append([]string(nil), d.Capabilities...)}
 		m.mu.Unlock()
+		//nolint:contextcheck // sidecars share process runtimeCtx across Start calls
 		go m.watchRuntime(runtimeCtx, d)
 	}
 }
@@ -419,10 +417,10 @@ func (m *Manager) globalClient(ctx context.Context, name string) (*rpcClient, er
 		}
 	}
 	if !ok {
-		return nil, fmt.Errorf("extension %q runtime is not registered", name)
+		return nil, fmt.Errorf("%w: %q", errRuntimeNotRegistered, name)
 	}
 	if c = m.ensure(ctx, "", d); c == nil {
-		return nil, fmt.Errorf("extension %q runtime is unavailable", name)
+		return nil, fmt.Errorf("%w: %q", errRuntimeUnavailable, name)
 	}
 	return c, nil
 }
@@ -455,8 +453,8 @@ func (m *Manager) items(sessionID string) []namedInterceptor {
 }
 
 func (m *Manager) errFn(sessionID string) func(name, capability, code, message string) {
-	return func(name, cap, code, message string) {
-		m.reportError(sessionID, name, cap, code, message)
+	return func(name, capability, code, message string) {
+		m.reportError(sessionID, name, capability, code, message)
 	}
 }
 
@@ -465,6 +463,7 @@ func (m *Manager) Occupy(sessionID string) *Occupy {
 	return &Occupy{items: m.items(sessionID), skipped: newSkipSet(), onErr: m.errFn(sessionID)}
 }
 
+// Hooks returns occupy-scoped loop hooks for this session's interceptors.
 func (o *Occupy) Hooks() loop.Hooks {
 	if o == nil {
 		return loop.Hooks{}
@@ -472,6 +471,7 @@ func (o *Occupy) Hooks() loop.Hooks {
 	return composeHooks(o.items, o.skipped, o.onErr)
 }
 
+// WrapStreamer wraps the live occupy streamer with provider lifecycle hooks.
 func (o *Occupy) WrapStreamer(inner loop.Streamer) loop.Streamer {
 	if o == nil {
 		return inner
@@ -479,6 +479,7 @@ func (o *Occupy) WrapStreamer(inner loop.Streamer) loop.Streamer {
 	return wrapStreamer(inner, o.items, o.skipped, o.onErr)
 }
 
+// HTTPDoer returns an HTTP round-tripper that applies before_provider_headers.
 func (o *Occupy) HTTPDoer() provider.HTTPDoer {
 	if o == nil {
 		return nil
@@ -566,8 +567,8 @@ func (m *Manager) InvokeCommand(ctx context.Context, sessionID, name, args strin
 	return client.invokeCommand(withSessionID(ctx, sessionID), name, args)
 }
 
-// OnEvent fans out a redacted event asynchronously.
-func (m *Manager) OnEvent(sessionID string, ev Event) {
+// OnEvent fans out a redacted event to async subscribers.
+func (m *Manager) OnEvent(ctx context.Context, sessionID string, ev Event) {
 	m.mu.Lock()
 	clients := make([]*rpcClient, 0, len(m.order[sessionID]))
 	seen := map[string]bool{}
@@ -585,7 +586,7 @@ func (m *Manager) OnEvent(sessionID string, ev Event) {
 		}
 	}
 	m.mu.Unlock()
-	ctx := withSessionID(context.Background(), sessionID)
+	ctx = withSessionID(ctx, sessionID)
 	for _, c := range clients {
 		_ = c.OnEvent(ctx, ev)
 	}
@@ -657,9 +658,6 @@ func (m *Manager) Close() {
 	}
 }
 
-// Enabled filters snapshot.Extensions (Discover.All) with the live toggle and
-// returns Discover chain order (global-by-name). Server
-// Prepare must use this (or Discover.Enabled), never a bare name-sorted All.
 // ApplyInput runs sync input subscribers. swallow true means drop the prompt.
 func (m *Manager) ApplyInput(ctx context.Context, sessionID, text string) (string, bool) {
 	for _, it := range m.items(sessionID) {
@@ -766,10 +764,8 @@ func (m *Manager) NotifyGlobal(name, method string, params any) {
 func (m *Manager) client(sessionID, name string) *rpcClient {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, enabled := range m.order[sessionID] {
-		if enabled == name {
-			return m.by[name]
-		}
+	if slices.Contains(m.order[sessionID], name) {
+		return m.by[name]
 	}
 	return nil
 }
@@ -833,6 +829,9 @@ func cloneJSON(v any) any {
 	return out
 }
 
+// Enabled filters snapshot.Extensions (Discover.All) with the live toggle and
+// returns Discover chain order (global-by-name). Server Prepare must use this
+// (or Discover.Enabled), never a bare name-sorted All.
 func Enabled(all []Descriptor, toggle session.Toggle) []Descriptor {
 	var filtered []Descriptor
 	for _, d := range all {

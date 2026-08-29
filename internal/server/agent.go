@@ -20,7 +20,7 @@ import (
 // the resulting parent-child relationship.
 func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.AgentLaunch, error) {
 	if s.agentTasks == nil {
-		return tools.AgentLaunch{}, fmt.Errorf("agent task store is unavailable")
+		return tools.AgentLaunch{}, errAgentTaskStoreUnavailable
 	}
 	parent, err := s.open(req.ParentSessionID)
 	if err != nil {
@@ -32,7 +32,7 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 		return tools.AgentLaunch{}, err
 	}
 	if parentDepth >= tools.MaxAgentDepth {
-		return tools.AgentLaunch{}, fmt.Errorf("maximum agent depth %d reached", tools.MaxAgentDepth)
+		return tools.AgentLaunch{}, fmt.Errorf("%w %d reached", errMaximumAgentDepth, tools.MaxAgentDepth)
 	}
 	target := req.ParentEntryID
 	if target == "" {
@@ -65,7 +65,7 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 		ref, model, resolveErr := s.registry.ResolveSpec(req.Model, child.Config.Provider)
 		if resolveErr != nil {
 			cleanupChild()
-			return tools.AgentLaunch{}, resolveErr
+			return tools.AgentLaunch{}, fmt.Errorf("resolve model: %w", resolveErr)
 		}
 		effort, resolveErr := resolveThinking(model, child.Config.ThinkingEffort)
 		if resolveErr != nil {
@@ -74,7 +74,7 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 		}
 		if err := child.SetModelAndThinking(ref.Provider, ref.Model, effort); err != nil {
 			cleanupChild()
-			return tools.AgentLaunch{}, err
+			return tools.AgentLaunch{}, fmt.Errorf("set model: %w", err)
 		}
 	}
 	_ = child.Close()
@@ -86,7 +86,7 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 	launch, err := s.agentTasks.Start(ctx, req, outputFile, s.agentRunner(childID, req))
 	if err != nil {
 		cleanupChild()
-		return tools.AgentLaunch{}, err
+		return tools.AgentLaunch{}, fmt.Errorf("start agent task: %w", err)
 	}
 	launch.SessionID = childID
 	s.agentTasks.SetSessionID(launch.TaskID, childID)
@@ -99,7 +99,7 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 // calls, while ordinary user-created forks do not consume Agent depth.
 func (s *Server) agentDepth(sess *session.Session) (int, error) {
 	if sess == nil {
-		return 0, fmt.Errorf("agent depth requires a session")
+		return 0, errAgentDepthRequiresSession
 	}
 	depth := 0
 	current := sess
@@ -123,7 +123,7 @@ func (s *Server) agentDepth(sess *session.Session) (int, error) {
 			return depth, nil
 		}
 		if _, ok := seen[parentID]; ok {
-			return 0, fmt.Errorf("session parent cycle while resolving agent depth at %s", parentID)
+			return 0, fmt.Errorf("%w at %s", errSessionParentCycle, parentID)
 		}
 		seen[parentID] = struct{}{}
 		ancestor, err := s.open(parentID)
@@ -185,6 +185,7 @@ func (s *Server) agentRunner(childID string, base tools.AgentRequest) tools.Agen
 					outputFile = filepath.Join(dir, "events.jsonl")
 				}
 			}
+			//nolint:contextcheck // completion notify/dispatch must outlive the child run ctx
 			s.notifyAgentCompletion(base.ParentSessionID, taskID, base.Description, outputFile, completion, runErr)
 		}
 		return completion, runErr
@@ -195,7 +196,7 @@ func (s *Server) restoreAgentTasks(infos []session.Info) {
 	for _, info := range infos {
 		metadataPath := filepath.Join(info.Dir, "agent.json")
 		basePath := metadataPath
-		data, readErr := os.ReadFile(metadataPath)
+		data, readErr := os.ReadFile(metadataPath) //nolint:gosec // path is agent.json under an indexed session directory
 		if readErr != nil {
 			if !os.IsNotExist(readErr) {
 				slog.Warn("read agent metadata", "path", metadataPath, "err", readErr)
@@ -208,7 +209,7 @@ func (s *Server) restoreAgentTasks(infos []session.Info) {
 			continue
 		}
 		loaded, err := s.agentTasks.LoadMetadata(metadataPath, func(ctx context.Context, taskID, prompt string, background bool) (tools.AgentCompletion, error) {
-			data, readErr := os.ReadFile(basePath)
+			data, readErr := os.ReadFile(basePath) //nolint:gosec // path is agent.json under an indexed session directory
 			if readErr != nil {
 				return tools.AgentCompletion{}, readErr
 			}
@@ -272,16 +273,16 @@ func (s *Server) notifyAgentCompletion(parentID, taskID, description, outputFile
 // AgentStore performs the race-safe queue or transcript resume.
 func (s *Server) SendAgentMessage(ctx context.Context, req tools.AgentMessageRequest) (tools.AgentMessageResult, error) {
 	if s.agentTasks == nil {
-		return tools.AgentMessageResult{}, fmt.Errorf("agent task store is unavailable")
+		return tools.AgentMessageResult{}, errAgentTaskStoreUnavailable
 	}
 	target := strings.TrimSpace(req.Target)
 	message := strings.TrimSpace(req.Message)
 	if target == "" || message == "" {
-		return tools.AgentMessageResult{}, fmt.Errorf("to and message are required")
+		return tools.AgentMessageResult{}, errAgentToAndMessageRequired
 	}
 	task, ok := s.agentTasks.Get(target)
 	if !ok {
-		return tools.AgentMessageResult{}, fmt.Errorf("agent %s not found", target)
+		return tools.AgentMessageResult{}, fmt.Errorf("%w: %s", errAgentNotFound, target)
 	}
 	if task.Status == tools.TaskRunning {
 		if live := s.runAt(task.SessionID); live != nil {
@@ -290,9 +291,9 @@ func (s *Server) SendAgentMessage(ctx context.Context, req tools.AgentMessageReq
 			}
 		}
 	}
-	status, err := s.agentTasks.QueueOrResume(target, message)
+	status, err := s.agentTasks.QueueOrResume(ctx, target, message)
 	if err != nil {
-		return tools.AgentMessageResult{}, err
+		return tools.AgentMessageResult{}, fmt.Errorf("queue or resume agent: %w", err)
 	}
 	switch status {
 	case "queued":
@@ -342,9 +343,9 @@ func (s *Server) runChildAgent(ctx context.Context, id string, req tools.AgentRe
 	return tools.AgentCompletion{Result: result, ToolUseCount: toolUses, TotalTokens: tokens}, nil
 }
 
-// These methods expose only the agent half of the unified TaskStore. The
-// tools.Set composite store adds shell jobs alongside it for TaskOutput and
-// TaskStop.
+// Get returns one agent task snapshot from the unified TaskStore surface.
+// The tools.Set composite store adds shell jobs alongside it for TaskOutput
+// and TaskStop.
 func (s *Server) Get(key string) (tools.TaskSnapshot, bool) {
 	if s.agentTasks == nil {
 		return tools.TaskSnapshot{}, false
@@ -352,16 +353,26 @@ func (s *Server) Get(key string) (tools.TaskSnapshot, bool) {
 	return s.agentTasks.Get(key)
 }
 
+// Wait blocks until an agent task reaches a terminal state or ctx cancels.
 func (s *Server) Wait(ctx context.Context, id string) (tools.TaskSnapshot, error) {
 	if s.agentTasks == nil {
-		return tools.TaskSnapshot{}, fmt.Errorf("agent task store is unavailable")
+		return tools.TaskSnapshot{}, errAgentTaskStoreUnavailable
 	}
-	return s.agentTasks.Wait(ctx, id)
+	snap, err := s.agentTasks.Wait(ctx, id)
+	if err != nil {
+		return tools.TaskSnapshot{}, fmt.Errorf("wait agent task: %w", err)
+	}
+	return snap, nil
 }
 
+// Stop interrupts a running agent task.
 func (s *Server) Stop(id string) (tools.TaskSnapshot, error) {
 	if s.agentTasks == nil {
-		return tools.TaskSnapshot{}, fmt.Errorf("agent task store is unavailable")
+		return tools.TaskSnapshot{}, errAgentTaskStoreUnavailable
 	}
-	return s.agentTasks.Stop(id)
+	snap, err := s.agentTasks.Stop(id)
+	if err != nil {
+		return tools.TaskSnapshot{}, fmt.Errorf("stop agent task: %w", err)
+	}
+	return snap, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -19,7 +20,10 @@ import (
 	"ki/internal/types"
 )
 
-var errSessionBusy = errors.New("session busy")
+var (
+	errSessionBusy   = errors.New("session busy")
+	errRuntimeClosed = errors.New("server shutting down")
+)
 
 func (s *Server) workspacePath(id string) string {
 	if id == "" {
@@ -41,8 +45,10 @@ func (s *Server) doReload(w http.ResponseWriter, r *http.Request) {
 	}
 	var queued bool
 	if body.SessionID == "" {
+		//nolint:contextcheck // reload rewarm is process-owned via runtimeCtx
 		queued = s.Reload()
 	} else {
+		//nolint:contextcheck // reload rewarm is process-owned via runtimeCtx
 		queued = s.requestReload(body.SessionID)
 	}
 	slog.Info("reload")
@@ -80,11 +86,12 @@ func (s *Server) patchSkills(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	//nolint:contextcheck // skill toggle reload rewarm is process-owned via runtimeCtx
 	s.Reload()
 	s.getSkills(w, r)
 }
 
-func (s *Server) getExtensions(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getExtensions(w http.ResponseWriter, _ *http.Request) {
 	snapshot := s.resources.Scan("")
 	_ = s.disableManifestExtensions(snapshot.Extensions)
 	writeJSON(w, 200, map[string]any{"items": s.extensionCatalog(snapshot)})
@@ -104,6 +111,7 @@ func (s *Server) patchExtensions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	//nolint:contextcheck // extension toggle reload rewarm is process-owned via runtimeCtx
 	s.Reload()
 	if err := s.disableManifestExtensions(s.resources.Scan("").Extensions); err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
@@ -149,7 +157,12 @@ func (s *Server) patchExtensionConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	configRaw, ok := body["config"]
 	if !ok {
-		configRaw, _ = json.Marshal(body)
+		var err error
+		configRaw, err = json.Marshal(body)
+		if err != nil {
+			http.Error(w, "invalid config", http.StatusBadRequest)
+			return
+		}
 	}
 	var patch map[string]any
 	if err := json.Unmarshal(configRaw, &patch); err != nil || patch == nil {
@@ -251,6 +264,12 @@ func (s *Server) onExtensionError(sessionID, name, capability, code, message str
 func (s *Server) occupy(parent context.Context, id string) (*runState, context.Context, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.runtimeMu.Lock()
+	closed := s.runtimeClosed
+	s.runtimeMu.Unlock()
+	if closed {
+		return nil, nil, errRuntimeClosed
+	}
 	if st, ok := s.runs[id]; ok {
 		select {
 		case <-st.done:
@@ -262,7 +281,7 @@ func (s *Server) occupy(parent context.Context, id string) (*runState, context.C
 	runID, err := idgen.NewV7()
 	if err != nil {
 		cancel()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("new run id: %w", err)
 	}
 	st := &runState{cancel: cancel, runID: runID, done: make(chan struct{})}
 	st.wait = sync.NewCond(&st.mu)
@@ -297,7 +316,7 @@ func (s *Server) release(id string, st *runState) {
 		s.reloadSession(id)
 	}
 	if s.ext != nil {
-		s.ext.OnEvent(id, extension.RedactEvent(loop.Event{Type: loop.AgentSettled, RunID: runID, External: external}, id))
+		s.ext.OnEvent(context.Background(), id, extension.RedactEvent(loop.Event{Type: loop.AgentSettled, RunID: runID, External: external}, id))
 	}
 	s.flushSettled(id)
 	s.dispatchQueue(id)
@@ -410,6 +429,16 @@ func (s *Server) dispatchQueue(id string) {
 	gate := s.inputGate(id)
 	gate.Lock()
 	defer gate.Unlock()
+	// Pin this dispatch on runtimeWG under the same lock as runtimeClosed so
+	// Shutdown's Wait cannot return while dequeue→occupy is still in flight.
+	s.runtimeMu.Lock()
+	if s.runtimeClosed {
+		s.runtimeMu.Unlock()
+		return
+	}
+	s.runtimeWG.Add(1)
+	s.runtimeMu.Unlock()
+	defer s.runtimeWG.Done()
 	if s.running(id) {
 		return
 	}

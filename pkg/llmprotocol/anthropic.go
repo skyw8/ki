@@ -3,7 +3,6 @@ package llmprotocol
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 )
@@ -203,7 +202,7 @@ func (l *Client) streamAnthropic(ctx context.Context, req Request, emit func(Ass
 func parseAnthropicSSE(event, data string, acc *Message) sseParseResult {
 	var obj map[string]any
 	if json.Unmarshal([]byte(data), &obj) != nil {
-		return sseParseResult{err: errors.New("invalid Anthropic SSE JSON")}
+		return sseParseResult{err: errInvalidAnthropicSSEJSON}
 	}
 	typ, _ := obj["type"].(string)
 	if typ == "" {
@@ -226,11 +225,11 @@ func parseAnthropicSSE(event, data string, acc *Message) sseParseResult {
 	case "content_block_delta":
 		index := anthropicStreamIndex(obj)
 		if index < 0 {
-			return sseParseResult{err: errors.New("Anthropic content block delta has no index")}
+			return sseParseResult{err: errAnthropicDeltaNoIndex}
 		}
 		delta, ok := obj["delta"].(map[string]any)
 		if !ok {
-			return sseParseResult{err: errors.New("Anthropic content block delta has no delta object")}
+			return sseParseResult{err: errAnthropicDeltaNoObject}
 		}
 		switch t, _ := delta["type"].(string); t {
 		case "text_delta":
@@ -264,24 +263,24 @@ func parseAnthropicSSE(event, data string, acc *Message) sseParseResult {
 			}
 			appendToolArgs(block, partial)
 		case "":
-			return sseParseResult{err: errors.New("Anthropic content block delta has no type")}
+			return sseParseResult{err: errAnthropicDeltaNoType}
 		}
 
 	case "content_block_start":
 		index := anthropicStreamIndex(obj)
 		if index < 0 {
-			return sseParseResult{err: errors.New("Anthropic content block start has no index")}
+			return sseParseResult{err: errAnthropicStartNoIndex}
 		}
 		blk, ok := obj["content_block"].(map[string]any)
 		if !ok {
-			return sseParseResult{err: errors.New("Anthropic content block start has no content_block")}
+			return sseParseResult{err: errAnthropicStartNoContentBlock}
 		}
 		t, _ := blk["type"].(string)
 		// Anthropic's index is the identity of a content block. Rejecting a
 		// duplicate start prevents a retry or malformed stream from silently
 		// overwriting already accumulated thinking/tool state.
 		if anthropicContentBlockAt(acc, index) != nil {
-			return sseParseResult{err: fmt.Errorf("Anthropic content block %d started more than once", index)}
+			return sseParseResult{err: fmt.Errorf("%w: %d", errAnthropicBlockStartedTwice, index)}
 		}
 		switch t {
 		case "text":
@@ -310,13 +309,13 @@ func parseAnthropicSSE(event, data string, acc *Message) sseParseResult {
 			}
 			block.ThinkingData, _ = blk["data"].(string)
 			if block.ThinkingData == "" {
-				return sseParseResult{err: errors.New("Anthropic redacted_thinking has no data")}
+				return sseParseResult{err: errAnthropicRedactedThinkingNoData}
 			}
 		case "tool_use":
 			id, _ := blk["id"].(string)
 			name, _ := blk["name"].(string)
 			if id == "" || name == "" {
-				return sseParseResult{err: errors.New("Anthropic tool_use is missing id or name")}
+				return sseParseResult{err: errAnthropicToolUseMissingIDOrName}
 			}
 			block, err := anthropicContentBlock(acc, index, "toolCall")
 			if err != nil {
@@ -326,11 +325,11 @@ func parseAnthropicSSE(event, data string, acc *Message) sseParseResult {
 			block.Arguments = map[string]any{}
 			input, exists := blk["input"]
 			if !exists || input == nil {
-				return sseParseResult{err: errors.New("Anthropic tool_use has no input")}
+				return sseParseResult{err: errAnthropicToolUseNoInput}
 			}
 			value, valid := input.(map[string]any)
 			if !valid {
-				return sseParseResult{err: errors.New("Anthropic tool_use input must be an object")}
+				return sseParseResult{err: errAnthropicToolUseInputMustBeObject}
 			}
 			block.Arguments = value
 			if len(value) > 0 {
@@ -341,16 +340,16 @@ func parseAnthropicSSE(event, data string, acc *Message) sseParseResult {
 				}, emit: true}
 			}
 		default:
-			return sseParseResult{err: fmt.Errorf("unsupported Anthropic content block type %q", t)}
+			return sseParseResult{err: fmt.Errorf("%w %q", errUnsupportedAnthropicContentBlock, t)}
 		}
 
 	case "content_block_stop":
 		index := anthropicStreamIndex(obj)
 		if index < 0 {
-			return sseParseResult{err: errors.New("Anthropic content block stop has no index")}
+			return sseParseResult{err: errAnthropicStopNoIndex}
 		}
 		if anthropicContentBlockAt(acc, index) == nil {
-			return sseParseResult{err: fmt.Errorf("Anthropic content block stop references unknown index %d", index)}
+			return sseParseResult{err: fmt.Errorf("%w %d", errAnthropicStopUnknownIndex, index)}
 		}
 
 	case "message_delta":
@@ -364,11 +363,11 @@ func parseAnthropicSSE(event, data string, acc *Message) sseParseResult {
 	case "message_start":
 		msg, ok := obj["message"].(map[string]any)
 		if !ok {
-			return sseParseResult{err: errors.New("Anthropic message_start has no message object")}
+			return sseParseResult{err: errAnthropicMessageStartNoMessage}
 		}
 		acc.ResponseID = stringValue(msg["id"])
 		if acc.ResponseID == "" {
-			return sseParseResult{err: errors.New("Anthropic message_start has empty message id")}
+			return sseParseResult{err: errAnthropicMessageStartEmptyID}
 		}
 		if usage, ok := msg["usage"].(map[string]any); ok {
 			mergeAnthropicUsage(acc, usage)
@@ -407,10 +406,10 @@ func anthropicExistingContentBlock(m *Message, index int, typ string) (*Content,
 		// Do not recreate a block from a delta: the protocol requires start →
 		// delta ordering, and recreating here would associate a late delta with
 		// the wrong logical output item.
-		return nil, fmt.Errorf("Anthropic content block delta references unknown index %d", index)
+		return nil, fmt.Errorf("%w %d", errAnthropicDeltaUnknownIndex, index)
 	}
 	if block.Type != typ {
-		return nil, fmt.Errorf("Anthropic content block %d changed type from %s to %s", index, block.Type, typ)
+		return nil, fmt.Errorf("%w: %d from %s to %s", errAnthropicBlockTypeChanged, index, block.Type, typ)
 	}
 	return block, nil
 }
@@ -418,7 +417,7 @@ func anthropicExistingContentBlock(m *Message, index int, typ string) (*Content,
 func anthropicContentBlock(m *Message, index int, typ string) (*Content, error) {
 	if block := anthropicContentBlockAt(m, index); block != nil {
 		if block.Type != "" && block.Type != typ {
-			return nil, fmt.Errorf("Anthropic content block %d changed type from %s to %s", index, block.Type, typ)
+			return nil, fmt.Errorf("%w: %d from %s to %s", errAnthropicBlockTypeChanged, index, block.Type, typ)
 		}
 		block.Type = typ
 		return block, nil
@@ -477,7 +476,7 @@ func validateAnthropicRequest(req Request) error {
 	for _, message := range Replayable(req.Messages) {
 		if message.Role == "toolResult" {
 			if message.ToolCallID == "" {
-				return errors.New("Anthropic tool_result has no tool_use_id")
+				return errAnthropicToolResultNoToolUseID
 			}
 			continue
 		}
@@ -488,22 +487,22 @@ func validateAnthropicRequest(req Request) error {
 			switch block.Type {
 			case "thinking":
 				if block.ThinkingData == "" && block.ThinkingSignature == "" && block.Thinking != "" {
-					return errors.New("Anthropic thinking block has no signature")
+					return errAnthropicThinkingNoSignature
 				}
 			case "toolCall":
 				if block.ID == "" || block.Name == "" {
-					return errors.New("Anthropic tool_use has no id or name")
+					return errAnthropicToolUseNoIDOrName
 				}
 				if block.Arguments == nil {
 					if block.ArgumentsRaw == "" {
-						return fmt.Errorf("Anthropic tool_use %q input is not an object", block.ID)
+						return fmt.Errorf("%w: %q", errAnthropicToolUseInputNotObject, block.ID)
 					}
 					if validObjectArgumentsRaw(block.ArgumentsRaw) == "" {
 						// A length-truncated tool call is followed by an error
 						// tool_result. Its partial raw text cannot be replayed as
 						// Anthropic input, so the request encoder will send {}.
 						if message.StopReason != "length" {
-							return fmt.Errorf("Anthropic tool_use %q input is not an object", block.ID)
+							return fmt.Errorf("%w: %q", errAnthropicToolUseInputNotObject, block.ID)
 						}
 					}
 				}
@@ -520,7 +519,7 @@ func validateAnthropicOutput(acc *Message) error {
 			continue
 		}
 		if block.ID == "" || block.Name == "" {
-			return errors.New("Anthropic tool_use stream is missing id or name")
+			return errAnthropicToolUseStreamMissingIDName
 		}
 		if block.ArgumentsRaw == "" {
 			if block.Arguments == nil {
@@ -530,10 +529,10 @@ func validateAnthropicOutput(acc *Message) error {
 		}
 		var args map[string]any
 		if err := json.Unmarshal([]byte(block.ArgumentsRaw), &args); err != nil {
-			return fmt.Errorf("Anthropic tool_use %q input is invalid JSON: %w", block.ID, err)
+			return fmt.Errorf("anthropic tool_use %q input is invalid JSON: %w", block.ID, err)
 		}
 		if args == nil {
-			return fmt.Errorf("Anthropic tool_use %q input is not an object", block.ID)
+			return fmt.Errorf("%w: %q", errAnthropicToolUseInputNotObject, block.ID)
 		}
 	}
 	return nil

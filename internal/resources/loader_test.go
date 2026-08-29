@@ -90,7 +90,7 @@ func TestScanMergesExtensionPromptAndHonorsDisabled(t *testing.T) {
 	if len(snap.ExtensionPrompts) != 1 || snap.ExtensionPrompts[0].Text != "FROM-EXT" {
 		t.Fatalf("%+v", snap.ExtensionPrompts)
 	}
-	if err := os.MkdirAll(filepath.Join(home), 0o700); err != nil {
+	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(home, "toggles.json"), []byte(`{"extensions":{"disabled":["alpha"]}}`), 0o600); err != nil {

@@ -201,7 +201,7 @@ func (r *router) Stream(ctx context.Context, req loop.Request, emit func(loop.As
 			return types.Message{}, fmt.Errorf("resolve provider credential: %w", err)
 		}
 		if !status.Configured {
-			return types.Message{}, fmt.Errorf("provider %q has no configured credential", req.Provider)
+			return types.Message{}, fmt.Errorf("%w: %q", errProviderNoCredential, req.Provider)
 		}
 		credential, err = r.extensions.RefreshCredential(ctx, r.registry, req.Provider, credential)
 		if err != nil {
@@ -485,13 +485,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		jobs = append(jobs, store)
 		delete(s.jobs, id)
 	}
-	runs := make([]*runState, 0, len(s.runs))
-	for _, st := range s.runs {
-		if st != nil {
-			st.cancel()
-			runs = append(runs, st)
-		}
-	}
 	s.mu.Unlock()
 	for _, store := range jobs {
 		store.Close()
@@ -499,11 +492,37 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.agentTasks != nil {
 		s.agentTasks.Close()
 	}
-	for _, st := range runs {
-		select {
-		case <-st.done:
-		case <-ctx.Done():
-		case <-time.After(2 * time.Second):
+	// Why: release → dispatchQueue can spawn a run after a one-shot snapshot;
+	// drain until idle (or ctx done) so TempDir cleanup is not racing writers.
+	for {
+		s.mu.Lock()
+		active := make([]*runState, 0, len(s.runs))
+		for _, st := range s.runs {
+			if st == nil {
+				continue
+			}
+			select {
+			case <-st.done:
+			default:
+				st.cancel()
+				active = append(active, st)
+			}
+		}
+		s.mu.Unlock()
+		if len(active) == 0 {
+			break
+		}
+		stopped := false
+		for _, st := range active {
+			select {
+			case <-st.done:
+			case <-ctx.Done():
+				stopped = true
+			case <-time.After(2 * time.Second):
+			}
+		}
+		if stopped || ctx.Err() != nil {
+			break
 		}
 	}
 	if s.ext != nil {
@@ -608,6 +627,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	s.sidx.Add(sess.ID(), sess.Dir)
 	s.rememberModel(ref)
 	writeJSON(w, 200, s.sessionMap(sess, nil))
+	//nolint:contextcheck // session warmup is process-owned via runtimeCtx, not the HTTP request
 	s.kickWarmup(sess.ID(), sess.Header.CWD)
 }
 
@@ -663,6 +683,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	if extQueued == nil {
 		extQueued = []session.ExtQueuedItem{}
 	}
+	//nolint:contextcheck // session warmup is process-owned via runtimeCtx, not the HTTP request
 	s.kickWarmup(sess.ID(), sess.Header.CWD)
 	// Why: ready is set after Prepare, so read ready first then RuntimeCommands
 	// to avoid ready:true with an empty slash catalog.
@@ -915,7 +936,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	parsed = command.ResolveCommand(parsed, snapshot, runtimeCmds)
 	if parsed.Kind == command.KindUnknown && s.ext != nil {
 		tgPre := toggles.Load(s.cfg.Home)
-		s.ext.Prepare(context.Background(), id, sess.Header.CWD, extension.Enabled(snapshot.Extensions, tgPre.Extensions)) // chain order via Enabled
+		s.ext.Prepare(r.Context(), id, sess.Header.CWD, extension.Enabled(snapshot.Extensions, tgPre.Extensions)) // chain order via Enabled
 		for name := range s.ext.RuntimeCommands(id) {
 			runtimeCmds[name] = struct{}{}
 		}
@@ -948,6 +969,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		switch parsed.Kind {
 		case command.KindBuiltin:
 			_ = sess.Close()
+			//nolint:contextcheck // /new warmup is process-owned; must not cancel with this prompt request
 			s.handleBuiltin(w, r, parsed.Name, parsed.Args)
 			return
 		case command.KindSkill:
@@ -1281,6 +1303,7 @@ func hasUnresolvedToolCalls(messages []types.Message) bool {
 }
 
 func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content []types.Content, parentID *string, reqModel, origin, idempotencyKey string, nextTurn []session.ExtQueuedItem, external ...map[string]string) {
+	//nolint:contextcheck // release may rewarm/reload/dispatch after the run ctx is cancelled
 	defer func() {
 		// Why: occupy must be paired with release. Closing done here used to
 		// mark SSE idle without consuming pendingReload, so a /reload during
@@ -1391,15 +1414,14 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		AgentParentSessionID: sess.ID(),
 		Shells:               s.shells, Mutations: s.mutations,
 	}.Build(profile)
-	tg := toggles.Load(cfg.Home)
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
 	s.reportManifestErrors(sess.ID(), snapshot.Extensions)
-	tg = toggles.Load(cfg.Home)
+	tg := toggles.Load(cfg.Home)
 	// snapshot.Extensions is the global Discover.All catalog. Configure
 	// reconciles process-global sidecars; Prepare builds this session's view.
 	enabledExtensions := extension.Enabled(snapshot.Extensions, tg.Extensions)
 	s.ext.Configure(enabledExtensions)
-	extTools := s.ext.Prepare(context.Background(), sess.ID(), sess.Header.CWD, enabledExtensions)
+	extTools := s.ext.Prepare(ctx, sess.ID(), sess.Header.CWD, enabledExtensions)
 	tls = append(tls, extTools...)
 	if ctx.Err() != nil {
 		st.err = ctx.Err()
@@ -1480,12 +1502,17 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		st.mu.Unlock()
 		switch ev.Type {
 		case loop.ToolExecutionUpdate, loop.ContextUsage, loop.PatchApplyUpdated, loop.ExtensionError:
-		default:
+			// High-churn or already-handled sidebands; skip extension OnEvent.
+		case loop.AgentStart, loop.AgentEnd, loop.TurnStart, loop.TurnEnd,
+			loop.RequestHeader, loop.MessageStart, loop.MessageUpdate, loop.MessageEnd,
+			loop.ToolExecutionStart, loop.ToolExecutionEnd, loop.CompactionStart, loop.CompactionEnd,
+			loop.QueueChanged, loop.SteerAccepted, loop.RunAborted,
+			loop.ExtensionNotice, loop.ExtensionUIPrompt, loop.AgentSettled, loop.RuntimeReady:
 			// Lifecycle notifications are asynchronous from the extension's point
 			// of view, but their write order must match the loop. Spawning one
 			// goroutine per event allowed agent_settled to overtake message_end,
 			// leaving channel connectors with an ephemeral draft but no final reply.
-			s.ext.OnEvent(id, extension.RedactEvent(ev, id))
+			s.ext.OnEvent(ctx, id, extension.RedactEvent(ev, id))
 		}
 		if ev.Type == loop.RequestHeader || (ev.Type == loop.MessageEnd && ev.Message != nil && ev.Message.Role == "assistant") {
 			messages := sess.MessagesToLeaf()
@@ -1567,7 +1594,10 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	runMessage := func(user types.Message) error {
 		_, runErr := loop.RunMessage(ctx, user, sess.MessagesToLeaf(), runCfg, emit)
-		return runErr
+		if runErr != nil {
+			return fmt.Errorf("run message: %w", runErr)
+		}
+		return nil
 	}
 	user := types.Message{Role: "user", Content: content, Origin: origin, External: externalMeta}
 	err = runMessage(user)
@@ -1701,7 +1731,7 @@ func (s *Server) withNextTurn(sess *session.Session, st *runState, hooks loop.Ho
 	return hooks
 }
 
-func (s *Server) liveSummarizer(sessionID, prov, model string) loop.Streamer {
+func (s *Server) liveSummarizer(ctx context.Context, sessionID, prov, model string) loop.Streamer {
 	if !s.requireModelCredential {
 		return s.streamer
 	}
@@ -1714,7 +1744,7 @@ func (s *Server) liveSummarizer(sessionID, prov, model string) loop.Streamer {
 		if err != nil || !status.Configured {
 			return s.streamer
 		}
-		credential, err = s.providerExtensions.RefreshCredential(context.Background(), s.registry, prov, credential)
+		credential, err = s.providerExtensions.RefreshCredential(ctx, s.registry, prov, credential)
 		if err != nil {
 			return s.streamer
 		}
@@ -1723,8 +1753,8 @@ func (s *Server) liveSummarizer(sessionID, prov, model string) loop.Streamer {
 	return provider.NewLiveModel(resolved, key, s.ext.HTTPDoer(sessionID))
 }
 
-func (s *Server) summarizer(sessionID, prov, model string) compact.Summarizer {
-	stream := s.liveSummarizer(sessionID, prov, model)
+func (s *Server) summarizer(ctx context.Context, sessionID, prov, model string) compact.Summarizer {
+	stream := s.liveSummarizer(ctx, sessionID, prov, model)
 	return compact.StreamSummarizer{
 		Stream: func(ctx context.Context, system, user string) (string, *types.Usage, error) {
 			m, err := stream.Stream(ctx, loop.Request{
@@ -1774,7 +1804,7 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]t
 	summary := customSummary
 	var usage *types.Usage
 	if summary == "" {
-		summary, usage, err = compact.Execute(ctx, prep, s.summarizer(sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+		summary, usage, err = compact.Execute(ctx, prep, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 		if err != nil {
 			return nil, fmt.Errorf("execute compaction: %w", err)
 		}
@@ -1784,6 +1814,7 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]t
 	}
 	// compactSession runs inside an occupied prompt, so this queues until
 	// runPrompt's release instead of closing this turn's extension views.
+	//nolint:contextcheck // reload/warmup is deferred to release and must outlive this compact ctx
 	s.requestReload(sess.ID())
 	return sess.MessagesToLeaf(), nil
 }
@@ -1916,7 +1947,8 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	e, err := compact.Run(ctx, sess, s.summarizer(sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+	e, err := compact.Run(ctx, sess, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+	//nolint:contextcheck // release may rewarm after the occupy ctx ends
 	s.release(id, st)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		http.Error(w, "compact aborted", http.StatusConflict)
@@ -1930,6 +1962,7 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	//nolint:contextcheck // post-compact rewarm is process-owned via runtimeCtx
 	s.reloadSession(id)
 	writeJSON(w, 200, map[string]any{"id": e.ID, "type": e.Type, "firstKeptEntryId": e.FirstKeptEntryID, "handled": true})
 }
@@ -1973,6 +2006,7 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sidx.Add(dst.ID(), dst.Dir)
 	writeJSON(w, 200, s.sessionMap(dst, nil))
+	//nolint:contextcheck // fork warmup is process-owned via runtimeCtx, not the HTTP request
 	s.kickWarmup(dst.ID(), dst.Header.CWD)
 }
 

@@ -41,7 +41,12 @@ func contextQueuePath(dir string) string { return filepath.Join(dir, "context-qu
 func queueGate(dir string) *sync.Mutex {
 	key := filepath.Clean(dir)
 	gate, _ := queueGates.LoadOrStore(key, &sync.Mutex{})
-	return gate.(*sync.Mutex)
+	mu, ok := gate.(*sync.Mutex)
+	if !ok {
+		mu = &sync.Mutex{}
+		queueGates.Store(key, mu)
+	}
+	return mu
 }
 
 // ExtQueuedItem is one extension-origin turn waiting after user queue.
@@ -100,7 +105,7 @@ func writeExtQueue(dir string, items []ExtQueuedItem) error {
 	if err != nil {
 		return fmt.Errorf("encode ext-queue: %w", err)
 	}
-	return os.WriteFile(extQueuePath(dir), append(b, '\n'), 0o600)
+	return writeFileAtomic(extQueuePath(dir), append(b, '\n'))
 }
 
 func readContextQueue(dir string) (contextQueueState, error) {
@@ -126,7 +131,7 @@ func writeContextQueue(dir string, state contextQueueState) error {
 	if err != nil {
 		return fmt.Errorf("encode context queue: %w", err)
 	}
-	return os.WriteFile(contextQueuePath(dir), append(b, '\n'), 0o600)
+	return writeFileAtomic(contextQueuePath(dir), append(b, '\n'))
 }
 
 // EnqueueContext appends a context-only message and assigns a durable order.
@@ -375,7 +380,7 @@ func writeQueue(dir string, items []QueuedItem) error {
 	if err != nil {
 		return fmt.Errorf("encode queue: %w", err)
 	}
-	return os.WriteFile(queuePath(dir), append(b, '\n'), 0o600)
+	return writeFileAtomic(queuePath(dir), append(b, '\n'))
 }
 
 // Enqueue appends a user turn. The session directory must already exist.

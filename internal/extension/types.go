@@ -216,28 +216,45 @@ type Interceptor interface {
 // NopInterceptor is a test stub.
 type NopInterceptor struct{}
 
+// BeforeRun implements Interceptor.
 func (NopInterceptor) BeforeRun(_ context.Context, system string, msgs []types.Message) (string, []types.Message, error) {
 	return system, msgs, nil
 }
+
+// TransformContext implements Interceptor.
 func (NopInterceptor) TransformContext(_ context.Context, msgs []types.Message) ([]types.Message, error) {
 	return msgs, nil
 }
+
+// BeforeTool implements Interceptor.
 func (NopInterceptor) BeforeTool(_ context.Context, in ToolCall) (ToolCall, *Block, error) {
 	return in, nil, nil
 }
+
+// AfterTool implements Interceptor.
 func (NopInterceptor) AfterTool(_ context.Context, _ ToolCall, res ResultPatch) (ResultPatch, error) {
 	return res, nil
 }
+
+// BeforeProvider implements Interceptor.
 func (NopInterceptor) BeforeProvider(_ context.Context, req ProviderRequest) (ProviderRequest, *ShortCircuit, error) {
 	return req, nil, nil
 }
+
+// BeforeProviderHTTP implements Interceptor.
 func (NopInterceptor) BeforeProviderHTTP(_ context.Context, _ HTTPRequestView) (HTTPRequestPatch, error) {
 	return HTTPRequestPatch{}, nil
 }
+
+// AfterProviderHTTP implements Interceptor.
 func (NopInterceptor) AfterProviderHTTP(context.Context, int, map[string]string) error { return nil }
+
+// AfterProviderError implements Interceptor.
 func (NopInterceptor) AfterProviderError(context.Context, string) (Fallback, error) {
 	return Fallback{}, nil
 }
+
+// OnEvent implements Interceptor.
 func (NopInterceptor) OnEvent(context.Context, Event) error { return nil }
 
 // ErrorFunc receives sideband extension_error notifications.
@@ -247,12 +264,6 @@ var reservedToolNames = map[string]bool{
 	"Read": true, "Write": true, "Edit": true, "apply_patch": true,
 	"Grep": true, "Glob": true, "Bash": true, "PowerShell": true,
 	"TaskOutput": true, "TaskStop": true, "Monitor": true,
-}
-
-func cloneMessages(msgs []types.Message) []types.Message {
-	out := make([]types.Message, len(msgs))
-	copy(out, msgs)
-	return out
 }
 
 func redactMessages(msgs []types.Message) []types.Message {

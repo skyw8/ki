@@ -2,6 +2,7 @@ package extension
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"reflect"
 
@@ -80,7 +81,7 @@ func (s *occupyStreamer) Stream(ctx context.Context, req loop.Request, emit func
 		return msg, nil
 	}
 	if ctx.Err() != nil {
-		return msg, err
+		return msg, fmt.Errorf("stream: %w", err)
 	}
 	for _, it := range s.items {
 		if s.skipped.has(it.name) || !it.hasSync(EventBeforeProviderRequest) {
@@ -98,10 +99,10 @@ func (s *occupyStreamer) Stream(ctx context.Context, req loop.Request, emit func
 			return cannedStop(emit, fb.Text)
 		}
 		if fb.Skip {
-			return msg, err
+			return msg, fmt.Errorf("stream: %w", err)
 		}
 	}
-	return msg, err
+	return msg, fmt.Errorf("stream: %w", err)
 }
 
 // applyProviderMutations copies interceptor-returned Model/Provider/tools onto
@@ -176,8 +177,11 @@ func (d *headerDoer) Do(req *http.Request) (*http.Response, error) {
 		}
 	}
 	resp, err := d.inner.Do(req)
-	if err != nil || resp == nil {
-		return resp, err
+	if err != nil {
+		return resp, fmt.Errorf("http do: %w", err)
+	}
+	if resp == nil {
+		return resp, nil
 	}
 	headers := map[string]string{}
 	for k, v := range resp.Header {

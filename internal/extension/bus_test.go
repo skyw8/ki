@@ -72,10 +72,13 @@ func TestBusBroadcastDoesNotWait(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	body, _ := json.Marshal(map[string]any{
+	body, err := json.Marshal(map[string]any{
 		"name": "alpha", "capabilities": []string{"bus", "lifecycle"},
 		"runtime": map[string]any{"kind": "rpc", "command": bin, "env": map[string]string{"KI_HOLD": "alpha"}},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "extension.json"), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -105,10 +108,13 @@ func TestBusMutexHandshake(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		body, _ := json.Marshal(map[string]any{
+		body, err := json.Marshal(map[string]any{
 			"name": name, "capabilities": []string{"bus", "lifecycle"},
 			"runtime": map[string]any{"kind": "rpc", "command": bin, "env": map[string]string{"KI_HOLD": name}},
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(filepath.Join(dir, "extension.json"), body, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -167,7 +173,7 @@ func main() {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(dir, "sidecar")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local mutex sidecar test fixture
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build mutex sidecar: %v\n%s", err, out)

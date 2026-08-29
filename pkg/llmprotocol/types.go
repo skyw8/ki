@@ -158,7 +158,7 @@ func NewClient(api, base, key string, doer HTTPDoer) *Client {
 	return &Client{Doer: doer, APIKey: key, Base: strings.TrimRight(base, "/"), API: api}
 }
 
-// Stream produces an assistant message and incremental deltas.
+// Streamer produces an assistant message and incremental deltas.
 type Streamer interface {
 	Stream(context.Context, Request, func(AssistantDelta) error) (Message, error)
 }

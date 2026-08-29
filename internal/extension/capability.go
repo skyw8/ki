@@ -1,8 +1,11 @@
 package extension
 
+import "slices"
+
 // Kind is a top-level capability declared in extension.json.
 type Kind string
 
+// Capability kinds declared in extension.json.
 const (
 	CapPromptAppend Kind = "prompt.append"
 	CapSkill        Kind = "skill"
@@ -28,12 +31,7 @@ var knownKinds = map[Kind]bool{
 }
 
 func hasKind(list []string, k Kind) bool {
-	for _, s := range list {
-		if s == string(k) {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, string(k))
 }
 
 func needsCodeRuntime(caps []string) bool {

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 
 	"ki/internal/loop"
 	"ki/internal/types"
@@ -38,10 +39,13 @@ func (l *Live) Stream(ctx context.Context, req loop.Request, emit func(loop.Assi
 	}
 	message, err := l.client.Stream(ctx, toProtocolRequest(req), protocolEmit)
 	converted := fromProtocolMessage(message)
-	if err == nil && converted.Usage != nil && l.Model != nil {
+	if err != nil {
+		return converted, fmt.Errorf("protocol stream: %w", err)
+	}
+	if converted.Usage != nil && l.Model != nil {
 		CalculateCost(*l.Model, converted.Usage)
 	}
-	return converted, err
+	return converted, nil
 }
 
 func toProtocolRequest(req loop.Request) llmprotocol.Request {

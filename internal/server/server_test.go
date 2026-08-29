@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -241,9 +242,9 @@ func (s *forkAgentStreamer) Stream(_ context.Context, req loop.Request, _ func(l
 }
 
 func lastUserContainsText(req loop.Request, text string) bool {
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == "user" {
-			return strings.Contains(req.Messages[i].Text(), text)
+	for _, msg := range slices.Backward(req.Messages) {
+		if msg.Role == "user" {
+			return strings.Contains(msg.Text(), text)
 		}
 	}
 	return false
@@ -563,7 +564,7 @@ func TestAgentTaskMetadataRestoresAfterServerRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srv2.Shutdown(context.Background())
+	defer func() { _ = srv2.Shutdown(context.Background()) }()
 	if got, ok := srv2.Get(launch.TaskID); !ok || got.Status != tools.TaskCompleted {
 		t.Fatalf("restored task = %+v %v", got, ok)
 	}
@@ -618,7 +619,7 @@ func TestInterruptedAgentResumesAfterServerRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srv2.Shutdown(context.Background())
+	defer func() { _ = srv2.Shutdown(context.Background()) }()
 	interrupted, ok := srv2.Get(launch.TaskID)
 	if !ok || interrupted.Status != tools.TaskInterrupted {
 		t.Fatalf("restored interrupted task = %+v %v", interrupted, ok)
@@ -741,10 +742,8 @@ func TestConcurrentBackgroundAgentsKeepSessionsAndNotificationsDistinct(t *testi
 	launches := make(chan tools.AgentLaunch, count)
 	errs := make(chan error, count)
 	var wg sync.WaitGroup
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range count {
+		wg.Go(func() {
 			launch, spawnErr := srv.SpawnAgent(context.Background(), tools.AgentRequest{
 				Description: "parallel child", Prompt: "child directive", RunInBackground: true,
 				ParentSessionID: parentID, ParentEntryID: parentEntry,
@@ -754,7 +753,7 @@ func TestConcurrentBackgroundAgentsKeepSessionsAndNotificationsDistinct(t *testi
 				return
 			}
 			launches <- launch
-		}()
+		})
 	}
 	wg.Wait()
 	close(launches)
@@ -1050,7 +1049,7 @@ func TestProviderOAuthAuthAPI(t *testing.T) {
 	}
 	source := filepath.Join(filepath.Dir(file), "..", "..", "e2e", "testdata", "extensions", "provider")
 	bin := filepath.Join(binDir, "provider-sidecar")
-	build := exec.Command("go", "build", "-o", bin, ".")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local provider sidecar test fixture
 	build.Dir = source
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build auth sidecar: %v\n%s", err, out)
@@ -1094,7 +1093,7 @@ func TestProviderOAuthAuthAPI(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		if out != nil && response.ContentLength != 0 {
 			if err := json.NewDecoder(response.Body).Decode(out); err != nil {
 				t.Fatal(err)
@@ -1113,7 +1112,7 @@ func TestProviderOAuthAuthAPI(t *testing.T) {
 		Error  string `json:"error"`
 	}
 	path := "/v1/providers/fake-oauth/auth/" + url.PathEscape(started.RequestID)
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		if status := call(http.MethodGet, path, "", &authStatus); status != http.StatusOK {
 			t.Fatalf("auth status=%d", status)
 		}
@@ -1670,9 +1669,7 @@ func promptJSON(t *testing.T, hs *httptest.Server, id, text string, extra map[st
 	if text != "" {
 		body["text"] = text
 	}
-	for k, v := range extra {
-		body[k] = v
-	}
+	maps.Copy(body, extra)
 	raw, _ := marshalJSON(body)
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", bytes.NewReader(raw))
 	req.Header.Set("Authorization", "Bearer tok")
@@ -1751,7 +1748,10 @@ func TestBusyPromptSteersSameRun(t *testing.T) {
 	waitAgentEnd(t, hs, id)
 	waitRunIdle(t, srv, id)
 	detail := sessionGET(t, hs, id)
-	raw, _ := json.Marshal(detail["messages"])
+	raw, err := json.Marshal(detail["messages"])
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(raw), "first") || !strings.Contains(string(raw), "steer-me") {
 		t.Fatalf("messages missing steered user: %s", raw)
 	}
@@ -1779,7 +1779,10 @@ func TestBusyPromptQueuesUntilRelease(t *testing.T) {
 	for {
 		detail = sessionGET(t, hs, id)
 		queued, _ = detail["queued"].([]any)
-		raw, _ := json.Marshal(detail["messages"])
+		raw, err := json.Marshal(detail["messages"])
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(queued) == 0 && strings.Contains(string(raw), "queued-me") && !srv.running(id) {
 			break
 		}
@@ -1908,7 +1911,10 @@ func TestBusyPromptPromotesQueueId(t *testing.T) {
 	for {
 		detail = sessionGET(t, hs, id)
 		queued, _ = detail["queued"].([]any)
-		raw, _ := json.Marshal(detail["messages"])
+		raw, err := json.Marshal(detail["messages"])
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(queued) == 0 && strings.Contains(string(raw), "promote-me") && strings.Contains(string(raw), "keep-queued") && !srv.running(id) {
 			break
 		}
@@ -1965,7 +1971,10 @@ func TestIdlePromoteQueueIdStartsRun(t *testing.T) {
 	waitRunIdle(t, srv, id)
 	detail := sessionGET(t, hs, id)
 	queued, _ := detail["queued"].([]any)
-	raw, _ := json.Marshal(detail["messages"])
+	raw, err := json.Marshal(detail["messages"])
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(queued) != 0 || !strings.Contains(string(raw), "from-queue") {
 		t.Fatalf("idle promote result queued=%+v messages=%s", queued, raw)
 	}
@@ -1999,7 +2008,10 @@ func TestCompactPromoteQueueIdRestoresHead(t *testing.T) {
 	for {
 		detail := sessionGET(t, hs, id)
 		queued, _ := detail["queued"].([]any)
-		raw, _ := json.Marshal(detail["messages"])
+		raw, err := json.Marshal(detail["messages"])
+		if err != nil {
+			t.Fatal(err)
+		}
 		running, _ := detail["running"].(bool)
 		// Wait until occupy finished so TempDir cleanup is not racing jsonl writers.
 		if !running && len(queued) == 0 && strings.Contains(string(raw), "during-compact") {
@@ -2066,7 +2078,10 @@ func TestCompactOccupySteersAsQueue(t *testing.T) {
 	for {
 		detail := sessionGET(t, hs, id)
 		queued, _ := detail["queued"].([]any)
-		raw, _ := json.Marshal(detail["messages"])
+		raw, err := json.Marshal(detail["messages"])
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(queued) == 0 && strings.Contains(string(raw), "during-compact") {
 			return
 		}
@@ -2131,7 +2146,6 @@ func TestSessionCatalogNoSpawn(t *testing.T) {
 	if sk["beta"]["enabled"] != true || sk["beta"]["source"] != "project" {
 		t.Fatalf("beta: %+v", sk["beta"])
 	}
-
 }
 
 func authedGet(t *testing.T, hs *httptest.Server, path string) (*http.Response, error) {
@@ -2213,7 +2227,7 @@ func TestExtensionSettingsDisableLoadErrors(t *testing.T) {
 
 	createSession(t, hs, t.TempDir())
 	var brokenEnabled = true
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		res, err = authedGet(t, hs, "/v1/extensions")
 		if err != nil {
 			t.Fatal(err)
@@ -3104,7 +3118,11 @@ func TestForkModeCascadeDelete(t *testing.T) {
 		if out["forkMode"] != mode || out["parentSessionId"] != parent {
 			t.Fatalf("fork metadata: %+v", out)
 		}
-		return out["id"].(string)
+		id, ok := out["id"].(string)
+		if !ok || id == "" {
+			t.Fatalf("fork id missing: %+v", out)
+		}
+		return id
 	}
 
 	treeChild := fork(root, session.ForkModeTree)
@@ -3455,7 +3473,7 @@ func TestPromptWithSidecarExtensionFinishes(t *testing.T) {
 	srv, hs := testServer(t)
 	bin := filepath.Join(t.TempDir(), "sidecar")
 	src := filepath.Join("..", "..", "e2e", "testdata", "extensions", "sidecar")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local sidecar test fixture
 	cmd.Dir = src
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build sidecar: %v\n%s", err, out)

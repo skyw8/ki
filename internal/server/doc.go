@@ -47,6 +47,8 @@
 // beside the child transcript rebuilds the stable task registry after restart;
 // SendMessage steers a live Inbox or resumes the same child session, while
 // TaskOutput/TaskStop expose the shared task lifecycle.
+// Shutdown sets runtimeClosed so occupy and queue dispatch refuse new runs, then
+// drains active runs until idle (release can otherwise chain a late dispatch).
 //
 // Routes and run lifecycle: docs/architecture.md.
 package server

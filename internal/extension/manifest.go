@@ -39,7 +39,7 @@ type Manifest struct {
 	Commands     []string                         `json:"commands"`
 	Providers    []provider.ExtensionProviderSpec `json:"providers"`
 	Config       ConfigSpec                       `json:"config"`
-	I18n         I18nSpec                         `json:"i18n,omitempty"`
+	I18n         I18nSpec                         `json:"i18n,omitzero"`
 	Runtime      RuntimeSpec                      `json:"runtime"`
 }
 
@@ -89,7 +89,7 @@ type Descriptor struct {
 	Enabled      bool                             `json:"enabled"`
 	Capabilities []string                         `json:"capabilities"`
 	Providers    []provider.ExtensionProviderSpec `json:"providers,omitempty"`
-	Config       ConfigSpec                       `json:"config,omitempty"`
+	Config       ConfigSpec                       `json:"config,omitzero"`
 	I18n         *I18nCatalog                     `json:"i18n,omitempty"`
 	Error        string                           `json:"error,omitempty"`
 	FailClosed   bool                             `json:"-"`
@@ -206,7 +206,7 @@ func loadPackage(root string) (Descriptor, bool) {
 func validateManifest(root string, m Manifest) error {
 	for _, capability := range m.Capabilities {
 		if !knownKinds[Kind(capability)] {
-			return fmt.Errorf("unknown capability %q", capability)
+			return fmt.Errorf("%w %q", errUnknownCapability, capability)
 		}
 	}
 	kind := m.Runtime.Kind
@@ -214,31 +214,31 @@ func validateManifest(root string, m Manifest) error {
 		kind = runtimeNone
 	}
 	if kind != runtimeNone && kind != runtimeRPC {
-		return fmt.Errorf("unknown runtime.kind %q", m.Runtime.Kind)
+		return fmt.Errorf("%w %q", errUnknownRuntimeKind, m.Runtime.Kind)
 	}
 	needsCode := needsCodeRuntime(m.Capabilities)
 	if kind == runtimeRPC {
 		if m.Runtime.Command == "" {
-			return fmt.Errorf("runtime.command required")
+			return errRuntimeCommandRequired
 		}
 		if !needsCode && !hasKind(m.Capabilities, CapCommand) {
-			return fmt.Errorf("runtime.kind=rpc requires tool, lifecycle, bus, or command")
+			return errRuntimeRPCRequiresCapability
 		}
 	}
 	if needsCode && kind != runtimeRPC {
-		return fmt.Errorf("code capabilities require runtime.kind=rpc")
+		return errCodeCapabilitiesRequireRPC
 	}
 	if hasKind(m.Capabilities, CapProvider) {
 		if len(m.Providers) == 0 {
-			return fmt.Errorf("provider capability requires providers")
+			return errProviderCapabilityNeedsSpecs
 		}
 		for _, spec := range m.Providers {
 			if err := provider.ValidateExtensionProviderSpec(spec); err != nil {
-				return err
+				return fmt.Errorf("validate provider: %w", err)
 			}
 		}
 	} else if len(m.Providers) > 0 {
-		return fmt.Errorf("providers require provider capability")
+		return errProvidersNeedCapability
 	}
 	for _, rel := range m.Prompt.Append {
 		if err := withinRoot(root, rel); err != nil {
@@ -256,11 +256,11 @@ func validateManifest(root string, m Manifest) error {
 		}
 	}
 	if m.I18n.DefaultLocale != "" && !localeRe.MatchString(m.I18n.DefaultLocale) {
-		return fmt.Errorf("invalid i18n.defaultLocale %q", m.I18n.DefaultLocale)
+		return fmt.Errorf("%w %q", errInvalidI18nDefaultLocale, m.I18n.DefaultLocale)
 	}
 	for locale, rel := range m.I18n.Resources {
 		if !localeRe.MatchString(locale) {
-			return fmt.Errorf("invalid i18n locale %q", locale)
+			return fmt.Errorf("%w %q", errInvalidI18nLocale, locale)
 		}
 		if err := withinRoot(root, rel); err != nil {
 			return fmt.Errorf("i18n resource %q: %w", locale, err)
@@ -327,14 +327,14 @@ func loadI18n(root string, spec I18nSpec) *I18nCatalog {
 
 func withinRoot(root, rel string) error {
 	if rel == "" {
-		return fmt.Errorf("empty path")
+		return errEmptyPath
 	}
 	if filepath.IsAbs(rel) {
-		return fmt.Errorf("path must be relative: %s", rel)
+		return fmt.Errorf("%w: %s", errPathMustBeRelative, rel)
 	}
 	clean := filepath.Clean(rel)
 	if strings.HasPrefix(clean, "..") {
-		return fmt.Errorf("path escapes package: %s", rel)
+		return fmt.Errorf("%w: %s", errPathEscapesPackage, rel)
 	}
 	joined := filepath.Join(root, clean)
 	if resolved, err := filepath.EvalSymlinks(joined); err == nil {
@@ -346,7 +346,7 @@ func withinRoot(root, rel string) error {
 	}
 	relOut, err := filepath.Rel(rootResolved, joined)
 	if err != nil || strings.HasPrefix(relOut, "..") {
-		return fmt.Errorf("path escapes package: %s", rel)
+		return fmt.Errorf("%w: %s", errPathEscapesPackage, rel)
 	}
 	return nil
 }

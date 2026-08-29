@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,7 +89,6 @@ type rpcClient struct {
 	mu                 sync.Mutex
 	pending            map[string]chan rpcMsg
 	idSeq              atomic.Int64
-	inboundSeq         atomic.Int64
 	closed             chan struct{}
 	closedOnce         sync.Once
 	closeOnce          sync.Once
@@ -115,22 +115,23 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 	if err := runInstall(ctx, d.root, d.manifest.Runtime.Install, env); err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(resolveRuntimeCommand(d.root, d.manifest.Runtime.Command), d.manifest.Runtime.Args...) //nolint:gosec // command comes from the extension manifest
+	// Sidecar outlives prepare; lifetime is owned by KillProcessGroup/close.
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), resolveRuntimeCommand(d.root, d.manifest.Runtime.Command), d.manifest.Runtime.Args...) //nolint:gosec // command/args come from the extension manifest
 	cmd.Dir = d.root
 	cmd.Env = env
 	tools.AttachProcessGroup(cmd)
 	tools.SetWaitDelay(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("start sidecar: %w", err)
 	}
 	c := &rpcClient{
 		name:               d.Name,
@@ -362,6 +363,11 @@ func (c *rpcClient) readLoop(r io.Reader) {
 			}
 		}
 	}
+	// Why: gopls flags Scan loops without Err(); a truncated NDJSON line is the
+	// only interesting failure mode once the peer closes stdout.
+	if err := sc.Err(); err != nil {
+		slog.Debug("extension rpc read", "extension", c.name, "err", err)
+	}
 }
 
 func (c *rpcClient) providerAuthLoop() {
@@ -442,7 +448,7 @@ func (c *rpcClient) notify(method string, params any) {
 		return
 	}
 	c.mu.Lock()
-	_ = c.enc.Encode(rpcMsg{JSONRPC: "2.0", Method: method, Params: raw})
+	c.encodeLocked(rpcMsg{JSONRPC: "2.0", Method: method, Params: raw})
 	c.mu.Unlock()
 }
 
@@ -471,9 +477,9 @@ func (c *rpcClient) hasAsync(event string) bool {
 	return c.registration.hasAsync(event)
 }
 
-func compactCtx(ctx context.Context, model string, idle bool) CompactCtx {
+func compactCtx(ctx context.Context, model string) CompactCtx {
 	aborted := ctx != nil && ctx.Err() != nil
-	return CompactCtx{Idle: idle, Model: model, Aborted: aborted}
+	return CompactCtx{Idle: false, Model: model, Aborted: aborted}
 }
 
 func (c *rpcClient) BeforeRun(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error) {
@@ -489,7 +495,7 @@ func (c *rpcClient) BeforeRun(ctx context.Context, system string, msgs []types.M
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
 		"sessionId": sessionIDFromContext(ctx),
 		"event":     EventBeforeAgentStart, "payload": map[string]any{"system": system, "messages": redactMessages(msgs)},
-		"ctx": compactCtx(ctx, "", false),
+		"ctx": compactCtx(ctx, ""),
 	}, &out)
 	if err != nil {
 		return system, msgs, err
@@ -515,7 +521,7 @@ func (c *rpcClient) TransformContext(ctx context.Context, msgs []types.Message) 
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
 		"sessionId": sessionIDFromContext(ctx),
 		"event":     EventContext, "payload": map[string]any{"messages": redactMessages(msgs)},
-		"ctx": compactCtx(ctx, "", false),
+		"ctx": compactCtx(ctx, ""),
 	}, &out)
 	if err != nil {
 		return msgs, err
@@ -540,7 +546,7 @@ func (c *rpcClient) BeforeTool(ctx context.Context, in ToolCall) (ToolCall, *Blo
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
 		"sessionId": sessionIDFromContext(ctx),
-		"event":     EventToolCall, "payload": in, "ctx": compactCtx(ctx, "", false),
+		"event":     EventToolCall, "payload": in, "ctx": compactCtx(ctx, ""),
 	}, &out)
 	if err != nil {
 		return in, nil, err
@@ -564,7 +570,7 @@ func (c *rpcClient) AfterTool(ctx context.Context, in ToolCall, res ResultPatch)
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
 		"sessionId": sessionIDFromContext(ctx),
 		"event":     EventToolResult, "payload": map[string]any{"call": in, "result": res},
-		"ctx": compactCtx(ctx, "", false),
+		"ctx": compactCtx(ctx, ""),
 	}, &out)
 	if err != nil {
 		return res, err
@@ -584,7 +590,7 @@ func (c *rpcClient) BeforeProvider(ctx context.Context, req ProviderRequest) (Pr
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
 		"sessionId": sessionIDFromContext(ctx),
-		"event":     EventBeforeProviderRequest, "payload": req, "ctx": compactCtx(ctx, req.Model, false),
+		"event":     EventBeforeProviderRequest, "payload": req, "ctx": compactCtx(ctx, req.Model),
 	}, &out)
 	if err != nil {
 		return req, nil, err
@@ -624,7 +630,7 @@ func (c *rpcClient) BeforeProviderHTTP(ctx context.Context, view HTTPRequestView
 	var out HTTPRequestPatch
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
 		"sessionId": sessionIDFromContext(ctx),
-		"event":     EventBeforeProviderHeaders, "payload": view, "ctx": compactCtx(ctx, "", false),
+		"event":     EventBeforeProviderHeaders, "payload": view, "ctx": compactCtx(ctx, ""),
 	}, &out)
 	return out, err
 }
@@ -651,7 +657,7 @@ func (c *rpcClient) AfterProviderError(ctx context.Context, errClass string) (Fa
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
 		"sessionId": sessionIDFromContext(ctx),
 		"event":     EventProviderError, "payload": map[string]any{"errClass": errClass},
-		"ctx": compactCtx(ctx, "", false),
+		"ctx": compactCtx(ctx, ""),
 	}, &out)
 	return out, err
 }
@@ -684,13 +690,21 @@ func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, 
 			c.progressMu.Unlock()
 		}()
 	}
-	raw, _ := json.Marshal(map[string]any{
+	raw, err := json.Marshal(map[string]any{
 		"sessionId": sessionIDFromContext(ctx), "toolCallId": toolCallID, "name": name, "args": args,
 	})
+	if err != nil {
+		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
+	}
 	ch := make(chan rpcMsg, 1)
 	c.mu.Lock()
 	c.pending[id] = ch
-	_ = c.enc.Encode(rpcMsg{JSONRPC: "2.0", ID: id, Method: "tool.execute", Params: raw})
+	if err := c.enc.Encode(rpcMsg{JSONRPC: "2.0", ID: id, Method: "tool.execute", Params: raw}); err != nil {
+		delete(c.pending, id)
+		c.mu.Unlock()
+		slog.Debug("extension tool.execute encode", "extension", c.name, "err", err)
+		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
+	}
 	c.mu.Unlock()
 	var msg rpcMsg
 	select {
@@ -727,7 +741,7 @@ func (c *rpcClient) rewriteInput(ctx context.Context, text string) (string, bool
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
 		"sessionId": sessionIDFromContext(ctx),
-		"event":     EventInput, "payload": map[string]any{"text": text}, "ctx": compactCtx(ctx, "", false),
+		"event":     EventInput, "payload": map[string]any{"text": text}, "ctx": compactCtx(ctx, ""),
 	}, &out)
 	if err != nil {
 		return text, false, err
@@ -752,7 +766,7 @@ func (c *rpcClient) rewriteMessageEnd(ctx context.Context, msg types.Message) (t
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
 		"sessionId": sessionIDFromContext(ctx),
-		"event":     EventMessageEnd, "payload": map[string]any{"message": msg}, "ctx": compactCtx(ctx, "", false),
+		"event":     EventMessageEnd, "payload": map[string]any{"message": msg}, "ctx": compactCtx(ctx, ""),
 	}, &out)
 	if err != nil {
 		return msg, err
@@ -775,7 +789,7 @@ func (c *rpcClient) beforeCompact(ctx context.Context) (bool, string, error) {
 	}
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
 		"sessionId": sessionIDFromContext(ctx),
-		"event":     EventSessionBeforeCompact, "payload": map[string]any{}, "ctx": compactCtx(ctx, "", false),
+		"event":     EventSessionBeforeCompact, "payload": map[string]any{}, "ctx": compactCtx(ctx, ""),
 	}, &out)
 	if err != nil {
 		return true, "", err

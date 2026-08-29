@@ -24,7 +24,7 @@ export function PDFPreview({ url }: { url: string }) {
     setLoading(true)
     void task.promise.then(pdf => {
       if (active) setDoc(pdf)
-      else void pdf.destroy()
+      else void pdf.cleanup()
     }).catch(err => {
       if (active) setError(err instanceof Error ? err.message : String(err))
     }).finally(() => { if (active) setLoading(false) })

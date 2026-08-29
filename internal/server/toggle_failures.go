@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"ki/internal/extension"
 	"ki/internal/toggles"
@@ -54,7 +55,7 @@ func (s *Server) disableManifestExtensions(descriptors []extension.Descriptor) e
 		}
 		names = append(names, d.Name)
 		if first == nil {
-			first = fmt.Errorf("extension %q: %s", d.Name, d.Error)
+			first = fmt.Errorf("%w %q: %s", errExtensionFailed, d.Name, d.Error)
 		}
 	}
 	if len(names) > 0 {
@@ -82,10 +83,5 @@ func (s *Server) reportManifestErrors(sessionID string, descriptors []extension.
 }
 
 func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }

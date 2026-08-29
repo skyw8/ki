@@ -3,6 +3,7 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,7 +47,7 @@ func TestIllegalSyncRejectedAndEmptyLifecycleFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	reg := Registration{Subscriptions: []Subscription{{Event: "nope", Mode: "sync"}}}
-	if err := gateSubscriptions([]string{string(CapLifecycle)}, &reg); err != errNoSubscriptions {
+	if err := gateSubscriptions([]string{string(CapLifecycle)}, &reg); !errors.Is(err, errNoSubscriptions) {
 		t.Fatalf("want no subscriptions err, got %v", err)
 	}
 }
@@ -165,7 +166,10 @@ func TestDiscoverLifecycleNotIntercept(t *testing.T) {
 	if len(got.Enabled) != 1 {
 		t.Fatalf("%+v", got.Enabled)
 	}
-	raw, _ := json.Marshal(got.Enabled[0])
+	raw, err := json.Marshal(got.Enabled[0])
+	if err != nil {
+		t.Fatal(err)
+	}
 	if os.Getenv("NO") == "x" {
 		t.Log(raw)
 	}

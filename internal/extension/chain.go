@@ -3,6 +3,7 @@ package extension
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"sync"
 
 	"ki/internal/loop"
@@ -56,12 +57,12 @@ func composeHooks(items []namedInterceptor, skipped *skipSet, onErr func(name, c
 	if skipped == nil {
 		skipped = newSkipSet()
 	}
-	fail := func(name, cap, code, message string) {
+	fail := func(name, capability, code, message string) {
 		skipped.mark(name)
 		if onErr != nil {
-			onErr(name, cap, code, message)
+			onErr(name, capability, code, message)
 		}
-		slog.Info("extension lifecycle skipped", "extension", name, "capability", cap, "code", code)
+		slog.Info("extension lifecycle skipped", "extension", name, "capability", capability, "code", code)
 	}
 	return loop.Hooks{
 		BeforeRun: func(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error) {
@@ -146,6 +147,7 @@ func composeHooks(items []namedInterceptor, skipped *skipSet, onErr func(name, c
 
 func boolPtr(v bool) *bool { return &v }
 
+// RedactEvent copies a loop event into the extension-facing Event shape.
 func RedactEvent(ev loop.Event, sessionID string) Event {
 	out := Event{
 		Type:       string(ev.Type),
@@ -189,8 +191,6 @@ func cloneStringMap(in map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }

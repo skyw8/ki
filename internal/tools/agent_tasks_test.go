@@ -80,7 +80,7 @@ func TestAgentStoreResumeKeepsStableID(t *testing.T) {
 	if _, err := store.Wait(context.Background(), launch.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	status, err := store.QueueOrResume(launch.TaskID, "second")
+	status, err := store.QueueOrResume(context.Background(), launch.TaskID, "second")
 	if err != nil || status != "resumed" {
 		t.Fatalf("resume = %q %v", status, err)
 	}
@@ -123,7 +123,7 @@ func TestAgentStoreQueuesMessageAtRunBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-started
-	status, err := store.QueueOrResume(launch.TaskID, "follow-up")
+	status, err := store.QueueOrResume(context.Background(), launch.TaskID, "follow-up")
 	if err != nil || status != "queued" {
 		t.Fatalf("queued = %q %v", status, err)
 	}
@@ -176,7 +176,7 @@ func TestAgentStoreRehydratesInterruptedAgent(t *testing.T) {
 	if got, ok := restarted.Get(launch.TaskID); !ok || got.Status != TaskInterrupted {
 		t.Fatalf("loaded task = %+v %v", got, ok)
 	}
-	if status, err := restarted.QueueOrResume(launch.TaskID, "after restart"); err != nil || status != "resumed" {
+	if status, err := restarted.QueueOrResume(context.Background(), launch.TaskID, "after restart"); err != nil || status != "resumed" {
 		t.Fatalf("restart resume = %q %v", status, err)
 	}
 	got, err := restarted.Wait(context.Background(), launch.TaskID)
@@ -196,7 +196,7 @@ func TestAgentStoreConcurrentAgentsHaveIndependentLifecycle(t *testing.T) {
 		<-release
 		return AgentCompletion{Result: "done:" + taskID}, nil
 	}
-	for i := 0; i < count; i++ {
+	for i := range count {
 		launch, err := store.Start(context.Background(), AgentRequest{
 			Description: "parallel child", Prompt: "work", RunInBackground: true,
 			SessionID: fmt.Sprintf("child-%d", i),
@@ -206,7 +206,7 @@ func TestAgentStoreConcurrentAgentsHaveIndependentLifecycle(t *testing.T) {
 		}
 		launches = append(launches, launch)
 	}
-	for i := 0; i < count; i++ {
+	for range count {
 		<-started
 	}
 	close(release)
@@ -252,7 +252,7 @@ func TestAgentStoreStoppedAgentResumesAfterRunnerExits(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("cancelled runner did not exit before Stop returned")
 	}
-	status, err := store.QueueOrResume(launch.TaskID, "continue")
+	status, err := store.QueueOrResume(context.Background(), launch.TaskID, "continue")
 	if err != nil || status != "resumed" {
 		t.Fatalf("resume after stop = %q %v", status, err)
 	}
@@ -307,7 +307,7 @@ func TestAgentStoreNotificationClaimIsPerRun(t *testing.T) {
 	if _, err := store.Wait(context.Background(), launch.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	if status, err := store.QueueOrResume(launch.TaskID, "second"); err != nil || status != "resumed" {
+	if status, err := store.QueueOrResume(context.Background(), launch.TaskID, "second"); err != nil || status != "resumed" {
 		t.Fatalf("resume = %q %v", status, err)
 	}
 	if _, err := store.Wait(context.Background(), launch.TaskID); err != nil {
@@ -329,10 +329,10 @@ func TestAgentToolSchemaAndBackgroundResult(t *testing.T) {
 	if err := tool.Validate(map[string]any{"description": "child"}); err == nil {
 		t.Fatal("missing prompt was accepted")
 	}
-	if params["properties"] == nil {
+	properties, ok := params["properties"].(map[string]any)
+	if !ok || properties == nil {
 		t.Fatal("agent schema has no properties")
 	}
-	properties := params["properties"].(map[string]any)
 	for _, name := range []string{"name", "team_name", "mode", "cwd", "isolation"} {
 		if properties[name] != nil {
 			t.Fatalf("Agent schema leaked team field %s", name)
@@ -390,7 +390,7 @@ type fakeMessenger struct{}
 
 func (fakeMessenger) SendAgentMessage(_ context.Context, req AgentMessageRequest) (AgentMessageResult, error) {
 	if req.Target != "a-1" || req.Message != "continue" {
-		return AgentMessageResult{}, errors.New("bad message")
+		return AgentMessageResult{}, errBadMessage
 	}
 	return AgentMessageResult{AgentID: req.Target, Status: "steered", Message: "steered"}, nil
 }

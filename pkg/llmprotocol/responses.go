@@ -3,7 +3,6 @@ package llmprotocol
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -172,14 +171,14 @@ func validateResponsesBody(body map[string]any) error {
 	for i, raw := range input {
 		item, ok := raw.(map[string]any)
 		if !ok {
-			return fmt.Errorf("responses input[%d] is not an object", i)
+			return fmt.Errorf("responses input[%d]: %w", i, errResponsesInputNotObject)
 		}
 		typ, _ := item["type"].(string)
 		switch typ {
 		case "function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output":
 			callID, _ := item["call_id"].(string)
 			if strings.TrimSpace(callID) == "" {
-				return fmt.Errorf("responses input[%d] %s has empty call_id", i, typ)
+				return fmt.Errorf("responses input[%d] %s: %w", i, typ, errResponsesInputEmptyCallID)
 			}
 		}
 	}
@@ -260,7 +259,7 @@ func (l *Client) streamResponses(ctx context.Context, req Request, emit func(Ass
 func parseResponsesSSE(event, data string, acc *Message) sseParseResult {
 	var obj map[string]any
 	if err := json.Unmarshal([]byte(data), &obj); err != nil {
-		return sseParseResult{err: errors.New("invalid Responses SSE JSON")}
+		return sseParseResult{err: errInvalidResponsesSSEJSON}
 	}
 	typ, _ := obj["type"].(string)
 	if typ == "" {
@@ -273,7 +272,7 @@ func parseResponsesSSE(event, data string, acc *Message) sseParseResult {
 	case "response.output_item.added", "response.output_item.done":
 		item, ok := obj["item"].(map[string]any)
 		if !ok {
-			return sseParseResult{err: errors.New("Responses output item event has no item")}
+			return sseParseResult{err: errResponsesOutputItemNoItem}
 		}
 		return applyResponsesOutputItem(acc, item, responseOutputIndex(obj))
 	case "response.content_part.added", "response.content_part.done":
@@ -283,7 +282,7 @@ func parseResponsesSSE(event, data string, acc *Message) sseParseResult {
 		}
 		part, ok := obj["part"].(map[string]any)
 		if !ok {
-			return sseParseResult{err: errors.New("Responses content part event has no part")}
+			return sseParseResult{err: errResponsesContentPartNoPart}
 		}
 		item := map[string]any{"type": "message", "content": []any{part}}
 		if itemID != "" {
@@ -367,7 +366,7 @@ func parseResponsesSSE(event, data string, acc *Message) sseParseResult {
 			return sseParseResult{err: err}
 		}
 		if c.ID == "" {
-			return sseParseResult{err: errors.New("Responses function call has empty call_id")}
+			return sseParseResult{err: errResponsesFunctionCallEmptyCallID}
 		}
 		acc.StopReason = "toolUse"
 		return sseParseResult{}
@@ -396,7 +395,7 @@ func parseResponsesSSE(event, data string, acc *Message) sseParseResult {
 			c.Input = input
 		}
 		if c.ID == "" {
-			return sseParseResult{err: errors.New("Responses custom tool call has empty call_id")}
+			return sseParseResult{err: errResponsesCustomToolCallEmptyCallID}
 		}
 		acc.StopReason = "toolUse"
 		return sseParseResult{}
@@ -481,7 +480,7 @@ func setResponseID(acc *Message, obj map[string]any) {
 func requiredResponseItemID(obj map[string]any) (string, error) {
 	itemID := responseItemID(obj)
 	if strings.TrimSpace(itemID) == "" {
-		return "", errors.New("Responses stream event has empty item_id")
+		return "", errResponsesStreamEmptyItemID
 	}
 	return itemID, nil
 }
@@ -527,12 +526,12 @@ func responseTextReference(acc *Message, obj map[string]any) (string, int, error
 			continue
 		}
 		if candidate != nil {
-			return "", -1, errors.New("Responses text event has no item_id or output_index")
+			return "", -1, errResponsesTextNoItemOrIndex
 		}
 		candidate = &acc.Content[i]
 	}
 	if candidate == nil {
-		return "", -1, errors.New("Responses text event has no item_id or output_index")
+		return "", -1, errResponsesTextNoItemOrIndex
 	}
 	return candidate.ItemID, candidate.StreamIndex, nil
 }
@@ -575,11 +574,11 @@ func applyResponsesOutputItem(acc *Message, item map[string]any, outputIndex int
 		return sseParseResult{delta: AssistantDelta{Type: "text_delta", Delta: textDelta, Partial: *acc}, emit: textDelta != ""}
 	case "function_call", "custom_tool_call":
 		if itemID == "" {
-			return sseParseResult{err: fmt.Errorf("Responses %s has empty id", itemType)}
+			return sseParseResult{err: fmt.Errorf("responses %s: %w", itemType, errResponsesItemEmptyID)}
 		}
 		callID, _ := item["call_id"].(string)
 		if strings.TrimSpace(callID) == "" {
-			return sseParseResult{err: fmt.Errorf("Responses %s has empty call_id", itemType)}
+			return sseParseResult{err: fmt.Errorf("responses %s: %w", itemType, errResponsesItemEmptyCallID)}
 		}
 		name, _ := item["name"].(string)
 		c := findOrAddToolCall(acc, callID, itemID, name, -1)
@@ -596,7 +595,7 @@ func applyResponsesOutputItem(acc *Message, item map[string]any, outputIndex int
 		return sseParseResult{}
 	case "reasoning":
 		if itemID == "" {
-			return sseParseResult{err: errors.New("Responses reasoning output item has empty id")}
+			return sseParseResult{err: errResponsesReasoningEmptyID}
 		}
 		block := responseThinkingBlock(acc, itemID)
 		for _, raw := range responseContent(item["summary"]) {
@@ -728,8 +727,7 @@ func mergeResponseText(acc *Message, itemID string, outputIndex int, text string
 		block.Text = text
 		return text
 	}
-	if strings.HasPrefix(text, block.Text) {
-		delta := strings.TrimPrefix(text, block.Text)
+	if delta, ok := strings.CutPrefix(text, block.Text); ok {
 		block.Text = text
 		return delta
 	}
@@ -771,7 +769,7 @@ func mergeResponseThinking(block *Content, text string) {
 
 func setResponseFunctionArguments(c *Content, raw string) error {
 	if c == nil {
-		return errors.New("Responses function call is missing")
+		return errResponsesFunctionCallMissing
 	}
 	if raw != "" {
 		var args map[string]any
@@ -779,7 +777,7 @@ func setResponseFunctionArguments(c *Content, raw string) error {
 			return fmt.Errorf("invalid Responses function call arguments: %w", err)
 		}
 		if args == nil {
-			return errors.New("Responses function call arguments must be a JSON object")
+			return errResponsesFunctionCallArgsMustObject
 		}
 		c.Arguments = args
 	}

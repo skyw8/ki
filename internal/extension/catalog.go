@@ -43,6 +43,7 @@ const (
 // Mode is a subscription mode.
 type Mode string
 
+// Subscription delivery modes.
 const (
 	ModeSync  Mode = "sync"
 	ModeAsync Mode = "async"

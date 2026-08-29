@@ -106,8 +106,11 @@ func waitPrompts(t *testing.T, g *occupyGateStreamer, n int) []string {
 
 func postJSON(t *testing.T, hs *httptest.Server, method, path string, body any) (int, map[string]any) {
 	t.Helper()
-	raw, _ := json.Marshal(body)
-	req, err := http.NewRequest(method, hs.URL+path, bytes.NewReader(raw))
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), method, hs.URL+path, bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +300,7 @@ func TestExtEnqueueBusyQueuesAndUserDrainsFirst(t *testing.T) {
 	if prompts[0] != "hello" || prompts[1] != "hello|user-next" || !strings.Contains(prompts[2], "ext-next") {
 		t.Fatalf("occupy order %v", prompts)
 	}
-	if strings.Index(prompts[1], "user-next") < 0 || strings.Index(prompts[1], "ext-next") >= 0 {
+	if !strings.Contains(prompts[1], "user-next") || strings.Contains(prompts[1], "ext-next") {
 		t.Fatalf("user occupy must precede ext: %v", prompts)
 	}
 }
@@ -422,7 +425,10 @@ func TestSidecarSetStatusAppearsOnSession(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		_, got := postJSON(t, hs, http.MethodGet, "/v1/sessions/"+id, nil)
-		raw, _ := json.Marshal(got["extensionUi"])
+		raw, err := json.Marshal(got["extensionUi"])
+		if err != nil {
+			t.Fatal(err)
+		}
 		if bytes.Contains(raw, []byte("Goal · active")) {
 			return
 		}
@@ -440,7 +446,7 @@ func buildExtSidecar(t *testing.T) string {
 	}
 	src := filepath.Join(filepath.Dir(file), "..", "..", "e2e", "testdata", "extensions", "sidecar")
 	bin := filepath.Join(t.TempDir(), "sidecar")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local sidecar test fixture
 	cmd.Dir = src
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
@@ -462,7 +468,10 @@ func TestExtensionUIProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, got := postJSON(t, hs, http.MethodGet, "/v1/sessions/"+id, nil)
-	raw, _ := json.Marshal(got["extensionUi"])
+	raw, err := json.Marshal(got["extensionUi"])
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Contains(raw, []byte("Goal · active")) || !bytes.Contains(raw, []byte("do the thing")) {
 		t.Fatalf("extensionUi %s", raw)
 	}
@@ -501,10 +510,12 @@ func TestGlobalExtensionUIProjection(t *testing.T) {
 		if !ok {
 			t.Fatalf("global ui missing: %+v", item)
 		}
-		if ui["status"].(map[string]any)["text"] != "Goal" {
+		status, ok := ui["status"].(map[string]any)
+		if !ok || status["text"] != "Goal" {
 			t.Fatalf("global status %+v", ui["status"])
 		}
-		if ui["panel"].(map[string]any)["summary"] != "choose a session" {
+		panel, ok := ui["panel"].(map[string]any)
+		if !ok || panel["summary"] != "choose a session" {
 			t.Fatalf("global panel %+v", ui["panel"])
 		}
 		return
@@ -558,7 +569,10 @@ func TestExtEnqueuePersistsOrigin(t *testing.T) {
 	}
 	waitAgentEnd(t, hs, id)
 	_, got := postJSON(t, hs, http.MethodGet, "/v1/sessions/"+id, nil)
-	raw, _ := json.Marshal(got["messages"])
+	raw, err := json.Marshal(got["messages"])
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Contains(raw, []byte("extension:goal")) {
 		t.Fatalf("origin missing: %s", raw)
 	}
@@ -591,7 +605,10 @@ func TestUIConfirmRoundTrip(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		_, got := postJSON(t, hs, http.MethodGet, "/v1/sessions/"+id, nil)
-		raw, _ := json.Marshal(got["extensionUi"])
+		raw, err := json.Marshal(got["extensionUi"])
+		if err != nil {
+			t.Fatal(err)
+		}
 		if bytes.Contains(raw, []byte("Continue?")) {
 			break
 		}
@@ -675,7 +692,10 @@ func TestGetSessionWarmsRuntimeCommands(t *testing.T) {
 	}
 	id, _ := created["id"].(string)
 	got := waitRuntimeReady(t, hs, id)
-	raw, _ := json.Marshal(got["commands"])
+	raw, err := json.Marshal(got["commands"])
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Contains(raw, []byte(`"ship"`)) {
 		t.Fatalf("commands after GET warmup: %s", raw)
 	}
@@ -695,7 +715,11 @@ func TestGetHistoricalSessionWarmsWithoutPrompt(t *testing.T) {
 	var raw []byte
 	for time.Now().Before(deadline) {
 		_, got := postJSON(t, hs, http.MethodGet, "/v1/sessions/"+id, nil)
-		raw, _ = json.Marshal(got["extensionUi"])
+		var err error
+		raw, err = json.Marshal(got["extensionUi"])
+		if err != nil {
+			t.Fatal(err)
+		}
 		if bytes.Contains(raw, []byte("Goal · active")) {
 			return
 		}

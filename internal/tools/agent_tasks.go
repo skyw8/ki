@@ -155,11 +155,8 @@ func NewAgentStore() *AgentStore { return &AgentStore{tasks: map[string]*agentTa
 // detach from the parent's prompt context; foreground children inherit it and
 // are waited on by Agent.Execute.
 func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile string, run AgentRun) (AgentLaunch, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if run == nil {
-		return AgentLaunch{}, fmt.Errorf("agent runner is nil")
+		return AgentLaunch{}, errAgentRunnerNil
 	}
 	id := fmt.Sprintf("a-%d-%d", time.Now().UnixNano(), atomic.AddUint64(&s.seq, 1))
 	task := &agentTask{
@@ -184,11 +181,12 @@ func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile str
 	s.tasks[id] = task
 	s.mu.Unlock()
 
+	// Why: background children outlive the parent prompt; keep values but detach cancel.
 	parent := ctx
 	if req.RunInBackground {
-		parent = context.Background()
+		parent = context.WithoutCancel(ctx)
 	}
-	if err := s.startRun(task, parent, req.Prompt, req.RunInBackground); err != nil {
+	if err := s.startRun(parent, task, req.Prompt, req.RunInBackground); err != nil {
 		s.mu.Lock()
 		delete(s.tasks, id)
 		s.mu.Unlock()
@@ -197,12 +195,10 @@ func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile str
 	return AgentLaunch{TaskID: id, SessionID: req.SessionID, Description: req.Description, Prompt: req.Prompt, OutputFile: outputFile}, nil
 }
 
-func (s *AgentStore) startRun(task *agentTask, parent context.Context, prompt string, background bool) error {
-	if parent == nil {
-		parent = context.Background()
-	}
+func (s *AgentStore) startRun(ctx context.Context, task *agentTask, prompt string, background bool) error {
 	if background {
-		parent = context.Background()
+		// Why: process-owned follow-ups must not cancel with a prior request.
+		ctx = context.WithoutCancel(ctx)
 	}
 	s.mu.RLock()
 	if s.closed {
@@ -210,7 +206,7 @@ func (s *AgentStore) startRun(task *agentTask, parent context.Context, prompt st
 		return errTaskStoreClosed
 	}
 
-	runCtx, cancel := context.WithCancel(parent)
+	runCtx, cancel := context.WithCancel(ctx)
 	task.mu.Lock()
 	if task.removed {
 		task.mu.Unlock()
@@ -248,11 +244,11 @@ func (s *AgentStore) startRun(task *agentTask, parent context.Context, prompt st
 	task.mu.Unlock()
 	s.mu.RUnlock()
 
-	go s.executeRun(task, generation, runCtx, prompt, background, run, runDone)
+	go s.executeRun(runCtx, task, generation, prompt, background, run, runDone)
 	return nil
 }
 
-func (s *AgentStore) executeRun(task *agentTask, generation uint64, ctx context.Context, prompt string, background bool, run AgentRun, runDone chan struct{}) {
+func (s *AgentStore) executeRun(ctx context.Context, task *agentTask, generation uint64, prompt string, background bool, run AgentRun, runDone chan struct{}) {
 	defer close(runDone)
 	completion, err := run(ctx, task.snap.TaskID, prompt, background)
 
@@ -293,7 +289,7 @@ func (s *AgentStore) executeRun(task *agentTask, generation uint64, ctx context.
 	if pending != "" {
 		// A message that arrived at the run boundary is a new detached run on
 		// the same logical agent, not a new fork or agent ID.
-		if err := s.startRun(task, context.Background(), pending, true); err != nil {
+		if err := s.startRun(ctx, task, pending, true); err != nil {
 			task.mu.Lock()
 			if !task.removed {
 				task.pending = append([]string{pending}, task.pending...)
@@ -349,7 +345,7 @@ func (t *agentTask) persistLocked() {
 // was live in the previous process is explicitly marked interrupted because
 // its provider goroutine and cancel function cannot be reconstructed.
 func (s *AgentStore) LoadMetadata(path string, run AgentRun) (bool, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is the session agent.json selected by the server index
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
@@ -361,10 +357,10 @@ func (s *AgentStore) LoadMetadata(path string, run AgentRun) (bool, error) {
 		return false, fmt.Errorf("decode agent metadata %s: %w", path, err)
 	}
 	if meta.TaskID == "" || meta.SessionID == "" {
-		return false, fmt.Errorf("agent metadata %s is missing task or session ID", path)
+		return false, fmt.Errorf("%w: %s", errAgentMetadataIncomplete, path)
 	}
 	if run == nil {
-		return false, fmt.Errorf("agent metadata %s has no runner", path)
+		return false, fmt.Errorf("%w: %s", errAgentMetadataNoRunner, path)
 	}
 	task := &agentTask{
 		snap: TaskSnapshot{
@@ -391,7 +387,7 @@ func (s *AgentStore) LoadMetadata(path string, run AgentRun) (bool, error) {
 	}
 	if _, exists := s.tasks[meta.TaskID]; exists {
 		s.mu.Unlock()
-		return false, fmt.Errorf("duplicate agent task ID %s", meta.TaskID)
+		return false, fmt.Errorf("%w %s", errDuplicateAgentTaskID, meta.TaskID)
 	}
 	s.tasks[meta.TaskID] = task
 	s.mu.Unlock()
@@ -404,10 +400,10 @@ func (s *AgentStore) LoadMetadata(path string, run AgentRun) (bool, error) {
 // QueueOrResume delivers a message when the live run boundary has already
 // closed. A live run should first be steered through the server's runState;
 // this method is the race-safe fallback and terminal resume path.
-func (s *AgentStore) QueueOrResume(id, message string) (string, error) {
+func (s *AgentStore) QueueOrResume(ctx context.Context, id, message string) (string, error) {
 	message = strings.TrimSpace(message)
 	if message == "" {
-		return "", fmt.Errorf("message is required")
+		return "", errMessageRequired
 	}
 	s.mu.RLock()
 	closed := s.closed
@@ -438,7 +434,8 @@ func (s *AgentStore) QueueOrResume(id, message string) (string, error) {
 	}
 	task.persistLocked()
 	task.mu.Unlock()
-	if err := s.startRun(task, context.Background(), prompt, true); err != nil {
+	// Why: resumed agents are process-owned and must outlive the delivering request.
+	if err := s.startRun(context.WithoutCancel(ctx), task, prompt, true); err != nil {
 		if errors.Is(err, errAgentBusy) {
 			task.mu.Lock()
 			if !task.removed {
@@ -476,7 +473,7 @@ func (s *AgentStore) ResumePending(id string) (bool, error) {
 	task.pending = task.pending[1:]
 	task.persistLocked()
 	task.mu.Unlock()
-	if err := s.startRun(task, context.Background(), prompt, true); err != nil {
+	if err := s.startRun(context.Background(), task, prompt, true); err != nil {
 		task.mu.Lock()
 		if !task.removed {
 			task.pending = append([]string{prompt}, task.pending...)
@@ -595,9 +592,6 @@ func (s *AgentStore) Get(key string) (TaskSnapshot, bool) {
 
 // Wait blocks until a child reaches a terminal state or ctx is cancelled.
 func (s *AgentStore) Wait(ctx context.Context, id string) (TaskSnapshot, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	task, ok := s.task(id)
 	if !ok {
 		return TaskSnapshot{}, os.ErrNotExist

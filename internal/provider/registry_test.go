@@ -175,7 +175,7 @@ func TestRegistryRegistersExtensionProviderAndOpaqueCredential(t *testing.T) {
 	if _, _, _, err := r.Resolve(spec.ID, "codex-mini"); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(home, "credentials.json"))
+	b, err := os.ReadFile(filepath.Join(home, "credentials.json")) //nolint:gosec // path is under the test's temporary home
 	if err != nil {
 		t.Fatal(err)
 	}

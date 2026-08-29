@@ -32,4 +32,5 @@ var (
 	errCredentialType         = errors.New("credential type does not match provider auth")
 	errInvalidThinkingEffort  = errors.New("invalid thinking effort")
 	errNoThinkingEffort       = errors.New("model has no supported thinking effort")
+	errUnsupportedAuthType    = errors.New("unsupported auth type")
 )

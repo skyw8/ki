@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"ki/internal/types"
@@ -628,5 +629,53 @@ func TestTitlePinRemove(t *testing.T) {
 	infos, err := List(root)
 	if err != nil || len(infos) != 0 {
 		t.Fatalf("list after remove: %v %+v", err, infos)
+	}
+}
+
+func TestConfigAtomicUnderConcurrentOpenWrite(t *testing.T) {
+	root := t.TempDir()
+	s, err := Create(root, t.TempDir(), "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := s.Dir
+	_ = s.Close()
+
+	const writers = 8
+	const iters = 100
+	errCh := make(chan error, writers*iters)
+	var wg sync.WaitGroup
+	for w := range writers {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := range iters {
+				sess, err := Open(dir)
+				if err != nil {
+					errCh <- err
+					continue
+				}
+				sess.Config.Title = fmt.Sprintf("w%d-%d", id, i)
+				if err := sess.SaveConfig(); err != nil {
+					errCh <- err
+				}
+				_ = sess.Close()
+				if _, err := Open(dir); err != nil {
+					errCh <- err
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errCh)
+	var n int
+	for err := range errCh {
+		n++
+		if n <= 5 {
+			t.Log(err)
+		}
+	}
+	if n > 0 {
+		t.Fatalf("%d concurrent open/write errors", n)
 	}
 }

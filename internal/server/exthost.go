@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -34,9 +35,10 @@ type uiAnswer struct {
 	Value string
 }
 
+// CreateSession creates a session for an extension host request.
 func (s *Server) CreateSession(req extension.SessionCreateRequest) (extension.SessionCreateResult, error) {
 	if strings.TrimSpace(req.WorkspaceID) == "" && strings.TrimSpace(req.CWD) == "" {
-		return extension.SessionCreateResult{}, fmt.Errorf("workspaceId or cwd required")
+		return extension.SessionCreateResult{}, errWorkspaceOrCWDRequired
 	}
 	rec, err := s.resolveWorkspace(req.WorkspaceID, req.CWD)
 	if err != nil {
@@ -44,7 +46,7 @@ func (s *Server) CreateSession(req extension.SessionCreateRequest) (extension.Se
 	}
 	ref, model, err := s.registry.ResolveSpec(req.Model, req.Provider)
 	if err != nil {
-		return extension.SessionCreateResult{}, err
+		return extension.SessionCreateResult{}, fmt.Errorf("resolve model: %w", err)
 	}
 	effort, err := resolveThinking(model, req.ThinkingEffort)
 	if err != nil {
@@ -55,11 +57,11 @@ func (s *Server) CreateSession(req extension.SessionCreateRequest) (extension.Se
 		Metadata:       req.Metadata,
 	})
 	if err != nil {
-		return extension.SessionCreateResult{}, err
+		return extension.SessionCreateResult{}, fmt.Errorf("create session: %w", err)
 	}
 	defer func() { _ = sess.Close() }()
 	if err := s.ws.AttachSession(rec.ID, sess.ID()); err != nil {
-		return extension.SessionCreateResult{}, err
+		return extension.SessionCreateResult{}, fmt.Errorf("attach session: %w", err)
 	}
 	s.sidx.Add(sess.ID(), sess.Dir)
 	s.rememberModel(ref)
@@ -67,6 +69,7 @@ func (s *Server) CreateSession(req extension.SessionCreateRequest) (extension.Se
 	return extension.SessionCreateResult{SessionID: sess.ID(), CWD: sess.Header.CWD, WorkspaceID: rec.ID, Metadata: sess.Config.Metadata}, nil
 }
 
+// NewSession forks a new session from an existing one's workspace and model.
 func (s *Server) NewSession(sessionID string, cwd string) (extension.SessionCreateResult, error) {
 	if s.running(sessionID) {
 		return extension.SessionCreateResult{}, errSessionBusy
@@ -95,28 +98,31 @@ func (s *Server) NewSession(sessionID string, cwd string) (extension.SessionCrea
 	})
 }
 
+// ReloadSession invalidates one session's resource and extension views.
 func (s *Server) ReloadSession(sessionID string) error {
 	s.requestReload(sessionID)
 	return nil
 }
 
+// GetSession returns a snapshot for one session.
 func (s *Server) GetSession(sessionID string) (extension.SessionSnapshot, error) {
 	dir, ok := s.sidx.Lookup(sessionID)
 	if !ok {
-		return extension.SessionSnapshot{}, fmt.Errorf("session not found")
+		return extension.SessionSnapshot{}, errSessionNotFound
 	}
 	sess, err := session.Open(dir)
 	if err != nil {
-		return extension.SessionSnapshot{}, err
+		return extension.SessionSnapshot{}, fmt.Errorf("open session: %w", err)
 	}
 	defer func() { _ = sess.Close() }()
 	return s.sessionSnapshot(sess), nil
 }
 
+// ListSessions returns sessions whose metadata matches filter.
 func (s *Server) ListSessions(filter map[string]any) ([]extension.SessionSnapshot, error) {
 	infos, err := session.List(s.cfg.Sessions.Root)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 	out := make([]extension.SessionSnapshot, 0, len(infos))
 	for _, info := range infos {
@@ -156,13 +162,14 @@ func matchesMetadata(metadata, filter map[string]any) bool {
 	return true
 }
 
+// Enqueue starts or queues an extension-originated prompt on a session.
 func (s *Server) Enqueue(sessionID, extName string, req extension.EnqueueRequest) (extension.EnqueueResult, error) {
 	gate := s.inputGate(sessionID)
 	gate.Lock()
 	defer gate.Unlock()
 	dir, ok := s.sidx.Lookup(sessionID)
 	if !ok {
-		return extension.EnqueueResult{}, fmt.Errorf("session not found")
+		return extension.EnqueueResult{}, errSessionNotFound
 	}
 	if req.IdempotencyKey != "" {
 		s.mu.Lock()
@@ -173,7 +180,7 @@ func (s *Server) Enqueue(sessionID, extName string, req extension.EnqueueRequest
 		s.mu.Unlock()
 		sess, err := session.Open(dir)
 		if err != nil {
-			return extension.EnqueueResult{}, err
+			return extension.EnqueueResult{}, fmt.Errorf("open session: %w", err)
 		}
 		for _, entry := range sess.Entries() {
 			if entry.Type == "message" && entry.IdempotencyKey == req.IdempotencyKey {
@@ -184,7 +191,7 @@ func (s *Server) Enqueue(sessionID, extName string, req extension.EnqueueRequest
 		_ = sess.Close()
 		queued, err := session.ReadExtQueue(dir)
 		if err != nil {
-			return extension.EnqueueResult{}, err
+			return extension.EnqueueResult{}, fmt.Errorf("read ext queue: %w", err)
 		}
 		for _, item := range queued {
 			if item.Extension == extName && item.IdempotencyKey == req.IdempotencyKey {
@@ -194,7 +201,7 @@ func (s *Server) Enqueue(sessionID, extName string, req extension.EnqueueRequest
 	}
 	contextSequence, err := session.PendingContextSequence(dir)
 	if err != nil {
-		return extension.EnqueueResult{}, err
+		return extension.EnqueueResult{}, fmt.Errorf("pending context sequence: %w", err)
 	}
 	req.ContextSequence = contextSequence
 	req.ContextBoundary = true
@@ -224,7 +231,7 @@ func (s *Server) Enqueue(sessionID, extName string, req extension.EnqueueRequest
 func (s *Server) acceptExtPrompt(sessionID, extName string, req extension.EnqueueRequest) (extension.EnqueueResult, error) {
 	dir, ok := s.sidx.Lookup(sessionID)
 	if !ok {
-		return extension.EnqueueResult{}, fmt.Errorf("session not found")
+		return extension.EnqueueResult{}, errSessionNotFound
 	}
 	deliver := req.DeliverAs
 	if deliver == "" {
@@ -245,7 +252,7 @@ func (s *Server) acceptExtPrompt(sessionID, extName string, req extension.Enqueu
 		item.When = "nextTurn"
 		got, err := session.EnqueueExt(dir, item)
 		if err != nil {
-			return extension.EnqueueResult{}, err
+			return extension.EnqueueResult{}, fmt.Errorf("enqueue ext: %w", err)
 		}
 		s.publishQueueChanged(sessionID)
 		return extension.EnqueueResult{Accepted: "queued", QueueID: got.ID}, nil
@@ -258,7 +265,7 @@ func (s *Server) acceptExtPrompt(sessionID, extName string, req extension.Enqueu
 		}
 		got, err := session.EnqueueExt(dir, item)
 		if err != nil {
-			return extension.EnqueueResult{}, err
+			return extension.EnqueueResult{}, fmt.Errorf("enqueue ext: %w", err)
 		}
 		s.publishQueueChanged(sessionID)
 		return extension.EnqueueResult{Accepted: "queued", QueueID: got.ID}, nil
@@ -282,16 +289,17 @@ func (s *Server) acceptExtPrompt(sessionID, extName string, req extension.Enqueu
 	return extension.EnqueueResult{Accepted: "started"}, nil
 }
 
+// Snapshot returns the live session view for extension host APIs.
 func (s *Server) Snapshot(sessionID, _ string) (extension.SessionSnapshot, error) {
 	dir, ok := s.sidx.Lookup(sessionID)
 	if !ok {
-		return extension.SessionSnapshot{}, fmt.Errorf("session not found")
+		return extension.SessionSnapshot{}, errSessionNotFound
 	}
 	q, _ := session.ReadQueue(dir)
 	eq, _ := session.ReadExtQueue(dir)
 	sess, err := session.Open(dir)
 	if err != nil {
-		return extension.SessionSnapshot{}, err
+		return extension.SessionSnapshot{}, fmt.Errorf("open session: %w", err)
 	}
 	defer func() { _ = sess.Close() }()
 	cmds := []string{}
@@ -327,9 +335,7 @@ func cloneExternal(in map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -350,17 +356,23 @@ func (s *Server) inputGate(sessionID string) *sync.Mutex {
 func (s *Server) flushContextMessages(sessionID string, maxSequence uint64) error {
 	dir, ok := s.sidx.Lookup(sessionID)
 	if !ok {
-		return fmt.Errorf("session not found")
+		return errSessionNotFound
 	}
 	sess, err := session.Open(dir)
 	if err != nil {
-		return err
+		return fmt.Errorf("open session: %w", err)
 	}
 	defer func() { _ = sess.Close() }()
-	return session.DrainContextThrough(dir, maxSequence, func(item session.ContextQueuedItem) error {
+	if err := session.DrainContextThrough(dir, maxSequence, func(item session.ContextQueuedItem) error {
 		_, _, err := sess.AppendMessageWithKey(item.Message, item.IdempotencyKey)
-		return err
-	})
+		if err != nil {
+			return fmt.Errorf("append message: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("drain context: %w", err)
+	}
+	return nil
 }
 
 // hasPendingOccupy reports queued work that must run before a new context-only
@@ -369,14 +381,14 @@ func (s *Server) flushContextMessages(sessionID string, maxSequence uint64) erro
 func hasPendingOccupy(dir string) (bool, error) {
 	userQueue, err := session.ReadQueue(dir)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("read queue: %w", err)
 	}
 	if len(userQueue) > 0 {
 		return true, nil
 	}
 	extQueue, err := session.ReadExtQueue(dir)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("read ext queue: %w", err)
 	}
 	for _, item := range extQueue {
 		if item.When != "nextTurn" {
@@ -391,13 +403,13 @@ func hasPendingOccupy(dir string) (bool, error) {
 // and is committed before the next prompt boundary.
 func (s *Server) AppendMessage(sessionID, extName string, req extension.AppendMessageRequest) (extension.AppendMessageResult, error) {
 	if strings.TrimSpace(extName) == "" {
-		return extension.AppendMessageResult{}, fmt.Errorf("extension required")
+		return extension.AppendMessageResult{}, errExtensionRequired
 	}
 	if req.Message.Role == "" {
 		req.Message.Role = "user"
 	}
 	if req.Message.Role != "user" {
-		return extension.AppendMessageResult{}, fmt.Errorf("appendMessage only accepts user messages")
+		return extension.AppendMessageResult{}, errAppendMessageUserOnly
 	}
 	if err := validateUserContent(req.Message.Content); err != nil {
 		return extension.AppendMessageResult{}, err
@@ -414,7 +426,7 @@ func (s *Server) AppendMessage(sessionID, extName string, req extension.AppendMe
 	defer gate.Unlock()
 	dir, ok := s.sidx.Lookup(sessionID)
 	if !ok {
-		return extension.AppendMessageResult{}, fmt.Errorf("session not found")
+		return extension.AppendMessageResult{}, errSessionNotFound
 	}
 	// Check the transcript before adding a queue item. The queue itself also
 	// deduplicates pending items; both checks are needed across a crash where
@@ -422,7 +434,7 @@ func (s *Server) AppendMessage(sessionID, extName string, req extension.AppendMe
 	if req.IdempotencyKey != "" {
 		sess, err := session.Open(dir)
 		if err != nil {
-			return extension.AppendMessageResult{}, err
+			return extension.AppendMessageResult{}, fmt.Errorf("open session: %w", err)
 		}
 		for _, entry := range sess.Entries() {
 			if entry.Type == "message" && entry.IdempotencyKey == req.IdempotencyKey {
@@ -437,7 +449,7 @@ func (s *Server) AppendMessage(sessionID, extName string, req extension.AppendMe
 		IdempotencyKey: req.IdempotencyKey,
 	})
 	if err != nil {
-		return extension.AppendMessageResult{}, err
+		return extension.AppendMessageResult{}, fmt.Errorf("enqueue context: %w", err)
 	}
 	if s.running(sessionID) {
 		return extension.AppendMessageResult{Accepted: "queued", Sequence: item.Sequence}, nil
@@ -455,15 +467,19 @@ func (s *Server) AppendMessage(sessionID, extName string, req extension.AppendMe
 	return extension.AppendMessageResult{Accepted: "appended", Sequence: item.Sequence}, nil
 }
 
+// AppendEntry writes a custom jsonl entry for an extension.
 func (s *Server) AppendEntry(sessionID, extName, customType string, data any) error {
 	dir, ok := s.sidx.Lookup(sessionID)
 	if !ok {
-		return fmt.Errorf("session not found")
+		return errSessionNotFound
 	}
-	_, err := session.AppendCustomEntry(dir, extName, customType, data)
-	return err
+	if _, err := session.AppendCustomEntry(dir, extName, customType, data); err != nil {
+		return fmt.Errorf("append custom entry: %w", err)
+	}
+	return nil
 }
 
+// Abort cancels the live run and any pending UI prompts for the session.
 func (s *Server) Abort(sessionID string) error {
 	st := s.runAt(sessionID)
 	if st != nil {
@@ -479,6 +495,7 @@ func (s *Server) publishNotice(sessionID, extName, tone, text string) {
 	}, false)
 }
 
+// Compact runs session compaction under occupy.
 func (s *Server) Compact(sessionID string) error {
 	sess, err := s.open(sessionID)
 	if err != nil {
@@ -489,15 +506,16 @@ func (s *Server) Compact(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	_, err = compact.Run(ctx, sess, s.summarizer(sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+	_, err = compact.Run(ctx, sess, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 	s.release(sessionID, st)
 	if err != nil {
-		return err
+		return fmt.Errorf("compact: %w", err)
 	}
 	s.reloadSession(sessionID)
 	return nil
 }
 
+// PatchSession updates the session model and/or thinking effort.
 func (s *Server) PatchSession(sessionID, model, thinking string) error {
 	sess, err := s.open(sessionID)
 	if err != nil {
@@ -513,7 +531,7 @@ func (s *Server) PatchSession(sessionID, model, thinking string) error {
 	}
 	ref, selected, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve model: %w", err)
 	}
 	effort := sess.Config.ThinkingEffort
 	if thinking != "" {
@@ -524,12 +542,13 @@ func (s *Server) PatchSession(sessionID, model, thinking string) error {
 		return err
 	}
 	if err := sess.SetModelAndThinking(ref.Provider, ref.Model, effort); err != nil {
-		return err
+		return fmt.Errorf("set model: %w", err)
 	}
 	s.rememberModel(ref)
 	return nil
 }
 
+// SetActiveTools restricts which tools the next occupy may use.
 func (s *Server) SetActiveTools(sessionID, extName string, names []string) error {
 	known := map[string]bool{
 		"Read": true, "Write": true, "Edit": true, "apply_patch": true,
@@ -545,10 +564,8 @@ func (s *Server) SetActiveTools(sessionID, extName string, names []string) error
 		unknown = append(unknown, n)
 	}
 	s.mu.Lock()
-	if len(kept) == 0 && len(names) > 0 {
-		// Do not silently clear the whole set when every name is unknown.
-		kept = append([]string{}, s.activeTools[sessionID]...)
-	} else {
+	// Why: do not silently clear the whole set when every name is unknown.
+	if len(kept) > 0 || len(names) == 0 {
 		s.activeTools[sessionID] = kept
 	}
 	s.mu.Unlock()
@@ -558,13 +575,18 @@ func (s *Server) SetActiveTools(sessionID, extName string, names []string) error
 	return nil
 }
 
+// RegisterTools registers extension-contributed tools on a session.
 func (s *Server) RegisterTools(sessionID, extName string, tools []extension.ToolSpec) error {
 	if s.ext == nil {
-		return fmt.Errorf("no extensions")
+		return errNoExtensions
 	}
-	return s.ext.RegisterTools(sessionID, extName, tools)
+	if err := s.ext.RegisterTools(sessionID, extName, tools); err != nil {
+		return fmt.Errorf("register tools: %w", err)
+	}
+	return nil
 }
 
+// UISetStatus sets or clears a session-scoped top-bar status chip.
 func (s *Server) UISetStatus(sessionID, extName, key string, text extension.UIText, tone string) error {
 	s.mu.Lock()
 	if s.extUI[sessionID] == nil {
@@ -585,6 +607,7 @@ func (s *Server) UISetStatus(sessionID, extName, key string, text extension.UITe
 	return nil
 }
 
+// UISetPanel stores a session-scoped extension panel.
 func (s *Server) UISetPanel(sessionID, extName string, panel extension.UIPanel) error {
 	s.mu.Lock()
 	if s.extUI[sessionID] == nil {
@@ -602,6 +625,7 @@ func (s *Server) UISetPanel(sessionID, extName string, panel extension.UIPanel) 
 	return nil
 }
 
+// UIClearPanel removes a session-scoped extension panel.
 func (s *Server) UIClearPanel(sessionID, extName string) error {
 	s.mu.Lock()
 	if s.extUI[sessionID] != nil && s.extUI[sessionID][extName] != nil {
@@ -653,6 +677,7 @@ func (s *Server) GlobalUISetPanel(extName string, panel extension.UIPanel) error
 	return nil
 }
 
+// GlobalUIClearPanel removes the process-level panel for an extension.
 func (s *Server) GlobalUIClearPanel(extName string) error {
 	s.mu.Lock()
 	if st := s.globalExtUI[extName]; st != nil {
@@ -662,6 +687,7 @@ func (s *Server) GlobalUIClearPanel(extName string) error {
 	return nil
 }
 
+// UIConfirm prompts the WebUI for a yes/no answer (120s timeout).
 func (s *Server) UIConfirm(sessionID, extName string, title, message extension.UIText) (bool, error) {
 	ch := make(chan uiAnswer, 1)
 	key := sessionID + "/confirm/" + extName
@@ -677,6 +703,7 @@ func (s *Server) UIConfirm(sessionID, extName string, title, message extension.U
 	}
 }
 
+// UISelect prompts the WebUI to choose one option (120s timeout).
 func (s *Server) UISelect(sessionID, extName string, title extension.UIText, options []string) (string, error) {
 	ch := make(chan uiAnswer, 1)
 	key := sessionID + "/select/" + extName
@@ -746,24 +773,33 @@ func (s *Server) cancelUIPrompts(sessionID string) {
 	s.publishExtUI(sessionID)
 }
 
+// BusEmit sends a bus message and returns the transformed payload.
 func (s *Server) BusEmit(sessionID, from, channel string, data any) (any, error) {
 	if s.ext == nil {
 		return data, nil
 	}
-	return s.ext.BusEmit(sessionID, from, channel, data)
+	out, err := s.ext.BusEmit(sessionID, from, channel, data)
+	if err != nil {
+		return out, fmt.Errorf("bus emit: %w", err)
+	}
+	return out, nil
 }
 
+// BusBroadcast fans out a bus message to subscribers without a reply.
 func (s *Server) BusBroadcast(sessionID, from, channel string, data any) error {
 	if s.ext == nil {
 		return nil
 	}
-	return s.ext.BusBroadcast(sessionID, from, channel, data)
+	if err := s.ext.BusBroadcast(sessionID, from, channel, data); err != nil {
+		return fmt.Errorf("bus broadcast: %w", err)
+	}
+	return nil
 }
 
-func (s *Server) extensionUIList(sessionID string) []extension.ExtensionUI {
+func (s *Server) extensionUIList(sessionID string) []extension.UI {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []extension.ExtensionUI
+	var out []extension.UI
 	for name, st := range s.extUI[sessionID] {
 		if st == nil {
 			continue
@@ -773,7 +809,7 @@ func (s *Server) extensionUIList(sessionID string) []extension.ExtensionUI {
 	return out
 }
 
-func (s *Server) globalExtensionUI(name string) *extension.ExtensionUI {
+func (s *Server) globalExtensionUI(name string) *extension.UI {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := s.globalExtUI[name]
@@ -787,8 +823,8 @@ func (s *Server) globalExtensionUI(name string) *extension.ExtensionUI {
 	return &ui
 }
 
-func cloneExtensionUI(name string, st *extUIState) extension.ExtensionUI {
-	ui := extension.ExtensionUI{Extension: name}
+func cloneExtensionUI(name string, st *extUIState) extension.UI {
+	ui := extension.UI{Extension: name}
 	if st.Status != nil {
 		status := *st.Status
 		ui.Status = &status

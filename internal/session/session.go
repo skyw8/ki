@@ -19,6 +19,7 @@ import (
 
 const version = 1
 
+// ForkMode values for ForkAt (flat copies the leaf chain; tree keeps branching).
 const (
 	ForkModeFlat = "flat"
 	ForkModeTree = "tree"
@@ -28,9 +29,23 @@ var (
 	errCWDRequired     = errors.New("cwd required")
 	errSessionHeader   = errors.New("session header missing")
 	errSessionNotFound = errors.New("session not found")
-	errActiveLeaf      = errors.New("active leaf")
 	errEntryNotFound   = errors.New("entry")
+	errInvalidForkMode = errors.New("invalid forkMode")
+	// Why: distinct Session handles on one directory do not share Session.mu;
+	// serializing config/jsonl IO prevents Open from decoding a torn append.
+	fileGates sync.Map // cleaned dir → *sync.RWMutex
 )
+
+func fileGate(dir string) *sync.RWMutex {
+	key := filepath.Clean(dir)
+	gate, _ := fileGates.LoadOrStore(key, &sync.RWMutex{})
+	mu, ok := gate.(*sync.RWMutex)
+	if !ok {
+		mu = &sync.RWMutex{}
+		fileGates.Store(key, mu)
+	}
+	return mu
+}
 
 // Header is the first jsonl line.
 type Header struct {
@@ -50,7 +65,7 @@ func NormalizeForkMode(mode string) (string, error) {
 		return ForkModeFlat, nil
 	}
 	if mode != ForkModeFlat && mode != ForkModeTree {
-		return "", fmt.Errorf("forkMode must be %q or %q", ForkModeFlat, ForkModeTree)
+		return "", fmt.Errorf("%w: must be %q or %q", errInvalidForkMode, ForkModeFlat, ForkModeTree)
 	}
 	return mode, nil
 }
@@ -248,6 +263,9 @@ func cloneMetadata(in map[string]any) map[string]any {
 
 // Open loads an existing session directory.
 func Open(dir string) (*Session, error) {
+	gate := fileGate(dir)
+	gate.RLock()
+	defer gate.RUnlock()
 	s := &Session{Dir: dir, byID: map[string]Entry{}}
 	//nolint:gosec // dir is an internally generated session directory.
 	cfgb, err := os.ReadFile(filepath.Join(dir, "config.json"))
@@ -255,7 +273,7 @@ func Open(dir string) (*Session, error) {
 		return nil, err
 	}
 	if err := json.Unmarshal(cfgb, &s.Config); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode config.json: %w", err)
 	}
 	//nolint:gosec // dir is an internally generated session directory.
 	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_RDWR|os.O_APPEND, 0o600)
@@ -273,14 +291,16 @@ func Open(dir string) (*Session, error) {
 		}
 		if first {
 			if err := json.Unmarshal([]byte(line), &s.Header); err != nil {
-				return nil, err
+				_ = f.Close()
+				return nil, fmt.Errorf("decode events.jsonl header: %w", err)
 			}
 			first = false
 			continue
 		}
 		var e Entry
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			return nil, err
+			_ = f.Close()
+			return nil, fmt.Errorf("decode events.jsonl entry: %w", err)
 		}
 		s.entries = append(s.entries, e)
 		s.byID[e.ID] = e
@@ -289,9 +309,11 @@ func Open(dir string) (*Session, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
+		_ = f.Close()
 		return nil, err
 	}
 	if s.Header.ID == "" {
+		_ = f.Close()
 		return nil, fmt.Errorf("%w: %s", errSessionHeader, dir)
 	}
 	if s.Config.ActiveLeafID != "" {
@@ -804,6 +826,9 @@ func (s *Session) writeLine(v any) error {
 	if err != nil {
 		return err
 	}
+	gate := fileGate(s.Dir)
+	gate.Lock()
+	defer gate.Unlock()
 	if _, err := s.jsonl.Write(append(b, '\n')); err != nil {
 		return err
 	}
@@ -815,7 +840,10 @@ func (s *Session) writeConfig() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.Dir, "config.json"), append(b, '\n'), 0o600)
+	gate := fileGate(s.Dir)
+	gate.Lock()
+	defer gate.Unlock()
+	return writeFileAtomic(filepath.Join(s.Dir, "config.json"), append(b, '\n'))
 }
 
 // SaveConfig writes config.json.

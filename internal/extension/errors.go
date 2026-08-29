@@ -1,0 +1,48 @@
+package extension
+
+import "errors"
+
+var (
+	errConfigMustBeObject = errors.New("config must be a JSON object")
+	errConfigRequired     = errors.New("required")
+	errConfigObject       = errors.New("must be an object")
+	errConfigNotAllowed   = errors.New("not allowed")
+	errConfigArray        = errors.New("must be an array")
+	errConfigTooFewItems  = errors.New("has too few items")
+	errConfigTooManyItems = errors.New("has too many items")
+	errConfigString       = errors.New("must be a string")
+	errConfigTooShort     = errors.New("is too short")
+	errConfigTooLong      = errors.New("is too long")
+	errConfigBoolean      = errors.New("must be a boolean")
+	errConfigNumber       = errors.New("must be a number")
+	errConfigInteger      = errors.New("must be an integer")
+	errConfigInvalidValue = errors.New("has an invalid value")
+
+	errUnknownCapability            = errors.New("unknown capability")
+	errUnknownRuntimeKind           = errors.New("unknown runtime.kind")
+	errRuntimeCommandRequired       = errors.New("runtime.command required")
+	errRuntimeRPCRequiresCapability = errors.New("runtime.kind=rpc requires tool, lifecycle, bus, or command")
+	errCodeCapabilitiesRequireRPC   = errors.New("code capabilities require runtime.kind=rpc")
+	errProviderCapabilityNeedsSpecs = errors.New("provider capability requires providers")
+	errProvidersNeedCapability      = errors.New("providers require provider capability")
+	errInvalidI18nDefaultLocale     = errors.New("invalid i18n.defaultLocale")
+	errInvalidI18nLocale            = errors.New("invalid i18n locale")
+	errEmptyPath                    = errors.New("empty path")
+	errPathMustBeRelative           = errors.New("path must be relative")
+	errPathEscapesPackage           = errors.New("path escapes package")
+
+	errSessionIDRequiredForGlobal = errors.New("sessionId required for global extension")
+	errRuntimeNotRegistered       = errors.New("extension runtime is not registered")
+	errRuntimeUnavailable         = errors.New("extension runtime is unavailable")
+
+	errProviderDeclaredTwice        = errors.New("provider declared by multiple extensions")
+	errProviderAuthNotAccepted      = errors.New("provider auth was not accepted")
+	errProviderAuthInputNotAccepted = errors.New("provider auth input was not accepted")
+	errProviderCredentialRemoved    = errors.New("provider credential was removed")
+	errProviderNonOAuthCredential   = errors.New("provider returned a non-OAuth credential")
+	errProviderNotRegisteredByExt   = errors.New("provider is not registered by an extension")
+	errProviderExtDescriptorMissing = errors.New("provider extension descriptor is unavailable")
+	errProviderRuntimeReloaded      = errors.New("provider runtime was reloaded")
+	errProviderStreamNotAccepted    = errors.New("provider stream was not accepted")
+	errProviderStreamFailed         = errors.New("provider stream failed")
+)

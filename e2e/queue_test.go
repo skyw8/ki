@@ -70,7 +70,10 @@ func TestBusyQueuePromoteHTTP(t *testing.T) {
 	for {
 		_, detail = serveJSON(t, sf, http.MethodGet, "/v1/sessions/"+id, nil)
 		queued, _ = detail["queued"].([]any)
-		raw, _ := json.Marshal(detail["messages"])
+		raw, err := json.Marshal(detail["messages"])
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(queued) == 0 && strings.Contains(string(raw), "queued-keep") {
 			return
 		}

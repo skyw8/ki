@@ -237,10 +237,10 @@ func TestRunEventOrderAndPersistPoints(t *testing.T) {
 	}
 }
 
-type testNonRetryableStreamFailure struct{}
+type testNonRetryableStreamError struct{}
 
-func (testNonRetryableStreamFailure) Error() string      { return "malformed provider stream" }
-func (testNonRetryableStreamFailure) NonRetryable() bool { return true }
+func (testNonRetryableStreamError) Error() string      { return "malformed provider stream" }
+func (testNonRetryableStreamError) NonRetryable() bool { return true }
 
 type malformedStream struct{ calls int }
 
@@ -248,7 +248,7 @@ func (s *malformedStream) Stream(_ context.Context, _ Request, emit func(Assista
 	s.calls++
 	m := types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "pong"}}}
 	_ = emit(AssistantDelta{Type: "text_delta", Delta: "pong", Partial: m})
-	return m, testNonRetryableStreamFailure{}
+	return m, testNonRetryableStreamError{}
 }
 
 func TestRunReportsNonRetryableStreamFailureWithoutRetry(t *testing.T) {
@@ -336,9 +336,13 @@ func TestRunToolTimingIsReportedOnExecutionAndResultEvents(t *testing.T) {
 			end = event
 		case MessageEnd:
 			if event.Message != nil && event.Message.Role == "toolResult" {
-				copy := *event.Message
-				result = &copy
+				msg := *event.Message
+				result = &msg
 			}
+		case AgentStart, AgentEnd, TurnStart, TurnEnd, RequestHeader, MessageStart, MessageUpdate,
+			ToolExecutionUpdate, PatchApplyUpdated, CompactionStart, CompactionEnd, ContextUsage,
+			QueueChanged, SteerAccepted, RunAborted, ExtensionError, ExtensionNotice,
+			ExtensionUIPrompt, AgentSettled, RuntimeReady:
 		}
 		return nil
 	})

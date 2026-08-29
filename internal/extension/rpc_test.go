@@ -21,7 +21,7 @@ func buildTestSidecar(t *testing.T) string {
 		t.Fatal("caller")
 	}
 	src := filepath.Join(filepath.Dir(file), "..", "..", "e2e", "testdata", "extensions", "sidecar")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local sidecar test fixture
 	cmd.Dir = src
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
@@ -208,7 +208,7 @@ func TestRuntimeInstallRunsBeforeStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.close()
-	body, err := os.ReadFile(marker)
+	body, err := os.ReadFile(marker) //nolint:gosec // marker is created under t.TempDir by the install fixture
 	if err != nil {
 		t.Fatal(err)
 	}

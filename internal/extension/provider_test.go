@@ -25,7 +25,7 @@ func buildProviderSidecar(t *testing.T) string {
 		t.Fatal("caller")
 	}
 	src := filepath.Join(filepath.Dir(file), "..", "..", "e2e", "testdata", "extensions", "provider")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local provider sidecar test fixture
 	cmd.Dir = src
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
@@ -112,15 +112,15 @@ func TestProviderManagerStreamsConcurrentAndCancels(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 2 {
+		wg.Go(func() {
 			text, _, err := run(context.Background(), models["fast"])
-			if err != nil || text != "hello fast" {
-				errs <- fmt.Errorf("concurrent stream text=%q err=%v", text, err)
+			if err != nil {
+				errs <- fmt.Errorf("concurrent stream text=%q: %w", text, err)
+			} else if text != "hello fast" {
+				errs <- fmt.Errorf("concurrent stream text=%q: %w", text, errProviderStreamFailed)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)

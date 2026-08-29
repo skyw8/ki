@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -260,7 +259,7 @@ func buildSidecar(t *testing.T) string {
 	}
 	src := filepath.Join(filepath.Dir(file), "testdata", "extensions", "sidecar")
 	bin := filepath.Join(t.TempDir(), "sidecar")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local e2e sidecar fixture
 	cmd.Dir = src
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build sidecar: %v\n%s", err, out)
@@ -282,7 +281,7 @@ func installProtected(t *testing.T, home, bin string, env ...map[string]string) 
   "name": "protected-paths",
   "capabilities": ["prompt.append", "lifecycle"],
   "prompt": {"append": ["APPEND.md"]},
-  "runtime": {"kind": "rpc", "command": "` + strings.ReplaceAll(bin, `\`, `\\`) + `"` + runtimeEnvJSON(extra) + `}
+  "runtime": {"kind": "rpc", "command": "` + strings.ReplaceAll(bin, `\`, `\\`) + `"` + runtimeEnvJSON(t, extra) + `}
 }`
 	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
@@ -301,36 +300,23 @@ func installSlash(t *testing.T, home, bin string, env map[string]string) {
 	manifest := `{
   "name": "slashy",
   "capabilities": ["command"],
-  "runtime": {"kind": "rpc", "command": "` + strings.ReplaceAll(bin, `\`, `\\`) + `"` + runtimeEnvJSON(env) + `}
+  "runtime": {"kind": "rpc", "command": "` + strings.ReplaceAll(bin, `\`, `\\`) + `"` + runtimeEnvJSON(t, env) + `}
 }`
 	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func runtimeEnvJSON(env map[string]string) string {
+func runtimeEnvJSON(t *testing.T, env map[string]string) string {
+	t.Helper()
 	if len(env) == 0 {
 		return ""
 	}
-	b, _ := json.Marshal(env)
-	return `,"env":` + string(b)
-}
-
-func waitPIDFile(t *testing.T, path string) int {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		b, err := os.ReadFile(path)
-		if err == nil {
-			pid, convErr := strconv.Atoi(strings.TrimSpace(string(b)))
-			if convErr == nil && pid > 0 {
-				return pid
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("grandchild pid file missing")
-	return 0
+	return `,"env":` + string(b)
 }
 
 func installSpawner(t *testing.T, home, marker string) {

@@ -159,7 +159,7 @@ func (r *Registry) ReplaceExtensionProviders(specs []ExtensionProviderSpec) erro
 	for id := range next {
 		if _, exists := r.state.providers[id]; exists {
 			r.mu.Unlock()
-			return fmt.Errorf("provider %q already exists", id)
+			return fmt.Errorf("provider %q: %w", id, errDuplicateProvider)
 		}
 	}
 	r.extensionProviders = next
@@ -194,17 +194,13 @@ func (r *Registry) providerOrderLocked() []string {
 
 func (r *Registry) defaultRefLocked() ModelRef {
 	providers := make(map[string]Provider, len(r.state.providers)+len(r.extensionProviders))
-	for id, p := range r.state.providers {
-		providers[id] = p
-	}
-	for id, p := range r.extensionProviders {
-		providers[id] = p
-	}
+	maps.Copy(providers, r.state.providers)
+	maps.Copy(providers, r.extensionProviders)
 	return pickDefault(providers, r.providerOrderLocked(), r.state.creds, r.state.user.Default)
 }
 
 func readStrictJSON(path string, dst any) error {
-	b, err := os.ReadFile(path) //nolint:gosec // path is the bounded Ki model catalog path
+	b, err := os.ReadFile(path) //nolint:gosec // path is a Ki-managed catalog or credentials file
 	if err != nil {
 		return err
 	}
@@ -433,7 +429,7 @@ func ValidateExtensionProviderSpec(spec ExtensionProviderSpec) error {
 		spec.Auth.Type = AuthAPIKey
 	}
 	if spec.Auth.Type != AuthNone && spec.Auth.Type != AuthAPIKey && spec.Auth.Type != AuthOAuth {
-		return fmt.Errorf("provider %q: unsupported auth type %q", spec.ID, spec.Auth.Type)
+		return fmt.Errorf("provider %q: %w %q", spec.ID, errUnsupportedAuthType, spec.Auth.Type)
 	}
 	seenModels := make(map[string]bool, len(spec.Models))
 	for _, seed := range spec.Models {
@@ -717,10 +713,6 @@ func (r *Registry) Resolve(providerID, modelID string) (Provider, Model, string,
 		}
 	}
 	return Provider{}, Model{}, "", fmt.Errorf("model %q/%q is %w", providerID, modelID, errUnavailable)
-}
-
-func (r *Registry) credentialLocked(id string, envVars []string) (string, CredentialStatus) {
-	return credentialFrom(r.state.creds, id, envVars)
 }
 
 func (r *Registry) credentialLockedFor(p Provider) (string, CredentialStatus) {

@@ -3,7 +3,6 @@ package llmprotocol
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -275,7 +274,7 @@ func parseCompletionsSSE(_, data string, acc *Message) sseParseResult {
 		} `json:"usage"`
 	}
 	if json.Unmarshal([]byte(data), &chunk) != nil {
-		return sseParseResult{err: errors.New("invalid chat completions SSE JSON")}
+		return sseParseResult{err: errInvalidCompletionsSSEJSON}
 	}
 	if chunk.ID != "" {
 		acc.ResponseID = chunk.ID
@@ -317,7 +316,7 @@ func parseCompletionsSSE(_, data string, acc *Message) sseParseResult {
 	}
 	for _, tc := range d.ToolCalls {
 		if tc.Index == nil || *tc.Index < 0 {
-			return sseParseResult{err: errors.New("Chat Completions tool call has no valid index")}
+			return sseParseResult{err: errCompletionsToolCallNoIndex}
 		}
 		idx := *tc.Index
 		id := tc.ID
@@ -326,7 +325,7 @@ func parseCompletionsSSE(_, data string, acc *Message) sseParseResult {
 				id = call.ID
 			}
 			if id == "" {
-				return sseParseResult{err: fmt.Errorf("Chat Completions tool call %d has no id", idx)}
+				return sseParseResult{err: fmt.Errorf("%w: %d", errCompletionsToolCallNoID, idx)}
 			}
 		}
 		if tc.Function.Name == "" {
@@ -394,7 +393,7 @@ func validateCompletionsRequest(req Request) error {
 		switch message.Role {
 		case "toolResult":
 			if message.ToolCallID == "" {
-				return errors.New("Chat Completions tool message has no tool_call_id")
+				return errCompletionsToolMessageNoCallID
 			}
 		case "assistant":
 			for _, block := range message.Content {
@@ -402,10 +401,10 @@ func validateCompletionsRequest(req Request) error {
 					continue
 				}
 				if block.ToolType == "custom" {
-					return errors.New("Chat Completions does not support custom tool calls")
+					return errCompletionsNoCustomToolCalls
 				}
 				if block.ID == "" || block.Name == "" {
-					return errors.New("Chat Completions assistant tool call has no id or name")
+					return errCompletionsAssistantToolCallNoID
 				}
 			}
 		}
@@ -416,20 +415,20 @@ func validateCompletionsRequest(req Request) error {
 func validateCompletionsOutput(acc *Message) error {
 	for _, call := range acc.ToolCalls() {
 		if call.ID == "" || call.Name == "" {
-			return errors.New("Chat Completions tool call is missing id or name")
+			return errCompletionsToolCallMissingIDOrName
 		}
 		if call.ArgumentsRaw == "" {
 			if call.Arguments == nil {
-				return fmt.Errorf("Chat Completions tool call %q has no arguments", call.ID)
+				return fmt.Errorf("%w: %q", errCompletionsToolCallNoArguments, call.ID)
 			}
 			continue
 		}
 		var args map[string]any
 		if err := json.Unmarshal([]byte(call.ArgumentsRaw), &args); err != nil {
-			return fmt.Errorf("Chat Completions tool call %q has invalid JSON arguments: %w", call.ID, err)
+			return fmt.Errorf("chat Completions tool call %q has invalid JSON arguments: %w", call.ID, err)
 		}
 		if args == nil {
-			return fmt.Errorf("Chat Completions tool call %q arguments must be a JSON object", call.ID)
+			return fmt.Errorf("%w: %q", errCompletionsToolCallArgsMustBeObject, call.ID)
 		}
 	}
 	return nil

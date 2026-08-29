@@ -20,7 +20,7 @@ func ConfigPath(d Descriptor) string { return filepath.Join(d.root, "config.json
 // map is a detached JSON value and is safe for callers to modify.
 func LoadConfig(d Descriptor) (map[string]any, error) {
 	values := cloneConfigMap(d.Config.Defaults)
-	b, err := os.ReadFile(ConfigPath(d)) //nolint:gosec // the path comes from a discovered extension root.
+	b, err := os.ReadFile(ConfigPath(d))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return values, validateConfig(d.Config.Schema, values)
@@ -30,7 +30,7 @@ func LoadConfig(d Descriptor) (map[string]any, error) {
 	var saved map[string]any
 	if err := json.Unmarshal(b, &saved); err != nil || saved == nil {
 		if err == nil {
-			err = fmt.Errorf("config must be a JSON object")
+			err = errConfigMustBeObject
 		}
 		return nil, fmt.Errorf("decode extension config: %w", err)
 	}
@@ -72,7 +72,7 @@ func UpdateConfig(d Descriptor, patch map[string]any) (map[string]any, error) {
 	if err := os.MkdirAll(d.root, 0o700); err != nil {
 		return nil, fmt.Errorf("create extension config directory: %w", err)
 	}
-	if err := os.WriteFile(ConfigPath(d), append(b, '\n'), 0o600); err != nil { //nolint:gosec // path is a discovered extension root.
+	if err := os.WriteFile(ConfigPath(d), append(b, '\n'), 0o600); err != nil {
 		return nil, fmt.Errorf("write extension config: %w", err)
 	}
 	return sanitizedConfigMap(d.Config.Schema, values), nil
@@ -196,7 +196,7 @@ func validateConfig(schema map[string]any, value any) error {
 func validateConfigValue(schema map[string]any, value any, path string) error {
 	if value == nil {
 		if required, _ := schema["required"].(bool); required {
-			return fmt.Errorf("%s is required", path)
+			return fmt.Errorf("%s: %w", path, errConfigRequired)
 		}
 		return nil
 	}
@@ -205,7 +205,7 @@ func validateConfigValue(schema map[string]any, value any, path string) error {
 	case "object":
 		values, ok := value.(map[string]any)
 		if !ok {
-			return fmt.Errorf("%s must be an object", path)
+			return fmt.Errorf("%s: %w", path, errConfigObject)
 		}
 		properties := schemaProperties(schema)
 		required := map[string]bool{}
@@ -216,7 +216,7 @@ func validateConfigValue(schema map[string]any, value any, path string) error {
 			childSchema, _ := childSchemaRaw.(map[string]any)
 			child, exists := values[key]
 			if !exists && required[key] {
-				return fmt.Errorf("%s.%s is required", path, key)
+				return fmt.Errorf("%s.%s: %w", path, key, errConfigRequired)
 			}
 			if err := validateConfigValue(childSchema, child, path+"."+key); err != nil {
 				return err
@@ -225,20 +225,20 @@ func validateConfigValue(schema map[string]any, value any, path string) error {
 		if additional, exists := schema["additionalProperties"]; exists && additional == false {
 			for key := range values {
 				if _, ok := properties[key]; !ok {
-					return fmt.Errorf("%s.%s is not allowed", path, key)
+					return fmt.Errorf("%s.%s: %w", path, key, errConfigNotAllowed)
 				}
 			}
 		}
 	case "array":
 		values, ok := value.([]any)
 		if !ok {
-			return fmt.Errorf("%s must be an array", path)
+			return fmt.Errorf("%s: %w", path, errConfigArray)
 		}
-		if min, ok := number(schema["minItems"]); ok && float64(len(values)) < min {
-			return fmt.Errorf("%s has too few items", path)
+		if minItems, ok := number(schema["minItems"]); ok && float64(len(values)) < minItems {
+			return fmt.Errorf("%s: %w", path, errConfigTooFewItems)
 		}
-		if max, ok := number(schema["maxItems"]); ok && float64(len(values)) > max {
-			return fmt.Errorf("%s has too many items", path)
+		if maxItems, ok := number(schema["maxItems"]); ok && float64(len(values)) > maxItems {
+			return fmt.Errorf("%s: %w", path, errConfigTooManyItems)
 		}
 		items, _ := schema["items"].(map[string]any)
 		for i, child := range values {
@@ -249,26 +249,26 @@ func validateConfigValue(schema map[string]any, value any, path string) error {
 	case "string":
 		text, ok := value.(string)
 		if !ok {
-			return fmt.Errorf("%s must be a string", path)
+			return fmt.Errorf("%s: %w", path, errConfigString)
 		}
-		if min, ok := number(schema["minLength"]); ok && float64(len([]rune(text))) < min {
-			return fmt.Errorf("%s is too short", path)
+		if minLen, ok := number(schema["minLength"]); ok && float64(len([]rune(text))) < minLen {
+			return fmt.Errorf("%s: %w", path, errConfigTooShort)
 		}
-		if max, ok := number(schema["maxLength"]); ok && float64(len([]rune(text))) > max {
-			return fmt.Errorf("%s is too long", path)
+		if maxLen, ok := number(schema["maxLength"]); ok && float64(len([]rune(text))) > maxLen {
+			return fmt.Errorf("%s: %w", path, errConfigTooLong)
 		}
 	case "boolean":
 		if _, ok := value.(bool); !ok {
-			return fmt.Errorf("%s must be a boolean", path)
+			return fmt.Errorf("%s: %w", path, errConfigBoolean)
 		}
 	case "number":
 		if _, ok := number(value); !ok {
-			return fmt.Errorf("%s must be a number", path)
+			return fmt.Errorf("%s: %w", path, errConfigNumber)
 		}
 	case "integer":
 		n, ok := number(value)
 		if !ok || math.Trunc(n) != n {
-			return fmt.Errorf("%s must be an integer", path)
+			return fmt.Errorf("%s: %w", path, errConfigInteger)
 		}
 	}
 	if enum := schemaValues(schema["enum"]); len(enum) > 0 {
@@ -280,7 +280,7 @@ func validateConfigValue(schema map[string]any, value any, path string) error {
 			}
 		}
 		if !matched {
-			return fmt.Errorf("%s has an invalid value", path)
+			return fmt.Errorf("%s: %w", path, errConfigInvalidValue)
 		}
 	}
 	return nil

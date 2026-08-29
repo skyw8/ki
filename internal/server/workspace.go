@@ -285,8 +285,8 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	collect(targetID)
-	for i := len(targets) - 1; i >= 0; i-- {
-		if err := s.removeSessionInfo(targets[i]); err != nil {
+	for _, info := range slices.Backward(targets) {
+		if err := s.removeSessionInfo(info); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -316,7 +316,7 @@ func (s *Server) removeSessionInfo(info session.Info) error {
 		_ = s.ws.DetachSession(rec.ID, info.ID)
 	}
 	if err := session.Remove(info.Dir); err != nil {
-		return err
+		return fmt.Errorf("remove session: %w", err)
 	}
 	s.sidx.Remove(info.ID) // only after the dir is actually gone
 	s.resources.Invalidate(info.ID)

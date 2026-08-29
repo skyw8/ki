@@ -120,7 +120,7 @@ func (m *ProviderManager) Replace(descriptors []Descriptor) error {
 				return fmt.Errorf("extension %q: %w", d.Name, err)
 			}
 			if previous, exists := nextDescs[spec.ID]; exists {
-				return fmt.Errorf("provider %q declared by both %q and %q", spec.ID, previous.Name, d.Name)
+				return fmt.Errorf("%w: %q by %q and %q", errProviderDeclaredTwice, spec.ID, previous.Name, d.Name)
 			}
 			nextDescs[spec.ID] = d
 			nextSpecs[spec.ID] = spec
@@ -190,7 +190,7 @@ func (m *ProviderManager) HasProvider(id string) bool {
 }
 
 // NewStreamer creates a host-side adapter for a provider sidecar stream.
-func (m *ProviderManager) NewStreamer(model provider.Model, credential provider.Credential) provider.ProviderStreamer {
+func (m *ProviderManager) NewStreamer(model provider.Model, credential provider.Credential) provider.Streamer {
 	return &providerSidecarStreamer{manager: m, model: model, credential: credential}
 }
 
@@ -270,7 +270,7 @@ func (m *ProviderManager) StartAuth(ctx context.Context, providerID, mode string
 		return "", err
 	}
 	if !result.Accepted {
-		return "", fmt.Errorf("provider auth was not accepted")
+		return "", errProviderAuthNotAccepted
 	}
 	return requestID, nil
 }
@@ -289,7 +289,7 @@ func (m *ProviderManager) AuthInput(ctx context.Context, providerID, requestID, 
 		return err
 	}
 	if !result.Accepted {
-		return fmt.Errorf("provider auth input was not accepted")
+		return errProviderAuthInputNotAccepted
 	}
 	return nil
 }
@@ -333,10 +333,10 @@ func (m *ProviderManager) RefreshCredential(ctx context.Context, registry *provi
 	if registry != nil {
 		current, status, err := registry.Credential(providerID)
 		if err != nil {
-			return credential, err
+			return credential, fmt.Errorf("read credential: %w", err)
 		}
 		if !status.Configured {
-			return provider.Credential{}, fmt.Errorf("provider %q credential was removed", providerID)
+			return provider.Credential{}, fmt.Errorf("%w: %q", errProviderCredentialRemoved, providerID)
 		}
 		credential = current
 	}
@@ -356,15 +356,15 @@ func (m *ProviderManager) RefreshCredential(ctx context.Context, registry *provi
 		return credential, nil
 	}
 	if result.Credential.Type != provider.AuthOAuth {
-		return credential, fmt.Errorf("provider returned a non-OAuth credential")
+		return credential, errProviderNonOAuthCredential
 	}
 	if registry != nil {
 		current, status, err := registry.Credential(providerID)
 		if err != nil {
-			return credential, err
+			return credential, fmt.Errorf("re-read credential: %w", err)
 		}
 		if !status.Configured {
-			return provider.Credential{}, fmt.Errorf("provider %q credential was removed", providerID)
+			return provider.Credential{}, fmt.Errorf("%w: %q", errProviderCredentialRemoved, providerID)
 		}
 		if current.Type != credential.Type || current.APIKey != credential.APIKey || string(current.Value) != string(credential.Value) {
 			// A concurrent login/logout won the credential race. Do not let a
@@ -406,7 +406,7 @@ func (m *ProviderManager) client(ctx context.Context, providerID string) (*rpcCl
 	owner, ok := m.owners[providerID]
 	if !ok {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("provider %q is not registered by an extension", providerID)
+		return nil, fmt.Errorf("%w: %q", errProviderNotRegisteredByExt, providerID)
 	}
 	if c := m.clients[owner]; c != nil {
 		m.mu.Unlock()
@@ -415,7 +415,7 @@ func (m *ProviderManager) client(ctx context.Context, providerID string) (*rpcCl
 	d, ok := m.descs[providerID]
 	m.mu.Unlock()
 	if !ok {
-		return nil, fmt.Errorf("provider %q extension descriptor is unavailable", providerID)
+		return nil, fmt.Errorf("%w: %q", errProviderExtDescriptorMissing, providerID)
 	}
 	if runtime != nil {
 		c, err := runtime.globalClient(ctx, d.Name)
@@ -448,7 +448,7 @@ func (m *ProviderManager) client(ctx context.Context, providerID string) (*rpcCl
 	if epoch != m.epoch {
 		m.mu.Unlock()
 		c.close()
-		return nil, fmt.Errorf("provider runtime was reloaded")
+		return nil, errProviderRuntimeReloaded
 	}
 	if existing := m.clients[d.Name]; existing != nil {
 		m.mu.Unlock()

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"ki/internal/loop"
@@ -107,7 +108,11 @@ type scopedAgentRuntime struct {
 func (s scopedAgentRuntime) SpawnAgent(ctx context.Context, req AgentRequest) (AgentLaunch, error) {
 	req.ParentSessionID = s.sessionID
 	req.ParentEntryID = s.entryID
-	return s.AgentRuntime.SpawnAgent(ctx, req)
+	launch, err := s.AgentRuntime.SpawnAgent(ctx, req)
+	if err != nil {
+		return AgentLaunch{}, fmt.Errorf("spawn agent: %w", err)
+	}
+	return launch, nil
 }
 
 func (s scopedAgentRuntime) SendAgentMessage(ctx context.Context, req AgentMessageRequest) (AgentMessageResult, error) {
@@ -116,7 +121,11 @@ func (s scopedAgentRuntime) SendAgentMessage(ctx context.Context, req AgentMessa
 		return AgentMessageResult{}, os.ErrNotExist
 	}
 	req.SenderSessionID = s.sessionID
-	return messenger.SendAgentMessage(ctx, req)
+	result, err := messenger.SendAgentMessage(ctx, req)
+	if err != nil {
+		return AgentMessageResult{}, fmt.Errorf("send agent message: %w", err)
+	}
+	return result, nil
 }
 
 type compositeTaskStore struct {
@@ -143,7 +152,11 @@ func (s compositeTaskStore) Wait(ctx context.Context, id string) (TaskSnapshot, 
 		}
 	}
 	if s.agent != nil {
-		return s.agent.Wait(ctx, id)
+		snap, err := s.agent.Wait(ctx, id)
+		if err != nil {
+			return TaskSnapshot{}, fmt.Errorf("wait agent task: %w", err)
+		}
+		return snap, nil
 	}
 	return TaskSnapshot{}, os.ErrNotExist
 }
@@ -155,7 +168,11 @@ func (s compositeTaskStore) Stop(id string) (TaskSnapshot, error) {
 		}
 	}
 	if s.agent != nil {
-		return s.agent.Stop(id)
+		snap, err := s.agent.Stop(id)
+		if err != nil {
+			return TaskSnapshot{}, fmt.Errorf("stop agent task: %w", err)
+		}
+		return snap, nil
 	}
 	return TaskSnapshot{}, os.ErrNotExist
 }

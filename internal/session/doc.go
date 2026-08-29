@@ -2,8 +2,11 @@
 //
 // One session is one directory: events.jsonl + config.json, plus queue.json
 // for user turns waiting on the current run and context-queue.json for normal
-// user messages that must enter a later prompt without starting a run. New rows always
-// append; config.activeLeafId persists the selected branch across opens.
+// user messages that must enter a later prompt without starting a run.
+// config.json and the queue JSON files are replaced atomically (temp + rename)
+// so concurrent readers never observe truncated JSON. A per-directory file gate
+// serializes Open against jsonl appends across distinct Session handles. New
+// rows always append; config.activeLeafId persists the selected branch across opens.
 // SetLeaf moves the leaf without deleting old rows. ForkAt creates a new
 // directory containing only the root-to-target path and records the parent and
 // fork mode in the header. The server owns tree-mode cascade deletion.

@@ -602,7 +602,7 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				// End the failed attempt explicitly so clients can discard the
 				// partial stream and show the actual protocol error.
 				_ = emit(Event{Type: MessageEnd, Message: &asst})
-				return asst, err
+				return asst, fmt.Errorf("stream assistant response: %w", err)
 			}
 			continue
 		}

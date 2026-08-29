@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"ki/internal/types"
@@ -198,10 +199,10 @@ type UIPrompt struct {
 	Options []string `json:"options,omitempty"`
 }
 
-// ExtensionUI is the WebUI projection for one extension. Session responses
-// contain session-scoped values; the extension catalog may contain a global
-// value emitted by a process-level sidecar.
-type ExtensionUI struct {
+// UI is the WebUI projection for one extension. Session responses contain
+// session-scoped values; the extension catalog may contain a global value
+// emitted by a process-level sidecar.
+type UI struct {
 	Extension string    `json:"extension"`
 	Status    *UIStatus `json:"status,omitempty"`
 	Panel     *UIPanel  `json:"panel,omitempty"`
@@ -217,7 +218,7 @@ type UIStatus struct {
 
 func (c *rpcClient) replyError(id any, message string) {
 	c.mu.Lock()
-	_ = c.enc.Encode(rpcMsg{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: -32000, Message: message}})
+	c.encodeLocked(rpcMsg{JSONRPC: "2.0", ID: id, Error: &rpcError{Code: -32000, Message: message}})
 	c.mu.Unlock()
 }
 
@@ -228,8 +229,15 @@ func (c *rpcClient) replyResult(id any, result any) {
 		return
 	}
 	c.mu.Lock()
-	_ = c.enc.Encode(rpcMsg{JSONRPC: "2.0", ID: id, Result: raw})
+	c.encodeLocked(rpcMsg{JSONRPC: "2.0", ID: id, Result: raw})
 	c.mu.Unlock()
+}
+
+// encodeLocked writes one NDJSON frame. Caller must hold c.mu.
+func (c *rpcClient) encodeLocked(msg rpcMsg) {
+	if err := c.enc.Encode(msg); err != nil {
+		slog.Debug("extension rpc encode", "extension", c.name, "err", err)
+	}
 }
 
 func inboundSessionID(params json.RawMessage) (string, error) {
@@ -240,7 +248,7 @@ func inboundSessionID(params json.RawMessage) (string, error) {
 		return "", err
 	}
 	if p.SessionID == "" {
-		return "", fmt.Errorf("sessionId required for global extension")
+		return "", errSessionIDRequiredForGlobal
 	}
 	return p.SessionID, nil
 }

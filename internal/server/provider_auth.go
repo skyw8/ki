@@ -94,8 +94,8 @@ func (s *Server) providerAuthStatus(w http.ResponseWriter, r *http.Request) {
 	s.pruneProviderAuthLocked(time.Now())
 	state := s.providerAuth[providerAuthKey(id, requestID)]
 	if state != nil {
-		copy := *state
-		state = &copy
+		cloned := *state
+		state = &cloned
 	}
 	s.providerAuthMu.Unlock()
 	if state == nil {
@@ -200,7 +200,7 @@ func (s *Server) logoutProviderAuth(w http.ResponseWriter, r *http.Request) {
 	s.providerAuthMu.Unlock()
 	unlockCredential()
 	for _, requestID := range active {
-		cancelCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		cancelCtx, cancel := context.WithTimeout(r.Context(), time.Second)
 		_ = s.providerExtensions.CancelAuth(cancelCtx, id, requestID)
 		cancel()
 	}

@@ -285,15 +285,15 @@ func runProviderLogin(cfg config.Config, providerID string, deviceCode bool) err
 			if status.Error == "" {
 				status.Error = "provider authentication failed"
 			}
-			return errors.New(status.Error)
+			return fmt.Errorf("%w: %s", errProviderAuthFailed, status.Error)
 		case "cancelled":
-			return errors.New("provider authentication cancelled")
+			return errProviderAuthCancelled
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return errors.New("provider authentication timed out")
+			return errProviderAuthTimedOut
 		case <-time.After(time.Second):
 		}
 	}
@@ -390,13 +390,17 @@ type flags struct {
 }
 
 var (
-	errSessionRequired     = errors.New("--session is required")
-	errServerDidNotComeUp  = errors.New("server did not come up")
-	errPromptRequired      = errors.New("prompt is required")
-	errSteerQueueExclusive = errors.New("--steer and --queue are mutually exclusive")
-	errInProcessServerBind = errors.New("in-process server failed to bind")
-	errHTTPResponse        = errors.New("HTTP request failed")
-	errNoLiveServer        = errors.New("ki server is not running")
+	errSessionRequired       = errors.New("--session is required")
+	errServerDidNotComeUp    = errors.New("server did not come up")
+	errPromptRequired        = errors.New("prompt is required")
+	errSteerQueueExclusive   = errors.New("--steer and --queue are mutually exclusive")
+	errInProcessServerBind   = errors.New("in-process server failed to bind")
+	errHTTPResponse          = errors.New("HTTP request failed")
+	errNoLiveServer          = errors.New("ki server is not running")
+	errProviderAuthFailed    = errors.New("provider authentication failed")
+	errProviderAuthCancelled = errors.New("provider authentication cancelled")
+	errProviderAuthTimedOut  = errors.New("provider authentication timed out")
+	errPromptNotice          = errors.New("prompt notice")
 )
 
 func runServe(cfg config.Config, addr string) error {
@@ -542,12 +546,12 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 	if result.Handled {
 		if result.Notice != "" {
 			if result.Error {
-				return errors.New(result.Notice)
+				return fmt.Errorf("%w: %s", errPromptNotice, result.Notice)
 			}
-			fmt.Fprintln(os.Stdout, result.Notice)
+			_, _ = fmt.Fprintln(os.Stdout, result.Notice)
 		}
 		if result.SessionID != "" {
-			fmt.Fprintf(os.Stdout, "session_id: %s\n", result.SessionID)
+			_, _ = fmt.Fprintf(os.Stdout, "session_id: %s\n", result.SessionID)
 		}
 		return nil
 	}
@@ -707,7 +711,9 @@ func printEvent(ev loop.Event) {
 	case loop.AgentStart, loop.AgentEnd, loop.TurnStart, loop.TurnEnd,
 		loop.RequestHeader, loop.MessageStart, loop.MessageEnd,
 		loop.ToolExecutionUpdate, loop.PatchApplyUpdated, loop.CompactionStart, loop.CompactionEnd,
-		loop.ContextUsage:
+		loop.ContextUsage, loop.QueueChanged, loop.SteerAccepted, loop.RunAborted,
+		loop.ExtensionError, loop.ExtensionNotice, loop.ExtensionUIPrompt,
+		loop.AgentSettled, loop.RuntimeReady:
 		return
 	}
 }

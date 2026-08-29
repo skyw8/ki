@@ -81,7 +81,11 @@ func TestExtensionConfigPreservesNestedArraySecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	accounts, ok := got["accounts"].([]any)
-	if !ok || len(accounts) != 1 || accounts[0].(map[string]any)["token"] != SecretValue {
+	if !ok || len(accounts) != 1 {
+		t.Fatalf("sanitized nested config = %#v", got)
+	}
+	account, ok := accounts[0].(map[string]any)
+	if !ok || account["token"] != SecretValue {
 		t.Fatalf("sanitized nested config = %#v", got)
 	}
 	raw, err := os.ReadFile(ConfigPath(d))

@@ -27,7 +27,7 @@ func TestQueueEnqueueDequeueAndCap(t *testing.T) {
 		t.Fatalf("after dequeue: %+v %v", leftover, err)
 	}
 
-	for i := 0; i < MaxQueueItems; i++ {
+	for i := range MaxQueueItems {
 		if _, err := Enqueue(dir, []types.Content{{Type: "text", Text: "x"}}); err != nil {
 			t.Fatalf("fill %d: %v", i, err)
 		}
@@ -41,14 +41,12 @@ func TestQueueConcurrentMutationsKeepAllItems(t *testing.T) {
 	dir := t.TempDir()
 	const count = 50
 	var wg sync.WaitGroup
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range count {
+		wg.Go(func() {
 			if _, err := Enqueue(dir, []types.Content{{Type: "text", Text: "message"}}); err != nil {
 				t.Errorf("enqueue: %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	items, err := ReadQueue(dir)
@@ -62,14 +60,12 @@ func TestQueueConcurrentMutationsKeepAllItems(t *testing.T) {
 		}
 		seen[item.ID] = true
 	}
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range count {
+		wg.Go(func() {
 			if _, _, err := Dequeue(dir); err != nil {
 				t.Errorf("dequeue: %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if left, err := ReadQueue(dir); err != nil || len(left) != 0 {

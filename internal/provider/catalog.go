@@ -11,6 +11,7 @@ import (
 // AuthKind identifies the credential protocol owned by a provider runtime.
 type AuthKind string
 
+// Built-in credential protocols for AuthSpec and Credential.
 const (
 	AuthNone   AuthKind = "none"
 	AuthAPIKey AuthKind = "api_key"
