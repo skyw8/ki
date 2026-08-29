@@ -39,7 +39,7 @@ Tool result details include `searchDurationMs`, plus each successful provider's
 `durationMs` in `providerRuns` and each failed provider's `durationMs` in
 `diagnostics`.
 
-The source implementation uses only Node standard-library modules. The
-checked-in `dist/main.js` is a small loader so the extension runs without an
-install step. Run `npm test` from this directory for protocol and toggle
-tests.
+The source implementation uses only Node standard-library modules. Runtime is
+`node dist/main.js` after `npm run build` (`extension.json` `runtime.install`).
+Checked-in `dist/` is the compiled sidecar. Run `npm test` from this directory
+for protocol and toggle tests.

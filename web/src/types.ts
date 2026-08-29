@@ -179,7 +179,6 @@ export type CatalogExtension = {
   path?: string
   enabled: boolean
   capabilities?: string[]
-  intercept?: string[]
   error?: string
 	configurable?: boolean
 	runtime?: { name: string; state: string; error?: string; capabilities?: string[] }

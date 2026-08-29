@@ -83,7 +83,7 @@ Usage:
 	}
 	return base + `
 - This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.
-- This tool can only read files, not directories. To read a directory, use an ls command via the Bash tool.`
+- This tool can only read files, not directories. To list a directory, use the Glob tool.`
 }
 
 func (t readTool) Parameters() map[string]any {
@@ -141,7 +141,7 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		return errRes(err.Error())
 	}
 	if st.IsDir() {
-		return errRes("This tool can only read files, not directories. Use Bash ls.")
+		return errRes("This tool can only read files, not directories. Use Glob.")
 	}
 
 	data, err := ops.ReadFile(ctx, abs)

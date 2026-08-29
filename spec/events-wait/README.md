@@ -1,8 +1,7 @@
 # spec/events-wait：SSE 等待循环"close-before-broadcast"顺序的 TLA+ 模型
 
 形式化验证 `internal/server/server.go` 里 SSE 等待循环（`events` handler +
-`runState`）的"丢失唤醒"顺序问题。教学版讲解见 `tmp/server-events-explained.md`
-§5.6 / §5.0。
+`runState`）的"丢失唤醒"顺序问题。HTTP/SSE 编排见 `docs/architecture.md`。
 
 ## 为什么放 `spec/` 而不是 `docs/`
 

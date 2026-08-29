@@ -18,7 +18,8 @@
 // Enablement is toggles.json extensions.disabled
 // (missing = all on). Host interceptors are test doubles only; production
 // never compiles user extensions into the ki binary.
-// Runtime failures are reported through the server's extension_error event;
-// the server disables the failing package in toggles.json.
+// Manifest errors, sidecar start failures, and undeclared capabilities disable
+// the package in toggles.json. Occupy RPC timeouts stay fail-open: the package
+// is skipped for that occupy and is not toggled off.
 // Cross-package contract: docs/extension.md.
 package extension

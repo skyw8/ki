@@ -27,8 +27,8 @@
 
 ### 文件变更与并发
 
-- [ ] 文件工具结果增加机器可读状态，同时保留简短的模型可读摘要。
-- [ ] 将只读工具和文件变更工具显式分类：只读操作可并行，同一路径的变更必须串行。
+- [x] 文件工具结果增加机器可读状态，同时保留简短的模型可读摘要（见 `docs/tools.md` details）。
+- [x] 同一路径的 `Write` / `Edit` / `apply_patch` 经 mutation queue 串行；只读工具仍可并行。
 - [ ] 为取消、timeout、后台完成和长任务建立跨工具统一的结构化事件。
 
 ### 可选工具
@@ -38,6 +38,6 @@
 - [ ] `ViewImage`：现有 Read 已能读图，先完成缩放；优先级低。
 - [ ] `ToolSearch`：工具数量显著增长后再按需加载；优先级低。
 - [x] `Agent` / 多代理：已接入 `forkMode=tree` child session、前台/后台 task、
-  `TaskOutput`/`TaskStop` 统一生命周期；未完成的 agent definitions、worktree/team
-  能力见 [multi-agent.md](multi-agent.md)。
+  `TaskOutput`/`TaskStop` 统一生命周期。agent definitions、worktree 和 Agent Teams
+  不在当前契约内，见 [tools.md](../tools.md) Agent 节。
 - [ ] `Sleep` / `CurrentTime`：只有需要无副作用等待或取时才引入；优先级低。

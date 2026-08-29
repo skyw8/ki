@@ -19,13 +19,6 @@ type Summarizer interface {
 	Summarize(ctx context.Context, system, user string) (string, *types.Usage, error)
 }
 
-// EstimateTokens estimates context tokens for messages, preferring real usage
-// (input + cacheRead, aligned with pi calculateContextTokens) from the newest
-// assistant message. recentCompaction is the unix-ms timestamp of the latest
-// compaction entry: usage from a message older than it reflects the
-// pre-compaction (larger) context and would falsely re-trigger compaction right
-// after one finished — fall back to the char/4 lower-bound estimate instead.
-
 // ErrNothingToCompact reports that Prepare found no messages worth summarizing.
 // The compaction is skipped and no model call happens.
 var ErrNothingToCompact = errors.New("nothing to compact")

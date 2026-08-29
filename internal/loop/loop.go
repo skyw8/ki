@@ -55,7 +55,7 @@ const (
 	// RunAborted reports that abort cancelled the occupy context. AgentEnd
 	// still follows when the loop actually returns.
 	RunAborted EventType = "run_aborted"
-	// ExtensionError reports a sidecar or intercept failure as a sideband.
+	// ExtensionError reports a sidecar or lifecycle failure as a sideband.
 	ExtensionError EventType = "extension_error"
 	// ExtensionNotice is a non-error toast (info/warn) for the WebUI shell.
 	ExtensionNotice EventType = "extension_notice"

@@ -236,12 +236,14 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 
 ## 失败策略
 
-默认 fail-open：RPC/超时 → `extension_error`，本 occupy 该扩展进 skip 集。`failClosed: true` 仅 `tool_call` / `before_provider_request`。
+默认 occupy fail-open：RPC/超时 → `extension_error`，本 occupy 该扩展进 skip 集，不写 `toggles.json`。`failClosed: true` 仅 `tool_call` / `before_provider_request`。
+
+加载期失败会禁用包：manifest 校验失败、`sidecar_start`、以及 initialize 报了未声明的 tools/commands（`undeclared`）都会写入 `toggles.json` `extensions.disabled`。sidecar 在仍启用时会自动重试；session Prepare 一旦上报 `sidecar_start`，Host 将其关掉。
 
 ## 生命周期
 
 1. Scan 只读 Discover；sidecar 是进程级资源，每个扩展最多启动一个。
-2. **server 完成监听后**，所有启用且声明可执行 runtime 的扩展统一启动，不按能力类别或 session 懒加载；失败状态由 catalog 暴露并自动重试。
+2. **server 完成监听后**，所有启用且声明可执行 runtime 的扩展统一启动，不按能力类别或 session 懒加载；sidecar 在仍启用时失败会重试，catalog 暴露 runtime 状态。
 3. `GET /v1/sessions/{id}` 带 `runtime.ready`；未就绪也可先出 transcript。`runtime_ready` SSE（sideband，不进 jsonl）。失败也算 ready。
 4. `Prepare` 只建立当前 session 的扩展视图，复用已运行的 server sidecar，并发送 `session.open`。
 5. Steer 不重新 Prepare，不重跑 `before_agent_start`。
@@ -258,4 +260,4 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 
 `path` 只展示，不当 `href`。
 
-扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影和可选 i18n catalog；查询不会启动 sidecar。manifest 校验失败不会拉起 runtime；sidecar 启动失败保持启用并自动重试。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航切换扩展，Extensions 设置中的 Configure 也只负责打开并定位到同一个页面，不在 session Info 或设置页内嵌第二份编辑器。
+扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影和可选 i18n catalog；查询不会启动 sidecar。manifest 校验失败不会拉起 runtime，并写入 `extensions.disabled`。sidecar 启动失败在仍启用时自动重试；session Prepare 上报 `sidecar_start` 后同样禁用。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航切换扩展，Extensions 设置中的 Configure 也只负责打开并定位到同一个页面，不在 session Info 或设置页内嵌第二份编辑器。

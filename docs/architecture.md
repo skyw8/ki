@@ -9,6 +9,9 @@
 - `ki serve -d`：后台启动或复用 server，CLI 退出后 server 继续运行。
 - `ki run [flags] <text>`：client。`server.json` health 通则连；否则本进程听 `127.0.0.1:0`，退出带走。
 - `ki session compact|fork --session <id>`：对已有 session 执行管理操作。
+- `ki reload`：对已运行的 daemon 发 `POST /v1/reload`（不在本进程起 server）。
+- `ki extension list`：列出全局发现的扩展。
+- `ki provider login|logout <provider>`：provider 扩展登录 / 清除凭据。
 - `ki config path` / `ki version`：查看配置位置和版本。
 - CLI 命令和 flags 由 Cobra 管理；TOML 由 Viper 解析，只管理 server、session、compaction 和 logging 等运行参数。模型与供应商由 provider registry 的 `models.json` / `credentials.json` 管理。`ki serve --addr` 通过 Cobra flag 绑定到 Viper 的 `server.addr`，优先级高于配置文件和环境变量。
 
@@ -16,7 +19,7 @@
 
 续聊必须 `--session <id>`。`--model` 随 prompt 发给 server，写回**该 session** 的 `config.json`，不改 toml。`KI_FAKE=1` 用假模型。
 
-系统提示词由 `internal/prompt` 从预加载的资源快照纯渲染，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）、项目/全局追加 system prompt、运行 OS/架构、cwd 和本地日期时区。后面这些运行环境字段在 session 首次加载资源时计算一次，普通消息不会重复探测；reload 后随新快照更新。模型被问及"去哪改 server / 扩展 / skills 设置"时读这段，配合 `ki config path`。完整分层与缓存边界见 [system_prompt.md](system_prompt.md)。
+系统提示词由 `internal/prompt` 从预加载的资源快照纯渲染，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）、项目/全局追加 system prompt、启用扩展的 `prompt.append`、运行 OS/架构、cwd 和本地日期时区。后面这些运行环境字段在 session 首次加载资源时计算一次，普通消息不会重复探测；reload 后随新快照更新。模型被问及"去哪改 server / 扩展 / skills 设置"时读这段，配合 `ki config path`。完整分层与缓存边界见 [system_prompt.md](system_prompt.md)。
 
 `internal/resources.Loader` 由 Server 持有，把运行环境、skills、AGENTS/CLAUDE 和 prompt 模板合并成 session 级不可变快照。设置页没有 session，只用不缓存的 `Scan(cwd)` 展示配置。每轮 prompt 在渲染前准备当前 session 的 extension view；扩展工具与内置工具一起进入 prompt、loop 和 `request_header`，单个扩展失败不阻断本轮。
 
@@ -33,22 +36,24 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET | `/v1/models` | registry 的可选模型扁平视图（含 `thinkingLevels` / `defaultThinking`） |
-| GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential 和 model 管理；扩展 provider 目录只读 |
+| GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential、OAuth login/logout 和 model 管理；扩展 provider 目录只读 |
 | PUT | `/v1/default-model` | 显式记住上次选用的模型；WebUI 切模型时 server 也会写 |
 | GET | `/v1/meta` | 上次选用的模型（不可用则第一个可用项）、该模型 default thinking、用户 home（无进程 cwd） |
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned / parentSessionId / forkMode） |
 | POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…`；可选 `model` / `thinkingEffort`，省略则用上次选用的模型和该模型 default thinking。WebUI 传入当前 composer 的模型配置 |
 | GET | `/v1/sessions/search` | 正文字面搜索普通/flat session，最多 20 条；tree child 通过全量 session list 的 Tree 浏览器访问 |
-| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、只读 `availableSkills` / `availableExtensions` / `commands` / `queued` / `runtime.ready`；并后台 Prepare 全局 extension 的 session view |
+| GET | `/v1/sessions/{id}` | header、leaf、模型、`entries`、`messages`、running、只读 `availableSkills` / `availableExtensions` / `commands` / `queued` / `extQueued` / `extensionUi` / `runtime.ready`；并后台 Prepare 全局 extension 的 session view |
 | PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / `queued`（保留 id 列表） |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
 | POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId` / `delivery` / `queueId`；空闲 `202 started`；忙时 `steer` 插入本轮或 `queue` 排队，省略则用 `toggles.json` `message.busy`；`queueId`+`delivery=steer` 从 `queue.json` 取出插入本轮；`parentId` 且 busy 仍 **409** |
 | GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`） |
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件 |
+| POST | `/v1/sessions/{id}/extension-ui` | 面板 action / submit / confirm / select 回传 sidecar |
 | POST | `/v1/sessions/{id}/abort` | cancel |
 | POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
-| POST | `/v1/reload` | 清全部 session 的资源快照并重载 extension catalog |
+| POST | `/v1/reload` | 清空闲 session 的资源快照并重载 extension catalog；body 可带 `sessionId` 只重载该 session |
 | GET/PATCH | `/v1/skills` `/v1/extensions` | 全局启用开关（`toggles.json`） |
+| GET/PATCH | `/v1/extensions/{name}/config` | 扩展配置（脱敏读写） |
 | POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径；body 可传 `forkMode=flat|tree`，返回 `parentSessionId` / `forkMode`，删除时仅沿 tree 边级联 |
 | POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |
 | GET | `/v1/workspaces` | 工作区登记（含 `sessionIds` / `temp`） |
@@ -57,7 +62,7 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 | DELETE | `/v1/workspaces/{id}` | 删组内会话日志和登记，不删工作区磁盘目录 |
 | POST | `/v1/workspaces/{id}/move` | 工作区排序 |
 | POST | `/v1/workspaces/{id}/sessions/move` | 组内会话排序 |
-| GET | `/v1/fs` | 列目录；`files=1` 时也列普通文件供附件选择 |
+| GET | `/v1/fs` | 列目录；`files=1` 时也列普通文件供附件选择；`preview=1` 同源预览图片、文本/代码和 PDF |
 | POST | `/v1/fs` | 在已有目录下建子文件夹 |
 
 `message_end` 上 await 写 jsonl。`agent_end` 上按阈值自动 compact。SSE 在 run `done` 后先排空剩余事件，再结束（等待循环"先 `close(done)` 后 `Broadcast()`"的顺序协议有 TLA+ 模型验证，见 `spec/events-wait`）。
@@ -178,7 +183,7 @@ package "internal/session" {
   [events.jsonl] as JSONL
 }
 package "internal/compact" {
-  [maybeCompact] as COMPACT
+  [compactSession] as COMPACT
 }
 package "internal/provider" {
   [registry + loop adapter → NewLive] as LIVE
@@ -202,7 +207,7 @@ EV --> WEB
 ABORT --> RS : cancel()
 RUN --> LIVE : loop.Streamer 接口\n（实现由 server 注入）
 LIVE --> PROTOCOL : neutral Request / Message adapter
-RUNP --> COMPACT : agent_end 时同步压缩
+RUNP --> COMPACT : preflight / overflow / threshold 压缩
 @enduml
 ```
 

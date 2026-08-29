@@ -233,8 +233,9 @@ func newToken() string {
 // Token is the bearer secret.
 func (s *Server) Token() string { return s.token }
 
-// Reload drops every session's resource snapshots and extension session views so the
-// next prompt/GET rebuilds resources. Process-wide: there is no per-session reload.
+// Reload drops idle sessions' resource snapshots and extension views so the
+// next prompt/GET rebuilds them. Occupied sessions are queued onto pendingReload
+// and applied at release. Per-session invalidation is reloadSession.
 func (s *Server) Reload() bool {
 	s.mu.Lock()
 	active := make(map[string]bool, len(s.runs))

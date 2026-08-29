@@ -17,18 +17,19 @@
 // fork) prepares the session view of already-running extensions in the
 // background; List does not. runtime.ready is
 // true when that Prepare finishes (failure still counts). PATCH /v1/sessions/{id} writes model /
-// thinking / title / pin / leaf. Skills and extension enablement is
+// thinking / title / pin / leaf / queued. Skills and extension enablement is
 // {KI_HOME}/toggles.json via GET/PATCH /v1/skills and /v1/extensions.
 // Extension session.appendMessage accepts normal user messages without
 // starting a run; busy sessions hold them in a durable context queue and
 // dispatch drains them at the captured prompt boundary. Prompt accepts content blocks and an optional branch parent before assembling
-// the model request. GET /v1/fs
-// optionally lists files or streams authenticated image, plain-text/code, and
-// PDF previews for the attachment picker; POST creates directories.
+// the model request. GET /v1/fs lists directories; files=1 also lists regular
+// files; preview=1 streams authenticated image, plain-text/code, and PDF
+// previews for the attachment picker. POST creates directories.
 // Session attachment uploads are content-addressed under that session dir.
 // request_header, context_usage, and streamed apply_patch preview events
 // persist on jsonl/SSE.
-// Non-/v1 paths serve the SPA at "/"; other unknown paths redirect to "/".
+// Non-/v1 paths serve the SPA. Unknown non-asset paths also serve index.html
+// in place (do not 302 to "/": port-forwards would leave the page blank).
 // index.html gets the token injected. The UI is used behind port-forwards.
 // A second prompt on a busy session steers or queues (toggles message.busy,
 // overridable with delivery). queueId + delivery=steer takes that queued item

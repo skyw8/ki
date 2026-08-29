@@ -13,20 +13,24 @@ ki/
 ├── cmd/ki/              sole binary
 ├── web/                 Vite+React SPA; go:embed dist; same-origin from serve
 ├── e2e/                 CLI e2e: scripted model for tests; -tags live for a real model
-├── docs/                cross-package notes (architecture, session, prompt, provider, tools, webui, workspace, telegram-bot)
+├── docs/                cross-package notes (see Docs below)
 ├── spec/                TLA+ formal specs (events-wait: SSE close-before-broadcast ordering)
+├── extensions/          bundled extension packages (install under {KI_HOME}/extensions)
 ├── internal/
 │   ├── cli/             flags; start/attach server; SSE to the terminal
 │   ├── server/          HTTP orchestration + embedded WebUI
 │   ├── loop/            main loop; emit only
 │   ├── session/         jsonl tree
-│   ├── tools/           Read / Write / Edit / Bash
+│   ├── tools/           model-aware builtins (see internal/tools/doc.go)
+│   ├── search/          embedded ripgrep engines for Grep / Glob
 │   ├── provider/        catalog, registry, credentials, cost, Ki adapter
 │   ├── prompt/          system prompt renderer
 │   ├── resources/       session-scoped runtime and filesystem snapshots
 │   ├── compact/         compaction
 │   ├── config/          merge ki.toml and env
+│   ├── command/         slash catalog and parse
 │   ├── skills/          discover SKILL.md
+│   ├── toggles/         {KI_HOME}/toggles.json
 │   ├── extension/       extension.json + NDJSON sidecar
 │   ├── workspace/       workspace registry
 │   ├── types/           Message / Usage IR

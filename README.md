@@ -35,6 +35,12 @@ scripts/run.sh
 # inspect config and version
 ./ki config path
 ./ki version
+
+# live daemon (requires ki serve already running)
+./ki reload
+./ki extension list
+./ki provider login <provider>
+./ki provider logout <provider>
 ```
 
 Auth is a Bearer token in `~/.ki/server.json` (or `KI_HOME/server.json`). Config is `~/.ki/ki.toml` and `<cwd>/.ki/ki.toml`. The configured real provider is used by default; set `KI_FAKE=1` only for local plumbing tests.

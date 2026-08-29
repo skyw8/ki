@@ -52,7 +52,7 @@ var nonOverflowPatterns = []*regexp.Regexp{
 // IsContextOverflow reports whether an assistant message is a context overflow
 // error (stopReason "error" + matching provider message, minus exclusions).
 // The silent-overflow and length-stop cases from pi are covered by the
-// threshold check in maybeCompact via usage.Input+CacheRead.
+// threshold check in shouldCompact via EstimateTokens.
 func IsContextOverflow(m types.Message) bool {
 	if m.StopReason != "error" || m.ErrorMessage == "" {
 		return false
