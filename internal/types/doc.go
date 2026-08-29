@@ -6,6 +6,7 @@
 // ThinkingSignature, ThinkingData, TextSignature, and Message.ResponseID) is
 // persisted as opaque provider-owned state. StreamIndex is transient provider
 // parsing state and is not persisted. Message roles: user, assistant,
-// toolResult.
+// toolResult. Tool results persist their completion timestamp and durationMs
+// for diagnostics and UI replay.
 // This package imports no other internal packages.
 package types

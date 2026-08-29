@@ -141,7 +141,7 @@ function detailsFor(requestedWorkflow, effectiveWorkflow, result, extra: any = {
     fallbackTo: extra.fallbackTo ?? null,
     fallbackReason: extra.fallbackReason ?? null,
     query: result.query,
-    providerRuns: result.runs?.map((run) => ({ provider: run.provider, transport: run.transport, count: run.results?.length || 0 })) || [],
+    providerRuns: result.runs?.map((run) => ({ provider: run.provider, transport: run.transport, count: run.results?.length || 0, durationMs: run.durationMs })) || [],
     diagnostics: result.diagnostics || [],
     cacheHit: result.cacheHit === true,
     ...extra,
@@ -203,6 +203,7 @@ async function deepSearchTool(args, config, signal, id, toolCallId, sessionId) {
   const queries = normalizeQueries(args);
   if (!queries.length) return sourceResult("deep_web_search requires query or queries", {}, true);
   const options = mergeOptions(args, config);
+  const searchStartedAt = Date.now();
   // Workflow is intentionally read only from extension config. Exposing it in
   // the tool schema would let the model override the user's global setting.
   const requestedWorkflow = config.workflow;
@@ -243,7 +244,7 @@ async function deepSearchTool(args, config, signal, id, toolCallId, sessionId) {
   }
   cache.response(result.responseId, result);
   if (requestedWorkflow === "none") {
-    const details = detailsFor(requestedWorkflow, "none", result, { sourceCount: result.results.length, contentAvailable: result.results.some((item) => item.content), queryFailures });
+    const details = detailsFor(requestedWorkflow, "none", result, { searchDurationMs: Date.now() - searchStartedAt, sourceCount: result.results.length, contentAvailable: result.results.some((item) => item.content), queryFailures });
     await persistSearchEntry(sessionId, result, details);
     return sourceResult(sourcePackText(result), details);
   }
@@ -251,11 +252,11 @@ async function deepSearchTool(args, config, signal, id, toolCallId, sessionId) {
     try {
       recordProgress(id, toolCallId, { phase: "summary", status: "running" });
       const summary = await generateSummary(result, config, signal);
-      const details = detailsFor(requestedWorkflow, "auto-summary", result, { summary: summary.meta, sourceCount: result.results.length, queryFailures });
+      const details = detailsFor(requestedWorkflow, "auto-summary", result, { searchDurationMs: Date.now() - searchStartedAt, summary: summary.meta, sourceCount: result.results.length, queryFailures });
       await persistSearchEntry(sessionId, result, details);
       return sourceResult(summary.text, details);
     } catch (error) {
-      const details = detailsFor(requestedWorkflow, "none", result, { fallbackTo: "none", fallbackReason: safeError(error), summary: { fallbackUsed: true, fallbackReason: safeError(error), phase: "summary" }, sourceCount: result.results.length, queryFailures });
+      const details = detailsFor(requestedWorkflow, "none", result, { searchDurationMs: Date.now() - searchStartedAt, fallbackTo: "none", fallbackReason: safeError(error), summary: { fallbackUsed: true, fallbackReason: safeError(error), phase: "summary" }, sourceCount: result.results.length, queryFailures });
       await persistSearchEntry(sessionId, result, details);
       return sourceResult(sourcePackText(result), details);
     }

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"ki/internal/types"
 )
@@ -307,6 +308,57 @@ func TestRunToolThenSecondTurn(t *testing.T) {
 	}
 }
 
+type delayedTool struct {
+	oneTool
+	delay time.Duration
+}
+
+func (t delayedTool) Execute(ctx context.Context, args map[string]any) ToolResult {
+	select {
+	case <-time.After(t.delay):
+	case <-ctx.Done():
+	}
+	return t.oneTool.Execute(ctx, args)
+}
+
+func TestRunToolTimingIsReportedOnExecutionAndResultEvents(t *testing.T) {
+	const delay = 20 * time.Millisecond
+	var start, end Event
+	var result *types.Message
+	_, err := Run(context.Background(), "read it", nil, Config{
+		Streamer: &scripted{},
+		Tools:    []Tool{delayedTool{delay: delay}},
+	}, func(event Event) error {
+		switch event.Type {
+		case ToolExecutionStart:
+			start = event
+		case ToolExecutionEnd:
+			end = event
+		case MessageEnd:
+			if event.Message != nil && event.Message.Role == "toolResult" {
+				copy := *event.Message
+				result = &copy
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start.Timestamp == 0 || end.Timestamp == 0 || end.Timestamp < start.Timestamp {
+		t.Fatalf("tool event timestamps: start=%+v end=%+v", start, end)
+	}
+	if end.DurationMs < int64(delay/time.Millisecond) {
+		t.Fatalf("tool event duration = %dms, want at least %dms", end.DurationMs, delay/time.Millisecond)
+	}
+	if result == nil {
+		t.Fatal("missing tool result")
+	}
+	if result.DurationMs != end.DurationMs || result.Timestamp != end.Timestamp {
+		t.Fatalf("tool result timing = %+v, event timing = %+v", result, end)
+	}
+}
+
 // overflowStreamer fails once with a context-overflow error, then succeeds.
 type overflowStreamer struct {
 	n int
@@ -527,13 +579,20 @@ func TestRunValidateBlocksToolBeforeExecute(t *testing.T) {
 		t.Fatal("tool executed despite failing validation")
 	}
 	var tr *types.Message
+	var end Event
 	for _, e := range evs {
+		if e.Type == ToolExecutionEnd {
+			end = e
+		}
 		if e.Type == MessageEnd && e.Message != nil && e.Message.Role == "toolResult" {
 			tr = e.Message
 		}
 	}
 	if tr == nil || !tr.IsError || !strings.Contains(tr.Text(), "file_path: required field") {
 		t.Fatalf("toolResult should carry the validation error: %+v", tr)
+	}
+	if end.Timestamp == 0 || tr.Timestamp != end.Timestamp || tr.DurationMs != end.DurationMs {
+		t.Fatalf("validation timing: result=%+v end=%+v", tr, end)
 	}
 }
 

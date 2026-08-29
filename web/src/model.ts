@@ -394,10 +394,15 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
   if (m.role === 'toolResult') {
     const text = messageText(m)
     const tid = m.toolCallId || id
+    const finishedAt = tsMs(m, stamp)
+    const startedAt = finishedAt != null && m.durationMs != null
+      ? finishedAt - Math.max(0, m.durationMs)
+      : undefined
     patchTool(s, tid, {
       result: text,
       isError: m.isError,
       durationMs: m.durationMs,
+	  startedAt,
 	  details: m.details ?? (m.toolName === 'apply_patch' ? { status: 'failed', exact: true, changes: [] } : undefined),
       running: false,
       name: m.toolName,
@@ -424,10 +429,11 @@ function compactArgs(args: unknown): string {
   }
 }
 
-function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { kind: 'tool' }>> & { output?: unknown }) {
+function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { kind: 'tool' }>> & { startedAt?: number }) {
+  const { startedAt, ...nodePatch } = patch
   s.nodes = s.nodes.map(n => {
     if (n.kind !== 'tool' || n.id !== id) return n
-    return { ...n, ...patch, running: patch.running ?? n.running }
+    return { ...n, ...nodePatch, running: patch.running ?? n.running }
   })
   s.records = s.records.map(r => {
     if (r.kind !== 'tool' || r.id !== id) return r
@@ -438,6 +444,7 @@ function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { 
       running: patch.running ?? r.running,
       error: patch.isError ?? r.error,
       durationMs: patch.durationMs ?? r.durationMs,
+	  startedAt: startedAt ?? r.startedAt,
       name: patch.name || r.name,
 	  details: patch.details ?? r.details,
       preview: previewOf((patch.name || r.name || 'tool') + ' ' + (result || compactArgs(r.input))),
@@ -511,6 +518,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
       break
     case 'tool_execution_start':
       if (ev.toolCallId) {
+        const startedAt = ev.timestamp ?? Date.now()
         const existing = next.nodes.some(n => n.kind === 'tool' && n.id === ev.toolCallId)
         if (!existing) {
           next.nodes.push({
@@ -528,11 +536,14 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
             input: ev.args,
             name: ev.toolName,
             running: true,
-            startedAt: Date.now(),
+            startedAt,
           })
         } else {
           patchTool(next, ev.toolCallId, { running: true, args: ev.args, name: ev.toolName })
         }
+        next.records = next.records.map(r => r.kind === 'tool' && r.id === ev.toolCallId
+          ? { ...r, startedAt, running: true }
+          : r)
       }
       break
 	case 'patch_apply_updated':
@@ -569,6 +580,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
           result: toolResultText(ev.result),
           isError: ev.isError,
           running: false,
+          durationMs: ev.durationMs,
           name: ev.toolName,
 		  details: resultDetails ?? (ev.toolName === 'apply_patch' ? { status: 'failed', exact: true, changes: [] } : undefined),
         })

@@ -79,6 +79,8 @@ export type LoopEvent = {
 	runId?: string
 	external?: Record<string, string>
 	entryId?: string
+	timestamp?: number
+	durationMs?: number
   message?: Message
   toolCallId?: string
   toolName?: string

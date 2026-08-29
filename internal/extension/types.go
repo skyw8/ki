@@ -14,6 +14,7 @@ type Event struct {
 	Type         string            `json:"type"`
 	SessionID    string            `json:"sessionId,omitempty"`
 	Role         string            `json:"role,omitempty"`
+	Timestamp    int64             `json:"timestamp,omitempty"`
 	ToolCallID   string            `json:"toolCallId,omitempty"`
 	ToolName     string            `json:"toolName,omitempty"`
 	IsError      bool              `json:"isError,omitempty"`

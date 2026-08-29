@@ -37,6 +37,12 @@ sideband 事件可以并发到达。
 Patch 预览和部分 sideband 会按各自的 server 路径持久化。并非每个 SSE
 事件都会推进 conversation leaf。
 
+`tool_execution_start` 带 `timestamp`（Unix 毫秒）作为调用开始时间；
+`tool_execution_end` 带完成时间 `timestamp` 和 `durationMs`。耗时覆盖
+工具执行及 `AfterTool`；校验、拦截和未知工具也会产生有计时的成对事件
+和 toolResult。toolResult message 会携带同一组 `timestamp` / `durationMs`
+并落入 jsonl；start/end 本身仍是实时事件，不单独生成 conversation entry。
+
 ## Extension lifecycle 事件
 
 只有下列事件名可以被扩展订阅。`sync` 可以影响当前操作；`async` 是持久化

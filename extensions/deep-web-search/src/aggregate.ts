@@ -57,10 +57,10 @@ function mergeResults(runs, limit) {
   return chosen;
 }
 
-function providerError(provider, error) {
+function providerError(provider, error, durationMs) {
   const message = error instanceof Error ? error.message : String(error);
   const status = message.match(/(?:http-|HTTP |status )([45]\d\d)/i)?.[1];
-  return { provider, ok: false, error: compactText(message, 320), category: status === "401" ? "auth" : status === "429" ? "rate-limit" : message.toLowerCase().includes("network") || message.toLowerCase().includes("fetch") ? "network" : "provider" };
+  return { provider, ok: false, durationMs, error: compactText(message, 320), category: status === "401" ? "auth" : status === "429" ? "rate-limit" : message.toLowerCase().includes("network") || message.toLowerCase().includes("fetch") ? "network" : "provider" };
 }
 
 export async function aggregateSearch(query, options, config, signal, onProgress: (partial: any) => void = () => {}) {
@@ -82,19 +82,26 @@ export async function aggregateSearch(query, options, config, signal, onProgress
     active.push(provider);
   }
   if (!active.length) throw new Error("provider-config-error: no enabled provider has usable credentials");
-  const settled = await Promise.allSettled(active.map(async (provider) => {
+  const settled = await Promise.all(active.map(async (provider) => {
+    const startedAt = Date.now();
     onProgress({ phase: "provider", provider, status: "running" });
-    const result = await searchProvider(provider, query, options, config, signal);
-    onProgress({ phase: "provider", provider, status: "done", count: result.results?.length || 0 });
-    return result;
+    try {
+      const result = await searchProvider(provider, query, options, config, signal);
+      const durationMs = Date.now() - startedAt;
+      onProgress({ phase: "provider", provider, status: "done", count: result.results?.length || 0, durationMs });
+      return { provider, result, durationMs, ok: true };
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      onProgress({ phase: "provider", provider, status: "failed", error: compactText(error instanceof Error ? error.message : String(error), 320), durationMs });
+      return { provider, error, durationMs, ok: false };
+    }
   }));
-  settled.forEach((item, index) => {
-    const provider = active[index];
-    if (item.status === "fulfilled") {
-      runs.push({ ...item.value, provider });
-      diagnostics.push({ provider, ok: true, transport: (item.value as any).transport, count: item.value.results?.length || 0 });
+  settled.forEach((item) => {
+    if (item.ok) {
+      runs.push({ ...item.result, provider: item.provider, durationMs: item.durationMs });
+      diagnostics.push({ provider: item.provider, ok: true, durationMs: item.durationMs, transport: (item.result as any).transport, count: item.result.results?.length || 0 });
     } else {
-      diagnostics.push(providerError(provider, item.reason));
+      diagnostics.push(providerError(item.provider, item.error, item.durationMs));
     }
   });
   if (!runs.length) throw new Error(`provider-failed: ${diagnostics.map((item) => `${item.provider}: ${item.error || "no results"}`).join("; ")}`);

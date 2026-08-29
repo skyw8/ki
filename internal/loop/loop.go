@@ -70,8 +70,14 @@ const (
 
 // Event is a loop event (pi field names).
 type Event struct {
-	Type                  EventType         `json:"type"`
-	EntryID               string            `json:"entryId,omitempty"`
+	Type    EventType `json:"type"`
+	EntryID string    `json:"entryId,omitempty"`
+	// Timestamp is Unix milliseconds. Tool execution start/end events use it
+	// as the authoritative start/completion wall-clock time.
+	Timestamp int64 `json:"timestamp,omitempty"`
+	// DurationMs is the elapsed time for one tool call, including execution and
+	// the optional AfterTool hook.
+	DurationMs            int64             `json:"durationMs,omitempty"`
 	Message               *types.Message    `json:"message,omitempty"`
 	Messages              []types.Message   `json:"messages,omitempty"`
 	ToolResults           []types.Message   `json:"toolResults,omitempty"`
@@ -705,11 +711,10 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 		if c.ToolType == "custom" {
 			args = map[string]any{"input": c.Input}
 		}
-		_ = emit(Event{Type: ToolExecutionStart, ToolCallID: c.ID, ToolName: c.Name, Args: args})
-		p := prep{call: c}
 		if args == nil {
 			args = map[string]any{}
 		}
+		p := prep{call: c, args: args}
 		t, ok := byName[c.Name]
 		if !ok {
 			m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: "unknown tool " + c.Name}}, IsError: true}
@@ -735,6 +740,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 				continue
 			}
 			args, p.terminate = a, term
+			p.args = args
 			if b {
 				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: r}}, IsError: true}
 				p.immediate = &m
@@ -749,12 +755,32 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 	// Phase 2: execute.
 	run := func(i int) {
 		p := preps[i]
+		startedAt := time.Now()
+		_ = emit(Event{
+			Type:       ToolExecutionStart,
+			Timestamp:  startedAt.UnixMilli(),
+			ToolCallID: p.call.ID,
+			ToolName:   p.call.Name,
+			Args:       p.args,
+		})
 		if p.immediate != nil {
-			out[i] = *p.immediate
-			_ = emit(Event{Type: ToolExecutionEnd, ToolCallID: p.call.ID, ToolName: p.call.Name, IsError: true})
+			finishedAt := time.Now()
+			dur := finishedAt.Sub(startedAt).Milliseconds()
+			msg := *p.immediate
+			msg.DurationMs = dur
+			msg.Timestamp = finishedAt.UnixMilli()
+			out[i] = msg
+			_ = emit(Event{
+				Type:       ToolExecutionEnd,
+				Timestamp:  finishedAt.UnixMilli(),
+				DurationMs: dur,
+				ToolCallID: p.call.ID,
+				ToolName:   p.call.Name,
+				Args:       p.args,
+				IsError:    true,
+			})
 			return
 		}
-		start := time.Now()
 		var res ToolResult
 		if p.call.ToolType == "custom" {
 			raw, _ := p.args["input"].(string)
@@ -784,7 +810,8 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 				res = nr
 			}
 		}
-		dur := time.Since(start).Milliseconds()
+		finishedAt := time.Now()
+		dur := finishedAt.Sub(startedAt).Milliseconds()
 		msg := types.Message{
 			Role:       "toolResult",
 			ToolCallID: p.call.ID,
@@ -794,12 +821,21 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			Details:    res.Details,
 			IsError:    res.IsError,
 			DurationMs: dur,
-			Timestamp:  time.Now().UnixMilli(),
+			Timestamp:  finishedAt.UnixMilli(),
 		}
 		out[i] = msg
 		p.terminate = p.terminate || res.Terminate
 		preps[i] = p
-		_ = emit(Event{Type: ToolExecutionEnd, ToolCallID: p.call.ID, ToolName: p.call.Name, Args: p.args, Result: res, IsError: res.IsError})
+		_ = emit(Event{
+			Type:       ToolExecutionEnd,
+			Timestamp:  finishedAt.UnixMilli(),
+			DurationMs: dur,
+			ToolCallID: p.call.ID,
+			ToolName:   p.call.Name,
+			Args:       p.args,
+			Result:     res,
+			IsError:    res.IsError,
+		})
 	}
 	if cfg.Parallel {
 		var wg sync.WaitGroup
@@ -839,6 +875,10 @@ func rejectToolCalls(calls []types.Content, emit func(Event) error) []types.Mess
 		if c.ToolType == "custom" {
 			args = map[string]any{"input": c.Input}
 		}
+		startedAt := time.Now()
+		_ = emit(Event{Type: ToolExecutionStart, Timestamp: startedAt.UnixMilli(), ToolCallID: c.ID, ToolName: c.Name, Args: args})
+		finishedAt := time.Now()
+		dur := finishedAt.Sub(startedAt).Milliseconds()
 		msg := types.Message{
 			Role:       "toolResult",
 			ToolCallID: c.ID,
@@ -846,11 +886,11 @@ func rejectToolCalls(calls []types.Content, emit func(Event) error) []types.Mess
 			ToolType:   c.ToolType,
 			Content: []types.Content{{Type: "text", Text: fmt.Sprintf(
 				"Tool call %q was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.", c.Name)}},
-			IsError:   true,
-			Timestamp: time.Now().UnixMilli(),
+			IsError:    true,
+			DurationMs: dur,
+			Timestamp:  finishedAt.UnixMilli(),
 		}
-		_ = emit(Event{Type: ToolExecutionStart, ToolCallID: c.ID, ToolName: c.Name, Args: args})
-		_ = emit(Event{Type: ToolExecutionEnd, ToolCallID: c.ID, ToolName: c.Name, IsError: true})
+		_ = emit(Event{Type: ToolExecutionEnd, Timestamp: finishedAt.UnixMilli(), DurationMs: dur, ToolCallID: c.ID, ToolName: c.Name, IsError: true})
 		out = append(out, msg)
 	}
 	return out

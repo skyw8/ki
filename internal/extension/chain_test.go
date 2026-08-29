@@ -140,9 +140,17 @@ func TestRedactEventIncludesAssistantFailure(t *testing.T) {
 	message := types.Message{
 		Role: "assistant", StopReason: "error", ErrorMessage: "Responses stream is invalid",
 	}
-	event := RedactEvent(loop.Event{Type: loop.MessageEnd, Message: &message}, "session-1")
-	if !event.IsError || event.StopReason != "error" || event.ErrorMessage != "Responses stream is invalid" {
+	event := RedactEvent(loop.Event{Type: loop.MessageEnd, Timestamp: 123, DurationMs: 17, Message: &message}, "session-1")
+	if !event.IsError || event.StopReason != "error" || event.ErrorMessage != "Responses stream is invalid" || event.Timestamp != 123 || event.DurationMs != 17 {
 		t.Fatalf("redacted failure: %+v", event)
+	}
+}
+
+func TestRedactEventIncludesToolTiming(t *testing.T) {
+	message := types.Message{Role: "toolResult", Timestamp: 100, DurationMs: 8}
+	event := RedactEvent(loop.Event{Type: loop.MessageEnd, Message: &message}, "session-1")
+	if event.Timestamp != 100 || event.DurationMs != 8 {
+		t.Fatalf("redacted tool timing: %+v", event)
 	}
 }
 

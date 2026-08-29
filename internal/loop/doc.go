@@ -7,6 +7,8 @@
 // compaction_start/end (reason + ok), plus request_header (system + tools
 // snapshot after turn_start, before stream) and patch_apply_updated for
 // syntax-only previews of streamed apply_patch arguments.
+// Tool execution start/end events carry Unix-millisecond timestamps and the
+// end event carries durationMs; the same duration is persisted on toolResult.
 // Tool specs default to JSON functions; ToolSpecProvider and FreeformTool add
 // grammar-backed custom tools without changing existing function executors.
 // Tools run in two phases (pi prepare/execute): synchronous prepare resolves

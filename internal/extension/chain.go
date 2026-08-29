@@ -151,9 +151,11 @@ func RedactEvent(ev loop.Event, sessionID string) Event {
 		Type:       string(ev.Type),
 		SessionID:  sessionID,
 		RunID:      ev.RunID,
+		Timestamp:  ev.Timestamp,
 		ToolCallID: ev.ToolCallID,
 		ToolName:   ev.ToolName,
 		IsError:    ev.IsError,
+		DurationMs: ev.DurationMs,
 		Reason:     ev.Reason,
 		OK:         ev.OK,
 		Provider:   ev.Provider,
@@ -165,6 +167,12 @@ func RedactEvent(ev loop.Event, sessionID string) Event {
 		out.Text = ev.Message.Text()
 		out.StopReason = ev.Message.StopReason
 		out.ErrorMessage = ev.Message.ErrorMessage
+		if out.Timestamp == 0 {
+			out.Timestamp = ev.Message.Timestamp
+		}
+		if ev.Message.Role == "toolResult" && out.DurationMs == 0 {
+			out.DurationMs = ev.Message.DurationMs
+		}
 		out.IsError = out.IsError || ev.Message.IsError || ev.Message.StopReason == "error"
 	}
 	if ev.AssistantMessageEvent != nil && ev.AssistantMessageEvent.Delta != "" {

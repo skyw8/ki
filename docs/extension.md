@@ -101,6 +101,7 @@ my-ext/
 - 声明了 `lifecycle` 但没有任何有效订阅：**整包加载失败**。
 - **sync**：停靠点 `lifecycle.invoke`（`event` + payload + `ctx`），await，应用 result。
 - **async**：persist/SSE **之后** notification `lifecycle.event`；瘦 DTO；fail-open。同一 run 的通知保持 loop 产生顺序，尤其 `message_end` 必须先于该 run 的 `agent_settled`。
+- 异步 `tool_execution_start/end` DTO 带 Unix 毫秒 `timestamp`；end 还带 `durationMs`，便于扩展记录工具执行耗时。
 - 同一 event：先 sync 链，再 async（async 见最终态）。
 - 链序：全局按名。
 - `before_agent_start`：**每个 occupy 一次**；steer 不重跑。每 turn 改 messages 用 `context`。

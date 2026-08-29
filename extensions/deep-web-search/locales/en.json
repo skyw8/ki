@@ -2,7 +2,7 @@
   "manifest.description": "Four-provider parallel web search with source cleaning, content extraction, evidence checks, and automatic summary fallback.",
   "config.hint": "Configure search defaults and the connection for each source.",
   "config.globalTitle": "Global search settings",
-  "config.globalHint": "Control default sources, models, the result workflow, and content handling.",
+  "config.globalHint": "Control default sources, the result workflow, and content handling.",
   "config.providersTitle": "Provider configuration",
   "config.providersHint": "Configure credentials as needed; unavailable sources can still be disabled above.",
   "config.exaKey": "Exa API key",

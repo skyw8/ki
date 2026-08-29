@@ -35,9 +35,11 @@ choice for an individual call:
 When `queries` contains multiple search strings, all queries are started in
 parallel. Each query also starts all enabled providers in parallel; a provider
 failure is isolated and successful query/provider results are still aggregated.
+Tool result details include `searchDurationMs`, plus each successful provider's
+`durationMs` in `providerRuns` and each failed provider's `durationMs` in
+`diagnostics`.
 
 The source implementation uses only Node standard-library modules. The
-generated `dist/` output is ignored by Git and built before the sidecar starts.
-Run `npm install` once in a fresh checkout; the runtime then runs
-`npm run build` automatically. Run `npm test` from this directory for protocol
-and toggle tests.
+checked-in `dist/main.js` is a small loader so the extension runs without an
+install step. Run `npm test` from this directory for protocol and toggle
+tests.

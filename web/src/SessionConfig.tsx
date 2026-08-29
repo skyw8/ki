@@ -694,20 +694,6 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 						<div className="form-grid two deep-web-search-global-fields">
 							<label className="form-control"><span>{copy('config.provider')}</span><select data-testid="deep-web-search-provider" value={provider} onChange={event => setProvider(event.target.value)}><option value="all">{copy('option.provider.all')}</option><option value="auto">{copy('option.provider.auto')}</option><option value="codex">{copy('option.provider.codex')}</option><option value="exa">{copy('option.provider.exa')}</option><option value="tinyfish">{copy('option.provider.tinyfish')}</option><option value="duckduckgo">{copy('option.provider.duckduckgo')}</option></select></label>
 							<label className="form-control"><span>{copy('config.workflow')}</span><select data-testid="deep-web-search-workflow" value={workflow} onChange={event => setWorkflow(event.target.value === 'auto-summary' ? 'auto-summary' : 'none')}><option value="none">{copy('option.workflow.none')}</option><option value="auto-summary">{copy('option.workflow.auto-summary')}</option></select></label>
-							<ExtensionModelPicker
-								fieldLabel={copy('config.codexModel')}
-								hint={copy('config.codexModelHint')}
-								emptyLabel={copy('config.modelUnavailable')}
-								emptyDetail={copy('config.modelUnavailable')}
-								customDetail={copy('config.modelCustom')}
-								dialogTitle={copy('config.codexModelPickerTitle')}
-								testid="deep-web-search-codex-model-picker"
-								dialogTestid="deep-web-search-codex-model-dialog"
-								value={codexModel}
-								pickerValue={codexModelSpec}
-								models={codexModels}
-								onSelect={spec => setCodexModel(spec.slice('openai-codex/'.length))}
-							/>
 							<label className="form-control"><span>{copy('config.maxResults')}</span><input data-testid="deep-web-search-max-results" type="number" min={1} max={20} value={maxResults} onChange={event => setMaxResults(Number(event.target.value))} /></label>
 							<ExtensionModelPicker
 								fieldLabel={copy('config.summaryModel')}
@@ -737,7 +723,23 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 						<div className="deep-web-search-provider-list">
 							<article className="deep-web-search-provider-row">
 								<div className="deep-web-search-provider-copy"><div className="deep-web-search-provider-title"><span className="deep-web-search-provider-mark codex" aria-hidden /> <strong>{providerCopy.codex.name}</strong><span className="deep-web-search-provider-status">{copy('provider.codexStatus')}</span></div><p>{providerCopy.codex.description}</p></div>
-								<div className="deep-web-search-provider-value"><span className="deep-web-search-provider-badge">{copy('status.connected')}</span><code>codex-oauth</code></div>
+								<div className="deep-web-search-provider-controls deep-web-search-provider-controls-codex">
+									<ExtensionModelPicker
+										fieldLabel={copy('config.codexModel')}
+										hint={copy('config.codexModelHint')}
+										emptyLabel={copy('config.modelUnavailable')}
+										emptyDetail={copy('config.modelUnavailable')}
+										customDetail={copy('config.modelCustom')}
+										dialogTitle={copy('config.codexModelPickerTitle')}
+										testid="deep-web-search-codex-model-picker"
+										dialogTestid="deep-web-search-codex-model-dialog"
+										value={codexModel}
+										pickerValue={codexModelSpec}
+										models={codexModels}
+										onSelect={spec => setCodexModel(spec.slice('openai-codex/'.length))}
+									/>
+									<div className="deep-web-search-provider-value"><span className="deep-web-search-provider-badge">{copy('status.connected')}</span><code>codex-oauth</code></div>
+								</div>
 							</article>
 							<article className="deep-web-search-provider-row">
 								<div className="deep-web-search-provider-copy"><div className="deep-web-search-provider-title"><span className="deep-web-search-provider-mark exa" aria-hidden /> <strong>{providerCopy.exa.name}</strong></div><p>{providerCopy.exa.description}</p></div>

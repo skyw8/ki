@@ -128,6 +128,58 @@ test('freerouter config form edits fields without raw JSON', async ({ page, requ
   await request.patch('/v1/extensions', { headers, data: { disabled: [name] } })
 })
 
+test('deep web search keeps the Codex model with the Codex provider', async ({ page, request }) => {
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const name = 'deep-web-search'
+  const dir = join(home, 'extensions', name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'extension.json'), JSON.stringify({
+    name,
+    capabilities: ['settings'],
+    config: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          codexModel: { type: 'string' },
+          provider: { type: 'string' },
+          providerToggles: { type: 'object' },
+          maxResults: { type: 'integer' },
+          summaryModel: { type: 'string' },
+          workflow: { type: 'string' },
+          fetchContent: { type: 'boolean' },
+        },
+      },
+      defaults: { codexModel: 'gpt-5.5', provider: 'all', maxResults: 5, summaryModel: '', workflow: 'none', fetchContent: false },
+    },
+    runtime: { kind: 'rpc', command: process.execPath, args: [join(repo, 'extensions/deep-web-search/dist/main.js')] },
+  }))
+
+  await page.goto('/')
+  await reloadServer(page, request)
+  const headers = { Authorization: `Bearer ${await tokenOf(page)}` }
+  const listed = await request.get('/v1/extensions', { headers })
+  const catalog = await listed.json() as { items?: { name: string }[] }
+  await request.patch('/v1/extensions', {
+    headers,
+    data: { disabled: (catalog.items ?? []).map(item => item.name).filter(item => item !== name) },
+  })
+  await reloadServer(page, request)
+  await page.reload()
+
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-extensions').click()
+  await page.getByTestId(`cfg-configure-${name}`).click()
+  await expect(page.getByTestId(`extension-config-${name}`)).toBeVisible({ timeout: 15_000 })
+
+  const global = page.locator('[aria-labelledby="deep-web-search-global-title"]')
+  const providers = page.locator('[aria-labelledby="deep-web-search-providers-title"]')
+  await expect(global.getByTestId('deep-web-search-codex-model-picker')).toHaveCount(0)
+  await expect(providers.getByTestId('deep-web-search-codex-model-picker')).toBeVisible()
+
+  await request.patch('/v1/extensions', { headers, data: { disabled: [name] } })
+})
+
 test('extension ui.setStatus chip opens panel modal', async ({ page, request }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const bin = join(tmpdir(), 'ki-pw-ext-ui-sidecar')

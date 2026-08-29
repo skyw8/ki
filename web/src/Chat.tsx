@@ -27,6 +27,12 @@ function fmtTs(ts?: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+function fmtDuration(ms?: number): string {
+  if (ms == null) return ''
+  if (ms < 1000) return `${Math.round(ms)} ms`
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`
+}
+
 function fmtFileSize(size?: number): string {
   if (size == null) return ''
   if (size < 1024) return `${size} B`
@@ -184,6 +190,7 @@ function ToolRow({
         </button>
         {line ? <span className="tool-sep" aria-hidden /> : null}
         {line ? <span className={`tool-preview${fail ? ' err' : ''}`} data-testid="tool-preview" title={line}>{line}</span> : null}
+        {!node.running && node.durationMs != null ? <span className="tool-duration" data-testid="tool-duration">{fmtDuration(node.durationMs)}</span> : null}
         {copyValue ? (
           <IconBtn label={t('chat.copy')} testid="copy-tool" onClick={() => copyText(copyValue)}><ICopy /></IconBtn>
         ) : null}
