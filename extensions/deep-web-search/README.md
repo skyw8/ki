@@ -37,6 +37,7 @@ parallel. Each query also starts all enabled providers in parallel; a provider
 failure is isolated and successful query/provider results are still aggregated.
 
 The source implementation uses only Node standard-library modules. The
-checked-in `dist/main.js` is a small loader so the extension runs without an
-install step. Run `npm test` from this directory for protocol and toggle
-tests.
+generated `dist/` output is ignored by Git and built before the sidecar starts.
+Run `npm install` once in a fresh checkout; the runtime then runs
+`npm run build` automatically. Run `npm test` from this directory for protocol
+and toggle tests.
