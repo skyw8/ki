@@ -52,6 +52,7 @@
   "runtime": {
     "kind": "rpc",
     "command": "node",
-    "args": ["dist/main.js"]
+    "args": ["dist/main.js"],
+    "install": ["npm", "run", "build"]
   }
 }

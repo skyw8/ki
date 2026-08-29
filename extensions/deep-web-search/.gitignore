@@ -6,6 +6,7 @@ cache.json
 
 # Local development dependencies.
 node_modules/
+dist/
 
 # OS/editor files.
 .DS_Store
