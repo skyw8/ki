@@ -5,6 +5,14 @@ export type Lang = 'zh' | 'en'
 export const LANG_KEY = 'ki-lang'
 
 const zh = {
+  'auth.title': '登录 Ki',
+  'auth.subtitle': '输入 Ki token 以建立安全会话。',
+  'auth.token': 'Ki token',
+  'auth.placeholder': '粘贴 server.json 中的 token',
+  'auth.submit': '登录',
+  'auth.loggingIn': '登录中…',
+  'auth.invalid': 'token 无效。',
+  'auth.checking': '正在检查登录状态…',
   'settings.title': '设置',
 	'settings.providers': '模型供应商',
 	'settings.skills': 'Skills',
@@ -251,6 +259,14 @@ const zh = {
 export type MsgKey = keyof typeof zh
 
 const en: Record<MsgKey, string> = {
+  'auth.title': 'Sign in to Ki',
+  'auth.subtitle': 'Enter the Ki token to start a secure session.',
+  'auth.token': 'Ki token',
+  'auth.placeholder': 'Paste the token from server.json',
+  'auth.submit': 'Sign in',
+  'auth.loggingIn': 'Signing in…',
+  'auth.invalid': 'Invalid token.',
+  'auth.checking': 'Checking sign-in status…',
   'settings.title': 'Settings',
 	'settings.providers': 'Model providers',
 	'settings.skills': 'Skills',

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ApiError, Client, boot } from './api'
+import { ApiError, Client } from './api'
+import { AuthLoading, LoginScreen } from './AuthScreen'
 import { ChatView } from './Chat'
 import { Composer, type Draft } from './Composer'
 import { AttachmentBrowser } from './AttachmentBrowser'
@@ -123,10 +124,23 @@ function Modal({ title, onClose, children, testid, wide, className }: { title: s
 }
 
 export function App() {
+  const api = useMemo(() => new Client(), [])
+  const [auth, setAuth] = useState<'checking' | 'required' | 'authenticated'>('checking')
+
+  useEffect(() => {
+    void api.authStatus()
+      .then(status => setAuth(status.authenticated ? 'authenticated' : 'required'))
+      .catch(() => setAuth('required'))
+  }, [api])
+
+  if (auth === 'checking') return <AuthLoading />
+  if (auth === 'required') return <LoginScreen api={api} onLogin={() => setAuth('authenticated')} />
+  return <WorkspaceApp api={api} />
+}
+
+function WorkspaceApp({ api }: { api: Client }) {
   const { t, lang, setLang } = useI18n()
   const untitled = t('session.untitled')
-  const cfg = useMemo(() => boot(), [])
-  const api = useMemo(() => new Client(cfg.token), [cfg.token])
   const [dark, setDark] = useState(() => localStorage.getItem('ki-theme') === 'dark')
   const [collapsed, setCollapsed] = useState(false)
   const [settled, setSettled] = useState(false)

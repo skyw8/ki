@@ -241,8 +241,7 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(userActions.getByTestId('edit-msg')).toBeVisible()
 
   const listed = await page.evaluate(async () => {
-    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
-    const res = await fetch('/v1/sessions', { headers: { Authorization: `Bearer ${token}` } })
+    const res = await fetch('/v1/sessions', { credentials: 'same-origin' })
     if (!res.ok) throw new Error(`list ${res.status}`)
     return res.json() as Promise<Array<{ title?: string }>>
   })
@@ -303,9 +302,7 @@ test('edit branches in place with attachments and fork opens a new session', asy
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
 
   const before = await page.evaluate(async () => {
-    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
-    const headers = { Authorization: `Bearer ${token}` }
-    const sessions = await fetch('/v1/sessions', { headers }).then(r => r.json()) as Array<{ id: string; cwd: string; title?: string }>
+    const sessions = await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as Array<{ id: string; cwd: string; title?: string }>
     return { count: sessions.length, cwd: sessions.find(s => (s.title ?? '').includes('branch-original'))!.cwd }
   })
   writeFileSync(join(before.cwd, 'edit-attachment.txt'), 'attachment marker')
@@ -373,16 +370,14 @@ test('edit branches in place with attachments and fork opens a new session', asy
 
   await page.getByTestId('fork-msg').click()
   await expect.poll(async () => page.evaluate(async () => {
-    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
-    return (await fetch('/v1/sessions', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()) as unknown[]).length
+    return (await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as unknown[]).length
   })).toBe(before.count + 1)
   await expect(page.getByTestId('user-bubble')).toContainText(edited)
 
   await page.getByTestId('regen-msg').click()
   await expect(page.locator('.branch-nav')).toContainText('2 / 2')
   await expect.poll(async () => page.evaluate(async () => {
-    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
-    return (await fetch('/v1/sessions', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()) as unknown[]).length
+    return (await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as unknown[]).length
   })).toBe(before.count + 1)
 })
 
@@ -416,10 +411,8 @@ test('new session keeps the current model and thinking effort', async ({ page })
   await expect(chip).toHaveText('gpt-5.6-terra')
   await expect(thinking).toHaveText('high')
   const created = await page.evaluate(async () => {
-    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
-    const headers = { Authorization: `Bearer ${token}` }
-    const sessions = await fetch('/v1/sessions', { headers }).then(r => r.json()) as Array<{ id: string }>
-    return fetch(`/v1/sessions/${sessions[0].id}`, { headers }).then(r => r.json()) as Promise<{ provider: string; model: string; thinkingEffort?: string }>
+    const sessions = await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as Array<{ id: string }>
+    return fetch(`/v1/sessions/${sessions[0].id}`, { credentials: 'same-origin' }).then(r => r.json()) as Promise<{ provider: string; model: string; thinkingEffort?: string }>
   })
   expect(created.provider).toBe('openai')
   expect(created.model).toBe('gpt-5.6-terra')
@@ -613,11 +606,9 @@ test('info reload failure shows a toast on the info page', async ({ page }) => {
 
 async function sessionQueue(page: Page): Promise<{ running: boolean; texts: string[] }> {
   return page.evaluate(async () => {
-    const token = (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? ''
-    const headers = { Authorization: `Bearer ${token}` }
-    const list = await fetch('/v1/sessions', { headers }).then(r => r.json()) as Array<{ id: string; running?: boolean; title?: string }>
+    const list = await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as Array<{ id: string; running?: boolean; title?: string }>
     const s = list.find(x => x.running) || list.find(x => (x.title ?? '').includes('e2e-hold')) || list[0]
-    const d = await fetch(`/v1/sessions/${s.id}`, { headers }).then(r => r.json()) as { running?: boolean; queued?: Array<{ content?: Array<{ text?: string }> }> }
+    const d = await fetch(`/v1/sessions/${s.id}`, { credentials: 'same-origin' }).then(r => r.json()) as { running?: boolean; queued?: Array<{ content?: Array<{ text?: string }> }> }
     return {
       running: !!d.running,
       texts: (d.queued ?? []).map(q => (q.content ?? []).map(c => c.text ?? '').join(' ')),

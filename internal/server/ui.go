@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -62,13 +61,7 @@ func (s *Server) writeIndex(w http.ResponseWriter, root fs.FS) {
 		http.Error(w, "web ui not built (cd web && npm run build)", http.StatusServiceUnavailable)
 		return
 	}
-	boot, err := json.Marshal(map[string]string{"token": s.token})
-	if err != nil {
-		http.Error(w, "failed to render web UI", http.StatusInternalServerError)
-		return
-	}
-	html := strings.Replace(string(b), "__KI_BOOT__", string(boot), 1)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = io.WriteString(w, html)
+	_, _ = io.WriteString(w, string(b))
 }

@@ -13,7 +13,8 @@ On Windows, Ki looks for Git Bash through `KI_GIT_BASH_PATH`, `CLAUDE_CODE_GIT_B
 ## Run
 
 ```bash
-# dev loop: build + run in a tmux session (window `server`, shell `cli`)
+# dev loop: build + run in a tmux session; listens on all IPv4 interfaces by default
+# open the WebUI with the host's LAN IP, or pass --addr to narrow the listener
 scripts/run.sh
 
 # open the WebUI (starts a detached server and tries to open a browser)
@@ -43,7 +44,7 @@ scripts/run.sh
 ./ki provider logout <provider>
 ```
 
-Auth is a Bearer token in `~/.ki/server.json` (or `KI_HOME/server.json`). Config is `~/.ki/ki.toml` and `<cwd>/.ki/ki.toml`. The configured real provider is used by default; set `KI_FAKE=1` only for local plumbing tests.
+API auth is a Bearer token from `~/.ki/server.json` (or `KI_HOME/server.json`) for CLI clients. The WebUI asks for that token once and exchanges it for a short-lived HttpOnly browser session; the token is not embedded in HTML or URLs. Config is `~/.ki/ki.toml` and `<cwd>/.ki/ki.toml`. The configured real provider is used by default; set `KI_FAKE=1` only for local plumbing tests.
 
 ## Test
 

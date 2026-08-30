@@ -1,7 +1,11 @@
 // Package server is the local HTTP backend. It orchestrates loop, session
 // persist, tools, and providers. The same process serves the embedded WebUI.
 //
-// Auth is Bearer token except GET /v1/health. Query ?token= is also accepted.
+// API auth is Bearer token or a browser session cookie, except GET /v1/health
+// and the auth status/login endpoints. Browser login exchanges the bearer
+// secret for an HttpOnly session cookie and a separate CSRF token; the token
+// is never embedded in the SPA HTML. Unsafe browser requests must echo the
+// CSRF token in X-Ki-CSRF. The CLI continues to use Bearer auth.
 // Provider CRUD manages the offline registry and credentials; provider
 // globally discovered extensions add process-level sidecar runtimes and read-only catalog entries;
 // GET /v1/models
@@ -30,7 +34,9 @@
 // persist on jsonl/SSE.
 // Non-/v1 paths serve the SPA. Unknown non-asset paths also serve index.html
 // in place (do not 302 to "/": port-forwards would leave the page blank).
-// index.html gets the token injected. The UI is used behind port-forwards.
+// The SPA shell contains no server secret; it establishes a browser session
+// through the auth endpoints before calling the API. The UI is used behind
+// port-forwards and on explicitly configured private listeners.
 // A second prompt on a busy session steers or queues (toggles message.busy,
 // overridable with delivery). queueId + delivery=steer takes that queued item
 // into the captured run's Inbox. parentId while busy is 409. message_end awaits jsonl

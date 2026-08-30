@@ -31,10 +31,13 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 
 ## HTTP
 
-除 `GET /v1/health` 外都要 `Authorization: Bearer`（也认 `?token=`）。非 `/v1` 路径是同域 WebUI，`index.html` 注入 token。
+除 `GET /v1/health`、`GET /v1/auth/status` 和 `POST /v1/auth/login` 外，API 要么带 `Authorization: Bearer`，要么带 WebUI 登录后设置的 HttpOnly browser session cookie。浏览器写请求还要带 `X-Ki-CSRF`，CLI 继续使用 Bearer。非 `/v1` 路径是同域 WebUI，SPA HTML 不再注入 server token；登录时由用户显式输入 token，服务端换发短期 cookie。不要把 token 放进 URL。登录会话仅保存在 server 内存中，server 重启后失效。
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
+| GET | `/v1/auth/status` | 返回当前 browser session 是否已登录，不返回 token |
+| POST | `/v1/auth/login` | 校验 body 中的 token，换发 HttpOnly browser session 和 CSRF cookie |
+| POST | `/v1/auth/logout` | 清除当前 browser session 和 CSRF cookie |
 | GET | `/v1/models` | registry 的可选模型扁平视图（含 `thinkingLevels` / `defaultThinking`） |
 | GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential、OAuth login/logout 和 model 管理；扩展 provider 目录只读 |
 | PUT | `/v1/default-model` | 显式记住上次选用的模型；WebUI 切模型时 server 也会写 |

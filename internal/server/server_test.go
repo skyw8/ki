@@ -10,6 +10,7 @@ import (
 	"maps"
 	"mime/multipart"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -1341,8 +1342,8 @@ func TestListHistoryAndUI(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("ui %d", res.StatusCode)
 	}
-	if !strings.Contains(string(body), `"token":"tok"`) {
-		t.Fatalf("index missing injected token:\n%s", body)
+	if strings.Contains(string(body), `"token":"tok"`) {
+		t.Fatalf("index must not expose the server token:\n%s", body)
 	}
 
 	req, err = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/home/someone/proj", nil)
@@ -1355,8 +1356,120 @@ func TestListHistoryAndUI(t *testing.T) {
 	}
 	hostBody, _ := io.ReadAll(res.Body)
 	_ = res.Body.Close()
-	if res.StatusCode != http.StatusOK || !strings.Contains(string(hostBody), `"token":"tok"`) {
+	if res.StatusCode != http.StatusOK || strings.Contains(string(hostBody), `"token":"tok"`) {
 		t.Fatalf("host path should still serve SPA: %d", res.StatusCode)
+	}
+}
+
+func TestBrowserLoginSessionAndCSRF(t *testing.T) {
+	_, hs := testServer(t)
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar}
+
+	status := func() map[string]any {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/auth/status", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		var out map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("auth status: %d", res.StatusCode)
+		}
+		return out
+	}
+	if status()["authenticated"] != false {
+		t.Fatal("new browser must not be authenticated")
+	}
+	queryReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions?token=tok", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryRes, err := client.Do(queryReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = queryRes.Body.Close()
+	if queryRes.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("query token must not authenticate: %d", queryRes.StatusCode)
+	}
+
+	login := func(token string) *http.Response {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/auth/login", strings.NewReader(`{"token":"`+token+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	bad := login("wrong")
+	_ = bad.Body.Close()
+	if bad.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bad login: %d", bad.StatusCode)
+	}
+	good := login("tok")
+	_ = good.Body.Close()
+	if good.StatusCode != http.StatusOK {
+		t.Fatalf("good login: %d", good.StatusCode)
+	}
+	if status()["authenticated"] != true {
+		t.Fatal("browser session was not authenticated")
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions", strings.NewReader(`{"cwd":"`+t.TempDir()+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("cookie write without csrf: %d", res.StatusCode)
+	}
+
+	serverURL, err := url.Parse(hs.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrf := ""
+	for _, cookie := range jar.Cookies(serverURL) {
+		if cookie.Name == browserCSRFCookie {
+			csrf = cookie.Value
+		}
+	}
+	if csrf == "" {
+		t.Fatal("login did not set csrf cookie")
+	}
+	req, err = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions", strings.NewReader(`{"cwd":"`+t.TempDir()+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Ki-CSRF", csrf)
+	res, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("cookie write with csrf: %d", res.StatusCode)
 	}
 }
 

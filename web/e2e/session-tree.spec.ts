@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { buildSessionTree, orderedChildren } from '../src/session-tree.ts'
 import type { SessionInfo, WorkspaceInfo } from '../src/types.ts'
+import { serverToken } from './global-setup.ts'
 
 function session(id: string, over: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -48,7 +49,7 @@ test('session tree isolates orphan, cross-workspace, and cyclic edges', () => {
 
 test('Tree browser opens deep children and reveals selected sidebar rows', async ({ page, request }) => {
   await page.goto('/')
-  const token = await page.evaluate(() => (window as unknown as { __KI__?: { token?: string } }).__KI__?.token ?? '')
+  const token = serverToken()
   const headers = { Authorization: `Bearer ${token}` }
   const create = async (title: string, parent?: string) => {
     const response = parent

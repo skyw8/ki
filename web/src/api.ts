@@ -1,12 +1,5 @@
 import type { FsListing, LoopEvent, Meta, ProviderAuthStatus, ProviderCatalog, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
 
-export type Boot = { token: string }
-
-export function boot(): Boot {
-  const raw = window.__KI__ ?? {}
-  return { token: raw.token ?? '' }
-}
-
 export class ApiError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -16,18 +9,25 @@ export class ApiError extends Error {
 }
 
 export class Client {
-  constructor(readonly token: string) {}
+  constructor(readonly token = '') {}
 
-  private headers(json = false): HeadersInit {
-    const h: Record<string, string> = { Authorization: `Bearer ${this.token}` }
+  private headers(json = false, method = 'GET'): HeadersInit {
+    const h: Record<string, string> = {}
+    if (this.token) h.Authorization = `Bearer ${this.token}`
     if (json) h['Content-Type'] = 'application/json'
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())) {
+      const csrf = document.cookie.split('; ').find(item => item.startsWith('ki_csrf='))?.slice('ki_csrf='.length)
+      if (csrf) h['X-Ki-CSRF'] = decodeURIComponent(csrf)
+    }
     return h
   }
 
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
+    const method = (init?.method ?? 'GET').toString().toUpperCase()
     const res = await fetch(path, { // same-origin relative; works behind a port-forward
       ...init,
-      headers: { ...this.headers(init?.body != null), ...(init?.headers ?? {}) },
+      credentials: 'same-origin',
+      headers: { ...this.headers(init?.body != null, method), ...(init?.headers ?? {}) },
     })
     if (!res.ok) {
       const text = await res.text()
@@ -35,6 +35,27 @@ export class Client {
     }
     if (res.status === 204) return undefined as T
     return res.json() as Promise<T>
+  }
+
+  async authStatus(): Promise<{ authenticated: boolean }> {
+    return this.json('/v1/auth/status')
+  }
+
+  async login(token: string): Promise<void> {
+    const res = await fetch('/v1/auth/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    })
+    if (!res.ok) {
+      const text = await res.text()
+      throw new ApiError(res.status, text.trim() || res.statusText)
+    }
+  }
+
+  async logout(): Promise<void> {
+    await this.json('/v1/auth/logout', { method: 'POST' })
   }
 
   list(): Promise<SessionInfo[]> {
@@ -94,7 +115,7 @@ export class Client {
 
   async previewFS(path: string, signal?: AbortSignal): Promise<Blob> {
 	const p = new URLSearchParams({ path, preview: '1' })
-	const res = await fetch(`/v1/fs?${p}`, { headers: this.headers(), signal })
+	const res = await fetch(`/v1/fs?${p}`, { credentials: 'same-origin', headers: this.headers(false, 'GET'), signal })
 	if (!res.ok) throw new ApiError(res.status, (await res.text()).trim() || res.statusText)
 	return res.blob()
   }
@@ -177,7 +198,7 @@ export class Client {
   async uploadAttachment(id: string, file: File): Promise<import('./types').Content> {
 	const body = new FormData()
 	body.append('file', file, file.name)
-	const res = await fetch(`/v1/sessions/${id}/attachments`, { method: 'POST', headers: this.headers(), body })
+	const res = await fetch(`/v1/sessions/${id}/attachments`, { method: 'POST', credentials: 'same-origin', headers: this.headers(false, 'POST'), body })
 	if (!res.ok) throw new ApiError(res.status, (await res.text()).trim() || res.statusText)
 	return res.json() as Promise<import('./types').Content>
   }
@@ -233,7 +254,8 @@ export class Client {
 
   async *events(id: string, signal?: AbortSignal, notifications = false): AsyncGenerator<LoopEvent> {
     const res = await fetch(`/v1/sessions/${id}/events${notifications ? '?notifications=1' : ''}`, {
-      headers: this.headers(),
+      credentials: 'same-origin',
+      headers: this.headers(false, 'GET'),
       signal,
     })
     if (!res.ok || !res.body) {

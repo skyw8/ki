@@ -6,6 +6,14 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 export const statePath = join(tmpdir(), 'ki-pw-serve.json')
+export const storageStatePath = join(tmpdir(), 'ki-pw-storage.json')
+
+export function serverToken(): string {
+  const state = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const server = JSON.parse(readFileSync(join(state.home, 'server.json'), 'utf8')) as { token?: string }
+  if (!server.token) throw new Error('server.json has no token')
+  return server.token
+}
 
 function goBin(): string {
   if (process.env.GO) return process.env.GO
@@ -31,6 +39,43 @@ async function waitHealth(url: string): Promise<void> {
     await new Promise(r => setTimeout(r, 100))
   }
   throw new Error(`ki serve did not become healthy: ${url}`)
+}
+
+async function seedBrowserSession(baseURL: string, home: string): Promise<void> {
+  const server = JSON.parse(readFileSync(join(home, 'server.json'), 'utf8')) as { token?: string }
+  if (!server.token) throw new Error('server.json has no token')
+  const res = await fetch(`${baseURL}/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: server.token }),
+  })
+  if (!res.ok) throw new Error(`browser session login failed: ${res.status}`)
+
+  const headers = res.headers as Headers & { getSetCookie?: () => string[] }
+  const setCookies = headers.getSetCookie?.() ?? [res.headers.get('set-cookie') ?? '']
+  const host = new URL(baseURL).hostname
+  const expires = Math.floor(Date.now() / 1000) + 12 * 60 * 60
+  const cookies = setCookies.flatMap(header => {
+    const pair = header.split(';', 1)[0]
+    const i = pair.indexOf('=')
+    if (i < 1) return []
+    const name = pair.slice(0, i)
+    const value = pair.slice(i + 1)
+    return [{
+      name,
+      value,
+      domain: host,
+      path: '/',
+      expires,
+      httpOnly: name === 'ki_session',
+      secure: false,
+      sameSite: 'Strict' as const,
+    }]
+  })
+  if (!cookies.some(cookie => cookie.name === 'ki_session') || !cookies.some(cookie => cookie.name === 'ki_csrf')) {
+    throw new Error('browser session login did not set both cookies')
+  }
+  writeFileSync(storageStatePath, JSON.stringify({ cookies, origins: [] }))
 }
 
 function dashscopeKey(): string {
@@ -73,6 +118,11 @@ export default async function globalSetup(): Promise<void> {
       addr: '',
       cwd: '',
     }))
+    const baseURL = process.env.KI_BASE_URL
+    if (baseURL && process.env.KI_HOME) {
+      await waitHealth(`${baseURL}/v1/health`)
+      await seedBrowserSession(baseURL, process.env.KI_HOME)
+    }
     return
   }
 
@@ -120,4 +170,5 @@ export default async function globalSetup(): Promise<void> {
   child.unref()
   writeFileSync(statePath, JSON.stringify({ pid: child.pid, home, addr, cwd }))
   await waitHealth(`http://${addr}/v1/health`)
+  await seedBrowserSession(`http://${addr}`, home)
 }

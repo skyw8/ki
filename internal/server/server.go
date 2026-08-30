@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -74,6 +75,7 @@ type Server struct {
 	inputGates             map[string]*sync.Mutex
 	activeTools            map[string][]string
 	uiAnswers              map[string]chan uiAnswer
+	browserSessions        map[string]time.Time
 	toggleMu               sync.Mutex
 	runtimeMu              sync.Mutex
 	runtime                map[string]*runtimePrep
@@ -82,6 +84,20 @@ type Server struct {
 	runtimeWG              sync.WaitGroup
 	runtimeClosed          bool
 }
+
+const (
+	browserSessionCookie = "ki_session"
+	browserCSRFCookie    = "ki_csrf"
+	browserSessionTTL    = 12 * time.Hour
+)
+
+type authSource uint8
+
+const (
+	authNone authSource = iota
+	authBearer
+	authBrowserSession
+)
 
 type runState struct {
 	cancel   context.CancelFunc
@@ -168,6 +184,7 @@ func New(opt Options) (*Server, error) {
 		inputGates:             map[string]*sync.Mutex{},
 		activeTools:            map[string][]string{},
 		uiAnswers:              map[string]chan uiAnswer{},
+		browserSessions:        map[string]time.Time{},
 		runtime:                map[string]*runtimePrep{},
 		runtimeCtx:             runtimeCtx,
 		runtimeCancel:          runtimeCancel,
@@ -348,6 +365,9 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": true})
 	})
+	api.HandleFunc("GET /v1/auth/status", s.authStatus)
+	api.HandleFunc("POST /v1/auth/login", s.login)
+	api.HandleFunc("POST /v1/auth/logout", s.auth(s.logout))
 	api.HandleFunc("GET /v1/models", s.auth(s.models))
 	api.HandleFunc("GET /v1/providers", s.auth(s.providers))
 	api.HandleFunc("POST /v1/providers", s.auth(s.createProvider))
@@ -418,16 +438,160 @@ func recoverHTTP(next http.Handler) http.Handler {
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got == "" {
-			got = r.URL.Query().Get("token")
-		}
-		if got == "" || got != s.token {
+		source := s.authenticate(r)
+		if source == authNone {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if source == authBrowserSession && unsafeMethod(r.Method) && !s.validCSRF(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		next(w, r)
 	}
+}
+
+func (s *Server) authenticate(r *http.Request) authSource {
+	if got := bearerToken(r); got != "" && sameSecret(got, s.token) {
+		return authBearer
+	}
+	if cookie, err := r.Cookie(browserSessionCookie); err == nil && s.validBrowserSession(cookie.Value) {
+		return authBrowserSession
+	}
+	return authNone
+}
+
+func bearerToken(r *http.Request) string {
+	value := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(value, "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(value, "Bearer "))
+}
+
+func sameSecret(got, want string) bool {
+	if got == "" || want == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+func unsafeMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) validBrowserSession(value string) bool {
+	if value == "" {
+		return false
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, expiresAt := range s.browserSessions {
+		if !expiresAt.After(now) {
+			delete(s.browserSessions, id)
+		}
+	}
+	expiresAt, ok := s.browserSessions[value]
+	return ok && expiresAt.After(now)
+}
+
+func (s *Server) validCSRF(r *http.Request) bool {
+	cookie, err := r.Cookie(browserCSRFCookie)
+	if err != nil {
+		return false
+	}
+	return sameSecret(r.Header.Get("X-Ki-CSRF"), cookie.Value)
+}
+
+func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": s.authenticate(r) != authNone})
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token string `json:"token"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	if !sameSecret(strings.TrimSpace(body.Token), s.token) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	sessionID := newToken()
+	csrf := newToken()
+	now := time.Now()
+	s.mu.Lock()
+	for id, expiresAt := range s.browserSessions {
+		if !expiresAt.After(now) {
+			delete(s.browserSessions, id)
+		}
+	}
+	s.browserSessions[sessionID] = now.Add(browserSessionTTL)
+	s.mu.Unlock()
+
+	secure := requestIsSecure(r)
+	http.SetCookie(w, &http.Cookie{
+		Name:     browserSessionCookie,
+		Value:    sessionID,
+		Path:     "/",
+		Expires:  now.Add(browserSessionTTL),
+		MaxAge:   int(browserSessionTTL / time.Second),
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     browserCSRFCookie,
+		Value:    csrf,
+		Path:     "/",
+		Expires:  now.Add(browserSessionTTL),
+		MaxAge:   int(browserSessionTTL / time.Second),
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+	})
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(browserSessionCookie); err == nil {
+		s.mu.Lock()
+		delete(s.browserSessions, cookie.Value)
+		s.mu.Unlock()
+	}
+	secure := requestIsSecure(r)
+	for _, name := range []string{browserSessionCookie, browserCSRFCookie} {
+		http.SetCookie(w, &http.Cookie{
+			Name:     name,
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: name == browserSessionCookie,
+			Secure:   secure,
+			SameSite: http.SameSiteStrictMode,
+		})
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func requestIsSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+	return strings.EqualFold(forwarded, "https")
 }
 
 // ListenAndServe binds addr (empty uses cfg).

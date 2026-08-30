@@ -12,7 +12,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SESSION="${KI_TMUX_SESSION:-ki}"
-ADDR="127.0.0.1:19800"
+ADDR="0.0.0.0:19800"
 BUILD_WEB=0
 ATTACH=0
 FAKE=0
@@ -76,7 +76,11 @@ tmux respawn-window -k -t "$SESSION:server" -c "$ROOT" "$cmd"
 tmux select-window -t "$SESSION:server"
 
 echo "ki serve starting in tmux session '$SESSION' (window server)"
-echo "  URL: http://$ADDR/"
+if [[ "$ADDR" == 0.0.0.0:* ]]; then
+  echo "  listen: http://$ADDR/ (open with the host's LAN IP)"
+else
+  echo "  URL: http://$ADDR/"
+fi
 echo "  attach: tmux attach -t '$SESSION'"
 
 if [[ $ATTACH == 1 ]]; then

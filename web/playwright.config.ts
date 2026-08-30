@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test'
+import { storageStatePath } from './e2e/global-setup.ts'
 
 const live = process.env.KI_LIVE === '1'
 const baseURL = process.env.KI_BASE_URL || (live ? 'http://127.0.0.1:19833' : 'http://127.0.0.1:19832')
@@ -15,6 +16,7 @@ export default defineConfig({
     locale: 'zh-CN',
     headless: true,
     trace: 'retain-on-failure',
+    storageState: storageStatePath,
   },
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',

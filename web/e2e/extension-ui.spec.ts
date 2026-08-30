@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
-import { statePath } from './global-setup.ts'
+import { serverToken, statePath } from './global-setup.ts'
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..')
 
@@ -29,7 +29,8 @@ async function sendPrompt(page: Page, text: string) {
 }
 
 async function tokenOf(page: Page) {
-  return await page.evaluate(() => (window as unknown as { __KI__?: { token?: string } }).__KI__?.token) || ''
+  void page
+  return serverToken()
 }
 
 async function reloadServer(page: Page, request: { post: (url: string, opts: { headers: Record<string, string> }) => Promise<unknown> }) {
@@ -78,9 +79,10 @@ test('freerouter config form edits fields without raw JSON', async ({ page, requ
           firstTokenTimeoutMs: number('first token deadline'),
           idleTimeoutMs: number('stream idle deadline'),
           refreshIntervalMs: number('model list refresh'),
+          listen: { type: 'string' },
         },
       },
-      defaults: { raceWidth: 2, maxBatches: 3, exhaustedTtlMs: 90000, slowTtlMs: 15000, firstTokenTimeoutMs: 10000, idleTimeoutMs: 30000, refreshIntervalMs: 3600000 },
+      defaults: { raceWidth: 2, maxBatches: 3, exhaustedTtlMs: 90000, slowTtlMs: 15000, firstTokenTimeoutMs: 10000, idleTimeoutMs: 30000, refreshIntervalMs: 3600000, listen: '127.0.0.1:18427' },
     },
     runtime: { kind: 'rpc', command: bin },
   }))
