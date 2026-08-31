@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { IChev, IChevDown, ICompact, ICopy, IEdit, IFork, IRegen, ISpark, ITraj, IWrench } from './icons'
 import { IFile } from './icons'
@@ -288,7 +288,7 @@ const ChatItem = memo(function ChatItem({
   }, [n, onHydrate])
   if (n.kind === 'user') {
     return (
-      <div className="user-row">
+      <div className="user-row" data-msg-id={n.id}>
         <div className="user-stack">
           {edit?.messageId === n.id ? <Composer api={api} mode="edit" draft={edit.draft} onChange={d => onEditChange?.(d)} onSend={() => onSendEdit?.()} onAttach={() => onAttachEdit?.()} onFiles={onFilesEdit} onCancel={onCancelEdit} busy={busy} uploading={uploading} /> : <UserBubble api={api} node={n} onHydrate={onHydrate} />}
           <div className="msg-foot">
@@ -366,9 +366,44 @@ const ChatItem = memo(function ChatItem({
   return <Compaction node={n} />
 })
 
-export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, onHydrate }: Omit<ChatItemProps, 'node'> & {
+function activeUserId(
+  nodes: ChatNode[],
+  scrollEl: HTMLElement,
+  virtualize: boolean,
+  offsetOf: (index: number) => number | undefined,
+): string | null {
+  const users: { id: string; index: number }[] = []
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i].kind === 'user') users.push({ id: nodes[i].id, index: i })
+  }
+  if (!users.length) return null
+  const top = scrollEl.scrollTop + 12
+  let current = users[0].id
+  if (virtualize) {
+    for (const user of users) {
+      const start = offsetOf(user.index)
+      if (start == null) continue
+      if (start <= top) current = user.id
+      else break
+    }
+    return current
+  }
+  const box = scrollEl.getBoundingClientRect()
+  for (const user of users) {
+    const el = scrollEl.querySelector(`[data-msg-id="${CSS.escape(user.id)}"]`)
+    if (!(el instanceof HTMLElement)) continue
+    const start = el.getBoundingClientRect().top - box.top + scrollEl.scrollTop
+    if (start <= top) current = user.id
+  }
+  return current
+}
+
+export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, onHydrate, jumpToId, onJumped, onActiveRequest }: Omit<ChatItemProps, 'node'> & {
 	nodes: ChatNode[]
 	scrollRef?: RefObject<HTMLDivElement | null>
+	jumpToId?: string | null
+	onJumped?: () => void
+	onActiveRequest?: (id: string | null) => void
 }) {
   const { t } = useI18n()
   const nodes = reconcileUserNodes(rawNodes)
@@ -383,6 +418,34 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   })
   const itemProps = { api, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate }
   const running = busy && !nodes.some(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
+
+  useLayoutEffect(() => {
+    if (!jumpToId) return
+    const index = nodes.findIndex(n => n.id === jumpToId)
+    if (index < 0) return
+    const scroll = scrollRef?.current
+    if (virtualize) {
+      virtualizer.scrollToIndex(index, { align: 'start' })
+    } else if (scroll) {
+      const el = scroll.querySelector(`[data-msg-id="${CSS.escape(jumpToId)}"]`)
+      if (el instanceof HTMLElement) {
+        const top = el.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop
+        scroll.scrollTop = Math.max(0, top - 8)
+      }
+    }
+    onJumped?.()
+  }, [jumpToId, nodes, onJumped, scrollRef, virtualize, virtualizer])
+
+  useEffect(() => {
+    const el = scrollRef?.current
+    if (!el) return
+    const update = () => {
+      onActiveRequest?.(activeUserId(nodes, el, virtualize, index => virtualizer.getOffsetForIndex(index, 'start')?.[0]))
+    }
+    update()
+    el.addEventListener('scroll', update, { passive: true })
+    return () => el.removeEventListener('scroll', update)
+  }, [nodes, onActiveRequest, scrollRef, virtualize, virtualizer])
   if (!virtualize) {
     return (
       <div className="chat-col" data-testid="chat">

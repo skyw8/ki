@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { ApiError, Client } from './api'
 import { AuthLoading, LoginScreen } from './AuthScreen'
 import { ChatView } from './Chat'
+import { RequestNav } from './RequestNav'
 import { Composer, type Draft } from './Composer'
 import { AttachmentBrowser } from './AttachmentBrowser'
 import { DirectoryBrowser } from './DirectoryBrowser'
@@ -11,7 +12,7 @@ import { ExtensionConfigEditor, MessageSettings, SessionConfig, SettingsToggles 
 import { ModelPickerDialog } from './ModelPickerDialog'
 import { ProviderSettings } from './ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
-import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, hydrateEntries, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats } from './model'
+import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, hydrateEntries, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats, userRequests } from './model'
 import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
@@ -201,6 +202,8 @@ function WorkspaceApp({ api }: { api: Client }) {
   const [confirmDel, setConfirmDel] = useState<{ kind: 'ws' | 'sess'; id: string; label: string; extra?: string } | null>(null)
   const [inspId, setInspId] = useState<string | null>(null)
   const [atBottom, setAtBottom] = useState(true)
+  const [jumpToId, setJumpToId] = useState<string | null>(null)
+  const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const searchAc = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -1147,6 +1150,19 @@ function WorkspaceApp({ api }: { api: Client }) {
 
   const empty = view.nodes.length === 0
   const stats = useMemo(() => sessionStats(view), [view])
+  const requestItems = useMemo(() => userRequests(view.nodes), [view.nodes])
+
+  useEffect(() => {
+    setJumpToId(null)
+    setActiveRequestId(null)
+  }, [currentId])
+
+  const jumpToRequest = useCallback((id: string) => {
+    setAtBottom(false)
+    setActiveRequestId(id)
+    setJumpToId(id)
+  }, [])
+  const clearJump = useCallback(() => setJumpToId(null), [])
   const queued = view.queued ?? []
   const extQueued = view.extQueued ?? []
   const steerShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘+Enter' : t('queue.steerHint')
@@ -1541,6 +1557,7 @@ function WorkspaceApp({ api }: { api: Client }) {
               </div>
             ) : (
               <>
+                <div className="chat-stage">
                 <div
                   className="scroll"
                   data-testid="chat-scroll"
@@ -1570,8 +1587,17 @@ function WorkspaceApp({ api }: { api: Client }) {
 					onRegen={regenerate}
 					branches={branchInfo}
 					onBranch={(node, delta) => void switchBranch(node, delta)}
+					jumpToId={jumpToId}
+					onJumped={clearJump}
+					onActiveRequest={setActiveRequestId}
 				  />
                 </div>
+                <RequestNav
+                  key={currentId ?? 'none'}
+                  items={requestItems}
+                  activeId={activeRequestId}
+                  onJump={jumpToRequest}
+                />
                 {!atBottom ? (
                   <div className="to-bottom-slot">
                     <button type="button" className="to-bottom" data-testid="to-bottom" aria-label={t('chat.toBottom')} onClick={() => {
@@ -1585,6 +1611,7 @@ function WorkspaceApp({ api }: { api: Client }) {
                     </button>
                   </div>
                 ) : null}
+                </div>
 				{!edit ? composer : null}
               </>
             )}

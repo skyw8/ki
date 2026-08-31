@@ -508,6 +508,34 @@ for (const profile of profiles) {
       await attachments.getByRole('button', { name: /取消|Cancel/ }).click()
     })
 
+    test('request navigator stays inside the viewport', async ({ page }) => {
+      test.setTimeout(45_000)
+      await page.goto('/')
+      const input = page.getByTestId('composer-input')
+      await expect(input).toBeEnabled({ timeout: 15_000 })
+      await input.fill(`req-nav-a ${profile.name} ${Date.now()}`)
+      await page.getByTestId('composer-send').click()
+      await expect(page.getByTestId('assistant-message')).toContainText('ok')
+      await expect(page.getByTestId('request-nav')).toHaveCount(0)
+
+      await input.fill(`req-nav-b ${profile.name}`)
+      await page.getByTestId('composer-send').click()
+      await expect(page.getByTestId('assistant-message').nth(1)).toContainText('ok')
+      const toggle = page.getByTestId('request-nav-toggle')
+      await expect(toggle).toBeVisible()
+      await expectTouchTarget(profile, toggle, `${profile.name} request nav toggle`)
+      await expectNoPageOverflow(page, `${profile.name} request nav collapsed`)
+
+      await toggle.click()
+      const panel = page.getByTestId('request-nav-panel')
+      await expect(panel).toBeVisible()
+      await expectInsideViewport(page, panel, `${profile.name} request nav panel`)
+      await expectInsideViewport(page, toggle, `${profile.name} request nav toggle open`)
+      await expectNoPageOverflow(page, `${profile.name} request nav open`)
+      await expectTouchButtons(profile, panel, `${profile.name} request nav panel`)
+      await expect(panel.getByTestId('request-nav-item')).toHaveCount(2)
+    })
+
     test('chat, secondary views, and extension inspector remain usable', async ({ page, request }) => {
       test.setTimeout(60_000)
       await page.goto('/')

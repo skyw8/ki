@@ -1074,6 +1074,30 @@ export function reconcileUserNodes(nodes: ChatNode[]): ChatNode[] {
   return out
 }
 
+export type UserRequest = { id: string; title: string }
+
+/** First non-empty line, else the first named attachment. Empty when the user turn has no caption. */
+export function requestTitle(text: string, content?: Content[]): string {
+  const line = text.split('\n').find(l => l.trim())?.replace(/\s+/g, ' ').trim()
+  if (line) return line
+  if (!content) return ''
+  for (const c of content) {
+    if (c.type !== 'image' && c.type !== 'file' && c.type !== 'workspace_file') continue
+    const name = (c.name || c.path || '').trim()
+    if (name) return name
+  }
+  return ''
+}
+
+export function userRequests(nodes: ChatNode[]): UserRequest[] {
+  const out: UserRequest[] = []
+  for (const n of reconcileUserNodes(nodes)) {
+    if (n.kind !== 'user') continue
+    out.push({ id: n.id, title: requestTitle(n.text, n.content) })
+  }
+  return out
+}
+
 export function appendOptimisticUser(s: ViewState, content: import('./types').Content[]): ViewState {
   const text = content.filter(c => c.type === 'text' || c.type === '').map(c => c.text ?? '').join('\n')
   if (text && lastUserText(s) === text) {

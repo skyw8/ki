@@ -15,6 +15,7 @@ import {
   ListCollapse,
   ListMinus,
   ListTree,
+  Menu,
   Moon,
   MoreHorizontal,
   PanelLeft,
@@ -46,6 +47,7 @@ function sized(C: ComponentType<LucideProps>, size: number) {
 
 export const IPlus = sized(Plus, 16)
 export const IPanel = sized(PanelLeft, 16)
+export const IMenu = sized(Menu, 16)
 export const ISun = sized(Sun, 16)
 export const IMoon = sized(Moon, 16)
 export const IGear = sized(Settings, 16)
