@@ -74,6 +74,7 @@ WebUI live: `cd web && npm run test:e2e:live`.
 - Do not consider backward compatibility. Prioritize refactoring legacy code and improving the existing implementation.
 - Create PlantUML diagrams when necessary. When creating diagrams, only include PlantUML code blocks in Markdown files.
 - Port-forwarded WebUI is a first-class client: same-origin relative `/v1` and `/assets` only; never navigate the browser to a host filesystem path; never use a native OS file picker.
+- WebUI must support mobile and touch layouts: use responsive drawers/full-screen dialogs, dynamic viewport and safe-area insets, at least 40px touch targets (44px for key navigation), and keep the responsive Playwright matrix in `web/e2e/responsive.spec.ts` passing; document detailed behavior in `docs/webui.md`.
 - Cross-platform (Linux, macOS, Windows): `filepath` for joins; host-absolute paths; no POSIX-only roots, separators, or hidden-file rules.
 - Do not name  `docs/todo`, or files under them in this file.
 - Package comments go in that package's `doc.go`. Cross-package explanation stays in `docs/`.
