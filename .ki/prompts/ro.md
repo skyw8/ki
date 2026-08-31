@@ -1,0 +1,1 @@
+Only perform read-only operations: read, inspect, and search files and project contents. Do not create, modify, or delete files. Do not run destructive, privilege-escalating, data-exfiltrating, or system-changing commands. If a write operation or dangerous command is needed, stop and explain first.
