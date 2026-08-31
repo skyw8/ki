@@ -1171,22 +1171,47 @@
 }
 .timeline {
   flex: none;
-  display: flex;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
   align-items: stretch;
-  gap: 2px;
+  gap: 8px;
   width: 100%;
   min-width: 0;
-  height: 36px;
+  height: 72px;
   overflow-x: auto;
   overflow-y: hidden;
   padding: 8px 16px 6px;
   overscroll-behavior-inline: contain;
   scrollbar-width: thin;
 }
+.timeline-labels,
+.timeline-tracks {
+  display: grid;
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  min-height: 0;
+}
+.timeline-labels {
+  align-items: center;
+  color: var(--dsw-alias-label-caption);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.timeline-tracks { min-width: 240px; overflow: hidden; }
+.timeline-track {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+.timeline-track:last-child { border-bottom: 0; }
+.tl-gap { flex: 1 1 12px; min-width: 4px; height: 4px; }
 .tl-bar {
   flex: 1 1 12px;
   min-width: 4px;
-  min-height: 100%;
+  height: 12px;
   border-radius: 3px;
   opacity: 0.85;
   cursor: pointer;
@@ -1198,6 +1223,30 @@
 .tl-bar.system { background: var(--dsw-alias-state-system); }
 .tl-bar.dim { opacity: 0.25; }
 .tl-bar.on { outline: 2px solid var(--dsw-alias-label-primary); outline-offset: 1px; }
+
+.system-prompt-row {
+  margin: 0 auto;
+  width: min(760px, 100%);
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-state-system-bg);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+.system-prompt-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 0;
+  color: var(--dsw-alias-state-system);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.system-prompt-label svg { width: 14px; height: 14px; }
+.system-prompt-row details { padding: 0 10px 7px; }
+.system-prompt-row summary { cursor: pointer; padding-top: 3px; }
+.system-prompt-row pre { max-height: 160px; margin: 8px 0 0; overflow: auto; white-space: pre-wrap; }
 
 .traj-split {
   flex: 1;
@@ -1217,6 +1266,12 @@
   letter-spacing: 0.04em;
   color: var(--dsw-alias-label-caption);
   border-top: 2px solid var(--dsw-alias-border-l2);
+}
+.step-h td {
+  padding: 7px 16px 2px 68px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 10px;
+  letter-spacing: 0.05em;
 }
 .traj-row { cursor: pointer; }
 .traj-row:hover td { background: var(--dsw-alias-interactive-bg-hover); }
@@ -1242,8 +1297,10 @@
   letter-spacing: 0.03em;
 }
 .tag.user { color: var(--dsw-alias-state-success); background: var(--dsw-alias-state-success-bg); }
+.tag.context { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-module-platform); }
 .tag.assistant { color: var(--dsw-alias-brand); background: color-mix(in srgb, var(--dsw-alias-brand) 16%, transparent); }
 .tag.tool { color: var(--dsw-alias-state-tool); background: var(--dsw-alias-state-tool-bg); }
+.tag.subtool { color: var(--dsw-alias-state-tool); background: color-mix(in srgb, var(--dsw-alias-state-tool) 12%, transparent); }
 .tag.compacted { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-module-platform); }
 .tag.system {
   color: var(--dsw-alias-state-system);
@@ -1461,7 +1518,7 @@
   .traj .traj-search { height: 40px; }
   .traj .traj-zoom .traj-zoom-reset { width: 56px; }
   .traj .timeline {
-    height: 48px;
+    height: 132px;
     padding-top: 4px;
     padding-bottom: 4px;
     touch-action: pan-x;
@@ -1470,6 +1527,8 @@
     flex-basis: 40px;
     flex-shrink: 0;
     min-width: 40px;
+    min-height: 40px;
+    height: 40px;
     border-radius: 6px;
   }
   .traj .turn-fold,
@@ -1503,6 +1562,13 @@
 @media (max-width: 520px), (max-height: 540px) and (max-width: 900px) {
   /* Why: a stacked list and inspector leave neither surface usable on a
      phone. Selection becomes a drill-down view, and Close returns to the list. */
+  .traj .timeline { height: 56px; }
+  /* Why: the short landscape layout lets the table scroll beneath the
+     overview; only actual bars should remain hit-testable in that overlap. */
+  .traj .timeline,
+  .traj .timeline * { pointer-events: none; }
+  .traj .timeline .tl-bar { pointer-events: auto; }
+  .traj .timeline-track { overflow: hidden; }
   .traj .traj-split:not(.no-insp) { grid-template-rows: minmax(0, 1fr); }
   .traj .traj-split:not(.no-insp) .traj-table-wrap { display: none; }
   .traj .traj-split:not(.no-insp) .insp { border-top: 0; }
@@ -2605,6 +2671,14 @@ textarea:focus-visible,
 select:focus-visible {
   outline: 2px solid var(--dsw-alias-brand);
   outline-offset: 2px;
+}
+
+/* Why: the composer is already visually contained by its card, so the global
+   brand focus outline is distracting here; keep focus indicators on controls. */
+.composer textarea:focus,
+.composer textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 @media (max-width: 760px), (max-height: 540px) and (max-width: 900px) {

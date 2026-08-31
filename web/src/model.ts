@@ -1,4 +1,4 @@
-import type { ChatNode, Entry, LoopEvent, Message, Meta, ModelInfo, SessionDetail, TrajRecord, Usage, ViewState } from './types'
+import type { ChatNode, Content, Entry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from './types'
 
 const LAST_MODEL_KEY = 'ki-last-model'
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -99,6 +99,7 @@ export function emptyView(): ViewState {
   return {
     nodes: [],
     records: [],
+    requests: [],
     busy: false,
     error: null,
     model: '',
@@ -213,43 +214,131 @@ export function applyRuntimeCatalog(s: ViewState, detail: SessionDetail): ViewSt
   }
 }
 
-function lastSystem(s: ViewState): TrajRecord | undefined {
-  for (let i = s.records.length - 1; i >= 0; i--) {
-    if (s.records[i].kind === 'system') return s.records[i]
-  }
-  return undefined
-}
-
-function normalizeTools(raw?: TrajRecord['tools'] | unknown): TrajRecord['tools'] {
-  if (!Array.isArray(raw)) return raw as TrajRecord['tools']
+function normalizeTools(raw?: ToolSchema[] | unknown): ToolSchema[] {
+  if (!Array.isArray(raw)) return []
   return raw.map(item => {
     if (!item || typeof item !== 'object') return { name: String(item) }
     const o = item as Record<string, unknown>
     const parameters = o.parameters ?? o.Parameters
+    const format = o.format && typeof o.format === 'object' ? o.format as ToolSchema['format'] : undefined
     return {
+      type: o.type != null || o.Type != null ? String(o.type ?? o.Type) : undefined,
       name: String(o.name ?? o.Name ?? ''),
       description: o.description != null || o.Description != null ? String(o.description ?? o.Description) : undefined,
       parameters: parameters && typeof parameters === 'object' ? parameters as Record<string, unknown> : undefined,
+      format,
     }
   })
 }
 
-function applyRequestHeader(s: ViewState, id: string, system: string, tools: TrajRecord['tools'], stamp?: string) {
-  const prev = lastSystem(s)
-  tools = normalizeTools(tools)
-  s.records.push({
+function sameTools(a: ToolSchema[], b: ToolSchema[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+function nextRequestStep(s: ViewState, turn: number): number {
+  let step = 0
+  for (const request of s.requests) {
+    if (request.turn === turn) step = Math.max(step, request.step)
+  }
+  return step + 1
+}
+
+function inspectPrompt(
+  previous: PromptSnapshot | undefined,
+  prompt: PromptSnapshot,
+  id: string,
+  time?: number,
+): PromptChange | undefined {
+  if (previous && previous.system === prompt.system && sameTools(previous.tools, prompt.tools)) return undefined
+  const systemChanged = previous !== undefined && previous.system !== prompt.system
+  const toolsChanged = previous !== undefined && !sameTools(previous.tools, prompt.tools)
+  return {
+    kind: previous === undefined
+      ? 'initial'
+      : systemChanged && toolsChanged
+        ? 'system-and-tools'
+        : systemChanged ? 'system' : 'tools',
+    seq: id,
+    time,
+    ...(previous === undefined ? {} : { previous }),
+  }
+}
+
+function updateRequest(s: ViewState, id: string, patch: Partial<RequestView>) {
+  s.requests = s.requests.map(request => request.id === id ? { ...request, ...patch } : request)
+  s.records = s.records.map(record => record.requestId !== id
+    ? record
+    : {
+      ...record,
+      ...(patch.durationMs === undefined ? {} : { durationMs: patch.durationMs }),
+      ...(patch.ttftMs === undefined ? {} : { ttftMs: patch.ttftMs }),
+      ...(patch.status === undefined ? {} : { running: patch.status === 'running', error: patch.status === 'error' }),
+    })
+}
+
+function applyRequestHeader(
+  s: ViewState,
+  id: string,
+  system: string,
+  rawTools: ToolSchema[] | unknown,
+  stamp?: string | number,
+  metadata?: Pick<RequestView, 'provider' | 'model' | 'thinkingEffort'>,
+) {
+  const tools = normalizeTools(rawTools)
+  const prompt: PromptSnapshot = { ...metadata, system, tools }
+  const previous = s.promptState
+  const startedAt = tsMs(undefined, stamp)
+  const change = inspectPrompt(previous, prompt, id, startedAt)
+  const turn = s.turn || 1
+  const step = nextRequestStep(s, turn)
+  const request: RequestView = {
     id,
+    turn,
+    step,
+    startedAt,
+    status: 'running',
+    ...metadata,
+    prompt,
+    ...(change === undefined ? {} : { promptChange: change }),
+  }
+  s.promptState = prompt
+  s.currentRequestId = id
+  s.requests.push(request)
+
+  // Why: request headers describe every provider call, but the visible ledger
+  // should only show the prompt state when it changes. This hidden boundary
+  // retains request timing without duplicating system rows.
+  s.records.push({
+    id: `request:${id}`,
+    kind: 'assistant',
+    turn,
+    step,
+    requestId: id,
+    requestOnly: true,
+    preview: '',
+    startedAt,
+    running: true,
+  })
+  if (change === undefined) return
+  const systemId = `system:${id}`
+  s.records.push({
+    id: systemId,
     kind: 'system',
-    turn: s.turn || 1,
-    preview: previewOf(system || `${tools?.length ?? 0} tools`),
+    turn,
+    step,
+    requestId: id,
+    preview: previewOf(system || `${tools.length} tools`),
     system,
     tools,
-    previousSystem: prev?.system,
-    previousTools: prev?.tools,
+    prompt,
+    promptChange: change,
+    previousSystem: previous?.system,
+    previousTools: previous?.tools,
     input: system,
     output: tools,
-    startedAt: tsMs(undefined, stamp),
+    startedAt,
   })
+  if (system) s.nodes.push({ kind: 'system', id: systemId, text: system, tools, promptChange: change, ts: startedAt })
 }
 
 function applyEntry(s: ViewState, e: Entry) {
@@ -258,7 +347,11 @@ function applyEntry(s: ViewState, e: Entry) {
 		return
 	}
   if (e.type === 'request_header') {
-    applyRequestHeader(s, e.id, e.system ?? '', e.tools, e.timestamp)
+    applyRequestHeader(s, e.id, e.system ?? '', e.tools, e.timestamp, {
+      provider: e.provider,
+      model: e.modelId,
+      thinkingEffort: e.thinkingEffort,
+    })
     return
   }
   if (e.type === 'message' && e.message) {
@@ -339,6 +432,8 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
   if (m.role === 'assistant') {
     const text = messageText(m)
     const thinking = messageThinking(m)
+    const request = s.currentRequestId ? s.requests.find(item => item.id === s.currentRequestId) : undefined
+    const requestId = request?.id
     s.nodes.push({
       kind: 'assistant',
       id,
@@ -357,6 +452,8 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       id,
       kind: 'assistant',
       turn: s.turn || 1,
+      step: request?.step,
+      requestId,
       preview: previewOf(thinking ? thinking : text),
       output: text,
       input: thinking || undefined,
@@ -365,7 +462,19 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       ttftMs: m.ttftMs,
       startedAt: tsMs(m, stamp),
       error: !!m.errorMessage,
+      sourceBlocks: m.content ?? [],
     })
+    if (requestId) {
+      updateRequest(s, requestId, {
+        status: m.errorMessage ? 'error' : 'complete',
+        completedAt: tsMs(m, stamp),
+        resultId: id,
+        usage: m.usage,
+        ttftMs: m.ttftMs,
+        durationMs: m.latencyMs,
+        error: m.errorMessage,
+      })
+    }
     for (const c of m.content ?? []) {
       if (c.type !== 'toolCall' || !c.id) continue
 	  if (s.nodes.some(n => n.kind === 'tool' && n.id === c.id)) {
@@ -383,10 +492,13 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
         id: c.id,
         kind: 'tool',
         turn: s.turn || 1,
+        step: request?.step,
+        requestId,
         preview: previewOf(c.name + ' ' + compactArgs(args)),
         input: args,
         name: c.name,
         startedAt: tsMs(m, stamp),
+        sourceBlocks: [c],
       })
     }
     return
@@ -403,10 +515,19 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       isError: m.isError,
       durationMs: m.durationMs,
 	  startedAt,
+	  outputBlocks: m.content ?? [],
 	  details: m.details ?? (m.toolName === 'apply_patch' ? { status: 'failed', exact: true, changes: [] } : undefined),
       running: false,
       name: m.toolName,
-    })
+	  })
+	  if (s.currentRequestId) {
+	    const request = s.requests.find(item => item.id === s.currentRequestId)
+	    if (request?.status === 'running') {
+	      // Tool results keep the model request open; the next request header
+	      // will close the current request boundary and start the next step.
+	      updateRequest(s, request.id, { status: 'running' })
+	    }
+	  }
   }
 }
 
@@ -429,7 +550,7 @@ function compactArgs(args: unknown): string {
   }
 }
 
-function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { kind: 'tool' }>> & { startedAt?: number }) {
+function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { kind: 'tool' }>> & { startedAt?: number; outputBlocks?: Content[]; sourceBlocks?: Content[] }) {
   const { startedAt, ...nodePatch } = patch
   s.nodes = s.nodes.map(n => {
     if (n.kind !== 'tool' || n.id !== id) return n
@@ -447,6 +568,8 @@ function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { 
 	  startedAt: startedAt ?? r.startedAt,
       name: patch.name || r.name,
 	  details: patch.details ?? r.details,
+	  ...(patch.outputBlocks === undefined ? {} : { outputBlocks: patch.outputBlocks }),
+	  ...(patch.sourceBlocks === undefined ? {} : { sourceBlocks: patch.sourceBlocks }),
       preview: previewOf((patch.name || r.name || 'tool') + ' ' + (result || compactArgs(r.input))),
     }
   })
@@ -476,6 +599,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     ...s,
     nodes: s.nodes.slice(),
     records: s.records.slice(),
+    requests: s.requests.slice(),
   }
   switch (ev.type) {
 	case 'context_usage':
@@ -492,6 +616,9 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
         n.kind === 'assistant' && n.streaming ? { ...n, streaming: false } : n.kind === 'tool' && n.running ? { ...n, running: false } : n,
       )
       next.records = next.records.map(r => r.running ? { ...r, running: false } : r)
+      next.requests = next.requests.map(request => request.status === 'running'
+        ? { ...request, status: 'complete', completedAt: request.completedAt ?? Date.now() }
+        : request)
       break
     case 'steer_accepted':
       if (ev.message?.content) return appendOptimisticUser(s, ev.message.content)
@@ -506,9 +633,10 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     case 'runtime_ready':
       break
     case 'request_header': {
-      const prev = lastSystem(next)
-      if (prev && prev.system === (ev.system ?? '') && JSON.stringify(prev.tools) === JSON.stringify(ev.tools)) break
-      applyRequestHeader(next, `live-sys-${next.records.length}`, ev.system ?? '', ev.tools)
+      applyRequestHeader(next, ev.entryId || `live-request-${next.requests.length + 1}`, ev.system ?? '', ev.tools, ev.timestamp || Date.now(), {
+        provider: ev.provider,
+        model: ev.model,
+      })
       break
     }
     case 'message_start':
@@ -532,6 +660,8 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
             id: ev.toolCallId,
             kind: 'tool',
             turn: next.turn || 1,
+            step: next.requests.find(item => item.id === next.currentRequestId)?.step,
+            requestId: next.currentRequestId,
             preview: previewOf((ev.toolName || 'tool') + ' ' + compactArgs(ev.args)),
             input: ev.args,
             name: ev.toolName,
@@ -660,12 +790,15 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
       id,
       kind: 'assistant',
       turn: s.turn || 1,
+      step: s.requests.find(item => item.id === s.currentRequestId)?.step,
+      requestId: s.currentRequestId,
       preview: previewOf(messageText(m) || messageThinking(m) || '…'),
       running: true,
       // Fall back to the local clock only if the event somehow carries no
       // timestamp; server time is preferred for cross-client consistency.
       startedAt: ts ?? Date.now(),
     })
+    if (s.currentRequestId) updateRequest(s, s.currentRequestId, { status: 'running' })
     return
   }
 
@@ -716,6 +849,18 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
       }
     : r)
 
+  if (s.currentRequestId) {
+    updateRequest(s, s.currentRequestId, {
+      status: ev.type === 'message_end' && m.errorMessage ? 'error' : ev.type === 'message_end' ? 'complete' : 'running',
+      completedAt: ev.type === 'message_end' ? tsMs(m) : undefined,
+      resultId: ev.type === 'message_end' ? (ev.entryId || node.id) : undefined,
+      usage: m.usage,
+      ttftMs: m.ttftMs,
+      durationMs: m.latencyMs,
+      error: m.errorMessage,
+    })
+  }
+
   if (ev.type === 'message_end') {
     for (const c of m.content ?? []) {
       if (c.type !== 'toolCall' || !c.id) continue
@@ -726,6 +871,8 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
         id: c.id,
         kind: 'tool',
         turn: s.turn || 1,
+		step: s.requests.find(item => item.id === s.currentRequestId)?.step,
+		requestId: s.currentRequestId,
 		preview: previewOf((c.name || 'tool') + ' ' + compactArgs(args)),
 		input: args,
         name: c.name,

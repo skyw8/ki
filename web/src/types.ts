@@ -309,17 +309,54 @@ export type Meta = {
 
 export type ChatNode =
   | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string }
+  | { kind: 'system'; id: string; text: string; tools?: ToolSchema[]; promptChange?: PromptChange; ts?: number }
   | { kind: 'assistant'; id: string; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; running?: boolean }
   | { kind: 'compaction'; id: string; summary: string; tokensBefore?: number }
 
-export type TrajKind = 'user' | 'assistant' | 'tool' | 'compacted' | 'compact' | 'system'
+export type PromptSnapshot = {
+  provider?: string
+  model?: string
+  thinkingEffort?: string
+  system: string
+  tools: ToolSchema[]
+}
+
+export type PromptChange = {
+  kind: 'initial' | 'system' | 'tools' | 'system-and-tools'
+  seq?: string
+  time?: number
+  previous?: PromptSnapshot
+}
+
+export type RequestView = {
+  id: string
+  turn: number
+  step: number
+  startedAt?: number
+  completedAt?: number
+  status: 'running' | 'complete' | 'error'
+  error?: string
+  provider?: string
+  model?: string
+  thinkingEffort?: string
+  prompt?: PromptSnapshot
+  promptChange?: PromptChange
+  resultId?: string
+  usage?: Usage | null
+  ttftMs?: number
+  durationMs?: number
+  retry?: number
+}
+
+export type TrajKind = 'user' | 'assistant' | 'tool' | 'subtool' | 'compacted' | 'compact' | 'system' | 'context'
 
 export type TrajRecord = {
   id: string
 	parentId?: string
   kind: TrajKind
   turn: number
+  step?: number
   preview: string
   input?: unknown
   output?: unknown
@@ -329,17 +366,24 @@ export type TrajRecord = {
   ttftMs?: number
   startedAt?: number
   running?: boolean
+  requestOnly?: boolean
+  requestId?: string
+  prompt?: PromptSnapshot
+  promptChange?: PromptChange
   name?: string
   error?: boolean
   system?: string
   tools?: ToolSchema[]
   previousSystem?: string
   previousTools?: ToolSchema[]
+  sourceBlocks?: Content[]
+  outputBlocks?: Content[]
 }
 
 export type ViewState = {
   nodes: ChatNode[]
   records: TrajRecord[]
+  requests: RequestView[]
   busy: boolean
   stopping?: boolean
   error: string | null
@@ -359,4 +403,6 @@ export type ViewState = {
   extQueued?: QueuedItem[]
   extensionUi?: ExtensionUI[]
   runtimeReady?: boolean
+	promptState?: PromptSnapshot
+	currentRequestId?: string
 }

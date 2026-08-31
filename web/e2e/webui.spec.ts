@@ -320,6 +320,7 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
 
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
   await expect(page.getByTestId('assistant-message').locator('.md')).toContainText('ok')
+  await expect(page.getByTestId('chat-system-prompt')).toHaveCount(1)
   await expect(page.getByTestId('session-stats')).toContainText('1 轮 · 1 步')
   await expect(page.getByTestId('session-stats')).toContainText('输入 8 · 输出 2')
   await expect(page.getByTestId('session-title').filter({ hasText: prompt })).toBeVisible()
@@ -340,6 +341,9 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
 
   await page.getByTestId('tab-trajectory').click()
   await expect(page.getByTestId('trajectory')).toBeVisible()
+  await expect(page.getByTestId('traj-timeline')).toContainText('Input')
+  await expect(page.getByTestId('traj-timeline')).toContainText('Model')
+  await expect(page.getByTestId('traj-timeline')).toContainText('Tools')
   await expect(page.locator('[data-testid="traj-row"][data-kind="user"]')).toContainText(prompt)
   await expect(page.locator('[data-testid="traj-row"][data-kind="assistant"]')).toContainText('ok')
   await page.locator('[data-testid="traj-row"][data-kind="assistant"]').first().click()

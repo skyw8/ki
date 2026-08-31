@@ -1486,7 +1486,7 @@ function WorkspaceApp({ api }: { api: Client }) {
           </div>
         ) : tab === 'trajectory' ? (
           <div className="conv-body">
-            <TrajectoryView records={view.records} selectId={inspId} />
+            <TrajectoryView records={view.records} requests={view.requests} selectId={inspId} />
             {composer}
           </div>
         ) : (

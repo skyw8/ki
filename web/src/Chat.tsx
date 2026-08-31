@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { IChev, IChevDown, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from './icons'
+import { IChev, IChevDown, ICompact, ICopy, IEdit, IFork, IRegen, ISpark, ITraj, IWrench } from './icons'
 import { IFile } from './icons'
 import { Composer, type Draft } from './Composer'
 import { AttachmentImage } from './AttachmentImage'
@@ -281,6 +281,17 @@ export function ChatView({ api, nodes, busy, uploading, onSelect, edit, onStartE
                   </div>
                 </div>
               </div>
+            </div>
+          )
+        }
+        if (n.kind === 'system') {
+          return (
+            <div key={n.id} className="system-prompt-row" data-testid="chat-system-prompt">
+              <div className="system-prompt-label"><ISpark /> {t('chat.system')}</div>
+              <details>
+                <summary>{n.promptChange?.kind === 'initial' ? t('chat.systemInitial') : t('chat.systemChanged')}</summary>
+                <pre>{n.text}</pre>
+              </details>
             </div>
           )
         }

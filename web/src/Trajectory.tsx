@@ -3,7 +3,7 @@ import { applyFollowTail, followFromGap } from './follow-tail'
 import { useI18n, type TFn } from './i18n'
 import { IChev, IClock, IClose, ICompact, ICopy, IFold, ISearch, ISpark, ITail, IUser, IWrench } from './icons'
 import { Markdown } from './Markdown'
-import type { ToolSchema, TrajKind, TrajRecord } from './types'
+import type { RequestView, ToolSchema, TrajKind, TrajRecord } from './types'
 
 type InspTab = 'summary' | 'preview' | 'raw' | 'system-prompt' | 'tools' | 'context'
 
@@ -25,8 +25,7 @@ function tabsFor(kind: TrajKind, t: TFn): TabItem[] {
 }
 
 function groupOf(kind: TrajKind, t: TFn, step?: number): string {
-  if (kind === 'user') return t('traj.group.message')
-  if (kind === 'system') return t('traj.group.system')
+  if (kind === 'user' || kind === 'context' || kind === 'system') return t('traj.group.message')
   if (kind === 'compacted') return t('traj.group.compacted')
   return t('traj.group.step', { n: step ?? 1 })
 }
@@ -35,7 +34,11 @@ function locate(records: TrajRecord[], t: TFn): Map<string, { turn: number; step
   const out = new Map<string, { turn: number; step?: number; group: string }>()
   const stepByTurn = new Map<number, number>()
   for (const r of records) {
-    if (r.kind === 'assistant') {
+    if (r.step !== undefined) {
+      out.set(r.id, { turn: r.turn, step: r.step, group: groupOf(r.kind, t, r.step) })
+      continue
+    }
+    if (r.kind === 'assistant' && !r.requestOnly) {
       const n = (stepByTurn.get(r.turn) ?? 0) + 1
       stepByTurn.set(r.turn, n)
       out.set(r.id, { turn: r.turn, step: n, group: groupOf(r.kind, t, n) })
@@ -69,8 +72,10 @@ function MarkdownBody({ text }: { text: string }) {
 
 const KIND_LABEL: Record<TrajKind, string> = {
   user: 'USER',
+  context: 'CONTEXT',
   assistant: 'ASSISTANT',
   tool: 'TOOL',
+  subtool: 'SUBTOOL',
   compacted: 'COMPACTED',
   compact: 'COMPACT',
   system: 'SYSTEM',
@@ -78,7 +83,8 @@ const KIND_LABEL: Record<TrajKind, string> = {
 
 function KindIcon({ kind }: { kind: TrajKind }) {
   if (kind === 'user') return <IUser />
-  if (kind === 'tool') return <IWrench />
+  if (kind === 'context') return <ISpark />
+  if (kind === 'tool' || kind === 'subtool') return <IWrench />
   if (kind === 'compacted') return <ICompact />
   if (kind === 'system') return <ISpark />
   return <ISpark />
@@ -195,10 +201,17 @@ function lineDiff(a: string, b: string): { kind: 'same' | 'del' | 'add'; text: s
   return out
 }
 
+function timelineLane(kind: TrajKind): 'input' | 'model' | 'tools' {
+  if (kind === 'tool' || kind === 'subtool') return 'tools'
+  if (kind === 'assistant' || kind === 'compacted' || kind === 'compact') return 'model'
+  return 'input'
+}
+
 export function TrajectoryView({
-  records, onSelect, selectId,
+  records, requests = [], onSelect, selectId,
 }: {
   records: TrajRecord[]
+  requests?: RequestView[]
   onSelect?: (r: TrajRecord | null) => void
   selectId?: string | null
 }) {
@@ -247,14 +260,20 @@ export function TrajectoryView({
   const locations = useMemo(() => locate(records, t), [records, t])
   const selectedLoc = selected ? locations.get(selected.id) : undefined
   const selectedTabs = selected ? tabsFor(selected.kind, t) : []
+  const selectedRequest = selected?.requestId
+    ? requests.find(request => request.id === selected.requestId)
+    : undefined
 
   const visible = useMemo(() => {
     return filtered.filter(r => {
+      if (r.requestOnly) return false
       if (foldedTurns.has(r.turn) && r.kind !== 'user' && r.kind !== 'system') return false
       if (foldTools && r.kind === 'tool') return false
       return true
     })
   }, [filtered, foldedTurns, foldTools])
+
+  const timelineRecords = useMemo(() => records.filter(r => !r.requestOnly), [records])
 
   useEffect(() => {
     // Why: follow state lags a render behind a wheel/scroll pause. Read the
@@ -426,19 +445,36 @@ export function TrajectoryView({
         }}
         onContextMenu={e => { e.preventDefault(); setRange(null); setZoom(1) }}
       >
-        {records.map((r, i) => (
-          <button
-            key={r.id}
-            type="button"
-            data-i={i}
-            className={`tl-bar ${r.kind}${sel === r.id ? ' on' : ''}${q && !filtered.includes(r) ? ' dim' : ''}`}
-            style={{ flexGrow: actualDur ? Math.max(1, Math.round(((r.durationMs ?? 400) * zoom) / 200)) : Math.max(1, zoom) }}
-            title={`${KIND_LABEL[r.kind]} ${r.preview}`}
-            aria-label={`${KIND_LABEL[r.kind]} ${r.preview || r.name || ''}`.trim()}
-            aria-current={sel === r.id ? 'true' : undefined}
-            onClick={() => pick(r)}
-          />
-        ))}
+        <div className="timeline-labels" aria-hidden="true">
+          <span>{t('traj.lane.input')}</span>
+          <span>{t('traj.lane.model')}</span>
+          <span>{t('traj.lane.tools')}</span>
+        </div>
+        <div className="timeline-tracks">
+          {(['input', 'model', 'tools'] as const).map(lane => (
+            <div key={lane} className={`timeline-track timeline-${lane}`}>
+              {timelineRecords.map(r => {
+                const selected = sel === r.id
+                const weight = actualDur
+                  ? Math.max(1, Math.round(((r.durationMs ?? 0) * zoom) / 200))
+                  : Math.max(1, Math.round(zoom))
+                return timelineLane(r.kind) === lane ? (
+                  <button
+                    key={r.id}
+                    type="button"
+                    data-i={records.indexOf(r)}
+                    className={`tl-bar ${r.kind}${selected ? ' on' : ''}${q && !filtered.includes(r) ? ' dim' : ''}`}
+                    style={{ flexGrow: weight }}
+                    title={`${KIND_LABEL[r.kind]} ${r.preview}`}
+                    aria-label={`${KIND_LABEL[r.kind]} ${r.preview || r.name || ''}`.trim()}
+                    aria-current={selected ? 'true' : undefined}
+                    onClick={() => pick(r)}
+                  />
+                ) : <span key={r.id} className="tl-gap" style={{ flexGrow: weight }} aria-hidden="true" />
+              })}
+            </div>
+          ))}
+        </div>
       </div>
       {range ? <button type="button" className="chip traj-range-reset" data-testid="traj-clear-range" onClick={() => setRange(null)}>{t('traj.clearRange')}</button> : null}
       <div className={`traj-split${selected ? '' : ' no-insp'}`}>
@@ -472,25 +508,33 @@ export function TrajectoryView({
                       </button>
                     </td>
                   </tr>
-                  {g.rows.map(({ rec, index }) => (
-                    <tr
-                      key={rec.id}
-                      data-rid={rec.id}
-                      className={`traj-row${sel === rec.id ? ' sel' : ''}`}
-                      data-testid="traj-row"
-                      data-kind={rec.kind}
-                      onClick={() => pick(rec)}
-                    >
-                      <td>
-                        <div className="cell">
-                          <span className="idx">{index + 1}</span>
-                          <span className={`tag ${rec.kind}`}><KindIcon kind={rec.kind} />&nbsp;{KIND_LABEL[rec.kind]}</span>
-                          <span className="preview">{rec.running ? '… ' : ''}{rec.preview || rec.name || '—'}</span>
-                          <span className="dur">{rec.running ? '' : fmtDur(rec.durationMs)}</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {g.rows.map(({ rec, index }, rowIndex) => {
+                    const previous = g.rows[rowIndex - 1]?.rec
+                    return (
+                      <Fragment key={rec.id}>
+                        {rec.step !== undefined && previous?.step !== rec.step ? (
+                          <tr className="step-h"><td>STEP {rec.step}</td></tr>
+                        ) : null}
+                        <tr
+                          data-rid={rec.id}
+                          className={`traj-row${sel === rec.id ? ' sel' : ''}`}
+                          data-testid="traj-row"
+                          data-kind={rec.kind}
+                          data-request-id={rec.requestId}
+                          onClick={() => pick(rec)}
+                        >
+                          <td>
+                            <div className="cell">
+                              <span className="idx">{index + 1}</span>
+                              <span className={`tag ${rec.kind}`}><KindIcon kind={rec.kind} />&nbsp;{KIND_LABEL[rec.kind]}</span>
+                              <span className="preview">{rec.running ? '… ' : ''}{rec.preview || rec.name || '—'}</span>
+                              <span className="dur">{rec.running ? '' : fmtDur(rec.durationMs)}</span>
+                            </div>
+                          </td>
+                        </tr>
+                      </Fragment>
+                    )
+                  })}
                 </Fragment>
               ))}
               {visible.length === 0 ? (
@@ -522,6 +566,14 @@ export function TrajectoryView({
                 <dl>
                   <div><dt>{t('traj.status')}</dt><dd>{selected.running ? t('traj.statusRunning') : selected.error ? t('traj.statusError') : t('traj.statusDone')}</dd></div>
                   {selected.name ? <div><dt>{t('traj.name')}</dt><dd>{selected.name}</dd></div> : null}
+                  {selected.step != null ? <div><dt>Step</dt><dd>{selected.step}</dd></div> : null}
+                  {selectedRequest ? (
+                    <>
+                      <div><dt>Request</dt><dd>{selectedRequest.status}</dd></div>
+                      {selectedRequest.provider || selectedRequest.model ? <div><dt>Model</dt><dd>{[selectedRequest.provider, selectedRequest.model].filter(Boolean).join(' / ')}</dd></div> : null}
+                      {selectedRequest.promptChange ? <div><dt>Prompt</dt><dd>{selectedRequest.promptChange.kind}</dd></div> : null}
+                    </>
+                  ) : null}
                   <div><dt>{t('traj.started')}</dt><dd>{fmtTime(selected.startedAt)}</dd></div>
                   <div><dt>{t('traj.duration')}</dt><dd>{selected.running ? t('traj.statusRunning') : (fmtDur(selected.durationMs) || '—')}</dd></div>
                   {selected.ttftMs != null ? <div><dt>TTFT</dt><dd data-testid="traj-ttft">{fmtDur(selected.ttftMs)}</dd></div> : null}
