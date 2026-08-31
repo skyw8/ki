@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Client } from './api'
 import { ICheck, IEdit, IPlus, IRegen, ITrash } from './icons'
 import { useI18n } from './i18n'
 import { Select } from './Select'
 import { toast } from './toast'
+import { pickSelectedProviderID, providerReady, sortProviderModels, sortProviders } from './provider-order'
 import type { ProviderAuthStatus, ProviderCatalog, ProviderModel } from './types'
 import { useDialogFocus } from './useDialogFocus'
 
@@ -67,6 +68,7 @@ export function ProviderSettings({ api, onChanged }: Props) {
   const [modelForm, setModelForm] = useState({ id: '', name: '', contextWindow: '128000', maxTokens: '16384' })
   const newProviderID = useRef<HTMLInputElement>(null)
   const modelJSONRef = useRef<HTMLTextAreaElement>(null)
+  const selectedNavRef = useRef<HTMLButtonElement>(null)
   const newProviderDialogRef = useDialogFocus<HTMLDivElement>({
     open: newProvider,
     onEscape: () => { if (!busy) setNewProvider(false) },
@@ -81,12 +83,17 @@ export function ProviderSettings({ api, onChanged }: Props) {
   const load = async () => {
     const next = await api.providers()
     setData(next)
-    setSelected(id => id && next.providers.some(p => p.id === id) ? id : (next.default.provider || next.providers[0]?.id || ''))
+    setSelected(id => pickSelectedProviderID(next.providers, id, next.default.provider))
     onChanged()
   }
   useEffect(() => { void load().catch(e => toast.from(e)) }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  const current = useMemo(() => data?.providers.find(p => p.id === selected), [data, selected])
+  const providers = useMemo(() => sortProviders(data?.providers ?? []), [data])
+  const current = useMemo(() => providers.find(p => p.id === selected), [providers, selected])
+  const models = useMemo(() => current ? sortProviderModels(current.models) : [], [current])
   const extensionManaged = current?.runtime === 'extension'
+  useEffect(() => {
+    selectedNavRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [selected])
   useEffect(() => {
     if (!current) return
     setConnection({ name: current.name, api: current.api, baseUrl: current.baseUrl })
@@ -189,15 +196,26 @@ export function ProviderSettings({ api, onChanged }: Props) {
 
       <div className="provider-workbench">
         <aside className="provider-sidebar" aria-label={c.providers}>
-          <div className="provider-sidebar-head"><span>{c.providers}</span><span>{data?.providers.length ?? 0}</span></div>
+          <div className="provider-sidebar-head"><span>{c.providers}</span><span>{providers.length}</span></div>
           <nav className="provider-nav" aria-label={c.providers}>
-            {data?.providers.map(provider => (
+            {providers.map((provider, index) => {
+              const split = index > 0 && providerReady(providers[index - 1]) && !providerReady(provider)
+              const classes = [
+                provider.id === selected ? 'on' : '',
+                providerReady(provider) ? '' : 'needs-setup',
+                provider.enabled ? '' : 'is-disabled',
+              ].filter(Boolean).join(' ')
               // Name only: id + "API key needed" read as a second grey copy of the same row.
-              <button type="button" aria-current={provider.id === selected ? 'page' : undefined} key={provider.id} data-provider-id={provider.id} className={provider.id === selected ? 'on' : ''} title={provider.name} onClick={() => setSelected(provider.id)}>
-                <span className={`provider-status-dot${provider.credential.configured ? ' ready' : ''}`} aria-hidden />
-                <span className="provider-nav-copy">{provider.name}</span>
-              </button>
-            ))}
+              return (
+                <Fragment key={provider.id}>
+                  {split ? <div className="provider-nav-split" role="separator" data-testid="provider-nav-split" /> : null}
+                  <button type="button" ref={provider.id === selected ? selectedNavRef : undefined} aria-current={provider.id === selected ? 'page' : undefined} data-provider-id={provider.id} className={classes} title={provider.name} onClick={() => setSelected(provider.id)}>
+                    <span className={`provider-status-dot${provider.credential.configured ? ' ready' : ''}`} aria-hidden />
+                    <span className="provider-nav-copy">{provider.name}</span>
+                  </button>
+                </Fragment>
+              )
+            })}
           </nav>
         </aside>
 
@@ -268,8 +286,8 @@ export function ProviderSettings({ api, onChanged }: Props) {
                 ) : null}
 
                 <div className="model-table">
-                  {current.models.map(model => {
-                    return <div className="model-row" key={model.id} data-testid="provider-model-row">
+                  {models.map(model => {
+                    return <div className={`model-row${model.enabled ? '' : ' is-disabled'}`} key={model.id} data-testid="provider-model-row">
                       <div className="model-main"><strong>{model.name || model.id}</strong><small>{model.id}</small><div className="model-tags"><span>{model.contextWindow?.toLocaleString()} ctx</span>{model.reasoning ? <span>{c.reasoning}</span> : null}{model.input?.includes('image') ? <span>{c.vision}</span> : null}<span>{extensionManaged ? c.extension : model.builtin ? c.builtIn : c.custom}</span></div></div>
                       <div className="model-actions">
                         {!extensionManaged ? <><button type="button" className="icon-text-button" data-testid="edit-model" onClick={() => editModel(model)}><IEdit />{c.edit}</button>

@@ -63,6 +63,17 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.locator('.provider-nav [data-provider-id="anthropic"]')).toHaveText('Anthropic')
   await expect(page.locator('.provider-nav')).not.toContainText('缺少密钥')
   await expect(page.locator('.provider-nav')).not.toContainText('API key needed')
+  const providerOrder = await page.locator('.provider-nav [data-provider-id]').evaluateAll(els => els.map(el => ({
+    id: el.getAttribute('data-provider-id'),
+    ready: !!el.querySelector('.provider-status-dot.ready') && !el.classList.contains('is-disabled'),
+  })))
+  const firstUnready = providerOrder.findIndex(item => !item.ready)
+  if (firstUnready >= 0) {
+    expect(providerOrder.slice(firstUnready).every(item => !item.ready)).toBe(true)
+  }
+  if (firstUnready > 0 && firstUnready < providerOrder.length) {
+    await expect(page.getByTestId('provider-nav-split')).toHaveCount(1)
+  }
   await expect(page.getByTestId('settings-theme')).toHaveCount(0)
 
   const baseURL = page.getByTestId('provider-base-url')
