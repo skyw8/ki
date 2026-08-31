@@ -135,6 +135,15 @@ func main() {
 					map[string]any{"name": "extprompt", "description": "prompt occupy"},
 				}
 			}
+			if hasCap(p.Capabilities, "tool") {
+				result["tools"] = []any{
+					map[string]any{
+						"name":        "ext_echo",
+						"description": "echo from extension",
+						"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
+					},
+				}
+			}
 			if os.Getenv("KI_COMPLETIONS") == "1" {
 				result["commands"] = []any{
 					map[string]any{

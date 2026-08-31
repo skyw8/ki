@@ -59,6 +59,19 @@ type CommandSpec struct {
 	Completions  []string `json:"completions,omitempty"`
 }
 
+// CatalogEntry is a name/description pair in the read-only extension catalog.
+type CatalogEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// SessionContribution is the live tools and commands one sidecar currently
+// exposes to a session (initialize result plus session.RegisterTools).
+type SessionContribution struct {
+	Tools    []CatalogEntry
+	Commands []CatalogEntry
+}
+
 // ToolCall is one tool_call payload.
 type ToolCall struct {
 	ID       string         `json:"id"`

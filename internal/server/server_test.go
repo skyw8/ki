@@ -3637,6 +3637,82 @@ func TestExtensionsHTTPToggle(t *testing.T) {
 	}
 }
 
+func TestExtensionCatalogListsLoadedContributions(t *testing.T) {
+	srv, hs := testServer(t)
+	home := srv.cfg.Home
+	dir := filepath.Join(home, "extensions", "packx")
+	if err := os.MkdirAll(filepath.Join(dir, "skills", "from-ext"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "commands"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"packx","version":"2.1.0","description":"catalog fixture","capabilities":["skill","command","prompt.append"],"skills":["skills"],"commands":["commands"],"prompt":{"append":["APPEND.md"]}}`
+	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skills", "from-ext", "SKILL.md"), []byte("---\nname: from-ext\ndescription: skill from packx\n---\nbody\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "commands", "exthello.md"), []byte("---\ndescription: hello from packx\n---\nHi\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "APPEND.md"), []byte("EXT-LAYER"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := createSession(t, hs, t.TempDir())
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"?fields=runtime", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sess map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&sess); err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	item := extensionItem(t, sess["availableExtensions"], "packx")
+	if item["version"] != "2.1.0" {
+		t.Fatalf("version %+v", item["version"])
+	}
+	skills, _ := item["skills"].([]any)
+	if !catalogHasName(skills, "from-ext") {
+		t.Fatalf("skills %+v", item["skills"])
+	}
+	cmds, _ := item["commands"].([]any)
+	if !catalogHasName(cmds, "exthello") {
+		t.Fatalf("commands %+v", item["commands"])
+	}
+	files, _ := item["promptAppend"].([]any)
+	if len(files) != 1 || files[0] != "APPEND.md" {
+		t.Fatalf("promptAppend %+v", item["promptAppend"])
+	}
+}
+
+func extensionItem(t *testing.T, raw any, name string) map[string]any {
+	t.Helper()
+	items, _ := raw.([]any)
+	for _, item := range items {
+		m, _ := item.(map[string]any)
+		if m["name"] == name {
+			return m
+		}
+	}
+	t.Fatalf("extension %q missing from %+v", name, raw)
+	return nil
+}
+
+func catalogHasName(items []any, name string) bool {
+	for _, item := range items {
+		m, _ := item.(map[string]any)
+		if m["name"] == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestPromptWithDeclarativeExtensionFinishes(t *testing.T) {
 	srv, hs := testServer(t)
 	home := srv.cfg.Home

@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { applyFollowTail } from '../src/follow-tail.ts'
 import { nodeTypes, nodeValues, parseMarkdown } from './markdown-parse.ts'
-import { statePath } from './global-setup.ts'
+import { serverToken, statePath } from './global-setup.ts'
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
@@ -661,6 +661,55 @@ test('session info lists skills and extensions; toggles live in settings', async
 
   await page.getByTestId('info-edit').click()
   await expect(page.getByTestId('settings-tab-extensions')).toBeVisible()
+})
+
+test('session info lists extension-loaded skills, commands, and prompt with heading sizes', async ({ page, request }) => {
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const dir = join(home, 'extensions', 'infox')
+  mkdirSync(join(dir, 'skills', 'ext-skill'), { recursive: true })
+  mkdirSync(join(dir, 'commands'), { recursive: true })
+  writeFileSync(join(dir, 'extension.json'), JSON.stringify({
+    name: 'infox',
+    version: '3.0.0',
+    description: 'info page fixture',
+    capabilities: ['skill', 'command', 'prompt.append'],
+    skills: ['skills'],
+    commands: ['commands'],
+    prompt: { append: ['APPEND.md'] },
+  }))
+  writeFileSync(join(dir, 'skills', 'ext-skill', 'SKILL.md'), '---\nname: ext-skill\ndescription: skill from infox\n---\n')
+  writeFileSync(join(dir, 'commands', 'exthello.md'), '---\ndescription: hello from infox\n---\nHi\n')
+  writeFileSync(join(dir, 'APPEND.md'), 'EXT-PROMPT-LAYER\n')
+
+  const headers = { Authorization: `Bearer ${serverToken()}` }
+  const reload = await request.post('/v1/reload', { headers })
+  expect(reload.ok()).toBe(true)
+
+  await page.goto('/')
+  await sendPrompt(page, `info-ext ${Date.now()}`)
+  await expect(page.getByTestId('assistant-message')).toContainText('ok')
+  await page.getByTestId('tab-config').click()
+
+  const card = page.getByTestId('cfg-extension').filter({ has: page.locator('.cfg-h2', { hasText: 'infox' }) })
+  await expect(card).toBeVisible()
+  await expect(card.getByTestId('cfg-extension-skill')).toHaveAttribute('data-name', 'ext-skill')
+  await expect(card.getByTestId('cfg-extension-command')).toContainText('/exthello')
+  await expect(card.getByTestId('cfg-extension-prompt')).toHaveAttribute('data-name', 'APPEND.md')
+  await expect(card.getByTestId('cfg-extension-capabilities')).toContainText('skill')
+  await expect(page.getByTestId('info-outline')).toContainText('ext-skill')
+  await expect(page.getByTestId('cfg-skill').filter({ hasText: 'ext-skill' })).toBeVisible()
+
+  const sizes = await page.evaluate(() => {
+    const section = document.querySelector('#info-extensions.cfg-block .cfg-h, #info-extensions .cfg-h')
+    const ext = document.querySelector('#info-extensions .cfg-h2')
+    const group = document.querySelector('#info-extensions .cfg-h3')
+    const body = document.querySelector('#info-extensions .cfg-desc')
+    const sizeOf = (el: Element | null) => el ? Number.parseFloat(getComputedStyle(el).fontSize) : 0
+    return { section: sizeOf(section), ext: sizeOf(ext), group: sizeOf(group), body: sizeOf(body) }
+  })
+  expect(sizes.section, `heading sizes ${JSON.stringify(sizes)}`).toBeGreaterThan(sizes.ext)
+  expect(sizes.ext, `heading sizes ${JSON.stringify(sizes)}`).toBeGreaterThan(sizes.group)
+  expect(sizes.group, `heading sizes ${JSON.stringify(sizes)}`).toBeGreaterThanOrEqual(sizes.body - 0.5)
 })
 
 test('command palette is opaque, one-line, and inserts without sending', async ({ page }) => {

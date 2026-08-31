@@ -103,7 +103,7 @@ func (s *Server) patchSkills(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getExtensions(w http.ResponseWriter, _ *http.Request) {
 	snapshot := s.resources.Scan("")
 	_ = s.disableManifestExtensions(snapshot.Extensions)
-	writeJSON(w, 200, map[string]any{"items": s.extensionCatalog(snapshot)})
+	writeJSON(w, 200, map[string]any{"items": s.extensionCatalog(snapshot, "")})
 }
 
 func (s *Server) patchExtensions(w http.ResponseWriter, r *http.Request) {
@@ -189,18 +189,77 @@ func (s *Server) patchExtensionConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"name": d.Name, "schema": d.Config.Schema, "config": values, "i18n": d.I18n})
 }
 
-func (s *Server) extensionCatalog(snapshot resources.Snapshot) []map[string]any {
+func (s *Server) extensionCatalog(snapshot resources.Snapshot, sessionID string) []map[string]any {
 	tg := toggles.Load(s.cfg.Home)
 	statuses := map[string]extension.RuntimeStatus{}
+	contribs := map[string]extension.SessionContribution{}
 	if s.ext != nil {
 		for _, state := range s.ext.RuntimeStatuses() {
 			statuses[state.Name] = state
 		}
+		contribs = s.ext.SessionContributions(sessionID)
+	}
+	skillsByExt := map[string][]map[string]any{}
+	for _, item := range snapshot.Skills {
+		name, ok := strings.CutPrefix(item.Source, "extension:")
+		if !ok {
+			continue
+		}
+		skillsByExt[name] = append(skillsByExt[name], map[string]any{
+			"name":        item.Name,
+			"description": item.Description,
+		})
+	}
+	cmdsByExt := map[string][]map[string]any{}
+	seenCmd := map[string]map[string]bool{}
+	for _, tmpl := range snapshot.Prompts {
+		if tmpl.Extension == "" {
+			continue
+		}
+		cmdsByExt[tmpl.Extension] = append(cmdsByExt[tmpl.Extension], map[string]any{
+			"name":        tmpl.Name,
+			"description": tmpl.Description,
+			"source":      "prompt",
+		})
+		if seenCmd[tmpl.Extension] == nil {
+			seenCmd[tmpl.Extension] = map[string]bool{}
+		}
+		seenCmd[tmpl.Extension][tmpl.Name] = true
+	}
+	for name, contrib := range contribs {
+		for _, cmd := range contrib.Commands {
+			if seenCmd[name][cmd.Name] {
+				continue
+			}
+			cmdsByExt[name] = append(cmdsByExt[name], map[string]any{
+				"name":        cmd.Name,
+				"description": cmd.Description,
+				"source":      "runtime",
+			})
+			if seenCmd[name] == nil {
+				seenCmd[name] = map[string]bool{}
+			}
+			seenCmd[name][cmd.Name] = true
+		}
+	}
+	for name := range skillsByExt {
+		sort.Slice(skillsByExt[name], func(i, j int) bool {
+			a, _ := skillsByExt[name][i]["name"].(string)
+			b, _ := skillsByExt[name][j]["name"].(string)
+			return a < b
+		})
+	}
+	for name := range cmdsByExt {
+		sort.Slice(cmdsByExt[name], func(i, j int) bool {
+			a, _ := cmdsByExt[name][i]["name"].(string)
+			b, _ := cmdsByExt[name][j]["name"].(string)
+			return a < b
+		})
 	}
 	items := []map[string]any{}
 	for _, d := range snapshot.Extensions {
 		errorText := d.Error
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"name":         d.Name,
 			"version":      d.Version,
 			"description":  d.Description,
@@ -208,19 +267,39 @@ func (s *Server) extensionCatalog(snapshot resources.Snapshot) []map[string]any 
 			"enabled":      tg.Extensions.Allowed(d.Name),
 			"capabilities": d.Capabilities,
 			"configurable": len(d.Config.Schema) > 0,
-		})
+		}
 		if d.I18n != nil {
-			items[len(items)-1]["i18n"] = d.I18n
+			item["i18n"] = d.I18n
 		}
 		if ui := s.globalExtensionUI(d.Name); ui != nil {
-			items[len(items)-1]["ui"] = ui
+			item["ui"] = ui
 		}
 		if state, ok := statuses[d.Name]; ok {
-			items[len(items)-1]["runtime"] = state
+			item["runtime"] = state
 		}
 		if errorText != "" {
-			items[len(items)-1]["error"] = errorText
+			item["error"] = errorText
 		}
+		if sk := skillsByExt[d.Name]; len(sk) > 0 {
+			item["skills"] = sk
+		}
+		if contrib := contribs[d.Name]; len(contrib.Tools) > 0 {
+			item["tools"] = contrib.Tools
+		}
+		if cmds := cmdsByExt[d.Name]; len(cmds) > 0 {
+			item["commands"] = cmds
+		}
+		if files := d.PromptAppendFiles(); len(files) > 0 {
+			item["promptAppend"] = files
+		}
+		if len(d.Providers) > 0 {
+			providers := make([]map[string]any, 0, len(d.Providers))
+			for _, p := range d.Providers {
+				providers = append(providers, map[string]any{"id": p.ID, "name": p.Name, "api": p.API})
+			}
+			item["providers"] = providers
+		}
+		items = append(items, item)
 	}
 	sort.Slice(items, func(i, j int) bool {
 		a, _ := items[i]["name"].(string)

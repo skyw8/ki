@@ -654,9 +654,13 @@ function WorkspaceApp({ api }: { api: Client }) {
   }, [api, currentId, view.runtimeReady])
 
   const sessionExtChips = useMemo(() => statusChips(view.extensionUi), [view.extensionUi])
-  const globalExtensionItems = useMemo(
-		() => globalExtensions.filter(item => item.enabled && (item.configurable || item.ui?.status?.text || item.ui?.panel)),
+  const enabledExtensions = useMemo(
+		() => globalExtensions.filter(item => item.enabled),
 		[globalExtensions],
+	)
+  const globalExtensionItems = useMemo(
+		() => enabledExtensions.filter(item => item.configurable || item.ui?.status?.text || item.ui?.panel),
+		[enabledExtensions],
 	)
 	const globalExtChips = useMemo(
 		() => globalExtensionItems.flatMap(item => {
@@ -672,13 +676,9 @@ function WorkspaceApp({ api }: { api: Client }) {
 		if (!extOpen) return null
 		const sessionUI = sessionExtChips.find(ui => ui.extension === extOpen)
 		if (sessionUI) return sessionUI
-		const globalItem = globalExtensionItems.find(item => item.name === extOpen)
+		const globalItem = enabledExtensions.find(item => item.name === extOpen)
 		return globalItem ? globalExtensionUI(globalItem) : null
-	}, [extOpen, globalExtensionItems, sessionExtChips])
-	const globalConfigExtensions = useMemo(
-		() => globalExtensions.filter(item => item.enabled && item.configurable),
-		[globalExtensions],
-	)
+	}, [enabledExtensions, extOpen, sessionExtChips])
 
 	const selectExtension = useCallback((name: string) => {
 		setExtOpen(name)
@@ -692,13 +692,13 @@ function WorkspaceApp({ api }: { api: Client }) {
 
   useEffect(() => {
     if (!extOpen) return
-    if (extChips.some(ui => ui.extension === extOpen) || globalExtensionItems.some(item => item.name === extOpen)) return
-    if (!extChips.length && !globalExtensionItems.length) {
+    if (extChips.some(ui => ui.extension === extOpen) || enabledExtensions.some(item => item.name === extOpen)) return
+    if (!extChips.length && !enabledExtensions.length) {
       setExtOpen(null)
       return
     }
-    selectExtension(extChips[0]?.extension ?? globalExtensionItems[0].name)
-  }, [extChips, extOpen, globalExtensionItems, selectExtension])
+    selectExtension(extChips[0]?.extension ?? enabledExtensions[0].name)
+  }, [enabledExtensions, extChips, extOpen, selectExtension])
 
   const openExt = useCallback((name?: string) => {
     const chips = extChips
@@ -1541,6 +1541,7 @@ function WorkspaceApp({ api }: { api: Client }) {
               onEdit={page => { drawerDialogSource.current = null; setSettingsPage(page); setSettingsOpen(true) }}
               treeAvailable={treeAvailable}
               onTreeOpen={() => setTreeOpen(true)}
+              runtimeReady={view.runtimeReady}
             />
           </div>
         ) : tab === 'trajectory' ? (
@@ -1711,7 +1712,7 @@ function WorkspaceApp({ api }: { api: Client }) {
         <Modal title={t('ext.inspector')} onClose={() => setExtOpen(null)} testid="ext-panel" className="modal-ext modal-flush">
           <ExtensionInspector
             items={sessionExtChips}
-            globalItems={globalExtensionItems}
+            globalItems={enabledExtensions}
             selected={extSelected}
             selectedName={extOpen}
             fields={extFields}

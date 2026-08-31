@@ -238,6 +238,11 @@ test('extension ui.setStatus chip opens panel modal', async ({ page, request }) 
   await page.getByTestId('settings-tab-extensions').click()
   await expect(page.getByTestId('extension-on-goalui')).toHaveAttribute('aria-checked', 'true')
   await expect(page.getByTestId('extensions-status-goalui')).toHaveCount(0)
+  await expect(page.getByTestId('cfg-configure-goalui')).toBeVisible()
+  await page.getByTestId('cfg-configure-goalui').click()
+  await expect(page.getByTestId('settings')).toHaveCount(0)
+  await expect(page.getByTestId('ext-panel')).toBeVisible()
+  await expect(page.getByTestId('ext-nav-goalui')).toHaveAttribute('aria-current', 'page')
 })
 
 test('opening a session locks composer until runtime.ready', async ({ page, request }) => {

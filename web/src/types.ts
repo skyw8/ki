@@ -193,6 +193,18 @@ export type ExtensionI18n = {
   resources?: Record<string, Record<string, string>>
 }
 
+export type CatalogContribution = {
+  name: string
+  description?: string
+  source?: string
+}
+
+export type CatalogProvider = {
+  id: string
+  name?: string
+  api?: string
+}
+
 export type CatalogExtension = {
   name: string
   version?: string
@@ -205,6 +217,11 @@ export type CatalogExtension = {
 	runtime?: { name: string; state: string; error?: string; capabilities?: string[] }
 	ui?: ExtensionUI
 	i18n?: ExtensionI18n
+	skills?: CatalogContribution[]
+	tools?: CatalogContribution[]
+	commands?: CatalogContribution[]
+	promptAppend?: string[]
+	providers?: CatalogProvider[]
 }
 
 export type ExtensionConfig = {

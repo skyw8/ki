@@ -1,17 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import type { Client } from './api'
 import { ICheck, IChevDown, IEdit, IRegen, ITraj } from './icons'
-import { useI18n, type Lang, type MsgKey } from './i18n'
+import { useI18n, type Lang, type MsgKey, type TFn } from './i18n'
 import { ModelPickerDialog } from './ModelPickerDialog'
 import { toast } from './toast'
 import { localizedExtensionText } from './ExtensionPanel'
-import type { CatalogExtension, CatalogSkill, ExtensionConfig, ExtensionI18n, ModelInfo, SessionCommand, SessionDetail } from './types'
+import type { CatalogContribution, CatalogExtension, CatalogSkill, ExtensionConfig, ExtensionI18n, ModelInfo, SessionCommand, SessionDetail } from './types'
 
 const SOURCE_KEY: Record<string, MsgKey> = {
   home: 'cfg.src.home',
   'user-agents': 'cfg.src.user-agents',
   project: 'cfg.src.project',
   'ancestor-agents': 'cfg.src.ancestor-agents',
+  prompt: 'cfg.src.prompt',
+  runtime: 'cfg.src.runtime',
+  extension: 'cfg.src.sidecar',
+  builtin: 'cfg.src.builtin',
+  skill: 'cfg.src.skill',
+}
+
+function sourceLabel(source: string | undefined, t: TFn): string {
+  if (!source) return ''
+  if (SOURCE_KEY[source]) return t(SOURCE_KEY[source])
+  if (source.startsWith('extension:')) return t('cfg.src.extension', { name: source.slice('extension:'.length) })
+  return source
 }
 
 const INFO_SECTIONS = [
@@ -36,6 +48,16 @@ type OutlineItem = {
   children?: OutlineItem[]
 }
 
+function extensionOutlineChildren(item: CatalogExtension, index: number): OutlineItem[] {
+  return [
+    ...(item.skills ?? []).map((sk, j) => ({ id: `info-extension-${index}-skill-${j}`, label: sk.name })),
+    ...(item.tools ?? []).map((tool, j) => ({ id: `info-extension-${index}-tool-${j}`, label: tool.name })),
+    ...(item.commands ?? []).map((cmd, j) => ({ id: `info-extension-${index}-command-${j}`, label: `/${cmd.name}` })),
+    ...(item.promptAppend ?? []).map((file, j) => ({ id: `info-extension-${index}-prompt-${j}`, label: file })),
+    ...(item.providers ?? []).map((p, j) => ({ id: `info-extension-${index}-provider-${j}`, label: p.name || p.id })),
+  ]
+}
+
 function flattenOutline(items: OutlineItem[]): OutlineItem[] {
   return items.flatMap(item => [item, ...flattenOutline(item.children ?? [])])
 }
@@ -48,6 +70,7 @@ export function SessionConfig({
   onEdit,
   treeAvailable,
   onTreeOpen,
+  runtimeReady,
 }: {
   api: Client
   sessionId: string | null
@@ -56,6 +79,7 @@ export function SessionConfig({
   onEdit?: (page: 'skills' | 'extensions') => void
   treeAvailable?: boolean
   onTreeOpen?: () => void
+  runtimeReady?: boolean
 }) {
   const { t, lang } = useI18n()
   const [detail, setDetail] = useState<SessionDetail | null>(null)
@@ -76,7 +100,11 @@ export function SessionConfig({
     {
       id: 'info-extensions',
       label: t('cfg.extensions'),
-      children: extensions.map((item, i) => ({ id: `info-extension-${i}`, label: item.name })),
+      children: extensions.map((item, i) => ({
+        id: `info-extension-${i}`,
+        label: item.name,
+        children: extensionOutlineChildren(item, i),
+      })),
     },
     {
       id: 'info-commands',
@@ -101,7 +129,7 @@ export function SessionConfig({
     }
   }, [api, sessionId])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { void load() }, [load, runtimeReady])
 
   useEffect(() => {
     const root = configRef.current
@@ -149,7 +177,7 @@ export function SessionConfig({
             ) : null}
           </div>
           <section className="cfg-block" id="info-session">
-            <h3 className="cfg-h">{t('cfg.session')}</h3>
+            <h2 className="cfg-h">{t('cfg.session')}</h2>
             <dl className="cfg-meta">
               <div>
                 <dt>{t('cfg.cwd')}</dt>
@@ -183,7 +211,7 @@ export function SessionConfig({
           </section>
 
           <section className="cfg-block" id="info-skills">
-            <h3 className="cfg-h">{t('cfg.skills')}</h3>
+            <h2 className="cfg-h">{t('cfg.skills')}</h2>
             {skills.length === 0 && !loading ? (
               <p className="cfg-empty">{t('cfg.skillsEmpty')}</p>
             ) : (
@@ -193,7 +221,7 @@ export function SessionConfig({
                     <div className="cfg-copy">
                       <div className="cfg-name">
                         {item.name}
-                        {item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
+                        {item.source ? <span className="cfg-src">{sourceLabel(item.source, t)}</span> : null}
                         <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
                       </div>
                       {item.description ? <p className="cfg-desc">{item.description}</p> : null}
@@ -205,30 +233,20 @@ export function SessionConfig({
           </section>
 
           <section className="cfg-block" id="info-extensions">
-            <h3 className="cfg-h">{t('cfg.extensions')}</h3>
+            <h2 className="cfg-h">{t('cfg.extensions')}</h2>
             {extensions.length === 0 && !loading ? (
               <p className="cfg-empty">{t('cfg.extensionsEmpty')}</p>
             ) : (
-              <ul className="cfg-list">
+              <ul className="cfg-list cfg-extension-list">
                 {extensions.map((item, i) => (
-                  <li key={item.name} id={`info-extension-${i}`} className="cfg-row" data-testid="cfg-extension" data-name={item.name}>
-                    <div className="cfg-copy">
-                      <div className="cfg-name">
-                        {item.name}
-                        <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
-                      </div>
-                      {extensionDescription(item, lang) ? <p className="cfg-desc">{extensionDescription(item, lang)}</p> : null}
-                      {item.runtime ? <p className="cfg-desc">{t('cfg.runtime')}: {item.runtime.state}</p> : null}
-                      {item.error ? <p className="cfg-desc settings-error" role="alert">{item.error}</p> : null}
-                    </div>
-                  </li>
+                  <ExtensionInfoCard key={item.name} item={item} index={i} lang={lang} t={t} />
                 ))}
               </ul>
             )}
           </section>
 
           <section className="cfg-block" id="info-commands">
-            <h3 className="cfg-h">{t('cfg.commands')}</h3>
+            <h2 className="cfg-h">{t('cfg.commands')}</h2>
             {commands.length === 0 && !loading ? (
               <p className="cfg-empty">{t('cfg.commandsEmpty')}</p>
             ) : (
@@ -238,7 +256,7 @@ export function SessionConfig({
                     <div className="cfg-copy">
                       <div className="cfg-name">
                         /{item.name}
-                        <span className="cfg-src">{item.source}</span>
+                        <span className="cfg-src">{item.extension ? sourceLabel(`extension:${item.extension}`, t) : sourceLabel(item.source, t)}</span>
                       </div>
                       {item.description ? <p className="cfg-desc">{item.description}</p> : null}
                     </div>
@@ -272,6 +290,139 @@ export function SessionConfig({
           </nav>
         </aside>
       </div>
+    </div>
+  )
+}
+
+function ExtensionInfoCard({ item, index, lang, t }: { item: CatalogExtension; index: number; lang: Lang; t: TFn }) {
+  const desc = extensionDescription(item, lang)
+  const skills = item.skills ?? []
+  const tools = item.tools ?? []
+  const commands = item.commands ?? []
+  const prompts = item.promptAppend ?? []
+  const providers = item.providers ?? []
+  const loaded = skills.length + tools.length + commands.length + prompts.length + providers.length
+  const runtimePending = item.enabled && (item.capabilities ?? []).some(cap => cap === 'tool' || cap === 'command') && item.runtime?.state !== 'ready' && item.runtime?.state !== 'failed'
+  return (
+    <li id={`info-extension-${index}`} className="cfg-extension" data-testid="cfg-extension" data-name={item.name}>
+      <header className="cfg-extension-head">
+        <h3 className="cfg-h2">{item.name}</h3>
+        {item.version ? <span className="cfg-src">{t('cfg.version')} {item.version}</span> : null}
+        <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
+      </header>
+      {desc ? <p className="cfg-desc">{desc}</p> : null}
+      <dl className="cfg-meta cfg-extension-meta">
+        {item.runtime ? (
+          <div>
+            <dt>{t('cfg.runtime')}</dt>
+            <dd>{item.runtime.state}{item.runtime.error ? ` · ${item.runtime.error}` : ''}</dd>
+          </div>
+        ) : null}
+        {item.capabilities?.length ? (
+          <div>
+            <dt>{t('cfg.capabilities')}</dt>
+            <dd className="cfg-caps" data-testid="cfg-extension-capabilities">
+              {item.capabilities.map(cap => <span key={cap} className="cfg-src">{cap}</span>)}
+            </dd>
+          </div>
+        ) : null}
+      </dl>
+      {item.error ? <p className="cfg-desc settings-error" role="alert">{item.error}</p> : null}
+      {loaded === 0 && !runtimePending ? (
+        <p className="cfg-empty" data-testid="cfg-extension-empty">{t('cfg.contribEmpty')}</p>
+      ) : null}
+      <ContribGroup
+        title={t('cfg.skills')}
+        items={skills}
+        idPrefix={`info-extension-${index}-skill`}
+        testid="cfg-extension-skill"
+        sourceOf={item => item.source}
+        t={t}
+      />
+      <ContribGroup
+        title={t('cfg.tools')}
+        items={tools}
+        idPrefix={`info-extension-${index}-tool`}
+        testid="cfg-extension-tool"
+        t={t}
+      />
+      <ContribGroup
+        title={t('cfg.commands')}
+        items={commands}
+        idPrefix={`info-extension-${index}-command`}
+        testid="cfg-extension-command"
+        nameOf={item => `/${item.name}`}
+        sourceOf={item => item.source}
+        t={t}
+      />
+      {prompts.length > 0 ? (
+        <div className="cfg-contrib">
+          <h4 className="cfg-h3">{t('cfg.promptAppend')}</h4>
+          <ul className="cfg-contrib-list">
+            {prompts.map((file, j) => (
+              <li key={file} id={`info-extension-${index}-prompt-${j}`} className="cfg-contrib-item" data-testid="cfg-extension-prompt" data-name={file}>
+                <div className="cfg-name">{file}</div>
+                <p className="cfg-desc">{t('cfg.promptLayer')}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {providers.length > 0 ? (
+        <div className="cfg-contrib">
+          <h4 className="cfg-h3">{t('cfg.providers')}</h4>
+          <ul className="cfg-contrib-list">
+            {providers.map((provider, j) => (
+              <li key={provider.id} id={`info-extension-${index}-provider-${j}`} className="cfg-contrib-item" data-testid="cfg-extension-provider" data-name={provider.id}>
+                <div className="cfg-name">
+                  {provider.name || provider.id}
+                  {provider.api ? <span className="cfg-src">{provider.api}</span> : null}
+                </div>
+                {provider.name && provider.name !== provider.id ? <p className="cfg-desc">{provider.id}</p> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </li>
+  )
+}
+
+function ContribGroup({
+  title,
+  items,
+  idPrefix,
+  testid,
+  nameOf,
+  sourceOf,
+  t,
+}: {
+  title: string
+  items: CatalogContribution[]
+  idPrefix: string
+  testid: string
+  nameOf?: (item: CatalogContribution) => string
+  sourceOf?: (item: CatalogContribution) => string | undefined
+  t: TFn
+}) {
+  if (items.length === 0) return null
+  return (
+    <div className="cfg-contrib">
+      <h4 className="cfg-h3">{title}</h4>
+      <ul className="cfg-contrib-list">
+        {items.map((item, j) => {
+          const source = sourceOf?.(item)
+          return (
+            <li key={`${item.name}:${j}`} id={`${idPrefix}-${j}`} className="cfg-contrib-item" data-testid={testid} data-name={item.name}>
+              <div className="cfg-name">
+                {nameOf ? nameOf(item) : item.name}
+                {source ? <span className="cfg-src">{sourceLabel(source, t)}</span> : null}
+              </div>
+              {item.description ? <p className="cfg-desc">{item.description}</p> : null}
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
 }
@@ -342,16 +493,18 @@ export function SettingsToggles({
               <div className="cfg-copy">
                 <div className="cfg-name">
                   {item.name}
-                  {kind === 'skills' && 'source' in item && item.source ? <span className="cfg-src">{SOURCE_KEY[item.source] ? t(SOURCE_KEY[item.source]) : item.source}</span> : null}
+                  {kind === 'skills' && 'source' in item && item.source ? <span className="cfg-src">{sourceLabel(item.source, t)}</span> : null}
                 </div>
               {'description' in item && kind === 'extensions' && extensionDescription(item, lang) ? <p className="cfg-desc">{extensionDescription(item, lang)}</p> : null}
               {'description' in item && kind !== 'extensions' && item.description ? <p className="cfg-desc">{item.description}</p> : null}
 	              {'error' in item && item.error ? <p className="cfg-desc settings-error-inline" data-testid={`${kind}-error-${item.name}`} role="alert">{item.error}</p> : null}
 	              </div>
-	              {/* Why: disabled extensions are intentionally absent from the
-	                  live inspector catalog; exposing Configure here opened an
-	                  empty or unrelated extension instead. */}
-	              {kind === 'extensions' && 'configurable' in item && item.configurable && item.enabled ? <button type="button" className="cfg-btn" data-testid={`cfg-configure-${item.name}`} onClick={() => onConfigure?.(item.name)}>{t('cfg.configure')}</button> : null}
+	              {/* Why: the inspector catalog is enabled extensions only.
+	                  Disabled packages have no live sidecar view, so Configure
+	                  would open an empty or unrelated inspector. Goal and other
+	                  UI-only packages have no config schema, but they still
+	                  use the same inspector as configurable extensions. */}
+	              {kind === 'extensions' && item.enabled ? <button type="button" className="cfg-btn" data-testid={`cfg-configure-${item.name}`} onClick={() => onConfigure?.(item.name)}>{t('cfg.configure')}</button> : null}
               <Switch
                 testid={`${kind === 'skills' ? 'skill' : 'extension'}-on-${item.name}`}
                 ariaLabel={`${t('cfg.enabled')} ${item.name}`}

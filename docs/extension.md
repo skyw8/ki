@@ -253,11 +253,11 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| GET / PATCH | `/v1/extensions` | 全局列表 / `disabled`，包含 runtime 状态和全局 `ui` 投影 |
+| GET / PATCH | `/v1/extensions` | 全局列表 / `disabled`，包含 runtime 状态、全局 `ui` 投影，以及已加载的 skills / tools / commands / promptAppend / providers |
 | GET / PATCH | `/v1/extensions/{name}/config` | 读取脱敏配置 / 校验并保存扩展配置 |
-| GET | `/v1/sessions/{id}` | `availableExtensions`、`commands`、`extensionUi`、`queued`、`extQueued`、`runtime.ready` |
+| GET | `/v1/sessions/{id}` | `availableExtensions`（含已加载的 skills / tools / commands / promptAppend / providers）、`commands`、`extensionUi`、`queued`、`extQueued`、`runtime.ready` |
 | POST | `/v1/reload` | 重新扫描并协调 sidecar |
 
 `path` 只展示，不当 `href`。
 
-扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影和可选 i18n catalog；查询不会启动 sidecar。manifest 校验失败不会拉起 runtime，并写入 `extensions.disabled`。sidecar 启动失败在仍启用时自动重试；session Prepare 上报 `sidecar_start` 后同样禁用。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航切换扩展，Extensions 设置中的 Configure 也只负责打开并定位到同一个页面，不在 session Info 或设置页内嵌第二份编辑器。
+扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影、可选 i18n catalog，以及该包已加载的 skills / tools / slash 命令 / prompt append / providers；查询不会启动 sidecar。sidecar 尚未握手时 tools/runtime commands 可能为空，session Info 在 `runtime.ready` 后再拉一次。manifest 校验失败不会拉起 runtime，并写入 `extensions.disabled`。sidecar 启动失败在仍启用时自动重试；session Prepare 上报 `sidecar_start` 后同样禁用。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航列出全部已启用扩展。Extensions 设置里每个已启用扩展都有 Configure，打开并定位到同一个页面（不要求必须有 config schema）；停用的扩展没有该按钮。不在 session Info 或设置页内嵌第二份编辑器。

@@ -917,14 +917,25 @@ func (s *Server) sessionRuntime(snap *sessionSnap) (map[string]any, error) {
 	ready := s.runtimeReady(snap.id)
 	cmds := command.Catalog(snapshot, tg.Skills)
 	if s.ext != nil {
+		owner := map[string]string{}
+		for extName, contrib := range s.ext.SessionContributions(snap.id) {
+			for _, cmd := range contrib.Commands {
+				if _, exists := owner[cmd.Name]; !exists {
+					owner[cmd.Name] = extName
+				}
+			}
+		}
 		for _, spec := range s.ext.RuntimeCommands(snap.id) {
-			cmds = append(cmds, command.Item{Name: spec.Name, Description: spec.Description, ArgumentHint: spec.ArgumentHint, Completions: spec.Completions, Source: "extension"})
+			cmds = append(cmds, command.Item{
+				Name: spec.Name, Description: spec.Description, ArgumentHint: spec.ArgumentHint, Completions: spec.Completions,
+				Source: "extension", Extension: owner[spec.Name],
+			})
 		}
 	}
 	return map[string]any{
 		"leafId":              snap.leafID,
 		"availableSkills":     sk,
-		"availableExtensions": s.extensionCatalog(snapshot),
+		"availableExtensions": s.extensionCatalog(snapshot, snap.id),
 		"commands":            cmds,
 		"queued":              queued,
 		"extQueued":           extQueued,

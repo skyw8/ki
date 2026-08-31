@@ -20,8 +20,9 @@
 // workspace (or a tmp+ workspace). GET /v1/sessions/{id} returns a WebUI
 // view: a body-less index of the jsonl tree, a slimmed tail of the active
 // leaf (unchanged request_header system/tools omitted; large bodies truncated),
-// plus a read-only catalog (availableSkills / availableExtensions, including global
-// extension i18n/UI, commands[]), session extensionUi, and runtime.ready.
+// plus a read-only catalog (availableSkills / availableExtensions, including
+// loaded skills/tools/commands/promptAppend/providers and global extension
+// i18n/UI, commands[]), session extensionUi, and runtime.ready.
 // Query fields=runtime omits the transcript; entry/entries fetch full bodies;
 // before+limit pages older leaf entries. messages is not included. Opening a session (POST create, GET by id,
 // fork) prepares the session view of already-running extensions in the

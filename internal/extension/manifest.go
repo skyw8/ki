@@ -413,6 +413,16 @@ func (d Descriptor) skillRoots() []string {
 	return out
 }
 
+// PromptAppendFiles lists declared system-prompt append paths. Catalog display
+// uses this even when the package is disabled so Info can show what the
+// package contains; prompt loading still goes through promptText().
+func (d Descriptor) PromptAppendFiles() []string {
+	if !hasKind(d.Capabilities, CapPromptAppend) || d.Error != "" {
+		return nil
+	}
+	return append([]string(nil), d.manifest.Prompt.Append...)
+}
+
 func (d Descriptor) commandDirs() []string {
 	if !hasKind(d.Capabilities, CapCommand) || !d.Enabled || d.Error != "" {
 		return nil

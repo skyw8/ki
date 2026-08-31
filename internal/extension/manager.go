@@ -514,6 +514,62 @@ func (m *Manager) HTTPDoer(sessionID string) provider.HTTPDoer {
 	return nil
 }
 
+// SessionContributions lists tools and commands currently registered on
+// running sidecars. sessionID "" uses process-level initialize results only;
+// a session id also includes that session's RegisterTools specs. Occupied
+// tool execution still waits for the next Prepare; the catalog can show
+// registrations as soon as the sidecar has them.
+func (m *Manager) SessionContributions(sessionID string) map[string]SessionContribution {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	names := append([]string(nil), m.order[sessionID]...)
+	if len(names) == 0 {
+		for name := range m.by {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+	}
+	out := map[string]SessionContribution{}
+	for _, name := range names {
+		c := m.by[name]
+		if c == nil {
+			continue
+		}
+		contrib := SessionContribution{}
+		if hasKind(c.capabilities, CapTool) {
+			seen := map[string]bool{}
+			addTool := func(spec ToolSpec) {
+				if spec.Name == "" || reservedToolNames[spec.Name] || seen[spec.Name] {
+					return
+				}
+				seen[spec.Name] = true
+				contrib.Tools = append(contrib.Tools, CatalogEntry{Name: spec.Name, Description: spec.Description})
+			}
+			for _, spec := range c.registration.Tools {
+				addTool(spec)
+			}
+			if sessionID != "" {
+				for _, spec := range m.sessionTools[sessionID][name] {
+					addTool(spec)
+				}
+			}
+		}
+		if hasKind(c.capabilities, CapCommand) {
+			for _, spec := range c.registration.Commands {
+				if spec.Name == "" || spec.Name == "compact" || spec.Name == "reload" {
+					continue
+				}
+				contrib.Commands = append(contrib.Commands, CatalogEntry{Name: spec.Name, Description: spec.Description})
+			}
+		}
+		if len(contrib.Tools) == 0 && len(contrib.Commands) == 0 {
+			continue
+		}
+		out[name] = contrib
+	}
+	return out
+}
+
 // RuntimeCommands lists executable slash handlers from the session's enabled
 // view of the global sidecars.
 func (m *Manager) RuntimeCommands(sessionID string) map[string]CommandSpec {

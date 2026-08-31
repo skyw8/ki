@@ -701,6 +701,30 @@ func TestGetSessionWarmsRuntimeCommands(t *testing.T) {
 	}
 }
 
+func TestSessionCatalogListsRuntimeToolsAndCommands(t *testing.T) {
+	bin := buildExtSidecar(t)
+	srv, hs := testServer(t)
+	installSidecar(t, srv.cfg.Home, "shipper", bin, `"command","tool"`, "")
+	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{"cwd": t.TempDir()})
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	id, _ := created["id"].(string)
+	got := waitRuntimeReady(t, hs, id)
+	item := extensionItem(t, got["availableExtensions"], "shipper")
+	if !catalogHasName(asAnySlice(item["tools"]), "ext_echo") {
+		t.Fatalf("tools %+v", item["tools"])
+	}
+	if !catalogHasName(asAnySlice(item["commands"]), "ship") {
+		t.Fatalf("commands %+v", item["commands"])
+	}
+}
+
+func asAnySlice(v any) []any {
+	items, _ := v.([]any)
+	return items
+}
+
 func TestGetHistoricalSessionWarmsWithoutPrompt(t *testing.T) {
 	bin := buildExtSidecar(t)
 	srv, hs := testServer(t)

@@ -155,6 +155,14 @@ func TestRegisterToolsVisibleOnNextPrepare(t *testing.T) {
 	if !found {
 		t.Fatal("ext_ping missing on next Prepare")
 	}
+	contrib := m.SessionContributions("sess")["regtools"]
+	names := map[string]bool{}
+	for _, tool := range contrib.Tools {
+		names[tool.Name] = true
+	}
+	if !names["ext_echo"] || !names["ext_ping"] {
+		t.Fatalf("catalog tools %+v", contrib.Tools)
+	}
 }
 
 func TestDiscoverLifecycleNotIntercept(t *testing.T) {
