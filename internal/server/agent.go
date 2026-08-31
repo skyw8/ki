@@ -55,6 +55,7 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 		if attached {
 			_ = s.ws.DetachSession(rec.ID, childID)
 		}
+		s.dropSessionSnap(childID)
 		_ = session.Remove(childDir)
 		s.sidx.Remove(childID)
 	}

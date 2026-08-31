@@ -52,7 +52,7 @@ export default defineConfig({
     {
       name: 'fake',
       testMatch: '**/*.spec.ts',
-      testIgnore: ['**/*.live.spec.ts', '**/shots.spec.ts'],
+      testIgnore: ['**/*.live.spec.ts', '**/shots.spec.ts', '**/*.perf.spec.ts'],
       timeout: 30_000,
       expect: { timeout: 15_000 },
     },
@@ -66,6 +66,12 @@ export default defineConfig({
       name: 'shots',
       testMatch: '**/shots.spec.ts',
       timeout: 60_000,
+    },
+    {
+      name: 'perf',
+      testMatch: '**/*.perf.spec.ts',
+      timeout: 120_000,
+      expect: { timeout: 30_000 },
     },
   ],
 })

@@ -1,4 +1,4 @@
-import type { ChatNode, Content, Entry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from './types'
+import type { ChatNode, Content, Entry, IndexEntry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from './types'
 
 const LAST_MODEL_KEY = 'ki-last-model'
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -109,6 +109,8 @@ export function emptyView(): ViewState {
     turn: 0,
 	thinkingEffort: '',
 	allEntries: [],
+	hasMore: false,
+	oldestId: undefined,
 	queued: [],
 	extQueued: [],
 	extensionUi: [],
@@ -183,25 +185,15 @@ export function loadHistory(detail: SessionDetail): ViewState {
 	s.extensionUi = detail.extensionUi ?? []
 	s.runtimeReady = detail.runtime?.ready !== false
   const entries = detail.entries ?? []
-	s.allEntries = entries
+	s.allEntries = mergeEntries(detail.index, entries)
 	s.leafId = detail.leafId
-  if (entries.length === 0 && detail.messages) {
+	s.hasMore = !!detail.hasMore
+	s.oldestId = detail.oldestId
+  if (s.allEntries.length === 0 && detail.messages) {
     for (const m of detail.messages) applyMessage(s, m, crypto.randomUUID(), undefined)
     return s
   }
-	const byId = new Map(entries.map(e => [e.id, e]))
-	const active: Entry[] = []
-	let id = detail.leafId || entries.at(-1)?.id
-	const seen = new Set<string>()
-	while (id && !seen.has(id)) {
-		seen.add(id)
-		const entry = byId.get(id)
-		if (!entry) break
-		active.push(entry)
-		id = entry.parentId
-	}
-	active.reverse()
-	for (const e of active) applyEntry(s, e)
+	for (const e of leafEntries(s.allEntries, detail.leafId)) applyEntry(s, e)
   return s
 }
 
@@ -211,7 +203,114 @@ export function applyRuntimeCatalog(s: ViewState, detail: SessionDetail): ViewSt
     runtimeReady: detail.runtime?.ready !== false,
     commands: detail.commands ?? s.commands,
     extensionUi: detail.extensionUi ?? s.extensionUi,
+    queued: detail.queued ?? s.queued,
+    extQueued: detail.extQueued ?? s.extQueued,
   }
+}
+
+function mergeEntries(index: IndexEntry[] | undefined, entries: Entry[]): Entry[] {
+  const full = new Map(entries.map(e => [e.id, e]))
+  if (!index?.length) return entries
+  return index.map(ix => full.get(ix.id) ?? indexToEntry(ix))
+}
+
+function indexToEntry(ix: IndexEntry): Entry {
+  const entry: Entry = {
+    type: ix.type,
+    id: ix.id,
+    parentId: ix.parentId,
+    timestamp: ix.timestamp,
+    sideband: ix.sideband,
+    tokensBefore: ix.tokensBefore,
+    truncated: true,
+    usage: ix.usage,
+  }
+  if (ix.role) {
+    entry.message = {
+      role: ix.role,
+      origin: ix.origin,
+      usage: ix.usage,
+      durationMs: ix.durationMs,
+      ttftMs: ix.ttftMs,
+      stopReason: ix.stopReason,
+      toolCallId: ix.toolCallId,
+      toolName: ix.name,
+      content: [{ type: 'text', text: ix.preview || '' }],
+    }
+  }
+  if (ix.type === 'compaction') entry.summary = ix.preview
+  return entry
+}
+
+function leafEntries(entries: Entry[], leafId?: string): Entry[] {
+  const byId = new Map(entries.map(e => [e.id, e]))
+  const active: Entry[] = []
+  let id = leafId || entries.at(-1)?.id
+  const seen = new Set<string>()
+  while (id && !seen.has(id)) {
+    seen.add(id)
+    const entry = byId.get(id)
+    if (!entry) break
+    active.push(entry)
+    id = entry.parentId
+  }
+  active.reverse()
+  return active
+}
+
+export function hydrateEntries(s: ViewState, incoming: Entry[], meta?: { hasMore?: boolean; oldestId?: string }): ViewState {
+  if (!incoming.length && meta == null) return s
+  const full = new Map(incoming.map(e => [e.id, e]))
+  const allEntries = s.allEntries.map(e => full.get(e.id) ?? e)
+  for (const e of incoming) {
+    if (!allEntries.some(existing => existing.id === e.id)) allEntries.push(e)
+  }
+  const live = {
+    busy: s.busy,
+    stopping: s.stopping,
+    commands: s.commands,
+    queued: s.queued,
+    extQueued: s.extQueued,
+    extensionUi: s.extensionUi,
+    runtimeReady: s.runtimeReady,
+    provider: s.provider,
+    model: s.model,
+    thinkingEffort: s.thinkingEffort,
+    cwd: s.cwd,
+    title: s.title,
+    error: s.error,
+  }
+  const streaming = s.nodes.filter(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
+  const next = loadHistory({
+    id: '',
+    cwd: live.cwd,
+    provider: live.provider,
+    model: live.model,
+    title: live.title,
+    thinkingEffort: live.thinkingEffort,
+    running: live.busy,
+    leafId: s.leafId,
+    entries: allEntries,
+    hasMore: meta?.hasMore ?? s.hasMore,
+    oldestId: meta?.oldestId ?? s.oldestId,
+    commands: live.commands,
+    queued: live.queued,
+    extQueued: live.extQueued,
+    extensionUi: live.extensionUi,
+    runtime: { ready: live.runtimeReady !== false },
+  })
+  next.error = live.error
+  next.stopping = live.stopping
+  if (!streaming.length) return next
+  const byId = new Set(next.nodes.map(n => n.id))
+  for (const node of streaming) {
+    if (byId.has(node.id)) {
+      next.nodes = next.nodes.map(n => n.id === node.id ? node : n)
+      continue
+    }
+    next.nodes.push(node)
+  }
+  return next
 }
 
 function normalizeTools(raw?: ToolSchema[] | unknown): ToolSchema[] {
@@ -347,6 +446,15 @@ function applyEntry(s: ViewState, e: Entry) {
 		return
 	}
   if (e.type === 'request_header') {
+    if (e.promptUnchanged) {
+      applyRequestHeader(s, e.id, s.promptState?.system ?? '', s.promptState?.tools ?? [], e.timestamp, {
+        provider: e.provider,
+        model: e.modelId,
+        thinkingEffort: e.thinkingEffort,
+      })
+      return
+    }
+    if (!e.system && !e.tools?.length && e.truncated) return
     applyRequestHeader(s, e.id, e.system ?? '', e.tools, e.timestamp, {
       provider: e.provider,
       model: e.modelId,
@@ -355,7 +463,7 @@ function applyEntry(s: ViewState, e: Entry) {
     return
   }
   if (e.type === 'message' && e.message) {
-    applyMessage(s, e.message, e.id, e.timestamp, e.parentId)
+    applyMessage(s, e.message, e.id, e.timestamp, e.parentId, e.truncated)
     return
   }
 	if (e.type === 'patch_apply_updated' && e.details && typeof e.details === 'object') {
@@ -365,7 +473,7 @@ function applyEntry(s: ViewState, e: Entry) {
 	}
   if (e.type === 'compaction') {
     const summary = e.summary || ''
-    s.nodes.push({ kind: 'compaction', id: e.id, summary, tokensBefore: e.tokensBefore })
+    s.nodes.push({ kind: 'compaction', id: e.id, summary, tokensBefore: e.tokensBefore, truncated: e.truncated })
     s.records.push({
       id: e.id,
       kind: 'compacted',
@@ -412,11 +520,11 @@ function applyCompactEvent(s: ViewState, id: string, type: string, details?: unk
   }
 }
 
-function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | number, parentId?: string) {
+function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | number, parentId?: string, truncated?: boolean) {
   if (m.role === 'user') {
     const text = messageText(m)
     s.turn += 1
-    s.nodes.push({ kind: 'user', id, parentId, text, content: m.content ?? [], ts: tsMs(m, stamp), origin: m.origin })
+    s.nodes.push({ kind: 'user', id, parentId, text, content: m.content ?? [], ts: tsMs(m, stamp), origin: m.origin, truncated })
     s.records.push({
       id,
 	  parentId,
@@ -446,6 +554,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       error: m.errorMessage,
 	  stopReason: m.stopReason,
       ts: tsMs(m, stamp),
+      truncated,
       images: (m.content ?? []).filter(c => c.type === 'image' && c.data).map(c => ({ data: c.data!, mimeType: c.mimeType || 'image/png' })),
     })
     s.records.push({
@@ -510,6 +619,29 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
     const startedAt = finishedAt != null && m.durationMs != null
       ? finishedAt - Math.max(0, m.durationMs)
       : undefined
+    if (!s.nodes.some(n => n.kind === 'tool' && n.id === tid)) {
+      s.nodes.push({
+        kind: 'tool',
+        id: tid,
+        name: m.toolName || 'tool',
+        result: text,
+        isError: m.isError,
+        durationMs: m.durationMs,
+        details: m.details,
+        truncated,
+      })
+      s.records.push({
+        id: tid,
+        kind: 'tool',
+        turn: s.turn || 1,
+        preview: previewOf((m.toolName || 'tool') + ' ' + text),
+        output: text,
+        name: m.toolName,
+        durationMs: m.durationMs,
+        startedAt,
+        error: !!m.isError,
+      })
+    }
     patchTool(s, tid, {
       result: text,
       isError: m.isError,
@@ -519,6 +651,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
 	  details: m.details ?? (m.toolName === 'apply_patch' ? { status: 'failed', exact: true, changes: [] } : undefined),
       running: false,
       name: m.toolName,
+      truncated,
 	  })
 	  if (s.currentRequestId) {
 	    const request = s.requests.find(item => item.id === s.currentRequestId)
@@ -727,6 +860,15 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
   if (!m) return
   if (m.role === 'user') {
     const text = messageText(m)
+    const persistedUsers = s.nodes.filter(n => n.kind === 'user' && !liveUserPrefix.test(n.id)).length
+    const liveUsers = s.nodes.filter(n => n.kind === 'user' && liveUserPrefix.test(n.id)).length
+    if (ev.type === 'message_start' && liveUsers === 0 && persistedUsers > 0) {
+      const startedReplay = s.replayedUsers ?? 0
+      if (startedReplay < persistedUsers) {
+        s.replayedUsers = startedReplay + 1
+        return
+      }
+    }
     if (lastUserText(s) === text) {
       // Same text is already on screen. Two cases:
       //   1. history replay: loadHistory already read the jsonl entry, which
@@ -888,6 +1030,48 @@ function lastStreamingAssistant(s: ViewState): number {
     if (n.kind === 'assistant' && n.streaming) return i
   }
   return -1
+}
+
+const liveUserPrefix = /^(live-user-|opt-user-)/
+
+/** Drop optimistic/live user bubbles once the jsonl copy of the same text exists. */
+export function reconcileUserNodes(nodes: ChatNode[]): ChatNode[] {
+  const collapsed: ChatNode[] = []
+  for (const n of nodes) {
+    const last = collapsed.at(-1)
+    // Consecutive same-text users are the optimistic bubble plus the live SSE
+    // copy, not two turns (a real second turn has an assistant in between).
+    if (n.kind === 'user' && last?.kind === 'user' && last.text.trim() === n.text.trim()) {
+      collapsed[collapsed.length - 1] = n
+      continue
+    }
+    collapsed.push(n)
+  }
+  const persisted = new Map<string, ChatNode>()
+  for (const n of collapsed) {
+    if (n.kind === 'user' && !liveUserPrefix.test(n.id)) persisted.set(n.text, n)
+  }
+  if (!persisted.size) return collapsed
+  const used = new Set<string>()
+  const out: ChatNode[] = []
+  for (const n of collapsed) {
+    if (n.kind !== 'user') {
+      out.push(n)
+      continue
+    }
+    const canonical = persisted.get(n.text)
+    if (liveUserPrefix.test(n.id) && canonical) {
+      if (!used.has(canonical.id)) {
+        out.push(canonical)
+        used.add(canonical.id)
+      }
+      continue
+    }
+    if (canonical && used.has(canonical.id) && n.id === canonical.id) continue
+    out.push(n)
+    if (canonical && n.id === canonical.id) used.add(n.id)
+  }
+  return out
 }
 
 export function appendOptimisticUser(s: ViewState, content: import('./types').Content[]): ViewState {

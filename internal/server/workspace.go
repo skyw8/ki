@@ -38,23 +38,31 @@ func (s *Server) resolveWorkspace(id, cwd string) (workspace.Record, error) {
 }
 
 func (s *Server) sessionMap(sess *session.Session, extra map[string]any) map[string]any {
+	return s.sessionMapData(sess.ID(), sess.Dir, sess.Header, sess.Config, sess.Entries(), extra)
+}
+
+func (s *Server) sessionMapSnap(snap *sessionSnap, extra map[string]any) map[string]any {
+	return s.sessionMapData(snap.id, snap.dir, snap.header, snap.configV, snap.entries, extra)
+}
+
+func (s *Server) sessionMapData(id, dir string, header session.Header, cfg session.Config, entries []session.Entry, extra map[string]any) map[string]any {
 	m := map[string]any{
-		"id":              sess.ID(),
-		"cwd":             sess.Header.CWD,
-		"provider":        sess.Config.Provider,
-		"model":           sess.Config.Model,
-		"thinkingEffort":  sess.Config.ThinkingEffort,
-		"dir":             sess.Dir,
-		"parentSessionId": sess.Header.ParentSession,
-		"forkMode":        sess.Header.EffectiveForkMode(),
-		"title":           session.TitleOf(sess),
-		"running":         s.running(sess.ID()),
-		"pinned":          sess.Config.Pinned,
-		"pinnedAt":        sess.Config.PinnedAt,
-		"timestamp":       sess.Header.Timestamp,
-		"metadata":        sess.Config.Metadata,
+		"id":              id,
+		"cwd":             header.CWD,
+		"provider":        cfg.Provider,
+		"model":           cfg.Model,
+		"thinkingEffort":  cfg.ThinkingEffort,
+		"dir":             dir,
+		"parentSessionId": header.ParentSession,
+		"forkMode":        header.EffectiveForkMode(),
+		"title":           session.TitleFrom(cfg, entries),
+		"running":         s.running(id),
+		"pinned":          cfg.Pinned,
+		"pinnedAt":        cfg.PinnedAt,
+		"timestamp":       header.Timestamp,
+		"metadata":        cfg.Metadata,
 	}
-	if rec, ok := s.ws.Match(sess.Header.CWD); ok {
+	if rec, ok := s.ws.Match(header.CWD); ok {
 		m["workspaceId"] = rec.ID
 	}
 	maps.Copy(m, extra)
@@ -315,6 +323,7 @@ func (s *Server) removeSessionInfo(info session.Info) error {
 	if rec, ok := s.ws.Match(info.CWD); ok {
 		_ = s.ws.DetachSession(rec.ID, info.ID)
 	}
+	s.dropSessionSnap(info.ID)
 	if err := session.Remove(info.Dir); err != nil {
 		return fmt.Errorf("remove session: %w", err)
 	}

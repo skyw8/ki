@@ -8,10 +8,12 @@
     "preview": "vite preview",
     "test:e2e": "playwright test --project=fake",
     "test:e2e:live": "KI_LIVE=1 playwright test --project=live",
-    "test:shots": "playwright test --project=shots"
+    "test:shots": "playwright test --project=shots",
+    "test:perf": "playwright test --project=perf"
   },
   "dependencies": {
     "@streamdown/cjk": "^1.0.3",
+    "@tanstack/react-virtual": "^3.14.10",
     "lucide-react": "^1.31.0",
     "pdfjs-dist": "^6.2.108",
     "react": "^18.3.1",

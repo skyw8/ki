@@ -60,10 +60,15 @@ func List(root string) ([]Info, error) {
 
 // TitleOf prefers config.json title, else the first user message, truncated.
 func TitleOf(s *Session) string {
-	if t := strings.TrimSpace(s.Config.Title); t != "" {
+	return TitleFrom(s.Config, s.Entries())
+}
+
+// TitleFrom prefers config.json title, else the first user message, truncated.
+func TitleFrom(cfg Config, entries []Entry) string {
+	if t := strings.TrimSpace(cfg.Title); t != "" {
 		return t
 	}
-	for _, e := range s.Entries() {
+	for _, e := range entries {
 		if e.Type != "message" || e.Message == nil || e.Message.Role != "user" {
 			continue
 		}

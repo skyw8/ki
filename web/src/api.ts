@@ -62,8 +62,22 @@ export class Client {
     return this.json('/v1/sessions')
   }
 
-  get(id: string): Promise<SessionDetail> {
-    return this.json(`/v1/sessions/${id}`)
+  get(id: string, opts?: { fields?: 'runtime'; before?: string; limit?: number }): Promise<SessionDetail> {
+    const p = new URLSearchParams()
+    if (opts?.fields) p.set('fields', opts.fields)
+    if (opts?.before) p.set('before', opts.before)
+    if (opts?.limit) p.set('limit', String(opts.limit))
+    const q = p.size ? `?${p}` : ''
+    return this.json(`/v1/sessions/${id}${q}`)
+  }
+
+  getEntry(id: string, entryId: string): Promise<{ entry: import('./types').Entry }> {
+    return this.json(`/v1/sessions/${id}?entry=${encodeURIComponent(entryId)}`)
+  }
+
+  getEntries(id: string, entryIds: string[]): Promise<{ entries: import('./types').Entry[] }> {
+    if (!entryIds.length) return Promise.resolve({ entries: [] })
+    return this.json(`/v1/sessions/${id}?entries=${entryIds.map(encodeURIComponent).join(',')}`)
   }
 
   create(opts?: { cwd?: string; workspaceId?: string; model?: string; thinkingEffort?: string; metadata?: Record<string, unknown> }): Promise<SessionInfo> {

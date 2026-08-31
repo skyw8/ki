@@ -63,6 +63,27 @@ export type Entry = {
 	usedTokens?: number
 	contextWindow?: number
 	estimated?: boolean
+	promptUnchanged?: boolean
+	truncated?: boolean
+}
+
+export type IndexEntry = {
+  type: string
+  id: string
+  parentId?: string
+  timestamp?: string
+  role?: string
+  name?: string
+  preview?: string
+  toolCallId?: string
+  truncated?: boolean
+  usage?: Usage | null
+  durationMs?: number
+  ttftMs?: number
+  origin?: string
+  sideband?: boolean
+  tokensBefore?: number
+  stopReason?: string
 }
 
 export type ToolSchema = {
@@ -211,6 +232,9 @@ export type QueuedItem = {
 export type SessionDetail = SessionInfo & {
   leafId?: string
   entries?: Entry[]
+  index?: IndexEntry[]
+  hasMore?: boolean
+  oldestId?: string
   messages?: Message[]
   availableSkills?: CatalogSkill[]
   availableExtensions?: CatalogExtension[]
@@ -308,11 +332,11 @@ export type Meta = {
 }
 
 export type ChatNode =
-  | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string }
-  | { kind: 'system'; id: string; text: string; tools?: ToolSchema[]; promptChange?: PromptChange; ts?: number }
-  | { kind: 'assistant'; id: string; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number }
-  | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; running?: boolean }
-  | { kind: 'compaction'; id: string; summary: string; tokensBefore?: number }
+  | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string; truncated?: boolean }
+  | { kind: 'system'; id: string; text: string; tools?: ToolSchema[]; promptChange?: PromptChange; ts?: number; truncated?: boolean }
+  | { kind: 'assistant'; id: string; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number; truncated?: boolean }
+  | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; running?: boolean; truncated?: boolean }
+  | { kind: 'compaction'; id: string; summary: string; tokensBefore?: number; truncated?: boolean }
 
 export type PromptSnapshot = {
   provider?: string
@@ -393,11 +417,14 @@ export type ViewState = {
   title: string
   turn: number
   replayed?: number
+  replayedUsers?: number
   skills?: Toggle
 	thinkingEffort: string
 	contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
 	leafId?: string
 	allEntries: Entry[]
+	hasMore?: boolean
+	oldestId?: string
   commands?: SessionCommand[]
   queued?: QueuedItem[]
   extQueued?: QueuedItem[]

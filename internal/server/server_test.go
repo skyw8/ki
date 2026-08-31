@@ -39,6 +39,31 @@ func marshalJSON(v any) ([]byte, error) {
 	return b, nil
 }
 
+func sessionBlob(got map[string]any) string {
+	raw, _ := json.Marshal(got["entries"])
+	return string(raw)
+}
+
+func entryMessages(got map[string]any) []types.Message {
+	ents, _ := got["entries"].([]any)
+	var out []types.Message
+	for _, item := range ents {
+		m, _ := item.(map[string]any)
+		if fmt.Sprint(m["type"]) != "message" || m["message"] == nil {
+			continue
+		}
+		b, err := json.Marshal(m["message"])
+		if err != nil {
+			continue
+		}
+		var msg types.Message
+		if json.Unmarshal(b, &msg) == nil {
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
 func testServer(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
 	return testServerWith(t, &provider.Scripted{Steps: []types.Message{{Content: []types.Content{{Type: "text", Text: "hi there"}}}}})
@@ -382,7 +407,7 @@ func TestAgentForksTreeSessionAndRunsChildLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	var detail struct {
-		Messages []types.Message `json:"messages"`
+		Entries []session.Entry `json:"entries"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&detail); err != nil {
 		t.Fatal(err)
@@ -390,19 +415,22 @@ func TestAgentForksTreeSessionAndRunsChildLoop(t *testing.T) {
 	_ = res.Body.Close()
 	found := false
 	forkedParentPrompt := false
-	for _, message := range detail.Messages {
-		if message.Role == "assistant" && message.Text() == "child report" {
+	for _, entry := range detail.Entries {
+		if entry.Message == nil {
+			continue
+		}
+		if entry.Message.Role == "assistant" && entry.Message.Text() == "child report" {
 			found = true
 		}
-		if message.Role == "user" && message.Text() == "delegate" {
+		if entry.Message.Role == "user" && entry.Message.Text() == "delegate" {
 			forkedParentPrompt = true
 		}
 	}
 	if !found {
-		t.Fatalf("child messages missing report: %+v", detail.Messages)
+		t.Fatalf("child messages missing report: %+v", detail.Entries)
 	}
 	if !forkedParentPrompt {
-		t.Fatalf("child fork omitted the current parent turn: %+v", detail.Messages)
+		t.Fatalf("child fork omitted the current parent turn: %+v", detail.Entries)
 	}
 }
 
@@ -433,7 +461,7 @@ func TestBackgroundAgentQueuesCompletionNotification(t *testing.T) {
 			t.Fatal(err)
 		}
 		var detail struct {
-			Messages []types.Message `json:"messages"`
+			Entries []session.Entry `json:"entries"`
 		}
 		decodeErr := json.NewDecoder(res.Body).Decode(&detail)
 		_ = res.Body.Close()
@@ -441,11 +469,15 @@ func TestBackgroundAgentQueuesCompletionNotification(t *testing.T) {
 			t.Fatal(decodeErr)
 		}
 		var notification, handled bool
-		for _, message := range detail.Messages {
-			if strings.Contains(message.Text(), "<task-notification>") {
+		for _, entry := range detail.Entries {
+			if entry.Message == nil {
+				continue
+			}
+			text := entry.Message.Text()
+			if strings.Contains(text, "<task-notification>") {
 				notification = true
 			}
-			if message.Text() == "notification handled" {
+			if text == "notification handled" {
 				handled = true
 			}
 		}
@@ -1324,9 +1356,12 @@ func TestListHistoryAndUI(t *testing.T) {
 	var got map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&got)
 	_ = res.Body.Close()
-	msgs, _ := got["messages"].([]any)
-	if len(msgs) < 2 {
-		t.Fatalf("history messages: %+v", got["messages"])
+	ents, _ := got["entries"].([]any)
+	if len(ents) < 2 {
+		t.Fatalf("history entries: %+v", got["entries"])
+	}
+	if _, ok := got["messages"]; ok {
+		t.Fatal("GET session must not duplicate leaf messages")
 	}
 
 	req, err = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/", nil)
@@ -1531,14 +1566,12 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	for _, raw := range ents {
 		m, _ := raw.(map[string]any)
 		if m["type"] == "request_header" {
-			sys, _ := m["system"].(string)
-			if sys == "" {
-				t.Fatalf("empty system in entry: %+v", m)
-			}
 			if m["provider"] != "openrouter" || m["modelId"] != "free" || m["catalogVersion"] != float64(provider.CatalogVersion) || m["pricing"] == nil {
 				t.Fatalf("request metadata: %+v", m)
 			}
-			found = true
+			if sys, _ := m["system"].(string); sys != "" {
+				found = true
+			}
 		}
 	}
 	if !found {
@@ -1814,6 +1847,74 @@ func sessionGET(t *testing.T, hs *httptest.Server, id string) map[string]any {
 	return out
 }
 
+func TestSessionViewAPI(t *testing.T) {
+	_, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	prompt202(t, hs, id, "hello view")
+	waitAgentEnd(t, hs, id)
+	got := sessionGET(t, hs, id)
+	if _, ok := got["messages"]; ok {
+		t.Fatal("GET session must not include messages")
+	}
+	if _, ok := got["index"]; !ok {
+		t.Fatal("missing index")
+	}
+	ents, _ := got["entries"].([]any)
+	if len(ents) == 0 {
+		t.Fatal("missing entries")
+	}
+	var entryID string
+	for _, raw := range ents {
+		m, _ := raw.(map[string]any)
+		if m["type"] == "message" {
+			entryID, _ = m["id"].(string)
+			break
+		}
+	}
+	if entryID == "" {
+		t.Fatal("no message entry")
+	}
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"?fields=runtime", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runtime map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&runtime)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("runtime %d %+v", res.StatusCode, runtime)
+	}
+	if _, ok := runtime["entries"]; ok {
+		t.Fatal("fields=runtime must omit entries")
+	}
+	if _, ok := runtime["index"]; ok {
+		t.Fatal("fields=runtime must omit index")
+	}
+	if _, ok := runtime["runtime"]; !ok {
+		t.Fatalf("runtime payload: %+v", runtime)
+	}
+
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"?entry="+entryID, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var one map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&one)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("entry %d %+v", res.StatusCode, one)
+	}
+	entry, _ := one["entry"].(map[string]any)
+	if entry["id"] != entryID {
+		t.Fatalf("entry: %+v", one)
+	}
+}
+
 func TestMessageBusyToggle(t *testing.T) {
 	_, hs := testServer(t)
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/message", nil)
@@ -1861,12 +1962,9 @@ func TestBusyPromptSteersSameRun(t *testing.T) {
 	waitAgentEnd(t, hs, id)
 	waitRunIdle(t, srv, id)
 	detail := sessionGET(t, hs, id)
-	raw, err := json.Marshal(detail["messages"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), "first") || !strings.Contains(string(raw), "steer-me") {
-		t.Fatalf("messages missing steered user: %s", raw)
+	raw := sessionBlob(detail)
+	if !strings.Contains(raw, "first") || !strings.Contains(raw, "steer-me") {
+		t.Fatalf("entries missing steered user: %s", raw)
 	}
 }
 
@@ -1892,15 +1990,12 @@ func TestBusyPromptQueuesUntilRelease(t *testing.T) {
 	for {
 		detail = sessionGET(t, hs, id)
 		queued, _ = detail["queued"].([]any)
-		raw, err := json.Marshal(detail["messages"])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(queued) == 0 && strings.Contains(string(raw), "queued-me") && !srv.running(id) {
+		raw := sessionBlob(detail)
+		if len(queued) == 0 && strings.Contains(raw, "queued-me") && !srv.running(id) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("queued follow-up did not run: queued=%+v messages=%s running=%v", queued, raw, srv.running(id))
+			t.Fatalf("queued follow-up did not run: queued=%+v entries=%s running=%v", queued, raw, srv.running(id))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -2024,15 +2119,12 @@ func TestBusyPromptPromotesQueueId(t *testing.T) {
 	for {
 		detail = sessionGET(t, hs, id)
 		queued, _ = detail["queued"].([]any)
-		raw, err := json.Marshal(detail["messages"])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(queued) == 0 && strings.Contains(string(raw), "promote-me") && strings.Contains(string(raw), "keep-queued") && !srv.running(id) {
+		raw := sessionBlob(detail)
+		if len(queued) == 0 && strings.Contains(raw, "promote-me") && strings.Contains(raw, "keep-queued") && !srv.running(id) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("promote follow-up: queued=%+v messages=%s running=%v", queued, raw, srv.running(id))
+			t.Fatalf("promote follow-up: queued=%+v entries=%s running=%v", queued, raw, srv.running(id))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -2084,12 +2176,9 @@ func TestIdlePromoteQueueIdStartsRun(t *testing.T) {
 	waitRunIdle(t, srv, id)
 	detail := sessionGET(t, hs, id)
 	queued, _ := detail["queued"].([]any)
-	raw, err := json.Marshal(detail["messages"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(queued) != 0 || !strings.Contains(string(raw), "from-queue") {
-		t.Fatalf("idle promote result queued=%+v messages=%s", queued, raw)
+	raw := sessionBlob(detail)
+	if len(queued) != 0 || !strings.Contains(raw, "from-queue") {
+		t.Fatalf("idle promote result queued=%+v entries=%s", queued, raw)
 	}
 }
 
@@ -2121,17 +2210,14 @@ func TestCompactPromoteQueueIdRestoresHead(t *testing.T) {
 	for {
 		detail := sessionGET(t, hs, id)
 		queued, _ := detail["queued"].([]any)
-		raw, err := json.Marshal(detail["messages"])
-		if err != nil {
-			t.Fatal(err)
-		}
+		raw := sessionBlob(detail)
 		running, _ := detail["running"].(bool)
 		// Wait until occupy finished so TempDir cleanup is not racing jsonl writers.
-		if !running && len(queued) == 0 && strings.Contains(string(raw), "during-compact") {
+		if !running && len(queued) == 0 && strings.Contains(raw, "during-compact") {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("compact promote dispatch: running=%v queued=%+v messages=%s", running, queued, raw)
+			t.Fatalf("compact promote dispatch: running=%v queued=%+v entries=%s", running, queued, raw)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -2191,15 +2277,12 @@ func TestCompactOccupySteersAsQueue(t *testing.T) {
 	for {
 		detail := sessionGET(t, hs, id)
 		queued, _ := detail["queued"].([]any)
-		raw, err := json.Marshal(detail["messages"])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(queued) == 0 && strings.Contains(string(raw), "during-compact") {
+		raw := sessionBlob(detail)
+		if len(queued) == 0 && strings.Contains(raw, "during-compact") {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("compact queue not dispatched: queued=%+v messages=%s", queued, raw)
+			t.Fatalf("compact queue not dispatched: queued=%+v entries=%s", queued, raw)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +84,8 @@ type Server struct {
 	runtimeCancel          context.CancelFunc
 	runtimeWG              sync.WaitGroup
 	runtimeClosed          bool
+	snapMu                 sync.Mutex
+	snaps                  map[string]*sessionSnap
 }
 
 const (
@@ -188,6 +191,7 @@ func New(opt Options) (*Server, error) {
 		runtime:                map[string]*runtimePrep{},
 		runtimeCtx:             runtimeCtx,
 		runtimeCancel:          runtimeCancel,
+		snaps:                  map[string]*sessionSnap{},
 	}
 	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
 	srv.ext.SetHost(srv)
@@ -824,54 +828,109 @@ func (s *Server) open(id string) (*session.Session, error) {
 }
 
 func (s *Server) get(w http.ResponseWriter, r *http.Request) {
-	sess, err := s.open(r.PathValue("id"))
+	id := r.PathValue("id")
+	q := r.URL.Query()
+	fields := q.Get("fields")
+	entryID := q.Get("entry")
+	batch := q.Get("entries")
+	before := q.Get("before")
+	limit := session.DefaultViewLimit
+	if raw := q.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			http.Error(w, "invalid limit", http.StatusBadRequest)
+			return
+		}
+		limit = session.ClampViewLimit(n)
+	}
+
+	snap, err := s.loadSessionSnap(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	defer func() { _ = sess.Close() }()
-	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
-	sk := s.sessionCatalog(snapshot)
-	tg := toggles.Load(s.cfg.Home)
-	queued, err := session.ReadQueue(sess.Dir)
+
+	if entryID != "" {
+		got := session.LookupEntries(snap.entries, []string{entryID})
+		if len(got) == 0 {
+			http.Error(w, "entry not found", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"entry": got[0]})
+		return
+	}
+	if batch != "" {
+		writeJSON(w, 200, map[string]any{"entries": session.LookupEntries(snap.entries, strings.Split(batch, ","))})
+		return
+	}
+	if before != "" {
+		view := session.BuildBefore(snap.entries, snap.leafID, before, limit)
+		writeJSON(w, 200, map[string]any{
+			"entries":  view.Entries,
+			"hasMore":  view.HasMore,
+			"oldestId": view.OldestID,
+		})
+		return
+	}
+
+	runtime, err := s.sessionRuntime(snap)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if fields == "runtime" {
+		writeJSON(w, 200, s.sessionMapSnap(snap, runtime))
+		return
+	}
+
+	view := session.BuildView(snap.entries, snap.leafID, limit)
+	runtime["leafId"] = snap.leafID
+	runtime["entries"] = view.Entries
+	runtime["index"] = view.Index
+	runtime["hasMore"] = view.HasMore
+	runtime["oldestId"] = view.OldestID
+	writeJSON(w, 200, s.sessionMapSnap(snap, runtime))
+}
+
+func (s *Server) sessionRuntime(snap *sessionSnap) (map[string]any, error) {
+	snapshot := s.resources.Load(snap.id, snap.header.CWD)
+	sk := s.sessionCatalog(snapshot)
+	tg := toggles.Load(s.cfg.Home)
+	queued, err := session.ReadQueue(snap.dir)
+	if err != nil {
+		return nil, err
 	}
 	if queued == nil {
 		queued = []session.QueuedItem{}
 	}
-	extQueued, err := session.ReadExtQueue(sess.Dir)
+	extQueued, err := session.ReadExtQueue(snap.dir)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	if extQueued == nil {
 		extQueued = []session.ExtQueuedItem{}
 	}
 	//nolint:contextcheck // session warmup is process-owned via runtimeCtx, not the HTTP request
-	s.kickWarmup(sess.ID(), sess.Header.CWD)
+	s.kickWarmup(snap.id, snap.header.CWD)
 	// Why: ready is set after Prepare, so read ready first then RuntimeCommands
 	// to avoid ready:true with an empty slash catalog.
-	ready := s.runtimeReady(sess.ID())
+	ready := s.runtimeReady(snap.id)
 	cmds := command.Catalog(snapshot, tg.Skills)
 	if s.ext != nil {
-		for _, spec := range s.ext.RuntimeCommands(sess.ID()) {
+		for _, spec := range s.ext.RuntimeCommands(snap.id) {
 			cmds = append(cmds, command.Item{Name: spec.Name, Description: spec.Description, ArgumentHint: spec.ArgumentHint, Completions: spec.Completions, Source: "extension"})
 		}
 	}
-	writeJSON(w, 200, s.sessionMap(sess, map[string]any{
-		"leafId":              sess.LeafID(),
-		"entries":             sess.Entries(),
-		"messages":            sess.MessagesToLeaf(),
+	return map[string]any{
+		"leafId":              snap.leafID,
 		"availableSkills":     sk,
 		"availableExtensions": s.extensionCatalog(snapshot),
 		"commands":            cmds,
 		"queued":              queued,
 		"extQueued":           extQueued,
-		"extensionUi":         s.extensionUIList(sess.ID()),
+		"extensionUi":         s.extensionUIList(snap.id),
 		"runtime":             map[string]any{"ready": ready},
-	}))
+	}, nil
 }
 
 func (s *Server) sessionCatalog(snapshot resources.Snapshot) []map[string]any {

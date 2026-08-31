@@ -791,7 +791,7 @@ test('busy enter queues and ctrl+enter promotes the tail', async ({ page }) => {
     await expect.poll(async () => (await sessionQueue(page)).texts).toEqual(['queued-keep'])
     await expect(page.getByTestId('queued-item')).toHaveCount(1)
     await expect(page.getByTestId('queued-list')).not.toContainText('queued-promote')
-    await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-promote' })).toBeVisible()
+    await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-promote' }).first()).toBeVisible()
   } finally {
     const stop = page.getByTestId('composer-stop')
     if (await stop.count()) await stop.click()

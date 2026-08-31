@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type UIEvent, type WheelEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type UIEvent, type WheelEvent } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { applyFollowTail, followFromGap } from './follow-tail'
 import { useI18n, type TFn } from './i18n'
 import { IChev, IClock, IClose, ICompact, ICopy, IFold, ISearch, ISpark, ITail, IUser, IWrench } from './icons'
@@ -207,13 +208,133 @@ function timelineLane(kind: TrajKind): 'input' | 'model' | 'tools' {
   return 'input'
 }
 
+const VIRTUALIZE_AFTER = 48
+const TIMELINE_MAX_BARS = 240
+
+type TimelineBar = {
+  id: string
+  kind: TrajKind
+  lane: 'input' | 'model' | 'tools'
+  left: number
+  width: number
+  index: number
+  dim: boolean
+  label: string
+}
+
+function layoutTimeline(records: TrajRecord[], actualDur: boolean, zoom: number, match: Set<string> | null): TimelineBar[] {
+  const items = records.filter(r => !r.requestOnly)
+  const indexOf = new Map(records.map((r, i) => [r.id, i]))
+  const weights = items.map(r => actualDur ? Math.max(1, Math.round(((r.durationMs ?? 0) * zoom) / 200)) : Math.max(1, Math.round(zoom)))
+  const total = weights.reduce((a, b) => a + b, 0) || 1
+  const prefix = [0]
+  for (const w of weights) prefix.push(prefix[prefix.length - 1] + w)
+  const bar = (r: TrajRecord, left: number, width: number): TimelineBar => ({
+    id: r.id,
+    kind: r.kind,
+    lane: timelineLane(r.kind),
+    left,
+    width,
+    index: indexOf.get(r.id) ?? 0,
+    dim: !!match && !match.has(r.id),
+    label: `${KIND_LABEL[r.kind]} ${r.preview || r.name || ''}`.trim(),
+  })
+  if (items.length <= TIMELINE_MAX_BARS) {
+    return items.map((r, i) => bar(r, prefix[i] / total, weights[i] / total))
+  }
+  const bucket = Math.ceil(items.length / TIMELINE_MAX_BARS)
+  const bars: TimelineBar[] = []
+  for (let start = 0; start < items.length; start += bucket) {
+    const end = Math.min(items.length, start + bucket)
+    let best = start
+    for (let i = start + 1; i < end; i++) {
+      if (weights[i] > weights[best]) best = i
+    }
+    bars.push(bar(items[best], prefix[start] / total, (prefix[end] - prefix[start]) / total))
+  }
+  return bars
+}
+
+type TrajLine =
+  | { key: string; kind: 'turn'; turn: number }
+  | { key: string; kind: 'step'; step: number }
+  | { key: string; kind: 'row'; rec: TrajRecord; index: number }
+
+function TrajLineView({
+  line, selected, foldedTurns, setFoldedTurns, onPick, asTable,
+}: {
+  line: TrajLine
+  selected: string | null
+  foldedTurns: Set<number>
+  setFoldedTurns: (update: (s: Set<number>) => Set<number>) => void
+  onPick: (r: TrajRecord) => void
+  asTable?: boolean
+}) {
+  if (line.kind === 'turn') {
+    const body = (
+      <button type="button" className="turn-fold" onClick={() => setFoldedTurns(s => {
+        const n = new Set(s)
+        if (n.has(line.turn)) n.delete(line.turn)
+        else n.add(line.turn)
+        return n
+      })}
+      >
+        <IChev open={!foldedTurns.has(line.turn)} /> TURN {line.turn}
+      </button>
+    )
+    if (asTable) return <tr className="turn-h"><td>{body}</td></tr>
+    return <div className="turn-h">{body}</div>
+  }
+  if (line.kind === 'step') {
+    if (asTable) return <tr className="step-h"><td>STEP {line.step}</td></tr>
+    return <div className="step-h">STEP {line.step}</div>
+  }
+  const rec = line.rec
+  const inner = (
+    <div className="cell">
+      <span className="idx">{line.index + 1}</span>
+      <span className={`tag ${rec.kind}`}><KindIcon kind={rec.kind} />&nbsp;{KIND_LABEL[rec.kind]}</span>
+      <span className="preview">{rec.running ? '… ' : ''}{rec.preview || rec.name || '—'}</span>
+      <span className="dur">{rec.running ? '' : fmtDur(rec.durationMs)}</span>
+    </div>
+  )
+  if (asTable) {
+    return (
+      <tr
+        data-rid={rec.id}
+        className={`traj-row${selected === rec.id ? ' sel' : ''}`}
+        data-testid="traj-row"
+        data-kind={rec.kind}
+        data-request-id={rec.requestId}
+        onClick={() => onPick(rec)}
+      >
+        <td>{inner}</td>
+      </tr>
+    )
+  }
+  return (
+    <div
+      data-rid={rec.id}
+      className={`traj-row${selected === rec.id ? ' sel' : ''}`}
+      data-testid="traj-row"
+      data-kind={rec.kind}
+      data-request-id={rec.requestId}
+      onClick={() => onPick(rec)}
+      role="button"
+    >
+      {inner}
+    </div>
+  )
+}
+
 export function TrajectoryView({
-  records, requests = [], onSelect, selectId,
+  records, requests = [], onSelect, selectId, onHydrate,
 }: {
   records: TrajRecord[]
   requests?: RequestView[]
   onSelect?: (r: TrajRecord | null) => void
   selectId?: string | null
+  onHydrate?: (id: string) => void
 }) {
   const { t } = useI18n()
   const [q, setQ] = useState('')
@@ -273,13 +394,53 @@ export function TrajectoryView({
     })
   }, [filtered, foldedTurns, foldTools])
 
-  const timelineRecords = useMemo(() => records.filter(r => !r.requestOnly), [records])
+  const recordIndex = useMemo(() => {
+    const map = new Map<string, number>()
+    records.forEach((r, i) => map.set(r.id, i))
+    return map
+  }, [records])
+
+  const matchIds = useMemo(() => q.trim() ? new Set(filtered.map(r => r.id)) : null, [filtered, q])
+  const timelineBars = useMemo(() => layoutTimeline(records, actualDur, zoom, matchIds), [actualDur, matchIds, records, zoom])
+
+  const lines = useMemo(() => {
+    const out: TrajLine[] = []
+    let prevTurn = -1
+    let prevStep: number | undefined
+    for (const rec of visible) {
+      if (rec.turn !== prevTurn) {
+        out.push({ key: `t-${rec.turn}`, kind: 'turn', turn: rec.turn })
+        prevTurn = rec.turn
+        prevStep = undefined
+      }
+      if (rec.step !== undefined && rec.step !== prevStep) {
+        out.push({ key: `s-${rec.turn}-${rec.step}`, kind: 'step', step: rec.step })
+        prevStep = rec.step
+      }
+      out.push({ key: rec.id, kind: 'row', rec, index: recordIndex.get(rec.id) ?? 0 })
+    }
+    return out
+  }, [recordIndex, visible])
+
+  const virtualize = lines.length > VIRTUALIZE_AFTER
+  const virtualizer = useVirtualizer({
+    count: lines.length,
+    getScrollElement: () => tableRef.current,
+    estimateSize: () => 38,
+    overscan: 12,
+    getItemKey: index => lines[index]?.key ?? index,
+    enabled: virtualize,
+  })
 
   useEffect(() => {
     // Why: follow state lags a render behind a wheel/scroll pause. Read the
     // ref so a live run cannot snap the ledger back before React commits.
+    if (virtualize && followRef.current && lines.length) {
+      virtualizer.scrollToIndex(lines.length - 1, { align: 'end' })
+      return
+    }
     applyFollowTail(tableRef.current, followRef.current)
-  }, [follow, records, visible])
+  }, [follow, records, visible, virtualize, lines.length])
 
   useEffect(() => {
     if (!sel) return
@@ -297,6 +458,11 @@ export function TrajectoryView({
 
   useEffect(() => {
     if (!sel) return
+    if (virtualize) {
+      const idx = lines.findIndex(line => line.kind === 'row' && line.rec.id === sel)
+      if (idx >= 0) virtualizer.scrollToIndex(idx, { align: 'auto' })
+      return
+    }
     const wrap = tableRef.current
     const row = wrap?.querySelector(`[data-rid="${sel}"]`) as HTMLElement | null
     if (!wrap || !row) return
@@ -306,15 +472,15 @@ export function TrajectoryView({
     if (!off) return
     setFollowOn(false)
     row.scrollIntoView({ block: 'nearest' })
-  }, [sel])
+  }, [sel, virtualize, lines, virtualizer])
 
-  const grouped: { turn: number; rows: { rec: TrajRecord; index: number }[] }[] = []
-  visible.forEach((rec) => {
-    const index = records.indexOf(rec)
-    const last = grouped[grouped.length - 1]
-    if (!last || last.turn !== rec.turn) grouped.push({ turn: rec.turn, rows: [{ rec, index }] })
-    else last.rows.push({ rec, index })
-  })
+  useEffect(() => {
+    if (!sel) return
+    const rec = records.find(r => r.id === sel)
+    if (!rec) return
+    const needsBody = (rec.kind === 'system' && !rec.system) || ((rec.kind === 'tool' || rec.kind === 'assistant') && rec.output == null && rec.input == null)
+    if (needsBody) onHydrate?.(rec.id)
+  }, [onHydrate, records, sel])
 
   function pick(r: TrajRecord) {
     setSel(r.id)
@@ -453,25 +619,22 @@ export function TrajectoryView({
         <div className="timeline-tracks">
           {(['input', 'model', 'tools'] as const).map(lane => (
             <div key={lane} className={`timeline-track timeline-${lane}`}>
-              {timelineRecords.map(r => {
-                const selected = sel === r.id
-                const weight = actualDur
-                  ? Math.max(1, Math.round(((r.durationMs ?? 0) * zoom) / 200))
-                  : Math.max(1, Math.round(zoom))
-                return timelineLane(r.kind) === lane ? (
-                  <button
-                    key={r.id}
-                    type="button"
-                    data-i={records.indexOf(r)}
-                    className={`tl-bar ${r.kind}${selected ? ' on' : ''}${q && !filtered.includes(r) ? ' dim' : ''}`}
-                    style={{ flexGrow: weight }}
-                    title={`${KIND_LABEL[r.kind]} ${r.preview}`}
-                    aria-label={`${KIND_LABEL[r.kind]} ${r.preview || r.name || ''}`.trim()}
-                    aria-current={selected ? 'true' : undefined}
-                    onClick={() => pick(r)}
-                  />
-                ) : <span key={r.id} className="tl-gap" style={{ flexGrow: weight }} aria-hidden="true" />
-              })}
+              {timelineBars.filter(bar => bar.lane === lane).map(bar => (
+                <button
+                  key={bar.id}
+                  type="button"
+                  data-i={bar.index}
+                  className={`tl-bar ${bar.kind}${sel === bar.id ? ' on' : ''}${bar.dim ? ' dim' : ''}`}
+                  style={{ left: `${bar.left * 100}%`, width: `${Math.max(bar.width * 100, 0.4)}%` }}
+                  title={bar.label}
+                  aria-label={bar.label}
+                  aria-current={sel === bar.id ? 'true' : undefined}
+                  onClick={() => {
+                    const rec = records.find(r => r.id === bar.id)
+                    if (rec) pick(rec)
+                  }}
+                />
+              ))}
             </div>
           ))}
         </div>
@@ -491,57 +654,36 @@ export function TrajectoryView({
             setFollowOn(followFromGap(gap, followRef.current))
           }}
         >
+          {virtualize ? (
+            <div className="traj-table traj-virtual" style={{ height: virtualizer.getTotalSize() }}>
+              {virtualizer.getVirtualItems().map(item => {
+                const line = lines[item.index]
+                if (!line) return null
+                return (
+                  <div
+                    key={item.key}
+                    data-index={item.index}
+                    ref={virtualizer.measureElement}
+                    className="traj-virtual-item"
+                    style={{ transform: `translateY(${item.start}px)` }}
+                  >
+                    <TrajLineView line={line} selected={sel} foldedTurns={foldedTurns} setFoldedTurns={setFoldedTurns} onPick={pick} />
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
           <table className="traj-table">
             <tbody>
-              {grouped.map(g => (
-                <Fragment key={`t-${g.turn}`}>
-                  <tr className="turn-h">
-                    <td>
-                      <button type="button" className="turn-fold" onClick={() => setFoldedTurns(s => {
-                        const n = new Set(s)
-                        if (n.has(g.turn)) n.delete(g.turn)
-                        else n.add(g.turn)
-                        return n
-                      })}
-                      >
-                        <IChev open={!foldedTurns.has(g.turn)} /> TURN {g.turn}
-                      </button>
-                    </td>
-                  </tr>
-                  {g.rows.map(({ rec, index }, rowIndex) => {
-                    const previous = g.rows[rowIndex - 1]?.rec
-                    return (
-                      <Fragment key={rec.id}>
-                        {rec.step !== undefined && previous?.step !== rec.step ? (
-                          <tr className="step-h"><td>STEP {rec.step}</td></tr>
-                        ) : null}
-                        <tr
-                          data-rid={rec.id}
-                          className={`traj-row${sel === rec.id ? ' sel' : ''}`}
-                          data-testid="traj-row"
-                          data-kind={rec.kind}
-                          data-request-id={rec.requestId}
-                          onClick={() => pick(rec)}
-                        >
-                          <td>
-                            <div className="cell">
-                              <span className="idx">{index + 1}</span>
-                              <span className={`tag ${rec.kind}`}><KindIcon kind={rec.kind} />&nbsp;{KIND_LABEL[rec.kind]}</span>
-                              <span className="preview">{rec.running ? '… ' : ''}{rec.preview || rec.name || '—'}</span>
-                              <span className="dur">{rec.running ? '' : fmtDur(rec.durationMs)}</span>
-                            </div>
-                          </td>
-                        </tr>
-                      </Fragment>
-                    )
-                  })}
-                </Fragment>
+              {lines.map(line => (
+                <TrajLineView key={line.key} line={line} selected={sel} foldedTurns={foldedTurns} setFoldedTurns={setFoldedTurns} onPick={pick} asTable />
               ))}
               {visible.length === 0 ? (
                 <tr><td><div className="cell"><span className="preview">{t('traj.empty')}</span></div></td></tr>
               ) : null}
             </tbody>
           </table>
+          )}
         </div>
         {selected ? (
           <aside className="insp" data-testid="traj-inspector">

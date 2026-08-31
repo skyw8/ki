@@ -17,7 +17,7 @@
 - 设置 / 选模型：各自弹窗。设置页签为「模型供应商」「Skills」「Extensions」「Message」「主题和语言」。Skills/Extensions 开关和 Message 忙碌策略写 `{KI_HOME}/toggles.json`；扩展的全局配置只从对话页右上角的全局 extension chip 进入，点击后打开统一的扩展 Modal，左侧可切换全局 UI、当前 session 的 goal 等 panel 和 Telegram 等全局配置，Extensions 设置中的 Configure 复用同一个页面。全局 UI 在没有 session 时也能显示；选中 session 后，session UI 覆盖同名的全局状态。无信任按钮、无原生文件选择器。选模型支持按 provider、model ID、显示名称和完整 spec 进行不区分大小写的子串 / 顺序模糊搜索。没有「设为默认」：composer 里切模型或 thinking 即记住；server 把上次选用的模型写入 `models.json`，本浏览器另存 thinking。冷启动没有记录时落到第一个可用模型。页签和主按钮与对话页同一套 tab / 主按钮样式。供应商页的外层不滚动，左侧供应商列表只显示名称，与右侧连接、凭据、模型编辑区分别独立滚动，新增供应商和使用「编辑」打开的模型高级 JSON 都用二级弹窗。模型高级 JSON 编辑保留 `input` 和 `applyPatchToolType` 等能力字段。目录只在本机维护，不在线刷新目录。Base URL、API 协议等表单控件共享尺寸和排版；API 协议与 thinking effort 共用 ARIA combobox/listbox 组件，支持方向键、Enter、Escape，并按可用空间向上或向下展开。主题（默认浅色）和语言（中 / 英）存在本浏览器 `localStorage`
 - 扩展 OAuth：供应商页对 `auth.type=oauth` 的 provider 显示 Browser login、Device code login 和 Logout；登录进度通过同源 `/v1/providers/{id}/auth/{requestId}` 轮询，页面只显示授权 URL、设备码和脱敏错误。Browser flow 还允许粘贴 redirect URL/code，适用于端口转发；不会在页面中打开外部窗口，也不会要求用户填 access token。
 
-数据来自 session jsonl 和本次 run 的 SSE。conversation 和 trajectory 根据 `leafId` 沿 `parentId` 只渲染 active path，全部 entries 保留用于 sibling 索引。`message_end` SSE 带持久化后的 `entryId`，所以刚完成的消息可以立即 edit/fork。工作区见 [workspace.md](workspace.md)。Sidecar 协议见 [extension.md](extension.md)。
+数据来自 session jsonl 和本次 run 的 SSE。`GET /v1/sessions/{id}` 默认给 leaf 尾部的 slim entries 加整棵树 `index`；Chat/Trace 在条数多时用虚拟列表只画视口附近的行，时间线按权重绝对定位并在过密时合并。向上滚到顶沿 `before` 再取更早的 leaf；Inspect / 展开截断工具行时用 `entry`/`entries` 补全文。conversation 和 trajectory 根据 `leafId` 沿 `parentId` 只渲染 active path，`index` 保留 sibling。`message_end` SSE 带持久化后的 `entryId`，所以刚完成的消息可以立即 edit/fork。工作区见 [workspace.md](workspace.md)。Sidecar 协议见 [extension.md](extension.md)。
 
 ## 扩展 UI 壳
 
@@ -213,6 +213,14 @@ Playwright 每次 invocation 使用独立的临时状态、鉴权文件、二进
 由 `e2e/responsive.spec.ts` 随 fake project 一起执行。
 
 `go test ./e2e -run WebUI` 会先起 server，再跑同一套 Playwright（需已 `npm install` 和装好 chromium）。
+
+长会话 / 超长消息压测不进 fake 矩阵。生成 jsonl 夹具后测 slim GET 体积与延迟（含 `fields=runtime`、`before`、`entry`）、打开 Chat/Trace 的 DOM 与 JS heap，以及向上翻页 / 截断正文补全：
+
+```bash
+cd web && npm run test:perf
+```
+
+Go 侧同一套夹具：`go test ./internal/session ./internal/server -run 'SeedView|ViewPerf|SeedTranscript' -v`；微基准 `go test ./internal/session -bench . -benchmem`。
 
 真模型（DashScope `qwen3.7-plus`，读 `DASHSCOPE_CN_API_KEY` 或 `~/.ki/ki.toml`）：
 

@@ -17,9 +17,13 @@
 // GET /v1/extensions lists the global extension catalog, optional extension
 // i18n resources, runtime status, and process-level extension UI projection.
 // Workspaces live in {KI_HOME}/workspaces.json. Session cwd comes from a
-// workspace (or a tmp+ workspace). GET /v1/sessions/{id} includes a
-// read-only catalog (availableSkills / availableExtensions, including global
-// extension i18n/UI, commands[]), session extensionUi, and runtime.ready. Opening a session (POST create, GET by id,
+// workspace (or a tmp+ workspace). GET /v1/sessions/{id} returns a WebUI
+// view: a body-less index of the jsonl tree, a slimmed tail of the active
+// leaf (unchanged request_header system/tools omitted; large bodies truncated),
+// plus a read-only catalog (availableSkills / availableExtensions, including global
+// extension i18n/UI, commands[]), session extensionUi, and runtime.ready.
+// Query fields=runtime omits the transcript; entry/entries fetch full bodies;
+// before+limit pages older leaf entries. messages is not included. Opening a session (POST create, GET by id,
 // fork) prepares the session view of already-running extensions in the
 // background; List does not. runtime.ready is
 // true when that Prepare finishes (failure still counts). PATCH /v1/sessions/{id} writes model /

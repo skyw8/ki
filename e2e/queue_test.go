@@ -70,7 +70,7 @@ func TestBusyQueuePromoteHTTP(t *testing.T) {
 	for {
 		_, detail = serveJSON(t, sf, http.MethodGet, "/v1/sessions/"+id, nil)
 		queued, _ = detail["queued"].([]any)
-		raw, err := json.Marshal(detail["messages"])
+		raw, err := json.Marshal(detail["entries"])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -78,7 +78,7 @@ func TestBusyQueuePromoteHTTP(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("keep did not dispatch: queued=%+v messages=%s", queued, raw)
+			t.Fatalf("keep did not dispatch: queued=%+v entries=%s", queued, raw)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

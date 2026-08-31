@@ -93,7 +93,7 @@ export function SessionConfig({
     }
     setLoading(true)
     try {
-      setDetail(await api.get(sessionId))
+      setDetail(await api.get(sessionId, { fields: 'runtime' }))
     } catch (e) {
       toast.from(e)
     } finally {

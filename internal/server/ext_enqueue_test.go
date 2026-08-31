@@ -569,7 +569,7 @@ func TestExtEnqueuePersistsOrigin(t *testing.T) {
 	}
 	waitAgentEnd(t, hs, id)
 	_, got := postJSON(t, hs, http.MethodGet, "/v1/sessions/"+id, nil)
-	raw, err := json.Marshal(got["messages"])
+	raw, err := json.Marshal(got["entries"])
 	if err != nil {
 		t.Fatal(err)
 	}

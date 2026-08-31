@@ -11,7 +11,7 @@ import { ExtensionConfigEditor, MessageSettings, SessionConfig, SettingsToggles 
 import { ModelPickerDialog } from './ModelPickerDialog'
 import { ProviderSettings } from './ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
-import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats } from './model'
+import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, hydrateEntries, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats } from './model'
 import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
@@ -558,7 +558,7 @@ function WorkspaceApp({ api }: { api: Client }) {
 					}
 					if (ev.type === 'runtime_ready') {
 					  try {
-					    const detail = await api.get(currentId)
+					    const detail = await api.get(currentId, { fields: 'runtime' })
 					    if (ac.signal.aborted) return
 					    setView(v => applyRuntimeCatalog(v, detail))
 					  } catch (e) { toast.from(e) }
@@ -566,9 +566,9 @@ function WorkspaceApp({ api }: { api: Client }) {
 					}
 					if (ev.type === 'extension_ui_updated' || ev.type === 'queue_changed') {
 					  try {
-					    const detail = await api.get(currentId)
+					    const detail = await api.get(currentId, { fields: 'runtime' })
 					    if (ac.signal.aborted) return
-					    setView(v => ({ ...loadHistory(detail), busy: v.busy || !!detail.running }))
+					    setView(v => ({ ...applyRuntimeCatalog(v, detail), busy: v.busy || !!detail.running }))
 					    if (detail.running) void listen(currentId)
 					  } catch (e) { toast.from(e) }
 					  continue
@@ -637,7 +637,7 @@ function WorkspaceApp({ api }: { api: Client }) {
         })
         if (ac.signal.aborted) return
         try {
-          const detail = await api.get(currentId)
+          const detail = await api.get(currentId, { fields: 'runtime' })
           if (ac.signal.aborted) return
           if (detail.runtime?.ready) {
             setView(v => applyRuntimeCatalog(v, detail))
@@ -829,8 +829,8 @@ function WorkspaceApp({ api }: { api: Client }) {
 	  if (result?.accepted === 'queued') {
 		setDraft({ text: '', attachments: [] })
 		try {
-		  const detail = await api.get(id)
-		  setView(v => ({ ...loadHistory(detail), busy: true }))
+		  const detail = await api.get(id, { fields: 'runtime' })
+		  setView(v => ({ ...applyRuntimeCatalog(v, detail), busy: true }))
 		} catch (e) { toast.from(e) }
 		return
 	  }
@@ -877,7 +877,7 @@ function WorkspaceApp({ api }: { api: Client }) {
 	      }))
 	      return
 	    }
-	    const detail = await api.get(currentId)
+	    const detail = await api.get(currentId, { fields: 'runtime' })
 	    setView(v => ({ ...v, queued: detail.queued ?? [], busy: v.busy || !!detail.running }))
 	  } catch (e) { toast.from(e) }
 	}, [api, currentId, view.model, view.provider, view.queued])
@@ -1033,6 +1033,43 @@ function WorkspaceApp({ api }: { api: Client }) {
     return [...map.values()].slice(0, 20)
   }, [byId, hits, localHits, untitled, workspaces])
 
+  const pendingHydrate = useRef(new Set<string>())
+  const hydrateTimer = useRef(0)
+  const olderLock = useRef(false)
+  const requestHydrate = useCallback((id: string) => {
+    if (!currentId || !id) return
+    pendingHydrate.current.add(id)
+    if (hydrateTimer.current) return
+    hydrateTimer.current = window.setTimeout(() => {
+      hydrateTimer.current = 0
+      const ids = [...pendingHydrate.current]
+      pendingHydrate.current.clear()
+      void api.getEntries(currentId, ids).then(out => {
+        setView(v => hydrateEntries(v, out.entries ?? []))
+      }).catch(e => toast.from(e))
+    }, 32)
+  }, [api, currentId])
+
+  const loadOlder = useCallback(async () => {
+    if (!currentId || !view.hasMore || !view.oldestId || olderLock.current) return
+    olderLock.current = true
+    const el = scrollRef.current
+    const prev = el?.scrollHeight ?? 0
+    const prevTop = el?.scrollTop ?? 0
+    try {
+      const extra = await api.get(currentId, { before: view.oldestId })
+      setView(v => hydrateEntries(v, extra.entries ?? [], { hasMore: extra.hasMore, oldestId: extra.oldestId }))
+      requestAnimationFrame(() => {
+        if (!el) return
+        el.scrollTop = prevTop + (el.scrollHeight - prev)
+      })
+    } catch (e) {
+      toast.from(e)
+    } finally {
+      olderLock.current = false
+    }
+  }, [api, currentId, view.hasMore, view.oldestId])
+
   useEffect(() => {
     const el = scrollRef.current
     if (!el || !atBottom) return
@@ -1141,7 +1178,7 @@ function WorkspaceApp({ api }: { api: Client }) {
               <button type="button" className="queued-remove" data-testid="queued-remove" aria-label={t('queue.remove')} onClick={() => {
                 if (!currentId) return
                 const ids = queued.filter(q => q.id !== item.id).map(q => q.id)
-                void api.patch(currentId, { queued: ids }).then(() => api.get(currentId)).then(detail => {
+                void api.patch(currentId, { queued: ids }).then(() => api.get(currentId, { fields: 'runtime' })).then(detail => {
                   setView(v => ({ ...v, queued: detail.queued ?? [] }))
                 }).catch(e => toast.from(e))
               }}><IClose /></button>
@@ -1492,7 +1529,7 @@ function WorkspaceApp({ api }: { api: Client }) {
           </div>
         ) : tab === 'trajectory' ? (
           <div className="conv-body">
-            <TrajectoryView records={view.records} requests={view.requests} selectId={inspId} />
+            <TrajectoryView records={view.records} requests={view.requests} selectId={inspId} onHydrate={requestHydrate} />
             {composer}
           </div>
         ) : (
@@ -1511,12 +1548,15 @@ function WorkspaceApp({ api }: { api: Client }) {
                   onScroll={e => {
                     const el = e.currentTarget
                     setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80)
+                    if (el.scrollTop < 96) void loadOlder()
                   }}
                 >
 				  <ChatView
 					api={api}
 					nodes={view.nodes}
 					busy={view.busy}
+					scrollRef={scrollRef}
+					onHydrate={requestHydrate}
 					onSelect={inspect}
 					edit={edit}
 					onStartEdit={startEdit}

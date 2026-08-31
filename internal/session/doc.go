@@ -13,7 +13,9 @@
 // fork mode in the header. The server owns tree-mode cascade deletion.
 //
 // request_header entries store system/tools plus provider, model, thinking,
-// catalog, and pricing snapshots. context_usage entries store model-facing
+// catalog, and pricing snapshots. WebUI GET projects a body-less index plus a
+// slimmed active-leaf tail (unchanged prompts omitted, large bodies truncated).
+// context_usage entries store model-facing
 // context pressure; patch_apply_updated entries store non-executing structured
 // patch previews. Asynchronous sideband rows never advance activeLeafId.
 // config.json owns provider/model/thinking effort plus

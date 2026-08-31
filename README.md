@@ -52,6 +52,7 @@ API auth is a Bearer token from `~/.ki/server.json` (or `KI_HOME/server.json`) f
 go test ./...
 go test ./e2e
 cd web && npm run test:e2e
+cd web && npm run test:perf
 cd web && npm run test:e2e:live
 go test -tags live -timeout 5m ./e2e -run Live
 ```

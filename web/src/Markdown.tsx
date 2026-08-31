@@ -1,4 +1,4 @@
-import { createElement, type JSX } from 'react'
+import { createElement, memo, type JSX } from 'react'
 import { cjk } from '@streamdown/cjk'
 import { Streamdown, type ExtraProps } from 'streamdown'
 import { normalizeMarkdown } from './markdown-normalize'
@@ -61,7 +61,7 @@ const components = {
   code: MdCode,
 }
 
-export function Markdown({
+export const Markdown = memo(function Markdown({
   text,
   streaming = false,
   className,
@@ -84,4 +84,4 @@ export function Markdown({
       {normalizeMarkdown(text)}
     </Streamdown>
   )
-}
+})

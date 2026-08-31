@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { IChev, IChevDown, ICompact, ICopy, IEdit, IFork, IRegen, ISpark, ITraj, IWrench } from './icons'
 import { IFile } from './icons'
 import { Composer, type Draft } from './Composer'
@@ -6,7 +7,10 @@ import { AttachmentImage } from './AttachmentImage'
 import type { Client } from './api'
 import { useI18n } from './i18n'
 import { Markdown } from './Markdown'
+import { reconcileUserNodes } from './model'
 import type { ChatNode } from './types'
+
+const VIRTUALIZE_AFTER = 48
 
 function copyText(text: string) {
   void navigator.clipboard?.writeText(text)
@@ -95,7 +99,7 @@ function prettyArgs(args: unknown): string {
   return JSON.stringify(args, null, 2)
 }
 
-function UserBubble({ api, node }: { api: Client; node: Extract<ChatNode, { kind: 'user' }> }) {
+function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatNode, { kind: 'user' }>; onHydrate?: (id: string) => void }) {
   const { t } = useI18n()
   const ref = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -134,7 +138,10 @@ function UserBubble({ api, node }: { api: Client; node: Extract<ChatNode, { kind
             data-testid="user-bubble-toggle"
             aria-label={open ? t('chat.collapse') : t('chat.expand')}
             title={open ? t('chat.collapse') : t('chat.expand')}
-            onClick={() => setOpen(v => !v)}
+            onClick={() => {
+              if (!open && node.truncated) onHydrate?.(node.id)
+              setOpen(v => !v)
+            }}
           >
             <IChevDown className={open ? 'up' : undefined} />
           </button>
@@ -145,12 +152,13 @@ function UserBubble({ api, node }: { api: Client; node: Extract<ChatNode, { kind
 }
 
 function ToolRow({
-  node, title, summary, onInspect,
+  node, title, summary, onInspect, onHydrate,
 }: {
   node: Extract<ChatNode, { kind: 'tool' }>
   title: string
   summary: string
   onInspect?: (n: ChatNode) => void
+  onHydrate?: (id: string) => void
 }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
@@ -182,7 +190,11 @@ function ToolRow({
           aria-expanded={open}
           aria-label={open ? t('chat.collapse') : t('chat.expand')}
           disabled={!expandable}
-          onClick={() => expandable && setOpen(v => !v)}
+          onClick={() => {
+            if (!expandable) return
+            if (!open && node.truncated) onHydrate?.(node.id)
+            setOpen(v => !v)
+          }}
         >
           {expandable ? <IChev open={open} /> : null}
           {state === 'error' ? <span className="state-dot err" /> : node.running ? <span className="spin" /> : <IWrench />}
@@ -245,9 +257,9 @@ function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> 
   )
 }
 
-export function ChatView({ api, nodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch }: {
+type ChatItemProps = {
 	api: Client
-	nodes: ChatNode[]
+	node: ChatNode
 	busy: boolean
 	uploading?: boolean
 	onSelect?: (n: ChatNode) => void
@@ -262,93 +274,141 @@ export function ChatView({ api, nodes, busy, uploading, onSelect, edit, onStartE
 	onRegen?: (n: Extract<ChatNode, { kind: 'assistant' }>) => void
 	branches?: Record<string, { index: number; total: number }>
 	onBranch?: (n: Extract<ChatNode, { kind: 'user' }>, delta: number) => void
+	onHydrate?: (id: string) => void
+}
+
+const ChatItem = memo(function ChatItem({
+	api, node: n, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate,
+}: ChatItemProps) {
+  const { t } = useI18n()
+  useEffect(() => {
+    if (n.truncated && (n.kind === 'assistant' || n.kind === 'system') && !(n.kind === 'assistant' && n.streaming)) {
+      onHydrate?.(n.id)
+    }
+  }, [n, onHydrate])
+  if (n.kind === 'user') {
+    return (
+      <div className="user-row">
+        <div className="user-stack">
+          {edit?.messageId === n.id ? <Composer api={api} mode="edit" draft={edit.draft} onChange={d => onEditChange?.(d)} onSend={() => onSendEdit?.()} onAttach={() => onAttachEdit?.()} onFiles={onFilesEdit} onCancel={onCancelEdit} busy={busy} uploading={uploading} /> : <UserBubble api={api} node={n} onHydrate={onHydrate} />}
+          <div className="msg-foot">
+            {n.ts ? <div className="msg-stats">{fmtTs(n.ts)}</div> : null}
+            <div className="msg-actions" data-testid="user-actions">
+              <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => copyText(n.text)}><ICopy /></IconBtn>
+              {branches?.[n.id]?.total && branches[n.id].total > 1 ? <span className="branch-nav"><button type="button" onClick={() => onBranch?.(n, -1)}>‹</button>{branches[n.id].index + 1} / {branches[n.id].total}<button type="button" onClick={() => onBranch?.(n, 1)}>›</button></span> : null}
+              <IconBtn label={t('chat.edit')} testid="edit-msg" onClick={() => onStartEdit?.(n)}><IEdit /></IconBtn>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+  if (n.kind === 'system') {
+    return (
+      <div className="system-prompt-row" data-testid="chat-system-prompt">
+        <div className="system-prompt-label"><ISpark /> {t('chat.system')}</div>
+        <details>
+          <summary>{n.promptChange?.kind === 'initial' ? t('chat.systemInitial') : t('chat.systemChanged')}</summary>
+          <pre>{n.text}</pre>
+        </details>
+      </div>
+    )
+  }
+  if (n.kind === 'assistant') {
+    const hasStats = !n.streaming && !!(n.ts || n.latencyMs || n.ttftMs || n.usage)
+    return (
+      <div className="asst" data-testid="assistant-message">
+        <div className="asst-body">
+          {n.thinking ? <Think text={n.thinking} streaming={n.streaming} /> : null}
+          {n.images?.map((img, i) => (
+            <img key={i} className="msg-img" alt="" src={`data:${img.mimeType};base64,${img.data}`} />
+          ))}
+          {n.text ? <Markdown text={n.text} streaming={n.streaming} /> : n.streaming && !n.thinking ? <span className="status-line">…</span> : null}
+          {n.error ? <div className="notice">{n.error}</div> : null}
+        </div>
+        {!n.streaming ? (
+          <div className="msg-foot">
+            {hasStats ? (
+              <div className="msg-stats">
+                {n.ts ? <span>{fmtTs(n.ts)}</span> : null}
+                {n.latencyMs != null ? <span>Ran {(n.latencyMs / 1000).toFixed(2)}s</span> : null}
+                {n.ttftMs != null ? <span>TTFT {(n.ttftMs / 1000).toFixed(2)}s</span> : null}
+                {n.usage ? <span>{fmtUsage(n.usage)}</span> : null}
+              </div>
+            ) : null}
+            <div className="msg-actions" data-testid="asst-actions">
+              <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => copyText(n.text || n.thinking || '')}><ICopy /></IconBtn>
+              {n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.fork')} testid="fork-msg" onClick={() => onFork?.(n)}><IFork /></IconBtn> : null}
+              {n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.regen')} testid="regen-msg" onClick={() => onRegen?.(n)}><IRegen /></IconBtn> : null}
+              <IconBtn label={t('chat.locate')} testid="traj-msg" onClick={() => onSelect?.(n)}><ITraj /></IconBtn>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+  if (n.kind === 'tool') {
+    const name = n.name
+    const path = argStr(n.args, 'file_path')
+    const summary = name === 'Bash'
+      ? (argStr(n.args, 'description') || argStr(n.args, 'command'))
+      : path || firstLine(n.result || prettyArgs(n.args))
+    return (
+      <ToolRow
+        node={n}
+        title={name}
+        summary={summary}
+        onInspect={onSelect}
+        onHydrate={onHydrate}
+      />
+    )
+  }
+  return <Compaction node={n} />
+})
+
+export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, onHydrate }: Omit<ChatItemProps, 'node'> & {
+	nodes: ChatNode[]
+	scrollRef?: RefObject<HTMLDivElement | null>
 }) {
   const { t } = useI18n()
+  const nodes = reconcileUserNodes(rawNodes)
+  const virtualize = nodes.length > VIRTUALIZE_AFTER
+  const virtualizer = useVirtualizer({
+    count: nodes.length,
+    getScrollElement: () => scrollRef?.current ?? null,
+    estimateSize: () => 96,
+    overscan: 10,
+    getItemKey: index => nodes[index]?.id ?? index,
+    enabled: virtualize,
+  })
+  const itemProps = { api, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate }
+  const running = busy && !nodes.some(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
+  if (!virtualize) {
+    return (
+      <div className="chat-col" data-testid="chat">
+        {nodes.map(n => <ChatItem key={n.id} node={n} {...itemProps} />)}
+        {running ? <div className="status-line">{t('chat.running')}</div> : null}
+      </div>
+    )
+  }
   return (
-    <div className="chat-col" data-testid="chat">
-      {nodes.map(n => {
-        if (n.kind === 'user') {
-          return (
-            <div key={n.id} className="user-row">
-              <div className="user-stack">
-				{edit?.messageId === n.id ? <Composer api={api} mode="edit" draft={edit.draft} onChange={d => onEditChange?.(d)} onSend={() => onSendEdit?.()} onAttach={() => onAttachEdit?.()} onFiles={onFilesEdit} onCancel={onCancelEdit} busy={busy} uploading={uploading} /> : <UserBubble api={api} node={n} />}
-                <div className="msg-foot">
-                  {n.ts ? <div className="msg-stats">{fmtTs(n.ts)}</div> : null}
-                  <div className="msg-actions" data-testid="user-actions">
-                    <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => copyText(n.text)}><ICopy /></IconBtn>
-					{branches?.[n.id]?.total && branches[n.id].total > 1 ? <span className="branch-nav"><button type="button" onClick={() => onBranch?.(n, -1)}>‹</button>{branches[n.id].index + 1} / {branches[n.id].total}<button type="button" onClick={() => onBranch?.(n, 1)}>›</button></span> : null}
-					<IconBtn label={t('chat.edit')} testid="edit-msg" onClick={() => onStartEdit?.(n)}><IEdit /></IconBtn>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )
-        }
-        if (n.kind === 'system') {
-          return (
-            <div key={n.id} className="system-prompt-row" data-testid="chat-system-prompt">
-              <div className="system-prompt-label"><ISpark /> {t('chat.system')}</div>
-              <details>
-                <summary>{n.promptChange?.kind === 'initial' ? t('chat.systemInitial') : t('chat.systemChanged')}</summary>
-                <pre>{n.text}</pre>
-              </details>
-            </div>
-          )
-        }
-        if (n.kind === 'assistant') {
-          const hasStats = !n.streaming && !!(n.ts || n.latencyMs || n.ttftMs || n.usage)
-          return (
-            <div key={n.id} className="asst" data-testid="assistant-message">
-              <div className="asst-body">
-                {n.thinking ? <Think text={n.thinking} streaming={n.streaming} /> : null}
-                {n.images?.map((img, i) => (
-                  <img key={i} className="msg-img" alt="" src={`data:${img.mimeType};base64,${img.data}`} />
-                ))}
-                {n.text ? <Markdown text={n.text} streaming={n.streaming} /> : n.streaming && !n.thinking ? <span className="status-line">…</span> : null}
-                {n.error ? <div className="notice">{n.error}</div> : null}
-              </div>
-              {!n.streaming ? (
-                <div className="msg-foot">
-                  {hasStats ? (
-                    <div className="msg-stats">
-                      {n.ts ? <span>{fmtTs(n.ts)}</span> : null}
-                      {n.latencyMs != null ? <span>Ran {(n.latencyMs / 1000).toFixed(2)}s</span> : null}
-                      {n.ttftMs != null ? <span>TTFT {(n.ttftMs / 1000).toFixed(2)}s</span> : null}
-                      {n.usage ? <span>{fmtUsage(n.usage)}</span> : null}
-                    </div>
-                  ) : null}
-                  <div className="msg-actions" data-testid="asst-actions">
-                    <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => copyText(n.text || n.thinking || '')}><ICopy /></IconBtn>
-					{n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.fork')} testid="fork-msg" onClick={() => onFork?.(n)}><IFork /></IconBtn> : null}
-					{n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.regen')} testid="regen-msg" onClick={() => onRegen?.(n)}><IRegen /></IconBtn> : null}
-                    <IconBtn label={t('chat.locate')} testid="traj-msg" onClick={() => onSelect?.(n)}><ITraj /></IconBtn>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          )
-        }
-        if (n.kind === 'tool') {
-          const name = n.name
-          const path = argStr(n.args, 'file_path')
-          const summary = name === 'Bash'
-            ? (argStr(n.args, 'description') || argStr(n.args, 'command'))
-            : path || firstLine(n.result || prettyArgs(n.args))
-          return (
-            <ToolRow
-              key={n.id}
-              node={n}
-              title={name === 'Read' || name === 'Edit' || name === 'Write' || name === 'Bash' ? name : name}
-              summary={summary}
-              onInspect={onSelect}
-            />
-          )
-        }
-        return <Compaction key={n.id} node={n} />
+    <div className="chat-col chat-virtual" data-testid="chat" style={{ height: virtualizer.getTotalSize() }}>
+      {virtualizer.getVirtualItems().map(item => {
+        const n = nodes[item.index]
+        if (!n) return null
+        return (
+          <div
+            key={item.key}
+            data-index={item.index}
+            ref={virtualizer.measureElement}
+            className="chat-virtual-item"
+            style={{ transform: `translateY(${item.start}px)` }}
+          >
+            <ChatItem node={n} {...itemProps} />
+          </div>
+        )
       })}
-      {busy && !nodes.some(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running)) ? (
-        <div className="status-line">{t('chat.running')}</div>
-      ) : null}
+      {running ? <div className="status-line chat-virtual-item" style={{ transform: `translateY(${virtualizer.getTotalSize()}px)` }}>{t('chat.running')}</div> : null}
     </div>
   )
 }

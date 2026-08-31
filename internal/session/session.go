@@ -128,6 +128,10 @@ type Entry struct {
 	Pricing          any             `json:"pricing,omitempty"`
 	System           string          `json:"system,omitempty"`
 	Tools            []ToolSchema    `json:"tools,omitempty"`
+	// PromptUnchanged and Truncated are view-only flags for GET /v1/sessions/{id}.
+	// They are never written to jsonl.
+	PromptUnchanged bool `json:"promptUnchanged,omitempty"`
+	Truncated       bool `json:"truncated,omitempty"`
 }
 
 // ToolSchema is the model-visible tool list on a request_header entry.
@@ -377,6 +381,14 @@ func (s *Session) Entries() []Entry {
 	out := make([]Entry, len(s.entries))
 	copy(out, s.entries)
 	return out
+}
+
+// Lookup returns one persisted entry by id.
+func (s *Session) Lookup(id string) (Entry, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.byID[id]
+	return e, ok
 }
 
 // LeafEntries returns leaf-chain entries in chronological order (root → leaf),
