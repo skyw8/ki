@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"ki/internal/command"
 	"ki/internal/extension"
 	"ki/internal/idgen"
 	"ki/internal/loop"
@@ -69,6 +70,14 @@ func (s *Server) getSkills(w http.ResponseWriter, r *http.Request) {
 			"enabled":     tg.Skills.Allowed(item.Name),
 		})
 	}
+	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func (s *Server) getCommands(w http.ResponseWriter, r *http.Request) {
+	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
+	snapshot := s.resources.Scan(cwd)
+	tg := toggles.Load(s.cfg.Home)
+	items := command.Catalog(snapshot, tg.Skills)
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 

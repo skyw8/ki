@@ -402,6 +402,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PATCH /v1/skills", s.auth(s.patchSkills))
 	api.HandleFunc("GET /v1/extensions", s.auth(s.getExtensions))
 	api.HandleFunc("PATCH /v1/extensions", s.auth(s.patchExtensions))
+	api.HandleFunc("GET /v1/commands", s.auth(s.getCommands))
 	api.HandleFunc("GET /v1/extensions/{name}/config", s.auth(s.getExtensionConfig))
 	api.HandleFunc("PATCH /v1/extensions/{name}/config", s.auth(s.patchExtensionConfig))
 	api.HandleFunc("GET /v1/message", s.auth(s.getMessage))

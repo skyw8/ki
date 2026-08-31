@@ -21,6 +21,15 @@ async function expectMinTarget(locator: Locator, label: string): Promise<void> {
 
 test.describe.configure({ mode: 'serial' })
 
+test('slash palette is available before creating a session', async ({ page }) => {
+  await page.goto('/')
+  const input = page.getByTestId('composer-input')
+  await expect(input).toBeVisible()
+  await input.fill('/')
+  await expect(page.getByTestId('command-palette')).toBeVisible()
+  await expect(page.getByTestId('command-item-new')).toBeVisible()
+})
+
 test('settings navigation and controls are consistent', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()

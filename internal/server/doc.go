@@ -12,6 +12,8 @@
 // is its flat selectable view. GET /v1/meta exposes the last-used model
 // (or the first available fallback), that model's default thinking
 // effort, and user home.
+// GET /v1/commands exposes the workspace-scoped built-in, prompt-template,
+// and skill catalog used by the WebUI before a session exists.
 // GET /v1/extensions lists the global extension catalog, optional extension
 // i18n resources, runtime status, and process-level extension UI projection.
 // Workspaces live in {KI_HOME}/workspaces.json. Session cwd comes from a

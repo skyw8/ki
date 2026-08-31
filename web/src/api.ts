@@ -167,6 +167,12 @@ export class Client {
     return got.items ?? []
   }
 
+  async commands(workspaceId?: string | null): Promise<import('./types').SessionCommand[]> {
+    const q = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
+    const got = await this.json<{ items: import('./types').SessionCommand[] }>(`/v1/commands${q}`)
+    return got.items ?? []
+  }
+
   patchExtensions(disabled: string[]): Promise<{ items: import('./types').CatalogExtension[] }> {
     return this.json('/v1/extensions', { method: 'PATCH', body: JSON.stringify({ disabled }) })
   }

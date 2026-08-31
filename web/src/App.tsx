@@ -475,6 +475,12 @@ function WorkspaceApp({ api }: { api: Client }) {
 	useEffect(() => { void refreshList() }, [refreshList])
 	useEffect(() => { void refreshExtensions() }, [refreshExtensions])
 	useEffect(() => {
+		if (currentId) return
+		void api.commands(selectedWs).then(commands => {
+			setView(v => v.commands === commands ? v : { ...v, commands })
+		}).catch(() => {})
+	}, [api, currentId, selectedWs])
+	useEffect(() => {
 		const timer = window.setInterval(() => {
 			void api.extensions().then(setGlobalExtensions).catch(() => {})
 		}, 1000)
