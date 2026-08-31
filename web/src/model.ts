@@ -437,7 +437,10 @@ function applyRequestHeader(
     output: tools,
     startedAt,
   })
-  if (system) s.nodes.push({ kind: 'system', id: systemId, text: system, tools, promptChange: change, ts: startedAt })
+  // Why: request_header is the provider call's system/tools payload. Chat is
+  // the user/assistant transcript; a SYSTEM row for the initial (or changed)
+  // prompt was noise on every conversation. Trajectory keeps the record and
+  // inspector tabs.
 }
 
 function applyEntry(s: ViewState, e: Entry) {

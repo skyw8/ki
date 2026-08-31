@@ -341,7 +341,7 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
   await expect(page.getByTestId('request-nav')).toHaveCount(0)
   await expect(page.getByTestId('assistant-message').locator('.md')).toContainText('ok')
-  await expect(page.getByTestId('chat-system-prompt')).toHaveCount(1)
+  await expect(page.getByTestId('chat-system-prompt')).toHaveCount(0)
   await expect(page.getByTestId('session-stats')).toContainText('1 轮 · 1 步')
   await expect(page.getByTestId('session-stats')).toContainText('输入 8 · 输出 2')
   await expect(page.getByTestId('session-title').filter({ hasText: prompt })).toBeVisible()

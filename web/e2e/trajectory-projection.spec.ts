@@ -83,7 +83,7 @@ test('repeated request headers inherit one visible system prompt', () => {
   expect(view.requests.map(item => item.promptChange?.kind)).toEqual(['initial', undefined, undefined])
   expect(view.records.filter(item => item.kind === 'system')).toHaveLength(1)
   expect(view.records.filter(item => item.requestOnly)).toHaveLength(3)
-  expect(view.nodes.filter(item => item.kind === 'system')).toHaveLength(1)
+  expect(view.nodes.map(item => item.kind)).toEqual(['user', 'assistant', 'assistant', 'assistant'])
 })
 
 test('prompt changes create a new visible system record and diff source', () => {
@@ -101,6 +101,7 @@ test('prompt changes create a new visible system record and diff source', () => 
   expect(view.requests.map(item => item.promptChange?.kind)).toEqual(['initial', 'system'])
   expect(view.records.filter(item => item.kind === 'system').map(item => item.system)).toEqual(['first', 'second'])
   expect(view.records.filter(item => item.kind === 'system')[1]).toMatchObject({ previousSystem: 'first' })
+  expect(view.nodes.map(item => item.kind)).toEqual(['user', 'assistant', 'assistant'])
 })
 
 test('live request headers retain request metadata while rendering one prompt', () => {
