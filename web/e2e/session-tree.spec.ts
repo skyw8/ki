@@ -97,7 +97,7 @@ test('Tree browser opens deep children and reveals selected sidebar rows', async
   await expect(page.locator('[data-tree-focus="true"]')).toHaveCount(2)
   const childARow = page.locator('[data-tree-focus="true"]').filter({ has: page.locator('.title').filter({ hasText: childATitle }) })
   await childARow.locator('button[aria-label="会话菜单"]').click()
-  await expect(page.getByTestId('pop-menu').getByRole('button', { name: '置顶' })).toHaveCount(0)
+  await expect(page.getByTestId('pop-menu').getByRole('menuitem', { name: '置顶' })).toHaveCount(0)
   await page.keyboard.press('Escape')
 
   await page.getByTestId('session-title').filter({ hasText: rootTitle }).click()

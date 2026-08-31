@@ -28,12 +28,19 @@ export function Select({ value, options, onChange, ariaLabel, className = '', te
     const rect = trigger.current?.getBoundingClientRect()
     if (!rect) return
     const gap = 6
-    const menuWidth = Math.max(112, rect.width)
-    const below = window.innerHeight - rect.bottom - gap - 8
-    const above = rect.top - gap - 8
+    const visual = window.visualViewport
+    const viewportLeft = visual?.offsetLeft ?? 0
+    const viewportTop = visual?.offsetTop ?? 0
+    const viewportWidth = visual?.width ?? window.innerWidth
+    const viewportHeight = visual?.height ?? window.innerHeight
+    const viewportRight = viewportLeft + viewportWidth
+    const viewportBottom = viewportTop + viewportHeight
+    const menuWidth = Math.min(Math.max(112, rect.width), viewportWidth - 16)
+    const below = viewportBottom - rect.bottom - gap - 8
+    const above = rect.top - viewportTop - gap - 8
     const upward = below < 180 && above > below
     setPosition({
-      left: Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8)),
+      left: Math.max(viewportLeft + 8, Math.min(rect.left, viewportRight - menuWidth - 8)),
       width: menuWidth,
       maxHeight: Math.max(96, Math.min(240, upward ? above : below)),
       ...(upward ? { bottom: window.innerHeight - rect.top + gap } : { top: rect.bottom + gap }),
@@ -56,10 +63,14 @@ export function Select({ value, options, onChange, ariaLabel, className = '', te
     document.addEventListener('pointerdown', closeOutside)
     window.addEventListener('resize', closeOnViewportChange)
     window.addEventListener('scroll', closeOnViewportChange, true)
+    window.visualViewport?.addEventListener('resize', closeOnViewportChange)
+    window.visualViewport?.addEventListener('scroll', closeOnViewportChange)
     return () => {
       document.removeEventListener('pointerdown', closeOutside)
       window.removeEventListener('resize', closeOnViewportChange)
       window.removeEventListener('scroll', closeOnViewportChange, true)
+      window.visualViewport?.removeEventListener('resize', closeOnViewportChange)
+      window.visualViewport?.removeEventListener('scroll', closeOnViewportChange)
     }
   }, [open])
 

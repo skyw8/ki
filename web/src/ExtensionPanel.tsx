@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import type { CatalogExtension, ExtensionI18n, ExtensionUI } from './types'
 import { Markdown } from './Markdown'
 import { interpolate, useI18n, type Lang } from './i18n'
@@ -168,6 +168,39 @@ export function ExtensionInspector({
   const navItems = useMemo(() => inspectorItems(items, globalItems), [globalItems, items])
   const selectedGlobal = globalItems.find(item => item.name === selectedName)
   const extensionI18n = selectedGlobal?.i18n
+  const hasDetails = !!selected?.panel
+  const hasConfig = !!selectedGlobal?.configurable && !!renderConfig
+  const defaultView = hasDetails ? 'details' : 'config'
+  const [viewChoice, setViewChoice] = useState<{ extension: string; view: 'details' | 'config' }>(() => ({
+    extension: selectedName,
+    view: defaultView,
+  }))
+  const requestedView = viewChoice.extension === selectedName ? viewChoice.view : defaultView
+  const activeView = requestedView === 'details' && hasDetails
+    ? 'details'
+    : requestedView === 'config' && hasConfig
+      ? 'config'
+      : defaultView
+  const selectView = (view: 'details' | 'config', focus = false) => {
+    setViewChoice({ extension: selectedName, view })
+    if (focus) window.requestAnimationFrame(() => document.getElementById(`ext-inspector-${view}-tab`)?.focus({ preventScroll: false }))
+  }
+  const onViewTabsKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    const next = event.key === 'Home'
+      ? 'details'
+      : event.key === 'End'
+        ? 'config'
+        : activeView === 'details' ? 'config' : 'details'
+    event.preventDefault()
+    selectView(next, true)
+  }
+
+  useEffect(() => {
+    // A newly selected extension should open on its details when available;
+    // otherwise a config-only extension would inherit the previous tab.
+    setViewChoice({ extension: selectedName, view: defaultView })
+  }, [defaultView, hasConfig, selectedName])
   useEffect(() => {
     navRef.current?.querySelector<HTMLElement>('.ext-nav-item.on')?.scrollIntoView({ block: 'nearest', inline: 'center' })
   }, [selectedName])
@@ -197,20 +230,86 @@ export function ExtensionInspector({
       <div className="ext-inspector-main" data-testid="ext-inspector-main">
         <header className="ext-inspector-head">
           <h3>{localizedExtensionText(selected?.panel?.title || selectedGlobal?.name || selectedName, extensionI18n, lang)}</h3>
+          {hasDetails && hasConfig ? (
+            <div className="tabs ext-inspector-view-tabs" role="tablist" aria-label={t('ext.view')} onKeyDown={onViewTabsKeyDown}>
+              <button
+                id="ext-inspector-details-tab"
+                type="button"
+                role="tab"
+                aria-selected={activeView === 'details'}
+                aria-controls="ext-inspector-details-panel"
+                tabIndex={activeView === 'details' ? 0 : -1}
+                className={`tab${activeView === 'details' ? ' active' : ''}`}
+                data-testid="ext-inspector-details-tab"
+                onClick={() => selectView('details')}
+              >
+                {t('ext.details')}
+              </button>
+              <button
+                id="ext-inspector-config-tab"
+                type="button"
+                role="tab"
+                aria-selected={activeView === 'config'}
+                aria-controls="ext-inspector-config-panel"
+                tabIndex={activeView === 'config' ? 0 : -1}
+                className={`tab${activeView === 'config' ? ' active' : ''}`}
+                data-testid="ext-inspector-config-tab"
+                onClick={() => selectView('config')}
+              >
+                {t('ext.config')}
+              </button>
+            </div>
+          ) : null}
         </header>
-        {selected?.panel ? (
-          <ExtensionPanel
-            ui={selected}
-            fields={fields}
-            onField={onField}
-            onAction={onAction}
-            onSubmit={onSubmit}
-            extensionI18n={extensionI18n}
-            hideStatus
-          />
+        {hasDetails && hasConfig ? (
+          <>
+            <div
+              className="ext-inspector-view"
+              id="ext-inspector-details-panel"
+              role="tabpanel"
+              aria-labelledby="ext-inspector-details-tab"
+              tabIndex={activeView === 'details' ? 0 : -1}
+              hidden={activeView !== 'details'}
+            >
+              {activeView === 'details' ? (
+                <ExtensionPanel
+                  ui={selected!}
+                  fields={fields}
+                  onField={onField}
+                  onAction={onAction}
+                  onSubmit={onSubmit}
+                  extensionI18n={extensionI18n}
+                  hideStatus
+                />
+              ) : null}
+            </div>
+            <div
+              className="ext-inspector-view"
+              id="ext-inspector-config-panel"
+              role="tabpanel"
+              aria-labelledby="ext-inspector-config-tab"
+              tabIndex={activeView === 'config' ? 0 : -1}
+              hidden={activeView !== 'config'}
+            >
+              {activeView === 'config' ? renderConfig(selectedGlobal!.name) : null}
+            </div>
+          </>
+        ) : hasDetails ? (
+          <div className="ext-inspector-view">
+            <ExtensionPanel
+              ui={selected!}
+              fields={fields}
+              onField={onField}
+              onAction={onAction}
+              onSubmit={onSubmit}
+              extensionI18n={extensionI18n}
+              hideStatus
+            />
+          </div>
+        ) : hasConfig ? (
+          <div className="ext-inspector-view">{renderConfig(selectedGlobal!.name)}</div>
         ) : null}
-        {selectedGlobal?.configurable && renderConfig ? renderConfig(selectedGlobal.name) : null}
-        {!selected?.panel && !selectedGlobal ? (
+        {!hasDetails && !hasConfig ? (
           <p className="ext-inspector-empty">{t('ext.empty')}</p>
         ) : null}
       </div>

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { ICheck, IChevRight, IFolder, IFolderOpen, IPencil, IPlus } from './icons'
 import type { Client } from './api'
 import { useI18n } from './i18n'
 import type { FsEntry, FsListing } from './types'
+import { useDialogFocus } from './useDialogFocus'
 
 const PREVIEW_MS = 250
 const SLOW_MS = 300
@@ -56,38 +57,39 @@ function Column({
   onPick: (e: FsEntry) => void
 }) {
   return (
-    <div className="dir-col" role="list">
+    <ul className="dir-col">
       {visibleEntries(entries ?? [], selected, showHidden, prefix).map(e => {
         const on = e.path === selected
         return (
-          <button
-            key={e.path}
-            type="button"
-            role="listitem"
-            className={`dir-row${on ? ' on' : ''}`}
-            data-testid="dir-row"
-            aria-current={on || undefined}
-            onMouseDown={ev => ev.preventDefault()}
-            onClick={ev => { ev.preventDefault(); ev.stopPropagation(); onPick(e) }}
-          >
-            {on ? <span className="dir-ico on"><IFolderOpen /></span> : <span className="dir-ico"><IFolder /></span>}
-            <span className="dir-name">{e.name}</span>
-            <span className="dir-row-chev"><IChevRight /></span>
-          </button>
+          <li key={e.path}>
+            <button
+              type="button"
+              className={`dir-row${on ? ' on' : ''}`}
+              data-testid="dir-row"
+              aria-current={on || undefined}
+              onMouseDown={ev => ev.preventDefault()}
+              onClick={ev => { ev.preventDefault(); ev.stopPropagation(); onPick(e) }}
+            >
+              {on ? <span className="dir-ico on"><IFolderOpen /></span> : <span className="dir-ico"><IFolder /></span>}
+              <span className="dir-name">{e.name}</span>
+              <span className="dir-row-chev"><IChevRight /></span>
+            </button>
+          </li>
         )
       })}
-    </div>
+    </ul>
   )
 }
 
 export function DirectoryBrowser({
-  api, open, busy, onOpen, onClose,
+  api, open, busy, onOpen, onClose, restoreFocusRef,
 }: {
   api: Client
   open: boolean
   busy?: boolean
   onOpen: (path: string) => void
   onClose: () => void
+  restoreFocusRef?: RefObject<HTMLElement>
 }) {
   const { t } = useI18n()
   const homeName = t('dir.home')
@@ -108,6 +110,25 @@ export function DirectoryBrowser({
   const viewRef = useRef({ parent, child })
   const inputRef = useRef<HTMLInputElement | null>(null)
   const crumbRef = useRef<HTMLSpanElement | null>(null)
+  const createInputRef = useRef<HTMLInputElement | null>(null)
+  const dialogRef = useDialogFocus<HTMLDivElement>({
+    open,
+    restoreFocusRef,
+    onEscape: () => {
+      if (draft !== null) {
+        setDraft(null)
+        if (!child) setSelected(null)
+        window.requestAnimationFrame(() => dialogRef.current?.querySelector<HTMLElement>('[data-testid="dir-path"]')?.focus({ preventScroll: true }))
+      } else if (!busy && !mkdir) {
+        onClose()
+      }
+    },
+  })
+  const createDialogRef = useDialogFocus<HTMLDivElement>({
+    open: open && mkdir,
+    onEscape: () => { if (!creating) setMkdir(false) },
+    initialFocusRef: createInputRef,
+  })
 
   useEffect(() => { viewRef.current = { parent, child } }, [parent, child])
 
@@ -294,17 +315,14 @@ export function DirectoryBrowser({
   const picker = (
     <div className="modal-mask" onClick={() => { if (!mkdir && !busy) onClose() }} data-testid="dir-browser-mask">
       <div
+        ref={dialogRef}
         className="dir-browser"
         data-testid="dir-browser"
         onClick={e => e.stopPropagation()}
         role="dialog"
+        aria-modal="true"
         aria-label={t('dir.title')}
-        onKeyDown={e => {
-          if (e.key !== 'Escape' || draft === null) return
-          e.stopPropagation()
-          setDraft(null)
-          if (!child) setSelected(null)
-        }}
+        tabIndex={-1}
       >
         <div className="dir-head">
           <h2>{t('dir.title')}</h2>
@@ -376,7 +394,7 @@ export function DirectoryBrowser({
             ) : null}
           </div>
           {loading && slow ? <div className="dir-loading-float">{t('dir.loading')}</div> : null}
-          {err ? <div className="dir-error">{err}</div> : null}
+          {err ? <div className="dir-error" role="alert">{err}</div> : null}
         </div>
         <div className="dir-foot">
           <div className="dir-foot-left">
@@ -422,22 +440,21 @@ export function DirectoryBrowser({
 
   const createDlg = mkdir ? (
     <div className="dir-create-mask" data-testid="dir-create" onClick={() => { if (!creating) setMkdir(false) }}>
-      <div className="dir-create" role="dialog" aria-label={t('dir.createTitle')} onClick={e => e.stopPropagation()}>
+      <div ref={createDialogRef} className="dir-create" role="dialog" aria-modal="true" aria-label={t('dir.createTitle')} tabIndex={-1} onClick={e => e.stopPropagation()}>
         <h3>{t('dir.createTitle')}</h3>
         <p>{t('dir.createIn', { name: selected?.name ?? crumbs.at(-1)?.name ?? homeName })}</p>
         <input
+          ref={createInputRef}
           data-testid="dir-new-name"
           placeholder={t('dir.untitledFolder')}
-          autoFocus
           disabled={creating}
           value={newName}
           onChange={e => setNewName(e.target.value)}
           onKeyDown={e => {
             if (e.key === 'Enter') { e.preventDefault(); void createFolder() }
-            if (e.key === 'Escape') { e.stopPropagation(); if (!creating) setMkdir(false) }
           }}
         />
-        {createErr ? <div className="dir-error">{createErr}</div> : null}
+        {createErr ? <div className="dir-error" role="alert">{createErr}</div> : null}
         <div className="dir-create-actions">
           <button type="button" disabled={creating} onClick={() => setMkdir(false)}>{t('dir.cancel')}</button>
           <button type="button" className="primary-btn" disabled={creating || !newName.trim()} onClick={() => void createFolder()}>{t('dir.create')}</button>

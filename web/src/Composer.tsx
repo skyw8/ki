@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useId, useRef, useState, type CSSProperties } from 'react'
 import { IAttach, IClose, ICommand, IFile, ISend, IStop } from './icons'
 import type { Client } from './api'
 import { AttachmentImage } from './AttachmentImage'
-import { CommandPalette, type PalettePick } from './CommandPalette'
+import { CommandPalette, isCommandPaletteVisible, type PalettePick } from './CommandPalette'
 import { Select } from './Select'
 import { useI18n } from './i18n'
 import type { SessionCommand } from './types'
@@ -97,7 +97,9 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   const ref = useRef<HTMLTextAreaElement>(null)
   const cmdBtn = useRef<HTMLButtonElement>(null)
   const card = useRef<HTMLDivElement>(null)
+  const paletteId = useId()
   const [palette, setPalette] = useState(false)
+  const [paletteActive, setPaletteActive] = useState<string>()
   useEffect(() => {
     const el = ref.current
     if (!el) return
@@ -112,6 +114,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   }, [draft.text, mode])
   const canSend = !uploading && (!!draft.text.trim() || draft.attachments.length > 0)
   const slashDraft = mode === 'new' && draft.text.trim().startsWith('/')
+  const paletteVisible = isCommandPaletteVisible(palette && !disabled, draft.text, commands)
   const openPalette = () => {
     if (disabled) return
     void onEnsureSession?.()
@@ -159,6 +162,12 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
           placeholder={loading ? t('composer.placeholderLoading') : disabled ? t('composer.placeholderDisabled') : t('composer.placeholder')}
           value={draft.text}
           disabled={disabled}
+          role={mode === 'new' ? 'combobox' : undefined}
+          aria-autocomplete={mode === 'new' ? 'list' : undefined}
+          aria-haspopup={mode === 'new' ? 'listbox' : undefined}
+          aria-expanded={mode === 'new' ? paletteVisible : undefined}
+          aria-controls={mode === 'new' && paletteVisible ? paletteId : undefined}
+          aria-activedescendant={mode === 'new' && paletteVisible ? paletteActive : undefined}
           onChange={e => onChange({ ...draft, text: e.target.value })}
 		  onPaste={e => {
 			const files = Array.from(e.clipboardData.files)
@@ -195,7 +204,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
         />
         <div className="composer-row">
           {mode === 'new' ? (
-            <button type="button" ref={cmdBtn} className="attach-btn" data-testid="command-btn" disabled={disabled} aria-label={t('cmd.open')} title={t('cmd.open')} onClick={openPalette}><ICommand /></button>
+            <button type="button" ref={cmdBtn} className="attach-btn" data-testid="command-btn" disabled={disabled} aria-label={t('cmd.open')} aria-haspopup="listbox" aria-expanded={paletteVisible} aria-controls={paletteVisible ? paletteId : undefined} title={t('cmd.open')} onClick={openPalette}><ICommand /></button>
           ) : null}
           <button type="button" className="attach-btn" onClick={onAttach} disabled={disabled || busy} aria-label={t('composer.attach')} title={t('composer.attach')}><IAttach /></button>
           {mode === 'new' ? <button type="button" className="model-chip" data-testid="open-model" onClick={onPickModel}>{model || t('composer.pickModel')}</button> : null}
@@ -205,7 +214,10 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
               query={draft.text}
               items={commands}
               anchor={card}
+              id={paletteId}
+              ariaLabel={t('cmd.open')}
               onClose={() => setPalette(false)}
+              onActiveDescendant={setPaletteActive}
               onPick={insertCommand}
             />
           ) : null}

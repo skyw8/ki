@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import type { SessionCommand } from './types'
 
@@ -45,6 +45,10 @@ function paletteRows(query: string, items: SessionCommand[]): Row[] {
   }))
 }
 
+export function isCommandPaletteVisible(open: boolean, query: string, items: SessionCommand[]): boolean {
+  return open && paletteRows(query, items).length > 0
+}
+
 function matchesDraft(query: string, row: Row) {
   if (row.kind === 'command') {
     const prefix = `/${row.item.name}`
@@ -59,17 +63,22 @@ export function CommandPalette({
   query,
   items,
   anchor,
+  id,
+  ariaLabel,
   onPick,
   onClose,
+  onActiveDescendant,
 }: {
   open: boolean
   query: string
   items: SessionCommand[]
   anchor: RefObject<HTMLElement | null>
+  id: string
+  ariaLabel: string
   onPick: (pick: PalettePick) => void
   onClose: () => void
+  onActiveDescendant?: (id: string | undefined) => void
 }) {
-  const id = useId()
   const menu = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(0)
   const [position, setPosition] = useState<CSSProperties>({})
@@ -84,20 +93,31 @@ export function CommandPalette({
   onPickRef.current = onPick
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
+  const activeDescendantRef = useRef(onActiveDescendant)
+  activeDescendantRef.current = onActiveDescendant
 
   const place = () => {
     const rect = anchor.current?.getBoundingClientRect()
     if (!rect) return
     const gap = 8
+    const visual = window.visualViewport
+    const viewportLeft = visual?.offsetLeft ?? 0
+    const viewportTop = visual?.offsetTop ?? 0
+    const viewportWidth = visual?.width ?? window.innerWidth
+    const viewportHeight = visual?.height ?? window.innerHeight
+    const viewportRight = viewportLeft + viewportWidth
+    const viewportBottom = viewportTop + viewportHeight
     // Why: the palette used to anchor to the / button in the composer row.
     // "Upward" then sat on top of the textarea and hid the input. Anchor the
     // whole composer card and prefer sitting above it so the field stays visible.
-    const width = Math.min(Math.max(rect.width, 280), window.innerWidth - 16)
-    const above = rect.top - gap - 8
-    const below = window.innerHeight - rect.bottom - gap - 8
+    // visualViewport keeps this math inside the area left above an on-screen
+    // keyboard; innerHeight alone can still describe the obscured layout viewport.
+    const width = Math.min(Math.max(rect.width, 280), viewportWidth - 16)
+    const above = rect.top - gap - viewportTop - 8
+    const below = viewportBottom - rect.bottom - gap - 8
     const upward = above >= 96
     setPosition({
-      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+      left: Math.max(viewportLeft + 8, Math.min(rect.left, viewportRight - width - 8)),
       width,
       maxHeight: Math.max(96, Math.min(320, upward ? above : below)),
       ...(upward ? { bottom: window.innerHeight - rect.top + gap } : { top: rect.bottom + gap }),
@@ -114,27 +134,58 @@ export function CommandPalette({
     if (!open) return
     const closeOutside = (event: PointerEvent) => {
       const node = event.target as Node
-      if (!anchor.current?.contains(node) && !menu.current?.contains(node)) onCloseRef.current()
+      const queryInput = anchor.current?.querySelector('textarea')
+      // Why: model, attachment, and Select controls also live inside the
+      // composer card. Only the query input and palette are true palette
+      // owners; any sibling control must dismiss it before opening its popup.
+      if (!queryInput?.contains(node) && !menu.current?.contains(node)) onCloseRef.current()
+    }
+    const closeOnFocus = (event: FocusEvent) => {
+      const node = event.target as Node
+      const queryInput = anchor.current?.querySelector('textarea')
+      if (!queryInput?.contains(node) && !menu.current?.contains(node)) onCloseRef.current()
     }
     const onViewport = () => place()
     document.addEventListener('pointerdown', closeOutside)
+    document.addEventListener('focusin', closeOnFocus)
     window.addEventListener('resize', onViewport)
     window.addEventListener('scroll', onViewport, true)
+    window.visualViewport?.addEventListener('resize', onViewport)
+    window.visualViewport?.addEventListener('scroll', onViewport)
     const node = anchor.current
     const ro = typeof ResizeObserver !== 'undefined' && node ? new ResizeObserver(onViewport) : null
     if (node && ro) ro.observe(node)
     return () => {
       document.removeEventListener('pointerdown', closeOutside)
+      document.removeEventListener('focusin', closeOnFocus)
       window.removeEventListener('resize', onViewport)
       window.removeEventListener('scroll', onViewport, true)
+      window.visualViewport?.removeEventListener('resize', onViewport)
+      window.visualViewport?.removeEventListener('scroll', onViewport)
       ro?.disconnect()
     }
   }, [open, anchor])
   useEffect(() => {
+    const optionID = open && rows[active] ? `${id}-option-${active}` : undefined
+    activeDescendantRef.current?.(optionID)
+  }, [active, id, open, rows.length])
+  useEffect(() => () => activeDescendantRef.current?.(undefined), [])
+  useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229) return
+      const queryInput = anchor.current?.querySelector('textarea')
+      // A portalled dialog or Select moves focus away from the textarea. Do
+      // not let a stale palette capture that surface's Enter/arrows/Escape.
+      if (!(event.target instanceof Node) || !queryInput?.contains(event.target)) {
+        onCloseRef.current()
+        return
+      }
       const list = rowsRef.current
+      if (event.key === 'Tab') {
+        onCloseRef.current()
+        return
+      }
       if (event.key === 'ArrowDown') {
         event.preventDefault()
         event.stopPropagation()
@@ -181,6 +232,7 @@ export function CommandPalette({
       data-testid="command-palette"
       role="listbox"
       id={id}
+      aria-label={ariaLabel}
       style={position}
     >
       {rows.map((row, i) => {
@@ -191,6 +243,7 @@ export function CommandPalette({
           <button
             type="button"
             key={row.key}
+            id={`${id}-option-${i}`}
             role="option"
             aria-selected={i === active}
             className={`command-item${i === active ? ' active' : ''}`}

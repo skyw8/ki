@@ -4,6 +4,7 @@ import type { Client } from './api'
 import { IChevRight, IClose, IFile, IFolder, IImage } from './icons'
 import { useI18n } from './i18n'
 import type { Content, FsEntry, FsListing } from './types'
+import { useDialogFocus } from './useDialogFocus'
 
 const imageExt = /\.(avif|bmp|gif|jpe?g|png|webp)$/i
 const PDFPreview = lazy(() => import('./PDFPreview').then(module => ({ default: module.PDFPreview })))
@@ -40,6 +41,7 @@ export function AttachmentBrowser({ api, open, startPath, onPick, onClose }: {
   const [preview, setPreview] = useState<Preview | null>(null)
   const [previewFailed, setPreviewFailed] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const dialogRef = useDialogFocus<HTMLDivElement>({ open, onEscape: onClose })
 
   useEffect(() => {
     if (!open) return
@@ -96,7 +98,7 @@ export function AttachmentBrowser({ api, open, startPath, onPick, onClose }: {
   }
   return createPortal(
     <div className="modal-mask" onClick={onClose} data-testid="attachment-browser-mask">
-      <div className="attachment-browser" role="dialog" aria-label={t('file.title')} onClick={e => e.stopPropagation()}>
+      <div ref={dialogRef} className="attachment-browser" role="dialog" aria-modal="true" aria-label={t('file.title')} tabIndex={-1} onClick={e => e.stopPropagation()}>
         <div className="modal-head">
           <h2>{t('file.title')}</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label={t('dialog.close')}><IClose /></button>
@@ -146,7 +148,7 @@ export function AttachmentBrowser({ api, open, startPath, onPick, onClose }: {
             </> : <div className="attachment-preview-placeholder"><IImage /><span>{t('file.previewHint')}</span></div>}
           </aside>
         </div>
-        {error ? <div className="attachment-error">{error}</div> : null}
+        {error ? <div className="attachment-error" role="alert">{error}</div> : null}
         <div className="modal-actions">
           <button type="button" onClick={onClose}>{t('dir.cancel')}</button>
           <button type="button" className="primary-btn" disabled={!selected} onClick={() => {

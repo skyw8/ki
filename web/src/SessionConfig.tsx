@@ -348,9 +348,13 @@ export function SettingsToggles({
               {'description' in item && kind !== 'extensions' && item.description ? <p className="cfg-desc">{item.description}</p> : null}
 	              {'error' in item && item.error ? <p className="cfg-desc settings-error-inline" data-testid={`${kind}-error-${item.name}`} role="alert">{item.error}</p> : null}
 	              </div>
-	              {kind === 'extensions' && 'configurable' in item && item.configurable ? <button type="button" className="cfg-btn" data-testid={`cfg-configure-${item.name}`} onClick={() => onConfigure?.(item.name)}>{t('cfg.configure')}</button> : null}
+	              {/* Why: disabled extensions are intentionally absent from the
+	                  live inspector catalog; exposing Configure here opened an
+	                  empty or unrelated extension instead. */}
+	              {kind === 'extensions' && 'configurable' in item && item.configurable && item.enabled ? <button type="button" className="cfg-btn" data-testid={`cfg-configure-${item.name}`} onClick={() => onConfigure?.(item.name)}>{t('cfg.configure')}</button> : null}
               <Switch
                 testid={`${kind === 'skills' ? 'skill' : 'extension'}-on-${item.name}`}
+                ariaLabel={`${t('cfg.enabled')} ${item.name}`}
                 on={item.enabled}
                 onChange={on => void patch(items.map(s => s.name === item.name ? { ...s, enabled: on } : s))}
               />
@@ -687,7 +691,7 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 							{(['codex', 'exa', 'tinyfish', 'duckduckgo'] as const).map(key => (
 								<label className="deep-web-search-provider-toggle" key={key}>
 									<span className="deep-web-search-toggle-copy"><strong>{providerCopy[key].name}</strong><small>{toggles[key] ? copy('status.enabled') : copy('status.disabled')}</small></span>
-									<Switch testid={`deep-web-search-toggle-${key}`} on={toggles[key]} onChange={on => setToggles(value => ({ ...value, [key]: on }))} />
+										<Switch ariaLabel={`${copy('config.toggles')} ${providerCopy[key].name}`} testid={`deep-web-search-toggle-${key}`} on={toggles[key]} onChange={on => setToggles(value => ({ ...value, [key]: on }))} />
 								</label>
 							))}
 						</div>
@@ -833,9 +837,9 @@ function ReloadButton({ testid, run }: { testid: string; run: () => Promise<void
   )
 }
 
-function Switch({ on, onChange, testid }: { on: boolean; onChange: (on: boolean) => void; testid?: string }) {
+function Switch({ on, onChange, testid, ariaLabel }: { on: boolean; onChange: (on: boolean) => void; testid?: string; ariaLabel: string }) {
   return (
-    <button type="button" role="switch" aria-checked={on} className={`switch${on ? ' on' : ''}`} data-testid={testid} onClick={() => onChange(!on)}>
+    <button type="button" role="switch" aria-label={ariaLabel} aria-checked={on} className={`switch${on ? ' on' : ''}`} data-testid={testid} onClick={() => onChange(!on)}>
       <span className="switch-knob" aria-hidden />
     </button>
   )

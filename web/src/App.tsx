@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { ApiError, Client } from './api'
 import { AuthLoading, LoginScreen } from './AuthScreen'
@@ -17,11 +17,26 @@ import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
 import { toast } from './toast'
 import { ExtensionInspector, localizedExtensionText, seedExtFields, statusChips, visibleStatusChips } from './ExtensionPanel'
+import { useDialogFocus } from './useDialogFocus'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
 type SettingsPage = 'providers' | 'skills' | 'extensions' | 'message' | 'appearance'
+const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'extensions', 'message', 'appearance']
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
+const COMPACT_LAYOUT_QUERY = '(max-width: 900px)'
+
+function useCompactLayout(): boolean {
+  const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_LAYOUT_QUERY).matches)
+  useEffect(() => {
+    const query = window.matchMedia(COMPACT_LAYOUT_QUERY)
+    const update = () => setCompact(query.matches)
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+  return compact
+}
 
 function loadExpanded(): Record<string, boolean> {
   try { return JSON.parse(localStorage.getItem(EXPAND_KEY) || '{}') as Record<string, boolean> }
@@ -87,31 +102,26 @@ function popMenuStyle(anchor: DOMRect, menu: HTMLElement): CSSProperties {
   const pad = 8
   const mw = menu.offsetWidth
   const mh = menu.offsetHeight
-  const vw = window.innerWidth
-  const vh = window.innerHeight
+  const visual = window.visualViewport
+  const leftEdge = visual?.offsetLeft ?? 0
+  const topEdge = visual?.offsetTop ?? 0
+  const rightEdge = leftEdge + (visual?.width ?? window.innerWidth)
+  const bottomEdge = topEdge + (visual?.height ?? window.innerHeight)
   let top = anchor.bottom + gap
-  if (top + mh > vh - pad && anchor.top - gap - mh >= pad) {
+  if (top + mh > bottomEdge - pad && anchor.top - gap - mh >= topEdge + pad) {
     top = anchor.top - gap - mh
   }
-  const left = Math.max(pad, Math.min(anchor.left, vw - mw - pad))
-  top = Math.max(pad, Math.min(top, vh - mh - pad))
+  const left = Math.max(leftEdge + pad, Math.min(anchor.left, rightEdge - mw - pad))
+  top = Math.max(topEdge + pad, Math.min(top, bottomEdge - mh - pad))
   return { left, top }
 }
 
-function Modal({ title, onClose, children, testid, wide, className }: { title: string; onClose: () => void; children: ReactNode; testid?: string; wide?: boolean; className?: string }) {
+function Modal({ title, onClose, children, testid, wide, className, initialFocusRef, restoreFocusRef }: { title: string; onClose: () => void; children: ReactNode; testid?: string; wide?: boolean; className?: string; initialFocusRef?: RefObject<HTMLElement>; restoreFocusRef?: RefObject<HTMLElement> }) {
   const { t } = useI18n()
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    document.body.style.overflow = 'hidden'
-    return () => {
-      window.removeEventListener('keydown', onKey)
-      document.body.style.overflow = ''
-    }
-  }, [onClose])
+  const dialogRef = useDialogFocus<HTMLDivElement>({ open: true, onEscape: onClose, initialFocusRef, restoreFocusRef })
   return createPortal(
     <div className="modal-mask" onClick={onClose} data-testid={testid ? `${testid}-mask` : undefined}>
-      <div className={`modal${testid === 'settings' ? ' settings-modal' : ''}${wide ? ' modal-wide' : ''}${className ? ` ${className}` : ''}`} data-testid={testid} onClick={e => e.stopPropagation()} role="dialog" aria-label={title}>
+      <div ref={dialogRef} className={`modal${testid === 'settings' ? ' settings-modal' : ''}${wide ? ' modal-wide' : ''}${className ? ` ${className}` : ''}`} data-testid={testid} onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
         <div className="modal-head">
           <h2>{title}</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label={t('dialog.close')}><IClose /></button>
@@ -141,8 +151,10 @@ export function App() {
 function WorkspaceApp({ api }: { api: Client }) {
   const { t, lang, setLang } = useI18n()
   const untitled = t('session.untitled')
+  const compactLayout = useCompactLayout()
   const [dark, setDark] = useState(() => localStorage.getItem('ki-theme') === 'dark')
   const [collapsed, setCollapsed] = useState(false)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [settled, setSettled] = useState(false)
   const everWide = useRef(true)
   const [tab, setTab] = useState<Tab>('conversation')
@@ -180,9 +192,12 @@ function WorkspaceApp({ api }: { api: Client }) {
   const [dirBusy, setDirBusy] = useState(false)
   const [menu, setMenu] = useState<{ kind: 'ws' | 'sess'; id: string } | null>(null)
   const [menuStyle, setMenuStyle] = useState<CSSProperties>({ visibility: 'hidden' })
+  const menuID = useId()
   const menuAnchor = useRef<DOMRect | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [rename, setRename] = useState<{ kind: 'ws' | 'sess'; id: string; title: string } | null>(null)
+  const renameInputRef = useRef<HTMLInputElement>(null)
   const [confirmDel, setConfirmDel] = useState<{ kind: 'ws' | 'sess'; id: string; label: string; extra?: string } | null>(null)
   const [inspId, setInspId] = useState<string | null>(null)
   const [atBottom, setAtBottom] = useState(true)
@@ -191,13 +206,45 @@ function WorkspaceApp({ api }: { api: Client }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const searchRootRef = useRef<HTMLDivElement>(null)
+  const sidebarRef = useRef<HTMLElement>(null)
+  const mainRef = useRef<HTMLElement>(null)
+  const mobileNavToggleRef = useRef<HTMLButtonElement>(null)
+  const mobileSidebarWasOpen = useRef(false)
+  const drawerDialogSource = useRef<'settings' | 'dir' | null>(null)
   const sessionRowRefs = useRef(new Map<string, HTMLButtonElement>())
 
-  const openMenu = (kind: 'ws' | 'sess', id: string, el: HTMLElement) => {
+  const openDirectoryFromSidebar = () => {
+    drawerDialogSource.current = compactLayout && mobileSidebarOpen ? 'dir' : null
+    setMobileSidebarOpen(false)
+    setDirOpen(true)
+  }
+
+  const openSettingsFromSidebar = () => {
+    drawerDialogSource.current = compactLayout && mobileSidebarOpen ? 'settings' : null
+    setMobileSidebarOpen(false)
+    setSettingsOpen(true)
+  }
+
+  const openMenu = (kind: 'ws' | 'sess', id: string, el: HTMLButtonElement) => {
+    menuTriggerRef.current = el
     menuAnchor.current = el.getBoundingClientRect()
     setMenuStyle({ visibility: 'hidden' })
     setMenu({ kind, id })
   }
+
+  const closeMenu = useCallback((restoreFocus = true) => {
+    const trigger = menuTriggerRef.current
+    setMenu(null)
+    if (restoreFocus) window.requestAnimationFrame(() => trigger?.isConnected && trigger.focus({ preventScroll: true }))
+  }, [])
+
+  const handoffMenuToDialog = useCallback(() => {
+    // The next dialog captures document.activeElement as its restore target.
+    // Move focus back to the opener before the menu unmounts so dialog close
+    // never tries to restore a detached menu item.
+    menuTriggerRef.current?.focus({ preventScroll: true })
+    setMenu(null)
+  }, [])
 
   useLayoutEffect(() => {
     if (!menu) return
@@ -205,21 +252,85 @@ function WorkspaceApp({ api }: { api: Client }) {
     const el = menuRef.current
     if (!anchor || !el) return
     setMenuStyle(popMenuStyle(anchor, el))
+    const frame = window.requestAnimationFrame(() => el.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({ preventScroll: true }))
+    return () => window.cancelAnimationFrame(frame)
   }, [menu])
 
   useEffect(() => {
     if (!menu) return
-    const close = () => setMenu(null)
+    const close = () => closeMenu()
+    const closeAfterAnchorMoves = () => {
+      const anchor = menuAnchor.current
+      const trigger = menuTriggerRef.current
+      if (anchor && trigger?.isConnected) {
+        const current = trigger.getBoundingClientRect()
+        // Why: browsers may deliver the trigger's scroll-into-view event after
+        // the click has mounted the menu. That stale event must not immediately
+        // dismiss a menu whose anchor is already at the recorded position.
+        if (
+          Math.abs(current.top - anchor.top) < 0.5
+          && Math.abs(current.right - anchor.right) < 0.5
+          && Math.abs(current.bottom - anchor.bottom) < 0.5
+          && Math.abs(current.left - anchor.left) < 0.5
+        ) return
+      }
+      close()
+    }
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
     window.addEventListener('resize', close)
-    window.addEventListener('scroll', close, true)
+    window.addEventListener('scroll', closeAfterAnchorMoves, true)
+    window.visualViewport?.addEventListener('resize', close)
+    window.visualViewport?.addEventListener('scroll', close)
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('resize', close)
-      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('scroll', closeAfterAnchorMoves, true)
+      window.visualViewport?.removeEventListener('resize', close)
+      window.visualViewport?.removeEventListener('scroll', close)
       window.removeEventListener('keydown', onKey)
     }
-  }, [menu])
+  }, [closeMenu, menu])
+
+  const onMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'))
+    if (!items.length) return
+    const current = items.indexOf(document.activeElement as HTMLButtonElement)
+    let next = current
+    if (event.key === 'ArrowDown') next = (current + 1 + items.length) % items.length
+    else if (event.key === 'ArrowUp') next = (current - 1 + items.length) % items.length
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = items.length - 1
+    else if (event.key === 'Tab') next = (current + (event.shiftKey ? -1 : 1) + items.length) % items.length
+    else if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      closeMenu()
+      return
+    } else return
+    event.preventDefault()
+    event.stopPropagation()
+    items[next]?.focus({ preventScroll: true })
+  }
+
+  const onSettingsTabKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+    const current = (event.target as HTMLElement).closest<HTMLButtonElement>('[role="tab"]')
+    const index = current ? tabs.indexOf(current) : -1
+    if (index < 0 || !tabs.length) return
+    const next = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? tabs.length - 1
+        : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length
+    const page = tabs[next]?.dataset.settingsPage as SettingsPage | undefined
+    if (!page || !SETTINGS_PAGES.includes(page)) return
+    event.preventDefault()
+    // Horizontal tab strips can scroll on compact layouts; focus the newly
+    // active tab so keyboard users receive the same visible context as taps.
+    setSettingsPage(page)
+    window.requestAnimationFrame(() => tabs[next]?.focus({ preventScroll: false }))
+  }
 
   useEffect(() => {
     document.body.dataset.theme = dark ? 'dark' : 'light'
@@ -239,6 +350,66 @@ function WorkspaceApp({ api }: { api: Client }) {
     return () => window.clearTimeout(t)
   }, [collapsed])
   const wide = !collapsed || !settled
+  const sidebarWide = compactLayout || wide
+
+  useEffect(() => {
+    if (!compactLayout) setMobileSidebarOpen(false)
+  }, [compactLayout])
+
+  useEffect(() => {
+    if (!mobileSidebarOpen) return
+    const close = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMobileSidebarOpen(false)
+    }
+    window.addEventListener('keydown', close)
+    return () => window.removeEventListener('keydown', close)
+  }, [mobileSidebarOpen])
+
+  useEffect(() => {
+    // Why: a selected session must become visible immediately on a phone;
+    // leaving the navigation drawer above it made taps appear to do nothing.
+    if (compactLayout) setMobileSidebarOpen(false)
+  }, [compactLayout, currentId])
+
+  useLayoutEffect(() => {
+    const sidebar = sidebarRef.current
+    const main = mainRef.current
+    if (!sidebar || !main) return
+    // Why: visibility and aria-hidden do not remove descendants from every
+    // browser's tab order. inert makes the closed off-canvas drawer truly
+    // unavailable until its scrim and content are visible.
+    sidebar.toggleAttribute('inert', compactLayout && !mobileSidebarOpen)
+    main.toggleAttribute('inert', compactLayout && mobileSidebarOpen)
+    if (compactLayout && mobileSidebarOpen) {
+      requestAnimationFrame(() => sidebar.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled)')?.focus({ preventScroll: true }))
+    } else if (compactLayout && mobileSidebarWasOpen.current) {
+      // Why: a dialog opened from the drawer owns initial focus and has an
+      // explicit return target. The ordinary drawer-close frame must not steal
+      // focus back to the hamburger after that dialog has mounted.
+      const handingOffToDialog = (drawerDialogSource.current === 'settings' && settingsOpen)
+        || (drawerDialogSource.current === 'dir' && dirOpen)
+      if (!handingOffToDialog) requestAnimationFrame(() => mobileNavToggleRef.current?.focus({ preventScroll: true }))
+    }
+    mobileSidebarWasOpen.current = mobileSidebarOpen
+  }, [compactLayout, dirOpen, mobileSidebarOpen, settingsOpen])
+
+  const onSidebarKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!compactLayout || !mobileSidebarOpen || event.key !== 'Tab') return
+    const sidebar = sidebarRef.current
+    if (!sidebar) return
+    const focusable = Array.from(sidebar.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex="-1"])'))
+      .filter(element => element.offsetParent !== null)
+    if (!focusable.length) return
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
 
   useEffect(() => {
     if (!wide || !(searchOpen || filter)) return
@@ -1025,24 +1196,28 @@ function WorkspaceApp({ api }: { api: Client }) {
   }, [currentId, temporaryTreeRevealIds, trees])
 
   return (
-    <div className={`app${collapsed ? ' sidebar-collapsed' : ''}${(settingsOpen || modelOpen || dirOpen || attachmentTarget || extOpen || treeOpen) ? ' modal-open' : ''}`}>
+    <div className={`app${collapsed && !compactLayout ? ' sidebar-collapsed' : ''}${mobileSidebarOpen ? ' mobile-sidebar-open' : ''}${(settingsOpen || modelOpen || dirOpen || attachmentTarget || extOpen || treeOpen) ? ' modal-open' : ''}`}>
 	  {fileDragActive ? createPortal(<div className="global-drop-overlay" data-testid="global-drop-overlay">
 		<div className="global-drop-visual"><span><IImage /></span><span><IFile /></span><span><IPlus /></span></div>
 		<strong>{edit ? t('drop.editTitle') : t('drop.newTitle')}</strong>
 		<p>{t('drop.hint')}</p>
 	  </div>, document.body) : null}
       <aside
-        className={`sidebar${collapsed && wide ? ' fading' : ''}${!wide ? ' rail' : ''}${!wide && everWide.current ? ' rail-in' : ''}`}
-        style={wide ? { width: 280 } : undefined}
+        ref={sidebarRef}
+        id="app-sidebar"
+        className={`sidebar${collapsed && wide && !compactLayout ? ' fading' : ''}${!sidebarWide ? ' rail' : ''}${!sidebarWide && everWide.current ? ' rail-in' : ''}`}
+        style={sidebarWide ? { width: 280 } : undefined}
+        aria-hidden={compactLayout && !mobileSidebarOpen}
+        onKeyDown={onSidebarKeyDown}
       >
         <div className="sidebar-top">
-          {wide ? <div className="wordmark wide-only">ki</div> : null}
-          <button type="button" className="icon-btn" onClick={() => setCollapsed(v => !v)} aria-label={collapsed ? t('sidebar.open') : t('sidebar.collapse')} title={collapsed ? t('sidebar.open') : t('sidebar.collapse')}><IPanel /></button>
+          {sidebarWide ? <div className="wordmark wide-only">ki</div> : null}
+          <button type="button" className="icon-btn" onClick={() => compactLayout ? setMobileSidebarOpen(false) : setCollapsed(v => !v)} aria-label={compactLayout || !collapsed ? t('sidebar.collapse') : t('sidebar.open')} title={compactLayout || !collapsed ? t('sidebar.collapse') : t('sidebar.open')}><IPanel /></button>
         </div>
-        <button type="button" className="new-session" data-testid="new-session" onClick={() => void newSession()}>
-          <IPlus />{wide ? <span className="wide-only">{t('session.new')}</span> : null}
+        <button type="button" className="new-session" data-testid="new-session" onClick={() => { setMobileSidebarOpen(false); void newSession() }}>
+          <IPlus />{sidebarWide ? <span className="wide-only">{t('session.new')}</span> : null}
         </button>
-        {wide ? (
+        {sidebarWide ? (
           <div className="ws-toolbar">
             <span className={`ws-label${searchOpen || filter ? ' hidden' : ''}`}>{t('workspace.label')}</span>
             <div className={`search-slot${searchOpen || filter ? ' expanded' : ''}`}>
@@ -1076,7 +1251,7 @@ function WorkspaceApp({ api }: { api: Client }) {
               </div>
             </div>
             <div className={`header-actions${searchOpen || filter ? ' hidden' : ''}`}>
-              <button type="button" className="icon-btn" data-testid="add-workspace" onClick={() => setDirOpen(true)} aria-label={t('workspace.add')} title={t('workspace.add')}><IFolder /></button>
+              <button type="button" className="icon-btn" data-testid="add-workspace" onClick={openDirectoryFromSidebar} aria-label={t('workspace.add')} title={t('workspace.add')}><IFolder /></button>
             </div>
           </div>
         ) : (
@@ -1090,11 +1265,11 @@ function WorkspaceApp({ api }: { api: Client }) {
             >
               <ISearch />
             </button>
-            <button type="button" className="icon-btn" data-testid="add-workspace" onClick={() => setDirOpen(true)} aria-label={t('workspace.add')} title={t('workspace.add')}><IFolder /></button>
+            <button type="button" className="icon-btn" data-testid="add-workspace" onClick={openDirectoryFromSidebar} aria-label={t('workspace.add')} title={t('workspace.add')}><IFolder /></button>
           </div>
         )}
         <div className="session-list">
-          {wide && filter.trim() ? (
+          {sidebarWide && filter.trim() ? (
             <>
               {mergedHits.map(h => (
                 <button key={h.id} type="button" className="session-row" data-testid="search-hit" onClick={() => void openSession(h.id)}>
@@ -1108,7 +1283,7 @@ function WorkspaceApp({ api }: { api: Client }) {
               {searchMore ? <div className="cwd-label">{t('search.tooMany')}</div> : null}
             </>
           ) : null}
-          {wide && !filter.trim() && trees.groups.map(({ ws, rows }) => {
+          {sidebarWide && !filter.trim() && trees.groups.map(({ ws, rows }) => {
             const open = expanded[ws.id] !== false
             const shown = open ? visibleRows(ws.id, rows) : []
             return (
@@ -1134,7 +1309,15 @@ function WorkspaceApp({ api }: { api: Client }) {
                     <IFolder />
                     <span className="title">{ws.title}{ws.temp ? ` · ${t('workspace.temp')}` : ''}</span>
                   </button>
-                  <button type="button" className="icon-btn tiny" aria-label={t('workspace.menu')} onClick={e => openMenu('ws', ws.id, e.currentTarget)}><IDots /></button>
+                  <button
+                    type="button"
+                    className="icon-btn tiny"
+                    aria-label={t('workspace.menu')}
+                    aria-haspopup="menu"
+                    aria-expanded={menu?.kind === 'ws' && menu.id === ws.id}
+                    aria-controls={menu?.kind === 'ws' && menu.id === ws.id ? menuID : undefined}
+                    onClick={e => openMenu('ws', ws.id, e.currentTarget)}
+                  ><IDots /></button>
                   <button type="button" className="icon-btn tiny" data-testid="ws-new-session" aria-label={t('session.new')} onClick={() => void newSession(ws.id)}><IPlus /></button>
                 </div>
                 {shown.map((s, i) => (
@@ -1171,7 +1354,15 @@ function WorkspaceApp({ api }: { api: Client }) {
                         <div className="sub">{temporaryTreeRevealIds.includes(s.id) ? `${t('tree.label')} · ${sessionPathLabel(s.id, byId, untitled)}` : s.model}</div>
                       </span>
                     </button>
-                    <button type="button" className="icon-btn tiny" aria-label={t('session.menu')} onClick={e => openMenu('sess', s.id, e.currentTarget)}><IDots /></button>
+                    <button
+                      type="button"
+                      className="icon-btn tiny"
+                      aria-label={t('session.menu')}
+                      aria-haspopup="menu"
+                      aria-expanded={menu?.kind === 'sess' && menu.id === s.id}
+                      aria-controls={menu?.kind === 'sess' && menu.id === s.id ? menuID : undefined}
+                      onClick={e => openMenu('sess', s.id, e.currentTarget)}
+                    ><IDots /></button>
                   </div>
                 ))}
                 {open && rows.length > shown.length ? (
@@ -1180,7 +1371,7 @@ function WorkspaceApp({ api }: { api: Client }) {
               </div>
             )
           })}
-          {wide && !filter.trim() && trees.ungrouped.length ? (
+          {sidebarWide && !filter.trim() && trees.ungrouped.length ? (
             <div>
               <div className="cwd-label">{t('session.ungrouped')}</div>
               {trees.ungrouped.map(s => (
@@ -1210,18 +1401,42 @@ function WorkspaceApp({ api }: { api: Client }) {
             type="button"
             className="settings-btn"
             data-testid="open-settings"
-            onClick={() => setSettingsOpen(true)}
+            onClick={openSettingsFromSidebar}
             aria-label={t('settings.open')}
             title={t('settings.open')}
           >
-            <IGear />{wide ? <span className="wide-only">{t('settings.open')}</span> : null}
+            <IGear />{sidebarWide ? <span className="wide-only">{t('settings.open')}</span> : null}
           </button>
         </div>
       </aside>
 
-      <main className="main">
+      {compactLayout ? (
+        // Why: the scrim is a pointer shortcut, not a second keyboard control;
+        // the labeled collapse button inside the trapped drawer owns that job.
+        <div
+          className="mobile-sidebar-backdrop"
+          aria-hidden="true"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      ) : null}
+
+      <main ref={mainRef} className="main" aria-hidden={compactLayout && mobileSidebarOpen}>
         <header className="conv-header">
           <div className="title-row">
+            {compactLayout ? (
+              <button
+                ref={mobileNavToggleRef}
+                type="button"
+                className="icon-btn mobile-nav-toggle"
+                data-testid="mobile-nav-toggle"
+                aria-label={t('sidebar.open')}
+                aria-expanded={mobileSidebarOpen}
+                aria-controls="app-sidebar"
+                onClick={() => setMobileSidebarOpen(true)}
+              >
+                <IPanel />
+              </button>
+            ) : null}
             <div className="conv-title">{view.title || (currentId ? untitled : 'ki')}</div>
             <div className="ext-chips" data-testid="ext-chips">
               {extVisible.map(ui => (
@@ -1264,7 +1479,7 @@ function WorkspaceApp({ api }: { api: Client }) {
               sessionId={currentId}
               workspaceTitle={workspaces.find(w => w.id === (selectedWs ?? sessions.find(s => s.id === currentId)?.workspaceId))?.title}
               busy={view.busy}
-              onEdit={page => { setSettingsPage(page); setSettingsOpen(true) }}
+              onEdit={page => { drawerDialogSource.current = null; setSettingsPage(page); setSettingsOpen(true) }}
               treeAvailable={treeAvailable}
               onTreeOpen={() => setTreeOpen(true)}
             />
@@ -1332,23 +1547,33 @@ function WorkspaceApp({ api }: { api: Client }) {
       </main>
 
       {menu ? (
-        <div className="menu-mask" onClick={() => setMenu(null)}>
-          <div ref={menuRef} className="pop-menu" data-testid="pop-menu" style={menuStyle} onClick={e => e.stopPropagation()}>
+        <div className="menu-mask" onClick={() => closeMenu()}>
+          <div
+            ref={menuRef}
+            id={menuID}
+            className="pop-menu"
+            data-testid="pop-menu"
+            style={menuStyle}
+            role="menu"
+            aria-label={menu.kind === 'ws' ? t('workspace.menu') : t('session.menu')}
+            onKeyDown={onMenuKeyDown}
+            onClick={e => e.stopPropagation()}
+          >
             {menu.kind === 'ws' ? (
               <>
-                <button type="button" onClick={() => {
+                <button type="button" role="menuitem" onClick={() => {
                   const ws = workspaces.find(w => w.id === menu.id)
+                  handoffMenuToDialog()
                   setRename({ kind: 'ws', id: menu.id, title: ws?.title ?? '' })
-                  setMenu(null)
                 }}
                 >
                   <IEdit /> {t('workspace.rename')}
                 </button>
-                <button type="button" className="danger" onClick={() => {
+                <button type="button" role="menuitem" className="danger" onClick={() => {
                   const ws = workspaces.find(w => w.id === menu.id)
                   const n = sessions.filter(s => s.workspaceId === menu.id).length
+                  handoffMenuToDialog()
                   setConfirmDel({ kind: 'ws', id: menu.id, label: ws?.title ?? '', extra: t('delete.workspaceExtra', { n, path: ws?.path ?? '' }) })
-                  setMenu(null)
                 }}
                 >
                   <ITrash /> {t('workspace.delete')}
@@ -1357,27 +1582,27 @@ function WorkspaceApp({ api }: { api: Client }) {
             ) : (
               <>
                 {byId.get(menu.id)?.forkMode !== 'tree' ? (
-                  <button type="button" onClick={() => {
+                  <button type="button" role="menuitem" onClick={() => {
                     const s = byId.get(menu.id)
                     void api.patch(menu.id, { pinned: !s?.pinned }).then(() => refreshList())
-                    setMenu(null)
+                    closeMenu()
                   }}
                   >
                     <IPin /> {byId.get(menu.id)?.pinned ? t('session.unpin') : t('session.pin')}
                   </button>
                 ) : null}
-                <button type="button" onClick={() => {
+                <button type="button" role="menuitem" onClick={() => {
                   const s = byId.get(menu.id)
+                  handoffMenuToDialog()
                   setRename({ kind: 'sess', id: menu.id, title: s?.title ?? '' })
-                  setMenu(null)
                 }}
                 >
                   <IEdit /> {t('session.rename')}
                 </button>
-                <button type="button" className="danger" onClick={() => {
+                <button type="button" role="menuitem" className="danger" onClick={() => {
                   const s = byId.get(menu.id)
+                  handoffMenuToDialog()
                   setConfirmDel({ kind: 'sess', id: menu.id, label: s?.title || untitled })
-                  setMenu(null)
                 }}
                 >
                   <ITrash /> {t('session.delete')}
@@ -1389,8 +1614,8 @@ function WorkspaceApp({ api }: { api: Client }) {
       ) : null}
 
       {rename ? (
-        <Modal title={t('rename.title')} onClose={() => setRename(null)} testid="rename-dialog">
-          <input className="session-search" data-testid="rename-input" value={rename.title} onChange={e => setRename({ ...rename, title: e.target.value })} />
+        <Modal title={t('rename.title')} onClose={() => setRename(null)} testid="rename-dialog" initialFocusRef={renameInputRef}>
+          <input ref={renameInputRef} className="session-search" data-testid="rename-input" aria-label={t('rename.title')} value={rename.title} onChange={e => setRename({ ...rename, title: e.target.value })} />
           <div className="modal-actions">
             <button
               type="button"
@@ -1506,11 +1731,13 @@ function WorkspaceApp({ api }: { api: Client }) {
         api={api}
         open={dirOpen}
         busy={dirBusy}
-        onClose={() => setDirOpen(false)}
+        restoreFocusRef={drawerDialogSource.current === 'dir' ? mobileNavToggleRef : undefined}
+        onClose={() => { setDirOpen(false); drawerDialogSource.current = null }}
         onOpen={path => {
           setDirBusy(true)
           void api.createWorkspace(path).then(ws => {
             setDirOpen(false)
+            drawerDialogSource.current = null
             if (ws && ws.id) {
               setSelectedWs(ws.id)
               setExpanded(e => ({ ...e, [ws.id]: true }))
@@ -1551,42 +1778,75 @@ function WorkspaceApp({ api }: { api: Client }) {
 		/>
 
       {settingsOpen ? (
-        <Modal title={t('settings.title')} onClose={() => setSettingsOpen(false)} testid="settings">
-		  <nav className="tabs settings-tabs" role="tablist" aria-label={t('settings.title')}>
-			<button type="button" role="tab" aria-selected={settingsPage === 'providers'} className={`tab${settingsPage === 'providers' ? ' active' : ''}`} data-testid="settings-tab-providers" onClick={() => setSettingsPage('providers')}>{t('settings.providers')}</button>
-			<button type="button" role="tab" aria-selected={settingsPage === 'skills'} className={`tab${settingsPage === 'skills' ? ' active' : ''}`} data-testid="settings-tab-skills" onClick={() => setSettingsPage('skills')}>{t('settings.skills')}</button>
-			<button type="button" role="tab" aria-selected={settingsPage === 'extensions'} className={`tab${settingsPage === 'extensions' ? ' active' : ''}`} data-testid="settings-tab-extensions" onClick={() => setSettingsPage('extensions')}>{t('settings.extensions')}</button>
-			<button type="button" role="tab" aria-selected={settingsPage === 'message'} className={`tab${settingsPage === 'message' ? ' active' : ''}`} data-testid="settings-tab-message" onClick={() => setSettingsPage('message')}>{t('settings.message')}</button>
-			<button type="button" role="tab" aria-selected={settingsPage === 'appearance'} className={`tab${settingsPage === 'appearance' ? ' active' : ''}`} data-testid="settings-tab-appearance" onClick={() => setSettingsPage('appearance')}>{t('settings.appearanceLanguage')}</button>
+        <Modal
+          title={t('settings.title')}
+          onClose={() => { setSettingsOpen(false); drawerDialogSource.current = null }}
+          testid="settings"
+          restoreFocusRef={drawerDialogSource.current === 'settings' ? mobileNavToggleRef : undefined}
+        >
+		  <nav className="tabs settings-tabs" role="tablist" aria-label={t('settings.title')} onKeyDown={onSettingsTabKeyDown}>
+            {([
+              ['providers', t('settings.providers')],
+              ['skills', t('settings.skills')],
+              ['extensions', t('settings.extensions')],
+              ['message', t('settings.message')],
+              ['appearance', t('settings.appearanceLanguage')],
+            ] as const).map(([page, label]) => (
+              <button
+                key={page}
+                id={`settings-tab-${page}-control`}
+                type="button"
+                role="tab"
+                aria-selected={settingsPage === page}
+                aria-controls={`settings-panel-${page}`}
+                tabIndex={settingsPage === page ? 0 : -1}
+                className={`tab${settingsPage === page ? ' active' : ''}`}
+                data-testid={`settings-tab-${page}`}
+                data-settings-page={page}
+                onClick={() => setSettingsPage(page)}
+              >
+                {label}
+              </button>
+            ))}
 		  </nav>
-		  <div className="settings-page">
-			{settingsPage === 'providers' ? <ProviderSettings api={api} onChanged={refreshModels} /> : settingsPage === 'skills' ? (
-			  <SettingsToggles kind="skills" api={api} workspaceId={selectedWs} />
-			) : settingsPage === 'extensions' ? (
-			  <SettingsToggles kind="extensions" api={api} onConfigure={openExtensionConfig} onChanged={refreshExtensions} />
-			) : settingsPage === 'message' ? (
-			  <MessageSettings api={api} />
-			) : (
-			  <div className="preference-page" data-testid="appearance-settings">
-				<header className="settings-page-title"><div><h3>{t('settings.appearanceLanguage')}</h3><p>{t('settings.preferenceHint')}</p></div></header>
-				<section className="preference-section">
-				  <div className="preference-copy"><h4>{t('settings.appearance')}</h4><p>{t('settings.themeHint')}</p></div>
-				  <div className="theme-picks" data-testid="settings-theme" role="radiogroup" aria-label={t('settings.appearance')}>
-					<button type="button" role="radio" aria-checked={!dark} className={`theme-pick${!dark ? ' on' : ''}`} onClick={() => setDark(false)}><span className="theme-swatch light" aria-hidden /><span>{t('settings.themeLight')}</span></button>
-					<button type="button" role="radio" aria-checked={dark} className={`theme-pick${dark ? ' on' : ''}`} onClick={() => setDark(true)}><span className="theme-swatch dark" aria-hidden /><span>{t('settings.themeDark')}</span></button>
-				  </div>
-				</section>
-				<section className="preference-section inline">
-				  <div className="preference-copy"><h4>{t('settings.language')}</h4><p>{t('settings.languageHint')}</p></div>
-				  <div className="lang-picks" data-testid="settings-lang" role="radiogroup" aria-label={t('settings.language')}>
-					<button type="button" role="radio" aria-checked={lang === 'zh'} className={`lang-pick${lang === 'zh' ? ' on' : ''}`} data-testid="lang-zh" onClick={() => setLang('zh')}>{t('settings.langZh')}</button>
-					<button type="button" role="radio" aria-checked={lang === 'en'} className={`lang-pick${lang === 'en' ? ' on' : ''}`} data-testid="lang-en" onClick={() => setLang('en')}>{t('settings.langEn')}</button>
-				  </div>
-				</section>
-				<p className="preference-footnote">{t('settings.hint')}</p>
-			  </div>
-			)}
-		  </div>
+            {SETTINGS_PAGES.map(page => (
+              <div
+                key={page}
+                className="settings-page"
+                id={`settings-panel-${page}`}
+                role="tabpanel"
+                aria-labelledby={`settings-tab-${page}-control`}
+                tabIndex={page === settingsPage ? 0 : -1}
+                hidden={page !== settingsPage}
+              >
+                {page !== settingsPage ? null : page === 'providers' ? <ProviderSettings api={api} onChanged={refreshModels} /> : page === 'skills' ? (
+                  <SettingsToggles kind="skills" api={api} workspaceId={selectedWs} />
+                ) : page === 'extensions' ? (
+                  <SettingsToggles kind="extensions" api={api} onConfigure={openExtensionConfig} onChanged={refreshExtensions} />
+                ) : page === 'message' ? (
+                  <MessageSettings api={api} />
+                ) : (
+                  <div className="preference-page" data-testid="appearance-settings">
+                    <header className="settings-page-title"><div><h3>{t('settings.appearanceLanguage')}</h3><p>{t('settings.preferenceHint')}</p></div></header>
+                    <section className="preference-section">
+                      <div className="preference-copy"><h4>{t('settings.appearance')}</h4><p>{t('settings.themeHint')}</p></div>
+                      <div className="theme-picks" data-testid="settings-theme" role="radiogroup" aria-label={t('settings.appearance')}>
+                        <button type="button" role="radio" aria-checked={!dark} className={`theme-pick${!dark ? ' on' : ''}`} onClick={() => setDark(false)}><span className="theme-swatch light" aria-hidden /><span>{t('settings.themeLight')}</span></button>
+                        <button type="button" role="radio" aria-checked={dark} className={`theme-pick${dark ? ' on' : ''}`} onClick={() => setDark(true)}><span className="theme-swatch dark" aria-hidden /><span>{t('settings.themeDark')}</span></button>
+                      </div>
+                    </section>
+                    <section className="preference-section inline">
+                      <div className="preference-copy"><h4>{t('settings.language')}</h4><p>{t('settings.languageHint')}</p></div>
+                      <div className="lang-picks" data-testid="settings-lang" role="radiogroup" aria-label={t('settings.language')}>
+                        <button type="button" role="radio" aria-checked={lang === 'zh'} className={`lang-pick${lang === 'zh' ? ' on' : ''}`} data-testid="lang-zh" onClick={() => setLang('zh')}>{t('settings.langZh')}</button>
+                        <button type="button" role="radio" aria-checked={lang === 'en'} className={`lang-pick${lang === 'en' ? ' on' : ''}`} data-testid="lang-en" onClick={() => setLang('en')}>{t('settings.langEn')}</button>
+                      </div>
+                    </section>
+                    <p className="preference-footnote">{t('settings.hint')}</p>
+                  </div>
+                )}
+              </div>
+            ))}
         </Modal>
       ) : null}
     </div>

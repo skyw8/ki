@@ -1,31 +1,25 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { tmpdir } from 'node:os'
 import { serverToken, statePath } from './global-setup.ts'
+import { goBinary } from './go-toolchain.ts'
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..')
-
-function goBin(): string {
-  if (process.env.GO) return process.env.GO
-  try {
-    execFileSync('go', ['version'], { stdio: 'ignore' })
-    return 'go'
-  } catch {
-    for (const c of ['/home/hgy/sdk/go/bin/go', '/usr/local/go/bin/go']) {
-      if (existsSync(c)) return c
-    }
-  }
-  throw new Error('go toolchain not found')
-}
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
   await expect(input).toBeEnabled()
   await input.fill(text)
   await page.getByTestId('composer-send').click()
+}
+
+async function expectMinTarget(locator: Locator, label: string): Promise<void> {
+  const box = await locator.boundingBox()
+  expect(box, `${label} should have a layout box`).toBeTruthy()
+  expect(box!.width, `${label} width`).toBeGreaterThanOrEqual(40)
+  expect(box!.height, `${label} height`).toBeGreaterThanOrEqual(40)
 }
 
 async function tokenOf(page: Page) {
@@ -48,13 +42,19 @@ function writeExt(home: string, name: string, bin: string, extra: Record<string,
   }))
 }
 
+function sidecarBin(home: string, name: string): string {
+  const dir = join(home, 'playwright-bin')
+  mkdirSync(dir, { recursive: true })
+  return join(dir, `${name}${process.platform === 'win32' ? '.exe' : ''}`)
+}
+
 // The freerouter config form dispatches on the extension name; a fixture with
 // the same settings schema exercises the whole form round-trip.
 test('freerouter config form edits fields without raw JSON', async ({ page, request }) => {
   test.setTimeout(60_000)
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
-  const bin = join(tmpdir(), 'freerouter-sidecar')
-  execFileSync(goBin(), ['build', '-o', bin, '.'], {
+  const bin = sidecarBin(home, 'freerouter-sidecar')
+  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
     cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
     stdio: 'inherit',
   })
@@ -178,14 +178,21 @@ test('deep web search keeps the Codex model with the Codex provider', async ({ p
   const providers = page.locator('[aria-labelledby="deep-web-search-providers-title"]')
   await expect(global.getByTestId('deep-web-search-codex-model-picker')).toHaveCount(0)
   await expect(providers.getByTestId('deep-web-search-codex-model-picker')).toBeVisible()
+  const codexToggle = page.getByTestId('deep-web-search-toggle-codex')
+  await expect(codexToggle).toHaveAccessibleName(/Codex|provider\.codex/)
+  await expectMinTarget(codexToggle, 'deep-web Codex toggle')
+  const fetchContent = page.getByTestId('deep-web-search-fetch-content')
+  const fetchTarget = page.locator('.deep-web-search-options label').filter({ has: fetchContent })
+  await expect(fetchContent).toHaveAccessibleName(/.+/)
+  await expectMinTarget(fetchTarget, 'deep-web fetch-content checkbox')
 
   await request.patch('/v1/extensions', { headers, data: { disabled: [name] } })
 })
 
 test('extension ui.setStatus chip opens panel modal', async ({ page, request }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
-  const bin = join(tmpdir(), 'ki-pw-ext-ui-sidecar')
-  execFileSync(goBin(), ['build', '-o', bin, '.'], {
+  const bin = sidecarBin(home, 'ext-ui-sidecar')
+  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
     cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
     stdio: 'inherit',
   })
@@ -235,8 +242,8 @@ test('extension ui.setStatus chip opens panel modal', async ({ page, request }) 
 
 test('opening a session locks composer until runtime.ready', async ({ page, request }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
-  const bin = join(tmpdir(), 'ki-pw-ext-lock-sidecar')
-  execFileSync(goBin(), ['build', '-o', bin, '.'], {
+  const bin = sidecarBin(home, 'ext-lock-sidecar')
+  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
     cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
     stdio: 'inherit',
   })
@@ -254,8 +261,8 @@ test('opening a session locks composer until runtime.ready', async ({ page, requ
 
 test('slash palette is two-level for completions', async ({ page, request }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
-  const bin = join(tmpdir(), 'ki-pw-ext-slash-sidecar')
-  execFileSync(goBin(), ['build', '-o', bin, '.'], {
+  const bin = sidecarBin(home, 'ext-slash-sidecar')
+  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
     cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
     stdio: 'inherit',
   })
@@ -292,11 +299,11 @@ test('slash palette is two-level for completions', async ({ page, request }) => 
   await expect(palette).toHaveCount(0)
 })
 
-test('top bar folds extra chips into one inspector modal', async ({ page, request }) => {
+test('top bar folds extra chips into one inspector modal', async ({ page, request }, testInfo) => {
   test.setTimeout(60_000)
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
-  const bin = join(tmpdir(), 'ki-pw-ext-fold-sidecar')
-  execFileSync(goBin(), ['build', '-o', bin, '.'], {
+  const bin = sidecarBin(home, 'ext-fold-sidecar')
+  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
     cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
     stdio: 'inherit',
   })
@@ -336,7 +343,9 @@ test('top bar folds extra chips into one inspector modal', async ({ page, reques
   await expect(page.getByTestId('ext-chip-notesx')).toHaveCount(0)
   await expect(page.getByTestId('ext-chips-more').locator('.ext-more-wide')).toHaveText('+2')
 
-  const shotDir = process.env.KI_SHOT_DIR || 'test-results/ext-inspector'
+  // Why: independent Playwright invocations can exercise this fixture at the
+  // same time. The per-test output path prevents their screenshots colliding.
+  const shotDir = process.env.KI_SHOT_DIR || testInfo.outputPath('ext-inspector')
   mkdirSync(shotDir, { recursive: true })
   await page.screenshot({ path: `${shotDir}/01-header.png` })
 
@@ -366,8 +375,8 @@ test('top bar folds extra chips into one inspector modal', async ({ page, reques
 test('global extension chip opens the same config modal as Configure', async ({ page, request }) => {
   test.setTimeout(60_000)
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
-  const bin = join(tmpdir(), 'ki-pw-global-config-sidecar')
-  execFileSync(goBin(), ['build', '-o', bin, '.'], {
+  const bin = sidecarBin(home, 'global-config-sidecar')
+  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
     cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
     stdio: 'inherit',
   })

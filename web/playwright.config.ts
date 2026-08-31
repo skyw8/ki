@@ -1,11 +1,39 @@
 import { defineConfig } from '@playwright/test'
-import { storageStatePath } from './e2e/global-setup.ts'
+import { createServer } from 'node:net'
+import { join } from 'node:path'
+import { baseURLForAddress, runID, storageStatePath } from './e2e/run-state.ts'
 
-const live = process.env.KI_LIVE === '1'
-const baseURL = process.env.KI_BASE_URL || (live ? 'http://127.0.0.1:19833' : 'http://127.0.0.1:19832')
+async function availablePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.unref()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (!address || typeof address === 'string') {
+        server.close()
+        reject(new Error('Playwright could not allocate a loopback port'))
+        return
+      }
+      server.close(error => error ? reject(error) : resolve(address.port))
+    })
+  })
+}
+
+let baseURL = process.env.KI_BASE_URL?.trim()
+if (!baseURL) {
+  let address = process.env.KI_SERVE_ADDR?.trim()
+  if (!address) {
+    address = `127.0.0.1:${await availablePort()}`
+    process.env.KI_SERVE_ADDR = address
+  }
+  baseURL = baseURLForAddress(address)
+  process.env.KI_BASE_URL = baseURL
+}
 
 export default defineConfig({
   testDir: './e2e',
+  outputDir: join('test-results', 'runs', runID),
   fullyParallel: false,
   workers: 1,
   retries: 0,

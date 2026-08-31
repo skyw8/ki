@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { applyFollowTail } from '../src/follow-tail.ts'
@@ -10,6 +10,13 @@ async function sendPrompt(page: Page, text: string) {
   await expect(input).toBeEnabled()
   await input.fill(text)
   await page.getByTestId('composer-send').click()
+}
+
+async function expectMinTarget(locator: Locator, label: string): Promise<void> {
+  const box = await locator.boundingBox()
+  expect(box, `${label} should have a layout box`).toBeTruthy()
+  expect(box!.width, `${label} width`).toBeGreaterThanOrEqual(40)
+  expect(box!.height, `${label} height`).toBeGreaterThanOrEqual(40)
 }
 
 test.describe.configure({ mode: 'serial' })
@@ -25,6 +32,24 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('settings-tab-extensions')).toHaveText('Extensions')
   await expect(page.getByTestId('settings-tab-message')).toHaveText('Message')
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('主题和语言')
+  for (const pageName of ['providers', 'skills', 'extensions', 'message', 'appearance']) {
+    await expect(page.locator(`#settings-panel-${pageName}`)).toHaveCount(1)
+  }
+  await expect(page.locator('#settings-panel-skills')).toHaveAttribute('hidden', '')
+  const providersTab = page.getByTestId('settings-tab-providers')
+  await expect(providersTab).toHaveAttribute('tabindex', '0')
+  await expect(providersTab).toHaveAttribute('aria-controls', 'settings-panel-providers')
+  await providersTab.focus()
+  await providersTab.press('End')
+  const appearanceTab = page.getByTestId('settings-tab-appearance')
+  await expect(appearanceTab).toBeFocused()
+  await expect(appearanceTab).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'settings-tab-appearance-control')
+  await expect(page.locator('#settings-panel-providers')).toHaveAttribute('hidden', '')
+  await appearanceTab.press('Home')
+  await expect(providersTab).toBeFocused()
+  await expect(providersTab).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('tabpanel')).toHaveAttribute('id', 'settings-panel-providers')
   await expect(page.getByTestId('provider-settings')).toContainText('Anthropic')
   await expect(page.locator('.provider-nav [data-provider-id="anthropic"]')).toHaveText('Anthropic')
   await expect(page.locator('.provider-nav')).not.toContainText('缺少密钥')
@@ -113,6 +138,70 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('model-option')).not.toHaveCount(0)
 })
 
+test('nested dialogs isolate lower layers and restore attributes after out-of-order cleanup', async ({ page }) => {
+  await page.goto('/')
+  const initialBodyOverflow = await page.evaluate(() => document.body.style.overflow)
+  await page.getByTestId('open-settings').click()
+  const settings = page.getByTestId('settings')
+  await expect(settings).toBeVisible()
+
+  // Exercise exact restoration, including values that differ from the
+  // hook-owned aria-hidden="true" and empty inert overrides. JavaScript click
+  // is intentional because the preserved inert state makes the opener
+  // correctly unavailable to user interaction.
+  await settings.evaluate(element => {
+    element.setAttribute('aria-hidden', 'false')
+    element.setAttribute('inert', 'preserve-me')
+    element.querySelector<HTMLButtonElement>('[data-testid="add-provider"]')?.click()
+  })
+
+  const provider = page.getByTestId('new-provider-dialog')
+  await expect(provider).toBeVisible()
+  await expect(settings).toHaveAttribute('aria-hidden', 'true')
+  await expect(settings).toHaveAttribute('inert', '')
+  await expect(provider).not.toHaveAttribute('aria-hidden')
+  await expect(provider).not.toHaveAttribute('inert')
+  await expect(provider.getByLabel('供应商 ID')).toBeFocused()
+  await provider.locator('.provider-dialog-close').focus()
+  await page.keyboard.press('Shift+Tab')
+  await expect(provider.getByRole('button', { name: '创建供应商' })).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(provider.locator('.provider-dialog-close')).toBeFocused()
+
+  // Open a third registered dialog, then remove the middle entry first. This
+  // models React unmounting portalled dialogs out of visual stack order.
+  await page.locator('button[aria-label="添加图片或文件"]').first().evaluate(element => (element as HTMLButtonElement).click())
+  const attachments = page.getByRole('dialog', { name: '选择图片或文件' })
+  await expect(attachments).toBeVisible()
+  await expect(settings).toHaveAttribute('aria-hidden', 'true')
+  await expect(settings).toHaveAttribute('inert', '')
+  await expect(provider).toHaveAttribute('aria-hidden', 'true')
+  await expect(provider).toHaveAttribute('inert', '')
+  await expect(attachments).not.toHaveAttribute('aria-hidden')
+  await expect(attachments).not.toHaveAttribute('inert')
+
+  await provider.locator('.provider-dialog-close').evaluate(element => (element as HTMLButtonElement).click())
+  await expect(provider).toHaveCount(0)
+  await expect(settings).toHaveAttribute('aria-hidden', 'true')
+  await expect(settings).toHaveAttribute('inert', '')
+  await expect(attachments).not.toHaveAttribute('aria-hidden')
+  await expect(attachments).not.toHaveAttribute('inert')
+
+  await page.keyboard.press('Escape')
+  await expect(attachments).toHaveCount(0)
+  await expect(settings).toHaveAttribute('aria-hidden', 'false')
+  await expect(settings).toHaveAttribute('inert', 'preserve-me')
+  expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden')
+
+  await settings.evaluate(element => {
+    element.removeAttribute('aria-hidden')
+    element.removeAttribute('inert')
+  })
+  await settings.getByRole('button', { name: '关闭对话框' }).click()
+  await expect(settings).toHaveCount(0)
+  expect(await page.evaluate(() => document.body.style.overflow)).toBe(initialBodyOverflow)
+})
+
 test('provider settings supports a complete add and edit flow', async ({ page }) => {
   const providerID = `pw-provider-${Date.now()}`
   const modelID = `pw-model-${Date.now()}`
@@ -155,6 +244,8 @@ test('provider settings supports a complete add and edit flow', async ({ page })
   await model.getByRole('button', { name: '添加', exact: true }).click()
   const modelRow = page.getByTestId('provider-model-row').filter({ hasText: modelID })
   await expect(modelRow).toContainText('64,000 ctx')
+  await expect(modelRow.getByRole('checkbox')).toHaveAccessibleName(/Playwright Model/)
+  await expectMinTarget(modelRow.locator('.compact-switch'), 'model enabled switch')
 
   await modelRow.getByTestId('edit-model').click()
   const editDlg = page.getByTestId('model-advanced')
@@ -362,6 +453,8 @@ test('edit branches in place with attachments and fork opens a new session', asy
   await page.getByRole('button', { name: '关闭图片预览' }).click()
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
   await expect(page.locator('.branch-nav')).toContainText('2 / 2')
+  await expectMinTarget(page.locator('.branch-nav button').first(), 'previous branch')
+  await expectMinTarget(page.locator('.branch-nav button').last(), 'next branch')
 
   await page.locator('.branch-nav button').first().click()
   await expect(page.getByTestId('user-bubble')).toContainText(original)
@@ -424,6 +517,8 @@ test('new session keeps the current model and thinking effort', async ({ page })
 })
 
 test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }) => {
+  const { cwd } = JSON.parse(readFileSync(statePath, 'utf8')) as { cwd: string }
+  expect(cwd).toBeTruthy()
   await page.goto('/')
   await sendPrompt(page, `ws-e2e ${Date.now()}`)
   await expect(page.getByTestId('workspace-row').first()).toBeVisible()
@@ -440,7 +535,6 @@ test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }
   await page.getByTestId('add-workspace').click()
   await expect(page.getByTestId('dir-browser')).toBeVisible()
   await expect(page.getByRole('navigation').getByRole('button', { name: '主目录' })).toBeVisible()
-  await expect(page.getByTestId('dir-browser')).not.toContainText('/home/')
   await page.getByTestId('dir-new-folder').click()
   await expect(page.getByTestId('dir-create')).toBeVisible()
   await page.getByTestId('dir-create').getByRole('button', { name: '取消' }).click()
@@ -448,13 +542,13 @@ test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }
   await page.getByTestId('dir-path').click()
   const pathIn = page.getByLabel('编辑路径')
   await expect(pathIn).toBeVisible()
-  await pathIn.fill('/tmp')
+  await pathIn.fill(cwd)
   await expect(page.getByTestId('dir-row').first()).toBeVisible({ timeout: 5000 })
   await page.getByTestId('dir-browser-mask').getByRole('button', { name: '取消' }).click()
   await expect(page.getByTestId('dir-browser')).toHaveCount(0)
 
   await page.getByTestId('session-row').first().locator('button[aria-label="会话菜单"]').click()
-  await page.getByRole('button', { name: '置顶' }).click()
+  await page.getByRole('menuitem', { name: '置顶' }).click()
   await expect(page.locator('.pin-mark')).toBeVisible()
 
   await page.getByRole('button', { name: '搜索会话' }).click()
@@ -466,6 +560,7 @@ test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }
   await page.getByTestId('composer-send').click()
   await expect(page.getByTestId('user-bubble').nth(1)).toBeVisible()
   // Long user bubbles are clamped to 6 lines; expand so the chat overflows.
+  await expectMinTarget(page.getByTestId('user-bubble-toggle'), 'long-message toggle')
   await page.getByTestId('user-bubble-toggle').click()
   await expect(page.getByTestId('user-bubble-toggle')).toHaveAttribute('aria-label', '收起')
   const scroll = page.getByTestId('chat-scroll')
@@ -490,6 +585,12 @@ test('session overflow menu anchors to the clicked row', async ({ page }) => {
   await trigger.click()
   const menu = page.getByTestId('pop-menu')
   await expect(menu).toBeVisible()
+  await expect(menu).toHaveAttribute('role', 'menu')
+  await expect(trigger).toHaveAttribute('aria-haspopup', 'menu')
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+  await expect(trigger).toHaveAttribute('aria-controls', await menu.getAttribute('id') as string)
+  const items = menu.getByRole('menuitem')
+  await expect(items.first()).toBeFocused()
   const btnBox = await trigger.boundingBox()
   const menuBox = await menu.boundingBox()
   expect(btnBox).toBeTruthy()
@@ -498,6 +599,23 @@ test('session overflow menu anchors to the clicked row', async ({ page }) => {
   const below = menuBox!.y >= btnBox!.y + btnBox!.height - 4
   const above = menuBox!.y + menuBox!.height <= btnBox!.y + 4
   expect(below || above).toBe(true)
+
+  await page.keyboard.press('ArrowDown')
+  await expect(items.nth(1)).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(menu).toHaveCount(0)
+  await expect(trigger).toBeFocused()
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+
+  await trigger.click()
+  await page.getByRole('menuitem', { name: '重命名' }).click()
+  const rename = page.getByTestId('rename-dialog')
+  await expect(rename).toBeVisible()
+  await expect(page.getByTestId('rename-input')).toBeFocused()
+  await expect(page.getByTestId('rename-input')).toHaveAccessibleName('重命名')
+  await rename.getByRole('button', { name: '关闭对话框' }).click()
+  await expect(rename).toHaveCount(0)
+  await expect(trigger).toBeFocused()
 })
 
 test('session info lists skills and extensions; toggles live in settings', async ({ page }) => {
@@ -535,6 +653,17 @@ test('command palette is opaque, one-line, and inserts without sending', async (
   await page.getByTestId('command-btn').click()
   const palette = page.getByTestId('command-palette')
   await expect(palette).toBeVisible()
+  const composerInput = page.getByTestId('composer-input')
+  const paletteID = await palette.getAttribute('id')
+  expect(paletteID).toBeTruthy()
+  await expect(palette).toHaveAccessibleName('命令')
+  await expect(composerInput).toHaveAttribute('role', 'combobox')
+  await expect(composerInput).toHaveAttribute('aria-expanded', 'true')
+  await expect(composerInput).toHaveAttribute('aria-controls', paletteID!)
+  await expect(composerInput).toHaveAttribute('aria-activedescendant', /.+/)
+  const activeOptionID = await composerInput.getAttribute('aria-activedescendant')
+  expect(activeOptionID).toBeTruthy()
+  await expect(page.locator(`[id="${activeOptionID}"]`)).toHaveAttribute('role', 'option')
   const palBox = await palette.boundingBox()
   const cardBox = await page.getByTestId('composer-card').boundingBox()
   expect(palBox).toBeTruthy()
@@ -642,6 +771,8 @@ test('busy enter queues and ctrl+enter promotes the tail', async ({ page }) => {
     await expect.poll(async () => (await sessionQueue(page)).texts).toEqual(['queued-keep', 'queued-promote'])
     await expect(page.getByTestId('queued-item')).toHaveCount(2)
     await expect(page.getByTestId('queued-steer')).toHaveCount(2)
+    await expectMinTarget(page.getByTestId('queued-steer').first(), 'queued steer')
+    await expectMinTarget(page.getByTestId('queued-remove').first(), 'queued remove')
     await expect(page.getByTestId('queued-item').last()).toContainText('Ctrl+Enter')
     await input.press('Control+Enter')
     await expect.poll(async () => (await sessionQueue(page)).texts).toEqual(['queued-keep'])

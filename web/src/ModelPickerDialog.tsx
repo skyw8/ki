@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ICheck, IClose, ISearch } from './icons'
 import { useI18n } from './i18n'
 import type { ModelInfo } from './types'
+import { useDialogFocus } from './useDialogFocus'
 
 function fuzzyTextMatch(value: string, query: string): boolean {
   const haystack = value.normalize('NFKC').toLocaleLowerCase()
@@ -41,28 +42,11 @@ export function ModelPickerDialog({
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
-  const closeRef = useRef(onClose)
-  closeRef.current = onClose
+  const dialogRef = useDialogFocus<HTMLDivElement>({ open, onEscape: onClose, initialFocusRef: inputRef })
 
   useEffect(() => {
     if (!open) {
       setQuery('')
-      return
-    }
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    const focus = window.requestAnimationFrame(() => inputRef.current?.focus())
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopImmediatePropagation()
-      closeRef.current()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.cancelAnimationFrame(focus)
-      window.removeEventListener('keydown', onKey)
-      document.body.style.overflow = previousOverflow
     }
   }, [open])
 
@@ -75,7 +59,7 @@ export function ModelPickerDialog({
   const dialogTitle = title || t('model.title')
   return createPortal(
     <div className="modal-mask" onClick={onClose} data-testid={`${testid}-mask`}>
-      <div className="modal model-picker-modal" data-testid={testid} onClick={event => event.stopPropagation()} role="dialog" aria-label={dialogTitle}>
+      <div ref={dialogRef} className="modal model-picker-modal" data-testid={testid} onClick={event => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={dialogTitle} tabIndex={-1}>
         <div className="modal-head">
           <h2>{dialogTitle}</h2>
           <button type="button" className="icon-btn" onClick={onClose} aria-label={t('dialog.close')}><IClose /></button>

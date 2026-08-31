@@ -218,6 +218,7 @@ export function TrajectoryView({
   const followRef = useRef(true)
   const tableRef = useRef<HTMLDivElement>(null)
   const drag = useRef<{ i: number } | null>(null)
+  const zoomPercent = Math.round(zoom * 100)
 
   const setFollowOn = (next: boolean) => {
     followRef.current = next
@@ -309,53 +310,109 @@ export function TrajectoryView({
     setZoom(z => Math.min(4, Math.max(0.4, z * (e.deltaY > 0 ? 0.9 : 1.1))))
   }
 
+  function adjustZoom(factor: number) {
+    setZoom(z => Math.min(4, Math.max(0.4, Number((z * factor).toFixed(2)))))
+  }
+
+  function resetTimeline() {
+    setRange(null)
+    setZoom(1)
+  }
+
   return (
     <div className="traj" data-testid="trajectory">
       <div className="traj-toolbar">
-        <ISearch />
-        <input className="traj-search" placeholder={t('traj.search')} value={q} onChange={e => setQ(e.target.value)} />
-        <button
-          type="button"
-          className={`chip-icon${actualDur ? ' active' : ''}`}
-          data-testid="traj-duration"
-          aria-pressed={actualDur}
-          aria-label={actualDur ? t('traj.actualDur') : t('traj.equalDur')}
-          title={actualDur ? t('traj.actualDur') : t('traj.equalDur')}
-          onClick={() => setActualDur(v => !v)}
-        >
-          <IClock />
-        </button>
-        <button
-          type="button"
-          className={`chip-icon${foldTools ? ' active' : ''}`}
-          data-testid="traj-fold-tools"
-          aria-pressed={foldTools}
-          aria-label={foldTools ? t('traj.expandTools') : t('traj.foldTools')}
-          title={foldTools ? t('traj.expandTools') : t('traj.foldTools')}
-          onClick={() => setFoldTools(v => !v)}
-        >
-          <IFold />
-        </button>
-        <button
-          type="button"
-          className={`chip-icon${follow ? ' active' : ''}`}
-          data-testid="traj-follow"
-          aria-pressed={follow}
-          aria-label={follow ? t('traj.follow') : t('traj.unfollow')}
-          title={follow ? t('traj.follow') : t('traj.unfollow')}
-          onClick={() => {
-            const next = !followRef.current
-            setFollowOn(next)
-            if (next) applyFollowTail(tableRef.current, true)
-          }}
-        >
-          <ITail />
-        </button>
-        <span className="asst-meta">{t('traj.records', { n: visible.length })}</span>
+        <label className="traj-search-box">
+          <ISearch aria-hidden="true" />
+          <input
+            className="traj-search"
+            aria-label={t('traj.search')}
+            placeholder={t('traj.search')}
+            value={q}
+            onChange={e => setQ(e.target.value)}
+          />
+        </label>
+        <div className="traj-toolbar-controls">
+          <div className="traj-view-controls">
+            <button
+              type="button"
+              className={`chip-icon${actualDur ? ' active' : ''}`}
+              data-testid="traj-duration"
+              aria-pressed={actualDur}
+              aria-label={actualDur ? t('traj.actualDur') : t('traj.equalDur')}
+              title={actualDur ? t('traj.actualDur') : t('traj.equalDur')}
+              onClick={() => setActualDur(v => !v)}
+            >
+              <IClock />
+            </button>
+            <button
+              type="button"
+              className={`chip-icon${foldTools ? ' active' : ''}`}
+              data-testid="traj-fold-tools"
+              aria-pressed={foldTools}
+              aria-label={foldTools ? t('traj.expandTools') : t('traj.foldTools')}
+              title={foldTools ? t('traj.expandTools') : t('traj.foldTools')}
+              onClick={() => setFoldTools(v => !v)}
+            >
+              <IFold />
+            </button>
+            <button
+              type="button"
+              className={`chip-icon${follow ? ' active' : ''}`}
+              data-testid="traj-follow"
+              aria-pressed={follow}
+              aria-label={follow ? t('traj.follow') : t('traj.unfollow')}
+              title={follow ? t('traj.follow') : t('traj.unfollow')}
+              onClick={() => {
+                const next = !followRef.current
+                setFollowOn(next)
+                if (next) applyFollowTail(tableRef.current, true)
+              }}
+            >
+              <ITail />
+            </button>
+          </div>
+          {/* Why: wheel and context-menu gestures have no discoverable touch
+              equivalent, so zoom and reset stay visible on every input type. */}
+          <div className="traj-zoom" role="group" aria-label={t('traj.zoom')}>
+            <button
+              type="button"
+              data-testid="traj-zoom-out"
+              aria-label={t('traj.zoomOut')}
+              title={t('traj.zoomOut')}
+              disabled={zoom <= 0.4}
+              onClick={() => adjustZoom(0.8)}
+            >
+              −
+            </button>
+            <button
+              type="button"
+              className="traj-zoom-reset"
+              data-testid="traj-zoom-reset"
+              aria-label={`${t('traj.resetTimeline')} (${zoomPercent}%)`}
+              title={t('traj.resetTimeline')}
+              onClick={resetTimeline}
+            >
+              {zoomPercent}%
+            </button>
+            <button
+              type="button"
+              data-testid="traj-zoom-in"
+              aria-label={t('traj.zoomIn')}
+              title={t('traj.zoomIn')}
+              disabled={zoom >= 4}
+              onClick={() => adjustZoom(1.25)}
+            >
+              +
+            </button>
+          </div>
+          <span className="asst-meta traj-record-count">{t('traj.records', { n: visible.length })}</span>
+        </div>
       </div>
       <div
         className="timeline"
         data-testid="traj-timeline"
+        aria-label={t('traj.timeline')}
         onWheel={onWheel}
         onMouseDown={e => {
           const i = Number((e.target as HTMLElement).dataset.i)
@@ -377,11 +434,13 @@ export function TrajectoryView({
             className={`tl-bar ${r.kind}${sel === r.id ? ' on' : ''}${q && !filtered.includes(r) ? ' dim' : ''}`}
             style={{ flexGrow: actualDur ? Math.max(1, Math.round(((r.durationMs ?? 400) * zoom) / 200)) : Math.max(1, zoom) }}
             title={`${KIND_LABEL[r.kind]} ${r.preview}`}
+            aria-label={`${KIND_LABEL[r.kind]} ${r.preview || r.name || ''}`.trim()}
+            aria-current={sel === r.id ? 'true' : undefined}
             onClick={() => pick(r)}
           />
         ))}
       </div>
-      {range ? <button type="button" className="chip" onClick={() => setRange(null)}>{t('traj.clearRange')}</button> : null}
+      {range ? <button type="button" className="chip traj-range-reset" data-testid="traj-clear-range" onClick={() => setRange(null)}>{t('traj.clearRange')}</button> : null}
       <div className={`traj-split${selected ? '' : ' no-insp'}`}>
         <div
           className="traj-table-wrap"

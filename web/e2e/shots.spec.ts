@@ -1,10 +1,11 @@
 import { expect, test } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 
-const dir = process.env.KI_SHOT_DIR || 'test-results/shots'
-
-test('capture layout shots', async ({ page }) => {
+test('capture layout shots', async ({ page }, testInfo) => {
   test.setTimeout(60_000)
+  // Keep the user-selected export directory stable, but isolate default
+  // artifacts when two Playwright runs overlap.
+  const dir = process.env.KI_SHOT_DIR || testInfo.outputPath('shots')
   mkdirSync(dir, { recursive: true })
   await page.setViewportSize({ width: 1600, height: 900 })
   await page.addInitScript(() => localStorage.setItem('ki-theme', 'light'))

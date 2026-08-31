@@ -155,6 +155,40 @@ Host **不解析** panel 里的业务字段。扩展自己决定列哪些 action
 
 slash 子命令不必和按钮一一同名；面板是控制面，slash 是输入面。goal 的做法：pause / resume / clear 做 action（不能用的 `disabled`），status 用 sections，edit/start 用 field + submit。
 
+## 响应式与交互契约
+
+WebUI 以动态视口为边界，不假设固定桌面尺寸。桌面保留可折叠侧栏；宽度不超过
+900px 时改为带 scrim 的抽屉导航，主区常驻打开按钮，抽屉关闭时自身为 `inert`，打开时
+主区为 `inert`。同一断点内顶栏只显示一颗「扩展 · N」聚合入口，扩展、Provider 和设置
+内部导航改为横向可滚动列表，不能用 0 宽网格轨道隐藏仍在绘制的侧栏。
+
+手机宽度（不超过 760px）以及不超过 540px 高的横屏使用完整移动布局：设置、扩展、
+附件、目录和会话树占满可用视口；header、可滚动 body、sticky footer 各自分层，不得让
+内容画到 footer 下方。平板可以保留居中弹窗，但内部必须使用与 compact 壳一致的单列或
+横向导航布局。目录和会话树的 Miller 两列在手机上纵向排列并各自滚动。
+
+Provider 新建与高级模型弹层固定头尾、只滚动字段区。轨迹在触控端提供可见的缩小、复位、
+放大按钮；矮横屏保持单行工具栏，为记录列表保留可点击高度，选中后再钻取详情。
+
+页面高度使用 `dvh`，浮动菜单同时读取 `visualViewport`，四边 padding 合并
+`safe-area-inset-*`。移动端可编辑的 input、textarea、select 字号至少 16px，避免 iOS
+聚焦缩放。主要触控目标至少 40px，列表行和关键导航目标至少 44px；关闭的抽屉和弹层
+不能被 Tab 聚焦。所有 dialog 均需 `aria-modal`、Escape 只关闭栈顶、Tab 焦点圈定和关闭
+后焦点恢复；嵌套 dialog 打开时，下层 dialog 同时设为 `inert` 和 `aria-hidden`，关闭后精确
+恢复其先前属性。命令面板的 combobox 必须显式关联 listbox，且在焦点移交给 Select 或
+dialog 时立即释放键盘；侧栏操作菜单使用 menu/menuitem 语义，支持方向键、Tab、Escape，
+并在关闭后把焦点还给触发按钮。抽屉触发目录或设置 dialog 时，焦点直接交给 dialog，关闭
+后回到主区的抽屉按钮，不得回到已变为 inert 的侧栏节点。Settings 和扩展 Details/Config
+使用完整 tablist/tab/tabpanel 关系、roving tabindex 和方向键/Home/End 导航，inactive panel
+保留关联节点但必须 hidden。`prefers-reduced-motion` 下关闭抽屉和控件过渡。
+
+响应式回归覆盖 320×568、390×844、844×390、768/820 平板、1024×768 和桌面，逐页
+检查登录、Hero、Chat、Trajectory、Info、Settings、Provider、扩展配置、模型、命令菜单、
+选择菜单、附件、目录和会话树；根页面不得横向溢出，header、composer、dialog/footer 必须
+保持在可视区内。各 profile 会检查可见交互控件具有可访问名称；触控 profile 进一步扫描
+按钮、菜单项、链接、输入、select、textarea 以及 checkbox/radio 的 label 命中区，不允许
+小于 40px。长消息、分支切换、排队操作、扩展开关等低频状态也遵守同一命中区契约。
+
 ## 构建
 
 ```bash
@@ -172,6 +206,10 @@ go build -o ki ./cmd/ki
 cd web && npm install && npx playwright install chromium
 npm run test:e2e
 ```
+
+Playwright 每次 invocation 使用独立的临时状态、鉴权文件、二进制和随机 loopback 端口，
+因此可与 Go e2e 或另一轮 WebUI 测试并行运行，不得复用固定 `/tmp` 状态文件。响应式矩阵
+由 `e2e/responsive.spec.ts` 随 fake project 一起执行。
 
 `go test ./e2e -run WebUI` 会先起 server，再跑同一套 Playwright（需已 `npm install` 和装好 chromium）。
 

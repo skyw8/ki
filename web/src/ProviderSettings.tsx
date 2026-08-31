@@ -6,6 +6,7 @@ import { useI18n } from './i18n'
 import { Select } from './Select'
 import { toast } from './toast'
 import type { ProviderAuthStatus, ProviderCatalog, ProviderModel } from './types'
+import { useDialogFocus } from './useDialogFocus'
 
 type Props = { api: Client; onChanged: () => void }
 
@@ -66,6 +67,16 @@ export function ProviderSettings({ api, onChanged }: Props) {
   const [modelForm, setModelForm] = useState({ id: '', name: '', contextWindow: '128000', maxTokens: '16384' })
   const newProviderID = useRef<HTMLInputElement>(null)
   const modelJSONRef = useRef<HTMLTextAreaElement>(null)
+  const newProviderDialogRef = useDialogFocus<HTMLDivElement>({
+    open: newProvider,
+    onEscape: () => { if (!busy) setNewProvider(false) },
+    initialFocusRef: newProviderID,
+  })
+  const modelDialogRef = useDialogFocus<HTMLDivElement>({
+    open: !!editingModel,
+    onEscape: () => { if (!busy) setEditingModel('') },
+    initialFocusRef: modelJSONRef,
+  })
 
   const load = async () => {
     const next = await api.providers()
@@ -109,23 +120,6 @@ export function ProviderSettings({ api, onChanged }: Props) {
     const timer = window.setInterval(() => void poll(), 1000)
     return () => { stopped = true; window.clearInterval(timer) }
   }, [api, authStatus?.provider, authStatus?.requestId, authStatus?.status, current?.id, onChanged])
-  useEffect(() => {
-    if (!newProvider && !editingModel) return
-    if (newProvider) newProviderID.current?.focus()
-    else modelJSONRef.current?.focus()
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      // Capture prevents the parent settings dialog from handling the same
-      // Escape press and closing both dialog layers at once.
-      event.stopImmediatePropagation()
-      if (busy) return
-      if (editingModel) setEditingModel('')
-      else setNewProvider(false)
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [newProvider, editingModel, busy])
-
   const run = async (label: string, op: () => Promise<unknown>) => {
     setBusy(label)
     setError('')
@@ -196,15 +190,15 @@ export function ProviderSettings({ api, onChanged }: Props) {
       <div className="provider-workbench">
         <aside className="provider-sidebar" aria-label={c.providers}>
           <div className="provider-sidebar-head"><span>{c.providers}</span><span>{data?.providers.length ?? 0}</span></div>
-          <div className="provider-nav" role="listbox" aria-label={c.providers}>
+          <nav className="provider-nav" aria-label={c.providers}>
             {data?.providers.map(provider => (
               // Name only: id + "API key needed" read as a second grey copy of the same row.
-              <button type="button" role="option" aria-selected={provider.id === selected} key={provider.id} data-provider-id={provider.id} className={provider.id === selected ? 'on' : ''} title={provider.name} onClick={() => setSelected(provider.id)}>
+              <button type="button" aria-current={provider.id === selected ? 'page' : undefined} key={provider.id} data-provider-id={provider.id} className={provider.id === selected ? 'on' : ''} title={provider.name} onClick={() => setSelected(provider.id)}>
                 <span className={`provider-status-dot${provider.credential.configured ? ' ready' : ''}`} aria-hidden />
                 <span className="provider-nav-copy">{provider.name}</span>
               </button>
             ))}
-          </div>
+          </nav>
         </aside>
 
         <div className="provider-content">
@@ -279,7 +273,9 @@ export function ProviderSettings({ api, onChanged }: Props) {
                       <div className="model-main"><strong>{model.name || model.id}</strong><small>{model.id}</small><div className="model-tags"><span>{model.contextWindow?.toLocaleString()} ctx</span>{model.reasoning ? <span>{c.reasoning}</span> : null}{model.input?.includes('image') ? <span>{c.vision}</span> : null}<span>{extensionManaged ? c.extension : model.builtin ? c.builtIn : c.custom}</span></div></div>
                       <div className="model-actions">
                         {!extensionManaged ? <><button type="button" className="icon-text-button" data-testid="edit-model" onClick={() => editModel(model)}><IEdit />{c.edit}</button>
-                        <label className="compact-switch" title={model.enabled ? c.enabled : c.disabled}><input type="checkbox" checked={model.enabled} disabled={!!busy} onChange={e => void run('model-enabled', () => api.patchModel(current.id, { id: model.id, enabled: e.target.checked }))} /><span aria-hidden /></label>
+                        {/* Why: the compact switch has no visible text and title alone is not
+                            exposed as a reliable accessible name across browsers. */}
+                        <label className="compact-switch" title={model.enabled ? c.enabled : c.disabled}><input type="checkbox" aria-label={`${model.name || model.id}: ${model.enabled ? c.enabled : c.disabled}`} checked={model.enabled} disabled={!!busy} onChange={e => void run('model-enabled', () => api.patchModel(current.id, { id: model.id, enabled: e.target.checked }))} /><span aria-hidden /></label>
                         {model.builtin && model.customized ? <button type="button" className="icon-text-button" onClick={() => void run('restore-model', () => api.deleteModel(current.id, model.id))}><IRegen />{c.restore}</button> : null}
                         {!model.builtin ? <button type="button" className="icon-text-button danger" disabled={!!busy} onClick={() => void run('delete-model', () => api.deleteModel(current.id, model.id))}><ITrash />{c.remove}</button> : null}</> : null}
                       </div>
@@ -297,11 +293,11 @@ export function ProviderSettings({ api, onChanged }: Props) {
 
       {editingModel && current ? createPortal(
         <div className="provider-dialog-mask" data-testid="model-edit-dialog-mask" onMouseDown={() => { if (!busy) setEditingModel('') }}>
-          <div className="provider-dialog model-edit-dialog" data-testid="model-advanced" role="dialog" aria-modal="true" aria-labelledby="model-edit-title" onMouseDown={event => event.stopPropagation()}>
+          <div ref={modelDialogRef} className="provider-dialog model-edit-dialog" data-testid="model-advanced" role="dialog" aria-modal="true" aria-labelledby="model-edit-title" tabIndex={-1} onMouseDown={event => event.stopPropagation()}>
             <header className="provider-dialog-head">
               <div>
                 <h3 id="model-edit-title">{c.advanced}</h3>
-                <p>{current.models.find(model => model.id === editingModel)?.name || editingModel} · {c.advancedHint}</p>
+                <p id="model-edit-description">{current.models.find(model => model.id === editingModel)?.name || editingModel} · {c.advancedHint}</p>
               </div>
               <button type="button" className="provider-dialog-close" aria-label={c.cancel} disabled={!!busy} onClick={() => setEditingModel('')}>×</button>
             </header>
@@ -313,7 +309,7 @@ export function ProviderSettings({ api, onChanged }: Props) {
                 void run('edit-model', () => api.patchModel(current.id, { id: editingModel, ...override })).then(ok => { if (ok) setEditingModel('') })
               } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
             }}>
-              <textarea ref={modelJSONRef} rows={16} value={modelJSON} onChange={e => setModelJSON(e.target.value)} spellCheck={false} />
+              <textarea ref={modelJSONRef} rows={16} aria-label={c.advanced} aria-describedby="model-edit-description" value={modelJSON} onChange={e => setModelJSON(e.target.value)} spellCheck={false} />
               <div className="form-actions provider-dialog-actions"><button type="button" className="ui-button secondary" disabled={!!busy} onClick={() => setEditingModel('')}>{c.cancel}</button><button className="ui-button primary" type="submit" disabled={!!busy}>{busy ? c.saving : c.save}</button></div>
             </form>
           </div>
@@ -323,7 +319,7 @@ export function ProviderSettings({ api, onChanged }: Props) {
 
       {newProvider ? createPortal(
         <div className="provider-dialog-mask" data-testid="new-provider-dialog-mask" onMouseDown={() => { if (!busy) setNewProvider(false) }}>
-          <div className="provider-dialog" data-testid="new-provider-dialog" role="dialog" aria-modal="true" aria-labelledby="new-provider-title" onMouseDown={event => event.stopPropagation()}>
+          <div ref={newProviderDialogRef} className="provider-dialog" data-testid="new-provider-dialog" role="dialog" aria-modal="true" aria-labelledby="new-provider-title" tabIndex={-1} onMouseDown={event => event.stopPropagation()}>
             <header className="provider-dialog-head">
               <div><h3 id="new-provider-title">{c.newProvider}</h3><p>{c.newProviderHint}</p></div>
               <button type="button" className="provider-dialog-close" aria-label={c.cancel} disabled={!!busy} onClick={() => setNewProvider(false)}>×</button>

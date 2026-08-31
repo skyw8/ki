@@ -3,29 +3,17 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { baseURLForAddress, runID, statePath, storageStatePath } from './run-state.ts'
+import { goBinary } from './go-toolchain.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
-export const statePath = join(tmpdir(), 'ki-pw-serve.json')
-export const storageStatePath = join(tmpdir(), 'ki-pw-storage.json')
+export { statePath, storageStatePath }
 
 export function serverToken(): string {
   const state = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const server = JSON.parse(readFileSync(join(state.home, 'server.json'), 'utf8')) as { token?: string }
   if (!server.token) throw new Error('server.json has no token')
   return server.token
-}
-
-function goBin(): string {
-  if (process.env.GO) return process.env.GO
-  try {
-    execFileSync('go', ['version'], { stdio: 'ignore' })
-    return 'go'
-  } catch {
-    for (const c of ['/home/hgy/sdk/go/bin/go', '/usr/local/go/bin/go']) {
-      if (existsSync(c)) return c
-    }
-  }
-  throw new Error('go toolchain not found')
 }
 
 async function waitHealth(url: string): Promise<void> {
@@ -116,7 +104,9 @@ export default async function globalSetup(): Promise<void> {
       pid: 0,
       home: process.env.KI_HOME ?? '',
       addr: '',
-      cwd: '',
+      // Why: the Go harness owns the server and its cross-platform temporary
+      // workspace, so Playwright cannot infer that workspace from this process.
+      cwd: process.env.KI_PW_CWD ?? '',
     }))
     const baseURL = process.env.KI_BASE_URL
     if (baseURL && process.env.KI_HOME) {
@@ -128,11 +118,13 @@ export default async function globalSetup(): Promise<void> {
 
   const live = process.env.KI_LIVE === '1'
   const addr = process.env.KI_SERVE_ADDR || (live ? '127.0.0.1:19833' : '127.0.0.1:19832')
+  const serveURL = baseURLForAddress(addr)
   const home = mkdtempSync(join(tmpdir(), 'ki-pw-home-'))
   const cwd = mkdtempSync(join(tmpdir(), 'ki-pw-cwd-'))
-  const bin = process.env.KI_BIN || join(tmpdir(), live ? 'ki-pw-live-bin' : 'ki-pw-bin')
+  const executable = process.platform === 'win32' ? '.exe' : ''
+  const bin = process.env.KI_BIN || join(tmpdir(), `ki-pw-${runID}${live ? '-live' : ''}${executable}`)
   if (!process.env.KI_BIN) {
-    execFileSync(goBin(), ['build', '-o', bin, './cmd/ki'], { cwd: root, stdio: 'inherit' })
+    execFileSync(goBinary(), ['build', '-o', bin, './cmd/ki'], { cwd: root, stdio: 'inherit' })
   }
 
   const env: NodeJS.ProcessEnv = {
@@ -169,6 +161,14 @@ export default async function globalSetup(): Promise<void> {
   if (child.pid == null) throw new Error('failed to start ki serve')
   child.unref()
   writeFileSync(statePath, JSON.stringify({ pid: child.pid, home, addr, cwd }))
-  await waitHealth(`http://${addr}/v1/health`)
-  await seedBrowserSession(`http://${addr}`, home)
+  try {
+    await waitHealth(`${serveURL}/v1/health`)
+    await seedBrowserSession(serveURL, home)
+  } catch (error) {
+    // Why: setup failures happen before the normal teardown lifecycle is
+    // guaranteed. Stop this run's server here so a bind/auth error cannot
+    // strand a daemon that poisons the next invocation.
+    try { process.kill(child.pid, 'SIGTERM') } catch { /* already gone */ }
+    throw error
+  }
 }

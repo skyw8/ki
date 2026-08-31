@@ -4,6 +4,7 @@ import type { Client } from './api'
 import { IClose, IImage } from './icons'
 import { useI18n } from './i18n'
 import type { Content } from './types'
+import { useDialogFocus } from './useDialogFocus'
 
 export function AttachmentImage({ api, content, className = '', expandable = false }: {
   api: Client
@@ -16,6 +17,7 @@ export function AttachmentImage({ api, content, className = '', expandable = fal
   const [url, setURL] = useState(inline)
   const [failed, setFailed] = useState(false)
   const [open, setOpen] = useState(false)
+  const lightboxRef = useDialogFocus<HTMLDivElement>({ open, onEscape: () => setOpen(false) })
 
   useEffect(() => {
     setFailed(false)
@@ -42,15 +44,6 @@ export function AttachmentImage({ api, content, className = '', expandable = fal
     }
   }, [api, content.path, inline])
 
-  useEffect(() => {
-    if (!open) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open])
-
   const name = content.name || content.path || 'image'
   const preview = expandable && url && !failed ? (
     <button type="button" className={`attachment-image expandable ${className}`} title={name} aria-label={t('image.openPreview')} onClick={() => setOpen(true)}>
@@ -64,7 +57,7 @@ export function AttachmentImage({ api, content, className = '', expandable = fal
   return <>
     {preview}
     {open && url ? createPortal(
-      <div className="image-lightbox" role="dialog" aria-modal="true" aria-label={t('image.preview')} onClick={() => setOpen(false)}>
+      <div ref={lightboxRef} className="image-lightbox" role="dialog" aria-modal="true" aria-label={t('image.preview')} tabIndex={-1} onClick={() => setOpen(false)}>
         <button type="button" className="image-lightbox-close" aria-label={t('image.closePreview')} onClick={() => setOpen(false)}><IClose /></button>
         <div className="image-lightbox-stage" onClick={event => event.stopPropagation()}>
           <img src={url} alt={name} />

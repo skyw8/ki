@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ICheck, IChevRight, IClose, ITraj } from './icons'
 import { useI18n } from './i18n'
 import { buildSessionTree, orderedChildren, sessionLabel, type SessionTreeModel } from './session-tree'
 import type { SessionInfo, WorkspaceInfo } from './types'
+import { useDialogFocus } from './useDialogFocus'
 
 type TreeView = {
   path: SessionInfo[]
@@ -25,37 +26,37 @@ function SessionColumn({
 }) {
   const { t } = useI18n()
   return (
-    <div className="dir-col session-tree-col" role="list">
+    <ul className="dir-col session-tree-col">
       {sessions.map(session => {
         const selected = session.id === selectedId
         const children = orderedChildren(model, session.id)
         return (
-          <button
-            key={session.id}
-            type="button"
-            role="listitem"
-            className={`dir-row session-tree-row${selected ? ' on' : ''}`}
-            data-testid="session-tree-row"
-            aria-current={selected || undefined}
-            onMouseDown={event => event.preventDefault()}
-            onClick={event => { event.preventDefault(); event.stopPropagation(); onPick(session.id) }}
-          >
-            <span className={`dir-ico${selected ? ' on' : ''}`}><ITraj /></span>
-            <span className="session-tree-copy">
-              <span className="dir-name">{sessionLabel(session)}</span>
-              <span className="session-tree-meta">
-                {session.model || '—'}
-                {session.running ? ` · ${t('tree.running')}` : ''}
+          <li key={session.id}>
+            <button
+              type="button"
+              className={`dir-row session-tree-row${selected ? ' on' : ''}`}
+              data-testid="session-tree-row"
+              aria-current={selected || undefined}
+              onMouseDown={event => event.preventDefault()}
+              onClick={event => { event.preventDefault(); event.stopPropagation(); onPick(session.id) }}
+            >
+              <span className={`dir-ico${selected ? ' on' : ''}`}><ITraj /></span>
+              <span className="session-tree-copy">
+                <span className="dir-name">{sessionLabel(session)}</span>
+                <span className="session-tree-meta">
+                  {session.model || '—'}
+                  {session.running ? ` · ${t('tree.running')}` : ''}
+                </span>
               </span>
-            </span>
-            <span className="session-tree-flag session-tree-kind">{t('tree.label')}</span>
-            {model.unresolved.has(session.id) ? <span className="session-tree-flag">{t('tree.unresolved')}</span> : null}
-            {selected ? <span className="session-tree-check"><ICheck /></span> : children.length ? <span className="dir-row-chev"><IChevRight /></span> : null}
-          </button>
+              <span className="session-tree-flag session-tree-kind">{t('tree.label')}</span>
+              {model.unresolved.has(session.id) ? <span className="session-tree-flag">{t('tree.unresolved')}</span> : null}
+              {selected ? <span className="session-tree-check"><ICheck /></span> : children.length ? <span className="dir-row-chev"><IChevRight /></span> : null}
+            </button>
+          </li>
         )
       })}
-      {!sessions.length ? <div className="session-tree-empty">{t('tree.noChildren')}</div> : null}
-    </div>
+      {!sessions.length ? <li className="session-tree-empty">{t('tree.noChildren')}</li> : null}
+    </ul>
   )
 }
 
@@ -75,10 +76,10 @@ export function SessionTreeBrowser({
   onSelect: (id: string) => boolean | Promise<boolean>
 }) {
   const { t } = useI18n()
-  const dialogRef = useRef<HTMLDivElement>(null)
   const [view, setView] = useState<TreeView | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const dialogRef = useDialogFocus<HTMLDivElement>({ open, onEscape: () => { if (!busy) onClose() } })
   const model = useMemo(() => buildSessionTree(sessions, workspaces, currentId), [currentId, sessions, workspaces])
   const byId = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions])
 
@@ -136,7 +137,6 @@ export function SessionTreeBrowser({
     if (model) setView(viewFor(currentId ?? model.root.id, model))
     else setView(null)
     setErr(null)
-    requestAnimationFrame(() => dialogRef.current?.focus())
   }, [currentId, model, open, viewFor])
 
   const pick = useCallback((id: string) => {
@@ -169,16 +169,13 @@ export function SessionTreeBrowser({
         data-testid="session-tree-browser"
         onClick={event => event.stopPropagation()}
         onKeyDown={event => {
-          if (event.key === 'Escape' && !busy) {
-            event.preventDefault()
-            onClose()
-          }
           if (event.key === 'Enter' && event.target === event.currentTarget && view?.selected && !busy) {
             event.preventDefault()
             void confirm()
           }
         }}
         role="dialog"
+        aria-modal="true"
         aria-label={t('tree.title')}
         tabIndex={-1}
       >

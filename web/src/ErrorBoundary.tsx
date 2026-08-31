@@ -13,11 +13,11 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { err: str
       return (
         <I18nContext.Consumer>
           {({ t }) => (
-            <div style={{ padding: 24, maxWidth: 640 }}>
-              <h1 style={{ fontSize: 18 }}>{t('error.title')}</h1>
-              <pre style={{ whiteSpace: 'pre-wrap' }}>{this.state.err}</pre>
-              <button type="button" onClick={() => { this.setState({ err: null }); window.location.href = '/' }}>{t('error.home')}</button>
-            </div>
+            <main className="error-boundary" role="alert">
+              <h1>{t('error.title')}</h1>
+              <pre>{this.state.err}</pre>
+              <button type="button" className="primary-btn" onClick={() => { this.setState({ err: null }); window.location.href = '/' }}>{t('error.home')}</button>
+            </main>
           )}
         </I18nContext.Consumer>
       )

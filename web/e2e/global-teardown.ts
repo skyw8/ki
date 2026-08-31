@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
-import { statePath, storageStatePath } from './global-setup.ts'
+import { statePath, storageStatePath } from './run-state.ts'
 
 export default async function globalTeardown(): Promise<void> {
   // Do not skip on KI_SKIP_SERVER: the state file may still exist (pid 0)
