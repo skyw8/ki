@@ -4,7 +4,7 @@
   "config.globalTitle": "全局搜索设置",
   "config.globalHint": "控制默认来源、结果工作流以及正文处理。",
   "config.providersTitle": "Provider 配置",
-  "config.providersHint": "按需配置鉴权；未配置的来源仍可在上方开关中停用。",
+  "config.providersHint": "单独启用各个来源，并按需配置鉴权。关闭后，该来源不会参与默认或显式搜索。",
   "config.exaKey": "Exa API Key",
   "config.tinyfishKey": "TinyFish API Key",
   "config.keyPlaceholder": "输入 API Key",

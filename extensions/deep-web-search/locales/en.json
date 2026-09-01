@@ -4,7 +4,7 @@
   "config.globalTitle": "Global search settings",
   "config.globalHint": "Control default sources, the result workflow, and content handling.",
   "config.providersTitle": "Provider configuration",
-  "config.providersHint": "Configure credentials as needed; unavailable sources can still be disabled above.",
+  "config.providersHint": "Enable each source and configure credentials as needed. Disabled sources are skipped for both default and explicit searches.",
   "config.exaKey": "Exa API key",
   "config.tinyfishKey": "TinyFish API key",
   "config.keyPlaceholder": "Enter API key",

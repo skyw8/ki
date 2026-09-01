@@ -2435,15 +2435,14 @@
 .deep-web-search-config-form .form-grid, .freerouter-config-form .form-grid { margin-top: 0; }
 .deep-web-search-config-form select { min-height: 34px; padding: 0 10px; border: 1px solid var(--dsw-alias-border-l2-thin); border-radius: 8px; background: var(--dsw-specific-input); color: var(--dsw-alias-label-primary); font: inherit; }
 .deep-web-search-config-form select:focus-visible { outline: 2px solid var(--dsw-alias-brand); outline-offset: -1px; border-color: transparent; }
-.deep-web-search-provider-toggles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-l2); }
-.deep-web-search-block-head { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.deep-web-search-block-head strong { color: var(--dsw-alias-label-secondary); font-size: 12px; }
-.deep-web-search-block-head small { color: var(--dsw-alias-label-caption); font-size: 11px; line-height: 17px; }
-.deep-web-search-provider-toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; min-height: 46px; padding: 8px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font-size: 12px; cursor: pointer; }
-.deep-web-search-provider-toggle:hover { border-color: var(--dsw-alias-brand); }
-.deep-web-search-toggle-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.deep-web-search-toggle-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-primary); font-size: 12px; font-weight: 600; }
-.deep-web-search-toggle-copy small { color: var(--dsw-alias-label-caption); font-size: 10px; }
+.deep-web-search-provider-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.deep-web-search-provider-head .deep-web-search-provider-title { flex: 1; }
+.deep-web-search-provider-toggle { display: flex; align-items: center; gap: 6px; flex: none; min-height: 40px; margin: -8px -4px -8px 0; padding: 0; border: 0; background: transparent; color: var(--dsw-alias-label-secondary); font-size: 12px; cursor: pointer; }
+.deep-web-search-toggle-copy { min-width: 0; display: flex; flex-direction: column; align-items: flex-end; }
+.deep-web-search-toggle-copy small { color: var(--dsw-alias-label-caption); font-size: 10px; white-space: nowrap; }
+.deep-web-search-provider-row.is-off .deep-web-search-provider-copy p,
+.deep-web-search-provider-row.is-off .deep-web-search-provider-controls,
+.deep-web-search-provider-row.is-off .deep-web-search-provider-value { opacity: .55; }
 .deep-web-search-global-fields { gap: 14px 16px; }
 .deep-web-search-options { display: flex; flex-wrap: wrap; gap: 12px 20px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .deep-web-search-options label { min-height: 40px; display: inline-flex; align-items: center; gap: 7px; padding-block: 8px; }
@@ -2851,7 +2850,6 @@ select:focus-visible {
   .extension-config-textarea { min-height: 260px; }
   .telegram-config-form .form-grid.two { grid-template-columns: 1fr; }
   .deep-web-search-global-fields { grid-template-columns: 1fr; }
-  .deep-web-search-provider-toggles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .deep-web-search-provider-row { gap: 12px; }
   .deep-web-search-provider-controls { gap: 12px; }
   .deep-web-search-provider-controls-codex { align-items: stretch; }
@@ -2989,7 +2987,6 @@ select:focus-visible {
     border-bottom: 1px solid var(--dsw-alias-border-l2);
   }
   .ext-nav-item { flex: 0 0 auto; width: auto; min-width: 156px; }
-  .deep-web-search-provider-toggles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 760px), (max-height: 540px) and (max-width: 900px) {
@@ -3199,7 +3196,7 @@ select:focus-visible {
   .ext-btn,
   .ext-actions .primary-btn { min-height: 40px; }
   .extension-config-editor.embedded { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
-  .deep-web-search-provider-toggles { grid-template-columns: 1fr; }
+  .deep-web-search-provider-head { flex-wrap: wrap; }
   .deep-web-search-config-actions { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
   .toaster {
     top: max(10px, env(safe-area-inset-top));
@@ -3398,19 +3395,14 @@ select:focus-visible {
   .extension-config-editor .deep-web-search-global-fields {
     grid-template-columns: minmax(0, 1fr);
   }
-  .extension-config-editor .deep-web-search-provider-toggles {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
   .provider-content .settings-section-head,
-  .extension-config-editor .deep-web-search-section-head {
+  .extension-config-editor .deep-web-search-section-head,
+  .extension-config-editor .deep-web-search-provider-head {
     flex-wrap: wrap;
   }
 }
 
 @container (max-width: 420px) {
-  .extension-config-editor .deep-web-search-provider-toggles {
-    grid-template-columns: minmax(0, 1fr);
-  }
   .provider-content .oauth-status .form-control {
     grid-template-columns: minmax(0, 1fr);
   }

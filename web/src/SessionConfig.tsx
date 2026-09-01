@@ -827,6 +827,19 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 		tinyfish: { name: copy('provider.tinyfish'), description: copy('provider.tinyfishDescription') },
 		duckduckgo: { name: copy('provider.duckduckgo'), description: copy('provider.duckduckgoDescription') },
 	} as const
+	type ProviderKey = keyof typeof providerCopy
+	const providerHead = (key: ProviderKey, status?: string) => (
+		<div className="deep-web-search-provider-copy">
+			<div className="deep-web-search-provider-head">
+				<div className="deep-web-search-provider-title"><span className={`deep-web-search-provider-mark ${key}`} aria-hidden /> <strong>{providerCopy[key].name}</strong>{status ? <span className="deep-web-search-provider-status">{status}</span> : null}</div>
+				<label className="deep-web-search-provider-toggle" title={copy('config.toggleHint')}>
+					<span className="deep-web-search-toggle-copy"><small>{toggles[key] ? copy('status.enabled') : copy('status.disabled')}</small></span>
+					<Switch ariaLabel={`${copy('config.toggles')} ${providerCopy[key].name}`} testid={`deep-web-search-toggle-${key}`} on={toggles[key]} onChange={on => setToggles(value => ({ ...value, [key]: on }))} />
+				</label>
+			</div>
+			<p>{providerCopy[key].description}</p>
+		</div>
+	)
 
 	return (
 		<section className={`extension-config-editor deep-web-search-config-editor${embedded ? ' embedded' : ''}`} data-testid={`extension-config-${name}`}>
@@ -838,15 +851,6 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 						<section className="deep-web-search-settings-section" aria-labelledby="deep-web-search-global-title">
 						<div className="deep-web-search-section-head">
 							<div><h4 id="deep-web-search-global-title">{copy('config.globalTitle')}</h4><p>{copy('config.globalHint')}</p></div>
-						</div>
-						<div className="deep-web-search-provider-toggles" data-testid="deep-web-search-provider-toggles">
-							<div className="deep-web-search-block-head"><strong>{copy('config.toggles')}</strong><small>{copy('config.toggleHint')}</small></div>
-							{(['codex', 'exa', 'tinyfish', 'duckduckgo'] as const).map(key => (
-								<label className="deep-web-search-provider-toggle" key={key}>
-									<span className="deep-web-search-toggle-copy"><strong>{providerCopy[key].name}</strong><small>{toggles[key] ? copy('status.enabled') : copy('status.disabled')}</small></span>
-										<Switch ariaLabel={`${copy('config.toggles')} ${providerCopy[key].name}`} testid={`deep-web-search-toggle-${key}`} on={toggles[key]} onChange={on => setToggles(value => ({ ...value, [key]: on }))} />
-								</label>
-							))}
 						</div>
 						<div className="form-grid two deep-web-search-global-fields">
 							<label className="form-control"><span>{copy('config.provider')}</span><select data-testid="deep-web-search-provider" value={provider} onChange={event => setProvider(event.target.value)}><option value="all">{copy('option.provider.all')}</option><option value="auto">{copy('option.provider.auto')}</option><option value="codex">{copy('option.provider.codex')}</option><option value="exa">{copy('option.provider.exa')}</option><option value="tinyfish">{copy('option.provider.tinyfish')}</option><option value="duckduckgo">{copy('option.provider.duckduckgo')}</option></select></label>
@@ -878,8 +882,8 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 							<div><h4 id="deep-web-search-providers-title">{copy('config.providersTitle')}</h4><p>{copy('config.providersHint')}</p></div>
 						</div>
 						<div className="deep-web-search-provider-list">
-							<article className="deep-web-search-provider-row">
-								<div className="deep-web-search-provider-copy"><div className="deep-web-search-provider-title"><span className="deep-web-search-provider-mark codex" aria-hidden /> <strong>{providerCopy.codex.name}</strong><span className="deep-web-search-provider-status">{copy('provider.codexStatus')}</span></div><p>{providerCopy.codex.description}</p></div>
+							<article className={`deep-web-search-provider-row${toggles.codex ? '' : ' is-off'}`} data-testid="deep-web-search-provider-codex">
+								{providerHead('codex', copy('provider.codexStatus'))}
 								<div className="deep-web-search-provider-controls deep-web-search-provider-controls-codex">
 									<ExtensionModelPicker
 										fieldLabel={copy('config.codexModel')}
@@ -898,19 +902,19 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 									<div className="deep-web-search-provider-value"><span className="deep-web-search-provider-badge">{copy('status.connected')}</span><code>codex-oauth</code></div>
 								</div>
 							</article>
-							<article className="deep-web-search-provider-row">
-								<div className="deep-web-search-provider-copy"><div className="deep-web-search-provider-title"><span className="deep-web-search-provider-mark exa" aria-hidden /> <strong>{providerCopy.exa.name}</strong></div><p>{providerCopy.exa.description}</p></div>
+							<article className={`deep-web-search-provider-row${toggles.exa ? '' : ' is-off'}`} data-testid="deep-web-search-provider-exa">
+								{providerHead('exa')}
 								<div className="deep-web-search-provider-controls">
 									<label className="form-control"><span>{copy('config.exaKey')}</span><input data-testid="deep-web-search-exa-key" type="password" value={exaKey} onChange={event => { setExaKey(event.target.value); setExaConfigured(false) }} placeholder={exaConfigured ? copy('config.configured') : copy('config.keyPlaceholder')} autoComplete="new-password" /><small className="form-hint">{copy('config.exaKeyHint')}</small></label>
 									<label className="form-control"><span>{copy('config.exaMode')}</span><select data-testid="deep-web-search-exa-mode" value={exaMode} onChange={event => setExaMode(event.target.value)}><option value="auto">{copy('option.exaMode.auto')}</option><option value="api">{copy('option.exaMode.api')}</option><option value="mcp">{copy('option.exaMode.mcp')}</option></select></label>
 								</div>
 							</article>
-							<article className="deep-web-search-provider-row">
-								<div className="deep-web-search-provider-copy"><div className="deep-web-search-provider-title"><span className="deep-web-search-provider-mark tinyfish" aria-hidden /> <strong>{providerCopy.tinyfish.name}</strong></div><p>{providerCopy.tinyfish.description}</p></div>
+							<article className={`deep-web-search-provider-row${toggles.tinyfish ? '' : ' is-off'}`} data-testid="deep-web-search-provider-tinyfish">
+								{providerHead('tinyfish')}
 								<div className="deep-web-search-provider-controls single"><label className="form-control"><span>{copy('config.tinyfishKey')}</span><input data-testid="deep-web-search-tinyfish-key" type="password" value={tinyfishKey} onChange={event => { setTinyfishKey(event.target.value); setTinyfishConfigured(false) }} placeholder={tinyfishConfigured ? copy('config.configured') : copy('config.keyPlaceholder')} autoComplete="new-password" /><small className="form-hint">{copy('config.tinyfishKeyHint')}</small></label></div>
 							</article>
-							<article className="deep-web-search-provider-row">
-								<div className="deep-web-search-provider-copy"><div className="deep-web-search-provider-title"><span className="deep-web-search-provider-mark duckduckgo" aria-hidden /> <strong>{providerCopy.duckduckgo.name}</strong></div><p>{providerCopy.duckduckgo.description}</p></div>
+							<article className={`deep-web-search-provider-row${toggles.duckduckgo ? '' : ' is-off'}`} data-testid="deep-web-search-provider-duckduckgo">
+								{providerHead('duckduckgo')}
 								<div className="deep-web-search-provider-value"><span className="deep-web-search-provider-badge free">{copy('status.noAuth')}</span></div>
 							</article>
 						</div>
