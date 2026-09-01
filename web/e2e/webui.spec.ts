@@ -326,6 +326,13 @@ test('markdown parse keeps fences, emphasis, CJK, and streaming closers', () => 
   const leftover = parseMarkdown('before **bold', false)
   expect(nodeTypes(leftover)).not.toContain('strong')
   expect(nodeValues(leftover, 'text')).toEqual(['before **bold'])
+
+  const table = parseMarkdown('| Col A | Col B |\n| --- | --- |\n| 1 | 2 |\n')
+  expect(nodeTypes(table)).toContain('table')
+
+  const mermaid = parseMarkdown('```mermaid\nflowchart LR\n  Start --> End\n```\n')
+  expect(nodeTypes(mermaid)).toContain('code')
+  expect(nodeValues(mermaid, 'code')).toEqual(['flowchart LR\n  Start --> End'])
 })
 
 test('chat and trajectory talk to the fake runtime', async ({ page }) => {
@@ -408,6 +415,29 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await page.getByTestId('session-row').first().click()
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
+})
+
+test('markdown table copy and mermaid diagram/source toggle', async ({ page }) => {
+  await page.goto('/')
+  await sendPrompt(page, 'e2e-markdown')
+  const asst = page.getByTestId('assistant-message').last()
+  await expect(asst.getByTestId('md-table')).toBeVisible()
+  await expect(asst.getByRole('columnheader', { name: 'Col A' })).toBeVisible()
+  await expect(asst.getByRole('cell', { name: '1' })).toBeVisible()
+  await asst.getByTestId('md-table-copy').click()
+  await expect(asst.getByTestId('md-table-copy')).toHaveAttribute('aria-label', '已复制')
+
+  const mermaid = asst.getByTestId('md-mermaid')
+  await expect(mermaid).toBeVisible()
+  await expect(mermaid.getByTestId('md-mermaid-diagram')).toHaveAttribute('aria-pressed', 'true')
+  await expect(mermaid.getByTestId('md-mermaid-svg').locator('svg')).toBeVisible()
+  await mermaid.getByTestId('md-mermaid-source').click()
+  await expect(mermaid.getByTestId('md-mermaid-source')).toHaveAttribute('aria-pressed', 'true')
+  await expect(mermaid.getByTestId('md-mermaid-code')).toContainText('flowchart LR')
+  await mermaid.getByTestId('md-mermaid-copy').click()
+  await expect(mermaid.getByTestId('md-mermaid-copy')).toHaveAttribute('aria-label', '已复制')
+  await mermaid.getByTestId('md-mermaid-diagram').click()
+  await expect(mermaid.getByTestId('md-mermaid-svg').locator('svg')).toBeVisible()
 })
 
 test('edit branches in place with attachments and fork opens a new session', async ({ page }) => {

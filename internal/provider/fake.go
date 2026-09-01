@@ -24,6 +24,14 @@ const WriteEnvToken = "e2e-write-env" //nolint:gosec // e2e prompt marker, not a
 // that extension intercept e2e holds until abort.
 const SleepInterceptToken = "e2e-sleep-intercept" //nolint:gosec // e2e prompt marker, not a credential
 
+// MarkdownToken makes the default fake assistant emit a GFM table and a
+// mermaid fence so WebUI Playwright can exercise those renderers without a
+// live model.
+const MarkdownToken = "e2e-markdown"
+
+// MarkdownFixture is the canned assistant text for MarkdownToken.
+const MarkdownFixture = "| Col A | Col B |\n| --- | --- |\n| 1 | 2 |\n\n```mermaid\nflowchart LR\n  Start --> End\n```\n"
+
 // Scripted is a test/dev Streamer with canned steps.
 type Scripted struct {
 	mu    sync.Mutex
@@ -82,6 +90,18 @@ func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.
 			Provider:   req.Provider,
 			Model:      req.Model,
 		}
+		return m, ctx.Err()
+	}
+	if lastMessageIsUserContaining(req, MarkdownToken) {
+		m := types.Message{
+			Role:       "assistant",
+			Content:    []types.Content{{Type: "text", Text: MarkdownFixture}},
+			StopReason: "stop",
+			Provider:   req.Provider,
+			Model:      req.Model,
+			Usage:      &types.Usage{Input: 8, Output: 2, TotalTokens: 10},
+		}
+		_ = emit(loop.AssistantDelta{Type: "text_delta", Delta: MarkdownFixture, Partial: m})
 		return m, ctx.Err()
 	}
 	s.mu.Lock()

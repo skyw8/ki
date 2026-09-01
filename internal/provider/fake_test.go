@@ -51,6 +51,14 @@ func TestScriptedWriteEnvOnlyOnLatestUser(t *testing.T) {
 	}
 }
 
+func TestScriptedMarkdownFixture(t *testing.T) {
+	s := &Scripted{}
+	msg, err := s.Stream(context.Background(), loop.Request{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: MarkdownToken}}}}}, func(loop.AssistantDelta) error { return nil })
+	if err != nil || msg.Text() != MarkdownFixture {
+		t.Fatalf("got %+v %v", msg, err)
+	}
+}
+
 func TestScriptedSkipsHoldWithoutToken(t *testing.T) {
 	s := &Scripted{}
 	msg, err := s.Stream(context.Background(), loop.Request{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "hello"}}}}}, func(loop.AssistantDelta) error { return nil })

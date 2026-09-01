@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@streamdown/cjk": "^1.0.3",
+    "@streamdown/mermaid": "^1.0.2",
     "@tanstack/react-virtual": "^3.14.10",
     "lucide-react": "^1.31.0",
     "pdfjs-dist": "^6.2.108",
