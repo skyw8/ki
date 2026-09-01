@@ -24,6 +24,7 @@ import (
 	"ki/internal/config"
 	"ki/internal/logging"
 	"ki/internal/loop"
+	"ki/internal/processenv"
 	"ki/internal/provider"
 	"ki/internal/server"
 )
@@ -464,7 +465,7 @@ func startDetached(cfg config.Config, addr string) (sf server.File, pid int, sta
 	}
 	//nolint:gosec // self is the current executable resolved by os.Executable.
 	cmd := exec.CommandContext(context.Background(), self, "serve", "--addr", addr)
-	cmd.Env = os.Environ()
+	cmd.Env = processenv.WithProxyEnvironment(processenv.ChildEnvironment())
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	cmd.SysProcAttr = detachedSysProcAttr()

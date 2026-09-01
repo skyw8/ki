@@ -7,11 +7,38 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"ki/internal/session"
 )
+
+func TestSidecarEnvCarriesProxyVariablesAndManifestOverrides(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://inherited.example:8080")
+	t.Setenv("HTTPS_PROXY", "http://inherited.example:8443")
+	d := Descriptor{
+		Name: "proxy-test",
+		root: "/tmp/proxy-test",
+		manifest: Manifest{Runtime: RuntimeSpec{Env: map[string]string{
+			"HTTP_PROXY": "http://manifest.example:8080",
+		}}},
+	}
+
+	values := make(map[string]string)
+	for _, item := range sidecarEnv(d, "", "/tmp/ki", "") {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	if values["HTTP_PROXY"] != "http://manifest.example:8080" {
+		t.Fatalf("HTTP_PROXY = %q", values["HTTP_PROXY"])
+	}
+	if values["HTTPS_PROXY"] != "http://inherited.example:8443" {
+		t.Fatalf("HTTPS_PROXY = %q", values["HTTPS_PROXY"])
+	}
+}
 
 func buildTestSidecar(t *testing.T) string {
 	t.Helper()

@@ -90,6 +90,7 @@
 - Windows 依次查找 `KI_GIT_BASH_PATH`、`CLAUDE_CODE_GIT_BASH_PATH`、Git for Windows 安装目录和 PATH 中的 `bash.exe`。
 - 找不到 Bash 时不注册 `Bash` 和 `Monitor`，server 仍正常启动。
 - 每次调用都是新的 `bash -lc` 进程，会加载用户 login profile；cwd 固定为 session cwd，`cd` 不会影响后续调用。
+- Bash、PowerShell、后台任务及其后代进程显式继承 Ki 启动时可见的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`ALL_PROXY`、`NO_PROXY`（含小写变体）；不会硬编码代理地址。
 - stdout/stderr 混排并持续写入无损临时文件；实时增量最多每 100ms 通过 `ToolExecutionUpdate` 推送一次。
 - 实时增量和模型可见结果使用跨 chunk 清理器去除 ANSI 及不可见控制字符，只保留换行、制表符和可显示文本；spill 文件仍保留原始字节。
 - 超过 2000 行或 50KB 时只把 JobStore 的滚动尾部放进 tool result，并附完整输出临时文件的绝对路径，可用 `Read` 的 `offset` / `limit` 分页读取；生成最终结果不会重新把完整 spill 文件载入内存。

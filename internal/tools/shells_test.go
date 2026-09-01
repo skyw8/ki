@@ -32,6 +32,30 @@ func TestDiscoverShellRuntimeNonWindowsDoesNotExposePowerShell(t *testing.T) {
 	}
 }
 
+func TestShellEnvironmentCarriesProxyVariables(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://proxy.example:8080")
+	t.Setenv("HTTPS_PROXY", "http://proxy.example:8443")
+	t.Setenv("NO_PROXY", "localhost")
+
+	env := (shellSpec{kind: shellBash, path: "/bin/bash"}).env()
+	values := make(map[string]string)
+	for _, item := range env {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	for key, want := range map[string]string{
+		"HTTP_PROXY":  "http://proxy.example:8080",
+		"HTTPS_PROXY": "http://proxy.example:8443",
+		"NO_PROXY":    "localhost",
+	} {
+		if values[key] != want {
+			t.Fatalf("%s = %q, want %q", key, values[key], want)
+		}
+	}
+}
+
 func TestFindWindowsBashEnvironmentPriority(t *testing.T) {
 	root := t.TempDir()
 	kiPath := filepath.Join(root, "ki", "bash.exe")

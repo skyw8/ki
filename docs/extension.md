@@ -139,7 +139,7 @@ my-ext/
 
 ## Sidecar 协议
 
-NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` + 平台必需 + `runtime.env`。全局 sidecar 不固定 `KI_SESSION_ID`/`KI_CWD`；session 相关 RPC 显式携带 `sessionId`。
+NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` + 平台必需 + Ki 启动时继承的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`ALL_PROXY`、`NO_PROXY`（含小写变体）+ `runtime.env`。`runtime.env` 对同名变量拥有最终覆盖权；install 命令、sidecar 及其子进程沿用该环境。全局 sidecar 不固定 `KI_SESSION_ID`/`KI_CWD`；session 相关 RPC 显式携带 `sessionId`。
 
 超时：`initialize` 10s；sync 生命周期 2s；`tool.execute` 120s；`command.invoke` 15s；provider stream start 10s。
 

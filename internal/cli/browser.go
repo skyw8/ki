@@ -7,6 +7,8 @@ import (
 	"net"
 	"os/exec"
 	"runtime"
+
+	"ki/internal/processenv"
 )
 
 var errBrowserUnavailable = errors.New("browser opener unavailable")
@@ -39,6 +41,7 @@ func openBrowser(url string) error {
 	}
 	//nolint:gosec // path is the OS browser opener selected by LookPath.
 	cmd := exec.CommandContext(context.Background(), path, args...)
+	cmd.Env = processenv.WithProxyEnvironment(processenv.ChildEnvironment())
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start browser opener: %w", err)
 	}

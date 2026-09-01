@@ -17,6 +17,10 @@ BUILD_WEB=0
 ATTACH=0
 FAKE=0
 SERVE_ARGS=()
+PROXY_ENV_KEYS=(
+  HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY FTP_PROXY
+  http_proxy https_proxy all_proxy no_proxy ftp_proxy
+)
 
 usage() {
   echo "usage: scripts/run.sh [options] [extra serve args...]"
@@ -64,6 +68,16 @@ else
     fi
   done
 fi
+
+# tmux servers keep their own environment snapshot. Refresh proxy variables
+# before respawning Ki so a long-lived tmux server does not run with stale data.
+for key in "${PROXY_ENV_KEYS[@]}"; do
+  if [[ -v $key ]]; then
+    tmux set-environment -t "$SESSION" "$key" "${!key}"
+  else
+    tmux set-environment -t "$SESSION" -u "$key" 2>/dev/null || true
+  fi
+done
 
 cmd=""
 [[ $FAKE == 1 ]] && cmd="KI_FAKE=1 "

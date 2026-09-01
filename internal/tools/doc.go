@@ -11,6 +11,9 @@
 // /bin/bash then PATH. When Bash is unavailable, Bash and Monitor are omitted
 // without preventing server startup. The session-scoped task store tracks
 // process groups, output files, status, exit code, cancellation, and progress.
+// Shell and other child processes receive Ki's inherited HTTP(S)/FTP/ALL proxy
+// variables explicitly, so commands launched by them keep the same network
+// routing. Runtime configuration remains authoritative for sidecar overrides.
 // Agent delegates through a narrow AgentRuntime supplied by server. Its child
 // session is created with session forkMode=tree and is bounded to three child
 // layers below the main session; SendMessage steers or resumes the stable child

@@ -23,5 +23,7 @@
 // Manifest errors, sidecar start failures, and undeclared capabilities disable
 // the package in toggles.json. Occupy RPC timeouts stay fail-open: the package
 // is skipped for that occupy and is not toggled off.
+// Install commands, sidecars, and their descendants inherit Ki's proxy
+// environment; runtime.env can explicitly override those variables.
 // Cross-package contract: docs/extension.md.
 package extension

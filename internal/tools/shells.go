@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"ki/internal/processenv"
 )
 
 type shellKind string
@@ -43,10 +45,12 @@ func (s shellSpec) args(command string) []string {
 }
 
 func (s shellSpec) env() []string {
+	// Why: shell commands can launch networked tools such as npm or curl, so
+	// pass the same proxy environment explicitly across every process boundary.
+	env := processenv.WithProxyEnvironment(processenv.ChildEnvironment())
 	if !s.setShellEnv {
-		return nil
+		return env
 	}
-	env := os.Environ()
 	for i, item := range env {
 		if strings.EqualFold(strings.SplitN(item, "=", 2)[0], "SHELL") {
 			env[i] = "SHELL=" + s.path

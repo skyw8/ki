@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"ki/internal/loop"
+	"ki/internal/processenv"
 	"ki/internal/tools"
 	"ki/internal/types"
 )
@@ -194,10 +195,25 @@ func sidecarEnv(d Descriptor, sessionID, home, cwd string) []string {
 			env = append(env, key+"="+v)
 		}
 	}
+	// Why: sidecars use an explicit allowlist, so network clients and their
+	// descendants would otherwise lose Ki's system proxy configuration.
+	env = processenv.WithProxyEnvironment(env)
 	for k, v := range d.manifest.Runtime.Env {
-		env = append(env, k+"="+v)
+		env = setEnvironmentValue(env, k, v)
 	}
 	return env
+}
+
+func setEnvironmentValue(env []string, key, value string) []string {
+	entry := key + "=" + value
+	for i, item := range env {
+		existing, _, ok := strings.Cut(item, "=")
+		if ok && strings.EqualFold(existing, key) {
+			env[i] = entry
+			return env
+		}
+	}
+	return append(env, entry)
 }
 
 // resolveRuntimeCommand uses PATH for a name with no slash and the extension
