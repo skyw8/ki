@@ -745,8 +745,11 @@ test('session info lists extension-loaded skills, commands, and prompt with head
 test('command palette is opaque, one-line, and inserts without sending', async ({ page }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const skillDir = join(home, 'skills', 'long-skill')
+  const promptDir = join(home, 'prompts')
   mkdirSync(skillDir, { recursive: true })
+  mkdirSync(promptDir, { recursive: true })
   writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: long-skill\ndescription: "Create, read, edit, or manipulate Word documents (docx files) or Word templates (dotx files). Triggers include any mention of Word, docx, or word document."\n---\nbody\n')
+  writeFileSync(join(promptDir, 'ro.md'), '---\ndescription: rewrite the supplied text\n---\n$@\n')
 
   await page.goto('/')
   await sendPrompt(page, `palette-e2e ${Date.now()}`)
@@ -792,7 +795,24 @@ test('command palette is opaque, one-line, and inserts without sending', async (
   await expect(page.getByTestId('composer-input')).toHaveValue('/reload')
   await expect(bubbles).toHaveCount(before)
 
-  await page.getByTestId('composer-input').press('Enter')
+  const body = '保留这段输入内容'
+  await composerInput.fill(body)
+  await page.getByTestId('command-btn').click()
+  await expect(composerInput).toHaveValue(body)
+  await page.getByTestId('command-item-ro').click()
+  await expect(composerInput).toHaveValue(`/ro ${body}`)
+  await expect(bubbles).toHaveCount(before)
+
+  await composerInput.fill('/ro')
+  await expect(page.getByTestId('command-palette')).toBeVisible()
+  await composerInput.press('Enter')
+  await expect(page.getByTestId('command-palette')).toHaveCount(0)
+  await expect(composerInput).toHaveValue('/ro')
+  await expect(bubbles).toHaveCount(before)
+
+  await composerInput.fill('/reload')
+  await composerInput.press('Enter')
+  await composerInput.press('Enter')
   const toast = page.getByTestId('toast')
   await expect(toast).toContainText('reloaded')
   await expect(toast).toHaveAttribute('data-kind', 'info')

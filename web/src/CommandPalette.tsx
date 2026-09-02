@@ -34,10 +34,19 @@ function paletteRows(query: string, items: SessionCommand[]): Row[] {
     }
     return []
   }
-  return items.filter(item => {
-    if (!namePart) return true
-    return item.name.toLowerCase().includes(namePart) || oneLine(item.description).toLowerCase().includes(namePart)
-  }).map(item => ({
+  return items.map((item, index) => {
+    const name = item.name.toLowerCase()
+    const desc = oneLine(item.description).toLowerCase()
+    // Why: an exact `/name` must beat a description match, otherwise a
+    // prompt template can lose to an unrelated extension command.
+    const score = !namePart ? 0
+      : name === namePart ? 0
+        : name.startsWith(namePart) ? 1
+          : name.includes(namePart) ? 2
+            : desc.includes(namePart) ? 3
+              : -1
+    return { item, index, score }
+  }).filter(row => row.score >= 0).sort((a, b) => a.score - b.score || a.index - b.index).map(({ item }) => ({
     key: `${item.source}:${item.name}`,
     kind: 'command' as const,
     item,
@@ -210,8 +219,12 @@ export function CommandPalette({
         onCloseRef.current()
         return
       }
-      // Already-typed `/name` or `/name args` (or a completed subcommand): let composer Enter send.
+      // Already-typed `/name` or `/name args` (or a completed subcommand):
+      // the first Enter only dismisses the palette. Without stopping this
+      // event, Composer would see the same Enter and submit the command.
       if (matchesDraft(queryRef.current, row)) {
+        event.preventDefault()
+        event.stopPropagation()
         onCloseRef.current()
         return
       }

@@ -592,8 +592,8 @@ for (const profile of profiles) {
         await expect(palette).toHaveCount(0)
       }
 
-      // The command button seeds `/`; clear it so remounting the composer on
-      // another tab does not intentionally reopen the palette.
+      // Clear any command draft so remounting the composer on another tab does
+      // not intentionally reopen the palette.
       await page.getByTestId('composer-input').fill('')
 
       await page.getByRole('button', { name: /添加图片或文件|Add image or file/ }).click()

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from 'react'
 import { IAttach, IClose, ICommand, IFile, ISend, IStop } from './icons'
 import type { Client } from './api'
 import { AttachmentImage } from './AttachmentImage'
@@ -17,6 +17,17 @@ import {
 import type { Content } from './types'
 
 export type Draft = { text: string; attachments: Content[] }
+
+type PaletteMode = 'replace' | 'prepend'
+
+function commandNeedsSpace(item: SessionCommand): boolean {
+  return !!item.argumentHint || item.source === 'skill' || !!item.completions?.length
+}
+
+function prependCommand(prefix: string, body: string, trailingSpace: boolean): string {
+  if (!body) return `${prefix}${trailingSpace ? ' ' : ''}`
+  return `${prefix}${/^\s/.test(body) ? '' : ' '}${body}`
+}
 
 function basename(p: string): string {
   const s = p.replace(/[\\/]+$/, '')
@@ -99,7 +110,17 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   const card = useRef<HTMLDivElement>(null)
   const paletteId = useId()
   const [palette, setPalette] = useState(false)
+  const [paletteQuery, setPaletteQuery] = useState<string | null>(null)
   const [paletteActive, setPaletteActive] = useState<string>()
+  const paletteMode = useRef<PaletteMode>('replace')
+  // Why: selecting a command changes the draft to slash-prefixed text. The
+  // following draft update must not reopen the palette after we just closed it.
+  const suppressAutoOpen = useRef(false)
+  const closePalette = useCallback(() => {
+    setPalette(false)
+    setPaletteQuery(null)
+    setPaletteActive(undefined)
+  }, [])
   useEffect(() => {
     const el = ref.current
     if (!el) return
@@ -107,18 +128,33 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`
   }, [draft.text])
   useEffect(() => { if (mode === 'edit') ref.current?.focus({ preventScroll: true }) }, [mode])
-  useEffect(() => { if (disabled) setPalette(false) }, [disabled])
   useEffect(() => {
-    if (mode === 'new' && draft.text === '/') setPalette(true)
-    if (mode === 'new' && !draft.text.startsWith('/')) setPalette(false)
-  }, [draft.text, mode])
+    if (disabled) closePalette()
+  }, [closePalette, disabled])
+  useEffect(() => {
+    if (mode !== 'new') return
+    if (suppressAutoOpen.current) {
+      suppressAutoOpen.current = false
+      return
+    }
+    if (draft.text.startsWith('/')) {
+      paletteMode.current = 'replace'
+      setPaletteQuery(draft.text)
+      setPalette(true)
+    } else {
+      closePalette()
+    }
+  }, [closePalette, draft.text, mode])
   const canSend = !uploading && (!!draft.text.trim() || draft.attachments.length > 0)
   const slashDraft = mode === 'new' && draft.text.trim().startsWith('/')
-  const paletteVisible = isCommandPaletteVisible(palette && !disabled, draft.text, commands)
+  const paletteSearch = paletteQuery ?? draft.text
+  const paletteVisible = isCommandPaletteVisible(palette && !disabled, paletteSearch, commands)
   const openPalette = () => {
     if (disabled) return
     void onEnsureSession?.()
-    if (!draft.text.startsWith('/')) onChange({ ...draft, text: '/' })
+    const slash = draft.text.startsWith('/')
+    paletteMode.current = slash ? 'replace' : 'prepend'
+    setPaletteQuery(slash ? draft.text : '/')
     setPalette(true)
     ref.current?.focus()
   }
@@ -126,17 +162,37 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   // completions.join) produced the screenshot capsule `/goal[pause|…]`.
   const insertCommand = (pick: PalettePick) => {
     if (pick.kind === 'completion') {
-      onChange({ ...draft, text: `/${pick.item.name} ${pick.value} ` })
-      setPalette(false)
+      const prefix = `/${pick.item.name}`
+      let text = `${prefix} ${pick.value} `
+      if (paletteMode.current === 'prepend') {
+        const suffix = draft.text.startsWith(prefix) ? draft.text.slice(prefix.length) : ''
+        const preserved = suffix ? (/^\s/.test(suffix) ? suffix : ` ${suffix}`) : ' '
+        text = `${prefix} ${pick.value}${preserved}`
+      }
+      suppressAutoOpen.current = text !== draft.text
+      onChange({ ...draft, text })
+      closePalette()
       requestAnimationFrame(() => ref.current?.focus())
       return
     }
     const item = pick.item
     const prefix = `/${item.name}`
-    const already = draft.text === prefix || draft.text.startsWith(`${prefix} `)
-    const text = already ? draft.text : `${prefix}${item.argumentHint || item.source === 'skill' || item.completions?.length ? ' ' : ''}`
+    const needsSpace = commandNeedsSpace(item)
+    const text = paletteMode.current === 'prepend'
+      ? prependCommand(prefix, draft.text, needsSpace)
+      : (draft.text === prefix || draft.text.startsWith(`${prefix} `))
+        ? draft.text
+        : `${prefix}${needsSpace ? ' ' : ''}`
+    suppressAutoOpen.current = text !== draft.text
     onChange({ ...draft, text })
-    if (!item.completions?.length) setPalette(false)
+    if (item.completions?.length) {
+      // Keep the original draft in the textarea, but use a command-only
+      // query so existing user text does not filter out every completion.
+      setPaletteQuery(`${prefix} `)
+      setPalette(true)
+    } else {
+      closePalette()
+    }
     requestAnimationFrame(() => ref.current?.focus())
   }
   return (
@@ -168,19 +224,22 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
           aria-expanded={mode === 'new' ? paletteVisible : undefined}
           aria-controls={mode === 'new' && paletteVisible ? paletteId : undefined}
           aria-activedescendant={mode === 'new' && paletteVisible ? paletteActive : undefined}
-          onChange={e => onChange({ ...draft, text: e.target.value })}
+          onChange={e => {
+            const text = e.target.value
+            if (paletteMode.current === 'replace' && palette) setPaletteQuery(text)
+            onChange({ ...draft, text })
+          }}
 		  onPaste={e => {
 			const files = Array.from(e.clipboardData.files)
 			if (files.length) onFiles?.(files)
 		  }}
           onKeyDown={e => {
-            if (e.key === 'Escape' && palette) { e.preventDefault(); setPalette(false); return }
+            if (e.key === 'Escape' && palette) { e.preventDefault(); closePalette(); return }
             if (e.key === 'Escape' && mode === 'edit') { e.preventDefault(); onCancel?.(); return }
             if (mode === 'new' && e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
-              if (palette) {
-                setPalette(false)
-                if (canSend) onSend()
+              if (paletteVisible) {
+                closePalette()
                 return
               }
               const ctrl = e.ctrlKey || e.metaKey
@@ -211,12 +270,12 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
           {mode === 'new' ? (
             <CommandPalette
               open={palette && !disabled}
-              query={draft.text}
+              query={paletteSearch}
               items={commands}
               anchor={card}
               id={paletteId}
               ariaLabel={t('cmd.open')}
-              onClose={() => setPalette(false)}
+              onClose={closePalette}
               onActiveDescendant={setPaletteActive}
               onPick={insertCommand}
             />
