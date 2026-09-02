@@ -64,3 +64,15 @@ func TestSchemaErrorsFormatting(t *testing.T) {
 		t.Fatal("nil schema should validate everything")
 	}
 }
+
+func TestValidateSchemaRejectsAdditionalProperties(t *testing.T) {
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"prompt": map[string]any{"type": "string"}},
+	}
+	errs := ValidateSchema(schema, map[string]any{"prompt": "work", "model": "other/model"})
+	if len(errs) != 1 || !strings.Contains(errs[0], "model: additional property is not allowed") {
+		t.Fatalf("additional property errors = %v", errs)
+	}
+}

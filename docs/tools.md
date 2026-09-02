@@ -6,7 +6,7 @@
 
 | 工具 | 参数 | 结果 |
 |---|---|---|
-| `Read` | 文本模型：`file_path`、行分页 `offset` / `limit` 或字节分页 `byte_offset` / `byte_limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
+| `Read` | 文本模型：`file_path`、可选行分页 `offset` / `limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
 | `Write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 Read |
 | `Edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。模型只看到简短摘要，diff/patch 在 details |
 | `apply_patch` | Responses custom freeform + Lark grammar | Codex 补丁格式：新增、删除、更新、移动；模型只收到 `A/M/D` 摘要或短错误，实际 diff 在 details |
@@ -14,7 +14,7 @@
 | `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
 | `PowerShell` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 仅 Windows 注册；PowerShell 原生命令、退出码、流式输出和后台任务与 Bash 使用同一生命周期 |
-| `Agent` | `description`、`prompt`；可选 `subagent_type`、`model`、`run_in_background` | 从当前 session branch fork 一个 `forkMode=tree` 子 session；前台返回 `completed`，后台返回 `async_launched` 和 `outputFile` |
+| `Agent` | `description`、`prompt`；可选 `subagent_type`、`run_in_background` | 从当前 session branch fork 一个 `forkMode=tree` 子 session，固定沿用当前 session 的 provider/model；前台返回 `completed`，后台返回 `async_launched` 和 `outputFile` |
 | `SendMessage` | `to`、`message`；可选 `summary` | 按稳定 `agentId` 在当前 run 边界 steer，或从 child transcript 续跑已完成/停止的后台 agent |
 | `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待 shell/agent 后台任务；返回有界输出、状态、结果和输出文件路径 |
 | `TaskStop` | `task_id`（或兼容的 `shell_id`） | 终止 shell/agent 后台任务并返回最终状态 |
@@ -24,8 +24,8 @@
 
 - 相对路径按 session cwd 解析；返回原文，不添加行号。
 - 普通文本和 shell spill 文件共用 `offset` / `limit` 分页；超过 2000 行或 50KB 时保留头部，并提示下一次读取的 `offset`。
-- 超过 50KB 的单行使用零基 `byte_offset` / `byte_limit` 继续读取；字节分页与行分页互斥，并保证 UTF-8 字符边界。
-- details 包含总字节/行数、当前输出大小、截断原因以及 `next_offset` 或 `next_byte_offset`。
+- 分页只使用 `offset` / `limit` 行范围参数；两者可单独使用，也可一起使用。
+- details 包含总字节/行数、当前输出大小、截断原因以及 `next_offset`。
 - `ToolProfile.input` 含 `image` 时才支持图片、PDF 和 `pages`；文本模式在执行阶段也会拒绝图片和 PDF。
 - 图片进入模型前限制到 2000×2000 和 4.5MB；需要时缩放并转成 PNG/JPEG，details 记录处理前后的尺寸、格式和大小。
 - 文件访问通过可替换的 `ReadOperations`；默认本地实现会在每个文件操作前后检查取消。
@@ -124,7 +124,7 @@
 - `Agent` 在 tool call 所属 parent session 的当前 leaf 上调用 `session.ForkAt`，传入 `forkMode=tree`。子 session 复制 root → leaf 的 history、provider/model/thinking 和附件，然后把 directive 作为新的 user message 运行现有 loop。
 - 子 agent 使用自己的 `runState`、extension Prepare、工具集和 `events.jsonl`；因此可以递归创建 tree child，且 child 的工具结果不会污染 parent context。主会话为深度 0，最多允许 Agent child 深度 3；深度 3 的 child 保留 `SendMessage`，但不再暴露 `Agent`。
 - `run_in_background=true` 与 parent prompt 脱钩，立即返回 `{"status":"async_launched", "agentId":…, "outputFile":…}`；`TaskOutput` 可等待它，`TaskStop` 可取消它。前台 agent 返回 Claude Code 兼容的 `completed` 结果对象。
-- `model` 覆盖只写入 child 的 `config.json` / `model_change`，不修改 parent session；空值继承 parent。
+- child 继承当前 session 的 provider、model 和 thinking effort；Agent schema 不接受模型覆盖，避免子 agent 跨供应商使用不同凭据或协议。
 - `cwd` override 和 `worktree` isolation 不在模型可见 schema 中；child 始终继承 parent cwd，隔离依靠 session tree，不会静默提供未实现的隔离。
 - 当前 Agent prompt/schema 只描述普通 parent → child delegation；不描述 Agent Teams 的命名成员、`team_name`、permission mode、roster 或 peer messaging。
 - 后台 Agent 返回的 `agentId` 可传给 `SendMessage`；运行中消息在当前 model/tool round 后注入，已完成或停止的 child 从原 session transcript 续跑。`TaskOutput` 只读状态/结果，`TaskStop` 只停止当前 run。

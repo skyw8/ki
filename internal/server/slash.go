@@ -601,7 +601,7 @@ func (s *Server) dispatchQueue(id string) {
 		return
 	}
 	enableRunInbox(st)
-	go s.runPrompt(ctx, st, id, item.Content, nil, "", "", "", s.takeNextTurn(id))
+	go s.runPrompt(ctx, st, id, item.Content, nil, "", item.Origin, "", s.takeNextTurn(id))
 }
 
 func writeHandled(w http.ResponseWriter, notice string, isErr bool) {

@@ -60,24 +60,9 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 		s.sidx.Remove(childID)
 	}
 
-	// A model override belongs to the child session config. Persisting it as a
-	// model_change entry keeps replay and request_header metadata consistent.
-	if strings.TrimSpace(req.Model) != "" {
-		ref, model, resolveErr := s.registry.ResolveSpec(req.Model, child.Config.Provider)
-		if resolveErr != nil {
-			cleanupChild()
-			return tools.AgentLaunch{}, fmt.Errorf("resolve model: %w", resolveErr)
-		}
-		effort, resolveErr := resolveThinking(model, child.Config.ThinkingEffort)
-		if resolveErr != nil {
-			cleanupChild()
-			return tools.AgentLaunch{}, resolveErr
-		}
-		if err := child.SetModelAndThinking(ref.Provider, ref.Model, effort); err != nil {
-			cleanupChild()
-			return tools.AgentLaunch{}, fmt.Errorf("set model: %w", err)
-		}
-	}
+	// Why: ForkAt already copies the active provider/model. Agent delegation
+	// must stay on that provider so a child cannot silently cross credentials or
+	// protocol boundaries through a model override.
 	_ = child.Close()
 
 	outputFile := filepath.Join(childDir, "events.jsonl")
@@ -220,8 +205,8 @@ func (s *Server) restoreAgentTasks(infos []session.Info) {
 			}
 			base := tools.AgentRequest{
 				Description: meta.Description, SubagentType: meta.SubagentType,
-				Model: meta.Model, ParentSessionID: meta.ParentSessionID,
-				SessionID: meta.SessionID, MetadataPath: metadataPath, OutputFile: meta.OutputFile,
+				ParentSessionID: meta.ParentSessionID,
+				SessionID:       meta.SessionID, MetadataPath: metadataPath, OutputFile: meta.OutputFile,
 			}
 			return s.agentRunner(meta.SessionID, base)(ctx, taskID, prompt, background)
 		})
@@ -262,7 +247,7 @@ func (s *Server) notifyAgentCompletion(parentID, taskID, description, outputFile
 	if !ok {
 		return
 	}
-	if _, err := session.Enqueue(dir, content); err != nil {
+	if _, err := session.EnqueueWithOrigin(dir, content, "agent:"+taskID); err != nil {
 		return
 	}
 	s.publishQueueChanged(parentID)

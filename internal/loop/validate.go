@@ -22,6 +22,13 @@ func ValidateSchema(schema map[string]any, args map[string]any) []string {
 		return nil
 	}
 	props, _ := schema["properties"].(map[string]any)
+	if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
+		for name := range args {
+			if _, known := props[name]; !known {
+				errs = append(errs, fmt.Sprintf("  - %s: additional property is not allowed", name))
+			}
+		}
+	}
 	if req, ok := schema["required"].([]any); ok {
 		for _, r := range req {
 			name, _ := r.(string)

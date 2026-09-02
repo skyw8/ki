@@ -28,7 +28,6 @@ type AgentRequest struct {
 	Description     string
 	Prompt          string
 	SubagentType    string
-	Model           string
 	RunInBackground bool
 	ParentSessionID string
 	ParentEntryID   string
@@ -93,7 +92,6 @@ type AgentMetadata struct {
 	Description     string     `json:"description,omitempty"`
 	Prompt          string     `json:"prompt,omitempty"`
 	SubagentType    string     `json:"subagent_type,omitempty"`
-	Model           string     `json:"model,omitempty"`
 	OutputFile      string     `json:"output_file,omitempty"`
 	Status          TaskStatus `json:"status"`
 	Result          string     `json:"result,omitempty"`
@@ -142,7 +140,6 @@ type agentTask struct {
 	metadataPath    string
 	parentSessionID string
 	subagentType    string
-	model           string
 	pending         []string
 	runCount        uint64
 	notifiedRun     uint64
@@ -171,7 +168,6 @@ func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile str
 		metadataPath:    req.MetadataPath,
 		parentSessionID: req.ParentSessionID,
 		subagentType:    req.SubagentType,
-		model:           req.Model,
 	}
 	s.mu.Lock()
 	if s.closed {
@@ -311,7 +307,7 @@ func (t *agentTask) metadataLocked() AgentMetadata {
 	return AgentMetadata{
 		Version: 1, TaskID: t.snap.TaskID, SessionID: t.snap.SessionID,
 		ParentSessionID: t.parentSessionID, Description: t.snap.Description,
-		Prompt: t.snap.Prompt, SubagentType: t.subagentType, Model: t.model,
+		Prompt: t.snap.Prompt, SubagentType: t.subagentType,
 		OutputFile: t.snap.OutputFile, Status: t.snap.Status, Result: t.snap.Result,
 		Error: t.snap.Error, ToolUseCount: t.snap.ToolUseCount,
 		TotalTokens: t.snap.TotalTokens, StartedAt: t.snap.StartedAt,
@@ -372,7 +368,7 @@ func (s *AgentStore) LoadMetadata(path string, run AgentRun) (bool, error) {
 		},
 		done: make(chan struct{}), doneClosed: true, run: run, metadataPath: path,
 		parentSessionID: meta.ParentSessionID, subagentType: meta.SubagentType,
-		model: meta.Model, pending: append([]string(nil), meta.Pending...), runCount: meta.RunCount,
+		pending: append([]string(nil), meta.Pending...), runCount: meta.RunCount,
 		notifiedRun: meta.NotifiedRun,
 	}
 	if task.snap.Status == TaskRunning || task.snap.Status == TaskPending {

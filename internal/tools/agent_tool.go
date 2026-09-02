@@ -11,7 +11,7 @@ import (
 
 const agentPrompt = `Launch a new agent to handle complex, multi-step tasks autonomously.
 
-The Agent tool launches a specialized child agent that works independently with its own conversation branch. Specify subagent_type to select a specialized agent, or omit it to use the general-purpose agent. The child starts from the current conversation fork, so give it a directive describing exactly what to do.
+The Agent tool launches a specialized child agent that works independently with its own conversation branch. Specify subagent_type to select a specialized agent, or omit it to use the general-purpose agent. The child starts from the current conversation fork and uses the current session's model provider and model, so give it a directive describing exactly what to do.
 
 ## When to use
 
@@ -43,7 +43,6 @@ func (agentTool) Parameters() map[string]any {
 			"description":       map[string]any{"type": "string", "description": "A short (3-5 word) description of the task."},
 			"prompt":            map[string]any{"type": "string", "description": "The task for the agent to perform."},
 			"subagent_type":     map[string]any{"type": "string", "description": "The type of specialized agent to use for this task."},
-			"model":             map[string]any{"type": "string", "description": "Optional model override for this agent."},
 			"run_in_background": map[string]any{"type": "boolean", "description": "Set to true to run this agent in the background. You will be notified when it completes."},
 		},
 	}
@@ -61,7 +60,6 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) loop.ToolRe
 		Description:     stringArg(args, "description", "Running task"),
 		Prompt:          stringArg(args, "prompt", ""),
 		SubagentType:    stringArg(args, "subagent_type", "general-purpose"),
-		Model:           stringArg(args, "model", ""),
 		RunInBackground: agentBoolArg(args, "run_in_background", false),
 	}
 	if req.Prompt == "" {

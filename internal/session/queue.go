@@ -30,6 +30,7 @@ var (
 type QueuedItem struct {
 	ID      string          `json:"id"`
 	Content []types.Content `json:"content"`
+	Origin  string          `json:"origin,omitempty"`
 }
 
 func queuePath(dir string) string { return filepath.Join(dir, "queue.json") }
@@ -385,6 +386,11 @@ func writeQueue(dir string, items []QueuedItem) error {
 
 // Enqueue appends a user turn. The session directory must already exist.
 func Enqueue(dir string, content []types.Content) (QueuedItem, error) {
+	return EnqueueWithOrigin(dir, content, "")
+}
+
+// EnqueueWithOrigin appends a queued turn and preserves its non-human origin.
+func EnqueueWithOrigin(dir string, content []types.Content, origin string) (QueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
 	defer gate.Unlock()
@@ -399,7 +405,7 @@ func Enqueue(dir string, content []types.Content) (QueuedItem, error) {
 	if err != nil {
 		return QueuedItem{}, fmt.Errorf("queue id: %w", err)
 	}
-	item := QueuedItem{ID: id, Content: content}
+	item := QueuedItem{ID: id, Content: content, Origin: origin}
 	items = append(items, item)
 	if err := writeQueue(dir, items); err != nil {
 		return QueuedItem{}, err

@@ -326,6 +326,9 @@ func TestAgentToolSchemaAndBackgroundResult(t *testing.T) {
 	if err := tool.Validate(map[string]any{"description": "child", "prompt": "do it", "run_in_background": true}); err != nil {
 		t.Fatal(err)
 	}
+	if err := tool.Validate(map[string]any{"description": "child", "prompt": "do it", "model": "other/model"}); err == nil {
+		t.Fatal("model override was accepted")
+	}
 	if err := tool.Validate(map[string]any{"description": "child"}); err == nil {
 		t.Fatal("missing prompt was accepted")
 	}
@@ -337,6 +340,9 @@ func TestAgentToolSchemaAndBackgroundResult(t *testing.T) {
 		if properties[name] != nil {
 			t.Fatalf("Agent schema leaked team field %s", name)
 		}
+	}
+	if properties["model"] != nil {
+		t.Fatal("Agent schema exposed a model override")
 	}
 	if strings.Contains(strings.ToLower(tool.Prompt()), "team") {
 		t.Fatalf("Agent prompt leaked Agent Teams guidance: %q", tool.Prompt())

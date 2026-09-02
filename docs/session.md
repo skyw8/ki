@@ -7,7 +7,7 @@
 `{sessions.root}/<encoded-cwd>/<timestamp>_<uuidv7>/`
 
 - `encoded-cwd`：绝对路径去掉盘符，`/` `\` `:` 换成 `-`，两边加 `--`。
-- 目录内：`events.jsonl` + `config.json`；忙时排队的 user 在 `queue.json`（最多 100 条 FIFO，不进消息树直到出队开跑）；扩展 FIFO 在 `ext-queue.json`；不触发运行但要进入后续 prompt 的正常 user message 暂存于 `context-queue.json`（最多 100 条，按序提交）。`config.json` / `queue.json` / `ext-queue.json` / `context-queue.json` 经同目录临时文件 + rename 原子落盘，避免并发读到截断 JSON。
+- 目录内：`events.jsonl` + `config.json`；忙时排队的 user 在 `queue.json`（最多 100 条 FIFO，不进消息树直到出队开跑，队列项可带 `origin` 标记非人类消息）；扩展 FIFO 在 `ext-queue.json`；不触发运行但要进入后续 prompt 的正常 user message 暂存于 `context-queue.json`（最多 100 条，按序提交）。`config.json` / `queue.json` / `ext-queue.json` / `context-queue.json` 经同目录临时文件 + rename 原子落盘，避免并发读到截断 JSON。
 
 ## jsonl
 

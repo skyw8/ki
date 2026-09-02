@@ -323,23 +323,18 @@ func TestEditBatchUsesOneOriginalAndReturnsDiffDetails(t *testing.T) {
 	}
 }
 
-func TestReadBytePagingAndImageResize(t *testing.T) {
+func TestReadPagingAndImageResize(t *testing.T) {
 	cwd := t.TempDir()
-	textPath := filepath.Join(cwd, "long.txt")
-	_ = os.WriteFile(textPath, []byte(strings.Repeat("你", 20000)), 0o600)
+	textPath := filepath.Join(cwd, "lines.txt")
+	_ = os.WriteFile(textPath, []byte("one\ntwo\nthree\n"), 0o600)
 	read := readTool{cwd: cwd, rich: true}
-	first := read.Execute(context.Background(), map[string]any{"file_path": textPath})
-	readDetailsValue, ok := first.Details.(readDetails)
-	if !ok {
-		t.Fatalf("first details = %#v", first.Details)
+	page := read.Execute(context.Background(), map[string]any{"file_path": textPath, "offset": 2, "limit": 1})
+	if page.IsError || !strings.HasPrefix(page.Content[0].Text, "two\n") {
+		t.Fatalf("line page: %+v", page)
 	}
-	details := readDetailsValue.Truncation
-	if !details.Truncated || details.NextByteOffset == 0 || !utf8.ValidString(first.Content[0].Text) {
-		t.Fatalf("first page: %+v", first)
-	}
-	next := read.Execute(context.Background(), map[string]any{"file_path": textPath, "byte_offset": details.NextByteOffset})
-	if next.IsError || !utf8.ValidString(next.Content[0].Text) {
-		t.Fatalf("byte page: %+v", next)
+	params := read.Parameters()["properties"].(map[string]any)
+	if params["byte_offset"] != nil || params["byte_limit"] != nil {
+		t.Fatal("Read schema still exposes byte paging")
 	}
 
 	imagePath := filepath.Join(cwd, "wide.png")

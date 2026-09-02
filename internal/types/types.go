@@ -79,7 +79,7 @@ type Message struct {
 	Details any `json:"details,omitempty"`
 	// ToolType selects the matching function/custom output wire item.
 	ToolType string `json:"toolType,omitempty"`
-	// Origin marks extension-enqueued user turns (extension:<name>). Empty is the human user.
+	// Origin marks non-human user turns (for example extension:<name> or agent:<task-id>). Empty is the human user.
 	Origin     string            `json:"origin,omitempty"`
 	External   map[string]string `json:"external,omitempty"`
 	IsError    bool              `json:"isError,omitempty"`

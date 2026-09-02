@@ -50,14 +50,13 @@ func (localReadOperations) ReadFile(ctx context.Context, path string) ([]byte, e
 }
 
 type truncationDetails struct {
-	Truncated      bool   `json:"truncated"`
-	Reason         string `json:"reason,omitempty"`
-	TotalBytes     int    `json:"total_bytes"`
-	TotalLines     int    `json:"total_lines"`
-	OutputBytes    int    `json:"output_bytes"`
-	OutputLines    int    `json:"output_lines"`
-	NextOffset     int    `json:"next_offset,omitempty"`
-	NextByteOffset int    `json:"next_byte_offset,omitempty"`
+	Truncated   bool   `json:"truncated"`
+	Reason      string `json:"reason,omitempty"`
+	TotalBytes  int    `json:"total_bytes"`
+	TotalLines  int    `json:"total_lines"`
+	OutputBytes int    `json:"output_bytes"`
+	OutputLines int    `json:"output_lines"`
+	NextOffset  int    `json:"next_offset,omitempty"`
 }
 
 type readDetails struct {
@@ -88,11 +87,9 @@ Usage:
 
 func (t readTool) Parameters() map[string]any {
 	properties := map[string]any{
-		"file_path":   map[string]any{"type": "string", "description": "The absolute path to the file to read"},
-		"offset":      map[string]any{"type": "integer", "description": "The line number to start reading from. Only provide if the file is too large to read at once"},
-		"limit":       map[string]any{"type": "integer", "description": "The number of lines to read. Only provide if the file is too large to read at once."},
-		"byte_offset": map[string]any{"type": "integer", "minimum": 0, "description": "Zero-based byte position for continuing a line larger than the normal output limit. Cannot be combined with offset or limit."},
-		"byte_limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": maxBytes, "description": "Maximum bytes to return in byte mode. Defaults to 51200. Cannot be combined with offset or limit."},
+		"file_path": map[string]any{"type": "string", "description": "The absolute path to the file to read"},
+		"offset":    map[string]any{"type": "integer", "description": "The line number to start reading from. Only provide if the file is too large to read at once"},
+		"limit":     map[string]any{"type": "integer", "description": "The number of lines to read. Only provide if the file is too large to read at once."},
 	}
 	if t.rich {
 		properties["pages"] = map[string]any{"type": "string", "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Only applicable to PDF files. Maximum 20 pages per request."}
@@ -117,21 +114,6 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		return errRes("file_path is required")
 	}
 	abs := resolve(t.cwd, path)
-	if _, byteMode := args["byte_offset"]; byteMode {
-		if _, ok := args["offset"]; ok {
-			return errRes("byte_offset cannot be combined with offset or limit")
-		}
-		if _, ok := args["limit"]; ok {
-			return errRes("byte_offset cannot be combined with offset or limit")
-		}
-	} else if _, ok := args["byte_limit"]; ok {
-		if _, lineOffset := args["offset"]; lineOffset {
-			return errRes("byte_limit cannot be combined with offset or limit")
-		}
-		if _, lineLimit := args["limit"]; lineLimit {
-			return errRes("byte_limit cannot be combined with offset or limit")
-		}
-	}
 	ops := t.ops
 	if ops == nil {
 		ops = localReadOperations{}
@@ -184,31 +166,6 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	if !utf8.ValidString(text) {
 		return errRes("binary file; cannot read as text")
 	}
-	totalLines := strings.Count(text, "\n") + 1
-	if byteOffset, byteMode := asInt(args["byte_offset"]); byteMode || args["byte_limit"] != nil {
-		if byteOffset < 0 || byteOffset > len(data) {
-			return errRes("byte_offset is beyond end of file")
-		}
-		if byteOffset < len(data) && !utf8.RuneStart(data[byteOffset]) {
-			return errRes("byte_offset must be on a UTF-8 character boundary")
-		}
-		byteLimit := maxBytes
-		if v, ok := asInt(args["byte_limit"]); ok {
-			byteLimit = min(v, maxBytes)
-		}
-		end := min(len(data), byteOffset+byteLimit)
-		for end > byteOffset && end < len(data) && !utf8.RuneStart(data[end]) {
-			end--
-		}
-		chunk := string(data[byteOffset:end])
-		d := &truncationDetails{Truncated: end < len(data), TotalBytes: len(data), TotalLines: totalLines, OutputBytes: end - byteOffset, OutputLines: strings.Count(chunk, "\n") + 1}
-		if d.Truncated {
-			d.Reason = "bytes"
-			d.NextByteOffset = end
-			chunk += fmt.Sprintf("\n\n[Showing bytes %d-%d of %d. Use byte_offset=%d to continue.]", byteOffset, end-1, len(data), end)
-		}
-		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: chunk}}, Details: readDetails{Truncation: d}}
-	}
 	lines := strings.Split(text, "\n")
 	off := 1
 	if v, ok := asInt(args["offset"]); ok {
@@ -243,15 +200,6 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		d.Truncated, d.Reason = true, "bytes_or_lines"
 		if outputLines < len(lines)-start {
 			d.NextOffset = off + outputLines
-		}
-		if outputLines == 1 && len(selected) > len(chunk) {
-			lineStart := 0
-			for i := range start {
-				lineStart += len(lines[i]) + 1
-			}
-			d.NextOffset = 0
-			d.NextByteOffset = lineStart + len(chunk)
-			note = fmt.Sprintf("\n\n[Line %d exceeds the byte limit. Use byte_offset=%d to continue.]", off, d.NextByteOffset)
 		}
 	}
 	return loop.ToolResult{Content: []types.Content{{Type: "text", Text: chunk + note}}, Details: readDetails{Truncation: d}}

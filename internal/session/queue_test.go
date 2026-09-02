@@ -37,6 +37,21 @@ func TestQueueEnqueueDequeueAndCap(t *testing.T) {
 	}
 }
 
+func TestQueuePreservesOrigin(t *testing.T) {
+	dir := t.TempDir()
+	item, err := EnqueueWithOrigin(dir, []types.Content{{Type: "text", Text: "done"}}, "agent:a-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := Dequeue(dir)
+	if err != nil || !ok {
+		t.Fatalf("dequeue = %+v, %v, %v", got, ok, err)
+	}
+	if got.ID != item.ID || got.Origin != "agent:a-1" {
+		t.Fatalf("queued origin = %+v", got)
+	}
+}
+
 func TestQueueConcurrentMutationsKeepAllItems(t *testing.T) {
 	dir := t.TempDir()
 	const count = 50
