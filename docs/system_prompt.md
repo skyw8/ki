@@ -17,7 +17,7 @@ System prompt 按以下顺序组装：
 9. **运行系统**：输出 OS（macOS、Windows、Linux 或 WSL）和架构。
 10. **当前环境**：输出 session cwd、资源快照创建日期和时区。
 
-Prompt templates 不直接进入 system prompt，只用于 slash command 展开。扩展工具通过“可用工具”层体现。
+Prompt templates 不直接进入 system prompt，只用于 slash command 展开。模板中的 `$1`、`$@` 等占位符会替换为命令参数；没有占位符时，参数不会自动追加。扩展工具通过“可用工具”层体现。
 
 ## Reload
 
