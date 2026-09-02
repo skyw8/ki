@@ -5,7 +5,7 @@ import { useI18n, type Lang, type MsgKey, type TFn } from './i18n'
 import { ModelPickerDialog } from './ModelPickerDialog'
 import { toast } from './toast'
 import { localizedExtensionText } from './ExtensionPanel'
-import type { CatalogContribution, CatalogExtension, CatalogSkill, ExtensionConfig, ExtensionI18n, ModelInfo, SessionCommand, SessionDetail } from './types'
+import type { CatalogContribution, CatalogExtension, CatalogSkill, CatalogTool, ExtensionConfig, ExtensionI18n, ModelInfo, SessionCommand, SessionDetail } from './types'
 
 const SOURCE_KEY: Record<string, MsgKey> = {
   home: 'cfg.src.home',
@@ -430,42 +430,45 @@ function ContribGroup({
 export function SettingsToggles({
   kind,
   api,
+  sessionId,
   workspaceId,
   onConfigure,
   onChanged,
 }: {
-  kind: 'skills' | 'extensions'
+  kind: 'skills' | 'tools' | 'extensions'
   api: Client
+  sessionId?: string | null
   workspaceId?: string | null
   onConfigure?: (name: string) => void
   onChanged?: () => void | Promise<void>
 }) {
   const { t, lang } = useI18n()
-  const [items, setItems] = useState<Array<CatalogSkill | CatalogExtension>>([])
+  const [items, setItems] = useState<Array<CatalogSkill | CatalogTool | CatalogExtension>>([])
   const [loading, setLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const next = kind === 'skills' ? await api.skills(workspaceId) : await api.extensions()
+      const next = kind === 'skills' ? await api.skills(workspaceId) : kind === 'tools' ? await api.tools(sessionId, workspaceId) : await api.extensions()
       setItems(next)
     } catch (e) {
       toast.from(e)
     } finally {
       setLoading(false)
     }
-  }, [api, kind, workspaceId])
+  }, [api, kind, sessionId, workspaceId])
 
   useEffect(() => { void load() }, [load])
 
-  const patch = async (next: Array<CatalogSkill | CatalogExtension>) => {
+  const patch = async (next: Array<CatalogSkill | CatalogTool | CatalogExtension>) => {
     const prev = items
     setItems(next)
     try {
       const disabled = next.filter(s => !s.enabled).map(s => s.name)
       if (kind === 'skills') await api.patchSkills(disabled)
+      else if (kind === 'tools') await api.patchTools(disabled, sessionId, workspaceId)
       else await api.patchExtensions(disabled)
-      const listed = kind === 'skills' ? await api.skills(workspaceId) : await api.extensions()
+      const listed = kind === 'skills' ? await api.skills(workspaceId) : kind === 'tools' ? await api.tools(sessionId, workspaceId) : await api.extensions()
       setItems(listed)
       await onChanged?.()
     } catch (e) {
@@ -474,9 +477,10 @@ export function SettingsToggles({
     }
   }
 
-  const empty = kind === 'skills' ? t('cfg.skillsEmpty') : t('cfg.extensionsEmpty')
-  const title = kind === 'skills' ? t('settings.skills') : t('settings.extensions')
-  const hint = kind === 'skills' ? t('settings.skillsHint') : t('settings.extensionsHint')
+  const empty = kind === 'skills' ? t('cfg.skillsEmpty') : kind === 'tools' ? t('cfg.toolsEmpty') : t('cfg.extensionsEmpty')
+  const title = kind === 'skills' ? t('settings.skills') : kind === 'tools' ? t('settings.tools') : t('settings.extensions')
+  const hint = kind === 'skills' ? t('settings.skillsHint') : kind === 'tools' ? t('settings.toolsHint') : t('settings.extensionsHint')
+  const itemKind = kind === 'skills' ? 'skill' : kind === 'tools' ? 'tool' : 'extension'
   return (
     <div className="preference-page" data-testid={`${kind}-settings`}>
       <header className="settings-page-title">
@@ -489,14 +493,14 @@ export function SettingsToggles({
       {items.length === 0 && !loading ? <p className="cfg-empty">{empty}</p> : (
         <ul className="cfg-list">
           {items.map(item => (
-            <li key={item.name} className="cfg-row" data-testid={`cfg-${kind === 'skills' ? 'skill' : 'extension'}`} data-name={item.name}>
+            <li key={item.name} className="cfg-row" data-testid={`cfg-${itemKind}`} data-name={item.name}>
               <div className="cfg-copy">
                 <div className="cfg-name">
                   {item.name}
-                  {kind === 'skills' && 'source' in item && item.source ? <span className="cfg-src">{sourceLabel(item.source, t)}</span> : null}
+                  {kind !== 'extensions' && 'source' in item && item.source ? <span className="cfg-src">{sourceLabel(item.source, t)}</span> : null}
                 </div>
-              {'description' in item && kind === 'extensions' && extensionDescription(item, lang) ? <p className="cfg-desc">{extensionDescription(item, lang)}</p> : null}
-              {'description' in item && kind !== 'extensions' && item.description ? <p className="cfg-desc">{item.description}</p> : null}
+	              {'description' in item && kind === 'extensions' && extensionDescription(item, lang) ? <p className="cfg-desc">{extensionDescription(item, lang)}</p> : null}
+	              {'description' in item && kind !== 'extensions' && item.description ? <p className="cfg-desc">{item.description}</p> : null}
 	              {'error' in item && item.error ? <p className="cfg-desc settings-error-inline" data-testid={`${kind}-error-${item.name}`} role="alert">{item.error}</p> : null}
 	              </div>
 	              {/* Why: the inspector catalog is enabled extensions only.
@@ -506,7 +510,7 @@ export function SettingsToggles({
 	                  use the same inspector as configurable extensions. */}
 	              {kind === 'extensions' && item.enabled ? <button type="button" className="cfg-btn" data-testid={`cfg-configure-${item.name}`} onClick={() => onConfigure?.(item.name)}>{t('cfg.configure')}</button> : null}
               <Switch
-                testid={`${kind === 'skills' ? 'skill' : 'extension'}-on-${item.name}`}
+                testid={`${itemKind}-on-${item.name}`}
                 ariaLabel={`${t('cfg.enabled')} ${item.name}`}
                 on={item.enabled}
                 onChange={on => void patch(items.map(s => s.name === item.name ? { ...s, enabled: on } : s))}

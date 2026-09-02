@@ -176,6 +176,23 @@ export class Client {
     return this.json('/v1/skills', { method: 'PATCH', body: JSON.stringify({ disabled }) })
   }
 
+  async tools(sessionId?: string | null, workspaceId?: string | null): Promise<import('./types').CatalogTool[]> {
+    const p = new URLSearchParams()
+    if (sessionId) p.set('sessionId', sessionId)
+    if (workspaceId) p.set('workspaceId', workspaceId)
+    const q = p.size ? `?${p}` : ''
+    const got = await this.json<{ items: import('./types').CatalogTool[] }>(`/v1/tools${q}`)
+    return got.items ?? []
+  }
+
+  patchTools(disabled: string[], sessionId?: string | null, workspaceId?: string | null): Promise<{ items: import('./types').CatalogTool[] }> {
+    const p = new URLSearchParams()
+    if (sessionId) p.set('sessionId', sessionId)
+    if (workspaceId) p.set('workspaceId', workspaceId)
+    const q = p.size ? `?${p}` : ''
+    return this.json(`/v1/tools${q}`, { method: 'PATCH', body: JSON.stringify({ disabled }) })
+  }
+
   async extensions(): Promise<import('./types').CatalogExtension[]> {
     const got = await this.json<{ items: import('./types').CatalogExtension[] }>('/v1/extensions')
     return got.items ?? []

@@ -2,6 +2,14 @@
 
 普通工具的对外名字和 input schema 跟 Claude Code；文本结果跟 pi。内置工具由已解析模型对应的 `ToolProfile` 选择，包入口见 `internal/tools/doc.go`。
 
+## 全局开关
+
+内置工具的全局启用状态保存在 `{KI_HOME}/toggles.json` 的 `tools.disabled`。`GET/PATCH /v1/tools` 提供目录和开关；目录按当前 session 的模型能力生成，因此 Responses 的 freeform 模型显示 `apply_patch`，普通模型显示 `Write` / `Edit`。保存的名称仍是全局的，切换模型后同名设置继续生效。开关在下一次 occupy 生效；已在运行的请求继续使用其 request header 中固定的工具集。
+
+这套开关只过滤 `internal/tools.Set.Build` 产生的内置工具，扩展工具仍由 extension 的启用状态和 session 生命周期控制。
+
+关闭 `Agent` 只阻止后续请求创建新的 child agent，不会影响主 session 的 loop、文件/搜索/shell 工具，也不会取消已经运行的 agent。`SendMessage` 仍可用于处理已有的 agent；如果要完全隐藏代理交互，还需同时关闭 `SendMessage`。`TaskOutput` / `TaskStop` 同时服务 shell 和 agent，不能只为 agent 关闭而保留 shell 任务能力。
+
 工具执行两段化（对齐 pi prepare/execute）：先 **prepare**（找工具 → `ToolValidator.Validate` schema 校验 → `BeforeTool` / lifecycle `tool_call` sync，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` / `tool_result` 变换结果）。扩展订事件见 [extension.md](extension.md)。`BeforeTool` 和 `ToolResult.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。内置工具和扩展工具都校验 required 和参数类型。
 
 | 工具 | 参数 | 结果 |

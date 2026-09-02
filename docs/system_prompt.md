@@ -24,7 +24,7 @@ Prompt templates 不直接进入 system prompt，只用于 slash command 展开�
 以下情况会执行全局 reload：
 
 - `POST /v1/reload` 或 `/reload`。
-- skills 或 extensions Toggle 修改成功。
+- tools、skills 或 extensions Toggle 修改成功。
 - 自动或手动 compaction 成功。
 
 Reload 会清空空闲 session 的资源快照并重载扩展视图。正在跑 prompt 或 compact 的 session 把 reload 排到 `occupy` 对应的 `release` 之后。删除 session 时只清理该 session 的快照。
@@ -50,7 +50,7 @@ Compaction 会重建模型上下文，此时旧 prompt 缓存可视为失效；�
 
 每轮动态输入只有：
 
-- 当前工具列表；模型能力或扩展状态可能改变它。
+- 当前工具列表；模型能力、内置工具 Toggle 或扩展状态可能改变它。
 - Skills Toggle；决定 system prompt 展示哪些 skills。
 
-Extension Toggle 不直接传入 `Build`，但会影响绑定到本轮的扩展工具。`Build` 本身每轮仍执行字符串组装，但不再读取资源或重新计算运行环境。
+Tools Toggle 在 `Set.Build` 之后过滤内置工具，Extension Toggle 不直接传入 `Build`，但会影响绑定到本轮的扩展工具。`Build` 本身每轮仍执行字符串组装，但不再读取资源或重新计算运行环境。

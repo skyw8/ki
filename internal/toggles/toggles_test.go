@@ -18,6 +18,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	want := File{
 		Skills:     session.Toggle{Disabled: []string{"alpha"}},
+		Tools:      session.Toggle{Disabled: []string{"Agent"}},
 		Extensions: session.Toggle{Disabled: []string{"telegram-bot"}},
 		Message:    Message{Busy: BusyQueue},
 	}
@@ -30,6 +31,9 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 	if got.Extensions.Allowed("telegram-bot") {
 		t.Fatalf("extensions %+v", got.Extensions)
+	}
+	if got.Tools.Allowed("Agent") {
+		t.Fatalf("tools %+v", got.Tools)
 	}
 	if got.Message.BusyDelivery() != BusyQueue {
 		t.Fatalf("message %+v", got.Message)

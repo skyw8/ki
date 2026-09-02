@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +20,7 @@ import (
 	"ki/internal/resources"
 	"ki/internal/session"
 	"ki/internal/toggles"
+	"ki/internal/tools"
 	"ki/internal/types"
 )
 
@@ -71,6 +74,92 @@ func (s *Server) getSkills(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+// getTools returns the built-in tool catalog for the selected session/model.
+// The global toggle is still shared across sessions; the model only controls
+// capability-dependent entries such as Write/Edit versus apply_patch.
+func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
+	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
+	profile := tools.Profile{Editor: tools.EditorWriteEdit}
+	agentDepth := 0
+	if sessionID != "" {
+		sess, err := s.open(sessionID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		defer func() { _ = sess.Close() }()
+		cwd = sess.Header.CWD
+		_, info, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
+		if !ok {
+			http.Error(w, "session model unavailable", http.StatusUnprocessableEntity)
+			return
+		}
+		profile.RichRead = slices.Contains(info.Input, "image")
+		if info.ApplyPatchToolType == "freeform" {
+			profile.Editor = tools.EditorApplyPatch
+		}
+		var depthErr error
+		agentDepth, depthErr = s.agentDepth(sess)
+		if depthErr != nil {
+			// Why: a damaged ancestry must not make the catalog claim that
+			// recursive Agent spawning is available at an unsafe depth.
+			agentDepth = tools.MaxAgentDepth
+		}
+	} else if ref := s.registry.Default(); ref.Provider != "" && ref.Model != "" {
+		// Settings can be opened before a session exists. Use the last selected
+		// model when it is available, while retaining a useful fallback catalog
+		// if the provider catalog is not configured yet.
+		if _, info, ok := s.registry.FindModel(ref.Provider, ref.Model); ok {
+			profile.RichRead = slices.Contains(info.Input, "image")
+			if info.ApplyPatchToolType == "freeform" {
+				profile.Editor = tools.EditorApplyPatch
+			}
+		}
+	}
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	if cwd == "" {
+		cwd = "."
+	}
+	builtins := (tools.Set{
+		CWD: cwd, Jobs: s.jobsFor(sessionID), Agent: s, AgentDepth: agentDepth,
+		AgentParentSessionID: sessionID, Shells: s.shells, Mutations: s.mutations,
+	}).Build(profile)
+	tg := toggles.Load(s.cfg.Home)
+	items := make([]map[string]any, 0, len(builtins))
+	for _, tool := range builtins {
+		items = append(items, map[string]any{
+			"name":        tool.Name(),
+			"description": tool.Description(),
+			"source":      "builtin",
+			"enabled":     tg.Tools.Allowed(tool.Name()),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) patchTools(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Disabled []string `json:"disabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	f := toggles.Load(s.cfg.Home)
+	f.Tools = session.Toggle{Disabled: body.Disabled}
+	if err := toggles.Save(s.cfg.Home, f); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// The current run keeps its request header; Reload queues the new tool
+	// set for an occupied session and applies it at the next occupy boundary.
+	s.Reload()
+	s.getTools(w, r)
 }
 
 func (s *Server) getCommands(w http.ResponseWriter, r *http.Request) {

@@ -404,6 +404,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /v1/reload", s.auth(s.doReload))
 	api.HandleFunc("GET /v1/skills", s.auth(s.getSkills))
 	api.HandleFunc("PATCH /v1/skills", s.auth(s.patchSkills))
+	api.HandleFunc("GET /v1/tools", s.auth(s.getTools))
+	api.HandleFunc("PATCH /v1/tools", s.auth(s.patchTools))
 	api.HandleFunc("GET /v1/extensions", s.auth(s.getExtensions))
 	api.HandleFunc("PATCH /v1/extensions", s.auth(s.patchExtensions))
 	api.HandleFunc("GET /v1/commands", s.auth(s.getCommands))
@@ -1653,6 +1655,10 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
 	s.reportManifestErrors(sess.ID(), snapshot.Extensions)
 	tg := toggles.Load(cfg.Home)
+	// Apply the global built-in toggle before extension tools are appended. This
+	// keeps the built-in setting scoped to Set.Build and leaves extensions under
+	// their own lifecycle/session controls.
+	tls = tools.FilterBuiltins(tls, tg.Tools)
 	// snapshot.Extensions is the global Discover.All catalog. Configure
 	// reconciles process-global sidecars; Prepare builds this session's view.
 	enabledExtensions := extension.Enabled(snapshot.Extensions, tg.Extensions)

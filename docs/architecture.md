@@ -57,7 +57,7 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 | POST | `/v1/sessions/{id}/abort` | cancel |
 | POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
 | POST | `/v1/reload` | 清空闲 session 的资源快照并重载 extension catalog；body 可带 `sessionId` 只重载该 session |
-| GET/PATCH | `/v1/skills` `/v1/extensions` | 全局启用开关（`toggles.json`） |
+| GET/PATCH | `/v1/tools` `/v1/skills` `/v1/extensions` | 全局启用开关（`toggles.json`）；tools 只管理内置工具 |
 | GET/PATCH | `/v1/extensions/{name}/config` | 扩展配置（脱敏读写） |
 | POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径；body 可传 `forkMode=flat|tree`，返回 `parentSessionId` / `forkMode`，删除时仅沿 tree 边级联 |
 | POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |

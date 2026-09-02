@@ -21,8 +21,8 @@ import { ExtensionInspector, localizedExtensionText, seedExtFields, statusChips,
 import { useDialogFocus } from './useDialogFocus'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
-type SettingsPage = 'providers' | 'skills' | 'extensions' | 'message' | 'appearance'
-const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'extensions', 'message', 'appearance']
+type SettingsPage = 'providers' | 'skills' | 'tools' | 'extensions' | 'message' | 'appearance'
+const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'extensions', 'message', 'appearance']
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
 const COMPACT_LAYOUT_QUERY = '(max-width: 900px)'
@@ -1862,6 +1862,7 @@ function WorkspaceApp({ api }: { api: Client }) {
             {([
               ['providers', t('settings.providers')],
               ['skills', t('settings.skills')],
+              ['tools', t('settings.tools')],
               ['extensions', t('settings.extensions')],
               ['message', t('settings.message')],
               ['appearance', t('settings.appearanceLanguage')],
@@ -1895,6 +1896,8 @@ function WorkspaceApp({ api }: { api: Client }) {
               >
                 {page !== settingsPage ? null : page === 'providers' ? <ProviderSettings api={api} onChanged={refreshModels} /> : page === 'skills' ? (
                   <SettingsToggles kind="skills" api={api} workspaceId={selectedWs} />
+                ) : page === 'tools' ? (
+                  <SettingsToggles kind="tools" api={api} sessionId={currentId} workspaceId={selectedWs} />
                 ) : page === 'extensions' ? (
                   <SettingsToggles kind="extensions" api={api} onConfigure={openExtensionConfig} onChanged={refreshExtensions} />
                 ) : page === 'message' ? (

@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"ki/internal/loop"
+	"ki/internal/session"
 )
 
 // Editor selects the mutually exclusive model-visible editing interface.
@@ -94,6 +95,20 @@ func (s Set) Build(profile Profile) []loop.Tool {
 		}
 		if messenger, ok := agent.(AgentMessenger); ok {
 			out = append(out, sendMessageTool{messenger: messenger})
+		}
+	}
+	return out
+}
+
+// FilterBuiltins applies a global built-in tool toggle to a tool slice. The
+// caller must pass only the tools returned by Set.Build; keeping this helper
+// separate from extension filtering prevents a global built-in setting from
+// accidentally disabling an extension tool with a matching name.
+func FilterBuiltins(all []loop.Tool, toggle session.Toggle) []loop.Tool {
+	out := make([]loop.Tool, 0, len(all))
+	for _, tool := range all {
+		if toggle.Allowed(tool.Name()) {
+			out = append(out, tool)
 		}
 	}
 	return out

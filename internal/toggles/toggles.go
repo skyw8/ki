@@ -31,6 +31,7 @@ func (m Message) BusyDelivery() string {
 // File is {KI_HOME}/toggles.json.
 type File struct {
 	Skills     session.Toggle `json:"skills"`
+	Tools      session.Toggle `json:"tools"`
 	Extensions session.Toggle `json:"extensions"`
 	Message    Message        `json:"message"`
 }

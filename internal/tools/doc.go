@@ -36,7 +36,8 @@
 // verifies the complete patch before its first write, preserves mixed line
 // endings, tracks the definitely committed prefix on failure, and exposes
 // throttled argument previews without placing structured details in model
-// context.
+// context. The server applies FilterBuiltins with the global tools toggle
+// before appending extension tools.
 //
 // Parameter and result tables: docs/tools.md.
 package tools

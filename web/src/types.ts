@@ -182,6 +182,13 @@ export type CatalogSkill = {
   enabled: boolean
 }
 
+export type CatalogTool = {
+  name: string
+  description?: string
+  source?: string
+  enabled: boolean
+}
+
 export type ExtensionText = string | number | boolean | {
   key: string
   params?: Record<string, string | number>

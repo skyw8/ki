@@ -38,10 +38,11 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await page.getByTestId('open-settings').click()
   await expect(page.getByTestId('settings-tab-providers')).toHaveText('模型供应商')
   await expect(page.getByTestId('settings-tab-skills')).toHaveText('Skills')
+  await expect(page.getByTestId('settings-tab-tools')).toHaveText('Tools')
   await expect(page.getByTestId('settings-tab-extensions')).toHaveText('Extensions')
   await expect(page.getByTestId('settings-tab-message')).toHaveText('Message')
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('主题和语言')
-  for (const pageName of ['providers', 'skills', 'extensions', 'message', 'appearance']) {
+  for (const pageName of ['providers', 'skills', 'tools', 'extensions', 'message', 'appearance']) {
     await expect(page.locator(`#settings-panel-${pageName}`)).toHaveCount(1)
   }
   await expect(page.locator('#settings-panel-skills')).toHaveAttribute('hidden', '')
@@ -124,6 +125,14 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('settings-lang')).toBeVisible()
   await page.getByTestId('settings-tab-skills').click()
   await expect(page.getByTestId('skills-settings')).toBeVisible()
+  await page.getByTestId('settings-tab-tools').click()
+  await expect(page.getByTestId('tools-settings')).toBeVisible()
+  const agentToggle = page.getByTestId('tool-on-Agent')
+  await expect(agentToggle).toHaveAttribute('aria-checked', 'true')
+  await agentToggle.click()
+  await expect(agentToggle).toHaveAttribute('aria-checked', 'false')
+  await agentToggle.click()
+  await expect(agentToggle).toHaveAttribute('aria-checked', 'true')
   await page.getByTestId('settings-tab-extensions').click()
   await expect(page.getByTestId('extensions-settings')).toBeVisible()
   await page.getByTestId('settings-tab-message').click()

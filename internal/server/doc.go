@@ -28,8 +28,9 @@
 // fork) prepares the session view of already-running extensions in the
 // background; List does not. runtime.ready is
 // true when that Prepare finishes (failure still counts). PATCH /v1/sessions/{id} writes model /
-// thinking / title / pin / leaf / queued. Skills and extension enablement is
-// {KI_HOME}/toggles.json via GET/PATCH /v1/skills and /v1/extensions.
+// thinking / title / pin / leaf / queued. Built-in tool, skill, and extension
+// enablement is {KI_HOME}/toggles.json via GET/PATCH /v1/tools, /v1/skills,
+// and /v1/extensions.
 // Extension session.appendMessage accepts normal user messages without
 // starting a run; busy sessions hold them in a durable context queue and
 // dispatch drains them at the captured prompt boundary. Prompt accepts content blocks and an optional branch parent before assembling

@@ -357,6 +357,81 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	}
 }
 
+func TestBuiltinToolsToggleAppliesToNextPrompt(t *testing.T) {
+	recorder := &reqRecorder{}
+	_, hs := testServerWith(t, recorder)
+	id := createSession(t, hs, t.TempDir())
+
+	getTools := func() []map[string]any {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/tools?sessionId="+url.QueryEscape(id), nil)
+		req.Header.Set("Authorization", "Bearer tok")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var got struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("tools status = %d, body = %+v", res.StatusCode, got)
+		}
+		return got.Items
+	}
+
+	initial := getTools()
+	if !slices.ContainsFunc(initial, func(item map[string]any) bool { return item["name"] == "Agent" && item["enabled"] == true }) {
+		t.Fatalf("Agent missing or disabled initially: %+v", initial)
+	}
+	patchBody, _ := marshalJSON(map[string]any{"disabled": []string{"Agent"}})
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/tools?sessionId="+url.QueryEscape(id), bytes.NewReader(patchBody))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var patched struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&patched); err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("patch tools status = %d, body = %+v", res.StatusCode, patched)
+	}
+	for _, item := range patched.Items {
+		if item["name"] == "Agent" && item["enabled"] != false {
+			t.Fatalf("Agent remained enabled: %+v", patched.Items)
+		}
+	}
+
+	body, _ := marshalJSON(map[string]any{"text": "tools after toggle"})
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("prompt status = %d", res.StatusCode)
+	}
+	waitAgentEnd(t, hs, id)
+	if slices.Contains(requestToolNames(recorder.reqs[len(recorder.reqs)-1].Tools), "Agent") {
+		t.Fatal("disabled Agent was sent in the next request")
+	}
+	if !slices.Contains(requestToolNames(recorder.reqs[len(recorder.reqs)-1].Tools), "Read") {
+		t.Fatal("disabling Agent also removed Read")
+	}
+}
+
 func TestAgentForksTreeSessionAndRunsChildLoop(t *testing.T) {
 	streamer := &forkAgentStreamer{}
 	_, hs := testServerWith(t, streamer)

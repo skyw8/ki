@@ -481,6 +481,7 @@ for (const profile of profiles) {
       for (const [tab, content] of [
         ['providers', 'provider-settings'],
         ['skills', 'skills-settings'],
+        ['tools', 'tools-settings'],
         ['extensions', 'extensions-settings'],
         ['message', 'message-settings'],
         ['appearance', 'appearance-settings'],

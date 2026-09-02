@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"ki/internal/loop"
+	"ki/internal/session"
 )
 
 func pick(ts []loop.Tool, name string) loop.Tool {
@@ -86,6 +87,23 @@ func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
 	spec := provider.ToolSpec()
 	if spec.Type != "custom" || spec.Format == nil || spec.Format.Syntax != "lark" {
 		t.Fatalf("apply_patch spec = %+v", spec)
+	}
+}
+
+func TestFilterBuiltinsHonorsToggle(t *testing.T) {
+	store := NewAgentStore()
+	defer store.Close()
+	set := Set{CWD: t.TempDir(), Agent: fakeAgentRuntime{store: store}}
+	all := set.Build(Profile{Editor: EditorWriteEdit})
+	filtered := FilterBuiltins(all, session.Toggle{Disabled: []string{"Read", "Agent"}})
+	if pick(filtered, "Read") != nil {
+		t.Fatal("Read was not disabled")
+	}
+	if pick(filtered, "Agent") != nil {
+		t.Fatal("Agent was not disabled")
+	}
+	if pick(filtered, "Grep") == nil {
+		t.Fatal("unlisted built-in tool was disabled")
 	}
 }
 
