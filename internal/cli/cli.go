@@ -406,7 +406,11 @@ var (
 
 func runServe(cfg config.Config, addr string) error {
 	st := streamer(cfg)
-	srv, err := server.New(server.Options{Config: cfg, Streamer: st})
+	token := ""
+	if sf, readErr := server.ReadServerFile(cfg.Home); readErr == nil {
+		token = sf.Token
+	}
+	srv, err := server.New(server.Options{Config: cfg, Token: token, Streamer: st})
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}

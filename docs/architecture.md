@@ -5,7 +5,8 @@
 ## 进程
 
 - `ki`：后台启动或复用 HTTP server，尝试打开同源 WebUI。
-- `ki serve [--addr]`：前台 HTTP，默认 `127.0.0.1:19800`，写 `~/.ki/server.json`（addr + token）。
+- `ki serve [--addr]`：前台 HTTP，默认 `127.0.0.1:19800`，复用已有
+  `~/.ki/server.json` 的 token（不存在时首次生成），并写回当前 addr + token。
 - `ki serve -d`：后台启动或复用 server，CLI 退出后 server 继续运行。
 - `ki run [flags] <text>`：client。`server.json` health 通则连；否则本进程听 `127.0.0.1:0`，退出带走。
 - `ki session compact|fork --session <id>`：对已有 session 执行管理操作。
