@@ -16,13 +16,13 @@ func (bashTool) Name() string { return "Bash" }
 func (bashTool) Description() string {
 	return "Run shell command"
 }
-func (bashTool) Snippet() string { return "Execute bash commands (ls, grep, find, etc.)" }
+func (bashTool) Snippet() string { return "Execute shell commands (build, test, git, etc.)" }
 func (bashTool) Prompt() string {
 	return `Executes a given bash command and returns its output.
 
 Each call starts in the session cwd. 'cd' only affects the current call and is not remembered. Use 'cd <dir> && <command>' when needed. The shell environment is initialized from the user's profile (bash or zsh).
 
-IMPORTANT: Avoid using this tool to run cat, head, tail, sed, awk, or echo commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool.
+IMPORTANT: Never use Bash for cat, head, tail, sed, awk, echo, grep, rg, or find. Use Read, Grep, or Glob instead, unless explicitly instructed otherwise.
 
 You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). By default, your command will timeout after 120000ms (2 minutes). A long-running foreground command may continue in the background when this waiting timeout expires; use TaskOutput to wait or inspect it and TaskStop to terminate it.
 
