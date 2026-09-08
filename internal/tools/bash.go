@@ -22,7 +22,7 @@ func (bashTool) Prompt() string {
 
 Each call starts in the session cwd. 'cd' only affects the current call and is not remembered. Use 'cd <dir> && <command>' when needed. The shell environment is initialized from the user's profile (bash or zsh).
 
-IMPORTANT: Never use Bash for cat, head, tail, sed, awk, echo, grep, rg, or find. Use Read, Grep, or Glob instead, unless explicitly instructed otherwise.
+IMPORTANT: Prefer dedicated tools over shell equivalents: use Read, Grep, and Glob instead of cat, head, tail, sed, awk, echo, grep, rg, or find.
 
 You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). By default, your command will timeout after 120000ms (2 minutes). A long-running foreground command may continue in the background when this waiting timeout expires; use TaskOutput to wait or inspect it and TaskStop to terminate it.
 
