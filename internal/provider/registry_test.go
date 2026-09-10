@@ -53,24 +53,25 @@ func TestBuiltinGPTModelsAdvertiseFreeformApplyPatch(t *testing.T) {
 	t.Fatal("openai provider missing")
 }
 
-func TestBuiltinDeepSeekVisionModelAdvertisesImageInput(t *testing.T) {
+func TestBuiltinDeepSeekFlashAdvertisesImageInput(t *testing.T) {
 	for _, p := range BuiltinProviders() {
 		if p.ID != "deepseek" {
 			continue
 		}
-		for _, model := range p.Models {
-			if model.ID != "deepseek-v4-flash-vision-exp" {
-				continue
-			}
-			if !slices.Contains(model.Input, "image") {
-				t.Fatalf("DeepSeek vision model input = %v, want image", model.Input)
-			}
-			if model.API != "completions" || model.BaseURL != "https://api.deepseek.com" {
-				t.Fatalf("DeepSeek vision model endpoint = %s %s", model.API, model.BaseURL)
-			}
-			return
+		if len(p.Models) != 1 || p.Models[0].ID != "deepseek-flash" {
+			t.Fatalf("DeepSeek models = %+v, want only deepseek-flash", p.Models)
 		}
-		t.Fatal("DeepSeek vision model missing")
+		model := p.Models[0]
+		if !slices.Contains(model.Input, "image") {
+			t.Fatalf("DeepSeek deepseek-flash input = %v, want image", model.Input)
+		}
+		if model.API != "completions" || model.BaseURL != "https://api.deepseek.com" {
+			t.Fatalf("DeepSeek deepseek-flash endpoint = %s %s", model.API, model.BaseURL)
+		}
+		if p.DefaultModel != "deepseek-flash" {
+			t.Fatalf("DeepSeek default = %q, want deepseek-flash", p.DefaultModel)
+		}
+		return
 	}
 	t.Fatal("deepseek provider missing")
 }

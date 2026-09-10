@@ -329,31 +329,32 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 		t.Fatal("GPT rich Read is missing pages")
 	}
 
-	deepseek := prompt("deepseek/deepseek-v4-flash")
-	deepseekWant := []string{"Read", "Write", "Edit", "Grep", "Glob"}
+	// Text-only models must not advertise image or PDF reading in Read.
+	textOnly := prompt("zai/glm-5.3")
+	textOnlyWant := []string{"Read", "Write", "Edit", "Grep", "Glob"}
 	if srv.shells.BashAvailable() {
-		deepseekWant = append(deepseekWant, "Bash")
+		textOnlyWant = append(textOnlyWant, "Bash")
 	}
 	if srv.shells.PowerShellEnabled() {
-		deepseekWant = append(deepseekWant, "PowerShell")
+		textOnlyWant = append(textOnlyWant, "PowerShell")
 	}
-	deepseekWant = append(deepseekWant, "TaskOutput", "TaskStop")
+	textOnlyWant = append(textOnlyWant, "TaskOutput", "TaskStop")
 	if srv.shells.BashAvailable() {
-		deepseekWant = append(deepseekWant, "Monitor")
+		textOnlyWant = append(textOnlyWant, "Monitor")
 	}
-	deepseekWant = append(deepseekWant, "Agent", "SendMessage")
-	if got := requestToolNames(deepseek.Tools); !slices.Equal(got, deepseekWant) {
-		t.Fatalf("DeepSeek tools = %v", got)
+	textOnlyWant = append(textOnlyWant, "Agent", "SendMessage")
+	if got := requestToolNames(textOnly.Tools); !slices.Equal(got, textOnlyWant) {
+		t.Fatalf("text-only tools = %v", got)
 	}
-	if strings.Contains(deepseek.Tools[0].Description, "PDF") {
-		t.Fatalf("DeepSeek Read leaked PDF description: %s", deepseek.Tools[0].Description)
+	if strings.Contains(textOnly.Tools[0].Description, "PDF") {
+		t.Fatalf("text-only Read leaked PDF description: %s", textOnly.Tools[0].Description)
 	}
-	readProps, ok = deepseek.Tools[0].Parameters["properties"].(map[string]any)
+	readProps, ok = textOnly.Tools[0].Parameters["properties"].(map[string]any)
 	if !ok {
-		t.Fatalf("DeepSeek Read properties = %#v", deepseek.Tools[0].Parameters["properties"])
+		t.Fatalf("text-only Read properties = %#v", textOnly.Tools[0].Parameters["properties"])
 	}
 	if readProps["pages"] != nil {
-		t.Fatalf("DeepSeek Read leaked pages: %+v", readProps)
+		t.Fatalf("text-only Read leaked pages: %+v", readProps)
 	}
 }
 

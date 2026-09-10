@@ -407,7 +407,7 @@ func TestReplayableDropsAbortedAndEmptyAssistants(t *testing.T) {
 		{Role: "assistant", StopReason: "aborted", ErrorMessage: "context canceled"},
 		{Role: "user", Content: []types.Content{{Type: "text", Text: "你好"}}},
 	}
-	comp := CompletionsBody(loop.Request{Model: "deepseek-v4-flash", Messages: hist})
+	comp := CompletionsBody(loop.Request{Model: "deepseek-flash", Messages: hist})
 	var roles []string
 	for _, m := range mustType[[]map[string]any](t, comp["messages"]) {
 		roles = append(roles, fmt.Sprint(m["role"]))
