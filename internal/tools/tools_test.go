@@ -280,10 +280,15 @@ func TestGrepAndGlobTools(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(cwd, ".gitignore"), []byte("ignored.go\n"), 0o600)
 	_ = os.Mkdir(filepath.Join(cwd, ".git"), 0o700)
 	_ = os.WriteFile(filepath.Join(cwd, "ignored.go"), []byte("package ignored\n"), 0o600)
-	defaultIgnored := glob.Execute(context.Background(), map[string]any{"pattern": "**/ignored.go"})
-	respected := glob.Execute(context.Background(), map[string]any{"pattern": "**/ignored.go", "respect_gitignore": true})
-	if !strings.Contains(defaultIgnored.Content[0].Text, "ignored.go") || strings.Contains(respected.Content[0].Text, "ignored.go\n") {
-		t.Fatalf("gitignore behavior: default=%q respected=%q", defaultIgnored.Content[0].Text, respected.Content[0].Text)
+	defaultRespected := glob.Execute(context.Background(), map[string]any{"pattern": "**/ignored.go"})
+	noIgnore := glob.Execute(context.Background(), map[string]any{"pattern": "**/ignored.go", "respect_gitignore": false})
+	if strings.Contains(defaultRespected.Content[0].Text, "ignored.go\n") || !strings.Contains(noIgnore.Content[0].Text, "ignored.go") {
+		t.Fatalf("gitignore behavior: default=%q noIgnore=%q", defaultRespected.Content[0].Text, noIgnore.Content[0].Text)
+	}
+	grepDefault := grep.Execute(context.Background(), map[string]any{"pattern": "package ignored"})
+	grepNoIgnore := grep.Execute(context.Background(), map[string]any{"pattern": "package ignored", "respect_gitignore": false})
+	if strings.Contains(grepDefault.Content[0].Text, "ignored.go") || !strings.Contains(grepNoIgnore.Content[0].Text, "ignored.go") {
+		t.Fatalf("grep gitignore behavior: default=%q noIgnore=%q", grepDefault.Content[0].Text, grepNoIgnore.Content[0].Text)
 	}
 }
 

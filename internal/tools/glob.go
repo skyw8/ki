@@ -14,7 +14,8 @@ const globPrompt = `Fast file pattern matching tool that works with any codebase
 - Supports glob patterns like "**/*.js" or "src/**/*.ts"
 - Returns matching file paths sorted by modification time
 - Use this tool when you need to find files by name patterns
-- Use Glob together with Grep for open-ended searches that require multiple rounds of file discovery and content search`
+- Use Glob together with Grep for open-ended searches that require multiple rounds of file discovery and content search
+- Respects .gitignore by default; set respect_gitignore=false to include ignored files`
 
 const defaultGlobLimit = 100
 const globMaxOutput = 100_000
@@ -34,7 +35,7 @@ func (globTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"pattern":           map[string]any{"type": "string", "description": "The glob pattern to match files against"},
 			"path":              map[string]any{"type": "string", "description": "The directory to search in. If not specified, the current working directory will be used. Must be a valid directory path if provided."},
-			"respect_gitignore": map[string]any{"type": "boolean", "description": "Respect .gitignore rules. Defaults to false, preserving the no-ignore search behavior."},
+			"respect_gitignore": map[string]any{"type": "boolean", "description": "Respect .gitignore rules. Defaults to true; set false to include ignored paths."},
 		},
 	}
 }
@@ -53,7 +54,12 @@ func (t globTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		root = absoluteRoot
 		pattern = relativePattern
 	}
-	respectGitignore, _ := args["respect_gitignore"].(bool)
+	// Respect .gitignore by default so callers do not have to configure it;
+	// only an explicit false opts back into the no-ignore search behavior.
+	respectGitignore := true
+	if v, ok := args["respect_gitignore"].(bool); ok {
+		respectGitignore = v
+	}
 	result, err := (search.Engine{}).Glob(ctx, search.GlobRequest{
 		Pattern:       pattern,
 		Root:          root,

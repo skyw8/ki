@@ -18,7 +18,7 @@
 | `Write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 Read |
 | `Edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。模型只看到简短摘要，diff/patch 在 details |
 | `apply_patch` | Responses custom freeform + Lark grammar | Codex 补丁格式：新增、删除、更新、移动；模型只收到 `A/M/D` 摘要或短错误，实际 diff 在 details |
-| `Grep` | `pattern`、`path`、`glob`、`output_mode`、上下文/分页/类型参数 | 基于内置 ripgrep；支持 partial results、JSON/NUL 解析、EAGAIN 降级、正则、`.gitignore`、取消/超时和统计元数据 |
+| `Grep` | `pattern`、`path`、`glob`、`output_mode`、`respect_gitignore`、上下文/分页/类型参数 | 基于内置 ripgrep；默认尊重 `.gitignore`；支持 partial results、JSON/NUL 解析、EAGAIN 降级、正则、取消/超时和统计元数据 |
 | `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
 | `PowerShell` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 仅 Windows 注册；PowerShell 原生命令、退出码、流式输出和后台任务与 Bash 使用同一生命周期 |
@@ -79,6 +79,7 @@
 - 使用编译进 ki 的 ripgrep 15.2.0，不依赖系统 `rg`；helper 按平台物化到用户缓存目录。
 - 通过 argv 启动并逐行解析 JSON 输出，不经过 shell；支持正则、glob、文件类型、上下文和分页。
 - 默认超时 20 秒；达到结果或原始输出上限时立即终止子进程，并保留已经解析的 partial results。
+- 默认尊重 `.gitignore`，无需任何配置；仅 `respect_gitignore=false` 时改为 `--no-ignore`，搜索被忽略的文件。
 - 资源暂时不足时自动以 `-j 1` 重试一次。
 - 无匹配的退出码 1 是正常空结果；取消、超时和命令错误分别返回对应错误，已有结果的超时标为截断而不是全部丢弃。
 - content 模式单行最多 500 字节、最终文本最多 20KB；截断保持 UTF-8 边界，匹配上限与文本上限分别提示。
@@ -88,7 +89,7 @@
 
 - 使用同一内置 ripgrep 的 `--files` 和 NUL 分隔输出，不依赖 shell，特殊文件名不会破坏解析。
 - 默认最多返回 100 个结果、最终文本最多 100KB；结果按修改时间排序，并包含文件数、limit 和 `truncated`。
-- 结果文本和 details 都包含规范化搜索根目录。`respect_gitignore=false` 是默认值并保留 `--no-ignore` 行为；显式设为 true 时先按 ignore 规则枚举，再应用 glob，避免 ripgrep 的白名单 glob 覆盖 ignore 文件。
+- 结果文本和 details 都包含规范化搜索根目录。默认尊重 `.gitignore`，无需任何配置；仅当显式传入 `respect_gitignore=false` 时才改为 `--no-ignore` 行为，搜索被忽略的路径。尊重 ignore 时先按 ignore 规则枚举，再应用 glob，避免 ripgrep 的白名单 glob 覆盖 ignore 文件。
 - 默认超时 20 秒；达到上限时保留部分结果，资源暂时不足时以 `-j 1` 重试一次。
 - `KI_USE_SYSTEM_RIPGREP=1` 仅用于调试。
 

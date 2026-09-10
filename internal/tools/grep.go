@@ -21,7 +21,8 @@ Usage:
 - Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), and "count" shows match counts
 - Use Glob together with Grep for open-ended searches that require multiple rounds of file discovery and content search
 - Pattern syntax uses ripgrep, not grep; literal braces need escaping (use "interface\{\}" to find "interface{}" in Go code)
-- Multiline matching is disabled by default. For cross-line patterns like "struct \{[\s\S]*?field", use multiline: true`
+- Multiline matching is disabled by default. For cross-line patterns like "struct \{[\s\S]*?field", use multiline: true
+- Respects .gitignore by default; set respect_gitignore=false to include ignored files`
 
 const defaultGrepHeadLimit = 250
 const grepMaxOutput = 20_000
@@ -40,20 +41,21 @@ func (grepTool) Parameters() map[string]any {
 		"additionalProperties": false,
 		"required":             []any{"pattern"},
 		"properties": map[string]any{
-			"pattern":     map[string]any{"type": "string", "description": "The regular expression pattern to search for in file contents"},
-			"path":        map[string]any{"type": "string", "description": "File or directory to search in (rg PATH). Defaults to current working directory."},
-			"glob":        map[string]any{"type": "string", "description": "Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\") - maps to rg --glob"},
-			"output_mode": map[string]any{"type": "string", "enum": []any{"content", "files_with_matches", "count"}, "description": "Output mode: \"content\" shows matching lines, \"files_with_matches\" shows only file paths (default), or \"count\" shows match counts."},
-			"-B":          map[string]any{"type": "number", "description": "Number of lines to show before each match. Requires output_mode: content."},
-			"-A":          map[string]any{"type": "number", "description": "Number of lines to show after each match. Requires output_mode: content."},
-			"-C":          map[string]any{"type": "number", "description": "Alias for context."},
-			"context":     map[string]any{"type": "number", "description": "Number of lines to show before and after each match. Requires output_mode: content."},
-			"-n":          map[string]any{"type": "boolean", "description": "Show line numbers in content output. Defaults to true."},
-			"-i":          map[string]any{"type": "boolean", "description": "Case insensitive search."},
-			"type":        map[string]any{"type": "string", "description": "File type to search, such as js, py, rust, or go."},
-			"head_limit":  map[string]any{"type": "number", "description": "Limit output to the first N lines or entries. Defaults to 250. Pass 0 for unlimited."},
-			"offset":      map[string]any{"type": "number", "description": "Skip the first N lines or entries before applying head_limit. Defaults to 0."},
-			"multiline":   map[string]any{"type": "boolean", "description": "Enable multiline mode where patterns can span lines. Defaults to false."},
+			"pattern":           map[string]any{"type": "string", "description": "The regular expression pattern to search for in file contents"},
+			"path":              map[string]any{"type": "string", "description": "File or directory to search in (rg PATH). Defaults to current working directory."},
+			"glob":              map[string]any{"type": "string", "description": "Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\") - maps to rg --glob"},
+			"output_mode":       map[string]any{"type": "string", "enum": []any{"content", "files_with_matches", "count"}, "description": "Output mode: \"content\" shows matching lines, \"files_with_matches\" shows only file paths (default), or \"count\" shows match counts."},
+			"-B":                map[string]any{"type": "number", "description": "Number of lines to show before each match. Requires output_mode: content."},
+			"-A":                map[string]any{"type": "number", "description": "Number of lines to show after each match. Requires output_mode: content."},
+			"-C":                map[string]any{"type": "number", "description": "Alias for context."},
+			"context":           map[string]any{"type": "number", "description": "Number of lines to show before and after each match. Requires output_mode: content."},
+			"-n":                map[string]any{"type": "boolean", "description": "Show line numbers in content output. Defaults to true."},
+			"-i":                map[string]any{"type": "boolean", "description": "Case insensitive search."},
+			"type":              map[string]any{"type": "string", "description": "File type to search, such as js, py, rust, or go."},
+			"head_limit":        map[string]any{"type": "number", "description": "Limit output to the first N lines or entries. Defaults to 250. Pass 0 for unlimited."},
+			"offset":            map[string]any{"type": "number", "description": "Skip the first N lines or entries before applying head_limit. Defaults to 0."},
+			"multiline":         map[string]any{"type": "boolean", "description": "Enable multiline mode where patterns can span lines. Defaults to false."},
+			"respect_gitignore": map[string]any{"type": "boolean", "description": "Respect .gitignore rules. Defaults to true; set false to include ignored files."},
 		},
 	}
 }
@@ -107,6 +109,11 @@ func (t grepTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		maxResults = offset + headLimit
 	}
 
+	// Respect .gitignore by default; only an explicit false opts into --no-ignore.
+	respectGitignore := true
+	if v, ok := args["respect_gitignore"].(bool); ok {
+		respectGitignore = v
+	}
 	result, err := (search.Engine{}).Grep(ctx, search.GrepRequest{
 		Pattern:       pattern,
 		Root:          root,
@@ -120,6 +127,7 @@ func (t grepTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		Multiline:     multiline,
 		OutputMode:    mode,
 		MaxResults:    maxResults,
+		NoIgnore:      !respectGitignore,
 		IncludeHidden: true,
 	})
 	if err != nil {
