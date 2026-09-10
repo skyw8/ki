@@ -99,7 +99,7 @@ func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.
 			StopReason: "stop",
 			Provider:   req.Provider,
 			Model:      req.Model,
-			Usage:      &types.Usage{Input: 8, Output: 2, TotalTokens: 10},
+			Usage:      &types.Usage{Input: 8, Output: 2, CacheRead: 90, TotalTokens: 100},
 		}
 		_ = emit(loop.AssistantDelta{Type: "text_delta", Delta: MarkdownFixture, Partial: m})
 		return m, ctx.Err()
@@ -113,7 +113,7 @@ func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.
 			StopReason: "stop",
 			Provider:   req.Provider,
 			Model:      req.Model,
-			Usage:      &types.Usage{Input: 8, Output: 2, TotalTokens: 10},
+			Usage:      &types.Usage{Input: 8, Output: 2, CacheRead: 90, TotalTokens: 100},
 		}
 		_ = emit(loop.AssistantDelta{Type: "text_delta", Delta: "ok", Partial: m})
 		return m, nil

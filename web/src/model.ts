@@ -1115,53 +1115,40 @@ export function appendOptimisticUser(s: ViewState, content: import('./types').Co
   return next
 }
 
-export type SessionStats = {
-  turns: number
-  steps: number
-  /** Uncached + cache read + cache write. */
+export type LatestStats = {
+  /** Uncached + cache read + cache write for the latest step. */
   input: number
-  output: number
   cacheRead: number
-  cacheWrite: number
-  hasCost: boolean
-  cost: number
+  /** First-token latency; 0 when the model reported none. */
   ttftMs: number
-  ttftSteps: number
+  /** First-token → message_end span and its output tokens, for TPS. */
   decodeMs: number
   decodeTokens: number
 }
 
-function emptyStats(): SessionStats {
-  return {
-    turns: 0, steps: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
-    hasCost: false, cost: 0, ttftMs: 0, ttftSteps: 0, decodeMs: 0, decodeTokens: 0,
-  }
+function emptyStats(): LatestStats {
+  return { input: 0, cacheRead: 0, ttftMs: 0, decodeMs: 0, decodeTokens: 0 }
 }
 
-function addUsage(out: SessionStats, usage?: Usage | null, timing?: { ttftMs?: number; latencyMs?: number }) {
+function stepStats(usage?: Usage | null, timing?: { ttftMs?: number; latencyMs?: number }): LatestStats {
+  const out = emptyStats()
   if (usage) {
-    out.input += (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
-    out.output += usage.output ?? 0
-    out.cacheRead += usage.cacheRead ?? 0
-    out.cacheWrite += usage.cacheWrite ?? 0
-    if (usage.cost) {
-      out.hasCost = true
-      out.cost += usage.cost.total
-    }
+    out.input = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
+    out.cacheRead = usage.cacheRead ?? 0
   }
   if (timing?.ttftMs != null && Number.isFinite(timing.ttftMs) && timing.ttftMs > 0) {
-    out.ttftMs += timing.ttftMs
-    out.ttftSteps += 1
+    out.ttftMs = timing.ttftMs
   }
-  // Decode span is first-token → message_end. A step missing TTFT is dropped
-  // rather than treating the whole latency as decode (that would inflate TPS).
-  if (timing?.latencyMs != null && timing.ttftMs != null && usage && (usage.output ?? 0) > 0) {
-    const decodeMs = Math.max(0, timing.latencyMs - timing.ttftMs)
+  // Decode span is first-token → message_end. Missing TTFT is dropped rather
+  // than treating the whole latency as decode (that would inflate TPS).
+  if (timing?.latencyMs != null && out.ttftMs > 0 && (usage?.output ?? 0) > 0) {
+    const decodeMs = Math.max(0, timing.latencyMs - out.ttftMs)
     if (decodeMs > 0) {
-      out.decodeMs += decodeMs
-      out.decodeTokens += usage.output ?? 0
+      out.decodeMs = decodeMs
+      out.decodeTokens = usage?.output ?? 0
     }
   }
+  return out
 }
 
 function activePath(s: ViewState): Entry[] {
@@ -1180,50 +1167,32 @@ function activePath(s: ViewState): Entry[] {
   return path
 }
 
-/** Whole-branch session figures. Walks the current leaf path so compacted
- * assistants still count, then adds live nodes that are not yet in jsonl. */
-export function sessionStats(s: ViewState): SessionStats {
-  const out = emptyStats()
-  const counted = new Set<string>()
-  for (const e of activePath(s)) {
-    counted.add(e.id)
-    if (e.type === 'message' && e.message?.role === 'user') {
-      out.turns += 1
-      continue
-    }
+/** Figures for the newest assistant step only — TTFT, decode speed and cache
+ * hit of the last request, not a whole-branch average. Live nodes that have not
+ * been persisted yet win over the jsonl leaf, so a just-finished step shows
+ * before the history refetch; a streaming step is skipped. */
+export function latestStats(s: ViewState): LatestStats {
+  const path = activePath(s)
+  const counted = new Set(path.map(e => e.id))
+  for (let i = s.nodes.length - 1; i >= 0; i--) {
+    const n = s.nodes[i]
+    if (counted.has(n.id) || n.kind !== 'assistant' || n.streaming) continue
+    return stepStats(n.usage, { ttftMs: n.ttftMs, latencyMs: n.latencyMs })
+  }
+  // activePath returns leaf → root, so the first assistant or compaction is the
+  // newest step persisted on this branch.
+  for (const e of path) {
     if (e.type === 'message' && e.message?.role === 'assistant') {
-      out.steps += 1
-      addUsage(out, e.message.usage, { ttftMs: e.message.ttftMs, latencyMs: e.message.latencyMs })
-      continue
+      return stepStats(e.message.usage, { ttftMs: e.message.ttftMs, latencyMs: e.message.latencyMs })
     }
-    if (e.type === 'compaction' && e.usage) {
-      out.steps += 1
-      addUsage(out, e.usage)
-    }
+    if (e.type === 'compaction' && e.usage) return stepStats(e.usage)
   }
-  for (const n of s.nodes) {
-    if (counted.has(n.id)) continue
-    if (n.kind === 'user') {
-      out.turns += 1
-      continue
-    }
-    if (n.kind !== 'assistant' || n.streaming) continue
-    out.steps += 1
-    addUsage(out, n.usage, { ttftMs: n.ttftMs, latencyMs: n.latencyMs })
-  }
-  return out
+  return emptyStats()
 }
 
-export function cacheHitPercent(s: SessionStats): number | null {
+export function cacheHitPercent(s: LatestStats): number | null {
   if (s.input <= 0 || s.cacheRead <= 0) return null
   return Math.round(s.cacheRead / s.input * 100)
-}
-
-export function formatTokens(n: number): string {
-  const scaled = (v: number): string => (v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
-  if (n < 1_000) return String(n)
-  if (n < 1_000_000) return `${scaled(n / 1_000)}K`
-  return `${scaled(n / 1_000_000)}M`
 }
 
 export function formatDuration(ms: number): string {
@@ -1236,9 +1205,4 @@ export function formatDuration(ms: number): string {
 export function formatTokensPerSecond(tps: number): string {
   const clamped = Math.max(0, tps)
   return clamped >= 10 ? String(Math.round(clamped)) : String(Math.round(clamped * 10) / 10)
-}
-
-export function formatCost(total: number): string {
-  const n = Math.max(0, total)
-  return n < 0.01 ? n.toFixed(4) : n.toFixed(2)
 }

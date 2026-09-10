@@ -8,11 +8,9 @@ import { useI18n } from './i18n'
 import type { SessionCommand } from './types'
 import {
   cacheHitPercent,
-  formatCost,
   formatDuration,
-  formatTokens,
   formatTokensPerSecond,
-  type SessionStats,
+  type LatestStats,
 } from './model'
 import type { Content } from './types'
 
@@ -42,25 +40,16 @@ function fileKind(content: Content): string {
   return name.slice(dot + 1).toLocaleUpperCase().slice(0, 5)
 }
 
-function SessionStatsLine({ stats, t }: { stats: SessionStats; t: ReturnType<typeof useI18n>['t'] }) {
+function SessionStatsLine({ stats, t }: { stats: LatestStats; t: ReturnType<typeof useI18n>['t'] }) {
   const groups: string[] = []
-  if (stats.turns > 0 || stats.steps > 0) {
-    groups.push(t('stats.counts', { turns: stats.turns, steps: stats.steps }))
-  }
   const speeds: string[] = []
-  if (stats.ttftSteps > 0) {
-    speeds.push(t('stats.ttft', { duration: formatDuration(stats.ttftMs / stats.ttftSteps) }))
-  }
+  if (stats.ttftMs > 0) speeds.push(t('stats.ttft', { duration: formatDuration(stats.ttftMs) }))
   if (stats.decodeMs > 0) {
     speeds.push(t('stats.tps', { tps: formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1_000)) }))
   }
   if (speeds.length > 0) groups.push(speeds.join(' · '))
   const hit = cacheHitPercent(stats)
   if (hit !== null) groups.push(t('stats.cacheHit', { percent: hit }))
-  if (stats.input > 0 || stats.output > 0) {
-    groups.push(t('stats.tokens', { input: formatTokens(stats.input), output: formatTokens(stats.output) }))
-  }
-  if (stats.hasCost) groups.push(t('stats.cost', { amount: formatCost(stats.cost) }))
   if (groups.length === 0) return null
   const line = groups.join(' | ')
   return (
@@ -100,7 +89,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   defaultThinking?: string
   onThinking?: (effort: string) => void
   contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
-  stats?: SessionStats
+  stats?: LatestStats
   mode?: 'new' | 'edit'
   hasQueued?: boolean
 }) {

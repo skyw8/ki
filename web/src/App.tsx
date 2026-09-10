@@ -12,7 +12,7 @@ import { ExtensionConfigEditor, MessageSettings, SessionConfig, SettingsToggles 
 import { ModelPickerDialog } from './ModelPickerDialog'
 import { ProviderSettings } from './ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './icons'
-import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, hydrateEntries, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats, userRequests } from './model'
+import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, hydrateEntries, initialView, keepComposer, latestStats, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, userRequests } from './model'
 import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './types'
 import { TrajectoryView } from './Trajectory'
 import { useI18n } from './i18n'
@@ -1149,7 +1149,7 @@ function WorkspaceApp({ api }: { api: Client }) {
 	}, [api, currentId, openSession, view.allEntries, view.busy])
 
   const empty = view.nodes.length === 0
-  const stats = useMemo(() => sessionStats(view), [view])
+  const stats = useMemo(() => latestStats(view), [view])
   const requestItems = useMemo(() => userRequests(view.nodes), [view.nodes])
 
   useEffect(() => {
