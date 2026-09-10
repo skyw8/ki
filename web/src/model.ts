@@ -730,6 +730,26 @@ function persistedAssistantsAfterLastUser(s: ViewState): number {
   return n
 }
 
+function persistedUsers(s: ViewState): number {
+  return s.nodes.filter(n => n.kind === 'user' && !liveUserPrefix.test(n.id)).length
+}
+
+// replayBaseline freezes the replay-skip counts when a run starts. The
+// server replays the run from its agent_start, so the assistants already on
+// screen at that instant are exactly the ones whose message_start must be
+// skipped. Counting dynamically instead lets live completions inflate the
+// baseline, so the next genuine assistant message_start is treated as a
+// replay: message_update deltas are dropped and the reply only appears whole
+// at message_end (this is why text after a tool call did not stream).
+function replayBaseline(s: ViewState): Pick<ViewState, 'replayAssistants' | 'replayUsers' | 'replayed' | 'replayedUsers'> {
+  return {
+    replayAssistants: persistedAssistantsAfterLastUser(s),
+    replayUsers: persistedUsers(s),
+    replayed: 0,
+    replayedUsers: 0,
+  }
+}
+
 export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
   const next: ViewState = {
     ...s,
@@ -744,6 +764,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     case 'agent_start':
       next.busy = true
       next.error = null
+      Object.assign(next, replayBaseline(next))
       break
     case 'agent_end':
       next.busy = false
@@ -863,11 +884,11 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
   if (!m) return
   if (m.role === 'user') {
     const text = messageText(m)
-    const persistedUsers = s.nodes.filter(n => n.kind === 'user' && !liveUserPrefix.test(n.id)).length
+    const persisted = s.replayUsers ?? persistedUsers(s)
     const liveUsers = s.nodes.filter(n => n.kind === 'user' && liveUserPrefix.test(n.id)).length
-    if (ev.type === 'message_start' && liveUsers === 0 && persistedUsers > 0) {
+    if (ev.type === 'message_start' && liveUsers === 0 && persisted > 0) {
       const startedReplay = s.replayedUsers ?? 0
-      if (startedReplay < persistedUsers) {
+      if (startedReplay < persisted) {
         s.replayedUsers = startedReplay + 1
         return
       }
@@ -907,7 +928,7 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
   if (m.role !== 'assistant') return
 
   if (ev.type === 'message_start') {
-    const persisted = persistedAssistantsAfterLastUser(s)
+    const persisted = s.replayAssistants ?? persistedAssistantsAfterLastUser(s)
     const live = s.nodes.filter(n => n.kind === 'assistant' && n.streaming).length
     if (live === 0 && persisted > 0) {
       // replay of an already-loaded completed assistant; skip until we run out
@@ -950,6 +971,11 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
   const idx = lastStreamingAssistant(s)
   if (idx < 0) {
     if (ev.type === 'message_end') {
+      // Reconnect replays message_end for entries loadHistory already rendered.
+      // The entry id is authoritative, so match it before the empty-text case:
+      // a tool-call-only assistant has no text and would otherwise be appended
+      // as a spurious empty bubble.
+      if (ev.entryId && s.nodes.some(n => n.id === ev.entryId)) return
       const text = messageText(m)
       if (s.nodes.some(n => n.kind === 'assistant' && !n.streaming && n.text === text && text !== '')) return
       applyMessage(s, m, `live-asst-${s.nodes.length}`, undefined)
