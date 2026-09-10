@@ -99,7 +99,7 @@
 - 首次使用把两个可执行文件物化到用户缓存 `ki/tools/<goos>-<goarch>/`（缓存不可写时退化为进程级临时目录），用 SHA-256 判断是否需要重写；`ToolsDir` 结果在进程内缓存一次。
 - `Bash` 和 `PowerShell` 把该目录放到子进程 `PATH` 最前，因此 shell 里的 `rg`/`fd` 始终是 ki 自带的版本，不受宿主环境影响。`KI_USE_SYSTEM_RIPGREP=1` 只影响 `Grep` / `Glob` 引擎，不影响 shell 的 `PATH`。
 - Bash 额外通过 `BASH_ENV` 注入一个 shim：`bash -lc` 先读 `/etc/profile` 和用户 profile，而 profile 可能整体重置 `PATH`（例如 Debian 的 `/etc/profile`），所以只在子进程环境里 prepend `PATH` 并不可靠；shim 在 startup files 之后再次把工具目录放到 `PATH` 最前。shim 通过 `KI_ORIG_BASH_ENV` 串联用户已有的 `BASH_ENV`，不覆盖用户配置。
-- `fd` 默认尊重 `.gitignore` 并跳过隐藏文件；`-H` 包含隐藏路径，`-I` 关闭 ignore。Bash 和 PowerShell 的工具描述要求：从 shell 搜索或需要管道组合时优先用 `rg`/`fd`，而不是 `grep`/`find`。
+- `fd` 默认尊重 `.gitignore` 并跳过隐藏文件；`-H` 包含隐藏路径，`-I` 关闭 ignore。Bash 和 PowerShell 的工具描述强制要求：shell 命令或管道中禁止使用 `grep`/`find`（PowerShell 为 `Select-String`/递归 `Get-ChildItem`），必须使用内置的 `rg`/`fd`。
 
 ## Bash
 
@@ -111,7 +111,7 @@
 - stdout/stderr 混排并持续写入无损临时文件；实时增量最多每 100ms 通过 `ToolExecutionUpdate` 推送一次。
 - 实时增量和模型可见结果使用跨 chunk 清理器去除 ANSI 及不可见控制字符，只保留换行、制表符和可显示文本；spill 文件仍保留原始字节。
 - 超过 2000 行或 50KB 时只把 JobStore 的滚动尾部放进 tool result，并附完整输出临时文件的绝对路径，可用 `Read` 的 `offset` / `limit` 分页读取；生成最终结果不会重新把完整 spill 文件载入内存。
-- 非零退出码、timeout 和取消分别返回 error、后台接管提示或 aborted 状态。
+- 非零退出码、timeout 和取消分别返回 error、后台接管提示或 aborted 状态；前台默认 timeout 为 30 秒（`timeout` 参数上限 600 秒）。
 - Bash、PowerShell 和任务工具的 details 统一记录 task/status、timeout/cancel、退出码、截断统计和完整输出路径。
 - 前台 timeout 时，普通命令转入后台并返回 task id 和输出文件；以 `sleep` 开头的命令直接终止。
 - abort 终止整个进程组及其子进程、管道；显式后台任务不受 prompt abort 影响。

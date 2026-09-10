@@ -38,7 +38,7 @@ Each call starts in the session cwd. Set-Location only affects the current call 
 
 IMPORTANT: Use the dedicated Read, Write, Edit, Grep, and Glob tools instead of Get-Content, Set-Content, Select-String, or recursive Get-ChildItem.
 
-For shell search, use 'rg' and 'fd' instead of Select-String or Get-ChildItem; ki bundles both on PATH. 'fd' respects .gitignore and skips hidden files (-H hidden, -I no-ignore).
+NEVER use Select-String or recursive Get-ChildItem for shell search. ALWAYS use 'rg' and 'fd' instead — ki bundles both on PATH and they are the only supported search tools. 'fd' respects .gitignore and skips hidden files (-H shows hidden, -I disables ignore rules).
 
 %s
 
@@ -51,7 +51,7 @@ PowerShell syntax:
 - Never use Read-Host, Get-Credential, Out-GridView, pause, or commands that open an interactive editor.
 - For literal multiline native arguments, use a single-quoted here-string whose closing '@ starts at column 0.
 
-You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). The default is 120000ms / 2 minutes. A long-running foreground command may continue in the background when this waiting timeout expires; use TaskOutput to inspect it and TaskStop to terminate it.
+You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). The default is 30000ms / 30 seconds. A long-running foreground command may continue in the background when this waiting timeout expires; use TaskOutput to inspect it and TaskStop to terminate it.
 
 Use run_in_background when the result is not needed immediately. Avoid unnecessary Start-Sleep commands and do not poll a background task; TaskOutput can wait for completion.
 

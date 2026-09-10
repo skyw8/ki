@@ -36,7 +36,7 @@ func executeShell(ctx context.Context, args map[string]any, emit func(any), shel
 		}
 		return errRes("Bash is not available on this system.")
 	}
-	timeout := 120000
+	timeout := 30000
 	if v, ok := asInt(args["timeout"]); ok && v > 0 {
 		timeout = min(v, 600000)
 	}
