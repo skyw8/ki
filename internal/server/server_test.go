@@ -988,8 +988,98 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 	}
 }
 
-func TestAuthAndCreateGetFork(t *testing.T) {
-	_, hs := testServer(t)
+// A manual /compact is one synchronous request, so the WebUI cannot learn that
+// it is running from a prompt SSE stream. It must arrive as a session
+// notification (compaction_start → compaction_end) for the chat to show a live
+// "compacting" row.
+func TestManualCompactPublishesNotifications(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KI_HOME", home)
+	cfg := config.Builtin(home)
+	cfg.Sessions.Root = filepath.Join(home, "sessions")
+	cfg.Compaction.KeepRecentTokens = 1 // tiny budget: any session compacts
+	srv, err := New(Options{
+		Config:   cfg,
+		Token:    "tok",
+		Streamer: &provider.Scripted{Steps: []types.Message{{Content: []types.Content{{Type: "text", Text: "hi there"}}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv.Handler())
+	defer hs.Close()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	id := createSession(t, hs, t.TempDir())
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res0, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res0.Body.Close()
+	waitAgentEnd(t, hs, id)
+
+	// Subscribe before compacting so the start event cannot be missed.
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events?notifications=1", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	sub, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sub.Body.Close() }()
+	events := make(chan loop.Event, 8)
+	go func() {
+		sc := bufio.NewScanner(sub.Body)
+		for sc.Scan() {
+			line := sc.Text()
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			var ev loop.Event
+			if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev) == nil {
+				events <- ev
+			}
+		}
+	}()
+
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/compact", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("compact %d %s", res.StatusCode, b)
+	}
+
+	var got []string
+	deadline := time.After(5 * time.Second)
+	for len(got) < 2 {
+		select {
+		case ev := <-events:
+			if ev.Type != loop.CompactionStart && ev.Type != loop.CompactionEnd {
+				continue
+			}
+			if ev.Type == loop.CompactionEnd && !ev.OK {
+				t.Fatalf("compaction_end reported failure: %+v", ev)
+			}
+			got = append(got, string(ev.Type)+":"+ev.Reason)
+		case <-deadline:
+			t.Fatalf("compaction notifications: got %v, want start then end", got)
+		}
+	}
+	if got[0] != "compaction_start:manual" || got[1] != "compaction_end:manual" {
+		t.Fatalf("compaction notifications: %v", got)
+	}
+}
+
+func TestAuthAndCreateGetFork(t *testing.T) {	_, hs := testServer(t)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions", strings.NewReader(`{"cwd":"`+t.TempDir()+`"}`))
 	if err != nil {
 		t.Fatal(err)

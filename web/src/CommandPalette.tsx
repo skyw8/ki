@@ -192,7 +192,21 @@ export function CommandPalette({
       }
       const list = rowsRef.current
       if (event.key === 'Tab') {
-        onCloseRef.current()
+        // Why: Tab is the muscle-memory completion key for slash commands.
+        // Shift+Tab walks the list backwards instead of completing.
+        event.preventDefault()
+        event.stopPropagation()
+        if (event.shiftKey) {
+          if (list.length) setActive(i => (i - 1 + list.length) % list.length)
+          return
+        }
+        const row = list[activeRef.current]
+        if (!row || matchesDraft(queryRef.current, row)) {
+          onCloseRef.current()
+          return
+        }
+        if (row.kind === 'completion') onPickRef.current({ kind: 'completion', item: row.item, value: row.value })
+        else onPickRef.current({ kind: 'command', item: row.item })
         return
       }
       if (event.key === 'ArrowDown') {

@@ -6,6 +6,8 @@ import {
   ChevronRight,
   Clock,
   Copy,
+  FileCode,
+  FileImage,
   Folder,
   FolderOpen,
 	File,
@@ -23,6 +25,7 @@ import {
   Pin,
   Plus,
   RefreshCcw,
+  Scan,
   Search,
   SendHorizontal,
   Settings,
@@ -34,6 +37,8 @@ import {
   User,
   Wrench,
   X,
+  ZoomIn,
+  ZoomOut,
   type LucideProps,
 } from 'lucide-react'
 
@@ -61,6 +66,11 @@ export const ISpark = sized(Sparkles, 14)
 export const IUser = sized(User, 14)
 export const ICompact = sized(ListMinus, 14)
 export const ICopy = sized(Copy, 14)
+export const IDownloadPng = sized(FileImage, 14)
+export const IDownloadSvg = sized(FileCode, 14)
+export const IZoomIn = sized(ZoomIn, 16)
+export const IZoomOut = sized(ZoomOut, 16)
+export const IZoomFit = sized(Scan, 16)
 export const IEdit = sized(Pencil, 16)
 export const IRegen = sized(RefreshCcw, 16)
 export const IClock = sized(Clock, 16)

@@ -841,8 +841,12 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
       // id is not part of the wire event; match by kind+order on the live path.
       const stamp = Date.now()
       if (ev.type === 'compaction_start') {
+        const id = `compact-live-${stamp}`
+        // The chat history has no run stream of its own for a manual /compact,
+        // so the same events drive both the timeline record and the chat row.
+        next.nodes = [...next.nodes, { kind: 'compaction', id, summary: '', running: true }]
         next.records.push({
-          id: `compact-live-${stamp}`,
+          id,
           kind: 'compact',
           turn: next.turn || 1,
           preview: `Compacting (${ev.reason || 'auto'})…`,
@@ -850,6 +854,13 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
           startedAt: stamp,
         })
       } else {
+        const live = [...next.nodes].reverse().find(n => n.kind === 'compaction' && n.running)
+        if (live && live.kind === 'compaction') {
+          const empty = ev.reason === 'empty'
+          next.nodes = next.nodes.map(n => n.id === live.id
+            ? { ...live, running: false, empty, failed: !empty && ev.ok === false }
+            : n)
+        }
         const rec = [...next.records].reverse().find(r => r.kind === 'compact' && r.running)
         if (rec) {
           rec.running = false

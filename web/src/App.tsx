@@ -559,6 +559,12 @@ function WorkspaceApp({ api }: { api: Client }) {
 					  setView(v => applyEvent(v, ev))
 					  continue
 					}
+					// A manual /compact is a synchronous request, so its progress
+					// arrives as a session notification rather than on a run stream.
+					if (ev.type === 'compaction_start' || ev.type === 'compaction_end') {
+					  setView(v => applyEvent(v, ev))
+					  continue
+					}
 					if (ev.type === 'runtime_ready') {
 					  try {
 					    const detail = await api.get(currentId, { fields: 'runtime' })

@@ -359,7 +359,7 @@ export type ChatNode =
   | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string; truncated?: boolean }
   | { kind: 'assistant'; id: string; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number; truncated?: boolean }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; running?: boolean; truncated?: boolean }
-  | { kind: 'compaction'; id: string; summary: string; tokensBefore?: number; truncated?: boolean }
+  | { kind: 'compaction'; id: string; summary: string; tokensBefore?: number; running?: boolean; failed?: boolean; empty?: boolean; truncated?: boolean }
 
 export type PromptSnapshot = {
   provider?: string

@@ -245,14 +245,32 @@ function ToolRow({
 function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
+  // Why: compaction runs synchronously inside the /compact request, so the row
+  // itself is the only progress signal. Keep it colored while it runs and
+  // switch to the settled label (with the pre-compaction token count) after.
+  const label = node.running
+    ? t('chat.compacting')
+    : node.empty
+      ? t('chat.nothingToCompact')
+      : node.failed
+        ? t('chat.compactFailed')
+        : t('chat.compacted')
+  const state = node.running ? ' running' : node.empty ? ' empty' : node.failed ? ' failed' : ''
   return (
-    <div className="compact-row">
-      <button type="button" className="compact-btn" onClick={() => setOpen(v => !v)}>
-        <ICompact />
-        {t('chat.compacted')}
-        {node.tokensBefore ? <span>· {t('chat.compactedTokens', { n: node.tokensBefore })}</span> : null}
+    <div className="compact-row" data-testid="compact-row">
+      <button
+        type="button"
+        className={`compact-btn${state}`}
+        data-testid="compact-btn"
+        aria-live={node.running ? 'polite' : undefined}
+        disabled={node.running}
+        onClick={() => setOpen(v => !v)}
+      >
+        {node.running ? <span className="compact-spin" aria-hidden /> : <ICompact />}
+        {label}
+        {!node.running && !node.empty && !node.failed && node.tokensBefore ? <span>· {t('chat.compactedTokens', { n: node.tokensBefore })}</span> : null}
       </button>
-      {open ? <div className="compact-body">{node.summary}</div> : null}
+      {open && node.summary ? <div className="compact-body">{node.summary}</div> : null}
     </div>
   )
 }

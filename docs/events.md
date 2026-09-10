@@ -12,7 +12,7 @@
 | Extension lifecycle | host → extension sidecar | `lifecycle.invoke`（同步）或 `lifecycle.event`（异步） |
 | Provider stream | provider sidecar → host | `provider.stream.event.type` |
 | Provider auth | provider sidecar → host | `provider.auth.event.type` |
-| WebUI 通知 | server → WebUI | `extension_ui_updated` |
+| WebUI 通知 | server → WebUI | `GET /events?notifications=1` 的 `extension_ui_updated`、`runtime_ready`，以及手动 `/compact` 的 `compaction_start`/`compaction_end` |
 
 ## Session SSE 事件
 
@@ -26,7 +26,7 @@ sideband 事件可以并发到达。
 | 消息 | `message_start`、`message_update`、`message_end` | 用户、assistant、tool result 消息；assistant 增量通过 update 流式发送。 |
 | 工具执行 | `tool_execution_start`、`tool_execution_update`、`tool_execution_end` | 工具开始、进度和结束。 |
 | Patch 预览 | `patch_apply_updated` | `apply_patch` 参数仍在生成时的非执行预览。 |
-| 压缩 | `compaction_start`、`compaction_end` | preflight、overflow recovery 或 threshold 压缩。 |
+| 压缩 | `compaction_start`、`compaction_end` | preflight、overflow recovery、threshold，以及手动 `/compact` 压缩。 |
 | 队列和控制 | `queue_changed`、`steer_accepted`、`run_aborted` | 队列变化、实时 Inbox 接收和中止；`steer_accepted` 不是 JSONL leaf。 |
 | 扩展 UI/状态 | `extension_error`、`extension_notice`、`extension_ui_prompt` | 扩展失败、toast，或 WebUI 确认/选择弹层。 |
 | Runtime | `runtime_ready` | session 打开时的扩展视图准备结束；成功或失败都会解锁 session。 |
@@ -214,6 +214,14 @@ alt 接受
 else 被吞掉或拒绝
   Server --> UI: handled / error
 end
+
+== 手动 /compact ==
+note over User, SSE: 同步请求，没有 run stream；进度走 session 通知流
+User -> Server: prompt "/compact"
+Server -> 通知流: compaction_start (reason=manual)
+Server -> JSONL: compaction
+Server -> 通知流: compaction_end (reason=manual 或 empty)
+Server --> UI: handled（随后 UI 重新读取 session）
 
 == 并发 sideband ==
 par 队列和控制

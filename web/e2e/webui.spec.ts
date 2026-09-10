@@ -426,7 +426,11 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
 })
 
-test('markdown table copy and mermaid diagram/source toggle', async ({ page }) => {
+test('markdown table copy and diagram toggle/download/copy', async ({ page }) => {
+  // The plantuml block fetches from a PlantUML server; stub it so the test
+  // never depends on the network.
+  const stubSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="#eee"/></svg>'
+  await page.route('https://www.plantuml.com/**', route => route.fulfill({ contentType: 'image/svg+xml', body: stubSvg }))
   await page.goto('/')
   await sendPrompt(page, 'e2e-markdown')
   const asst = page.getByTestId('assistant-message').last()
@@ -440,6 +444,21 @@ test('markdown table copy and mermaid diagram/source toggle', async ({ page }) =
   await expect(mermaid).toBeVisible()
   await expect(mermaid.getByTestId('md-mermaid-diagram')).toHaveAttribute('aria-pressed', 'true')
   await expect(mermaid.getByTestId('md-mermaid-svg').locator('svg')).toBeVisible()
+  // Download buttons first, copy last (far right).
+  const actionIds = await mermaid.locator('.md-block-actions button').evaluateAll(els => els.map(el => el.getAttribute('data-testid')))
+  expect(actionIds).toEqual(['md-mermaid-download-png', 'md-mermaid-download-svg', 'md-mermaid-copy'])
+  // Clicking the diagram opens the zoom viewer.
+  await mermaid.getByTestId('md-mermaid-svg').click()
+  const mermaidZoom = page.getByTestId('md-mermaid-zoom')
+  await expect(mermaidZoom).toBeVisible()
+  const level = mermaidZoom.getByTestId('md-mermaid-zoom-level')
+  const fitted = await level.textContent()
+  await mermaidZoom.getByTestId('md-mermaid-zoom-in').click()
+  await expect(level).not.toHaveText(fitted ?? '')
+  await mermaidZoom.getByTestId('md-mermaid-zoom-fit').click()
+  await expect(level).toHaveText(fitted ?? '')
+  await mermaidZoom.getByTestId('md-mermaid-zoom-close').click()
+  await expect(mermaidZoom).toHaveCount(0)
   await mermaid.getByTestId('md-mermaid-source').click()
   await expect(mermaid.getByTestId('md-mermaid-source')).toHaveAttribute('aria-pressed', 'true')
   await expect(mermaid.getByTestId('md-mermaid-code')).toContainText('flowchart LR')
@@ -447,6 +466,37 @@ test('markdown table copy and mermaid diagram/source toggle', async ({ page }) =
   await expect(mermaid.getByTestId('md-mermaid-copy')).toHaveAttribute('aria-label', '已复制')
   await mermaid.getByTestId('md-mermaid-diagram').click()
   await expect(mermaid.getByTestId('md-mermaid-svg').locator('svg')).toBeVisible()
+  const mermaidSvg = page.waitForEvent('download')
+  await mermaid.getByTestId('md-mermaid-download-svg').click()
+  expect((await mermaidSvg).suggestedFilename()).toBe('mermaid.svg')
+  const mermaidPng = page.waitForEvent('download')
+  await mermaid.getByTestId('md-mermaid-download-png').click()
+  expect((await mermaidPng).suggestedFilename()).toBe('mermaid.png')
+
+  const plantuml = asst.getByTestId('md-plantuml')
+  await expect(plantuml).toBeVisible()
+  await expect(plantuml.getByTestId('md-plantuml-diagram')).toHaveAttribute('aria-pressed', 'true')
+  await expect(plantuml.getByTestId('md-plantuml-svg').locator('img')).toBeVisible()
+  // The stub is far narrower than the block, so this asserts the diagram is
+  // horizontally centered (part of the unified diagram chrome).
+  const frame = await plantuml.getByTestId('md-plantuml-svg').boundingBox()
+  const image = await plantuml.getByTestId('md-plantuml-svg').locator('img').boundingBox()
+  expect(frame && image).toBeTruthy()
+  expect(Math.abs((image!.x + image!.width / 2) - (frame!.x + frame!.width / 2))).toBeLessThan(2)
+  await plantuml.getByTestId('md-plantuml-svg').click()
+  const plantumlZoom = page.getByTestId('md-plantuml-zoom')
+  await expect(plantumlZoom).toBeVisible()
+  await plantumlZoom.getByTestId('md-plantuml-zoom-close').click()
+  await expect(plantumlZoom).toHaveCount(0)
+  await plantuml.getByTestId('md-plantuml-source').click()
+  await expect(plantuml.getByTestId('md-plantuml-code')).toContainText('@startuml')
+  await plantuml.getByTestId('md-plantuml-copy').click()
+  await expect(plantuml.getByTestId('md-plantuml-copy')).toHaveAttribute('aria-label', '已复制')
+  await plantuml.getByTestId('md-plantuml-diagram').click()
+  await expect(plantuml.getByTestId('md-plantuml-svg').locator('img')).toBeVisible()
+  const plantumlPng = page.waitForEvent('download')
+  await plantuml.getByTestId('md-plantuml-download-png').click()
+  expect((await plantumlPng).suggestedFilename()).toBe('plantuml.png')
 })
 
 test('edit branches in place with attachments and fork opens a new session', async ({ page }) => {
@@ -819,6 +869,15 @@ test('command palette is opaque, one-line, and inserts without sending', async (
   await expect(composerInput).toHaveValue('/ro')
   await expect(bubbles).toHaveCount(before)
 
+  // Tab completes the highlighted row in place and never sends.
+  await composerInput.fill('/rel')
+  await expect(page.getByTestId('command-item-reload')).toBeVisible()
+  await expect(palette.locator('[role="option"]')).toHaveCount(1)
+  await composerInput.press('Tab')
+  await expect(composerInput).toHaveValue('/reload')
+  await expect(page.getByTestId('command-palette')).toHaveCount(0)
+  await expect(bubbles).toHaveCount(before)
+
   await composerInput.fill('/reload')
   await composerInput.press('Enter')
   await composerInput.press('Enter')
@@ -832,6 +891,27 @@ test('command palette is opaque, one-line, and inserts without sending', async (
   expect(box!.y).toBeLessThan(48)
   expect(box!.x + box!.width).toBeGreaterThan((view!.width) - 400)
   await expect(bubbles).toHaveCount(before)
+})
+
+test('slash command Tab completion drives a live compaction row', async ({ page }) => {
+  await page.goto('/')
+  await sendPrompt(page, `compact-e2e ${Date.now()}`)
+  await expect(page.getByTestId('assistant-message')).toContainText('ok')
+
+  const input = page.getByTestId('composer-input')
+  await input.fill('/com')
+  await expect(page.getByTestId('command-palette')).toBeVisible()
+  await input.press('Tab')
+  await expect(input).toHaveValue('/compact')
+  await expect(page.getByTestId('command-palette')).toHaveCount(0)
+
+  // Enter sends directly now that the palette is closed. The fake session is
+  // too small to summarize, so the row settles on the non-error "empty" state.
+  await input.press('Enter')
+  const row = page.getByTestId('compact-row')
+  await expect(row).toBeVisible()
+  await expect(page.getByTestId('compact-btn')).toHaveClass(/empty/)
+  await expect(page.getByTestId('compact-btn')).toContainText('无需压缩')
 })
 
 test('info reload shows progress then completion', async ({ page }) => {

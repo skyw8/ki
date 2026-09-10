@@ -702,6 +702,20 @@
   width: 100%; height: 24px; padding: 0 4px; border-radius: 6px; text-align: left;
 }
 .compact-btn:hover { background: var(--dsw-alias-interactive-bg-hover); }
+/* Why: compaction can run for a long time inside one synchronous request, so
+   the row carries its own color-coded state instead of relying on a toast. */
+.compact-btn.running { color: var(--dsw-alias-state-warning); cursor: default; }
+.compact-btn.running:hover { background: transparent; }
+.compact-btn.failed { color: var(--dsw-alias-state-error); }
+.compact-btn.empty { color: var(--dsw-alias-label-tertiary); cursor: default; }
+.compact-btn.empty:hover { background: transparent; }
+.compact-spin {
+  width: 10px; height: 10px; flex: none;
+  border: 1.5px solid color-mix(in srgb, var(--dsw-alias-state-warning) 35%, transparent);
+  border-top-color: var(--dsw-alias-state-warning);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
 .compact-body {
   margin-top: 6px; padding: 8px 10px; border-radius: 8px;
   background: var(--dsw-alias-bg-layer-1); white-space: pre-wrap; font-size: 13px;
@@ -1496,7 +1510,7 @@
 .md table { border-collapse: collapse; width: 100%; margin: 0; font-size: 14px; }
 .md th, .md td { border: 1px solid var(--dsw-alias-border-l2); padding: 4px 8px; }
 .md pre code { display: block; }
-.md-table, .md-mermaid {
+.md-table, .md-diagram {
   margin: 8px 0 12px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 10px;
@@ -1532,6 +1546,7 @@
   color: var(--dsw-alias-label-primary);
 }
 .md-view-toggle button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.md-block-actions { display: inline-flex; align-items: center; gap: 2px; }
 .md-copy {
   flex: none;
   width: 28px;
@@ -1542,18 +1557,22 @@
   color: var(--dsw-alias-label-tertiary);
 }
 .md-copy:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
-.md-copy:focus-visible, .md-view-toggle button:focus-visible, .md-mermaid-retry:focus-visible {
+.md-copy:disabled { opacity: .4; cursor: default; }
+.md-copy:disabled:hover { background: none; color: var(--dsw-alias-label-tertiary); }
+.md-copy:focus-visible, .md-view-toggle button:focus-visible, .md-diagram-retry:focus-visible {
   outline: 2px solid var(--dsw-alias-brand);
   outline-offset: 2px;
 }
 .md-table-scroll { overflow-x: auto; max-width: 100%; }
-.md-mermaid pre { margin: 0; border-radius: 0; }
-.md-mermaid-svg { overflow: auto; padding: 12px; }
-.md-mermaid-svg[hidden] { display: none; }
-.md-mermaid-svg svg { display: block; max-width: 100%; height: auto; }
-.md-mermaid-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 14px; }
-.md-mermaid-error p { margin: 0; color: var(--dsw-alias-state-error); font-size: 13px; }
-.md-mermaid-error pre {
+.md-diagram pre { margin: 0; border-radius: 0; }
+/* Center the diagram; `overflow: auto` still scrolls oversized diagrams. */
+.md-diagram-svg { display: flex; justify-content: center; align-items: flex-start; overflow: auto; padding: 12px; cursor: zoom-in; }
+.md-diagram-svg[hidden] { display: none; }
+.md-diagram-svg:focus-visible { outline: 2px solid var(--dsw-alias-brand); outline-offset: -2px; }
+.md-diagram-svg svg, .md-diagram-svg img { display: block; max-width: 100%; height: auto; }
+.md-diagram-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 14px; }
+.md-diagram-error p { margin: 0; color: var(--dsw-alias-state-error); font-size: 13px; }
+.md-diagram-error pre {
   margin: 0;
   max-width: 100%;
   padding: 8px 10px;
@@ -1561,6 +1580,18 @@
   font-size: 12px;
   white-space: pre-wrap;
 }
+/* Full-screen zoom viewer. The stage scrolls; auto margins on the canvas keep
+   it centered even when a zoomed diagram overflows the viewport. */
+.diagram-zoom { position: fixed; inset: 0; z-index: 12000; display: flex; flex-direction: column; background: rgba(8, 10, 14, .92); backdrop-filter: blur(8px); }
+.diagram-zoom-bar { position: fixed; top: 18px; right: 22px; z-index: 1; display: inline-flex; align-items: center; gap: 4px; padding: 4px; border-radius: 12px; background: rgba(20, 24, 32, .72); }
+.diagram-zoom-bar button { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 8px; color: #fff; }
+.diagram-zoom-bar button:hover { background: rgba(255, 255, 255, .16); }
+.diagram-zoom-bar button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.diagram-zoom-pct { min-width: 52px; text-align: center; color: #fff; font-size: 12px; font-variant-numeric: tabular-nums; }
+.diagram-zoom-stage { flex: 1; min-height: 0; display: flex; overflow: auto; padding: 24px; cursor: grab; touch-action: pan-x pan-y; }
+.diagram-zoom-stage:active { cursor: grabbing; }
+.diagram-zoom-canvas { margin: auto; }
+.diagram-zoom-canvas img { display: block; width: 100%; height: 100%; user-select: none; }
 .chip { height: 26px; padding: 0 8px; border-radius: 8px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .chip.on { background: var(--dsw-alias-interactive-bg-active); color: var(--dsw-alias-label-primary); }
 .traj-range-reset { flex: none; align-self: flex-start; margin: 0 16px 6px; }
@@ -3367,7 +3398,8 @@ select:focus-visible {
   .queued-remove,
   .md-copy,
   .md-view-toggle button,
-  .md-mermaid-retry,
+  .md-diagram-retry,
+  .diagram-zoom-bar button,
   .bubble-toggle,
   .branch-nav button,
   .req-nav-toggle,

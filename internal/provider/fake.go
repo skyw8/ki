@@ -24,13 +24,13 @@ const WriteEnvToken = "e2e-write-env" //nolint:gosec // e2e prompt marker, not a
 // that extension intercept e2e holds until abort.
 const SleepInterceptToken = "e2e-sleep-intercept" //nolint:gosec // e2e prompt marker, not a credential
 
-// MarkdownToken makes the default fake assistant emit a GFM table and a
-// mermaid fence so WebUI Playwright can exercise those renderers without a
-// live model.
+// MarkdownToken makes the default fake assistant emit a GFM table, a mermaid
+// fence, and a plantuml fence so WebUI Playwright can exercise those renderers
+// without a live model.
 const MarkdownToken = "e2e-markdown"
 
 // MarkdownFixture is the canned assistant text for MarkdownToken.
-const MarkdownFixture = "| Col A | Col B |\n| --- | --- |\n| 1 | 2 |\n\n```mermaid\nflowchart LR\n  Start --> End\n```\n"
+const MarkdownFixture = "| Col A | Col B |\n| --- | --- |\n| 1 | 2 |\n\n```mermaid\nflowchart LR\n  Start --> End\n```\n\n```plantuml\n@startuml\nAlice -> Bob: hi\n@enduml\n```\n"
 
 // Scripted is a test/dev Streamer with canned steps.
 type Scripted struct {

@@ -7,16 +7,24 @@ import { normalizeMarkdown } from './markdown-normalize'
 
 const plugins = { cjk }
 const linkSafety = { enabled: false }
-const MermaidBlock = lazy(() => import('./MermaidBlock'))
+const DiagramBlock = lazy(() => import('./DiagramBlock'))
+
+// Fences rendered by DiagramBlock: mermaid renders in-browser, plantuml via a
+// PlantUML server (plantuml.ts). `puml` is plantuml's common short alias.
+const DIAGRAM_KINDS: Record<string, 'mermaid' | 'plantuml'> = {
+  mermaid: 'mermaid',
+  plantuml: 'plantuml',
+  puml: 'plantuml',
+}
 
 type MdProps<T extends keyof JSX.IntrinsicElements> = JSX.IntrinsicElements[T] & ExtraProps
 
 // Streamdown's defaults ship Tailwind/shadcn chrome (code toolbar, table
 // copy, link-safety modal, strong-as-span). Those classes do nothing here
 // (this app is not on Tailwind) and would not match the chat bubble.
-// Semantic tags let `.md` CSS own the look. Mermaid uses @streamdown/mermaid
-// from MermaidBlock instead of Streamdown's mermaid chrome, so we can keep
-// diagram/source toggle and copy on the same design tokens.
+// Semantic tags let `.md` CSS own the look. Mermaid and plantuml fences go
+// through DiagramBlock instead of Streamdown's mermaid chrome, so both share
+// the diagram/source toggle, copy, and download on the same design tokens.
 function md<T extends keyof JSX.IntrinsicElements>(tag: T) {
   return function MdEl({ node: _node, children, ...rest }: MdProps<T>) {
     return createElement(tag, rest, children)
@@ -80,10 +88,11 @@ function MdCode({ node: _node, children, className, ...rest }: MdProps<'code'>) 
     return <code className={className}>{children}</code>
   }
   const code = nodeText(children)
-  if (languageOf(className) === 'mermaid') {
+  const kind = DIAGRAM_KINDS[languageOf(className)]
+  if (kind) {
     return (
       <Suspense fallback={<pre><code className={className}>{children}</code></pre>}>
-        <MermaidBlock code={code} isIncomplete={isIncomplete} />
+        <DiagramBlock kind={kind} code={code} isIncomplete={isIncomplete} />
       </Suspense>
     )
   }

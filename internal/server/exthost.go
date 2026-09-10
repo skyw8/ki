@@ -506,8 +506,10 @@ func (s *Server) Compact(sessionID string) error {
 	if err != nil {
 		return err
 	}
+	s.publishNotification(sessionID, loop.Event{Type: loop.CompactionStart, Reason: "manual"})
 	_, err = compact.Run(ctx, sess, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 	s.release(sessionID, st)
+	s.publishCompactionEnd(sessionID, err)
 	if err != nil {
 		return fmt.Errorf("compact: %w", err)
 	}

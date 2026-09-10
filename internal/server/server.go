@@ -345,6 +345,34 @@ func (s *Server) requestReload(id string) bool {
 	return false
 }
 
+// publishNotification fans an event out to the session's notification streams
+// (GET /v1/sessions/{id}/events?notifications=1). Unlike run events it is not
+// persisted or replayed, so it is only for progress that the owning request
+// cannot stream itself.
+func (s *Server) publishNotification(sessionID string, ev loop.Event) {
+	s.mu.Lock()
+	for subscriber := range s.eventSubscribers[sessionID] {
+		select {
+		case subscriber <- ev:
+		default:
+		}
+	}
+	s.mu.Unlock()
+}
+
+// publishCompactionEnd reports the outcome of a manual compaction. "empty"
+// means there was nothing worth summarizing; it is not an error.
+func (s *Server) publishCompactionEnd(sessionID string, err error) {
+	reason, ok := "manual", true
+	switch {
+	case errors.Is(err, compact.ErrNothingToCompact):
+		reason = "empty"
+	case err != nil:
+		ok = false
+	}
+	s.publishNotification(sessionID, loop.Event{Type: loop.CompactionEnd, Reason: reason, OK: ok})
+}
+
 func (s *Server) subscribeEvents(sessionID string) (<-chan loop.Event, func()) {
 	ch := make(chan loop.Event, 16)
 	s.mu.Lock()
@@ -2189,9 +2217,14 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
+	// Why: /compact is answered by one synchronous request, so the chat UI has
+	// no run stream to watch. Publish progress on the session notification
+	// stream so the history shows a live "compacting" row.
+	s.publishNotification(id, loop.Event{Type: loop.CompactionStart, Reason: "manual"})
 	e, err := compact.Run(ctx, sess, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 	//nolint:contextcheck // release may rewarm after the occupy ctx ends
 	s.release(id, st)
+	s.publishCompactionEnd(id, err)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		http.Error(w, "compact aborted", http.StatusConflict)
 		return
