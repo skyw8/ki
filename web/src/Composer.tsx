@@ -8,7 +8,9 @@ import { useI18n } from './i18n'
 import type { SessionCommand } from './types'
 import {
   cacheHitPercent,
+  formatCost,
   formatDuration,
+  formatTokens,
   formatTokensPerSecond,
   type LatestStats,
 } from './model'
@@ -42,6 +44,9 @@ function fileKind(content: Content): string {
 
 function SessionStatsLine({ stats, t }: { stats: LatestStats; t: ReturnType<typeof useI18n>['t'] }) {
   const groups: string[] = []
+  if (stats.turns > 0 || stats.steps > 0) {
+    groups.push(t('stats.counts', { turns: stats.turns, steps: stats.steps }))
+  }
   const speeds: string[] = []
   if (stats.ttftMs > 0) speeds.push(t('stats.ttft', { duration: formatDuration(stats.ttftMs) }))
   if (stats.decodeMs > 0) {
@@ -50,6 +55,10 @@ function SessionStatsLine({ stats, t }: { stats: LatestStats; t: ReturnType<type
   if (speeds.length > 0) groups.push(speeds.join(' · '))
   const hit = cacheHitPercent(stats)
   if (hit !== null) groups.push(t('stats.cacheHit', { percent: hit }))
+  if (stats.input > 0 || stats.output > 0) {
+    groups.push(t('stats.tokens', { input: formatTokens(stats.input), output: formatTokens(stats.output) }))
+  }
+  if (stats.hasCost) groups.push(t('stats.cost', { amount: formatCost(stats.cost) }))
   if (groups.length === 0) return null
   const line = groups.join(' | ')
   return (

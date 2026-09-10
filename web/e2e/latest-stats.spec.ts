@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { cacheHitPercent, emptyView, formatDuration, formatTokensPerSecond, latestStats } from '../src/model.ts'
+import { cacheHitPercent, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats } from '../src/model.ts'
 import type { Entry, ViewState } from '../src/types.ts'
 
 function view(over: Partial<ViewState> = {}): ViewState {
@@ -15,11 +15,11 @@ function msg(id: string, parentId: string, role: 'user' | 'assistant', extra: Pa
   }
 }
 
-test('latestStats keeps only the newest assistant on the leaf path', () => {
+test('latestStats counts the branch but keeps only the newest step usage', () => {
   const entries: Entry[] = [
     msg('u1', '', 'user'),
     msg('a1', 'u1', 'assistant', {
-      usage: { input: 10, output: 4, cacheRead: 90, cacheWrite: 0 },
+      usage: { input: 10, output: 4, cacheRead: 90, cacheWrite: 0, cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 } },
       ttftMs: 800,
       latencyMs: 1800,
     }),
@@ -36,8 +36,12 @@ test('latestStats keeps only the newest assistant on the leaf path', () => {
       { kind: 'assistant', id: 'a2', text: 'ok', usage: { input: 3, output: 1, cacheRead: 7 }, ttftMs: 200, latencyMs: 700 },
     ],
   }))
+  expect(s.turns).toBe(2)
+  expect(s.steps).toBe(3)
   expect(s.input).toBe(3 + 7)
+  expect(s.output).toBe(1)
   expect(s.cacheRead).toBe(7)
+  expect(s.hasCost).toBe(false)
   expect(s.ttftMs).toBe(200)
   expect(s.decodeMs).toBe(500)
   expect(s.decodeTokens).toBe(1)
@@ -49,10 +53,15 @@ test('latestStats prefers a live step that is not persisted yet', () => {
     allEntries: [msg('u1', '', 'user'), msg('a1', 'u1', 'assistant', { usage: { input: 1, output: 1 }, ttftMs: 50, latencyMs: 100 })],
     nodes: [
       { kind: 'assistant', id: 'a1', text: 'old', usage: { input: 1, output: 1 }, ttftMs: 50, latencyMs: 100 },
-      { kind: 'assistant', id: 'live-asst-1', text: 'new', usage: { input: 8, output: 2 }, ttftMs: 100, latencyMs: 600 },
+      { kind: 'assistant', id: 'live-asst-1', text: 'new', usage: { input: 8, output: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.012 } }, ttftMs: 100, latencyMs: 600 },
     ],
   }))
+  expect(s.turns).toBe(1)
+  expect(s.steps).toBe(2)
   expect(s.input).toBe(8)
+  expect(s.output).toBe(2)
+  expect(s.hasCost).toBe(true)
+  expect(s.cost).toBeCloseTo(0.012)
   expect(s.ttftMs).toBe(100)
   expect(s.decodeMs).toBe(500)
   expect(s.decodeTokens).toBe(2)
@@ -72,7 +81,10 @@ test('latestStats skips a streaming step and a sibling branch', () => {
       { kind: 'assistant', id: 'stream', text: '…', streaming: true, usage: { input: 9, output: 9 } },
     ],
   }))
+  expect(s.turns).toBe(1)
+  expect(s.steps).toBe(1)
   expect(s.input).toBe(1)
+  expect(s.output).toBe(1)
   expect(s.decodeMs).toBe(200)
   expect(s.decodeTokens).toBe(1)
 })
@@ -82,6 +94,7 @@ test('latestStats drops decode when the step reported no TTFT', () => {
     nodes: [{ kind: 'assistant', id: 'a1', text: 'ok', usage: { input: 8, output: 2 }, latencyMs: 500 }],
   }))
   expect(s.input).toBe(8)
+  expect(s.output).toBe(2)
   expect(s.ttftMs).toBe(0)
   expect(s.decodeMs).toBe(0)
   expect(s.decodeTokens).toBe(0)
@@ -95,9 +108,13 @@ test('cacheHitPercent needs billed input and a cache read', () => {
 })
 
 test('format helpers match the compact strip', () => {
+  expect(formatTokens(517)).toBe('517')
+  expect(formatTokens(12_200)).toBe('12.2K')
+  expect(formatTokens(1_200_000)).toBe('1.2M')
   expect(formatDuration(900)).toBe('0.9s')
-  expect(formatDuration(800)).toBe('0.8s')
   expect(formatDuration(162_000)).toBe('2m42s')
   expect(formatTokensPerSecond(8.24)).toBe('8.2')
   expect(formatTokensPerSecond(259.4)).toBe('259')
+  expect(formatCost(0.00321)).toBe('0.0032')
+  expect(formatCost(1.2)).toBe('1.20')
 })

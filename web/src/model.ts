@@ -1116,25 +1116,47 @@ export function appendOptimisticUser(s: ViewState, content: import('./types').Co
 }
 
 export type LatestStats = {
+  /** Branch totals — how many user turns and assistant/compaction steps exist. */
+  turns: number
+  steps: number
   /** Uncached + cache read + cache write for the latest step. */
   input: number
+  output: number
   cacheRead: number
-  /** First-token latency; 0 when the model reported none. */
+  cacheWrite: number
+  hasCost: boolean
+  cost: number
+  /** First-token latency of the latest step; 0 when the model reported none. */
   ttftMs: number
   /** First-token → message_end span and its output tokens, for TPS. */
   decodeMs: number
   decodeTokens: number
 }
 
+/** Usage/timing of a single step; the branch counts live on LatestStats. */
+type StepMetrics = Pick<LatestStats, 'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'hasCost' | 'cost' | 'ttftMs' | 'decodeMs' | 'decodeTokens'>
+
 function emptyStats(): LatestStats {
-  return { input: 0, cacheRead: 0, ttftMs: 0, decodeMs: 0, decodeTokens: 0 }
+  return {
+    turns: 0, steps: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+    hasCost: false, cost: 0, ttftMs: 0, decodeMs: 0, decodeTokens: 0,
+  }
 }
 
-function stepStats(usage?: Usage | null, timing?: { ttftMs?: number; latencyMs?: number }): LatestStats {
-  const out = emptyStats()
+function stepMetrics(usage?: Usage | null, timing?: { ttftMs?: number; latencyMs?: number }): StepMetrics {
+  const out: StepMetrics = {
+    input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+    hasCost: false, cost: 0, ttftMs: 0, decodeMs: 0, decodeTokens: 0,
+  }
   if (usage) {
     out.input = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
+    out.output = usage.output ?? 0
     out.cacheRead = usage.cacheRead ?? 0
+    out.cacheWrite = usage.cacheWrite ?? 0
+    if (usage.cost) {
+      out.hasCost = true
+      out.cost = usage.cost.total
+    }
   }
   if (timing?.ttftMs != null && Number.isFinite(timing.ttftMs) && timing.ttftMs > 0) {
     out.ttftMs = timing.ttftMs
@@ -1167,27 +1189,44 @@ function activePath(s: ViewState): Entry[] {
   return path
 }
 
-/** Figures for the newest assistant step only — TTFT, decode speed and cache
- * hit of the last request, not a whole-branch average. Live nodes that have not
- * been persisted yet win over the jsonl leaf, so a just-finished step shows
- * before the history refetch; a streaming step is skipped. */
+/** Usage/timing/features of the newest assistant step only — the last request,
+ * not a whole-branch average. Live nodes that have not been persisted yet win
+ * over the jsonl leaf, so a just-finished step shows before the history
+ * refetch; a streaming step is skipped. turns/steps stay branch totals. */
 export function latestStats(s: ViewState): LatestStats {
   const path = activePath(s)
   const counted = new Set(path.map(e => e.id))
+  const out = { ...emptyStats(), ...latestStepMetrics(s, path, counted) }
+  for (const e of path) {
+    if (e.type === 'message' && e.message?.role === 'user') out.turns += 1
+    else if (e.type === 'message' && e.message?.role === 'assistant') out.steps += 1
+    else if (e.type === 'compaction' && e.usage) out.steps += 1
+  }
+  for (const n of s.nodes) {
+    if (counted.has(n.id)) continue
+    if (n.kind === 'user') out.turns += 1
+    else if (n.kind === 'assistant' && !n.streaming) out.steps += 1
+  }
+  return out
+}
+
+function latestStepMetrics(s: ViewState, path: Entry[], counted: Set<string>): StepMetrics {
+  // Newest live step first: it is past the persisted leaf during the window
+  // between message_end and the next history refetch.
   for (let i = s.nodes.length - 1; i >= 0; i--) {
     const n = s.nodes[i]
     if (counted.has(n.id) || n.kind !== 'assistant' || n.streaming) continue
-    return stepStats(n.usage, { ttftMs: n.ttftMs, latencyMs: n.latencyMs })
+    return stepMetrics(n.usage, { ttftMs: n.ttftMs, latencyMs: n.latencyMs })
   }
   // activePath returns leaf → root, so the first assistant or compaction is the
   // newest step persisted on this branch.
   for (const e of path) {
     if (e.type === 'message' && e.message?.role === 'assistant') {
-      return stepStats(e.message.usage, { ttftMs: e.message.ttftMs, latencyMs: e.message.latencyMs })
+      return stepMetrics(e.message.usage, { ttftMs: e.message.ttftMs, latencyMs: e.message.latencyMs })
     }
-    if (e.type === 'compaction' && e.usage) return stepStats(e.usage)
+    if (e.type === 'compaction' && e.usage) return stepMetrics(e.usage)
   }
-  return emptyStats()
+  return stepMetrics()
 }
 
 export function cacheHitPercent(s: LatestStats): number | null {
@@ -1205,4 +1244,16 @@ export function formatDuration(ms: number): string {
 export function formatTokensPerSecond(tps: number): string {
   const clamped = Math.max(0, tps)
   return clamped >= 10 ? String(Math.round(clamped)) : String(Math.round(clamped * 10) / 10)
+}
+
+export function formatTokens(n: number): string {
+  const scaled = (v: number): string => (v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
+  if (n < 1_000) return String(n)
+  if (n < 1_000_000) return `${scaled(n / 1_000)}K`
+  return `${scaled(n / 1_000_000)}M`
+}
+
+export function formatCost(total: number): string {
+  const n = Math.max(0, total)
+  return n < 0.01 ? n.toFixed(4) : n.toFixed(2)
 }
