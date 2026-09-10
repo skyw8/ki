@@ -106,7 +106,11 @@ func TestLiveWebUIPlaywright(t *testing.T) {
 	}
 	webDir := filepath.Join(filepath.Dir(filepath.Dir(file)), "web")
 	if _, err := os.Stat(filepath.Join(webDir, "node_modules", "@playwright", "test")); err != nil {
-		t.Skip("web/node_modules/@playwright/test missing; cd web && npm install")
+		t.Skip("web/node_modules/@playwright/test missing; cd web && bun install")
+	}
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Skip("bun not found in PATH; install bun to run the WebUI suite")
 	}
 	home, proj := isolateLive(t)
 	if err := os.WriteFile(filepath.Join(proj, "pw-live.txt"), []byte("KI-LIVE-MARKER-77\n"), 0o600); err != nil {
@@ -115,7 +119,7 @@ func TestLiveWebUIPlaywright(t *testing.T) {
 	sf := startServeLive(t, home, proj)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "npx", "playwright", "test", "--project=live")
+	cmd := exec.CommandContext(ctx, bun, "x", "playwright", "test", "--project=live")
 	cmd.Dir = webDir
 	cmd.Env = append(liveChildEnv(home),
 		"KI_BASE_URL=http://"+sf.Addr,

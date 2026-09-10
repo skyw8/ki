@@ -4,7 +4,7 @@ A lean and extensible agent runtime designed for easy integration.
 ## tech stack
 - Go: backend
 - CLI: Cobra + Viper
-- WebUI: Vite + React
+- WebUI: Vite + React (deps and scripts use bun; vite config unchanged)
 
 ## directory structure
 
@@ -62,9 +62,9 @@ ki/
 
 - Dev run: `scripts/run.sh` builds `./ki` and starts `ki serve` with the real configured provider by default inside a tmux session named `ki`: window `server` runs the daemon, window `cli` is a shell for operating it. Re-run to rebuild and respawn; real tests operate through the script or `tmux attach -t ki`. `--web` rebuilds `web/dist`; `--fake` is an explicit opt-in for canned-model plumbing checks only.
 - Fake model (tests only): `go test ./e2e` (`KI_FAKE=1`; CLI main path, `serve`, `serve -d`, two sessions in parallel, WebUI Playwright). Do not use `KI_FAKE=1` or `--fake` for normal development, manual verification, or service restarts.
-WebUI: `cd web && npm run test:e2e` (starts a fake `ki serve`). Requires `npx playwright install chromium`. Long-history / huge-message budgets: `cd web && npm run test:perf` (not in the fake matrix).
+WebUI: `cd web && bun run test:e2e` (starts a fake `ki serve`). Requires `bunx playwright install chromium`. Long-history / huge-message budgets: `cd web && bun run test:perf` (not in the fake matrix).
 - Live model: `go test -tags live -timeout 5m ./e2e -run Live` (reads `DASHSCOPE_CN_API_KEY` or `~/.ki/ki.toml` dashscope-cn; default `qwen3.7-plus`; images / PDF / WebUI Playwright).
-WebUI live: `cd web && npm run test:e2e:live`.
+WebUI live: `cd web && bun run test:e2e:live`.
 
 ## constraints
 
@@ -80,7 +80,7 @@ WebUI live: `cd web && npm run test:e2e:live`.
 - Package comments go in that package's `doc.go`. Cross-package explanation stays in `docs/`.
 - When changing code, update the related docs that already describe that contract (`docs/*.md` and the owning `doc.go`). Do not add new todo filenames here.
 - Bugs and pitfalls get a why-comment at the fix site explaining why the code is written that way. A problem that recurs gets a retrospective entry under `docs/postmortem/`.
-- One binary: `ki serve` serves API and the embedded SPA on the same origin. Rebuild `web/dist` then `go build` after frontend changes; serve does not run npm.
+- One binary: `ki serve` serves API and the embedded SPA on the same origin. Rebuild `web/dist` then `go build` after frontend changes; serve does not run vite or bun.
 - Naming: `extension` is the installable/runtime bundle; a provider supplied by one is an `extension provider`. Do not use `plugin` for provider code, APIs, runtime values, or UI/docs.
 - Real provider is the default runtime. `KI_FAKE=1` and `scripts/run.sh --fake` are test-only opt-ins and must not be used for normal development or manual verification.
 - Do not invent REST routes for data the loop already has. Extend `loop.Event` and jsonl (and existing SSE / `GET /v1/sessions/{id}`) instead.

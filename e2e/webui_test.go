@@ -17,7 +17,11 @@ func TestWebUIPlaywright(t *testing.T) {
 	}
 	webDir := filepath.Join(filepath.Dir(filepath.Dir(file)), "web")
 	if _, err := os.Stat(filepath.Join(webDir, "node_modules", "@playwright", "test")); err != nil {
-		t.Skip("web/node_modules/@playwright/test missing; cd web && npm install")
+		t.Skip("web/node_modules/@playwright/test missing; cd web && bun install")
+	}
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Skip("bun not found in PATH; install bun to run the WebUI suite")
 	}
 	home, proj := isolate(t)
 	sf := startServe(t, home)
@@ -25,7 +29,7 @@ func TestWebUIPlaywright(t *testing.T) {
 	// major WebUI surface and takes slightly over two minutes on slower runners.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "npx", "playwright", "test", "--project=fake")
+	cmd := exec.CommandContext(ctx, bun, "x", "playwright", "test", "--project=fake")
 	cmd.Dir = webDir
 	cmd.Env = append(childEnv(home),
 		"KI_BASE_URL=http://"+sf.Addr,

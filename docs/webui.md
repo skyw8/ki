@@ -194,31 +194,32 @@ dialog 时立即释放键盘；侧栏操作菜单使用 menu/menuitem 语义，�
 ## 构建
 
 ```bash
-cd web && npm install && npm run build
+cd web && bun install && bun run build
 go build -o ki ./cmd/ki
 ```
 
-改前端后必须重新 `npm run build`，再编 Go，嵌入的才是新资源。
+改前端后必须重新 `bun run build`，再编 Go，嵌入的才是新资源。依赖用 bun 管理
+（`web/bun.lock`），vite 配置不变。
 
 ## Playwright
 
 假模型打通对话和轨迹（`KI_FAKE=1` 起 `ki serve`，同域打开页面）：
 
 ```bash
-cd web && npm install && npx playwright install chromium
-npm run test:e2e
+cd web && bun install && bunx playwright install chromium
+bun run test:e2e
 ```
 
 Playwright 每次 invocation 使用独立的临时状态、鉴权文件、二进制和随机 loopback 端口，
 因此可与 Go e2e 或另一轮 WebUI 测试并行运行，不得复用固定 `/tmp` 状态文件。响应式矩阵
 由 `e2e/responsive.spec.ts` 随 fake project 一起执行。
 
-`go test ./e2e -run WebUI` 会先起 server，再跑同一套 Playwright（需已 `npm install` 和装好 chromium）。
+`go test ./e2e -run WebUI` 会先起 server，再跑同一套 Playwright（需已 `bun install` 和装好 chromium）。
 
 长会话 / 超长消息压测不进 fake 矩阵。生成 jsonl 夹具后测 slim GET 体积与延迟（含 `fields=runtime`、`before`、`entry`）、打开 Chat/Trace 的 DOM 与 JS heap，以及向上翻页 / 截断正文补全：
 
 ```bash
-cd web && npm run test:perf
+cd web && bun run test:perf
 ```
 
 Go 侧同一套夹具：`go test ./internal/session ./internal/server -run 'SeedView|ViewPerf|SeedTranscript' -v`；微基准 `go test ./internal/session -bench . -benchmem`。
@@ -226,7 +227,7 @@ Go 侧同一套夹具：`go test ./internal/session ./internal/server -run 'Seed
 真模型（DashScope `qwen3.7-plus`，读 `DASHSCOPE_CN_API_KEY` 或 `~/.ki/ki.toml`）：
 
 ```bash
-cd web && KI_LIVE=1 npm run test:e2e:live
+cd web && KI_LIVE=1 bun run test:e2e:live
 ```
 
 或 `go test -tags live -timeout 5m ./e2e -run LiveWebUI`。

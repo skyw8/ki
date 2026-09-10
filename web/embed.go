@@ -3,7 +3,7 @@ package web
 
 import "embed"
 
-// Dist is the production frontend (web/dist). Rebuild with npm run build.
+// Dist is the production frontend (web/dist). Rebuild with bun run build.
 //
 //go:embed all:dist
 var Dist embed.FS

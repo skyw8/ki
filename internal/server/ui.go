@@ -58,7 +58,7 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 func (s *Server) writeIndex(w http.ResponseWriter, root fs.FS) {
 	b, err := fs.ReadFile(root, "index.html")
 	if err != nil {
-		http.Error(w, "web ui not built (cd web && npm run build)", http.StatusServiceUnavailable)
+		http.Error(w, "web ui not built (cd web && bun run build)", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

@@ -1079,7 +1079,8 @@ func TestManualCompactPublishesNotifications(t *testing.T) {
 	}
 }
 
-func TestAuthAndCreateGetFork(t *testing.T) {	_, hs := testServer(t)
+func TestAuthAndCreateGetFork(t *testing.T) {
+	_, hs := testServer(t)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions", strings.NewReader(`{"cwd":"`+t.TempDir()+`"}`))
 	if err != nil {
 		t.Fatal(err)

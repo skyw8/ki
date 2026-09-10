@@ -52,7 +52,7 @@ cd "$ROOT"
 
 if [[ $BUILD_WEB == 1 ]]; then
   echo "building web/dist ..."
-  (cd web && npm run build)
+  (cd web && bun run build)
 fi
 
 echo "building ./ki ..."
