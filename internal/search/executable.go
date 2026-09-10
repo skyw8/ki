@@ -12,14 +12,60 @@ import (
 	"sync"
 )
 
-const embeddedRGVersion = "15.2.0"
+// ToolsShimName is the shell fragment written next to the bundled binaries and
+// sourced through BASH_ENV by the shell tools.
+const ToolsShimName = "shim.sh"
 
-var materializeMu sync.Mutex
+var (
+	toolsDirOnce sync.Once
+	toolsDirPath string
+	toolsDirErr  error
+)
 
-// executable returns a stable executable path and a cleanup function. The
-// normal path is a per-user cache so repeated searches do not rewrite rg. A
-// temporary fallback keeps the tool usable when the cache directory is not
-// writable (for example in a locked-down CI container).
+// ToolsDir returns a directory that holds the embedded search executables (rg
+// and, where available, fd) together with the BASH_ENV shim. The Bash and
+// PowerShell tools put this directory on PATH so shell commands can use rg/fd
+// regardless of what the host has installed.
+//
+// Binaries are materialized once per user and reused while their SHA-256 still
+// matches the embedded bytes. When no writable cache directory exists the tools
+// fall back to a process-lifetime temporary directory.
+func ToolsDir() (string, error) {
+	toolsDirOnce.Do(func() {
+		toolsDirPath, toolsDirErr = resolveToolsDir()
+	})
+	return toolsDirPath, toolsDirErr
+}
+
+func resolveToolsDir() (string, error) {
+	if len(embeddedBinaries()) == 0 {
+		return "", errEmbeddedRGMissing
+	}
+	if cache, err := os.UserCacheDir(); err == nil && cache != "" {
+		dir := filepath.Join(cache, "ki", "tools", runtime.GOOS+"-"+runtime.GOARCH)
+		if err := materializeTools(dir); err == nil {
+			return dir, nil
+		}
+	}
+
+	// Why: a locked-down container may have no writable cache directory. A
+	// process-lifetime temp dir still lets shell commands resolve rg/fd; unlike
+	// the previous per-call temp file it is intentionally not removed, because
+	// PATH points at it for as long as ki runs.
+	dir, err := os.MkdirTemp("", "ki-tools-*")
+	if err != nil {
+		return "", fmt.Errorf("create temporary tools directory: %w", err)
+	}
+	if err := materializeTools(dir); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
+	}
+	return dir, nil
+}
+
+// executable returns a stable rg executable path plus a cleanup function. The
+// normal path is the shared tools directory, so the same binary backs both the
+// Grep/Glob engines and shell commands.
 func executable() (string, func(), error) {
 	if truthy(os.Getenv("KI_USE_SYSTEM_RIPGREP")) {
 		path, err := exec.LookPath("rg")
@@ -33,43 +79,58 @@ func executable() (string, func(), error) {
 	if len(data) == 0 {
 		return "", func() {}, errEmbeddedRGMissing
 	}
-	if name == "" {
-		name = "rg"
-	}
-	if runtime.GOOS == "windows" && !strings.HasSuffix(name, ".exe") {
-		name += ".exe"
-	}
-
-	materializeMu.Lock()
-	defer materializeMu.Unlock()
-	hash := sha256.Sum256(data)
-	digest := hex.EncodeToString(hash[:])
-	if cache, err := os.UserCacheDir(); err == nil && cache != "" {
-		dir := filepath.Join(cache, "ki", "rg", embeddedRGVersion, runtime.GOOS+"-"+runtime.GOARCH)
-		if path, ok := materializeCached(dir, name, data, digest); ok {
-			return path, func() {}, nil
-		}
-	}
-
-	file, err := os.CreateTemp("", "ki-rg-*")
+	dir, err := ToolsDir()
 	if err != nil {
-		return "", func() {}, fmt.Errorf("create temporary ripgrep: %w", err)
-	}
-	path := file.Name()
-	if err := writeExecutable(file, data); err != nil {
-		_ = os.Remove(path)
 		return "", func() {}, err
 	}
-	if runtime.GOOS == "windows" {
-		path += ".exe"
-		if err := os.Rename(file.Name(), path); err != nil {
-			_ = os.Remove(file.Name())
-			_ = os.Remove(path)
-			return "", func() {}, fmt.Errorf("name temporary ripgrep: %w", err)
+	path := filepath.Join(dir, executableName(name))
+	if _, statErr := os.Stat(path); statErr != nil {
+		return "", func() {}, errEmbeddedRGMissing
+	}
+	return path, func() {}, nil
+}
+
+type embeddedBinary struct {
+	name string
+	data []byte
+}
+
+// embeddedBinaries lists the binaries embedded for the current target. fd is
+// absent on unsupported platforms and rg may be requested from the system, so
+// callers must tolerate either being missing.
+func embeddedBinaries() []embeddedBinary {
+	var out []embeddedBinary
+	if data, name := embeddedRG(); len(data) > 0 {
+		out = append(out, embeddedBinary{name: executableName(name), data: data})
+	}
+	if data, name := embeddedFD(); len(data) > 0 {
+		out = append(out, embeddedBinary{name: executableName(name), data: data})
+	}
+	return out
+}
+
+func executableName(name string) string {
+	if name == "" {
+		name = "tool"
+	}
+	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
+		name += ".exe"
+	}
+	return name
+}
+
+func materializeTools(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create tools directory: %w", err)
+	}
+	for _, bin := range embeddedBinaries() {
+		hash := sha256.Sum256(bin.data)
+		digest := hex.EncodeToString(hash[:])
+		if _, ok := materializeCached(dir, bin.name, bin.data, digest); !ok {
+			return fmt.Errorf("materialize embedded %s", bin.name)
 		}
 	}
-	cleanup := func() { _ = os.Remove(path) }
-	return path, cleanup, nil
+	return materializeShim(dir)
 }
 
 func materializeCached(dir, name string, data []byte, digest string) (string, bool) {
@@ -81,13 +142,12 @@ func materializeCached(dir, name string, data []byte, digest string) (string, bo
 		return destination, true
 	}
 
-	tmp, err := os.CreateTemp(dir, ".rg-*")
+	tmp, err := os.CreateTemp(dir, ".tool-*")
 	if err != nil {
 		return "", false
 	}
 	tmpPath := tmp.Name()
 	if err := writeExecutable(tmp, data); err != nil {
-		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
 		return "", false
 	}
@@ -101,18 +161,46 @@ func materializeCached(dir, name string, data []byte, digest string) (string, bo
 	return destination, true
 }
 
+// toolsShim re-prepends the bundled tools directory to PATH. bash -lc sources
+// /etc/profile and the user's profile before BASH_ENV, and those files may
+// reset PATH entirely (Debian's /etc/profile does), so exporting PATH on the
+// child process alone is not enough. KI_ORIG_BASH_ENV chains to any BASH_ENV
+// the user already had so the shim does not shadow it.
+const toolsShim = `# ki: expose bundled rg/fd to shell commands.
+[ -n "${KI_ORIG_BASH_ENV:-}" ] && [ -r "$KI_ORIG_BASH_ENV" ] && . "$KI_ORIG_BASH_ENV"
+_ki_tools_dir=$(cd "$(dirname "$BASH_SOURCE")" 2>/dev/null && pwd)
+if [ -n "$_ki_tools_dir" ]; then
+	case ":$PATH:" in
+		*":$_ki_tools_dir:"*) ;;
+		*) PATH="$_ki_tools_dir:$PATH"; export PATH ;;
+	esac
+fi
+unset _ki_tools_dir
+`
+
+func materializeShim(dir string) error {
+	path := filepath.Join(dir, ToolsShimName)
+	if current, err := os.ReadFile(path); err == nil && string(current) == toolsShim {
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(toolsShim), 0o600); err != nil {
+		return fmt.Errorf("write tools shim: %w", err)
+	}
+	return nil
+}
+
 func writeExecutable(file *os.File, data []byte) error {
 	if err := file.Chmod(0o700); err != nil {
-		return fmt.Errorf("set ripgrep permissions: %w", err)
+		return fmt.Errorf("set embedded executable permissions: %w", err)
 	}
 	if _, err := file.Write(data); err != nil {
-		return fmt.Errorf("write embedded ripgrep: %w", err)
+		return fmt.Errorf("write embedded executable: %w", err)
 	}
 	if err := file.Sync(); err != nil {
-		return fmt.Errorf("sync embedded ripgrep: %w", err)
+		return fmt.Errorf("sync embedded executable: %w", err)
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("close embedded ripgrep: %w", err)
+		return fmt.Errorf("close embedded executable: %w", err)
 	}
 	return nil
 }

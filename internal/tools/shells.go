@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"ki/internal/processenv"
+	"ki/internal/search"
 )
 
 type shellKind string
@@ -48,6 +49,9 @@ func (s shellSpec) env() []string {
 	// Why: shell commands can launch networked tools such as npm or curl, so
 	// pass the same proxy environment explicitly across every process boundary.
 	env := processenv.WithProxyEnvironment(processenv.ChildEnvironment())
+	if dir, err := search.ToolsDir(); err == nil {
+		env = withBundledSearchTools(env, dir, s.kind)
+	}
 	if !s.setShellEnv {
 		return env
 	}
@@ -58,6 +62,63 @@ func (s shellSpec) env() []string {
 		}
 	}
 	return append(env, "SHELL="+s.path)
+}
+
+// withBundledSearchTools prepends ki's embedded rg/fd directory to PATH. Bash
+// additionally gets a BASH_ENV shim: bash -lc sources /etc/profile and the
+// user's profile before BASH_ENV, and those files can overwrite PATH after the
+// child environment is already fixed, so exporting PATH alone is not reliable.
+func withBundledSearchTools(env []string, dir string, kind shellKind) []string {
+	env = prependPath(env, dir)
+	if kind != shellBash {
+		return env
+	}
+	shim := shellPath(filepath.Join(dir, search.ToolsShimName))
+	if original := envValue(env, "BASH_ENV"); original != "" && filepath.Clean(original) != filepath.Clean(shim) {
+		env = setEnvValue(env, "KI_ORIG_BASH_ENV", original)
+	}
+	return setEnvValue(env, "BASH_ENV", shim)
+}
+
+func prependPath(env []string, dir string) []string {
+	for i, item := range env {
+		key, value, ok := strings.Cut(item, "=")
+		if ok && strings.EqualFold(key, "PATH") {
+			env[i] = key + "=" + dir + string(os.PathListSeparator) + value
+			return env
+		}
+	}
+	return append(env, "PATH="+dir)
+}
+
+func envValue(env []string, key string) string {
+	for _, item := range env {
+		k, value, ok := strings.Cut(item, "=")
+		if ok && strings.EqualFold(k, key) {
+			return value
+		}
+	}
+	return ""
+}
+
+func setEnvValue(env []string, key, value string) []string {
+	for i, item := range env {
+		k, _, ok := strings.Cut(item, "=")
+		if ok && strings.EqualFold(k, key) {
+			env[i] = key + "=" + value
+			return env
+		}
+	}
+	return append(env, key+"="+value)
+}
+
+// shellPath renders a host path in a form the shell reads unambiguously. Git
+// Bash on Windows accepts both separators, but forward slashes avoid escaping.
+func shellPath(path string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.ToSlash(path)
+	}
+	return path
 }
 
 // ShellRuntime is the process-wide set of command interpreters discovered at

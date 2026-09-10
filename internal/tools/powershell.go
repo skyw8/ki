@@ -36,7 +36,9 @@ func (t powerShellTool) Prompt() string {
 
 Each call starts in the session cwd. Set-Location only affects the current call and is not remembered. The process runs with -NoProfile and -NonInteractive.
 
-IMPORTANT: Use the dedicated Read, Write, Edit, Grep, and Glob tools for file operations and searching instead of Get-Content, Set-Content, Select-String, or recursive Get-ChildItem.
+IMPORTANT: Use the dedicated Read, Write, Edit, Grep, and Glob tools instead of Get-Content, Set-Content, Select-String, or recursive Get-ChildItem.
+
+For shell search, use 'rg' and 'fd' instead of Select-String or Get-ChildItem; ki bundles both on PATH. 'fd' respects .gitignore and skips hidden files (-H hidden, -I no-ignore).
 
 %s
 

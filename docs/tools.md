@@ -76,7 +76,7 @@
 
 ## Grep
 
-- 使用编译进 ki 的 ripgrep 15.2.0，不依赖系统 `rg`；helper 按平台物化到用户缓存目录。
+- 使用编译进 ki 的 ripgrep 15.2.0，不依赖系统 `rg`；helper 与 fd 一起物化到 `ki/tools/<goos>-<goarch>/`，该目录同时暴露给 shell（见"内置 rg 和 fd"）。
 - 通过 argv 启动并逐行解析 JSON 输出，不经过 shell；支持正则、glob、文件类型、上下文和分页。
 - 默认超时 20 秒；达到结果或原始输出上限时立即终止子进程，并保留已经解析的 partial results。
 - 默认尊重 `.gitignore`，无需任何配置；仅 `respect_gitignore=false` 时改为 `--no-ignore`，搜索被忽略的文件。
@@ -92,6 +92,14 @@
 - 结果文本和 details 都包含规范化搜索根目录。默认尊重 `.gitignore`，无需任何配置；仅当显式传入 `respect_gitignore=false` 时才改为 `--no-ignore` 行为，搜索被忽略的路径。尊重 ignore 时先按 ignore 规则枚举，再应用 glob，避免 ripgrep 的白名单 glob 覆盖 ignore 文件。
 - 默认超时 20 秒；达到上限时保留部分结果，资源暂时不足时以 `-j 1` 重试一次。
 - `KI_USE_SYSTEM_RIPGREP=1` 仅用于调试。
+
+## 内置 rg 和 fd
+
+- ki 把 rg（ripgrep 15.2.0）和 fd（10.3.0）编译进二进制，按 `GOOS/GOARCH` 只嵌入当前目标的那一份，安装后不需要系统 `rg`/`fd`；Linux 产物使用静态 musl 构建。fd 固定 10.3.0，因为它是唯一同时提供 `x86_64-apple-darwin`（10.4.1 起移除）和 `aarch64-pc-windows-msvc`（10.3.0 才加入）的版本，与内嵌 ripgrep 覆盖同样六个目标。
+- 首次使用把两个可执行文件物化到用户缓存 `ki/tools/<goos>-<goarch>/`（缓存不可写时退化为进程级临时目录），用 SHA-256 判断是否需要重写；`ToolsDir` 结果在进程内缓存一次。
+- `Bash` 和 `PowerShell` 把该目录放到子进程 `PATH` 最前，因此 shell 里的 `rg`/`fd` 始终是 ki 自带的版本，不受宿主环境影响。`KI_USE_SYSTEM_RIPGREP=1` 只影响 `Grep` / `Glob` 引擎，不影响 shell 的 `PATH`。
+- Bash 额外通过 `BASH_ENV` 注入一个 shim：`bash -lc` 先读 `/etc/profile` 和用户 profile，而 profile 可能整体重置 `PATH`（例如 Debian 的 `/etc/profile`），所以只在子进程环境里 prepend `PATH` 并不可靠；shim 在 startup files 之后再次把工具目录放到 `PATH` 最前。shim 通过 `KI_ORIG_BASH_ENV` 串联用户已有的 `BASH_ENV`，不覆盖用户配置。
+- `fd` 默认尊重 `.gitignore` 并跳过隐藏文件；`-H` 包含隐藏路径，`-I` 关闭 ignore。Bash 和 PowerShell 的工具描述要求：从 shell 搜索或需要管道组合时优先用 `rg`/`fd`，而不是 `grep`/`find`。
 
 ## Bash
 

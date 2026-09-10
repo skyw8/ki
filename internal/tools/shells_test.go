@@ -2,9 +2,14 @@ package tools
 
 import (
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"ki/internal/search"
 )
 
 var errShellNotFound = errors.New("not found")
@@ -163,5 +168,84 @@ func TestPowerShellArgumentsAndSleepDetection(t *testing.T) {
 	}
 	if isLeadingSleep(shellPowerShell, "Write-Output ok; Start-Sleep 10") {
 		t.Fatal("later sleep was treated as a leading sleep")
+	}
+}
+
+func envToMap(env []string) map[string]string {
+	values := make(map[string]string, len(env))
+	for _, item := range env {
+		if key, value, ok := strings.Cut(item, "="); ok {
+			values[key] = value
+		}
+	}
+	return values
+}
+
+func TestBundledSearchToolsPrependPathAndSetBashEnv(t *testing.T) {
+	dir := filepath.Join(string(filepath.Separator)+"opt", "ki-tools")
+	values := envToMap(withBundledSearchTools([]string{"PATH=/usr/bin:/bin", "HOME=/home/x"}, dir, shellBash))
+
+	if got, want := values["PATH"], dir+string(os.PathListSeparator)+"/usr/bin:/bin"; got != want {
+		t.Fatalf("PATH = %q, want %q", got, want)
+	}
+	if got, want := values["BASH_ENV"], shellPath(filepath.Join(dir, search.ToolsShimName)); got != want {
+		t.Fatalf("BASH_ENV = %q, want %q", got, want)
+	}
+	if _, ok := values["KI_ORIG_BASH_ENV"]; ok {
+		t.Fatalf("unexpected KI_ORIG_BASH_ENV = %q", values["KI_ORIG_BASH_ENV"])
+	}
+}
+
+func TestBundledSearchToolsChainsExistingBashEnv(t *testing.T) {
+	dir := filepath.Join(string(filepath.Separator)+"opt", "ki-tools")
+	values := envToMap(withBundledSearchTools(
+		[]string{"PATH=/usr/bin", "BASH_ENV=/home/x/.user-env.sh"}, dir, shellBash))
+
+	if got, want := values["KI_ORIG_BASH_ENV"], "/home/x/.user-env.sh"; got != want {
+		t.Fatalf("KI_ORIG_BASH_ENV = %q, want %q", got, want)
+	}
+	if values["BASH_ENV"] == "/home/x/.user-env.sh" {
+		t.Fatal("existing BASH_ENV was not replaced by the shim")
+	}
+}
+
+func TestBundledSearchToolsDoesNotSetBashEnvForPowerShell(t *testing.T) {
+	dir := filepath.Join(string(filepath.Separator)+"opt", "ki-tools")
+	values := envToMap(withBundledSearchTools([]string{"PATH=C:\\Windows"}, dir, shellPowerShell))
+
+	if _, ok := values["BASH_ENV"]; ok {
+		t.Fatalf("PowerShell env should not set BASH_ENV: %q", values["BASH_ENV"])
+	}
+}
+
+// TestBashResolvesBundledToolsDespiteProfile guards the reason the shim exists:
+// bash -lc runs the login profile before BASH_ENV, and a profile that resets
+// PATH would otherwise hide the embedded rg/fd.
+func TestBashResolvesBundledToolsDespiteProfile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX login-profile PATH reset scenario")
+	}
+	runtimeShell := DiscoverShellRuntime()
+	if !runtimeShell.BashAvailable() {
+		t.Skip("bash unavailable")
+	}
+	toolsDir, err := search.ToolsDir()
+	if err != nil {
+		t.Skipf("embedded tools unavailable: %v", err)
+	}
+
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte("export PATH=/usr/bin:/bin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(runtimeShell.bash.path, runtimeShell.bash.args("rg --version >/dev/null && fd --version >/dev/null && command -v rg && command -v fd")...) //nolint:gosec // test invokes the discovered system shell intentionally
+	cmd.Env = setEnvValue(runtimeShell.bash.env(), "HOME", home)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bash failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), filepath.Base(toolsDir)) {
+		t.Fatalf("bash resolved rg/fd outside the bundled tools dir:\n%s", out)
 	}
 }

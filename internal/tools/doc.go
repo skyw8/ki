@@ -30,7 +30,10 @@
 // explicit background tasks can be inspected by bounded TaskOutput or stopped by
 // TaskStop. Monitor streams Bash output through ToolExecutionUpdate. Search
 // tools use the same process-tree termination contract and run an embedded
-// ripgrep binary, so an installed ki does not require rg in PATH.
+// ripgrep binary, so an installed ki does not require rg in PATH. ki also
+// embeds fd; both are materialized into one tools directory that Bash and
+// PowerShell prepend to PATH, and Bash additionally sources a BASH_ENV shim so
+// rg/fd stay resolvable even after a login profile rewrites PATH.
 // Set.Build selects a text/rich Read and exactly one editor family from the
 // provider-neutral Profile. apply_patch uses the Codex freeform patch grammar,
 // verifies the complete patch before its first write, preserves mixed line

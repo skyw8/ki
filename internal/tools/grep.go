@@ -15,7 +15,7 @@ import (
 const grepPrompt = `A powerful search tool built on ripgrep
 
 Usage:
-- ALWAYS use Grep for search tasks. NEVER invoke grep or rg as a Bash command. The Grep tool is optimized for correct permissions and access.
+- Prefer Grep over shell search. For shell pipelines use rg or fd, not grep or find.
 - Supports full regex syntax (e.g., "log.*Error", "function\s+\w+")
 - Filter files with the glob parameter (e.g., "*.js", "**/*.tsx") or the type parameter (e.g., "js", "py", "rust")
 - Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), and "count" shows match counts
