@@ -1,6 +1,7 @@
 import base64
 import json
 import threading
+import time
 import unittest
 import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -258,6 +259,78 @@ class CodexExtensionTest(unittest.TestCase):
             self.assertEqual(final["usage"]["input"], 5)
             self.assertEqual(final["usage"]["cacheWrite"], 3)
         finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_stalled_response_headers_fail_within_header_budget(self):
+        # A connection the upstream accepts but never answers used to hold the
+        # turn for the full stream timeout (5 minutes); Ki can only retry after
+        # the sidecar errors, so the header budget must fail fast.
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                time.sleep(2)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+
+            def log_message(self, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        original = main.STREAM_HEADER_TIMEOUT
+        main.STREAM_HEADER_TIMEOUT = 0.3
+        try:
+            payload = {
+                "model": {"id": "gpt-5.4", "baseUrl": f"http://127.0.0.1:{server.server_port}"},
+                "credential": {"value": {"access": "access", "accountId": "acct"}},
+                "request": {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]},
+            }
+            started = time.monotonic()
+            with self.assertRaises(TimeoutError):
+                main.stream_codex(threading.Event(), payload, lambda _event: None, "stream-stall")
+            self.assertLess(time.monotonic() - started, 2)
+        finally:
+            main.STREAM_HEADER_TIMEOUT = original
+            server.shutdown()
+            server.server_close()
+
+    def test_idle_stream_survives_past_header_budget(self):
+        # Once headers arrive the socket must use the longer idle budget so a
+        # reasoning model that pauses between events is not cut off.
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.flush()
+                time.sleep(1.0)
+                self.wfile.write(b'data: {"type":"response.created","response":{"id":"resp-idle"}}\n\n')
+                self.wfile.write(b'data: {"type":"response.output_text.delta","item_id":"msg-1","delta":"hi"}\n\n')
+                self.wfile.write(b'data: {"type":"response.completed","response":{"status":"completed"}}\n\n')
+
+            def log_message(self, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        original_header = main.STREAM_HEADER_TIMEOUT
+        original_idle = main.STREAM_IDLE_TIMEOUT
+        main.STREAM_HEADER_TIMEOUT = 0.3
+        main.STREAM_IDLE_TIMEOUT = 5
+        try:
+            events = []
+            payload = {
+                "model": {"id": "gpt-5.4", "provider": "openai-codex", "api": "openai-codex-responses", "baseUrl": f"http://127.0.0.1:{server.server_port}", "input": ["text"]},
+                "credential": {"type": "oauth", "value": {"access": "access", "accountId": "acct"}},
+                "request": {"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]},
+            }
+            main.stream_codex(threading.Event(), payload, events.append, "stream-idle")
+            self.assertIn("done", [event["params"]["type"] for event in events])
+            self.assertEqual(events[-1]["params"]["message"]["responseId"], "resp-idle")
+        finally:
+            main.STREAM_HEADER_TIMEOUT = original_header
+            main.STREAM_IDLE_TIMEOUT = original_idle
             server.shutdown()
             server.server_close()
 

@@ -32,6 +32,15 @@ CALLBACK_PORT = 1455
 REFRESH_WINDOW = 60_000
 DEVICE_LIFETIME = 15 * 60
 
+# A single stalled connection must not stall a whole turn. Ki retries a failed
+# provider stream, but only after this sidecar gives up, so a long socket
+# timeout turns one dead connection into a multi-minute wait. Keep the
+# connect/response-header budget short (the upstream sends `response.created`
+# as soon as it accepts the request) and widen it once the SSE stream is live,
+# where a reasoning model may legitimately stay quiet between events.
+STREAM_HEADER_TIMEOUT = 60
+STREAM_IDLE_TIMEOUT = 300
+
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -492,6 +501,21 @@ def response_id(obj: dict[str, Any]) -> str:
     return str((response if isinstance(response, dict) else obj).get("id", ""))
 
 
+def relax_stream_timeout(response: Any, seconds: float) -> None:
+    """Widen the socket inactivity budget after the response headers arrive.
+
+    urllib's timeout covers the connect and every later read, so one value
+    cannot be both a fast failure for a stalled connection and a long budget
+    for a slow reasoning stream.  CPython exposes the response socket as
+    `HTTPResponse.fp.raw._sock`; if that internal shape ever changes the short
+    header budget stays in force and behavior falls back to a tighter read.
+    """
+    try:
+        response.fp.raw._sock.settimeout(seconds)
+    except AttributeError:
+        pass
+
+
 def stream_codex(cancelled: threading.Event, payload: dict[str, Any], send: Callable[[dict[str, Any]], None], request_id: str) -> None:
     credential = (payload.get("credential") or {}).get("value") or {}
     if not credential.get("access") or not credential.get("accountId"):
@@ -505,9 +529,10 @@ def stream_codex(cancelled: threading.Event, payload: dict[str, Any], send: Call
     if session_id:
         request.add_header("session-id", session_id)
         request.add_header("x-client-request-id", session_id)
-    with urllib.request.urlopen(request, timeout=300) as response:
+    with urllib.request.urlopen(request, timeout=STREAM_HEADER_TIMEOUT) as response:
         if response.status < 200 or response.status >= 300:
             raise RuntimeError(f"Codex request failed ({response.status})")
+        relax_stream_timeout(response, STREAM_IDLE_TIMEOUT)
         message = {"role": "assistant", "api": model.get("api", "openai-codex-responses"), "provider": model.get("provider", "openai-codex"), "model": model.get("id", ""), "content": []}
         item_map: dict[str, dict[str, Any]] = {}
         started_text: set[str] = set()
