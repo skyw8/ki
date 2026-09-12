@@ -7,7 +7,7 @@ import { AttachmentImage } from './AttachmentImage'
 import type { Client } from './api'
 import { useI18n } from './i18n'
 import { Markdown } from './Markdown'
-import { cacheMisses, formatTokens, reconcileUserNodes, type CacheMiss } from './model'
+import { cacheHitRate, cacheMisses, formatTokens, reconcileUserNodes, type CacheMiss } from './model'
 import type { ChatNode } from './types'
 
 const VIRTUALIZE_AFTER = 48
@@ -327,6 +327,7 @@ const ChatItem = memo(function ChatItem({
   if (n.kind === 'assistant') {
     const hasStats = !n.streaming && !!(n.ts || n.latencyMs || n.ttftMs || n.usage)
     const missed = misses?.get(n.id)
+    const hitRate = cacheHitRate(n.usage)
     return (
       <div className="asst" data-testid="assistant-message">
         <div className="asst-body">
@@ -345,6 +346,7 @@ const ChatItem = memo(function ChatItem({
                 {n.latencyMs != null ? <span>Ran {(n.latencyMs / 1000).toFixed(2)}s</span> : null}
                 {n.ttftMs != null ? <span>TTFT {(n.ttftMs / 1000).toFixed(2)}s</span> : null}
                 {n.usage ? <span>{fmtUsage(n.usage)}</span> : null}
+                {hitRate != null ? <span data-testid="cache-hit-rate">{t('stats.cacheHitRate', { percent: hitRate.toFixed(2) })}</span> : null}
                 {missed != null ? (
                   <span className="cache-miss" data-testid="cache-miss" title={t('stats.cacheMissTitle', { tokens: formatTokens(missed.missedTokens), percent: Math.round(missed.missRatio * 100) })}>
                     {t('stats.cacheMiss')}

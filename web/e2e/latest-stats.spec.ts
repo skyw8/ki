@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { cacheHitPercent, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats } from '../src/model.ts'
+import { cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats } from '../src/model.ts'
 import type { ChatNode, Entry, ViewState } from '../src/types.ts'
 
 function view(over: Partial<ViewState> = {}): ViewState {
@@ -147,6 +147,15 @@ test('cacheMisses resets across compaction and skips streaming steps', () => {
   expect(cacheMisses(nodes).size).toBe(0)
   // The live streaming step is not compared until it is complete.
   expect(cacheMisses([asst('a1', { input: 100, cacheRead: 29900 }), asst('live', { input: 30000 }, { streaming: true })]).size).toBe(0)
+})
+
+test('cacheHitRate is the cache-read share of the prompt, shown to 2 decimals', () => {
+  expect(cacheHitRate(null)).toBeNull()
+  expect(cacheHitRate({ input: 0, cacheRead: 0, cacheWrite: 0 })).toBeNull()
+  expect(cacheHitRate({ input: 0, cacheRead: 100, cacheWrite: 0 })).toBe(100)
+  const rate = cacheHitRate({ input: 71348, cacheRead: 3584, cacheWrite: 0 })
+  expect(rate).toBeCloseTo(3584 / 74932 * 100)
+  expect(rate!.toFixed(2)).toBe('4.78')
 })
 
 test('format helpers match the compact strip', () => {

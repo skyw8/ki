@@ -1271,6 +1271,16 @@ export function cacheHitPercent(s: LatestStats): number | null {
   return Math.round(s.cacheRead / s.input * 100)
 }
 
+/** Cache-read share of a step's prompt, as a percentage (not rounded). `input`
+ * is the uncached bucket, so the prompt is input + cacheRead + cacheWrite.
+ * Returns null when the step billed no prompt tokens. */
+export function cacheHitRate(usage?: Usage | null): number | null {
+  if (!usage) return null
+  const prompt = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
+  if (prompt <= 0) return null
+  return (usage.cacheRead ?? 0) / prompt * 100
+}
+
 /** Prompt-cache misses at or below this many tokens are cache-breakpoint
  * granularity noise, not a real break. Mirrors pi's `NOISE_FLOOR_TOKENS` and
  * the ~1K-token minimum cacheable prefix OpenAI and Anthropic document, below
