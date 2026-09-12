@@ -16,12 +16,15 @@ function copyText(text: string) {
   void navigator.clipboard?.writeText(text)
 }
 
-function fmtUsage(u: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total: number } }): string {
+function fmtUsage(u: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }): string {
   let s = `${u.input ?? 0}→${u.output ?? 0}`
   if (u.cacheRead) s += ` cache ${u.cacheRead}`
   if (u.cacheWrite) s += ` +${u.cacheWrite}`
-	if (u.cost) s += ` · $${u.cost.total < .01 ? u.cost.total.toFixed(4) : u.cost.total.toFixed(2)}`
   return s
+}
+
+function fmtCost(total: number): string {
+  return `$${total < .01 ? total.toFixed(4) : total.toFixed(2)}`
 }
 
 function fmtTs(ts?: number): string {
@@ -328,6 +331,7 @@ const ChatItem = memo(function ChatItem({
     const hasStats = !n.streaming && !!(n.ts || n.latencyMs || n.ttftMs || n.usage)
     const missed = misses?.get(n.id)
     const hitRate = cacheHitRate(n.usage)
+    const cost = n.usage?.cost
     return (
       <div className="asst" data-testid="assistant-message">
         <div className="asst-body">
@@ -346,7 +350,8 @@ const ChatItem = memo(function ChatItem({
                 {n.latencyMs != null ? <span>Ran {(n.latencyMs / 1000).toFixed(2)}s</span> : null}
                 {n.ttftMs != null ? <span>TTFT {(n.ttftMs / 1000).toFixed(2)}s</span> : null}
                 {n.usage ? <span>{fmtUsage(n.usage)}</span> : null}
-                {hitRate != null ? <span data-testid="cache-hit-rate">{t('stats.cacheHitRate', { percent: hitRate.toFixed(2) })}</span> : null}
+                {hitRate != null ? <span data-testid="cache-hit-rate" title={t('stats.cacheHitRate', { percent: hitRate.toFixed(2) })}>{hitRate.toFixed(2)}%</span> : null}
+                {cost ? <span>{fmtCost(cost.total)}</span> : null}
                 {missed != null ? (
                   <span className="cache-miss" data-testid="cache-miss" title={t('stats.cacheMissTitle', { tokens: formatTokens(missed.missedTokens), percent: Math.round(missed.missRatio * 100) })}>
                     {t('stats.cacheMiss')}
