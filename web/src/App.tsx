@@ -803,8 +803,14 @@ function WorkspaceApp({ api }: { api: Client }) {
     catch (e) { toast.from(e) }
   }, [makeSession, selectedWs])
 
-  const sendContent = useCallback(async (content: Content[], parentId?: string, editedMessageId?: string, delivery?: 'steer' | 'queue') => {
+  const sendContent = useCallback(async (content: Content[], parentId?: string, editedMessageId?: string, delivery?: 'steer' | 'queue', restore?: () => void) => {
 	if (!content.some(c => (c.type === 'text' && !!c.text?.trim()) || c.type !== 'text')) return
+    // Why: callers clear the composer before awaiting this. Slash commands such
+    // as /compact stay inside the HTTP request until the work finishes, so
+    // clearing on response would leave the typed command visible for seconds.
+    // Anything accepted stays cleared; a pre-acceptance failure restores it.
+    let consumed = false
+    const fail = () => { if (!consumed) restore?.() }
     try {
       let id = currentId
       if (!id) {
@@ -815,9 +821,9 @@ function WorkspaceApp({ api }: { api: Client }) {
       try {
         const spec = view.provider && view.model ? `${view.provider}/${view.model}` : view.model
 		result = await api.prompt(id, content, spec || undefined, parentId, delivery)
+        consumed = true
         if (result?.handled) {
           if (result.notice) (result.error ? toast.error : toast.info)(result.notice)
-          setDraft(d => ({ ...d, text: '' }))
           if (!result.error) {
             if (result.sessionId && result.sessionId !== id) {
               await refreshList()
@@ -831,12 +837,12 @@ function WorkspaceApp({ api }: { api: Client }) {
       } catch (e) {
         if (e instanceof ApiError && e.status === 409) {
           toast.error(e.message)
+          fail()
           return
         }
         throw e
       }
 	  if (result?.accepted === 'queued') {
-		setDraft({ text: '', attachments: [] })
 		try {
 		  const detail = await api.get(id, { fields: 'runtime' })
 		  setView(v => ({ ...applyRuntimeCatalog(v, detail), busy: true }))
@@ -844,32 +850,35 @@ function WorkspaceApp({ api }: { api: Client }) {
 		return
 	  }
 	  if (result?.accepted === 'steered') {
-		setDraft({ text: '', attachments: [] })
 		setView(v => appendOptimisticUser(v, content))
 		return
 	  }
 	  if (editedMessageId) {
-		setEdit(null)
 		setView(v => {
 		  const cut = v.nodes.findIndex(n => n.id === editedMessageId)
 		  // Hide the abandoned descendant path immediately; the authoritative
-		  // tree is reloaded after SSE completes, so failed requests never lose
-		  // the editor draft or mutate the visible branch.
+		  // tree is reloaded after SSE completes.
 		  return appendOptimisticUser({ ...v, nodes: cut >= 0 ? v.nodes.slice(0, cut) : v.nodes }, content)
 		})
 	  } else {
-		setDraft({ text: '', attachments: [] })
 		setView(v => appendOptimisticUser(v, content))
 	  }
       void listen(id)
     } catch (e) {
+      fail()
       toast.from(e)
     }
 	}, [api, currentId, listen, makeSession, openSession, selectedWs, view.model, view.provider])
 
 	const send = useCallback((delivery?: 'steer' | 'queue') => {
 	  const content: Content[] = [...(draft.text.trim() ? [{ type: 'text', text: draft.text } as Content] : []), ...draft.attachments]
-	  return sendContent(content, undefined, undefined, delivery)
+	  const snapshot = draft
+	  // Why: clear the input the moment the user submits so the command never
+	  // looks unsent while a slow server-side slash command runs. A failed send
+	  // restores the snapshot, but only when the user has not typed something
+	  // new in the meantime.
+	  setDraft({ text: '', attachments: [] })
+	  return sendContent(content, undefined, undefined, delivery, () => setDraft(d => (d.text || d.attachments.length) ? d : snapshot))
 	}, [draft, sendContent])
 
 	const steerQueued = useCallback(async (queueId?: string) => {
@@ -894,7 +903,11 @@ function WorkspaceApp({ api }: { api: Client }) {
 	const sendEdit = useCallback(() => {
 	  if (!edit) return Promise.resolve()
 	  const content: Content[] = [...(edit.draft.text.trim() ? [{ type: 'text', text: edit.draft.text } as Content] : []), ...edit.draft.attachments]
-	  return sendContent(content, edit.parentId, edit.messageId)
+	  const snapshot = edit
+	  // Same optimistic close as the composer: submit closes the editor, and a
+	  // rejected send only reopens it if the user did not start another edit.
+	  setEdit(null)
+	  return sendContent(content, snapshot.parentId, snapshot.messageId, undefined, () => setEdit(e => e ?? snapshot))
 	}, [edit, sendContent])
 
   const stop = useCallback(async () => {

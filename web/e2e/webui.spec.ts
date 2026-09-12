@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { applyFollowTail } from '../src/follow-tail.ts'
@@ -915,6 +915,26 @@ test('slash command Tab completion drives a live compaction row', async ({ page 
   await expect(row).toBeVisible()
   await expect(page.getByTestId('compact-btn')).toHaveClass(/empty/)
   await expect(page.getByTestId('compact-btn')).toContainText('无需压缩')
+})
+
+test('composer clears before a slow slash command returns', async ({ page }) => {
+  await page.goto('/')
+  await sendPrompt(page, `compact-clear ${Date.now()}`)
+  await expect(page.getByTestId('assistant-message')).toContainText('ok')
+
+  const input = page.getByTestId('composer-input')
+  let parked: Route | undefined
+  await page.route('**/v1/sessions/*/prompt', route => { parked = route })
+  await input.fill('/compact')
+  await input.press('Tab')
+  await expect(input).toHaveValue('/compact')
+  await input.press('Enter')
+  // The request is still parked in the route handler: the input must already be
+  // empty instead of echoing /compact until compaction finishes.
+  await expect(input).toHaveValue('')
+  await expect.poll(() => !!parked).toBe(true)
+  await parked!.continue()
+  await expect(page.getByTestId('compact-row')).toBeVisible()
 })
 
 test('info reload shows progress then completion', async ({ page }) => {
