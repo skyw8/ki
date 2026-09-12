@@ -8,7 +8,6 @@ import type { Client } from './api'
 import { useI18n } from './i18n'
 import { Markdown } from './Markdown'
 import { cacheHitRate, cacheMisses, formatTokens, reconcileUserNodes, type CacheMiss } from './model'
-import { argStr, firstLine, prettyArgs, toolCopyText } from './tool-copy'
 import type { ChatNode } from './types'
 
 const VIRTUALIZE_AFTER = 48
@@ -85,6 +84,22 @@ function IconBtn({
       {children}
     </button>
   )
+}
+
+function argStr(args: unknown, key: string): string {
+  if (!args || typeof args !== 'object') return ''
+  const v = (args as Record<string, unknown>)[key]
+  return v == null ? '' : String(v)
+}
+
+function firstLine(s: string): string {
+  return s.split('\n').find(l => l.trim()) ?? s
+}
+
+function prettyArgs(args: unknown): string {
+  if (args == null) return ''
+  if (typeof args === 'string') return args
+  return JSON.stringify(args, null, 2)
 }
 
 function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatNode, { kind: 'user' }>; onHydrate?: (id: string) => void }) {
@@ -167,7 +182,6 @@ function ToolRow({
   const fail = state === 'error' && node.result ? firstLine(node.result) : ''
   const line = fail || summary
   const bodyIn = name === 'Write' ? content : name === 'Bash' ? cmd : prettyArgs(node.args)
-  const copyValue = toolCopyText(node, summary)
   const expandable = !!(node.result || bodyIn || oldS || newS || desc || editDiff || patchDiff)
   return (
     <div className={`tool-row${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool={name} data-state={state}>
@@ -191,9 +205,6 @@ function ToolRow({
         {line ? <span className="tool-sep" aria-hidden /> : null}
         {line ? <span className={`tool-preview${fail ? ' err' : ''}`} data-testid="tool-preview" title={line}>{line}</span> : null}
         {!node.running && node.durationMs != null ? <span className="tool-duration" data-testid="tool-duration">{fmtDuration(node.durationMs)}</span> : null}
-        {copyValue ? (
-          <IconBtn label={t('chat.copy')} testid="copy-tool" onClick={() => copyText(copyValue)}><ICopy /></IconBtn>
-        ) : null}
       </div>
       {open && expandable ? (
         <div className="tool-row-body">

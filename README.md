@@ -13,8 +13,8 @@ cd .. && go build -tags embed -o ki ./cmd/ki
 ```
 
 Without `-tags embed`, `go build ./cmd/ki` produces the CLI/API only; `ki serve`
-then reports the UI as not built. `scripts/run.sh` builds `web/dist` on demand and
-always uses `-tags embed`.
+then reports the UI as not built. `scripts/run.sh` rebuilds `web/dist` on every
+run and always uses `-tags embed`.
 
 On Windows, Ki looks for Git Bash through `KI_GIT_BASH_PATH`, `CLAUDE_CODE_GIT_BASH_PATH`, standard Git for Windows locations, and then `bash.exe` on `PATH`. If Bash is unavailable, Ki still starts with the Windows-only PowerShell tool and omits Bash-dependent tools.
 

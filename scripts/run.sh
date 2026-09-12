@@ -13,7 +13,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SESSION="${KI_TMUX_SESSION:-ki}"
 ADDR="0.0.0.0:19800"
-BUILD_WEB=0
 ATTACH=0
 FAKE=0
 SERVE_ARGS=()
@@ -27,7 +26,6 @@ usage() {
   echo
   echo "options:"
   echo "  -a, --attach    attach to the tmux session after starting"
-  echo "      --web       force a web/dist rebuild (built on demand when missing)"
   echo "      --fake      opt in to KI_FAKE=1 for canned-model tests"
   echo "      --addr A    listen address (default $ADDR)"
   echo "      -h, --help  show this help"
@@ -37,7 +35,6 @@ usage() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -a|--attach) ATTACH=1 ;;
-    --web) BUILD_WEB=1 ;;
     --fake) FAKE=1 ;;
     --addr) ADDR="$2"; shift ;;
     -h|--help) usage ;;
@@ -50,12 +47,10 @@ command -v tmux >/dev/null || { echo "error: tmux is required" >&2; exit 1; }
 
 cd "$ROOT"
 
-# web/dist is build output and is not tracked by git, so build it on demand to
-# keep a fresh checkout able to produce the single embedded binary.
-if [[ $BUILD_WEB == 1 || ! -f web/dist/index.html ]]; then
-  echo "building web/dist ..."
-  (cd web && bun run build)
-fi
+# web/dist is untracked build output, so always rebuild it before compiling the
+# embedded binary. Otherwise frontend source changes can silently remain stale.
+echo "building web/dist ..."
+(cd web && bun run build)
 if [[ ! -f web/dist/index.html ]]; then
   echo "error: web/dist/index.html is missing (run 'cd web && bun install' first)" >&2
   exit 1
@@ -94,14 +89,25 @@ cmd+="./ki serve --addr $ADDR"
 # diagnosis instead of disappearing when the command exits.
 tmux set-option -w -t "$SESSION:server" remain-on-exit failed
 
-# Rebuild first, then replace the running server with the new binary.
+# Stop the previous server and wait for its listener to disappear before
+# starting the replacement. Without this wait, a fast restart can race the
+# old process's shutdown and make the new server fail with "address in use".
+port="${ADDR##*:}"
+tmux send-keys -t "$SESSION:server" C-c 2>/dev/null || true
+for _ in {1..50}; do
+  if ! ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .; then
+    break
+  fi
+  sleep 0.1
+done
+
+# Rebuild first, then replace the stopped server with the new binary.
 tmux respawn-window -k -t "$SESSION:server" -c "$ROOT" "$cmd"
 tmux select-window -t "$SESSION:server"
 
 # tmux returns as soon as it has launched the command. Wait for the HTTP
 # listener so a bind/startup failure is reported by this script rather than
 # being hidden in the detached server window.
-port="${ADDR##*:}"
 ready=0
 for _ in {1..30}; do
   if curl --silent --show-error --fail --max-time 1 "http://127.0.0.1:$port/" >/dev/null 2>&1; then

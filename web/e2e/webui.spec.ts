@@ -382,7 +382,8 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(page.getByTestId('request-nav')).toHaveCount(0)
   await expect(page.getByTestId('assistant-message').locator('.md')).toContainText('ok')
   await expect(page.getByTestId('chat-system-prompt')).toHaveCount(0)
-  await expect(page.getByTestId('session-stats')).toContainText('缓存命中 92%')
+  // The stats strip renders the hit rate to 2 decimals (90/98).
+  await expect(page.getByTestId('session-stats')).toContainText('缓存命中 91.84%')
   await expect(page.getByTestId('session-stats')).toContainText('输入 98 · 输出 2')
   await expect(page.getByTestId('session-title').filter({ hasText: prompt })).toBeVisible()
   const asstActions = page.getByTestId('assistant-message').getByTestId('asst-actions')
