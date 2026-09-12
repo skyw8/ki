@@ -1266,9 +1266,12 @@ function latestStepMetrics(s: ViewState, path: Entry[], counted: Set<string>): S
   return stepMetrics()
 }
 
+/** Cache-read share of the latest step's prompt, as a percentage. `input` is
+ * the whole prompt (uncached + cacheRead + cacheWrite). Returns null when the
+ * step billed no prompt tokens or read nothing from cache. */
 export function cacheHitPercent(s: LatestStats): number | null {
   if (s.input <= 0 || s.cacheRead <= 0) return null
-  return Math.round(s.cacheRead / s.input * 100)
+  return s.cacheRead / s.input * 100
 }
 
 /** Cache-read share of a step's prompt, as a percentage (not rounded). `input`

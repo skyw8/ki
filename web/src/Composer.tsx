@@ -65,7 +65,7 @@ function SessionStatsLine({ stats, t }: { stats: LatestStats; t: ReturnType<type
   }
   if (speeds.length > 0) groups.push(speeds.join(' · '))
   const hit = cacheHitPercent(stats)
-  if (hit !== null) groups.push(t('stats.cacheHit', { percent: hit }))
+  if (hit !== null) groups.push(t('stats.cacheHit', { percent: hit.toFixed(2) }))
   if (stats.input > 0 || stats.output > 0) {
     groups.push(t('stats.tokens', { input: formatTokens(stats.input), output: formatTokens(stats.output) }))
   }

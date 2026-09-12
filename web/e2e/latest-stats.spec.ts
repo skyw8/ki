@@ -105,6 +105,9 @@ test('cacheHitPercent needs billed input and a cache read', () => {
   expect(cacheHitPercent({ ...base, input: 0, cacheRead: 0 })).toBeNull()
   expect(cacheHitPercent({ ...base, input: 100, cacheRead: 0 })).toBeNull()
   expect(cacheHitPercent({ ...base, input: 100, cacheRead: 90 })).toBe(90)
+  // Unrounded, so the strip can render it to 2 decimals.
+  const hit = cacheHitPercent({ ...base, input: 74_932, cacheRead: 3_584 })
+  expect(hit!.toFixed(2)).toBe('4.78')
 })
 
 function asst(id: string, usage: NonNullable<Extract<ChatNode, { kind: 'assistant' }>['usage']>, extra: Partial<Extract<ChatNode, { kind: 'assistant' }>> = {}): ChatNode {
