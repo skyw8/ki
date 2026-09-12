@@ -11,10 +11,15 @@
 //
 // Env:
 //   KI_E2E_PROJECT      Playwright project to run (default: fake)
-//   KI_E2E_JOBS         Max concurrent processes (default: min(CPUs, 16))
+//   KI_E2E_JOBS         Max concurrent processes (default: min(CPUs, 32))
 //   KI_E2E_SPLIT        Min tests before a non-serial file is split (default: 12)
 //   KI_BIN              Reuse an already-built ki binary instead of building one
 //   KI_SKIP_WEB_BUILD   Fail instead of running `bun run build` when dist is absent
+//
+// A spec file may opt in to one-process-per-test by declaring
+// `test.describe.configure({ mode: 'parallel' })`; that is the file's assertion
+// that its tests are independent (verify by running each one standalone first).
+// Files that declare `mode: 'serial'` are always kept in a single process.
 import { spawn } from 'node:child_process'
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
@@ -31,7 +36,7 @@ function positiveInt(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
-const jobs = positiveInt(process.env.KI_E2E_JOBS, Math.max(2, Math.min(cpus().length, 16)))
+const jobs = positiveInt(process.env.KI_E2E_JOBS, Math.max(2, Math.min(cpus().length, 32)))
 const splitThreshold = positiveInt(process.env.KI_E2E_SPLIT, 12)
 const runDir = join(webDir, 'test-results', 'e2e-parallel')
 
@@ -39,6 +44,7 @@ interface FileTests {
   total: number
   topLevel: number
   describes: Map<string, number>
+  paths: string[]
 }
 
 interface Unit {
@@ -99,9 +105,11 @@ function parseList(output: string): Map<string, FileTests> {
     const match = /^\s*\[[^\]]+\]\s*›\s*(.+?):\d+:\d+\s*›\s*(.+?)\s*$/.exec(line)
     if (!match) continue
     const file = basename(match[1])
-    const segments = match[2].split(' › ')
-    const entry = files.get(file) ?? { total: 0, topLevel: 0, describes: new Map<string, number>() }
+    const path = match[2]
+    const segments = path.split(' › ')
+    const entry = files.get(file) ?? { total: 0, topLevel: 0, describes: new Map<string, number>(), paths: [] }
     entry.total += 1
+    entry.paths.push(path)
     if (segments.length > 1) {
       const describe = segments[0]
       entry.describes.set(describe, (entry.describes.get(describe) ?? 0) + 1)
@@ -130,20 +138,38 @@ function listTests(): Promise<Map<string, FileTests>> {
   })
 }
 
+// grepPattern turns a "describe › title" path into a -g pattern. Why: Playwright
+// matches -g against that joined path but does not accept the literal separator,
+// so the escaped parts are joined with ".*".
+function grepPattern(path: string): string {
+  return path.split(' › ').map(escapeRegExp).join('.*')
+}
+
 function buildUnits(files: Map<string, FileTests>): Unit[] {
   const units: Unit[] = []
   for (const [file, info] of files) {
     const source = readFileSync(join(webDir, 'e2e', file), 'utf8')
-    // Serial files encode an ordered narrative and must stay in one process.
-    const serial = /mode:\s*['"]serial['"]/.test(source)
-    const splittable = !serial && info.total > splitThreshold && info.topLevel === 0 && info.describes.size > 1
     const relative = `e2e/${file}`
+    if (/mode:\s*['"]serial['"]/.test(source)) {
+      // Serial files encode an ordered narrative and must stay in one process.
+      units.push({ label: file, file, args: [relative], expected: info.total })
+      continue
+    }
+    if (/mode:\s*['"]parallel['"]/.test(source)) {
+      // "parallel" is the spec's assertion that its tests are independent (each
+      // was verified standalone), so every test gets its own isolated process.
+      for (const path of info.paths) {
+        units.push({ label: path, file, args: [relative, '-g', grepPattern(path)], expected: 1 })
+      }
+      continue
+    }
+    const splittable = info.total > splitThreshold && info.topLevel === 0 && info.describes.size > 1
     if (splittable) {
       for (const [describe, count] of info.describes) {
         units.push({
           label: `${file} › ${describe}`,
           file,
-          args: [relative, '--grep', escapeRegExp(describe)],
+          args: [relative, '-g', escapeRegExp(describe)],
           expected: count,
         })
       }
@@ -184,37 +210,48 @@ function collectSpecs(node: unknown, inheritedFile: string, out: Array<{ file: s
   for (const child of record.suites ?? []) collectSpecs(child, file, out)
 }
 
+const maxAttempts = 2
+
 async function runUnit(unit: Unit, index: number, kiBin: string): Promise<UnitResult> {
   const logFile = join(runDir, `unit-${index}.log`)
   const jsonFile = join(runDir, `unit-${index}.json`)
   const started = Date.now()
   let code = 1
-  try {
-    const port = await freePort()
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      KI_BIN: kiBin,
-      KI_SERVE_ADDR: `127.0.0.1:${port}`,
-      PLAYWRIGHT_JSON_OUTPUT_NAME: jsonFile,
-    }
-    // A stale base URL would override KI_SERVE_ADDR in playwright.config.ts.
-    delete env.KI_BASE_URL
-    delete env.KI_SKIP_SERVER
-    const args = ['x', 'playwright', 'test', `--project=${project}`, ...unit.args, '--reporter=line', '--reporter=json']
-    code = await runCapture('bun', args, env, logFile, webDir)
-  } catch {
-    code = 1
-  }
   let executed = 0
   let failed = 0
-  try {
-    const report = JSON.parse(readFileSync(jsonFile, 'utf8')) as { suites?: unknown[] }
-    const specs: Array<{ file: string; ok: boolean }> = []
-    for (const suite of report.suites ?? []) collectSpecs(suite, '', specs)
-    executed = specs.length
-    failed = specs.filter(spec => !spec.ok).length
-  } catch {
-    // A missing report means the unit ran no test; the coverage guard catches it.
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const port = await freePort()
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        KI_BIN: kiBin,
+        KI_SERVE_ADDR: `127.0.0.1:${port}`,
+        PLAYWRIGHT_JSON_OUTPUT_NAME: jsonFile,
+      }
+      // A stale base URL would override KI_SERVE_ADDR in playwright.config.ts.
+      delete env.KI_BASE_URL
+      delete env.KI_SKIP_SERVER
+      const args = ['x', 'playwright', 'test', `--project=${project}`, ...unit.args, '--reporter=line', '--reporter=json']
+      code = await runCapture('bun', args, env, logFile, webDir)
+    } catch {
+      code = 1
+    }
+    executed = 0
+    failed = 0
+    try {
+      const report = JSON.parse(readFileSync(jsonFile, 'utf8')) as { suites?: unknown[] }
+      const specs: Array<{ file: string; ok: boolean }> = []
+      for (const suite of report.suites ?? []) collectSpecs(suite, '', specs)
+      executed = specs.length
+      failed = specs.filter(spec => !spec.ok).length
+    } catch {
+      // A missing report means the unit ran no test; the coverage guard catches it.
+    }
+    // Why: freePort() closes its probe socket before ki binds the port, so two
+    // units can race for it. A bind failure runs no test at all (executed === 0),
+    // so retrying on a fresh port cannot mask a real test failure.
+    if (attempt === maxAttempts || executed > 0 || !/address already in use/.test(readFileSync(logFile, 'utf8'))) break
+    process.stdout.write(`  retry    ${unit.label} (port race)\n`)
   }
   return { unit, code, seconds: (Date.now() - started) / 1000, executed, failed, logFile }
 }
@@ -258,6 +295,13 @@ async function main(): Promise<number> {
   for (const [file, info] of files) {
     const ran = executedByFile.get(file) ?? 0
     if (ran !== info.total) mismatches.push(`${file}: expected ${info.total}, executed ${ran}`)
+  }
+  // Per-unit reconciliation catches a split that silently selects the wrong tests
+  // (for example a -g pattern matching a sibling test as well as its own).
+  for (const result of results) {
+    if (result.executed !== result.unit.expected) {
+      mismatches.push(`${result.unit.label}: expected ${result.unit.expected}, executed ${result.executed}`)
+    }
   }
   const failedUnits = results.filter(result => result.code !== 0 || result.failed > 0)
   for (const result of failedUnits) {

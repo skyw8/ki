@@ -170,7 +170,7 @@ export default async function globalSetup(): Promise<void> {
   })
   if (child.pid == null) throw new Error('failed to start ki serve')
   child.unref()
-  writeFileSync(statePath, JSON.stringify({ pid: child.pid, home, addr, cwd }))
+  writeFileSync(statePath, JSON.stringify({ pid: child.pid, home, addr, cwd, owned: true }))
   try {
     await waitHealth(`${serveURL}/v1/health`)
     await seedBrowserSession(serveURL, home)

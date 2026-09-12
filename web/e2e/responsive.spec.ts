@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url'
 import { serverToken, statePath } from './global-setup.ts'
 import { goBinary } from './go-toolchain.ts'
 
+// Every test is self-contained (verified standalone on its own server), so the
+// parallel runner may split this file into one isolated process per test.
+test.describe.configure({ mode: 'parallel' })
+
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const fixtureName = 'responsive-fixture'
 const previewName = 'responsive-preview-long-name.txt'

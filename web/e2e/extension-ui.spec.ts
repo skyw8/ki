@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url'
 import { serverToken, statePath } from './global-setup.ts'
 import { goBinary } from './go-toolchain.ts'
 
+// Every test is self-contained (verified standalone on its own server), so the
+// parallel runner may split this file into one isolated process per test.
+test.describe.configure({ mode: 'parallel' })
+
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..')
 
 async function sendPrompt(page: Page, text: string) {
@@ -262,7 +266,7 @@ test('opening a session locks composer until runtime.ready', async ({ page, requ
     cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
     stdio: 'inherit',
   })
-  writeExt(home, 'slowboot', bin, { env: { KI_INIT_SLEEP_MS: '1500' } })
+  writeExt(home, 'slowboot', bin, { env: { KI_INIT_WAIT_FILE: join(home, 'slowboot-release') } })
 
   await page.goto('/')
   await reloadServer(page, request)
@@ -271,6 +275,9 @@ test('opening a session locks composer until runtime.ready', async ({ page, requ
   await expect(input).toBeDisabled()
   await expect(input).toHaveAttribute('placeholder', /正在加载扩展|Loading extensions/)
   await expect(page.getByTestId('command-btn')).toBeDisabled()
+  // Why: release the sidecar gate only after observing the locked composer; a
+  // fixed init sleep either flakes under load or wastes time.
+  writeFileSync(join(home, 'slowboot-release'), '')
   await expect(input).toBeEnabled({ timeout: 15_000 })
 })
 

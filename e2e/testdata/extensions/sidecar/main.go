@@ -108,6 +108,18 @@ func main() {
 					time.Sleep(time.Duration(n) * time.Millisecond)
 				}
 			}
+			// KI_INIT_WAIT_FILE holds initialize until the file exists (bounded by
+			// a safety cap) so a test can observe the runtime-loading state instead
+			// of racing a fixed sleep.
+			if gate := os.Getenv("KI_INIT_WAIT_FILE"); gate != "" {
+				deadline := time.Now().Add(30 * time.Second)
+				for time.Now().Before(deadline) {
+					if _, err := os.Stat(gate); err == nil {
+						break
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
 			var p struct {
 				Capabilities []string `json:"capabilities"`
 				SessionID    string   `json:"sessionId"`

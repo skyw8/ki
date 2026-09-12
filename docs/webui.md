@@ -215,14 +215,26 @@ bun run test:e2e:serial   # 单进程串行，便于定位单个失败
 ```
 
 `bun run test:e2e` 由 `web/scripts/e2e-parallel.ts` 驱动：先 `playwright test --list`
-自动枚举 `--project=fake` 的用例，把非 serial 的大文件（当前是 `responsive.spec.ts` 的 7 个
-profile）按顶层 describe 拆成独立进程，其余文件各占一个进程；默认并发 `min(CPU, 16)`，每个
-进程独立端口。每次 invocation 使用独立的临时状态、鉴权文件、二进制和随机 loopback 端口，
-因此互不干扰，可与 Go e2e 并行运行，不得复用固定 `/tmp` 状态文件。
+自动枚举 `--project=fake` 的用例，再按文件声明的方式拆成独立进程：
+
+- `test.describe.configure({ mode: 'parallel' })` —— **一个用例一个进程**。这是文件在声明
+  其用例彼此独立；加这行前必须先逐个用例单独跑通（`-g` 精确匹配单条标题）验证。
+- `mode: 'serial'` —— 整文件保持单进程，顺序叙事不得拆散。
+- 其余：超过 `KI_E2E_SPLIT` 个用例、且全部挂在顶层 describe 下的大文件按 describe 拆分
+  （`responsive.spec.ts` 的历史行为），否则整文件一个进程。
+
+默认并发 `min(CPU, 32)`，每个进程独立端口。每次 invocation 使用独立的临时状态、鉴权文件、
+二进制和随机 loopback 端口，因此互不干扰，可与 Go e2e 并行运行，不得复用固定 `/tmp` 状态文件。
+`freePort()` 的探测 socket 会先关闭再由 `ki serve` 绑定，两者之间可能与另一个单元抢同一端口；
+runner 仅在"一个用例都没跑 + `address already in use`"时换端口重试一次，因此不会掩盖真实失败。
 
 为保证不牺牲覆盖，runner 记录 `--list` 的期望用例数，跑完按文件与实际执行数核对：任何用例被
-丢弃或重复执行都会让整个 run 失败退出。可用 `KI_E2E_JOBS` 调并发、`KI_E2E_SPLIT` 调拆分阈值、
-`KI_BIN` 复用已构建的二进制、`KI_SKIP_WEB_BUILD` 禁止自动构建前端。
+丢弃或重复执行（例如标题重复导致 `-g` 多匹配）都会让整个 run 失败退出。可用 `KI_E2E_JOBS` 调
+并发、`KI_E2E_SPLIT` 调拆分阈值、`KI_BIN` 复用已构建的二进制、`KI_SKIP_WEB_BUILD` 禁止自动
+构建前端。
+
+用例需要"先锁后放"这类瞬态时，不要靠固定 sleep 撞窗口（高并发下会偶发）：`sidecar` fixture
+支持 `KI_INIT_WAIT_FILE`，测试可以先断言锁定态、再写文件放行。
 
 `go test ./e2e -run WebUI` 复用同一个 runner，并用 `KI_BIN` 指向 Go 构建的二进制，因此每个
 spec 仍然打到 Go 编出来的 SPA（需已 `bun install` 和装好 chromium）。

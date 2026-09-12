@@ -19,7 +19,10 @@ async function expectMinTarget(locator: Locator, label: string): Promise<void> {
   expect(box!.height, `${label} height`).toBeGreaterThanOrEqual(40)
 }
 
-test.describe.configure({ mode: 'serial' })
+// Every test here is self-contained (verified by running each one alone on its
+// own server), so the parallel runner may split this file into one isolated
+// process per test instead of serializing the whole file.
+test.describe.configure({ mode: 'parallel' })
 
 test('slash palette is available before creating a session', async ({ page }) => {
   await page.goto('/')
