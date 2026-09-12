@@ -1,4 +1,4 @@
-import type { ProviderModel, ProviderView } from './types'
+import type { ProviderModel, ProviderView } from '../api/types'
 
 export function providerReady(provider: Pick<ProviderView, 'enabled' | 'credential'>): boolean {
   return provider.enabled && provider.credential.configured

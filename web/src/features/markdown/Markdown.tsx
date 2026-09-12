@@ -1,8 +1,8 @@
 import { createElement, isValidElement, lazy, memo, Suspense, useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { cjk } from '@streamdown/cjk'
 import { Streamdown, useIsCodeFenceIncomplete, type ExtraProps } from 'streamdown'
-import { useI18n } from './i18n'
-import { ICheck, ICopy } from './icons'
+import { useI18n } from '../../i18n/index'
+import { ICheck, ICopy } from '../../components/icons'
 import { normalizeMarkdown } from './markdown-normalize'
 
 const plugins = { cjk }

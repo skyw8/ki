@@ -1,13 +1,13 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { Client } from './api'
-import { ICheck, IEdit, IPlus, IRegen, ITrash } from './icons'
-import { useI18n } from './i18n'
-import { Select } from './Select'
-import { toast } from './toast'
-import { pickSelectedProviderID, providerReady, sortProviderModels, sortProviders } from './provider-order'
-import type { ProviderAuthStatus, ProviderCatalog, ProviderModel } from './types'
-import { useDialogFocus } from './useDialogFocus'
+import type { Client } from '../../api/client'
+import { ICheck, IEdit, IPlus, IRegen, ITrash } from '../../components/icons'
+import { useI18n } from '../../i18n/index'
+import { Select } from '../../components/Select'
+import { toast } from '../../components/toast'
+import { pickSelectedProviderID, providerReady, sortProviderModels, sortProviders } from '../../lib/provider-order'
+import type { ProviderAuthStatus, ProviderCatalog, ProviderModel } from '../../api/types'
+import { useDialogFocus } from '../../hooks/useDialogFocus'
 
 type Props = { api: Client; onChanged: () => void }
 

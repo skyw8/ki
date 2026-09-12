@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { applyEvent, emptyView, loadHistory } from '../src/model.ts'
+import { applyEvent, emptyView, loadHistory } from '../src/lib/model.ts'
 
 test('apply_patch preview is created before execution and replaced by committed details', () => {
   const preview = { changes: [{ path: 'a.txt', kind: 'update', unified_diff: '@@\n-old\n+new\n' }] }

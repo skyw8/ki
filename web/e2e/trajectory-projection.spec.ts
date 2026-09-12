@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { applyEvent, emptyView, loadHistory, reconcileUserNodes } from '../src/model.ts'
-import type { Entry, LoopEvent } from '../src/types.ts'
+import { applyEvent, emptyView, loadHistory, reconcileUserNodes } from '../src/lib/model.ts'
+import type { Entry, LoopEvent } from '../src/api/types.ts'
 
 function request(id: string, parentId: string, system: string, tools = []): Entry {
   return { type: 'request_header', id, parentId, timestamp: '2026-08-31T00:00:00.000Z', system, tools }

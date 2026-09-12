@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { applyFollowTail, followFromGap } from '../src/follow-tail.ts'
+import { applyFollowTail, followFromGap } from '../src/lib/follow-tail.ts'
 
 test('applyFollowTail writes scrollTop to scrollHeight only when follow is on', () => {
   const el = { scrollHeight: 800, scrollTop: 12 }

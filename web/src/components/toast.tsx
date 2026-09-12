@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { IClose } from './icons'
-import { useI18n } from './i18n'
+import { useI18n } from '../i18n/index'
 
 export type ToastKind = 'info' | 'error'
 

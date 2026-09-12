@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
-import type { CatalogExtension, ExtensionI18n, ExtensionUI } from './types'
-import { Markdown } from './Markdown'
-import { interpolate, useI18n, type Lang } from './i18n'
+import type { CatalogExtension, ExtensionI18n, ExtensionUI } from '../../api/types'
+import { Markdown } from '../markdown/Markdown'
+import { interpolate, useI18n, type Lang } from '../../i18n/index'
 
 const TONE_RANK: Record<string, number> = {
   error: 0,

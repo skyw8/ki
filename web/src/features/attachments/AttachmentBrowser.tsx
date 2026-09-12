@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { Client } from './api'
-import { IChevRight, IClose, IFile, IFolder, IImage } from './icons'
-import { useI18n } from './i18n'
-import type { Content, FsEntry, FsListing } from './types'
-import { useDialogFocus } from './useDialogFocus'
+import type { Client } from '../../api/client'
+import { IChevRight, IClose, IFile, IFolder, IImage } from '../../components/icons'
+import { useI18n } from '../../i18n/index'
+import type { Content, FsEntry, FsListing } from '../../api/types'
+import { useDialogFocus } from '../../hooks/useDialogFocus'
 
 const imageExt = /\.(avif|bmp|gif|jpe?g|png|webp)$/i
 const PDFPreview = lazy(() => import('./PDFPreview').then(module => ({ default: module.PDFPreview })))

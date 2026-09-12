@@ -201,8 +201,19 @@ cd .. && go build -tags embed -o ki ./cmd/ki
 `web/dist` 是构建产物、不进 git（见 `.gitignore`）。必须用 `-tags embed` 才能把它嵌进二进制：
 不带该 tag 时 `web/embed.go` 不参与编译，改由 `web/stub.go` 提供空 FS，`ki serve` 对 `/`
 返回 503 提示。改前端后必须重新 `bun run build` 再编 Go。依赖用 bun 管理
-（`web/bun.lock`），vite 配置不变。`scripts/run.sh` 每次都重新构建 `web/dist`，
-并始终带 `-tags embed`，避免把旧前端资源嵌入新的二进制。
+（`web/bun.lock`）。`scripts/run.sh` 用输入 hash 判断前端有没有变：覆盖 `src/`、`public/`、
+`index.html`、`vite.config.ts`、`tsconfig.json`、`package.json`、`bun.lock` 和 bun 版本；
+没变就跳过 `bun run build`，直接复用 `web/dist`（指纹存在
+`web/node_modules/.cache/ki/web-dist-hash`，不放进 dist，因为 `//go:embed all:dist` 会把
+dotfile 一起打进二进制）。`--force-web` 强制重建。跳过与否都始终带 `-tags embed`，避免把
+旧前端资源嵌入新的二进制。
+
+打包器是 **Vite 8**，它默认用 **Rolldown**（`vite` 的依赖里是 `rolldown`，不再依赖 Rollup），
+config、插件和 `vite` / `vite build` 命令都照旧。同一份代码，原 Vite 6（Rollup）的
+`vite build` 约 5.7s，Vite 8 约 1.4s（`@vitejs/plugin-react` 用 6.x，其 peer 要求
+`vite ^8`）。构建快了以后就不必再为重型依赖（mermaid）做预打包，`DiagramBlock` 直接
+`import('@streamdown/mermaid')`。升级 Vite 或换插件后都要用 `bun run test:e2e` 和
+`bun run test:perf` 验证。
 
 ## Playwright
 

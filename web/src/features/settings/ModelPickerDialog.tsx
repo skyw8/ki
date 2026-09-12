@@ -1,9 +1,9 @@
 import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ICheck, IClose, ISearch } from './icons'
-import { useI18n } from './i18n'
-import type { ModelInfo } from './types'
-import { useDialogFocus } from './useDialogFocus'
+import { ICheck, IClose, ISearch } from '../../components/icons'
+import { useI18n } from '../../i18n/index'
+import type { ModelInfo } from '../../api/types'
+import { useDialogFocus } from '../../hooks/useDialogFocus'
 
 function fuzzyTextMatch(value: string, query: string): boolean {
   const haystack = value.normalize('NFKC').toLocaleLowerCase()

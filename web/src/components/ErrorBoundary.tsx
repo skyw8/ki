@@ -1,5 +1,5 @@
 import { Component, type ReactNode } from 'react'
-import { I18nContext } from './i18n'
+import { I18nContext } from '../i18n/index'
 
 export class ErrorBoundary extends Component<{ children: ReactNode }, { err: string | null }> {
   state = { err: null as string | null }

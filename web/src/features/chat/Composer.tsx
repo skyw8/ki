@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from 'react'
-import { IAttach, IClose, ICommand, IEdit, IFile, ISend, IStop } from './icons'
-import type { Client } from './api'
-import { AttachmentImage } from './AttachmentImage'
+import { IAttach, IClose, ICommand, IEdit, IFile, ISend, IStop } from '../../components/icons'
+import type { Client } from '../../api/client'
+import { AttachmentImage } from '../attachments/AttachmentImage'
 import { CommandPalette, isCommandPaletteVisible, type PalettePick } from './CommandPalette'
-import { Select } from './Select'
-import { useI18n } from './i18n'
-import type { SessionCommand } from './types'
+import { Select } from '../../components/Select'
+import { useI18n } from '../../i18n/index'
+import type { SessionCommand } from '../../api/types'
 import {
   cacheHitPercent,
   formatCost,
@@ -13,8 +13,8 @@ import {
   formatTokens,
   formatTokensPerSecond,
   type LatestStats,
-} from './model'
-import type { Content } from './types'
+} from '../../lib/model'
+import type { Content } from '../../api/types'
 
 export type Draft = { text: string; attachments: Content[] }
 

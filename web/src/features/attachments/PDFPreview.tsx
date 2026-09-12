@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { GlobalWorkerOptions, getDocument, type PDFDocumentProxy, type RenderTask } from 'pdfjs-dist'
 import workerURL from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import { useI18n } from './i18n'
+import { useI18n } from '../../i18n/index'
 
 GlobalWorkerOptions.workerSrc = workerURL
 

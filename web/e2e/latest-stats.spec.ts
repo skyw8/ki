@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats } from '../src/model.ts'
-import type { ChatNode, Entry, ViewState } from '../src/types.ts'
+import { cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats } from '../src/lib/model.ts'
+import type { ChatNode, Entry, ViewState } from '../src/api/types.ts'
 
 function view(over: Partial<ViewState> = {}): ViewState {
   return { ...emptyView(), ...over }

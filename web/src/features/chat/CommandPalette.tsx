@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import type { SessionCommand } from './types'
+import type { SessionCommand } from '../../api/types'
 
 function oneLine(s?: string) {
   return (s ?? '').replace(/\s+/g, ' ').trim()

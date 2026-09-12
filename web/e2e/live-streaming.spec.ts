@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { applyEvent, emptyView } from '../src/model.ts'
-import type { LoopEvent, ViewState } from '../src/types.ts'
+import { applyEvent, emptyView } from '../src/lib/model.ts'
+import type { LoopEvent, ViewState } from '../src/api/types.ts'
 
 // Regression: the assistant message after a tool call used to be mistaken for a
 // replayed history message, so its message_update deltas were dropped and the

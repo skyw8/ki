@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { clampThinkingEffort, pickComposerModel, sessionCreateBody } from '../src/model.ts'
-import type { ModelInfo } from '../src/types.ts'
+import { clampThinkingEffort, pickComposerModel, sessionCreateBody } from '../src/lib/model.ts'
+import type { ModelInfo } from '../src/api/types.ts'
 
 function model(over: Partial<ModelInfo> & Pick<ModelInfo, 'provider' | 'id'>): ModelInfo {
   return {

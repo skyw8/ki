@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { pickSelectedProviderID, providerReady, sortProviderModels, sortProviders } from '../src/provider-order.ts'
-import type { ProviderModel, ProviderView } from '../src/types.ts'
+import { pickSelectedProviderID, providerReady, sortProviderModels, sortProviders } from '../src/lib/provider-order.ts'
+import type { ProviderModel, ProviderView } from '../src/api/types.ts'
 
 function provider(over: Partial<ProviderView> & Pick<ProviderView, 'id'>): ProviderView {
   return {

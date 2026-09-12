@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { Client } from './api'
-import { IClose, IImage } from './icons'
-import { useI18n } from './i18n'
-import type { Content } from './types'
-import { useDialogFocus } from './useDialogFocus'
+import type { Client } from '../../api/client'
+import { IClose, IImage } from '../../components/icons'
+import { useI18n } from '../../i18n/index'
+import type { Content } from '../../api/types'
+import { useDialogFocus } from '../../hooks/useDialogFocus'
 
 export function AttachmentImage({ api, content, className = '', expandable = false }: {
   api: Client

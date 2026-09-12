@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { buildSessionTree, orderedChildren } from '../src/session-tree.ts'
-import type { SessionInfo, WorkspaceInfo } from '../src/types.ts'
+import { buildSessionTree, orderedChildren } from '../src/lib/session-tree.ts'
+import type { SessionInfo, WorkspaceInfo } from '../src/api/types.ts'
 import { serverToken } from './global-setup.ts'
 
 function session(id: string, over: Partial<SessionInfo> = {}): SessionInfo {

@@ -1,8 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { IMenu } from './icons'
-import { useI18n } from './i18n'
-import type { UserRequest } from './model'
+import { IMenu } from '../../components/icons'
+import { useI18n } from '../../i18n/index'
+import type { UserRequest } from '../../lib/model'
 
 const FILTER_AFTER = 12
 const VIRTUALIZE_AFTER = 24

@@ -15,6 +15,7 @@ SESSION="${KI_TMUX_SESSION:-ki}"
 ADDR="0.0.0.0:19800"
 ATTACH=0
 FAKE=0
+FORCE_WEB=0
 SERVE_ARGS=()
 PROXY_ENV_KEYS=(
   HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY FTP_PROXY
@@ -27,6 +28,7 @@ usage() {
   echo "options:"
   echo "  -a, --attach    attach to the tmux session after starting"
   echo "      --fake      opt in to KI_FAKE=1 for canned-model tests"
+  echo "      --force-web rebuild web/dist even when frontend inputs are unchanged"
   echo "      --addr A    listen address (default $ADDR)"
   echo "      -h, --help  show this help"
   exit 0
@@ -36,6 +38,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -a|--attach) ATTACH=1 ;;
     --fake) FAKE=1 ;;
+    --force-web) FORCE_WEB=1 ;;
     --addr) ADDR="$2"; shift ;;
     -h|--help) usage ;;
     *) SERVE_ARGS+=("$1") ;;
@@ -47,10 +50,60 @@ command -v tmux >/dev/null || { echo "error: tmux is required" >&2; exit 1; }
 
 cd "$ROOT"
 
-# web/dist is untracked build output, so always rebuild it before compiling the
-# embedded binary. Otherwise frontend source changes can silently remain stale.
+# Rebuilding web/dist on every run costs seconds even when nothing changed, so
+# hash the inputs that determine it and reuse the existing build when they match.
+# Everything that feeds dist is covered: sources, public assets, configs,
+# lockfile and bun's version. Things not covered by construction (a hand-edited
+# dependency, a build cache that lies) are what --force-web is for.
+WEB_HASH_VERSION=1
+
+hash_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  else
+    shasum -a 256 | cut -d' ' -f1
+  fi
+}
+
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
+web_inputs_hash() {
+  (
+    cd "$ROOT/web"
+    printf 'version %s\n' "$WEB_HASH_VERSION"
+    printf 'bun %s\n' "$(bun --version 2>/dev/null || echo unknown)"
+    for f in index.html package.json bun.lock vite.config.ts tsconfig.json; do
+      if [[ -f $f ]]; then printf '%s %s\n' "$(hash_file "$f")" "$f"; fi
+    done
+    for d in src public; do
+      if [[ -d $d ]]; then
+        find "$d" -type f | LC_ALL=C sort | while IFS= read -r f; do
+          printf '%s %s\n' "$(hash_file "$f")" "$f"
+        done
+      fi
+    done
+  ) | hash_stream
+}
+
 echo "building web/dist ..."
-(cd web && bun run build)
+web_hash="$(web_inputs_hash)"
+# Keep the fingerprint out of web/dist: `//go:embed all:dist` embeds dotfiles,
+# so a file there would ship inside the binary and be served.
+web_hash_file="$ROOT/web/node_modules/.cache/ki/web-dist-hash"
+if [[ $FORCE_WEB != 1 && -f "$ROOT/web/dist/index.html" && -f "$web_hash_file" \
+  && "$(cat "$web_hash_file")" == "$web_hash" ]]; then
+  echo "web/dist unchanged, skipping frontend build (--force-web to rebuild)"
+else
+  (cd web && bun run build)
+  mkdir -p "$(dirname "$web_hash_file")"
+  printf '%s\n' "$web_hash" > "$web_hash_file"
+fi
 if [[ ! -f web/dist/index.html ]]; then
   echo "error: web/dist/index.html is missing (run 'cd web && bun install' first)" >&2
   exit 1

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
-import { requestTitle, userRequests } from '../src/model.ts'
-import type { ChatNode } from '../src/types.ts'
+import { requestTitle, userRequests } from '../src/lib/model.ts'
+import type { ChatNode } from '../src/api/types.ts'
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')

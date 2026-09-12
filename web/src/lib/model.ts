@@ -1,4 +1,4 @@
-import type { ChatNode, Content, Entry, IndexEntry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from './types'
+import type { ChatNode, Content, Entry, IndexEntry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from '../api/types'
 
 const LAST_MODEL_KEY = 'ki-last-model'
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -1138,7 +1138,7 @@ export function userRequests(nodes: ChatNode[]): UserRequest[] {
   return out
 }
 
-export function appendOptimisticUser(s: ViewState, content: import('./types').Content[]): ViewState {
+export function appendOptimisticUser(s: ViewState, content: import('../api/types').Content[]): ViewState {
   const text = content.filter(c => c.type === 'text' || c.type === '').map(c => c.text ?? '').join('\n')
   if (text && lastUserText(s) === text) {
     return { ...s, busy: true, error: null }

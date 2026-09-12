@@ -1,14 +1,14 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { IChev, IChevDown, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from './icons'
-import { IFile } from './icons'
+import { IChev, IChevDown, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from '../../components/icons'
+import { IFile } from '../../components/icons'
 import { Composer, type Draft } from './Composer'
-import { AttachmentImage } from './AttachmentImage'
-import type { Client } from './api'
-import { useI18n } from './i18n'
-import { Markdown } from './Markdown'
-import { cacheHitRate, cacheMisses, formatTokens, reconcileUserNodes, type CacheMiss } from './model'
-import type { ChatNode } from './types'
+import { AttachmentImage } from '../attachments/AttachmentImage'
+import type { Client } from '../../api/client'
+import { useI18n } from '../../i18n/index'
+import { Markdown } from '../markdown/Markdown'
+import { cacheHitRate, cacheMisses, formatTokens, reconcileUserNodes, type CacheMiss } from '../../lib/model'
+import type { ChatNode } from '../../api/types'
 
 const VIRTUALIZE_AFTER = 48
 

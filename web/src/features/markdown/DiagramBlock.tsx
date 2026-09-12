@@ -1,9 +1,9 @@
 import { Component, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { useI18n } from './i18n'
-import { ICheck, IClose, ICopy, IDownloadPng, IDownloadSvg, IZoomFit, IZoomIn, IZoomOut } from './icons'
+import { useI18n } from '../../i18n/index'
+import { ICheck, IClose, ICopy, IDownloadPng, IDownloadSvg, IZoomFit, IZoomIn, IZoomOut } from '../../components/icons'
 import { plantumlUrl } from './plantuml'
-import { useDialogFocus } from './useDialogFocus'
+import { useDialogFocus } from '../../hooks/useDialogFocus'
 
 export type DiagramKind = 'mermaid' | 'plantuml'
 

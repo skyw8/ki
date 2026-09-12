@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { ICheck, IChevRight, IFolder, IFolderOpen, IPencil, IPlus } from './icons'
-import type { Client } from './api'
-import { useI18n } from './i18n'
-import type { FsEntry, FsListing } from './types'
-import { useDialogFocus } from './useDialogFocus'
+import { ICheck, IChevRight, IFolder, IFolderOpen, IPencil, IPlus } from '../../components/icons'
+import type { Client } from '../../api/client'
+import { useI18n } from '../../i18n/index'
+import type { FsEntry, FsListing } from '../../api/types'
+import { useDialogFocus } from '../../hooks/useDialogFocus'
 
 const PREVIEW_MS = 250
 const SLOW_MS = 300

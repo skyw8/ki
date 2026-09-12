@@ -1,4 +1,4 @@
-import type { SessionInfo, WorkspaceInfo } from './types'
+import type { SessionInfo, WorkspaceInfo } from '../api/types'
 
 export type SessionTreeModel = {
   root: SessionInfo

@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
-import { ApiError, Client } from './api'
-import { useI18n } from './i18n'
+import { ApiError, Client } from '../../api/client'
+import { useI18n } from '../../i18n/index'
 
 export function AuthLoading() {
   const { t } = useI18n()

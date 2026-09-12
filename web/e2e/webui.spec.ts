@@ -1,7 +1,7 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { applyFollowTail } from '../src/follow-tail.ts'
+import { applyFollowTail } from '../src/lib/follow-tail.ts'
 import { nodeTypes, nodeValues, parseMarkdown } from './markdown-parse.ts'
 import { serverToken, statePath } from './global-setup.ts'
 

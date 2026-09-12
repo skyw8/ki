@@ -4,7 +4,7 @@ import remarkParse from 'remark-parse'
 import { cjk } from '@streamdown/cjk'
 import { unified, type Pluggable, type Processor } from 'unified'
 import { visit } from 'unist-util-visit'
-import { normalizeMarkdown } from '../src/markdown-normalize.ts'
+import { normalizeMarkdown } from '../src/features/markdown/markdown-normalize.ts'
 
 function apply(processor: Processor, plugins: Pluggable[]) {
   for (const plugin of plugins) {

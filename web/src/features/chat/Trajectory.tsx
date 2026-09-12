@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type UIEvent, type WheelEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { applyFollowTail, followFromGap } from './follow-tail'
-import { useI18n, type TFn } from './i18n'
-import { IChev, IClock, IClose, ICompact, ICopy, IFold, ISearch, ISpark, ITail, IUser, IWrench } from './icons'
-import { Markdown } from './Markdown'
-import type { RequestView, ToolSchema, TrajKind, TrajRecord } from './types'
+import { applyFollowTail, followFromGap } from '../../lib/follow-tail'
+import { useI18n, type TFn } from '../../i18n/index'
+import { IChev, IClock, IClose, ICompact, ICopy, IFold, ISearch, ISpark, ITail, IUser, IWrench } from '../../components/icons'
+import { Markdown } from '../markdown/Markdown'
+import type { RequestView, ToolSchema, TrajKind, TrajRecord } from '../../api/types'
 
 type InspTab = 'summary' | 'preview' | 'raw' | 'system-prompt' | 'tools' | 'context'
 

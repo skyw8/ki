@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ICheck, IChevRight, IClose, ITraj } from './icons'
-import { useI18n } from './i18n'
-import { buildSessionTree, orderedChildren, sessionLabel, type SessionTreeModel } from './session-tree'
-import type { SessionInfo, WorkspaceInfo } from './types'
-import { useDialogFocus } from './useDialogFocus'
+import { ICheck, IChevRight, IClose, ITraj } from '../../components/icons'
+import { useI18n } from '../../i18n/index'
+import { buildSessionTree, orderedChildren, sessionLabel, type SessionTreeModel } from '../../lib/session-tree'
+import type { SessionInfo, WorkspaceInfo } from '../../api/types'
+import { useDialogFocus } from '../../hooks/useDialogFocus'
 
 type TreeView = {
   path: SessionInfo[]

@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
-import type { Client } from './api'
-import { ICheck, IChevDown, IEdit, IRegen, ITraj } from './icons'
-import { useI18n, type Lang, type MsgKey, type TFn } from './i18n'
+import type { Client } from '../../api/client'
+import { ICheck, IChevDown, IEdit, IRegen, ITraj } from '../../components/icons'
+import { useI18n, type Lang, type MsgKey, type TFn } from '../../i18n/index'
 import { ModelPickerDialog } from './ModelPickerDialog'
-import { Select } from './Select'
-import { clampThinkingEffort } from './model'
-import { toast } from './toast'
+import { Select } from '../../components/Select'
+import { clampThinkingEffort } from '../../lib/model'
+import { toast } from '../../components/toast'
 import { localizedExtensionText } from './ExtensionPanel'
-import type { CatalogContribution, CatalogExtension, CatalogSkill, CatalogTool, ExtensionConfig, ExtensionI18n, ModelInfo, SessionCommand, SessionDetail } from './types'
+import type { CatalogContribution, CatalogExtension, CatalogSkill, CatalogTool, ExtensionConfig, ExtensionI18n, ModelInfo, SessionCommand, SessionDetail } from '../../api/types'
 
 const SOURCE_KEY: Record<string, MsgKey> = {
   home: 'cfg.src.home',
