@@ -90,10 +90,34 @@ cmd=""
 cmd+="./ki serve --addr $ADDR"
 [[ ${#SERVE_ARGS[@]} -gt 0 ]] && cmd+=" ${SERVE_ARGS[*]}"
 
-# Respawn atomically: sending Ctrl-C first lets tmux destroy a window whose
-# sole command is the server, leaving no target for the subsequent respawn.
+# Keep a failed server pane around so its stderr remains available for
+# diagnosis instead of disappearing when the command exits.
+tmux set-option -w -t "$SESSION:server" remain-on-exit failed
+
+# Rebuild first, then replace the running server with the new binary.
 tmux respawn-window -k -t "$SESSION:server" -c "$ROOT" "$cmd"
 tmux select-window -t "$SESSION:server"
+
+# tmux returns as soon as it has launched the command. Wait for the HTTP
+# listener so a bind/startup failure is reported by this script rather than
+# being hidden in the detached server window.
+port="${ADDR##*:}"
+ready=0
+for _ in {1..30}; do
+  if curl --silent --show-error --fail --max-time 1 "http://127.0.0.1:$port/" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  if ! tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx 'server'; then
+    break
+  fi
+  sleep 0.2
+done
+if [[ $ready != 1 ]]; then
+  echo "error: ki serve failed to become ready on $ADDR" >&2
+  tmux capture-pane -pt "$SESSION:server" -S -40 >&2 2>/dev/null || true
+  exit 1
+fi
 
 echo "ki serve starting in tmux session '$SESSION' (window server)"
 if [[ "$ADDR" == 0.0.0.0:* ]]; then
