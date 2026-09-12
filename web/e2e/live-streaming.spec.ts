@@ -91,3 +91,17 @@ test('reconnect replay dedupes persisted messages and still streams the live one
   expect(streamed).toHaveLength(1)
   expect((streamed[0] as { text: string }).text).toBe('Done')
 })
+
+test('a sub-millisecond tool duration (0ms) is kept on the tool node', () => {
+  let s = emptyView()
+  s = applyEvent(s, ev('message_end', { message: asstMsg([toolCall('call-1', 'Read')], { timestamp: 1, stopReason: 'toolUse' }), entryId: 'e1' }))
+  s = applyEvent(s, ev('tool_execution_end', {
+    toolCallId: 'call-1',
+    toolName: 'Read',
+    durationMs: 0,
+    result: { content: [text('file body')] },
+  }))
+  const node = s.nodes.find(n => n.kind === 'tool' && n.id === 'call-1')
+  // 0 is a real measurement, not "absent": the row must still render a timer.
+  expect(node).toMatchObject({ durationMs: 0, running: false })
+})

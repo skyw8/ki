@@ -363,6 +363,34 @@ func TestRunToolTimingIsReportedOnExecutionAndResultEvents(t *testing.T) {
 	}
 }
 
+// A tool that finishes in under a millisecond reports DurationMs 0. The field
+// must still be serialized, otherwise fast tools (Read) show no timing in the
+// WebUI because `omitempty` dropped the zero value.
+func TestZeroToolDurationIsSerialized(t *testing.T) {
+	raw, err := json.Marshal(Event{Type: ToolExecutionEnd, ToolCallID: "c1", ToolName: "Read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["durationMs"]; !ok {
+		t.Fatalf("tool_execution_end dropped zero durationMs: %s", raw)
+	}
+	msg, err := json.Marshal(types.Message{Role: "toolResult", ToolName: "Read", ToolCallID: "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(msg, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m["durationMs"]; !ok {
+		t.Fatalf("toolResult dropped zero durationMs: %s", msg)
+	}
+}
+
 // overflowStreamer fails once with a context-overflow error, then succeeds.
 type overflowStreamer struct {
 	n int

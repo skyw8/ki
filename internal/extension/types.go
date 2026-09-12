@@ -18,7 +18,7 @@ type Event struct {
 	ToolCallID   string            `json:"toolCallId,omitempty"`
 	ToolName     string            `json:"toolName,omitempty"`
 	IsError      bool              `json:"isError,omitempty"`
-	DurationMs   int64             `json:"durationMs,omitempty"`
+	DurationMs   int64             `json:"durationMs"` // not omitempty: sidecars may key on the field at 0ms
 	Reason       string            `json:"reason,omitempty"`
 	OK           bool              `json:"ok,omitempty"`
 	Provider     string            `json:"provider,omitempty"`

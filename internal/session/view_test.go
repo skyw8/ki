@@ -1,11 +1,34 @@
 package session
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"ki/internal/types"
 )
+
+// indexOf must keep durationMs for tool results that finished in under a
+// millisecond: the WebUI reads the index to render per-tool timing.
+func TestIndexEntryKeepsZeroDuration(t *testing.T) {
+	ix := indexOf(Entry{Type: "message", ID: "e1", Message: &types.Message{
+		Role:       "toolResult",
+		ToolCallID: "c1",
+		ToolName:   "Read",
+		DurationMs: 0,
+	}})
+	raw, err := json.Marshal(ix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["durationMs"]; !ok {
+		t.Fatalf("index entry dropped zero durationMs: %s", raw)
+	}
+}
 
 func TestBuildViewOmitsUnchangedPromptAndWindowsTail(t *testing.T) {
 	s, err := Create(t.TempDir(), t.TempDir(), "openai", "model")

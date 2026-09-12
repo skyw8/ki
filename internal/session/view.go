@@ -34,7 +34,7 @@ type IndexEntry struct {
 	ToolCallID   string       `json:"toolCallId,omitempty"`
 	Truncated    bool         `json:"truncated,omitempty"`
 	Usage        *types.Usage `json:"usage,omitempty"`
-	DurationMs   int64        `json:"durationMs,omitempty"`
+	DurationMs   int64        `json:"durationMs"` // not omitempty: a fast tool reports a real 0ms
 	TTFTMs       int64        `json:"ttftMs,omitempty"`
 	Origin       string       `json:"origin,omitempty"`
 	Sideband     bool         `json:"sideband,omitempty"`

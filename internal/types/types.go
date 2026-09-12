@@ -85,7 +85,7 @@ type Message struct {
 	IsError    bool              `json:"isError,omitempty"`
 	LatencyMs  int64             `json:"latencyMs,omitempty"`
 	TTFTMs     int64             `json:"ttftMs,omitempty"`
-	DurationMs int64             `json:"durationMs,omitempty"`
+	DurationMs int64             `json:"durationMs"` // not omitempty: a fast tool reports a real 0ms
 }
 
 // Text returns concatenated text blocks.

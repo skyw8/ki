@@ -76,8 +76,10 @@ type Event struct {
 	// as the authoritative start/completion wall-clock time.
 	Timestamp int64 `json:"timestamp,omitempty"`
 	// DurationMs is the elapsed time for one tool call, including execution and
-	// the optional AfterTool hook.
-	DurationMs            int64             `json:"durationMs,omitempty"`
+	// the optional AfterTool hook. It is not omitempty: a sub-millisecond call
+	// rounds to 0 and clients must still see the field (otherwise fast tools
+	// like Read show no timing at all).
+	DurationMs            int64             `json:"durationMs"`
 	Message               *types.Message    `json:"message,omitempty"`
 	Messages              []types.Message   `json:"messages,omitempty"`
 	ToolResults           []types.Message   `json:"toolResults,omitempty"`

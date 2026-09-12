@@ -93,7 +93,7 @@ function KindIcon({ kind }: { kind: TrajKind }) {
 
 export function fmtDur(ms?: number): string {
   if (ms == null) return ''
-  if (ms < 1000) return `${Math.round(ms)} ms`
+  if (ms < 1000) return ms === 0 ? '<1 ms' : `${Math.round(ms)} ms`
   return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`
 }
 

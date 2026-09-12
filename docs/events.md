@@ -42,6 +42,8 @@ Patch 预览和部分 sideband 会按各自的 server 路径持久化。并非�
 工具执行及 `AfterTool`；校验、拦截和未知工具也会产生有计时的成对事件
 和 toolResult。toolResult message 会携带同一组 `timestamp` / `durationMs`
 并落入 jsonl；start/end 本身仍是实时事件，不单独生成 conversation entry。
+`durationMs` 不做 `omitempty`：亚毫秒的调用（例如读小文件的 `Read`）真实
+测得 0，字段必须保留，否则 WebUI 会把「0ms」误当成「无计时」而不显示。
 
 ## Extension lifecycle 事件
 

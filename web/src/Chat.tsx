@@ -8,6 +8,7 @@ import type { Client } from './api'
 import { useI18n } from './i18n'
 import { Markdown } from './Markdown'
 import { cacheHitRate, cacheMisses, formatTokens, reconcileUserNodes, type CacheMiss } from './model'
+import { argStr, firstLine, prettyArgs, toolCopyText } from './tool-copy'
 import type { ChatNode } from './types'
 
 const VIRTUALIZE_AFTER = 48
@@ -36,7 +37,7 @@ function fmtTs(ts?: number): string {
 
 function fmtDuration(ms?: number): string {
   if (ms == null) return ''
-  if (ms < 1000) return `${Math.round(ms)} ms`
+  if (ms < 1000) return ms === 0 ? '<1 ms' : `${Math.round(ms)} ms`
   return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`
 }
 
@@ -84,22 +85,6 @@ function IconBtn({
       {children}
     </button>
   )
-}
-
-function argStr(args: unknown, key: string): string {
-  if (!args || typeof args !== 'object') return ''
-  const v = (args as Record<string, unknown>)[key]
-  return v == null ? '' : String(v)
-}
-
-function firstLine(s: string): string {
-  return s.split('\n').find(l => l.trim()) ?? s
-}
-
-function prettyArgs(args: unknown): string {
-  if (args == null) return ''
-  if (typeof args === 'string') return args
-  return JSON.stringify(args, null, 2)
 }
 
 function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatNode, { kind: 'user' }>; onHydrate?: (id: string) => void }) {
@@ -181,8 +166,8 @@ function ToolRow({
   const state = node.running ? 'running' : node.isError ? 'error' : 'ok'
   const fail = state === 'error' && node.result ? firstLine(node.result) : ''
   const line = fail || summary
-  const copyValue = desc || line
   const bodyIn = name === 'Write' ? content : name === 'Bash' ? cmd : prettyArgs(node.args)
+  const copyValue = toolCopyText(node, summary)
   const expandable = !!(node.result || bodyIn || oldS || newS || desc || editDiff || patchDiff)
   return (
     <div className={`tool-row${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool={name} data-state={state}>
