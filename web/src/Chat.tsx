@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { IChev, IChevDown, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from './icons'
 import { IFile } from './icons'
@@ -7,7 +7,7 @@ import { AttachmentImage } from './AttachmentImage'
 import type { Client } from './api'
 import { useI18n } from './i18n'
 import { Markdown } from './Markdown'
-import { reconcileUserNodes } from './model'
+import { cacheMisses, formatTokens, reconcileUserNodes, type CacheMiss } from './model'
 import type { ChatNode } from './types'
 
 const VIRTUALIZE_AFTER = 48
@@ -293,10 +293,12 @@ type ChatItemProps = {
 	branches?: Record<string, { index: number; total: number }>
 	onBranch?: (n: Extract<ChatNode, { kind: 'user' }>, delta: number) => void
 	onHydrate?: (id: string) => void
+	/** Assistant node id → notable prompt-cache miss for that step. */
+	misses?: Map<string, CacheMiss>
 }
 
 const ChatItem = memo(function ChatItem({
-	api, node: n, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate,
+	api, node: n, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate, misses,
 }: ChatItemProps) {
   const { t } = useI18n()
   useEffect(() => {
@@ -324,6 +326,7 @@ const ChatItem = memo(function ChatItem({
   }
   if (n.kind === 'assistant') {
     const hasStats = !n.streaming && !!(n.ts || n.latencyMs || n.ttftMs || n.usage)
+    const missed = misses?.get(n.id)
     return (
       <div className="asst" data-testid="assistant-message">
         <div className="asst-body">
@@ -342,6 +345,11 @@ const ChatItem = memo(function ChatItem({
                 {n.latencyMs != null ? <span>Ran {(n.latencyMs / 1000).toFixed(2)}s</span> : null}
                 {n.ttftMs != null ? <span>TTFT {(n.ttftMs / 1000).toFixed(2)}s</span> : null}
                 {n.usage ? <span>{fmtUsage(n.usage)}</span> : null}
+                {missed != null ? (
+                  <span className="cache-miss" data-testid="cache-miss" title={t('stats.cacheMissTitle', { tokens: formatTokens(missed.missedTokens), percent: Math.round(missed.missRatio * 100) })}>
+                    {t('stats.cacheMiss')}
+                  </span>
+                ) : null}
               </div>
             ) : null}
             <div className="msg-actions" data-testid="asst-actions">
@@ -415,6 +423,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
 }) {
   const { t } = useI18n()
   const nodes = reconcileUserNodes(rawNodes)
+  const misses = useMemo(() => cacheMisses(nodes), [nodes])
   const virtualize = nodes.length > VIRTUALIZE_AFTER
   const virtualizer = useVirtualizer({
     count: nodes.length,
@@ -424,7 +433,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     getItemKey: index => nodes[index]?.id ?? index,
     enabled: virtualize,
   })
-  const itemProps = { api, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate }
+  const itemProps = { api, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate, misses }
   const running = busy && !nodes.some(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
 
   useLayoutEffect(() => {

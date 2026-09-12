@@ -488,6 +488,10 @@
   font-size: 12px;
   color: var(--dsw-alias-label-caption);
 }
+.cache-miss {
+  color: var(--dsw-alias-state-error);
+  font-weight: 600;
+}
 .user-row .msg-stats {
   justify-content: flex-start;
   flex: none;

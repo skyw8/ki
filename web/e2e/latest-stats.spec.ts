@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
-import { cacheHitPercent, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats } from '../src/model.ts'
-import type { Entry, ViewState } from '../src/types.ts'
+import { cacheHitPercent, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats } from '../src/model.ts'
+import type { ChatNode, Entry, ViewState } from '../src/types.ts'
 
 function view(over: Partial<ViewState> = {}): ViewState {
   return { ...emptyView(), ...over }
@@ -105,6 +105,48 @@ test('cacheHitPercent needs billed input and a cache read', () => {
   expect(cacheHitPercent({ ...base, input: 0, cacheRead: 0 })).toBeNull()
   expect(cacheHitPercent({ ...base, input: 100, cacheRead: 0 })).toBeNull()
   expect(cacheHitPercent({ ...base, input: 100, cacheRead: 90 })).toBe(90)
+})
+
+function asst(id: string, usage: NonNullable<Extract<ChatNode, { kind: 'assistant' }>['usage']>, extra: Partial<Extract<ChatNode, { kind: 'assistant' }>> = {}): ChatNode {
+  return { kind: 'assistant', id, text: id, usage, ...extra }
+}
+
+test('cacheMisses compares each step against the previous prompt', () => {
+  // No previous request → nothing to miss, so the session's first step is never flagged.
+  expect(cacheMisses([asst('a1', { input: 30000, cacheRead: 0 })]).size).toBe(0)
+  // Full read-back of the previous prompt → no miss.
+  expect(cacheMisses([asst('a1', { input: 100, cacheRead: 29900 }), asst('a2', { input: 100, cacheRead: 30000 })]).size).toBe(0)
+  // Appended content was not in the previous prompt, so it is never a miss.
+  expect(cacheMisses([asst('a1', { input: 100, cacheRead: 29900 }), asst('a2', { input: 10000, cacheRead: 29900 })]).size).toBe(0)
+  // A miss above the 20K token gate is reported with its token count and ratio.
+  const miss = cacheMisses([asst('a1', { input: 100, cacheRead: 29900 }), asst('a2', { input: 30000, cacheRead: 0 })])
+  expect(miss.get('a2')).toEqual({ missedTokens: 30000, missRatio: 1 })
+})
+
+test('cacheMisses also surfaces misses over half the previous prompt', () => {
+  // 6K missed of a 10K previous prompt: under 20K but 60% → flagged.
+  const ratio = cacheMisses([asst('a1', { input: 100, cacheRead: 9900 }), asst('a2', { input: 6000, cacheRead: 4000 })])
+  expect(ratio.get('a2')).toEqual({ missedTokens: 6000, missRatio: 0.6 })
+  // 10K missed of a 30K previous prompt: neither gate clears → not flagged.
+  const quiet = cacheMisses([asst('a1', { input: 100, cacheRead: 29900 }), asst('a2', { input: 22000, cacheRead: 20000 })])
+  expect(quiet.size).toBe(0)
+  // Below the noise floor is never flagged, even at 100% of a small prompt.
+  expect(cacheMisses([asst('a1', { input: 100, cacheRead: 900 }), asst('a2', { input: 2000, cacheRead: 0 })]).size).toBe(0)
+})
+
+test('cacheMisses ignores a provider that never reports caching', () => {
+  expect(cacheMisses([asst('a1', { input: 30000, cacheRead: 0, cacheWrite: 0 }), asst('a2', { input: 40000, cacheRead: 0, cacheWrite: 0 })]).size).toBe(0)
+})
+
+test('cacheMisses resets across compaction and skips streaming steps', () => {
+  const nodes: ChatNode[] = [
+    asst('a1', { input: 100, cacheRead: 29900 }),
+    { kind: 'compaction', id: 'c1', summary: 'sum' },
+    asst('a2', { input: 30000, cacheRead: 0, cacheWrite: 100 }),
+  ]
+  expect(cacheMisses(nodes).size).toBe(0)
+  // The live streaming step is not compared until it is complete.
+  expect(cacheMisses([asst('a1', { input: 100, cacheRead: 29900 }), asst('live', { input: 30000 }, { streaming: true })]).size).toBe(0)
 })
 
 test('format helpers match the compact strip', () => {

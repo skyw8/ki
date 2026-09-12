@@ -1271,6 +1271,76 @@ export function cacheHitPercent(s: LatestStats): number | null {
   return Math.round(s.cacheRead / s.input * 100)
 }
 
+/** Prompt-cache misses at or below this many tokens are cache-breakpoint
+ * granularity noise, not a real break. Mirrors pi's `NOISE_FLOOR_TOKENS` and
+ * the ~1K-token minimum cacheable prefix OpenAI and Anthropic document, below
+ * which a sub-prefix cannot be cached at all. */
+export const CACHE_MISS_NOISE_FLOOR = 1024
+
+/** pi's transcript-notice gate: a counted miss only surfaces when it re-billed
+ * at least this many tokens, or this fraction of the previous prompt. The
+ * ratio catches prefix rewrites on smaller contexts that never reach 20K. */
+export const CACHE_MISS_NOTICE_TOKENS = 20_000
+export const CACHE_MISS_NOTICE_RATIO = 0.5
+
+export type CacheMiss = {
+  /** Tokens that were in the previous step's prompt but not read from cache. */
+  missedTokens: number
+  /** `missedTokens / previous prompt` — the share of the re-used prefix that
+   * was re-billed instead of read from cache. */
+  missRatio: number
+}
+
+/**
+ * Notable prompt-cache misses on a branch, keyed by assistant node id. Uses
+ * pi's definition (packages/coding-agent/src/core/cache-stats.ts): a miss is
+ * how much of the *previous* request's prompt this request failed to read back
+ * from cache — `min(prevPrompt, prompt) - cacheRead`, where
+ * `prompt = input + cacheRead + cacheWrite` and `input` is the uncached
+ * bucket. A single cached token is not a hit: the delta must exceed the noise
+ * floor. Appended new content is never a miss (it was not in the previous
+ * prompt); only a rewritten prefix is. The first step, providers that never
+ * report cache activity, streaming steps, and sub-noise-floor deltas produce no
+ * entry. Compaction resets the comparison because the context legitimately
+ * changed (pi clears its previous-request state there too).
+ *
+ * Only misses large enough to matter are returned: `missedTokens >=
+ * CACHE_MISS_NOTICE_TOKENS || missRatio >= CACHE_MISS_NOTICE_RATIO`.
+ */
+export function cacheMisses(nodes: ChatNode[]): Map<string, CacheMiss> {
+  const out = new Map<string, CacheMiss>()
+  let prevPrompt = 0
+  let reported = false
+  for (const n of nodes) {
+    if (n.kind === 'compaction') {
+      prevPrompt = 0
+      reported = false
+      continue
+    }
+    if (n.kind !== 'assistant' || n.streaming) continue
+    const u = n.usage
+    if (!u) continue
+    const read = u.cacheRead ?? 0
+    const write = u.cacheWrite ?? 0
+    const prompt = (u.input ?? 0) + read + write
+    if (prompt <= 0) continue
+    // A zero-cache step only counts as a miss once some request has reported
+    // cache activity; otherwise the provider may simply not report caching.
+    if (prevPrompt > 0 && (read + write > 0 || reported)) {
+      const missedTokens = Math.min(prevPrompt, prompt) - read
+      if (missedTokens > CACHE_MISS_NOISE_FLOOR) {
+        const missRatio = missedTokens / prevPrompt
+        if (missedTokens >= CACHE_MISS_NOTICE_TOKENS || missRatio >= CACHE_MISS_NOTICE_RATIO) {
+          out.set(n.id, { missedTokens, missRatio })
+        }
+      }
+    }
+    prevPrompt = prompt
+    reported = reported || read + write > 0
+  }
+  return out
+}
+
 export function formatDuration(ms: number): string {
   const s = Math.max(0, ms) / 1_000
   if (s < 60) return `${Math.round(s * 10) / 10}s`

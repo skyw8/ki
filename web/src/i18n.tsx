@@ -195,6 +195,8 @@ const zh = {
   'stats.ttft': 'TTFT {duration}',
   'stats.tps': '{tps} tok/s',
   'stats.cacheHit': '缓存命中 {percent}%',
+  'stats.cacheMiss': '缓存未命中',
+  'stats.cacheMissTitle': '上一轮 prompt 有 {tokens} token（{percent}%）本次未命中缓存、被重新计费',
   'stats.tokens': '输入 {input} · 输出 {output}',
   'stats.cost': '${amount}',
 
@@ -503,6 +505,8 @@ const en: Record<MsgKey, string> = {
   'stats.ttft': 'TTFT {duration}',
   'stats.tps': '{tps} tok/s',
   'stats.cacheHit': 'Cache hit {percent}%',
+  'stats.cacheMiss': 'cache miss',
+  'stats.cacheMissTitle': '{tokens} tokens ({percent}%) from the previous prompt were re-billed instead of read from cache',
   'stats.tokens': 'In {input} · Out {output}',
   'stats.cost': '${amount}',
 
