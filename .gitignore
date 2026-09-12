@@ -3,7 +3,7 @@
 *.test
 *.out
 web/node_modules
-web/dist/*.map
+web/dist
 web/test-results
 web/playwright-report
 web/blob-report

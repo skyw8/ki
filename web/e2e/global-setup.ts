@@ -6,8 +6,17 @@ import { fileURLToPath } from 'node:url'
 import { baseURLForAddress, runID, statePath, storageStatePath } from './run-state.ts'
 import { goBinary } from './go-toolchain.ts'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
+const webDir = join(dirname(fileURLToPath(import.meta.url)), '..')
+const root = join(webDir, '..')
 export { statePath, storageStatePath }
+
+// web/dist is build output and is not tracked by git. Build it before embedding:
+// `go build -tags embed` fails when dist is missing, and a stub binary would make
+// every spec fail against a 503 page.
+function ensureWebDist(): void {
+  if (existsSync(join(webDir, 'dist', 'index.html'))) return
+  execFileSync('bun', ['run', 'build'], { cwd: webDir, stdio: 'inherit' })
+}
 
 export function serverToken(): string {
   const state = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
@@ -124,7 +133,8 @@ export default async function globalSetup(): Promise<void> {
   const executable = process.platform === 'win32' ? '.exe' : ''
   const bin = process.env.KI_BIN || join(tmpdir(), `ki-pw-${runID}${live ? '-live' : ''}${executable}`)
   if (!process.env.KI_BIN) {
-    execFileSync(goBinary(), ['build', '-o', bin, './cmd/ki'], { cwd: root, stdio: 'inherit' })
+    ensureWebDist()
+    execFileSync(goBinary(), ['build', '-tags', 'embed', '-o', bin, './cmd/ki'], { cwd: root, stdio: 'inherit' })
   }
 
   const env: NodeJS.ProcessEnv = {

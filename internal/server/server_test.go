@@ -29,6 +29,7 @@ import (
 	"ki/internal/session"
 	"ki/internal/tools"
 	"ki/internal/types"
+	"ki/web"
 )
 
 func marshalJSON(v any) ([]byte, error) {
@@ -1480,7 +1481,7 @@ func TestPromptModelWriteback(t *testing.T) {
 	}
 }
 
-func TestListHistoryAndUI(t *testing.T) {
+func TestListHistory(t *testing.T) {
 	_, hs := testServer(t)
 	cwd := t.TempDir()
 	id := createSession(t, hs, cwd)
@@ -1530,12 +1531,22 @@ func TestListHistoryAndUI(t *testing.T) {
 	if _, ok := got["messages"]; ok {
 		t.Fatal("GET session must not duplicate leaf messages")
 	}
+}
 
-	req, err = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/", nil)
+// TestUIServesEmbeddedSPA covers the same-origin SPA and its fallback. web/dist
+// is untracked build output, so this is skipped unless the test binary was
+// compiled with -tags embed.
+func TestUIServesEmbeddedSPA(t *testing.T) {
+	if !web.HasAssets() {
+		t.Skip("web/dist not embedded; run go test -tags embed to cover the UI")
+	}
+	_, hs := testServer(t)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err = http.DefaultClient.Do(req)
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

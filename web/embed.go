@@ -1,9 +1,14 @@
-// Package web embeds the Vite-built SPA served by ki serve on non-/v1 paths.
+//go:build embed
+
 package web
 
 import "embed"
 
-// Dist is the production frontend (web/dist). Rebuild with bun run build.
+// Dist is the Vite-built production frontend (web/dist).
 //
 //go:embed all:dist
 var Dist embed.FS
+
+// HasAssets reports whether the SPA was embedded, i.e. ki was built with
+// -tags embed.
+func HasAssets() bool { return true }

@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -142,9 +143,16 @@ func builtKI(t *testing.T) string {
 			return
 		}
 		root := filepath.Dir(filepath.Dir(file))
+		tags, err := embedTags(t.Context(), root)
+		if err != nil {
+			errKiBin = err
+			return
+		}
 		out := filepath.Join(os.TempDir(), "ki-e2e-bin")
+		args := append([]string{"build"}, tags...)
+		args = append(args, "-o", out, "./cmd/ki")
 		//nolint:gosec // goPath is resolved from the local Go toolchain for this e2e build.
-		cmd := exec.CommandContext(t.Context(), goPath, "build", "-o", out, "./cmd/ki")
+		cmd := exec.CommandContext(t.Context(), goPath, args...)
 		cmd.Dir = root
 		cmd.Env = append(os.Environ(), "PATH="+filepath.Dir(goPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
 		if b, err := cmd.CombinedOutput(); err != nil {
@@ -157,6 +165,30 @@ func builtKI(t *testing.T) string {
 		t.Fatal(errKiBin)
 	}
 	return kiBin
+}
+
+// embedTags returns the go build tags that embed the SPA. web/dist is build
+// output and is not tracked by git, so it is built here on demand when the web
+// toolchain is available; otherwise the build falls back to the stub UI
+// (web/stub.go) so CLI-only tests can run without bun.
+func embedTags(ctx context.Context, root string) ([]string, error) {
+	webDir := filepath.Join(root, "web")
+	if _, err := os.Stat(filepath.Join(webDir, "dist", "index.html")); err == nil {
+		return []string{"-tags", "embed"}, nil
+	}
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		return []string{}, nil
+	}
+	if _, err := os.Stat(filepath.Join(webDir, "node_modules")); err != nil {
+		return []string{}, nil
+	}
+	cmd := exec.CommandContext(ctx, bun, "run", "build")
+	cmd.Dir = webDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return []string{}, fmt.Errorf("build web/dist (cd web && bun run build): %w\n%s", err, out)
+	}
+	return []string{"-tags", "embed"}, nil
 }
 
 func runBin(t *testing.T, home string, args ...string) (out string, code int) {

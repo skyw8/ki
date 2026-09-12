@@ -195,11 +195,14 @@ dialog 时立即释放键盘；侧栏操作菜单使用 menu/menuitem 语义，�
 
 ```bash
 cd web && bun install && bun run build
-go build -o ki ./cmd/ki
+cd .. && go build -tags embed -o ki ./cmd/ki
 ```
 
-改前端后必须重新 `bun run build`，再编 Go，嵌入的才是新资源。依赖用 bun 管理
-（`web/bun.lock`），vite 配置不变。
+`web/dist` 是构建产物、不进 git（见 `.gitignore`）。必须用 `-tags embed` 才能把它嵌进二进制：
+不带该 tag 时 `web/embed.go` 不参与编译，改由 `web/stub.go` 提供空 FS，`ki serve` 对 `/`
+返回 503 提示。改前端后必须重新 `bun run build` 再编 Go。依赖用 bun 管理
+（`web/bun.lock`），vite 配置不变。`scripts/run.sh` 在 `web/dist` 缺失时自动构建，
+并始终带 `-tags embed`。
 
 ## Playwright
 

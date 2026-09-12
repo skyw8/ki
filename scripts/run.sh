@@ -27,7 +27,7 @@ usage() {
   echo
   echo "options:"
   echo "  -a, --attach    attach to the tmux session after starting"
-  echo "      --web       rebuild web/dist before building"
+  echo "      --web       force a web/dist rebuild (built on demand when missing)"
   echo "      --fake      opt in to KI_FAKE=1 for canned-model tests"
   echo "      --addr A    listen address (default $ADDR)"
   echo "      -h, --help  show this help"
@@ -50,13 +50,19 @@ command -v tmux >/dev/null || { echo "error: tmux is required" >&2; exit 1; }
 
 cd "$ROOT"
 
-if [[ $BUILD_WEB == 1 ]]; then
+# web/dist is build output and is not tracked by git, so build it on demand to
+# keep a fresh checkout able to produce the single embedded binary.
+if [[ $BUILD_WEB == 1 || ! -f web/dist/index.html ]]; then
   echo "building web/dist ..."
   (cd web && bun run build)
 fi
+if [[ ! -f web/dist/index.html ]]; then
+  echo "error: web/dist/index.html is missing (run 'cd web && bun install' first)" >&2
+  exit 1
+fi
 
 echo "building ./ki ..."
-go build -o ki ./cmd/ki
+go build -tags embed -o ki ./cmd/ki
 
 if ! tmux has-session -t "$SESSION" 2>/dev/null; then
   tmux new-session -d -s "$SESSION" -n server -c "$ROOT"
