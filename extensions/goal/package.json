@@ -3,14 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "setup": "bun install && bun run build",
+    "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/command.test.ts src/prompts.test.ts src/sidecar.test.ts"
-  },
-  "dependencies": {
-    "tsx": "^4.20.5"
+    "test": "bun run build && bun test"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vite": "^6.0.0"
   }
 }

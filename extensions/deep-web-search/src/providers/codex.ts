@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { compactText, splitDomainFilter } from "../normalize.js";
 
@@ -278,7 +278,14 @@ function sourcesFromOutput(output) {
   return results;
 }
 
-async function responsesRequest({ model, prompt, search, signal, provider = "openai-codex" }: { model: string; prompt: string; search?: any; signal: AbortSignal; provider?: string }) {
+// "off" means no reasoning block; anything else is forwarded as the Responses
+// reasoning effort, mirroring how the codex provider maps thinking levels.
+function reasoningEffort(value) {
+  const effort = typeof value === "string" ? value.trim() : "";
+  return !effort || effort === "off" ? null : effort;
+}
+
+async function responsesRequest({ model, prompt, search, signal, thinkingEffort = "", provider = "openai-codex" }: { model: string; prompt: string; search?: any; signal: AbortSignal; thinkingEffort?: string; provider?: string }) {
   const credential = provider === "openai" ? await openAiCredential() : await getCredential();
   const codex = provider !== "openai";
   const endpoint = codex
@@ -293,12 +300,14 @@ async function responsesRequest({ model, prompt, search, signal, provider = "ope
     headers["chatgpt-account-id"] = credential.accountId;
     headers.originator = "pi";
   }
+  const effort = reasoningEffort(thinkingEffort);
   const body = {
     model,
     instructions: search ? searchInstructions(search) : "Answer using only the supplied evidence. Do not invent citations or facts.",
     input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }],
     store: false,
     stream: true,
+    ...(effort ? { reasoning: { effort } } : {}),
     ...(search ? {
       tools: [{ type: "web_search", ...(sourceFilters(search) ? { filters: sourceFilters(search) } : {}) }],
       include: ["web_search_call.action.sources"],
@@ -327,7 +336,7 @@ async function openAiCredential() {
 
 export async function searchCodex(query, options, signal) {
   const model = typeof options.codexModel === "string" && options.codexModel.trim() ? options.codexModel.trim() : "gpt-5.5";
-  const response = await responsesRequest({ model, prompt: query, search: options, signal });
+  const response = await responsesRequest({ model, prompt: query, search: options, signal, thinkingEffort: options.codexThinkingEffort });
   const output = responseOutput(response.payload);
   const results = sourcesFromOutput(output).slice(0, options.numResults);
   const answer = answerFromOutput(output, response.streamedText);
@@ -343,14 +352,14 @@ function modelSpec(value) {
   return { provider: spec.slice(0, slash), model: spec.slice(slash + 1) };
 }
 
-export async function completeWithModel(prompt, configuredModel, signal, deadlineMs = 30_000) {
+export async function completeWithModel(prompt, configuredModel, signal, deadlineMs = 30_000, thinkingEffort = "") {
   const target = modelSpec(configuredModel);
   if (!target?.model) throw new Error("summary-model-missing: summaryModel is empty");
   if (target.provider !== "openai-codex" && target.provider !== "openai") {
     throw new Error(`summary-model-unsupported: ${target.provider} is not supported by the sidecar completion adapter`);
   }
   const deadline = timeoutSignal(signal, deadlineMs);
-  const response = await responsesRequest({ model: target.model, prompt, signal: deadline, provider: target.provider });
+  const response = await responsesRequest({ model: target.model, prompt, signal: deadline, thinkingEffort, provider: target.provider });
   const answer = answerFromOutput(responseOutput(response.payload), response.streamedText);
   if (!answer) throw new Error("summary-empty: model returned no text");
   return { text: answer, model: `${target.provider}/${target.model}` };

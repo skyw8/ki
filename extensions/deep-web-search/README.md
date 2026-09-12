@@ -32,6 +32,11 @@ choice for an individual call:
   browser. Missing, timed-out, or failed model completion falls back to
   `none` and returns the source pack.
 
+`codexModel` and `summaryModel` each accept an optional thinking effort
+(`codexThinkingEffort` / `summaryThinkingEffort`). The WebUI renders the
+thinking-effort dropdown next to each model picker; an empty value uses the
+model default, and `off` omits the Responses reasoning block.
+
 When `queries` contains multiple search strings, all queries are started in
 parallel. Each query also starts all enabled providers in parallel; a provider
 failure is isolated and successful query/provider results are still aggregated.
@@ -39,7 +44,9 @@ Tool result details include `searchDurationMs`, plus each successful provider's
 `durationMs` in `providerRuns` and each failed provider's `durationMs` in
 `diagnostics`.
 
-The source implementation uses only Node standard-library modules. Runtime is
-`node dist/main.js` after `npm run build` (`extension.json` `runtime.install`).
-Checked-in `dist/` is the compiled sidecar. Run `npm test` from this directory
-for protocol and toggle tests.
+The source implementation uses only Node standard-library modules. Vite bundles
+`src/main.ts` into a single ESM file (`bun run build`), and the sidecar runs the
+bundle with bun (`bun dist/main.js`). `extension.json` `runtime.install` runs
+`bun run setup` (`bun install` + `bun run build`), so `dist/` is produced on
+install and is not checked in. Run `bun test` from this directory for protocol
+and toggle tests.

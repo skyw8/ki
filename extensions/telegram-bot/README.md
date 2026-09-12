@@ -115,6 +115,7 @@ curl -sS -X POST \
 - **Managed Bot ID**：填写 `<MANAGED_BOT_ID>`。
 - **Bot Token**：填写 `<MANAGED_BOT_TOKEN>`。
 - **回复模型**：可从模型选择弹窗指定；留空跟随全局默认模型。
+- **思考强度**：在回复模型同一行选择该模型支持的 thinking effort；留空跟随模型默认。
 
 不要填写 Manager Bot 的 ID 或 token。官方参考：[Managed Bots](https://core.telegram.org/api/bots/managed-bots)、[getManagedBotToken](https://core.telegram.org/bots/api#getmanagedbottoken)、[setManagedBotAccessSettings](https://core.telegram.org/bots/api#setmanagedbotaccesssettings)。
 
@@ -137,6 +138,7 @@ curl -sS -X POST \
 - `botId` 是 Managed Bot 的数字 ID，按字符串填写。
 - `token` 是 Managed Bot 的 token，不是 Manager Bot 的 token。
 - `model` 是 Telegram 回复模型，可在模型选择弹窗中选择；不选择时跟随全局默认模型。
+- `thinkingEffort` 是回复模型的思考强度，下拉框就在回复模型同一行；留空跟随模型默认。
 - 当前一个扩展实例接入一个 Managed Bot；不再配置 `accounts`、私聊/群组白名单或命令权限。
 - WebUI 不会回显 token；已配置时 Token 输入框显示“留空保持不变”，直接保存即可。
 

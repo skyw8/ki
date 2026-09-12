@@ -22,7 +22,7 @@ export function summaryPrompt(result) {
 export async function generateSummary(result, config, signal) {
   const configured = typeof config.summaryModel === "string" ? config.summaryModel.trim() : "";
   const started = Date.now();
-  const output = await completeWithModel(summaryPrompt(result), configured, signal, config.summaryGenerationDeadlineMs);
+  const output = await completeWithModel(summaryPrompt(result), configured, signal, config.summaryGenerationDeadlineMs, config.summaryThinkingEffort);
   return {
     text: output.text,
     meta: { model: output.model, durationMs: Date.now() - started, fallbackUsed: false, phase: "summary" },

@@ -28,13 +28,18 @@
         "model": {
           "type": "string",
           "description": "Model specification for Telegram replies; leave empty to follow the global default."
+        },
+        "thinkingEffort": {
+          "type": "string",
+          "description": "Thinking effort for the reply model; leave empty to use the model default."
         }
       }
     },
     "defaults": {
       "botId": "",
       "token": "",
-      "model": ""
+      "model": "",
+      "thinkingEffort": ""
     }
   },
   "runtime": {

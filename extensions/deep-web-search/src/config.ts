@@ -4,11 +4,13 @@ import { join } from "node:path";
 export const DEFAULT_CONFIG = Object.freeze({
   exaMode: "auto",
   codexModel: "gpt-5.5",
+  codexThinkingEffort: "",
   provider: "all",
   providerToggles: Object.freeze({ codex: true, exa: true, tinyfish: true, duckduckgo: true }),
   maxResults: 5,
   fetchContent: false,
   summaryModel: "openai-codex/gpt-5.5",
+  summaryThinkingEffort: "",
   summaryGenerationDeadlineMs: 30_000,
   workflow: "none",
 });

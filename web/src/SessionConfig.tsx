@@ -3,6 +3,8 @@ import type { Client } from './api'
 import { ICheck, IChevDown, IEdit, IRegen, ITraj } from './icons'
 import { useI18n, type Lang, type MsgKey, type TFn } from './i18n'
 import { ModelPickerDialog } from './ModelPickerDialog'
+import { Select } from './Select'
+import { clampThinkingEffort } from './model'
 import { toast } from './toast'
 import { localizedExtensionText } from './ExtensionPanel'
 import type { CatalogContribution, CatalogExtension, CatalogSkill, CatalogTool, ExtensionConfig, ExtensionI18n, ModelInfo, SessionCommand, SessionDetail } from './types'
@@ -547,8 +549,16 @@ type ExtensionModelPickerProps = {
 	onSelect: (spec: string) => void
 	onClear?: () => void
 	clearLabel?: string
+	canClear?: boolean
+	thinkingLabel?: string
+	thinkingEffort?: string
+	onThinking?: (effort: string) => void
 }
 
+// Model row shared by every extension form that picks a model. The thinking
+// effort dropdown sits next to the model so a single row expresses both the
+// model and how hard it should reason; its options follow the selected model's
+// supported levels, matching the composer's thinking-select.
 function ExtensionModelPicker({
 	fieldLabel,
 	hint,
@@ -564,6 +574,10 @@ function ExtensionModelPicker({
 	onSelect,
 	onClear,
 	clearLabel,
+	canClear = !!value,
+	thinkingLabel,
+	thinkingEffort = '',
+	onThinking,
 }: ExtensionModelPickerProps) {
 	const [open, setOpen] = useState(false)
 	const selected = models.find(item => item.spec === pickerValue)
@@ -571,17 +585,38 @@ function ExtensionModelPicker({
 	const modelDetail = selected
 		? (selected.name && selected.name !== selected.id ? `${selected.provider} / ${selected.id}` : selected.provider)
 		: value ? customDetail : emptyDetail
+	const levels = onThinking ? selected?.thinkingLevels ?? [] : []
+	// Why: thinkingLevels[0] is "off"; an omitted effort should show the model
+	// default (medium) instead of the first supported level.
+	const effort = clampThinkingEffort(thinkingEffort, selected) || selected?.defaultThinking || levels[0] || ''
 
 	return (
 		<div className="form-control full">
-			<span>{fieldLabel}</span>
-			<button type="button" className="extension-model-trigger" data-testid={testid} aria-haspopup="dialog" disabled={!models.length} onClick={() => setOpen(true)}>
-				<span className="extension-model-value"><strong>{modelLabel}</strong><small>{modelDetail}</small></span>
-				<IChevDown />
-			</button>
+			<div className="extension-model-row">
+				<div className="extension-model-col">
+					<span>{fieldLabel}</span>
+					<button type="button" className="extension-model-trigger" data-testid={testid} aria-haspopup="dialog" disabled={!models.length} onClick={() => setOpen(true)}>
+						<span className="extension-model-value"><strong>{modelLabel}</strong><small>{modelDetail}</small></span>
+						<IChevDown />
+					</button>
+				</div>
+				{levels.length > 1 ? (
+					<div className="extension-model-col extension-thinking-col">
+						<span>{thinkingLabel}</span>
+						<Select
+							className="extension-thinking-select"
+							testid={`${testid}-thinking`}
+							ariaLabel={thinkingLabel || 'Thinking effort'}
+							value={effort}
+							options={levels.map(level => ({ value: level, label: level }))}
+							onChange={next => onThinking?.(next)}
+						/>
+					</div>
+				) : null}
+			</div>
 			<div className="extension-model-meta">
 				<small className="form-hint">{hint}</small>
-				{onClear && value ? <button type="button" className="cfg-btn" onClick={onClear}>{clearLabel}</button> : null}
+				{onClear && canClear ? <button type="button" className="cfg-btn" onClick={onClear}>{clearLabel}</button> : null}
 			</div>
 			<ModelPickerDialog open={open} models={models} value={pickerValue} onSelect={onSelect} onClose={() => setOpen(false)} testid={dialogTestid} title={dialogTitle} />
 		</div>
@@ -652,7 +687,7 @@ function TelegramConfigForm({ api, name, onClose, embedded = false, models = [],
 	const [token, setToken] = useState('')
 	const [tokenConfigured, setTokenConfigured] = useState(false)
 	const [model, setModel] = useState('')
-	const [modelOpen, setModelOpen] = useState(false)
+	const [thinkingEffort, setThinkingEffort] = useState('')
 	const copy = (key: string) => extensionCopy(config?.i18n, lang, key)
 
 	useEffect(() => {
@@ -666,6 +701,7 @@ function TelegramConfigForm({ api, name, onClose, embedded = false, models = [],
 			setToken(rawToken === '<configured>' ? '' : rawToken)
 			setTokenConfigured(rawToken === '<configured>')
 			setModel(typeof next.config.model === 'string' ? next.config.model : '')
+			setThinkingEffort(typeof next.config.thinkingEffort === 'string' ? next.config.thinkingEffort : '')
 		}).catch(e => toast.from(e)).finally(() => { if (alive) setLoading(false) })
 		return () => { alive = false }
 	}, [api, name])
@@ -688,12 +724,14 @@ function TelegramConfigForm({ api, name, onClose, embedded = false, models = [],
 				botId: nextBotID,
 				token: nextToken,
 				model: model.trim(),
+				thinkingEffort: thinkingEffort.trim(),
 			})
 			setConfig(next)
 			setBotId(typeof next.config.botId === 'string' ? next.config.botId : String(next.config.botId ?? nextBotID))
 			setToken('')
 			setTokenConfigured(next.config.token === '<configured>')
 			setModel(typeof next.config.model === 'string' ? next.config.model : model.trim())
+			setThinkingEffort(typeof next.config.thinkingEffort === 'string' ? next.config.thinkingEffort : thinkingEffort.trim())
 			toast.info(t('cfg.configSaved'))
 		} catch (e) {
 			toast.from(e)
@@ -703,11 +741,12 @@ function TelegramConfigForm({ api, name, onClose, embedded = false, models = [],
 	}
 
 	const effectiveModel = model.trim() || defaultModel.trim()
-	const selectedModel = models.find(item => item.spec === effectiveModel)
-	const modelLabel = selectedModel?.name || selectedModel?.id || effectiveModel || copy('config.modelDefault')
-	const modelDetail = selectedModel
-		? (selectedModel.name && selectedModel.name !== selectedModel.id ? `${selectedModel.provider} / ${selectedModel.id}` : selectedModel.provider)
-		: effectiveModel ? copy('config.modelCustom') : copy('config.modelDefaultHint')
+	const pickModel = (spec: string) => {
+		setModel(spec)
+		// Keep an explicit effort nearest-supported when the model changes; an
+		// unset effort stays unset so the model default still applies.
+		setThinkingEffort(prev => prev ? clampThinkingEffort(prev, models.find(item => item.spec === spec)) : prev)
+	}
 
 	return (
 		<section className={`extension-config-editor telegram-config-editor${embedded ? ' embedded' : ''}`} data-testid={`extension-config-${name}`}>
@@ -725,22 +764,30 @@ function TelegramConfigForm({ api, name, onClose, embedded = false, models = [],
 							<input data-testid="telegram-bot-token" type="password" value={token} onChange={event => { setToken(event.target.value); setTokenConfigured(false) }} placeholder={tokenConfigured ? copy('config.tokenConfigured') : copy('config.tokenPlaceholder')} autoComplete="new-password" />
 							<small className="form-hint">{copy('config.tokenHint')}</small>
 						</label>
-							<div className="form-control full">
-								<span>{copy('config.model')}</span>
-								<button type="button" className="extension-model-trigger" data-testid="telegram-model-picker" disabled={!models.length} onClick={() => setModelOpen(true)}>
-									<span className="extension-model-value"><strong>{modelLabel}</strong><small>{modelDetail}</small></span>
-									<IChevDown />
-								</button>
-								<div className="extension-model-meta">
-									<small className="form-hint">{copy('config.modelHint')}</small>
-									{model ? <button type="button" className="cfg-btn" onClick={() => setModel('')}>{copy('config.modelReset')}</button> : null}
-								</div>
-							</div>
+						<ExtensionModelPicker
+							fieldLabel={copy('config.model')}
+							hint={copy('config.modelHint')}
+							emptyLabel={copy('config.modelDefault')}
+							emptyDetail={copy('config.modelDefaultHint')}
+							customDetail={copy('config.modelCustom')}
+							dialogTitle={t('model.title')}
+							testid="telegram-model-picker"
+							dialogTestid="telegram-model-dialog"
+							value={effectiveModel}
+							pickerValue={effectiveModel}
+							models={models}
+							onSelect={pickModel}
+							onClear={() => setModel('')}
+							canClear={!!model.trim()}
+							clearLabel={copy('config.modelReset')}
+							thinkingLabel={t('cfg.thinkingEffort')}
+							thinkingEffort={thinkingEffort}
+							onThinking={setThinkingEffort}
+						/>
 					</div>
 					<div className="cfg-actions telegram-config-actions"><button type="submit" className="primary-btn" data-testid="telegram-config-save" disabled={saving || !config}>{saving ? t('cfg.configSaving') : t('cfg.configSave')}</button></div>
 				</form>
 			)}
-			<ModelPickerDialog open={modelOpen} models={models} value={effectiveModel} onSelect={setModel} onClose={() => setModelOpen(false)} testid="telegram-model-dialog" />
 		</section>
 	)
 }
@@ -761,6 +808,8 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 	const [maxResults, setMaxResults] = useState(5)
 	const [fetchContent, setFetchContent] = useState(false)
 	const [summaryModel, setSummaryModel] = useState('openai-codex/gpt-5.5')
+	const [summaryThinkingEffort, setSummaryThinkingEffort] = useState('')
+	const [codexThinkingEffort, setCodexThinkingEffort] = useState('')
 	const [workflow, setWorkflow] = useState('none')
 	const copy = (key: string) => extensionCopy(config?.i18n, lang, key)
 	const codexModels = useMemo(() => models.filter(item => item.provider === 'openai-codex'), [models])
@@ -768,6 +817,14 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 	// Keep older bare summary model values selectable after the picker switches
 	// to the canonical provider/model specs returned by /v1/models.
 	const summaryModelSpec = summaryModel && !summaryModel.includes('/') ? `openai-codex/${summaryModel}` : summaryModel
+	const pickSummaryModel = (spec: string) => {
+		setSummaryModel(spec)
+		setSummaryThinkingEffort(prev => prev ? clampThinkingEffort(prev, models.find(item => item.spec === spec)) : prev)
+	}
+	const pickCodexModel = (spec: string) => {
+		setCodexModel(spec.slice('openai-codex/'.length))
+		setCodexThinkingEffort(prev => prev ? clampThinkingEffort(prev, codexModels.find(item => item.spec === spec)) : prev)
+	}
 
 	const apply = (next: Record<string, unknown>, metadata?: ExtensionConfig) => {
 		const rawExa = typeof next.exaApiKey === 'string' ? next.exaApiKey : ''
@@ -786,6 +843,8 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 		setMaxResults(typeof next.maxResults === 'number' ? next.maxResults : 5)
 		setFetchContent(next.fetchContent === true)
 		setSummaryModel(typeof next.summaryModel === 'string' ? next.summaryModel : 'openai-codex/gpt-5.5')
+		setSummaryThinkingEffort(typeof next.summaryThinkingEffort === 'string' ? next.summaryThinkingEffort : '')
+		setCodexThinkingEffort(typeof next.codexThinkingEffort === 'string' ? next.codexThinkingEffort : '')
 		setWorkflow(next.workflow === 'auto-summary' ? 'auto-summary' : 'none')
 	}
 
@@ -810,11 +869,13 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 				exaMode,
 				tinyfishApiKey: tinyfishKey.trim() || (tinyfishConfigured ? '<configured>' : ''),
 				codexModel: codexModel.trim(),
+				codexThinkingEffort: codexThinkingEffort.trim(),
 				provider,
 				providerToggles: toggles,
 				maxResults: Math.max(1, Math.min(20, Math.floor(maxResults || 5))),
 				fetchContent,
 				summaryModel: summaryModel.trim(),
+				summaryThinkingEffort: summaryThinkingEffort.trim(),
 				workflow,
 			})
 			apply(next.config, next)
@@ -872,9 +933,12 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 								value={summaryModel}
 								pickerValue={summaryModelSpec}
 								models={models}
-								onSelect={setSummaryModel}
+								onSelect={pickSummaryModel}
 								onClear={() => setSummaryModel('')}
 								clearLabel={copy('config.summaryDisable')}
+								thinkingLabel={t('cfg.thinkingEffort')}
+								thinkingEffort={summaryThinkingEffort}
+								onThinking={setSummaryThinkingEffort}
 							/>
 						</div>
 						<div className="deep-web-search-options">
@@ -901,7 +965,10 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 										value={codexModel}
 										pickerValue={codexModelSpec}
 										models={codexModels}
-										onSelect={spec => setCodexModel(spec.slice('openai-codex/'.length))}
+										onSelect={pickCodexModel}
+										thinkingLabel={t('cfg.thinkingEffort')}
+										thinkingEffort={codexThinkingEffort}
+										onThinking={setCodexThinkingEffort}
 									/>
 									<div className="deep-web-search-provider-value"><span className="deep-web-search-provider-badge">{copy('status.connected')}</span><code>codex-oauth</code></div>
 								</div>

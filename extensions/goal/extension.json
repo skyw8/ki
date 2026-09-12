@@ -13,8 +13,8 @@
   "failClosed": false,
   "runtime": {
     "kind": "rpc",
-    "command": "node",
-    "args": ["--import", "tsx", "src/index.ts"],
-    "install": ["npm", "install"]
+    "command": "bun",
+    "args": ["dist/index.js"],
+    "install": ["bun", "run", "setup"]
   }
 }

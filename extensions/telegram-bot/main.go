@@ -24,9 +24,10 @@ const (
 )
 
 type telegramConfig struct {
-	BotID string `json:"botId"`
-	Token string `json:"token"`
-	Model string `json:"model"`
+	BotID          string `json:"botId"`
+	Token          string `json:"token"`
+	Model          string `json:"model"`
+	ThinkingEffort string `json:"thinkingEffort"`
 }
 
 type telegramState struct {
@@ -49,6 +50,7 @@ type sessionSnapshot struct {
 	Metadata map[string]any `json:"metadata"`
 	Provider string         `json:"provider"`
 	Model    string         `json:"model"`
+	Thinking string         `json:"thinking"`
 }
 
 type enqueueResult struct {
@@ -101,6 +103,7 @@ type telegramWorker struct {
 	botID     int64
 	accountID string
 	model     string
+	thinking  string
 	draftSeq  atomic.Int64
 }
 
@@ -250,7 +253,8 @@ func (a *telegramApp) reloadConfig() error {
 	ctx, cancel := context.WithCancel(a.ctx)
 	worker := &telegramWorker{
 		app: a, api: newBotAPI(config.Token), ctx: ctx, cancel: cancel,
-		botID: botID, accountID: "bot:" + strconv.FormatInt(botID, 10), model: strings.TrimSpace(config.Model),
+		botID: botID, accountID: "bot:" + strconv.FormatInt(botID, 10),
+		model: strings.TrimSpace(config.Model), thinking: strings.TrimSpace(config.ThinkingEffort),
 	}
 	a.workersMu.Lock()
 	a.workers[worker.accountID] = worker
@@ -631,6 +635,9 @@ func (w *telegramWorker) sessionFor(key string, msg *message) (sessionSnapshot, 
 	if w.model != "" {
 		params["model"] = w.model
 	}
+	if w.thinking != "" {
+		params["thinkingEffort"] = w.thinking
+	}
 	err = w.app.rpc.call(ctx, "session.create", params, &created)
 	cancel()
 	if err != nil {
@@ -646,12 +653,25 @@ func (w *telegramWorker) sessionFor(key string, msg *message) (sessionSnapshot, 
 }
 
 func (w *telegramWorker) applyModel(sess sessionSnapshot) error {
-	if w.model == "" || sess.ID == "" || w.model == sess.Model || w.model == sess.Provider+"/"+sess.Model {
+	if sess.ID == "" {
 		return nil
 	}
+	patch := map[string]any{}
+	if w.model != "" && w.model != sess.Model && w.model != sess.Provider+"/"+sess.Model {
+		patch["model"] = w.model
+	}
+	// The session keeps its model default while thinking is unset; only a
+	// configured effort is pushed, and only when it differs.
+	if w.thinking != "" && w.thinking != sess.Thinking {
+		patch["thinkingEffort"] = w.thinking
+	}
+	if len(patch) == 0 {
+		return nil
+	}
+	patch["sessionId"] = sess.ID
 	ctx, cancel := context.WithTimeout(w.ctx, 15*time.Second)
 	defer cancel()
-	return w.app.rpc.call(ctx, "session.patch", map[string]any{"sessionId": sess.ID, "model": w.model}, nil)
+	return w.app.rpc.call(ctx, "session.patch", patch, nil)
 }
 
 func (w *telegramWorker) workspaceCWD(chatID, threadID int64) string {

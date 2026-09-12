@@ -23,7 +23,7 @@ export function providerAvailability(name, config) {
 }
 
 export function searchProvider(name, query, options, config, signal) {
-  if (name === "codex") return searchCodex(query, { ...options, codexModel: config.codexModel }, signal);
+  if (name === "codex") return searchCodex(query, { ...options, codexModel: config.codexModel, codexThinkingEffort: config.codexThinkingEffort }, signal);
   if (name === "exa") return searchExa(query, options, config, signal);
   if (name === "tinyfish") return searchTinyfish(query, options, config, signal);
   if (name === "duckduckgo") return searchDuckduckgo(query, options, signal);

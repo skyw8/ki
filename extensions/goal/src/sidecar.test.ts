@@ -18,7 +18,7 @@ type Msg = {
 };
 
 function startSidecar(home: string, sessionId: string) {
-  const child = spawn("node", ["--import", "tsx", "src/index.ts"], {
+  const child = spawn(process.execPath, ["dist/index.js"], {
     cwd: root,
     env: { ...process.env, KI_HOME: home, KI_SESSION_ID: sessionId, KI_EXTENSION: "goal" },
     stdio: ["pipe", "pipe", "pipe"],

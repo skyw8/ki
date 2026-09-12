@@ -2511,6 +2511,19 @@
 .extension-model-value small { color: var(--dsw-alias-label-caption); font-size: 11px; line-height: 16px; }
 .extension-model-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; }
 .extension-model-meta .cfg-btn { flex: none; height: 24px; padding: 0 7px; font-size: 11px; }
+/* Model + thinking effort share one row: the model trigger stretches while the
+   effort select keeps a compact fixed column so both controls stay aligned. */
+.extension-model-row { display: flex; align-items: stretch; gap: 10px; }
+.extension-model-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.extension-model-col > span { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; font-weight: 500; }
+.extension-model-col .extension-model-trigger { flex: 1; }
+.extension-thinking-col { flex: 0 0 auto; width: clamp(96px, 32%, 140px); }
+.extension-thinking-col .ds-select { flex: 1; width: 100%; }
+.form-control .extension-thinking-col .ds-select-trigger {
+  height: 100%; min-height: 40px; padding: 0 11px; border: 1px solid var(--dsw-alias-border-l2-thin); border-radius: 8px;
+  background: var(--dsw-specific-input); color: var(--dsw-alias-label-primary); font-size: 13px; font-weight: 400;
+}
+.form-control .extension-thinking-col .ds-select-trigger:hover { border-color: var(--dsw-alias-border-l2); background: var(--dsw-alias-interactive-bg-hover); }
 .telegram-config-actions { margin: 20px 0 0 !important; padding-top: 16px; }
 .deep-web-search-config-form, .freerouter-config-form { display: flex; flex: 1; flex-direction: column; min-height: 0; margin-top: 16px; overflow: hidden; }
 .deep-web-search-config-scroll {

@@ -3,8 +3,9 @@ config.json
 cache.json
 *.tmp
 *.lock
+!bun.lock
 
-# Local development dependencies.
+# Local development dependencies and the Vite bundle.
 node_modules/
 dist/
 
