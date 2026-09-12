@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats } from '../src/lib/model.ts'
+import { cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats, turnStats } from '../src/lib/model.ts'
 import type { ChatNode, Entry, ViewState } from '../src/api/types.ts'
 
 function view(over: Partial<ViewState> = {}): ViewState {
@@ -171,4 +171,69 @@ test('format helpers match the compact strip', () => {
   expect(formatTokensPerSecond(259.4)).toBe('259')
   expect(formatCost(0.00321)).toBe('0.0032')
   expect(formatCost(1.2)).toBe('1.20')
+})
+
+test('turnStats aggregates a turn and keeps the first step TTFT', () => {
+  const nodes: ChatNode[] = [
+    { kind: 'user', id: 'u1', text: 'hi', content: [], ts: 1_000 },
+    asst('a1', {
+      input: 100,
+      output: 20,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.02 },
+    }, { ttftMs: 200, latencyMs: 1_200, ts: 3_000 }),
+    { kind: 'tool', id: 't1', name: 'Bash' },
+    asst('a2', { input: 10, output: 30, cacheRead: 90 }, { ttftMs: 300, latencyMs: 800, ts: 5_000 }),
+    { kind: 'user', id: 'u2', text: 'again', content: [], ts: 9_000 },
+    asst('a3', { input: 5, output: 5 }, { ttftMs: 50, latencyMs: 100, ts: 9_400 }),
+  ]
+  const stats = turnStats(nodes)
+  // Keyed by the turn's last node so the chat mounts the strip after it.
+  expect([...stats.keys()]).toEqual(['a2', 'a3'])
+  const first = stats.get('a2')!
+  expect(first.turn).toBe(1)
+  expect(first.steps).toBe(2)
+  // Wall clock spans the turn, including the tool call in between.
+  expect(first.elapsedMs).toBe(4_000)
+  expect(first.input).toBe(100 + 10 + 90)
+  expect(first.output).toBe(50)
+  expect(first.cacheRead).toBe(90)
+  expect(first.hasCost).toBe(true)
+  expect(first.cost).toBeCloseTo(0.02)
+  expect(first.ttftMs).toBe(200)
+  expect(first.live).toBe(false)
+  // Decode spans: (1200-200) + (800-300) over 50 output tokens.
+  expect(first.tps).toBeCloseTo(50 / 1.5)
+  const second = stats.get('a3')!
+  expect(second.turn).toBe(2)
+  expect(second.steps).toBe(1)
+  expect(second.elapsedMs).toBe(400)
+  expect(second.tps).toBeCloseTo(5 / 0.05)
+})
+
+test('turnStats drops turns without a step and flags live ones', () => {
+  expect(turnStats([{ kind: 'user', id: 'u1', text: 'hi', content: [] }]).size).toBe(0)
+  const live = turnStats([
+    { kind: 'user', id: 'u1', text: 'hi', content: [] },
+    asst('a1', { input: 1, output: 1 }),
+    { kind: 'assistant', id: 's1', text: '…', streaming: true },
+  ])
+  expect(live.get('s1')!.live).toBe(true)
+  expect(live.get('s1')!.steps).toBe(1)
+  const running = turnStats([
+    { kind: 'user', id: 'u1', text: 'hi', content: [] },
+    { kind: 'tool', id: 't1', name: 'Bash', running: true },
+  ])
+  expect(running.get('t1')!.live).toBe(true)
+  expect(running.get('t1')!.steps).toBe(0)
+})
+
+test('turnStats falls back to summed latencies without timestamps', () => {
+  const stats = turnStats([
+    { kind: 'user', id: 'u1', text: 'hi', content: [] },
+    asst('a1', { input: 1, output: 1 }, { latencyMs: 700 }),
+    asst('a2', { input: 1, output: 1 }, { latencyMs: 300 }),
+  ])
+  expect(stats.get('a2')!.elapsedMs).toBe(1_000)
+  // No TTFT means no TPS estimate, matching stepMetrics.
+  expect(stats.get('a2')!.tps).toBeNull()
 })

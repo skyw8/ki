@@ -1,13 +1,13 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { IChev, IChevDown, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from '../../components/icons'
+import { IChev, IChevDown, IClock, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from '../../components/icons'
 import { IFile } from '../../components/icons'
 import { Composer, type Draft } from './Composer'
 import { AttachmentImage } from '../attachments/AttachmentImage'
 import type { Client } from '../../api/client'
 import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
-import { cacheHitRate, cacheMisses, formatTokens, reconcileUserNodes, type CacheMiss } from '../../lib/model'
+import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, reconcileUserNodes, turnStats, type CacheMiss, type TurnStats } from '../../lib/model'
 import type { ChatNode } from '../../api/types'
 
 const VIRTUALIZE_AFTER = 48
@@ -274,6 +274,38 @@ function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> 
   )
 }
 
+/**
+ * Closes a turn: a hairline rule on both sides of the turn's aggregate stats.
+ * The numbers mirror the per-step inspector (elapsed, tokens, TPS, cache) but
+ * sum the whole turn, so a long tool-heavy run stays scannable at a glance.
+ */
+function TurnDivider({ stats }: { stats: TurnStats }) {
+  const { t } = useI18n()
+  const prompt = stats.input
+  const hit = prompt > 0 && stats.cacheRead > 0 ? stats.cacheRead / prompt * 100 : null
+  const cells: ReactNode[] = [
+    <span className="turn-stat" key="elapsed" data-testid="turn-elapsed"><IClock />{t('turn.elapsed', { duration: formatDuration(stats.elapsedMs) })}</span>,
+    <span className="turn-stat" key="steps">{t('turn.steps', { n: stats.steps })}</span>,
+  ]
+  if (stats.ttftMs > 0) cells.push(<span className="turn-stat" key="ttft">{t('stats.ttft', { duration: formatDuration(stats.ttftMs) })}</span>)
+  if (stats.tps != null) cells.push(<span className="turn-stat" key="tps">{t('stats.tps', { tps: formatTokensPerSecond(stats.tps) })}</span>)
+  if (stats.input > 0 || stats.output > 0) {
+    cells.push(<span className="turn-stat" key="tokens">{t('stats.tokens', { input: formatTokens(stats.input), output: formatTokens(stats.output) })}</span>)
+  }
+  if (hit != null) cells.push(<span className="turn-stat" key="cache">{t('stats.cacheHit', { percent: hit.toFixed(2) })}</span>)
+  if (stats.hasCost) cells.push(<span className="turn-stat" key="cost">{t('stats.cost', { amount: formatCost(stats.cost) })}</span>)
+  return (
+    <div className="turn-end" data-testid="turn-divider" data-turn={stats.turn}>
+      <span className="turn-end-rule" aria-hidden />
+      <div className="turn-end-stats">
+        <span className="turn-end-label">{t('turn.label', { n: stats.turn })}</span>
+        {cells}
+      </div>
+      <span className="turn-end-rule" aria-hidden />
+    </div>
+  )
+}
+
 type ChatItemProps = {
 	api: Client
 	node: ChatNode
@@ -438,6 +470,18 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   })
   const itemProps = { api, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate, misses }
   const running = busy && !nodes.some(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
+  // Turn dividers are keyed by each turn's last node id. The newest turn is
+  // deferred while a run is in flight (and skipped entirely while it streams or
+  // runs a tool): its step count is still growing, so a settled-looking strip
+  // that rewrites itself every delta would only flicker. The bottom
+  // "running…" line is the progress signal until agent_end.
+  const turns = useMemo(() => turnStats(nodes), [nodes])
+  const newestId = nodes[nodes.length - 1]?.id
+  const turnFoot = (n: ChatNode) => {
+    if (busy && n.id === newestId) return null
+    const foot = turns.get(n.id)
+    return foot && !foot.live && foot.steps > 0 ? <TurnDivider stats={foot} /> : null
+  }
 
   useLayoutEffect(() => {
     if (!jumpToId) return
@@ -469,7 +513,12 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   if (!virtualize) {
     return (
       <div className="chat-col" data-testid="chat">
-        {nodes.map(n => <ChatItem key={n.id} node={n} {...itemProps} />)}
+        {nodes.map(n => (
+          <Fragment key={n.id}>
+            <ChatItem node={n} {...itemProps} />
+            {turnFoot(n)}
+          </Fragment>
+        ))}
         {running ? <div className="status-line">{t('chat.running')}</div> : null}
       </div>
     )
@@ -488,6 +537,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
             style={{ transform: `translateY(${item.start}px)` }}
           >
             <ChatItem node={n} {...itemProps} />
+            {turnFoot(n)}
           </div>
         )
       })}

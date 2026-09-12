@@ -1266,6 +1266,106 @@ function latestStepMetrics(s: ViewState, path: Entry[], counted: Set<string>): S
   return stepMetrics()
 }
 
+export type TurnStats = {
+  /** 1-based turn index — the nth user message on the branch. */
+  turn: number
+  /** Completed steps in the turn: assistant messages plus settled compactions. */
+  steps: number
+  /** Wall-clock span from the user message to the turn's last persisted node.
+   * Falls back to summed step latencies when timestamps are unavailable. */
+  elapsedMs: number
+  /** Sum of the turn's assistant latencies (used as the elapsed fallback). */
+  durationMs: number
+  /** Whole prompt of every step: uncached + cacheRead + cacheWrite. */
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  hasCost: boolean
+  cost: number
+  /** First step's time-to-first-token; 0 when the provider reported none. */
+  ttftMs: number
+  /** Output tokens per second over the turn's decode spans; null when unknown. */
+  tps: number | null
+  /** True while the turn still has a streaming assistant or a running tool. */
+  live: boolean
+}
+
+/**
+ * Aggregate a chat branch into per-turn stats, keyed by the id of each turn's
+ * last node so the chat can mount a divider right after that node. A turn with
+ * no completed step is dropped (a just-sent user message has nothing to report),
+ * and a turn that is still streaming/running is marked `live` for the caller to
+ * defer. Steps are summed, not averaged, so the strip reads as the cost of the
+ * whole turn; `ttftMs` keeps the first step because that is the latency the
+ * user actually perceived.
+ */
+export function turnStats(nodes: ChatNode[]): Map<string, TurnStats> {
+  const out = new Map<string, TurnStats>()
+  type Acc = TurnStats & { startedAt?: number; lastAt?: number; decodeMs: number; decodeTokens: number; lastId: string }
+  let acc: Acc | null = null
+  let turn = 0
+  const flush = () => {
+    if (!acc) return
+    if (acc.startedAt != null && acc.lastAt != null && acc.lastAt > acc.startedAt) {
+      acc.elapsedMs = acc.lastAt - acc.startedAt
+    }
+    if (acc.elapsedMs === 0) acc.elapsedMs = acc.durationMs
+    // Live turns are kept (even before their first step lands) so a caller can
+    // tell "still running" apart from "nothing to show"; a settled turn with no
+    // step (a just-sent user message) is dropped.
+    if (acc.steps > 0 || acc.live) {
+      acc.tps = acc.decodeMs > 0 ? acc.decodeTokens / (acc.decodeMs / 1_000) : null
+      out.set(acc.lastId, acc)
+    }
+    acc = null
+  }
+  for (const n of nodes) {
+    if (n.kind === 'user') {
+      flush()
+      turn += 1
+      acc = {
+        turn, steps: 0, elapsedMs: 0, durationMs: 0,
+        input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+        hasCost: false, cost: 0, ttftMs: 0, tps: null, live: false,
+        startedAt: n.ts, lastAt: n.ts, decodeMs: 0, decodeTokens: 0, lastId: n.id,
+      }
+      continue
+    }
+    if (!acc) continue
+    acc.lastId = n.id
+    if (n.kind === 'assistant' && n.ts != null) acc.lastAt = n.ts
+    if (n.kind === 'assistant') {
+      if (n.streaming) { acc.live = true; continue }
+      acc.steps += 1
+      if (n.latencyMs != null) acc.durationMs += n.latencyMs
+      if (acc.ttftMs === 0 && n.ttftMs != null && n.ttftMs > 0) acc.ttftMs = n.ttftMs
+      const u = n.usage
+      if (u) {
+        const read = u.cacheRead ?? 0
+        const write = u.cacheWrite ?? 0
+        acc.input += (u.input ?? 0) + read + write
+        acc.output += u.output ?? 0
+        acc.cacheRead += read
+        acc.cacheWrite += write
+        if (u.cost) { acc.hasCost = true; acc.cost += u.cost.total }
+      }
+      // Same decode-span rule as stepMetrics: no TTFT means no TPS estimate.
+      if (n.latencyMs != null && n.ttftMs != null && n.ttftMs > 0 && (u?.output ?? 0) > 0) {
+        const decode = n.latencyMs - n.ttftMs
+        if (decode > 0) { acc.decodeMs += decode; acc.decodeTokens += u?.output ?? 0 }
+      }
+    } else if (n.kind === 'tool') {
+      if (n.running) acc.live = true
+    } else if (n.kind === 'compaction') {
+      if (n.running) acc.live = true
+      else acc.steps += 1
+    }
+  }
+  flush()
+  return out
+}
+
 /** Cache-read share of the latest step's prompt, as a percentage. `input` is
  * the whole prompt (uncached + cacheRead + cacheWrite). Returns null when the
  * step billed no prompt tokens or read nothing from cache. */

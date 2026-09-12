@@ -553,6 +553,54 @@
   min-width: 0;
 }
 
+/* Turn footer: a hairline rule on either side of the turn's aggregate stats,
+   mounted after the turn's last node. Keeps long runs scannable and gives the
+   next user bubble breathing room. */
+.turn-end {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  margin: 4px 0;
+}
+.turn-end-rule {
+  flex: 1 1 auto;
+  min-width: 12px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--dsw-alias-border-l2) 18%, var(--dsw-alias-border-l2) 82%, transparent);
+}
+.turn-end-stats {
+  flex: 0 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px 10px;
+  min-width: 0;
+  color: var(--dsw-alias-label-caption);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+}
+.turn-end-label {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.turn-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.turn-stat svg { width: 12px; height: 12px; opacity: 0.75; }
+
 .think {
   border-radius: 8px;
   overflow: hidden;
@@ -3168,6 +3216,19 @@ select:focus-visible {
     scrollbar-gutter: auto;
   }
   .chat-col { gap: 20px; }
+  /* Narrow chat columns: the side rules shrink to stubs, so drop them and use
+     one full-width hairline above the (possibly wrapped) stats instead. */
+  .turn-end { gap: 6px; margin: 2px 0; }
+  .turn-end-rule { display: none; }
+  .turn-end-stats {
+    flex: 1 1 auto;
+    padding-top: 10px;
+    border-top: 1px solid var(--dsw-alias-border-l1);
+    gap: 3px 8px;
+    font-size: 11px;
+    line-height: 16px;
+  }
+  .turn-end-label { padding: 1px 6px; font-size: 10px; }
   .hero {
     align-content: center;
     gap: 22px;

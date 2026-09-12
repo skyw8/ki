@@ -385,6 +385,14 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   // The stats strip renders the hit rate to 2 decimals (90/98).
   await expect(page.getByTestId('session-stats')).toContainText('缓存命中 91.84%')
   await expect(page.getByTestId('session-stats')).toContainText('输入 98 · 输出 2')
+  // The settled turn closes with a divider carrying its own aggregates.
+  const turnDivider = page.getByTestId('turn-divider')
+  await expect(turnDivider).toHaveCount(1)
+  await expect(turnDivider).toHaveAttribute('data-turn', '1')
+  await expect(turnDivider).toContainText('第 1 轮')
+  await expect(turnDivider).toContainText('1 步')
+  await expect(turnDivider).toContainText('缓存命中 91.84%')
+  await expect(turnDivider.getByTestId('turn-elapsed')).toBeVisible()
   await expect(page.getByTestId('session-title').filter({ hasText: prompt })).toBeVisible()
   const asstActions = page.getByTestId('assistant-message').getByTestId('asst-actions')
   await expect(asstActions.getByTestId('copy-msg')).toBeVisible()
@@ -449,6 +457,8 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await page.getByTestId('session-row').first().click()
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
+  // The divider is rebuilt from the persisted turn on the history path too.
+  await expect(page.getByTestId('turn-divider')).toHaveCount(1)
 })
 
 test('markdown table copy and diagram toggle/download/copy', async ({ page }) => {

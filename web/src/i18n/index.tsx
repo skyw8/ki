@@ -200,6 +200,9 @@ const zh = {
   'stats.cacheMissTitle': '上一轮 prompt 有 {tokens} token（{percent}%）本次未命中缓存、被重新计费',
   'stats.tokens': '输入 {input} · 输出 {output}',
   'stats.cost': '${amount}',
+  'turn.label': '第 {n} 轮',
+  'turn.steps': '{n} 步',
+  'turn.elapsed': '耗时 {duration}',
 
   'cfg.needSession': '先选择或新建会话。',
   'cfg.session': '会话',
@@ -511,6 +514,9 @@ const en: Record<MsgKey, string> = {
   'stats.cacheMissTitle': '{tokens} tokens ({percent}%) from the previous prompt were re-billed instead of read from cache',
   'stats.tokens': 'In {input} · Out {output}',
   'stats.cost': '${amount}',
+  'turn.label': 'Turn {n}',
+  'turn.steps': '{n} steps',
+  'turn.elapsed': '{duration} elapsed',
 
   'cfg.needSession': 'Select or create a session first.',
   'cfg.session': 'Session',
