@@ -1054,4 +1054,10 @@ test('busy enter queues and ctrl+enter promotes the tail', async ({ page }) => {
   await expect(page.getByTestId('composer-stop')).toHaveCount(0)
   await expect.poll(async () => (await sessionQueue(page)).texts).toEqual([])
   await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-keep' })).toBeVisible()
+  // A steer accepted into the run must survive its abort in history: the reload
+  // proves it was committed to jsonl, not only rendered optimistically.
+  await page.reload()
+  await page.getByTestId('session-row').first().click()
+  await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-promote' })).toBeVisible()
+  await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-keep' })).toBeVisible()
 })

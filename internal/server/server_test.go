@@ -2136,6 +2136,67 @@ func TestBusyPromptSteersSameRun(t *testing.T) {
 	}
 }
 
+// userPathTexts walks the active leaf chain from a session GET, mirroring what
+// the WebUI renders, and returns the preview of every user entry on it.
+func userPathTexts(t *testing.T, detail map[string]any) []string {
+	t.Helper()
+	byID := map[string]map[string]any{}
+	index, _ := detail["index"].([]any)
+	for _, raw := range index {
+		entry, _ := raw.(map[string]any)
+		id, _ := entry["id"].(string)
+		if id != "" {
+			byID[id] = entry
+		}
+	}
+	leaf, _ := detail["leafId"].(string)
+	var out []string
+	seen := map[string]bool{}
+	for leaf != "" && !seen[leaf] {
+		seen[leaf] = true
+		entry := byID[leaf]
+		if entry == nil {
+			break
+		}
+		if role, _ := entry["role"].(string); role == "user" {
+			preview, _ := entry["preview"].(string)
+			out = append(out, preview)
+		}
+		leaf, _ = entry["parentId"].(string)
+	}
+	slices.Reverse(out)
+	return out
+}
+
+func TestAbortedRunKeepsUndrainedSteer(t *testing.T) {
+	gate := &gateStreamer{inner: &provider.Scripted{}}
+	srv, hs := testServerWith(t, gate)
+	id := createSession(t, hs, t.TempDir())
+	gate.arm()
+	prompt202(t, hs, id, "first")
+	waitBuffered(t, srv, id, 6)
+	status, out := promptJSON(t, hs, id, "steer-me", map[string]any{"delivery": "steer"})
+	if status != http.StatusAccepted || out["accepted"] != "steered" {
+		t.Fatalf("steer %d %+v", status, out)
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/abort", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	waitAgentEnd(t, hs, id)
+	waitRunIdle(t, srv, id)
+	// The canceled run never drains the Inbox, so the accepted steer must still
+	// be committed as a user turn rather than silently dropped.
+	detail := sessionGET(t, hs, id)
+	users := userPathTexts(t, detail)
+	if !slices.Contains(users, "steer-me") {
+		t.Fatalf("aborted run dropped the steer; user path = %v", users)
+	}
+}
+
 func TestBusyPromptQueuesUntilRelease(t *testing.T) {
 	gate := &gateStreamer{inner: &provider.Scripted{}}
 	srv, hs := testServerWith(t, gate)

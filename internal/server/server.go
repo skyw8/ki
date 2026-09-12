@@ -1913,12 +1913,20 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 		st.mu.Unlock()
 		for _, steer := range steers {
-			if err != nil && ctx.Err() != nil {
-				break
+			if ctx.Err() != nil {
+				// Why: an accepted steer is committed to the tree only when
+				// loop.Run drains the Inbox. A canceled run (abort) never
+				// drains, so the optimistic bubble would vanish on the next
+				// jsonl reload. Commit the message here as an unanswered user
+				// turn: the text survives, and the next run sees it in history.
+				if _, _, aerr := sess.AppendMessageWithKey(steer, ""); aerr != nil {
+					slog.Warn("persist undrained steer", "session_id", id, "err", aerr)
+				}
+				continue
 			}
 			err = runMessage(steer)
 		}
-		if err != nil && ctx.Err() != nil {
+		if ctx.Err() != nil {
 			break
 		}
 	}

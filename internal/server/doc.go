@@ -50,7 +50,9 @@
 // into the captured run's Inbox. parentId while busy is 409. message_end awaits jsonl
 // append; asynchronous extension lifecycle notifications are written in loop
 // order, so message_end cannot be overtaken by agent_settled. agent_end may
-// auto-compact. SSE replays runState.evs and drains after done.
+// auto-compact. A steer accepted into the Inbox but never drained because the
+// run was aborted is committed to jsonl as an unanswered user turn. SSE
+// replays runState.evs and drains after done.
 //
 // One server-owned resources.Loader atomically caches runtime environment,
 // skills, AGENTS/CLAUDE, prompt templates, and discovered extension descriptors
