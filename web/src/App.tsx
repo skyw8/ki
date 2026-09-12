@@ -465,14 +465,47 @@ function WorkspaceApp({ api }: { api: Client }) {
 		}
 	}, [api])
 
-  const refreshList = useCallback(async () => {
-    try {
-      const [ss, ws] = await Promise.all([api.list(), api.workspaces()])
-      setSessions(ss)
-      setWorkspaces(ws)
-    } catch (e) {
-      toast.from(e)
-    }
+  // Sidebar refreshes are coalesced: runs ending together, or rapid pin/move/
+  // delete actions, collapse into one in-flight read plus at most one trailing
+  // read. Every caller's promise resolves after a refresh that started at or
+  // after its call, so `await refreshList()` still guarantees fresh state.
+  // The server's ETag lets an unchanged list skip setSessions entirely.
+  const listEtag = useRef<string | null>(null)
+  const wsKey = useRef<string | null>(null)
+  const refreshGate = useRef({ active: false, dirty: false, waiters: [] as Array<() => void> })
+
+  const refreshList = useCallback((): Promise<void> => {
+    const gate = refreshGate.current
+    gate.dirty = true
+    return new Promise<void>(resolve => {
+      gate.waiters.push(resolve)
+      if (gate.active) return
+      gate.active = true
+      void (async () => {
+        try {
+          while (gate.dirty) {
+            gate.dirty = false
+            const [ss, ws] = await Promise.all([api.list(listEtag.current ?? undefined), api.workspaces()])
+            if (!ss.notModified) {
+              listEtag.current = ss.etag
+              setSessions(ss.sessions)
+            }
+            const nextWs = JSON.stringify(ws)
+            if (nextWs !== wsKey.current) {
+              wsKey.current = nextWs
+              setWorkspaces(ws)
+            }
+          }
+        } catch (e) {
+          toast.from(e)
+        } finally {
+          gate.active = false
+          const waiters = gate.waiters
+          gate.waiters = []
+          for (const w of waiters) w()
+        }
+      })()
+    })
   }, [api])
 
 	useEffect(() => { void refreshList() }, [refreshList])

@@ -58,8 +58,19 @@ export class Client {
     await this.json('/v1/auth/logout', { method: 'POST' })
   }
 
-  list(): Promise<SessionInfo[]> {
-    return this.json('/v1/sessions')
+  // The sidebar refetches this list often. The server tags the rendered rows
+  // with an ETag, so an unchanged list comes back as 304 and the caller can
+  // skip a redundant state update.
+  async list(etag?: string): Promise<{ sessions: SessionInfo[]; etag: string | null; notModified: boolean }> {
+    const headers: Record<string, string> = { ...(this.headers(false, 'GET') as Record<string, string>) }
+    if (etag) headers['If-None-Match'] = etag
+    const res = await fetch('/v1/sessions', { credentials: 'same-origin', headers, cache: 'no-store' })
+    if (res.status === 304) return { sessions: [], etag: etag ?? null, notModified: true }
+    if (!res.ok) {
+      const text = await res.text()
+      throw new ApiError(res.status, text.trim() || res.statusText)
+    }
+    return { sessions: (await res.json()) as SessionInfo[], etag: res.headers.get('ETag'), notModified: false }
   }
 
   get(id: string, opts?: { fields?: 'runtime'; before?: string; limit?: number }): Promise<SessionDetail> {

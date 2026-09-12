@@ -33,6 +33,27 @@ test('slash palette is available before creating a session', async ({ page }) =>
   await expect(page.getByTestId('command-item-new')).toBeVisible()
 })
 
+// The sidebar refetches /v1/sessions often; the conditional request must reach
+// the server and come back 304 so an unchanged list does not rebuild the
+// sidebar (the browser HTTP cache must not swallow the conditional GET).
+test('session list conditional fetch returns 304', async ({ page }) => {
+  await page.goto('/')
+  const out = await page.evaluate(async () => {
+    const first = await fetch('/v1/sessions', { credentials: 'same-origin', cache: 'no-store' })
+    const etag = first.headers.get('ETag')
+    await first.text()
+    const second = await fetch('/v1/sessions', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'If-None-Match': etag ?? '' },
+    })
+    return { etag, first: first.status, second: second.status }
+  })
+  expect(out.first).toBe(200)
+  expect(out.etag).toBeTruthy()
+  expect(out.second).toBe(304)
+})
+
 test('settings navigation and controls are consistent', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()

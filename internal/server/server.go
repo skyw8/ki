@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -63,6 +64,7 @@ type Server struct {
 	agentTasks             *tools.AgentStore
 	ws                     *workspace.Store
 	sidx                   *session.Index
+	slist                  *session.ListCache
 	ln                     net.Listener
 	http                   *http.Server
 	shells                 tools.ShellRuntime
@@ -177,6 +179,7 @@ func New(opt Options) (*Server, error) {
 		agentTasks:             tools.NewAgentStore(),
 		ws:                     ws,
 		sidx:                   sidx,
+		slist:                  session.NewListCache(),
 		shells:                 shells,
 		mutations:              tools.NewMutationQueue(),
 		eventSubscribers:       map[string]map[chan loop.Event]struct{}{},
@@ -1122,8 +1125,11 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.sessionMap(sess, nil))
 }
 
-func (s *Server) list(w http.ResponseWriter, _ *http.Request) {
-	infos, err := session.List(s.cfg.Sessions.Root)
+// list renders the session sidebar. Rows come from the stamp-validated
+// ListCache, and the response carries an ETag over the rendered body so a
+// refresh that finds nothing changed returns 304 instead of a new array.
+func (s *Server) list(w http.ResponseWriter, r *http.Request) {
+	infos, err := s.slist.List(s.cfg.Sessions.Root)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1132,7 +1138,25 @@ func (s *Server) list(w http.ResponseWriter, _ *http.Request) {
 	for _, info := range infos {
 		out = append(out, s.infoMap(info))
 	}
-	writeJSON(w, 200, out)
+	body, err := json.Marshal(out)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Why hash the body instead of the file stamps: the row also carries
+	// in-memory state (running) and the workspace mapping, so anything derived
+	// from those must invalidate the tag too. Hashing the exact bytes keeps the
+	// tag correct for every display-affecting input without tracking them.
+	sum := sha256.Sum256(body)
+	etag := `"` + hex.EncodeToString(sum[:]) + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(append(body, '\n'))
 }
 
 func (s *Server) running(id string) bool {

@@ -25,6 +25,9 @@
 // transcript, relationship, and agent.json metadata remain durable so the
 // server can rebuild an agent task after restart. Removing a child also removes
 // its agent record through the server-owned lifecycle.
-// List walks the session root. Index caches id→dir for O(1) lookup; the
-// filesystem stays the source of truth and misses fall back to Find. On-disk layout: docs/session.md.
+// List walks the session root with a shallow scan: each row reads config.json,
+// the jsonl header, and the first user message only, so listing never decodes a
+// full transcript. ListCache reuses rows while config.json and events.jsonl keep
+// their size and mtime. Index caches id→dir for O(1) lookup; the filesystem
+// stays the source of truth and misses fall back to Find. On-disk layout: docs/session.md.
 package session
