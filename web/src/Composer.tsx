@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from 'react'
-import { IAttach, IClose, ICommand, IFile, ISend, IStop } from './icons'
+import { IAttach, IClose, ICommand, IEdit, IFile, ISend, IStop } from './icons'
 import type { Client } from './api'
 import { AttachmentImage } from './AttachmentImage'
 import { CommandPalette, isCommandPaletteVisible, type PalettePick } from './CommandPalette'
@@ -40,6 +40,17 @@ function fileKind(content: Content): string {
   const dot = name.lastIndexOf('.')
   if (dot <= 0 || dot === name.length - 1) return 'FILE'
   return name.slice(dot + 1).toLocaleUpperCase().slice(0, 5)
+}
+
+function attachmentName(content: Content): string {
+  return content.name || basename(content.path || '')
+}
+
+function formatFileSize(size?: number): string {
+  if (size == null) return ''
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${Math.ceil(size / 1024)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
 function SessionStatsLine({ stats, t }: { stats: LatestStats; t: ReturnType<typeof useI18n>['t'] }) {
@@ -122,9 +133,16 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   useEffect(() => {
     const el = ref.current
     if (!el) return
+    // Why: the edit dialog exists to work on one message, so it may grow much
+    // taller than the compact new-message composer before scrolling. Cap it
+    // against the viewport too, otherwise a wall of text pushes the actions
+    // off-screen on short windows.
+    const max = mode === 'edit'
+      ? Math.min(420, Math.round(window.innerHeight * 0.5))
+      : 180
     el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 180)}px`
-  }, [draft.text])
+    el.style.height = `${Math.min(el.scrollHeight, max)}px`
+  }, [draft.text, mode])
   useEffect(() => { if (mode === 'edit') ref.current?.focus({ preventScroll: true }) }, [mode])
   useEffect(() => {
     if (disabled) closePalette()
@@ -195,25 +213,41 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   }
   return (
     <div className={`composer-wrap${hero ? ' hero-pos' : ''}${mode === 'edit' ? ' edit-pos' : ''}`}>
-      <div className="composer" ref={card} data-testid={mode === 'edit' ? 'edit-composer' : 'composer-card'}>
+      <div className={`composer${mode === 'edit' ? ' composer-edit' : ''}`} ref={card} data-testid={mode === 'edit' ? 'edit-composer' : 'composer-card'}>
+        {mode === 'edit' ? (
+          <div className="composer-edit-head">
+            <span className="composer-edit-title"><IEdit /><span>{t('composer.editTitle')}</span></span>
+            <span className="composer-edit-hint">{t('composer.editHint')}</span>
+          </div>
+        ) : null}
         {draft.attachments.length ? <div className="attachment-strip">
-          {draft.attachments.map((a, i) => a.type === 'image' ? (
-            <span className="attachment-draft attachment-draft-image" key={`${a.path || a.name}-${i}`} title={a.name || basename(a.path || '')}>
-              <AttachmentImage api={api} content={a} className="composer-image" expandable />
-              <button type="button" className="attachment-remove" aria-label={t('composer.removeAttachment')} onClick={() => onChange({ ...draft, attachments: draft.attachments.filter((_, j) => i !== j) })}><IClose /></button>
-            </span>
-          ) : (
-            <span className="attachment-draft attachment-draft-file" key={`${a.path || a.name}-${i}`} title={a.name || basename(a.path || '')}>
-              <span className="attachment-file-tile"><IFile /><small>{fileKind(a)}</small></span>
-              <button type="button" className="attachment-remove" aria-label={t('composer.removeAttachment')} onClick={() => onChange({ ...draft, attachments: draft.attachments.filter((_, j) => i !== j) })}><IClose /></button>
-            </span>
-          ))}
+          {draft.attachments.map((a, i) => {
+            const name = attachmentName(a)
+            const remove = () => onChange({ ...draft, attachments: draft.attachments.filter((_, j) => i !== j) })
+            return a.type === 'image' ? (
+              <span className="attachment-draft attachment-draft-image" key={`${a.path || a.name}-${i}`} title={name}>
+                <AttachmentImage api={api} content={a} className="composer-image" expandable />
+                <button type="button" className="attachment-remove" aria-label={t('composer.removeAttachment')} onClick={remove}><IClose /></button>
+              </span>
+            ) : (
+              <span className="attachment-draft attachment-draft-file" key={`${a.path || a.name}-${i}`} title={name}>
+                <span className="attachment-file-tile">
+                  <span className="attachment-file-icon"><IFile /></span>
+                  <span className="attachment-file-meta">
+                    <strong>{name}</strong>
+                    <small>{[fileKind(a), formatFileSize(a.size)].filter(Boolean).join(' · ')}</small>
+                  </span>
+                </span>
+                <button type="button" className="attachment-remove" aria-label={t('composer.removeAttachment')} onClick={remove}><IClose /></button>
+              </span>
+            )
+          })}
         </div> : null}
         <textarea
           ref={ref}
           data-testid={mode === 'edit' ? 'edit-input' : 'composer-input'}
           rows={1}
-          placeholder={loading ? t('composer.placeholderLoading') : disabled ? t('composer.placeholderDisabled') : t('composer.placeholder')}
+          placeholder={mode === 'edit' ? t('composer.editPlaceholder') : loading ? t('composer.placeholderLoading') : disabled ? t('composer.placeholderDisabled') : t('composer.placeholder')}
           value={draft.text}
           disabled={disabled}
           role={mode === 'new' ? 'combobox' : undefined}

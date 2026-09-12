@@ -445,6 +445,10 @@
   max-width: min(525px, 82%);
   min-width: 0;
 }
+/* While editing, the row widens to the full chat column so long drafts and
+   attachments are not squeezed into the 525px bubble width. */
+.user-row.editing { align-items: stretch; }
+.user-row.editing .user-stack { max-width: 100%; width: 100%; }
 .asst-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .msg-foot {
   display: flex;
@@ -820,8 +824,8 @@
   min-width: 0;
   justify-self: stretch;
 }
-.composer-wrap.edit-pos { padding: 0; align-items: stretch; width: min(680px, 100%); }
-.composer-wrap.edit-pos .composer { max-width: none; border-radius: 16px; box-shadow: none; }
+.composer-wrap.edit-pos { padding: 0; align-items: stretch; width: 100%; }
+.composer-wrap.edit-pos .composer { max-width: none; }
 .notice {
   width: 100%;
   max-width: var(--composer-max);
@@ -967,6 +971,41 @@
   font-size: 16px;
   line-height: 24px;
 }
+/* The in-place message editor: a full-column card with a header, a tall
+   auto-growing textarea and named attachment chips. */
+.composer-edit {
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 20px;
+  border-color: color-mix(in srgb, var(--dsw-alias-brand) 34%, var(--dsw-alias-border-l2-thin));
+}
+.composer-edit textarea { max-height: min(420px, 52dvh); }
+.composer-edit-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 4px;
+}
+.composer-edit-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+.composer-edit-title svg { flex: none; width: 15px; height: 15px; color: var(--dsw-alias-brand); }
+.composer-edit-hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dsw-alias-label-caption);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .composer-row {
   display: flex;
   align-items: center;
@@ -985,10 +1024,18 @@
 .attachment-image img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .attachment-image > svg { width: 22px; height: 22px; }
 .attachment-draft { position: relative; width: 60px; height: 60px; flex: none; }
-.attachment-draft .composer-image, .attachment-file-tile { width: 60px; height: 60px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
-.attachment-file-tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); }
-.attachment-file-tile svg { width: 22px; height: 22px; }
-.attachment-file-tile small { max-width: 48px; overflow: hidden; color: var(--dsw-alias-label-tertiary); font-size: 9px; font-weight: 600; line-height: 12px; letter-spacing: .04em; text-overflow: ellipsis; }
+.attachment-draft .composer-image { width: 60px; height: 60px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
+/* Files carry their name, so the tile is a chip rather than a fixed square. */
+.attachment-draft-file { width: auto; height: auto; max-width: 100%; }
+.attachment-file-tile { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 230px; padding: 7px 12px 7px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); }
+.attachment-file-icon { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: 8px; background: var(--dsw-alias-bg-layer-1); }
+.attachment-file-icon svg { width: 16px; height: 16px; }
+.attachment-file-meta { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; line-height: 1.35; }
+.attachment-file-meta strong { max-width: 168px; overflow: hidden; color: var(--dsw-alias-label-primary); font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-file-meta small { color: var(--dsw-alias-label-tertiary); font-size: 10px; font-weight: 600; letter-spacing: .04em; }
+.composer-edit .attachment-draft-image,
+.composer-edit .attachment-draft-image .composer-image { width: 72px; height: 72px; }
+.composer-edit .attachment-file-tile { max-width: 260px; }
 .attachment-draft > .attachment-remove { position: absolute; top: -6px; right: -6px; z-index: 2; width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: 1px solid var(--dsw-alias-border-l2); border-radius: 50%; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); line-height: 0; box-shadow: var(--dsw-shadow-lv1); }
 .attachment-draft > .attachment-remove:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .attachment-draft > .attachment-remove svg { display: block; width: 12px; height: 12px; margin: auto; }
@@ -3326,6 +3373,8 @@ select:focus-visible {
   .tool-sep { display: none; }
   .msg-stats { gap: 4px 8px; font-size: 11px; }
   .user-row .msg-foot { flex-wrap: wrap; }
+  .composer-edit-hint { display: none; }
+  .composer-edit .attachment-file-meta strong { max-width: 40vw; }
   .composer-row { gap: 4px; }
   .attach-btn { width: 32px; height: 32px; }
   .send { flex: none; }

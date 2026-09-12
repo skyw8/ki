@@ -305,10 +305,11 @@ const ChatItem = memo(function ChatItem({
     }
   }, [n, onHydrate])
   if (n.kind === 'user') {
+    const editing = edit?.messageId === n.id
     return (
-      <div className="user-row" data-msg-id={n.id}>
+      <div className={`user-row${editing ? ' editing' : ''}`} data-msg-id={n.id}>
         <div className="user-stack">
-          {edit?.messageId === n.id ? <Composer api={api} mode="edit" draft={edit.draft} onChange={d => onEditChange?.(d)} onSend={() => onSendEdit?.()} onAttach={() => onAttachEdit?.()} onFiles={onFilesEdit} onCancel={onCancelEdit} busy={busy} uploading={uploading} /> : <UserBubble api={api} node={n} onHydrate={onHydrate} />}
+          {editing ? <Composer api={api} mode="edit" draft={edit!.draft} onChange={d => onEditChange?.(d)} onSend={() => onSendEdit?.()} onAttach={() => onAttachEdit?.()} onFiles={onFilesEdit} onCancel={onCancelEdit} busy={busy} uploading={uploading} /> : <UserBubble api={api} node={n} onHydrate={onHydrate} />}
           <div className="msg-foot">
             {n.ts ? <div className="msg-stats">{fmtTs(n.ts)}</div> : null}
             <div className="msg-actions" data-testid="user-actions">
