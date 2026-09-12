@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:e2e": "playwright test --project=fake",
+    "test:e2e": "bun scripts/e2e-parallel.ts",
+    "test:e2e:serial": "playwright test --project=fake",
     "test:e2e:live": "KI_LIVE=1 playwright test --project=live",
     "test:shots": "playwright test --project=shots",
     "test:perf": "playwright test --project=perf"

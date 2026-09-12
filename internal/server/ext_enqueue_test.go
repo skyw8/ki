@@ -7,9 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -440,18 +438,7 @@ func TestSidecarSetStatusAppearsOnSession(t *testing.T) {
 
 func buildExtSidecar(t *testing.T) string {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("caller")
-	}
-	src := filepath.Join(filepath.Dir(file), "..", "..", "e2e", "testdata", "extensions", "sidecar")
-	bin := filepath.Join(t.TempDir(), "sidecar")
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local sidecar test fixture
-	cmd.Dir = src
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
-	return bin
+	return buildFixture(t, "sidecar", fixtureSource("sidecar"))
 }
 
 func TestExtensionUIProjection(t *testing.T) {

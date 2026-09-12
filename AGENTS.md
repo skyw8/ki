@@ -62,7 +62,7 @@ ki/
 
 - Dev run: `scripts/run.sh` builds `./ki` and starts `ki serve` with the real configured provider by default inside a tmux session named `ki`: window `server` runs the daemon, window `cli` is a shell for operating it. Re-run to rebuild and respawn; real tests operate through the script or `tmux attach -t ki`. `web/dist` is untracked build output: the script builds it on demand and compiles with `-tags embed`; `--web` forces a rebuild; `--fake` is an explicit opt-in for canned-model plumbing checks only.
 - Fake model (tests only): `go test ./e2e` (`KI_FAKE=1`; CLI main path, `serve`, `serve -d`, two sessions in parallel, WebUI Playwright). Do not use `KI_FAKE=1` or `--fake` for normal development, manual verification, or service restarts.
-WebUI: `cd web && bun run test:e2e` (starts a fake `ki serve`). Requires `bunx playwright install chromium`. Long-history / huge-message budgets: `cd web && bun run test:perf` (not in the fake matrix).
+WebUI: `cd web && bun run test:e2e` (parallel runner; each unit starts an isolated fake `ki serve`; `bun run test:e2e:serial` runs one process for debugging). Requires `bunx playwright install chromium`. Long-history / huge-message budgets: `cd web && bun run test:perf` (not in the fake matrix).
 - Live model: `go test -tags live -timeout 5m ./e2e -run Live` (reads `DASHSCOPE_CN_API_KEY` or `~/.ki/ki.toml` dashscope-cn; default `qwen3.7-plus`; images / PDF / WebUI Playwright).
 WebUI live: `cd web && bun run test:e2e:live`.
 
@@ -83,5 +83,6 @@ WebUI live: `cd web && bun run test:e2e:live`.
 - One binary: `ki serve` serves API and the embedded SPA on the same origin. `web/dist` is untracked build output: build it (`cd web && bun run build`) and compile with `-tags embed`. Without the tag, `web/stub.go` supplies an empty FS and `ki serve` reports the UI as not built; serve does not run vite or bun.
 - Naming: `extension` is the installable/runtime bundle; a provider supplied by one is an `extension provider`. Do not use `plugin` for provider code, APIs, runtime values, or UI/docs.
 - Real provider is the default runtime. `KI_FAKE=1` and `scripts/run.sh --fake` are test-only opt-ins and must not be used for normal development or manual verification.
+- Keep tests fast without weakening coverage: parallelize or cache independent work (WebUI runner `web/scripts/e2e-parallel.ts`; compile each sidecar fixture once per test process), but never drop, skip, or reorder tests for speed; a coverage regression must fail the run (`test:e2e:serial` is the single-process debug fallback).
 - Do not invent REST routes for data the loop already has. Extend `loop.Event` and jsonl (and existing SSE / `GET /v1/sessions/{id}`) instead.
 - A second prompt on a busy session steers the current run or queues for the next (`delivery` / `toggles.json` `message.busy`). `parentId` while busy is **409**. Resume requires `--session`. `--model` is per-session `config.json`, not toml.

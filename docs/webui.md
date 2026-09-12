@@ -206,18 +206,26 @@ cd .. && go build -tags embed -o ki ./cmd/ki
 
 ## Playwright
 
-假模型打通对话和轨迹（`KI_FAKE=1` 起 `ki serve`，同域打开页面）：
+假模型打通对话和轨迹（每个并行单元各起一个隔离的 `ki serve`）：
 
 ```bash
 cd web && bun install && bunx playwright install chromium
-bun run test:e2e
+bun run test:e2e          # 并行 runner（默认）
+bun run test:e2e:serial   # 单进程串行，便于定位单个失败
 ```
 
-Playwright 每次 invocation 使用独立的临时状态、鉴权文件、二进制和随机 loopback 端口，
-因此可与 Go e2e 或另一轮 WebUI 测试并行运行，不得复用固定 `/tmp` 状态文件。响应式矩阵
-由 `e2e/responsive.spec.ts` 随 fake project 一起执行。
+`bun run test:e2e` 由 `web/scripts/e2e-parallel.ts` 驱动：先 `playwright test --list`
+自动枚举 `--project=fake` 的用例，把非 serial 的大文件（当前是 `responsive.spec.ts` 的 7 个
+profile）按顶层 describe 拆成独立进程，其余文件各占一个进程；默认并发 `min(CPU, 16)`，每个
+进程独立端口。每次 invocation 使用独立的临时状态、鉴权文件、二进制和随机 loopback 端口，
+因此互不干扰，可与 Go e2e 并行运行，不得复用固定 `/tmp` 状态文件。
 
-`go test ./e2e -run WebUI` 会先起 server，再跑同一套 Playwright（需已 `bun install` 和装好 chromium）。
+为保证不牺牲覆盖，runner 记录 `--list` 的期望用例数，跑完按文件与实际执行数核对：任何用例被
+丢弃或重复执行都会让整个 run 失败退出。可用 `KI_E2E_JOBS` 调并发、`KI_E2E_SPLIT` 调拆分阈值、
+`KI_BIN` 复用已构建的二进制、`KI_SKIP_WEB_BUILD` 禁止自动构建前端。
+
+`go test ./e2e -run WebUI` 复用同一个 runner，并用 `KI_BIN` 指向 Go 构建的二进制，因此每个
+spec 仍然打到 Go 编出来的 SPA（需已 `bun install` 和装好 chromium）。
 
 长会话 / 超长消息压测不进 fake 矩阵。生成 jsonl 夹具后测 slim GET 体积与延迟（含 `fields=runtime`、`before`、`entry`）、打开 Chat/Trace 的 DOM 与 JS heap，以及向上翻页 / 截断正文补全：
 

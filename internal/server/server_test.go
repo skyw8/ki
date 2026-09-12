@@ -14,7 +14,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -1244,17 +1243,8 @@ func TestProviderOAuthAuthAPI(t *testing.T) {
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("caller")
-	}
-	source := filepath.Join(filepath.Dir(file), "..", "..", "e2e", "testdata", "extensions", "provider")
 	bin := filepath.Join(binDir, "provider-sidecar")
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local provider sidecar test fixture
-	build.Dir = source
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build auth sidecar: %v\n%s", err, out)
-	}
+	copyFixture(t, buildFixture(t, "provider-sidecar", fixtureSource("provider")), bin)
 	manifest := map[string]any{
 		"name": "fake-oauth", "version": "0.1.0", "description": "fake oauth provider", "capabilities": []string{"provider"},
 		"providers": []map[string]any{{
@@ -3921,13 +3911,7 @@ func TestPromptWithDeclarativeExtensionFinishes(t *testing.T) {
 
 func TestPromptWithSidecarExtensionFinishes(t *testing.T) {
 	srv, hs := testServer(t)
-	bin := filepath.Join(t.TempDir(), "sidecar")
-	src := filepath.Join("..", "..", "e2e", "testdata", "extensions", "sidecar")
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local sidecar test fixture
-	cmd.Dir = src
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build sidecar: %v\n%s", err, out)
-	}
+	bin := buildFixture(t, "sidecar", fixtureSource("sidecar"))
 	dir := filepath.Join(srv.cfg.Home, "extensions", "protected-paths")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)

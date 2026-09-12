@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -42,22 +40,12 @@ func TestSidecarEnvCarriesProxyVariablesAndManifestOverrides(t *testing.T) {
 
 func buildTestSidecar(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "sidecar")
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("caller")
-	}
-	src := filepath.Join(filepath.Dir(file), "..", "..", "e2e", "testdata", "extensions", "sidecar")
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local sidecar test fixture
-	cmd.Dir = src
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
-	return bin
+	return buildFixture(t, "sidecar", fixtureSource("sidecar"))
 }
 
 func TestStartRPCInitialize(t *testing.T) {
-	bin := buildTestSidecar(t)
+	// This test deletes its sidecar binary, so it works on a private copy.
+	bin := copyFixture(t, buildTestSidecar(t))
 	root := t.TempDir()
 	d := Descriptor{
 		Name:         "protected-paths",

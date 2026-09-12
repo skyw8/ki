@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -253,18 +251,7 @@ func waitAgentEndHTTP(t *testing.T, sf server.File, id string) {
 
 func buildSidecar(t *testing.T) string {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("caller")
-	}
-	src := filepath.Join(filepath.Dir(file), "testdata", "extensions", "sidecar")
-	bin := filepath.Join(t.TempDir(), "sidecar")
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local e2e sidecar fixture
-	cmd.Dir = src
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build sidecar: %v\n%s", err, out)
-	}
-	return bin
+	return buildFixture(t, "sidecar", fixtureSource("sidecar"))
 }
 
 func installProtected(t *testing.T, home, bin string, env ...map[string]string) {

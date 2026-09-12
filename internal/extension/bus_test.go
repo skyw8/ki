@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -138,9 +138,38 @@ func TestBusMutexHandshake(t *testing.T) {
 	}
 }
 
+var (
+	mutexSidecarSrcOnce sync.Once
+	mutexSidecarSrcDir  string
+	mutexSidecarSrcErr  error
+)
+
+// mutexSidecarSourceDir keeps the inline fixture source in one stable directory
+// so the binary can be built once and shared across tests.
+func mutexSidecarSourceDir(t *testing.T) string {
+	t.Helper()
+	mutexSidecarSrcOnce.Do(func() {
+		base, err := fixturesDir()
+		if err != nil {
+			mutexSidecarSrcErr = err
+			return
+		}
+		dir := filepath.Join(base, "mutex-src")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			mutexSidecarSrcErr = err
+			return
+		}
+		mutexSidecarSrcDir = dir
+	})
+	if mutexSidecarSrcErr != nil {
+		t.Fatal(mutexSidecarSrcErr)
+	}
+	return mutexSidecarSrcDir
+}
+
 func buildMutexSidecar(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := mutexSidecarSourceDir(t)
 	src := `package main
 import ("bufio"; "encoding/json"; "os")
 type msg struct { JSONRPC string ` + "`json:\"jsonrpc\"`" + `; ID any ` + "`json:\"id,omitempty\"`" + `; Method string ` + "`json:\"method\"`" + `; Params json.RawMessage ` + "`json:\"params\"`" + ` }
@@ -172,11 +201,5 @@ func main() {
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module mutexsidecar\n\ngo 1.22\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(dir, "sidecar")
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local mutex sidecar test fixture
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build mutex sidecar: %v\n%s", err, out)
-	}
-	return bin
+	return buildFixture(t, "mutex-sidecar", dir)
 }

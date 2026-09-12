@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -19,18 +17,7 @@ import (
 
 func buildProviderSidecar(t *testing.T) string {
 	t.Helper()
-	bin := filepath.Join(t.TempDir(), "provider-sidecar")
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("caller")
-	}
-	src := filepath.Join(filepath.Dir(file), "..", "..", "e2e", "testdata", "extensions", "provider")
-	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds the local provider sidecar test fixture
-	cmd.Dir = src
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
-	}
-	return bin
+	return buildFixture(t, "provider-sidecar", fixtureSource("provider"))
 }
 
 func providerTestDescriptor(t *testing.T, bin string) (Descriptor, provider.ExtensionProviderSpec) {
