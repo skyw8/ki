@@ -65,8 +65,9 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('settings-tab-tools')).toHaveText('Tools')
   await expect(page.getByTestId('settings-tab-extensions')).toHaveText('Extensions')
   await expect(page.getByTestId('settings-tab-message')).toHaveText('Message')
+  await expect(page.getByTestId('settings-tab-notifications')).toHaveText('通知')
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('主题和语言')
-  for (const pageName of ['providers', 'skills', 'tools', 'extensions', 'message', 'appearance']) {
+  for (const pageName of ['providers', 'skills', 'tools', 'extensions', 'message', 'notifications', 'appearance']) {
     await expect(page.locator(`#settings-panel-${pageName}`)).toHaveCount(1)
   }
   await expect(page.locator('#settings-panel-skills')).toHaveAttribute('hidden', '')

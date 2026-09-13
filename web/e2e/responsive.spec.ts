@@ -488,6 +488,7 @@ for (const profile of profiles) {
         ['tools', 'tools-settings'],
         ['extensions', 'extensions-settings'],
         ['message', 'message-settings'],
+        ['notifications', 'notifications-settings'],
         ['appearance', 'appearance-settings'],
       ] as const) {
         await page.getByTestId(`settings-tab-${tab}`).click()

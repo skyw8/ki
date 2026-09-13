@@ -5,6 +5,7 @@ import { useI18n, type Lang, type MsgKey, type TFn } from '../../i18n/index'
 import { ModelPickerDialog } from './ModelPickerDialog'
 import { Select } from '../../components/Select'
 import { clampThinkingEffort } from '../../lib/model'
+import type { NotifyPermission } from '../../lib/notifications'
 import { toast } from '../../components/toast'
 import { localizedExtensionText } from './ExtensionPanel'
 import type { CatalogContribution, CatalogExtension, CatalogSkill, CatalogTool, ExtensionConfig, ExtensionI18n, ModelInfo, SessionCommand, SessionDetail } from '../../api/types'
@@ -1028,6 +1029,55 @@ export function MessageSettings({ api }: { api: Client }) {
           </button>
         </div>
       </section>
+    </div>
+  )
+}
+
+export function NotificationSettings({ enabled, permission, onToggle, onTest }: {
+  enabled: boolean
+  permission: NotifyPermission
+  onToggle: (on: boolean) => void
+  onTest: () => void
+}) {
+  const { t } = useI18n()
+  const permissionKey: MsgKey = permission === 'granted'
+    ? 'settings.notifyStateGranted'
+    : permission === 'denied'
+      ? 'settings.notifyStateDenied'
+      : permission === 'insecure'
+        ? 'settings.notifyStateInsecure'
+        : permission === 'unsupported' ? 'settings.notifyUnsupported' : 'settings.notifyStateDefault'
+  return (
+    <div className="preference-page" data-testid="notifications-settings">
+      <header className="settings-page-title">
+        <div>
+          <h3>{t('settings.notifications')}</h3>
+          <p>{t('settings.notificationsHint')}</p>
+        </div>
+      </header>
+      <section className="preference-section inline">
+        <div className="preference-copy">
+          <h4>{t('settings.notifyEnable')}</h4>
+          <p>{t('settings.notifyEnableHint')}</p>
+        </div>
+        <div className="notify-actions">
+          <Switch on={enabled} onChange={onToggle} testid="notify-toggle" ariaLabel={t('settings.notifyEnable')} />
+        </div>
+      </section>
+      <section className="preference-section inline">
+        <div className="preference-copy">
+          <h4>{t('settings.notifyTest')}</h4>
+          <p data-testid="notify-permission">{t(permissionKey)}</p>
+        </div>
+        <div className="notify-actions">
+          <button type="button" className="primary-btn notify-test-btn" data-testid="notify-test" disabled={permission !== 'granted'} onClick={onTest}>
+            {t('settings.notifyTest')}
+          </button>
+        </div>
+      </section>
+      {permission === 'denied' ? <p className="preference-footnote">{t('settings.notifyDenied')}</p> : null}
+      {permission === 'insecure' ? <p className="preference-footnote" data-testid="notify-insecure">{t('settings.notifyInsecure')}</p> : null}
+      <p className="preference-footnote">{t('settings.hint')}</p>
     </div>
   )
 }

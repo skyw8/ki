@@ -350,8 +350,10 @@ func (s *Server) requestReload(id string) bool {
 
 // publishNotification fans an event out to the session's notification streams
 // (GET /v1/sessions/{id}/events?notifications=1). Unlike run events it is not
-// persisted or replayed, so it is only for progress that the owning request
-// cannot stream itself.
+// persisted or replayed, so it is only for progress the owning request cannot
+// stream itself to every observer: extension UI updates, manual /compact
+// progress, and the run's terminal agent_end (which the run SSE ends on but a
+// tab watching a background session never sees).
 func (s *Server) publishNotification(sessionID string, ev loop.Event) {
 	s.mu.Lock()
 	for subscriber := range s.eventSubscribers[sessionID] {
@@ -1797,6 +1799,13 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		st.evs = append(st.evs, ev)
 		st.wait.Broadcast()
 		st.mu.Unlock()
+		if ev.Type == loop.AgentEnd {
+			// The run's terminal event must also reach notification subscribers:
+			// a WebUI tab that is not holding this run's SSE (background session,
+			// or the user switched to another session) still needs to learn the
+			// run finished. run_aborted already fans out through publishSideband.
+			s.publishNotification(id, ev)
+		}
 		switch ev.Type {
 		case loop.ToolExecutionUpdate, loop.ContextUsage, loop.PatchApplyUpdated, loop.ExtensionError:
 			// High-churn or already-handled sidebands; skip extension OnEvent.

@@ -1848,6 +1848,8 @@
 .preference-copy h4 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
 .preference-copy p { margin: 4px 0 16px; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
 .preference-section.inline .preference-copy p { margin-bottom: 0; }
+.notify-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.notify-test-btn { min-height: 40px; }
 .preference-footnote { margin: 14px 2px 0; color: var(--dsw-alias-label-caption); font-size: 12px; }
 .theme-picks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .theme-pick {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"ki/internal/loop"
 	"ki/internal/types"
@@ -15,6 +17,13 @@ import (
 // request context is canceled. Playwright and CLI e2e use it to keep a
 // fake run busy; it is a no-op for the live provider.
 const HoldToken = "e2e-hold"
+
+// DelayTokenPrefix keeps a fake run busy for a bounded time and then completes
+// it normally, unlike HoldToken which only ever ends through abort. The delay
+// is the decimal millisecond count right after the prefix, e.g. `e2e-delay-800`.
+// WebUI e2e uses it to finish a run after the user switched sessions. A no-op
+// for the live provider.
+const DelayTokenPrefix = "e2e-delay-"
 
 // WriteEnvToken makes the default fake assistant issue a Write of .env so
 // extension intercept e2e can prove the call is blocked.
@@ -60,11 +69,47 @@ func lastMessageIsUserContaining(req loop.Request, token string) bool {
 	return last.Role == "user" && strings.Contains(last.Text(), token)
 }
 
+// lastUserDelay parses `e2e-delay-<ms>` from the latest user message; 0 means no
+// delay (missing, malformed, or non-positive).
+func lastUserDelay(req loop.Request) time.Duration {
+	text := ""
+	for _, msg := range slices.Backward(req.Messages) {
+		if msg.Role == "user" {
+			text = msg.Text()
+			break
+		}
+	}
+	i := strings.Index(text, DelayTokenPrefix)
+	if i < 0 {
+		return 0
+	}
+	rest := text[i+len(DelayTokenPrefix):]
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	ms, err := strconv.Atoi(rest[:end])
+	if err != nil || ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
 // Stream returns the next scripted assistant message.
 func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
 	if lastUserHolds(req) {
 		<-ctx.Done()
 		return types.Message{}, ctx.Err()
+	}
+	if delay := lastUserDelay(req); delay > 0 {
+		select {
+		case <-ctx.Done():
+			return types.Message{}, ctx.Err()
+		case <-time.After(delay):
+		}
 	}
 	if lastMessageIsUserContaining(req, WriteEnvToken) {
 		m := types.Message{

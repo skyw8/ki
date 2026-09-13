@@ -8,7 +8,7 @@ import { Composer, type Draft } from './features/chat/Composer'
 import { AttachmentBrowser } from './features/attachments/AttachmentBrowser'
 import { DirectoryBrowser } from './features/sessions/DirectoryBrowser'
 import { SessionTreeBrowser } from './features/sessions/SessionTreeBrowser'
-import { ExtensionConfigEditor, MessageSettings, SessionConfig, SettingsToggles } from './features/settings/SessionConfig'
+import { ExtensionConfigEditor, MessageSettings, NotificationSettings, SessionConfig, SettingsToggles } from './features/settings/SessionConfig'
 import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
@@ -19,10 +19,14 @@ import { useI18n } from './i18n/index'
 import { toast } from './components/toast'
 import { ExtensionInspector, localizedExtensionText, seedExtFields, statusChips, visibleStatusChips } from './features/settings/ExtensionPanel'
 import { useDialogFocus } from './hooks/useDialogFocus'
+import { useTabFocus } from './hooks/useTabFocus'
+import { useRunCompletion } from './hooks/useRunCompletion'
+import { currentPermission, loadNotifyPref, notifyCompletion, requestPermission, saveNotifyPref, showNotification, type NotifyPermission } from './lib/notifications'
+import { focusedSession } from './lib/tab-focus'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
-type SettingsPage = 'providers' | 'skills' | 'tools' | 'extensions' | 'message' | 'appearance'
-const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'extensions', 'message', 'appearance']
+type SettingsPage = 'providers' | 'skills' | 'tools' | 'extensions' | 'message' | 'notifications' | 'appearance'
+const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'extensions', 'message', 'notifications', 'appearance']
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
 const COMPACT_LAYOUT_QUERY = '(max-width: 900px)'
@@ -188,6 +192,8 @@ function WorkspaceApp({ api }: { api: Client }) {
 	const [globalExtensions, setGlobalExtensions] = useState<CatalogExtension[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>('providers')
+  const [notifyEnabled, setNotifyEnabled] = useState<boolean>(loadNotifyPref)
+  const [notifyPerm, setNotifyPerm] = useState<NotifyPermission>(currentPermission)
   const [modelOpen, setModelOpen] = useState(false)
   const [dirOpen, setDirOpen] = useState(false)
   const [dirBusy, setDirBusy] = useState(false)
@@ -342,6 +348,54 @@ function WorkspaceApp({ api }: { api: Client }) {
   }, [dark])
 
   useEffect(() => { localStorage.setItem(EXPAND_KEY, JSON.stringify(expanded)) }, [expanded])
+
+  // Run-completion notifications are decoupled from the selected session's view
+  // stream (which is torn down on switch): useRunCompletion watches every
+  // running session's notification stream, and the tab marker lets another tab's
+  // focus suppress the ping for the session it is showing. The watcher is wired
+  // up below, after refreshList() is defined.
+
+  const toggleNotify = useCallback(async (on: boolean) => {
+    if (!on) {
+      setNotifyEnabled(false)
+      saveNotifyPref(false)
+      return
+    }
+    const perm = currentPermission()
+    setNotifyPerm(perm)
+    if (perm === 'insecure' || perm === 'unsupported') {
+      toast.error(t(perm === 'insecure' ? 'settings.notifyInsecure' : 'settings.notifyUnsupported'))
+      return
+    }
+    // Permission must be requested from a user gesture; the toggle click is it.
+    const granted = perm === 'granted' ? perm : await requestPermission()
+    setNotifyPerm(granted)
+    if (granted === 'granted') {
+      setNotifyEnabled(true)
+      saveNotifyPref(true)
+    } else {
+      setNotifyEnabled(false)
+      saveNotifyPref(false)
+      toast.error(t('settings.notifyDenied'))
+    }
+  }, [t])
+
+  const sendTestNotification = useCallback(() => {
+    const perm = currentPermission()
+    setNotifyPerm(perm)
+    if (perm === 'insecure' || perm === 'unsupported') {
+      toast.error(t(perm === 'insecure' ? 'settings.notifyInsecure' : 'settings.notifyUnsupported'))
+      return
+    }
+    if (perm !== 'granted') { toast.error(t('settings.notifyDenied')); return }
+    showNotification(t('settings.notifyTestTitle'), t('settings.notifyTestBody'))
+  }, [t])
+
+  // Permission can change in browser settings while the page is open; refresh
+  // the displayed state whenever the settings modal opens.
+  useEffect(() => {
+    if (settingsOpen) setNotifyPerm(currentPermission())
+  }, [settingsOpen])
 
   useEffect(() => {
     if (!collapsed) {
@@ -509,6 +563,29 @@ function WorkspaceApp({ api }: { api: Client }) {
   }, [api])
 
 	useEffect(() => { void refreshList() }, [refreshList])
+
+  // Completion watcher: one lightweight notification subscription per running
+  // session, so a finished background session (or one the user switched away
+  // from) still notifies. refreshList() refreshes the sidebar dots and shrinks
+  // the running set, closing each subscription once its session goes idle.
+  const sessionsRef = useRef(sessions)
+  useEffect(() => { sessionsRef.current = sessions }, [sessions])
+  useTabFocus(currentId)
+  const runningIds = useMemo(() => sessions.filter(s => s.running).map(s => s.id).sort(), [sessions])
+  const handleRunComplete = useCallback((id: string) => {
+    const session = sessionsRef.current.find(s => s.id === id)
+    notifyCompletion({
+      enabled: notifyEnabled,
+      sessionId: id,
+      focusedSession: focusedSession(),
+      title: session?.title || t('session.untitled'),
+      // The cwd disambiguates sessions that share a title (e.g. short prompts).
+      body: session?.cwd ? t('notify.doneBodyDir', { cwd: session.cwd }) : t('notify.doneBody'),
+    })
+    void refreshList()
+  }, [notifyEnabled, refreshList, t])
+  useRunCompletion(api, runningIds, handleRunComplete)
+
 	useEffect(() => { void refreshExtensions() }, [refreshExtensions])
 	useEffect(() => {
 		if (currentId) return
@@ -1917,6 +1994,7 @@ function WorkspaceApp({ api }: { api: Client }) {
               ['tools', t('settings.tools')],
               ['extensions', t('settings.extensions')],
               ['message', t('settings.message')],
+              ['notifications', t('settings.notifications')],
               ['appearance', t('settings.appearanceLanguage')],
             ] as const).map(([page, label]) => (
               <button
@@ -1954,6 +2032,13 @@ function WorkspaceApp({ api }: { api: Client }) {
                   <SettingsToggles kind="extensions" api={api} onConfigure={openExtensionConfig} onChanged={refreshExtensions} />
                 ) : page === 'message' ? (
                   <MessageSettings api={api} />
+                ) : page === 'notifications' ? (
+                  <NotificationSettings
+                    enabled={notifyEnabled}
+                    permission={notifyPerm}
+                    onToggle={on => void toggleNotify(on)}
+                    onTest={sendTestNotification}
+                  />
                 ) : (
                   <div className="preference-page" data-testid="appearance-settings">
                     <header className="settings-page-title"><div><h3>{t('settings.appearanceLanguage')}</h3><p>{t('settings.preferenceHint')}</p></div></header>

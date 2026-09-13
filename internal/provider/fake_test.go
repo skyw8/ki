@@ -59,6 +59,39 @@ func TestScriptedMarkdownFixture(t *testing.T) {
 	}
 }
 
+func TestScriptedDelayCompletesAfterDuration(t *testing.T) {
+	s := &Scripted{}
+	req := loop.Request{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "e2e-delay-60"}}}}}
+	start := time.Now()
+	msg, err := s.Stream(context.Background(), req, func(loop.AssistantDelta) error { return nil })
+	if err != nil || msg.Text() != "ok" {
+		t.Fatalf("got %+v %v", msg, err)
+	}
+	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
+		t.Fatalf("delay not applied: %v", elapsed)
+	}
+}
+
+func TestScriptedDelayUnblocksOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Scripted{}
+	req := loop.Request{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "e2e-delay-5000"}}}}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Stream(ctx, req, func(loop.AssistantDelta) error { return nil })
+		done <- err
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("delay did not unblock on cancel")
+	}
+}
+
 func TestScriptedSkipsHoldWithoutToken(t *testing.T) {
 	s := &Scripted{}
 	msg, err := s.Stream(context.Background(), loop.Request{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "hello"}}}}}, func(loop.AssistantDelta) error { return nil })

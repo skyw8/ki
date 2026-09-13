@@ -12,7 +12,7 @@
 | Extension lifecycle | host → extension sidecar | `lifecycle.invoke`（同步）或 `lifecycle.event`（异步） |
 | Provider stream | provider sidecar → host | `provider.stream.event.type` |
 | Provider auth | provider sidecar → host | `provider.auth.event.type` |
-| WebUI 通知 | server → WebUI | `GET /events?notifications=1` 的 `extension_ui_updated`、`runtime_ready`，以及手动 `/compact` 的 `compaction_start`/`compaction_end` |
+| WebUI 通知 | server → WebUI | `GET /events?notifications=1` 的 `extension_ui_updated`、`runtime_ready`、`run_aborted`，run 结束时的 `agent_end`，以及手动 `/compact` 的 `compaction_start`/`compaction_end`；这些不进 occupy 回放，只发给该 session 的通知订阅者（WebUI 用它给后台完成的 session 发系统通知） |
 
 ## Session SSE 事件
 

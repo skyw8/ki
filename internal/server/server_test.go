@@ -1079,6 +1079,78 @@ func TestManualCompactPublishesNotifications(t *testing.T) {
 	}
 }
 
+// A run's terminal agent_end must also reach notification subscribers: a WebUI
+// tab that is not holding the run SSE (background session, or the user switched
+// to another session) needs to learn the run finished to raise a notification.
+func TestAgentEndPublishesNotification(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KI_HOME", home)
+	cfg := config.Builtin(home)
+	cfg.Sessions.Root = filepath.Join(home, "sessions")
+	srv, err := New(Options{
+		Config:   cfg,
+		Token:    "tok",
+		Streamer: &provider.Scripted{Steps: []types.Message{{Content: []types.Content{{Type: "text", Text: "hi there"}}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv.Handler())
+	defer hs.Close()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	id := createSession(t, hs, t.TempDir())
+
+	// Subscribe before prompting so the completion cannot be missed.
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events?notifications=1", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	sub, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sub.Body.Close() }()
+	events := make(chan loop.Event, 8)
+	go func() {
+		sc := bufio.NewScanner(sub.Body)
+		for sc.Scan() {
+			line := sc.Text()
+			if !strings.HasPrefix(line, "data:") {
+				continue
+			}
+			var ev loop.Event
+			if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev) == nil {
+				events <- ev
+			}
+		}
+	}()
+
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev := <-events:
+			switch ev.Type {
+			case loop.AgentEnd:
+				return
+			case loop.RunAborted:
+				t.Fatal("completed run must not publish run_aborted")
+			}
+		case <-deadline:
+			t.Fatal("no agent_end on the notification stream")
+		}
+	}
+}
+
 func TestAuthAndCreateGetFork(t *testing.T) {
 	_, hs := testServer(t)
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions", strings.NewReader(`{"cwd":"`+t.TempDir()+`"}`))
