@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: All tests
+    uses: ./.github/workflows/ci.yml
+    with:
+      release_gate: true
+    secrets: inherit
+
+  web:
+    name: Build WebUI
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+      - name: Build
+        working-directory: web
+        run: bun run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  binaries:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: web
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            archive: tar.gz
+          - goos: darwin
+            goarch: amd64
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            archive: zip
+          - goos: windows
+            goarch: arm64
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Validate release tag
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tags must be semantic versions such as v1.2.3 or v1.2.3-rc.1"
+            exit 1
+          fi
+      - name: Build and archive
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          package="ki-${version}-${GOOS}-${GOARCH}"
+          binary="ki"
+          if [[ "$GOOS" == "windows" ]]; then binary="ki.exe"; fi
+
+          mkdir -p "package/$package" dist
+          go build -trimpath -tags embed \
+            -ldflags="-s -w -X ki/internal/cli.Version=$GITHUB_REF_NAME" \
+            -o "package/$package/$binary" ./cmd/ki
+          cp README.md LICENSE "package/$package/"
+
+          if [[ "$ARCHIVE" == "zip" ]]; then
+            (cd package && zip -9 -r "../dist/$package.zip" "$package")
+          else
+            tar -C package -czf "dist/$package.tar.gz" "$package"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ki-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub Release
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ki-*
+          path: release-assets
+          merge-multiple: true
+      - name: Write checksums
+        working-directory: release-assets
+        run: sha256sum ki-* > checksums.txt
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --verify-tag \
+            --title "Ki $GITHUB_REF_NAME" \
+            --generate-notes

@@ -71,3 +71,24 @@ go test -tags live -timeout 5m ./e2e -run Live
 ```
 
 Live tests call DashScope `qwen3.7-plus` (`dashscope-cn`). Put the key in `~/.ki/ki.toml` or `DASHSCOPE_CN_API_KEY`.
+
+## CI and releases
+
+GitHub Actions runs formatting, vet, WebUI type/build checks, Go tests on Linux,
+macOS, and Windows, the complete fake-model Playwright suite, screenshot coverage,
+and the long-history performance suite. Configure branch protection for `main`
+to require the `CI` workflow checks before merging.
+
+Releases are created only from semantic-version tags. Add
+`DASHSCOPE_CN_API_KEY` as a GitHub Actions repository secret, then push an
+annotated tag:
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+The release workflow reruns every CI test plus the credentialed live-provider
+CLI/WebUI suite against that exact tag. Only after all tests pass does it build
+Linux, macOS, and Windows archives for amd64 and arm64, inject the tag into
+`ki version`, generate SHA-256 checksums, and publish the GitHub Release.
