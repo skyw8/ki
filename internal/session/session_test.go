@@ -762,7 +762,15 @@ func TestConfigAtomicUnderConcurrentOpenWrite(t *testing.T) {
 					errCh <- err
 				}
 				_ = sess.Close()
-				if _, err := Open(dir); err != nil {
+				// Why: the reopened session must be closed too. Windows cannot
+				// delete events.jsonl while a handle is open, and t.TempDir
+				// cleanup runs after this test returns.
+				extra, err := Open(dir)
+				if err != nil {
+					errCh <- err
+					continue
+				}
+				if err := extra.Close(); err != nil {
 					errCh <- err
 				}
 			}

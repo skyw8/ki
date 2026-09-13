@@ -24,8 +24,20 @@ func installedPowerShell(t *testing.T) shellSpec {
 	return shellSpec{}
 }
 
+// resolveTestPath returns the long, symlink-free form of a test directory.
+func resolveTestPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
 func TestPowerShellExecutionAndCwdReset(t *testing.T) {
-	cwd := t.TempDir()
+	// Why: t.TempDir can hand out a short-name %TEMP% path (RUNNER~1) while
+	// PowerShell reports the long form of its cwd; compare like for like.
+	cwd := resolveTestPath(t, t.TempDir())
 	tool := powerShellTool{cwd: cwd, jobs: NewJobStore(), shell: installedPowerShell(t)}
 	defer tool.jobs.Close()
 

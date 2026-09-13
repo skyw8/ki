@@ -80,6 +80,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
+          set +e
           log="${RUNNER_TEMP}/go-test.log"
           {
             echo '### Failing Go tests'
@@ -123,28 +124,28 @@ jobs:
         working-directory: web
         shell: bash
         run: |
+          set +e
           {
+            echo '### e2e failure digest'
+            echo '```'
+            grep -n -A 14 'Error:' e2e-run.log 2>/dev/null | head -120
+            echo '```'
             echo '### e2e run tail'
             echo '```'
-            tail -80 e2e-run.log
+            tail -120 e2e-run.log 2>/dev/null
             echo '```'
-            for f in test-results/e2e-parallel/unit-*.log; do
-              if grep -q 'Error:' "$f"; then
-                echo "#### $f"
-                echo '```'
-                grep -m1 -A 25 'Error:' "$f"
-                echo '```'
-              fi
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          digest="$(grep -n -A 14 'Error:' e2e-run.log 2>/dev/null | head -100)"
+          printf '::error title=e2e failure digest::%s\n' "$(printf '%s' "$digest" | sed 's/%/%25/g' | awk 'NR > 1 { printf "%s", "%0A" } { printf "%s", $0 }' | head -c 4000)"
           for f in test-results/e2e-parallel/unit-*.log; do
-            grep -q 'Error:' "$f" || continue
-            unit="$(grep -m1 -E '^  [0-9]+\) ' "$f" | sed -E 's/^  [0-9]+\) \[[^]]+\] › //; s/[[:space:]]+$//')"
+            grep -q 'Error:' "$f" 2>/dev/null || continue
+            unit="$(grep -m1 -E '^  [0-9]+\) ' "$f" 2>/dev/null | sed -E 's/^  [0-9]+\) \[[^]]+\] › //; s/[[:space:]]+$//')"
             [ -n "$unit" ] || unit="$f"
-            body="$(awk '/^ *Error:/ { capture = 1 } capture { print } /^ *at / { if (capture) exit }' "$f" \
+            body="$(awk '/^ *Error:/ { capture = 1 } capture { print } /^ *at / { if (capture) exit }' "$f" 2>/dev/null \
               | sed 's/%/%25/g' | awk 'NR > 1 { printf "%s", "%0A" } { printf "%s", $0 }' | head -c 1500)"
             printf '::error title=%s::%s\n' "$unit" "$body"
           done
+          exit 0
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
