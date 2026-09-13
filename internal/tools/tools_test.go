@@ -458,9 +458,11 @@ func pidGoneScript(pid int) string {
 }
 
 // pidProbe reports what the shell still knows about pid for failure messages.
+// `ps -W` prints MSYS pids next to the Windows pid and parent, which is the only
+// way to see whether a surviving child is really a descendant of the launcher.
 func pidProbe(b bashTool, pid int) string {
 	res := b.Execute(context.Background(), map[string]any{
-		"command": fmt.Sprintf("if [ -d /proc/%[1]d ]; then cat /proc/%[1]d/winpid 2>/dev/null || echo no-winpid; else echo no-proc-entry; fi", pid),
+		"command": fmt.Sprintf("if [ -d /proc/%[1]d ]; then echo \"winpid=$(cat /proc/%[1]d/winpid 2>/dev/null)\"; else echo no-proc-entry; fi; ps -W | head -40 || true", pid),
 	})
 	if len(res.Content) == 0 {
 		return "unknown"

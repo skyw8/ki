@@ -21,6 +21,9 @@ async function sendPrompt(page: Page, text: string) {
 }
 
 async function expectMinTarget(locator: Locator, label: string): Promise<void> {
+  // Why: boundingBox returns null before the control is rendered, and the chat
+  // clamp toggle appears one frame after the bubble, so wait for visibility.
+  await expect(locator, `${label} should be visible`).toBeVisible()
   const box = await locator.boundingBox()
   expect(box, `${label} should have a layout box`).toBeTruthy()
   expect(box!.width, `${label} width`).toBeGreaterThanOrEqual(MIN_TOUCH_SIZE)
