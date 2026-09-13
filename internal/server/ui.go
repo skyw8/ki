@@ -42,6 +42,13 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 		s.writeIndex(w, root)
 		return
 	}
+	// Vite fingerprints every file under assets/ with a content hash, so the URL
+	// changes whenever the bytes do. immutable stops a reload from revalidating
+	// each asset with a round trip, which is what makes port-forwarded reloads
+	// feel slow. index.html and the SPA fallback keep writeIndex's no-store.
+	if strings.HasPrefix(path, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
 	rs, ok := f.(io.ReadSeeker)
 	if !ok {
 		b, err := io.ReadAll(f)

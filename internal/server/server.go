@@ -452,13 +452,16 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /v1/workspaces/{id}/sessions/move", s.auth(s.moveWorkspaceSession))
 	api.HandleFunc("GET /v1/fs", s.auth(s.listFS))
 	api.HandleFunc("POST /v1/fs", s.auth(s.createFS))
-	return recoverHTTP(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// gzip sits outside recoverHTTP so panics recovered there are still written
+	// through the compressing writer, and every route (SPA assets and /v1 JSON)
+	// shares one compression path.
+	return gzipHandler(recoverHTTP(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1" || strings.HasPrefix(r.URL.Path, "/v1/") {
 			api.ServeHTTP(w, r)
 			return
 		}
 		s.serveUI(w, r)
-	}))
+	})))
 }
 
 func recoverHTTP(next http.Handler) http.Handler {

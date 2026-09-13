@@ -42,6 +42,9 @@
 // persist on jsonl/SSE.
 // Non-/v1 paths serve the SPA. Unknown non-asset paths also serve index.html
 // in place (do not 302 to "/": port-forwards would leave the page blank).
+// Every text response (SPA assets and /v1 JSON) is gzipped except
+// text/event-stream, which is flushed per event; assets/ is content-hashed and
+// sent immutable while the SPA HTML stays no-store.
 // The SPA shell contains no server secret; it establishes a browser session
 // through the auth endpoints before calling the API. The UI is used behind
 // port-forwards and on explicitly configured private listeners.
