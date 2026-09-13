@@ -69,7 +69,26 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Run Go and CLI tests
-        run: go test -timeout 10m ./...
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -timeout 10m ./... 2>&1 | tee "${RUNNER_TEMP}/go-test.log"
+      # Why: a failed job only shows "exit code 1" to anyone without log access,
+      # so the failing tests and their output go to the job summary (and a few
+      # annotations) where they are visible without signing in.
+      - name: Report Go test failures
+        if: failure()
+        shell: bash
+        run: |
+          log="${RUNNER_TEMP}/go-test.log"
+          {
+            echo '### Failing Go tests'
+            echo '```'
+            grep -E '^(--- FAIL|FAIL)' "$log" | head -60
+            echo '```'
+            grep -n -A 30 '^--- FAIL' "$log" | head -300
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -m5 '^--- FAIL' "$log" | sed 's/^--- FAIL: /::error title=Failing test::/' || true
 
   web-e2e:
     name: WebUI E2E
@@ -89,9 +108,32 @@ jobs:
         run: bun x playwright install --with-deps chromium
       - name: Run complete fake-model suite
         working-directory: web
+        shell: bash
         env:
           KI_E2E_JOBS: "4"
-        run: bun run test:e2e
+        run: |
+          set -o pipefail
+          bun run test:e2e 2>&1 | tee e2e-run.log
+      - name: Report e2e failures
+        if: failure()
+        working-directory: web
+        shell: bash
+        run: |
+          {
+            echo '### e2e run tail'
+            echo '```'
+            tail -80 e2e-run.log
+            echo '```'
+            for f in test-results/e2e-parallel/unit-*.log; do
+              if grep -q 'Error:' "$f"; then
+                echo "#### $f"
+                echo '```'
+                grep -m1 -A 25 'Error:' "$f"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^  FAIL' e2e-run.log | head -5 | sed -E 's/^  FAIL +[0-9.]+s +[0-9]+\/[0-9]+ +//; s/^/::error title=Failing e2e unit::/' || true
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
