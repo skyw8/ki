@@ -29,10 +29,13 @@ func fakeDiscovery(goos string, env, paths map[string]string, files map[string]b
 }
 
 func TestDiscoverShellRuntimeNonWindowsDoesNotExposePowerShell(t *testing.T) {
+	// Why: the fake discovery matches paths it is handed, so the POSIX fixture
+	// has to be expressed in the host's separator form to model a POSIX host.
+	bashPath := filepath.FromSlash("/usr/local/bin/bash")
 	got := discoverShellRuntime(fakeDiscovery("linux", nil, map[string]string{ //nolint:gosec // fake shell paths are test fixtures, not credentials
-		"bash": "/usr/local/bin/bash", "pwsh": "/usr/bin/pwsh",
-	}, map[string]bool{"/usr/local/bin/bash": true}))
-	if got.bash.path != "/usr/local/bin/bash" || got.powerShell != nil {
+		"bash": bashPath, "pwsh": filepath.FromSlash("/usr/bin/pwsh"),
+	}, map[string]bool{bashPath: true}))
+	if got.bash.path != bashPath || got.powerShell != nil {
 		t.Fatalf("runtime = %+v", got)
 	}
 }

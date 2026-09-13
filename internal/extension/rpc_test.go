@@ -183,7 +183,10 @@ func TestPrepareOrderFollowsDiscoverEnabled(t *testing.T) {
 }
 
 func TestResolveRuntimeCommand(t *testing.T) {
-	root := "/pkg"
+	// Why: the absolute-path case needs a root the host considers absolute; a
+	// POSIX-looking literal like "/pkg" is a rooted-but-not-absolute path on
+	// Windows, which would exercise the package-relative branch instead.
+	root := t.TempDir()
 	if got := resolveRuntimeCommand(root, "node"); got != "node" {
 		t.Fatalf("PATH name %q", got)
 	}
