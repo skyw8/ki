@@ -462,7 +462,7 @@ func pidGoneScript(pid int) string {
 // way to see whether a surviving child is really a descendant of the launcher.
 func pidProbe(b bashTool, pid int) string {
 	res := b.Execute(context.Background(), map[string]any{
-		"command": fmt.Sprintf("if [ -d /proc/%[1]d ]; then echo \"winpid=$(cat /proc/%[1]d/winpid 2>/dev/null)\"; else echo no-proc-entry; fi; ps -W | grep -Ei "sleep|bash|ki[.]exe" | head -20 || true", pid),
+		"command": fmt.Sprintf("if [ -d /proc/%[1]d ]; then echo \"winpid=$(cat /proc/%[1]d/winpid 2>/dev/null)\"; else echo no-proc-entry; fi; ps -W | grep -Ei 'sleep|bash|ki[.]exe' | head -20 || true", pid),
 	})
 	if len(res.Content) == 0 {
 		return "unknown"
