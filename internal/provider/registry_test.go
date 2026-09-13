@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -129,7 +130,9 @@ func TestRegistryPersistsCustomProviderAndCredential(t *testing.T) {
 	if got := r.Default(); got.Provider != "local" || got.Model != "example/model" {
 		t.Fatalf("default = %+v", got)
 	}
-	if info, err := os.Stat(filepath.Join(home, "credentials.json")); err != nil || info.Mode().Perm()&0o077 != 0 {
+	// Why: Windows has no POSIX mode bits; Go reports 0666 for a writable file
+	// there, so the group/other-bits assertion only applies to POSIX platforms.
+	if info, err := os.Stat(filepath.Join(home, "credentials.json")); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
 		t.Fatalf("credential permissions: info=%v err=%v", info, err)
 	}
 }

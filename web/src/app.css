@@ -3526,6 +3526,7 @@ select:focus-visible {
   .insp-tabs button,
   .traj-range-reset,
   .modal-actions > button,
+  .dir-create-actions > button,
   .pop-menu button,
   .settings-btn,
   .new-session,

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"ki/internal/session"
+	"ki/internal/workspace"
 )
 
 func TestPromptCreatesSessionAndPrintsFake(t *testing.T) {
@@ -77,7 +78,13 @@ func TestCWDEncodesSessionPath(t *testing.T) {
 	}
 	id := mustSessionID(t, out, errOut)
 	dir := sessionDir(t, home, id)
-	abs, _ := filepath.Abs(proj)
+	// Why: the server stores the normalized cwd (Abs + EvalSymlinks), so the
+	// expectation must be normalized too. t.TempDir is unresolved on macOS
+	// (/var -> /private/var) and under Windows short-name %TEMP% paths.
+	abs, err := workspace.Normalize(proj, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(dir, session.EncodeCWD(abs)) {
 		t.Fatalf("dir %s should contain encoded %s", dir, abs)
 	}

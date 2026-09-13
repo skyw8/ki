@@ -117,6 +117,15 @@ var (
 	errRuntimeCaller = errors.New("runtime.Caller failed")
 )
 
+// exeSuffix is the platform executable suffix. Why: `go build -o name` writes
+// exactly that name, and Windows cannot start a process image without .exe.
+func exeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
 func builtKI(t *testing.T) string {
 	t.Helper()
 	kiBinOnce.Do(func() {
@@ -148,7 +157,7 @@ func builtKI(t *testing.T) string {
 			errKiBin = err
 			return
 		}
-		out := filepath.Join(os.TempDir(), "ki-e2e-bin")
+		out := filepath.Join(os.TempDir(), "ki-e2e-bin"+exeSuffix())
 		args := append([]string{"build"}, tags...)
 		args = append(args, "-o", out, "./cmd/ki")
 		//nolint:gosec // goPath is resolved from the local Go toolchain for this e2e build.

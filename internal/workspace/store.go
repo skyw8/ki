@@ -315,9 +315,20 @@ func (s *Store) Match(cwd string) (Record, bool) {
 
 // IsTemp reports whether rec lives under {home}/workspace/tmp+.
 func (s *Store) IsTemp(rec Record) bool {
-	root := filepath.Join(s.home, "workspace")
-	parent := filepath.Dir(rec.Path)
+	root := normalizeForCompare(s.home, filepath.Join(s.home, "workspace"))
+	parent := normalizeForCompare(s.home, filepath.Dir(rec.Path))
 	return SamePath(parent, root) && strings.HasPrefix(filepath.Base(rec.Path), "tmp+")
+}
+
+// normalizeForCompare resolves one side of a path comparison. Why: record paths
+// are stored normalized (EvalSymlinks), while home may arrive unresolved — on
+// macOS /var/folders and on Windows short-name %TEMP% paths — so both sides of
+// an IsTemp check must be resolved with the same rules.
+func normalizeForCompare(home, path string) string {
+	if n, err := Normalize(path, home); err == nil {
+		return n
+	}
+	return path
 }
 
 // Bootstrap registers distinct existing cwds once.

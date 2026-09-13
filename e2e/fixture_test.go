@@ -53,7 +53,7 @@ func buildFixture(t *testing.T, key, srcDir string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(dir, key)
+	bin := filepath.Join(dir, key+exeSuffix())
 	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds a local test fixture
 	cmd.Dir = srcDir
 	if out, err := cmd.CombinedOutput(); err != nil {

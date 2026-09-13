@@ -36,6 +36,16 @@ func fixturesDir() (string, error) {
 	return fixtureDir, fixtureDirErr
 }
 
+// fixtureExeSuffix is the platform executable suffix. Why: `go build -o name`
+// writes exactly that name, and Windows cannot start a process image without
+// .exe, so the sidecar fixtures must carry it.
+func fixtureExeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
 // buildFixture compiles a test sidecar once per process and reuses the binary.
 // Why: linking the fixture dominates these tests and a dozen of them build the
 // very same one; the binary is read-only at run time, so sharing it is invisible.
@@ -53,7 +63,7 @@ func buildFixture(t *testing.T, key, srcDir string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(dir, key)
+	bin := filepath.Join(dir, key+fixtureExeSuffix())
 	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // builds a local test fixture
 	cmd.Dir = srcDir
 	if out, err := cmd.CombinedOutput(); err != nil {

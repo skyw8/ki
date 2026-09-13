@@ -3,6 +3,7 @@
 登记文件 `{KI_HOME}/workspaces.json`。一条记录是稳定 id + 规范化目录 path + title + `sessionIds`。
 
 - 成员：session header 的 cwd 与 path 同一套 `Abs` / `EvalSymlinks` 后相等。
+- 临时工作区识别（`IsTemp`）与成员判定同样先对 home 一侧做 `Abs` / `EvalSymlinks`：macOS 的 `/var/folders`、Windows 短名 `%TEMP%` 下 home 与已规范化记录 path 才可比。
 - 开会话：`workspaceId` → 显式 `cwd`（会保证有登记）→ `{KI_HOME}/workspace/tmp+<FileTimestamp>`。
 - 删除工作区：abort 组内 run → 删会话 jsonl 目录 → 去登记。**不删**工作区磁盘目录和用户文件。
 - 组序是文件里数组顺序；组内序是 `sessionIds`。pin 把会话挪到组首并写 `config.pinned`。

@@ -1595,7 +1595,7 @@ func TestProviderOAuthAuthAPI(t *testing.T) {
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(binDir, "provider-sidecar")
+	bin := filepath.Join(binDir, "provider-sidecar"+fixtureExeSuffix())
 	copyFixture(t, buildFixture(t, "provider-sidecar", fixtureSource("provider")), bin)
 	manifest := map[string]any{
 		"name": "fake-oauth", "version": "0.1.0", "description": "fake oauth provider", "capabilities": []string{"provider"},
@@ -1604,7 +1604,7 @@ func TestProviderOAuthAuthAPI(t *testing.T) {
 			"auth":   map[string]any{"type": "oauth", "name": "Fake OAuth", "subscription": true},
 			"models": []map[string]any{{"id": "fake-model", "contextWindow": 4096, "maxTokens": 512, "input": []string{"text"}}},
 		}},
-		"runtime": map[string]any{"kind": "rpc", "command": "bin/provider-sidecar"},
+		"runtime": map[string]any{"kind": "rpc", "command": "bin/provider-sidecar" + fixtureExeSuffix()},
 	}
 	manifestBytes, err := json.Marshal(manifest)
 	if err != nil {
