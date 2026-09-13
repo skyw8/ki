@@ -2266,6 +2266,70 @@ func TestBusyParentIDStillConflicts(t *testing.T) {
 	waitAgentEnd(t, hs, id)
 }
 
+func TestForkBusyAllowsExplicitEntry(t *testing.T) {
+	gate := &gateStreamer{inner: &provider.Scripted{}}
+	srv, hs := testServerWith(t, gate)
+	id := createSession(t, hs, t.TempDir())
+	gate.arm()
+	prompt202(t, hs, id, "first")
+	waitBuffered(t, srv, id, 6)
+
+	// The live leaf cannot be forked while the turn is still running.
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/fork", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("leaf fork while busy = %d, want 409", res.StatusCode)
+	}
+
+	// An explicit settled entryId copies a complete prefix and is allowed.
+	dir, err := session.Find(srv.cfg.Sessions.Root, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = src.Close() }()
+	entryID := ""
+	for _, e := range src.Entries() {
+		if e.Type == "message" && e.Message != nil && e.Message.Role == "user" {
+			entryID = e.ID
+			break
+		}
+	}
+	if entryID == "" {
+		t.Fatal("user entry not found")
+	}
+	body, _ := marshalJSON(map[string]any{"entryId": entryID})
+	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/fork", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(res.Body)
+		t.Fatalf("entry fork while busy = %d %s", res.StatusCode, raw)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if child, _ := out["id"].(string); child == "" || child == id {
+		t.Fatalf("fork response: %+v", out)
+	}
+	gate.release()
+	waitAgentEnd(t, hs, id)
+}
+
 func TestQueueDefaultEnterSteerOverride(t *testing.T) {
 	gate := &gateStreamer{inner: &provider.Scripted{}}
 	srv, hs := testServerWith(t, gate)

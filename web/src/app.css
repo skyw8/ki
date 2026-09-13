@@ -481,6 +481,8 @@
   color: var(--dsw-alias-label-tertiary);
 }
 .msg-icon:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.msg-icon.disabled { opacity: .4; cursor: not-allowed; }
+.msg-icon.disabled:hover { background: transparent; color: var(--dsw-alias-label-tertiary); }
 .msg-stats {
   display: flex;
   flex-wrap: wrap;

@@ -59,7 +59,7 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 | POST | `/v1/reload` | 清空闲 session 的资源快照并重载 extension catalog；body 可带 `sessionId` 只重载该 session |
 | GET/PATCH | `/v1/tools` `/v1/skills` `/v1/extensions` | 全局启用开关（`toggles.json`）；tools 只管理内置工具 |
 | GET/PATCH | `/v1/extensions/{name}/config` | 扩展配置（脱敏读写） |
-| POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径；body 可传 `forkMode=flat|tree`，返回 `parentSessionId` / `forkMode`，删除时仅沿 tree 边级联 |
+| POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径；body 可传 `forkMode=flat|tree`，返回 `parentSessionId` / `forkMode`，删除时仅沿 tree 边级联。带 `entryId` 时运行中也可 fork（复制的是已落盘的完整前缀）；省略 `entryId`（fork 活动 leaf）且会话运行中仍 **409** |
 | POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |
 | GET | `/v1/workspaces` | 工作区登记（含 `sessionIds` / `temp`） |
 | POST | `/v1/workspaces` | 登记 path（可 mkdir） |

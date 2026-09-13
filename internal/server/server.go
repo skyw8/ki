@@ -2222,18 +2222,6 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
-	if s.running(r.PathValue("id")) {
-		// Each HTTP request opens its own Session and therefore has a different
-		// mutex. Reject a live writer instead of copying a half-finished tool turn.
-		http.Error(w, "session busy", http.StatusConflict)
-		return
-	}
-	sess, err := s.open(r.PathValue("id"))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	defer func() { _ = sess.Close() }()
 	var body struct {
 		EntryID  string `json:"entryId"`
 		ForkMode string `json:"forkMode"`
@@ -2244,6 +2232,20 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// An explicit entryId copies a settled prefix, so it is safe to fork a live
+	// session at a specific message (the WebUI only offers per-message forks).
+	// A leaf fork (no entryId) would copy whatever the running turn has written
+	// so far, so it stays rejected while the session is busy.
+	if body.EntryID == "" && s.running(r.PathValue("id")) {
+		http.Error(w, "session busy", http.StatusConflict)
+		return
+	}
+	sess, err := s.open(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	defer func() { _ = sess.Close() }()
 	forkMode, err := session.NormalizeForkMode(body.ForkMode)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

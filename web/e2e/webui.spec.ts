@@ -628,6 +628,41 @@ test('edit branches in place with attachments and fork opens a new session', asy
   })).toBe(before.count + 1)
 })
 
+test('fork works while running and regenerate reports the busy block', async ({ page, request }) => {
+  await page.goto('/')
+  await sendPrompt(page, 'fork-regen first')
+  await expect(page.getByTestId('assistant-message')).toContainText('ok')
+  const headers = { Authorization: `Bearer ${serverToken()}` }
+  const count = () => page.evaluate(async () => (
+    await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as unknown[]
+  ).length)
+
+  // Hold the run open so the session stays busy while we act on the settled turn.
+  await sendPrompt(page, 'e2e-hold')
+  await expect(page.getByTestId('composer-stop')).toBeVisible()
+  const parentId = await page.evaluate(async () => {
+    const list = await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as Array<{ id: string; running?: boolean }>
+    return list.find(s => s.running)?.id ?? ''
+  })
+  expect(parentId).not.toBe('')
+  const before = await count()
+
+  try {
+    // Regenerate would rewrite the running turn's branch, so it is dimmed and
+    // explains itself on click instead of silently doing nothing.
+    const regen = page.getByTestId('regen-msg').first()
+    await expect(regen).toHaveAttribute('data-disabled', 'true')
+    await regen.click()
+    await expect(page.getByTestId('toaster')).toContainText('当前对话正在运行')
+
+    // Fork copies settled history into a new session and never touches the run.
+    await page.getByTestId('fork-msg').first().click()
+    await expect.poll(count).toBe(before + 1)
+  } finally {
+    await request.post(`/v1/sessions/${parentId}/abort`, { headers })
+  }
+})
+
 test('new session keeps the current model and thinking effort', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()

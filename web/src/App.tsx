@@ -1343,15 +1343,20 @@ function WorkspaceApp({ api }: { api: Client }) {
 	}, [view.busy])
 
 	const forkMessage = useCallback(async (node: Extract<ChatNode, { kind: 'assistant' }>) => {
-	  if (!currentId || view.busy) return
+	  // Fork copies settled history up to this message and runs in a new session,
+	  // so it never touches the current (possibly running) turn.
+	  if (!currentId) return
 	  try {
 		const child = await api.fork(currentId, node.id)
 		await refreshList()
 		await openSession(child.id)
 	  } catch (e) { toast.from(e) }
-	}, [api, currentId, openSession, refreshList, view.busy])
+	}, [api, currentId, openSession, refreshList])
 
 	const regenerate = useCallback((node: Extract<ChatNode, { kind: 'assistant' }>) => {
+	  // Regenerate edits the user turn in place (a new branch), which would race
+	  // the running loop; refuse and tell the user instead of silently no-oping.
+	  if (view.busy) { toast.info(t('chat.regenBusy')); return }
 	  const idx = view.nodes.findIndex(n => n.id === node.id)
 	  for (let i = idx - 1; i >= 0; i--) {
 		const candidate = view.nodes[i]
@@ -1359,7 +1364,7 @@ function WorkspaceApp({ api }: { api: Client }) {
 		void sendContent(candidate.content, candidate.parentId ?? '', candidate.id)
 		return
 	  }
-	}, [sendContent, view.nodes])
+	}, [sendContent, t, view.busy, view.nodes])
 
 	const branchInfo = useMemo(() => {
 	  const groups = new Map<string, string[]>()

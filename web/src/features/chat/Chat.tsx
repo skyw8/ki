@@ -63,17 +63,24 @@ function Think({ text, streaming }: { text: string; streaming?: boolean }) {
 }
 
 function IconBtn({
-  label, testid, onClick, children,
+  label, testid, onClick, disabled, children,
 }: {
   label: string
   testid?: string
   onClick?: () => void
+  /**
+   * Dims the control to signal it is unavailable, but keeps it clickable so the
+   * caller can explain why (e.g. regenerate while the session is running).
+   * Not `disabled`/`aria-disabled`: those would swallow the click.
+   */
+  disabled?: boolean
   children: ReactNode
 }) {
   return (
     <button
       type="button"
-      className="msg-icon"
+      className={`msg-icon${disabled ? ' disabled' : ''}`}
+      data-disabled={disabled || undefined}
       aria-label={label}
       data-testid={testid}
       onClick={e => { e.stopPropagation(); onClick?.() }}
@@ -387,7 +394,7 @@ const ChatItem = memo(function ChatItem({
             <div className="msg-actions" data-testid="asst-actions">
               <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => void copyText(n.text || n.thinking || '')}><ICopy /></IconBtn>
               {n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.fork')} testid="fork-msg" onClick={() => onFork?.(n)}><IFork /></IconBtn> : null}
-              {n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.regen')} testid="regen-msg" onClick={() => onRegen?.(n)}><IRegen /></IconBtn> : null}
+              {n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.regen')} testid="regen-msg" disabled={busy} onClick={() => onRegen?.(n)}><IRegen /></IconBtn> : null}
               <IconBtn label={t('chat.locate')} testid="traj-msg" onClick={() => onSelect?.(n)}><ITraj /></IconBtn>
             </div>
           </div>
