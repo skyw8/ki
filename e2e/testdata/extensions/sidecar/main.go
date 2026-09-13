@@ -148,13 +148,19 @@ func main() {
 				}
 			}
 			if hasCap(p.Capabilities, "tool") {
-				result["tools"] = []any{
-					map[string]any{
-						"name":        "ext_echo",
-						"description": "echo from extension",
-						"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
-					},
+				tool := map[string]any{
+					"name":        "ext_echo",
+					"description": "echo from extension",
+					"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
 				}
+				// KI_TOOL_TIMEOUT_MS lets a test force the host tool deadline so it
+				// can observe the cancel drain path.
+				if ms := os.Getenv("KI_TOOL_TIMEOUT_MS"); ms != "" {
+					if n, err := strconv.Atoi(ms); err == nil {
+						tool["timeoutMs"] = n
+					}
+				}
+				result["tools"] = []any{tool}
 			}
 			if os.Getenv("KI_COMPLETIONS") == "1" {
 				result["commands"] = []any{
@@ -178,6 +184,18 @@ func main() {
 				sendUI("")
 			}
 			// Global sidecars learn the target session from the lifecycle RPC.
+		case "tool.execute":
+			// KI_TOOL_SLEEP_MS makes the reply arrive after the host tool deadline
+			// set by KI_TOOL_TIMEOUT_MS, exercising the host cancel drain.
+			if ms := os.Getenv("KI_TOOL_SLEEP_MS"); ms != "" {
+				if n, err := strconv.Atoi(ms); err == nil && n > 0 {
+					time.Sleep(time.Duration(n) * time.Millisecond)
+				}
+			}
+			reply(m.ID, map[string]any{
+				"content": []any{map[string]any{"type": "text", "text": "partial-result"}},
+				"details": map[string]any{"source": "fixture"},
+			})
 		case "command.invoke":
 			var p struct {
 				Name string `json:"name"`

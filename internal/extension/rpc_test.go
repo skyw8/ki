@@ -252,3 +252,44 @@ func TestRuntimeInstallFailureStopsSidecar(t *testing.T) {
 		t.Fatal("expected install error")
 	}
 }
+
+func TestExecuteToolDrainsPartialResultAfterDeadline(t *testing.T) {
+	bin := buildTestSidecar(t)
+	root := t.TempDir()
+	d := Descriptor{
+		Name: "slow-tool", Path: root, Enabled: true,
+		Capabilities: []string{"tool"}, root: root,
+		manifest: Manifest{
+			Name: "slow-tool", Capabilities: []string{"tool"},
+			Runtime: RuntimeSpec{Kind: runtimeRPC, Command: bin, Env: map[string]string{
+				"KI_TOOL_TIMEOUT_MS": "50",
+				"KI_TOOL_SLEEP_MS":   "300",
+			}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.close()
+	if len(c.registration.Tools) != 1 {
+		t.Fatalf("tools %+v", c.registration.Tools)
+	}
+	spec := c.registration.Tools[0]
+	started := time.Now()
+	res := c.executeTool(ctx, spec, "call-1", spec.Name, map[string]any{}, nil)
+	// The host deadline fires at 50ms and cancels the sidecar; the reply arrives
+	// at 300ms. The drain window must preserve that partial result instead of
+	// reporting a bare deadline error.
+	if res.IsError {
+		t.Fatalf("want drained partial result, got error %+v", res.Content)
+	}
+	if len(res.Content) != 1 || res.Content[0].Text != "partial-result" {
+		t.Fatalf("content %+v", res.Content)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("drain waited too long: %v", elapsed)
+	}
+}

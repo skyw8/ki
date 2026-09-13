@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { configPath, invalidateConfig, loadConfig, normalizeConfig } from "./config.js";
 import { SearchCache } from "./cache.js";
-import { aggregateSearch, combineAggregates, sourcePackText } from "./aggregate.js";
+import { aggregateSearch, combineAggregates, hydrateContent, sourcePackText } from "./aggregate.js";
 import { fetchContents, fetchOneContent } from "./content.js";
+import { TIMEOUTS } from "./deadlines.js";
 import { buildEvidence, sourceCheckClaims } from "./evidence.js";
 import { generateSummary } from "./summary.js";
 import { normalizeOptions, normalizeQueries, validateProxy } from "./normalize.js";
-import { fetchTinyfish, tinyfishAvailable } from "./providers/index.js";
+import { fetchTinyfish, providerAvailability, tinyfishAvailable } from "./providers/index.js";
 import { StdioRpc, safeError } from "./rpc.js";
 
 const PROVIDER_VALUES = ["auto", "all", "codex", "exa", "tinyfish", "duckduckgo"];
@@ -17,6 +18,9 @@ export const TOOL_SPECS = [
     name: "deep_web_search",
     description: "Search the web through Codex OAuth, Exa, TinyFish, and DuckDuckGo in parallel; aggregate and clean distinct sources.",
     snippet: "Search multiple independent web indexes and return a deduplicated evidence pack.",
+    // Host-side hard limit. It is a crash guard: the sidecar resolves inside
+    // TIMEOUTS.tool, so a stalled provider degrades to a partial result instead
+    // of reaching this deadline and losing what already succeeded.
     timeoutMs: 120_000,
     parameters: {
       type: "object",
@@ -76,6 +80,22 @@ async function withTimeout(promise, ms) {
   } finally { clearTimeout(timer); }
 }
 
+async function persistContentReady(sessionId, result) {
+  if (!sessionId) return;
+  const content = (result.results || []).filter((item) => typeof item.content === "string" && item.content);
+  if (!content.length) return;
+  try {
+    await withTimeout(rpc.call("session.appendEntry", {
+      sessionId,
+      customType: "deep-web-search-content-ready",
+      data: { responseId: result.responseId, contents: content.map((item) => ({ url: item.url, title: item.title, content: item.content.slice(0, 20_000) })) },
+    }), 2_000);
+  } catch {
+    // Content remains available through get_search_content even if the optional
+    // session entry cannot be appended.
+  }
+}
+
 async function persistSearchEntry(sessionId, result, details) {
   if (!sessionId) return;
   const data = {
@@ -99,18 +119,24 @@ async function persistSearchEntry(sessionId, result, details) {
   } catch {
     // Tool execution remains useful when a direct sidecar test has no Host.
   }
-  const content = data.results.filter((item) => item.content);
-  if (content.length) {
-    try {
-      await withTimeout(rpc.call("session.appendEntry", {
-        sessionId,
-        customType: "deep-web-search-content-ready",
-        data: { responseId: result.responseId, contents: content.map((item) => ({ url: item.url, title: item.title, content: item.content })) },
-      }), 2_000);
-    } catch {
-      // Content remains available through get_search_content even if the
-      // optional session entry cannot be appended.
-    }
+  await persistContentReady(sessionId, result);
+}
+
+// deep_web_search returns the source pack before content hydration. This
+// bounded background pass fills bodies into the cache (for get_search_content)
+// and appends the content-ready session entry once they arrive. It is best
+// effort: the search result the model waits on has already been returned.
+async function hydrateContentInBackground(result, config, sessionId, signal) {
+  const fallback = config.providerToggles?.tinyfish !== false && providerAvailability("tinyfish", config)
+    ? (urls, fetchSignal) => fetchTinyfish(urls, config, fetchSignal)
+    : undefined;
+  try {
+    const hydrated = await hydrateContent(result.results || [], { signal, fallback });
+    const updated = { ...result, results: hydrated };
+    cache.response(updated.responseId, updated);
+    await persistContentReady(sessionId, updated);
+  } catch {
+    // The source pack stays valid with snippets only.
   }
 }
 
@@ -203,6 +229,9 @@ async function deepSearchTool(args, config, signal, id, toolCallId, sessionId) {
   const queries = normalizeQueries(args);
   if (!queries.length) return sourceResult("deep_web_search requires query or queries", {}, true);
   const options = mergeOptions(args, config);
+  // Content is hydration, not search: defer it so the source pack returns as
+  // soon as providers settle. Bodies arrive through get_search_content.
+  options.deferContent = options.includeContent;
   const searchStartedAt = Date.now();
   // Workflow is intentionally read only from extension config. Exposing it in
   // the tool schema would let the model override the user's global setting.
@@ -243,6 +272,9 @@ async function deepSearchTool(args, config, signal, id, toolCallId, sessionId) {
     };
   }
   cache.response(result.responseId, result);
+  if (options.includeContent && options.deferContent && (result.results || []).some((item) => !item.content)) {
+    void hydrateContentInBackground(result, config, sessionId, signal);
+  }
   if (requestedWorkflow === "none") {
     const details = detailsFor(requestedWorkflow, "none", result, { searchDurationMs: Date.now() - searchStartedAt, sourceCount: result.results.length, contentAvailable: result.results.some((item) => item.content), queryFailures });
     await persistSearchEntry(sessionId, result, details);
@@ -270,11 +302,14 @@ async function executeTool(params, id) {
   if (params.name !== "deep_web_search" && params.name !== "fetch_content" && params.name !== "get_search_content" && params.name !== "source_check") return sourceResult(`unknown tool ${params.name || ""}`, {}, true);
   const controller = new AbortController();
   activeCalls.set(String(id), controller);
+  // Sidecar-side budget. It stays well inside the host hard timeout so a stalled
+  // provider yields a partial result instead of a host deadline error.
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(TIMEOUTS.tool)]);
   try {
     if (params.name === "get_search_content") return await getContentTool(args);
-    if (params.name === "fetch_content") return await fetchTool(args, config, controller.signal);
-    if (params.name === "source_check") return await sourceCheckTool(args, config, controller.signal, id, params.toolCallId);
-    return await deepSearchTool(args, config, controller.signal, id, params.toolCallId, typeof params.sessionId === "string" ? params.sessionId : "");
+    if (params.name === "fetch_content") return await fetchTool(args, config, signal);
+    if (params.name === "source_check") return await sourceCheckTool(args, config, signal, id, params.toolCallId);
+    return await deepSearchTool(args, config, signal, id, params.toolCallId, typeof params.sessionId === "string" ? params.sessionId : "");
   } catch (error) {
     const message = safeError(error);
     return sourceResult(message, { error: message }, true);

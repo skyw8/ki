@@ -1,3 +1,4 @@
+import { TIMEOUTS, timeoutSignal } from "../deadlines.js";
 import { compactText, normalizeDomain, splitDomainFilter } from "../normalize.js";
 
 const SEARCH_URL = "https://html.duckduckgo.com/html/";
@@ -46,7 +47,7 @@ export async function searchDuckduckgo(query, options, signal) {
   url.searchParams.set("q", query);
   const response = await fetch(url, {
     headers: { Accept: "text/html", "User-Agent": "Mozilla/5.0 (compatible; ki-deep-web-search/0.1)" },
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+    signal: timeoutSignal(signal, TIMEOUTS.providerSearch),
   });
   const html = await response.text();
   if (!response.ok) throw new Error(`duckduckgo-http-${response.status}: ${compactText(html, 260)}`);

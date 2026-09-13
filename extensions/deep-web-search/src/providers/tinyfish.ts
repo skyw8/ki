@@ -1,13 +1,9 @@
 import { configuredApiKey } from "../config.js";
+import { TIMEOUTS, timeoutSignal } from "../deadlines.js";
 import { compactText, splitDomainFilter } from "../normalize.js";
 
 const SEARCH_URL = "https://api.search.tinyfish.ai";
 const FETCH_URL = "https://api.fetch.tinyfish.ai";
-
-function timeoutSignal(signal, ms) {
-  const timeout = AbortSignal.timeout(ms);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
-}
 
 function keyFor(config) {
   return configuredApiKey(config, "tinyfishApiKey", "TINYFISH_API_KEY");
@@ -41,7 +37,7 @@ async function jsonRequest(url, key, init, signal, ms, label) {
 export async function searchTinyfish(query, options, config, signal) {
   const key = keyFor(config);
   if (!key) throw new Error("tinyfish-auth-missing: tinyfishApiKey is not configured");
-  const data = await jsonRequest(searchUrl(query, options), key, { method: "GET" }, signal, 60_000, "search");
+  const data = await jsonRequest(searchUrl(query, options), key, { method: "GET" }, signal, TIMEOUTS.providerSearch, "search");
   if (!Array.isArray(data.results)) throw new Error("tinyfish-search-invalid-response: results is not an array");
   const results = data.results.filter((item) => typeof item?.url === "string" && item.url.trim()).slice(0, options.numResults).map((item) => ({
     title: typeof item.title === "string" && item.title.trim() ? item.title.trim() : item.url,
@@ -50,9 +46,11 @@ export async function searchTinyfish(query, options, config, signal) {
     publishedAt: item.date || undefined,
     provider: "tinyfish",
   }));
-  let inlineContent = [];
-  if (options.includeContent && results.length) inlineContent = await fetchTinyfishMany(results.map((item) => item.url), key, signal);
-  return { answer: results.map((item) => `${item.snippet}\nSource: ${item.title} (${item.url})`).join("\n\n"), results, inlineContent, provider: "tinyfish" };
+  // Content hydration is a separate bounded stage (aggregate/content.ts) so a
+  // stalled TinyFish Fetch can never extend the search request. Exposing content
+  // through its own budget keeps the search inside TIMEOUTS.providerSearch even
+  // when the fetch endpoint hangs for minutes.
+  return { answer: results.map((item) => `${item.snippet}\nSource: ${item.title} (${item.url})`).join("\n\n"), results, inlineContent: [], provider: "tinyfish" };
 }
 
 export async function fetchTinyfish(urls, config, signal) {
@@ -61,20 +59,11 @@ export async function fetchTinyfish(urls, config, signal) {
   const data = await jsonRequest(FETCH_URL, key, {
     method: "POST",
     body: JSON.stringify({ urls, format: "markdown", per_url_timeout_ms: 30_000 }),
-  }, signal, 150_000, "fetch");
+  }, signal, TIMEOUTS.providerContent, "fetch");
   if (!Array.isArray(data.results)) throw new Error("tinyfish-fetch-invalid-response: results is not an array");
   return data.results.flatMap((item) => {
     const content = typeof item?.text === "string" ? item.text.trim() : item?.text ? JSON.stringify(item.text) : "";
     if (!content) return [];
     return [{ url: item.url || item.final_url, title: item.title || "", content, provider: "tinyfish" }];
-  });
-}
-
-async function fetchTinyfishMany(urls, key, signal) {
-  const data = await jsonRequest(FETCH_URL, key, { method: "POST", body: JSON.stringify({ urls, format: "markdown", per_url_timeout_ms: 30_000 }) }, signal, 150_000, "fetch");
-  if (!Array.isArray(data.results)) return [];
-  return data.results.flatMap((item) => {
-    const content = typeof item?.text === "string" ? item.text.trim() : "";
-    return content ? [{ url: item.url || item.final_url, title: item.title || "", content, provider: "tinyfish" }] : [];
   });
 }

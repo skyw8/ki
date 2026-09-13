@@ -30,6 +30,9 @@ export function normalizeOptions(args, config) {
   return {
     numResults: clampResults(args?.numResults, clampResults(config?.maxResults, 5)),
     includeContent: args?.includeContent === true || config.fetchContent === true,
+    // deferContent keeps bodies off the tool's critical path; tools that need
+    // bodies in-band (source_check) leave it false.
+    deferContent: args?.deferContent === true,
     recencyFilter: ["day", "week", "month", "year"].includes(args?.recencyFilter) ? args.recencyFilter : undefined,
     domainFilter: domains,
     provider,

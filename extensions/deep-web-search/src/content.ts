@@ -1,8 +1,9 @@
+import { TIMEOUTS } from "./deadlines.js";
 import { compactText, canonicalUrl } from "./normalize.js";
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
-const REQUEST_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = TIMEOUTS.providerContent;
 
 function timeoutSignal(signal) {
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);

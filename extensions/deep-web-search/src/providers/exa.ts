@@ -1,14 +1,10 @@
 import { configuredApiKey } from "../config.js";
+import { TIMEOUTS, timeoutSignal } from "../deadlines.js";
 import { compactText } from "../normalize.js";
 import { splitDomainFilter } from "../normalize.js";
 
 const EXA_API_BASE = "https://api.exa.ai";
 const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
-
-function timeoutSignal(signal, ms = 60_000) {
-  const timeout = AbortSignal.timeout(ms);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
-}
 
 function dateFromRecency(filter) {
   const days = { day: 1, week: 7, month: 30, year: 365 }[filter];
@@ -51,7 +47,7 @@ async function apiSearch(query, options, key, signal) {
     method: "POST",
     headers: { "x-api-key": key, "Content-Type": "application/json", "x-exa-integration": "ki-deep-web-search" },
     body: JSON.stringify(useAnswer ? { query } : { ...apiArgs(query, options), contents: { highlights: true, ...(options.includeContent ? { text: true } : {}) } }),
-    signal: timeoutSignal(signal),
+    signal: timeoutSignal(signal, TIMEOUTS.providerSearch),
   });
   const raw = await response.text();
   if (!response.ok) throw new Error(`exa-api-http-${response.status}: ${compactText(raw, 260)}`);
@@ -88,7 +84,7 @@ async function mcpCall(tool, args, signal) {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", "x-exa-source": "ki-deep-web-search" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } }),
-    signal: timeoutSignal(signal),
+    signal: timeoutSignal(signal, TIMEOUTS.providerSearch),
   });
   const raw = await response.text();
   if (!response.ok) throw new Error(`exa-mcp-http-${response.status}: ${compactText(raw, 260)}`);

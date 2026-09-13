@@ -1,5 +1,6 @@
 import { fetchContents } from "./content.js";
 import { responseId } from "./cache.js";
+import { settleWithGrace, LONG_PROVIDERS, providerSearchBudget, TIMEOUTS } from "./deadlines.js";
 import { canonicalUrl, compactText, hostOf, tokenSimilarity } from "./normalize.js";
 import { enabledProviders, providerAvailability, searchProvider, PROVIDERS, fetchTinyfish } from "./providers/index.js";
 
@@ -59,8 +60,42 @@ function mergeResults(runs, limit) {
 
 function providerError(provider, error, durationMs) {
   const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
   const status = message.match(/(?:http-|HTTP |status )([45]\d\d)/i)?.[1];
-  return { provider, ok: false, durationMs, error: compactText(message, 320), category: status === "401" ? "auth" : status === "429" ? "rate-limit" : message.toLowerCase().includes("network") || message.toLowerCase().includes("fetch") ? "network" : "provider" };
+  // Distinguish "this provider ran out of budget" from a real provider fault so
+  // the model can retry a straggler instead of treating it as a hard failure.
+  const timedOut = lower.includes("timeout") || lower.includes("budget") || lower.includes("abort");
+  return {
+    provider,
+    ok: false,
+    durationMs,
+    error: compactText(message, 320),
+    category: status === "401" ? "auth" : status === "429" ? "rate-limit" : timedOut ? "timeout" : lower.includes("network") || lower.includes("fetch") ? "network" : "provider",
+  };
+}
+
+// forwardAbort mirrors a parent (host cancel or query budget) onto a fresh
+// controller so per-provider and content requests can be cut independently.
+function forwardAbort(parent: AbortSignal | undefined): AbortController {
+  const controller = new AbortController();
+  if (!parent) return controller;
+  const forward = () => controller.abort(parent.reason ?? new Error("aborted"));
+  if (parent.aborted) forward();
+  else parent.addEventListener("abort", forward, { once: true });
+  return controller;
+}
+
+// hydrateContent runs the content pass under its own budget. Direct fetches and
+// the TinyFish fallback share this deadline, so a stalled fetch cannot extend
+// the search result the caller is waiting on.
+export async function hydrateContent(results, { signal, fallback }: { signal?: AbortSignal; fallback?: (urls: string[], signal?: AbortSignal) => Promise<any[]> } = {}) {
+  const controller = forwardAbort(signal);
+  const timer = setTimeout(() => controller.abort(new Error("content-budget-exceeded")), TIMEOUTS.providerContent);
+  try {
+    return await fetchContents(results, { signal: controller.signal, fallback });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function aggregateSearch(query, options, config, signal, onProgress: (partial: any) => void = () => {}) {
@@ -82,26 +117,59 @@ export async function aggregateSearch(query, options, config, signal, onProgress
     active.push(provider);
   }
   if (!active.length) throw new Error("provider-config-error: no enabled provider has usable credentials");
-  const settled = await Promise.all(active.map(async (provider) => {
+  // Providers race their own budgets. A straggler is cut a short grace after a
+  // quorum of providers is in, so one slow index cannot hold the query until
+  // the host tool deadline and discard the results that already succeeded.
+  // A long-budget provider (Codex) is exempt: when it participates the query
+  // waits for it up to its own budget instead of cutting it at the grace.
+  const longActive = active.some((provider) => LONG_PROVIDERS.includes(provider));
+  const searchController = forwardAbort(signal);
+  const searchTimer = setTimeout(() => searchController.abort(new Error("query-budget-exceeded")), TIMEOUTS.query);
+  const entries = active.map((provider) => {
+    const child = new AbortController();
+    const onAbort = () => child.abort(searchController.signal.reason);
+    if (searchController.signal.aborted) onAbort();
+    else searchController.signal.addEventListener("abort", onAbort, { once: true });
     const startedAt = Date.now();
+    const budget = providerSearchBudget(provider);
     onProgress({ phase: "provider", provider, status: "running" });
-    try {
-      const result = await searchProvider(provider, query, options, config, signal);
-      const durationMs = Date.now() - startedAt;
-      onProgress({ phase: "provider", provider, status: "done", count: result.results?.length || 0, durationMs });
-      return { provider, result, durationMs, ok: true };
-    } catch (error) {
-      const durationMs = Date.now() - startedAt;
-      onProgress({ phase: "provider", provider, status: "failed", error: compactText(error instanceof Error ? error.message : String(error), 320), durationMs });
-      return { provider, error, durationMs, ok: false };
+    const providerTimer = setTimeout(() => child.abort(new Error("provider-budget-exceeded")), budget);
+    const promise = searchProvider(provider, query, options, config, child.signal)
+      .then((result) => {
+        clearTimeout(providerTimer);
+        const durationMs = Date.now() - startedAt;
+        onProgress({ phase: "provider", provider, status: "done", count: result.results?.length || 0, durationMs });
+        return { provider, result, durationMs, ok: true as const };
+      })
+      .catch((error) => {
+        clearTimeout(providerTimer);
+        const durationMs = Date.now() - startedAt;
+        onProgress({ phase: "provider", provider, status: "failed", error: compactText(error instanceof Error ? error.message : String(error), 320), durationMs });
+        return { provider, error, durationMs, ok: false as const };
+      });
+    return { provider, promise, budget, abort: () => { clearTimeout(providerTimer); child.abort(new Error("straggler-cut")); } };
+  });
+  let settled;
+  try {
+    settled = await settleWithGrace(entries.map((entry) => entry.promise), {
+      quorum: longActive ? entries.length : Math.min(2, entries.length),
+      graceMs: TIMEOUTS.providerGrace,
+      onGrace: () => entries.forEach((entry) => entry.abort()),
+    });
+  } finally {
+    clearTimeout(searchTimer);
+  }
+  settled.forEach((item, index) => {
+    if (!item) {
+      diagnostics.push({ provider: entries[index].provider, ok: false, category: "timeout", error: "provider-budget-exceeded", durationMs: entries[index].budget });
+      return;
     }
-  }));
-  settled.forEach((item) => {
-    if (item.ok) {
-      runs.push({ ...item.result, provider: item.provider, durationMs: item.durationMs });
-      diagnostics.push({ provider: item.provider, ok: true, durationMs: item.durationMs, transport: (item.result as any).transport, count: item.result.results?.length || 0 });
+    const value = item.status === "fulfilled" ? item.value : { provider: entries[index].provider, ok: false as const, error: item.reason };
+    if (value.ok) {
+      runs.push({ ...value.result, provider: value.provider, durationMs: value.durationMs });
+      diagnostics.push({ provider: value.provider, ok: true, durationMs: value.durationMs, transport: (value.result as any).transport, count: value.result.results?.length || 0 });
     } else {
-      diagnostics.push(providerError(item.provider, item.error, item.durationMs));
+      diagnostics.push(providerError(value.provider, value.error, value.durationMs ?? 0));
     }
   });
   if (!runs.length) throw new Error(`provider-failed: ${diagnostics.map((item) => `${item.provider}: ${item.error || "no results"}`).join("; ")}`);
@@ -112,11 +180,13 @@ export async function aggregateSearch(query, options, config, signal, onProgress
     const content = inlineByUrl.get(resultKey(item));
     return content ? { ...item, content: content.content, fetchedBy: content.provider } : item;
   });
-  if (options.includeContent && results.length) {
+  // deep_web_search defers content (deferContent) so the source pack returns as
+  // soon as search settles; source_check keeps it in-band but still bounded.
+  if (options.includeContent && !options.deferContent && results.length) {
     const tinyfishFallback = config.providerToggles?.tinyfish !== false && providerAvailability("tinyfish", config)
       ? (urls, fetchSignal) => fetchTinyfish(urls, config, fetchSignal)
       : undefined;
-    results = await fetchContents(results, { signal, fallback: tinyfishFallback });
+    results = await hydrateContent(results, { signal, fallback: tinyfishFallback });
   }
   const id = responseId(query, options);
   const answer = runs.map((run) => run.answer).filter(Boolean).join("\n\n");

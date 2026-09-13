@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, open, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { TIMEOUTS } from "../deadlines.js";
 import { compactText, splitDomainFilter } from "../normalize.js";
 
 const CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
@@ -9,7 +10,9 @@ const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const AUTH_BASE = "https://auth.openai.com";
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const REFRESH_WINDOW_MS = 60_000;
-const REQUEST_TIMEOUT_MS = 60_000;
+// Codex runs a reasoning model with the hosted web_search tool, so it needs the
+// long provider budget rather than the plain-HTTP index budget.
+const REQUEST_TIMEOUT_MS = TIMEOUTS.codexSearch;
 
 let refreshInFlight;
 

@@ -42,6 +42,7 @@ export class SearchCache {
       query,
       numResults: options.numResults,
       includeContent: options.includeContent,
+      deferContent: options.deferContent === true,
       recencyFilter: options.recencyFilter || "",
       domainFilter: options.domainFilter || [],
       provider: options.provider || "all",

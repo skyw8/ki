@@ -24,9 +24,13 @@ import (
 )
 
 const (
-	timeoutInit          = 10 * time.Second
-	timeoutHook          = 2 * time.Second
-	timeoutTool          = 120 * time.Second
+	timeoutInit = 10 * time.Second
+	timeoutHook = 2 * time.Second
+	timeoutTool = 120 * time.Second
+	// timeoutToolDrain lets a sidecar flush the partial tool result it already
+	// computed before the host deadline, instead of the host discarding it and
+	// reporting only "context deadline exceeded".
+	timeoutToolDrain     = 2 * time.Second
 	timeoutCommand       = 15 * time.Second
 	timeoutProviderStart = 10 * time.Second
 )
@@ -726,7 +730,16 @@ func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, 
 	select {
 	case <-ctx.Done():
 		c.notify("cancel", withSessionParam(sessionIDFromContext(ctx), map[string]any{"id": id}))
-		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: ctx.Err().Error()}}, IsError: true}
+		// Drain grace: after canceling, give the sidecar a brief window to return
+		// the partial result it computed before the deadline. Losing it turns a
+		// usable partial answer into a bare deadline error.
+		select {
+		case msg = <-ch:
+		case <-time.After(timeoutToolDrain):
+			return loop.ToolResult{Content: []types.Content{{Type: "text", Text: ctx.Err().Error()}}, IsError: true}
+		case <-c.closed:
+			return loop.ToolResult{Content: []types.Content{{Type: "text", Text: "sidecar closed"}}, IsError: true}
+		}
 	case <-c.closed:
 		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: "sidecar closed"}}, IsError: true}
 	case msg = <-ch:
