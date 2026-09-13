@@ -80,7 +80,7 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 
 压缩三段化：`compact.Prepare`（纯函数：切点避开 toolResult、split-turn 前缀单独摘要、上次 retainedTail 虚拟展开参与切点、previousSummary 增量）→ `compact.Execute`（调模型）→ `session.AppendCompaction`（summary + retainedTail 落盘）。`compaction_start/end` 事件同时写 jsonl 与 SSE（`reason`: preflight/overflow/threshold）。
 
-每次成功压缩都会对该 session 触发 reload：自动 compact 仍在 `runPrompt` 占用中，走 `requestReload`（排队到 `release`）；手动 `/compact` 在 `release` 之后 `reloadSession`。上下文已重建，下一次 `prompt.Build` 必须使用重读磁盘后的快照。`POST /v1/reload` 和 `/reload` 是全局/session reload 入口；忙时排队到对应 run 的 `release`。
+每次成功压缩都会对该 session 触发 reload：自动 compact 仍在 `runPrompt` 占用中，走 `requestReload`（排队到 `release`）；手动 `/compact` 在 `release` 之后 `reloadSession`。上下文已重建，下一次 `prompt.Build` 必须使用重读磁盘后的快照。`POST /v1/reload` 和 `/reload` 是全局/session reload 入口；忙时排队到对应 run 的 `release`。run 之外的压缩（手动 `/compact`、threshold）完成后立即重算并追加 `context_usage`（char/4，加上最后一次 `request_header` 的 system/tools 估算）并经 push 下发，WebUI 的 context 计量不必等到下一次 prompt。
 
 阈值判定 `compact.ShouldRun(tokens, contextWindow, cfg)`：`tokens > contextWindow - reserveTokens`，窗口缺省 128000。`cfg.MaxContextTokens`（ki.toml `[compaction] max_context_tokens`）取 min 兜底——小于模型窗口时以它为准，小值让压缩提前触发（低成本测试不烧 token），0 = 只用模型窗口。
 

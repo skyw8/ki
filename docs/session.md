@@ -14,7 +14,7 @@
 第一行 header：`type=session`，含 `id` / `cwd` / `parentSession` / `forkMode`。`parentSession` 是直接来源 session 的 id；`forkMode` 为 `flat` 或 `tree`，普通 session 和普通 fork 默认为 `flat`。
 之后每行 `{type,id,parentId,timestamp,…}`：`message`、`compaction`、`model_change`、`request_header`、`context_usage`、`patch_apply_updated`、`compaction_start`/`compaction_end`、sideband `extension_error`。entry id 为无连字符的 32 位 hex UUIDv7。
 
-`request_header` 固定该轮的 `system`、`tools[]`、provider/model、thinking effort、catalog version 和价格快照。每个工具同时保存 `type`；custom 工具还保存 grammar `format`。消息里的工具调用保存 `toolType` 和 freeform `input`，使 resume 能保持 `custom_tool_call` / `custom_tool_call_output` 配对。`context_usage` 保存 `usedTokens`、有效 `contextWindow` 与 `estimated`；`patch_apply_updated` 保存模型生成 patch 时的结构化预览。两者都沿 SSE 到 WebUI，且不进入 provider context。
+`request_header` 固定该轮的 `system`、`tools[]`、provider/model、thinking effort、catalog version 和价格快照。每个工具同时保存 `type`；custom 工具还保存 grammar `format`。消息里的工具调用保存 `toolType` 和 freeform `input`，使 resume 能保持 `custom_tool_call` / `custom_tool_call_output` 配对。`context_usage` 保存 `usedTokens`、有效 `contextWindow` 与 `estimated`；`patch_apply_updated` 保存模型生成 patch 时的结构化预览。两者都沿 SSE 到 WebUI，且不进入 provider context。run 之外的压缩（手动 `/compact`、threshold 自动压缩）完成后也会立即追加一条 `context_usage` 并经 push 下发，使 context 计量不必等到下一次 prompt 的 `request_header` 才更新。
 
 toolResult message 可带结构化 `details`，以及工具完成时间 `timestamp`（Unix 毫秒）和从调用开始到完成的 `durationMs`。它随 jsonl 落盘并通过现有 session API/SSE 提供给 WebUI；历史 WebUI 可由这两个字段恢复工具开始时间。provider 回放只使用模型可见的 `content`，不会把 diff、patch、计时或任务诊断元数据送回模型。
 

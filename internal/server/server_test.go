@@ -1373,6 +1373,14 @@ func TestManualCompactPublishesNotifications(t *testing.T) {
 	if !end.OK || end.Reason != "manual" {
 		t.Fatalf("compaction_end reported failure: %+v", end)
 	}
+	// The rebuilt context must reach the meter right away, not at the next
+	// prompt's request_header.
+	usage := waitPush(t, events, "context_usage", func(ev pushEvent) bool {
+		return ev.Type == loop.ContextUsage && ev.SessionID == id
+	})
+	if usage.ContextWindow <= 0 || usage.UsedTokens <= 0 || !usage.Estimated {
+		t.Fatalf("post-compact context_usage: %+v", usage)
+	}
 }
 
 // A run's terminal agent_end must also reach push subscribers: a WebUI tab that

@@ -12,7 +12,7 @@
 | Extension lifecycle | host → extension sidecar | `lifecycle.invoke`（同步）或 `lifecycle.event`（异步） |
 | Provider stream | provider sidecar → host | `provider.stream.event.type` |
 | Provider auth | provider sidecar → host | `provider.auth.event.type` |
-| WebUI push / `GET /v1/events` | server → WebUI | 每个 tab 一条：`invalidate`（`scope` = `sessions` / `workspaces` / `providers` / `extensions`，只表示"去重取"，数据仍走原 REST）与 `ready`；以及带 `sessionId` 的 session sideband：`extension_ui_updated`、`runtime_ready`、`run_aborted`、`queue_changed`、`compaction_start`/`compaction_end`、run 结束的 `agent_end`。这些不进 occupy 回放（`ready` 后客户端自行全量重取，重连靠它追平）；WebUI 用它们刷新侧栏、workspaces、扩展目录，并给后台完成的 session 发系统通知 |
+| WebUI push / `GET /v1/events` | server → WebUI | 每个 tab 一条：`invalidate`（`scope` = `sessions` / `workspaces` / `providers` / `extensions`，只表示"去重取"，数据仍走原 REST）与 `ready`；以及带 `sessionId` 的 session sideband：`extension_ui_updated`、`runtime_ready`、`run_aborted`、`queue_changed`、`compaction_start`/`compaction_end`、run 结束的 `agent_end`、以及 run 之外压缩（手动 `/compact`、threshold 自动压缩）后立即重算的 `context_usage`。这些不进 occupy 回放（`ready` 后客户端自行全量重取，重连靠它追平）；WebUI 用它们刷新侧栏、workspaces、扩展目录，并给后台完成的 session 发系统通知 |
 
 ## Session SSE 事件
 

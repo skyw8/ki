@@ -853,6 +853,12 @@ function WorkspaceApp({ api }: { api: Client }) {
         // as a session notification rather than on a run stream.
         setView(v => applyEvent(v, ev))
         return
+      case 'context_usage':
+        // A compaction outside a run (manual /compact, threshold) refreshes the
+        // meter through the push stream; a run's context_usage still arrives on
+        // its run SSE.
+        setView(v => applyEvent(v, ev))
+        return
       case 'runtime_ready':
         void refreshOpenRuntime()
         return

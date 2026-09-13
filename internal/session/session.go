@@ -402,6 +402,22 @@ func (s *Session) LeafEntries() []Entry {
 	return s.leafEntriesLocked(s.leafID)
 }
 
+// LastRequestHeader returns the system prompt and tool schemas of the newest
+// request_header on the active leaf path. A post-compaction context estimate
+// adds their char/4 size because the compaction entry retains neither, mirroring
+// how a request_header sizes the first request after compaction. ok is false
+// when the session has never run.
+func (s *Session) LastRequestHeader() (string, []ToolSchema, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range slices.Backward(s.leafEntriesLocked(s.leafID)) {
+		if v.Type == "request_header" {
+			return v.System, v.Tools, true
+		}
+	}
+	return "", nil, false
+}
+
 // LastUserBoundary returns the entry id just before the newest user-role
 // message on the current leaf path. A delegated child forks at this boundary to
 // inherit only history that had already finished: the user message that

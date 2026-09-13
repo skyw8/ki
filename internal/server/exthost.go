@@ -514,6 +514,7 @@ func (s *Server) Compact(sessionID string) error {
 		return fmt.Errorf("compact: %w", err)
 	}
 	s.reloadSession(sessionID)
+	s.publishContextUsage(sess)
 	return nil
 }
 

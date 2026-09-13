@@ -368,6 +368,53 @@ func (s *Server) publishCompactionEnd(sessionID string, err error) {
 	s.publishPush(sessionID, loop.Event{Type: loop.CompactionEnd, Reason: reason, OK: ok})
 }
 
+// publishContextUsage recomputes and persists the model-facing context size
+// after a compaction that ran outside a request (manual /compact, threshold
+// auto-compaction), then pushes the value so the WebUI context meter updates
+// immediately instead of waiting for the next prompt's request_header.
+//
+// The estimate is char/4: the newest assistant usage predates the compaction,
+// so EstimateTokens falls back. The system prompt and tool schemas are part of
+// the real context but not of the message estimate, so they are added from the
+// last request_header — the same adjustment the request_header branch in emit
+// makes when no post-compaction usage exists.
+func (s *Server) publishContextUsage(sess *session.Session) {
+	_, info, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
+	if !ok {
+		return
+	}
+	last := sess.LastCompactionAt()
+	messages := sess.MessagesToLeaf()
+	used := compact.EstimateTokens(messages, last)
+	if !hasUsableContextUsage(messages, last) {
+		if system, tools, ok := sess.LastRequestHeader(); ok {
+			toolJSON, err := json.Marshal(tools)
+			if err != nil {
+				slog.Warn("marshal tool schemas", "session_id", sess.ID(), "err", err)
+			} else {
+				used += (len(system) + len(toolJSON) + 3) / 4
+			}
+		}
+	}
+	window := info.ContextWindow
+	if maxContext := s.cfg.Compaction.MaxContextTokens; maxContext > 0 && maxContext < window {
+		window = maxContext
+	}
+	if _, err := sess.AppendContextUsage(used, window, true); err != nil {
+		slog.Warn("append context usage", "session_id", sess.ID(), "err", err)
+		return
+	}
+	s.publishPush(sess.ID(), loop.Event{
+		Type:           loop.ContextUsage,
+		Provider:       sess.Config.Provider,
+		Model:          sess.Config.Model,
+		CatalogVersion: provider.CatalogVersion,
+		UsedTokens:     used,
+		ContextWindow:  window,
+		Estimated:      true,
+	})
+}
+
 // Handler returns the HTTP handler.
 func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
@@ -1833,6 +1880,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 					_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "threshold", OK: false})
 				} else {
 					_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "threshold", OK: true})
+					// The run SSE stops at agent_end, so the rebuilt context
+					// reaches the meter through the push stream.
+					if err == nil {
+						s.publishContextUsage(sess)
+					}
 				}
 			}
 		}
@@ -2218,6 +2270,9 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 	}
 	//nolint:contextcheck // post-compact rewarm is process-owned via runtimeCtx
 	s.reloadSession(id)
+	// A manual /compact has no run stream, so its rebuilt context would not
+	// reach the meter until the next prompt's request_header without this push.
+	s.publishContextUsage(sess)
 	writeJSON(w, 200, map[string]any{"id": e.ID, "type": e.Type, "firstKeptEntryId": e.FirstKeptEntryID, "handled": true})
 }
 

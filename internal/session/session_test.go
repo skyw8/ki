@@ -72,6 +72,32 @@ func TestLastUserBoundaryExcludesNewestUserTurn(t *testing.T) {
 	}
 }
 
+func TestLastRequestHeaderFollowsLeaf(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "openai", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, _, ok := s.LastRequestHeader(); ok {
+		t.Fatal("empty session reported a request header")
+	}
+	if _, err := s.AppendRequestHeader("first prompt", nil); err != nil {
+		t.Fatal(err)
+	}
+	system, tools, ok := s.LastRequestHeader()
+	if !ok || system != "first prompt" || tools != nil {
+		t.Fatalf("header = %q, %+v, %v", system, tools, ok)
+	}
+	// A newer header wins on the leaf path.
+	if _, err := s.AppendRequestHeader("second prompt", []ToolSchema{{Name: "Read"}}); err != nil {
+		t.Fatal(err)
+	}
+	system, tools, ok = s.LastRequestHeader()
+	if !ok || system != "second prompt" || len(tools) != 1 || tools[0].Name != "Read" {
+		t.Fatalf("header = %q, %+v, %v", system, tools, ok)
+	}
+}
+
 func TestForkHistoryAtKeepsMessagesAndRelinks(t *testing.T) {
 	s, err := Create(t.TempDir(), t.TempDir(), "openai", "test")
 	if err != nil {
