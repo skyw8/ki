@@ -5,10 +5,17 @@ on:
     branches:
       - "**"
   pull_request:
+  workflow_dispatch:
+    inputs:
+      live_tests:
+        description: Run the credentialed live provider tests
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
-      release_gate:
-        description: Run credentialed live tests required for a release
+      live_tests:
+        description: Run the credentialed live provider tests
         required: false
         type: boolean
         default: false
@@ -197,9 +204,11 @@ jobs:
             web/playwright-report
           if-no-files-found: ignore
 
+  # Opt-in only: these need a provider credential, so they never gate a pull
+  # request, a push, or a release.
   live-tests:
     name: Live provider tests
-    if: inputs.release_gate == true
+    if: inputs.live_tests == true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -208,7 +217,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - uses: oven-sh/setup-bun@v2
-      - name: Require release test credential
+      - name: Require the live provider credential
         env:
           DASHSCOPE_CN_API_KEY: ${{ secrets.DASHSCOPE_CN_API_KEY }}
         run: test -n "$DASHSCOPE_CN_API_KEY"

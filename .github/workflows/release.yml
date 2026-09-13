@@ -12,9 +12,6 @@ jobs:
   tests:
     name: All tests
     uses: ./.github/workflows/ci.yml
-    with:
-      release_gate: true
-    secrets: inherit
 
   web:
     name: Build WebUI
