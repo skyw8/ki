@@ -35,6 +35,7 @@ type Manager struct {
 	runtimeCancel context.CancelFunc
 	providerAuth  func(ProviderAuthEvent)
 	onErr         ErrorFunc
+	onStatus      func(RuntimeStatus)
 	home          string
 	host          SessionHost
 }
@@ -130,6 +131,15 @@ func (m *Manager) SetProviderAuthHandler(fn func(ProviderAuthEvent)) {
 	for _, c := range clients {
 		c.setProviderAuthHandler(fn)
 	}
+}
+
+// SetStatusHandler registers a callback for runtime status transitions
+// (starting/ready/restarting/failed). The WebUI push channel uses it so the
+// extensions catalog stays current without the client polling.
+func (m *Manager) SetStatusHandler(fn func(RuntimeStatus)) {
+	m.mu.Lock()
+	m.onStatus = fn
+	m.mu.Unlock()
 }
 
 // Configure reconciles the process-global sidecars with the latest global
@@ -268,9 +278,25 @@ func (m *Manager) watchRuntime(ctx context.Context, d Descriptor) {
 }
 
 func (m *Manager) setRuntimeStatus(name, state, message string, caps []string) {
+	st := RuntimeStatus{Name: name, State: state, Error: message, Capabilities: append([]string(nil), caps...)}
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.status[name] = RuntimeStatus{Name: name, State: state, Error: message, Capabilities: append([]string(nil), caps...)}
+	prev, seen := m.status[name]
+	m.status[name] = st
+	notify := m.onStatus
+	m.mu.Unlock()
+	// A stuck sidecar reports "failed" on every retry. Only a real transition is
+	// worth telling clients about: the handler is the server's push fan-out and
+	// a client refetches the catalog for each call.
+	if notify != nil && (!seen || !sameStatus(prev, st)) {
+		// Called outside the lock: the handler must not run under Manager.mu
+		// while other goroutines take it.
+		notify(st)
+	}
+}
+
+func sameStatus(a, b RuntimeStatus) bool {
+	return a.Name == b.Name && a.State == b.State && a.Error == b.Error &&
+		slices.Equal(a.Capabilities, b.Capabilities)
 }
 
 func sameRuntime(a, b Descriptor) bool {

@@ -204,7 +204,7 @@ func (s *Server) logoutProviderAuth(w http.ResponseWriter, r *http.Request) {
 		_ = s.providerExtensions.CancelAuth(cancelCtx, id, requestID)
 		cancel()
 	}
-	s.providers(w, r)
+	s.writeProviders(w, r)
 }
 
 func (s *Server) providerAuthExists(providerID, requestID string) bool {
@@ -286,6 +286,9 @@ func (s *Server) onProviderAuthEvent(event extension.ProviderAuthEvent) {
 		return
 	}
 	state.Status = "completed"
+	// The credential is now usable everywhere: the model picker and provider
+	// page in other tabs refetch from this.
+	s.publishInvalidation(scopeProviders)
 }
 
 func providerAuthKey(providerID, requestID string) string { return providerID + "\x00" + requestID }

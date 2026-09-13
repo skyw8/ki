@@ -1,4 +1,4 @@
-import type { FsListing, LoopEvent, Meta, ProviderAuthStatus, ProviderCatalog, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
+import type { FsListing, LoopEvent, Meta, ProviderAuthStatus, ProviderCatalog, PushEvent, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -300,8 +300,22 @@ export class Client {
 	return this.json(`/v1/providers/${encodeURIComponent(id)}/models?model=${encodeURIComponent(model)}`, { method: 'DELETE' })
   }
 
-  async *events(id: string, signal?: AbortSignal, notifications = false): AsyncGenerator<LoopEvent> {
-    const res = await fetch(`/v1/sessions/${id}/events${notifications ? '?notifications=1' : ''}`, {
+  async *events(id: string, signal?: AbortSignal): AsyncGenerator<LoopEvent> {
+    yield* this.sse<LoopEvent>(`/v1/sessions/${id}/events`, signal)
+  }
+
+  /**
+   * The single push stream for this tab: invalidate hints plus session
+   * sideband events tagged with `sessionId`. It replaces the one-notification-
+   * stream-per-running-session the UI used to hold, which ran into the browser's
+   * per-origin connection cap over plaintext HTTP/1.1.
+   */
+  async *serverEvents(signal?: AbortSignal): AsyncGenerator<PushEvent> {
+    yield* this.sse<PushEvent>('/v1/events', signal)
+  }
+
+  private async *sse<T extends { type: string }>(path: string, signal?: AbortSignal): AsyncGenerator<T> {
+    const res = await fetch(path, {
       credentials: 'same-origin',
       headers: this.headers(false, 'GET'),
       signal,
@@ -315,14 +329,14 @@ export class Client {
     let buf = ''
     let event = ''
     let data: string[] = []
-    const flush = (): LoopEvent | null => {
+    const flush = (): T | null => {
       if (!data.length) return null
       const raw = data.join('\n')
       data = []
       const name = event
       event = ''
       try {
-        const ev = JSON.parse(raw) as LoopEvent
+        const ev = JSON.parse(raw) as T
         if (!ev.type && name) ev.type = name
         return ev
       } catch {

@@ -506,7 +506,7 @@ func (s *Server) Compact(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	s.publishNotification(sessionID, loop.Event{Type: loop.CompactionStart, Reason: "manual"})
+	s.publishPush(sessionID, loop.Event{Type: loop.CompactionStart, Reason: "manual"})
 	_, err = compact.Run(ctx, sess, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 	s.release(sessionID, st)
 	s.publishCompactionEnd(sessionID, err)
@@ -654,6 +654,7 @@ func (s *Server) GlobalUISetStatus(extName, key string, text extension.UIText, t
 		st.Status = &extension.UIStatus{Key: key, Text: text, Tone: tone}
 	}
 	s.mu.Unlock()
+	s.publishInvalidation(scopeExtensions)
 	return nil
 }
 
@@ -676,6 +677,7 @@ func (s *Server) GlobalUISetPanel(extName string, panel extension.UIPanel) error
 	p.SubmitLabel = nil
 	st.Panel = &p
 	s.mu.Unlock()
+	s.publishInvalidation(scopeExtensions)
 	return nil
 }
 
@@ -686,6 +688,7 @@ func (s *Server) GlobalUIClearPanel(extName string) error {
 		st.Panel = nil
 	}
 	s.mu.Unlock()
+	s.publishInvalidation(scopeExtensions)
 	return nil
 }
 

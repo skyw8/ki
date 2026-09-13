@@ -13,14 +13,14 @@ import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
 import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, hydrateEntries, initialView, keepComposer, latestStats, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, userRequests } from './lib/model'
-import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './api/types'
+import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, PushEvent, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './api/types'
 import { TrajectoryView } from './features/chat/Trajectory'
 import { useI18n } from './i18n/index'
 import { toast } from './components/toast'
 import { ExtensionInspector, localizedExtensionText, seedExtFields, statusChips, visibleStatusChips } from './features/settings/ExtensionPanel'
 import { useDialogFocus } from './hooks/useDialogFocus'
 import { useTabFocus } from './hooks/useTabFocus'
-import { useRunCompletion } from './hooks/useRunCompletion'
+import { useServerEvents } from './hooks/useServerEvents'
 import { currentPermission, loadNotifyPref, notifyCompletion, requestPermission, saveNotifyPref, showNotification, type NotifyPermission } from './lib/notifications'
 import { focusedSession } from './lib/tab-focus'
 
@@ -211,6 +211,14 @@ function WorkspaceApp({ api }: { api: Client }) {
   const [jumpToId, setJumpToId] = useState<string | null>(null)
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  // The push handler is event-driven and long-lived, so it reads the open
+  // session and the run stream it holds through refs instead of captured state.
+  const currentIdRef = useRef<string | null>(currentId)
+  const listeningIdRef = useRef<string | null>(null)
+  const abortedRuns = useRef(new Set<string>())
+  // Sessions this tab has seen running. Completion notifications are limited to
+  // these so a run this browser never observed (CLI, agent child) stays silent.
+  const runningKnown = useRef(new Set<string>())
   const searchAc = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -350,10 +358,10 @@ function WorkspaceApp({ api }: { api: Client }) {
   useEffect(() => { localStorage.setItem(EXPAND_KEY, JSON.stringify(expanded)) }, [expanded])
 
   // Run-completion notifications are decoupled from the selected session's view
-  // stream (which is torn down on switch): useRunCompletion watches every
-  // running session's notification stream, and the tab marker lets another tab's
-  // focus suppress the ping for the session it is showing. The watcher is wired
-  // up below, after refreshList() is defined.
+  // stream (which is torn down on switch): the single push stream delivers
+  // every run's agent_end, and the tab marker lets another tab's focus suppress
+  // the ping for the session it is showing. The handler is wired up below,
+  // after refreshList() is defined.
 
   const toggleNotify = useCallback(async (on: boolean) => {
     if (!on) {
@@ -511,11 +519,13 @@ function WorkspaceApp({ api }: { api: Client }) {
 			setDefaultModel(meta.provider && meta.model ? `${meta.provider}/${meta.model}` : '')
 		}).catch(() => setModels([]))
 	}, [api])
-	const refreshExtensions = useCallback(async () => {
+	const refreshExtensions = useCallback(async (silent = false) => {
 		try {
 			setGlobalExtensions(await api.extensions())
 		} catch (e) {
-			toast.from(e)
+			// A push-driven refresh is a background sync; toasting every transient
+			// failure would spam while an extension restarts.
+			if (!silent) toast.from(e)
 		}
 	}, [api])
 
@@ -527,6 +537,8 @@ function WorkspaceApp({ api }: { api: Client }) {
   const listEtag = useRef<string | null>(null)
   const wsKey = useRef<string | null>(null)
   const refreshGate = useRef({ active: false, dirty: false, waiters: [] as Array<() => void> })
+  const sessionsRef = useRef(sessions)
+  useEffect(() => { sessionsRef.current = sessions }, [sessions])
 
   const refreshList = useCallback((): Promise<void> => {
     const gate = refreshGate.current
@@ -543,6 +555,9 @@ function WorkspaceApp({ api }: { api: Client }) {
             if (!ss.notModified) {
               listEtag.current = ss.etag
               setSessions(ss.sessions)
+              for (const session of ss.sessions) {
+                if (session.running) runningKnown.current.add(session.id)
+              }
             }
             const nextWs = JSON.stringify(ws)
             if (nextWs !== wsKey.current) {
@@ -564,14 +579,9 @@ function WorkspaceApp({ api }: { api: Client }) {
 
 	useEffect(() => { void refreshList() }, [refreshList])
 
-  // Completion watcher: one lightweight notification subscription per running
-  // session, so a finished background session (or one the user switched away
-  // from) still notifies. refreshList() refreshes the sidebar dots and shrinks
-  // the running set, closing each subscription once its session goes idle.
-  const sessionsRef = useRef(sessions)
-  useEffect(() => { sessionsRef.current = sessions }, [sessions])
+  useEffect(() => { currentIdRef.current = currentId }, [currentId])
+
   useTabFocus(currentId)
-  const runningIds = useMemo(() => sessions.filter(s => s.running).map(s => s.id).sort(), [sessions])
   const handleRunComplete = useCallback((id: string) => {
     const session = sessionsRef.current.find(s => s.id === id)
     notifyCompletion({
@@ -584,7 +594,6 @@ function WorkspaceApp({ api }: { api: Client }) {
     })
     void refreshList()
   }, [notifyEnabled, refreshList, t])
-  useRunCompletion(api, runningIds, handleRunComplete)
 
 	useEffect(() => { void refreshExtensions() }, [refreshExtensions])
 	useEffect(() => {
@@ -593,12 +602,6 @@ function WorkspaceApp({ api }: { api: Client }) {
 			setView(v => v.commands === commands ? v : { ...v, commands })
 		}).catch(() => {})
 	}, [api, currentId, selectedWs])
-	useEffect(() => {
-		const timer = window.setInterval(() => {
-			void api.extensions().then(setGlobalExtensions).catch(() => {})
-		}, 1000)
-		return () => window.clearInterval(timer)
-	}, [api])
   useEffect(() => {
     if (!temporaryTreeRevealIds.length) return
     const available = new Set(sessions.map(session => session.id))
@@ -633,6 +636,8 @@ function WorkspaceApp({ api }: { api: Client }) {
     abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
+    listeningIdRef.current = id
+    runningKnown.current.add(id)
     // Why: the sidebar dot reads sessions[].running, which only refreshList()
     // updates (after SSE ends or a manual refetch). Light it as soon as this
     // client starts listening so a live run is green without switching tabs.
@@ -650,78 +655,143 @@ function WorkspaceApp({ api }: { api: Client }) {
         if (abortRef.current === ac && detail) {
           setView(loadHistory(detail))
           if (detail.running) void listen(id)
+          else listeningIdRef.current = null
         } else if (abortRef.current === ac) {
           setView(v => ({ ...v, busy: false }))
+          listeningIdRef.current = null
         }
         void refreshList()
       }
     }
   }, [api, refreshList])
 
-	useEffect(() => {
-		if (!currentId) return
-		const ac = new AbortController()
-		void (async () => {
-			while (!ac.signal.aborted) {
-				try {
-					for await (const ev of api.events(currentId, ac.signal, true)) {
-					if (ev.type === 'run_aborted') {
-					  setView(v => applyEvent(v, ev))
-					  continue
-					}
-					// A manual /compact is a synchronous request, so its progress
-					// arrives as a session notification rather than on a run stream.
-					if (ev.type === 'compaction_start' || ev.type === 'compaction_end') {
-					  setView(v => applyEvent(v, ev))
-					  continue
-					}
-					if (ev.type === 'runtime_ready') {
-					  try {
-					    const detail = await api.get(currentId, { fields: 'runtime' })
-					    if (ac.signal.aborted) return
-					    setView(v => applyRuntimeCatalog(v, detail))
-					  } catch (e) { toast.from(e) }
-					  continue
-					}
-					if (ev.type === 'extension_ui_updated' || ev.type === 'queue_changed') {
-					  try {
-					    const detail = await api.get(currentId, { fields: 'runtime' })
-					    if (ac.signal.aborted) return
-					    setView(v => ({ ...applyRuntimeCatalog(v, detail), busy: v.busy || !!detail.running }))
-					    if (detail.running) void listen(currentId)
-					  } catch (e) { toast.from(e) }
-					  continue
-					}
-					if (ev.type === 'extension_notice') {
-						const text = ev.messageText || ev.reason || ev.server || 'extension'
-						if (ev.reason === 'warn' || ev.reason === 'error') toast.error(text)
-						else toast.info(text)
-						continue
-					}
-					if (ev.type === 'extension_error') {
-						toast.action('error', `${ev.server || 'extension'}: ${ev.messageText || ev.reason || t('extension.failed')}`, t('extension.reload'), async () => {
-							try {
-								const result = await api.reload(currentId)
-								toast.info(result.queued ? t('extension.reloadQueued') : t('extension.reloaded'))
-							} catch (e) { toast.from(e) }
-						})
-						continue
-					}
-					}
-				} catch (e) {
-					if ((e as { name?: string }).name === 'AbortError' || ac.signal.aborted) return
-				}
-				// The selected session keeps a notification stream while idle. Retry
-				// transient proxy/network closes without creating an error-toast loop.
-				await new Promise<void>(resolve => {
-					const onAbort = () => { window.clearTimeout(timer); resolve() }
-					const timer = window.setTimeout(() => { ac.signal.removeEventListener('abort', onAbort); resolve() }, 1000)
-					ac.signal.addEventListener('abort', onAbort, { once: true })
-				})
-				}
-		})()
-		return () => ac.abort()
-	}, [api, currentId, listen, t])
+  // The push channel's handler for the session this tab has open.
+  const refreshOpenRuntime = useCallback(async () => {
+    const id = currentIdRef.current
+    if (!id) return
+    try {
+      const detail = await api.get(id, { fields: 'runtime' })
+      if (currentIdRef.current !== id) return
+      setView(v => ({ ...applyRuntimeCatalog(v, detail), busy: v.busy || !!detail.running }))
+      if (detail.running && listeningIdRef.current !== id) void listen(id)
+    } catch {
+      // The session may have just been deleted; the list refresh closes it.
+    }
+  }, [api, listen])
+
+  // Everything the server pushes to this tab arrives here: invalidate hints for
+  // the sidebar/workspace/catalog state, and session sideband events for both
+  // the open session and background completions. Why one handler: see
+  // useServerEvents and docs/events.md — one stream replaces the previous
+  // one-notification-stream-per-running-session.
+  const onServerEvent = useCallback((ev: PushEvent) => {
+    if (ev.type === 'ready') {
+      // A fresh subscription replays nothing, so refetching everything is what
+      // makes a reconnect catch up on whatever it missed.
+      void refreshList()
+      void refreshExtensions(true)
+      void refreshOpenRuntime()
+      return
+    }
+    if (ev.type === 'invalidate') {
+      switch (ev.scope) {
+        case 'sessions':
+        case 'workspaces':
+          // A run that started elsewhere, a workspace deleted elsewhere, or a
+          // session created/removed: refetch the list, then reconcile the open
+          // session against it.
+          void refreshList().then(() => {
+            const id = currentIdRef.current
+            if (!id) return
+            const info = sessionsRef.current.find(s => s.id === id)
+            if (!info) {
+              // The open session was deleted by another client (e.g. its
+              // workspace was deleted): leave the transcript instead of showing
+              // a session that no longer exists.
+              abortRef.current?.abort()
+              abortRef.current = null
+              listeningIdRef.current = null
+              setCurrentId(null)
+              setView(v => keepComposer(v))
+              return
+            }
+            if (info.running && listeningIdRef.current !== id) void listen(id)
+          })
+          return
+        case 'extensions':
+          void refreshExtensions(true)
+          void refreshOpenRuntime()
+          return
+        case 'providers':
+          refreshModels()
+          return
+      }
+      return
+    }
+    const sessionId = ev.sessionId
+    if (!sessionId) return
+    if (ev.type === 'run_aborted') {
+      // Abort still ends with agent_end; remember it so the completion is not
+      // announced as a finished run.
+      abortedRuns.current.add(sessionId)
+      if (sessionId === currentIdRef.current) setView(v => applyEvent(v, ev))
+      return
+    }
+    if (ev.type === 'agent_end') {
+      const wasAborted = abortedRuns.current.delete(sessionId)
+      // Only announce a run this tab had seen as running. The push stream is
+      // global, so an unfiltered handler would raise a desktop notification for
+      // any run in the process, including `ki run` sessions and agent children
+      // this browser never observed (docs/webui.md).
+      const known = runningKnown.current.delete(sessionId)
+      if (!wasAborted && known) handleRunComplete(sessionId)
+      return
+    }
+    if (sessionId !== currentIdRef.current) return
+    switch (ev.type) {
+      case 'compaction_start':
+      case 'compaction_end':
+        // A manual /compact is a synchronous request, so its progress arrives
+        // as a session notification rather than on a run stream.
+        setView(v => applyEvent(v, ev))
+        return
+      case 'runtime_ready':
+        void refreshOpenRuntime()
+        return
+      case 'extension_ui_updated':
+      case 'queue_changed':
+        void refreshOpenRuntime()
+        return
+      case 'extension_notice': {
+        const text = ev.messageText || ev.reason || ev.server || 'extension'
+        if (ev.reason === 'warn' || ev.reason === 'error') toast.error(text)
+        else toast.info(text)
+        return
+      }
+      case 'extension_error':
+        toast.action('error', `${ev.server || 'extension'}: ${ev.messageText || ev.reason || t('extension.failed')}`, t('extension.reload'), async () => {
+          try {
+            const result = await api.reload(currentIdRef.current ?? undefined)
+            toast.info(result.queued ? t('extension.reloadQueued') : t('extension.reloaded'))
+          } catch (e) { toast.from(e) }
+        })
+        return
+    }
+  }, [api, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, t])
+  useServerEvents(api, onServerEvent)
+
+  // Safety net for a push stream that outlived a laptop sleep or a proxy idle
+  // timeout without raising a read error yet: resync when the tab is shown
+  // again. The refetch goes through the ETag, so an idle tab costs a 304.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      void refreshList()
+      void refreshExtensions(true)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [refreshExtensions, refreshList])
 
   const openSession = useCallback(async (id: string): Promise<boolean> => {
     setCurrentId(id)

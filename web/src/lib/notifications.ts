@@ -1,12 +1,12 @@
 // Session completion notifications.
 //
-// The WebUI learns that a run finished from the session notification stream
-// (agent_end on GET /v1/sessions/{id}/events?notifications=1). That stream stays
+// The WebUI learns that a run finished from the tab's push stream
+// (agent_end on GET /v1/events, tagged with the session id). That stream stays
 // open for background sessions too, so a completion still reaches the browser
-// while the user works in another program; the browser forwards it to the OS
-// notification center. We stay silent only for the session a focused ki tab is
-// showing (see tab-focus.ts): switched to another session, or another
-// application entirely, and the completion notifies.
+// while the user works in another session or another program; the browser
+// forwards it to the OS notification center. We stay silent only for the
+// session a focused ki tab is showing (see tab-focus.ts): switched to another
+// session, or another application entirely, and the completion notifies.
 //
 // The on/off preference lives in localStorage (per browser). Permission is owned
 // by the browser and can only be requested from a user gesture, which is why the

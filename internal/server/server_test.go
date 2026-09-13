@@ -989,8 +989,8 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 }
 
 // A manual /compact is one synchronous request, so the WebUI cannot learn that
-// it is running from a prompt SSE stream. It must arrive as a session
-// notification (compaction_start → compaction_end) for the chat to show a live
+// it is running from a prompt SSE stream. It must arrive as a session push
+// event (compaction_start → compaction_end) for the chat to show a live
 // "compacting" row.
 func TestManualCompactPublishesNotifications(t *testing.T) {
 	home := t.TempDir()
@@ -1022,29 +1022,8 @@ func TestManualCompactPublishesNotifications(t *testing.T) {
 	waitAgentEnd(t, hs, id)
 
 	// Subscribe before compacting so the start event cannot be missed.
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events?notifications=1", nil)
-	req.Header.Set("Authorization", "Bearer tok")
-	sub, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sub.Body.Close() }()
-	events := make(chan loop.Event, 8)
-	go func() {
-		sc := bufio.NewScanner(sub.Body)
-		for sc.Scan() {
-			line := sc.Text()
-			if !strings.HasPrefix(line, "data:") {
-				continue
-			}
-			var ev loop.Event
-			if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev) == nil {
-				events <- ev
-			}
-		}
-	}()
+	events := pushEvents(t, hs, "tok")
+	waitPush(t, events, "ready", func(ev pushEvent) bool { return ev.Type == "ready" })
 
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/compact", nil)
 	req.Header.Set("Authorization", "Bearer tok")
@@ -1058,30 +1037,23 @@ func TestManualCompactPublishesNotifications(t *testing.T) {
 		t.Fatalf("compact %d %s", res.StatusCode, b)
 	}
 
-	var got []string
-	deadline := time.After(5 * time.Second)
-	for len(got) < 2 {
-		select {
-		case ev := <-events:
-			if ev.Type != loop.CompactionStart && ev.Type != loop.CompactionEnd {
-				continue
-			}
-			if ev.Type == loop.CompactionEnd && !ev.OK {
-				t.Fatalf("compaction_end reported failure: %+v", ev)
-			}
-			got = append(got, string(ev.Type)+":"+ev.Reason)
-		case <-deadline:
-			t.Fatalf("compaction notifications: got %v, want start then end", got)
-		}
+	start := waitPush(t, events, "compaction_start", func(ev pushEvent) bool {
+		return ev.Type == loop.CompactionStart && ev.SessionID == id
+	})
+	if start.Reason != "manual" {
+		t.Fatalf("compaction_start reason %q, want manual", start.Reason)
 	}
-	if got[0] != "compaction_start:manual" || got[1] != "compaction_end:manual" {
-		t.Fatalf("compaction notifications: %v", got)
+	end := waitPush(t, events, "compaction_end", func(ev pushEvent) bool {
+		return ev.Type == loop.CompactionEnd && ev.SessionID == id
+	})
+	if !end.OK || end.Reason != "manual" {
+		t.Fatalf("compaction_end reported failure: %+v", end)
 	}
 }
 
-// A run's terminal agent_end must also reach notification subscribers: a WebUI
-// tab that is not holding the run SSE (background session, or the user switched
-// to another session) needs to learn the run finished to raise a notification.
+// A run's terminal agent_end must also reach push subscribers: a WebUI tab that
+// is not holding the run SSE (background session, or the user switched to
+// another session) needs to learn the run finished to raise a notification.
 func TestAgentEndPublishesNotification(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KI_HOME", home)
@@ -1102,31 +1074,10 @@ func TestAgentEndPublishesNotification(t *testing.T) {
 	id := createSession(t, hs, t.TempDir())
 
 	// Subscribe before prompting so the completion cannot be missed.
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events?notifications=1", nil)
-	req.Header.Set("Authorization", "Bearer tok")
-	sub, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sub.Body.Close() }()
-	events := make(chan loop.Event, 8)
-	go func() {
-		sc := bufio.NewScanner(sub.Body)
-		for sc.Scan() {
-			line := sc.Text()
-			if !strings.HasPrefix(line, "data:") {
-				continue
-			}
-			var ev loop.Event
-			if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev) == nil {
-				events <- ev
-			}
-		}
-	}()
+	events := pushEvents(t, hs, "tok")
+	waitPush(t, events, "ready", func(ev pushEvent) bool { return ev.Type == "ready" })
 
-	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
@@ -1135,19 +1086,16 @@ func TestAgentEndPublishesNotification(t *testing.T) {
 	}
 	_ = res.Body.Close()
 
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case ev := <-events:
-			switch ev.Type {
-			case loop.AgentEnd:
-				return
-			case loop.RunAborted:
-				t.Fatal("completed run must not publish run_aborted")
-			}
-		case <-deadline:
-			t.Fatal("no agent_end on the notification stream")
-		}
+	ev := waitPush(t, events, "agent_end", func(ev pushEvent) bool {
+		return (ev.Type == loop.AgentEnd && ev.SessionID == id) || (ev.Type == loop.RunAborted && ev.SessionID == id)
+	})
+	if ev.Type == loop.RunAborted {
+		t.Fatal("completed run must not publish run_aborted")
+	}
+	// The push frame carries the completion only: re-broadcasting the run's
+	// message array to every tab would be pure bandwidth.
+	if len(ev.Messages) != 0 {
+		t.Fatalf("agent_end push frame carried %d messages", len(ev.Messages))
 	}
 }
 

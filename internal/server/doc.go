@@ -14,6 +14,16 @@
 // effort, and user home.
 // GET /v1/commands exposes the workspace-scoped built-in, prompt-template,
 // and skill catalog used by the WebUI before a session exists.
+// GET /v1/events is the WebUI push channel: one SSE stream per browser tab
+// carrying invalidate frames (scope sessions/workspaces/providers/extensions:
+// "this changed, refetch it through the ordinary REST endpoint") and session
+// sideband loop events tagged with sessionId (agent_end, run_aborted,
+// runtime_ready, extension notices/UI, manual compaction, queue changes). It
+// replaced the per-running-session notification stream, so one tab holds one
+// push connection instead of one per running session. Nothing is replayed: the
+// ready frame is the client's cue to refetch, which is also how a reconnect
+// catches up. The pushed agent_end carries no messages; the run's full event
+// log is replayed only to the client holding that run's SSE.
 // GET /v1/extensions lists the global extension catalog, optional extension
 // i18n resources, runtime status, and process-level extension UI projection.
 // Workspaces live in {KI_HOME}/workspaces.json. Session cwd comes from a

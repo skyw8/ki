@@ -126,6 +126,19 @@ export type LoopEvent = {
 	options?: string[]
 }
 
+/**
+ * One frame of `GET /v1/events`. The server pushes two kinds:
+ *   - `{ type: 'ready' }` — the subscription is live; refetch everything, since
+ *     the stream replays nothing.
+ *   - `{ type: 'invalidate', scope }` — that slice of state changed; refetch it
+ *     through the ordinary REST endpoint.
+ *   - a session sideband loop event carrying the `sessionId` it belongs to.
+ */
+export type PushEvent = LoopEvent & {
+	sessionId?: string
+	scope?: string
+}
+
 export type SessionInfo = {
   id: string
   cwd: string

@@ -15,6 +15,13 @@ func (s *Server) providers(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"version": provider.CatalogVersion, "default": s.registry.Default(), "providers": s.registry.Providers()})
 }
 
+// writeProviders answers a successful registry mutation with the catalog and
+// tells other tabs (and this one's model picker) to refetch it.
+func (s *Server) writeProviders(w http.ResponseWriter, r *http.Request) {
+	s.publishInvalidation(scopeProviders)
+	s.providers(w, r)
+}
+
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -55,7 +62,7 @@ func (s *Server) createProvider(w http.ResponseWriter, r *http.Request) {
 		registryError(w, err)
 		return
 	}
-	s.providers(w, r)
+	s.writeProviders(w, r)
 }
 
 type providerPatch struct {
@@ -106,7 +113,7 @@ func (s *Server) patchProvider(w http.ResponseWriter, r *http.Request) {
 		registryError(w, err)
 		return
 	}
-	s.providers(w, r)
+	s.writeProviders(w, r)
 }
 
 func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
@@ -137,9 +144,10 @@ func (s *Server) deleteProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if builtin {
-		s.providers(w, r)
+		s.writeProviders(w, r)
 		return
 	}
+	s.publishInvalidation(scopeProviders)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -162,7 +170,7 @@ func (s *Server) putProviderCredential(w http.ResponseWriter, r *http.Request) {
 				registryError(w, err)
 				return
 			}
-			s.providers(w, r)
+			s.writeProviders(w, r)
 			return
 		}
 		if body.Type == "" {
@@ -173,7 +181,7 @@ func (s *Server) putProviderCredential(w http.ResponseWriter, r *http.Request) {
 			registryError(w, err)
 			return
 		}
-		s.providers(w, r)
+		s.writeProviders(w, r)
 		return
 	}
 	if body.APIKey == nil {
@@ -193,7 +201,7 @@ func (s *Server) putProviderCredential(w http.ResponseWriter, r *http.Request) {
 		registryError(w, err)
 		return
 	}
-	s.providers(w, r)
+	s.writeProviders(w, r)
 }
 
 func (s *Server) createProviderModel(w http.ResponseWriter, r *http.Request) {
@@ -235,7 +243,7 @@ func (s *Server) createProviderModel(w http.ResponseWriter, r *http.Request) {
 		registryError(w, err)
 		return
 	}
-	s.providers(w, r)
+	s.writeProviders(w, r)
 }
 
 func (s *Server) patchProviderModel(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +287,7 @@ func (s *Server) patchProviderModel(w http.ResponseWriter, r *http.Request) {
 		registryError(w, err)
 		return
 	}
-	s.providers(w, r)
+	s.writeProviders(w, r)
 }
 
 func (s *Server) deleteProviderModel(w http.ResponseWriter, r *http.Request) {
@@ -311,6 +319,7 @@ func (s *Server) deleteProviderModel(w http.ResponseWriter, r *http.Request) {
 		registryError(w, err)
 		return
 	}
+	s.publishInvalidation(scopeProviders)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -327,5 +336,5 @@ func (s *Server) putDefaultModel(w http.ResponseWriter, r *http.Request) {
 		registryError(w, err)
 		return
 	}
-	s.providers(w, r)
+	s.writeProviders(w, r)
 }

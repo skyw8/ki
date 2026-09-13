@@ -12,7 +12,7 @@
 | Extension lifecycle | host → extension sidecar | `lifecycle.invoke`（同步）或 `lifecycle.event`（异步） |
 | Provider stream | provider sidecar → host | `provider.stream.event.type` |
 | Provider auth | provider sidecar → host | `provider.auth.event.type` |
-| WebUI 通知 | server → WebUI | `GET /events?notifications=1` 的 `extension_ui_updated`、`runtime_ready`、`run_aborted`，run 结束时的 `agent_end`，以及手动 `/compact` 的 `compaction_start`/`compaction_end`；这些不进 occupy 回放，只发给该 session 的通知订阅者（WebUI 用它给后台完成的 session 发系统通知） |
+| WebUI push / `GET /v1/events` | server → WebUI | 每个 tab 一条：`invalidate`（`scope` = `sessions` / `workspaces` / `providers` / `extensions`，只表示"去重取"，数据仍走原 REST）与 `ready`；以及带 `sessionId` 的 session sideband：`extension_ui_updated`、`runtime_ready`、`run_aborted`、`queue_changed`、`compaction_start`/`compaction_end`、run 结束的 `agent_end`。这些不进 occupy 回放（`ready` 后客户端自行全量重取，重连靠它追平）；WebUI 用它们刷新侧栏、workspaces、扩展目录，并给后台完成的 session 发系统通知 |
 
 ## Session SSE 事件
 
@@ -31,7 +31,15 @@ sideband 事件可以并发到达。
 | 扩展 UI/状态 | `extension_error`、`extension_notice`、`extension_ui_prompt` | 扩展失败、toast，或 WebUI 确认/选择弹层。 |
 | Runtime | `runtime_ready` | session 打开时的扩展视图准备结束；成功或失败都会解锁 session。 |
 | 仅扩展生命周期 | `agent_settled` | `agent_end` 后 Host 收尾完成；发送给 lifecycle subscriber，不进入普通运行 SSE。 |
-| WebUI 通知 | `extension_ui_updated` | 扩展 status/panel/prompt 投影变化；客户端重新读取 session。它不是 `loop.EventType` 常量。 |
+| WebUI push | `extension_ui_updated` | 扩展 status/panel/prompt 投影变化；客户端重新读取 session。它不是 `loop.EventType` 常量，只在 `GET /v1/events` 上带 `sessionId`下发。 |
+
+`GET /v1/sessions/{id}/events` 是某个 run 的有序回放（`agent_end` 结束）。
+`GET /v1/events` 是每个 tab 的 push 流，只带「失效」和「终态/边带」信息，不带
+run 内的增量：`invalidate` 帧让客户端重取（sidebar 用 ETag 304 收尾），
+sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` 在 push 流上
+**不带 `messages`**——整份 run 消息只回放给持有该 run SSE 的客户端，push 只广播
+「这个 session 结束了」。因此 push 可以丢帧而不影响正确性：状态永远由 REST
+重取得出，`ready`/重连后的一次全量刷新即可追平。
 
 `message_end`、`request_header`、`context_usage`、压缩事件、工具进度、
 Patch 预览和部分 sideband 会按各自的 server 路径持久化。并非每个 SSE
@@ -111,14 +119,15 @@ participant Loop
 participant Tool
 participant Provider
 database "events.jsonl" as JSONL
-participant SSE
+participant "SSE (run 回放)" as SSE
+participant "push GET /v1/events" as Push
 
 == 打开 session ==
 UI -> Server: 打开 session
 Server -> Extension: session.open
-Server -> SSE: runtime_ready
+Server -> Push: runtime_ready（带 sessionId）
 Extension -> Server: ui.setStatus / ui.setPanel / ui.clearPanel
-Server -> SSE: extension_ui_updated
+Server -> Push: extension_ui_updated（带 sessionId）
 
 == 发送 prompt ==
 User -> UI: 发送 prompt
@@ -204,6 +213,7 @@ alt 接受
   end
 
   Loop -> SSE: agent_end
+  Loop -> Push: agent_end（不带 messages）/ invalidate(sessions)
   Loop -> Extension: lifecycle.event agent_end
   opt agent_end 后的 threshold compaction
     Server -> SSE: compaction_start
@@ -218,21 +228,22 @@ else 被吞掉或拒绝
 end
 
 == 手动 /compact ==
-note over User, SSE: 同步请求，没有 run stream；进度走 session 通知流
+note over User, Push: 同步请求，没有 run stream；进度走 push 流
 User -> Server: prompt "/compact"
-Server -> 通知流: compaction_start (reason=manual)
+Server -> Push: compaction_start (reason=manual)
 Server -> JSONL: compaction
-Server -> 通知流: compaction_end (reason=manual 或 empty)
+Server -> Push: compaction_end (reason=manual 或 empty)
 Server --> UI: handled（随后 UI 重新读取 session）
 
 == 并发 sideband ==
 par 队列和控制
   User -> Server: queue / steer / abort
   Server -> SSE: queue_changed / steer_accepted / run_aborted
+  Server -> Push: queue_changed / run_aborted
   Server -> JSONL: 按情况持久化 sideband
 else 扩展 UI
   Extension -> Server: notice / error / confirm / select
-  Server -> SSE: extension_notice / extension_error / extension_ui_prompt
+  Server -> Push: extension_notice / extension_error / extension_ui_prompt
 end
 
 == Provider auth ==

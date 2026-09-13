@@ -135,6 +135,8 @@ func (s *Server) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	if created {
 		code = 201
 	}
+	s.publishInvalidation(scopeWorkspaces)
+	s.publishInvalidation(scopeSessions)
 	writeJSON(w, code, s.workspaceJSON(rec))
 }
 
@@ -155,6 +157,7 @@ func (s *Server) patchWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec, _ := s.ws.Get(r.PathValue("id"))
+	s.publishInvalidation(scopeWorkspaces)
 	writeJSON(w, 200, s.workspaceJSON(rec))
 }
 
@@ -182,6 +185,9 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Deleting a workspace deletes its sessions, so the sidebar refetches both.
+	s.publishInvalidation(scopeSessions)
+	s.publishInvalidation(scopeWorkspaces)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -202,6 +208,7 @@ func (s *Server) moveWorkspace(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), code)
 		return
 	}
+	s.publishInvalidation(scopeWorkspaces)
 	s.listWorkspaces(w, r)
 }
 
@@ -235,6 +242,8 @@ func (s *Server) moveWorkspaceSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rec, _ := s.ws.Get(id)
+	s.publishInvalidation(scopeSessions)
+	s.publishInvalidation(scopeWorkspaces)
 	writeJSON(w, 200, s.workspaceJSON(rec))
 }
 
@@ -299,6 +308,8 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.publishInvalidation(scopeSessions)
+	s.publishInvalidation(scopeWorkspaces)
 	w.WriteHeader(http.StatusNoContent)
 }
 

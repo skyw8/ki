@@ -794,32 +794,19 @@ func TestRuntimeReadyNotification(t *testing.T) {
 	bin := buildExtSidecar(t)
 	srv, hs := testServer(t)
 	installSidecar(t, srv.cfg.Home, "slow", bin, `"lifecycle"`, `{"KI_INIT_SLEEP_MS":"200"}`)
+	// Subscribe before creating: runtime_ready is a live transition now, not a
+	// per-session catch-up frame, so the subscriber must already be connected.
+	events := pushEvents(t, hs, "tok")
+	waitPush(t, events, "ready", func(ev pushEvent) bool { return ev.Type == "ready" })
 	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{"cwd": t.TempDir()})
 	if status != http.StatusOK {
 		t.Fatal(status)
 	}
 	id, _ := created["id"].(string)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events?notifications=1", nil)
-	req.Header.Set("Authorization", "Bearer tok")
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = res.Body.Close() }()
-	buf := make([]byte, 4096)
-	got := ""
-	for {
-		n, readErr := res.Body.Read(buf)
-		if n > 0 {
-			got += string(buf[:n])
-			if strings.Contains(got, "runtime_ready") {
-				return
-			}
-		}
-		if readErr != nil {
-			t.Fatalf("no runtime_ready in %q: %v", got, readErr)
-		}
+	got := waitPush(t, events, "runtime_ready", func(ev pushEvent) bool {
+		return ev.Type == loop.RuntimeReady && ev.SessionID == id
+	})
+	if !got.OK {
+		t.Fatalf("runtime_ready was not OK: %+v", got)
 	}
 }

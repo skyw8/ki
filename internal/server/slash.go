@@ -56,6 +56,10 @@ func (s *Server) doReload(w http.ResponseWriter, r *http.Request) {
 		queued = s.requestReload(body.SessionID)
 	}
 	slog.Info("reload")
+	// Both branches change what /v1/extensions and the open session's runtime
+	// catalog report; a per-session reload has no other refetch signal.
+	s.publishInvalidation(scopeExtensions)
+	s.publishInvalidation(scopeSessions)
 	writeJSON(w, 200, map[string]any{"ok": true, "queued": queued})
 }
 
@@ -216,6 +220,8 @@ func (s *Server) patchExtensions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.getExtensions(w, r)
+	s.publishInvalidation(scopeExtensions)
+	s.publishInvalidation(scopeSessions)
 }
 
 func (s *Server) extensionDescriptor(name string) (extension.Descriptor, bool) {
@@ -425,13 +431,8 @@ func (s *Server) onExtensionError(sessionID, name, capability, code, message str
 		st.wait.Broadcast()
 		st.mu.Unlock()
 	}
-	for subscriber := range s.eventSubscribers[sessionID] {
-		select {
-		case subscriber <- ev:
-		default:
-		}
-	}
 	s.mu.Unlock()
+	s.publishPush(sessionID, ev)
 }
 
 // occupy claims exclusive run ownership for id. The caller must pair it with
@@ -463,6 +464,8 @@ func (s *Server) occupy(parent context.Context, id string) (*runState, context.C
 	st := &runState{cancel: cancel, runID: runID, done: make(chan struct{})}
 	st.wait = sync.NewCond(&st.mu)
 	s.runs[id] = st
+	// Green dot for every other client, not just the one that prompted.
+	s.publishInvalidation(scopeSessions)
 	return st, ctx, nil
 }
 
@@ -496,7 +499,10 @@ func (s *Server) release(id string, st *runState) {
 		s.ext.OnEvent(context.Background(), id, extension.RedactEvent(loop.Event{Type: loop.AgentSettled, RunID: runID, External: external}, id))
 	}
 	s.flushSettled(id)
+	// Publish after dispatchQueue: it may occupy again for a queued message, and
+	// the last frame then already reflects the next run starting.
 	s.dispatchQueue(id)
+	s.publishInvalidation(scopeSessions)
 }
 
 func (s *Server) getMessage(w http.ResponseWriter, _ *http.Request) {
@@ -593,13 +599,10 @@ func (s *Server) publishSideband(sessionID string, ev loop.Event, persist bool) 
 		st.wait.Broadcast()
 		st.mu.Unlock()
 	}
-	for subscriber := range s.eventSubscribers[sessionID] {
-		select {
-		case subscriber <- ev:
-		default:
-		}
-	}
 	s.mu.Unlock()
+	// Fan out after releasing s.mu: push subscribers never block, but keeping
+	// the two locks unnested documents the order for future publishers.
+	s.publishPush(sessionID, ev)
 }
 
 func (s *Server) dispatchQueue(id string) {

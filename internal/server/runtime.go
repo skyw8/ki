@@ -104,33 +104,5 @@ func (s *Server) finishRuntime(id string, st *runtimePrep) {
 	}
 	// Why: runtime_ready is a session notification, not an occupy event.
 	// Putting it on runState.evs prepends it to prompt SSE replay.
-	ev := loop.Event{Type: loop.RuntimeReady, OK: true}
-	s.mu.Lock()
-	for subscriber := range s.eventSubscribers[id] {
-		select {
-		case subscriber <- ev:
-		default:
-		}
-	}
-	s.mu.Unlock()
-}
-
-func (s *Server) rewarmWatchers(active map[string]bool) {
-	s.mu.Lock()
-	var ids []string
-	for id := range s.eventSubscribers {
-		if !active[id] {
-			ids = append(ids, id)
-		}
-	}
-	s.mu.Unlock()
-	for _, id := range ids {
-		sess, err := s.open(id)
-		if err != nil {
-			continue
-		}
-		cwd := sess.Header.CWD
-		_ = sess.Close()
-		s.kickWarmup(id, cwd)
-	}
+	s.publishPush(id, loop.Event{Type: loop.RuntimeReady, OK: true})
 }

@@ -377,7 +377,11 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(input).toBeEnabled()
   await input.fill(prompt)
   await input.press('Enter')
-  await expect(page.locator('.session-row.active .dot.on')).toBeVisible()
+  // The fake model answers instantly, and the sidebar now repaints from the
+  // server's invalidate frame, so the optimistic `.dot.on` is not a stable
+  // observable here. The live dot (turns on for a running session, clears when
+  // it ends, in this tab and in another) is covered in push.spec.ts.
+  await expect(page.locator('.session-row.active')).toBeVisible()
 
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
   await expect(page.getByTestId('request-nav')).toHaveCount(0)

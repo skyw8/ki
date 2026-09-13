@@ -69,7 +69,8 @@ type Server struct {
 	http                   *http.Server
 	shells                 tools.ShellRuntime
 	mutations              *tools.MutationQueue
-	eventSubscribers       map[string]map[chan loop.Event]struct{}
+	gsMu                   sync.Mutex
+	gsubs                  map[*pushSub]struct{}
 	pendingReload          map[string]bool
 	extUI                  map[string]map[string]*extUIState
 	globalExtUI            map[string]*extUIState
@@ -182,7 +183,7 @@ func New(opt Options) (*Server, error) {
 		slist:                  session.NewListCache(),
 		shells:                 shells,
 		mutations:              tools.NewMutationQueue(),
-		eventSubscribers:       map[string]map[chan loop.Event]struct{}{},
+		gsubs:                  map[*pushSub]struct{}{},
 		pendingReload:          map[string]bool{},
 		extUI:                  map[string]map[string]*extUIState{},
 		globalExtUI:            map[string]*extUIState{},
@@ -198,6 +199,9 @@ func New(opt Options) (*Server, error) {
 	}
 	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
 	srv.ext.SetHost(srv)
+	// The runtime state is part of GET /v1/extensions; push a refetch hint on
+	// every transition instead of making the WebUI poll that endpoint.
+	srv.ext.SetStatusHandler(func(extension.RuntimeStatus) { srv.publishInvalidation(scopeExtensions) })
 	srv.providerExtensions.SetRuntimeManager(srv.ext)
 	srv.providerExtensions.SetErrorHandler(srv.onExtensionError)
 	srv.providerExtensions.SetProviderAuthHandler(srv.onProviderAuthEvent)
@@ -279,7 +283,8 @@ func (s *Server) Reload() bool {
 	s.startExtensions()
 	s.reloadProviderExtensions()
 	s.resetRuntimeExcept(active)
-	s.rewarmWatchers(active)
+	s.publishInvalidation(scopeExtensions)
+	s.publishInvalidation(scopeSessions)
 	return len(active) > 0
 }
 
@@ -312,6 +317,8 @@ func (s *Server) reloadProviderExtensions() {
 	if err := s.registry.ReplaceExtensionProviders(s.providerExtensions.Specs()); err != nil {
 		slog.Warn("reload provider catalog", "err", err)
 	}
+	s.publishInvalidation(scopeProviders)
+	s.publishInvalidation(scopeExtensions)
 }
 
 // reloadSession invalidates one idle session. A live run keeps its fixed tool
@@ -348,23 +355,6 @@ func (s *Server) requestReload(id string) bool {
 	return false
 }
 
-// publishNotification fans an event out to the session's notification streams
-// (GET /v1/sessions/{id}/events?notifications=1). Unlike run events it is not
-// persisted or replayed, so it is only for progress the owning request cannot
-// stream itself to every observer: extension UI updates, manual /compact
-// progress, and the run's terminal agent_end (which the run SSE ends on but a
-// tab watching a background session never sees).
-func (s *Server) publishNotification(sessionID string, ev loop.Event) {
-	s.mu.Lock()
-	for subscriber := range s.eventSubscribers[sessionID] {
-		select {
-		case subscriber <- ev:
-		default:
-		}
-	}
-	s.mu.Unlock()
-}
-
 // publishCompactionEnd reports the outcome of a manual compaction. "empty"
 // means there was nothing worth summarizing; it is not an error.
 func (s *Server) publishCompactionEnd(sessionID string, err error) {
@@ -375,25 +365,7 @@ func (s *Server) publishCompactionEnd(sessionID string, err error) {
 	case err != nil:
 		ok = false
 	}
-	s.publishNotification(sessionID, loop.Event{Type: loop.CompactionEnd, Reason: reason, OK: ok})
-}
-
-func (s *Server) subscribeEvents(sessionID string) (<-chan loop.Event, func()) {
-	ch := make(chan loop.Event, 16)
-	s.mu.Lock()
-	if s.eventSubscribers[sessionID] == nil {
-		s.eventSubscribers[sessionID] = map[chan loop.Event]struct{}{}
-	}
-	s.eventSubscribers[sessionID][ch] = struct{}{}
-	s.mu.Unlock()
-	return ch, func() {
-		s.mu.Lock()
-		delete(s.eventSubscribers[sessionID], ch)
-		if len(s.eventSubscribers[sessionID]) == 0 {
-			delete(s.eventSubscribers, sessionID)
-		}
-		s.mu.Unlock()
-	}
+	s.publishPush(sessionID, loop.Event{Type: loop.CompactionEnd, Reason: reason, OK: ok})
 }
 
 // Handler returns the HTTP handler.
@@ -421,6 +393,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("DELETE /v1/providers/{id}/models", s.auth(s.deleteProviderModel))
 	api.HandleFunc("PUT /v1/default-model", s.auth(s.putDefaultModel))
 	api.HandleFunc("GET /v1/meta", s.auth(s.meta))
+	api.HandleFunc("GET /v1/events", s.auth(s.pushEvents))
 	api.HandleFunc("GET /v1/sessions", s.auth(s.list))
 	api.HandleFunc("POST /v1/sessions", s.auth(s.create))
 	api.HandleFunc("GET /v1/sessions/search", s.auth(s.searchSessions))
@@ -837,6 +810,8 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.sessionMap(sess, nil))
 	//nolint:contextcheck // session warmup is process-owned via runtimeCtx, not the HTTP request
 	s.kickWarmup(sess.ID(), sess.Header.CWD)
+	s.publishInvalidation(scopeSessions)
+	s.publishInvalidation(scopeWorkspaces)
 }
 
 func (s *Server) open(id string) (*session.Session, error) {
@@ -1127,6 +1102,8 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	s.publishInvalidation(scopeSessions)
+	s.publishInvalidation(scopeWorkspaces)
 	writeJSON(w, 200, s.sessionMap(sess, nil))
 }
 
@@ -1800,11 +1777,14 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		st.wait.Broadcast()
 		st.mu.Unlock()
 		if ev.Type == loop.AgentEnd {
-			// The run's terminal event must also reach notification subscribers:
-			// a WebUI tab that is not holding this run's SSE (background session,
-			// or the user switched to another session) still needs to learn the
-			// run finished. run_aborted already fans out through publishSideband.
-			s.publishNotification(id, ev)
+			// The run's terminal event must also reach push subscribers: a WebUI
+			// tab that is not holding this run's SSE (background session, or the
+			// user switched to another session) still needs to learn the run
+			// finished. run_aborted already fans out through publishSideband.
+			// Publish without Messages: the run SSE replays them for the one
+			// client that asked, while every tab needs only the completion. The
+			// full event still reaches extensions below.
+			s.publishPush(id, loop.Event{Type: ev.Type, RunID: ev.RunID, External: ev.External})
 		}
 		switch ev.Type {
 		case loop.ToolExecutionUpdate, loop.ContextUsage, loop.PatchApplyUpdated, loop.ExtensionError:
@@ -2135,10 +2115,6 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]t
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if r.URL.Query().Get("notifications") == "1" {
-		s.notificationEvents(w, r, id)
-		return
-	}
 	s.mu.Lock()
 	st := s.runs[id]
 	s.mu.Unlock()
@@ -2191,47 +2167,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) notificationEvents(w http.ResponseWriter, r *http.Request, id string) {
-	ch, unsubscribe := s.subscribeEvents(id)
-	defer unsubscribe()
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	fl, _ := w.(http.Flusher)
-	write := func(ev loop.Event) bool {
-		b, err := json.Marshal(ev)
-		if err != nil {
-			return false
-		}
-		_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b)
-		if fl != nil {
-			fl.Flush()
-		}
-		return err == nil
-	}
-	if s.runtimeReady(id) {
-		if !write(loop.Event{Type: loop.RuntimeReady, OK: true}) {
-			return
-		}
-	}
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case ev := <-ch:
-			if !write(ev) {
-				return
-			}
-		case <-ticker.C:
-			_, _ = fmt.Fprint(w, ": ping\n\n")
-			if fl != nil {
-				fl.Flush()
-			}
-		}
-	}
-}
-
 func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.mu.Lock()
@@ -2264,7 +2199,7 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 	// Why: /compact is answered by one synchronous request, so the chat UI has
 	// no run stream to watch. Publish progress on the session notification
 	// stream so the history shows a live "compacting" row.
-	s.publishNotification(id, loop.Event{Type: loop.CompactionStart, Reason: "manual"})
+	s.publishPush(id, loop.Event{Type: loop.CompactionStart, Reason: "manual"})
 	e, err := compact.Run(ctx, sess, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 	//nolint:contextcheck // release may rewarm after the occupy ctx ends
 	s.release(id, st)
@@ -2327,6 +2262,8 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.sessionMap(dst, nil))
 	//nolint:contextcheck // fork warmup is process-owned via runtimeCtx, not the HTTP request
 	s.kickWarmup(dst.ID(), dst.Header.CWD)
+	s.publishInvalidation(scopeSessions)
+	s.publishInvalidation(scopeWorkspaces)
 }
 
 func (s *Server) rememberModel(ref provider.ModelRef) {
