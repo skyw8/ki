@@ -26,11 +26,28 @@ var (
 	queueGates sync.Map // map[clean session dir]*sync.Mutex
 )
 
-// QueuedItem is one user turn waiting for the current run to finish.
+// QueueLane tells a queued turn apart by who asked for it. Dequeue always
+// serves the human lane first; within a lane the queue stays FIFO.
+type QueueLane string
+
+const (
+	// QueueHumanLane carries turns a person submitted while the session was busy
+	// (POST prompt with delivery=queue).
+	QueueHumanLane QueueLane = "human"
+	// QueueSystemLane carries turns the server generated, such as an agent
+	// completion notification or a message an agent sent its caller. An empty
+	// lane (a queue written before lanes existed) is read as system.
+	QueueSystemLane QueueLane = "system"
+)
+
+// QueuedItem is one turn waiting for the current run to finish.
 type QueuedItem struct {
 	ID      string          `json:"id"`
 	Content []types.Content `json:"content"`
 	Origin  string          `json:"origin,omitempty"`
+	// Lane is persisted: a restart must not promote a system turn ahead of a
+	// waiting human one.
+	Lane QueueLane `json:"lane,omitempty"`
 }
 
 func queuePath(dir string) string { return filepath.Join(dir, "queue.json") }
@@ -384,13 +401,18 @@ func writeQueue(dir string, items []QueuedItem) error {
 	return writeFileAtomic(queuePath(dir), append(b, '\n'))
 }
 
-// Enqueue appends a user turn. The session directory must already exist.
+// Enqueue appends a human turn. The session directory must already exist.
 func Enqueue(dir string, content []types.Content) (QueuedItem, error) {
-	return EnqueueWithOrigin(dir, content, "")
+	return enqueue(dir, content, "", QueueHumanLane)
 }
 
-// EnqueueWithOrigin appends a queued turn and preserves its non-human origin.
-func EnqueueWithOrigin(dir string, content []types.Content, origin string) (QueuedItem, error) {
+// EnqueueSystem appends a server-generated turn and preserves its origin. The
+// session directory must already exist.
+func EnqueueSystem(dir string, content []types.Content, origin string) (QueuedItem, error) {
+	return enqueue(dir, content, origin, QueueSystemLane)
+}
+
+func enqueue(dir string, content []types.Content, origin string, lane QueueLane) (QueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
 	defer gate.Unlock()
@@ -405,15 +427,48 @@ func EnqueueWithOrigin(dir string, content []types.Content, origin string) (Queu
 	if err != nil {
 		return QueuedItem{}, fmt.Errorf("queue id: %w", err)
 	}
-	item := QueuedItem{ID: id, Content: content, Origin: origin}
-	items = append(items, item)
-	if err := writeQueue(dir, items); err != nil {
+	item := QueuedItem{ID: id, Content: content, Origin: origin, Lane: lane}
+	if err := writeQueue(dir, insertByLane(items, item, false)); err != nil {
 		return QueuedItem{}, err
 	}
 	return item, nil
 }
 
-// EnqueueFront puts an item back at the head after a failed dispatch.
+// insertByLane keeps the queue file ordered the way Dequeue serves it — human
+// turns ahead of system turns, FIFO within a lane — so the client's list shows
+// the real dispatch order. A new turn joins the end of its lane; a retry
+// (front) rejoins the head of its lane, because it was dequeued before anything
+// still waiting.
+func insertByLane(items []QueuedItem, item QueuedItem, front bool) []QueuedItem {
+	humans := 0
+	for _, it := range items {
+		if it.Lane == QueueHumanLane {
+			humans++
+		}
+	}
+	idx := len(items)
+	switch {
+	case item.Lane == QueueHumanLane:
+		// End of the human region; a retry goes before every waiting human.
+		idx = humans
+		if front {
+			idx = 0
+		}
+	case front:
+		// Front of the system region: humans stay ahead of the retry.
+		idx = humans
+	}
+	ordered := make([]QueuedItem, 0, len(items)+1)
+	ordered = append(ordered, items[:idx]...)
+	ordered = append(ordered, item)
+	ordered = append(ordered, items[idx:]...)
+	return ordered
+}
+
+// EnqueueFront restores an item after dispatch could not start it, at the head
+// of its own lane. The item was dequeued before anything still queued, so it
+// stays first within its lane; a human turn that arrived in the meantime keeps
+// its priority over a system retry.
 func EnqueueFront(dir string, item QueuedItem) error {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -425,10 +480,20 @@ func EnqueueFront(dir string, item QueuedItem) error {
 	if len(items) >= MaxQueueItems {
 		return ErrQueueFull
 	}
-	return writeQueue(dir, append([]QueuedItem{item}, items...))
+	return writeQueue(dir, insertByLane(items, item, true))
 }
 
-// Dequeue removes and returns the head item.
+// Dequeue removes and returns the next turn: the oldest waiting human turn, or
+// the oldest system turn when no person is waiting.
+//
+// Why not plain FIFO: completion notifications are enqueued from a child's
+// goroutine and dispatched as soon as the session is idle, so a notification
+// that lands a moment before a user message would otherwise start its own turn
+// first and leave the person waiting behind a system message. Human input
+// outranking system turns is the same rule as Claude Code's queue, where
+// pending notifications take the lowest priority so user input is never
+// starved. FIFO still holds within each lane, so notifications never reorder
+// among themselves.
 func Dequeue(dir string) (QueuedItem, bool, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -440,8 +505,16 @@ func Dequeue(dir string) (QueuedItem, bool, error) {
 	if len(items) == 0 {
 		return QueuedItem{}, false, nil
 	}
-	head := items[0]
-	if err := writeQueue(dir, items[1:]); err != nil {
+	idx := 0
+	for i, item := range items {
+		if item.Lane == QueueHumanLane {
+			idx = i
+			break
+		}
+	}
+	head := items[idx]
+	rest := append(append([]QueuedItem{}, items[:idx]...), items[idx+1:]...)
+	if err := writeQueue(dir, rest); err != nil {
 		return QueuedItem{}, false, err
 	}
 	return head, true, nil

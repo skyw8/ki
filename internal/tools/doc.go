@@ -15,9 +15,16 @@
 // variables explicitly, so commands launched by them keep the same network
 // routing. Runtime configuration remains authoritative for sidecar overrides.
 // Agent delegates through a narrow AgentRuntime supplied by server. Its child
-// session starts from a clean context (linked with forkMode=tree, but with no
-// inherited transcript) and is bounded to three child layers below the main
-// session; SendMessage steers or resumes the stable child task. A child run is
+// session is linked with forkMode=tree and, by default (inherit_context), is
+// seeded with the parent's finished history up to the user message that
+// triggered the in-flight turn; inherit_context:false starts it clean. The
+// directive itself arrives as the child's first user message wrapped in a
+// subagent envelope carrying its depth and the session that delegated, so the child's
+// system prompt can stay byte-identical to its parent's. It is
+// bounded to three child layers below the main session. SendMessage addresses a
+// child by its stable task id, or resolves the reserved "parent"/"main"
+// addresses from the sender's session chain so a subagent can reach its caller.
+// A child run is
 // detached from its caller, and a foreground Agent call that exceeds its
 // two-minute wait is promoted to a background task instead of being cancelled
 // (the caller gets the run_in_background async_launched shape). TaskOutput and

@@ -11,6 +11,11 @@ import (
 )
 
 // Input is everything needed to assemble the system prompt.
+//
+// A subagent's orientation (identity, depth, reply address) is not part of the
+// system prompt: it travels in the child's first user message instead, so the
+// child's prompt stays byte-identical to its parent's for prefix caching. See
+// server.subagentDirective.
 type Input struct {
 	Resources resources.Snapshot
 	Tools     []loop.Tool

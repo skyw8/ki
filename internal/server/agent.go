@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -35,7 +36,7 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 	if parentDepth >= tools.MaxAgentDepth {
 		return tools.AgentLaunch{}, fmt.Errorf("%w %d reached", errMaximumAgentDepth, tools.MaxAgentDepth)
 	}
-	child, err := session.CreateChild(s.cfg.Sessions.Root, parent)
+	child, err := s.newAgentChild(parent, req.InheritContext)
 	if err != nil {
 		return tools.AgentLaunch{}, fmt.Errorf("create agent session: %w", err)
 	}
@@ -62,6 +63,10 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 	_ = child.Close()
 
 	outputFile := filepath.Join(childDir, "events.jsonl")
+	// The child's first user message is the delegating agent's prompt plus the
+	// subagent envelope; the tool result echoes the prompt as the caller wrote
+	// it, so the master's context is not restating the envelope.
+	req.Prompt = subagentDirective(parentDepth+1, parent.ID(), req.Prompt)
 	req.SessionID = childID
 	req.MetadataPath = filepath.Join(childDir, "agent.json")
 	req.OutputFile = outputFile
@@ -75,6 +80,42 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 	return launch, nil
 }
 
+// subagentDirective wraps the delegating agent's prompt into the child's first
+// user message. A child is a fresh model call that cannot see the parent's
+// instructions, so it is told what it is and which session assigned the task.
+// Keeping this in the message rather than in the child's system prompt leaves
+// that prompt byte-identical to the parent's, which lets the provider reuse the
+// parent's cached prefix for the inherited history.
+//
+// The result travels back through the Agent tool result or the child's
+// completion notification, so the envelope does not ask the child to report:
+// SendMessage stays available (its own tool description lists the addresses) for
+// a child that needs to ask its caller something mid-task.
+//
+// The depth shown is the child's own, one below the spawning session.
+func subagentDirective(depth int, parentSessionID, prompt string) string {
+	head := fmt.Sprintf("You are a subagent at depth %d, started by another agent through the Agent tool; the task below came from that agent", depth)
+	if parentSessionID != "" {
+		head += fmt.Sprintf(" (session %s)", parentSessionID)
+	}
+	return head + ".\n\n" + prompt
+}
+
+// newAgentChild creates the delegated child session. With inheritContext the
+// child is seeded with the parent's finished history: ForkAt copies the entry
+// chain up to, but not including, the user message that triggered the in-flight
+// turn, because that message was addressed to the parent. Without it the child
+// starts empty. Both forms keep the parent edge and tree fork mode so nesting,
+// deletion, and provider boundaries are unchanged.
+func (s *Server) newAgentChild(parent *session.Session, inheritContext bool) (*session.Session, error) {
+	if inheritContext {
+		if boundary, ok := parent.LastUserBoundary(); ok {
+			return session.ForkHistoryAt(s.cfg.Sessions.Root, parent, boundary, session.ForkModeTree)
+		}
+	}
+	return session.CreateChild(s.cfg.Sessions.Root, parent)
+}
+
 // Background implements tools.AgentRuntime for the Agent tool's foreground
 // timeout: the child keeps running and its completion reaches the parent through
 // the background notification path.
@@ -86,6 +127,11 @@ func (s *Server) Background(id string) (tools.TaskSnapshot, error) {
 // parent chain. Counting the agent.json markers instead of trusting a caller-
 // supplied depth keeps the limit valid after restart and for direct runtime
 // calls, while ordinary user-created forks do not consume Agent depth.
+//
+// A parent that no longer exists (the user deleted it, orphaning this session
+// the way the sidebar already tolerates) simply ends the walk: failing closed
+// here withheld the Agent tool from every descendant of a deleted session
+// forever. Cycles and unreadable parents are still errors.
 func (s *Server) agentDepth(sess *session.Session) (int, error) {
 	if sess == nil {
 		return 0, errAgentDepthRequiresSession
@@ -117,6 +163,9 @@ func (s *Server) agentDepth(sess *session.Session) (int, error) {
 		seen[parentID] = struct{}{}
 		ancestor, err := s.open(parentID)
 		if err != nil {
+			if errors.Is(err, session.ErrSessionNotFound) {
+				return depth, nil
+			}
 			return 0, fmt.Errorf("open parent session %s while resolving agent depth: %w", parentID, err)
 		}
 		opened = append(opened, ancestor)
@@ -222,7 +271,7 @@ func (s *Server) notifyAgentCompletion(parentID, taskID, description, outputFile
 	if !ok {
 		return
 	}
-	if _, err := session.EnqueueWithOrigin(dir, content, "agent:"+taskID); err != nil {
+	if _, err := session.EnqueueSystem(dir, content, "agent:"+taskID); err != nil {
 		return
 	}
 	s.publishQueueChanged(parentID)
@@ -231,19 +280,91 @@ func (s *Server) notifyAgentCompletion(parentID, taskID, description, outputFile
 
 // SendAgentMessage implements the ordinary Agent follow-up protocol. A live
 // child is steered through its captured run Inbox; if that run has just ended,
-// AgentStore performs the race-safe queue or transcript resume.
+// AgentStore performs the race-safe queue or transcript resume. The target may
+// also be a reserved address resolved from the sender's session chain.
 func (s *Server) SendAgentMessage(ctx context.Context, req tools.AgentMessageRequest) (tools.AgentMessageResult, error) {
 	if s.agentTasks == nil {
 		return tools.AgentMessageResult{}, errAgentTaskStoreUnavailable
 	}
 	target := strings.TrimSpace(req.Target)
-	message := strings.TrimSpace(req.Message)
-	if target == "" || message == "" {
-		return tools.AgentMessageResult{}, errAgentToAndMessageRequired
+	if target == "" {
+		target = tools.AgentTargetParent
 	}
-	task, ok := s.agentTasks.Get(target)
+	message := strings.TrimSpace(req.Message)
+	if message == "" {
+		return tools.AgentMessageResult{}, errAgentMessageRequired
+	}
+	if target == tools.AgentTargetParent || target == tools.AgentTargetMain {
+		sessionID, err := s.resolveSessionTarget(req.SenderSessionID, target)
+		if err != nil {
+			return tools.AgentMessageResult{}, err
+		}
+		if sessionID == req.SenderSessionID {
+			return tools.AgentMessageResult{}, errAgentSelfMessage
+		}
+		if task, ok := s.agentTasks.TaskForSession(sessionID); ok {
+			return s.messageAgent(ctx, task.TaskID, message)
+		}
+		return s.queueSessionMessage(sessionID, "agent:"+req.SenderSessionID, message)
+	}
+	return s.messageAgent(ctx, target, message)
+}
+
+// resolveSessionTarget maps a reserved SendMessage address to a session id by
+// walking the sender's parent chain: "parent" is the immediate parent session,
+// "main" is the root of the chain.
+func (s *Server) resolveSessionTarget(senderSessionID, target string) (string, error) {
+	if senderSessionID == "" {
+		return "", errAgentSenderUnknown
+	}
+	sess, err := s.open(senderSessionID)
+	if err != nil {
+		return "", fmt.Errorf("open sender session: %w", err)
+	}
+	defer func() { _ = sess.Close() }()
+	if target == tools.AgentTargetParent {
+		parent := strings.TrimSpace(sess.Header.ParentSession)
+		if parent == "" {
+			return "", errSessionNoParent
+		}
+		return parent, nil
+	}
+	opened := make([]*session.Session, 0, 3)
+	defer func() {
+		for _, extra := range opened {
+			_ = extra.Close()
+		}
+	}()
+	current := sess
+	seen := map[string]struct{}{sess.ID(): {}}
+	for {
+		parent := strings.TrimSpace(current.Header.ParentSession)
+		if parent == "" {
+			return current.ID(), nil
+		}
+		if _, ok := seen[parent]; ok {
+			return "", fmt.Errorf("%w at %s", errSessionParentCycle, parent)
+		}
+		seen[parent] = struct{}{}
+		next, err := s.open(parent)
+		if err != nil {
+			// A deleted ancestor ends the chain: the topmost session that still
+			// exists is the closest thing to "main" this session has.
+			if errors.Is(err, session.ErrSessionNotFound) {
+				return current.ID(), nil
+			}
+			return "", fmt.Errorf("open parent session %s: %w", parent, err)
+		}
+		opened = append(opened, next)
+		current = next
+	}
+}
+
+// messageAgent steers a live agent run, or queues or resumes its next turn.
+func (s *Server) messageAgent(ctx context.Context, taskID, message string) (tools.AgentMessageResult, error) {
+	task, ok := s.agentTasks.Get(taskID)
 	if !ok {
-		return tools.AgentMessageResult{}, fmt.Errorf("%w: %s", errAgentNotFound, target)
+		return tools.AgentMessageResult{}, fmt.Errorf("%w: %s", errAgentNotFound, taskID)
 	}
 	if task.Status == tools.TaskRunning {
 		if live := s.runAt(task.SessionID); live != nil {
@@ -252,7 +373,7 @@ func (s *Server) SendAgentMessage(ctx context.Context, req tools.AgentMessageReq
 			}
 		}
 	}
-	status, err := s.agentTasks.QueueOrResume(ctx, target, message)
+	status, err := s.agentTasks.QueueOrResume(ctx, task.TaskID, message)
 	if err != nil {
 		return tools.AgentMessageResult{}, fmt.Errorf("queue or resume agent: %w", err)
 	}
@@ -264,6 +385,26 @@ func (s *Server) SendAgentMessage(ctx context.Context, req tools.AgentMessageReq
 	default:
 		return tools.AgentMessageResult{AgentID: task.TaskID, Status: status, Message: "message accepted"}, nil
 	}
+}
+
+// queueSessionMessage delivers to a session without an agent task: the
+// top-level session, or any session in the sender's chain. A live run is
+// steered in place; otherwise the message is queued and dispatched as a prompt.
+func (s *Server) queueSessionMessage(sessionID, origin, message string) (tools.AgentMessageResult, error) {
+	content := []types.Content{{Type: "text", Text: message}}
+	if live := s.runAt(sessionID); live != nil && s.pushSteerRun(live, content) {
+		return tools.AgentMessageResult{AgentID: sessionID, Status: "steered", Message: "message delivered at the next model round"}, nil
+	}
+	dir, ok := s.sidx.Lookup(sessionID)
+	if !ok {
+		return tools.AgentMessageResult{}, fmt.Errorf("%w: %s", errAgentNotFound, sessionID)
+	}
+	if _, err := session.EnqueueSystem(dir, content, origin); err != nil {
+		return tools.AgentMessageResult{}, err
+	}
+	s.publishQueueChanged(sessionID)
+	s.dispatchQueue(sessionID)
+	return tools.AgentMessageResult{AgentID: sessionID, Status: "queued", Message: "message queued for the session"}, nil
 }
 
 func (s *Server) runChildAgent(ctx context.Context, id string, req tools.AgentRequest) (tools.AgentCompletion, error) {

@@ -28,6 +28,9 @@ type AgentRequest struct {
 	Description     string
 	Prompt          string
 	RunInBackground bool
+	// InheritContext asks the server to seed the child with the parent's
+	// completed history before the directive. The zero value is a clean child.
+	InheritContext  bool
 	ParentSessionID string
 	// SessionID is assigned by server after it creates the tree child and is
 	// used to stop the task if that session is deleted immediately.
@@ -64,6 +67,15 @@ type AgentMessageRequest struct {
 	Message         string
 	SenderSessionID string
 }
+
+// Reserved SendMessage addresses. They are resolved from SenderSessionID's
+// session chain instead of naming a task directly.
+const (
+	// AgentTargetParent is the session that spawned the sender.
+	AgentTargetParent = "parent"
+	// AgentTargetMain is the root of the sender's session chain.
+	AgentTargetMain = "main"
+)
 
 // AgentMessageResult describes whether a message steered a live run, waited
 // behind a run boundary, or resumed a terminal run.
@@ -710,6 +722,26 @@ func (s *AgentStore) Close() {
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// TaskForSession finds the logical agent that owns a child session. Used to
+// resolve reserved SendMessage addresses such as "parent".
+func (s *AgentStore) TaskForSession(sessionID string) (TaskSnapshot, bool) {
+	if sessionID == "" {
+		return TaskSnapshot{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, task := range s.tasks {
+		task.mu.Lock()
+		match := task.snap.SessionID == sessionID
+		snapshot := task.snap
+		task.mu.Unlock()
+		if match {
+			return snapshot, true
+		}
+	}
+	return TaskSnapshot{}, false
 }
 
 func (s *AgentStore) task(id string) (*agentTask, bool) {

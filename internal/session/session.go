@@ -26,9 +26,12 @@ const (
 )
 
 var (
-	errCWDRequired     = errors.New("cwd required")
-	errSessionHeader   = errors.New("session header missing")
-	errSessionNotFound = errors.New("session not found")
+	errCWDRequired   = errors.New("cwd required")
+	errSessionHeader = errors.New("session header missing")
+	// ErrSessionNotFound distinguishes a session that no longer exists from an
+	// IO failure. Callers that walk session ancestry treat a deleted session as
+	// an orphaned chain instead of a damaged one.
+	ErrSessionNotFound = errors.New("session not found")
 	errEntryNotFound   = errors.New("entry")
 	errInvalidForkMode = errors.New("invalid forkMode")
 	// Why: distinct Session handles on one directory do not share Session.mu;
@@ -344,12 +347,12 @@ func Find(root, id string) (string, error) {
 	})
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("%w: %s", errSessionNotFound, id)
+			return "", fmt.Errorf("%w: %s", ErrSessionNotFound, id)
 		}
 		return "", err
 	}
 	if found == "" {
-		return "", fmt.Errorf("%w: %s", errSessionNotFound, id)
+		return "", fmt.Errorf("%w: %s", ErrSessionNotFound, id)
 	}
 	return found, nil
 }
@@ -397,6 +400,34 @@ func (s *Session) LeafEntries() []Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.leafEntriesLocked(s.leafID)
+}
+
+// LastUserBoundary returns the entry id just before the newest user-role
+// message on the current leaf path. A delegated child forks at this boundary to
+// inherit only history that had already finished: the user message that
+// triggered the in-flight turn (and everything after it) was addressed to the
+// parent, not to the child. ok is false when there is no user message or
+// nothing precedes it, i.e. the child has no completed history to inherit.
+func (s *Session) LastUserBoundary() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.leafID
+	seen := map[string]bool{}
+	for id != "" && !seen[id] {
+		seen[id] = true
+		e, ok := s.byID[id]
+		if !ok {
+			break
+		}
+		if e.Type == "message" && e.Message != nil && e.Message.Role == "user" {
+			if e.ParentID == "" {
+				return "", false
+			}
+			return e.ParentID, true
+		}
+		id = e.ParentID
+	}
+	return "", false
 }
 
 // EntriesTo returns the root-to-leaf entry path for an entry in this session.
@@ -872,6 +903,21 @@ func Fork(root string, src *Session) (*Session, error) {
 
 // ForkAt creates a new session directory containing only root -> target.
 func ForkAt(root string, src *Session, target string, requestedMode ...string) (*Session, error) {
+	return forkAt(root, src, target, nil, requestedMode...)
+}
+
+// ForkHistoryAt is ForkAt restricted to model-facing entries: messages and
+// compaction markers. A delegated child inherits finished history as
+// background, so copying the parent's request headers, usage samples, and
+// streamed updates would replay the parent's system prompt and tool schemas
+// into the child's transcript view and its jsonl for no benefit.
+func ForkHistoryAt(root string, src *Session, target string, requestedMode ...string) (*Session, error) {
+	return forkAt(root, src, target, func(e Entry) bool {
+		return e.Type == "message" || e.Type == "compaction"
+	}, requestedMode...)
+}
+
+func forkAt(root string, src *Session, target string, keep func(Entry) bool, requestedMode ...string) (*Session, error) {
 	forkMode := ForkModeFlat
 	if len(requestedMode) > 0 {
 		var err error
@@ -894,6 +940,23 @@ func ForkAt(root string, src *Session, target string, requestedMode ...string) (
 		}
 	}
 	entries := slices.Clone(src.leafEntriesLocked(target))
+	if keep != nil {
+		// Metadata entries (request headers, usage samples, streamed updates)
+		// sit on the parent chain, so dropping them has to relink the survivors;
+		// otherwise the child's chain walk stops at the first gap and the
+		// inherited history is truncated.
+		filtered := make([]Entry, 0, len(entries))
+		prev := ""
+		for _, e := range entries {
+			if !keep(e) {
+				continue
+			}
+			e.ParentID = prev
+			prev = e.ID
+			filtered = append(filtered, e)
+		}
+		entries = filtered
+	}
 	sourceDir := src.Dir
 	src.mu.Unlock()
 

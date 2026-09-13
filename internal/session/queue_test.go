@@ -39,7 +39,7 @@ func TestQueueEnqueueDequeueAndCap(t *testing.T) {
 
 func TestQueuePreservesOrigin(t *testing.T) {
 	dir := t.TempDir()
-	item, err := EnqueueWithOrigin(dir, []types.Content{{Type: "text", Text: "done"}}, "agent:a-1")
+	item, err := EnqueueSystem(dir, []types.Content{{Type: "text", Text: "done"}}, "agent:a-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +49,110 @@ func TestQueuePreservesOrigin(t *testing.T) {
 	}
 	if got.ID != item.ID || got.Origin != "agent:a-1" {
 		t.Fatalf("queued origin = %+v", got)
+	}
+	if got.Lane != QueueSystemLane {
+		t.Fatalf("EnqueueSystem lane = %q, want %q", got.Lane, QueueSystemLane)
+	}
+	if _, err := Enqueue(dir, []types.Content{{Type: "text", Text: "human"}}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := ReadQueue(dir)
+	if err != nil || len(items) != 1 || items[0].Lane != QueueHumanLane {
+		t.Fatalf("Enqueue lane = %+v, %v", items, err)
+	}
+}
+
+// A person waiting on a reply must never sit behind a system turn: the
+// completion notification was enqueued first, but the human turn is served
+// first, and system turns keep their own FIFO order.
+func TestDequeueServesHumanTurnFirst(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := EnqueueSystem(dir, []types.Content{{Type: "text", Text: "notification"}}, "agent:a-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnqueueSystem(dir, []types.Content{{Type: "text", Text: "notification-2"}}, "agent:a-2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Enqueue(dir, []types.Content{{Type: "text", Text: "human"}}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"human", "notification", "notification-2"}
+	for i, text := range want {
+		item, ok, err := Dequeue(dir)
+		if err != nil || !ok {
+			t.Fatalf("dequeue %d = %+v, %v, %v", i, item, ok, err)
+		}
+		if got := item.Content[0].Text; got != text {
+			t.Fatalf("dequeue %d = %q, want %q", i, got, text)
+		}
+	}
+	if items, err := ReadQueue(dir); err != nil || len(items) != 0 {
+		t.Fatalf("queue drained: %+v %v", items, err)
+	}
+}
+
+func TestDequeueKeepsSystemFIFOWithoutHumanTurn(t *testing.T) {
+	dir := t.TempDir()
+	for _, text := range []string{"one", "two"} {
+		if _, err := EnqueueSystem(dir, []types.Content{{Type: "text", Text: text}}, "agent:a"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []string{"one", "two"} {
+		item, ok, err := Dequeue(dir)
+		if err != nil || !ok || item.Content[0].Text != want {
+			t.Fatalf("dequeue = %+v, %v, %v; want %q", item, ok, err, want)
+		}
+	}
+}
+
+// An empty lane comes from a queue written before lanes existed. It must read
+// as system: the real human turn is still served first, and the legacy item
+// keeps its FIFO position among system turns.
+func TestDequeueTreatsLegacyItemAsSystem(t *testing.T) {
+	dir := t.TempDir()
+	legacy := QueuedItem{ID: "legacy", Content: []types.Content{{Type: "text", Text: "legacy"}}}
+	if err := writeQueue(dir, []QueuedItem{legacy}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnqueueSystem(dir, []types.Content{{Type: "text", Text: "system"}}, "agent:a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Enqueue(dir, []types.Content{{Type: "text", Text: "human"}}); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"human", "legacy", "system"} {
+		item, ok, err := Dequeue(dir)
+		if err != nil || !ok {
+			t.Fatalf("dequeue %d = %+v, %v, %v", i, item, ok, err)
+		}
+		if got := item.Content[0].Text; got != want {
+			t.Fatalf("dequeue %d = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// A retry must rejoin its own lane: the human turn keeps outranking the system
+// item that was requeued after a failed dispatch.
+func TestEnqueueFrontRestoresIntoItsLane(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := EnqueueSystem(dir, []types.Content{{Type: "text", Text: "system"}}, "agent:a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Enqueue(dir, []types.Content{{Type: "text", Text: "human"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnqueueFront(dir, QueuedItem{ID: "retry", Lane: QueueSystemLane, Content: []types.Content{{Type: "text", Text: "retry"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"human", "retry", "system"} {
+		item, ok, err := Dequeue(dir)
+		if err != nil || !ok {
+			t.Fatalf("dequeue %d = %+v, %v, %v", i, item, ok, err)
+		}
+		if got := item.Content[0].Text; got != want {
+			t.Fatalf("dequeue %d = %q, want %q", i, got, want)
+		}
 	}
 }
 

@@ -19,7 +19,7 @@ var agentForegroundTimeout = 2 * time.Minute
 
 const agentPrompt = `Launch a new agent to handle complex, multi-step tasks autonomously.
 
-The Agent tool launches a child agent that works independently with its own conversation. It starts with a clean context and uses the current session's model provider and model.
+The Agent tool launches a child agent that works independently with its own conversation and uses the current session's model provider and model. By default the child inherits this conversation's finished history as background; set inherit_context to false when it should start with no history at all.
 
 When NOT to use the Agent tool:
 - If you want to read a specific file path, use the Read tool instead of the Agent tool, to find the match more quickly.
@@ -31,22 +31,19 @@ Usage notes:
 - Launch multiple agents concurrently whenever possible; to do that, use a single message with multiple tool uses.
 - When the agent is done, it will return a single message back to you. The result is not visible to the user. To show the user the result, send a text message back with a concise summary.
 - You can optionally run agents in the background with run_in_background. A foreground agent that runs longer than 2 minutes is promoted to a background task and returns async_launched. You are notified when a background agent completes, so do NOT sleep, poll, or proactively check its progress. Use TaskOutput to wait for or inspect it, and TaskStop to cancel it.
-- Use SendMessage with the agentId to steer a live background agent or resume it after completion. Each Agent invocation starts fresh, so provide a complete task description.
+- Use SendMessage with the agentId to steer a live background agent or resume it after completion.
 - The agent's outputs should generally be trusted.
 - Clearly tell the agent whether you expect it to write code or just to do research, since it is not aware of the user's intent.
 
 ## Writing the prompt
 
-Brief the agent like a smart colleague who just walked into the room — it hasn't seen this conversation, doesn't know what you've tried, doesn't understand why this task matters.
-- Explain what you're trying to accomplish and why.
-- Describe what you've already learned or ruled out.
-- Give enough context about the surrounding problem that the agent can make judgment calls rather than just following a narrow instruction.
-- If you need a short response, say so ("report in under 200 words").
-- Lookups: hand over the exact command. Investigations: hand over the question — prescribed steps become dead weight when the premise is wrong.
+The child does not see the user's latest request — that message was addressed to you — so the goal has to come from your directive.
+- Say what to do, where, and what "done" looks like. Include file paths and line numbers rather than delegating understanding with "based on your findings, fix the bug".
+- Describe what you already learned or ruled out when it changes the approach.
+- With the default inherit_context the child can see this conversation's finished turns; with inherit_context:false it starts empty and needs the full background restated.
+- If you need a short response, say so ("report in under 200 words"). Lookups want the exact command; investigations want the question, because prescribed steps become dead weight when the premise is wrong.
 
-Terse command-style prompts produce shallow, generic work.
-
-**Never delegate understanding.** Don't write "based on your findings, fix the bug" or "based on the research, implement it." Those phrases push synthesis onto the agent instead of doing it yourself. Write prompts that prove you understood: include file paths, line numbers, what specifically to change.`
+Terse command-style prompts produce shallow, generic work.`
 
 type agentTool struct{ runtime AgentRuntime }
 
@@ -66,7 +63,8 @@ func (agentTool) Parameters() map[string]any {
 		"required": []any{"description", "prompt"},
 		"properties": map[string]any{
 			"description":       map[string]any{"type": "string", "description": "A short (3-5 word) description of the task."},
-			"prompt":            map[string]any{"type": "string", "description": "The task for the agent to perform."},
+			"prompt":            map[string]any{"type": "string", "description": "The directive for the agent to carry out; it never sees the user's latest request."},
+			"inherit_context":   map[string]any{"type": "boolean", "description": "Give the child this conversation's finished history as background. Defaults to true; set false to start the child with a clean context."},
 			"run_in_background": map[string]any{"type": "boolean", "description": "Set to true to run this agent in the background. You will be notified when it completes."},
 		},
 	}
@@ -83,6 +81,7 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) loop.ToolRe
 	req := AgentRequest{
 		Description:     stringArg(args, "description", "Running task"),
 		Prompt:          stringArg(args, "prompt", ""),
+		InheritContext:  agentBoolArg(args, "inherit_context", true),
 		RunInBackground: agentBoolArg(args, "run_in_background", false),
 	}
 	if req.Prompt == "" {

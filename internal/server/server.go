@@ -1672,7 +1672,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	agentDepth, depthErr := s.agentDepth(sess)
 	if depthErr != nil {
-		// Fail closed: a damaged ancestry must not silently re-enable recursive
+		// Fail closed: a damaged ancestry (a cycle or an unreadable parent, not a
+		// deleted one — see agentDepth) must not silently re-enable recursive
 		// Agent spawning and defeat the resource protection.
 		slog.Warn("resolve agent depth", "session_id", sess.ID(), "err", depthErr)
 		agentDepth = tools.MaxAgentDepth
@@ -1715,7 +1716,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	// The snapshot is fixed for the session until reload, while the prompt is
 	// rendered per request so tool schemas and runtime metadata stay current.
-	sys := prompt.Build(prompt.Input{Resources: snapshot, Tools: tls, Toggle: tg.Skills})
+	promptInput := prompt.Input{Resources: snapshot, Tools: tls, Toggle: tg.Skills}
+	sys := prompt.Build(promptInput)
 
 	var emit func(loop.Event) error
 	emit = func(ev loop.Event) error {

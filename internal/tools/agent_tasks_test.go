@@ -522,12 +522,23 @@ func TestSendMessageToolContract(t *testing.T) {
 	if err := tool.Validate(map[string]any{"to": "a-1", "message": "continue"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := tool.Validate(map[string]any{"message": "continue"}); err == nil {
-		t.Fatal("missing target was accepted")
+	// `to` is optional: the default address is the parent session.
+	if err := tool.Validate(map[string]any{"message": "continue"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.Validate(map[string]any{"to": "a-1"}); err == nil {
+		t.Fatal("missing message was accepted")
 	}
 	result := tool.Execute(context.Background(), map[string]any{"to": "a-1", "message": "continue"})
 	if result.IsError || !containsText(result.Content[0].Text, "steered") {
 		t.Fatalf("SendMessage result = %+v", result)
+	}
+	recorder := &recordingMessenger{}
+	if result := (sendMessageTool{messenger: recorder}).Execute(context.Background(), map[string]any{"message": "continue"}); result.IsError {
+		t.Fatalf("default target result = %+v", result)
+	}
+	if recorder.target != AgentTargetParent {
+		t.Fatalf("default target = %q, want %q", recorder.target, AgentTargetParent)
 	}
 }
 
@@ -538,6 +549,13 @@ func (fakeMessenger) SendAgentMessage(_ context.Context, req AgentMessageRequest
 		return AgentMessageResult{}, errBadMessage
 	}
 	return AgentMessageResult{AgentID: req.Target, Status: "steered", Message: "steered"}, nil
+}
+
+type recordingMessenger struct{ target string }
+
+func (m *recordingMessenger) SendAgentMessage(_ context.Context, req AgentMessageRequest) (AgentMessageResult, error) {
+	m.target = req.Target
+	return AgentMessageResult{AgentID: req.Target, Status: "queued", Message: "queued"}, nil
 }
 
 type fakeAgentRuntime struct {

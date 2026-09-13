@@ -38,6 +38,82 @@ func TestToolMessageDetailsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLastUserBoundaryExcludesNewestUserTurn(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "openai", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, ok := s.LastUserBoundary(); ok {
+		t.Fatal("empty session reported a boundary")
+	}
+	if _, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "first"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.LastUserBoundary(); ok {
+		t.Fatal("a session that only has the newest user message has nothing to inherit")
+	}
+	reply, err := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "reply"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "trigger"}}}); err != nil {
+		t.Fatal(err)
+	}
+	boundary, ok := s.LastUserBoundary()
+	if !ok || boundary != reply.ID {
+		t.Fatalf("boundary = %q, %v; want %q", boundary, ok, reply.ID)
+	}
+	if _, err := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "plan"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if boundary, ok := s.LastUserBoundary(); !ok || boundary != reply.ID {
+		t.Fatalf("boundary moved after the trigger turn: %q, %v", boundary, ok)
+	}
+}
+
+func TestForkHistoryAtKeepsMessagesAndRelinks(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "openai", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "hello"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// request_header and context_usage sit on the leaf chain between messages.
+	if _, err := s.AppendRequestHeader("system prompt", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendContextUsage(10, 100, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "reply"}}}); err != nil {
+		t.Fatal(err)
+	}
+	dst, err := ForkHistoryAt(t.TempDir(), s, s.LeafID(), ForkModeTree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dst.Close() }()
+	entries := dst.Entries()
+	if len(entries) != 2 {
+		t.Fatalf("entries = %+v", entries)
+	}
+	for i, entry := range entries {
+		if entry.Type != "message" {
+			t.Fatalf("entry %d is %q", i, entry.Type)
+		}
+	}
+	if entries[0].ParentID != "" || entries[1].ParentID != entries[0].ID {
+		t.Fatalf("parent links not relinked: %+v", entries)
+	}
+	messages := dst.MessagesToLeaf()
+	if len(messages) != 2 || messages[0].Text() != "hello" || messages[1].Text() != "reply" {
+		t.Fatalf("messages = %+v", messages)
+	}
+}
+
 func TestSidebandEventDoesNotAdvanceConversationLeaf(t *testing.T) {
 	s, err := Create(t.TempDir(), t.TempDir(), "openai", "test")
 	if err != nil {

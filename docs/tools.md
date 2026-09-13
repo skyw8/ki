@@ -22,8 +22,8 @@
 | `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
 | `PowerShell` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 仅 Windows 注册；PowerShell 原生命令、退出码、流式输出和后台任务与 Bash 使用同一生命周期 |
-| `Agent` | `description`、`prompt`；可选 `run_in_background` | 新建一个 `forkMode=tree` 的干净子 session（不继承 parent history），固定沿用当前 session 的 provider/model；后台、以及前台超过 2 分钟后，返回 `async_launched` 和 `outputFile`，否则返回 `completed` |
-| `SendMessage` | `to`、`message`；可选 `summary` | 按稳定 `agentId` 在当前 run 边界 steer，或从 child transcript 续跑已完成/停止的后台 agent |
+| `Agent` | `description`、`prompt`；可选 `inherit_context`、`run_in_background` | 新建一个 `forkMode=tree` 的 child，固定沿用当前 session 的 provider/model；默认继承 parent 的已完成历史，后台、以及前台超过 2 分钟后返回 `async_launched` 和 `outputFile`，否则返回 `completed` |
+| `SendMessage` | `message`；可选 `to`（默认 `parent`）、`summary` | `to` 支持保留名 `"parent"` / `"main"` 或稳定 `agentId`；按目标在当前 run 边界 steer，或从目标 transcript 续跑 |
 | `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待 shell/agent 后台任务；返回有界输出、状态、结果和输出文件路径 |
 | `TaskStop` | `task_id`（或兼容的 `shell_id`） | 终止 shell/agent 后台任务并返回最终状态 |
 | `Monitor` | `command`、`description` | 启动流式监控任务，逐行发送输出更新；结束时返回任务结果 |
@@ -137,15 +137,19 @@
 
 ## Agent
 
-- `description` 是 3–5 个词的短任务名，`prompt` 是子 agent 的完整任务指令。没有 `subagent_type`：所有 child 都跑同一套 general-purpose 配置（类型化 subagent 留待后续）。
-- `Agent` 调用 `session.CreateChild`：child 记录 parent 边并沿用 provider/model/thinking，但**不复制** parent 的 history。子 agent 从干净 context 起步，只把 directive 作为第一条 user message 运行现有 loop；prompt 必须自包含（parent 不再把自己的对话 fork 进去，否则子代理会看到 parent 的 user turn 并重复委派）。
+- `description` 是 3–5 个词的短任务名，`prompt` 是子 agent 的 directive。没有 `subagent_type`：所有 child 都跑同一套 general-purpose 配置（类型化 subagent 留待后续）。
+- `inherit_context`（默认 true）把 parent 的**已完成历史**作为背景复制进 child，边界是当前 leaf 链上最新 user message 之前（见 `docs/session.md`）；因此 child 看不到触发本轮的用户消息——那条是发给 parent 的——directive 必须自带当前目标。`inherit_context:false` 建完全不继承的干净 child，directive 必须完全自包含。
+- child 的第一条 user 消息是 server 生成的 **subagent envelope + directive**：`You are a subagent at depth N, started by another agent through the Agent tool; the task below came from that agent (session <id>).`，空行后接 directive 原文。因为 child 是一次全新的模型调用、看不到 parent 的指令，信封必须随消息走；放进 system prompt 会让它和 parent 的系统提示不再逐字节相同，破坏跨会话的前缀缓存。depth 记的是 child 自己的层数（`parentDepth+1`）。
+- 信封**不要求 child 汇报**：结果本来就通过 tool result（前台）或 `<task-notification>`（后台/提升）自动回到调用方，让 child 再 `SendMessage` 一次只会造成重复汇报、还会诱导它把"已发消息"当成任务完成。`SendMessage` 对自己那条 prompt 里列出的 `"parent"` / `"main"` 地址保留给"中途要问调用方"的场景。`SendMessage` 续跑 child 时跟进的消息不再重复信封。
+- child 沿用 parent 的 provider/model/thinking 并沿用同一条 loop；无论是否继承历史，directive 都是子会话自己的第一条消息，parent 的 user turn 永远不会被当成 child 的任务（这正是最初 fork 整段对话会导致子代理重复委派的原因）。
 - 子 agent 使用自己的 `runState`、extension Prepare、工具集和 `events.jsonl`；因此可以递归创建 tree child，且 child 的工具结果不会污染 parent context。主会话为深度 0，最多允许 Agent child 深度 3；深度 3 的 child 保留 `SendMessage`，但不再暴露 `Agent`。
 - `run_in_background=true` 与 parent prompt 脱钩，立即返回 `{"status":"async_launched", "agentId":…, "outputFile":…}`；`TaskOutput` 可等待它，`TaskStop` 可取消它。前台 agent 返回 Claude Code 兼容的 `completed` 结果对象。
 - 前台 agent 最多占用 parent turn 2 分钟（`agentForegroundTimeout`）：超时后 child **转为后台继续运行**（不取消），Agent 返回与 `run_in_background` 相同的 `async_launched` 结果，完成时按后台通知路径回报。child 的 run context 与调用方解耦（`AgentStore.startRun` 用 `context.WithoutCancel`），所以 parent turn 结束不会杀掉它；parent 被 abort 时由 Agent 工具显式 `TaskStop`，避免孤儿任务。
 - child 继承当前 session 的 provider、model 和 thinking effort；Agent schema 不接受模型覆盖，避免子 agent 跨供应商使用不同凭据或协议。
 - `cwd` override 和 `worktree` isolation 不在模型可见 schema 中；child 始终继承 parent cwd，隔离依靠 session tree，不会静默提供未实现的隔离。
 - 当前 Agent prompt/schema 只描述普通 parent → child delegation；不描述 Agent Teams 的命名成员、`team_name`、permission mode、roster 或 peer messaging。
-- 后台 Agent 返回的 `agentId` 可传给 `SendMessage`；运行中消息在当前 model/tool round 后注入，已完成或停止的 child 从原 session transcript 续跑。`TaskOutput` 只读状态/结果，`TaskStop` 只停止当前 run。
+- 子代理给正在**同步等待**它的 parent 发消息时，消息会先落在 parent 的 Inbox，直到 parent 拿到 tool result 才被处理；parent 用 `run_in_background`（或等 2 分钟转后台）才能及时收到。
+- `SendMessage` 的 `to` 省略时默认 `"parent"`。保留名由 server 从发送方 session 链解析：`"parent"` 是 `header.parentSession`，`"main"` 沿链走到顶端；也接受稳定的 `agentId`。解析出的 session 若是一个 agent task，走 steer / queue / resume（运行中消息在当前 model/tool round 后注入，已完成或停止的 child 从原 session transcript 续跑）；若是普通 session（如顶层 main），有 live run 就 steer，否则 `EnqueueSystem` + `dispatchQueue` 起新的一轮（`system` lane，排在等待中的人类消息之后）。`TaskOutput` 只读状态/结果，`TaskStop` 只停止当前 run。
 - 删除 session 会终止并移除其 agent task 记录；关闭 server 会把运行中的 agent
   标记为 `interrupted`，保留 metadata 供下次启动恢复。shell 临时输出文件仍按
   原有 JobStore 生命周期清理。

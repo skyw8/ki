@@ -6,7 +6,7 @@
 
 System prompt 按以下顺序组装：
 
-1. **身份与职责**：说明模型运行在 ki agent harness 中，可以读取文件、执行命令、修改代码和创建文件。
+1. **身份与职责**：说明模型运行在 ki agent harness 中，可以读取文件、执行命令、修改代码和创建文件。这一段（以及整个 system prompt）对 subagent 与主会话**逐字节相同**：subagent 的自我认知（depth、派它的 session）不放这里，而是作为它的第一条 user 消息由 server 包在 directive 外层（见 `docs/tools.md` 的 Agent 小节）。这样 parent 与 child 共享同一段 system 前缀，provider 的前缀缓存可以跨会话复用。
 2. **Ki 配置位置**：存在 `KI_HOME` 时，列出 `ki.toml`、`skills/`、`models.json`、`credentials.json`、扩展目录、项目级 `<cwd>/.ki/`，以及 `ki config path`。
 3. **可用工具**：逐项输出本轮工具的名称和简短说明；没有工具时输出 `(none)`。这里包括内置工具以及已经绑定的扩展工具，并补充项目可能提供其他自定义工具。
 4. **通用行为约束**：要求回答简洁，并在操作文件时清晰展示路径。

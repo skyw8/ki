@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -514,8 +515,8 @@ func TestAgentSpawnsTreeChildAndRunsChildLoop(t *testing.T) {
 	if inheritedParentPrompt {
 		t.Fatalf("child inherited the parent turn: %+v", detail.Entries)
 	}
-	if firstUser != "child directive" {
-		t.Fatalf("child should start from the directive, got first user %q", firstUser)
+	if !strings.HasPrefix(firstUser, "You are a subagent at depth 1") || !strings.HasSuffix(strings.TrimSpace(firstUser), "child directive") {
+		t.Fatalf("child should start from the enveloped directive, got first user %q", firstUser)
 	}
 }
 
@@ -924,10 +925,259 @@ func TestAgentChildStartsWithCleanContext(t *testing.T) {
 	if len(messages) == 0 || messages[0].Role != "user" || !strings.Contains(messages[0].Text(), "child directive") {
 		t.Fatalf("child transcript should start with the directive, got %+v", messages)
 	}
+	first := messages[0].Text()
+	if !strings.Contains(first, "You are a subagent at depth 1") || !strings.Contains(first, parentID) {
+		t.Fatalf("directive is missing the subagent envelope: %q", first)
+	}
+	if strings.Contains(first, "SendMessage") {
+		t.Fatalf("the envelope must not assign the child a reporting duty: %q", first)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(first), "child directive") {
+		t.Fatalf("envelope must precede the directive: %q", first)
+	}
 	for _, message := range messages {
 		if strings.Contains(message.Text(), "parent request text") {
 			t.Fatalf("child transcript inherited the parent turn: %q", message.Text())
 		}
+	}
+}
+
+// agentEchoStreamer replies with the text of the last user message so tests can
+// tell turns apart.
+type agentEchoStreamer struct{}
+
+func (agentEchoStreamer) Stream(_ context.Context, req loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {
+	text := "reply"
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			text = "ack: " + req.Messages[i].Text()
+			break
+		}
+	}
+	return types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: text}}, StopReason: "stop"}, nil
+}
+
+func postPrompt(t *testing.T, hs *httptest.Server, id, text string) {
+	t.Helper()
+	body, err := marshalJSON(map[string]any{"text": text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("prompt status = %d", res.StatusCode)
+	}
+	waitAgentEnd(t, hs, id)
+}
+
+// A child created with inherit_context sees the parent's finished history, but
+// not the user message that triggered the in-flight turn.
+func TestAgentChildInheritsCompletedHistory(t *testing.T) {
+	srv, hs := testServerWith(t, agentEchoStreamer{})
+
+	parentID := createSession(t, hs, t.TempDir())
+	postPrompt(t, hs, parentID, "first turn")
+	postPrompt(t, hs, parentID, "second turn")
+
+	parentSess, err := srv.open(parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentMetadata := map[string]bool{}
+	for _, entry := range parentSess.Entries() {
+		if entry.Type != "message" && entry.Type != "compaction" {
+			parentMetadata[entry.ID] = true
+		}
+	}
+	_ = parentSess.Close()
+	if len(parentMetadata) == 0 {
+		t.Fatal("parent has no metadata entries to filter")
+	}
+
+	launch, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
+		Description: "forked child", Prompt: "child directive", RunInBackground: true,
+		InheritContext: true, ParentSessionID: parentID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Wait(context.Background(), launch.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	child, err := srv.open(launch.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = child.Close() }()
+	for _, entry := range child.Entries() {
+		if parentMetadata[entry.ID] {
+			t.Fatalf("child copied the parent's %q metadata entry", entry.Type)
+		}
+	}
+	texts := make([]string, 0)
+	for _, message := range child.MessagesToLeaf() {
+		texts = append(texts, message.Text())
+	}
+	joined := strings.Join(texts, "\n")
+	if !strings.Contains(joined, "first turn") {
+		t.Fatalf("completed history missing: %v", texts)
+	}
+	if strings.Contains(joined, "second turn") {
+		t.Fatalf("in-flight user turn leaked into the child: %v", texts)
+	}
+	if !strings.Contains(joined, "child directive") {
+		t.Fatalf("directive missing: %v", texts)
+	}
+	own := ""
+	for _, message := range child.MessagesToLeaf() {
+		if message.Role == "user" && strings.Contains(message.Text(), "child directive") {
+			own = message.Text()
+		}
+	}
+	if !strings.Contains(own, "You are a subagent at depth 1") || !strings.Contains(own, parentID) {
+		t.Fatalf("inherited directive is missing the envelope: %q", own)
+	}
+}
+
+// Deleting a session orphans its descendants (the sidebar nests them at top
+// level). The depth walk must end at the hole instead of failing closed, which
+// used to withhold the Agent tool from every descendant of a deleted session.
+func TestAgentDepthToleratesDeletedAncestor(t *testing.T) {
+	srv, hs := testServerWith(t, agentEchoStreamer{})
+	defer hs.Close()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	rootID := createSession(t, hs, t.TempDir())
+	child, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
+		Description: "child", Prompt: "child directive", RunInBackground: true, ParentSessionID: rootID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Wait(context.Background(), child.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	rootDir, ok := srv.sidx.Lookup(rootID)
+	if !ok {
+		t.Fatal("root session is not indexed")
+	}
+	if err := session.Remove(rootDir); err != nil {
+		t.Fatal(err)
+	}
+	srv.sidx.Remove(rootID)
+
+	childSess, err := srv.open(child.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = childSess.Close() }()
+	depth, err := srv.agentDepth(childSess)
+	if err != nil {
+		t.Fatalf("a deleted ancestor must end the walk: %v", err)
+	}
+	if depth != 1 {
+		t.Fatalf("depth = %d, want 1 (the child itself)", depth)
+	}
+	if _, err := srv.SendAgentMessage(context.Background(), tools.AgentMessageRequest{
+		Target: tools.AgentTargetMain, Message: "hello", SenderSessionID: child.SessionID,
+	}); !errors.Is(err, errAgentSelfMessage) {
+		t.Fatalf("the deepest surviving session is the sender, so main must resolve to it: %v", err)
+	}
+}
+
+// The envelope reports the child's own depth, so a nested delegation counts the
+// Agent layers below the main session rather than the caller's depth.
+func TestAgentChildEnvelopeDepthCountsNesting(t *testing.T) {
+	srv, hs := testServerWith(t, agentEchoStreamer{})
+	defer hs.Close()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	rootID := createSession(t, hs, t.TempDir())
+	child, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
+		Description: "child", Prompt: "child directive", RunInBackground: true, ParentSessionID: rootID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Wait(context.Background(), child.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	grandchild, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
+		Description: "grandchild", Prompt: "grandchild directive", RunInBackground: true,
+		ParentSessionID: child.SessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Wait(context.Background(), grandchild.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := srv.open(grandchild.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	messages := sess.MessagesToLeaf()
+	if len(messages) == 0 {
+		t.Fatal("grandchild transcript is empty")
+	}
+	first := messages[0].Text()
+	if !strings.Contains(first, "You are a subagent at depth 2") || !strings.Contains(first, child.SessionID) {
+		t.Fatalf("grandchild envelope: %q", first)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(first), "grandchild directive") {
+		t.Fatalf("envelope must precede the directive: %q", first)
+	}
+}
+
+func TestSendAgentMessageResolvesReservedAddresses(t *testing.T) {
+	srv, hs := testServerWith(t, agentEchoStreamer{})
+	parentID := createSession(t, hs, t.TempDir())
+
+	if _, err := srv.SendAgentMessage(context.Background(), tools.AgentMessageRequest{
+		Target: tools.AgentTargetParent, Message: "hello", SenderSessionID: parentID,
+	}); err != errSessionNoParent {
+		t.Fatalf("parent from main session = %v", err)
+	}
+	if _, err := srv.SendAgentMessage(context.Background(), tools.AgentMessageRequest{
+		Target: tools.AgentTargetMain, Message: "hello",
+	}); err != errAgentSenderUnknown {
+		t.Fatalf("unknown sender = %v", err)
+	}
+
+	launch, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
+		Description: "child", Prompt: "child directive", RunInBackground: true, ParentSessionID: parentID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Wait(context.Background(), launch.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	result, err := srv.SendAgentMessage(context.Background(), tools.AgentMessageRequest{
+		Target: tools.AgentTargetParent, Message: "status update", SenderSessionID: launch.SessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AgentID != parentID {
+		t.Fatalf("parent resolved to %q, want %q", result.AgentID, parentID)
+	}
+	result, err = srv.SendAgentMessage(context.Background(), tools.AgentMessageRequest{
+		Target: tools.AgentTargetMain, Message: "root update", SenderSessionID: launch.SessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AgentID != parentID {
+		t.Fatalf("main resolved to %q, want %q", result.AgentID, parentID)
 	}
 }
 

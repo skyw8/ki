@@ -9,9 +9,14 @@ import (
 	"ki/internal/loop"
 )
 
-const sendMessagePrompt = `Send a follow-up message to a running or completed background agent.
+const sendMessagePrompt = `Send a message to another agent.
 
-Use the stable agentId returned by Agent. A live agent receives the message after its current model/tool round; a completed, stopped, or interrupted agent resumes from its existing session transcript.`
+Targets:
+- "parent" (default): the session that spawned this one. A subagent uses this to ask its caller something while working; its final result already travels back on its own.
+- "main": the top-level session at the root of this session chain.
+- an agentId returned by Agent: steer or resume that specific child.
+
+A live agent receives the message after its current model/tool round; a completed, stopped, or interrupted agent resumes from its existing session transcript.`
 
 type sendMessageTool struct{ messenger AgentMessenger }
 
@@ -23,9 +28,9 @@ func (sendMessageTool) Prompt() string      { return sendMessagePrompt }
 func (sendMessageTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object", "additionalProperties": false,
-		"required": []any{"to", "message"},
+		"required": []any{"message"},
 		"properties": map[string]any{
-			"to":      map[string]any{"type": "string", "description": "The stable agentId returned by Agent."},
+			"to":      map[string]any{"type": "string", "description": "Recipient: \"parent\" (default), \"main\", or an agentId returned by Agent."},
 			"summary": map[string]any{"type": "string", "description": "A short summary of the follow-up message."},
 			"message": map[string]any{"type": "string", "description": "The instruction to deliver to the agent."},
 		},
@@ -41,10 +46,10 @@ func (t sendMessageTool) Execute(ctx context.Context, args map[string]any) loop.
 		return errRes("agent messaging is unavailable")
 	}
 	target := strings.TrimSpace(stringArg(args, "to", ""))
-	message := strings.TrimSpace(stringArg(args, "message", ""))
 	if target == "" {
-		return errRes("to is required")
+		target = AgentTargetParent
 	}
+	message := strings.TrimSpace(stringArg(args, "message", ""))
 	if message == "" {
 		return errRes("message is required")
 	}
