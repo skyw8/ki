@@ -603,11 +603,15 @@ test('edit branches in place with attachments and fork opens a new session', asy
 	await expect(page.getByTestId('global-drop-overlay')).toHaveCount(0)
 	await expect(page.locator('.attachment-draft-file[title="global-drop.go"]')).toBeVisible()
   await page.getByTestId('edit-send').click()
-  await expect(page.getByTestId('user-bubble')).toContainText(edited)
-  await expect(page.getByTestId('user-bubble').locator('.message-image img')).toBeVisible()
-  await expect(page.getByTestId('user-bubble').locator('.message-images')).toBeVisible()
-  await expect(page.getByTestId('user-bubble').locator('.user-text-bubble')).toHaveText(edited)
-  await page.getByTestId('user-bubble').getByRole('button', { name: '放大查看图片' }).click()
+  // Why: an edit appends a branch, and the replaced branch can still be attached
+  // for a frame, so address each branch by its own text instead of the testid.
+  const editedBubble = page.getByTestId('user-bubble').filter({ hasText: edited })
+  const originalBubble = page.getByTestId('user-bubble').filter({ hasText: original })
+  await expect(editedBubble).toContainText(edited)
+  await expect(editedBubble.locator('.message-image img')).toBeVisible()
+  await expect(editedBubble.locator('.message-images')).toBeVisible()
+  await expect(editedBubble.locator('.user-text-bubble')).toHaveText(edited)
+  await editedBubble.getByRole('button', { name: '放大查看图片' }).click()
   await expect(page.getByRole('dialog', { name: '图片预览' })).toBeVisible()
   await page.getByRole('button', { name: '关闭图片预览' }).click()
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
@@ -616,15 +620,17 @@ test('edit branches in place with attachments and fork opens a new session', asy
   await expectMinTarget(page.locator('.branch-nav button').last(), 'next branch')
 
   await page.locator('.branch-nav button').first().click()
-  await expect(page.getByTestId('user-bubble')).toContainText(original)
+  await expect(originalBubble).toBeVisible()
+  await expect(originalBubble).toContainText(original)
   await page.locator('.branch-nav button').last().click()
-  await expect(page.getByTestId('user-bubble')).toContainText(edited)
+  await expect(editedBubble).toBeVisible()
+  await expect(editedBubble).toContainText(edited)
 
   await page.getByTestId('fork-msg').click()
   await expect.poll(async () => page.evaluate(async () => {
     return (await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as unknown[]).length
   })).toBe(before.count + 1)
-  await expect(page.getByTestId('user-bubble')).toContainText(edited)
+  await expect(editedBubble).toContainText(edited)
 
   await page.getByTestId('regen-msg').click()
   await expect(page.locator('.branch-nav')).toContainText('2 / 2')
