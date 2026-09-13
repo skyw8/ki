@@ -481,6 +481,14 @@ func TestAgentToolForegroundStopsChildOnParentCancel(t *testing.T) {
 	}, "aborted parent left the child running")
 }
 
+// messengerAgentRuntime is a runtime that can also receive SendMessage, so a
+// Set build exposes both Agent and SendMessage.
+type messengerAgentRuntime struct{ fakeAgentRuntime }
+
+func (messengerAgentRuntime) SendAgentMessage(context.Context, AgentMessageRequest) (AgentMessageResult, error) {
+	return AgentMessageResult{Status: "steered"}, nil
+}
+
 func stackedAgentSnapshots(store *AgentStore) []TaskSnapshot {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
@@ -505,15 +513,21 @@ func waitFor(t *testing.T, ok func() bool, message string) {
 	t.Fatal(message)
 }
 
-func TestAgentToolIsWithheldAtMaximumDepth(t *testing.T) {
-	runtime := fakeAgentRuntime{store: NewAgentStore()}
-	atLimit := Set{CWD: t.TempDir(), Agent: runtime, AgentDepth: MaxAgentDepth}.Build(Profile{})
-	if pick(atLimit, "Agent") != nil {
-		t.Fatalf("Agent was exposed at depth %d: %v", MaxAgentDepth, names(atLimit))
+// Agent must be exposed unconditionally. The tool set is part of the provider's
+// cached prefix, so withholding Agent at MaxAgentDepth used to change the tool
+// schemas and the system prompt's tool list, invalidating the inherited prefix a
+// delegated child exists to reuse. Set deliberately has no depth input: the
+// limit is enforced by the spawn call, and a child created at the limit is told
+// not to delegate in its directive envelope.
+func TestAgentToolIsExposedAtEveryDepth(t *testing.T) {
+	runtime := messengerAgentRuntime{fakeAgentRuntime{store: NewAgentStore()}}
+	built := Set{CWD: t.TempDir(), Agent: runtime}.Build(Profile{})
+	if pick(built, "Agent") == nil {
+		t.Fatalf("Agent missing from %v", names(built))
 	}
-	belowLimit := Set{CWD: t.TempDir(), Agent: runtime, AgentDepth: MaxAgentDepth - 1}.Build(Profile{})
-	if pick(belowLimit, "Agent") == nil {
-		t.Fatalf("Agent was not exposed below depth limit: %v", names(belowLimit))
+	// A deepest child keeps its one non-spawning channel back to the caller.
+	if pick(built, "SendMessage") == nil {
+		t.Fatalf("SendMessage missing from %v", names(built))
 	}
 }
 

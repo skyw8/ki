@@ -87,7 +87,6 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
 	profile := tools.Profile{Editor: tools.EditorWriteEdit}
-	agentDepth := 0
 	if sessionID != "" {
 		sess, err := s.open(sessionID)
 		if err != nil {
@@ -105,13 +104,10 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 		if info.ApplyPatchToolType == "freeform" {
 			profile.Editor = tools.EditorApplyPatch
 		}
-		var depthErr error
-		agentDepth, depthErr = s.agentDepth(sess)
-		if depthErr != nil {
-			// Why: a damaged ancestry must not make the catalog claim that
-			// recursive Agent spawning is available at an unsafe depth.
-			agentDepth = tools.MaxAgentDepth
-		}
+		// Why this catalog does not resolve Agent depth: the tool list shown to
+		// clients must match the tool list sent to the provider, which is
+		// deliberately independent of the session's Agent depth. A deep session
+		// still reports Agent; the spawn call itself refuses past the limit.
 	} else if ref := s.registry.Default(); ref.Provider != "" && ref.Model != "" {
 		// Settings can be opened before a session exists. Use the last selected
 		// model when it is available, while retaining a useful fallback catalog
@@ -130,7 +126,7 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 		cwd = "."
 	}
 	builtins := (tools.Set{
-		CWD: cwd, Jobs: s.jobsFor(sessionID), Agent: s, AgentDepth: agentDepth,
+		CWD: cwd, Jobs: s.jobsFor(sessionID), Agent: s,
 		AgentParentSessionID: sessionID, Shells: s.shells, Mutations: s.mutations,
 	}).Build(profile)
 	tg := toggles.Load(s.cfg.Home)

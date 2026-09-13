@@ -28,12 +28,9 @@ type Profile struct {
 
 // Set binds built-in tools to a session cwd.
 type Set struct {
-	CWD   string
-	Jobs  *JobStore
-	Agent AgentRuntime
-	// AgentDepth is the current Agent-created child depth. The main session is
-	// depth 0; at MaxAgentDepth the Agent tool is withheld.
-	AgentDepth           int
+	CWD                  string
+	Jobs                 *JobStore
+	Agent                AgentRuntime
 	AgentParentSessionID string
 	Shells               ShellRuntime
 	ReadOps              ReadOperations
@@ -86,12 +83,15 @@ func (s Set) Build(profile Profile) []loop.Tool {
 		out = append(out, monitorTool{cwd: cwd, jobs: jobs, shell: shells.bash})
 	}
 	if agent != nil {
-		// Why: a recursive Agent call can otherwise fan out without a bound and
-		// exhaust provider, process, or disk resources. Keep SendMessage for a
-		// deepest child, but withhold only the spawning capability at the limit.
-		if s.AgentDepth < MaxAgentDepth {
-			out = append(out, agentTool{runtime: agent})
-		}
+		// The tool set is part of the provider's cached prefix, so it must not
+		// depend on how deep this session sits in the Agent chain: withholding
+		// Agent at MaxAgentDepth used to change both the tool schemas and the
+		// system prompt's tool list, which invalidated the whole inherited
+		// prefix (the very reuse that moving a child's identity into its first
+		// user message exists to preserve). The depth limit is enforced where
+		// the spawn happens (server.SpawnAgent refuses past MaxAgentDepth) and
+		// announced in the child's directive envelope.
+		out = append(out, agentTool{runtime: agent})
 		if messenger, ok := agent.(AgentMessenger); ok {
 			out = append(out, sendMessageTool{messenger: messenger})
 		}

@@ -19,8 +19,11 @@
 // seeded with the parent's finished history up to the user message that
 // triggered the in-flight turn; inherit_context:false starts it clean. The
 // directive itself arrives as the child's first user message wrapped in a
-// subagent envelope carrying its depth and the session that delegated, so the child's
-// system prompt can stay byte-identical to its parent's. It is
+// subagent envelope carrying its depth, the session that delegated, and — at
+// MaxAgentDepth — the instruction not to delegate again, so the child's system
+// prompt and tool schemas can stay byte-identical to its parent's. Set therefore
+// never withholds Agent; the depth limit is refused by the spawn call, not by
+// trimming the tool set (which would break the cached prefix). It is
 // bounded to three child layers below the main session. SendMessage addresses a
 // child by its stable task id, or resolves the reserved "parent"/"main"
 // addresses from the sender's session chain so a subagent can reach its caller.

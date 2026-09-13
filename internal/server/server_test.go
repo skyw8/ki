@@ -1135,6 +1135,79 @@ func TestAgentChildEnvelopeDepthCountsNesting(t *testing.T) {
 	if !strings.HasSuffix(strings.TrimSpace(first), "grandchild directive") {
 		t.Fatalf("envelope must precede the directive: %q", first)
 	}
+
+	greatGrandchild, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
+		Description: "great grandchild", Prompt: "great grandchild directive", RunInBackground: true,
+		ParentSessionID: grandchild.SessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Wait(context.Background(), greatGrandchild.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	deep, err := srv.open(greatGrandchild.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = deep.Close() }()
+	deepMessages := deep.MessagesToLeaf()
+	if len(deepMessages) == 0 {
+		t.Fatal("great-grandchild transcript is empty")
+	}
+	deepFirst := deepMessages[0].Text()
+	if !strings.Contains(deepFirst, "You are a subagent at depth 3") {
+		t.Fatalf("great-grandchild envelope: %q", deepFirst)
+	}
+	// The limit is announced in the message, not by withholding the tool.
+	if !strings.Contains(deepFirst, "maximum nesting depth (3)") || !strings.Contains(deepFirst, "do not call the Agent tool") {
+		t.Fatalf("depth-limit envelope must tell the child not to delegate: %q", deepFirst)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(deepFirst), "great grandchild directive") {
+		t.Fatalf("envelope must precede the directive: %q", deepFirst)
+	}
+	limit := lastRequestHeader(t, deep)
+	parent := lastRequestHeader(t, sess)
+	if limit.System != parent.System {
+		t.Fatal("depth limit changed the system prompt; the provider prefix cache would break")
+	}
+	if pickTool(limit.Tools, "Agent") == nil {
+		t.Fatalf("Agent must stay in the tool schemas at the depth limit: %v", toolNames(limit.Tools))
+	}
+	if !strings.Contains(limit.System, "- Agent:") {
+		t.Fatalf("Agent must stay in the system prompt tool list at the depth limit: %q", limit.System)
+	}
+}
+
+func lastRequestHeader(t *testing.T, sess *session.Session) session.Entry {
+	t.Helper()
+	var hdr session.Entry
+	for _, e := range sess.Entries() {
+		if e.Type == "request_header" {
+			hdr = e
+		}
+	}
+	if hdr.Type != "request_header" {
+		t.Fatal("session recorded no request_header entry")
+	}
+	return hdr
+}
+
+func pickTool(tools []session.ToolSchema, name string) *session.ToolSchema {
+	for i := range tools {
+		if tools[i].Name == name {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
+func toolNames(tools []session.ToolSchema) []string {
+	out := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		out = append(out, tool.Name)
+	}
+	return out
 }
 
 func TestSendAgentMessageResolvesReservedAddresses(t *testing.T) {

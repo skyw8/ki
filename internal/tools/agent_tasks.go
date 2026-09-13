@@ -20,6 +20,11 @@ type AgentRun func(context.Context, string, string, bool) (AgentCompletion, erro
 // MaxAgentDepth is the maximum number of Agent-created child layers below the
 // main session. The main session is depth 0, so depth 3 is the deepest child
 // that may run, but it cannot create another Agent child.
+//
+// The limit is enforced by refusing the spawn (and by telling a child created
+// at the limit not to delegate in its directive envelope), never by withholding
+// the Agent tool: the tool set is part of the provider's cached prefix, so it
+// stays identical to the parent's at every depth.
 const MaxAgentDepth = 3
 
 // AgentRequest describes one child agent launch. The parent session owns the

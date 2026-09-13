@@ -1670,16 +1670,14 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	if info.ApplyPatchToolType == "freeform" {
 		profile.Editor = tools.EditorApplyPatch
 	}
-	agentDepth, depthErr := s.agentDepth(sess)
-	if depthErr != nil {
-		// Fail closed: a damaged ancestry (a cycle or an unreadable parent, not a
-		// deleted one — see agentDepth) must not silently re-enable recursive
-		// Agent spawning and defeat the resource protection.
-		slog.Warn("resolve agent depth", "session_id", sess.ID(), "err", depthErr)
-		agentDepth = tools.MaxAgentDepth
-	}
+	// Why the prompt does not resolve the session's Agent depth: the tool set
+	// feeds both the provider's tool schemas and the system prompt's tool list,
+	// so making it depend on the durable parent chain meant a deep child (or a
+	// session whose ancestry changed mid-conversation) rendered a different
+	// prefix from its parent and lost the prefix cache. Depth is enforced at
+	// spawn time instead; see tools.Set.Build and Server.SpawnAgent.
 	tls := tools.Set{
-		CWD: sess.Header.CWD, Jobs: jobs, Agent: s, AgentDepth: agentDepth,
+		CWD: sess.Header.CWD, Jobs: jobs, Agent: s,
 		// Leave the entry unset so SpawnAgent resolves the leaf at the actual
 		// Agent tool-call boundary, after the current user/assistant history has
 		// been appended. Capturing it while assembling tools would fork stale

@@ -93,12 +93,22 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 // a child that needs to ask its caller something mid-task.
 //
 // The depth shown is the child's own, one below the spawning session.
+//
+// A child spawned at the depth limit is also told, here, not to delegate. The
+// Agent tool stays in its tool set anyway: withholding it would change the tool
+// schemas and the system prompt's tool list, and a changed prefix defeats the
+// cache reuse this envelope exists to protect. A call past the limit therefore
+// fails at the spawn boundary with a "maximum agent depth" tool result.
 func subagentDirective(depth int, parentSessionID, prompt string) string {
 	head := fmt.Sprintf("You are a subagent at depth %d, started by another agent through the Agent tool; the task below came from that agent", depth)
 	if parentSessionID != "" {
 		head += fmt.Sprintf(" (session %s)", parentSessionID)
 	}
-	return head + ".\n\n" + prompt
+	head += "."
+	if depth >= tools.MaxAgentDepth {
+		head += fmt.Sprintf(" You are at the maximum nesting depth (%d), so do not call the Agent tool: complete this task yourself.", tools.MaxAgentDepth)
+	}
+	return head + "\n\n" + prompt
 }
 
 // newAgentChild creates the delegated child session. With inheritContext the
