@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -25,12 +26,20 @@ func killCmd(cmd *exec.Cmd) {
 	// Why: Process.Kill is TerminateProcess and leaves descendants behind, and
 	// `taskkill /T` walks the parent chain recorded by the process launcher,
 	// which misses children of an MSYS shell. Walk the toolhelp snapshot instead
-	// and terminate deepest first, so a bash pipeline (find, sleep, ...) cannot
-	// keep the stdout pipe open and hang Wait.
-	for _, pid := range descendantPIDs(uint32(cmd.Process.Pid)) {
-		if proc, err := os.FindProcess(int(pid)); err == nil {
-			_ = proc.Kill()
+	// and terminate deepest first, repeating while descendants remain: the
+	// launcher can spawn another child between the snapshot and the kill, and a
+	// surviving child keeps the stdout pipe open, which hangs Wait.
+	for attempt := 0; attempt < 3; attempt++ {
+		descendants := descendantPIDs(uint32(cmd.Process.Pid))
+		if len(descendants) == 0 {
+			break
 		}
+		for _, pid := range descendants {
+			if proc, err := os.FindProcess(int(pid)); err == nil {
+				_ = proc.Kill()
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	// Belt and braces for launchers whose children are not linked through the
 	// toolhelp parent field, then the launcher itself.

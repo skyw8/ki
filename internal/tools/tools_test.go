@@ -454,7 +454,12 @@ func assertPIDDead(t *testing.T, b bashTool, pid int) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("pid %d still alive after cancel/timeout", pid)
+	// Why: `$!` reports an MSYS pid, which is its own namespace, so a stale table
+	// entry looks like a live process. Report what the shell still sees.
+	ps := b.Execute(context.Background(), map[string]any{
+		"command": fmt.Sprintf("ps -p %d -o pid,ppid,winpid,cmd || true", pid),
+	})
+	t.Fatalf("pid %d still alive after cancel/timeout\n%s", pid, ps.Content[0].Text)
 }
 
 func TestBashCancelKillsProcessGroup(t *testing.T) {
