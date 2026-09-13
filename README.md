@@ -16,6 +16,11 @@ Without `-tags embed`, `go build ./cmd/ki` produces the CLI/API only; `ki serve`
 then reports the UI as not built. `scripts/run.sh` rebuilds `web/dist` on every
 run and always uses `-tags embed`.
 
+Windows builds automatically link the Ki application icon from the checked-in
+`cmd/ki/rsrc_windows_{arch}.syso` resources. The icon is generated from the same
+`web/src/assets/ki.svg` artwork used by the browser tab. Plain command-line
+binaries on Linux and macOS do not carry a file-manager application icon.
+
 On Windows, Ki looks for Git Bash through `KI_GIT_BASH_PATH`, `CLAUDE_CODE_GIT_BASH_PATH`, standard Git for Windows locations, and then `bash.exe` on `PATH`. If Bash is unavailable, Ki still starts with the Windows-only PowerShell tool and omits Bash-dependent tools.
 
 ## Run

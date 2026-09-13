@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Ki crystal robot</title>
+  <desc id="desc">A symmetrical armored robot face with cyan eyes, upright copper horns, and violet crystal cones.</desc>
+  <defs>
+    <linearGradient id="bg" x1="20" y1="12" x2="106" y2="118" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#253753"/>
+      <stop offset="1" stop-color="#0d1526"/>
+    </linearGradient>
+    <linearGradient id="armor" x1="43" y1="43" x2="85" y2="108" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6f8097"/>
+      <stop offset=".42" stop-color="#435168"/>
+      <stop offset="1" stop-color="#263247"/>
+    </linearGradient>
+    <linearGradient id="horn" x1="50" y1="8" x2="46" y2="52" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffe39a"/>
+      <stop offset=".45" stop-color="#f2a447"/>
+      <stop offset="1" stop-color="#b95a27"/>
+    </linearGradient>
+    <linearGradient id="crystal" x1="38" y1="59" x2="12" y2="106" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff9bee"/>
+      <stop offset=".46" stop-color="#ef3bd5"/>
+      <stop offset="1" stop-color="#8e28d7"/>
+    </linearGradient>
+    <linearGradient id="eye" x1="40" y1="62" x2="57" y2="75" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#efffff"/>
+      <stop offset=".28" stop-color="#59f5ff"/>
+      <stop offset="1" stop-color="#02a9d1"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-70%" width="200%" height="240%">
+      <feGaussianBlur stdDeviation="1.8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <!-- Every lateral feature is drawn once and mirrored for exact symmetry. -->
+    <g id="horn-left" stroke-linejoin="round">
+      <path d="M42 52 40 22q0-4 3-6L60 9l-5 10-6 6 3 27Z" fill="url(#horn)" stroke="#43291c" stroke-width="2.5"/>
+    </g>
+    <g id="crystal-left">
+      <path d="m38 58-30 50 41-11Z" fill="url(#crystal)" stroke="#721cab" stroke-width="4" stroke-linejoin="round"/>
+      <path d="m37 65-23 37 18-8Z" fill="#ff8ce9"/>
+      <path d="m37 65-5 29 12 0Z" fill="#c82bc7"/>
+      <path d="M37 65 32 94 14 102" fill="none" stroke="#ffc5f5" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g id="eye-left">
+      <path d="M40 59h20l-5 12H43l-6-6Z" fill="url(#eye)" stroke="#101827" stroke-width="4" stroke-linejoin="round"/>
+    </g>
+  </defs>
+
+  <path d="M64 4 108 24l14 42-21 45-37 13-37-13L6 66l14-42Z" fill="url(#bg)" stroke="#30435f" stroke-width="4" stroke-linejoin="round"/>
+
+  <!-- Two long upright horns follow the user's beetle-like silhouette. -->
+  <use href="#horn-left"/>
+  <use href="#horn-left" transform="translate(128 0) scale(-1 1)"/>
+
+  <!-- Faceted triangular cones flare down from both shoulders. -->
+  <use href="#crystal-left"/>
+  <use href="#crystal-left" transform="translate(128 0) scale(-1 1)"/>
+
+  <!-- The face shield is a single clean, centered mass. -->
+  <path d="M38 43h52l10 19-8 39-28 17-28-17-8-39Z" fill="#182338" stroke="#0a101d" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M42 47h44l8 17-7 33-23 14-23-14-7-33Z" fill="url(#armor)" stroke="#8593a7" stroke-width="2.5" stroke-linejoin="round"/>
+
+  <!-- Large cyan eyes remain legible at favicon size. -->
+  <g filter="url(#glow)">
+    <use href="#eye-left"/>
+    <use href="#eye-left" transform="translate(128 0) scale(-1 1)"/>
+  </g>
+
+  <!-- The open center keeps the visor simple and the eyes visually separate. -->
+  <path d="m40 81 6 18 18 11 18-11 6-18" fill="none" stroke="#8796aa" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M53 93h22" stroke="#152035" stroke-width="7" stroke-linecap="round"/>
+  <path d="M56 92h16" stroke="#a3b1c2" stroke-width="2.5" stroke-linecap="round"/>
+</svg>
