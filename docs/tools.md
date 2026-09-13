@@ -22,7 +22,7 @@
 | `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
 | `PowerShell` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 仅 Windows 注册；PowerShell 原生命令、退出码、流式输出和后台任务与 Bash 使用同一生命周期 |
-| `Agent` | `description`、`prompt`；可选 `run_in_background` | 新建一个 `forkMode=tree` 的干净子 session（不继承 parent history），固定沿用当前 session 的 provider/model；前台返回 `completed`，后台返回 `async_launched` 和 `outputFile` |
+| `Agent` | `description`、`prompt`；可选 `run_in_background` | 新建一个 `forkMode=tree` 的干净子 session（不继承 parent history），固定沿用当前 session 的 provider/model；后台、以及前台超过 2 分钟后，返回 `async_launched` 和 `outputFile`，否则返回 `completed` |
 | `SendMessage` | `to`、`message`；可选 `summary` | 按稳定 `agentId` 在当前 run 边界 steer，或从 child transcript 续跑已完成/停止的后台 agent |
 | `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待 shell/agent 后台任务；返回有界输出、状态、结果和输出文件路径 |
 | `TaskStop` | `task_id`（或兼容的 `shell_id`） | 终止 shell/agent 后台任务并返回最终状态 |
@@ -141,6 +141,7 @@
 - `Agent` 调用 `session.CreateChild`：child 记录 parent 边并沿用 provider/model/thinking，但**不复制** parent 的 history。子 agent 从干净 context 起步，只把 directive 作为第一条 user message 运行现有 loop；prompt 必须自包含（parent 不再把自己的对话 fork 进去，否则子代理会看到 parent 的 user turn 并重复委派）。
 - 子 agent 使用自己的 `runState`、extension Prepare、工具集和 `events.jsonl`；因此可以递归创建 tree child，且 child 的工具结果不会污染 parent context。主会话为深度 0，最多允许 Agent child 深度 3；深度 3 的 child 保留 `SendMessage`，但不再暴露 `Agent`。
 - `run_in_background=true` 与 parent prompt 脱钩，立即返回 `{"status":"async_launched", "agentId":…, "outputFile":…}`；`TaskOutput` 可等待它，`TaskStop` 可取消它。前台 agent 返回 Claude Code 兼容的 `completed` 结果对象。
+- 前台 agent 最多占用 parent turn 2 分钟（`agentForegroundTimeout`）：超时后 child **转为后台继续运行**（不取消），Agent 返回与 `run_in_background` 相同的 `async_launched` 结果，完成时按后台通知路径回报。child 的 run context 与调用方解耦（`AgentStore.startRun` 用 `context.WithoutCancel`），所以 parent turn 结束不会杀掉它；parent 被 abort 时由 Agent 工具显式 `TaskStop`，避免孤儿任务。
 - child 继承当前 session 的 provider、model 和 thinking effort；Agent schema 不接受模型覆盖，避免子 agent 跨供应商使用不同凭据或协议。
 - `cwd` override 和 `worktree` isolation 不在模型可见 schema 中；child 始终继承 parent cwd，隔离依靠 session tree，不会静默提供未实现的隔离。
 - 当前 Agent prompt/schema 只描述普通 parent → child delegation；不描述 Agent Teams 的命名成员、`team_name`、permission mode、roster 或 peer messaging。

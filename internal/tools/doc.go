@@ -17,8 +17,12 @@
 // Agent delegates through a narrow AgentRuntime supplied by server. Its child
 // session starts from a clean context (linked with forkMode=tree, but with no
 // inherited transcript) and is bounded to three child layers below the main
-// session; SendMessage steers or resumes the stable child task. TaskOutput and TaskStop use a composite task store so shell and agent
-// tasks share the Claude Code-shaped lifecycle schema. File
+// session; SendMessage steers or resumes the stable child task. A child run is
+// detached from its caller, and a foreground Agent call that exceeds its
+// two-minute wait is promoted to a background task instead of being cancelled
+// (the caller gets the run_in_background async_launched shape). TaskOutput and
+// TaskStop use a composite task store so shell and agent tasks share the Claude
+// Code-shaped lifecycle schema. File
 // mutations share a server-scoped per-path queue; Edit additionally
 // supports non-overlapping batch replacements against one original. Structured
 // result details are persisted for clients but omitted by provider adapters.

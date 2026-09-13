@@ -112,6 +112,9 @@ var (
 type AgentRuntime interface {
 	TaskStore
 	SpawnAgent(context.Context, AgentRequest) (AgentLaunch, error)
+	// Background marks a running foreground task as detached so its completion
+	// notifies the parent through the background path. It never cancels the run.
+	Background(id string) (TaskSnapshot, error)
 }
 
 // AgentStore owns stable logical-agent records and the transient run state.
@@ -136,6 +139,7 @@ type agentTask struct {
 	run             AgentRun
 	metadataPath    string
 	parentSessionID string
+	backgrounded    bool
 	pending         []string
 	runCount        uint64
 	notifiedRun     uint64
@@ -144,9 +148,9 @@ type agentTask struct {
 // NewAgentStore creates a process-scoped child-agent registry.
 func NewAgentStore() *AgentStore { return &AgentStore{tasks: map[string]*agentTask{}} }
 
-// Start registers and runs one logical child agent. Background children
-// detach from the parent's prompt context; foreground children inherit it and
-// are waited on by Agent.Execute.
+// Start registers and runs one logical child agent. Every child is process-owned
+// (its run context does not inherit the caller's), so a foreground child survives
+// the caller and can be promoted to background by Agent.Execute.
 func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile string, run AgentRun) (AgentLaunch, error) {
 	if run == nil {
 		return AgentLaunch{}, errAgentRunnerNil
@@ -172,12 +176,9 @@ func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile str
 	s.tasks[id] = task
 	s.mu.Unlock()
 
-	// Why: background children outlive the parent prompt; keep values but detach cancel.
-	parent := ctx
-	if req.RunInBackground {
-		parent = context.WithoutCancel(ctx)
-	}
-	if err := s.startRun(parent, task, req.Prompt, req.RunInBackground); err != nil {
+	// Why: startRun detaches the run context from the caller; the Agent tool owns
+	// the foreground/background decision after the task is registered.
+	if err := s.startRun(ctx, task, req.Prompt, req.RunInBackground); err != nil {
 		s.mu.Lock()
 		delete(s.tasks, id)
 		s.mu.Unlock()
@@ -187,17 +188,17 @@ func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile str
 }
 
 func (s *AgentStore) startRun(ctx context.Context, task *agentTask, prompt string, background bool) error {
-	if background {
-		// Why: process-owned follow-ups must not cancel with a prior request.
-		ctx = context.WithoutCancel(ctx)
-	}
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
 		return errTaskStoreClosed
 	}
+	// Why: a child agent is process-owned, so its run never inherits the caller's
+	// cancellation. The Agent tool only watches a foreground child (and promotes
+	// it to background on timeout) and stops it explicitly when the parent turn
+	// is aborted; a later process-owned follow-up must outlive its request too.
+	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 
-	runCtx, cancel := context.WithCancel(ctx)
 	task.mu.Lock()
 	if task.removed {
 		task.mu.Unlock()
@@ -604,6 +605,35 @@ func (s *AgentStore) Wait(ctx context.Context, id string) (TaskSnapshot, error) 
 			return s.snapshot(task), ctx.Err()
 		}
 	}
+}
+
+// Background detaches a still-running foreground task from its caller. The run
+// already owns its context, so nothing is cancelled: the caller stops waiting and
+// the completion reports through the background task-notification path.
+func (s *AgentStore) Background(id string) (TaskSnapshot, error) {
+	task, ok := s.task(id)
+	if !ok {
+		return TaskSnapshot{}, os.ErrNotExist
+	}
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	if isTerminal(task.snap.Status) {
+		return task.snap, errTaskNotRunning
+	}
+	task.backgrounded = true
+	return task.snap, nil
+}
+
+// Backgrounded reports whether a task was promoted to background after starting
+// foreground, so the runner knows to notify the parent on completion.
+func (s *AgentStore) Backgrounded(id string) bool {
+	task, ok := s.task(id)
+	if !ok {
+		return false
+	}
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	return task.backgrounded
 }
 
 // Stop cancels the current run and leaves the stable agent record resumable.

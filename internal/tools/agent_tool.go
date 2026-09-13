@@ -5,9 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"ki/internal/loop"
 )
+
+// agentForegroundTimeout bounds how long a foreground Agent call pins the parent
+// turn open. When it expires the child is promoted to a background task and the
+// caller receives the same async_launched result as run_in_background, matching
+// Claude Code's auto-background; promotion never cancels the child. It is a var
+// so tests can shorten the wait.
+var agentForegroundTimeout = 2 * time.Minute
 
 const agentPrompt = `Launch a new agent to handle complex, multi-step tasks autonomously.
 
@@ -22,7 +30,7 @@ Usage notes:
 - Always include a short description (3-5 words) summarizing what the agent will do.
 - Launch multiple agents concurrently whenever possible; to do that, use a single message with multiple tool uses.
 - When the agent is done, it will return a single message back to you. The result is not visible to the user. To show the user the result, send a text message back with a concise summary.
-- You can optionally run agents in the background with run_in_background. You are notified when a background agent completes, so do NOT sleep, poll, or proactively check its progress. Use TaskOutput to wait for or inspect it, and TaskStop to cancel it.
+- You can optionally run agents in the background with run_in_background. A foreground agent that runs longer than 2 minutes is promoted to a background task and returns async_launched. You are notified when a background agent completes, so do NOT sleep, poll, or proactively check its progress. Use TaskOutput to wait for or inspect it, and TaskStop to cancel it.
 - Use SendMessage with the agentId to steer a live background agent or resume it after completion. Each Agent invocation starts fresh, so provide a complete task description.
 - The agent's outputs should generally be trusted.
 - Clearly tell the agent whether you expect it to write code or just to do research, since it is not aware of the user's intent.
@@ -85,16 +93,37 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) loop.ToolRe
 		return errRes(err.Error())
 	}
 	if req.RunInBackground {
-		res := jsonResult(map[string]any{
-			"status": "async_launched", "agentId": launch.TaskID,
-			"description": req.Description, "prompt": req.Prompt,
-			"outputFile": launch.OutputFile, "canReadOutputFile": true,
-		})
-		res.Terminate = true
-		return res
+		return agentAsyncResult(launch, req)
 	}
-	snapshot, waitErr := t.runtime.Wait(ctx, launch.TaskID)
-	if waitErr != nil && !errors.Is(waitErr, context.Canceled) {
+	// Foreground: bound the wait, then promote to background. The child is never
+	// cancelled by promotion; it keeps running and reports through the task store.
+	waitCtx, cancelWait := context.WithTimeout(ctx, agentForegroundTimeout)
+	defer cancelWait()
+	snapshot, waitErr := t.runtime.Wait(waitCtx, launch.TaskID)
+	switch {
+	case errors.Is(waitErr, context.DeadlineExceeded):
+		current, ok := t.runtime.Get(launch.TaskID)
+		if !ok {
+			return errRes(fmt.Sprintf("agent %s is no longer available", launch.TaskID))
+		}
+		snapshot = current
+		if !isTerminal(snapshot.Status) {
+			// Mark the task backgrounded so its completion notifies the parent
+			// instead of being dropped with the foreground wait.
+			if _, err := t.runtime.Background(launch.TaskID); err == nil {
+				return agentAsyncResult(launch, req)
+			}
+			// Raced to completion between Get and Background: report it inline.
+			if current, ok := t.runtime.Get(launch.TaskID); ok {
+				snapshot = current
+			}
+		}
+	case errors.Is(waitErr, context.Canceled):
+		// Why: the child does not inherit the parent turn's cancellation, so an
+		// aborted parent must stop it explicitly or it leaks as an orphan.
+		_, _ = t.runtime.Stop(launch.TaskID)
+		return errRes(fmt.Sprintf("agent %s aborted", launch.TaskID))
+	case waitErr != nil:
 		return errRes(waitErr.Error())
 	}
 	if snapshot.Status != TaskCompleted {
@@ -116,6 +145,19 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) loop.ToolRe
 			"server_tool_use": nil, "service_tier": nil, "cache_creation": nil,
 		},
 	})
+}
+
+// agentAsyncResult is the shared result for run_in_background and for a
+// foreground call promoted to background on timeout. Terminate stops the parent
+// turn so the completion arrives through the normal task-notification path.
+func agentAsyncResult(launch AgentLaunch, req AgentRequest) loop.ToolResult {
+	res := jsonResult(map[string]any{
+		"status": "async_launched", "agentId": launch.TaskID,
+		"description": req.Description, "prompt": req.Prompt,
+		"outputFile": launch.OutputFile, "canReadOutputFile": true,
+	})
+	res.Terminate = true
+	return res
 }
 
 func jsonResult(value any) loop.ToolResult {

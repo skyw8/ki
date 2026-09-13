@@ -75,6 +75,13 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 	return launch, nil
 }
 
+// Background implements tools.AgentRuntime for the Agent tool's foreground
+// timeout: the child keeps running and its completion reaches the parent through
+// the background notification path.
+func (s *Server) Background(id string) (tools.TaskSnapshot, error) {
+	return s.agentTasks.Background(id)
+}
+
 // agentDepth counts Agent-created sessions in the current session's durable
 // parent chain. Counting the agent.json markers instead of trusting a caller-
 // supplied depth keeps the limit valid after restart and for direct runtime
@@ -124,7 +131,9 @@ func (s *Server) agentRunner(childID string, base tools.AgentRequest) tools.Agen
 		req.Prompt = prompt
 		req.RunInBackground = background
 		completion, runErr := s.runChildAgent(ctx, childID, req)
-		if background {
+		// A foreground child promoted to background after agentForegroundTimeout
+		// must still notify the parent; the run itself is unchanged.
+		if background || s.agentTasks.Backgrounded(taskID) {
 			// Session deletion removes the logical task while its cancelled
 			// callback may still be unwinding. Do not enqueue a completion for
 			// a child that no longer exists.
@@ -264,7 +273,8 @@ func (s *Server) runChildAgent(ctx context.Context, id string, req tools.AgentRe
 	}
 	enableRunInbox(st)
 	// runPrompt owns the child occupy release and persists the complete child
-	// transcript. The user directive is appended after the forked history.
+	// transcript. The clean child has no inherited history, so the directive is
+	// its first user message.
 	s.runPrompt(runCtx, st, id, []types.Content{{Type: "text", Text: req.Prompt}}, nil, "", "agent", "", nil)
 	if st.err != nil {
 		return tools.AgentCompletion{}, st.err

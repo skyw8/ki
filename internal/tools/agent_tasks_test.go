@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"ki/internal/loop"
 )
 
 func TestAgentStoreBackgroundStop(t *testing.T) {
@@ -366,6 +368,143 @@ func TestAgentToolSchemaAndBackgroundResult(t *testing.T) {
 	t.Fatal("agent task was not registered")
 }
 
+// A child agent is process-owned: cancelling the caller must not cancel it,
+// because the Agent tool may promote it to background instead.
+func TestAgentStoreChildSurvivesCallerCancel(t *testing.T) {
+	store := NewAgentStore()
+	caller, cancelCaller := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	launch, err := store.Start(caller, AgentRequest{Description: "child", Prompt: "wait"}, "child.jsonl", func(_ context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+		<-release
+		return AgentCompletion{Result: "late"}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelCaller()
+	if snapshot, _ := store.Get(launch.TaskID); snapshot.Status != TaskRunning {
+		t.Fatalf("child did not outlive the caller: %s", snapshot.Status)
+	}
+	close(release)
+	waitFor(t, func() bool {
+		current, _ := store.Get(launch.TaskID)
+		return current.Status == TaskCompleted
+	}, "child never completed after the caller was cancelled")
+}
+
+func TestAgentStoreBackgroundMarksWithoutCancelling(t *testing.T) {
+	store := NewAgentStore()
+	release := make(chan struct{})
+	launch, err := store.Start(context.Background(), AgentRequest{Description: "child", Prompt: "wait"}, "child.jsonl", func(ctx context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+		select {
+		case <-release:
+			return AgentCompletion{Result: "done"}, nil
+		case <-ctx.Done():
+			return AgentCompletion{}, ctx.Err()
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.Backgrounded(launch.TaskID) {
+		t.Fatal("foreground task was already backgrounded")
+	}
+	if _, err := store.Background(launch.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if !store.Backgrounded(launch.TaskID) {
+		t.Fatal("Background did not mark the task")
+	}
+	if snapshot, _ := store.Get(launch.TaskID); snapshot.Status != TaskRunning {
+		t.Fatalf("Background cancelled the run: %s", snapshot.Status)
+	}
+	close(release)
+	waitFor(t, func() bool {
+		current, _ := store.Get(launch.TaskID)
+		return current.Status == TaskCompleted
+	}, "backgrounded child did not finish")
+}
+
+func TestAgentToolForegroundPromotesToBackgroundOnTimeout(t *testing.T) {
+	restore := agentForegroundTimeout
+	agentForegroundTimeout = 30 * time.Millisecond
+	t.Cleanup(func() { agentForegroundTimeout = restore })
+
+	release := make(chan struct{})
+	runtime := fakeAgentRuntime{store: NewAgentStore(), run: func(_ context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+		<-release
+		return AgentCompletion{Result: "late"}, nil
+	}}
+	result := agentTool{runtime: runtime}.Execute(context.Background(), map[string]any{"description": "slow child", "prompt": "work"})
+	if result.IsError || !result.Terminate {
+		t.Fatalf("promoted result = %+v", result)
+	}
+	if len(result.Content) != 1 || !containsText(result.Content[0].Text, "async_launched") {
+		t.Fatalf("promoted content = %+v", result.Content)
+	}
+	tasks := stackedAgentSnapshots(runtime.store)
+	if len(tasks) != 1 || !runtime.store.Backgrounded(tasks[0].TaskID) {
+		t.Fatal("promotion did not mark the task backgrounded for notification")
+	}
+	close(release)
+	waitFor(t, func() bool {
+		tasks := stackedAgentSnapshots(runtime.store)
+		return len(tasks) == 1 && tasks[0].Status == TaskCompleted
+	}, "promoted child was not left running to completion")
+}
+
+func TestAgentToolForegroundStopsChildOnParentCancel(t *testing.T) {
+	restore := agentForegroundTimeout
+	agentForegroundTimeout = time.Minute
+	t.Cleanup(func() { agentForegroundTimeout = restore })
+
+	started := make(chan struct{})
+	runtime := fakeAgentRuntime{store: NewAgentStore(), run: func(ctx context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+		close(started)
+		<-ctx.Done()
+		return AgentCompletion{}, ctx.Err()
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan loop.ToolResult, 1)
+	go func() {
+		done <- agentTool{runtime: runtime}.Execute(ctx, map[string]any{"description": "child", "prompt": "work"})
+	}()
+	<-started
+	cancel()
+	result := <-done
+	if !result.IsError || !containsText(result.Content[0].Text, "aborted") {
+		t.Fatalf("cancel result = %+v", result)
+	}
+	waitFor(t, func() bool {
+		tasks := stackedAgentSnapshots(runtime.store)
+		return len(tasks) == 1 && isTerminal(tasks[0].Status)
+	}, "aborted parent left the child running")
+}
+
+func stackedAgentSnapshots(store *AgentStore) []TaskSnapshot {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	out := make([]TaskSnapshot, 0, len(store.tasks))
+	for _, task := range store.tasks {
+		task.mu.Lock()
+		out = append(out, task.snap)
+		task.mu.Unlock()
+	}
+	return out
+}
+
+func waitFor(t *testing.T, ok func() bool, message string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal(message)
+}
+
 func TestAgentToolIsWithheldAtMaximumDepth(t *testing.T) {
 	runtime := fakeAgentRuntime{store: NewAgentStore()}
 	atLimit := Set{CWD: t.TempDir(), Agent: runtime, AgentDepth: MaxAgentDepth}.Build(Profile{})
@@ -401,17 +540,27 @@ func (fakeMessenger) SendAgentMessage(_ context.Context, req AgentMessageRequest
 	return AgentMessageResult{AgentID: req.Target, Status: "steered", Message: "steered"}, nil
 }
 
-type fakeAgentRuntime struct{ store *AgentStore }
+type fakeAgentRuntime struct {
+	store *AgentStore
+	run   AgentRun
+}
 
 func (f fakeAgentRuntime) SpawnAgent(ctx context.Context, req AgentRequest) (AgentLaunch, error) {
-	return f.store.Start(ctx, req, "child.jsonl", func(_ context.Context, _, _ string, _ bool) (AgentCompletion, error) {
-		return AgentCompletion{Result: "done"}, nil
-	})
+	run := f.run
+	if run == nil {
+		run = func(_ context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+			return AgentCompletion{Result: "done"}, nil
+		}
+	}
+	return f.store.Start(ctx, req, "child.jsonl", run)
 }
 
 func (f fakeAgentRuntime) Get(key string) (TaskSnapshot, bool) { return f.store.Get(key) }
 func (f fakeAgentRuntime) Wait(ctx context.Context, id string) (TaskSnapshot, error) {
 	return f.store.Wait(ctx, id)
+}
+func (f fakeAgentRuntime) Background(id string) (TaskSnapshot, error) {
+	return f.store.Background(id)
 }
 func (f fakeAgentRuntime) Stop(id string) (TaskSnapshot, error) { return f.store.Stop(id) }
 
