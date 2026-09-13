@@ -1,12 +1,16 @@
 import type { SessionInfo, WorkspaceInfo } from '../api/types'
 
-export type SessionTreeModel = {
-  root: SessionInfo
-  path: SessionInfo[]
+// SessionForest is the sidebar's parent/child view over the full session list.
+// It is intentionally independent of the "current" session: subagent sessions
+// (forkMode=tree) nest under their parent everywhere, and the sidebar decides
+// which branches are expanded.
+export type SessionForest = {
   parentOf: Map<string, string>
   childrenOf: Map<string, SessionInfo[]>
+  // unresolved holds tree children whose parent edge cannot be trusted (missing
+  // parent, cross-workspace, self/cycle). They render as top-level rows so a
+  // broken edge never hides a session.
   unresolved: Set<string>
-  unresolvedRoots: SessionInfo[]
   order: Map<string, number>
 }
 
@@ -67,15 +71,8 @@ function reachesCycle(id: string, parentCandidates: Map<string, string>, cycles:
   return cycles.has(cursor)
 }
 
-export function buildSessionTree(
-  sessions: SessionInfo[],
-  workspaces: WorkspaceInfo[],
-  currentId: string | null,
-): SessionTreeModel | null {
-  if (!currentId) return null
+export function buildSessionForest(sessions: SessionInfo[], workspaces: WorkspaceInfo[]): SessionForest {
   const byId = new Map(sessions.map(session => [session.id, session]))
-  const current = byId.get(currentId)
-  if (!current) return null
   const order = sessionOrder(sessions, workspaces)
   const parentCandidates = new Map<string, string>()
   const unresolved = new Set<string>()
@@ -111,27 +108,36 @@ export function buildSessionTree(
     childrenOf.set(parentId, children)
   }
 
-  const unresolvedRoots = sessions
-    .filter(session => unresolved.has(session.id) && !parentOf.has(session.id) && sameWorkspace(current, session))
-    .sort((a, b) => compareSessions(a, b, order))
+  return { parentOf, childrenOf, unresolved, order }
+}
 
-  const path: SessionInfo[] = []
-  const pathSeen = new Set<string>()
-  let cursor: SessionInfo | undefined = current
-  while (cursor && !pathSeen.has(cursor.id)) {
-    pathSeen.add(cursor.id)
-    path.unshift(cursor)
-    const parentId = parentOf.get(cursor.id)
-    cursor = parentId ? byId.get(parentId) : undefined
+
+export function orderedChildren(forest: SessionForest, parentId: string): SessionInfo[] {
+  return forest.childrenOf.get(parentId) ?? []
+}
+
+// topLevelRoot walks the trusted parent edges to the row that owns the branch.
+// The sidebar uses it to keep a collapsed-away child's root visible.
+export function topLevelRoot(forest: SessionForest, id: string): string {
+  const seen = new Set<string>()
+  let cursor = id
+  while (!seen.has(cursor)) {
+    const parent = forest.parentOf.get(cursor)
+    if (!parent) return cursor
+    seen.add(cursor)
+    cursor = parent
   }
-
-  return { root: path[0] ?? current, path, parentOf, childrenOf, unresolved, unresolvedRoots, order }
+  return cursor
 }
 
-export function orderedChildren(model: SessionTreeModel, parentId: string): SessionInfo[] {
-  return model.childrenOf.get(parentId) ?? []
-}
-
-export function sessionLabel(session: SessionInfo): string {
-  return session.title || session.id
+export function ancestorsOf(forest: SessionForest, id: string): string[] {
+  const chain: string[] = []
+  const seen = new Set<string>()
+  let cursor = forest.parentOf.get(id)
+  while (cursor && !seen.has(cursor)) {
+    seen.add(cursor)
+    chain.push(cursor)
+    cursor = forest.parentOf.get(cursor)
+  }
+  return chain
 }

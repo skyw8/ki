@@ -22,7 +22,7 @@
 | `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
 | `PowerShell` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 仅 Windows 注册；PowerShell 原生命令、退出码、流式输出和后台任务与 Bash 使用同一生命周期 |
-| `Agent` | `description`、`prompt`；可选 `subagent_type`、`run_in_background` | 从当前 session branch fork 一个 `forkMode=tree` 子 session，固定沿用当前 session 的 provider/model；前台返回 `completed`，后台返回 `async_launched` 和 `outputFile` |
+| `Agent` | `description`、`prompt`；可选 `run_in_background` | 新建一个 `forkMode=tree` 的干净子 session（不继承 parent history），固定沿用当前 session 的 provider/model；前台返回 `completed`，后台返回 `async_launched` 和 `outputFile` |
 | `SendMessage` | `to`、`message`；可选 `summary` | 按稳定 `agentId` 在当前 run 边界 steer，或从 child transcript 续跑已完成/停止的后台 agent |
 | `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待 shell/agent 后台任务；返回有界输出、状态、结果和输出文件路径 |
 | `TaskStop` | `task_id`（或兼容的 `shell_id`） | 终止 shell/agent 后台任务并返回最终状态 |
@@ -137,8 +137,8 @@
 
 ## Agent
 
-- `description` 是 3–5 个词的短任务名，`prompt` 是子 agent 的完整任务指令；`subagent_type` 省略时使用 `general-purpose`。
-- `Agent` 在 tool call 所属 parent session 的当前 leaf 上调用 `session.ForkAt`，传入 `forkMode=tree`。子 session 复制 root → leaf 的 history、provider/model/thinking 和附件，然后把 directive 作为新的 user message 运行现有 loop。
+- `description` 是 3–5 个词的短任务名，`prompt` 是子 agent 的完整任务指令。没有 `subagent_type`：所有 child 都跑同一套 general-purpose 配置（类型化 subagent 留待后续）。
+- `Agent` 调用 `session.CreateChild`：child 记录 parent 边并沿用 provider/model/thinking，但**不复制** parent 的 history。子 agent 从干净 context 起步，只把 directive 作为第一条 user message 运行现有 loop；prompt 必须自包含（parent 不再把自己的对话 fork 进去，否则子代理会看到 parent 的 user turn 并重复委派）。
 - 子 agent 使用自己的 `runState`、extension Prepare、工具集和 `events.jsonl`；因此可以递归创建 tree child，且 child 的工具结果不会污染 parent context。主会话为深度 0，最多允许 Agent child 深度 3；深度 3 的 child 保留 `SendMessage`，但不再暴露 `Agent`。
 - `run_in_background=true` 与 parent prompt 脱钩，立即返回 `{"status":"async_launched", "agentId":…, "outputFile":…}`；`TaskOutput` 可等待它，`TaskStop` 可取消它。前台 agent 返回 Claude Code 兼容的 `completed` 结果对象。
 - child 继承当前 session 的 provider、model 和 thinking effort；Agent schema 不接受模型覆盖，避免子 agent 跨供应商使用不同凭据或协议。

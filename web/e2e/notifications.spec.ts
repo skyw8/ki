@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { permissionFrom, shouldNotify } from '../src/lib/notifications.ts'
+import { serverToken } from './global-setup.ts'
 
 // Every test is self-contained, so the parallel runner may split this file into
 // one isolated process per test.
@@ -15,13 +16,16 @@ test('permission reflects the secure-context rules of the Notification API', () 
 })
 
 test('shouldNotify notifies unless a focused tab is showing that session', () => {
-  const base = { enabled: true, permission: 'granted' as const, sessionId: 'A' }
+  const base = { enabled: true, permission: 'granted' as const, sessionId: 'A', subagent: false }
   // User switched to another session: the finished one is not on screen.
   expect(shouldNotify({ ...base, focusedSession: 'B' })).toBe(true)
   // User is in another application: no ki tab is focused.
   expect(shouldNotify({ ...base, focusedSession: null })).toBe(true)
   // The focused tab is showing exactly the session that completed.
   expect(shouldNotify({ ...base, focusedSession: 'A' })).toBe(false)
+  // Subagent sessions stay silent even when nothing is on screen for them.
+  expect(shouldNotify({ ...base, subagent: true, focusedSession: 'B' })).toBe(false)
+  expect(shouldNotify({ ...base, subagent: true, focusedSession: null })).toBe(false)
   // Preference and permission still gate everything.
   expect(shouldNotify({ ...base, enabled: false, focusedSession: 'B' })).toBe(false)
   expect(shouldNotify({ ...base, permission: 'default', focusedSession: 'B' })).toBe(false)
@@ -151,6 +155,46 @@ test('aborting a run does not notify', async ({ page }) => {
   // run_aborted is published before agent_end; let the watcher process the
   // (suppressed) completion before asserting nothing new was raised.
   await page.waitForTimeout(400)
+  expect(await notifications(page)).toHaveLength(1)
+})
+
+test('subagent sessions never notify', async ({ page, request }) => {
+  await installNotificationProbe(page)
+  await page.goto('/')
+
+  // A subagent session is a tree child of a parent session. Open it and prompt
+  // it from this tab (so the tab tracks its run), then switch away before it
+  // finishes: an ordinary session would notify here, a subagent one must not.
+  const headers = { Authorization: `Bearer ${serverToken()}` }
+  const stamp = Date.now()
+  const parentTitle = `notify-parent-${stamp}`
+  const childTitle = `notify-child-${stamp}`
+  const parentRes = await request.post('/v1/sessions', { headers, data: {} })
+  expect(parentRes.ok()).toBe(true)
+  const parent = await parentRes.json() as { id: string }
+  await request.patch(`/v1/sessions/${parent.id}`, { headers, data: { title: parentTitle } })
+  const childRes = await request.post(`/v1/sessions/${parent.id}/fork`, { headers, data: { forkMode: 'tree' } })
+  expect(childRes.ok()).toBe(true)
+  const child = await childRes.json() as { id: string }
+  await request.patch(`/v1/sessions/${child.id}`, { headers, data: { title: childTitle } })
+
+  // Reload first: the probe's addInitScript resets the recorded notifications
+  // on navigation, so enable notifications only after the last reload.
+  await page.reload()
+  await enableNotifications(page)
+  const parentRow = page.locator('[data-testid="session-row"]').filter({ hasText: parentTitle })
+  await expect(parentRow).toBeVisible()
+  await parentRow.getByTestId('session-toggle').click()
+  const childRow = page.locator('[data-testid="session-row"]').filter({ hasText: childTitle })
+  await childRow.locator('.session-main').click()
+  await expect(childRow.locator('.session-main')).toHaveAttribute('aria-current', 'page')
+
+  await sendPrompt(page, 'e2e-delay-1200 subagent-run')
+  await expect(page.getByTestId('composer-stop')).toBeVisible()
+  await page.getByTestId('new-session').click()
+  await expect.poll(async () => request.get(`/v1/sessions/${child.id}`, { headers }).then(r => r.json() as Promise<{ running?: boolean }>).then(d => d.running ?? false)).toBe(false)
+  // Give the push watcher time to process the (suppressed) completion.
+  await page.waitForTimeout(500)
   expect(await notifications(page)).toHaveLength(1)
 })
 

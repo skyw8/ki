@@ -15,9 +15,10 @@ import (
 )
 
 // SpawnAgent implements tools.AgentRuntime. Child agents are sessions rather
-// than in-process message arrays: ForkAt preserves the exact parent branch,
-// and forkMode=tree lets the existing session deletion/tree browser logic own
-// the resulting parent-child relationship.
+// than in-process message arrays: CreateChild links the child to its parent
+// (forkMode=tree) so session deletion and sidebar nesting own the relationship,
+// while the child starts without the parent transcript. A delegated agent must
+// only receive the directive, not replay the parent's user turn.
 func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.AgentLaunch, error) {
 	if s.agentTasks == nil {
 		return tools.AgentLaunch{}, errAgentTaskStoreUnavailable
@@ -34,14 +35,9 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 	if parentDepth >= tools.MaxAgentDepth {
 		return tools.AgentLaunch{}, fmt.Errorf("%w %d reached", errMaximumAgentDepth, tools.MaxAgentDepth)
 	}
-	target := req.ParentEntryID
-	if target == "" {
-		target = parent.LeafID()
-		target = resolvedAgentForkTarget(parent, target)
-	}
-	child, err := session.ForkAt(s.cfg.Sessions.Root, parent, target, session.ForkModeTree)
+	child, err := session.CreateChild(s.cfg.Sessions.Root, parent)
 	if err != nil {
-		return tools.AgentLaunch{}, fmt.Errorf("fork agent session: %w", err)
+		return tools.AgentLaunch{}, fmt.Errorf("create agent session: %w", err)
 	}
 	childID := child.ID()
 	childDir := child.Dir
@@ -60,8 +56,8 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 		s.sidx.Remove(childID)
 	}
 
-	// Why: ForkAt already copies the active provider/model. Agent delegation
-	// must stay on that provider so a child cannot silently cross credentials or
+	// Why: CreateChild copies the active provider/model. Agent delegation must
+	// stay on that provider so a child cannot silently cross credentials or
 	// protocol boundaries through a model override.
 	_ = child.Close()
 
@@ -121,36 +117,6 @@ func (s *Server) agentDepth(sess *session.Session) (int, error) {
 	}
 }
 
-// resolvedAgentForkTarget keeps the current user turn while avoiding an
-// assistant tool-call entry whose tool result has not been appended yet. The
-// parent is busy executing Agent at that exact boundary; copying that
-// unresolved call into the child would produce an invalid provider history.
-func resolvedAgentForkTarget(parent *session.Session, target string) string {
-	entries, err := parent.EntriesTo(target)
-	if err != nil {
-		return target
-	}
-	pending := map[string]bool{}
-	for _, entry := range entries {
-		if entry.Message == nil {
-			continue
-		}
-		calls := entry.Message.ToolCalls()
-		for _, call := range calls {
-			if call.ID != "" {
-				pending[call.ID] = true
-			}
-		}
-		if entry.Message.Role == "toolResult" && entry.Message.ToolCallID != "" {
-			delete(pending, entry.Message.ToolCallID)
-		}
-		if len(calls) > 0 && len(pending) > 0 {
-			return entry.ParentID
-		}
-	}
-	return target
-}
-
 func (s *Server) agentRunner(childID string, base tools.AgentRequest) tools.AgentRun {
 	return func(ctx context.Context, taskID, prompt string, background bool) (tools.AgentCompletion, error) {
 		req := base
@@ -204,7 +170,7 @@ func (s *Server) restoreAgentTasks(infos []session.Info) {
 				return tools.AgentCompletion{}, unmarshalErr
 			}
 			base := tools.AgentRequest{
-				Description: meta.Description, SubagentType: meta.SubagentType,
+				Description:     meta.Description,
 				ParentSessionID: meta.ParentSessionID,
 				SessionID:       meta.SessionID, MetadataPath: metadataPath, OutputFile: meta.OutputFile,
 			}

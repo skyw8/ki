@@ -15,9 +15,9 @@
 // variables explicitly, so commands launched by them keep the same network
 // routing. Runtime configuration remains authoritative for sidecar overrides.
 // Agent delegates through a narrow AgentRuntime supplied by server. Its child
-// session is created with session forkMode=tree and is bounded to three child
-// layers below the main session; SendMessage steers or resumes the stable child
-// task. TaskOutput and TaskStop use a composite task store so shell and agent
+// session starts from a clean context (linked with forkMode=tree, but with no
+// inherited transcript) and is bounded to three child layers below the main
+// session; SendMessage steers or resumes the stable child task. TaskOutput and TaskStop use a composite task store so shell and agent
 // tasks share the Claude Code-shaped lifecycle schema. File
 // mutations share a server-scoped per-path queue; Edit additionally
 // supports non-overlapping batch replacements against one original. Structured

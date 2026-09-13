@@ -11,22 +11,34 @@ import (
 
 const agentPrompt = `Launch a new agent to handle complex, multi-step tasks autonomously.
 
-The Agent tool launches a specialized child agent that works independently with its own conversation branch. Specify subagent_type to select a specialized agent, or omit it to use the general-purpose agent. The child starts from the current conversation fork and uses the current session's model provider and model, so give it a directive describing exactly what to do.
+The Agent tool launches a child agent that works independently with its own conversation. It starts with a clean context and uses the current session's model provider and model.
 
-## When to use
+When NOT to use the Agent tool:
+- If you want to read a specific file path, use the Read tool instead of the Agent tool, to find the match more quickly.
+- If you are searching for a specific definition, use the Grep tool instead, to find the match more quickly.
+- If you are searching within a specific file or 2-3 files, use the Read tool instead of the Agent tool.
 
-- Delegate research, implementation, review, or verification that can proceed independently.
-- Launch independent agents in parallel when their work does not overlap.
-- Use run_in_background=true for work whose result is not needed before continuing; use TaskOutput to wait for or inspect it.
-- Use SendMessage with the returned agentId to steer a live background agent or resume it after completion; TaskOutput only observes and TaskStop terminates.
+Usage notes:
+- Always include a short description (3-5 words) summarizing what the agent will do.
+- Launch multiple agents concurrently whenever possible; to do that, use a single message with multiple tool uses.
+- When the agent is done, it will return a single message back to you. The result is not visible to the user. To show the user the result, send a text message back with a concise summary.
+- You can optionally run agents in the background with run_in_background. You are notified when a background agent completes, so do NOT sleep, poll, or proactively check its progress. Use TaskOutput to wait for or inspect it, and TaskStop to cancel it.
+- Use SendMessage with the agentId to steer a live background agent or resume it after completion. Each Agent invocation starts fresh, so provide a complete task description.
+- The agent's outputs should generally be trusted.
+- Clearly tell the agent whether you expect it to write code or just to do research, since it is not aware of the user's intent.
 
 ## Writing the prompt
 
-Brief the agent like a smart colleague who just walked into the room. Explain the goal, relevant context, exact scope, files or commands to inspect, and the expected report. Do not ask it to delegate the understanding back to you.
+Brief the agent like a smart colleague who just walked into the room — it hasn't seen this conversation, doesn't know what you've tried, doesn't understand why this task matters.
+- Explain what you're trying to accomplish and why.
+- Describe what you've already learned or ruled out.
+- Give enough context about the surrounding problem that the agent can make judgment calls rather than just following a narrow instruction.
+- If you need a short response, say so ("report in under 200 words").
+- Lookups: hand over the exact command. Investigations: hand over the question — prescribed steps become dead weight when the premise is wrong.
 
-## Fork behavior
+Terse command-style prompts produce shallow, generic work.
 
-Every child is created from the current session branch with forkMode=tree. The child has its own session transcript and can create further children. Child results are returned as a compact completed result or as an async task notification record.`
+**Never delegate understanding.** Don't write "based on your findings, fix the bug" or "based on the research, implement it." Those phrases push synthesis onto the agent instead of doing it yourself. Write prompts that prove you understood: include file paths, line numbers, what specifically to change.`
 
 type agentTool struct{ runtime AgentRuntime }
 
@@ -35,6 +47,11 @@ func (agentTool) Description() string { return "Launch a new agent." }
 func (agentTool) Snippet() string     { return "Delegate work to a child agent" }
 func (agentTool) Prompt() string      { return agentPrompt }
 
+// TODO: typed subagents. Claude Code exposes a subagent_type registry where each
+// type carries its own system prompt, tool allow/deny list, and model (Explore
+// and Plan are read-only; verification runs background checks). ki currently
+// runs every child as one general-purpose agent, so the parameter is gone.
+// Reintroduce it with those three axes rather than a label-only field.
 func (agentTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object", "additionalProperties": false,
@@ -42,7 +59,6 @@ func (agentTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"description":       map[string]any{"type": "string", "description": "A short (3-5 word) description of the task."},
 			"prompt":            map[string]any{"type": "string", "description": "The task for the agent to perform."},
-			"subagent_type":     map[string]any{"type": "string", "description": "The type of specialized agent to use for this task."},
 			"run_in_background": map[string]any{"type": "boolean", "description": "Set to true to run this agent in the background. You will be notified when it completes."},
 		},
 	}
@@ -59,7 +75,6 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) loop.ToolRe
 	req := AgentRequest{
 		Description:     stringArg(args, "description", "Running task"),
 		Prompt:          stringArg(args, "prompt", ""),
-		SubagentType:    stringArg(args, "subagent_type", "general-purpose"),
 		RunInBackground: agentBoolArg(args, "run_in_background", false),
 	}
 	if req.Prompt == "" {
@@ -91,7 +106,7 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) loop.ToolRe
 	}
 	return jsonResult(map[string]any{
 		"status": "completed", "agentId": launch.TaskID,
-		"agentType": req.SubagentType, "prompt": req.Prompt,
+		"prompt":            req.Prompt,
 		"content":           []any{map[string]any{"type": "text", "text": snapshot.Result}},
 		"totalToolUseCount": snapshot.ToolUseCount,
 		"totalDurationMs":   durationMillis(snapshot), "totalTokens": snapshot.TotalTokens,

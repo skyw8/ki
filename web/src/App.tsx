@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react'
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { ApiError, Client } from './api/client'
 import { AuthLoading, LoginScreen } from './features/settings/AuthScreen'
@@ -7,7 +7,6 @@ import { RequestNav } from './features/chat/RequestNav'
 import { Composer, type Draft } from './features/chat/Composer'
 import { AttachmentBrowser } from './features/attachments/AttachmentBrowser'
 import { DirectoryBrowser } from './features/sessions/DirectoryBrowser'
-import { SessionTreeBrowser } from './features/sessions/SessionTreeBrowser'
 import { ExtensionConfigEditor, MessageSettings, NotificationSettings, SessionConfig, SettingsToggles } from './features/settings/SessionConfig'
 import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
@@ -23,6 +22,7 @@ import { useTabFocus } from './hooks/useTabFocus'
 import { useServerEvents } from './hooks/useServerEvents'
 import { currentPermission, loadNotifyPref, notifyCompletion, requestPermission, saveNotifyPref, showNotification, type NotifyPermission } from './lib/notifications'
 import { focusedSession } from './lib/tab-focus'
+import { ancestorsOf, buildSessionForest, orderedChildren, topLevelRoot } from './lib/session-tree'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
 type SettingsPage = 'providers' | 'skills' | 'tools' | 'extensions' | 'message' | 'notifications' | 'appearance'
@@ -87,16 +87,119 @@ function mergeExtensionUI(globalItems: ExtensionUI[], sessionItems: ExtensionUI[
   return statusChips(Array.from(byName.values()))
 }
 
-function sessionPathLabel(id: string, byId: Map<string, SessionInfo>, fallback: string): string {
-  const labels: string[] = []
-  const seen = new Set<string>()
-  let current: SessionInfo | undefined = byId.get(id)
-  while (current && !seen.has(current.id)) {
-    seen.add(current.id)
-    labels.unshift(current.title || fallback)
-    current = current.parentSessionId ? byId.get(current.parentSessionId) : undefined
-  }
-  return labels.join(' / ')
+// SessionRows renders a workspace's session list as a parent/child tree.
+// Subagent sessions (children) nest under their parent and are collapsed by
+// default; the arrow toggles the branch while the row itself opens the session.
+type SessionRowsProps = {
+  rows: SessionInfo[]
+  depth: number
+  currentId: string | null
+  untitled: string
+  childrenOf: (id: string) => SessionInfo[]
+  isExpanded: (id: string) => boolean
+  onToggleExpand: (id: string) => void
+  onOpen: (id: string) => void
+  onMenu: (event: ReactMouseEvent<HTMLButtonElement>, id: string) => void
+  menu: { kind: 'ws' | 'sess'; id: string } | null
+  menuID: string
+  draggable?: boolean
+  onRowDrop?: (event: ReactDragEvent<HTMLDivElement>, index: number, session: SessionInfo) => void
+  onRowDragStart?: (event: ReactDragEvent<HTMLDivElement>, session: SessionInfo) => void
+}
+
+function SessionRows({
+  rows,
+  depth,
+  currentId,
+  untitled,
+  childrenOf,
+  isExpanded,
+  onToggleExpand,
+  onOpen,
+  onMenu,
+  menu,
+  menuID,
+  draggable,
+  onRowDrop,
+  onRowDragStart,
+}: SessionRowsProps) {
+  const { t } = useI18n()
+  return (
+    <>
+      {rows.map((session, index) => {
+        const children = childrenOf(session.id)
+        const open = isExpanded(session.id)
+        const canDrag = !!draggable && depth === 0
+        return (
+          <Fragment key={session.id}>
+            <div
+              className={`session-row${session.id === currentId ? ' active' : ''}${depth > 0 ? ' session-child' : ''}`}
+              data-testid="session-row"
+              data-depth={depth}
+              style={{ '--session-depth': depth } as CSSProperties}
+              draggable={canDrag}
+              onDragStart={e => { if (canDrag) onRowDragStart?.(e, session) }}
+              onDragOver={e => { if (canDrag) e.preventDefault() }}
+              onDrop={e => { if (canDrag) onRowDrop?.(e, index, session) }}
+            >
+              {children.length ? (
+                <button
+                  type="button"
+                  className="session-toggle"
+                  data-testid="session-toggle"
+                  aria-label={t('session.expand')}
+                  aria-expanded={open}
+                  onClick={() => onToggleExpand(session.id)}
+                >
+                  <IChev open={open} />
+                </button>
+              ) : (
+                <span className="session-toggle-spacer" aria-hidden />
+              )}
+              <button
+                type="button"
+                className="session-main"
+                aria-current={session.id === currentId ? 'page' : undefined}
+                onClick={() => onOpen(session.id)}
+              >
+                <span className={`dot${session.running ? ' on' : ''}`} />
+                {session.pinned && session.forkMode !== 'tree' ? <span className="pin-mark" aria-label={t('session.pinned')}><IPin /></span> : null}
+                {depth > 0 ? <span className="subagent-mark" aria-hidden title={t('session.subagent')}><IFork /></span> : null}
+                <span className="meta">
+                  <div className="title" data-testid="session-title">{session.title || untitled}</div>
+                  <div className="sub">{session.model}</div>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="icon-btn tiny"
+                aria-label={t('session.menu')}
+                aria-haspopup="menu"
+                aria-expanded={menu?.kind === 'sess' && menu.id === session.id}
+                aria-controls={menu?.kind === 'sess' && menu.id === session.id ? menuID : undefined}
+                onClick={e => onMenu(e, session.id)}
+              ><IDots /></button>
+            </div>
+            {children.length && open ? (
+              <SessionRows
+                rows={children}
+                depth={depth + 1}
+                currentId={currentId}
+                untitled={untitled}
+                childrenOf={childrenOf}
+                isExpanded={isExpanded}
+                onToggleExpand={onToggleExpand}
+                onOpen={onOpen}
+                onMenu={onMenu}
+                menu={menu}
+                menuID={menuID}
+              />
+            ) : null}
+          </Fragment>
+        )
+      })}
+    </>
+  )
 }
 
 // Why: .pop-menu used to be hard-coded at left:200/top:120, so a click on a
@@ -173,11 +276,10 @@ function WorkspaceApp({ api }: { api: Client }) {
   const [searchMore, setSearchMore] = useState(false)
   const [searchErr, setSearchErr] = useState<string | null>(null)
   const [currentId, setCurrentId] = useState<string | null>(null)
-  // Why: Tree reveals are navigation context, not a durable preference. Keep
-  // them for the lifetime of App so ordinary navigation can return to them,
-  // while a full page reload naturally starts with no temporary children.
-  const [temporaryTreeRevealIds, setTemporaryTreeRevealIds] = useState<string[]>([])
-  const [treeOpen, setTreeOpen] = useState(false)
+  // Why: sidebar branch expansion is navigation state, not a durable
+  // preference. Subagent branches start collapsed; opening a session expands
+  // its ancestor chain for this App lifetime, and a reload starts fresh.
+  const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({})
   const [selectedWs, setSelectedWs] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>(loadExpanded)
   const [showAll, setShowAll] = useState<Record<string, boolean>>({})
@@ -228,7 +330,6 @@ function WorkspaceApp({ api }: { api: Client }) {
   const mobileNavToggleRef = useRef<HTMLButtonElement>(null)
   const mobileSidebarWasOpen = useRef(false)
   const drawerDialogSource = useRef<'settings' | 'dir' | null>(null)
-  const sessionRowRefs = useRef(new Map<string, HTMLButtonElement>())
 
   const openDirectoryFromSidebar = () => {
     drawerDialogSource.current = compactLayout && mobileSidebarOpen ? 'dir' : null
@@ -588,6 +689,9 @@ function WorkspaceApp({ api }: { api: Client }) {
       enabled: notifyEnabled,
       sessionId: id,
       focusedSession: focusedSession(),
+      // Subagent sessions nest under a parent whose run owns the notification;
+      // announcing each child would be noise the user cannot act on.
+      subagent: session?.forkMode === 'tree',
       title: session?.title || t('session.untitled'),
       // The cwd disambiguates sessions that share a title (e.g. short prompts).
       body: session?.cwd ? t('notify.doneBodyDir', { cwd: session.cwd }) : t('notify.doneBody'),
@@ -602,12 +706,6 @@ function WorkspaceApp({ api }: { api: Client }) {
 			setView(v => v.commands === commands ? v : { ...v, commands })
 		}).catch(() => {})
 	}, [api, currentId, selectedWs])
-  useEffect(() => {
-    if (!temporaryTreeRevealIds.length) return
-    const available = new Set(sessions.map(session => session.id))
-    const next = temporaryTreeRevealIds.filter(id => available.has(id))
-    if (next.length !== temporaryTreeRevealIds.length) setTemporaryTreeRevealIds(next)
-  }, [sessions, temporaryTreeRevealIds])
   useEffect(() => {
     const q = filter.trim()
     if (!q) {
@@ -1130,47 +1228,12 @@ function WorkspaceApp({ api }: { api: Client }) {
 
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
 
-  const trees = useMemo(() => {
-    const temporary = temporaryTreeRevealIds.map(id => byId.get(id)).filter((s): s is SessionInfo => !!s)
-    const displayRows = (workspaceId: string | undefined, rows: SessionInfo[]) => {
-      const regular = rows.filter(session => session.forkMode !== 'tree')
-      const selected = temporary.filter(session => session.forkMode === 'tree' && session.workspaceId === workspaceId)
-      if (!selected.length) return regular
+  const forest = useMemo(() => buildSessionForest(sessions, workspaces), [sessions, workspaces])
 
-      const regularIds = new Set(regular.map(session => session.id))
-      const selectedIds = new Set(selected.map(session => session.id))
-      const anchorOf = (session: SessionInfo): string | null => {
-        const seen = new Set<string>()
-        let anchor = session.parentSessionId
-        while (anchor && !seen.has(anchor)) {
-          if (regularIds.has(anchor) || selectedIds.has(anchor)) return anchor
-          seen.add(anchor)
-          anchor = byId.get(anchor)?.parentSessionId
-        }
-        return null
-      }
-      const children = new Map<string | null, SessionInfo[]>()
-      for (const session of selected) {
-        const anchor = anchorOf(session)
-        children.set(anchor, [...(children.get(anchor) ?? []), session])
-      }
-      const out: SessionInfo[] = []
-      const appendSelected = (anchor: string | null, ancestors = new Set<string>()) => {
-        for (const session of children.get(anchor) ?? []) {
-          if (ancestors.has(session.id)) continue
-          out.push(session)
-          const nextAncestors = new Set(ancestors)
-          nextAncestors.add(session.id)
-          appendSelected(session.id, nextAncestors)
-        }
-      }
-      for (const session of regular) {
-        out.push(session)
-        appendSelected(session.id)
-      }
-      appendSelected(null)
-      return out
-    }
+  const trees = useMemo(() => {
+    // Top-level rows are sessions without a trusted parent edge. Subagent
+    // children are rendered recursively by SessionRows, not listed here.
+    const rootsOf = (rows: SessionInfo[]) => rows.filter(session => !forest.parentOf.has(session.id))
     const used = new Set<string>()
     const groups = workspaces.map(ws => {
       const order = ws.sessionIds?.length
@@ -1178,37 +1241,24 @@ function WorkspaceApp({ api }: { api: Client }) {
         : sessions.filter(s => s.workspaceId === ws.id).map(s => s.id)
       const allRows = order.map(id => byId.get(id)).filter((s): s is SessionInfo => !!s)
       allRows.forEach(s => used.add(s.id))
-      const rows = displayRows(ws.id, allRows)
-      return { ws, rows }
+      return { ws, rows: rootsOf(allRows) }
     })
-    const ungrouped = displayRows(undefined, sessions.filter(s => !used.has(s.id)))
+    const ungrouped = rootsOf(sessions.filter(s => !used.has(s.id)))
     return { groups, ungrouped }
-  }, [byId, sessions, temporaryTreeRevealIds, workspaces])
+  }, [byId, forest, sessions, workspaces])
 
-  const treeAvailable = useMemo(() => {
-    if (!currentId) return false
-    const current = byId.get(currentId)
-    return current?.forkMode === 'tree' || sessions.some(session => (
-      session.forkMode === 'tree' && session.parentSessionId === currentId
-    ))
-  }, [byId, currentId, sessions])
+  const childrenOf = useCallback((id: string) => orderedChildren(forest, id), [forest])
+  const isSessionExpanded = useCallback((id: string) => expandedSessions[id] === true, [expandedSessions])
+  const toggleSession = useCallback((id: string) => {
+    setExpandedSessions(current => ({ ...current, [id]: !current[id] }))
+  }, [])
 
-  const selectTreeSession = useCallback(async (id: string): Promise<boolean> => {
-    const target = byId.get(id)
-    if (!target) {
-      toast.error(t('tree.missing'))
-      return false
-    }
-    setTemporaryTreeRevealIds(current => current.includes(id) ? current : [...current, id])
-    if (target.workspaceId) {
-      setExpanded(value => ({ ...value, [target.workspaceId!]: true }))
-      setShowAll(value => ({ ...value, [target.workspaceId!]: true }))
-    }
-    const opened = await openSession(id)
-    if (!opened) setTemporaryTreeRevealIds(current => current.filter(item => item !== id))
-    else setTab('conversation')
-    return opened
-  }, [byId, openSession, t])
+  const openSessionRow = useCallback((id: string) => {
+    // A subagent result is a transcript, so surface it on the conversation tab
+    // rather than whatever tab the parent was left on.
+    if (byId.get(id)?.forkMode === 'tree') setTab('conversation')
+    void openSession(id)
+  }, [byId, openSession])
 
   const localHits = useMemo(() => {
     const q = filter.trim().toLowerCase()
@@ -1433,28 +1483,30 @@ function WorkspaceApp({ api }: { api: Client }) {
 
   const visibleRows = (wsId: string, rows: SessionInfo[]) => {
     if (showAll[wsId]) return rows
-    const idx = currentId ? rows.findIndex(s => s.id === currentId) : -1
+    // Opening a subagent child must keep its top-level branch in the slice,
+    // otherwise the expanded row would be cut off by the show-more limit.
+    const anchorId = currentId ? topLevelRoot(forest, currentId) : null
+    const idx = anchorId ? rows.findIndex(s => s.id === anchorId) : -1
     const n = idx >= SHOW ? idx + 1 : SHOW
     return rows.slice(0, n)
   }
 
-  const rememberSessionRow = useCallback((id: string, element: HTMLButtonElement | null) => {
-    if (element) sessionRowRefs.current.set(id, element)
-    else sessionRowRefs.current.delete(id)
-  }, [])
-
+  // Opening a session (including a deep subagent child restored from the URL)
+  // expands its ancestor chain so the active row is reachable in the tree.
   useEffect(() => {
-    if (!currentId || !temporaryTreeRevealIds.includes(currentId)) return
-    const frame = requestAnimationFrame(() => {
-      const row = sessionRowRefs.current.get(currentId)
-      row?.scrollIntoView({ block: 'nearest' })
-      row?.focus({ preventScroll: true })
+    if (!currentId) return
+    const chain = ancestorsOf(forest, currentId)
+    if (!chain.length) return
+    setExpandedSessions(current => {
+      if (chain.every(id => current[id] === true)) return current
+      const next = { ...current }
+      for (const id of chain) next[id] = true
+      return next
     })
-    return () => cancelAnimationFrame(frame)
-  }, [currentId, temporaryTreeRevealIds, trees])
+  }, [currentId, forest])
 
   return (
-    <div className={`app${collapsed && !compactLayout ? ' sidebar-collapsed' : ''}${mobileSidebarOpen ? ' mobile-sidebar-open' : ''}${(settingsOpen || modelOpen || dirOpen || attachmentTarget || extOpen || treeOpen) ? ' modal-open' : ''}`}>
+    <div className={`app${collapsed && !compactLayout ? ' sidebar-collapsed' : ''}${mobileSidebarOpen ? ' mobile-sidebar-open' : ''}${(settingsOpen || modelOpen || dirOpen || attachmentTarget || extOpen) ? ' modal-open' : ''}`}>
 	  {fileDragActive ? createPortal(<div className="global-drop-overlay" data-testid="global-drop-overlay">
 		<div className="global-drop-visual"><span><IImage /></span><span><IFile /></span><span><IPlus /></span></div>
 		<strong>{edit ? t('drop.editTitle') : t('drop.newTitle')}</strong>
@@ -1578,51 +1630,29 @@ function WorkspaceApp({ api }: { api: Client }) {
                   ><IDots /></button>
                   <button type="button" className="icon-btn tiny" data-testid="ws-new-session" aria-label={t('session.new')} onClick={() => void newSession(ws.id)}><IPlus /></button>
                 </div>
-                {shown.map((s, i) => (
-                  <div
-                    key={s.id}
-                    className={`session-row${s.id === currentId ? ' active' : ''}${temporaryTreeRevealIds.includes(s.id) ? ' tree-focus' : ''}`}
-                    data-testid="session-row"
-                    data-tree-focus={temporaryTreeRevealIds.includes(s.id) || undefined}
-                    draggable={!temporaryTreeRevealIds.includes(s.id)}
-                    onDragStart={e => { if (!temporaryTreeRevealIds.includes(s.id)) e.dataTransfer.setData('text/sess', `${ws.id}:${s.id}`) }}
-                    onDragOver={e => e.preventDefault()}
-                    onDrop={e => {
-                      if (temporaryTreeRevealIds.includes(s.id)) return
-                      const raw = e.dataTransfer.getData('text/sess')
-                      const [fromWs, sid] = raw.split(':')
-                      if (fromWs !== ws.id || !sid || sid === s.id) return
-                      const rect = e.currentTarget.getBoundingClientRect()
-                      const before = e.clientY < rect.top + rect.height / 2 ? s.id : shown[i + 1]?.id
-                      void api.moveSession(ws.id, sid, before ?? null).then(() => refreshList()).catch(er => toast.from(er))
-                    }}
-                  >
-                    <button
-                      ref={element => rememberSessionRow(s.id, element)}
-                      type="button"
-                      className="session-main"
-                      aria-current={s.id === currentId ? 'page' : undefined}
-                      onClick={() => { if (s.forkMode === 'tree') setTab('conversation'); void openSession(s.id) }}
-                    >
-                      <span className={`dot${s.running ? ' on' : ''}`} />
-                      {s.pinned && s.forkMode !== 'tree' ? <span className="pin-mark" aria-label={t('session.pinned')}><IPin /></span> : null}
-                      {temporaryTreeRevealIds.includes(s.id) ? <span className="tree-session-mark" aria-hidden><IFork /></span> : null}
-                      <span className="meta">
-                        <div className="title" data-testid="session-title">{s.title || untitled}</div>
-                        <div className="sub">{temporaryTreeRevealIds.includes(s.id) ? `${t('tree.label')} · ${sessionPathLabel(s.id, byId, untitled)}` : s.model}</div>
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-btn tiny"
-                      aria-label={t('session.menu')}
-                      aria-haspopup="menu"
-                      aria-expanded={menu?.kind === 'sess' && menu.id === s.id}
-                      aria-controls={menu?.kind === 'sess' && menu.id === s.id ? menuID : undefined}
-                      onClick={e => openMenu('sess', s.id, e.currentTarget)}
-                    ><IDots /></button>
-                  </div>
-                ))}
+                <SessionRows
+                  rows={shown}
+                  depth={0}
+                  currentId={currentId}
+                  untitled={untitled}
+                  childrenOf={childrenOf}
+                  isExpanded={isSessionExpanded}
+                  onToggleExpand={toggleSession}
+                  onOpen={openSessionRow}
+                  onMenu={(e, id) => openMenu('sess', id, e.currentTarget)}
+                  menu={menu}
+                  menuID={menuID}
+                  draggable
+                  onRowDragStart={(e, s) => e.dataTransfer.setData('text/sess', `${ws.id}:${s.id}`)}
+                  onRowDrop={(e, i, s) => {
+                    const raw = e.dataTransfer.getData('text/sess')
+                    const [fromWs, sid] = raw.split(':')
+                    if (fromWs !== ws.id || !sid || sid === s.id) return
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    const before = e.clientY < rect.top + rect.height / 2 ? s.id : shown[i + 1]?.id
+                    void api.moveSession(ws.id, sid, before ?? null).then(() => refreshList()).catch(er => toast.from(er))
+                  }}
+                />
                 {open && rows.length > shown.length ? (
                   <button type="button" className="show-more" data-testid="show-more" onClick={() => setShowAll(a => ({ ...a, [ws.id]: true }))}>{t('session.showMore')}</button>
                 ) : null}
@@ -1632,25 +1662,19 @@ function WorkspaceApp({ api }: { api: Client }) {
           {sidebarWide && !filter.trim() && trees.ungrouped.length ? (
             <div>
               <div className="cwd-label">{t('session.ungrouped')}</div>
-              {trees.ungrouped.map(s => (
-                <button
-                  key={s.id}
-                  ref={element => rememberSessionRow(s.id, element)}
-                  type="button"
-                  className={`session-row${s.id === currentId ? ' active' : ''}${temporaryTreeRevealIds.includes(s.id) ? ' tree-focus' : ''}`}
-                  data-testid="session-row"
-                  data-tree-focus={temporaryTreeRevealIds.includes(s.id) || undefined}
-                  aria-current={s.id === currentId ? 'page' : undefined}
-                    onClick={() => { if (s.forkMode === 'tree') setTab('conversation'); void openSession(s.id) }}
-                >
-                  <span className={`dot${s.running ? ' on' : ''}`} />
-                  {temporaryTreeRevealIds.includes(s.id) ? <span className="tree-session-mark" aria-hidden><IFork /></span> : null}
-                  <span className="meta">
-                    <div className="title" data-testid="session-title">{s.title || untitled}</div>
-                    <div className="sub">{temporaryTreeRevealIds.includes(s.id) ? `${t('tree.label')} · ${sessionPathLabel(s.id, byId, untitled)}` : s.model}</div>
-                  </span>
-                </button>
-              ))}
+              <SessionRows
+                rows={trees.ungrouped}
+                depth={0}
+                currentId={currentId}
+                untitled={untitled}
+                childrenOf={childrenOf}
+                isExpanded={isSessionExpanded}
+                onToggleExpand={toggleSession}
+                onOpen={openSessionRow}
+                onMenu={(e, id) => openMenu('sess', id, e.currentTarget)}
+                menu={menu}
+                menuID={menuID}
+              />
             </div>
           ) : null}
         </div>
@@ -1738,8 +1762,7 @@ function WorkspaceApp({ api }: { api: Client }) {
               workspaceTitle={workspaces.find(w => w.id === (selectedWs ?? sessions.find(s => s.id === currentId)?.workspaceId))?.title}
               busy={view.busy}
               onEdit={page => { drawerDialogSource.current = null; setSettingsPage(page); setSettingsOpen(true) }}
-              treeAvailable={treeAvailable}
-              onTreeOpen={() => setTreeOpen(true)}
+              onOpenSession={id => { setTab('conversation'); void openSession(id) }}
               runtimeReady={view.runtimeReady}
             />
           </div>
@@ -2020,14 +2043,6 @@ function WorkspaceApp({ api }: { api: Client }) {
             .finally(() => setDirBusy(false))
         }}
       />
-	  <SessionTreeBrowser
-		open={treeOpen}
-		sessions={sessions}
-		workspaces={workspaces}
-		currentId={currentId}
-		onClose={() => setTreeOpen(false)}
-		onSelect={selectTreeSession}
-	  />
 	  <AttachmentBrowser
 		api={api}
 		open={attachmentTarget !== null}

@@ -946,6 +946,50 @@ func ForkAt(root string, src *Session, target string, requestedMode ...string) (
 	return dst, nil
 }
 
+// CreateChild creates a delegated child session linked to src without copying
+// any transcript. A subagent must start from a clean context: it only sees the
+// directive the parent passes, so it cannot mistake the parent's user turn for
+// its own task or re-delegate it. The parent edge (parentSession + tree mode)
+// and the routing config are still inherited so deletion, sidebar nesting, and
+// provider/model boundaries behave like a fork.
+func CreateChild(root string, src *Session) (*Session, error) {
+	src.mu.Lock()
+	cwd := src.Header.CWD
+	parent := src.Header.ID
+	cfg := src.Config
+	src.mu.Unlock()
+
+	dst, err := Create(root, cwd, cfg.Provider, cfg.Model, cfg.ThinkingEffort)
+	if err != nil {
+		return nil, err
+	}
+	dir := dst.Dir
+	fail := func(err error) (*Session, error) {
+		_ = dst.Close()
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	dst.Config = cfg
+	dst.Config.ActiveLeafID = ""
+	dst.Header.ParentSession = parent
+	dst.Header.ForkMode = ForkModeTree
+	if err := dst.writeConfig(); err != nil {
+		return fail(err)
+	}
+	if err := rewriteHeader(dst); err != nil {
+		return fail(err)
+	}
+	if err := dst.Close(); err != nil {
+		return fail(err)
+	}
+	dst, err = Open(dir)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
+	return dst, nil
+}
+
 func referencedAttachments(entries []Entry, sourceDir string) []string {
 	set := map[string]bool{}
 	add := func(m *types.Message) {

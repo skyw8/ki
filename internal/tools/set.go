@@ -35,7 +35,6 @@ type Set struct {
 	// depth 0; at MaxAgentDepth the Agent tool is withheld.
 	AgentDepth           int
 	AgentParentSessionID string
-	AgentParentEntryID   string
 	Shells               ShellRuntime
 	ReadOps              ReadOperations
 	Mutations            *MutationQueue
@@ -50,8 +49,8 @@ func (s Set) Build(profile Profile) []loop.Tool {
 		s.Mutations = NewMutationQueue()
 	}
 	agent := s.Agent
-	if agent != nil && (s.AgentParentSessionID != "" || s.AgentParentEntryID != "") {
-		agent = scopedAgentRuntime{AgentRuntime: agent, sessionID: s.AgentParentSessionID, entryID: s.AgentParentEntryID}
+	if agent != nil && s.AgentParentSessionID != "" {
+		agent = scopedAgentRuntime{AgentRuntime: agent, sessionID: s.AgentParentSessionID}
 	}
 	tasks := compositeTaskStore{shell: s.Jobs}
 	if agent != nil {
@@ -117,12 +116,10 @@ func FilterBuiltins(all []loop.Tool, toggle session.Toggle) []loop.Tool {
 type scopedAgentRuntime struct {
 	AgentRuntime
 	sessionID string
-	entryID   string
 }
 
 func (s scopedAgentRuntime) SpawnAgent(ctx context.Context, req AgentRequest) (AgentLaunch, error) {
 	req.ParentSessionID = s.sessionID
-	req.ParentEntryID = s.entryID
 	launch, err := s.AgentRuntime.SpawnAgent(ctx, req)
 	if err != nil {
 		return AgentLaunch{}, fmt.Errorf("spawn agent: %w", err)

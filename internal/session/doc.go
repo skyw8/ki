@@ -21,10 +21,12 @@
 // config.json owns provider/model/thinking effort plus
 // title and pin. Skills/extension enablement is process-wide ({KI_HOME}/toggles.json).
 // Remove deletes the session directory.
-// Agent delegation uses the same ForkAt primitive with forkMode=tree; the child
-// transcript, relationship, and agent.json metadata remain durable so the
-// server can rebuild an agent task after restart. Removing a child also removes
-// its agent record through the server-owned lifecycle.
+// CreateChild makes the delegated-agent session: it records the same parent
+// edge and forkMode=tree but copies no transcript, so a subagent only sees the
+// directive it was given. Its transcript, relationship, and agent.json metadata
+// remain durable so the server can rebuild an agent task after restart.
+// Removing a child also removes its agent record through the server-owned
+// lifecycle.
 // List walks the session root with a shallow scan: each row reads config.json,
 // the jsonl header, and the first user message only, so listing never decodes a
 // full transcript. ListCache reuses rows while config.json and events.jsonl keep

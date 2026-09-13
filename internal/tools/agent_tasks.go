@@ -22,15 +22,13 @@ type AgentRun func(context.Context, string, string, bool) (AgentCompletion, erro
 // that may run, but it cannot create another Agent child.
 const MaxAgentDepth = 3
 
-// AgentRequest describes one child agent launch. The parent session and entry
-// identify the exact conversation point that is forked into the child.
+// AgentRequest describes one child agent launch. The parent session owns the
+// child edge; the child starts from a clean context and only receives Prompt.
 type AgentRequest struct {
 	Description     string
 	Prompt          string
-	SubagentType    string
 	RunInBackground bool
 	ParentSessionID string
-	ParentEntryID   string
 	// SessionID is assigned by server after it creates the tree child and is
 	// used to stop the task if that session is deleted immediately.
 	SessionID string
@@ -91,7 +89,6 @@ type AgentMetadata struct {
 	ParentSessionID string     `json:"parent_session_id,omitempty"`
 	Description     string     `json:"description,omitempty"`
 	Prompt          string     `json:"prompt,omitempty"`
-	SubagentType    string     `json:"subagent_type,omitempty"`
 	OutputFile      string     `json:"output_file,omitempty"`
 	Status          TaskStatus `json:"status"`
 	Result          string     `json:"result,omitempty"`
@@ -139,7 +136,6 @@ type agentTask struct {
 	run             AgentRun
 	metadataPath    string
 	parentSessionID string
-	subagentType    string
 	pending         []string
 	runCount        uint64
 	notifiedRun     uint64
@@ -167,7 +163,6 @@ func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile str
 		run:             run,
 		metadataPath:    req.MetadataPath,
 		parentSessionID: req.ParentSessionID,
-		subagentType:    req.SubagentType,
 	}
 	s.mu.Lock()
 	if s.closed {
@@ -307,8 +302,7 @@ func (t *agentTask) metadataLocked() AgentMetadata {
 	return AgentMetadata{
 		Version: 1, TaskID: t.snap.TaskID, SessionID: t.snap.SessionID,
 		ParentSessionID: t.parentSessionID, Description: t.snap.Description,
-		Prompt: t.snap.Prompt, SubagentType: t.subagentType,
-		OutputFile: t.snap.OutputFile, Status: t.snap.Status, Result: t.snap.Result,
+		Prompt: t.snap.Prompt, OutputFile: t.snap.OutputFile, Status: t.snap.Status, Result: t.snap.Result,
 		Error: t.snap.Error, ToolUseCount: t.snap.ToolUseCount,
 		TotalTokens: t.snap.TotalTokens, StartedAt: t.snap.StartedAt,
 		FinishedAt: t.snap.FinishedAt, Pending: append([]string(nil), t.pending...),
@@ -367,8 +361,8 @@ func (s *AgentStore) LoadMetadata(path string, run AgentRun) (bool, error) {
 			TotalTokens: meta.TotalTokens, StartedAt: meta.StartedAt, FinishedAt: meta.FinishedAt,
 		},
 		done: make(chan struct{}), doneClosed: true, run: run, metadataPath: path,
-		parentSessionID: meta.ParentSessionID, subagentType: meta.SubagentType,
-		pending: append([]string(nil), meta.Pending...), runCount: meta.RunCount,
+		parentSessionID: meta.ParentSessionID,
+		pending:         append([]string(nil), meta.Pending...), runCount: meta.RunCount,
 		notifiedRun: meta.NotifiedRun,
 	}
 	if task.snap.Status == TaskRunning || task.snap.Status == TaskPending {

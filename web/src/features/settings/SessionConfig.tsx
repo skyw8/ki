@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import type { Client } from '../../api/client'
-import { ICheck, IChevDown, IEdit, IRegen, ITraj } from '../../components/icons'
+import { ICheck, IChevDown, IEdit, IRegen } from '../../components/icons'
 import { useI18n, type Lang, type MsgKey, type TFn } from '../../i18n/index'
 import { ModelPickerDialog } from './ModelPickerDialog'
 import { Select } from '../../components/Select'
@@ -71,8 +71,7 @@ export function SessionConfig({
   workspaceTitle,
   busy,
   onEdit,
-  treeAvailable,
-  onTreeOpen,
+  onOpenSession,
   runtimeReady,
 }: {
   api: Client
@@ -80,8 +79,7 @@ export function SessionConfig({
   workspaceTitle?: string
   busy?: boolean
   onEdit?: (page: 'skills' | 'extensions') => void
-  treeAvailable?: boolean
-  onTreeOpen?: () => void
+  onOpenSession?: (id: string) => void
   runtimeReady?: boolean
 }) {
   const { t, lang } = useI18n()
@@ -173,11 +171,6 @@ export function SessionConfig({
             <button type="button" className="cfg-btn" data-testid="info-edit" onClick={() => onEdit?.('skills')}>
               <IEdit /> {t('cfg.edit')}
             </button>
-            {treeAvailable ? (
-              <button type="button" className="cfg-btn" data-testid="info-tree" onClick={onTreeOpen}>
-                <ITraj /> {t('tree.open')}
-              </button>
-            ) : null}
           </div>
           <section className="cfg-block" id="info-session">
             <h2 className="cfg-h">{t('cfg.session')}</h2>
@@ -201,7 +194,16 @@ export function SessionConfig({
               {detail?.parentSessionId ? (
                 <div>
                   <dt>{t('cfg.parent')}</dt>
-                  <dd>{detail.parentSessionId}</dd>
+                  <dd>
+                    <button
+                      type="button"
+                      className="cfg-link"
+                      data-testid="cfg-parent"
+                      onClick={() => onOpenSession?.(detail.parentSessionId!)}
+                    >
+                      {detail.parentSessionId}
+                    </button>
+                  </dd>
                 </div>
               ) : null}
               {detail?.timestamp ? (

@@ -433,7 +433,7 @@ func TestBuiltinToolsToggleAppliesToNextPrompt(t *testing.T) {
 	}
 }
 
-func TestAgentForksTreeSessionAndRunsChildLoop(t *testing.T) {
+func TestAgentSpawnsTreeChildAndRunsChildLoop(t *testing.T) {
 	streamer := &forkAgentStreamer{}
 	_, hs := testServerWith(t, streamer)
 	parentID := createSession(t, hs, t.TempDir())
@@ -490,7 +490,8 @@ func TestAgentForksTreeSessionAndRunsChildLoop(t *testing.T) {
 	}
 	_ = res.Body.Close()
 	found := false
-	forkedParentPrompt := false
+	inheritedParentPrompt := false
+	firstUser := ""
 	for _, entry := range detail.Entries {
 		if entry.Message == nil {
 			continue
@@ -498,15 +499,23 @@ func TestAgentForksTreeSessionAndRunsChildLoop(t *testing.T) {
 		if entry.Message.Role == "assistant" && entry.Message.Text() == "child report" {
 			found = true
 		}
-		if entry.Message.Role == "user" && entry.Message.Text() == "delegate" {
-			forkedParentPrompt = true
+		if entry.Message.Role == "user" {
+			if firstUser == "" {
+				firstUser = entry.Message.Text()
+			}
+			if entry.Message.Text() == "delegate" {
+				inheritedParentPrompt = true
+			}
 		}
 	}
 	if !found {
 		t.Fatalf("child messages missing report: %+v", detail.Entries)
 	}
-	if !forkedParentPrompt {
-		t.Fatalf("child fork omitted the current parent turn: %+v", detail.Entries)
+	if inheritedParentPrompt {
+		t.Fatalf("child inherited the parent turn: %+v", detail.Entries)
+	}
+	if firstUser != "child directive" {
+		t.Fatalf("child should start from the directive, got first user %q", firstUser)
 	}
 }
 
@@ -569,15 +578,9 @@ func TestAgentSendMessageSteersLiveChild(t *testing.T) {
 	streamer := &steerAgentStreamer{started: make(chan struct{}), release: make(chan struct{})}
 	srv, hs := testServerWith(t, streamer)
 	parentID := createSession(t, hs, t.TempDir())
-	parent, err := srv.open(parentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	parentEntry := parent.LeafID()
-	_ = parent.Close()
 	launch, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
 		Description: "steer child", Prompt: "child directive", RunInBackground: true,
-		ParentSessionID: parentID, ParentEntryID: parentEntry,
+		ParentSessionID: parentID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -599,15 +602,9 @@ func TestAgentSendMessageSteersLiveChild(t *testing.T) {
 func TestAgentSendMessageResumesCompletedChild(t *testing.T) {
 	srv, hs := testServerWith(t, resumeAgentStreamer{})
 	parentID := createSession(t, hs, t.TempDir())
-	parent, err := srv.open(parentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	parentEntry := parent.LeafID()
-	_ = parent.Close()
 	launch, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
 		Description: "resume child", Prompt: "child directive", RunInBackground: true,
-		ParentSessionID: parentID, ParentEntryID: parentEntry,
+		ParentSessionID: parentID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -642,17 +639,10 @@ func TestAgentTaskMetadataRestoresAfterServerRestart(t *testing.T) {
 	}
 	hs1 := httptest.NewServer(srv1.Handler())
 	parentID := createSession(t, hs1, t.TempDir())
-	parent, err := srv1.open(parentID)
-	if err != nil {
-		hs1.Close()
-		_ = srv1.Shutdown(context.Background())
-		t.Fatal(err)
-	}
 	launch, err := srv1.SpawnAgent(context.Background(), tools.AgentRequest{
 		Description: "restart child", Prompt: "child directive", RunInBackground: true,
-		ParentSessionID: parentID, ParentEntryID: parent.LeafID(),
+		ParentSessionID: parentID,
 	})
-	_ = parent.Close()
 	if err != nil {
 		hs1.Close()
 		_ = srv1.Shutdown(context.Background())
@@ -700,17 +690,9 @@ func TestInterruptedAgentResumesAfterServerRestart(t *testing.T) {
 	}
 	hs1 := httptest.NewServer(srv1.Handler())
 	parentID := createSession(t, hs1, t.TempDir())
-	parent, err := srv1.open(parentID)
-	if err != nil {
-		hs1.Close()
-		_ = srv1.Shutdown(context.Background())
-		t.Fatal(err)
-	}
-	parentEntry := parent.LeafID()
-	_ = parent.Close()
 	launch, err := srv1.SpawnAgent(context.Background(), tools.AgentRequest{
 		Description: "interrupted child", Prompt: "child directive", RunInBackground: true,
-		ParentSessionID: parentID, ParentEntryID: parentEntry,
+		ParentSessionID: parentID,
 	})
 	if err != nil {
 		hs1.Close()
@@ -745,63 +727,43 @@ func TestInterruptedAgentResumesAfterServerRestart(t *testing.T) {
 	}
 }
 
-func TestAgentRecursiveForkHonorsDepthAndTreeDeleteCleansTasks(t *testing.T) {
+func TestAgentRecursiveSpawnHonorsDepthAndTreeDeleteCleansTasks(t *testing.T) {
 	srv, hs := testServerWith(t, resumeAgentStreamer{})
 	rootID := createSession(t, hs, t.TempDir())
-	root, err := srv.open(rootID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	child, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
 		Description: "child", Prompt: "child directive", RunInBackground: true,
-		ParentSessionID: rootID, ParentEntryID: root.LeafID(),
+		ParentSessionID: rootID,
 	})
-	_ = root.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := srv.Wait(context.Background(), child.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	childSession, err := srv.open(child.SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	grandchild, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
 		Description: "grandchild", Prompt: "grandchild directive", RunInBackground: true,
-		ParentSessionID: child.SessionID, ParentEntryID: childSession.LeafID(),
+		ParentSessionID: child.SessionID,
 	})
-	_ = childSession.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := srv.Wait(context.Background(), grandchild.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	grandchildSession, err := srv.open(grandchild.SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	greatGrandchild, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
 		Description: "great grandchild", Prompt: "great grandchild directive", RunInBackground: true,
-		ParentSessionID: grandchild.SessionID, ParentEntryID: grandchildSession.LeafID(),
+		ParentSessionID: grandchild.SessionID,
 	})
-	_ = grandchildSession.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := srv.Wait(context.Background(), greatGrandchild.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	greatGrandchildSession, err := srv.open(greatGrandchild.SessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	_, err = srv.SpawnAgent(context.Background(), tools.AgentRequest{
 		Description: "too deep", Prompt: "must be rejected", RunInBackground: true,
-		ParentSessionID: greatGrandchild.SessionID, ParentEntryID: greatGrandchildSession.LeafID(),
+		ParentSessionID: greatGrandchild.SessionID,
 	})
-	_ = greatGrandchildSession.Close()
 	if err == nil || !strings.Contains(err.Error(), "maximum agent depth 3 reached") {
 		t.Fatalf("over-depth spawn error = %v", err)
 	}
@@ -840,12 +802,6 @@ func TestAgentRecursiveForkHonorsDepthAndTreeDeleteCleansTasks(t *testing.T) {
 func TestConcurrentBackgroundAgentsKeepSessionsAndNotificationsDistinct(t *testing.T) {
 	srv, hs := testServerWith(t, resumeAgentStreamer{})
 	parentID := createSession(t, hs, t.TempDir())
-	parent, err := srv.open(parentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	parentEntry := parent.LeafID()
-	_ = parent.Close()
 
 	const count = 4
 	launches := make(chan tools.AgentLaunch, count)
@@ -855,7 +811,7 @@ func TestConcurrentBackgroundAgentsKeepSessionsAndNotificationsDistinct(t *testi
 		wg.Go(func() {
 			launch, spawnErr := srv.SpawnAgent(context.Background(), tools.AgentRequest{
 				Description: "parallel child", Prompt: "child directive", RunInBackground: true,
-				ParentSessionID: parentID, ParentEntryID: parentEntry,
+				ParentSessionID: parentID,
 			})
 			if spawnErr != nil {
 				errs <- spawnErr
@@ -924,10 +880,55 @@ func TestConcurrentBackgroundAgentsKeepSessionsAndNotificationsDistinct(t *testi
 		lastNotifications = countNotifications
 		time.Sleep(10 * time.Millisecond)
 	}
-	parent, _ = srv.open(parentID)
+	parent, _ := srv.open(parentID)
 	defer func() { _ = parent.Close() }()
 	remaining, _ := session.ReadQueue(parent.Dir)
 	t.Fatalf("concurrent child completion notifications were lost: got=%d queue=%d messages=%d", lastNotifications, len(remaining), len(parent.MessagesToLeaf()))
+}
+
+// A delegated child must start from a clean context: only the directive is
+// visible, never the parent's user turn. Replaying that turn made subagents
+// re-delegate the parent task instead of executing their own directive.
+func TestAgentChildStartsWithCleanContext(t *testing.T) {
+	srv, hs := testServerWith(t, resumeAgentStreamer{})
+	defer hs.Close()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	parentID := createSession(t, hs, t.TempDir())
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+parentID+"/prompt", strings.NewReader(`{"text":"parent request text"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	waitAgentEnd(t, hs, parentID)
+
+	launch, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
+		Description: "clean child", Prompt: "child directive", RunInBackground: true,
+		ParentSessionID: parentID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Wait(context.Background(), launch.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	child, err := srv.open(launch.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = child.Close() }()
+	messages := child.MessagesToLeaf()
+	if len(messages) == 0 || messages[0].Role != "user" || !strings.Contains(messages[0].Text(), "child directive") {
+		t.Fatalf("child transcript should start with the directive, got %+v", messages)
+	}
+	for _, message := range messages {
+		if strings.Contains(message.Text(), "parent request text") {
+			t.Fatalf("child transcript inherited the parent turn: %q", message.Text())
+		}
+	}
 }
 
 func requestToolNames(specs []loop.ToolSpec) []string {

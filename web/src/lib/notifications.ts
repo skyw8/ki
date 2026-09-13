@@ -7,6 +7,8 @@
 // forwards it to the OS notification center. We stay silent only for the
 // session a focused ki tab is showing (see tab-focus.ts): switched to another
 // session, or another application entirely, and the completion notifies.
+// Subagent sessions are always silent: they are an implementation detail of a
+// parent run whose own completion already notifies.
 //
 // The on/off preference lives in localStorage (per browser). Permission is owned
 // by the browser and can only be requested from a user gesture, which is why the
@@ -58,13 +60,16 @@ export async function requestPermission(): Promise<NotifyPermission> {
 }
 
 // The whole gating rule in one place so it can be exercised without a browser:
-// notify unless a focused ki tab is showing exactly this session.
+// never notify for a subagent session, otherwise notify unless a focused ki tab
+// is showing exactly this session.
 export function shouldNotify(opts: {
   enabled: boolean
   permission: NotifyPermission
   sessionId: string
   focusedSession: string | null
+  subagent: boolean
 }): boolean {
+  if (opts.subagent) return false
   return opts.enabled && opts.permission === 'granted' && opts.focusedSession !== opts.sessionId
 }
 
@@ -72,6 +77,7 @@ export function notifyCompletion(opts: {
   enabled: boolean
   sessionId: string
   focusedSession: string | null
+  subagent: boolean
   title: string
   body: string
   onClick?: () => void
@@ -81,6 +87,7 @@ export function notifyCompletion(opts: {
     permission: currentPermission(),
     sessionId: opts.sessionId,
     focusedSession: opts.focusedSession,
+    subagent: opts.subagent,
   })) return null
   // One tag per session: several ki tabs observing the same completion, or a
   // run finishing twice, collapse into a single OS notification instead of a
