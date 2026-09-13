@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -442,24 +443,42 @@ func waitPIDFile(t *testing.T, path string) int {
 	return 0
 }
 
+// pidGoneScript prints "gone" once pid no longer runs.
+//
+// Why: `$!` reports the shell's pid namespace. Windows can keep a process that
+// an external TerminateProcess already removed in the MSYS table, which still
+// answers `kill -0`, so resolve the winpid MSYS recorded and ask the Windows
+// process list (tasklist reports "No tasks" for a pid that is gone).
+func pidGoneScript(pid int) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf(`if [ ! -d /proc/%[1]d ]; then echo gone; else w=$(cat /proc/%[1]d/winpid 2>/dev/null); `+
+			`if [ -z "$w" ] || tasklist /FI "PID eq $w" 2>/dev/null | grep -qi "no tasks"; then echo gone; fi; fi`, pid)
+	}
+	return fmt.Sprintf("kill -0 %d 2>/dev/null || echo gone", pid)
+}
+
+// pidProbe reports what the shell still knows about pid for failure messages.
+func pidProbe(b bashTool, pid int) string {
+	res := b.Execute(context.Background(), map[string]any{
+		"command": fmt.Sprintf("if [ -d /proc/%[1]d ]; then cat /proc/%[1]d/winpid 2>/dev/null || echo no-winpid; else echo no-proc-entry; fi", pid),
+	})
+	if len(res.Content) == 0 {
+		return "unknown"
+	}
+	return strings.TrimSpace(res.Content[0].Text)
+}
+
 func assertPIDDead(t *testing.T, b bashTool, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		res := b.Execute(context.Background(), map[string]any{
-			"command": fmt.Sprintf("kill -0 %d", pid),
-		})
-		if res.IsError {
+		res := b.Execute(context.Background(), map[string]any{"command": pidGoneScript(pid)})
+		if !res.IsError && strings.Contains(res.Content[0].Text, "gone") {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	// Why: `$!` reports an MSYS pid, which is its own namespace, so a stale table
-	// entry looks like a live process. Report what the shell still sees.
-	ps := b.Execute(context.Background(), map[string]any{
-		"command": fmt.Sprintf("ps -p %d -o pid,ppid,winpid,cmd || true", pid),
-	})
-	t.Fatalf("pid %d still alive after cancel/timeout\n%s", pid, ps.Content[0].Text)
+	t.Fatalf("pid %d still alive after cancel/timeout (probe=%s)", pid, pidProbe(b, pid))
 }
 
 func TestBashCancelKillsProcessGroup(t *testing.T) {
