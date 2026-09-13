@@ -137,6 +137,14 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
           digest="$(grep -n -A 14 'Error:' e2e-run.log 2>/dev/null | head -100)"
           printf '::error title=e2e failure digest::%s\n' "$(printf '%s' "$digest" | sed 's/%/%25/g' | awk 'NR > 1 { printf "%s", "%0A" } { printf "%s", $0 }' | head -c 4000)"
+          # The DOM snapshot Playwright writes next to a failure shows which
+          # session and composer state the page was in.
+          for ctx in test-results/runs/*/*/error-context.md; do
+            [ -f "$ctx" ] || continue
+            body="$(head -c 2000 "$ctx" | sed 's/%/%25/g' | awk 'NR > 1 { printf "%s", "%0A" } { printf "%s", $0 }')"
+            printf '::error title=page snapshot %s::%s\n' "${ctx##*/runs/}" "$body"
+            break
+          done
           for f in test-results/e2e-parallel/unit-*.log; do
             grep -q 'Error:' "$f" 2>/dev/null || continue
             unit="$(grep -m1 -E '^  [0-9]+\) ' "$f" 2>/dev/null | sed -E 's/^  [0-9]+\) \[[^]]+\] › //; s/[[:space:]]+$//')"

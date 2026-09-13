@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { serverToken, statePath } from './global-setup.ts'
 import { goBinary } from './go-toolchain.ts'
 import { MIN_TOUCH_SIZE } from './touch-target.ts'
+import { newSession } from './session.ts'
 
 // Every test is self-contained (verified standalone on its own server), so the
 // parallel runner may split this file into one isolated process per test.
@@ -274,7 +275,7 @@ test('opening a session locks composer until runtime.ready', async ({ page, requ
 
   await page.goto('/')
   await reloadServer(page, request)
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   const input = page.getByTestId('composer-input')
   await expect(input).toBeDisabled()
   await expect(input).toHaveAttribute('placeholder', /正在加载扩展|Loading extensions/)
@@ -296,7 +297,7 @@ test('slash palette is two-level for completions', async ({ page, request }) => 
 
   await page.goto('/')
   await reloadServer(page, request)
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   const input = page.getByTestId('composer-input')
   await expect(input).toBeEnabled({ timeout: 15_000 })
 
@@ -360,7 +361,7 @@ test('top bar folds extra chips into one inspector modal', async ({ page, reques
   const disabled = (catalog.items ?? []).map(item => item.name).filter(name => !keep.has(name))
   await request.patch('/v1/extensions', { headers, data: { disabled } })
   await page.reload()
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   await expect(page.getByTestId('composer-input')).toBeEnabled({ timeout: 15_000 })
   await expect(page.getByTestId('ext-chip-vault')).toBeVisible({ timeout: 15_000 })
   await expect(page.getByTestId('ext-chip-syncx')).toBeVisible()
@@ -443,7 +444,7 @@ test('global extension chip opens the same config modal as Configure', async ({ 
   await page.getByTestId('ext-panel').getByRole('button', { name: '关闭对话框' }).click()
   await expect(page.getByTestId('ext-panel')).toHaveCount(0)
 
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   await sendPrompt(page, `unified extension page ${Date.now()}`)
   await expect(page.getByTestId('assistant-message')).toBeVisible({ timeout: 20_000 })
   await expect(page.getByTestId('ext-chip-goalui')).toBeVisible({ timeout: 15_000 })

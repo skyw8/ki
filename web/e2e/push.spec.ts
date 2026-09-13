@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { newSession } from './session.ts'
 
 // The sidebar (session list + workspaces) is pushed over GET /v1/events, so a
 // client reflects another client's work without reloading. These tests drive two
@@ -47,7 +48,7 @@ test('a run in another tab turns the sidebar dot green and back without a reload
   await expect(other.getByTestId('session-row')).toHaveCount(0)
 
   // Session creation is pushed: the second tab grows the row with no refresh.
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   await expect(other.getByTestId('session-row')).toHaveCount(1)
 
   // Run start is pushed as a sessions invalidation, so the dot comes on here

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { permissionFrom, shouldNotify } from '../src/lib/notifications.ts'
 import { serverToken } from './global-setup.ts'
+import { newSession } from './session.ts'
 
 // Every test is self-contained, so the parallel runner may split this file into
 // one isolated process per test.
@@ -110,7 +111,7 @@ test('completion notifies when the session is not the focused one', async ({ pag
 
   // Focused tab watching the run: the delayed run really completes while the
   // session is on screen, and must stay quiet.
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   await sendPrompt(page, 'e2e-delay-300 foreground-run')
   await waitIdle(page)
   expect(await notifications(page)).toHaveLength(1)
@@ -118,7 +119,7 @@ test('completion notifies when the session is not the focused one', async ({ pag
   // Run a session, switch to another session before it finishes: still notify.
   await sendPrompt(page, 'e2e-delay-1200 switched-run')
   await expect(page.getByTestId('composer-stop')).toBeVisible()
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   await expect.poll(() => notifications(page)).toHaveLength(2)
   const switched = (await notifications(page))[1]
   expect(switched.body).toContain('会话已完成')
@@ -142,7 +143,7 @@ test('aborting a run does not notify', async ({ page }) => {
   await page.goto('/')
   await enableNotifications(page)
 
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   await sendPrompt(page, 'e2e-hold abort-run')
   await expect(page.getByTestId('composer-stop')).toBeVisible()
   await setBackground(page, true)
@@ -191,7 +192,7 @@ test('subagent sessions never notify', async ({ page, request }) => {
 
   await sendPrompt(page, 'e2e-delay-1200 subagent-run')
   await expect(page.getByTestId('composer-stop')).toBeVisible()
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   await expect.poll(async () => request.get(`/v1/sessions/${child.id}`, { headers }).then(r => r.json() as Promise<{ running?: boolean }>).then(d => d.running ?? false)).toBe(false)
   // Give the push watcher time to process the (suppressed) completion.
   await page.waitForTimeout(500)
@@ -228,7 +229,7 @@ test('a focused tab suppresses notifications in other ki tabs', async ({ page, c
   // Make the first tab the focused one; the other sits in the background.
   await setBackground(other, true)
   await setBackground(page, false)
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   await expect.poll(async () => page.evaluate(() => {
     const raw = localStorage.getItem('ki-focused-session')
     return raw ? (JSON.parse(raw) as { session?: string }).session ?? null : null

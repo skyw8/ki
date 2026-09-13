@@ -5,6 +5,7 @@ import { applyFollowTail } from '../src/lib/follow-tail.ts'
 import { nodeTypes, nodeValues, parseMarkdown } from './markdown-parse.ts'
 import { serverToken, statePath } from './global-setup.ts'
 import { MIN_TOUCH_SIZE } from './touch-target.ts'
+import { newSession } from './session.ts'
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
@@ -693,7 +694,7 @@ test('new session keeps the current model and thinking effort', async ({ page })
   await page.getByRole('option', { name: 'high', exact: true }).click()
   await expect(thinking).toHaveText('high')
 
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   await expect(chip).toHaveText('gpt-5.6-terra')
   await expect(thinking).toHaveText('high')
   const created = await page.evaluate(async () => {
@@ -1064,7 +1065,7 @@ test('busy enter queues and ctrl+enter promotes the tail', async ({ page }) => {
   await page.getByTestId('busy-queue').click()
   await expect(page.getByTestId('busy-queue')).toHaveAttribute('aria-checked', 'true')
   await page.getByTestId('settings-mask').click({ position: { x: 4, y: 4 } })
-  await page.getByTestId('new-session').click()
+  await newSession(page)
   const input = page.getByTestId('composer-input')
   await expect(input).toBeEnabled()
   await input.fill('e2e-hold')
