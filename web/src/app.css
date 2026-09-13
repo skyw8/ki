@@ -3042,6 +3042,14 @@ select:focus-visible {
   box-shadow: none;
 }
 
+/* Why: the session search field is focused programmatically when the cap opens.
+   Its overflow:hidden plus rounded border clips the global brand focus ring into
+   a stray blue box, so the expanded cap border is the focus affordance instead. */
+.search-cap .session-search:focus,
+.search-cap .session-search:focus-visible {
+  outline: none;
+}
+
 @media (max-width: 760px), (max-height: 540px) and (max-width: 900px) {
   .modal.modal-ext { width: 100%; height: 100%; max-height: 100%; border: 0; border-radius: 0; }
   .ext-inspector { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
