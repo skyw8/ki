@@ -90,5 +90,6 @@ git push origin v0.1.0
 
 The release workflow reruns every CI test plus the credentialed live-provider
 CLI/WebUI suite against that exact tag. Only after all tests pass does it build
-Linux, macOS, and Windows archives for amd64 and arm64, inject the tag into
-`ki version`, generate SHA-256 checksums, and publish the GitHub Release.
+Linux, macOS, and Windows archives for amd64 and arm64, inject the tag's version
+(the tag without its `v` prefix, matching the checked-in `internal/cli/version.go`)
+into `ki version`, generate SHA-256 checksums, and publish the GitHub Release.

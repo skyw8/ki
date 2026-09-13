@@ -94,7 +94,7 @@ jobs:
 
           mkdir -p "package/$package" dist
           go build -trimpath -tags embed \
-            -ldflags="-s -w -X ki/internal/cli.Version=$GITHUB_REF_NAME" \
+            -ldflags="-s -w -X ki/internal/cli.Version=${version}" \
             -o "package/$package/$binary" ./cmd/ki
           cp README.md LICENSE "package/$package/"
 
