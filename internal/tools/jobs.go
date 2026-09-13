@@ -214,6 +214,7 @@ func (j *bgJob) start(parent context.Context) error {
 		_ = j.file.Close()
 		return fmt.Errorf("start background command: %w", err)
 	}
+	afterStart(cmd)
 	j.mu.Lock()
 	j.pid = cmd.Process.Pid
 	j.mu.Unlock()

@@ -15,6 +15,14 @@ func AttachProcessGroup(cmd *exec.Cmd) {
 	detachCmd(cmd)
 }
 
+// AfterProcessStart joins a started command to the platform kill group. Unix
+// needs nothing (Setpgid covers the tree); Windows assigns a job object so
+// KillProcessGroup reaps descendants of launchers whose processes are not
+// linked by the parent pid the toolhelp snapshot reports.
+func AfterProcessStart(cmd *exec.Cmd) {
+	afterStart(cmd)
+}
+
 // KillProcessGroup terminates cmd and its descendants.
 func KillProcessGroup(cmd *exec.Cmd) {
 	killCmd(cmd)

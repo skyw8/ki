@@ -13,6 +13,11 @@ func detachCmd(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
+func afterStart(cmd *exec.Cmd) {
+	// Setpgid already makes the process group the unit of cancellation.
+	_ = cmd
+}
+
 func killCmd(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return

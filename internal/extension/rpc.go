@@ -138,6 +138,7 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start sidecar: %w", err)
 	}
+	tools.AfterProcessStart(cmd)
 	c := &rpcClient{
 		name:               d.Name,
 		failClosed:         d.FailClosed,
