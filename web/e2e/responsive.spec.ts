@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { serverToken, statePath } from './global-setup.ts'
 import { goBinary } from './go-toolchain.ts'
+import { MIN_TOUCH_SIZE } from './touch-target.ts'
 
 // Every test is self-contained (verified standalone on its own server), so the
 // parallel runner may split this file into one isolated process per test.
@@ -125,8 +126,8 @@ async function expectTouchTarget(profile: Profile, locator: Locator, surface: st
   await expect(locator, `${surface} should be visible`).toBeVisible()
   const box = await locator.boundingBox()
   expect(box, `${surface} should have a layout box`).toBeTruthy()
-  expect(box!.width, `${surface} touch width`).toBeGreaterThanOrEqual(40)
-  expect(box!.height, `${surface} touch height`).toBeGreaterThanOrEqual(40)
+  expect(box!.width, `${surface} touch width`).toBeGreaterThanOrEqual(MIN_TOUCH_SIZE)
+  expect(box!.height, `${surface} touch height`).toBeGreaterThanOrEqual(MIN_TOUCH_SIZE)
 }
 
 async function expectTouchButtons(profile: Profile, root: Locator, surface: string): Promise<void> {
@@ -168,7 +169,8 @@ async function expectTouchButtons(profile: Profile, root: Locator, surface: stri
     'label:has(input[type="checkbox"])',
     'label:has(input[type="radio"])',
   ].join(', ')
-  const undersized = await root.locator(controls).evaluateAll(elements => elements.flatMap(control => {
+  // The floor is passed in because the callback body runs inside the page.
+  const undersized = await root.locator(controls).evaluateAll((elements, minSize) => elements.flatMap(control => {
     const element = control as HTMLElement
     const style = getComputedStyle(element)
     const rect = element.getBoundingClientRect()
@@ -181,13 +183,13 @@ async function expectTouchButtons(profile: Profile, root: Locator, surface: stri
       || rect.width <= 0
       || rect.height <= 0
     ) return []
-    if (rect.width >= 39.5 && rect.height >= 39.5) return []
+    if (rect.width >= minSize && rect.height >= minSize) return []
     return [{
       label: element.getAttribute('aria-label') || element.dataset.testid || element.className || element.textContent?.trim().slice(0, 40) || 'button',
       width: Math.round(rect.width * 10) / 10,
       height: Math.round(rect.height * 10) / 10,
     }]
-  }))
+  }), MIN_TOUCH_SIZE)
   expect(undersized, `${surface}: visible interactive controls smaller than 40px`).toEqual([])
 }
 

@@ -171,7 +171,6 @@ type Session struct {
 	entries []Entry
 	byID    map[string]Entry
 	leafID  string
-	jsonl   *os.File
 }
 
 // EncodeCWD matches pi: --abs-path-with-dashes--
@@ -241,12 +240,6 @@ func CreateWithOptions(root, cwd, provider, model string, opts CreateOptions) (*
 	if err := s.writeConfig(); err != nil {
 		return nil, err
 	}
-	//nolint:gosec // dir is an internally generated session directory.
-	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_CREATE|os.O_RDWR|os.O_APPEND|os.O_EXCL, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	s.jsonl = f
 	if err := s.writeLine(s.Header); err != nil {
 		return nil, err
 	}
@@ -283,11 +276,11 @@ func Open(dir string) (*Session, error) {
 		return nil, fmt.Errorf("decode config.json: %w", err)
 	}
 	//nolint:gosec // dir is an internally generated session directory.
-	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_RDWR|os.O_APPEND, 0o600)
+	f, err := os.Open(filepath.Join(dir, "events.jsonl"))
 	if err != nil {
 		return nil, err
 	}
-	s.jsonl = f
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	first := true
@@ -357,13 +350,12 @@ func Find(root, id string) (string, error) {
 	return found, nil
 }
 
-// Close closes the jsonl file.
+// Close releases the session. It is kept because callers own a session's
+// lifetime, but there is nothing to release: every append opens events.jsonl
+// only for the duration of the write, so a closed session holds no descriptor.
 func (s *Session) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.jsonl != nil {
-		return s.jsonl.Close()
-	}
 	return nil
 }
 
@@ -866,7 +858,18 @@ func (s *Session) SetPinned(on bool) error {
 
 // Remove closes and deletes a session directory.
 func Remove(dir string) error {
-	return os.RemoveAll(dir)
+	// Why: POSIX unlinks a file that another goroutine is appending to, Windows
+	// refuses while the handle is open. Appends now hold a handle only for the
+	// write itself, so retrying briefly turns that instant into a success
+	// instead of a failed delete (deleting a running session, t.TempDir cleanup).
+	var err error
+	for attempt := 0; attempt < 40; attempt++ {
+		if err = os.RemoveAll(dir); err == nil {
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return err
 }
 
 func (s *Session) appendLocked(e Entry) error {
@@ -885,13 +888,28 @@ func (s *Session) writeLine(v any) error {
 	if err != nil {
 		return err
 	}
+	return s.appendRaw(append(b, '\n'))
+}
+
+// appendRaw appends serialized jsonl records under the session's file gate.
+func (s *Session) appendRaw(b []byte) error {
 	gate := fileGate(s.Dir)
 	gate.Lock()
 	defer gate.Unlock()
-	if _, err := s.jsonl.Write(append(b, '\n')); err != nil {
+	// Why: the append handle lives only for this write. A session-lifetime
+	// descriptor would keep events.jsonl open for as long as the session object
+	// exists, and Windows refuses to delete an open file, so deleting a session
+	// that another goroutine or process still holds would fail there while it
+	// succeeds on POSIX. O_APPEND still makes concurrent appends atomic.
+	f, err := os.OpenFile(filepath.Join(s.Dir, "events.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
 		return err
 	}
-	return s.jsonl.Sync()
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(b); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 func (s *Session) writeConfig() error {
@@ -1200,18 +1218,7 @@ func rewriteHeader(s *Session) error {
 		_ = out.Close()
 		return err
 	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	_ = s.jsonl.Close()
-	//nolint:gosec // path is the session file selected by the session index.
-	nf, err := os.OpenFile(path, os.O_RDWR, 0o600)
-	if err != nil {
-		return err
-	}
-	s.jsonl = nf
-	_, _ = s.jsonl.Seek(0, io.SeekEnd)
-	return nil
+	return out.Close()
 }
 
 // Allowed reports whether name is enabled by t.

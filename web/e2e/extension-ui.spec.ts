@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { serverToken, statePath } from './global-setup.ts'
 import { goBinary } from './go-toolchain.ts'
+import { MIN_TOUCH_SIZE } from './touch-target.ts'
 
 // Every test is self-contained (verified standalone on its own server), so the
 // parallel runner may split this file into one isolated process per test.
@@ -22,8 +23,8 @@ async function sendPrompt(page: Page, text: string) {
 async function expectMinTarget(locator: Locator, label: string): Promise<void> {
   const box = await locator.boundingBox()
   expect(box, `${label} should have a layout box`).toBeTruthy()
-  expect(box!.width, `${label} width`).toBeGreaterThanOrEqual(40)
-  expect(box!.height, `${label} height`).toBeGreaterThanOrEqual(40)
+  expect(box!.width, `${label} width`).toBeGreaterThanOrEqual(MIN_TOUCH_SIZE)
+  expect(box!.height, `${label} height`).toBeGreaterThanOrEqual(MIN_TOUCH_SIZE)
 }
 
 async function tokenOf(page: Page) {

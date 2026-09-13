@@ -203,7 +203,7 @@ dialog 时立即释放键盘；侧栏操作菜单使用 menu/menuitem 语义，�
 选择菜单、附件、目录和会话树；根页面不得横向溢出，header、composer、dialog/footer 必须
 保持在可视区内。各 profile 会检查可见交互控件具有可访问名称；触控 profile 进一步扫描
 按钮、菜单项、链接、输入、select、textarea 以及 checkbox/radio 的 label 命中区，不允许
-小于 40px。dialog 内的 action 按钮同样固定 40px 最小命中区，不随 label 文本宽度收缩。
+小于 40px（Chromium 的布局盒子按 1/64px 舍入，所以断言用 39.95px 作为下限，避免 40px 控件量到 39.999999 时误报）。dialog 内的 action 按钮同样固定 40px 最小命中区，不随 label 文本宽度收缩。
 长消息、分支切换、排队操作、扩展开关等低频状态也遵守同一命中区契约。
 
 复制按钮统一走 `web/src/lib/clipboard.ts` 的 `copyText()`：浏览器只在安全上下文

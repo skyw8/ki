@@ -133,14 +133,7 @@ func (s *Session) SeedTranscript(spec SeedSpec) error {
 		s.Config.Title = spec.Title
 	}
 
-	gate := fileGate(s.Dir)
-	gate.Lock()
-	_, err := s.jsonl.Write(buf.Bytes())
-	if err == nil {
-		err = s.jsonl.Sync()
-	}
-	gate.Unlock()
-	if err != nil {
+	if err := s.appendRaw(buf.Bytes()); err != nil {
 		return err
 	}
 	return s.writeConfig()

@@ -6,7 +6,10 @@
 // later prompt without starting a run. config.json and the queue JSON files
 // are replaced atomically (temp + rename) so concurrent readers never observe
 // truncated JSON. A per-directory file gate serializes Open against jsonl
-// appends across distinct Session handles. New
+// appends across distinct Session handles, and an append holds its descriptor
+// only for the write itself: a Session keeps no open events.jsonl, so a session
+// directory stays deletable while other goroutines or processes use it (POSIX
+// allows that, Windows only while no handle is open). New
 // rows always append; config.activeLeafId persists the selected branch across opens.
 // The main queue holds two lanes: human turns (Enqueue) and server-generated
 // turns such as agent completion notifications (EnqueueSystem). Dequeue serves

@@ -20,7 +20,7 @@ toolResult message 可带结构化 `details`，以及工具完成时间 `timesta
 
 ## 细节
 
-- 新行永远 append 在文件末尾；`config.activeLeafId` 持久化当前分支。旧数据没有该字段时，重载以最后一条非 header 为 leaf。
+- 新行永远 append 在文件末尾；`config.activeLeafId` 持久化当前分支。append 使用 `O_APPEND` 的短命句柄（写完即关），`Session` 不长期持有 `events.jsonl`：POSIX 允许删除仍被打开的文件，Windows 不允许，长期句柄会让「删除运行中的 session」和 `t.TempDir` 清理在 Windows 上失败；`session.Remove` 对仍有一瞬写入的目录做短暂重试。旧数据没有该字段时，重载以最后一条非 header 为 leaf。
 - `SetLeaf` 只切换 active leaf 并写 config，旧行不删。edit/regenerate 从指定 parent append sibling branch。
 - `MessagesToLeaf` 沿 parent 走到根；若路径上有 compaction，先注入 summary，再取 `retainedTail`（新条目，压缩时最近消息原文落盘）；旧 jsonl 无 `retainedTail` 时回退 `firstKeptEntryId` 截断。`LastCompactionAt` 返回最近 compaction 时间戳（stale-usage 防护用）。
 - fork：`ForkAt` 新建 session 目录，只写 root → target 路径；新 header 使用新 id，`parentSession` 保存源 session id，`forkMode` 保存处理策略。`flat` child 与 parent 独立；`tree` child 由 server 在删除 parent 时递归清理。子 session 复制源的 `provider` / `model` / `thinkingEffort`，不回落到 registry 默认。

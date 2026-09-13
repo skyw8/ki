@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { applyFollowTail } from '../src/lib/follow-tail.ts'
 import { nodeTypes, nodeValues, parseMarkdown } from './markdown-parse.ts'
 import { serverToken, statePath } from './global-setup.ts'
+import { MIN_TOUCH_SIZE } from './touch-target.ts'
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
@@ -15,8 +16,8 @@ async function sendPrompt(page: Page, text: string) {
 async function expectMinTarget(locator: Locator, label: string): Promise<void> {
   const box = await locator.boundingBox()
   expect(box, `${label} should have a layout box`).toBeTruthy()
-  expect(box!.width, `${label} width`).toBeGreaterThanOrEqual(40)
-  expect(box!.height, `${label} height`).toBeGreaterThanOrEqual(40)
+  expect(box!.width, `${label} width`).toBeGreaterThanOrEqual(MIN_TOUCH_SIZE)
+  expect(box!.height, `${label} height`).toBeGreaterThanOrEqual(MIN_TOUCH_SIZE)
 }
 
 // Every test here is self-contained (verified by running each one alone on its
