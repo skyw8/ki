@@ -18,8 +18,10 @@ run and always uses `-tags embed`.
 
 Windows builds automatically link the Ki application icon from the checked-in
 `cmd/ki/rsrc_windows_{arch}.syso` resources. The icon is generated from the same
-`web/src/assets/ki.svg` artwork used by the browser tab. Plain command-line
-binaries on Linux and macOS do not carry a file-manager application icon.
+`web/src/assets/ki.svg` artwork used by the browser tab: render the SVG to
+`cmd/ki/ki.ico`, then run `rsrc -ico cmd/ki/ki.ico -arch amd64|arm64 -o
+cmd/ki/rsrc_windows_{amd64,arm64}.syso`. Plain command-line binaries on Linux and
+macOS do not carry a file-manager application icon.
 
 On Windows, Ki looks for Git Bash through `KI_GIT_BASH_PATH`, `CLAUDE_CODE_GIT_BASH_PATH`, standard Git for Windows locations, and then `bash.exe` on `PATH`. If Bash is unavailable, Ki still starts with the Windows-only PowerShell tool and omits Bash-dependent tools.
 
