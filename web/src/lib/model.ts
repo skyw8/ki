@@ -189,10 +189,6 @@ export function loadHistory(detail: SessionDetail): ViewState {
 	s.leafId = detail.leafId
 	s.hasMore = !!detail.hasMore
 	s.oldestId = detail.oldestId
-  if (s.allEntries.length === 0 && detail.messages) {
-    for (const m of detail.messages) applyMessage(s, m, crypto.randomUUID(), undefined)
-    return s
-  }
 	for (const e of leafEntries(s.allEntries, detail.leafId)) applyEntry(s, e)
   return s
 }

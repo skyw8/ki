@@ -259,7 +259,6 @@ export type SessionDetail = SessionInfo & {
   index?: IndexEntry[]
   hasMore?: boolean
   oldestId?: string
-  messages?: Message[]
   availableSkills?: CatalogSkill[]
   availableExtensions?: CatalogExtension[]
   commands?: SessionCommand[]

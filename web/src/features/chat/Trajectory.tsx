@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type UIEvent, type WheelEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { applyFollowTail, followFromGap } from '../../lib/follow-tail'
+import { copyText } from '../../lib/clipboard'
 import { useI18n, type TFn } from '../../i18n/index'
 import { IChev, IClock, IClose, ICompact, ICopy, IFold, ISearch, ISpark, ITail, IUser, IWrench } from '../../components/icons'
 import { Markdown } from '../markdown/Markdown'
@@ -146,10 +147,6 @@ function SchemaView({ schema }: { schema: unknown }) {
   )
 }
 
-function copyText(text: string) {
-  void navigator.clipboard?.writeText(text)
-}
-
 function ToolCatalog({ tools }: { tools?: ToolSchema[] }) {
   const { t } = useI18n()
   if (!tools?.length) return <p className="insp-empty" data-testid="system-tools">{t('traj.noTools')}</p>
@@ -172,7 +169,7 @@ function ToolCatalog({ tools }: { tools?: ToolSchema[] }) {
                   className="msg-icon"
                   data-testid="copy-tool-desc"
                   aria-label={t('chat.copy')}
-                  onClick={e => { e.preventDefault(); copyText(tool.description || '') }}
+                  onClick={e => { e.preventDefault(); void copyText(tool.description || '') }}
                 >
                   <ICopy />
                 </button>

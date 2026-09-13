@@ -8,6 +8,7 @@ import { toast } from '../../components/toast'
 import { pickSelectedProviderID, providerReady, sortProviderModels, sortProviders } from '../../lib/provider-order'
 import type { ProviderAuthStatus, ProviderCatalog, ProviderModel } from '../../api/types'
 import { useDialogFocus } from '../../hooks/useDialogFocus'
+import { copyText } from '../../lib/clipboard'
 
 type Props = { api: Client; onChanged: () => void }
 
@@ -169,7 +170,8 @@ export function ProviderSettings({ api, onChanged }: Props) {
   }
   const copyAuthURL = async (value: string) => {
     try {
-      await navigator.clipboard.writeText(value)
+      const ok = await copyText(value)
+      if (!ok) throw new Error('clipboard unavailable')
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1500)
     } catch (e) {

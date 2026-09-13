@@ -8,13 +8,10 @@ import type { Client } from '../../api/client'
 import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
 import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, reconcileUserNodes, turnStats, type CacheMiss, type TurnStats } from '../../lib/model'
+import { copyText } from '../../lib/clipboard'
 import type { ChatNode } from '../../api/types'
 
 const VIRTUALIZE_AFTER = 48
-
-function copyText(text: string) {
-  void navigator.clipboard?.writeText(text)
-}
 
 function fmtUsage(u: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }): string {
   let s = `${u.input ?? 0}→${u.output ?? 0}`
@@ -346,7 +343,7 @@ const ChatItem = memo(function ChatItem({
           <div className="msg-foot">
             {n.ts ? <div className="msg-stats">{fmtTs(n.ts)}</div> : null}
             <div className="msg-actions" data-testid="user-actions">
-              <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => copyText(n.text)}><ICopy /></IconBtn>
+              <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => void copyText(n.text)}><ICopy /></IconBtn>
               {branches?.[n.id]?.total && branches[n.id].total > 1 ? <span className="branch-nav"><button type="button" onClick={() => onBranch?.(n, -1)}>‹</button>{branches[n.id].index + 1} / {branches[n.id].total}<button type="button" onClick={() => onBranch?.(n, 1)}>›</button></span> : null}
               <IconBtn label={t('chat.edit')} testid="edit-msg" onClick={() => onStartEdit?.(n)}><IEdit /></IconBtn>
             </div>
@@ -388,7 +385,7 @@ const ChatItem = memo(function ChatItem({
               </div>
             ) : null}
             <div className="msg-actions" data-testid="asst-actions">
-              <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => copyText(n.text || n.thinking || '')}><ICopy /></IconBtn>
+              <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => void copyText(n.text || n.thinking || '')}><ICopy /></IconBtn>
               {n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.fork')} testid="fork-msg" onClick={() => onFork?.(n)}><IFork /></IconBtn> : null}
               {n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.regen')} testid="regen-msg" onClick={() => onRegen?.(n)}><IRegen /></IconBtn> : null}
               <IconBtn label={t('chat.locate')} testid="traj-msg" onClick={() => onSelect?.(n)}><ITraj /></IconBtn>

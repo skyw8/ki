@@ -4,6 +4,7 @@ import { Streamdown, useIsCodeFenceIncomplete, type ExtraProps } from 'streamdow
 import { useI18n } from '../../i18n/index'
 import { ICheck, ICopy } from '../../components/icons'
 import { normalizeMarkdown } from './markdown-normalize'
+import { copyText } from '../../lib/clipboard'
 
 const plugins = { cjk }
 const linkSafety = { enabled: false }
@@ -71,10 +72,12 @@ function CopyBtn({ getText, testid }: { getText: () => string; testid: string })
       onClick={() => {
         const text = getText()
         if (!text) return
-        void navigator.clipboard?.writeText(text)
-        setCopied(true)
-        window.clearTimeout(timer.current)
-        timer.current = window.setTimeout(() => setCopied(false), 1500)
+        void copyText(text).then(ok => {
+          if (!ok) return
+          setCopied(true)
+          window.clearTimeout(timer.current)
+          timer.current = window.setTimeout(() => setCopied(false), 1500)
+        })
       }}
     >
       {copied ? <ICheck /> : <ICopy />}

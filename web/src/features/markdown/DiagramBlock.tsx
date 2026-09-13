@@ -4,6 +4,7 @@ import { useI18n } from '../../i18n/index'
 import { ICheck, IClose, ICopy, IDownloadPng, IDownloadSvg, IZoomFit, IZoomIn, IZoomOut } from '../../components/icons'
 import { plantumlUrl } from './plantuml'
 import { useDialogFocus } from '../../hooks/useDialogFocus'
+import { copyText } from '../../lib/clipboard'
 
 export type DiagramKind = 'mermaid' | 'plantuml'
 
@@ -353,10 +354,12 @@ export default function DiagramBlock({
   }, [kind, showDiagram, source, retry])
 
   const copy = () => {
-    void navigator.clipboard?.writeText(source)
-    setCopied(true)
-    window.clearTimeout(copiedTimer.current)
-    copiedTimer.current = window.setTimeout(() => setCopied(false), 1500)
+    void copyText(source).then(ok => {
+      if (!ok) return
+      setCopied(true)
+      window.clearTimeout(copiedTimer.current)
+      copiedTimer.current = window.setTimeout(() => setCopied(false), 1500)
+    })
   }
 
   const download = async (format: Format) => {

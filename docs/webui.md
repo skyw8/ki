@@ -192,6 +192,11 @@ dialog 时立即释放键盘；侧栏操作菜单使用 menu/menuitem 语义，�
 按钮、菜单项、链接、输入、select、textarea 以及 checkbox/radio 的 label 命中区，不允许
 小于 40px。长消息、分支切换、排队操作、扩展开关等低频状态也遵守同一命中区契约。
 
+复制按钮统一走 `web/src/lib/clipboard.ts` 的 `copyText()`：浏览器只在安全上下文
+（HTTPS，或 `localhost`/`127.0.0.1` 上的 HTTP）暴露 `navigator.clipboard`，而 WebUI
+经常通过主机名以明文 HTTP 访问（Tailscale/LAN 地址等），此时该 API 不存在。`copyText()`
+在非安全上下文回落到 `document.execCommand('copy')`，保证任何访问方式下复制都可用。
+
 ## 构建
 
 ```bash
