@@ -161,7 +161,7 @@ test('deep web search keeps the Codex model with the Codex provider', async ({ p
           fetchContent: { type: 'boolean' },
         },
       },
-      defaults: { codexModel: 'gpt-5.5', provider: 'all', maxResults: 5, summaryModel: '', workflow: 'none', fetchContent: false },
+      defaults: { codexModel: 'gpt-6-astra', provider: 'all', maxResults: 5, summaryModel: '', workflow: 'none', fetchContent: false },
     },
     runtime: { kind: 'rpc', command: process.execPath, args: [join(repo, 'extensions/deep-web-search/dist/main.js')] },
   }))

@@ -18,8 +18,9 @@ the OpenAI Codex service endpoints defined in `extension.json`.
 ## Thinking levels
 
 `thinkingLevelMap` mirrors the built-in catalog entries for the same models.
-No GPT-5.5/5.6 variant accepts `minimal` (the API answers
-`unsupported_value` and lists `none, low, medium, high, xhigh, max`), so every
-map hides `minimal`. The Codex backend does accept `none`, so `off` stays
-visible and maps to the zero-reasoning floor; the sidecar skips the whole
-`reasoning` block for `off` anyway.
+No GPT-6/5.6 variant accepts `minimal`, so every map hides it. The GPT-5.6
+models accept `none` (the API lists `none, low, medium, high, xhigh, max`), so
+`off` stays visible and maps to the zero-reasoning floor; the sidecar skips the
+whole `reasoning` block for `off` anyway. GPT-6 Astra rejects `none` (its
+`reasoning.effort` supports only `low, medium, high, xhigh, max`), so its map
+hides `off` as well.

@@ -338,7 +338,7 @@ async function openAiCredential() {
 }
 
 export async function searchCodex(query, options, signal) {
-  const model = typeof options.codexModel === "string" && options.codexModel.trim() ? options.codexModel.trim() : "gpt-5.5";
+  const model = typeof options.codexModel === "string" && options.codexModel.trim() ? options.codexModel.trim() : "gpt-6-astra";
   const response = await responsesRequest({ model, prompt: query, search: options, signal, thinkingEffort: options.codexThinkingEffort });
   const output = responseOutput(response.payload);
   const results = sourcesFromOutput(output).slice(0, options.numResults);
