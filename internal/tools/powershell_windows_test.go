@@ -73,7 +73,7 @@ func TestPowerShellBackgroundLifecycle(t *testing.T) {
 		t.Fatalf("start = %+v", started)
 	}
 	id := strings.Fields(strings.Split(started.Content[0].Text, "\n")[0])[3]
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	snapshot, err := jobs.Wait(ctx, id)
 	if err != nil || snapshot.Status != TaskCompleted {

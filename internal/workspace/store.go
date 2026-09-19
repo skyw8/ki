@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -226,18 +227,18 @@ func (s *Store) InsertSessionBefore(wsID, sid, beforeID string) error {
 		return errNotFound
 	}
 	ids := append([]string{}, s.data.Workspaces[i].SessionIDs...)
-	from := indexOf(ids, sid)
+	from := slices.Index(ids, sid)
 	if from < 0 {
 		return errSessionNotInWorkspace
 	}
-	if beforeID != "" && indexOf(ids, beforeID) < 0 {
+	if beforeID != "" && slices.Index(ids, beforeID) < 0 {
 		return errNotFound
 	}
 	ids = append(ids[:from], ids[from+1:]...)
 	if beforeID == "" {
 		ids = append(ids, sid)
 	} else {
-		to := indexOf(ids, beforeID)
+		to := slices.Index(ids, beforeID)
 		ids = append(ids[:to], append([]string{sid}, ids[to:]...)...)
 	}
 	s.data.Workspaces[i].SessionIDs = ids
@@ -253,7 +254,7 @@ func (s *Store) AttachSession(wsID, sid string) error {
 	if i < 0 {
 		return errNotFound
 	}
-	if indexOf(s.data.Workspaces[i].SessionIDs, sid) >= 0 {
+	if slices.Index(s.data.Workspaces[i].SessionIDs, sid) >= 0 {
 		return nil
 	}
 	s.data.Workspaces[i].SessionIDs = append([]string{sid}, s.data.Workspaces[i].SessionIDs...)
@@ -270,7 +271,7 @@ func (s *Store) DetachSession(wsID, sid string) error {
 		return nil
 	}
 	ids := s.data.Workspaces[i].SessionIDs
-	n := indexOf(ids, sid)
+	n := slices.Index(ids, sid)
 	if n < 0 {
 		return nil
 	}
@@ -449,15 +450,6 @@ func (s *Store) writeLocked() error {
 		return err
 	}
 	return os.Rename(tmp, s.path())
-}
-
-func indexOf(ids []string, id string) int {
-	for i, v := range ids {
-		if v == id {
-			return i
-		}
-	}
-	return -1
 }
 
 // NotFound reports whether err is a missing workspace.

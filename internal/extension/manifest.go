@@ -1,13 +1,15 @@
 package extension
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -138,7 +140,7 @@ func Discover(home string, toggle session.Toggle) Discovery {
 	for _, d := range byName {
 		all = append(all, d)
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].Name < all[j].Name })
+	slices.SortFunc(all, func(a, b Descriptor) int { return cmp.Compare(a.Name, b.Name) })
 	// All and Enabled are both globally name-sorted. Keep separate slices so
 	// callers can use All for catalog listing without re-filtering disabled packages.
 	return Discovery{All: all, Enabled: chainOrder(all)}
@@ -154,7 +156,7 @@ func chainOrder(in []Descriptor) []Descriptor {
 		}
 		globals = append(globals, d)
 	}
-	sort.Slice(globals, func(i, j int) bool { return globals[i].Name < globals[j].Name })
+	slices.SortFunc(globals, func(a, b Descriptor) int { return cmp.Compare(a.Name, b.Name) })
 	out := make([]Descriptor, 0, len(globals))
 	out = append(out, globals...)
 	return out
@@ -209,10 +211,7 @@ func validateManifest(root string, m Manifest) error {
 			return fmt.Errorf("%w %q", errUnknownCapability, capability)
 		}
 	}
-	kind := m.Runtime.Kind
-	if kind == "" {
-		kind = runtimeNone
-	}
+	kind := cmp.Or(m.Runtime.Kind, runtimeNone)
 	if kind != runtimeNone && kind != runtimeRPC {
 		return fmt.Errorf("%w %q", errUnknownRuntimeKind, m.Runtime.Kind)
 	}
@@ -273,11 +272,7 @@ func loadI18n(root string, spec I18nSpec) *I18nCatalog {
 	if len(spec.Resources) == 0 {
 		return nil
 	}
-	locales := make([]string, 0, len(spec.Resources))
-	for locale := range spec.Resources {
-		locales = append(locales, locale)
-	}
-	sort.Strings(locales)
+	locales := slices.Sorted(maps.Keys(spec.Resources))
 	catalog := &I18nCatalog{DefaultLocale: spec.DefaultLocale, Resources: map[string]map[string]string{}}
 	for _, locale := range locales {
 		path := filepath.Join(root, filepath.Clean(spec.Resources[locale]))
@@ -355,10 +350,7 @@ func (d Descriptor) wantsSidecar() bool {
 	if d.Error != "" || !d.Enabled {
 		return false
 	}
-	kind := d.manifest.Runtime.Kind
-	if kind == "" {
-		kind = runtimeNone
-	}
+	kind := cmp.Or(d.manifest.Runtime.Kind, runtimeNone)
 	return kind == runtimeRPC
 }
 
@@ -420,7 +412,7 @@ func (d Descriptor) PromptAppendFiles() []string {
 	if !hasKind(d.Capabilities, CapPromptAppend) || d.Error != "" {
 		return nil
 	}
-	return append([]string(nil), d.manifest.Prompt.Append...)
+	return slices.Clone(d.manifest.Prompt.Append)
 }
 
 func (d Descriptor) commandDirs() []string {

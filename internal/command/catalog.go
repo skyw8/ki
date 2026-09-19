@@ -1,8 +1,9 @@
 package command
 
 import (
+	"cmp"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 
 	"ki/internal/resources"
@@ -38,12 +39,12 @@ func Catalog(snapshot resources.Snapshot, skillsToggle session.Toggle) []Item {
 			Name: "skill:" + sk.Name, Description: sk.Description, Source: "skill",
 		})
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Source != out[j].Source {
+	slices.SortStableFunc(out, func(a, b Item) int {
+		if a.Source != b.Source {
 			order := map[string]int{"builtin": 0, "prompt": 1, "extension": 2, "skill": 3}
-			return order[out[i].Source] < order[out[j].Source]
+			return cmp.Compare(order[a.Source], order[b.Source])
 		}
-		return out[i].Name < out[j].Name
+		return cmp.Compare(a.Name, b.Name)
 	})
 	return out
 }
@@ -114,12 +115,13 @@ func ExpandSkill(snapshot resources.Snapshot, toggle session.Toggle, name, args 
 }
 
 func stripFrontmatter(text string) string {
-	if !strings.HasPrefix(text, "---") {
+	rest, ok := strings.CutPrefix(text, "---")
+	if !ok {
 		return text
 	}
-	i := strings.Index(text[3:], "---")
-	if i < 0 {
+	_, body, found := strings.Cut(rest, "---")
+	if !found {
 		return text
 	}
-	return strings.TrimLeft(text[3+i+3:], "\n")
+	return strings.TrimLeft(body, "\n")
 }

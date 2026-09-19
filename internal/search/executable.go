@@ -16,11 +16,7 @@ import (
 // sourced through BASH_ENV by the shell tools.
 const ToolsShimName = "shim.sh"
 
-var (
-	toolsDirOnce sync.Once
-	toolsDirPath string
-	toolsDirErr  error
-)
+var toolsDir = sync.OnceValues(resolveToolsDir)
 
 // ToolsDir returns a directory that holds the embedded search executables (rg
 // and, where available, fd) together with the BASH_ENV shim. The Bash and
@@ -31,10 +27,7 @@ var (
 // matches the embedded bytes. When no writable cache directory exists the tools
 // fall back to a process-lifetime temporary directory.
 func ToolsDir() (string, error) {
-	toolsDirOnce.Do(func() {
-		toolsDirPath, toolsDirErr = resolveToolsDir()
-	})
-	return toolsDirPath, toolsDirErr
+	return toolsDir()
 }
 
 func resolveToolsDir() (string, error) {

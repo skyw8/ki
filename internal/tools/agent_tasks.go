@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -110,13 +111,13 @@ type AgentMetadata struct {
 	Status          TaskStatus `json:"status"`
 	Result          string     `json:"result,omitempty"`
 	Error           string     `json:"error,omitempty"`
-	ToolUseCount    int        `json:"tool_use_count,omitempty"`
-	TotalTokens     int        `json:"total_tokens,omitempty"`
+	ToolUseCount    int        `json:"tool_use_count,omitzero"`
+	TotalTokens     int        `json:"total_tokens,omitzero"`
 	StartedAt       time.Time  `json:"started_at,omitzero"`
 	FinishedAt      *time.Time `json:"finished_at,omitempty"`
 	Pending         []string   `json:"pending,omitempty"`
 	RunCount        uint64     `json:"run_count"`
-	NotifiedRun     uint64     `json:"notified_run,omitempty"`
+	NotifiedRun     uint64     `json:"notified_run,omitzero"`
 }
 
 var (
@@ -141,7 +142,7 @@ type AgentStore struct {
 	mu     sync.RWMutex
 	tasks  map[string]*agentTask
 	closed bool
-	seq    uint64
+	seq    atomic.Uint64
 }
 
 type agentTask struct {
@@ -172,7 +173,7 @@ func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile str
 	if run == nil {
 		return AgentLaunch{}, errAgentRunnerNil
 	}
-	id := fmt.Sprintf("a-%d-%d", time.Now().UnixNano(), atomic.AddUint64(&s.seq, 1))
+	id := fmt.Sprintf("a-%d-%d", time.Now().UnixNano(), s.seq.Add(1))
 	task := &agentTask{
 		snap: TaskSnapshot{
 			TaskID: id, TaskType: "local_agent", Status: TaskPending,
@@ -323,7 +324,7 @@ func (t *agentTask) metadataLocked() AgentMetadata {
 		Prompt: t.snap.Prompt, OutputFile: t.snap.OutputFile, Status: t.snap.Status, Result: t.snap.Result,
 		Error: t.snap.Error, ToolUseCount: t.snap.ToolUseCount,
 		TotalTokens: t.snap.TotalTokens, StartedAt: t.snap.StartedAt,
-		FinishedAt: t.snap.FinishedAt, Pending: append([]string(nil), t.pending...),
+		FinishedAt: t.snap.FinishedAt, Pending: slices.Clone(t.pending),
 		RunCount: t.runCount, NotifiedRun: t.notifiedRun,
 	}
 }
@@ -380,7 +381,7 @@ func (s *AgentStore) LoadMetadata(path string, run AgentRun) (bool, error) {
 		},
 		done: make(chan struct{}), doneClosed: true, run: run, metadataPath: path,
 		parentSessionID: meta.ParentSessionID,
-		pending:         append([]string(nil), meta.Pending...), runCount: meta.RunCount,
+		pending:         slices.Clone(meta.Pending), runCount: meta.RunCount,
 		notifiedRun: meta.NotifiedRun,
 	}
 	if task.snap.Status == TaskRunning || task.snap.Status == TaskPending {

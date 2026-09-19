@@ -1,6 +1,7 @@
 package compact
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -305,10 +306,7 @@ func summarize(ctx context.Context, sum Summarizer, _ config.Compaction, msgs []
 		transcript.WriteString(m.Text())
 		transcript.WriteByte('\n')
 	}
-	t := transcript.String()
-	if t == "" {
-		t = "(empty)"
-	}
+	t := cmp.Or(transcript.String(), "(empty)")
 	system := SystemPrompt
 	user := "<conversation>\n" + t + "\n</conversation>\n\n"
 	switch {
@@ -356,10 +354,7 @@ type Static struct{ Text string }
 
 // Summarize implements Summarizer.
 func (s Static) Summarize(_ context.Context, _ string, user string) (string, *types.Usage, error) {
-	t := s.Text
-	if t == "" {
-		t = "Summary of earlier conversation."
-	}
+	t := cmp.Or(s.Text, "Summary of earlier conversation.")
 	return t + "\n" + fmt.Sprintf("(source chars=%d)", len(user)), &types.Usage{Output: 20, TotalTokens: 20}, nil
 }
 

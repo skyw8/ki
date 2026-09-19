@@ -83,7 +83,7 @@ func TestBusBroadcastDoesNotWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := Discover(home, session.Toggle{})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	_ = m.Prepare(ctx, "sess", cwd, got.Enabled)
 	defer m.Close()
@@ -120,7 +120,7 @@ func TestBusMutexHandshake(t *testing.T) {
 		}
 	}
 	got := Discover(home, session.Toggle{})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	_ = m.Prepare(ctx, "sess", cwd, got.Enabled)
 	defer m.Close()
@@ -138,33 +138,27 @@ func TestBusMutexHandshake(t *testing.T) {
 	}
 }
 
-var (
-	mutexSidecarSrcOnce sync.Once
-	mutexSidecarSrcDir  string
-	mutexSidecarSrcErr  error
-)
+// mutexSidecarSource keeps the inline fixture source in one stable directory so
+// the binary can be built once and shared across tests.
+var mutexSidecarSource = sync.OnceValues(func() (string, error) {
+	base, err := fixturesDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(base, "mutex-src")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+})
 
-// mutexSidecarSourceDir keeps the inline fixture source in one stable directory
-// so the binary can be built once and shared across tests.
 func mutexSidecarSourceDir(t *testing.T) string {
 	t.Helper()
-	mutexSidecarSrcOnce.Do(func() {
-		base, err := fixturesDir()
-		if err != nil {
-			mutexSidecarSrcErr = err
-			return
-		}
-		dir := filepath.Join(base, "mutex-src")
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			mutexSidecarSrcErr = err
-			return
-		}
-		mutexSidecarSrcDir = dir
-	})
-	if mutexSidecarSrcErr != nil {
-		t.Fatal(mutexSidecarSrcErr)
+	dir, err := mutexSidecarSource()
+	if err != nil {
+		t.Fatal(err)
 	}
-	return mutexSidecarSrcDir
+	return dir
 }
 
 func buildMutexSidecar(t *testing.T) string {

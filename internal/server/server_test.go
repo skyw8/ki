@@ -218,13 +218,19 @@ type forkAgentStreamer struct {
 }
 
 type steerAgentStreamer struct {
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
+	started      chan struct{}
+	release      chan struct{}
+	closeStarted func()
+}
+
+func newSteerAgentStreamer() *steerAgentStreamer {
+	s := &steerAgentStreamer{started: make(chan struct{}), release: make(chan struct{})}
+	s.closeStarted = sync.OnceFunc(func() { close(s.started) })
+	return s
 }
 
 func (s *steerAgentStreamer) Stream(ctx context.Context, req loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {
-	s.once.Do(func() { close(s.started) })
+	s.closeStarted()
 	select {
 	case <-s.release:
 	case <-ctx.Done():
@@ -576,7 +582,7 @@ func TestBackgroundAgentQueuesCompletionNotification(t *testing.T) {
 }
 
 func TestAgentSendMessageSteersLiveChild(t *testing.T) {
-	streamer := &steerAgentStreamer{started: make(chan struct{}), release: make(chan struct{})}
+	streamer := newSteerAgentStreamer()
 	srv, hs := testServerWith(t, streamer)
 	parentID := createSession(t, hs, t.TempDir())
 	launch, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{
@@ -684,7 +690,7 @@ func TestInterruptedAgentResumesAfterServerRestart(t *testing.T) {
 	home := t.TempDir()
 	cfg := config.Builtin(home)
 	cfg.Sessions.Root = filepath.Join(home, "sessions")
-	streamer := &steerAgentStreamer{started: make(chan struct{}), release: make(chan struct{})}
+	streamer := newSteerAgentStreamer()
 	srv1, err := New(Options{Config: cfg, Token: "tok", Streamer: streamer})
 	if err != nil {
 		t.Fatal(err)
@@ -3879,7 +3885,7 @@ func TestEventsClientDisconnect(t *testing.T) {
 	prompt202(t, hs, id, "hello")
 	waitBuffered(t, srv, id, 6)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)

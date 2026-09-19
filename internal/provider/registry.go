@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -380,12 +381,7 @@ func modelRefEnabled(providers map[string]Provider, ref ModelRef) bool {
 	if !ok || !p.Enabled {
 		return false
 	}
-	for _, m := range p.Models {
-		if m.ID == ref.Model && m.Enabled {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(p.Models, func(m Model) bool { return m.ID == ref.Model && m.Enabled })
 }
 
 func validateProviderShape(p Provider) error {
@@ -724,10 +720,7 @@ func (r *Registry) credentialLockedFor(p Provider) (string, CredentialStatus) {
 
 func credentialFrom(creds credentialsFile, id string, envVars []string) (string, CredentialStatus) {
 	if c := creds.Providers[id]; strings.TrimSpace(c.APIKey) != "" {
-		typ := c.Type
-		if typ == "" {
-			typ = AuthAPIKey
-		}
+		typ := cmp.Or(c.Type, AuthAPIKey)
 		return c.APIKey, CredentialStatus{Configured: true, Source: "stored", Type: typ}
 	}
 	if c := creds.Providers[id]; c.Type != "" && len(bytes.TrimSpace(c.Value)) > 0 && !bytes.Equal(bytes.TrimSpace(c.Value), []byte("null")) {

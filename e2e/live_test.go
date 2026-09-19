@@ -117,7 +117,7 @@ func TestLiveWebUIPlaywright(t *testing.T) {
 		t.Fatal(err)
 	}
 	sf := startServeLive(t, home, proj)
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bun, "x", "playwright", "test", "--project=live")
 	cmd.Dir = webDir

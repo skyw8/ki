@@ -143,10 +143,9 @@ func load(path string) (Skill, error) {
 	}
 	s := Skill{FilePath: path, Name: filepath.Base(filepath.Dir(path))}
 	text := string(b)
-	if strings.HasPrefix(text, "---") {
-		if i := strings.Index(text[3:], "---"); i >= 0 {
-			fm := text[3 : 3+i]
-			text = text[3+i+3:]
+	if rest, ok := strings.CutPrefix(text, "---"); ok {
+		if fm, after, found := strings.Cut(rest, "---"); found {
+			text = after
 			for line := range strings.SplitSeq(fm, "\n") {
 				line = strings.TrimSpace(line)
 				if k, v, ok := strings.Cut(line, ":"); ok {

@@ -384,7 +384,7 @@ func TestMutationQueueSerializesSamePathAndCancelsWait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { _, err := q.LockPaths(ctx, path); done <- err }()
 	cancel()
@@ -487,7 +487,7 @@ func TestBashCancelKillsProcessGroup(t *testing.T) {
 	cwd := t.TempDir()
 	b := bashTool{cwd: cwd, jobs: NewJobStore()}
 	pidPath := filepath.Join(cwd, "child.pid")
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan loop.ToolResult, 1)
 	go func() {
 		done <- b.Execute(ctx, map[string]any{

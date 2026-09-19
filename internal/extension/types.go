@@ -14,13 +14,13 @@ type Event struct {
 	Type         string            `json:"type"`
 	SessionID    string            `json:"sessionId,omitempty"`
 	Role         string            `json:"role,omitempty"`
-	Timestamp    int64             `json:"timestamp,omitempty"`
+	Timestamp    int64             `json:"timestamp,omitzero"`
 	ToolCallID   string            `json:"toolCallId,omitempty"`
 	ToolName     string            `json:"toolName,omitempty"`
-	IsError      bool              `json:"isError,omitempty"`
+	IsError      bool              `json:"isError,omitzero"`
 	DurationMs   int64             `json:"durationMs"` // not omitempty: sidecars may key on the field at 0ms
 	Reason       string            `json:"reason,omitempty"`
-	OK           bool              `json:"ok,omitempty"`
+	OK           bool              `json:"ok,omitzero"`
 	Provider     string            `json:"provider,omitempty"`
 	Model        string            `json:"model,omitempty"`
 	RunID        string            `json:"runId,omitempty"`
@@ -48,7 +48,7 @@ type ToolSpec struct {
 	Description string         `json:"description"`
 	Snippet     string         `json:"snippet,omitempty"`
 	Parameters  map[string]any `json:"parameters"`
-	TimeoutMs   int            `json:"timeoutMs,omitempty"`
+	TimeoutMs   int            `json:"timeoutMs,omitzero"`
 }
 
 // CommandSpec is a sidecar-declared executable slash handler.
@@ -83,7 +83,7 @@ type ToolCall struct {
 // Block stops a tool call.
 type Block struct {
 	Reason    string `json:"reason"`
-	Terminate bool   `json:"terminate,omitempty"`
+	Terminate bool   `json:"terminate,omitzero"`
 }
 
 // ResultPatch is tool_result.
@@ -100,7 +100,7 @@ type ProviderRequest struct {
 	Tools          []loop.ToolSpec `json:"tools"`
 	Provider       string          `json:"provider"`
 	Model          string          `json:"model"`
-	MaxTokens      int             `json:"maxTokens,omitempty"`
+	MaxTokens      int             `json:"maxTokens,omitzero"`
 	ThinkingEffort string          `json:"thinkingEffort,omitempty"`
 }
 
@@ -121,7 +121,7 @@ type ProviderStreamEvent struct {
 	RequestID    string         `json:"requestId"`
 	Type         string         `json:"type"`
 	Delta        string         `json:"delta,omitempty"`
-	ContentIndex int            `json:"contentIndex,omitempty"`
+	ContentIndex int            `json:"contentIndex,omitzero"`
 	ToolCallID   string         `json:"toolCallId,omitempty"`
 	ToolName     string         `json:"toolName,omitempty"`
 	ToolCall     *types.Content `json:"toolCall,omitempty"`
@@ -151,8 +151,8 @@ type ProviderAuthEvent struct {
 	Instructions     string               `json:"instructions,omitempty"`
 	UserCode         string               `json:"userCode,omitempty"`
 	VerificationURI  string               `json:"verificationUri,omitempty"`
-	IntervalSeconds  int                  `json:"intervalSeconds,omitempty"`
-	ExpiresInSeconds int                  `json:"expiresInSeconds,omitempty"`
+	IntervalSeconds  int                  `json:"intervalSeconds,omitzero"`
+	ExpiresInSeconds int                  `json:"expiresInSeconds,omitzero"`
 	Credential       *provider.Credential `json:"credential,omitempty"`
 	Error            string               `json:"error,omitempty"`
 }
@@ -160,8 +160,8 @@ type ProviderAuthEvent struct {
 // ProviderAuthResult is the response to a provider auth RPC. A refresh that
 // does not need network access returns Refreshed=false and no credential.
 type ProviderAuthResult struct {
-	Accepted   bool                 `json:"accepted,omitempty"`
-	Refreshed  bool                 `json:"refreshed,omitempty"`
+	Accepted   bool                 `json:"accepted,omitzero"`
+	Refreshed  bool                 `json:"refreshed,omitzero"`
 	Credential *provider.Credential `json:"credential,omitempty"`
 }
 
@@ -173,7 +173,7 @@ type ShortCircuit struct {
 // Fallback is provider_error.
 type Fallback struct {
 	Text string `json:"text,omitempty"`
-	Skip bool   `json:"skip,omitempty"`
+	Skip bool   `json:"skip,omitzero"`
 }
 
 // HTTPRequestView is a body-less view of a live HTTP request.

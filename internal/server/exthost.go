@@ -1,12 +1,14 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -233,10 +235,7 @@ func (s *Server) acceptExtPrompt(sessionID, extName string, req extension.Enqueu
 	if !ok {
 		return extension.EnqueueResult{}, errSessionNotFound
 	}
-	deliver := req.DeliverAs
-	if deliver == "" {
-		deliver = toggles.BusyQueue
-	}
+	deliver := cmp.Or(req.DeliverAs, toggles.BusyQueue)
 	item := session.ExtQueuedItem{
 		Content:         req.Content,
 		Extension:       extName,
@@ -528,10 +527,7 @@ func (s *Server) PatchSession(sessionID, model, thinking string) error {
 	if model == "" && thinking == "" {
 		return nil
 	}
-	spec := model
-	if spec == "" {
-		spec = sess.Config.Model
-	}
+	spec := cmp.Or(model, sess.Config.Model)
 	ref, selected, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
 	if err != nil {
 		return fmt.Errorf("resolve model: %w", err)
@@ -837,17 +833,17 @@ func cloneExtensionUI(name string, st *extUIState) extension.UI {
 	}
 	if st.Panel != nil {
 		panel := *st.Panel
-		panel.Sections = append([]map[string]any(nil), st.Panel.Sections...)
-		panel.Actions = append([]extension.UIAction(nil), st.Panel.Actions...)
-		panel.Fields = append([]extension.UIField(nil), st.Panel.Fields...)
+		panel.Sections = slices.Clone(st.Panel.Sections)
+		panel.Actions = slices.Clone(st.Panel.Actions)
+		panel.Fields = slices.Clone(st.Panel.Fields)
 		for i := range panel.Fields {
-			panel.Fields[i].Options = append([]string(nil), st.Panel.Fields[i].Options...)
+			panel.Fields[i].Options = slices.Clone(st.Panel.Fields[i].Options)
 		}
 		ui.Panel = &panel
 	}
 	if st.Prompt != nil {
 		prompt := *st.Prompt
-		prompt.Options = append([]string(nil), st.Prompt.Options...)
+		prompt.Options = slices.Clone(st.Prompt.Options)
 		ui.Prompt = &prompt
 	}
 	return ui

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -57,10 +58,7 @@ func (s *Server) startProviderAuth(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil && r.ContentLength != 0 && !decodeJSON(w, r, &body) {
 		return
 	}
-	mode := strings.TrimSpace(body.Mode)
-	if mode == "" {
-		mode = "browser"
-	}
+	mode := cmp.Or(strings.TrimSpace(body.Mode), "browser")
 	if mode != "browser" && mode != "device_code" {
 		http.Error(w, "auth mode must be browser or device_code", http.StatusBadRequest)
 		return

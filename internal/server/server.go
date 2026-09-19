@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -16,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -394,8 +394,8 @@ func (s *Server) publishContextUsage(sess *session.Session) {
 		}
 	}
 	window := info.ContextWindow
-	if maxContext := s.cfg.Compaction.MaxContextTokens; maxContext > 0 && maxContext < window {
-		window = maxContext
+	if maxContext := s.cfg.Compaction.MaxContextTokens; maxContext > 0 {
+		window = min(window, maxContext)
 	}
 	if _, err := sess.AppendContextUsage(used, window, true); err != nil {
 		slog.Warn("append context usage", "session_id", sess.ID(), "err", err)
@@ -968,7 +968,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 
 // hasField reports whether a comma-separated fields query contains name.
 func hasField(fields, name string) bool {
-	for _, f := range strings.Split(fields, ",") {
+	for f := range strings.SplitSeq(fields, ",") {
 		if strings.TrimSpace(f) == name {
 			return true
 		}
@@ -1040,11 +1040,7 @@ func (s *Server) sessionCatalog(snapshot resources.Snapshot) []map[string]any {
 			"enabled":     tg.Skills.Allowed(item.Name),
 		})
 	}
-	sort.Slice(sk, func(i, j int) bool {
-		a, _ := sk[i]["name"].(string)
-		b, _ := sk[j]["name"].(string)
-		return a < b
-	})
+	slices.SortFunc(sk, func(a, b map[string]any) int { return cmp.Compare(mapName(a), mapName(b)) })
 	return sk
 }
 
@@ -1106,10 +1102,7 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Model != "" || body.ThinkingEffort != nil {
-		spec := body.Model
-		if spec == "" {
-			spec = sess.Config.Model
-		}
+		spec := cmp.Or(body.Model, sess.Config.Model)
 		ref, model, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
@@ -1385,10 +1378,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		s.promoteQueued(w, r, id, sess, live, queueID, body.Model)
 		return
 	}
-	spec := body.Model
-	if spec == "" {
-		spec = sess.Config.Model
-	}
+	spec := cmp.Or(body.Model, sess.Config.Model)
 	ref, selectedModel, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
 	if err == nil && s.requireModelCredential {
 		_, selectedModel, _, err = s.registry.Resolve(ref.Provider, ref.Model)
@@ -1478,10 +1468,7 @@ func (s *Server) promoteQueued(w http.ResponseWriter, r *http.Request, id string
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	spec := model
-	if spec == "" {
-		spec = sess.Config.Model
-	}
+	spec := cmp.Or(model, sess.Config.Model)
 	ref, selectedModel, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
 	if err == nil && s.requireModelCredential {
 		_, selectedModel, _, err = s.registry.Resolve(ref.Provider, ref.Model)
@@ -1605,10 +1592,7 @@ func materializeAttachments(_ context.Context, messages []types.Message) ([]type
 		for _, c := range m.Content {
 			switch c.Type {
 			case "file", "workspace_file":
-				label := c.Name
-				if label == "" {
-					label = filepath.Base(c.Path)
-				}
+				label := cmp.Or(c.Name, filepath.Base(c.Path))
 				out[i].Content = append(out[i].Content, types.Content{Type: "text", Text: fmt.Sprintf("\nAttached file %q is available at: %s", label, c.Path)})
 			case "image":
 				if c.Data == "" && c.Path != "" {
@@ -1882,8 +1866,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 				used += (len(ev.System) + len(toolJSON) + 3) / 4
 			}
 			window := info.ContextWindow
-			if maxContext := cfg.Compaction.MaxContextTokens; maxContext > 0 && maxContext < window {
-				window = maxContext
+			if maxContext := cfg.Compaction.MaxContextTokens; maxContext > 0 {
+				window = min(window, maxContext)
 			}
 			estimated := ev.Type == loop.RequestHeader || ev.Message == nil || !usableUsage(ev.Message.Usage)
 			if _, err := sess.AppendContextUsage(used, window, estimated); err != nil {

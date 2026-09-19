@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -258,11 +259,11 @@ func clonePatchHunks(in []patchHunk) []patchHunk {
 	out := make([]patchHunk, len(in))
 	copy(out, in)
 	for i := range out {
-		out[i].chunks = append([]patchChunk(nil), in[i].chunks...)
+		out[i].chunks = slices.Clone(in[i].chunks)
 		for j := range out[i].chunks {
-			out[i].chunks[j].old = append([]string(nil), in[i].chunks[j].old...)
-			out[i].chunks[j].new = append([]string(nil), in[i].chunks[j].new...)
-			out[i].chunks[j].contextLines = append([][2]int(nil), in[i].chunks[j].contextLines...)
+			out[i].chunks[j].old = slices.Clone(in[i].chunks[j].old)
+			out[i].chunks[j].new = slices.Clone(in[i].chunks[j].new)
+			out[i].chunks[j].contextLines = slices.Clone(in[i].chunks[j].contextLines)
 		}
 	}
 	return out

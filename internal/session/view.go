@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -32,13 +33,13 @@ type IndexEntry struct {
 	Name         string       `json:"name,omitempty"`
 	Preview      string       `json:"preview,omitempty"`
 	ToolCallID   string       `json:"toolCallId,omitempty"`
-	Truncated    bool         `json:"truncated,omitempty"`
+	Truncated    bool         `json:"truncated,omitzero"`
 	Usage        *types.Usage `json:"usage,omitempty"`
 	DurationMs   int64        `json:"durationMs"` // not omitempty: a fast tool reports a real 0ms
-	TTFTMs       int64        `json:"ttftMs,omitempty"`
+	TTFTMs       int64        `json:"ttftMs,omitzero"`
 	Origin       string       `json:"origin,omitempty"`
-	Sideband     bool         `json:"sideband,omitempty"`
-	TokensBefore int          `json:"tokensBefore,omitempty"`
+	Sideband     bool         `json:"sideband,omitzero"`
+	TokensBefore int          `json:"tokensBefore,omitzero"`
 	StopReason   string       `json:"stopReason,omitempty"`
 }
 
@@ -191,9 +192,7 @@ func leafPath(entries []Entry, leaf string) []Entry {
 		rev = append(rev, e)
 		id = e.ParentID
 	}
-	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
-		rev[i], rev[j] = rev[j], rev[i]
-	}
+	slices.Reverse(rev)
 	return rev
 }
 
@@ -284,7 +283,7 @@ func slimEntry(e Entry, prevSys, prevTools *string, seenHeader *bool, digests to
 	}
 	if out.Message != nil {
 		msg := *out.Message
-		msg.Content = append([]types.Content(nil), msg.Content...)
+		msg.Content = slices.Clone(msg.Content)
 		truncated := false
 		for i := range msg.Content {
 			c := &msg.Content[i]

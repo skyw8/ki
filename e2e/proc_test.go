@@ -152,15 +152,12 @@ func TestParallelSessionsOnOneServer(t *testing.T) {
 		out2   string
 		c1, c2 int
 	)
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		out1, c1 = runBin(t, home, "run", "--session", idA, "alpha")
-	}()
-	go func() {
-		defer wg.Done()
+	})
+	wg.Go(func() {
 		out2, c2 = runBin(t, home, "run", "--session", idB, "beta")
-	}()
+	})
 	wg.Wait()
 	if c1 != 0 || c2 != 0 {
 		t.Fatalf("parallel exits %d %d\nA:%s\nB:%s", c1, c2, out1, out2)

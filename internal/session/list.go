@@ -2,12 +2,13 @@ package session
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -23,7 +24,7 @@ type Info struct {
 	ParentSessionID string         `json:"parentSessionId,omitempty"`
 	ForkMode        string         `json:"forkMode"`
 	Title           string         `json:"title"`
-	Pinned          bool           `json:"pinned,omitempty"`
+	Pinned          bool           `json:"pinned,omitzero"`
 	PinnedAt        string         `json:"pinnedAt,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
 }
@@ -51,7 +52,7 @@ func List(root string) ([]Info, error) {
 		}
 		return nil, err
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp > out[j].Timestamp })
+	slices.SortFunc(out, func(a, b Info) int { return cmp.Compare(b.Timestamp, a.Timestamp) })
 	return out, nil
 }
 

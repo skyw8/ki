@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -297,7 +298,7 @@ func schemaStrings(value any) []string {
 		}
 		return out
 	case []string:
-		return append([]string(nil), values...)
+		return slices.Clone(values)
 	default:
 		return nil
 	}
@@ -306,7 +307,7 @@ func schemaStrings(value any) []string {
 func schemaValues(value any) []any {
 	switch values := value.(type) {
 	case []any:
-		return append([]any(nil), values...)
+		return slices.Clone(values)
 	case []string:
 		out := make([]any, len(values))
 		for i, value := range values {

@@ -151,7 +151,7 @@ func mediaType(ct string) string {
 
 func addVary(h http.Header, value string) {
 	for _, v := range h.Values("Vary") {
-		for _, part := range strings.Split(v, ",") {
+		for part := range strings.SplitSeq(v, ",") {
 			if strings.EqualFold(strings.TrimSpace(part), value) {
 				return
 			}
@@ -163,12 +163,12 @@ func addVary(h http.Header, value string) {
 // acceptsGzip reports whether the client offered gzip. An explicit q=0 is a
 // refusal even though the token is present.
 func acceptsGzip(r *http.Request) bool {
-	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+	for part := range strings.SplitSeq(r.Header.Get("Accept-Encoding"), ",") {
 		enc, params, _ := strings.Cut(strings.TrimSpace(part), ";")
 		if !strings.EqualFold(strings.TrimSpace(enc), "gzip") {
 			continue
 		}
-		for _, p := range strings.Split(params, ";") {
+		for p := range strings.SplitSeq(params, ";") {
 			k, v, ok := strings.Cut(p, "=")
 			if !ok || !strings.EqualFold(strings.TrimSpace(k), "q") {
 				continue

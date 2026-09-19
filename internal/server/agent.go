@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -296,10 +297,7 @@ func (s *Server) SendAgentMessage(ctx context.Context, req tools.AgentMessageReq
 	if s.agentTasks == nil {
 		return tools.AgentMessageResult{}, errAgentTaskStoreUnavailable
 	}
-	target := strings.TrimSpace(req.Target)
-	if target == "" {
-		target = tools.AgentTargetParent
-	}
+	target := cmp.Or(strings.TrimSpace(req.Target), tools.AgentTargetParent)
 	message := strings.TrimSpace(req.Message)
 	if message == "" {
 		return tools.AgentMessageResult{}, errAgentMessageRequired

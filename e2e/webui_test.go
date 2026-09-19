@@ -28,7 +28,7 @@ func TestWebUIPlaywright(t *testing.T) {
 	// binary, so every spec still exercises the Go-built SPA while the phone,
 	// tablet, and desktop matrix runs concurrently instead of serially.
 	bin := builtKI(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bun, "run", "test:e2e")
 	cmd.Dir = webDir

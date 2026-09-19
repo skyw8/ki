@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -48,7 +49,7 @@ type Options struct {
 
 type rotatingFile struct {
 	mu         sync.Mutex
-	once       sync.Once
+	closeOnce  func()
 	file       *os.File
 	path       string
 	lock       *flock.Flock
@@ -64,13 +65,15 @@ func newRotatingFile(path, lockPath string, maxBytes int64, maxBackups int) (*ro
 	if err != nil {
 		return nil, err
 	}
-	return &rotatingFile{
+	f := &rotatingFile{
 		file:       file,
 		path:       path,
 		lock:       flock.New(lockPath),
 		maxBytes:   maxBytes,
 		maxBackups: maxBackups,
-	}, nil
+	}
+	f.closeOnce = sync.OnceFunc(f.closeFile)
+	return f, nil
 }
 
 func (f *rotatingFile) Write(p []byte) (int, error) {
@@ -151,19 +154,21 @@ func (f *rotatingFile) reopen() error {
 }
 
 func (f *rotatingFile) Close() error {
-	f.once.Do(func() {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		if err := f.lock.Lock(); err != nil {
-			f.closeErr = err
-			return
-		}
-		defer func() { _ = f.lock.Unlock() }()
-		if f.file != nil {
-			f.closeErr = f.file.Close()
-		}
-	})
+	f.closeOnce()
 	return f.closeErr
+}
+
+func (f *rotatingFile) closeFile() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.lock.Lock(); err != nil {
+		f.closeErr = err
+		return
+	}
+	defer func() { _ = f.lock.Unlock() }()
+	if f.file != nil {
+		f.closeErr = f.file.Close()
+	}
 }
 
 func removeIfExists(path string) error {
@@ -177,10 +182,7 @@ func removeIfExists(path string) error {
 // Setup installs the default JSONL slog logger and returns the log file closer.
 // Callers must close the returned handle when the process is shutting down.
 func Setup(opts Options) (io.Closer, error) {
-	home := opts.Home
-	if home == "" {
-		home = os.Getenv("KI_HOME")
-	}
+	home := cmp.Or(opts.Home, os.Getenv("KI_HOME"))
 	// home is the configured Ki home, not an attacker-controlled request path.
 	//nolint:gosec // create the configured logging directory
 	if err := os.MkdirAll(home, 0o700); err != nil {
@@ -212,10 +214,7 @@ func Setup(opts Options) (io.Closer, error) {
 		Level:       level,
 		ReplaceAttr: replaceAttr,
 	})
-	role := opts.Role
-	if role == "" {
-		role = "unknown"
-	}
+	role := cmp.Or(opts.Role, "unknown")
 	slog.SetDefault(slog.New(h).With("pid", os.Getpid(), "role", role))
 	return logFile, nil
 }

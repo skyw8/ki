@@ -125,7 +125,7 @@ func TestBuildViewWindowsLeafTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		if _, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "u" + strings.Repeat(".", i)}}}); err != nil {
 			t.Fatal(err)
 		}

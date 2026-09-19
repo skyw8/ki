@@ -24,7 +24,7 @@ type pushEvent struct {
 // pushEvents subscribes to the WebUI push channel and yields decoded frames.
 func pushEvents(t *testing.T, hs *httptest.Server, token string) <-chan pushEvent {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/v1/events", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	res, err := http.DefaultClient.Do(req)

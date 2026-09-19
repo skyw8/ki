@@ -70,7 +70,7 @@ type Message struct {
 	ToolCallID   string    `json:"toolCallId,omitempty"`
 	ToolName     string    `json:"toolName,omitempty"`
 	ToolType     string    `json:"toolType,omitempty"`
-	IsError      bool      `json:"isError,omitempty"`
+	IsError      bool      `json:"isError,omitzero"`
 }
 
 // Text returns concatenated text blocks.
@@ -128,12 +128,12 @@ type Request struct {
 	Tools                   []ToolSpec         `json:"tools"`
 	Provider                string             `json:"provider"`
 	Model                   string             `json:"model"`
-	MaxTokens               int                `json:"maxTokens,omitempty"`
+	MaxTokens               int                `json:"maxTokens,omitzero"`
 	ThinkingEffort          string             `json:"thinkingEffort,omitempty"`
 	ThinkingFormat          string             `json:"thinkingFormat,omitempty"`
 	MaxTokensField          string             `json:"maxTokensField,omitempty"`
-	SupportsReasoningEffort bool               `json:"supportsReasoningEffort,omitempty"`
-	ForceAdaptiveThinking   bool               `json:"forceAdaptiveThinking,omitempty"`
+	SupportsReasoningEffort bool               `json:"supportsReasoningEffort,omitzero"`
+	ForceAdaptiveThinking   bool               `json:"forceAdaptiveThinking,omitzero"`
 	ThinkingLevelMap        map[string]*string `json:"thinkingLevelMap,omitempty"`
 }
 

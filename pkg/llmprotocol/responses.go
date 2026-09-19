@@ -1,6 +1,7 @@
 package llmprotocol
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -213,10 +214,7 @@ func responsesUserContent(m Message) []map[string]any {
 				continue
 			}
 			hasMedia = true
-			mime := c.MIMEType
-			if mime == "" {
-				mime = "image/png"
-			}
+			mime := cmp.Or(c.MIMEType, "image/png")
 			content = append(content, map[string]any{
 				"type":      "input_image",
 				"image_url": "data:" + mime + ";base64," + c.Data,

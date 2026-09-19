@@ -94,7 +94,7 @@ func TestAgentStoreResumeKeepsStableID(t *testing.T) {
 		t.Fatalf("resumed snapshot = %+v", snapshot)
 	}
 	mu.Lock()
-	gotPrompts := append([]string(nil), prompts...)
+	gotPrompts := slices.Clone(prompts)
 	mu.Unlock()
 	if !slices.Equal(gotPrompts, []string{"first", "second"}) {
 		t.Fatalf("prompts = %v", gotPrompts)
@@ -372,7 +372,7 @@ func TestAgentToolSchemaAndBackgroundResult(t *testing.T) {
 // because the Agent tool may promote it to background instead.
 func TestAgentStoreChildSurvivesCallerCancel(t *testing.T) {
 	store := NewAgentStore()
-	caller, cancelCaller := context.WithCancel(context.Background())
+	caller, cancelCaller := context.WithCancel(t.Context())
 	release := make(chan struct{})
 	launch, err := store.Start(caller, AgentRequest{Description: "child", Prompt: "wait"}, "child.jsonl", func(_ context.Context, _, _ string, _ bool) (AgentCompletion, error) {
 		<-release
@@ -464,7 +464,7 @@ func TestAgentToolForegroundStopsChildOnParentCancel(t *testing.T) {
 		<-ctx.Done()
 		return AgentCompletion{}, ctx.Err()
 	}}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan loop.ToolResult, 1)
 	go func() {
 		done <- agentTool{runtime: runtime}.Execute(ctx, map[string]any{"description": "child", "prompt": "work"})

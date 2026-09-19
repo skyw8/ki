@@ -14,8 +14,8 @@ type taskDetails struct {
 	TaskID          string                 `json:"task_id,omitempty"`
 	Status          TaskStatus             `json:"status,omitempty"`
 	RetrievalStatus string                 `json:"retrieval_status,omitempty"`
-	TimedOut        bool                   `json:"timed_out,omitempty"`
-	Cancelled       bool                   `json:"cancelled,omitempty"`
+	TimedOut        bool                   `json:"timed_out,omitzero"`
+	Cancelled       bool                   `json:"cancelled,omitzero"`
 	ExitCode        *int                   `json:"exit_code,omitempty"`
 	OutputFile      string                 `json:"output_file,omitempty"`
 	Truncation      *taskTruncationDetails `json:"truncation,omitempty"`

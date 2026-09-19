@@ -56,7 +56,7 @@ type truncationDetails struct {
 	TotalLines  int    `json:"total_lines"`
 	OutputBytes int    `json:"output_bytes"`
 	OutputLines int    `json:"output_lines"`
-	NextOffset  int    `json:"next_offset,omitempty"`
+	NextOffset  int    `json:"next_offset,omitzero"`
 }
 
 type readDetails struct {

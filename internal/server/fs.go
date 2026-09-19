@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"io"
 	"mime"
@@ -9,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -28,7 +28,7 @@ type fsEntry struct {
 	Path      string `json:"path"`
 	Hidden    bool   `json:"hidden"`
 	Directory bool   `json:"directory"`
-	Size      int64  `json:"size,omitempty"`
+	Size      int64  `json:"size,omitzero"`
 }
 
 type fsListing struct {
@@ -113,8 +113,8 @@ func (s *Server) listFS(w http.ResponseWriter, r *http.Request) {
 			files = append(files, row)
 		}
 	}
-	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name < dirs[j].Name })
-	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	slices.SortFunc(dirs, func(a, b fsEntry) int { return cmp.Compare(a.Name, b.Name) })
+	slices.SortFunc(files, func(a, b fsEntry) int { return cmp.Compare(a.Name, b.Name) })
 	dirs = append(dirs, files...)
 	trunc := false
 	if len(dirs) > fsCap {

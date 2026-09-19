@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -118,12 +119,8 @@ func (p *pushSub) takeScopes() []string {
 	if len(p.scopes) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(p.scopes))
-	for scope := range p.scopes {
-		out = append(out, scope)
-	}
+	out := slices.Sorted(maps.Keys(p.scopes))
 	p.scopes = map[string]bool{}
-	sort.Strings(out)
 	return out
 }
 

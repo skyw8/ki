@@ -1,15 +1,13 @@
 package tools
 
 import (
+	"cmp"
 	"path/filepath"
 	"strings"
 )
 
 func displaySearchPath(cwd, path string) string {
-	base := cwd
-	if base == "" {
-		base = "."
-	}
+	base := cmp.Or(cwd, ".")
 	base, _ = filepath.Abs(base)
 	abs, err := filepath.Abs(path)
 	if err != nil {

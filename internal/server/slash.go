@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 
@@ -334,18 +334,10 @@ func (s *Server) extensionCatalog(snapshot resources.Snapshot, sessionID string)
 		}
 	}
 	for name := range skillsByExt {
-		sort.Slice(skillsByExt[name], func(i, j int) bool {
-			a, _ := skillsByExt[name][i]["name"].(string)
-			b, _ := skillsByExt[name][j]["name"].(string)
-			return a < b
-		})
+		slices.SortFunc(skillsByExt[name], func(a, b map[string]any) int { return cmp.Compare(mapName(a), mapName(b)) })
 	}
 	for name := range cmdsByExt {
-		sort.Slice(cmdsByExt[name], func(i, j int) bool {
-			a, _ := cmdsByExt[name][i]["name"].(string)
-			b, _ := cmdsByExt[name][j]["name"].(string)
-			return a < b
-		})
+		slices.SortFunc(cmdsByExt[name], func(a, b map[string]any) int { return cmp.Compare(mapName(a), mapName(b)) })
 	}
 	items := []map[string]any{}
 	for _, d := range snapshot.Extensions {
@@ -392,11 +384,7 @@ func (s *Server) extensionCatalog(snapshot resources.Snapshot, sessionID string)
 		}
 		items = append(items, item)
 	}
-	sort.Slice(items, func(i, j int) bool {
-		a, _ := items[i]["name"].(string)
-		b, _ := items[j]["name"].(string)
-		return a < b
-	})
+	slices.SortFunc(items, func(a, b map[string]any) int { return cmp.Compare(mapName(a), mapName(b)) })
 	return items
 }
 
@@ -710,12 +698,14 @@ func contentText(content []types.Content) string {
 }
 
 func hasNonText(content []types.Content) bool {
-	for _, c := range content {
-		if c.Type != "text" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(content, func(c types.Content) bool { return c.Type != "text" })
+}
+
+// mapName returns a catalog row's "name" field, treating a non-string as empty
+// so sorting stays total.
+func mapName(row map[string]any) string {
+	name, _ := row["name"].(string)
+	return name
 }
 
 func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id string, content []types.Content, parentID *string, model string) {

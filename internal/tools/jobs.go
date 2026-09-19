@@ -51,16 +51,16 @@ type TaskSnapshot struct {
 	Description  string     `json:"description,omitempty"`
 	Command      string     `json:"command,omitempty"`
 	OutputFile   string     `json:"output_file,omitempty"`
-	PID          int        `json:"pid,omitempty"`
+	PID          int        `json:"pid,omitzero"`
 	Output       string     `json:"output,omitempty"`
 	ExitCode     *int       `json:"exitCode,omitempty"`
 	Error        string     `json:"error,omitempty"`
 	Prompt       string     `json:"prompt,omitempty"`
 	Result       string     `json:"result,omitempty"`
-	ToolUseCount int        `json:"tool_use_count,omitempty"`
-	TotalTokens  int        `json:"total_tokens,omitempty"`
-	Bytes        int64      `json:"bytes,omitempty"`
-	Lines        int64      `json:"lines,omitempty"`
+	ToolUseCount int        `json:"tool_use_count,omitzero"`
+	TotalTokens  int        `json:"total_tokens,omitzero"`
+	Bytes        int64      `json:"bytes,omitzero"`
+	Lines        int64      `json:"lines,omitzero"`
 	StartedAt    time.Time  `json:"started_at,omitzero"`
 	FinishedAt   *time.Time `json:"finished_at,omitempty"`
 }
@@ -78,7 +78,7 @@ type JobStore struct {
 	mu     sync.RWMutex
 	jobs   map[string]*bgJob
 	closed bool
-	seq    uint64
+	seq    atomic.Uint64
 }
 
 type bgJob struct {
@@ -169,7 +169,7 @@ func (s *JobStore) newJob(shell shellSpec, cwd, command, description, taskType s
 	if err != nil {
 		return nil, fmt.Errorf("create task output: %w", err)
 	}
-	seq := atomic.AddUint64(&s.seq, 1)
+	seq := s.seq.Add(1)
 	id := fmt.Sprintf("bg-%d-%d", time.Now().UnixNano(), seq)
 	job := &bgJob{
 		id: id, path: f.Name(), cwd: cwd, command: command,
@@ -246,7 +246,7 @@ func (j *bgJob) wait(cmd *exec.Cmd) {
 	j.finishedAt = &now
 	_ = j.file.Sync()
 	_ = j.file.Close()
-	pending := append([]byte(nil), j.pendingEmit...)
+	pending := bytes.Clone(j.pendingEmit)
 	j.pendingEmit = nil
 	snapshot := j.snapshotLocked()
 	j.mu.Unlock()
@@ -281,7 +281,7 @@ func (j *bgJob) Write(p []byte) (int, error) {
 	shouldEmit := time.Since(j.lastEmit) >= 100*time.Millisecond
 	var delta []byte
 	if shouldEmit {
-		delta = append([]byte(nil), j.pendingEmit...)
+		delta = bytes.Clone(j.pendingEmit)
 		j.pendingEmit = nil
 		j.lastEmit = time.Now()
 	}

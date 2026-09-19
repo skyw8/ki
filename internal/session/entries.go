@@ -209,10 +209,7 @@ func (c *entriesCache) load(dir string, want int, full bool) error {
 			return c.readAll(path, stamp)
 		}
 		// Start from a bounded tail of the file and grow downward below.
-		start := stamp.size - tailReadBytes
-		if start < 0 {
-			start = 0
-		}
+		start := max(stamp.size-tailReadBytes, 0)
 		tail, err := readEntries(path, start, stamp.size)
 		if err != nil {
 			return err
@@ -236,10 +233,7 @@ func (c *entriesCache) load(dir string, want int, full bool) error {
 		return nil
 	}
 	for want > 0 && len(c.entries) < want && c.start > 0 {
-		start := c.start - tailGrowBytes
-		if start < 0 {
-			start = 0
-		}
+		start := max(c.start-tailGrowBytes, 0)
 		before := len(c.entries)
 		head, err := readEntries(path, start, c.start)
 		if err != nil {

@@ -59,7 +59,7 @@ func TestStartRPCInitialize(t *testing.T) {
 			Runtime:      RuntimeSpec{Kind: runtimeRPC, Command: bin},
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil)
 	if err != nil {
@@ -87,7 +87,7 @@ func TestStartRPCDropsUndeclaredInitializeMembers(t *testing.T) {
 			Runtime:      RuntimeSpec{Kind: runtimeRPC, Command: bin, Env: map[string]string{"KI_UNDECLARED": "1"}},
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestPrepareEmitsUndeclaredExtensionError(t *testing.T) {
 	m := NewManager(t.TempDir(), func(_, name, capability, code, _ string) {
 		codes = append(codes, name+":"+capability+":"+code)
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	tools := m.Prepare(ctx, "sess", t.TempDir(), []Descriptor{d})
 	defer m.Close()
@@ -169,7 +169,7 @@ func TestPrepareOrderFollowsDiscoverEnabled(t *testing.T) {
 	// Mirror server: snapshot.Extensions is All; Prepare gets Enabled(All, toggle).
 	chain := Enabled(got.All, session.Toggle{})
 	m := NewManager(home, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	_ = m.Prepare(ctx, "sess", cwd, chain)
 	defer m.Close()
@@ -219,7 +219,7 @@ func TestRuntimeInstallRunsBeforeStart(t *testing.T) {
 			},
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil)
 	if err != nil {
@@ -249,7 +249,7 @@ func TestRuntimeInstallFailureStopsSidecar(t *testing.T) {
 			},
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	if _, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil); err == nil {
 		t.Fatal("expected install error")
@@ -270,7 +270,7 @@ func TestExecuteToolDrainsPartialResultAfterDeadline(t *testing.T) {
 			}},
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil)
 	if err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -37,10 +38,7 @@ type botAPI struct {
 }
 
 func newBotAPI(token string) *botAPI {
-	base := os.Getenv("KI_TELEGRAM_API_BASE")
-	if base == "" {
-		base = "https://api.telegram.org"
-	}
+	base := cmp.Or(os.Getenv("KI_TELEGRAM_API_BASE"), "https://api.telegram.org")
 	return &botAPI{base: strings.TrimRight(base, "/"), token: token, client: &http.Client{}}
 }
 
@@ -207,7 +205,7 @@ type chat struct {
 
 type message struct {
 	MessageID       int64       `json:"message_id"`
-	MessageThreadID int64       `json:"message_thread_id,omitempty"`
+	MessageThreadID int64       `json:"message_thread_id,omitzero"`
 	From            *user       `json:"from,omitempty"`
 	Chat            chat        `json:"chat"`
 	Text            string      `json:"text,omitempty"`
@@ -229,14 +227,14 @@ type photoSize struct {
 	FileID   string `json:"file_id"`
 	Width    int    `json:"width"`
 	Height   int    `json:"height"`
-	FileSize int64  `json:"file_size,omitempty"`
+	FileSize int64  `json:"file_size,omitzero"`
 }
 
 type document struct {
 	FileID   string `json:"file_id"`
 	FileName string `json:"file_name"`
 	MIMEType string `json:"mime_type"`
-	FileSize int64  `json:"file_size,omitempty"`
+	FileSize int64  `json:"file_size,omitzero"`
 }
 
 type fileInfo struct {
@@ -423,10 +421,7 @@ func splitTelegram(text string) []string {
 	}
 	var out []string
 	for len(runes) > 0 {
-		n := telegramMessageLimit
-		if len(runes) < n {
-			n = len(runes)
-		}
+		n := min(telegramMessageLimit, len(runes))
 		out = append(out, string(runes[:n]))
 		runes = runes[n:]
 	}

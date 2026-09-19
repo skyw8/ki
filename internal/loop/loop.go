@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -74,7 +75,7 @@ type Event struct {
 	EntryID string    `json:"entryId,omitempty"`
 	// Timestamp is Unix milliseconds. Tool execution start/end events use it
 	// as the authoritative start/completion wall-clock time.
-	Timestamp int64 `json:"timestamp,omitempty"`
+	Timestamp int64 `json:"timestamp,omitzero"`
 	// DurationMs is the elapsed time for one tool call, including execution and
 	// the optional AfterTool hook. It is not omitempty: a sub-millisecond call
 	// rounds to 0 and clients must still see the field (otherwise fast tools
@@ -89,20 +90,20 @@ type Event struct {
 	Args                  map[string]any    `json:"args,omitempty"`
 	PartialResult         any               `json:"partialResult,omitempty"`
 	Result                any               `json:"result,omitempty"`
-	IsError               bool              `json:"isError,omitempty"`
+	IsError               bool              `json:"isError,omitzero"`
 	System                string            `json:"system,omitempty"`
 	Tools                 []ToolSpec        `json:"tools,omitempty"`
 	Reason                string            `json:"reason,omitempty"`
-	OK                    bool              `json:"ok,omitempty"`
+	OK                    bool              `json:"ok,omitzero"`
 	Provider              string            `json:"provider,omitempty"`
 	Model                 string            `json:"model,omitempty"`
-	CatalogVersion        int               `json:"catalogVersion,omitempty"`
-	UsedTokens            int               `json:"usedTokens,omitempty"`
-	ContextWindow         int               `json:"contextWindow,omitempty"`
-	Estimated             bool              `json:"estimated,omitempty"`
+	CatalogVersion        int               `json:"catalogVersion,omitzero"`
+	UsedTokens            int               `json:"usedTokens,omitzero"`
+	ContextWindow         int               `json:"contextWindow,omitzero"`
+	Estimated             bool              `json:"estimated,omitzero"`
 	Server                string            `json:"server,omitempty"`
 	MessageText           string            `json:"messageText,omitempty"`
-	ReloadRequired        bool              `json:"reloadRequired,omitempty"`
+	ReloadRequired        bool              `json:"reloadRequired,omitzero"`
 	Options               []string          `json:"options,omitempty"`
 	RunID                 string            `json:"runId,omitempty"`
 	External              map[string]string `json:"external,omitempty"`
@@ -188,12 +189,12 @@ type Request struct {
 	Provider                string             `json:"provider"`
 	Model                   string             `json:"model"`
 	API                     string             `json:"api"`
-	MaxTokens               int                `json:"maxTokens,omitempty"`
+	MaxTokens               int                `json:"maxTokens,omitzero"`
 	ThinkingEffort          string             `json:"thinkingEffort,omitempty"`
 	ThinkingFormat          string             `json:"thinkingFormat,omitempty"`
 	MaxTokensField          string             `json:"maxTokensField,omitempty"`
-	SupportsReasoningEffort bool               `json:"supportsReasoningEffort,omitempty"`
-	ForceAdaptiveThinking   bool               `json:"forceAdaptiveThinking,omitempty"`
+	SupportsReasoningEffort bool               `json:"supportsReasoningEffort,omitzero"`
+	ForceAdaptiveThinking   bool               `json:"forceAdaptiveThinking,omitzero"`
 	ThinkingLevelMap        map[string]*string `json:"thinkingLevelMap,omitempty"`
 }
 
@@ -391,7 +392,7 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		}
 		msgs = stripExternal(msgs)
 
-		if err := emit(Event{Type: RequestHeader, System: system, Tools: append([]ToolSpec(nil), specs...), Provider: cfg.Provider, Model: cfg.Model}); err != nil {
+		if err := emit(Event{Type: RequestHeader, System: system, Tools: slices.Clone(specs), Provider: cfg.Provider, Model: cfg.Model}); err != nil {
 			return newMsgs, err
 		}
 
@@ -842,11 +843,9 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 	if cfg.Parallel {
 		var wg sync.WaitGroup
 		for i := range calls {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
+			wg.Go(func() {
 				run(i)
-			}(i)
+			})
 		}
 		wg.Wait()
 	} else {

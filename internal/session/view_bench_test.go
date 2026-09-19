@@ -91,8 +91,7 @@ func BenchmarkBuildViewHistory(b *testing.B) {
 	entries := s.Entries()
 	leaf := s.LeafID()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		v := BuildView(entries, leaf, DefaultViewLimit)
 		if len(v.Index) == 0 {
 			b.Fatal("empty")
@@ -105,8 +104,7 @@ func BenchmarkOpenHistory(b *testing.B) {
 	dir := s.Dir
 	_ = s.Close()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		got, err := Open(dir)
 		if err != nil {
 			b.Fatal(err)
@@ -119,8 +117,7 @@ func BenchmarkMarshalView(b *testing.B) {
 	s := seedSession(b, SeedSpec{Turns: 400, AssistantBytes: 80, ToolResultBytes: 2048, SystemBytes: 2048, RepeatSamePrompt: true})
 	view := BuildView(s.Entries(), s.LeafID(), DefaultViewLimit)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		raw, err := json.Marshal(view)
 		if err != nil || len(raw) < 100 {
 			b.Fatal(err, len(raw))

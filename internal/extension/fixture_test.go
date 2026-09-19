@@ -11,9 +11,11 @@ import (
 )
 
 var (
-	fixtureDirOnce sync.Once
-	fixtureDir     string
-	fixtureDirErr  error
+	// fixturesDir creates the shared fixture directory on first use; TestMain
+	// removes it once the suite finishes.
+	fixturesDir = sync.OnceValues(func() (string, error) {
+		return os.MkdirTemp("", "ki-extension-fixtures-")
+	})
 
 	fixtureMu   sync.Mutex
 	fixtureBins = map[string]string{}
@@ -23,17 +25,10 @@ var (
 // TestMain drops the shared fixture binaries once the suite finishes.
 func TestMain(m *testing.M) {
 	code := m.Run()
-	if fixtureDir != "" {
-		_ = os.RemoveAll(fixtureDir)
+	if dir, err := fixturesDir(); err == nil {
+		_ = os.RemoveAll(dir)
 	}
 	os.Exit(code)
-}
-
-func fixturesDir() (string, error) {
-	fixtureDirOnce.Do(func() {
-		fixtureDir, fixtureDirErr = os.MkdirTemp("", "ki-extension-fixtures-")
-	})
-	return fixtureDir, fixtureDirErr
 }
 
 // fixtureExeSuffix is the platform executable suffix. Why: `go build -o name`

@@ -1,6 +1,7 @@
 package llmprotocol
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -171,10 +172,7 @@ func anthropicMediaBlocks(m Message) []map[string]any {
 		if c.Type != "image" || c.Data == "" {
 			continue
 		}
-		mime := c.MIMEType
-		if mime == "" {
-			mime = "image/png"
-		}
+		mime := cmp.Or(c.MIMEType, "image/png")
 		out = append(out, map[string]any{
 			"type": "image",
 			"source": map[string]any{

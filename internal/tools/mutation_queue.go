@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 )
@@ -84,7 +83,7 @@ func (q *MutationQueue) LockPaths(ctx context.Context, paths ...string) (func(),
 			keys = append(keys, key)
 		}
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	releases := make([]func(), 0, len(keys))
 	for _, key := range keys {
 		release, err := q.acquire(ctx, key)

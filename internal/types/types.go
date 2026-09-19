@@ -9,7 +9,7 @@ type Content struct {
 	Data     string `json:"data,omitempty"`
 	MIMEType string `json:"mimeType,omitempty"`
 	Path     string `json:"path,omitempty"`
-	Size     int64  `json:"size,omitempty"`
+	Size     int64  `json:"size,omitzero"`
 	Thinking string `json:"thinking,omitempty"`
 	ID       string `json:"id,omitempty"`
 	Name     string `json:"name,omitempty"`
@@ -62,7 +62,7 @@ type UsageCost struct {
 type Message struct {
 	Role      string    `json:"role"`
 	Content   []Content `json:"content"`
-	Timestamp int64     `json:"timestamp,omitempty"`
+	Timestamp int64     `json:"timestamp,omitzero"`
 	API       string    `json:"api,omitempty"`
 	Provider  string    `json:"provider,omitempty"`
 	Model     string    `json:"model,omitempty"`
@@ -82,9 +82,9 @@ type Message struct {
 	// Origin marks non-human user turns (for example extension:<name> or agent:<task-id>). Empty is the human user.
 	Origin     string            `json:"origin,omitempty"`
 	External   map[string]string `json:"external,omitempty"`
-	IsError    bool              `json:"isError,omitempty"`
-	LatencyMs  int64             `json:"latencyMs,omitempty"`
-	TTFTMs     int64             `json:"ttftMs,omitempty"`
+	IsError    bool              `json:"isError,omitzero"`
+	LatencyMs  int64             `json:"latencyMs,omitzero"`
+	TTFTMs     int64             `json:"ttftMs,omitzero"`
 	DurationMs int64             `json:"durationMs"` // not omitempty: a fast tool reports a real 0ms
 }
 

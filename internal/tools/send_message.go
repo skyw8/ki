@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,10 +46,7 @@ func (t sendMessageTool) Execute(ctx context.Context, args map[string]any) loop.
 	if t.messenger == nil {
 		return errRes("agent messaging is unavailable")
 	}
-	target := strings.TrimSpace(stringArg(args, "to", ""))
-	if target == "" {
-		target = AgentTargetParent
-	}
+	target := cmp.Or(strings.TrimSpace(stringArg(args, "to", "")), AgentTargetParent)
 	message := strings.TrimSpace(stringArg(args, "message", ""))
 	if message == "" {
 		return errRes("message is required")

@@ -95,7 +95,7 @@ type Config struct {
 	ThinkingEffort string         `json:"thinkingEffort,omitempty"`
 	ActiveLeafID   string         `json:"activeLeafId,omitempty"`
 	Title          string         `json:"title,omitempty"`
-	Pinned         bool           `json:"pinned,omitempty"`
+	Pinned         bool           `json:"pinned,omitzero"`
 	PinnedAt       string         `json:"pinnedAt,omitempty"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
 }
@@ -116,25 +116,25 @@ type Entry struct {
 	Message          *types.Message  `json:"message,omitempty"`
 	Summary          string          `json:"summary,omitempty"`
 	FirstKeptEntryID string          `json:"firstKeptEntryId,omitempty"`
-	TokensBefore     int             `json:"tokensBefore,omitempty"`
+	TokensBefore     int             `json:"tokensBefore,omitzero"`
 	Usage            *types.Usage    `json:"usage,omitempty"`
 	RetainedTail     []types.Message `json:"retainedTail,omitempty"`
 	Details          any             `json:"details,omitempty"`
-	Sideband         bool            `json:"sideband,omitempty"`
+	Sideband         bool            `json:"sideband,omitzero"`
 	Provider         string          `json:"provider,omitempty"`
 	ModelID          string          `json:"modelId,omitempty"`
 	ThinkingEffort   string          `json:"thinkingEffort,omitempty"`
-	CatalogVersion   int             `json:"catalogVersion,omitempty"`
-	UsedTokens       int             `json:"usedTokens,omitempty"`
-	ContextWindow    int             `json:"contextWindow,omitempty"`
-	Estimated        bool            `json:"estimated,omitempty"`
+	CatalogVersion   int             `json:"catalogVersion,omitzero"`
+	UsedTokens       int             `json:"usedTokens,omitzero"`
+	ContextWindow    int             `json:"contextWindow,omitzero"`
+	Estimated        bool            `json:"estimated,omitzero"`
 	Pricing          any             `json:"pricing,omitempty"`
 	System           string          `json:"system,omitempty"`
 	Tools            []ToolSchema    `json:"tools,omitempty"`
 	// PromptUnchanged and Truncated are view-only flags for GET /v1/sessions/{id}.
 	// They are never written to jsonl.
-	PromptUnchanged bool `json:"promptUnchanged,omitempty"`
-	Truncated       bool `json:"truncated,omitempty"`
+	PromptUnchanged bool `json:"promptUnchanged,omitzero"`
+	Truncated       bool `json:"truncated,omitzero"`
 }
 
 // ToolSchema is the model-visible tool list on a request_header entry.

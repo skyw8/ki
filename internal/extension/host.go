@@ -91,7 +91,7 @@ type AppendMessageRequest struct {
 type AppendMessageResult struct {
 	Accepted string `json:"accepted"`
 	EntryID  string `json:"entryId,omitempty"`
-	Sequence uint64 `json:"sequence,omitempty"`
+	Sequence uint64 `json:"sequence,omitzero"`
 }
 
 // SessionSnapshot is session.snapshot.
@@ -178,7 +178,7 @@ type UIAction struct {
 	ID       string `json:"id"`
 	Label    UIText `json:"label"`
 	Style    string `json:"style,omitempty"`
-	Disabled bool   `json:"disabled,omitempty"`
+	Disabled bool   `json:"disabled,omitzero"`
 	Title    UIText `json:"title,omitempty"`
 }
 

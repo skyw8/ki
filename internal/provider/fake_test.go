@@ -11,7 +11,7 @@ import (
 )
 
 func TestScriptedHoldWaitsForCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	s := &Scripted{}
 	req := loop.Request{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: HoldToken}}}}}
 	done := make(chan error, 1)
@@ -73,7 +73,7 @@ func TestScriptedDelayCompletesAfterDuration(t *testing.T) {
 }
 
 func TestScriptedDelayUnblocksOnCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	s := &Scripted{}
 	req := loop.Request{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "e2e-delay-5000"}}}}}
 	done := make(chan error, 1)

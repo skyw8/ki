@@ -1,10 +1,12 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -135,10 +137,7 @@ func newTelegramApp(rpc *stdioRPC) *telegramApp {
 			home = filepath.Join(userHome, ".ki")
 		}
 	}
-	root := os.Getenv("KI_EXTENSION_ROOT")
-	if root == "" {
-		root = filepath.Join(home, "extensions", "telegram-bot")
-	}
+	root := cmp.Or(os.Getenv("KI_EXTENSION_ROOT"), filepath.Join(home, "extensions", "telegram-bot"))
 	return &telegramApp{
 		rpc:           rpc,
 		home:          home,
@@ -509,7 +508,7 @@ type inputContent struct {
 	Text     string `json:"text,omitempty"`
 	Path     string `json:"path,omitempty"`
 	MIMEType string `json:"mimeType,omitempty"`
-	Size     int64  `json:"size,omitempty"`
+	Size     int64  `json:"size,omitzero"`
 }
 
 func hasInput(text string, contents []inputContent) bool {
@@ -885,7 +884,7 @@ func (a *telegramApp) ensureOutput(ev lifecycleEvent, w *telegramWorker) *output
 	st := &outputState{
 		worker: w, accountID: ev.External["accountId"], chatID: int64Value(ev.External["chatId"]),
 		threadID: int64Value(ev.External["threadId"]), private: ev.External["chatType"] == "private",
-		external: cloneStringMap(ev.External), draftOK: true,
+		external: maps.Clone(ev.External), draftOK: true,
 	}
 	a.outputs[ev.RunID] = st
 	return st
@@ -959,10 +958,7 @@ func (a *telegramApp) failOutput(ev lifecycleEvent, w *telegramWorker, override 
 	if st == nil {
 		return
 	}
-	text := override
-	if text == "" {
-		text = telegramFailureText(ev)
-	}
+	text := cmp.Or(override, telegramFailureText(ev))
 	a.outputMu.Lock()
 	if st.failed || st.final {
 		a.outputMu.Unlock()
@@ -1012,10 +1008,7 @@ func (a *telegramApp) failOutput(ev lifecycleEvent, w *telegramWorker, override 
 }
 
 func telegramFailureText(ev lifecycleEvent) string {
-	detail := strings.TrimSpace(ev.ErrorMessage)
-	if detail == "" {
-		detail = strings.TrimSpace(ev.Reason)
-	}
+	detail := cmp.Or(strings.TrimSpace(ev.ErrorMessage), strings.TrimSpace(ev.Reason))
 	if detail == "" {
 		detail = "模型请求失败，请稍后重试。"
 	}
@@ -1189,17 +1182,6 @@ func toolTitle(title, name string) string {
 	default:
 		return name
 	}
-}
-
-func cloneStringMap(in map[string]string) map[string]string {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
 }
 
 func main() {

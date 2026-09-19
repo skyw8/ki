@@ -712,7 +712,7 @@ func (g *gatedEcho) Stream(_ context.Context, req Request, emit func(AssistantDe
 		close(g.started)
 		<-g.release
 	}
-	g.last = append([]types.Message(nil), req.Messages...)
+	g.last = slices.Clone(req.Messages)
 	text := "echo:" + lastUser(req.Messages)
 	m := types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: text}}, StopReason: "stop"}
 	_ = emit(AssistantDelta{Type: "text_delta", Delta: text, Partial: m})

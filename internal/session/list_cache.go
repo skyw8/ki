@@ -1,9 +1,10 @@
 package session
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 )
@@ -90,7 +91,7 @@ func (c *ListCache) List(root string) ([]Info, error) {
 			delete(c.rows, dir)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp > out[j].Timestamp })
+	slices.SortFunc(out, func(a, b Info) int { return cmp.Compare(b.Timestamp, a.Timestamp) })
 	return out, nil
 }
 

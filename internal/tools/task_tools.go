@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -125,10 +126,7 @@ func (t taskStopTool) Execute(_ context.Context, args map[string]any) loop.ToolR
 	if t.tasks == nil {
 		return errRes("task store is unavailable")
 	}
-	id := stringArg(args, "task_id", "")
-	if id == "" {
-		id = stringArg(args, "shell_id", "")
-	}
+	id := cmp.Or(stringArg(args, "task_id", ""), stringArg(args, "shell_id", ""))
 	if id == "" {
 		return errRes("task_id is required")
 	}

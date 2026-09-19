@@ -1,10 +1,11 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/pmezard/go-difflib/difflib"
@@ -25,7 +26,7 @@ type editMatch struct {
 type editDetails struct {
 	Diff             string `json:"diff"`
 	Patch            string `json:"patch"`
-	FirstChangedLine int    `json:"first_changed_line,omitempty"`
+	FirstChangedLine int    `json:"first_changed_line,omitzero"`
 }
 
 func (editTool) Name() string        { return "Edit" }
@@ -196,7 +197,7 @@ func matchEdits(text string, edits []editInput, batch, replaceAll bool, path str
 			from = at + len(edit.Old)
 		}
 	}
-	sort.Slice(matches, func(i, j int) bool { return matches[i].start < matches[j].start })
+	slices.SortFunc(matches, func(a, b editMatch) int { return cmp.Compare(a.start, b.start) })
 	for i := 1; i < len(matches); i++ {
 		if matches[i].start < matches[i-1].end {
 			return nil, fmt.Errorf("%w in %s; merge the overlapping replacements", errEditsOverlap, path)

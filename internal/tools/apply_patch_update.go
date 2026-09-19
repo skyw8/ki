@@ -1,8 +1,9 @@
 package tools
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -62,7 +63,7 @@ func (f patchSourceFile) texts() []string {
 	return out
 }
 func (f *patchSourceFile) apply(repls []patchReplacement) {
-	sort.Slice(repls, func(i, j int) bool { return repls[i].start > repls[j].start })
+	slices.SortFunc(repls, func(a, b patchReplacement) int { return cmp.Compare(b.start, a.start) })
 	for _, r := range repls {
 		next := make([]patchSourceLine, 0, len(f.lines)-r.oldN+len(r.lines))
 		next = append(next, f.lines[:r.start]...)
@@ -102,8 +103,8 @@ func derivePatchUpdate(contents, path string, chunks []patchChunk) (string, stri
 			repls = append(repls, patchReplacement{start: len(texts), lines: insertedPatchLines(chunk.new, source.preferred)})
 			continue
 		}
-		pattern := append([]string(nil), chunk.old...)
-		replacement := append([]string(nil), chunk.new...)
+		pattern := slices.Clone(chunk.old)
+		replacement := slices.Clone(chunk.new)
 		idx := seekPatchSequence(texts, pattern, cursor, chunk.eof)
 		if idx < 0 && len(pattern) > 0 && pattern[len(pattern)-1] == "" {
 			pattern = pattern[:len(pattern)-1]

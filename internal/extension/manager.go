@@ -208,7 +208,7 @@ func (m *Manager) Start(ctx context.Context, descriptors []Descriptor) {
 			continue
 		}
 		m.watching[d.Name] = true
-		m.status[d.Name] = RuntimeStatus{Name: d.Name, State: "starting", Capabilities: append([]string(nil), d.Capabilities...)}
+		m.status[d.Name] = RuntimeStatus{Name: d.Name, State: "starting", Capabilities: slices.Clone(d.Capabilities)}
 		m.mu.Unlock()
 		//nolint:contextcheck // sidecars share process runtimeCtx across Start calls
 		go m.watchRuntime(runtimeCtx, d)
@@ -221,7 +221,7 @@ func (m *Manager) RuntimeStatuses() []RuntimeStatus {
 	defer m.mu.Unlock()
 	out := make([]RuntimeStatus, 0, len(m.status))
 	for _, state := range m.status {
-		state.Capabilities = append([]string(nil), state.Capabilities...)
+		state.Capabilities = slices.Clone(state.Capabilities)
 		out = append(out, state)
 	}
 	slices.SortFunc(out, func(a, b RuntimeStatus) int { return strings.Compare(a.Name, b.Name) })
@@ -278,7 +278,7 @@ func (m *Manager) watchRuntime(ctx context.Context, d Descriptor) {
 }
 
 func (m *Manager) setRuntimeStatus(name, state, message string, caps []string) {
-	st := RuntimeStatus{Name: name, State: state, Error: message, Capabilities: append([]string(nil), caps...)}
+	st := RuntimeStatus{Name: name, State: state, Error: message, Capabilities: slices.Clone(caps)}
 	m.mu.Lock()
 	prev, seen := m.status[name]
 	m.status[name] = st
@@ -324,7 +324,7 @@ func (m *Manager) Prepare(ctx context.Context, sessionID, cwd string, enabled []
 		}
 		tools = append(tools, toolsFromRegistration(c, sessionID)...)
 		m.mu.Lock()
-		dynamic := append([]ToolSpec(nil), m.sessionTools[sessionID][d.Name]...)
+		dynamic := slices.Clone(m.sessionTools[sessionID][d.Name])
 		m.mu.Unlock()
 		tools = append(tools, toolsFromSpecs(c, sessionID, dynamic)...)
 	}
@@ -548,7 +548,7 @@ func (m *Manager) HTTPDoer(sessionID string) provider.HTTPDoer {
 func (m *Manager) SessionContributions(sessionID string) map[string]SessionContribution {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	names := append([]string(nil), m.order[sessionID]...)
+	names := slices.Clone(m.order[sessionID])
 	if len(names) == 0 {
 		for name := range m.by {
 			names = append(names, name)

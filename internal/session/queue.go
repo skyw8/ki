@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"ki/internal/idgen"
@@ -78,8 +79,8 @@ type ExtQueuedItem struct {
 	IdempotencyKey string          `json:"idempotencyKey,omitempty"`
 	// ContextSequence is the last context-only message that belongs before
 	// this prompt. It prevents later messages from entering this prompt.
-	ContextSequence uint64            `json:"contextSequence,omitempty"`
-	ContextBoundary bool              `json:"contextBoundary,omitempty"`
+	ContextSequence uint64            `json:"contextSequence,omitzero"`
+	ContextBoundary bool              `json:"contextBoundary,omitzero"`
 	External        map[string]string `json:"external,omitempty"`
 }
 
@@ -239,7 +240,7 @@ func ReadContextQueue(dir string) ([]ContextQueuedItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append([]ContextQueuedItem(nil), state.Items...), nil
+	return slices.Clone(state.Items), nil
 }
 
 // EnqueueExt appends an extension FIFO item.

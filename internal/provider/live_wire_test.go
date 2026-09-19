@@ -60,7 +60,7 @@ func TestLiveCompletionsAcceptsBatchedToolImages(t *testing.T) {
 	}
 
 	live := NewLiveModel(model, key, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 	got, err := live.Stream(ctx, req, func(loop.AssistantDelta) error { return nil })
 	if err != nil {

@@ -1,11 +1,12 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 
 	"ki/internal/loop"
@@ -179,7 +180,7 @@ func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLi
 		return output + note + searchMetadata(result)
 
 	case "count":
-		counts := append([]search.Count(nil), result.Counts...)
+		counts := slices.Clone(result.Counts)
 		start, end := pageBounds(len(counts), offset, headLimit)
 		lines := make([]string, 0, end-start)
 		total := 0
@@ -195,14 +196,14 @@ func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLi
 		return output + note + searchMetadata(result)
 
 	default:
-		files := append([]string(nil), result.Files...)
-		sort.Slice(files, func(i, j int) bool {
-			left, leftErr := os.Stat(files[i])
-			right, rightErr := os.Stat(files[j])
+		files := slices.Clone(result.Files)
+		slices.SortFunc(files, func(a, b string) int {
+			left, leftErr := os.Stat(a)
+			right, rightErr := os.Stat(b)
 			if leftErr == nil && rightErr == nil && !left.ModTime().Equal(right.ModTime()) {
-				return left.ModTime().After(right.ModTime())
+				return right.ModTime().Compare(left.ModTime())
 			}
-			return files[i] < files[j]
+			return cmp.Compare(a, b)
 		})
 		start, end := pageBounds(len(files), offset, headLimit)
 		if start == end {

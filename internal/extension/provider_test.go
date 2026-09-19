@@ -120,7 +120,7 @@ func TestProviderManagerStreamsConcurrentAndCancels(t *testing.T) {
 		t.Error(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 80*time.Millisecond)
 	defer cancel()
 	_, _, err = run(ctx, models["slow"])
 	if !errors.Is(err, context.DeadlineExceeded) {

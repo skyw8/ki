@@ -2,6 +2,7 @@ package search
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -11,7 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -192,8 +193,8 @@ func (e Engine) Grep(ctx context.Context, req GrepRequest) (GrepResult, error) {
 	if err := validateGrepResult(result); err != nil {
 		return GrepResult{}, err
 	}
-	sort.Strings(result.Files)
-	sort.Slice(result.Counts, func(i, j int) bool { return result.Counts[i].Path < result.Counts[j].Path })
+	slices.Sort(result.Files)
+	slices.SortFunc(result.Counts, func(a, b Count) int { return cmp.Compare(a.Path, b.Path) })
 	return result, nil
 }
 
@@ -235,7 +236,7 @@ func (e Engine) grepFiles(ctx context.Context, req GrepRequest, root string) (Gr
 			return GrepResult{}, err
 		}
 	}
-	sort.Strings(result.Files)
+	slices.Sort(result.Files)
 	return result, nil
 }
 
@@ -414,7 +415,7 @@ func (b *lineBuffer) feed(chunk []byte, consume func([]byte) (bool, error)) (boo
 		if i < 0 {
 			return false, nil
 		}
-		part := append([]byte(nil), b.pending[:i]...)
+		part := bytes.Clone(b.pending[:i])
 		b.pending = b.pending[i+1:]
 		stop, err := consume(part)
 		if err != nil || stop {

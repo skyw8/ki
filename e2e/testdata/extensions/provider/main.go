@@ -106,7 +106,7 @@ func stream(start streamStart) {
 	event(requestID, "text_start", "")
 	event(requestID, "text_delta", "hello ")
 	if model == "slow" {
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			if isStopped(requestID) {
 				return
 			}

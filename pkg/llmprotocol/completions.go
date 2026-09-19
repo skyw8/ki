@@ -1,6 +1,7 @@
 package llmprotocol
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -172,10 +173,7 @@ func openAIContentParts(m Message) []map[string]any {
 				continue
 			}
 			hasMedia = true
-			mime := c.MIMEType
-			if mime == "" {
-				mime = "image/png"
-			}
+			mime := cmp.Or(c.MIMEType, "image/png")
 			parts = append(parts, map[string]any{
 				"type": "image_url",
 				"image_url": map[string]any{

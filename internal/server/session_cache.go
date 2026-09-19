@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"ki/internal/session"
 )
@@ -95,12 +96,7 @@ func entryIn(entries []session.Entry, id string) bool {
 	if id == "" {
 		return false
 	}
-	for _, e := range entries {
-		if e.ID == id {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(entries, func(e session.Entry) bool { return e.ID == id })
 }
 
 func lastNonSideband(entries []session.Entry) string {

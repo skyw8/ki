@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"reflect"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -167,15 +168,11 @@ func (m *ProviderManager) clientByName(name string) *rpcClient {
 func (m *ProviderManager) Specs() []provider.ExtensionProviderSpec {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	ids := make([]string, 0, len(m.specs))
-	for id := range m.specs {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := slices.Sorted(maps.Keys(m.specs))
 	out := make([]provider.ExtensionProviderSpec, 0, len(ids))
 	for _, id := range ids {
 		spec := m.specs[id]
-		spec.Models = append([]provider.ModelSeed(nil), spec.Models...)
+		spec.Models = slices.Clone(spec.Models)
 		out = append(out, spec)
 	}
 	return out

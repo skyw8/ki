@@ -20,7 +20,7 @@ func TestLifecycleSubscribeToolCallBlock(t *testing.T) {
 		Capabilities: []string{"lifecycle"}, root: root,
 		manifest: Manifest{Name: "protected-paths", Capabilities: []string{"lifecycle"}, Runtime: RuntimeSpec{Kind: runtimeRPC, Command: bin}},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil)
 	if err != nil {
@@ -60,7 +60,7 @@ func TestAsyncAgentEndNotify(t *testing.T) {
 		Capabilities: []string{"lifecycle"}, root: root,
 		manifest: Manifest{Name: "protected-paths", Capabilities: []string{"lifecycle"}, Runtime: RuntimeSpec{Kind: runtimeRPC, Command: bin}},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	c, err := startRPC(ctx, d, "sess", t.TempDir(), t.TempDir(), nil)
 	if err != nil {
@@ -87,7 +87,7 @@ func testLifecycleDesc(t *testing.T, name string, caps []string, env map[string]
 }
 
 func TestRewriteInputAndCompactCancel(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	home := t.TempDir()
 
@@ -129,7 +129,7 @@ func TestRewriteInputAndCompactCancel(t *testing.T) {
 }
 
 func TestRegisterToolsVisibleOnNextPrepare(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	d := testLifecycleDesc(t, "regtools", []string{"lifecycle", "tool"}, nil)
 	m := NewManager(t.TempDir(), nil)

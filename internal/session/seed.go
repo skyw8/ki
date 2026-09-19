@@ -50,7 +50,7 @@ func (s *Session) SeedTranscript(spec SeedSpec) error {
 	stamp := time.Now().UTC().Format(time.RFC3339Nano)
 	var buf bytes.Buffer
 	parent := s.leafID
-	for i := 0; i < spec.Turns; i++ {
+	for i := range spec.Turns {
 		user, err := seedMessage(parent, stamp, types.Message{
 			Role:    "user",
 			Content: []types.Content{{Type: "text", Text: "turn " + strconv.Itoa(i)}},

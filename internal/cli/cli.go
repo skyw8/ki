@@ -517,17 +517,22 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 		return errPromptRequired
 	}
 	ctx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stopSig()
-	go func() {
-		<-ctx.Done()
-		// Why Background: ctx is already canceled (that's why this goroutine
-		// woke). Reusing it would cancel the abort HTTP request before serve
-		// sees it, so Ctrl+C would never reach POST /abort.
-		// WithoutCancel keeps the abort request alive after the signal context
-		// is canceled while retaining any values attached to the client context.
+	// Why WithoutCancel: ctx is already canceled when this cleanup runs (that
+	// is what triggered it). Reusing it would cancel the abort HTTP request
+	// before serve sees it, so Ctrl+C would never reach POST /abort.
+	// WithoutCancel keeps the abort request alive after the signal context is
+	// canceled while retaining any values attached to the client context.
+	stopAbort := context.AfterFunc(ctx, func() {
 		abortCtx, abortCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer abortCancel()
 		_ = doJSONContext(abortCtx, base, token, "POST", "/v1/sessions/"+id+"/abort", nil, nil)
+	})
+	// Why stopSig first: canceling ctx is what triggers the abort POST, so any
+	// runClient exit keeps aborting a run the client stops streaming — the
+	// previous ctx.Done watcher goroutine behaved the same way.
+	defer func() {
+		stopSig()
+		stopAbort()
 	}()
 	if f.Steer && f.Queue {
 		return errSteerQueueExclusive

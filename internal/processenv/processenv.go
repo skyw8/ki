@@ -2,6 +2,7 @@ package processenv
 
 import (
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -21,7 +22,7 @@ func isProxyKey(key string) bool {
 // ChildEnvironment returns a copy of Ki's current environment for explicit
 // use as an exec.Cmd environment.
 func ChildEnvironment() []string {
-	return append([]string(nil), os.Environ()...)
+	return slices.Clone(os.Environ())
 }
 
 // ProxyEnvironment returns the proxy variables currently visible to Ki.
@@ -53,7 +54,7 @@ func WithProxyEnvironment(env []string) []string {
 // WithProxyEnvironmentFrom adds proxy variables from source to env unless the
 // child environment already defines the same key.
 func WithProxyEnvironmentFrom(env, source []string) []string {
-	result := append([]string(nil), env...)
+	result := slices.Clone(env)
 	present := make(map[string]struct{}, len(result))
 	for _, item := range result {
 		key, _, ok := strings.Cut(item, "=")

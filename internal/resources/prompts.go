@@ -94,10 +94,9 @@ func loadPromptTemplate(path, source string) (PromptTemplate, error) {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	template := PromptTemplate{Name: strings.ToLower(base), Source: source, Body: string(content)}
 	text := string(content)
-	if strings.HasPrefix(text, "---") {
-		if i := strings.Index(text[3:], "---"); i >= 0 {
-			frontmatter := text[3 : 3+i]
-			template.Body = strings.TrimLeft(text[3+i+3:], "\n")
+	if rest, ok := strings.CutPrefix(text, "---"); ok {
+		if frontmatter, after, found := strings.Cut(rest, "---"); found {
+			template.Body = strings.TrimLeft(after, "\n")
 			for line := range strings.SplitSeq(frontmatter, "\n") {
 				line = strings.TrimSpace(line)
 				key, value, ok := strings.Cut(line, ":")

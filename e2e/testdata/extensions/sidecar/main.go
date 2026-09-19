@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -50,22 +51,10 @@ func sendUI(sessionID string) {
 		})
 		return
 	}
-	text := os.Getenv("KI_STATUS_TEXT")
-	if text == "" {
-		text = "Goal · active"
-	}
-	tone := os.Getenv("KI_STATUS_TONE")
-	if tone == "" {
-		tone = "active"
-	}
-	title := os.Getenv("KI_PANEL_TITLE")
-	if title == "" {
-		title = "Goal"
-	}
-	summary := os.Getenv("KI_PANEL_SUMMARY")
-	if summary == "" {
-		summary = "fixture panel text"
-	}
+	text := cmp.Or(os.Getenv("KI_STATUS_TEXT"), "Goal · active")
+	tone := cmp.Or(os.Getenv("KI_STATUS_TONE"), "active")
+	title := cmp.Or(os.Getenv("KI_PANEL_TITLE"), "Goal")
+	summary := cmp.Or(os.Getenv("KI_PANEL_SUMMARY"), "fixture panel text")
 	enc := json.NewEncoder(os.Stdout)
 	_ = enc.Encode(map[string]any{
 		"jsonrpc": "2.0", "id": "ui-status", "method": "ui.setStatus",

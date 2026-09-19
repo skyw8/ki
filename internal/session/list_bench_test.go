@@ -8,7 +8,7 @@ import (
 func seedListRoot(tb testing.TB, sessions, turns, toolBytes int) string {
 	tb.Helper()
 	root := tb.TempDir()
-	for i := 0; i < sessions; i++ {
+	for i := range sessions {
 		s, err := Create(root, tb.TempDir(), "openai", "model")
 		if err != nil {
 			tb.Fatal(err)
@@ -33,8 +33,7 @@ func seedListRoot(tb testing.TB, sessions, turns, toolBytes int) string {
 func BenchmarkListHistory(b *testing.B) {
 	root := seedListRoot(b, 8, 40, 4096)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		infos, err := List(root)
 		if err != nil || len(infos) != 8 {
 			b.Fatal(err, len(infos))
@@ -49,8 +48,7 @@ func BenchmarkListCache(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		infos, err := c.List(root)
 		if err != nil || len(infos) != 8 {
 			b.Fatal(err, len(infos))

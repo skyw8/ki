@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"cmp"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -22,7 +23,7 @@ const (
 type AuthSpec struct {
 	Type         AuthKind `json:"type,omitempty"`
 	Name         string   `json:"name,omitempty"`
-	Subscription bool     `json:"subscription,omitempty"`
+	Subscription bool     `json:"subscription,omitzero"`
 }
 
 // Credential is the resolved value passed to a provider runtime. Value is
@@ -75,11 +76,11 @@ type Cost struct {
 // Compat contains only request-shape differences Ki implements.
 type Compat struct {
 	ThinkingFormat           string `json:"thinkingFormat,omitempty"`
-	SupportsReasoningEffort  bool   `json:"supportsReasoningEffort,omitempty"`
+	SupportsReasoningEffort  bool   `json:"supportsReasoningEffort,omitzero"`
 	SupportsDeveloperRole    *bool  `json:"supportsDeveloperRole,omitempty"`
 	MaxTokensField           string `json:"maxTokensField,omitempty"`
-	RequiresReasoningContent bool   `json:"requiresReasoningContent,omitempty"`
-	ForceAdaptiveThinking    bool   `json:"forceAdaptiveThinking,omitempty"`
+	RequiresReasoningContent bool   `json:"requiresReasoningContent,omitzero"`
+	ForceAdaptiveThinking    bool   `json:"forceAdaptiveThinking,omitzero"`
 }
 
 // Model is a fully resolved selectable model.
@@ -91,7 +92,7 @@ type Model struct {
 	BaseURL            string             `json:"baseUrl"`
 	Enabled            bool               `json:"enabled"`
 	Builtin            bool               `json:"builtin"`
-	Customized         bool               `json:"customized,omitempty"`
+	Customized         bool               `json:"customized,omitzero"`
 	ContextWindow      int                `json:"contextWindow"`
 	MaxTokens          int                `json:"maxTokens"`
 	Input              []string           `json:"input"`
@@ -111,7 +112,7 @@ type Provider struct {
 	Auth         AuthSpec `json:"auth,omitzero"`
 	Enabled      bool     `json:"enabled"`
 	Builtin      bool     `json:"builtin"`
-	Customized   bool     `json:"customized,omitempty"`
+	Customized   bool     `json:"customized,omitzero"`
 	Runtime      string   `json:"runtime,omitempty"`
 	EnvVars      []string `json:"-"`
 	DefaultModel string   `json:"defaultModel"`
@@ -141,8 +142,8 @@ type ModelSeed struct {
 	Enabled            *bool              `json:"enabled,omitempty"`
 	API                string             `json:"api,omitempty"`
 	BaseURL            string             `json:"baseUrl,omitempty"`
-	ContextWindow      int                `json:"contextWindow,omitempty"`
-	MaxTokens          int                `json:"maxTokens,omitempty"`
+	ContextWindow      int                `json:"contextWindow,omitzero"`
+	MaxTokens          int                `json:"maxTokens,omitzero"`
 	Input              []string           `json:"input,omitempty"`
 	ApplyPatchToolType string             `json:"applyPatchToolType,omitempty"`
 	Reasoning          *bool              `json:"reasoning,omitempty"`
@@ -253,18 +254,9 @@ func resolveSeed(providerID, providerAPI, providerBase string, seed ModelSeed, b
 	if seed.Enabled != nil {
 		enabled = *seed.Enabled
 	}
-	name := seed.Name
-	if name == "" {
-		name = seed.ID
-	}
-	api := seed.API
-	if api == "" {
-		api = providerAPI
-	}
-	base := strings.TrimRight(seed.BaseURL, "/")
-	if base == "" {
-		base = strings.TrimRight(providerBase, "/")
-	}
+	name := cmp.Or(seed.Name, seed.ID)
+	api := cmp.Or(seed.API, providerAPI)
+	base := cmp.Or(strings.TrimRight(seed.BaseURL, "/"), strings.TrimRight(providerBase, "/"))
 	window := seed.ContextWindow
 	if window == 0 {
 		window = 128000
