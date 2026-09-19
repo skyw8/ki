@@ -44,20 +44,11 @@ jobs:
           - goos: linux
             goarch: amd64
             archive: tar.gz
-          - goos: linux
-            goarch: arm64
-            archive: tar.gz
-          - goos: darwin
-            goarch: amd64
-            archive: tar.gz
           - goos: darwin
             goarch: arm64
             archive: tar.gz
           - goos: windows
             goarch: amd64
-            archive: zip
-          - goos: windows
-            goarch: arm64
             archive: zip
     steps:
       - uses: actions/checkout@v4
