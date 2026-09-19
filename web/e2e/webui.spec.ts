@@ -389,7 +389,10 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(page.locator('.session-row.active')).toBeVisible()
 
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
-  await expect(page.getByTestId('request-nav')).toHaveCount(0)
+  // The navigator is offered from the first prompt on (its panel is the way
+  // back to an earlier turn); the panel itself stays closed until asked for.
+  await expect(page.getByTestId('request-nav')).toHaveCount(1)
+  await expect(page.getByTestId('request-nav-panel')).toHaveCount(0)
   await expect(page.getByTestId('assistant-message').locator('.md')).toContainText('ok')
   await expect(page.getByTestId('chat-system-prompt')).toHaveCount(0)
   // The stats strip renders the hit rate to 2 decimals (90/98).

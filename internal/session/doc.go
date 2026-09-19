@@ -20,8 +20,13 @@
 // fork mode in the header. The server owns tree-mode cascade deletion.
 //
 // request_header entries store system/tools plus provider, model, thinking,
-// catalog, and pricing snapshots. WebUI GET projects a body-less index plus a
-// slimmed active-leaf tail (unchanged prompts omitted, large bodies truncated).
+// catalog, and pricing snapshots. WebUI GET projects a slimmed active-leaf tail
+// (unchanged prompts omitted, large bodies truncated) and, on request, a
+// body-less index of the whole tree. Because the jsonl is append-only, reads
+// are served from a per-directory cache that decodes only the bytes appended
+// since the last read: TailEntries (LeafTail) reads just the end of the file,
+// AllEntries extends the same cache to the whole transcript, and OpenFrom
+// builds a Session from entries a caller already took from that cache.
 // context_usage entries store model-facing
 // context pressure; patch_apply_updated entries store non-executing structured
 // patch previews. Asynchronous sideband rows never advance activeLeafId.

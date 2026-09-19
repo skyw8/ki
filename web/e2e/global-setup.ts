@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { baseURLForAddress, runID, statePath, storageStatePath } from './run-state.ts'
 import { goBinary } from './go-toolchain.ts'
+import { buildWebDist, webDistStale } from './web-dist.ts'
 
 const webDir = join(dirname(fileURLToPath(import.meta.url)), '..')
 const root = join(webDir, '..')
@@ -12,10 +13,11 @@ export { statePath, storageStatePath }
 
 // web/dist is build output and is not tracked by git. Build it before embedding:
 // `go build -tags embed` fails when dist is missing, and a stub binary would make
-// every spec fail against a 503 page.
+// every spec fail against a 503 page. It is also rebuilt when a frontend source
+// is newer than the bundle, so a suite never passes against the previous UI.
 function ensureWebDist(): void {
-  if (existsSync(join(webDir, 'dist', 'index.html'))) return
-  execFileSync('bun', ['run', 'build'], { cwd: webDir, stdio: 'inherit' })
+  if (!webDistStale()) return
+  buildWebDist()
 }
 
 export function serverToken(): string {

@@ -28,10 +28,14 @@ export function RequestNav({
   items,
   activeId,
   onJump,
+  onOpen,
 }: {
   items: UserRequest[]
   activeId: string | null
   onJump: (id: string) => void
+  /** Called when the panel opens: the caller can fill in history the list is
+   * still missing (the navigator walks the tree index, which loads lazily). */
+  onOpen?: () => void
 }) {
   const { t } = useI18n()
   const hoverable = useFineHover()
@@ -104,7 +108,10 @@ export function RequestNav({
     else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight
   }, [open, activeId, visible, virtualize, virtualizer])
 
-  if (items.length < 2) return null
+  // Always offered once the session has a prompt: hiding the navigator for a
+  // single-prompt branch (a tool-heavy turn, a fresh session) made it look
+  // broken, and its panel is the only way back to an earlier turn.
+  if (items.length === 0) return null
 
   const current = items.find(item => item.id === activeId) ?? items[0]
   const currentLabel = labelOf(current, untitled)
@@ -118,6 +125,7 @@ export function RequestNav({
   const openPanel = () => {
     cancelClose()
     setOpen(true)
+    onOpen?.()
   }
 
   const jump = (id: string) => {
@@ -207,10 +215,13 @@ export function RequestNav({
           // pointer click then would toggle it shut. Keyboard clicks have
           // detail 0 and still need to toggle.
           if (hoverable && e.detail > 0) {
-            setOpen(true)
+            openPanel()
             return
           }
-          setOpen(v => !v)
+          setOpen(v => {
+            if (!v) onOpen?.()
+            return !v
+          })
         }}
       >
         <IMenu />

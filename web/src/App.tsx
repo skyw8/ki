@@ -11,7 +11,7 @@ import { ExtensionConfigEditor, MessageSettings, NotificationSettings, SessionCo
 import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
-import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, hydrateEntries, initialView, keepComposer, latestStats, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, userRequests } from './lib/model'
+import { appendOptimisticUser, applyEvent, applyIndex, applyRuntimeCatalog, applyTail, clampThinkingEffort, emptyView, hydrateEntries, initialView, keepComposer, latestStats, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, userRequests } from './lib/model'
 import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, PushEvent, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './api/types'
 import { TrajectoryView } from './features/chat/Trajectory'
 import { useI18n } from './i18n/index'
@@ -316,6 +316,7 @@ function WorkspaceApp({ api }: { api: Client }) {
   // The push handler is event-driven and long-lived, so it reads the open
   // session and the run stream it holds through refs instead of captured state.
   const currentIdRef = useRef<string | null>(currentId)
+  const viewRef = useRef(view)
   const listeningIdRef = useRef<string | null>(null)
   const abortedRuns = useRef(new Set<string>())
   // Sessions this tab has seen running. Completion notifications are limited to
@@ -681,6 +682,7 @@ function WorkspaceApp({ api }: { api: Client }) {
 	useEffect(() => { void refreshList() }, [refreshList])
 
   useEffect(() => { currentIdRef.current = currentId }, [currentId])
+  useEffect(() => { viewRef.current = view }, [view])
 
   useTabFocus(currentId)
   const handleRunComplete = useCallback((id: string) => {
@@ -749,9 +751,12 @@ function WorkspaceApp({ api }: { api: Client }) {
       toast.from(e)
     } finally {
       if (abortRef.current === ac) {
+        // A finished run is reconciled from the tail: the events already
+        // arrived on this stream, so only the window and leaf need refreshing,
+        // not the whole history (and the index stays warm across the run).
         const detail = await api.get(id).catch(() => null)
         if (abortRef.current === ac && detail) {
-          setView(loadHistory(detail))
+          setView(v => applyTail(v, detail))
           if (detail.running) void listen(id)
           else listeningIdRef.current = null
         } else if (abortRef.current === ac) {
@@ -916,6 +921,36 @@ function WorkspaceApp({ api }: { api: Client }) {
       return false
     }
   }, [api, listen])
+
+  /**
+   * Fetch the tree index off the critical path.
+   *
+   * Why: the conversation renders the newest window of the transcript, which is
+   * what first paint needs; the index (branch rows, trajectory table, absolute
+   * turn numbers) is the part that made opening a long session read the whole
+   * file. It arrives moments later and only renumbers, never unmounts the chat.
+   * Short sessions answer with the index inline, so this is a no-op for them.
+   */
+  const indexLoading = useRef<string | null>(null)
+  const requestIndex = useCallback(async (id: string) => {
+    if (indexLoading.current === id) return
+    indexLoading.current = id
+    try {
+      const detail = await api.get(id, { fields: 'index' })
+      setView(v => (currentIdRef.current === id ? applyIndex(v, detail) : v))
+    } catch {
+      // The tail view already renders; the next open or tab switch retries.
+    } finally {
+      if (indexLoading.current === id) indexLoading.current = null
+    }
+  }, [api])
+
+  useEffect(() => {
+    if (!currentId || view.indexLoaded || !view.hasMore) return
+    const id = currentId
+    const timer = window.setTimeout(() => { void requestIndex(id) }, 250)
+    return () => window.clearTimeout(timer)
+  }, [currentId, requestIndex, view.indexLoaded, view.hasMore])
 
   useEffect(() => {
     if (!currentId || view.runtimeReady !== false) return
@@ -1334,9 +1369,16 @@ function WorkspaceApp({ api }: { api: Client }) {
     el.scrollTop = el.scrollHeight
   }, [view.nodes, atBottom])
 
+  // Jumping to an older prompt pages history in; 500 is the server's per-page
+  // cap, so a jump to the start of a long session takes a handful of requests.
+  const jumpPageSize = 500
+
   const inspect = (n: ChatNode) => {
     setInspId(n.id)
     setTab('trajectory')
+    // The trajectory table is built from the tree index; fetch it now instead
+    // of waiting for the background pass.
+    if (currentId && !view.indexLoaded) void requestIndex(currentId)
   }
 
 	const startEdit = useCallback((node: Extract<ChatNode, { kind: 'user' }>) => {
@@ -1410,18 +1452,52 @@ function WorkspaceApp({ api }: { api: Client }) {
 
   const empty = view.nodes.length === 0
   const stats = useMemo(() => latestStats(view), [view])
-  const requestItems = useMemo(() => userRequests(view.nodes), [view.nodes])
+  // The navigator walks the branch from the loaded entries and index rows, not
+  // from chat nodes, so every prompt is listed without paging the chat back.
+  const requestItems = useMemo(() => userRequests(view.allEntries, view.leafId, view.nodes), [view.allEntries, view.leafId, view.nodes])
 
   useEffect(() => {
     setJumpToId(null)
     setActiveRequestId(null)
   }, [currentId])
 
-  const jumpToRequest = useCallback((id: string) => {
+  /**
+   * Jump to a prompt from the navigator.
+   *
+   * The list covers the whole branch, but chat nodes only cover the loaded
+   * window, so a jump to older history pages it in first — the same pages
+   * scrolling up would fetch, in larger steps. history runs out at hasMore.
+   */
+  const jumpToRequest = useCallback(async (id: string) => {
     setAtBottom(false)
     setActiveRequestId(id)
+    const sessionId = currentIdRef.current
+    if (!sessionId) return
+    // A live node (a prompt sent in this tab, not persisted yet) is already on
+    // screen: paging history for it would never find it.
+    if (!viewRef.current.allEntries.some(e => e.id === id)) {
+      setJumpToId(id)
+      return
+    }
+    let have = new Set(viewRef.current.entries.map(e => e.id))
+    while (!have.has(id)) {
+      const current = viewRef.current
+      if (!current.hasMore || !current.oldestId || currentIdRef.current !== sessionId) return
+      let page
+      try {
+        page = await api.get(sessionId, { before: current.oldestId, limit: jumpPageSize })
+      } catch (e) {
+        toast.from(e)
+        return
+      }
+      if (currentIdRef.current !== sessionId) return
+      const entries = page.entries ?? []
+      if (!entries.length) return
+      setView(v => hydrateEntries(v, entries, { hasMore: page.hasMore, oldestId: page.oldestId }))
+      have = new Set([...have, ...entries.map(e => e.id)])
+    }
     setJumpToId(id)
-  }, [])
+  }, [api])
   const clearJump = useCallback(() => setJumpToId(null), [])
   const queued = view.queued ?? []
   const extQueued = view.extQueued ?? []
@@ -1761,7 +1837,7 @@ function WorkspaceApp({ api }: { api: Client }) {
           </div>
           <div className="tabs">
             <button type="button" className={`tab${tab === 'conversation' ? ' active' : ''}`} data-testid="tab-conversation" onClick={() => setTab('conversation')}>{t('tab.conversation')}</button>
-            <button type="button" className={`tab${tab === 'trajectory' ? ' active' : ''}`} data-testid="tab-trajectory" onClick={() => setTab('trajectory')}>{t('tab.trajectory')}</button>
+            <button type="button" className={`tab${tab === 'trajectory' ? ' active' : ''}`} data-testid="tab-trajectory" onClick={() => { setTab('trajectory'); if (currentId && !view.indexLoaded) void requestIndex(currentId) }}>{t('tab.trajectory')}</button>
             <button type="button" className={`tab${tab === 'config' ? ' active' : ''}`} data-testid="tab-config" onClick={() => setTab('config')}>{t('tab.info')}</button>
           </div>
         </header>
@@ -1824,6 +1900,7 @@ function WorkspaceApp({ api }: { api: Client }) {
 					jumpToId={jumpToId}
 					onJumped={clearJump}
 					onActiveRequest={setActiveRequestId}
+					turnBase={view.turnBase}
 				  />
                 </div>
                 <RequestNav
@@ -1831,6 +1908,7 @@ function WorkspaceApp({ api }: { api: Client }) {
                   items={requestItems}
                   activeId={activeRequestId}
                   onJump={jumpToRequest}
+                  onOpen={() => { if (currentId && !view.indexLoaded) void requestIndex(currentId) }}
                 />
                 {!atBottom ? (
                   <div className="to-bottom-slot">

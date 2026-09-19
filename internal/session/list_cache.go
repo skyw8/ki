@@ -94,6 +94,38 @@ func (c *ListCache) List(root string) ([]Info, error) {
 	return out, nil
 }
 
+// Row returns one session's list row, reusing the cached row while the session
+// files are unchanged. It is the per-directory counterpart of List: callers
+// that hold a directory (the session view needs a title even when it only read
+// a tail of the transcript) get the lite row without walking the whole root.
+func (c *ListCache) Row(dir string) (Info, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.rows == nil {
+		c.rows = map[string]cachedInfo{}
+	}
+	jsonl, err := stampFile(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		delete(c.rows, dir)
+		return Info{}, err
+	}
+	config, err := stampFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		delete(c.rows, dir)
+		return Info{}, err
+	}
+	if row, ok := c.rows[dir]; ok && row.jsonl == jsonl && row.config == config {
+		return row.info, nil
+	}
+	info, err := liteInfo(dir)
+	if err != nil {
+		delete(c.rows, dir)
+		return Info{}, err
+	}
+	c.rows[dir] = cachedInfo{info: info, jsonl: jsonl, config: config}
+	return info, nil
+}
+
 func stampFile(path string) (fileStamp, error) {
 	info, err := os.Stat(path)
 	if err != nil {

@@ -466,6 +466,22 @@ export type ViewState = {
 	thinkingEffort: string
 	contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
 	leafId?: string
+	/**
+	 * Body-loaded entries: the tail window the server returned plus every page
+	 * hydrated since. Chat nodes are built from these only, so a long session
+	 * renders a bounded number of them.
+	 */
+	entries: Entry[]
+	/**
+	 * Body-less rows for the whole tree. Fetched lazily (fields=index) because
+	 * carrying it on open made first paint wait for the full transcript; the
+	 * trajectory table, branch navigation and absolute turn numbers need it.
+	 */
+	index: IndexEntry[]
+	/** Whether `index` covers the tree (an empty tree counts as loaded). */
+	indexLoaded: boolean
+	/** Users on the branch before the loaded window, known from the index. */
+	turnBase: number
 	allEntries: Entry[]
 	hasMore?: boolean
 	oldestId?: string

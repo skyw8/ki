@@ -453,8 +453,10 @@ function activeUserId(
   return current
 }
 
-export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, onHydrate, jumpToId, onJumped, onActiveRequest }: Omit<ChatItemProps, 'node'> & {
+export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, onHydrate, jumpToId, onJumped, onActiveRequest, turnBase = 0 }: Omit<ChatItemProps, 'node'> & {
 	nodes: ChatNode[]
+	/** Turns on the branch before the loaded window (see turnStats). */
+	turnBase?: number
 	scrollRef?: RefObject<HTMLDivElement | null>
 	jumpToId?: string | null
 	onJumped?: () => void
@@ -479,7 +481,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   // runs a tool): its step count is still growing, so a settled-looking strip
   // that rewrites itself every delta would only flicker. The bottom
   // "running…" line is the progress signal until agent_end.
-  const turns = useMemo(() => turnStats(nodes), [nodes])
+  const turns = useMemo(() => turnStats(nodes, turnBase), [nodes, turnBase])
   const newestId = nodes[nodes.length - 1]?.id
   const turnFoot = (n: ChatNode) => {
     if (busy && n.id === newestId) return null

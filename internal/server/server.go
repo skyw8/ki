@@ -87,8 +87,6 @@ type Server struct {
 	runtimeCancel          context.CancelFunc
 	runtimeWG              sync.WaitGroup
 	runtimeClosed          bool
-	snapMu                 sync.Mutex
-	snaps                  map[string]*sessionSnap
 }
 
 const (
@@ -195,7 +193,6 @@ func New(opt Options) (*Server, error) {
 		runtime:                map[string]*runtimePrep{},
 		runtimeCtx:             runtimeCtx,
 		runtimeCancel:          runtimeCancel,
-		snaps:                  map[string]*sessionSnap{},
 	}
 	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
 	srv.ext.SetHost(srv)
@@ -862,31 +859,34 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) open(id string) (*session.Session, error) {
-	root := s.cfg.Sessions.Root
-	if dir, ok := s.sidx.Lookup(id); ok {
-		sess, err := session.Open(dir)
-		if err == nil {
-			return sess, nil
-		}
-		// Stale entry (dir deleted or renamed outside the server): drop it so
-		// the next lookup rescans instead of failing on a dead path forever.
-		s.sidx.Remove(id)
-		return nil, fmt.Errorf("open indexed session: %w", err)
-	}
-	// Index miss (session created by another process, or stale): fall back to
-	// a scan, then self-heal so the next lookup is O(1).
-	dir, err := session.Find(root, id)
+	dir, err := s.sessionDir(id)
 	if err != nil {
 		return nil, fmt.Errorf("find session: %w", err)
 	}
-	s.sidx.Add(id, dir)
-	sess, err := session.Open(dir)
+	header, err := session.ReadHeader(dir)
 	if err != nil {
-		return nil, fmt.Errorf("open session: %w", err)
+		return nil, fmt.Errorf("read session header: %w", err)
 	}
-	return sess, nil
+	cfg, err := session.ReadConfig(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read session config: %w", err)
+	}
+	entries, err := session.AllEntries(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read session entries: %w", err)
+	}
+	return session.OpenFrom(dir, header, cfg, entries), nil
 }
 
+// get answers the WebUI session view.
+//
+// The default response is the conversation tail: the newest leaf entries plus
+// the cursor for older pages. The full-tree index is opt-in via fields=index
+// (the trajectory table, branch navigation), and fields=runtime answers the
+// readiness poll without reading the transcript at all. Why: first paint used
+// to carry an index of every entry, so opening a long session waited for the
+// whole file to be parsed and for megabytes of JSON, none of which the newest
+// messages needed.
 func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	q := r.URL.Query()
@@ -903,8 +903,17 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = session.ClampViewLimit(n)
 	}
+	withIndex := hasField(fields, "index")
+	runtimeOnly := hasField(fields, "runtime") && !withIndex && entryID == "" && batch == "" && before == ""
+	full := entryID != "" || batch != "" || before != "" || withIndex
 
-	snap, err := s.loadSessionSnap(id)
+	var snap *sessionSnap
+	var err error
+	if full {
+		snap, err = s.loadSessionSnap(id, true, 0)
+	} else {
+		snap, err = s.loadSessionSnap(id, false, limit)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -938,18 +947,33 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if fields == "runtime" {
+	if runtimeOnly {
 		writeJSON(w, 200, s.sessionMapSnap(snap, runtime))
 		return
 	}
 
-	view := session.BuildView(snap.entries, snap.leafID, limit)
+	tail := session.BuildTail(snap.entries, snap.leafID, limit)
 	runtime["leafId"] = snap.leafID
-	runtime["entries"] = view.Entries
-	runtime["index"] = view.Index
-	runtime["hasMore"] = view.HasMore
-	runtime["oldestId"] = view.OldestID
+	runtime["entries"] = tail.Entries
+	runtime["hasMore"] = tail.HasMore
+	runtime["oldestId"] = tail.OldestID
+	if withIndex || (snap.complete && snap.small) {
+		// A session smaller than one tail read was read in full anyway, so its
+		// index costs nothing extra and the client needs no second request; a
+		// long one stays opt-in.
+		runtime["index"] = session.BuildIndex(snap.entries)
+	}
 	writeJSON(w, 200, s.sessionMapSnap(snap, runtime))
+}
+
+// hasField reports whether a comma-separated fields query contains name.
+func hasField(fields, name string) bool {
+	for _, f := range strings.Split(fields, ",") {
+		if strings.TrimSpace(f) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) sessionRuntime(snap *sessionSnap) (map[string]any, error) {

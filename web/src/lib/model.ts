@@ -108,6 +108,10 @@ export function emptyView(): ViewState {
     title: '',
     turn: 0,
 	thinkingEffort: '',
+	entries: [],
+	index: [],
+	indexLoaded: false,
+	turnBase: 0,
 	allEntries: [],
 	hasMore: false,
 	oldestId: undefined,
@@ -184,13 +188,199 @@ export function loadHistory(detail: SessionDetail): ViewState {
 	s.extQueued = detail.extQueued ?? []
 	s.extensionUi = detail.extensionUi ?? []
 	s.runtimeReady = detail.runtime?.ready !== false
-  const entries = detail.entries ?? []
-	s.allEntries = mergeEntries(detail.index, entries)
 	s.leafId = detail.leafId
 	s.hasMore = !!detail.hasMore
 	s.oldestId = detail.oldestId
-	for (const e of leafEntries(s.allEntries, detail.leafId)) applyEntry(s, e)
-  return s
+	setIndex(s, detail.index)
+	addEntries(s, detail.entries ?? [])
+	return rebuild(s)
+}
+
+/** setIndex records the tree index of a session detail. `undefined` leaves the
+ * index unloaded; the server omits it when it would have to parse the whole
+ * transcript, and the WebUI asks for it separately. */
+function setIndex(s: ViewState, index?: IndexEntry[]) {
+  if (index === undefined) return
+  s.index = index
+  s.indexLoaded = true
+}
+
+/**
+ * applyIndex merges a lazily fetched tree index into an open session.
+ *
+ * Why: the conversation renders from the loaded window only, so an index that
+ * arrives late must not change which entries have bodies — it fills in the
+ * branch/trajectory rows and the absolute turn numbering.
+ */
+export function applyIndex(s: ViewState, detail: SessionDetail): ViewState {
+  const next = { ...s }
+  setIndex(next, detail.index ?? [])
+  next.leafId = detail.leafId ?? next.leafId
+  addEntries(next, detail.entries ?? [])
+  applyCursor(next, detail)
+  return rebuild(next)
+}
+
+/**
+ * applyCursor adopts the server's paging cursor.
+ *
+ * Why: the cursor describes the window the server just returned. Once the user
+ * paged further back, the loaded entries are older than that window and keeping
+ * its cursor would re-fetch pages already on screen.
+ */
+function applyCursor(next: ViewState, detail: SessionDetail) {
+  if (detail.hasMore !== undefined) next.hasMore = detail.hasMore
+  const windowIds = new Set((detail.entries ?? []).map(e => e.id))
+  const paged = next.entries.some(e => !windowIds.has(e.id))
+  if (!paged && detail.oldestId !== undefined) next.oldestId = detail.oldestId
+}
+
+/**
+ * applyTail replaces the conversation window from a tail response, keeping the
+ * index warm. New entries are appended to the index as rows, which is sound
+ * because the transcript is append-only: they are the newest entries, so they
+ * belong at the end of the file order the index follows.
+ */
+export function applyTail(s: ViewState, detail: SessionDetail): ViewState {
+  const next = { ...s }
+  next.busy = !!detail.running
+  next.leafId = detail.leafId ?? next.leafId
+  next.runtimeReady = detail.runtime?.ready !== false
+  next.commands = detail.commands ?? next.commands
+  next.queued = detail.queued ?? next.queued
+  next.extQueued = detail.extQueued ?? next.extQueued
+  next.extensionUi = detail.extensionUi ?? next.extensionUi
+  const entries = detail.entries ?? []
+  addEntries(next, entries)
+  applyCursor(next, detail)
+  if (next.indexLoaded && entries.length) {
+    const known = new Set(next.index.map(row => row.id))
+    const added = entries.filter(e => !known.has(e.id)).map(entryToIndex)
+    if (added.length) next.index = [...next.index, ...added]
+  }
+  // A run end is not the place to grow: keep the newest pages and drop the
+  // oldest loaded entries once the window has slid past them, so a long
+  // session's node list stays bounded instead of rebuilding the history.
+  if (next.entries.length > maxLoadedEntries) {
+    next.entries = next.entries.slice(next.entries.length - maxLoadedEntries)
+  }
+  return rebuild(next)
+}
+
+/**
+ * maxLoadedEntries bounds how much history stays in chat nodes. The tail window
+ * is one page; a few pages of scrolled-back history are kept, and anything
+ * older is dropped on the next run-end refresh.
+ */
+const maxLoadedEntries = 400
+
+/** addEntries records body-loaded entries, replacing earlier copies by id. */
+function addEntries(s: ViewState, incoming: Entry[]) {
+  if (!incoming.length) return
+  const byId = new Map(incoming.map(e => [e.id, e]))
+  const known = new Set(s.entries.map(e => e.id))
+  s.entries = s.entries.map(e => byId.get(e.id) ?? e)
+  for (const e of incoming) {
+    if (!known.has(e.id)) s.entries.push(e)
+  }
+}
+
+/** entryToIndex is the inverse of indexToEntry: a tree row for a loaded body. */
+function entryToIndex(e: Entry): IndexEntry {
+  const row: IndexEntry = {
+    type: e.type,
+    id: e.id,
+    parentId: e.parentId,
+    timestamp: e.timestamp,
+    sideband: e.sideband,
+    tokensBefore: e.tokensBefore,
+    usage: e.usage,
+    truncated: e.truncated,
+  }
+  if (e.message) {
+    row.role = e.message.role
+    row.origin = e.message.origin
+    row.usage = e.message.usage ?? e.usage
+    row.durationMs = e.message.durationMs
+    row.ttftMs = e.message.ttftMs
+    row.stopReason = e.message.stopReason
+    row.toolCallId = e.message.toolCallId
+    row.name = e.message.toolName
+    row.preview = previewOf(messageText(e.message) || messageThinking(e.message))
+  } else if (e.type === 'compaction') {
+    row.preview = previewOf(e.summary ?? '')
+  }
+  return row
+}
+
+/**
+ * rebuild derives the whole view from entries + index.
+ *
+ * Nodes come from the loaded window only; older entries contribute records
+ * (the trajectory table) and the turn offset, so a long session neither builds
+ * nor re-renders thousands of chat nodes. Live state from an in-flight run is
+ * carried over so a rebuild during a run does not drop the streaming bubble.
+ */
+function rebuild(s: ViewState): ViewState {
+  const streaming = s.nodes.filter(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
+  const runningRecords = s.records.filter(r => r.running)
+  const runningRequests = s.requests.filter(r => r.status === 'running')
+  const next: ViewState = {
+    ...s,
+    nodes: [],
+    records: [],
+    requests: [],
+    turn: 0,
+    turnBase: 0,
+    promptState: undefined,
+    currentRequestId: undefined,
+  }
+  const all = mergeEntries(next.index, next.entries)
+  next.allEntries = all
+  const loaded = new Set(next.entries.map(e => e.id))
+  const chain = leafEntries(all, next.leafId)
+  // Canonical order: loaded bodies follow the branch, oldest first, so the
+  // window keeps appending at the end and the pruning above drops the oldest.
+  next.entries = chain.filter(e => loaded.has(e.id))
+  if (next.indexLoaded) {
+    next.turnBase = chain.reduce((n, e) => n + (!loaded.has(e.id) && isUserEntry(e) ? 1 : 0), 0)
+  }
+  // Records are numbered from the branch root (index-only entries count too),
+  // so the count below continues correctly for a live turn; turnStats adds
+  // turnBase to the window's nodes, which is what the chat dividers show.
+  for (const e of chain) applyEntry(next, e, loaded.has(e.id))
+
+  // Entries that arrived live (SSE) but are not persisted yet: keep the
+  // in-flight conversation state instead of dropping it on a rebuild.
+  if (streaming.length) {
+    const have = new Set(next.nodes.map(n => n.id))
+    for (const node of streaming) {
+      if (have.has(node.id)) next.nodes = next.nodes.map(n => n.id === node.id ? node : n)
+      else next.nodes.push(node)
+    }
+  }
+  if (runningRecords.length) {
+    const have = new Set(next.records.map(r => r.id))
+    for (const rec of runningRecords) if (!have.has(rec.id)) next.records.push(rec)
+  }
+  for (const req of runningRequests) {
+    if (!next.requests.some(r => r.id === req.id)) next.requests.push(req)
+  }
+  if (next.requests.length) next.currentRequestId = next.requests[next.requests.length - 1].id
+  return next
+}
+
+function isUserEntry(e: Entry): boolean {
+  return e.type === 'message' && e.message?.role === 'user'
+}
+
+export function hydrateEntries(s: ViewState, incoming: Entry[], meta?: { hasMore?: boolean; oldestId?: string }): ViewState {
+  if (!incoming.length && meta == null) return s
+  const next = { ...s }
+  addEntries(next, incoming)
+  if (meta?.hasMore !== undefined) next.hasMore = meta.hasMore
+  if (meta?.oldestId !== undefined) next.oldestId = meta.oldestId
+  return rebuild(next)
 }
 
 export function applyRuntimeCatalog(s: ViewState, detail: SessionDetail): ViewState {
@@ -207,7 +397,13 @@ export function applyRuntimeCatalog(s: ViewState, detail: SessionDetail): ViewSt
 function mergeEntries(index: IndexEntry[] | undefined, entries: Entry[]): Entry[] {
   const full = new Map(entries.map(e => [e.id, e]))
   if (!index?.length) return entries
-  return index.map(ix => full.get(ix.id) ?? indexToEntry(ix))
+  const rows = index.map(ix => full.get(ix.id) ?? indexToEntry(ix))
+  // Bodies the index has not seen yet (a run that landed after the index was
+  // fetched) still belong at the end: the transcript is append-only, so the
+  // file order the index follows puts them last.
+  const known = new Set(index.map(ix => ix.id))
+  for (const e of entries) if (!known.has(e.id)) rows.push(e)
+  return rows
 }
 
 function indexToEntry(ix: IndexEntry): Entry {
@@ -254,60 +450,6 @@ function leafEntries(entries: Entry[], leafId?: string): Entry[] {
   return active
 }
 
-export function hydrateEntries(s: ViewState, incoming: Entry[], meta?: { hasMore?: boolean; oldestId?: string }): ViewState {
-  if (!incoming.length && meta == null) return s
-  const full = new Map(incoming.map(e => [e.id, e]))
-  const allEntries = s.allEntries.map(e => full.get(e.id) ?? e)
-  for (const e of incoming) {
-    if (!allEntries.some(existing => existing.id === e.id)) allEntries.push(e)
-  }
-  const live = {
-    busy: s.busy,
-    stopping: s.stopping,
-    commands: s.commands,
-    queued: s.queued,
-    extQueued: s.extQueued,
-    extensionUi: s.extensionUi,
-    runtimeReady: s.runtimeReady,
-    provider: s.provider,
-    model: s.model,
-    thinkingEffort: s.thinkingEffort,
-    cwd: s.cwd,
-    title: s.title,
-    error: s.error,
-  }
-  const streaming = s.nodes.filter(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
-  const next = loadHistory({
-    id: '',
-    cwd: live.cwd,
-    provider: live.provider,
-    model: live.model,
-    title: live.title,
-    thinkingEffort: live.thinkingEffort,
-    running: live.busy,
-    leafId: s.leafId,
-    entries: allEntries,
-    hasMore: meta?.hasMore ?? s.hasMore,
-    oldestId: meta?.oldestId ?? s.oldestId,
-    commands: live.commands,
-    queued: live.queued,
-    extQueued: live.extQueued,
-    extensionUi: live.extensionUi,
-    runtime: { ready: live.runtimeReady !== false },
-  })
-  next.error = live.error
-  next.stopping = live.stopping
-  if (!streaming.length) return next
-  const byId = new Set(next.nodes.map(n => n.id))
-  for (const node of streaming) {
-    if (byId.has(node.id)) {
-      next.nodes = next.nodes.map(n => n.id === node.id ? node : n)
-      continue
-    }
-    next.nodes.push(node)
-  }
-  return next
-}
 
 function normalizeTools(raw?: ToolSchema[] | unknown): ToolSchema[] {
   if (!Array.isArray(raw)) return []
@@ -439,7 +581,10 @@ function applyRequestHeader(
   // inspector tabs.
 }
 
-function applyEntry(s: ViewState, e: Entry) {
+// applyEntry folds one entry into the view. withNode is false for entries that
+// only exist as index rows: they still contribute records and turn numbering,
+// but they must not become chat nodes.
+function applyEntry(s: ViewState, e: Entry, withNode = true) {
 	if (e.type === 'context_usage') {
 		s.contextUsage = { usedTokens: e.usedTokens ?? 0, contextWindow: e.contextWindow ?? 0, estimated: !!e.estimated }
 		return
@@ -462,7 +607,7 @@ function applyEntry(s: ViewState, e: Entry) {
     return
   }
   if (e.type === 'message' && e.message) {
-    applyMessage(s, e.message, e.id, e.timestamp, e.parentId, e.truncated)
+    applyMessage(s, e.message, e.id, e.timestamp, e.parentId, e.truncated, withNode)
     return
   }
 	if (e.type === 'patch_apply_updated' && e.details && typeof e.details === 'object') {
@@ -472,7 +617,7 @@ function applyEntry(s: ViewState, e: Entry) {
 	}
   if (e.type === 'compaction') {
     const summary = e.summary || ''
-    s.nodes.push({ kind: 'compaction', id: e.id, summary, tokensBefore: e.tokensBefore, truncated: e.truncated })
+    if (withNode) s.nodes.push({ kind: 'compaction', id: e.id, summary, tokensBefore: e.tokensBefore, truncated: e.truncated })
     s.records.push({
       id: e.id,
       kind: 'compacted',
@@ -519,11 +664,11 @@ function applyCompactEvent(s: ViewState, id: string, type: string, details?: unk
   }
 }
 
-function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | number, parentId?: string, truncated?: boolean) {
+function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | number, parentId?: string, truncated?: boolean, withNode = true) {
   if (m.role === 'user') {
     const text = messageText(m)
     s.turn += 1
-    s.nodes.push({ kind: 'user', id, parentId, text, content: m.content ?? [], ts: tsMs(m, stamp), origin: m.origin, truncated })
+    if (withNode) s.nodes.push({ kind: 'user', id, parentId, text, content: m.content ?? [], ts: tsMs(m, stamp), origin: m.origin, truncated })
     s.records.push({
       id,
 	  parentId,
@@ -541,7 +686,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
     const thinking = messageThinking(m)
     const request = s.currentRequestId ? s.requests.find(item => item.id === s.currentRequestId) : undefined
     const requestId = request?.id
-    s.nodes.push({
+    if (withNode) s.nodes.push({
       kind: 'assistant',
       id,
 	  parentId,
@@ -585,17 +730,19 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
     }
     for (const c of m.content ?? []) {
       if (c.type !== 'toolCall' || !c.id) continue
-	  if (s.nodes.some(n => n.kind === 'tool' && n.id === c.id)) {
-		patchTool(s, c.id, { name: c.name, args: c.arguments ?? (c.input !== undefined ? { input: c.input } : undefined) })
-		continue
-	  }
 	  const args = c.arguments ?? (c.input !== undefined ? { input: c.input } : undefined)
-      s.nodes.push({
-        kind: 'tool',
-        id: c.id,
-        name: c.name || 'tool',
-        args,
-      })
+      if (withNode) {
+        if (s.nodes.some(n => n.kind === 'tool' && n.id === c.id)) {
+          patchTool(s, c.id, { name: c.name, args })
+          continue
+        }
+        s.nodes.push({
+          kind: 'tool',
+          id: c.id,
+          name: c.name || 'tool',
+          args,
+        })
+      }
       s.records.push({
         id: c.id,
         kind: 'tool',
@@ -618,8 +765,9 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
     const startedAt = finishedAt != null && m.durationMs != null
       ? finishedAt - Math.max(0, m.durationMs)
       : undefined
-    if (!s.nodes.some(n => n.kind === 'tool' && n.id === tid)) {
-      s.nodes.push({
+    const haveToolNode = withNode && s.nodes.some(n => n.kind === 'tool' && n.id === tid)
+    if (!haveToolNode) {
+      if (withNode) s.nodes.push({
         kind: 'tool',
         id: tid,
         name: m.toolName || 'tool',
@@ -1125,10 +1273,41 @@ export function requestTitle(text: string, content?: Content[]): string {
   return ''
 }
 
-export function userRequests(nodes: ChatNode[]): UserRequest[] {
+/**
+ * isHumanPrompt reports whether a user turn was typed by a person.
+ *
+ * Why: the runtime writes machine turns into the same user role — the Agent
+ * tool's subagent directives and `<task-notification>` envelopes carry an
+ * `agent`/`agent:<id>` origin. Those belong in the transcript (the chat shows
+ * them as dashed bubbles) but not in the request navigator, which is a list of
+ * the prompts a person sent. Extension origins stay: they relay a real user
+ * (Telegram) or are turns an extension was asked to run, and both are part of
+ * the conversation the navigator walks.
+ */
+export function isHumanPrompt(origin?: string): boolean {
+  if (!origin) return true
+  return origin.startsWith('extension:')
+}
+
+/**
+ * userRequests lists the human prompts of the active branch.
+ *
+ * It walks the entries (which include body-less index rows for history the
+ * conversation has not loaded) so the navigator always covers the whole
+ * branch, then appends live user nodes the transcript has not caught up with
+ * yet — a prompt just sent in this tab shows up before its entry is reloaded.
+ */
+export function userRequests(entries: Entry[], leafId?: string, nodes: ChatNode[] = []): UserRequest[] {
   const out: UserRequest[] = []
+  const seen = new Set<string>()
+  for (const e of leafEntries(entries, leafId)) {
+    if (e.type !== 'message' || e.message?.role !== 'user' || !isHumanPrompt(e.message.origin)) continue
+    seen.add(e.id)
+    out.push({ id: e.id, title: requestTitle(messageText(e.message), e.message.content) })
+  }
   for (const n of reconcileUserNodes(nodes)) {
-    if (n.kind !== 'user') continue
+    if (n.kind !== 'user' || !isHumanPrompt(n.origin) || seen.has(n.id)) continue
+    seen.add(n.id)
     out.push({ id: n.id, title: requestTitle(n.text, n.content) })
   }
   return out
@@ -1295,12 +1474,16 @@ export type TurnStats = {
  * defer. Steps are summed, not averaged, so the strip reads as the cost of the
  * whole turn; `ttftMs` keeps the first step because that is the latency the
  * user actually perceived.
+ *
+ * base is the number of turns on the branch before the loaded window (0 while
+ * the tree index has not arrived), so windowed history still numbers its turns
+ * absolutely.
  */
-export function turnStats(nodes: ChatNode[]): Map<string, TurnStats> {
+export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
   const out = new Map<string, TurnStats>()
   type Acc = TurnStats & { startedAt?: number; lastAt?: number; decodeMs: number; decodeTokens: number; lastId: string }
   let acc: Acc | null = null
-  let turn = 0
+  let turn = base
   const flush = () => {
     if (!acc) return
     if (acc.startedAt != null && acc.lastAt != null && acc.lastAt > acc.startedAt) {

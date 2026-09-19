@@ -50,6 +50,16 @@ type View struct {
 	OldestID string
 }
 
+// Tail is the WebUI's conversation view: the slimmed tail of the active leaf
+// plus the cursor for paging further back. It is what a session open needs, and
+// it deliberately excludes the tree index so first paint costs the tail rather
+// than the whole history.
+type Tail struct {
+	Entries  []Entry
+	HasMore  bool
+	OldestID string
+}
+
 // ClampViewLimit normalizes the GET limit query. 0 or negative uses the default.
 func ClampViewLimit(n int) int {
 	if n <= 0 {
@@ -61,27 +71,48 @@ func ClampViewLimit(n int) int {
 	return n
 }
 
-// BuildView returns an index of every entry and a slimmed tail of the active leaf.
-func BuildView(entries []Entry, leafID string, limit int) View {
+// BuildTail returns a slimmed window of the active leaf, oldest entry first.
+func BuildTail(entries []Entry, leafID string, limit int) Tail {
 	limit = ClampViewLimit(limit)
-	index := make([]IndexEntry, 0, len(entries))
-	for _, e := range entries {
-		index = append(index, indexOf(e))
-	}
 	path := leafPath(entries, leafID)
-	keep, tailStart := selectLeafEntries(path, limit)
-	slimmed := slimPath(keep, nil)
+	keep, tailStart := selectLeafEntries(path, limit, toolsDigests{})
+	slimmed := slimPath(keep, nil, toolsDigests{})
 	oldest := ""
 	if tailStart < len(path) {
 		oldest = path[tailStart].ID
 	} else if len(path) > 0 {
 		oldest = path[0].ID
 	}
+	return Tail{Entries: slimmed, HasMore: tailStart > 0, OldestID: oldest}
+}
+
+// BuildIndex returns a body-less row per entry, in file order.
+func BuildIndex(entries []Entry) []IndexEntry {
+	index := make([]IndexEntry, 0, len(entries))
+	for _, e := range entries {
+		index = append(index, indexOf(e))
+	}
+	return index
+}
+
+// LeafChain returns the entries of the active branch, root first.
+//
+// The leaf resolution matches BuildView: an empty leafID means the newest
+// non-sideband entry. Entries that are not in the given slice are ignored, so a
+// caller holding only a window of the transcript gets the visible part of the
+// branch instead of an error.
+func LeafChain(entries []Entry, leaf string) []Entry {
+	return leafPath(entries, leaf)
+}
+
+// BuildView returns an index of every entry and a slimmed tail of the active leaf.
+func BuildView(entries []Entry, leafID string, limit int) View {
+	tail := BuildTail(entries, leafID, limit)
 	return View{
-		Index:    index,
-		Entries:  slimmed,
-		HasMore:  tailStart > 0,
-		OldestID: oldest,
+		Index:    BuildIndex(entries),
+		Entries:  tail.Entries,
+		HasMore:  tail.HasMore,
+		OldestID: tail.OldestID,
 	}
 }
 
@@ -105,7 +136,7 @@ func BuildBefore(entries []Entry, leafID, beforeID string, limit int) View {
 		start = len(older) - limit
 	}
 	window := older[start:]
-	slimmed := slimPath(window, older[:start])
+	slimmed := slimPath(window, older[:start], toolsDigests{})
 	oldest := ""
 	if len(window) > 0 {
 		oldest = window[0].ID
@@ -166,7 +197,7 @@ func leafPath(entries []Entry, leaf string) []Entry {
 	return rev
 }
 
-func selectLeafEntries(path []Entry, limit int) ([]Entry, int) {
+func selectLeafEntries(path []Entry, limit int, digests toolsDigests) ([]Entry, int) {
 	if len(path) <= limit {
 		return path, 0
 	}
@@ -181,7 +212,7 @@ func selectLeafEntries(path []Entry, limit int) ([]Entry, int) {
 		if e.Type != "request_header" {
 			continue
 		}
-		tools := toolsKey(e.Tools)
+		tools := digests.key(e)
 		if e.System != prevSys || tools != prevTools {
 			keep[e.ID] = true
 			prevSys = e.System
@@ -197,11 +228,26 @@ func selectLeafEntries(path []Entry, limit int) ([]Entry, int) {
 	return out, tailStart
 }
 
-func slimPath(path, prior []Entry) []Entry {
+// toolsDigests memoizes the tool-schema fingerprint of a request_header within
+// one view build. Why: marshaling a full tool schema is the most expensive part
+// of slimming a header, and both the keep-selection and the slim pass compare
+// the same headers against their predecessor.
+type toolsDigests map[string]string
+
+func (d toolsDigests) key(e Entry) string {
+	if k, ok := d[e.ID]; ok {
+		return k
+	}
+	k := toolsKey(e.Tools)
+	d[e.ID] = k
+	return k
+}
+
+func slimPath(path, prior []Entry, digests toolsDigests) []Entry {
 	prevSys, prevTools, seen := promptCursor(prior)
 	out := make([]Entry, len(path))
 	for i, e := range path {
-		out[i] = slimEntry(e, &prevSys, &prevTools, &seen)
+		out[i] = slimEntry(e, &prevSys, &prevTools, &seen, digests)
 	}
 	return out
 }
@@ -220,11 +266,11 @@ func promptCursor(entries []Entry) (string, string, bool) {
 	return sys, tools, seen
 }
 
-func slimEntry(e Entry, prevSys, prevTools *string, seenHeader *bool) Entry {
+func slimEntry(e Entry, prevSys, prevTools *string, seenHeader *bool, digests toolsDigests) Entry {
 	out := e
 	out.RetainedTail = nil
 	if out.Type == "request_header" {
-		key := toolsKey(out.Tools)
+		key := digests.key(out)
 		if *seenHeader && *prevSys == out.System && *prevTools == key {
 			out.System = ""
 			out.Tools = nil
@@ -335,7 +381,16 @@ func indexOf(e Entry) IndexEntry {
 	return ix
 }
 
+// previewScanBytes bounds how much of a body the index preview looks at. Why:
+// previewOf used to split every field of the whole body — a 300 KB tool result
+// becomes a slice of ~50k words — just to keep 160 runes, which dominated the
+// index build on long transcripts.
+const previewScanBytes = 4 * 1024
+
 func previewOf(text string) string {
+	if len(text) > previewScanBytes {
+		text = cutBytes(text, previewScanBytes)
+	}
 	t := strings.Join(strings.Fields(text), " ")
 	if utf8.RuneCountInString(t) <= indexPreviewLen {
 		return t

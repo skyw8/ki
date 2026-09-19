@@ -97,11 +97,13 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
     method: 'POST',
     body: { workspaceId },
   })
+  // Bigger than one tail read, so the conversation GET is a window of the file
+  // and the tree index stays a separate, opt-in request.
   const histSeed = appendTranscript(history.dir, {
     title: 'perf-history',
-    turns: 80,
+    turns: 200,
     assistantBytes: 64,
-    toolResultBytes: 2 * 1024,
+    toolResultBytes: 8 * 1024,
     systemBytes: 2048,
     repeatSamePrompt: true,
   })
@@ -126,6 +128,7 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
 
   const histGet = await measureGet(page, `/v1/sessions/${history.id}`)
   const histGet2 = await measureGet(page, `/v1/sessions/${history.id}`)
+  const histIndex = await measureGet(page, `/v1/sessions/${history.id}?fields=index`)
   const runtime = await measureGet(page, `/v1/sessions/${history.id}?fields=runtime`)
   const histBefore = await measureGet(page, `/v1/sessions/${history.id}?before=${histGet.oldestId}`)
   const hugeGet = await measureGet(page, `/v1/sessions/${huge.id}`)
@@ -164,6 +167,30 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
   })
   await olderWait
 
+  // The navigator lists the whole branch even though the chat holds only the
+  // newest window, and jumping to a prompt outside that window pages history
+  // in instead of requiring the user to scroll there.
+  const navToggle = page.getByTestId('request-nav-toggle')
+  await expect(navToggle).toBeVisible()
+  await navToggle.click()
+  const nav = page.getByTestId('request-nav-panel')
+  await expect(nav).toBeVisible()
+  await nav.getByTestId('request-nav-filter').fill('turn 0')
+  const firstTurn = nav.getByTestId('request-nav-item').filter({ hasText: /^turn 0$/ })
+  await expect(firstTurn).toBeVisible()
+  const jumpWait = page.waitForResponse(res => {
+    try {
+      const url = new URL(res.url())
+      return url.pathname.endsWith(`/v1/sessions/${history.id}`) && url.searchParams.has('before') && res.ok()
+    } catch {
+      return false
+    }
+  })
+  await firstTurn.click()
+  await jumpWait
+  await expect(page.getByTestId('user-bubble').first()).toHaveText('turn 0')
+  await page.keyboard.press('Escape')
+
   await page.getByTestId('tab-trajectory').click()
   await expect(page.getByTestId('trajectory')).toBeVisible()
   const trajRows = await page.getByTestId('traj-row').count()
@@ -190,7 +217,8 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
   const rows = [
     ['history jsonl', `${histJSONL}`, '-', `${histSeed.leafId ? 'disk' : ''}`],
     ['history GET', `${histGet.bytes}`, histGet.ms.toFixed(0), `index=${histGet.index} entries=${histGet.entries} unchanged=${histGet.unchanged} hasMore=${histGet.hasMore}`],
-    ['history GET#2', `${histGet2.bytes}`, histGet2.ms.toFixed(0), 'mtime cache'],
+    ['history GET#2', `${histGet2.bytes}`, histGet2.ms.toFixed(0), 'entry cache'],
+    ['history index', `${histIndex.bytes}`, histIndex.ms.toFixed(0), `index=${histIndex.index}`],
     ['fields=runtime', `${runtime.bytes}`, runtime.ms.toFixed(0), `index=${runtime.index}`],
     ['history before', `${histBefore.bytes}`, histBefore.ms.toFixed(0), `entries=${histBefore.entries} hasMore=${histBefore.hasMore}`],
     ['history open UI', '-', historyOpenMs.toFixed(0), `asstDOM=${historyAssistants} userDOM=${historyUsers} heap=${mb(historyHeap.jsHeap)}MiB nodes=${historyHeap.nodes}`],
@@ -204,12 +232,14 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
   console.log(`\n${table.join('\n')}\n`)
   test.info().annotations.push({ type: 'perf', description: table.join(' | ') })
 
-  expect(histGet.hasMore, '80-turn leaf should exceed the tail window').toBeTruthy()
+  expect(histGet.hasMore, 'long leaf should exceed the tail window').toBeTruthy()
   expect(histGet.oldestId, 'tail oldestId').toBeTruthy()
+  expect(histGet.index, 'tail GET omits the tree index').toBe(0)
   expect(histGet.unchanged, 'repeated request headers should omit system/tools').toBeGreaterThan(0)
-  expect(histGet.bytes, 'slim history GET').toBeLessThan(histJSONL)
-  expect(histGet.bytes, 'history GET budget').toBeLessThan(1_500_000)
-  expect(histGet.ms, 'history GET latency').toBeLessThan(3_000)
+  expect(histGet.bytes, 'tail GET budget').toBeLessThan(600_000)
+  expect(histGet.ms, 'tail GET latency').toBeLessThan(2_000)
+  expect(histIndex.index, 'index GET covers the tree').toBeGreaterThan(600)
+  expect(histIndex.bytes, 'index GET budget').toBeLessThan(3_000_000)
   expect(runtime.bytes, 'runtime GET budget').toBeLessThan(200_000)
   expect(runtime.index, 'runtime omits index').toBe(0)
   expect(histBefore.entries, 'before window').toBeGreaterThan(0)

@@ -2350,9 +2350,27 @@ func promptJSON(t *testing.T, hs *httptest.Server, id, text string, extra map[st
 	return res.StatusCode, out
 }
 
+// sessionGET fetches the full session view. The tree index is opt-in on the
+// wire (the WebUI's conversation view does not need it), so these tests ask for
+// it explicitly.
 func sessionGET(t *testing.T, hs *httptest.Server, id string) map[string]any {
 	t.Helper()
-	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
+	return sessionGETFields(t, hs, id, "index")
+}
+
+// sessionTailGET fetches the default (conversation tail) session view.
+func sessionTailGET(t *testing.T, hs *httptest.Server, id string) map[string]any {
+	t.Helper()
+	return sessionGETFields(t, hs, id, "")
+}
+
+func sessionGETFields(t *testing.T, hs *httptest.Server, id, fields string) map[string]any {
+	t.Helper()
+	url := hs.URL + "/v1/sessions/" + id
+	if fields != "" {
+		url += "?fields=" + fields
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -2382,6 +2400,17 @@ func TestSessionViewAPI(t *testing.T) {
 	ents, _ := got["entries"].([]any)
 	if len(ents) == 0 {
 		t.Fatal("missing entries")
+	}
+	// Default view: the conversation tail. Why: the index is what made opening
+	// a long session wait for a full parse of the transcript. A session shorter
+	// than one tail read still carries it inline, because it costs nothing
+	// there; TestSessionTailAPI pins the windowed case.
+	tail := sessionTailGET(t, hs, id)
+	if tail["entries"] == nil || tail["leafId"] == nil {
+		t.Fatalf("default GET missing tail: %+v", tail)
+	}
+	if tail["title"] != got["title"] {
+		t.Fatalf("tail title %v != full title %v", tail["title"], got["title"])
 	}
 	var entryID string
 	for _, raw := range ents {
@@ -2433,6 +2462,106 @@ func TestSessionViewAPI(t *testing.T) {
 	if entry["id"] != entryID {
 		t.Fatalf("entry: %+v", one)
 	}
+}
+
+// TestSessionTailAPI covers the tail-first contract: a session with more history
+// than one page answers with the newest entries only, plus a cursor that pages
+// backwards, and the index stays opt-in.
+func TestSessionTailAPI(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	dir, ok := srv.sidx.Lookup(id)
+	if !ok {
+		t.Fatal("session dir")
+	}
+	sess, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Bigger than one tail read, so the response is a real window of the file
+	// and the index is left to the explicit fields=index request.
+	if err := sess.SeedTranscript(session.SeedSpec{Turns: 300, AssistantBytes: 4096, ToolResultBytes: 64, Title: "tail-first", RepeatSamePrompt: true}); err != nil {
+		t.Fatal(err)
+	}
+	leaf := sess.LeafID()
+	total := len(sess.Entries())
+	_ = sess.Close()
+	if total < 2*session.DefaultViewLimit {
+		t.Fatalf("seed too small: %d", total)
+	}
+
+	got := sessionTailGET(t, hs, id)
+	if _, ok := got["index"]; ok {
+		t.Fatal("tail view must omit the index")
+	}
+	entries, _ := got["entries"].([]any)
+	if len(entries) < session.DefaultViewLimit || len(entries) >= total {
+		t.Fatalf("tail entries = %d (total %d)", len(entries), total)
+	}
+	last, _ := entries[len(entries)-1].(map[string]any)
+	if last["id"] != leaf {
+		t.Fatalf("tail must end at the leaf: last=%v leaf=%v", last["id"], leaf)
+	}
+	if got["hasMore"] != true {
+		t.Fatal("expected hasMore")
+	}
+	// The cursor names the oldest entry of the window. A retained
+	// request_header (its system/tools differ from its predecessor) can sit
+	// before it in the response, which is why the cursor is not always entries[0].
+	oldest, _ := got["oldestId"].(string)
+	var boundary map[string]any
+	for _, raw := range entries {
+		m, _ := raw.(map[string]any)
+		if m["id"] == oldest {
+			boundary = m
+		}
+	}
+	if oldest == "" || boundary == nil {
+		t.Fatalf("oldestId %q not in entries", oldest)
+	}
+
+	// The window is the newest entries, so the cursor pages strictly backwards.
+	older := sessionGETURL(t, hs, "/v1/sessions/"+id+"?before="+oldest)
+	olderEntries, _ := older["entries"].([]any)
+	if len(olderEntries) == 0 {
+		t.Fatal("older page empty")
+	}
+	if _, ok := older["index"]; ok {
+		t.Fatal("before page must omit the index")
+	}
+	// The two pages must meet: before= returns entries strictly older, so the
+	// older page ends at the parent of the cursor entry.
+	lastOlder, _ := olderEntries[len(olderEntries)-1].(map[string]any)
+	if lastOlder["id"] != boundary["parentId"] {
+		t.Fatalf("pages do not meet: %v then %v (parent %v)", lastOlder["id"], oldest, boundary["parentId"])
+	}
+	if older["hasMore"] != true {
+		t.Fatal("expected more history before the older page")
+	}
+
+	// The index still describes the whole tree when asked for explicitly.
+	full := sessionGET(t, hs, id)
+	index, _ := full["index"].([]any)
+	if len(index) != total {
+		t.Fatalf("index rows = %d (total %d)", len(index), total)
+	}
+}
+
+func sessionGETURL(t *testing.T, hs *httptest.Server, path string) map[string]any {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+path, nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s %d %+v", path, res.StatusCode, out)
+	}
+	return out
 }
 
 func TestMessageBusyToggle(t *testing.T) {
@@ -4413,4 +4542,25 @@ func TestPromptWithSidecarExtensionFinishes(t *testing.T) {
 	}
 	_ = res.Body.Close()
 	waitAgentEnd(t, hs, id)
+}
+
+// TestSessionTailTitleUsesFirstUserMessage guards the tail view's title: the
+// window does not hold the session's first user message, so the fallback title
+// must come from the lite list row instead of the newest message in the window.
+func TestSessionTailTitleUsesFirstUserMessage(t *testing.T) {
+	_, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	prompt202(t, hs, id, "first subject line")
+	waitAgentEnd(t, hs, id)
+	prompt202(t, hs, id, "second subject line")
+	waitAgentEnd(t, hs, id)
+
+	tail := sessionTailGET(t, hs, id)
+	if tail["title"] != "first subject line" {
+		t.Fatalf("tail title = %v", tail["title"])
+	}
+	full := sessionGET(t, hs, id)
+	if full["title"] != tail["title"] {
+		t.Fatalf("title differs: tail=%v full=%v", tail["title"], full["title"])
+	}
 }

@@ -28,13 +28,18 @@
 // i18n resources, runtime status, and process-level extension UI projection.
 // Workspaces live in {KI_HOME}/workspaces.json. Session cwd comes from a
 // workspace (or a tmp+ workspace). GET /v1/sessions/{id} returns a WebUI
-// view: a body-less index of the jsonl tree, a slimmed tail of the active
-// leaf (unchanged request_header system/tools omitted; large bodies truncated),
-// plus a read-only catalog (availableSkills / availableExtensions, including
-// loaded skills/tools/commands/promptAppend/providers and global extension
-// i18n/UI, commands[]), session extensionUi, and runtime.ready.
-// Query fields=runtime omits the transcript; entry/entries fetch full bodies;
-// before+limit pages older leaf entries. messages is not included. Opening a session (POST create, GET by id,
+// view: the newest entries of the active leaf (unchanged request_header
+// system/tools omitted; large bodies truncated) plus a read-only catalog
+// (availableSkills / availableExtensions, including loaded
+// skills/tools/commands/promptAppend/providers and global extension i18n/UI,
+// commands[]), session extensionUi, and runtime.ready.
+// The tree index is opt-in (fields=index): it needs the whole transcript, and
+// carrying it on open made a long session wait for a full parse and megabytes
+// of JSON that the newest messages did not need. A session smaller than one
+// tail read, which is read in full anyway, still answers with the index so the
+// WebUI needs no second request. fields=runtime omits the transcript
+// entirely; entry/entries fetch full bodies; before+limit pages older leaf
+// entries backwards from oldestId. messages is not included. Opening a session (POST create, GET by id,
 // fork) prepares the session view of already-running extensions in the
 // background; List does not. runtime.ready is
 // true when that Prepare finishes (failure still counts). PATCH /v1/sessions/{id} writes model /

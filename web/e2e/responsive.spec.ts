@@ -524,7 +524,9 @@ for (const profile of profiles) {
       await input.fill(`req-nav-a ${profile.name} ${Date.now()}`)
       await page.getByTestId('composer-send').click()
       await expect(page.getByTestId('assistant-message')).toContainText('ok')
-      await expect(page.getByTestId('request-nav')).toHaveCount(0)
+      // Present (closed) from the first prompt on, then reopened below with two.
+      await expect(page.getByTestId('request-nav')).toHaveCount(1)
+      await expect(page.getByTestId('request-nav-panel')).toHaveCount(0)
 
       await input.fill(`req-nav-b ${profile.name}`)
       await page.getByTestId('composer-send').click()

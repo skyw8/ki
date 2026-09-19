@@ -4,83 +4,118 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"ki/internal/session"
 )
 
-type fileStamp struct {
-	size  int64
-	mtime time.Time
-}
-
+// sessionSnap is one read of a session for one request.
+//
+// entries is a window of the transcript, not necessarily all of it: a request
+// that only needs the conversation tail reads the tail (complete is false), and
+// the read is served from the process-wide entry cache in internal/session, so
+// repeated opens of a long session stay proportional to what was appended
+// rather than to the size of the history.
 type sessionSnap struct {
-	jsonl   fileStamp
-	config  fileStamp
-	id      string
-	dir     string
-	header  session.Header
-	configV session.Config
-	leafID  string
-	entries []session.Entry
+	id       string
+	dir      string
+	header   session.Header
+	configV  session.Config
+	leafID   string
+	title    string
+	entries  []session.Entry
+	complete bool
+	// small marks a transcript that one tail read covers entirely, so its index
+	// costs no extra read and can be answered inline.
+	small bool
 }
 
-func stampOf(path string) (fileStamp, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fileStamp{}, err
-	}
-	return fileStamp{size: info.Size(), mtime: info.ModTime()}, nil
-}
-
-func (s *Server) dropSessionSnap(id string) {
-	s.snapMu.Lock()
-	delete(s.snaps, id)
-	s.snapMu.Unlock()
-}
-
-func (s *Server) loadSessionSnap(id string) (*sessionSnap, error) {
+// loadSessionSnap reads a session. full requests the whole transcript (id
+// lookups, older pages, the tree index); otherwise only the newest want entries
+// of the leaf chain are decoded.
+func (s *Server) loadSessionSnap(id string, full bool, want int) (*sessionSnap, error) {
 	dir, err := s.sessionDir(id)
 	if err != nil {
 		return nil, err
 	}
-	jsonlStamp, err := stampOf(filepath.Join(dir, "events.jsonl"))
+	header, err := session.ReadHeader(dir)
 	if err != nil {
-		return nil, fmt.Errorf("stat events.jsonl: %w", err)
+		return nil, fmt.Errorf("read session header: %w", err)
 	}
-	configStamp, err := stampOf(filepath.Join(dir, "config.json"))
+	cfg, err := session.ReadConfig(dir)
 	if err != nil {
-		return nil, fmt.Errorf("stat config.json: %w", err)
-	}
-	s.snapMu.Lock()
-	cached := s.snaps[id]
-	if cached != nil && cached.jsonl.size == jsonlStamp.size && cached.jsonl.mtime.Equal(jsonlStamp.mtime) &&
-		cached.config.size == configStamp.size && cached.config.mtime.Equal(configStamp.mtime) {
-		s.snapMu.Unlock()
-		return cached, nil
-	}
-	s.snapMu.Unlock()
-
-	sess, err := session.Open(dir)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read session config: %w", err)
 	}
 	snap := &sessionSnap{
-		jsonl:   jsonlStamp,
-		config:  configStamp,
-		id:      sess.ID(),
-		dir:     sess.Dir,
-		header:  sess.Header,
-		configV: sess.Config,
-		leafID:  sess.LeafID(),
-		entries: sess.Entries(),
+		id:       header.ID,
+		dir:      dir,
+		header:   header,
+		configV:  cfg,
+		leafID:   cfg.ActiveLeafID,
+		title:    cfg.Title,
+		complete: true,
 	}
-	_ = sess.Close()
-
-	s.snapMu.Lock()
-	s.snaps[id] = snap
-	s.snapMu.Unlock()
+	if full {
+		entries, err := session.AllEntries(dir)
+		if err != nil {
+			return nil, err
+		}
+		snap.entries = entries
+	} else {
+		entries, complete, err := session.LeafTail(dir, cfg.ActiveLeafID, want)
+		if err != nil {
+			return nil, err
+		}
+		snap.entries, snap.complete = entries, complete
+		if info, err := os.Stat(filepath.Join(dir, "events.jsonl")); err == nil {
+			snap.small = info.Size() <= session.TailReadLimit
+		}
+	}
+	if !entryIn(snap.entries, snap.leafID) {
+		// The active leaf is not in the window: either config points at a
+		// deleted entry or (impossible for a tail read, see LeafTail) the
+		// window missed it. Mirror session.Open and use the newest non-sideband
+		// entry that was read.
+		snap.leafID = lastNonSideband(snap.entries)
+	}
+	if snap.title == "" && !full {
+		// Why: the tail window does not contain the session's first user
+		// message, so TitleFrom would fall back to the newest one and rename
+		// the session. The lite row is cached and only revalidates two stats.
+		if info, err := s.slist.Row(dir); err == nil {
+			snap.title = info.Title
+		}
+	}
+	if snap.title == "" {
+		snap.title = session.TitleFrom(cfg, snap.entries)
+	}
 	return snap, nil
+}
+
+func entryIn(entries []session.Entry, id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, e := range entries {
+		if e.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func lastNonSideband(entries []session.Entry) string {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if !entries[i].Sideband {
+			return entries[i].ID
+		}
+	}
+	return ""
+}
+
+func (s *Server) dropSessionSnap(id string) {
+	if dir, ok := s.sidx.Lookup(id); ok {
+		session.DropEntriesCache(dir)
+	}
 }
 
 func (s *Server) sessionDir(id string) (string, error) {

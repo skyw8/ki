@@ -67,10 +67,12 @@ func TestSessionViewPerf(t *testing.T) {
 	if _, ok := got["messages"]; ok {
 		t.Fatal("GET still includes messages")
 	}
-	index, _ := got["index"].([]any)
+	if _, ok := got["index"]; ok {
+		t.Fatal("default GET must not carry the tree index")
+	}
 	entries, _ := got["entries"].([]any)
-	if len(index) < 80 || len(entries) == 0 {
-		t.Fatalf("index=%d entries=%d", len(index), len(entries))
+	if len(entries) == 0 {
+		t.Fatalf("entries=%d", len(entries))
 	}
 	if got["hasMore"] != true {
 		t.Fatal("expected hasMore")
@@ -83,6 +85,21 @@ func TestSessionViewPerf(t *testing.T) {
 		t.Fatal("oldestId")
 	}
 	second, _, _ := timedSessionGET(t, hs, "/v1/sessions/"+id)
+	indexDur, indexBody, gotIndex := timedSessionGET(t, hs, "/v1/sessions/"+id+"?fields=index")
+	index, _ := gotIndex["index"].([]any)
+	if len(index) < 80 {
+		t.Fatalf("index=%d", len(index))
+	}
+	tailIDs := map[string]bool{}
+	for _, item := range entries {
+		m, _ := item.(map[string]any)
+		if id, _ := m["id"].(string); id != "" {
+			tailIDs[id] = true
+		}
+	}
+	if firstID, _ := index[0].(map[string]any)["id"].(string); firstID != "" && tailIDs[firstID] {
+		t.Fatal("tail view must not reach back to the session's first entry")
+	}
 	runtimeDur, runtimeBody, runtime := timedSessionGET(t, hs, "/v1/sessions/"+id+"?fields=runtime")
 	if _, ok := runtime["entries"]; ok {
 		t.Fatal("fields=runtime leaked entries")
@@ -132,11 +149,12 @@ func TestSessionViewPerf(t *testing.T) {
 		t.Fatal("?entry must return the full row")
 	}
 
-	t.Logf("\n%-18s %10s %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s",
+	t.Logf("\n%-18s %10s %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s\n%-18s %10d %10s  %s",
 		"case", "bytes", "ms", "note",
 		"history jsonl", jsonl.Size(), "-", "disk",
-		"history GET", len(raw), first.Round(time.Millisecond), "slim view",
-		"history GET#2", len(raw), second.Round(time.Millisecond), "mtime cache",
+		"tail GET", len(raw), first.Round(time.Millisecond), "newest leaf window",
+		"tail GET#2", len(raw), second.Round(time.Millisecond), "entry cache",
+		"index GET", len(indexBody), indexDur.Round(time.Millisecond), "tree index, opt-in",
 		"fields=runtime", len(runtimeBody), runtimeDur.Round(time.Millisecond), "no transcript",
 		"history before", len(beforeBody), beforeDur.Round(time.Millisecond), "older leaf",
 		"huge jsonl", hugeJSONL.Size(), "-", "disk",
@@ -144,11 +162,17 @@ func TestSessionViewPerf(t *testing.T) {
 		"huge ?entry", len(entryBody), entryDur.Round(time.Millisecond), "full body",
 	)
 
+	// Why: the tail must not grow with the transcript. A 1 MB jsonl answers in
+	// a few hundred KB even before the index is asked for, and the index fetch
+	// stays bounded by the older per-response cap.
 	if int64(len(raw)) >= jsonl.Size() {
-		t.Fatalf("history GET %dB >= jsonl %dB", len(raw), jsonl.Size())
+		t.Fatalf("tail GET %dB >= jsonl %dB", len(raw), jsonl.Size())
 	}
-	if len(raw) > 1_500_000 {
-		t.Fatalf("history GET %dB too large", len(raw))
+	if len(raw) > 400_000 {
+		t.Fatalf("tail GET %dB too large", len(raw))
+	}
+	if len(indexBody) > 1_500_000 {
+		t.Fatalf("index GET %dB too large", len(indexBody))
 	}
 	if len(runtimeBody) > 200_000 {
 		t.Fatalf("runtime GET %dB too large", len(runtimeBody))

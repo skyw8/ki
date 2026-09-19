@@ -73,7 +73,7 @@ export class Client {
     return { sessions: (await res.json()) as SessionInfo[], etag: res.headers.get('ETag'), notModified: false }
   }
 
-  get(id: string, opts?: { fields?: 'runtime'; before?: string; limit?: number }): Promise<SessionDetail> {
+  get(id: string, opts?: { fields?: 'runtime' | 'index'; before?: string; limit?: number }): Promise<SessionDetail> {
     const p = new URLSearchParams()
     if (opts?.fields) p.set('fields', opts.fields)
     if (opts?.before) p.set('before', opts.before)

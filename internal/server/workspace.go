@@ -38,14 +38,15 @@ func (s *Server) resolveWorkspace(id, cwd string) (workspace.Record, error) {
 }
 
 func (s *Server) sessionMap(sess *session.Session, extra map[string]any) map[string]any {
-	return s.sessionMapData(sess.ID(), sess.Dir, sess.Header, sess.Config, sess.Entries(), extra)
+	entries := sess.Entries()
+	return s.sessionMapData(sess.ID(), sess.Dir, sess.Header, sess.Config, session.TitleFrom(sess.Config, entries), extra)
 }
 
 func (s *Server) sessionMapSnap(snap *sessionSnap, extra map[string]any) map[string]any {
-	return s.sessionMapData(snap.id, snap.dir, snap.header, snap.configV, snap.entries, extra)
+	return s.sessionMapData(snap.id, snap.dir, snap.header, snap.configV, snap.title, extra)
 }
 
-func (s *Server) sessionMapData(id, dir string, header session.Header, cfg session.Config, entries []session.Entry, extra map[string]any) map[string]any {
+func (s *Server) sessionMapData(id, dir string, header session.Header, cfg session.Config, title string, extra map[string]any) map[string]any {
 	m := map[string]any{
 		"id":              id,
 		"cwd":             header.CWD,
@@ -55,7 +56,7 @@ func (s *Server) sessionMapData(id, dir string, header session.Header, cfg sessi
 		"dir":             dir,
 		"parentSessionId": header.ParentSession,
 		"forkMode":        header.EffectiveForkMode(),
-		"title":           session.TitleFrom(cfg, entries),
+		"title":           title,
 		"running":         s.running(id),
 		"pinned":          cfg.Pinned,
 		"pinnedAt":        cfg.PinnedAt,

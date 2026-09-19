@@ -21,11 +21,13 @@
 // that its tests are independent (verify by running each one standalone first).
 // Files that declare `mode: 'serial'` are always kept in a single process.
 import { spawn } from 'node:child_process'
-import { closeSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { cpus } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { webDistStale } from '../e2e/web-dist.ts'
 
 const webDir = join(dirname(fileURLToPath(import.meta.url)), '..')
 const rootDir = join(webDir, '..')
@@ -185,13 +187,16 @@ function buildUnits(files: Map<string, FileTests>): Unit[] {
 async function ensureBinary(): Promise<string> {
   const provided = process.env.KI_BIN?.trim()
   if (provided) return provided
-  try {
-    readFileSync(join(webDir, 'dist', 'index.html'))
-  } catch (error) {
-    if (process.env.KI_SKIP_WEB_BUILD) throw error
-    const buildLog = join(runDir, 'web-build.log')
-    if (await runCapture('bun', ['run', 'build'], process.env, buildLog, webDir) !== 0) {
-      throw new Error(`web build failed; see ${buildLog}`)
+  if (webDistStale()) {
+    // Why: rebuilding only when dist is missing would run every spec against
+    // the previous UI after a source edit; see e2e/web-dist.ts.
+    if (existsSync(join(webDir, 'dist', 'index.html')) && process.env.KI_SKIP_WEB_BUILD) {
+      console.warn('warning: web/dist is older than the frontend sources and KI_SKIP_WEB_BUILD is set')
+    } else {
+      const buildLog = join(runDir, 'web-build.log')
+      if (await runCapture('bun', ['run', 'build'], process.env, buildLog, webDir) !== 0) {
+        throw new Error(`web build failed; see ${buildLog}`)
+      }
     }
   }
   const bin = join(runDir, 'ki')
