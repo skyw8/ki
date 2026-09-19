@@ -3,6 +3,13 @@
 //
 //	ki                  detached server + WebUI, then best-effort browser open
 //	ki serve [-d]       foreground or detached server + WebUI
+//
+// Bare `ki` is dual-purpose: a terminal user gets the server and a browser tab,
+// and a Windows Explorer double-click gets the same without Cobra's
+// command-line splash (MousetrapHelpText is cleared in Main). A double-click
+// hides the console window and reports fatal errors in a message box, because
+// that console closes with the process.
+//
 //	ki run [flags] text create/resume session, POST prompt, print events
 //	ki session compact  compact an existing session
 //	ki session fork     fork an existing session

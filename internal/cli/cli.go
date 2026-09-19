@@ -37,10 +37,25 @@ func Main(args []string) (exitCode int) {
 		}
 	}()
 
+	// Cobra's Windows mousetrap prints "This is a command line tool. You need
+	// to open cmd.exe and run it from there." and exits when the binary is
+	// double-clicked in Explorer. Bare `ki` is the WebUI launcher, so that
+	// splash blocks exactly the flow a double-click should start; disabling it
+	// lets RunE run the detached server and open the browser instead.
+	cobra.MousetrapHelpText = ""
+	shellLaunch := len(args) == 0 && launchedFromShell()
+	if shellLaunch {
+		hideOwnConsole()
+	}
+
 	cmd := newRootCommand()
 	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		if shellLaunch {
+			showFatalBox("ki", err.Error())
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		return 1
 	}
 	return 0

@@ -32,7 +32,10 @@ On Windows, Ki looks for Git Bash through `KI_GIT_BASH_PATH`, `CLAUDE_CODE_GIT_B
 # open the WebUI with the host's LAN IP, or pass --addr to narrow the listener
 scripts/run.sh
 
-# open the WebUI (starts a detached server and tries to open a browser)
+# open the WebUI (starts a detached server and tries to open a browser);
+# a double-click reaches this same path on Windows and macOS (via Terminal),
+# while a Linux desktop needs a .desktop entry because file managers do not
+# run ELF binaries directly
 ./ki
 
 # foreground server (writes ~/.ki/server.json)
