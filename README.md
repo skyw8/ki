@@ -2,7 +2,66 @@
 
 An extensible agent runtime designed for easy integration with other applications.
 
-## Build
+## Install
+
+Every [release](https://github.com/skyw8/ki/releases) attaches the archives the
+release workflow builds: Linux amd64, macOS arm64 (Apple Silicon), and Windows
+amd64. The commands below install the binary for that platform and verify the
+archive against the release `checksums.txt`. Replace `VERSION` with the tag you
+want, without the leading `v`.
+
+Linux (amd64):
+
+```bash
+VERSION=0.0.3
+curl -fsSLO "https://github.com/skyw8/ki/releases/download/v${VERSION}/ki-${VERSION}-linux-amd64.tar.gz"
+curl -fsSLO "https://github.com/skyw8/ki/releases/download/v${VERSION}/checksums.txt"
+grep "ki-${VERSION}-linux-amd64.tar.gz" checksums.txt | sha256sum -c -
+tar -xzf "ki-${VERSION}-linux-amd64.tar.gz"
+install -m 755 "ki-${VERSION}-linux-amd64/ki" ~/.local/bin/ki
+ki version
+```
+
+macOS (arm64; use `sudo install -m 755 ... /usr/local/bin/ki` to install
+system-wide instead):
+
+```bash
+VERSION=0.0.3
+curl -fsSLO "https://github.com/skyw8/ki/releases/download/v${VERSION}/ki-${VERSION}-darwin-arm64.tar.gz"
+curl -fsSLO "https://github.com/skyw8/ki/releases/download/v${VERSION}/checksums.txt"
+grep "ki-${VERSION}-darwin-arm64.tar.gz" checksums.txt | shasum -a 256 -c -
+tar -xzf "ki-${VERSION}-darwin-arm64.tar.gz"
+install -m 755 "ki-${VERSION}-darwin-arm64/ki" ~/.local/bin/ki
+ki version
+```
+
+If a browser, rather than `curl`, downloaded the macOS archive, Gatekeeper marks
+it quarantined and refuses to run it; clear the flag once with
+`xattr -d com.apple.quarantine /path/to/ki`.
+
+Windows (amd64, PowerShell; the binary lands in a fixed folder so later
+upgrades can replace it in place):
+
+```powershell
+$Version = "0.0.3"
+$Archive = "ki-$Version-windows-amd64.zip"
+$Dest = "$env:LOCALAPPDATA\Programs\Ki"
+Invoke-WebRequest "https://github.com/skyw8/ki/releases/download/v$Version/$Archive" -OutFile $Archive
+Invoke-WebRequest "https://github.com/skyw8/ki/releases/download/v$Version/checksums.txt" -OutFile checksums.txt
+(Get-FileHash $Archive -Algorithm SHA256).Hash   # must equal the checksums.txt line
+Expand-Archive $Archive -DestinationPath $env:TEMP -Force
+New-Item -ItemType Directory -Force $Dest | Out-Null
+Copy-Item "$env:TEMP\ki-$Version-windows-amd64\ki.exe" $Dest -Force
+[Environment]::SetEnvironmentVariable("PATH", "$env:PATH;$Dest", "User")
+& "$Dest\ki.exe" version
+```
+
+The PATH entry applies to terminals opened afterwards. Installed from an
+archive, `ki` (or `ki.exe`) is the WebUI launcher: a bare run starts the detached
+server and opens the browser, and double-clicking `ki.exe` in Explorer does the
+same.
+
+## Build from source
 
 `web/dist` is build output and is not tracked by git, so build the SPA first and
 compile with the `embed` tag to get the single binary with the WebUI:
@@ -93,8 +152,8 @@ git tag -a v0.1.0 -m "v0.1.0"
 git push origin v0.1.0
 ```
 
-The release workflow reruns every CI test plus the credentialed live-provider
-CLI/WebUI suite against that exact tag. Only after all tests pass does it build
-Linux, macOS, and Windows archives for amd64 and arm64, inject the tag's version
+The release workflow reruns every CI test except the credentialed live-provider
+suite, which stays opt-in, against that exact tag. Only after the tests pass does
+it build the Linux amd64, macOS arm64, and Windows amd64 archives, inject the tag's version
 (the tag without its `v` prefix, matching the checked-in `internal/cli/version.go`)
 into `ki version`, generate SHA-256 checksums, and publish the GitHub Release.
