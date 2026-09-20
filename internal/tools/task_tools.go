@@ -17,10 +17,15 @@ const taskOutputPrompt = `Retrieves output and status for a background task star
 Use block=false for an immediate snapshot. Use block=true to wait for completion up to timeout milliseconds. For a running task, output contains the captured output so far and output_file can be read with Read.`
 
 // TaskStore is the common lifecycle contract for shell and agent tasks.
+// MarkNotified belongs to the agent half of the store (a shell task has no
+// completion notification), so the shell implementation is a no-op.
 type TaskStore interface {
 	Get(key string) (TaskSnapshot, bool)
 	Wait(ctx context.Context, id string) (TaskSnapshot, error)
 	Stop(id string) (TaskSnapshot, error)
+	// MarkNotified records that the current run's result has been read, so its
+	// background completion notification is skipped.
+	MarkNotified(id string)
 }
 
 type taskOutputTool struct{ tasks TaskStore }
@@ -94,6 +99,12 @@ func (t taskOutputTool) Execute(ctx context.Context, args map[string]any) loop.T
 		if errors.Is(err, context.DeadlineExceeded) && !isTerminal(snapshot.Status) {
 			status = "timeout"
 		}
+	}
+	if isTerminal(snapshot.Status) {
+		// Why: the caller now holds this result, so the agent completion
+		// notification would only spend a parent turn re-reporting it. TaskStop
+		// marks the same fact on the store's stop path.
+		t.tasks.MarkNotified(id)
 	}
 	details := detailsForTask(snapshot, status)
 	details.TimedOut = status == "timeout"

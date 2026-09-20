@@ -1394,7 +1394,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	if busy {
 		dir := sess.Dir
 		_ = sess.Close()
-		if delivery == toggles.BusySteer && s.pushSteerRun(live, body.Content) {
+		if delivery == toggles.BusySteer && s.pushSteerRun(live, steerRequest{Content: body.Content}) {
 			writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "steered"})
 			return
 		}
@@ -1475,7 +1475,7 @@ func (s *Server) promoteQueued(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 	_ = sess.Close()
-	if s.pushSteerRun(live, item.Content) {
+	if s.pushSteerRun(live, steerRequest{Content: item.Content, Origin: item.Origin}) {
 		s.publishQueueChanged(id)
 		writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "steered"})
 		return
@@ -1487,7 +1487,7 @@ func (s *Server) promoteQueued(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 	enableRunInbox(st)
-	go s.runPrompt(ctx, st, id, item.Content, nil, model, "", "", s.takeNextTurn(id))
+	go s.runPrompt(ctx, st, id, item.Content, nil, model, item.Origin, "", s.takeNextTurn(id))
 	s.publishQueueChanged(id)
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started"})
 }

@@ -42,6 +42,66 @@ func TestAgentStoreBackgroundStop(t *testing.T) {
 	}
 }
 
+func TestAgentStoreMarkNotifiedSuppressesCompletion(t *testing.T) {
+	metadata := filepath.Join(t.TempDir(), "agent.json")
+	store := NewAgentStore()
+	launch, err := store.Start(context.Background(), AgentRequest{
+		Description: "child", Prompt: "first", RunInBackground: true,
+		SessionID: "child-session", MetadataPath: metadata,
+	}, "child.jsonl", func(_ context.Context, _, prompt string, _ bool) (AgentCompletion, error) {
+		return AgentCompletion{Result: prompt}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Wait(context.Background(), launch.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	// Reading the result (TaskOutput) consumes the notification of that run.
+	store.MarkNotified(launch.TaskID)
+	if !store.NotificationConsumed(launch.TaskID) {
+		t.Fatal("read run was not marked consumed")
+	}
+	if store.ClaimNotification(launch.TaskID) {
+		t.Fatal("a consumed run still claimed a completion notification")
+	}
+	// A resume is a new run with a new result, so it notifies again.
+	if status, err := store.QueueOrResume(context.Background(), launch.TaskID, "second"); err != nil || status != "resumed" {
+		t.Fatalf("resume = %q %v", status, err)
+	}
+	if _, err := store.Wait(context.Background(), launch.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if store.NotificationConsumed(launch.TaskID) {
+		t.Fatal("resumed run inherited the consumed mark")
+	}
+	if !store.ClaimNotification(launch.TaskID) {
+		t.Fatal("resumed run did not notify")
+	}
+}
+
+func TestAgentStoreStopConsumesCompletion(t *testing.T) {
+	started := make(chan struct{})
+	store := NewAgentStore()
+	launch, err := store.Start(context.Background(), AgentRequest{
+		Description: "child", Prompt: "wait", RunInBackground: true, SessionID: "child-session",
+	}, "child.jsonl", func(ctx context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+		close(started)
+		<-ctx.Done()
+		return AgentCompletion{}, ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if _, err := store.Stop(launch.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	if store.ClaimNotification(launch.TaskID) {
+		t.Fatal("stopped run claimed a completion notification")
+	}
+}
+
 func TestAgentStoreCompletionAndTaskOutputShape(t *testing.T) {
 	store := NewAgentStore()
 	launch, err := store.Start(context.Background(), AgentRequest{Description: "quick child", Prompt: "report"}, "child.jsonl", func(_ context.Context, _, _ string, _ bool) (AgentCompletion, error) {
@@ -352,10 +412,13 @@ func TestAgentToolSchemaAndBackgroundResult(t *testing.T) {
 	result := tool.Execute(context.Background(), map[string]any{
 		"description": "child", "prompt": "do it", "run_in_background": true,
 	})
+	// An explicit background call does end the parent turn: the notification is
+	// the next thing the session runs.
 	if result.IsError || !result.Terminate {
 		t.Fatalf("background result = %+v", result)
 	}
-	if len(result.Content) != 1 || !containsText(result.Content[0].Text, "async_launched") {
+	if len(result.Content) != 1 || !containsText(result.Content[0].Text, "async_launched") ||
+		!containsText(result.Content[0].Text, "task-notification") {
 		t.Fatalf("background content = %+v", result.Content)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -436,11 +499,21 @@ func TestAgentToolForegroundPromotesToBackgroundOnTimeout(t *testing.T) {
 		return AgentCompletion{Result: "late"}, nil
 	}}
 	result := agentTool{runtime: runtime}.Execute(context.Background(), map[string]any{"description": "slow child", "prompt": "work"})
-	if result.IsError || !result.Terminate {
+	if result.IsError {
 		t.Fatalf("promoted result = %+v", result)
+	}
+	// The promotion keeps the parent turn: only an explicit run_in_background
+	// call terminates it, so the caller can keep working or wait.
+	if result.Terminate {
+		t.Fatal("promotion terminated the parent turn")
 	}
 	if len(result.Content) != 1 || !containsText(result.Content[0].Text, "async_launched") {
 		t.Fatalf("promoted content = %+v", result.Content)
+	}
+	// The result itself must say why the wait ended and what to do next.
+	if !containsText(result.Content[0].Text, "foreground wait expired") ||
+		!containsText(result.Content[0].Text, "task-notification") {
+		t.Fatalf("promoted note = %+v", result.Content)
 	}
 	tasks := stackedAgentSnapshots(runtime.store)
 	if len(tasks) != 1 || !runtime.store.Backgrounded(tasks[0].TaskID) {
@@ -595,6 +668,7 @@ func (f fakeAgentRuntime) Background(id string) (TaskSnapshot, error) {
 	return f.store.Background(id)
 }
 func (f fakeAgentRuntime) Stop(id string) (TaskSnapshot, error) { return f.store.Stop(id) }
+func (f fakeAgentRuntime) MarkNotified(id string)               { f.store.MarkNotified(id) }
 
 func containsText(text, want string) bool {
 	for i := 0; i+len(want) <= len(text); i++ {

@@ -46,6 +46,10 @@ type QueuedItem struct {
 	ID      string          `json:"id"`
 	Content []types.Content `json:"content"`
 	Origin  string          `json:"origin,omitempty"`
+	// AgentTask is the agent task this turn reports on, set for a completion
+	// notification. Dispatch drops such a turn when the parent has already read
+	// that task's result, since the notification would only restate it.
+	AgentTask string `json:"agentTask,omitempty"`
 	// Lane is persisted: a restart must not promote a system turn ahead of a
 	// waiting human one.
 	Lane QueueLane `json:"lane,omitempty"`
@@ -404,16 +408,23 @@ func writeQueue(dir string, items []QueuedItem) error {
 
 // Enqueue appends a human turn. The session directory must already exist.
 func Enqueue(dir string, content []types.Content) (QueuedItem, error) {
-	return enqueue(dir, content, "", QueueHumanLane)
+	return enqueue(dir, content, "", QueueHumanLane, "")
 }
 
 // EnqueueSystem appends a server-generated turn and preserves its origin. The
 // session directory must already exist.
 func EnqueueSystem(dir string, content []types.Content, origin string) (QueuedItem, error) {
-	return enqueue(dir, content, origin, QueueSystemLane)
+	return enqueue(dir, content, origin, QueueSystemLane, "")
 }
 
-func enqueue(dir string, content []types.Content, origin string, lane QueueLane) (QueuedItem, error) {
+// EnqueueAgentNotification appends the server-generated turn that reports one
+// agent task's completion. agentTask is what lets dispatch discard the turn if
+// the parent read the task's result first.
+func EnqueueAgentNotification(dir string, content []types.Content, origin, agentTask string) (QueuedItem, error) {
+	return enqueue(dir, content, origin, QueueSystemLane, agentTask)
+}
+
+func enqueue(dir string, content []types.Content, origin string, lane QueueLane, agentTask string) (QueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
 	defer gate.Unlock()
@@ -428,7 +439,7 @@ func enqueue(dir string, content []types.Content, origin string, lane QueueLane)
 	if err != nil {
 		return QueuedItem{}, fmt.Errorf("queue id: %w", err)
 	}
-	item := QueuedItem{ID: id, Content: content, Origin: origin, Lane: lane}
+	item := QueuedItem{ID: id, Content: content, Origin: origin, AgentTask: agentTask, Lane: lane}
 	if err := writeQueue(dir, insertByLane(items, item, false)); err != nil {
 		return QueuedItem{}, err
 	}

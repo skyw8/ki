@@ -7,7 +7,7 @@
 `{sessions.root}/<encoded-cwd>/<timestamp>_<uuidv7>/`
 
 - `encoded-cwd`：绝对路径去掉盘符，`/` `\` `:` 换成 `-`，两边加 `--`。
-- 目录内：`events.jsonl` + `config.json`；忙时排队的 user 在 `queue.json`（最多 100 条，不进消息树直到出队开跑；队列项带 `lane`：`human` 是人提交的（`POST prompt` + `delivery=queue`），`system` 是服务端生成的（agent 完成通知、agent 发给 caller 的消息），带 `origin` 标记来源）。**出队规则是 human 先于 system**，同一 lane 内保持 FIFO：完成通知是从子代理的 goroutine 入队并在 session 空闲时立刻 dispatch 的，若严格 FIFO，先到的通知会抢先成一轮、让人白等一轮；这条规则与 Claude Code 的队列一致（那边的 task-notification 取最低优先级，"user input is never starved by system messages"）。`EnqueueFront` 会把重试项插回**自己那条 lane**的头部，所以重试也不会插到人的前面；扩展 FIFO 在 `ext-queue.json`；不触发运行但要进入后续 prompt 的正常 user message 暂存于 `context-queue.json`（最多 100 条，按序提交）。`config.json` / `queue.json` / `ext-queue.json` / `context-queue.json` 经同目录临时文件 + rename 原子落盘，避免并发读到截断 JSON。
+- 目录内：`events.jsonl` + `config.json`；忙时排队的 user 在 `queue.json`（最多 100 条，不进消息树直到出队开跑；队列项带 `lane`：`human` 是人提交的（`POST prompt` + `delivery=queue`），`system` 是服务端生成的（agent 完成通知、agent 发给 caller 的消息），带 `origin` 标记来源；完成通知另带 `agentTask`（它报告的那个 agent 任务），出队时若该任务的结果已经被读过（`TaskOutput`）或终止过（`TaskStop`）就整项丢弃，避免同一结果回报两次）。**出队规则是 human 先于 system**，同一 lane 内保持 FIFO：完成通知是从子代理的 goroutine 入队并在 session 空闲时立刻 dispatch 的，若严格 FIFO，先到的通知会抢先成一轮、让人白等一轮；这条规则与 Claude Code 的队列一致（那边的 task-notification 取最低优先级，"user input is never starved by system messages"）。`EnqueueFront` 会把重试项插回**自己那条 lane**的头部，所以重试也不会插到人的前面；扩展 FIFO 在 `ext-queue.json`；不触发运行但要进入后续 prompt 的正常 user message 暂存于 `context-queue.json`（最多 100 条，按序提交）。`config.json` / `queue.json` / `ext-queue.json` / `context-queue.json` 经同目录临时文件 + rename 原子落盘，避免并发读到截断 JSON。
 
 ## jsonl
 

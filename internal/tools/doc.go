@@ -30,9 +30,14 @@
 // A child run is
 // detached from its caller, and a foreground Agent call that exceeds its
 // two-minute wait is promoted to a background task instead of being cancelled
-// (the caller gets the run_in_background async_launched shape). TaskOutput and
-// TaskStop use a composite task store so shell and agent tasks share the Claude
-// Code-shaped lifecycle schema. File
+// (the caller gets the run_in_background async_launched shape, and its turn
+// keeps running: only an explicit run_in_background terminates it, and every
+// async result carries a note telling the caller where the completion lands).
+// A completion notification is delivered mid-turn when the parent run is still
+// alive and through the durable queue otherwise, and TaskOutput/TaskStop mark a
+// run whose result the caller already has so it is not reported twice.
+// TaskOutput and TaskStop use a composite task store so shell and agent tasks
+// share the Claude Code-shaped lifecycle schema. File
 // mutations share a server-scoped per-path queue; Edit additionally
 // supports non-overlapping batch replacements against one original. Structured
 // result details are persisted for clients but omitted by provider adapters.

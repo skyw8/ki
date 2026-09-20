@@ -188,3 +188,17 @@ func (s compositeTaskStore) Stop(id string) (TaskSnapshot, error) {
 	}
 	return TaskSnapshot{}, os.ErrNotExist
 }
+
+// MarkNotified routes by ownership: only agent tasks have a completion
+// notification to suppress, and the shell store's own marking is a no-op.
+func (s compositeTaskStore) MarkNotified(id string) {
+	if s.shell != nil {
+		if _, ok := s.shell.Get(id); ok {
+			s.shell.MarkNotified(id)
+			return
+		}
+	}
+	if s.agent != nil {
+		s.agent.MarkNotified(id)
+	}
+}

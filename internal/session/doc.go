@@ -12,7 +12,10 @@
 // allows that, Windows only while no handle is open). New
 // rows always append; config.activeLeafId persists the selected branch across opens.
 // The main queue holds two lanes: human turns (Enqueue) and server-generated
-// turns such as agent completion notifications (EnqueueSystem). Dequeue serves
+// turns such as agent completion notifications (EnqueueSystem; a notification
+// also records the agent task it reports through
+// EnqueueAgentNotification, which lets dispatch drop it when the parent has
+// already read that result). Dequeue serves
 // the oldest human turn first and FIFO within a lane, so a person waiting on a
 // reply never sits behind a system message.
 // SetLeaf moves the leaf without deleting old rows. ForkAt creates a new

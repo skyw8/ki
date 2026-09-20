@@ -275,14 +275,30 @@ func (s *Server) notifyAgentCompletion(parentID, taskID, description, outputFile
 	}
 	text := fmt.Sprintf("<task-notification>\nTask %s (%s) %s.\nResult:\n%s\noutput_file: %s\n</task-notification>", taskID, description, status, result, outputFile)
 	content := []types.Content{{Type: "text", Text: text}}
-	// Why: a background Agent tool terminates its parent turn immediately. An
-	// Inbox steer accepted in the tiny window before release would then never
-	// drain, so completion notifications always take the durable queue path.
+	// The parent may already hold this result: TaskOutput marks a task it read,
+	// and the notification it would receive is the same text it just pulled.
+	if s.agentTasks.NotificationConsumed(taskID) {
+		return
+	}
+	// A parent that is still mid-turn (the Agent call did not end its turn: a
+	// promotion to background, or a tool batch that terminated nothing) takes
+	// the notification through its run Inbox, the channel SendMessage steers
+	// with. The loop drains the Inbox at the next model round, so the result
+	// lands inside the turn that started the agent — Claude Code's
+	// tool-round-boundary attachment — instead of ending it. A push that
+	// arrives after the loop's last round is not lost either: runPrompt closes
+	// the Inbox handoff atomically and runs (or persists, on abort) whatever it
+	// finds there, and a push once the handoff is closed returns false here.
+	if live := s.runAt(parentID); live != nil && s.pushSteerRun(live, steerRequest{Content: content, Origin: "agent:" + taskID}) {
+		return
+	}
+	// No live run (the parent turn ended, or the child finished before it could
+	// start): the durable queue wakes the parent with a fresh turn.
 	dir, ok := s.sidx.Lookup(parentID)
 	if !ok {
 		return
 	}
-	if _, err := session.EnqueueSystem(dir, content, "agent:"+taskID); err != nil {
+	if _, err := session.EnqueueAgentNotification(dir, content, "agent:"+taskID, taskID); err != nil {
 		return
 	}
 	s.publishQueueChanged(parentID)
@@ -311,11 +327,11 @@ func (s *Server) SendAgentMessage(ctx context.Context, req tools.AgentMessageReq
 			return tools.AgentMessageResult{}, errAgentSelfMessage
 		}
 		if task, ok := s.agentTasks.TaskForSession(sessionID); ok {
-			return s.messageAgent(ctx, task.TaskID, message)
+			return s.messageAgent(ctx, task.TaskID, req.SenderSessionID, message)
 		}
 		return s.queueSessionMessage(sessionID, "agent:"+req.SenderSessionID, message)
 	}
-	return s.messageAgent(ctx, target, message)
+	return s.messageAgent(ctx, target, req.SenderSessionID, message)
 }
 
 // resolveSessionTarget maps a reserved SendMessage address to a session id by
@@ -369,14 +385,17 @@ func (s *Server) resolveSessionTarget(senderSessionID, target string) (string, e
 }
 
 // messageAgent steers a live agent run, or queues or resumes its next turn.
-func (s *Server) messageAgent(ctx context.Context, taskID, message string) (tools.AgentMessageResult, error) {
+func (s *Server) messageAgent(ctx context.Context, taskID, senderSessionID, message string) (tools.AgentMessageResult, error) {
 	task, ok := s.agentTasks.Get(taskID)
 	if !ok {
 		return tools.AgentMessageResult{}, fmt.Errorf("%w: %s", errAgentNotFound, taskID)
 	}
 	if task.Status == tools.TaskRunning {
 		if live := s.runAt(task.SessionID); live != nil {
-			if s.pushSteerRun(live, []types.Content{{Type: "text", Text: message}}) {
+			// Origin mirrors the durable path below: the message is from the
+			// calling agent, not from the person at the keyboard.
+			steer := steerRequest{Content: []types.Content{{Type: "text", Text: message}}, Origin: "agent:" + senderSessionID}
+			if s.pushSteerRun(live, steer) {
 				return tools.AgentMessageResult{AgentID: task.TaskID, Status: "steered", Message: "message delivered at the next model round"}, nil
 			}
 		}
@@ -400,7 +419,7 @@ func (s *Server) messageAgent(ctx context.Context, taskID, message string) (tool
 // steered in place; otherwise the message is queued and dispatched as a prompt.
 func (s *Server) queueSessionMessage(sessionID, origin, message string) (tools.AgentMessageResult, error) {
 	content := []types.Content{{Type: "text", Text: message}}
-	if live := s.runAt(sessionID); live != nil && s.pushSteerRun(live, content) {
+	if live := s.runAt(sessionID); live != nil && s.pushSteerRun(live, steerRequest{Content: content, Origin: origin}) {
 		return tools.AgentMessageResult{AgentID: sessionID, Status: "steered", Message: "message delivered at the next model round"}, nil
 	}
 	dir, ok := s.sidx.Lookup(sessionID)
@@ -486,4 +505,14 @@ func (s *Server) Stop(id string) (tools.TaskSnapshot, error) {
 		return tools.TaskSnapshot{}, fmt.Errorf("stop agent task: %w", err)
 	}
 	return snap, nil
+}
+
+// MarkNotified implements the tools.TaskStore half of AgentRuntime: TaskOutput
+// marks a task whose result the caller just read, so the completion
+// notification is not delivered on top of it.
+func (s *Server) MarkNotified(id string) {
+	if s.agentTasks == nil {
+		return
+	}
+	s.agentTasks.MarkNotified(id)
 }

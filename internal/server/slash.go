@@ -515,17 +515,26 @@ func (s *Server) patchMessage(w http.ResponseWriter, r *http.Request) {
 	s.getMessage(w, r)
 }
 
+// steerRequest is one user-role message injected into a live run. Origin marks
+// who produced it (empty is the human, agent:<task-id> a subagent or its
+// completion notification, extension:<name> a relayed message); External
+// carries the metadata a relaying extension needs to correlate the turn.
+type steerRequest struct {
+	Content  []types.Content
+	Origin   string
+	External map[string]string
+}
+
 // pushSteerRun writes Inbox on this occupy only. Using the captured runState
 // avoids steering a later occupy that replaced s.runs[id] after TakeQueueID.
-func (s *Server) pushSteerRun(st *runState, content []types.Content, external ...map[string]string) bool {
+//
+// A false return means the message did not enter this run: the caller must
+// deliver it another way (durable queue) rather than drop it.
+func (s *Server) pushSteerRun(st *runState, req steerRequest) bool {
 	if st == nil {
 		return false
 	}
-	var externalMeta map[string]string
-	if len(external) > 0 {
-		externalMeta = cloneExternal(external[0])
-	}
-	msg := types.Message{Role: "user", Content: content, External: externalMeta}
+	msg := types.Message{Role: "user", Content: req.Content, Origin: req.Origin, External: cloneExternal(req.External)}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.steerClosed || st.inbox == nil {
@@ -610,7 +619,7 @@ func (s *Server) dispatchQueue(id string) {
 	if !ok {
 		return
 	}
-	item, ok, err := session.Dequeue(dir)
+	item, ok, err := s.dequeueDispatchable(id, dir)
 	if err != nil {
 		slog.Warn("dequeue", "session_id", id, "err", err)
 		return
@@ -678,6 +687,29 @@ func (s *Server) dispatchQueue(id string) {
 	}
 	enableRunInbox(st)
 	go s.runPrompt(ctx, st, id, item.Content, nil, "", item.Origin, "", s.takeNextTurn(id))
+}
+
+// dequeueDispatchable takes the next turn that should run, skipping completion
+// notifications the parent already read on its own.
+//
+// Why here and not when the notification is enqueued: the child finishes and
+// enqueues its notification while the parent is still busy, and the parent's own
+// TaskOutput can read the same result before its turn ends. The queue item waits
+// for that turn boundary, so this is the first moment the consumed mark exists
+// and can be honored. Dropped items are not silently removed from the client's
+// view: each skip republishes the queue.
+func (s *Server) dequeueDispatchable(id, dir string) (session.QueuedItem, bool, error) {
+	for {
+		item, ok, err := session.Dequeue(dir)
+		if err != nil || !ok {
+			return session.QueuedItem{}, ok, err
+		}
+		if item.AgentTask != "" && s.agentTasks != nil && s.agentTasks.NotificationConsumed(item.AgentTask) {
+			s.publishQueueChanged(id)
+			continue
+		}
+		return item, true, nil
+	}
 }
 
 func writeHandled(w http.ResponseWriter, notice string, isErr bool) {

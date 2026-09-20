@@ -13,8 +13,15 @@ import (
 // agentForegroundTimeout bounds how long a foreground Agent call pins the parent
 // turn open. When it expires the child is promoted to a background task and the
 // caller receives the same async_launched result as run_in_background, matching
-// Claude Code's auto-background; promotion never cancels the child. It is a var
-// so tests can shorten the wait.
+// Claude Code's auto-background; promotion never cancels the child.
+//
+// Promotion deliberately leaves the parent turn running: the caller asked to
+// block, so it keeps the decision to work on something else, to wait through
+// TaskOutput, or to end its turn. The result it gets back says so. The
+// completion reaches the caller either way, mid-turn through the run Inbox or as
+// the next queued turn once this one has ended.
+//
+// It is a var so tests can shorten the wait.
 var agentForegroundTimeout = 2 * time.Minute
 
 const agentPrompt = `Launch a new agent to handle complex, multi-step tasks autonomously.
@@ -30,7 +37,7 @@ Usage notes:
 - Always include a short description (3-5 words) summarizing what the agent will do.
 - Launch multiple agents concurrently whenever possible; to do that, use a single message with multiple tool uses.
 - When the agent is done, it will return a single message back to you. The result is not visible to the user. To show the user the result, send a text message back with a concise summary.
-- You can optionally run agents in the background with run_in_background. A foreground agent that runs longer than 2 minutes is promoted to a background task and returns async_launched. You are notified when a background agent completes, so do NOT sleep, poll, or proactively check its progress. Use TaskOutput to wait for or inspect it, and TaskStop to cancel it.
+- You can optionally run agents in the background with run_in_background. A foreground agent that runs longer than 2 minutes is promoted to a background task: it keeps running, the call returns async_launched, and your turn continues. A background agent's completion arrives as a task-notification, so do NOT sleep, poll, or proactively check its progress. Use TaskOutput to wait for or inspect a task, and TaskStop to cancel it.
 - Use SendMessage with the agentId to steer a live background agent or resume it after completion.
 - The agent's outputs should generally be trusted.
 - Clearly tell the agent whether you expect it to write code or just to do research, since it is not aware of the user's intent.
@@ -92,7 +99,7 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) loop.ToolRe
 		return errRes(err.Error())
 	}
 	if req.RunInBackground {
-		return agentAsyncResult(launch, req)
+		return agentAsyncResult(launch, req, false)
 	}
 	// Foreground: bound the wait, then promote to background. The child is never
 	// cancelled by promotion; it keeps running and reports through the task store.
@@ -110,7 +117,7 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) loop.ToolRe
 			// Mark the task backgrounded so its completion notifies the parent
 			// instead of being dropped with the foreground wait.
 			if _, err := t.runtime.Background(launch.TaskID); err == nil {
-				return agentAsyncResult(launch, req)
+				return agentAsyncResult(launch, req, true)
 			}
 			// Raced to completion between Get and Background: report it inline.
 			if current, ok := t.runtime.Get(launch.TaskID); ok {
@@ -147,16 +154,34 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) loop.ToolRe
 }
 
 // agentAsyncResult is the shared result for run_in_background and for a
-// foreground call promoted to background on timeout. Terminate stops the parent
-// turn so the completion arrives through the normal task-notification path.
-func agentAsyncResult(launch AgentLaunch, req AgentRequest) loop.ToolResult {
+// foreground call promoted to background on timeout.
+//
+// promoted distinguishes the two: only an explicit run_in_background call
+// terminates the parent turn (the caller chose async, so the queued completion
+// notification is what the session runs next). A promoted call keeps its turn —
+// the child keeps running either way, and both shapes carry the note that tells
+// the caller what to do with the rest of the turn.
+func agentAsyncResult(launch AgentLaunch, req AgentRequest, promoted bool) loop.ToolResult {
 	res := jsonResult(map[string]any{
 		"status": "async_launched", "agentId": launch.TaskID,
 		"description": req.Description, "prompt": req.Prompt,
 		"outputFile": launch.OutputFile, "canReadOutputFile": true,
+		"note": agentAsyncNote(promoted),
 	})
-	res.Terminate = true
+	res.Terminate = !promoted
 	return res
+}
+
+// agentAsyncNote is the model-facing guidance that travels with every async
+// result. Claude Code attaches the same points to its own async result instead
+// of leaving them in the tool description alone: the agent is detached, its
+// result arrives on its own, and the caller must not poll it or redo its work.
+// Which of those matters most is what differs between the two shapes.
+func agentAsyncNote(promoted bool) string {
+	if promoted {
+		return fmt.Sprintf("The %s foreground wait expired, so this agent keeps running in the background and this turn is yours to continue; do not start it again. A <task-notification> with its result arrives automatically, so work on non-overlapping tasks or wait for it with TaskOutput (block=true) instead of polling.", agentForegroundTimeout)
+	}
+	return "The agent is running in the background; this turn ends here, and its <task-notification> starts the next one automatically. Do not duplicate its work or poll it: check progress with TaskOutput (block=false) or by reading outputFile."
 }
 
 func jsonResult(value any) loop.ToolResult {

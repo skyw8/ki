@@ -258,7 +258,7 @@ func (s *Server) acceptExtPrompt(sessionID, extName string, req extension.Enqueu
 	}
 	if s.running(sessionID) {
 		if deliver == toggles.BusySteer {
-			if s.pushSteerRun(s.runAt(sessionID), req.Content, req.External) {
+			if s.pushSteerRun(s.runAt(sessionID), steerRequest{Content: req.Content, Origin: "extension:" + extName, External: req.External}) {
 				return extension.EnqueueResult{Accepted: "steered"}, nil
 			}
 		}

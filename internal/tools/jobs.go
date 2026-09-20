@@ -442,6 +442,10 @@ func (s *JobStore) Stop(id string) (TaskSnapshot, error) {
 	return j.snapshot(), nil
 }
 
+// MarkNotified is the agent-only half of the TaskStore contract: a shell task
+// has no completion notification to suppress.
+func (s *JobStore) MarkNotified(string) {}
+
 func isTerminal(status TaskStatus) bool {
 	return status == TaskCompleted || status == TaskFailed || status == TaskKilled || status == TaskInterrupted
 }

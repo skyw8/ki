@@ -606,6 +606,200 @@ func TestAgentSendMessageSteersLiveChild(t *testing.T) {
 	}
 }
 
+// holdTurnStreamer keeps a run alive across a second model round so a test can
+// hand the run a message while it is still going.
+type holdTurnStreamer struct {
+	mu      sync.Mutex
+	once    sync.Once
+	calls   int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newHoldTurnStreamer() *holdTurnStreamer {
+	return &holdTurnStreamer{entered: make(chan struct{}, 1), release: make(chan struct{})}
+}
+
+// unblock releases the held model round. It is idempotent so a failing test can
+// register it as cleanup and still let the server shut down.
+func (s *holdTurnStreamer) unblock() { s.once.Do(func() { close(s.release) }) }
+
+func (s *holdTurnStreamer) Stream(_ context.Context, _ loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	switch call {
+	case 1:
+		// One tool call, so the loop takes another round instead of ending here.
+		return types.Message{Role: "assistant", Content: []types.Content{{
+			Type: "toolCall", ID: "keep-alive", Name: "Bash",
+			Arguments: map[string]any{"command": "echo keep-alive"},
+		}}, StopReason: "toolUse"}, nil
+	case 2:
+		select {
+		case s.entered <- struct{}{}:
+		default:
+		}
+		<-s.release
+		return types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "parent before notification"}}, StopReason: "stop"}, nil
+	default:
+		return types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "parent acknowledged notification"}}, StopReason: "stop"}, nil
+	}
+}
+
+// readRunEvents replays one run's SSE until agent_end.
+func readRunEvents(t *testing.T, hs *httptest.Server, id string) []loop.Event {
+	t.Helper()
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	var events []loop.Event
+	sc := bufio.NewScanner(res.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var ev loop.Event
+		_ = json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev)
+		events = append(events, ev)
+		if ev.Type == loop.AgentEnd {
+			break
+		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return events
+}
+
+// A completion that arrives while the parent is mid-turn is injected into that
+// same run (Claude Code's tool-round-boundary attachment) instead of waiting for
+// the durable queue, so the parent never has to be restarted to learn the news.
+func TestAgentCompletionNotificationJoinsLiveParentTurn(t *testing.T) {
+	streamer := newHoldTurnStreamer()
+	srv, hs := testServerWith(t, streamer)
+	t.Cleanup(streamer.unblock)
+	parentID := createSession(t, hs, t.TempDir())
+	dir, ok := srv.sidx.Lookup(parentID)
+	if !ok {
+		t.Fatal("parent session is not indexed")
+	}
+	if status, out := promptJSON(t, hs, parentID, "delegate", nil); status != http.StatusAccepted || out["accepted"] != "started" {
+		t.Fatalf("prompt %d %+v", status, out)
+	}
+	select {
+	case <-streamer.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("parent run never reached its second model round")
+	}
+
+	srv.notifyAgentCompletion(parentID, "a-live-1", "child review", dir+"/events.jsonl", tools.AgentCompletion{Result: "child report"}, nil)
+	if !srv.running(parentID) {
+		t.Fatal("notification ended the parent turn")
+	}
+	queued, err := session.ReadQueue(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("notification was queued instead of steered: %+v", queued)
+	}
+	streamer.unblock()
+	waitAgentEnd(t, hs, parentID)
+
+	var order []string
+	for _, ev := range readRunEvents(t, hs, parentID) {
+		if ev.Type != loop.MessageEnd || ev.Message == nil {
+			continue
+		}
+		switch {
+		case strings.Contains(ev.Message.Text(), "<task-notification>"):
+			order = append(order, "notification")
+		case ev.Message.Text() == "parent acknowledged notification":
+			order = append(order, "acknowledged")
+		}
+	}
+	if !slices.Equal(order, []string{"notification", "acknowledged"}) {
+		t.Fatalf("notification did not land inside the run: %v", order)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"origin":"agent:a-live-1"`) {
+		t.Fatalf("notification lost its origin: %s", raw)
+	}
+}
+
+// A completion notification is dropped at dispatch when the parent already read
+// that task's result (TaskOutput marks it), and kept when nobody read it.
+func TestDispatchDropsConsumedAgentNotification(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	dir, ok := srv.sidx.Lookup(id)
+	if !ok {
+		t.Fatal("session is not indexed")
+	}
+	startTask := func() string {
+		t.Helper()
+		launch, err := srv.agentTasks.Start(context.Background(), tools.AgentRequest{
+			Description: "child", Prompt: "work", RunInBackground: true, SessionID: id,
+		}, filepath.Join(dir, "events.jsonl"), func(context.Context, string, string, bool) (tools.AgentCompletion, error) {
+			return tools.AgentCompletion{Result: "child done"}, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.agentTasks.Wait(context.Background(), launch.TaskID); err != nil {
+			t.Fatal(err)
+		}
+		return launch.TaskID
+	}
+	enqueue := func(taskID string) {
+		t.Helper()
+		content := []types.Content{{Type: "text", Text: "<task-notification>\nTask " + taskID + " completed.\n</task-notification>"}}
+		if _, err := session.EnqueueAgentNotification(dir, content, "agent:"+taskID, taskID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	read := startTask()
+	srv.MarkNotified(read) // the parent pulled the result with TaskOutput
+	enqueue(read)
+	srv.dispatchQueue(id)
+	if srv.running(id) {
+		t.Fatal("a consumed notification started a turn")
+	}
+	queued, err := session.ReadQueue(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("consumed notification stayed queued: %+v", queued)
+	}
+
+	// Control: an unread task's notification still runs.
+	unread := startTask()
+	enqueue(unread)
+	srv.dispatchQueue(id)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(filepath.Join(dir, "events.jsonl"))
+		if err == nil && strings.Contains(string(raw), "Task "+unread+" completed.") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("unread notification was not delivered")
+}
+
 func TestAgentSendMessageResumesCompletedChild(t *testing.T) {
 	srv, hs := testServerWith(t, resumeAgentStreamer{})
 	parentID := createSession(t, hs, t.TempDir())

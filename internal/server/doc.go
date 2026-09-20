@@ -72,7 +72,12 @@
 // the run SSE buffer, the WebUI push stream, and extension lifecycle
 // subscribers in that fixed order on the loop's goroutine. agent_end may
 // auto-compact. A steer accepted into the Inbox but never drained because the
-// run was aborted is committed to jsonl as an unanswered user turn. SSE
+// run was aborted is committed to jsonl as an unanswered user turn; a subagent
+// completion notification uses the same Inbox while the parent run is live, so
+// it lands inside the turn that started the agent, and falls back to the durable
+// queue (system lane, tagged with its agent task) once that turn has ended.
+// Dispatch drops a queued notification whose task result the parent already read
+// or stopped. SSE
 // replays runState.evs and drains after done.
 //
 // One server-owned resources.Loader atomically caches runtime environment,

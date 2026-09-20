@@ -118,6 +118,9 @@ type AgentMetadata struct {
 	Pending         []string   `json:"pending,omitempty"`
 	RunCount        uint64     `json:"run_count"`
 	NotifiedRun     uint64     `json:"notified_run,omitzero"`
+	// ConsumedRun is the run whose result the caller already read, so no
+	// completion notification is owed for it.
+	ConsumedRun uint64 `json:"consumed_run,omitzero"`
 }
 
 var (
@@ -161,6 +164,7 @@ type agentTask struct {
 	pending         []string
 	runCount        uint64
 	notifiedRun     uint64
+	consumedRun     uint64
 }
 
 // NewAgentStore creates a process-scoped child-agent registry.
@@ -325,7 +329,7 @@ func (t *agentTask) metadataLocked() AgentMetadata {
 		Error: t.snap.Error, ToolUseCount: t.snap.ToolUseCount,
 		TotalTokens: t.snap.TotalTokens, StartedAt: t.snap.StartedAt,
 		FinishedAt: t.snap.FinishedAt, Pending: slices.Clone(t.pending),
-		RunCount: t.runCount, NotifiedRun: t.notifiedRun,
+		RunCount: t.runCount, NotifiedRun: t.notifiedRun, ConsumedRun: t.consumedRun,
 	}
 }
 
@@ -382,7 +386,7 @@ func (s *AgentStore) LoadMetadata(path string, run AgentRun) (bool, error) {
 		done: make(chan struct{}), doneClosed: true, run: run, metadataPath: path,
 		parentSessionID: meta.ParentSessionID,
 		pending:         slices.Clone(meta.Pending), runCount: meta.RunCount,
-		notifiedRun: meta.NotifiedRun,
+		notifiedRun: meta.NotifiedRun, consumedRun: meta.ConsumedRun,
 	}
 	if task.snap.Status == TaskRunning || task.snap.Status == TaskPending {
 		now := time.Now()
@@ -497,6 +501,10 @@ func (s *AgentStore) ResumePending(id string) (bool, error) {
 // ClaimNotification makes one completion notification idempotent per logical
 // agent run. The claim is persisted before the caller writes the parent queue,
 // so concurrent completion paths cannot enqueue the same run twice.
+//
+// It returns false for a run the caller already consumed through MarkNotified
+// (TaskOutput read the result, TaskStop ended it): notifying again would spend a
+// whole parent turn re-reporting a result that side already has.
 func (s *AgentStore) ClaimNotification(id string) bool {
 	s.mu.RLock()
 	closed := s.closed
@@ -516,6 +524,64 @@ func (s *AgentStore) ClaimNotification(id string) bool {
 	task.notifiedRun = task.runCount
 	task.persistLocked()
 	return true
+}
+
+// MarkNotified records that the caller already holds this run's result, which
+// suppresses its completion notification: notifying again would spend a whole
+// parent turn re-reporting a result that side already has. TaskOutput marks what
+// it read and Stop marks what it ended; Claude Code tracks the same fact as
+// task.notified.
+//
+// The mark is durable and per run, so a later resume still notifies — that is a
+// new run with a new result.
+func (s *AgentStore) MarkNotified(id string) {
+	s.mu.RLock()
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
+		return
+	}
+	task, ok := s.task(id)
+	if !ok {
+		return
+	}
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	s.markConsumedLocked(task)
+}
+
+// markConsumedLocked sets both notification bits: consumedRun stops a
+// notification that has not been delivered yet, and notifiedRun stops one that
+// has not been claimed yet (a task stopped before its runner finalized).
+func (s *AgentStore) markConsumedLocked(task *agentTask) {
+	if task.removed || task.runCount == 0 {
+		return
+	}
+	changed := false
+	if task.consumedRun < task.runCount {
+		task.consumedRun = task.runCount
+		changed = true
+	}
+	if task.notifiedRun < task.runCount {
+		task.notifiedRun = task.runCount
+		changed = true
+	}
+	if changed {
+		task.persistLocked()
+	}
+}
+
+// NotificationConsumed reports whether the caller already holds the current
+// run's result. Dispatch uses it to drop a queued completion notification that
+// the parent read on its own (TaskOutput) before the turn ran.
+func (s *AgentStore) NotificationConsumed(id string) bool {
+	task, ok := s.task(id)
+	if !ok {
+		return false
+	}
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	return task.runCount > 0 && task.consumedRun >= task.runCount
 }
 
 // SetSessionID associates the in-memory task with its durable child session.
@@ -655,6 +721,10 @@ func (s *AgentStore) Backgrounded(id string) bool {
 }
 
 // Stop cancels the current run and leaves the stable agent record resumable.
+//
+// The stopped run is marked notified: whoever stopped it (TaskStop, or the
+// Agent tool stopping a child whose parent turn was aborted) is the caller that
+// decided the result is not wanted, so no completion notification follows.
 func (s *AgentStore) Stop(id string) (TaskSnapshot, error) {
 	task, ok := s.task(id)
 	if !ok {
@@ -673,6 +743,7 @@ func (s *AgentStore) Stop(id string) (TaskSnapshot, error) {
 	task.snap.Status = TaskKilled
 	task.snap.FinishedAt = &now
 	task.snap.Error = "task stopped"
+	s.markConsumedLocked(task)
 	task.closeDoneLocked()
 	task.persistLocked()
 	runDone := task.runDone

@@ -24,8 +24,8 @@
 | `PowerShell` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 仅 Windows 注册；PowerShell 原生命令、退出码、流式输出和后台任务与 Bash 使用同一生命周期 |
 | `Agent` | `description`、`prompt`；可选 `inherit_context`、`run_in_background` | 新建一个 `forkMode=tree` 的 child，固定沿用当前 session 的 provider/model；默认继承 parent 的已完成历史，后台、以及前台超过 2 分钟后返回 `async_launched` 和 `outputFile`，否则返回 `completed` |
 | `SendMessage` | `message`；可选 `to`（默认 `parent`）、`summary` | `to` 支持保留名 `"parent"` / `"main"` 或稳定 `agentId`；按目标在当前 run 边界 steer，或从目标 transcript 续跑 |
-| `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待 shell/agent 后台任务；返回有界输出、状态、结果和输出文件路径 |
-| `TaskStop` | `task_id`（或兼容的 `shell_id`） | 终止 shell/agent 后台任务并返回最终状态 |
+| `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待 shell/agent 后台任务；返回有界输出、状态、结果和输出文件路径。读到**终态**的 agent 任务会标记该 run 已读，后续完成通知不再送达 |
+| `TaskStop` | `task_id`（或兼容的 `shell_id`） | 终止 shell/agent 后台任务并返回最终状态；被终止的 run 同样不再收到完成通知 |
 | `Monitor` | `command`、`description` | 启动流式监控任务，逐行发送输出更新；结束时返回任务结果 |
 
 ## Read
@@ -143,8 +143,10 @@
 - 信封**不要求 child 汇报**：结果本来就通过 tool result（前台）或 `<task-notification>`（后台/提升）自动回到调用方，让 child 再 `SendMessage` 一次只会造成重复汇报、还会诱导它把"已发消息"当成任务完成。`SendMessage` 对自己那条 prompt 里列出的 `"parent"` / `"main"` 地址保留给"中途要问调用方"的场景。`SendMessage` 续跑 child 时跟进的消息不再重复信封。
 - child 沿用 parent 的 provider/model/thinking 并沿用同一条 loop；无论是否继承历史，directive 都是子会话自己的第一条消息，parent 的 user turn 永远不会被当成 child 的任务（这正是最初 fork 整段对话会导致子代理重复委派的原因）。
 - 子 agent 使用自己的 `runState`、extension Prepare、工具集和 `events.jsonl`；因此可以递归创建 tree child，且 child 的工具结果不会污染 parent context。主会话为深度 0，最多允许 Agent child 深度 3。**深度只约束“能不能 spawn”，不约束工具集**：`Set.Build` 在任何深度都暴露 `Agent`（`Set` 没有深度字段），因为工具集同时进 provider 的 tool schemas 和 system prompt 的 `Available tools` 列表、属于前缀缓存的一部分——在深度 3 摘掉 `Agent` 会让 child 与 parent 的前缀从第一个 token 分叉，正好废掉信封设计要保住的缓存复用。限制落在两处：(1) `depth >= 3` 时信封追加 `You are at the maximum nesting depth (3), so do not call the Agent tool: complete this task yourself.`；(2) `SpawnAgent` 在 `parentDepth >= MaxAgentDepth` 时硬拒绝，模型即使无视提示调用，也只会拿到 `maximum agent depth 3 reached` 的 tool result。
-- `run_in_background=true` 与 parent prompt 脱钩，立即返回 `{"status":"async_launched", "agentId":…, "outputFile":…}`；`TaskOutput` 可等待它，`TaskStop` 可取消它。前台 agent 返回 Claude Code 兼容的 `completed` 结果对象。
-- 前台 agent 最多占用 parent turn 2 分钟（`agentForegroundTimeout`）：超时后 child **转为后台继续运行**（不取消），Agent 返回与 `run_in_background` 相同的 `async_launched` 结果，完成时按后台通知路径回报。child 的 run context 与调用方解耦（`AgentStore.startRun` 用 `context.WithoutCancel`），所以 parent turn 结束不会杀掉它；parent 被 abort 时由 Agent 工具显式 `TaskStop`，避免孤儿任务。
+- `run_in_background=true` 与 parent prompt 脱钩，立即返回 `{"status":"async_launched", "agentId":…, "outputFile":…}`；`TaskOutput` 可等待它，`TaskStop` 可取消它。前台 agent 返回 Claude Code 兼容的 `completed` 结果对象。两种 `async_launched` 结果都带 `note`：说明结果会以 `<task-notification>` 自动回来、不要轮询或重做它的工作、可以用 `TaskOutput(block=false)` 或读 `outputFile` 看进度（Claude Code 把同样的指引写在结果文本里，而不是只放在工具描述里——结果不进缓存前缀，加字不破坏 prefix cache）。
+- 前台 agent 最多占用 parent turn 2 分钟（`agentForegroundTimeout`）：超时后 child **转为后台继续运行**（不取消），Agent 返回与 `run_in_background` 相同的 `async_launched` 结果，**但只有显式 `run_in_background` 才 `Terminate` parent turn**（那是调用方自己选了异步，下一轮就该是完成通知）。超时提升不结束 turn：调用方请求的就是阻塞，它自己决定继续做别的事、用 `TaskOutput(block=true)` 等，还是结束回复；`note` 里会说明等待已过期、不要重复启动同一个任务。child 的 run context 与调用方解耦（`AgentStore.startRun` 用 `context.WithoutCancel`），所以 parent turn 结束（自然结束、被 `Terminate` 或提升）都不会杀掉它；唯一"父死子亡"的路径是 parent 在阻塞等待期间被 abort——那时 Agent 工具显式 `TaskStop`，避免孤儿任务。
+- 完成通知的送达路径有两条：parent 的 run 还活着时写进它的 Inbox（`pushSteerRun`），循环在下一个 model round 前 drain，于是结果落在**启动它的那个 turn 之内**（对应 Claude Code 在 tool-round 边界 attach `<task-notification>`）；没有 live run 时走 durable queue 起一轮新的。Inbox 手递手窗口由 `runPrompt` 原子关闭（最后一轮取快照后置 `steerClosed`），所以晚到的 push 要么被当作续跑轮、要么被 abort 路径持久化，要么 push 返回 false 落到队列——三条路都不会丢通知。
+- 通知在 **dispatch 时**再判一次去重：`TaskOutput` 读到终态、或 `TaskStop` 终止了某个 run，`AgentStore.MarkNotified` 会记下 `consumed_run`，队列里带着同一个 `AgentTask` 的通知在出队时直接丢弃（`Server.dequeueDispatchable`）。为什么不在通知入队时判：child 完成时 parent 往往还在跑，parent 自己用 `TaskOutput` 把结果读走可能发生在它这轮结束之前，而出队正是"读没读过"第一次可知的时刻。`notified_run`/`consumed_run` 都是按 run 计数持久化的，所以续跑（新 run）照常通知。
 - child 继承当前 session 的 provider、model 和 thinking effort；Agent schema 不接受模型覆盖，避免子 agent 跨供应商使用不同凭据或协议。
 - `cwd` override 和 `worktree` isolation 不在模型可见 schema 中；child 始终继承 parent cwd，隔离依靠 session tree，不会静默提供未实现的隔离。
 - 当前 Agent prompt/schema 只描述普通 parent → child delegation；不描述 Agent Teams 的命名成员、`team_name`、permission mode、roster 或 peer messaging。
