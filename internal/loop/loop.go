@@ -69,6 +69,25 @@ const (
 	RuntimeReady EventType = "runtime_ready"
 )
 
+// Lifecycle reports whether the event is delivered to extension lifecycle
+// subscribers (the async-only list in docs/events.md).
+//
+// High-churn sidebands (tool progress, context usage, patch previews) and
+// failures the host already handled (extension errors) are excluded. The list
+// is an allow-list on purpose: a new event type stays invisible to extensions
+// until it is added here, instead of leaking to them by default.
+func (t EventType) Lifecycle() bool {
+	switch t {
+	case AgentStart, AgentEnd, TurnStart, TurnEnd,
+		RequestHeader, MessageStart, MessageUpdate, MessageEnd,
+		ToolExecutionStart, ToolExecutionEnd, CompactionStart, CompactionEnd,
+		QueueChanged, SteerAccepted, RunAborted,
+		ExtensionNotice, ExtensionUIPrompt, AgentSettled, RuntimeReady:
+		return true
+	}
+	return false
+}
+
 // Event is a loop event (pi field names).
 type Event struct {
 	Type    EventType `json:"type"`

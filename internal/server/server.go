@@ -371,31 +371,18 @@ func (s *Server) publishCompactionEnd(sessionID string, err error) {
 // immediately instead of waiting for the next prompt's request_header.
 //
 // The estimate is char/4: the newest assistant usage predates the compaction,
-// so EstimateTokens falls back. The system prompt and tool schemas are part of
-// the real context but not of the message estimate, so they are added from the
-// last request_header — the same adjustment the request_header branch in emit
-// makes when no post-compaction usage exists.
+// so EstimateTokens falls back and contextUsageEstimate adds the system prompt
+// and tool schemas from the persisted last request header.
 func (s *Server) publishContextUsage(sess *session.Session) {
 	_, info, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
 	if !ok {
 		return
 	}
-	last := sess.LastCompactionAt()
-	messages := sess.MessagesToLeaf()
-	used := compact.EstimateTokens(messages, last)
-	if !hasUsableContextUsage(messages, last) {
-		if system, tools, ok := sess.LastRequestHeader(); ok {
-			toolJSON, err := json.Marshal(tools)
-			if err != nil {
-				slog.Warn("marshal tool schemas", "session_id", sess.ID(), "err", err)
-			} else {
-				used += (len(system) + len(toolJSON) + 3) / 4
-			}
-		}
-	}
-	window := info.ContextWindow
-	if maxContext := s.cfg.Compaction.MaxContextTokens; maxContext > 0 {
-		window = min(window, maxContext)
+	// No live request: the compaction already ran, so the schemas come from the
+	// last persisted request_header.
+	used, window, err := s.contextUsageEstimate(sess, info, nil)
+	if err != nil {
+		slog.Warn("marshal tool schemas", "session_id", sess.ID(), "err", err)
 	}
 	if _, err := sess.AppendContextUsage(used, window, true); err != nil {
 		slog.Warn("append context usage", "session_id", sess.ID(), "err", err)
@@ -1772,144 +1759,14 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	promptInput := prompt.Input{Resources: snapshot, Tools: tls, Toggle: tg.Skills}
 	sys := prompt.Build(promptInput)
 
-	var emit func(loop.Event) error
-	emit = func(ev loop.Event) error {
-		if ev.Type == loop.MessageEnd && ev.Message != nil {
-			if s.ext != nil {
-				rewritten := s.ext.ApplyMessageEnd(ctx, id, *ev.Message)
-				ev.Message = &rewritten
-			}
-			key := ""
-			if ev.Message.Role == "user" && idempotencyKey != "" {
-				key = idempotencyKey
-				idempotencyKey = ""
-			}
-			e, _, err := sess.AppendMessageWithKey(*ev.Message, key)
-			if err != nil {
-				return fmt.Errorf("append message: %w", err)
-			}
-			ev.EntryID = e.ID
-		}
-		if ev.Type == loop.RequestHeader {
-			tools := make([]session.ToolSchema, 0, len(ev.Tools))
-			for _, t := range ev.Tools {
-				var format *session.ToolFormat
-				if t.Format != nil {
-					format = &session.ToolFormat{Type: t.Format.Type, Syntax: t.Format.Syntax, Definition: t.Format.Definition}
-				}
-				tools = append(tools, session.ToolSchema{Type: t.Type, Name: t.Name, Description: t.Description, Parameters: t.Parameters, Format: format})
-			}
-			if _, err := sess.AppendRequestHeader(ev.System, tools, session.RequestMeta{Provider: sess.Config.Provider, Model: sess.Config.Model, ThinkingEffort: sess.Config.ThinkingEffort, CatalogVersion: provider.CatalogVersion, Pricing: info.Cost}); err != nil {
-				return fmt.Errorf("append request header: %w", err)
-			}
-		}
-		// Compaction progress is persisted too (decision: jsonl + SSE) so a
-		// session replay shows when compaction happened.
-		if ev.Type == loop.CompactionStart || ev.Type == loop.CompactionEnd {
-			if _, err := sess.AppendEvent(string(ev.Type), ev.Reason, ev.OK); err != nil {
-				return fmt.Errorf("append loop event: %w", err)
-			}
-		}
-		if ev.Type == loop.ToolExecutionUpdate {
-			progress, err := json.Marshal(ev.PartialResult)
-			if err != nil {
-				return fmt.Errorf("marshal tool progress: %w", err)
-			}
-			if _, err := sess.AppendEvent(string(ev.Type), string(progress), true); err != nil {
-				return fmt.Errorf("append tool progress: %w", err)
-			}
-		}
-		if ev.Type == loop.PatchApplyUpdated {
-			details := map[string]any{"toolCallId": ev.ToolCallID, "toolName": ev.ToolName, "partialResult": ev.PartialResult}
-			if _, err := sess.AppendDetailsEvent(string(ev.Type), details); err != nil {
-				return fmt.Errorf("append patch preview: %w", err)
-			}
-		}
-		st.mu.Lock()
-		ev.RunID = st.runID
-		ev.External = cloneExternal(st.external)
-		st.evs = append(st.evs, ev)
-		st.wait.Broadcast()
-		st.mu.Unlock()
-		if ev.Type == loop.AgentEnd {
-			// The run's terminal event must also reach push subscribers: a WebUI
-			// tab that is not holding this run's SSE (background session, or the
-			// user switched to another session) still needs to learn the run
-			// finished. run_aborted already fans out through publishSideband.
-			// Publish without Messages: the run SSE replays them for the one
-			// client that asked, while every tab needs only the completion. The
-			// full event still reaches extensions below.
-			s.publishPush(id, loop.Event{Type: ev.Type, RunID: ev.RunID, External: ev.External})
-		}
-		switch ev.Type {
-		case loop.ToolExecutionUpdate, loop.ContextUsage, loop.PatchApplyUpdated, loop.ExtensionError:
-			// High-churn or already-handled sidebands; skip extension OnEvent.
-		case loop.AgentStart, loop.AgentEnd, loop.TurnStart, loop.TurnEnd,
-			loop.RequestHeader, loop.MessageStart, loop.MessageUpdate, loop.MessageEnd,
-			loop.ToolExecutionStart, loop.ToolExecutionEnd, loop.CompactionStart, loop.CompactionEnd,
-			loop.QueueChanged, loop.SteerAccepted, loop.RunAborted,
-			loop.ExtensionNotice, loop.ExtensionUIPrompt, loop.AgentSettled, loop.RuntimeReady:
-			// Lifecycle notifications are asynchronous from the extension's point
-			// of view, but their write order must match the loop. Spawning one
-			// goroutine per event allowed agent_settled to overtake message_end,
-			// leaving channel connectors with an ephemeral draft but no final reply.
-			s.ext.OnEvent(ctx, id, extension.RedactEvent(ev, id))
-		}
-		if ev.Type == loop.RequestHeader || (ev.Type == loop.MessageEnd && ev.Message != nil && ev.Message.Role == "assistant") {
-			messages := sess.MessagesToLeaf()
-			used := compact.EstimateTokens(messages, sess.LastCompactionAt())
-			if ev.Type == loop.RequestHeader && !hasUsableContextUsage(messages, sess.LastCompactionAt()) {
-				toolJSON, err := json.Marshal(ev.Tools)
-				if err != nil {
-					return fmt.Errorf("marshal tool schemas: %w", err)
-				}
-				used += (len(ev.System) + len(toolJSON) + 3) / 4
-			}
-			window := info.ContextWindow
-			if maxContext := cfg.Compaction.MaxContextTokens; maxContext > 0 {
-				window = min(window, maxContext)
-			}
-			estimated := ev.Type == loop.RequestHeader || ev.Message == nil || !usableUsage(ev.Message.Usage)
-			if _, err := sess.AppendContextUsage(used, window, estimated); err != nil {
-				return fmt.Errorf("append context usage: %w", err)
-			}
-			contextEvent := loop.Event{Type: loop.ContextUsage, Provider: sess.Config.Provider, Model: sess.Config.Model, CatalogVersion: provider.CatalogVersion, UsedTokens: used, ContextWindow: window, Estimated: estimated}
-			st.mu.Lock()
-			st.evs = append(st.evs, contextEvent)
-			st.wait.Broadcast()
-			st.mu.Unlock()
-		}
-		if ev.Type == loop.AgentEnd {
-			// After agent_end, apply the threshold check and compact an oversized context.
-			if s.shouldCompact(sess, info.ContextWindow) {
-				_ = emit(loop.Event{Type: loop.CompactionStart, Reason: "threshold"})
-				if _, err := s.compactSession(ctx, sess); err != nil && !errors.Is(err, compact.ErrNothingToCompact) {
-					slog.Warn("auto compact", "session_id", id, "err", err)
-					_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "threshold", OK: false})
-				} else {
-					_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "threshold", OK: true})
-					// The run SSE stops at agent_end, so the rebuilt context
-					// reaches the meter through the push stream.
-					if err == nil {
-						s.publishContextUsage(sess)
-					}
-				}
-			}
-		}
-		return nil
-	}
+	emitter := &runEmitter{s: s, ctx: ctx, id: id, sess: sess, st: st, info: info, idempotencyKey: idempotencyKey}
+	emit := emitter.Emit
 
 	// Preflight before running: a resumed session or a very large prompt may already
 	// exceed the context window, so compact once before loop.Run. This is non-blocking:
 	// a compaction failure only emits a warning.
 	if s.shouldCompact(sess, info.ContextWindow) {
-		_ = emit(loop.Event{Type: loop.CompactionStart, Reason: "preflight"})
-		if _, err := s.compactSession(ctx, sess); err != nil && !errors.Is(err, compact.ErrNothingToCompact) {
-			slog.Warn("preflight compact", "session_id", id, "err", err)
-			_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "preflight", OK: false})
-		} else {
-			_ = emit(loop.Event{Type: loop.CompactionEnd, Reason: "preflight", OK: true})
-		}
+		emitter.compactNow("preflight")
 	}
 
 	hooks := s.composeHooks(sess, occ)
