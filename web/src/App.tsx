@@ -22,7 +22,7 @@ import { useTabFocus } from './hooks/useTabFocus'
 import { useServerEvents } from './hooks/useServerEvents'
 import { currentPermission, loadNotifyPref, notifyCompletion, requestPermission, saveNotifyPref, showNotification, type NotifyPermission } from './lib/notifications'
 import { focusedSession } from './lib/tab-focus'
-import { ancestorsOf, buildSessionForest, orderedChildren, topLevelRoot } from './lib/session-tree'
+import { ancestorsOf, buildSessionForest, orderedChildren, pinnedFirst, topLevelRoot } from './lib/session-tree'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
 type SettingsPage = 'providers' | 'skills' | 'tools' | 'extensions' | 'message' | 'notifications' | 'appearance'
@@ -1280,11 +1280,13 @@ function WorkspaceApp({ api }: { api: Client }) {
       const order = ws.sessionIds?.length
         ? [...ws.sessionIds, ...sessions.filter(s => s.workspaceId === ws.id && !ws.sessionIds!.includes(s.id)).map(s => s.id)]
         : sessions.filter(s => s.workspaceId === ws.id).map(s => s.id)
-      const allRows = order.map(id => byId.get(id)).filter((s): s is SessionInfo => !!s)
+      // Pin first: the account order is stored order, which starts with the
+      // newest session, so a freshly created one would otherwise sit above a pin.
+      const allRows = pinnedFirst(order.map(id => byId.get(id)).filter((s): s is SessionInfo => !!s))
       allRows.forEach(s => used.add(s.id))
       return { ws, rows: rootsOf(allRows) }
     })
-    const ungrouped = rootsOf(sessions.filter(s => !used.has(s.id)))
+    const ungrouped = rootsOf(pinnedFirst(sessions.filter(s => !used.has(s.id))))
     return { groups, ungrouped }
   }, [byId, forest, sessions, workspaces])
 

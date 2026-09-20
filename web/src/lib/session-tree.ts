@@ -71,6 +71,20 @@ function reachesCycle(id: string, parentCandidates: Map<string, string>, cycles:
   return cycles.has(cursor)
 }
 
+// pinnedFirst splits rows into the pinned part and the rest, keeping the
+// incoming order inside each part.
+//
+// Why a stable partition instead of a sort by `pinnedAt`: a pin is sticky, and
+// a new session is prepended to the workspace account, so without this the pin
+// is pushed below every session created afterwards. Ordering inside each part
+// still comes from the stored order, so dragging a row reorders it inside its
+// own part instead of being overwritten by the pin key.
+export function pinnedFirst(rows: SessionInfo[]): SessionInfo[] {
+  const pinned = rows.filter(row => row.pinned)
+  if (pinned.length === 0 || pinned.length === rows.length) return rows
+  return [...pinned, ...rows.filter(row => !row.pinned)]
+}
+
 export function buildSessionForest(sessions: SessionInfo[], workspaces: WorkspaceInfo[]): SessionForest {
   const byId = new Map(sessions.map(session => [session.id, session]))
   const order = sessionOrder(sessions, workspaces)

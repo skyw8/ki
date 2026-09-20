@@ -774,6 +774,20 @@ test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }
   await expect(page.getByTestId('to-bottom')).toBeVisible()
   await page.getByTestId('to-bottom').click()
   await expect(page.getByTestId('to-bottom')).toHaveCount(0)
+
+  // A session created later is prepended to the group, so without the
+  // pinned-first partition it would take the top slot away from the pin.
+  await page.getByRole('button', { name: '清除搜索' }).click()
+  const rows = page.getByTestId('session-row')
+  const before = await rows.count()
+  await page.getByTestId('ws-new-session').first().click()
+  await expect(rows).toHaveCount(before + 1)
+  // Reload so the assertion reads the settled order the server stored rather
+  // than the optimistic frame that renders the new row before the workspace
+  // order arrives; that frame would pass even while the pin loses its slot.
+  await page.reload()
+  await expect(rows).toHaveCount(before + 1)
+  await expect(rows.first().locator('.pin-mark')).toBeVisible()
 })
 
 test('session overflow menu anchors to the clicked row', async ({ page }) => {

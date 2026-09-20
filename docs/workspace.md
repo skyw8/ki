@@ -6,6 +6,6 @@
 - 临时工作区识别（`IsTemp`）与成员判定同样先对 home 一侧做 `Abs` / `EvalSymlinks`：macOS 的 `/var/folders`、Windows 短名 `%TEMP%` 下 home 与已规范化记录 path 才可比。
 - 开会话：`workspaceId` → 显式 `cwd`（会保证有登记）→ `{KI_HOME}/workspace/tmp+<FileTimestamp>`。
 - 删除工作区：abort 组内 run → 删会话 jsonl 目录 → 去登记。**不删**工作区磁盘目录和用户文件。
-- 组序是文件里数组顺序；组内序是 `sessionIds`。pin 把会话挪到组首并写 `config.pinned`。
+- 组序是文件里数组顺序；组内序是 `sessionIds`。pin 写 `config.pinned` 并把会话挪到组首；侧栏渲染时再按 `pinned` 稳定分区（置顶在前、各段内保持 `sessionIds` 顺序），所以之后新建的会话（`AttachSession` 前插）不会把置顶挤下去，段内拖拽排序照常生效。
 - `GET /v1/fs` 默认只列目录，带 `separator` 与绝对 `path`；前端不拼接路径。`files=1` 时也列普通文件供附件选择；`preview=1` 同源预览图片、文本/代码和 PDF。
 - 内容搜索扫 jsonl 的 user / assistant 文本，字面匹配，最多 20 条。
