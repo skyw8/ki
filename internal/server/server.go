@@ -1279,9 +1279,9 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 			writeHandled(w, "usage: /"+parsed.Name, true)
 			return
 		}
-		if parsed.Kind == command.KindBuiltin && parsed.Name == "cwd" && strings.TrimSpace(parsed.Args) == "" {
+		if parsed.Kind == command.KindBuiltin && parsed.Name == "cd" && strings.TrimSpace(parsed.Args) == "" {
 			_ = sess.Close()
-			writeHandled(w, "usage: /cwd <path>", true)
+			writeHandled(w, "usage: /cd <path>", true)
 			return
 		}
 		if busy && !command.AllowBusy(parsed) {
@@ -1501,7 +1501,7 @@ func (s *Server) handleBuiltin(w http.ResponseWriter, r *http.Request, name, arg
 			return
 		}
 		writeJSON(w, 200, map[string]any{"handled": true, "notice": "started a new session", "sessionId": result.SessionID, "cwd": result.CWD, "workspaceId": result.WorkspaceID})
-	case "cwd":
+	case "cd":
 		result, err := s.NewSession(r.PathValue("id"), strings.TrimSpace(args))
 		if err != nil {
 			writeHandled(w, err.Error(), true)

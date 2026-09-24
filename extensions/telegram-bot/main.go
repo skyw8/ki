@@ -445,7 +445,7 @@ func (w *telegramWorker) handleUpdate(item update) error {
 	// controls whether a group message starts a run; all received group
 	// messages are retained as context for the next addressed message.
 	name, args, slash := parseSlash(text)
-	control := slash && (name == "new" || name == "cwd" || name == "compact" || name == "reload")
+	control := slash && (name == "new" || name == "cd" || name == "compact" || name == "reload")
 
 	key := w.externalKey(msg.Chat.ID, msg.MessageThreadID)
 	sess, err := w.sessionFor(key, msg)
@@ -708,9 +708,9 @@ func (w *telegramWorker) runCommand(name, args, key string, sess sessionSnapshot
 		}
 		w.updateMapping(key, result.SessionID)
 		w.sendText(msg.Chat.ID, msg.MessageThreadID, "已开启新会话。")
-	case "cwd":
+	case "cd":
 		if strings.TrimSpace(args) == "" {
-			w.sendText(msg.Chat.ID, msg.MessageThreadID, "用法：/cwd <path>")
+			w.sendText(msg.Chat.ID, msg.MessageThreadID, "用法：/cd <path>")
 			return nil
 		}
 		path := strings.TrimSpace(args)

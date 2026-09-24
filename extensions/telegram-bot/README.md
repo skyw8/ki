@@ -148,7 +148,7 @@ Telegram 的用户访问策略由 Managed Bot 在 Telegram 侧控制。扩展不
 
 - 私聊：由 Telegram Managed Bot 访问设置决定是否可用。
 - 群组：需要关闭 Privacy Mode 或将 Bot 设为管理员，才能收到所有群组消息。未 @ Bot 的消息只进入该群组 session 历史，不回复；明确 `@你的_bot` 的消息才触发 KI。扩展不维护群组白名单。
-- 支持 `/new`、`/cwd <path>`、`/compact`、`/reload`。命令不再配置独立权限，访问权限由 Telegram Managed Bot 策略决定。
+- 支持 `/new`、`/cd <path>`、`/compact`、`/reload`。命令不再配置独立权限，访问权限由 Telegram Managed Bot 策略决定。
 - 每个 chat/topic 的 session 映射键为 `telegram:<accountId>:<chatId>:<threadId>`，没有 topic 时 `threadId` 为 `0`。
 - workspace 自动创建在 `{KI_HOME}/workspace/telegram/<accountId>/chat-<chatId>/topic-<threadId>`，不同 chat/topic 不会共用目录。
 - 群组消息会带简短的发送者名称和 `user_id`，用于区分多人发言。

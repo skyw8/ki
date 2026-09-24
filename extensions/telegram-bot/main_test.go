@@ -72,11 +72,11 @@ func TestTelegramPathComponentDoesNotEscape(t *testing.T) {
 }
 
 func TestParseSlash(t *testing.T) {
-	name, args, ok := parseSlash("/cwd@ki_bot ./project")
-	if !ok || name != "cwd" || args != "./project" {
+	name, args, ok := parseSlash("/cd@ki_bot ./project")
+	if !ok || name != "cd" || args != "./project" {
 		t.Fatalf("parsed slash = %q %q %v", name, args, ok)
 	}
-	if _, _, ok := parseSlash("hello /cwd"); ok {
+	if _, _, ok := parseSlash("hello /cd"); ok {
 		t.Fatal("embedded slash must not be a command")
 	}
 }

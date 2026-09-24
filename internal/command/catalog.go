@@ -25,7 +25,7 @@ type Item struct {
 func Catalog(snapshot resources.Snapshot, skillsToggle session.Toggle) []Item {
 	out := []Item{
 		{Name: "new", Description: "Start a new session", Source: "builtin"},
-		{Name: "cwd", Description: "Start a session in another directory", ArgumentHint: "<path>", Source: "builtin"},
+		{Name: "cd", Description: "Start a session in another directory", ArgumentHint: "<path>", Source: "builtin"},
 		{Name: "compact", Description: "Compact this session's context", Source: "builtin"},
 		{Name: "reload", Description: "Reload session resources and extensions", Source: "builtin"},
 	}

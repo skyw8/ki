@@ -66,7 +66,7 @@ type SessionCreateRequest struct {
 	Metadata       map[string]any `json:"metadata,omitempty"`
 }
 
-// SessionCreateResult is returned to a channel after create/new/cwd.
+// SessionCreateResult is returned to a channel after create/new/cd.
 type SessionCreateResult struct {
 	SessionID   string         `json:"sessionId"`
 	CWD         string         `json:"cwd"`
