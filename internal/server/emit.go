@@ -55,7 +55,11 @@ func (p *runEmitter) Emit(ev loop.Event) error {
 	if err := p.persist(&ev); err != nil {
 		return err
 	}
-	p.buffer(ev)
+	// buffer stamps the run identity onto ev itself; publishCompletion and
+	// notifyExtensions below read that same event and a subscriber that cannot
+	// attribute an event to its run must drop it (a channel connector replies to
+	// nothing when runId/external are missing).
+	p.buffer(&ev)
 	if ev.Type == loop.AgentEnd {
 		p.publishCompletion(ev)
 	}
@@ -152,15 +156,22 @@ func (p *runEmitter) appendRequestHeader(ev loop.Event) error {
 	return nil
 }
 
-// buffer appends the event to this run's replay log and wakes its SSE readers.
-// Every buffered event carries the run id and the run's external metadata, so a
-// reader that starts mid-run can still attribute what it replays.
-func (p *runEmitter) buffer(ev loop.Event) {
+// buffer stamps this run's identity onto ev, appends it to the run's replay log
+// and wakes its SSE readers. Every buffered event carries the run id and the
+// run's external metadata, so a reader that starts mid-run can still attribute
+// what it replays.
+//
+// It stamps the caller's event rather than a copy, for the same reason persist
+// takes a pointer: the stages after it (the push completion frame and the
+// extension lifecycle notification) must see the identity too. Buffering a copy
+// made agent_end reach extensions with an empty runId, which channel connectors
+// read as "not mine" and silently dropped.
+func (p *runEmitter) buffer(ev *loop.Event) {
 	p.st.mu.Lock()
 	defer p.st.mu.Unlock()
 	ev.RunID = p.st.runID
 	ev.External = cloneExternal(p.st.external)
-	p.st.evs = append(p.st.evs, ev)
+	p.st.evs = append(p.st.evs, *ev)
 	p.st.wait.Broadcast()
 }
 
@@ -211,7 +222,7 @@ func (p *runEmitter) recordContextUsage(ev loop.Event) error {
 	if _, err := p.sess.AppendContextUsage(used, window, estimated); err != nil {
 		return fmt.Errorf("append context usage: %w", err)
 	}
-	p.buffer(loop.Event{
+	usage := loop.Event{
 		Type:           loop.ContextUsage,
 		Provider:       p.sess.Config.Provider,
 		Model:          p.sess.Config.Model,
@@ -219,7 +230,8 @@ func (p *runEmitter) recordContextUsage(ev loop.Event) error {
 		UsedTokens:     used,
 		ContextWindow:  window,
 		Estimated:      estimated,
-	})
+	}
+	p.buffer(&usage)
 	return nil
 }
 

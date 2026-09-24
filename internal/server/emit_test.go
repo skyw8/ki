@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/http/httptest"
 	"sync"
 	"testing"
 
@@ -12,10 +13,12 @@ import (
 
 // newEmitterForTest builds a funnel over a fresh session. Why: the funnel was
 // split out of runPrompt so its stages can be asserted directly — driving a
-// whole loop.Run just to observe a jsonl shape is what the split removed.
-func newEmitterForTest(t *testing.T) (*runEmitter, *session.Session) {
+// whole loop.Run just to observe a jsonl shape is what the split removed. hs is
+// the httptest server backing srv, for the stages that reach a subscriber over
+// HTTP (the WebUI push stream).
+func newEmitterForTest(t *testing.T) (*runEmitter, *session.Session, *httptest.Server) {
 	t.Helper()
-	srv, _ := testServer(t)
+	srv, hs := testServer(t)
 	sess, err := session.CreateWithOptions(srv.cfg.Sessions.Root, t.TempDir(), "p", "m", session.CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -27,14 +30,14 @@ func newEmitterForTest(t *testing.T) (*runEmitter, *session.Session) {
 		s: srv, ctx: t.Context(), id: sess.ID(), sess: sess, st: st,
 		info: provider.Model{ID: "m", ContextWindow: 1000},
 	}
-	return em, sess
+	return em, sess, hs
 }
 
 // TestEmitterPersistAndBuffer covers the two stages a request_header goes
 // through: the jsonl entry plus the context meter entry, and the SSE replay
 // buffer that must also carry the synthesized context_usage event.
 func TestEmitterPersistAndBuffer(t *testing.T) {
-	em, sess := newEmitterForTest(t)
+	em, sess, _ := newEmitterForTest(t)
 	ev := loop.Event{Type: loop.RequestHeader, System: "sys", Tools: []loop.ToolSpec{{Type: "function", Name: "Read"}}}
 	if err := em.Emit(ev); err != nil {
 		t.Fatal(err)
@@ -72,7 +75,7 @@ func TestEmitterPersistAndBuffer(t *testing.T) {
 // captured closure variable: only the first user message_end spends the key,
 // and the message_end event carries the appended entry id.
 func TestEmitterIdempotencyKeyConsumedOnce(t *testing.T) {
-	em, sess := newEmitterForTest(t)
+	em, sess, _ := newEmitterForTest(t)
 	em.idempotencyKey = "key-1"
 	assistant := loop.Event{Type: loop.MessageEnd, Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "hello"}}}}
 	if err := em.persist(&assistant); err != nil {
@@ -97,5 +100,27 @@ func TestEmitterIdempotencyKeyConsumedOnce(t *testing.T) {
 	}
 	if len(entries) != 2 || entries[0].IdempotencyKey != "" || entries[1].IdempotencyKey != "key-1" {
 		t.Fatalf("entries: %+v", entries)
+	}
+}
+
+// TestEmitterStampsIdentityOnCallerEvent covers the stage boundary a refactor
+// broke: buffer used to take the event by value, so only the buffered copy got
+// the run id and external metadata while the stages after it — the push
+// completion frame and the extension lifecycle notification — saw an anonymous
+// event. A channel connector drops a lifecycle event without a run id, so the
+// symptom was a bot that stopped replying at all.
+func TestEmitterStampsIdentityOnCallerEvent(t *testing.T) {
+	em, _, hs := newEmitterForTest(t)
+	em.st.external = map[string]string{"connector": "telegram-bot"}
+	events := pushEvents(t, hs, "tok")
+	if err := em.Emit(loop.Event{Type: loop.AgentEnd}); err != nil {
+		t.Fatal(err)
+	}
+	got := waitPush(t, events, "agent_end frame", func(ev pushEvent) bool { return ev.Type == loop.AgentEnd })
+	if got.RunID != "run-1" {
+		t.Fatalf("agent_end frame without the run id: %+v", got)
+	}
+	if got.External["connector"] != "telegram-bot" {
+		t.Fatalf("agent_end frame without external metadata: %+v", got)
 	}
 }
