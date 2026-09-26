@@ -92,7 +92,7 @@ func TestScanWithoutExtensionsMatchesBarePromptFields(t *testing.T) {
 // the resource snapshot, so the tools toggle/reload path is the only one that
 // has to invalidate them.
 func TestScanIncludesExtensionPathDirs(t *testing.T) {
-	home := t.TempDir()
+	home := resolvedTempDir(t)
 	cwd := t.TempDir()
 	writeFile(t, filepath.Join(home, "extensions", "pathx", "extension.json"),
 		`{"name":"pathx","capabilities":["path"],"runtime":{"kind":"none","path":["bin"]}}`)
@@ -107,6 +107,20 @@ func TestScanIncludesExtensionPathDirs(t *testing.T) {
 	if got := NewLoader(home).Scan(cwd).PathDirs; len(got) != 0 {
 		t.Fatalf("disabled package contributed PATH dirs: %v", got)
 	}
+}
+
+// resolvedTempDir returns a temp dir whose symlinks are already resolved, so
+// expectations built from it match the extension roots the loader derives:
+// t.TempDir is unresolved on macOS (/var -> /private/var) and Windows
+// short-name %TEMP%.
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
 
 func TestScanMergesExtensionPromptAndHonorsDisabled(t *testing.T) {

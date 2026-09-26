@@ -58,7 +58,7 @@ func TestDiscoverRejectsEscapingPathDirs(t *testing.T) {
 // package name, duplicate declarations collapse, and missing directories are
 // skipped because runtime.install may create them after this point.
 func TestPathDirsListsExistingDirsInChainOrder(t *testing.T) {
-	home := t.TempDir()
+	home := resolvedTempDir(t)
 	extensionsDir := filepath.Join(home, "extensions")
 	alphaDir := writePathPkg(t, extensionsDir, "alpha", `"bin","bin/"`)
 	betaDir := writePathPkg(t, extensionsDir, "beta", `"bin"`)
@@ -89,4 +89,17 @@ func TestPathDirsListsExistingDirsInChainOrder(t *testing.T) {
 	if dirs := PathDirs(disabled.Enabled); len(dirs) != 1 || dirs[0] != installed {
 		t.Fatalf("disabled package still contributed: %v", dirs)
 	}
+}
+
+// resolvedTempDir returns a temp dir whose symlinks are already resolved, so
+// expectations built from it match the roots the loader derives: t.TempDir is
+// unresolved on macOS (/var -> /private/var) and Windows short-name %TEMP%.
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
