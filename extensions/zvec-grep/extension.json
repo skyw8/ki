@@ -1,0 +1,75 @@
+{
+  "name": "zvec-grep",
+  "version": "0.1.0",
+  "description": "Local hybrid (lexical + vector) workspace search over a zvec-grep index, with index management commands.",
+  "capabilities": ["tool", "settings", "prompt.append", "command", "path"],
+  "i18n": {
+    "defaultLocale": "en",
+    "resources": {
+      "en": "locales/en.json",
+      "zh": "locales/zh.json"
+    }
+  },
+  "config": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "embedding": {
+          "type": "string",
+          "description": "Embedding model for queries and for the indexes /zg-index builds; a command flag overrides it. Remote models need credentials in zg's own config (zg config provider set)."
+        },
+        "device": {
+          "type": "string",
+          "enum": ["auto", "cpu", "metal", "vulkan", "cuda"],
+          "description": "Device for local embedding models, forwarded to /zg-index as well."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["in-process", "external-daemon"],
+          "description": "in-process loads the library inside the sidecar; external-daemon calls the zg CLI instead."
+        },
+        "maxResults": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Default item limit when the model does not pass limit."
+        },
+        "ignoredGlobs": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Path rules excluded from search, e.g. **/dist/**. Index scope is controlled by the zg-index command."
+        },
+        "searchTimeoutMs": {
+          "type": "integer",
+          "minimum": 5000,
+          "maximum": 115000,
+          "description": "Sidecar-side budget for one search, kept inside the host's 120s tool limit."
+        },
+        "notifyOnIndexComplete": {
+          "type": "boolean",
+          "description": "Deliver a short message to the session when a background index job finishes."
+        }
+      }
+    },
+    "defaults": {
+      "embedding": "local/potion-code-16m-v2",
+      "device": "auto",
+      "mode": "in-process",
+      "maxResults": 5,
+      "ignoredGlobs": [],
+      "searchTimeoutMs": 90000,
+      "notifyOnIndexComplete": false
+    }
+  },
+  "prompt": {
+    "append": ["prompt/APPEND.md"]
+  },
+  "runtime": {
+    "kind": "rpc",
+    "command": "bun",
+    "args": ["dist/main.js"],
+    "install": ["bun", "run", "setup"],
+    "path": ["node_modules/.bin"]
+  }
+}

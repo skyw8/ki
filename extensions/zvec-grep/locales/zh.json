@@ -1,0 +1,11 @@
+{
+  "index.started": "已开始为 {root} 建索引",
+  "index.scanning": "正在扫描待索引文件…",
+  "index.modelDownload": "正在准备 embedding 模型 {model}…",
+  "index.progress": "已索引 {done}/{total} 个文件（{failed} 个失败）",
+  "index.done": "{root} 索引就绪：{files} 个文件、{entities} 个实体，耗时 {seconds}s",
+  "index.failed": "{root} 建索引失败：{error}",
+  "index.removed": "已移除 {root} 的 zvec-grep 索引",
+  "confirm.drop.title": "移除 zvec-grep 索引？",
+  "confirm.drop.message": "这会删除 {root}/.zvec-grep 及其向量索引，可用 /zg-index 重建。"
+}

@@ -14,6 +14,7 @@
 - 启用开关是进程级 `{KI_HOME}/toggles.json` 的 `extensions.disabled`（缺省空 = 全开）。
 - 禁用的包仍出现在列表（`enabled: false`），但不贡献、不拉起 sidecar。
 - 目录列表和 prompt/lifecycle 链均按全局包名排序。
+- 仓库 `extensions/` 下是随源码分发的扩展包（各自带 README）；把目录安装到 `{KI_HOME}/extensions/<name>` 后由 manifest 的 `runtime.install` 构建。`internal/extension` 的测试会读取这些随包 manifest：manifest 校验失败、能力缺失或 locale key 不对齐都会让测试失败。
 
 ## 包布局
 

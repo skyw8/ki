@@ -1,0 +1,11 @@
+{
+  "index.started": "Index job started for {root}",
+  "index.scanning": "Scanning files for the zvec-grep index…",
+  "index.modelDownload": "Preparing embedding model {model}…",
+  "index.progress": "Indexing {done}/{total} files ({failed} failed)",
+  "index.done": "Index ready for {root}: {files} files, {entities} entities in {seconds}s",
+  "index.failed": "Index failed for {root}: {error}",
+  "index.removed": "Removed the zvec-grep index for {root}",
+  "confirm.drop.title": "Remove the zvec-grep index?",
+  "confirm.drop.message": "This deletes {root}/.zvec-grep and the indexed vectors. It can be rebuilt with /zg-index."
+}

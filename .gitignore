@@ -9,4 +9,6 @@ web/playwright-report
 web/blob-report
 web/playwright/.cache
 extensions/*/config.json
+# zvec-grep workspace index: binary shards, not source (would also drown rg/fd).
+.zvec-grep/
 tmp*
