@@ -1173,7 +1173,7 @@ func toolTitle(title, name string) string {
 		return "读取文件"
 	case "Write":
 		return "写入文件"
-	case "Edit", "apply_patch":
+	case "Edit":
 		return "修改文件"
 	case "Bash", "PowerShell":
 		return "执行命令"

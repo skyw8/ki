@@ -610,11 +610,6 @@ function applyEntry(s: ViewState, e: Entry, withNode = true) {
     applyMessage(s, e.message, e.id, e.timestamp, e.parentId, e.truncated, withNode)
     return
   }
-	if (e.type === 'patch_apply_updated' && e.details && typeof e.details === 'object') {
-		const details = e.details as { toolCallId?: string; toolName?: string; partialResult?: unknown }
-		if (details.toolCallId) patchApplyPreview(s, details.toolCallId, details.toolName, details.partialResult, e.timestamp)
-		return
-	}
   if (e.type === 'compaction') {
     const summary = e.summary || ''
     if (withNode) s.nodes.push({ kind: 'compaction', id: e.id, summary, tokensBefore: e.tokensBefore, truncated: e.truncated })
@@ -795,7 +790,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       durationMs: m.durationMs,
 	  startedAt,
 	  outputBlocks: m.content ?? [],
-	  details: m.details ?? (m.toolName === 'apply_patch' ? { status: 'failed', exact: true, changes: [] } : undefined),
+	  details: m.details,
       running: false,
       name: m.toolName,
       truncated,
@@ -809,15 +804,6 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
 	    }
 	  }
   }
-}
-
-function patchApplyPreview(s: ViewState, id: string, name?: string, details?: unknown, stamp?: string | number) {
-	if (!s.nodes.some(n => n.kind === 'tool' && n.id === id)) {
-		s.nodes.push({ kind: 'tool', id, name: name || 'apply_patch', details, running: true })
-		s.records.push({ id, kind: 'tool', turn: s.turn || 1, preview: name || 'apply_patch', name: name || 'apply_patch', details, running: true, startedAt: tsMs(undefined, stamp) ?? Date.now() })
-		return
-	}
-	patchTool(s, id, { name: name || 'apply_patch', details, running: true })
 }
 
 function compactArgs(args: unknown): string {
@@ -977,9 +963,6 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
           : r)
       }
       break
-	case 'patch_apply_updated':
-		if (ev.toolCallId) patchApplyPreview(next, ev.toolCallId, ev.toolName, ev.partialResult)
-		break
     case 'compaction_start':
     case 'compaction_end': {
       // id is not part of the wire event; match by kind+order on the live path.
@@ -1024,7 +1007,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
           running: false,
           durationMs: ev.durationMs,
           name: ev.toolName,
-		  details: resultDetails ?? (ev.toolName === 'apply_patch' ? { status: 'failed', exact: true, changes: [] } : undefined),
+		  details: resultDetails,
         })
       }
       break

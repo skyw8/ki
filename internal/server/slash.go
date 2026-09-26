@@ -82,11 +82,11 @@ func (s *Server) getSkills(w http.ResponseWriter, r *http.Request) {
 
 // getTools returns the built-in tool catalog for the selected session/model.
 // The global toggle is still shared across sessions; the model only controls
-// capability-dependent entries such as Write/Edit versus apply_patch.
+// the rich/text Read mode, since every model edits with Write/Edit.
 func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
-	profile := tools.Profile{Editor: tools.EditorWriteEdit}
+	var profile tools.Profile
 	if sessionID != "" {
 		sess, err := s.open(sessionID)
 		if err != nil {
@@ -101,9 +101,6 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		profile.RichRead = slices.Contains(info.Input, "image")
-		if info.ApplyPatchToolType == "freeform" {
-			profile.Editor = tools.EditorApplyPatch
-		}
 		// Why this catalog does not resolve Agent depth: the tool list shown to
 		// clients must match the tool list sent to the provider, which is
 		// deliberately independent of the session's Agent depth. A deep session
@@ -114,9 +111,6 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 		// if the provider catalog is not configured yet.
 		if _, info, ok := s.registry.FindModel(ref.Provider, ref.Model); ok {
 			profile.RichRead = slices.Contains(info.Input, "image")
-			if info.ApplyPatchToolType == "freeform" {
-				profile.Editor = tools.EditorApplyPatch
-			}
 		}
 	}
 	if cwd == "" {

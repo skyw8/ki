@@ -386,10 +386,12 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.AppendRequestHeader("sys-body", []ToolSchema{{
-		Type: "custom", Name: "apply_patch", Description: "patch", Format: &ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"},
+		Name: "Edit", Description: "edit",
 	}}); err != nil {
 		t.Fatal(err)
 	}
+	// Legacy history may still contain a Responses custom (freeform) tool call;
+	// it must round-trip through the jsonl even though no built-in emits one now.
 	if _, err := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "c1", Name: "apply_patch", Input: "PATCH"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +414,7 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 			hdr = &e
 		}
 	}
-	if hdr == nil || hdr.System != "sys-body" || len(hdr.Tools) != 1 || hdr.Tools[0].Name != "apply_patch" || hdr.Tools[0].Type != "custom" || hdr.Tools[0].Format == nil {
+	if hdr == nil || hdr.System != "sys-body" || len(hdr.Tools) != 1 || hdr.Tools[0].Name != "Edit" {
 		t.Fatalf("header: %+v", hdr)
 	}
 	messages := s2.MessagesToLeaf()
@@ -560,7 +562,7 @@ func TestCompactionEventsPersist(t *testing.T) {
 	if _, err := s.AppendEvent("compaction_start", "overflow", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AppendDetailsEvent("patch_apply_updated", map[string]any{"toolCallId": "call-1", "partialResult": map[string]any{"changes": []any{map[string]any{"path": "a.txt"}}}}); err != nil {
+	if _, err := s.AppendDetailsEvent("tool_details", map[string]any{"toolCallId": "call-1", "partialResult": map[string]any{"changes": []any{map[string]any{"path": "a.txt"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	hist := s.MessagesToLeaf() // must ignore event entries
@@ -585,7 +587,7 @@ func TestCompactionEventsPersist(t *testing.T) {
 				t.Fatalf("details: %+v", e.Details)
 			}
 		}
-		if e.Type == "patch_apply_updated" {
+		if e.Type == "tool_details" {
 			previewFound = true
 			if d, ok := e.Details.(map[string]any); !ok || d["toolCallId"] != "call-1" {
 				t.Fatalf("preview details: %+v", e.Details)
@@ -596,7 +598,7 @@ func TestCompactionEventsPersist(t *testing.T) {
 		t.Fatal("compaction_start not persisted")
 	}
 	if !previewFound {
-		t.Fatal("patch preview event missing after reopen")
+		t.Fatal("details event missing after reopen")
 	}
 }
 

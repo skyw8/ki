@@ -9,21 +9,12 @@ import (
 	"ki/internal/session"
 )
 
-// Editor selects the mutually exclusive model-visible editing interface.
-type Editor string
-
-const (
-	// EditorWriteEdit exposes Write and Edit tools for ordinary function APIs.
-	EditorWriteEdit Editor = "write_edit"
-	// EditorApplyPatch exposes the freeform apply_patch tool for Responses.
-	EditorApplyPatch Editor = "apply_patch_freeform"
-)
-
 // Profile is the provider-neutral subset of model capabilities that affects
 // built-in tool exposure. The server derives it from the resolved model.
+// Every model gets the same editing interface (Write/Edit), so the built-in
+// tool set is provider-independent apart from rich Read.
 type Profile struct {
 	RichRead bool
-	Editor   Editor
 }
 
 // Set binds built-in tools to a session cwd.
@@ -73,11 +64,7 @@ func (s Set) Build(profile Profile) []loop.Tool {
 		shells.powerShell = &powerShell
 	}
 	out := []loop.Tool{readTool{cwd: cwd, rich: profile.RichRead, ops: s.ReadOps}}
-	if profile.Editor == EditorApplyPatch {
-		out = append(out, applyPatchTool{cwd: cwd, mutations: s.Mutations})
-	} else {
-		out = append(out, writeTool{cwd: cwd, mutations: s.Mutations}, editTool{cwd: cwd, mutations: s.Mutations})
-	}
+	out = append(out, writeTool{cwd: cwd, mutations: s.Mutations}, editTool{cwd: cwd, mutations: s.Mutations})
 	out = append(out,
 		grepTool{cwd: cwd},
 		globTool{cwd: cwd},

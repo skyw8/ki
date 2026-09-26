@@ -327,7 +327,6 @@ export type ModelInfo = {
   contextWindow?: number
 	maxTokens?: number
 	input?: string[]
-	applyPatchToolType?: 'freeform'
 	reasoning?: boolean
 	thinkingLevels?: string[]
 	defaultThinking?: string
@@ -343,7 +342,6 @@ export type ProviderModel = Omit<ModelInfo, 'spec' | 'thinkingLevels' | 'default
 	baseUrl: string
 	cost?: { input: number; output: number; cacheRead: number; cacheWrite: number } | null
 	thinkingLevelMap?: Record<string, string | null>
-	applyPatchToolType?: 'freeform'
 	compat?: Record<string, unknown>
 }
 

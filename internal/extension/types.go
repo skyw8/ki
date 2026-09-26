@@ -274,7 +274,7 @@ func (NopInterceptor) OnEvent(context.Context, Event) error { return nil }
 type ErrorFunc func(sessionID, name, capability, code, message string)
 
 var reservedToolNames = map[string]bool{
-	"Read": true, "Write": true, "Edit": true, "apply_patch": true,
+	"Read": true, "Write": true, "Edit": true,
 	"Grep": true, "Glob": true, "Bash": true, "PowerShell": true,
 	"TaskOutput": true, "TaskStop": true, "Monitor": true,
 }

@@ -18,7 +18,7 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 - `{KI_HOME}/models.json` 保存上次选用的模型、自定义 provider/model 和内置项覆盖；`{KI_HOME}/credentials.json` 保存 API key 或 provider-owned opaque credential（0600）。密钥解析顺序为 credentials 文件再到 provider 环境变量，API 从不返回明文。
 - registry 按嵌入目录 → 用户配置合并，并在校验成功、原子替换文件后发布新快照。provider/model 可新增、禁用和删除；内置项删除覆盖即恢复基线。上次选用不可用时落到第一个有凭据的可用模型，再不行落到目录里第一个启用项；没有「钉死不能禁用」的 default。
 - provider 和模型可选 `completions` / `responses` / `anthropic`，模型可覆盖 provider 的 API/Base URL。Google 使用官方 OpenAI-compatible 入口。扩展 provider 的 `defaultModel` 只是可选偏好；缺失、被删除或被禁用时，自动使用第一个启用模型。
-- 模型的 `input` 声明输入模态；可选 `applyPatchToolType=freeform` 声明 Codex grammar-backed `apply_patch`。freeform custom tool 只允许配置在 Responses 模型上，避免生成协议无法表达的工具调用。
+- 模型的 `input` 声明输入模态。所有模型共用同一套内置工具：编辑一律是 `Write` / `Edit`，不再有按协议切换的 freeform 编辑器，也不再向 provider 声明 custom（freeform）工具。
 
 配置入口是 `GET/POST/PATCH/DELETE /v1/providers` 及其 `/credential`、`/models` 子资源。创建会话、改模型或发 prompt 会把当前模型记进 `models.json` 的 last-used；`PUT /v1/default-model` 仍可显式写入同一字段。`GET /v1/models` 是同一 registry 的扁平可选视图，不存在第二份目录。
 
@@ -32,7 +32,7 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 - `thinkingEffort` 使用 `off/minimal/low/medium/high/xhigh/max`，按模型映射到 OpenAI effort、Qwen `enable_thinking`、DeepSeek/Z.AI `thinking` 或 Anthropic adaptive/budget 形状。未指定时用该模型的 default thinking（优先 `medium`）。切换模型时夹到最近的可用等级，而不是回到 default。`GET /v1/models` 每项带 `thinkingLevels` 与 `defaultThinking`。
 - usage 先归一为互斥的 uncached input/cache read/cache write/output，再按目录每百万 token 单价计算；`cost=null` 表示未知而不是免费。长上下文 tier 命中最高阈值。DeepSeek 官方有高峰/空闲两套价，内置目录用高峰（空闲是一半）；目录不按时段切换。
 - 流式工具参数：function 碎片拼成完整 JSON 再 `Unmarshal`；Responses custom tool 的 `response.custom_tool_call_input.*` 保留原始文本，并把 delta、call ID 和工具名交给 loop 的参数预览消费者。回放时严格保持 function/custom 的 call-output 配对。
-- 只有 Responses 能表达 custom（freeform）工具调用。Completions / Anthropic 的请求编码会把这类历史降级：custom call 重写成同名 function call，arguments 是 `{"input": <原始文本>}`，同一 call id 和它后面的 tool result 原样保留；没有对应 call 的孤立 tool result 直接丢弃。避免跨协议继续一段 freeform 历史时整条请求被网关拒绝。
+- 新会话不再产生 custom（freeform）工具调用；但遗留历史里可能还有。Responses 能原生回放这类 item（`custom_tool_call` / `custom_tool_call_output` 成对保留）；Completions / Anthropic 的请求编码会把它们降级：custom call 重写成同名 function call，arguments 是 `{"input": <原始文本>}`，同一 call id 和它后面的 tool result 原样保留，没有对应 call 的孤立 tool result 直接丢弃。避免跨协议继续一段 freeform 历史时整条请求被网关拒绝。
 - Responses 文本消息兼容少数网关缺失 `message.id` 的返回：优先用 `item_id`，其次用 `output_index` 或唯一未关闭文本项关联；function call、custom tool 和 reasoning 仍要求有效 item ID，以保证无状态回放。
 - 确定性的请求/协议错误（普通 4xx、缺失终止事件、非法 SSE、请求体校验失败）不重试；网络错误、408/409/425/429、5xx，以及兼容网关明确返回的瞬时 `bad_response_status_code` 才进入 loop 的退避重试。三种协议的请求体校验失败都在发送前返回 `nonRetryableError`，否则 loop 会按退避静默重试约 60 秒，用户只看到“没有回复”。
 - Completions 对齐 Chat Completions wire contract：OpenAI provider 使用 `max_completion_tokens` 和 `stream_options.include_usage`；`prompt_tokens` 与 `prompt_tokens_details.cached_tokens` 原样接收，成本计算时再拆成 uncached input/cache read。SSE 消费 `choices[].delta` 的 content/refusal/tool_calls（以及兼容旧网关的 `function_call`），按 `tool_calls[].index` 累积 arguments，并处理 `stop`、`length`、`tool_calls`、`function_call`、`content_filter`。

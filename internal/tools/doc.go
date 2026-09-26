@@ -1,6 +1,6 @@
-// Package tools implements model-aware built-ins: Read, Write, Edit,
-// apply_patch, Grep, Glob, Bash, PowerShell, Agent, SendMessage, TaskOutput,
-// TaskStop, and Monitor.
+// Package tools implements model-aware built-ins: Read, Write, Edit, Grep,
+// Glob, Bash, PowerShell, Agent, SendMessage, TaskOutput, TaskStop, and
+// Monitor.
 //
 // Wire names and input schemas follow Claude Code. Text results follow pi
 // (no cat -n; shell tools mix stdout/stderr; non-zero exit is an error). Relative
@@ -59,12 +59,9 @@
 // extensions can contribute their own PATH directories (Set.PathDirs, from the
 // session's resource snapshot); those follow the bundled directory and are
 // re-prepended by the same shim from KI_EXTENSION_PATH_DIRS.
-// Set.Build selects a text/rich Read and exactly one editor family from the
-// provider-neutral Profile. apply_patch uses the Codex freeform patch grammar,
-// verifies the complete patch before its first write, preserves mixed line
-// endings, tracks the definitely committed prefix on failure, and exposes
-// throttled argument previews without placing structured details in model
-// context. The server applies FilterBuiltins with the global tools toggle
+// Set.Build selects a text/rich Read; every model edits through the same
+// Write/Edit pair, so the built-in tool set does not depend on the provider
+// protocol. The server applies FilterBuiltins with the global tools toggle
 // before appending extension tools.
 //
 // Parameter and result tables: docs/tools.md.

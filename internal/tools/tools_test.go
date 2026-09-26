@@ -36,10 +36,10 @@ func names(ts []loop.Tool) []string {
 	return out
 }
 
-func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
+func TestBuildSelectsReadCapabilities(t *testing.T) {
 	shells := DiscoverShellRuntime()
 	set := Set{CWD: t.TempDir(), Shells: shells}
-	classic := set.Build(Profile{Editor: EditorWriteEdit})
+	classic := set.Build(Profile{})
 	wantClassic := []string{"Read", "Write", "Edit", "Grep", "Glob"}
 	if shells.BashAvailable() {
 		wantClassic = append(wantClassic, "Bash")
@@ -63,31 +63,23 @@ func TestBuildSelectsReadAndEditorCapabilities(t *testing.T) {
 		t.Fatalf("text Read leaked rich capabilities: %s %+v", textRead.Prompt(), textRead.Parameters())
 	}
 
-	patch := set.Build(Profile{RichRead: true, Editor: EditorApplyPatch})
-	wantPatch := []string{"Read", "apply_patch", "Grep", "Glob"}
+	rich := set.Build(Profile{RichRead: true})
+	wantRich := []string{"Read", "Write", "Edit", "Grep", "Glob"}
 	if shells.BashAvailable() {
-		wantPatch = append(wantPatch, "Bash")
+		wantRich = append(wantRich, "Bash")
 	}
 	if shells.PowerShellEnabled() {
-		wantPatch = append(wantPatch, "PowerShell")
+		wantRich = append(wantRich, "PowerShell")
 	}
-	wantPatch = append(wantPatch, "TaskOutput", "TaskStop")
+	wantRich = append(wantRich, "TaskOutput", "TaskStop")
 	if shells.BashAvailable() {
-		wantPatch = append(wantPatch, "Monitor")
+		wantRich = append(wantRich, "Monitor")
 	}
-	if got := strings.Join(names(patch), ","); got != strings.Join(wantPatch, ",") {
-		t.Fatalf("patch tools = %s", got)
+	if got := strings.Join(names(rich), ","); got != strings.Join(wantRich, ",") {
+		t.Fatalf("rich tools = %s", got)
 	}
-	if !strings.Contains(pick(patch, "Read").Prompt(), "PDF") {
+	if !strings.Contains(pick(rich, "Read").Prompt(), "PDF") {
 		t.Fatal("rich Read omitted PDF capability")
-	}
-	provider, ok := pick(patch, "apply_patch").(loop.ToolSpecProvider)
-	if !ok {
-		t.Fatal("apply_patch does not provide a custom tool spec")
-	}
-	spec := provider.ToolSpec()
-	if spec.Type != "custom" || spec.Format == nil || spec.Format.Syntax != "lark" {
-		t.Fatalf("apply_patch spec = %+v", spec)
 	}
 }
 
@@ -95,7 +87,7 @@ func TestFilterBuiltinsHonorsToggle(t *testing.T) {
 	store := NewAgentStore()
 	defer store.Close()
 	set := Set{CWD: t.TempDir(), Agent: fakeAgentRuntime{store: store}}
-	all := set.Build(Profile{Editor: EditorWriteEdit})
+	all := set.Build(Profile{})
 	filtered := FilterBuiltins(all, session.Toggle{Disabled: []string{"Read", "Agent"}})
 	if pick(filtered, "Read") != nil {
 		t.Fatal("Read was not disabled")
@@ -111,7 +103,7 @@ func TestFilterBuiltinsHonorsToggle(t *testing.T) {
 func TestBuildPowerShellContract(t *testing.T) {
 	ps := shellSpec{kind: shellPowerShell, path: "pwsh", powerShellEdition: powerShellCore}
 	shells := ShellRuntime{bash: shellSpec{kind: shellBash}, powerShell: &ps}
-	all := Set{CWD: t.TempDir(), Shells: shells}.Build(Profile{Editor: EditorWriteEdit})
+	all := Set{CWD: t.TempDir(), Shells: shells}.Build(Profile{})
 	if pick(all, "Bash") != nil || pick(all, "Monitor") != nil {
 		t.Fatalf("Bash-dependent tools registered without Bash: %v", names(all))
 	}
@@ -153,65 +145,10 @@ func TestTextReadRejectsImageAndPDF(t *testing.T) {
 	}
 }
 
-func TestApplyPatchAddUpdateMoveDelete(t *testing.T) {
-	cwd := t.TempDir()
-	tool := applyPatchTool{cwd: cwd}
-	add := tool.ExecuteRaw(context.Background(), "*** Begin Patch\n*** Add File: a.txt\n+one\n+two\n*** End Patch")
-	if add.IsError {
-		t.Fatalf("add: %+v", add)
-	}
-	update := tool.ExecuteRaw(context.Background(), "*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+ONE\n two\n*** Move to: ignored.txt\n*** End Patch")
-	if !update.IsError {
-		t.Fatal("move marker after chunks must be rejected")
-	}
-	move := tool.ExecuteRaw(context.Background(), "*** Begin Patch\n*** Update File: a.txt\n*** Move to: sub/b.txt\n@@\n-one\n+ONE\n two\n*** End Patch")
-	if move.IsError {
-		t.Fatalf("move: %+v", move)
-	}
-	b, err := os.ReadFile(filepath.Join(cwd, "sub", "b.txt")) //nolint:gosec // path is inside the isolated test directory
-	if err != nil || string(b) != "ONE\ntwo\n" {
-		t.Fatalf("moved file = %q err=%v", b, err)
-	}
-	if _, err := os.Stat(filepath.Join(cwd, "a.txt")); !os.IsNotExist(err) {
-		t.Fatalf("source still exists: %v", err)
-	}
-	del := tool.ExecuteRaw(context.Background(), "*** Begin Patch\n*** Delete File: sub/b.txt\n*** End Patch")
-	if del.IsError {
-		t.Fatalf("delete: %+v", del)
-	}
-}
-
-func TestApplyPatchPreservesCRLFAndMatchesWhitespace(t *testing.T) {
-	cwd := t.TempDir()
-	path := filepath.Join(cwd, "a.txt")
-	if err := os.WriteFile(path, []byte("  one  \r\ntwo\r\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	res := (applyPatchTool{cwd: cwd}).ExecuteRaw(context.Background(), "*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+ONE\n two\n*** End Patch")
-	if res.IsError {
-		t.Fatalf("patch: %+v", res)
-	}
-	b, _ := os.ReadFile(path) //nolint:gosec // path is inside the isolated test directory
-	if string(b) != "ONE\r\ntwo\r\n" {
-		t.Fatalf("preserved file = %q", b)
-	}
-}
-
-func TestApplyPatchRejectsMalformedInputWithoutWriting(t *testing.T) {
-	cwd := t.TempDir()
-	res := (applyPatchTool{cwd: cwd}).ExecuteRaw(context.Background(), "*** Begin Patch\n*** Add File: bad.txt\nmissing plus\n*** End Patch")
-	if !res.IsError || !strings.Contains(res.Content[0].Text, "verification failed") {
-		t.Fatalf("malformed patch = %+v", res)
-	}
-	if _, err := os.Stat(filepath.Join(cwd, "bad.txt")); !os.IsNotExist(err) {
-		t.Fatalf("malformed patch wrote file: %v", err)
-	}
-}
-
 func TestReadWriteEditRelativeAndNoLineNumbers(t *testing.T) {
 	cwd := t.TempDir()
 	set := Set{CWD: cwd, Jobs: NewJobStore()}
-	all := set.Build(Profile{RichRead: true, Editor: EditorWriteEdit})
+	all := set.Build(Profile{RichRead: true})
 	read, write, edit := pick(all, "Read"), pick(all, "Write"), pick(all, "Edit")
 	res := write.Execute(context.Background(), map[string]any{
 		"file_path": "a.txt",
@@ -254,7 +191,7 @@ func TestGrepAndGlobTools(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cwd, "src", "main.go"), []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	set := Set{CWD: cwd}.Build(Profile{Editor: EditorWriteEdit})
+	set := Set{CWD: cwd}.Build(Profile{})
 	grep, glob := pick(set, "Grep"), pick(set, "Glob")
 
 	grepResult := grep.Execute(context.Background(), map[string]any{
@@ -546,7 +483,7 @@ func TestBashBackgroundAndRead(t *testing.T) {
 	cwd := t.TempDir()
 	jobs := NewJobStore()
 	set := Set{CWD: cwd, Jobs: jobs}
-	all := set.Build(Profile{Editor: EditorWriteEdit})
+	all := set.Build(Profile{})
 	bash, read := pick(all, "Bash"), pick(all, "Read")
 	res := bash.Execute(context.Background(), map[string]any{
 		"command":           "echo bg-out",
@@ -579,7 +516,7 @@ func TestBashForegroundTruncationSpillsAndReadCanPage(t *testing.T) {
 	cwd := t.TempDir()
 	jobs := NewJobStore()
 	defer jobs.Close()
-	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{Editor: EditorWriteEdit})
+	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{})
 	bash, read := pick(all, "Bash"), pick(all, "Read")
 	result := bash.Execute(context.Background(), map[string]any{
 		"command": "i=1; while [ $i -le 3000 ]; do printf 'line-%04d\\n' \"$i\"; i=$((i+1)); done",
@@ -644,7 +581,7 @@ func TestTaskOutputAndTaskStopLifecycle(t *testing.T) {
 	cwd := t.TempDir()
 	jobs := NewJobStore()
 	defer jobs.Close()
-	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{Editor: EditorWriteEdit})
+	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{})
 	bash := pick(all, "Bash")
 	outputTool := pick(all, "TaskOutput")
 	stopTool := pick(all, "TaskStop")
@@ -691,7 +628,7 @@ func TestTaskOutputAndTaskStopLifecycle(t *testing.T) {
 func TestTaskOutputKeepsLargeLogsOnDisk(t *testing.T) {
 	jobs := NewJobStore()
 	defer jobs.Close()
-	all := Set{CWD: t.TempDir(), Jobs: jobs}.Build(Profile{Editor: EditorWriteEdit})
+	all := Set{CWD: t.TempDir(), Jobs: jobs}.Build(Profile{})
 	bash, outputTool := pick(all, "Bash"), pick(all, "TaskOutput")
 	started := bash.Execute(context.Background(), map[string]any{"command": "i=1; while [ $i -le 8000 ]; do printf 'task-%05d\\n' \"$i\"; i=$((i+1)); done", "run_in_background": true})
 	id := strings.Fields(strings.Split(started.Content[0].Text, "\n")[0])[3]
@@ -826,7 +763,7 @@ func TestBashWritesItsLogIntoTheSessionSpool(t *testing.T) {
 	dir := t.TempDir()
 	jobs := NewSpooledJobStore(fakeSpool{dir: dir}, "session-1")
 	defer jobs.Close()
-	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{Editor: EditorWriteEdit})
+	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{})
 	bash := pick(all, "Bash")
 	res := bash.Execute(context.Background(), map[string]any{"command": "echo spooled-out"})
 	if res.IsError {

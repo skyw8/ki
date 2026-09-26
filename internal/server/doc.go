@@ -58,8 +58,7 @@
 // files; preview=1 streams authenticated image, plain-text/code, and PDF
 // previews for the attachment picker. POST creates directories.
 // Session attachment uploads are content-addressed under that session dir.
-// request_header, context_usage, and streamed apply_patch preview events
-// persist on jsonl/SSE.
+// request_header and context_usage persist on jsonl/SSE.
 // Non-/v1 paths serve the SPA. Unknown non-asset paths also serve index.html
 // in place (do not 302 to "/": port-forwards would leave the page blank).
 // Every text response (SPA assets and /v1 JSON) is gzipped except

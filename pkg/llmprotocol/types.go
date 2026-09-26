@@ -104,20 +104,11 @@ type AssistantDelta struct {
 	Partial    Message `json:"partial"`
 }
 
-// ToolSpec describes a function or custom tool exposed to a provider.
+// ToolSpec describes a function tool exposed to a provider.
 type ToolSpec struct {
-	Type        string         `json:"type,omitempty"`
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
-	Format      *ToolFormat    `json:"format,omitempty"`
-}
-
-// ToolFormat describes the grammar accepted by a Responses custom tool.
-type ToolFormat struct {
-	Type       string `json:"type"`
-	Syntax     string `json:"syntax"`
-	Definition string `json:"definition"`
 }
 
 // Request is one provider call. Provider-specific request options are kept

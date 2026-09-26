@@ -25,7 +25,6 @@ sideband 事件可以并发到达。
 | 请求 | `request_header`、`context_usage` | 面向模型的 system/tools 快照和上下文压力。 |
 | 消息 | `message_start`、`message_update`、`message_end` | 用户、assistant、tool result 消息；assistant 增量通过 update 流式发送。 |
 | 工具执行 | `tool_execution_start`、`tool_execution_update`、`tool_execution_end` | 工具开始、进度和结束。 |
-| Patch 预览 | `patch_apply_updated` | `apply_patch` 参数仍在生成时的非执行预览。 |
 | 压缩 | `compaction_start`、`compaction_end` | preflight、overflow recovery、threshold，以及手动 `/compact` 压缩。 |
 | 队列和控制 | `queue_changed`、`steer_accepted`、`run_aborted` | 队列变化、实时 Inbox 接收和中止；`steer_accepted` 不是 JSONL leaf（run 在 drain 前被 abort 时，待处理 steer 会作为未回复的 user turn 落盘）。parent 的 run 还活着时，子代理完成通知也走这条 Inbox 路径（于是它以 `steer_accepted` 先到 push、随后由 drain 产生 `message_*`），run 已结束才落到 `queue_changed` + durable queue。 |
 | 扩展 UI/状态 | `extension_error`、`extension_notice`、`extension_ui_prompt` | 扩展失败、toast，或 WebUI 确认/选择弹层。 |
@@ -41,8 +40,8 @@ sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` �
 「这个 session 结束了」。因此 push 可以丢帧而不影响正确性：状态永远由 REST
 重取得出，`ready`/重连后的一次全量刷新即可追平。
 
-`message_end`、`request_header`、`context_usage`、压缩事件、工具进度、
-Patch 预览和部分 sideband 会按各自的 server 路径持久化。并非每个 SSE
+`message_end`、`request_header`、`context_usage`、压缩事件、工具进度
+和部分 sideband 会按各自的 server 路径持久化。并非每个 SSE
 事件都会推进 conversation leaf。
 
 `tool_execution_start` 带 `timestamp`（Unix 毫秒）作为调用开始时间；
@@ -75,7 +74,7 @@ partial 当作成功回复。
 表示 Host 不等待扩展完成外部 I/O，不表示事件可以乱序。
 
 `tool_execution_update`、`context_usage`、
-`patch_apply_updated`、`extension_error`、`extension_notice`、
+`extension_error`、`extension_notice`、
 `extension_ui_prompt`、`runtime_ready` 和 `extension_ui_updated` 不是
 lifecycle 订阅点。
 
@@ -174,7 +173,7 @@ alt 接受
       Provider --> Loop: assistant deltas
       Loop -> Extension: lifecycle.event after_provider_response
       Loop -> SSE: message_start
-      Loop -> SSE: message_update* / patch_apply_updated*
+      Loop -> SSE: message_update*
       Loop -> Extension: lifecycle.invoke message_end
       Extension --> Loop: 可选的最终 message 替换
       Loop -> JSONL: message_end

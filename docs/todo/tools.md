@@ -28,7 +28,7 @@
 ### 文件变更与并发
 
 - [x] 文件工具结果增加机器可读状态，同时保留简短的模型可读摘要（见 `docs/tools.md` details）。
-- [x] 同一路径的 `Write` / `Edit` / `apply_patch` 经 mutation queue 串行；只读工具仍可并行。
+- [x] 同一路径的 `Write` / `Edit` 经 mutation queue 串行；只读工具仍可并行。
 - [ ] 为取消、timeout、后台完成和长任务建立跨工具统一的结构化事件。
 
 ### 可选工具

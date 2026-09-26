@@ -103,11 +103,6 @@ func (p *runEmitter) persist(ev *loop.Event) error {
 		if _, err := p.sess.AppendEvent(string(ev.Type), string(progress), true); err != nil {
 			return fmt.Errorf("append tool progress: %w", err)
 		}
-	case loop.PatchApplyUpdated:
-		details := map[string]any{"toolCallId": ev.ToolCallID, "toolName": ev.ToolName, "partialResult": ev.PartialResult}
-		if _, err := p.sess.AppendDetailsEvent(string(ev.Type), details); err != nil {
-			return fmt.Errorf("append patch preview: %w", err)
-		}
 	}
 	return nil
 }
@@ -137,11 +132,7 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 func (p *runEmitter) appendRequestHeader(ev loop.Event) error {
 	tools := make([]session.ToolSchema, 0, len(ev.Tools))
 	for _, t := range ev.Tools {
-		var format *session.ToolFormat
-		if t.Format != nil {
-			format = &session.ToolFormat{Type: t.Format.Type, Syntax: t.Format.Syntax, Definition: t.Format.Definition}
-		}
-		tools = append(tools, session.ToolSchema{Type: t.Type, Name: t.Name, Description: t.Description, Parameters: t.Parameters, Format: format})
+		tools = append(tools, session.ToolSchema{Name: t.Name, Description: t.Description, Parameters: t.Parameters})
 	}
 	meta := session.RequestMeta{
 		Provider:       p.sess.Config.Provider,

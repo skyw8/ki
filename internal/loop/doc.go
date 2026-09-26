@@ -5,12 +5,11 @@
 //
 // Events follow pi names: agent_*, turn_*, message_*, tool_execution_*,
 // compaction_start/end (reason + ok), plus request_header (system + tools
-// snapshot after turn_start, before stream) and patch_apply_updated for
-// syntax-only previews of streamed apply_patch arguments.
+// snapshot after turn_start, before stream).
 // Tool execution start/end events carry Unix-millisecond timestamps and the
 // end event carries durationMs; the same duration is persisted on toolResult.
-// Tool specs default to JSON functions; ToolSpecProvider and FreeformTool add
-// grammar-backed custom tools without changing existing function executors.
+// Every built-in tool is a JSON function; Results follow the tool contract
+// (internal/tools/doc.go).
 // Config.OutputStore bounds every model-facing tool result at the single
 // boundary after the AfterTool hook: oversized text is written to the session
 // spill store and replaced by a bounded preview plus a reference in details, so

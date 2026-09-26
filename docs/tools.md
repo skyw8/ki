@@ -1,6 +1,6 @@
 # 工具契约
 
-普通工具的对外名字和 input schema 跟 Claude Code；文本结果跟 pi。内置工具由已解析模型对应的 `ToolProfile` 选择，包入口见 `internal/tools/doc.go`。
+普通工具的对外名字和 input schema 跟 Claude Code；文本结果跟 pi。内置工具由 `internal/tools.Set.Build` 构造，包入口见 `internal/tools/doc.go`。所有模型共用同一套内置工具（`Write` + `Edit` 编辑）；只有 `Read` 会按模型是否支持图片在富/文本两种模式间切换，而且这发生在 system prompt 组装阶段（见 [architecture.md](architecture.md)）。
 
 ## 输出溢出
 
@@ -30,7 +30,7 @@ Bash、PowerShell、Monitor 的完整输出文件也由该 store 创建：任务
 
 ## 全局开关
 
-内置工具的全局启用状态保存在 `{KI_HOME}/toggles.json` 的 `tools.disabled`。`GET/PATCH /v1/tools` 提供目录和开关；目录按当前 session 的模型能力生成，因此 Responses 的 freeform 模型显示 `apply_patch`，普通模型显示 `Write` / `Edit`。保存的名称仍是全局的，切换模型后同名设置继续生效。开关在下一次 occupy 生效；已在运行的请求继续使用其 request header 中固定的工具集。
+内置工具的全局启用状态保存在 `{KI_HOME}/toggles.json` 的 `tools.disabled`。`GET/PATCH /v1/tools` 提供目录和开关；目录按当前 session 的模型能力生成，所有模型都暴露 `Write` / `Edit`（没有按 provider 切换的编辑器），只有 `Read` 在图片模型上带 `pages`。保存的名称仍是全局的，切换模型后同名设置继续生效。开关在下一次 occupy 生效；已在运行的请求继续使用其 request header 中固定的工具集。
 
 这套开关只过滤 `internal/tools.Set.Build` 产生的内置工具，扩展工具仍由 extension 的启用状态和 session 生命周期控制。
 
@@ -43,7 +43,6 @@ Bash、PowerShell、Monitor 的完整输出文件也由该 store 创建：任务
 | `Read` | 文本模型：`file_path`、可选行分页 `offset` / `limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
 | `Write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 Read |
 | `Edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。模型只看到简短摘要，diff/patch 在 details |
-| `apply_patch` | Responses custom freeform + Lark grammar | Codex 补丁格式：新增、删除、更新、移动；模型只收到 `A/M/D` 摘要或短错误，实际 diff 在 details |
 | `Grep` | `pattern`、`path`、`glob`、`output_mode`、`respect_gitignore`、上下文/分页/类型参数 | 基于内置 ripgrep；默认尊重 `.gitignore`；支持 partial results、JSON/NUL 解析、EAGAIN 降级、正则、取消/超时和统计元数据 |
 | `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
@@ -80,25 +79,11 @@ Bash、PowerShell、Monitor 的完整输出文件也由该 store 创建：任务
 - `edits: [{old_string,new_string}]` 是互斥的批量模式：每项在同一份原文中必须唯一且各匹配区间不得重叠，最终只写一次文件。
 - 基于原始字节做精确替换，未触及的 BOM 和换行符保持不变。
 - 模型可见 content 只有替换数量和路径；展示 diff、统一 patch 和首个变更行保存在 tool-result details，不进入 provider context。
-- 仅未启用 freeform `apply_patch` 的模型注册，与 `apply_patch` 不同时出现。
 
 ## 文件变更并发
 
-- server 共享按规范化主机绝对路径索引的 mutation queue；同一路径的 `Write`、`Edit`、`apply_patch` 串行，不同路径仍可并行。
-- `apply_patch` 对源路径和移动目标路径排序加锁以避免死锁，但仍保持现有逐文件应用语义。
+- server 共享按规范化主机绝对路径索引的 mutation queue；同一路径的 `Write`、`Edit` 串行，不同路径仍可并行。
 - 等待路径锁及每个目录创建、读取、写入步骤前后检查取消；当前文件操作返回后才释放锁。
-
-## apply_patch
-
-- 仅 `applyPatchToolType=freeform` 的模型注册，与 `Write`、`Edit` 不同时出现。
-- 使用 Codex 的 `*** Begin Patch` / `*** End Patch` 格式，支持新增、删除、更新和移动文件。
-- 路径通过 `filepath` 相对 session cwd 解析；源路径和 move 目标继续使用主机绝对路径与共享 mutation queue，不引入远程 filesystem 或 environment ID。
-- 第一次写盘前解析并预检整份 patch：读取 delete/update 原文、定位全部 hunk、计算新内容和 unified diff，并拒绝多个操作指向同一规范化源路径。预检不是跨文件事务；I/O 失败仍可能只提交前缀。
-- 执行按 patch 顺序记录 committed delta。失败 details 包含已经确认的变更和 `exact`；写入失败可能已截断目标，因此标为不精确，move 删除源失败则保留已经写入目标的 add。
-- 完整旧/新内容只在执行期内存中用于生成实际 diff；持久化 details 只有 `status`、`exact` 以及有序的 path/kind/move_path/unified_diff，不进入 provider context。
-- 更新保留未触及行原有的 LF、CRLF、单独 CR 和混合换行；新增行采用文件第一个换行符，无换行文件采用 LF。与 Codex 的历史行为一致，update 后保证尾部换行。
-- Responses 的 `custom_tool_call_input.delta` 由增量 parser 转成 `patch_apply_updated` 预览，最多每 500ms 发送一次并补发最终 pending 快照。预览不执行文件操作；事件写入 jsonl、经现有 SSE 发送并由 WebUI 展示，最终 committed details 覆盖预览。
-- 权限、approval、sandbox、多环境、远程/虚拟 workspace，以及从 Bash/PowerShell 拦截 apply_patch 均不属于该工具契约。
 
 ## Grep
 

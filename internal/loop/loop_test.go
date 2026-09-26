@@ -41,11 +41,6 @@ func TestRequestJSONUsesProviderFieldNames(t *testing.T) {
 	}
 }
 
-var (
-	errCustomSpecMissing   = errors.New("custom spec missing")
-	errCustomResultMissing = errors.New("custom result kind missing")
-)
-
 type echo struct{}
 
 func (echo) Stream(_ context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
@@ -76,87 +71,6 @@ func (oneTool) Prompt() string      { return "p" }
 func (oneTool) Snippet() string     { return "s" }
 func (oneTool) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
-}
-
-type rawTool struct{ got string }
-
-func (t *rawTool) Name() string               { return "apply_patch" }
-func (t *rawTool) Description() string        { return "patch" }
-func (t *rawTool) Prompt() string             { return "" }
-func (t *rawTool) Snippet() string            { return "patch" }
-func (t *rawTool) Parameters() map[string]any { return nil }
-func (t *rawTool) Execute(context.Context, map[string]any) ToolResult {
-	return ToolResult{IsError: true}
-}
-func (t *rawTool) ExecuteRaw(_ context.Context, input string) ToolResult {
-	t.got = input
-	return ToolResult{Content: []types.Content{{Type: "text", Text: "patched"}}}
-}
-func (t *rawTool) ToolSpec() ToolSpec {
-	return ToolSpec{Type: "custom", Name: t.Name(), Description: t.Description(), Format: &ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"}}
-}
-func (t *rawTool) NewArgumentDiffConsumer() ToolArgumentDiffConsumer { return &rawArgumentConsumer{} }
-
-type rawArgumentConsumer struct{ input string }
-
-func (c *rawArgumentConsumer) Consume(delta string) (any, bool) {
-	c.input += delta
-	return map[string]any{"input": c.input}, true
-}
-func (c *rawArgumentConsumer) Finish() (any, bool) { return nil, false }
-
-type customStreamer struct{ n int }
-
-func (s *customStreamer) Stream(_ context.Context, req Request, _ func(AssistantDelta) error) (types.Message, error) {
-	s.n++
-	if s.n == 1 {
-		if len(req.Tools) != 1 || req.Tools[0].Type != "custom" {
-			return types.Message{}, fmt.Errorf("%w: %+v", errCustomSpecMissing, req.Tools)
-		}
-		return types.Message{Role: "assistant", StopReason: "toolUse", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "c1", Name: "apply_patch", Input: "PATCH"}}}, nil
-	}
-	if len(req.Messages) == 0 || req.Messages[len(req.Messages)-1].ToolType != "custom" {
-		return types.Message{}, fmt.Errorf("%w: %+v", errCustomResultMissing, req.Messages)
-	}
-	return types.Message{Role: "assistant", StopReason: "stop", Content: []types.Content{{Type: "text", Text: "done"}}}, nil
-}
-
-func TestRunDispatchesFreeformTool(t *testing.T) {
-	tool := &rawTool{}
-	_, err := Run(context.Background(), "patch", nil, Config{Streamer: &customStreamer{}, Tools: []Tool{tool}}, func(Event) error { return nil })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tool.got != "PATCH" {
-		t.Fatalf("raw input = %q", tool.got)
-	}
-}
-
-type streamingCustomStreamer struct{ customStreamer }
-
-func (s *streamingCustomStreamer) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
-	if s.n == 0 {
-		partial := types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "c1", Name: "apply_patch", Input: "PATCH"}}}
-		if err := emit(AssistantDelta{Type: "custom_tool_call_input_delta", Delta: "PATCH", ToolCallID: "c1", ToolName: "apply_patch", Partial: partial}); err != nil {
-			return types.Message{}, err
-		}
-	}
-	return s.customStreamer.Stream(ctx, req, emit)
-}
-
-func TestRunEmitsStreamedToolArgumentPreview(t *testing.T) {
-	tool := &rawTool{}
-	var events []Event
-	_, err := Run(context.Background(), "patch", nil, Config{Streamer: &streamingCustomStreamer{}, Tools: []Tool{tool}}, func(event Event) error { events = append(events, event); return nil })
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, event := range events {
-		if event.Type == PatchApplyUpdated && event.ToolCallID == "c1" {
-			return
-		}
-	}
-	t.Fatalf("missing patch preview in %+v", events)
 }
 
 type captureMessages struct{ got []types.Message }
@@ -342,7 +256,7 @@ func TestRunToolTimingIsReportedOnExecutionAndResultEvents(t *testing.T) {
 				result = &msg
 			}
 		case AgentStart, AgentEnd, TurnStart, TurnEnd, RequestHeader, MessageStart, MessageUpdate,
-			ToolExecutionUpdate, PatchApplyUpdated, CompactionStart, CompactionEnd, ContextUsage,
+			ToolExecutionUpdate, CompactionStart, CompactionEnd, ContextUsage,
 			QueueChanged, SteerAccepted, RunAborted, ExtensionError, ExtensionNotice,
 			ExtensionUIPrompt, AgentSettled, RuntimeReady:
 		}

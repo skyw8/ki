@@ -31,8 +31,7 @@
 // AllEntries extends the same cache to the whole transcript, and OpenFrom
 // builds a Session from entries a caller already took from that cache.
 // context_usage entries store model-facing
-// context pressure; patch_apply_updated entries store non-executing structured
-// patch previews. Asynchronous sideband rows never advance activeLeafId.
+// context pressure. Asynchronous sideband rows never advance activeLeafId.
 // config.json owns provider/model/thinking effort plus
 // title and pin. Skills/extension enablement is process-wide ({KI_HOME}/toggles.json).
 // Remove deletes the session directory.

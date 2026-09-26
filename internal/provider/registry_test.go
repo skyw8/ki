@@ -39,21 +39,6 @@ func TestBuiltinOpenRouterFreeModelIsFirstDefault(t *testing.T) {
 	}
 }
 
-func TestBuiltinGPTModelsAdvertiseFreeformApplyPatch(t *testing.T) {
-	for _, p := range BuiltinProviders() {
-		if p.ID != "openai" {
-			continue
-		}
-		for _, model := range p.Models {
-			if model.ApplyPatchToolType != "freeform" || model.API != "responses" {
-				t.Fatalf("OpenAI model %+v does not advertise Responses freeform apply_patch", model)
-			}
-		}
-		return
-	}
-	t.Fatal("openai provider missing")
-}
-
 func TestBuiltinDeepSeekFlashAdvertisesImageInput(t *testing.T) {
 	for _, p := range BuiltinProviders() {
 		if p.ID != "deepseek" {
@@ -75,25 +60,6 @@ func TestBuiltinDeepSeekFlashAdvertisesImageInput(t *testing.T) {
 		return
 	}
 	t.Fatal("deepseek provider missing")
-}
-
-func TestRegistryRejectsFreeformApplyPatchOutsideResponses(t *testing.T) {
-	r, err := NewRegistry(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	on := true
-	reasoning := false
-	err = r.Update(func(cfg *ModelsFile) error {
-		cfg.Providers["bad"] = Config{
-			Name: "Bad", API: "completions", BaseURL: "http://127.0.0.1/v1", Enabled: &on,
-			Models: []ModelSeed{{ID: "bad", Input: []string{"text"}, ApplyPatchToolType: "freeform", Reasoning: &reasoning}},
-		}
-		return nil
-	})
-	if err == nil {
-		t.Fatal("freeform apply_patch on completions model must fail")
-	}
 }
 
 func TestRegistryPersistsCustomProviderAndCredential(t *testing.T) {
@@ -146,7 +112,7 @@ func TestRegistryRegistersExtensionProviderAndOpaqueCredential(t *testing.T) {
 	spec := ExtensionProviderSpec{
 		ID: "codex", Name: "Codex", API: "openai-codex-responses", BaseURL: "https://chatgpt.com/backend-api",
 		DefaultModel: "codex-mini", Auth: AuthSpec{Type: AuthOAuth, Name: "Codex", Subscription: true},
-		Models: []ModelSeed{{ID: "codex-mini", ContextWindow: 128000, MaxTokens: 16384, Input: []string{"text"}, ApplyPatchToolType: "freeform"}},
+		Models: []ModelSeed{{ID: "codex-mini", ContextWindow: 128000, MaxTokens: 16384, Input: []string{"text"}}},
 	}
 	if err := r.ReplaceExtensionProviders([]ExtensionProviderSpec{spec}); err != nil {
 		t.Fatal(err)

@@ -550,7 +550,7 @@ func (s *Server) PatchSession(sessionID, model, thinking string) error {
 // SetActiveTools restricts which tools the next occupy may use.
 func (s *Server) SetActiveTools(sessionID, extName string, names []string) error {
 	known := map[string]bool{
-		"Read": true, "Write": true, "Edit": true, "apply_patch": true,
+		"Read": true, "Write": true, "Edit": true,
 		"Grep": true, "Glob": true, "Bash": true, "PowerShell": true,
 		"TaskOutput": true, "TaskStop": true, "Monitor": true,
 	}

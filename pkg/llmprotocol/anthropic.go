@@ -69,9 +69,6 @@ func AnthropicBody(req Request) map[string]any {
 	if len(req.Tools) > 0 {
 		var tools []map[string]any
 		for _, t := range req.Tools {
-			if t.Type == "custom" {
-				continue
-			}
 			tools = append(tools, map[string]any{
 				"name":         t.Name,
 				"description":  t.Description,

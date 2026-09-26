@@ -35,14 +35,6 @@ func ResponsesBody(req Request) map[string]any {
 	if len(req.Tools) > 0 {
 		var tools []map[string]any
 		for _, t := range req.Tools {
-			if t.Type == "custom" {
-				tool := map[string]any{"type": "custom", "name": t.Name, "description": t.Description}
-				if t.Format != nil {
-					tool["format"] = t.Format
-				}
-				tools = append(tools, tool)
-				continue
-			}
 			tools = append(tools, map[string]any{
 				"type":        "function",
 				"name":        t.Name,

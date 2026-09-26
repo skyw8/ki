@@ -30,7 +30,7 @@ func TestBuildLayers(t *testing.T) {
 	}
 	sys := Build(Input{
 		Resources: snapshot,
-		Tools:     tools.Set{CWD: cwd}.Build(tools.Profile{RichRead: true, Editor: tools.EditorWriteEdit}),
+		Tools:     tools.Set{CWD: cwd}.Build(tools.Profile{RichRead: true}),
 	})
 	if !strings.Contains(sys, "operating inside ki") {
 		t.Fatalf("identity: %s", sys[:80])

@@ -71,15 +71,8 @@ func toProtocolTools(tools []loop.ToolSpec) []llmprotocol.ToolSpec {
 	}
 	out := make([]llmprotocol.ToolSpec, len(tools))
 	for i, tool := range tools {
-		var format *llmprotocol.ToolFormat
-		if tool.Format != nil {
-			format = &llmprotocol.ToolFormat{
-				Type: tool.Format.Type, Syntax: tool.Format.Syntax, Definition: tool.Format.Definition,
-			}
-		}
 		out[i] = llmprotocol.ToolSpec{
-			Type: tool.Type, Name: tool.Name, Description: tool.Description,
-			Parameters: tool.Parameters, Format: format,
+			Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters,
 		}
 	}
 	return out

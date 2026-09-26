@@ -12,7 +12,6 @@ import (
 
 	"ki/internal/loop"
 	"ki/internal/types"
-	"ki/pkg/llmprotocol"
 )
 
 func mustType[T any](t *testing.T, value any) T {
@@ -192,25 +191,21 @@ func TestFunctionArgumentsStayValidWhenAStreamWasTruncated(t *testing.T) {
 
 func ptr(s string) *string { return &s }
 
-func TestResponsesBodyUsesCustomToolCallAndOutput(t *testing.T) {
+// Responses cannot declare a custom tool any more, but legacy history that
+// contains a custom (freeform) call still replays as custom_tool_call items so
+// the stored call/output pair round-trips.
+func TestResponsesBodyReplaysCustomToolCallAndOutput(t *testing.T) {
 	body := ResponsesBody(loop.Request{
 		Model: "gpt-5.6-terra",
-		Tools: []loop.ToolSpec{{
-			Type: "custom", Name: "apply_patch", Description: "patch",
-			Format: &loop.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"},
-		}},
+		Tools: []loop.ToolSpec{{Name: "Read"}},
 		Messages: []types.Message{
 			{Role: "assistant", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "call_1", Name: "apply_patch", Input: "*** Begin Patch"}}},
 			{Role: "toolResult", ToolType: "custom", ToolCallID: "call_1", ToolName: "apply_patch", Content: []types.Content{{Type: "text", Text: "ok"}}},
 		},
 	})
 	tools := mustType[[]map[string]any](t, body["tools"])
-	if tools[0]["type"] != "custom" || tools[0]["name"] != "apply_patch" {
-		t.Fatalf("custom tool: %+v", tools[0])
-	}
-	format := mustType[*llmprotocol.ToolFormat](t, tools[0]["format"])
-	if format.Syntax != "lark" {
-		t.Fatalf("format: %+v", format)
+	if tools[0]["type"] != "function" || tools[0]["name"] != "Read" {
+		t.Fatalf("function tool: %+v", tools[0])
 	}
 	items := mustType[[]any](t, body["input"])
 	call := mustType[map[string]any](t, items[0])

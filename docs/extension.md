@@ -144,7 +144,7 @@ my-ext/
 | `tool_execution_start` `tool_execution_end` | 否 | 是 | — |
 | `compaction_start` `compaction_end` | 否 | 是 | — |
 | `queue_changed` `steer_accepted` `run_aborted` | 否 | 是 | — |
-| `context_usage` `patch_apply_updated` `extension_error` `extension_notice` | 否 | 否 | — |
+| `context_usage` `extension_error` `extension_notice` | 否 | 否 | — |
 
 `agent_settled`：occupy 结束且 Host 内部收尾（含 auto-compact）完成，可接受新 occupy。**不含**扩展 FIFO 已空。
 

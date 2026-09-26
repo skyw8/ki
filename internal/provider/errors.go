@@ -20,8 +20,6 @@ var (
 	errInvalidBaseURL         = errors.New("invalid baseUrl")
 	errTokenLimitsPositive    = errors.New("token limits must be positive")
 	errTextInputRequired      = errors.New("input must include text")
-	errInvalidPatchToolType   = errors.New("invalid applyPatchToolType")
-	errFreeformResponsesAPI   = errors.New("freeform apply_patch requires responses api")
 	errInvalidThinkingLevel   = errors.New("invalid thinking level")
 	errCostTierOrder          = errors.New("cost tiers must have increasing thresholds")
 	errNegativeCostRates      = errors.New("cost rates must not be negative")

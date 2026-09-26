@@ -340,7 +340,7 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	}
 
 	gpt := prompt("openai/gpt-5.6-terra")
-	gptWant := []string{"Read", "apply_patch", "Grep", "Glob"}
+	gptWant := []string{"Read", "Write", "Edit", "Grep", "Glob"}
 	if srv.shells.BashAvailable() {
 		gptWant = append(gptWant, "Bash")
 	}
@@ -354,9 +354,6 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	gptWant = append(gptWant, "Agent", "SendMessage")
 	if got := requestToolNames(gpt.Tools); !slices.Equal(got, gptWant) {
 		t.Fatalf("GPT tools = %v", got)
-	}
-	if gpt.Tools[1].Type != "custom" || gpt.Tools[1].Format == nil {
-		t.Fatalf("GPT apply_patch spec = %+v", gpt.Tools[1])
 	}
 	readProps, ok := gpt.Tools[0].Parameters["properties"].(map[string]any)
 	if !ok {
