@@ -147,11 +147,15 @@ func TestResponsesBodyReplaysEncryptedReasoningItem(t *testing.T) {
 }
 
 func TestToolResultDetailsNeverEnterProviderRequests(t *testing.T) {
-	message := types.Message{Role: "toolResult", ToolCallID: "c1", ToolName: "Edit", Content: []types.Content{{Type: "text", Text: "edited"}}, Details: map[string]any{"diff": "DETAIL_SECRET"}}
+	call := types.Content{Type: "toolCall", ID: "c1", Name: "Edit", Arguments: map[string]any{"file_path": "a"}}
+	req := loop.Request{Model: "m", Messages: []types.Message{
+		{Role: "assistant", Content: []types.Content{call}},
+		{Role: "toolResult", ToolCallID: "c1", ToolName: "Edit", Content: []types.Content{{Type: "text", Text: "edited"}}, Details: map[string]any{"diff": "DETAIL_SECRET"}},
+	}}
 	requests := []any{
-		toOpenAIMessage(message),
-		toResponsesItems(message),
-		anthropicToolResultBlock(message),
+		CompletionsBody(req),
+		ResponsesBody(req),
+		AnthropicBody(req),
 	}
 	for _, body := range requests {
 		encoded, err := json.Marshal(body)

@@ -187,6 +187,83 @@ func assistantHasReplayableContent(m Message) bool {
 	return false
 }
 
+// structuredToolReplay adapts replayed history for protocols whose tool calls
+// are always JSON function calls (Chat Completions, Anthropic Messages).
+// Responses-style custom (freeform) calls have no wire representation there,
+// so each one is downgraded in place to a function call whose arguments carry
+// the original opaque input; the call id and the following tool result are
+// preserved, so the turn stays valid and readable. A tool result whose call is
+// absent from the replayed history is dropped instead of being sent as an
+// unpaired role:tool / tool_result message, which every gateway rejects.
+//
+// Responses keeps Replayable: it is the only protocol that can carry custom
+// calls, and downgrading there would discard the item identity it depends on.
+func structuredToolReplay(msgs []Message) []Message {
+	replayed := Replayable(msgs)
+	out := make([]Message, 0, len(replayed))
+	calls := map[string]bool{}
+	for _, m := range replayed {
+		switch m.Role {
+		case "assistant":
+			m = downgradeCustomCalls(m)
+			for _, c := range m.Content {
+				if c.Type == "toolCall" && c.ID != "" {
+					calls[c.ID] = true
+				}
+			}
+			out = append(out, m)
+		case "toolResult":
+			// A missing call id is a malformed request that validation should
+			// still report; only a genuinely absent call is dropped.
+			if m.ToolCallID != "" && !calls[m.ToolCallID] {
+				continue
+			}
+			out = append(out, m)
+		default:
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// downgradeCustomCalls rewrites custom tool calls as function calls. It copies
+// the content slice before mutating, so the caller's history is never changed.
+func downgradeCustomCalls(m Message) Message {
+	rewritten := false
+	content := m.Content
+	for i := range content {
+		if content[i].Type != "toolCall" || content[i].ToolType != "custom" {
+			continue
+		}
+		if !rewritten {
+			content = append([]Content(nil), m.Content...)
+			rewritten = true
+		}
+		c := &content[i]
+		c.ArgumentsRaw = customCallArguments(*c)
+		c.Arguments = nil
+		c.ToolType = ""
+		c.Input = ""
+	}
+	if !rewritten {
+		return m
+	}
+	m.Content = content
+	return m
+}
+
+// customCallArguments encodes a custom call's opaque input as the JSON object
+// that a function tool call requires.
+func customCallArguments(c Content) string {
+	if c.Input != "" {
+		return marshalArguments(map[string]any{"input": c.Input})
+	}
+	if c.Arguments != nil {
+		return marshalArguments(c.Arguments)
+	}
+	return "{}"
+}
+
 func (l *Client) oaHeaders() http.Header {
 	h := http.Header{}
 	h.Set("Content-Type", "application/json")

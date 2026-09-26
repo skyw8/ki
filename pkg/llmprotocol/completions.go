@@ -26,7 +26,7 @@ func CompletionsBody(req Request) map[string]any {
 	// so stable prefix bytes can preserve prompt-cache hits.
 	// When there are no images, do not insert a user message; this matches the
 	// previous plain-text path.
-	history := Replayable(req.Messages)
+	history := structuredToolReplay(req.Messages)
 	for i := 0; i < len(history); i++ {
 		m := history[i]
 		if m.Role != "toolResult" {
@@ -223,8 +223,10 @@ func openAIToolImageFollowup(imgs []map[string]any) map[string]any {
 }
 
 func (l *Client) streamCompletions(ctx context.Context, req Request, emit func(AssistantDelta) error) (Message, error) {
+	// A deterministic request failure can only fail again: retrying it would
+	// rebuild the same body and hide the error behind the loop's backoff.
 	if err := validateCompletionsRequest(req); err != nil {
-		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, err
+		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, &nonRetryableError{err: err}
 	}
 	url := l.Base + "/chat/completions"
 	msg, err := l.postStream(ctx, url, CompletionsBody(req), l.oaHeaders(), emit, parseCompletionsSSE, false)
@@ -387,7 +389,7 @@ func completionToolCallAt(m *Message, index int) *Content {
 }
 
 func validateCompletionsRequest(req Request) error {
-	for _, message := range Replayable(req.Messages) {
+	for _, message := range structuredToolReplay(req.Messages) {
 		switch message.Role {
 		case "toolResult":
 			if message.ToolCallID == "" {
@@ -397,9 +399,6 @@ func validateCompletionsRequest(req Request) error {
 			for _, block := range message.Content {
 				if block.Type != "toolCall" {
 					continue
-				}
-				if block.ToolType == "custom" {
-					return errCompletionsNoCustomToolCalls
 				}
 				if block.ID == "" || block.Name == "" {
 					return errCompletionsAssistantToolCallNoID

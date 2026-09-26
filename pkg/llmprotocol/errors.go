@@ -31,7 +31,6 @@ var (
 	errCompletionsToolCallNoIndex          = errors.New("chat Completions tool call has no valid index")
 	errCompletionsToolCallNoID             = errors.New("chat Completions tool call has no id")
 	errCompletionsToolMessageNoCallID      = errors.New("chat Completions tool message has no tool_call_id")
-	errCompletionsNoCustomToolCalls        = errors.New("chat Completions does not support custom tool calls")
 	errCompletionsAssistantToolCallNoID    = errors.New("chat Completions assistant tool call has no id or name")
 	errCompletionsToolCallMissingIDOrName  = errors.New("chat Completions tool call is missing id or name")
 	errCompletionsToolCallNoArguments      = errors.New("chat Completions tool call has no arguments")

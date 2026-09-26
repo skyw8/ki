@@ -14,7 +14,7 @@ func AnthropicBody(req Request) map[string]any {
 	// Combine consecutive toolResults into one user message containing multiple
 	// tool_result blocks. Anthropic permits images in each tool_result.content,
 	// so do not split them into trailing user messages.
-	history := Replayable(req.Messages)
+	history := structuredToolReplay(req.Messages)
 	for i := 0; i < len(history); i++ {
 		m := history[i]
 		if m.Role != "toolResult" {
@@ -186,8 +186,10 @@ func anthropicMediaBlocks(m Message) []map[string]any {
 }
 
 func (l *Client) streamAnthropic(ctx context.Context, req Request, emit func(AssistantDelta) error) (Message, error) {
+	// A deterministic request failure can only fail again: retrying it would
+	// rebuild the same body and hide the error behind the loop's backoff.
 	if err := validateAnthropicRequest(req); err != nil {
-		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, err
+		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, &nonRetryableError{err: err}
 	}
 	url := l.Base + "/v1/messages"
 	h := http.Header{}
@@ -471,7 +473,7 @@ func applyAnthropicStopReason(acc *Message, reason string) {
 }
 
 func validateAnthropicRequest(req Request) error {
-	for _, message := range Replayable(req.Messages) {
+	for _, message := range structuredToolReplay(req.Messages) {
 		if message.Role == "toolResult" {
 			if message.ToolCallID == "" {
 				return errAnthropicToolResultNoToolUseID
