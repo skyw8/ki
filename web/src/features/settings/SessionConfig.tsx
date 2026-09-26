@@ -57,6 +57,7 @@ function extensionOutlineChildren(item: CatalogExtension, index: number): Outlin
     ...(item.tools ?? []).map((tool, j) => ({ id: `info-extension-${index}-tool-${j}`, label: tool.name })),
     ...(item.commands ?? []).map((cmd, j) => ({ id: `info-extension-${index}-command-${j}`, label: `/${cmd.name}` })),
     ...(item.promptAppend ?? []).map((file, j) => ({ id: `info-extension-${index}-prompt-${j}`, label: file })),
+    ...(item.pathDirs ?? []).map((dir, j) => ({ id: `info-extension-${index}-path-${j}`, label: dir.path })),
     ...(item.providers ?? []).map((p, j) => ({ id: `info-extension-${index}-provider-${j}`, label: p.name || p.id })),
   ]
 }
@@ -305,8 +306,9 @@ function ExtensionInfoCard({ item, index, lang, t }: { item: CatalogExtension; i
   const tools = item.tools ?? []
   const commands = item.commands ?? []
   const prompts = item.promptAppend ?? []
+  const pathDirs = item.pathDirs ?? []
   const providers = item.providers ?? []
-  const loaded = skills.length + tools.length + commands.length + prompts.length + providers.length
+  const loaded = skills.length + tools.length + commands.length + prompts.length + pathDirs.length + providers.length
   const runtimePending = item.enabled && (item.capabilities ?? []).some(cap => cap === 'tool' || cap === 'command') && item.runtime?.state !== 'ready' && item.runtime?.state !== 'failed'
   return (
     <li id={`info-extension-${index}`} className="cfg-extension" data-testid="cfg-extension" data-name={item.name}>
@@ -368,6 +370,22 @@ function ExtensionInfoCard({ item, index, lang, t }: { item: CatalogExtension; i
               <li key={file} id={`info-extension-${index}-prompt-${j}`} className="cfg-contrib-item" data-testid="cfg-extension-prompt" data-name={file}>
                 <div className="cfg-name">{file}</div>
                 <p className="cfg-desc">{t('cfg.promptLayer')}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {pathDirs.length > 0 ? (
+        <div className="cfg-contrib">
+          <h4 className="cfg-h3">{t('cfg.pathDirs')}</h4>
+          <ul className="cfg-contrib-list">
+            {pathDirs.map((dir, j) => (
+              <li key={dir.path} id={`info-extension-${index}-path-${j}`} className="cfg-contrib-item" data-testid="cfg-extension-path" data-name={dir.path} data-exists={dir.exists ? 'true' : 'false'}>
+                <div className="cfg-name">
+                  {dir.path}
+                  <span className={`cfg-flag${dir.exists ? ' on' : ''}`}>{dir.exists ? t('cfg.pathDirPresent') : t('cfg.pathDirMissing')}</span>
+                </div>
+                <p className="cfg-desc">{t('cfg.pathDirHint')}</p>
               </li>
             ))}
           </ul>

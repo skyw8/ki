@@ -241,6 +241,7 @@ export type CatalogExtension = {
 	tools?: CatalogContribution[]
 	commands?: CatalogContribution[]
 	promptAppend?: string[]
+	pathDirs?: { path: string; exists: boolean }[]
 	providers?: CatalogProvider[]
 }
 

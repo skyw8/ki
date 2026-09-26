@@ -358,9 +358,12 @@ test.beforeAll(async ({ request }) => {
 
   const dir = join(home, 'extensions', fixtureName)
   mkdirSync(dir, { recursive: true })
+  // The extension declares these under its own root; the first one exists so the
+  // info card can show the present/missing pair.
+  mkdirSync(join(dir, 'playwright-bin'), { recursive: true })
   writeFileSync(join(dir, 'extension.json'), JSON.stringify({
     name: fixtureName,
-    capabilities: ['settings', 'lifecycle'],
+    capabilities: ['settings', 'lifecycle', 'path'],
     config: {
       schema: {
         type: 'object',
@@ -375,6 +378,9 @@ test.beforeAll(async ({ request }) => {
     runtime: {
       kind: 'rpc',
       command: bin,
+      // One existing and one missing directory: the info card has to show both
+      // states, and the long absolute path must not overflow a phone viewport.
+      path: ['playwright-bin', 'playwright-bin-not-installed-with-a-long-name'],
       env: {
         KI_SET_UI: '1',
         KI_STATUS_TEXT: 'Responsive · active',
@@ -660,6 +666,9 @@ for (const profile of profiles) {
 
       await page.getByTestId('tab-config').click()
       await expect(page.getByTestId('session-info')).toBeVisible()
+      const infoExtension = page.getByTestId('cfg-extension').filter({ has: page.locator('.cfg-h2', { hasText: fixtureName }) })
+      await expect(infoExtension.getByTestId('cfg-extension-path').first()).toHaveAttribute('data-exists', 'true')
+      await expect(infoExtension.getByTestId('cfg-extension-path').nth(1)).toHaveAttribute('data-exists', 'false')
       await expectNoPageOverflow(page, `${profile.name} info`)
       await expectTouchButtons(profile, page.getByTestId('session-info'), `${profile.name} info`)
 

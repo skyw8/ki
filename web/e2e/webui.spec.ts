@@ -865,14 +865,16 @@ test('session info lists extension-loaded skills, commands, and prompt with head
     name: 'infox',
     version: '3.0.0',
     description: 'info page fixture',
-    capabilities: ['skill', 'command', 'prompt.append'],
+    capabilities: ['skill', 'command', 'prompt.append', 'path'],
     skills: ['skills'],
     commands: ['commands'],
     prompt: { append: ['APPEND.md'] },
+    runtime: { kind: 'none', path: ['bin', 'missing-bin'] },
   }))
   writeFileSync(join(dir, 'skills', 'ext-skill', 'SKILL.md'), '---\nname: ext-skill\ndescription: skill from infox\n---\n')
   writeFileSync(join(dir, 'commands', 'exthello.md'), '---\ndescription: hello from infox\n---\nHi\n')
   writeFileSync(join(dir, 'APPEND.md'), 'EXT-PROMPT-LAYER\n')
+  mkdirSync(join(dir, 'bin'), { recursive: true })
 
   const headers = { Authorization: `Bearer ${serverToken()}` }
   const reload = await request.post('/v1/reload', { headers })
@@ -889,7 +891,12 @@ test('session info lists extension-loaded skills, commands, and prompt with head
   await expect(card.getByTestId('cfg-extension-command')).toContainText('/exthello')
   await expect(card.getByTestId('cfg-extension-prompt')).toHaveAttribute('data-name', 'APPEND.md')
   await expect(card.getByTestId('cfg-extension-capabilities')).toContainText('skill')
+  await expect(card.getByTestId('cfg-extension-path').first()).toHaveAttribute('data-exists', 'true')
+  await expect(card.getByTestId('cfg-extension-path').first()).toContainText(join(dir, 'bin'))
+  await expect(card.getByTestId('cfg-extension-path').nth(1)).toHaveAttribute('data-exists', 'false')
+  await expect(card.getByTestId('cfg-extension-path').nth(1)).toContainText('missing-bin')
   await expect(page.getByTestId('info-outline')).toContainText('ext-skill')
+  await expect(page.getByTestId('info-outline')).toContainText(join(dir, 'missing-bin'))
   await expect(page.getByTestId('cfg-skill').filter({ hasText: 'ext-skill' })).toBeVisible()
 
   const sizes = await page.evaluate(() => {
