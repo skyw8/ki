@@ -11,6 +11,10 @@
 // end event carries durationMs; the same duration is persisted on toolResult.
 // Tool specs default to JSON functions; ToolSpecProvider and FreeformTool add
 // grammar-backed custom tools without changing existing function executors.
+// Config.OutputStore bounds every model-facing tool result at the single
+// boundary after the AfterTool hook: oversized text is written to the session
+// spill store and replaced by a bounded preview plus a reference in details, so
+// built-in, extension, and sidecar tools share one policy.
 // Tools run in two phases (pi prepare/execute): synchronous prepare resolves
 // the tool, runs the optional ToolValidator schema check (validate.go), and
 // the BeforeTool hook; failures become immediate error results. Then execute

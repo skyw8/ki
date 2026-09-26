@@ -2,6 +2,32 @@
 
 普通工具的对外名字和 input schema 跟 Claude Code；文本结果跟 pi。内置工具由已解析模型对应的 `ToolProfile` 选择，包入口见 `internal/tools/doc.go`。
 
+## 输出溢出
+
+所有工具结果在进入 provider prompt 前都经过统一的 output spool（`internal/tooloutput`，边界在 loop 的 `AfterTool` 之后）：
+
+- 小结果直接进入 `toolResult.content`。
+- 超过 preview budget 的文本完整写入当前 session 的私有临时文件，模型只收到有界 preview、字节/行数和 `Read(file_path, offset, limit)` 提示；jsonl 和 SSE 里记录的也是这个有界结果，完整内容只存在于 spill 文件。
+- 默认 preview budget 为 16KiB / 800 行；它只限制模型上下文，不改变 spill 文件的内容（`tooloutput.Config` 可覆盖）。
+- 目录结构是 `<os.TempDir>/ki-tool-output/run-<pid>-<rand>/<session>/`；目录 `0700`、文件 `0600`，全部用主机 `filepath`。
+- details 在保留工具原有字段的同时挂一个保留键 `output`：`output.path`、`output.bytes`（文件实际存了多少）、`output.totalBytes`（工具产出多少）、`output.lines`、`output.previewBytes`、`output.previewLines`、`output.truncated`、`output.incomplete`（文件只存了前缀）。
+- 图片、PDF 等非文本 content 不参与 spool，原样保留。
+
+配额与生命周期：
+
+- 单个 spill 文件最多 8MiB、单个 session 最多 256MiB。文件达到单文件上限时只存前缀并在 note 里说明；session 预算用完时不再落盘，模型仍拿到有界 preview 和未保存的原因。
+- 写盘失败和配额拒绝都不会把工具结果变成错误：模型始终拿到有界 preview，原因写在 note 里。
+- session 关闭（`closeJobs`）删除该 session 的目录并释放预算；server 关闭删除整个 run root。这些文件不属于 session 历史，重启后不保证旧路径仍存在。
+- 崩溃残留靠启动时清扫：每个 run root 写 `owner.json`（pid/host/heartbeat）；启动时扫描 base 目录，同机且进程已死的 root 立即删除，心跳超过 24 小时的（其它主机、或无法判定存活）按 TTL 删除，持有者进程仍存活的 root 永不清理。
+
+谁不参与 spool：
+
+- 已带完整输出文件的工具结果（Bash / PowerShell / Monitor / TaskOutput 的 `output_file`）和已带分页游标的工具结果（Read 的 `next_offset`）原样保留：它们本身就是"完整内容 + 续读方式"，再 spool 一次会让 Read 指向自己那一页。
+- 用 Read 读 spill 文件不会二次落盘（store 只 spill 不属于自己的路径）。
+- Read 的一页（2000 行 / 50KB）和 shell 的尾部（2000 行 / 50KB）是这两个工具自己的契约，不叠加 preview budget。
+
+Bash、PowerShell、Monitor 的完整输出文件也由该 store 创建：任务日志落在同一个 session 目录里，随 session 关闭一起删除；store 拒绝创建时退回进程临时文件，任务本身照常运行。
+
 ## 全局开关
 
 内置工具的全局启用状态保存在 `{KI_HOME}/toggles.json` 的 `tools.disabled`。`GET/PATCH /v1/tools` 提供目录和开关；目录按当前 session 的模型能力生成，因此 Responses 的 freeform 模型显示 `apply_patch`，普通模型显示 `Write` / `Edit`。保存的名称仍是全局的，切换模型后同名设置继续生效。开关在下一次 occupy 生效；已在运行的请求继续使用其 request header 中固定的工具集。
@@ -31,7 +57,7 @@
 ## Read
 
 - 相对路径按 session cwd 解析；返回原文，不添加行号。
-- 普通文本和 shell spill 文件共用 `offset` / `limit` 分页；超过 2000 行或 50KB 时保留头部，并提示下一次读取的 `offset`。
+- 普通文本和所有 tool-output spill 文件共用 `offset` / `limit` 分页；超过 2000 行或 50KB 时保留头部，并提示下一次读取的 `offset`（这类结果自带游标，不再进 spool）。
 - 分页只使用 `offset` / `limit` 行范围参数；两者可单独使用，也可一起使用。
 - details 包含总字节/行数、当前输出大小、截断原因以及 `next_offset`。
 - `ToolProfile.input` 含 `image` 时才支持图片、PDF 和 `pages`；文本模式在执行阶段也会拒绝图片和 PDF。
@@ -82,13 +108,13 @@
 - 默认尊重 `.gitignore`，无需任何配置；仅 `respect_gitignore=false` 时改为 `--no-ignore`，搜索被忽略的文件。
 - 资源暂时不足时自动以 `-j 1` 重试一次。
 - 无匹配的退出码 1 是正常空结果；取消、超时和命令错误分别返回对应错误，已有结果的超时标为截断而不是全部丢弃。
-- content 模式单行最多 500 字节、最终文本最多 20KB；截断保持 UTF-8 边界，匹配上限与文本上限分别提示。
+- content 模式单行最多 500 字节；结果文本本身不再做 20KB 级别的截断（完整匹配交给 output spool 保存，只有 16MiB 的内存保护上限），模型看到的是统一 preview。截断保持 UTF-8 边界，匹配上限与文本上限分别提示。
 - 结果包含文件数、匹配数和 `truncated`；路径来自 JSON 字段，不解析人类可读文本。`KI_USE_SYSTEM_RIPGREP=1` 仅用于调试。
 
 ## Glob
 
 - 使用同一内置 ripgrep 的 `--files` 和 NUL 分隔输出，不依赖 shell，特殊文件名不会破坏解析。
-- 默认最多返回 100 个结果、最终文本最多 100KB；结果按修改时间排序，并包含文件数、limit 和 `truncated`。
+- 默认最多返回 100 个结果；结果按修改时间排序，并包含文件数、limit 和 `truncated`。结果文本不做 100KB 级别的截断，超过统一 preview budget 的部分由 output spool 保存，模型只收到有界 preview。
 - 结果文本和 details 都包含规范化搜索根目录。默认尊重 `.gitignore`，无需任何配置；仅当显式传入 `respect_gitignore=false` 时才改为 `--no-ignore` 行为，搜索被忽略的路径。尊重 ignore 时先按 ignore 规则枚举，再应用 glob，避免 ripgrep 的白名单 glob 覆盖 ignore 文件。
 - 默认超时 20 秒；达到上限时保留部分结果，资源暂时不足时以 `-j 1` 重试一次。
 - `KI_USE_SYSTEM_RIPGREP=1` 仅用于调试。
@@ -111,7 +137,7 @@
 - Bash、PowerShell、后台任务及其后代进程显式继承 Ki 启动时可见的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`ALL_PROXY`、`NO_PROXY`（含小写变体）；不会硬编码代理地址。
 - stdout/stderr 混排并持续写入无损临时文件；实时增量最多每 100ms 通过 `ToolExecutionUpdate` 推送一次。
 - 实时增量和模型可见结果使用跨 chunk 清理器去除 ANSI 及不可见控制字符，只保留换行、制表符和可显示文本；spill 文件仍保留原始字节。
-- 超过 2000 行或 50KB 时只把 JobStore 的滚动尾部放进 tool result，并附完整输出临时文件的绝对路径，可用 `Read` 的 `offset` / `limit` 分页读取；生成最终结果不会重新把完整 spill 文件载入内存。
+- 超过 2000 行或 50KB 时只把 JobStore 的滚动尾部放进 tool result，并附完整输出文件的绝对路径（落在 session 的 spill 目录里，不是独立的临时文件），可用 `Read` 的 `offset` / `limit` 分页读取；生成最终结果不会重新把完整 spill 文件载入内存。
 - 非零退出码、timeout 和取消分别返回 error、后台接管提示或 aborted 状态；前台默认 timeout 为 30 秒（`timeout` 参数上限 600 秒）。
 - Bash、PowerShell 和任务工具的 details 统一记录 task/status、timeout/cancel、退出码、截断统计和完整输出路径。
 - 前台 timeout 时，普通命令转入后台并返回 task id 和输出文件；以 `sleep` 开头的命令直接终止。

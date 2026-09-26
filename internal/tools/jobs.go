@@ -73,12 +73,21 @@ type TaskUpdate struct {
 	Snapshot TaskSnapshot `json:"task"`
 }
 
+// OutputSpool is the tool-output store contract used by shell tasks. Keeping
+// it an interface lets tests run without a store while the server roots every
+// complete-output file in one session-scoped directory.
+type OutputSpool interface {
+	CreateOutputFile(sessionID, toolName string) (*os.File, error)
+}
+
 // JobStore owns session-scoped background task processes and their output.
 type JobStore struct {
-	mu     sync.RWMutex
-	jobs   map[string]*bgJob
-	closed bool
-	seq    atomic.Uint64
+	mu        sync.RWMutex
+	jobs      map[string]*bgJob
+	closed    bool
+	seq       atomic.Uint64
+	spool     OutputSpool
+	sessionID string
 }
 
 type bgJob struct {
@@ -110,8 +119,17 @@ type bgJob struct {
 	subs        map[chan TaskUpdate]struct{}
 }
 
-// NewJobStore creates a session-scoped task registry.
+// NewJobStore creates a session-scoped task registry whose output files live in
+// the process temporary directory. Tests and standalone tools use it; the
+// server uses NewSpooledJobStore so shell logs share the session spill
+// directory and its cleanup.
 func NewJobStore() *JobStore { return &JobStore{jobs: map[string]*bgJob{}} }
+
+// NewSpooledJobStore creates a task registry whose complete output files are
+// owned by the tool-output store for sessionID.
+func NewSpooledJobStore(spool OutputSpool, sessionID string) *JobStore {
+	return &JobStore{jobs: map[string]*bgJob{}, spool: spool, sessionID: sessionID}
+}
 
 // Start launches a command that remains independent of the prompt context.
 func (s *JobStore) Start(ctx context.Context, shell shellSpec, cwd, command, description, taskType string) (id, path string, err error) {
@@ -165,7 +183,7 @@ func (s *JobStore) newJob(shell shellSpec, cwd, command, description, taskType s
 	if s.closed {
 		return nil, errTaskStoreClosed
 	}
-	f, err := os.CreateTemp("", "ki-bg-*.log")
+	f, err := s.createOutput()
 	if err != nil {
 		return nil, fmt.Errorf("create task output: %w", err)
 	}
@@ -179,6 +197,19 @@ func (s *JobStore) newJob(shell shellSpec, cwd, command, description, taskType s
 	s.jobs[id] = job
 	s.jobs[job.path] = job
 	return job, nil
+}
+
+// createOutput roots a task's complete output in the session spill directory
+// when a spool is available, and otherwise falls back to a process temporary
+// file. The store owns cleanup either way: JobStore.Close removes the live
+// tasks' files and the store removes the session directory.
+func (s *JobStore) createOutput() (*os.File, error) {
+	if s.spool != nil {
+		if f, err := s.spool.CreateOutputFile(s.sessionID, "bash"); err == nil {
+			return f, nil
+		}
+	}
+	return os.CreateTemp("", "ki-bg-*.log")
 }
 
 func (j *bgJob) start(parent context.Context) error {

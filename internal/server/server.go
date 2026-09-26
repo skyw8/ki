@@ -33,6 +33,7 @@ import (
 	"ki/internal/resources"
 	"ki/internal/session"
 	"ki/internal/toggles"
+	"ki/internal/tooloutput"
 	"ki/internal/tools"
 	"ki/internal/types"
 	"ki/internal/workspace"
@@ -61,6 +62,7 @@ type Server struct {
 	mu                     sync.Mutex
 	runs                   map[string]*runState
 	jobs                   map[string]*tools.JobStore
+	outputStore            *tooloutput.Store
 	agentTasks             *tools.AgentStore
 	ws                     *workspace.Store
 	sidx                   *session.Index
@@ -164,6 +166,12 @@ func New(opt Options) (*Server, error) {
 	_ = ws.Bootstrap(cwds)
 	sidx := session.NewIndex(infos) // reuse the List walk: zero extra reads
 	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
+	outputStore, err := tooloutput.New()
+	if err != nil {
+		runtimeCancel()
+		providerExtensions.Close()
+		return nil, fmt.Errorf("create tool output store: %w", err)
+	}
 	srv := &Server{
 		cfg:                    opt.Config,
 		token:                  tok,
@@ -175,6 +183,7 @@ func New(opt Options) (*Server, error) {
 		resources:              resources.NewLoader(opt.Config.Home),
 		runs:                   map[string]*runState{},
 		jobs:                   map[string]*tools.JobStore{},
+		outputStore:            outputStore,
 		agentTasks:             tools.NewAgentStore(),
 		ws:                     ws,
 		sidx:                   sidx,
@@ -740,6 +749,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			break
 		}
 	}
+	if s.outputStore != nil {
+		_ = s.outputStore.Close()
+	}
 	if s.ext != nil {
 		s.ext.Close()
 	}
@@ -761,7 +773,7 @@ func (s *Server) jobsFor(id string) *tools.JobStore {
 	if jobs, ok := s.jobs[id]; ok {
 		return jobs
 	}
-	jobs := tools.NewJobStore()
+	jobs := tools.NewSpooledJobStore(s.outputStore, id)
 	s.jobs[id] = jobs
 	return jobs
 }
@@ -773,6 +785,9 @@ func (s *Server) closeJobs(id string) {
 	s.mu.Unlock()
 	if jobs != nil {
 		jobs.Close()
+	}
+	if s.outputStore != nil {
+		_ = s.outputStore.CloseSession(id)
 	}
 }
 
@@ -1784,6 +1799,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		Streamer:                runStreamer,
 		SessionID:               id,
 		Tools:                   tls,
+		OutputStore:             s.outputStore,
 		System:                  sys,
 		Provider:                sess.Config.Provider,
 		Model:                   sess.Config.Model,

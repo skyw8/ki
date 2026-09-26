@@ -11,6 +11,9 @@
 // /bin/bash then PATH. When Bash is unavailable, Bash and Monitor are omitted
 // without preventing server startup. The session-scoped task store tracks
 // process groups, output files, status, exit code, cancellation, and progress.
+// Its complete output files are created through the tool-output store
+// (OutputSpool), so they live in the session spill directory and are removed
+// with it; a process temporary file is the fallback when the store refuses.
 // Shell and other child processes receive Ki's inherited HTTP(S)/FTP/ALL proxy
 // variables explicitly, so commands launched by them keep the same network
 // routing. Runtime configuration remains authoritative for sidecar overrides.

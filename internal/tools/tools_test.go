@@ -752,3 +752,98 @@ func TestReadNotebookAndPDFPages(t *testing.T) {
 		t.Fatalf("real pdf extract: %s", res.Content[0].Text)
 	}
 }
+
+// The model-visible bound moved to the loop spill, so Grep must hand over the
+// complete result instead of cutting it at 20KB; otherwise the spill file would
+// only ever contain an already-truncated page.
+func TestGrepKeepsCompleteResultForTheSpool(t *testing.T) {
+	cwd := t.TempDir()
+	var content strings.Builder
+	for i := 0; i < 120; i++ {
+		content.WriteString(fmt.Sprintf("match %03d %s-end-marker\n", i, strings.Repeat("x", 300)))
+	}
+	if err := os.WriteFile(filepath.Join(cwd, "big.txt"), []byte(content.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	grep := grepTool{cwd: cwd}
+	res := grep.Execute(context.Background(), map[string]any{
+		"pattern":     "match",
+		"output_mode": "content",
+		"head_limit":  0,
+	})
+	if res.IsError {
+		t.Fatalf("grep: %+v", res)
+	}
+	text := res.Content[0].Text
+	if len(text) <= 20_000 {
+		t.Fatalf("grep result is %d bytes; the 20KB tool-level cap is back", len(text))
+	}
+	if !strings.Contains(text, "119") || !strings.Contains(text, "-end-marker") {
+		t.Fatalf("grep result dropped matches: %q", text[len(text)-200:])
+	}
+	if strings.Contains(text, "20000 byte limit") {
+		t.Fatalf("grep still applies the removed 20KB limit")
+	}
+}
+
+type fakeSpool struct {
+	dir string
+	err error
+}
+
+func (s fakeSpool) CreateOutputFile(string, string) (*os.File, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return os.CreateTemp(s.dir, "spool-*.log")
+}
+
+func TestJobStoreRootsTaskOutputInTheSessionSpool(t *testing.T) {
+	dir := t.TempDir()
+	jobs := NewSpooledJobStore(fakeSpool{dir: dir}, "session-1")
+	file, err := jobs.createOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	if !strings.HasPrefix(file.Name(), dir) {
+		t.Fatalf("task output %q is not in the spool directory %q", file.Name(), dir)
+	}
+
+	// A refused spool must not break shell tasks: the store falls back to a
+	// process temporary file, and JobStore.Close still removes it.
+	fallback := NewSpooledJobStore(fakeSpool{err: os.ErrPermission}, "session-1")
+	other, err := fallback.createOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = other.Close()
+	_ = os.Remove(other.Name())
+}
+
+func TestBashWritesItsLogIntoTheSessionSpool(t *testing.T) {
+	cwd := t.TempDir()
+	dir := t.TempDir()
+	jobs := NewSpooledJobStore(fakeSpool{dir: dir}, "session-1")
+	defer jobs.Close()
+	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{Editor: EditorWriteEdit})
+	bash := pick(all, "Bash")
+	res := bash.Execute(context.Background(), map[string]any{"command": "echo spooled-out"})
+	if res.IsError {
+		t.Fatalf("bash: %+v", res)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one spooled task log, got %d", len(entries))
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, entries[0].Name())) //nolint:gosec // test reads its own spool directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "spooled-out") {
+		t.Fatalf("task log is incomplete: %q", raw)
+	}
+}

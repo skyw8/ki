@@ -18,7 +18,6 @@ const globPrompt = `Fast file pattern matching tool that works with any codebase
 - Respects .gitignore by default; set respect_gitignore=false to include ignored files`
 
 const defaultGlobLimit = 100
-const globMaxOutput = 100_000
 
 type globTool struct{ cwd string }
 
@@ -78,7 +77,7 @@ func (t globTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	for _, file := range result.Files {
 		lines = append(lines, displaySearchPath(t.cwd, file))
 	}
-	output, note := limitSearchOutput(strings.Join(lines, "\n"), globMaxOutput)
+	output, note := limitSearchOutput(strings.Join(lines, "\n"), spillSafetyLimit)
 	if result.Truncated {
 		if note == "" {
 			note = "\n\n[Results are truncated. Consider using a more specific path or pattern.]"

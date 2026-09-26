@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"ki/internal/tooloutput"
 	"ki/internal/types"
 )
 
@@ -304,6 +305,7 @@ type Config struct {
 	Streamer                Streamer
 	SessionID               string
 	Tools                   []Tool
+	OutputStore             *tooloutput.Store
 	Hooks                   Hooks
 	MaxRetries              int
 	BaseDelay               time.Duration
@@ -831,6 +833,13 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			if nr, err := cfg.Hooks.AfterTool(ctx, p.call.Name, p.args, res); err == nil {
 				res = nr
 			}
+		}
+		if cfg.OutputStore != nil {
+			// The bounded result is what reaches the model, the jsonl, and the
+			// SSE stream; the complete text stays in the session spill file.
+			content, ref := cfg.OutputStore.Normalize(cfg.SessionID, p.call.Name, p.args, res.Content, res.Details)
+			res.Content = content
+			res.Details = tooloutput.MergeDetails(res.Details, ref)
 		}
 		finishedAt := time.Now()
 		dur := finishedAt.Sub(startedAt).Milliseconds()

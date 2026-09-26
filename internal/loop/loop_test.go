@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"ki/internal/tooloutput"
 	"ki/internal/types"
 )
 
@@ -750,5 +752,79 @@ func TestRunDrainsInboxAfterCurrentStream(t *testing.T) {
 	}
 	if !foundFirst {
 		t.Fatalf("original user missing from second request: %+v", g.last)
+	}
+}
+
+type bigTool struct {
+	oneTool
+	text string
+}
+
+func (t bigTool) Execute(context.Context, map[string]any) ToolResult {
+	return ToolResult{
+		Content: []types.Content{{Type: "text", Text: t.text}},
+		Details: map[string]any{"matches": 3},
+	}
+}
+
+// The loop is the single spool boundary: every tool result that exceeds the
+// preview budget is bounded there, its complete text is written to the session
+// store, and the tool's own details stay flat next to the reference.
+func TestRunSpillsOversizedToolResult(t *testing.T) {
+	store, err := tooloutput.NewWithConfig(tooloutput.Config{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	full := strings.Repeat("payload ", 4000)
+	var result *types.Message
+	_, err = Run(context.Background(), "read it", nil, Config{
+		Streamer:    &scripted{},
+		Tools:       []Tool{bigTool{text: full}},
+		SessionID:   "session-1",
+		OutputStore: store,
+	}, func(event Event) error {
+		if event.Type == MessageEnd && event.Message != nil && event.Message.Role == "toolResult" {
+			msg := *event.Message
+			result = &msg
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil {
+		t.Fatal("missing tool result")
+	}
+	if len(result.Text()) > tooloutput.DefaultPreviewBytes+1024 {
+		t.Fatalf("model-facing result is %d bytes", len(result.Text()))
+	}
+	if !strings.Contains(result.Text(), "Stored:") {
+		t.Fatalf("result does not point at the spill file: %q", result.Text())
+	}
+	// Details reach the jsonl/WebUI as JSON, so assert on the marshalled shape.
+	rawDetails, err := json.Marshal(result.Details)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var details map[string]any
+	if err := json.Unmarshal(rawDetails, &details); err != nil {
+		t.Fatal(err)
+	}
+	if details["matches"] != float64(3) {
+		t.Fatalf("tool details were nested or lost: %#v", details)
+	}
+	output, ok := details["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing output reference: %#v", details)
+	}
+	path, _ := output["path"].(string)
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(raw) != full {
+		t.Fatalf("spill file is not the complete output (%d of %d bytes)", len(raw), len(full))
 	}
 }

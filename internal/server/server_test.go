@@ -90,6 +90,36 @@ func testServerWith(t *testing.T, st loop.Streamer) (*Server, *httptest.Server) 
 	return srv, hs
 }
 
+// The session spill directory is runtime state, not session history: closing a
+// session removes its files and shutting the server down removes the whole run
+// root, so a restart never reuses a stale temporary path.
+func TestSessionSpillFilesFollowTheSessionLifecycle(t *testing.T) {
+	srv, _ := testServer(t)
+	file, err := srv.outputStore.CreateOutputFile("session-1", "bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.outputStore.Owns(path) {
+		t.Fatalf("store does not own %s", path)
+	}
+	srv.closeJobs("session-1")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("closeJobs left the spill file behind: %v", err)
+	}
+
+	root := srv.outputStore.Root()
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("shutdown left the tool output run root behind: %v", err)
+	}
+}
+
 func TestFSPreview(t *testing.T) {
 	_, hs := testServer(t)
 	dir := t.TempDir()

@@ -244,6 +244,7 @@ func TestBundledSearchToolsPrependExtensionDirs(t *testing.T) {
 }
 
 func TestBundledSearchToolsWithoutExtensionsKeepsPathUnchanged(t *testing.T) {
+	clearExtensionPathEnv(t)
 	dir := filepath.Join(string(filepath.Separator)+"opt", "ki-tools")
 	env := withBundledSearchTools([]string{"PATH=/usr/bin:/bin"}, dir, nil, shellBash)
 	values := envToMap(env)
@@ -259,6 +260,25 @@ func TestBundledSearchToolsWithoutExtensionsKeepsPathUnchanged(t *testing.T) {
 	if _, ok := spec[ExtensionPathEnv]; ok {
 		t.Fatalf("shell env exported %s without extension dirs", ExtensionPathEnv)
 	}
+}
+
+// clearExtensionPathEnv removes an inherited KI_EXTENSION_PATH_DIRS. Shell
+// environments pass the process environment through, so running `go test` from
+// a ki session (which exports its own extension dirs) would otherwise make the
+// "no extension dirs" assertions fail for the wrong reason.
+func clearExtensionPathEnv(t *testing.T) {
+	t.Helper()
+	previous, had := os.LookupEnv(ExtensionPathEnv)
+	if err := os.Unsetenv(ExtensionPathEnv); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv(ExtensionPathEnv, previous)
+			return
+		}
+		_ = os.Unsetenv(ExtensionPathEnv)
+	})
 }
 
 // TestBashResolvesExtensionCliDespiteProfile guards the same failure mode as

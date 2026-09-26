@@ -26,7 +26,6 @@ Usage:
 - Respects .gitignore by default; set respect_gitignore=false to include ignored files`
 
 const defaultGrepHeadLimit = 250
-const grepMaxOutput = 20_000
 const grepMaxLineLength = 500
 
 type grepTool struct{ cwd string }
@@ -170,7 +169,7 @@ func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLi
 			lineWasTruncated = lineWasTruncated || truncated
 		}
 		output := strings.Join(lines, "\n")
-		output, note := limitSearchOutput(output, grepMaxOutput)
+		output, note := limitSearchOutput(output, spillSafetyLimit)
 		if result.Truncated {
 			note = appendSearchNote(note, fmt.Sprintf("Showing results with pagination = limit: %d", headLimit))
 		}
@@ -191,7 +190,7 @@ func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLi
 		if len(lines) == 0 {
 			return "No matches found" + searchMetadata(result)
 		}
-		output, note := limitSearchOutput(strings.Join(lines, "\n"), grepMaxOutput)
+		output, note := limitSearchOutput(strings.Join(lines, "\n"), spillSafetyLimit)
 		note = appendSearchNote(note, fmt.Sprintf("Found %d total occurrences across %d files.", total, len(lines)))
 		return output + note + searchMetadata(result)
 
@@ -213,7 +212,7 @@ func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLi
 		for _, file := range files[start:end] {
 			lines = append(lines, displaySearchPath(cwd, file))
 		}
-		output, note := limitSearchOutput(strings.Join(lines, "\n"), grepMaxOutput)
+		output, note := limitSearchOutput(strings.Join(lines, "\n"), spillSafetyLimit)
 		return fmt.Sprintf("Found %d files\n%s", len(lines), output) + note + searchMetadata(result)
 	}
 }
