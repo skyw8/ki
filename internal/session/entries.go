@@ -108,8 +108,14 @@ func ReadHeader(dir string) (Header, error) {
 	return h, nil
 }
 
-// ReadConfig reads a session's config.json.
+// ReadConfig reads a session's config.json. It takes the same file gate as Open
+// and writeConfig: on Windows the reader that lands inside a replace fails with
+// ERROR_SHARING_VIOLATION ("being used by another process"), so config reads and
+// writes have to be ordered rather than raced.
 func ReadConfig(dir string) (Config, error) {
+	gate := fileGate(dir)
+	gate.RLock()
+	defer gate.RUnlock()
 	//nolint:gosec // dir is an internally generated session directory.
 	b, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if err != nil {

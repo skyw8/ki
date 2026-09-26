@@ -2,15 +2,39 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"ki/internal/provider"
+	"ki/internal/server"
 )
 
+// promptJSON posts a prompt and also returns the raw body, so a failure shows
+// what the server answered instead of the empty map serveJSON falls back to.
+func promptJSON(t *testing.T, sf server.File, id string, body map[string]any) (int, map[string]any, string) {
+	t.Helper()
+	status, raw, err := serveRaw(t, sf, http.MethodPost, "/v1/sessions/"+id+"/prompt", body)
+	if err != nil {
+		t.Fatalf("prompt request: %v", err)
+	}
+	out := map[string]any{}
+	if raw != "" {
+		_ = json.Unmarshal([]byte(raw), &out)
+	}
+	return status, out, raw
+}
+
 func TestBusyQueuePromoteHTTP(t *testing.T) {
+	// diag: repeat the scenario so a rare Windows race shows up in one CI run.
+	for i := range 8 {
+		t.Run(fmt.Sprint(i), func(t *testing.T) { busyQueueScenario(t) })
+	}
+}
+
+func busyQueueScenario(t *testing.T) {
 	home, proj := isolate(t)
 	sf := startServe(t, home)
 
@@ -27,30 +51,31 @@ func TestBusyQueuePromoteHTTP(t *testing.T) {
 		t.Fatalf("message toggle %d", status)
 	}
 
-	status, out := serveJSON(t, sf, http.MethodPost, "/v1/sessions/"+id+"/prompt", map[string]any{"text": provider.HoldToken})
+	status, out, raw := promptJSON(t, sf, id, map[string]any{"text": provider.HoldToken})
 	if status != http.StatusAccepted || out["accepted"] != "started" {
-		t.Fatalf("hold %d %+v", status, out)
+		t.Fatalf("hold %d %+v body=%q", status, out, raw)
 	}
 	waitSessionRunning(t, sf, id, true)
 
-	status, out = serveJSON(t, sf, http.MethodPost, "/v1/sessions/"+id+"/prompt", map[string]any{"text": "queued-keep"})
+	status, out, raw = promptJSON(t, sf, id, map[string]any{"text": "queued-keep"})
 	if status != http.StatusAccepted || out["accepted"] != "queued" {
-		t.Fatalf("keep %d %+v", status, out)
+		t.Fatalf("keep %d %+v body=%q", status, out, raw)
 	}
-	status, out = serveJSON(t, sf, http.MethodPost, "/v1/sessions/"+id+"/prompt", map[string]any{"text": "queued-promote"})
+	status, out, raw = promptJSON(t, sf, id, map[string]any{"text": "queued-promote"})
 	if status != http.StatusAccepted || out["accepted"] != "queued" {
-		t.Fatalf("promote enqueue %d %+v", status, out)
+		t.Fatalf("promote enqueue %d %+v body=%q", status, out, raw)
 	}
-	_, detail := serveJSON(t, sf, http.MethodGet, "/v1/sessions/"+id, nil)
+	status, detail := serveJSON(t, sf, http.MethodGet, "/v1/sessions/"+id, nil)
 	queued, _ := detail["queued"].([]any)
-	if len(queued) != 2 {
-		t.Fatalf("queued = %+v", detail["queued"])
+	if status != http.StatusOK || len(queued) != 2 {
+		rawStatus, raw, rawErr := serveRaw(t, sf, http.MethodGet, "/v1/sessions/"+id, nil)
+		t.Fatalf("detail %d queued=%+v body=%+v retry=%d err=%v body=%.400q", status, detail["queued"], detail, rawStatus, rawErr, raw)
 	}
 	tail, _ := queued[1].(map[string]any)
 	tailID, _ := tail["id"].(string)
-	status, out = serveJSON(t, sf, http.MethodPost, "/v1/sessions/"+id+"/prompt", map[string]any{"delivery": "steer", "queueId": tailID})
+	status, out, raw = promptJSON(t, sf, id, map[string]any{"delivery": "steer", "queueId": tailID})
 	if status != http.StatusAccepted || out["accepted"] != "steered" {
-		t.Fatalf("promote %d %+v", status, out)
+		t.Fatalf("promote %d %+v body=%q", status, out, raw)
 	}
 	_, detail = serveJSON(t, sf, http.MethodGet, "/v1/sessions/"+id, nil)
 	queued, _ = detail["queued"].([]any)

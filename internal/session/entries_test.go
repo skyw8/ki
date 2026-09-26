@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"ki/internal/types"
 )
@@ -266,4 +267,50 @@ func readFile(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// TestReadConfigWaitsForTheFileGate pins that ReadConfig shares the session file
+// gate with writeConfig. Windows refuses an open that lands inside the temp-file
+// + rename replace ("The process cannot access the file because it is being used
+// by another process"), so the gate — not luck — is what makes a config read
+// safe while a run appends. Without it the Windows e2e run saw spurious 404s
+// from POST /v1/sessions/{id}/prompt.
+func TestReadConfigWaitsForTheFileGate(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "provider", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := fileGate(s.Dir)
+	gate.Lock()
+
+	type result struct {
+		cfg Config
+		err error
+	}
+	done := make(chan result, 1)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		cfg, readErr := ReadConfig(s.Dir)
+		done <- result{cfg: cfg, err: readErr}
+	}()
+	<-started
+	select {
+	case got := <-done:
+		gate.Unlock()
+		t.Fatalf("ReadConfig returned while the writer held the gate: %+v %v", got.cfg, got.err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	gate.Unlock()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.cfg.Model != "model" {
+			t.Fatalf("config = %+v", got.cfg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReadConfig did not finish after the gate was released")
+	}
 }

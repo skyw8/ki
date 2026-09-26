@@ -295,6 +295,36 @@ func serveJSON(t *testing.T, sf server.File, method, path string, body any) (int
 	return res.StatusCode, out
 }
 
+// serveRaw reports the status, the raw body, and the body read error, so a
+// failure can show what the server actually answered instead of the empty map
+// serveJSON falls back to.
+func serveRaw(t *testing.T, sf server.File, method, path string, body any) (int, string, error) {
+	t.Helper()
+	var r io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), method, "http://"+sf.Addr+path, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+sf.Token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, readErr := io.ReadAll(res.Body)
+	return res.StatusCode, string(raw), readErr
+}
+
 func waitSessionRunning(t *testing.T, sf server.File, id string, running bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
