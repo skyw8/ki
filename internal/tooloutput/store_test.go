@@ -212,9 +212,11 @@ func TestCloseSessionRemovesSpillFiles(t *testing.T) {
 func TestSweepRemovesDeadOwnersAndKeepsLiveOnes(t *testing.T) {
 	base := t.TempDir()
 	now := time.Now()
-	// A PID above every pid_max is safely not running.
+	// A PID above every pid_max is safely not running. The heartbeat is also
+	// older than the TTL, so a platform whose liveness check cannot answer
+	// (Windows) still sweeps it through the documented heartbeat fallback.
 	dead := filepath.Join(base, runDirPrefix+"dead")
-	mkdirOwner(t, dead, ownerInfo{PID: 1 << 30, Host: testHost(t), StartedAt: now.Add(-time.Hour), Heartbeat: now.Add(-time.Hour)})
+	mkdirOwner(t, dead, ownerInfo{PID: 1 << 30, Host: testHost(t), StartedAt: now.Add(-2 * time.Hour), Heartbeat: now.Add(-2 * time.Hour)})
 	live := filepath.Join(base, runDirPrefix+fmt.Sprint(os.Getpid())+"-live")
 	mkdirOwner(t, live, ownerInfo{PID: os.Getpid(), Host: testHost(t), StartedAt: now, Heartbeat: now})
 	foreign := filepath.Join(base, "not-a-run-root")
