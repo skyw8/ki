@@ -4,10 +4,18 @@ import { EnginePool } from "./engine.js";
 import { Host } from "./host.js";
 import { IndexJobs, type IndexJobState, notifyText } from "./index-job.js";
 import { StdioRpc, safeError } from "./rpc.js";
-import { cancelledResult, executeSearch, SEARCH_TOOL_SPEC, type SearchPlan, type ToolResult } from "./tool.js";
+import {
+  cancelledResult,
+  executeSearch,
+  RefreshGate,
+  SEARCH_TOOL_SPEC,
+  type SearchPlan,
+  type ToolResult,
+} from "./tool.js";
 
 const rpc = new StdioRpc();
 const pool = new EnginePool();
+const gate = new RefreshGate();
 const sessions = new Map<string, { cwd: string }>();
 const hostBySession = new Map<string, Host>();
 /** In-flight tool calls keyed by the JSON-RPC id the Host cancels by. */
@@ -117,6 +125,10 @@ async function toolExecute(params: unknown, id?: string | number) {
       cwd,
       config: config(),
       pool,
+      gate,
+      // The sidecar knows which roots it is indexing itself; a search must not
+      // contend with that job for the index write permit.
+      indexJobActive: (root: string) => jobs.hasActiveRoot(root),
       // Record the resolved root so a cancel answered mid-flight names the
       // workspace it was actually searching.
       onPlan: (plan: SearchPlan) => {

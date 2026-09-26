@@ -93,6 +93,17 @@ one library instance per effective configuration, refreshes changed files
 before a search (`freshness: wait_for_fresh`, the default), and bounds
 concurrent searches to four so one slow call cannot stall the sidecar.
 
+An auto-update keeps zvec-grep's workspace write lock for its whole refresh, and
+zg's read path refuses to run while a writer holds that lock, so the sidecar
+serializes its searches per root: a second search waits for the first instead of
+failing with "another writer holds the index write lock". Two further situations
+degrade instead of failing: a refresh that loses the race for the index write
+permit is retried once, then the search answers from the index as built (the
+result then starts with `note: refresh skipped — …`, and
+`details.refreshSkipped` records why); a search issued while `/zg-index` builds
+the same root fails immediately naming that job, because the build owns the write
+lock until it ends.
+
 `mode: external-daemon` runs `zg query` against a daemon you manage. It fails
 fast when `zg server status --check-ready` fails instead of starting a daemon
 itself. Do not run `zg --server` as a daemon and the in-process engine against
@@ -113,8 +124,10 @@ numbers, and — with `preview: full` — the item's outline.
 
 Item-level `status: possibly_stale` means the index has not caught up with a
 recent edit; the model is told to verify those files with `Grep` before making
-claims about their current contents. Add `.zvec-grep/` to the project's
-`.gitignore`.
+claims about their current contents. A leading `note: refresh skipped — …` means
+the search answered from the index as last built because the write lock was busy;
+`details.refreshSkipped` names the reason (`write_busy` or `index_job`). Add
+`.zvec-grep/` to the project's `.gitignore`.
 
 ## Tests
 
@@ -136,3 +149,17 @@ in a temp directory, so it never touches `~/.zvec-grep`.
   the model; later runs reuse the cache.
 - **`external-daemon` mode reports the daemon is not ready** — start it with
   `zg server on`, or switch the setting back to `in-process`.
+- **`note: refresh skipped — …` on a result** — the index write lock was held, so
+  the ranking comes from the index as last built (the header's `freshness` still
+  reports what the library observed). Retry, or ask for `freshness: eventual` to
+  request that behaviour deliberately.
+- **"another writer holds the zvec-grep workspace write lock"** — another process
+  (an external `zg index`, a `zg server`, or another ki session) is writing that
+  index. zg's read path refuses to run alongside a writer, so the search retries
+  briefly and then reports the owner; run it again once that writer finishes.
+- **"cannot read the index … while an index job is building it"** — `/zg-index`
+  owns the write lock for the whole build. Wait for the job (its progress is on
+  the extension status chip) and search again.
+- **"a zvec-grep daemon owns the index writes"** — a `zg server` daemon holds
+  that root. Stop it with `zg server off`, or switch this extension's `mode`
+  setting to `external-daemon` so searches go through the daemon.

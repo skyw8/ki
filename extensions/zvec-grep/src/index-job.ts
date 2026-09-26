@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { ZvecConfig } from "./config.js";
 import { type CliProgress, runIndex, summaryFields } from "./cli.js";
 import type { Host } from "./host.js";
@@ -34,6 +35,23 @@ export class IndexJobs {
 
   get(sessionId: string): IndexJobState | undefined {
     return this.jobs.get(sessionId)?.state;
+  }
+
+  /**
+   * hasActiveRoot reports whether any session's job builds that root, so a
+   * search can skip its auto-update: `zg index` holds the index write permit for
+   * the whole build (upstream takes it before the staleness check), and a
+   * refresh that contends with it fails outright.
+   *
+   * Paths are compared resolved, because the tool takes the root from the call
+   * arguments while the commands resolve it against the session cwd.
+   */
+  hasActiveRoot(root: string): boolean {
+    const target = resolve(root);
+    for (const job of this.jobs.values()) {
+      if (resolve(job.state.root) === target) return true;
+    }
+    return false;
   }
 
   start(sessionId: string, request: IndexRequest, host: Host, config: ZvecConfig): { started: boolean; notice: string } {

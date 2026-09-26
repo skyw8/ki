@@ -232,6 +232,145 @@ test("/zg-index refuses a second job and does not accept --drop", async (t) => {
   assert.match(dropped.result.notice, /use \/zg-remove/);
 });
 
+test("a contended index write lock retries, then searches without refreshing", async (t) => {
+  const sidecar = startSidecar(t, {
+    state: {
+      indexWrite: "contended",
+      items: [{ path: "src/theme.ts", startLine: 1, endLine: 1, content: "const theme = 'light'", matchedBy: "fts" }],
+    },
+  });
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  const response = await sidecar.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args: searchArgs() });
+  const result = response.result;
+  assert.notEqual(result.isError, true);
+  assert.match(result.content[0].text, /^note: refresh skipped — another writer holds the index write lock/);
+  assert.match(result.content[0].text, /freshness: fresh/);
+  assert.match(result.content[0].text, /src\/theme\.ts:1-1/);
+  assert.equal(result.details.refreshSkipped, "write_busy");
+  assert.equal(result.details.attempts, 3);
+  const contexts = sidecar.entries().filter((entry) => entry.event === "context");
+  assert.deepEqual(contexts.map((entry) => entry.options.autoUpdate), [true, true, false]);
+});
+
+test("an eventual search never contends with the index write lock", async (t) => {
+  const sidecar = startSidecar(t, { state: { indexWrite: "contended", items: [] } });
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  const response = await sidecar.call("tool.execute", {
+    sessionId: "s1",
+    name: "zvec_grep_search",
+    args: searchArgs({ freshness: "eventual" }),
+  });
+  assert.notEqual(response.result.isError, true);
+  assert.doesNotMatch(response.result.content[0].text, /refresh skipped/);
+  assert.equal(response.result.details.attempts, 1);
+});
+
+test("a daemon-owned root is named instead of the library's CLI hint", async (t) => {
+  const sidecar = startSidecar(t, { state: { indexWrite: "daemon", items: [] } });
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  const response = await sidecar.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args: searchArgs() });
+  const result = response.result;
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /a zvec-grep daemon owns the index writes/);
+  assert.match(result.content[0].text, /pid 4242/);
+  assert.match(result.content[0].text, /zg server off/);
+  // The library's own hint is about the CLI's transport mode, which an
+  // in-process search cannot set; relaying it would misdirect the model.
+  assert.doesNotMatch(result.content[0].text, /client\.mode/);
+  assert.equal(result.details.holder, "daemon");
+  assert.equal(result.details.holderPid, 4242);
+});
+
+test("a write lock held without a daemon lease is reported as contention", async (t) => {
+  const sidecar = startSidecar(t, { state: { indexWrite: "always", items: [] } });
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  const response = await sidecar.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args: searchArgs() });
+  const result = response.result;
+  assert.equal(result.isError, true);
+  // pid=0 means no daemon lease exists: only the guard was contended.
+  assert.match(result.content[0].text, /another writer holds the zvec-grep index write lock/);
+  assert.match(result.content[0].text, /freshness=eventual/);
+  assert.doesNotMatch(result.content[0].text, /daemon owns/);
+  assert.doesNotMatch(result.content[0].text, /config\.json/);
+  assert.equal(result.details.holder, "unknown");
+  assert.equal(result.details.attempts, 3);
+});
+
+test("a running index job makes searches skip the refresh", async (t) => {
+  const sidecar = startSidecar(t, { state: { items: [] }, env: { KI_ZVEC_GREP_FAKE_INDEX_SLEEP: "2" } });
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  const started = await sidecar.call("command.invoke", { sessionId: "s1", name: "zg-index", args: "" });
+  assert.match(started.result.notice, /Started/);
+
+  const refreshed = await sidecar.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args: searchArgs() });
+  assert.notEqual(refreshed.result.isError, true);
+  assert.match(refreshed.result.content[0].text, /^note: refresh skipped — an index job is running for this root/);
+  assert.equal(refreshed.result.details.refreshSkipped, "index_job");
+  assert.equal(sidecar.entries().find((entry) => entry.event === "context").options.autoUpdate, false);
+});
+
+test("concurrent searches of one sidecar do not collide on the write lock", async (t) => {
+  // The stub makes the first refreshing search hold the workspace write lock for
+  // 1.5s and fails any overlapping call, which is what the real library does; a
+  // serialized second search therefore has to wait, not retry its way through.
+  const sidecar = startSidecar(t, {
+    state: { holdWriterLockMs: 1500, items: [{ path: "src/theme.ts", startLine: 1, endLine: 1, content: "theme", matchedBy: "fts" }] },
+  });
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  const startedAt = Date.now();
+  const [first, second] = await Promise.all([
+    sidecar.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args: searchArgs() }),
+    sidecar.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args: searchArgs({ query: "another question" }) }),
+  ]);
+  for (const response of [first, second]) {
+    assert.notEqual(response.result.isError, true, JSON.stringify(response.result));
+    assert.equal(response.result.details.attempts, 1);
+  }
+  assert.equal(second.result.details.refreshSkipped, null);
+  assert.ok(Date.now() - startedAt >= 1500, "the second search must wait for the first");
+  const contexts = sidecar.entries().filter((entry) => entry.event === "context");
+  assert.equal(contexts.length, 2);
+  assert.equal(contexts.some((entry) => entry.options.autoUpdate === false), false);
+});
+
+test("a workspace write lock held elsewhere is retried, then named", async (t) => {
+  const sidecar = startSidecar(t, { state: { lockBusy: "once", items: [] } });
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  const recovered = await sidecar.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args: searchArgs() });
+  assert.notEqual(recovered.result.isError, true);
+  assert.equal(recovered.result.details.attempts, 2);
+
+  const sidecar2 = startSidecar(t, { state: { lockBusy: "always", items: [] } });
+  await sidecar2.call("session.open", { sessionId: "s1", cwd: sidecar2.workspace });
+  const response = await sidecar2.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args: searchArgs() });
+  const result = response.result;
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /another writer holds the zvec-grep workspace write lock/);
+  assert.match(result.content[0].text, /by `index` \(pid 5150\)/);
+  assert.match(result.content[0].text, /locks\/home\.write/);
+  assert.equal(result.details.holder, "index");
+  assert.equal(result.details.holderPid, 5150);
+  assert.equal(result.details.retryable, true);
+  assert.equal(result.details.attempts, 3);
+});
+
+test("a search that loses to the sidecar's own index job says so", async (t) => {
+  const sidecar = startSidecar(t, {
+    state: { lockBusy: "always", items: [] },
+    env: { KI_ZVEC_GREP_FAKE_INDEX_SLEEP: "2" },
+  });
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  await sidecar.call("command.invoke", { sessionId: "s1", name: "zg-index", args: "" });
+  const response = await sidecar.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args: searchArgs() });
+  const result = response.result;
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /while an index job is building it/);
+  assert.match(result.content[0].text, /use Grep for an exact anchor/);
+  assert.equal(result.details.reason, "index_job");
+  // Waiting for a build would burn the search budget: one attempt, then report.
+  assert.equal(result.details.attempts, 1);
+});
+
 test("/zg-remove asks for confirmation and forwards the drop", async (t) => {
   const sidecar = startSidecar(t, { state: { items: [] } });
   sidecar.replies.set("ui.confirm", { ok: false });

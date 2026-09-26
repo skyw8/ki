@@ -3,6 +3,7 @@ import { cliAvailable, runCli, zgBinary } from "./cli.js";
 import type { ZvecConfig } from "./config.js";
 import {
   type ContextResult,
+  type EngineErrorInfo,
   EnginePool,
   engineError,
   SearchCancelledError,
@@ -46,9 +47,95 @@ export type ToolContext = {
   cwd: string;
   config: ZvecConfig;
   pool: EnginePool;
+  /** Serializes the searches of this sidecar per root; see RefreshGate. */
+  gate: RefreshGate;
   /** onPlan reports the resolved plan so callers can name the searched root. */
   onPlan?: (plan: SearchPlan) => void;
+  /**
+   * indexJobActive reports whether this sidecar already builds an index for that
+   * root. `zg index` takes the index write permit before its staleness check and
+   * holds it for the whole run, so a refresh from a search during that window
+   * can only fail: the search skips the refresh instead of contending with our
+   * own job.
+   */
+  indexJobActive?: (root: string) => boolean;
 };
+
+/** Why a search answered from an index it could not refresh. */
+export type RefreshSkip = "index_job" | "write_busy";
+
+/** Bookkeeping for the tool result: what happened to the refresh, and how often we tried. */
+export type SearchOutcome = {
+  refreshSkipped?: RefreshSkip;
+  /** Resolved pid of the writer that held the permit, when the library named one. */
+  holderPid?: number;
+  attempts: number;
+};
+
+/**
+ * INDEX_WRITE_BUSY_CODE is the library's "another writer holds the index write
+ * permit" error: either the transient guard that only the auto-update path
+ * takes, or a daemon that owns the root's index writes.
+ */
+export const INDEX_WRITE_BUSY_CODE = "ZVEC_GREP.ENGINE.DAEMON_LEASE_ACTIVE";
+
+/**
+ * INDEX_LOCK_BUSY_CODE is the library's workspace write-lock error. Its read
+ * path refuses to run while any writer holds that lock, so a search overlapping
+ * a refresh or an index build fails with it even though it would only read.
+ */
+export const INDEX_LOCK_BUSY_CODE = "ZVEC_GREP.ENGINE.LOCK.BUSY";
+
+/**
+ * How long to wait before re-running a search that lost the race for the index
+ * write permit.
+ *
+ * The permit is a mkdir guard that normally lives for milliseconds — two
+ * searches in one sidecar race on the same guard while the winner scans the
+ * workspace for staleness — so one short retry still returns a refreshed index.
+ * A permit held for a real refresh or an index build does not clear in this
+ * window; the caller then searches the index as built and says so.
+ */
+const INDEX_WRITE_RETRY_MS = 250;
+
+/** Retries for a workspace write lock held by another process, and their spacing. */
+const INDEX_LOCK_RETRIES = 2;
+const INDEX_LOCK_RETRY_MS = 400;
+
+/**
+ * RefreshGate serializes the searches of this sidecar per root.
+ *
+ * Why: the library takes the index write permit and the workspace write lock for
+ * a whole auto-update, and its read path refuses to run while a writer holds that
+ * lock. Two concurrent searches of one sidecar therefore make the second fail
+ * with "daemon owns index writes" or "Index unavailable" although only our own
+ * first search is writing. A follower waits for the leader and then refreshes
+ * nothing (the workspace is already current), so serializing costs latency and
+ * never correctness.
+ */
+export class RefreshGate {
+  private readonly tails = new Map<string, Promise<void>>();
+
+  /** run executes task after every earlier task for that root has finished. */
+  async run<T>(root: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.tails.get(root) ?? Promise.resolve();
+    let release: () => void = () => {};
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => current);
+    this.tails.set(root, tail);
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release();
+      // Drop the chain once it drains, so a long-lived sidecar does not keep one
+      // entry per searched root forever.
+      if (this.tails.get(root) === tail) this.tails.delete(root);
+    }
+  }
+}
 
 const SYMBOL_TYPES = ["module", "class", "interface", "function", "value", "alias"];
 const MAX_QUERIES = 8;
@@ -157,8 +244,16 @@ export function normalizeSearchArgs(args: Record<string, unknown>, ctx: ToolCont
   };
 }
 
-/** contextOptions maps the plan onto the library's context() options. */
-export function contextOptions(plan: SearchPlan, config: ZvecConfig): Record<string, unknown> {
+/**
+ * contextOptions maps the plan onto the library's context() options. `autoUpdate`
+ * defaults to the refresh-then-search path ("wait_for_fresh"); the retry below
+ * passes false to search the index as built.
+ */
+export function contextOptions(
+  plan: SearchPlan,
+  config: ZvecConfig,
+  autoUpdate = plan.freshness === "wait_for_fresh",
+): Record<string, unknown> {
   return {
     root: plan.root,
     queries: plan.queries.length ? plan.queries : undefined,
@@ -185,8 +280,10 @@ export function contextOptions(plan: SearchPlan, config: ZvecConfig): Record<str
     modifiedAfter: plan.modifiedAfter,
     modifiedBefore: plan.modifiedBefore,
     // "wait_for_fresh" is the library's refresh-then-search path; "eventual"
-    // skips the refresh and reports possibly_stale items instead.
-    autoUpdate: plan.freshness === "wait_for_fresh",
+    // skips the refresh and reports possibly_stale items instead. Only the
+    // refresh path takes the index write permit, so "eventual" cannot contend
+    // with another writer.
+    autoUpdate,
   };
 }
 
@@ -198,20 +295,83 @@ export async function executeSearch(args: Record<string, unknown>, ctx: ToolCont
   ctx.onPlan?.(plan);
   if (ctx.config.mode === "external-daemon") return runCliSearch(plan, ctx);
   const started = Date.now();
-  try {
-    const result = await ctx.pool.run(ctx.config, ctx.config.searchTimeoutMs, (engine) =>
-      engine.context(contextOptions(plan, ctx.config)),
-    );
-    return successResult(result, plan, Date.now() - started);
-  } catch (error) {
-    return failureResult(error, plan, Date.now() - started);
-  }
+  const deadline = started + ctx.config.searchTimeoutMs;
+  const wantsRefresh = plan.freshness === "wait_for_fresh";
+  const jobRunning = wantsRefresh && ctx.indexJobActive?.(plan.root) === true;
+  let autoUpdate = wantsRefresh && !jobRunning;
+  let refreshSkipped: RefreshSkip | undefined = jobRunning ? "index_job" : undefined;
+  let holderPid: number | undefined;
+  let attempts = 0;
+  let lockWaits = 0;
+  return ctx.gate.run(plan.root, async () => {
+    for (;;) {
+      attempts += 1;
+      const outcome: SearchOutcome = { refreshSkipped, holderPid, attempts };
+      try {
+        // Each attempt spends what is left of the sidecar budget, so the gate,
+        // the retry, and the fallback cannot add up past the config's budget.
+        const result = await ctx.pool.run(ctx.config, Math.max(1, deadline - Date.now()), (engine) =>
+          engine.context(contextOptions(plan, ctx.config, autoUpdate)),
+        );
+        return successResult(result, plan, Date.now() - started, outcome);
+      } catch (error) {
+        const info = engineError(error);
+        const busy = info.code === INDEX_WRITE_BUSY_CODE || info.code === INDEX_LOCK_BUSY_CODE;
+        if (!busy) return failureResult(error, plan, Date.now() - started, outcome);
+        holderPid = indexWriteHolderPid(info.details) ?? holderPid;
+        // Our own index job holds both locks for its whole build, so waiting
+        // would only burn the budget: report it as the reason instead.
+        if (ctx.indexJobActive?.(plan.root) === true) {
+          return indexJobBusyResult(info, plan, {
+            root: plan.root,
+            durationMs: Date.now() - started,
+            refreshSkipped: refreshSkipped ?? null,
+            attempts,
+          }, { ...outcome, holderPid });
+        }
+        if (info.code === INDEX_WRITE_BUSY_CODE && autoUpdate) {
+          // The permit is a mkdir guard that is normally held for milliseconds,
+          // so one retry still returns a refreshed index.
+          if (attempts === 1) {
+            await sleep(INDEX_WRITE_RETRY_MS);
+            continue;
+          }
+          // A permit held across a whole refresh or build does not clear by
+          // waiting. Only the auto-update path takes it, so answer from the
+          // index as built and mark the result as unrefreshed.
+          autoUpdate = false;
+          refreshSkipped = "write_busy";
+          continue;
+        }
+        if (info.code === INDEX_LOCK_BUSY_CODE && lockWaits < INDEX_LOCK_RETRIES) {
+          lockWaits += 1;
+          await sleep(INDEX_LOCK_RETRY_MS);
+          continue;
+        }
+        const details: FailureDetails = {
+          root: plan.root,
+          durationMs: Date.now() - started,
+          refreshSkipped: refreshSkipped ?? null,
+          attempts,
+        };
+        return info.code === INDEX_LOCK_BUSY_CODE
+          ? indexLockBusyResult(info, plan, details, outcome)
+          : indexWriteBusyResult(info, plan, details, outcome);
+      }
+    }
+  });
 }
 
-export function successResult(result: ContextResult, plan: SearchPlan, durationMs: number): ToolResult {
+export function successResult(
+  result: ContextResult,
+  plan: SearchPlan,
+  durationMs: number,
+  outcome: SearchOutcome = { attempts: 1 },
+): ToolResult {
   const text = renderContextResult(result, { preview: plan.preview });
+  const note = outcome.refreshSkipped ? refreshSkipNote(outcome.refreshSkipped, outcome.holderPid) : "";
   return {
-    content: [{ type: "text", text }],
+    content: [{ type: "text", text: note ? `${note}\n${text}` : text }],
     details: {
       root: result.root,
       source: result.source,
@@ -221,14 +381,58 @@ export function successResult(result: ContextResult, plan: SearchPlan, durationM
       stale: result.items.filter((item) => item.status === "possibly_stale").length,
       emptyReason: result.diagnostics.emptyReason ?? null,
       routes: result.diagnostics.index?.routes?.map((route) => `${route.mode}:${route.query}`) ?? [],
+      refreshSkipped: outcome.refreshSkipped ?? null,
+      holderPid: outcome.holderPid ?? null,
+      attempts: outcome.attempts,
       durationMs,
     },
   };
 }
 
+/**
+ * refreshSkipNote tells the model why the ranking may lag the working tree. The
+ * header's `freshness:` still reports what the library observed; this line
+ * explains a refresh this sidecar chose not to attempt.
+ */
+function refreshSkipNote(skip: RefreshSkip, holderPid?: number): string {
+  if (skip === "index_job") {
+    return "note: refresh skipped — an index job is running for this root; results come from the index as last built";
+  }
+  if (holderPid) {
+    return `note: refresh skipped — a zvec-grep daemon owns index writes for this root (pid ${holderPid}); results come from ` +
+      "the index as last built — stop the daemon (`zg server off`) or switch this extension's mode setting to `external-daemon` if it must stay current";
+  }
+  return "note: refresh skipped — another writer holds the index write lock; results come from the index as last built";
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * indexWriteHolderPid reads the `pid=` line the library puts in the error
+ * context. `pid=0` is the library's placeholder for "no daemon lease exists"
+ * (only the transient guard was contended), so it never names a daemon.
+ */
+export function indexWriteHolderPid(details: string): number | undefined {
+  const match = /(?:^|\n)pid=(\d+)/.exec(details);
+  const pid = match ? Number(match[1]) : 0;
+  return pid > 0 ? pid : undefined;
+}
+
 /** failureResult turns a library failure into model-actionable text. */
-export function failureResult(error: unknown, plan: SearchPlan, durationMs: number): ToolResult {
-  const details = { root: plan.root, durationMs };
+export function failureResult(
+  error: unknown,
+  plan: SearchPlan,
+  durationMs: number,
+  outcome: SearchOutcome = { attempts: 1 },
+): ToolResult {
+  const details = {
+    root: plan.root,
+    durationMs,
+    refreshSkipped: outcome.refreshSkipped ?? null,
+    attempts: outcome.attempts,
+  };
   if (error instanceof SearchTimeoutError) {
     return {
       content: [{
@@ -242,6 +446,9 @@ export function failureResult(error: unknown, plan: SearchPlan, durationMs: numb
   }
   if (error instanceof SearchCancelledError) return cancelledResult(plan);
   const info = engineError(error);
+  if (info.code === INDEX_WRITE_BUSY_CODE) {
+    return indexWriteBusyResult(info, plan, details, outcome);
+  }
   if (info.code === "ZVEC_GREP.ENGINE.SERVICE.WORKSPACE_INDEX_NOT_FOUND") {
     return {
       content: [{
@@ -267,6 +474,137 @@ export function failureResult(error: unknown, plan: SearchPlan, durationMs: numb
   return {
     content: [{ type: "text", text: `zvec_grep_search failed: ${info.message}${info.details ? `\n${info.details}` : ""}` }],
     details: { ...details, code: info.code || null },
+    isError: true,
+  };
+}
+
+type FailureDetails = {
+  root: string;
+  durationMs: number;
+  refreshSkipped: RefreshSkip | null;
+  attempts: number;
+};
+
+/**
+ * indexJobBusyResult explains a search that lost to this sidecar's own index job.
+ * `zg index` holds the workspace write lock for its whole run and the library's
+ * read path refuses to run alongside a writer, so the search cannot succeed
+ * until the job finishes — waiting for it here would only burn the budget.
+ */
+function indexJobBusyResult(
+  info: EngineErrorInfo,
+  plan: SearchPlan,
+  details: FailureDetails,
+  outcome: SearchOutcome,
+): ToolResult {
+  return {
+    content: [{
+      type: "text",
+      text: `zvec_grep_search cannot read the index of ${plan.root} while an index job is building it: ` +
+        "`zg index` holds the workspace write lock for the whole build, and zg's read path refuses to run alongside a writer.\n" +
+        "Wait for the job to finish (progress is on the extension status chip) and search again; " +
+        "use Grep for an exact anchor in the meantime.",
+    }],
+    details: {
+      ...details,
+      code: info.code,
+      reason: "index_job",
+      retryable: true,
+      attempts: outcome.attempts,
+    },
+    isError: true,
+  };
+}
+
+/**
+ * indexLockBusyResult reports a workspace write lock held by another process —
+ * an external `zg index`, a daemon, or another ki session. The library's read
+ * path refuses to run alongside a writer, so this is not a transient ranking
+ * failure the model can work around inside one call.
+ */
+function indexLockBusyResult(
+  info: EngineErrorInfo,
+  plan: SearchPlan,
+  details: FailureDetails,
+  outcome: SearchOutcome,
+): ToolResult {
+  const owner = lockOwner(info.details);
+  const by = owner.operation
+    ? ` by \`${owner.operation}\`${owner.pid ? ` (pid ${owner.pid})` : ""}`
+    : "";
+  return {
+    content: [{
+      type: "text",
+      text: `zvec_grep_search failed: another writer holds the zvec-grep workspace write lock of ${plan.root}${by}.\n` +
+        `lock=${owner.lock ?? "unknown"}\n` +
+        "Another `zg index`, `zg server`, or ki session is writing that index, and zg's read path refuses to run alongside a writer. " +
+        "Retry once that writer finishes, or use Grep for an exact anchor.",
+    }],
+    details: {
+      ...details,
+      code: info.code,
+      holder: owner.operation ?? "unknown",
+      holderPid: owner.pid ?? null,
+      retryable: true,
+      attempts: outcome.attempts,
+    },
+    isError: true,
+  };
+}
+
+/**
+ * lockOwner reads the lock diagnosis the library puts in the error context
+ * (`lock=`, `operation=`, `ownerOperation=`, `ownerPid=`). The owner fields are
+ * absent when the lock directory has no readable owner record.
+ */
+export function lockOwner(details: string): { lock?: string; operation?: string; pid?: number } {
+  const field = (name: string): string | undefined => {
+    const match = new RegExp(`(?:^|\\n)${name}=([^\\n]+)`).exec(details);
+    const value = match ? match[1].trim() : "";
+    return value ? value : undefined;
+  };
+  const pid = Number(field("ownerPid"));
+  return {
+    lock: field("lock"),
+    operation: field("ownerOperation"),
+    pid: Number.isInteger(pid) && pid > 0 ? pid : undefined,
+  };
+}
+
+/**
+ * indexWriteBusyResult replaces the library's raw DAEMON_LEASE_ACTIVE text. That
+ * text reports every lost race as "a daemon owns index writes" (with `pid=0`
+ * when no daemon lease exists at all) and points the reader at zg's CLI-only
+ * `client.mode` — neither of which is a usable lever for an in-process caller.
+ */
+function indexWriteBusyResult(
+  info: EngineErrorInfo,
+  plan: SearchPlan,
+  details: FailureDetails,
+  outcome: SearchOutcome,
+): ToolResult {
+  const pid = outcome.holderPid ?? indexWriteHolderPid(info.details);
+  if (pid) {
+    return {
+      content: [{
+        type: "text",
+        text: `zvec_grep_search failed: a zvec-grep daemon owns the index writes of ${plan.root} (pid ${pid}).\n` +
+          "This extension searches the index in-process, so it cannot update an index a daemon owns. " +
+          "Tell the user to stop the daemon (`zg server off`) or to switch this extension's mode setting to `external-daemon`, which queries the daemon instead.",
+      }],
+      details: { ...details, code: info.code, holder: "daemon", holderPid: pid },
+      isError: true,
+    };
+  }
+  return {
+    content: [{
+      type: "text",
+      text: `zvec_grep_search failed: another writer holds the zvec-grep index write lock for ${plan.root} ` +
+        "(this extension's own index refresh or /zg-index, or another zg process).\n" +
+        "The lock is released when that writer finishes, so retry the search; " +
+        "pass freshness=eventual to search without refreshing, or use Grep for an exact anchor.",
+    }],
+    details: { ...details, code: info.code, holder: "unknown", holderPid: null },
     isError: true,
   };
 }
