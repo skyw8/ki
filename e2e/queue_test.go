@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -28,13 +27,6 @@ func promptJSON(t *testing.T, sf server.File, id string, body map[string]any) (i
 }
 
 func TestBusyQueuePromoteHTTP(t *testing.T) {
-	// diag: repeat the scenario so a rare Windows race shows up in one CI run.
-	for i := range 8 {
-		t.Run(fmt.Sprint(i), func(t *testing.T) { busyQueueScenario(t) })
-	}
-}
-
-func busyQueueScenario(t *testing.T) {
 	home, proj := isolate(t)
 	sf := startServe(t, home)
 
