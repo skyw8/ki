@@ -336,7 +336,7 @@ func withinRoot(root, rel string) error {
 	if rel == "" {
 		return errEmptyPath
 	}
-	if filepath.IsAbs(rel) {
+	if filepath.IsAbs(rel) || isRootedManifestPath(rel) {
 		return fmt.Errorf("%w: %s", errPathMustBeRelative, rel)
 	}
 	clean := filepath.Clean(rel)
@@ -356,6 +356,28 @@ func withinRoot(root, rel string) error {
 		return fmt.Errorf("%w: %s", errPathEscapesPackage, rel)
 	}
 	return nil
+}
+
+// isRootedManifestPath reports whether rel is rooted for some platform, not only
+// for the host one. Why: extension.json travels between machines, so the
+// manifest rule ("paths stay inside the package") must not depend on where it is
+// read. filepath.IsAbs answers for the host alone — on Windows it is false for
+// "/bin" (no volume name), which would let a POSIX-rooted path fold into the
+// package root instead of being rejected.
+func isRootedManifestPath(rel string) bool {
+	if strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, `\`) {
+		return true
+	}
+	if filepath.VolumeName(rel) != "" {
+		return true
+	}
+	// A Windows drive prefix is two characters, so it is spelled out here
+	// instead of relying on the host's volume rules.
+	if len(rel) >= 2 && rel[1] == ':' {
+		c := rel[0]
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	}
+	return false
 }
 
 func (d Descriptor) wantsSidecar() bool {
