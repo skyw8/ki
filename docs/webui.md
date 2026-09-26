@@ -279,7 +279,7 @@ cd web && bun run test:perf
 
 Go 侧同一套夹具：`go test ./internal/session ./internal/server -run 'SeedView|ViewPerf|SeedTranscript' -v`；微基准 `go test ./internal/session -bench . -benchmem`。
 
-真模型（DashScope `qwen3.7-plus`，读 `DASHSCOPE_CN_API_KEY` 或 `~/.ki/ki.toml`）：
+真模型（DeepSeek `deepseek-flash`，读 `DEEPSEEK_API_KEY` 或 `~/.ki` 凭据）：
 
 ```bash
 cd web && KI_LIVE=1 bun run test:e2e:live

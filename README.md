@@ -100,7 +100,9 @@ cd web && bun run test:e2e:live
 go test -tags live -timeout 5m ./e2e -run Live
 ```
 
-Live tests call DashScope `qwen3.7-plus` (`dashscope-cn`). Put the key in `~/.ki/ki.toml` or `DASHSCOPE_CN_API_KEY`.
+Live tests call DeepSeek `deepseek-flash` over all three wire protocols
+(Completions, Responses, Anthropic). Put the key in `~/.ki` (credentials or
+`ki.toml`) or `DEEPSEEK_API_KEY`.
 
 ## CI and releases
 
@@ -110,7 +112,7 @@ and the long-history performance suite. Configure branch protection for `main`
 to require the `CI` workflow checks before merging.
 
 Releases are created only from semantic-version tags. Add
-`DASHSCOPE_CN_API_KEY` as a GitHub Actions repository secret, then push an
+`DEEPSEEK_API_KEY` as a GitHub Actions repository secret, then push an
 annotated tag:
 
 ```bash

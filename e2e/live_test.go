@@ -14,27 +14,41 @@ import (
 	"time"
 )
 
-const liveModel = "dashscope-cn/qwen3.7-plus"
+// DeepSeek is the live provider. It serves all three wire protocols from one
+// credential: the built-in `deepseek` provider speaks Completions, and the two
+// overlay providers below point the same model at its Responses and Anthropic
+// endpoints. `--model` then selects the protocol per session.
+const (
+	liveModel                 = "deepseek/deepseek-flash"
+	liveModelResponses        = "deepseek-responses/deepseek-flash"
+	liveModelAnthropic        = "deepseek-anthropic/deepseek-flash"
+	liveDeepSeekBase          = "https://api.deepseek.com"
+	liveDeepSeekAnthropicBase = liveDeepSeekBase + "/anthropic"
+)
 
-func TestLiveQwenPing(t *testing.T) {
-	home, proj := isolateLive(t)
-	out, errOut, code := runKI(t, "--cwd", proj, "--model", liveModel,
-		"Reply with exactly the single word pong and nothing else.")
-	if code != 0 {
-		t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
-	}
-	got := strings.ToLower(out)
-	if !strings.Contains(got, "pong") {
-		t.Fatalf("expected pong, got:\n%s", out)
-	}
-	id := mustSessionID(t, out, errOut)
-	raw := readJSONL(t, sessionDir(t, home, id))
-	if !strings.Contains(raw, `"role":"assistant"`) {
-		t.Fatalf("jsonl:\n%s", raw)
+func TestLivePing(t *testing.T) {
+	for _, ref := range []string{liveModel, liveModelResponses, liveModelAnthropic} {
+		t.Run(strings.ReplaceAll(ref, "/", "_"), func(t *testing.T) {
+			home, proj := isolateLive(t)
+			out, errOut, code := runKI(t, "--cwd", proj, "--model", ref,
+				"Reply with exactly the single word pong and nothing else.")
+			if code != 0 {
+				t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", code, out, errOut)
+			}
+			got := strings.ToLower(out)
+			if !strings.Contains(got, "pong") {
+				t.Fatalf("expected pong, got:\n%s", out)
+			}
+			id := mustSessionID(t, out, errOut)
+			raw := readJSONL(t, sessionDir(t, home, id))
+			if !strings.Contains(raw, `"role":"assistant"`) {
+				t.Fatalf("jsonl:\n%s", raw)
+			}
+		})
 	}
 }
 
-func TestLiveQwenImageAndPDF(t *testing.T) {
+func TestLiveImageAndPDF(t *testing.T) {
 	home, proj := isolateLive(t)
 	img := filepath.Join(proj, "red.png")
 	pdf := filepath.Join(proj, "marker.pdf")
@@ -66,7 +80,7 @@ func TestLiveQwenImageAndPDF(t *testing.T) {
 	}
 }
 
-func TestLiveQwenTwoImages(t *testing.T) {
+func TestLiveTwoImages(t *testing.T) {
 	home, proj := isolateLive(t)
 	red := filepath.Join(proj, "red.png")
 	blue := filepath.Join(proj, "blue.png")
@@ -125,6 +139,9 @@ func TestLiveWebUIPlaywright(t *testing.T) {
 		"KI_BASE_URL=http://"+sf.Addr,
 		"KI_SKIP_SERVER=1",
 		"KI_LIVE=1",
+		// global-setup records this for specs that need the fixture directory;
+		// the live tool spec reads pw-live.txt from it.
+		"KI_PW_CWD="+proj,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -134,49 +151,102 @@ func TestLiveWebUIPlaywright(t *testing.T) {
 
 func isolateLive(t *testing.T) (home, proj string) {
 	t.Helper()
-	key := liveDashScopeKey(t)
+	key := liveDeepSeekKey(t)
 	home = t.TempDir()
 	proj = t.TempDir()
 	t.Setenv("KI_HOME", home)
 	t.Setenv("KI_FAKE", "")
 	t.Setenv("KI_SERVER_ADDR", "")
-	t.Setenv("DASHSCOPE_CN_API_KEY", key)
-	t.Setenv("DASHSCOPE_API_KEY", key)
-	if err := os.WriteFile(filepath.Join(home, "models.json"), []byte(`{"version":1,"default":{"provider":"dashscope-cn","model":"qwen3.7-plus"},"providers":{}}`), 0o600); err != nil {
+	t.Setenv("DEEPSEEK_API_KEY", key)
+	if err := os.WriteFile(filepath.Join(home, "models.json"), []byte(modelsJSON(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "credentials.json"), []byte(credentialsJSON(t, key)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Chdir(proj)
 	return home, proj
 }
 
-func liveDashScopeKey(t *testing.T) string {
+// modelsJSON pins the default to DeepSeek Completions and adds the Responses and
+// Anthropic overlays so one home can run every protocol.
+func modelsJSON(t *testing.T) string {
 	t.Helper()
-	for _, k := range []string{"DASHSCOPE_CN_API_KEY", "DASHSCOPE_API_KEY"} {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			return v
+	seed := map[string]any{
+		"id": "deepseek-flash", "name": "DeepSeek V4.1 Flash",
+		"contextWindow": 1000000, "maxTokens": 384000,
+		"input": []string{"text", "image"}, "reasoning": true,
+		"cost": map[string]any{"input": 0.3, "output": 1.2, "cacheRead": 0.006, "cacheWrite": 0},
+	}
+	overlay := func(name, api, base string) map[string]any {
+		return map[string]any{
+			"name": name, "api": api, "baseUrl": base,
+			"models": []any{seed},
 		}
 	}
+	doc := map[string]any{
+		"version": 1,
+		"default": map[string]any{"provider": "deepseek", "model": "deepseek-flash"},
+		"providers": map[string]any{
+			"deepseek-responses": overlay("DeepSeek Responses", "responses", liveDeepSeekBase),
+			"deepseek-anthropic": overlay("DeepSeek Anthropic", "anthropic", liveDeepSeekAnthropicBase),
+		},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func credentialsJSON(t *testing.T, key string) string {
+	t.Helper()
+	entry := map[string]any{"apiKey": key}
+	doc := map[string]any{
+		"version": 1,
+		"providers": map[string]any{
+			"deepseek":           entry,
+			"deepseek-responses": entry,
+			"deepseek-anthropic": entry,
+		},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func liveDeepSeekKey(t *testing.T) string {
+	t.Helper()
+	if v := strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY")); v != "" {
+		return v
+	}
+	if key := deepSeekKeyFromCredentials(t); key != "" {
+		return key
+	}
+	t.Skip("no deepseek key; set DEEPSEEK_API_KEY or configure it in Ki settings")
+	return ""
+}
+
+func deepSeekKeyFromCredentials(t *testing.T) string {
+	t.Helper()
 	userHome, err := os.UserHomeDir()
 	if err != nil {
-		t.Skip(err)
+		return ""
 	}
 	//nolint:gosec // this is the user's explicit private Ki configuration path.
 	b, err := os.ReadFile(filepath.Join(userHome, ".ki", "credentials.json"))
 	if err != nil {
-		t.Skip("no dashscope-cn key; set DASHSCOPE_CN_API_KEY or configure it in Ki settings")
+		return ""
 	}
 	var credentials struct {
 		Providers map[string]struct {
 			APIKey string `json:"apiKey"`
 		} `json:"providers"`
 	}
-	if json.Unmarshal(b, &credentials) == nil {
-		for _, id := range []string{"dashscope-cn", "dashscope"} {
-			if key := strings.TrimSpace(credentials.Providers[id].APIKey); key != "" {
-				return key
-			}
-		}
+	if json.Unmarshal(b, &credentials) != nil {
+		return ""
 	}
-	t.Skip("no dashscope-cn key; set DASHSCOPE_CN_API_KEY or configure it in Ki settings")
-	return ""
+	return strings.TrimSpace(credentials.Providers["deepseek"].APIKey)
 }

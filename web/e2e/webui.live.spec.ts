@@ -1,4 +1,7 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
+import { statePath } from './run-state.ts'
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
@@ -26,9 +29,15 @@ test('live ping through chat and trajectory', async ({ page }) => {
 })
 
 test('live tool call shows in chat and trajectory', async ({ page }) => {
+  // A fresh home gives every session an empty temporary workspace, so the
+  // fixture can only be reached by its absolute path (which the Read tool
+  // accepts) rather than a workspace-relative name.
+  const { cwd } = JSON.parse(readFileSync(statePath, 'utf8')) as { cwd: string }
+  expect(cwd).toBeTruthy()
+  const markerFile = join(cwd, 'pw-live.txt')
   const prompt = [
     'You must use the Read tool. Do not guess.',
-    'Read the file pw-live.txt in the current workspace and quote the marker token you find.',
+    'Read the file ' + markerFile + ' and quote the marker token you find.',
     'Final answer on its own line: MARKER=<token>',
   ].join('\n')
   await page.goto('/')

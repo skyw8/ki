@@ -77,33 +77,35 @@ async function seedBrowserSession(baseURL: string, home: string): Promise<void> 
   writeFileSync(storageStatePath, JSON.stringify({ cookies, origins: [] }))
 }
 
-function dashscopeKey(): string {
-  for (const k of ['DASHSCOPE_CN_API_KEY', 'DASHSCOPE_API_KEY']) {
-    const v = (process.env[k] ?? '').trim()
-    if (v) return v
+function deepseekKey(): string {
+  const fromEnv = (process.env.DEEPSEEK_API_KEY ?? '').trim()
+  if (fromEnv) return fromEnv
+  const credsPath = join(homedir(), '.ki', 'credentials.json')
+  if (existsSync(credsPath)) {
+    const creds = JSON.parse(readFileSync(credsPath, 'utf8')) as {
+      providers?: Record<string, { apiKey?: string }>
+    }
+    const key = (creds.providers?.deepseek?.apiKey ?? '').trim()
+    if (key) return key
   }
   const tomlPath = join(homedir(), '.ki', 'ki.toml')
   if (!existsSync(tomlPath)) {
-    throw new Error('no dashscope-cn key; set DASHSCOPE_CN_API_KEY or ~/.ki/ki.toml')
+    throw new Error('no deepseek key; set DEEPSEEK_API_KEY or configure it in Ki settings')
   }
   let section = ''
-  let fallback = ''
   for (const raw of readFileSync(tomlPath, 'utf8').split('\n')) {
     const line = raw.trim()
     if (line.startsWith('[') && line.endsWith(']')) {
       section = line.slice(1, -1).trim()
       continue
     }
-    if (!line.startsWith('api_key')) continue
+    if (section !== 'providers.deepseek' || !line.startsWith('api_key')) continue
     const i = line.indexOf('=')
     if (i < 0) continue
     const v = line.slice(i + 1).trim().replace(/^['"]|['"]$/g, '')
-    if (!v) continue
-    if (section === 'providers.dashscope-cn') return v
-    if (section === 'providers.dashscope' && !fallback) fallback = v
+    if (v) return v
   }
-  if (fallback) return fallback
-  throw new Error('no dashscope-cn key; set DASHSCOPE_CN_API_KEY or ~/.ki/ki.toml')
+  throw new Error('no deepseek key; set DEEPSEEK_API_KEY or configure it in Ki settings')
 }
 
 export default async function globalSetup(): Promise<void> {
@@ -145,18 +147,17 @@ export default async function globalSetup(): Promise<void> {
     KI_SERVER_ADDR: '',
   }
   if (live) {
-    const key = dashscopeKey()
+    const key = deepseekKey()
     env.KI_FAKE = ''
-    env.DASHSCOPE_CN_API_KEY = key
-    env.DASHSCOPE_API_KEY = key
+    env.DEEPSEEK_API_KEY = key
     writeFileSync(join(home, 'ki.toml'), [
       '[defaults]',
-      'provider = "dashscope-cn"',
-      'model = "qwen3.7-plus"',
+      'provider = "deepseek"',
+      'model = "deepseek-flash"',
       '',
-      '[providers.dashscope-cn]',
+      '[providers.deepseek]',
       `api_key = "${key}"`,
-      'base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"',
+      'base_url = "https://api.deepseek.com"',
       '',
     ].join('\n'))
     writeFileSync(join(cwd, 'pw-live.txt'), 'KI-LIVE-MARKER-77\n')

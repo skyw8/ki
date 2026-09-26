@@ -20,7 +20,7 @@ on:
         type: boolean
         default: false
     secrets:
-      DASHSCOPE_CN_API_KEY:
+      DEEPSEEK_API_KEY:
         required: false
 
 permissions:
@@ -219,8 +219,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Require the live provider credential
         env:
-          DASHSCOPE_CN_API_KEY: ${{ secrets.DASHSCOPE_CN_API_KEY }}
-        run: test -n "$DASHSCOPE_CN_API_KEY"
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: test -n "$DEEPSEEK_API_KEY"
       - name: Install WebUI dependencies
         working-directory: web
         run: bun install --frozen-lockfile
@@ -230,9 +230,13 @@ jobs:
       - name: Build WebUI
         working-directory: web
         run: bun run build
+      - name: Run live protocol adapter tests
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: go test -tags live -timeout 10m ./internal/provider -run '^TestLiveDeepSeek'
       - name: Run live CLI and WebUI tests
         env:
-          DASHSCOPE_CN_API_KEY: ${{ secrets.DASHSCOPE_CN_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: go test -tags live -timeout 10m ./e2e -run '^TestLive'
       - name: Upload failure artifacts
         if: failure()

@@ -67,7 +67,7 @@ ki/
 - Dev run: `scripts/run.sh` rebuilds `web/dist` (skipped when frontend inputs are unchanged; `--force-web` forces it) and `./ki`, then starts `ki serve` with the real configured provider by default inside a tmux session named `ki`: window `server` runs the daemon, window `cli` is a shell for operating it. Re-run to rebuild and respawn; real tests operate through the script or `tmux attach -t ki`. The script compiles with `-tags embed`; `--fake` is an explicit opt-in for canned-model plumbing checks only.
 - Fake model (tests only): `go test ./e2e` (`KI_FAKE=1`; CLI main path, `serve`, `serve -d`, two sessions in parallel, WebUI Playwright). Do not use `KI_FAKE=1` or `--fake` for normal development, manual verification, or service restarts.
 WebUI: `cd web && bun run test:e2e` (parallel runner; each unit starts an isolated fake `ki serve`; `bun run test:e2e:serial` runs one process for debugging). Requires `bunx playwright install chromium`. Long-history / huge-message budgets: `cd web && bun run test:perf` (not in the fake matrix).
-- Live model: `go test -tags live -timeout 5m ./e2e -run Live` (reads `DASHSCOPE_CN_API_KEY` or `~/.ki/ki.toml` dashscope-cn; default `qwen3.7-plus`; images / PDF / WebUI Playwright).
+- Live model: `go test -tags live -timeout 5m ./e2e -run Live` covers DeepSeek `deepseek-flash` across Completions, Responses, and Anthropic (reads `DEEPSEEK_API_KEY` or `~/.ki` credentials; images / PDF / WebUI Playwright). `go test -tags live ./internal/provider -run TestLiveDeepSeek` drives the three protocol adapters directly.
 WebUI live: `cd web && bun run test:e2e:live`.
 
 ## constraints
