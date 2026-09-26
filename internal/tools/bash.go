@@ -22,10 +22,6 @@ func (bashTool) Prompt() string {
 
 Each call starts in the session cwd. 'cd' only affects the current call and is not remembered. Use 'cd <dir> && <command>' when needed. The shell environment is initialized from the user's profile (bash or zsh).
 
-IMPORTANT: Prefer Read, Grep, and Glob over shell equivalents (cat, head, sed, awk, echo).
-
-NEVER use 'grep' or 'find' in shell commands or pipelines. ALWAYS use 'rg' and 'fd' instead — ki bundles both on PATH and they are the only supported search tools. 'fd' respects .gitignore and skips hidden files (-H shows hidden, -I disables ignore rules).
-
 You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). By default, your command will timeout after 30000ms (30 seconds). A long-running foreground command may continue in the background when this waiting timeout expires; use TaskOutput to wait or inspect it and TaskStop to terminate it.
 
 You can use the run_in_background parameter to run the command in the background. Only use this if you don't need the result immediately.

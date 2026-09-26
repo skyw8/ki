@@ -251,6 +251,27 @@ export type ExtensionConfig = {
 	i18n?: ExtensionI18n
 }
 
+/** One appended-system-prompt source as the settings editor sees it. */
+export type PromptAppendItem = {
+	source: 'builtin' | 'global' | 'project' | 'extension' | string
+	editable: boolean
+	available: boolean
+	path?: string
+	exists?: boolean
+	text: string
+	bytes: number
+	/** Why an editable source cannot be written, e.g. workspace-required. */
+	reason?: string
+	name?: string
+	paths?: string[]
+}
+
+export type PromptAppendView = {
+	items: PromptAppendItem[]
+	/** The append stack exactly as the model receives it, in render order. */
+	effective: string
+}
+
 export type SessionCommand = {
   name: string
   description?: string

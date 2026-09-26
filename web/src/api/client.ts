@@ -219,6 +219,24 @@ export class Client {
     return this.json('/v1/extensions', { method: 'PATCH', body: JSON.stringify({ disabled }) })
   }
 
+  // The editor sends a source name, never a path: the server resolves both
+  // writable files from KI_HOME and the selected workspace.
+  promptAppend(workspaceId?: string | null): Promise<import('./types').PromptAppendView> {
+    const q = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
+    return this.json(`/v1/prompt/append${q}`)
+  }
+
+  putPromptAppend(source: 'global' | 'project', text: string, workspaceId?: string | null): Promise<import('./types').PromptAppendView> {
+    const q = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
+    return this.json(`/v1/prompt/append${q}`, { method: 'PUT', body: JSON.stringify({ source, text }) })
+  }
+
+  deletePromptAppend(source: 'global' | 'project', workspaceId?: string | null): Promise<import('./types').PromptAppendView> {
+    const q = new URLSearchParams({ source })
+    if (workspaceId) q.set('workspaceId', workspaceId)
+    return this.json(`/v1/prompt/append?${q}`, { method: 'DELETE' })
+  }
+
   extensionConfig(name: string): Promise<import('./types').ExtensionConfig> {
 	return this.json(`/v1/extensions/${encodeURIComponent(name)}/config`)
   }

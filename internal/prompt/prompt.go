@@ -22,6 +22,51 @@ type Input struct {
 	Toggle    session.Toggle
 }
 
+// DefaultAppendSystemPrompt is the built-in supplement rendered in the
+// appended-system-prompt position for every session. Search-tool preferences
+// belong to the harness rather than to one shell, so keeping them here avoids
+// repeating the same paragraph in both the Bash and PowerShell descriptions
+// (and keeps them when a model has no shell tool at all).
+const DefaultAppendSystemPrompt = `IMPORTANT: Prefer Read, Grep, and Glob over shell equivalents (cat, head, sed, awk, echo).
+
+NEVER use 'grep' or 'find' in shell commands or pipelines. ALWAYS use 'rg' and 'fd' instead — ki bundles both on PATH and they are the only supported search tools. 'fd' respects .gitignore and skips hidden files (-H shows hidden, -I disables ignore rules).`
+
+// AppendSection returns the appended-system-prompt stack as one text, in the
+// order Build renders it: the built-in supplement, the global file, the project
+// file, then each enabled extension layer. The settings API serves it so the
+// editor can preview exactly what the model receives without rebuilding a whole
+// system prompt (which would need this session's tools and skills).
+func AppendSection(res resources.Snapshot) string {
+	var b strings.Builder
+	for i, block := range appendBlocks(res) {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(block)
+	}
+	return b.String()
+}
+
+// appendBlocks lists the append stack in render order, dropping empty layers so
+// a blank file cannot leave stray blank lines in the prompt.
+func appendBlocks(res resources.Snapshot) []string {
+	blocks := make([]string, 0, len(res.AppendSystemPrompts)+len(res.ExtensionPrompts)+1)
+	blocks = append(blocks, DefaultAppendSystemPrompt)
+	for _, layer := range res.AppendSystemPrompts {
+		if strings.TrimSpace(layer.Text) == "" {
+			continue
+		}
+		blocks = append(blocks, layer.Text)
+	}
+	for _, layer := range res.ExtensionPrompts {
+		if strings.TrimSpace(layer.Text) == "" {
+			continue
+		}
+		blocks = append(blocks, fmt.Sprintf("<extension_instructions name=%q>\n%s\n</extension_instructions>\n", layer.ExtensionID, layer.Text))
+	}
+	return blocks
+}
+
 // Build renders a system prompt from an already loaded resource snapshot.
 func Build(in Input) string {
 	var b strings.Builder
@@ -51,18 +96,13 @@ func Build(in Input) string {
 	}
 	b.WriteString("\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\n")
 	b.WriteString("Guidelines:\n- Be concise in your responses\n- Show file paths clearly when working with files\n")
-	// Keep the supplement after Ki's built-in guidance and before task-scoped
-	// resources. This gives operators a stable layer for extra global/project
-	// instructions without allowing it to replace the base prompt.
-	if in.Resources.AppendSystemPrompt != "" {
+	// The append stack sits after Ki's built-in guidance and before task-scoped
+	// resources: the built-in supplement leads (so operator text adds to the
+	// harness rules instead of replacing them) and every operator layer follows
+	// in source order.
+	for _, block := range appendBlocks(in.Resources) {
 		b.WriteString("\n\n")
-		b.WriteString(in.Resources.AppendSystemPrompt)
-	}
-	for _, layer := range in.Resources.ExtensionPrompts {
-		if strings.TrimSpace(layer.Text) == "" {
-			continue
-		}
-		fmt.Fprintf(&b, "\n\n<extension_instructions name=%q>\n%s\n</extension_instructions>\n", layer.ExtensionID, layer.Text)
+		b.WriteString(block)
 	}
 
 	// Toggle already dropped disabled names; this is listing, not a process.

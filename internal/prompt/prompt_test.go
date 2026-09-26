@@ -24,9 +24,9 @@ func TestBuildLayers(t *testing.T) {
 			Date:         "2026-08-15",
 			Timezone:     "UTC (UTC+0)",
 		},
-		AppendSystemPrompt: "extra operator instructions",
-		ContextFiles:       []resources.ContextFile{{Path: filepath.Join(cwd, "AGENTS.md"), Content: "use tabs"}},
-		Skills:             []skills.Skill{{Name: "demo", Description: "do demo", FilePath: filepath.Join(home, "skills", "demo", "SKILL.md")}},
+		AppendSystemPrompts: []resources.AppendSystemPrompt{{Source: resources.AppendSourceGlobal, Text: "extra operator instructions"}},
+		ContextFiles:        []resources.ContextFile{{Path: filepath.Join(cwd, "AGENTS.md"), Content: "use tabs"}},
+		Skills:              []skills.Skill{{Name: "demo", Description: "do demo", FilePath: filepath.Join(home, "skills", "demo", "SKILL.md")}},
 	}
 	sys := Build(Input{
 		Resources: snapshot,
@@ -81,15 +81,41 @@ func TestBuildHasNoSubagentLayer(t *testing.T) {
 func TestBuildExtensionLayerAfterUserAppend(t *testing.T) {
 	sys := Build(Input{
 		Resources: resources.Snapshot{
-			AppendSystemPrompt: "USER-APPEND",
-			ExtensionPrompts:   []extension.PromptLayer{{ExtensionID: "alpha", Text: "EXT-LAYER"}},
-			Environment:        resources.Environment{Date: "2026-08-24", Timezone: "UTC"},
+			AppendSystemPrompts: []resources.AppendSystemPrompt{{Source: resources.AppendSourceGlobal, Text: "USER-APPEND"}},
+			ExtensionPrompts:    []extension.PromptLayer{{ExtensionID: "alpha", Text: "EXT-LAYER"}},
+			Environment:         resources.Environment{Date: "2026-08-24", Timezone: "UTC"},
 		},
 		Tools: []loop.Tool{},
 	})
 	user, ext, skills := strings.Index(sys, "USER-APPEND"), strings.Index(sys, "<extension_instructions name=\"alpha\">"), strings.Index(sys, "Runtime environment:")
 	if user < 0 || ext < 0 || user > ext || ext > skills {
 		t.Fatalf("order user=%d ext=%d runtime=%d\n%s", user, ext, skills, sys)
+	}
+}
+
+// TestBuildHasBuiltinAppendSystemPrompt pins the harness-level search rules into
+// the system prompt: they must render even with no tools, no operator file, and
+// no session resources, and must precede any operator-supplied append text.
+func TestBuildHasBuiltinAppendSystemPrompt(t *testing.T) {
+	sys := Build(Input{Tools: []loop.Tool{}})
+	if !strings.Contains(sys, DefaultAppendSystemPrompt) {
+		t.Fatalf("built-in append system prompt missing:\n%s", sys)
+	}
+	guidelines, builtin := strings.Index(sys, "Guidelines:"), strings.Index(sys, DefaultAppendSystemPrompt)
+	if guidelines < 0 || guidelines > builtin {
+		t.Fatalf("built-in append position: guidelines=%d builtin=%d", guidelines, builtin)
+	}
+
+	withOperator := Build(Input{
+		Resources: resources.Snapshot{AppendSystemPrompts: []resources.AppendSystemPrompt{
+			{Source: resources.AppendSourceGlobal, Text: "GLOBAL-APPEND"},
+			{Source: resources.AppendSourceProject, Text: "PROJECT-APPEND"},
+		}},
+		Tools: []loop.Tool{},
+	})
+	builtin, global, project := strings.Index(withOperator, DefaultAppendSystemPrompt), strings.Index(withOperator, "GLOBAL-APPEND"), strings.Index(withOperator, "PROJECT-APPEND")
+	if builtin < 0 || global < 0 || project < 0 || builtin > global || global > project {
+		t.Fatalf("append order builtin=%d global=%d project=%d", builtin, global, project)
 	}
 }
 

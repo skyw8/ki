@@ -11,14 +11,14 @@ import (
 
 // Snapshot is the complete immutable resource view pinned to one session.
 type Snapshot struct {
-	Environment        Environment
-	ContextFiles       []ContextFile
-	AppendSystemPrompt string
-	ExtensionPrompts   []extension.PromptLayer
-	Skills             []skills.Skill
-	Prompts            []PromptTemplate
-	Extensions         []extension.Descriptor
-	Revision           uint64
+	Environment         Environment
+	ContextFiles        []ContextFile
+	AppendSystemPrompts []AppendSystemPrompt
+	ExtensionPrompts    []extension.PromptLayer
+	Skills              []skills.Skill
+	Prompts             []PromptTemplate
+	Extensions          []extension.Descriptor
+	Revision            uint64
 }
 
 // Loader caches complete snapshots by real session id. It belongs to one
@@ -87,13 +87,13 @@ func (l *Loader) scan(cwd string) Snapshot {
 		mergedPrompts = append(mergedPrompts, t)
 	}
 	return Snapshot{
-		Environment:        loadEnvironment(l.home, cwd, time.Now()),
-		ContextFiles:       collectContextFiles(l.home, cwd),
-		AppendSystemPrompt: loadAppendSystemPrompt(l.home, cwd),
-		ExtensionPrompts:   extension.PromptLayers(found.Enabled),
-		Skills:             skills.Scan(l.home, cwd, extension.SkillRoots(found.Enabled)...),
-		Prompts:            mergedPrompts,
-		Extensions:         found.All,
+		Environment:         loadEnvironment(l.home, cwd, time.Now()),
+		ContextFiles:        collectContextFiles(l.home, cwd),
+		AppendSystemPrompts: loadAppendSystemPrompts(l.home, cwd),
+		ExtensionPrompts:    extension.PromptLayers(found.Enabled),
+		Skills:              skills.Scan(l.home, cwd, extension.SkillRoots(found.Enabled)...),
+		Prompts:             mergedPrompts,
+		Extensions:          found.All,
 	}
 }
 

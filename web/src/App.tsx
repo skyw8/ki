@@ -8,6 +8,7 @@ import { Composer, type Draft } from './features/chat/Composer'
 import { AttachmentBrowser } from './features/attachments/AttachmentBrowser'
 import { DirectoryBrowser } from './features/sessions/DirectoryBrowser'
 import { ExtensionConfigEditor, MessageSettings, NotificationSettings, SessionConfig, SettingsToggles } from './features/settings/SessionConfig'
+import { PromptSettings } from './features/settings/PromptSettings'
 import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
@@ -25,8 +26,8 @@ import { focusedSession } from './lib/tab-focus'
 import { ancestorsOf, buildSessionForest, orderedChildren, pinnedFirst, topLevelRoot } from './lib/session-tree'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
-type SettingsPage = 'providers' | 'skills' | 'tools' | 'extensions' | 'message' | 'notifications' | 'appearance'
-const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'extensions', 'message', 'notifications', 'appearance']
+type SettingsPage = 'providers' | 'skills' | 'tools' | 'extensions' | 'prompt' | 'message' | 'notifications' | 'appearance'
+const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'extensions', 'prompt', 'message', 'notifications', 'appearance']
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
 const COMPACT_LAYOUT_QUERY = '(max-width: 900px)'
@@ -2169,6 +2170,7 @@ function WorkspaceApp({ api }: { api: Client }) {
               ['skills', t('settings.skills')],
               ['tools', t('settings.tools')],
               ['extensions', t('settings.extensions')],
+              ['prompt', t('settings.prompt')],
               ['message', t('settings.message')],
               ['notifications', t('settings.notifications')],
               ['appearance', t('settings.appearanceLanguage')],
@@ -2206,6 +2208,8 @@ function WorkspaceApp({ api }: { api: Client }) {
                   <SettingsToggles kind="tools" api={api} sessionId={currentId} workspaceId={selectedWs} />
                 ) : page === 'extensions' ? (
                   <SettingsToggles kind="extensions" api={api} onConfigure={openExtensionConfig} onChanged={refreshExtensions} />
+                ) : page === 'prompt' ? (
+                  <PromptSettings api={api} workspaceId={selectedWs} />
                 ) : page === 'message' ? (
                   <MessageSettings api={api} />
                 ) : page === 'notifications' ? (

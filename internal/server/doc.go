@@ -46,6 +46,11 @@
 // thinking / title / pin / leaf / queued. Built-in tool, skill, and extension
 // enablement is {KI_HOME}/toggles.json via GET/PATCH /v1/tools, /v1/skills,
 // and /v1/extensions.
+// GET /v1/prompt/append lists every appended-system-prompt source (the
+// read-only built-in layer, the editable {KI_HOME} and workspace files, the
+// read-only extension layers) with the effective append stack; PUT/DELETE edit
+// one source file by name (never by client-supplied path) and reload sessions
+// so the next prompt reads it.
 // Extension session.appendMessage accepts normal user messages without
 // starting a run; busy sessions hold them in a durable context queue and
 // dispatch drains them at the captured prompt boundary. Prompt accepts content blocks and an optional branch parent before assembling

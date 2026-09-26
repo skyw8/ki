@@ -489,6 +489,7 @@ for (const profile of profiles) {
         ['skills', 'skills-settings'],
         ['tools', 'tools-settings'],
         ['extensions', 'extensions-settings'],
+        ['prompt', 'prompt-settings'],
         ['message', 'message-settings'],
         ['notifications', 'notifications-settings'],
         ['appearance', 'appearance-settings'],

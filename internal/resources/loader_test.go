@@ -33,20 +33,26 @@ func TestContextFilesStopAtGitRoot(t *testing.T) {
 	}
 }
 
-func TestAppendSystemPromptProjectOverridesGlobal(t *testing.T) {
+func TestAppendSystemPromptsAreAdditive(t *testing.T) {
 	base := t.TempDir()
 	home := filepath.Join(base, "home")
 	cwd := filepath.Join(base, "repo")
 	writeFile(t, filepath.Join(home, "prompt", "APPEND_SYSTEM.md"), "GLOBAL")
 
 	loader := NewLoader(home)
-	if got := loader.Scan(cwd).AppendSystemPrompt; got != "GLOBAL" {
+	if got := appendText(loader.Scan(cwd)); got != "GLOBAL" {
 		t.Fatalf("global append system prompt = %q, want GLOBAL", got)
 	}
 
 	writeFile(t, filepath.Join(cwd, ".ki", "prompt", "APPEND_SYSTEM.md"), "PROJECT")
-	if got := loader.Scan(cwd).AppendSystemPrompt; got != "PROJECT" {
-		t.Fatalf("project append system prompt = %q, want PROJECT", got)
+	snapshot := loader.Scan(cwd)
+	if got := appendText(snapshot); got != "GLOBAL\n\nPROJECT" {
+		t.Fatalf("additive append system prompt = %q, want global then project", got)
+	}
+	if len(snapshot.AppendSystemPrompts) != 2 ||
+		snapshot.AppendSystemPrompts[0].Source != AppendSourceGlobal ||
+		snapshot.AppendSystemPrompts[1].Source != AppendSourceProject {
+		t.Fatalf("append system prompt sources = %+v", snapshot.AppendSystemPrompts)
 	}
 }
 
@@ -59,9 +65,18 @@ func TestAppendSystemPromptIgnoresDirectories(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(home, "prompt", "APPEND_SYSTEM.md"), "GLOBAL")
 
-	if got := NewLoader(home).Scan(cwd).AppendSystemPrompt; got != "GLOBAL" {
-		t.Fatalf("directory prompt fallback = %q, want GLOBAL", got)
+	snapshot := NewLoader(home).Scan(cwd)
+	if got := appendText(snapshot); got != "GLOBAL" || len(snapshot.AppendSystemPrompts) != 1 {
+		t.Fatalf("directory prompt fallback = %q %+v", got, snapshot.AppendSystemPrompts)
 	}
+}
+
+func appendText(snapshot Snapshot) string {
+	var parts []string
+	for _, layer := range snapshot.AppendSystemPrompts {
+		parts = append(parts, layer.Text)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func TestScanWithoutExtensionsMatchesBarePromptFields(t *testing.T) {
