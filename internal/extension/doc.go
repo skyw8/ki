@@ -2,7 +2,8 @@
 // language-agnostic JSON-RPC sidecars.
 //
 // A package is a directory with extension.json under {KI_HOME}/extensions.
-// Declarative contributions (prompt, skills, and slash templates) are global.
+// Declarative contributions (prompt, skills, slash templates, and runtime.path
+// shell PATH directories) are global.
 // Optional extension-owned i18n resources are loaded into the read-only catalog
 // and remain opaque to the host; the WebUI resolves their UIText values.
 // The catalog also lists loaded skills, sidecar tools/commands, prompt-append

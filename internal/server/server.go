@@ -1715,6 +1715,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	if info.ApplyPatchToolType == "freeform" {
 		profile.Editor = tools.EditorApplyPatch
 	}
+	// The resource snapshot is loaded before the tool set because shell tools
+	// carry the extension-contributed PATH directories, and it stays the single
+	// source for this session's extension catalog below.
+	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
+	s.reportManifestErrors(sess.ID(), snapshot.Extensions)
 	// Why the prompt does not resolve the session's Agent depth: the tool set
 	// feeds both the provider's tool schemas and the system prompt's tool list,
 	// so making it depend on the durable parent chain meant a deep child (or a
@@ -1729,9 +1734,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		// parent context.
 		AgentParentSessionID: sess.ID(),
 		Shells:               s.shells, Mutations: s.mutations,
+		PathDirs: snapshot.PathDirs,
 	}.Build(profile)
-	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
-	s.reportManifestErrors(sess.ID(), snapshot.Extensions)
 	tg := toggles.Load(cfg.Home)
 	// Apply the global built-in toggle before extension tools are appended. This
 	// keeps the built-in setting scoped to Set.Build and leaves extensions under

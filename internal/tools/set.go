@@ -35,6 +35,10 @@ type Set struct {
 	Shells               ShellRuntime
 	ReadOps              ReadOperations
 	Mutations            *MutationQueue
+	// PathDirs are extension-contributed directories that shell children get on
+	// PATH. They are resolved per turn from the session's resource snapshot, so
+	// enabling an extension applies with the next prompt.
+	PathDirs []string
 }
 
 // Build returns the tools exposed for one resolved model.
@@ -58,6 +62,15 @@ func (s Set) Build(profile Profile) []loop.Tool {
 	shells := s.Shells
 	if shells.bash.kind == "" {
 		shells = fallbackShellRuntime()
+	}
+	// The shell specs carry the extension PATH directories because every shell
+	// child (foreground, background, Monitor) builds its environment from the
+	// spec it was started with.
+	shells.bash.pathDirs = s.PathDirs
+	if shells.powerShell != nil {
+		powerShell := *shells.powerShell
+		powerShell.pathDirs = s.PathDirs
+		shells.powerShell = &powerShell
 	}
 	out := []loop.Tool{readTool{cwd: cwd, rich: profile.RichRead, ops: s.ReadOps}}
 	if profile.Editor == EditorApplyPatch {

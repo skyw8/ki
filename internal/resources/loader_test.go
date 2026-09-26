@@ -83,8 +83,29 @@ func TestScanWithoutExtensionsMatchesBarePromptFields(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	snapshot := NewLoader(home).Scan(cwd)
-	if len(snapshot.Extensions) != 0 || len(snapshot.ExtensionPrompts) != 0 {
+	if len(snapshot.Extensions) != 0 || len(snapshot.ExtensionPrompts) != 0 || len(snapshot.PathDirs) != 0 {
 		t.Fatalf("expected empty extensions: %+v", snapshot.Extensions)
+	}
+}
+
+// TestScanIncludesExtensionPathDirs pins that extension PATH directories ride
+// the resource snapshot, so the tools toggle/reload path is the only one that
+// has to invalidate them.
+func TestScanIncludesExtensionPathDirs(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	writeFile(t, filepath.Join(home, "extensions", "pathx", "extension.json"),
+		`{"name":"pathx","capabilities":["path"],"runtime":{"kind":"none","path":["bin"]}}`)
+	if err := os.MkdirAll(filepath.Join(home, "extensions", "pathx", "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := NewLoader(home).Scan(cwd).PathDirs; len(got) != 1 || got[0] != filepath.Join(home, "extensions", "pathx", "bin") {
+		t.Fatalf("PathDirs = %v", got)
+	}
+	writeFile(t, filepath.Join(home, "toggles.json"), `{"extensions":{"disabled":["pathx"]}}`)
+	if got := NewLoader(home).Scan(cwd).PathDirs; len(got) != 0 {
+		t.Fatalf("disabled package contributed PATH dirs: %v", got)
 	}
 }
 

@@ -186,7 +186,7 @@ func envToMap(env []string) map[string]string {
 
 func TestBundledSearchToolsPrependPathAndSetBashEnv(t *testing.T) {
 	dir := filepath.Join(string(filepath.Separator)+"opt", "ki-tools")
-	values := envToMap(withBundledSearchTools([]string{"PATH=/usr/bin:/bin", "HOME=/home/x"}, dir, shellBash))
+	values := envToMap(withBundledSearchTools([]string{"PATH=/usr/bin:/bin", "HOME=/home/x"}, dir, nil, shellBash))
 
 	if got, want := values["PATH"], dir+string(os.PathListSeparator)+"/usr/bin:/bin"; got != want {
 		t.Fatalf("PATH = %q, want %q", got, want)
@@ -202,7 +202,7 @@ func TestBundledSearchToolsPrependPathAndSetBashEnv(t *testing.T) {
 func TestBundledSearchToolsChainsExistingBashEnv(t *testing.T) {
 	dir := filepath.Join(string(filepath.Separator)+"opt", "ki-tools")
 	values := envToMap(withBundledSearchTools(
-		[]string{"PATH=/usr/bin", "BASH_ENV=/home/x/.user-env.sh"}, dir, shellBash))
+		[]string{"PATH=/usr/bin", "BASH_ENV=/home/x/.user-env.sh"}, dir, nil, shellBash))
 
 	if got, want := values["KI_ORIG_BASH_ENV"], "/home/x/.user-env.sh"; got != want {
 		t.Fatalf("KI_ORIG_BASH_ENV = %q, want %q", got, want)
@@ -214,10 +214,84 @@ func TestBundledSearchToolsChainsExistingBashEnv(t *testing.T) {
 
 func TestBundledSearchToolsDoesNotSetBashEnvForPowerShell(t *testing.T) {
 	dir := filepath.Join(string(filepath.Separator)+"opt", "ki-tools")
-	values := envToMap(withBundledSearchTools([]string{"PATH=C:\\Windows"}, dir, shellPowerShell))
+	values := envToMap(withBundledSearchTools([]string{"PATH=C:\\Windows"}, dir, nil, shellPowerShell))
 
 	if _, ok := values["BASH_ENV"]; ok {
 		t.Fatalf("PowerShell env should not set BASH_ENV: %q", values["BASH_ENV"])
+	}
+}
+
+// TestBundledSearchToolsPrependExtensionDirs pins the PATH contract: ki's own
+// tools directory stays first so an extension can never shadow rg/fd, extension
+// directories follow it in order, and the shim receives them separately because
+// login profiles can rewrite PATH after the child environment is fixed.
+func TestBundledSearchToolsPrependExtensionDirs(t *testing.T) {
+	dir := filepath.Join(string(filepath.Separator)+"opt", "ki-tools")
+	extA := filepath.Join(string(filepath.Separator)+"home", "x", "extensions", "alpha", "node_modules", ".bin")
+	extB := filepath.Join(string(filepath.Separator)+"home", "x", "extensions", "beta", "bin")
+	values := envToMap(withBundledSearchTools([]string{"PATH=/usr/bin:/bin"}, dir, []string{extA, extB}, shellBash))
+
+	wantPath := strings.Join([]string{dir, extA, extB, "/usr/bin:/bin"}, string(os.PathListSeparator))
+	if got := values["PATH"]; got != wantPath {
+		t.Fatalf("PATH = %q, want %q", got, wantPath)
+	}
+	if got, want := values[ExtensionPathEnv], extA+pathListSeparator+extB; got != want {
+		t.Fatalf("%s = %q, want %q", ExtensionPathEnv, got, want)
+	}
+	if _, ok := values["BASH_ENV"]; !ok {
+		t.Fatal("bash env must still source the shim")
+	}
+}
+
+func TestBundledSearchToolsWithoutExtensionsKeepsPathUnchanged(t *testing.T) {
+	dir := filepath.Join(string(filepath.Separator)+"opt", "ki-tools")
+	env := withBundledSearchTools([]string{"PATH=/usr/bin:/bin"}, dir, nil, shellBash)
+	values := envToMap(env)
+	if _, ok := values[ExtensionPathEnv]; ok {
+		t.Fatalf("no extension dirs must not export %s", ExtensionPathEnv)
+	}
+	if got, want := values["PATH"], dir+string(os.PathListSeparator)+"/usr/bin:/bin"; got != want {
+		t.Fatalf("PATH = %q, want %q", got, want)
+	}
+	// A shell spec without extension dirs must produce exactly the legacy
+	// environment: proxy passthrough plus the bundled tools directory.
+	spec := envToMap((shellSpec{kind: shellBash, path: "/bin/bash", pathDirs: nil}).env())
+	if _, ok := spec[ExtensionPathEnv]; ok {
+		t.Fatalf("shell env exported %s without extension dirs", ExtensionPathEnv)
+	}
+}
+
+// TestBashResolvesExtensionCliDespiteProfile guards the same failure mode as
+// the bundled-tools test for extension-contributed directories: the login
+// profile resets PATH before BASH_ENV runs, so the shim has to re-add them.
+func TestBashResolvesExtensionCliDespiteProfile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX login-profile PATH reset scenario")
+	}
+	runtimeShell := DiscoverShellRuntime()
+	if !runtimeShell.BashAvailable() {
+		t.Skip("bash unavailable")
+	}
+	extDir := t.TempDir()
+	script := filepath.Join(extDir, "zi")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho extension-cli-marker\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".profile"), []byte("export PATH=/usr/bin:/bin\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bash := runtimeShell.bash
+	bash.pathDirs = []string{extDir}
+	cmd := exec.Command(bash.path, bash.args("zi")...) //nolint:gosec // test invokes the discovered system shell intentionally
+	cmd.Env = setEnvValue(bash.env(), "HOME", home)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bash failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "extension-cli-marker") {
+		t.Fatalf("extension CLI did not resolve through PATH:\n%s", out)
 	}
 }
 

@@ -38,6 +38,13 @@ const SleepInterceptToken = "e2e-sleep-intercept" //nolint:gosec // e2e prompt m
 // without a live model.
 const MarkdownToken = "e2e-markdown"
 
+// BashTokenPrefix makes the fake assistant run the rest of the user message
+// through the Bash tool and report back, so a CLI e2e can assert what a shell
+// command actually resolves on this host. Unlike the intercept tokens this
+// probe completes its round trip, so it only fires while the request has no
+// tool result yet.
+const BashTokenPrefix = "e2e-bash:"
+
 // MarkdownFixture is the canned assistant text for MarkdownToken.
 const MarkdownFixture = "| Col A | Col B |\n| --- | --- |\n| 1 | 2 |\n\n```mermaid\nflowchart LR\n  Start --> End\n```\n\n```plantuml\n@startuml\nAlice -> Bob: hi\n@enduml\n```\n"
 
@@ -98,6 +105,30 @@ func lastUserDelay(req loop.Request) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+// lastUserBashProbe returns the command after BashTokenPrefix in the latest
+// user message. It reports false once the request already carries a tool
+// result, so the probe round trip terminates instead of looping.
+func lastUserBashProbe(req loop.Request) (string, bool) {
+	for _, msg := range req.Messages {
+		if msg.Role == "toolResult" {
+			return "", false
+		}
+	}
+	for _, msg := range slices.Backward(req.Messages) {
+		if msg.Role != "user" {
+			continue
+		}
+		text := msg.Text()
+		i := strings.Index(text, BashTokenPrefix)
+		if i < 0 {
+			return "", false
+		}
+		command := strings.TrimSpace(text[i+len(BashTokenPrefix):])
+		return command, command != ""
+	}
+	return "", false
+}
+
 // Stream returns the next scripted assistant message.
 func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
 	if lastUserHolds(req) {
@@ -110,6 +141,18 @@ func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.
 			return types.Message{}, ctx.Err()
 		case <-time.After(delay):
 		}
+	}
+	if command, ok := lastUserBashProbe(req); ok {
+		return types.Message{
+			Role: "assistant",
+			Content: []types.Content{{
+				Type: "toolCall", ID: "call-bash-probe", Name: "Bash",
+				Arguments: map[string]any{"command": command},
+			}},
+			StopReason: "toolUse",
+			Provider:   req.Provider,
+			Model:      req.Model,
+		}, ctx.Err()
 	}
 	if lastMessageIsUserContaining(req, WriteEnvToken) {
 		m := types.Message{

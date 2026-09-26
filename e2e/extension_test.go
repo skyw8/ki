@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -320,5 +321,68 @@ func installSpawner(t *testing.T, home, marker string) {
 }`
 	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(manifest), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// installPathExtension writes a declarative package that contributes bin/ to
+// the shell PATH and ships one probe executable.
+func installPathExtension(t *testing.T, home, name, command string) {
+	t.Helper()
+	dir := filepath.Join(home, "extensions", name)
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"` + name + `","capabilities":["path"],"runtime":{"kind":"none","path":["bin"]}}`
+	if err := os.WriteFile(filepath.Join(dir, "extension.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\necho extension-path-marker\n"
+	if err := os.WriteFile(filepath.Join(dir, "bin", command), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestExtensionPathDirsReachBashTool proves the path capability end to end
+// through the real CLI: an enabled package's directory is on the Bash tool's
+// PATH, and disabling the package removes it again.
+func TestExtensionPathDirsReachBashTool(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("probe command is a POSIX shell script")
+	}
+	home, proj := isolate(t)
+	installPathExtension(t, home, "pathprobe", "ziprobe")
+	sf := startServe(t, home)
+
+	status, created := serveJSON(t, sf, http.MethodPost, "/v1/sessions", map[string]any{"cwd": proj})
+	if status != http.StatusOK {
+		t.Fatalf("create %d %+v", status, created)
+	}
+	id, _ := created["id"].(string)
+	status, _ = serveJSON(t, sf, http.MethodPost, "/v1/sessions/"+id+"/prompt", map[string]any{"text": "e2e-bash:ziprobe"})
+	if status != http.StatusAccepted {
+		t.Fatalf("prompt %d", status)
+	}
+	waitAgentEndHTTP(t, sf, id)
+	if raw := readJSONL(t, sessionDir(t, home, id)); !strings.Contains(raw, "extension-path-marker") {
+		t.Fatalf("extension CLI missing from PATH:\n%s", raw)
+	}
+
+	status, _ = serveJSON(t, sf, http.MethodPatch, "/v1/extensions", map[string]any{"disabled": []string{"pathprobe"}})
+	if status != http.StatusOK {
+		t.Fatalf("disable %d", status)
+	}
+	status, created = serveJSON(t, sf, http.MethodPost, "/v1/sessions", map[string]any{"cwd": proj})
+	if status != http.StatusOK {
+		t.Fatalf("create %d %+v", status, created)
+	}
+	disabledID, _ := created["id"].(string)
+	status, _ = serveJSON(t, sf, http.MethodPost, "/v1/sessions/"+disabledID+"/prompt", map[string]any{"text": "e2e-bash:ziprobe"})
+	if status != http.StatusAccepted {
+		t.Fatalf("prompt %d", status)
+	}
+	waitAgentEndHTTP(t, sf, disabledID)
+	raw := readJSONL(t, sessionDir(t, home, disabledID))
+	if strings.Contains(raw, "extension-path-marker") || !strings.Contains(raw, "not found") {
+		t.Fatalf("disabled package still resolved its CLI:\n%s", raw)
 	}
 }

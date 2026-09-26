@@ -8,5 +8,8 @@
 // The package also embeds fd and materializes both executables, plus a BASH_ENV
 // shim, into one tools directory (ToolsDir). The shell tools prepend that
 // directory to PATH so rg and fd work inside Bash no matter what the host has
-// installed, which keeps ki a single self-contained binary.
+// installed, which keeps ki a single self-contained binary. The shim also
+// re-prepends the extension-contributed directories from KI_EXTENSION_PATH_DIRS
+// after login profiles run, so the shared shim file stays independent of the
+// enabled extension set.
 package search

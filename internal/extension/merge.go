@@ -1,6 +1,8 @@
 package extension
 
 import (
+	"path/filepath"
+
 	"ki/internal/skills"
 )
 
@@ -44,4 +46,39 @@ func CommandDirs(enabled []Descriptor) []CommandDir {
 		}
 	}
 	return out
+}
+
+// PathDirs returns the PATH directories contributed by enabled packages in
+// chain order, deduplicated, keeping only those that exist right now. Existence
+// is resolved per call rather than at load time because runtime.install can
+// create the directory (node_modules/.bin) after the manifest was validated.
+func PathDirs(enabled []Descriptor) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, d := range enabled {
+		if !d.Enabled {
+			continue
+		}
+		for _, declared := range d.PathDirs() {
+			dir := existingDir(declared)
+			if dir == "" || seen[dir] {
+				continue
+			}
+			seen[dir] = true
+			out = append(out, dir)
+		}
+	}
+	return out
+}
+
+// existingDir returns the resolved absolute path when dir is an existing
+// directory, and "" otherwise.
+func existingDir(dir string) string {
+	if !isDir(dir) {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != "" {
+		return resolved
+	}
+	return dir
 }

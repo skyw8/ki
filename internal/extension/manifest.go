@@ -73,13 +73,17 @@ type PromptSpec struct {
 	Append []string `json:"append"`
 }
 
-// RuntimeSpec describes the optional JSON-RPC sidecar.
+// RuntimeSpec describes the optional JSON-RPC sidecar. Path lists directories
+// inside the package that are added to the PATH of shell tools while the
+// package is enabled; they may be created later by Install (node_modules/.bin),
+// so only their shape is validated here.
 type RuntimeSpec struct {
 	Kind    string            `json:"kind"`
 	Command string            `json:"command"`
 	Args    []string          `json:"args"`
 	Install []string          `json:"install"`
 	Env     map[string]string `json:"env"`
+	Path    []string          `json:"path"`
 }
 
 // Descriptor is one discovered package. It holds no live RPC handles.
@@ -252,6 +256,14 @@ func validateManifest(root string, m Manifest) error {
 	for _, rel := range m.Commands {
 		if err := withinRoot(root, rel); err != nil {
 			return err
+		}
+	}
+	if len(m.Runtime.Path) > 0 && !hasKind(m.Capabilities, CapPath) {
+		return errPathDirsNeedCapability
+	}
+	for _, rel := range m.Runtime.Path {
+		if err := withinRoot(root, rel); err != nil {
+			return fmt.Errorf("runtime.path %q: %w", rel, err)
 		}
 	}
 	if m.I18n.DefaultLocale != "" && !localeRe.MatchString(m.I18n.DefaultLocale) {
@@ -427,4 +439,44 @@ func (d Descriptor) commandDirs() []string {
 		out = append(out, filepath.Join(d.root, "commands"))
 	}
 	return out
+}
+
+// PathDirs lists the directories this package declares for the shell PATH.
+// Existence is deliberately not checked: runtime.install may create
+// node_modules/.bin after the manifest was validated, so callers filter and
+// stat at use time. Like PromptAppendFiles, the catalog reads this for disabled
+// packages too; enablement is applied by PathDirs in merge.go.
+func (d Descriptor) PathDirs() []string {
+	if !hasKind(d.Capabilities, CapPath) || d.Error != "" {
+		return nil
+	}
+	out := make([]string, 0, len(d.manifest.Runtime.Path))
+	for _, rel := range d.manifest.Runtime.Path {
+		out = append(out, filepath.Join(d.root, filepath.Clean(rel)))
+	}
+	return out
+}
+
+// PathDirStatus is one declared PATH directory and whether it exists right now.
+type PathDirStatus struct {
+	Path   string `json:"path"`
+	Exists bool   `json:"exists"`
+}
+
+// PathDirStatuses lists declared PATH directories with their current state. The
+// catalog shows declarations even when the directory is missing, because a
+// directory that never appears (typo in the manifest, failed install) is the
+// failure mode an operator has to see.
+func (d Descriptor) PathDirStatuses() []PathDirStatus {
+	declared := d.PathDirs()
+	out := make([]PathDirStatus, 0, len(declared))
+	for _, dir := range declared {
+		out = append(out, PathDirStatus{Path: dir, Exists: isDir(dir)})
+	}
+	return out
+}
+
+func isDir(dir string) bool {
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
 }

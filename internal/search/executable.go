@@ -154,11 +154,15 @@ func materializeCached(dir, name string, data []byte, digest string) (string, bo
 	return destination, true
 }
 
-// toolsShim re-prepends the bundled tools directory to PATH. bash -lc sources
-// /etc/profile and the user's profile before BASH_ENV, and those files may
-// reset PATH entirely (Debian's /etc/profile does), so exporting PATH on the
-// child process alone is not enough. KI_ORIG_BASH_ENV chains to any BASH_ENV
-// the user already had so the shim does not shadow it.
+// toolsShim re-prepends the bundled tools directory and the extension PATH
+// directories to PATH. bash -lc sources /etc/profile and the user's profile
+// before BASH_ENV, and those files may reset PATH entirely (Debian's
+// /etc/profile does), so exporting PATH on the child process alone is not
+// enough. KI_ORIG_BASH_ENV chains to any BASH_ENV the user already had so the
+// shim does not shadow it, and KI_EXTENSION_PATH_DIRS carries the directories
+// contributed by enabled extensions: they cannot be baked into this file
+// because it is one shared artifact whose content must not depend on the
+// session.
 const toolsShim = `# ki: expose bundled rg/fd to shell commands.
 [ -n "${KI_ORIG_BASH_ENV:-}" ] && [ -r "$KI_ORIG_BASH_ENV" ] && . "$KI_ORIG_BASH_ENV"
 _ki_tools_dir=$(cd "$(dirname "$BASH_SOURCE")" 2>/dev/null && pwd)
@@ -169,6 +173,19 @@ if [ -n "$_ki_tools_dir" ]; then
 	esac
 fi
 unset _ki_tools_dir
+if [ -n "${KI_EXTENSION_PATH_DIRS:-}" ]; then
+	_ki_old_ifs=$IFS
+	IFS=:
+	for _ki_dir in $KI_EXTENSION_PATH_DIRS; do
+		[ -d "$_ki_dir" ] || continue
+		case ":$PATH:" in
+			*":$_ki_dir:"*) ;;
+			*) PATH="$_ki_dir:$PATH"; export PATH ;;
+		esac
+	done
+	IFS=$_ki_old_ifs
+	unset _ki_old_ifs _ki_dir
+fi
 `
 
 func materializeShim(dir string) error {

@@ -15,10 +15,14 @@ type Snapshot struct {
 	ContextFiles        []ContextFile
 	AppendSystemPrompts []AppendSystemPrompt
 	ExtensionPrompts    []extension.PromptLayer
-	Skills              []skills.Skill
-	Prompts             []PromptTemplate
-	Extensions          []extension.Descriptor
-	Revision            uint64
+	// PathDirs are existing extension-contributed shell PATH directories, in
+	// chain order. They live in the snapshot so toggling a package takes effect
+	// with the same reload as its skills and prompt layers.
+	PathDirs   []string
+	Skills     []skills.Skill
+	Prompts    []PromptTemplate
+	Extensions []extension.Descriptor
+	Revision   uint64
 }
 
 // Loader caches complete snapshots by real session id. It belongs to one
@@ -91,6 +95,7 @@ func (l *Loader) scan(cwd string) Snapshot {
 		ContextFiles:        collectContextFiles(l.home, cwd),
 		AppendSystemPrompts: loadAppendSystemPrompts(l.home, cwd),
 		ExtensionPrompts:    extension.PromptLayers(found.Enabled),
+		PathDirs:            extension.PathDirs(found.Enabled),
 		Skills:              skills.Scan(l.home, cwd, extension.SkillRoots(found.Enabled)...),
 		Prompts:             mergedPrompts,
 		Extensions:          found.All,

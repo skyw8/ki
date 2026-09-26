@@ -16,6 +16,11 @@ const (
 	CapProvider     Kind = "provider"
 	CapChannel      Kind = "channel"
 	CapSettings     Kind = "settings"
+	// CapPath lets a package contribute its own executable directories to the
+	// PATH of shell tools. It is declarative (no sidecar), but gated like the
+	// other contributions so an enabled package cannot silently change command
+	// resolution across every session.
+	CapPath Kind = "path"
 )
 
 var knownKinds = map[Kind]bool{
@@ -28,6 +33,7 @@ var knownKinds = map[Kind]bool{
 	CapProvider:     true,
 	CapChannel:      true,
 	CapSettings:     true,
+	CapPath:         true,
 }
 
 func hasKind(list []string, k Kind) bool {

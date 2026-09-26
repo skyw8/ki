@@ -375,6 +375,12 @@ func (s *Server) extensionCatalog(snapshot resources.Snapshot, sessionID string)
 		if files := d.PromptAppendFiles(); len(files) > 0 {
 			item["promptAppend"] = files
 		}
+		// PATH contributions are shown with their current existence: an enabled
+		// package whose directory never appears is invisible otherwise, and PATH
+		// shadowing has to stay observable.
+		if dirs := d.PathDirStatuses(); len(dirs) > 0 {
+			item["pathDirs"] = dirs
+		}
 		if len(d.Providers) > 0 {
 			providers := make([]map[string]any, 0, len(d.Providers))
 			for _, p := range d.Providers {

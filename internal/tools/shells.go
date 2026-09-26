@@ -30,6 +30,9 @@ type shellSpec struct {
 	path              string
 	powerShellEdition powerShellEdition
 	setShellEnv       bool
+	// pathDirs are extension-contributed directories prepended to PATH after
+	// ki's own bundled tools directory.
+	pathDirs []string
 }
 
 func (s shellSpec) available() bool { return s.path != "" }
@@ -49,8 +52,13 @@ func (s shellSpec) env() []string {
 	// Why: shell commands can launch networked tools such as npm or curl, so
 	// pass the same proxy environment explicitly across every process boundary.
 	env := processenv.WithProxyEnvironment(processenv.ChildEnvironment())
-	if dir, err := search.ToolsDir(); err == nil {
-		env = withBundledSearchTools(env, dir, s.kind)
+	dir, toolsErr := search.ToolsDir()
+	if toolsErr == nil {
+		env = withBundledSearchTools(env, dir, s.pathDirs, s.kind)
+	} else if len(s.pathDirs) > 0 {
+		// Without a bundled tools directory there is no shim to source, so the
+		// extension directories are only exported on the child environment.
+		env = prependPath(env, s.pathDirs)
 	}
 	if !s.setShellEnv {
 		return env
@@ -64,12 +72,27 @@ func (s shellSpec) env() []string {
 	return append(env, "SHELL="+s.path)
 }
 
-// withBundledSearchTools prepends ki's embedded rg/fd directory to PATH. Bash
-// additionally gets a BASH_ENV shim: bash -lc sources /etc/profile and the
-// user's profile before BASH_ENV, and those files can overwrite PATH after the
-// child environment is already fixed, so exporting PATH alone is not reliable.
-func withBundledSearchTools(env []string, dir string, kind shellKind) []string {
-	env = prependPath(env, dir)
+// ExtensionPathEnv carries the extension PATH directories to the BASH_ENV shim.
+// The shim cannot bake them in: it is one shared file in the tools cache, while
+// the directory list changes with the enabled extension set.
+const ExtensionPathEnv = "KI_EXTENSION_PATH_DIRS"
+
+// pathListSeparator is fixed to the POSIX separator because the only consumer
+// that reads a joined list is the sh shim, even when ki runs on Windows.
+const pathListSeparator = ":"
+
+// withBundledSearchTools prepends ki's embedded rg/fd directory and then the
+// extension-contributed directories to PATH. Bash additionally gets a BASH_ENV
+// shim: bash -lc sources /etc/profile and the user's profile before BASH_ENV,
+// and those files can overwrite PATH after the child environment is already
+// fixed, so exporting PATH alone is not reliable. The shim re-prepends the
+// bundled directory (from its own location) and every extension directory
+// (from ExtensionPathEnv).
+func withBundledSearchTools(env []string, dir string, extra []string, kind shellKind) []string {
+	env = prependPath(env, append([]string{dir}, extra...))
+	if len(extra) > 0 {
+		env = setEnvValue(env, ExtensionPathEnv, strings.Join(extra, pathListSeparator))
+	}
 	if kind != shellBash {
 		return env
 	}
@@ -80,15 +103,20 @@ func withBundledSearchTools(env []string, dir string, kind shellKind) []string {
 	return setEnvValue(env, "BASH_ENV", shim)
 }
 
-func prependPath(env []string, dir string) []string {
+// prependPath puts dirs in front of PATH in order, so dirs[0] stays first.
+func prependPath(env []string, dirs []string) []string {
+	if len(dirs) == 0 {
+		return env
+	}
+	prefix := strings.Join(dirs, string(os.PathListSeparator)) + string(os.PathListSeparator)
 	for i, item := range env {
 		key, value, ok := strings.Cut(item, "=")
 		if ok && strings.EqualFold(key, "PATH") {
-			env[i] = key + "=" + dir + string(os.PathListSeparator) + value
+			env[i] = key + "=" + prefix + value
 			return env
 		}
 	}
-	return append(env, "PATH="+dir)
+	return append(env, "PATH="+strings.TrimSuffix(prefix, string(os.PathListSeparator)))
 }
 
 func envValue(env []string, key string) string {

@@ -30,6 +30,7 @@ var (
 	errEmptyPath                    = errors.New("empty path")
 	errPathMustBeRelative           = errors.New("path must be relative")
 	errPathEscapesPackage           = errors.New("path escapes package")
+	errPathDirsNeedCapability       = errors.New("runtime.path requires path capability")
 
 	errSessionIDRequiredForGlobal = errors.New("sessionId required for global extension")
 	errRuntimeNotRegistered       = errors.New("extension runtime is not registered")

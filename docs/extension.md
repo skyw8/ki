@@ -37,7 +37,7 @@ my-ext/
   "name": "protected-paths",
   "version": "0.1.0",
   "description": "…",
-  "capabilities": ["prompt.append", "skill", "command", "tool", "lifecycle", "bus", "provider", "channel", "settings"],
+  "capabilities": ["prompt.append", "skill", "command", "path", "tool", "lifecycle", "bus", "provider", "channel", "settings"],
   "failClosed": false,
   "prompt": { "append": ["prompt/APPEND.md"] },
   "skills": ["skills"],
@@ -54,7 +54,7 @@ my-ext/
     "auth": { "type": "oauth", "subscription": true },
     "models": [{ "id": "example-model", "contextWindow": 128000, "maxTokens": 16384, "input": ["text"] }]
   }],
-  "runtime": { "kind": "rpc", "command": "bin/extension", "args": [], "install": [], "env": {} }
+  "runtime": { "kind": "rpc", "command": "bin/extension", "args": [], "install": [], "env": {}, "path": ["node_modules/.bin"] }
 }
 ```
 
@@ -63,6 +63,7 @@ my-ext/
 - `runtime.kind`：`none`（缺省）| `rpc`。`rpc` 须声明 `tool` / `lifecycle` / `command` / `bus` / `provider` / `channel` / `settings` 之一。
 - `runtime.command`：无路径分隔符（`node` / `bun` / `npx`）走 **PATH**；带 `/` 的相对路径相对包根（`bin/extension`）；绝对路径原样用。
 - `runtime.install`：可选 argv，sidecar **启动前**在包根执行（装依赖）。stdout 并进 stderr，避免污染 NDJSON。失败则不拉起 sidecar。
+- `runtime.path`：可选的包内目录列表，声明后并入 shell 工具子进程的 `PATH`（详见下文「扩展 PATH 目录」）。需要 `path` 能力；缺声明但写了 `runtime.path` 会按 manifest 错误禁用整个包。目录必须相对包根且不得逃逸（绝对路径、`..`、空串都拒绝）；**不校验目录是否存在**，因为 `node_modules/.bin` 之类由 `runtime.install` 在这些校验之后创建。
 - `i18n`：可选的扩展自有文案包。`resources` 将 locale 映射到包内的 UTF-8 JSON 文件；文件内容是扁平的 `key -> string` 字典，扩展可以自行使用点号组织 key。`defaultLocale` 缺省时优先使用 `en`，再使用字典中排序最前的 locale。路径必须留在包根内，单个资源最多 256 KiB。
 - i18n 资源是展示数据。资源文件缺失、格式错误、超限或包含非法 UTF-8 时，该 locale 会被忽略，不能阻止扩展运行；WebUI 会回退到其它 locale、`fallback` 或 key。
 - Host 只读取并转发经过校验的 catalog，不合并扩展 key，也不在 Go 或 WebUI 的 host 字典中维护扩展文案。
@@ -73,6 +74,7 @@ my-ext/
 |---|---|---|
 | `prompt.append` | 声明式 | system 第 6 层 |
 | `skill` | 声明式 | 额外 skill 根 |
+| `path` | 声明式 | 把包内目录加入 shell 工具的 `PATH`（`runtime.path`） |
 | `command` | 声明式 + 代码 | markdown slash；sidecar `command.invoke` |
 | `tool` | sidecar | `tool.execute`；模型裸名 |
 | `lifecycle` | sidecar | 订事件：`initialize.subscriptions` |
@@ -80,6 +82,18 @@ my-ext/
 | `provider` | 进程级 sidecar | 注册模型/认证元数据并接管 provider stream |
 | `channel` | 进程级 sidecar | 接入外部消息渠道并调用 Host session 能力 |
 | `settings` | 进程级 sidecar | 声明全局配置 schema，由 Host 脱敏、校验和通知变更 |
+
+## 扩展 PATH 目录
+
+声明 `path` 能力并列出 `runtime.path` 后，这些目录会出现在 shell 工具（Bash / PowerShell / Monitor）派生的子进程 `PATH` 里，使扩展自带的 CLI 对模型可见，而不要求用户全局安装。
+
+顺序：**ki 内嵌 rg/fd 目录 → 扩展目录（按扩展名排序）→ 用户原 `PATH`**。ki 的目录永远最前，扩展无法顶掉 `rg`/`fd`；扩展目录在用户 `PATH` 之前，保证 shell 里敲到的版本与 sidecar 使用的一致。重复声明的目录会去重。
+
+- 只有**已启用**（`toggles.json` 未禁用）且 manifest 无错误的包贡献目录；目录来自 session 的资源快照，因此启用/禁用与 reload 语义和 skills / prompt 一致：下一轮 prompt 生效，运行中的 run 保持旧环境。
+- 目录若此刻不存在会被跳过（例如依赖尚未安装），下一次组装工具时重新解析，所以 `runtime.install` 建出的目录不需要额外 reload。
+- 生效范围只有 ki shell 工具派生的子进程：不影响用户终端、扩展 sidecar 自身的环境、`Grep`/`Glob` 的内嵌引擎。
+- `bash -lc` 会先 source `/etc/profile`，Debian 的 `/etc/profile` 会整体重置 `PATH`，所以 Bash 额外通过 `BASH_ENV` 的 shim 在 profile 之后按 `KI_EXTENSION_PATH_DIRS` 再前置一次；PowerShell 不需要 shim。
+- 扩展目录位于用户 `PATH` 之前，理论上可以 shadow 用户的同名命令。这是声明式、可见的（明细见 `runtime.path` 与 `docs/tools.md`），且目录必须留在包根内，不能指向 `/usr/bin` 之类的任意位置。
 
 ## 订事件
 
@@ -253,11 +267,11 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| GET / PATCH | `/v1/extensions` | 全局列表 / `disabled`，包含 runtime 状态、全局 `ui` 投影，以及已加载的 skills / tools / commands / promptAppend / providers |
+| GET / PATCH | `/v1/extensions` | 全局列表 / `disabled`，包含 runtime 状态、全局 `ui` 投影、声明的 `pathDirs`，以及已加载的 skills / tools / commands / promptAppend / providers |
 | GET / PATCH | `/v1/extensions/{name}/config` | 读取脱敏配置 / 校验并保存扩展配置 |
-| GET | `/v1/sessions/{id}` | `availableExtensions`（含已加载的 skills / tools / commands / promptAppend / providers）、`commands`、`extensionUi`、`queued`、`extQueued`、`runtime.ready` |
+| GET | `/v1/sessions/{id}` | `availableExtensions`（含已加载的 skills / tools / commands / promptAppend / providers / `pathDirs`）、`commands`、`extensionUi`、`queued`、`extQueued`、`runtime.ready` |
 | POST | `/v1/reload` | 重新扫描并协调 sidecar |
 
 `path` 只展示，不当 `href`。
 
-扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影、可选 i18n catalog，以及该包已加载的 skills / tools / slash 命令 / prompt append / providers；查询不会启动 sidecar。sidecar 尚未握手时 tools/runtime commands 可能为空，session Info 在 `runtime.ready` 后再拉一次。manifest 校验失败不会拉起 runtime，并写入 `extensions.disabled`。sidecar 启动失败在仍启用时自动重试；session Prepare 上报 `sidecar_start` 后同样禁用。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航列出全部已启用扩展。Extensions 设置里每个已启用扩展都有 Configure，打开并定位到同一个页面（不要求必须有 config schema）；停用的扩展没有该按钮。不在 session Info 或设置页内嵌第二份编辑器。
+扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影、可选 i18n catalog，以及该包已加载的 skills / tools / slash 命令 / prompt append / providers；`pathDirs` 逐条给出声明的绝对路径与当前是否存在，让“目录没生效”和“PATH 覆盖了同名命令”两件事都能被发现。查询不会启动 sidecar。sidecar 尚未握手时 tools/runtime commands 可能为空，session Info 在 `runtime.ready` 后再拉一次。manifest 校验失败不会拉起 runtime，并写入 `extensions.disabled`。sidecar 启动失败在仍启用时自动重试；session Prepare 上报 `sidecar_start` 后同样禁用。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航列出全部已启用扩展。Extensions 设置里每个已启用扩展都有 Configure，打开并定位到同一个页面（不要求必须有 config schema）；停用的扩展没有该按钮。不在 session Info 或设置页内嵌第二份编辑器。
