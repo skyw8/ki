@@ -378,6 +378,73 @@ def response_item_id(value: Any, fallback: str) -> str:
     return f"msg_pi_{hashlib.sha256(candidate.encode()).hexdigest()[:32]}"
 
 
+def reasoning_key(item: dict[str, Any]) -> str:
+    signature = item.get("thinkingSignature")
+    if signature:
+        try:
+            parsed = json.loads(signature)
+            if isinstance(parsed, dict):
+                value = parsed.get("id")
+                if value:
+                    return f"id:{value}"
+        except (TypeError, json.JSONDecodeError):
+            pass
+    item_id = item.get("itemId")
+    return f"item:{item_id}" if item_id else ""
+
+
+# Reasoning items accept only these fields. A gateway that reuses
+# output_index across items can otherwise hand a reasoning item the name and
+# arguments of a function call; replaying such an item is both rejected by the
+# Responses API and self-perpetuating, because the polluted item is stored in
+# the session and sent again on every later turn.
+REASONING_FIELDS = ("type", "id", "summary", "content", "encrypted_content", "status", "phase")
+
+
+def reasoning_payload(item: dict[str, Any]) -> dict[str, Any]:
+    payload = {key: value for key, value in item.items() if key in REASONING_FIELDS}
+    payload.setdefault("type", "reasoning")
+    return payload
+
+
+class SlotRegistry:
+    """Correlates stream events to one slot per output item.
+
+    The provider item ID is the stable identity. Some gateways reuse or omit
+    ``output_index`` while emitting separate reasoning and function-call items,
+    so correlating by output index merged them into one slot: the reasoning
+    entry then carried the tool call's ``name``/``arguments`` and was replayed
+    to the provider on every later turn. ``output_index`` and ``call_id`` stay
+    as fallbacks for delta events that omit the item ID, and the most recent
+    registration wins, because such a delta describes the item the provider
+    mentioned last.
+    """
+
+    def __init__(self) -> None:
+        self.by_index: dict[str, str] = {}
+        self.by_call: dict[str, str] = {}
+
+    def resolve(self, obj: dict[str, Any], item_id: str, call_id: str) -> str:
+        output_index = obj.get("output_index")
+        index_key = str(output_index) if output_index is not None else ""
+        if item_id:
+            slot = f"id:{item_id}"
+            if index_key:
+                self.by_index[index_key] = slot
+            if call_id:
+                self.by_call[call_id] = slot
+            return slot
+        if call_id and call_id in self.by_call:
+            return self.by_call[call_id]
+        if index_key and index_key in self.by_index:
+            return self.by_index[index_key]
+        if call_id:
+            return f"call:{call_id}"
+        if index_key:
+            return f"index:{index_key}"
+        return "item:unknown"
+
+
 def input_items(message: dict[str, Any], model: dict[str, Any], message_index: int = 0) -> list[dict[str, Any]]:
     role = message.get("role")
     allow_image = "image" in model.get("input", [])
@@ -404,12 +471,20 @@ def input_items(message: dict[str, Any], model: dict[str, Any], message_index: i
         return [{"type": kind, "call_id": call_id, "output": output}]
     if role == "assistant":
         result: list[dict[str, Any]] = []
+        seen_reasoning: set[str] = set()
         for item in message.get("content", []):
             if item.get("type") == "thinking" and item.get("thinkingSignature"):
+                key = reasoning_key(item)
+                if key and key in seen_reasoning:
+                    continue
+                if key:
+                    seen_reasoning.add(key)
                 try:
-                    result.append(json.loads(item["thinkingSignature"]))
+                    signature = json.loads(item["thinkingSignature"])
                 except (TypeError, json.JSONDecodeError):
-                    pass
+                    continue
+                if isinstance(signature, dict):
+                    result.append(reasoning_payload(signature))
         if text_of(message):
             item = {"type": "message", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": text_of(message), "annotations": []}]}
             signature = next((x.get("textSignature") for x in message.get("content", []) if x.get("type") == "text" and x.get("textSignature")), "")
@@ -516,6 +591,316 @@ def relax_stream_timeout(response: Any, seconds: float) -> None:
         pass
 
 
+class CodexStreamBuilder:
+    """Collects one assistant message from a Codex Responses SSE stream.
+
+    Item identity comes from the provider item ID. Some gateways reuse or omit
+    ``output_index`` while emitting separate reasoning and function-call items,
+    so correlating by output index merged them into one slot: the reasoning
+    entry then carried the tool call's ``name``/``arguments`` and was replayed
+    to the provider on every later turn. ``output_index`` is kept only as a
+    fallback for delta events that omit the item ID entirely.
+    """
+
+    def __init__(self, send: Callable[[dict[str, Any]], None], request_id: str, model: dict[str, Any]) -> None:
+        self.send = send
+        self.request_id = request_id
+        self.message: dict[str, Any] = {"role": "assistant", "api": model.get("api", "openai-codex-responses"), "provider": model.get("provider", "openai-codex"), "model": model.get("id", ""), "content": []}
+        self.item_map: dict[str, dict[str, Any]] = {}
+        self.slots = SlotRegistry()
+        self.started_text: set[str] = set()
+        self.ended_text: set[str] = set()
+        self.started_thinking: set[str] = set()
+        self.ended_thinking: set[str] = set()
+        self.ended_tools: set[str] = set()
+        self.content_indices: dict[str, int] = {}
+        self.terminal = False
+        self.event_name = ""
+        self.data_lines: list[str] = []
+        emit_event(send, "start", self.message, requestId=request_id)
+
+    def content_index(self, item_key: str) -> int:
+        if item_key not in self.content_indices:
+            self.content_indices[item_key] = len(self.content_indices)
+        return self.content_indices[item_key]
+
+    def emit(self, kind: str, item_key: str | None = None, **values: Any) -> None:
+        if item_key is not None:
+            values["contentIndex"] = self.content_index(item_key)
+        emit_event(self.send, kind, self.message, requestId=self.request_id, **values)
+
+    def feed(self, line: str) -> bool:
+        """Consume one decoded SSE line; return True once the stream is done."""
+        if not line:
+            if self.data_lines:
+                data = "\n".join(self.data_lines)
+                if data != "[DONE]":
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError("Codex stream contained invalid JSON") from exc
+                    self.process(self.event_name, obj)
+            self.event_name, self.data_lines = "", []
+            return self.terminal
+        if line.startswith("event:"):
+            self.event_name = line[6:].strip()
+        elif line.startswith("data:"):
+            self.data_lines.append(line[5:].lstrip())
+        return False
+
+    def process(self, name: str, obj: dict[str, Any]) -> None:
+        typ = obj.get("type") or name
+        if typ in ("response.created", "response.in_progress", "response.queued"):
+            self.message["responseId"] = response_id(obj) or self.message.get("responseId", "")
+            return
+        item = obj.get("item") if isinstance(obj.get("item"), dict) else {}
+        call_id = str(obj.get("call_id") or item.get("call_id") or "")
+        item_id = str(obj.get("item_id") or item.get("id") or call_id or "")
+        # Item IDs are the stable identity; SlotRegistry keeps an
+        # output_index/call_id fallback for gateways that omit them on deltas.
+        slot_id = self.slots.resolve(obj, str(obj.get("item_id") or item.get("id") or ""), call_id)
+        if typ in ("response.output_item.added", "response.output_item.done") and item:
+            item_type = item.get("type", "")
+            if item_type == "message":
+                existing = self.item_map.setdefault(slot_id, {"type": "text", "text": "", "itemId": item_id})
+                if item.get("id"):
+                    existing["itemId"] = item["id"]
+                    signature: dict[str, Any] = {"v": 1, "id": item["id"]}
+                    if item.get("phase"):
+                        signature["phase"] = item["phase"]
+                    existing["textSignature"] = json.dumps(signature, separators=(",", ":"))
+                for part in item.get("content", []):
+                    if part.get("type") == "output_text" and part.get("text"):
+                        existing["text"] = part["text"]
+                if typ == "response.output_item.done":
+                    if existing.get("text") and slot_id not in self.started_text:
+                        self.started_text.add(slot_id)
+                        self.message["content"].append(existing)
+                        self.emit("text_start", slot_id)
+                        self.emit("text_delta", slot_id, delta=existing["text"])
+                    if slot_id in self.started_text and slot_id not in self.ended_text:
+                        self.ended_text.add(slot_id)
+                        self.emit("text_end", slot_id)
+            elif item_type in ("function_call", "custom_tool_call"):
+                if not item_id:
+                    raise RuntimeError("Codex response tool call has no item_id")
+                call_id = str(item.get("call_id") or "")
+                if not call_id:
+                    raise RuntimeError("Codex response tool call has no call_id")
+                existing = self.item_map.setdefault(slot_id, {"type": "toolCall", "id": call_id, "itemId": item.get("id", item_id), "name": item.get("name", ""), "arguments": {}, "argumentsRaw": "", "toolType": "custom" if item_type == "custom_tool_call" else "function", "input": item.get("input", "")})
+                existing["id"] = call_id
+                existing.update({"name": item.get("name", existing.get("name", "")), "itemId": item.get("id", existing.get("itemId", ""))})
+                if item_type == "function_call" and item.get("arguments") is not None:
+                    existing["argumentsRaw"] = str(item["arguments"])
+                    if typ == "response.output_item.done" and existing["argumentsRaw"]:
+                        try:
+                            parsed_arguments = json.loads(existing["argumentsRaw"])
+                        except json.JSONDecodeError as exc:
+                            raise RuntimeError("Codex function call arguments are not valid JSON") from exc
+                        if not isinstance(parsed_arguments, dict):
+                            raise RuntimeError("Codex function call arguments must be a JSON object")
+                        existing["arguments"] = parsed_arguments
+                if item_type == "custom_tool_call" and item.get("input") is not None:
+                    existing["input"] = str(item["input"])
+                if typ == "response.output_item.done":
+                    if existing not in self.message["content"]:
+                        self.message["content"].append(existing)
+                        self.emit("toolcall_start", slot_id, toolCallId=existing["id"], toolName=existing.get("name"))
+                    if slot_id not in self.ended_tools:
+                        self.ended_tools.add(slot_id)
+                        self.emit("toolcall_end", slot_id, toolCallId=existing["id"], toolName=existing.get("name"))
+            elif item_type == "reasoning":
+                existing = self.item_map.setdefault(slot_id, {"type": "thinking", "thinking": "", "itemId": item_id})
+                if item.get("encrypted_content"):
+                    existing["thinkingSignature"] = json.dumps(reasoning_payload(item), separators=(",", ":"))
+                summary = "\n\n".join(str(part.get("text", "")) for part in item.get("summary", []) if part.get("text"))
+                if not summary:
+                    summary = "\n\n".join(str(part.get("text", "")) for part in item.get("content", []) if part.get("text"))
+                if summary:
+                    existing["thinking"] = summary
+                if existing not in self.message["content"]:
+                    self.message["content"].append(existing)
+                if typ == "response.output_item.done":
+                    if slot_id not in self.started_thinking:
+                        self.started_thinking.add(slot_id)
+                        self.emit("thinking_start", slot_id)
+                        if existing.get("thinking"):
+                            self.emit("thinking_delta", slot_id, delta=existing["thinking"])
+                    if slot_id not in self.ended_thinking:
+                        self.ended_thinking.add(slot_id)
+                        self.emit("thinking_end", slot_id)
+            return
+        if typ in ("response.content_part.added", "response.content_part.done"):
+            if not item_id:
+                raise RuntimeError("Codex content event has no item_id")
+            content = self.item_map.setdefault(slot_id, {"type": "text", "text": "", "itemId": item_id})
+            part = obj.get("part") if isinstance(obj.get("part"), dict) else {}
+            part_type = part.get("type", "")
+            final_text = str(part.get("text", part.get("refusal", ""))) if part_type in ("output_text", "refusal") else ""
+            delta = final_text
+            if content.get("text") == final_text:
+                delta = ""
+            elif content.get("text") and final_text.startswith(content["text"]):
+                delta = final_text[len(content["text"]):]
+            elif content.get("text"):
+                # A final content-part event may repair a truncated stream;
+                # update the persisted self.message without replaying duplicate
+                # text to the client.
+                delta = ""
+            if final_text:
+                content["text"] = final_text
+            if delta:
+                if slot_id not in self.started_text:
+                    self.started_text.add(slot_id)
+                    self.message["content"].append(content)
+                    self.emit("text_start", slot_id)
+                self.emit("text_delta", slot_id, delta=delta)
+            return
+        if typ == "response.output_text.delta" or typ == "response.refusal.delta":
+            if not item_id:
+                raise RuntimeError("Codex text event has no item_id")
+            content = self.item_map.setdefault(slot_id, {"type": "text", "text": "", "itemId": item_id})
+            if slot_id not in self.started_text:
+                self.started_text.add(slot_id)
+                self.message["content"].append(content)
+                self.emit("text_start", slot_id)
+            delta = str(obj.get("delta", ""))
+            content["text"] += delta
+            self.emit("text_delta", slot_id, delta=delta)
+        elif typ == "response.output_text.done":
+            if not item_id:
+                raise RuntimeError("Codex text event has no item_id")
+            content = self.item_map.setdefault(slot_id, {"type": "text", "text": "", "itemId": item_id})
+            if obj.get("text") is not None:
+                content["text"] = str(obj["text"])
+            if slot_id not in self.started_text and content.get("text"):
+                self.started_text.add(slot_id)
+                self.message["content"].append(content)
+                self.emit("text_start", slot_id)
+                self.emit("text_delta", slot_id, delta=content["text"])
+            if slot_id in self.started_text and slot_id not in self.ended_text:
+                self.ended_text.add(slot_id)
+                self.emit("text_end", slot_id)
+        elif typ == "response.reasoning_summary_part.added":
+            if not item_id:
+                raise RuntimeError("Codex reasoning summary event has no item_id")
+            content = self.item_map.setdefault(slot_id, {"type": "thinking", "thinking": "", "itemId": item_id})
+            part = obj.get("part") if isinstance(obj.get("part"), dict) else {}
+            delta = str(part.get("text", ""))
+            if slot_id not in self.started_thinking:
+                self.started_thinking.add(slot_id)
+                self.message["content"].append(content)
+                self.emit("thinking_start", slot_id)
+            content["thinking"] += delta
+            self.emit("thinking_delta", slot_id, delta=delta)
+        elif typ in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+            if not item_id:
+                raise RuntimeError("Codex reasoning event has no item_id")
+            content = self.item_map.setdefault(slot_id, {"type": "thinking", "thinking": "", "itemId": item_id})
+            if slot_id not in self.started_thinking:
+                self.started_thinking.add(slot_id)
+                self.message["content"].append(content)
+                self.emit("thinking_start", slot_id)
+            delta = str(obj.get("delta", ""))
+            content["thinking"] += delta
+            self.emit("thinking_delta", slot_id, delta=delta)
+        elif typ == "response.reasoning_summary_part.done" and slot_id in self.started_thinking:
+            # A summary part is separated from the next part by a newline.
+            self.emit("thinking_delta", slot_id, delta="\n\n")
+        elif typ in ("response.reasoning_summary_text.done", "response.reasoning_text.done") and slot_id in self.started_thinking:
+            if slot_id not in self.ended_thinking:
+                self.ended_thinking.add(slot_id)
+                self.emit("thinking_end", slot_id)
+        elif typ in ("response.function_call_arguments.delta", "response.custom_tool_call_input.delta"):
+            custom = typ.startswith("response.custom")
+            call_id = str(obj.get("call_id") or "")
+            if not item_id:
+                raise RuntimeError("Codex tool call event has no item_id")
+            content = self.item_map.get(slot_id)
+            if content is None:
+                if not call_id:
+                    raise RuntimeError("Codex tool call delta has no prior output item")
+                content = self.item_map.setdefault(slot_id, {"type": "toolCall", "id": call_id, "itemId": item_id, "name": obj.get("name", ""), "toolType": "custom" if custom else "function", "argumentsRaw": "", "arguments": {}, "input": ""})
+            if call_id:
+                content["id"] = call_id
+            if content not in self.message["content"]:
+                self.message["content"].append(content)
+                self.emit("toolcall_start", slot_id, toolCallId=content.get("id"), toolName=content.get("name"))
+            delta = str(obj.get("delta", obj.get("input", "")))
+            if custom:
+                content["input"] += delta
+            else:
+                content["argumentsRaw"] += delta
+            event_kind = "custom_tool_call_input_delta" if custom else "toolcall_delta"
+            self.emit(event_kind, slot_id, delta=delta, toolCallId=content.get("id"), toolName=content.get("name"))
+        elif typ in ("response.function_call_arguments.done", "response.custom_tool_call_input.done"):
+            content = self.item_map.get(slot_id)
+            call_id = str(obj.get("call_id") or "")
+            if content is None and call_id:
+                content = self.item_map.setdefault(slot_id or call_id, {"type": "toolCall", "id": call_id, "itemId": item_id or call_id, "name": obj.get("name", ""), "toolType": "custom" if typ.startswith("response.custom") else "function", "argumentsRaw": "", "arguments": {}, "input": ""})
+            if content is None:
+                raise RuntimeError("Codex tool call completion has no prior output item")
+            if not content.get("id"):
+                if not call_id:
+                    raise RuntimeError("Codex tool call event has no call_id")
+                content["id"] = call_id
+            if content not in self.message["content"]:
+                self.message["content"].append(content)
+                self.emit("toolcall_start", slot_id, toolCallId=content.get("id"), toolName=content.get("name"))
+            if obj.get("arguments") is not None:
+                content["argumentsRaw"] = str(obj["arguments"])
+                try:
+                    parsed_arguments = json.loads(content["argumentsRaw"])
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError("Codex function call arguments are not valid JSON") from exc
+                if not isinstance(parsed_arguments, dict):
+                    raise RuntimeError("Codex function call arguments must be a JSON object")
+                content["arguments"] = parsed_arguments
+            if obj.get("input") is not None:
+                content["input"] = str(obj["input"])
+            if slot_id not in self.ended_tools:
+                self.ended_tools.add(slot_id)
+                self.emit("toolcall_end", slot_id, toolCallId=content.get("id"), toolName=content.get("name"))
+        elif typ in ("response.done", "response.completed", "response.incomplete", "response.failed", "response.cancelled", "error"):
+            response = obj.get("response") if isinstance(obj.get("response"), dict) else obj
+            if isinstance(response, dict):
+                # The terminal response contains the authoritative output
+                # array. Replay each item through the normal final-item
+                # path so a server that omits an intermediate event still
+                # yields a complete self.message and replay metadata.
+                output = response.get("output", [])
+                if isinstance(output, list):
+                    for output_index, output_item in enumerate(output):
+                        if isinstance(output_item, dict):
+                            self.process("response.output_item.done", {"type": "response.output_item.done", "output_index": output_index, "item": output_item})
+            if response_id(obj):
+                self.message["responseId"] = response_id(obj)
+            usage = response.get("usage") if isinstance(response, dict) else None
+            if usage:
+                details = usage.get("input_tokens_details") or {}
+                cached = int(details.get("cached_tokens", 0) or 0)
+                cache_write = int(details.get("cache_write_tokens", usage.get("cache_write_tokens", 0)) or 0)
+                self.message["usage"] = {"input": max(0, int(usage.get("input_tokens", 0) or 0) - cached - cache_write), "output": int(usage.get("output_tokens", 0) or 0), "cacheRead": cached, "cacheWrite": cache_write, "totalTokens": int(usage.get("total_tokens", 0) or 0)}
+            status = response.get("status", "") if isinstance(response, dict) else ""
+            if typ in ("response.failed", "error") or status == "failed":
+                error = response.get("error") if isinstance(response, dict) else None
+                error_message = error.get("message") if isinstance(error, dict) else error
+                self.message["stopReason"], self.message["errorMessage"] = "error", str(obj.get("message") or error_message or "Codex response failed")
+            elif typ == "response.cancelled" or status == "cancelled":
+                self.message["stopReason"] = "aborted"
+            elif typ == "response.incomplete" or status == "incomplete":
+                incomplete = response.get("incomplete_details") if isinstance(response, dict) else None
+                incomplete_reason = incomplete.get("reason") if isinstance(incomplete, dict) else ""
+                if incomplete_reason == "max_output_tokens":
+                    self.message["stopReason"] = "length"
+                else:
+                    self.message["stopReason"] = "error"
+                    self.message["errorMessage"] = f"Response incomplete: {incomplete_reason}" if incomplete_reason else "Response incomplete without a provider reason"
+            else:
+                self.message["stopReason"] = "toolUse" if tool_calls(self.message) else "stop"
+            self.terminal = True
+
+
 def stream_codex(cancelled: threading.Event, payload: dict[str, Any], send: Callable[[dict[str, Any]], None], request_id: str) -> None:
     credential = (payload.get("credential") or {}).get("value") or {}
     if not credential.get("access") or not credential.get("accountId"):
@@ -533,304 +918,15 @@ def stream_codex(cancelled: threading.Event, payload: dict[str, Any], send: Call
         if response.status < 200 or response.status >= 300:
             raise RuntimeError(f"Codex request failed ({response.status})")
         relax_stream_timeout(response, STREAM_IDLE_TIMEOUT)
-        message = {"role": "assistant", "api": model.get("api", "openai-codex-responses"), "provider": model.get("provider", "openai-codex"), "model": model.get("id", ""), "content": []}
-        item_map: dict[str, dict[str, Any]] = {}
-        started_text: set[str] = set()
-        ended_text: set[str] = set()
-        started_thinking: set[str] = set()
-        ended_thinking: set[str] = set()
-        ended_tools: set[str] = set()
-        content_indices: dict[str, int] = {}
-        terminal = False
-        emit_event(send, "start", message, requestId=request_id)
-        event_name, data_lines = "", []
-
-        def content_index(item_key: str) -> int:
-            if item_key not in content_indices:
-                content_indices[item_key] = len(content_indices)
-            return content_indices[item_key]
-
-        def emit(kind: str, item_key: str | None = None, **values: Any) -> None:
-            if item_key is not None:
-                values["contentIndex"] = content_index(item_key)
-            emit_event(send, kind, message, requestId=request_id, **values)
-
-        def process(name: str, obj: dict[str, Any]) -> None:
-            nonlocal terminal
-            typ = obj.get("type") or name
-            if typ in ("response.created", "response.in_progress", "response.queued"):
-                message["responseId"] = response_id(obj) or message.get("responseId", "")
-                return
-            item = obj.get("item") if isinstance(obj.get("item"), dict) else {}
-            item_id = str(obj.get("item_id") or item.get("id") or obj.get("call_id") or "")
-            # Responses events are correlated by output_index.  Item IDs are
-            # still persisted for replay, but using only item_id can merge
-            # parallel output items when a provider omits it on a delta event.
-            output_index = obj.get("output_index")
-            slot_id = str(output_index) if output_index is not None else item_id
-            if typ in ("response.output_item.added", "response.output_item.done") and item:
-                item_type = item.get("type", "")
-                if item_type == "message":
-                    existing = item_map.setdefault(slot_id, {"type": "text", "text": "", "itemId": item_id})
-                    if item.get("id"):
-                        existing["itemId"] = item["id"]
-                        signature: dict[str, Any] = {"v": 1, "id": item["id"]}
-                        if item.get("phase"):
-                            signature["phase"] = item["phase"]
-                        existing["textSignature"] = json.dumps(signature, separators=(",", ":"))
-                    for part in item.get("content", []):
-                        if part.get("type") == "output_text" and part.get("text"):
-                            existing["text"] = part["text"]
-                    if typ == "response.output_item.done":
-                        if existing.get("text") and slot_id not in started_text:
-                            started_text.add(slot_id)
-                            message["content"].append(existing)
-                            emit("text_start", slot_id)
-                            emit("text_delta", slot_id, delta=existing["text"])
-                        if slot_id in started_text and slot_id not in ended_text:
-                            ended_text.add(slot_id)
-                            emit("text_end", slot_id)
-                elif item_type in ("function_call", "custom_tool_call"):
-                    if not item_id:
-                        raise RuntimeError("Codex response tool call has no item_id")
-                    call_id = str(item.get("call_id") or "")
-                    if not call_id:
-                        raise RuntimeError("Codex response tool call has no call_id")
-                    existing = item_map.setdefault(slot_id, {"type": "toolCall", "id": call_id, "itemId": item.get("id", item_id), "name": item.get("name", ""), "arguments": {}, "argumentsRaw": "", "toolType": "custom" if item_type == "custom_tool_call" else "function", "input": item.get("input", "")})
-                    existing["id"] = call_id
-                    existing.update({"name": item.get("name", existing.get("name", "")), "itemId": item.get("id", existing.get("itemId", ""))})
-                    if item_type == "function_call" and item.get("arguments") is not None:
-                        existing["argumentsRaw"] = str(item["arguments"])
-                        if typ == "response.output_item.done" and existing["argumentsRaw"]:
-                            try:
-                                parsed_arguments = json.loads(existing["argumentsRaw"])
-                            except json.JSONDecodeError as exc:
-                                raise RuntimeError("Codex function call arguments are not valid JSON") from exc
-                            if not isinstance(parsed_arguments, dict):
-                                raise RuntimeError("Codex function call arguments must be a JSON object")
-                            existing["arguments"] = parsed_arguments
-                    if item_type == "custom_tool_call" and item.get("input") is not None:
-                        existing["input"] = str(item["input"])
-                    if typ == "response.output_item.done":
-                        if existing not in message["content"]:
-                            message["content"].append(existing)
-                            emit("toolcall_start", slot_id, toolCallId=existing["id"], toolName=existing.get("name"))
-                        if slot_id not in ended_tools:
-                            ended_tools.add(slot_id)
-                            emit("toolcall_end", slot_id, toolCallId=existing["id"], toolName=existing.get("name"))
-                elif item_type == "reasoning":
-                    existing = item_map.setdefault(slot_id, {"type": "thinking", "thinking": "", "itemId": item_id})
-                    if item.get("encrypted_content"):
-                        existing["thinkingSignature"] = json.dumps(item, separators=(",", ":"))
-                    summary = "\n\n".join(str(part.get("text", "")) for part in item.get("summary", []) if part.get("text"))
-                    if not summary:
-                        summary = "\n\n".join(str(part.get("text", "")) for part in item.get("content", []) if part.get("text"))
-                    if summary:
-                        existing["thinking"] = summary
-                    if existing not in message["content"]:
-                        message["content"].append(existing)
-                    if typ == "response.output_item.done":
-                        if slot_id not in started_thinking:
-                            started_thinking.add(slot_id)
-                            emit("thinking_start", slot_id)
-                            if existing.get("thinking"):
-                                emit("thinking_delta", slot_id, delta=existing["thinking"])
-                        if slot_id not in ended_thinking:
-                            ended_thinking.add(slot_id)
-                            emit("thinking_end", slot_id)
-                return
-            if typ in ("response.content_part.added", "response.content_part.done"):
-                if not item_id:
-                    raise RuntimeError("Codex content event has no item_id")
-                content = item_map.setdefault(slot_id, {"type": "text", "text": "", "itemId": item_id})
-                part = obj.get("part") if isinstance(obj.get("part"), dict) else {}
-                part_type = part.get("type", "")
-                final_text = str(part.get("text", part.get("refusal", ""))) if part_type in ("output_text", "refusal") else ""
-                delta = final_text
-                if content.get("text") == final_text:
-                    delta = ""
-                elif content.get("text") and final_text.startswith(content["text"]):
-                    delta = final_text[len(content["text"]):]
-                elif content.get("text"):
-                    # A final content-part event may repair a truncated stream;
-                    # update the persisted message without replaying duplicate
-                    # text to the client.
-                    delta = ""
-                if final_text:
-                    content["text"] = final_text
-                if delta:
-                    if slot_id not in started_text:
-                        started_text.add(slot_id)
-                        message["content"].append(content)
-                        emit("text_start", slot_id)
-                    emit("text_delta", slot_id, delta=delta)
-                return
-            if typ == "response.output_text.delta" or typ == "response.refusal.delta":
-                if not item_id:
-                    raise RuntimeError("Codex text event has no item_id")
-                content = item_map.setdefault(slot_id, {"type": "text", "text": "", "itemId": item_id})
-                if slot_id not in started_text:
-                    started_text.add(slot_id)
-                    message["content"].append(content)
-                    emit("text_start", slot_id)
-                delta = str(obj.get("delta", ""))
-                content["text"] += delta
-                emit("text_delta", slot_id, delta=delta)
-            elif typ == "response.output_text.done":
-                if not item_id:
-                    raise RuntimeError("Codex text event has no item_id")
-                content = item_map.setdefault(slot_id, {"type": "text", "text": "", "itemId": item_id})
-                if obj.get("text") is not None:
-                    content["text"] = str(obj["text"])
-                if slot_id not in started_text and content.get("text"):
-                    started_text.add(slot_id)
-                    message["content"].append(content)
-                    emit("text_start", slot_id)
-                    emit("text_delta", slot_id, delta=content["text"])
-                if slot_id in started_text and slot_id not in ended_text:
-                    ended_text.add(slot_id)
-                    emit("text_end", slot_id)
-            elif typ == "response.reasoning_summary_part.added":
-                if not item_id:
-                    raise RuntimeError("Codex reasoning summary event has no item_id")
-                content = item_map.setdefault(slot_id, {"type": "thinking", "thinking": "", "itemId": item_id})
-                part = obj.get("part") if isinstance(obj.get("part"), dict) else {}
-                delta = str(part.get("text", ""))
-                if slot_id not in started_thinking:
-                    started_thinking.add(slot_id)
-                    message["content"].append(content)
-                    emit("thinking_start", slot_id)
-                content["thinking"] += delta
-                emit("thinking_delta", slot_id, delta=delta)
-            elif typ in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
-                if not item_id:
-                    raise RuntimeError("Codex reasoning event has no item_id")
-                content = item_map.setdefault(slot_id, {"type": "thinking", "thinking": "", "itemId": item_id})
-                if slot_id not in started_thinking:
-                    started_thinking.add(slot_id)
-                    message["content"].append(content)
-                    emit("thinking_start", slot_id)
-                delta = str(obj.get("delta", ""))
-                content["thinking"] += delta
-                emit("thinking_delta", slot_id, delta=delta)
-            elif typ == "response.reasoning_summary_part.done" and slot_id in started_thinking:
-                # A summary part is separated from the next part by a newline.
-                emit("thinking_delta", slot_id, delta="\n\n")
-            elif typ in ("response.reasoning_summary_text.done", "response.reasoning_text.done") and slot_id in started_thinking:
-                if slot_id not in ended_thinking:
-                    ended_thinking.add(slot_id)
-                    emit("thinking_end", slot_id)
-            elif typ in ("response.function_call_arguments.delta", "response.custom_tool_call_input.delta"):
-                custom = typ.startswith("response.custom")
-                call_id = str(obj.get("call_id") or "")
-                if not item_id:
-                    raise RuntimeError("Codex tool call event has no item_id")
-                content = item_map.get(slot_id)
-                if content is None:
-                    if not call_id:
-                        raise RuntimeError("Codex tool call delta has no prior output item")
-                    content = item_map.setdefault(slot_id, {"type": "toolCall", "id": call_id, "itemId": item_id, "name": obj.get("name", ""), "toolType": "custom" if custom else "function", "argumentsRaw": "", "arguments": {}, "input": ""})
-                if call_id:
-                    content["id"] = call_id
-                if content not in message["content"]:
-                    message["content"].append(content)
-                    emit("toolcall_start", slot_id, toolCallId=content.get("id"), toolName=content.get("name"))
-                delta = str(obj.get("delta", obj.get("input", "")))
-                if custom:
-                    content["input"] += delta
-                else:
-                    content["argumentsRaw"] += delta
-                event_kind = "custom_tool_call_input_delta" if custom else "toolcall_delta"
-                emit(event_kind, slot_id, delta=delta, toolCallId=content.get("id"), toolName=content.get("name"))
-            elif typ in ("response.function_call_arguments.done", "response.custom_tool_call_input.done"):
-                content = item_map.get(slot_id)
-                call_id = str(obj.get("call_id") or "")
-                if content is None and call_id:
-                    content = item_map.setdefault(slot_id or call_id, {"type": "toolCall", "id": call_id, "itemId": item_id or call_id, "name": obj.get("name", ""), "toolType": "custom" if typ.startswith("response.custom") else "function", "argumentsRaw": "", "arguments": {}, "input": ""})
-                if content is None:
-                    raise RuntimeError("Codex tool call completion has no prior output item")
-                if not content.get("id"):
-                    if not call_id:
-                        raise RuntimeError("Codex tool call event has no call_id")
-                    content["id"] = call_id
-                if content not in message["content"]:
-                    message["content"].append(content)
-                    emit("toolcall_start", slot_id, toolCallId=content.get("id"), toolName=content.get("name"))
-                if obj.get("arguments") is not None:
-                    content["argumentsRaw"] = str(obj["arguments"])
-                    try:
-                        parsed_arguments = json.loads(content["argumentsRaw"])
-                    except (TypeError, json.JSONDecodeError) as exc:
-                        raise RuntimeError("Codex function call arguments are not valid JSON") from exc
-                    if not isinstance(parsed_arguments, dict):
-                        raise RuntimeError("Codex function call arguments must be a JSON object")
-                    content["arguments"] = parsed_arguments
-                if obj.get("input") is not None:
-                    content["input"] = str(obj["input"])
-                if slot_id not in ended_tools:
-                    ended_tools.add(slot_id)
-                    emit("toolcall_end", slot_id, toolCallId=content.get("id"), toolName=content.get("name"))
-            elif typ in ("response.done", "response.completed", "response.incomplete", "response.failed", "response.cancelled", "error"):
-                response = obj.get("response") if isinstance(obj.get("response"), dict) else obj
-                if isinstance(response, dict):
-                    # The terminal response contains the authoritative output
-                    # array. Replay each item through the normal final-item
-                    # path so a server that omits an intermediate event still
-                    # yields a complete message and replay metadata.
-                    output = response.get("output", [])
-                    if isinstance(output, list):
-                        for output_index, output_item in enumerate(output):
-                            if isinstance(output_item, dict):
-                                process("response.output_item.done", {"type": "response.output_item.done", "output_index": output_index, "item": output_item})
-                if response_id(obj):
-                    message["responseId"] = response_id(obj)
-                usage = response.get("usage") if isinstance(response, dict) else None
-                if usage:
-                    details = usage.get("input_tokens_details") or {}
-                    cached = int(details.get("cached_tokens", 0) or 0)
-                    cache_write = int(details.get("cache_write_tokens", usage.get("cache_write_tokens", 0)) or 0)
-                    message["usage"] = {"input": max(0, int(usage.get("input_tokens", 0) or 0) - cached - cache_write), "output": int(usage.get("output_tokens", 0) or 0), "cacheRead": cached, "cacheWrite": cache_write, "totalTokens": int(usage.get("total_tokens", 0) or 0)}
-                status = response.get("status", "") if isinstance(response, dict) else ""
-                if typ in ("response.failed", "error") or status == "failed":
-                    error = response.get("error") if isinstance(response, dict) else None
-                    error_message = error.get("message") if isinstance(error, dict) else error
-                    message["stopReason"], message["errorMessage"] = "error", str(obj.get("message") or error_message or "Codex response failed")
-                elif typ == "response.cancelled" or status == "cancelled":
-                    message["stopReason"] = "aborted"
-                elif typ == "response.incomplete" or status == "incomplete":
-                    incomplete = response.get("incomplete_details") if isinstance(response, dict) else None
-                    incomplete_reason = incomplete.get("reason") if isinstance(incomplete, dict) else ""
-                    if incomplete_reason == "max_output_tokens":
-                        message["stopReason"] = "length"
-                    else:
-                        message["stopReason"] = "error"
-                        message["errorMessage"] = f"Response incomplete: {incomplete_reason}" if incomplete_reason else "Response incomplete without a provider reason"
-                else:
-                    message["stopReason"] = "toolUse" if tool_calls(message) else "stop"
-                terminal = True
-
+        builder = CodexStreamBuilder(send, request_id, model)
         for raw_line in response:
             if cancelled.is_set():
                 return
-            line = raw_line.decode(errors="replace").rstrip("\r\n")
-            if not line:
-                if data_lines:
-                    data = "\n".join(data_lines)
-                    if data != "[DONE]":
-                        try:
-                            obj = json.loads(data)
-                        except json.JSONDecodeError as exc:
-                            raise RuntimeError("Codex stream contained invalid JSON") from exc
-                        process(event_name, obj)
-                event_name, data_lines = "", []
-                if terminal:
-                    break
-            elif line.startswith("event:"):
-                event_name = line[6:].strip()
-            elif line.startswith("data:"):
-                data_lines.append(line[5:].lstrip())
-        if not terminal:
+            if builder.feed(raw_line.decode(errors="replace").rstrip("\r\n")):
+                break
+        if not builder.terminal:
             raise RuntimeError("Codex stream ended before a terminal response event")
+        message = builder.message
         if message.get("stopReason") == "error":
             # Keep the provider response metadata attached to the RPC error;
             # otherwise the host would retry with an empty assistant message

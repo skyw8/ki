@@ -36,6 +36,7 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 - Completions 对齐 Chat Completions wire contract：OpenAI provider 使用 `max_completion_tokens` 和 `stream_options.include_usage`；`prompt_tokens` 与 `prompt_tokens_details.cached_tokens` 原样接收，成本计算时再拆成 uncached input/cache read。SSE 消费 `choices[].delta` 的 content/refusal/tool_calls（以及兼容旧网关的 `function_call`），按 `tool_calls[].index` 累积 arguments，并处理 `stop`、`length`、`tool_calls`、`function_call`、`content_filter`。
 - Anthropic Messages 对齐官方 SSE 生命周期：`message_start` → 带 `index` 的 `content_block_start/delta/stop` → `message_delta` → `message_stop`；`error` 事件转为失败。text/thinking/tool input 按 block index 独立累积，保留 thinking signature 和 redacted-thinking data，tool input 必须是 JSON object，未收到终止事件的流视为失败。
 - Responses core adapter 使用 `store:false` 和 `include:["reasoning.encrypted_content"]` 做无状态回放；输出按 `item_id` 关联 message/reasoning/tool item，必须遇到 `response.completed` / `response.failed` / `response.incomplete` 等终止事件才结束流。
+- provider 扩展（`extensions/codex-oauth`）与 core adapter 共享同一套 item 关联规则，并额外防污染：流式关联以 provider item ID 为准，`output_index` 和 `call_id` 只作为 delta 缺 ID 时的回退（同一个 `output_index` 被多个 item 复用时以最后注册的 item 为准）；reasoning item 只保留 API 允许的字段，落盘和回放前各过滤一次。复用 `output_index` 的网关曾把 function call 的 `name`/`arguments` 并进 reasoning 条目，那条被污染的历史会在之后每一轮重新发给上游。
 - toolResult 的 `details` 只供 session 和客户端使用；Completions、Responses、Anthropic 的请求转换都只序列化模型可见 `content` 和错误状态。
 - `Scripted`：测试和 `KI_FAKE=1` 用。
 

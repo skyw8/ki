@@ -78,6 +78,41 @@ class CodexExtensionTest(unittest.TestCase):
         self.assertEqual(reasoning["id"], "rs-1")
         self.assertEqual(reasoning["encrypted_content"], "opaque")
 
+    def test_build_request_deduplicates_reasoning_items(self):
+        signature = json.dumps({"type": "reasoning", "id": "rs-dup", "encrypted_content": "opaque"})
+        payload = {
+            "model": {"id": "gpt-5.6", "input": ["text"]},
+            "request": {
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "run"}]},
+                    {"role": "assistant", "content": [
+                        {"type": "thinking", "thinking": "summary", "thinkingSignature": signature},
+                        {"type": "thinking", "thinking": "summary", "name": "Grep", "arguments": {}, "thinkingSignature": signature},
+                        {"type": "toolCall", "id": "call-1", "name": "Grep", "arguments": {}},
+                    ]},
+                    {"role": "toolResult", "toolCallId": "call-1", "content": [{"type": "text", "text": "ok"}]},
+                ],
+            },
+        }
+        body = main.build_request(payload)
+        self.assertEqual([item["type"] for item in body["input"]], ["message", "reasoning", "function_call", "function_call_output"])
+
+    def test_slot_registry_prefers_item_id_over_reused_output_index(self):
+        slots = main.SlotRegistry()
+        first = slots.resolve({"output_index": 0}, "rs-1", "")
+        second = slots.resolve({"output_index": 0}, "fc-1", "call-1")
+        self.assertNotEqual(first, second)
+        # A delta without an item ID must reach an item the output item events
+        # registered, not invent a third slot: call_id is exact, and the output
+        # index falls back to the most recent registration (reuse makes it
+        # ambiguous, so the latest item wins).
+        self.assertEqual(slots.resolve({"output_index": 0}, "", "call-1"), second)
+        self.assertEqual(slots.resolve({"output_index": 0}, "", ""), second)
+        # call_id is still usable when nothing registered it.
+        self.assertEqual(slots.resolve({"output_index": 7}, "", "call-9"), "call:call-9")
+        self.assertEqual(slots.resolve({"output_index": 7}, "", ""), "index:7")
+        self.assertEqual(slots.resolve({}, "", ""), "item:unknown")
+
     def test_build_request_rejects_empty_input(self):
         payload = {"model": {"id": "gpt-5.4"}, "request": {"messages": []}}
         with self.assertRaisesRegex(RuntimeError, "no input messages"):
@@ -176,6 +211,96 @@ class CodexExtensionTest(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def stream_events(self, stream):
+        """Run one Codex SSE stream against a fake upstream and return events."""
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for event in stream:
+                    self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
+
+            def log_message(self, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            events = []
+            payload = {
+                "model": {"id": "gpt-5.4", "provider": "openai-codex", "api": "openai-codex-responses", "baseUrl": f"http://127.0.0.1:{server.server_port}", "input": ["text"]},
+                "credential": {"type": "oauth", "value": {"access": "access", "accountId": "acct"}},
+                "request": {"messages": [{"role": "user", "content": [{"type": "text", "text": "run"}]}]},
+            }
+            main.stream_codex(threading.Event(), payload, events.append, "stream-test")
+            return events
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_stream_separates_reasoning_and_tool_call_with_shared_output_index(self):
+        # Gateway quirk: a reasoning item and a function call arrive with the
+        # same output_index. Correlating by output index merged them into one
+        # slot and replayed a reasoning item carrying name/arguments.
+        events = self.stream_events([
+            {"type": "response.created", "response": {"id": "resp-1"}},
+            {"type": "response.output_item.added", "output_index": 0, "item": {"type": "reasoning", "id": "rs-1", "encrypted_content": "opaque", "summary": [{"type": "summary_text", "text": "thinking"}]}},
+            {"type": "response.output_item.added", "output_index": 0, "item": {"type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "Grep", "arguments": '{"pattern":"x"}'}},
+            {"type": "response.output_item.done", "output_index": 0, "item": {"type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "Grep", "arguments": '{"pattern":"x"}'}},
+            {"type": "response.completed", "response": {"id": "resp-1", "status": "completed"}},
+        ])
+        message = events[-1]["params"]["message"]
+        kinds = [item["type"] for item in message["content"]]
+        self.assertEqual(kinds, ["thinking", "toolCall"])
+        reasoning, call = message["content"]
+        self.assertEqual(reasoning["thinking"], "thinking")
+        signature = json.loads(reasoning["thinkingSignature"])
+        self.assertEqual(signature["id"], "rs-1")
+        self.assertNotIn("name", signature)
+        self.assertNotIn("arguments", signature)
+        self.assertNotIn("name", reasoning)
+        self.assertEqual(call["name"], "Grep")
+        self.assertEqual(call["arguments"], {"pattern": "x"})
+        self.assertEqual(message["stopReason"], "toolUse")
+
+    def test_stream_routes_item_less_delta_through_output_index(self):
+        events = self.stream_events([
+            {"type": "response.output_item.added", "output_index": 0, "item": {"type": "function_call", "id": "fc-1", "call_id": "call-1", "name": "Grep", "arguments": ""}},
+            # Some gateways omit item_id on argument deltas; the output index
+            # must still reach the item the added event registered.
+            {"type": "response.function_call_arguments.delta", "output_index": 0, "call_id": "call-1", "delta": '{"pattern":"y"}'},
+            {"type": "response.function_call_arguments.done", "output_index": 0, "call_id": "call-1", "arguments": '{"pattern":"y"}'},
+            {"type": "response.completed", "response": {"id": "resp-1", "status": "completed"}},
+        ])
+        final = events[-1]["params"]["message"]
+        self.assertEqual([item["type"] for item in final["content"]], ["toolCall"])
+        self.assertEqual(final["content"][0]["arguments"], {"pattern": "y"})
+        self.assertEqual(final["content"][0]["itemId"], "fc-1")
+
+    def test_build_request_strips_tool_fields_from_reasoning(self):
+        signature = json.dumps({"type": "reasoning", "id": "rs-1", "encrypted_content": "opaque", "name": "Grep", "arguments": {"pattern": "x"}})
+        payload = {
+            "model": {"id": "gpt-5.6", "input": ["text"]},
+            "request": {
+                "messages": [
+                    {"role": "user", "content": [{"type": "text", "text": "run"}]},
+                    {"role": "assistant", "content": [
+                        {"type": "thinking", "thinking": "summary", "thinkingSignature": signature},
+                        {"type": "toolCall", "id": "call-1", "name": "Grep", "arguments": {"pattern": "x"}},
+                    ]},
+                    {"role": "toolResult", "toolCallId": "call-1", "content": [{"type": "text", "text": "ok"}]},
+                ],
+            },
+        }
+        body = main.build_request(payload)
+        reasoning = body["input"][1]
+        self.assertEqual(reasoning["type"], "reasoning")
+        self.assertEqual(reasoning["encrypted_content"], "opaque")
+        self.assertNotIn("name", reasoning)
+        self.assertNotIn("arguments", reasoning)
 
     def test_stream_failed_event_preserves_response_message(self):
         class Handler(BaseHTTPRequestHandler):
