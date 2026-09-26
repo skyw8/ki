@@ -9,11 +9,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"ki/internal/prompt"
 	"ki/internal/resources"
+	"ki/internal/workspace"
 )
 
 type promptAppendItem struct {
@@ -148,7 +150,7 @@ func TestPromptAppendWritesBothSourcesAdditively(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("global prompt mode = %v, want 0600", st.Mode().Perm())
 	}
 
@@ -157,7 +159,14 @@ func TestPromptAppendWritesBothSourcesAdditively(t *testing.T) {
 	if !project.Exists || project.Text != "PROJECT-RULE" {
 		t.Fatalf("project after write = %+v", project)
 	}
-	if want := filepath.Join(cwd, ".ki", "prompt", "APPEND_SYSTEM.md"); project.Path != want {
+	// The workspace registry stores the normalized path, so the expectation has
+	// to be normalized too: t.TempDir is unresolved on macOS (/var ->
+	// /private/var) and under Windows short-name %TEMP% paths.
+	normalized, err := workspace.Normalize(cwd, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(normalized, ".ki", "prompt", "APPEND_SYSTEM.md"); project.Path != want {
 		t.Fatalf("project path = %q, want %q", project.Path, want)
 	}
 	builtinAt := strings.Index(view.Effective, prompt.DefaultAppendSystemPrompt)
