@@ -7,6 +7,8 @@ import { appendTranscript } from './perf-seed.ts'
 type GetMeasure = {
   ms: number
   bytes: number
+  encodedBytes: number
+  transferBytes: number
   hasMore?: boolean
   oldestId: string
   entries: number
@@ -50,9 +52,12 @@ async function measureGet(page: Page, path: string): Promise<GetMeasure> {
       entries?: Array<{ truncated?: boolean; promptUnchanged?: boolean }>
       index?: unknown[]
     }
+    const timing = performance.getEntriesByName(new URL(path, location.href).href).at(-1) as PerformanceResourceTiming | undefined
     return {
       ms,
       bytes: buf.byteLength,
+      encodedBytes: timing?.encodedBodySize ?? 0,
+      transferBytes: timing?.transferSize ?? 0,
       hasMore: !!json.hasMore,
       oldestId: json.oldestId ?? '',
       entries: json.entries?.length ?? 0,
@@ -79,6 +84,12 @@ test.describe.configure({ mode: 'serial' })
 
 test('long history and huge message stay within GET/UI budgets', async ({ page }) => {
   test.setTimeout(120_000)
+  if (process.env.KI_PERF_WEAK === '1') {
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Network.enable')
+    await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 800, downloadThroughput: 1_600_000 / 8, uploadThroughput: 750_000 / 8 })
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
+  }
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
 
@@ -133,6 +144,13 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
   const histBefore = await measureGet(page, `/v1/sessions/${history.id}?before=${histGet.oldestId}`)
   const hugeGet = await measureGet(page, `/v1/sessions/${huge.id}`)
   const hugeEntry = await measureGet(page, `/v1/sessions/${huge.id}?entry=${hugeSeed.leafId}`)
+  console.log('wire bytes (decoded/encoded/transfer)', JSON.stringify({
+    tail: [histGet.bytes, histGet.encodedBytes, histGet.transferBytes],
+    index: [histIndex.bytes, histIndex.encodedBytes, histIndex.transferBytes],
+    before: [histBefore.bytes, histBefore.encodedBytes, histBefore.transferBytes],
+  }))
+  expect(histGet.encodedBytes).toBeGreaterThan(0)
+  expect(histGet.encodedBytes).toBeLessThan(histGet.bytes)
 
   await page.reload()
   await expect(page.getByTestId('hero')).toBeVisible()

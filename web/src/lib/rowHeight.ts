@@ -24,7 +24,7 @@
  */
 
 /** Measured heights, keyed by item key: the value is only valid at its width. */
-const heights = new Map<string, { w: number; h: number }>()
+const heights = new Map<string, { w: number; h: number; chars: number }>()
 const CACHE_LIMIT = 2000
 const MIN_ESTIMATE = 64
 const MAX_ESTIMATE = 2400
@@ -42,9 +42,9 @@ function clamp(n: number): number {
 /** rememberRowHeight stores one measurement, evicting the oldest key. */
 export function rememberRowHeight(key: string, width: number, height: number, chars: number): void {
   if (!key || !Number.isFinite(height) || height <= 0) return
-  const h = Math.round(height)
+  const h = height
   heights.delete(key)
-  heights.set(key, { w: width, h })
+  heights.set(key, { w: width, h, chars })
   if (heights.size > CACHE_LIMIT) {
     const oldest = heights.keys().next().value
     if (oldest !== undefined) heights.delete(oldest)
@@ -62,7 +62,7 @@ export function rememberRowHeight(key: string, width: number, height: number, ch
 /** rowHeightEstimate is a measured height when there is one for this width. */
 export function rowHeightEstimate(key: string, width: number, chars: number): number {
   const hit = heights.get(key)
-  if (hit && (width === UNKNOWN_WIDTH || hit.w === width)) return hit.h
+  if (hit && hit.chars === chars && (width === UNKNOWN_WIDTH || hit.w === width)) return hit.h
   return clamp(56 + chars * pxPerChar)
 }
 

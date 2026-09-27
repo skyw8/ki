@@ -25,8 +25,12 @@
 // request_header entries store system/tools plus provider, model, thinking,
 // catalog, and pricing snapshots. WebUI GET projects a slimmed active-leaf tail
 // (unchanged prompts omitted, large bodies truncated) and, on request, a
-// body-less index of the whole tree. Because the jsonl is append-only, reads
-// are served from a per-directory cache that decodes only the bytes appended
+// body-less index of the whole tree. Views have a 512 KiB serialized slim-entry
+// page budget as well as a count limit.
+// Oversized entries retain identity/statistics and advertise truncation; full
+// bodies stay available through entry/entries. A page's cursor is its actual
+// contiguous boundary, not its additional turn-opening user entry. Since jsonl
+// is append-only, reads use a per-directory cache that decodes only bytes appended
 // since the last read: TailEntries (LeafTail) reads just the end of the file,
 // AllEntries extends the same cache to the whole transcript, and OpenFrom
 // builds a Session from entries a caller already took from that cache.

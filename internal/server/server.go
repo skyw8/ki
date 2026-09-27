@@ -1234,6 +1234,25 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	if withIndex && !hasField(fields, "runtime") {
+		// Index consumers already have a tail. Repeating it here doubled the
+		// weak-link transfer and could overwrite hydrated bodies in the UI.
+		body, err := json.Marshal(map[string]any{"id": id, "index": session.BuildIndex(snap.entries)})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		etag := fmt.Sprintf(`"%x"`, sha256.Sum256(body))
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Cache-Control", "private, no-cache")
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+		return
+	}
 
 	runtime, err := s.sessionRuntime(snap)
 	if err != nil {
@@ -2385,6 +2404,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
+	var encoder loop.MessageEncoder
 	reader := &runReader{}
 	st.mu.Lock()
 	runID := st.runID
@@ -2430,7 +2450,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		if ev.Blank || ev.Seq <= since {
 			continue
 		}
-		b, err := json.Marshal(ev)
+		b, err := json.Marshal(encoder.Encode(*ev))
 		if err != nil {
 			slog.Error("marshal SSE event", "err", err)
 			return

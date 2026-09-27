@@ -66,6 +66,12 @@ CLI 的行读取器只认 `data:` 前缀。
 的 `seq` 并在重新监听时带上它；因为服务端会裁掉已持久化的消息、且客户端按状态（entry
 id / 是否已有 streaming 气泡）去重，续传不需要客户端持有完整历史。CLI 不发游标：它只跟
 自己刚启动的 run，直接读累积 partial 的增量打印。
+`message_update` 的 HTTP 表示由每条连接独立编码：第一条 update 是 `message` 快照；后续只在更小时发送 `messagePatch: {baseSeq, changes}`，省略重复的 `assistantMessageEvent.partial`。`messageStream` 标识这条连接上的消息流（第一条 update 的 seq），当前帧 `seq` 是新 revision；`baseSeq` 指上一条 **message frame**，中间可以有其他事件或被裁剪的全局 seq，不能按 `seq+1` 判定连续。
+
+每个 change 为 `{path: string[], op, value?}`：`set` 替换 JSON 值，`append` 追加字符串（Unicode 无字节偏移歧义），`remove` 删除对象字段，`resize` 调整数组长度后再写入新增项。覆盖 text/thinking、工具参数、内容块增删、字段替换/重置与错误元数据。每次 attach / reconnect 使用新编码器，第一条有效 update 必为可独立还原的快照；消息 start/end 清空基线。base 或 messageStream 不匹配时客户端拒绝该 patch，WebUI 从最后成功应用的游标重连。
+
+CLI 与 WebUI 在打印/16ms 渲染合并之前还原 patch；不能先丢弃中间补丁。canonical `loop.Event`、服务端回放缓存、extension 生命周期仍是完整消息，编码不修改共享事件；`message_end` 与 jsonl 保持权威全文。SSE 不启用 gzip，事件持久化、关闭、广播顺序不变。线性追加流只传新增字段内容；attach 快照和 provider 主动重写全文单独计量。
+
 `GET /v1/events` 是每个 tab 的 push 流，只带「失效」和「终态/边带」信息，不带
 run 内的增量：`invalidate` 帧让客户端重取（sidebar 用 ETag 304 收尾），
 sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` 在 push 流上

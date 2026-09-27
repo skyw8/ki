@@ -331,11 +331,16 @@ export function TrajectoryView({
   requests?: RequestView[]
   onSelect?: (r: TrajRecord | null) => void
   selectId?: string | null
-  onHydrate?: (id: string) => void
+  onHydrate?: (id: string) => Promise<boolean>
 }) {
   const { t } = useI18n()
   const [q, setQ] = useState('')
   const [sel, setSel] = useState<string | null>(null)
+  const [bodyLoading, setBodyLoading] = useState(false)
+  const [bodyFailed, setBodyFailed] = useState(false)
+  const attempted = useRef<string | null>(null)
+  const bodySelection = useRef(sel)
+  bodySelection.current = sel
   useEffect(() => {
     if (selectId) setSel(selectId)
   }, [selectId])
@@ -475,8 +480,12 @@ export function TrajectoryView({
     if (!sel) return
     const rec = records.find(r => r.id === sel)
     if (!rec) return
-    const needsBody = (rec.kind === 'system' && !rec.system) || ((rec.kind === 'tool' || rec.kind === 'assistant') && rec.output == null && rec.input == null)
-    if (needsBody) onHydrate?.(rec.id)
+    const needsBody = rec.truncated || (rec.kind === 'system' && !rec.system) || ((rec.kind === 'tool' || rec.kind === 'assistant') && rec.output == null && rec.input == null)
+    if (attempted.current !== sel) { setBodyFailed(false); setBodyLoading(false) }
+    if (!needsBody || attempted.current === sel || !onHydrate) return
+    attempted.current = sel
+    setBodyLoading(true)
+    void onHydrate(rec.id).then(ok => { if (bodySelection.current === rec.id) { setBodyFailed(!ok); setBodyLoading(false) } })
   }, [onHydrate, records, sel])
 
   function pick(r: TrajRecord) {
@@ -684,6 +693,12 @@ export function TrajectoryView({
         </div>
         {selected ? (
           <aside className="insp" data-testid="traj-inspector">
+            {bodyLoading ? <div role="status">{t('chat.loadingBody')}</div> : bodyFailed ? <button type="button" className="body-load" onClick={() => {
+              if (!onHydrate || !sel) return
+              setBodyLoading(true)
+              const id = sel
+              void onHydrate(id).then(ok => { if (bodySelection.current === id) { setBodyFailed(!ok); setBodyLoading(false) } })
+            }}>{t('chat.retryOlder')}</button> : null}
             <div className="insp-head">
               <span className={`tag ${selected.kind}`}>{KIND_LABEL[selected.kind]}</span>
               <div className="grow insp-loc" data-testid="insp-loc">

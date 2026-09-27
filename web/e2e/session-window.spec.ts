@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { applyIndex, applyTail, hydrateEntries, loadHistory, turnStats } from '../src/lib/model.ts'
+import { applyIndex, applyTail, evictBodies, hydrateEntries, loadHistory, turnStats } from '../src/lib/model.ts'
 import type { Entry, IndexEntry } from '../src/api/types.ts'
 
 // The WebUI loads the newest window of a session and lets the tree index arrive
@@ -129,4 +129,46 @@ test('a late index over a long branch stays cheap', () => {
   expect(view.nodes).toHaveLength(200)
   expect(view.records.filter(r => r.kind === 'user')).toHaveLength(1000)
   expect(elapsed).toBeLessThan(1_000)
+})
+
+test('a tail refresh preserves a 500-entry reading window and its cursor', () => {
+  const all = Array.from({ length: 300 }, (_, i) => [user(i + 1), assistant(i + 1)]).flat()
+  let view = loadHistory({ id: 's', entries: all.slice(-500), leafId: 'a300', oldestId: 'u51', hasMore: true })
+  view = applyTail(view, { id: 's', entries: all.slice(-100), leafId: 'a300', oldestId: 'u251', hasMore: true })
+  expect(view.entries.map(e => e.id)).toEqual(all.slice(-500).map(e => e.id))
+  expect(view.oldestId).toBe('u51')
+  view = hydrateEntries(view, all.slice(0, 100), { oldestId: 'u1', hasMore: false })
+  view = applyTail(view, { id: 's', entries: all.slice(-100), leafId: 'a300', oldestId: 'u251', hasMore: true })
+  expect(view.hasMore).toBe(false)
+  expect(view.oldestId).toBe('u1')
+  expect(view.nodes.map(n => n.id)).toEqual(all.map(e => e.id))
+})
+
+test('late slim pages and index never downgrade bodies or the live leaf', () => {
+  const full = assistant(1)
+  let view = loadHistory({ id: 's', entries: [user(1), full], leafId: 'a1', oldestId: 'u1', hasMore: false })
+  const unchanged = view.nodes[0]
+  view = hydrateEntries(view, [{ ...full, truncated: true, message: { role: 'assistant', content: [{ type: 'text', text: 'preview' }] } }])
+  view = applyIndex(view, { id: 's', index: [row(user(1), 'turn 1')], leafId: 'u1', oldestId: 'stale', hasMore: true })
+  expect(view.entries.find(e => e.id === 'a1')).toBe(full)
+  expect(view.nodes[0]).toBe(unchanged)
+  expect(view.leafId).toBe('a1')
+  expect(view.oldestId).toBe('u1')
+  expect(view.hasMore).toBe(false)
+})
+
+test('body eviction preserves all ids, the visible row and the active tail', () => {
+  const all = Array.from({ length: 6 }, (_, i) => [user(i + 1), {
+    ...assistant(i + 1), message: { role: 'assistant', content: [{ type: 'text', text: `${i} ` + 'body '.repeat(4000) }] },
+  }]).flat()
+  const view = loadHistory({ id: 's', entries: all, leafId: 'a6', oldestId: 'u1', hasMore: false })
+  const trimmed = evictBodies(view, new Set(['a2']), 60_000)
+  expect(trimmed.entries.map(e => e.id)).toEqual(view.entries.map(e => e.id))
+  expect(trimmed.entries.find(e => e.id === 'a2')?.truncated).toBeFalsy()
+  expect(trimmed.entries.find(e => e.id === 'a6')?.truncated).toBeFalsy()
+  expect(trimmed.entries.find(e => e.id === 'a1')?.truncated).toBe(true)
+  expect(trimmed.oldestId).toBe(view.oldestId)
+  expect(trimmed.hasMore).toBe(false)
+  const restored = hydrateEntries(trimmed, [all[1]])
+  expect(restored.entries[1]).toBe(all[1])
 })

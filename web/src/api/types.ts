@@ -95,6 +95,8 @@ export type ToolSchema = {
 }
 
 export type LoopEvent = {
+  messageStream?: number
+  messagePatch?: { baseSeq: number; changes: { path: string[]; op: 'set' | 'append' | 'remove' | 'resize'; value?: unknown }[] }
   type: string
 	role?: string
 	runId?: string
@@ -439,6 +441,7 @@ export type RequestView = {
 export type TrajKind = 'user' | 'assistant' | 'tool' | 'subtool' | 'compacted' | 'compact' | 'system' | 'context'
 
 export type TrajRecord = {
+  truncated?: boolean
   id: string
 	parentId?: string
   kind: TrajKind

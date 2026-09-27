@@ -2,6 +2,10 @@
 //
 // It does not write disk, speak HTTP, or assemble prompt files. Subscribers
 // (persist, SSE) are attached by the server via emit.
+// MessageEncoder/MessageDecoder project canonical message updates onto a
+// connection-local snapshot/patch SSE stream. Patches name a message stream
+// and the previous message frame's seq; global seq gaps are valid. Persistence
+// and extension subscribers still receive full canonical messages.
 //
 // Events follow pi names: agent_*, turn_*, message_*, tool_execution_*,
 // compaction_start/end (reason + ok), plus request_header (system + tools

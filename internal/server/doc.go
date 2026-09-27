@@ -42,12 +42,13 @@
 // (availableSkills / availableExtensions, including loaded
 // skills/tools/commands/promptAppend/providers and global extension i18n/UI,
 // commands[]), session extensionUi, and runtime.ready.
-// The tree index is opt-in (fields=index): it needs the whole transcript, and
+// The tree index is opt-in (fields=index, only id/index, content ETag): it needs the whole transcript, and
 // carrying it on open made a long session wait for a full parse and megabytes
 // of JSON that the newest messages did not need. A session smaller than one
 // tail read, which is read in full anyway, still answers with the index so the
 // WebUI needs no second request. fields=runtime omits the transcript
-// entirely; entry/entries fetch full bodies; before+limit pages older leaf
+// entirely; fields=index,runtime includes tail/index/runtime together.
+// entry/entries fetch full bodies; before+limit pages older leaf
 // entries backwards from oldestId. messages is not included. Opening a session (POST create, GET by id,
 // fork) prepares the session view of already-running extensions in the
 // background; List does not. runtime.ready is
@@ -104,6 +105,9 @@
 // is stored as promptUnchanged without its body. Each event carries a per-run
 // seq, sent as the SSE id line; a client may resume with Last-Event-ID or
 // ?since=<runId>:<seq> instead of replaying the whole run.
+// Each SSE reader encodes message_update as an initial full snapshot followed
+// by smaller field patches. A reconnect gets a fresh snapshot regardless of
+// trimming; canonical buffered events and lifecycle delivery are unchanged.
 //
 // One server-owned resources.Loader atomically caches runtime environment,
 // skills, AGENTS/CLAUDE, prompt templates, and discovered extension descriptors

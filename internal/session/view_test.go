@@ -2,11 +2,66 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"ki/internal/types"
 )
+
+func TestBoundedPagesRemainContiguous(t *testing.T) {
+	entries := []Entry{}
+	parent := ""
+	for i := 0; i < 80; i++ {
+		e := Entry{ID: fmt.Sprintf("e%d", i), ParentID: parent, Type: "request_header", System: fmt.Sprintf("%d ", i) + strings.Repeat("中", 19_000)}
+		entries = append(entries, e)
+		parent = e.ID
+	}
+	page := BuildView(entries, parent, 100)
+	seen := map[string]bool{}
+	for count := 0; ; count++ {
+		if count > len(entries) {
+			t.Fatal("paging did not advance")
+		}
+		raw, _ := json.Marshal(page.Entries)
+		if len(raw) > MaxViewPageBytes {
+			t.Fatalf("page bytes %d", len(raw))
+		}
+		for _, e := range page.Entries {
+			seen[e.ID] = true
+		}
+		if !page.HasMore {
+			break
+		}
+		before := page.OldestID
+		page = BuildBefore(entries, parent, before, 100)
+		if page.OldestID == before || len(page.Entries) == 0 {
+			t.Fatal("stalled cursor")
+		}
+	}
+	if len(seen) != len(entries) {
+		t.Fatalf("lost entries: %d/%d", len(seen), len(entries))
+	}
+}
+
+func TestOversizedViewEntryKeepsUTF8AndHydrationIdentity(t *testing.T) {
+	e := Entry{Type: "message", ID: "huge", Message: &types.Message{Role: "toolResult", ToolCallID: "call", Content: []types.Content{{Type: "text", Text: strings.Repeat("中🙂", 20_000)}}}}
+	view := BuildTail([]Entry{e}, e.ID, 100)
+	got := view.Entries[0]
+	if !got.Truncated || got.ID != e.ID || got.Message.ToolCallID != "call" {
+		t.Fatalf("missing preview identity: %+v", got)
+	}
+	if !utf8.ValidString(got.Message.Content[0].Text) {
+		t.Fatal("split UTF-8")
+	}
+	if len(got.Message.Content[0].Text) > toolPreviewBytes {
+		t.Fatal("unbounded collapsed tool result")
+	}
+	if len(e.Message.Content[0].Text) != 140_000 {
+		t.Fatal("mutated persisted body")
+	}
+}
 
 // indexOf must keep durationMs for tool results that finished in under a
 // millisecond: the WebUI reads the index to render per-tool timing.

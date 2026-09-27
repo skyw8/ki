@@ -2,7 +2,10 @@ import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useR
 import { createPortal } from 'react-dom'
 import { ApiError, Client } from './api/client'
 import { AuthLoading, LoginScreen } from './features/settings/AuthScreen'
-import { ChatView, capturePrepend, type PrependAnchor } from './features/chat/Chat'
+import { ChatView } from './features/chat/Chat'
+import { ImagePreviewProvider } from './features/attachments/AttachmentImage'
+import { useTranscriptRequests } from './features/chat/useTranscriptRequests'
+import type { TranscriptScroll } from './features/chat/useTranscriptScroll'
 import { PerfHud } from './features/chat/PerfHud'
 import { RequestNav } from './features/chat/RequestNav'
 import { Composer, type Draft } from './features/chat/Composer'
@@ -13,7 +16,7 @@ import { PromptSettings } from './features/settings/PromptSettings'
 import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
-import { appendOptimisticUser, applyEvent, applyIndex, applyRuntimeCatalog, applyTail, clampThinkingEffort, emptyView, hydrateEntries, initialView, keepComposer, latestStats, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, userRequests } from './lib/model'
+import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, applyTail, clampThinkingEffort, emptyView, initialView, keepComposer, latestStats, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, userRequests } from './lib/model'
 import { clampCompactKeep, loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
 import type { CatalogExtension, ChatNode, Content, ExtensionUI, LoopEvent, ModelInfo, PushEvent, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './api/types'
 import { TrajectoryView } from './features/chat/Trajectory'
@@ -259,7 +262,7 @@ export function App() {
 
   if (auth === 'checking') return <AuthLoading />
   if (auth === 'required') return <LoginScreen api={api} onLogin={() => setAuth('authenticated')} />
-  return <WorkspaceApp api={api} />
+  return <ImagePreviewProvider><WorkspaceApp api={api} /></ImagePreviewProvider>
 }
 
 function WorkspaceApp({ api }: { api: Client }) {
@@ -340,6 +343,18 @@ function WorkspaceApp({ api }: { api: Client }) {
   const runningKnown = useRef(new Set<string>())
   const searchAc = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const chatControl = useRef<TranscriptScroll>(null)
+  const [sessionRevision, setSessionRevision] = useState(0)
+  const openAbort = useRef<AbortController | null>(null)
+  const history = useTranscriptRequests(api, currentId, sessionRevision, viewRef, setView)
+  const { requestIndex, requestHydrate, loadOlder, loadingOlder, olderError } = history
+  const jumpVersion = useRef(0)
+  const [seekingId, setSeekingId] = useState<string | null>(null)
+  const cancelJump = useCallback(() => {
+    jumpVersion.current++
+    setSeekingId(null)
+    setJumpToId(null)
+  }, [])
   const searchInputRef = useRef<HTMLInputElement>(null)
   const searchRootRef = useRef<HTMLDivElement>(null)
   const sidebarRef = useRef<HTMLElement>(null)
@@ -728,8 +743,8 @@ function WorkspaceApp({ api }: { api: Client }) {
 
 	useEffect(() => { void refreshList() }, [refreshList])
 
-  useEffect(() => { currentIdRef.current = currentId }, [currentId])
-  useEffect(() => { viewRef.current = view }, [view])
+  useLayoutEffect(() => { currentIdRef.current = currentId }, [currentId])
+  useLayoutEffect(() => { viewRef.current = view }, [view])
 
   useTabFocus(currentId)
   const handleRunComplete = useCallback((id: string) => {
@@ -1015,12 +1030,22 @@ function WorkspaceApp({ api }: { api: Client }) {
   }, [catchUpMissedCompletions, refreshExtensions, refreshList])
 
   const openSession = useCallback(async (id: string): Promise<boolean> => {
+    history.cancel()
+    cancelJump()
+    openAbort.current?.abort()
+    const ac = new AbortController()
+    openAbort.current = ac
+    currentIdRef.current = id
+    setSessionRevision(n => n + 1)
+    setView(v => keepComposer(v))
+    setAtBottom(true)
     setCurrentId(id)
 	setEdit(null)
     abortRef.current?.abort()
 	abortRef.current = null
     try {
-      const detail = await api.get(id)
+      const detail = await api.get(id, { signal: ac.signal })
+      if (ac.signal.aborted || currentIdRef.current !== id) return false
       const next = loadHistory(detail)
       setView(next)
       saveLastComposerModel({ provider: next.provider, model: next.model, thinkingEffort: next.thinkingEffort })
@@ -1029,40 +1054,10 @@ function WorkspaceApp({ api }: { api: Client }) {
       if (detail.running) void listen(id)
       return true
     } catch (e) {
-      toast.from(e)
+      if (!ac.signal.aborted) toast.from(e)
       return false
     }
-  }, [api, listen])
-
-  /**
-   * Fetch the tree index off the critical path.
-   *
-   * Why: the conversation renders the newest window of the transcript, which is
-   * what first paint needs; the index (branch rows, trajectory table, absolute
-   * turn numbers) is the part that made opening a long session read the whole
-   * file. It arrives moments later and only renumbers, never unmounts the chat.
-   * Short sessions answer with the index inline, so this is a no-op for them.
-   */
-  const indexLoading = useRef<string | null>(null)
-  const requestIndex = useCallback(async (id: string) => {
-    if (indexLoading.current === id) return
-    indexLoading.current = id
-    try {
-      const detail = await api.get(id, { fields: 'index' })
-      setView(v => (currentIdRef.current === id ? applyIndex(v, detail) : v))
-    } catch {
-      // The tail view already renders; the next open or tab switch retries.
-    } finally {
-      if (indexLoading.current === id) indexLoading.current = null
-    }
-  }, [api])
-
-  useEffect(() => {
-    if (!currentId || view.indexLoaded || !view.hasMore) return
-    const id = currentId
-    const timer = window.setTimeout(() => { void requestIndex(id) }, 250)
-    return () => window.clearTimeout(timer)
-  }, [currentId, requestIndex, view.indexLoaded, view.hasMore])
+  }, [api, listen, history.cancel, cancelJump])
 
   useEffect(() => {
     if (!currentId || view.runtimeReady !== false) return
@@ -1440,136 +1435,11 @@ function WorkspaceApp({ api }: { api: Client }) {
     return [...map.values()].slice(0, 20)
   }, [byId, hits, localHits, untitled, workspaces])
 
-  const pendingHydrate = useRef(new Set<string>())
-  const hydrateTimer = useRef(0)
-  const olderLock = useRef(false)
-  /** True once this session's list has been scrolled by the reader (see loadOlder). */
-  const userScrolled = useRef(false)
-  /** When the reader last touched the list (see the follow-tail rule below). */
-  const gestureAt = useRef(0)
-  /**
-   * True while the view follows the tail: an open lands at the bottom, a stream
-   * keeps it there, and rows growing as they are measured do not leave it behind.
-   * Cleared only by a scroll that follows a gesture (the reader moved away).
-   */
-  const follow = useRef(true)
-  /** Bumped when the rendered height changes; re-runs the follow effect. */
-  const [layoutTick, setLayoutTick] = useState(0)
-  const [loadingOlder, setLoadingOlder] = useState(false)
-  /** Where the reader was when the in-flight older page was requested. */
-  const [prependAnchor, setPrependAnchor] = useState<PrependAnchor | null>(null)
-  const requestHydrate = useCallback((id: string) => {
-    if (!currentId || !id) return
-    pendingHydrate.current.add(id)
-    if (hydrateTimer.current) return
-    hydrateTimer.current = window.setTimeout(() => {
-      hydrateTimer.current = 0
-      const ids = [...pendingHydrate.current]
-      pendingHydrate.current.clear()
-      void api.getEntries(currentId, ids).then(out => {
-        setView(v => hydrateEntries(v, out.entries ?? []))
-      }).catch(e => toast.from(e))
-    }, 32)
-  }, [api, currentId])
-
-  const loadOlder = useCallback(async () => {
-    // Only a reader can ask for older history. Opening a session paints at
-    // scrollTop 0 for a frame before follow-tail moves to the bottom, and the
-    // virtual list's own measurement scrolls fire scroll events too — with a
-    // bare "near the top" rule every open fetched a ~100-entry page nobody
-    // looked at.
-    if (!userScrolled.current) return
-    if (!currentId || !view.hasMore || !view.oldestId || olderLock.current) return
-    olderLock.current = true
-    const el = scrollRef.current
-    // What the reader is looking at, so the page can be inserted above it.
-    const anchor = el ? capturePrepend(el) : null
-    setLoadingOlder(true)
-    try {
-      const extra = await api.get(currentId, { before: view.oldestId })
-      setView(v => hydrateEntries(v, extra.entries ?? [], { hasMore: extra.hasMore, oldestId: extra.oldestId }))
-      // Restored by ChatView in the commit that renders the new rows, before
-      // paint — not in a frame callback, which could run ahead of that commit and
-      // read the pre-page scrollHeight (see the effect in ChatView).
-      if (anchor) setPrependAnchor(anchor)
-    } catch (e) {
-      toast.from(e)
-    } finally {
-      olderLock.current = false
-      setLoadingOlder(false)
-    }
-  }, [api, currentId, view.hasMore, view.oldestId])
-
-  /** Clear the token once ChatView has restored the reader's position with it. */
-  const clearPrependAnchor = useCallback(() => setPrependAnchor(null), [])
-
-  /**
-   * Follow-tail is a property of where the viewport is, not of a flag somebody
-   * set once: read it back from the geometry. Scrolling sets it, and so does a
-   * fold toggle or a page of older history — both change the rendered height
-   * without a scroll event, and a stale "at the tail" flag would then yank the
-   * reader back down on the next streamed delta.
-   */
-  const syncFollow = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    // This runs after a *deliberate* layout change — a fold, a prepended page, a
-    // jump — where the reader's position is the reference, so it may also release
-    // the follow. Content that grows on its own (a stream, rows being measured)
-    // goes through onContentResized instead and never releases it.
-    follow.current = nearBottom
-    setAtBottom(nearBottom)
-  }, [])
-
-  /** The rendered height changed (rows measured, markdown arrived, a fold opened). */
-  const onContentResized = useCallback(() => setLayoutTick(t => t + 1), [])
-
-  // Why layoutTick: on open the first commit renders the list before it has a
-  // height (the virtualizer measures in its own layout pass), so a one-shot scroll
-  // to the bottom would land at scrollTop 0 and stay there. Re-running this when
-  // the rendered height changes is what keeps an opening session at the tail.
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el || !follow.current) return
-    el.scrollTop = el.scrollHeight
-    setAtBottom(true)
-  }, [view.nodes, atBottom, layoutTick])
-
-  // Anything the reader does that can move the list counts as intent to read
-  // older history; the flag is per session (see loadOlder). The listeners sit on
-  // the window and test the target instead of binding the scroller element: the
-  // first commit after a session is picked still shows the hero, so an effect
-  // keyed on the session found no scroller to bind and never ran again.
-  useEffect(() => {
-    userScrolled.current = false
-    const scrollKeys = new Set(['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' '])
-    const mark = (event: Event) => {
-      if (event.type === 'keydown' && !scrollKeys.has((event as KeyboardEvent).key)) return
-      const el = scrollRef.current
-      const target = event.target
-      if (!el || !(target instanceof Node)) return
-      if (el === target || el.contains(target)) {
-        userScrolled.current = true
-        gestureAt.current = performance.now()
-      }
-    }
-    const events = ['wheel', 'touchstart', 'touchmove', 'pointerdown', 'keydown'] as const
-    for (const event of events) window.addEventListener(event, mark, { passive: true, capture: true })
-    return () => {
-      for (const event of events) window.removeEventListener(event, mark, { capture: true })
-    }
-  }, [currentId])
-
-  // Jumping to an older prompt pages history in; 500 is the server's per-page
-  // cap, so a jump to the start of a long session takes a handful of requests.
-  const jumpPageSize = 500
-
   const inspect = (n: ChatNode) => {
     setInspId(n.id)
     setTab('trajectory')
     // The trajectory table is built from the tree index; fetch it now instead
-    // of waiting for the background pass.
+    // of downloading it speculatively when the session opens.
     if (currentId && !view.indexLoaded) void requestIndex(currentId)
   }
 
@@ -1661,39 +1531,25 @@ function WorkspaceApp({ api }: { api: Client }) {
    * scrolling up would fetch, in larger steps. history runs out at hasMore.
    */
   const jumpToRequest = useCallback(async (id: string) => {
-    // An explicit jump is not "follow the tail": paging the target in changes
-    // view.nodes, and a following view would scroll straight back to the bottom
-    // and swallow the jump.
-    follow.current = false
-    setAtBottom(false)
-    setActiveRequestId(id)
+    chatControl.current?.read()
+    const version = ++jumpVersion.current
     const sessionId = currentIdRef.current
-    if (!sessionId) return
-    // A live node (a prompt sent in this tab, not persisted yet) is already on
-    // screen: paging history for it would never find it.
-    if (!viewRef.current.allEntries.some(e => e.id === id)) {
-      setJumpToId(id)
-      return
-    }
-    let have = new Set(viewRef.current.entries.map(e => e.id))
-    while (!have.has(id)) {
-      const current = viewRef.current
-      if (!current.hasMore || !current.oldestId || currentIdRef.current !== sessionId) return
-      let page
-      try {
-        page = await api.get(sessionId, { before: current.oldestId, limit: jumpPageSize })
-      } catch (e) {
-        toast.from(e)
-        return
+    setSeekingId(id)
+    setActiveRequestId(id)
+    const have = new Set(viewRef.current.entries.map(e => e.id))
+    const live = viewRef.current.nodes.some(n => n.id === id)
+    try {
+      while (!live && !have.has(id)) {
+        const page = await loadOlder(500)
+        if (version !== jumpVersion.current || sessionId !== currentIdRef.current || !page) return
+        for (const entry of page.entries ?? []) have.add(entry.id)
+        if (!have.has(id) && !page.hasMore) return
       }
-      if (currentIdRef.current !== sessionId) return
-      const entries = page.entries ?? []
-      if (!entries.length) return
-      setView(v => hydrateEntries(v, entries, { hasMore: page.hasMore, oldestId: page.oldestId }))
-      have = new Set([...have, ...entries.map(e => e.id)])
+      if (version === jumpVersion.current && sessionId === currentIdRef.current) setJumpToId(id)
+    } finally {
+      if (version === jumpVersion.current) setSeekingId(null)
     }
-    setJumpToId(id)
-  }, [api])
+  }, [loadOlder])
   const clearJump = useCallback(() => setJumpToId(null), [])
   const queued = view.queued ?? []
   const extQueued = view.extQueued ?? []
@@ -2068,27 +1924,22 @@ function WorkspaceApp({ api }: { api: Client }) {
                   className="scroll"
                   data-testid="chat-scroll"
                   ref={scrollRef}
-                  onScroll={e => {
-                    const el = e.currentTarget
-                    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-                    // Why the recency test: the list rewrites its own scroll
-                    // position as rows are measured, and a growing streamed
-                    // message moves the tail without the reader doing anything.
-                    // Only a scroll that follows a gesture means the reader chose
-                    // to leave the tail.
-                    if (nearBottom) follow.current = true
-                    else if (performance.now() - gestureAt.current < 300) follow.current = false
-                    setAtBottom(nearBottom)
-                    if (el.scrollTop < 96) void loadOlder()
-                  }}
+                  tabIndex={0}
                 >
-				  {loadingOlder ? <div className="older-loading" data-testid="older-loading"><span>{t('chat.loadingOlder')}</span></div> : null}
 				  <ChatView
+                    key={`${currentId}:${sessionRevision}`}
+                    controlRef={chatControl}
+                    onAtBottom={setAtBottom}
+                    onReadIntent={cancelJump}
+                    onLoadOlder={loadOlder}
+                    hasMore={view.hasMore}
+                    olderError={olderError}
 					api={api}
 					nodes={view.nodes}
 					busy={view.busy}
 					scrollRef={scrollRef}
 					onHydrate={requestHydrate}
+                    onVisibleEntries={history.protect}
 					onSelect={inspect}
 					edit={edit}
 					onStartEdit={startEdit}
@@ -2100,15 +1951,12 @@ function WorkspaceApp({ api }: { api: Client }) {
 					uploading={uploading}
 					onFork={node => void forkMessage(node)}
 					onRegen={regenerate}
-					branches={branchInfo}
+					branches={view.indexLoaded ? branchInfo : undefined}
+                    onShowBranches={() => { if (currentId) void requestIndex(currentId) }}
 					onBranch={(node, delta) => void switchBranch(node, delta)}
 					jumpToId={jumpToId}
 					onJumped={clearJump}
 					onActiveRequest={setActiveRequestId}
-					onLayoutChanged={syncFollow}
-					onContentResized={onContentResized}
-					prependAnchor={prependAnchor}
-					onPrependApplied={clearPrependAnchor}
 					loadingOlder={loadingOlder}
 					turnBase={view.turnBase}
 					mode={messageView.mode}
@@ -2123,14 +1971,12 @@ function WorkspaceApp({ api }: { api: Client }) {
                   onJump={jumpToRequest}
                   onOpen={() => { if (currentId && !view.indexLoaded) void requestIndex(currentId) }}
                 />
+                {seekingId ? <button type="button" className="history-seeking" data-testid="cancel-jump" onClick={cancelJump}>{t('chat.cancelJump')}</button> : null}
                 {!atBottom ? (
                   <div className="to-bottom-slot">
                     <button type="button" className="to-bottom" data-testid="to-bottom" aria-label={t('chat.toBottom')} onClick={() => {
-                      const el = scrollRef.current
-                      if (!el) return
-                      follow.current = true
-                      el.scrollTop = el.scrollHeight
-                      setAtBottom(true)
+                      cancelJump()
+                      chatControl.current?.latest()
                     }}
                     >
                       <IChevDown />

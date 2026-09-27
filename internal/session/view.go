@@ -15,6 +15,12 @@ const DefaultViewLimit = 100
 // MaxViewBytes caps text-like fields in the WebUI session view.
 const MaxViewBytes = 24 * 1024
 
+// MaxViewPageBytes bounds the encoded entries array, before HTTP compression.
+const MaxViewPageBytes = 512 * 1024
+
+// Folded tool output needs a preview; its full body is fetched on expansion.
+const toolPreviewBytes = 1024
+
 // MaxViewEntries is the upper bound for limit= on GET /v1/sessions/{id}.
 const MaxViewEntries = 500
 
@@ -82,9 +88,8 @@ func ClampViewLimit(n int) int {
 func BuildTail(entries []Entry, leafID string, limit int) Tail {
 	limit = ClampViewLimit(limit)
 	path := leafPath(entries, leafID)
-	keep, tailStart := selectLeafEntries(path, limit, toolsDigests{})
-	keep = withTurnOpeningUser(path, keep)
-	slimmed := slimPath(keep, nil, toolsDigests{})
+	slimmed, tailStart := boundedWindow(path, limit)
+
 	oldest := ""
 	if tailStart < len(path) {
 		oldest = path[tailStart].ID
@@ -202,19 +207,9 @@ func BuildBefore(entries []Entry, leafID, beforeID string, limit int) View {
 		return View{Entries: []Entry{}, HasMore: false}
 	}
 	older := path[:cut]
-	start := 0
-	if len(older) > limit {
-		start = len(older) - limit
-	}
-	window := older[start:]
-	// OldestID stays the window's own boundary (not the added prompt), so the
-	// next page continues from there and the entries between them stay reachable.
-	oldest := ""
-	if len(window) > 0 {
-		oldest = window[0].ID
-	}
-	window = withTurnOpeningUser(older, window)
-	slimmed := slimPath(window, older[:start], toolsDigests{})
+	slimmed, start := boundedWindow(older, limit)
+	oldest := older[start].ID
+
 	return View{Entries: slimmed, HasMore: start > 0, OldestID: oldest}
 }
 
@@ -269,35 +264,25 @@ func leafPath(entries []Entry, leaf string) []Entry {
 	return rev
 }
 
-func selectLeafEntries(path []Entry, limit int, digests toolsDigests) ([]Entry, int) {
-	if len(path) <= limit {
-		return path, 0
+// boundedWindow keeps a contiguous leaf range and its actual boundary. The
+// extra opening user is context, never the cursor. Count alone permitted pages
+// with hundreds of 24 KiB fields, blocking phones on both transfer and parsing.
+func boundedWindow(path []Entry, limit int) ([]Entry, int) {
+	if len(path) == 0 {
+		return []Entry{}, 0
 	}
-	tailStart := len(path) - limit
-	keep := make(map[string]bool, limit+8)
-	for _, e := range path[tailStart:] {
-		keep[e.ID] = true
-	}
-	var prevSys string
-	var prevTools string
-	for _, e := range path {
-		if e.Type != "request_header" {
-			continue
+	start := max(0, len(path)-limit)
+	for {
+		window := withTurnOpeningUser(path, path[start:])
+		out := slimPath(window, nil, toolsDigests{})
+		raw, _ := json.Marshal(out)
+		if len(raw) <= MaxViewPageBytes || start == len(path)-1 {
+			return out, start
 		}
-		tools := digests.key(e)
-		if e.System != prevSys || tools != prevTools {
-			keep[e.ID] = true
-			prevSys = e.System
-			prevTools = tools
-		}
+		// Shrink geometrically, then recompute the prompt and turn context for
+		// the new boundary. At least one entry always makes forward progress.
+		start += max(1, (len(path)-start)/2)
 	}
-	out := make([]Entry, 0, len(keep))
-	for _, e := range path {
-		if keep[e.ID] {
-			out = append(out, e)
-		}
-	}
-	return out, tailStart
 }
 
 // toolsDigests memoizes the tool-schema fingerprint of a request_header within
@@ -319,7 +304,7 @@ func slimPath(path, prior []Entry, digests toolsDigests) []Entry {
 	prevSys, prevTools, seen := promptCursor(prior)
 	out := make([]Entry, len(path))
 	for i, e := range path {
-		out[i] = slimEntry(e, &prevSys, &prevTools, &seen, digests)
+		out[i] = compactViewEntry(slimEntry(e, &prevSys, &prevTools, &seen, digests))
 	}
 	return out
 }
@@ -364,6 +349,10 @@ func slimEntry(e Entry, prevSys, prevTools *string, seenHeader *bool, digests to
 			c.ThinkingSignature = ""
 			c.TextSignature = ""
 			if truncateString(&c.Text) {
+				truncated = true
+			}
+			if msg.Role == "toolResult" && len(c.Text) > toolPreviewBytes {
+				c.Text = utf8Prefix(c.Text, toolPreviewBytes)
 				truncated = true
 			}
 			if truncateString(&c.Thinking) {
@@ -512,4 +501,43 @@ func toolsKey(tools []ToolSchema) string {
 		return ""
 	}
 	return string(b)
+}
+
+// compactViewEntry prevents one multi-block body, inline image or prompt from
+// defeating the page budget. The immutable original remains available by id.
+func compactViewEntry(e Entry) Entry {
+	raw, _ := json.Marshal(e)
+	if len(raw) <= 64*1024 {
+		return e
+	}
+	e.Truncated = true
+	e.Details, e.Pricing, e.Tools = nil, nil, nil
+	e.System = utf8Prefix(e.System, 4096)
+	e.Summary = utf8Prefix(e.Summary, 4096)
+	if e.Message != nil {
+		m := *e.Message
+		m.Details, m.External = nil, nil
+		m.Content = slices.Clone(m.Content[:min(len(m.Content), 32)])
+		for i := range m.Content {
+			c := &m.Content[i]
+			c.Text = utf8Prefix(c.Text, 256)
+			c.Thinking = utf8Prefix(c.Thinking, 256)
+			c.Input = utf8Prefix(c.Input, 256)
+			c.ArgumentsRaw = utf8Prefix(c.ArgumentsRaw, 256)
+			c.Data, c.ThinkingData, c.ThinkingSignature, c.TextSignature = "", "", "", ""
+			c.Arguments = nil
+		}
+		e.Message = &m
+	}
+	return e
+}
+
+func utf8Prefix(s string, size int) string {
+	if len(s) <= size {
+		return s
+	}
+	for size > 0 && !utf8.RuneStart(s[size]) {
+		size--
+	}
+	return s[:size]
 }

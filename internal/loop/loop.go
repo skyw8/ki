@@ -99,6 +99,8 @@ type Event struct {
 	// like Read show no timing at all).
 	DurationMs            int64             `json:"durationMs"`
 	Message               *types.Message    `json:"message,omitempty"`
+	MessagePatch          *MessagePatch     `json:"messagePatch,omitempty"`
+	MessageStream         int64             `json:"messageStream,omitempty"`
 	Messages              []types.Message   `json:"messages,omitempty"`
 	ToolResults           []types.Message   `json:"toolResults,omitempty"`
 	AssistantMessageEvent *AssistantDelta   `json:"assistantMessageEvent,omitempty"`

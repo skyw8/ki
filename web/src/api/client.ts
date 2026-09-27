@@ -1,4 +1,5 @@
 import type { FsListing, LoopEvent, Meta, ProviderAuthStatus, ProviderCatalog, PushEvent, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
+import { messageDecoder } from './messageStream'
 
 export class ApiError extends Error {
   status: number
@@ -73,22 +74,22 @@ export class Client {
     return { sessions: (await res.json()) as SessionInfo[], etag: res.headers.get('ETag'), notModified: false }
   }
 
-  get(id: string, opts?: { fields?: 'runtime' | 'index'; before?: string; limit?: number }): Promise<SessionDetail> {
+  get(id: string, opts?: { fields?: 'runtime' | 'index'; before?: string; limit?: number; signal?: AbortSignal }): Promise<SessionDetail> {
     const p = new URLSearchParams()
     if (opts?.fields) p.set('fields', opts.fields)
     if (opts?.before) p.set('before', opts.before)
     if (opts?.limit) p.set('limit', String(opts.limit))
     const q = p.size ? `?${p}` : ''
-    return this.json(`/v1/sessions/${id}${q}`)
+    return this.json(`/v1/sessions/${id}${q}`, { signal: opts?.signal })
   }
 
   getEntry(id: string, entryId: string): Promise<{ entry: import('./types').Entry }> {
     return this.json(`/v1/sessions/${id}?entry=${encodeURIComponent(entryId)}`)
   }
 
-  getEntries(id: string, entryIds: string[]): Promise<{ entries: import('./types').Entry[] }> {
+  getEntries(id: string, entryIds: string[], signal?: AbortSignal): Promise<{ entries: import('./types').Entry[] }> {
     if (!entryIds.length) return Promise.resolve({ entries: [] })
-    return this.json(`/v1/sessions/${id}?entries=${entryIds.map(encodeURIComponent).join(',')}`)
+    return this.json(`/v1/sessions/${id}?entries=${entryIds.map(encodeURIComponent).join(',')}`, { signal })
   }
 
   create(opts?: { cwd?: string; workspaceId?: string; model?: string; thinkingEffort?: string; metadata?: Record<string, unknown> }): Promise<SessionInfo> {
@@ -339,7 +340,8 @@ export class Client {
 	 * value is safe.
 	 */
   async *events(id: string, signal?: AbortSignal, lastEventId?: string): AsyncGenerator<LoopEvent> {
-    yield* this.sse<LoopEvent>(`/v1/sessions/${id}/events`, signal, lastEventId ? { 'Last-Event-ID': lastEventId } : undefined)
+    const decode = messageDecoder()
+    for await (const event of this.sse<LoopEvent>(`/v1/sessions/${id}/events`, signal, lastEventId ? { 'Last-Event-ID': lastEventId } : undefined)) yield decode(event)
   }
 
   /**

@@ -2706,7 +2706,7 @@ func promptJSON(t *testing.T, hs *httptest.Server, id, text string, extra map[st
 // it explicitly.
 func sessionGET(t *testing.T, hs *httptest.Server, id string) map[string]any {
 	t.Helper()
-	return sessionGETFields(t, hs, id, "index")
+	return sessionGETFields(t, hs, id, "index,runtime")
 }
 
 // sessionTailGET fetches the default (conversation tail) session view.
@@ -2895,6 +2895,30 @@ func TestSessionTailAPI(t *testing.T) {
 	index, _ := full["index"].([]any)
 	if len(index) != total {
 		t.Fatalf("index rows = %d (total %d)", len(index), total)
+	}
+	indexOnly := sessionGETFields(t, hs, id, "index")
+	if len(indexOnly["index"].([]any)) != total || len(indexOnly) != 2 {
+		t.Fatalf("index-only repeated tail/runtime: %v", indexOnly)
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"?fields=index", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	etag := res.Header.Get("ETag")
+	_ = res.Body.Close()
+	if etag == "" {
+		t.Fatal("missing index ETag")
+	}
+	req.Header.Set("If-None-Match", etag)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotModified {
+		t.Fatalf("unchanged index status %d", res.StatusCode)
 	}
 }
 

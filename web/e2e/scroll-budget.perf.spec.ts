@@ -214,6 +214,12 @@ test.describe('scroll budgets', () => {
     // then move the view after the page landed, which is correct behaviour but
     // makes the position at request time impossible to compare against.
     let paged = false
+    let releasePage!: () => void
+    const pageGate = new Promise<void>(resolve => { releasePage = resolve })
+    await page.route('**/v1/sessions/*?before=*', async route => {
+      await pageGate
+      await route.continue()
+    })
     const onResponse = (res: import('@playwright/test').Response) => {
       try {
         if (new URL(res.url()).searchParams.has('before')) paged = true
@@ -238,14 +244,16 @@ test.describe('scroll budgets', () => {
       const offset = row ? Math.round(row.getBoundingClientRect().top - box.top) : null
       return { key: row?.dataset.itemKey ?? null, offset }
     })
-    await startFrames(page)
-    for (let i = 0; i < 400 && !paged; i++) await page.waitForTimeout(20)
-    expect(paged, 'reaching the top pages older history in').toBeTruthy()
+    // Capture BEFORE the response. Capturing afterwards could accept the
+    // wrong row after a prepend jump; prefetch can also begin before top=0.
     await expect.poll(async () => {
       const read = await readAnchor()
       return read.offset != null && Math.abs(read.offset) < 600
     }, { timeout: 5000 }).toBe(true)
     const anchor = (await readAnchor()) as { key: string; offset: number }
+    releasePage()
+    for (let i = 0; i < 400 && !paged; i++) await page.waitForTimeout(20)
+    expect(paged, 'reaching the top pages older history in').toBeTruthy()
     page.off('response', onResponse)
     await page.waitForTimeout(1800)
     const pagingScroll = await stopFrames(page)
@@ -261,7 +269,7 @@ test.describe('scroll budgets', () => {
     // left ~25 turns earlier). What is left is the drift of the rows that were
     // measured while the page was in flight — under a row, not a screen.
     expect(after.offset, `anchor row is gone (users=${after.users})`).not.toBeNull()
-    expect(Math.abs(after.offset! - anchor.offset), `anchor moved from ${anchor.offset} to ${after.offset}`).toBeLessThanOrEqual(64)
+    expect(Math.abs(after.offset! - anchor.offset), `anchor moved from ${anchor.offset} to ${after.offset}`).toBeLessThanOrEqual(8)
     expect(pagingScroll.worstLurch, `page load lurched (${pagingScroll.trace})`).toBeLessThan(600)
 
     // First pass: rows are visited for the first time, so their height is only

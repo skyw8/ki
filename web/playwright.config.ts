@@ -50,6 +50,20 @@ export default defineConfig({
   globalTeardown: './e2e/global-teardown.ts',
   projects: [
     {
+      name: 'webkit-scroll',
+      use: { browserName: 'webkit', launchOptions: process.env.KI_WEBKIT_EXECUTABLE ? { executablePath: process.env.KI_WEBKIT_EXECUTABLE } : undefined },
+      testMatch: '**/transcript-scroll.spec.ts',
+      timeout: 45_000,
+      expect: { timeout: 15_000 },
+    },
+    {
+      name: 'firefox-scroll',
+      use: { browserName: 'firefox' },
+      testMatch: '**/transcript-scroll.spec.ts',
+      timeout: 45_000,
+      expect: { timeout: 15_000 },
+    },
+    {
       name: 'fake',
       testMatch: '**/*.spec.ts',
       testIgnore: ['**/*.live.spec.ts', '**/shots.spec.ts', '**/*.perf.spec.ts'],

@@ -7,6 +7,7 @@ import { normalizeMarkdown } from './markdown-normalize'
 import { settleBoundaries } from './streamText'
 import { copyText } from '../../lib/clipboard'
 import { textHeightHint } from '../../lib/rowHeight'
+import { queueMarkdown } from './parseQueue'
 
 const plugins = { cjk }
 const linkSafety = { enabled: false }
@@ -133,7 +134,7 @@ function MdA({ node: _node, href, children }: MdProps<'a'>) {
 }
 
 function MdImg({ node: _node, alt, ...rest }: MdProps<'img'>) {
-  return <img alt={alt ?? ''} {...rest} />
+  return <img alt={alt ?? ''} loading="lazy" decoding="async" {...rest} />
 }
 
 /**
@@ -142,7 +143,10 @@ function MdImg({ node: _node, alt, ...rest }: MdProps<'img'>) {
  * back (scrolling up is mostly revisits) is lexed once.
  */
 const BLOCK_CACHE_LIMIT = 300
+const BLOCK_CACHE_BYTES = 8 * 1024 * 1024
+let blockCacheBytes = 0
 const blockCache = new Map<string, string[]>()
+const blockBytes = (text: string, blocks: string[]) => 2 * (text.length + blocks.reduce((n, b) => n + b.length, 0))
 function blocksFor(text: string): string[] {
   const hit = blockCache.get(text)
   if (hit) {
@@ -152,10 +156,15 @@ function blocksFor(text: string): string[] {
     return hit
   }
   const blocks = parseMarkdownIntoBlocks(text)
+  const bytes = blockBytes(text, blocks)
+  if (bytes > BLOCK_CACHE_BYTES) return blocks
   blockCache.set(text, blocks)
-  if (blockCache.size > BLOCK_CACHE_LIMIT) {
+  blockCacheBytes += bytes
+  while (blockCache.size > BLOCK_CACHE_LIMIT || blockCacheBytes > BLOCK_CACHE_BYTES) {
     const oldest = blockCache.keys().next().value
-    if (oldest !== undefined) blockCache.delete(oldest)
+    if (oldest === undefined) break
+    blockCacheBytes -= blockBytes(oldest, blockCache.get(oldest)!)
+    blockCache.delete(oldest)
   }
   return blocks
 }
@@ -196,15 +205,25 @@ export const Markdown = memo(function Markdown({
   // Why a placeholder first: mounting a row parses its whole markdown (marked,
   // then remark/rehype and the plugins) on the main thread, and scrolling mounts
   // several rows at once, so the parses land in one frame as a long block. The
-  // row's height is only known after that render, which is also what makes the
-  // virtual list correct the scroll position under the reader's finger. Rendering
-  // the body on the next idle callback keeps the parse out of the frame that
-  // handles the gesture; the placeholder reserves the estimated height, so the
-  // list does not resize when the body arrives one frame later.
+  // row's height is only known after that render. The shared queue admits one
+  // parse per frame and prioritizes visible content; an idle callback per row
+  // merely moved the same burst later. Estimates reserve space until the
+  // virtualizer measures the actual body and compensates above the reader.
   const [ready, setReady] = useState(streaming)
+  const pendingRef = useRef<HTMLDivElement>(null)
   const shown = useStreamingText(text, streaming)
-  const source = useMemo(() => normalizeMarkdown(shown), [shown])
+  const source = useMemo(() => ready ? normalizeMarkdown(shown) : '', [shown, ready])
   const boundaries = useMemo(() => settleBoundaries(source), [source])
+  const staticSegments = useMemo(() => {
+    if (streaming || source.length <= TAIL_MAX) return null
+    // Reference definitions have document scope; splitting them changes links.
+    const ends = /^ {0,3}\[[^\]]+\]:/m.test(source) ? [] : boundaries
+    const parts: string[] = []
+    let start = 0
+    for (const end of ends) if (end - start >= SEAL_MIN) { parts.push(source.slice(start, end)); start = end }
+    if (start < source.length) parts.push(source.slice(start))
+    return parts
+  }, [source, boundaries, streaming])
 
   /**
    * Sealed segments: slices of this message whose rendering can no longer
@@ -260,20 +279,12 @@ export const Markdown = memo(function Markdown({
   const liveMode: 'streaming' | 'static' | 'plain' = !streaming ? 'static' : rest.length > TAIL_MAX ? 'plain' : 'streaming'
   useEffect(() => {
     if (ready) return
-    const w = window as Window & {
-      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
-      cancelIdleCallback?: (id: number) => void
-    }
-    if (!w.requestIdleCallback) {
-      const id = window.setTimeout(() => setReady(true), 16)
-      return () => window.clearTimeout(id)
-    }
-    const id = w.requestIdleCallback(() => setReady(true), { timeout: 200 })
-    return () => w.cancelIdleCallback?.(id)
+    return queueMarkdown(() => setReady(true), () => pendingRef.current)
   }, [ready])
   if (!ready) {
     return (
       <div
+        ref={pendingRef}
         className="md-pending"
         data-md-pending="1"
         aria-busy="true"
@@ -281,6 +292,7 @@ export const Markdown = memo(function Markdown({
       />
     )
   }
+  if (staticSegments) return <>{staticSegments.map((segment, index) => <StaticSegment key={index} text={segment} className={className} />)}</>
   return (
     <>
       {sealedState.segments.map((seg, i) => (
@@ -309,6 +321,18 @@ export const Markdown = memo(function Markdown({
       )}
     </>
   )
+})
+
+const StaticSegment = memo(function StaticSegment({ text, className }: { text: string; className?: string }) {
+  const { t } = useI18n()
+  const root = useRef<HTMLDivElement>(null)
+  const [ready, setReady] = useState(false)
+  const [format, setFormat] = useState(text.length <= 64 * 1024)
+  useEffect(() => queueMarkdown(() => setReady(true), () => root.current), [])
+  return <div ref={root} data-md-block="1" data-md-pending={ready ? undefined : '1'} style={ready ? undefined : { minHeight: textHeightHint(text) }}>
+    {ready && (format ? <Streamdown className={segClass(className)} plugins={plugins} mode="static" {...shared} parseMarkdownIntoBlocksFn={blocksFor}>{text}</Streamdown>
+      : <><button type="button" className="body-load" onClick={() => setFormat(true)}>{t('chat.formatMarkdown')}</button><div className="md md-tail">{text}</div></>)}
+  </div>
 })
 
 // A settled segment is sealed once this much of the message can no longer change.

@@ -3,16 +3,80 @@ package server
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"ki/internal/loop"
 	"ki/internal/types"
 )
+
+func TestEventsWireSnapshotsPatchesAndResume(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	st := &runState{runID: "wire", done: make(chan struct{})}
+	st.wait = sync.NewCond(&st.mu)
+	for i := 1; i <= 40; i++ {
+		event := assistantDelta(strings.Repeat("中文🙂", i*50))
+		event.Seq = int64(i * 3)
+		st.evs = append(st.evs, &event)
+	}
+	close(st.done)
+	srv.mu.Lock()
+	srv.runs[id] = st
+	srv.mu.Unlock()
+	for _, cursor := range []string{"", "wire:60"} {
+		res := openEventsWithCursor(t, hs, id, cursor)
+		scanner := bufio.NewScanner(res.Body)
+		var decoder loop.MessageDecoder
+		count, patches, wireBytes := 0, 0, 0
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			wireBytes += len(line)
+			var event loop.Event
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+				t.Fatal(err)
+			}
+			if count == 0 && event.Message == nil {
+				t.Fatal("first/resumed frame is not a snapshot")
+			}
+			if event.MessagePatch != nil {
+				patches++
+			}
+			decoded, err := decoder.Decode(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decoded.Message.Text() != strings.Repeat("中文🙂", int(event.Seq/3)*50) {
+				t.Fatal("decoded wire differs from canonical message")
+			}
+			count++
+		}
+		_ = res.Body.Close()
+		if err := scanner.Err(); err != nil {
+			t.Fatal(err)
+		}
+		want := 40
+		if cursor != "" {
+			want = 20
+		}
+		if count != want || patches != want-1 {
+			t.Fatalf("frames %d patches %d", count, patches)
+		}
+		if wireBytes > 50_000 {
+			t.Fatalf("repeated partial on wire: %d bytes", wireBytes)
+		}
+		t.Logf("cursor=%q frames=%d bytes=%d", cursor, count, wireBytes)
+	}
+}
 
 // assistantDelta builds one streaming update whose partial carries the whole
 // text so far, exactly like the provider adapters do.

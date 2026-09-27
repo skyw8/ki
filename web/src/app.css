@@ -3731,28 +3731,6 @@ select:focus-visible {
   50% { opacity: .5; }
 }
 
-/* A page of older history is in flight. Sticky and out of flow: the virtual
-   list measures these rows, so the hint must not add height to the list. */
-.older-loading {
-  position: sticky;
-  top: 6px;
-  z-index: 3;
-  height: 0;
-  display: grid;
-  place-items: start center;
-  pointer-events: none;
-}
-
-.older-loading span {
-  padding: 4px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
-}
-
 /* Read-only performance overlay for checking scrolling on a real device; only
    mounted when localStorage['ki-perf-hud'] = '1' (see features/chat/PerfHud). */
 .perf-hud {
@@ -3784,3 +3762,11 @@ select:focus-visible {
   cursor: pointer;
   text-decoration: underline;
 }
+
+/* The virtualizer owns anchoring and includes both vertical paddings in its
+   extent. Browser anchoring would otherwise compensate a prepend twice. */
+.chat-stage .scroll { padding-top: 0; padding-bottom: 0; overflow-anchor: none; }
+.history-control { position: absolute; top: 8px; left: 0; right: 0; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.history-control button, .body-load { min-height: 44px; padding: 8px 16px; border-radius: 10px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); }
+.branch-load { min-height: 40px; padding: 4px 8px; color: var(--dsw-alias-label-secondary); }
+.history-seeking { position: absolute; z-index: 4; top: 8px; left: 50%; transform: translateX(-50%); min-height: 44px; max-width: 90%; padding: 8px 16px; border-radius: 12px; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 2px 8px rgb(0 0 0 / 8%); }

@@ -708,6 +708,7 @@ func streamEvents(ctx context.Context, base, token, id string) error {
 	sc := bufio.NewScanner(res.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	var pr streamPrinter
+	var decoder loop.MessageDecoder
 	for sc.Scan() {
 		line := sc.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -716,6 +717,10 @@ func streamEvents(ctx context.Context, base, token, id string) error {
 		var ev loop.Event
 		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev) != nil {
 			continue
+		}
+		ev, err = decoder.Decode(ev)
+		if err != nil {
+			return err
 		}
 		pr.event(ev)
 		if ev.Type == loop.AgentEnd {
@@ -784,13 +789,15 @@ func (p *streamPrinter) event(ev loop.Event) {
 		p.printed = ""
 	case loop.MessageUpdate:
 		d := ev.AssistantMessageEvent
-		if d == nil {
+		if d == nil && ev.Message == nil {
 			return
 		}
 		p.started = true
-		m := d.Partial
+		var m types.Message
 		if ev.Message != nil {
 			m = *ev.Message
+		} else {
+			m = d.Partial
 		}
 		p.print(thinkingText(m) + m.Text())
 	case loop.ToolExecutionStart:

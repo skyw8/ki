@@ -1,5 +1,6 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { useTranscriptScroll, type TranscriptScroll } from './useTranscriptScroll'
 import { IChev, IChevDown, IClock, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from '../../components/icons'
 import { IFile } from '../../components/icons'
 import { Composer, type Draft } from './Composer'
@@ -9,43 +10,11 @@ import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
 import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, reconcileUserNodes, requestTitle, turnStats, type CacheMiss, type TurnStats } from '../../lib/model'
 import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
-import { forgetRowHeights, rememberRowHeight, rowHeightEstimate, UNKNOWN_WIDTH } from '../../lib/rowHeight'
+import { rememberRowHeight, rowHeightEstimate, UNKNOWN_WIDTH } from '../../lib/rowHeight'
 import { copyText } from '../../lib/clipboard'
 import type { ChatNode } from '../../api/types'
 
-const VIRTUALIZE_AFTER = 48
-
-/**
- * Rows kept mounted outside the viewport.
- *
- * Every mounted row is a full markdown render, so the overscan is a work budget,
- * not just a smoothness knob: at 10 rows and ~700px average height it parsed
- * more than a screen of messages the reader never saw. Row heights are
- * remembered now (lib/rowHeight), so a small overscan still finds the correct
- * scroll offset — the estimate no longer has to be paid for with lookahead.
- */
 const OVERSCAN = 4
-
-/**
- * What a page of older history must restore the view to.
- *
- * The reader's distance from the tail, and nothing else: a page prepended *above*
- * the window does not change it, so restoring it puts the reader back on the same
- * content. Reading rows from the DOM instead — the obvious "remember the row at
- * the top" — races the virtual list's own re-render: after a one-shot jump (a
- * scrollbar drag to the top, a fling) the mounted rows are still laid out for the
- * previous scroll position, so their measured offset belongs to a different
- * frame and the restore lands tens of thousands of pixels away.
- */
-export type PrependAnchor = {
-  /** Distance from the bottom of the list when the page was requested. */
-  tail: number
-}
-
-/** capturePrepend records where the reader is before a page is prepended. */
-export function capturePrepend(el: HTMLElement): PrependAnchor {
-  return { tail: Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) }
-}
 
 function fmtUsage(u: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }): string {
   let s = `${u.input ?? 0}→${u.output ?? 0}`
@@ -140,11 +109,26 @@ function prettyArgs(args: unknown): string {
   return JSON.stringify(args, null, 2)
 }
 
-function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatNode, { kind: 'user' }>; onHydrate?: (id: string) => void }) {
+function useBodyLoad(id: string, onHydrate?: (id: string) => Promise<boolean>) {
+  const [loading, setLoading] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const load = async () => {
+    if (!onHydrate || loading) return
+    setLoading(true)
+    setFailed(false)
+    const ok = await onHydrate(id)
+    setLoading(false)
+    setFailed(!ok)
+  }
+  return { loading, failed, load }
+}
+
+function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatNode, { kind: 'user' }>; onHydrate?: (id: string) => Promise<boolean> }) {
   const { t } = useI18n()
   const ref = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const [overflow, setOverflow] = useState(false)
+  const body = useBodyLoad(node.id, onHydrate)
   useEffect(() => {
     const el = ref.current
     if (!el) return
@@ -172,7 +156,7 @@ function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatN
 	  </div> : null}
       {node.text ? <div className="user-text-bubble">
         <div ref={ref} className={`bubble-text${folded ? ' clamped' : ''}`}>{node.text}</div>
-        {overflow || open ? (
+        {overflow || open || node.truncated ? (
           <button
             type="button"
             className="bubble-toggle"
@@ -180,7 +164,7 @@ function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatN
             aria-label={open ? t('chat.collapse') : t('chat.expand')}
             title={open ? t('chat.collapse') : t('chat.expand')}
             onClick={() => {
-              if (!open && node.truncated) onHydrate?.(node.id)
+              if (!open && node.truncated) void body.load()
               setOpen(v => !v)
             }}
           >
@@ -188,6 +172,7 @@ function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatN
           </button>
         ) : null}
       </div> : null}
+      {node.truncated && (open || !node.text) ? <button type="button" className="body-load" disabled={body.loading} onClick={() => void body.load()}>{t(body.loading ? 'chat.loadingBody' : body.failed ? 'chat.retryOlder' : 'chat.loadBody')}</button> : null}
     </div>
   )
 }
@@ -199,11 +184,12 @@ function ToolRow({
   title: string
   summary: string
   onInspect?: (n: ChatNode) => void
-  onHydrate?: (id: string) => void
+  onHydrate?: (id: string) => Promise<boolean>
 }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const name = node.name
+  const body = useBodyLoad(node.id, onHydrate)
   const cmd = argStr(node.args, 'command')
   const desc = argStr(node.args, 'description')
   const oldS = argStr(node.args, 'old_string')
@@ -217,7 +203,7 @@ function ToolRow({
   const fail = state === 'error' && node.result ? firstLine(node.result) : ''
   const line = fail || summary
   const bodyIn = name === 'Write' ? content : name === 'Bash' ? cmd : prettyArgs(node.args)
-  const expandable = !!(node.result || bodyIn || oldS || newS || desc || editDiff)
+  const expandable = !!(node.truncated || node.result || bodyIn || oldS || newS || desc || editDiff)
   return (
     <div className={`tool-row${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool={name} data-state={state}>
       <div className="tool-row-h">
@@ -229,7 +215,7 @@ function ToolRow({
           disabled={!expandable}
           onClick={() => {
             if (!expandable) return
-            if (!open && node.truncated) onHydrate?.(node.id)
+            if (!open && node.truncated) void body.load()
             setOpen(v => !v)
           }}
         >
@@ -243,6 +229,7 @@ function ToolRow({
       </div>
       {open && expandable ? (
         <div className="tool-row-body">
+          {node.truncated ? <button type="button" className="body-load" disabled={body.loading} onClick={() => void body.load()}>{t(body.loading ? 'chat.loadingBody' : body.failed ? 'chat.retryOlder' : 'chat.loadBody')}</button> : null}
           {desc ? <div className="tool-desc" data-testid="tool-desc">{desc}</div> : null}
           {name === 'Read' && node.result ? (
             <pre className="tool-read">{node.result.split('\n').map((ln, i) => `${String(offset + i).padStart(4, ' ')}  ${ln}`).join('\n')}</pre>
@@ -394,22 +381,42 @@ type ChatItemProps = {
 	onFilesEdit?: (files: File[]) => void
 	onFork?: (n: Extract<ChatNode, { kind: 'assistant' }>) => void
 	onRegen?: (n: Extract<ChatNode, { kind: 'assistant' }>) => void
-	branches?: Record<string, { index: number; total: number }>
+	branchIndex?: number
+	branchTotal?: number
 	onBranch?: (n: Extract<ChatNode, { kind: 'user' }>, delta: number) => void
-	onHydrate?: (id: string) => void
+	onShowBranches?: () => void
+	onHydrate?: (id: string) => Promise<boolean>
 	/** Assistant node id → notable prompt-cache miss for that step. */
-	misses?: Map<string, CacheMiss>
+	missed?: CacheMiss
 }
 
 const ChatItem = memo(function ChatItem({
-	api, node: n, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate, misses,
+	api, node: n, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branchIndex, branchTotal, onBranch, onHydrate, onShowBranches, missed,
 }: ChatItemProps) {
   const { t } = useI18n()
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [hydrating, setHydrating] = useState(false)
+  const [hydrateFailed, setHydrateFailed] = useState(false)
+  const hydrate = useCallback(async () => {
+    if (!onHydrate) return
+    setHydrating(true)
+    const ok = await onHydrate(n.id)
+    setHydrating(false)
+    setHydrateFailed(!ok)
+  }, [n.id, onHydrate])
   useEffect(() => {
-    if (n.truncated && n.kind === 'assistant' && !n.streaming) {
-      onHydrate?.(n.id)
-    }
-  }, [n, onHydrate])
+    const el = bodyRef.current
+    if (!el || !n.truncated || n.kind !== 'assistant' || n.streaming || hydrateFailed) return
+    let timer = 0
+    // Mounted overscan is not reading intent. Wait for actual visibility so a
+    // quick fling does not download every large reply it passes.
+    const observer = new IntersectionObserver(entries => {
+      window.clearTimeout(timer)
+      if (entries.some(entry => entry.isIntersecting)) timer = window.setTimeout(() => { observer.disconnect(); void hydrate() }, 100)
+    }, { root: el.closest('.scroll') })
+    observer.observe(el)
+    return () => { observer.disconnect(); window.clearTimeout(timer) }
+  }, [n.id, n.truncated, n.kind, n.kind === 'assistant' && n.streaming, hydrate, hydrateFailed])
   if (n.kind === 'user') {
     const editing = edit?.messageId === n.id
     return (
@@ -420,7 +427,8 @@ const ChatItem = memo(function ChatItem({
             {n.ts ? <div className="msg-stats">{fmtTs(n.ts)}</div> : null}
             <div className="msg-actions" data-testid="user-actions">
               <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => void copyText(n.text)}><ICopy /></IconBtn>
-              {branches?.[n.id]?.total && branches[n.id].total > 1 ? <span className="branch-nav"><button type="button" onClick={() => onBranch?.(n, -1)}>‹</button>{branches[n.id].index + 1} / {branches[n.id].total}<button type="button" onClick={() => onBranch?.(n, 1)}>›</button></span> : null}
+              {branchTotal == null ? <button type="button" className="branch-load" onClick={onShowBranches}>{t('chat.branches')}</button> : null}
+              {branchTotal && branchTotal > 1 ? <span className="branch-nav"><button type="button" onClick={() => onBranch?.(n, -1)}>‹</button>{(branchIndex ?? 0) + 1} / {branchTotal}<button type="button" onClick={() => onBranch?.(n, 1)}>›</button></span> : null}
               <IconBtn label={t('chat.edit')} testid="edit-msg" onClick={() => onStartEdit?.(n)}><IEdit /></IconBtn>
             </div>
           </div>
@@ -430,17 +438,17 @@ const ChatItem = memo(function ChatItem({
   }
   if (n.kind === 'assistant') {
     const hasStats = !n.streaming && !!(n.ts || n.latencyMs || n.ttftMs || n.usage)
-    const missed = misses?.get(n.id)
     const hitRate = cacheHitRate(n.usage)
     const cost = n.usage?.cost
     return (
-      <div className="asst" data-testid="assistant-message">
+      <div ref={bodyRef} className="asst" data-testid="assistant-message">
         <div className="asst-body">
           {n.thinking ? <Think text={n.thinking} streaming={n.streaming} /> : null}
           {n.images?.map((img, i) => (
             <img key={i} className="msg-img" alt="" src={`data:${img.mimeType};base64,${img.data}`} />
           ))}
           {n.text ? <Markdown text={n.text} streaming={n.streaming} /> : n.streaming && !n.thinking ? <span className="status-line">…</span> : null}
+          {n.truncated ? <button type="button" className="body-load" data-testid="load-body" disabled={hydrating} onClick={() => void hydrate()}>{hydrating ? t('chat.loadingBody') : hydrateFailed ? t('chat.retryOlder') : t('chat.loadBody')}</button> : null}
           {n.error ? <div className="notice">{n.error}</div> : null}
         </div>
         {!n.streaming ? (
@@ -490,399 +498,243 @@ const ChatItem = memo(function ChatItem({
   return <Compaction node={n} />
 })
 
-/**
- * activeUserId returns the id of the user turn at or above the viewport top.
- *
- * It walks the render list, not the node list, because compact mode inserts
- * fold rows; the user bubbles themselves are always rendered, so they stay the
- * only anchors the request navigator needs.
- */
-function activeUserId(
-  items: ChatRenderItem[],
-  scrollEl: HTMLElement,
-  virtualize: boolean,
-  offsetOf: (index: number) => number | undefined,
-): string | null {
-  const users: { id: string; index: number }[] = []
-  items.forEach((it, index) => {
-    if (it.kind === 'node' && it.node.kind === 'user') users.push({ id: it.node.id, index })
-  })
-  if (!users.length) return null
-  const top = scrollEl.scrollTop + 12
-  let current = users[0].id
-  if (virtualize) {
-    for (const user of users) {
-      const start = offsetOf(user.index)
-      if (start == null) continue
-      if (start <= top) current = user.id
-      else break
-    }
-    return current
-  }
-  const box = scrollEl.getBoundingClientRect()
-  for (const user of users) {
-    const el = scrollEl.querySelector(`[data-msg-id="${CSS.escape(user.id)}"]`)
-    if (!(el instanceof HTMLElement)) continue
-    const start = el.getBoundingClientRect().top - box.top + scrollEl.scrollTop
-    if (start <= top) current = user.id
-  }
-  return current
-}
-
-export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, onHydrate, jumpToId, onJumped, onActiveRequest, onLayoutChanged, onContentResized, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP, prependAnchor, onPrependApplied, loadingOlder }: Omit<ChatItemProps, 'node'> & {
-	nodes: ChatNode[]
-	/** Turns on the branch before the loaded window (see turnStats). */
-	turnBase?: number
-	/** 'compact' folds each turn's older replies (see lib/messageView). */
-	mode?: MessageViewMode
-	/** Newest reply nodes kept visible per turn in compact mode. */
-	keep?: number
-	scrollRef?: RefObject<HTMLDivElement | null>
-	jumpToId?: string | null
-	onJumped?: () => void
-	onActiveRequest?: (id: string | null) => void
-	/** A fold toggle changed the rendered height: re-evaluate follow-tail. */
-	onLayoutChanged?: () => void
-	/** The rendered height changed for any reason (rows measured, bodies arrived). */
-	onContentResized?: () => void
-	/** An older page just landed: put the reader back where they were. */
-	prependAnchor?: PrependAnchor | null
-	onPrependApplied?: () => void
-	/** A page of older history is in flight (shows the top hint). */
-	loadingOlder?: boolean
+export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, controlRef, onHydrate, onShowBranches, onVisibleEntries, jumpToId, onJumped, onActiveRequest, onAtBottom, onReadIntent, onLoadOlder, hasMore, olderError, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP, loadingOlder }: Omit<ChatItemProps, 'node' | 'missed' | 'branchIndex' | 'branchTotal'> & {
+  branches?: Record<string, { index: number; total: number }>
+  nodes: ChatNode[]
+  turnBase?: number
+  mode?: MessageViewMode
+  keep?: number
+  scrollRef: RefObject<HTMLDivElement | null>
+  controlRef?: React.Ref<TranscriptScroll>
+  onVisibleEntries?: (ids: string[]) => void
+  jumpToId?: string | null
+  onJumped?: () => void
+  onActiveRequest?: (id: string | null) => void
+  onAtBottom?: (bottom: boolean) => void
+  onReadIntent?: () => void
+  onLoadOlder?: () => Promise<unknown>
+  hasMore?: boolean
+  loadingOlder?: boolean
+  olderError?: boolean
 }) {
   const { t } = useI18n()
-  // Memoised: this array is the input of every other computation below, and a
-  // fresh identity on each render (a streamed delta, a scroll tick) used to
-  // invalidate all of them — including the `misses` prop that ChatItem is
-  // memoised on, so every visible row re-rendered.
+  const measurementAnchor = useRef<string | null>(null)
+  const navigation = useTranscriptScroll({ scrollRef, onAtBottom, onReadIntent: () => { measurementAnchor.current = null; onReadIntent?.() }, onLoadOlder, hasMore, loadingOlder, olderError })
   const nodes = useMemo(() => reconcileUserNodes(rawNodes), [rawNodes])
   const misses = useMemo(() => cacheMisses(nodes), [nodes])
-  // List width: row heights are measured against it, and a wrap from a resize
-  // makes the remembered heights stale (see lib/rowHeight).
+  const listRef = useRef<HTMLDivElement>(null)
   const [listWidth, setListWidth] = useState(UNKNOWN_WIDTH)
-  useEffect(() => {
-    const el = scrollRef?.current
+  useLayoutEffect(() => {
+    const el = listRef.current
     if (!el) return
-    setListWidth(el.clientWidth)
     const ro = new ResizeObserver(() => setListWidth(el.clientWidth))
+    setListWidth(el.clientWidth)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [scrollRef])
-  // Turns the user opened by hand in compact mode. Keyed by turn id, so a stale
-  // entry from another session simply never matches; nothing has to be reset
-  // when the open session changes.
-  const [folds, setFolds] = useState<ReadonlySet<string>>(() => new Set<string>())
-  /**
-   * The fold row a toggle just acted on, with the viewport offset it had.
-   *
-   * Opening a fold inserts nodes below the row and closing it removes them.
-   * Either way the row must not move: it is the thing the pointer is on, and a
-   * jump under the cursor is exactly how the reader loses their place. The
-   * offset is restored in a layout effect, before paint, so no frame shows the
-   * shifted list.
-   */
+  }, [])
+  const [folds, setFolds] = useState<ReadonlySet<string>>(() => new Set())
   const foldAnchor = useRef<{ id: string; offset: number } | null>(null)
   const toggleFold = useCallback((id: string) => {
-    const scroll = scrollRef?.current
+    navigation.read()
+    const scroll = scrollRef.current
     const row = scroll?.querySelector(`[data-testid="fold-row"][data-fold="${CSS.escape(id)}"]`)
-    if (scroll && row instanceof HTMLElement) {
-      foldAnchor.current = { id, offset: row.getBoundingClientRect().top - scroll.getBoundingClientRect().top }
-    }
+    if (scroll && row) foldAnchor.current = { id, offset: row.getBoundingClientRect().top - scroll.getBoundingClientRect().top }
     setFolds(prev => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }, [scrollRef])
-  const items = useMemo(
-    () => (mode === 'compact' ? foldReplies(nodes, { keep, expanded: folds }) : detailedItems(nodes)),
-    [mode, nodes, keep, folds],
-  )
-  // Characters per item, used by the height estimate of rows nobody has
-  // measured yet.
-  const itemChars = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const it of items) {
-      const n = it.kind === 'node' ? it.node : it.nodes[0]
-      const chars = n && n.kind === 'user' ? n.text.length
-        : n && n.kind === 'assistant' ? n.text.length + (n.thinking?.length ?? 0)
-          : 0
-      m.set(it.id, chars)
+  }, [scrollRef, navigation.read])
+  const items = useMemo(() => mode === 'compact' ? foldReplies(nodes, { keep, expanded: folds }) : detailedItems(nodes), [mode, nodes, keep, folds])
+  const previousItems = useRef(items)
+  const previousVirtual = navigation.virtual.current
+  if (items !== previousItems.current) {
+    if (!navigation.following.current && previousVirtual && items[0]?.id !== previousItems.current[0]?.id) {
+      measurementAnchor.current = String(previousVirtual.getVirtualItemForOffset(previousVirtual.scrollOffset ?? 0)?.key ?? '') || null
     }
-    return m
-  }, [items])
-  /**
-   * Whether to walk the list with the virtualizer.
-   *
-   * The decision must not change when a fold is opened: the two branches build
-   * a different DOM (plain children vs. absolutely positioned items inside a
-   * sized container), so swapping them remounts the whole transcript, and the
-   * swap clamps scrollTop to 0 — a reader who taps a fold row a screen down ends
-   * up at the top of the loaded window. Fold state is therefore kept out of the
-   * count: it takes the transcript and the render list, whichever is longer
-   * (folded rows add rows; opening one only adds more).
-   */
-  const virtualize = Math.max(items.length, nodes.length) > VIRTUALIZE_AFTER
+    previousItems.current = items
+  }
+  const anchorIndex = measurementAnchor.current ? items.findIndex(item => item.id === measurementAnchor.current) : -1
+  const itemChars = useMemo(() => new Map(items.map(it => {
+    const n = it.kind === 'node' ? it.node : null
+    return [it.id, n?.kind === 'user' ? n.text.length : n?.kind === 'assistant' ? n.text.length + (n.thinking?.length ?? 0) : 0]
+  })), [items])
+  const itemLookup = useRef(items)
+  itemLookup.current = items
+  const getItemKey = useCallback((index: number) => itemLookup.current[index].id, [])
+  const estimates = useRef(new Map<string, { width: number; chars: number; size: number }>())
+  const estimateSize = (index: number) => {
+    const key = items[index].id
+    const chars = itemChars.get(key) ?? 0
+    const cached = estimates.current.get(key)
+    if (cached && cached.width === listWidth && cached.chars === chars) return cached.size
+    const size = rowHeightEstimate(key, listWidth, chars)
+    estimates.current.set(key, { width: listWidth, chars, size })
+    return size
+  }
+  const running = busy && !nodes.some(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
   const virtualizer = useVirtualizer({
     count: items.length,
-    getScrollElement: () => scrollRef?.current ?? null,
-    // Measured heights first, learned ratio second (lib/rowHeight): a row that
-    // enters the viewport already knowing its size owes no scroll correction, so
-    // it cannot swallow the reader's gesture.
-    estimateSize: index => rowHeightEstimate(items[index]?.id ?? '', listWidth, itemChars.get(items[index]?.id ?? '') ?? 0),
+    getScrollElement: () => scrollRef.current,
+    // A new key callback invalidates every measurement. Likewise, changing
+    // unmeasured estimates as the global average learns silently moves rows
+    // without a resizeItem delta. Freeze each estimate until its body/width
+    // changes; actual measurements remain owned by the virtualizer.
+    getItemKey,
+    estimateSize,
     overscan: OVERSCAN,
-    getItemKey: index => items[index]?.id ?? index,
-    // Remember every measurement, and skip the ones taken while a row is still
-    // showing its markdown placeholder (that height is the estimate, not the
-    // message).
-    measureElement: (element, entry, instance) => {
-      const box = entry?.borderBoxSize?.[0]
-      let size: number
-      if (box) {
-        size = Math.round(box.blockSize)
-      } else {
-        const index = instance.indexFromElement(element)
-        size = instance.itemSizeCache.get(instance.options.getItemKey(index)) ?? Math.round(element.getBoundingClientRect().height)
-      }
-      const el = element as HTMLElement
-      const key = el.dataset.itemKey
-      if (key && !el.querySelector('[data-md-pending]')) {
-        rememberRowHeight(key, listWidth, size, itemChars.get(key) ?? 0)
-      }
+    paddingStart: 60,
+    paddingEnd: running ? 40 : 8,
+    // The library anchors the CURRENT keyed item when a response commits, not
+    // the distance from the tail recorded before a slow network request.
+    anchorTo: 'end',
+    followOnAppend: navigation.following.current,
+    scrollEndThreshold: navigation.following.current ? 80 : -1,
+    measureElement: (element, entry) => {
+      const size = entry?.borderBoxSize?.[0]?.blockSize ?? element.getBoundingClientRect().height
+      const key = (element as HTMLElement).dataset.itemKey
+      if (key && !element.querySelector('[data-md-pending]')) rememberRowHeight(key, listWidth, size, itemChars.get(key) ?? 0)
       return size
     },
-    enabled: virtualize,
   })
-  /**
-   * Compensate every size change above the viewport, whatever direction the
-   * reader is scrolling.
-   *
-   * The library's built-in default skips that compensation while scrolling
-   * backwards ("avoid the items jump while scrolling up cascade"), but a row
-   * above the fold that turns out to be taller moves the whole visible list by
-   * that delta: without the matching scroll adjustment the content lurches under
-   * the reader — measured at 1316px in a single frame with scrollTop never
-   * moving, and then snapping back when the correction finally lands, which is
-   * the reported "scrolling up jumps around". Rows that merely straddle the fold
-   * stay excluded (a streaming message growing at its bottom must not drag the
-   * view along). With real heights remembered (lib/rowHeight) an adjustment is a
-   * one-time correction, not a cascade.
-   *
-   * Assigned on the instance rather than passed as an option: this build reads
-   * the predicate from the virtualizer, not from the options object.
-   */
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) =>
-    delta !== 0 && item.start + item.size <= readScrollOffset(instance)
-
-  /** readScrollOffset reads the live offset; the accessor is typed private. */
-  function readScrollOffset(v: unknown): number {
-    return (v as unknown as { getScrollOffset(): number }).getScrollOffset()
-  }
-  // The rendered height drives follow-tail in the parent: rows grow while they are
-  // measured and while their markdown arrives, and none of that is an items
-  // change. Without it a session opens at scrollTop 0 (the first follow effect ran
-  // before the list had a height) and never corrects itself.
-  const totalSize = virtualize ? virtualizer.getTotalSize() : 0
-  const lastTotal = useRef(-1)
-  useEffect(() => {
-    if (totalSize === lastTotal.current) return
-    lastTotal.current = totalSize
-    onContentResized?.()
-  }, [totalSize, onContentResized])
-
-  const props = { api, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate }
-  // Stable identity, `misses` included: ChatItem is memoised on these props, and
-  // a fresh object per render would defeat that for every visible row.
-  const itemProps = useMemo(() => ({ ...props, misses }), [api, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate, misses])
-  const running = busy && !nodes.some(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
-  // Turn dividers are keyed by each turn's last node id. The newest turn is
-  // deferred while a run is in flight (and skipped entirely while it streams or
-  // runs a tool): its step count is still growing, so a settled-looking strip
-  // that rewrites itself every delta would only flicker. The bottom
-  // "running…" line is the progress signal until agent_end.
-  const turns = useMemo(() => turnStats(nodes, turnBase), [nodes, turnBase])
-  const newestId = nodes[nodes.length - 1]?.id
-  const turnFoot = (n: ChatNode) => {
-    if (busy && n.id === newestId) return null
-    const foot = turns.get(n.id)
-    return foot && !foot.live && foot.steps > 0 ? <TurnDivider stats={foot} /> : null
-  }
-  const renderItem = (it: ChatRenderItem) => {
-    if (it.kind === 'fold') {
-      return <FoldRow key={it.id} turn={it.turn} nodes={it.nodes} expanded={it.expanded} onToggle={() => toggleFold(it.turn.id)} />
+  navigation.virtual.current = virtualizer
+  // A resize above the viewport must not move the visible content. Let the
+  // virtualizer apply this adjustment, including its iOS momentum deferral.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) => {
+    // At the history boundary the reader may be in the 60px padding before
+    // the anchor row. After prepend that space contains the preceding row:
+    // its resize still belongs ABOVE the content anchor, even if its estimated
+    // bottom crosses scrollTop. A pixel-only predicate loses that adjustment.
+    if (measurementAnchor.current && anchorIndex >= 0) {
+      return delta !== 0 && item.index < anchorIndex
     }
-    return (
-      <Fragment key={it.id}>
-        <ChatItem node={it.node} {...itemProps} />
-        {turnFoot(it.node)}
-      </Fragment>
-    )
+    return delta !== 0 && (instance.itemSizeCache.has(item.key) ? item.end : item.start) <= (instance.scrollOffset ?? 0) + instance.scrollAdjustments
   }
+  useImperativeHandle(controlRef, () => ({ read: navigation.read, latest: navigation.latest }), [navigation.read, navigation.latest])
 
-  /**
-   * An older page just landed above the transcript: put the reader back.
-   *
-   * This has to run here, in the commit that rendered the new list, and it has
-   * to run before paint — the browser must never show the list with the page
-   * inserted under the reader's feet. Why not the previous arithmetic in a
-   * `requestAnimationFrame`: React renders this update concurrently, so the
-   * frame callback could fire before the commit and then read the *old*
-   * `scrollHeight`, which made the compensation a silent no-op (measured: the
-   * reader stayed at scrollTop 0 while the page was prepended, i.e. was thrown
-   * ~25 turns back). The anchor's item index is used instead of a height delta
-   * because the rows of the new page may still be at their estimated size.
-   */
-  /**
-   * The row the reader is on after a page lands, and where it belongs.
-   *
-   * The index-based restore below lands within a row's height of the truth, but
-   * rows that were measured between the render and the effect (or right after it)
-   * can still shift the list by their delta, so the anchor is re-asserted while
-   * the layout settles — bounded frames, stopping as soon as it holds, because
-   * every correction writes the reader's scroll position.
-   */
-  const anchorRepair = useRef(true)
+  const opened = useRef(false)
   useLayoutEffect(() => {
-    if (!prependAnchor) return
-    const el = scrollRef?.current
-    onPrependApplied?.()
-    if (!el) return
-    // Keep the distance from the tail: the page went in above the window, so this
-    // lands on the same content the reader was on. It is applied here, in the
-    // commit that rendered the page and before paint — the same arithmetic in a
-    // frame callback used to run *before* the commit and read the old height,
-    // which made it a no-op and left the reader a page back.
-    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - prependAnchor.tail)
-    anchorRepair.current = true
-    // The list re-rendered under a new scroll position: re-read follow-tail.
-    onLayoutChanged?.()
-  }, [prependAnchor, items, scrollRef, onPrependApplied, onLayoutChanged])
-
+    // The parent scroller's ref is attached after the child's first layout
+    // pass. Wait for the virtualizer to bind it before the initial end jump.
+    if (opened.current || !items.length || !virtualizer.scrollElement) return
+    opened.current = true
+    navigation.latest()
+  })
+  // A viewport change (keyboard/rotation) changes the reachable end even if no
+  // message changes. Reading remains anchored; following stays at the end.
   useEffect(() => {
-    const el = scrollRef?.current
-    if (!el || !anchorRepair.current) return
-    let raf = 0
-    let steady = 0
-    let last: { key: string; top: number; offset: number } | null = null
-    const deadline = performance.now() + 1200
-    /**
-     * Keep the row under the viewport top still while the page's rows are
-     * measured.
-     *
-     * A prepended page lands with its rows at their estimated height; the ones
-     * that mount in the overscan band above the viewport are measured a frame or
-     * two later, and each measurement moves everything below. The virtualizer
-     * compensates for those, but not when the row was re-measured right after the
-     * restore wrote the scroll position, so the anchor is held frame by frame:
-     * the marked row may only move by as much as the scroll itself moved, and any
-     * excess is corrected. A reader who scrolls during this is not fought — their
-     * scroll moves the row *with* it, which reads as no drift.
-     */
-    const settle = () => {
-      const box = el.getBoundingClientRect()
-      const rows = [...el.querySelectorAll<HTMLElement>('[data-item-key]')]
-      const row = rows.find(r => r.getBoundingClientRect().bottom > box.top + 1)
-      if (row?.dataset.itemKey) {
-        const now = { key: row.dataset.itemKey, top: el.scrollTop, offset: Math.round(row.getBoundingClientRect().top - box.top) }
-        if (last && last.key === now.key) {
-          const drift = Math.round((now.offset - last.offset) + (now.top - last.top))
-          if (Math.abs(drift) > 1) {
-            el.scrollTop += drift
-            steady = 0
-          } else {
-            steady += 1
-          }
-        }
-        last = now
-      }
-      if (steady >= 5 || performance.now() > deadline) {
-        anchorRepair.current = false
-        return
-      }
-      raf = requestAnimationFrame(settle)
-    }
-    raf = requestAnimationFrame(settle)
-    return () => cancelAnimationFrame(raf)
-  }, [prependAnchor, items, scrollRef])
+    const el = scrollRef.current
+    if (!el) return
+    let previous = el.clientHeight
+    const ro = new ResizeObserver(() => {
+      if (el.clientHeight === previous) return
+      previous = el.clientHeight
+      if (navigation.following.current) virtualizer.scrollToEnd()
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [scrollRef, virtualizer])
 
-  // Why this runs on every item change but only acts on a pending toggle: the
-  // anchor has to be restored in the same commit that re-rendered the list, and
-  // the parent then re-reads the geometry while the scroll position is settled.
+  const turns = useMemo(() => turnStats(nodes, turnBase), [nodes, turnBase])
+  const newestId = nodes.at(-1)?.id
+  const actions = useRef({ onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches })
+  actions.current = { onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches }
+  const callbacks = useMemo(() => ({
+    onSelect: (...args: Parameters<NonNullable<ChatItemProps['onSelect']>>) => actions.current.onSelect?.(...args),
+    onStartEdit: (...args: Parameters<NonNullable<ChatItemProps['onStartEdit']>>) => actions.current.onStartEdit?.(...args),
+    onEditChange: (...args: Parameters<NonNullable<ChatItemProps['onEditChange']>>) => actions.current.onEditChange?.(...args),
+    onShowBranches: () => actions.current.onShowBranches?.(),
+    onCancelEdit: () => actions.current.onCancelEdit?.(),
+    onSendEdit: () => actions.current.onSendEdit?.(),
+    onAttachEdit: () => actions.current.onAttachEdit?.(),
+    onFilesEdit: (...args: Parameters<NonNullable<ChatItemProps['onFilesEdit']>>) => actions.current.onFilesEdit?.(...args),
+    onFork: (...args: Parameters<NonNullable<ChatItemProps['onFork']>>) => actions.current.onFork?.(...args),
+    onRegen: (...args: Parameters<NonNullable<ChatItemProps['onRegen']>>) => actions.current.onRegen?.(...args),
+    onBranch: (...args: Parameters<NonNullable<ChatItemProps['onBranch']>>) => actions.current.onBranch?.(...args),
+  }), [])
+  const props = { api, busy, uploading, ...callbacks, onHydrate }
+  const visibleItems = virtualizer.getVirtualItems()
+  useEffect(() => {
+    onVisibleEntries?.(visibleItems.flatMap(item => {
+      const it = items[item.index]
+      return [it.id]
+    }))
+  }, [visibleItems, items, onVisibleEntries])
+  const renderItem = (it: ChatRenderItem) => {
+    if (it.kind === 'fold') return <FoldRow turn={it.turn} nodes={it.nodes} expanded={it.expanded} onToggle={() => toggleFold(it.turn.id)} />
+    const foot = turns.get(it.id)
+    return <>
+      <ChatItem node={it.node} {...props} edit={edit?.messageId === it.id ? edit : null} branchIndex={branches?.[it.id]?.index} branchTotal={branches?.[it.id]?.total} missed={misses.get(it.id)} />
+      {foot && !foot.live && foot.steps > 0 && !(busy && newestId === it.id) ? <TurnDivider stats={foot} /> : null}
+    </>
+  }
+
   useLayoutEffect(() => {
     const anchor = foldAnchor.current
     if (!anchor) return
     foldAnchor.current = null
-    const scroll = scrollRef?.current
+    const scroll = scrollRef.current
     const row = scroll?.querySelector(`[data-testid="fold-row"][data-fold="${CSS.escape(anchor.id)}"]`)
-    if (scroll && row instanceof HTMLElement) {
-      const top = row.getBoundingClientRect().top - scroll.getBoundingClientRect().top
-      if (Math.abs(top - anchor.offset) > 1) scroll.scrollTop += top - anchor.offset
+    if (scroll && row) {
+      const delta = row.getBoundingClientRect().top - scroll.getBoundingClientRect().top - anchor.offset
+      if (Math.abs(delta) > 1) virtualizer.scrollBy(delta)
     }
-    onLayoutChanged?.()
-  }, [items, scrollRef, onLayoutChanged])
+  }, [items, scrollRef, virtualizer])
 
   useLayoutEffect(() => {
     if (!jumpToId) return
+    measurementAnchor.current = null
+    navigation.read()
     const index = items.findIndex(it => it.kind === 'node' && it.node.id === jumpToId)
     if (index < 0) {
-      // The target sits inside a fold row: open it and let the effect re-run
-      // against the rebuilt item list.
       const fold = items.find(it => it.kind === 'fold' && it.nodes.some(n => n.id === jumpToId))
-      if (fold && fold.kind === 'fold') toggleFold(fold.turn.id)
+      if (fold?.kind === 'fold') toggleFold(fold.turn.id)
       return
     }
-    const scroll = scrollRef?.current
-    if (virtualize) {
-      virtualizer.scrollToIndex(index, { align: 'start' })
-    } else if (scroll) {
-      const el = scroll.querySelector(`[data-msg-id="${CSS.escape(jumpToId)}"]`)
-      if (el instanceof HTMLElement) {
-        const top = el.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop
-        scroll.scrollTop = Math.max(0, top - 8)
-      }
-    }
+    virtualizer.scrollToIndex(index, { align: 'start' })
     onJumped?.()
-  }, [jumpToId, items, onJumped, scrollRef, virtualize, virtualizer, toggleFold])
+  }, [jumpToId, items, onJumped, virtualizer, toggleFold, navigation.read])
 
+  const users = useMemo(() => items.flatMap((it, index) => it.kind === 'node' && it.node.kind === 'user' ? [{ id: it.id, index }] : []), [items])
   useEffect(() => {
-    const el = scrollRef?.current
+    const el = scrollRef.current
     if (!el) return
+    let frame = 0
+    let last: string | null | undefined
     const update = () => {
-      onActiveRequest?.(activeUserId(items, el, virtualize, index => virtualizer.getOffsetForIndex(index, 'start')?.[0]))
+      frame = 0
+      let lo = 0, hi = users.length - 1
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2)
+        const offset = virtualizer.getOffsetForIndex(users[mid].index, 'start')?.[0] ?? Infinity
+        if (offset <= el.scrollTop + 12) lo = mid
+        else hi = mid - 1
+      }
+      const id = users[lo]?.id ?? null
+      if (id !== last) { last = id; onActiveRequest?.(id) }
+      onAtBottom?.(virtualizer.getDistanceFromEnd() <= 8)
     }
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(update) }
     update()
-    el.addEventListener('scroll', update, { passive: true })
-    return () => el.removeEventListener('scroll', update)
-  }, [items, onActiveRequest, scrollRef, virtualize, virtualizer])
-  if (!virtualize) {
-    return (
-      <div className="chat-col" data-testid="chat">
-        {items.map(renderItem)}
-        {running ? <div className="status-line">{t('chat.running')}</div> : null}
-      </div>
-    )
-  }
+    el.addEventListener('scroll', schedule, { passive: true })
+    return () => { cancelAnimationFrame(frame); el.removeEventListener('scroll', schedule) }
+  }, [users, scrollRef, virtualizer, onActiveRequest, onAtBottom])
+
   return (
-    <div className="chat-col chat-virtual" data-testid="chat" style={{ height: virtualizer.getTotalSize() }}>
+    <div ref={listRef} className="chat-col chat-virtual" data-testid="chat" data-scroll-intent={navigation.isFollowing ? 'following' : 'reading'} data-anchor-key={measurementAnchor.current ?? undefined} style={{ height: virtualizer.getTotalSize() }}>
+      <div className="history-control" aria-live="polite">
+        {hasMore ? <button type="button" data-testid="load-older" disabled={loadingOlder} onClick={navigation.loadOlder}>
+          {loadingOlder ? <span data-testid="older-loading">{t('chat.loadingOlder')}</span> : olderError ? t('chat.retryOlder') : t('chat.loadOlder')}
+        </button> : <span>{t('chat.historyStart')}</span>}
+      </div>
       {virtualizer.getVirtualItems().map(item => {
         const it = items[item.index]
-        if (!it) return null
-        return (
-          <div
-            key={item.key}
-            data-index={item.index}
-            data-item-key={it.id}
-            ref={virtualizer.measureElement}
-            className="chat-virtual-item"
-            style={{ transform: `translateY(${item.start}px)` }}
-          >
-            {renderItem(it)}
-          </div>
-        )
+        return <div key={item.key} data-index={item.index} data-item-key={it.id} ref={virtualizer.measureElement} className="chat-virtual-item" style={{ transform: `translateY(${item.start}px)` }}>
+          {renderItem(it)}
+        </div>
       })}
-      {running ? <div className="status-line chat-virtual-item" style={{ transform: `translateY(${virtualizer.getTotalSize()}px)` }}>{t('chat.running')}</div> : null}
+      {running ? <div className="status-line chat-virtual-item" style={{ transform: `translateY(${virtualizer.getTotalSize() - 32}px)` }}>{t('chat.running')}</div> : null}
     </div>
   )
 }

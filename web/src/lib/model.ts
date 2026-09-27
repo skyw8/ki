@@ -215,9 +215,8 @@ function setIndex(s: ViewState, index?: IndexEntry[]) {
 export function applyIndex(s: ViewState, detail: SessionDetail): ViewState {
   const next = { ...s }
   setIndex(next, detail.index ?? [])
-  next.leafId = detail.leafId ?? next.leafId
-  addEntries(next, detail.entries ?? [])
-  applyCursor(next, detail)
+  // An index can finish after a page or a live append. It only describes tree
+  // metadata; adopting its old leaf/cursor would discard the reader's window.
   return rebuild(next)
 }
 
@@ -229,14 +228,15 @@ export function applyIndex(s: ViewState, detail: SessionDetail): ViewState {
  * its cursor would re-fetch pages already on screen.
  */
 function applyCursor(next: ViewState, detail: SessionDetail) {
+  // Only pagination advances an established boundary. An attached turn-opening
+  // user may precede that boundary, so neither min(id) nor array[0] is a cursor.
+  if (next.oldestId) return
   if (detail.hasMore !== undefined) next.hasMore = detail.hasMore
-  const windowIds = new Set((detail.entries ?? []).map(e => e.id))
-  const paged = next.entries.some(e => !windowIds.has(e.id))
-  if (!paged && detail.oldestId !== undefined) next.oldestId = detail.oldestId
+  if (detail.oldestId !== undefined) next.oldestId = detail.oldestId
 }
 
 /**
- * applyTail replaces the conversation window from a tail response, keeping the
+ * applyTail merges a tail response into the loaded window, keeping the
  * index warm. New entries are appended to the index as rows, which is sound
  * because the transcript is append-only: they are the newest entries, so they
  * belong at the end of the file order the index follows.
@@ -258,31 +258,69 @@ export function applyTail(s: ViewState, detail: SessionDetail): ViewState {
     const added = entries.filter(e => !known.has(e.id)).map(entryToIndex)
     if (added.length) next.index = [...next.index, ...added]
   }
-  // A run end is not the place to grow: keep the newest pages and drop the
-  // oldest loaded entries once the window has slid past them, so a long
-  // session's node list stays bounded instead of rebuilding the history.
-  if (next.entries.length > maxLoadedEntries) {
-    next.entries = next.entries.slice(next.entries.length - maxLoadedEntries)
-  }
+  // Never delete loaded ranges at run end: keeping the old cursor after a
+  // 400-entry trim made the discarded range unreachable and removed the
+  // reader's anchor. Body eviction keeps the entry identities instead.
   return rebuild(next)
 }
-
-/**
- * maxLoadedEntries bounds how much history stays in chat nodes. The tail window
- * is one page; a few pages of scrolled-back history are kept, and anything
- * older is dropped on the next run-end refresh.
- */
-const maxLoadedEntries = 400
 
 /** addEntries records body-loaded entries, replacing earlier copies by id. */
 function addEntries(s: ViewState, incoming: Entry[]) {
   if (!incoming.length) return
   const byId = new Map(incoming.map(e => [e.id, e]))
   const known = new Set(s.entries.map(e => e.id))
-  s.entries = s.entries.map(e => byId.get(e.id) ?? e)
+  s.entries = s.entries.map(e => {
+    const replacement = byId.get(e.id)
+    if (replacement && !replacement.truncated && e.truncated) bodyPreviews.set(replacement, e)
+    // Persisted entries are immutable. A late slim page must not erase a full
+    // body and trigger another download when the row is mounted again.
+    return replacement && !(replacement.truncated && !e.truncated) ? replacement : e
+  })
   for (const e of incoming) {
     if (!known.has(e.id)) s.entries.push(e)
   }
+}
+
+const bodyPreviews = new WeakMap<Entry, Entry>()
+const bodySizes = new WeakMap<Entry, number>()
+const evictedPreviews = new WeakSet<Entry>()
+export const BODY_CACHE_BYTES = 8 * 1024 * 1024
+
+function bodySize(entry: Entry): number {
+  let bytes = bodySizes.get(entry)
+  if (bytes === undefined) { bytes = JSON.stringify(entry).length * 2; bodySizes.set(entry, bytes) }
+  return bytes
+}
+
+/** Evict cold bodies, never identities or page boundaries. Mounted rows and
+ * the newest turn are pinned, even when one of them alone exceeds the budget. */
+export function evictBodies(s: ViewState, protectedIds: ReadonlySet<string>, budget = BODY_CACHE_BYTES): ViewState {
+  // Compact metadata/preview rows remain as the index of known ranges; only
+  // retained bodies are charged. Identity count is deliberately independent
+  // of this budget so eviction cannot create a hole in the transcript.
+  let bytes = s.entries.reduce((total, e) => total + (evictedPreviews.has(e) ? 0 : bodySize(e)), 0)
+  if (bytes <= budget) return s
+  let lastUser = -1
+  for (let i = s.entries.length - 1; i >= 0; i--) if (s.entries[i].message?.role === 'user') { lastUser = i; break }
+  if (lastUser < 0) lastUser = Math.max(0, s.entries.length - 10)
+  let changed = false
+  const entries = s.entries.map((e, index) => {
+    if (bytes <= budget || evictedPreviews.has(e) || index >= lastUser || protectedIds.has(e.id) || protectedIds.has(`system:${e.id}`) || (e.message?.toolCallId && protectedIds.has(e.message.toolCallId)) || e.message?.content?.some(c => c.id && protectedIds.has(c.id))) return e
+    const base = bodyPreviews.get(e) ?? e
+    const preview: Entry = {
+      ...e, truncated: true, tools: undefined, details: undefined,
+      system: base.system?.slice(0, 160), summary: base.summary?.slice(0, 160),
+      message: base.message ? { ...base.message, details: undefined, content: base.message.content?.map(c => ({
+        type: c.type, id: c.id, name: c.name, path: c.path, size: c.size, mimeType: c.mimeType, toolType: c.toolType,
+        text: c.text?.slice(0, 160), thinking: c.thinking?.slice(0, 160), input: c.input?.slice(0, 160),
+      })) } : undefined,
+    }
+    bytes -= bodySize(e)
+    evictedPreviews.add(preview)
+    changed = true
+    return preview
+  })
+  return changed ? rebuild({ ...s, entries }) : s
 }
 
 /** entryToIndex is the inverse of indexToEntry: a tree row for a loaded body. */
@@ -367,7 +405,22 @@ function rebuild(s: ViewState): ViewState {
     if (!next.requests.some(r => r.id === req.id)) next.requests.push(req)
   }
   if (next.requests.length) next.currentRequestId = next.requests[next.requests.length - 1].id
+  // Preserve row identity across pagination/hydration. A sibling acquiring its
+  // full body must not re-render every unchanged Markdown/tool row.
+  const oldNodes = new Map(s.nodes.map(n => [n.id, n]))
+  next.nodes = next.nodes.map(n => {
+    const old = oldNodes.get(n.id)
+    return old && sameValue(old, n) ? old : n
+  })
   return next
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false
+  const aa = a as Record<string, unknown>, bb = b as Record<string, unknown>
+  const keys = Object.keys(aa)
+  return keys.length === Object.keys(bb).length && keys.every(key => Object.hasOwn(bb, key) && sameValue(aa[key], bb[key]))
 }
 
 function isUserEntry(e: Entry): boolean {
@@ -598,12 +651,17 @@ function applyEntry(s: ViewState, e: Entry, withNode = true) {
       })
       return
     }
-    if (!e.system && !e.tools?.length && e.truncated) return
+    if (!e.system && !e.tools?.length && e.truncated) {
+      s.records.push({ id: `system:${e.id}`, requestId: e.id, kind: 'system', turn: s.turn || 1, preview: '', truncated: true })
+      return
+    }
     applyRequestHeader(s, e.id, e.system ?? '', e.tools, e.timestamp, {
       provider: e.provider,
       model: e.modelId,
       thinkingEffort: e.thinkingEffort,
     })
+    const record = s.records.find(r => r.id === `system:${e.id}`)
+    if (record) record.truncated = e.truncated
     return
   }
   if (e.type === 'message' && e.message) {
@@ -668,6 +726,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       id,
 	  parentId,
       kind: 'user',
+      truncated,
       turn: s.turn,
       preview: previewOf(text),
       output: text,
@@ -700,6 +759,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       id,
       kind: 'assistant',
       turn: s.turn || 1,
+      truncated,
       step: request?.step,
       requestId,
       preview: previewOf(thinking ? thinking : text),
@@ -828,6 +888,7 @@ function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { 
     return {
       ...r,
       output: result,
+      truncated: patch.truncated ?? r.truncated,
       running: patch.running ?? r.running,
       error: patch.isError ?? r.error,
       durationMs: patch.durationMs ?? r.durationMs,
