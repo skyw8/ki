@@ -691,6 +691,16 @@
 }
 .md p { margin: 0 0 10px; }
 .md p:last-child { margin-bottom: 0; }
+/* A streaming message is rendered as several streamdown wrappers (settled
+   segments plus the open tail), which are siblings — so `p:last-child` above
+   flattens the gap at a segment boundary. Restore it there: the boundary is a
+   blank line, and a blank line means one block gap. Specificity beats
+   `.md p:last-child`. */
+.md-seg:not(:last-child) > *:last-child { margin-bottom: 10px; }
+/* The open tail of a long block, painted as source until it closes: same
+   metrics as parsed text (`.md` sets the font), but newlines are kept. */
+.md-tail { white-space: pre-wrap; margin: 0 0 10px; }
+.md-tail:last-child { margin-bottom: 0; }
 .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 16px 0 8px; line-height: 1.3; }
 .md ul, .md ol { margin: 0 0 10px; padding-left: 1.4em; }
 .md ul.contains-task-list { list-style: none; padding-left: 0; }

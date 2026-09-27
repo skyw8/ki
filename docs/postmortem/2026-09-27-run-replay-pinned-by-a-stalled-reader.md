@@ -32,7 +32,7 @@
 - `internal/server/server.go`：裁剪增加上限（最新 128 条过时 payload、总量 4 MiB），超出后不再为落后的 reader 让路。安全性：最新 partial 已经带整份累积文本，更早的内容在 `GET /v1/sessions/{id}` 的 transcript 里，落后 128 条以上的读者本来也看不到直播。
 - `internal/cli/cli.go`：`streamPrinter` 改成打印累积 partial 里尚未输出的后缀（而不是直接打 `d.Delta`），所以裁剪和重连都不会让 CLI 漏字。
 - `web/src/App.tsx`：run 事件入队、按 16ms 合并成一次 `setView`，连续 `message_update` 只留最后一条；游标仍在同一个 updater 里推进。
-- `web/src/features/markdown/Markdown.tsx`：`useStreamingText` 给流式渲染加 150ms 尾随节流（最后一次一定渲染）。
+- `web/src/features/markdown/Markdown.tsx`：`useStreamingText` 给流式渲染加渲染节流（最后一次一定渲染；见 [流式正文冻在 debounce 后面](2026-09-27-streaming-text-froze-behind-a-debounce.md)），随后改成只解析定稿前缀之外的尾部（见 [webui.md](../webui.md)）。
 - 测试用假 provider 新增 `e2e-stream-<n>`（每 chunk 一整行 markdown、重复整份 partial），用来复现重放/渲染路径。
 
 ## 验证

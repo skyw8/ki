@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,5 +132,26 @@ func TestScriptedStreamTokenIgnoresMalformed(t *testing.T) {
 	msg, err := s.Stream(context.Background(), req, func(loop.AssistantDelta) error { return nil })
 	if err != nil || msg.Text() != "ok" {
 		t.Fatalf("got %q %v", msg.Text(), err)
+	}
+}
+
+func TestScriptedStreamsParagraphBlocks(t *testing.T) {
+	s := &Scripted{}
+	req := loop.Request{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "e2e-blocks-12"}}}}}
+	var last types.Message
+	deltas := 0
+	msg, err := s.Stream(context.Background(), req, func(d loop.AssistantDelta) error {
+		deltas++
+		last = d.Partial
+		return nil
+	})
+	if err != nil || deltas != 12 {
+		t.Fatalf("deltas = %d, err %v", deltas, err)
+	}
+	if got := strings.Count(msg.Text(), "\n\n"); got != 12 {
+		t.Fatalf("blank-line separated blocks = %d, want 12", got)
+	}
+	if last.Text() != msg.Text() {
+		t.Fatal("the last partial must carry the whole text")
 	}
 }

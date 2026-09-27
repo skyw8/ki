@@ -40,6 +40,13 @@ const SleepInterceptToken = "e2e-sleep-intercept" //nolint:gosec // e2e prompt m
 // produces, without a live model. A no-op for the live provider.
 const StreamTokenPrefix = "e2e-stream-"
 
+// BlocksTokenPrefix makes the fake assistant emit `<n>` markdown paragraphs, one
+// per chunk, each followed by a blank line. Unlike StreamTokenPrefix (one long
+// unbroken list) this is the shape that makes Streamdown re-lex the whole message
+// per delta, which is what the settled-prefix split in the WebUI avoids. A no-op
+// for the live provider.
+const BlocksTokenPrefix = "e2e-blocks-"
+
 // MarkdownToken makes the default fake assistant emit a GFM table, a mermaid
 // fence, and a plantuml fence so WebUI Playwright can exercise those renderers
 // without a live model.
@@ -112,9 +119,9 @@ func lastUserDelay(req loop.Request) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-// lastUserStreamChunks parses `e2e-stream-<n>` from the latest user message; 0
-// means no streaming fixture (missing or malformed).
-func lastUserStreamChunks(req loop.Request) int {
+// lastUserChunks parses `<prefix><n>` from the latest user message; 0 means the
+// token is missing or malformed, or the request already carries a tool result.
+func lastUserChunks(req loop.Request, prefix string) int {
 	text := ""
 	for _, msg := range slices.Backward(req.Messages) {
 		if msg.Role == "user" {
@@ -122,11 +129,11 @@ func lastUserStreamChunks(req loop.Request) int {
 			break
 		}
 	}
-	i := strings.Index(text, StreamTokenPrefix)
+	i := strings.Index(text, prefix)
 	if i < 0 {
 		return 0
 	}
-	rest := text[i+len(StreamTokenPrefix):]
+	rest := text[i+len(prefix):]
 	end := 0
 	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
 		end++
@@ -143,6 +150,12 @@ func lastUserStreamChunks(req loop.Request) int {
 	}
 	return n
 }
+
+// lastUserStreamChunks parses `e2e-stream-<n>`: n lines of one growing list block.
+func lastUserStreamChunks(req loop.Request) int { return lastUserChunks(req, StreamTokenPrefix) }
+
+// lastUserBlockChunks parses `e2e-blocks-<n>`: n paragraphs, blank-line separated.
+func lastUserBlockChunks(req loop.Request) int { return lastUserChunks(req, BlocksTokenPrefix) }
 
 // lastUserBashProbe returns the command after BashTokenPrefix in the latest
 // user message. It reports false once the request already carries a tool
@@ -236,6 +249,26 @@ func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.
 			}
 			if i%8 == 0 {
 				// Keep the run busy for a moment so a test can observe it live.
+				select {
+				case <-ctx.Done():
+					return m, ctx.Err()
+				case <-time.After(25 * time.Millisecond):
+				}
+			}
+		}
+		return m, ctx.Err()
+	}
+	if n := lastUserBlockChunks(req); n > 0 {
+		m := types.Message{Role: "assistant", StopReason: "stop", Provider: req.Provider, Model: req.Model}
+		var acc strings.Builder
+		for i := 0; i < n; i++ {
+			block := fmt.Sprintf("Paragraph %d: %s\n\n", i, strings.Repeat("lorem ipsum dolor ", 7))
+			acc.WriteString(block)
+			m.Content = []types.Content{{Type: "text", Text: acc.String()}}
+			if err := emit(loop.AssistantDelta{Type: "text_delta", Delta: block, Partial: m}); err != nil {
+				return m, err
+			}
+			if i%8 == 0 {
 				select {
 				case <-ctx.Done():
 					return m, ctx.Err()

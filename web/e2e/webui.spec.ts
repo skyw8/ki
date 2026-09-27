@@ -394,7 +394,7 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   // back to an earlier turn); the panel itself stays closed until asked for.
   await expect(page.getByTestId('request-nav')).toHaveCount(1)
   await expect(page.getByTestId('request-nav-panel')).toHaveCount(0)
-  await expect(page.getByTestId('assistant-message').locator('.md')).toContainText('ok')
+  await expect(page.getByTestId('assistant-message').first()).toContainText('ok')
   await expect(page.getByTestId('chat-system-prompt')).toHaveCount(0)
   // The stats strip renders the hit rate to 2 decimals (90/98).
   await expect(page.getByTestId('session-stats')).toContainText('缓存命中 91.84%')
