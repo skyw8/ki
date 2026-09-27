@@ -22,11 +22,11 @@
 
 谁不参与 spool：
 
-- 已带完整输出文件的工具结果（Bash / PowerShell / Monitor / TaskOutput 的 `output_file`）和已带分页游标的工具结果（Read 的 `next_offset`）原样保留：它们本身就是"完整内容 + 续读方式"，再 spool 一次会让 Read 指向自己那一页。
+- 已带完整输出文件的工具结果（Bash / PowerShell / TaskOutput 的 `output_file`）和已带分页游标的工具结果（Read 的 `next_offset`）原样保留：它们本身就是"完整内容 + 续读方式"，再 spool 一次会让 Read 指向自己那一页。
 - 用 Read 读 spill 文件不会二次落盘（store 只 spill 不属于自己的路径）。
 - Read 的一页（2000 行 / 50KB）和 shell 的尾部（2000 行 / 50KB）是这两个工具自己的契约，不叠加 preview budget。
 
-Bash、PowerShell、Monitor 的完整输出文件也由该 store 创建：任务日志落在同一个 session 目录里，随 session 关闭一起删除；store 拒绝创建时退回进程临时文件，任务本身照常运行。
+Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落在同一个 session 目录里，随 session 关闭一起删除；store 拒绝创建时退回进程临时文件，任务本身照常运行。
 
 ## 全局开关
 
@@ -51,7 +51,6 @@ Bash、PowerShell、Monitor 的完整输出文件也由该 store 创建：任务
 | `SendMessage` | `message`；可选 `to`（默认 `parent`）、`summary` | `to` 支持保留名 `"parent"` / `"main"` 或稳定 `agentId`；按目标在当前 run 边界 steer，或从目标 transcript 续跑 |
 | `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待 shell/agent 后台任务；返回有界输出、状态、结果和输出文件路径。读到**终态**的 agent 任务会标记该 run 已读，后续完成通知不再送达 |
 | `TaskStop` | `task_id`（或兼容的 `shell_id`） | 终止 shell/agent 后台任务并返回最终状态；被终止的 run 同样不再收到完成通知 |
-| `Monitor` | `command`、`description` | 启动流式监控任务，逐行发送输出更新；结束时返回任务结果 |
 
 ## Read
 
@@ -117,7 +116,7 @@ Bash、PowerShell、Monitor 的完整输出文件也由该 store 创建：任务
 
 - server 启动时解析一次可执行文件；Unix 依次查找 `/bin/bash` 和 PATH。
 - Windows 依次查找 `KI_GIT_BASH_PATH`、`CLAUDE_CODE_GIT_BASH_PATH`、Git for Windows 安装目录和 PATH 中的 `bash.exe`。
-- 找不到 Bash 时不注册 `Bash` 和 `Monitor`，server 仍正常启动。
+- 找不到 Bash 时不注册 `Bash`，server 仍正常启动。
 - 每次调用都是新的 `bash -lc` 进程，会加载用户 login profile；cwd 固定为 session cwd，`cd` 不会影响后续调用。
 - Bash、PowerShell、后台任务及其后代进程显式继承 Ki 启动时可见的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`ALL_PROXY`、`NO_PROXY`（含小写变体）；不会硬编码代理地址。
 - stdout/stderr 混排并持续写入无损临时文件；实时增量最多每 100ms 通过 `ToolExecutionUpdate` 推送一次。
@@ -173,9 +172,3 @@ Bash、PowerShell、Monitor 的完整输出文件也由该 store 创建：任务
 - 接受 `task_id`，并兼容 `shell_id`。
 - 终止任务的整个进程组及其子进程、管道。
 - 已完成、失败或停止的任务再次停止时返回不可停止错误。
-
-## Monitor
-
-- 仅找到 Bash 时注册，并启动独立的 Bash 监控任务。
-- stdout/stderr 每行通过 `ToolExecutionUpdate` 和现有 SSE 流式发送。
-- 命令结束后返回最终任务结果；PowerShell 长任务直接使用 `PowerShell.run_in_background`。

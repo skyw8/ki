@@ -348,9 +348,6 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 		gptWant = append(gptWant, "PowerShell")
 	}
 	gptWant = append(gptWant, "TaskOutput", "TaskStop")
-	if srv.shells.BashAvailable() {
-		gptWant = append(gptWant, "Monitor")
-	}
 	gptWant = append(gptWant, "Agent", "SendMessage")
 	if got := requestToolNames(gpt.Tools); !slices.Equal(got, gptWant) {
 		t.Fatalf("GPT tools = %v", got)
@@ -373,9 +370,6 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 		textOnlyWant = append(textOnlyWant, "PowerShell")
 	}
 	textOnlyWant = append(textOnlyWant, "TaskOutput", "TaskStop")
-	if srv.shells.BashAvailable() {
-		textOnlyWant = append(textOnlyWant, "Monitor")
-	}
 	textOnlyWant = append(textOnlyWant, "Agent", "SendMessage")
 	if got := requestToolNames(textOnly.Tools); !slices.Equal(got, textOnlyWant) {
 		t.Fatalf("text-only tools = %v", got)

@@ -48,9 +48,6 @@ func TestBuildSelectsReadCapabilities(t *testing.T) {
 		wantClassic = append(wantClassic, "PowerShell")
 	}
 	wantClassic = append(wantClassic, "TaskOutput", "TaskStop")
-	if shells.BashAvailable() {
-		wantClassic = append(wantClassic, "Monitor")
-	}
 	if got := strings.Join(names(classic), ","); got != strings.Join(wantClassic, ",") {
 		t.Fatalf("classic tools = %s", got)
 	}
@@ -72,9 +69,6 @@ func TestBuildSelectsReadCapabilities(t *testing.T) {
 		wantRich = append(wantRich, "PowerShell")
 	}
 	wantRich = append(wantRich, "TaskOutput", "TaskStop")
-	if shells.BashAvailable() {
-		wantRich = append(wantRich, "Monitor")
-	}
 	if got := strings.Join(names(rich), ","); got != strings.Join(wantRich, ",") {
 		t.Fatalf("rich tools = %s", got)
 	}
@@ -104,7 +98,7 @@ func TestBuildPowerShellContract(t *testing.T) {
 	ps := shellSpec{kind: shellPowerShell, path: "pwsh", powerShellEdition: powerShellCore}
 	shells := ShellRuntime{bash: shellSpec{kind: shellBash}, powerShell: &ps}
 	all := Set{CWD: t.TempDir(), Shells: shells}.Build(Profile{})
-	if pick(all, "Bash") != nil || pick(all, "Monitor") != nil {
+	if pick(all, "Bash") != nil {
 		t.Fatalf("Bash-dependent tools registered without Bash: %v", names(all))
 	}
 	tool := pick(all, "PowerShell")
@@ -639,28 +633,6 @@ func TestTaskOutputKeepsLargeLogsOnDisk(t *testing.T) {
 	details, ok := result.Details.(taskDetails)
 	if !ok || details.Truncation == nil || !details.Truncation.Truncated || details.OutputFile == "" {
 		t.Fatalf("task details: %#v", result.Details)
-	}
-}
-
-func TestMonitorStreamsOutput(t *testing.T) {
-	jobs := NewJobStore()
-	defer jobs.Close()
-	monitor := monitorTool{cwd: t.TempDir(), jobs: jobs}
-	var updates []string
-	result := monitor.ExecuteWithProgress(context.Background(), map[string]any{
-		"command": "printf 'first\\n'; sleep 0.05; printf 'second\\n'",
-	}, func(value any) {
-		if progress, ok := value.(map[string]any); ok {
-			if text, ok := progress["output"].(string); ok {
-				updates = append(updates, text)
-			}
-		}
-	})
-	if result.IsError || !strings.Contains(result.Content[0].Text, `"status":"completed"`) {
-		t.Fatalf("monitor: %+v", result)
-	}
-	if !strings.Contains(strings.Join(updates, ""), "first") || !strings.Contains(strings.Join(updates, ""), "second") {
-		t.Fatalf("monitor updates = %q", updates)
 	}
 }
 

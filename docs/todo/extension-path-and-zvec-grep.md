@@ -31,7 +31,7 @@
 - **不要求 `runtime.kind: rpc`**：纯 CLI 包（`kind: none`）也应能声明 `path`。
 - **路径存在性只能在使用时判定**：`node_modules/.bin` 之类由 `runtime.install` 创建，而 install 晚于 manifest 校验。装载期只校验形状，每轮组装工具时 `os.Stat` 并跳过缺失目录（log 一次）。副产品：install 建出的目录下一轮自动生效，不需要 reload。
 - **PATH 顺序**：`ki 内嵌 rg/fd 目录` → 扩展目录（按扩展名排序）→ 用户原 PATH。ki 的目录永远最前，保证 shell 里的 `rg`/`fd` 仍是 ki 自带版本；扩展目录在用户 PATH 之前，保证 shell 里敲到的 `zg` 与 sidecar 使用的版本一致。
-- **作用面**：只影响 ki shell 工具（Bash / PowerShell / Monitor）派生的子进程；不影响用户终端、扩展 sidecar 自己的环境（sidecar 用 `KI_EXTENSION_ROOT` 定位包内 bin）和 `Grep`/`Glob` 的内嵌引擎。
+- **作用面**：只影响 ki shell 工具（Bash / PowerShell）派生的子进程；不影响用户终端、扩展 sidecar 自己的环境（sidecar 用 `KI_EXTENSION_ROOT` 定位包内 bin）和 `Grep`/`Glob` 的内嵌引擎。
 - **可观测**：`GET /v1/extensions` 的扩展条目加 `pathDirs`（解析后的绝对路径），WebUI 扩展卡片展示；PATH 覆盖别人命令这件事必须可见。
 
 ### 关键实现点
@@ -81,7 +81,7 @@ stop
 - [x] `internal/extension/manifest.go`：`RuntimeSpec.Path []string`；装载期校验（相对、`withinRoot`、非空），失败写 `d.Error`；`Descriptor.PathDirs()` 返回绝对路径（enabled + 声明能力 + 无 Error，不做存在性检查）。
 - [x] `internal/extension/merge.go`：新增 `PathDirs(enabled []Descriptor) []string`，与 `PromptLayers` / `SkillRoots` / `CommandDir` 同层，按包名排序。
 - [x] `internal/resources/loader.go`：`Snapshot.PathDirs []string`，在 `scan()` 里由 `extension.PathDirs(found.Enabled)` 填充（随快照缓存，reload 后更新）。
-- [x] `internal/tools/set.go`：`Set.PathDirs []string`；`Build(profile)` 把它透传给 `bashTool` / `powerShellTool` / `monitorTool`（`shellSpec.pathDirs`）。
+- [x] `internal/tools/set.go`：`Set.PathDirs []string`；`Build(profile)` 把它透传给 `bashTool` / `powerShellTool`（`shellSpec.pathDirs`）。
 - [x] `internal/tools/shells.go`：`withBundledSearchTools(env, primary string, extra []string, kind shellKind)`；`prependPath` 支持多目录；Bash 分支额外设置 `KI_EXTENSION_PATH_DIRS`，分隔符固定为 `:`（shim 是 POSIX 脚本，与宿主 `os.PathListSeparator` 无关）。
 - [x] `internal/search/executable.go`：`toolsShim` 增加扩展目录循环（shim 内容变更后 `materializeShim` 会重写缓存里的文件）。
 - [x] `internal/server/server.go`：组装 `tools.Set{...}` 时填 `PathDirs: snapshot.PathDirs`（`snapshot` 已在同处 `s.resources.Load` 取到）。

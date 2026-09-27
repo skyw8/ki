@@ -276,7 +276,7 @@ type ErrorFunc func(sessionID, name, capability, code, message string)
 var reservedToolNames = map[string]bool{
 	"Read": true, "Write": true, "Edit": true,
 	"Grep": true, "Glob": true, "Bash": true, "PowerShell": true,
-	"TaskOutput": true, "TaskStop": true, "Monitor": true,
+	"TaskOutput": true, "TaskStop": true,
 }
 
 func redactMessages(msgs []types.Message) []types.Message {

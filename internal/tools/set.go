@@ -55,7 +55,7 @@ func (s Set) Build(profile Profile) []loop.Tool {
 		shells = fallbackShellRuntime()
 	}
 	// The shell specs carry the extension PATH directories because every shell
-	// child (foreground, background, Monitor) builds its environment from the
+	// child (foreground, background) builds its environment from the
 	// spec it was started with.
 	shells.bash.pathDirs = s.PathDirs
 	if shells.powerShell != nil {
@@ -79,9 +79,6 @@ func (s Set) Build(profile Profile) []loop.Tool {
 		taskOutputTool{tasks: tasks},
 		taskStopTool{tasks: tasks},
 	)
-	if shells.bash.available() {
-		out = append(out, monitorTool{cwd: cwd, jobs: jobs, shell: shells.bash})
-	}
 	if agent != nil {
 		// The tool set is part of the provider's cached prefix, so it must not
 		// depend on how deep this session sits in the Agent chain: withholding

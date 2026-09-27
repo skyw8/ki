@@ -86,7 +86,7 @@ my-ext/
 
 ## 扩展 PATH 目录
 
-声明 `path` 能力并列出 `runtime.path` 后，这些目录会出现在 shell 工具（Bash / PowerShell / Monitor）派生的子进程 `PATH` 里，使扩展自带的 CLI 对模型可见，而不要求用户全局安装。
+声明 `path` 能力并列出 `runtime.path` 后，这些目录会出现在 shell 工具（Bash / PowerShell）派生的子进程 `PATH` 里，使扩展自带的 CLI 对模型可见，而不要求用户全局安装。
 
 顺序：**ki 内嵌 rg/fd 目录 → 扩展目录（按扩展名排序）→ 用户原 `PATH`**。ki 的目录永远最前，扩展无法顶掉 `rg`/`fd`；扩展目录在用户 `PATH` 之前，保证 shell 里敲到的版本与 sidecar 使用的一致。重复声明的目录会去重。
 

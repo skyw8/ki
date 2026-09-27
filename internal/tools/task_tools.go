@@ -12,7 +12,7 @@ import (
 	"ki/internal/loop"
 )
 
-const taskOutputPrompt = `Retrieves output and status for a background task started by Agent, Bash, PowerShell, or Monitor.
+const taskOutputPrompt = `Retrieves output and status for a background task started by Agent, Bash, or PowerShell.
 
 Use block=false for an immediate snapshot. Use block=true to wait for completion up to timeout milliseconds. For a running task, output contains the captured output so far and output_file can be read with Read.`
 
@@ -38,7 +38,7 @@ func (taskOutputTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object", "additionalProperties": false, "required": []any{"task_id"},
 		"properties": map[string]any{
-			"task_id": map[string]any{"type": "string", "description": "The task ID returned by Bash, PowerShell, or Monitor."},
+			"task_id": map[string]any{"type": "string", "description": "The task ID returned by Bash, PowerShell, or Agent."},
 			"block":   map[string]any{"type": "boolean", "description": "Whether to wait for the task to finish. Defaults to true."},
 			"timeout": map[string]any{"type": "number", "minimum": 0, "maximum": 600000, "description": "Maximum wait time in milliseconds. Defaults to 30000."},
 		},
@@ -155,96 +155,6 @@ func (t taskStopTool) Execute(_ context.Context, args map[string]any) loop.ToolR
 		"status":    snapshot.Status,
 		"command":   snapshot.Command,
 	}, detailsForTask(snapshot, "success"))
-}
-
-type monitorTool struct {
-	jobs  *JobStore
-	cwd   string
-	shell shellSpec
-}
-
-func (monitorTool) Name() string        { return "Monitor" }
-func (monitorTool) Description() string { return "Run a command and stream each stdout/stderr update." }
-func (monitorTool) Snippet() string     { return "Stream output from a long-running command" }
-func (monitorTool) Prompt() string {
-	return "Runs a monitoring command as a background task and streams output updates. Use Bash with run_in_background for a one-shot command that only needs a completion result."
-}
-func (monitorTool) Parameters() map[string]any {
-	return map[string]any{
-		"type": "object", "additionalProperties": false, "required": []any{"command"},
-		"properties": map[string]any{
-			"command":     map[string]any{"type": "string", "description": "Command or script whose output should be streamed."},
-			"description": map[string]any{"type": "string", "description": "Short description of the monitored stream."},
-		},
-	}
-}
-func (t monitorTool) Validate(args map[string]any) error {
-	return validateArgs(t.Parameters(), t.Name(), args)
-}
-
-func (t monitorTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
-	return t.ExecuteWithProgress(ctx, args, nil)
-}
-
-func (t monitorTool) ExecuteWithProgress(ctx context.Context, args map[string]any, emit func(any)) loop.ToolResult {
-	if t.jobs == nil {
-		return errRes("task store is unavailable")
-	}
-	command := stringArg(args, "command", "")
-	if command == "" {
-		return errRes("command is required")
-	}
-	description := stringArg(args, "description", command)
-	shell := t.shell
-	if !shell.available() {
-		shell = fallbackShellRuntime().bash
-	}
-	id, _, err := t.jobs.Start(ctx, shell, t.cwd, command, description, "local_bash")
-	if err != nil {
-		return errRes(err.Error())
-	}
-	updates, stop, err := t.jobs.Subscribe(id)
-	if err != nil {
-		return errRes(err.Error())
-	}
-	done, ok := t.jobs.Done(id)
-	if !ok {
-		stop()
-		return errRes(fmt.Sprintf("task %s not found", id))
-	}
-	defer stop()
-	for {
-		select {
-		case update := <-updates:
-			if update.Delta != "" && emit != nil {
-				emit(map[string]any{
-					"type": "monitor_progress", "task_id": id,
-					"output": update.Delta, "task": update.Snapshot,
-				})
-			}
-		case <-done:
-			for {
-				select {
-				case update := <-updates:
-					if update.Delta != "" && emit != nil {
-						emit(map[string]any{"type": "monitor_progress", "task_id": id, "output": update.Delta, "task": update.Snapshot})
-					}
-				default:
-					snapshot, _ := t.jobs.Get(id)
-					details := detailsForTask(snapshot, "success")
-					snapshot, _ = boundedTaskSnapshot(snapshot)
-					return taskResult(snapshot, details)
-				}
-			}
-		case <-ctx.Done():
-			snapshot, _ := t.jobs.Stop(id)
-			details := detailsForTask(snapshot, "cancelled")
-			details.Cancelled = true
-			res := errRes("Monitor aborted")
-			res.Details = details
-			return res
-		}
-	}
 }
 
 func taskResult(value any, details ...any) loop.ToolResult {

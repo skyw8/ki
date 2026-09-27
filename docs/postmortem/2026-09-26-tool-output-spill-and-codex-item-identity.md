@@ -38,7 +38,7 @@
 - **统一 output spool**（`internal/tooloutput`，边界在 loop 的 `AfterTool` 之后）：超过 preview budget（默认 16KiB / 800 行）的文本完整写入 `<os.TempDir>/ki-tool-output/run-<pid>-<rand>/<session>/`，模型只拿到有界 preview + `Read(file_path, offset, limit)` 提示；jsonl/SSE 记录的也是有界结果。内置工具、扩展工具、zvec 等 sidecar 工具同一契约。
 - **配额**：单文件 8MiB、单 session 256MiB；超限时只存前缀（`output.incomplete`），session 预算用完则只回有界 preview 并在 note 里说明，绝不把结果变成错误。
 - **生命周期**：session 关闭删目录并释放预算，server 关闭删整个 run root；崩溃残留由启动时的 `owner.json`（pid/host/heartbeat）+ TTL 24h 清扫，持有者进程仍存活的 root 不清理。
-- **不重复 spool**：已带 `output_file` 的工具结果、已带 `next_offset` 的 Read 结果、以及"读 spill 文件"本身都原样保留 —— 否则 Read 会指向自己那一页。Bash / PowerShell / Monitor 的任务日志也交给 store 创建，与 session 目录同生命周期。
+- **不重复 spool**：已带 `output_file` 的工具结果、已带 `next_offset` 的 Read 结果、以及"读 spill 文件"本身都原样保留 —— 否则 Read 会指向自己那一页。Bash / PowerShell 的任务日志也交给 store 创建，与 session 目录同生命周期。
 - **Grep / Glob 不再在自己内部截断**：完整匹配交给 spool，只保留 16MiB 的内存保护上限，spill 文件因此真的是"完整结果"。
 - **sidecar item 关联**：`SlotRegistry` 以 provider item ID 为主键，`call_id` / `output_index` 只作为 delta 缺 ID 时的回退（同一个 `output_index` 被复用时以最后注册的 item 为准）；reasoning item 按 `REASONING_FIELDS` 白名单过滤，落盘和回放各过滤一次；回放前按 reasoning id 去重。
 

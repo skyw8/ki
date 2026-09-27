@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// TaskStatus is the lifecycle state exposed by Bash, TaskOutput, TaskStop and
-// Monitor. A backgrounded task is still running; the separate state makes it
+// TaskStatus is the lifecycle state exposed by Bash, TaskOutput, and
+// TaskStop. A backgrounded task is still running; the separate state makes it
 // possible to distinguish an explicit background task from a foreground one
 // that was promoted after its waiting budget expired.
 type TaskStatus string
@@ -399,31 +399,6 @@ func (s *JobStore) Get(key string) (TaskSnapshot, bool) {
 		return TaskSnapshot{}, false
 	}
 	return j.snapshot(), true
-}
-
-// Subscribe returns a loss-tolerant progress stream for one task. The output
-// file remains the source of truth; subscribers are only for live UI/model
-// updates and may miss intermediate chunks when they are too slow.
-func (s *JobStore) Subscribe(id string) (<-chan TaskUpdate, func(), error) {
-	s.mu.RLock()
-	j, ok := s.jobs[id]
-	s.mu.RUnlock()
-	if !ok {
-		return nil, nil, os.ErrNotExist
-	}
-	ch, stop := j.subscribe()
-	return ch, stop, nil
-}
-
-// Done returns the task completion signal without exposing the process.
-func (s *JobStore) Done(id string) (<-chan struct{}, bool) {
-	s.mu.RLock()
-	j, ok := s.jobs[id]
-	s.mu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	return j.done, true
 }
 
 // Output returns the complete output captured so far by task id or path.

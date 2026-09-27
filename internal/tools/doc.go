@@ -1,6 +1,5 @@
 // Package tools implements model-aware built-ins: Read, Write, Edit, Grep,
-// Glob, Bash, PowerShell, Agent, SendMessage, TaskOutput, TaskStop, and
-// Monitor.
+// Glob, Bash, PowerShell, Agent, SendMessage, TaskOutput, and TaskStop.
 //
 // Wire names and input schemas follow Claude Code. Text results follow pi
 // (no cat -n; shell tools mix stdout/stderr; non-zero exit is an error). Relative
@@ -8,7 +7,7 @@
 // that cwd, so cd and Set-Location are not remembered. Windows probes configured
 // paths, standard Git installations, then PATH for Bash, and additionally
 // exposes PowerShell, preferring pwsh over powershell.exe. Other platforms probe
-// /bin/bash then PATH. When Bash is unavailable, Bash and Monitor are omitted
+// /bin/bash then PATH. When Bash is unavailable, Bash is omitted
 // without preventing server startup. The session-scoped task store tracks
 // process groups, output files, status, exit code, cancellation, and progress.
 // Its complete output files are created through the tool-output store
@@ -50,7 +49,7 @@
 // truncated results at the complete session-scoped temporary output file.
 // A foreground timeout promotes a still-running command to a background task;
 // explicit background tasks can be inspected by bounded TaskOutput or stopped by
-// TaskStop. Monitor streams Bash output through ToolExecutionUpdate. Search
+// TaskStop. Search
 // tools use the same process-tree termination contract and run an embedded
 // ripgrep binary, so an installed ki does not require rg in PATH. ki also
 // embeds fd; both are materialized into one tools directory that Bash and

@@ -310,7 +310,7 @@ func (s *Server) Snapshot(sessionID, _ string) (extension.SessionSnapshot, error
 	s.mu.Lock()
 	active := append([]string{}, s.activeTools[sessionID]...)
 	s.mu.Unlock()
-	all := []string{"Read", "Write", "Edit", "Grep", "Glob", "Bash", "TaskOutput", "TaskStop", "Monitor"}
+	all := []string{"Read", "Write", "Edit", "Grep", "Glob", "Bash", "TaskOutput", "TaskStop"}
 	return extension.SessionSnapshot{
 		ID:          sess.ID(),
 		CWD:         sess.Header.CWD,
@@ -552,7 +552,7 @@ func (s *Server) SetActiveTools(sessionID, extName string, names []string) error
 	known := map[string]bool{
 		"Read": true, "Write": true, "Edit": true,
 		"Grep": true, "Glob": true, "Bash": true, "PowerShell": true,
-		"TaskOutput": true, "TaskStop": true, "Monitor": true,
+		"TaskOutput": true, "TaskStop": true,
 	}
 	var kept, unknown []string
 	for _, n := range names {
