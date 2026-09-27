@@ -5,6 +5,7 @@ import { useI18n, type Lang, type MsgKey, type TFn } from '../../i18n/index'
 import { ModelPickerDialog } from './ModelPickerDialog'
 import { Select } from '../../components/Select'
 import { clampThinkingEffort } from '../../lib/model'
+import { clampCompactKeep, MAX_COMPACT_KEEP, type MessageView } from '../../lib/messageView'
 import type { NotifyPermission } from '../../lib/notifications'
 import { toast } from '../../components/toast'
 import { localizedExtensionText } from './ExtensionPanel'
@@ -1019,7 +1020,7 @@ function DeepWebSearchConfigForm({ api, name, onClose, embedded = false, models 
 	)
 }
 
-export function MessageSettings({ api }: { api: Client }) {
+export function MessageSettings({ api, view, onView }: { api: Client; view: MessageView; onView: (view: MessageView) => void }) {
   const { t } = useI18n()
   const [busy, setBusy] = useState<'steer' | 'queue'>('steer')
   useEffect(() => {
@@ -1040,6 +1041,40 @@ export function MessageSettings({ api }: { api: Client }) {
         </div>
       </header>
       <section className="preference-section">
+        <div className="preference-copy">
+          <h4>{t('settings.viewMode')}</h4>
+          <p>{t('settings.viewModeHint')}</p>
+        </div>
+        <div className="theme-picks" data-testid="settings-view" role="radiogroup" aria-label={t('settings.viewMode')}>
+          <button type="button" role="radio" aria-checked={view.mode === 'detailed'} className={`theme-pick${view.mode === 'detailed' ? ' on' : ''}`} data-testid="view-detailed" onClick={() => onView({ ...view, mode: 'detailed' })}>
+            <span>{t('settings.viewDetailed')}</span>
+          </button>
+          <button type="button" role="radio" aria-checked={view.mode === 'compact'} className={`theme-pick${view.mode === 'compact' ? ' on' : ''}`} data-testid="view-compact" onClick={() => onView({ ...view, mode: 'compact' })}>
+            <span>{t('settings.viewCompact')}</span>
+          </button>
+        </div>
+        {view.mode === 'compact' ? (
+          <div className="view-keep">
+            <label htmlFor="message-view-keep">{t('settings.viewKeep')}</label>
+            <input
+              id="message-view-keep"
+              data-testid="view-keep"
+              type="number"
+              min={0}
+              max={MAX_COMPACT_KEEP}
+              inputMode="numeric"
+              value={view.keep}
+              onChange={e => onView({ ...view, keep: clampCompactKeep(Number(e.target.value)) })}
+            />
+            <p className="cfg-hint">{t('settings.viewKeepHint', { max: MAX_COMPACT_KEEP })}</p>
+          </div>
+        ) : null}
+      </section>
+      <section className="preference-section">
+        <div className="preference-copy">
+          <h4>{t('settings.busyDelivery')}</h4>
+          <p>{t('settings.busyDeliveryHint')}</p>
+        </div>
         <div className="theme-picks" data-testid="settings-busy" role="radiogroup" aria-label={t('settings.busyDelivery')}>
           <button type="button" role="radio" aria-checked={busy === 'steer'} className={`theme-pick${busy === 'steer' ? ' on' : ''}`} data-testid="busy-steer" onClick={() => void save('steer')}>
             <span>{t('settings.busySteer')}</span>

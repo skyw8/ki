@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { IChev, IChevDown, IClock, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from '../../components/icons'
 import { IFile } from '../../components/icons'
@@ -7,7 +7,8 @@ import { AttachmentImage } from '../attachments/AttachmentImage'
 import type { Client } from '../../api/client'
 import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
-import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, reconcileUserNodes, turnStats, type CacheMiss, type TurnStats } from '../../lib/model'
+import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, reconcileUserNodes, requestTitle, turnStats, type CacheMiss, type TurnStats } from '../../lib/model'
+import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
 import { copyText } from '../../lib/clipboard'
 import type { ChatNode } from '../../api/types'
 
@@ -305,6 +306,46 @@ function TurnDivider({ stats }: { stats: TurnStats }) {
   )
 }
 
+/** nodePreview is the one-line hint a fold row shows for what it hides. */
+function nodePreview(n: ChatNode): string {
+  if (n.kind === 'user' || n.kind === 'assistant') return n.text
+  if (n.kind === 'tool') return n.name
+  return n.summary
+}
+
+/**
+ * FoldRow stands in for a turn's folded reply nodes. It sits between the turn's
+ * user bubble and the nodes that stayed visible, and opens them in place (the
+ * row itself does not move, so expanding never reorders the transcript). It
+ * carries the first hidden node id as `data-msg-id` so the request navigator
+ * can highlight the row while the target itself is folded away.
+ */
+function FoldRow({ turn, nodes, expanded, onToggle }: {
+  turn: ChatTurn
+  nodes: ChatNode[]
+  expanded: boolean
+  onToggle: () => void
+}) {
+  const { t } = useI18n()
+  const preview = nodes.length ? nodePreview(nodes[nodes.length - 1]) : ''
+  return (
+    <div className={`fold-row${expanded ? ' expanded' : ''}`} data-testid="fold-row" data-fold={turn.id} data-msg-id={nodes[0]?.id}>
+      <button
+        type="button"
+        className="fold-row-btn"
+        data-testid="fold-row-btn"
+        aria-expanded={expanded}
+        aria-label={expanded ? t('chat.collapse') : t('chat.expand')}
+        onClick={onToggle}
+      >
+        <IChev open={expanded} />
+        <span className="fold-row-count">{t('chat.foldCount', { n: nodes.length })}</span>
+        {!expanded && preview ? <span className="fold-row-preview">{preview}</span> : null}
+      </button>
+    </div>
+  )
+}
+
 type ChatItemProps = {
 	api: Client
 	node: ChatNode
@@ -416,16 +457,23 @@ const ChatItem = memo(function ChatItem({
   return <Compaction node={n} />
 })
 
+/**
+ * activeUserId returns the id of the user turn at or above the viewport top.
+ *
+ * It walks the render list, not the node list, because compact mode inserts
+ * fold rows; the user bubbles themselves are always rendered, so they stay the
+ * only anchors the request navigator needs.
+ */
 function activeUserId(
-  nodes: ChatNode[],
+  items: ChatRenderItem[],
   scrollEl: HTMLElement,
   virtualize: boolean,
   offsetOf: (index: number) => number | undefined,
 ): string | null {
   const users: { id: string; index: number }[] = []
-  for (let i = 0; i < nodes.length; i++) {
-    if (nodes[i].kind === 'user') users.push({ id: nodes[i].id, index: i })
-  }
+  items.forEach((it, index) => {
+    if (it.kind === 'node' && it.node.kind === 'user') users.push({ id: it.node.id, index })
+  })
   if (!users.length) return null
   const top = scrollEl.scrollTop + 12
   let current = users[0].id
@@ -448,25 +496,73 @@ function activeUserId(
   return current
 }
 
-export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, onHydrate, jumpToId, onJumped, onActiveRequest, turnBase = 0 }: Omit<ChatItemProps, 'node'> & {
+export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, onHydrate, jumpToId, onJumped, onActiveRequest, onLayoutChanged, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP }: Omit<ChatItemProps, 'node'> & {
 	nodes: ChatNode[]
 	/** Turns on the branch before the loaded window (see turnStats). */
 	turnBase?: number
+	/** 'compact' folds each turn's older replies (see lib/messageView). */
+	mode?: MessageViewMode
+	/** Newest reply nodes kept visible per turn in compact mode. */
+	keep?: number
 	scrollRef?: RefObject<HTMLDivElement | null>
 	jumpToId?: string | null
 	onJumped?: () => void
 	onActiveRequest?: (id: string | null) => void
+	/** A fold toggle changed the rendered height: re-evaluate follow-tail. */
+	onLayoutChanged?: () => void
 }) {
   const { t } = useI18n()
   const nodes = reconcileUserNodes(rawNodes)
   const misses = useMemo(() => cacheMisses(nodes), [nodes])
-  const virtualize = nodes.length > VIRTUALIZE_AFTER
+  // Turns the user opened by hand in compact mode. Keyed by turn id, so a stale
+  // entry from another session simply never matches; nothing has to be reset
+  // when the open session changes.
+  const [folds, setFolds] = useState<ReadonlySet<string>>(() => new Set<string>())
+  /**
+   * The fold row a toggle just acted on, with the viewport offset it had.
+   *
+   * Opening a fold inserts nodes below the row and closing it removes them.
+   * Either way the row must not move: it is the thing the pointer is on, and a
+   * jump under the cursor is exactly how the reader loses their place. The
+   * offset is restored in a layout effect, before paint, so no frame shows the
+   * shifted list.
+   */
+  const foldAnchor = useRef<{ id: string; offset: number } | null>(null)
+  const toggleFold = useCallback((id: string) => {
+    const scroll = scrollRef?.current
+    const row = scroll?.querySelector(`[data-testid="fold-row"][data-fold="${CSS.escape(id)}"]`)
+    if (scroll && row instanceof HTMLElement) {
+      foldAnchor.current = { id, offset: row.getBoundingClientRect().top - scroll.getBoundingClientRect().top }
+    }
+    setFolds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [scrollRef])
+  const items = useMemo(
+    () => (mode === 'compact' ? foldReplies(nodes, { keep, busy, expanded: folds }) : detailedItems(nodes)),
+    [mode, nodes, keep, busy, folds],
+  )
+  /**
+   * Whether to walk the list with the virtualizer.
+   *
+   * The decision must not change when a fold is opened: the two branches build
+   * a different DOM (plain children vs. absolutely positioned items inside a
+   * sized container), so swapping them remounts the whole transcript, and the
+   * swap clamps scrollTop to 0 — a reader who taps a fold row a screen down ends
+   * up at the top of the loaded window. Fold state is therefore kept out of the
+   * count: it takes the transcript and the render list, whichever is longer
+   * (folded rows add rows; opening one only adds more).
+   */
+  const virtualize = Math.max(items.length, nodes.length) > VIRTUALIZE_AFTER
   const virtualizer = useVirtualizer({
-    count: nodes.length,
+    count: items.length,
     getScrollElement: () => scrollRef?.current ?? null,
     estimateSize: () => 96,
     overscan: 10,
-    getItemKey: index => nodes[index]?.id ?? index,
+    getItemKey: index => items[index]?.id ?? index,
     enabled: virtualize,
   })
   const itemProps = { api, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate, misses }
@@ -483,11 +579,44 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     const foot = turns.get(n.id)
     return foot && !foot.live && foot.steps > 0 ? <TurnDivider stats={foot} /> : null
   }
+  const renderItem = (it: ChatRenderItem) => {
+    if (it.kind === 'fold') {
+      return <FoldRow key={it.id} turn={it.turn} nodes={it.nodes} expanded={it.expanded} onToggle={() => toggleFold(it.turn.id)} />
+    }
+    return (
+      <Fragment key={it.id}>
+        <ChatItem node={it.node} {...itemProps} />
+        {turnFoot(it.node)}
+      </Fragment>
+    )
+  }
+
+  // Why this runs on every item change but only acts on a pending toggle: the
+  // anchor has to be restored in the same commit that re-rendered the list, and
+  // the parent then re-reads the geometry while the scroll position is settled.
+  useLayoutEffect(() => {
+    const anchor = foldAnchor.current
+    if (!anchor) return
+    foldAnchor.current = null
+    const scroll = scrollRef?.current
+    const row = scroll?.querySelector(`[data-testid="fold-row"][data-fold="${CSS.escape(anchor.id)}"]`)
+    if (scroll && row instanceof HTMLElement) {
+      const top = row.getBoundingClientRect().top - scroll.getBoundingClientRect().top
+      if (Math.abs(top - anchor.offset) > 1) scroll.scrollTop += top - anchor.offset
+    }
+    onLayoutChanged?.()
+  }, [items, scrollRef, onLayoutChanged])
 
   useLayoutEffect(() => {
     if (!jumpToId) return
-    const index = nodes.findIndex(n => n.id === jumpToId)
-    if (index < 0) return
+    const index = items.findIndex(it => it.kind === 'node' && it.node.id === jumpToId)
+    if (index < 0) {
+      // The target sits inside a fold row: open it and let the effect re-run
+      // against the rebuilt item list.
+      const fold = items.find(it => it.kind === 'fold' && it.nodes.some(n => n.id === jumpToId))
+      if (fold && fold.kind === 'fold') toggleFold(fold.turn.id)
+      return
+    }
     const scroll = scrollRef?.current
     if (virtualize) {
       virtualizer.scrollToIndex(index, { align: 'start' })
@@ -499,27 +628,22 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
       }
     }
     onJumped?.()
-  }, [jumpToId, nodes, onJumped, scrollRef, virtualize, virtualizer])
+  }, [jumpToId, items, onJumped, scrollRef, virtualize, virtualizer, toggleFold])
 
   useEffect(() => {
     const el = scrollRef?.current
     if (!el) return
     const update = () => {
-      onActiveRequest?.(activeUserId(nodes, el, virtualize, index => virtualizer.getOffsetForIndex(index, 'start')?.[0]))
+      onActiveRequest?.(activeUserId(items, el, virtualize, index => virtualizer.getOffsetForIndex(index, 'start')?.[0]))
     }
     update()
     el.addEventListener('scroll', update, { passive: true })
     return () => el.removeEventListener('scroll', update)
-  }, [nodes, onActiveRequest, scrollRef, virtualize, virtualizer])
+  }, [items, onActiveRequest, scrollRef, virtualize, virtualizer])
   if (!virtualize) {
     return (
       <div className="chat-col" data-testid="chat">
-        {nodes.map(n => (
-          <Fragment key={n.id}>
-            <ChatItem node={n} {...itemProps} />
-            {turnFoot(n)}
-          </Fragment>
-        ))}
+        {items.map(renderItem)}
         {running ? <div className="status-line">{t('chat.running')}</div> : null}
       </div>
     )
@@ -527,8 +651,8 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   return (
     <div className="chat-col chat-virtual" data-testid="chat" style={{ height: virtualizer.getTotalSize() }}>
       {virtualizer.getVirtualItems().map(item => {
-        const n = nodes[item.index]
-        if (!n) return null
+        const it = items[item.index]
+        if (!it) return null
         return (
           <div
             key={item.key}
@@ -537,8 +661,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
             className="chat-virtual-item"
             style={{ transform: `translateY(${item.start}px)` }}
           >
-            <ChatItem node={n} {...itemProps} />
-            {turnFoot(n)}
+            {renderItem(it)}
           </div>
         )
       })}

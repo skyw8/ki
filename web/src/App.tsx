@@ -13,6 +13,7 @@ import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
 import { appendOptimisticUser, applyEvent, applyIndex, applyRuntimeCatalog, applyTail, clampThinkingEffort, emptyView, hydrateEntries, initialView, keepComposer, latestStats, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, userRequests } from './lib/model'
+import { clampCompactKeep, loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
 import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, PushEvent, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './api/types'
 import { TrajectoryView } from './features/chat/Trajectory'
 import { useI18n } from './i18n/index'
@@ -295,6 +296,7 @@ function WorkspaceApp({ api }: { api: Client }) {
 	const [globalExtensions, setGlobalExtensions] = useState<CatalogExtension[]>([])
   const [settingsOpen, setSettingsOpen] = useState(false)
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>('providers')
+  const [messageView, setMessageView] = useState<MessageView>(loadMessageView)
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(loadNotifyPref)
   const [notifyPerm, setNotifyPerm] = useState<NotifyPermission>(currentPermission)
   const [modelOpen, setModelOpen] = useState(false)
@@ -463,6 +465,13 @@ function WorkspaceApp({ api }: { api: Client }) {
     document.body.toggleAttribute('data-ds-dark-theme', dark)
     localStorage.setItem('ki-theme', dark ? 'dark' : 'light')
   }, [dark])
+
+  // The message view is a per-browser display preference (like the theme), so
+  // it lives in localStorage instead of the server's toggles.
+  const changeMessageView = useCallback((next: MessageView) => {
+    setMessageView({ mode: next.mode, keep: clampCompactKeep(next.keep) })
+    saveMessageView(next)
+  }, [])
 
   useEffect(() => { localStorage.setItem(EXPAND_KEY, JSON.stringify(expanded)) }, [expanded])
 
@@ -1379,6 +1388,19 @@ function WorkspaceApp({ api }: { api: Client }) {
     }
   }, [api, currentId, view.hasMore, view.oldestId])
 
+  /**
+   * Follow-tail is a property of where the viewport is, not of a flag somebody
+   * set once: read it back from the geometry. Scrolling sets it, and so does a
+   * fold toggle — expanding a row under the viewport pushes the tail away
+   * without any scroll event, and a stale "at the tail" flag would then yank the
+   * reader back down on the next streamed delta.
+   */
+  const syncFollow = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80)
+  }, [])
+
   useEffect(() => {
     const el = scrollRef.current
     if (!el || !atBottom) return
@@ -1889,9 +1911,8 @@ function WorkspaceApp({ api }: { api: Client }) {
                   data-testid="chat-scroll"
                   ref={scrollRef}
                   onScroll={e => {
-                    const el = e.currentTarget
-                    setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80)
-                    if (el.scrollTop < 96) void loadOlder()
+                    syncFollow()
+                    if (e.currentTarget.scrollTop < 96) void loadOlder()
                   }}
                 >
 				  <ChatView
@@ -1916,7 +1937,10 @@ function WorkspaceApp({ api }: { api: Client }) {
 					jumpToId={jumpToId}
 					onJumped={clearJump}
 					onActiveRequest={setActiveRequestId}
+					onLayoutChanged={syncFollow}
 					turnBase={view.turnBase}
+					mode={messageView.mode}
+					keep={messageView.keep}
 				  />
                 </div>
                 <RequestNav
@@ -2224,7 +2248,7 @@ function WorkspaceApp({ api }: { api: Client }) {
                 ) : page === 'prompt' ? (
                   <PromptSettings api={api} workspaceId={selectedWs} />
                 ) : page === 'message' ? (
-                  <MessageSettings api={api} />
+                  <MessageSettings api={api} view={messageView} onView={changeMessageView} />
                 ) : page === 'notifications' ? (
                   <NotificationSettings
                     enabled={notifyEnabled}

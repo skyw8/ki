@@ -555,6 +555,32 @@
   min-width: 0;
 }
 
+/* Compact message view: the row standing in for a turn's folded reply nodes.
+   It sits between the turn's user bubble and the nodes that stayed visible
+   (never folding the user bubble itself) and opens them in place. */
+.fold-row { display: flex; margin: 6px 0; }
+.fold-row-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px dashed var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  text-align: left;
+}
+.fold-row-btn:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.fold-row-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand); outline-offset: 2px; }
+.fold-row.expanded .fold-row-btn { border-style: solid; margin-bottom: 6px; }
+.fold-row-count { flex: none; color: var(--dsw-alias-label-caption); font-variant-numeric: tabular-nums; }
+.fold-row-preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-tertiary); }
+.view-keep { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+.view-keep input { width: 72px; }
+
 /* Turn footer: a hairline rule on either side of the turn's aggregate stats,
    mounted after the turn's last node. Keeps long runs scannable and gives the
    next user bubble breathing room. */
@@ -3563,11 +3589,14 @@ select:focus-visible {
   .diagram-zoom-bar button,
   .bubble-toggle,
   .branch-nav button,
+  .fold-row-btn,
   .req-nav-toggle,
   .req-nav-item {
     min-width: 40px;
     min-height: 40px;
   }
+  .fold-row-btn { height: 40px; }
+  .view-keep input { min-height: 40px; }
   .req-nav-toggle { width: 40px; height: 40px; }
   .req-nav-item { height: 40px; line-height: 40px; }
   .req-nav-filter { min-height: 40px; height: 40px; }
