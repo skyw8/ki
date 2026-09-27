@@ -574,9 +574,21 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   const [loadingFolds, setLoadingFolds] = useState<ReadonlySet<string>>(() => new Set())
   const [failedFolds, setFailedFolds] = useState<ReadonlySet<string>>(() => new Set())
   const foldAnchor = useRef<{ id: string; offset: number } | null>(null)
+  const foldFollow = useRef(false)
   const toggleFold = useCallback(async (id: string) => {
-    navigation.read()
+    // Preserve the reader's intent across the toggle. The newest turn's fold
+    // keeps the tail following so its revealed rows (and their late
+    // measurement) stay pinned to the bottom; any earlier fold is something the
+    // reader opened to read, so anchor that row and pause follow. Cancelling an
+    // in-flight jump is always wanted.
+    let tailTurnId = ''
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      if (nodes[i].kind === 'user') { tailTurnId = nodes[i].id; break }
+    }
+    if (!tailTurnId) tailTurnId = nodes[0]?.id ?? ''
+    const keepFollowing = navigation.following.current && id === tailTurnId
     onReadIntent?.()
+    if (!keepFollowing) navigation.read()
     if (!folds.has(id) && compactTurns?.some(t => t.id === id && t.hiddenCount > 0) && !loadedTurnIds?.includes(id)) {
       if (loadingFolds.has(id) || !onLoadTurn) return
       setLoadingFolds(prev => new Set([...prev, id]))
@@ -587,14 +599,15 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     }
     const scroll = scrollRef.current
     const row = scroll?.querySelector(`[data-testid="fold-row"][data-fold="${CSS.escape(id)}"]`)
-    if (scroll && row) foldAnchor.current = { id, offset: row.getBoundingClientRect().top - scroll.getBoundingClientRect().top }
+    if (keepFollowing) foldFollow.current = true
+    else if (scroll && row) foldAnchor.current = { id, offset: row.getBoundingClientRect().top - scroll.getBoundingClientRect().top }
     setFolds(prev => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }, [scrollRef, navigation.read, onReadIntent, folds, compactTurns, loadedTurnIds, loadingFolds, onLoadTurn])
+  }, [scrollRef, navigation.read, onReadIntent, folds, compactTurns, loadedTurnIds, loadingFolds, onLoadTurn, nodes])
   const items = useMemo(() => mode === 'compact' ? foldReplies(nodes, { keep, expanded: folds, summaries: compactTurns, loadedTurnIds }) : detailedItems(nodes), [mode, nodes, keep, folds, compactTurns, loadedTurnIds])
   const previousItems = useRef(items)
   const previousVirtual = navigation.virtual.current
@@ -736,6 +749,14 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   }
 
   useLayoutEffect(() => {
+    // Following a fold: the item count changed, so pin the tail. This also
+    // covers a collapse, which removes rows (no followOnAppend) and would
+    // otherwise leave the reader hovering above the clamped end.
+    if (foldFollow.current) {
+      foldFollow.current = false
+      virtualizer.scrollToEnd()
+      return
+    }
     const anchor = foldAnchor.current
     if (!anchor) return
     foldAnchor.current = null

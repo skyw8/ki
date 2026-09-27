@@ -36,6 +36,18 @@ function foldProbe(page: Page, fold: string) {
   }, fold)
 }
 
+/** Tail position of the chat scroller: are we pinned to the end and following? */
+function tailProbe(page: Page) {
+  return page.evaluate(() => {
+    const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
+    return {
+      scrollTop: Math.round(el.scrollTop),
+      maxScroll: Math.round(el.scrollHeight - el.clientHeight),
+      toBottom: !!document.querySelector('[data-testid="to-bottom"]'),
+    }
+  })
+}
+
 async function clickFold(page: Page, fold: string) {
   await page.evaluate((f: string) => {
     const row = document.querySelector(`[data-testid="fold-row"][data-fold="${f}"]`) as HTMLElement
@@ -142,6 +154,48 @@ test('opening a fold under the viewport keeps the row put and pauses follow-tail
   expect(ended.rowTop).toBe(before.rowTop)
   expect(ended.scrollTop).toBe(before.scrollTop)
   expect(ended.maxScroll).toBeGreaterThan(before.maxScroll)
+})
+
+test('expanding or collapsing the newest fold at the tail keeps following the bottom', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.goto('/')
+  await expect(page.getByTestId('hero')).toBeVisible()
+  // Enough turns that the transcript scrolls, so "at the tail" is meaningful.
+  for (let i = 0; i < 8; i++) {
+    await sendPrompt(page, `fold-msg-${i}`)
+    await expect(page.getByTestId('session-stats')).toContainText(`${i + 1} 轮 ·`)
+  }
+  // A tool turn gives the newest turn several reply nodes to fold.
+  await sendPrompt(page, 'e2e-bash:echo fold-me')
+  await expect(page.getByTestId('session-stats')).toContainText('9 轮 ·')
+  await useCompact(page, '0')
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
+    el.scrollTop = el.scrollHeight
+  })
+  await expect.poll(async () => (await tailProbe(page)).toBottom).toBe(false)
+  const before = await tailProbe(page)
+  expect(before.scrollTop).toBe(before.maxScroll)
+
+  // Expanding the newest fold reveals rows below the pointer. While following
+  // the tail must stay pinned, not drag the reader above the new end.
+  await page.getByTestId('fold-row-btn').last().click()
+  await expect(page.getByTestId('fold-row-btn').last()).toHaveAttribute('aria-expanded', 'true')
+  await expect.poll(async () => {
+    const p = await tailProbe(page)
+    return p.maxScroll > before.maxScroll && p.scrollTop === p.maxScroll
+  }).toBe(true)
+  expect((await tailProbe(page)).toBottom).toBe(false)
+
+  // Collapsing removes rows, which followOnAppend does not cover: the tail must
+  // still stay pinned instead of leaving the reader above a clamped end.
+  await page.getByTestId('fold-row-btn').last().click()
+  await expect(page.getByTestId('fold-row-btn').last()).toHaveAttribute('aria-expanded', 'false')
+  await expect.poll(async () => {
+    const p = await tailProbe(page)
+    return p.scrollTop === p.maxScroll
+  }).toBe(true)
+  expect((await tailProbe(page)).toBottom).toBe(false)
 })
 
 /**
