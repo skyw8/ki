@@ -5,7 +5,10 @@
 // and the auth status/login endpoints. Browser login exchanges the bearer
 // secret for an HttpOnly session cookie and a separate CSRF token; the token
 // is never embedded in the SPA HTML. Unsafe browser requests must echo the
-// CSRF token in X-Ki-CSRF. The CLI continues to use Bearer auth.
+// CSRF token in X-Ki-CSRF. The CLI continues to use Bearer auth. A browser
+// session expires after 12h idle and, once more than half that window has
+// elapsed, an authenticated request rewrites both cookies to extend it, so a
+// tab left in use stays signed in while an abandoned one still ages out.
 // Provider CRUD manages the offline registry and credentials; provider
 // globally discovered extensions add process-level sidecar runtimes and read-only catalog entries;
 // GET /v1/models
@@ -26,6 +29,12 @@
 // log is replayed only to the client holding that run's SSE.
 // GET /v1/extensions lists the global extension catalog, optional extension
 // i18n resources, runtime status, and process-level extension UI projection.
+// Web Push (docs/push.md) is served by GET /v1/push/config (the VAPID public
+// key), POST /v1/push/subscriptions (register a browser endpoint; upsert, so the
+// client re-syncs on every load) and DELETE /v1/push/subscriptions. Every
+// finished run also queues a push for those endpoints; the service encrypts per
+// subscription (RFC 8291) and prunes one the push service reports gone (404/410).
+// It is best-effort and never blocks the run's event funnel.
 // Workspaces live in {KI_HOME}/workspaces.json. Session cwd comes from a
 // workspace (or a tmp+ workspace). GET /v1/sessions/{id} returns a WebUI
 // view: the newest entries of the active leaf (unchanged request_header
@@ -82,7 +91,10 @@
 // queue (system lane, tagged with its agent task) once that turn has ended.
 // Dispatch drops a queued notification whose task result the parent already read
 // or stopped. SSE
-// replays runState.evs and drains after done. The buffered log is trimmed where
+// replays runState.evs and drains after done, emitting a `: ping` comment every
+// 15s while idle so a mobile or NAT path does not drop a connection that is
+// silent for a whole model round; GET /v1/events heartbeats the same way, and
+// SSE clients ignore comments. The buffered log is trimmed where
 // a payload cannot help a reader that attaches later: a message's start and
 // chunks leave the log once its message_end is persisted, superseded partials
 // are blanked once every attached reader has passed them (so memory tracks the

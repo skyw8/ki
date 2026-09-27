@@ -17,6 +17,7 @@ type Config struct {
 	Compaction Compaction `mapstructure:"compaction"`
 	Server     Server     `mapstructure:"server"`
 	Log        Log        `mapstructure:"log"`
+	Push       Push       `mapstructure:"push"`
 }
 
 // Sessions holds session storage settings.
@@ -48,6 +49,17 @@ type Log struct {
 	MaxBackups int    `mapstructure:"max_backups"`
 }
 
+// Push configures Web Push completion notifications.
+type Push struct {
+	// Enabled turns the server-side sender off entirely; with it off the WebUI
+	// still raises notifications from a live tab, but never while the page is
+	// suspended.
+	Enabled bool `mapstructure:"enabled"`
+	// Subject is the VAPID JWT `sub` claim (RFC 8292): a mailto: address or
+	// https URL. A bare address is normalized to mailto: by internal/push.
+	Subject string `mapstructure:"subject"`
+}
+
 // Builtin returns compiled-in defaults.
 func Builtin(home string) Config {
 	if home == "" {
@@ -65,6 +77,7 @@ func Builtin(home string) Config {
 		},
 		Server: Server{Addr: "127.0.0.1:19800"},
 		Log:    Log{Level: "info", MaxSizeMB: 10, MaxBackups: 3},
+		Push:   Push{Enabled: true, Subject: "mailto:ki@localhost"},
 	}
 }
 
@@ -138,6 +151,8 @@ func setDefaults(settings *viper.Viper, cfg Config) {
 	settings.SetDefault("log.level", cfg.Log.Level)
 	settings.SetDefault("log.max_size_mb", cfg.Log.MaxSizeMB)
 	settings.SetDefault("log.max_backups", cfg.Log.MaxBackups)
+	settings.SetDefault("push.enabled", cfg.Push.Enabled)
+	settings.SetDefault("push.subject", cfg.Push.Subject)
 }
 
 func mergeEnv(settings *viper.Viper) error {

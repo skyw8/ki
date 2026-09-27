@@ -73,33 +73,76 @@ export function shouldNotify(opts: {
   return opts.enabled && opts.permission === 'granted' && opts.focusedSession !== opts.sessionId
 }
 
-export function notifyCompletion(opts: {
+export async function notifyCompletion(opts: {
   enabled: boolean
   sessionId: string
   focusedSession: string | null
   subagent: boolean
   title: string
   body: string
-  onClick?: () => void
-}): Notification | null {
+}): Promise<boolean> {
   if (!shouldNotify({
     enabled: opts.enabled,
     permission: currentPermission(),
     sessionId: opts.sessionId,
     focusedSession: opts.focusedSession,
     subagent: opts.subagent,
-  })) return null
+  })) return false
   // One tag per session: several ki tabs observing the same completion, or a
   // run finishing twice, collapse into a single OS notification instead of a
-  // stack of duplicates.
-  return showNotification(opts.title, opts.body, opts.onClick, `ki-run-${opts.sessionId}`)
+  // stack of duplicates. The Web Push worker uses the same tag, so a completion
+  // that both the page and the push service report collapses too.
+  return showNotification({ title: opts.title, body: opts.body, tag: `ki-run-${opts.sessionId}` })
 }
 
-// Shared by the run-completion ping and the settings test button.
-export function showNotification(title: string, body: string, onClick?: () => void, tag?: string): Notification | null {
-  if (typeof Notification === 'undefined') return null
+// showNotification delivers a notification through whichever channel this
+// browser actually has, and reports whether one was raised.
+//
+// Why the service worker comes first: Android Chrome has no Notification
+// constructor at all — `new Notification()` throws "Illegal constructor", and
+// only a ServiceWorkerRegistration can raise a notification there. Leading with
+// the constructor made the settings test button look dead on a phone while Web
+// Push completions, which go through the worker, arrived fine. Using the worker
+// whenever a registration exists also gives the page path the same tag and the
+// same click behavior as the push path. The constructor stays as the fallback
+// for a browser with no service worker.
+export async function showNotification(req: {
+  title: string
+  body: string
+  tag?: string
+  data?: Record<string, unknown>
+}, onClick?: () => void): Promise<boolean> {
+  if (currentPermission() !== 'granted') return false
+  if (await showViaServiceWorker(req)) return true
+  return showViaConstructor(req, onClick)
+}
+
+async function showViaServiceWorker(req: { title: string; body: string; tag?: string; data?: Record<string, unknown> }): Promise<boolean> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return false
   try {
-    const notification = new Notification(title, { body, ...(tag ? { tag } : {}) })
+    const registration = await navigator.serviceWorker.getRegistration('/')
+    if (!registration) return false
+    await registration.showNotification(req.title, {
+      body: req.body,
+      ...(req.tag ? { tag: req.tag } : {}),
+      ...(req.data ? { data: req.data } : {}),
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function showViaConstructor(req: { title: string; body: string; tag?: string }, onClick?: () => void): boolean {
+  if (typeof Notification === 'undefined') return false
+  try {
+    const notification = new Notification(req.title, {
+      body: req.body,
+      icon: '/icon-192.png',
+      ...(req.tag ? { tag: req.tag } : {}),
+    })
     notification.onclick = () => {
       // Bring the WebUI back so the finished conversation is on screen; the OS
       // notification itself is dismissed once it has served that purpose.
@@ -107,8 +150,8 @@ export function showNotification(title: string, body: string, onClick?: () => vo
       onClick?.()
       notification.close()
     }
-    return notification
+    return true
   } catch {
-    return null
+    return false
   }
 }

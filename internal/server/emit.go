@@ -176,6 +176,10 @@ func (p *runEmitter) buffer(ev *loop.Event) {
 // reaches extensions.
 func (p *runEmitter) publishCompletion(ev loop.Event) {
 	p.s.publishPush(p.id, loop.Event{Type: ev.Type, RunID: ev.RunID, External: ev.External})
+	// The push stream only reaches a running page. Web Push wakes the service
+	// worker after the tab is frozen, so a locked phone still learns the run
+	// finished (the worker suppresses it while a focused tab is watching).
+	p.s.notifyPushCompletion(p.id)
 }
 
 // notifyExtensions forwards a lifecycle notification to async subscribers.

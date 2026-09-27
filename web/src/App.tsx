@@ -24,7 +24,10 @@ import { useDialogFocus } from './hooks/useDialogFocus'
 import { useTabFocus } from './hooks/useTabFocus'
 import { useServerEvents } from './hooks/useServerEvents'
 import { currentPermission, loadNotifyPref, notifyCompletion, requestPermission, saveNotifyPref, showNotification, type NotifyPermission } from './lib/notifications'
+import { dropPushSubscription, ensurePushSubscription } from './lib/push'
 import { focusedSession } from './lib/tab-focus'
+import { reconcileFinishedRuns } from './lib/completion-catchup'
+import { isNetworkError } from './lib/errors'
 import { ancestorsOf, buildSessionForest, orderedChildren, pinnedFirst, topLevelRoot } from './lib/session-tree'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
@@ -300,6 +303,9 @@ function WorkspaceApp({ api }: { api: Client }) {
   const [messageView, setMessageView] = useState<MessageView>(loadMessageView)
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(loadNotifyPref)
   const [notifyPerm, setNotifyPerm] = useState<NotifyPermission>(currentPermission)
+  // Whether the server can reach this browser with the page closed (a Web Push
+  // subscription is registered). Gates the "works while suspended" hint.
+  const [pushReady, setPushReady] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [dirOpen, setDirOpen] = useState(false)
   const [dirBusy, setDirBusy] = useState(false)
@@ -486,6 +492,8 @@ function WorkspaceApp({ api }: { api: Client }) {
     if (!on) {
       setNotifyEnabled(false)
       saveNotifyPref(false)
+      setPushReady(false)
+      void dropPushSubscription(api)
       return
     }
     const perm = currentPermission()
@@ -500,14 +508,17 @@ function WorkspaceApp({ api }: { api: Client }) {
     if (granted === 'granted') {
       setNotifyEnabled(true)
       saveNotifyPref(true)
+      // Registering the Web Push subscription also happens in this gesture:
+      // some browsers only allow subscribe() from one.
+      void ensurePushSubscription(api).then(setPushReady)
     } else {
       setNotifyEnabled(false)
       saveNotifyPref(false)
       toast.error(t('settings.notifyDenied'))
     }
-  }, [t])
+  }, [api, t])
 
-  const sendTestNotification = useCallback(() => {
+  const sendTestNotification = useCallback(async () => {
     const perm = currentPermission()
     setNotifyPerm(perm)
     if (perm === 'insecure' || perm === 'unsupported') {
@@ -515,7 +526,10 @@ function WorkspaceApp({ api }: { api: Client }) {
       return
     }
     if (perm !== 'granted') { toast.error(t('settings.notifyDenied')); return }
-    showNotification(t('settings.notifyTestTitle'), t('settings.notifyTestBody'))
+    const shown = await showNotification({ title: t('settings.notifyTestTitle'), body: t('settings.notifyTestBody') })
+    // Silence here reads as a broken button (a phone with no service worker
+    // registered cannot raise a page notification at all), so say why.
+    if (!shown) toast.error(t('settings.notifyTestFailed'))
   }, [t])
 
   // Permission can change in browser settings while the page is open; refresh
@@ -523,6 +537,15 @@ function WorkspaceApp({ api }: { api: Client }) {
   useEffect(() => {
     if (settingsOpen) setNotifyPerm(currentPermission())
   }, [settingsOpen])
+
+  // Re-assert the Web Push subscription whenever the page loads with
+  // notifications on. The server may have pruned the endpoint (the push service
+  // reported it gone) or lost its registry; re-POSTing is an upsert and heals
+  // either case without user action.
+  useEffect(() => {
+    if (!notifyEnabled || currentPermission() !== 'granted') return
+    void ensurePushSubscription(api).then(setPushReady)
+  }, [api, notifyEnabled])
 
   useEffect(() => {
     if (!collapsed) {
@@ -673,6 +696,9 @@ function WorkspaceApp({ api }: { api: Client }) {
             const [ss, ws] = await Promise.all([api.list(listEtag.current ?? undefined), api.workspaces()])
             if (!ss.notModified) {
               listEtag.current = ss.etag
+              // Eager copy: the resume catch-up reads sessionsRef synchronously
+              // from the promise callback, before React has re-rendered.
+              sessionsRef.current = ss.sessions
               setSessions(ss.sessions)
               for (const session of ss.sessions) {
                 if (session.running) runningKnown.current.add(session.id)
@@ -685,7 +711,11 @@ function WorkspaceApp({ api }: { api: Client }) {
             }
           }
         } catch (e) {
-          toast.from(e)
+          // A resume/visibility resync or a push-driven refetch can land while
+          // the phone's radio is still reattaching; the stream reconnects and
+          // the next refresh succeeds, so a transient network failure must not
+          // echo the browser's message as an error toast. HTTP errors still do.
+          if (!isNetworkError(e)) toast.from(e)
         } finally {
           gate.active = false
           const waiters = gate.waiters
@@ -704,7 +734,7 @@ function WorkspaceApp({ api }: { api: Client }) {
   useTabFocus(currentId)
   const handleRunComplete = useCallback((id: string) => {
     const session = sessionsRef.current.find(s => s.id === id)
-    notifyCompletion({
+    void notifyCompletion({
       enabled: notifyEnabled,
       sessionId: id,
       focusedSession: focusedSession(),
@@ -717,6 +747,20 @@ function WorkspaceApp({ api }: { api: Client }) {
     })
     void refreshList()
   }, [notifyEnabled, refreshList, t])
+
+  // A run that finished while this tab was suspended (phone locked, laptop
+  // asleep) never reached the agent_end sideband, and the push stream replays
+  // nothing on reconnect. The resume refresh is the only place that sees "was
+  // running, now stopped", so it is where the missed completion is announced.
+  // Call it after a refresh so sessionsRef already holds the new list.
+  const catchUpMissedCompletions = useCallback(() => {
+    reconcileFinishedRuns({
+      known: runningKnown.current,
+      sessions: sessionsRef.current,
+      aborted: abortedRuns.current,
+      announce: handleRunComplete,
+    })
+  }, [handleRunComplete])
 
 	useEffect(() => { void refreshExtensions() }, [refreshExtensions])
 	useEffect(() => {
@@ -772,7 +816,9 @@ function WorkspaceApp({ api }: { api: Client }) {
       }
     } catch (e) {
       if ((e as { name?: string }).name === 'AbortError') return
-      toast.from(e)
+      // The run stream drops whenever the tab is suspended or the link changes;
+      // the finally block re-listens, so a transient network failure is silent.
+      if (!isNetworkError(e)) toast.from(e)
     } finally {
       if (abortRef.current === ac) {
         // A finished run is reconciled from the tail: the events already
@@ -815,7 +861,7 @@ function WorkspaceApp({ api }: { api: Client }) {
     if (ev.type === 'ready') {
       // A fresh subscription replays nothing, so refetching everything is what
       // makes a reconnect catch up on whatever it missed.
-      void refreshList()
+      void refreshList().then(catchUpMissedCompletions)
       void refreshExtensions(true)
       void refreshOpenRuntime()
       return
@@ -910,21 +956,23 @@ function WorkspaceApp({ api }: { api: Client }) {
         })
         return
     }
-  }, [api, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, t])
+  }, [api, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, t, catchUpMissedCompletions])
   useServerEvents(api, onServerEvent)
 
   // Safety net for a push stream that outlived a laptop sleep or a proxy idle
   // timeout without raising a read error yet: resync when the tab is shown
-  // again. The refetch goes through the ETag, so an idle tab costs a 304.
+  // again. The refetch goes through the ETag, so an idle tab costs a 304. It is
+  // also where a completion missed while the page was suspended is recovered:
+  // the refresh reports the session as no longer running (see completion-catchup).
   useEffect(() => {
     const onVisibility = () => {
       if (document.visibilityState !== 'visible') return
-      void refreshList()
+      void refreshList().then(catchUpMissedCompletions)
       void refreshExtensions(true)
     }
     document.addEventListener('visibilitychange', onVisibility)
     return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [refreshExtensions, refreshList])
+  }, [catchUpMissedCompletions, refreshExtensions, refreshList])
 
   const openSession = useCallback(async (id: string): Promise<boolean> => {
     setCurrentId(id)
@@ -2339,6 +2387,7 @@ function WorkspaceApp({ api }: { api: Client }) {
                   <NotificationSettings
                     enabled={notifyEnabled}
                     permission={notifyPerm}
+                    pushReady={pushReady}
                     onToggle={on => void toggleNotify(on)}
                     onTest={sendTestNotification}
                   />

@@ -33,6 +33,9 @@ sideband 事件可以并发到达。
 | WebUI push | `extension_ui_updated` | 扩展 status/panel/prompt 投影变化；客户端重新读取 session。它不是 `loop.EventType` 常量，只在 `GET /v1/events` 上带 `sessionId`下发。 |
 
 `GET /v1/sessions/{id}/events` 是某个 run 的有序回放（`agent_end` 结束）。
+一个整轮模型调用期间可能长时间没有可发的帧，所以该流和 `GET /v1/events` 一样按
+`ssePingInterval`（15s）发 `: ping` 注释帧保活移动网络/代理；SSE 客户端忽略注释，
+CLI 的行读取器只认 `data:` 前缀。
 回放日志**按「后到的读者是否用得上」裁剪**，否则它会随 turn 的输出量增长而不是随
 轮次数增长。裁剪只作用于回放：已经连上的 reader 该收的每一帧照收。
 

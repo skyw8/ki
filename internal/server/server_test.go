@@ -2143,6 +2143,40 @@ func TestUIServesEmbeddedSPA(t *testing.T) {
 	}
 }
 
+// TestUIServesPWAAssets checks the two files that must not be cached like an
+// asset: the service worker (a stale handler would ignore pushes) and the
+// manifest. Skipped without the embedded SPA, like TestUIServesEmbeddedSPA.
+func TestUIServesPWAAssets(t *testing.T) {
+	if !web.HasAssets() {
+		t.Skip("web/dist not embedded; run go test -tags embed to cover the UI")
+	}
+	_, hs := testServer(t)
+	for _, tc := range []struct{ path, contentType string }{
+		{"/sw.js", "text/javascript"},
+		{"/manifest.webmanifest", "application/manifest+json"},
+	} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+tc.path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %d", tc.path, res.StatusCode)
+		}
+		if got := res.Header.Get("Content-Type"); !strings.HasPrefix(got, tc.contentType) {
+			t.Fatalf("%s content-type: %q", tc.path, got)
+		}
+		if got := res.Header.Get("Cache-Control"); got != "no-cache" {
+			t.Fatalf("%s cache-control: %q", tc.path, got)
+		}
+	}
+}
+
 func TestBrowserLoginSessionAndCSRF(t *testing.T) {
 	_, hs := testServer(t)
 	jar, err := cookiejar.New(nil)
@@ -2252,6 +2286,96 @@ func TestBrowserLoginSessionAndCSRF(t *testing.T) {
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("cookie write with csrf: %d", res.StatusCode)
+	}
+}
+
+// The browser session expires on idle, not on absolute age: a tab left open
+// across a working day keeps refreshing its 12h window, so a phone that comes
+// back after hours is still signed in. A session with plenty of life left is
+// left untouched.
+func TestBrowserSessionRenewsWhileInUse(t *testing.T) {
+	srv, hs := testServer(t)
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar}
+	login, err := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/auth/login", strings.NewReader(`{"token":"tok"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	login.Header.Set("Content-Type", "application/json")
+	res, err := client.Do(login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("login: %d", res.StatusCode)
+	}
+	serverURL, err := url.Parse(hs.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := ""
+	for _, c := range jar.Cookies(serverURL) {
+		if c.Name == browserSessionCookie {
+			sessionID = c.Value
+		}
+	}
+	if sessionID == "" {
+		t.Fatal("login did not set the session cookie")
+	}
+	get := func() *http.Response {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	// More than half spent: the next authenticated request renews it, and the
+	// response rewrites the cookie pair the browser holds.
+	srv.mu.Lock()
+	srv.browserSessions[sessionID] = time.Now().Add(browserSessionTTL/2 - time.Minute)
+	srv.mu.Unlock()
+	res = get()
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("renew request: %d", res.StatusCode)
+	}
+	renewed := false
+	for _, c := range res.Cookies() {
+		if c.Name == browserSessionCookie && c.MaxAge > 0 {
+			renewed = true
+		}
+	}
+	if !renewed {
+		t.Fatal("renewal did not rewrite the session cookie")
+	}
+	srv.mu.Lock()
+	expiresAt := srv.browserSessions[sessionID]
+	srv.mu.Unlock()
+	if time.Until(expiresAt) < browserSessionTTL/2 {
+		t.Fatalf("session not renewed: %v left", time.Until(expiresAt))
+	}
+
+	// Plenty of life left: the stored expiry is untouched.
+	fixed := time.Now().Add(browserSessionTTL - time.Hour)
+	srv.mu.Lock()
+	srv.browserSessions[sessionID] = fixed
+	srv.mu.Unlock()
+	res = get()
+	_ = res.Body.Close()
+	srv.mu.Lock()
+	after := srv.browserSessions[sessionID]
+	srv.mu.Unlock()
+	if !after.Equal(fixed) {
+		t.Fatalf("session with life left was rewritten: %v", after)
 	}
 }
 
@@ -4231,6 +4355,45 @@ func TestEventsNoRunEmptyStream(t *testing.T) {
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatalf("scanner: %v", err)
+	}
+}
+
+// A run can be silent for a whole model round; a mobile or NAT path drops an
+// idle connection long before that, so the run stream must send a comment
+// heartbeat like the push stream does. The CLI skips non-"data:" lines, so the
+// extra frames are invisible to it.
+func TestRunEventsSendIdleHeartbeat(t *testing.T) {
+	old := ssePingInterval
+	ssePingInterval = 25 * time.Millisecond
+	t.Cleanup(func() { ssePingInterval = old })
+
+	streamer := newHoldTurnStreamer()
+	_, hs := testServerWith(t, streamer)
+	t.Cleanup(streamer.unblock)
+	id := createSession(t, hs, t.TempDir())
+	if status, out := promptJSON(t, hs, id, "heartbeat", nil); status != http.StatusAccepted {
+		t.Fatalf("prompt %d %+v", status, out)
+	}
+	res := mustOpenEvents(t, hs, id)
+	defer func() { _ = res.Body.Close() }()
+
+	ping := make(chan struct{}, 1)
+	go func() {
+		sc := bufio.NewScanner(res.Body)
+		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for sc.Scan() {
+			if sc.Text() == ": ping" {
+				select {
+				case ping <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	select {
+	case <-ping:
+	case <-time.After(5 * time.Second):
+		t.Fatal("idle run stream never sent a heartbeat")
 	}
 }
 

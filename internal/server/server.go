@@ -30,6 +30,7 @@ import (
 	"ki/internal/loop"
 	"ki/internal/prompt"
 	"ki/internal/provider"
+	"ki/internal/push"
 	"ki/internal/resources"
 	"ki/internal/session"
 	"ki/internal/toggles"
@@ -82,6 +83,9 @@ type Server struct {
 	activeTools            map[string][]string
 	uiAnswers              map[string]chan uiAnswer
 	browserSessions        map[string]time.Time
+	push                   *push.Service
+	pushAbortMu            sync.Mutex
+	pushAborted            map[string]struct{}
 	toggleMu               sync.Mutex
 	runtimeMu              sync.Mutex
 	runtime                map[string]*runtimePrep
@@ -364,6 +368,7 @@ func New(opt Options) (*Server, error) {
 		activeTools:            map[string][]string{},
 		uiAnswers:              map[string]chan uiAnswer{},
 		browserSessions:        map[string]time.Time{},
+		pushAborted:            map[string]struct{}{},
 		runtime:                map[string]*runtimePrep{},
 		runtimeCtx:             runtimeCtx,
 		runtimeCancel:          runtimeCancel,
@@ -377,6 +382,19 @@ func New(opt Options) (*Server, error) {
 	srv.providerExtensions.SetErrorHandler(srv.onExtensionError)
 	srv.providerExtensions.SetProviderAuthHandler(srv.onProviderAuthEvent)
 	srv.restoreAgentTasks(infos)
+
+	// Web Push is best-effort infrastructure: a key or registry that cannot be
+	// read only disables the off-page channel, never the server. The WebUI falls
+	// back to its live-tab notification when push reports unavailable.
+	if opt.Config.Push.Enabled {
+		key, err := push.LoadOrCreateKey(filepath.Join(opt.Config.Home, "vapid.json"), opt.Config.Push.Subject)
+		if err != nil {
+			slog.Warn("web push disabled", "err", err)
+		} else {
+			srv.push = push.NewService(key, push.OpenStore(filepath.Join(opt.Config.Home, "push-subscriptions.json")))
+			srv.push.Start(runtimeCtx)
+		}
+	}
 	return srv, nil
 }
 
@@ -599,6 +617,9 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PUT /v1/default-model", s.auth(s.putDefaultModel))
 	api.HandleFunc("GET /v1/meta", s.auth(s.meta))
 	api.HandleFunc("GET /v1/events", s.auth(s.pushEvents))
+	api.HandleFunc("GET /v1/push/config", s.auth(s.pushConfig))
+	api.HandleFunc("POST /v1/push/subscriptions", s.auth(s.putPushSubscription))
+	api.HandleFunc("DELETE /v1/push/subscriptions", s.auth(s.deletePushSubscription))
 	api.HandleFunc("GET /v1/sessions", s.auth(s.list))
 	api.HandleFunc("POST /v1/sessions", s.auth(s.create))
 	api.HandleFunc("GET /v1/sessions/search", s.auth(s.searchSessions))
@@ -667,9 +688,14 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if source == authBrowserSession && unsafeMethod(r.Method) && !s.validCSRF(r) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
+		if source == authBrowserSession {
+			// Idle-based expiry: a tab left open across a working day keeps
+			// refreshing its window instead of dying at a fixed 12h mark.
+			s.renewBrowserSession(w, r)
+			if unsafeMethod(r.Method) && !s.validCSRF(r) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 		}
 		next(w, r)
 	}
@@ -725,6 +751,60 @@ func (s *Server) validBrowserSession(value string) bool {
 	return ok && expiresAt.After(now)
 }
 
+// renewBrowserSession extends a browser session once more than half its TTL has
+// been used, and rewrites both cookies to match. Sliding expiry keeps a tab
+// that is actively in use (a phone left on the WebUI across a day) signed in,
+// while an abandoned session still ages out. Rewriting on every request would
+// be needless churn, hence the half-TTL threshold.
+func (s *Server) renewBrowserSession(w http.ResponseWriter, r *http.Request) {
+	sessionCookie, err := r.Cookie(browserSessionCookie)
+	if err != nil {
+		return
+	}
+	csrfCookie, err := r.Cookie(browserCSRFCookie)
+	if err != nil {
+		// The pair is written together at login; without the CSRF half a
+		// rewrite would break unsafe methods, so let this session expire.
+		return
+	}
+	now := time.Now()
+	s.mu.Lock()
+	expiresAt, ok := s.browserSessions[sessionCookie.Value]
+	if !ok || expiresAt.After(now.Add(browserSessionTTL/2)) {
+		s.mu.Unlock()
+		return
+	}
+	s.browserSessions[sessionCookie.Value] = now.Add(browserSessionTTL)
+	s.mu.Unlock()
+	setBrowserCookies(w, sessionCookie.Value, csrfCookie.Value, now, requestIsSecure(r))
+}
+
+// setBrowserCookies writes the session/CSRF cookie pair with one shared expiry,
+// so login and renewal cannot drift apart.
+func setBrowserCookies(w http.ResponseWriter, sessionID, csrf string, now time.Time, secure bool) {
+	expires := now.Add(browserSessionTTL)
+	maxAge := int(browserSessionTTL / time.Second)
+	http.SetCookie(w, &http.Cookie{
+		Name:     browserSessionCookie,
+		Value:    sessionID,
+		Path:     "/",
+		Expires:  expires,
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     browserCSRFCookie,
+		Value:    csrf,
+		Path:     "/",
+		Expires:  expires,
+		MaxAge:   maxAge,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
 func (s *Server) validCSRF(r *http.Request) bool {
 	cookie, err := r.Cookie(browserCSRFCookie)
 	if err != nil {
@@ -764,26 +844,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	s.browserSessions[sessionID] = now.Add(browserSessionTTL)
 	s.mu.Unlock()
 
-	secure := requestIsSecure(r)
-	http.SetCookie(w, &http.Cookie{
-		Name:     browserSessionCookie,
-		Value:    sessionID,
-		Path:     "/",
-		Expires:  now.Add(browserSessionTTL),
-		MaxAge:   int(browserSessionTTL / time.Second),
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
-	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     browserCSRFCookie,
-		Value:    csrf,
-		Path:     "/",
-		Expires:  now.Add(browserSessionTTL),
-		MaxAge:   int(browserSessionTTL / time.Second),
-		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
-	})
+	setBrowserCookies(w, sessionID, csrf, now, requestIsSecure(r))
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -916,6 +977,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.outputStore != nil {
 		_ = s.outputStore.Close()
+	}
+	if s.push != nil {
+		s.push.Close()
 	}
 	if s.ext != nil {
 		s.ext.Close()
@@ -2225,6 +2289,43 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fl, _ := w.(http.Flusher)
+	// The run can sit silent for a whole model round (nothing to flush until the
+	// first delta), and a mobile/NAT path drops that idle connection long before
+	// the model answers. A comment heartbeat keeps it open. Heartbeat and event
+	// writes share writeMu because two goroutines must not interleave frames;
+	// once the handler returns it must stop touching w, so shutdown is joined.
+	var writeMu sync.Mutex
+	write := func(format string, args ...any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if _, err := fmt.Fprintf(w, format, args...); err != nil {
+			return err
+		}
+		if fl != nil {
+			fl.Flush()
+		}
+		return nil
+	}
+	stopPing := make(chan struct{})
+	pingStopped := make(chan struct{})
+	defer func() { close(stopPing); <-pingStopped }()
+	go func() {
+		defer close(pingStopped)
+		ticker := time.NewTicker(ssePingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopPing:
+				return
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if write(": ping\n\n") != nil {
+					return
+				}
+			}
+		}
+	}()
 	reader := &runReader{}
 	st.mu.Lock()
 	runID := st.runID
@@ -2275,9 +2376,8 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			slog.Error("marshal SSE event", "err", err)
 			return
 		}
-		_, _ = fmt.Fprintf(w, "id: %s:%d\nevent: %s\ndata: %s\n\n", runID, ev.Seq, ev.Type, b)
-		if fl != nil {
-			fl.Flush()
+		if write("id: %s:%d\nevent: %s\ndata: %s\n\n", runID, ev.Seq, ev.Type, b) != nil {
+			return
 		}
 		if ev.Type == loop.AgentEnd {
 			return

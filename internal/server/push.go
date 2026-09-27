@@ -42,6 +42,16 @@ const (
 	pushQueueLimit = 512
 )
 
+// ssePingInterval is the idle heartbeat for every SSE response. A mobile
+// browser or an intermediary (carrier NAT, a proxy) drops an idle connection
+// long before a slow model round produces its next event, so a comment frame
+// keeps both the run stream and the push stream alive. SSE clients ignore
+// comments, and the CLI's line reader skips anything without a "data:" prefix.
+//
+// A var, not a const: a test shortens it to observe a heartbeat without waiting
+// out the production interval.
+var ssePingInterval = 15 * time.Second
+
 // invalidateFrame is the payload of an event: invalidate frame.
 type invalidateFrame struct {
 	Type  string `json:"type"`
@@ -210,7 +220,7 @@ func (s *Server) pushEvents(w http.ResponseWriter, r *http.Request) {
 	if !write("ready", readyFrame{Type: "ready"}) {
 		return
 	}
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(ssePingInterval)
 	defer ticker.Stop()
 	for {
 		if scopes := p.takeScopes(); len(scopes) > 0 {

@@ -59,6 +59,7 @@ ki/
   - `tools.md` — tool contract (names/schemas follow Claude Code, results follow pi)
   - `webui.md` — same-origin WebUI serving contract
   - `workspace.md` — workspace registry (`{KI_HOME}/workspaces.json`)
+  - `push.md` — Web Push completion notifications (VAPID, subscriptions, service worker)
   - `postmortem/` — retrospective entries
 - Package invariants are in each package's `doc.go` (`go doc ./internal/session`). Keep this file free of `todo` paths and of per-file inventories under those directories.
 

@@ -561,6 +561,9 @@ func (s *Server) runAt(id string) *runState {
 }
 
 func (s *Server) publishRunAborted(sessionID string) {
+	// The Web Push fallback must stay silent for an aborted run; the mark is
+	// consumed by the agent_end that follows (see notifyPushCompletion).
+	s.markPushAborted(sessionID)
 	ev := loop.Event{Type: loop.RunAborted}
 	if st := s.runAt(sessionID); st != nil {
 		st.mu.Lock()

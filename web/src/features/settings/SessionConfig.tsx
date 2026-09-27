@@ -1088,11 +1088,12 @@ export function MessageSettings({ api, view, onView }: { api: Client; view: Mess
   )
 }
 
-export function NotificationSettings({ enabled, permission, onToggle, onTest }: {
+export function NotificationSettings({ enabled, permission, pushReady, onToggle, onTest }: {
   enabled: boolean
   permission: NotifyPermission
+  pushReady: boolean
   onToggle: (on: boolean) => void
-  onTest: () => void
+  onTest: () => void | Promise<void>
 }) {
   const { t } = useI18n()
   const permissionKey: MsgKey = permission === 'granted'
@@ -1125,13 +1126,16 @@ export function NotificationSettings({ enabled, permission, onToggle, onTest }: 
           <p data-testid="notify-permission">{t(permissionKey)}</p>
         </div>
         <div className="notify-actions">
-          <button type="button" className="primary-btn notify-test-btn" data-testid="notify-test" disabled={permission !== 'granted'} onClick={onTest}>
+          <button type="button" className="primary-btn notify-test-btn" data-testid="notify-test" disabled={permission !== 'granted'} onClick={() => void onTest()}>
             {t('settings.notifyTest')}
           </button>
         </div>
       </section>
       {permission === 'denied' ? <p className="preference-footnote">{t('settings.notifyDenied')}</p> : null}
       {permission === 'insecure' ? <p className="preference-footnote" data-testid="notify-insecure">{t('settings.notifyInsecure')}</p> : null}
+      {enabled && permission === 'granted'
+        ? <p className="preference-footnote" data-testid="notify-push" data-push={pushReady ? 'on' : 'off'}>{t(pushReady ? 'settings.notifyPushReady' : 'settings.notifyPushUnavailable')}</p>
+        : null}
       <p className="preference-footnote">{t('settings.hint')}</p>
     </div>
   )

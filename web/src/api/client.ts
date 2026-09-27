@@ -253,6 +253,20 @@ export class Client {
     return this.json(`/v1/sessions/${id}/extension-ui`, { method: 'POST', body: JSON.stringify(body) })
   }
 
+  // Web Push: the config supplies the VAPID public key the browser subscribes
+  // with; the subscription registry is what the server pushes to.
+  pushConfig(): Promise<{ enabled: boolean; publicKey: string }> {
+    return this.json('/v1/push/config')
+  }
+
+  putPushSubscription(sub: { endpoint: string; keys: { p256dh: string; auth: string } }): Promise<void> {
+    return this.json('/v1/push/subscriptions', { method: 'POST', body: JSON.stringify(sub) })
+  }
+
+  deletePushSubscription(endpoint: string): Promise<void> {
+    return this.json(`/v1/push/subscriptions?endpoint=${encodeURIComponent(endpoint)}`, { method: 'DELETE' })
+  }
+
   compact(id: string): Promise<void> {
     return this.json(`/v1/sessions/${id}/compact`, { method: 'POST' })
   }

@@ -49,6 +49,17 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(path, "assets/") {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	}
+	// The service worker must never be served from a stale cache: a browser
+	// checks it on navigation, and a long max-age would pin an old notification
+	// handler for up to a day. The manifest can revalidate cheaply.
+	switch path {
+	case "sw.js":
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+	case "manifest.webmanifest":
+		w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+	}
 	rs, ok := f.(io.ReadSeeker)
 	if !ok {
 		b, err := io.ReadAll(f)

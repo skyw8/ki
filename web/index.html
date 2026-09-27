@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <link rel="icon" type="image/svg+xml" href="/src/assets/ki.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- iOS installs the PWA from the Home Screen; it reads this icon rather
+         than the manifest, and needs the standalone meta to run without
+         Safari chrome (a requirement for Web Push there). -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="ki" />
+    <meta name="theme-color" content="#ffffff" />
     <title>ki</title>
   </head>
   <body>
