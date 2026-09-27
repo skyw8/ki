@@ -586,7 +586,13 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
       if (nodes[i].kind === 'user') { tailTurnId = nodes[i].id; break }
     }
     if (!tailTurnId) tailTurnId = nodes[0]?.id ?? ''
-    const keepFollowing = navigation.following.current && id === tailTurnId
+    // `following` can be false while the scrollbar still sits at the bottom (an
+    // earlier fold paused it, a programmatic scroll, a clamped end). Treat the
+    // visible bottom as following too, so the newest turn's fold still pins the
+    // tail instead of anchoring at the fold row.
+    const el = scrollRef.current
+    const atBottom = !!el && Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop) <= 8
+    const keepFollowing = (navigation.following.current || atBottom) && id === tailTurnId
     onReadIntent?.()
     if (!keepFollowing) navigation.read()
     if (!folds.has(id) && compactTurns?.some(t => t.id === id && t.hiddenCount > 0) && !loadedTurnIds?.includes(id)) {
