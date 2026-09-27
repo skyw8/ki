@@ -3563,7 +3563,11 @@ select:focus-visible {
   .attach-btn { width: 32px; height: 32px; }
   .send { flex: none; }
   .composer-row:has(.send.stop) .context-meter { display: none; }
-  .session-stats { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; }
+  /* Why: the stats strip exceeds the width on phones, so it scrolls sideways.
+     The scrollbar would eat a row of scarce vertical space, so hide it while
+     keeping touch/drag scrolling. */
+  .session-stats { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .session-stats::-webkit-scrollbar { display: none; }
   .session-stats-g { flex: none; }
   .theme-picks { grid-template-columns: 1fr; }
   .theme-pick { flex-direction: row; justify-content: flex-start; }
