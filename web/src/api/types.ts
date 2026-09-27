@@ -112,6 +112,14 @@ export type LoopEvent = {
   assistantMessageEvent?: { type: string; delta?: string; partial?: Message }
   system?: string
   tools?: ToolSchema[]
+	/**
+	 * The server drops the system/tools body of a replayed request_header that
+	 * repeats the previous one and sets this instead; the client reuses the
+	 * prompt it already has (same rule as the persisted entry).
+	 */
+	promptUnchanged?: boolean
+	/** Per-run SSE sequence number, the cursor a client resumes from. */
+	seq?: number
   reason?: string
   ok?: boolean
 	provider?: string
@@ -471,17 +479,6 @@ export type ViewState = {
   cwd: string
   title: string
   turn: number
-  replayed?: number
-  replayedUsers?: number
-  /**
-   * Replay baseline captured once at agent_start: how many already-persisted
-   * assistants (after the last user) and users the current run's event stream
-   * will replay before reaching live messages. Live completions must not move
-   * this, or the next real assistant message_start is mistaken for a replayed
-   * one and only shows up whole at message_end.
-   */
-  replayAssistants?: number
-  replayUsers?: number
   skills?: Toggle
 	thinkingEffort: string
 	contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }

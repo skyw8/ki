@@ -22,6 +22,8 @@ composer（命令按钮 + 行首 `/` 打开 slash 面板，数据来自 session 
 
 数据来自 session jsonl 和本次 run 的 SSE。`GET /v1/sessions/{id}` 默认给 leaf 尾部的 slim entries 加整棵树 `index`；Chat/Trace 在条数多时用虚拟列表只画视口附近的行，时间线按权重绝对定位并在过密时合并。向上滚到顶沿 `before` 再取更早的 leaf；Inspect / 展开截断工具行时用 `entry`/`entries` 补全文。conversation 和 trajectory 根据 `leafId` 沿 `parentId` 只渲染 active path，`index` 保留 sibling。`message_end` SSE 带持久化后的 `entryId`，所以刚完成的消息可以立即 edit/fork。工作区见 [workspace.md](workspace.md)。Sidecar 协议见 [extension.md](extension.md)。
 
+run 流的去重是**按状态**而不是按计数：重放里可能只有一条 in-flight 消息的最新 partial（服务端会裁掉已持久化的 `message_start`/chunk，见 [events.md](events.md)），也可能因为续传而从任意位置开始，所以客户端只问「视图里已经有什么」——`message_update` 且没有 streaming 气泡就用 partial 开一个；`message_start` 遇到已有 streaming 气泡就原地重置（同一时刻只可能有一条在流）；`message_end` 的 `entryId` 已在视图里就丢弃重放开出来的那个气泡。重新监听会带上「本 session 最后应用的 `<runId>:<seq>`」续传，runId 不匹配时服务端忽略（新 run 必从头回放）。
+
 ## 扩展 UI 壳
 
 WebUI **不加载扩展 JS**，不 `window.open`，不按扩展名写死控件。每个扩展只投一份投影，壳按同一套布局渲染。goal 和以后别的包用同一组接口。扩展文案由扩展包自己的 `extension.json -> i18n.resources` 提供，Host 只读取、校验并随 catalog 转发；WebUI 只负责按当前浏览器语言解析通用 `UIText`，不认识任何扩展 key。

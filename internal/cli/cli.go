@@ -27,6 +27,7 @@ import (
 	"ki/internal/processenv"
 	"ki/internal/provider"
 	"ki/internal/server"
+	"ki/internal/types"
 )
 
 // Main is the process entrypoint.
@@ -706,6 +707,7 @@ func streamEvents(ctx context.Context, base, token, id string) error {
 	defer func() { _ = res.Body.Close() }()
 	sc := bufio.NewScanner(res.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	var pr streamPrinter
 	for sc.Scan() {
 		line := sc.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -715,7 +717,7 @@ func streamEvents(ctx context.Context, base, token, id string) error {
 		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev) != nil {
 			continue
 		}
-		printEvent(ev)
+		pr.event(ev)
 		if ev.Type == loop.AgentEnd {
 			return nil
 		}
@@ -723,18 +725,66 @@ func streamEvents(ctx context.Context, base, token, id string) error {
 	return sc.Err()
 }
 
-func printEvent(ev loop.Event) {
+// thinkingText returns concatenated thinking blocks.
+func thinkingText(m types.Message) string {
+	var s strings.Builder
+	for _, c := range m.Content {
+		if c.Type == "thinking" {
+			s.WriteString(c.Thinking)
+		}
+	}
+	return s.String()
+}
+
+// streamPrinter writes a run's assistant text to stdout.
+//
+// Why it is stateful: the server trims superseded chunks from the replay it
+// gives a client that attaches mid-message, so the first message_update this
+// process sees can already carry several chunks' worth of text. Printing the
+// raw delta would drop everything before it, so the first chunk of a message is
+// written from the accumulated partial instead. For a live stream the two are
+// the same string, because the partial starts empty.
+type streamPrinter struct {
+	started bool
+}
+
+func (p *streamPrinter) event(ev loop.Event) {
 	switch ev.Type {
+	case loop.MessageStart:
+		p.started = false
+	case loop.MessageEnd:
+		// A run can finish before this process connects (a cached or local
+		// model): the replay then carries only the message_end, its chunks
+		// already trimmed. Print the final text when no chunk did.
+		if m := ev.Message; m != nil && m.Role == "assistant" && !p.started {
+			_, _ = fmt.Fprint(os.Stdout, thinkingText(*m)+m.Text())
+		}
+		p.started = false
 	case loop.MessageUpdate:
-		if ev.AssistantMessageEvent != nil && ev.AssistantMessageEvent.Delta != "" {
-			_, _ = fmt.Fprint(os.Stdout, ev.AssistantMessageEvent.Delta)
+		d := ev.AssistantMessageEvent
+		if d == nil {
+			return
+		}
+		if !p.started {
+			p.started = true
+			m := d.Partial
+			if ev.Message != nil {
+				m = *ev.Message
+			}
+			if text := thinkingText(m) + m.Text(); text != "" {
+				_, _ = fmt.Fprint(os.Stdout, text)
+				return
+			}
+		}
+		if d.Delta != "" {
+			_, _ = fmt.Fprint(os.Stdout, d.Delta)
 		}
 	case loop.ToolExecutionStart:
 		_, _ = fmt.Fprintf(os.Stdout, "\n[%s %s]\n", ev.ToolName, ev.ToolCallID)
 	case loop.ToolExecutionEnd:
 		_, _ = fmt.Fprintf(os.Stdout, "[%s done err=%v]\n", ev.ToolName, ev.IsError)
 	case loop.AgentStart, loop.AgentEnd, loop.TurnStart, loop.TurnEnd,
-		loop.RequestHeader, loop.MessageStart, loop.MessageEnd,
+		loop.RequestHeader,
 		loop.ToolExecutionUpdate, loop.CompactionStart, loop.CompactionEnd,
 		loop.ContextUsage, loop.QueueChanged, loop.SteerAccepted, loop.RunAborted,
 		loop.ExtensionError, loop.ExtensionNotice, loop.ExtensionUIPrompt,

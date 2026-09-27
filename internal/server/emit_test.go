@@ -24,7 +24,7 @@ func newEmitterForTest(t *testing.T) (*runEmitter, *session.Session, *httptest.S
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sess.Close() })
-	st := &runState{runID: "run-1", done: make(chan struct{})}
+	st := &runState{runID: "run-1", done: make(chan struct{}), partial: -1}
 	st.wait = sync.NewCond(&st.mu)
 	em := &runEmitter{
 		s: srv, ctx: t.Context(), id: sess.ID(), sess: sess, st: st,

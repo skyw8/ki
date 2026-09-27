@@ -319,6 +319,12 @@ function WorkspaceApp({ api }: { api: Client }) {
   const currentIdRef = useRef<string | null>(currentId)
   const viewRef = useRef(view)
   const listeningIdRef = useRef<string | null>(null)
+  // Last event this tab applied per session, as the server's "<runId>:<seq>"
+  // cursor. Re-listening resumes after it instead of replaying the whole run
+  // (the server trims that replay, but a long turn still costs megabytes). The
+  // run id makes a stale cursor harmless: the server ignores a cursor from
+  // another run, so a new run always replays from its start.
+  const resumeRef = useRef<Map<string, string>>(new Map())
   const abortedRuns = useRef(new Set<string>())
   // Sessions this tab has seen running. Completion notifications are limited to
   // these so a run this browser never observed (CLI, agent child) stays silent.
@@ -744,8 +750,15 @@ function WorkspaceApp({ api }: { api: Client }) {
     // client starts listening so a live run is green without switching tabs.
     setSessions(ss => ss.map(s => s.id === id ? { ...s, running: true } : s))
     try {
-      for await (const ev of api.events(id, ac.signal)) {
-        setView(v => (abortRef.current === ac ? applyEvent(v, ev) : v))
+      for await (const ev of api.events(id, ac.signal, resumeRef.current.get(id))) {
+        setView(v => {
+          if (abortRef.current !== ac) return v
+          // Advance the cursor with the view, not with the socket: React
+          // batches these updaters, so writing it outside could let the cursor
+          // skip past an event this view never applied.
+          if (ev.runId && ev.seq !== undefined) resumeRef.current.set(id, `${ev.runId}:${ev.seq}`)
+          return applyEvent(v, ev)
+        })
       }
     } catch (e) {
       if ((e as { name?: string }).name === 'AbortError') return

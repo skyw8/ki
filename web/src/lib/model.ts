@@ -849,36 +849,18 @@ function lastUserText(s: ViewState): string | null {
   return null
 }
 
-function persistedAssistantsAfterLastUser(s: ViewState): number {
-  let i = s.nodes.length - 1
-  while (i >= 0 && s.nodes[i].kind !== 'user') i--
-  let n = 0
-  for (let j = i + 1; j < s.nodes.length; j++) {
-    const node = s.nodes[j]
-    if (node.kind === 'assistant' && !node.streaming) n++
-  }
-  return n
-}
-
-function persistedUsers(s: ViewState): number {
-  return s.nodes.filter(n => n.kind === 'user' && !liveUserPrefix.test(n.id)).length
-}
-
-// replayBaseline freezes the replay-skip counts when a run starts. The
-// server replays the run from its agent_start, so the assistants already on
-// screen at that instant are exactly the ones whose message_start must be
-// skipped. Counting dynamically instead lets live completions inflate the
-// baseline, so the next genuine assistant message_start is treated as a
-// replay: message_update deltas are dropped and the reply only appears whole
-// at message_end (this is why text after a tool call did not stream).
-function replayBaseline(s: ViewState): Pick<ViewState, 'replayAssistants' | 'replayUsers' | 'replayed' | 'replayedUsers'> {
-  return {
-    replayAssistants: persistedAssistantsAfterLastUser(s),
-    replayUsers: persistedUsers(s),
-    replayed: 0,
-    replayedUsers: 0,
-  }
-}
+// Replay dedupe is state-based, never counted. Why: the server trims its
+// replay buffer (superseded chunks and completed messages' starts are gone) and
+// a client may resume mid-run with a cursor, so "how many messages will the
+// replay cover" is not knowable on the client. A count-based baseline also
+// breaks the moment a live completion lands between the baseline and the next
+// message_start: the reply then only appeared whole at message_end (text after
+// a tool call did not stream). Instead every rule below asks what the view
+// already holds:
+//   - a second assistant message_start is the same in-flight message replayed
+//     (at most one message streams at a time) -> reset that bubble in place;
+//   - a message_end whose entry id is already on screen finishes a message the
+//     transcript holds -> drop the bubble the replayed start/partial opened.
 
 export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
   const next: ViewState = {
@@ -894,7 +876,6 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     case 'agent_start':
       next.busy = true
       next.error = null
-      Object.assign(next, replayBaseline(next))
       break
     case 'agent_end':
       next.busy = false
@@ -920,7 +901,13 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     case 'runtime_ready':
       break
     case 'request_header': {
-      applyRequestHeader(next, ev.entryId || `live-request-${next.requests.length + 1}`, ev.system ?? '', ev.tools, ev.timestamp || Date.now(), {
+      // A replayed header whose system prompt and tools repeat the previous
+      // one arrives without its body (the server trims it, exactly like the
+      // persisted entry): fold it back into the prompt already on screen.
+      const previous = next.promptState
+      const system = ev.promptUnchanged ? previous?.system ?? '' : ev.system ?? ''
+      const tools = ev.promptUnchanged ? previous?.tools ?? [] : ev.tools
+      applyRequestHeader(next, ev.entryId || `live-request-${next.requests.length + 1}`, system, tools, ev.timestamp || Date.now(), {
         provider: ev.provider,
         model: ev.model,
       })
@@ -1022,15 +1009,6 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
   if (!m) return
   if (m.role === 'user') {
     const text = messageText(m)
-    const persisted = s.replayUsers ?? persistedUsers(s)
-    const liveUsers = s.nodes.filter(n => n.kind === 'user' && liveUserPrefix.test(n.id)).length
-    if (ev.type === 'message_start' && liveUsers === 0 && persisted > 0) {
-      const startedReplay = s.replayedUsers ?? 0
-      if (startedReplay < persisted) {
-        s.replayedUsers = startedReplay + 1
-        return
-      }
-    }
     if (lastUserText(s) === text) {
       // Same text is already on screen. Two cases:
       //   1. history replay: loadHistory already read the jsonl entry, which
@@ -1056,66 +1034,60 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
       }
       return
     }
+    // A resume can replay a user message the transcript already rendered; the
+    // entry id is authoritative, so it is never appended twice.
+    if (ev.entryId && s.nodes.some(n => n.id === ev.entryId)) return
     applyMessage(s, m, `live-user-${s.nodes.length}`, undefined)
     return
   }
   if (m.role === 'toolResult') {
+    // applyMessage patches an existing tool node by toolCallId, so a replayed
+    // tool result is idempotent without an entry-id check.
     applyMessage(s, m, m.toolCallId || `live-tr-${s.nodes.length}`, undefined)
     return
   }
   if (m.role !== 'assistant') return
 
+  if (ev.type === 'message_end' && ev.entryId && s.nodes.some(n => n.id === ev.entryId)) {
+    // The transcript already holds this message (it finished while we were
+    // away, and the refetched tail has it). A replayed start or partial may
+    // have opened a bubble for it: drop that bubble instead of letting it
+    // stream forever next to the persisted node.
+    const stale = lastStreamingAssistant(s)
+    if (stale >= 0) dropStreamingAssistant(s, stale)
+    return
+  }
+
   if (ev.type === 'message_start') {
-    const persisted = s.replayAssistants ?? persistedAssistantsAfterLastUser(s)
-    const live = s.nodes.filter(n => n.kind === 'assistant' && n.streaming).length
-    if (live === 0 && persisted > 0) {
-      // replay of an already-loaded completed assistant; skip until we run out
-      const startedReplay = s.replayed ?? 0
-      if (startedReplay < persisted) {
-        s.replayed = startedReplay + 1
-        return
-      }
+    const live = lastStreamingAssistant(s)
+    if (live >= 0) {
+      // At most one assistant message streams at a time, so a second start can
+      // only be that same in-flight message replayed — a re-attach. Reset the
+      // bubble in place; pushing another one would leave both streaming.
+      const node = s.nodes[live] as Extract<ChatNode, { kind: 'assistant' }>
+      s.nodes[live] = { ...node, text: messageText(m), thinking: messageThinking(m), streaming: true, ts: m.timestamp ?? node.ts }
+      if (s.currentRequestId) updateRequest(s, s.currentRequestId, { status: 'running' })
+      return
     }
-    const id = `live-asst-${s.nodes.length}`
-    // The assistant has no optimistic placeholder — this event is the first
-    // sight of the reply, so its timestamp is the earliest we can show and
-    // matches what a reload would display. Recording it at start means the
-    // bubble and the trajectory panel show it even while streaming.
-    const ts = m.timestamp
-    s.nodes.push({
-      kind: 'assistant',
-      id,
-      text: messageText(m),
-      thinking: messageThinking(m),
-      streaming: true,
-      ts,
-    })
-    s.records.push({
-      id,
-      kind: 'assistant',
-      turn: s.turn || 1,
-      step: s.requests.find(item => item.id === s.currentRequestId)?.step,
-      requestId: s.currentRequestId,
-      preview: previewOf(messageText(m) || messageThinking(m) || '…'),
-      running: true,
-      // Fall back to the local clock only if the event somehow carries no
-      // timestamp; server time is preferred for cross-client consistency.
-      startedAt: ts ?? Date.now(),
-    })
-    if (s.currentRequestId) updateRequest(s, s.currentRequestId, { status: 'running' })
+    pushStreamingAssistant(s, m)
     return
   }
 
   const idx = lastStreamingAssistant(s)
   if (idx < 0) {
+    if (ev.type === 'message_update') {
+      // The replay may carry only the newest partial: the server trims every
+      // superseded chunk and the completed messages' starts. That partial
+      // still holds the whole accumulated text, so it is enough to open the
+      // bubble and keep streaming from the next live chunk.
+      pushStreamingAssistant(s, m)
+      return
+    }
     if (ev.type === 'message_end') {
-      // Reconnect replays message_end for entries loadHistory already rendered.
-      // The entry id is authoritative, so match it before the empty-text case:
-      // a tool-call-only assistant has no text and would otherwise be appended
-      // as a spurious empty bubble.
-      if (ev.entryId && s.nodes.some(n => n.id === ev.entryId)) return
+      // The entry id was checked above; a view whose nodes carry no ids yet
+      // (a very old window) falls back to matching the finished text.
       const text = messageText(m)
-      if (s.nodes.some(n => n.kind === 'assistant' && !n.streaming && n.text === text && text !== '')) return
+      if (text !== '' && s.nodes.some(n => n.kind === 'assistant' && !n.streaming && n.text === text)) return
       applyMessage(s, m, `live-asst-${s.nodes.length}`, undefined)
     }
     return
@@ -1197,6 +1169,42 @@ function lastStreamingAssistant(s: ViewState): number {
     if (n.kind === 'assistant' && n.streaming) return i
   }
   return -1
+}
+
+/**
+ * pushStreamingAssistant opens the reply bubble. Two events reach here: a live
+ * message_start, and a replayed message_update when the server only kept the
+ * newest partial. Both carry the accumulated message, so the record starts
+ * with the same text the bubble shows — message_update usually has no
+ * timestamp, hence the local-clock fallback.
+ */
+function pushStreamingAssistant(s: ViewState, m: Message) {
+  const id = `live-asst-${s.nodes.length}`
+  const ts = m.timestamp
+  s.nodes.push({ kind: 'assistant', id, text: messageText(m), thinking: messageThinking(m), streaming: true, ts })
+  s.records.push({
+    id,
+    kind: 'assistant',
+    turn: s.turn || 1,
+    step: s.requests.find(item => item.id === s.currentRequestId)?.step,
+    requestId: s.currentRequestId,
+    preview: previewOf(messageText(m) || messageThinking(m) || '…'),
+    running: true,
+    startedAt: ts ?? Date.now(),
+  })
+  if (s.currentRequestId) updateRequest(s, s.currentRequestId, { status: 'running' })
+}
+
+/**
+ * dropStreamingAssistant removes a bubble a replay opened for a message the
+ * transcript already completed, along with its trajectory record, so a resume
+ * cannot leave a duplicate behind.
+ */
+function dropStreamingAssistant(s: ViewState, idx: number) {
+  const node = s.nodes[idx]
+  if (!node || node.kind !== 'assistant') return
+  s.nodes.splice(idx, 1)
+  s.records = s.records.filter(r => r.id !== node.id)
 }
 
 const liveUserPrefix = /^(live-user-|opt-user-)/

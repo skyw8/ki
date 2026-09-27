@@ -411,7 +411,7 @@ func (s *Server) onExtensionError(sessionID, name, capability, code, message str
 	s.mu.Lock()
 	if st := s.runs[sessionID]; st != nil {
 		st.mu.Lock()
-		st.evs = append(st.evs, ev)
+		st.appendLocked(&ev)
 		st.wait.Broadcast()
 		st.mu.Unlock()
 	}
@@ -445,7 +445,7 @@ func (s *Server) occupy(parent context.Context, id string) (*runState, context.C
 		cancel()
 		return nil, nil, fmt.Errorf("new run id: %w", err)
 	}
-	st := &runState{cancel: cancel, runID: runID, done: make(chan struct{})}
+	st := &runState{cancel: cancel, runID: runID, done: make(chan struct{}), partial: -1}
 	st.wait = sync.NewCond(&st.mu)
 	s.runs[id] = st
 	// Green dot for every other client, not just the one that prompted.
@@ -541,7 +541,8 @@ func (s *Server) pushSteerRun(st *runState, req steerRequest) bool {
 		return false
 	}
 	st.inbox.Push(msg)
-	st.evs = append(st.evs, loop.Event{Type: loop.SteerAccepted, Message: &msg, RunID: st.runID, External: cloneExternal(st.external)})
+	ev := loop.Event{Type: loop.SteerAccepted, Message: &msg, RunID: st.runID, External: cloneExternal(st.external)}
+	st.appendLocked(&ev)
 	st.wait.Broadcast()
 	return true
 }
@@ -588,7 +589,7 @@ func (s *Server) publishSideband(sessionID string, ev loop.Event, persist bool) 
 	s.mu.Lock()
 	if st := s.runs[sessionID]; st != nil {
 		st.mu.Lock()
-		st.evs = append(st.evs, ev)
+		st.appendLocked(&ev)
 		st.wait.Broadcast()
 		st.mu.Unlock()
 	}

@@ -110,15 +110,180 @@ type runState struct {
 	runID    string
 	external map[string]string
 	mu       sync.Mutex
-	evs      []loop.Event
-	wait     *sync.Cond
-	done     chan struct{}
-	err      error
-	inbox    *loop.Inbox
+	// evs holds pointers so a trimmed ("blank") slot collapses to one word plus
+	// the shared blankEvent instead of a 424-byte loop.Event per chunk. A
+	// long turn streams tens of thousands of chunks; their slots must not
+	// outgrow the payloads the trimming just freed.
+	evs   []*loop.Event
+	wait  *sync.Cond
+	done  chan struct{}
+	err   error
+	inbox *loop.Inbox
 	// steerClosed closes the handoff window after loop.Run has returned. A
 	// message that arrives after that point must become a queued/resumed run,
 	// never a successful write to an Inbox that nobody will drain.
 	steerClosed bool
+	// seq numbers every buffered event; readers echo it back to resume.
+	seq int64
+	// promptKey is the system+tools digest of the last buffered request_header,
+	// so a repeat can be stored as promptUnchanged instead of the full payload.
+	promptKey string
+	// pending holds the indices of buffered transient events (a message's start
+	// and chunks, tool progress) still eligible for payload trimming; partial is
+	// the one index that must survive it — the newest chunk of the message in
+	// flight, which a reader attaching now still needs to render. readers is the
+	// set of attached SSE readers by their next read index. Trimming needs all
+	// three: a payload may go only once every reader has passed it and it is not
+	// the in-flight partial.
+	pending []int
+	partial int
+	readers map[*runReader]struct{}
+}
+
+// runReader is one attached SSE reader's next index into runState.evs.
+// Guarded by the owning runState.mu.
+type runReader struct{ pos int }
+
+// blankEvent is every trimmed slot's payload. One shared value keeps a blanked
+// chunk at one pointer per slot; readers skip it and it is never marshaled.
+var blankEvent = &loop.Event{Blank: true}
+
+// minReaderPos returns the smallest index no attached reader has consumed:
+// everything below it has been delivered (or there is no reader, so nothing is
+// owed). Must be called with mu held.
+func (st *runState) minReaderPos() int {
+	min := len(st.evs)
+	for r := range st.readers {
+		if r.pos < min {
+			min = r.pos
+		}
+	}
+	return min
+}
+
+// addReader and removeReader track attached SSE readers. Must be called with mu
+// held. The map is created lazily so a runState literal (tests) needs no setup.
+func (st *runState) addReader(r *runReader) {
+	if st.readers == nil {
+		st.readers = map[*runReader]struct{}{}
+	}
+	st.readers[r] = struct{}{}
+}
+
+func (st *runState) removeReader(r *runReader) { delete(st.readers, r) }
+
+// transient reports whether a buffered event is superseded by a later one:
+// streaming chunks carry the whole accumulated partial, a message_start is
+// superseded by its own chunks, and tool progress is superseded by the next
+// progress tick. Only the newest of a run of them can matter to a reader that
+// arrives later — once the message is persisted even that one stops mattering
+// (see appendLocked).
+func transient(t loop.EventType) bool {
+	return t == loop.MessageStart || t == loop.MessageUpdate || t == loop.ToolExecutionUpdate
+}
+
+// appendLocked buffers one event for replay and stamps it with the run's next
+// sequence number.
+//
+// Why payload trimming lives here: the SSE replay exists for a client that
+// attaches mid-run, and the transcript (GET /v1/sessions/{id}) already carries
+// every persisted entry. Two payloads grow with the run's *output* rather than
+// with its number of rounds, so storing them verbatim made the buffer quadratic
+// in a long turn's streaming text and made every re-attach resend it:
+//
+//   - message_update / tool_execution_update repeat the whole accumulated
+//     partial on every chunk, so all but the newest per message are redundant
+//     (see trimLocked);
+//   - request_header repeats the run's system prompt and tool schemas every
+//     round, so the repeat is stored as promptUnchanged — the same shape the
+//     session view already gives the persisted entries, which the WebUI already
+//     folds back into the previous prompt body.
+//
+// The caller's event keeps its full payload: the stages after buffer
+// (context-usage estimation, extension lifecycle) need it. Must be called with
+// mu held.
+func (st *runState) appendLocked(ev *loop.Event) {
+	// Every buffered event carries the run identity, whichever path appended it
+	// (the loop funnel, a queue drain, a sideband). A reader that attaches later
+	// must be able to attribute what it replays, and a client builds its resume
+	// cursor from these fields.
+	ev.RunID = st.runID
+	if ev.External == nil {
+		ev.External = cloneExternal(st.external)
+	}
+	st.seq++
+	ev.Seq = st.seq
+	stored := *ev
+	if ev.Type == loop.RequestHeader {
+		key := promptDigest(ev.System, ev.Tools)
+		if key == st.promptKey {
+			stored.System = ""
+			stored.Tools = nil
+			stored.PromptUnchanged = true
+		} else {
+			st.promptKey = key
+		}
+	}
+	idx := len(st.evs)
+	st.evs = append(st.evs, &stored)
+	switch {
+	case transient(ev.Type):
+		// The previous partial loses its exemption; the new one becomes the
+		// payload a reader attaching right now still needs.
+		st.retirePartialLocked()
+		st.partial = idx
+		st.trimLocked()
+	case ev.Type == loop.MessageEnd && stored.EntryID != "":
+		// The message is on disk: its start and every chunk are in the
+		// transcript this reader can fetch, so the group is no longer in-flight
+		// state and the whole of it may be trimmed. A message_end without an
+		// entry id (the append failed) is not on disk, so it stays.
+		st.retirePartialLocked()
+		st.trimLocked()
+	}
+}
+
+// retirePartialLocked stops exempting the in-flight partial from trimming; its
+// index joins pending so the next trim may drop it. Must be called with mu held.
+func (st *runState) retirePartialLocked() {
+	if st.partial >= 0 {
+		st.pending = append(st.pending, st.partial)
+		st.partial = -1
+	}
+}
+
+// trimLocked blanks superseded payloads, keeping memory proportional to the
+// in-flight partial instead of to the whole run's streamed output.
+//
+// The in-flight partial stays: a reader attaching right now still gets one
+// chunk to render, and the next live chunk carries the whole accumulated
+// message anyway. Everything else goes only once every attached reader has
+// passed it, so the CLI — which prints the raw increments — never loses a chunk
+// it has not read yet. Must be called with mu held.
+func (st *runState) trimLocked() {
+	limit := st.minReaderPos()
+	out := st.pending[:0]
+	for _, idx := range st.pending {
+		if idx != st.partial && idx < limit {
+			st.evs[idx] = blankEvent
+			continue
+		}
+		out = append(out, idx)
+	}
+	st.pending = out
+}
+
+// promptDigest identifies a request_header payload (system prompt + tool
+// schemas) so a repeat can be stored without its body.
+func promptDigest(system string, tools []loop.ToolSpec) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(system))
+	b, err := json.Marshal(tools)
+	if err != nil {
+		b = nil
+	}
+	_, _ = h.Write(b)
+	return string(h.Sum(nil))
 }
 
 // File is ~/.ki/server.json
@@ -1946,7 +2111,7 @@ func (s *Server) withNextTurn(sess *session.Session, st *runState, hooks loop.Ho
 			if e, _, aerr := sess.AppendMessageWithKey(msg, item.IdempotencyKey); aerr == nil {
 				ev := loop.Event{Type: loop.MessageEnd, Message: &msg, EntryID: e.ID}
 				st.mu.Lock()
-				st.evs = append(st.evs, ev)
+				st.appendLocked(&ev)
 				st.wait.Broadcast()
 				st.mu.Unlock()
 			}
@@ -2060,19 +2225,32 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fl, _ := w.(http.Flusher)
+	reader := &runReader{}
+	st.mu.Lock()
+	runID := st.runID
+	since := parseCursor(r, runID)
+	// Registering before the first read tells the emitter which buffered
+	// payloads this reader is still owed, so nothing is trimmed out from under
+	// it (see runState.trimLocked).
+	st.addReader(reader)
+	st.mu.Unlock()
+	defer func() {
+		st.mu.Lock()
+		st.removeReader(reader)
+		st.mu.Unlock()
+	}()
 	go func() {
 		<-r.Context().Done()
 		st.mu.Lock()
 		st.wait.Broadcast()
 		st.mu.Unlock()
 	}() // Prevent a client disconnect from leaking the goroutine.
-	idx := 0
 	for {
 		if r.Context().Err() != nil {
 			return
 		}
 		st.mu.Lock()
-		for idx >= len(st.evs) {
+		for reader.pos >= len(st.evs) {
 			select {
 			case <-st.done:
 				st.mu.Unlock()
@@ -2084,15 +2262,20 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 				st.wait.Wait()
 			}
 		}
-		ev := st.evs[idx]
-		idx++
+		ev := st.evs[reader.pos]
+		reader.pos++
 		st.mu.Unlock()
+		// Blank carries a payload the emitter dropped as superseded; since
+		// marks events this client already has from an earlier connection.
+		if ev.Blank || ev.Seq <= since {
+			continue
+		}
 		b, err := json.Marshal(ev)
 		if err != nil {
 			slog.Error("marshal SSE event", "err", err)
 			return
 		}
-		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", ev.Type, b)
+		_, _ = fmt.Fprintf(w, "id: %s:%d\nevent: %s\ndata: %s\n\n", runID, ev.Seq, ev.Type, b)
 		if fl != nil {
 			fl.Flush()
 		}
@@ -2100,6 +2283,32 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// parseCursor reads the resume position the client sent, from the SSE
+// Last-Event-ID header (EventSource resends it on its own) or a `since` query
+// (fetch clients set it themselves). Both carry "<runID>:<seq>"; a cursor from
+// another run is ignored so a stale value cannot skip the current run.
+func parseCursor(r *http.Request, runID string) int64 {
+	raw := strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+	if raw == "" {
+		raw = strings.TrimSpace(r.URL.Query().Get("since"))
+	}
+	if raw == "" {
+		return 0
+	}
+	run, seqPart, ok := strings.Cut(raw, ":")
+	if ok && run != runID {
+		return 0
+	}
+	if !ok {
+		seqPart = run
+	}
+	seq, err := strconv.ParseInt(seqPart, 10, 64)
+	if err != nil || seq < 0 {
+		return 0
+	}
+	return seq
 }
 
 func (s *Server) abort(w http.ResponseWriter, r *http.Request) {

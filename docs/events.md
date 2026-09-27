@@ -33,6 +33,30 @@ sideband 事件可以并发到达。
 | WebUI push | `extension_ui_updated` | 扩展 status/panel/prompt 投影变化；客户端重新读取 session。它不是 `loop.EventType` 常量，只在 `GET /v1/events` 上带 `sessionId`下发。 |
 
 `GET /v1/sessions/{id}/events` 是某个 run 的有序回放（`agent_end` 结束）。
+回放日志**按「后到的读者是否用得上」裁剪**，否则它会随 turn 的输出量增长而不是随
+轮次数增长。裁剪只作用于回放：已经连上的 reader 该收的每一帧照收。
+
+- `message_start` / `message_update` / `tool_execution_update` 是「过时即可丢」的事件：
+  chunk 每条都带整份累积 partial，`message_start` 被自己的 chunk 取代，工具进度被下一
+  条取代。**当前 in-flight 的那份 partial 永远保留**（刚 attach 的客户端靠它渲染），其余
+  的在**所有已连接 reader 都读过之后**被清空成 `blank`（reader 直接跳过、不发帧、不进扩
+  展）。内存因此只跟最新 partial 同量级，而不是跟整轮流式文本的平方同量级；仍挂着未读
+  增量的 reader（CLI）不会被裁掉——这也是为什么裁剪要看 reader 位置而不是定时。
+- 一条 message 的 `message_end` **落盘后**（带 entry id），它的 `message_start` 和所有
+  chunk 就都能从 `GET /v1/sessions/{id}` 取回，整个 group 随即退出 in-flight 状态、可被
+  裁掉：一个已完成的 run 的回放因此只剩 `message_end`，没有 `message_start`/`message_update`。
+  落盘失败的 `message_end`（无 entry id）不在此列，它的 group 会留着。
+- `request_header` 每轮都重复同一份 system prompt 和 tools schema（实测一个 209 轮的
+  run 里占 7 MB / 9 MB）。第一份带完整 body，重复的存成 `promptUnchanged` 且不带
+  body，与持久化 entry 给 `GET /v1/sessions/{id}` 的形状一致，客户端复用已有 prompt。
+  发给扩展的生命周期事件仍是完整 payload。
+
+每个回放帧的 `id:` 为 `<runId>:<seq>`（`seq` 也放在 JSON 里）。客户端可以带
+`Last-Event-ID`（EventSource 自动重发）或 `?since=<runId>:<seq>` 续传，只收该事件之后
+的内容；runId 不匹配的游标会被忽略，避免旧值跳过新 run。WebUI 按 session 记住最后应用
+的 `seq` 并在重新监听时带上它；因为服务端会裁掉已持久化的消息、且客户端按状态（entry
+id / 是否已有 streaming 气泡）去重，续传不需要客户端持有完整历史。CLI 不发游标：它只跟
+自己刚启动的 run，直接读累积 partial 的增量打印。
 `GET /v1/events` 是每个 tab 的 push 流，只带「失效」和「终态/边带」信息，不带
 run 内的增量：`invalidate` 帧让客户端重取（sidebar 用 ETag 304 收尾），
 sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` 在 push 流上

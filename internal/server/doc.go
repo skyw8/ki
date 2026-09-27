@@ -82,7 +82,14 @@
 // queue (system lane, tagged with its agent task) once that turn has ended.
 // Dispatch drops a queued notification whose task result the parent already read
 // or stopped. SSE
-// replays runState.evs and drains after done.
+// replays runState.evs and drains after done. The buffered log is trimmed where
+// a payload cannot help a reader that attaches later: a message's start and
+// chunks leave the log once its message_end is persisted, superseded partials
+// are blanked once every attached reader has passed them (so memory tracks the
+// in-flight partial, not the run's total output), and a repeated request_header
+// is stored as promptUnchanged without its body. Each event carries a per-run
+// seq, sent as the SSE id line; a client may resume with Last-Event-ID or
+// ?since=<runId>:<seq> instead of replaying the whole run.
 //
 // One server-owned resources.Loader atomically caches runtime environment,
 // skills, AGENTS/CLAUDE, prompt templates, and discovered extension descriptors

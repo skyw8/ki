@@ -318,8 +318,14 @@ export class Client {
 	return this.json(`/v1/providers/${encodeURIComponent(id)}/models?model=${encodeURIComponent(model)}`, { method: 'DELETE' })
   }
 
-  async *events(id: string, signal?: AbortSignal): AsyncGenerator<LoopEvent> {
-    yield* this.sse<LoopEvent>(`/v1/sessions/${id}/events`, signal)
+	/**
+	 * lastEventId resumes a run's stream: the server's `id:` line is
+	 * `<runId>:<seq>`, and sending the last one back replays only what came
+	 * after it. A cursor from another run is ignored server-side, so a stale
+	 * value is safe.
+	 */
+  async *events(id: string, signal?: AbortSignal, lastEventId?: string): AsyncGenerator<LoopEvent> {
+    yield* this.sse<LoopEvent>(`/v1/sessions/${id}/events`, signal, lastEventId ? { 'Last-Event-ID': lastEventId } : undefined)
   }
 
   /**
@@ -332,10 +338,10 @@ export class Client {
     yield* this.sse<PushEvent>('/v1/events', signal)
   }
 
-  private async *sse<T extends { type: string }>(path: string, signal?: AbortSignal): AsyncGenerator<T> {
+  private async *sse<T extends { type: string }>(path: string, signal?: AbortSignal, extra?: Record<string, string>): AsyncGenerator<T> {
     const res = await fetch(path, {
       credentials: 'same-origin',
-      headers: this.headers(false, 'GET'),
+      headers: { ...this.headers(false, 'GET') as Record<string, string>, ...extra },
       signal,
     })
     if (!res.ok || !res.body) {

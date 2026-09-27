@@ -150,7 +150,9 @@ func (p *runEmitter) appendRequestHeader(ev loop.Event) error {
 // buffer stamps this run's identity onto ev, appends it to the run's replay log
 // and wakes its SSE readers. Every buffered event carries the run id and the
 // run's external metadata, so a reader that starts mid-run can still attribute
-// what it replays.
+// what it replays. The log trims payloads a later reader cannot use (see
+// runState.appendLocked), so it stays proportional to the newest partial rather
+// than to the run's total streamed output.
 //
 // It stamps the caller's event rather than a copy, for the same reason persist
 // takes a pointer: the stages after it (the push completion frame and the
@@ -160,9 +162,7 @@ func (p *runEmitter) appendRequestHeader(ev loop.Event) error {
 func (p *runEmitter) buffer(ev *loop.Event) {
 	p.st.mu.Lock()
 	defer p.st.mu.Unlock()
-	ev.RunID = p.st.runID
-	ev.External = cloneExternal(p.st.external)
-	p.st.evs = append(p.st.evs, *ev)
+	p.st.appendLocked(ev) // stamps the run identity onto ev
 	p.st.wait.Broadcast()
 }
 

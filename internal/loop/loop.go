@@ -124,6 +124,20 @@ type Event struct {
 	Options               []string          `json:"options,omitempty"`
 	RunID                 string            `json:"runId,omitempty"`
 	External              map[string]string `json:"external,omitempty"`
+	// Seq is the per-run sequence number the server stamps when it buffers the
+	// event for SSE replay. It travels with the event so a client can resume
+	// with the last one it saw (the SSE id line, or ?since=) instead of asking
+	// for the whole run again.
+	Seq int64 `json:"seq,omitempty"`
+	// PromptUnchanged marks a replayed request_header whose system prompt and
+	// tool schemas repeat the run's first one: the payload is left out and the
+	// reader reuses what it already has. Same shape as the persisted entry
+	// (session.Entry.PromptUnchanged), so both paths feed one client rule.
+	PromptUnchanged bool `json:"promptUnchanged,omitempty"`
+	// Blank marks a buffered event whose payload the server dropped from the
+	// replay log because a newer partial supersedes it. Readers skip it; it is
+	// never sent and never reaches an extension.
+	Blank bool `json:"-"`
 }
 
 // AssistantDelta is a streaming increment (pi assistantMessageEvent).

@@ -3719,8 +3719,8 @@ func (g *gateStreamer) release() {
 	g.mu.Unlock()
 }
 
-// wantSSE is the event sequence (type[:role]) for one complete prompt using the
-// gated Scripted model.
+// wantSSE is every event one complete prompt emits with the gated Scripted
+// model — what a reader sees when it is attached before the run starts.
 func wantSSE() []string {
 	return []string{
 		"agent_start",
@@ -3733,6 +3733,35 @@ func wantSSE() []string {
 		"turn_end",
 		"agent_end",
 	}
+}
+
+// wantReplay is what a reader that attaches after the run finished receives.
+//
+// The emitter trims the replay to what a later reader cannot reconstruct from
+// the transcript: a message's start and chunks stop being in-flight state once
+// its message_end is persisted, and they are dropped when no attached reader is
+// owed them. A reader that was already attached keeps every event (see
+// wantSSE), and one attaching mid-stream keeps the events it replays, minus the
+// ones trimmed before it registered (see wantLiveFromWait).
+func wantReplay() []string {
+	return []string{
+		"agent_start",
+		"turn_start",
+		"message_end:user",
+		"request_header",
+		"context_usage",
+		"message_end:assistant",
+		"context_usage",
+		"turn_end",
+		"agent_end",
+	}
+}
+
+// wantLiveFromWait is wantSSE minus the events the emitter had already trimmed
+// when the wait-path tests attach their reader: waitBuffered waits for the user
+// message_end, which retires the user message_start.
+func wantLiveFromWait() []string {
+	return slices.DeleteFunc(slices.Clone(wantSSE()), func(s string) bool { return s == "message_start:user" })
 }
 
 func prompt202(t *testing.T, hs *httptest.Server, id, text string) {
@@ -3883,6 +3912,21 @@ func TestUploadAttachmentStoresContentAddressedBlob(t *testing.T) {
 
 // waitBuffered polls until the runState buffer contains at least n events. It reads
 // internal state in this package, locking in srv.mu / st.mu order.
+// waitRunEnd waits for a run to finish without opening its SSE stream: a
+// reader attached during the run is owed every delta (that is what keeps the
+// CLI's increments intact), so the trimmed replay only exists for a reader that
+// arrives after it.
+func waitRunEnd(t *testing.T, srv *Server, id string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.running(id) {
+		if time.Now().After(deadline) {
+			t.Fatal("run never finished")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 func waitBuffered(t *testing.T, srv *Server, id string, n int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -4042,15 +4086,16 @@ func TestEventsWaitPathSingleReader(t *testing.T) {
 	res := mustOpenEvents(t, hs, id)
 	defer func() { _ = res.Body.Close() }()
 	sc := bufio.NewScanner(res.Body)
-	// After reading the fifth event, the server reader has replayed the buffer and
-	// must be in Cond.Wait: the gate is closed, so no new event is possible, and the
-	// run is unfinished, so done cannot be closed.
-	first := scanN(t, sc, 6)
+	// After draining the replayable buffer the server reader must be in
+	// Cond.Wait: the gate is closed, so no new event is possible, and the run is
+	// unfinished, so done cannot be closed.
+	want := wantLiveFromWait()
+	first := scanN(t, sc, len(want)-6)
 	gate.release() // Release the run; Broadcast must awaken the reader.
 	rest := scanAll(t, sc)
 
 	got := append(append([]string{}, first...), rest...)
-	if want := wantSSE(); !slices.Equal(got, want) {
+	if !slices.Equal(got, want) {
 		t.Fatalf("stream mismatch:\n got %v\nwant %v", got, want)
 	}
 }
@@ -4066,22 +4111,22 @@ func TestEventsMultiReader(t *testing.T) {
 	prompt202(t, hs, id, "hello")
 	waitBuffered(t, srv, id, 6)
 
+	want := wantLiveFromWait()
 	ready1 := make(chan struct{}, 1)
 	ready2 := make(chan struct{}, 1)
 	r1 := make(chan sseResult, 1)
 	r2 := make(chan sseResult, 1)
-	go func() { r1 <- readSSE(hs, id, 6, ready1) }()
-	go func() { r2 <- readSSE(hs, id, 6, ready2) }()
+	go func() { r1 <- readSSE(hs, id, len(want)-6, ready1) }()
+	go func() { r2 <- readSSE(hs, id, len(want)-6, ready2) }()
 	for i, ready := range []<-chan struct{}{ready1, ready2} {
 		select {
 		case <-ready:
 		case <-time.After(5 * time.Second):
-			t.Fatalf("reader %d never replayed 5 events", i)
+			t.Fatalf("reader %d never drained the replay", i)
 		}
 	}
 	gate.release() // Both readers are now in Cond.Wait.
 
-	want := wantSSE()
 	for i, rc := range []<-chan sseResult{r1, r2} {
 		r := <-rc
 		if r.err != nil {
@@ -4114,8 +4159,8 @@ func TestEventsClientDisconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	sc := bufio.NewScanner(res.Body)
-	scanN(t, sc, 6) // The reader replayed request_header/context_usage and is waiting.
-	cancel()        // Client disconnects; the sentinel broadcasts and the reader exits.
+	scanN(t, sc, len(wantLiveFromWait())-6) // The reader drained the replay and is waiting.
+	cancel()                                // Client disconnects; the sentinel broadcasts and the reader exits.
 	_ = res.Body.Close()
 	gate.release() // The run completes normally.
 
@@ -4123,7 +4168,7 @@ func TestEventsClientDisconnect(t *testing.T) {
 	// available for complete replay.
 	waitBuffered(t, srv, id, 12)
 	//nolint:bodyclose // collectSSE owns and closes the response body.
-	if replay := collectSSE(t, mustOpenEvents(t, hs, id)); !slices.Equal(replay, wantSSE()) {
+	if replay := collectSSE(t, mustOpenEvents(t, hs, id)); !slices.Equal(replay, wantReplay()) {
 		t.Fatalf("replay after disconnect: %v", replay)
 	}
 
@@ -4149,17 +4194,20 @@ func TestEventsClientDisconnect(t *testing.T) {
 // so a new connection can replay the complete event stream from the beginning
 // (frontend refresh and reconnect depend on this behavior).
 func TestEventsReplayAfterDone(t *testing.T) {
-	_, hs := testServer(t)
+	srv, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
 	prompt202(t, hs, id, "hi")
+	// Wait without a reader attached: with one attached the run streams to it
+	// live (wantSSE), so the trimmed replay only exists for a later reader.
+	waitRunEnd(t, srv, id)
 	//nolint:bodyclose // collectSSE owns and closes the response body.
 	first := collectSSE(t, mustOpenEvents(t, hs, id))
-	if want := wantSSE(); !slices.Equal(first, want) {
+	if want := wantReplay(); !slices.Equal(first, want) {
 		t.Fatalf("first stream: %v", first)
 	}
 	//nolint:bodyclose // collectSSE owns and closes the response body.
 	second := collectSSE(t, mustOpenEvents(t, hs, id))
-	if want := wantSSE(); !slices.Equal(second, want) {
+	if want := wantReplay(); !slices.Equal(second, want) {
 		t.Fatalf("replay after done: %v", second)
 	}
 }
