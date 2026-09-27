@@ -1,4 +1,4 @@
-import type { ChatNode, Content, Entry, IndexEntry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from '../api/types'
+import type { CompactTurn, ChatNode, Content, Entry, IndexEntry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from '../api/types'
 
 const LAST_MODEL_KEY = 'ki-last-model'
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -191,6 +191,7 @@ export function loadHistory(detail: SessionDetail): ViewState {
 	s.leafId = detail.leafId
 	s.hasMore = !!detail.hasMore
 	s.oldestId = detail.oldestId
+	s.compactTurns = detail.compactTurns
 	setIndex(s, detail.index)
 	addEntries(s, detail.entries ?? [])
 	return rebuild(s)
@@ -252,6 +253,7 @@ export function applyTail(s: ViewState, detail: SessionDetail): ViewState {
   next.extensionUi = detail.extensionUi ?? next.extensionUi
   const entries = detail.entries ?? []
   addEntries(next, entries)
+  mergeCompactTurns(next, detail.compactTurns)
   applyCursor(next, detail)
   if (next.indexLoaded && entries.length) {
     const known = new Set(next.index.map(row => row.id))
@@ -376,7 +378,7 @@ function rebuild(s: ViewState): ViewState {
   const all = mergeEntries(next.index, next.entries)
   next.allEntries = all
   const loaded = new Set(next.entries.map(e => e.id))
-  const chain = leafEntries(all, next.leafId)
+  const chain = leafEntries(all, next.leafId, next.compactTurns)
   // Canonical order: loaded bodies follow the branch, oldest first, so the
   // window keeps appending at the end and the pruning above drops the oldest.
   next.entries = chain.filter(e => loaded.has(e.id))
@@ -387,6 +389,11 @@ function rebuild(s: ViewState): ViewState {
   // so the count below continues correctly for a live turn; turnStats adds
   // turnBase to the window's nodes, which is what the chat dividers show.
   for (const e of chain) applyEntry(next, e, loaded.has(e.id))
+
+  const expanded = new Set(next.loadedTurnIds)
+  const omitted = new Set(next.compactTurns?.filter(t => !expanded.has(t.id)).flatMap(t => t.omittedNodeIds ?? []))
+  next.nodes = next.nodes.filter(n => !omitted.has(n.id))
+  if (next.compactTurns?.length) next.turnBase = Math.max(0, next.compactTurns[0].stats.turn - 1)
 
   // Entries that arrived live (SSE) but are not persisted yet: keep the
   // in-flight conversation state instead of dropping it on a rebuild.
@@ -427,13 +434,53 @@ function isUserEntry(e: Entry): boolean {
   return e.type === 'message' && e.message?.role === 'user'
 }
 
-export function hydrateEntries(s: ViewState, incoming: Entry[], meta?: { hasMore?: boolean; oldestId?: string }): ViewState {
+export function hydrateEntries(s: ViewState, incoming: Entry[], meta?: { hasMore?: boolean; oldestId?: string; compactTurns?: CompactTurn[] }): ViewState {
   if (!incoming.length && meta == null) return s
   const next = { ...s }
   addEntries(next, incoming)
+  mergeCompactTurns(next, meta?.compactTurns)
   if (meta?.hasMore !== undefined) next.hasMore = meta.hasMore
   if (meta?.oldestId !== undefined) next.oldestId = meta.oldestId
   return rebuild(next)
+}
+
+function mergeCompactTurns(s: ViewState, incoming?: CompactTurn[]) {
+  if (!incoming) return
+  const turns = new Map(s.compactTurns?.map(t => [t.id, t]))
+  for (const turn of incoming) turns.set(turn.id, turn)
+  s.compactTurns = [...turns.values()].sort((a, b) => a.stats.turn - b.stats.turn)
+  const byId = new Map(s.entries.map(e => [e.id, e]))
+  const loaded = new Set(s.loadedTurnIds)
+  for (const turn of incoming) {
+    let id: string | undefined = turn.tailId
+    const seen = new Set<string>()
+    while (id && !seen.has(id)) {
+      seen.add(id)
+      if (!byId.has(id)) break
+      if (id === turn.id) { loaded.add(id); break }
+      id = byId.get(id)?.parentId
+    }
+  }
+  s.loadedTurnIds = [...loaded]
+}
+
+export function hydrateTurn(s: ViewState, id: string, entries: Entry[]): ViewState {
+  return hydrateEntries({ ...s, loadedTurnIds: [...new Set([...(s.loadedTurnIds ?? []), id])] }, [...new Map(entries.map(e => [e.id, e])).values()])
+}
+
+/** Convert the partial oldest detailed page to a whole compact turn without
+ * downloading the missing folded replies or keeping their partial count. */
+export function compactBoundary(s: ViewState, detail: SessionDetail): ViewState {
+  const turn = detail.compactTurns?.[0]
+  if (!turn) return s
+  const next = { ...s }
+  mergeCompactTurns(next, detail.compactTurns)
+  // Changing presentation must not evict a complete turn already on screen
+  // (or one the reader expanded while the projection request was in flight).
+  if (next.loadedTurnIds?.includes(turn.id)) return hydrateEntries(next, detail.entries ?? [], detail)
+  const end = s.entries.findIndex(e => e.id === turn.tailId)
+  const entries = end >= 0 ? s.entries.slice(end + 1) : s.entries
+  return hydrateEntries({ ...next, entries }, detail.entries ?? [], detail)
 }
 
 export function applyRuntimeCatalog(s: ViewState, detail: SessionDetail): ViewState {
@@ -487,17 +534,29 @@ function indexToEntry(ix: IndexEntry): Entry {
   return entry
 }
 
-function leafEntries(entries: Entry[], leafId?: string): Entry[] {
+function leafEntries(entries: Entry[], leafId?: string, turns: CompactTurn[] = []): Entry[] {
+  // Sparse compact bodies keep their canonical parents for edit/fork. Only
+  // reading traversal bridges omitted ranges; a later index/full turn takes
+  // precedence and restores the original chain without rewriting any entry.
+  const previous = new Map<string, string | undefined>()
+  const tails = new Map<string, string | undefined>()
+  let last: string | undefined
+  for (const turn of turns) {
+    for (const id of turn.entryIds) { previous.set(id, last); last = id }
+    tails.set(turn.tailId, last)
+  }
   const byId = new Map(entries.map(e => [e.id, e]))
   const active: Entry[] = []
   let id = leafId || entries.at(-1)?.id
+  if (id && !byId.has(id)) id = tails.get(id)
   const seen = new Set<string>()
   while (id && !seen.has(id)) {
     seen.add(id)
     const entry = byId.get(id)
     if (!entry) break
     active.push(entry)
-    id = entry.parentId
+    const parent = entry.parentId
+    id = parent && byId.has(parent) ? parent : (parent && tails.has(parent) ? tails.get(parent) : previous.get(entry.id))
   }
   active.reverse()
   return active
@@ -788,7 +847,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
 	  const args = c.arguments ?? (c.input !== undefined ? { input: c.input } : undefined)
       if (withNode) {
         if (s.nodes.some(n => n.kind === 'tool' && n.id === c.id)) {
-          patchTool(s, c.id, { name: c.name, args })
+          patchTool(s, c.id, { name: c.name, args, truncated })
           continue
         }
         s.nodes.push({
@@ -796,6 +855,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
           id: c.id,
           name: c.name || 'tool',
           args,
+          truncated,
         })
       }
       s.records.push({
@@ -820,7 +880,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
     const startedAt = finishedAt != null && m.durationMs != null
       ? finishedAt - Math.max(0, m.durationMs)
       : undefined
-    const haveToolNode = withNode && s.nodes.some(n => n.kind === 'tool' && n.id === tid)
+    const haveToolNode = withNode && s.nodes.find(n => n.kind === 'tool' && n.id === tid)
     if (!haveToolNode) {
       if (withNode) s.nodes.push({
         kind: 'tool',
@@ -853,7 +913,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
 	  details: m.details,
       running: false,
       name: m.toolName,
-      truncated,
+      truncated: truncated || !!(haveToolNode && haveToolNode.truncated),
 	  })
 	  if (s.currentRequestId) {
 	    const request = s.requests.find(item => item.id === s.currentRequestId)
@@ -1349,10 +1409,10 @@ export function isHumanPrompt(origin?: string): boolean {
  * branch, then appends live user nodes the transcript has not caught up with
  * yet — a prompt just sent in this tab shows up before its entry is reloaded.
  */
-export function userRequests(entries: Entry[], leafId?: string, nodes: ChatNode[] = []): UserRequest[] {
+export function userRequests(entries: Entry[], leafId?: string, nodes: ChatNode[] = [], turns: CompactTurn[] = []): UserRequest[] {
   const out: UserRequest[] = []
   const seen = new Set<string>()
-  for (const e of leafEntries(entries, leafId)) {
+  for (const e of leafEntries(entries, leafId, turns)) {
     if (e.type !== 'message' || e.message?.role !== 'user' || !isHumanPrompt(e.message.origin)) continue
     seen.add(e.id)
     out.push({ id: e.id, title: requestTitle(messageText(e.message), e.message.content) })
@@ -1438,19 +1498,7 @@ function stepMetrics(usage?: Usage | null, timing?: { ttftMs?: number; latencyMs
 }
 
 function activePath(s: ViewState): Entry[] {
-  if (s.allEntries.length === 0) return []
-  const byId = new Map(s.allEntries.map(e => [e.id, e]))
-  const path: Entry[] = []
-  const seen = new Set<string>()
-  let id = s.leafId || s.allEntries.at(-1)?.id
-  while (id && !seen.has(id)) {
-    seen.add(id)
-    const entry = byId.get(id)
-    if (!entry) break
-    path.push(entry)
-    id = entry.parentId
-  }
-  return path
+  return leafEntries(s.allEntries, s.leafId, s.compactTurns).reverse()
 }
 
 /** Usage/timing/features of the newest assistant step only — the last request,
@@ -1465,6 +1513,16 @@ export function latestStats(s: ViewState): LatestStats {
     if (e.type === 'message' && e.message?.role === 'user') out.turns += 1
     else if (e.type === 'message' && e.message?.role === 'assistant') out.steps += 1
     else if (e.type === 'compaction' && e.usage) out.steps += 1
+  }
+  const summary = s.compactTurns?.at(-1)
+  if (summary && !s.indexLoaded) {
+    const at = path.findIndex(e => summary.entryIds.includes(e.id))
+    const newer = at >= 0 ? path.slice(0, at) : []
+    out.turns = summary.stats.turn + newer.filter(isUserEntry).length
+    out.steps = summary.stepCount + newer.filter(e => e.message?.role === 'assistant' || (e.type === 'compaction' && e.usage)).length
+    if (summary.lastStep && !newer.some(e => e.message?.role === 'assistant') && !s.nodes.some(n => n.kind === 'assistant' && !n.streaming && !counted.has(n.id))) {
+      Object.assign(out, stepMetrics(summary.lastStep.usage, summary.lastStep))
+    }
   }
   for (const n of s.nodes) {
     if (counted.has(n.id)) continue

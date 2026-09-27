@@ -74,11 +74,14 @@ export class Client {
     return { sessions: (await res.json()) as SessionInfo[], etag: res.headers.get('ETag'), notModified: false }
   }
 
-  get(id: string, opts?: { fields?: 'runtime' | 'index'; before?: string; limit?: number; signal?: AbortSignal }): Promise<SessionDetail> {
+  get(id: string, opts?: { fields?: 'runtime' | 'index'; before?: string; limit?: number; view?: 'compact'; keep?: number; turn?: string; signal?: AbortSignal }): Promise<SessionDetail> {
     const p = new URLSearchParams()
     if (opts?.fields) p.set('fields', opts.fields)
     if (opts?.before) p.set('before', opts.before)
     if (opts?.limit) p.set('limit', String(opts.limit))
+    if (opts?.view) p.set('view', opts.view)
+    if (opts?.keep != null) p.set('keep', String(opts.keep))
+    if (opts?.turn) p.set('turn', opts.turn)
     const q = p.size ? `?${p}` : ''
     return this.json(`/v1/sessions/${id}${q}`, { signal: opts?.signal })
   }
@@ -339,9 +342,10 @@ export class Client {
 	 * after it. A cursor from another run is ignored server-side, so a stale
 	 * value is safe.
 	 */
-  async *events(id: string, signal?: AbortSignal, lastEventId?: string): AsyncGenerator<LoopEvent> {
+  async *events(id: string, signal?: AbortSignal, lastEventId?: string, through?: string): AsyncGenerator<LoopEvent> {
     const decode = messageDecoder()
-    for await (const event of this.sse<LoopEvent>(`/v1/sessions/${id}/events`, signal, lastEventId ? { 'Last-Event-ID': lastEventId } : undefined)) yield decode(event)
+    const query = through ? `?through=${encodeURIComponent(through)}` : ''
+    for await (const event of this.sse<LoopEvent>(`/v1/sessions/${id}/events${query}`, signal, lastEventId ? { 'Last-Event-ID': lastEventId } : undefined)) yield decode(event)
   }
 
   /**

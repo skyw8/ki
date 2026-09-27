@@ -304,6 +304,9 @@ function WorkspaceApp({ api }: { api: Client }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>('providers')
   const [messageView, setMessageView] = useState<MessageView>(loadMessageView)
+  const messageViewRef = useRef(messageView)
+  messageViewRef.current = messageView
+  const transcriptOptions = () => messageViewRef.current.mode === 'compact' ? { view: 'compact' as const, keep: messageViewRef.current.keep } : {}
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(loadNotifyPref)
   const [notifyPerm, setNotifyPerm] = useState<NotifyPermission>(currentPermission)
   // Whether the server can reach this browser with the page closed (a Web Push
@@ -346,7 +349,8 @@ function WorkspaceApp({ api }: { api: Client }) {
   const chatControl = useRef<TranscriptScroll>(null)
   const [sessionRevision, setSessionRevision] = useState(0)
   const openAbort = useRef<AbortController | null>(null)
-  const history = useTranscriptRequests(api, currentId, sessionRevision, viewRef, setView)
+  const beforeHistoryCommit = useCallback((signal: AbortSignal) => chatControl.current?.preparePrepend(signal) ?? Promise.resolve(), [])
+  const history = useTranscriptRequests(api, currentId, sessionRevision, viewRef, setView, messageView, beforeHistoryCommit)
   const { requestIndex, requestHydrate, loadOlder, loadingOlder, olderError } = history
   const jumpVersion = useRef(0)
   const [seekingId, setSeekingId] = useState<string | null>(null)
@@ -808,7 +812,11 @@ function WorkspaceApp({ api }: { api: Client }) {
     return () => window.clearTimeout(t)
   }, [api, filter])
 
-  const listen = useCallback(async (id: string) => {
+  const listen = useCallback(async (id: string, snapshotLeaf?: string) => {
+    // Hidden replies are represented by compact summaries, not client nodes.
+    // Tell replay which persisted snapshot is already accounted for so an
+    // attach cannot download those replies and add them to the fold again.
+    const through = snapshotLeaf ?? (currentIdRef.current === id && viewRef.current.compactTurns?.length ? viewRef.current.leafId : undefined)
     abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
@@ -862,7 +870,7 @@ function WorkspaceApp({ api }: { api: Client }) {
       if (!timer) timer = window.setTimeout(flush, 16)
     }
     try {
-      for await (const ev of api.events(id, ac.signal, resumeRef.current.get(id))) {
+      for await (const ev of api.events(id, ac.signal, resumeRef.current.get(id), through)) {
         enqueue(ev)
       }
     } catch (e) {
@@ -879,10 +887,10 @@ function WorkspaceApp({ api }: { api: Client }) {
         // A finished run is reconciled from the tail: the events already
         // arrived on this stream, so only the window and leaf need refreshing,
         // not the whole history (and the index stays warm across the run).
-        const detail = await api.get(id).catch(() => null)
+        const detail = await api.get(id, transcriptOptions()).catch(() => null)
         if (abortRef.current === ac && detail) {
           setView(v => applyTail(v, detail))
-          if (detail.running) void listen(id)
+          if (detail.running) void listen(id, detail.compactTurns?.length ? detail.leafId : undefined)
           else listeningIdRef.current = null
         } else if (abortRef.current === ac) {
           setView(v => ({ ...v, busy: false }))
@@ -1044,14 +1052,14 @@ function WorkspaceApp({ api }: { api: Client }) {
     abortRef.current?.abort()
 	abortRef.current = null
     try {
-      const detail = await api.get(id, { signal: ac.signal })
+      const detail = await api.get(id, { ...transcriptOptions(), signal: ac.signal })
       if (ac.signal.aborted || currentIdRef.current !== id) return false
       const next = loadHistory(detail)
       setView(next)
       saveLastComposerModel({ provider: next.provider, model: next.model, thinkingEffort: next.thinkingEffort })
       setSelectedWs(detail.workspaceId ?? null)
       if (detail.workspaceId) setExpanded(e => ({ ...e, [detail.workspaceId!]: true }))
-      if (detail.running) void listen(id)
+      if (detail.running) void listen(id, detail.compactTurns?.length ? detail.leafId : undefined)
       return true
     } catch (e) {
       if (!ac.signal.aborted) toast.from(e)
@@ -1150,7 +1158,7 @@ function WorkspaceApp({ api }: { api: Client }) {
     setCurrentId(s.id)
     setSelectedWs(s.workspaceId ?? workspaceId ?? null)
     try {
-      setView(loadHistory(await api.get(s.id)))
+      setView(loadHistory(await api.get(s.id, transcriptOptions())))
     } catch {
       setView({ ...emptyView(), cwd: s.cwd, model: s.model, provider: s.provider, thinkingEffort: s.thinkingEffort ?? '' })
     }
@@ -1516,7 +1524,7 @@ function WorkspaceApp({ api }: { api: Client }) {
   const stats = useMemo(() => latestStats(view), [view])
   // The navigator walks the branch from the loaded entries and index rows, not
   // from chat nodes, so every prompt is listed without paging the chat back.
-  const requestItems = useMemo(() => userRequests(view.allEntries, view.leafId, view.nodes), [view.allEntries, view.leafId, view.nodes])
+  const requestItems = useMemo(() => userRequests(view.allEntries, view.leafId, view.nodes, view.compactTurns), [view.allEntries, view.leafId, view.nodes, view.compactTurns])
 
   useEffect(() => {
     setJumpToId(null)
@@ -1931,6 +1939,9 @@ function WorkspaceApp({ api }: { api: Client }) {
                     controlRef={chatControl}
                     onAtBottom={setAtBottom}
                     onReadIntent={cancelJump}
+                    compactTurns={view.compactTurns}
+                    loadedTurnIds={view.loadedTurnIds}
+                    onLoadTurn={history.requestTurn}
                     onLoadOlder={loadOlder}
                     hasMore={view.hasMore}
                     olderError={olderError}

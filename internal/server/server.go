@@ -1187,6 +1187,17 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	entryID := q.Get("entry")
 	batch := q.Get("entries")
 	before := q.Get("before")
+	compact := q.Get("view") == "compact"
+	turnID := q.Get("turn")
+	keep := 1
+	if raw := q.Get("keep"); raw != "" {
+		var err error
+		keep, err = strconv.Atoi(raw)
+		if err != nil || keep < 0 || keep > 20 {
+			http.Error(w, "invalid compact keep", http.StatusBadRequest)
+			return
+		}
+	}
 	limit := session.DefaultViewLimit
 	if raw := q.Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
@@ -1198,7 +1209,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 	withIndex := hasField(fields, "index")
 	runtimeOnly := hasField(fields, "runtime") && !withIndex && entryID == "" && batch == "" && before == ""
-	full := entryID != "" || batch != "" || before != "" || withIndex
+	full := entryID != "" || batch != "" || before != "" || withIndex || compact || turnID != ""
 
 	var snap *sessionSnap
 	var err error
@@ -1225,7 +1236,29 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"entries": session.LookupEntries(snap.entries, strings.Split(batch, ","))})
 		return
 	}
+	if turnID != "" {
+		if compact {
+			page, found := session.BuildCompactTurn(snap.entries, snap.leafID, turnID, keep)
+			if !found {
+				http.Error(w, "turn not found on active branch", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, 200, page)
+			return
+		}
+		page, found := session.BuildTurn(snap.entries, snap.leafID, turnID, before, limit)
+		if !found {
+			http.Error(w, "turn not found on active branch", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"entries": page.Entries, "hasMore": page.HasMore, "oldestId": page.OldestID})
+		return
+	}
 	if before != "" {
+		if compact {
+			writeJSON(w, 200, session.BuildCompact(snap.entries, snap.leafID, before, keep))
+			return
+		}
 		view := session.BuildBefore(snap.entries, snap.leafID, before, limit)
 		writeJSON(w, 200, map[string]any{
 			"entries":  view.Entries,
@@ -1264,12 +1297,16 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tail := session.BuildTail(snap.entries, snap.leafID, limit)
 	runtime["leafId"] = snap.leafID
-	runtime["entries"] = tail.Entries
-	runtime["hasMore"] = tail.HasMore
-	runtime["oldestId"] = tail.OldestID
-	if withIndex || (snap.complete && snap.small) {
+	if compact {
+		page := session.BuildCompact(snap.entries, snap.leafID, "", keep)
+		runtime["entries"], runtime["compactTurns"] = page.Entries, page.Turns
+		runtime["hasMore"], runtime["oldestId"] = page.HasMore, page.OldestID
+	} else {
+		tail := session.BuildTail(snap.entries, snap.leafID, limit)
+		runtime["entries"], runtime["hasMore"], runtime["oldestId"] = tail.Entries, tail.HasMore, tail.OldestID
+	}
+	if withIndex || (!compact && snap.complete && snap.small) {
 		// A session smaller than one tail read was read in full anyway, so its
 		// index costs nothing extra and the client needs no second request; a
 		// long one stays opt-in.
@@ -2366,6 +2403,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	snapshot := s.replaySnapshot(id, r.URL.Query().Get("through"))
 	fl, _ := w.(http.Flusher)
 	// The run can sit silent for a whole model round (nothing to flush until the
 	// first delta), and a mobile/NAT path drops that idle connection long before
@@ -2409,6 +2447,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	st.mu.Lock()
 	runID := st.runID
 	since := parseCursor(r, runID)
+	for _, ev := range st.evs {
+		snapshot.observe(ev)
+	}
 	// Registering before the first read tells the emitter which buffered
 	// payloads this reader is still owed, so nothing is trimmed out from under
 	// it (see runState.trimLocked).
@@ -2447,10 +2488,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		st.mu.Unlock()
 		// Blank carries a payload the emitter dropped as superseded; since
 		// marks events this client already has from an earlier connection.
-		if ev.Blank || ev.Seq <= since {
+		if ev.Blank || ev.Seq <= since || snapshot.covers(ev) {
 			continue
 		}
-		b, err := json.Marshal(encoder.Encode(*ev))
+		b, err := json.Marshal(encoder.Encode(snapshot.frame(*ev)))
 		if err != nil {
 			slog.Error("marshal SSE event", "err", err)
 			return

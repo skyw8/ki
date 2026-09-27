@@ -1,7 +1,8 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { Client } from '../../api/client'
 import type { SessionDetail, ViewState } from '../../api/types'
-import { applyIndex, evictBodies, hydrateEntries } from '../../lib/model'
+import { applyIndex, compactBoundary, evictBodies, hydrateEntries, hydrateTurn } from '../../lib/model'
+import type { MessageView } from '../../lib/messageView'
 
 type BodyRequest = { promise: Promise<boolean>; resolve: (ok: boolean) => void }
 type Scope = {
@@ -15,6 +16,7 @@ type Scope = {
   pending: Set<string>
   timer: number
   hydrating: boolean
+  turns: Map<string, Promise<boolean>>
 }
 
 /** Network state belongs to an opened branch, not to the lifetime of App. */
@@ -24,8 +26,12 @@ export function useTranscriptRequests(
   revision: number,
   view: { current: ViewState },
   setView: Dispatch<SetStateAction<ViewState>>,
+  presentation: MessageView,
+  beforeCommit: (signal: AbortSignal) => Promise<void>,
 ) {
-  const scope = useMemo<Scope>(() => ({ id, abort: new AbortController(), bodies: new Map(), pending: new Set(), timer: 0, hydrating: false }), [api, id, revision])
+  const scope = useMemo<Scope>(() => ({ id, abort: new AbortController(), bodies: new Map(), pending: new Set(), turns: new Map(), timer: 0, hydrating: false }), [api, id, revision, presentation.mode, presentation.keep])
+  const mode = useRef(presentation)
+  mode.current = presentation
   const current = useRef(scope)
   current.current = scope
   const [loadingOlder, setLoadingOlder] = useState(false)
@@ -64,7 +70,9 @@ export function useTranscriptRequests(
     if (!(s.hasMore ?? view.current.hasMore) || !cursor) return Promise.resolve(null)
     setOlderError(false)
     setLoadingOlder(true)
-    const page = api.get(s.id, { before: cursor, limit, signal: s.abort.signal }).then(out => {
+    const compact = mode.current.mode === 'compact'
+    const page = api.get(s.id, { before: cursor, limit, view: compact ? 'compact' : undefined, keep: compact ? mode.current.keep : undefined, signal: s.abort.signal }).then(async out => {
+      await beforeCommit(s.abort.signal)
       if (!valid(s)) return null
       if (out.hasMore && (!out.entries?.length || !out.oldestId || out.oldestId === cursor)) {
         throw new Error('History cursor did not advance')
@@ -73,7 +81,7 @@ export function useTranscriptRequests(
       // can otherwise request the same page repeatedly before React commits.
       s.cursor = out.oldestId ?? cursor
       s.hasMore = !!out.hasMore
-      const meta = { hasMore: s.hasMore, oldestId: s.cursor }
+      const meta = { hasMore: s.hasMore, oldestId: s.cursor, compactTurns: out.compactTurns }
       setView(v => valid(s) ? hydrateEntries(v, out.entries ?? [], meta) : v)
       return out
     }).catch(() => {
@@ -85,7 +93,68 @@ export function useTranscriptRequests(
     })
     s.page = page
     return page
-  }, [api, setView, view])
+  }, [api, setView, view, beforeCommit])
+
+  const requestTurn = useCallback((turnId: string): Promise<boolean> => {
+    const s = current.current
+    if (!s.id || !valid(s)) return Promise.resolve(false)
+    if (view.current.loadedTurnIds?.includes(turnId)) return Promise.resolve(true)
+    const pending = s.turns.get(turnId)
+    if (pending) return pending
+    const task = (async () => {
+      const entries: NonNullable<SessionDetail['entries']> = []
+      let before: string | undefined
+      try {
+        do {
+          const page = await api.get(s.id!, { turn: turnId, before, limit: 500, signal: s.abort.signal })
+          if (!valid(s)) return false
+          entries.unshift(...page.entries ?? [])
+          if (!page.hasMore) break
+          if (!page.oldestId || page.oldestId === before) throw new Error('Turn cursor did not advance')
+          before = page.oldestId
+        } while (valid(s))
+        // Publish once: partial expansion would repeatedly change the fold
+        // count and move its final reply while the reader waits on the link.
+        await beforeCommit(s.abort.signal)
+        if (!valid(s)) return false
+        setView(v => valid(s) ? hydrateTurn(v, turnId, entries) : v)
+        return true
+      } catch { return false }
+      finally { s.turns.delete(turnId) }
+    })()
+    s.turns.set(turnId, task)
+    return task
+  }, [api, setView, view, beforeCommit])
+
+  useEffect(() => {
+    // Switching to detailed (or asking for more visible replies) is an
+    // explicit request for bodies omitted by an earlier compact projection.
+    const s = current.current
+    const state = view.current
+    if (presentation.mode === 'compact' && !state.compactTurns?.length && state.entries.length && state.oldestId && s.id) {
+      setLoadingOlder(true)
+      s.page = api.get(s.id, { turn: state.oldestId, view: 'compact', keep: presentation.keep, signal: s.abort.signal }).then(async page => {
+        await beforeCommit(s.abort.signal)
+        if (!valid(s)) return null
+        s.cursor = page.oldestId
+        s.hasMore = page.hasMore
+        setView(v => valid(s) ? compactBoundary(v, page) : v)
+        return page
+      }).catch(() => { if (valid(s)) setOlderError(true); return null }).finally(() => {
+        s.page = undefined
+        if (valid(s)) setLoadingOlder(false)
+      })
+    }
+    for (const turn of state.compactTurns ?? []) {
+      if (state.loadedTurnIds?.includes(turn.id)) continue
+      if (presentation.mode === 'detailed') void requestTurn(turn.id)
+      else if (presentation.keep > turn.visibleNodeIds.length - 1 && s.id) {
+        void api.get(s.id, { turn: turn.id, view: 'compact', keep: presentation.keep, signal: s.abort.signal }).then(page => {
+          if (valid(s)) setView(v => valid(s) ? hydrateEntries(v, page.entries ?? [], { compactTurns: page.compactTurns }) : v)
+        }).catch(() => {})
+      }
+    }
+  }, [presentation.mode, presentation.keep, requestTurn, scope, view, api, setView, beforeCommit])
 
   const requestIndex = useCallback((sessionId: string): Promise<void> => {
     const s = current.current
@@ -145,5 +214,5 @@ export function useTranscriptRequests(
     return Promise.all(ids.map(requestBody)).then(results => results.every(Boolean))
   }, [requestBody, view])
 
-  return { cancel, loadOlder, loadingOlder, olderError, requestHydrate, requestIndex, protect }
+  return { cancel, loadOlder, loadingOlder, olderError, requestHydrate, requestIndex, requestTurn, protect }
 }

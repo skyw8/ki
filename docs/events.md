@@ -66,6 +66,9 @@ CLI 的行读取器只认 `data:` 前缀。
 的 `seq` 并在重新监听时带上它；因为服务端会裁掉已持久化的消息、且客户端按状态（entry
 id / 是否已有 streaming 气泡）去重，续传不需要客户端持有完整历史。CLI 不发游标：它只跟
 自己刚启动的 run，直接读累积 partial 的增量打印。
+
+compact WebUI 连接可带 `?through=<已读取快照的 leafId>`。服务端沿该持久化分支过滤已被摘要计入的 message 和已完成工具事件，避免重放把隐藏正文重新下载并重复加入折叠计数。快照之后的消息继续发送；并发工具按结果是否已落盘判断，不能仅按 seq 截掉仍在运行工具的 start/args。此连接的 `turn_end` / `agent_end` 只传生命周期边界，不重复附带 message / messages / toolResults。无效 leaf 忽略，普通连接不变；该快照边界与 Last-Event-ID 续传同时生效。
+
 `message_update` 的 HTTP 表示由每条连接独立编码：第一条 update 是 `message` 快照；后续只在更小时发送 `messagePatch: {baseSeq, changes}`，省略重复的 `assistantMessageEvent.partial`。`messageStream` 标识这条连接上的消息流（第一条 update 的 seq），当前帧 `seq` 是新 revision；`baseSeq` 指上一条 **message frame**，中间可以有其他事件或被裁剪的全局 seq，不能按 `seq+1` 判定连续。
 
 每个 change 为 `{path: string[], op, value?}`：`set` 替换 JSON 值，`append` 追加字符串（Unicode 无字节偏移歧义），`remove` 删除对象字段，`resize` 调整数组长度后再写入新增项。覆盖 text/thinking、工具参数、内容块增删、字段替换/重置与错误元数据。每次 attach / reconnect 使用新编码器，第一条有效 update 必为可独立还原的快照；消息 start/end 清空基线。base 或 messageStream 不匹配时客户端拒绝该 patch，WebUI 从最后成功应用的游标重连。

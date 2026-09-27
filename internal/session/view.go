@@ -506,8 +506,12 @@ func toolsKey(tools []ToolSchema) string {
 // compactViewEntry prevents one multi-block body, inline image or prompt from
 // defeating the page budget. The immutable original remains available by id.
 func compactViewEntry(e Entry) Entry {
+	return compactViewEntryLimit(e, 64*1024)
+}
+
+func compactViewEntryLimit(e Entry, limit int) Entry {
 	raw, _ := json.Marshal(e)
-	if len(raw) <= 64*1024 {
+	if len(raw) <= limit {
 		return e
 	}
 	e.Truncated = true
@@ -518,12 +522,13 @@ func compactViewEntry(e Entry) Entry {
 		m := *e.Message
 		m.Details, m.External = nil, nil
 		m.Content = slices.Clone(m.Content[:min(len(m.Content), 32)])
+		textLimit := min(256, max(32, limit/(max(1, len(m.Content))*8)))
 		for i := range m.Content {
 			c := &m.Content[i]
-			c.Text = utf8Prefix(c.Text, 256)
-			c.Thinking = utf8Prefix(c.Thinking, 256)
-			c.Input = utf8Prefix(c.Input, 256)
-			c.ArgumentsRaw = utf8Prefix(c.ArgumentsRaw, 256)
+			c.Text = utf8Prefix(c.Text, textLimit)
+			c.Thinking = utf8Prefix(c.Thinking, textLimit)
+			c.Input = utf8Prefix(c.Input, textLimit)
+			c.ArgumentsRaw = utf8Prefix(c.ArgumentsRaw, textLimit)
 			c.Data, c.ThinkingData, c.ThinkingSignature, c.TextSignature = "", "", "", ""
 			c.Arguments = nil
 		}

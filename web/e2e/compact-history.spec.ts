@@ -1,0 +1,210 @@
+import { expect, test, type Page } from '@playwright/test'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { serverToken } from './global-setup'
+import type { Entry, SessionDetail } from '../src/api/types'
+
+test.describe.configure({ mode: 'parallel' })
+
+async function seed(page: Page) {
+  const headers = { Authorization: `Bearer ${serverToken()}` }
+  const created = await page.request.post('/v1/sessions', { headers, data: {} })
+  expect(created.ok()).toBeTruthy()
+  const { id, dir } = await created.json() as { id: string; dir: string }
+  const path = join(dir, 'config.json')
+  const config = JSON.parse(readFileSync(path, 'utf8'))
+  const entries: Entry[] = []
+  let parent = ''
+  const push = (entry: Omit<Entry, 'parentId'>) => { entries.push({ ...entry, parentId: parent }); parent = entry.id }
+  for (let t = 0; t < 9; t++) {
+    push({ type: 'message', id: `u${t}`, message: { role: 'user', content: [{ type: 'text', text: `Input turn ${t}` }] } })
+    for (let n = 0; n < 260; n++) {
+      const call = `call-${t}-${n}`
+      push({ type: 'message', id: `a-${t}-${n}`, message: { role: 'assistant', content: [{ type: 'text', text: `HIDDEN_BODY_${t}_${n}` }, { type: 'toolCall', id: call, name: 'Bash', arguments: { command: `HIDDEN_ARGUMENT_${t}_${n}` } }] } })
+      push({ type: 'message', id: `r-${t}-${n}`, message: { role: 'toolResult', toolCallId: call, toolName: 'Bash', content: [{ type: 'text', text: `HIDDEN_RESULT_${t}_${n}` }] } })
+    }
+    push({ type: 'message', id: `final${t}`, message: { role: 'assistant', content: [{ type: 'text', text: `## Final ${t}\n\n**Complete turn** with stable reading content.\n\n- First result\n- Second result\n\n\`\`\`ts\nconst turn = ${t}\n\`\`\`` }] } })
+  }
+  appendFileSync(join(dir, 'events.jsonl'), entries.map(e => JSON.stringify(e)).join('\n') + '\n')
+  config.activeLeafId = parent
+  config.title = `compact-${id}`
+  writeFileSync(path, JSON.stringify(config))
+  await page.addInitScript(() => {
+    localStorage.setItem('ki-message-view', 'compact')
+    localStorage.setItem('ki-message-view-keep', '1')
+  })
+  await page.setViewportSize({ width: 390, height: 844 })
+  return { id, open: async () => {
+    await page.goto('/')
+    await page.getByTestId('mobile-nav-toggle').click()
+    await page.getByTestId('session-row').filter({ hasText: config.title }).click()
+    await expect(page.locator('[data-item-key="final8"]')).toBeVisible()
+    await expect(page.locator('[data-md-pending]')).toHaveCount(0)
+    await expect(page.getByTestId('session-stats')).toContainText('9 轮 · 2349 步')
+  } }
+}
+
+async function readTop(page: Page) {
+  const scroll = page.getByTestId('chat-scroll')
+  const touch = await page.evaluate(() => /iPhone/.test(navigator.userAgent))
+  if (touch) {
+    await scroll.evaluate(el => {
+      // Desktop WebKit's iPhone emulation does not expose a Touch constructor.
+      // Exercise touch intent/deferral with DOM events; motion is controlled
+      // below, so this is not a claim of native inertial-gesture coverage.
+      const touch = (type: string, y?: number) => {
+        const event = new Event(type, { bubbles: true })
+        Object.defineProperty(event, 'touches', { value: y == null ? [] : [{ identifier: 1, target: el, clientX: 160, clientY: y }] })
+        el.dispatchEvent(event)
+      }
+      touch('touchstart', 300)
+      touch('touchmove', 340)
+      el.scrollTop = 0
+      touch('touchend')
+    })
+  } else {
+    await scroll.hover()
+    await page.mouse.wheel(0, -5)
+  }
+  await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', 'reading')
+  await scroll.evaluate(el => { el.scrollTop = 0 })
+}
+
+test('compact paging adds one complete turn and keeps the same content through successive prepends', async ({ page }) => {
+  const f = await seed(page)
+  const pages: SessionDetail[] = []
+  const gates: Array<() => void> = []
+  let bodies = 0
+  await page.route(`**/v1/sessions/${f.id}?*`, async route => {
+    const params = new URL(route.request().url()).searchParams
+    if (params.has('turn') || params.has('entries')) bodies++
+    if (!params.has('before')) return route.fallback()
+    expect(params.get('view')).toBe('compact')
+    const response = await route.fetch()
+    const data = await response.json() as SessionDetail
+    pages.push(data)
+    await new Promise<void>(done => gates.push(done))
+    await route.fulfill({ response })
+  })
+  await f.open()
+  expect(pages).toHaveLength(0)
+  for (let i = 0; i < 3; i++) {
+    await readTop(page)
+    await expect.poll(() => gates.length).toBe(i + 1)
+    await expect(page.locator('[data-md-pending]')).toHaveCount(0)
+    const key = `u${5 - i}`
+    await expect(page.locator(`[data-item-key="${key}"]`)).toBeVisible()
+    const probe = () => page.evaluate(key => {
+      const el = document.querySelector('[data-testid="chat-scroll"]')!
+      const row = el.querySelector(`[data-item-key="${key}"]`)!
+      return row.getBoundingClientRect().top - el.getBoundingClientRect().top
+    }, key)
+    const before = await probe()
+    const fold = page.locator(`[data-fold="${key}"] .fold-row-count`)
+    await expect(fold).toHaveText('已折叠 520 条消息')
+    // More input events during the same pending load must not queue a second
+    // turn merely because its measured height leaves us near the boundary.
+    await readTop(page)
+    await page.evaluate(({ key, before }) => {
+      const state = { active: true, worst: 0, missing: false, trace: [] as unknown[] }
+      ;(window as unknown as { anchorProbe: typeof state }).anchorProbe = state
+      const sample = () => {
+        if (!state.active) return
+        const el = document.querySelector('[data-testid="chat-scroll"]')!
+        const row = el.querySelector(`[data-item-key="${key}"]`)
+        if (!row) state.missing = true
+        else {
+          const offset = row.getBoundingClientRect().top - el.getBoundingClientRect().top
+          if (state.trace.length < 50) state.trace.push({ offset, scroll: el.scrollTop, logical: (el.firstElementChild as HTMLElement)?.dataset.scrollOffset, scrolling: (el.firstElementChild as HTMLElement)?.dataset.libraryScrolling })
+          state.worst = Math.max(state.worst, Math.abs(offset - before))
+        }
+        requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+    }, { key, before })
+    gates[i]()
+    await expect(page.getByTestId('older-loading')).toHaveCount(0)
+    await expect.poll(async () => Math.abs(await probe() - before)).toBeLessThanOrEqual(2)
+    await page.waitForTimeout(400)
+    expect(Math.abs(await probe() - before)).toBeLessThanOrEqual(2)
+    const frames = await page.evaluate(() => {
+      const state = (window as unknown as { anchorProbe: { active: boolean; worst: number; missing: boolean } }).anchorProbe
+      state.active = false
+      return state
+    })
+    expect(frames.missing).toBe(false)
+    expect(frames.worst, `the anchor must also stay put between commit and final measurements: ${JSON.stringify(frames)}`).toBeLessThanOrEqual(2)
+    await expect(fold).toHaveText('已折叠 520 条消息')
+    expect(pages[i].compactTurns?.map(t => t.id)).toEqual([`u${4 - i}`])
+    expect(pages[i].entries?.map(e => e.id)).toEqual([`u${4 - i}`, `final${4 - i}`])
+    expect(JSON.stringify(pages[i])).not.toContain('HIDDEN_')
+    expect(pages).toHaveLength(i + 1)
+  }
+  expect(bodies).toBe(0)
+})
+
+test('compact expands hidden contents only on demand and preserves its paging cursor', async ({ page }) => {
+  const f = await seed(page)
+  const expansions: string[] = []
+  let pages = 0
+  await page.route(`**/v1/sessions/${f.id}?*`, async route => {
+    const p = new URL(route.request().url()).searchParams
+    if (p.has('turn')) expansions.push(p.get('turn')!)
+    else if (p.has('before')) pages++
+    return route.fallback()
+  })
+  await f.open()
+  expect(expansions).toHaveLength(0)
+  const fold = page.locator('[data-fold="u8"]')
+  await fold.getByTestId('fold-row-btn').click()
+  await expect(fold.getByTestId('fold-row-btn')).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByTestId('tool-card').first()).toBeVisible()
+  expect(expansions.length).toBeGreaterThan(1)
+  expect(expansions.every(id => id === 'u8')).toBe(true)
+  expect(pages).toBe(0)
+  await fold.getByTestId('fold-row-btn').click()
+  await expect(fold.locator('.fold-row-count')).toHaveText('已折叠 520 条消息')
+  await readTop(page)
+  await expect.poll(() => pages).toBe(1)
+  await expect(page.locator('[data-fold="u5"] .fold-row-count')).toHaveText('已折叠 520 条消息')
+})
+
+test('a page arriving during an active touch waits to commit without moving the reader', async ({ page }) => {
+  const f = await seed(page)
+  let release!: () => void
+  const gate = new Promise<void>(done => { release = done })
+  let ready = false
+  await page.route(`**/v1/sessions/${f.id}?before=*`, async route => {
+    const response = await route.fetch()
+    ready = true
+    await gate
+    await route.fulfill({ response })
+  })
+  await f.open()
+  const scroll = page.getByTestId('chat-scroll')
+  await scroll.evaluate(el => {
+    const dispatch = (type: string, y: number) => {
+      const event = new Event(type, { bubbles: true })
+      Object.defineProperty(event, 'touches', { value: [{ clientY: y }] })
+      el.dispatchEvent(event)
+    }
+    dispatch('touchstart', 300)
+    dispatch('touchmove', 360)
+    el.scrollTop = 0
+  })
+  await expect.poll(() => ready).toBe(true)
+  await expect(page.locator('[data-md-pending]')).toHaveCount(0)
+  const offset = () => scroll.evaluate(el => el.querySelector('[data-item-key="u5"]')!.getBoundingClientRect().top - el.getBoundingClientRect().top)
+  const before = await offset()
+  release()
+  await page.waitForTimeout(250)
+  await expect(page.getByTestId('older-loading')).toHaveCount(1)
+  expect(Math.abs(await offset() - before)).toBeLessThanOrEqual(2)
+  await scroll.evaluate(el => {
+    const event = new Event('touchend', { bubbles: true })
+    Object.defineProperty(event, 'touches', { value: [] })
+    el.dispatchEvent(event)
+  })
+  await expect(page.getByTestId('older-loading')).toHaveCount(0)
+  await expect.poll(async () => Math.abs(await offset() - before)).toBeLessThanOrEqual(2)
+})

@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { observeElementOffset, useVirtualizer } from '@tanstack/react-virtual'
 import { useTranscriptScroll, type TranscriptScroll } from './useTranscriptScroll'
 import { IChev, IChevDown, IClock, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from '../../components/icons'
 import { IFile } from '../../components/icons'
@@ -12,7 +12,7 @@ import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, fo
 import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
 import { rememberRowHeight, rowHeightEstimate, UNKNOWN_WIDTH } from '../../lib/rowHeight'
 import { copyText } from '../../lib/clipboard'
-import type { ChatNode } from '../../api/types'
+import type { ChatNode, CompactTurn } from '../../api/types'
 
 const OVERSCAN = 4
 
@@ -340,26 +340,32 @@ function nodePreview(n: ChatNode): string {
  * carries the first hidden node id as `data-msg-id` so the request navigator
  * can highlight the row while the target itself is folded away.
  */
-function FoldRow({ turn, nodes, expanded, onToggle }: {
+function FoldRow({ turn, nodes, expanded, onToggle, count, preview: summaryPreview, firstHiddenId, loading, failed }: {
   turn: ChatTurn
   nodes: ChatNode[]
   expanded: boolean
   onToggle: () => void
+  count: number
+  preview?: string
+  firstHiddenId?: string
+  loading?: boolean
+  failed?: boolean
 }) {
   const { t } = useI18n()
-  const preview = nodes.length ? nodePreview(nodes[nodes.length - 1]) : ''
+  const preview = nodes.length ? nodePreview(nodes[nodes.length - 1]) : summaryPreview ?? ''
   return (
-    <div className={`fold-row${expanded ? ' expanded' : ''}`} data-testid="fold-row" data-fold={turn.id} data-msg-id={nodes[0]?.id}>
+    <div className={`fold-row${expanded ? ' expanded' : ''}`} data-testid="fold-row" data-fold={turn.id} data-msg-id={firstHiddenId ?? nodes[0]?.id}>
       <button
         type="button"
         className="fold-row-btn"
         data-testid="fold-row-btn"
         aria-expanded={expanded}
+        disabled={loading}
         aria-label={expanded ? t('chat.collapse') : t('chat.expand')}
         onClick={onToggle}
       >
         <IChev open={expanded} />
-        <span className="fold-row-count">{t('chat.foldCount', { n: nodes.length })}</span>
+        <span className="fold-row-count">{loading ? t('chat.loadingBody') : failed ? t('chat.retryOlder') : t('chat.foldCount', { n: count })}</span>
         {!expanded && preview ? <span className="fold-row-preview">{preview}</span> : null}
       </button>
     </div>
@@ -498,7 +504,7 @@ const ChatItem = memo(function ChatItem({
   return <Compaction node={n} />
 })
 
-export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, controlRef, onHydrate, onShowBranches, onVisibleEntries, jumpToId, onJumped, onActiveRequest, onAtBottom, onReadIntent, onLoadOlder, hasMore, olderError, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP, loadingOlder }: Omit<ChatItemProps, 'node' | 'missed' | 'branchIndex' | 'branchTotal'> & {
+export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, controlRef, onHydrate, onShowBranches, onVisibleEntries, jumpToId, onJumped, onActiveRequest, onAtBottom, onReadIntent, onLoadOlder, hasMore, olderError, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP, loadingOlder, compactTurns, loadedTurnIds, onLoadTurn }: Omit<ChatItemProps, 'node' | 'missed' | 'branchIndex' | 'branchTotal'> & {
   branches?: Record<string, { index: number; total: number }>
   nodes: ChatNode[]
   turnBase?: number
@@ -516,10 +522,13 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   hasMore?: boolean
   loadingOlder?: boolean
   olderError?: boolean
+  compactTurns?: CompactTurn[]
+  loadedTurnIds?: string[]
+  onLoadTurn?: (id: string) => Promise<boolean>
 }) {
   const { t } = useI18n()
   const measurementAnchor = useRef<string | null>(null)
-  const navigation = useTranscriptScroll({ scrollRef, onAtBottom, onReadIntent: () => { measurementAnchor.current = null; onReadIntent?.() }, onLoadOlder, hasMore, loadingOlder, olderError })
+  const navigation = useTranscriptScroll({ scrollRef, onAtBottom, onReadIntent: () => { measurementAnchor.current = null; onReadIntent?.() }, onLoadOlder, hasMore, loadingOlder, olderError, pageBudget: mode === 'compact' ? 1 : 2 })
   const nodes = useMemo(() => reconcileUserNodes(rawNodes), [rawNodes])
   const misses = useMemo(() => cacheMisses(nodes), [nodes])
   const listRef = useRef<HTMLDivElement>(null)
@@ -533,9 +542,20 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     return () => ro.disconnect()
   }, [])
   const [folds, setFolds] = useState<ReadonlySet<string>>(() => new Set())
+  const [loadingFolds, setLoadingFolds] = useState<ReadonlySet<string>>(() => new Set())
+  const [failedFolds, setFailedFolds] = useState<ReadonlySet<string>>(() => new Set())
   const foldAnchor = useRef<{ id: string; offset: number } | null>(null)
-  const toggleFold = useCallback((id: string) => {
+  const toggleFold = useCallback(async (id: string) => {
     navigation.read()
+    onReadIntent?.()
+    if (!folds.has(id) && compactTurns?.some(t => t.id === id && t.hiddenCount > 0) && !loadedTurnIds?.includes(id)) {
+      if (loadingFolds.has(id) || !onLoadTurn) return
+      setLoadingFolds(prev => new Set([...prev, id]))
+      const ok = await onLoadTurn(id)
+      setLoadingFolds(prev => new Set([...prev].filter(key => key !== id)))
+      setFailedFolds(prev => new Set(ok ? [...prev].filter(key => key !== id) : [...prev, id]))
+      if (!ok) return
+    }
     const scroll = scrollRef.current
     const row = scroll?.querySelector(`[data-testid="fold-row"][data-fold="${CSS.escape(id)}"]`)
     if (scroll && row) foldAnchor.current = { id, offset: row.getBoundingClientRect().top - scroll.getBoundingClientRect().top }
@@ -545,8 +565,8 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
       else next.add(id)
       return next
     })
-  }, [scrollRef, navigation.read])
-  const items = useMemo(() => mode === 'compact' ? foldReplies(nodes, { keep, expanded: folds }) : detailedItems(nodes), [mode, nodes, keep, folds])
+  }, [scrollRef, navigation.read, onReadIntent, folds, compactTurns, loadedTurnIds, loadingFolds, onLoadTurn])
+  const items = useMemo(() => mode === 'compact' ? foldReplies(nodes, { keep, expanded: folds, summaries: compactTurns, loadedTurnIds }) : detailedItems(nodes), [mode, nodes, keep, folds, compactTurns, loadedTurnIds])
   const previousItems = useRef(items)
   const previousVirtual = navigation.virtual.current
   if (items !== previousItems.current) {
@@ -577,6 +597,12 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
+    // Scroll events from our own prepend/resize compensation are not touch
+    // momentum. Reporting them as user scrolling makes iOS defer the next
+    // Markdown height correction while its transform already moves (~500px
+    // flash). Only real input may enable that deferral; pages wait for it to
+    // settle before publishing, and subsequent geometry commits stay atomic.
+    observeElementOffset: (instance, cb) => observeElementOffset(instance, (offset, scrolling) => cb(offset, scrolling && navigation.userScrolling.current)),
     // A new key callback invalidates every measurement. Likewise, changing
     // unmeasured estimates as the global average learns silently moves rows
     // without a resizeItem delta. Freeze each estimate until its body/width
@@ -611,7 +637,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     }
     return delta !== 0 && (instance.itemSizeCache.has(item.key) ? item.end : item.start) <= (instance.scrollOffset ?? 0) + instance.scrollAdjustments
   }
-  useImperativeHandle(controlRef, () => ({ read: navigation.read, latest: navigation.latest }), [navigation.read, navigation.latest])
+  useImperativeHandle(controlRef, () => ({ read: navigation.read, latest: navigation.latest, preparePrepend: navigation.preparePrepend }), [navigation.read, navigation.latest, navigation.preparePrepend])
 
   const opened = useRef(false)
   useLayoutEffect(() => {
@@ -636,7 +662,14 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     return () => ro.disconnect()
   }, [scrollRef, virtualizer])
 
-  const turns = useMemo(() => turnStats(nodes, turnBase), [nodes, turnBase])
+  const turns = useMemo(() => {
+    const out = turnStats(nodes, turnBase)
+    for (const turn of compactTurns ?? []) {
+      const last = turn.visibleNodeIds.at(-1)
+      if (last && last !== turn.id && turn.stats.steps) out.set(last, turn.stats)
+    }
+    return out
+  }, [nodes, turnBase, compactTurns])
   const newestId = nodes.at(-1)?.id
   const actions = useRef({ onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches })
   actions.current = { onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches }
@@ -662,7 +695,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     }))
   }, [visibleItems, items, onVisibleEntries])
   const renderItem = (it: ChatRenderItem) => {
-    if (it.kind === 'fold') return <FoldRow turn={it.turn} nodes={it.nodes} expanded={it.expanded} onToggle={() => toggleFold(it.turn.id)} />
+    if (it.kind === 'fold') return <FoldRow {...it} loading={loadingFolds.has(it.turn.id) || (loadingOlder && !compactTurns?.length)} failed={failedFolds.has(it.turn.id)} onToggle={() => void toggleFold(it.turn.id)} />
     const foot = turns.get(it.id)
     return <>
       <ChatItem node={it.node} {...props} edit={edit?.messageId === it.id ? edit : null} branchIndex={branches?.[it.id]?.index} branchTotal={branches?.[it.id]?.total} missed={misses.get(it.id)} />
@@ -722,7 +755,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   }, [users, scrollRef, virtualizer, onActiveRequest, onAtBottom])
 
   return (
-    <div ref={listRef} className="chat-col chat-virtual" data-testid="chat" data-scroll-intent={navigation.isFollowing ? 'following' : 'reading'} data-anchor-key={measurementAnchor.current ?? undefined} style={{ height: virtualizer.getTotalSize() }}>
+    <div ref={listRef} className="chat-col chat-virtual" data-testid="chat" data-scroll-intent={navigation.isFollowing ? 'following' : 'reading'} data-anchor-key={measurementAnchor.current ?? undefined} data-scroll-offset={virtualizer.scrollOffset} data-library-scrolling={String(virtualizer.isScrolling)} style={{ height: virtualizer.getTotalSize() }}>
       <div className="history-control" aria-live="polite">
         {hasMore ? <button type="button" data-testid="load-older" disabled={loadingOlder} onClick={navigation.loadOlder}>
           {loadingOlder ? <span data-testid="older-loading">{t('chat.loadingOlder')}</span> : olderError ? t('chat.retryOlder') : t('chat.loadOlder')}

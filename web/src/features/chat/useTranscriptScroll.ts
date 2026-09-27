@@ -4,6 +4,7 @@ import type { Virtualizer } from '@tanstack/react-virtual'
 export type TranscriptScroll = {
   read: () => void
   latest: () => void
+  preparePrepend: (signal: AbortSignal) => Promise<void>
 }
 
 /** Whether an inner scroller consumes this gesture before the transcript. */
@@ -27,6 +28,7 @@ export function useTranscriptScroll(options: {
   hasMore?: boolean
   loadingOlder?: boolean
   olderError?: boolean
+  pageBudget?: number
 }) {
   const state = useRef(options)
   state.current = options
@@ -39,6 +41,29 @@ export function useTranscriptScroll(options: {
   const dragging = useRef(false)
   const direction = useRef(0)
   const active = useRef(false)
+  const touching = useRef(false)
+  const lastMotion = useRef(0)
+  const userScrolling = useRef(false)
+  const preparePrepend = useCallback((signal: AbortSignal): Promise<void> => new Promise(resolve => {
+    let frame = 0
+    const finish = () => {
+      cancelAnimationFrame(frame)
+      signal.removeEventListener('abort', finish)
+      if (!signal.aborted) userScrolling.current = false
+      resolve()
+    }
+    const check = () => {
+      // iOS virtual-core defers scrollTop during touch/momentum, but commits
+      // prepended transforms immediately. That exposes a whole-turn flash
+      // before the deferred correction (measured ~500px). Wait to publish
+      // the page until both the gesture and the library have settled; then
+      // capture the CURRENT anchor and commit geometry in one layout pass.
+      if (signal.aborted || !active.current || (!touching.current && !virtual.current?.isScrolling && performance.now() - lastMotion.current >= 180)) finish()
+      else frame = requestAnimationFrame(check)
+    }
+    signal.addEventListener('abort', finish, { once: true })
+    check()
+  }), [])
   const setIntent = useCallback((follow: boolean) => {
     following.current = follow
     setFollowing(follow)
@@ -76,7 +101,7 @@ export function useTranscriptScroll(options: {
   const loadOlder = useCallback(() => {
     state.current.onReadIntent?.()
     setIntent(false)
-    budget.current = 1
+    budget.current = 0
     // A retry deliberately bypasses the automatic error gate.
     void state.current.onLoadOlder?.()
   }, [setIntent])
@@ -90,22 +115,25 @@ export function useTranscriptScroll(options: {
     let settleTimer = 0
     const intent = (delta: number, target: EventTarget | null) => {
       if (!delta || innerScrolls(target, el, delta)) return
+      userScrolling.current = true
       direction.current = Math.sign(delta)
       state.current.onReadIntent?.()
       if (delta < 0) {
         setIntent(false)
-        budget.current = 2
+        // Repeated wheel/touch events while a page is pending belong to the
+        // same gesture. Re-arming here silently queues another whole turn.
+        if (!pending.current && !state.current.loadingOlder) budget.current = state.current.pageBudget ?? 2
         checkOlder()
       }
     }
     const wheel = (e: WheelEvent) => { if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)) intent(e.deltaY, e.target) }
-    const touchStart = (e: TouchEvent) => { touchY = e.touches[0]?.clientY ?? null }
+    const touchStart = (e: TouchEvent) => { touching.current = true; userScrolling.current = true; touchY = e.touches[0]?.clientY ?? null }
     const touchMove = (e: TouchEvent) => {
       const y = e.touches[0]?.clientY
       if (y != null && touchY != null) intent(touchY - y, e.target)
       touchY = y ?? null
     }
-    const touchEnd = () => { touchY = null }
+    const touchEnd = () => { touching.current = false; lastMotion.current = performance.now(); touchY = null }
     const key = (e: KeyboardEvent) => {
       if (e.defaultPrevented || (e.target instanceof Element && e.target.closest('input,textarea,select,button,[contenteditable="true"]'))) return
       if (['ArrowUp', 'PageUp', 'Home'].includes(e.key) || (e.key === ' ' && e.shiftKey)) intent(-1, e.target)
@@ -119,11 +147,13 @@ export function useTranscriptScroll(options: {
     const up = () => { dragging.current = false }
     const finish = () => {
       if (touchY != null || dragging.current) return
+      userScrolling.current = false
       const gap = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)
       if (direction.current > 0 && gap <= 8) setIntent(true)
       direction.current = 0
     }
     const scroll = () => {
+      lastMotion.current = performance.now()
       if (dragging.current && el.scrollTop !== lastTop) intent(el.scrollTop - lastTop, el)
       lastTop = el.scrollTop
       state.current.onAtBottom?.(Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop) <= 8)
@@ -145,6 +175,7 @@ export function useTranscriptScroll(options: {
     observer.observe(el)
     return () => {
       active.current = false
+      touching.current = false
       observer.disconnect()
       window.clearTimeout(settleTimer)
       cancelAnimationFrame(frame.current)
@@ -161,5 +192,5 @@ export function useTranscriptScroll(options: {
     }
   }, [options.scrollRef, checkOlder, setIntent])
 
-  return { virtual, following, isFollowing, read, latest, loadOlder }
+  return { virtual, following, isFollowing, read, latest, loadOlder, preparePrepend, userScrolling }
 }

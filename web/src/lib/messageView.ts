@@ -1,4 +1,4 @@
-import type { ChatNode } from '../api/types'
+import type { ChatNode, CompactTurn } from '../api/types'
 
 /**
  * Message view mode controls how much of the transcript the chat renders.
@@ -82,7 +82,7 @@ export function groupTurns(nodes: ChatNode[]): ChatTurn[] {
  */
 export type ChatRenderItem =
   | { kind: 'node'; id: string; node: ChatNode }
-  | { kind: 'fold'; id: string; turn: ChatTurn; nodes: ChatNode[]; expanded: boolean }
+  | { kind: 'fold'; id: string; turn: ChatTurn; nodes: ChatNode[]; expanded: boolean; count: number; preview?: string; firstHiddenId?: string; remote?: boolean }
 
 export function detailedItems(nodes: ChatNode[]): ChatRenderItem[] {
   return nodes.map(n => ({ kind: 'node', id: n.id, node: n }))
@@ -93,6 +93,8 @@ export type FoldOptions = {
   keep: number
   /** Turn ids the user expanded by hand (they stay open). */
   expanded?: ReadonlySet<string>
+  summaries?: CompactTurn[]
+  loadedTurnIds?: string[]
 }
 
 /** isLive reports nodes compact mode must never hide: work in progress. */
@@ -130,17 +132,21 @@ function hiddenCount(rest: ChatNode[], keep: number): number {
 export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderItem[] {
   const turns = groupTurns(nodes)
   const keep = clampCompactKeep(opts.keep)
+  const summaries = new Map(opts.summaries?.map(t => [t.id, t]))
+  const loaded = new Set(opts.loadedTurnIds)
   const out: ChatRenderItem[] = []
   turns.forEach(turn => {
     if (turn.user) out.push({ kind: 'node', id: turn.user.id, node: turn.user })
     const rest = turn.user ? turn.nodes.slice(1) : turn.nodes
     const hidden = hiddenCount(rest, keep)
-    if (hidden === 0) {
+    const summary = !loaded.has(turn.id) ? summaries.get(turn.id) : undefined
+    const count = hidden + (summary?.hiddenCount ?? 0)
+    if (count === 0) {
       for (const n of rest) out.push({ kind: 'node', id: n.id, node: n })
       return
     }
     const expanded = opts.expanded?.has(turn.id) ?? false
-    out.push({ kind: 'fold', id: `fold:${turn.id}`, turn, nodes: rest.slice(0, hidden), expanded })
+    out.push({ kind: 'fold', id: `fold:${turn.id}`, turn, nodes: rest.slice(0, hidden), expanded, count, preview: summary?.preview, firstHiddenId: summary?.firstHiddenId, remote: !!summary?.hiddenCount })
     for (const n of expanded ? rest : rest.slice(hidden)) out.push({ kind: 'node', id: n.id, node: n })
   })
   return out

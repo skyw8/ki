@@ -1,4 +1,4 @@
-import { defineConfig } from '@playwright/test'
+import { defineConfig, devices } from '@playwright/test'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { baseURLForAddress, runID, storageStatePath } from './e2e/run-state.ts'
@@ -50,16 +50,23 @@ export default defineConfig({
   globalTeardown: './e2e/global-teardown.ts',
   projects: [
     {
+      name: 'webkit-compact-touch',
+      use: { ...devices['iPhone 13'], browserName: 'webkit', launchOptions: process.env.KI_WEBKIT_EXECUTABLE ? { executablePath: process.env.KI_WEBKIT_EXECUTABLE } : undefined },
+      testMatch: '**/compact-history.spec.ts',
+      timeout: 45_000,
+      expect: { timeout: 15_000 },
+    },
+    {
       name: 'webkit-scroll',
       use: { browserName: 'webkit', launchOptions: process.env.KI_WEBKIT_EXECUTABLE ? { executablePath: process.env.KI_WEBKIT_EXECUTABLE } : undefined },
-      testMatch: '**/transcript-scroll.spec.ts',
+      testMatch: ['**/transcript-scroll.spec.ts', '**/compact-history.spec.ts'],
       timeout: 45_000,
       expect: { timeout: 15_000 },
     },
     {
       name: 'firefox-scroll',
       use: { browserName: 'firefox' },
-      testMatch: '**/transcript-scroll.spec.ts',
+      testMatch: ['**/transcript-scroll.spec.ts', '**/compact-history.spec.ts'],
       timeout: 45_000,
       expect: { timeout: 15_000 },
     },

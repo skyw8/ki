@@ -123,4 +123,9 @@
 // drains active runs until idle (release can otherwise chain a late dispatch).
 //
 // Routes and run lifecycle: docs/architecture.md.
+// Compact session GETs project complete turns without hidden reply bodies;
+// turn expansion reuses that GET with a turn-local cursor. Runtime and index
+// queries remain independent of the browser display preference.
+// Compact SSE readers name their persisted snapshot leaf to suppress covered
+// reply bodies while retaining unfinished tools and newer messages.
 package server

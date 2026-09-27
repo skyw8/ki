@@ -301,6 +301,7 @@ export type QueuedItem = {
 export type SessionDetail = SessionInfo & {
   leafId?: string
   entries?: Entry[]
+  compactTurns?: CompactTurn[]
   index?: IndexEntry[]
   hasMore?: boolean
   oldestId?: string
@@ -311,6 +312,26 @@ export type SessionDetail = SessionInfo & {
   extQueued?: QueuedItem[]
   extensionUi?: ExtensionUI[]
   runtime?: { ready: boolean }
+}
+
+/** Whole-turn sparse projection. Hidden reply bodies are fetched on expansion. */
+export type CompactTurn = {
+  id: string
+  parentId?: string
+  tailId: string
+  entryIds: string[]
+  visibleNodeIds: string[]
+  omittedNodeIds?: string[]
+  hiddenCount: number
+  stepCount: number
+  lastStep?: { usage?: Usage; ttftMs: number; latencyMs: number }
+  firstHiddenId?: string
+  preview?: string
+  stats: {
+    turn: number; steps: number; elapsedMs: number; durationMs: number
+    input: number; output: number; cacheRead: number; cacheWrite: number
+    hasCost: boolean; cost: number; ttftMs: number; tps: number | null; live: boolean
+  }
 }
 
 export type ExtensionUI = {
@@ -492,6 +513,8 @@ export type ViewState = {
 	 * renders a bounded number of them.
 	 */
 	entries: Entry[]
+	compactTurns?: CompactTurn[]
+	loadedTurnIds?: string[]
 	/**
 	 * Body-less rows for the whole tree. Fetched lazily (fields=index) because
 	 * carrying it on open made first paint wait for the full transcript; the

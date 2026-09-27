@@ -26,7 +26,11 @@
 // catalog, and pricing snapshots. WebUI GET projects a slimmed active-leaf tail
 // (unchanged prompts omitted, large bodies truncated) and, on request, a
 // body-less index of the whole tree. Views have a 512 KiB serialized slim-entry
-// page budget as well as a count limit.
+// page budget as well as a count limit. Compact views instead page whole user
+// turns: visible input/reply bodies plus a fold summary and canonical range
+// metadata. Hidden replies are transferred only on explicit turn expansion; its local
+// cursor never replaces the main history cursor. Detailed views keep count
+// pagination.
 // Oversized entries retain identity/statistics and advertise truncation; full
 // bodies stay available through entry/entries. A page's cursor is its actual
 // contiguous boundary, not its additional turn-opening user entry. Since jsonl

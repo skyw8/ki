@@ -1,6 +1,6 @@
 # WebUI 历史翻页、滚动跟随与长会话性能优化方案
 
-日期：2026-09-27。调研基线：`7c16f06`。状态：M1–M4 已落地；实施结果见第 10 节。第 2–8 节保留调研时的基线与设计理由，真机验收另行标明。
+日期：2026-09-27。调研基线：`7c16f06`。状态：M1–M4 已落地；实施结果见第 10 节；compact 整轮分页与中间帧修复见第 11 节。第 2–8 节保留调研时的基线与设计理由，真机验收另行标明。
 
 ## 1. 结论与优先级
 
@@ -313,3 +313,34 @@
 - 图片复用浏览器 HTTP 缓存；未额外保留全局 Blob 缓存，只有挂载行与当前打开的预览持有资源。
 - Playwright WebKit / Firefox 是真实浏览器引擎自动化，并非 iPhone / Android 真机。真机触摸惯性、回弹、软键盘和横竖屏，以及真实 provider + 端口转发链路尚未执行；自动化结果不能替代这些验收。
 - 已同步现有 WebUI/session/events 文档、相关包 doc.go 和既有滚动复盘。测试均使用隔离 fake 服务，未重启正常开发服务。
+
+
+## 11. Compact 整轮分页与中间帧修复（2026-09-27）
+
+用户补充明确：整轮分页用于 compact；detailed 仍按定量 entry 加载。前一版两种模式共用 entry cursor，长 turn 的隐藏区会被逐页下载，折叠计数也随之增加，属于分页契约错误。
+
+本轮落地：
+
+- compact 首次最多 4 个完整 turn，每次上翻 1 个完整 turn：input + compact 摘要 + 最后 N 个详细节点。`oldestId` 指向该轮输入，隐藏正文不进入普通分页；正在等待该页时重复 wheel/touch 不再排队追加一页。
+- 摘要携带完整折叠数量、整轮统计、累计步骤与最新步骤用量。可见工具保留 call/result 配对，共享 entry 中隐藏的 assistant 正文仍省略。keep=0、分支、20 个大回复及 512KiB 页预算均有后端回归。
+- 点击展开通过现有 GET 的 `turn` 参数分页补该轮，局部游标不推进历史 cursor，收齐后一次发布。调整 keep 重取投影；切换 detailed 补缺失正文，已完整加载或展开的 turn 不因转换丢失。
+- 运行中会话的 SSE attach 携带已读快照 leaf，服务端过滤摘要已覆盖的消息/已完成工具；保留并发未完成工具及新消息，生命周期边界不再重复夹带整轮正文。
+- iPhone UA 的 WebKit 复现到约 500px、持续约 150ms 的中间帧闪跳。根因是程序补偿的 scroll 被当作触摸惯性，Markdown 的 transform 先更新、scrollTop 后更新。分页等待真实手势静止再提交，offset observer 区分真实输入与程序补偿，仍由虚拟列表库独占几何补偿。
+
+新增场景用每轮 260 次工具往返、520 个隐藏节点的 9 轮会话。普通分页只收到输入与最终回复两条 entry；显式展开才请求该轮 522 条 entry。连续三次翻页均在释放响应前锁定内容 key，再逐动画帧量测，最大偏移必须 ≤2px；另覆盖按住触点时响应到达，不能只比较最终恢复后的位置。
+
+WebKit iPhone 仿真使用 DOM 触摸事件和受控位移，验证库的 iOS 路径，不代表已完成真机惯性、回弹或弱网端口转发验收。所有自动化使用隔离测试服务，正常开发服务未重启。
+
+
+本轮验证：
+
+| 检查 | 结果 |
+| --- | --- |
+| Chromium 全量（含完整 responsive matrix） | `bun run test:e2e`，155/155，29.0s |
+| WebKit / Firefox 滚动与 compact、iPhone WebKit compact | 25/25；补强连续手势后 compact 三项目再跑 9/9 |
+| 性能预算 | `bun run test:perf`，3/3，24.5s；400 turn 分页锚点 `60px → 60px`，上滑/重访 long task 都为 0 |
+| 弱网仿真 | `KI_PERF_WEAK=1` 指定性能用例 1/1，34.1s；1.6Mbps 下行、800ms 延迟、CPU 4×，未放宽预算；历史 UI 1341ms、300KiB 回复 UI 1774ms（量到目标可见） |
+| Go | `go test ./...`、`go vet ./...` 通过；包含 compact 预算、展开游标、分支、SSE 快照/并发工具回归 |
+| 构建与类型 | Vite build、embed 构建、`bunx tsc --noEmit` 通过 |
+
+性能套件保留 detailed 定量分页预算：200 turn 首次返回 100 条 entries，decoded 58,457B、encoded 4,078B；普通较早页 decoded 57,434B、encoded 3,559B。该 fixture 带重复内容，不能把压缩比例外推到真实会话。compact 的新增用例验证每次跨过一个完整 522-entry turn，只传 input 和 final 两条正文，且响应与普通分页的后续请求均不含隐藏正文。
