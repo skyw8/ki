@@ -63,6 +63,10 @@ test('compact mode folds each turn\'s earlier replies and keeps the prompt visib
   // has more than one reply node and something to fold.
   await sendPrompt(page, 'e2e-bash:echo fold-me')
   await expect(page.getByTestId('tool-card')).toHaveCount(1)
+  // Wait for the turn to settle before sending again: a second prompt while the
+  // run is still busy steers the in-flight one, whose final reply then never
+  // arrives under load (the assistant count below stalls at two).
+  await expect(page.getByTestId('composer-stop')).toHaveCount(0)
   await sendPrompt(page, 'fold-beta')
   await expect(page.getByTestId('session-stats')).toContainText('2 轮 ·')
 

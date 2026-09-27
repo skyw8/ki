@@ -594,7 +594,20 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     const atBottom = !!el && Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop) <= 8
     const keepFollowing = (navigation.following.current || atBottom) && id === tailTurnId
     onReadIntent?.()
-    if (!keepFollowing) navigation.read()
+    if (keepFollowing) {
+      // Re-arm follow instead of pinning once. The revealed rows are measured
+      // over the next frames and the newest message keeps growing while it
+      // streams, so an unarmed follow drifts between the single scrollToEnd and
+      // the late measurements — the newest node visibly jumps. `latest` also
+      // re-enables the virtualizer's resize pinning (scrollEndThreshold), which
+      // is what holds the tail through each growth. foldFollow pins once more
+      // after this render: inserting rows in the middle of the list (before the
+      // kept node) is not an append the library follows on its own.
+      navigation.latest()
+      foldFollow.current = true
+    } else {
+      navigation.read()
+    }
     if (!folds.has(id) && compactTurns?.some(t => t.id === id && t.hiddenCount > 0) && !loadedTurnIds?.includes(id)) {
       if (loadingFolds.has(id) || !onLoadTurn) return
       setLoadingFolds(prev => new Set([...prev, id]))
@@ -605,15 +618,14 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     }
     const scroll = scrollRef.current
     const row = scroll?.querySelector(`[data-testid="fold-row"][data-fold="${CSS.escape(id)}"]`)
-    if (keepFollowing) foldFollow.current = true
-    else if (scroll && row) foldAnchor.current = { id, offset: row.getBoundingClientRect().top - scroll.getBoundingClientRect().top }
+    if (!keepFollowing && scroll && row) foldAnchor.current = { id, offset: row.getBoundingClientRect().top - scroll.getBoundingClientRect().top }
     setFolds(prev => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }, [scrollRef, navigation.read, onReadIntent, folds, compactTurns, loadedTurnIds, loadingFolds, onLoadTurn, nodes])
+  }, [scrollRef, navigation.read, navigation.latest, onReadIntent, folds, compactTurns, loadedTurnIds, loadingFolds, onLoadTurn, nodes])
   const items = useMemo(() => mode === 'compact' ? foldReplies(nodes, { keep, expanded: folds, summaries: compactTurns, loadedTurnIds }) : detailedItems(nodes), [mode, nodes, keep, folds, compactTurns, loadedTurnIds])
   const previousItems = useRef(items)
   const previousVirtual = navigation.virtual.current
@@ -676,6 +688,20 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     },
   })
   navigation.virtual.current = virtualizer
+  // The library only re-measures rows through its ResizeObserver, which lands a
+  // frame after the DOM already grew. That paints one frame of stale geometry:
+  // while following, the tail lags the newest message (measured: a streamed
+  // reply sat ~600px past the viewport on every display batch), and a fold that
+  // reveals hidden rows moves the row under the reader before the next frame
+  // corrects it. Measure the mounted rows synchronously in this commit's layout
+  // phase so their sizes and every scroll compensation land in the same paint as
+  // the DOM that changed. The observer stays for size changes React did not
+  // drive.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    for (const node of el.querySelectorAll<HTMLElement>('[data-index]')) virtualizer.measureElement(node)
+  }, [items, virtualizer, scrollRef])
   // A resize above the viewport must not move the visible content. Let the
   // virtualizer apply this adjustment, including its iOS momentum deferral.
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) => {

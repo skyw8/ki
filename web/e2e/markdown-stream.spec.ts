@@ -48,6 +48,30 @@ test('keeps the text moving while it streams', async ({ page }) => {
   expect(growing.at(-1), 'final length').toBeGreaterThan(30_000)
 })
 
+test('following the tail stays pinned while the newest message grows', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.goto('/')
+  await expect(page.getByTestId('hero')).toBeVisible()
+  await sendPrompt(page, 'e2e-stream-200')
+  await expect(page.getByTestId('chat-scroll')).toBeVisible()
+  // The newest message grows to ~26 KiB while the viewport follows it. Sample
+  // the distance from the tail across the growth: each measured reflow must keep
+  // the bottom pinned, so a follow that is only pinned once (or that the growth
+  // un-arms) shows up here as a drifting/lurching gap.
+  const gaps = await page.evaluate(async () => {
+    const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
+    const gaps: number[] = []
+    const deadline = Date.now() + 15_000
+    while (Date.now() < deadline && !(el.textContent ?? '').includes('item 199')) {
+      gaps.push(Math.round(Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)))
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    return gaps
+  })
+  expect(gaps.length, 'grew for long enough to sample the follow').toBeGreaterThan(5)
+  expect(Math.max(...gaps), `distance from the tail while growing: ${gaps.join(',')}`).toBeLessThanOrEqual(8)
+})
+
 test('stopping generation retains already visible text and its mounted root', async ({ page }) => {
   await page.goto('/')
   await sendPrompt(page, 'e2e-blocks-400')
@@ -81,9 +105,13 @@ test('paragraph-shaped streams parse each block once, not per delta', async ({ p
   await expect(page.getByTestId('assistant-message').first()).toContainText('Paragraph 399', { timeout: 60_000 })
   await expect(page.getByTestId('assistant-message').first().locator('p')).toHaveCount(400)
   await expect(page.locator('[data-md-tail]')).toHaveCount(0)
-  // Splitting at blank lines must not duplicate or drop text.
-  const text = (await page.getByTestId('assistant-message').first().textContent()) ?? ''
-  expect(text.match(/Paragraph \d+:/g)?.length).toBe(400)
+  // Splitting at blank lines must not duplicate or drop text. The finalize
+  // re-seals the tail into segments, so poll instead of reading one instant:
+  // a single read can land mid-render and see only the settled part.
+  await expect.poll(async () => {
+    const text = (await page.getByTestId('assistant-message').first().textContent()) ?? ''
+    return text.match(/Paragraph \d+:/g)?.length
+  }).toBe(400)
 })
 
 test('an unbroken block is painted until it closes, then parsed', async ({ page }) => {

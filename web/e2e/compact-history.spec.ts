@@ -155,18 +155,41 @@ test('compact expands hidden contents only on demand and preserves its paging cu
   })
   await f.open()
   expect(expansions).toHaveLength(0)
-  const fold = page.locator('[data-fold="u8"]')
-  await fold.getByTestId('fold-row-btn').click()
-  await expect(fold.getByTestId('fold-row-btn')).toHaveAttribute('aria-expanded', 'true')
+  // The newest turn's fold follows the tail: expanding fetches the hidden
+  // replies on demand and pins the newest revealed node to the bottom, so the
+  // fold row itself scrolls out of the virtualized window. The proof it opened
+  // is the fetched reply, not the row's own attribute.
+  // Following the newest message must not jump while the revealed rows are
+  // measured over the next frames: sample the distance from the tail across the
+  // expansion. A follow that only pins once drifts, which is the visible jitter.
+  const shiftProbe = page.evaluate(async () => {
+    const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
+    const gaps: number[] = []
+    for (let i = 0; i < 40; i++) {
+      gaps.push(Math.round(Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)))
+      await new Promise(r => requestAnimationFrame(r))
+    }
+    return gaps
+  })
+  await page.locator('[data-fold="u8"]').getByTestId('fold-row-btn').click()
   await expect(page.getByTestId('tool-card').first()).toBeVisible()
+  const gaps = await shiftProbe
+  expect(Math.max(...gaps), `distance from the tail across the expansion: ${gaps.join(',')}`).toBeLessThanOrEqual(8)
   expect(expansions.length).toBeGreaterThan(1)
   expect(expansions.every(id => id === 'u8')).toBe(true)
+  // Expanding must not page: the history cursor only moves when the reader
+  // scrolls up, not when a fold grows in place.
   expect(pages).toBe(0)
-  await fold.getByTestId('fold-row-btn').click()
-  await expect(fold.locator('.fold-row-count')).toHaveText('已折叠 520 条消息')
   await readTop(page)
   await expect.poll(() => pages).toBe(1)
-  await expect(page.locator('[data-fold="u5"] .fold-row-count')).toHaveText('已折叠 520 条消息')
+  // An earlier fold is something the reader opened to read: it anchors in place
+  // and toggles closed on the same row, keeping its count.
+  const older = page.locator('[data-fold="u5"]')
+  await expect(older.locator('.fold-row-count')).toHaveText('已折叠 520 条消息')
+  await older.getByTestId('fold-row-btn').click()
+  await expect(older.getByTestId('fold-row-btn')).toHaveAttribute('aria-expanded', 'true')
+  await older.getByTestId('fold-row-btn').click()
+  await expect(older.locator('.fold-row-count')).toHaveText('已折叠 520 条消息')
 })
 
 test('a page arriving during an active touch waits to commit without moving the reader', async ({ page }) => {
