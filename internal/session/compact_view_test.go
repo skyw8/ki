@@ -37,7 +37,7 @@ func TestCompactPagesWholeTurnsWithoutHiddenBodies(t *testing.T) {
 		t.Fatalf("tail: turns=%d entries=%d cursor=%s more=%v", len(page.Turns), len(page.Entries), page.OldestID, page.HasMore)
 	}
 	for _, turn := range page.Turns {
-		if turn.HiddenCount != 640 || turn.Stats.Steps != 321 || turn.Stats.Input != 3200 {
+		if turn.HiddenCount != 640 || turn.Stats.Steps != 321 || turn.Stats.Input != 3200 || turn.Stats.Tools != 320 || turn.Stats.ToolFailures != 0 {
 			t.Fatalf("incomplete turn summary: %+v", turn)
 		}
 	}
@@ -103,6 +103,67 @@ func TestCompactProjectionKeepsToolPairsAndZeroKeep(t *testing.T) {
 	page = BuildCompact(branched, "sibling", "", 1)
 	if len(page.Entries) != 2 || page.Turns[0].HiddenCount != 0 || page.Entries[1].ID != "sibling" {
 		t.Fatalf("wrong branch: %+v", page)
+	}
+}
+
+func TestCompactTurnCountsToolFailuresAndCacheMisses(t *testing.T) {
+	usage := func(input, read int) *types.Usage { return &types.Usage{Input: input, CacheRead: read} }
+	var entries []Entry
+	add := func(id string, m types.Message) {
+		parent := ""
+		if len(entries) > 0 {
+			parent = entries[len(entries)-1].ID
+		}
+		entries = append(entries, Entry{Type: "message", ID: id, ParentID: parent, Message: &m})
+	}
+	add("u0", types.Message{Role: "user"})
+	// Reads the whole 30K prompt back: healthy, no miss.
+	add("a0", types.Message{Role: "assistant", Usage: usage(100, 29900)})
+	add("a0c", types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ID: "t1", Name: "Bash"}}})
+	add("r1", types.Message{Role: "toolResult", ToolCallID: "t1"})
+	add("r2", types.Message{Role: "toolResult", ToolCallID: "t2", IsError: true})
+	// Re-bills the previous 30K prompt → one notable miss.
+	add("a1", types.Message{Role: "assistant", Usage: usage(30000, 0)})
+
+	page := BuildCompact(entries, "", "", 1)
+	turn := page.Turns[0]
+	if turn.Stats.Tools != 2 || turn.Stats.ToolFailures != 1 || turn.Stats.CacheMisses != 1 {
+		t.Fatalf("stats: tools=%d failures=%d misses=%d", turn.Stats.Tools, turn.Stats.ToolFailures, turn.Stats.CacheMisses)
+	}
+}
+
+func TestCompactCacheMissBaselineSurvivesPaging(t *testing.T) {
+	usage := func(input, read int) *types.Usage { return &types.Usage{Input: input, CacheRead: read} }
+	var entries []Entry
+	add := func(id string, m types.Message) {
+		parent := ""
+		if len(entries) > 0 {
+			parent = entries[len(entries)-1].ID
+		}
+		entries = append(entries, Entry{Type: "message", ID: id, ParentID: parent, Message: &m})
+	}
+	// Turn 0 warms a 30K prompt. Turn 1 re-bills it, but the page below only
+	// carries turns 1..4, so turn 1 owes its miss count to the baseline.
+	add("u0", types.Message{Role: "user"})
+	add("a0", types.Message{Role: "assistant", Usage: usage(100, 29900)})
+	add("u1", types.Message{Role: "user"})
+	add("a1", types.Message{Role: "assistant", Usage: usage(30000, 0)})
+	for _, id := range []string{"u2", "u3", "u4"} {
+		add(id, types.Message{Role: "user"})
+		add("a"+id, types.Message{Role: "assistant", Usage: usage(10, 100)})
+	}
+
+	page := BuildCompact(entries, "", "", 1)
+	if len(page.Turns) != 4 || page.Turns[0].ID != "u1" {
+		t.Fatalf("page window: %+v", page.Turns)
+	}
+	if got := page.Turns[0].Stats.CacheMisses; got != 1 {
+		t.Fatalf("turn 1 misses = %d, want 1 (baseline not threaded)", got)
+	}
+	for _, turn := range page.Turns[1:] {
+		if turn.Stats.CacheMisses != 0 {
+			t.Fatalf("turn %s unexpected misses: %d", turn.ID, turn.Stats.CacheMisses)
+		}
 	}
 }
 

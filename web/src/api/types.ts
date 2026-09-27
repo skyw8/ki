@@ -334,6 +334,7 @@ export type CompactTurn = {
   stats: {
     turn: number; steps: number; elapsedMs: number; durationMs: number
     input: number; output: number; cacheRead: number; cacheWrite: number
+    tools: number; toolFailures: number; cacheMisses: number
     hasCost: boolean; cost: number; ttftMs: number; tps: number | null; live: boolean
   }
 }

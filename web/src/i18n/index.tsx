@@ -265,6 +265,10 @@ const zh = {
   'turn.label': '第 {n} 轮',
   'turn.steps': '{n} 步',
   'turn.elapsed': '耗时 {duration}',
+  'turn.tools': '工具 {failed}/{total}',
+  'turn.toolsTitle': '失败 {failed} · 调用 {total}',
+  'turn.cacheMiss': '缓存未命中 {n} 次',
+  'turn.cacheMissTitle': '本轮共 {n} 次缓存未命中',
 
   'cfg.needSession': '先选择或新建会话。',
   'cfg.session': '会话',
@@ -634,6 +638,10 @@ const en: Record<MsgKey, string> = {
   'turn.label': 'Turn {n}',
   'turn.steps': '{n} steps',
   'turn.elapsed': '{duration} elapsed',
+  'turn.tools': 'Tools {failed}/{total}',
+  'turn.toolsTitle': '{failed} failed · {total} calls',
+  'turn.cacheMiss': 'Cache miss {n}×',
+  'turn.cacheMissTitle': '{n} cache misses this turn',
 
   'cfg.needSession': 'Select or create a session first.',
   'cfg.session': 'Session',

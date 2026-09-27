@@ -36,19 +36,22 @@ type TurnStep struct {
 // TurnStats accounts for hidden steps too; folding changes presentation, never
 // the usage or absolute turn number shown next to the final reply.
 type TurnStats struct {
-	Turn       int      `json:"turn"`
-	Steps      int      `json:"steps"`
-	ElapsedMS  int64    `json:"elapsedMs"`
-	DurationMS int64    `json:"durationMs"`
-	Input      int64    `json:"input"`
-	Output     int64    `json:"output"`
-	CacheRead  int64    `json:"cacheRead"`
-	CacheWrite int64    `json:"cacheWrite"`
-	HasCost    bool     `json:"hasCost"`
-	Cost       float64  `json:"cost"`
-	TTFTMS     int64    `json:"ttftMs"`
-	TPS        *float64 `json:"tps"`
-	Live       bool     `json:"live"`
+	Turn         int      `json:"turn"`
+	Steps        int      `json:"steps"`
+	ElapsedMS    int64    `json:"elapsedMs"`
+	DurationMS   int64    `json:"durationMs"`
+	Input        int64    `json:"input"`
+	Output       int64    `json:"output"`
+	CacheRead    int64    `json:"cacheRead"`
+	CacheWrite   int64    `json:"cacheWrite"`
+	Tools        int      `json:"tools"`
+	ToolFailures int      `json:"toolFailures"`
+	CacheMisses  int      `json:"cacheMisses"`
+	HasCost      bool     `json:"hasCost"`
+	Cost         float64  `json:"cost"`
+	TTFTMS       int64    `json:"ttftMs"`
+	TPS          *float64 `json:"tps"`
+	Live         bool     `json:"live"`
 }
 
 type CompactPage struct {
@@ -101,9 +104,15 @@ func BuildCompact(entries []Entry, leaf, before string, keep int) CompactPage {
 		count = 1
 	}
 	start := max(0, end-count)
+	base := 0
+	if start < len(ranges) {
+		base = ranges[start].start
+	}
+	prevPrompt, cacheReported := cacheBaseline(path[:base])
 	for i := start; i < end; i++ {
 		r := ranges[i]
-		turn, bodies := projectTurn(path[r.start:r.end], r.ordinal, min(20, max(0, keep)))
+		turn, bodies, nextPrompt, nextReported := projectTurn(path[r.start:r.end], r.ordinal, min(20, max(0, keep)), prevPrompt, cacheReported)
+		prevPrompt, cacheReported = nextPrompt, nextReported
 		turn.StepCount = completedSteps(path[:r.end])
 		page.Turns = append(page.Turns, turn)
 		page.Entries = append(page.Entries, bodies...)
@@ -154,7 +163,8 @@ func BuildCompactTurn(entries []Entry, leaf, id string, keep int) (CompactPage, 
 	for _, r := range turnRanges(path) {
 		part := path[r.start:r.end]
 		if slices.ContainsFunc(part, func(e Entry) bool { return e.ID == id }) {
-			turn, bodies := projectTurn(part, r.ordinal, min(20, max(0, keep)))
+			prevPrompt, cacheReported := cacheBaseline(path[:r.start])
+			turn, bodies, _, _ := projectTurn(part, r.ordinal, min(20, max(0, keep)), prevPrompt, cacheReported)
 			turn.StepCount = completedSteps(path[:r.end])
 			return CompactPage{Entries: bodies, Turns: []CompactTurn{turn}, HasMore: r.ordinal > 1, OldestID: turn.ID}, true
 		}
@@ -162,13 +172,22 @@ func BuildCompactTurn(entries []Entry, leaf, id string, keep int) (CompactPage, 
 	return CompactPage{}, false
 }
 
-func projectTurn(path []Entry, ordinal, keep int) (CompactTurn, []Entry) {
+// Prompt-cache miss thresholds mirror the client's `cacheMisses` so a folded
+// turn's count matches the per-step badges for turns the browser computes.
+const (
+	cacheMissNoiseFloor   = 1024
+	cacheMissNoticeTokens = 20_000
+	cacheMissNoticeRatio  = 0.5
+)
+
+func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReported bool) (CompactTurn, []Entry, int64, bool) {
 	type node struct {
 		id, preview string
 		entries     []int
 	}
 	var nodes []node
 	tools := map[string]int{}
+	failedTools := map[string]bool{}
 	user := -1
 	stats := TurnStats{Turn: ordinal}
 	var lastStep *TurnStep
@@ -201,6 +220,21 @@ func projectTurn(path []Entry, ordinal, keep int) (CompactTurn, []Entry) {
 					decodeMS += m.LatencyMs - m.TTFTMs
 					decodeTokens += int64(u.Output)
 				}
+				read, write := int64(u.CacheRead), int64(u.CacheWrite)
+				prompt := int64(u.Input) + read + write
+				if prompt > 0 {
+					if prevPrompt > 0 && (read+write > 0 || cacheReported) {
+						missed := min(prevPrompt, prompt) - read
+						if missed > cacheMissNoiseFloor {
+							ratio := float64(missed) / float64(prevPrompt)
+							if missed >= cacheMissNoticeTokens || ratio >= cacheMissNoticeRatio {
+								stats.CacheMisses++
+							}
+						}
+					}
+					prevPrompt = prompt
+					cacheReported = cacheReported || read+write > 0
+				}
 			}
 			for _, c := range m.Content {
 				if c.Type == "toolCall" && c.ID != "" {
@@ -217,6 +251,9 @@ func projectTurn(path []Entry, ordinal, keep int) (CompactTurn, []Entry) {
 			if id == "" {
 				id = e.ID
 			}
+			if m.IsError {
+				failedTools[id] = true
+			}
 			if at, ok := tools[id]; ok {
 				nodes[at].entries = append(nodes[at].entries, i)
 			} else {
@@ -229,8 +266,13 @@ func projectTurn(path []Entry, ordinal, keep int) (CompactTurn, []Entry) {
 			}
 			nodes = append(nodes, node{e.ID, e.Summary, []int{i}})
 			stats.Steps++
+			// A compaction rewrites the context, so the client restarts its
+			// cache comparison here too.
+			prevPrompt, cacheReported = 0, false
 		}
 	}
+	stats.Tools = len(tools)
+	stats.ToolFailures = len(failedTools)
 	stats.ElapsedMS = stats.DurationMS
 	if start > 0 && last > start {
 		stats.ElapsedMS = last - start
@@ -294,7 +336,34 @@ func projectTurn(path []Entry, ordinal, keep int) (CompactTurn, []Entry) {
 		// fits the ordinary entry cap. Slim bodies further, never split a turn.
 		bodies[i] = compactViewEntryLimit(e, MaxViewPageBytes/(len(bodies)+2))
 	}
-	return t, bodies
+	return t, bodies, prevPrompt, cacheReported
+}
+
+// cacheBaseline replays the prompt-cache comparison over the turns preceding a
+// projected page, so a folded turn's miss count matches the client's
+// `cacheMisses` when the browser never sees those steps. It mirrors the
+// assistant/compaction handling in projectTurn and returns the carried state.
+func cacheBaseline(path []Entry) (int64, bool) {
+	var prevPrompt int64
+	reported := false
+	for _, e := range path {
+		if e.Type == "compaction" {
+			prevPrompt, reported = 0, false
+			continue
+		}
+		m := e.Message
+		if m == nil || m.Role != "assistant" || m.Usage == nil {
+			continue
+		}
+		read, write := int64(m.Usage.CacheRead), int64(m.Usage.CacheWrite)
+		prompt := int64(m.Usage.Input) + read + write
+		if prompt <= 0 {
+			continue
+		}
+		prevPrompt = prompt
+		reported = reported || read+write > 0
+	}
+	return prevPrompt, reported
 }
 
 func completedSteps(path []Entry) int {

@@ -406,6 +406,8 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(turnDivider).toContainText('第 1 轮')
   await expect(turnDivider).toContainText('1 步')
   await expect(turnDivider).toContainText('缓存命中 91.84%')
+  // The divider also reports turn health: tool calls and notable cache misses.
+  await expect(turnDivider.getByTestId('turn-cache-miss')).toContainText('缓存未命中 0 次')
   await expect(turnDivider.getByTestId('turn-elapsed')).toBeVisible()
   await expect(page.getByTestId('session-title').filter({ hasText: prompt })).toBeVisible()
   const asstActions = page.getByTestId('assistant-message').getByTestId('asst-actions')

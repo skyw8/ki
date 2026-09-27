@@ -182,6 +182,7 @@ test('turnStats aggregates a turn and keeps the first step TTFT', () => {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.02 },
     }, { ttftMs: 200, latencyMs: 1_200, ts: 3_000 }),
     { kind: 'tool', id: 't1', name: 'Bash' },
+    { kind: 'tool', id: 't2', name: 'Edit', isError: true },
     asst('a2', { input: 10, output: 30, cacheRead: 90 }, { ttftMs: 300, latencyMs: 800, ts: 5_000 }),
     { kind: 'user', id: 'u2', text: 'again', content: [], ts: 9_000 },
     asst('a3', { input: 5, output: 5 }, { ttftMs: 50, latencyMs: 100, ts: 9_400 }),
@@ -201,6 +202,9 @@ test('turnStats aggregates a turn and keeps the first step TTFT', () => {
   expect(first.cost).toBeCloseTo(0.02)
   expect(first.ttftMs).toBe(200)
   expect(first.live).toBe(false)
+  expect(first.tools).toBe(2)
+  expect(first.toolFailures).toBe(1)
+  expect(first.cacheMisses).toBe(0)
   // Decode spans: (1200-200) + (800-300) over 50 output tokens.
   expect(first.tps).toBeCloseTo(50 / 1.5)
   const second = stats.get('a3')!
@@ -208,6 +212,40 @@ test('turnStats aggregates a turn and keeps the first step TTFT', () => {
   expect(second.steps).toBe(1)
   expect(second.elapsedMs).toBe(400)
   expect(second.tps).toBeCloseTo(5 / 0.05)
+  expect(second.tools).toBe(0)
+  expect(second.toolFailures).toBe(0)
+})
+
+test('turnStats counts tool failures and notable cache misses per turn', () => {
+  const nodes: ChatNode[] = [
+    { kind: 'user', id: 'u1', text: 'hi', content: [] },
+    // Full read-back of the previous prompt: healthy, no miss.
+    asst('a1', { input: 100, cacheRead: 29_900 }),
+    { kind: 'tool', id: 't1', name: 'Bash' },
+    { kind: 'tool', id: 't2', name: 'Edit', isError: true },
+    // The previous prompt (30K) is re-billed instead of read back → one miss.
+    asst('a2', { input: 30_000, cacheRead: 0 }),
+    { kind: 'user', id: 'u2', text: 'again', content: [] },
+    // Reads the whole previous prompt back → no miss.
+    asst('a3', { input: 30_000, cacheRead: 30_000 }),
+  ]
+  const stats = turnStats(nodes)
+  const first = stats.get('a2')!
+  expect(first.tools).toBe(2)
+  expect(first.toolFailures).toBe(1)
+  expect(first.cacheMisses).toBe(1)
+  const second = stats.get('a3')!
+  expect(second.tools).toBe(0)
+  expect(second.toolFailures).toBe(0)
+  expect(second.cacheMisses).toBe(0)
+  // A compaction clears the previous-prompt baseline, so the rewrite is not a miss.
+  const afterCompact = turnStats([
+    { kind: 'user', id: 'u1', text: 'hi', content: [] },
+    asst('a1', { input: 100, cacheRead: 29_900 }),
+    { kind: 'compaction', id: 'c1', summary: 'sum' },
+    asst('a2', { input: 30_000, cacheRead: 0 }),
+  ]).get('a2')!
+  expect(afterCompact.cacheMisses).toBe(0)
 })
 
 test('turnStats drops turns without a step and flags live ones', () => {

@@ -295,33 +295,62 @@ function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> 
 }
 
 /**
- * Closes a turn: a hairline rule on both sides of the turn's aggregate stats.
- * The numbers mirror the per-step inspector (elapsed, tokens, TPS, cache) but
- * sum the whole turn, so a long tool-heavy run stays scannable at a glance.
+ * Closes a turn: a labelled hairline over the turn's aggregate stats, split
+ * across two centered rows. The numbers mirror the per-step inspector (elapsed,
+ * tokens, TPS, cache) but sum the whole turn, so a long tool-heavy run stays
+ * scannable at a glance. Timing and work ride the labelled first row; token
+ * usage and cost take the second.
  */
 function TurnDivider({ stats }: { stats: TurnStats }) {
   const { t } = useI18n()
   const prompt = stats.input
   const hit = prompt > 0 && stats.cacheRead > 0 ? stats.cacheRead / prompt * 100 : null
-  const cells: ReactNode[] = [
+  const timing: ReactNode[] = [
     <span className="turn-stat" key="elapsed" data-testid="turn-elapsed"><IClock />{t('turn.elapsed', { duration: formatDuration(stats.elapsedMs) })}</span>,
     <span className="turn-stat" key="steps">{t('turn.steps', { n: stats.steps })}</span>,
   ]
-  if (stats.ttftMs > 0) cells.push(<span className="turn-stat" key="ttft">{t('stats.ttft', { duration: formatDuration(stats.ttftMs) })}</span>)
-  if (stats.tps != null) cells.push(<span className="turn-stat" key="tps">{t('stats.tps', { tps: formatTokensPerSecond(stats.tps) })}</span>)
-  if (stats.input > 0 || stats.output > 0) {
-    cells.push(<span className="turn-stat" key="tokens">{t('stats.tokens', { input: formatTokens(stats.input), output: formatTokens(stats.output) })}</span>)
+  if (stats.tools > 0) {
+    timing.push(
+      <span
+        className={`turn-stat${stats.toolFailures > 0 ? ' turn-stat-err' : ''}`}
+        key="tools"
+        data-testid="turn-tools"
+        title={t('turn.toolsTitle', { failed: stats.toolFailures, total: stats.tools })}
+      >
+        <IWrench />
+        {t('turn.tools', { failed: stats.toolFailures, total: stats.tools })}
+      </span>,
+    )
   }
-  if (hit != null) cells.push(<span className="turn-stat" key="cache">{t('stats.cacheHit', { percent: hit.toFixed(2) })}</span>)
-  if (stats.hasCost) cells.push(<span className="turn-stat" key="cost">{t('stats.cost', { amount: formatCost(stats.cost) })}</span>)
+  if (stats.ttftMs > 0) timing.push(<span className="turn-stat" key="ttft">{t('stats.ttft', { duration: formatDuration(stats.ttftMs) })}</span>)
+  if (stats.tps != null) timing.push(<span className="turn-stat" key="tps">{t('stats.tps', { tps: formatTokensPerSecond(stats.tps) })}</span>)
+  const usage: ReactNode[] = []
+  if (stats.input > 0 || stats.output > 0) {
+    usage.push(<span className="turn-stat" key="tokens">{t('stats.tokens', { input: formatTokens(stats.input), output: formatTokens(stats.output) })}</span>)
+  }
+  if (hit != null) usage.push(<span className="turn-stat" key="cache">{t('stats.cacheHit', { percent: hit.toFixed(2) })}</span>)
+  if (stats.steps > 0) {
+    usage.push(
+      <span
+        className={`turn-stat${stats.cacheMisses > 0 ? ' turn-stat-warn' : ''}`}
+        key="miss"
+        data-testid="turn-cache-miss"
+        title={t('turn.cacheMissTitle', { n: stats.cacheMisses })}
+      >
+        {t('turn.cacheMiss', { n: stats.cacheMisses })}
+      </span>,
+    )
+  }
+  if (stats.hasCost) usage.push(<span className="turn-stat" key="cost">{t('stats.cost', { amount: formatCost(stats.cost) })}</span>)
   return (
     <div className="turn-end" data-testid="turn-divider" data-turn={stats.turn}>
-      <span className="turn-end-rule" aria-hidden />
-      <div className="turn-end-stats">
+      <div className="turn-end-row">
+        <span className="turn-end-rule" aria-hidden />
         <span className="turn-end-label">{t('turn.label', { n: stats.turn })}</span>
-        {cells}
+        {timing}
+        <span className="turn-end-rule" aria-hidden />
       </div>
-      <span className="turn-end-rule" aria-hidden />
+      {usage.length > 0 ? <div className="turn-end-row">{usage}</div> : null}
     </div>
   )
 }

@@ -1576,6 +1576,12 @@ export type TurnStats = {
   cacheWrite: number
   hasCost: boolean
   cost: number
+  /** Completed tool calls in the turn, and how many of them failed. */
+  tools: number
+  toolFailures: number
+  /** Notable prompt-cache misses in the turn; same rule as `cacheMisses`, so
+   * the divider count matches the per-step cache-miss badges. */
+  cacheMisses: number
   /** First step's time-to-first-token; 0 when the provider reported none. */
   ttftMs: number
   /** Output tokens per second over the turn's decode spans; null when unknown. */
@@ -1591,7 +1597,8 @@ export type TurnStats = {
  * and a turn that is still streaming/running is marked `live` for the caller to
  * defer. Steps are summed, not averaged, so the strip reads as the cost of the
  * whole turn; `ttftMs` keeps the first step because that is the latency the
- * user actually perceived.
+ * user actually perceived. Tool calls (total and failed) and notable cache
+ * misses are counted per turn as a quick health read for long tool-heavy runs.
  *
  * base is the number of turns on the branch before the loaded window (0 while
  * the tree index has not arrived), so windowed history still numbers its turns
@@ -1602,6 +1609,12 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
   type Acc = TurnStats & { startedAt?: number; lastAt?: number; decodeMs: number; decodeTokens: number; lastId: string }
   let acc: Acc | null = null
   let turn = base
+  // Cache-miss detection mirrors `cacheMisses`: `prevPrompt` is the previous
+  // completed step's whole prompt and `cacheReported` turns on once any step
+  // has shown cache activity (so a provider that never reports caching is not
+  // counted). Compaction clears both because the context legitimately changed.
+  let prevPrompt = 0
+  let cacheReported = false
   const flush = () => {
     if (!acc) return
     if (acc.startedAt != null && acc.lastAt != null && acc.lastAt > acc.startedAt) {
@@ -1625,6 +1638,7 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
         turn, steps: 0, elapsedMs: 0, durationMs: 0,
         input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
         hasCost: false, cost: 0, ttftMs: 0, tps: null, live: false,
+        tools: 0, toolFailures: 0, cacheMisses: 0,
         startedAt: n.ts, lastAt: n.ts, decodeMs: 0, decodeTokens: 0, lastId: n.id,
       }
       continue
@@ -1646,6 +1660,22 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
         acc.cacheRead += read
         acc.cacheWrite += write
         if (u.cost) { acc.hasCost = true; acc.cost += u.cost.total }
+        // Mirrors `cacheMisses` exactly: a miss is how much of the previous
+        // prompt this step failed to read back, once it clears the noise floor
+        // and the notice gate. First step, no-cache providers, and appends to
+        // the prefix never count.
+        const prompt = (u.input ?? 0) + read + write
+        if (prompt > 0) {
+          if (prevPrompt > 0 && (read + write > 0 || cacheReported)) {
+            const missedTokens = Math.min(prevPrompt, prompt) - read
+            if (missedTokens > CACHE_MISS_NOISE_FLOOR) {
+              const missRatio = missedTokens / prevPrompt
+              if (missedTokens >= CACHE_MISS_NOTICE_TOKENS || missRatio >= CACHE_MISS_NOTICE_RATIO) acc.cacheMisses += 1
+            }
+          }
+          prevPrompt = prompt
+          cacheReported = cacheReported || read + write > 0
+        }
       }
       // Same decode-span rule as stepMetrics: no TTFT means no TPS estimate.
       if (n.latencyMs != null && n.ttftMs != null && n.ttftMs > 0 && (u?.output ?? 0) > 0) {
@@ -1653,8 +1683,14 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
         if (decode > 0) { acc.decodeMs += decode; acc.decodeTokens += u?.output ?? 0 }
       }
     } else if (n.kind === 'tool') {
+      acc.tools += 1
+      if (n.isError) acc.toolFailures += 1
       if (n.running) acc.live = true
     } else if (n.kind === 'compaction') {
+      // A compaction legitimately rewrites the context, so cache comparison
+      // restarts from the next step (pi clears its previous-request state too).
+      prevPrompt = 0
+      cacheReported = false
       if (n.running) acc.live = true
       else acc.steps += 1
     }
