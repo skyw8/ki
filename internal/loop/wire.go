@@ -41,12 +41,8 @@ func (c *MessageEncoder) Encode(ev Event) Event {
 	if ev.Type != MessageUpdate || ev.Message == nil {
 		return ev
 	}
-	raw, err := json.Marshal(ev.Message)
+	next, err := messageWireValue(*ev.Message)
 	if err != nil {
-		return ev
-	}
-	var next any
-	if json.Unmarshal(raw, &next) != nil {
 		return ev
 	}
 	// The old wire shape serialized the same growing partial twice.
@@ -57,7 +53,15 @@ func (c *MessageEncoder) Encode(ev Event) Event {
 		patch := &MessagePatch{BaseSeq: c.seq, Changes: []WireChange{}}
 		diffWire(c.previous, next, []string{}, &patch.Changes)
 		encoded, err := json.Marshal(patch)
-		if err == nil && len(encoded) < len(raw) {
+		// Strings are immutable: projecting the typed fields shares their bytes
+		// instead of marshaling and reparsing the growing answer for every token.
+		// Only measure a full snapshot when the patch exceeds its cheap lower bound.
+		smaller := err == nil && len(encoded) < wireSizeLowerBound(next)
+		if err == nil && !smaller {
+			raw, snapshotErr := json.Marshal(next)
+			smaller = snapshotErr == nil && len(encoded) < len(raw)
+		}
+		if smaller {
 			ev.Message = nil
 			ev.MessagePatch = patch
 		}
@@ -68,9 +72,6 @@ func (c *MessageEncoder) Encode(ev Event) Event {
 }
 
 func diffWire(old, next any, path []string, changes *[]WireChange) {
-	if reflect.DeepEqual(old, next) {
-		return
-	}
 	child := func(key string) []string { return append(append([]string{}, path...), key) }
 	if a, ok := old.(map[string]any); ok {
 		if b, ok := next.(map[string]any); ok {
@@ -108,9 +109,16 @@ func diffWire(old, next any, path []string, changes *[]WireChange) {
 	}
 	op, value := "set", next
 	if a, ok := old.(string); ok {
-		if b, ok := next.(string); ok && a != "" && strings.HasPrefix(b, a) {
-			op, value = "append", b[len(a):]
+		if b, ok := next.(string); ok {
+			if a == b {
+				return
+			}
+			if a != "" && strings.HasPrefix(b, a) {
+				op, value = "append", b[len(a):]
+			}
 		}
+	} else if reflect.DeepEqual(old, next) {
+		return
 	}
 	raw, _ := json.Marshal(value)
 	*changes = append(*changes, WireChange{Path: path, Op: op, Value: raw})

@@ -73,7 +73,11 @@ compact WebUI 连接可带 `?through=<已读取快照的 leafId>`。服务端沿
 
 每个 change 为 `{path: string[], op, value?}`：`set` 替换 JSON 值，`append` 追加字符串（Unicode 无字节偏移歧义），`remove` 删除对象字段，`resize` 调整数组长度后再写入新增项。覆盖 text/thinking、工具参数、内容块增删、字段替换/重置与错误元数据。每次 attach / reconnect 使用新编码器，第一条有效 update 必为可独立还原的快照；消息 start/end 清空基线。base 或 messageStream 不匹配时客户端拒绝该 patch，WebUI 从最后成功应用的游标重连。
 
-CLI 与 WebUI 在打印/16ms 渲染合并之前还原 patch；不能先丢弃中间补丁。canonical `loop.Event`、服务端回放缓存、extension 生命周期仍是完整消息，编码不修改共享事件；`message_end` 与 jsonl 保持权威全文。SSE 不启用 gzip，事件持久化、关闭、广播顺序不变。线性追加流只传新增字段内容；attach 快照和 provider 主动重写全文单独计量。
+CLI 与 WebUI 在打印/逐帧渲染合并之前还原 patch；不能先丢弃中间补丁。canonical `loop.Event`、服务端回放缓存、extension 生命周期仍是完整消息，编码不修改共享事件；`message_end` 与 jsonl 保持权威全文。SSE 不启用 gzip，事件持久化、关闭、广播顺序不变。线性追加流只传新增字段内容；attach 快照和 provider 主动重写全文单独计量。
+
+编码器直接从 typed Message/Content 投影字段，共享不可变字符串，仅对可变 arguments/details 做 JSON 快照；追加 patch 可以明确小于快照时不序列化全文比较体积。保留现有 baseSeq、messageStream、快照恢复和终态全文契约。回放在入队时计一次 payload 字节数，覆盖工具参数、raw 输入、签名及 details；128 条/约 4MiB 仍仅约束已被替代的 partial，不是 run 总内存上限。进程内 BufferedAt/BufferedBytes 不进入 wire/jsonl。
+
+run 与 push SSE 都发送 `X-Accel-Buffering: no`，每次 write/flush 有 30s deadline，取消会立即打断支持 deadline 的底层 writer；心跳失败取消等待循环，退出前 join 取消回调并清除 deadline，允许 HTTP 正常写完终止 chunk。gzip wrapper 向下传播 flush 错误，不对 SSE 压缩。正常长 run 没有全局写时长限制；反向代理仍须允许流式转发。debug 日志抽样记录 run/seq、queue/encode/write 微秒及帧字节，不记录正文。
 
 `GET /v1/events` 是每个 tab 的 push 流，只带「失效」和「终态/边带」信息，不带
 run 内的增量：`invalidate` 帧让客户端重取（sidebar 用 ETag 304 收尾），

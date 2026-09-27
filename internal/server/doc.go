@@ -108,6 +108,11 @@
 // Each SSE reader encodes message_update as an initial full snapshot followed
 // by smaller field patches. A reconnect gets a fresh snapshot regardless of
 // trimming; canonical buffered events and lifecycle delivery are unchanged.
+// Retained payload size is computed once per append, including tool arguments
+// and raw fields. Both SSE endpoints disable proxy buffering and bound each
+// write/flush to 30s; cancellation interrupts blocked supported writers. A
+// failed heartbeat cancels the reader wait, and compression preserves flush
+// errors. These per-write limits do not cap the lifetime of a healthy run.
 //
 // One server-owned resources.Loader atomically caches runtime environment,
 // skills, AGENTS/CLAUDE, prompt templates, and discovered extension descriptors

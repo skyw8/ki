@@ -696,7 +696,7 @@
    flattens the gap at a segment boundary. Restore it there: the boundary is a
    blank line, and a blank line means one block gap. Specificity beats
    `.md p:last-child`. */
-.md-seg:not(:last-child) > *:last-child { margin-bottom: 10px; }
+[data-md-block]:not(:last-child) { margin-bottom: 10px; }
 /* The open tail of a long block, painted as source until it closes: same
    metrics as parsed text (`.md` sets the font), but newlines are kept. */
 .md-tail { white-space: pre-wrap; margin: 0 0 10px; }

@@ -18,6 +18,12 @@ type Config struct {
 	Server     Server     `mapstructure:"server"`
 	Log        Log        `mapstructure:"log"`
 	Push       Push       `mapstructure:"push"`
+	Streaming  Streaming  `mapstructure:"streaming"`
+}
+
+// Streaming configures native provider response-body liveness.
+type Streaming struct {
+	IdleTimeoutSeconds int `mapstructure:"idle_timeout_seconds"`
 }
 
 // Sessions holds session storage settings.
@@ -75,9 +81,10 @@ func Builtin(home string) Config {
 			ReserveTokens:    16384,
 			KeepRecentTokens: 20000,
 		},
-		Server: Server{Addr: "127.0.0.1:19800"},
-		Log:    Log{Level: "info", MaxSizeMB: 10, MaxBackups: 3},
-		Push:   Push{Enabled: true, Subject: "mailto:ki@localhost"},
+		Server:    Server{Addr: "127.0.0.1:19800"},
+		Log:       Log{Level: "info", MaxSizeMB: 10, MaxBackups: 3},
+		Push:      Push{Enabled: true, Subject: "mailto:ki@localhost"},
+		Streaming: Streaming{IdleTimeoutSeconds: 300},
 	}
 }
 
@@ -129,6 +136,9 @@ func LoadWithViper(cwd string, settings *viper.Viper) (Config, error) {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
 	cfg.Home = home
+	if cfg.Streaming.IdleTimeoutSeconds < 0 {
+		return Config{}, fmt.Errorf("streaming.idle_timeout_seconds must not be negative")
+	}
 	if cfg.Sessions.Root == "" {
 		cfg.Sessions.Root = filepath.Join(cfg.Home, "sessions")
 	}
@@ -153,6 +163,7 @@ func setDefaults(settings *viper.Viper, cfg Config) {
 	settings.SetDefault("log.max_backups", cfg.Log.MaxBackups)
 	settings.SetDefault("push.enabled", cfg.Push.Enabled)
 	settings.SetDefault("push.subject", cfg.Push.Subject)
+	settings.SetDefault("streaming.idle_timeout_seconds", cfg.Streaming.IdleTimeoutSeconds)
 }
 
 func mergeEnv(settings *viper.Viper) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"time"
@@ -140,6 +141,9 @@ type Event struct {
 	// replay log because a newer partial supersedes it. Readers skip it; it is
 	// never sent and never reaches an extension.
 	Blank bool `json:"-"`
+	// Process-local replay accounting; never persisted or put on the wire.
+	BufferedAt    time.Time `json:"-"`
+	BufferedBytes int       `json:"-"`
 }
 
 // AssistantDelta is a streaming increment (pi assistantMessageEvent).
@@ -531,24 +535,50 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 		}
 		started := time.Now()
 		var firstDelta time.Time
+		var lastDelta time.Time
+		deltas := 0
 		partial := types.Message{Role: "assistant", Provider: cfg.Provider, Model: cfg.Model, Timestamp: time.Now().UnixMilli()}
+		// The start message escapes to replay readers; keep the local accumulator
+		// separate so retaining a canceled partial never mutates a published event.
+		latest := partial
 		if err := emit(Event{Type: MessageStart, Message: &partial}); err != nil {
 			return partial, err
 		}
 		asst, err := cfg.Streamer.Stream(ctx, req, func(d AssistantDelta) error {
+			arrived := time.Now()
 			if firstDelta.IsZero() {
-				firstDelta = time.Now()
+				firstDelta = arrived
 			}
 			m := d.Partial
+			latest = m
 			if err := emit(Event{Type: MessageUpdate, Message: &m, AssistantMessageEvent: &d}); err != nil {
 				return err
 			}
+			deltas++
+			if slog.Default().Enabled(ctx, slog.LevelDebug) {
+				emitTime := time.Since(arrived)
+				gap := time.Duration(0)
+				if !lastDelta.IsZero() {
+					gap = arrived.Sub(lastDelta)
+				}
+				if deltas == 1 || deltas%128 == 0 || gap >= time.Second || emitTime >= 100*time.Millisecond {
+					slog.DebugContext(ctx, "provider delta", "provider", cfg.Provider, "model", cfg.Model, "attempt", attempt, "delta_count", deltas, "gap_us", gap.Microseconds(), "emit_us", emitTime.Microseconds(), "delta_bytes", len(d.Delta))
+				}
+			}
+			lastDelta = arrived
 			return nil
 		})
 		if err != nil {
 			lastErr = err
 			if ctx.Err() != nil {
-				asst = types.Message{Role: "assistant", StopReason: "aborted", ErrorMessage: ctx.Err().Error()}
+				// Cancellation ends generation, not the text already shown. Some
+				// streamers return no accumulator on error, so retain the last delta.
+				if len(asst.Content) == 0 {
+					asst = latest
+				}
+				asst.Role = "assistant"
+				asst.StopReason = "aborted"
+				asst.ErrorMessage = ctx.Err().Error()
 				_ = emit(Event{Type: MessageEnd, Message: &asst})
 				return asst, fmt.Errorf("stream assistant response: %w", err)
 			}

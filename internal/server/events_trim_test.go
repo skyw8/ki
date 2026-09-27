@@ -259,6 +259,32 @@ func TestEmitterTrimsBehindAStalledReader(t *testing.T) {
 	}
 }
 
+func TestEmitterCountsToolArgumentsInStalledReaderBudget(t *testing.T) {
+	em, _, _ := newEmitterForTest(t)
+	em.st.addReader(&runReader{})
+	for i := 0; i < 20; i++ {
+		message := types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ID: "call", Name: "Write", Arguments: map[string]any{"content": strings.Repeat("x", 512<<10)}}}}
+		if err := em.Emit(loop.Event{Type: loop.MessageUpdate, Message: &message}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	em.st.mu.Lock()
+	defer em.st.mu.Unlock()
+	bytes := 0
+	for i, ev := range em.st.evs {
+		if ev.Blank || i == em.st.partial {
+			continue
+		}
+		if ev.BufferedBytes < 512<<10 {
+			t.Fatalf("tool payload undercounted: %d", ev.BufferedBytes)
+		}
+		bytes += eventPayloadBytes(ev)
+	}
+	if bytes > maxKeptSupersededBytes {
+		t.Fatalf("superseded tool payload: %d", bytes)
+	}
+}
+
 // TestEmitterTrimsASupersededMessageGroupOnceTheRunIsLong: the caps count
 // payloads, not messages, so a run with many short messages stays bounded too.
 func TestEmitterTrimsBehindAStalledReaderAcrossMessages(t *testing.T) {

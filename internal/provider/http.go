@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"ki/internal/loop"
 	"ki/internal/types"
@@ -27,6 +28,11 @@ func NewLive(api, base, key string, doer HTTPDoer) *Live {
 // NewLiveModel creates a live adapter from a resolved Ki model.
 func NewLiveModel(model Model, key string, doer HTTPDoer) *Live {
 	return &Live{client: llmprotocol.NewClient(model.API, model.BaseURL, key, doer), Model: &model}
+}
+
+func (l *Live) WithIdleTimeout(timeout time.Duration) *Live {
+	l.client.IdleTimeout = timeout
+	return l
 }
 
 // Stream implements loop.Streamer by translating only at the package boundary.

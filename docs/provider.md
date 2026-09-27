@@ -59,3 +59,14 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 OAuth provider 的登录/刷新也由 sidecar 完成：`provider.auth.start` 启动 browser 或 `device_code` 流程，`provider.auth.event` 只上报 UI-neutral 的授权 URL、设备码、完成或错误；`provider.auth.input` 接收手工 redirect URL/code，`provider.auth.cancel` 终止流程，`provider.auth.refresh` 在凭据临近过期时返回新的 opaque value。Server 的 `/v1/providers/{id}/auth/*` 只暴露脱敏状态，完成事件才原子写入 `credentials.json`，因此 WebUI 不需要、也不能把 OAuth access token 当 API key 输入。
 
 Responses provider 的 `types.Content.ItemID`、`ArgumentsRaw`、`ThinkingSignature`、`TextSignature` 以及 `types.Message.ResponseID` 会随 jsonl 保存；它们对通用 loop 透明，Codex 扩展可据此重新编码 reasoning/function/custom tool item。流式期间仍只通过 compact delta 传输，raw provider payload 不进入 SSE。
+
+## 流式读取活性
+
+内置三种 HTTP 协议共用 `pkg/llmprotocol.Client.IdleTimeout`（`NewClient` 默认 5 分钟）。Ki 的全局或项目 `ki.toml` 可设置：
+
+```toml
+[streaming]
+idle_timeout_seconds = 300 # 0 disables; negative values are rejected
+```
+
+计时覆盖 response body 的单次阻塞 Read：任何字节（含心跳、reasoning）都算活性，解析、emit 和工具执行不计入。它不限制等待 HTTP headers 的时间，也不是“正文 5 分钟没变就中止”。到期关闭 body 解阻塞；已有 partial 时保留内容并返回不重试错误，避免重复答案或工具调用；用户中止时 loop 的最终 aborted 消息也保留已经输出的 partial，尚无内容时沿现有 loop 退避策略重试。extension provider 自管传输与超时，此配置只作用于内置 adapter。loop 的 debug `provider delta` 采样记录增量间隔、emit 耗时与字节数，用于区分上游空档和本地发送阻塞，不记录正文。

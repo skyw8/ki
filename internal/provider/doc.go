@@ -12,6 +12,9 @@
 // is stateless: encrypted reasoning items are requested with
 // reasoning.encrypted_content, and a stream is successful only after a
 // terminal response event.
+// Native adapters accept a response-body idle timeout; server configuration
+// applies it to routed, occupied and compaction requests. Extension providers
+// retain ownership of their transport liveness policy.
 //
 // Completions tool images: consecutive toolResults stay adjacent; one
 // follow-up user carries that group's images (pi). Responses embed

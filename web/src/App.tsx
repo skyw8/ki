@@ -31,6 +31,7 @@ import { dropPushSubscription, ensurePushSubscription } from './lib/push'
 import { focusedSession } from './lib/tab-focus'
 import { reconcileFinishedRuns } from './lib/completion-catchup'
 import { isNetworkError } from './lib/errors'
+import { streamBatch, reconnectDelay, waitForReconnect } from './lib/stream-batch'
 import { ancestorsOf, buildSessionForest, orderedChildren, pinnedFirst, topLevelRoot } from './lib/session-tree'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
@@ -340,6 +341,7 @@ function WorkspaceApp({ api }: { api: Client }) {
   // run id makes a stale cursor harmless: the server ignores a cursor from
   // another run, so a new run always replays from its start.
   const resumeRef = useRef<Map<string, string>>(new Map())
+  const reconnectAttempts = useRef(new Map<string, number>())
   const abortedRuns = useRef(new Set<string>())
   // Sessions this tab has seen running. Completion notifications are limited to
   // these so a run this browser never observed (CLI, agent child) stays silent.
@@ -826,52 +828,23 @@ function WorkspaceApp({ api }: { api: Client }) {
     // updates (after SSE ends or a manual refetch). Light it as soon as this
     // client starts listening so a live run is green without switching tabs.
     setSessions(ss => ss.map(s => s.id === id ? { ...s, running: true } : s))
-    /**
-     * Events are applied in order, but rendered together.
-     *
-     * Why the queue: attaching to a run replays its buffered events, and a long
-     * turn streams tens of thousands of updates — each carrying the whole
-     * accumulated text. One setView per event meant one React render per event,
-     * and the markdown layer re-lexes a streaming message on every render, so a
-     * re-attach spent minutes re-parsing the same text before it could paint
-     * (measured: 14,766 replayed events, ~286 MiB, on one live run). A flush
-     * renders everything queued so far; a newer partial of the same message
-     * replaces a queued one, because only the last can be on screen.
-     */
-    let queue: LoopEvent[] = []
-    let timer = 0
-    const flush = (): void => {
-      if (timer) {
-        window.clearTimeout(timer)
-        timer = 0
-      }
-      const batch = queue
-      queue = []
-      if (!batch.length || abortRef.current !== ac) return
+    const connectedAt = performance.now()
+    const batcher = streamBatch(batch => {
+      if (abortRef.current !== ac) return
       setView(v => {
         if (abortRef.current !== ac) return v
         let next = v
         for (const ev of batch) next = applyEvent(next, ev)
-        // Advance the cursor with the view, not with the socket: React batches
-        // these updaters, so writing it outside could let the cursor skip past an
-        // event this view never applied.
+        // The resume cursor belongs to committed state, not socket receipt or
+        // display animation. Advancing it earlier can skip unapplied events.
         const last = batch[batch.length - 1]
         if (last.runId && last.seq !== undefined) resumeRef.current.set(id, `${last.runId}:${last.seq}`)
         return next
       })
-    }
-    const enqueue = (ev: LoopEvent): void => {
-      const prev = queue[queue.length - 1]
-      // Consecutive message_update events belong to the same message (a message
-      // is bracketed by its start/end and any tool event), and each carries the
-      // whole partial, so the queue only has to keep the newest.
-      if (ev.type === 'message_update' && prev?.type === 'message_update') queue[queue.length - 1] = ev
-      else queue.push(ev)
-      if (!timer) timer = window.setTimeout(flush, 16)
-    }
+    })
     try {
       for await (const ev of api.events(id, ac.signal, resumeRef.current.get(id), through)) {
-        enqueue(ev)
+        batcher.enqueue(ev)
       }
     } catch (e) {
       if ((e as { name?: string }).name === 'AbortError') return
@@ -882,19 +855,26 @@ function WorkspaceApp({ api }: { api: Client }) {
       // Apply whatever is still queued before the tail reconciliation below: it
       // replaces the window, and the cursor must not move past an unapplied
       // event.
-      flush()
-      if (abortRef.current === ac) {
+      batcher.flush()
+      batcher.dispose()
+      if (abortRef.current === ac && !ac.signal.aborted) {
         // A finished run is reconciled from the tail: the events already
         // arrived on this stream, so only the window and leaf need refreshing,
         // not the whole history (and the index stays warm across the run).
         const detail = await api.get(id, transcriptOptions()).catch(() => null)
-        if (abortRef.current === ac && detail) {
-          setView(v => applyTail(v, detail))
-          if (detail.running) void listen(id, detail.compactTurns?.length ? detail.leafId : undefined)
-          else listeningIdRef.current = null
-        } else if (abortRef.current === ac) {
-          setView(v => ({ ...v, busy: false }))
-          listeningIdRef.current = null
+        if (abortRef.current === ac && !ac.signal.aborted) {
+          if (detail) setView(v => applyTail(v, detail))
+          if (!detail || detail.running) {
+            // A dead link must not turn into a tight GET/listen loop or make a
+            // still-running session appear completed. Retrying never resends a prompt.
+            const attempt = performance.now() - connectedAt >= 5000 ? 0 : (reconnectAttempts.current.get(id) ?? 0)
+            reconnectAttempts.current.set(id, attempt + 1)
+            await waitForReconnect(reconnectDelay(attempt), ac.signal).catch(() => {})
+            if (abortRef.current === ac && !ac.signal.aborted) void listen(id, detail?.compactTurns?.length ? detail.leafId : undefined)
+          } else {
+            reconnectAttempts.current.delete(id)
+            listeningIdRef.current = null
+          }
         }
         void refreshList()
       }

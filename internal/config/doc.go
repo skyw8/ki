@@ -4,6 +4,8 @@
 // the home), <cwd>/.ki/ki.toml, then KI_SERVER_ADDR.
 // Session config.json is owned by package session, not this package.
 // CLI --model does not write toml.
+// streaming.idle_timeout_seconds bounds native provider response-body reads
+// (default 300, zero disables); it is not a whole-request timeout.
 //
 // Provider/model settings and credentials are owned by package provider in
 // models.json and credentials.json, not TOML.

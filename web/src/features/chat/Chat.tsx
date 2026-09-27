@@ -453,7 +453,7 @@ const ChatItem = memo(function ChatItem({
           {n.images?.map((img, i) => (
             <img key={i} className="msg-img" alt="" src={`data:${img.mimeType};base64,${img.data}`} />
           ))}
-          {n.text ? <Markdown text={n.text} streaming={n.streaming} /> : n.streaming && !n.thinking ? <span className="status-line">…</span> : null}
+          {n.text ? <Markdown text={n.text} streaming={n.streaming} revision={n.display} /> : n.streaming && !n.thinking ? <span className="status-line">…</span> : null}
           {n.truncated ? <button type="button" className="body-load" data-testid="load-body" disabled={hydrating} onClick={() => void hydrate()}>{hydrating ? t('chat.loadingBody') : hydrateFailed ? t('chat.retryOlder') : t('chat.loadBody')}</button> : null}
           {n.error ? <div className="notice">{n.error}</div> : null}
         </div>
@@ -582,7 +582,10 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   })), [items])
   const itemLookup = useRef(items)
   itemLookup.current = items
-  const getItemKey = useCallback((index: number) => itemLookup.current[index].id, [])
+  const getItemKey = useCallback((index: number) => {
+    const item = itemLookup.current[index]
+    return item.kind === 'node' && item.node.kind === 'assistant' ? item.node.renderKey ?? item.id : item.id
+  }, [])
   const estimates = useRef(new Map<string, { width: number; chars: number; size: number }>())
   const estimateSize = (index: number) => {
     const key = items[index].id

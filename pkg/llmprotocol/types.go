@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Supported wire protocol names accepted by Client.API.
@@ -139,6 +140,8 @@ type Client struct {
 	APIKey string
 	Base   string
 	API    string // APICompletions | APIResponses | APIAnthropic
+	// IdleTimeout bounds a blocked response-body read. Zero disables it.
+	IdleTimeout time.Duration
 }
 
 // NewClient builds a protocol client. A nil doer uses http.DefaultClient.
@@ -146,7 +149,7 @@ func NewClient(api, base, key string, doer HTTPDoer) *Client {
 	if doer == nil {
 		doer = http.DefaultClient
 	}
-	return &Client{Doer: doer, APIKey: key, Base: strings.TrimRight(base, "/"), API: api}
+	return &Client{Doer: doer, APIKey: key, Base: strings.TrimRight(base, "/"), API: api, IdleTimeout: 5 * time.Minute}
 }
 
 // Streamer produces an assistant message and incremental deltas.

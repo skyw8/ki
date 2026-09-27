@@ -70,7 +70,7 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 | GET | `/v1/fs` | 列目录；`files=1` 时也列普通文件供附件选择；`preview=1` 同源预览图片、文本/代码和 PDF |
 | POST | `/v1/fs` | 在已有目录下建子文件夹 |
 
-`message_end` 上 await 写 jsonl。`agent_end` 上按阈值自动 compact。SSE 在 run `done` 后先排空剩余事件，再结束（等待循环"先 `close(done)` 后 `Broadcast()`"的顺序协议有 TLA+ 模型验证，见 `spec/events-wait`）。
+`message_end` 上 await 写 jsonl。`agent_end` 上按阈值自动 compact。SSE reader 在 run 锁之外投影 typed message 并编码 patch，每次 write/flush 最多等待 30s；慢连接不占用事件漏斗。buffer 只在入队时计量 payload，debug 采样记录排队、编码与写入耗时。WebUI 按顺序解码、逐帧合并显示，终态立即 flush；可见身份与持久化 entryId 分开，使定稿不重挂载正文。SSE 在 run `done` 后先排空剩余事件，再结束（等待循环"先 `close(done)` 后 `Broadcast()`"的顺序协议有 TLA+ 模型验证，见 `spec/events-wait`）。
 
 压缩有三个触发时机：
 

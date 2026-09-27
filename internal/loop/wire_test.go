@@ -2,12 +2,81 @@ package loop
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
 	"ki/internal/types"
 )
+
+func TestMessageWireProjectionAndMutableBase(t *testing.T) {
+	m := types.Message{
+		Role: "assistant", Timestamp: 9, API: "responses", Provider: "p", Model: "m", ResponseID: "r",
+		StopReason: "error", ErrorMessage: "failed", ToolCallID: "call", ToolName: "Bash", ToolType: "custom",
+		Origin: "extension:test", External: map[string]string{"key": "before"}, IsError: true,
+		LatencyMs: 1, TTFTMs: 2, DurationMs: 3, Details: map[string]any{"nested": []any{"before"}},
+		Usage: &types.Usage{Input: 1, Output: 2, CacheRead: 3, CacheWrite: 4, TotalTokens: 10, Cost: &types.UsageCost{Input: 1, Output: 2, CacheRead: 3, CacheWrite: 4, Total: 10}},
+		Content: []types.Content{{Type: "toolCall", Text: strings.Repeat("中🙂", 100), Data: "data", MIMEType: "image/png", Path: "image.png", Size: 23,
+			Thinking: "thinking", ID: "id", Name: "name", ToolType: "custom", Input: "input", ItemID: "item", ArgumentsRaw: "raw",
+			ThinkingSignature: "signature", ThinkingData: "opaque", TextSignature: "textsig", StreamIndex: 7,
+			Arguments: map[string]any{"nested": map[string]any{"text": "before"}, "__proto__": nil}}},
+	}
+	projected, err := messageWireValue(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := snapshotJSON(m)
+	got, _ := snapshotJSON(projected)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("projection differs: %#v != %#v", got, want)
+	}
+	var encoder MessageEncoder
+	encoder.Encode(Event{Type: MessageUpdate, Seq: 1, Message: &m})
+	m.Content[0].Arguments["nested"].(map[string]any)["text"] = "after"
+	m.Content[0].Text += "new"
+	m.External["key"] = "after"
+	m.Details.(map[string]any)["nested"].([]any)[0] = "after"
+	m.Usage.Cost.Total = 20
+	wire := encoder.Encode(Event{Type: MessageUpdate, Seq: 2, Message: &m})
+	base, _ := snapshotJSON(projected)
+	var decoder = MessageDecoder{previous: base, seq: 1, stream: 1}
+	decoded, err := decoder.Decode(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ = snapshotJSON(m)
+	got, _ = snapshotJSON(decoded.Message)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatal("mutable provider values changed the retained baseline")
+	}
+}
+
+func BenchmarkMessageWireEncode(b *testing.B) {
+	for _, kib := range []int{8, 64, 256, 1024} {
+		b.Run(fmt.Sprintf("%dKiB", kib), func(b *testing.B) {
+			events := make([]Event, 128)
+			body := strings.Repeat("a", kib*1024)
+			for i := range events {
+				body += strings.Repeat("b", 64)
+				m := types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: body}}}
+				events[i] = Event{Type: MessageUpdate, Seq: int64(i + 1), Message: &m}
+			}
+			var encoder MessageEncoder
+			i := 0
+			b.ReportAllocs()
+			for b.Loop() {
+				if i == 0 {
+					encoder = MessageEncoder{}
+				}
+				if _, err := json.Marshal(encoder.Encode(events[i])); err != nil {
+					b.Fatal(err)
+				}
+				i = (i + 1) % len(events)
+			}
+		})
+	}
+}
 
 func TestMessageWireRoundTrip(t *testing.T) {
 	var encoder MessageEncoder

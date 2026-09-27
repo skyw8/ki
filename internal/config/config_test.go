@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,7 +120,30 @@ func TestLoadMissingFilesUsesBuiltin(t *testing.T) {
 	if cfg.Server.Addr != "127.0.0.1:19800" {
 		t.Fatalf("addr: %q", cfg.Server.Addr)
 	}
+	if cfg.Streaming.IdleTimeoutSeconds != 300 {
+		t.Fatalf("streaming: %+v", cfg.Streaming)
+	}
 	if cfg.Log.Level != "info" || cfg.Log.MaxSizeMB != 10 || cfg.Log.MaxBackups != 3 {
 		t.Fatalf("builtin log: %+v", cfg.Log)
+	}
+}
+
+func TestStreamingIdleTimeout(t *testing.T) {
+	for _, seconds := range []int{-1, 0, 42} {
+		t.Run(fmt.Sprint(seconds), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("KI_HOME", home)
+			if err := os.WriteFile(filepath.Join(home, "ki.toml"), fmt.Appendf(nil, "[streaming]\nidle_timeout_seconds = %d\n", seconds), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(t.TempDir())
+			if seconds < 0 {
+				if err == nil {
+					t.Fatal("negative timeout accepted")
+				}
+			} else if err != nil || cfg.Streaming.IdleTimeoutSeconds != seconds {
+				t.Fatalf("timeout: %+v, error: %v", cfg.Streaming, err)
+			}
+		})
 	}
 }

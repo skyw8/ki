@@ -312,7 +312,7 @@ func (l *Client) postStream(ctx context.Context, url string, body any, hdr http.
 		return out, err
 	}
 	acc := Message{Role: "assistant"}
-	sc := bufio.NewScanner(res.Body)
+	sc := bufio.NewScanner(idleReader{ReadCloser: res.Body, timeout: l.IdleTimeout})
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var eventName string
 	var dataLines []string
@@ -375,6 +375,11 @@ func (l *Client) postStream(ctx context.Context, url string, body any, hdr http.
 		streamErr = sc.Err()
 	}
 	if streamErr != nil {
+		// Resending after partial output can duplicate an answer or a tool call.
+		// End this attempt with its retained content instead of appending a retry.
+		if errors.Is(streamErr, errStreamIdle) && len(acc.Content) > 0 {
+			return acc, &nonRetryableError{err: streamErr}
+		}
 		return acc, streamErr
 	}
 	if requireTerminal && !terminal {

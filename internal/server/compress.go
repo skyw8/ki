@@ -131,12 +131,16 @@ func (w *gzipWriter) close() {
 // Flush keeps SSE working through the wrapper. SSE is never compressed, so this
 // only has to forward to the underlying writer.
 func (w *gzipWriter) Flush() {
+	_ = w.FlushError()
+}
+
+func (w *gzipWriter) FlushError() error {
 	if w.gz != nil {
-		_ = w.gz.Flush()
+		if err := w.gz.Flush(); err != nil {
+			return err
+		}
 	}
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 // Unwrap exposes the underlying writer to http.ResponseController.

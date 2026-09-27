@@ -1,5 +1,6 @@
 import type { FsListing, LoopEvent, Meta, ProviderAuthStatus, ProviderCatalog, PushEvent, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
 import { messageDecoder } from './messageStream'
+import { readSSE } from './sse'
 
 export class ApiError extends Error {
   status: number
@@ -345,7 +346,11 @@ export class Client {
   async *events(id: string, signal?: AbortSignal, lastEventId?: string, through?: string): AsyncGenerator<LoopEvent> {
     const decode = messageDecoder()
     const query = through ? `?through=${encodeURIComponent(through)}` : ''
-    for await (const event of this.sse<LoopEvent>(`/v1/sessions/${id}/events${query}`, signal, lastEventId ? { 'Last-Event-ID': lastEventId } : undefined)) yield decode(event)
+    for await (const event of this.sse<LoopEvent>(`/v1/sessions/${id}/events${query}`, signal, lastEventId ? { 'Last-Event-ID': lastEventId } : undefined)) {
+      const decoded = decode(event)
+      const now = performance.now()
+      yield { ...decoded, display: { runId: decoded.runId ?? id, seq: decoded.seq ?? 0, receivedAt: now, pendingSince: now } }
+    }
   }
 
   /**
@@ -368,45 +373,6 @@ export class Client {
       const text = await res.text().catch(() => res.statusText)
       throw new ApiError(res.status, text.trim() || res.statusText)
     }
-    const reader = res.body.getReader()
-    const dec = new TextDecoder()
-    let buf = ''
-    let event = ''
-    let data: string[] = []
-    const flush = (): T | null => {
-      if (!data.length) return null
-      const raw = data.join('\n')
-      data = []
-      const name = event
-      event = ''
-      try {
-        const ev = JSON.parse(raw) as T
-        if (!ev.type && name) ev.type = name
-        return ev
-      } catch {
-        return null
-      }
-    }
-    while (true) {
-      const { value, done } = await reader.read()
-      buf += dec.decode(value || new Uint8Array(), { stream: !done })
-      const lines = buf.split('\n')
-      buf = done ? '' : (lines.pop() ?? '')
-      for (const line of lines) {
-        if (line.startsWith('event:')) {
-          event = line.slice(6).trim()
-        } else if (line.startsWith('data:')) {
-          data.push(line.slice(5).trimStart())
-        } else if (line === '') {
-          const ev = flush()
-          if (ev) yield ev
-        }
-      }
-      if (done) {
-        const ev = flush()
-        if (ev) yield ev
-        return
-      }
-    }
+    yield* readSSE<T>(res.body, signal)
   }
 }

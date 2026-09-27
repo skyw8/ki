@@ -217,6 +217,9 @@ func (st *runState) appendLocked(ev *loop.Event) {
 	}
 	st.seq++
 	ev.Seq = st.seq
+	ev.BufferedAt = time.Now()
+	ev.BufferedBytes = 0
+	ev.BufferedBytes = eventPayloadBytes(ev)
 	stored := *ev
 	if ev.Type == loop.RequestHeader {
 		key := promptDigest(ev.System, ev.Tools)
@@ -323,17 +326,47 @@ func eventPayloadBytes(ev *loop.Event) int {
 	if ev == nil {
 		return 0
 	}
+	if ev.BufferedBytes > 0 {
+		return ev.BufferedBytes
+	}
 	n := len(ev.System) + len(ev.MessageText)
 	if ev.Message != nil {
-		n += len(ev.Message.Text())
-		for i := range ev.Message.Content {
-			n += len(ev.Message.Content[i].Thinking) + len(ev.Message.Content[i].Data)
+		for _, c := range ev.Message.Content {
+			n += len(c.Text) + len(c.Thinking) + len(c.Data) + len(c.Input) + len(c.ArgumentsRaw)
+			n += len(c.ThinkingSignature) + len(c.ThinkingData) + len(c.TextSignature) + retainedValueBytes(c.Arguments)
 		}
+		n += retainedValueBytes(ev.Message.Details)
 	}
 	if ev.AssistantMessageEvent != nil {
 		n += len(ev.AssistantMessageEvent.Delta)
 	}
-	return n
+	return n + retainedValueBytes(ev.PartialResult) + retainedValueBytes(ev.Args)
+}
+
+func retainedValueBytes(v any) int {
+	switch v := v.(type) {
+	case nil:
+		return 0
+	case string:
+		return len(v)
+	case []byte:
+		return len(v)
+	case map[string]any:
+		n := 0
+		for key, value := range v {
+			n += len(key) + retainedValueBytes(value)
+		}
+		return n
+	case []any:
+		n := 0
+		for _, value := range v {
+			n += retainedValueBytes(value)
+		}
+		return n
+	default:
+		raw, _ := json.Marshal(v)
+		return len(raw)
+	}
 }
 
 // promptDigest identifies a request_header payload (system prompt + tool
@@ -383,7 +416,7 @@ func New(opt Options) (*Server, error) {
 	requireCredential := opt.Streamer == nil
 	st := opt.Streamer
 	if st == nil {
-		st = liveFromRegistry(reg, providerExtensions)
+		st = liveFromRegistry(reg, providerExtensions, time.Duration(opt.Config.Streaming.IdleTimeoutSeconds)*time.Second)
 	}
 	ws := workspace.Open(opt.Config.Home, opt.Config.Sessions.Root)
 	infos, _ := session.List(opt.Config.Sessions.Root)
@@ -457,13 +490,14 @@ func New(opt Options) (*Server, error) {
 	return srv, nil
 }
 
-func liveFromRegistry(reg *provider.Registry, extensions *extension.ProviderManager) loop.Streamer {
-	return &router{registry: reg, extensions: extensions}
+func liveFromRegistry(reg *provider.Registry, extensions *extension.ProviderManager, idleTimeout time.Duration) loop.Streamer {
+	return &router{registry: reg, extensions: extensions, idleTimeout: idleTimeout}
 }
 
 type router struct {
-	registry   *provider.Registry
-	extensions *extension.ProviderManager
+	idleTimeout time.Duration
+	registry    *provider.Registry
+	extensions  *extension.ProviderManager
 }
 
 func (r *router) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
@@ -493,7 +527,7 @@ func (r *router) Stream(ctx context.Context, req loop.Request, emit func(loop.As
 	if err != nil {
 		return types.Message{}, fmt.Errorf("resolve provider model: %w", err)
 	}
-	msg, err := provider.NewLiveModel(m, key, nil).Stream(ctx, req, emit)
+	msg, err := provider.NewLiveModel(m, key, nil).WithIdleTimeout(r.idleTimeout).Stream(ctx, req, emit)
 	if err != nil {
 		return msg, fmt.Errorf("stream live provider: %w", err)
 	}
@@ -2111,7 +2145,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		if s.providerExtensions != nil && s.providerExtensions.HasProvider(liveModel.Provider) {
 			runStreamer = s.providerExtensions.NewStreamer(liveModel, liveCredential)
 		} else {
-			runStreamer = provider.NewLiveModel(liveModel, liveKey, occ.HTTPDoer())
+			runStreamer = provider.NewLiveModel(liveModel, liveKey, occ.HTTPDoer()).WithIdleTimeout(time.Duration(s.cfg.Streaming.IdleTimeoutSeconds) * time.Second)
 			runStreamer = occ.WrapStreamer(runStreamer)
 		}
 	}
@@ -2323,7 +2357,7 @@ func (s *Server) liveSummarizer(ctx context.Context, sessionID, prov, model stri
 		}
 		return s.providerExtensions.NewStreamer(resolved, credential)
 	}
-	return provider.NewLiveModel(resolved, key, s.ext.HTTPDoer(sessionID))
+	return provider.NewLiveModel(resolved, key, s.ext.HTTPDoer(sessionID)).WithIdleTimeout(time.Duration(s.cfg.Streaming.IdleTimeoutSeconds) * time.Second)
 }
 
 func (s *Server) summarizer(ctx context.Context, sessionID, prov, model string) compact.Summarizer {
@@ -2397,34 +2431,21 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	st := s.runs[id]
 	s.mu.Unlock()
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache") // Prevent proxy/browser buffering from delaying events.
+	writer := newSSEWriter(w)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	defer writer.watch(ctx)()
 	if st == nil {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	snapshot := s.replaySnapshot(id, r.URL.Query().Get("through"))
-	fl, _ := w.(http.Flusher)
-	// The run can sit silent for a whole model round (nothing to flush until the
-	// first delta), and a mobile/NAT path drops that idle connection long before
-	// the model answers. A comment heartbeat keeps it open. Heartbeat and event
-	// writes share writeMu because two goroutines must not interleave frames;
-	// once the handler returns it must stop touching w, so shutdown is joined.
-	var writeMu sync.Mutex
-	write := func(format string, args ...any) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		if _, err := fmt.Fprintf(w, format, args...); err != nil {
-			return err
-		}
-		if fl != nil {
-			fl.Flush()
-		}
-		return nil
-	}
+	// Heartbeats and event writes share one writer; a failed heartbeat cancels
+	// the reader's condition wait instead of leaving a dead connection parked.
+	write := writer.write
 	stopPing := make(chan struct{})
 	pingStopped := make(chan struct{})
-	defer func() { close(stopPing); <-pingStopped }()
+	defer func() { cancel(); close(stopPing); <-pingStopped }()
 	go func() {
 		defer close(pingStopped)
 		ticker := time.NewTicker(ssePingInterval)
@@ -2433,10 +2454,11 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-stopPing:
 				return
-			case <-r.Context().Done():
+			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				if write(": ping\n\n") != nil {
+					cancel()
 					return
 				}
 			}
@@ -2461,13 +2483,13 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		st.mu.Unlock()
 	}()
 	go func() {
-		<-r.Context().Done()
+		<-ctx.Done()
 		st.mu.Lock()
 		st.wait.Broadcast()
 		st.mu.Unlock()
 	}() // Prevent a client disconnect from leaking the goroutine.
 	for {
-		if r.Context().Err() != nil {
+		if ctx.Err() != nil {
 			return
 		}
 		st.mu.Lock()
@@ -2476,7 +2498,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			case <-st.done:
 				st.mu.Unlock()
 				return
-			case <-r.Context().Done():
+			case <-ctx.Done():
 				st.mu.Unlock()
 				return
 			default:
@@ -2491,13 +2513,20 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		if ev.Blank || ev.Seq <= since || snapshot.covers(ev) {
 			continue
 		}
+		encodedAt := time.Now()
 		b, err := json.Marshal(encoder.Encode(snapshot.frame(*ev)))
+		encodeTime := time.Since(encodedAt)
 		if err != nil {
 			slog.Error("marshal SSE event", "err", err)
 			return
 		}
+		writtenAt := time.Now()
 		if write("id: %s:%d\nevent: %s\ndata: %s\n\n", runID, ev.Seq, ev.Type, b) != nil {
 			return
+		}
+		writeTime := time.Since(writtenAt)
+		if ev.Seq%128 == 0 || encodeTime+writeTime >= 100*time.Millisecond {
+			slog.Debug("stream frame", "run_id", runID, "seq", ev.Seq, "bytes", len(b), "queue_us", encodedAt.Sub(ev.BufferedAt).Microseconds(), "encode_us", encodeTime.Microseconds(), "write_us", writeTime.Microseconds())
 		}
 		if ev.Type == loop.AgentEnd {
 			return

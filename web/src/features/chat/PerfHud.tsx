@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { streamMetrics } from '../../lib/stream-metrics'
 
 /**
  * A read-only performance overlay for checking the transcript on a real device.
@@ -27,7 +28,7 @@ export function PerfHud({ target }: { target: React.RefObject<HTMLElement | null
       return false
     }
   })
-  const [view, setView] = useState({ fps: 0, worst: 0, longTasks: 0, longTotal: 0, drift: 0, rows: 0, top: 0 })
+  const [view, setView] = useState({ fps: 0, worst: 0, longTasks: 0, longTotal: 0, drift: 0, rows: 0, top: 0, streamP95: 0, streamPending: 0 })
   const sample = useRef<Sample>({ frames: [], longTasks: [], longTotal: 0, drift: 0 })
 
   useEffect(() => {
@@ -43,7 +44,8 @@ export function PerfHud({ target }: { target: React.RefObject<HTMLElement | null
         s.longTotal += entry.duration
       }
     })
-    observer.observe({ type: 'longtask', buffered: false })
+    // WebKit does not expose longtask entries; the frame/stream probes still work.
+    if (PerformanceObserver.supportedEntryTypes.includes('longtask')) observer.observe({ type: 'longtask', buffered: false })
     const tick = (t: number) => {
       const dt = t - last
       last = t
@@ -67,6 +69,8 @@ export function PerfHud({ target }: { target: React.RefObject<HTMLElement | null
         const sorted = [...s.frames].sort((a, b) => a - b)
         const p50 = sorted[Math.floor(sorted.length / 2)] ?? 0
         setView({
+          streamP95: Math.round(streamMetrics().p95),
+          streamPending: Math.round(streamMetrics().pendingMax),
           fps: p50 > 0 ? Math.round(1000 / p50) : 0,
           worst: Math.round(sorted[sorted.length - 1] ?? 0),
           longTasks: s.longTasks.length,
@@ -97,6 +101,8 @@ export function PerfHud({ target }: { target: React.RefObject<HTMLElement | null
       <span>drift {view.drift}px</span>
       <span>rows {view.rows}</span>
       <span>top {view.top}</span>
+      <span>stream p95 {view.streamP95}ms</span>
+      <span>pending max {view.streamPending}ms</span>
       <button
         type="button"
         onClick={() => {

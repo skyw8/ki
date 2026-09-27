@@ -6,6 +6,9 @@
 // connection-local snapshot/patch SSE stream. Patches name a message stream
 // and the previous message frame's seq; global seq gaps are valid. Persistence
 // and extension subscribers still receive full canonical messages.
+// Encoding shares immutable typed strings; mutable argument/detail values are
+// snapshotted before becoming a patch base. BufferedAt/BufferedBytes are local
+// server telemetry/retention metadata, never part of wire or persistence.
 //
 // Events follow pi names: agent_*, turn_*, message_*, tool_execution_*,
 // compaction_start/end (reason + ok), plus request_header (system + tools
@@ -29,6 +32,7 @@
 // Hooks.OnContextOverflow (server compacts and returns the new context; same
 // Run, so events are not replayed). stopReason "length" rejects tool calls
 // (truncated arguments) instead of executing them.
+// Cancellation retains already-emitted partial content in its aborted message.
 // RunMessage accepts provider-neutral structured user content. TextOnly
 // removes image blocks at the final model-facing boundary.
 // Config.Inbox injects extra user messages into the same Run after the

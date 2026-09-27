@@ -25,9 +25,9 @@ test('splitSettled settles whole blocks and leaves the open tail alone', () => {
   // list ends (two <ol>s would restart the numbering).
   expect(splitSettled('1. a\n\n1. b\n\n')).toEqual({ sealed: '', live: '1. a\n\n1. b\n\n' })
   expect(splitSettled('1. a\n\n1. b\n\nprose\n\n')).toEqual({ sealed: '1. a\n\n1. b\n\nprose\n\n', live: '' })
-  // A bullet list is settled across blank lines: the split only costs the 10px
-  // gap between blocks, and the alternative is painting a long list as source.
-  expect(splitSettled('- a\n\n- b\n\n')).toEqual({ sealed: '- a\n\n- b\n\n', live: '' })
+  // Blank lines inside lists affect tightness and nested blocks. Keep the whole
+  // list mutable until the following block proves it has ended.
+  expect(splitSettled('- a\n\n- b\n\n')).toEqual({ sealed: '', live: '- a\n\n- b\n\n' })
   // A blockquote can be continued by a `>` line after a blank line, so it stays
   // live until a block that cannot join it ends it.
   expect(splitSettled('> a\n\n> still quoted\n\n')).toEqual({ sealed: '', live: '> a\n\n> still quoted\n\n' })
@@ -97,6 +97,17 @@ test('keeps the text moving while it streams', async ({ page }) => {
   expect(growing.at(-1), 'final length').toBeGreaterThan(30_000)
 })
 
+test('stopping generation retains already visible text and its mounted root', async ({ page }) => {
+  await page.goto('/')
+  await sendPrompt(page, 'e2e-blocks-400')
+  await expect(page.getByTestId('assistant-message')).toContainText('Paragraph 20')
+  await page.evaluate(() => { (window as unknown as { stoppedRoot: Element | null }).stoppedRoot = document.querySelector('[data-stream-seq]') })
+  await page.getByTestId('composer-stop').click()
+  await expect(page.getByTestId('composer-stop')).toHaveCount(0)
+  await expect(page.getByTestId('assistant-message')).toContainText('Paragraph 20')
+  expect(await page.evaluate(() => (window as unknown as { stoppedRoot: Element }).stoppedRoot.isConnected)).toBe(true)
+})
+
 test('paragraph-shaped streams parse each block once, not per delta', async ({ page }) => {
   test.setTimeout(120_000)
   await page.goto('/')
@@ -115,8 +126,7 @@ test('paragraph-shaped streams parse each block once, not per delta', async ({ p
   // No piece ever holds the growing whole, so no render re-lexes more than one
   // sealed chunk plus the open block — that is the whole point of the split.
   expect(Math.max(...mid), `longest piece mid-stream: ${Math.max(...mid)}`).toBeLessThan(12_000)
-  // The whole message lands (one final piece: the stream's node is replaced by
-  // the persisted entry, which parses the finished text once and caches it).
+  // The whole message lands without replacing the stream's mounted segments.
   await expect(page.getByTestId('assistant-message').first()).toContainText('Paragraph 399', { timeout: 60_000 })
   await expect(page.getByTestId('assistant-message').first().locator('p')).toHaveCount(400)
   await expect(page.locator('[data-md-tail]')).toHaveCount(0)

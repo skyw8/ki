@@ -417,6 +417,9 @@ function rebuild(s: ViewState): ViewState {
   const oldNodes = new Map(s.nodes.map(n => [n.id, n]))
   next.nodes = next.nodes.map(n => {
     const old = oldNodes.get(n.id)
+    // Final SSE identity becomes the persisted entry id, while the mounted row
+    // keeps its render key and parsed segments through the tail reconciliation.
+    if (old?.kind === 'assistant' && n.kind === 'assistant' && old.renderKey) n = { ...n, renderKey: old.renderKey }
     return old && sameValue(old, n) ? old : n
   })
   return next
@@ -614,6 +617,8 @@ function inspectPrompt(
 }
 
 function updateRequest(s: ViewState, id: string, patch: Partial<RequestView>) {
+  const previous = s.requests.find(request => request.id === id)
+  if (!previous || Object.entries(patch).every(([key, value]) => previous[key as keyof RequestView] === value)) return
   s.requests = s.requests.map(request => request.id === id ? { ...request, ...patch } : request)
   s.records = s.records.map(record => record.requestId !== id
     ? record
@@ -1190,7 +1195,7 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
       if (s.currentRequestId) updateRequest(s, s.currentRequestId, { status: 'running' })
       return
     }
-    pushStreamingAssistant(s, m)
+    pushStreamingAssistant(s, m, ev.display)
     return
   }
 
@@ -1201,7 +1206,7 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
       // superseded chunk and the completed messages' starts. That partial
       // still holds the whole accumulated text, so it is enough to open the
       // bubble and keep streaming from the next live chunk.
-      pushStreamingAssistant(s, m)
+      pushStreamingAssistant(s, m, ev.display)
       return
     }
     if (ev.type === 'message_end') {
@@ -1221,6 +1226,8 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
     ...node,
     text,
     thinking,
+    display: ev.display,
+    renderKey: node.renderKey ?? node.id,
     // Streaming deltas (message_update) usually carry no timestamp, so keep
     // the one from message_start; message_end carries the final authoritative
     // value, which wins when present.
@@ -1299,10 +1306,11 @@ function lastStreamingAssistant(s: ViewState): number {
  * with the same text the bubble shows — message_update usually has no
  * timestamp, hence the local-clock fallback.
  */
-function pushStreamingAssistant(s: ViewState, m: Message) {
+function pushStreamingAssistant(s: ViewState, m: Message, display?: LoopEvent['display']) {
   const id = `live-asst-${s.nodes.length}`
   const ts = m.timestamp
-  s.nodes.push({ kind: 'assistant', id, text: messageText(m), thinking: messageThinking(m), streaming: true, ts })
+  const renderKey = display?.seq ? `stream:${display.runId}:${display.seq}` : id
+  s.nodes.push({ kind: 'assistant', id, renderKey, display, text: messageText(m), thinking: messageThinking(m), streaming: true, ts })
   s.records.push({
     id,
     kind: 'assistant',

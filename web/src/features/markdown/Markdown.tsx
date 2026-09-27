@@ -1,12 +1,11 @@
-import { createElement, isValidElement, lazy, memo, Suspense, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
+import { createElement, isValidElement, lazy, memo, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import { cjk } from '@streamdown/cjk'
 import { Streamdown, parseMarkdownIntoBlocks, useIsCodeFenceIncomplete, type ExtraProps } from 'streamdown'
 import { useI18n } from '../../i18n/index'
 import { ICheck, ICopy } from '../../components/icons'
-import { normalizeMarkdown } from './markdown-normalize'
-import { settleBoundaries } from './streamText'
+import { MarkdownDocument } from './streamText'
+import { recordStreamCommit, type DisplayRevision } from '../../lib/stream-metrics'
 import { copyText } from '../../lib/clipboard'
-import { textHeightHint } from '../../lib/rowHeight'
 import { queueMarkdown } from './parseQueue'
 
 const plugins = { cjk }
@@ -155,7 +154,10 @@ function blocksFor(text: string): string[] {
     blockCache.set(text, hit)
     return hit
   }
-  const blocks = parseMarkdownIntoBlocks(text)
+  // A giant semantic block (list/fence/reference document) is already a safe
+  // unit. Re-running marked's block splitter over it can be quadratic; the
+  // underlying Markdown renderer accepts multiple blocks in one input too.
+  const blocks = text.length > 4096 ? [text] : parseMarkdownIntoBlocks(text)
   const bytes = blockBytes(text, blocks)
   if (bytes > BLOCK_CACHE_BYTES) return blocks
   blockCache.set(text, blocks)
@@ -197,148 +199,64 @@ export const Markdown = memo(function Markdown({
   text,
   streaming = false,
   className,
+  revision,
 }: {
   text: string
   streaming?: boolean
   className?: string
+  revision?: DisplayRevision
 }) {
-  // Why a placeholder first: mounting a row parses its whole markdown (marked,
-  // then remark/rehype and the plugins) on the main thread, and scrolling mounts
-  // several rows at once, so the parses land in one frame as a long block. The
-  // row's height is only known after that render. The shared queue admits one
-  // parse per frame and prioritizes visible content; an idle callback per row
-  // merely moved the same burst later. Estimates reserve space until the
-  // virtualizer measures the actual body and compensates above the reader.
-  const [ready, setReady] = useState(streaming)
-  const pendingRef = useRef<HTMLDivElement>(null)
-  const shown = useStreamingText(text, streaming)
-  const source = useMemo(() => ready ? normalizeMarkdown(shown) : '', [shown, ready])
-  const boundaries = useMemo(() => settleBoundaries(source), [source])
-  const staticSegments = useMemo(() => {
-    if (streaming || source.length <= TAIL_MAX) return null
-    // Reference definitions have document scope; splitting them changes links.
-    const ends = /^ {0,3}\[[^\]]+\]:/m.test(source) ? [] : boundaries
-    const parts: string[] = []
-    let start = 0
-    for (const end of ends) if (end - start >= SEAL_MIN) { parts.push(source.slice(start, end)); start = end }
-    if (start < source.length) parts.push(source.slice(start))
-    return parts
-  }, [source, boundaries, streaming])
-
-  /**
-   * Sealed segments: slices of this message whose rendering can no longer
-   * change, each rendered by its own Streamdown and never re-parsed.
-   *
-   * Why segments rather than one growing prefix: Streamdown re-lexes whatever
-   * text it is handed, so feeding it the settled prefix would re-parse the whole
-   * message every time another block settled — the quadratic cost this split
-   * exists to remove. A segment is immutable, so it parses once (and its blocks
-   * come from the shared cache when the row is remounted by scrolling).
-   */
-  const sealRef = useRef<{ text: string; segments: string[] }>({ text: '', segments: [] })
-  const [sealedState, setSealedState] = useState(sealRef.current)
-  useEffect(() => {
-    // Keep what this text still starts with, segment by segment: an edit, a
-    // regeneration, a virtual-list row reused for another node — or the final
-    // text with its trailing blank line trimmed — must only drop the segments
-    // that no longer match, not force a re-parse of the whole message.
-    const prev = sealRef.current
-    let len = 0
-    let kept = prev.segments
-    for (let i = 0; i < prev.segments.length; i++) {
-      if (!source.startsWith(prev.segments[i], len)) {
-        kept = prev.segments.slice(0, i)
-        break
-      }
-      len += prev.segments[i].length
-    }
-    if (kept !== prev.segments) {
-      sealRef.current = { text: source.slice(0, len), segments: kept }
-      setSealedState(sealRef.current)
-    }
-    if (!streaming && sealRef.current.segments.length === 0) return // a message loaded whole stays whole
-    // Seal every chunk that is ready, not just the last boundary: a burst can
-    // settle tens of KiB between two renders, and handing one Streamdown all of it
-    // would put the quadratic parse back for that piece.
-    let grown = sealRef.current
-    for (const at of boundaries) {
-      if (at - grown.text.length < SEAL_MIN) continue
-      grown = { text: source.slice(0, at), segments: [...grown.segments, source.slice(grown.text.length, at)] }
-    }
-    if (grown === sealRef.current) return
-    sealRef.current = grown
-    setSealedState(grown)
-  }, [source, boundaries, streaming])
-
-  const rest = source.slice(sealedState.text.length)
-  // What is left over is the part still being written. A short remainder is
-  // parsed the way it always was (incomplete markdown closed up, deltas faded
-  // in); a long one — one huge paragraph, a fence still streaming, a table — is
-  // painted as source instead, because that is where re-parsing per delta used
-  // to cost hundreds of milliseconds. A finished message always parses fully.
-  const liveMode: 'streaming' | 'static' | 'plain' = !streaming ? 'static' : rest.length > TAIL_MAX ? 'plain' : 'streaming'
-  useEffect(() => {
-    if (ready) return
-    return queueMarkdown(() => setReady(true), () => pendingRef.current)
-  }, [ready])
-  if (!ready) {
-    return (
-      <div
-        ref={pendingRef}
-        className="md-pending"
-        data-md-pending="1"
-        aria-busy="true"
-        style={{ minHeight: `${textHeightHint(text)}px` }}
-      />
-    )
-  }
-  if (staticSegments) return <>{staticSegments.map((segment, index) => <StaticSegment key={index} text={segment} className={className} />)}</>
-  return (
-    <>
-      {sealedState.segments.map((seg, i) => (
-        <Streamdown key={`seg${i}`} className={segClass(className)} plugins={plugins} mode="static" {...shared}>
-          {seg}
-        </Streamdown>
-      ))}
-      {rest === '' ? null : liveMode === 'plain' ? (
-        <div key="live" className="md md-tail" data-md-tail="1">
-          {rest}
-        </div>
-      ) : (
-        <Streamdown
-          key="live"
-          className={segClass(className)}
-          plugins={plugins}
-          mode={liveMode}
-          isAnimating={streaming}
-          {...shared}
-          // Only the open tail changes per delta, so it is the one part worth
-          // re-lexing; a settled segment is immutable and cached by its text.
-          parseMarkdownIntoBlocksFn={liveMode === 'static' ? blocksFor : undefined}
-        >
-          {rest}
-        </Streamdown>
-      )}
-    </>
-  )
-})
-
-const StaticSegment = memo(function StaticSegment({ text, className }: { text: string; className?: string }) {
-  const { t } = useI18n()
+  const [document] = useState(() => new MarkdownDocument())
   const root = useRef<HTMLDivElement>(null)
-  const [ready, setReady] = useState(false)
-  const [format, setFormat] = useState(text.length <= 64 * 1024)
-  useEffect(() => queueMarkdown(() => setReady(true), () => root.current), [])
-  return <div ref={root} data-md-block="1" data-md-pending={ready ? undefined : '1'} style={ready ? undefined : { minHeight: textHeightHint(text) }}>
-    {ready && (format ? <Streamdown className={segClass(className)} plugins={plugins} mode="static" {...shared} parseMarkdownIntoBlocksFn={blocksFor}>{text}</Streamdown>
-      : <><button type="button" className="body-load" onClick={() => setFormat(true)}>{t('chat.formatMarkdown')}</button><div className="md md-tail">{text}</div></>)}
+  const parts = useMemo(() => document.update(text, !streaming), [document, text, streaming])
+  // This runs after actual text was committed, never at socket receipt or setState.
+  useLayoutEffect(() => recordStreamCommit(revision, root.current), [revision, text])
+  return <div ref={root} data-stream-seq={revision?.seq}>
+    {parts.segments.map((segment, index) => <MarkdownPiece key={index} text={segment} className={className} />)}
+    {parts.tail && <MarkdownPiece key="tail" text={parts.tail} live={streaming} className={className} />}
   </div>
 })
 
-// A settled segment is sealed once this much of the message can no longer change.
-const SEAL_MIN = 4096
-// A moving part longer than this is painted, not parsed.
-const TAIL_MAX = 4096
+/** Keep content visible while an expensive block waits for its formatting turn.
+ * A message finishing must not replace already-visible text with placeholders.
+ * Immutable segments keep the same component through both streaming and final.
+ */
+const MarkdownPiece = memo(function MarkdownPiece({ text, live = false, className }: { text: string; live?: boolean; className?: string }) {
+  const { t } = useI18n()
+  const root = useRef<HTMLDivElement>(null)
+  const wasLive = useRef(live)
+  if (live) wasLive.current = true
+  const immediate = wasLive.current && text.length <= 4096
+  const [formatted, setFormatted] = useState('')
+  const [explicit, setExplicit] = useState(false)
+  const allowed = text.length <= 64 * 1024 || explicit
+  const ready = immediate || !live && formatted === text
+  useEffect(() => {
+    if (immediate || live || !allowed || formatted === text) return
+    return queueMarkdown(() => setFormatted(text), () => root.current, wasLive.current ? 1 : 0)
+  }, [text, live, allowed, formatted, immediate])
+  return <div ref={root} data-md-block="1" data-md-pending={!live && !ready && allowed ? '1' : undefined}>
+    {!live && !allowed && <button type="button" className="body-load" onClick={() => setExplicit(true)}>{t('chat.formatMarkdown')}</button>}
+    {ready ? <Streamdown className={segClass(className)} plugins={plugins} mode={live ? 'streaming' : 'static'} isAnimating={live} {...shared} parseMarkdownIntoBlocksFn={live ? undefined : blocksFor}>{text}</Streamdown>
+      : <PlainText text={text} />}
+  </div>
+})
+
+const TextChunk = memo(function TextChunk({ text }: { text: string }) { return <>{text}</> })
+function PlainText({ text }: { text: string }) {
+  const chunks = useMemo(() => {
+    const result: string[] = []
+    for (let at = 0; at < text.length;) {
+      let end = Math.min(at + 4096, text.length)
+      // Never split a surrogate pair into separate DOM text nodes.
+      if (end < text.length && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff) end--
+      result.push(text.slice(at, end))
+      at = end
+    }
+    return result
+  }, [text])
+  return <div className="md md-tail" data-md-tail="1">{chunks.map((chunk, i) => <TextChunk key={i} text={chunk} />)}</div>
+}
 
 /** Shared props of every piece a streaming message is rendered as. */
 const shared = {
@@ -351,35 +269,4 @@ const shared = {
 
 function segClass(className?: string): string {
   return className ? `md md-seg ${className}` : 'md md-seg'
-}
-
-/**
- * How long a streaming message may lag behind its newest delta.
- *
- * Attaching to a run replays its chunks, and every delta used to re-render the
- * message. The render itself is cheap now that only the open tail is parsed (see
- * streamText.ts), so this only has to keep a slow device from re-rendering tens of
- * times a second; the text still moves ~12 times a second.
- *
- * Why the deadline is measured from the last render rather than armed per delta:
- * a timer that is reset on every change is a debounce, and with deltas arriving
- * every few milliseconds it never fires — the text froze for the whole stream and
- * jumped when the provider paused. Tests read the rendered length over time; see
- * "keeps the text moving while it streams".
- */
-const STREAM_RENDER_MS = 80
-
-function useStreamingText(text: string, streaming: boolean): string {
-  const [shown, setShown] = useState(text)
-  const renderedAt = useRef(0)
-  useEffect(() => {
-    if (!streaming || text === shown) return
-    const wait = Math.max(0, STREAM_RENDER_MS - (performance.now() - renderedAt.current))
-    const id = window.setTimeout(() => {
-      renderedAt.current = performance.now()
-      setShown(text)
-    }, wait)
-    return () => window.clearTimeout(id)
-  }, [text, streaming, shown])
-  return streaming ? shown : text
 }

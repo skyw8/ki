@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -197,22 +196,15 @@ func (s *Server) pushEvents(w http.ResponseWriter, r *http.Request) {
 	p := newPushSub()
 	s.subscribePush(p)
 	defer s.unsubscribePush(p)
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache") // proxies must not buffer events.
-	fl, _ := w.(http.Flusher)
+	writer := newSSEWriter(w)
+	defer writer.watch(r.Context())()
 	write := func(name string, payload any) bool {
 		b, err := json.Marshal(payload)
 		if err != nil {
 			slog.Error("marshal push frame", "err", err)
 			return false
 		}
-		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, b); err != nil {
-			return false
-		}
-		if fl != nil {
-			fl.Flush()
-		}
-		return true
+		return writer.write("event: %s\ndata: %s\n\n", name, b) == nil
 	}
 	// Subscribe first, then flush: the client fetches only after this frame
 	// arrives, so a change that happened while it was disconnected cannot be
@@ -249,11 +241,8 @@ func (s *Server) pushEvents(w http.ResponseWriter, r *http.Request) {
 		case <-ticker.C:
 			// Comment frames keep an idle connection (and any intermediary)
 			// alive; SSE clients ignore them.
-			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+			if err := writer.write(": ping\n\n"); err != nil {
 				return
-			}
-			if fl != nil {
-				fl.Flush()
 			}
 		}
 	}

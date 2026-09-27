@@ -43,6 +43,39 @@ func TestRequestJSONUsesProviderFieldNames(t *testing.T) {
 
 type echo struct{}
 
+type cancelPartial struct{ cancel context.CancelFunc }
+
+func (s cancelPartial) Stream(_ context.Context, _ Request, emit func(AssistantDelta) error) (types.Message, error) {
+	m := types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "Already visible 中🙂"}}}
+	if err := emit(AssistantDelta{Type: "text_delta", Partial: m}); err != nil {
+		return m, err
+	}
+	s.cancel()
+	return types.Message{}, context.Canceled
+}
+
+func TestCanceledStreamKeepsVisiblePartialInFinalEvent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var final types.Message
+	var start *types.Message
+	message, err := streamWithRetry(ctx, Config{Streamer: cancelPartial{cancel: cancel}}, Request{}, func(ev Event) error {
+		if ev.Type == MessageEnd {
+			final = *ev.Message
+		}
+		if ev.Type == MessageStart {
+			start = ev.Message
+		}
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) || message.Text() != "Already visible 中🙂" || final.Text() != message.Text() || final.StopReason != "aborted" {
+		t.Fatalf("message=%+v final=%+v err=%v", message, final, err)
+	}
+	if start == nil || start.Text() != "" {
+		t.Fatal("published start message mutated")
+	}
+}
+
 func (echo) Stream(_ context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
 	m := types.Message{
 		Role:       "assistant",
