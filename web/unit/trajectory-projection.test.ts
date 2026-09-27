@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from 'bun:test'
 import { applyEvent, emptyView, loadHistory, reconcileUserNodes } from '../src/lib/model.ts'
 import type { Entry, LoopEvent } from '../src/api/types.ts'
 

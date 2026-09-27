@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from 'bun:test'
 import { applyFollowTail, followFromGap } from '../src/lib/follow-tail.ts'
 
 test('applyFollowTail writes scrollTop to scrollHeight only when follow is on', () => {

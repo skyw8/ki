@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from 'bun:test'
 import { messageDecoder } from '../src/api/messageStream'
 
 test('wire patches preserve snapshots, handle Unicode, blocks, replacements and sequence gaps', () => {

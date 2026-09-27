@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from 'bun:test'
 import { clampThinkingEffort, pickComposerModel, sessionCreateBody } from '../src/lib/model.ts'
 import type { ModelInfo } from '../src/api/types.ts'
 

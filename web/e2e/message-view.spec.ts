@@ -2,74 +2,10 @@ import { expect, test, type Page } from '@playwright/test'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { statePath } from './global-setup.ts'
-import { clampCompactKeep, foldReplies, groupTurns } from '../src/lib/messageView.ts'
-import type { ChatNode } from '../src/api/types.ts'
 
-const user = (id: string, text: string): ChatNode => ({ kind: 'user', id, text, content: [] })
-const asst = (id: string, text = 'ok', streaming = false): ChatNode => ({ kind: 'assistant', id, text, streaming })
-const tool = (id: string, running = false): ChatNode => ({ kind: 'tool', id, name: 'Bash', args: {}, running })
-
-test('groupTurns splits at user nodes and keeps a leading group', () => {
-  const turns = groupTurns([asst('a0'), user('u1', 'one'), asst('a1'), user('u2', 'two'), asst('a2')])
-  expect(turns.map(t => t.id)).toEqual(['a0', 'u1', 'u2'])
-  expect(turns[0].user).toBeUndefined()
-  expect(turns[1].user?.id).toBe('u1')
-  expect(turns[1].nodes.map(n => n.id)).toEqual(['u1', 'a1'])
-  expect(turns[2].nodes.map(n => n.id)).toEqual(['u2', 'a2'])
-})
-
-test('foldReplies keeps every user bubble and the newest keep replies of each turn', () => {
-  const nodes = [
-    user('u1', 'one'), asst('a1a'), tool('t1'), asst('a1b'),
-    user('u2', 'two'), asst('a2a'), tool('t2'), asst('a2b'),
-  ]
-  // One reply kept per turn: the fold row sits between the prompt and it.
-  expect(foldReplies(nodes, { keep: 1 }).map(i => i.id)).toEqual([
-    'u1', 'fold:u1', 'a1b',
-    'u2', 'fold:u2', 'a2b',
-  ])
-  const folded = foldReplies(nodes, { keep: 1 }).find(i => i.kind === 'fold')
-  expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1a', 't1'])
-
-  // keep 0 folds every reply, keep 2 leaves the short turns alone.
-  expect(foldReplies(nodes, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'u2', 'fold:u2'])
-  expect(foldReplies(nodes, { keep: 3 }).map(i => i.id)).toEqual(nodes.map(n => n.id))
-  // A turn that is only a prompt has nothing to fold.
-  expect(foldReplies([user('u1', 'one')], { keep: 0 }).map(i => i.id)).toEqual(['u1'])
-})
-
-test('foldReplies opens a fold in place without reordering the turn', () => {
-  const nodes = [user('u1', 'one'), asst('a1a'), tool('t1'), asst('a1b')]
-  expect(foldReplies(nodes, { keep: 1, expanded: new Set(['u1']) }).map(i => i.id)).toEqual([
-    'u1', 'fold:u1', 'a1a', 't1', 'a1b',
-  ])
-})
-
-test('foldReplies never hides work in progress', () => {
-  // A running tool and streaming text stay visible even at keep=0.
-  const nodes = [user('u1', 'one'), asst('a1a'), tool('t1', true), asst('a1b')]
-  expect(foldReplies(nodes, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 't1', 'a1b'])
-})
-
-test('foldReplies folds the running turn too, keeping live work visible', () => {
-  // An in-flight turn is the longest one in practice: leaving it unfolded meant
-  // rendering all of its reply nodes (measured on a live run: 61 nodes, where
-  // folding renders 2). It folds like any other turn — only nodes that are still
-  // streaming or running stay on screen.
-  const nodes = [user('u1', 'one'), asst('a1a'), tool('t1'), asst('a1b'), user('u2', 'two'), asst('a2a'), asst('a2b')]
-  expect(foldReplies(nodes, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'u2', 'fold:u2'])
-  const live = [user('u1', 'one'), asst('a1a'), asst('a1b', 'ok', true)]
-  expect(foldReplies(live, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'a1b'])
-  const runningTool = [user('u1', 'one'), asst('a1a'), tool('t1', true), asst('a1b')]
-  expect(foldReplies(runningTool, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 't1', 'a1b'])
-})
-
-test('clampCompactKeep bounds the configured N', () => {
-  expect(clampCompactKeep(Number.NaN)).toBe(1)
-  expect(clampCompactKeep(-3)).toBe(0)
-  expect(clampCompactKeep(2.6)).toBe(3)
-  expect(clampCompactKeep(99)).toBe(20)
-})
+// Each browser test passed alone with its own server and home. Keep that
+// isolation when splitting this file so independent scenarios overlap safely.
+test.describe.configure({ mode: 'parallel' })
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
@@ -167,20 +103,26 @@ test('opening a fold under the viewport keeps the row put and pauses follow-tail
   // A run that stays busy for a few seconds: the tail keeps moving after the
   // click, which is what used to drag the reader away.
   await sendPrompt(page, 'e2e-delay-3000 keep-streaming')
-  await page.waitForTimeout(600)
-  const fold = await page.evaluate(() => {
+  await expect(page.getByTestId('composer-stop')).toBeVisible()
+  await page.evaluate(() => {
     const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
     el.scrollTop = el.scrollHeight
-    const box = el.getBoundingClientRect()
-    const rows = [...document.querySelectorAll('[data-testid="fold-row"]')] as HTMLElement[]
-    // A row the reader can actually see and click, near the tail.
-    const visible = rows.filter(r => {
-      const b = r.getBoundingClientRect()
-      return b.top > box.top && b.bottom < box.bottom
-    })
-    return visible[0].dataset.fold as string
   })
-  await page.waitForTimeout(200)
+  // Virtual rows commit after the scroll event. Reading them in the same task
+  // as scrollTop can find no visible fold, especially with shared browsers.
+  let fold = ''
+  await expect.poll(async () => {
+    fold = await page.evaluate(() => {
+      const box = document.querySelector('[data-testid="chat-scroll"]')!.getBoundingClientRect()
+      const rows = [...document.querySelectorAll('[data-testid="fold-row"]')] as HTMLElement[]
+      return rows.find(row => {
+        const b = row.getBoundingClientRect()
+        return b.top > box.top && b.bottom < box.bottom
+      })?.dataset.fold ?? ''
+    })
+    return fold
+  }).not.toBe('')
+  await expect.poll(async () => (await foldProbe(page, fold)).toBottom).toBe(false)
   const before = await foldProbe(page, fold)
   expect(before.rowTop).not.toBeNull()
   expect(before.toBottom).toBe(false)
@@ -193,8 +135,9 @@ test('opening a fold under the viewport keeps the row put and pauses follow-tail
   expect(after.scrollTop).toBe(before.scrollTop)
   expect(after.toBottom).toBe(true)
 
-  // The run ends and rewrites the node list; the reader stays where they are.
-  await page.waitForTimeout(4000)
+  // Wait for the real completion rewrite: a fixed sleep wastes time and can
+  // still inspect a running turn when the machine is busy.
+  await expect(page.getByTestId('composer-stop')).toHaveCount(0)
   const ended = await foldProbe(page, fold)
   expect(ended.rowTop).toBe(before.rowTop)
   expect(ended.scrollTop).toBe(before.scrollTop)

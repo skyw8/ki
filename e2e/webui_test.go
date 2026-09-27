@@ -30,12 +30,12 @@ func TestWebUIPlaywright(t *testing.T) {
 	bin := builtKI(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bun, "run", "test:e2e")
+	cmd := exec.CommandContext(ctx, bun, "run", "test")
 	cmd.Dir = webDir
 	cmd.Env = webSuiteEnv(bin)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("playwright: %v\n%s", err, out)
+		t.Fatalf("web tests: %v\n%s", err, out)
 	}
 }
 

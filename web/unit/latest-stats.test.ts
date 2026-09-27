@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from 'bun:test'
 import { cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats, turnStats } from '../src/lib/model.ts'
 import type { ChatNode, Entry, ViewState } from '../src/api/types.ts'
 

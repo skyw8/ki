@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from 'bun:test'
 import { streamBatch, reconnectDelay, type FrameClock } from '../src/lib/stream-batch'
 import { readSSE } from '../src/api/sse'
 import { messageDecoder } from '../src/api/messageStream'

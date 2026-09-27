@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from 'bun:test'
 import { applyIndex, applyTail, evictBodies, hydrateEntries, loadHistory, turnStats } from '../src/lib/model.ts'
 import type { Entry, IndexEntry } from '../src/api/types.ts'
 

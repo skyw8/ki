@@ -2,9 +2,8 @@
 //
 // Why: a single `playwright test` run drives one `ki serve` with one KI_HOME, and
 // several specs mutate global state (extension toggles, skills/commands under
-// KI_HOME, one serial narrative in webui.spec.ts). Per-invocation isolation is
-// already guaranteed by run-state.ts (random run id) and global-setup.ts (temp
-// home/cwd plus a free port), so separate processes are safe to run concurrently.
+// KI_HOME). Each invocation gets a random run ID and a private home, cwd and
+// port from run-state.ts and global-setup.ts; isolated processes can overlap.
 //
 // Coverage is never traded for speed: every executed spec is reconciled against
 // `playwright test --list`, and the run fails if a test was dropped or duplicated.
@@ -12,6 +11,7 @@
 // Env:
 //   KI_E2E_PROJECT      Playwright project to run (default: fake)
 //   KI_E2E_JOBS         Max concurrent processes (default: min(CPUs, 32))
+//   KI_E2E_BROWSERS     Shared Chromium processes for fake tests (default: 4; 0 disables reuse)
 //   KI_E2E_SPLIT        Min tests before a non-serial file is split (default: 12)
 //   KI_BIN              Reuse an already-built ki binary instead of building one
 //   KI_SKIP_WEB_BUILD   Fail instead of running `bun run build` when dist is absent
@@ -21,13 +21,16 @@
 // that its tests are independent (verify by running each one standalone first).
 // Files that declare `mode: 'serial'` are always kept in a single process.
 import { spawn } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { cpus } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 
 import { webDistStale } from '../e2e/web-dist.ts'
+import { goBinary } from '../e2e/go-toolchain.ts'
+import { coverageMismatches, reportSpecs } from './e2e-coverage.ts'
 
 const webDir = join(dirname(fileURLToPath(import.meta.url)), '..')
 const rootDir = join(webDir, '..')
@@ -40,27 +43,31 @@ function positiveInt(value: string | undefined, fallback: number): number {
 
 const jobs = positiveInt(process.env.KI_E2E_JOBS, Math.max(2, Math.min(cpus().length, 32)))
 const splitThreshold = positiveInt(process.env.KI_E2E_SPLIT, 12)
-const runDir = join(webDir, 'test-results', 'e2e-parallel')
+// Concurrent invocations must not erase another run's binary or reports.
+const resultRoot = join(webDir, 'test-results', 'e2e-parallel')
+mkdirSync(resultRoot, { recursive: true })
+const runDir = mkdtempSync(join(resultRoot, 'run-'))
 
 interface FileTests {
   total: number
   topLevel: number
   describes: Map<string, number>
   paths: string[]
+  ids: string[]
 }
 
 interface Unit {
   label: string
   file: string
   args: string[]
-  expected: number
+  expected: string[]
 }
 
 interface UnitResult {
   unit: Unit
   code: number
   seconds: number
-  executed: number
+  executed: string[]
   failed: number
   logFile: string
 }
@@ -103,29 +110,26 @@ function runCapture(bin: string, args: string[], env: NodeJS.ProcessEnv, logFile
 
 function parseList(output: string): Map<string, FileTests> {
   const files = new Map<string, FileTests>()
-  for (const line of output.split('\n')) {
-    const match = /^\s*\[[^\]]+\]\s*›\s*(.+?):\d+:\d+\s*›\s*(.+?)\s*$/.exec(line)
-    if (!match) continue
-    const file = basename(match[1])
-    const path = match[2]
-    const segments = path.split(' › ')
-    const entry = files.get(file) ?? { total: 0, topLevel: 0, describes: new Map<string, number>(), paths: [] }
+  for (const spec of reportSpecs(JSON.parse(output))) {
+    const segments = spec.path.split(' › ')
+    const entry = files.get(spec.file) ?? { total: 0, topLevel: 0, describes: new Map<string, number>(), paths: [], ids: [] }
     entry.total += 1
-    entry.paths.push(path)
+    entry.paths.push(spec.path)
+    entry.ids.push(spec.id)
     if (segments.length > 1) {
       const describe = segments[0]
       entry.describes.set(describe, (entry.describes.get(describe) ?? 0) + 1)
     } else {
       entry.topLevel += 1
     }
-    files.set(file, entry)
+    files.set(spec.file, entry)
   }
   return files
 }
 
 function listTests(): Promise<Map<string, FileTests>> {
   return new Promise((resolve, reject) => {
-    const child = spawn('bun', ['x', 'playwright', 'test', `--project=${project}`, '--list', '--reporter=list'], {
+    const child = spawn('bun', ['x', 'playwright', 'test', `--project=${project}`, '--list', '--reporter=json'], {
       cwd: webDir,
       env: process.env,
       stdio: ['ignore', 'pipe', 'inherit'],
@@ -136,7 +140,10 @@ function listTests(): Promise<Map<string, FileTests>> {
       output += chunk
     })
     child.on('error', reject)
-    child.on('close', () => resolve(parseList(output)))
+    child.on('close', code => {
+      if (code !== 0) return reject(new Error(`Playwright discovery exited with ${code}`))
+      try { resolve(parseList(output)) } catch (error) { reject(error) }
+    })
   })
 }
 
@@ -154,33 +161,33 @@ function buildUnits(files: Map<string, FileTests>): Unit[] {
     const relative = `e2e/${file}`
     if (/mode:\s*['"]serial['"]/.test(source)) {
       // Serial files encode an ordered narrative and must stay in one process.
-      units.push({ label: file, file, args: [relative], expected: info.total })
+      units.push({ label: file, file, args: [relative], expected: info.ids })
       continue
     }
     if (/mode:\s*['"]parallel['"]/.test(source)) {
       // "parallel" is the spec's assertion that its tests are independent (each
       // was verified standalone), so every test gets its own isolated process.
-      for (const path of info.paths) {
-        units.push({ label: path, file, args: [relative, '-g', grepPattern(path)], expected: 1 })
+      for (const [index, path] of info.paths.entries()) {
+        units.push({ label: path, file, args: [relative, '-g', grepPattern(path)], expected: [info.ids[index]] })
       }
       continue
     }
     const splittable = info.total > splitThreshold && info.topLevel === 0 && info.describes.size > 1
     if (splittable) {
-      for (const [describe, count] of info.describes) {
+      for (const describe of info.describes.keys()) {
         units.push({
           label: `${file} › ${describe}`,
           file,
           args: [relative, '-g', escapeRegExp(describe)],
-          expected: count,
+          expected: info.ids.filter((_, index) => info.paths[index].split(' › ')[0] === describe),
         })
       }
     } else {
-      units.push({ label: file, file, args: [relative], expected: info.total })
+      units.push({ label: file, file, args: [relative], expected: info.ids })
     }
   }
   // Start the longest units first so the tail of the run stays balanced.
-  units.sort((a, b) => b.expected - a.expected)
+  units.sort((a, b) => b.expected.length - a.expected.length)
   return units
 }
 
@@ -199,30 +206,62 @@ async function ensureBinary(): Promise<string> {
       }
     }
   }
-  const bin = join(runDir, 'ki')
+  const bin = join(runDir, `ki${process.platform === 'win32' ? '.exe' : ''}`)
   const env = { ...process.env, KI_BIN: '' }
   const buildLog = join(runDir, 'go-build.log')
-  if (await runCapture('go', ['build', '-tags', 'embed', '-o', bin, './cmd/ki'], env, buildLog, rootDir) !== 0) {
+  if (await runCapture(goBinary(), ['build', '-tags', 'embed', '-o', bin, './cmd/ki'], env, buildLog, rootDir) !== 0) {
     throw new Error(`go build failed; see ${buildLog}`)
   }
   return bin
 }
 
-function collectSpecs(node: unknown, inheritedFile: string, out: Array<{ file: string; ok: boolean }>): void {
-  const record = node as { file?: string; specs?: Array<{ ok?: boolean }>; suites?: unknown[] }
-  const file = record.file ? basename(record.file) : inheritedFile
-  for (const spec of record.specs ?? []) out.push({ file, ok: spec.ok !== false })
-  for (const child of record.suites ?? []) collectSpecs(child, file, out)
+async function buildSidecar(files: Map<string, FileTests>): Promise<string | undefined> {
+  if (!files.has('extension-ui.spec.ts')) return undefined
+  const bin = join(runDir, `sidecar${process.platform === 'win32' ? '.exe' : ''}`)
+  const logFile = join(runDir, 'sidecar-build.log')
+  // All extension UI tests use the same read-only fixture. Compile it once,
+  // then let each isolated server receive its own copy.
+  if (await runCapture(goBinary(), ['build', '-o', bin, './e2e/testdata/extensions/sidecar'], process.env, logFile, rootDir) !== 0) {
+    throw new Error(`sidecar build failed; see ${logFile}`)
+  }
+  return bin
 }
 
 const maxAttempts = 2
 
-async function runUnit(unit: Unit, index: number, kiBin: string): Promise<UnitResult> {
+interface SharedBrowser {
+  endpoint: string
+  close(): Promise<void>
+}
+
+async function launchBrowser(): Promise<SharedBrowser> {
+  const child = spawn('node', [join(webDir, 'scripts', 'browser-server.mjs')], {
+    cwd: webDir, stdio: ['pipe', 'pipe', 'inherit'],
+  })
+  const closed = new Promise<void>(resolve => child.once('close', () => resolve()))
+  const lines = createInterface({ input: child.stdout })
+  try {
+    const endpoint = await new Promise<string>((resolve, reject) => {
+      lines.once('line', resolve)
+      child.once('error', reject)
+      child.once('close', code => reject(new Error(`browser server exited before ready: ${code}`)))
+    })
+    return { endpoint, close: async () => { child.stdin.end(); await closed } }
+  } catch (error) {
+    child.stdin.end()
+    await closed
+    throw error
+  } finally {
+    lines.close()
+  }
+}
+
+async function runUnit(unit: Unit, index: number, kiBin: string, sidecar: string | undefined, browserEndpoint?: string): Promise<UnitResult> {
   const logFile = join(runDir, `unit-${index}.log`)
   const jsonFile = join(runDir, `unit-${index}.json`)
   const started = Date.now()
   let code = 1
-  let executed = 0
+  let executed: string[] = []
   let failed = 0
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -230,6 +269,8 @@ async function runUnit(unit: Unit, index: number, kiBin: string): Promise<UnitRe
       const env: NodeJS.ProcessEnv = {
         ...process.env,
         KI_BIN: kiBin,
+        KI_E2E_SIDECAR: sidecar,
+        KI_E2E_BROWSER_WS: browserEndpoint,
         KI_SERVE_ADDR: `127.0.0.1:${port}`,
         PLAYWRIGHT_JSON_OUTPUT_NAME: jsonFile,
       }
@@ -241,32 +282,27 @@ async function runUnit(unit: Unit, index: number, kiBin: string): Promise<UnitRe
     } catch {
       code = 1
     }
-    executed = 0
+    executed = []
     failed = 0
     try {
-      const report = JSON.parse(readFileSync(jsonFile, 'utf8')) as { suites?: unknown[] }
-      const specs: Array<{ file: string; ok: boolean }> = []
-      for (const suite of report.suites ?? []) collectSpecs(suite, '', specs)
-      executed = specs.length
+      const specs = reportSpecs(JSON.parse(readFileSync(jsonFile, 'utf8')))
+      executed = specs.filter(spec => spec.executed).map(spec => spec.id)
       failed = specs.filter(spec => !spec.ok).length
     } catch {
       // A missing report means the unit ran no test; the coverage guard catches it.
     }
     // Why: freePort() closes its probe socket before ki binds the port, so two
-    // units can race for it. A bind failure runs no test at all (executed === 0),
+    // units can race for it. A bind failure runs no test at all (executed.length === 0),
     // so retrying on a fresh port cannot mask a real test failure.
-    if (attempt === maxAttempts || executed > 0 || !/address already in use/.test(readFileSync(logFile, 'utf8'))) break
+    if (attempt === maxAttempts || executed.length > 0 || !/address already in use/.test(readFileSync(logFile, 'utf8'))) break
     process.stdout.write(`  retry    ${unit.label} (port race)\n`)
   }
   return { unit, code, seconds: (Date.now() - started) / 1000, executed, failed, logFile }
 }
 
 async function main(): Promise<number> {
-  rmSync(runDir, { recursive: true, force: true })
-  mkdirSync(runDir, { recursive: true })
-
-  const kiBin = await ensureBinary()
-  const files = await listTests()
+  const [kiBin, files] = await Promise.all([ensureBinary(), listTests()])
+  const sidecar = await buildSidecar(files)
   const units = buildUnits(files)
   const expectedTotal = [...files.values()].reduce((sum, info) => sum + info.total, 0)
   if (units.length === 0) {
@@ -277,35 +313,42 @@ async function main(): Promise<number> {
   process.stdout.write(`e2e-parallel: ${expectedTotal} tests in ${units.length} units, ${concurrent} concurrent\n`)
 
   const results: UnitResult[] = new Array(units.length)
+  const browsers: SharedBrowser[] = []
   let cursor = 0
   const started = Date.now()
-  const worker = async (): Promise<void> => {
+  const worker = async (workerIndex: number): Promise<void> => {
     for (;;) {
       const index = cursor++
       if (index >= units.length) return
-      const result = await runUnit(units[index], index, kiBin)
+      const endpoint = browsers.length ? browsers[workerIndex % browsers.length].endpoint : undefined
+      const result = await runUnit(units[index], index, kiBin, sidecar, endpoint)
       results[index] = result
       const state = result.code === 0 && result.failed === 0 ? 'ok' : 'FAIL'
-      process.stdout.write(`  ${state.padEnd(4)} ${result.seconds.toFixed(1).padStart(6)}s  ${result.executed}/${result.unit.expected}  ${result.unit.label}\n`)
+      process.stdout.write(`  ${state.padEnd(4)} ${result.seconds.toFixed(1).padStart(6)}s  ${result.executed.length}/${result.unit.expected.length}  ${result.unit.label}\n`)
     }
   }
-  await Promise.all(Array.from({ length: concurrent }, worker))
+  try {
+    // Reuse browser processes, not contexts or server state. Playwright still
+    // creates a fresh context per test; every unit keeps its own Ki home/port.
+    const browserCount = process.env.KI_E2E_BROWSERS === '0' ? 0 : positiveInt(process.env.KI_E2E_BROWSERS, 4)
+    if (project === 'fake') {
+      for (let i = 0; i < Math.min(browserCount, concurrent); i++) {
+        browsers.push(await launchBrowser())
+      }
+    }
+    await Promise.all(Array.from({ length: concurrent }, (_, index) => worker(index)))
+  } finally {
+    await Promise.all(browsers.map(browser => browser.close()))
+  }
   const wall = (Date.now() - started) / 1000
 
-  const executedByFile = new Map<string, number>()
+  const mismatches = coverageMismatches(
+    [...files.values()].flatMap(info => info.ids),
+    results.flatMap(result => result.executed),
+  )
   for (const result of results) {
-    executedByFile.set(result.unit.file, (executedByFile.get(result.unit.file) ?? 0) + result.executed)
-  }
-  const mismatches: string[] = []
-  for (const [file, info] of files) {
-    const ran = executedByFile.get(file) ?? 0
-    if (ran !== info.total) mismatches.push(`${file}: expected ${info.total}, executed ${ran}`)
-  }
-  // Per-unit reconciliation catches a split that silently selects the wrong tests
-  // (for example a -g pattern matching a sibling test as well as its own).
-  for (const result of results) {
-    if (result.executed !== result.unit.expected) {
-      mismatches.push(`${result.unit.label}: expected ${result.unit.expected}, executed ${result.executed}`)
+    for (const error of coverageMismatches(result.unit.expected, result.executed)) {
+      mismatches.push(`${result.unit.label}: ${error}`)
     }
   }
   const failedUnits = results.filter(result => result.code !== 0 || result.failed > 0)
@@ -315,7 +358,7 @@ async function main(): Promise<number> {
     process.stderr.write(`${lines.slice(-25).join('\n')}\n`)
   }
 
-  const executedTotal = results.reduce((sum, result) => sum + result.executed, 0)
+  const executedTotal = results.reduce((sum, result) => sum + result.executed.length, 0)
   process.stdout.write(`\ne2e-parallel: ${executedTotal}/${expectedTotal} tests in ${wall.toFixed(1)}s (${failedUnits.length} failing units)\n`)
   if (failedUnits.length > 0) return 1
   if (mismatches.length > 0) {

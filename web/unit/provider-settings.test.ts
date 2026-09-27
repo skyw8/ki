@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from 'bun:test'
 import { pickSelectedProviderID, providerReady, sortProviderModels, sortProviders } from '../src/lib/provider-order.ts'
 import type { ProviderModel, ProviderView } from '../src/api/types.ts'
 

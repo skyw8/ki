@@ -15,6 +15,7 @@ ki/
 │   ├── src/             app entry; api/ (client, types); lib/ (pure logic); hooks/; i18n/; components/ (shared UI)
 │   │   └── features/    domain UI + logic: chat/ attachments/ markdown/ sessions/ settings/
 │   ├── scripts/         e2e-parallel.ts (Playwright runner)
+│   ├── unit/            Bun pure-logic tests
 │   └── e2e/             Playwright specs
 ├── e2e/                 CLI e2e: scripted model for tests; -tags live for a real model
 ├── docs/                cross-package notes (see Docs below)
@@ -67,9 +68,19 @@ ki/
 
 - Dev run: `scripts/run.sh` rebuilds `web/dist` (skipped when frontend inputs are unchanged; `--force-web` forces it) and `./ki`, then starts `ki serve` with the real configured provider by default inside a tmux session named `ki`: window `server` runs the daemon, window `cli` is a shell for operating it. Re-run to rebuild and respawn; real tests operate through the script or `tmux attach -t ki`. The script compiles with `-tags embed`; `--fake` is an explicit opt-in for canned-model plumbing checks only.
 - Fake model (tests only): `go test ./e2e` (`KI_FAKE=1`; CLI main path, `serve`, `serve -d`, two sessions in parallel, WebUI Playwright). Do not use `KI_FAKE=1` or `--fake` for normal development, manual verification, or service restarts.
-WebUI: `cd web && bun run test:e2e` (parallel runner; each unit starts an isolated fake `ki serve`; `bun run test:e2e:serial` runs one process for debugging). Requires `bunx playwright install chromium`. Long-history / huge-message budgets: `cd web && bun run test:perf` (not in the fake matrix).
+WebUI: `cd web && bun run test` (Bun unit tests + parallel browser runner; each browser unit starts an isolated fake `ki serve`; `bun run test:e2e:serial` runs browsers in one process for debugging). Requires `bunx playwright install chromium`. Long-history / huge-message budgets: `cd web && bun run test:perf` (not in the fake matrix).
 - Live model: `go test -tags live -timeout 5m ./e2e -run Live` covers DeepSeek `deepseek-flash` across Completions, Responses, and Anthropic (reads `DEEPSEEK_API_KEY` or `~/.ki` credentials; images / PDF / WebUI Playwright). `go test -tags live ./internal/provider -run TestLiveDeepSeek` drives the three protocol adapters directly.
 WebUI live: `cd web && bun run test:e2e:live`.
+
+## fast feedback
+
+- **During development, iterate with focused checks, not a full suite after every edit. Run the complete required suites when the change is ready; cross-layer or test-harness changes also warrant an early integration check.**
+- Match checks to the change: affected Go packages/tests, Bun logic tests, or relevant Playwright specs. Docs-only edits need diff, link and formatting checks. In `web/`, keep `bun run typecheck:watch` and `bun run test:unit:watch` running while editing code.
+- Full WebUI: `cd web && bun run test`. Full local regression: type-check and build fresh `web/dist`, then `go test -tags embed -count=1 ./...`. With WebUI dependencies installed, the Go run includes unit and browser tests; do not run them again separately.
+- Preserve Go and TypeScript caches; let `scripts/run.sh` reuse unchanged frontend output for backend-only changes. Use `-count=1` for forced execution or timing, not every package check. Never embed stale assets.
+- Diagnose failures from their logs and reproduce narrowly before retrying a full suite. Record the command, result and changes checked; reuse passing results until relevant edits or unresolved concerns invalidate them. Avoid duplicate concurrent runs.
+- Parallelize verified independent work and reuse read-only fixtures/browser processes; isolate mutable state and artifacts. Never drop, skip, reorder, or weaken tests for speed; coverage mismatches must fail. Tune concurrency from measurements.
+- Run required performance budgets without competing heavy workloads. Reserve extra perf/live/cross-browser suites for applicable changes or explicit requirements. Detailed commands and isolation rules live in `docs/webui.md`.
 
 ## constraints
 
@@ -88,6 +99,5 @@ WebUI live: `cd web && bun run test:e2e:live`.
 - One binary: `ki serve` serves API and the embedded SPA on the same origin. `web/dist` is untracked build output: build it (`cd web && bun run build`) and compile with `-tags embed`. Without the tag, `web/stub.go` supplies an empty FS and `ki serve` reports the UI as not built; serve does not run vite or bun.
 - Naming: `extension` is the installable/runtime bundle; a provider supplied by one is an `extension provider`. Do not use `plugin` for provider code, APIs, runtime values, or UI/docs.
 - Real provider is the default runtime. `KI_FAKE=1` and `scripts/run.sh --fake` are test-only opt-ins and must not be used for normal development or manual verification.
-- Keep tests fast without weakening coverage: parallelize or cache independent work (WebUI runner `web/scripts/e2e-parallel.ts`; compile each sidecar fixture once per test process), but never drop, skip, or reorder tests for speed; a coverage regression must fail the run (`test:e2e:serial` is the single-process debug fallback).
 - Do not invent REST routes for data the loop already has. Extend `loop.Event` and jsonl (and existing SSE / `GET /v1/sessions/{id}`) instead.
 - A second prompt on a busy session steers the current run or queues for the next (`delivery` / `toggles.json` `message.busy`). `parentId` while busy is **409**. Resume requires `--session`. `--model` is per-session `config.json`, not toml.

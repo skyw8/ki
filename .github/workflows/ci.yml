@@ -57,7 +57,7 @@ jobs:
         run: go vet ./...
       - name: Type-check WebUI
         working-directory: web
-        run: bun x tsc --noEmit
+        run: bun run typecheck
       - name: Build WebUI
         working-directory: web
         run: bun run build
@@ -125,7 +125,7 @@ jobs:
           KI_E2E_JOBS: "4"
         run: |
           set -o pipefail
-          bun run test:e2e 2>&1 | tee e2e-run.log
+          bun run test 2>&1 | tee e2e-run.log
       - name: Report e2e failures
         if: failure()
         working-directory: web
@@ -152,7 +152,7 @@ jobs:
             printf '::error title=page snapshot %s::%s\n' "${ctx##*/runs/}" "$body"
             break
           done
-          for f in test-results/e2e-parallel/unit-*.log; do
+          for f in test-results/e2e-parallel/run-*/unit-*.log; do
             grep -q 'Error:' "$f" 2>/dev/null || continue
             unit="$(grep -m1 -E '^  [0-9]+\) ' "$f" 2>/dev/null | sed -E 's/^  [0-9]+\) \[[^]]+\] › //; s/[[:space:]]+$//')"
             [ -n "$unit" ] || unit="$f"

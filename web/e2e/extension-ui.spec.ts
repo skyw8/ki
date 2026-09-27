@@ -1,10 +1,9 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { serverToken, statePath } from './global-setup.ts'
-import { goBinary } from './go-toolchain.ts'
+import { sidecarBin } from './sidecar.ts'
 import { MIN_TOUCH_SIZE } from './touch-target.ts'
 import { newSession } from './session.ts'
 
@@ -51,22 +50,12 @@ function writeExt(home: string, name: string, bin: string, extra: Record<string,
   }))
 }
 
-function sidecarBin(home: string, name: string): string {
-  const dir = join(home, 'playwright-bin')
-  mkdirSync(dir, { recursive: true })
-  return join(dir, `${name}${process.platform === 'win32' ? '.exe' : ''}`)
-}
-
 // The freerouter config form dispatches on the extension name; a fixture with
 // the same settings schema exercises the whole form round-trip.
 test('freerouter config form edits fields without raw JSON', async ({ page, request }) => {
   test.setTimeout(60_000)
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const bin = sidecarBin(home, 'freerouter-sidecar')
-  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
-    cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
-    stdio: 'inherit',
-  })
   const name = 'freerouter'
   const dir = join(home, 'extensions', name)
   mkdirSync(dir, { recursive: true })
@@ -211,10 +200,6 @@ test('deep web search keeps the Codex model with the Codex provider', async ({ p
 test('extension ui.setStatus chip opens panel modal', async ({ page, request }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const bin = sidecarBin(home, 'ext-ui-sidecar')
-  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
-    cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
-    stdio: 'inherit',
-  })
   writeExt(home, 'goalui', bin, { env: { KI_SET_UI: '1', KI_SET_UI_GLOBAL: '1' } })
 
   await page.goto('/')
@@ -267,10 +252,6 @@ test('extension ui.setStatus chip opens panel modal', async ({ page, request }) 
 test('opening a session locks composer until runtime.ready', async ({ page, request }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const bin = sidecarBin(home, 'ext-lock-sidecar')
-  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
-    cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
-    stdio: 'inherit',
-  })
   writeExt(home, 'slowboot', bin, { env: { KI_INIT_WAIT_FILE: join(home, 'slowboot-release') } })
 
   await page.goto('/')
@@ -289,10 +270,6 @@ test('opening a session locks composer until runtime.ready', async ({ page, requ
 test('slash palette is two-level for completions', async ({ page, request }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const bin = sidecarBin(home, 'ext-slash-sidecar')
-  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
-    cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
-    stdio: 'inherit',
-  })
   writeExt(home, 'goalcmd', bin, { capabilities: ['command'], env: { KI_COMPLETIONS: '1' } })
 
   await page.goto('/')
@@ -330,10 +307,6 @@ test('top bar folds extra chips into one inspector modal', async ({ page, reques
   test.setTimeout(60_000)
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const bin = sidecarBin(home, 'ext-fold-sidecar')
-  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
-    cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
-    stdio: 'inherit',
-  })
   const fixtures = [
     { name: 'vault', text: 'Vault · error', tone: 'error', title: 'Vault' },
     { name: 'syncx', text: 'Sync · wait', tone: 'warning', title: 'Sync' },
@@ -403,10 +376,6 @@ test('global extension chip opens the same config modal as Configure', async ({ 
   test.setTimeout(60_000)
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const bin = sidecarBin(home, 'global-config-sidecar')
-  execFileSync(goBinary(), ['build', '-o', bin, '.'], {
-    cwd: join(repo, 'e2e/testdata/extensions/sidecar'),
-    stdio: 'inherit',
-  })
   const name = 'globalcfg'
   const dir = join(home, 'extensions', name)
   mkdirSync(dir, { recursive: true })

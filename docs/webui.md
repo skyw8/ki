@@ -242,8 +242,17 @@ dotfile 一起打进二进制）。`--force-web` 强制重建。跳过与否都�
 config、插件和 `vite` / `vite build` 命令都照旧。同一份代码，原 Vite 6（Rollup）的
 `vite build` 约 5.7s，Vite 8 约 1.4s（`@vitejs/plugin-react` 用 6.x，其 peer 要求
 `vite ^8`）。构建快了以后就不必再为重型依赖（mermaid）做预打包，`DiagramBlock` 直接
-`import('@streamdown/mermaid')`。升级 Vite 或换插件后都要用 `bun run test:e2e` 和
+`import('@streamdown/mermaid')`。升级 Vite 或换插件后都要用 `bun run test` 和
 `bun run test:perf` 验证。
+
+类型检查独立于打包：`bun run typecheck` 开启 TypeScript 增量检查，缓存写入
+`node_modules/.cache/ki/web.tsbuildinfo`，不进入 dist。开发时常驻 `bun run typecheck:watch`，
+避免每次编辑都重新解析完整依赖图；首次检查仍覆盖全部源码。
+
+纯逻辑测试位于 `web/unit/`，使用 `bun run test:unit` 或 `bun run test:unit:watch`，
+不构建 Go、不启动服务或浏览器。`bun run test` 依次运行完整 Bun 单元测试和 fake 浏览器套件，
+是 CI 与 Go E2E 共用的 WebUI 总入口。拆分时原有 164 条场景全部保留：59 条转到 Bun，
+105 条仍由 Playwright 执行；另有 runner 覆盖核对自身的单元测试。
 
 ## Playwright
 
@@ -251,11 +260,12 @@ config、插件和 `vite` / `vite build` 命令都照旧。同一份代码，原
 
 ```bash
 cd web && bun install && bunx playwright install chromium
-bun run test:e2e          # 并行 runner（默认）
+bun run test             # 完整 WebUI：Bun 纯逻辑 + Playwright
+bun run test:e2e          # 仅浏览器，并行 runner
 bun run test:e2e:serial   # 单进程串行，便于定位单个失败
 ```
 
-`bun run test:e2e` 由 `web/scripts/e2e-parallel.ts` 驱动：先 `playwright test --list`
+`bun run test:e2e` 由 `web/scripts/e2e-parallel.ts` 驱动：用 `playwright test --list --reporter=json`
 自动枚举 `--project=fake` 的用例，再按文件声明的方式拆成独立进程：
 
 - `test.describe.configure({ mode: 'parallel' })` —— **一个用例一个进程**。这是文件在声明
@@ -265,20 +275,45 @@ bun run test:e2e:serial   # 单进程串行，便于定位单个失败
   （`responsive.spec.ts` 的历史行为），否则整文件一个进程。
 
 默认并发 `min(CPU, 32)`，每个进程独立端口。每次 invocation 使用独立的临时状态、鉴权文件、
-二进制和随机 loopback 端口，因此互不干扰，可与 Go e2e 并行运行，不得复用固定 `/tmp` 状态文件。
+二进制和随机 loopback 端口；runner 产物也放在独立的 `test-results/e2e-parallel/run-*/`，
+不会删除另一次运行的报告或可执行文件。可与 Go e2e 并行运行，不得复用固定临时状态文件。
+extension UI 的只读 sidecar 由 runner 编译一次，再复制到各测试的独立 home；直接运行
+Playwright（包括串行调试）则在该 invocation 的 home 中编译并复用一次。
+fake runner 默认复用最多 4 个 Chromium 进程，通过 Playwright `connectOptions` 连接；
+每条测试仍创建独立 BrowserContext，cookie、localStorage、权限和页面不会复用。
+`KI_E2E_BROWSERS` 调整进程数，`0` 关闭复用以便对照；其他浏览器项目和直接 Playwright
+调用不使用此池。浏览器连接服务由 Node 承载（与 Playwright CLI 一致），只绑定 loopback，
+runner 完成或父进程管道关闭时释放；Bun 的该服务传输路径会在 fixture 初始化时挂起。
 `freePort()` 的探测 socket 会先关闭再由 `ki serve` 绑定，两者之间可能与另一个单元抢同一端口；
 runner 仅在"一个用例都没跑 + `address already in use`"时换端口重试一次，因此不会掩盖真实失败。
 
-为保证不牺牲覆盖，runner 记录 `--list` 的期望用例数，跑完按文件与实际执行数核对：任何用例被
-丢弃或重复执行（例如标题重复导致 `-g` 多匹配）都会让整个 run 失败退出。可用 `KI_E2E_JOBS` 调
+为保证不牺牲覆盖，runner 将 `--list` 的测试 ID 与各单元实际执行的 ID 逐项核对：缺失、重复、
+意外多选或跳过都会使运行失败，避免总数相同却测错了用例。发现用例失败也直接失败退出。
+可用 `KI_E2E_JOBS` 调
 并发、`KI_E2E_SPLIT` 调拆分阈值、`KI_BIN` 复用已构建的二进制、`KI_SKIP_WEB_BUILD` 禁止自动
 构建前端。
 
 用例需要"先锁后放"这类瞬态时，不要靠固定 sleep 撞窗口（高并发下会偶发）：`sidecar` fixture
 支持 `KI_INIT_WAIT_FILE`，测试可以先断言锁定态、再写文件放行。
 
-`go test ./e2e -run WebUI` 复用同一个 runner，并用 `KI_BIN` 指向 Go 构建的二进制，因此每个
+`go test ./e2e -run WebUI` 运行 `bun run test`，包含 Bun 单元测试和同一个浏览器 runner，
+并用 `KI_BIN` 指向 Go 构建的二进制，因此每个
 spec 仍然打到 Go 编出来的 SPA（需已 `bun install`、`bun run build` 和装好 chromium）。Go 测试复用现有 dist；改前端后先重新构建，避免新用例测到旧页面。
+
+完整本地回归先 `bun run typecheck && bun run build`，再回根目录运行
+`go test -tags embed -count=1 ./...`：包含静态资源契约、CLI 与完整 WebUI，无需再重复执行
+`bun run test`。开发中采用“修改 → 最小相关检查”的循环：Go 改动先跑受影响包/用例，纯逻辑
+改动跑 Bun，交互改动跑对应 Playwright spec，不要每改一处就启动全量。改动稳定、准备交付时
+再集中跑一次完整的必需套件；跨层契约或测试框架改动可以提前跑一次集成检查，尽早发现耦合。
+文档改动检查 diff、链接和格式即可，新增命令则核对对应脚本与参数。
+失败时先读日志、用最小范围复现并修复，不盲目重跑全量。记录执行过的命令、结果与覆盖的改动；
+没有相关新改动或未解决问题时复用通过结果，避免重复或同时启动多份相同检查。
+保留 Go 编译缓存，只有需要强制执行或比较真实测试耗时时才禁用测试结果缓存。
+性能预算单独执行，避免与高并发浏览器测试争抢 CPU；调并发先测量，不按核心数盲目加倍。
+
+2026-09-27 本机对照：完整 WebUI（61 条 Bun，含 2 条 runner 回归；105 条浏览器）从
+关闭浏览器复用时的 30.7s 降到开启时的 24.9s；Bun 单元测试约 0.14s，增量类型检查无修改
+时约 1.7s。这些是依赖已安装、编译缓存存在时的单轮测量，不代表 CI 或性能预算。
 
 长会话 / 超长消息压测不进 fake 矩阵。生成 jsonl 夹具后测尾部 GET 的体积与延迟（并验证它不带 `index`）、`fields=index` / `fields=runtime` / `before` / `entry` 的预算、打开 Chat/Trace 的 DOM 与 JS heap，以及向上翻页 / 截断正文补全：
 

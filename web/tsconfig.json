@@ -11,7 +11,9 @@
     "isolatedModules": true,
     "useDefineForClassFields": true,
     "allowImportingTsExtensions": false,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "incremental": true,
+    "tsBuildInfoFile": "./node_modules/.cache/ki/web.tsbuildinfo"
   },
   "include": ["src"]
 }

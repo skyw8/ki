@@ -92,13 +92,21 @@ API auth is a Bearer token from `~/.ki/server.json` (or `KI_HOME/server.json`) f
 ## Test
 
 ```bash
-go test ./...
-go test ./e2e
-cd web && bun run test:e2e         # parallel runner; test:e2e:serial for one process
-cd web && bun run test:perf
-cd web && bun run test:e2e:live
+(cd web && bun run typecheck && bun run build)
+go test -tags embed -count=1 ./... # includes CLI, WebUI unit tests and fake browser tests
+# Focused development checks; no need to repeat these after the full run passes:
+go test ./internal/... ./pkg/...
+(cd web && bun run test:unit)      # pure logic; test:unit:watch for continuous feedback
+(cd web && bun run test)           # all WebUI unit + browser tests
+(cd web && bun run test:perf)
+(cd web && bun run test:e2e:live)
 go test -tags live -timeout 5m ./e2e -run Live
 ```
+
+Keep `cd web && bun run typecheck:watch` running while editing. TypeScript's
+incremental cache lives in `web/node_modules/.cache/ki/`. `test:e2e` runs only the
+browser suite; `test:e2e:serial` is its single-process debugging fallback. The
+full Go run requires the WebUI dependencies and Chromium to include web tests.
 
 Live tests call DeepSeek `deepseek-flash` over all three wire protocols
 (Completions, Responses, Anthropic). Put the key in `~/.ki` (credentials or

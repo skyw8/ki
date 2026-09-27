@@ -72,6 +72,9 @@ export default defineConfig({
     },
     {
       name: 'fake',
+      use: {
+        connectOptions: process.env.KI_E2E_BROWSER_WS ? { wsEndpoint: process.env.KI_E2E_BROWSER_WS } : undefined,
+      },
       testMatch: '**/*.spec.ts',
       testIgnore: ['**/*.live.spec.ts', '**/shots.spec.ts', '**/*.perf.spec.ts'],
       timeout: 30_000,
