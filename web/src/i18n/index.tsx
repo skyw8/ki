@@ -176,6 +176,7 @@ const zh = {
 	'drop.editTitle': '添加到编辑消息',
 	'drop.hint': '松开即可添加图片或文件',
   'chat.toBottom': '回到底部',
+  'chat.loadingOlder': '正在加载更早的消息…',
 
   'model.title': '选择模型',
   'model.search': '搜索模型',
@@ -533,6 +534,7 @@ const en: Record<MsgKey, string> = {
 	'drop.editTitle': 'Add to edited message',
 	'drop.hint': 'Drop to attach images or files',
   'chat.toBottom': 'Jump to bottom',
+  'chat.loadingOlder': 'Loading older messages…',
 
   'model.title': 'Choose model',
   'model.search': 'Search models',

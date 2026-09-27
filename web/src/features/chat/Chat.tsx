@@ -9,10 +9,43 @@ import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
 import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, reconcileUserNodes, requestTitle, turnStats, type CacheMiss, type TurnStats } from '../../lib/model'
 import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
+import { forgetRowHeights, rememberRowHeight, rowHeightEstimate, UNKNOWN_WIDTH } from '../../lib/rowHeight'
 import { copyText } from '../../lib/clipboard'
 import type { ChatNode } from '../../api/types'
 
 const VIRTUALIZE_AFTER = 48
+
+/**
+ * Rows kept mounted outside the viewport.
+ *
+ * Every mounted row is a full markdown render, so the overscan is a work budget,
+ * not just a smoothness knob: at 10 rows and ~700px average height it parsed
+ * more than a screen of messages the reader never saw. Row heights are
+ * remembered now (lib/rowHeight), so a small overscan still finds the correct
+ * scroll offset — the estimate no longer has to be paid for with lookahead.
+ */
+const OVERSCAN = 4
+
+/**
+ * What a page of older history must restore the view to.
+ *
+ * The reader's distance from the tail, and nothing else: a page prepended *above*
+ * the window does not change it, so restoring it puts the reader back on the same
+ * content. Reading rows from the DOM instead — the obvious "remember the row at
+ * the top" — races the virtual list's own re-render: after a one-shot jump (a
+ * scrollbar drag to the top, a fling) the mounted rows are still laid out for the
+ * previous scroll position, so their measured offset belongs to a different
+ * frame and the restore lands tens of thousands of pixels away.
+ */
+export type PrependAnchor = {
+  /** Distance from the bottom of the list when the page was requested. */
+  tail: number
+}
+
+/** capturePrepend records where the reader is before a page is prepended. */
+export function capturePrepend(el: HTMLElement): PrependAnchor {
+  return { tail: Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) }
+}
 
 function fmtUsage(u: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }): string {
   let s = `${u.input ?? 0}→${u.output ?? 0}`
@@ -496,7 +529,7 @@ function activeUserId(
   return current
 }
 
-export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, onHydrate, jumpToId, onJumped, onActiveRequest, onLayoutChanged, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP }: Omit<ChatItemProps, 'node'> & {
+export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, onHydrate, jumpToId, onJumped, onActiveRequest, onLayoutChanged, onContentResized, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP, prependAnchor, onPrependApplied, loadingOlder }: Omit<ChatItemProps, 'node'> & {
 	nodes: ChatNode[]
 	/** Turns on the branch before the loaded window (see turnStats). */
 	turnBase?: number
@@ -510,10 +543,32 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
 	onActiveRequest?: (id: string | null) => void
 	/** A fold toggle changed the rendered height: re-evaluate follow-tail. */
 	onLayoutChanged?: () => void
+	/** The rendered height changed for any reason (rows measured, bodies arrived). */
+	onContentResized?: () => void
+	/** An older page just landed: put the reader back where they were. */
+	prependAnchor?: PrependAnchor | null
+	onPrependApplied?: () => void
+	/** A page of older history is in flight (shows the top hint). */
+	loadingOlder?: boolean
 }) {
   const { t } = useI18n()
-  const nodes = reconcileUserNodes(rawNodes)
+  // Memoised: this array is the input of every other computation below, and a
+  // fresh identity on each render (a streamed delta, a scroll tick) used to
+  // invalidate all of them — including the `misses` prop that ChatItem is
+  // memoised on, so every visible row re-rendered.
+  const nodes = useMemo(() => reconcileUserNodes(rawNodes), [rawNodes])
   const misses = useMemo(() => cacheMisses(nodes), [nodes])
+  // List width: row heights are measured against it, and a wrap from a resize
+  // makes the remembered heights stale (see lib/rowHeight).
+  const [listWidth, setListWidth] = useState(UNKNOWN_WIDTH)
+  useEffect(() => {
+    const el = scrollRef?.current
+    if (!el) return
+    setListWidth(el.clientWidth)
+    const ro = new ResizeObserver(() => setListWidth(el.clientWidth))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [scrollRef])
   // Turns the user opened by hand in compact mode. Keyed by turn id, so a stale
   // entry from another session simply never matches; nothing has to be reset
   // when the open session changes.
@@ -545,6 +600,19 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     () => (mode === 'compact' ? foldReplies(nodes, { keep, busy, expanded: folds }) : detailedItems(nodes)),
     [mode, nodes, keep, busy, folds],
   )
+  // Characters per item, used by the height estimate of rows nobody has
+  // measured yet.
+  const itemChars = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const it of items) {
+      const n = it.kind === 'node' ? it.node : it.nodes[0]
+      const chars = n && n.kind === 'user' ? n.text.length
+        : n && n.kind === 'assistant' ? n.text.length + (n.thinking?.length ?? 0)
+          : 0
+      m.set(it.id, chars)
+    }
+    return m
+  }, [items])
   /**
    * Whether to walk the list with the virtualizer.
    *
@@ -560,12 +628,74 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef?.current ?? null,
-    estimateSize: () => 96,
-    overscan: 10,
+    // Measured heights first, learned ratio second (lib/rowHeight): a row that
+    // enters the viewport already knowing its size owes no scroll correction, so
+    // it cannot swallow the reader's gesture.
+    estimateSize: index => rowHeightEstimate(items[index]?.id ?? '', listWidth, itemChars.get(items[index]?.id ?? '') ?? 0),
+    overscan: OVERSCAN,
     getItemKey: index => items[index]?.id ?? index,
+    // Remember every measurement, and skip the ones taken while a row is still
+    // showing its markdown placeholder (that height is the estimate, not the
+    // message).
+    measureElement: (element, entry, instance) => {
+      const box = entry?.borderBoxSize?.[0]
+      let size: number
+      if (box) {
+        size = Math.round(box.blockSize)
+      } else {
+        const index = instance.indexFromElement(element)
+        size = instance.itemSizeCache.get(instance.options.getItemKey(index)) ?? Math.round(element.getBoundingClientRect().height)
+      }
+      const el = element as HTMLElement
+      const key = el.dataset.itemKey
+      if (key && !el.querySelector('[data-md-pending]')) {
+        rememberRowHeight(key, listWidth, size, itemChars.get(key) ?? 0)
+      }
+      return size
+    },
     enabled: virtualize,
   })
-  const itemProps = { api, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate, misses }
+  /**
+   * Compensate every size change above the viewport, whatever direction the
+   * reader is scrolling.
+   *
+   * The library's built-in default skips that compensation while scrolling
+   * backwards ("avoid the items jump while scrolling up cascade"), but a row
+   * above the fold that turns out to be taller moves the whole visible list by
+   * that delta: without the matching scroll adjustment the content lurches under
+   * the reader — measured at 1316px in a single frame with scrollTop never
+   * moving, and then snapping back when the correction finally lands, which is
+   * the reported "scrolling up jumps around". Rows that merely straddle the fold
+   * stay excluded (a streaming message growing at its bottom must not drag the
+   * view along). With real heights remembered (lib/rowHeight) an adjustment is a
+   * one-time correction, not a cascade.
+   *
+   * Assigned on the instance rather than passed as an option: this build reads
+   * the predicate from the virtualizer, not from the options object.
+   */
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) =>
+    delta !== 0 && item.start + item.size <= readScrollOffset(instance)
+
+  /** readScrollOffset reads the live offset; the accessor is typed private. */
+  function readScrollOffset(v: unknown): number {
+    return (v as unknown as { getScrollOffset(): number }).getScrollOffset()
+  }
+  // The rendered height drives follow-tail in the parent: rows grow while they are
+  // measured and while their markdown arrives, and none of that is an items
+  // change. Without it a session opens at scrollTop 0 (the first follow effect ran
+  // before the list had a height) and never corrects itself.
+  const totalSize = virtualize ? virtualizer.getTotalSize() : 0
+  const lastTotal = useRef(-1)
+  useEffect(() => {
+    if (totalSize === lastTotal.current) return
+    lastTotal.current = totalSize
+    onContentResized?.()
+  }, [totalSize, onContentResized])
+
+  const props = { api, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate }
+  // Stable identity, `misses` included: ChatItem is memoised on these props, and
+  // a fresh object per render would defeat that for every visible row.
+  const itemProps = useMemo(() => ({ ...props, misses }), [api, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, onHydrate, misses])
   const running = busy && !nodes.some(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
   // Turn dividers are keyed by each turn's last node id. The newest turn is
   // deferred while a run is in flight (and skipped entirely while it streams or
@@ -590,6 +720,92 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
       </Fragment>
     )
   }
+
+  /**
+   * An older page just landed above the transcript: put the reader back.
+   *
+   * This has to run here, in the commit that rendered the new list, and it has
+   * to run before paint — the browser must never show the list with the page
+   * inserted under the reader's feet. Why not the previous arithmetic in a
+   * `requestAnimationFrame`: React renders this update concurrently, so the
+   * frame callback could fire before the commit and then read the *old*
+   * `scrollHeight`, which made the compensation a silent no-op (measured: the
+   * reader stayed at scrollTop 0 while the page was prepended, i.e. was thrown
+   * ~25 turns back). The anchor's item index is used instead of a height delta
+   * because the rows of the new page may still be at their estimated size.
+   */
+  /**
+   * The row the reader is on after a page lands, and where it belongs.
+   *
+   * The index-based restore below lands within a row's height of the truth, but
+   * rows that were measured between the render and the effect (or right after it)
+   * can still shift the list by their delta, so the anchor is re-asserted while
+   * the layout settles — bounded frames, stopping as soon as it holds, because
+   * every correction writes the reader's scroll position.
+   */
+  const anchorRepair = useRef(true)
+  useLayoutEffect(() => {
+    if (!prependAnchor) return
+    const el = scrollRef?.current
+    onPrependApplied?.()
+    if (!el) return
+    // Keep the distance from the tail: the page went in above the window, so this
+    // lands on the same content the reader was on. It is applied here, in the
+    // commit that rendered the page and before paint — the same arithmetic in a
+    // frame callback used to run *before* the commit and read the old height,
+    // which made it a no-op and left the reader a page back.
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight - prependAnchor.tail)
+    anchorRepair.current = true
+    // The list re-rendered under a new scroll position: re-read follow-tail.
+    onLayoutChanged?.()
+  }, [prependAnchor, items, scrollRef, onPrependApplied, onLayoutChanged])
+
+  useEffect(() => {
+    const el = scrollRef?.current
+    if (!el || !anchorRepair.current) return
+    let raf = 0
+    let steady = 0
+    let last: { key: string; top: number; offset: number } | null = null
+    const deadline = performance.now() + 1200
+    /**
+     * Keep the row under the viewport top still while the page's rows are
+     * measured.
+     *
+     * A prepended page lands with its rows at their estimated height; the ones
+     * that mount in the overscan band above the viewport are measured a frame or
+     * two later, and each measurement moves everything below. The virtualizer
+     * compensates for those, but not when the row was re-measured right after the
+     * restore wrote the scroll position, so the anchor is held frame by frame:
+     * the marked row may only move by as much as the scroll itself moved, and any
+     * excess is corrected. A reader who scrolls during this is not fought — their
+     * scroll moves the row *with* it, which reads as no drift.
+     */
+    const settle = () => {
+      const box = el.getBoundingClientRect()
+      const rows = [...el.querySelectorAll<HTMLElement>('[data-item-key]')]
+      const row = rows.find(r => r.getBoundingClientRect().bottom > box.top + 1)
+      if (row?.dataset.itemKey) {
+        const now = { key: row.dataset.itemKey, top: el.scrollTop, offset: Math.round(row.getBoundingClientRect().top - box.top) }
+        if (last && last.key === now.key) {
+          const drift = Math.round((now.offset - last.offset) + (now.top - last.top))
+          if (Math.abs(drift) > 1) {
+            el.scrollTop += drift
+            steady = 0
+          } else {
+            steady += 1
+          }
+        }
+        last = now
+      }
+      if (steady >= 5 || performance.now() > deadline) {
+        anchorRepair.current = false
+        return
+      }
+      raf = requestAnimationFrame(settle)
+    }
+    raf = requestAnimationFrame(settle)
+    return () => cancelAnimationFrame(raf)
+  }, [prependAnchor, items, scrollRef])
 
   // Why this runs on every item change but only acts on a pending toggle: the
   // anchor has to be restored in the same commit that re-rendered the list, and
@@ -657,6 +873,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
           <div
             key={item.key}
             data-index={item.index}
+            data-item-key={it.id}
             ref={virtualizer.measureElement}
             className="chat-virtual-item"
             style={{ transform: `translateY(${item.start}px)` }}

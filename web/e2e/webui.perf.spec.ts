@@ -152,20 +152,28 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
   const historyAssistants = await page.getByTestId('assistant-message').count()
   const historyUsers = await page.getByTestId('user-bubble').count()
 
-  const olderWait = page.waitForResponse(res => {
+  // A real gesture: older history is only paged in for a reader, not for a
+  // scripted scrollTop write (see loadOlder in App.tsx).
+  let olderDone = false
+  const onOlder = (res: import('@playwright/test').Response) => {
     try {
       const url = new URL(res.url())
-      return url.pathname.endsWith(`/v1/sessions/${history.id}`) && url.searchParams.has('before') && res.ok()
-    } catch {
-      return false
-    }
-  })
-  await page.getByTestId('chat-scroll').evaluate(el => {
-    const node = el as HTMLElement
-    node.scrollTop = 0
-    node.dispatchEvent(new Event('scroll'))
-  })
-  await olderWait
+      if (url.pathname.endsWith(`/v1/sessions/${history.id}`) && url.searchParams.has('before') && res.ok()) olderDone = true
+    } catch { /* not a URL we track */ }
+  }
+  page.on('response', onOlder)
+  const scrollBox = await page.getByTestId('chat-scroll').boundingBox()
+  if (scrollBox) await page.mouse.move(scrollBox.x + scrollBox.width / 2, scrollBox.y + scrollBox.height / 2)
+  // Scroll down first so there is room above regardless of where the open left
+  // the view, then walk up until the page is requested.
+  await page.mouse.wheel(0, 1200)
+  await page.waitForTimeout(120)
+  for (let i = 0; i < 400 && !olderDone; i++) {
+    await page.mouse.wheel(0, -400)
+    await page.waitForTimeout(16)
+  }
+  page.off('response', onOlder)
+  expect(olderDone, 'scrolling to the top pages older history in').toBeTruthy()
 
   // The navigator lists the whole branch even though the chat holds only the
   // newest window, and jumping to a prompt outside that window pages history

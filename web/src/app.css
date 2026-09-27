@@ -3705,3 +3705,72 @@ select:focus-visible {
     animation: none;
   }
 }
+
+/* Placeholder for a message whose markdown is parsed on the next idle callback
+   (see features/markdown/Markdown.tsx). It reserves the estimated height, so the
+   virtual list does not resize when the real body replaces it. */
+.md-pending {
+  min-height: 3.5em;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  opacity: .35;
+  animation: md-pending-pulse 1.4s var(--ds-ease-in-out, ease) infinite;
+}
+
+@keyframes md-pending-pulse {
+  50% { opacity: .5; }
+}
+
+/* A page of older history is in flight. Sticky and out of flow: the virtual
+   list measures these rows, so the hint must not add height to the list. */
+.older-loading {
+  position: sticky;
+  top: 6px;
+  z-index: 3;
+  height: 0;
+  display: grid;
+  place-items: start center;
+  pointer-events: none;
+}
+
+.older-loading span {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
+}
+
+/* Read-only performance overlay for checking scrolling on a real device; only
+   mounted when localStorage['ki-perf-hud'] = '1' (see features/chat/PerfHud). */
+.perf-hud {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 240px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--ds-font-family-code);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.perf-hud button {
+  pointer-events: auto;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}

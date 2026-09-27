@@ -1,10 +1,11 @@
 import { createElement, isValidElement, lazy, memo, Suspense, useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { cjk } from '@streamdown/cjk'
-import { Streamdown, useIsCodeFenceIncomplete, type ExtraProps } from 'streamdown'
+import { Streamdown, parseMarkdownIntoBlocks, useIsCodeFenceIncomplete, type ExtraProps } from 'streamdown'
 import { useI18n } from '../../i18n/index'
 import { ICheck, ICopy } from '../../components/icons'
 import { normalizeMarkdown } from './markdown-normalize'
 import { copyText } from '../../lib/clipboard'
+import { textHeightHint } from '../../lib/rowHeight'
 
 const plugins = { cjk }
 const linkSafety = { enabled: false }
@@ -134,6 +135,30 @@ function MdImg({ node: _node, alt, ...rest }: MdProps<'img'>) {
   return <img alt={alt ?? ''} {...rest} />
 }
 
+/**
+ * Block lexing is the first pass over a message body, and Streamdown runs it per
+ * mount. Caching the split per text means a body that left the window and came
+ * back (scrolling up is mostly revisits) is lexed once.
+ */
+const BLOCK_CACHE_LIMIT = 300
+const blockCache = new Map<string, string[]>()
+function blocksFor(text: string): string[] {
+  const hit = blockCache.get(text)
+  if (hit) {
+    // Refresh the insertion order so the limit evicts the coldest text.
+    blockCache.delete(text)
+    blockCache.set(text, hit)
+    return hit
+  }
+  const blocks = parseMarkdownIntoBlocks(text)
+  blockCache.set(text, blocks)
+  if (blockCache.size > BLOCK_CACHE_LIMIT) {
+    const oldest = blockCache.keys().next().value
+    if (oldest !== undefined) blockCache.delete(oldest)
+  }
+  return blocks
+}
+
 const components = {
   h1: md('h1'),
   h2: md('h2'),
@@ -167,6 +192,38 @@ export const Markdown = memo(function Markdown({
   streaming?: boolean
   className?: string
 }) {
+  // Why a placeholder first: mounting a row parses its whole markdown (marked,
+  // then remark/rehype and the plugins) on the main thread, and scrolling mounts
+  // several rows at once, so the parses land in one frame as a long block. The
+  // row's height is only known after that render, which is also what makes the
+  // virtual list correct the scroll position under the reader's finger. Rendering
+  // the body on the next idle callback keeps the parse out of the frame that
+  // handles the gesture; the placeholder reserves the estimated height, so the
+  // list does not resize when the body arrives one frame later.
+  const [ready, setReady] = useState(streaming)
+  useEffect(() => {
+    if (ready) return
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
+      cancelIdleCallback?: (id: number) => void
+    }
+    if (!w.requestIdleCallback) {
+      const id = window.setTimeout(() => setReady(true), 16)
+      return () => window.clearTimeout(id)
+    }
+    const id = w.requestIdleCallback(() => setReady(true), { timeout: 200 })
+    return () => w.cancelIdleCallback?.(id)
+  }, [ready])
+  if (!ready) {
+    return (
+      <div
+        className="md-pending"
+        data-md-pending="1"
+        aria-busy="true"
+        style={{ minHeight: `${textHeightHint(text)}px` }}
+      />
+    )
+  }
   return (
     <Streamdown
       className={className ? `md ${className}` : 'md'}
@@ -177,6 +234,10 @@ export const Markdown = memo(function Markdown({
       controls={false}
       lineNumbers={false}
       linkSafety={linkSafety}
+      // Settled text is lexed once per text: a message scrolled out of the
+      // window and back reuses its blocks instead of re-splitting the whole
+      // body. Streaming text changes every delta, so it stays uncached.
+      parseMarkdownIntoBlocksFn={streaming ? undefined : blocksFor}
       components={components}
     >
       {normalizeMarkdown(text)}
