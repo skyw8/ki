@@ -35,7 +35,15 @@ sideband 事件可以并发到达。
 `GET /v1/sessions/{id}/events` 是某个 run 的有序回放（`agent_end` 结束）。
 一个整轮模型调用期间可能长时间没有可发的帧，所以该流和 `GET /v1/events` 一样按
 `ssePingInterval`（15s）发 `: ping` 注释帧保活移动网络/代理；SSE 客户端忽略注释，
-CLI 的行读取器只认 `data:` 前缀。
+CLI 的行读取器只认 `data:` 前缀。WebUI 客户端同时把「收到字节」当作唯一的存活证据：
+`readSSE` 的读空闲守卫在 `SSE_IDLE_TIMEOUT_MS`（45s）内没有任何字节（含注释帧）就
+判定连接已死并结束流，交给重连循环——浏览器不会把停滞的流式 `fetch` 报成错误。守卫
+另有恢复判据：隐藏时不触发，但隐藏达到短恢复窗口且期间一个字节都没读到，
+回前台就立刻结束流重连，不必等满 45s；连接可能在后台失效。
+该守卫只是传输兜底：WebUI 在回前台、重新联网、bfcache 恢复和 push `ready` 时，
+还必须独立读取当前会话的正文 tail，并取消旧 run reader。收到心跳、重建 push 连接或
+只读取 runtime 都不能证明正文已经追平。idle 快照清理临时流式状态，running 快照带
+已应用游标续听；`pagehide` 后等待恢复事件，不能在缓存期间重开订阅。
 回放日志**按「后到的读者是否用得上」裁剪**，否则它会随 turn 的输出量增长而不是随
 轮次数增长。裁剪只作用于回放：已经连上的 reader 该收的每一帧照收。
 
@@ -97,6 +105,13 @@ sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` �
 并落入 jsonl；start/end 本身仍是实时事件，不单独生成 conversation entry。
 `durationMs` 不做 `omitempty`：亚毫秒的调用（例如读小文件的 `Read`）真实
 测得 0，字段必须保留，否则 WebUI 会把「0ms」误当成「无计时」而不显示。
+
+`turn_start` 带开始时间 `timestamp`，`turn_end` 带完成时间 `timestamp` 和
+`durationMs`（从 `turn_start` 起算的墙钟，覆盖本轮全部请求与工具）。这两个
+事件仍是实时边界，不落 jsonl。WebUI 运行中的耗时按该轮开头 user 消息的
+`timestamp` 起算（与 `turn_start.timestamp` 同一时刻），结束后改用该轮最后
+一个节点的时间戳（工具行按 `startedAt + durationMs` 计入尾部），reload 后
+同样重算，因此不需要新的 conversation entry。
 
 ## Extension lifecycle 事件
 

@@ -861,7 +861,7 @@ function WorkspaceApp({ api }: { api: Client }) {
         // A finished run is reconciled from the tail: the events already
         // arrived on this stream, so only the window and leaf need refreshing,
         // not the whole history (and the index stays warm across the run).
-        const detail = await api.get(id, transcriptOptions()).catch(() => null)
+        const detail = await api.get(id, { ...transcriptOptions(), signal: ac.signal }).catch(() => null)
         if (abortRef.current === ac && !ac.signal.aborted) {
           if (detail) setView(v => applyTail(v, detail))
           if (!detail || detail.running) {
@@ -880,6 +880,40 @@ function WorkspaceApp({ api }: { api: Client }) {
       }
     }
   }, [api, refreshList])
+
+  const recovering = useRef<AbortController | null>(null)
+  const recoverOpenTranscript = useCallback(async (restart = false) => {
+    const id = currentIdRef.current
+    // The first run may contain only live nodes: entries are populated by the
+    // next tail read. Requiring persisted entries would strand fresh sessions.
+    if (!id || (!viewRef.current.entries.length && !viewRef.current.nodes.length && !viewRef.current.busy)) return
+    if (!restart && recovering.current === abortRef.current && recovering.current && !recovering.current.signal.aborted) return
+    // A healthy push socket says nothing about the run socket or missed data.
+    // Retire the old reader before taking a snapshot so its delayed frames
+    // cannot overwrite recovery, even after switching away and back to this id.
+    abortRef.current?.abort()
+    const ac = new AbortController()
+    abortRef.current = recovering.current = ac
+    listeningIdRef.current = null
+    const valid = () => abortRef.current === ac && !ac.signal.aborted && currentIdRef.current === id
+    try {
+      for (let attempt = 0; valid(); attempt++) {
+        try {
+          const detail = await api.get(id, { ...transcriptOptions(), signal: ac.signal })
+          if (!valid()) return
+          setView(v => applyTail(v, detail))
+          if (detail.running) void listen(id, detail.compactTurns?.length ? detail.leafId : undefined)
+          return
+        } catch (error) {
+          if (!valid()) return
+          if (!isNetworkError(error)) { toast.from(error); return }
+          await waitForReconnect(reconnectDelay(attempt), ac.signal).catch(() => {})
+        }
+      }
+    } finally {
+      if (recovering.current === ac) recovering.current = null
+    }
+  }, [api, listen])
 
   // The push channel's handler for the session this tab has open.
   const refreshOpenRuntime = useCallback(async () => {
@@ -906,7 +940,7 @@ function WorkspaceApp({ api }: { api: Client }) {
       // makes a reconnect catch up on whatever it missed.
       void refreshList().then(catchUpMissedCompletions)
       void refreshExtensions(true)
-      void refreshOpenRuntime()
+      void recoverOpenTranscript()
       return
     }
     if (ev.type === 'invalidate') {
@@ -999,7 +1033,7 @@ function WorkspaceApp({ api }: { api: Client }) {
         })
         return
     }
-  }, [api, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, t, catchUpMissedCompletions])
+  }, [api, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, recoverOpenTranscript, t, catchUpMissedCompletions])
   useServerEvents(api, onServerEvent)
 
   // Safety net for a push stream that outlived a laptop sleep or a proxy idle
@@ -1012,10 +1046,21 @@ function WorkspaceApp({ api }: { api: Client }) {
       if (document.visibilityState !== 'visible') return
       void refreshList().then(catchUpMissedCompletions)
       void refreshExtensions(true)
+      void recoverOpenTranscript(true)
     }
+    const onPageShow = (event: PageTransitionEvent) => { if (event.persisted) onVisibility() }
+    const onPageHide = () => { abortRef.current?.abort(); listeningIdRef.current = null }
     document.addEventListener('visibilitychange', onVisibility)
-    return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [catchUpMissedCompletions, refreshExtensions, refreshList])
+    window.addEventListener('pageshow', onPageShow)
+    window.addEventListener('online', onVisibility)
+    window.addEventListener('pagehide', onPageHide)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pageshow', onPageShow)
+      window.removeEventListener('online', onVisibility)
+      window.removeEventListener('pagehide', onPageHide)
+    }
+  }, [catchUpMissedCompletions, refreshExtensions, refreshList, recoverOpenTranscript])
 
   const openSession = useCallback(async (id: string): Promise<boolean> => {
     history.cancel()
@@ -1031,6 +1076,7 @@ function WorkspaceApp({ api }: { api: Client }) {
 	setEdit(null)
     abortRef.current?.abort()
 	abortRef.current = null
+    listeningIdRef.current = null
     try {
       const detail = await api.get(id, { ...transcriptOptions(), signal: ac.signal })
       if (ac.signal.aborted || currentIdRef.current !== id) return false
@@ -1520,10 +1566,10 @@ function WorkspaceApp({ api }: { api: Client }) {
    */
   const jumpToRequest = useCallback(async (id: string) => {
     chatControl.current?.read()
+    setJumpToId(null)
     const version = ++jumpVersion.current
     const sessionId = currentIdRef.current
     setSeekingId(id)
-    setActiveRequestId(id)
     const have = new Set(viewRef.current.entries.map(e => e.id))
     const live = viewRef.current.nodes.some(n => n.id === id)
     try {
@@ -1958,7 +2004,7 @@ function WorkspaceApp({ api }: { api: Client }) {
                 <RequestNav
                   key={currentId ?? 'none'}
                   items={requestItems}
-                  activeId={activeRequestId}
+                  activeId={seekingId ?? jumpToId ?? activeRequestId}
                   onJump={jumpToRequest}
                   onOpen={() => { if (currentId && !view.indexLoaded) void requestIndex(currentId) }}
                 />

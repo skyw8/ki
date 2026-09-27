@@ -312,6 +312,46 @@ func TestRunToolTimingIsReportedOnExecutionAndResultEvents(t *testing.T) {
 	}
 }
 
+// A turn's wall clock is stamped onto turn_start (timestamp) and turn_end
+// (timestamp + durationMs) so a client can run a live per-turn counter from the
+// server clock. The tool delay inside the first turn must be covered by its
+// duration, which is what makes turn timing more than the sum of the model's
+// own latencies.
+func TestTurnTimingIsReportedOnTurnEvents(t *testing.T) {
+	const delay = 20 * time.Millisecond
+	var starts, ends []Event
+	_, err := Run(context.Background(), "read it", nil, Config{
+		Streamer: &scripted{},
+		Tools:    []Tool{delayedTool{delay: delay}},
+	}, func(event Event) error {
+		switch event.Type {
+		case TurnStart:
+			starts = append(starts, event)
+		case TurnEnd:
+			ends = append(ends, event)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(starts) == 0 || len(starts) != len(ends) {
+		t.Fatalf("turn events: starts=%d ends=%d", len(starts), len(ends))
+	}
+	if starts[0].Timestamp == 0 {
+		t.Fatalf("turn_start timestamp not set: %+v", starts[0])
+	}
+	if ends[0].Timestamp < starts[0].Timestamp {
+		t.Fatalf("turn timestamps out of order: start=%+v end=%+v", starts[0], ends[0])
+	}
+	if ends[0].DurationMs < int64(delay/time.Millisecond) {
+		t.Fatalf("turn duration = %dms, want at least %dms", ends[0].DurationMs, delay/time.Millisecond)
+	}
+	if len(starts) > 1 && starts[1].Timestamp < ends[0].Timestamp {
+		t.Fatalf("second turn starts before the first ended: %+v %+v", starts[1], ends[0])
+	}
+}
+
 // A tool that finishes in under a millisecond reports DurationMs 0. The field
 // must still be serialized, otherwise fast tools (Read) show no timing in the
 // WebUI because `omitempty` dropped the zero value.

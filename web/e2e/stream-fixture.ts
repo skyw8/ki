@@ -1,7 +1,7 @@
 import { expect, type Page } from '@playwright/test'
 import { serverToken } from './global-setup'
 
-export async function openStream(page: Page, history: number) {
+export async function openStream(page: Page, history: number, emptySnapshot = false) {
   const headers = { Authorization: `Bearer ${serverToken()}` }
   const response = await page.request.post('/v1/sessions', { headers, data: {} })
   const { id } = await response.json() as { id: string }
@@ -12,7 +12,7 @@ export async function openStream(page: Page, history: number) {
   } }))
   entries.push({ type: 'message', id: 'question', parentId: entries.at(-1)?.id ?? '', message: { role: 'user', content: [{ type: 'text', text: 'Streaming render budget' }] } })
   await page.route(`**/v1/sessions/${id}`, route => route.request().method() === 'GET'
-    ? route.fulfill({ json: { id, title, entries, running: true, leafId: 'question', hasMore: false } }) : route.fallback())
+    ? route.fulfill({ json: { id, title, entries: emptySnapshot ? [] : entries, running: true, leafId: emptySnapshot ? undefined : 'question', hasMore: false } }) : route.fallback())
   await page.addInitScript(({ id }) => {
     localStorage.setItem('ki-stream-metrics', '1')
     const scope = window as unknown as { streamSend: (value: unknown) => void; streamFail: () => void; streamClose: () => void; streamURLs: string[]; streamCursors: (string | null)[] }

@@ -59,14 +59,14 @@ export default defineConfig({
     {
       name: 'webkit-scroll',
       use: { browserName: 'webkit', launchOptions: process.env.KI_WEBKIT_EXECUTABLE ? { executablePath: process.env.KI_WEBKIT_EXECUTABLE } : undefined },
-      testMatch: ['**/transcript-scroll.spec.ts', '**/compact-history.spec.ts'],
+      testMatch: ['**/transcript-scroll.spec.ts', '**/compact-history.spec.ts', '**/request-nav.spec.ts', '**/sse-resume.spec.ts'],
       timeout: 45_000,
       expect: { timeout: 15_000 },
     },
     {
       name: 'firefox-scroll',
       use: { browserName: 'firefox' },
-      testMatch: ['**/transcript-scroll.spec.ts', '**/compact-history.spec.ts'],
+      testMatch: ['**/transcript-scroll.spec.ts', '**/compact-history.spec.ts', '**/request-nav.spec.ts', '**/sse-resume.spec.ts'],
       timeout: 45_000,
       expect: { timeout: 15_000 },
     },

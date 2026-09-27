@@ -1,6 +1,7 @@
 import { Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { observeElementOffset, useVirtualizer } from '@tanstack/react-virtual'
 import { useTranscriptScroll, type TranscriptScroll } from './useTranscriptScroll'
+import { useNow } from '../../hooks/useNow'
 import { IChev, IChevDown, IClock, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from '../../components/icons'
 import { IFile } from '../../components/icons'
 import { Composer, type Draft } from './Composer'
@@ -8,7 +9,7 @@ import { AttachmentImage } from '../attachments/AttachmentImage'
 import type { Client } from '../../api/client'
 import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
-import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, reconcileUserNodes, requestTitle, turnStats, type CacheMiss, type TurnStats } from '../../lib/model'
+import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, isHumanPrompt, reconcileUserNodes, requestTitle, turnStats, type CacheMiss, type TurnStats } from '../../lib/model'
 import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
 import { rememberRowHeight, rowHeightEstimate, UNKNOWN_WIDTH } from '../../lib/rowHeight'
 import { copyText } from '../../lib/clipboard'
@@ -200,6 +201,8 @@ function ToolRow({
 	  ? String((node.details as Record<string, unknown>).diff ?? '')
 	  : ''
   const state = node.running ? 'running' : node.isError ? 'error' : 'ok'
+  // Ticks only while this row is running, from the server's start timestamp.
+  const now = useNow(!!node.running)
   const fail = state === 'error' && node.result ? firstLine(node.result) : ''
   const line = fail || summary
   const bodyIn = name === 'Write' ? content : name === 'Bash' ? cmd : prettyArgs(node.args)
@@ -225,6 +228,7 @@ function ToolRow({
         </button>
         {line ? <span className="tool-sep" aria-hidden /> : null}
         {line ? <span className={`tool-preview${fail ? ' err' : ''}`} data-testid="tool-preview" title={line}>{line}</span> : null}
+        {node.running && node.startedAt ? <span className="tool-duration live" data-testid="tool-duration">{fmtDuration(Math.max(0, now - node.startedAt))}</span> : null}
         {!node.running && node.durationMs != null ? <span className="tool-duration" data-testid="tool-duration">{fmtDuration(node.durationMs)}</span> : null}
       </div>
       {open && expandable ? (
@@ -300,15 +304,24 @@ function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> 
  * tokens, TPS, cache) but sum the whole turn, so a long tool-heavy run stays
  * scannable at a glance. Timing and work ride the labelled first row; token
  * usage and cost take the second.
+ *
+ * While the turn is still running the divider is mounted too, but with a live
+ * elapsed (`now - startedAt`) and a pulsing dot so the per-turn duration is
+ * recorded from the start instead of appearing only once the turn settles. The
+ * row stays keyed to the turn's last node either way, so the value settles in
+ * place rather than jumping in.
  */
 function TurnDivider({ stats }: { stats: TurnStats }) {
   const { t } = useI18n()
+  const live = stats.live
+  const now = useNow(live)
+  const elapsedMs = live && stats.startedAt != null && stats.startedAt > 0 ? Math.max(0, now - stats.startedAt) : stats.elapsedMs
   const prompt = stats.input
   const hit = prompt > 0 && stats.cacheRead > 0 ? stats.cacheRead / prompt * 100 : null
   const timing: ReactNode[] = [
-    <span className="turn-stat" key="elapsed" data-testid="turn-elapsed"><IClock />{t('turn.elapsed', { duration: formatDuration(stats.elapsedMs) })}</span>,
-    <span className="turn-stat" key="steps">{t('turn.steps', { n: stats.steps })}</span>,
+    <span className={`turn-stat${live ? ' live' : ''}`} key="elapsed" data-testid="turn-elapsed"><IClock />{t('turn.elapsed', { duration: formatDuration(elapsedMs) })}</span>,
   ]
+  if (stats.steps > 0) timing.push(<span className="turn-stat" key="steps">{t('turn.steps', { n: stats.steps })}</span>)
   if (stats.tools > 0) {
     timing.push(
       <span
@@ -343,10 +356,13 @@ function TurnDivider({ stats }: { stats: TurnStats }) {
   }
   if (stats.hasCost) usage.push(<span className="turn-stat" key="cost">{t('stats.cost', { amount: formatCost(stats.cost) })}</span>)
   return (
-    <div className="turn-end" data-testid="turn-divider" data-turn={stats.turn}>
+    <div className={`turn-end${live ? ' live' : ''}`} data-testid="turn-divider" data-turn={stats.turn} data-live={live || undefined}>
       <div className="turn-end-row">
         <span className="turn-end-rule" aria-hidden />
-        <span className="turn-end-label">{t('turn.label', { n: stats.turn })}</span>
+        <span className="turn-end-label">
+          {live ? <span className="turn-live-dot" aria-hidden /> : null}
+          {t('turn.label', { n: stats.turn })}
+        </span>
         {timing}
         <span className="turn-end-rule" aria-hidden />
       </div>
@@ -557,7 +573,8 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
 }) {
   const { t } = useI18n()
   const measurementAnchor = useRef<string | null>(null)
-  const navigation = useTranscriptScroll({ scrollRef, onAtBottom, onReadIntent: () => { measurementAnchor.current = null; onReadIntent?.() }, onLoadOlder, hasMore, loadingOlder, olderError, pageBudget: mode === 'compact' ? 1 : 2 })
+  const selectedRequest = useRef<string | null>(null)
+  const navigation = useTranscriptScroll({ scrollRef, onAtBottom, onReadIntent: () => { measurementAnchor.current = null; selectedRequest.current = null; onReadIntent?.() }, onLoadOlder, hasMore, loadingOlder, olderError, pageBudget: mode === 'compact' ? 1 : 2 })
   const nodes = useMemo(() => reconcileUserNodes(rawNodes), [rawNodes])
   const misses = useMemo(() => cacheMisses(nodes), [nodes])
   const listRef = useRef<HTMLDivElement>(null)
@@ -576,6 +593,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   const foldAnchor = useRef<{ id: string; offset: number } | null>(null)
   const foldFollow = useRef(false)
   const toggleFold = useCallback(async (id: string) => {
+    selectedRequest.current = null
     // Preserve the reader's intent across the toggle. The newest turn's fold
     // keeps the tail following so its revealed rows (and their late
     // measurement) stay pinned to the bottom; any earlier fold is something the
@@ -714,7 +732,11 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     }
     return delta !== 0 && (instance.itemSizeCache.has(item.key) ? item.end : item.start) <= (instance.scrollOffset ?? 0) + instance.scrollAdjustments
   }
-  useImperativeHandle(controlRef, () => ({ read: navigation.read, latest: navigation.latest, preparePrepend: navigation.preparePrepend }), [navigation.read, navigation.latest, navigation.preparePrepend])
+  useImperativeHandle(controlRef, () => ({ read: navigation.read, latest: () => {
+    selectedRequest.current = null
+    measurementAnchor.current = null
+    navigation.latest()
+  }, preparePrepend: navigation.preparePrepend }), [navigation.read, navigation.latest, navigation.preparePrepend])
 
   const opened = useRef(false)
   useLayoutEffect(() => {
@@ -747,7 +769,6 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     }
     return out
   }, [nodes, turnBase, compactTurns])
-  const newestId = nodes.at(-1)?.id
   const actions = useRef({ onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches })
   actions.current = { onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches }
   const callbacks = useMemo(() => ({
@@ -776,7 +797,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     const foot = turns.get(it.id)
     return <>
       <ChatItem node={it.node} {...props} edit={edit?.messageId === it.id ? edit : null} branchIndex={branches?.[it.id]?.index} branchTotal={branches?.[it.id]?.total} missed={misses.get(it.id)} />
-      {foot && !foot.live && foot.steps > 0 && !(busy && newestId === it.id) ? <TurnDivider stats={foot} /> : null}
+      {foot && (foot.steps > 0 || foot.live) ? <TurnDivider stats={foot} /> : null}
     </>
   }
 
@@ -802,7 +823,6 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
 
   useLayoutEffect(() => {
     if (!jumpToId) return
-    measurementAnchor.current = null
     navigation.read()
     const index = items.findIndex(it => it.kind === 'node' && it.node.id === jumpToId)
     if (index < 0) {
@@ -810,11 +830,34 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
       if (fold?.kind === 'fold') toggleFold(fold.turn.id)
       return
     }
+    // Keep the keyed target through late Markdown/body measurements. A single
+    // estimated scroll followed by an immediate acknowledgement leaves the
+    // first tap above/below the prompt as virtual rows acquire real heights.
+    measurementAnchor.current = items[index].id
+    selectedRequest.current = jumpToId
     virtualizer.scrollToIndex(index, { align: 'start' })
-    onJumped?.()
-  }, [jumpToId, items, onJumped, virtualizer, toggleFold, navigation.read])
+    let frame = 0
+    let stable = 0
+    const settle = () => {
+      const el = scrollRef.current
+      if (!el || selectedRequest.current !== jumpToId) return
+      const row = el.querySelector<HTMLElement>(`[data-item-key="${CSS.escape(jumpToId)}"]`)
+      const offset = row ? row.getBoundingClientRect().top - el.getBoundingClientRect().top : Infinity
+      const remaining = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)
+      const error = Math.min(offset, remaining)
+      if (row && Math.abs(error) <= 1) stable++
+      else {
+        stable = 0
+        virtualizer.scrollToIndex(index, { align: 'start' })
+      }
+      if (stable >= 2) onJumped?.()
+      else frame = requestAnimationFrame(settle)
+    }
+    frame = requestAnimationFrame(settle)
+    return () => cancelAnimationFrame(frame)
+  }, [jumpToId, items, onJumped, virtualizer, toggleFold, navigation.read, scrollRef])
 
-  const users = useMemo(() => items.flatMap((it, index) => it.kind === 'node' && it.node.kind === 'user' ? [{ id: it.id, index }] : []), [items])
+  const users = useMemo(() => items.flatMap((it, index) => it.kind === 'node' && it.node.kind === 'user' && isHumanPrompt(it.node.origin) ? [{ id: it.id, index }] : []), [items])
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
@@ -825,11 +868,13 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
       let lo = 0, hi = users.length - 1
       while (lo < hi) {
         const mid = Math.ceil((lo + hi) / 2)
-        const offset = virtualizer.getOffsetForIndex(users[mid].index, 'start')?.[0] ?? Infinity
+        // Scroll targets are clamped to the bottom: several short tail turns
+        // have the same target. Reading ownership needs actual row geometry.
+        const offset = virtualizer.measurementsCache[users[mid].index]?.start ?? Infinity
         if (offset <= el.scrollTop + 12) lo = mid
         else hi = mid - 1
       }
-      const id = users[lo]?.id ?? null
+      const id = selectedRequest.current ?? (navigation.following.current ? users.at(-1)?.id : users[lo]?.id) ?? null
       if (id !== last) { last = id; onActiveRequest?.(id) }
       onAtBottom?.(virtualizer.getDistanceFromEnd() <= 8)
     }
@@ -837,7 +882,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     update()
     el.addEventListener('scroll', schedule, { passive: true })
     return () => { cancelAnimationFrame(frame); el.removeEventListener('scroll', schedule) }
-  }, [users, scrollRef, virtualizer, onActiveRequest, onAtBottom])
+  }, [users, scrollRef, virtualizer, onActiveRequest, onAtBottom, navigation.following, navigation.isFollowing, jumpToId])
 
   return (
     <div ref={listRef} className="chat-col chat-virtual" data-testid="chat" data-scroll-intent={navigation.isFollowing ? 'following' : 'reading'} data-anchor-key={measurementAnchor.current ?? undefined} data-scroll-offset={virtualizer.scrollOffset} data-library-scrolling={String(virtualizer.isScrolling)} style={{ height: virtualizer.getTotalSize() }}>

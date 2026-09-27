@@ -15,6 +15,9 @@
 // snapshot after turn_start, before stream).
 // Tool execution start/end events carry Unix-millisecond timestamps and the
 // end event carries durationMs; the same duration is persisted on toolResult.
+// turn_start carries its start timestamp and turn_end carries the completion
+// timestamp plus durationMs, so a consumer can time a turn from the server's
+// own boundaries.
 // Every built-in tool is a JSON function; Results follow the tool contract
 // (internal/tools/doc.go).
 // Config.OutputStore bounds every model-facing tool result at the single

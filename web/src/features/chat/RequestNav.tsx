@@ -42,6 +42,7 @@ export function RequestNav({
   const panelId = useId()
   const rootRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const toggleRef = useRef<HTMLButtonElement>(null)
   const closeTimer = useRef(0)
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -58,7 +59,7 @@ export function RequestNav({
   const virtualizer = useVirtualizer({
     count: visible.length,
     getScrollElement: () => listRef.current,
-    estimateSize: () => (window.matchMedia('(pointer: coarse)').matches ? 40 : 36),
+    estimateSize: () => (window.matchMedia('(pointer: coarse)').matches ? 44 : 36),
     overscan: 8,
     enabled: virtualize && open,
     getItemKey: index => visible[index]?.id ?? index,
@@ -73,8 +74,10 @@ export function RequestNav({
     }
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        event.preventDefault()
         event.stopPropagation()
         setOpen(false)
+        toggleRef.current?.focus({ preventScroll: true })
       }
     }
     const onPointer = (event: PointerEvent) => {
@@ -102,7 +105,10 @@ export function RequestNav({
     if (!list || !el) return
     // Why: scrollIntoView can also move the conversation scroller; keep the
     // highlight inside this panel without disturbing the chat.
-    const top = el.offsetTop
+    // offsetTop uses the positioned navigator as its origin for ordinary
+    // rows, but the virtual list for virtual rows. Rects keep both in the
+    // list's scroll coordinates, including filter and panel padding.
+    const top = el.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop
     const bottom = top + el.offsetHeight
     if (top < list.scrollTop) list.scrollTop = top
     else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight
@@ -129,6 +135,9 @@ export function RequestNav({
   }
 
   const jump = (id: string) => {
+    // Retire focus before unmounting a touch option / closing its keyboard.
+    // Browser focus scrolling must not run after the transcript's jump.
+    if (!hoverable) toggleRef.current?.focus({ preventScroll: true })
     onJump(id)
     if (!hoverable) setOpen(false)
   }
@@ -148,6 +157,22 @@ export function RequestNav({
         title={label}
         style={style}
         onClick={() => jump(item.id)}
+        onKeyDown={event => {
+          if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
+          event.preventDefault()
+          const index = visible.findIndex(row => row.id === item.id)
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? visible.length - 1 : Math.max(0, Math.min(visible.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))
+          if (virtualize) virtualizer.scrollToIndex(next, { align: 'auto' })
+          requestAnimationFrame(() => {
+            const list = listRef.current
+            const row = list?.querySelector<HTMLElement>(`[data-request-id="${CSS.escape(visible[next].id)}"]`)
+            if (!list || !row) return
+            row.focus({ preventScroll: true })
+            const top = row.getBoundingClientRect().top - list.getBoundingClientRect().top
+            if (top < 0) list.scrollTop += top
+            else if (top + row.offsetHeight > list.clientHeight) list.scrollTop += top + row.offsetHeight - list.clientHeight
+          })
+        }}
       >
         {label}
       </button>
@@ -202,6 +227,7 @@ export function RequestNav({
         </div>
       ) : null}
       <button
+        ref={toggleRef}
         type="button"
         className="req-nav-toggle"
         data-testid="request-nav-toggle"

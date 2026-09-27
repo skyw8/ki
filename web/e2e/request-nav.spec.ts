@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { loadHistory, requestTitle, userRequests } from '../src/lib/model.ts'
 import type { ChatNode, Entry, IndexEntry } from '../src/api/types.ts'
+import { serverToken } from './global-setup'
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
@@ -114,5 +115,69 @@ test('request navigator jumps to an earlier user turn', async ({ page }) => {
     const scroll = el.closest('[data-testid="chat-scroll"]') as HTMLElement
     return el.getBoundingClientRect().top - scroll.getBoundingClientRect().top
   })).toBeLessThan(96)
+  await expect.poll(async () => firstBubble.evaluate(el => {
+    const scroll = el.closest('[data-testid="chat-scroll"]') as HTMLElement
+    return el.getBoundingClientRect().top - scroll.getBoundingClientRect().top
+  })).toBeGreaterThanOrEqual(-1)
   await expect(page.getByTestId('request-nav-item').filter({ hasText: prompts[0] })).toHaveClass(/active/)
+})
+
+for (const mobile of [false, true]) test(`request navigation lands once and tracks actual reading on ${mobile ? 'touch' : 'desktop'}`, async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL, storageState: test.info().project.use.storageState,
+    viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 }, isMobile: mobile && test.info().project.use.browserName !== 'firefox', hasTouch: mobile,
+  })
+  const page = await context.newPage()
+  try {
+    const headers = { Authorization: `Bearer ${serverToken()}` }
+    const response = await page.request.post('/v1/sessions', { headers, data: {} })
+    const { id } = await response.json()
+    const title = `navigation-${id}`
+    await page.request.patch(`/v1/sessions/${id}`, { headers, data: { title } })
+    const entries: Entry[] = Array.from({ length: 45 }, (_, i) => ({ type: 'message', id: `u${i}`, parentId: i ? `u${i - 1}` : '',
+      message: { role: 'user', content: [{ type: 'text', text: `Request ${String(i).padStart(2, '0')}\n` + (i < 38 ? 'Variable height content wrapping on a narrow phone. '.repeat(i % 7 + 1) : 'Short') }] },
+    }))
+    await page.route(`**/v1/sessions/${id}**`, route => {
+      const params = new URL(route.request().url()).searchParams
+      if (params.get('fields') === 'index') return route.fulfill({ json: { id, index: entries.map(e => ({ id: e.id, type: e.type, parentId: e.parentId, role: 'user', preview: e.message?.content?.[0].text })) } })
+      if (route.request().method() !== 'GET') return route.fallback()
+      return route.fulfill({ json: { id, title, leafId: 'u44', entries, running: false } })
+    })
+    await page.goto('/')
+    if (mobile) await page.getByTestId('mobile-nav-toggle').click()
+    await page.getByTestId('session-row').filter({ hasText: title }).click()
+    const toggle = page.getByTestId('request-nav-toggle')
+    const select = async (n: number) => {
+      if (!await page.getByTestId('request-nav-panel').isVisible()) await toggle.click()
+      await page.getByTestId('request-nav-filter').fill(`Request ${String(n).padStart(2, '0')}`)
+      await page.locator(`[data-request-id="u${n}"]`).click()
+    }
+    const offset = (n: number) => page.locator(`[data-item-key="u${n}"]`).evaluate(el => el.getBoundingClientRect().top - el.closest('[data-testid="chat-scroll"]')!.getBoundingClientRect().top)
+    const landingError = (n: number) => page.locator(`[data-item-key="u${n}"]`).evaluate(el => {
+      const scroll = el.closest('[data-testid="chat-scroll"]')!
+      const offset = el.getBoundingClientRect().top - scroll.getBoundingClientRect().top
+      // A short final turn cannot reach the top; it must be fully visible at
+      // the reachable end and remain selected, not select a later sibling.
+      return Math.abs(Math.min(offset, scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop))
+    })
+    for (const n of [8, 31, 0, 40]) {
+      await select(n)
+      await expect.poll(() => landingError(n)).toBeLessThanOrEqual(2)
+      expect(await offset(n)).toBeGreaterThanOrEqual(-2)
+      if (mobile) await toggle.click()
+      await expect(page.locator(`[data-request-id="u${n}"]`)).toHaveAttribute('aria-selected', 'true')
+      // A late measurement/selection must not steal the landing after one tap.
+      await page.waitForTimeout(250)
+      expect(await landingError(n)).toBeLessThanOrEqual(2)
+    }
+    await page.keyboard.press('Escape')
+    const scroll = page.getByTestId('chat-scroll')
+    await scroll.evaluate(el => {
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: -1, bubbles: true }))
+      const row = el.querySelector('[data-item-key="u37"]')!
+      el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top + 1
+    })
+    await toggle.click()
+    await page.getByTestId('request-nav-filter').fill('Request 37')
+    await expect(page.locator('[data-request-id="u37"]')).toHaveAttribute('aria-selected', 'true')
+  } finally { await context.close() }
 })

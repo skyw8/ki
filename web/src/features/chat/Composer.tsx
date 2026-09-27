@@ -5,6 +5,7 @@ import { AttachmentImage } from '../attachments/AttachmentImage'
 import { CommandPalette, isCommandPaletteVisible, type PalettePick } from './CommandPalette'
 import { Select } from '../../components/Select'
 import { useI18n } from '../../i18n/index'
+import { useNow } from '../../hooks/useNow'
 import type { SessionCommand } from '../../api/types'
 import {
   cacheHitPercent,
@@ -53,7 +54,7 @@ function formatFileSize(size?: number): string {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
-function SessionStatsLine({ stats, t }: { stats: LatestStats; t: ReturnType<typeof useI18n>['t'] }) {
+function SessionStatsLine({ stats, t, liveElapsedMs }: { stats: LatestStats; t: ReturnType<typeof useI18n>['t']; liveElapsedMs?: number }) {
   const groups: string[] = []
   if (stats.turns > 0 || stats.steps > 0) {
     groups.push(t('stats.counts', { turns: stats.turns, steps: stats.steps }))
@@ -70,13 +71,22 @@ function SessionStatsLine({ stats, t }: { stats: LatestStats; t: ReturnType<type
     groups.push(t('stats.tokens', { input: formatTokens(stats.input), output: formatTokens(stats.output) }))
   }
   if (stats.hasCost) groups.push(t('stats.cost', { amount: formatCost(stats.cost) }))
-  if (groups.length === 0) return null
-  const line = groups.join(' | ')
+  // The live turn leads the line: it is the only value that changes, and it
+  // stays visible while the rest of the strip is the previous step's readout.
+  const live = liveElapsedMs != null && liveElapsedMs > 0
+  const elapsed = live ? t('turn.elapsed', { duration: formatDuration(liveElapsedMs) }) : ''
+  if (groups.length === 0 && !live) return null
+  const line = [live ? elapsed : '', ...groups].filter(Boolean).join(' | ')
   return (
     <div className="session-stats" data-testid="session-stats" title={line}>
+      {live ? (
+        <span className="session-stats-live" data-testid="session-elapsed">
+          <span className="turn-live-dot" aria-hidden />{elapsed}
+        </span>
+      ) : null}
       {groups.map((group, i) => (
         <span key={`${i}:${group}`} className="session-stats-g">
-          {i > 0 ? <span className="session-stats-sep" aria-hidden>|</span> : null}
+          {i > 0 || live ? <span className="session-stats-sep" aria-hidden>|</span> : null}
           {group}
         </span>
       ))}
@@ -114,6 +124,11 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   hasQueued?: boolean
 }) {
   const { t } = useI18n()
+  // The composer's live turn counter: only ticks while a turn with a known
+  // start is running, so an idle composer schedules nothing.
+  const liveTurn = !!busy && !!stats && stats.turnStartedAt > 0
+  const now = useNow(liveTurn)
+  const liveElapsedMs = liveTurn && stats ? Math.max(0, now - stats.turnStartedAt) : 0
   const ref = useRef<HTMLTextAreaElement>(null)
   const cmdBtn = useRef<HTMLButtonElement>(null)
   const card = useRef<HTMLDivElement>(null)
@@ -322,7 +337,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
           {mode === 'edit' ? <button type="button" className="send" data-testid="edit-send" disabled={disabled || !canSend} onClick={() => onSend()} aria-label={t('composer.sendEdit')}><ISend /></button> : <button type="button" className="send" data-testid="composer-send" disabled={disabled || !canSend} onClick={() => onSend()} aria-label={t('composer.send')}><ISend /></button>}
         </div>
       </div>
-      {mode === 'new' && !hero && stats ? <SessionStatsLine stats={stats} t={t} /> : null}
+      {mode === 'new' && !hero && stats ? <SessionStatsLine stats={stats} t={t} liveElapsedMs={liveElapsedMs} /> : null}
     </div>
   )
 }

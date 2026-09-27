@@ -639,6 +639,31 @@
 .turn-stat-err { color: var(--dsw-alias-state-error); }
 .turn-stat-warn { color: var(--dsw-alias-state-warning); }
 .turn-stat-err svg { opacity: 1; }
+/* Live durations: the running turn and its tools tick from the first moment.
+   A pulsing dot marks the value as in-progress so it never reads as final, and
+   `prefers-reduced-motion` drops the motion but keeps the dot. */
+.turn-live-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-success);
+  animation: turn-live-pulse 1.5s ease-out infinite;
+}
+@keyframes turn-live-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--dsw-alias-state-success) 55%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 5px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .turn-live-dot { animation: none; }
+}
+.turn-end.live .turn-end-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dsw-alias-label-secondary);
+}
+.turn-stat.live { color: var(--dsw-alias-label-secondary); }
 
 .think {
   border-radius: 8px;
@@ -903,6 +928,14 @@
   white-space: nowrap;
 }
 .session-stats-g { white-space: nowrap; }
+.session-stats-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dsw-alias-label-secondary);
+  font-weight: 600;
+  white-space: nowrap;
+}
 .session-stats-sep {
   margin: 0 9px;
   color: color-mix(in srgb, var(--dsw-alias-label-caption) 42%, transparent);
@@ -2396,6 +2429,7 @@
 .tool-row .tool-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-tertiary); font-size: 14px; user-select: text; cursor: text; }
 .tool-row .tool-preview.err { color: var(--dsw-alias-state-error); }
 .tool-duration { flex: none; color: var(--dsw-alias-label-caption); font-size: 12px; font-variant-numeric: tabular-nums; }
+.tool-duration.live { color: var(--dsw-alias-label-tertiary); }
 .tool-row .msg-icon { width: 24px; height: 24px; }
 .tool-desc { margin: 0 0 8px; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; white-space: pre-wrap; user-select: text; cursor: text; }
 .state-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
@@ -2514,7 +2548,11 @@
   white-space: nowrap;
   cursor: pointer;
 }
-.req-nav-item:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+/* Touch browsers retain :hover after a tap. Only the selected request should
+   stay shaded when the panel is reopened. */
+@media (hover: hover) and (pointer: fine) {
+  .req-nav-item:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+}
 .req-nav-item.active {
   background: var(--dsw-alias-interactive-bg-active);
   color: var(--dsw-alias-label-primary);
@@ -3618,10 +3656,10 @@ select:focus-visible {
   }
   .fold-row-btn { height: 40px; }
   .view-keep input { min-height: 40px; }
-  .req-nav-toggle { width: 40px; height: 40px; }
-  .req-nav-item { height: 40px; line-height: 40px; }
+  .req-nav-toggle { width: 44px; height: 44px; }
+  .req-nav-item { height: 44px; line-height: 44px; }
   .req-nav-filter { min-height: 40px; height: 40px; }
-  .chat-stage:has(.req-nav) .scroll { padding-right: max(56px, calc(8px + env(safe-area-inset-right) + 40px)); }
+  .chat-stage:has(.req-nav) .scroll { padding-right: max(60px, calc(8px + env(safe-area-inset-right) + 44px)); }
   .session-row,
   .ws-toggle,
   .dir-row,

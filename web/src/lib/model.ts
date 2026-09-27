@@ -245,6 +245,15 @@ function applyCursor(next: ViewState, detail: SessionDetail) {
 export function applyTail(s: ViewState, detail: SessionDetail): ViewState {
   const next = { ...s }
   next.busy = !!detail.running
+  if (!next.busy) {
+    next.stopping = false
+    // Recovery can miss message_end/agent_end entirely. An authoritative idle
+    // snapshot must retire transient rows or rebuild appends the stale partial
+    // beside the persisted final answer and leaves tool spinners running.
+    next.nodes = next.nodes.filter(n => !(n.kind === 'assistant' && n.streaming) && !(n.kind === 'tool' && n.running))
+    next.records = next.records.filter(r => !r.running)
+    next.requests = next.requests.filter(r => r.status !== 'running')
+  }
   next.leafId = detail.leafId ?? next.leafId
   next.runtimeReady = detail.runtime?.ready !== false
   next.commands = detail.commands ?? next.commands
@@ -941,8 +950,11 @@ function compactArgs(args: unknown): string {
   }
 }
 
-function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { kind: 'tool' }>> & { startedAt?: number; outputBlocks?: Content[]; sourceBlocks?: Content[] }) {
-  const { startedAt, ...nodePatch } = patch
+function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { kind: 'tool' }>> & { outputBlocks?: Content[]; sourceBlocks?: Content[] }) {
+  // startedAt stays on the node (not just the record): the running row ticks
+  // its live elapsed from it, and a settled row keeps it so the chat and the
+  // trajectory inspector agree after a history load.
+  const { outputBlocks, sourceBlocks, ...nodePatch } = patch
   s.nodes = s.nodes.map(n => {
     if (n.kind !== 'tool' || n.id !== id) return n
     return { ...n, ...nodePatch, running: patch.running ?? n.running }
@@ -957,11 +969,11 @@ function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { 
       running: patch.running ?? r.running,
       error: patch.isError ?? r.error,
       durationMs: patch.durationMs ?? r.durationMs,
-	  startedAt: startedAt ?? r.startedAt,
+      startedAt: patch.startedAt ?? r.startedAt,
       name: patch.name || r.name,
-	  details: patch.details ?? r.details,
-	  ...(patch.outputBlocks === undefined ? {} : { outputBlocks: patch.outputBlocks }),
-	  ...(patch.sourceBlocks === undefined ? {} : { sourceBlocks: patch.sourceBlocks }),
+      details: patch.details ?? r.details,
+      ...(outputBlocks === undefined ? {} : { outputBlocks }),
+      ...(sourceBlocks === undefined ? {} : { sourceBlocks }),
       preview: previewOf((patch.name || r.name || 'tool') + ' ' + (result || compactArgs(r.input))),
     }
   })
@@ -1054,6 +1066,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
             id: ev.toolCallId,
             name: ev.toolName || 'tool',
             args: ev.args,
+            startedAt,
             running: true,
           })
           next.records.push({
@@ -1069,7 +1082,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
             startedAt,
           })
         } else {
-          patchTool(next, ev.toolCallId, { running: true, args: ev.args, name: ev.toolName })
+          patchTool(next, ev.toolCallId, { running: true, args: ev.args, name: ev.toolName, startedAt })
         }
         next.records = next.records.map(r => r.kind === 'tool' && r.id === ev.toolCallId
           ? { ...r, startedAt, running: true }
@@ -1463,6 +1476,9 @@ export type LatestStats = {
   /** First-token → message_end span and its output tokens, for TPS. */
   decodeMs: number
   decodeTokens: number
+  /** Unix ms of the newest turn's opening user message, 0 when unknown. Lets
+   * the composer show a live elapsed while that turn runs. */
+  turnStartedAt: number
 }
 
 /** Usage/timing of a single step; the branch counts live on LatestStats. */
@@ -1471,7 +1487,7 @@ type StepMetrics = Pick<LatestStats, 'input' | 'output' | 'cacheRead' | 'cacheWr
 function emptyStats(): LatestStats {
   return {
     turns: 0, steps: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
-    hasCost: false, cost: 0, ttftMs: 0, decodeMs: 0, decodeTokens: 0,
+    hasCost: false, cost: 0, ttftMs: 0, decodeMs: 0, decodeTokens: 0, turnStartedAt: 0,
   }
 }
 
@@ -1517,6 +1533,20 @@ export function latestStats(s: ViewState): LatestStats {
   const path = activePath(s)
   const counted = new Set(path.map(e => e.id))
   const out = { ...emptyStats(), ...latestStepMetrics(s, path, counted) }
+  // Start of the newest turn for the composer's live elapsed. activePath is
+  // newest-first, so the first user entry is the current turn; a just-sent
+  // prompt whose entry has not landed yet falls back to the live node.
+  for (const e of path) {
+    if (e.type === 'message' && e.message?.role === 'user') { out.turnStartedAt = tsMs(e.message, e.timestamp) ?? 0; break }
+  }
+  for (let i = s.nodes.length - 1; i >= 0; i--) {
+    const n = s.nodes[i]
+    if (n.kind !== 'user') continue
+    // A second prompt appears optimistically before its entry reaches the
+    // branch. Timing the previous persisted prompt includes all the idle time.
+    if (out.turnStartedAt === 0 || liveUserPrefix.test(n.id)) out.turnStartedAt = n.ts ?? out.turnStartedAt
+    break
+  }
   for (const e of path) {
     if (e.type === 'message' && e.message?.role === 'user') out.turns += 1
     else if (e.type === 'message' && e.message?.role === 'assistant') out.steps += 1
@@ -1564,6 +1594,9 @@ export type TurnStats = {
   turn: number
   /** Completed steps in the turn: assistant messages plus settled compactions. */
   steps: number
+  /** Unix ms of the turn's opening user message; absent on a folded compact
+   * turn, which is always settled. The live divider ticks `now - startedAt`. */
+  startedAt?: number
   /** Wall-clock span from the user message to the turn's last persisted node.
    * Falls back to summed step latencies when timestamps are unavailable. */
   elapsedMs: number
@@ -1594,9 +1627,10 @@ export type TurnStats = {
  * Aggregate a chat branch into per-turn stats, keyed by the id of each turn's
  * last node so the chat can mount a divider right after that node. A turn with
  * no completed step is dropped (a just-sent user message has nothing to report),
- * and a turn that is still streaming/running is marked `live` for the caller to
- * defer. Steps are summed, not averaged, so the strip reads as the cost of the
- * whole turn; `ttftMs` keeps the first step because that is the latency the
+ * and a turn that is still streaming/running is marked `live` so the caller can
+ * render it with a ticking elapsed (`now - startedAt`) instead of waiting for
+ * it to settle. Steps are summed, not averaged, so the strip reads as the cost
+ * of the whole turn; `ttftMs` keeps the first step because that is the latency the
  * user actually perceived. Tool calls (total and failed) and notable cache
  * misses are counted per turn as a quick health read for long tool-heavy runs.
  *
@@ -1606,7 +1640,7 @@ export type TurnStats = {
  */
 export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
   const out = new Map<string, TurnStats>()
-  type Acc = TurnStats & { startedAt?: number; lastAt?: number; decodeMs: number; decodeTokens: number; lastId: string }
+  type Acc = TurnStats & { lastAt: number; decodeMs: number; decodeTokens: number; lastId: string }
   let acc: Acc | null = null
   let turn = base
   // Cache-miss detection mirrors `cacheMisses`: `prevPrompt` is the previous
@@ -1617,7 +1651,10 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
   let cacheReported = false
   const flush = () => {
     if (!acc) return
-    if (acc.startedAt != null && acc.lastAt != null && acc.lastAt > acc.startedAt) {
+    // The span reaches the turn's last node timestamp. Tool nodes carry their
+    // own start+end, so a turn ending on a tool still counts that tail instead
+    // of stopping at the last assistant message.
+    if (acc.startedAt != null && acc.startedAt > 0 && acc.lastAt > acc.startedAt) {
       acc.elapsedMs = acc.lastAt - acc.startedAt
     }
     if (acc.elapsedMs === 0) acc.elapsedMs = acc.durationMs
@@ -1639,13 +1676,17 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
         input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
         hasCost: false, cost: 0, ttftMs: 0, tps: null, live: false,
         tools: 0, toolFailures: 0, cacheMisses: 0,
-        startedAt: n.ts, lastAt: n.ts, decodeMs: 0, decodeTokens: 0, lastId: n.id,
+        startedAt: n.ts ?? 0, lastAt: n.ts ?? 0, decodeMs: 0, decodeTokens: 0, lastId: n.id,
       }
       continue
     }
     if (!acc) continue
     acc.lastId = n.id
     if (n.kind === 'assistant' && n.ts != null) acc.lastAt = n.ts
+    if (n.kind === 'tool' && n.startedAt != null && n.durationMs != null) {
+      const endedAt = n.startedAt + n.durationMs
+      if (endedAt > acc.lastAt) acc.lastAt = endedAt
+    }
     if (n.kind === 'assistant') {
       if (n.streaming) { acc.live = true; continue }
       acc.steps += 1

@@ -10,4 +10,9 @@
 // Go e2e harness and CI use this entry point to retain the complete test set.
 // The fake browser runner reuses browser processes while keeping each test's
 // context and each invocation's server state and artifacts isolated.
+//
+// Resume reconciles the opened transcript independently of push heartbeats;
+// an idle snapshot retires transient streaming rows. Request navigation owns
+// a keyed landing until real reading input, and highlights use unclamped row
+// geometry. See docs/webui.md for lifecycle and touch interaction contracts.
 package web

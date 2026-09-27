@@ -76,7 +76,19 @@ export function useTranscriptScroll(options: {
       v.options.scrollEndThreshold = follow ? 80 : -1
     }
   }, [])
-  const read = useCallback(() => setIntent(false), [setIntent])
+  const read = useCallback(() => {
+    // An explicit jump supersedes the previous touch momentum and paging
+    // budget; neither may re-arm following while its target is settling.
+    direction.current = 0
+    budget.current = 0
+    userScrolling.current = false
+    setIntent(false)
+    // Turning follow off does not cancel virtual-core's in-flight end jump.
+    // Replace that target before a fold or request jump can take ownership,
+    // otherwise its next reconciliation still drags the reader toward the end.
+    const el = state.current.scrollRef.current
+    if (el) virtual.current?.scrollToOffset(el.scrollTop)
+  }, [setIntent])
   const latest = useCallback(() => {
     direction.current = 0
     budget.current = 0

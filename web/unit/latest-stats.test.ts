@@ -275,3 +275,37 @@ test('turnStats falls back to summed latencies without timestamps', () => {
   // No TTFT means no TPS estimate, matching stepMetrics.
   expect(stats.get('a2')!.tps).toBeNull()
 })
+
+test('turnStats exposes the turn start and counts a tool tail', () => {
+  const stats = turnStats([
+    { kind: 'user', id: 'u1', text: 'hi', content: [], ts: 1_000 },
+    asst('a1', { input: 1, output: 1 }, { ttftMs: 100, latencyMs: 400, ts: 1_400 }),
+    { kind: 'tool', id: 't1', name: 'Bash', startedAt: 1_400, durationMs: 3_000 },
+    { kind: 'assistant', id: 's1', text: '…', streaming: true },
+  ])
+  const live = stats.get('s1')!
+  expect(live.live).toBe(true)
+  // The live divider ticks `now - startedAt`; without the start it cannot.
+  expect(live.startedAt).toBe(1_000)
+  // A tool tail extends the span past the last assistant timestamp (1_400):
+  // the tool ends at 4_400, so the turn has run 3_400ms from 1_000.
+  expect(live.elapsedMs).toBe(3_400)
+})
+
+test('latestStats exposes the current turn start for the live counter', () => {
+  const entry: Entry = {
+    type: 'message',
+    id: 'u1',
+    parentId: '',
+    timestamp: '2026-09-27T12:00:00.000Z',
+    message: { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+  }
+  expect(latestStats(view({ leafId: 'u1', allEntries: [entry] })).turnStartedAt)
+    .toBe(Date.parse('2026-09-27T12:00:00.000Z'))
+  // A just-sent prompt whose entry has not landed falls back to its live node.
+  expect(latestStats(view({ nodes: [{ kind: 'user', id: 'opt', text: 'hi', content: [], ts: 42 }] })).turnStartedAt).toBe(42)
+  expect(latestStats(view()).turnStartedAt).toBe(0)
+  expect(latestStats(view({ leafId: 'u1', allEntries: [entry], nodes: [
+    { kind: 'user', id: 'opt-user-2', text: 'next prompt', ts: 42 },
+  ] })).turnStartedAt).toBe(42)
+})

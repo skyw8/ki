@@ -332,7 +332,10 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 	if err := emit(Event{Type: AgentStart}); err != nil {
 		return nil, err
 	}
-	if err := emit(Event{Type: TurnStart}); err != nil {
+	// The turn's wall clock starts here and is stamped onto turn_start; turn_end
+	// reports the span so consumers can time a turn from the server clock.
+	turnStartedAt := time.Now()
+	if err := emit(Event{Type: TurnStart, Timestamp: turnStartedAt.UnixMilli()}); err != nil {
 		return nil, err
 	}
 	if err := emit(Event{Type: MessageStart, Message: &user}); err != nil {
@@ -367,7 +370,8 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 			return newMsgs, ctx.Err()
 		}
 		if !firstTurn {
-			if err := emit(Event{Type: TurnStart}); err != nil {
+			turnStartedAt = time.Now()
+			if err := emit(Event{Type: TurnStart, Timestamp: turnStartedAt.UnixMilli()}); err != nil {
 				return newMsgs, err
 			}
 		}
@@ -460,7 +464,14 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 				history = append(history, rr)
 			}
 		}
-		if err := emit(Event{Type: TurnEnd, Message: &asst, ToolResults: results}); err != nil {
+		turnEndedAt := time.Now()
+		if err := emit(Event{
+			Type:        TurnEnd,
+			Timestamp:   turnEndedAt.UnixMilli(),
+			DurationMs:  turnEndedAt.Sub(turnStartedAt).Milliseconds(),
+			Message:     &asst,
+			ToolResults: results,
+		}); err != nil {
 			return newMsgs, err
 		}
 		if asst.StopReason == "error" || asst.StopReason == "aborted" || terminate {

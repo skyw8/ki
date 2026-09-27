@@ -70,6 +70,34 @@ async function readTop(page: Page) {
   await scroll.evaluate(el => { el.scrollTop = 0 })
 }
 
+test('request navigation supersedes a slow history jump and anchors the requested compact turn', async ({ page }) => {
+  const f = await seed(page)
+  let release!: () => void
+  const gate = new Promise<void>(done => { release = done })
+  let pages = 0
+  await page.route(`**/v1/sessions/${f.id}?before=*`, async route => {
+    pages++
+    if (pages === 1) await gate
+    return route.continue()
+  })
+  await f.open()
+  const toggle = page.getByTestId('request-nav-toggle')
+  await toggle.click()
+  await page.getByTestId('request-nav-item').filter({ hasText: 'Input turn 0' }).click()
+  await expect.poll(() => pages).toBe(1)
+  if (!await page.getByTestId('request-nav-panel').isVisible()) await toggle.click()
+  await page.getByTestId('request-nav-item').filter({ hasText: 'Input turn 3' }).click()
+  release()
+  const offset = () => page.locator('[data-item-key="u3"]').evaluate(el => el.getBoundingClientRect().top - el.closest('[data-testid="chat-scroll"]')!.getBoundingClientRect().top)
+  await expect.poll(async () => Math.abs(await offset())).toBeLessThanOrEqual(2)
+  await expect(page.getByTestId('cancel-jump')).toHaveCount(0)
+  if (!await page.getByTestId('request-nav-panel').isVisible()) await toggle.click()
+  await expect(page.locator('[data-request-id="u3"]')).toHaveAttribute('aria-selected', 'true')
+  await page.waitForTimeout(300)
+  expect(Math.abs(await offset())).toBeLessThanOrEqual(2)
+  expect(pages).toBeLessThanOrEqual(3)
+})
+
 test('compact paging adds one complete turn and keeps the same content through successive prepends', async ({ page }) => {
   const f = await seed(page)
   const pages: SessionDetail[] = []

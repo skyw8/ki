@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { applyIndex, applyTail, evictBodies, hydrateEntries, loadHistory, turnStats } from '../src/lib/model.ts'
+import { applyEvent, applyIndex, applyTail, evictBodies, hydrateEntries, loadHistory, turnStats } from '../src/lib/model.ts'
 import type { Entry, IndexEntry } from '../src/api/types.ts'
 
 // The WebUI loads the newest window of a session and lets the tree index arrive
@@ -107,6 +107,21 @@ test('a rebuild during a run keeps the streaming bubble', () => {
   const paged = hydrateEntries(view, [user(8)])
   expect(paged.nodes.filter(n => n.id === 'live-asst')).toHaveLength(1)
   expect(paged.nodes[paged.nodes.length - 1].id).toBe('live-asst')
+})
+
+test('an idle recovery snapshot retires missed terminal events without losing loaded history', () => {
+  const { entries, index, leafId } = fixture()
+  let view = loadHistory({ id: 's', entries, index, leafId, running: true })
+  view = applyEvent(view, { type: 'message_update', message: { role: 'assistant', content: [{ type: 'text', text: 'unfinished partial' }] } })
+  view = applyEvent(view, { type: 'tool_execution_start', toolCallId: 'lost-tool', toolName: 'Bash' })
+  view = applyEvent(view, { type: 'run_aborted' })
+  const recovered = applyTail(view, { id: 's', running: false, leafId: 'a13', entries: [user(13), assistant(13)] })
+  expect(recovered.busy).toBe(false)
+  expect(recovered.stopping).toBe(false)
+  expect(recovered.nodes.map(n => n.id)).toEqual([...entries.map(e => e.id), 'u13', 'a13'])
+  expect(recovered.records.some(r => r.running)).toBe(false)
+  expect(recovered.requests.some(r => r.status === 'running')).toBe(false)
+  expect(recovered.indexLoaded).toBe(true)
 })
 
 test('a late index over a long branch stays cheap', () => {
