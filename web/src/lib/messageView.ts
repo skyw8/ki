@@ -93,8 +93,6 @@ export type FoldOptions = {
   keep: number
   /** Turn ids the user expanded by hand (they stay open). */
   expanded?: ReadonlySet<string>
-  /** While a run is live its own turn stays unfolded, even at keep=0. */
-  busy?: boolean
 }
 
 /** isLive reports nodes compact mode must never hide: work in progress. */
@@ -107,6 +105,12 @@ function isLive(n: ChatNode): boolean {
  * but the newest `keep`, and never a node that is still live — folding the
  * streaming text or the running tool would hide exactly what the user is
  * waiting for.
+ *
+ * The running turn folds like any other (measured: one in-flight turn held 61
+ * reply nodes and rendered all of them, where folding renders two). Keeping a
+ * whole live turn unfolded was the earlier behaviour and it is what made
+ * opening a running session expensive: the newest turn is usually the longest
+ * one, and its tool chatter is exactly what compact mode hides.
  */
 function hiddenCount(rest: ChatNode[], keep: number): number {
   let cut = Math.max(0, rest.length - keep)
@@ -127,11 +131,10 @@ export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderIte
   const turns = groupTurns(nodes)
   const keep = clampCompactKeep(opts.keep)
   const out: ChatRenderItem[] = []
-  turns.forEach((turn, i) => {
+  turns.forEach(turn => {
     if (turn.user) out.push({ kind: 'node', id: turn.user.id, node: turn.user })
     const rest = turn.user ? turn.nodes.slice(1) : turn.nodes
-    // The newest turn is where a live run is doing its work; leave it alone.
-    const hidden = opts.busy && i === turns.length - 1 ? 0 : hiddenCount(rest, keep)
+    const hidden = hiddenCount(rest, keep)
     if (hidden === 0) {
       for (const n of rest) out.push({ kind: 'node', id: n.id, node: n })
       return

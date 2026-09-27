@@ -97,8 +97,10 @@
 // SSE clients ignore comments. The buffered log is trimmed where
 // a payload cannot help a reader that attaches later: a message's start and
 // chunks leave the log once its message_end is persisted, superseded partials
-// are blanked once every attached reader has passed them (so memory tracks the
-// in-flight partial, not the run's total output), and a repeated request_header
+// are blanked once every attached reader has passed them — or, for a reader
+// that stopped consuming, once they are older than the retention caps in
+// runState.trimLocked (a stalled reader used to pin 286 MB of repeated partials
+// and made every re-attach replay all of it) — and a repeated request_header
 // is stored as promptUnchanged without its body. Each event carries a per-run
 // seq, sent as the SSE id line; a client may resume with Last-Event-ID or
 // ?since=<runId>:<seq> instead of replaying the whole run.

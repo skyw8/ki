@@ -99,3 +99,37 @@ func TestScriptedSkipsHoldWithoutToken(t *testing.T) {
 		t.Fatalf("got %+v %v", msg, err)
 	}
 }
+
+func TestScriptedStreamsGrowingChunks(t *testing.T) {
+	s := &Scripted{}
+	req := loop.Request{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "e2e-stream-8"}}}}}
+	var partials []types.Message
+	deltas := 0
+	msg, err := s.Stream(context.Background(), req, func(d loop.AssistantDelta) error {
+		deltas++
+		partials = append(partials, d.Partial)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deltas != 8 {
+		t.Fatalf("deltas = %d, want 8", deltas)
+	}
+	// Every partial carries the whole accumulated text, like the real adapters.
+	if got, want := partials[7].Text(), msg.Text(); got != want {
+		t.Fatalf("last partial %q, final %q", got, want)
+	}
+	if len(partials[0].Text()) >= len(partials[7].Text()) {
+		t.Fatal("partials must grow")
+	}
+}
+
+func TestScriptedStreamTokenIgnoresMalformed(t *testing.T) {
+	s := &Scripted{}
+	req := loop.Request{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "e2e-stream-x"}}}}}
+	msg, err := s.Stream(context.Background(), req, func(loop.AssistantDelta) error { return nil })
+	if err != nil || msg.Text() != "ok" {
+		t.Fatalf("got %q %v", msg.Text(), err)
+	}
+}

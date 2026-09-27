@@ -725,6 +725,21 @@ func streamEvents(ctx context.Context, base, token, id string) error {
 	return sc.Err()
 }
 
+// print writes the part of text stdout has not seen yet.
+func (p *streamPrinter) print(text string) {
+	if text == "" {
+		return
+	}
+	if !strings.HasPrefix(text, p.printed) {
+		// The accumulation changed shape (a provider that drops reasoning from a
+		// later partial): resync on the whole text rather than pretend the
+		// suffix lines up.
+		p.printed = ""
+	}
+	_, _ = fmt.Fprint(os.Stdout, text[len(p.printed):])
+	p.printed = text
+}
+
 // thinkingText returns concatenated thinking blocks.
 func thinkingText(m types.Message) string {
 	var s strings.Builder
@@ -738,13 +753,17 @@ func thinkingText(m types.Message) string {
 
 // streamPrinter writes a run's assistant text to stdout.
 //
-// Why it is stateful: the server trims superseded chunks from the replay it
-// gives a client that attaches mid-message, so the first message_update this
-// process sees can already carry several chunks' worth of text. Printing the
-// raw delta would drop everything before it, so the first chunk of a message is
-// written from the accumulated partial instead. For a live stream the two are
-// the same string, because the partial starts empty.
+// Why it diffs the accumulated text instead of printing the event's delta: the
+// server drops superseded chunks from a replay (each repeats the whole partial,
+// see runState.trimLocked), and it stops honouring a reader that fell further
+// behind than the retention caps there. A process that attaches mid-message —
+// or that falls behind — therefore receives a partial that has moved on by more
+// than one chunk, and printing raw deltas would silently drop the text in
+// between. Writing the missing suffix of the accumulated partial is correct in
+// both cases, and identical to the delta for a live stream.
 type streamPrinter struct {
+	// printed is the text already written for the message in flight.
+	printed string
 	started bool
 }
 
@@ -752,33 +771,28 @@ func (p *streamPrinter) event(ev loop.Event) {
 	switch ev.Type {
 	case loop.MessageStart:
 		p.started = false
+		p.printed = ""
 	case loop.MessageEnd:
 		// A run can finish before this process connects (a cached or local
 		// model): the replay then carries only the message_end, its chunks
-		// already trimmed. Print the final text when no chunk did.
-		if m := ev.Message; m != nil && m.Role == "assistant" && !p.started {
-			_, _ = fmt.Fprint(os.Stdout, thinkingText(*m)+m.Text())
+		// already trimmed. The end carries the final text, so anything the
+		// stream did not show is written here.
+		if m := ev.Message; m != nil && m.Role == "assistant" {
+			p.print(thinkingText(*m) + m.Text())
 		}
 		p.started = false
+		p.printed = ""
 	case loop.MessageUpdate:
 		d := ev.AssistantMessageEvent
 		if d == nil {
 			return
 		}
-		if !p.started {
-			p.started = true
-			m := d.Partial
-			if ev.Message != nil {
-				m = *ev.Message
-			}
-			if text := thinkingText(m) + m.Text(); text != "" {
-				_, _ = fmt.Fprint(os.Stdout, text)
-				return
-			}
+		p.started = true
+		m := d.Partial
+		if ev.Message != nil {
+			m = *ev.Message
 		}
-		if d.Delta != "" {
-			_, _ = fmt.Fprint(os.Stdout, d.Delta)
-		}
+		p.print(thinkingText(m) + m.Text())
 	case loop.ToolExecutionStart:
 		_, _ = fmt.Fprintf(os.Stdout, "\n[%s %s]\n", ev.ToolName, ev.ToolCallID)
 	case loop.ToolExecutionEnd:

@@ -105,9 +105,9 @@ func TestEmitterReplayStaysBounded(t *testing.T) {
 	}
 }
 
-// TestEmitterKeepsDeltasALiveReaderIsOwed: trimming may only drop a payload
-// every attached reader has already passed, so a reader that is still printing
-// increments (the CLI) never loses a chunk it has not read yet.
+// TestEmitterKeepsDeltasALiveReaderIsOwed: within the retention caps, trimming
+// still only drops a payload every attached reader has already passed, so a
+// reader that is following along (the CLI) keeps its chunks.
 func TestEmitterKeepsDeltasALiveReaderIsOwed(t *testing.T) {
 	em, _, _ := newEmitterForTest(t)
 	reader := &runReader{}
@@ -143,6 +143,79 @@ func TestEmitterKeepsDeltasALiveReaderIsOwed(t *testing.T) {
 		if want := i < 3; ev.Blank != want {
 			t.Fatalf("event %d blank = %v, want %v", i, ev.Blank, want)
 		}
+	}
+}
+
+// TestEmitterTrimsBehindAStalledReader is why the retention caps exist: a reader
+// that stopped consuming (a backgrounded tab, a suspended phone page, a
+// port-forward) used to pin every superseded payload for the whole run. In the
+// wild that reached 14,766 buffered events / 286 MB of repeated partials, ~1 GB
+// of daemon RSS, and a fresh page load replayed all of it before it could paint.
+func TestEmitterTrimsBehindAStalledReader(t *testing.T) {
+	const chunks = maxKeptSuperseded * 3
+	em, _, _ := newEmitterForTest(t)
+	stalled := &runReader{}
+	em.st.addReader(stalled) // never consumes: pos stays 0
+	for i := 1; i <= chunks; i++ {
+		// Every chunk repeats the whole partial, as the provider adapters do.
+		if err := em.Emit(assistantDelta(strings.Repeat("z", i*16))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The in-flight partial is the newest slot; a further chunk shows the buffer
+	// stays bounded rather than growing with the run.
+	if err := em.Emit(assistantDelta("tail")); err != nil {
+		t.Fatal(err)
+	}
+	em.st.mu.Lock()
+	defer em.st.mu.Unlock()
+	live, bytes := 0, 0
+	for _, ev := range em.st.evs {
+		if ev.Blank {
+			continue
+		}
+		if ev.Type != loop.MessageUpdate {
+			t.Fatalf("unexpected live event %s", ev.Type)
+		}
+		live++
+		bytes += eventPayloadBytes(ev)
+	}
+	// The in-flight partial plus at most maxKeptSuperseded superseded ones.
+	if live > maxKeptSuperseded+1 {
+		t.Fatalf("kept %d live payloads behind a stalled reader, want <= %d", live, maxKeptSuperseded+1)
+	}
+	if bytes > maxKeptSupersededBytes {
+		t.Fatalf("kept %d bytes behind a stalled reader, want <= %d", bytes, maxKeptSupersededBytes)
+	}
+	if live < 2 {
+		t.Fatalf("dropped too much: %d live payloads", live)
+	}
+	if len(em.st.evs) != chunks+1 {
+		t.Fatalf("buffer grew to %d slots", len(em.st.evs))
+	}
+}
+
+// TestEmitterTrimsASupersededMessageGroupOnceTheRunIsLong: the caps count
+// payloads, not messages, so a run with many short messages stays bounded too.
+func TestEmitterTrimsBehindAStalledReaderAcrossMessages(t *testing.T) {
+	em, _, _ := newEmitterForTest(t)
+	stalled := &runReader{}
+	em.st.addReader(stalled)
+	for i := 0; i < 40; i++ {
+		if err := em.Emit(assistantDelta(fmt.Sprintf("message-%d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	em.st.mu.Lock()
+	defer em.st.mu.Unlock()
+	live := 0
+	for _, ev := range em.st.evs {
+		if !ev.Blank {
+			live++
+		}
+	}
+	if live > maxKeptSuperseded+1 {
+		t.Fatalf("kept %d payloads, want <= %d", live, maxKeptSuperseded+1)
 	}
 }
 

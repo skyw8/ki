@@ -73,10 +73,17 @@ func ClampViewLimit(n int) int {
 }
 
 // BuildTail returns a slimmed window of the active leaf, oldest entry first.
+//
+// The window opens with the user message that opens its first turn (see
+// withTurnOpeningUser): compact mode renders one prompt per turn, and a window
+// cut by count starts wherever the tail limit lands — measured on real sessions,
+// 43 of 125 windows held no user entry at all, so their first turn rendered as a
+// fold row with no prompt above it.
 func BuildTail(entries []Entry, leafID string, limit int) Tail {
 	limit = ClampViewLimit(limit)
 	path := leafPath(entries, leafID)
 	keep, tailStart := selectLeafEntries(path, limit, toolsDigests{})
+	keep = withTurnOpeningUser(path, keep)
 	slimmed := slimPath(keep, nil, toolsDigests{})
 	oldest := ""
 	if tailStart < len(path) {
@@ -85,6 +92,69 @@ func BuildTail(entries []Entry, leafID string, limit int) Tail {
 		oldest = path[0].ID
 	}
 	return Tail{Entries: slimmed, HasMore: tailStart > 0, OldestID: oldest}
+}
+
+// withTurnOpeningUser adds the user message that opens the window's first turn.
+//
+// It is one extra entry, not a wider window: HasMore and OldestID keep their
+// meaning, so ?before= still walks the branch entry by entry and the entries
+// between the prompt and the window — a turn can be longer than the window —
+// stay reachable. A window that already opens with its turn's prompt (or one
+// whose turn goes back to the branch root) is returned unchanged.
+func withTurnOpeningUser(path, keep []Entry) []Entry {
+	first := firstChatEntry(keep)
+	if first == nil || isUserMessage(*first) {
+		return keep
+	}
+	user := userMessageBefore(path, first.ID)
+	if user == nil || slices.ContainsFunc(keep, func(e Entry) bool { return e.ID == user.ID }) {
+		return keep
+	}
+	want := make(map[string]bool, len(keep)+1)
+	for _, e := range keep {
+		want[e.ID] = true
+	}
+	want[user.ID] = true
+	out := make([]Entry, 0, len(keep)+1)
+	for _, e := range path {
+		if want[e.ID] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// firstChatEntry is the first entry of a window that becomes a chat node:
+// messages and compactions do, request headers and usage snapshots do not.
+func firstChatEntry(entries []Entry) *Entry {
+	for i := range entries {
+		switch entries[i].Type {
+		case "message", "compaction":
+			return &entries[i]
+		}
+	}
+	return nil
+}
+
+// userMessageBefore returns the nearest user message before id on the branch.
+func userMessageBefore(path []Entry, id string) *Entry {
+	at := -1
+	for i := range path {
+		if path[i].ID == id {
+			at = i
+			break
+		}
+	}
+	for i := at - 1; i >= 0; i-- {
+		if isUserMessage(path[i]) {
+			return &path[i]
+		}
+	}
+	return nil
+}
+
+func isUserMessage(e Entry) bool {
+	return e.Type == "message" && e.Message != nil && e.Message.Role == "user"
 }
 
 // BuildIndex returns a body-less row per entry, in file order.
@@ -137,11 +207,14 @@ func BuildBefore(entries []Entry, leafID, beforeID string, limit int) View {
 		start = len(older) - limit
 	}
 	window := older[start:]
-	slimmed := slimPath(window, older[:start], toolsDigests{})
+	// OldestID stays the window's own boundary (not the added prompt), so the
+	// next page continues from there and the entries between them stay reachable.
 	oldest := ""
 	if len(window) > 0 {
 		oldest = window[0].ID
 	}
+	window = withTurnOpeningUser(older, window)
+	slimmed := slimPath(window, older[:start], toolsDigests{})
 	return View{Entries: slimmed, HasMore: start > 0, OldestID: oldest}
 }
 

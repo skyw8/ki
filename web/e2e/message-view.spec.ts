@@ -6,7 +6,7 @@ import { clampCompactKeep, foldReplies, groupTurns } from '../src/lib/messageVie
 import type { ChatNode } from '../src/api/types.ts'
 
 const user = (id: string, text: string): ChatNode => ({ kind: 'user', id, text, content: [] })
-const asst = (id: string, text = 'ok'): ChatNode => ({ kind: 'assistant', id, text })
+const asst = (id: string, text = 'ok', streaming = false): ChatNode => ({ kind: 'assistant', id, text, streaming })
 const tool = (id: string, running = false): ChatNode => ({ kind: 'tool', id, name: 'Bash', args: {}, running })
 
 test('groupTurns splits at user nodes and keeps a leading group', () => {
@@ -51,11 +51,17 @@ test('foldReplies never hides work in progress', () => {
   expect(foldReplies(nodes, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 't1', 'a1b'])
 })
 
-test('foldReplies leaves the newest turn alone while a run is live', () => {
+test('foldReplies folds the running turn too, keeping live work visible', () => {
+  // An in-flight turn is the longest one in practice: leaving it unfolded meant
+  // rendering all of its reply nodes (measured on a live run: 61 nodes, where
+  // folding renders 2). It folds like any other turn — only nodes that are still
+  // streaming or running stay on screen.
   const nodes = [user('u1', 'one'), asst('a1a'), tool('t1'), asst('a1b'), user('u2', 'two'), asst('a2a'), asst('a2b')]
-  expect(foldReplies(nodes, { keep: 0, busy: true }).map(i => i.id)).toEqual([
-    'u1', 'fold:u1', 'u2', 'a2a', 'a2b',
-  ])
+  expect(foldReplies(nodes, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'u2', 'fold:u2'])
+  const live = [user('u1', 'one'), asst('a1a'), asst('a1b', 'ok', true)]
+  expect(foldReplies(live, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'a1b'])
+  const runningTool = [user('u1', 'one'), asst('a1a'), tool('t1', true), asst('a1b')]
+  expect(foldReplies(runningTool, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 't1', 'a1b'])
 })
 
 test('clampCompactKeep bounds the configured N', () => {
@@ -314,4 +320,62 @@ test.describe('big fold on a phone', () => {
     expect(after.tools).toBeGreaterThan(0)
     expect(after.maxScroll).toBeGreaterThan(start.maxScroll)
   })
+})
+
+test('a running turn folds its replies like any finished turn', async ({ page }) => {
+  test.setTimeout(60_000)
+  await page.goto('/')
+  await expect(page.getByTestId('hero')).toBeVisible()
+  await useCompact(page, '0')
+  // Two rounds, each delayed: while the second one is pending the turn already
+  // has a tool call plus its result to fold, and the run is still live.
+  await sendPrompt(page, `e2e-write-env e2e-delay-2500 ${Date.now()}`)
+  // composer-stop is the live-run control, so the assertions below run while the
+  // turn is still in flight.
+  await expect(page.getByTestId('composer-stop')).toBeVisible({ timeout: 20_000 })
+  // The turn already has a tool call and its result, and both are folded away;
+  // the prompt stays on screen. Before this, a live turn rendered every reply
+  // node it had.
+  await expect(page.getByTestId('fold-row')).toHaveCount(1, { timeout: 20_000 })
+  await expect(page.getByTestId('user-bubble')).toHaveCount(1)
+  await expect(page.getByTestId('assistant-message')).toHaveCount(0)
+  await expect(page.getByTestId('tool-card')).toHaveCount(0)
+})
+
+test('a burst of streaming chunks keeps the main thread responsive', async ({ page }) => {
+  test.setTimeout(90_000)
+  await page.goto('/')
+  await expect(page.getByTestId('hero')).toBeVisible()
+  // 400 chunks of ~130 bytes: each one repeats the whole accumulated text, so an
+  // un-throttled client re-lexes a message that grows to ~50 KiB on every delta.
+  await sendPrompt(page, 'e2e-stream-400')
+  await expect(page.getByTestId('chat-scroll')).toBeVisible()
+  const stats = await page.evaluate(async () => {
+    const root = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
+    const tasks: number[] = []
+    const obs = new PerformanceObserver(list => {
+      for (const e of list.getEntries()) tasks.push(e.duration)
+    })
+    try {
+      obs.observe({ type: 'longtask', buffered: false })
+    } catch { /* not supported: no budget check below */ }
+    const deadline = Date.now() + 40_000
+    while (Date.now() < deadline) {
+      if ((root.textContent ?? '').includes('item 399')) break
+      await new Promise(r => setTimeout(r, 200))
+    }
+    obs.disconnect()
+    return {
+      done: (root.textContent ?? '').includes('item 399'),
+      total: Math.round(tasks.reduce((a, b) => a + b, 0)),
+      worst: Math.round(Math.max(0, ...tasks)),
+      tasks: tasks.length,
+    }
+  })
+  console.log(`burst stats: ${JSON.stringify(stats)}`)
+  // The block is the number, not the count of long tasks in isolation: before the
+  // throttle the same run blocked for seconds (every delta re-parsed the message).
+  expect(stats.done, 'the stream finished').toBe(true)
+  expect(stats.total, `long task total ${stats.tasks} tasks, worst ${stats.worst}ms`).toBeLessThan(2000)
+  expect(stats.worst, `worst long task (total ${stats.total}ms)`).toBeLessThan(400)
 })

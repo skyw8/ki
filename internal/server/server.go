@@ -256,25 +256,84 @@ func (st *runState) retirePartialLocked() {
 	}
 }
 
+// Bounds on the superseded streaming payloads a run keeps for a reader that
+// attaches later.
+//
+// Why a bound exists at all: trimming used to be gated purely on reader
+// positions ('never drop a chunk a reader has not read yet'), and one stalled
+// client — a backgrounded tab, a suspended phone page, a port-forward that
+// stopped reading — then pinned the whole buffer. A live run in the wild held
+// 14,766 events / 286 MB of superseded message_update payloads and left the
+// daemon at ~1 GB RSS, and every fresh page load replayed all of it (the
+// stall's send queue measured 3.1 MB) before it could render anything.
+//
+// Why dropping them is safe: a message_update carries the whole accumulated
+// partial, so the newest one per message is all a reader needs, and everything
+// older than that is on disk in the transcript the same reader can fetch. A
+// client that falls this far behind cannot be shown a live stream anyway; the
+// CLI prints the accumulated partial and the missing suffix instead of the raw
+// increments (see internal/cli streamPrinter).
+const (
+	maxKeptSuperseded      = 128
+	maxKeptSupersededBytes = 4 << 20
+)
+
 // trimLocked blanks superseded payloads, keeping memory proportional to the
 // in-flight partial instead of to the whole run's streamed output.
 //
-// The in-flight partial stays: a reader attaching right now still gets one
-// chunk to render, and the next live chunk carries the whole accumulated
-// message anyway. Everything else goes only once every attached reader has
-// passed it, so the CLI — which prints the raw increments — never loses a chunk
-// it has not read yet. Must be called with mu held.
+// The in-flight partial always stays: a reader attaching right now still gets
+// one chunk to render, and the next live chunk carries the whole accumulated
+// message anyway. Everything else goes once every attached reader has passed it,
+// or — for a reader that is further behind than the caps above — once it is
+// older than the newest maxKeptSuperseded payloads. Must be called with mu held.
 func (st *runState) trimLocked() {
 	limit := st.minReaderPos()
+	// Pass one, newest first: the retention caps keep the payloads a client
+	// attaching now can still use, and mark everything else blank.
+	kept, bytes := 0, 0
+	for i := len(st.pending) - 1; i >= 0; i-- {
+		idx := st.pending[i]
+		if idx == st.partial {
+			continue
+		}
+		size := eventPayloadBytes(st.evs[idx])
+		if idx < limit || kept >= maxKeptSuperseded || (kept > 0 && bytes+size > maxKeptSupersededBytes) {
+			st.evs[idx] = blankEvent
+			continue
+		}
+		kept++
+		bytes += size
+	}
+	// Pass two compacts in place, oldest first. The write cursor stays behind the
+	// read cursor because pending is scanned in the same order it was built.
 	out := st.pending[:0]
 	for _, idx := range st.pending {
-		if idx != st.partial && idx < limit {
-			st.evs[idx] = blankEvent
+		if st.evs[idx] == blankEvent {
 			continue
 		}
 		out = append(out, idx)
 	}
 	st.pending = out
+}
+
+// eventPayloadBytes approximates what a buffered event retains, for the
+// retention cap. The exact size needs a marshal, and the cap only has to be
+// right about the order of magnitude.
+func eventPayloadBytes(ev *loop.Event) int {
+	if ev == nil {
+		return 0
+	}
+	n := len(ev.System) + len(ev.MessageText)
+	if ev.Message != nil {
+		n += len(ev.Message.Text())
+		for i := range ev.Message.Content {
+			n += len(ev.Message.Content[i].Thinking) + len(ev.Message.Content[i].Data)
+		}
+	}
+	if ev.AssistantMessageEvent != nil {
+		n += len(ev.AssistantMessageEvent.Delta)
+	}
+	return n
 }
 
 // promptDigest identifies a request_header payload (system prompt + tool

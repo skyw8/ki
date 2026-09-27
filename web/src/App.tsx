@@ -15,7 +15,7 @@ import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
 import { appendOptimisticUser, applyEvent, applyIndex, applyRuntimeCatalog, applyTail, clampThinkingEffort, emptyView, hydrateEntries, initialView, keepComposer, latestStats, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, userRequests } from './lib/model'
 import { clampCompactKeep, loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
-import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, PushEvent, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './api/types'
+import type { CatalogExtension, ChatNode, Content, ExtensionUI, LoopEvent, ModelInfo, PushEvent, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './api/types'
 import { TrajectoryView } from './features/chat/Trajectory'
 import { useI18n } from './i18n/index'
 import { toast } from './components/toast'
@@ -803,16 +803,52 @@ function WorkspaceApp({ api }: { api: Client }) {
     // updates (after SSE ends or a manual refetch). Light it as soon as this
     // client starts listening so a live run is green without switching tabs.
     setSessions(ss => ss.map(s => s.id === id ? { ...s, running: true } : s))
+    /**
+     * Events are applied in order, but rendered together.
+     *
+     * Why the queue: attaching to a run replays its buffered events, and a long
+     * turn streams tens of thousands of updates — each carrying the whole
+     * accumulated text. One setView per event meant one React render per event,
+     * and the markdown layer re-lexes a streaming message on every render, so a
+     * re-attach spent minutes re-parsing the same text before it could paint
+     * (measured: 14,766 replayed events, ~286 MiB, on one live run). A flush
+     * renders everything queued so far; a newer partial of the same message
+     * replaces a queued one, because only the last can be on screen.
+     */
+    let queue: LoopEvent[] = []
+    let timer = 0
+    const flush = (): void => {
+      if (timer) {
+        window.clearTimeout(timer)
+        timer = 0
+      }
+      const batch = queue
+      queue = []
+      if (!batch.length || abortRef.current !== ac) return
+      setView(v => {
+        if (abortRef.current !== ac) return v
+        let next = v
+        for (const ev of batch) next = applyEvent(next, ev)
+        // Advance the cursor with the view, not with the socket: React batches
+        // these updaters, so writing it outside could let the cursor skip past an
+        // event this view never applied.
+        const last = batch[batch.length - 1]
+        if (last.runId && last.seq !== undefined) resumeRef.current.set(id, `${last.runId}:${last.seq}`)
+        return next
+      })
+    }
+    const enqueue = (ev: LoopEvent): void => {
+      const prev = queue[queue.length - 1]
+      // Consecutive message_update events belong to the same message (a message
+      // is bracketed by its start/end and any tool event), and each carries the
+      // whole partial, so the queue only has to keep the newest.
+      if (ev.type === 'message_update' && prev?.type === 'message_update') queue[queue.length - 1] = ev
+      else queue.push(ev)
+      if (!timer) timer = window.setTimeout(flush, 16)
+    }
     try {
       for await (const ev of api.events(id, ac.signal, resumeRef.current.get(id))) {
-        setView(v => {
-          if (abortRef.current !== ac) return v
-          // Advance the cursor with the view, not with the socket: React
-          // batches these updaters, so writing it outside could let the cursor
-          // skip past an event this view never applied.
-          if (ev.runId && ev.seq !== undefined) resumeRef.current.set(id, `${ev.runId}:${ev.seq}`)
-          return applyEvent(v, ev)
-        })
+        enqueue(ev)
       }
     } catch (e) {
       if ((e as { name?: string }).name === 'AbortError') return
@@ -820,6 +856,10 @@ function WorkspaceApp({ api }: { api: Client }) {
       // the finally block re-listens, so a transient network failure is silent.
       if (!isNetworkError(e)) toast.from(e)
     } finally {
+      // Apply whatever is still queued before the tail reconciliation below: it
+      // replaces the window, and the cursor must not move past an unapplied
+      // event.
+      flush()
       if (abortRef.current === ac) {
         // A finished run is reconciled from the tail: the events already
         // arrived on this stream, so only the window and leaf need refreshing,

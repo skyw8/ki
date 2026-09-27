@@ -201,6 +201,7 @@ export const Markdown = memo(function Markdown({
   // handles the gesture; the placeholder reserves the estimated height, so the
   // list does not resize when the body arrives one frame later.
   const [ready, setReady] = useState(streaming)
+  const shown = useStreamingText(text, streaming)
   useEffect(() => {
     if (ready) return
     const w = window as Window & {
@@ -240,7 +241,30 @@ export const Markdown = memo(function Markdown({
       parseMarkdownIntoBlocksFn={streaming ? undefined : blocksFor}
       components={components}
     >
-      {normalizeMarkdown(text)}
+      {normalizeMarkdown(shown)}
     </Streamdown>
   )
 })
+
+/**
+ * How long a streaming message may lag behind its newest delta.
+ *
+ * Streaming mode re-lexes the whole message on every render (the block cache is
+ * off there, because every delta changes the text). Attaching to a run replays
+ * its chunks, so rendering each one re-parsed the message thousands of times
+ * before anything could be read; this caps that at ~8 parses a second while
+ * keeping the text visibly moving, and the last delta always lands (the timer
+ * is only armed while the text keeps changing, and a settled message renders
+ * immediately).
+ */
+const STREAM_RENDER_MS = 150
+
+function useStreamingText(text: string, streaming: boolean): string {
+  const [shown, setShown] = useState(text)
+  useEffect(() => {
+    if (!streaming || text === shown) return
+    const id = window.setTimeout(() => setShown(text), STREAM_RENDER_MS)
+    return () => window.clearTimeout(id)
+  }, [text, streaming, shown])
+  return streaming ? shown : text
+}

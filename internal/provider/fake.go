@@ -33,6 +33,13 @@ const WriteEnvToken = "e2e-write-env" //nolint:gosec // e2e prompt marker, not a
 // that extension intercept e2e holds until abort.
 const SleepInterceptToken = "e2e-sleep-intercept" //nolint:gosec // e2e prompt marker, not a credential
 
+// StreamTokenPrefix makes the fake assistant emit `<n>` streaming chunks of a
+// growing message, each carrying the whole accumulated partial, with a short
+// pause between them so the run stays live while a test watches it. It is how
+// WebUI tests exercise the replay and render path a long streaming turn
+// produces, without a live model. A no-op for the live provider.
+const StreamTokenPrefix = "e2e-stream-"
+
 // MarkdownToken makes the default fake assistant emit a GFM table, a mermaid
 // fence, and a plantuml fence so WebUI Playwright can exercise those renderers
 // without a live model.
@@ -103,6 +110,38 @@ func lastUserDelay(req loop.Request) time.Duration {
 		return 0
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+// lastUserStreamChunks parses `e2e-stream-<n>` from the latest user message; 0
+// means no streaming fixture (missing or malformed).
+func lastUserStreamChunks(req loop.Request) int {
+	text := ""
+	for _, msg := range slices.Backward(req.Messages) {
+		if msg.Role == "user" {
+			text = msg.Text()
+			break
+		}
+	}
+	i := strings.Index(text, StreamTokenPrefix)
+	if i < 0 {
+		return 0
+	}
+	rest := text[i+len(StreamTokenPrefix):]
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil || n <= 0 {
+		return 0
+	}
+	if n > 2000 {
+		n = 2000
+	}
+	return n
 }
 
 // lastUserBashProbe returns the command after BashTokenPrefix in the latest
@@ -177,6 +216,32 @@ func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.
 			StopReason: "toolUse",
 			Provider:   req.Provider,
 			Model:      req.Model,
+		}
+		return m, ctx.Err()
+	}
+	if n := lastUserStreamChunks(req); n > 0 {
+		m := types.Message{Role: "assistant", StopReason: "stop", Provider: req.Provider, Model: req.Model}
+		var acc strings.Builder
+		for i := 0; i < n; i++ {
+			// Every chunk repeats the whole partial, exactly like the provider
+			// adapters: that repetition is what makes a replay quadratic unless
+			// the server trims it.
+			// A markdown list item per chunk: the text grows to a realistic size,
+			// so a client that re-parses it per delta pays the real cost.
+			line := fmt.Sprintf("- item %d %s\n", i, strings.Repeat("x", 110))
+			acc.WriteString(line)
+			m.Content = []types.Content{{Type: "text", Text: acc.String()}}
+			if err := emit(loop.AssistantDelta{Type: "text_delta", Delta: line, Partial: m}); err != nil {
+				return m, err
+			}
+			if i%8 == 0 {
+				// Keep the run busy for a moment so a test can observe it live.
+				select {
+				case <-ctx.Done():
+					return m, ctx.Err()
+				case <-time.After(25 * time.Millisecond):
+				}
+			}
 		}
 		return m, ctx.Err()
 	}

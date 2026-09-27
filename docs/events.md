@@ -43,8 +43,14 @@ CLI 的行读取器只认 `data:` 前缀。
   chunk 每条都带整份累积 partial，`message_start` 被自己的 chunk 取代，工具进度被下一
   条取代。**当前 in-flight 的那份 partial 永远保留**（刚 attach 的客户端靠它渲染），其余
   的在**所有已连接 reader 都读过之后**被清空成 `blank`（reader 直接跳过、不发帧、不进扩
-  展）。内存因此只跟最新 partial 同量级，而不是跟整轮流式文本的平方同量级；仍挂着未读
-  增量的 reader（CLI）不会被裁掉——这也是为什么裁剪要看 reader 位置而不是定时。
+  展）。内存因此只跟最新 partial 同量级，而不是跟整轮流式文本的平方同量级。
+- 裁剪还带**上限**：最多保留最新的 `128` 条过时 payload（且总量不超过 4 MiB）。原因是一
+  个不再读取的 reader（后台标签页、被挂起的手机页、停掉的端口转发）会把裁剪点永久钉在
+  它停下的位置，实测一个 live run 因此攒下 14,766 条事件 / 286 MB 重复 partial、daemon
+  RSS ~1 GB，而**每一次重新打开该会话都要先把这 286 MB 重放完**才能渲染。超出上限的
+  reader 不再被让路：最新 partial 已经带着整份累积文本，更早的内容都在同一份 transcript
+  里，落后 128 条以上的读者本来就看不到「直播」；CLI 因此改成打印累积文本里尚未输出的
+  后缀（`internal/cli` 的 `streamPrinter`），裁剪与重连都不会让它漏字。
 - 一条 message 的 `message_end` **落盘后**（带 entry id），它的 `message_start` 和所有
   chunk 就都能从 `GET /v1/sessions/{id}` 取回，整个 group 随即退出 in-flight 状态、可被
   裁掉：一个已完成的 run 的回放因此只剩 `message_end`，没有 `message_start`/`message_update`。

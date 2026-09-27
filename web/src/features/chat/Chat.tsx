@@ -597,8 +597,8 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     })
   }, [scrollRef])
   const items = useMemo(
-    () => (mode === 'compact' ? foldReplies(nodes, { keep, busy, expanded: folds }) : detailedItems(nodes)),
-    [mode, nodes, keep, busy, folds],
+    () => (mode === 'compact' ? foldReplies(nodes, { keep, expanded: folds }) : detailedItems(nodes)),
+    [mode, nodes, keep, folds],
   )
   // Characters per item, used by the height estimate of rows nobody has
   // measured yet.

@@ -50,23 +50,76 @@ func TestStreamPrinterPrintsReplayedPartialOnce(t *testing.T) {
 	}
 }
 
-// TestStreamPrinterPrintsLiveDeltas: a live stream's chunks are increments, so
-// each one prints as-is in arrival order.
+// TestStreamPrinterPrintsLiveDeltas: a live stream's chunks are increments and
+// each partial extends the last, so every chunk prints once, in arrival order.
 func TestStreamPrinterPrintsLiveDeltas(t *testing.T) {
+	steps := []struct{ chunk, text string }{{"Hel", "Hel"}, {"lo ", "Hello "}, {"world", "Hello world"}}
 	var p streamPrinter
 	out := captureStdout(t, func() {
 		p.event(loop.Event{Type: loop.MessageStart, Message: assistant("")})
-		for i, chunk := range []string{"Hel", "lo ", "world"} {
-			text := "Hello world"[:3+i*3]
-			partial := *assistant(text)
+		for _, step := range steps {
+			partial := *assistant(step.text)
 			p.event(loop.Event{
 				Type:                  loop.MessageUpdate,
-				Message:               assistant(text),
-				AssistantMessageEvent: &loop.AssistantDelta{Type: "text_delta", Delta: chunk, Partial: partial},
+				Message:               assistant(step.text),
+				AssistantMessageEvent: &loop.AssistantDelta{Type: "text_delta", Delta: step.chunk, Partial: partial},
 			})
 		}
 	})
 	if out != "Hello world" {
+		t.Fatalf("stdout = %q", out)
+	}
+}
+
+// TestStreamPrinterFillsSkippedChunks: a reader that fell behind the retention
+// caps (or reconnected) sees a partial that moved on by several chunks at once.
+// Printing the accumulated text's missing suffix is what keeps the output whole
+// — the raw delta of the first update after the gap is only part of it.
+func TestStreamPrinterFillsSkippedChunks(t *testing.T) {
+	var p streamPrinter
+	out := captureStdout(t, func() {
+		p.event(loop.Event{Type: loop.MessageStart, Message: assistant("")})
+		first := *assistant("Hel")
+		p.event(loop.Event{
+			Type:                  loop.MessageUpdate,
+			Message:               assistant("Hel"),
+			AssistantMessageEvent: &loop.AssistantDelta{Type: "text_delta", Delta: "Hel", Partial: first},
+		})
+		// Three chunks' worth of text arrives as one update, with a delta that
+		// only covers the newest one.
+		later := *assistant("Hello world")
+		p.event(loop.Event{
+			Type:                  loop.MessageUpdate,
+			Message:               assistant("Hello world"),
+			AssistantMessageEvent: &loop.AssistantDelta{Type: "text_delta", Delta: "world", Partial: later},
+		})
+	})
+	if out != "Hello world" {
+		t.Fatalf("stdout = %q", out)
+	}
+}
+
+// TestStreamPrinterResyncsWhenThePartialIsNotExtended: providers that drop
+// reasoning text from a later partial must not lose the printed suffix logic —
+// the printer falls back to the whole accumulated text.
+func TestStreamPrinterResyncsWhenThePartialIsNotExtended(t *testing.T) {
+	var p streamPrinter
+	out := captureStdout(t, func() {
+		p.event(loop.Event{Type: loop.MessageStart, Message: assistant("")})
+		first := *assistant("thinking first")
+		p.event(loop.Event{
+			Type:                  loop.MessageUpdate,
+			Message:               assistant("thinking first"),
+			AssistantMessageEvent: &loop.AssistantDelta{Type: "text_delta", Delta: "thinking first", Partial: first},
+		})
+		switched := *assistant("answer")
+		p.event(loop.Event{
+			Type:                  loop.MessageUpdate,
+			Message:               assistant("answer"),
+			AssistantMessageEvent: &loop.AssistantDelta{Type: "text_delta", Delta: "answer", Partial: switched},
+		})
+	})
+	if out != "thinking firstanswer" {
 		t.Fatalf("stdout = %q", out)
 	}
 }
