@@ -154,11 +154,14 @@ Telegram 的用户访问策略由 Managed Bot 在 Telegram 侧控制。扩展不
 - 群组消息会带简短的发送者名称和 `user_id`，用于区分多人发言。
 - 未 @ 的群组消息通过 `session.appendMessage` 进入正常历史，不启动模型；@ 消息通过 `session.enqueue` 触发 prompt，并读取此前已提交的完整历史。
 - 私聊或群组明确 @ Bot 的消息会尽力添加 `👀` reaction；未 @ 的群组消息不添加 reaction，只记录历史并确认处理。私聊使用 Telegram 的 30 秒临时草稿流式更新，并在结束时发送普通消息固化，群组使用占位消息编辑；不会发送 thinking、原始 tool call、参数和完整 tool result。
+- 预览更新（草稿、工具状态、占位编辑）按每个 chat 约 1 秒的节奏写入，避免触发 Telegram 的限流；最后一条回复不受节奏限制，一定写入。
+- 群组的最终回复就是那次占位消息编辑。编辑被限流（429）会按 `retry_after` 重试，仍失败则改发一条普通消息并删除占位，同时把失败原因打到 server stderr（`telegram-bot: edit final message: …`）——回复不会静默丢失。
 - 如果模型或 Responses 流失败，扩展会清理已收到的 partial 文本，并在草稿/占位消息中显示失败原因，不会把 partial 当成正常回复。
 - 普通 4xx 和 Responses 协议格式错误会立即返回，不会重复请求多次；429、5xx、网络错误和网关明确标记的瞬时 `bad_response_status_code` 仍会退避重试。
 
 ## 常见问题
 
 - **没有回复**：确认填入的是 Managed Bot 的 token 和 ID，Telegram 侧访问策略允许当前用户，并确认群组消息 @ 了 Bot。
+- **群里只留下 `…` 或半截回复**：最终编辑没写进去。现在会重试并在失败后改发新消息，同时 server stderr 会有 `telegram-bot: edit final message: …`；如果一条日志都没有，看 session jsonl 确认该轮是否真的跑完（`message` 里应有 assistant 回复）。
 - **无法加入群组**：在 BotFather 中检查 `/setjoingroups`；是否能添加 Bot 仍受群组成员管理权限影响。
 - **保存后未连接**：检查 server 日志和 Extensions runtime 状态；Telegram API 网络错误会自动重试。

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -85,6 +86,25 @@ func (a *botAPI) call(ctx context.Context, method string, params any, result any
 	return nil
 }
 
+// callRetry runs one Telegram call and retries only throttling (HTTP 429), which
+// is the expected rejection for rapid per-chat writes. retry_after is honored and
+// capped: the lifecycle goroutine writes every session's replies in order, so a
+// long server-side delay must not stall it. A final reply must not be lost to a
+// 429 that only the caller could have waited out.
+func (a *botAPI) callRetry(ctx context.Context, method string, params any, result any) error {
+	for attempt := 0; ; attempt++ {
+		err := a.call(ctx, method, params, result)
+		var apiErr *telegramError
+		if !errorsAs(err, &apiErr) || apiErr.Code != http.StatusTooManyRequests || attempt >= telegramRetryAttempts {
+			return err
+		}
+		delay := min(time.Duration(apiErr.RetryAfter)*time.Second, telegramRetryMaxDelay)
+		if !waitContext(ctx, delay) {
+			return err
+		}
+	}
+}
+
 func (a *botAPI) getMe(ctx context.Context) (user, error) {
 	var out user
 	err := a.call(ctx, "getMe", map[string]any{}, &out)
@@ -100,7 +120,7 @@ func (a *botAPI) deleteWebhook(ctx context.Context) error {
 
 func (a *botAPI) getUpdates(ctx context.Context, offset int64) ([]update, error) {
 	var out []update
-	callCtx, cancel := context.WithTimeout(ctx, 50*timeSecond)
+	callCtx, cancel := context.WithTimeout(ctx, 50*time.Second)
 	defer cancel()
 	err := a.call(callCtx, "getUpdates", map[string]any{
 		"offset":          offset,
@@ -118,13 +138,25 @@ func (a *botAPI) setReaction(ctx context.Context, chatID, messageID int64) error
 	}, nil)
 }
 
-func (a *botAPI) sendMessage(ctx context.Context, chatID, threadID int64, text string) (message, error) {
+func sendMessageParams(chatID, threadID int64, text string) map[string]any {
 	params := map[string]any{"chat_id": chatID, "text": text}
 	if threadID != 0 {
 		params["message_thread_id"] = threadID
 	}
+	return params
+}
+
+func (a *botAPI) sendMessage(ctx context.Context, chatID, threadID int64, text string) (message, error) {
 	var out message
-	err := a.call(ctx, "sendMessage", params, &out)
+	err := a.call(ctx, "sendMessage", sendMessageParams(chatID, threadID, text), &out)
+	return out, err
+}
+
+// sendMessageRetry is sendMessage with throttling retried: the final answer is
+// the one write the connector cannot afford to lose.
+func (a *botAPI) sendMessageRetry(ctx context.Context, chatID, threadID int64, text string) (message, error) {
+	var out message
+	err := a.callRetry(ctx, "sendMessage", sendMessageParams(chatID, threadID, text), &out)
 	return out, err
 }
 
@@ -136,12 +168,19 @@ func (a *botAPI) sendMessageDraft(ctx context.Context, chatID, threadID, draftID
 	return a.call(ctx, "sendMessageDraft", params, nil)
 }
 
+func editMessageParams(chatID, messageID int64, text string) map[string]any {
+	return map[string]any{"chat_id": chatID, "message_id": messageID, "text": text}
+}
+
 func (a *botAPI) editMessage(ctx context.Context, chatID, messageID int64, text string) error {
-	return a.call(ctx, "editMessageText", map[string]any{
-		"chat_id":    chatID,
-		"message_id": messageID,
-		"text":       text,
-	}, nil)
+	return a.call(ctx, "editMessageText", editMessageParams(chatID, messageID, text), nil)
+}
+
+// editMessageRetry is editMessage with throttling retried: a group reply is
+// delivered by editing its placeholder message, so a throttled edit must be
+// waited out instead of being abandoned.
+func (a *botAPI) editMessageRetry(ctx context.Context, chatID, messageID int64, text string) error {
+	return a.callRetry(ctx, "editMessageText", editMessageParams(chatID, messageID, text), nil)
 }
 
 func (a *botAPI) deleteMessage(ctx context.Context, chatID, messageID int64) error {
@@ -178,10 +217,6 @@ func (a *botAPI) download(ctx context.Context, filePath string) ([]byte, error) 
 	}
 	return io.ReadAll(io.LimitReader(res.Body, 50<<20))
 }
-
-// Telegram's long-poll timeout is expressed separately to avoid importing a
-// second duration helper into the sidecar's small API client.
-const timeSecond = 1_000_000_000
 
 type update struct {
 	UpdateID int64    `json:"update_id"`

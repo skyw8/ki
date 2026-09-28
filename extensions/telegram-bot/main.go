@@ -17,12 +17,30 @@ import (
 )
 
 const (
-	stateFileName   = "state.json"
-	configFileName  = "config.json"
-	outputDebounce  = 250 * time.Millisecond
-	settleDelay     = 500 * time.Millisecond
-	outputRetention = 30 * time.Second
-	secretValue     = "<configured>"
+	stateFileName  = "state.json"
+	configFileName = "config.json"
+	// outputDebounce coalesces a burst of deltas into one preview write.
+	outputDebounce = 250 * time.Millisecond
+	// minOutputWriteInterval paces the writes to one chat. Telegram throttles
+	// rapid chat writes, and a group reply is delivered by editing a placeholder
+	// message: an unpaced preview turned a long answer into an edit storm, and
+	// the throttled final edit then lost the answer.
+	minOutputWriteInterval = time.Second
+	// previewSendTimeout budgets one preview write (draft, placeholder, edit).
+	previewSendTimeout = 15 * time.Second
+	// finalSendTimeout budgets one final write, including a throttled retry. Each
+	// part of a split answer gets its own budget, so a slow earlier part cannot
+	// spend the deadline the remaining parts need.
+	finalSendTimeout = 30 * time.Second
+	// telegramRetryAttempts caps throttled (429) retries per Telegram call.
+	telegramRetryAttempts = 2
+	// telegramRetryMaxDelay caps one retry wait. The lifecycle goroutine writes
+	// every session's replies in order, so a long server-side retry_after must
+	// not stall it.
+	telegramRetryMaxDelay = 10 * time.Second
+	settleDelay           = 500 * time.Millisecond
+	outputRetention       = 30 * time.Second
+	secretValue           = "<configured>"
 )
 
 type telegramConfig struct {
@@ -128,6 +146,9 @@ type outputState struct {
 	draftOK       bool
 	placeholderID int64
 	statusID      int64
+	// lastWriteAt paces this chat's writes at minOutputWriteInterval; guarded by
+	// the app's outputMu.
+	lastWriteAt time.Time
 }
 
 func newTelegramApp(rpc *stdioRPC) *telegramApp {
@@ -896,10 +917,35 @@ func (a *telegramApp) appendOutput(ev lifecycleEvent, w *telegramWorker) {
 	if st != nil && !st.final && !st.failed {
 		st.text += ev.Text
 		if st.timer == nil {
-			st.timer = time.AfterFunc(outputDebounce, func() { a.flushOutput(ev.RunID, false) })
+			st.timer = time.AfterFunc(st.outputDelay(time.Now()), func() { a.flushOutput(ev.RunID, false) })
 		}
 	}
 	a.outputMu.Unlock()
+}
+
+// reserveWrite reports whether a preview write may reach Telegram now, and
+// records the attempt when it may. Telegram throttles per-chat writes, so a
+// preview that would land inside the pacing window is skipped: the next delta
+// schedules another tick, and the final write is never paced. Must be called
+// with outputMu held.
+func (st *outputState) reserveWrite(now time.Time) bool {
+	if now.Sub(st.lastWriteAt) < minOutputWriteInterval {
+		return false
+	}
+	st.lastWriteAt = now
+	return true
+}
+
+// outputDelay returns how long to wait before the pending preview write: never
+// inside the pacing window, and at least outputDebounce after the newest delta.
+// Deferring the timer, instead of writing on every delta, keeps the placeholder
+// rendering without spending the chat's whole write budget on one answer. Must
+// be called with outputMu held.
+func (st *outputState) outputDelay(now time.Time) time.Duration {
+	if wait := minOutputWriteInterval - now.Sub(st.lastWriteAt); wait > outputDebounce {
+		return wait
+	}
+	return outputDebounce
 }
 
 func (a *telegramApp) finishOutput(ev lifecycleEvent, w *telegramWorker) {
@@ -983,7 +1029,7 @@ func (a *telegramApp) failOutput(ev lifecycleEvent, w *telegramWorker, override 
 
 	st.sendMu.Lock()
 	defer st.sendMu.Unlock()
-	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(a.ctx, previewSendTimeout)
 	defer cancel()
 	if private && draftOK && draftID != 0 {
 		// Replace a private draft before sending the durable error message.
@@ -991,18 +1037,23 @@ func (a *telegramApp) failOutput(ev lifecycleEvent, w *telegramWorker, override 
 		// sendMessageDraft.
 		_ = worker.api.sendMessageDraft(ctx, chatID, threadID, draftID, text)
 	}
+	// The notice explaining why there is no answer is a terminal write: it
+	// retries throttling and does not reuse the edit's context, which that edit
+	// may have spent.
+	noticeCtx, noticeCancel := context.WithTimeout(a.ctx, finalSendTimeout)
+	defer noticeCancel()
 	if placeholderID != 0 {
-		if err := worker.api.editMessage(ctx, chatID, placeholderID, text); err != nil {
-			_ = worker.api.deleteMessage(ctx, chatID, placeholderID)
-			if _, sendErr := worker.api.sendMessage(ctx, chatID, threadID, text); sendErr != nil {
+		if err := worker.api.editMessageRetry(ctx, chatID, placeholderID, text); err != nil {
+			_ = worker.api.deleteMessage(noticeCtx, chatID, placeholderID)
+			if _, sendErr := worker.api.sendMessageRetry(noticeCtx, chatID, threadID, text); sendErr != nil {
 				reportError("send failure message: " + sendErr.Error())
 			}
 		}
-	} else if _, err := worker.api.sendMessage(ctx, chatID, threadID, text); err != nil {
+	} else if _, err := worker.api.sendMessageRetry(noticeCtx, chatID, threadID, text); err != nil {
 		reportError("send failure message: " + err.Error())
 	}
 	if statusID != 0 {
-		_ = worker.api.deleteMessage(ctx, chatID, statusID)
+		_ = worker.api.deleteMessage(noticeCtx, chatID, statusID)
 	}
 	a.scheduleOutputCleanup(ev.RunID, st)
 }
@@ -1066,6 +1117,10 @@ func (a *telegramApp) flushOutput(runID string, final bool) {
 	worker := st.worker
 	chatID, threadID := st.chatID, st.threadID
 	private, draftID, draftOK, placeholderID, statusID := st.private, st.draftID, st.draftOK, st.placeholderID, st.statusID
+	// Every write to the chat is paced, and a preview that arrives inside the
+	// pacing window is skipped; the final write is never skipped, so the answer
+	// reaches Telegram even when it completes inside that window.
+	paced := st.reserveWrite(time.Now())
 	a.outputMu.Unlock()
 	if text == "" {
 		if final {
@@ -1073,9 +1128,12 @@ func (a *telegramApp) flushOutput(runID string, final bool) {
 		}
 		return
 	}
-	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
-	defer cancel()
 	if !final {
+		if !paced {
+			return
+		}
+		ctx, cancel := context.WithTimeout(a.ctx, previewSendTimeout)
+		defer cancel()
 		part := splitTelegram(text)[0]
 		if private && draftOK {
 			if draftID == 0 {
@@ -1107,26 +1165,62 @@ func (a *telegramApp) flushOutput(runID string, final bool) {
 			}
 		}
 		if placeholderID != 0 {
+			// A rejected preview is dropped on purpose: the next tick or the final
+			// edit carries the newer text, and retrying would deepen a throttle
+			// that is already rejecting this chat's writes.
 			_ = worker.api.editMessage(ctx, chatID, placeholderID, part)
 		}
 		return
 	}
-	parts := splitTelegram(text)
-	for i, part := range parts {
+	a.flushFinal(worker, chatID, threadID, placeholderID, statusID, text)
+	a.scheduleOutputCleanup(runID, st)
+}
+
+// flushFinal writes the completed answer. Every part gets its own budget so a
+// slow or throttled earlier part cannot spend the deadline the remaining parts
+// need, and a write that fails is reported: an answer that does not reach
+// Telegram must not disappear without a trace.
+func (a *telegramApp) flushFinal(w *telegramWorker, chatID, threadID, placeholderID, statusID int64, text string) {
+	for i, part := range splitTelegram(text) {
+		ctx, cancel := context.WithTimeout(a.ctx, finalSendTimeout)
 		if i == 0 && placeholderID != 0 {
-			if err := worker.api.editMessage(ctx, chatID, placeholderID, part); err != nil {
-				_, _ = worker.api.sendMessage(ctx, chatID, threadID, part)
-			}
-			continue
-		}
-		if _, err := worker.api.sendMessage(ctx, chatID, threadID, part); err != nil {
+			a.writeFinalPlaceholder(ctx, w, chatID, threadID, placeholderID, part)
+		} else if _, err := w.api.sendMessageRetry(ctx, chatID, threadID, part); err != nil {
 			reportError("send final message: " + err.Error())
 		}
+		cancel()
 	}
 	if statusID != 0 {
-		_ = worker.api.deleteMessage(ctx, chatID, statusID)
+		ctx, cancel := context.WithTimeout(a.ctx, finalSendTimeout)
+		_ = w.api.deleteMessage(ctx, chatID, statusID)
+		cancel()
 	}
-	a.scheduleOutputCleanup(runID, st)
+}
+
+// writeFinalPlaceholder writes the final text into the group's placeholder
+// message. The placeholder *is* the reply, so a failed edit cannot be dropped:
+// throttled edits are retried, and a still-failing edit falls back to a fresh
+// message and removes the stub. The fallback gets its own context because the
+// failed edit may have spent the caller's deadline.
+func (a *telegramApp) writeFinalPlaceholder(ctx context.Context, w *telegramWorker, chatID, threadID, placeholderID int64, part string) {
+	err := w.api.editMessageRetry(ctx, chatID, placeholderID, part)
+	if err == nil {
+		return
+	}
+	// The placeholder may also be gone (removed by hand, or a rejected edit that
+	// Telegram never applied), so a fresh message is the only way to show the
+	// answer. The stub is deleted only after that send succeeded: deleting first
+	// would destroy a partial answer when the fallback also fails.
+	reportError("edit final message: " + err.Error())
+	sendCtx, cancel := context.WithTimeout(a.ctx, finalSendTimeout)
+	defer cancel()
+	if _, sendErr := w.api.sendMessageRetry(sendCtx, chatID, threadID, part); sendErr != nil {
+		reportError("send final message: " + sendErr.Error())
+		return
+	}
+	if err := w.api.deleteMessage(sendCtx, chatID, placeholderID); err != nil {
+		reportError("delete placeholder message: " + err.Error())
+	}
 }
 
 func (a *telegramApp) sendToolStatus(ev lifecycleEvent, w *telegramWorker) {
@@ -1138,9 +1232,13 @@ func (a *telegramApp) sendToolStatus(ev lifecycleEvent, w *telegramWorker) {
 	st.sendMu.Lock()
 	defer st.sendMu.Unlock()
 	a.outputMu.Lock()
-	settled := st == nil || st.failed || st.settled
+	settled := st.failed || st.settled
+	// Tool status and preview share one per-chat write budget: a run with many
+	// tool calls would otherwise spend the budget the reply's placeholder edit
+	// needs. A skipped status keeps the previous tool row.
+	write := st.reserveWrite(time.Now())
 	a.outputMu.Unlock()
-	if settled {
+	if settled || !write {
 		return
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)

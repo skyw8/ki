@@ -8,7 +8,57 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
+
+// telegramCall is one recorded Bot API request.
+type telegramCall struct {
+	method string
+	params map[string]any
+}
+
+// fakeTelegram records the connector's requests and answers request number N
+// with reply(method, N)'s raw Bot API body.
+func fakeTelegram(t *testing.T, reply func(method string, ordinal int) string) (*httptest.Server, func() []telegramCall) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls []telegramCall
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var params map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		method := r.URL.Path[strings.LastIndexByte(r.URL.Path, '/')+1:]
+		mu.Lock()
+		calls = append(calls, telegramCall{method: method, params: params})
+		ordinal := len(calls)
+		mu.Unlock()
+		_, _ = w.Write([]byte(reply(method, ordinal)))
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []telegramCall {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]telegramCall(nil), calls...)
+	}
+}
+
+// groupOutput builds a connector whose final reply owns a group placeholder.
+func groupOutput(t *testing.T, server *httptest.Server) (*telegramApp, *telegramWorker, lifecycleEvent, *outputState) {
+	t.Helper()
+	app := &telegramApp{ctx: context.Background(), outputs: map[string]*outputState{}, workers: map[string]*telegramWorker{}}
+	worker := &telegramWorker{app: app, api: &botAPI{base: server.URL, token: "test", client: server.Client()}}
+	ev := lifecycleEvent{
+		RunID: "run-group", Role: "assistant", StopReason: "stop", Text: "完整回复",
+		External: map[string]string{
+			"connector": "telegram-bot", "accountId": "bot:1", "chatId": "42",
+			"threadId": "0", "chatType": "supergroup",
+		},
+	}
+	st := app.ensureOutput(ev, worker)
+	st.text = ev.Text
+	return app, worker, ev, st
+}
 
 func TestMentionsBotUsesTelegramEntities(t *testing.T) {
 	me := user{ID: 42, Username: "ki_bot"}
@@ -292,5 +342,86 @@ func TestTelegramFailureTextHasFallback(t *testing.T) {
 	got := telegramFailureText(lifecycleEvent{})
 	if got != "⚠️ 模型请求失败：\n模型请求失败，请稍后重试。" {
 		t.Fatalf("fallback text: %q", got)
+	}
+}
+
+func TestFinalEditRetriesThrottlingAndIgnoresPacing(t *testing.T) {
+	server, calls := fakeTelegram(t, func(method string, ordinal int) string {
+		if method == "editMessageText" && ordinal == 1 {
+			// Throttle answer without retry_after: the retry only depends on the
+			// 429 code, and waiting a real second would only slow the test down.
+			return `{"ok":false,"error_code":429,"description":"Too Many Requests: retry later"}`
+		}
+		return `{"ok":true,"result":{"message_id":7}}`
+	})
+	app, worker, ev, st := groupOutput(t, server)
+	st.placeholderID = 99
+	// A preview write just went out; the final answer must not be paced out.
+	st.reserveWrite(time.Now())
+	app.finishOutput(ev, worker)
+
+	got := calls()
+	if len(got) != 2 || got[0].method != "editMessageText" || got[1].method != "editMessageText" {
+		t.Fatalf("telegram calls: %+v", got)
+	}
+	if text := got[1].params["text"]; text != "完整回复" {
+		t.Fatalf("final edit text: %v", text)
+	}
+	if !st.final || st.text != "完整回复" {
+		t.Fatalf("output state: %+v", st)
+	}
+}
+
+func TestFailedFinalEditFallsBackToFreshMessage(t *testing.T) {
+	server, calls := fakeTelegram(t, func(method string, _ int) string {
+		if method == "editMessageText" {
+			// A 4xx is not retried; the answer still has to reach the chat.
+			return `{"ok":false,"error_code":400,"description":"message to edit not found"}`
+		}
+		return `{"ok":true,"result":{"message_id":7}}`
+	})
+	app, worker, ev, st := groupOutput(t, server)
+	st.placeholderID = 99
+	app.finishOutput(ev, worker)
+
+	got := calls()
+	if len(got) != 3 {
+		t.Fatalf("telegram calls: %+v", got)
+	}
+	if got[0].method != "editMessageText" || got[1].method != "sendMessage" || got[2].method != "deleteMessage" {
+		t.Fatalf("call order: %+v", got)
+	}
+	if text := got[1].params["text"]; text != "完整回复" {
+		t.Fatalf("fallback text: %v", text)
+	}
+	if id := got[2].params["message_id"]; id != float64(99) {
+		t.Fatalf("deleted message: %v", id)
+	}
+	if !st.final {
+		t.Fatalf("output state: %+v", st)
+	}
+}
+
+func TestPreviewWritesArePaced(t *testing.T) {
+	now := time.Now()
+	st := &outputState{}
+	if !st.reserveWrite(now) {
+		t.Fatal("a fresh output has no pacing to respect")
+	}
+	if st.reserveWrite(now.Add(minOutputWriteInterval / 2)) {
+		t.Fatal("a preview inside the pacing window must be skipped")
+	}
+	if !st.reserveWrite(now.Add(minOutputWriteInterval)) {
+		t.Fatal("a preview after the window must be allowed")
+	}
+	st.lastWriteAt = now
+	if delay := st.outputDelay(now.Add(100 * time.Millisecond)); delay != minOutputWriteInterval-100*time.Millisecond {
+		t.Fatalf("paced delay = %v", delay)
+	}
+	if delay := st.outputDelay(now.Add(2 * minOutputWriteInterval)); delay != outputDebounce {
+		t.Fatalf("unpaced delay = %v", delay)
+	}
+	if delay := st.outputDelay(time.Time{}); delay != outputDebounce {
+		t.Fatalf("zero-time delay = %v", delay)
 	}
 }
