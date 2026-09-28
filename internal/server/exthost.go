@@ -42,7 +42,7 @@ func (s *Server) CreateSession(req extension.SessionCreateRequest) (extension.Se
 	if strings.TrimSpace(req.WorkspaceID) == "" && strings.TrimSpace(req.CWD) == "" {
 		return extension.SessionCreateResult{}, errWorkspaceOrCWDRequired
 	}
-	rec, err := s.resolveWorkspace(req.WorkspaceID, req.CWD)
+	rec, err := s.resolveWorkspace(req.WorkspaceID, req.CWD, req.WorkspaceTitle)
 	if err != nil {
 		return extension.SessionCreateResult{}, err
 	}

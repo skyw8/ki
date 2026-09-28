@@ -1146,7 +1146,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		Metadata       map[string]any `json:"metadata"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	rec, err := s.resolveWorkspace(body.WorkspaceID, body.CWD)
+	rec, err := s.resolveWorkspace(body.WorkspaceID, body.CWD, "")
 	if err != nil {
 		code := 400
 		if workspace.NotFound(err) {

@@ -37,6 +37,31 @@ func TestCreateNormalizeAndDuplicate(t *testing.T) {
 	}
 }
 
+func TestCreateAppliesGivenTitleOnlyOnce(t *testing.T) {
+	home := t.TempDir()
+	s := Open(home, filepath.Join(home, "sessions"))
+	dir := filepath.Join(home, "topic-0")
+	rec, created, err := s.Create(dir, "group-怀仁堂")
+	if err != nil || !created {
+		t.Fatalf("create: created=%v err=%v", created, err)
+	}
+	if rec.Title != "group-怀仁堂" {
+		t.Fatalf("title %q", rec.Title)
+	}
+	if err := s.SetTitle(rec.ID, "my name"); err != nil {
+		t.Fatal(err)
+	}
+	// A connector that re-registers its workspace must not overwrite the name the
+	// user gave it in the WebUI.
+	again, created, err := s.Create(dir, "group-怀仁堂")
+	if err != nil || created {
+		t.Fatalf("re-register: created=%v err=%v", created, err)
+	}
+	if again.Title != "my name" {
+		t.Fatalf("rename lost: %q", again.Title)
+	}
+}
+
 func TestEnsureTempAndMatch(t *testing.T) {
 	home := t.TempDir()
 	s := Open(home, filepath.Join(home, "sessions"))

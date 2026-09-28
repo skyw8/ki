@@ -53,6 +53,12 @@ type telegramConfig struct {
 type telegramState struct {
 	Offsets  map[string]int64  `json:"offsets"`
 	Sessions map[string]string `json:"sessions"`
+	// Topics caches forum topic names ("<chatId>:<threadId>") learned from topic
+	// service messages; Telegram has no method to query a topic name.
+	Topics map[string]string `json:"topics,omitempty"`
+	// Forums caches the is_forum flag per chat, so a sidecar does not have to ask
+	// getChat again for every message that carries a thread id.
+	Forums map[string]bool `json:"forums,omitempty"`
 }
 
 type sessionCreateResult struct {
@@ -299,7 +305,12 @@ func loadTelegramConfig(path string) (telegramConfig, error) {
 }
 
 func loadTelegramState(path string) (telegramState, error) {
-	state := telegramState{Offsets: map[string]int64{}, Sessions: map[string]string{}}
+	state := telegramState{
+		Offsets:  map[string]int64{},
+		Sessions: map[string]string{},
+		Topics:   map[string]string{},
+		Forums:   map[string]bool{},
+	}
 	b, err := os.ReadFile(path) //nolint:gosec // path is the private extension state file.
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -315,6 +326,12 @@ func loadTelegramState(path string) (telegramState, error) {
 	}
 	if state.Sessions == nil {
 		state.Sessions = map[string]string{}
+	}
+	if state.Topics == nil {
+		state.Topics = map[string]string{}
+	}
+	if state.Forums == nil {
+		state.Forums = map[string]bool{}
 	}
 	return state, nil
 }
@@ -440,7 +457,13 @@ func waitContext(ctx context.Context, delay time.Duration) bool {
 
 func (w *telegramWorker) handleUpdate(item update) error {
 	msg := item.Message
-	if msg == nil || msg.From == nil || msg.From.IsBot {
+	if msg == nil {
+		return nil
+	}
+	// Topic service messages are the only place a topic name is ever revealed, so
+	// they are recorded before anything else may drop the update.
+	w.rememberTopic(msg)
+	if msg.From == nil || msg.From.IsBot {
 		return nil
 	}
 	group := isGroup(msg.Chat)
@@ -450,7 +473,8 @@ func (w *telegramWorker) handleUpdate(item update) error {
 		text = msg.Caption
 		entities = msg.CaptionEntities
 	}
-	addressed := !group || mentionsBot(text, entities, w.me)
+	// A reply to one of the bot's own messages addresses it just like a mention.
+	addressed := !group || mentionsBot(text, entities, w.me) || repliesToBot(msg, w.me)
 	if group && addressed {
 		text = stripBotMention(text, entities, w.me)
 	}
@@ -468,8 +492,9 @@ func (w *telegramWorker) handleUpdate(item update) error {
 	name, args, slash := parseSlash(text)
 	control := slash && (name == "new" || name == "cd" || name == "compact" || name == "reload")
 
-	key := w.externalKey(msg.Chat.ID, msg.MessageThreadID)
-	sess, err := w.sessionFor(key, msg)
+	thread := w.conversationThread(msg)
+	key := w.externalKey(msg.Chat.ID, thread)
+	sess, err := w.sessionFor(key, msg, thread)
 	if err != nil {
 		return err
 	}
@@ -484,7 +509,7 @@ func (w *telegramWorker) handleUpdate(item update) error {
 		text = "请查看附件。"
 	}
 	contents = append([]inputContent{{Type: "text", Text: authorPrefix(msg.From, text)}}, contents...)
-	external := w.externalMetadata(msg)
+	external := w.externalMetadata(msg, thread)
 	if group && !addressed {
 		ctx, cancel := context.WithTimeout(w.ctx, 15*time.Second)
 		var result map[string]any
@@ -502,11 +527,11 @@ func (w *telegramWorker) handleUpdate(item update) error {
 		return err
 	}
 	if err := w.applyModel(sess); err != nil {
-		w.sendText(msg.Chat.ID, msg.MessageThreadID, "⚠️ Telegram 回复模型配置无效：\n"+err.Error())
+		w.sendText(msg.Chat.ID, thread, "⚠️ Telegram 回复模型配置无效：\n"+err.Error())
 		return nil
 	}
 	if control {
-		return w.runCommand(name, args, key, sess, msg)
+		return w.runCommand(name, args, key, sess, msg, thread)
 	}
 
 	var result enqueueResult
@@ -595,21 +620,110 @@ func (w *telegramWorker) externalKey(chatID, threadID int64) string {
 	return "telegram:" + w.accountID + ":" + strconv.FormatInt(chatID, 10) + ":" + strconv.FormatInt(threadID, 10)
 }
 
-func (w *telegramWorker) externalMetadata(msg *message) map[string]string {
+func (w *telegramWorker) externalMetadata(msg *message, threadID int64) map[string]string {
 	return map[string]string{
 		"source":      "telegram",
 		"connector":   "telegram-bot",
 		"accountId":   w.accountID,
-		"externalKey": w.externalKey(msg.Chat.ID, msg.MessageThreadID),
+		"externalKey": w.externalKey(msg.Chat.ID, threadID),
 		"chatId":      strconv.FormatInt(msg.Chat.ID, 10),
-		"threadId":    strconv.FormatInt(msg.MessageThreadID, 10),
+		"threadId":    strconv.FormatInt(threadID, 10),
 		"chatType":    msg.Chat.Type,
 		"userId":      userID(msg.From),
 		"messageId":   strconv.FormatInt(msg.MessageID, 10),
 	}
 }
 
-func (w *telegramWorker) sessionFor(key string, msg *message) (sessionSnapshot, error) {
+// conversationThread is the thread id that identifies this message's
+// conversation, plus one getChat probe per chat: replies create threads in every
+// group, and only a forum's topics are conversations of their own.
+func (w *telegramWorker) conversationThread(msg *message) int64 {
+	forum := msg.Chat.IsForum
+	if isGroup(msg.Chat) && !forum && msg.MessageThreadID > 1 {
+		forum = w.forumChat(msg.Chat.ID)
+	}
+	return sessionThread(msg.Chat, msg.MessageThreadID, w.me.HasTopicsEnabled, forum)
+}
+
+// forumChat reports whether the chat is a forum, cached in state.json. Updates
+// carry is_forum, but a sidecar started before the group gained topics would
+// otherwise keep merging that forum's topics into one session.
+func (w *telegramWorker) forumChat(chatID int64) bool {
+	key := strconv.FormatInt(chatID, 10)
+	w.app.stateMu.Lock()
+	cached, known := w.app.state.Forums[key]
+	w.app.stateMu.Unlock()
+	if known {
+		return cached
+	}
+	ctx, cancel := context.WithTimeout(w.ctx, 10*time.Second)
+	got, err := w.api.getChat(ctx, chatID)
+	cancel()
+	if err != nil {
+		// Keep the parent session until a later message can classify the chat;
+		// guessing "forum" would fork a session out of an ordinary group.
+		return false
+	}
+	w.app.stateMu.Lock()
+	if w.app.state.Forums == nil {
+		w.app.state.Forums = map[string]bool{}
+	}
+	w.app.state.Forums[key] = got.IsForum
+	if err := w.app.persistStateLocked(); err != nil {
+		reportError("persist forum flag: " + err.Error())
+	}
+	w.app.stateMu.Unlock()
+	return got.IsForum
+}
+
+// rememberTopic caches the name of a forum topic. Telegram only reveals it in the
+// forum_topic_created / forum_topic_edited service messages, and the label of the
+// topic's workspace needs it.
+func (w *telegramWorker) rememberTopic(msg *message) {
+	name := ""
+	switch {
+	case msg.ForumTopicCreated != nil:
+		name = msg.ForumTopicCreated.Name
+	case msg.ForumTopicEdited != nil:
+		// An edit may only change the icon, which carries no new name.
+		name = msg.ForumTopicEdited.Name
+	}
+	if strings.TrimSpace(name) == "" || msg.MessageThreadID <= 1 {
+		return
+	}
+	key := topicKey(msg.Chat.ID, msg.MessageThreadID)
+	w.app.stateMu.Lock()
+	if w.app.state.Topics == nil {
+		w.app.state.Topics = map[string]string{}
+	}
+	if w.app.state.Topics[key] == name {
+		w.app.stateMu.Unlock()
+		return
+	}
+	w.app.state.Topics[key] = name
+	if err := w.app.persistStateLocked(); err != nil {
+		reportError("persist topic name: " + err.Error())
+	}
+	w.app.stateMu.Unlock()
+}
+
+func (w *telegramWorker) topicName(chatID, threadID int64) string {
+	w.app.stateMu.Lock()
+	defer w.app.stateMu.Unlock()
+	return w.app.state.Topics[topicKey(chatID, threadID)]
+}
+
+func topicKey(chatID, threadID int64) string {
+	return strconv.FormatInt(chatID, 10) + ":" + strconv.FormatInt(threadID, 10)
+}
+
+// workspaceTitle is the display name given to a workspace when the connector
+// registers it: group-怀仁堂, group-怀仁堂-项目讨论, private-@ki_user.
+func (w *telegramWorker) workspaceTitle(chat chat, threadID int64) string {
+	return chatLabel(chat, threadID, w.topicName(chat.ID, threadID))
+}
+
+func (w *telegramWorker) sessionFor(key string, msg *message, threadID int64) (sessionSnapshot, error) {
 	w.app.stateMu.Lock()
 	id := w.app.state.Sessions[key]
 	w.app.stateMu.Unlock()
@@ -638,19 +752,23 @@ func (w *telegramWorker) sessionFor(key string, msg *message) (sessionSnapshot, 
 		w.app.stateMu.Unlock()
 		return got, nil
 	}
-	cwd := w.workspaceCWD(msg.Chat.ID, msg.MessageThreadID)
+	cwd := w.workspaceCWD(msg.Chat.ID, threadID)
 	if err := os.MkdirAll(cwd, 0o700); err != nil {
 		return sessionSnapshot{}, err
 	}
 	metadata := map[string]any{}
-	for key, value := range w.externalMetadata(msg) {
-		metadata[key] = value
+	for field, value := range w.externalMetadata(msg, threadID) {
+		metadata[field] = value
 	}
 	var created sessionCreateResult
 	ctx, cancel = context.WithTimeout(w.ctx, 15*time.Second)
 	params := map[string]any{
-		"cwd":      cwd,
-		"metadata": metadata,
+		"cwd": cwd,
+		// The workspace keeps this name until the user renames it in the WebUI:
+		// session.create applies workspaceTitle only when the directory is
+		// registered for the first time.
+		"workspaceTitle": w.workspaceTitle(msg.Chat, threadID),
+		"metadata":       metadata,
 	}
 	if w.model != "" {
 		params["model"] = w.model
@@ -717,21 +835,21 @@ func authorPrefix(from *user, text string) string {
 	return fmt.Sprintf("[Telegram 用户: %s, id=%s]\n%s", displayName(from), userID(from), text)
 }
 
-func (w *telegramWorker) runCommand(name, args, key string, sess sessionSnapshot, msg *message) error {
+func (w *telegramWorker) runCommand(name, args, key string, sess sessionSnapshot, msg *message, threadID int64) error {
 	ctx, cancel := context.WithTimeout(w.ctx, 30*time.Second)
 	defer cancel()
 	switch name {
 	case "new":
 		var result sessionCreateResult
 		if err := w.app.rpc.call(ctx, "session.new", map[string]any{"sessionId": sess.ID}, &result); err != nil {
-			w.sendText(msg.Chat.ID, msg.MessageThreadID, "新会话创建失败："+err.Error())
+			w.sendText(msg.Chat.ID, threadID, "新会话创建失败："+err.Error())
 			return nil
 		}
 		w.updateMapping(key, result.SessionID)
-		w.sendText(msg.Chat.ID, msg.MessageThreadID, "已开启新会话。")
+		w.sendText(msg.Chat.ID, threadID, "已开启新会话。")
 	case "cd":
 		if strings.TrimSpace(args) == "" {
-			w.sendText(msg.Chat.ID, msg.MessageThreadID, "用法：/cd <path>")
+			w.sendText(msg.Chat.ID, threadID, "用法：/cd <path>")
 			return nil
 		}
 		path := strings.TrimSpace(args)
@@ -740,28 +858,28 @@ func (w *telegramWorker) runCommand(name, args, key string, sess sessionSnapshot
 		}
 		path, err := filepath.Abs(path)
 		if err != nil {
-			w.sendText(msg.Chat.ID, msg.MessageThreadID, "工作目录无效："+err.Error())
+			w.sendText(msg.Chat.ID, threadID, "工作目录无效："+err.Error())
 			return nil
 		}
 		var result sessionCreateResult
 		if err := w.app.rpc.call(ctx, "session.new", map[string]any{"sessionId": sess.ID, "cwd": path}, &result); err != nil {
-			w.sendText(msg.Chat.ID, msg.MessageThreadID, "切换工作目录失败："+err.Error())
+			w.sendText(msg.Chat.ID, threadID, "切换工作目录失败："+err.Error())
 			return nil
 		}
 		w.updateMapping(key, result.SessionID)
-		w.sendText(msg.Chat.ID, msg.MessageThreadID, "工作目录已切换到：\n"+result.CWD)
+		w.sendText(msg.Chat.ID, threadID, "工作目录已切换到：\n"+result.CWD)
 	case "compact":
 		if err := w.app.rpc.call(ctx, "session.compact", map[string]any{"sessionId": sess.ID}, nil); err != nil {
-			w.sendText(msg.Chat.ID, msg.MessageThreadID, "压缩失败："+err.Error())
+			w.sendText(msg.Chat.ID, threadID, "压缩失败："+err.Error())
 			return nil
 		}
-		w.sendText(msg.Chat.ID, msg.MessageThreadID, "会话已压缩。")
+		w.sendText(msg.Chat.ID, threadID, "会话已压缩。")
 	case "reload":
 		if err := w.app.rpc.call(ctx, "session.reload", map[string]any{"sessionId": sess.ID}, nil); err != nil {
-			w.sendText(msg.Chat.ID, msg.MessageThreadID, "重载失败："+err.Error())
+			w.sendText(msg.Chat.ID, threadID, "重载失败："+err.Error())
 			return nil
 		}
-		w.sendText(msg.Chat.ID, msg.MessageThreadID, "会话扩展资源已重载。")
+		w.sendText(msg.Chat.ID, threadID, "会话扩展资源已重载。")
 	}
 	return nil
 }

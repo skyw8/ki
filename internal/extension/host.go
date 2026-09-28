@@ -58,8 +58,13 @@ type EnqueueRequest struct {
 
 // SessionCreateRequest is the channel-safe session creation contract.
 type SessionCreateRequest struct {
-	WorkspaceID    string         `json:"workspaceId,omitempty"`
-	CWD            string         `json:"cwd,omitempty"`
+	WorkspaceID string `json:"workspaceId,omitempty"`
+	CWD         string `json:"cwd,omitempty"`
+	// WorkspaceTitle names the workspace this session registers. It only applies
+	// when that directory is registered for the first time, so a channel
+	// connector can give its chats readable names without overriding a rename the
+	// user made in the WebUI.
+	WorkspaceTitle string         `json:"workspaceTitle,omitempty"`
 	Provider       string         `json:"provider,omitempty"`
 	Model          string         `json:"model,omitempty"`
 	ThinkingEffort string         `json:"thinkingEffort,omitempty"`

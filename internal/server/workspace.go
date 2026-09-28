@@ -15,7 +15,10 @@ import (
 	"ki/internal/workspace"
 )
 
-func (s *Server) resolveWorkspace(id, cwd string) (workspace.Record, error) {
+// resolveWorkspace picks the workspace for a new session: the named one, the one
+// registered for cwd, or a temporary directory. title only reaches a workspace
+// that is registered now, since Store.Create keeps an existing record as it is.
+func (s *Server) resolveWorkspace(id, cwd, title string) (workspace.Record, error) {
 	if id != "" {
 		rec, ok := s.ws.Get(id)
 		if !ok {
@@ -24,7 +27,7 @@ func (s *Server) resolveWorkspace(id, cwd string) (workspace.Record, error) {
 		return rec, nil
 	}
 	if strings.TrimSpace(cwd) != "" {
-		rec, _, err := s.ws.Create(cwd, "")
+		rec, _, err := s.ws.Create(cwd, title)
 		if err != nil {
 			return workspace.Record{}, fmt.Errorf("create workspace: %w", err)
 		}

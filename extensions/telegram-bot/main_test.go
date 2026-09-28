@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -342,6 +343,123 @@ func TestTelegramFailureTextHasFallback(t *testing.T) {
 	got := telegramFailureText(lifecycleEvent{})
 	if got != "⚠️ 模型请求失败：\n模型请求失败，请稍后重试。" {
 		t.Fatalf("fallback text: %q", got)
+	}
+}
+
+func TestSessionThreadMergesOrdinaryGroupReplies(t *testing.T) {
+	group := chat{ID: -1004449407453, Type: "supergroup", Title: "怀仁堂"}
+	forum := chat{ID: -1004449407453, Type: "supergroup", Title: "怀仁堂", IsForum: true}
+	private := chat{ID: 6164830811, Type: "private", FirstName: "bron2ebear"}
+	cases := []struct {
+		name             string
+		chat             chat
+		thread           int64
+		botTopics, forum bool
+		want             int64
+	}{
+		// Telegram creates a thread for every reply, but only a forum's topics are
+		// conversations of their own.
+		{"reply thread in an ordinary group", group, 145, false, false, 0},
+		{"forum topic", forum, 145, false, true, 145},
+		{"general topic", forum, 1, false, true, 0},
+		{"group without a thread", group, 0, false, false, 0},
+		{"private chat without threaded mode", private, 7, false, false, 0},
+		{"private chat with BotFather threaded mode", private, 7, true, false, 7},
+	}
+	for _, tc := range cases {
+		if got := sessionThread(tc.chat, tc.thread, tc.botTopics, tc.forum); got != tc.want {
+			t.Errorf("%s: sessionThread = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestChatLabelNamesChatsInEnglish(t *testing.T) {
+	group := chat{ID: -1004449407453, Type: "supergroup", Title: "怀仁堂"}
+	cases := []struct {
+		name   string
+		chat   chat
+		thread int64
+		topic  string
+		want   string
+	}{
+		{"group", group, 0, "", "group-怀仁堂"},
+		{"group reply thread", group, 145, "", "group-怀仁堂-thread-145"},
+		{"group forum topic", group, 145, "项目讨论", "group-怀仁堂-项目讨论"},
+		{"private user name", chat{ID: 6164830811, Type: "private", FirstName: "bron2ebear"}, 0, "", "private-bron2ebear"},
+		{"private username wins", chat{ID: 5, Type: "private", Username: "XueyuehuazZ", FirstName: "Yuheng"}, 0, "", "private-@XueyuehuazZ"},
+		{"private without a name", chat{ID: 5241498812, Type: "private"}, 0, "", "private-5241498812"},
+		{"long title with a newline", chat{ID: 6, Type: "supergroup", Title: "a\nb"}, 0, "", "group-a b"},
+	}
+	for _, tc := range cases {
+		if got := chatLabel(tc.chat, tc.thread, tc.topic); got != tc.want {
+			t.Errorf("%s: chatLabel = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestRepliesToBotCountsAsAddressed(t *testing.T) {
+	me := user{ID: 42, Username: "ki_worker_bot"}
+	if !repliesToBot(&message{ReplyTo: &message{From: &user{ID: 42, IsBot: true}}}, me) {
+		t.Fatal("a reply to the bot's own message must count as addressed")
+	}
+	if repliesToBot(&message{ReplyTo: &message{From: &user{ID: 7}}}, me) {
+		t.Fatal("a reply to another member must not count as addressed")
+	}
+	if repliesToBot(&message{ReplyTo: &message{}}, me) {
+		t.Fatal("a reply without a sender must not count as addressed")
+	}
+	if repliesToBot(&message{}, me) {
+		t.Fatal("a message without a reply must not count as addressed")
+	}
+	if repliesToBot(&message{ReplyTo: &message{From: &user{ID: 42}}}, user{}) {
+		t.Fatal("an unresolved bot identity must not count as addressed")
+	}
+}
+
+func TestGeneralTopicThreadIsNotSent(t *testing.T) {
+	// Telegram answers message_thread_id=1 with "message thread not found": the
+	// General topic is addressed by omitting the field.
+	if _, ok := sendMessageParams(-100, 1, "hi")["message_thread_id"]; ok {
+		t.Fatal("thread 1 must be omitted")
+	}
+	if _, ok := sendMessageParams(-100, 0, "hi")["message_thread_id"]; ok {
+		t.Fatal("no thread must be omitted")
+	}
+	if got := sendMessageParams(-100, 145, "hi")["message_thread_id"]; got != int64(145) {
+		t.Fatalf("topic thread = %v", got)
+	}
+}
+
+func TestTopicNamesAreCachedForWorkspaceLabels(t *testing.T) {
+	app := &telegramApp{
+		ctx:       context.Background(),
+		statePath: filepath.Join(t.TempDir(), "state.json"),
+		state:     telegramState{Topics: map[string]string{}, Forums: map[string]bool{}},
+		outputs:   map[string]*outputState{},
+		workers:   map[string]*telegramWorker{},
+	}
+	worker := &telegramWorker{app: app, ctx: context.Background(), accountID: "bot:8733071196"}
+	created := &message{
+		MessageThreadID:   145,
+		Chat:              chat{ID: -1004449407453, Type: "supergroup", Title: "怀仁堂"},
+		ForumTopicCreated: &forumTopic{Name: "项目讨论"},
+	}
+	worker.rememberTopic(created)
+	if got := worker.topicName(-1004449407453, 145); got != "项目讨论" {
+		t.Fatalf("topic name = %q", got)
+	}
+	if got := worker.workspaceTitle(created.Chat, 145); got != "group-怀仁堂-项目讨论" {
+		t.Fatalf("workspace title = %q", got)
+	}
+	// An icon-only rename carries no name and must keep the cached one.
+	worker.rememberTopic(&message{MessageThreadID: 145, Chat: created.Chat, ForumTopicEdited: &forumTopic{}})
+	if got := worker.topicName(-1004449407453, 145); got != "项目讨论" {
+		t.Fatalf("topic name after icon edit = %q", got)
+	}
+	// A topic-less message must not invent an entry.
+	worker.rememberTopic(&message{Chat: created.Chat, ForumTopicCreated: &forumTopic{Name: "General"}})
+	if got := worker.topicName(-1004449407453, 0); got != "" {
+		t.Fatalf("general topic name = %q", got)
 	}
 }
 

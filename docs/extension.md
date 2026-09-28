@@ -210,7 +210,7 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 
 | method | 门闸 | 说明 |
 |---|---|---|
-| `session.create` | — | 全局创建 session；可传 `workspaceId`、`cwd`、model 和 metadata |
+| `session.create` | — | 全局创建 session；可传 `workspaceId`、`cwd`、model 和 metadata；`workspaceTitle` 只在新建 workspace 时生效，用于给频道会话可读的显示名 |
 | `session.list` / `session.get` | — | 查询 session，可按 metadata 过滤；不绑定当前 session |
 | `session.new` | — | 当前 session 创建同配置的新 session，可选新 `cwd` |
 | `session.reload` | — | 重载当前 session 的资源和扩展视图 |

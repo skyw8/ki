@@ -149,8 +149,9 @@ Telegram 的用户访问策略由 Managed Bot 在 Telegram 侧控制。扩展不
 - 私聊：由 Telegram Managed Bot 访问设置决定是否可用。
 - 群组：需要关闭 Privacy Mode 或将 Bot 设为管理员，才能收到所有群组消息。未 @ Bot 的消息只进入该群组 session 历史，不回复；明确 `@你的_bot` 的消息才触发 KI。扩展不维护群组白名单。
 - 支持 `/new`、`/cd <path>`、`/compact`、`/reload`。命令不再配置独立权限，访问权限由 Telegram Managed Bot 策略决定。
-- 每个 chat/topic 的 session 映射键为 `telegram:<accountId>:<chatId>:<threadId>`，没有 topic 时 `threadId` 为 `0`。
-- workspace 自动创建在 `{KI_HOME}/workspace/telegram/<accountId>/chat-<chatId>/topic-<threadId>`，不同 chat/topic 不会共用目录。
+- 每个 chat/topic 的 session 映射键为 `telegram:<accountId>:<chatId>:<threadId>`。**只有论坛话题才算独立会话**：Telegram 对群里任意一条"回复"都会建 message thread（线程 id = 被回复消息的 id，见 [api/threads](https://core.telegram.org/api/threads)），普通群里的回复线程并入该群原会话（`threadId` 记 `0`）；论坛（`getChat.is_forum`）与私聊 BotFather threaded mode（`getMe.has_topics_enabled`）才按 `threadId` 分会话。General 话题（`threadId=1`）同样算 `0`，发送时省略 `message_thread_id`——Telegram 对 `message_thread_id=1` 回 `message thread not found`。
+- workspace 自动创建在 `{KI_HOME}/workspace/telegram/<accountId>/chat-<chatId>/topic-<threadId>`，不同 chat/topic 不会共用目录；注册时的显示名是 `group-<群名>`、`group-<群名>-<话题名|thread-id>`、`private-<@username|姓名|chatId>`（`session.create` 的 `workspaceTitle`，只在新建 workspace 时生效，之后你在 WebUI 里改的名字不会被覆盖）。论坛话题名只能从 `forum_topic_created` / `forum_topic_edited` 服务消息里学到并缓存在 `state.json`。
+- 群里**回复 Bot 自己的消息**等同 @ 它：普通 `@` 和 reply 都会触发 run，未 @ 也未回复 Bot 的消息仍然只进历史。
 - 群组消息会带简短的发送者名称和 `user_id`，用于区分多人发言。
 - 未 @ 的群组消息通过 `session.appendMessage` 进入正常历史，不启动模型；@ 消息通过 `session.enqueue` 触发 prompt，并读取此前已提交的完整历史。
 - 私聊或群组明确 @ Bot 的消息会尽力添加 `👀` reaction；未 @ 的群组消息不添加 reaction，只记录历史并确认处理。私聊使用 Telegram 的 30 秒临时草稿流式更新，并在结束时发送普通消息固化，群组使用占位消息编辑；不会发送 thinking、原始 tool call、参数和完整 tool result。
@@ -161,7 +162,8 @@ Telegram 的用户访问策略由 Managed Bot 在 Telegram 侧控制。扩展不
 
 ## 常见问题
 
-- **没有回复**：确认填入的是 Managed Bot 的 token 和 ID，Telegram 侧访问策略允许当前用户，并确认群组消息 @ 了 Bot。
+- **没有回复**：确认填入的是 Managed Bot 的 token 和 ID，Telegram 侧访问策略允许当前用户，并确认群组消息 @ 了 Bot 或回复的是 Bot 自己的消息。
+- **同一个群出现多个会话/工作区**：这是 Telegram 的 message thread 而不是论坛话题（`is_forum` 为假），现在普通群不再按线程分会话；老的 `topic-*` 工作区可以手动改名或删除。
 - **群里只留下 `…` 或半截回复**：最终编辑没写进去。现在会重试并在失败后改发新消息，同时 server stderr 会有 `telegram-bot: edit final message: …`；如果一条日志都没有，看 session jsonl 确认该轮是否真的跑完（`message` 里应有 assistant 回复）。
 - **无法加入群组**：在 BotFather 中检查 `/setjoingroups`；是否能添加 Bot 仍受群组成员管理权限影响。
 - **保存后未连接**：检查 server 日志和 Extensions runtime 状态；Telegram API 网络错误会自动重试。
