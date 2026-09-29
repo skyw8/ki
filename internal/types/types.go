@@ -14,15 +14,34 @@ type ProviderBinding struct {
 	BaseURL    string `json:"baseUrl"`
 	Model      string `json:"model"`
 	Credential string `json:"credential"`
+	Compaction string `json:"compaction"`
 }
 
 // Equal reports whether opaque provider context can be replayed to other.
 func (b ProviderBinding) Equal(other ProviderBinding) bool {
+	return b.SameScope(other) &&
+		compactionProtocol(b.Compaction) == compactionProtocol(other.Compaction)
+}
+
+// SameScope reports whether two bindings identify the same provider request
+// identity without requiring the checkpoint-producing compaction protocol.
+func (b ProviderBinding) SameScope(other ProviderBinding) bool {
 	return b.Provider == other.Provider &&
 		b.API == other.API &&
 		strings.TrimRight(b.BaseURL, "/") == strings.TrimRight(other.BaseURL, "/") &&
 		b.Model == other.Model &&
 		b.Credential == other.Credential
+}
+
+func compactionProtocol(protocol string) string {
+	if protocol == "" {
+		// Why: checkpoints written before the capability split had no protocol
+		// field and could only have come from OpenAI compaction. Treating them
+		// as OpenAI preserves old JSONL without making them compatible with the
+		// later Codex V2 standalone protocol.
+		return "openai"
+	}
+	return protocol
 }
 
 // ResponsesContext is an opaque canonical Responses input prefix. Items are

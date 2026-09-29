@@ -45,19 +45,19 @@ type Config struct {
 
 // ModelOverride describes field-level overrides for one model.
 type ModelOverride struct {
-	Name               *string             `json:"name,omitempty"`
-	Enabled            *bool               `json:"enabled,omitempty"`
-	API                *string             `json:"api,omitempty"`
-	BaseURL            *string             `json:"baseUrl,omitempty"`
-	ContextWindow      *int                `json:"contextWindow,omitempty"`
-	MaxTokens          *int                `json:"maxTokens,omitempty"`
-	Input              *[]string           `json:"input,omitempty"`
-	ApplyPatchToolType *string             `json:"applyPatchToolType,omitempty"`
-	RemoteCompaction   *string             `json:"remoteCompaction,omitempty"`
-	Reasoning          *bool               `json:"reasoning,omitempty"`
-	ThinkingLevelMap   *map[string]*string `json:"thinkingLevelMap,omitempty"`
-	Cost               json.RawMessage     `json:"cost,omitempty"`
-	Compat             *Compat             `json:"compat,omitempty"`
+	Name               *string                 `json:"name,omitempty"`
+	Enabled            *bool                   `json:"enabled,omitempty"`
+	API                *string                 `json:"api,omitempty"`
+	BaseURL            *string                 `json:"baseUrl,omitempty"`
+	ContextWindow      *int                    `json:"contextWindow,omitempty"`
+	MaxTokens          *int                    `json:"maxTokens,omitempty"`
+	Input              *[]string               `json:"input,omitempty"`
+	ApplyPatchToolType *string                 `json:"applyPatchToolType,omitempty"`
+	Compaction         *CompactionCapabilities `json:"compaction,omitempty"`
+	Reasoning          *bool                   `json:"reasoning,omitempty"`
+	ThinkingLevelMap   *map[string]*string     `json:"thinkingLevelMap,omitempty"`
+	Cost               json.RawMessage         `json:"cost,omitempty"`
+	Compat             *Compat                 `json:"compat,omitempty"`
 }
 
 type credentialEntry struct {
@@ -91,6 +91,8 @@ type registryState struct {
 	creds      credentialsFile
 }
 
+const modelsFileVersion = 2
+
 // Registry owns the offline model catalog and mutable global overlays.
 type Registry struct {
 	mu                     sync.RWMutex
@@ -111,15 +113,9 @@ func NewRegistry(home string) (*Registry, error) {
 		extensionProviders:     map[string]Provider{},
 		extensionProviderOrder: []string{},
 	}
-	user := ModelsFile{Version: 1, Providers: map[string]Config{}}
-	if err := readStrictJSON(r.modelsPath, &user); err != nil && !errors.Is(err, os.ErrNotExist) {
+	user, err := readModelsFile(r.modelsPath)
+	if err != nil {
 		return nil, err
-	}
-	if user.Version == 0 {
-		user.Version = 1
-	}
-	if user.Providers == nil {
-		user.Providers = map[string]Config{}
 	}
 	creds := credentialsFile{Version: 1, Providers: map[string]credentialEntry{}}
 	if err := readStrictJSON(r.credsPath, &creds); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -201,11 +197,93 @@ func (r *Registry) defaultRefLocked() ModelRef {
 	return pickDefault(providers, r.providerOrderLocked(), r.state.creds, r.state.user.Default)
 }
 
+// readModelsFile loads the user provider overlay, upgrading a document written
+// by an older schema. A newer version is rejected instead of being coerced: it
+// may carry fields this binary would silently drop from configuration the user
+// owns, and a hard error at startup is the only signal the user gets.
+func readModelsFile(path string) (ModelsFile, error) {
+	user := ModelsFile{Version: modelsFileVersion, Providers: map[string]Config{}}
+	b, err := os.ReadFile(path) //nolint:gosec // path is a Ki-managed catalog file
+	if errors.Is(err, os.ErrNotExist) {
+		return user, nil
+	}
+	if err != nil {
+		return ModelsFile{}, err
+	}
+	var head struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(b, &head); err != nil {
+		return ModelsFile{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	if head.Version != 0 && head.Version != modelsFileVersion {
+		migrated, err := migrateModelsFile(b, head.Version)
+		if err != nil {
+			return ModelsFile{}, err
+		}
+		b = migrated
+	}
+	if err := decodeStrictJSON(path, b, &user); err != nil {
+		return ModelsFile{}, err
+	}
+	// A migrated document still carries its old version field, and a hand-written
+	// one may omit it; either way the decoded overlay is the current schema.
+	user.Version = modelsFileVersion
+	if user.Providers == nil {
+		user.Providers = map[string]Config{}
+	}
+	return user, nil
+}
+
+// migrateModelsFile rewrites an overlay written by an older schema into the
+// current one. Version 1 carried remoteCompaction as a single protocol string;
+// version 2 splits it into CompactionCapabilities. The document is walked as
+// generic JSON so the rename holds wherever the field appears (provider model
+// seeds and per-model overrides share the shape); the strict decode that
+// follows stays the single source of field validation.
+func migrateModelsFile(raw []byte, version int) ([]byte, error) {
+	if version != 1 {
+		return nil, fmt.Errorf("models.json version %d is %w", version, errUnsupportedVersion)
+	}
+	var doc any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	renameRemoteCompaction(doc)
+	return json.Marshal(doc)
+}
+
+// renameRemoteCompaction maps the version 1 capability onto the version 2 split:
+// the old field gated both an explicit compaction request (standalone) and
+// automatic server-side compaction on an ordinary request (inline).
+func renameRemoteCompaction(node any) {
+	switch n := node.(type) {
+	case map[string]any:
+		if proto, ok := n["remoteCompaction"].(string); ok {
+			delete(n, "remoteCompaction")
+			if proto != "" {
+				n["compaction"] = map[string]any{"standalone": proto, "inline": proto}
+			}
+		}
+		for _, child := range n {
+			renameRemoteCompaction(child)
+		}
+	case []any:
+		for _, child := range n {
+			renameRemoteCompaction(child)
+		}
+	}
+}
+
 func readStrictJSON(path string, dst any) error {
 	b, err := os.ReadFile(path) //nolint:gosec // path is a Ki-managed catalog or credentials file
 	if err != nil {
 		return err
 	}
+	return decodeStrictJSON(path, b, dst)
+}
+
+func decodeStrictJSON(path string, b []byte, dst any) error {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
@@ -222,7 +300,7 @@ func readStrictJSON(path string, dst any) error {
 }
 
 func buildRegistryState(user ModelsFile, creds credentialsFile) (*registryState, error) {
-	if user.Version != 1 {
+	if user.Version != modelsFileVersion {
 		return nil, fmt.Errorf("models.json version %d is %w", user.Version, errUnsupportedVersion)
 	}
 	providers := map[string]Provider{}
@@ -466,6 +544,9 @@ func validateExtensionModel(m Model) error {
 	if err := validateApplyPatchToolType(m); err != nil {
 		return err
 	}
+	if err := validateCompaction(m, true); err != nil {
+		return err
+	}
 	for k := range m.ThinkingLevelMap {
 		if !slices.Contains(thinkingLevels, k) {
 			return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidThinkingLevel, k)
@@ -498,11 +579,22 @@ func validateApplyPatchToolType(m Model) error {
 	return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidApplyPatchToolType, m.ApplyPatchToolType)
 }
 
-func validateRemoteCompaction(m Model) error {
-	if m.RemoteCompaction == "" || m.RemoteCompaction == "openai" {
-		return nil
+func validateCompaction(m Model, extensionOwned bool) error {
+	if m.Compaction.Standalone != "" &&
+		m.Compaction.Standalone != "openai" &&
+		m.Compaction.Standalone != "codex-v2" {
+		return fmt.Errorf("provider %q model %q: %w standalone %q", m.Provider, m.ID, errInvalidCompaction, m.Compaction.Standalone)
 	}
-	return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidRemoteCompaction, m.RemoteCompaction)
+	if m.Compaction.Inline != "" && m.Compaction.Inline != "openai" {
+		return fmt.Errorf("provider %q model %q: %w inline %q", m.Provider, m.ID, errInvalidCompaction, m.Compaction.Inline)
+	}
+	if m.Compaction.Standalone == "codex-v2" && !extensionOwned {
+		return fmt.Errorf("provider %q model %q: %w standalone %q requires an extension provider", m.Provider, m.ID, errInvalidCompaction, m.Compaction.Standalone)
+	}
+	if !extensionOwned && (m.Compaction.Standalone == "openai" || m.Compaction.Inline == "openai") && m.API != "responses" {
+		return fmt.Errorf("provider %q model %q: %w OpenAI compaction requires Responses API", m.Provider, m.ID, errInvalidCompaction)
+	}
+	return nil
 }
 
 func validateModel(m Model) error {
@@ -525,7 +617,7 @@ func validateModel(m Model) error {
 	if err := validateApplyPatchToolType(m); err != nil {
 		return err
 	}
-	if err := validateRemoteCompaction(m); err != nil {
+	if err := validateCompaction(m, false); err != nil {
 		return err
 	}
 	for k := range m.ThinkingLevelMap {
@@ -584,8 +676,8 @@ func applyModelOverride(m Model, o ModelOverride) (Model, error) {
 	if o.ApplyPatchToolType != nil {
 		m.ApplyPatchToolType = *o.ApplyPatchToolType
 	}
-	if o.RemoteCompaction != nil {
-		m.RemoteCompaction = *o.RemoteCompaction
+	if o.Compaction != nil {
+		m.Compaction = *o.Compaction
 	}
 	if o.Reasoning != nil {
 		m.Reasoning = *o.Reasoning
@@ -847,7 +939,7 @@ func (r *Registry) Update(mut func(*ModelsFile) error) error {
 	if err := mut(&next); err != nil {
 		return err
 	}
-	next.Version = 1
+	next.Version = modelsFileVersion
 	state, err := buildRegistryState(next, r.state.creds)
 	if err != nil {
 		return err

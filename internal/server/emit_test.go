@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"ki/internal/compact"
 	"ki/internal/loop"
 	"ki/internal/provider"
 	"ki/internal/session"
@@ -163,9 +164,11 @@ func TestEmitterPromotesServerCompactionToPrivateCheckpoint(t *testing.T) {
 	em.info = provider.Model{
 		Provider: "openai", ID: "gpt", API: "responses",
 		BaseURL: "https://api.openai.com/v1", ContextWindow: 1000,
+		Compaction: provider.CompactionCapabilities{Standalone: "codex-v2", Inline: "openai"},
 	}
-	em.binding = em.s.providerBinding(em.info)
-	em.replayBinding = em.binding
+	em.binding = providerBindingForProtocol(em.info, provider.Credential{}, "openai")
+	em.replayBinding = providerBindingForProtocol(em.info, provider.Credential{}, "codex-v2")
+	em.serverSide = true
 	opaque := json.RawMessage(`{"type":"compaction","id":"cmp_1","encrypted_content":"opaque"}`)
 	answer := json.RawMessage(`{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"after compact"}]}`)
 	message := types.Message{
@@ -195,7 +198,7 @@ func TestEmitterPromotesServerCompactionToPrivateCheckpoint(t *testing.T) {
 	if checkpoint == nil || len(checkpoint.Responses.Items) != 2 {
 		t.Fatalf("checkpoint: %+v", checkpoint)
 	}
-	ctx := sess.ContextToLeaf(em.s.providerBinding(em.info))
+	ctx := sess.ContextToLeaf(em.binding)
 	if ctx.Responses == nil || len(ctx.Responses.Items) != 2 || len(ctx.Messages) != 0 {
 		t.Fatalf("projected context: %+v", ctx)
 	}
@@ -230,6 +233,33 @@ func TestEmitterDoesNotPersistOpaqueCheckpointAcrossLifecyclePolicy(t *testing.T
 	}
 }
 
+func TestEmitterDiscardsInlineCheckpointWithoutInlineCapability(t *testing.T) {
+	em, sess, _ := newEmitterForTest(t)
+	em.info = provider.Model{
+		Provider: "codex", ID: "gpt", API: "codex-responses",
+		BaseURL: "https://example.test", Compaction: provider.CompactionCapabilities{Standalone: "codex-v2"},
+	}
+	em.binding = em.s.providerBinding(em.info)
+	em.replayBinding = em.binding
+	message := types.Message{
+		Role: "assistant", Content: []types.Content{{Type: "text", Text: "portable"}},
+		ResponsesItems: []json.RawMessage{
+			json.RawMessage(`{"type":"compaction","encrypted_content":"unexpected"}`),
+		},
+	}
+	if err := em.Emit(loop.Event{Type: loop.MessageEnd, Message: &message}); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range sess.Entries() {
+		if entry.Responses != nil {
+			t.Fatal("standalone-only provider injected an inline checkpoint")
+		}
+	}
+	if got := sess.MessagesToLeaf(); len(got) != 1 || got[0].Text() != "portable" {
+		t.Fatalf("portable assistant missing: %+v", got)
+	}
+}
+
 func TestStrictRemoteCompactionDoesNotFallBackForUnsupportedModel(t *testing.T) {
 	srv, _ := testServer(t)
 	srv.cfg.Compaction.Mode = "remote"
@@ -241,7 +271,7 @@ func TestStrictRemoteCompactionDoesNotFallBackForUnsupportedModel(t *testing.T) 
 	for range 4 {
 		_, _ = sess.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "history"}}})
 	}
-	_, err = srv.compactSession(t.Context(), sess, nil)
+	_, err = srv.compactSession(t.Context(), sess, compact.Intent{Reason: compact.ReasonManual}, nil)
 	if err == nil || !strings.Contains(err.Error(), "does not support remote compaction") {
 		t.Fatalf("strict remote error = %v", err)
 	}
@@ -249,5 +279,57 @@ func TestStrictRemoteCompactionDoesNotFallBackForUnsupportedModel(t *testing.T) 
 		if entry.Type == "compaction" {
 			t.Fatalf("strict remote wrote local fallback: %+v", entry)
 		}
+	}
+}
+
+func TestServerSideCompactionRequiresInlineCapability(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.requireModelCredential = true
+	srv.cfg.Compaction.Enabled = true
+	srv.cfg.Compaction.ServerSide = true
+	srv.cfg.Compaction.Mode = "auto"
+	base := provider.Model{API: "responses"}
+	standalone := base
+	standalone.Compaction = provider.CompactionCapabilities{Standalone: "openai"}
+	if srv.serverSideCompaction(standalone) {
+		t.Fatal("standalone-only model enabled inline compaction")
+	}
+	inline := base
+	inline.Compaction = provider.CompactionCapabilities{Inline: "openai"}
+	if !srv.serverSideCompaction(inline) {
+		t.Fatal("inline-capable model did not enable server compaction")
+	}
+	codex := base
+	codex.Compaction = provider.CompactionCapabilities{Standalone: "codex-v2"}
+	if srv.serverSideCompaction(codex) {
+		t.Fatal("Codex standalone V2 enabled OpenAI context_management")
+	}
+}
+
+func TestReplayBindingFollowsLatestCheckpointProtocol(t *testing.T) {
+	srv, _ := testServer(t)
+	sess, err := session.Create(srv.cfg.Sessions.Root, t.TempDir(), "hybrid", "gpt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	model := provider.Model{
+		Provider: "hybrid", ID: "gpt", API: "responses", BaseURL: "https://example.test",
+		Compaction: provider.CompactionCapabilities{Standalone: "codex-v2", Inline: "openai"},
+	}
+	item := []json.RawMessage{json.RawMessage(`{"type":"compaction","encrypted_content":"opaque"}`)}
+	inline := providerBindingForProtocol(model, provider.Credential{}, "openai")
+	if _, err := sess.AppendResponsesCompaction(types.ResponsesContext{Binding: inline, Items: item}, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := replayBindingForSession(sess, model, provider.Credential{}); got.Compaction != "openai" {
+		t.Fatalf("inline checkpoint selected as %q", got.Compaction)
+	}
+	standalone := providerBindingForProtocol(model, provider.Credential{}, "codex-v2")
+	if _, err := sess.AppendResponsesCompaction(types.ResponsesContext{Binding: standalone, Items: item}, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := replayBindingForSession(sess, model, provider.Credential{}); got.Compaction != "codex-v2" {
+		t.Fatalf("standalone checkpoint selected as %q", got.Compaction)
 	}
 }

@@ -412,8 +412,15 @@ func (m *ProviderManager) client(ctx context.Context, providerID string) (*rpcCl
 		return nil, fmt.Errorf("%w: %q", errProviderNotRegisteredByExt, providerID)
 	}
 	if c := m.clients[owner]; c != nil {
-		m.mu.Unlock()
-		return c, nil
+		select {
+		case <-c.closed:
+			// Why: a sidecar may exit after a canceled or malformed RPC.
+			// Evict the dead shared client so later sessions can restart it.
+			delete(m.clients, owner)
+		default:
+			m.mu.Unlock()
+			return c, nil
+		}
 	}
 	d, ok := m.descs[providerID]
 	m.mu.Unlock()

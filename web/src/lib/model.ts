@@ -892,16 +892,22 @@ function applyEntry(s: ViewState, e: Entry, withNode = true) {
   }
 }
 
-function compactReason(details?: unknown): string {
+function compactDetails(details?: unknown): { reason: string; status: string; ok?: boolean } {
   if (details && typeof details === 'object') {
-    const d = details as { reason?: string; ok?: boolean }
-    return d.reason || ''
+    const d = details as { reason?: string; status?: string; ok?: boolean }
+    return { reason: d.reason || '', status: d.status || '', ok: d.ok }
   }
-  return ''
+  return { reason: '', status: '' }
+}
+
+function compactTerminal(status: string, reason: string, ok?: boolean) {
+  const empty = status === 'empty' || reason === 'empty'
+  const failed = !empty && (status === 'failed' || status === 'cancelled' || ok === false)
+  return { empty, failed }
 }
 
 function applyCompactEvent(s: ViewState, id: string, type: string, details?: unknown, stamp?: string) {
-  const reason = compactReason(details)
+  const { reason, status, ok } = compactDetails(details)
   if (type === 'compaction_start') {
     s.records.push({
       id,
@@ -913,10 +919,15 @@ function applyCompactEvent(s: ViewState, id: string, type: string, details?: unk
     })
     return
   }
-  const rec = s.records.find(r => r.id === id)
+  // Persisted start/end entries have distinct JSONL IDs. Pair the terminal
+  // entry with the newest unfinished operation, just like the live event path.
+  const rec = [...s.records].reverse().find(r => r.kind === 'compact' && r.running)
   if (rec && rec.kind === 'compact') {
+    const { empty, failed } = compactTerminal(status, reason, ok)
     rec.running = false
-    rec.preview = `Compacted (${reason || 'auto'})`
+    rec.preview = empty
+      ? `Nothing to compact (${reason || 'auto'})`
+      : `Compacted (${reason || 'auto'})${failed ? ' (failed)' : ''}`
   }
 }
 
@@ -1301,17 +1312,19 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
           startedAt: stamp,
         })
       } else {
+        const terminal = compactTerminal(ev.status || '', ev.reason || '', ev.ok)
         const live = [...next.nodes].reverse().find(n => n.kind === 'compaction' && n.running)
         if (live && live.kind === 'compaction') {
-          const empty = ev.reason === 'empty'
           next.nodes = next.nodes.map(n => n.id === live.id
-            ? { ...live, running: false, empty, failed: !empty && ev.ok === false }
+            ? { ...live, running: false, empty: terminal.empty, failed: terminal.failed }
             : n)
         }
         const rec = [...next.records].reverse().find(r => r.kind === 'compact' && r.running)
         if (rec) {
           rec.running = false
-          rec.preview = `Compacted (${ev.reason || 'auto'})${ev.ok === false ? ' (failed)' : ''}`
+          rec.preview = terminal.empty
+            ? `Nothing to compact (${ev.reason || 'auto'})`
+            : `Compacted (${ev.reason || 'auto'})${terminal.failed ? ' (failed)' : ''}`
         }
       }
       break

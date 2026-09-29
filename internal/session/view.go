@@ -464,7 +464,7 @@ func indexOf(e Entry) IndexEntry {
 		ix.Preview = previewOf(e.System)
 	case "compaction":
 		if e.Responses != nil {
-			ix.Preview = "OpenAI remote compaction"
+			ix.Preview = "Provider remote compaction"
 		} else {
 			ix.Preview = previewOf(e.Summary)
 		}

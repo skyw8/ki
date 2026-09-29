@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"ki/internal/compact"
 	"ki/internal/extension"
 	"ki/internal/loop"
 	"ki/internal/session"
@@ -494,7 +496,7 @@ func (s *Server) publishNotice(sessionID, extName, tone, text string) {
 }
 
 // Compact runs session compaction under occupy.
-func (s *Server) Compact(sessionID string) error {
+func (s *Server) Compact(sessionID, instructions string) error {
 	sess, err := s.open(sessionID)
 	if err != nil {
 		return err
@@ -504,10 +506,17 @@ func (s *Server) Compact(sessionID string) error {
 	if err != nil {
 		return err
 	}
-	s.publishPush(sessionID, loop.Event{Type: loop.CompactionStart, Reason: "manual"})
-	_, err = s.compactSession(ctx, sess, nil)
+	intent := compact.Intent{Reason: compact.ReasonManual, Instructions: strings.TrimSpace(instructions)}
+	if err := s.publishStandaloneCompactionEvent(ctx, sess, loop.Event{Type: loop.CompactionStart, Reason: string(intent.Reason)}); err != nil {
+		s.release(sessionID, st)
+		return err
+	}
+	outcome, err := s.compactSession(ctx, sess, intent, nil)
+	eventErr := s.publishStandaloneCompactionEvent(ctx, sess, compactionEndEvent(intent, outcome, err))
 	s.release(sessionID, st)
-	s.publishCompactionEnd(sessionID, err)
+	if eventErr != nil {
+		return errors.Join(err, eventErr)
+	}
 	if err != nil {
 		return fmt.Errorf("compact: %w", err)
 	}

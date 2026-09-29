@@ -98,6 +98,47 @@ func TestLastRequestHeaderFollowsLeaf(t *testing.T) {
 	}
 }
 
+func TestAppendMigratesLegacyConfigWithoutActiveLeaf(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "openai", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	first, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "old"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := s.Config
+	cfg.ActiveLeafID = ""
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Dir, "config.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if reopened.LeafID() != first.ID {
+		t.Fatalf("legacy leaf = %q, want %q", reopened.LeafID(), first.ID)
+	}
+	second, err := reopened.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "new"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := Open(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = again.Close() }()
+	if again.Config.ActiveLeafID != second.ID || again.LeafID() != second.ID {
+		t.Fatalf("legacy config was not migrated: config=%q leaf=%q", again.Config.ActiveLeafID, again.LeafID())
+	}
+}
+
 func TestForkHistoryAtKeepsMessagesAndRelinks(t *testing.T) {
 	s, err := Create(t.TempDir(), t.TempDir(), "openai", "test")
 	if err != nil {
@@ -546,12 +587,20 @@ func TestResponsesCompactionContextRoundTripAndBinding(t *testing.T) {
 
 	got := s.ContextToLeaf(types.ProviderBinding{
 		Provider: "openai", API: "responses", BaseURL: "https://api.openai.com/v1", Model: "gpt-a",
+		Compaction: "openai",
 	})
 	if got.Responses == nil || len(got.Responses.Items) != 2 || string(got.Responses.Items[0]) != string(items[0]) {
 		t.Fatalf("compatible context: %+v", got.Responses)
 	}
 	if len(got.Messages) != 1 || got.Messages[0].Text() != "suffix" {
 		t.Fatalf("compatible suffix: %+v", got.Messages)
+	}
+	codex := s.ContextToLeaf(types.ProviderBinding{
+		Provider: "openai", API: "responses", BaseURL: "https://api.openai.com/v1", Model: "gpt-a",
+		Compaction: "codex-v2",
+	})
+	if codex.Responses != nil {
+		t.Fatal("legacy OpenAI checkpoint crossed into Codex V2")
 	}
 
 	portable := s.ContextToLeaf(types.ProviderBinding{

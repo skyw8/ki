@@ -48,6 +48,26 @@ test('a tail window builds nodes only for the entries it holds', () => {
   expect(view.oldestId).toBe('u9')
 })
 
+test('persisted compaction start and end pair across distinct entry ids', () => {
+  const entries: Entry[] = [
+    { type: 'compaction_start', id: 'compact-start', details: { reason: 'manual' } },
+    { type: 'compaction_end', id: 'compact-end', parentId: 'compact-start', details: { reason: 'manual', status: 'committed', ok: true } },
+  ]
+  const view = loadHistory({ id: 's', entries, leafId: 'compact-end' })
+  const compact = view.records.find(record => record.kind === 'compact')
+  expect(compact?.running).toBe(false)
+  expect(compact?.preview).toBe('Compacted (manual)')
+})
+
+test('persisted failed compaction is not projected as success', () => {
+  const entries: Entry[] = [
+    { type: 'compaction_start', id: 'compact-start', details: { reason: 'threshold' } },
+    { type: 'compaction_end', id: 'compact-end', parentId: 'compact-start', details: { reason: 'threshold', status: 'failed' } },
+  ]
+  const view = loadHistory({ id: 's', entries, leafId: 'compact-end' })
+  expect(view.records.find(record => record.kind === 'compact')?.preview).toBe('Compacted (threshold) (failed)')
+})
+
 test('the lazy index renumbers turns without adding nodes', () => {
   const { entries, index, leafId } = fixture()
   let view = loadHistory({ id: 's', cwd: '/tmp', provider: 'p', model: 'm', title: 't', leafId, entries })

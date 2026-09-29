@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -28,6 +29,25 @@ var ErrNothingToCompact = errors.New("nothing to compact")
 // ErrCompactionSkipped reports that a session_before_compact interceptor
 // vetoed the operation without changing context.
 var ErrCompactionSkipped = errors.New("compaction skipped")
+
+// Reason identifies why a compaction was requested.
+type Reason string
+
+const (
+	ReasonManual    Reason = "manual"
+	ReasonPreflight Reason = "preflight"
+	ReasonThreshold Reason = "threshold"
+	ReasonOverflow  Reason = "overflow"
+	ReasonServer    Reason = "server"
+)
+
+// Intent is trigger metadata shared by planning, extensions, execution, and
+// terminal events.
+type Intent struct {
+	Reason       Reason `json:"reason"`
+	WillRetry    bool   `json:"willRetry"`
+	Instructions string `json:"instructions,omitempty"`
+}
 
 // EstimateTokens estimates the model-facing context size. Primary source is
 // the newest assistant message with usage (pi calculateContextTokens:
@@ -125,6 +145,8 @@ func ShouldRun(tokens, contextWindow int, cfg config.Compaction) bool {
 // Preparation is the pure-function output of Prepare, ready for Execute
 // (aligned with pi CompactionPreparation: cut, segments, iterative summary).
 type Preparation struct {
+	Intent              Intent
+	SourceLeafID        string
 	FirstKeptEntryID    string
 	MessagesToSummarize []types.Message
 	TurnPrefixMessages  []types.Message
@@ -132,6 +154,15 @@ type Preparation struct {
 	IsSplitTurn         bool
 	TokensBefore        int
 	PreviousSummary     string
+}
+
+// Result is a generated local checkpoint. The host-owned cut point and
+// retained tail remain on Preparation so an extension cannot forge them.
+type Result struct {
+	Summary       string
+	Usage         *types.Usage
+	Details       any
+	FromExtension bool
 }
 
 // Prepare computes everything needed for one compaction without calling the
@@ -142,6 +173,12 @@ type Preparation struct {
 // result, and detects a split turn (cut inside a turn → prefix summarized
 // separately).
 func Prepare(entries []session.Entry, cfg config.Compaction) (*Preparation, error) {
+	return PrepareWithIntent(entries, cfg, Intent{})
+}
+
+// PrepareWithIntent attaches trigger metadata to the otherwise pure local
+// compaction plan.
+func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent Intent) (*Preparation, error) {
 	keep := cfg.KeepRecentTokens
 	if keep <= 0 {
 		keep = 20000
@@ -273,7 +310,13 @@ func Prepare(entries []session.Entry, cfg config.Compaction) (*Preparation, erro
 	if messagesToSummarize == nil && turnPrefix == nil {
 		return nil, ErrNothingToCompact
 	}
+	sourceLeafID := ""
+	if len(entries) > 0 {
+		sourceLeafID = entries[len(entries)-1].ID
+	}
 	return &Preparation{
+		Intent:              intent,
+		SourceLeafID:        sourceLeafID,
 		FirstKeptEntryID:    firstKept,
 		MessagesToSummarize: messagesToSummarize,
 		TurnPrefixMessages:  turnPrefix,
@@ -284,6 +327,15 @@ func Prepare(entries []session.Entry, cfg config.Compaction) (*Preparation, erro
 	}, nil
 }
 
+// Generate executes the local summary strategy without writing the session.
+func Generate(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.Compaction) (Result, error) {
+	summary, usage, err := Execute(ctx, prep, sum, cfg)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Summary: summary, Usage: usage}, nil
+}
+
 // Execute generates the compaction summary for a Preparation (the only stage
 // that calls the model). Returns the summary text and combined usage.
 func Execute(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.Compaction) (string, *types.Usage, error) {
@@ -292,21 +344,21 @@ func Execute(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.
 	if prep.IsSplitTurn && len(prep.TurnPrefixMessages) > 0 {
 		historyText := "No prior history."
 		if len(prep.MessagesToSummarize) > 0 {
-			s, u, err := summarize(ctx, sum, cfg, prep.MessagesToSummarize, prep.PreviousSummary, false)
+			s, u, err := summarize(ctx, sum, cfg, prep.MessagesToSummarize, prep.PreviousSummary, false, prep.Intent.Instructions)
 			if err != nil {
 				return "", nil, err
 			}
 			historyText = s
 			usage = u
 		}
-		ts, u, err := summarize(ctx, sum, cfg, prep.TurnPrefixMessages, "", true)
+		ts, u, err := summarize(ctx, sum, cfg, prep.TurnPrefixMessages, "", true, prep.Intent.Instructions)
 		if err != nil {
 			return "", nil, err
 		}
 		summary = historyText + "\n\n---\n\n**Turn Context (split turn):**\n\n" + ts
 		usage = combineUsage(usage, u)
 	} else {
-		s, u, err := summarize(ctx, sum, cfg, prep.MessagesToSummarize, prep.PreviousSummary, false)
+		s, u, err := summarize(ctx, sum, cfg, prep.MessagesToSummarize, prep.PreviousSummary, false, prep.Intent.Instructions)
 		if err != nil {
 			return "", nil, err
 		}
@@ -315,32 +367,82 @@ func Execute(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.
 	return summary, usage, nil
 }
 
-// Run is the one-step convenience entry (used by the /compact endpoint):
-// Prepare + Execute + AppendCompaction. Returns ErrNothingToCompact when the
-// session has nothing worth summarizing.
-func Run(ctx context.Context, s *session.Session, sum Summarizer, cfg config.Compaction) (session.Entry, error) {
-	prep, err := Prepare(s.LeafEntries(), cfg)
-	if err != nil {
-		return session.Entry{}, err
-	}
+// Commit validates and atomically appends a generated local checkpoint.
+func Commit(s *session.Session, prep *Preparation, result Result) (session.Entry, error) {
 	if prep == nil {
-		return session.Entry{}, ErrNothingToCompact
+		return session.Entry{}, errors.New("missing compaction preparation")
 	}
-	summary, usage, err := Execute(ctx, prep, sum, cfg)
-	if err != nil {
-		return session.Entry{}, err
+	if strings.TrimSpace(result.Summary) == "" {
+		return session.Entry{}, errors.New("compaction summary is empty")
 	}
-	entry, err := s.AppendCompaction(summary, prep.FirstKeptEntryID, prep.TokensBefore, usage, prep.RetainedTail)
+	const maxCustomSummaryBytes = 8 << 20
+	if len(result.Summary) > maxCustomSummaryBytes {
+		return session.Entry{}, errors.New("compaction summary is too large")
+	}
+	if result.Details != nil {
+		raw, err := json.Marshal(result.Details)
+		if err != nil {
+			return session.Entry{}, fmt.Errorf("marshal compaction details: %w", err)
+		}
+		const maxDetailsBytes = 1 << 20
+		if len(raw) > maxDetailsBytes {
+			return session.Entry{}, errors.New("compaction details are too large")
+		}
+	}
+	if result.FromExtension {
+		if err := validateCustomUsage(result.Usage); err != nil {
+			return session.Entry{}, err
+		}
+	}
+	entry, err := s.AppendPreparedCompaction(
+		prep.SourceLeafID,
+		result.Summary,
+		prep.FirstKeptEntryID,
+		prep.TokensBefore,
+		result.Usage,
+		prep.RetainedTail,
+		result.Details,
+	)
 	if err != nil {
 		return session.Entry{}, fmt.Errorf("append compaction: %w", err)
 	}
 	return entry, nil
 }
 
+func validateCustomUsage(usage *types.Usage) error {
+	if usage == nil {
+		return nil
+	}
+	if usage.Input < 0 || usage.Output < 0 || usage.CacheRead < 0 ||
+		usage.CacheWrite < 0 || usage.TotalTokens < 0 {
+		return errors.New("custom compaction usage contains negative tokens")
+	}
+	sum := usage.Input + usage.Output + usage.CacheRead + usage.CacheWrite
+	if usage.TotalTokens != 0 && usage.TotalTokens != sum {
+		return errors.New("custom compaction usage total does not match token fields")
+	}
+	if usage.Cost == nil {
+		return nil
+	}
+	cost := usage.Cost
+	values := []float64{cost.Input, cost.Output, cost.CacheRead, cost.CacheWrite, cost.Total}
+	for _, value := range values {
+		if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return errors.New("custom compaction usage contains invalid cost")
+		}
+	}
+	sumCost := cost.Input + cost.Output + cost.CacheRead + cost.CacheWrite
+	tolerance := math.Max(1e-9, math.Abs(sumCost)*1e-9)
+	if math.Abs(cost.Total-sumCost) > tolerance {
+		return errors.New("custom compaction usage total does not match cost fields")
+	}
+	return nil
+}
+
 // summarize builds the prompt (aligned with pi prompts) and calls the model.
 // splitTurn selects the turn-prefix prompt; otherwise previousSummary selects
 // the incremental UPDATE prompt.
-func summarize(ctx context.Context, sum Summarizer, _ config.Compaction, msgs []types.Message, previousSummary string, splitTurn bool) (string, *types.Usage, error) {
+func summarize(ctx context.Context, sum Summarizer, _ config.Compaction, msgs []types.Message, previousSummary string, splitTurn bool, instructions string) (string, *types.Usage, error) {
 	transcript := strings.Builder{}
 	for _, m := range msgs {
 		transcript.WriteString(m.Role)
@@ -359,6 +461,9 @@ func summarize(ctx context.Context, sum Summarizer, _ config.Compaction, msgs []
 		user += "<previous-summary>\n" + previousSummary + "\n</previous-summary>\n\n" + UpdateSummarizationPrompt
 	default:
 		user += SummarizationPrompt
+	}
+	if instructions = strings.TrimSpace(instructions); instructions != "" {
+		user += "\n\n<custom-instructions>\n" + instructions + "\n</custom-instructions>\n"
 	}
 	text, usage, err := sum.Summarize(ctx, system, user)
 	if err != nil {

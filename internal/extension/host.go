@@ -24,7 +24,7 @@ type SessionHost interface {
 	Snapshot(sessionID, extension string) (SessionSnapshot, error)
 	AppendEntry(sessionID, extension, customType string, data any) error
 	Abort(sessionID string) error
-	Compact(sessionID string) error
+	Compact(sessionID, instructions string) error
 	PatchSession(sessionID string, model, thinking string) error
 	SetActiveTools(sessionID, extension string, names []string) error
 	RegisterTools(sessionID, extension string, tools []ToolSpec) error
@@ -392,7 +392,11 @@ func (c *rpcClient) handleInbound(msg rpcMsg) {
 		}
 		c.replyResult(msg.ID, map[string]any{"ok": true})
 	case "session.compact":
-		if err := c.host.Compact(sessionID); err != nil {
+		var p struct {
+			Instructions string `json:"instructions"`
+		}
+		_ = json.Unmarshal(msg.Params, &p)
+		if err := c.host.Compact(sessionID, p.Instructions); err != nil {
 			c.replyError(msg.ID, err.Error())
 			return
 		}

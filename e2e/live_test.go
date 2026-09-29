@@ -185,7 +185,7 @@ func modelsJSON(t *testing.T) string {
 		}
 	}
 	doc := map[string]any{
-		"version": 1,
+		"version": 2,
 		"default": map[string]any{"provider": "deepseek", "model": "deepseek-flash"},
 		"providers": map[string]any{
 			"deepseek-responses": overlay("DeepSeek Responses", "responses", liveDeepSeekBase),

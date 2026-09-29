@@ -311,7 +311,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			}
 			preview := e.Summary
 			if e.Responses != nil {
-				preview = "OpenAI remote compaction"
+				preview = "Provider remote compaction"
 			}
 			nodes = append(nodes, node{e.ID, preview, []int{i}})
 			stats.Steps++

@@ -473,12 +473,11 @@ func (c *rpcClient) call(ctx context.Context, method string, params any, result 
 			return err
 		}
 	case <-ctx.Done():
-		// A pipe write has no portable deadline. Terminating the sidecar is the
-		// only way to ensure a canceled large compact RPC releases the shared
-		// writer instead of initiating billable work after its caller is gone.
-		if c.cmd != nil {
-			tools.KillProcessGroup(c.cmd)
-		}
+		// A provider sidecar is shared by every session. Do not kill it merely
+		// because one large request was canceled: once the in-flight pipe write
+		// drains, cancel that RPC specifically. A genuinely wedged reader is
+		// terminated after a grace period so it cannot hold the writer forever.
+		go c.cancelAfterWrite(id, writeDone)
 		return ctx.Err()
 	case <-c.closed:
 		return fmt.Errorf("%w: sidecar closed", errRPC)
@@ -486,11 +485,7 @@ func (c *rpcClient) call(ctx context.Context, method string, params any, result 
 	var msg rpcMsg
 	select {
 	case <-ctx.Done():
-		if method == "provider.compact" && c.cmd != nil {
-			tools.KillProcessGroup(c.cmd)
-		} else {
-			c.notify("cancel", withSessionParam(sessionIDFromContext(ctx), map[string]any{"id": id}))
-		}
+		c.notify("cancel", withSessionParam(sessionIDFromContext(ctx), map[string]any{"id": id}))
 		return ctx.Err()
 	case <-c.closed:
 		return fmt.Errorf("%w: sidecar closed", errRPC)
@@ -503,6 +498,20 @@ func (c *rpcClient) call(ctx context.Context, method string, params any, result 
 		return json.Unmarshal(msg.Result, result)
 	}
 	return nil
+}
+
+func (c *rpcClient) cancelAfterWrite(id string, writeDone <-chan error) {
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-writeDone:
+		c.notify("cancel", map[string]any{"id": id})
+	case <-timer.C:
+		if c.cmd != nil {
+			tools.KillProcessGroup(c.cmd)
+		}
+	case <-c.closed:
+	}
 }
 
 func (c *rpcClient) notify(method string, params any) {
@@ -735,6 +744,17 @@ func (c *rpcClient) OnEvent(ctx context.Context, ev Event) error {
 	return nil
 }
 
+func (c *rpcClient) notifyBeforeCompact(ctx context.Context, req BeforeCompactRequest) {
+	if !c.hasAsync(EventSessionBeforeCompact) {
+		return
+	}
+	c.notify("lifecycle.event", map[string]any{
+		"sessionId": sessionIDFromContext(ctx),
+		"event":     EventSessionBeforeCompact,
+		"payload":   req,
+	})
+}
+
 func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, name string, args map[string]any, emit func(any)) loop.ToolResult {
 	timeout := timeoutTool
 	if spec.TimeoutMs > 0 {
@@ -855,27 +875,21 @@ func (c *rpcClient) rewriteMessageEnd(ctx context.Context, msg types.Message) (t
 	return msg, nil
 }
 
-func (c *rpcClient) beforeCompact(ctx context.Context) (bool, string, error) {
+func (c *rpcClient) beforeCompact(ctx context.Context, req BeforeCompactRequest) (BeforeCompactDecision, error) {
 	if !c.hasSync(EventSessionBeforeCompact) {
-		return true, "", nil
+		return BeforeCompactDecision{}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeoutHook)
 	defer cancel()
-	var out struct {
-		Cancel  bool   `json:"cancel"`
-		Summary string `json:"summary"`
-	}
+	var out BeforeCompactDecision
 	err := c.call(ctx, "lifecycle.invoke", map[string]any{
 		"sessionId": sessionIDFromContext(ctx),
-		"event":     EventSessionBeforeCompact, "payload": map[string]any{}, "ctx": compactCtx(ctx, ""),
+		"event":     EventSessionBeforeCompact, "payload": req, "ctx": compactCtx(ctx, ""),
 	}, &out)
 	if err != nil {
-		return true, "", err
+		return BeforeCompactDecision{}, err
 	}
-	if out.Cancel {
-		return false, "", nil
-	}
-	return true, out.Summary, nil
+	return out, nil
 }
 
 func (c *rpcClient) invokeCommand(ctx context.Context, name, args string) (handled bool, notice, prompt string, err error) {

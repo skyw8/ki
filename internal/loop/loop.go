@@ -122,6 +122,13 @@ type Event struct {
 	Tools                 []ToolSpec        `json:"tools,omitempty"`
 	Reason                string            `json:"reason,omitempty"`
 	OK                    bool              `json:"ok,omitzero"`
+	WillRetry             bool              `json:"willRetry,omitzero"`
+	Strategy              string            `json:"strategy,omitempty"`
+	Status                string            `json:"status,omitempty"`
+	FromExtension         bool              `json:"fromExtension,omitzero"`
+	FirstKeptEntryID      string            `json:"firstKeptEntryId,omitempty"`
+	TokensBefore          int               `json:"tokensBefore,omitzero"`
+	Usage                 *types.Usage      `json:"usage,omitempty"`
 	Provider              string            `json:"provider,omitempty"`
 	Model                 string            `json:"model,omitempty"`
 	CatalogVersion        int               `json:"catalogVersion,omitzero"`
@@ -286,7 +293,19 @@ type Hooks struct {
 	// OnContextOverflow compacts and returns the new context when a request
 	// failed with a context-overflow error. Runs at most once per Run (the
 	// compact-and-retry guard), inside the same Run so events are not replayed.
-	OnContextOverflow func(ctx context.Context, failed Request) (types.ModelContext, error)
+	OnContextOverflow func(ctx context.Context, failed Request) (CompactionResult, error)
+}
+
+// CompactionResult carries a rebuilt context plus redacted checkpoint metadata
+// from an overflow hook back to the loop's terminal compaction event.
+type CompactionResult struct {
+	Context          types.ModelContext
+	EntryID          string
+	Strategy         string
+	FromExtension    bool
+	FirstKeptEntryID string
+	TokensBefore     int
+	Usage            *types.Usage
 }
 
 // ErrContextOverflow marks a request failure caused by context overflow.
@@ -502,18 +521,30 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 			// replayable on the retry (skipAssistant skips stopReason error).
 			if errors.Is(err, ErrContextOverflow) && !overflowRecovered && cfg.Hooks.OnContextOverflow != nil {
 				overflowRecovered = true
-				_ = emit(Event{Type: CompactionStart, Reason: "overflow"})
-				newContext, herr := cfg.Hooks.OnContextOverflow(ctx, request)
+				if emitErr := emit(Event{Type: CompactionStart, Reason: "overflow", WillRetry: true}); emitErr != nil {
+					return newMsgs, fmt.Errorf("emit overflow compaction start: %w", emitErr)
+				}
+				outcome, herr := cfg.Hooks.OnContextOverflow(ctx, request)
 				if herr == nil {
-					history = newContext.Messages
+					history = outcome.Context.Messages
 					responsesContext = nil
-					if newContext.Responses != nil {
-						responsesContext = slices.Clone(newContext.Responses.Items)
+					if outcome.Context.Responses != nil {
+						responsesContext = slices.Clone(outcome.Context.Responses.Items)
 					}
-					_ = emit(Event{Type: CompactionEnd, Reason: "overflow", OK: true})
+					if emitErr := emit(Event{
+						Type: CompactionEnd, Reason: "overflow", OK: true,
+						WillRetry: true, Status: "committed", EntryID: outcome.EntryID,
+						Strategy: outcome.Strategy, FromExtension: outcome.FromExtension,
+						FirstKeptEntryID: outcome.FirstKeptEntryID,
+						TokensBefore:     outcome.TokensBefore, Usage: outcome.Usage,
+					}); emitErr != nil {
+						return newMsgs, fmt.Errorf("emit overflow compaction end: %w", emitErr)
+					}
 					continue
 				}
-				_ = emit(Event{Type: CompactionEnd, Reason: "overflow", OK: false})
+				if emitErr := emit(Event{Type: CompactionEnd, Reason: "overflow", WillRetry: true, Status: "failed"}); emitErr != nil {
+					return newMsgs, errors.Join(herr, fmt.Errorf("emit overflow compaction end: %w", emitErr))
+				}
 			}
 			_ = emit(Event{Type: AgentEnd, Messages: newMsgs})
 			return newMsgs, err
@@ -779,20 +810,27 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				asst.ErrorMessage = "provider response failed"
 			}
 		}
+		if req.ResponsesCompactThreshold <= 0 {
+			// Why: ResponsesItems is a private inline-compaction channel, not
+			// ordinary provider output. Discard it at the loop boundary unless
+			// this exact request enabled context_management; emitter-only
+			// gating is too late because the next tool round also uses it.
+			asst.ResponsesItems = nil
+		}
 		serverCompacted := len(asst.ResponsesItems) > 0
 		if serverCompacted {
-			if err := emit(Event{Type: CompactionStart, Reason: "server"}); err != nil {
+			if err := emit(Event{Type: CompactionStart, Reason: "server", Strategy: "openai-inline"}); err != nil {
 				return asst, err
 			}
 		}
 		if err := emit(Event{Type: MessageEnd, Message: &asst}); err != nil {
 			if serverCompacted {
-				_ = emit(Event{Type: CompactionEnd, Reason: "server", OK: false})
+				_ = emit(Event{Type: CompactionEnd, Reason: "server", Strategy: "openai-inline", Status: "failed"})
 			}
 			return asst, err
 		}
 		if serverCompacted {
-			if err := emit(Event{Type: CompactionEnd, Reason: "server", OK: true}); err != nil {
+			if err := emit(Event{Type: CompactionEnd, Reason: "server", OK: true, Strategy: "openai-inline", Status: "committed"}); err != nil {
 				return asst, err
 			}
 		}

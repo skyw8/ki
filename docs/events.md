@@ -26,7 +26,7 @@ sideband 事件可以并发到达。
 | 消息 | `message_start`、`message_update`、`message_end` | 用户、assistant、tool result 消息；assistant 增量通过 update 流式发送。 |
 | 工具执行 | `tool_execution_start`、`tool_execution_update`、`tool_execution_end` | 工具开始、进度和结束。 |
 | Patch 预览 | `patch_apply_updated` | `apply_patch` 参数仍在生成时的非执行语法预览；最终执行结果覆盖预览。 |
-| 压缩 | `compaction_start`、`compaction_end` | preflight、overflow recovery、threshold、手动 `/compact`，以及 Responses server-side compaction（`reason=server`；terminal item 才可见的 provider 会合成这对事件）。 |
+| 压缩 | `compaction_start`、`compaction_end` | preflight、overflow recovery、threshold、手动 `/compact`，以及 Responses server-side compaction。`reason` 保持触发原因；end 另带 `status=committed|empty|cancelled|failed`、`strategy`、`fromExtension`、cut/token/usage 元数据，overflow 带 `willRetry=true`。 |
 | 队列和控制 | `queue_changed`、`steer_accepted`、`run_aborted` | 队列变化、实时 Inbox 接收和中止；`steer_accepted` 不是 JSONL leaf（run 在 drain 前被 abort 时，待处理 steer 会作为未回复的 user turn 落盘）。parent 的 run 还活着时，子代理完成通知也走这条 Inbox 路径（于是它以 `steer_accepted` 先到 push、随后由 drain 产生 `message_*`），run 已结束才落到 `queue_changed` + durable queue。 |
 | 扩展 UI/状态 | `extension_error`、`extension_notice`、`extension_ui_prompt` | 扩展失败、toast，或 WebUI 确认/选择弹层。 |
 | Runtime | `runtime_ready` | session 打开时的扩展视图准备结束；成功或失败都会解锁 session。 |
@@ -132,6 +132,11 @@ sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` �
 assistant 的 `message_end` 可能带 `stopReason=error`、`errorMessage` 和
 `isError=true`；扩展应丢弃此前收到的 partial 文本并展示错误信息，不应把
 partial 当作成功回复。
+
+`session_before_compact` 是 Prepare 后的同步拦截点，接收 portable
+`preparation`，可 cancel 或返回完整 custom local result；它看不到 opaque
+Responses checkpoint。`compaction_end` 是对应的异步 after 通知，手动路径也会先
+持久化再经 WebUI push/lifecycle 发布。
 
 同一 run 的 async lifecycle 通知按 loop 产生顺序写入 sidecar：各次
 `message_start/update/end` 不会被该 run 的 `agent_settled` 越过。async

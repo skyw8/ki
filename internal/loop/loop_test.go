@@ -497,15 +497,15 @@ func TestRunOverflowRecovery(t *testing.T) {
 		Streamer:         streamer,
 		ResponsesContext: initial,
 		Hooks: Hooks{
-			OnContextOverflow: func(_ context.Context, failed Request) (types.ModelContext, error) {
+			OnContextOverflow: func(_ context.Context, failed Request) (CompactionResult, error) {
 				hooked = true
 				if len(failed.ResponsesContext) != 1 || string(failed.ResponsesContext[0]) != string(initial[0]) {
 					t.Fatalf("hook did not receive failed provider context: %+v", failed.ResponsesContext)
 				}
-				return types.ModelContext{
+				return CompactionResult{Context: types.ModelContext{
 					Responses: &types.ResponsesContext{Items: replacement},
 					Messages:  []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "compacted"}}}},
-				}, nil
+				}}, nil
 			},
 		},
 	}, func(e Event) error {
@@ -572,9 +572,9 @@ func TestRunOverflowRecoveryRunsOnce(t *testing.T) {
 	_, err := Run(context.Background(), "hello", nil, Config{
 		Streamer: alwaysOverflowStreamer{},
 		Hooks: Hooks{
-			OnContextOverflow: func(_ context.Context, _ Request) (types.ModelContext, error) {
+			OnContextOverflow: func(_ context.Context, _ Request) (CompactionResult, error) {
 				hooks++
-				return types.ModelContext{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "c"}}}}}, nil
+				return CompactionResult{Context: types.ModelContext{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "c"}}}}}}, nil
 			},
 		},
 	}, func(_ Event) error { return nil })
@@ -603,7 +603,8 @@ func (serverCompactionStreamer) Stream(_ context.Context, _ Request, _ func(Assi
 func TestRunEmitsServerCompactionLifecycle(t *testing.T) {
 	var events []Event
 	if _, err := Run(context.Background(), "hello", nil, Config{
-		Streamer: serverCompactionStreamer{},
+		Streamer:                  serverCompactionStreamer{},
+		ResponsesCompactThreshold: 1000,
 	}, func(event Event) error {
 		events = append(events, event)
 		return nil
@@ -657,8 +658,9 @@ func TestRunPromotesServerCompactionBeforeToolRound(t *testing.T) {
 	streamer := &serverCompactionToolStreamer{}
 	history := []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "old"}}}}
 	if _, err := Run(context.Background(), "new", history, Config{
-		Streamer: streamer,
-		Tools:    []Tool{oneTool{}},
+		Streamer:                  streamer,
+		Tools:                     []Tool{oneTool{}},
+		ResponsesCompactThreshold: 1000,
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -671,6 +673,36 @@ func TestRunPromotesServerCompactionBeforeToolRound(t *testing.T) {
 	}
 	if len(next.Messages) != 1 || next.Messages[0].Role != "toolResult" {
 		t.Fatalf("old history or duplicate assistant survived compaction: %+v", next.Messages)
+	}
+}
+
+func TestRunDiscardsUnadvertisedInlineCheckpoint(t *testing.T) {
+	streamer := &serverCompactionToolStreamer{}
+	history := []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "old"}}}}
+	var events []Event
+	if _, err := Run(context.Background(), "new", history, Config{
+		Streamer: streamer,
+		Tools:    []Tool{oneTool{}},
+	}, func(event Event) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(streamer.requests) != 2 {
+		t.Fatalf("requests = %d", len(streamer.requests))
+	}
+	next := streamer.requests[1]
+	if len(next.ResponsesContext) != 0 {
+		t.Fatalf("unadvertised checkpoint reached next request: %+v", next.ResponsesContext)
+	}
+	if len(next.Messages) < 4 {
+		t.Fatalf("portable history was cleared: %+v", next.Messages)
+	}
+	for _, event := range events {
+		if event.Type == CompactionStart || event.Type == CompactionEnd {
+			t.Fatalf("unadvertised checkpoint emitted compaction event: %+v", event)
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -273,5 +274,86 @@ func TestRegistryStrictJSONRejectsTrailingValue(t *testing.T) {
 	}
 	if _, err := NewRegistry(home); err == nil {
 		t.Fatal("trailing JSON must fail")
+	}
+}
+
+func TestRegistryMigratesVersion1RemoteCompaction(t *testing.T) {
+	home := t.TempDir()
+	// openrouter/free exercises the per-model override path; custom/m and
+	// custom/m-off exercise the model seed path. m-off guards the empty value:
+	// version 1 treated it as "no capability", not as a protocol named "".
+	doc := `{
+  "version": 1,
+  "default": {"provider": "openrouter", "model": "free"},
+  "providers": {
+    "openrouter": {
+      "modelOverrides": {
+        "free": {"api": "responses", "remoteCompaction": "openai"}
+      }
+    },
+    "custom": {
+      "name": "Custom",
+      "api": "responses",
+      "baseUrl": "https://example.test/v1",
+      "models": [
+        {"id": "m", "name": "M", "contextWindow": 1000, "maxTokens": 100, "input": ["text"], "remoteCompaction": "openai"},
+        {"id": "m-off", "name": "M Off", "contextWindow": 1000, "maxTokens": 100, "input": ["text"], "remoteCompaction": ""}
+      ]
+    }
+  }
+}`
+	path := filepath.Join(home, "models.json")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewRegistry(home)
+	if err != nil {
+		t.Fatalf("version 1 models.json must migrate, got %v", err)
+	}
+	want := CompactionCapabilities{Standalone: "openai", Inline: "openai"}
+	for _, ref := range []ModelRef{
+		{Provider: "openrouter", Model: "free"},
+		{Provider: "custom", Model: "m"},
+	} {
+		_, m, ok := r.FindModel(ref.Provider, ref.Model)
+		if !ok {
+			t.Fatalf("model %s/%s missing after migration", ref.Provider, ref.Model)
+		}
+		if m.Compaction != want {
+			t.Fatalf("model %s/%s compaction = %+v, want %+v", ref.Provider, ref.Model, m.Compaction, want)
+		}
+	}
+	if _, m, ok := r.FindModel("custom", "m-off"); !ok || m.Compaction != (CompactionCapabilities{}) {
+		t.Fatalf("empty remoteCompaction compaction = %+v, want none", m.Compaction)
+	}
+	// Migration is a read path: the user's file is rewritten only on the next
+	// mutation, so a plain load must leave it untouched.
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(onDisk), `"version": 1`) {
+		t.Fatalf("load rewrote models.json: %s", onDisk)
+	}
+}
+
+func TestRegistryRejectsNewerModelsFileVersion(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "models.json"), []byte(`{"version":99,"providers":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRegistry(home); !errors.Is(err, errUnsupportedVersion) {
+		t.Fatalf("newer version error = %v, want %v", err, errUnsupportedVersion)
+	}
+}
+
+func TestRegistryMigratedVersionKeepsStrictFields(t *testing.T) {
+	home := t.TempDir()
+	doc := `{"version":1,"providers":{"openai":{"bogus":true}}}`
+	if err := os.WriteFile(filepath.Join(home, "models.json"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRegistry(home); err == nil {
+		t.Fatal("unknown field must still fail after migration")
 	}
 }

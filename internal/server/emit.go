@@ -102,7 +102,14 @@ func (p *runEmitter) persist(ev *loop.Event) error {
 	case loop.CompactionStart, loop.CompactionEnd:
 		// Compaction progress is persisted too (decision: jsonl + SSE) so a
 		// session replay shows when compaction happened.
-		if _, err := p.sess.AppendEvent(string(ev.Type), ev.Reason, ev.OK); err != nil {
+		details := map[string]any{
+			"reason": ev.Reason, "ok": ev.OK, "willRetry": ev.WillRetry,
+			"strategy": ev.Strategy, "status": ev.Status,
+			"fromExtension": ev.FromExtension,
+			"entryId":       ev.EntryID, "firstKeptEntryId": ev.FirstKeptEntryID,
+			"tokensBefore": ev.TokensBefore, "usage": ev.Usage,
+		}
+		if _, err := p.sess.AppendDetailsEvent(string(ev.Type), details); err != nil {
 			return fmt.Errorf("append loop event: %w", err)
 		}
 	case loop.ToolExecutionUpdate:
@@ -141,7 +148,13 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 	persisted := *ev.Message
 	persisted.ResponsesItems = nil
 	if len(ev.Message.ResponsesItems) > 0 {
-		if !p.replayBinding.Equal(p.binding) ||
+		if !p.serverSide {
+			// Why: ResponsesItems is a private server-compaction checkpoint,
+			// not ordinary assistant content. A standalone-only or buggy
+			// provider must not inject opaque replay state unless this occupy
+			// explicitly enabled the advertised inline protocol.
+			ev.Message = &persisted
+		} else if !p.replayBinding.SameScope(p.binding) ||
 			(ev.Message.Provider != "" && ev.Message.Provider != p.info.Provider) ||
 			(ev.Message.Model != "" && ev.Message.Model != p.info.ID) {
 			// A message-visible lifecycle hook cannot rewrite the encrypted
@@ -294,7 +307,12 @@ func (p *runEmitter) autoCompact() {
 	if !p.s.shouldCompact(p.sess, p.info, p.replayBinding) {
 		return
 	}
-	if changed, _ := p.compactNow("threshold", nil); changed {
+	changed, err := p.compactNow(compact.Intent{Reason: compact.ReasonThreshold}, nil)
+	if err != nil && !errors.Is(err, compact.ErrNothingToCompact) &&
+		!errors.Is(err, compact.ErrCompactionSkipped) {
+		slog.Warn("threshold compaction lifecycle", "session_id", p.id, "err", err)
+	}
+	if changed {
 		// The run SSE stops at agent_end, so the rebuilt context reaches the
 		// meter through the push stream.
 		p.s.publishContextUsage(p.sess)
@@ -305,19 +323,47 @@ func (p *runEmitter) autoCompact() {
 // changed. The compaction events go through Emit like every other event, so
 // they are persisted, buffered, and fanned out in loop order. A compaction that
 // finds nothing to do is not an error.
-func (p *runEmitter) compactNow(reason string, request *loop.Request) (bool, error) {
-	_ = p.Emit(loop.Event{Type: loop.CompactionStart, Reason: reason})
-	_, err := p.s.compactSession(p.ctx, p.sess, request)
+func (p *runEmitter) compactNow(intent compact.Intent, request *loop.Request) (bool, error) {
+	reason := string(intent.Reason)
+	if err := p.Emit(loop.Event{
+		Type: loop.CompactionStart, Reason: reason, WillRetry: intent.WillRetry,
+	}); err != nil {
+		return false, fmt.Errorf("persist compaction start: %w", err)
+	}
+	outcome, err := p.s.compactSession(p.ctx, p.sess, intent, request)
 	if errors.Is(err, compact.ErrCompactionSkipped) {
-		_ = p.Emit(loop.Event{Type: loop.CompactionEnd, Reason: reason, OK: false})
+		if emitErr := p.Emit(loop.Event{
+			Type: loop.CompactionEnd, Reason: reason, WillRetry: intent.WillRetry,
+			Status: "cancelled",
+		}); emitErr != nil {
+			return false, errors.Join(err, fmt.Errorf("persist compaction end: %w", emitErr))
+		}
 		return false, err
 	}
 	if err != nil && !errors.Is(err, compact.ErrNothingToCompact) {
 		slog.Warn(reason+" compact", "session_id", p.id, "err", err)
-		_ = p.Emit(loop.Event{Type: loop.CompactionEnd, Reason: reason, OK: false})
+		if emitErr := p.Emit(loop.Event{
+			Type: loop.CompactionEnd, Reason: reason, WillRetry: intent.WillRetry,
+			Status: "failed",
+		}); emitErr != nil {
+			return false, errors.Join(err, fmt.Errorf("persist compaction end: %w", emitErr))
+		}
 		return false, err
 	}
-	_ = p.Emit(loop.Event{Type: loop.CompactionEnd, Reason: reason, OK: true})
+	status := "committed"
+	if errors.Is(err, compact.ErrNothingToCompact) {
+		status = "empty"
+	}
+	if emitErr := p.Emit(loop.Event{
+		Type: loop.CompactionEnd, Reason: reason, OK: true,
+		WillRetry: intent.WillRetry, Status: status,
+		EntryID: outcome.Entry.ID, Strategy: outcome.Strategy,
+		FromExtension:    outcome.FromExtension,
+		FirstKeptEntryID: outcome.FirstKeptEntryID,
+		TokensBefore:     outcome.TokensBefore, Usage: outcome.Usage,
+	}); emitErr != nil {
+		return err == nil, fmt.Errorf("persist compaction end: %w", emitErr)
+	}
 	return err == nil, err
 }
 

@@ -12,24 +12,32 @@ import (
 
 // Event is the redacted DTO delivered to sidecars. No prompt, args, or bodies.
 type Event struct {
-	Type         string            `json:"type"`
-	SessionID    string            `json:"sessionId,omitempty"`
-	Role         string            `json:"role,omitempty"`
-	Timestamp    int64             `json:"timestamp,omitzero"`
-	ToolCallID   string            `json:"toolCallId,omitempty"`
-	ToolName     string            `json:"toolName,omitempty"`
-	IsError      bool              `json:"isError,omitzero"`
-	DurationMs   int64             `json:"durationMs"` // not omitempty: sidecars may key on the field at 0ms
-	Reason       string            `json:"reason,omitempty"`
-	OK           bool              `json:"ok,omitzero"`
-	Provider     string            `json:"provider,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	RunID        string            `json:"runId,omitempty"`
-	Text         string            `json:"text,omitempty"`
-	StopReason   string            `json:"stopReason,omitempty"`
-	ErrorMessage string            `json:"errorMessage,omitempty"`
-	ToolTitle    string            `json:"toolTitle,omitempty"`
-	External     map[string]string `json:"external,omitempty"`
+	Type             string            `json:"type"`
+	SessionID        string            `json:"sessionId,omitempty"`
+	EntryID          string            `json:"entryId,omitempty"`
+	Role             string            `json:"role,omitempty"`
+	Timestamp        int64             `json:"timestamp,omitzero"`
+	ToolCallID       string            `json:"toolCallId,omitempty"`
+	ToolName         string            `json:"toolName,omitempty"`
+	IsError          bool              `json:"isError,omitzero"`
+	DurationMs       int64             `json:"durationMs"` // not omitempty: sidecars may key on the field at 0ms
+	Reason           string            `json:"reason,omitempty"`
+	OK               bool              `json:"ok,omitzero"`
+	WillRetry        bool              `json:"willRetry,omitzero"`
+	Strategy         string            `json:"strategy,omitempty"`
+	Status           string            `json:"status,omitempty"`
+	FromExtension    bool              `json:"fromExtension,omitzero"`
+	FirstKeptEntryID string            `json:"firstKeptEntryId,omitempty"`
+	TokensBefore     int               `json:"tokensBefore,omitzero"`
+	Usage            *types.Usage      `json:"usage,omitempty"`
+	Provider         string            `json:"provider,omitempty"`
+	Model            string            `json:"model,omitempty"`
+	RunID            string            `json:"runId,omitempty"`
+	Text             string            `json:"text,omitempty"`
+	StopReason       string            `json:"stopReason,omitempty"`
+	ErrorMessage     string            `json:"errorMessage,omitempty"`
+	ToolTitle        string            `json:"toolTitle,omitempty"`
+	External         map[string]string `json:"external,omitempty"`
 }
 
 // Registration is the frozen initialize result.
@@ -95,6 +103,43 @@ type ResultPatch struct {
 	Terminate *bool           `json:"terminate,omitempty"`
 }
 
+// CompactPreparation is the portable, provider-neutral plan exposed to a
+// session_before_compact hook. It never contains Responses opaque items,
+// credentials, provider bindings, or transformed provider requests.
+type CompactPreparation struct {
+	Strategy            string          `json:"strategy"`
+	SourceLeafID        string          `json:"sourceLeafId,omitempty"`
+	FirstKeptEntryID    string          `json:"firstKeptEntryId,omitempty"`
+	MessagesToSummarize []types.Message `json:"messagesToSummarize,omitempty"`
+	TurnPrefixMessages  []types.Message `json:"turnPrefixMessages,omitempty"`
+	RetainedTail        []types.Message `json:"retainedTail,omitempty"`
+	IsSplitTurn         bool            `json:"isSplitTurn,omitzero"`
+	TokensBefore        int             `json:"tokensBefore,omitzero"`
+	PreviousSummary     string          `json:"previousSummary,omitempty"`
+}
+
+// BeforeCompactRequest is the structured session_before_compact payload.
+type BeforeCompactRequest struct {
+	Reason       string             `json:"reason"`
+	WillRetry    bool               `json:"willRetry"`
+	Instructions string             `json:"instructions,omitempty"`
+	Preparation  CompactPreparation `json:"preparation"`
+}
+
+// CustomCompactResult replaces local summary generation while leaving the
+// host-owned cut point and retained tail unchanged.
+type CustomCompactResult struct {
+	Summary string       `json:"summary"`
+	Usage   *types.Usage `json:"usage,omitempty"`
+	Details any          `json:"details,omitempty"`
+}
+
+// BeforeCompactDecision is returned by session_before_compact.
+type BeforeCompactDecision struct {
+	Cancel bool                 `json:"cancel,omitempty"`
+	Result *CustomCompactResult `json:"result,omitempty"`
+}
+
 // ProviderRequest is before_provider_request (no System, no keys).
 type ProviderRequest struct {
 	Messages       []types.Message `json:"messages"`
@@ -116,8 +161,8 @@ type ProviderStreamRequest struct {
 }
 
 // ProviderCompactRequest is the complete host-to-provider standalone
-// compaction payload. Provider sidecars that advertise remoteCompaction own
-// the wire request and return a canonical ordered window.
+// compaction payload. Provider sidecars that advertise compaction.standalone
+// own the wire request and return a canonical ordered window.
 type ProviderCompactRequest struct {
 	Provider   string              `json:"provider"`
 	Model      provider.Model      `json:"model"`

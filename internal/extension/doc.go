@@ -12,8 +12,11 @@
 // one NDJSON sidecar per enabled package, owned by the server process. Provider
 // capabilities use the same process-level lifetime and are shared by all
 // sessions.
-// Provider sidecars may additionally implement provider.compact and return
-// private Responses compaction items outside ordinary message/lifecycle JSON.
+// Provider sidecars that advertise compaction.standalone implement
+// provider.compact. Inline Responses items require a separate inline capability
+// and remain outside ordinary message/lifecycle JSON.
+// session_before_compact receives a portable host preparation after planning;
+// it may cancel or replace local summary generation, but cannot alter the cut.
 // A synchronous hook that can change provider-visible messages or routing
 // forces portable history replay because it cannot inspect an encrypted prefix.
 // Channel sidecars can call session.appendMessage to persist a normal user

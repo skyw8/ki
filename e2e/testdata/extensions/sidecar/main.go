@@ -224,12 +224,15 @@ func main() {
 				}
 			}
 			if wrap.Event == "session_before_compact" {
+				if marker := os.Getenv("KI_COMPACT_MARKER"); marker != "" {
+					_ = os.WriteFile(marker, wrap.Payload, 0o600)
+				}
 				if os.Getenv("KI_COMPACT_CANCEL") == "1" {
 					reply(m.ID, map[string]any{"cancel": true})
 					continue
 				}
 				if sum := os.Getenv("KI_COMPACT_SUMMARY"); sum != "" {
-					reply(m.ID, map[string]any{"summary": sum})
+					reply(m.ID, map[string]any{"result": map[string]any{"summary": sum}})
 					continue
 				}
 			}

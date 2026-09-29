@@ -174,7 +174,7 @@ NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` 
 | `bus.event` | `bus` | 他方 emit / 广播 |
 | `provider.stream.start` | `provider` | `{requestId,request}`；一次传入完整 model、credential 和 loop request，`request` 使用 lower camelCase 字段名，返回 `{accepted:true}` |
 | `provider.stream.cancel` | `provider` | `{requestId}`；取消一个 provider stream |
-| `provider.compact` | `provider` | standalone remote compaction；接收完整 model、credential、已应用 `context` / `before_provider_request` 的 loop request，返回 `{items:[...],usage?}` canonical window；单条 RPC 上限 65 MiB。JSON-RPC schema/4xx 错误不重试，server/internal/429/5xx 可走 host retry；取消大请求会终止 sidecar 以打断不可设 deadline 的 pipe write |
+| `provider.compact` | `provider` | 模型声明 `compaction.standalone` 后的 standalone remote compaction；接收完整 model、credential、已应用 `context` / `before_provider_request` 的 loop request，返回 `{items:[...],usage?}` 完整有序 canonical window；单条 RPC 上限 65 MiB。 |
 
 `config.updated` 是 Host 发给全局 sidecar 的配置变更通知，参数包含脱敏后的
 `config`；sidecar 应重新读取自己的私有配置文件。
@@ -201,7 +201,7 @@ provider capability 使用进程级 sidecar，不随 session 各拉起一个进�
 {"jsonrpc":"2.0","method":"provider.stream.event","params":{"requestId":"stream-1","type":"text_delta","contentIndex":0,"delta":"hello"}}
 ```
 
-事件类型首版为 `start`、`text_start`/`text_delta`/`text_end`、`thinking_start`/`thinking_delta`/`thinking_end`、`toolcall_start`/`toolcall_delta`/`toolcall_end`、`custom_tool_call_input_delta`、`done`、`error`。`done` 可携带完整最终 `message`；普通增量不重复携带完整 `partial`，Host adapter 会在内存中重建 `loop.AssistantDelta`。声明模型 `remoteCompaction:"openai"` 的 sidecar 可在 completed `done` event 的私有 `responsesItems` 返回从最后一个 server-side compaction item 到 terminal output 末尾的完整 canonical suffix；Host 将其提升为 session checkpoint，该字段不进入普通 message/SSE/lifecycle JSON。
+事件类型首版为 `start`、`text_start`/`text_delta`/`text_end`、`thinking_start`/`thinking_delta`/`thinking_end`、`toolcall_start`/`toolcall_delta`/`toolcall_end`、`custom_tool_call_input_delta`、`done`、`error`。`done` 可携带完整最终 `message`。只有模型声明 `compaction.inline:"openai"` 且该 occupy 实际启用 server-side compaction 时，sidecar 才可在 completed `done` 的私有 `responsesItems` 返回完整 canonical suffix；standalone-only sidecar 的同字段会被丢弃。
 
 provider sidecar 的生命周期、凭据和流都是全局进程级资源；session 只通过 `requestId` 复用同一个 sidecar。Reload 时保留仍注册的 sidecar，移除或禁用的 provider 会关闭对应进程。
 
@@ -220,7 +220,7 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 | `session.appendMessage` | — | `{sessionId,message,idempotencyKey}`；追加正常 user message；不启动模型 |
 | `session.appendEntry` | — | `{sessionId,...}`；jsonl custom；强制本扩展名；不进 provider context |
 | `session.abort` | — | 同 POST abort |
-| `session.compact` | — | 同 HTTP compact |
+| `session.compact` | — | 同 HTTP compact；可传 `{instructions}` |
 | `session.patch` | — | model / thinkingEffort |
 | `session.setActiveTools` | — | 会话级；未知名 warn，不静默清空 |
 | `tools.register` | `tool` | 下一 occupy 生效 |
@@ -233,7 +233,9 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 
 除 `session.create`、`session.list`、`session.get` 和 `ui.setGlobal*` / `ui.clearGlobalPanel` 外，上表 inbound 方法都必须带 `sessionId`，bus 订阅也按 session 维护。`session.open` 是 Host→sidecar 的 session 生命周期通知。`ui.setPanel` 和 `ui.setGlobalPanel` 由 WebUI 按通用壳渲染，Host 不解析扩展语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
 
-`origin` 一律 `extension:<name>`，并写进该次 occupy 的 user message（WebUI 气泡可区分）。扩展 FIFO 与用户 `queue.json` **分轨**；occupy release 后 **先用户 queue，再扩展 FIFO**。`when=settled` 在 `agent_settled` 后只写入扩展 FIFO（不直接 occupy），再走同一套 dispatch。`nextTurn` 挂到下次**用户** occupy，注入 messages，不自触发 occupy。`session.setActiveTools` 忽略未知名并发 `extension_notice` warn；全部未知名则保留上一套工具。`session.patch` 与 HTTP PATCH 同一套 ResolveSpec / thinking 校验。`session_before_compact` 可 cancel 或返回定制 summary（跳过模型摘要）。
+`origin` 一律 `extension:<name>`，并写进该次 occupy 的 user message（WebUI 气泡可区分）。扩展 FIFO 与用户 `queue.json` **分轨**；occupy release 后 **先用户 queue，再扩展 FIFO**。`when=settled` 在 `agent_settled` 后只写入扩展 FIFO（不直接 occupy），再走同一套 dispatch。`nextTurn` 挂到下次**用户** occupy，注入 messages，不自触发 occupy。`session.setActiveTools` 忽略未知名并发 `extension_notice` warn；全部未知名则保留上一套工具。`session.patch` 与 HTTP PATCH 同一套 ResolveSpec / thinking 校验。
+
+`session_before_compact` 在 Host 完成 portable plan 后调用，payload 为 `{reason,willRetry,instructions?,preparation}`；preparation 含 strategy、source/kept entry id、待摘要消息、split-turn prefix、retained tail、tokensBefore 和 previousSummary，不含 Responses items、binding、credential 或 provider-facing transformed request。返回 `{cancel:true}` 可取消，或 `{result:{summary,usage?,details?}}` 可替换本地生成；Host 仍校验并控制 cut/tail/tokens。strict remote 不接受 custom local result/instructions。结束后的 `compaction_end` 提供 `status`、`strategy`、`fromExtension`、`firstKeptEntryId`、`tokensBefore`、`usage` 及 overflow 的 `willRetry`。
 
 `session.appendMessage` 只接受 `role=user`，追加的是 provider 可见的正常
 `message` entry，但本身不 occupy、不调用模型。Host 会先把消息写入持久化

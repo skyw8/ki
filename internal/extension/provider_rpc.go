@@ -23,7 +23,7 @@ func (e *nonRetryableProviderCompactError) NonRetryable() bool {
 
 func deterministicProviderRPCError(code int) bool {
 	switch code {
-	case -32700, -32600, -32601, -32602:
+	case -32700, -32600, -32601, -32602, -32040, -32800:
 		return true
 	case 400, 401, 403, 404, 405, 410, 413, 415, 422:
 		return true

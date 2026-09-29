@@ -272,8 +272,9 @@ export class Client {
     return this.json(`/v1/push/subscriptions?endpoint=${encodeURIComponent(endpoint)}`, { method: 'DELETE' })
   }
 
-  compact(id: string): Promise<void> {
-    return this.json(`/v1/sessions/${id}/compact`, { method: 'POST' })
+  compact(id: string, instructions?: string): Promise<void> {
+    const body = instructions?.trim() ? JSON.stringify({ instructions: instructions.trim() }) : undefined
+    return this.json(`/v1/sessions/${id}/compact`, { method: 'POST', body })
   }
 
   fork(id: string, entryId: string, forkMode: 'flat' | 'tree' = 'flat'): Promise<SessionInfo> {

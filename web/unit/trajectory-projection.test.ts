@@ -143,6 +143,14 @@ test('a manual compaction streams a running chat row that settles in place', () 
   failed = applyEvent(failed, { type: 'compaction_end', reason: 'manual', ok: false })
   expect(failed.nodes[0]).toMatchObject({ kind: 'compaction', running: false, failed: true })
 
+  let statusFailed = applyEvent(emptyView(), { type: 'compaction_start', reason: 'manual' })
+  statusFailed = applyEvent(statusFailed, { type: 'compaction_end', reason: 'manual', status: 'failed' })
+  expect(statusFailed.nodes[0]).toMatchObject({ kind: 'compaction', running: false, failed: true })
+
+  let cancelled = applyEvent(emptyView(), { type: 'compaction_start', reason: 'manual' })
+  cancelled = applyEvent(cancelled, { type: 'compaction_end', reason: 'manual', status: 'cancelled' })
+  expect(cancelled.nodes[0]).toMatchObject({ kind: 'compaction', running: false, failed: true })
+
   // The reloaded history replaces the live row with the persisted summary.
   const settled = loadHistory({
     id: 'session', cwd: '/tmp', provider: 'test', model: 'test', title: 'test', leafId: 'c1',

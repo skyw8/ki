@@ -49,7 +49,7 @@ func TestProviderStreamAccumulatorRebuildsCustomInput(t *testing.T) {
 }
 
 func TestProviderCompactRPCErrorClassification(t *testing.T) {
-	for _, code := range []int{-32700, -32600, -32601, -32602, 400, 401, 404, 413, 422} {
+	for _, code := range []int{-32700, -32600, -32601, -32602, -32040, -32800, 400, 401, 404, 413, 422} {
 		if !deterministicProviderRPCError(code) {
 			t.Fatalf("deterministic code %d was retryable", code)
 		}

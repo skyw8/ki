@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Callable
 
 
@@ -40,16 +41,60 @@ DEVICE_LIFETIME = 15 * 60
 # where a reasoning model may legitimately stay quiet between events.
 STREAM_HEADER_TIMEOUT = 60
 STREAM_IDLE_TIMEOUT = 300
+COMPACTION_EVENT_LIMIT = 64 * 1024 * 1024
+COMPACTION_RETAINED_TOKEN_BUDGET = 64_000
+
+# The ChatGPT Codex backend identifies the calling client by `originator` and
+# gates Responses behaviors (Remote Compaction V2 included) on the beta
+# features the client advertises. Codex CLI sends `codex_cli_rs/<version>` and
+# `x-codex-beta-features: remote_compaction_v2` on every Responses request.
+# Without that advertisement the backend ignores the appended
+# `{"type":"compaction_trigger"}` item and completes with an empty output, so a
+# standalone compaction request yields no `compaction` item at all.
+CODEX_ORIGINATOR = "codex_cli_rs"
+CODEX_CLIENT_VERSION = "0.0.0"
+CODEX_BETA_FEATURES = "remote_compaction_v2"
+
+# Codex sends a stable per-installation id and a per-window id on every
+# Responses request (body `client_metadata` plus the matching headers). Ki does
+# not persist an installation id, so one is minted per sidecar process; window
+# ids are kept per session for the process lifetime.
+INSTALLATION_ID = str(uuid.uuid4())
+_SESSION_WINDOW_IDS: dict[str, str] = {}
+_WINDOW_IDS_LOCK = threading.Lock()
+
+
+def session_window_id(session_id: str) -> str:
+    with _WINDOW_IDS_LOCK:
+        window_id = _SESSION_WINDOW_IDS.get(session_id)
+        if window_id is None:
+            window_id = str(uuid.uuid4())
+            _SESSION_WINDOW_IDS[session_id] = window_id
+        return window_id
 
 
 def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def pi_user_agent() -> str:
-    platform_name = "linux" if sys.platform.startswith("linux") else "darwin" if sys.platform == "darwin" else "win32" if sys.platform == "win32" else sys.platform
-    arch = {"x86_64": "x64", "AMD64": "x64", "aarch64": "arm64"}.get(platform.machine(), platform.machine())
-    return f"pi ({platform_name} {platform.release()}; {arch})"
+def codex_user_agent() -> str:
+    """Mimic the Codex CLI User-Agent.
+
+    Codex formats it as `codex_cli_rs/<version> (<os type> <os version>;
+    <arch>) <terminal>`; the backend only needs the originator/version prefix,
+    but a shaped string keeps the client identity consistent.
+    """
+    if sys.platform.startswith("linux"):
+        os_type, os_version = "Linux", platform.release()
+    elif sys.platform == "darwin":
+        os_type, os_version = "Mac OS", platform.mac_ver()[0] or platform.release()
+    elif sys.platform == "win32":
+        os_type, os_version = "Windows", platform.version()
+    else:
+        os_type, os_version = sys.platform, platform.release()
+    arch = {"x86_64": "x64", "AMD64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(platform.machine(), platform.machine())
+    terminal = os.environ.get("TERM_PROGRAM") or os.environ.get("TERM") or "unknown"
+    return f"{CODEX_ORIGINATOR}/{CODEX_CLIENT_VERSION} ({os_type} {os_version}; {arch}) {terminal}"
 
 
 def auth_base() -> str:
@@ -139,7 +184,7 @@ def authorization_flow() -> tuple[str, str, str]:
             "state": state,
             "id_token_add_organizations": "true",
             "codex_cli_simplified_flow": "true",
-            "originator": "pi",
+            "originator": CODEX_ORIGINATOR,
         }
     )
     return verifier, state, f"{auth_base()}/oauth/authorize?{query}"
@@ -528,7 +573,18 @@ def input_items(message: dict[str, Any], model: dict[str, Any], message_index: i
 def build_request(payload: dict[str, Any]) -> dict[str, Any]:
     request = payload.get("request", {})
     model = payload.get("model", {})
-    input_items_list = [item for index, message in enumerate(replayable(request.get("messages", []))) for item in input_items(message, model, index)]
+    responses_context = request.get("responsesContext") or []
+    if not isinstance(responses_context, list) or any(not isinstance(item, dict) for item in responses_context):
+        raise RuntimeError("Codex Responses context must be an array of objects")
+    # Responses compaction items are provider-owned canonical input. Preserve
+    # every field and its order instead of routing them through Ki's portable
+    # message conversion, which would discard encrypted and future fields.
+    input_items_list = copy.deepcopy(responses_context)
+    input_items_list.extend(
+        item
+        for index, message in enumerate(replayable(request.get("messages", [])))
+        for item in input_items(message, model, index)
+    )
     if not input_items_list:
         raise RuntimeError("Codex request has no input messages")
     body: dict[str, Any] = {
@@ -565,6 +621,37 @@ def build_request(payload: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
+def build_compact_request(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build Codex Remote Compaction V2 as a normal Responses request."""
+    body = build_request(payload)
+    # Remote Compaction V2 is not POST /responses/compact. Codex asks the
+    # ordinary Responses endpoint to compact by appending this opaque trigger
+    # after the complete canonical window.
+    body["input"].append({"type": "compaction_trigger"})
+    return body
+
+
+def retained_compaction_items(input_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Retain recent client-authored turns around the V2 compaction item."""
+    candidates = [
+        item for item in input_items
+        if item.get("type") == "message" and item.get("role") == "user"
+    ]
+    remaining = COMPACTION_RETAINED_TOKEN_BUDGET
+    retained_reversed: list[dict[str, Any]] = []
+    for item in reversed(candidates):
+        # Codex budgets retained client turns independently from the encrypted
+        # summary. A serialized estimate is conservative for text and images
+        # and, unlike normalization, preserves every field of retained items.
+        tokens = max(1, (len(json.dumps(item, separators=(",", ":"))) + 3) // 4)
+        if tokens > remaining:
+            break
+        retained_reversed.append(copy.deepcopy(item))
+        remaining -= tokens
+    retained_reversed.reverse()
+    return retained_reversed
+
+
 def emit_event(send: Callable[[dict[str, Any]], None], kind: str, message: dict[str, Any], **values: Any) -> None:
     event = {"jsonrpc": "2.0", "method": "provider.stream.event", "params": {"requestId": values.pop("requestId", ""), "type": kind, "message": copy.deepcopy(message)}}
     event["params"].update({key: value for key, value in values.items() if value is not None and value != ""})
@@ -574,6 +661,23 @@ def emit_event(send: Callable[[dict[str, Any]], None], kind: str, message: dict[
 def response_id(obj: dict[str, Any]) -> str:
     response = obj.get("response")
     return str((response if isinstance(response, dict) else obj).get("id", ""))
+
+
+def response_usage(usage: Any) -> dict[str, int] | None:
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("input_tokens_details") or {}
+    if not isinstance(details, dict):
+        details = {}
+    cached = int(details.get("cached_tokens", 0) or 0)
+    cache_write = int(details.get("cache_write_tokens", usage.get("cache_write_tokens", 0)) or 0)
+    return {
+        "input": max(0, int(usage.get("input_tokens", 0) or 0) - cached - cache_write),
+        "output": int(usage.get("output_tokens", 0) or 0),
+        "cacheRead": cached,
+        "cacheWrite": cache_write,
+        "totalTokens": int(usage.get("total_tokens", 0) or 0),
+    }
 
 
 def relax_stream_timeout(response: Any, seconds: float) -> None:
@@ -875,12 +979,9 @@ class CodexStreamBuilder:
                             self.process("response.output_item.done", {"type": "response.output_item.done", "output_index": output_index, "item": output_item})
             if response_id(obj):
                 self.message["responseId"] = response_id(obj)
-            usage = response.get("usage") if isinstance(response, dict) else None
+            usage = response_usage(response.get("usage") if isinstance(response, dict) else None)
             if usage:
-                details = usage.get("input_tokens_details") or {}
-                cached = int(details.get("cached_tokens", 0) or 0)
-                cache_write = int(details.get("cache_write_tokens", usage.get("cache_write_tokens", 0)) or 0)
-                self.message["usage"] = {"input": max(0, int(usage.get("input_tokens", 0) or 0) - cached - cache_write), "output": int(usage.get("output_tokens", 0) or 0), "cacheRead": cached, "cacheWrite": cache_write, "totalTokens": int(usage.get("total_tokens", 0) or 0)}
+                self.message["usage"] = usage
             status = response.get("status", "") if isinstance(response, dict) else ""
             if typ in ("response.failed", "error") or status == "failed":
                 error = response.get("error") if isinstance(response, dict) else None
@@ -901,46 +1002,288 @@ class CodexStreamBuilder:
             self.terminal = True
 
 
-def stream_codex(cancelled: threading.Event, payload: dict[str, Any], send: Callable[[dict[str, Any]], None], request_id: str) -> None:
+class CodexCompactBuilder:
+    """Collects one opaque Remote Compaction V2 item from Responses SSE."""
+
+    def __init__(self) -> None:
+        self.output: list[dict[str, Any]] = []
+        self.usage: dict[str, int] | None = None
+        self.terminal = False
+        self.event_name = ""
+        self.data_lines: list[str] = []
+        self.event_bytes = 0
+
+    def feed(self, line: str) -> bool:
+        if not line:
+            if self.data_lines:
+                data = "\n".join(self.data_lines)
+                if data != "[DONE]":
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError("Codex compaction stream contained invalid JSON") from exc
+                    if not isinstance(obj, dict):
+                        raise RuntimeError("Codex compaction stream event is not an object")
+                    self.process(self.event_name, obj)
+            self.event_name, self.data_lines, self.event_bytes = "", [], 0
+            return self.terminal
+        self.event_bytes += len(line.encode("utf-8", errors="replace"))
+        if self.event_bytes > COMPACTION_EVENT_LIMIT:
+            raise RuntimeError("Codex compaction stream event is too large")
+        if line.startswith("event:"):
+            self.event_name = line[6:].strip()
+        elif line.startswith("data:"):
+            self.data_lines.append(line[5:].lstrip())
+        return False
+
+    @staticmethod
+    def error_message(obj: dict[str, Any], response: dict[str, Any], fallback: str) -> str:
+        error = response.get("error")
+        detail = error.get("message") if isinstance(error, dict) else error
+        return str(obj.get("message") or detail or fallback)
+
+    def process(self, name: str, obj: dict[str, Any]) -> None:
+        typ = str(obj.get("type") or name)
+        item = obj.get("item")
+        if typ == "response.output_item.done" and isinstance(item, dict):
+            # Do not normalize the compaction object. Unknown fields are part
+            # of the provider-owned checkpoint and must survive round trips.
+            self.output.append(copy.deepcopy(item))
+            return
+        if typ not in (
+            "response.done",
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+            "response.cancelled",
+            "error",
+        ):
+            return
+        raw_response = obj.get("response")
+        response = raw_response if isinstance(raw_response, dict) else obj
+        if "output" in response:
+            terminal_output = response["output"]
+            if not isinstance(terminal_output, list) or any(not isinstance(value, dict) for value in terminal_output):
+                raise RuntimeError("Codex compaction terminal output is invalid")
+            # Keep items already delivered through response.output_item.done:
+            # a Remote Compaction V2 response completes with `output: []` and
+            # ships the single compaction item only as an incremental event, so
+            # adopting the empty terminal array would discard it and report
+            # "got 0 ... output items". The terminal array is authoritative only
+            # when it actually carries items.
+            if terminal_output and not self.output:
+                self.output = copy.deepcopy(terminal_output)
+        self.usage = response_usage(response.get("usage"))
+        status = str(response.get("status") or "")
+        if typ in ("response.failed", "error") or status == "failed":
+            raise RuntimeError(self.error_message(obj, response, "Codex compaction failed"))
+        if typ == "response.cancelled" or status == "cancelled":
+            raise RuntimeError("Codex compaction was cancelled")
+        if typ == "response.incomplete" or status == "incomplete":
+            details = response.get("incomplete_details")
+            reason = details.get("reason") if isinstance(details, dict) else ""
+            suffix = f": {reason}" if reason else ""
+            raise RuntimeError(f"Codex compaction response was incomplete{suffix}")
+        if typ not in ("response.done", "response.completed") or status not in ("", "completed"):
+            raise RuntimeError(f"Codex compaction ended with unexpected status {status or typ}")
+        self.terminal = True
+
+    def result(self) -> dict[str, Any]:
+        compacted = [item for item in self.output if item.get("type") == "compaction"]
+        if len(compacted) != 1:
+            raise RuntimeError(
+                f"Codex Remote Compaction V2 expected exactly one compaction output item, got {len(compacted)} from {len(self.output)} output items"
+            )
+        # Preserve the complete provider-owned output, including unknown
+        # future items around the compaction object. The host treats the
+        # ordered window as opaque and scopes it to this provider credential.
+        result: dict[str, Any] = {"items": copy.deepcopy(self.output)}
+        if self.usage is not None:
+            result["usage"] = self.usage
+        return result
+
+
+def codex_url(model: dict[str, Any]) -> str:
+    base = str(model.get("baseUrl", "https://chatgpt.com/backend-api")).rstrip("/")
+    return base if base.endswith("/codex/responses") else base + ("/responses" if base.endswith("/codex") else "/codex/responses")
+
+
+def turn_metadata(session_id: str, thread_id: str, window_id: str, turn_id: str, compaction: bool) -> str:
+    """Codex `x-codex-turn-metadata` payload.
+
+    Mirrors the fields Codex CLI serializes (session/thread/window/turn ids and
+    the request kind); a compaction request additionally carries the
+    Remote Compaction V2 descriptor.
+    """
+    metadata: dict[str, Any] = {
+        "session_id": session_id,
+        "thread_id": thread_id,
+        "window_id": window_id,
+        "turn_id": turn_id,
+        "root_turn_id": turn_id,
+        "request_kind": "compaction" if compaction else "turn",
+    }
+    if compaction:
+        metadata["compaction"] = {
+            "trigger": "manual",
+            "reason": "user_requested",
+            "implementation": "responses_compaction_v2",
+            "phase": "standalone_turn",
+            "strategy": "memento",
+        }
+    return json.dumps(metadata, separators=(",", ":"))
+
+
+def codex_request(payload: dict[str, Any], body: dict[str, Any], compaction: bool = False) -> urllib.request.Request:
     credential = (payload.get("credential") or {}).get("value") or {}
     if not credential.get("access") or not credential.get("accountId"):
         raise RuntimeError("invalid Codex OAuth credential")
+    session_id = (payload.get("request") or {}).get("sessionId", "") or str(uuid.uuid4())
+    window_id = session_window_id(session_id)
+    turn_id = str(uuid.uuid4())
+    metadata = turn_metadata(session_id, session_id, window_id, turn_id, compaction)
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {credential['access']}",
+        "chatgpt-account-id": credential["accountId"],
+        "OpenAI-Beta": "responses=experimental",
+        "originator": CODEX_ORIGINATOR,
+        "User-Agent": codex_user_agent(),
+        "Accept": "text/event-stream",
+        # Advertised on every Responses request, exactly as Codex CLI does;
+        # the backend requires it before it honors a compaction trigger.
+        "x-codex-beta-features": CODEX_BETA_FEATURES,
+        "session-id": session_id,
+        "thread-id": session_id,
+        "x-client-request-id": session_id,
+        "x-codex-window-id": window_id,
+        "x-codex-turn-metadata": metadata,
+    }
+    # Codex also projects the same identity into the body's `client_metadata`
+    # map; the window id there must equal the header.
+    body = {
+        **body,
+        "client_metadata": {
+            "x-codex-installation-id": INSTALLATION_ID,
+            "session_id": session_id,
+            "thread_id": session_id,
+            "x-codex-window-id": window_id,
+            "turn_id": turn_id,
+            "x-codex-turn-metadata": metadata,
+        },
+    }
+    return urllib.request.Request(
+        codex_url(payload.get("model", {})),
+        data=json.dumps(body).encode(),
+        method="POST",
+        headers=headers,
+    )
+
+
+class CancellationSignal:
+    """Cancellation that also closes the currently blocked HTTP response."""
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.lock = threading.Lock()
+        self.response: Any | None = None
+
+    def is_set(self) -> bool:
+        return self.event.is_set()
+
+    def set(self) -> None:
+        self.event.set()
+        with self.lock:
+            response = self.response
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+
+    def bind(self, response: Any) -> None:
+        with self.lock:
+            self.response = response
+            cancelled = self.event.is_set()
+        if cancelled:
+            response.close()
+
+    def unbind(self, response: Any) -> None:
+        with self.lock:
+            if self.response is response:
+                self.response = None
+
+
+def stream_codex(cancelled: threading.Event | CancellationSignal, payload: dict[str, Any], send: Callable[[dict[str, Any]], None], request_id: str) -> None:
     model = payload.get("model", {})
-    base = str(model.get("baseUrl", "https://chatgpt.com/backend-api")).rstrip("/")
-    url = base if base.endswith("/codex/responses") else base + ("/responses" if base.endswith("/codex") else "/codex/responses")
-    raw = json.dumps(build_request(payload)).encode()
-    request = urllib.request.Request(url, data=raw, method="POST", headers={"Content-Type": "application/json", "Authorization": f"Bearer {credential['access']}", "chatgpt-account-id": credential["accountId"], "OpenAI-Beta": "responses=experimental", "originator": "pi", "User-Agent": pi_user_agent(), "Accept": "text/event-stream"})
-    session_id = (payload.get("request") or {}).get("sessionId", "")
-    if session_id:
-        request.add_header("session-id", session_id)
-        request.add_header("x-client-request-id", session_id)
+    request = codex_request(payload, build_request(payload))
     with urllib.request.urlopen(request, timeout=STREAM_HEADER_TIMEOUT) as response:
-        if response.status < 200 or response.status >= 300:
-            raise RuntimeError(f"Codex request failed ({response.status})")
-        relax_stream_timeout(response, STREAM_IDLE_TIMEOUT)
-        builder = CodexStreamBuilder(send, request_id, model)
-        for raw_line in response:
+        if isinstance(cancelled, CancellationSignal):
+            cancelled.bind(response)
+        try:
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError(f"Codex request failed ({response.status})")
+            relax_stream_timeout(response, STREAM_IDLE_TIMEOUT)
+            builder = CodexStreamBuilder(send, request_id, model)
+            for raw_line in response:
+                if cancelled.is_set():
+                    return
+                if builder.feed(raw_line.decode(errors="replace").rstrip("\r\n")):
+                    break
             if cancelled.is_set():
                 return
-            if builder.feed(raw_line.decode(errors="replace").rstrip("\r\n")):
-                break
-        if not builder.terminal:
-            raise RuntimeError("Codex stream ended before a terminal response event")
-        message = builder.message
-        if message.get("stopReason") == "error":
-            # Keep the provider response metadata attached to the RPC error;
-            # otherwise the host would retry with an empty assistant message
-            # and lose the upstream failure details.
-            emit_event(send, "error", message, requestId=request_id, error=message.get("errorMessage", "Codex response failed"))
-            return
-        emit_event(send, "done", message, requestId=request_id)
+            if not builder.terminal:
+                raise RuntimeError("Codex stream ended before a terminal response event")
+            message = builder.message
+            if message.get("stopReason") == "error":
+                # Keep the provider response metadata attached to the RPC error;
+                # otherwise the host would retry with an empty assistant message
+                # and lose the upstream failure details.
+                emit_event(send, "error", message, requestId=request_id, error=message.get("errorMessage", "Codex response failed"))
+                return
+            emit_event(send, "done", message, requestId=request_id)
+        finally:
+            if isinstance(cancelled, CancellationSignal):
+                cancelled.unbind(response)
+
+
+def compact_codex(cancelled: threading.Event | CancellationSignal, payload: dict[str, Any]) -> dict[str, Any]:
+    if cancelled.is_set():
+        raise RuntimeError("Codex compaction was cancelled")
+    body = build_compact_request(payload)
+    retained = retained_compaction_items(body["input"][:-1])
+    request = codex_request(payload, body, compaction=True)
+    with urllib.request.urlopen(request, timeout=STREAM_HEADER_TIMEOUT) as response:
+        if isinstance(cancelled, CancellationSignal):
+            cancelled.bind(response)
+        try:
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError(f"Codex compaction request failed ({response.status})")
+            relax_stream_timeout(response, STREAM_IDLE_TIMEOUT)
+            builder = CodexCompactBuilder()
+            for raw_line in response:
+                if cancelled.is_set():
+                    raise RuntimeError("Codex compaction was cancelled")
+                if builder.feed(raw_line.decode(errors="replace").rstrip("\r\n")):
+                    break
+            if cancelled.is_set():
+                raise RuntimeError("Codex compaction was cancelled")
+            if not builder.terminal:
+                raise RuntimeError("Codex compaction stream ended before response.completed")
+            result = builder.result()
+            result["items"] = retained + result["items"]
+            return result
+        finally:
+            if isinstance(cancelled, CancellationSignal):
+                cancelled.unbind(response)
 
 
 class Sidecar:
     def __init__(self) -> None:
         self.write_lock = threading.Lock()
         self.auth: dict[str, OAuthSession] = {}
-        self.streams: dict[str, threading.Event] = {}
+        self.streams: dict[str, CancellationSignal] = {}
+        self.compactions: dict[str, CancellationSignal] = {}
         self.lock = threading.Lock()
 
     def send(self, value: dict[str, Any]) -> None:
@@ -999,13 +1342,48 @@ class Sidecar:
                 self.reply(ident, {"refreshed": refreshed, "credential": credential} if refreshed else {})
             except Exception as exc:
                 self.fail(ident, safe_error(exc))
+        elif method == "provider.compact":
+            payload = params
+            if ident is None or payload.get("provider") != "openai-codex":
+                if ident is not None:
+                    self.fail(ident, "invalid Codex compaction request", -32602)
+                return
+            key = str(ident)
+            cancelled = CancellationSignal()
+            with self.lock:
+                if key in self.compactions:
+                    self.fail(ident, "Codex compaction request is already running", -32600)
+                    return
+                self.compactions[key] = cancelled
+
+            def run_compaction() -> None:
+                try:
+                    self.reply(ident, compact_codex(cancelled, payload))
+                except urllib.error.HTTPError as exc:
+                    self.fail(ident, safe_error(exc), exc.code)
+                except RuntimeError as exc:
+                    # Invalid request/canonical output is deterministic. Give
+                    # the Host a non-retryable JSON-RPC code so it cannot issue
+                    # six identical billable compaction requests.
+                    self.fail(ident, safe_error(exc), -32800 if cancelled.is_set() else -32040)
+                except Exception as exc:
+                    self.fail(ident, safe_error(exc), -32800 if cancelled.is_set() else -32000)
+                finally:
+                    with self.lock:
+                        if self.compactions.get(key) is cancelled:
+                            self.compactions.pop(key, None)
+
+            # Keep the NDJSON loop responsive while compaction is in flight;
+            # cancellation closes this request's response without terminating
+            # streams owned by other sessions.
+            threading.Thread(target=run_compaction, daemon=True).start()
         elif method == "provider.stream.start":
             request_id = params.get("requestId", "")
             payload = params.get("request") or {}
             if not request_id or payload.get("provider") != "openai-codex":
                 self.reply(ident, {"accepted": False})
                 return
-            cancelled = threading.Event()
+            cancelled = CancellationSignal()
             with self.lock:
                 if request_id in self.streams:
                     self.reply(ident, {"accepted": False})
@@ -1025,10 +1403,16 @@ class Sidecar:
             event = self.streams.get(params.get("requestId", ""))
             if event:
                 event.set()
+        elif method == "cancel":
+            event = self.compactions.get(str(params.get("id", "")))
+            if event:
+                event.set()
         elif method == "shutdown":
             for session in list(self.auth.values()):
                 session.close()
             for event in list(self.streams.values()):
+                event.set()
+            for event in list(self.compactions.values()):
                 event.set()
             if ident is not None:
                 self.reply(ident, {})

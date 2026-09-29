@@ -37,7 +37,7 @@ func (h mutexHost) AppendMessage(string, string, AppendMessageRequest) (AppendMe
 	return AppendMessageResult{}, nil
 }
 func (h mutexHost) Abort(string) error                             { return nil }
-func (h mutexHost) Compact(string) error                           { return nil }
+func (h mutexHost) Compact(string, string) error                   { return nil }
 func (h mutexHost) PatchSession(string, string, string) error      { return nil }
 func (h mutexHost) SetActiveTools(string, string, []string) error  { return nil }
 func (h mutexHost) RegisterTools(string, string, []ToolSpec) error { return nil }

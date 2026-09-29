@@ -36,6 +36,7 @@ var (
 	ErrSessionNotFound = errors.New("session not found")
 	errEntryNotFound   = errors.New("entry")
 	errInvalidForkMode = errors.New("invalid forkMode")
+	errSessionChanged  = errors.New("session changed after compaction preparation")
 	// Why: distinct Session handles on one directory do not share Session.mu;
 	// serializing config/jsonl IO prevents Open from decoding a torn append.
 	fileGates sync.Map // cleaned dir → *sync.RWMutex
@@ -729,6 +730,16 @@ func (s *Session) AppendModelChange(provider, model string, efforts ...string) e
 // recent messages kept verbatim after the cut (pi retainedTail); old entries
 // without it fall back to FirstKeptEntryID slicing in MessagesToLeaf.
 func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, usage *types.Usage, retainedTail []types.Message) (Entry, error) {
+	return s.appendCompaction("", false, summary, firstKept, tokensBefore, usage, retainedTail, nil)
+}
+
+// AppendPreparedCompaction commits a planned local checkpoint only while the
+// session is still at the leaf from which it was prepared.
+func (s *Session) AppendPreparedCompaction(expectedLeaf, summary, firstKept string, tokensBefore int, usage *types.Usage, retainedTail []types.Message, details any) (Entry, error) {
+	return s.appendCompaction(expectedLeaf, true, summary, firstKept, tokensBefore, usage, retainedTail, details)
+}
+
+func (s *Session) appendCompaction(expectedLeaf string, prepared bool, summary, firstKept string, tokensBefore int, usage *types.Usage, retainedTail []types.Message, details any) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, err := idgen.EntryID()
@@ -745,8 +756,15 @@ func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, 
 		TokensBefore:     tokensBefore,
 		Usage:            usage,
 		RetainedTail:     retainedTail,
+		Details:          details,
 	}
-	if err := s.appendLocked(e); err != nil {
+	if prepared {
+		e.ParentID = expectedLeaf
+		err = s.appendPreparedLocked(e, expectedLeaf)
+	} else {
+		err = s.appendLocked(e)
+	}
+	if err != nil {
 		return Entry{}, err
 	}
 	return e, nil
@@ -756,6 +774,16 @@ func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, 
 // a remote Responses compaction. Validation happens before the append so a
 // malformed or oversized provider result cannot advance the session leaf.
 func (s *Session) AppendResponsesCompaction(checkpoint types.ResponsesContext, tokensBefore int, usage *types.Usage) (Entry, error) {
+	return s.appendResponsesCompaction("", false, checkpoint, tokensBefore, usage)
+}
+
+// AppendPreparedResponsesCompaction commits a standalone provider checkpoint
+// only while the source leaf is unchanged.
+func (s *Session) AppendPreparedResponsesCompaction(expectedLeaf string, checkpoint types.ResponsesContext, tokensBefore int, usage *types.Usage) (Entry, error) {
+	return s.appendResponsesCompaction(expectedLeaf, true, checkpoint, tokensBefore, usage)
+}
+
+func (s *Session) appendResponsesCompaction(expectedLeaf string, prepared bool, checkpoint types.ResponsesContext, tokensBefore int, usage *types.Usage) (Entry, error) {
 	copyCheckpoint, err := validatedResponsesContext(checkpoint)
 	if err != nil {
 		return Entry{}, err
@@ -776,10 +804,18 @@ func (s *Session) AppendResponsesCompaction(checkpoint types.ResponsesContext, t
 		Usage:        usage,
 		Responses:    copyCheckpoint,
 	}
+	if prepared {
+		e.ParentID = expectedLeaf
+	}
 	if err := validateJSONLLine(e); err != nil {
 		return Entry{}, err
 	}
-	if err := s.appendLocked(e); err != nil {
+	if prepared {
+		err = s.appendPreparedLocked(e, expectedLeaf)
+	} else {
+		err = s.appendLocked(e)
+	}
+	if err != nil {
 		return Entry{}, err
 	}
 	return e, nil
@@ -831,15 +867,14 @@ func (s *Session) AppendMessageAndResponsesCompaction(
 	batch = append(batch, '\n')
 	batch = append(batch, checkpointJSON...)
 	batch = append(batch, '\n')
-	oldActiveLeaf := s.Config.ActiveLeafID
-	s.Config.ActiveLeafID = checkpointID
-	if err := s.appendRawAndConfig(batch); err != nil {
-		s.Config.ActiveLeafID = oldActiveLeaf
+	nextConfig, err := s.appendRawAndConfigAtLeaf(batch, s.leafID, checkpointID)
+	if err != nil {
 		return Entry{}, Entry{}, err
 	}
 	s.entries = append(s.entries, messageEntry, checkpointEntry)
 	s.byID[messageID], s.byID[checkpointID] = messageEntry, checkpointEntry
 	s.leafID = checkpointID
+	s.Config = nextConfig
 	return messageEntry, checkpointEntry, nil
 }
 
@@ -1072,14 +1107,41 @@ func Remove(dir string) error {
 }
 
 func (s *Session) appendLocked(e Entry) error {
-	if err := s.writeLine(e); err != nil {
+	b, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	if len(b) >= maxJSONLLineBytes {
+		return errors.New("session entry is too large")
+	}
+	nextConfig, err := s.appendRawAndConfigAtLeaf(append(b, '\n'), s.leafID, e.ID)
+	if err != nil {
 		return err
 	}
 	s.entries = append(s.entries, e)
 	s.byID[e.ID] = e
 	s.leafID = e.ID
-	s.Config.ActiveLeafID = e.ID
-	return s.writeConfig()
+	s.Config = nextConfig
+	return nil
+}
+
+func (s *Session) appendPreparedLocked(e Entry, expectedLeaf string) error {
+	b, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	if len(b) >= maxJSONLLineBytes {
+		return errors.New("compaction entry is too large")
+	}
+	nextConfig, err := s.appendRawAndConfigAtLeaf(append(b, '\n'), expectedLeaf, e.ID)
+	if err != nil {
+		return err
+	}
+	s.entries = append(s.entries, e)
+	s.byID[e.ID] = e
+	s.leafID = e.ID
+	s.Config = nextConfig
+	return nil
 }
 
 func (s *Session) writeLine(v any) error {
@@ -1111,17 +1173,78 @@ func (s *Session) appendRaw(b []byte) error {
 	return f.Sync()
 }
 
-// appendRawAndConfig commits a multi-entry append and its active leaf under
-// one file gate. A failed/short write is truncated back to the original size,
-// so Open never encounters half of an opaque checkpoint.
-func (s *Session) appendRawAndConfig(b []byte) error {
-	configJSON, err := json.MarshalIndent(s.Config, "", "  ")
-	if err != nil {
-		return err
-	}
+// appendRawAndConfigAtLeaf commits an append and active leaf under one file
+// gate. It re-reads config so another Session handle cannot race a stale parent.
+func (s *Session) appendRawAndConfigAtLeaf(b []byte, expectedLeaf, nextLeaf string) (Config, error) {
 	gate := fileGate(s.Dir)
 	gate.Lock()
 	defer gate.Unlock()
+	raw, err := os.ReadFile(filepath.Join(s.Dir, "config.json"))
+	if err != nil {
+		return Config{}, err
+	}
+	var current Config
+	if err := json.Unmarshal(raw, &current); err != nil {
+		return Config{}, fmt.Errorf("decode session config: %w", err)
+	}
+	activeLeaf := current.ActiveLeafID
+	if activeLeaf == "" && expectedLeaf != "" {
+		// Old config.json files predate activeLeafId and derive the leaf from
+		// the final non-sideband JSONL row. Preserve that compatibility while
+		// still validating the authoritative on-disk state under the file gate.
+		activeLeaf, err = lastActiveLeaf(s.Dir)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	if activeLeaf != expectedLeaf {
+		return Config{}, errSessionChanged
+	}
+	current.ActiveLeafID = nextLeaf
+	configJSON, err := json.MarshalIndent(current, "", "  ")
+	if err != nil {
+		return Config{}, err
+	}
+	if err := s.appendRawAndConfigLocked(b, configJSON); err != nil {
+		return Config{}, err
+	}
+	return current, nil
+}
+
+func lastActiveLeaf(dir string) (string, error) {
+	f, err := os.Open(filepath.Join(dir, "events.jsonl"))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), maxJSONLLineBytes)
+	first := true
+	leaf := ""
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		if first {
+			first = false
+			continue
+		}
+		var entry Entry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return "", fmt.Errorf("decode events.jsonl entry: %w", err)
+		}
+		if !entry.Sideband {
+			leaf = entry.ID
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	return leaf, nil
+}
+
+func (s *Session) appendRawAndConfigLocked(b, configJSON []byte) error {
 	f, err := os.OpenFile(filepath.Join(s.Dir, "events.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err

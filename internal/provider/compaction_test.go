@@ -70,15 +70,15 @@ func TestBuiltinRemoteCompactionCapabilityIsExplicit(t *testing.T) {
 		t.Fatal("missing OpenAI catalog")
 	}
 	for _, model := range openAI.Models {
-		if model.RemoteCompaction != "openai" {
-			t.Fatalf("OpenAI model %q capability = %q", model.ID, model.RemoteCompaction)
+		if model.Compaction.Standalone != "openai" || model.Compaction.Inline != "openai" {
+			t.Fatalf("OpenAI model %q capability = %+v", model.ID, model.Compaction)
 		}
 	}
 	if xAI == nil {
 		t.Fatal("missing xAI catalog")
 	}
 	for _, model := range xAI.Models {
-		if model.API == "responses" && model.RemoteCompaction != "" {
+		if model.API == "responses" && model.Compaction != (CompactionCapabilities{}) {
 			t.Fatalf("compatible gateway inferred remote compaction: %+v", model)
 		}
 	}
@@ -92,5 +92,62 @@ func TestCredentialFingerprintChangesWithoutExposingSecret(t *testing.T) {
 	}
 	if first == "secret-one" || second == "secret-two" {
 		t.Fatal("credential fingerprint exposed the credential")
+	}
+}
+
+func TestCompactionCapabilitiesValidateByRuntimeOwner(t *testing.T) {
+	native := Model{
+		Provider: "native", ID: "m", API: "responses",
+		BaseURL: "https://example.test", ContextWindow: 1000, MaxTokens: 100,
+		Input:      []string{"text"},
+		Compaction: CompactionCapabilities{Standalone: "codex-v2"},
+	}
+	if err := validateModel(native); err == nil {
+		t.Fatal("native model accepted extension-owned codex-v2")
+	}
+	spec := ExtensionProviderSpec{
+		ID: "codex", Name: "Codex", API: "codex-responses",
+		BaseURL: "https://example.test", Auth: AuthSpec{Type: AuthOAuth},
+		Models: []ModelSeed{{
+			ID: "m", ContextWindow: 1000, MaxTokens: 100, Input: []string{"text"},
+			Compaction: CompactionCapabilities{Standalone: "codex-v2"},
+		}},
+	}
+	built, err := BuildExtensionProvider(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := built.Models[0].Compaction.Standalone; got != "codex-v2" {
+		t.Fatalf("standalone capability = %q", got)
+	}
+}
+
+func TestCompactionCapabilitiesAreIndependent(t *testing.T) {
+	spec := ExtensionProviderSpec{
+		ID: "hybrid", Name: "Hybrid", API: "responses",
+		BaseURL: "https://example.test", Auth: AuthSpec{Type: AuthOAuth},
+		Models: []ModelSeed{{
+			ID: "m", ContextWindow: 1000, MaxTokens: 100, Input: []string{"text"},
+			Compaction: CompactionCapabilities{Standalone: "codex-v2", Inline: "openai"},
+		}},
+	}
+	built, err := BuildExtensionProvider(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := built.Models[0].Compaction; got != spec.Models[0].Compaction {
+		t.Fatalf("capabilities collapsed: %+v", got)
+	}
+}
+
+func TestCompactionOverrideCanClearBuiltinCapability(t *testing.T) {
+	model := Model{Compaction: CompactionCapabilities{Standalone: "openai", Inline: "openai"}}
+	empty := CompactionCapabilities{}
+	got, err := applyModelOverride(model, ModelOverride{Compaction: &empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Compaction != (CompactionCapabilities{}) {
+		t.Fatalf("capability was not cleared: %+v", got.Compaction)
 	}
 }

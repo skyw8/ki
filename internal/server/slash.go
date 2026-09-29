@@ -438,7 +438,8 @@ func (s *Server) onExtensionError(sessionID, name, capability, code, message str
 }
 
 // occupy claims exclusive run ownership for id. The caller must pair it with
-// release: runPrompt defers that; doCompact calls it after compact.Run.
+// release: runPrompt defers that; manual compaction releases after its
+// prepare/execute/validate/commit pipeline.
 // A second occupy while done is still open returns 409. A finished run stays
 // in s.runs until the next occupy overwrites it (SSE replay after done).
 func (s *Server) occupy(parent context.Context, id string) (*runState, context.Context, error) {

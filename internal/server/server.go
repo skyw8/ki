@@ -637,17 +637,44 @@ func (s *Server) requestReload(id string) bool {
 	return false
 }
 
-// publishCompactionEnd reports the outcome of a manual compaction. "empty"
-// means there was nothing worth summarizing; it is not an error.
-func (s *Server) publishCompactionEnd(sessionID string, err error) {
-	reason, ok := "manual", true
+func compactionEndEvent(intent compact.Intent, outcome compactionOutcome, err error) loop.Event {
+	status, ok := "committed", err == nil
 	switch {
 	case errors.Is(err, compact.ErrNothingToCompact):
-		reason = "empty"
+		status, ok = "empty", true
+	case errors.Is(err, compact.ErrCompactionSkipped):
+		status = "cancelled"
 	case err != nil:
-		ok = false
+		status = "failed"
 	}
-	s.publishPush(sessionID, loop.Event{Type: loop.CompactionEnd, Reason: reason, OK: ok})
+	return loop.Event{
+		Type: loop.CompactionEnd, Reason: string(intent.Reason), OK: ok,
+		WillRetry: intent.WillRetry, Status: status,
+		EntryID: outcome.Entry.ID, Strategy: outcome.Strategy,
+		FromExtension:    outcome.FromExtension,
+		FirstKeptEntryID: outcome.FirstKeptEntryID,
+		TokensBefore:     outcome.TokensBefore, Usage: outcome.Usage,
+	}
+}
+
+// publishStandaloneCompactionEvent gives manual compaction the same durable
+// and extension-visible lifecycle as run-owned compaction events.
+func (s *Server) publishStandaloneCompactionEvent(ctx context.Context, sess *session.Session, ev loop.Event) error {
+	details := map[string]any{
+		"reason": ev.Reason, "ok": ev.OK, "willRetry": ev.WillRetry,
+		"strategy": ev.Strategy, "status": ev.Status,
+		"fromExtension": ev.FromExtension,
+		"entryId":       ev.EntryID, "firstKeptEntryId": ev.FirstKeptEntryID,
+		"tokensBefore": ev.TokensBefore, "usage": ev.Usage,
+	}
+	if _, err := sess.AppendDetailsEvent(string(ev.Type), details); err != nil {
+		return fmt.Errorf("append manual compaction event: %w", err)
+	}
+	s.publishPush(sess.ID(), ev)
+	if s.ext != nil {
+		s.ext.OnEvent(ctx, sess.ID(), extension.RedactEvent(ev, sess.ID()))
+	}
+	return nil
 }
 
 // publishContextUsage recomputes and persists the model-facing context size
@@ -723,7 +750,9 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /v1/sessions/{id}/events", s.auth(s.events))
 	api.HandleFunc("POST /v1/sessions/{id}/abort", s.auth(s.abort))
 	api.HandleFunc("POST /v1/sessions/{id}/extension-ui", s.auth(s.extensionUIAnswer))
-	api.HandleFunc("POST /v1/sessions/{id}/compact", s.auth(s.doCompact))
+	api.HandleFunc("POST /v1/sessions/{id}/compact", s.auth(func(w http.ResponseWriter, r *http.Request) {
+		s.doCompact(w, r)
+	}))
 	api.HandleFunc("POST /v1/sessions/{id}/fork", s.auth(s.fork))
 	api.HandleFunc("POST /v1/sessions/{id}/attachments", s.auth(s.uploadAttachment))
 	api.HandleFunc("POST /v1/reload", s.auth(s.doReload))
@@ -1533,6 +1562,7 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 			"maxTokens":          m.MaxTokens,
 			"input":              m.Input,
 			"applyPatchToolType": m.ApplyPatchToolType,
+			"compaction":         m.Compaction,
 			"reasoning":          m.Reasoning,
 			"thinkingLevels":     provider.SupportedThinkingLevels(m),
 			"defaultThinking":    provider.DefaultThinking(m),
@@ -1763,7 +1793,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "commands do not take attachments", http.StatusBadRequest)
 			return
 		}
-		if parsed.Kind == command.KindBuiltin && ((parsed.Name == "compact" || parsed.Name == "reload" || parsed.Name == "new") && parsed.Args != "") {
+		if parsed.Kind == command.KindBuiltin && ((parsed.Name == "reload" || parsed.Name == "new") && parsed.Args != "") {
 			_ = sess.Close()
 			writeHandled(w, "usage: /"+parsed.Name, true)
 			return
@@ -2005,7 +2035,7 @@ func (s *Server) handleBuiltin(w http.ResponseWriter, r *http.Request, name, arg
 			writeHandled(w, "reloaded session resources and extensions", false)
 		}
 	case "compact":
-		s.doCompact(w, r)
+		s.doCompact(w, r, strings.TrimSpace(args))
 	default:
 		writeHandled(w, "unknown command /"+name, true)
 	}
@@ -2189,11 +2219,13 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			}
 		}
 	}
-	activeBinding := s.providerBinding(info)
+	bindingCredential := provider.Credential{}
 	if s.requireModelCredential {
 		// Use the credential snapshot held by this run rather than mutable
 		// registry state; a concurrent login must not relabel opaque output.
-		activeBinding = providerBindingWithCredential(info, liveCredential)
+		bindingCredential = liveCredential
+	} else if credential, status, err := s.registry.Credential(info.Provider); err == nil && status.Configured {
+		bindingCredential = credential
 	}
 	jobs := s.jobsFor(id)
 	profile := toolProfile(info)
@@ -2249,8 +2281,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	sys := prompt.Build(promptInput)
 
 	useServerCompaction := s.serverSideCompaction(info) && occ.HTTPDoer() == nil
-	replayBinding := activeBinding
-	if !occ.OpaqueReplaySafe() {
+	replayBinding := replayBindingForSession(sess, info, bindingCredential)
+	requestBinding := replayBinding
+	inlineBinding := providerBindingForProtocol(info, bindingCredential, info.Compaction.Inline)
+	opaqueReplaySafe := occ.OpaqueReplaySafe()
+	if !opaqueReplaySafe {
 		// Lifecycle hooks only see portable messages. Replaying an encrypted
 		// prefix would bypass a newly enabled DLP/moderation hook, and provider
 		// hooks can redirect it outside the scope recorded in its binding.
@@ -2260,7 +2295,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	emitter := &runEmitter{
 		s: s, ctx: ctx, id: id, sess: sess, st: st, info: info,
 		idempotencyKey: idempotencyKey, serverSide: useServerCompaction,
-		binding: activeBinding, replayBinding: replayBinding,
+		binding: inlineBinding, replayBinding: replayBinding,
 	}
 	emit := emitter.Emit
 
@@ -2272,16 +2307,33 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		preflight := &loop.Request{
 			SessionID: id, System: sys, Messages: current.Messages,
 			Provider: info.Provider, Model: info.ID, API: info.API,
-			ProviderBinding: activeBinding,
+			ProviderBinding:         requestBinding,
+			Tools:                   toolSpecs(tls),
+			MaxTokens:               info.MaxTokens,
+			ThinkingEffort:          sess.Config.ThinkingEffort,
+			ThinkingFormat:          info.Compat.ThinkingFormat,
+			MaxTokensField:          info.Compat.MaxTokensField,
+			SupportsReasoningEffort: info.Compat.SupportsReasoningEffort,
+			ForceAdaptiveThinking:   info.Compat.ForceAdaptiveThinking,
+			ThinkingLevelMap:        info.ThinkingLevelMap,
 		}
 		if current.Responses != nil {
 			preflight.ResponsesContext = current.Responses.Items
 		}
-		_, compactErr := emitter.compactNow("preflight", preflight)
+		changed, compactErr := emitter.compactNow(compact.Intent{Reason: compact.ReasonPreflight}, preflight)
 		if compactErr != nil && s.cfg.Compaction.Mode == "remote" &&
 			!errors.Is(compactErr, compact.ErrNothingToCompact) {
 			st.err = fmt.Errorf("remote preflight compaction: %w", compactErr)
 			return
+		}
+		if changed && opaqueReplaySafe {
+			// A standalone preflight may replace an inline checkpoint with a
+			// different protocol. Resolve the newly committed binding before
+			// the first generation request instead of expanding portable
+			// history through the stale preflight binding.
+			replayBinding = replayBindingForSession(sess, info, bindingCredential)
+			requestBinding = replayBinding
+			emitter.replayBinding = replayBinding
 		}
 	}
 
@@ -2298,7 +2350,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		Provider:                sess.Config.Provider,
 		Model:                   sess.Config.Model,
 		API:                     info.API,
-		ProviderBinding:         activeBinding,
+		ProviderBinding:         requestBinding,
 		MaxTokens:               info.MaxTokens,
 		ThinkingEffort:          sess.Config.ThinkingEffort,
 		ThinkingFormat:          info.Compat.ThinkingFormat,
@@ -2402,8 +2454,11 @@ func (s *Server) composeHooks(sess *session.Session, occ *extension.Occupy) loop
 		},
 		BeforeTool: extHooks.BeforeTool,
 		AfterTool:  extHooks.AfterTool,
-		OnContextOverflow: func(ctx context.Context, failed loop.Request) (types.ModelContext, error) {
-			return s.compactSession(ctx, sess, &failed)
+		OnContextOverflow: func(ctx context.Context, failed loop.Request) (loop.CompactionResult, error) {
+			outcome, err := s.compactSession(ctx, sess, compact.Intent{
+				Reason: compact.ReasonOverflow, WillRetry: true,
+			}, &failed)
+			return outcome.loopResult(), err
 		},
 	}
 }
@@ -2488,7 +2543,7 @@ func (s *Server) liveSummarizer(ctx context.Context, sessionID, prov, model stri
 }
 
 func (s *Server) liveCompactor(ctx context.Context, sessionID string, model provider.Model) (provider.Compactor, types.ProviderBinding) {
-	if !s.requireModelCredential {
+	if !s.requireModelCredential || model.Compaction.Standalone == "" {
 		return nil, types.ProviderBinding{}
 	}
 	if s.providerExtensions != nil && s.providerExtensions.HasProvider(model.Provider) {
@@ -2500,7 +2555,11 @@ func (s *Server) liveCompactor(ctx context.Context, sessionID string, model prov
 		if err != nil {
 			return nil, types.ProviderBinding{}
 		}
-		return s.providerExtensions.NewCompactor(resolved, credential), providerBindingWithCredential(resolved, credential)
+		return s.providerExtensions.NewCompactor(resolved, credential),
+			providerBindingForProtocol(resolved, credential, resolved.Compaction.Standalone)
+	}
+	if model.Compaction.Standalone != "openai" {
+		return nil, types.ProviderBinding{}
 	}
 	_, resolved, credential, err := s.registry.ResolveCredential(model.Provider, model.ID)
 	if err != nil {
@@ -2508,7 +2567,7 @@ func (s *Server) liveCompactor(ctx context.Context, sessionID string, model prov
 	}
 	return provider.NewLiveModel(resolved, credential.APIKey, s.ext.HTTPDoer(sessionID)).
 			WithIdleTimeout(time.Duration(s.cfg.Streaming.IdleTimeoutSeconds) * time.Second),
-		providerBindingWithCredential(resolved, credential)
+		providerBindingForProtocol(resolved, credential, resolved.Compaction.Standalone)
 }
 
 func (s *Server) summarizer(ctx context.Context, sessionID, prov, model string) compact.Summarizer {
@@ -2539,6 +2598,17 @@ func (s *Server) providerBinding(model provider.Model) types.ProviderBinding {
 }
 
 func providerBindingWithCredential(model provider.Model, credential provider.Credential) types.ProviderBinding {
+	protocol := model.Compaction.Standalone
+	if protocol == "" {
+		protocol = model.Compaction.Inline
+	}
+	if protocol == "" {
+		protocol = "none"
+	}
+	return providerBindingForProtocol(model, credential, protocol)
+}
+
+func providerBindingForProtocol(model provider.Model, credential provider.Credential, protocol string) types.ProviderBinding {
 	fingerprint := ""
 	if credential.Type != "" || credential.APIKey != "" || len(credential.Value) > 0 {
 		fingerprint = provider.CredentialFingerprint(credential)
@@ -2549,7 +2619,62 @@ func providerBindingWithCredential(model provider.Model, credential provider.Cre
 		BaseURL:    model.BaseURL,
 		Model:      model.ID,
 		Credential: fingerprint,
+		Compaction: protocol,
 	}
+}
+
+func replayBindingForSession(sess *session.Session, model provider.Model, credential provider.Credential) types.ProviderBinding {
+	protocols := []string{model.Compaction.Standalone, model.Compaction.Inline}
+	var preferred types.ProviderBinding
+	for _, protocol := range protocols {
+		if protocol == "" {
+			continue
+		}
+		binding := providerBindingForProtocol(model, credential, protocol)
+		if preferred.Provider == "" {
+			preferred = binding
+		}
+		if sess.ContextToLeaf(binding).Responses != nil {
+			return binding
+		}
+	}
+	if preferred.Provider != "" {
+		return preferred
+	}
+	return providerBindingWithCredential(model, credential)
+}
+
+func toolSpecs(tools []loop.Tool) []loop.ToolSpec {
+	out := make([]loop.ToolSpec, 0, len(tools))
+	for _, tool := range tools {
+		if provider, ok := tool.(loop.ToolSpecProvider); ok {
+			out = append(out, provider.ToolSpec())
+			continue
+		}
+		out = append(out, loop.ToolSpec{
+			Type: "function", Name: tool.Name(),
+			Description: tool.Description() + "\n\n" + tool.Prompt(),
+			Parameters:  tool.Parameters(),
+		})
+	}
+	return out
+}
+
+func requestToolSpecs(tools []session.ToolSchema) []loop.ToolSpec {
+	out := make([]loop.ToolSpec, 0, len(tools))
+	for _, tool := range tools {
+		spec := loop.ToolSpec{
+			Type: tool.Type, Name: tool.Name, Description: tool.Description,
+			Parameters: tool.Parameters,
+		}
+		if tool.Format != nil {
+			spec.Format = &loop.ToolFormat{
+				Type: tool.Format.Type, Syntax: tool.Format.Syntax, Definition: tool.Format.Definition,
+			}
+		}
+		out = append(out, spec)
+	}
+	return out
 }
 
 func (s *Server) serverSideCompaction(model provider.Model) bool {
@@ -2559,7 +2684,7 @@ func (s *Server) serverSideCompaction(model provider.Model) bool {
 		s.cfg.Compaction.Enabled &&
 		s.cfg.Compaction.ServerSide &&
 		s.cfg.Compaction.Mode != "local" &&
-		model.RemoteCompaction == "openai" &&
+		model.Compaction.Inline == "openai" &&
 		supportsWire
 }
 
@@ -2611,228 +2736,313 @@ func (s *Server) shouldCompact(sess *session.Session, model provider.Model, bind
 	return compact.ShouldRun(compact.EstimateModelContext(modelContext, sess.LastCompactionAt()), model.ContextWindow, s.cfg.Compaction)
 }
 
-// compactSession runs one compaction (Prepare + Execute + AppendCompaction)
-// and returns the new model-facing context. Shared by the preflight, overflow
-// recovery, and threshold paths. Returns ErrNothingToCompact when the
-// conversation fits inside the recent-token budget (no model call is made).
-//
-// A successful compaction requestReloads this session: the model context was
-// rebuilt, so the next prompt should use freshly loaded environment,
-// instructions, skills, and templates.
-func (s *Server) compactSession(ctx context.Context, sess *session.Session, request *loop.Request) (types.ModelContext, error) {
+var errRemoteCompactionUnavailable = errors.New("remote compaction is unavailable")
+
+type compactionOutcome struct {
+	Context          types.ModelContext
+	Entry            session.Entry
+	Strategy         string
+	FromExtension    bool
+	FirstKeptEntryID string
+	TokensBefore     int
+	Usage            *types.Usage
+}
+
+func (o compactionOutcome) loopResult() loop.CompactionResult {
+	return loop.CompactionResult{
+		Context: o.Context, EntryID: o.Entry.ID, Strategy: o.Strategy,
+		FromExtension: o.FromExtension, FirstKeptEntryID: o.FirstKeptEntryID,
+		TokensBefore: o.TokensBefore, Usage: o.Usage,
+	}
+}
+
+type remoteCompactionPlan struct {
+	sourceLeafID   string
+	request        loop.Request
+	binding        types.ProviderBinding
+	compactor      provider.Compactor
+	tokensBefore   int
+	contextChanged bool
+}
+
+func extensionPreparation(strategy string, prep *compact.Preparation, sess *session.Session) extension.CompactPreparation {
+	if prep != nil {
+		return extension.CompactPreparation{
+			Strategy: strategy, SourceLeafID: prep.SourceLeafID,
+			FirstKeptEntryID:    prep.FirstKeptEntryID,
+			MessagesToSummarize: prep.MessagesToSummarize,
+			TurnPrefixMessages:  prep.TurnPrefixMessages,
+			RetainedTail:        prep.RetainedTail, IsSplitTurn: prep.IsSplitTurn,
+			TokensBefore: prep.TokensBefore, PreviousSummary: prep.PreviousSummary,
+		}
+	}
+	// A standalone provider can compact a window that is too small for the
+	// local cut policy. The hook still receives a portable plan, never the
+	// opaque Responses prefix.
+	messages := sess.MessagesToLeaf()
+	return extension.CompactPreparation{
+		Strategy: strategy, SourceLeafID: sess.LeafID(),
+		MessagesToSummarize: messages,
+		TokensBefore:        compact.EstimateTokens(messages, sess.LastCompactionAt()),
+	}
+}
+
+func customCompactionResult(in *extension.CustomCompactResult) compact.Result {
+	if in == nil {
+		return compact.Result{}
+	}
+	details := map[string]any{"fromExtension": true}
+	if in.Details != nil {
+		details["extension"] = in.Details
+	}
+	return compact.Result{
+		Summary: in.Summary, Usage: in.Usage, Details: details,
+		FromExtension: true,
+	}
+}
+
+func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Session, model provider.Model, failed *loop.Request) (*remoteCompactionPlan, error) {
+	// Header interceptors can replace the endpoint or project/account identity
+	// after binding is computed. Until they expose a stable scope fingerprint,
+	// encrypted context cannot safely cross that boundary.
+	if s.ext != nil && s.ext.HTTPDoer(sess.ID()) != nil {
+		return nil, fmt.Errorf("%w with provider header interception", errRemoteCompactionUnavailable)
+	}
+	compactor, binding := s.liveCompactor(ctx, sess.ID(), model)
+	if compactor == nil {
+		return nil, errRemoteCompactionUnavailable
+	}
+	if failed != nil && failed.ProviderBinding.Provider != "" &&
+		!failed.ProviderBinding.SameScope(binding) {
+		// Overflow recovery resumes through the already occupied streamer. A
+		// rotated credential or protocol would make the new checkpoint unsafe
+		// for that stream.
+		return nil, errors.New("provider credential or compaction scope changed during remote compaction")
+	}
+
+	req := loop.Request{
+		SessionID: sess.ID(), Provider: model.Provider, Model: model.ID, API: model.API,
+		ProviderBinding:         binding,
+		MaxTokens:               model.MaxTokens,
+		ThinkingEffort:          sess.Config.ThinkingEffort,
+		ThinkingFormat:          model.Compat.ThinkingFormat,
+		MaxTokensField:          model.Compat.MaxTokensField,
+		SupportsReasoningEffort: model.Compat.SupportsReasoningEffort,
+		ForceAdaptiveThinking:   model.Compat.ForceAdaptiveThinking,
+		ThinkingLevelMap:        model.ThinkingLevelMap,
+	}
+	if failed != nil {
+		req = *failed
+	}
+	opaqueReplaySafe := s.ext == nil || s.ext.Occupy(sess.ID()).OpaqueReplaySafe()
+	reuseRequestContext := failed != nil &&
+		opaqueReplaySafe &&
+		failed.ProviderBinding.Equal(binding)
+	if !reuseRequestContext {
+		inputBinding := binding
+		if !opaqueReplaySafe {
+			inputBinding = types.ProviderBinding{}
+		}
+		current := sess.ContextToLeaf(inputBinding)
+		req.Messages = current.Messages
+		req.ResponsesContext = nil
+		if current.Responses != nil {
+			req.ResponsesContext = current.Responses.Items
+		}
+		req.ContextTransformed = false
+		if req.System == "" || len(req.Tools) == 0 {
+			system, schemas, found := sess.LastRequestHeader()
+			if found {
+				if req.System == "" {
+					req.System = system
+				}
+				if len(req.Tools) == 0 {
+					req.Tools = requestToolSpecs(schemas)
+				}
+			}
+		}
+		req.ProviderBinding = binding
+	}
+	providerFacingDigest := func(messages []types.Message) [32]byte {
+		raw, _ := json.Marshal(messages)
+		return sha256.Sum256(raw)
+	}
+	digest := providerFacingDigest(req.Messages)
+	contextChanged := false
+	if !req.ContextTransformed && s.ext != nil {
+		hooks := s.ext.Hooks(sess.ID())
+		if hooks.BeforeRun != nil {
+			system, messages, err := hooks.BeforeRun(ctx, req.System, req.Messages)
+			if err != nil {
+				return nil, fmt.Errorf("transform compaction run: %w", err)
+			}
+			req.System, req.Messages = system, messages
+			contextChanged = providerFacingDigest(req.Messages) != digest
+			digest = providerFacingDigest(req.Messages)
+		}
+	}
+	messages, err := materializeAttachments(ctx, req.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("materialize compaction context: %w", err)
+	}
+	req.Messages = messages
+	digest = providerFacingDigest(req.Messages)
+	if !req.ContextTransformed && s.ext != nil {
+		hooks := s.ext.Hooks(sess.ID())
+		if hooks.TransformContext != nil {
+			transformed, transformErr := hooks.TransformContext(ctx, req.Messages)
+			if transformErr != nil {
+				return nil, fmt.Errorf("transform compaction context: %w", transformErr)
+			}
+			req.Messages = transformed
+			contextChanged = contextChanged || providerFacingDigest(req.Messages) != digest
+			digest = providerFacingDigest(req.Messages)
+		}
+		req.ContextTransformed = true
+	}
+	if s.ext != nil {
+		transformed, transformErr := s.ext.Occupy(sess.ID()).TransformProviderRequest(ctx, req)
+		if transformErr != nil {
+			// A failed provider policy must not be bypassed by local fallback.
+			return nil, fmt.Errorf("transform remote compaction request: %w", transformErr)
+		}
+		req = transformed
+		contextChanged = contextChanged || providerFacingDigest(req.Messages) != digest
+	}
+	if req.Provider != model.Provider || req.Model != model.ID {
+		if contextChanged {
+			return nil, errors.New("cannot fall back to untransformed local compaction context")
+		}
+		return nil, fmt.Errorf("%w after provider/model request mutation", errRemoteCompactionUnavailable)
+	}
+	if len(req.ResponsesContext) == 0 && len(req.Messages) == 0 {
+		return nil, errRemoteCompactionUnavailable
+	}
+	return &remoteCompactionPlan{
+		sourceLeafID: sess.LeafID(), request: req, binding: binding,
+		compactor:      compactor,
+		tokensBefore:   compact.EstimateTokens(req.Messages, sess.LastCompactionAt()),
+		contextChanged: contextChanged,
+	}, nil
+}
+
+// compactSession is the shared orchestrator for manual, preflight, threshold,
+// and overflow compaction. Planning, extension interception, strategy
+// execution, validation, and commit are separate stages.
+func (s *Server) compactSession(ctx context.Context, sess *session.Session, intent compact.Intent, request *loop.Request) (compactionOutcome, error) {
 	_, model, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
 	if !ok {
-		return types.ModelContext{}, fmt.Errorf("resolve compaction model %s/%s", sess.Config.Provider, sess.Config.Model)
+		return compactionOutcome{}, fmt.Errorf("resolve compaction model %s/%s", sess.Config.Provider, sess.Config.Model)
 	}
 	binding := s.providerBinding(model)
-	var customSummary string
-	if s.ext != nil {
-		ok, summary := s.ext.CompactAllowed(ctx, sess.ID())
-		if !ok {
-			return types.ModelContext{}, compact.ErrCompactionSkipped
-		}
-		customSummary = summary
-	}
 	if s.cfg.Compaction.Mode == "remote" {
-		if model.RemoteCompaction != "openai" {
-			return types.ModelContext{}, fmt.Errorf("model %s/%s does not support remote compaction", model.Provider, model.ID)
+		if model.Compaction.Standalone == "" {
+			return compactionOutcome{}, fmt.Errorf("model %s/%s does not support remote compaction", model.Provider, model.ID)
 		}
-		if customSummary != "" {
-			return types.ModelContext{}, errors.New("remote compaction cannot use a custom local summary")
-		}
-	}
-	useRemote := customSummary == "" &&
-		s.cfg.Compaction.Mode != "local" &&
-		model.RemoteCompaction == "openai"
-	if useRemote {
-		// Header interceptors can replace the endpoint or project/account
-		// identity after binding is computed. Until they expose a stable scope
-		// fingerprint, sending or replaying provider-owned encrypted context
-		// across that boundary is unsafe.
-		if s.ext != nil && s.ext.HTTPDoer(sess.ID()) != nil {
-			if s.cfg.Compaction.Mode == "remote" {
-				return types.ModelContext{}, errors.New("remote compaction is unavailable with provider header interception")
-			}
-			slog.Warn("remote compaction header interception fallback", "session_id", sess.ID())
-			useRemote = false
-		}
-		var (
-			compactor      provider.Compactor
-			compactBinding types.ProviderBinding
-		)
-		if useRemote {
-			// Resolve and refresh before selecting an opaque input. A refresh
-			// can change credential scope, in which case the old checkpoint
-			// must be replaced by the portable transcript.
-			compactor, compactBinding = s.liveCompactor(ctx, sess.ID(), model)
-			if compactor == nil {
-				useRemote = false
-			}
-		}
-		if useRemote && request != nil && request.ProviderBinding.Provider != "" &&
-			!request.ProviderBinding.Equal(compactBinding) {
-			// Overflow recovery resumes through the already occupied streamer.
-			// A freshly rotated credential would create a checkpoint that this
-			// run's old streamer must never receive.
-			return types.ModelContext{}, errors.New("provider credential changed during remote compaction")
-		}
-		remoteRequest := loop.Request{
-			SessionID: sess.ID(),
-			Provider:  model.Provider,
-			Model:     model.ID,
-			API:       model.API,
-		}
-		if request != nil {
-			remoteRequest = *request
-		}
-		opaqueReplaySafe := s.ext == nil || s.ext.Occupy(sess.ID()).OpaqueReplaySafe()
-		reuseRequestContext := request != nil &&
-			opaqueReplaySafe &&
-			request.ProviderBinding.Equal(compactBinding)
-		if !reuseRequestContext {
-			inputBinding := compactBinding
-			if !opaqueReplaySafe {
-				inputBinding = types.ProviderBinding{}
-			}
-			current := sess.ContextToLeaf(inputBinding)
-			remoteRequest.Messages = current.Messages
-			remoteRequest.ResponsesContext = nil
-			if current.Responses != nil {
-				remoteRequest.ResponsesContext = current.Responses.Items
-			}
-			remoteRequest.ContextTransformed = false
-			if remoteRequest.System == "" {
-				system, _, found := sess.LastRequestHeader()
-				if found {
-					remoteRequest.System = system
-				}
-			}
-			remoteRequest.ProviderBinding = compactBinding
-		}
-		providerFacingDigest := func(messages []types.Message) [32]byte {
-			raw, _ := json.Marshal(messages)
-			return sha256.Sum256(raw)
-		}
-		contextDigest := providerFacingDigest(remoteRequest.Messages)
-		providerContextChanged := false
-		if !remoteRequest.ContextTransformed && s.ext != nil {
-			hooks := s.ext.Hooks(sess.ID())
-			if hooks.BeforeRun != nil {
-				system, messages, transformErr := hooks.BeforeRun(ctx, remoteRequest.System, remoteRequest.Messages)
-				if transformErr != nil {
-					return types.ModelContext{}, fmt.Errorf("transform compaction run: %w", transformErr)
-				}
-				remoteRequest.System, remoteRequest.Messages = system, messages
-				providerContextChanged = providerFacingDigest(remoteRequest.Messages) != contextDigest
-				contextDigest = providerFacingDigest(remoteRequest.Messages)
-			}
-		}
-		messages, materializeErr := materializeAttachments(ctx, remoteRequest.Messages)
-		if materializeErr != nil {
-			return types.ModelContext{}, fmt.Errorf("materialize compaction context: %w", materializeErr)
-		}
-		remoteRequest.Messages = messages
-		contextDigest = providerFacingDigest(remoteRequest.Messages)
-		if !remoteRequest.ContextTransformed && s.ext != nil {
-			hooks := s.ext.Hooks(sess.ID())
-			if hooks.TransformContext != nil {
-				transformed, transformErr := hooks.TransformContext(ctx, remoteRequest.Messages)
-				if transformErr != nil {
-					return types.ModelContext{}, fmt.Errorf("transform compaction context: %w", transformErr)
-				}
-				remoteRequest.Messages = transformed
-				providerContextChanged = providerContextChanged ||
-					providerFacingDigest(remoteRequest.Messages) != contextDigest
-				contextDigest = providerFacingDigest(remoteRequest.Messages)
-			}
-			remoteRequest.ContextTransformed = true
-		}
-		if s.ext != nil {
-			transformed, transformErr := s.ext.Occupy(sess.ID()).TransformProviderRequest(ctx, remoteRequest)
-			if transformErr != nil {
-				// A provider-request interceptor failure aborts normal model
-				// calls. Falling back here would bypass that policy and send
-				// the untransformed transcript to the summary model.
-				return types.ModelContext{}, fmt.Errorf("transform remote compaction request: %w", transformErr)
-			} else {
-				remoteRequest = transformed
-				providerContextChanged = providerContextChanged ||
-					providerFacingDigest(remoteRequest.Messages) != contextDigest
-			}
-		}
-		if useRemote && (remoteRequest.Provider != model.Provider || remoteRequest.Model != model.ID) {
-			if s.cfg.Compaction.Mode == "remote" {
-				return types.ModelContext{}, errors.New("remote compaction does not support provider/model request mutation")
-			}
-			slog.Warn("remote compaction route mutation fallback", "session_id", sess.ID())
-			useRemote = false
-		}
-		if !useRemote && providerContextChanged {
-			return types.ModelContext{}, errors.New("cannot fall back to untransformed local compaction context")
-		}
-		if useRemote && compactor != nil && (len(remoteRequest.ResponsesContext) > 0 || len(remoteRequest.Messages) > 0) {
-			// Standalone compaction is a provider request, so it follows the
-			// same transient retry budget as generation. Falling back
-			// immediately on a single 429/5xx would silently discard provider
-			// state during a brief outage.
-			result, compactErr := compactRemoteWithRetry(ctx, compactor, remoteRequest)
-			if compactErr == nil {
-				// The compactor snapshots the exact credential used by this
-				// request; mutable registry state may change before append.
-				resultBinding := compactBinding
-				checkpoint := types.ResponsesContext{Binding: resultBinding, Items: result.Items}
-				tokensBefore := compact.EstimateTokens(remoteRequest.Messages, sess.LastCompactionAt())
-				if _, appendErr := sess.AppendResponsesCompaction(checkpoint, tokensBefore, result.Usage); appendErr == nil {
-					//nolint:contextcheck // reload/warmup is deferred to release and must outlive this compact ctx
-					s.requestReload(sess.ID())
-					return sess.ContextToLeaf(resultBinding), nil
-				} else if s.cfg.Compaction.Mode == "remote" {
-					return types.ModelContext{}, fmt.Errorf("append remote compaction: %w", appendErr)
-				} else {
-					// Validation (including the durable line-size limit) is
-					// part of remote success. Auto mode remains usable by
-					// falling back before any checkpoint advances the leaf.
-					compactErr = fmt.Errorf("append remote compaction: %w", appendErr)
-				}
-			}
-			if errors.Is(compactErr, context.Canceled) || errors.Is(compactErr, context.DeadlineExceeded) {
-				return types.ModelContext{}, compactErr
-			}
-			if providerContextChanged {
-				return types.ModelContext{}, fmt.Errorf("remote compaction failed after provider context transformation: %w", compactErr)
-			}
-			if s.cfg.Compaction.Mode == "remote" {
-				return types.ModelContext{}, fmt.Errorf("execute remote compaction: %w", compactErr)
-			}
-			slog.Warn("remote compaction fallback", "session_id", sess.ID(), "provider", model.Provider, "model", model.ID, "err", compactErr)
-		} else if s.cfg.Compaction.Mode == "remote" {
-			return types.ModelContext{}, errors.New("remote compaction is unavailable")
+		if strings.TrimSpace(intent.Instructions) != "" {
+			return compactionOutcome{}, errors.New("remote compaction cannot use custom local instructions")
 		}
 	}
 
-	prep, err := compact.Prepare(sess.LeafEntries(), s.cfg.Compaction)
-	if err != nil {
-		return types.ModelContext{}, fmt.Errorf("prepare compaction: %w", err)
+	localPrep, localPrepErr := compact.PrepareWithIntent(sess.LeafEntries(), s.cfg.Compaction, intent)
+	if localPrepErr != nil && !errors.Is(localPrepErr, compact.ErrNothingToCompact) {
+		return compactionOutcome{}, fmt.Errorf("prepare compaction: %w", localPrepErr)
 	}
-	if prep == nil {
-		return types.ModelContext{}, compact.ErrNothingToCompact
+	useRemote := strings.TrimSpace(intent.Instructions) == "" &&
+		s.cfg.Compaction.Mode != "local" &&
+		model.Compaction.Standalone != ""
+	strategy := "local"
+	if useRemote {
+		strategy = model.Compaction.Standalone
 	}
-	summary := customSummary
-	var usage *types.Usage
-	if summary == "" {
-		summary, usage, err = compact.Execute(ctx, prep, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
-		if err != nil {
-			return types.ModelContext{}, fmt.Errorf("execute compaction: %w", err)
+	decision := extension.BeforeCompactDecision{}
+	if s.ext != nil {
+		decision = s.ext.BeforeCompact(ctx, sess.ID(), extension.BeforeCompactRequest{
+			Reason: string(intent.Reason), WillRetry: intent.WillRetry,
+			Instructions: intent.Instructions,
+			Preparation:  extensionPreparation(strategy, localPrep, sess),
+		})
+	}
+	if decision.Cancel {
+		return compactionOutcome{}, compact.ErrCompactionSkipped
+	}
+	if decision.Result != nil {
+		if s.cfg.Compaction.Mode == "remote" {
+			return compactionOutcome{}, errors.New("remote compaction cannot use a custom local result")
+		}
+		useRemote = false
+	}
+
+	if useRemote {
+		plan, prepareErr := s.prepareRemoteCompaction(ctx, sess, model, request)
+		if prepareErr == nil {
+			result, compactErr := compactRemoteWithRetry(ctx, plan.compactor, plan.request)
+			if compactErr == nil {
+				checkpoint := types.ResponsesContext{Binding: plan.binding, Items: result.Items}
+				entry, appendErr := sess.AppendPreparedResponsesCompaction(
+					plan.sourceLeafID, checkpoint, plan.tokensBefore, result.Usage,
+				)
+				if appendErr == nil {
+					//nolint:contextcheck // reload/warmup is deferred to release and must outlive this compact ctx
+					s.requestReload(sess.ID())
+					return compactionOutcome{
+						Context: sess.ContextToLeaf(plan.binding), Entry: entry,
+						Strategy:     model.Compaction.Standalone,
+						TokensBefore: plan.tokensBefore, Usage: result.Usage,
+					}, nil
+				}
+				compactErr = fmt.Errorf("append remote compaction: %w", appendErr)
+			}
+			if errors.Is(compactErr, context.Canceled) || errors.Is(compactErr, context.DeadlineExceeded) {
+				return compactionOutcome{}, compactErr
+			}
+			if plan.contextChanged {
+				return compactionOutcome{}, fmt.Errorf("remote compaction failed after provider context transformation: %w", compactErr)
+			}
+			if s.cfg.Compaction.Mode == "remote" {
+				return compactionOutcome{}, fmt.Errorf("execute remote compaction: %w", compactErr)
+			}
+			slog.Warn("remote compaction fallback", "session_id", sess.ID(), "provider", model.Provider, "model", model.ID, "err", compactErr)
+		} else if !errors.Is(prepareErr, errRemoteCompactionUnavailable) {
+			return compactionOutcome{}, prepareErr
+		} else if s.cfg.Compaction.Mode == "remote" {
+			return compactionOutcome{}, prepareErr
+		} else {
+			slog.Warn("remote compaction unavailable fallback", "session_id", sess.ID(), "err", prepareErr)
 		}
 	}
-	if _, err := sess.AppendCompaction(summary, prep.FirstKeptEntryID, prep.TokensBefore, usage, prep.RetainedTail); err != nil {
-		return types.ModelContext{}, fmt.Errorf("append compaction: %w", err)
+
+	if localPrepErr != nil {
+		return compactionOutcome{}, localPrepErr
+	}
+	var result compact.Result
+	var err error
+	if decision.Result != nil {
+		result = customCompactionResult(decision.Result)
+	} else {
+		result, err = compact.Generate(ctx, localPrep, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+		if err != nil {
+			return compactionOutcome{}, fmt.Errorf("execute compaction: %w", err)
+		}
+	}
+	entry, err := compact.Commit(sess, localPrep, result)
+	if err != nil {
+		return compactionOutcome{}, err
 	}
 	// compactSession runs inside an occupied prompt, so this queues until
 	// runPrompt's release instead of closing this turn's extension views.
 	//nolint:contextcheck // reload/warmup is deferred to release and must outlive this compact ctx
 	s.requestReload(sess.ID())
-	return sess.ContextToLeaf(binding), nil
+	strategy = "local"
+	if result.FromExtension {
+		strategy = "extension"
+	}
+	return compactionOutcome{
+		Context: sess.ContextToLeaf(binding), Entry: entry, Strategy: strategy,
+		FromExtension:    result.FromExtension,
+		FirstKeptEntryID: localPrep.FirstKeptEntryID,
+		TokensBefore:     localPrep.TokensBefore, Usage: result.Usage,
+	}, nil
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
@@ -2985,8 +3195,23 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"aborted": true})
 }
 
-func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
+func (s *Server) doCompact(w http.ResponseWriter, r *http.Request, suppliedInstructions ...string) {
 	id := r.PathValue("id")
+	instructions := ""
+	if len(suppliedInstructions) > 0 {
+		instructions = strings.TrimSpace(suppliedInstructions[0])
+	} else if r.Body != nil && r.ContentLength != 0 {
+		var body struct {
+			Instructions string `json:"instructions"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			http.Error(w, "invalid compact request", http.StatusBadRequest)
+			return
+		}
+		instructions = strings.TrimSpace(body.Instructions)
+	}
 	sess, err := s.open(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -3001,12 +3226,23 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 	// Why: /compact is answered by one synchronous request, so the chat UI has
 	// no run stream to watch. Publish progress on the session notification
 	// stream so the history shows a live "compacting" row.
-	s.publishPush(id, loop.Event{Type: loop.CompactionStart, Reason: "manual"})
-	_, err = s.compactSession(ctx, sess, nil)
-	e, _ := sess.Lookup(sess.LeafID())
+	intent := compact.Intent{Reason: compact.ReasonManual, Instructions: instructions}
+	if err := s.publishStandaloneCompactionEvent(ctx, sess, loop.Event{
+		Type: loop.CompactionStart, Reason: string(intent.Reason),
+	}); err != nil {
+		//nolint:contextcheck // release may rewarm after the occupy ctx ends
+		s.release(id, st)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	outcome, err := s.compactSession(ctx, sess, intent, nil)
+	eventErr := s.publishStandaloneCompactionEvent(ctx, sess, compactionEndEvent(intent, outcome, err))
 	//nolint:contextcheck // release may rewarm after the occupy ctx ends
 	s.release(id, st)
-	s.publishCompactionEnd(id, err)
+	if eventErr != nil {
+		http.Error(w, eventErr.Error(), http.StatusInternalServerError)
+		return
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		http.Error(w, "compact aborted", http.StatusConflict)
 		return
@@ -3026,7 +3262,11 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 	// A manual /compact has no run stream, so its rebuilt context would not
 	// reach the meter until the next prompt's request_header without this push.
 	s.publishContextUsage(sess)
-	writeJSON(w, 200, map[string]any{"id": e.ID, "type": e.Type, "firstKeptEntryId": e.FirstKeptEntryID, "handled": true})
+	writeJSON(w, 200, map[string]any{
+		"id": outcome.Entry.ID, "type": outcome.Entry.Type,
+		"firstKeptEntryId": outcome.FirstKeptEntryID, "handled": true,
+		"strategy": outcome.Strategy,
+	})
 }
 
 func (s *Server) fork(w http.ResponseWriter, r *http.Request) {

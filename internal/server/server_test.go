@@ -1527,8 +1527,12 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 	// Manual compact drives compactSession, whose summarizer must call the
 	// streamer with the session's provider/model — otherwise liveFromConfig
 	// resolves an empty base URL and the summarization request fails.
-	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/compact", nil)
+	req, _ = http.NewRequestWithContext(
+		t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/compact",
+		strings.NewReader(`{"instructions":"Preserve database migration commands."}`),
+	)
 	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -1544,6 +1548,9 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 	last := rec.reqs[len(rec.reqs)-1]
 	if last.Provider != "openrouter" || last.Model != "free" {
 		t.Fatalf("summarizer request must carry session provider/model, got %q/%q", last.Provider, last.Model)
+	}
+	if len(last.Messages) != 1 || !strings.Contains(last.Messages[0].Text(), "Preserve database migration commands.") {
+		t.Fatalf("manual compact instructions missing from summarizer request: %+v", last.Messages)
 	}
 }
 

@@ -376,18 +376,40 @@ func newSessionCommand() *cobra.Command {
 		},
 	}
 
-	for _, action := range []string{"compact", "fork"} {
+	{
 		var id string
 		sub := &cobra.Command{
-			Use:   action,
-			Short: action + " a session",
+			Use:   "compact [instructions]",
+			Short: "compact a session",
+			Args:  cobra.ArbitraryArgs,
+			RunE: func(_ *cobra.Command, args []string) error {
+				if id == "" {
+					return errSessionRequired
+				}
+				return withConfig("client", nil, func(cfg config.Config) error {
+					body := map[string]any{}
+					if instructions := strings.TrimSpace(strings.Join(args, " ")); instructions != "" {
+						body["instructions"] = instructions
+					}
+					return runSessionAction(cfg, id, "compact", body)
+				})
+			},
+		}
+		sub.Flags().StringVar(&id, "session", "", "session id")
+		cmd.AddCommand(sub)
+	}
+	{
+		var id string
+		sub := &cobra.Command{
+			Use:   "fork",
+			Short: "fork a session",
 			Args:  cobra.NoArgs,
 			RunE: func(_ *cobra.Command, _ []string) error {
 				if id == "" {
 					return errSessionRequired
 				}
 				return withConfig("client", nil, func(cfg config.Config) error {
-					return runSessionAction(cfg, id, action)
+					return runSessionAction(cfg, id, "fork", nil)
 				})
 			},
 		}
@@ -589,7 +611,7 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 	return nil
 }
 
-func runSessionAction(cfg config.Config, id, action string) error {
+func runSessionAction(cfg config.Config, id, action string, body any) error {
 	base, token, stop, err := ensureServer(cfg, flags{})
 	if err != nil {
 		return err
@@ -598,7 +620,7 @@ func runSessionAction(cfg config.Config, id, action string) error {
 		defer stop()
 	}
 	var out map[string]any
-	if err := doJSON(base, token, "/v1/sessions/"+id+"/"+action, nil, &out); err != nil {
+	if err := doJSON(base, token, "/v1/sessions/"+id+"/"+action, body, &out); err != nil {
 		return err
 	}
 	if action == "compact" {

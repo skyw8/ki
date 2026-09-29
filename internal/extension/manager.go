@@ -823,28 +823,24 @@ func (m *Manager) ApplyMessageEnd(ctx context.Context, sessionID string, msg typ
 	return msg
 }
 
-// CompactAllowed runs session_before_compact. false means skip compact.
-func (m *Manager) CompactAllowed(ctx context.Context, sessionID string) (bool, string) {
+// BeforeCompact runs session_before_compact after the host has prepared a
+// portable plan. A custom result replaces local generation, not host policy.
+func (m *Manager) BeforeCompact(ctx context.Context, sessionID string, req BeforeCompactRequest) BeforeCompactDecision {
+	decision := BeforeCompactDecision{}
 	for _, it := range m.items(sessionID) {
-		if !it.hasSync(EventSessionBeforeCompact) {
-			continue
-		}
 		si, ok := it.inner.(sessionInterceptor)
 		if !ok {
 			continue
 		}
-		okc, summary, err := si.client.beforeCompact(withSessionID(ctx, sessionID))
-		if err != nil {
-			continue
+		if it.hasSync(EventSessionBeforeCompact) && !decision.Cancel && decision.Result == nil {
+			next, err := si.client.beforeCompact(withSessionID(ctx, sessionID), req)
+			if err == nil && (next.Cancel || next.Result != nil) {
+				decision = next
+			}
 		}
-		if !okc {
-			return false, ""
-		}
-		if summary != "" {
-			return true, summary
-		}
+		si.client.notifyBeforeCompact(withSessionID(ctx, sessionID), req)
 	}
-	return true, ""
+	return decision
 }
 
 // RegisterTools appends tool specs for this session's next occupy Prepare.

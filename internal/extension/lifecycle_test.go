@@ -6,10 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"ki/internal/session"
+	"ki/internal/types"
 )
 
 func TestLifecycleSubscribeToolCallBlock(t *testing.T) {
@@ -113,18 +115,61 @@ func TestRewriteInputAndCompactCancel(t *testing.T) {
 	mc := NewManager(home, nil)
 	_ = mc.Prepare(ctx, "sess-cc", t.TempDir(), []Descriptor{cancelD})
 	defer mc.Close()
-	ok, summary := mc.CompactAllowed(ctx, "sess-cc")
-	if ok || summary != "" {
-		t.Fatalf("cancel compact ok=%v summary=%q", ok, summary)
+	decision := mc.BeforeCompact(ctx, "sess-cc", BeforeCompactRequest{Reason: "manual"})
+	if !decision.Cancel || decision.Result != nil {
+		t.Fatalf("cancel compact decision=%+v", decision)
 	}
 
 	sumD := testLifecycleDesc(t, "csum", []string{"lifecycle"}, map[string]string{"KI_COMPACT_SUMMARY": "custom-summary"})
 	msum := NewManager(home, nil)
 	_ = msum.Prepare(ctx, "sess-cs", t.TempDir(), []Descriptor{sumD})
 	defer msum.Close()
-	ok, summary = msum.CompactAllowed(ctx, "sess-cs")
-	if !ok || summary != "custom-summary" {
-		t.Fatalf("summary compact ok=%v summary=%q", ok, summary)
+	decision = msum.BeforeCompact(ctx, "sess-cs", BeforeCompactRequest{Reason: "threshold"})
+	if decision.Cancel || decision.Result == nil || decision.Result.Summary != "custom-summary" {
+		t.Fatalf("summary compact decision=%+v", decision)
+	}
+}
+
+func TestBeforeCompactReceivesPortablePreparation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	marker := filepath.Join(t.TempDir(), "compact.json")
+	d := testLifecycleDesc(t, "cprep", []string{"lifecycle"}, map[string]string{
+		"KI_COMPACT_SUMMARY": "custom-summary",
+		"KI_COMPACT_MARKER":  marker,
+	})
+	m := NewManager(t.TempDir(), nil)
+	_ = m.Prepare(ctx, "sess", t.TempDir(), []Descriptor{d})
+	defer m.Close()
+	req := BeforeCompactRequest{
+		Reason: "overflow", WillRetry: true, Instructions: "keep files",
+		Preparation: CompactPreparation{
+			Strategy: "local", SourceLeafID: "leaf", FirstKeptEntryID: "kept",
+			MessagesToSummarize: []types.Message{{
+				Role: "user", Content: []types.Content{{Type: "text", Text: "portable"}},
+			}},
+			TokensBefore: 42,
+		},
+	}
+	decision := m.BeforeCompact(ctx, "sess", req)
+	if decision.Result == nil || decision.Result.Summary != "custom-summary" {
+		t.Fatalf("decision=%+v", decision)
+	}
+	raw, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "encrypted_content") {
+		t.Fatal("before compact payload exposed opaque provider state")
+	}
+	var got BeforeCompactRequest
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Reason != "overflow" || !got.WillRetry ||
+		got.Preparation.SourceLeafID != "leaf" ||
+		len(got.Preparation.MessagesToSummarize) != 1 {
+		t.Fatalf("payload=%+v", got)
 	}
 }
 

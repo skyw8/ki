@@ -68,7 +68,16 @@ func TestShouldRunAndAppendRebuildsHistory(t *testing.T) {
 		_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "aaaaaaaaaa"}}})
 		_, _ = s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "bbbbbbbbbb"}}})
 	}
-	e, err := Run(context.Background(), s, Static{Text: "PREV"}, config.Compaction{Enabled: true, KeepRecentTokens: 5})
+	cfg := config.Compaction{Enabled: true, KeepRecentTokens: 5}
+	prep, err := Prepare(s.LeafEntries(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Generate(context.Background(), prep, Static{Text: "PREV"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := Commit(s, prep, result)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,5 +354,110 @@ func TestExecuteSplitTurnJoinsSummaries(t *testing.T) {
 	}
 	if strings.Count(summary, "(source chars=") != 2 {
 		t.Fatalf("expected two summarizer calls (history + turn prefix): %q", summary)
+	}
+}
+
+type captureSummarizer struct {
+	user string
+}
+
+func (c *captureSummarizer) Summarize(_ context.Context, _, user string) (string, *types.Usage, error) {
+	c.user = user
+	return "summary", &types.Usage{TotalTokens: 1}, nil
+}
+
+func TestGenerateIncludesCustomInstructions(t *testing.T) {
+	capture := &captureSummarizer{}
+	prep := &Preparation{
+		Intent: Intent{Reason: ReasonManual, Instructions: "Preserve migration commands exactly."},
+		MessagesToSummarize: []types.Message{{
+			Role: "user", Content: []types.Content{{Type: "text", Text: "history"}},
+		}},
+	}
+	if _, err := Generate(context.Background(), prep, capture, config.Compaction{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(capture.user, "<custom-instructions>") ||
+		!strings.Contains(capture.user, "Preserve migration commands exactly.") {
+		t.Fatalf("custom instructions missing from prompt: %q", capture.user)
+	}
+}
+
+func TestCommitRejectsStalePreparation(t *testing.T) {
+	s, err := session.Create(t.TempDir(), t.TempDir(), "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	first, _ := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "old"}}})
+	prep := &Preparation{
+		SourceLeafID: first.ID, FirstKeptEntryID: first.ID,
+		MessagesToSummarize: []types.Message{{
+			Role: "user", Content: []types.Content{{Type: "text", Text: "old"}},
+		}},
+	}
+	_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "new"}}})
+	if _, err := Commit(s, prep, Result{Summary: "summary"}); err == nil ||
+		!strings.Contains(err.Error(), "session changed") {
+		t.Fatalf("stale commit error = %v", err)
+	}
+}
+
+func TestCommitRejectsLeafChangedThroughAnotherHandle(t *testing.T) {
+	s, err := session.Create(t.TempDir(), t.TempDir(), "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	first, err := s.AppendMessage(types.Message{
+		Role: "user", Content: []types.Content{{Type: "text", Text: "old"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := session.Open(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Close() }()
+	if _, err := other.AppendMessage(types.Message{
+		Role: "user", Content: []types.Content{{Type: "text", Text: "new"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prep := &Preparation{SourceLeafID: first.ID, FirstKeptEntryID: first.ID}
+	if _, err := Commit(s, prep, Result{Summary: "summary"}); err == nil ||
+		!strings.Contains(err.Error(), "session changed") {
+		t.Fatalf("cross-handle stale commit error = %v", err)
+	}
+	reopened, err := session.Open(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if reopened.LeafID() != other.LeafID() {
+		t.Fatalf("stale commit replaced active leaf: got %q want %q", reopened.LeafID(), other.LeafID())
+	}
+}
+
+func TestCommitRejectsInvalidExtensionUsage(t *testing.T) {
+	s, err := session.Create(t.TempDir(), t.TempDir(), "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	first, err := s.AppendMessage(types.Message{
+		Role: "user", Content: []types.Content{{Type: "text", Text: "old"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prep := &Preparation{SourceLeafID: first.ID, FirstKeptEntryID: first.ID}
+	_, err = Commit(s, prep, Result{
+		Summary: "summary", FromExtension: true,
+		Usage: &types.Usage{Input: 2, Output: 1, TotalTokens: 99},
+	})
+	if err == nil || !strings.Contains(err.Error(), "usage total") {
+		t.Fatalf("invalid usage error = %v", err)
 	}
 }

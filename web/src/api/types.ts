@@ -131,6 +131,13 @@ export type LoopEvent = {
 	seq?: number
   reason?: string
   ok?: boolean
+	status?: 'committed' | 'empty' | 'cancelled' | 'failed' | string
+	willRetry?: boolean
+	strategy?: string
+	fromExtension?: boolean
+	firstKeptEntryId?: string
+	tokensBefore?: number
+	usage?: Usage
 	provider?: string
 	model?: string
 	catalogVersion?: number
@@ -378,7 +385,10 @@ export type ModelInfo = {
 	maxTokens?: number
 	input?: string[]
 	applyPatchToolType?: 'freeform'
-	remoteCompaction?: 'openai'
+	compaction?: {
+		standalone?: 'openai' | 'codex-v2'
+		inline?: 'openai'
+	}
 	reasoning?: boolean
 	thinkingLevels?: string[]
 	defaultThinking?: string

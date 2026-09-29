@@ -55,10 +55,13 @@
 // patch_apply_updated stores non-executing structured patch previews.
 // A local compaction stores a portable summary plus retained tail. A remote
 // Responses compaction instead stores a canonical raw-item window bound to
-// provider/API/base/model/credential. ContextToLeaf replays it only for an exact binding;
+// provider/API/base/model/credential/compaction protocol. ContextToLeaf replays
+// it only for an exact binding;
 // MessagesToLeaf ignores remote checkpoints and remains the portable
 // projection used for model switches and local fallback. A server-compacted
 // assistant and checkpoint commit under one file gate with tail rollback.
+// Prepared standalone/local compactions re-read config.activeLeafId under that
+// same gate before append, so a second Session handle cannot commit a stale cut.
 // Slim views never expose encrypted checkpoint items.
 // Asynchronous sideband rows never advance activeLeafId.
 // config.json owns provider/model/thinking effort plus

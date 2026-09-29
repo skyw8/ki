@@ -228,7 +228,7 @@ func traceEntry(e Entry) TraceEntry {
 	}
 	if e.Type == "compaction" {
 		if e.Responses != nil {
-			row.Preview = "OpenAI remote compaction"
+			row.Preview = "Provider remote compaction"
 		} else {
 			row.Preview = preview(e.Summary, 160)
 		}
