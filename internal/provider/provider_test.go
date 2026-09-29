@@ -12,6 +12,7 @@ import (
 
 	"ki/internal/loop"
 	"ki/internal/types"
+	"ki/pkg/llmprotocol"
 )
 
 func mustType[T any](t *testing.T, value any) T {
@@ -197,7 +198,10 @@ func ptr(s string) *string { return &s }
 func TestResponsesBodyReplaysCustomToolCallAndOutput(t *testing.T) {
 	body := ResponsesBody(loop.Request{
 		Model: "gpt-5.6-terra",
-		Tools: []loop.ToolSpec{{Name: "Read"}},
+		Tools: []loop.ToolSpec{
+			{Name: "Read"},
+			{Type: "custom", Name: "apply_patch", Description: "patch", Format: &loop.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"}},
+		},
 		Messages: []types.Message{
 			{Role: "assistant", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "call_1", Name: "apply_patch", Input: "*** Begin Patch"}}},
 			{Role: "toolResult", ToolType: "custom", ToolCallID: "call_1", ToolName: "apply_patch", Content: []types.Content{{Type: "text", Text: "ok"}}},
@@ -206,6 +210,10 @@ func TestResponsesBodyReplaysCustomToolCallAndOutput(t *testing.T) {
 	tools := mustType[[]map[string]any](t, body["tools"])
 	if tools[0]["type"] != "function" || tools[0]["name"] != "Read" {
 		t.Fatalf("function tool: %+v", tools[0])
+	}
+	format, ok := tools[1]["format"].(*llmprotocol.ToolFormat)
+	if tools[1]["type"] != "custom" || tools[1]["name"] != "apply_patch" || !ok || format.Syntax != "lark" {
+		t.Fatalf("custom tool: %+v", tools[1])
 	}
 	items := mustType[[]any](t, body["input"])
 	call := mustType[map[string]any](t, items[0])

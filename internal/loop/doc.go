@@ -15,15 +15,17 @@
 // from a leaf that may already include that message.
 //
 // Events follow pi names: agent_*, turn_*, message_*, tool_execution_*,
-// compaction_start/end (reason + ok), plus request_header (system + tools
-// snapshot after turn_start, before stream).
+// compaction_start/end (reason + ok), request_header (system + tools snapshot
+// after turn_start, before stream), and patch_apply_updated for non-executing
+// previews of streamed freeform patch arguments.
 // Tool execution start/end events carry Unix-millisecond timestamps and the
 // end event carries durationMs; the same duration is persisted on toolResult.
 // turn_start carries its start timestamp and turn_end carries the completion
 // timestamp plus durationMs, so a consumer can time a turn from the server's
 // own boundaries.
-// Every built-in tool is a JSON function; Results follow the tool contract
-// (internal/tools/doc.go).
+// Tools are normally JSON functions; grammar-backed Responses custom tools
+// may override ToolSpec and receive raw freeform input. Results follow the tool
+// contract (internal/tools/doc.go).
 // Config.OutputStore bounds every model-facing tool result at the single
 // boundary after the AfterTool hook: oversized text is written to the session
 // spill store and replaced by a bounded preview plus a reference in details, so

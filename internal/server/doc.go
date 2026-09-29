@@ -60,7 +60,9 @@
 // true when that Prepare finishes (failure still counts). PATCH /v1/sessions/{id} writes model /
 // thinking / title / pin / leaf / queued. Built-in tool, skill, and extension
 // enablement is {KI_HOME}/toggles.json via GET/PATCH /v1/tools, /v1/skills,
-// and /v1/extensions.
+// and /v1/extensions. The built-in tool catalog includes model-specific editors
+// even when unavailable to the selected model, with an available marker, so a
+// global toggle survives model switches.
 // GET /v1/prompt/append lists every appended-system-prompt source (the
 // read-only built-in layer, the editable {KI_HOME} and workspace files, the
 // read-only extension layers) with the effective append stack; PUT/DELETE edit

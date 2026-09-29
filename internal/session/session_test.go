@@ -386,12 +386,13 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.AppendRequestHeader("sys-body", []ToolSchema{{
-		Name: "Edit", Description: "edit",
+		Type: "custom", Name: "apply_patch", Description: "patch",
+		Format: &ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"},
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	// Legacy history may still contain a Responses custom (freeform) tool call;
-	// it must round-trip through the jsonl even though no built-in emits one now.
+	// Responses custom calls and their schemas must survive jsonl reload so
+	// protocol replay and the request inspector preserve their wire shape.
 	if _, err := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "c1", Name: "apply_patch", Input: "PATCH"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +415,8 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 			hdr = &e
 		}
 	}
-	if hdr == nil || hdr.System != "sys-body" || len(hdr.Tools) != 1 || hdr.Tools[0].Name != "Edit" {
+	if hdr == nil || hdr.System != "sys-body" || len(hdr.Tools) != 1 || hdr.Tools[0].Type != "custom" ||
+		hdr.Tools[0].Name != "apply_patch" || hdr.Tools[0].Format == nil || hdr.Tools[0].Format.Definition != "start: PATCH" {
 		t.Fatalf("header: %+v", hdr)
 	}
 	messages := s2.MessagesToLeaf()

@@ -1,6 +1,6 @@
 # 工具契约
 
-普通工具的对外名字和 input schema 跟 Claude Code；文本结果跟 pi。内置工具由 `internal/tools.Set.Build` 构造，包入口见 `internal/tools/doc.go`。所有模型共用同一套内置工具（`Write` + `Edit` 编辑）；只有 `Read` 会按模型是否支持图片在富/文本两种模式间切换，而且这发生在 system prompt 组装阶段（见 [architecture.md](architecture.md)）。
+普通工具的对外名字和 input schema 跟 Claude Code；文本结果跟 pi。内置工具由 `internal/tools.Set.Build` 构造，包入口见 `internal/tools/doc.go`。GPT Responses 模型使用原生 freeform `apply_patch`，其它模型使用 `Write` + `Edit`；两组编辑器互斥。`Read` 仍按模型是否支持图片在富/文本两种模式间切换，而且这些选择发生在 system prompt 组装阶段（见 [architecture.md](architecture.md)）。
 
 ## 输出溢出
 
@@ -30,7 +30,7 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 
 ## 全局开关
 
-内置工具的全局启用状态保存在 `{KI_HOME}/toggles.json` 的 `tools.disabled`。`GET/PATCH /v1/tools` 提供目录和开关；目录按当前 session 的模型能力生成，所有模型都暴露 `Write` / `Edit`（没有按 provider 切换的编辑器），只有 `Read` 在图片模型上带 `pages`。保存的名称仍是全局的，切换模型后同名设置继续生效。开关在下一次 occupy 生效；已在运行的请求继续使用其 request header 中固定的工具集。
+内置工具的全局启用状态保存在 `{KI_HOME}/toggles.json` 的 `tools.disabled`。`GET/PATCH /v1/tools` 提供目录和开关；设置目录始终列出 `Write`、`Edit` 和 `apply_patch`，并用 `available` 标出当前模型实际使用的互斥编辑器，因此切换模型或其它工具时不会丢失隐藏工具的全局禁用状态。开关在下一次 occupy 生效；已在运行的请求继续使用其 request header 中固定的工具集。
 
 这套开关只过滤 `internal/tools.Set.Build` 产生的内置工具，扩展工具仍由 extension 的启用状态和 session 生命周期控制。
 
@@ -42,7 +42,8 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 |---|---|---|
 | `Read` | 文本模型：`file_path`、可选行分页 `offset` / `limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
 | `Write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 Read |
-| `Edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。模型只看到简短摘要，diff/patch 在 details |
+| `Edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。若 provider 同时填充两种模式的字段，只执行唯一有效的模式并提醒；两种模式都有有效修改时拒绝。模型只看到简短摘要，diff/patch 在 details |
+| `apply_patch` | Codex `*** Begin Patch` freeform grammar | GPT Responses 专用的 add/update/delete/move 批量补丁；完整预检后才写入，结果 details 带每个文件的 unified diff |
 | `Grep` | `pattern`、`path`、`glob`、`output_mode`、`respect_gitignore`、上下文/分页/类型参数 | 基于内置 ripgrep；默认尊重 `.gitignore`；支持 partial results、JSON/NUL 解析、EAGAIN 降级、正则、取消/超时和统计元数据 |
 | `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
@@ -76,12 +77,23 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 - 相对路径按 session cwd 解析。
 - 精确匹配 `old_string`；默认要求唯一，`replace_all=true` 时替换全部匹配。
 - `edits: [{old_string,new_string}]` 是互斥的批量模式：每项在同一份原文中必须唯一且各匹配区间不得重叠，最终只写一次文件。
+- 某些 function-calling provider 会给未使用模式补空值或 no-op 占位符。Edit 会分别验证两种模式：只有一种包含有效修改时执行它，忽略另一种模式的字段，并在成功文本和 details 的 `ignored_fields` 中提醒；两种模式都包含有效修改时仍拒绝，避免猜测导致误改。
 - 基于原始字节做精确替换，未触及的 BOM 和换行符保持不变。
-- 模型可见 content 只有替换数量和路径；展示 diff、统一 patch 和首个变更行保存在 tool-result details，不进入 provider context。
+- 模型可见 content 包含替换数量、路径，以及发生兼容降级时的简短提醒；展示 diff、统一 patch、首个变更行和忽略字段保存在 tool-result details，不进入 provider context。
+
+## apply_patch
+
+- 仅模型 capability `applyPatchToolType: "freeform"` 启用；内置 OpenAI Responses GPT 和 bundled `codex-oauth` GPT 模型声明该能力。启用时替代 `Write` / `Edit`，避免两套编辑接口同时诱导模型。
+- 使用 Responses custom tool 和 Lark 约束的 Codex patch grammar，不把 patch 包进 JSON。
+- 支持 add、delete、update 和 move；整份 patch 的路径、源文件和上下文在第一次写入前预检，同一路径的多个操作按规范化主机路径拒绝。
+- 更新匹配容忍行尾空白和 Unicode 标点差异，同时保留未触及内容原有的 LF、CRLF、bare CR 或混合换行。
+- 多个纯插入 chunk 保持 patch 中的声明顺序；`*** End of File` 只匹配文件尾，不回退到较早的同名片段。
+- Responses 的 custom-tool 输入 delta 由增量 parser 转成 `patch_apply_updated` 语法预览，最多每 500ms 发送一次并补发最终 pending 快照；预览不执行文件操作，最终 committed details 覆盖它。
+- 结果 details 记录 `status`、`exact` 和逐文件 `changes[].unified_diff`。不可避免的中途 I/O 失败只报告确定已提交的前缀，并用 `exact=false` 标记无法精确证明的状态。
 
 ## 文件变更并发
 
-- server 共享按规范化主机绝对路径索引的 mutation queue；同一路径的 `Write`、`Edit` 串行，不同路径仍可并行。
+- server 共享按规范化主机绝对路径索引的 mutation queue；同一路径的 `Write`、`Edit`、`apply_patch` 串行，不同路径仍可并行。
 - 等待路径锁及每个目录创建、读取、写入步骤前后检查取消；当前文件操作返回后才释放锁。
 
 ## Grep

@@ -3,6 +3,7 @@ package tools
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -19,14 +20,21 @@ type editTool struct {
 }
 
 type editInput struct{ Old, New string }
+type resolvedEdit struct {
+	inputs        []editInput
+	batch         bool
+	replaceAll    bool
+	ignoredFields []string
+}
 type editMatch struct {
 	start, end int
 	newText    string
 }
 type editDetails struct {
-	Diff             string `json:"diff"`
-	Patch            string `json:"patch"`
-	FirstChangedLine int    `json:"first_changed_line,omitzero"`
+	Diff             string   `json:"diff"`
+	Patch            string   `json:"patch"`
+	FirstChangedLine int      `json:"first_changed_line,omitzero"`
+	IgnoredFields    []string `json:"ignored_fields,omitempty"`
 }
 
 func (editTool) Name() string        { return "Edit" }
@@ -68,15 +76,8 @@ func (t editTool) Validate(args map[string]any) error {
 	if err := validateArgs(t.Parameters(), t.Name(), args); err != nil {
 		return err
 	}
-	_, hasEdits := args["edits"]
-	_, hasOld := args["old_string"]
-	_, hasNew := args["new_string"]
-	_, hasAll := args["replace_all"]
-	if hasEdits && (hasOld || hasNew || hasAll) {
-		return fmt.Errorf("%w: edits cannot be combined with old_string, new_string, or replace_all", errToolExecution)
-	}
-	if !hasEdits && (!hasOld || !hasNew) {
-		return fmt.Errorf("%w: provide old_string/new_string or edits", errToolExecution)
+	if _, err := resolveEditInputs(args); err != nil {
+		return fmt.Errorf("%w: %v", errToolExecution, err)
 	}
 	return nil
 }
@@ -86,7 +87,7 @@ func (t editTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	if path == "" {
 		return errRes("file_path is required")
 	}
-	edits, batch, err := parseEditInputs(args)
+	resolved, err := resolveEditInputs(args)
 	if err != nil {
 		return errRes(err.Error())
 	}
@@ -112,7 +113,7 @@ func (t editTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		return errRes("Edit aborted")
 	}
 	text := string(data)
-	matches, err := matchEdits(text, edits, batch, boolArg(args, "replace_all"), path)
+	matches, err := matchEdits(text, resolved.inputs, resolved.batch, resolved.replaceAll, path)
 	if err != nil {
 		return errRes(err.Error())
 	}
@@ -126,46 +127,110 @@ func (t editTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 		return errRes("Edit aborted")
 	}
 	details := makeEditDetails(path, text, next, matches[0].start)
-	return loop.ToolResult{Content: []types.Content{{Type: "text", Text: fmt.Sprintf("Successfully replaced %d block(s) in %s.", len(matches), path)}}, Details: details}
+	details.IgnoredFields = resolved.ignoredFields
+	message := fmt.Sprintf("Successfully replaced %d block(s) in %s.", len(matches), path)
+	if len(resolved.ignoredFields) > 0 {
+		message += fmt.Sprintf(" Note: ignored fields from the inactive Edit mode: %s. Do not combine Edit modes.", strings.Join(resolved.ignoredFields, ", "))
+	}
+	return loop.ToolResult{Content: []types.Content{{Type: "text", Text: message}}, Details: details}
 }
 
-func parseEditInputs(args map[string]any) ([]editInput, bool, error) {
+func resolveEditInputs(args map[string]any) (resolvedEdit, error) {
+	batchInputs, batchErr, hasBatch := parseBatchEditInputs(args)
+	singleInputs, singleErr, hasSingle := parseSingleEditInput(args)
+	batchValid := hasBatch && batchErr == nil
+	singleValid := hasSingle && singleErr == nil
+
+	// Why: some function-calling models populate every optional schema field
+	// with empty or no-op placeholders. Select the sole meaningful mode instead
+	// of rejecting an otherwise unambiguous edit, but never guess when both
+	// modes contain executable changes.
+	switch {
+	case batchValid && singleValid:
+		return resolvedEdit{}, errors.New("both edits and old_string/new_string contain executable changes; provide only one Edit mode")
+	case batchValid:
+		return resolvedEdit{
+			inputs:        batchInputs,
+			batch:         true,
+			ignoredFields: presentEditFields(args, "old_string", "new_string", "replace_all"),
+		}, nil
+	case singleValid:
+		return resolvedEdit{
+			inputs:        singleInputs,
+			replaceAll:    boolArg(args, "replace_all"),
+			ignoredFields: presentEditFields(args, "edits"),
+		}, nil
+	case hasBatch && hasSingle:
+		return resolvedEdit{}, fmt.Errorf("neither Edit mode is valid: edits: %v; old_string/new_string: %v", batchErr, singleErr)
+	case hasBatch:
+		return resolvedEdit{}, batchErr
+	case hasSingle:
+		return resolvedEdit{}, singleErr
+	default:
+		return resolvedEdit{}, errors.New("provide old_string/new_string or edits")
+	}
+}
+
+func parseBatchEditInputs(args map[string]any) ([]editInput, error, bool) {
 	rawValue, hasEdits := args["edits"]
-	if hasEdits {
-		raw, ok := rawValue.([]any)
+	if !hasEdits {
+		return nil, nil, false
+	}
+	raw, ok := rawValue.([]any)
+	if !ok {
+		return nil, errEditsArray, true
+	}
+	out := make([]editInput, 0, len(raw))
+	for i, value := range raw {
+		item, ok := value.(map[string]any)
 		if !ok {
-			return nil, true, errEditsArray
+			return nil, fmt.Errorf("edits[%d] %w", i, errEditObject), true
 		}
-		out := make([]editInput, 0, len(raw))
-		for i, value := range raw {
-			item, ok := value.(map[string]any)
-			if !ok {
-				return nil, true, fmt.Errorf("edits[%d] %w", i, errEditObject)
-			}
-			oldS, _ := item["old_string"].(string)
-			newS, _ := item["new_string"].(string)
-			if oldS == "" {
-				return nil, true, fmt.Errorf("edits[%d].%w", i, errEditOldEmpty)
-			}
-			if oldS == newS {
-				return nil, true, fmt.Errorf("edits[%d] %w", i, errEditNoChange)
-			}
-			out = append(out, editInput{Old: oldS, New: newS})
+		oldS, _ := item["old_string"].(string)
+		newS, _ := item["new_string"].(string)
+		if oldS == "" {
+			return nil, fmt.Errorf("edits[%d].%w", i, errEditOldEmpty), true
 		}
-		if len(out) == 0 {
-			return nil, true, errEditsEmpty
+		if oldS == newS {
+			return nil, fmt.Errorf("edits[%d] %w", i, errEditNoChange), true
 		}
-		return out, true, nil
+		out = append(out, editInput{Old: oldS, New: newS})
+	}
+	if len(out) == 0 {
+		return nil, errEditsEmpty, true
+	}
+	return out, nil, true
+}
+
+func parseSingleEditInput(args map[string]any) ([]editInput, error, bool) {
+	_, hasOld := args["old_string"]
+	_, hasNew := args["new_string"]
+	_, hasAll := args["replace_all"]
+	if !hasOld && !hasNew && !hasAll {
+		return nil, nil, false
 	}
 	oldS, _ := args["old_string"].(string)
 	newS, _ := args["new_string"].(string)
 	if oldS == "" {
-		return nil, false, errOldStringRequired
+		return nil, errOldStringRequired, true
+	}
+	if !hasNew {
+		return nil, errors.New("new_string is required"), true
 	}
 	if oldS == newS {
-		return nil, false, errNoChanges
+		return nil, errNoChanges, true
 	}
-	return []editInput{{Old: oldS, New: newS}}, false, nil
+	return []editInput{{Old: oldS, New: newS}}, nil, true
+}
+
+func presentEditFields(args map[string]any, fields ...string) []string {
+	var present []string
+	for _, field := range fields {
+		if _, ok := args[field]; ok {
+			present = append(present, field)
+		}
+	}
+	return present
 }
 
 func boolArg(args map[string]any, key string) bool { v, _ := args[key].(bool); return v }

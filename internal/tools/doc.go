@@ -1,5 +1,6 @@
-// Package tools implements model-aware built-ins: Read, Write, Edit, Grep,
-// Glob, Bash, PowerShell, Agent, SendMessage, TaskOutput, and TaskStop.
+// Package tools implements model-aware built-ins: Read, Write, Edit,
+// apply_patch, Grep, Glob, Bash, PowerShell, Agent, SendMessage, TaskOutput,
+// and TaskStop.
 //
 // Wire names and input schemas follow Claude Code. Text results follow pi
 // (no cat -n; shell tools mix stdout/stderr; non-zero exit is an error). Relative
@@ -41,8 +42,11 @@
 // TaskOutput and TaskStop use a composite task store so shell and agent tasks
 // share the Claude Code-shaped lifecycle schema. File
 // mutations share a server-scoped per-path queue; Edit additionally
-// supports non-overlapping batch replacements against one original. Structured
-// result details are persisted for clients but omitted by provider adapters.
+// supports non-overlapping batch replacements against one original. When a
+// function-calling provider fills both Edit modes, the sole semantically valid
+// mode wins and reports the ignored fields; two executable modes remain an
+// error rather than an unsafe guess. Structured result details are persisted
+// for clients but omitted by provider adapters.
 // Read exposes line and UTF-8-safe byte paging, injectable operations, and
 // bounded image processing. Foreground shell results keep only a bounded,
 // ANSI-free tail in model context and point
@@ -58,9 +62,11 @@
 // extensions can contribute their own PATH directories (Set.PathDirs, from the
 // session's resource snapshot); those follow the bundled directory and are
 // re-prepended by the same shim from KI_EXTENSION_PATH_DIRS.
-// Set.Build selects a text/rich Read; every model edits through the same
-// Write/Edit pair, so the built-in tool set does not depend on the provider
-// protocol. The server applies FilterBuiltins with the global tools toggle
+// Set.Build selects a text/rich Read and one model-specific editor family:
+// GPT Responses models use grammar-backed freeform apply_patch, while other
+// models use Write/Edit. apply_patch preflights the whole patch before its first
+// write, preserves mixed line endings, and records exact committed diffs. The
+// server applies FilterBuiltins with the global tools toggle
 // before appending extension tools.
 //
 // Parameter and result tables: docs/tools.md.

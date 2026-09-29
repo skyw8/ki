@@ -806,7 +806,7 @@ func (p *streamPrinter) event(ev loop.Event) {
 		_, _ = fmt.Fprintf(os.Stdout, "[%s done err=%v]\n", ev.ToolName, ev.IsError)
 	case loop.AgentStart, loop.AgentEnd, loop.TurnStart, loop.TurnEnd,
 		loop.RequestHeader,
-		loop.ToolExecutionUpdate, loop.CompactionStart, loop.CompactionEnd,
+		loop.ToolExecutionUpdate, loop.PatchApplyUpdated, loop.CompactionStart, loop.CompactionEnd,
 		loop.ContextUsage, loop.QueueChanged, loop.SteerAccepted, loop.RunAborted,
 		loop.ExtensionError, loop.ExtensionNotice, loop.ExtensionUIPrompt,
 		loop.AgentSettled, loop.RuntimeReady:

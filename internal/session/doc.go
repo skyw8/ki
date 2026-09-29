@@ -22,8 +22,8 @@
 // directory containing only the root-to-target path and records the parent and
 // fork mode in the header. The server owns tree-mode cascade deletion.
 //
-// request_header entries store system/tools plus provider, model, thinking,
-// catalog, and pricing snapshots. WebUI GET projects a slimmed active-leaf tail
+// request_header entries store system/tools (including custom type/grammar)
+// plus provider, model, thinking, catalog, and pricing snapshots. WebUI GET projects a slimmed active-leaf tail
 // (unchanged prompts omitted, large bodies truncated) and, on request, a
 // body-less index of the whole tree. Views have a 512 KiB serialized slim-entry
 // page budget as well as a count limit. Compact views instead page whole human
@@ -46,8 +46,9 @@
 // builds a Session from entries a caller already took from that cache. A tail
 // read from byte zero is complete even though the header is not an entry; an
 // explicit branch root also ends paging without reading unrelated branches.
-// context_usage entries store model-facing
-// context pressure. Asynchronous sideband rows never advance activeLeafId.
+// context_usage entries store model-facing context pressure;
+// patch_apply_updated stores non-executing structured patch previews.
+// Asynchronous sideband rows never advance activeLeafId.
 // config.json owns provider/model/thinking effort plus
 // title and pin. Skills/extension enablement is process-wide ({KI_HOME}/toggles.json).
 // Remove deletes the session directory.

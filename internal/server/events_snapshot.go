@@ -49,7 +49,7 @@ func (s snapshotReplay) covers(ev *loop.Event) bool {
 	switch ev.Type {
 	case loop.MessageStart, loop.MessageUpdate, loop.RequestHeader, loop.CompactionStart, loop.CompactionEnd:
 		return s.through > 0 && ev.Seq <= s.through
-	case loop.ToolExecutionStart, loop.ToolExecutionUpdate, loop.ToolExecutionEnd:
+	case loop.ToolExecutionStart, loop.ToolExecutionUpdate, loop.ToolExecutionEnd, loop.PatchApplyUpdated:
 		// A sibling tool can finish while another is still running. A sequence
 		// cutoff alone would lose that running tool's start/arguments.
 		return ev.ToolCallID != "" && s.tools[ev.ToolCallID]

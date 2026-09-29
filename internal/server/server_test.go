@@ -340,7 +340,7 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	}
 
 	gpt := prompt("openai/gpt-5.6-terra")
-	gptWant := []string{"Read", "Write", "Edit", "Grep", "Glob"}
+	gptWant := []string{"Read", "apply_patch", "Grep", "Glob"}
 	if srv.shells.BashAvailable() {
 		gptWant = append(gptWant, "Bash")
 	}
@@ -351,6 +351,9 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	gptWant = append(gptWant, "Agent", "SendMessage")
 	if got := requestToolNames(gpt.Tools); !slices.Equal(got, gptWant) {
 		t.Fatalf("GPT tools = %v", got)
+	}
+	if gpt.Tools[1].Type != "custom" || gpt.Tools[1].Format == nil || gpt.Tools[1].Format.Syntax != "lark" {
+		t.Fatalf("GPT apply_patch spec = %+v", gpt.Tools[1])
 	}
 	readProps, ok := gpt.Tools[0].Parameters["properties"].(map[string]any)
 	if !ok {
@@ -416,7 +419,14 @@ func TestBuiltinToolsToggleAppliesToNextPrompt(t *testing.T) {
 	if !slices.ContainsFunc(initial, func(item map[string]any) bool { return item["name"] == "Agent" && item["enabled"] == true }) {
 		t.Fatalf("Agent missing or disabled initially: %+v", initial)
 	}
-	patchBody, _ := marshalJSON(map[string]any{"disabled": []string{"Agent"}})
+	if !slices.ContainsFunc(initial, func(item map[string]any) bool {
+		return item["name"] == "apply_patch"
+	}) || !slices.ContainsFunc(initial, func(item map[string]any) bool {
+		return item["name"] == "Edit"
+	}) {
+		t.Fatalf("model-specific editors missing from global catalog: %+v", initial)
+	}
+	patchBody, _ := marshalJSON(map[string]any{"disabled": []string{"Agent", "apply_patch"}})
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/tools?sessionId="+url.QueryEscape(id), bytes.NewReader(patchBody))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
@@ -435,12 +445,12 @@ func TestBuiltinToolsToggleAppliesToNextPrompt(t *testing.T) {
 		t.Fatalf("patch tools status = %d, body = %+v", res.StatusCode, patched)
 	}
 	for _, item := range patched.Items {
-		if item["name"] == "Agent" && item["enabled"] != false {
-			t.Fatalf("Agent remained enabled: %+v", patched.Items)
+		if (item["name"] == "Agent" || item["name"] == "apply_patch") && item["enabled"] != false {
+			t.Fatalf("tool remained enabled: %+v", patched.Items)
 		}
 	}
 
-	body, _ := marshalJSON(map[string]any{"text": "tools after toggle"})
+	body, _ := marshalJSON(map[string]any{"text": "tools after toggle", "model": "openai/gpt-5.6-terra"})
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
@@ -453,10 +463,14 @@ func TestBuiltinToolsToggleAppliesToNextPrompt(t *testing.T) {
 		t.Fatalf("prompt status = %d", res.StatusCode)
 	}
 	waitAgentEnd(t, hs, id)
-	if slices.Contains(requestToolNames(recorder.reqs[len(recorder.reqs)-1].Tools), "Agent") {
+	names := requestToolNames(recorder.reqs[len(recorder.reqs)-1].Tools)
+	if slices.Contains(names, "Agent") {
 		t.Fatal("disabled Agent was sent in the next request")
 	}
-	if !slices.Contains(requestToolNames(recorder.reqs[len(recorder.reqs)-1].Tools), "Read") {
+	if slices.Contains(names, "apply_patch") {
+		t.Fatal("disabled apply_patch was sent to a GPT model")
+	}
+	if !slices.Contains(names, "Read") {
 		t.Fatal("disabling Agent also removed Read")
 	}
 }

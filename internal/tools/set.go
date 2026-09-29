@@ -10,11 +10,11 @@ import (
 )
 
 // Profile is the provider-neutral subset of model capabilities that affects
-// built-in tool exposure. The server derives it from the resolved model.
-// Every model gets the same editing interface (Write/Edit), so the built-in
-// tool set is provider-independent apart from rich Read.
+// built-in tool exposure. GPT Responses models use the native freeform patch
+// editor; other models use the JSON Write/Edit pair.
 type Profile struct {
-	RichRead bool
+	RichRead   bool
+	ApplyPatch bool
 }
 
 // Set binds built-in tools to a session cwd.
@@ -64,7 +64,11 @@ func (s Set) Build(profile Profile) []loop.Tool {
 		shells.powerShell = &powerShell
 	}
 	out := []loop.Tool{readTool{cwd: cwd, rich: profile.RichRead, ops: s.ReadOps}}
-	out = append(out, writeTool{cwd: cwd, mutations: s.Mutations}, editTool{cwd: cwd, mutations: s.Mutations})
+	if profile.ApplyPatch {
+		out = append(out, applyPatchTool{cwd: cwd, mutations: s.Mutations})
+	} else {
+		out = append(out, writeTool{cwd: cwd, mutations: s.Mutations}, editTool{cwd: cwd, mutations: s.Mutations})
+	}
 	out = append(out,
 		grepTool{cwd: cwd},
 		globTool{cwd: cwd},
@@ -91,6 +95,29 @@ func (s Set) Build(profile Profile) []loop.Tool {
 		out = append(out, agentTool{runtime: agent})
 		if messenger, ok := agent.(AgentMessenger); ok {
 			out = append(out, sendMessageTool{messenger: messenger})
+		}
+	}
+	return out
+}
+
+// Catalog returns every built-in that can be selected by a model profile.
+// The settings toggle is global, so model-specific editors must remain visible
+// when another model is selected or their disabled state would be lost.
+func (s Set) Catalog(profile Profile) []loop.Tool {
+	classic := s.Build(Profile{RichRead: profile.RichRead})
+	patch := s.Build(Profile{RichRead: profile.RichRead, ApplyPatch: true})
+	var patchTool loop.Tool
+	for _, tool := range patch {
+		if tool.Name() == "apply_patch" {
+			patchTool = tool
+			break
+		}
+	}
+	out := make([]loop.Tool, 0, len(classic)+1)
+	for _, tool := range classic {
+		out = append(out, tool)
+		if tool.Name() == "Edit" && patchTool != nil {
+			out = append(out, patchTool)
 		}
 	}
 	return out

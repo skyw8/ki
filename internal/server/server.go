@@ -183,7 +183,7 @@ func (st *runState) removeReader(r *runReader) { delete(st.readers, r) }
 // arrives later — once the message is persisted even that one stops mattering
 // (see appendLocked).
 func transient(t loop.EventType) bool {
-	return t == loop.MessageStart || t == loop.MessageUpdate || t == loop.ToolExecutionUpdate
+	return t == loop.MessageStart || t == loop.MessageUpdate || t == loop.ToolExecutionUpdate || t == loop.PatchApplyUpdated
 }
 
 // appendLocked buffers one event for replay and stamps it with the run's next
@@ -1445,19 +1445,20 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 	out := make([]map[string]any, 0, len(cat))
 	for _, m := range cat {
 		out = append(out, map[string]any{
-			"provider":        m.Provider,
-			"id":              m.ID,
-			"name":            m.Name,
-			"api":             m.API,
-			"contextWindow":   m.ContextWindow,
-			"maxTokens":       m.MaxTokens,
-			"input":           m.Input,
-			"reasoning":       m.Reasoning,
-			"thinkingLevels":  provider.SupportedThinkingLevels(m),
-			"defaultThinking": provider.DefaultThinking(m),
-			"builtin":         m.Builtin,
-			"customized":      m.Customized,
-			"spec":            m.Provider + "/" + m.ID,
+			"provider":           m.Provider,
+			"id":                 m.ID,
+			"name":               m.Name,
+			"api":                m.API,
+			"contextWindow":      m.ContextWindow,
+			"maxTokens":          m.MaxTokens,
+			"input":              m.Input,
+			"applyPatchToolType": m.ApplyPatchToolType,
+			"reasoning":          m.Reasoning,
+			"thinkingLevels":     provider.SupportedThinkingLevels(m),
+			"defaultThinking":    provider.DefaultThinking(m),
+			"builtin":            m.Builtin,
+			"customized":         m.Customized,
+			"spec":               m.Provider + "/" + m.ID,
 		})
 	}
 	writeJSON(w, 200, out)
@@ -2113,9 +2114,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 	}
 	jobs := s.jobsFor(id)
-	profile := tools.Profile{
-		RichRead: slices.Contains(info.Input, "image"),
-	}
+	profile := toolProfile(info)
 	// The resource snapshot is loaded before the tool set because shell tools
 	// carry the extension-contributed PATH directories, and it stays the single
 	// source for this session's extension catalog below.

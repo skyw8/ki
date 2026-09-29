@@ -45,17 +45,18 @@ type Config struct {
 
 // ModelOverride describes field-level overrides for one model.
 type ModelOverride struct {
-	Name             *string             `json:"name,omitempty"`
-	Enabled          *bool               `json:"enabled,omitempty"`
-	API              *string             `json:"api,omitempty"`
-	BaseURL          *string             `json:"baseUrl,omitempty"`
-	ContextWindow    *int                `json:"contextWindow,omitempty"`
-	MaxTokens        *int                `json:"maxTokens,omitempty"`
-	Input            *[]string           `json:"input,omitempty"`
-	Reasoning        *bool               `json:"reasoning,omitempty"`
-	ThinkingLevelMap *map[string]*string `json:"thinkingLevelMap,omitempty"`
-	Cost             json.RawMessage     `json:"cost,omitempty"`
-	Compat           *Compat             `json:"compat,omitempty"`
+	Name               *string             `json:"name,omitempty"`
+	Enabled            *bool               `json:"enabled,omitempty"`
+	API                *string             `json:"api,omitempty"`
+	BaseURL            *string             `json:"baseUrl,omitempty"`
+	ContextWindow      *int                `json:"contextWindow,omitempty"`
+	MaxTokens          *int                `json:"maxTokens,omitempty"`
+	Input              *[]string           `json:"input,omitempty"`
+	ApplyPatchToolType *string             `json:"applyPatchToolType,omitempty"`
+	Reasoning          *bool               `json:"reasoning,omitempty"`
+	ThinkingLevelMap   *map[string]*string `json:"thinkingLevelMap,omitempty"`
+	Cost               json.RawMessage     `json:"cost,omitempty"`
+	Compat             *Compat             `json:"compat,omitempty"`
 }
 
 type credentialEntry struct {
@@ -461,6 +462,9 @@ func validateExtensionModel(m Model) error {
 	if !slices.Contains(m.Input, "text") {
 		return fmt.Errorf("provider %q model %q: %w", m.Provider, m.ID, errTextInputRequired)
 	}
+	if err := validateApplyPatchToolType(m); err != nil {
+		return err
+	}
 	for k := range m.ThinkingLevelMap {
 		if !slices.Contains(thinkingLevels, k) {
 			return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidThinkingLevel, k)
@@ -486,6 +490,13 @@ func validateExtensionModel(m Model) error {
 
 var thinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 
+func validateApplyPatchToolType(m Model) error {
+	if m.ApplyPatchToolType == "" || m.ApplyPatchToolType == "freeform" {
+		return nil
+	}
+	return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidApplyPatchToolType, m.ApplyPatchToolType)
+}
+
 func validateModel(m Model) error {
 	if strings.TrimSpace(m.ID) == "" {
 		return fmt.Errorf("provider %q: %w", m.Provider, errModelIDRequired)
@@ -502,6 +513,9 @@ func validateModel(m Model) error {
 	}
 	if !slices.Contains(m.Input, "text") {
 		return fmt.Errorf("provider %q model %q: %w", m.Provider, m.ID, errTextInputRequired)
+	}
+	if err := validateApplyPatchToolType(m); err != nil {
+		return err
 	}
 	for k := range m.ThinkingLevelMap {
 		if !slices.Contains(thinkingLevels, k) {
@@ -555,6 +569,9 @@ func applyModelOverride(m Model, o ModelOverride) (Model, error) {
 	}
 	if o.Input != nil {
 		m.Input = slices.Clone(*o.Input)
+	}
+	if o.ApplyPatchToolType != nil {
+		m.ApplyPatchToolType = *o.ApplyPatchToolType
 	}
 	if o.Reasoning != nil {
 		m.Reasoning = *o.Reasoning

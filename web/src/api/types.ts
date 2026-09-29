@@ -217,6 +217,7 @@ export type CatalogTool = {
   description?: string
   source?: string
   enabled: boolean
+  available?: boolean
 }
 
 export type ExtensionText = string | number | boolean | {
@@ -372,6 +373,7 @@ export type ModelInfo = {
   contextWindow?: number
 	maxTokens?: number
 	input?: string[]
+	applyPatchToolType?: 'freeform'
 	reasoning?: boolean
 	thinkingLevels?: string[]
 	defaultThinking?: string

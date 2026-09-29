@@ -522,6 +522,7 @@ export function SettingsToggles({
                 <div className="cfg-name">
                   {item.name}
                   {kind !== 'extensions' && 'source' in item && item.source ? <span className="cfg-src">{sourceLabel(item.source, t)}</span> : null}
+                  {kind === 'tools' && 'available' in item && item.available === false ? <span className="cfg-src">{t('cfg.toolUnavailable')}</span> : null}
                 </div>
 	              {'description' in item && kind === 'extensions' && extensionDescription(item, lang) ? <p className="cfg-desc">{extensionDescription(item, lang)}</p> : null}
 	              {'description' in item && kind !== 'extensions' && item.description ? <p className="cfg-desc">{item.description}</p> : null}

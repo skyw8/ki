@@ -41,6 +41,9 @@ const (
 	ToolExecutionUpdate EventType = "tool_execution_update"
 	// ToolExecutionEnd ends tool execution.
 	ToolExecutionEnd EventType = "tool_execution_end"
+	// PatchApplyUpdated carries a non-executing preview parsed from streamed
+	// apply_patch arguments.
+	PatchApplyUpdated EventType = "patch_apply_updated"
 	// CompactionStart begins context compaction.
 	CompactionStart EventType = "compaction_start"
 	// CompactionEnd ends context compaction.
@@ -177,6 +180,30 @@ type ProgressTool interface {
 	ExecuteWithProgress(ctx context.Context, args map[string]any, emit func(any)) ToolResult
 }
 
+// ToolSpecProvider optionally replaces the default JSON function schema.
+// It is used by grammar-backed Responses custom tools such as apply_patch.
+type ToolSpecProvider interface {
+	ToolSpec() ToolSpec
+}
+
+// FreeformTool executes the raw input of a custom tool call.
+type FreeformTool interface {
+	ExecuteRaw(ctx context.Context, input string) ToolResult
+}
+
+// ToolArgumentDiffConsumer incrementally parses a freeform tool call while
+// the provider is still producing its arguments. Results are client previews;
+// they never authorize or execute the tool.
+type ToolArgumentDiffConsumer interface {
+	Consume(delta string) (any, bool)
+	Finish() (any, bool)
+}
+
+// ToolArgumentDiffProvider creates isolated state for one streamed tool call.
+type ToolArgumentDiffProvider interface {
+	NewArgumentDiffConsumer() ToolArgumentDiffConsumer
+}
+
 // ToolResult is one tool execution outcome.
 type ToolResult struct {
 	Content []types.Content
@@ -214,15 +241,27 @@ type Request struct {
 	ThinkingLevelMap        map[string]*string `json:"thinkingLevelMap,omitempty"`
 }
 
-// ToolSpec is the JSON function schema sent to the provider.
+// ToolSpec is the schema sent to the provider.
 type ToolSpec struct {
+	Type        string         `json:"type,omitempty"`
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
+	Format      *ToolFormat    `json:"format,omitempty"`
+}
+
+// ToolFormat describes the grammar accepted by a Responses custom tool.
+type ToolFormat struct {
+	Type       string `json:"type"`
+	Syntax     string `json:"syntax"`
+	Definition string `json:"definition"`
 }
 
 func specForTool(t Tool) ToolSpec {
-	return ToolSpec{Name: t.Name(), Description: t.Description() + "\n\n" + t.Prompt(), Parameters: t.Parameters()}
+	if p, ok := t.(ToolSpecProvider); ok {
+		return p.ToolSpec()
+	}
+	return ToolSpec{Type: "function", Name: t.Name(), Description: t.Description() + "\n\n" + t.Prompt(), Parameters: t.Parameters()}
 }
 
 // Hooks are awaited interception points.
@@ -551,6 +590,8 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 		var firstDelta time.Time
 		var lastDelta time.Time
 		deltas := 0
+		argumentConsumers := map[string]ToolArgumentDiffConsumer{}
+		argumentConsumerNames := map[string]string{}
 		partial := types.Message{Role: "assistant", Provider: cfg.Provider, Model: cfg.Model, Timestamp: time.Now().UnixMilli()}
 		// The start message escapes to replay readers; keep the local accumulator
 		// separate so retaining a canceled partial never mutates a published event.
@@ -567,6 +608,27 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 			latest = m
 			if err := emit(Event{Type: MessageUpdate, Message: &m, AssistantMessageEvent: &d}); err != nil {
 				return err
+			}
+			if d.Type == "custom_tool_call_input_delta" && d.ToolCallID != "" {
+				consumer := argumentConsumers[d.ToolCallID]
+				if consumer == nil {
+					for _, tool := range cfg.Tools {
+						if tool.Name() != d.ToolName {
+							continue
+						}
+						if provider, ok := tool.(ToolArgumentDiffProvider); ok {
+							consumer = provider.NewArgumentDiffConsumer()
+							argumentConsumers[d.ToolCallID] = consumer
+							argumentConsumerNames[d.ToolCallID] = d.ToolName
+						}
+						break
+					}
+				}
+				if consumer != nil {
+					if value, ok := consumer.Consume(d.Delta); ok {
+						return emit(Event{Type: PatchApplyUpdated, ToolCallID: d.ToolCallID, ToolName: d.ToolName, PartialResult: value})
+					}
+				}
 			}
 			deltas++
 			if slog.Default().Enabled(ctx, slog.LevelDebug) {
@@ -627,6 +689,17 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				return asst, fmt.Errorf("stream assistant response: %w", err)
 			}
 			continue
+		}
+		for _, call := range asst.ToolCalls() {
+			consumer := argumentConsumers[call.ID]
+			if consumer == nil {
+				continue
+			}
+			if value, ok := consumer.Finish(); ok {
+				if err := emit(Event{Type: PatchApplyUpdated, ToolCallID: call.ID, ToolName: argumentConsumerNames[call.ID], PartialResult: value}); err != nil {
+					return asst, err
+				}
+			}
 		}
 		asst.LatencyMs = time.Since(started).Milliseconds()
 		if !firstDelta.IsZero() {
@@ -793,7 +866,14 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			return
 		}
 		var res ToolResult
-		if progress, ok := p.tool.(ProgressTool); ok {
+		if p.call.ToolType == "custom" {
+			raw, _ := p.args["input"].(string)
+			if freeform, ok := p.tool.(FreeformTool); ok {
+				res = freeform.ExecuteRaw(ctx, raw)
+			} else {
+				res = ToolResult{Content: []types.Content{{Type: "text", Text: "tool does not accept freeform input"}}, IsError: true}
+			}
+		} else if progress, ok := p.tool.(ProgressTool); ok {
 			progressEmit := func(value any) {
 				_ = emit(Event{
 					Type:          ToolExecutionUpdate,

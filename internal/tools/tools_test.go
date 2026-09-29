@@ -60,20 +60,34 @@ func TestBuildSelectsReadCapabilities(t *testing.T) {
 		t.Fatalf("text Read leaked rich capabilities: %s %+v", textRead.Prompt(), textRead.Parameters())
 	}
 
-	rich := set.Build(Profile{RichRead: true})
-	wantRich := []string{"Read", "Write", "Edit", "Grep", "Glob"}
+	patch := set.Build(Profile{RichRead: true, ApplyPatch: true})
+	wantPatch := []string{"Read", "apply_patch", "Grep", "Glob"}
 	if shells.BashAvailable() {
-		wantRich = append(wantRich, "Bash")
+		wantPatch = append(wantPatch, "Bash")
 	}
 	if shells.PowerShellEnabled() {
-		wantRich = append(wantRich, "PowerShell")
+		wantPatch = append(wantPatch, "PowerShell")
 	}
-	wantRich = append(wantRich, "TaskOutput", "TaskStop")
-	if got := strings.Join(names(rich), ","); got != strings.Join(wantRich, ",") {
-		t.Fatalf("rich tools = %s", got)
+	wantPatch = append(wantPatch, "TaskOutput", "TaskStop")
+	if got := strings.Join(names(patch), ","); got != strings.Join(wantPatch, ",") {
+		t.Fatalf("patch tools = %s", got)
 	}
-	if !strings.Contains(pick(rich, "Read").Prompt(), "PDF") {
+	if !strings.Contains(pick(patch, "Read").Prompt(), "PDF") {
 		t.Fatal("rich Read omitted PDF capability")
+	}
+	provider, ok := pick(patch, "apply_patch").(loop.ToolSpecProvider)
+	if !ok {
+		t.Fatal("apply_patch does not provide a custom tool spec")
+	}
+	spec := provider.ToolSpec()
+	if spec.Type != "custom" || spec.Format == nil || spec.Format.Syntax != "lark" {
+		t.Fatalf("apply_patch spec = %+v", spec)
+	}
+	catalog := set.Catalog(Profile{ApplyPatch: true})
+	for _, name := range []string{"apply_patch", "Write", "Edit"} {
+		if pick(catalog, name) == nil {
+			t.Fatalf("catalog omitted %s: %v", name, names(catalog))
+		}
 	}
 }
 
@@ -276,6 +290,59 @@ func TestEditBatchUsesOneOriginalAndReturnsDiffDetails(t *testing.T) {
 	if err := ed.Validate(mixed); err == nil {
 		t.Fatal("mixed edit modes must fail")
 	}
+}
+
+func TestEditSelectsSoleMeaningfulModeAndWarns(t *testing.T) {
+	cwd := t.TempDir()
+	ed := editTool{cwd: cwd, mutations: NewMutationQueue()}
+
+	t.Run("batch ignores default single fields", func(t *testing.T) {
+		path := filepath.Join(cwd, "batch-defaults.txt")
+		_ = os.WriteFile(path, []byte("alpha\nbeta\n"), 0o600)
+		args := map[string]any{
+			"file_path": path,
+			"edits": []any{
+				map[string]any{"old_string": "alpha", "new_string": "ALPHA"},
+			},
+			"old_string": "", "new_string": "", "replace_all": false,
+		}
+		if err := ed.Validate(args); err != nil {
+			t.Fatal(err)
+		}
+		res := ed.Execute(context.Background(), args)
+		if res.IsError || !strings.Contains(res.Content[0].Text, "ignored fields from the inactive Edit mode") {
+			t.Fatalf("batch fallback: %+v", res)
+		}
+		details, ok := res.Details.(editDetails)
+		if !ok || strings.Join(details.IgnoredFields, ",") != "old_string,new_string,replace_all" {
+			t.Fatalf("ignored fields: %#v", res.Details)
+		}
+		got, _ := os.ReadFile(path) //nolint:gosec // path is inside the isolated test directory
+		if string(got) != "ALPHA\nbeta\n" {
+			t.Fatalf("file: %q", got)
+		}
+	})
+
+	t.Run("single ignores no-op batch placeholder", func(t *testing.T) {
+		path := filepath.Join(cwd, "single-placeholder.txt")
+		_ = os.WriteFile(path, []byte("alpha\n"), 0o600)
+		args := map[string]any{
+			"file_path":  path,
+			"old_string": "alpha", "new_string": "ALPHA", "replace_all": false,
+			"edits": []any{map[string]any{"old_string": "placeholder", "new_string": "placeholder"}},
+		}
+		if err := ed.Validate(args); err != nil {
+			t.Fatal(err)
+		}
+		res := ed.Execute(context.Background(), args)
+		if res.IsError || !strings.Contains(res.Content[0].Text, "ignored fields from the inactive Edit mode: edits") {
+			t.Fatalf("single fallback: %+v", res)
+		}
+		got, _ := os.ReadFile(path) //nolint:gosec // path is inside the isolated test directory
+		if string(got) != "ALPHA\n" {
+			t.Fatalf("file: %q", got)
+		}
+	})
 }
 
 func TestReadPagingAndImageResize(t *testing.T) {

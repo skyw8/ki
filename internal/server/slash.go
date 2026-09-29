@@ -17,6 +17,7 @@ import (
 	"ki/internal/extension"
 	"ki/internal/idgen"
 	"ki/internal/loop"
+	"ki/internal/provider"
 	"ki/internal/resources"
 	"ki/internal/session"
 	"ki/internal/toggles"
@@ -80,9 +81,19 @@ func (s *Server) getSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 
-// getTools returns the built-in tool catalog for the selected session/model.
-// The global toggle is still shared across sessions; the model only controls
-// the rich/text Read mode, since every model edits with Write/Edit.
+// toolProfile is the single model-to-tool capability mapping used by both
+// Settings and occupied runs; keeping one mapping prevents the visible catalog
+// from drifting away from the request header sent to the provider.
+func toolProfile(info provider.Model) tools.Profile {
+	return tools.Profile{
+		RichRead:   slices.Contains(info.Input, "image"),
+		ApplyPatch: info.ApplyPatchToolType == "freeform",
+	}
+}
+
+// getTools returns every globally toggleable built-in. The selected model is
+// reported through available, but model-specific editors remain visible so
+// changing another switch cannot erase their global disabled state.
 func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
@@ -100,7 +111,7 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "session model unavailable", http.StatusUnprocessableEntity)
 			return
 		}
-		profile.RichRead = slices.Contains(info.Input, "image")
+		profile = toolProfile(info)
 		// Why this catalog does not resolve Agent depth: the tool list shown to
 		// clients must match the tool list sent to the provider, which is
 		// deliberately independent of the session's Agent depth. A deep session
@@ -110,7 +121,7 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 		// model when it is available, while retaining a useful fallback catalog
 		// if the provider catalog is not configured yet.
 		if _, info, ok := s.registry.FindModel(ref.Provider, ref.Model); ok {
-			profile.RichRead = slices.Contains(info.Input, "image")
+			profile = toolProfile(info)
 		}
 	}
 	if cwd == "" {
@@ -119,10 +130,16 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 	if cwd == "" {
 		cwd = "."
 	}
-	builtins := (tools.Set{
+	toolSet := tools.Set{
 		CWD: cwd, Jobs: s.jobsFor(sessionID), Agent: s,
 		AgentParentSessionID: sessionID, Shells: s.shells, Mutations: s.mutations,
-	}).Build(profile)
+	}
+	active := toolSet.Build(profile)
+	available := make(map[string]bool, len(active))
+	for _, tool := range active {
+		available[tool.Name()] = true
+	}
+	builtins := toolSet.Catalog(profile)
 	tg := toggles.Load(s.cfg.Home)
 	items := make([]map[string]any, 0, len(builtins))
 	for _, tool := range builtins {
@@ -131,6 +148,7 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 			"description": tool.Description(),
 			"source":      "builtin",
 			"enabled":     tg.Tools.Allowed(tool.Name()),
+			"available":   available[tool.Name()],
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})

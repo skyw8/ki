@@ -25,6 +25,7 @@ sideband 事件可以并发到达。
 | 请求 | `request_header`、`context_usage` | 面向模型的 system/tools 快照和上下文压力。 |
 | 消息 | `message_start`、`message_update`、`message_end` | 用户、assistant、tool result 消息；assistant 增量通过 update 流式发送。 |
 | 工具执行 | `tool_execution_start`、`tool_execution_update`、`tool_execution_end` | 工具开始、进度和结束。 |
+| Patch 预览 | `patch_apply_updated` | `apply_patch` 参数仍在生成时的非执行语法预览；最终执行结果覆盖预览。 |
 | 压缩 | `compaction_start`、`compaction_end` | preflight、overflow recovery、threshold，以及手动 `/compact` 压缩。 |
 | 队列和控制 | `queue_changed`、`steer_accepted`、`run_aborted` | 队列变化、实时 Inbox 接收和中止；`steer_accepted` 不是 JSONL leaf（run 在 drain 前被 abort 时，待处理 steer 会作为未回复的 user turn 落盘）。parent 的 run 还活着时，子代理完成通知也走这条 Inbox 路径（于是它以 `steer_accepted` 先到 push、随后由 drain 产生 `message_*`），run 已结束才落到 `queue_changed` + durable queue。 |
 | 扩展 UI/状态 | `extension_error`、`extension_notice`、`extension_ui_prompt` | 扩展失败、toast，或 WebUI 确认/选择弹层。 |
@@ -47,7 +48,7 @@ CLI 的行读取器只认 `data:` 前缀。WebUI 客户端同时把「收到字�
 回放日志**按「后到的读者是否用得上」裁剪**，否则它会随 turn 的输出量增长而不是随
 轮次数增长。裁剪只作用于回放：已经连上的 reader 该收的每一帧照收。
 
-- `message_start` / `message_update` / `tool_execution_update` 是「过时即可丢」的事件：
+- `message_start` / `message_update` / `tool_execution_update` / `patch_apply_updated` 是「过时即可丢」的事件：
   chunk 每条都带整份累积 partial，`message_start` 被自己的 chunk 取代，工具进度被下一
   条取代。**当前 in-flight 的那份 partial 永远保留**（刚 attach 的客户端靠它渲染），其余
   的在**所有已连接 reader 都读过之后**被清空成 `blank`（reader 直接跳过、不发帧、不进扩
@@ -94,7 +95,7 @@ sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` �
 「这个 session 结束了」。因此 push 可以丢帧而不影响正确性：状态永远由 REST
 重取得出，`ready`/重连后的一次全量刷新即可追平。
 
-`message_end`、`request_header`、`context_usage`、压缩事件、工具进度
+`message_end`、`request_header`、`context_usage`、压缩事件、工具进度、patch 预览
 和部分 sideband 会按各自的 server 路径持久化。并非每个 SSE
 事件都会推进 conversation leaf。
 
