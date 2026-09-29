@@ -123,7 +123,7 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 	if err != nil {
 		return fmt.Errorf("append message: %w", err)
 	}
-	ev.EntryID = e.ID
+	ev.EntryID, ev.ParentID = e.ID, &e.ParentID
 	return nil
 }
 

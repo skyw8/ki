@@ -13,18 +13,31 @@ import (
 // replies. EntryIDs is the ordered, sparse body projection; ParentID/TailID
 // bridge the omitted range without changing persisted parent edges.
 type CompactTurn struct {
-	ID             string    `json:"id"`
-	ParentID       string    `json:"parentId,omitempty"`
-	TailID         string    `json:"tailId"`
-	EntryIDs       []string  `json:"entryIds"`
-	VisibleNodeIDs []string  `json:"visibleNodeIds"`
-	OmittedNodeIDs []string  `json:"omittedNodeIds,omitempty"`
-	HiddenCount    int       `json:"hiddenCount"`
-	FirstHiddenID  string    `json:"firstHiddenId,omitempty"`
-	Preview        string    `json:"preview,omitempty"`
-	Stats          TurnStats `json:"stats"`
-	StepCount      int       `json:"stepCount"`
-	LastStep       *TurnStep `json:"lastStep,omitempty"`
+	ID                  string          `json:"id"`
+	ParentID            string          `json:"parentId,omitempty"`
+	TailID              string          `json:"tailId"`
+	EntryCount          int             `json:"entryCount"`
+	AssistantAt         int64           `json:"assistantAt,omitempty"`
+	ToolStates          []TurnToolState `json:"toolStates"`
+	CumulativeElapsedMS int64           `json:"cumulativeElapsedMs"`
+	EntryIDs            []string        `json:"entryIds"`
+	VisibleNodeIDs      []string        `json:"visibleNodeIds"`
+	OmittedNodeIDs      []string        `json:"omittedNodeIds,omitempty"`
+	HiddenCount         int             `json:"hiddenCount"`
+	FirstHiddenID       string          `json:"firstHiddenId,omitempty"`
+	Preview             string          `json:"preview,omitempty"`
+	Stats               TurnStats       `json:"stats"`
+	StepCount           int             `json:"stepCount"`
+	LastStep            *TurnStep       `json:"lastStep,omitempty"`
+}
+
+// TurnToolState covers only the latest assistant tool batch, not the hidden
+// history. It lets sparse snapshots deduplicate both running and completed
+// tools against events received while the snapshot was in flight.
+type TurnToolState struct {
+	ID       string `json:"id"`
+	Finished bool   `json:"finished"`
+	IsError  bool   `json:"isError,omitempty"`
 }
 
 type TurnStep struct {
@@ -37,6 +50,7 @@ type TurnStep struct {
 // the usage or absolute turn number shown next to the final reply.
 type TurnStats struct {
 	Turn         int      `json:"turn"`
+	StartedAt    int64    `json:"startedAt,omitempty"`
 	Steps        int      `json:"steps"`
 	ElapsedMS    int64    `json:"elapsedMs"`
 	DurationMS   int64    `json:"durationMs"`
@@ -88,6 +102,7 @@ func turnRanges(path []Entry) []turnRange {
 func BuildCompact(entries []Entry, leaf, before string, keep int) CompactPage {
 	path := leafPath(entries, leaf)
 	ranges := turnRanges(path)
+	elapsed := cumulativeTurnElapsed(path, ranges)
 	end := len(ranges)
 	if before != "" {
 		end = 0
@@ -114,6 +129,7 @@ func BuildCompact(entries []Entry, leaf, before string, keep int) CompactPage {
 		turn, bodies, nextPrompt, nextReported := projectTurn(path[r.start:r.end], r.ordinal, min(20, max(0, keep)), prevPrompt, cacheReported)
 		prevPrompt, cacheReported = nextPrompt, nextReported
 		turn.StepCount = completedSteps(path[:r.end])
+		turn.CumulativeElapsedMS = elapsed[i]
 		page.Turns = append(page.Turns, turn)
 		page.Entries = append(page.Entries, bodies...)
 	}
@@ -160,12 +176,15 @@ func BuildTurn(entries []Entry, leaf, id, before string, limit int) (Tail, bool)
 // its enclosing turn, so switching modes can repair the boundary atomically.
 func BuildCompactTurn(entries []Entry, leaf, id string, keep int) (CompactPage, bool) {
 	path := leafPath(entries, leaf)
-	for _, r := range turnRanges(path) {
+	ranges := turnRanges(path)
+	elapsed := cumulativeTurnElapsed(path, ranges)
+	for i, r := range ranges {
 		part := path[r.start:r.end]
 		if slices.ContainsFunc(part, func(e Entry) bool { return e.ID == id }) {
 			prevPrompt, cacheReported := cacheBaseline(path[:r.start])
 			turn, bodies, _, _ := projectTurn(part, r.ordinal, min(20, max(0, keep)), prevPrompt, cacheReported)
 			turn.StepCount = completedSteps(path[:r.end])
+			turn.CumulativeElapsedMS = elapsed[i]
 			return CompactPage{Entries: bodies, Turns: []CompactTurn{turn}, HasMore: r.ordinal > 1, OldestID: turn.ID}, true
 		}
 	}
@@ -188,22 +207,28 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 	var nodes []node
 	tools := map[string]int{}
 	failedTools := map[string]bool{}
+	batch := map[string]int{}
+	toolStates := []TurnToolState{}
+	var assistantAt int64
 	user := -1
 	stats := TurnStats{Turn: ordinal}
 	var lastStep *TurnStep
-	var start, last, decodeMS, decodeTokens int64
+	var clock turnClock
+	var decodeMS, decodeTokens int64
 	for i, e := range path {
+		clock.add(e)
 		m := e.Message
 		switch {
 		case isUserMessage(e):
 			user = i
-			start = entryMillis(e)
 		case m != nil && m.Role == "assistant":
+			batch = map[string]int{}
+			toolStates = []TurnToolState{}
 			lastStep = &TurnStep{Usage: m.Usage, TTFTMs: m.TTFTMs, LatencyMs: m.LatencyMs}
 			nodes = append(nodes, node{e.ID, m.Text(), []int{i}})
 			stats.Steps++
 			stats.DurationMS += m.LatencyMs
-			last = entryMillis(e)
+			assistantAt = max(assistantAt, entryMillis(e))
 			if stats.TTFTMS == 0 && m.TTFTMs > 0 {
 				stats.TTFTMS = m.TTFTMs
 			}
@@ -238,6 +263,10 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			}
 			for _, c := range m.Content {
 				if c.Type == "toolCall" && c.ID != "" {
+					if _, exists := batch[c.ID]; !exists {
+						batch[c.ID] = len(toolStates)
+						toolStates = append(toolStates, TurnToolState{ID: c.ID})
+					}
 					if at, ok := tools[c.ID]; ok {
 						nodes[at].entries = append(nodes[at].entries, i)
 					} else {
@@ -250,6 +279,12 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			id := m.ToolCallID
 			if id == "" {
 				id = e.ID
+			}
+			if at, exists := batch[id]; exists {
+				toolStates[at].Finished, toolStates[at].IsError = true, m.IsError
+			} else {
+				batch[id] = len(toolStates)
+				toolStates = append(toolStates, TurnToolState{ID: id, Finished: true, IsError: m.IsError})
 			}
 			if m.IsError {
 				failedTools[id] = true
@@ -273,15 +308,12 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 	}
 	stats.Tools = len(tools)
 	stats.ToolFailures = len(failedTools)
-	stats.ElapsedMS = stats.DurationMS
-	if start > 0 && last > start {
-		stats.ElapsedMS = last - start
-	}
+	stats.StartedAt, stats.ElapsedMS = clock.start, clock.elapsed()
 	if decodeMS > 0 {
 		tps := float64(decodeTokens) / (float64(decodeMS) / 1000)
 		stats.TPS = &tps
 	}
-	t := CompactTurn{ID: path[0].ID, ParentID: path[0].ParentID, TailID: path[len(path)-1].ID, Stats: stats, LastStep: lastStep, EntryIDs: []string{}, VisibleNodeIDs: []string{}}
+	t := CompactTurn{ToolStates: toolStates, EntryCount: len(path), AssistantAt: assistantAt, ID: path[0].ID, ParentID: path[0].ParentID, TailID: path[len(path)-1].ID, Stats: stats, LastStep: lastStep, EntryIDs: []string{}, VisibleNodeIDs: []string{}}
 	selected := map[int]bool{}
 	if user >= 0 {
 		t.ID = path[user].ID
@@ -385,4 +417,42 @@ func entryMillis(e Entry) int64 {
 		return 0
 	}
 	return t.UnixMilli()
+}
+
+// turnClock shares one elapsed contract between per-turn and cumulative stats.
+// Parallel tool results can be persisted in call order, not completion order;
+// use the maximum completion time so a later sibling cannot shorten the span.
+type turnClock struct{ start, last, duration int64 }
+
+func (c *turnClock) add(e Entry) {
+	switch {
+	case isUserMessage(e):
+		c.start = entryMillis(e)
+	case e.Message != nil && e.Message.Role == "assistant":
+		c.duration += e.Message.LatencyMs
+		c.last = max(c.last, entryMillis(e))
+	case e.Message != nil && e.Message.Role == "toolResult", e.Type == "compaction":
+		c.last = max(c.last, entryMillis(e))
+	}
+}
+
+func (c turnClock) elapsed() int64 {
+	if c.start > 0 && c.last > c.start {
+		return c.last - c.start
+	}
+	return c.duration
+}
+
+func cumulativeTurnElapsed(path []Entry, ranges []turnRange) []int64 {
+	out := make([]int64, len(ranges))
+	var total int64
+	for i, r := range ranges {
+		var clock turnClock
+		for _, e := range path[r.start:r.end] {
+			clock.add(e)
+		}
+		total += clock.elapsed()
+		out[i] = total
+	}
+	return out
 }

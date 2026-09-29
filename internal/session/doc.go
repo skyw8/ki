@@ -29,15 +29,21 @@
 // page budget as well as a count limit. Compact views instead page whole user
 // turns: visible input/reply bodies plus a fold summary and canonical range
 // metadata. Hidden replies are transferred only on explicit turn expansion; its local
-// cursor never replaces the main history cursor. Detailed views keep count
-// pagination.
+// cursor never replaces the main history cursor. Compact snapshots carry a
+// monotone per-turn entryCount, the latest assistant completion boundary, and
+// only that assistant batch's tool states for sparse live reconciliation.
+// Turn elapsed spans include assistant, tool-result and compaction completion;
+// cumulativeElapsedMs includes earlier turns outside the loaded compact page.
+// Detailed views keep count pagination.
 // Oversized entries retain identity/statistics and advertise truncation; full
 // bodies stay available through entry/entries. A page's cursor is its actual
 // contiguous boundary, not its additional turn-opening user entry. Since jsonl
 // is append-only, reads use a per-directory cache that decodes only bytes appended
 // since the last read: TailEntries (LeafTail) reads just the end of the file,
 // AllEntries extends the same cache to the whole transcript, and OpenFrom
-// builds a Session from entries a caller already took from that cache.
+// builds a Session from entries a caller already took from that cache. A tail
+// read from byte zero is complete even though the header is not an entry; an
+// explicit branch root also ends paging without reading unrelated branches.
 // context_usage entries store model-facing
 // context pressure. Asynchronous sideband rows never advance activeLeafId.
 // config.json owns provider/model/thinking effort plus

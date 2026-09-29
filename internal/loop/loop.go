@@ -91,6 +91,9 @@ func (t EventType) Lifecycle() bool {
 type Event struct {
 	Type    EventType `json:"type"`
 	EntryID string    `json:"entryId,omitempty"`
+	// ParentID is the persisted message edge, including an explicit empty root.
+	// A sparse transcript leaf is not a safe parent for a replayed message.
+	ParentID *string `json:"parentId,omitempty"`
 	// Timestamp is Unix milliseconds. Tool execution start/end events use it
 	// as the authoritative start/completion wall-clock time.
 	Timestamp int64 `json:"timestamp,omitzero"`

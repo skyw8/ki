@@ -180,3 +180,74 @@ func TestCompactPageBoundsLargeVisibleSuffixWithoutSplittingTurn(t *testing.T) {
 		t.Fatalf("page: bytes=%d turns=%d cursor=%s more=%v", len(raw), len(page.Turns), page.OldestID, page.HasMore)
 	}
 }
+
+func TestCompactTimingAndLatestToolStates(t *testing.T) {
+	entries := []Entry{
+		{ID: "u", Type: "message", Message: &types.Message{Role: "user", Timestamp: 1000}},
+		{ID: "a", ParentID: "u", Type: "message", Message: &types.Message{Role: "assistant", Timestamp: 2000, Content: []types.Content{{Type: "toolCall", ID: "slow"}, {Type: "toolCall", ID: "fast"}}}},
+		{ID: "r", ParentID: "a", Type: "message", Message: &types.Message{Role: "toolResult", Timestamp: 5000, ToolCallID: "fast", DurationMs: 3000, IsError: true}},
+	}
+	page := BuildCompact(entries, "", "", 0)
+	raw, err := json.Marshal(page.Turns[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var turn struct {
+		AssistantAt         int64
+		ToolStates          []TurnToolState
+		CumulativeElapsedMs int64
+		Stats               struct {
+			StartedAt int64
+			ElapsedMs int64
+		}
+	}
+	if err := json.Unmarshal(raw, &turn); err != nil {
+		t.Fatal(err)
+	}
+	if turn.AssistantAt != 2000 || len(turn.ToolStates) != 2 || turn.ToolStates[0].ID != "slow" || turn.ToolStates[0].Finished || turn.ToolStates[1].ID != "fast" || !turn.ToolStates[1].Finished || !turn.ToolStates[1].IsError || turn.Stats.StartedAt != 1000 || turn.Stats.ElapsedMs != 4000 || turn.CumulativeElapsedMs != 4000 {
+		t.Fatalf("missing sparse timing/pending state: %s", raw)
+	}
+	entries = append(entries, Entry{ID: "r2", ParentID: "r", Type: "message", Message: &types.Message{Role: "toolResult", Timestamp: 4000, ToolCallID: "slow", DurationMs: 2000}})
+	page = BuildCompact(entries, "", "", 0)
+	if page.Turns[0].Stats.ElapsedMS != 4000 {
+		t.Fatal("parallel completion timestamp moved backwards")
+	}
+	entries = append(entries, Entry{ID: "c", ParentID: "r2", Type: "compaction", Timestamp: "1970-01-01T00:00:07Z"})
+	page = BuildCompact(entries, "", "", 0)
+	raw, _ = json.Marshal(page.Turns[0])
+	if err := json.Unmarshal(raw, &turn); err != nil {
+		t.Fatal(err)
+	}
+	if page.Turns[0].Stats.ElapsedMS != 6000 || turn.AssistantAt != 2000 || len(turn.ToolStates) != 2 || !turn.ToolStates[0].Finished || !turn.ToolStates[1].Finished {
+		t.Fatalf("compaction must extend duration but not assistant boundary: %s", raw)
+	}
+	entries = append(entries, Entry{ID: "next", ParentID: "c", Type: "message", Message: &types.Message{Role: "assistant", Timestamp: 8000}})
+	page = BuildCompact(entries, "", "", 0)
+	if len(page.Turns[0].ToolStates) != 0 || page.Turns[0].AssistantAt != 8000 || page.Turns[0].EntryCount != len(entries) {
+		t.Fatalf("next assistant must retire old batch: %+v", page.Turns[0])
+	}
+}
+
+func TestCompactCumulativeElapsedIncludesUnloadedTurns(t *testing.T) {
+	entries := compactFixture(7, 0)
+	for i := range entries {
+		entries[i].Message.Timestamp = int64(1000 + (i/2)*10000 + (i%2)*2000)
+	}
+	page := BuildCompact(entries, "", "", 0)
+	for _, turn := range page.Turns {
+		raw, _ := json.Marshal(turn)
+		var got struct{ CumulativeElapsedMs int64 }
+		_ = json.Unmarshal(raw, &got)
+		if got.CumulativeElapsedMs != int64(turn.Stats.Turn)*2000 {
+			t.Fatalf("cumulative timing: %s", raw)
+		}
+	}
+	projected, found := BuildCompactTurn(entries, "", "u5", 0)
+	if !found {
+		t.Fatal("turn missing")
+	}
+	raw, _ := json.Marshal(projected.Turns[0])
+	if !strings.Contains(string(raw), `"cumulativeElapsedMs":12000`) {
+		t.Fatalf("reprojected cumulative timing: %s", raw)
+	}
+}

@@ -10,6 +10,10 @@
 // snapshotted before becoming a patch base. BufferedAt/BufferedBytes are local
 // server telemetry/retention metadata, never part of wire or persistence.
 //
+// Persisted message_end events carry entryId plus parentId, including an
+// explicit empty root parent, so sparse/replayed clients never infer a parent
+// from a leaf that may already include that message.
+//
 // Events follow pi names: agent_*, turn_*, message_*, tool_execution_*,
 // compaction_start/end (reason + ok), plus request_header (system + tools
 // snapshot after turn_start, before stream).

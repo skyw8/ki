@@ -98,6 +98,8 @@ sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` �
 和部分 sideband 会按各自的 server 路径持久化。并非每个 SSE
 事件都会推进 conversation leaf。
 
+`message_end` 带持久化后的 `entryId` 和 `parentId`（根为显式空字符串）。稀疏快照的 leaf 可能没有正文，客户端不能把收到的同一个 leaf id 当成自己的 parent；已完成 SSE 消息立即并入身份图，使用真实 parent 边，未取得中间 metadata 时另设本地阅读桥。
+
 `tool_execution_start` 带 `timestamp`（Unix 毫秒）作为调用开始时间；
 `tool_execution_end` 带完成时间 `timestamp` 和 `durationMs`。耗时覆盖
 工具执行及 `AfterTool`；校验、拦截和未知工具也会产生有计时的成对事件

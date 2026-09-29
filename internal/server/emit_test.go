@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -122,5 +123,36 @@ func TestEmitterStampsIdentityOnCallerEvent(t *testing.T) {
 	}
 	if got.External["connector"] != "telegram-bot" {
 		t.Fatalf("agent_end frame without external metadata: %+v", got)
+	}
+}
+
+func TestEmitterMessageCarriesPersistedParentThroughWire(t *testing.T) {
+	em, sess, _ := newEmitterForTest(t)
+	parent := ""
+	for _, role := range []string{"user", "assistant", "toolResult"} {
+		ev := loop.Event{Type: loop.MessageEnd, Message: &types.Message{Role: role}}
+		if err := em.persist(&ev); err != nil {
+			t.Fatal(err)
+		}
+		if ev.ParentID == nil || *ev.ParentID != parent {
+			t.Fatalf("%s parent = %v, want %q", role, ev.ParentID, parent)
+		}
+		var encoder loop.MessageEncoder
+		raw, err := json.Marshal(encoder.Encode(ev))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wire map[string]any
+		if err := json.Unmarshal(raw, &wire); err != nil {
+			t.Fatal(err)
+		}
+		if got, exists := wire["parentId"]; !exists || got != parent {
+			t.Fatalf("wire lost parent (including root): %s", raw)
+		}
+		entry, ok := sess.Lookup(ev.EntryID)
+		if !ok || entry.ParentID != parent {
+			t.Fatal("wire does not match persisted edge")
+		}
+		parent = ev.EntryID
 	}
 }

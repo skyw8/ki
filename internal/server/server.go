@@ -2335,7 +2335,7 @@ func (s *Server) withNextTurn(sess *session.Session, st *runState, hooks loop.Ho
 			}
 			msg := types.Message{Role: "user", Content: item.Content, Origin: origin, External: cloneExternal(item.External), Timestamp: time.Now().UnixMilli()}
 			if e, _, aerr := sess.AppendMessageWithKey(msg, item.IdempotencyKey); aerr == nil {
-				ev := loop.Event{Type: loop.MessageEnd, Message: &msg, EntryID: e.ID}
+				ev := loop.Event{Type: loop.MessageEnd, Message: &msg, EntryID: e.ID, ParentID: &e.ParentID}
 				st.mu.Lock()
 				st.appendLocked(&ev)
 				st.wait.Broadcast()
