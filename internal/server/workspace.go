@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"ki/internal/session"
 	"ki/internal/workspace"
@@ -81,6 +81,7 @@ func (s *Server) infoMap(info session.Info) map[string]any {
 		"provider":        info.Provider,
 		"model":           info.Model,
 		"timestamp":       info.Timestamp,
+		"updatedAt":       info.UpdatedAt,
 		"parentSessionId": info.ParentSessionID,
 		"forkMode":        info.ForkMode,
 		"title":           info.Title,
@@ -363,106 +364,51 @@ func (s *Server) abortRun(id string) {
 }
 
 func (s *Server) searchSessions(w http.ResponseWriter, r *http.Request) {
-	q := strings.ReplaceAll(r.URL.Query().Get("q"), "\x00", "")
-	q = strings.TrimSpace(q)
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if q == "" {
 		http.Error(w, "q required", http.StatusBadRequest)
 		return
 	}
-	if utf8.RuneCountInString(q) > 500 {
-		q = string([]rune(q)[:500])
+	limit := 20
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 500 {
+			http.Error(w, "invalid limit", http.StatusBadRequest)
+			return
+		}
+		limit = n
 	}
-	ql := strings.ToLower(q)
-	infos, err := session.List(s.cfg.Sessions.Root)
+	hits, hasMore, err := session.Search(s.cfg.Sessions.Root, session.SearchOptions{
+		Context: r.Context(), Query: q, Limit: limit, IncludeAgents: queryBool(r.URL.Query().Get("includeAgents")),
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	const limit = 20
 	type hit struct {
 		ID             string `json:"id"`
 		Title          string `json:"title"`
+		CWD            string `json:"cwd,omitempty"`
+		Model          string `json:"model,omitempty"`
+		UpdatedAt      string `json:"updatedAt,omitempty"`
 		WorkspaceID    string `json:"workspaceId,omitempty"`
 		WorkspaceTitle string `json:"workspaceTitle,omitempty"`
 		Snippet        string `json:"snippet,omitempty"`
 	}
-	var items []hit
-	hasMore := false
-	for _, info := range infos {
+	items := make([]hit, 0, len(hits))
+	for _, found := range hits {
 		if r.Context().Err() != nil {
 			return
 		}
-		// Why: tree children are deliberately discoverable through the Tree
-		// browser, not through the persistent sidebar/search navigation.
-		if info.ForkMode == session.ForkModeTree {
-			continue
+		h := hit{
+			ID: found.ID, Title: found.Title, CWD: found.CWD, Model: found.Model,
+			UpdatedAt: found.UpdatedAt, Snippet: found.Snippet,
 		}
-		sess, err := session.Open(info.Dir)
-		if err != nil {
-			continue
-		}
-		snip, ok := sessionSnippet(sess, ql)
-		_ = sess.Close()
-		if !ok {
-			continue
-		}
-		if len(items) >= limit {
-			hasMore = true
-			break
-		}
-		h := hit{ID: info.ID, Title: info.Title, Snippet: snip}
-		if rec, ok := s.ws.Match(info.CWD); ok {
+		if rec, ok := s.ws.Match(found.CWD); ok {
 			h.WorkspaceID = rec.ID
 			h.WorkspaceTitle = rec.Title
 		}
 		items = append(items, h)
 	}
-	if items == nil {
-		items = []hit{}
-	}
 	writeJSON(w, 200, map[string]any{"items": items, "hasMore": hasMore})
-}
-
-func sessionSnippet(sess *session.Session, ql string) (string, bool) {
-	for _, e := range sess.Entries() {
-		if e.Type != "message" || e.Message == nil {
-			continue
-		}
-		if e.Message.Role != "user" && e.Message.Role != "assistant" {
-			continue
-		}
-		var b strings.Builder
-		b.WriteString(e.Message.Text())
-		for _, c := range e.Message.Content {
-			if c.Thinking != "" {
-				b.WriteByte('\n')
-				b.WriteString(c.Thinking)
-			}
-		}
-		if snip, ok := snippetAround(b.String(), ql); ok {
-			return snip, true
-		}
-	}
-	return "", false
-}
-
-func snippetAround(text, ql string) (string, bool) {
-	low := strings.ToLower(text)
-	i := strings.Index(low, ql)
-	if i < 0 {
-		return "", false
-	}
-	runes := []rune(text)
-	// map byte index to rune index approximately via prefix
-	prefix := []rune(text[:i])
-	start := max(len(prefix)-40, 0)
-	end := min(len(prefix)+utf8.RuneCountInString(ql)+40, len(runes))
-	s := strings.Join(strings.Fields(string(runes[start:end])), " ")
-	if start > 0 {
-		s = "…" + s
-	}
-	if end < len(runes) {
-		s += "…"
-	}
-	return s, true
 }

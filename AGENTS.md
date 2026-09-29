@@ -72,6 +72,26 @@ WebUI: `cd web && bun run test` (Bun unit tests + parallel browser runner; each 
 - Live model: `go test -tags live -timeout 5m ./e2e -run Live` covers DeepSeek `deepseek-flash` across Completions, Responses, and Anthropic (reads `DEEPSEEK_API_KEY` or `~/.ki` credentials; images / PDF / WebUI Playwright). `go test -tags live ./internal/provider -run TestLiveDeepSeek` drives the three protocol adapters directly.
 WebUI live: `cd web && bun run test:e2e:live`.
 
+## `./ki` shortcuts
+
+Prefer these commands over locating or parsing session JSONL by hand:
+
+```bash
+./ki session list --limit 20
+./ki session search "<text>" --limit 20
+./ki session show <id> --view compact --turns 4
+./ki session show <id> --view detailed --limit 100
+./ki session trace <id> --cache-miss --context 1
+./ki session trace <id> --failed --tool <name>
+./ki session inspect <id>
+./ki session inspect <id> --cache
+```
+
+- Add `--json` for one structured result or `--jsonl` for record-per-line output; agents should prefer these formats over scraping text tables.
+- Read-only session commands use a live server when available and otherwise read the session store directly; they never start a server.
+- Use `./ki run --session <id> "<prompt>"` to resume, `./ki session compact --session <id>` to compact, and `./ki session fork --session <id>` to fork.
+- Use `./ki config path`, `./ki extension list`, `./ki reload`, and `./ki version` for common runtime inspection.
+
 ## fast feedback
 
 - **During development, iterate with focused checks, not a full suite after every edit. Run the complete required suites when the change is ready; cross-layer or test-harness changes also warrant an early integration check.**

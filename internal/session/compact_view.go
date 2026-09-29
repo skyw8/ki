@@ -264,14 +264,8 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 				read, write := int64(u.CacheRead), int64(u.CacheWrite)
 				prompt := int64(u.Input) + read + write
 				if prompt > 0 {
-					if prevPrompt > 0 && (read+write > 0 || cacheReported) {
-						missed := min(prevPrompt, prompt) - read
-						if missed > cacheMissNoiseFloor {
-							ratio := float64(missed) / float64(prevPrompt)
-							if missed >= cacheMissNoticeTokens || ratio >= cacheMissNoticeRatio {
-								stats.CacheMisses++
-							}
-						}
+					if classifyCacheMiss(int(prevPrompt), cacheReported, u) != nil {
+						stats.CacheMisses++
 					}
 					prevPrompt = prompt
 					cacheReported = cacheReported || read+write > 0

@@ -36,7 +36,12 @@
 // only that assistant batch's tool states for sparse live reconciliation.
 // Turn elapsed spans include assistant, tool-result and compaction completion;
 // cumulativeElapsedMs includes earlier turns outside the loaded compact page.
-// Detailed views keep count pagination.
+// Detailed views keep count pagination. Trace projects the active leaf into
+// stable diagnostic rows and Analyze aggregates cache misses, tool failures,
+// prompt fingerprints, token usage and context pressure. Both share the
+// compact view's cache classifier and reset its baseline at compaction. Search
+// returns the first active-leaf text match per session; these read APIs back
+// both the session CLI and HTTP projections.
 // Oversized entries retain identity/statistics and advertise truncation; full
 // bodies stay available through entry/entries. A page's cursor is its actual
 // contiguous boundary, not its additional turn-opening user entry. Since jsonl

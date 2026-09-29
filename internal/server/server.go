@@ -1221,7 +1221,14 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	entryID := q.Get("entry")
 	batch := q.Get("entries")
 	before := q.Get("before")
-	compact := q.Get("view") == "compact"
+	view := q.Get("view")
+	if view != "" && view != "detailed" && view != "compact" && view != "trace" && view != "inspect" {
+		http.Error(w, "invalid session view", http.StatusBadRequest)
+		return
+	}
+	compact := view == "compact"
+	traceView := view == "trace"
+	inspectView := view == "inspect"
 	turnID := q.Get("turn")
 	keep := 1
 	if raw := q.Get("keep"); raw != "" {
@@ -1243,7 +1250,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 	withIndex := hasField(fields, "index")
 	runtimeOnly := hasField(fields, "runtime") && !withIndex && entryID == "" && batch == "" && before == ""
-	full := entryID != "" || batch != "" || before != "" || withIndex || compact || turnID != ""
+	full := entryID != "" || batch != "" || before != "" || withIndex || compact || traceView || inspectView || turnID != ""
 
 	var snap *sessionSnap
 	var err error
@@ -1254,6 +1261,64 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	if traceView {
+		contextLines := 0
+		if raw := q.Get("context"); raw != "" {
+			contextLines, err = strconv.Atoi(raw)
+			if err != nil || contextLines < 0 || contextLines > 20 {
+				http.Error(w, "invalid trace context", http.StatusBadRequest)
+				return
+			}
+		}
+		filter := session.TraceFilter{
+			Types: splitQueryList(q.Get("type")), Roles: splitQueryList(q.Get("role")),
+			Tools: splitQueryList(q.Get("tool")), FailedOnly: queryBool(q.Get("failed")),
+			CacheMisses: queryBool(q.Get("cacheMiss")), Since: q.Get("since"), Until: q.Get("until"),
+		}
+		rows := session.TraceWithContext(snap.entries, snap.leafID, filter, contextLines)
+		if before != "" {
+			at := slices.IndexFunc(rows, func(row session.TraceEntry) bool { return row.ID == before })
+			if at < 0 {
+				http.Error(w, "trace cursor not found on active branch", http.StatusConflict)
+				return
+			}
+			rows = rows[:at]
+		}
+		hasMore := len(rows) > limit
+		if hasMore {
+			rows = rows[len(rows)-limit:]
+		}
+		oldest := ""
+		if len(rows) > 0 {
+			oldest = rows[0].ID
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"schemaVersion": 1, "id": id, "leafId": snap.leafID,
+			"trace": rows, "hasMore": hasMore, "oldestId": oldest,
+		})
+		return
+	}
+	if inspectView {
+		infos, listErr := s.slist.List(s.cfg.Sessions.Root)
+		if listErr != nil {
+			http.Error(w, listErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		children := make([]session.Info, 0)
+		for _, info := range infos {
+			if info.ParentSessionID == id {
+				children = append(children, info)
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"schemaVersion": 1, "id": id, "leafId": snap.leafID,
+			"cwd": snap.header.CWD, "provider": snap.configV.Provider, "model": snap.configV.Model,
+			"parentSessionId": snap.header.ParentSession, "children": children,
+			"analysis": session.Analyze(snap.entries, snap.leafID),
+		})
 		return
 	}
 
@@ -1360,6 +1425,21 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		runtime["index"] = session.BuildIndex(snap.entries)
 	}
 	writeJSON(w, 200, s.sessionMapSnap(snap, runtime))
+}
+
+func splitQueryList(raw string) []string {
+	var out []string
+	for item := range strings.SplitSeq(raw, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func queryBool(raw string) bool {
+	value, _ := strconv.ParseBool(raw)
+	return value
 }
 
 // hasField reports whether a comma-separated fields query contains name.

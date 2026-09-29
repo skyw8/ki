@@ -163,6 +163,7 @@ export type SessionInfo = {
   provider: string
   model: string
   timestamp?: string
+  updatedAt?: string
   parentSessionId?: string
   forkMode?: 'flat' | 'tree'
   title: string
@@ -199,6 +200,9 @@ export type FsListing = {
 export type SearchHit = {
   id: string
   title: string
+  cwd?: string
+  model?: string
+  updatedAt?: string
   workspaceId?: string
   workspaceTitle?: string
   snippet?: string

@@ -21,6 +21,7 @@ type Info struct {
 	Provider        string         `json:"provider"`
 	Model           string         `json:"model"`
 	Timestamp       string         `json:"timestamp"`
+	UpdatedAt       string         `json:"updatedAt,omitempty"`
 	ParentSessionID string         `json:"parentSessionId,omitempty"`
 	ForkMode        string         `json:"forkMode"`
 	Title           string         `json:"title"`
@@ -85,6 +86,10 @@ func liteInfo(dir string) (Info, error) {
 	if header.ID == "" {
 		return Info{}, fmt.Errorf("%w: %s", errSessionHeader, dir)
 	}
+	updatedAt := ""
+	if stat, statErr := f.Stat(); statErr == nil {
+		updatedAt = stat.ModTime().UTC().Format("2006-01-02T15:04:05.999999999Z07:00")
+	}
 	return Info{
 		ID:              header.ID,
 		CWD:             header.CWD,
@@ -92,6 +97,7 @@ func liteInfo(dir string) (Info, error) {
 		Provider:        cfg.Provider,
 		Model:           cfg.Model,
 		Timestamp:       header.Timestamp,
+		UpdatedAt:       updatedAt,
 		ParentSessionID: header.ParentSession,
 		ForkMode:        header.EffectiveForkMode(),
 		Title:           title,

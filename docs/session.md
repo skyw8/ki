@@ -46,3 +46,26 @@ toolResult message 可带结构化 `details`，以及工具完成时间 `timesta
 无效、已切离当前分支的 `before`（含展开局部游标）返回 **409**，不能返回空成功页并假装已到根。客户端保留缓存并重新确认边界。
 
 显式展开使用同一 GET 的 `turn=<turnId>`（可配 `before` / `limit`），返回限定在该轮内的 slim entry 页；其 `hasMore` / `oldestId` 是展开的局部游标，不能覆盖会话历史边界。`view=compact&turn=<entryId>&keep=N` 可重新投影某个已知 turn，也可把 detailed 页边界所在的半轮转换成完整 compact 轮。页预算通过缩小完整 turn 数量或进一步缩略可见正文满足，不能把一个 compact turn 截成两页。detailed 的计数分页契约保持不变。
+
+### CLI browsing and diagnostics
+
+`ki session list/search/show/trace/inspect` 是 jsonl 的只读浏览层。已有 serve
+进程时 CLI 优先访问它；没有 serve 时直接使用本包读取磁盘，且绝不为了浏览历史启动
+server。所有命令提供 `text`、`json`、`jsonl` 输出；默认文本隐藏完整 system prompt、
+tool schema、工具参数和 thinking，`show` 的对应显式开关才展开。
+
+`trace` 沿 active leaf 输出稳定的事件 DTO，可按 type、role、tool、失败、时间和 cache
+miss 过滤，并一次附带命中项两侧的 context 行。`inspect` 汇总 token、context 峰值、
+tool failure、compaction、system/tools 指纹变化和 cache miss。cache miss 分类与 compact
+turn 共用同一实现：prompt 为 input + cache read + cache write；误差不超过 1024 忽略，
+超过 20k 或上一 prompt 的 50% 才报告；尚未观察到 provider cache 指标时不推断，
+compaction 后重置基线。
+
+远程诊断复用现有 `GET /v1/sessions/{id}`：
+
+- `view=trace`：支持 `type`、`role`、`tool`、`failed`、`cacheMiss`、`since`、
+  `until`、`context`、`before`、`limit`，返回有界 trace 页。
+- `view=inspect`：返回完整 active-leaf 聚合，但不带 transcript body。
+
+两个投影都直接读取 session snapshot，不构建 runtime catalog，也不触发 extension
+warmup。未知 `view` 返回 400，避免旧的“静默退化为 detailed”让自动化误读响应。

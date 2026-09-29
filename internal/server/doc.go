@@ -42,6 +42,9 @@
 // (availableSkills / availableExtensions, including loaded
 // skills/tools/commands/promptAppend/providers and global extension i18n/UI,
 // commands[]), session extensionUi, and runtime.ready.
+// The same route's view=trace and view=inspect projections expose bounded
+// active-leaf diagnostics to CLI clients without preparing extension runtime;
+// unsupported view names are rejected rather than treated as detailed.
 // The tree index is opt-in (fields=index, only id/index, content ETag): it needs the whole transcript, and
 // carrying it on open made a long session wait for a full parse and megabytes
 // of JSON that the newest messages did not need. A session smaller than one

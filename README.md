@@ -76,6 +76,14 @@ scripts/run.sh
 ./ki session compact --session <id>
 ./ki session fork --session <id>
 
+# browse and diagnose saved sessions (read-only; no server is started)
+./ki session list --limit 20
+./ki session search "apply_patch"
+./ki session show <id> --view compact
+./ki session trace <id> --cache-miss --context 1
+./ki session inspect <id> --cache
+# every browse command supports --format text|json|jsonl (--json/--jsonl aliases)
+
 # inspect config and version
 ./ki config path
 ./ki version

@@ -394,6 +394,7 @@ func newSessionCommand() *cobra.Command {
 		sub.Flags().StringVar(&id, "session", "", "session id")
 		cmd.AddCommand(sub)
 	}
+	addSessionBrowseCommands(cmd)
 	return cmd
 }
 
