@@ -103,7 +103,10 @@ func BuildTail(entries []Entry, leafID string, limit int, complete bool) Tail {
 	} else if len(path) > 0 {
 		oldest = path[0].ID
 	}
-	return Tail{Entries: slimmed, HasMore: tailStart > 0 || !complete, OldestID: oldest}
+	// An explicit root is conclusive even when older unrelated branches are
+	// outside the file window; a missing parent is not a root.
+	missingPrefix := !complete && (len(path) == 0 || path[0].ParentID != "")
+	return Tail{Entries: slimmed, HasMore: tailStart > 0 || missingPrefix, OldestID: oldest}
 }
 
 // withTurnOpeningUser adds the user message that opens the window's first turn.

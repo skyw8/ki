@@ -158,6 +158,7 @@ func TailEntries(dir string, want int) ([]Entry, bool, error) {
 // (a branchy or tool-heavy tail carries many entries off the branch), so callers
 // can treat the result as "the newest want messages of this branch".
 func LeafTail(dir, leafID string, want int) ([]Entry, bool, error) {
+	want = max(1, want)
 	entries, complete, err := TailEntries(dir, want)
 	if err != nil {
 		return nil, false, err
@@ -165,11 +166,15 @@ func LeafTail(dir, leafID string, want int) ([]Entry, bool, error) {
 	// The window grows until the leaf chain is covered; TailEntries reports
 	// complete once the window reaches the file start, which ends the loop even
 	// when the chain is shorter than want.
-	for !complete && len(LeafChain(entries, leafID)) < want {
-		// Grow by a fraction rather than a multiple: the window only has to
-		// cover the chain, and every extra entry is parsed and trimmed anyway.
-		want += want/4 + 8
-		entries, complete, err = TailEntries(dir, want)
+	for !complete {
+		chain := LeafChain(entries, leafID)
+		if len(chain) >= want || (len(chain) > 0 && chain[0].ParentID == "") {
+			break
+		}
+		// A recent branch can reach its root before the file window reaches
+		// byte zero. Grow the decoded window, not the chain target, otherwise
+		// unrelated branches force a complete reread while chasing that target.
+		entries, complete, err = TailEntries(dir, len(entries)+max(8, want/4))
 		if err != nil {
 			return nil, false, err
 		}
@@ -221,6 +226,11 @@ func (c *entriesCache) load(dir string, want int, full bool) error {
 			return err
 		}
 		c.start, c.size, c.mtime, c.entries = tail.start, tail.end, stamp.mtime, tail.entries
+		// readEntries skips the header and returns the first entry offset.
+		// A read from byte zero is nevertheless the complete transcript.
+		if start == 0 {
+			c.start = 0
+		}
 	} else if full && c.start > 0 {
 		prefix, err := readEntries(path, 0, c.start)
 		if err != nil {
@@ -240,12 +250,13 @@ func (c *entriesCache) load(dir string, want int, full bool) error {
 	}
 	for want > 0 && len(c.entries) < want && c.start > 0 {
 		start := max(c.start-tailGrowBytes, 0)
-		before := len(c.entries)
 		head, err := readEntries(path, start, c.start)
 		if err != nil {
 			return err
 		}
-		if head.end != c.start || len(c.entries) == before {
+		// Progress belongs to the decoded prefix; c.entries has not been
+		// merged yet, so comparing its length here always forces a full read.
+		if head.end != c.start || len(head.entries) == 0 {
 			// The range before the window held no complete line: fall back to a
 			// full read so callers always get an answer instead of looping.
 			return c.readAll(path, stamp)
@@ -255,6 +266,9 @@ func (c *entriesCache) load(dir string, want int, full bool) error {
 		merged = append(merged, c.entries...)
 		c.entries = merged
 		c.start = head.start
+		if start == 0 {
+			c.start = 0
+		}
 	}
 	return nil
 }

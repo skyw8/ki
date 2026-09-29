@@ -1270,6 +1270,13 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"entries": session.LookupEntries(snap.entries, strings.Split(batch, ","))})
 		return
 	}
+	// A stale cursor after a branch change is not evidence of reaching the
+	// root. Returning an empty successful page would permanently hide older
+	// history until the browser is reloaded.
+	if before != "" && !slices.ContainsFunc(session.LeafChain(snap.entries, snap.leafID), func(e session.Entry) bool { return e.ID == before }) {
+		http.Error(w, "history cursor not found on active branch", http.StatusConflict)
+		return
+	}
 	if turnID != "" {
 		if compact {
 			page, found := session.BuildCompactTurn(snap.entries, snap.leafID, turnID, keep)
@@ -1282,6 +1289,12 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		}
 		page, found := session.BuildTurn(snap.entries, snap.leafID, turnID, before, limit)
 		if !found {
+			if before != "" {
+				if _, exists := session.BuildTurn(snap.entries, snap.leafID, turnID, "", limit); exists {
+					http.Error(w, "history cursor not found in requested turn", http.StatusConflict)
+					return
+				}
+			}
 			http.Error(w, "turn not found on active branch", http.StatusNotFound)
 			return
 		}

@@ -16,8 +16,10 @@ func seedTailSession(t *testing.T, turns int) (*Session, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SeedTranscript(SeedSpec{Turns: turns, AssistantBytes: 4096, ToolResultBytes: 64, RepeatSamePrompt: true}); err != nil {
-		t.Fatal(err)
+	if turns > 0 {
+		if err := s.SeedTranscript(SeedSpec{Turns: turns, AssistantBytes: 4096, ToolResultBytes: 64, RepeatSamePrompt: true}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return s, s.Dir
 }
@@ -312,5 +314,76 @@ func TestReadConfigWaitsForTheFileGate(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("ReadConfig did not finish after the gate was released")
+	}
+}
+
+func TestTailEntriesColdSmallHistoryIsComplete(t *testing.T) {
+	for name, turns := range map[string]int{"empty": 0, "small": 3} {
+		t.Run(name, func(t *testing.T) {
+			s, dir := seedTailSession(t, turns)
+			defer func() { _ = s.Close() }()
+			DropEntriesCache(dir)
+			for read := range 2 {
+				entries, complete, err := TailEntries(dir, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !complete || len(entries) != len(s.Entries()) {
+					t.Fatalf("read %d: complete=%v entries=%d, want %d", read, complete, len(entries), len(s.Entries()))
+				}
+			}
+		})
+	}
+}
+
+func TestTailEntriesGrowthDoesNotReadWholeHistory(t *testing.T) {
+	s, dir := seedBigSession(t)
+	defer func() { _ = s.Close() }()
+	initial, complete, err := TailEntries(dir, 1)
+	if err != nil || complete {
+		t.Fatalf("initial tail complete=%v: %v", complete, err)
+	}
+	grown, complete, err := TailEntries(dir, len(initial)+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete || len(grown) <= len(initial) || len(grown) >= len(s.Entries()) {
+		t.Fatalf("growth decoded whole history: initial=%d grown=%d total=%d complete=%v", len(initial), len(grown), len(s.Entries()), complete)
+	}
+	all, err := AllEntries(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != len(s.Entries()) {
+		t.Fatalf("full index lost entries: %d/%d", len(all), len(s.Entries()))
+	}
+	for i, e := range all {
+		if e.ID != s.Entries()[i].ID {
+			t.Fatalf("full index differs at %d", i)
+		}
+	}
+}
+
+func TestLeafTailStopsAtRecentBranchRoot(t *testing.T) {
+	s, dir := seedBigSession(t)
+	defer func() { _ = s.Close() }()
+	if err := s.SetLeaf(""); err != nil {
+		t.Fatal(err)
+	}
+	root, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "new root"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	DropEntriesCache(dir)
+	entries, complete, err := LeafTail(dir, root.ID, DefaultViewLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if complete {
+		t.Fatal("recent branch root must not force reading unrelated branches")
+	}
+	tail := BuildTail(entries, root.ID, DefaultViewLimit, complete)
+	if tail.HasMore || tail.OldestID != root.ID || len(tail.Entries) != 1 {
+		t.Fatalf("branch root falsely advertises older history: %+v", tail)
 	}
 }

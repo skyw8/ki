@@ -5020,3 +5020,162 @@ func TestSessionTailTitleUsesFirstUserMessage(t *testing.T) {
 		t.Fatalf("title differs: tail=%v full=%v", tail["title"], full["title"])
 	}
 }
+
+func TestSessionPagingRejectsStaleCursors(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	dir, _ := srv.sidx.Lookup(id)
+	sess, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	root, err := sess.AppendMessage(types.Message{Role: "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling, err := sess.AppendMessage(types.Message{Role: "assistant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.SetLeaf(root.ID); err != nil {
+		t.Fatal(err)
+	}
+	active, err := sess.AppendMessage(types.Message{Role: "assistant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cursor := range []string{"missing", sibling.ID} {
+		for _, suffix := range []string{"", "&view=compact", "&turn=" + root.ID} {
+			res, err := authedGet(t, hs, "/v1/sessions/"+id+"?before="+cursor+suffix)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(res.Body)
+			_ = res.Body.Close()
+			if res.StatusCode != http.StatusConflict {
+				t.Errorf("cursor=%s suffix=%s: %d %s", cursor, suffix, res.StatusCode, body)
+			}
+		}
+	}
+	for _, suffix := range []string{"", "&view=compact", "&turn=" + root.ID} {
+		page := sessionGETURL(t, hs, "/v1/sessions/"+id+"?before="+root.ID+suffix)
+		if page["hasMore"] != false || len(page["entries"].([]any)) != 0 {
+			t.Fatalf("real root must be a valid empty page: %v", page)
+		}
+	}
+	page := sessionGETURL(t, hs, "/v1/sessions/"+id+"?before="+active.ID)
+	if len(page["entries"].([]any)) != 1 {
+		t.Fatalf("valid cursor failed: %v", page)
+	}
+	later, err := sess.AppendMessage(types.Message{Role: "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := authedGet(t, hs, "/v1/sessions/"+id+"?before="+later.ID+"&turn="+root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("cursor on another turn: %d", res.StatusCode)
+	}
+}
+
+func TestSessionColdSmallTailIncludesCompleteIndex(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	dir, _ := srv.sidx.Lookup(id)
+	sess, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.SeedTranscript(session.SeedSpec{Turns: 2}); err != nil {
+		t.Fatal(err)
+	}
+	count := len(sess.Entries())
+	_ = sess.Close()
+	session.DropEntriesCache(dir)
+	got := sessionGETURL(t, hs, "/v1/sessions/"+id)
+	index, ok := got["index"].([]any)
+	if !ok || len(index) != count || got["hasMore"] != false {
+		t.Fatalf("cold small tail lost complete index or root: %v", got)
+	}
+}
+
+func TestSessionHistoryReenterAfterAppendKeepsAllPrompts(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	dir, _ := srv.sidx.Lookup(id)
+	sess, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	if err := sess.SeedTranscript(session.SeedSpec{Turns: 12, AssistantBytes: 128 * 1024}); err != nil {
+		t.Fatal(err)
+	}
+	_ = sessionGETURL(t, hs, "/v1/sessions/"+id)
+	// More turns land while the browser is away, then a process cold read and a
+	// separately warmed full index must expose exactly the same branch prompts.
+	if err := sess.SeedTranscript(session.SeedSpec{Turns: 3, AssistantBytes: 64}); err != nil {
+		t.Fatal(err)
+	}
+	expected := map[string]bool{}
+	for _, e := range session.LeafChain(sess.Entries(), sess.LeafID()) {
+		if e.Message != nil && e.Message.Role == "user" {
+			expected[e.ID] = true
+		}
+	}
+	for _, compact := range []bool{false, true} {
+		for _, indexed := range []bool{false, true} {
+			session.DropEntriesCache(dir)
+			if indexed {
+				index := sessionGETFields(t, hs, id, "index")
+				if len(index["index"].([]any)) != len(sess.Entries()) {
+					t.Fatal("index lost append")
+				}
+			}
+			query := "?limit=7"
+			if compact {
+				query = "?view=compact&keep=0"
+			}
+			seen := map[string]bool{}
+			cursor := ""
+			for pages := 0; ; pages++ {
+				if pages > len(sess.Entries()) {
+					t.Fatal("paging never terminated")
+				}
+				suffix := query
+				if cursor != "" {
+					suffix += "&before=" + cursor
+				}
+				page := sessionGETURL(t, hs, "/v1/sessions/"+id+suffix)
+				entries := page["entries"].([]any)
+				for _, item := range entries {
+					entry := item.(map[string]any)
+					message, _ := entry["message"].(map[string]any)
+					if message["role"] == "user" {
+						seen[entry["id"].(string)] = true
+					}
+				}
+				if page["hasMore"] == false {
+					break
+				}
+				next, _ := page["oldestId"].(string)
+				if next == "" || next == cursor || len(entries) == 0 {
+					t.Fatalf("dead paging: compact=%v indexed=%v page=%v", compact, indexed, page)
+				}
+				cursor = next
+			}
+			if len(seen) != len(expected) {
+				t.Fatalf("reenter missing prompts: compact=%v indexed=%v got=%d want=%d", compact, indexed, len(seen), len(expected))
+			}
+			for id := range expected {
+				if !seen[id] {
+					t.Fatalf("missing user %s", id)
+				}
+			}
+		}
+	}
+}

@@ -52,7 +52,9 @@
 // entries backwards from oldestId. The default tail is a byte window of the
 // transcript (LeafTail), not the whole branch, so hasMore stays true until a
 // read or page actually reaches the branch root; a cursor outside the active
-// branch yields an empty page. messages is not included. Opening a session (POST create, GET by id,
+// branch yields 409, not an empty root page. The same applies to an expansion
+// cursor outside its requested turn. A valid root cursor returns an empty page
+// with hasMore=false. messages is not included. Opening a session (POST create, GET by id,
 // fork) prepares the session view of already-running extensions in the
 // background; List does not. runtime.ready is
 // true when that Prepare finishes (failure still counts). PATCH /v1/sessions/{id} writes model /

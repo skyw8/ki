@@ -59,12 +59,13 @@ func TestIncompleteTailWindowKeepsHasMore(t *testing.T) {
 		parent = e.ID
 	}
 	// The window is exactly the page limit, so tailStart == 0.
-	tail := BuildTail(entries, parent, 40, false)
+	window := entries[10:]
+	tail := BuildTail(window, parent, 30, false)
 	if !tail.HasMore {
 		t.Fatal("an incomplete window must still report older history")
 	}
-	if tail.OldestID != entries[0].ID {
-		t.Fatalf("cursor %q, want %q", tail.OldestID, entries[0].ID)
+	if tail.OldestID != window[0].ID {
+		t.Fatalf("cursor %q, want %q", tail.OldestID, window[0].ID)
 	}
 	// The same window read to the branch root genuinely has nothing older.
 	if BuildTail(entries, parent, 40, true).HasMore {
