@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"ki/internal/compact"
 	"ki/internal/extension"
 	"ki/internal/loop"
 	"ki/internal/session"
@@ -506,13 +505,12 @@ func (s *Server) Compact(sessionID string) error {
 		return err
 	}
 	s.publishPush(sessionID, loop.Event{Type: loop.CompactionStart, Reason: "manual"})
-	_, err = compact.Run(ctx, sess, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+	_, err = s.compactSession(ctx, sess, nil)
 	s.release(sessionID, st)
 	s.publishCompactionEnd(sessionID, err)
 	if err != nil {
 		return fmt.Errorf("compact: %w", err)
 	}
-	s.reloadSession(sessionID)
 	s.publishContextUsage(sess)
 	return nil
 }

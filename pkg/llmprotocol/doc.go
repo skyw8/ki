@@ -4,7 +4,9 @@
 // does classify deterministic client and wire-protocol failures so a caller's
 // retry policy can avoid replaying an identical invalid request, and it adapts
 // replayed history to each protocol's tool-call model (Responses custom calls
-// are downgraded for Completions and Anthropic).
+// are downgraded for Completions and Anthropic). Responses supports both
+// standalone /responses/compact and server-side context management; canonical
+// compaction windows remain opaque ordered JSON items for lossless replay.
 // Client.IdleTimeout bounds blocked response-body reads, counting heartbeat
 // bytes and excluding consumer time. NewClient defaults to five minutes; zero
 // disables the bound. An idle failure after partial content is non-retryable,

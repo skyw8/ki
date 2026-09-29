@@ -2,6 +2,7 @@ package extension
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"ki/internal/loop"
@@ -114,6 +115,22 @@ type ProviderStreamRequest struct {
 	Request    loop.Request        `json:"request"`
 }
 
+// ProviderCompactRequest is the complete host-to-provider standalone
+// compaction payload. Provider sidecars that advertise remoteCompaction own
+// the wire request and return a canonical ordered window.
+type ProviderCompactRequest struct {
+	Provider   string              `json:"provider"`
+	Model      provider.Model      `json:"model"`
+	Credential provider.Credential `json:"credential"`
+	Request    loop.Request        `json:"request"`
+}
+
+// ProviderCompactResult is returned by provider.compact.
+type ProviderCompactResult struct {
+	Items []json.RawMessage `json:"items"`
+	Usage *types.Usage      `json:"usage,omitempty"`
+}
+
 // ProviderStreamEvent is a compact provider-to-host stream event. Partial
 // messages are intentionally reconstructed by the host adapter rather than
 // serialized once per token.
@@ -126,8 +143,11 @@ type ProviderStreamEvent struct {
 	ToolName     string         `json:"toolName,omitempty"`
 	ToolCall     *types.Content `json:"toolCall,omitempty"`
 	Message      *types.Message `json:"message,omitempty"`
-	Reason       string         `json:"reason,omitempty"`
-	Error        string         `json:"error,omitempty"`
+	// ResponsesItems carries provider-owned compaction output outside ordinary
+	// message JSON so it is never forwarded to clients or lifecycle hooks.
+	ResponsesItems []json.RawMessage `json:"responsesItems,omitempty"`
+	Reason         string            `json:"reason,omitempty"`
+	Error          string            `json:"error,omitempty"`
 }
 
 // ProviderAuthRequest starts or advances provider-owned authentication. The

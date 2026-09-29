@@ -174,6 +174,7 @@ NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` 
 | `bus.event` | `bus` | 他方 emit / 广播 |
 | `provider.stream.start` | `provider` | `{requestId,request}`；一次传入完整 model、credential 和 loop request，`request` 使用 lower camelCase 字段名，返回 `{accepted:true}` |
 | `provider.stream.cancel` | `provider` | `{requestId}`；取消一个 provider stream |
+| `provider.compact` | `provider` | standalone remote compaction；接收完整 model、credential、已应用 `context` / `before_provider_request` 的 loop request，返回 `{items:[...],usage?}` canonical window；单条 RPC 上限 65 MiB。JSON-RPC schema/4xx 错误不重试，server/internal/429/5xx 可走 host retry；取消大请求会终止 sidecar 以打断不可设 deadline 的 pipe write |
 
 `config.updated` 是 Host 发给全局 sidecar 的配置变更通知，参数包含脱敏后的
 `config`；sidecar 应重新读取自己的私有配置文件。
@@ -200,7 +201,7 @@ provider capability 使用进程级 sidecar，不随 session 各拉起一个进�
 {"jsonrpc":"2.0","method":"provider.stream.event","params":{"requestId":"stream-1","type":"text_delta","contentIndex":0,"delta":"hello"}}
 ```
 
-事件类型首版为 `start`、`text_start`/`text_delta`/`text_end`、`thinking_start`/`thinking_delta`/`thinking_end`、`toolcall_start`/`toolcall_delta`/`toolcall_end`、`custom_tool_call_input_delta`、`done`、`error`。`done` 可携带完整最终 `message`；普通增量不重复携带完整 `partial`，Host adapter 会在内存中重建 `loop.AssistantDelta`。
+事件类型首版为 `start`、`text_start`/`text_delta`/`text_end`、`thinking_start`/`thinking_delta`/`thinking_end`、`toolcall_start`/`toolcall_delta`/`toolcall_end`、`custom_tool_call_input_delta`、`done`、`error`。`done` 可携带完整最终 `message`；普通增量不重复携带完整 `partial`，Host adapter 会在内存中重建 `loop.AssistantDelta`。声明模型 `remoteCompaction:"openai"` 的 sidecar 可在 completed `done` event 的私有 `responsesItems` 返回从最后一个 server-side compaction item 到 terminal output 末尾的完整 canonical suffix；Host 将其提升为 session checkpoint，该字段不进入普通 message/SSE/lifecycle JSON。
 
 provider sidecar 的生命周期、凭据和流都是全局进程级资源；session 只通过 `requestId` 复用同一个 sidecar。Reload 时保留仍注册的 sidecar，移除或禁用的 provider 会关闭对应进程。
 

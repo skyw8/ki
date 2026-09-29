@@ -99,6 +99,29 @@ type Occupy struct {
 	onErr   func(name, capability, code, message string)
 }
 
+// OpaqueReplaySafe reports whether persisted provider-owned context can bypass
+// this occupy's message-visible lifecycle hooks. These hooks cannot inspect an
+// encrypted prefix, and provider hooks may also change its routing scope.
+func (o *Occupy) OpaqueReplaySafe() bool {
+	if o == nil {
+		return true
+	}
+	for _, item := range o.items {
+		for _, event := range []string{
+			EventBeforeAgentStart,
+			EventContext,
+			EventBeforeProviderRequest,
+			EventBeforeProviderHeaders,
+			EventMessageEnd,
+		} {
+			if item.hasSync(event) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // NewManager creates a manager. onErr may be nil.
 func NewManager(home string, onErr ErrorFunc) *Manager {
 	return &Manager{
@@ -503,6 +526,23 @@ func (o *Occupy) WrapStreamer(inner loop.Streamer) loop.Streamer {
 		return inner
 	}
 	return wrapStreamer(inner, o.items, o.skipped, o.onErr)
+}
+
+// TransformProviderRequest applies the same before_provider_request mutations
+// used by an occupied stream to a standalone provider request. A short-circuit
+// cannot supply a canonical compaction window, so it is returned as an error.
+func (o *Occupy) TransformProviderRequest(ctx context.Context, req loop.Request) (loop.Request, error) {
+	if o == nil {
+		return req, nil
+	}
+	live, short, err := applyBeforeProvider(ctx, req, o.items, o.skipped, o.onErr)
+	if err != nil {
+		return loop.Request{}, err
+	}
+	if short != "" {
+		return loop.Request{}, fmt.Errorf("provider request short-circuited during compaction")
+	}
+	return live, nil
 }
 
 // HTTPDoer returns an HTTP round-tripper that applies before_provider_headers.

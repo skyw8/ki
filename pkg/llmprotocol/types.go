@@ -2,6 +2,8 @@ package llmprotocol
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -60,6 +62,63 @@ type UsageCost struct {
 	Total      float64 `json:"total"`
 }
 
+// ResponsesItem is one opaque OpenAI Responses input/output item. The package
+// validates that it is a JSON object but deliberately does not interpret or
+// discard fields: compaction windows are provider-owned canonical state.
+type ResponsesItem []byte
+
+// MarshalJSON preserves the provider-owned object rather than base64-encoding
+// its bytes.
+func (i ResponsesItem) MarshalJSON() ([]byte, error) {
+	if err := validateResponsesItem(i); err != nil {
+		return nil, err
+	}
+	return i, nil
+}
+
+// UnmarshalJSON copies and validates one provider-owned Responses item.
+func (i *ResponsesItem) UnmarshalJSON(data []byte) error {
+	if i == nil {
+		return fmt.Errorf("cannot unmarshal Responses item into nil receiver")
+	}
+	if err := validateResponsesItem(data); err != nil {
+		return err
+	}
+	*i = append((*i)[:0], data...)
+	return nil
+}
+
+// RawJSON returns a copy of the item's provider-owned JSON.
+func (i ResponsesItem) RawJSON() []byte {
+	return append([]byte(nil), i...)
+}
+
+// Type returns the Responses item type, or an empty string when absent.
+func (i ResponsesItem) Type() string {
+	var header struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(i, &header) != nil {
+		return ""
+	}
+	return header.Type
+}
+
+func validateResponsesItem(data []byte) error {
+	if !json.Valid(data) {
+		return fmt.Errorf("invalid Responses item JSON")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil || object == nil {
+		return fmt.Errorf("Responses item must be a JSON object")
+	}
+	return nil
+}
+
+// ResponsesWindow is an ordered canonical Responses context window. Callers
+// must retain every item and its order when replaying compaction output.
+type ResponsesWindow []ResponsesItem
+
 // Message is a protocol-neutral user, assistant, or tool-result message.
 type Message struct {
 	Role         string    `json:"role"`
@@ -72,6 +131,10 @@ type Message struct {
 	ToolName     string    `json:"toolName,omitempty"`
 	ToolType     string    `json:"toolType,omitempty"`
 	IsError      bool      `json:"isError,omitzero"`
+	// ResponsesItems retains the complete canonical output suffix from the
+	// latest server-side compaction item onward, so a stateless Responses
+	// request can replace its previous window on the next turn.
+	ResponsesItems ResponsesWindow `json:"responsesItems,omitempty"`
 }
 
 // Text returns concatenated text blocks.
@@ -136,6 +199,30 @@ type Request struct {
 	SupportsReasoningEffort bool               `json:"supportsReasoningEffort,omitzero"`
 	ForceAdaptiveThinking   bool               `json:"forceAdaptiveThinking,omitzero"`
 	ThinkingLevelMap        map[string]*string `json:"thinkingLevelMap,omitempty"`
+	// ResponsesWindow is a canonical provider-owned prefix inserted before
+	// Messages when encoding an OpenAI Responses request.
+	ResponsesWindow ResponsesWindow `json:"responsesWindow,omitempty"`
+	// ResponsesCompactThreshold enables OpenAI server-side compaction when
+	// positive by sending context_management with a compaction threshold.
+	ResponsesCompactThreshold int `json:"responsesCompactThreshold,omitzero"`
+}
+
+// ResponsesCompactRequest is a standalone POST /responses/compact request.
+// Window is replayed before Messages; Instructions maps to the wire-level
+// instructions field.
+type ResponsesCompactRequest struct {
+	Model        string
+	Instructions string
+	Window       ResponsesWindow
+	Messages     []Message
+}
+
+// ResponsesCompactResult is the canonical context returned by standalone
+// Responses compaction.
+type ResponsesCompactResult struct {
+	ID     string
+	Output ResponsesWindow
+	Usage  *Usage
 }
 
 // HTTPDoer is the transport injected into a Client. *http.Client satisfies it.
@@ -164,4 +251,9 @@ func NewClient(api, base, key string, doer HTTPDoer) *Client {
 // Streamer produces an assistant message and incremental deltas.
 type Streamer interface {
 	Stream(context.Context, Request, func(AssistantDelta) error) (Message, error)
+}
+
+// ResponsesCompactor performs standalone OpenAI Responses compaction.
+type ResponsesCompactor interface {
+	CompactResponses(context.Context, ResponsesCompactRequest) (ResponsesCompactResult, error)
 }

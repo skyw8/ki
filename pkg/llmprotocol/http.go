@@ -170,6 +170,9 @@ func skipAssistant(m Message) bool {
 }
 
 func assistantHasReplayableContent(m Message) bool {
+	if len(m.ResponsesItems) > 0 {
+		return true
+	}
 	for _, c := range m.Content {
 		switch c.Type {
 		case "text", "":
@@ -402,6 +405,47 @@ func (l *Client) postStream(ctx context.Context, url string, body any, hdr http.
 		acc.Usage.TotalTokens = acc.Usage.Input + acc.Usage.Output + acc.Usage.CacheRead + acc.Usage.CacheWrite
 	}
 	return acc, sc.Err()
+}
+
+func (l *Client) postJSON(ctx context.Context, url string, body any, hdr http.Header) ([]byte, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header = hdr
+	httpReq.Header.Set("Accept", "application/json")
+	res, err := l.Doer.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("send provider request: %w", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	// Standalone compaction can be a long model pass too. Use the same
+	// per-read liveness bound as streaming responses instead of allowing a
+	// silent body to hold manual/overflow compaction forever.
+	const maxJSONResponseBytes = 65 * 1024 * 1024
+	responseBody, readErr := io.ReadAll(io.LimitReader(
+		idleReader{ReadCloser: res.Body, timeout: l.IdleTimeout},
+		maxJSONResponseBytes+1,
+	))
+	if readErr != nil {
+		return nil, fmt.Errorf("read provider response: %w", readErr)
+	}
+	if len(responseBody) > maxJSONResponseBytes {
+		return nil, &nonRetryableError{err: errProviderJSONTooLarge}
+	}
+	if res.StatusCode >= 400 {
+		msg := fmt.Sprintf("http %d: %s", res.StatusCode, truncate(string(responseBody), 500))
+		err := fmt.Errorf("%w: %s", errProviderHTTP, msg)
+		if !retryableProviderResponse(res.StatusCode, responseBody) {
+			return nil, &nonRetryableError{err: err}
+		}
+		return nil, err
+	}
+	return responseBody, nil
 }
 
 func appendText(m *Message, s string) {

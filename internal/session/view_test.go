@@ -259,3 +259,17 @@ func TestLookupEntriesPreservesOrderAndCap(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+func TestLookupEntriesRedactsRemoteCompaction(t *testing.T) {
+	entries := []Entry{{
+		Type: "compaction", ID: "cmp",
+		Responses: &types.ResponsesContext{
+			Binding: types.ProviderBinding{Provider: "openai", API: "responses", BaseURL: "https://api.openai.com/v1", Model: "gpt"},
+			Items:   []json.RawMessage{json.RawMessage(`{"type":"compaction","encrypted_content":"secret"}`)},
+		},
+	}}
+	got := LookupEntries(entries, []string{"cmp"})
+	if len(got) != 1 || got[0].Responses != nil {
+		t.Fatalf("exact lookup leaked remote checkpoint: %+v", got)
+	}
+}

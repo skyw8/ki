@@ -519,6 +519,123 @@ func TestMessagesToLeafIncludesMessagesAfterCompaction(t *testing.T) {
 	}
 }
 
+func TestResponsesCompactionContextRoundTripAndBinding(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "openai", "gpt-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "old"}}})
+	if _, err := s.AppendCompaction("portable", "", 10, nil, []types.Message{{
+		Role: "user", Content: []types.Content{{Type: "text", Text: "old"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "before remote"}}})
+
+	binding := types.ProviderBinding{
+		Provider: "openai", API: "responses", BaseURL: "https://api.openai.com/v1/", Model: "gpt-a",
+	}
+	items := []json.RawMessage{
+		json.RawMessage(`{"type":"message","role":"assistant","unknown":9007199254740993}`),
+		json.RawMessage(`{"type":"compaction","id":"cmp_1","encrypted_content":"opaque"}`),
+	}
+	if _, err := s.AppendResponsesCompaction(types.ResponsesContext{Binding: binding, Items: items}, 123, &types.Usage{TotalTokens: 7}); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "suffix"}}})
+
+	got := s.ContextToLeaf(types.ProviderBinding{
+		Provider: "openai", API: "responses", BaseURL: "https://api.openai.com/v1", Model: "gpt-a",
+	})
+	if got.Responses == nil || len(got.Responses.Items) != 2 || string(got.Responses.Items[0]) != string(items[0]) {
+		t.Fatalf("compatible context: %+v", got.Responses)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].Text() != "suffix" {
+		t.Fatalf("compatible suffix: %+v", got.Messages)
+	}
+
+	portable := s.ContextToLeaf(types.ProviderBinding{
+		Provider: "anthropic", API: "anthropic", BaseURL: "https://api.anthropic.com", Model: "claude",
+	})
+	if portable.Responses != nil {
+		t.Fatal("incompatible provider received opaque Responses context")
+	}
+	if !portable.Portable {
+		t.Fatal("incompatible checkpoint projection was not marked portable")
+	}
+	if len(portable.Messages) != 4 ||
+		!strings.Contains(portable.Messages[0].Text(), "portable") ||
+		portable.Messages[len(portable.Messages)-1].Text() != "suffix" {
+		t.Fatalf("portable projection: %+v", portable.Messages)
+	}
+	forked, err := ForkHistoryAt(t.TempDir(), s, s.LeafID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	forkContext := forked.ContextToLeaf(binding)
+	_ = forked.Close()
+	if forkContext.Responses == nil || len(forkContext.Responses.Items) != 2 ||
+		len(forkContext.Messages) != 1 || forkContext.Messages[0].Text() != "suffix" {
+		t.Fatalf("forked remote context: %+v", forkContext)
+	}
+
+	dir := s.Dir
+	_ = s.Close()
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	roundTrip := reopened.ContextToLeaf(binding)
+	if roundTrip.Responses == nil || len(roundTrip.Responses.Items) != 2 ||
+		string(roundTrip.Responses.Items[1]) != string(items[1]) {
+		t.Fatalf("round trip context: %+v", roundTrip.Responses)
+	}
+}
+
+func TestResponsesCompactionDoesNotReuseOlderBinding(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "openai", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "raw"}}})
+	a := types.ProviderBinding{Provider: "openai", API: "responses", BaseURL: "https://a.example/v1", Model: "a"}
+	b := types.ProviderBinding{Provider: "openai", API: "responses", BaseURL: "https://b.example/v1", Model: "b"}
+	if _, err := s.AppendResponsesCompaction(types.ResponsesContext{
+		Binding: a, Items: []json.RawMessage{json.RawMessage(`{"type":"compaction","encrypted_content":"a"}`)},
+	}, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "between"}}})
+	if _, err := s.AppendResponsesCompaction(types.ResponsesContext{
+		Binding: b, Items: []json.RawMessage{json.RawMessage(`{"type":"compaction","encrypted_content":"b"}`)},
+	}, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := s.ContextToLeaf(a)
+	if got.Responses != nil || len(got.Messages) != 2 {
+		t.Fatalf("older incompatible checkpoint reused: %+v", got)
+	}
+}
+
+func TestAppendResponsesCompactionRejectsMalformedWindow(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "openai", "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	binding := types.ProviderBinding{Provider: "openai", API: "responses", BaseURL: "https://api.openai.com/v1", Model: "a"}
+	if _, err := s.AppendResponsesCompaction(types.ResponsesContext{
+		Binding: binding, Items: []json.RawMessage{json.RawMessage(`[]`)},
+	}, 1, nil); err == nil {
+		t.Fatal("array item should be rejected")
+	}
+	if s.LeafID() != "" {
+		t.Fatal("failed checkpoint advanced the leaf")
+	}
+}
+
 func TestCompactionRetainedTailFallback(t *testing.T) {
 	// Old jsonl without retainedTail falls back to FirstKeptEntryID slicing.
 	root := t.TempDir()

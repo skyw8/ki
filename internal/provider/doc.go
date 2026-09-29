@@ -15,6 +15,10 @@
 // Native adapters accept a response-body idle timeout; server configuration
 // applies it to routed, occupied and compaction requests. Extension providers
 // retain ownership of their transport liveness policy.
+// Models explicitly advertise remoteCompaction; Responses alone does not
+// imply that a compatible gateway implements /responses/compact. Live
+// implements optional standalone compaction and server-side context_management,
+// returning provider-owned items for a binding-scoped session checkpoint.
 //
 // Completions tool images: consecutive toolResults stay adjacent; one
 // follow-up user carries that group's images (pi). Responses embed
@@ -31,6 +35,8 @@
 // execute custom streamers in a process-level sidecar; the Registry only
 // resolves catalog entries and opaque credentials, while the host adapter
 // reconstructs loop deltas from compact provider events.
+// A sidecar model that advertises remote compaction also implements
+// provider.compact and may return stream-event Responses items privately.
 // Auth login, manual-code input, cancellation, and refresh are private RPCs;
 // the HTTP server exposes only redacted auth status and persists the returned
 // credential atomically. Responses replay metadata is carried by types.Content

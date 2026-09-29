@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"ki/internal/compact"
 	"ki/internal/extension"
 	"ki/internal/loop"
 	"ki/internal/provider"
 	"ki/internal/session"
+	"ki/internal/types"
 )
 
 // runEmitter is one run's event funnel. loop.Run produces events and calls Emit
@@ -42,6 +44,14 @@ type runEmitter struct {
 	// supplies the context window and the pricing pinned into the request
 	// header.
 	info provider.Model
+	// serverSide is the effective per-occupy decision after extension transport
+	// checks, not merely the catalog/config capability.
+	serverSide bool
+	// binding is the provider scope actually occupied by this run, including
+	// its credential snapshot. replayBinding is empty when lifecycle hooks must
+	// receive the portable transcript instead of an opaque prefix.
+	binding       types.ProviderBinding
+	replayBinding types.ProviderBinding
 
 	// idempotencyKey is consumed by the first user message_end, so a retried
 	// extension enqueue appends one entry instead of two. Empty when the run
@@ -115,8 +125,12 @@ func (p *runEmitter) persist(ev *loop.Event) error {
 // appendMessage persists a message_end. Message rewriting stays ahead of the
 // append and of the SSE replay of the same event.
 func (p *runEmitter) appendMessage(ev *loop.Event) error {
+	responsesItems := slices.Clone(ev.Message.ResponsesItems)
 	if p.s.ext != nil {
 		rewritten := p.s.ext.ApplyMessageEnd(p.ctx, p.id, *ev.Message)
+		// Opaque server compaction state is host-private and therefore omitted
+		// from extension JSON. Preserve it across an otherwise valid rewrite.
+		rewritten.ResponsesItems = responsesItems
 		ev.Message = &rewritten
 	}
 	key := ""
@@ -124,7 +138,39 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 		key = p.idempotencyKey
 		p.idempotencyKey = ""
 	}
-	e, _, err := p.sess.AppendMessageWithKey(*ev.Message, key)
+	persisted := *ev.Message
+	persisted.ResponsesItems = nil
+	if len(ev.Message.ResponsesItems) > 0 {
+		if !p.replayBinding.Equal(p.binding) ||
+			(ev.Message.Provider != "" && ev.Message.Provider != p.info.Provider) ||
+			(ev.Message.Model != "" && ev.Message.Model != p.info.ID) {
+			// A message-visible lifecycle hook cannot rewrite the encrypted
+			// canonical suffix. Keep only the portable transcript so changing
+			// or disabling that hook cannot later replay state under the wrong
+			// routing or moderation policy.
+			ev.Message = &persisted
+		} else {
+			items, checkpointErr := provider.ResponsesCheckpointItems(*ev.Message)
+			if checkpointErr != nil {
+				return fmt.Errorf("build server compaction checkpoint: %w", checkpointErr)
+			}
+			checkpoint := types.ResponsesContext{Binding: p.binding, Items: items}
+			messages := append(p.sess.MessagesToLeaf(), persisted)
+			tokensBefore := compact.EstimateTokens(messages, p.sess.LastCompactionAt())
+			messageEntry, _, checkpointErr := p.sess.AppendMessageAndResponsesCompaction(persisted, checkpoint, tokensBefore)
+			if checkpointErr != nil {
+				return fmt.Errorf("append server compaction checkpoint: %w", checkpointErr)
+			}
+			ev.EntryID, ev.ParentID = messageEntry.ID, &messageEntry.ParentID
+			// The dedicated checkpoint owns encrypted state. Never buffer it
+			// into ordinary message SSE or extension notifications. Copy
+			// instead of mutating the loop's assistant value: the same live
+			// run still needs the canonical suffix for its next tool round.
+			ev.Message = &persisted
+			return nil
+		}
+	}
+	e, _, err := p.sess.AppendMessageWithKey(persisted, key)
 	if err != nil {
 		return fmt.Errorf("append message: %w", err)
 	}
@@ -218,7 +264,7 @@ func (p *runEmitter) recordContextUsage(ev loop.Event) error {
 		// message estimate does not cover.
 		request = &ev
 	}
-	used, window, err := p.s.contextUsageEstimate(p.sess, p.info, request)
+	used, window, err := p.s.contextUsageEstimate(p.sess, p.info, p.replayBinding, request)
 	if err != nil {
 		return err
 	}
@@ -242,10 +288,13 @@ func (p *runEmitter) recordContextUsage(ev loop.Event) error {
 // autoCompact applies the threshold check after agent_end and compacts an
 // oversized context so the next prompt starts fresh.
 func (p *runEmitter) autoCompact() {
-	if !p.s.shouldCompact(p.sess, p.info.ContextWindow) {
+	if p.serverSide {
 		return
 	}
-	if p.compactNow("threshold") {
+	if !p.s.shouldCompact(p.sess, p.info, p.replayBinding) {
+		return
+	}
+	if changed, _ := p.compactNow("threshold", nil); changed {
 		// The run SSE stops at agent_end, so the rebuilt context reaches the
 		// meter through the push stream.
 		p.s.publishContextUsage(p.sess)
@@ -256,16 +305,20 @@ func (p *runEmitter) autoCompact() {
 // changed. The compaction events go through Emit like every other event, so
 // they are persisted, buffered, and fanned out in loop order. A compaction that
 // finds nothing to do is not an error.
-func (p *runEmitter) compactNow(reason string) bool {
+func (p *runEmitter) compactNow(reason string, request *loop.Request) (bool, error) {
 	_ = p.Emit(loop.Event{Type: loop.CompactionStart, Reason: reason})
-	_, err := p.s.compactSession(p.ctx, p.sess)
+	_, err := p.s.compactSession(p.ctx, p.sess, request)
+	if errors.Is(err, compact.ErrCompactionSkipped) {
+		_ = p.Emit(loop.Event{Type: loop.CompactionEnd, Reason: reason, OK: false})
+		return false, err
+	}
 	if err != nil && !errors.Is(err, compact.ErrNothingToCompact) {
 		slog.Warn(reason+" compact", "session_id", p.id, "err", err)
 		_ = p.Emit(loop.Event{Type: loop.CompactionEnd, Reason: reason, OK: false})
-		return false
+		return false, err
 	}
 	_ = p.Emit(loop.Event{Type: loop.CompactionEnd, Reason: reason, OK: true})
-	return err == nil
+	return err == nil, err
 }
 
 // contextUsageEstimate returns the model-facing token estimate and the effective
@@ -279,10 +332,11 @@ func (p *runEmitter) compactNow(reason string) bool {
 // outside a run, has no live request left. The returned estimate is still useful
 // when marshaling the live schemas fails; the error is reported so the
 // request_header path can abort the run.
-func (s *Server) contextUsageEstimate(sess *session.Session, info provider.Model, request *loop.Event) (used, window int, err error) {
-	messages := sess.MessagesToLeaf()
+func (s *Server) contextUsageEstimate(sess *session.Session, info provider.Model, binding types.ProviderBinding, request *loop.Event) (used, window int, err error) {
+	modelContext := sess.ContextToLeaf(binding)
+	messages := modelContext.Messages
 	last := sess.LastCompactionAt()
-	used = compact.EstimateTokens(messages, last)
+	used = compact.EstimateModelContext(modelContext, last)
 	window = info.ContextWindow
 	if maxContext := s.cfg.Compaction.MaxContextTokens; maxContext > 0 {
 		window = min(window, maxContext)

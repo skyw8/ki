@@ -70,19 +70,23 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 | GET | `/v1/fs` | 列目录；`files=1` 时也列普通文件供附件选择；`preview=1` 同源预览图片、文本/代码和 PDF |
 | POST | `/v1/fs` | 在已有目录下建子文件夹 |
 
-`message_end` 上 await 写 jsonl。`agent_end` 上按阈值自动 compact。SSE reader 在 run 锁之外投影 typed message 并编码 patch，每次 write/flush 最多等待 30s；慢连接不占用事件漏斗。buffer 只在入队时计量 payload，debug 采样记录排队、编码与写入耗时。WebUI 按顺序解码、逐帧合并显示，终态立即 flush；可见身份与持久化 entryId 分开，使定稿不重挂载正文。SSE 在 run `done` 后先排空剩余事件，再结束（等待循环"先 `close(done)` 后 `Broadcast()`"的顺序协议有 TLA+ 模型验证，见 `spec/events-wait`）。
+`message_end` 上 await 写 jsonl。未启用 provider server-side compaction 时，`agent_end` 上按阈值自动 compact。SSE reader 在 run 锁之外投影 typed message 并编码 patch，每次 write/flush 最多等待 30s；慢连接不占用事件漏斗。buffer 只在入队时计量 payload，debug 采样记录排队、编码与写入耗时。WebUI 按顺序解码、逐帧合并显示，终态立即 flush；可见身份与持久化 entryId 分开，使定稿不重挂载正文。SSE 在 run `done` 后先排空剩余事件，再结束（等待循环"先 `close(done)` 后 `Broadcast()`"的顺序协议有 TLA+ 模型验证，见 `spec/events-wait`）。
 
 压缩有三个触发时机：
 
 1. **preflight**：prompt 受理后、`loop.Run` 前，上下文已超阈值（resume/超大 prompt）就压缩一次，失败不阻断。
-2. **overflow**：请求失败且错误匹配溢出正则表（`internal/loop/overflow.go`，对齐 pi `OVERFLOW_PATTERNS`，排除 rate-limit）→ `Hooks.OnContextOverflow`（server 实现 = 压缩 + 返回新上下文）→ 同 Run 内重建 history 重试一次（`_overflowRecoveryAttempted` 语义）。溢出错误不做指数退避重试（重发同量级请求必败）。`stopReason == "length"` 的工具调用全部拒执（参数可能截断，让模型重发）。
+2. **overflow**：请求失败且错误匹配溢出正则表（`internal/loop/overflow.go`，对齐 pi `OVERFLOW_PATTERNS`，排除 rate-limit）→ `Hooks.OnContextOverflow(ctx, failedRequest)`（server 收到真实 system/messages/Responses prefix，压缩后返回完整 `ModelContext`）→ 同 Run 内同时替换 portable history 和 opaque prefix，再重试一次（`_overflowRecoveryAttempted` 语义）。溢出错误不做指数退避重试（重发同量级请求必败）。`stopReason == "length"` 的工具调用全部拒执（参数可能截断，让模型重发）。
 3. **threshold**：`agent_end` 后估算超阈值 → 压缩。估算优先用最后一条 assistant 的 usage（pi `calculateContextTokens`：`totalTokens`，回退 `input+output+cacheRead+cacheWrite`）再加 trailing 消息的 char/4，且带 stale 防护（usage 早于最近 compaction 则回退 char/4，避免刚压缩完再压缩）。
 
-压缩三段化：`compact.Prepare`（纯函数：切点避开 toolResult、split-turn 前缀单独摘要、上次 retainedTail 虚拟展开参与切点、previousSummary 增量）→ `compact.Execute`（调模型）→ `session.AppendCompaction`（summary + retainedTail 落盘）。`compaction_start/end` 事件同时写 jsonl 与 SSE（`reason`: preflight/overflow/threshold）。
+`[compaction] mode` 为 `auto`（默认）、`local` 或 `remote`。模型目录必须显式声明 `remoteCompaction:"openai"`，不能由 `api:"responses"` 推断兼容网关能力。`auto` 优先 OpenAI standalone `POST /responses/compact`，失败回退本地摘要；若 `context` / `before_provider_request` 已改变 provider-facing messages，则失败而不回退到未变换的本地历史，避免绕过脱敏策略。`remote` 是 strict：能力缺失、custom local summary、RPC 或持久化失败都会明确失败。standalone 返回的整个有序 canonical `output` 作为 opaque checkpoint 保存，后续只追加 checkpoint 后的消息；provider/API/base URL/model/实际请求 credential 任一变化都会改走 portable local projection，绝不跨 scope 回放密文。启用 `before_agent_start`、`context`、provider request/header 或 `message_end` 同步 hook 时也只从 portable transcript 建请求；这些 hook 看不到 encrypted prefix，因此不能让旧 checkpoint 绕过新 DLP/路由/输出改写策略。
 
-每次成功压缩都会对该 session 触发 reload：自动 compact 仍在 `runPrompt` 占用中，走 `requestReload`（排队到 `release`）；手动 `/compact` 在 `release` 之后 `reloadSession`。上下文已重建，下一次 `prompt.Build` 必须使用重读磁盘后的快照。`POST /v1/reload` 和 `/reload` 是全局/session reload 入口；忙时排队到对应 run 的 `release`。设置页写入或删除 `APPEND_SYSTEM.md` 后同样走一次全局 reload，否则改了文件的下一次 prompt 仍会用缓存里的旧快照。run 之外的压缩（手动 `/compact`、threshold）完成后立即重算并追加 `context_usage`（char/4，加上最后一次 `request_header` 的 system/tools 估算）并经 push 下发，WebUI 的 context 计量不必等到下一次 prompt。
+本地压缩仍三段化：`compact.Prepare`（纯函数：切点避开 toolResult、split-turn 前缀单独摘要、上次 retainedTail 虚拟展开参与切点、previousSummary 增量；忽略 remote checkpoint）→ `compact.Execute`（调模型）→ `session.AppendCompaction`（summary + retainedTail 落盘）。remote 使用 `session.AppendResponsesCompaction`。`compaction_start/end` 事件同时写 jsonl 与 SSE（`reason`: preflight/overflow/threshold/server）。
 
-阈值判定 `compact.ShouldRun(tokens, contextWindow, cfg)`：`tokens > contextWindow - reserveTokens`，窗口缺省 128000。`cfg.MaxContextTokens`（ki.toml `[compaction] max_context_tokens`）取 min 兜底——小于模型窗口时以它为准，小值让压缩提前触发（低成本测试不烧 token），0 = 只用模型窗口。
+`[compaction] server_side=true`（默认）使有能力的 Responses 模型在普通请求中发送 `context_management[{type:"compaction",compact_threshold:...}]`；阈值为有效模型窗口减 `reserve_tokens`。这类模型关闭 host preflight/threshold，避免双重压缩，overflow 和手动 `/compact` 仍用 standalone endpoint；`auto` 遇到网关拒绝该可选字段时会去掉它重试一次。completed terminal output 中从最后一个 compaction item 到末尾的 raw canonical suffix 与 assistant 以同一次 append 提交；failed/incomplete/cancelled output 不提升。旧 request prefix 在同一 run 的下一工具轮即被裁掉。若当前 lifecycle policy 需要看见/改写消息，canonical suffix 只在本 run 内使用而不持久化；TurnEnd/replay buffer 也只保留已清除 opaque 字段的 assistant，避免 idle session 常驻大 checkpoint。opaque 内容不进入普通 message、SSE、WebUI、CLI full view 或 extension lifecycle payload。
+
+每次成功压缩都会对该 session 触发 reload：压缩发生在 prompt 或手动 `/compact` 的 occupy 中，统一走 `requestReload`，排队到匹配的 `release`。上下文已重建，下一次 `prompt.Build` 必须使用重读磁盘后的快照。`POST /v1/reload` 和 `/reload` 是全局/session reload 入口；忙时排队到对应 run 的 `release`。设置页写入或删除 `APPEND_SYSTEM.md` 后同样走一次全局 reload，否则改了文件的下一次 prompt 仍会用缓存里的旧快照。run 之外的压缩（手动 `/compact`、threshold）完成后立即重算并追加 `context_usage`（char/4，加上最后一次 `request_header` 的 system/tools 估算）并经 push 下发，WebUI 的 context 计量不必等到下一次 prompt。
+
+host 阈值判定 `compact.ShouldRun(tokens, contextWindow, cfg)`：`tokens > contextWindow - reserveTokens`，窗口缺省 128000。`cfg.MaxContextTokens`（ki.toml `[compaction] max_context_tokens`）取 min 兜底——小于模型窗口时以它为准，小值让压缩提前触发（低成本测试不烧 token），0 = 只用模型窗口；同一个有效窗口也用于 server-side `compact_threshold`。
 
 压缩 no-op 保护（对齐 pi `prepareCompaction` 返回 undefined）：切点预算（`keep_recent_tokens`，char/4 口径）装下整个对话时没有值得摘要的内容，`Prepare` 返回 `ErrNothingToCompact`——不调模型、不落盘；自动路径（A/D）静默跳过，手动 `/compact` 返回 409 "nothing to compact (session too small)"。
 

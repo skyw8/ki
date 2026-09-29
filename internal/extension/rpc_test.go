@@ -1,8 +1,10 @@
 package extension
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,24 @@ import (
 
 	"ki/internal/session"
 )
+
+func TestRPCPreCanceledCallDoesNotWrite(t *testing.T) {
+	var output bytes.Buffer
+	client := &rpcClient{
+		enc:     json.NewEncoder(&output),
+		pending: map[string]chan rpcMsg{},
+		closed:  make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := client.call(ctx, "provider.compact", map[string]any{"payload": strings.Repeat("x", 1024)}, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("call error = %v", err)
+	}
+	if output.Len() != 0 || len(client.pending) != 0 {
+		t.Fatalf("pre-canceled RPC wrote %d bytes and left %d pending", output.Len(), len(client.pending))
+	}
+}
 
 func TestSidecarEnvCarriesProxyVariablesAndManifestOverrides(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://inherited.example:8080")

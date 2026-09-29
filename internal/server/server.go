@@ -665,7 +665,7 @@ func (s *Server) publishContextUsage(sess *session.Session) {
 	}
 	// No live request: the compaction already ran, so the schemas come from the
 	// last persisted request_header.
-	used, window, err := s.contextUsageEstimate(sess, info, nil)
+	used, window, err := s.contextUsageEstimate(sess, info, s.providerBinding(info), nil)
 	if err != nil {
 		slog.Warn("marshal tool schemas", "session_id", sess.ID(), "err", err)
 	}
@@ -2172,19 +2172,15 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	var liveModel provider.Model
 	runStreamer := s.streamer
 	if s.requireModelCredential {
-		_, resolved, key, resolveErr := s.registry.Resolve(sess.Config.Provider, sess.Config.Model)
+		_, resolved, credential, resolveErr := s.registry.ResolveCredential(sess.Config.Provider, sess.Config.Model)
 		if resolveErr != nil {
 			st.err = resolveErr
 			return
 		}
 		info = resolved
 		liveModel = resolved
-		liveKey = key
-		liveCredential, _, resolveErr = s.registry.Credential(sess.Config.Provider)
-		if resolveErr != nil {
-			st.err = resolveErr
-			return
-		}
+		liveCredential = credential
+		liveKey = credential.APIKey
 		if s.providerExtensions != nil && s.providerExtensions.HasProvider(liveModel.Provider) {
 			liveCredential, resolveErr = s.providerExtensions.RefreshCredential(ctx, s.registry, liveModel.Provider, liveCredential)
 			if resolveErr != nil {
@@ -2192,6 +2188,12 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 				return
 			}
 		}
+	}
+	activeBinding := s.providerBinding(info)
+	if s.requireModelCredential {
+		// Use the credential snapshot held by this run rather than mutable
+		// registry state; a concurrent login must not relabel opaque output.
+		activeBinding = providerBindingWithCredential(info, liveCredential)
 	}
 	jobs := s.jobsFor(id)
 	profile := toolProfile(info)
@@ -2246,14 +2248,41 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	promptInput := prompt.Input{Resources: snapshot, Tools: tls, Toggle: tg.Skills}
 	sys := prompt.Build(promptInput)
 
-	emitter := &runEmitter{s: s, ctx: ctx, id: id, sess: sess, st: st, info: info, idempotencyKey: idempotencyKey}
+	useServerCompaction := s.serverSideCompaction(info) && occ.HTTPDoer() == nil
+	replayBinding := activeBinding
+	if !occ.OpaqueReplaySafe() {
+		// Lifecycle hooks only see portable messages. Replaying an encrypted
+		// prefix would bypass a newly enabled DLP/moderation hook, and provider
+		// hooks can redirect it outside the scope recorded in its binding.
+		replayBinding = types.ProviderBinding{}
+		useServerCompaction = false
+	}
+	emitter := &runEmitter{
+		s: s, ctx: ctx, id: id, sess: sess, st: st, info: info,
+		idempotencyKey: idempotencyKey, serverSide: useServerCompaction,
+		binding: activeBinding, replayBinding: replayBinding,
+	}
 	emit := emitter.Emit
 
 	// Preflight before running: a resumed session or a very large prompt may already
 	// exceed the context window, so compact once before loop.Run. This is non-blocking:
 	// a compaction failure only emits a warning.
-	if s.shouldCompact(sess, info.ContextWindow) {
-		emitter.compactNow("preflight")
+	if !useServerCompaction && s.shouldCompact(sess, info, replayBinding) {
+		current := sess.ContextToLeaf(replayBinding)
+		preflight := &loop.Request{
+			SessionID: id, System: sys, Messages: current.Messages,
+			Provider: info.Provider, Model: info.ID, API: info.API,
+			ProviderBinding: activeBinding,
+		}
+		if current.Responses != nil {
+			preflight.ResponsesContext = current.Responses.Items
+		}
+		_, compactErr := emitter.compactNow("preflight", preflight)
+		if compactErr != nil && s.cfg.Compaction.Mode == "remote" &&
+			!errors.Is(compactErr, compact.ErrNothingToCompact) {
+			st.err = fmt.Errorf("remote preflight compaction: %w", compactErr)
+			return
+		}
 	}
 
 	hooks := s.composeHooks(sess, occ)
@@ -2269,6 +2298,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		Provider:                sess.Config.Provider,
 		Model:                   sess.Config.Model,
 		API:                     info.API,
+		ProviderBinding:         activeBinding,
 		MaxTokens:               info.MaxTokens,
 		ThinkingEffort:          sess.Config.ThinkingEffort,
 		ThinkingFormat:          info.Compat.ThinkingFormat,
@@ -2283,8 +2313,17 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		Inbox:                   st.inbox,
 		Hooks:                   hooks,
 	}
+	if useServerCompaction {
+		runCfg.ResponsesCompactThreshold = s.remoteCompactThreshold(info)
+		runCfg.ResponsesCompactFallback = s.cfg.Compaction.Mode == "auto"
+	}
 	runMessage := func(user types.Message) error {
-		_, runErr := loop.RunMessage(ctx, user, sess.MessagesToLeaf(), runCfg, emit)
+		current := sess.ContextToLeaf(replayBinding)
+		cfgForRun := runCfg
+		if current.Responses != nil {
+			cfgForRun.ResponsesContext = current.Responses.Items
+		}
+		_, runErr := loop.RunMessage(ctx, user, current.Messages, cfgForRun, emit)
 		if runErr != nil {
 			return fmt.Errorf("run message: %w", runErr)
 		}
@@ -2363,8 +2402,8 @@ func (s *Server) composeHooks(sess *session.Session, occ *extension.Occupy) loop
 		},
 		BeforeTool: extHooks.BeforeTool,
 		AfterTool:  extHooks.AfterTool,
-		OnContextOverflow: func(ctx context.Context) ([]types.Message, error) {
-			return s.compactSession(ctx, sess)
+		OnContextOverflow: func(ctx context.Context, failed loop.Request) (types.ModelContext, error) {
+			return s.compactSession(ctx, sess, &failed)
 		},
 	}
 }
@@ -2434,22 +2473,42 @@ func (s *Server) liveSummarizer(ctx context.Context, sessionID, prov, model stri
 	if !s.requireModelCredential {
 		return s.streamer
 	}
-	_, resolved, key, err := s.registry.Resolve(prov, model)
+	_, resolved, credential, err := s.registry.ResolveCredential(prov, model)
 	if err != nil {
 		return s.streamer
 	}
 	if s.providerExtensions != nil && s.providerExtensions.HasProvider(prov) {
-		credential, status, err := s.registry.Credential(prov)
-		if err != nil || !status.Configured {
-			return s.streamer
-		}
 		credential, err = s.providerExtensions.RefreshCredential(ctx, s.registry, prov, credential)
 		if err != nil {
 			return s.streamer
 		}
 		return s.providerExtensions.NewStreamer(resolved, credential)
 	}
-	return provider.NewLiveModel(resolved, key, s.ext.HTTPDoer(sessionID)).WithIdleTimeout(time.Duration(s.cfg.Streaming.IdleTimeoutSeconds) * time.Second)
+	return provider.NewLiveModel(resolved, credential.APIKey, s.ext.HTTPDoer(sessionID)).WithIdleTimeout(time.Duration(s.cfg.Streaming.IdleTimeoutSeconds) * time.Second)
+}
+
+func (s *Server) liveCompactor(ctx context.Context, sessionID string, model provider.Model) (provider.Compactor, types.ProviderBinding) {
+	if !s.requireModelCredential {
+		return nil, types.ProviderBinding{}
+	}
+	if s.providerExtensions != nil && s.providerExtensions.HasProvider(model.Provider) {
+		_, resolved, credential, err := s.registry.ResolveCredential(model.Provider, model.ID)
+		if err != nil {
+			return nil, types.ProviderBinding{}
+		}
+		credential, err = s.providerExtensions.RefreshCredential(ctx, s.registry, model.Provider, credential)
+		if err != nil {
+			return nil, types.ProviderBinding{}
+		}
+		return s.providerExtensions.NewCompactor(resolved, credential), providerBindingWithCredential(resolved, credential)
+	}
+	_, resolved, credential, err := s.registry.ResolveCredential(model.Provider, model.ID)
+	if err != nil {
+		return nil, types.ProviderBinding{}
+	}
+	return provider.NewLiveModel(resolved, credential.APIKey, s.ext.HTTPDoer(sessionID)).
+			WithIdleTimeout(time.Duration(s.cfg.Streaming.IdleTimeoutSeconds) * time.Second),
+		providerBindingWithCredential(resolved, credential)
 }
 
 func (s *Server) summarizer(ctx context.Context, sessionID, prov, model string) compact.Summarizer {
@@ -2471,9 +2530,85 @@ func (s *Server) summarizer(ctx context.Context, sessionID, prov, model string) 
 	}
 }
 
-func (s *Server) shouldCompact(sess *session.Session, window int) bool {
-	msgs := sess.MessagesToLeaf()
-	return compact.ShouldRun(compact.EstimateTokens(msgs, sess.LastCompactionAt()), window, s.cfg.Compaction)
+func (s *Server) providerBinding(model provider.Model) types.ProviderBinding {
+	credential := provider.Credential{}
+	if credential, status, err := s.registry.Credential(model.Provider); err == nil && status.Configured {
+		return providerBindingWithCredential(model, credential)
+	}
+	return providerBindingWithCredential(model, credential)
+}
+
+func providerBindingWithCredential(model provider.Model, credential provider.Credential) types.ProviderBinding {
+	fingerprint := ""
+	if credential.Type != "" || credential.APIKey != "" || len(credential.Value) > 0 {
+		fingerprint = provider.CredentialFingerprint(credential)
+	}
+	return types.ProviderBinding{
+		Provider:   model.Provider,
+		API:        model.API,
+		BaseURL:    model.BaseURL,
+		Model:      model.ID,
+		Credential: fingerprint,
+	}
+}
+
+func (s *Server) serverSideCompaction(model provider.Model) bool {
+	supportsWire := model.API == "responses" ||
+		(s.providerExtensions != nil && s.providerExtensions.HasProvider(model.Provider))
+	return s.requireModelCredential &&
+		s.cfg.Compaction.Enabled &&
+		s.cfg.Compaction.ServerSide &&
+		s.cfg.Compaction.Mode != "local" &&
+		model.RemoteCompaction == "openai" &&
+		supportsWire
+}
+
+func (s *Server) remoteCompactThreshold(model provider.Model) int {
+	window := model.ContextWindow
+	if cap := s.cfg.Compaction.MaxContextTokens; cap > 0 && cap < window {
+		window = cap
+	}
+	threshold := window - s.cfg.Compaction.ReserveTokens
+	if threshold < 1 {
+		return 1
+	}
+	return threshold
+}
+
+type nonRetryableCompactionError interface {
+	NonRetryable() bool
+}
+
+func compactRemoteWithRetry(ctx context.Context, compactor provider.Compactor, request loop.Request) (provider.CompactResult, error) {
+	var last error
+	for attempt := 0; attempt <= 5; attempt++ {
+		if attempt > 0 {
+			delay := 2 * time.Second * time.Duration(1<<uint(attempt-1))
+			select {
+			case <-ctx.Done():
+				return provider.CompactResult{}, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		result, err := compactor.Compact(ctx, request)
+		if err == nil {
+			return result, nil
+		}
+		last = err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return provider.CompactResult{}, err
+		}
+		var deterministic nonRetryableCompactionError
+		if errors.As(err, &deterministic) && deterministic.NonRetryable() {
+			return provider.CompactResult{}, err
+		}
+	}
+	return provider.CompactResult{}, last
+}
+
+func (s *Server) shouldCompact(sess *session.Session, model provider.Model, binding types.ProviderBinding) bool {
+	modelContext := sess.ContextToLeaf(binding)
+	return compact.ShouldRun(compact.EstimateModelContext(modelContext, sess.LastCompactionAt()), model.ContextWindow, s.cfg.Compaction)
 }
 
 // compactSession runs one compaction (Prepare + Execute + AppendCompaction)
@@ -2484,38 +2619,220 @@ func (s *Server) shouldCompact(sess *session.Session, window int) bool {
 // A successful compaction requestReloads this session: the model context was
 // rebuilt, so the next prompt should use freshly loaded environment,
 // instructions, skills, and templates.
-func (s *Server) compactSession(ctx context.Context, sess *session.Session) ([]types.Message, error) {
+func (s *Server) compactSession(ctx context.Context, sess *session.Session, request *loop.Request) (types.ModelContext, error) {
+	_, model, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
+	if !ok {
+		return types.ModelContext{}, fmt.Errorf("resolve compaction model %s/%s", sess.Config.Provider, sess.Config.Model)
+	}
+	binding := s.providerBinding(model)
 	var customSummary string
 	if s.ext != nil {
 		ok, summary := s.ext.CompactAllowed(ctx, sess.ID())
 		if !ok {
-			return sess.MessagesToLeaf(), nil
+			return types.ModelContext{}, compact.ErrCompactionSkipped
 		}
 		customSummary = summary
 	}
+	if s.cfg.Compaction.Mode == "remote" {
+		if model.RemoteCompaction != "openai" {
+			return types.ModelContext{}, fmt.Errorf("model %s/%s does not support remote compaction", model.Provider, model.ID)
+		}
+		if customSummary != "" {
+			return types.ModelContext{}, errors.New("remote compaction cannot use a custom local summary")
+		}
+	}
+	useRemote := customSummary == "" &&
+		s.cfg.Compaction.Mode != "local" &&
+		model.RemoteCompaction == "openai"
+	if useRemote {
+		// Header interceptors can replace the endpoint or project/account
+		// identity after binding is computed. Until they expose a stable scope
+		// fingerprint, sending or replaying provider-owned encrypted context
+		// across that boundary is unsafe.
+		if s.ext != nil && s.ext.HTTPDoer(sess.ID()) != nil {
+			if s.cfg.Compaction.Mode == "remote" {
+				return types.ModelContext{}, errors.New("remote compaction is unavailable with provider header interception")
+			}
+			slog.Warn("remote compaction header interception fallback", "session_id", sess.ID())
+			useRemote = false
+		}
+		var (
+			compactor      provider.Compactor
+			compactBinding types.ProviderBinding
+		)
+		if useRemote {
+			// Resolve and refresh before selecting an opaque input. A refresh
+			// can change credential scope, in which case the old checkpoint
+			// must be replaced by the portable transcript.
+			compactor, compactBinding = s.liveCompactor(ctx, sess.ID(), model)
+			if compactor == nil {
+				useRemote = false
+			}
+		}
+		if useRemote && request != nil && request.ProviderBinding.Provider != "" &&
+			!request.ProviderBinding.Equal(compactBinding) {
+			// Overflow recovery resumes through the already occupied streamer.
+			// A freshly rotated credential would create a checkpoint that this
+			// run's old streamer must never receive.
+			return types.ModelContext{}, errors.New("provider credential changed during remote compaction")
+		}
+		remoteRequest := loop.Request{
+			SessionID: sess.ID(),
+			Provider:  model.Provider,
+			Model:     model.ID,
+			API:       model.API,
+		}
+		if request != nil {
+			remoteRequest = *request
+		}
+		opaqueReplaySafe := s.ext == nil || s.ext.Occupy(sess.ID()).OpaqueReplaySafe()
+		reuseRequestContext := request != nil &&
+			opaqueReplaySafe &&
+			request.ProviderBinding.Equal(compactBinding)
+		if !reuseRequestContext {
+			inputBinding := compactBinding
+			if !opaqueReplaySafe {
+				inputBinding = types.ProviderBinding{}
+			}
+			current := sess.ContextToLeaf(inputBinding)
+			remoteRequest.Messages = current.Messages
+			remoteRequest.ResponsesContext = nil
+			if current.Responses != nil {
+				remoteRequest.ResponsesContext = current.Responses.Items
+			}
+			remoteRequest.ContextTransformed = false
+			if remoteRequest.System == "" {
+				system, _, found := sess.LastRequestHeader()
+				if found {
+					remoteRequest.System = system
+				}
+			}
+			remoteRequest.ProviderBinding = compactBinding
+		}
+		providerFacingDigest := func(messages []types.Message) [32]byte {
+			raw, _ := json.Marshal(messages)
+			return sha256.Sum256(raw)
+		}
+		contextDigest := providerFacingDigest(remoteRequest.Messages)
+		providerContextChanged := false
+		if !remoteRequest.ContextTransformed && s.ext != nil {
+			hooks := s.ext.Hooks(sess.ID())
+			if hooks.BeforeRun != nil {
+				system, messages, transformErr := hooks.BeforeRun(ctx, remoteRequest.System, remoteRequest.Messages)
+				if transformErr != nil {
+					return types.ModelContext{}, fmt.Errorf("transform compaction run: %w", transformErr)
+				}
+				remoteRequest.System, remoteRequest.Messages = system, messages
+				providerContextChanged = providerFacingDigest(remoteRequest.Messages) != contextDigest
+				contextDigest = providerFacingDigest(remoteRequest.Messages)
+			}
+		}
+		messages, materializeErr := materializeAttachments(ctx, remoteRequest.Messages)
+		if materializeErr != nil {
+			return types.ModelContext{}, fmt.Errorf("materialize compaction context: %w", materializeErr)
+		}
+		remoteRequest.Messages = messages
+		contextDigest = providerFacingDigest(remoteRequest.Messages)
+		if !remoteRequest.ContextTransformed && s.ext != nil {
+			hooks := s.ext.Hooks(sess.ID())
+			if hooks.TransformContext != nil {
+				transformed, transformErr := hooks.TransformContext(ctx, remoteRequest.Messages)
+				if transformErr != nil {
+					return types.ModelContext{}, fmt.Errorf("transform compaction context: %w", transformErr)
+				}
+				remoteRequest.Messages = transformed
+				providerContextChanged = providerContextChanged ||
+					providerFacingDigest(remoteRequest.Messages) != contextDigest
+				contextDigest = providerFacingDigest(remoteRequest.Messages)
+			}
+			remoteRequest.ContextTransformed = true
+		}
+		if s.ext != nil {
+			transformed, transformErr := s.ext.Occupy(sess.ID()).TransformProviderRequest(ctx, remoteRequest)
+			if transformErr != nil {
+				// A provider-request interceptor failure aborts normal model
+				// calls. Falling back here would bypass that policy and send
+				// the untransformed transcript to the summary model.
+				return types.ModelContext{}, fmt.Errorf("transform remote compaction request: %w", transformErr)
+			} else {
+				remoteRequest = transformed
+				providerContextChanged = providerContextChanged ||
+					providerFacingDigest(remoteRequest.Messages) != contextDigest
+			}
+		}
+		if useRemote && (remoteRequest.Provider != model.Provider || remoteRequest.Model != model.ID) {
+			if s.cfg.Compaction.Mode == "remote" {
+				return types.ModelContext{}, errors.New("remote compaction does not support provider/model request mutation")
+			}
+			slog.Warn("remote compaction route mutation fallback", "session_id", sess.ID())
+			useRemote = false
+		}
+		if !useRemote && providerContextChanged {
+			return types.ModelContext{}, errors.New("cannot fall back to untransformed local compaction context")
+		}
+		if useRemote && compactor != nil && (len(remoteRequest.ResponsesContext) > 0 || len(remoteRequest.Messages) > 0) {
+			// Standalone compaction is a provider request, so it follows the
+			// same transient retry budget as generation. Falling back
+			// immediately on a single 429/5xx would silently discard provider
+			// state during a brief outage.
+			result, compactErr := compactRemoteWithRetry(ctx, compactor, remoteRequest)
+			if compactErr == nil {
+				// The compactor snapshots the exact credential used by this
+				// request; mutable registry state may change before append.
+				resultBinding := compactBinding
+				checkpoint := types.ResponsesContext{Binding: resultBinding, Items: result.Items}
+				tokensBefore := compact.EstimateTokens(remoteRequest.Messages, sess.LastCompactionAt())
+				if _, appendErr := sess.AppendResponsesCompaction(checkpoint, tokensBefore, result.Usage); appendErr == nil {
+					//nolint:contextcheck // reload/warmup is deferred to release and must outlive this compact ctx
+					s.requestReload(sess.ID())
+					return sess.ContextToLeaf(resultBinding), nil
+				} else if s.cfg.Compaction.Mode == "remote" {
+					return types.ModelContext{}, fmt.Errorf("append remote compaction: %w", appendErr)
+				} else {
+					// Validation (including the durable line-size limit) is
+					// part of remote success. Auto mode remains usable by
+					// falling back before any checkpoint advances the leaf.
+					compactErr = fmt.Errorf("append remote compaction: %w", appendErr)
+				}
+			}
+			if errors.Is(compactErr, context.Canceled) || errors.Is(compactErr, context.DeadlineExceeded) {
+				return types.ModelContext{}, compactErr
+			}
+			if providerContextChanged {
+				return types.ModelContext{}, fmt.Errorf("remote compaction failed after provider context transformation: %w", compactErr)
+			}
+			if s.cfg.Compaction.Mode == "remote" {
+				return types.ModelContext{}, fmt.Errorf("execute remote compaction: %w", compactErr)
+			}
+			slog.Warn("remote compaction fallback", "session_id", sess.ID(), "provider", model.Provider, "model", model.ID, "err", compactErr)
+		} else if s.cfg.Compaction.Mode == "remote" {
+			return types.ModelContext{}, errors.New("remote compaction is unavailable")
+		}
+	}
+
 	prep, err := compact.Prepare(sess.LeafEntries(), s.cfg.Compaction)
 	if err != nil {
-		return nil, fmt.Errorf("prepare compaction: %w", err)
+		return types.ModelContext{}, fmt.Errorf("prepare compaction: %w", err)
 	}
 	if prep == nil {
-		return nil, compact.ErrNothingToCompact
+		return types.ModelContext{}, compact.ErrNothingToCompact
 	}
 	summary := customSummary
 	var usage *types.Usage
 	if summary == "" {
 		summary, usage, err = compact.Execute(ctx, prep, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
 		if err != nil {
-			return nil, fmt.Errorf("execute compaction: %w", err)
+			return types.ModelContext{}, fmt.Errorf("execute compaction: %w", err)
 		}
 	}
 	if _, err := sess.AppendCompaction(summary, prep.FirstKeptEntryID, prep.TokensBefore, usage, prep.RetainedTail); err != nil {
-		return nil, fmt.Errorf("append compaction: %w", err)
+		return types.ModelContext{}, fmt.Errorf("append compaction: %w", err)
 	}
 	// compactSession runs inside an occupied prompt, so this queues until
 	// runPrompt's release instead of closing this turn's extension views.
 	//nolint:contextcheck // reload/warmup is deferred to release and must outlive this compact ctx
 	s.requestReload(sess.ID())
-	return sess.MessagesToLeaf(), nil
+	return sess.ContextToLeaf(binding), nil
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
@@ -2685,7 +3002,8 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 	// no run stream to watch. Publish progress on the session notification
 	// stream so the history shows a live "compacting" row.
 	s.publishPush(id, loop.Event{Type: loop.CompactionStart, Reason: "manual"})
-	e, err := compact.Run(ctx, sess, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+	_, err = s.compactSession(ctx, sess, nil)
+	e, _ := sess.Lookup(sess.LeafID())
 	//nolint:contextcheck // release may rewarm after the occupy ctx ends
 	s.release(id, st)
 	s.publishCompactionEnd(id, err)
@@ -2698,11 +3016,13 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "nothing to compact (session too small)", http.StatusConflict)
 			return
 		}
+		if errors.Is(err, compact.ErrCompactionSkipped) {
+			http.Error(w, "compaction skipped by extension", http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	//nolint:contextcheck // post-compact rewarm is process-owned via runtimeCtx
-	s.reloadSession(id)
 	// A manual /compact has no run stream, so its rebuilt context would not
 	// reach the meter until the next prompt's request_header without this push.
 	s.publishContextUsage(sess)

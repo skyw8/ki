@@ -2,12 +2,25 @@ package provider
 
 import (
 	"cmp"
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 )
+
+// CredentialFingerprint returns a non-secret identity for binding encrypted
+// provider context to the credential that created it.
+func CredentialFingerprint(credential Credential) string {
+	hash := sha256.New()
+	_, _ = hash.Write([]byte(credential.Type))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(credential.APIKey))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write(credential.Value)
+	return fmt.Sprintf("%x", hash.Sum(nil)[:16])
+}
 
 // AuthKind identifies the credential protocol owned by a provider runtime.
 type AuthKind string
@@ -51,7 +64,7 @@ type ExtensionProviderSpec struct {
 }
 
 // CatalogVersion is the schema version of the embedded provider catalog.
-const CatalogVersion = 2
+const CatalogVersion = 3
 
 // CostRates are USD prices per million tokens.
 type CostRates struct {
@@ -85,22 +98,25 @@ type Compat struct {
 
 // Model is a fully resolved selectable model.
 type Model struct {
-	Provider           string             `json:"provider"`
-	ID                 string             `json:"id"`
-	Name               string             `json:"name"`
-	API                string             `json:"api"`
-	BaseURL            string             `json:"baseUrl"`
-	Enabled            bool               `json:"enabled"`
-	Builtin            bool               `json:"builtin"`
-	Customized         bool               `json:"customized,omitzero"`
-	ContextWindow      int                `json:"contextWindow"`
-	MaxTokens          int                `json:"maxTokens"`
-	Input              []string           `json:"input"`
-	ApplyPatchToolType string             `json:"applyPatchToolType,omitempty"`
-	Reasoning          bool               `json:"reasoning"`
-	ThinkingLevelMap   map[string]*string `json:"thinkingLevelMap,omitempty"`
-	Cost               *Cost              `json:"cost"`
-	Compat             Compat             `json:"compat,omitzero"`
+	Provider           string   `json:"provider"`
+	ID                 string   `json:"id"`
+	Name               string   `json:"name"`
+	API                string   `json:"api"`
+	BaseURL            string   `json:"baseUrl"`
+	Enabled            bool     `json:"enabled"`
+	Builtin            bool     `json:"builtin"`
+	Customized         bool     `json:"customized,omitzero"`
+	ContextWindow      int      `json:"contextWindow"`
+	MaxTokens          int      `json:"maxTokens"`
+	Input              []string `json:"input"`
+	ApplyPatchToolType string   `json:"applyPatchToolType,omitempty"`
+	// RemoteCompaction names the provider-owned compaction protocol. "openai"
+	// means Responses /responses/compact plus context_management.
+	RemoteCompaction string             `json:"remoteCompaction,omitempty"`
+	Reasoning        bool               `json:"reasoning"`
+	ThinkingLevelMap map[string]*string `json:"thinkingLevelMap,omitempty"`
+	Cost             *Cost              `json:"cost"`
+	Compat           Compat             `json:"compat,omitzero"`
 }
 
 // Provider describes a connection plus its resolved models.
@@ -146,6 +162,7 @@ type ModelSeed struct {
 	MaxTokens          int                `json:"maxTokens,omitzero"`
 	Input              []string           `json:"input,omitempty"`
 	ApplyPatchToolType string             `json:"applyPatchToolType,omitempty"`
+	RemoteCompaction   string             `json:"remoteCompaction,omitempty"`
 	Reasoning          *bool              `json:"reasoning,omitempty"`
 	ThinkingLevelMap   map[string]*string `json:"thinkingLevelMap,omitempty"`
 	Cost               *Cost              `json:"cost"`
@@ -273,7 +290,7 @@ func resolveSeed(providerID, providerAPI, providerBase string, seed ModelSeed, b
 	if seed.Reasoning != nil {
 		reasoning = *seed.Reasoning
 	}
-	return Model{Provider: providerID, ID: seed.ID, Name: name, API: api, BaseURL: base, Enabled: enabled, Builtin: builtin, Customized: !builtin, ContextWindow: window, MaxTokens: maxTokens, Input: input, ApplyPatchToolType: seed.ApplyPatchToolType, Reasoning: reasoning, ThinkingLevelMap: cloneThinkingMap(seed.ThinkingLevelMap), Cost: cloneCost(seed.Cost), Compat: seed.Compat}
+	return Model{Provider: providerID, ID: seed.ID, Name: name, API: api, BaseURL: base, Enabled: enabled, Builtin: builtin, Customized: !builtin, ContextWindow: window, MaxTokens: maxTokens, Input: input, ApplyPatchToolType: seed.ApplyPatchToolType, RemoteCompaction: seed.RemoteCompaction, Reasoning: reasoning, ThinkingLevelMap: cloneThinkingMap(seed.ThinkingLevelMap), Cost: cloneCost(seed.Cost), Compat: seed.Compat}
 }
 
 func cloneThinkingMap(in map[string]*string) map[string]*string {

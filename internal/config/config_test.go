@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/pflag"
@@ -114,7 +115,8 @@ func TestLoadMissingFilesUsesBuiltin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 16384 {
+	if !cfg.Compaction.Enabled || cfg.Compaction.ReserveTokens != 16384 ||
+		cfg.Compaction.Mode != "auto" || !cfg.Compaction.ServerSide {
 		t.Fatalf("builtin compaction: %+v", cfg.Compaction)
 	}
 	if cfg.Server.Addr != "127.0.0.1:19800" {
@@ -125,6 +127,17 @@ func TestLoadMissingFilesUsesBuiltin(t *testing.T) {
 	}
 	if cfg.Log.Level != "info" || cfg.Log.MaxSizeMB != 10 || cfg.Log.MaxBackups != 3 {
 		t.Fatalf("builtin log: %+v", cfg.Log)
+	}
+}
+
+func TestLoadRejectsInvalidCompactionMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KI_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "ki.toml"), []byte("[compaction]\nmode = \"magic\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(t.TempDir()); err == nil || !strings.Contains(err.Error(), "compaction.mode") {
+		t.Fatalf("invalid mode error = %v", err)
 	}
 }
 

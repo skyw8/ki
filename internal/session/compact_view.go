@@ -309,7 +309,11 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			if e.Usage != nil {
 				lastStep = &TurnStep{Usage: e.Usage}
 			}
-			nodes = append(nodes, node{e.ID, e.Summary, []int{i}})
+			preview := e.Summary
+			if e.Responses != nil {
+				preview = "OpenAI remote compaction"
+			}
+			nodes = append(nodes, node{e.ID, preview, []int{i}})
 			stats.Steps++
 			// A compaction rewrites the context, so the client restarts its
 			// cache comparison here too.

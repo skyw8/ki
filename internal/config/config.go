@@ -36,6 +36,13 @@ type Compaction struct {
 	Enabled          bool `mapstructure:"enabled"`
 	ReserveTokens    int  `mapstructure:"reserve_tokens"`
 	KeepRecentTokens int  `mapstructure:"keep_recent_tokens"`
+	// Mode selects the checkpoint implementation: local uses a readable model
+	// summary, remote requires a provider compaction capability, and auto uses
+	// remote when available with a local fallback.
+	Mode string `mapstructure:"mode"`
+	// ServerSide enables provider-managed compaction during ordinary Responses
+	// generation. Manual and overflow compaction remain explicit checkpoints.
+	ServerSide bool `mapstructure:"server_side"`
 	// MaxContextTokens caps the context window used for the threshold check
 	// (min of model window and this value; 0 = model window only). A small
 	// value triggers compaction early, useful for low-cost testing without
@@ -80,6 +87,8 @@ func Builtin(home string) Config {
 			Enabled:          true,
 			ReserveTokens:    16384,
 			KeepRecentTokens: 20000,
+			Mode:             "auto",
+			ServerSide:       true,
 		},
 		Server:    Server{Addr: "127.0.0.1:19800"},
 		Log:       Log{Level: "info", MaxSizeMB: 10, MaxBackups: 3},
@@ -139,6 +148,11 @@ func LoadWithViper(cwd string, settings *viper.Viper) (Config, error) {
 	if cfg.Streaming.IdleTimeoutSeconds < 0 {
 		return Config{}, fmt.Errorf("streaming.idle_timeout_seconds must not be negative")
 	}
+	switch cfg.Compaction.Mode {
+	case "auto", "local", "remote":
+	default:
+		return Config{}, fmt.Errorf("compaction.mode must be auto, local, or remote")
+	}
 	if cfg.Sessions.Root == "" {
 		cfg.Sessions.Root = filepath.Join(cfg.Home, "sessions")
 	}
@@ -157,6 +171,8 @@ func setDefaults(settings *viper.Viper, cfg Config) {
 	settings.SetDefault("compaction.reserve_tokens", cfg.Compaction.ReserveTokens)
 	settings.SetDefault("compaction.keep_recent_tokens", cfg.Compaction.KeepRecentTokens)
 	settings.SetDefault("compaction.max_context_tokens", cfg.Compaction.MaxContextTokens)
+	settings.SetDefault("compaction.mode", cfg.Compaction.Mode)
+	settings.SetDefault("compaction.server_side", cfg.Compaction.ServerSide)
 	settings.SetDefault("server.addr", cfg.Server.Addr)
 	settings.SetDefault("log.level", cfg.Log.Level)
 	settings.SetDefault("log.max_size_mb", cfg.Log.MaxSizeMB)

@@ -3,6 +3,7 @@ package compact
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -24,6 +25,10 @@ type Summarizer interface {
 // The compaction is skipped and no model call happens.
 var ErrNothingToCompact = errors.New("nothing to compact")
 
+// ErrCompactionSkipped reports that a session_before_compact interceptor
+// vetoed the operation without changing context.
+var ErrCompactionSkipped = errors.New("compaction skipped")
+
 // EstimateTokens estimates the model-facing context size. Primary source is
 // the newest assistant message with usage (pi calculateContextTokens:
 // totalTokens, falling back to input+output+cacheRead+cacheWrite), plus
@@ -32,6 +37,13 @@ var ErrNothingToCompact = errors.New("nothing to compact")
 // usage: a usage recorded before the last compaction reflects the old,
 // larger context and would falsely re-trigger compaction.
 func EstimateTokens(msgs []types.Message, recentCompaction int64) int {
+	if tokens, ok := estimateFromUsage(msgs, recentCompaction); ok {
+		return tokens
+	}
+	return char4(msgs)
+}
+
+func estimateFromUsage(msgs []types.Message, recentCompaction int64) (int, bool) {
 	for i, v := range slices.Backward(msgs) {
 		m := v
 		if m.Role != "assistant" || m.Usage == nil {
@@ -39,15 +51,42 @@ func EstimateTokens(msgs []types.Message, recentCompaction int64) int {
 		}
 		if recentCompaction == 0 || m.Timestamp > recentCompaction {
 			if t := m.Usage.TotalTokens; t > 0 {
-				return t + trailingTokens(msgs[i+1:])
+				return t + trailingTokens(msgs[i+1:]), true
 			}
 			if t := m.Usage.Input + m.Usage.Output + m.Usage.CacheRead + m.Usage.CacheWrite; t > 0 {
-				return t + trailingTokens(msgs[i+1:])
+				return t + trailingTokens(msgs[i+1:]), true
 			}
 		}
 		break
 	}
-	return char4(msgs)
+	return 0, false
+}
+
+// EstimateModelContext includes an opaque Responses prefix using the same
+// conservative char/4 fallback as ordinary messages. Provider usage cannot
+// describe a standalone compacted window's next rendered size, so treating the
+// encrypted bytes as zero would immediately under-report context pressure.
+func EstimateModelContext(ctx types.ModelContext, recentCompaction int64) int {
+	if ctx.Portable {
+		if raw, err := json.Marshal(ctx.Messages); err == nil {
+			return (len(raw) + 3) / 4
+		}
+		return char4(ctx.Messages)
+	}
+	if ctx.Responses != nil {
+		if tokens, ok := estimateFromUsage(ctx.Messages, recentCompaction); ok {
+			// Usage from a request with this checkpoint already includes its
+			// provider-side token cost; adding ciphertext bytes would double it.
+			return tokens
+		}
+	}
+	tokens := EstimateTokens(ctx.Messages, recentCompaction)
+	if ctx.Responses != nil {
+		for _, item := range ctx.Responses.Items {
+			tokens += (len(item) + 3) / 4
+		}
+	}
+	return tokens
 }
 
 func trailingTokens(msgs []types.Message) int {
@@ -109,7 +148,10 @@ func Prepare(entries []session.Entry, cfg config.Compaction) (*Preparation, erro
 	}
 	prevCompIdx := -1
 	for i, v := range slices.Backward(entries) {
-		if v.Type == "compaction" {
+		// Remote Responses checkpoints are opaque and model-bound. A local
+		// fallback or model switch must summarize the durable transcript, not
+		// mistake an unreadable checkpoint for an empty local summary.
+		if v.Type == "compaction" && v.Responses == nil {
 			prevCompIdx = i
 			break
 		}

@@ -19,6 +19,8 @@ import (
 
 const version = 1
 
+const maxJSONLLineBytes = 64 * 1024 * 1024
+
 // ForkMode values for ForkAt (flat copies the leaf chain; tree keeps branching).
 const (
 	ForkModeFlat = "flat"
@@ -119,18 +121,21 @@ type Entry struct {
 	TokensBefore     int             `json:"tokensBefore,omitzero"`
 	Usage            *types.Usage    `json:"usage,omitempty"`
 	RetainedTail     []types.Message `json:"retainedTail,omitempty"`
-	Details          any             `json:"details,omitempty"`
-	Sideband         bool            `json:"sideband,omitzero"`
-	Provider         string          `json:"provider,omitempty"`
-	ModelID          string          `json:"modelId,omitempty"`
-	ThinkingEffort   string          `json:"thinkingEffort,omitempty"`
-	CatalogVersion   int             `json:"catalogVersion,omitzero"`
-	UsedTokens       int             `json:"usedTokens,omitzero"`
-	ContextWindow    int             `json:"contextWindow,omitzero"`
-	Estimated        bool            `json:"estimated,omitzero"`
-	Pricing          any             `json:"pricing,omitempty"`
-	System           string          `json:"system,omitempty"`
-	Tools            []ToolSchema    `json:"tools,omitempty"`
+	// Responses is the complete canonical output of a remote Responses
+	// compaction. It is provider-owned opaque state, not a readable summary.
+	Responses      *types.ResponsesContext `json:"responses,omitempty"`
+	Details        any                     `json:"details,omitempty"`
+	Sideband       bool                    `json:"sideband,omitzero"`
+	Provider       string                  `json:"provider,omitempty"`
+	ModelID        string                  `json:"modelId,omitempty"`
+	ThinkingEffort string                  `json:"thinkingEffort,omitempty"`
+	CatalogVersion int                     `json:"catalogVersion,omitzero"`
+	UsedTokens     int                     `json:"usedTokens,omitzero"`
+	ContextWindow  int                     `json:"contextWindow,omitzero"`
+	Estimated      bool                    `json:"estimated,omitzero"`
+	Pricing        any                     `json:"pricing,omitempty"`
+	System         string                  `json:"system,omitempty"`
+	Tools          []ToolSchema            `json:"tools,omitempty"`
 	// PromptUnchanged and Truncated are view-only flags for GET /v1/sessions/{id}.
 	// They are never written to jsonl.
 	PromptUnchanged bool `json:"promptUnchanged,omitzero"`
@@ -282,7 +287,7 @@ func Open(dir string) (*Session, error) {
 	}
 	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), maxJSONLLineBytes)
 	first := true
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -513,6 +518,27 @@ func (s *Session) MessagesToLeaf() []types.Message {
 	return s.messagesLocked(s.leafID)
 }
 
+// ContextToLeaf returns the model-facing history for target. A compatible
+// remote checkpoint becomes an opaque Responses prefix plus messages appended
+// after it; every other target receives the portable local-summary projection.
+func (s *Session) ContextToLeaf(target types.ProviderBinding) types.ModelContext {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.contextLocked(s.leafID, target)
+}
+
+// ContextTo is ContextToLeaf for an arbitrary branch point.
+func (s *Session) ContextTo(leaf string, target types.ProviderBinding) (types.ModelContext, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if leaf != "" {
+		if _, ok := s.byID[leaf]; !ok {
+			return types.ModelContext{}, fmt.Errorf("%w %q not found", errEntryNotFound, leaf)
+		}
+	}
+	return s.contextLocked(leaf, target), nil
+}
+
 // MessagesTo returns model-facing history for an arbitrary branch point.
 func (s *Session) MessagesTo(leaf string) ([]types.Message, error) {
 	s.mu.Lock()
@@ -543,7 +569,7 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 	chrono := rev
 	compIdx := -1
 	for i, e := range chrono {
-		if e.Type == "compaction" {
+		if e.Type == "compaction" && e.Responses == nil {
 			compIdx = i
 		}
 	}
@@ -592,6 +618,44 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 		}
 	}
 	return msgs
+}
+
+func (s *Session) contextLocked(leaf string, target types.ProviderBinding) types.ModelContext {
+	chrono := s.leafEntriesLocked(leaf)
+	latestCompaction := -1
+	for i, e := range chrono {
+		if e.Type == "compaction" {
+			latestCompaction = i
+		}
+	}
+	if latestCompaction >= 0 {
+		comp := chrono[latestCompaction]
+		if comp.Responses != nil && comp.Responses.Binding.Equal(target) {
+			ctx := cloneResponsesContext(comp.Responses)
+			var msgs []types.Message
+			for _, e := range chrono[latestCompaction+1:] {
+				if e.Type == "message" && e.Message != nil {
+					msgs = append(msgs, *e.Message)
+				}
+			}
+			return types.ModelContext{Responses: ctx, Messages: msgs}
+		}
+		if comp.Responses != nil {
+			return types.ModelContext{Messages: s.messagesLocked(leaf), Portable: true}
+		}
+	}
+	return types.ModelContext{Messages: s.messagesLocked(leaf)}
+}
+
+func cloneResponsesContext(in *types.ResponsesContext) *types.ResponsesContext {
+	if in == nil {
+		return nil
+	}
+	out := &types.ResponsesContext{Binding: in.Binding, Items: make([]json.RawMessage, len(in.Items))}
+	for i, item := range in.Items {
+		out.Items[i] = slices.Clone(item)
+	}
+	return out
 }
 
 // AppendMessage writes a message as a child of the current leaf.
@@ -686,6 +750,141 @@ func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, 
 		return Entry{}, err
 	}
 	return e, nil
+}
+
+// AppendResponsesCompaction records the complete canonical window returned by
+// a remote Responses compaction. Validation happens before the append so a
+// malformed or oversized provider result cannot advance the session leaf.
+func (s *Session) AppendResponsesCompaction(checkpoint types.ResponsesContext, tokensBefore int, usage *types.Usage) (Entry, error) {
+	copyCheckpoint, err := validatedResponsesContext(checkpoint)
+	if err != nil {
+		return Entry{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, err := idgen.EntryID()
+	if err != nil {
+		return Entry{}, fmt.Errorf("generate entry ID: %w", err)
+	}
+	e := Entry{
+		Type:         "compaction",
+		ID:           id,
+		ParentID:     s.leafID,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339Nano),
+		TokensBefore: tokensBefore,
+		Usage:        usage,
+		Responses:    copyCheckpoint,
+	}
+	if err := validateJSONLLine(e); err != nil {
+		return Entry{}, err
+	}
+	if err := s.appendLocked(e); err != nil {
+		return Entry{}, err
+	}
+	return e, nil
+}
+
+// AppendMessageAndResponsesCompaction commits a server-compacted assistant and
+// its canonical checkpoint in one append. The checkpoint is the child so later
+// tool results naturally become its suffix.
+func (s *Session) AppendMessageAndResponsesCompaction(
+	message types.Message,
+	checkpoint types.ResponsesContext,
+	tokensBefore int,
+) (Entry, Entry, error) {
+	copyCheckpoint, err := validatedResponsesContext(checkpoint)
+	if err != nil {
+		return Entry{}, Entry{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	messageID, err := idgen.EntryID()
+	if err != nil {
+		return Entry{}, Entry{}, fmt.Errorf("generate message entry ID: %w", err)
+	}
+	checkpointID, err := idgen.EntryID()
+	if err != nil {
+		return Entry{}, Entry{}, fmt.Errorf("generate compaction entry ID: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	messageEntry := Entry{
+		Type: "message", ID: messageID, ParentID: s.leafID, Timestamp: now, Message: &message,
+	}
+	checkpointEntry := Entry{
+		Type: "compaction", ID: checkpointID, ParentID: messageID, Timestamp: now,
+		TokensBefore: tokensBefore, Responses: copyCheckpoint,
+	}
+	messageJSON, err := json.Marshal(messageEntry)
+	if err != nil {
+		return Entry{}, Entry{}, err
+	}
+	checkpointJSON, err := json.Marshal(checkpointEntry)
+	if err != nil {
+		return Entry{}, Entry{}, err
+	}
+	if len(messageJSON) >= maxJSONLLineBytes || len(checkpointJSON) >= maxJSONLLineBytes {
+		return Entry{}, Entry{}, errors.New("responses compaction entry is too large")
+	}
+	batch := make([]byte, 0, len(messageJSON)+len(checkpointJSON)+2)
+	batch = append(batch, messageJSON...)
+	batch = append(batch, '\n')
+	batch = append(batch, checkpointJSON...)
+	batch = append(batch, '\n')
+	oldActiveLeaf := s.Config.ActiveLeafID
+	s.Config.ActiveLeafID = checkpointID
+	if err := s.appendRawAndConfig(batch); err != nil {
+		s.Config.ActiveLeafID = oldActiveLeaf
+		return Entry{}, Entry{}, err
+	}
+	s.entries = append(s.entries, messageEntry, checkpointEntry)
+	s.byID[messageID], s.byID[checkpointID] = messageEntry, checkpointEntry
+	s.leafID = checkpointID
+	return messageEntry, checkpointEntry, nil
+}
+
+func validatedResponsesContext(checkpoint types.ResponsesContext) (*types.ResponsesContext, error) {
+	if strings.TrimSpace(checkpoint.Binding.Provider) == "" ||
+		strings.TrimSpace(checkpoint.Binding.API) == "" ||
+		strings.TrimSpace(checkpoint.Binding.BaseURL) == "" ||
+		strings.TrimSpace(checkpoint.Binding.Model) == "" {
+		return nil, errors.New("invalid responses compaction binding")
+	}
+	if len(checkpoint.Items) == 0 {
+		return nil, errors.New("responses compaction output is empty")
+	}
+	copyCheckpoint := cloneResponsesContext(&checkpoint)
+	total := 0
+	hasCompaction := false
+	for _, raw := range copyCheckpoint.Items {
+		total += len(raw)
+		if total > maxJSONLLineBytes {
+			return nil, errors.New("responses compaction output is too large")
+		}
+		var item map[string]any
+		if len(raw) == 0 || json.Unmarshal(raw, &item) != nil || item == nil {
+			return nil, errors.New("responses compaction item must be a JSON object")
+		}
+		if typ, _ := item["type"].(string); typ == "compaction" {
+			encrypted, _ := item["encrypted_content"].(string)
+			hasCompaction = hasCompaction || encrypted != ""
+		}
+	}
+	if !hasCompaction {
+		return nil, errors.New("responses compaction output has no compaction item")
+	}
+	return copyCheckpoint, nil
+}
+
+func validateJSONLLine(value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("encode jsonl entry: %w", err)
+	}
+	if len(encoded) >= maxJSONLLineBytes {
+		return errors.New("responses compaction entry is too large")
+	}
+	return nil
 }
 
 // AppendEvent records a non-message event entry (compaction_start/end) so
@@ -910,6 +1109,51 @@ func (s *Session) appendRaw(b []byte) error {
 		return err
 	}
 	return f.Sync()
+}
+
+// appendRawAndConfig commits a multi-entry append and its active leaf under
+// one file gate. A failed/short write is truncated back to the original size,
+// so Open never encounters half of an opaque checkpoint.
+func (s *Session) appendRawAndConfig(b []byte) error {
+	configJSON, err := json.MarshalIndent(s.Config, "", "  ")
+	if err != nil {
+		return err
+	}
+	gate := fileGate(s.Dir)
+	gate.Lock()
+	defer gate.Unlock()
+	f, err := os.OpenFile(filepath.Join(s.Dir, "events.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	rollback := func(cause error) error {
+		if truncateErr := f.Truncate(info.Size()); truncateErr != nil {
+			return errors.Join(cause, fmt.Errorf("rollback jsonl append: %w", truncateErr))
+		}
+		if syncErr := f.Sync(); syncErr != nil {
+			return errors.Join(cause, fmt.Errorf("sync jsonl rollback: %w", syncErr))
+		}
+		return cause
+	}
+	n, err := f.Write(b)
+	if err != nil {
+		return rollback(err)
+	}
+	if n != len(b) {
+		return rollback(io.ErrShortWrite)
+	}
+	if err := f.Sync(); err != nil {
+		return rollback(err)
+	}
+	if err := writeFileAtomic(filepath.Join(s.Dir, "config.json"), append(configJSON, '\n')); err != nil {
+		return rollback(err)
+	}
+	return nil
 }
 
 func (s *Session) writeConfig() error {
@@ -1186,7 +1430,7 @@ func rewriteHeader(s *Session) error {
 	}
 	var rest []byte
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), maxJSONLLineBytes)
 	first := true
 	for sc.Scan() {
 		if first {

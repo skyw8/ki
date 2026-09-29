@@ -227,7 +227,11 @@ func traceEntry(e Entry) TraceEntry {
 		row.ToolsHash = digestJSON(e.Tools)
 	}
 	if e.Type == "compaction" {
-		row.Preview = preview(e.Summary, 160)
+		if e.Responses != nil {
+			row.Preview = "OpenAI remote compaction"
+		} else {
+			row.Preview = preview(e.Summary, 160)
+		}
 		row.Usage = e.Usage
 	}
 	if m := e.Message; m != nil {

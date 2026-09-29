@@ -85,6 +85,14 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
+type rpcResponseError struct {
+	Code    int
+	Message string
+}
+
+func (e *rpcResponseError) Error() string { return fmt.Sprintf("%v: %s", errRPC, e.Message) }
+func (e *rpcResponseError) Unwrap() error { return errRPC }
+
 type rpcClient struct {
 	name               string
 	failClosed         bool
@@ -92,6 +100,7 @@ type rpcClient struct {
 	cmd                *exec.Cmd
 	enc                *json.Encoder
 	mu                 sync.Mutex
+	pendingMu          sync.Mutex
 	pending            map[string]chan rpcMsg
 	idSeq              atomic.Int64
 	closed             chan struct{}
@@ -111,6 +120,8 @@ type rpcClient struct {
 	busMu              sync.Mutex
 	host               SessionHost
 }
+
+const maxRPCLineBytes = 65 * 1024 * 1024
 
 func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, host SessionHost) (*rpcClient, error) {
 	env := sidecarEnv(d, sessionID, home, cwd)
@@ -298,7 +309,10 @@ func applyRegistrationGates(caps []string, reg *Registration) []string {
 func (c *rpcClient) readLoop(r io.Reader) {
 	defer c.markClosed()
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	// Remote compaction may legitimately return a canonical window near the
+	// session's 64 MiB entry limit. Keep one bounded RPC line large enough for
+	// its JSON-RPC envelope instead of closing the sidecar at the old 8 MiB cap.
+	sc.Buffer(make([]byte, 0, 64*1024), maxRPCLineBytes)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -358,9 +372,9 @@ func (c *rpcClient) readLoop(r io.Reader) {
 		}
 		id, _ := stringifyID(msg.ID)
 		if msg.Method != "" && id != "" {
-			c.mu.Lock()
+			c.pendingMu.Lock()
 			ch := c.pending[id]
-			c.mu.Unlock()
+			c.pendingMu.Unlock()
 			if ch == nil {
 				go c.handleInbound(msg)
 				continue
@@ -374,9 +388,9 @@ func (c *rpcClient) readLoop(r io.Reader) {
 		if id == "" {
 			continue
 		}
-		c.mu.Lock()
+		c.pendingMu.Lock()
 		ch := c.pending[id]
-		c.mu.Unlock()
+		c.pendingMu.Unlock()
 		if ch != nil {
 			select {
 			case ch <- msg:
@@ -427,35 +441,63 @@ func stringifyID(id any) (string, bool) {
 }
 
 func (c *rpcClient) call(ctx context.Context, method string, params any, result any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	id := strconv.FormatInt(c.idSeq.Add(1), 10)
 	raw, err := json.Marshal(params)
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	ch := make(chan rpcMsg, 1)
-	c.mu.Lock()
+	c.pendingMu.Lock()
 	c.pending[id] = ch
-	err = c.enc.Encode(rpcMsg{JSONRPC: "2.0", ID: id, Method: method, Params: raw})
-	c.mu.Unlock()
+	c.pendingMu.Unlock()
 	defer func() {
-		c.mu.Lock()
+		c.pendingMu.Lock()
 		delete(c.pending, id)
+		c.pendingMu.Unlock()
+	}()
+	writeDone := make(chan error, 1)
+	go func() {
+		c.mu.Lock()
+		writeDone <- c.enc.Encode(rpcMsg{JSONRPC: "2.0", ID: id, Method: method, Params: raw})
 		c.mu.Unlock()
 	}()
-	if err != nil {
-		return err
+	select {
+	case err = <-writeDone:
+		if err != nil {
+			return err
+		}
+	case <-ctx.Done():
+		// A pipe write has no portable deadline. Terminating the sidecar is the
+		// only way to ensure a canceled large compact RPC releases the shared
+		// writer instead of initiating billable work after its caller is gone.
+		if c.cmd != nil {
+			tools.KillProcessGroup(c.cmd)
+		}
+		return ctx.Err()
+	case <-c.closed:
+		return fmt.Errorf("%w: sidecar closed", errRPC)
 	}
 	var msg rpcMsg
 	select {
 	case <-ctx.Done():
-		c.notify("cancel", withSessionParam(sessionIDFromContext(ctx), map[string]any{"id": id}))
+		if method == "provider.compact" && c.cmd != nil {
+			tools.KillProcessGroup(c.cmd)
+		} else {
+			c.notify("cancel", withSessionParam(sessionIDFromContext(ctx), map[string]any{"id": id}))
+		}
 		return ctx.Err()
 	case <-c.closed:
 		return fmt.Errorf("%w: sidecar closed", errRPC)
 	case msg = <-ch:
 	}
 	if msg.Error != nil {
-		return fmt.Errorf("%w: %s", errRPC, msg.Error.Message)
+		return &rpcResponseError{Code: msg.Error.Code, Message: msg.Error.Message}
 	}
 	if result != nil && len(msg.Result) > 0 {
 		return json.Unmarshal(msg.Result, result)
@@ -718,10 +760,16 @@ func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, 
 		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 	}
 	ch := make(chan rpcMsg, 1)
-	c.mu.Lock()
+	c.pendingMu.Lock()
 	c.pending[id] = ch
-	if err := c.enc.Encode(rpcMsg{JSONRPC: "2.0", ID: id, Method: "tool.execute", Params: raw}); err != nil {
+	c.pendingMu.Unlock()
+	defer func() {
+		c.pendingMu.Lock()
 		delete(c.pending, id)
+		c.pendingMu.Unlock()
+	}()
+	c.mu.Lock()
+	if err := c.enc.Encode(rpcMsg{JSONRPC: "2.0", ID: id, Method: "tool.execute", Params: raw}); err != nil {
 		c.mu.Unlock()
 		slog.Debug("extension tool.execute encode", "extension", c.name, "err", err)
 		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}

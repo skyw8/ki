@@ -2,6 +2,7 @@ package compact
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +12,44 @@ import (
 	"ki/internal/session"
 	"ki/internal/types"
 )
+
+func TestPrepareIgnoresRemoteCheckpointForLocalFallback(t *testing.T) {
+	s, err := session.Create(t.TempDir(), t.TempDir(), "openai", "gpt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	for _, text := range []string{"old one", "old two", "old three"} {
+		_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: text}}})
+	}
+	if _, err := s.AppendResponsesCompaction(types.ResponsesContext{
+		Binding: types.ProviderBinding{
+			Provider: "openai", API: "responses", BaseURL: "https://api.openai.com/v1", Model: "gpt",
+		},
+		Items: []json.RawMessage{json.RawMessage(`{"type":"compaction","encrypted_content":"secret"}`)},
+	}, 10, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "new"}}})
+
+	prep, err := Prepare(s.LeafEntries(), config.Compaction{KeepRecentTokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text strings.Builder
+	for _, message := range prep.MessagesToSummarize {
+		text.WriteString(message.Text())
+	}
+	for _, message := range prep.TurnPrefixMessages {
+		text.WriteString(message.Text())
+	}
+	if !strings.Contains(text.String(), "old one") {
+		t.Fatalf("local fallback lost raw history: %+v", prep)
+	}
+	if strings.Contains(text.String(), "secret") {
+		t.Fatal("opaque encrypted context entered local summary input")
+	}
+}
 
 func TestShouldRunAndAppendRebuildsHistory(t *testing.T) {
 	if ShouldRun(100, 128000, config.Compaction{Enabled: true, ReserveTokens: 16384}) {
@@ -68,6 +107,47 @@ func TestShouldRunMaxContextTokensCapsWindow(t *testing.T) {
 	// Disabled still wins.
 	if ShouldRun(1<<20, 128000, config.Compaction{Enabled: false, MaxContextTokens: 6000}) {
 		t.Fatal("disabled must never compact")
+	}
+}
+
+func TestEstimateModelContextCountsOpaqueResponsesPrefix(t *testing.T) {
+	ctx := types.ModelContext{
+		Responses: &types.ResponsesContext{Items: []json.RawMessage{
+			json.RawMessage(`{"type":"compaction","encrypted_content":"1234567890123456"}`),
+		}},
+		Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "tail"}}}},
+	}
+	got := EstimateModelContext(ctx, 0)
+	if got <= EstimateTokens(ctx.Messages, 0) {
+		t.Fatalf("opaque prefix was not counted: %d", got)
+	}
+}
+
+func TestEstimateModelContextDoesNotDoubleCountOpaquePrefixWithUsage(t *testing.T) {
+	ctx := types.ModelContext{
+		Responses: &types.ResponsesContext{Items: []json.RawMessage{
+			json.RawMessage(`{"type":"compaction","encrypted_content":"1234567890123456"}`),
+		}},
+		Messages: []types.Message{{
+			Role: "assistant", Timestamp: 200,
+			Usage: &types.Usage{TotalTokens: 123},
+		}},
+	}
+	if got := EstimateModelContext(ctx, 100); got != 123 {
+		t.Fatalf("estimate = %d, want usage without ciphertext double count", got)
+	}
+}
+
+func TestEstimatePortableContextIgnoresCheckpointScopedUsage(t *testing.T) {
+	ctx := types.ModelContext{
+		Portable: true,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.Content{{Type: "text", Text: strings.Repeat("x", 400)}}},
+			{Role: "assistant", Timestamp: 200, Usage: &types.Usage{TotalTokens: 1}},
+		},
+	}
+	if got := EstimateModelContext(ctx, 100); got <= 100 {
+		t.Fatalf("portable estimate = %d, want expanded serialized estimate", got)
 	}
 }
 

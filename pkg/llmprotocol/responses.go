@@ -12,16 +12,19 @@ import (
 // statelessly, so reasoning items with encrypted content must be requested and
 // retained as input items on the next turn.
 func ResponsesBody(req Request) map[string]any {
-	input := make([]any, 0, len(req.Messages))
-	for _, m := range Replayable(req.Messages) {
-		input = append(input, toResponsesItems(m)...)
-	}
+	input := responsesInput(req.ResponsesWindow, req.Messages)
 	body := map[string]any{
 		"model":   req.Model,
 		"input":   input,
 		"stream":  true,
 		"store":   false,
 		"include": []string{"reasoning.encrypted_content"},
+	}
+	if req.ResponsesCompactThreshold > 0 {
+		body["context_management"] = []map[string]any{{
+			"type":              "compaction",
+			"compact_threshold": req.ResponsesCompactThreshold,
+		}}
 	}
 	if req.MaxTokens > 0 {
 		body["max_output_tokens"] = req.MaxTokens
@@ -55,6 +58,51 @@ func ResponsesBody(req Request) map[string]any {
 	return body
 }
 
+func responsesInput(window ResponsesWindow, messages []Message) []any {
+	input := make([]any, 0, len(window)+len(messages))
+	for _, item := range window {
+		input = append(input, item)
+	}
+	for _, m := range Replayable(messages) {
+		items := toResponsesItems(m)
+		// A server-side compaction item supersedes every earlier stateless
+		// input item. Reset only for items emitted by an ordinary response;
+		// standalone /responses/compact windows remain canonical and unpruned.
+		if len(m.ResponsesItems) > 0 {
+			input = input[:0]
+		}
+		input = append(input, items...)
+	}
+	return input
+}
+
+// ResponsesItemsForMessage converts one message to the exact ordered Responses
+// items used for stateless replay. It is used by hosts to turn a server-side
+// compaction response into a durable canonical checkpoint.
+func ResponsesItemsForMessage(message Message) (ResponsesWindow, error) {
+	if len(message.ResponsesItems) > 0 {
+		out := make(ResponsesWindow, len(message.ResponsesItems))
+		for i, item := range message.ResponsesItems {
+			out[i] = append(ResponsesItem(nil), item...)
+		}
+		return out, nil
+	}
+	rawItems := toResponsesItems(message)
+	out := make(ResponsesWindow, 0, len(rawItems))
+	for _, value := range rawItems {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("marshal Responses item: %w", err)
+		}
+		var item ResponsesItem
+		if err := json.Unmarshal(raw, &item); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
 func toResponsesItems(m Message) []any {
 	switch m.Role {
 	case "toolResult":
@@ -70,7 +118,14 @@ func toResponsesItems(m Message) []any {
 			"output":  responsesToolOutput(m),
 		}}
 	case "assistant":
-		var items []any
+		if len(m.ResponsesItems) > 0 {
+			items := make([]any, len(m.ResponsesItems))
+			for i, item := range m.ResponsesItems {
+				items[i] = item
+			}
+			return items
+		}
+		items := make([]any, 0, len(m.ResponsesItems)+len(m.Content))
 		var text strings.Builder
 		var textSignature string
 		flushText := func() {
@@ -170,8 +225,8 @@ func validateResponsesBody(body map[string]any) error {
 		return nil
 	}
 	for i, raw := range input {
-		item, ok := raw.(map[string]any)
-		if !ok {
+		item, err := responsesInputObject(raw)
+		if err != nil {
 			return fmt.Errorf("responses input[%d]: %w", i, errResponsesInputNotObject)
 		}
 		typ, _ := item["type"].(string)
@@ -184,6 +239,29 @@ func validateResponsesBody(body map[string]any) error {
 		}
 	}
 	return nil
+}
+
+func responsesInputObject(raw any) (map[string]any, error) {
+	if item, ok := raw.(map[string]any); ok {
+		return item, nil
+	}
+	var data []byte
+	switch item := raw.(type) {
+	case ResponsesItem:
+		data = item
+	case json.RawMessage:
+		data = item
+	default:
+		return nil, errResponsesInputNotObject
+	}
+	if err := validateResponsesItem(data); err != nil {
+		return nil, err
+	}
+	var item map[string]any
+	if err := json.Unmarshal(data, &item); err != nil || item == nil {
+		return nil, errResponsesInputNotObject
+	}
+	return item, nil
 }
 
 func responsesToolOutput(m Message) any {
@@ -245,6 +323,73 @@ func responsesImageParts(m Message) []map[string]any {
 	return imgs
 }
 
+// ResponsesCompactBody builds the wire payload for POST /responses/compact.
+// The provider-owned window is retained in front of newly converted messages.
+func ResponsesCompactBody(req ResponsesCompactRequest) map[string]any {
+	body := map[string]any{
+		"model": req.Model,
+		"input": responsesInput(req.Window, req.Messages),
+	}
+	if req.Instructions != "" {
+		body["instructions"] = req.Instructions
+	}
+	return body
+}
+
+// CompactResponses invokes OpenAI's standalone Responses compaction endpoint.
+// Output is the complete canonical next context window and must be replayed
+// without pruning.
+func (l *Client) CompactResponses(ctx context.Context, req ResponsesCompactRequest) (ResponsesCompactResult, error) {
+	body := ResponsesCompactBody(req)
+	if err := validateResponsesBody(body); err != nil {
+		return ResponsesCompactResult{}, &nonRetryableError{err: err}
+	}
+	raw, err := l.postJSON(ctx, l.Base+"/responses/compact", body, l.oaHeaders())
+	if err != nil {
+		return ResponsesCompactResult{}, err
+	}
+	var response struct {
+		ID     string          `json:"id"`
+		Output ResponsesWindow `json:"output"`
+		Usage  map[string]any  `json:"usage"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return ResponsesCompactResult{}, &nonRetryableError{
+			err: fmt.Errorf("%w: %v", errResponsesCompactInvalidJSON, err),
+		}
+	}
+	if len(response.Output) == 0 {
+		return ResponsesCompactResult{}, &nonRetryableError{err: errResponsesCompactOutputMissing}
+	}
+	hasCompaction := false
+	for _, item := range response.Output {
+		if item.Type() != "compaction" {
+			continue
+		}
+		var header struct {
+			EncryptedContent string `json:"encrypted_content"`
+		}
+		if json.Unmarshal(item, &header) == nil && header.EncryptedContent != "" {
+			hasCompaction = true
+			break
+		}
+	}
+	if !hasCompaction {
+		return ResponsesCompactResult{}, &nonRetryableError{err: errResponsesCompactOutputMissing}
+	}
+	var usage *Usage
+	if response.Usage != nil {
+		message := Message{}
+		applyResponsesUsage(&message, map[string]any{"usage": response.Usage})
+		usage = message.Usage
+	}
+	return ResponsesCompactResult{
+		ID:     response.ID,
+		Output: response.Output,
+		Usage:  usage,
+	}, nil
+}
+
 func (l *Client) streamResponses(ctx context.Context, req Request, emit func(AssistantDelta) error) (Message, error) {
 	body := ResponsesBody(req)
 	if err := validateResponsesBody(body); err != nil {
@@ -262,6 +407,9 @@ func parseResponsesSSE(event, data string, acc *Message) sseParseResult {
 	typ, _ := obj["type"].(string)
 	if typ == "" {
 		typ = event
+	}
+	if window := rawResponsesCompactionWindow([]byte(data), typ); len(window) > 0 {
+		acc.ResponsesItems = window
 	}
 	switch typ {
 	case "response.created", "response.in_progress", "response.queued":
@@ -610,9 +758,65 @@ func applyResponsesOutputItem(acc *Message, item map[string]any, outputIndex int
 			block.ThinkingSignature = marshalArguments(item)
 		}
 		return sseParseResult{}
+	case "compaction":
+		return sseParseResult{}
 	default:
 		return sseParseResult{}
 	}
+}
+
+func rawResponsesCompactionWindow(data []byte, eventType string) ResponsesWindow {
+	// Only a completed response defines a canonical next window. An item seen
+	// before response.incomplete/failed may be followed by output the provider
+	// never committed and must not replace durable context.
+	if eventType != "response.completed" && eventType != "response.done" {
+		return nil
+	}
+	var envelope struct {
+		Response json.RawMessage   `json:"response"`
+		Output   []json.RawMessage `json:"output"`
+		Status   string            `json:"status"`
+	}
+	if json.Unmarshal(data, &envelope) != nil {
+		return nil
+	}
+	if envelope.Status != "" && envelope.Status != "completed" {
+		return nil
+	}
+	candidates := envelope.Output
+	if len(envelope.Response) > 0 {
+		var response struct {
+			Status string            `json:"status"`
+			Output []json.RawMessage `json:"output"`
+		}
+		if json.Unmarshal(envelope.Response, &response) != nil ||
+			(response.Status != "" && response.Status != "completed") {
+			return nil
+		}
+		candidates = response.Output
+	}
+	lastCompaction := -1
+	for i, raw := range candidates {
+		var header struct {
+			Type             string `json:"type"`
+			EncryptedContent string `json:"encrypted_content"`
+		}
+		if json.Unmarshal(raw, &header) == nil && header.Type == "compaction" && header.EncryptedContent != "" {
+			lastCompaction = i
+		}
+	}
+	if lastCompaction < 0 {
+		return nil
+	}
+	out := make(ResponsesWindow, 0, len(candidates)-lastCompaction)
+	for _, raw := range candidates[lastCompaction:] {
+		var item ResponsesItem
+		if json.Unmarshal(raw, &item) != nil {
+			return nil
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func responseContent(value any) []map[string]any {

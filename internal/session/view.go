@@ -223,7 +223,9 @@ func BuildBefore(entries []Entry, leafID, beforeID string, limit int) View {
 	return View{Entries: slimmed, HasMore: start > 0, OldestID: oldest}
 }
 
-// LookupEntries returns unslimmed entries for the given ids, preserving request order.
+// LookupEntries returns unslimmed user-visible entries for the given ids,
+// preserving request order. Provider-owned encrypted checkpoints are always
+// redacted, including exact-body APIs.
 func LookupEntries(entries []Entry, ids []string) []Entry {
 	if len(ids) > MaxViewBatch {
 		ids = ids[:MaxViewBatch]
@@ -239,8 +241,19 @@ func LookupEntries(entries []Entry, ids []string) []Entry {
 			continue
 		}
 		if e, ok := byID[id]; ok {
+			e.Responses = nil
 			out = append(out, e)
 		}
+	}
+	return out
+}
+
+// RedactProviderContext removes encrypted provider checkpoints from a copy of
+// entries without applying ordinary body truncation.
+func RedactProviderContext(entries []Entry) []Entry {
+	out := slices.Clone(entries)
+	for i := range out {
+		out[i].Responses = nil
 	}
 	return out
 }
@@ -336,6 +349,9 @@ func promptCursor(entries []Entry) (string, string, bool) {
 func slimEntry(e Entry, prevSys, prevTools *string, seenHeader *bool, digests toolsDigests) Entry {
 	out := e
 	out.RetainedTail = nil
+	// Provider-owned encrypted compaction state is never part of a session
+	// view. It is replayed only at the provider boundary.
+	out.Responses = nil
 	if out.Type == "request_header" {
 		key := digests.key(out)
 		if *seenHeader && *prevSys == out.System && *prevTools == key {
@@ -447,7 +463,11 @@ func indexOf(e Entry) IndexEntry {
 	case "request_header":
 		ix.Preview = previewOf(e.System)
 	case "compaction":
-		ix.Preview = previewOf(e.Summary)
+		if e.Responses != nil {
+			ix.Preview = "OpenAI remote compaction"
+		} else {
+			ix.Preview = previewOf(e.Summary)
+		}
 	}
 	return ix
 }

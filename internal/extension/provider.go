@@ -191,6 +191,12 @@ func (m *ProviderManager) NewStreamer(model provider.Model, credential provider.
 	return &providerSidecarStreamer{manager: m, model: model, credential: credential}
 }
 
+// NewCompactor creates a host-side adapter for a provider sidecar's optional
+// standalone remote-compaction method.
+func (m *ProviderManager) NewCompactor(model provider.Model, credential provider.Credential) provider.Compactor {
+	return &providerSidecarStreamer{manager: m, model: model, credential: credential}
+}
+
 // Start launches provider runtimes together with ordinary extension runtimes.
 // Model listing and the first stream therefore do not determine process
 // startup timing.
@@ -476,3 +482,22 @@ func (s *providerSidecarStreamer) Stream(ctx context.Context, req loop.Request, 
 		Request:    req,
 	}, emit)
 }
+
+func (s *providerSidecarStreamer) Compact(ctx context.Context, req loop.Request) (provider.CompactResult, error) {
+	c, err := s.manager.client(ctx, s.model.Provider)
+	if err != nil {
+		return provider.CompactResult{}, err
+	}
+	result, err := c.compactProvider(ctx, ProviderCompactRequest{
+		Provider:   s.model.Provider,
+		Model:      s.model,
+		Credential: s.credential,
+		Request:    req,
+	})
+	if err != nil {
+		return provider.CompactResult{}, err
+	}
+	return provider.CompactResult{Items: result.Items, Usage: result.Usage}, nil
+}
+
+var _ provider.Compactor = (*providerSidecarStreamer)(nil)

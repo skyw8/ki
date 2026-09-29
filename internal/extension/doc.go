@@ -12,6 +12,10 @@
 // one NDJSON sidecar per enabled package, owned by the server process. Provider
 // capabilities use the same process-level lifetime and are shared by all
 // sessions.
+// Provider sidecars may additionally implement provider.compact and return
+// private Responses compaction items outside ordinary message/lifecycle JSON.
+// A synchronous hook that can change provider-visible messages or routing
+// forces portable history replay because it cannot inspect an encrypted prefix.
 // Channel sidecars can call session.appendMessage to persist a normal user
 // message without starting a run; session.appendEntry remains custom and is
 // not model-facing.

@@ -378,6 +378,7 @@ export type ModelInfo = {
 	maxTokens?: number
 	input?: string[]
 	applyPatchToolType?: 'freeform'
+	remoteCompaction?: 'openai'
 	reasoning?: boolean
 	thinkingLevels?: string[]
 	defaultThinking?: string

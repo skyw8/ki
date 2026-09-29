@@ -1,6 +1,48 @@
 package types
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
+
+// ProviderBinding identifies the provider endpoint and model that owns opaque
+// context. Every field participates in compatibility checks: provider-owned
+// encrypted state must never cross an endpoint or model switch.
+type ProviderBinding struct {
+	Provider   string `json:"provider"`
+	API        string `json:"api"`
+	BaseURL    string `json:"baseUrl"`
+	Model      string `json:"model"`
+	Credential string `json:"credential"`
+}
+
+// Equal reports whether opaque provider context can be replayed to other.
+func (b ProviderBinding) Equal(other ProviderBinding) bool {
+	return b.Provider == other.Provider &&
+		b.API == other.API &&
+		strings.TrimRight(b.BaseURL, "/") == strings.TrimRight(other.BaseURL, "/") &&
+		b.Model == other.Model &&
+		b.Credential == other.Credential
+}
+
+// ResponsesContext is an opaque canonical Responses input prefix. Items are
+// the complete ordered output returned by /responses/compact; Ki does not
+// interpret or prune them.
+type ResponsesContext struct {
+	Binding ProviderBinding   `json:"binding"`
+	Items   []json.RawMessage `json:"items"`
+}
+
+// ModelContext separates portable messages from an optional provider-owned
+// prefix. Non-Responses protocols use Messages and ignore Responses.
+type ModelContext struct {
+	Responses *ResponsesContext `json:"responses,omitempty"`
+	Messages  []Message         `json:"messages,omitempty"`
+	// Portable marks an expanded fallback from an incompatible opaque
+	// checkpoint. Provider usage after that checkpoint describes the compact
+	// prefix, not this larger durable transcript.
+	Portable bool `json:"-"`
+}
 
 // Content is one block inside a message.
 type Content struct {
@@ -68,12 +110,17 @@ type Message struct {
 	Model     string    `json:"model,omitempty"`
 	// ResponseID is the provider response identifier used by resumable
 	// Responses-style runtimes. It is deliberately optional for other APIs.
-	ResponseID   string `json:"responseId,omitempty"`
-	Usage        *Usage `json:"usage,omitempty"`
-	StopReason   string `json:"stopReason,omitempty"`
-	ErrorMessage string `json:"errorMessage,omitempty"`
-	ToolCallID   string `json:"toolCallId,omitempty"`
-	ToolName     string `json:"toolName,omitempty"`
+	ResponseID string `json:"responseId,omitempty"`
+	// ResponsesItems is the transient canonical provider output suffix from a
+	// server-side compaction. The emitter promotes it to a dedicated session
+	// checkpoint before persisting or publishing the message, so opaque
+	// encrypted state never leaks through ordinary message JSON.
+	ResponsesItems []json.RawMessage `json:"-"`
+	Usage          *Usage            `json:"usage,omitempty"`
+	StopReason     string            `json:"stopReason,omitempty"`
+	ErrorMessage   string            `json:"errorMessage,omitempty"`
+	ToolCallID     string            `json:"toolCallId,omitempty"`
+	ToolName       string            `json:"toolName,omitempty"`
 	// Details is persisted for clients and diagnostics but provider adapters
 	// deliberately omit it from model requests.
 	Details any `json:"details,omitempty"`

@@ -4,8 +4,11 @@
 // Path keeps host references out of browser URLs; Data is materialized only at
 // the provider boundary. Responses replay metadata (ItemID, ArgumentsRaw,
 // ThinkingSignature, ThinkingData, TextSignature, and Message.ResponseID) is
-// persisted as opaque provider-owned state. StreamIndex is transient provider
-// parsing state and is not persisted. Message roles: user, assistant,
+// persisted as opaque provider-owned state. ModelContext separates portable
+// messages from a binding-scoped canonical Responses prefix. ResponsesItems is
+// transient server-side compaction output promoted to a session checkpoint
+// before message persistence or client delivery. StreamIndex is transient
+// provider parsing state and is not persisted. Message roles: user, assistant,
 // toolResult. Tool results persist their completion timestamp and durationMs
 // for diagnostics and UI replay.
 // This package imports no other internal packages.

@@ -50,7 +50,10 @@ var (
 	errResponsesReasoningEmptyID           = errors.New("responses reasoning output item has empty id")
 	errResponsesFunctionCallMissing        = errors.New("responses function call is missing")
 	errResponsesFunctionCallArgsMustObject = errors.New("responses function call arguments must be a JSON object")
+	errResponsesCompactInvalidJSON         = errors.New("invalid Responses compact JSON")
+	errResponsesCompactOutputMissing       = errors.New("Responses compact response has no output window")
 
 	errProviderSSEEndedEarly  = errors.New("provider SSE stream ended before a terminal response event")
 	errProviderResponseFailed = errors.New("provider response failed")
+	errProviderJSONTooLarge   = errors.New("provider JSON response exceeds 65 MiB")
 )

@@ -468,11 +468,13 @@ func TestZeroToolDurationIsSerialized(t *testing.T) {
 
 // overflowStreamer fails once with a context-overflow error, then succeeds.
 type overflowStreamer struct {
-	n int
+	n        int
+	requests []Request
 }
 
-func (s *overflowStreamer) Stream(_ context.Context, _ Request, emit func(AssistantDelta) error) (types.Message, error) {
+func (s *overflowStreamer) Stream(_ context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error) {
 	s.n++
+	s.requests = append(s.requests, req)
 	if s.n == 1 {
 		return types.Message{
 			Role:         "assistant",
@@ -488,12 +490,22 @@ func (s *overflowStreamer) Stream(_ context.Context, _ Request, emit func(Assist
 func TestRunOverflowRecovery(t *testing.T) {
 	var evs []Event
 	hooked := false
+	streamer := &overflowStreamer{}
+	initial := []json.RawMessage{json.RawMessage(`{"type":"compaction","encrypted_content":"old"}`)}
+	replacement := []json.RawMessage{json.RawMessage(`{"type":"compaction","encrypted_content":"new"}`)}
 	_, err := Run(context.Background(), "hello", nil, Config{
-		Streamer: &overflowStreamer{},
+		Streamer:         streamer,
+		ResponsesContext: initial,
 		Hooks: Hooks{
-			OnContextOverflow: func(_ context.Context) ([]types.Message, error) {
+			OnContextOverflow: func(_ context.Context, failed Request) (types.ModelContext, error) {
 				hooked = true
-				return []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "compacted"}}}}, nil
+				if len(failed.ResponsesContext) != 1 || string(failed.ResponsesContext[0]) != string(initial[0]) {
+					t.Fatalf("hook did not receive failed provider context: %+v", failed.ResponsesContext)
+				}
+				return types.ModelContext{
+					Responses: &types.ResponsesContext{Items: replacement},
+					Messages:  []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "compacted"}}}},
+				}, nil
 			},
 		},
 	}, func(e Event) error {
@@ -505,6 +517,10 @@ func TestRunOverflowRecovery(t *testing.T) {
 	}
 	if !hooked {
 		t.Fatal("OnContextOverflow was not called")
+	}
+	if len(streamer.requests) != 2 || len(streamer.requests[1].ResponsesContext) != 1 ||
+		string(streamer.requests[1].ResponsesContext[0]) != string(replacement[0]) {
+		t.Fatalf("retry did not use replacement provider context: %+v", streamer.requests)
 	}
 	order := EventOrder(evs)
 	has := func(t EventType) bool {
@@ -556,9 +572,9 @@ func TestRunOverflowRecoveryRunsOnce(t *testing.T) {
 	_, err := Run(context.Background(), "hello", nil, Config{
 		Streamer: alwaysOverflowStreamer{},
 		Hooks: Hooks{
-			OnContextOverflow: func(_ context.Context) ([]types.Message, error) {
+			OnContextOverflow: func(_ context.Context, _ Request) (types.ModelContext, error) {
 				hooks++
-				return []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "c"}}}}, nil
+				return types.ModelContext{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "c"}}}}}, nil
 			},
 		},
 	}, func(_ Event) error { return nil })
@@ -567,6 +583,125 @@ func TestRunOverflowRecoveryRunsOnce(t *testing.T) {
 	}
 	if hooks != 1 {
 		t.Fatalf("OnContextOverflow called %d times, want 1", hooks)
+	}
+}
+
+type serverCompactionStreamer struct{}
+
+func (serverCompactionStreamer) Stream(_ context.Context, _ Request, _ func(AssistantDelta) error) (types.Message, error) {
+	return types.Message{
+		Role:    "assistant",
+		Content: []types.Content{{Type: "text", Text: "compacted reply"}},
+		ResponsesItems: []json.RawMessage{
+			json.RawMessage(`{"type":"compaction","encrypted_content":"opaque"}`),
+			json.RawMessage(`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"compacted reply"}]}`),
+		},
+		StopReason: "stop",
+	}, nil
+}
+
+func TestRunEmitsServerCompactionLifecycle(t *testing.T) {
+	var events []Event
+	if _, err := Run(context.Background(), "hello", nil, Config{
+		Streamer: serverCompactionStreamer{},
+	}, func(event Event) error {
+		events = append(events, event)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	start, assistantEnd, end := -1, -1, -1
+	for i, event := range events {
+		if event.Type == TurnEnd && event.Message != nil && len(event.Message.ResponsesItems) != 0 {
+			t.Fatal("turn_end retained provider-owned checkpoint")
+		}
+		switch {
+		case event.Type == CompactionStart && event.Reason == "server":
+			start = i
+		case event.Type == MessageEnd && event.Message != nil && event.Message.Role == "assistant":
+			assistantEnd = i
+		case event.Type == CompactionEnd && event.Reason == "server" && event.OK:
+			end = i
+		}
+	}
+	if start < 0 || assistantEnd <= start || end <= assistantEnd {
+		t.Fatalf("server compaction order: %+v", events)
+	}
+}
+
+type serverCompactionToolStreamer struct {
+	requests []Request
+}
+
+func (s *serverCompactionToolStreamer) Stream(_ context.Context, req Request, _ func(AssistantDelta) error) (types.Message, error) {
+	s.requests = append(s.requests, req)
+	if len(s.requests) == 1 {
+		return types.Message{
+			Role: "assistant",
+			Content: []types.Content{{
+				Type: "toolCall", ID: "call_1", ItemID: "fc_1", Name: "Read", Arguments: map[string]any{},
+			}},
+			ResponsesItems: []json.RawMessage{
+				json.RawMessage(`{"type":"compaction","encrypted_content":"opaque"}`),
+				json.RawMessage(`{"type":"function_call","id":"fc_1","call_id":"call_1","name":"Read","arguments":"{}"}`),
+			},
+			StopReason: "toolUse",
+		}, nil
+	}
+	return types.Message{
+		Role: "assistant", Content: []types.Content{{Type: "text", Text: "done"}}, StopReason: "stop",
+	}, nil
+}
+
+func TestRunPromotesServerCompactionBeforeToolRound(t *testing.T) {
+	streamer := &serverCompactionToolStreamer{}
+	history := []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "old"}}}}
+	if _, err := Run(context.Background(), "new", history, Config{
+		Streamer: streamer,
+		Tools:    []Tool{oneTool{}},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(streamer.requests) != 2 {
+		t.Fatalf("requests = %d", len(streamer.requests))
+	}
+	next := streamer.requests[1]
+	if len(next.ResponsesContext) != 2 {
+		t.Fatalf("canonical context not promoted: %+v", next.ResponsesContext)
+	}
+	if len(next.Messages) != 1 || next.Messages[0].Role != "toolResult" {
+		t.Fatalf("old history or duplicate assistant survived compaction: %+v", next.Messages)
+	}
+}
+
+type contextManagementFallbackStreamer struct {
+	requests []Request
+}
+
+func (s *contextManagementFallbackStreamer) Stream(_ context.Context, req Request, _ func(AssistantDelta) error) (types.Message, error) {
+	s.requests = append(s.requests, req)
+	if req.ResponsesCompactThreshold > 0 {
+		return types.Message{Role: "assistant", StopReason: "error", ErrorMessage: "unknown field context_management"},
+			testNonRetryableStreamError{}
+	}
+	return types.Message{
+		Role: "assistant", Content: []types.Content{{Type: "text", Text: "fallback ok"}}, StopReason: "stop",
+	}, nil
+}
+
+func TestRunAutoRetriesWithoutRejectedContextManagement(t *testing.T) {
+	streamer := &contextManagementFallbackStreamer{}
+	if _, err := Run(context.Background(), "hello", nil, Config{
+		Streamer:                  streamer,
+		ResponsesCompactThreshold: 1000,
+		ResponsesCompactFallback:  true,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(streamer.requests) != 2 ||
+		streamer.requests[0].ResponsesCompactThreshold != 1000 ||
+		streamer.requests[1].ResponsesCompactThreshold != 0 {
+		t.Fatalf("fallback requests: %+v", streamer.requests)
 	}
 }
 

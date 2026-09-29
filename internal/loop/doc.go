@@ -38,8 +38,10 @@
 // Transient provider errors retry up to 5 times with exponential backoff from
 // 2s. Deterministic request/protocol errors and context-overflow errors are not
 // retried; overflow returns ErrContextOverflow and Run recovers once via
-// Hooks.OnContextOverflow (server compacts and returns the new context; same
-// Run, so events are not replayed). stopReason "length" rejects tool calls
+// Hooks.OnContextOverflow (the failed Request is supplied; server returns both
+// portable messages and an optional canonical Responses prefix; same Run, so
+// events are not replayed). Request may also carry context_management for
+// provider-managed compaction. stopReason "length" rejects tool calls
 // (truncated arguments) instead of executing them.
 // Cancellation retains already-emitted partial content in its aborted message.
 // RunMessage accepts provider-neutral structured user content. TextOnly

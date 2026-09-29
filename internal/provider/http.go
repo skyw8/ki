@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -45,6 +46,7 @@ func (l *Live) Stream(ctx context.Context, req loop.Request, emit func(loop.Assi
 	}
 	message, err := l.client.Stream(ctx, toProtocolRequest(req), protocolEmit)
 	converted := fromProtocolMessage(message)
+	converted.API, converted.Provider, converted.Model = req.API, req.Provider, req.Model
 	if err != nil {
 		return converted, fmt.Errorf("protocol stream: %w", err)
 	}
@@ -54,21 +56,57 @@ func (l *Live) Stream(ctx context.Context, req loop.Request, emit func(loop.Assi
 	return converted, nil
 }
 
-func toProtocolRequest(req loop.Request) llmprotocol.Request {
-	return llmprotocol.Request{
-		System:                  req.System,
-		Messages:                toProtocolMessages(req.Messages),
-		Tools:                   toProtocolTools(req.Tools),
-		Provider:                req.Provider,
-		Model:                   req.Model,
-		MaxTokens:               req.MaxTokens,
-		ThinkingEffort:          req.ThinkingEffort,
-		ThinkingFormat:          req.ThinkingFormat,
-		MaxTokensField:          req.MaxTokensField,
-		SupportsReasoningEffort: req.SupportsReasoningEffort,
-		ForceAdaptiveThinking:   req.ForceAdaptiveThinking,
-		ThinkingLevelMap:        req.ThinkingLevelMap,
+// Compact implements standalone OpenAI Responses compaction.
+func (l *Live) Compact(ctx context.Context, req loop.Request) (CompactResult, error) {
+	if l.client.API != llmprotocol.APIResponses {
+		return CompactResult{}, fmt.Errorf("remote compaction requires Responses API")
 	}
+	protocolReq := toProtocolRequest(req)
+	result, err := l.client.CompactResponses(ctx, llmprotocol.ResponsesCompactRequest{
+		Model:        protocolReq.Model,
+		Instructions: protocolReq.System,
+		Window:       protocolReq.ResponsesWindow,
+		Messages:     protocolReq.Messages,
+	})
+	if err != nil {
+		return CompactResult{}, fmt.Errorf("protocol compact: %w", err)
+	}
+	out := CompactResult{Items: make([]json.RawMessage, len(result.Output))}
+	for i, item := range result.Output {
+		out.Items[i] = item.RawJSON()
+	}
+	if result.Usage != nil {
+		out.Usage = fromProtocolUsage(result.Usage)
+		if l.Model != nil {
+			CalculateCost(*l.Model, out.Usage)
+		}
+	}
+	return out, nil
+}
+
+func toProtocolRequest(req loop.Request) llmprotocol.Request {
+	out := llmprotocol.Request{
+		System:                    req.System,
+		Messages:                  toProtocolMessages(req.Messages),
+		Tools:                     toProtocolTools(req.Tools),
+		Provider:                  req.Provider,
+		Model:                     req.Model,
+		MaxTokens:                 req.MaxTokens,
+		ThinkingEffort:            req.ThinkingEffort,
+		ThinkingFormat:            req.ThinkingFormat,
+		MaxTokensField:            req.MaxTokensField,
+		SupportsReasoningEffort:   req.SupportsReasoningEffort,
+		ForceAdaptiveThinking:     req.ForceAdaptiveThinking,
+		ThinkingLevelMap:          req.ThinkingLevelMap,
+		ResponsesCompactThreshold: req.ResponsesCompactThreshold,
+	}
+	if len(req.ResponsesContext) > 0 {
+		out.ResponsesWindow = make(llmprotocol.ResponsesWindow, len(req.ResponsesContext))
+		for i, item := range req.ResponsesContext {
+			out.ResponsesWindow[i] = append(llmprotocol.ResponsesItem(nil), item...)
+		}
+	}
+	return out
 }
 
 func toProtocolTools(tools []loop.ToolSpec) []llmprotocol.ToolSpec {
@@ -104,6 +142,12 @@ func toProtocolMessage(message types.Message) llmprotocol.Message {
 		ToolName: message.ToolName, ToolType: message.ToolType, IsError: message.IsError,
 		StopReason: message.StopReason, ErrorMessage: message.ErrorMessage,
 	}
+	if len(message.ResponsesItems) > 0 {
+		out.ResponsesItems = make(llmprotocol.ResponsesWindow, len(message.ResponsesItems))
+		for i, item := range message.ResponsesItems {
+			out.ResponsesItems[i] = append(llmprotocol.ResponsesItem(nil), item...)
+		}
+	}
 	if len(message.Content) > 0 {
 		out.Content = make([]llmprotocol.Content, len(message.Content))
 		for i, content := range message.Content {
@@ -130,14 +174,14 @@ func fromProtocolMessage(message llmprotocol.Message) types.Message {
 		ErrorMessage: message.ErrorMessage, ToolCallID: message.ToolCallID, ToolName: message.ToolName,
 		ToolType: message.ToolType, IsError: message.IsError,
 	}
-	if message.Usage != nil {
-		usage := *message.Usage
-		var cost *types.UsageCost
-		if message.Usage.Cost != nil {
-			value := *message.Usage.Cost
-			cost = &types.UsageCost{Input: value.Input, Output: value.Output, CacheRead: value.CacheRead, CacheWrite: value.CacheWrite, Total: value.Total}
+	if len(message.ResponsesItems) > 0 {
+		out.ResponsesItems = make([]json.RawMessage, len(message.ResponsesItems))
+		for i, item := range message.ResponsesItems {
+			out.ResponsesItems[i] = item.RawJSON()
 		}
-		out.Usage = &types.Usage{Input: usage.Input, Output: usage.Output, CacheRead: usage.CacheRead, CacheWrite: usage.CacheWrite, TotalTokens: usage.TotalTokens, Cost: cost}
+	}
+	if message.Usage != nil {
+		out.Usage = fromProtocolUsage(message.Usage)
 	}
 	if len(message.Content) > 0 {
 		out.Content = make([]types.Content, len(message.Content))
@@ -146,6 +190,36 @@ func fromProtocolMessage(message llmprotocol.Message) types.Message {
 		}
 	}
 	return out
+}
+
+func fromProtocolUsage(usage *llmprotocol.Usage) *types.Usage {
+	if usage == nil {
+		return nil
+	}
+	var cost *types.UsageCost
+	if usage.Cost != nil {
+		value := *usage.Cost
+		cost = &types.UsageCost{Input: value.Input, Output: value.Output, CacheRead: value.CacheRead, CacheWrite: value.CacheWrite, Total: value.Total}
+	}
+	return &types.Usage{Input: usage.Input, Output: usage.Output, CacheRead: usage.CacheRead, CacheWrite: usage.CacheWrite, TotalTokens: usage.TotalTokens, Cost: cost}
+}
+
+// ResponsesCheckpointItems returns the canonical suffix beginning with a
+// server-emitted compaction item and including the assistant output that
+// followed it in the same response.
+func ResponsesCheckpointItems(message types.Message) ([]json.RawMessage, error) {
+	if len(message.ResponsesItems) == 0 {
+		return nil, nil
+	}
+	window, err := llmprotocol.ResponsesItemsForMessage(toProtocolMessage(message))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]json.RawMessage, len(window))
+	for i, item := range window {
+		out[i] = item.RawJSON()
+	}
+	return out, nil
 }
 
 func fromProtocolContent(content llmprotocol.Content) types.Content {
@@ -176,3 +250,4 @@ func replayable(messages []types.Message) []types.Message {
 }
 
 var _ loop.Streamer = (*Live)(nil)
+var _ Compactor = (*Live)(nil)

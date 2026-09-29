@@ -6,6 +6,9 @@
 // CLI --model does not write toml.
 // streaming.idle_timeout_seconds bounds native provider response-body reads
 // (default 300, zero disables); it is not a whole-request timeout.
+// compaction.mode selects auto, local, or remote checkpoints;
+// compaction.server_side enables provider-managed Responses compaction for
+// catalog models that explicitly advertise it.
 //
 // Provider/model settings and credentials are owned by package provider in
 // models.json and credentials.json, not TOML.

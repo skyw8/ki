@@ -95,7 +95,12 @@
 // event funnel (emit.go, runEmitter) that applies every loop event to jsonl,
 // the run SSE buffer, the WebUI push stream, and extension lifecycle
 // subscribers in that fixed order on the loop's goroutine. agent_end may
-// auto-compact. A steer accepted into the Inbox but never drained because the
+// auto-compact locally or through the standalone provider capability; models
+// with server-side Responses compaction instead promote returned opaque items
+// to a binding-scoped session checkpoint at message_end. Message-visible
+// lifecycle hooks force portable replay and suppress durable server checkpoints
+// because they cannot inspect an encrypted prefix. A steer accepted into
+// the Inbox but never drained because the
 // run was aborted is committed to jsonl as an unanswered user turn; a subagent
 // completion notification uses the same Inbox while the parent run is live, so
 // it lands inside the turn that started the agent, and falls back to the durable

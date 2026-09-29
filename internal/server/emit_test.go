@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -154,5 +155,99 @@ func TestEmitterMessageCarriesPersistedParentThroughWire(t *testing.T) {
 			t.Fatal("wire does not match persisted edge")
 		}
 		parent = ev.EntryID
+	}
+}
+
+func TestEmitterPromotesServerCompactionToPrivateCheckpoint(t *testing.T) {
+	em, sess, _ := newEmitterForTest(t)
+	em.info = provider.Model{
+		Provider: "openai", ID: "gpt", API: "responses",
+		BaseURL: "https://api.openai.com/v1", ContextWindow: 1000,
+	}
+	em.binding = em.s.providerBinding(em.info)
+	em.replayBinding = em.binding
+	opaque := json.RawMessage(`{"type":"compaction","id":"cmp_1","encrypted_content":"opaque"}`)
+	answer := json.RawMessage(`{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"after compact"}]}`)
+	message := types.Message{
+		Role:           "assistant",
+		Content:        []types.Content{{Type: "text", Text: "after compact"}},
+		ResponsesItems: []json.RawMessage{opaque, answer},
+	}
+	ev := loop.Event{Type: loop.MessageEnd, Message: &message}
+	if err := em.Emit(ev); err != nil {
+		t.Fatal(err)
+	}
+	// Persisting/buffering must not mutate the loop's in-memory assistant: its
+	// next tool round still needs the item to prune the previous request.
+	if len(message.ResponsesItems) != 2 {
+		t.Fatal("emitter cleared live provider context")
+	}
+	entries := sess.Entries()
+	var checkpoint *session.Entry
+	for i := range entries {
+		if entries[i].Type == "compaction" && entries[i].Responses != nil {
+			checkpoint = &entries[i]
+		}
+		if entries[i].Message != nil && len(entries[i].Message.ResponsesItems) != 0 {
+			t.Fatal("opaque context leaked into persisted message")
+		}
+	}
+	if checkpoint == nil || len(checkpoint.Responses.Items) != 2 {
+		t.Fatalf("checkpoint: %+v", checkpoint)
+	}
+	ctx := sess.ContextToLeaf(em.s.providerBinding(em.info))
+	if ctx.Responses == nil || len(ctx.Responses.Items) != 2 || len(ctx.Messages) != 0 {
+		t.Fatalf("projected context: %+v", ctx)
+	}
+	for _, buffered := range em.st.evs {
+		if buffered.Message != nil && len(buffered.Message.ResponsesItems) != 0 {
+			t.Fatal("opaque context leaked into buffered SSE")
+		}
+	}
+}
+
+func TestEmitterDoesNotPersistOpaqueCheckpointAcrossLifecyclePolicy(t *testing.T) {
+	em, sess, _ := newEmitterForTest(t)
+	em.info = provider.Model{Provider: "openai", ID: "gpt", API: "responses", BaseURL: "https://api.openai.com/v1"}
+	em.binding = em.s.providerBinding(em.info)
+	em.replayBinding = types.ProviderBinding{}
+	message := types.Message{
+		Role: "assistant", Content: []types.Content{{Type: "text", Text: "visible"}},
+		ResponsesItems: []json.RawMessage{
+			json.RawMessage(`{"type":"compaction","encrypted_content":"opaque"}`),
+		},
+	}
+	if err := em.Emit(loop.Event{Type: loop.MessageEnd, Message: &message}); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range sess.Entries() {
+		if entry.Responses != nil {
+			t.Fatal("opaque checkpoint persisted across message-visible lifecycle policy")
+		}
+	}
+	if got := sess.MessagesToLeaf(); len(got) != 1 || got[0].Text() != "visible" {
+		t.Fatalf("portable assistant missing: %+v", got)
+	}
+}
+
+func TestStrictRemoteCompactionDoesNotFallBackForUnsupportedModel(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.cfg.Compaction.Mode = "remote"
+	sess, err := session.Create(srv.cfg.Sessions.Root, t.TempDir(), "openrouter", "free")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	for range 4 {
+		_, _ = sess.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "history"}}})
+	}
+	_, err = srv.compactSession(t.Context(), sess, nil)
+	if err == nil || !strings.Contains(err.Error(), "does not support remote compaction") {
+		t.Fatalf("strict remote error = %v", err)
+	}
+	for _, entry := range sess.Entries() {
+		if entry.Type == "compaction" {
+			t.Fatalf("strict remote wrote local fallback: %+v", entry)
+		}
 	}
 }

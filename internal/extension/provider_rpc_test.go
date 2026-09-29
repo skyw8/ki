@@ -47,3 +47,16 @@ func TestProviderStreamAccumulatorRebuildsCustomInput(t *testing.T) {
 		t.Fatalf("custom input=%q", got)
 	}
 }
+
+func TestProviderCompactRPCErrorClassification(t *testing.T) {
+	for _, code := range []int{-32700, -32600, -32601, -32602, 400, 401, 404, 413, 422} {
+		if !deterministicProviderRPCError(code) {
+			t.Fatalf("deterministic code %d was retryable", code)
+		}
+	}
+	for _, code := range []int{-32603, -32000, 408, 409, 425, 429, 500, 503} {
+		if deterministicProviderRPCError(code) {
+			t.Fatalf("transient code %d was non-retryable", code)
+		}
+	}
+}

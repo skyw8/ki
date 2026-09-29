@@ -26,6 +26,53 @@ func (boom) BeforeTool(context.Context, ToolCall) (ToolCall, *Block, error) {
 	return ToolCall{}, nil, errRPC
 }
 
+type redactProviderMessage struct{ NopInterceptor }
+
+func (redactProviderMessage) BeforeProvider(_ context.Context, req ProviderRequest) (ProviderRequest, *ShortCircuit, error) {
+	req.Messages = []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "redacted"}}}}
+	return req, nil, nil
+}
+
+func TestStandaloneProviderTransformUsesStreamMutationRules(t *testing.T) {
+	req := loop.Request{
+		Provider: "openai", Model: "gpt",
+		Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "secret"}}}},
+	}
+	got, short, err := applyBeforeProvider(t.Context(), req, []namedInterceptor{{
+		name: "redactor", syncEvents: map[string]bool{EventBeforeProviderRequest: true}, inner: redactProviderMessage{},
+	}}, newSkipSet(), nil)
+	if err != nil || short != "" {
+		t.Fatalf("transform err=%v short=%q", err, short)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].Text() != "redacted" {
+		t.Fatalf("provider transform not applied: %+v", got.Messages)
+	}
+}
+
+func TestOpaqueReplaySafetyRejectsMessageVisibleHooks(t *testing.T) {
+	for _, event := range []string{
+		EventBeforeAgentStart,
+		EventContext,
+		EventBeforeProviderRequest,
+		EventBeforeProviderHeaders,
+		EventMessageEnd,
+	} {
+		t.Run(event, func(t *testing.T) {
+			occupy := &Occupy{items: []namedInterceptor{{
+				name: "policy", syncEvents: map[string]bool{event: true}, inner: NopInterceptor{},
+			}}}
+			if occupy.OpaqueReplaySafe() {
+				t.Fatal("message-visible hook allowed opaque replay")
+			}
+		})
+	}
+	if !(&Occupy{items: []namedInterceptor{{
+		name: "observer", syncEvents: map[string]bool{EventToolCall: true}, inner: NopInterceptor{},
+	}}}).OpaqueReplaySafe() {
+		t.Fatal("unrelated hook disabled opaque replay")
+	}
+}
+
 func TestComposeBeforeToolBlockSkipsExecuteSemantics(t *testing.T) {
 	hooks := ComposeHooks([]namedInterceptor{{
 		name: "protected-paths", syncEvents: map[string]bool{EventToolCall: true}, inner: blockWrite{},

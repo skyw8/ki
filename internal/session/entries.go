@@ -91,7 +91,7 @@ func ReadHeader(dir string) (Header, error) {
 	}
 	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), maxJSONLLineBytes)
 	if !sc.Scan() {
 		if err := sc.Err(); err != nil {
 			return Header{}, err

@@ -3,6 +3,7 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -11,6 +12,52 @@ import (
 )
 
 const providerStreamQueueSize = 128
+
+type nonRetryableProviderCompactError struct{ err error }
+
+func (e *nonRetryableProviderCompactError) Error() string { return e.err.Error() }
+func (e *nonRetryableProviderCompactError) Unwrap() error { return e.err }
+func (e *nonRetryableProviderCompactError) NonRetryable() bool {
+	return true
+}
+
+func deterministicProviderRPCError(code int) bool {
+	switch code {
+	case -32700, -32600, -32601, -32602:
+		return true
+	case 400, 401, 403, 404, 405, 410, 413, 415, 422:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *rpcClient) compactProvider(ctx context.Context, req ProviderCompactRequest) (ProviderCompactResult, error) {
+	var result ProviderCompactResult
+	if err := c.call(ctx, "provider.compact", req, &result); err != nil {
+		var responseErr *rpcResponseError
+		var syntaxErr *json.SyntaxError
+		var typeErr *json.UnmarshalTypeError
+		if (errors.As(err, &responseErr) && deterministicProviderRPCError(responseErr.Code)) ||
+			errors.As(err, &syntaxErr) ||
+			errors.As(err, &typeErr) {
+			return ProviderCompactResult{}, &nonRetryableProviderCompactError{err: err}
+		}
+		return ProviderCompactResult{}, err
+	}
+	if len(result.Items) == 0 {
+		err := fmt.Errorf("%w: empty compaction output", errProviderStreamFailed)
+		return ProviderCompactResult{}, &nonRetryableProviderCompactError{err: err}
+	}
+	for _, item := range result.Items {
+		var object map[string]json.RawMessage
+		if json.Unmarshal(item, &object) != nil || object == nil {
+			err := fmt.Errorf("%w: invalid compaction item", errProviderStreamFailed)
+			return ProviderCompactResult{}, &nonRetryableProviderCompactError{err: err}
+		}
+	}
+	return result, nil
+}
 
 type providerStreamPipe struct {
 	events chan ProviderStreamEvent
@@ -73,6 +120,10 @@ func (c *rpcClient) streamProvider(ctx context.Context, req ProviderStreamReques
 				if event.Message != nil {
 					mergeProviderMessage(&acc, *event.Message)
 				}
+				if acc.StopReason != "error" && acc.StopReason != "aborted" && acc.StopReason != "length" &&
+					len(event.ResponsesItems) > 0 {
+					acc.ResponsesItems = cloneRawMessages(event.ResponsesItems)
+				}
 				if acc.Role == "" {
 					acc.Role = "assistant"
 				}
@@ -113,6 +164,14 @@ func (c *rpcClient) streamProvider(ctx context.Context, req ProviderStreamReques
 			}
 		}
 	}
+}
+
+func cloneRawMessages(items []json.RawMessage) []json.RawMessage {
+	out := make([]json.RawMessage, len(items))
+	for i, item := range items {
+		out[i] = append(json.RawMessage(nil), item...)
+	}
+	return out
 }
 
 func mergeProviderMessage(acc *types.Message, final types.Message) {

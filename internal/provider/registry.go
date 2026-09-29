@@ -53,6 +53,7 @@ type ModelOverride struct {
 	MaxTokens          *int                `json:"maxTokens,omitempty"`
 	Input              *[]string           `json:"input,omitempty"`
 	ApplyPatchToolType *string             `json:"applyPatchToolType,omitempty"`
+	RemoteCompaction   *string             `json:"remoteCompaction,omitempty"`
 	Reasoning          *bool               `json:"reasoning,omitempty"`
 	ThinkingLevelMap   *map[string]*string `json:"thinkingLevelMap,omitempty"`
 	Cost               json.RawMessage     `json:"cost,omitempty"`
@@ -497,6 +498,13 @@ func validateApplyPatchToolType(m Model) error {
 	return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidApplyPatchToolType, m.ApplyPatchToolType)
 }
 
+func validateRemoteCompaction(m Model) error {
+	if m.RemoteCompaction == "" || m.RemoteCompaction == "openai" {
+		return nil
+	}
+	return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidRemoteCompaction, m.RemoteCompaction)
+}
+
 func validateModel(m Model) error {
 	if strings.TrimSpace(m.ID) == "" {
 		return fmt.Errorf("provider %q: %w", m.Provider, errModelIDRequired)
@@ -515,6 +523,9 @@ func validateModel(m Model) error {
 		return fmt.Errorf("provider %q model %q: %w", m.Provider, m.ID, errTextInputRequired)
 	}
 	if err := validateApplyPatchToolType(m); err != nil {
+		return err
+	}
+	if err := validateRemoteCompaction(m); err != nil {
 		return err
 	}
 	for k := range m.ThinkingLevelMap {
@@ -572,6 +583,9 @@ func applyModelOverride(m Model, o ModelOverride) (Model, error) {
 	}
 	if o.ApplyPatchToolType != nil {
 		m.ApplyPatchToolType = *o.ApplyPatchToolType
+	}
+	if o.RemoteCompaction != nil {
+		m.RemoteCompaction = *o.RemoteCompaction
 	}
 	if o.Reasoning != nil {
 		m.Reasoning = *o.Reasoning
@@ -692,25 +706,37 @@ func (r *Registry) ResolveSpec(spec, fallbackProvider string) (ModelRef, Model, 
 
 // Resolve returns an enabled model and its configured API credential.
 func (r *Registry) Resolve(providerID, modelID string) (Provider, Model, string, error) {
+	provider, model, credential, err := r.ResolveCredential(providerID, modelID)
+	if err != nil {
+		return Provider{}, Model{}, "", err
+	}
+	return provider, model, credential.APIKey, nil
+}
+
+// ResolveCredential atomically snapshots an enabled model and the credential
+// that a caller must use for it. Keeping both under one read lock prevents a
+// concurrent login from giving the HTTP client one key and opaque binding
+// metadata for another.
+func (r *Registry) ResolveCredential(providerID, modelID string) (Provider, Model, Credential, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	p, ok := r.providerLocked(providerID)
 	if !ok || !p.Enabled {
-		return Provider{}, Model{}, "", fmt.Errorf("provider %q is %w", providerID, errUnavailable)
+		return Provider{}, Model{}, Credential{}, fmt.Errorf("provider %q is %w", providerID, errUnavailable)
 	}
 	for _, m := range p.Models {
 		if m.ID == modelID {
 			if !m.Enabled {
 				break
 			}
-			key, status := r.credentialLockedFor(p)
+			credential, status := r.credentialLocked(p)
 			if !status.Configured {
-				return Provider{}, Model{}, "", fmt.Errorf("provider %q %w", providerID, errNoAPIKey)
+				return Provider{}, Model{}, Credential{}, fmt.Errorf("provider %q %w", providerID, errNoAPIKey)
 			}
-			return cloneProvider(p), m, key, nil
+			return cloneProvider(p), m, credential, nil
 		}
 	}
-	return Provider{}, Model{}, "", fmt.Errorf("model %q/%q is %w", providerID, modelID, errUnavailable)
+	return Provider{}, Model{}, Credential{}, fmt.Errorf("model %q/%q is %w", providerID, modelID, errUnavailable)
 }
 
 func (r *Registry) credentialLockedFor(p Provider) (string, CredentialStatus) {
@@ -746,25 +772,30 @@ func (r *Registry) Credential(id string) (Credential, CredentialStatus, error) {
 	if !ok {
 		return Credential{}, CredentialStatus{}, fmt.Errorf("provider %q: %w", id, errProviderNotFound)
 	}
+	credential, status := r.credentialLocked(p)
+	return credential, status, nil
+}
+
+func (r *Registry) credentialLocked(p Provider) (Credential, CredentialStatus) {
 	if p.Auth.Type == AuthNone {
-		return Credential{Type: AuthNone}, CredentialStatus{Configured: true, Source: "none", Type: AuthNone}, nil
+		return Credential{Type: AuthNone}, CredentialStatus{Configured: true, Source: "none", Type: AuthNone}
 	}
-	if c := r.state.creds.Providers[id]; strings.TrimSpace(c.APIKey) != "" {
+	if c := r.state.creds.Providers[p.ID]; strings.TrimSpace(c.APIKey) != "" {
 		typ := c.Type
 		if typ == "" {
 			typ = AuthAPIKey
 		}
-		return Credential{Type: typ, APIKey: c.APIKey}, CredentialStatus{Configured: true, Source: "stored", Type: typ}, nil
+		return Credential{Type: typ, APIKey: c.APIKey}, CredentialStatus{Configured: true, Source: "stored", Type: typ}
 	}
-	if c := r.state.creds.Providers[id]; c.Type != "" && len(bytes.TrimSpace(c.Value)) > 0 && !bytes.Equal(bytes.TrimSpace(c.Value), []byte("null")) {
-		return Credential{Type: c.Type, Value: append(json.RawMessage(nil), c.Value...)}, CredentialStatus{Configured: true, Source: "stored", Type: c.Type}, nil
+	if c := r.state.creds.Providers[p.ID]; c.Type != "" && len(bytes.TrimSpace(c.Value)) > 0 && !bytes.Equal(bytes.TrimSpace(c.Value), []byte("null")) {
+		return Credential{Type: c.Type, Value: append(json.RawMessage(nil), c.Value...)}, CredentialStatus{Configured: true, Source: "stored", Type: c.Type}
 	}
 	for _, name := range p.EnvVars {
 		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
-			return Credential{Type: AuthAPIKey, APIKey: v}, CredentialStatus{Configured: true, Source: name, Type: AuthAPIKey}, nil
+			return Credential{Type: AuthAPIKey, APIKey: v}, CredentialStatus{Configured: true, Source: name, Type: AuthAPIKey}
 		}
 	}
-	return Credential{}, CredentialStatus{}, nil
+	return Credential{}, CredentialStatus{}
 }
 
 // Models returns enabled models, optionally limited to credentialed providers.

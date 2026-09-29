@@ -47,34 +47,12 @@ func cannedStop(emit func(loop.AssistantDelta) error, text string) (types.Messag
 }
 
 func (s *occupyStreamer) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
-	live := req
-	for _, it := range s.items {
-		if s.skipped.has(it.name) || !it.hasSync(EventBeforeProviderRequest) {
-			continue
-		}
-		view := ProviderRequest{
-			Messages:       redactMessages(live.Messages),
-			Tools:          live.Tools,
-			Provider:       live.Provider,
-			Model:          live.Model,
-			MaxTokens:      live.MaxTokens,
-			ThinkingEffort: live.ThinkingEffort,
-		}
-		next, sc, err := it.inner.BeforeProvider(ctx, view)
-		if err != nil {
-			if it.failClosed {
-				return cannedStop(emit, "extension "+it.name+" failed closed")
-			}
-			if s.onErr != nil {
-				s.onErr(it.name, string(CapLifecycle), EventBeforeProviderRequest, err.Error())
-			}
-			s.skipped.mark(it.name)
-			continue
-		}
-		if sc != nil && sc.Text != "" {
-			return cannedStop(emit, sc.Text)
-		}
-		applyProviderMutations(&live, view, next)
+	live, short, err := applyBeforeProvider(ctx, req, s.items, s.skipped, s.onErr)
+	if err != nil {
+		return types.Message{}, err
+	}
+	if short != "" {
+		return cannedStop(emit, short)
 	}
 	msg, err := s.inner.Stream(ctx, live, emit)
 	if err == nil {
@@ -103,6 +81,45 @@ func (s *occupyStreamer) Stream(ctx context.Context, req loop.Request, emit func
 		}
 	}
 	return msg, fmt.Errorf("stream: %w", err)
+}
+
+func applyBeforeProvider(
+	ctx context.Context,
+	req loop.Request,
+	items []namedInterceptor,
+	skipped *skipSet,
+	onErr func(name, capability, code, message string),
+) (loop.Request, string, error) {
+	live := req
+	for _, it := range items {
+		if skipped.has(it.name) || !it.hasSync(EventBeforeProviderRequest) {
+			continue
+		}
+		view := ProviderRequest{
+			Messages:       redactMessages(live.Messages),
+			Tools:          live.Tools,
+			Provider:       live.Provider,
+			Model:          live.Model,
+			MaxTokens:      live.MaxTokens,
+			ThinkingEffort: live.ThinkingEffort,
+		}
+		next, sc, err := it.inner.BeforeProvider(ctx, view)
+		if err != nil {
+			if it.failClosed {
+				return loop.Request{}, "", fmt.Errorf("extension %s failed closed: %w", it.name, err)
+			}
+			if onErr != nil {
+				onErr(it.name, string(CapLifecycle), EventBeforeProviderRequest, err.Error())
+			}
+			skipped.mark(it.name)
+			continue
+		}
+		if sc != nil && sc.Text != "" {
+			return live, sc.Text, nil
+		}
+		applyProviderMutations(&live, view, next)
+	}
+	return live, "", nil
 }
 
 // applyProviderMutations copies interceptor-returned Model/Provider/tools onto

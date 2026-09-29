@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -225,20 +226,30 @@ type Streamer interface {
 type Request struct {
 	// SessionID is optional provider cache affinity metadata. Core providers
 	// ignore it; provider extensions may use it for session-scoped protocol state.
-	SessionID               string             `json:"sessionId"`
-	System                  string             `json:"system"`
-	Messages                []types.Message    `json:"messages"`
-	Tools                   []ToolSpec         `json:"tools"`
-	Provider                string             `json:"provider"`
-	Model                   string             `json:"model"`
-	API                     string             `json:"api"`
-	MaxTokens               int                `json:"maxTokens,omitzero"`
-	ThinkingEffort          string             `json:"thinkingEffort,omitempty"`
-	ThinkingFormat          string             `json:"thinkingFormat,omitempty"`
-	MaxTokensField          string             `json:"maxTokensField,omitempty"`
-	SupportsReasoningEffort bool               `json:"supportsReasoningEffort,omitzero"`
-	ForceAdaptiveThinking   bool               `json:"forceAdaptiveThinking,omitzero"`
-	ThinkingLevelMap        map[string]*string `json:"thinkingLevelMap,omitempty"`
+	SessionID               string                `json:"sessionId"`
+	System                  string                `json:"system"`
+	Messages                []types.Message       `json:"messages"`
+	Tools                   []ToolSpec            `json:"tools"`
+	Provider                string                `json:"provider"`
+	Model                   string                `json:"model"`
+	API                     string                `json:"api"`
+	ProviderBinding         types.ProviderBinding `json:"-"`
+	MaxTokens               int                   `json:"maxTokens,omitzero"`
+	ThinkingEffort          string                `json:"thinkingEffort,omitempty"`
+	ThinkingFormat          string                `json:"thinkingFormat,omitempty"`
+	MaxTokensField          string                `json:"maxTokensField,omitempty"`
+	SupportsReasoningEffort bool                  `json:"supportsReasoningEffort,omitzero"`
+	ForceAdaptiveThinking   bool                  `json:"forceAdaptiveThinking,omitzero"`
+	ThinkingLevelMap        map[string]*string    `json:"thinkingLevelMap,omitempty"`
+	// ResponsesContext is a provider-owned canonical input prefix. Other wire
+	// protocols ignore it.
+	ResponsesContext []json.RawMessage `json:"responsesContext,omitempty"`
+	// ResponsesCompactThreshold enables Responses context_management.
+	ResponsesCompactThreshold int `json:"responsesCompactThreshold,omitzero"`
+	// ContextTransformed is process-local proof that TransformContext already
+	// ran for Messages. Standalone compaction uses it to avoid applying the
+	// security-sensitive hook twice.
+	ContextTransformed bool `json:"-"`
 }
 
 // ToolSpec is the schema sent to the provider.
@@ -275,7 +286,7 @@ type Hooks struct {
 	// OnContextOverflow compacts and returns the new context when a request
 	// failed with a context-overflow error. Runs at most once per Run (the
 	// compact-and-retry guard), inside the same Run so events are not replayed.
-	OnContextOverflow func(ctx context.Context) ([]types.Message, error)
+	OnContextOverflow func(ctx context.Context, failed Request) (types.ModelContext, error)
 }
 
 // ErrContextOverflow marks a request failure caused by context overflow.
@@ -325,26 +336,32 @@ func (i *Inbox) Has() bool {
 
 // Config is loop runtime options.
 type Config struct {
-	Streamer                Streamer
-	SessionID               string
-	Tools                   []Tool
-	OutputStore             *tooloutput.Store
-	Hooks                   Hooks
-	MaxRetries              int
-	BaseDelay               time.Duration
-	Parallel                bool
-	Provider                string
-	Model                   string
-	API                     string
-	MaxTokens               int
-	ThinkingEffort          string
-	ThinkingFormat          string
-	MaxTokensField          string
-	SupportsReasoningEffort bool
-	ForceAdaptiveThinking   bool
-	ThinkingLevelMap        map[string]*string
-	TextOnly                bool
-	System                  string
+	Streamer                  Streamer
+	SessionID                 string
+	Tools                     []Tool
+	OutputStore               *tooloutput.Store
+	Hooks                     Hooks
+	MaxRetries                int
+	BaseDelay                 time.Duration
+	Parallel                  bool
+	Provider                  string
+	Model                     string
+	API                       string
+	ProviderBinding           types.ProviderBinding
+	MaxTokens                 int
+	ThinkingEffort            string
+	ThinkingFormat            string
+	MaxTokensField            string
+	SupportsReasoningEffort   bool
+	ForceAdaptiveThinking     bool
+	ThinkingLevelMap          map[string]*string
+	ResponsesContext          []json.RawMessage
+	ResponsesCompactThreshold int
+	// ResponsesCompactFallback retries one failed server-side request without
+	// context_management. Auto mode enables it; strict remote mode does not.
+	ResponsesCompactFallback bool
+	TextOnly                 bool
+	System                   string
 	// Inbox receives same-run user messages. Drain happens after the current
 	// stream/tools turn, before the next streamWithRetry. A nil Inbox is idle.
 	Inbox *Inbox
@@ -403,9 +420,11 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 	for _, t := range cfg.Tools {
 		specs = append(specs, specForTool(t))
 	}
+	responsesContext := slices.Clone(cfg.ResponsesContext)
 
 	firstTurn := true
 	overflowRecovered := false // compact-and-retry runs at most once per Run (pi _overflowRecoveryAttempted)
+	serverCompactionFallback := false
 	for {
 		if ctx.Err() != nil {
 			_ = emit(Event{Type: AgentEnd, Messages: newMsgs})
@@ -444,23 +463,39 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 			return newMsgs, err
 		}
 
-		asst, err := streamWithRetry(ctx, cfg, Request{
-			SessionID:               cfg.SessionID,
-			System:                  system,
-			Messages:                msgs,
-			Tools:                   specs,
-			Provider:                cfg.Provider,
-			Model:                   cfg.Model,
-			API:                     cfg.API,
-			MaxTokens:               cfg.MaxTokens,
-			ThinkingEffort:          cfg.ThinkingEffort,
-			ThinkingFormat:          cfg.ThinkingFormat,
-			MaxTokensField:          cfg.MaxTokensField,
-			SupportsReasoningEffort: cfg.SupportsReasoningEffort,
-			ForceAdaptiveThinking:   cfg.ForceAdaptiveThinking,
-			ThinkingLevelMap:        cfg.ThinkingLevelMap,
-		}, emit)
+		request := Request{
+			SessionID:                 cfg.SessionID,
+			System:                    system,
+			Messages:                  msgs,
+			Tools:                     specs,
+			Provider:                  cfg.Provider,
+			Model:                     cfg.Model,
+			API:                       cfg.API,
+			ProviderBinding:           cfg.ProviderBinding,
+			MaxTokens:                 cfg.MaxTokens,
+			ThinkingEffort:            cfg.ThinkingEffort,
+			ThinkingFormat:            cfg.ThinkingFormat,
+			MaxTokensField:            cfg.MaxTokensField,
+			SupportsReasoningEffort:   cfg.SupportsReasoningEffort,
+			ForceAdaptiveThinking:     cfg.ForceAdaptiveThinking,
+			ThinkingLevelMap:          cfg.ThinkingLevelMap,
+			ResponsesContext:          responsesContext,
+			ResponsesCompactThreshold: cfg.ResponsesCompactThreshold,
+			ContextTransformed:        cfg.Hooks.TransformContext != nil,
+		}
+		asst, err := streamWithRetry(ctx, cfg, request, emit)
 		if err != nil {
+			if request.ResponsesCompactThreshold > 0 &&
+				cfg.ResponsesCompactFallback &&
+				!serverCompactionFallback &&
+				!errors.Is(err, ErrContextOverflow) {
+				// A stale gateway capability or extension implementation must
+				// not make auto mode unusable. Retry once without the optional
+				// field; a real overflow still takes the standalone/local path.
+				serverCompactionFallback = true
+				cfg.ResponsesCompactThreshold = 0
+				continue
+			}
 			// Context overflow: compact once (server-side, via hook) and retry
 			// with the new context inside the same Run. The failed assistant
 			// message stays in session history but is dropped by provider
@@ -468,9 +503,13 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 			if errors.Is(err, ErrContextOverflow) && !overflowRecovered && cfg.Hooks.OnContextOverflow != nil {
 				overflowRecovered = true
 				_ = emit(Event{Type: CompactionStart, Reason: "overflow"})
-				newHistory, herr := cfg.Hooks.OnContextOverflow(ctx)
+				newContext, herr := cfg.Hooks.OnContextOverflow(ctx, request)
 				if herr == nil {
-					history = newHistory
+					history = newContext.Messages
+					responsesContext = nil
+					if newContext.Responses != nil {
+						responsesContext = slices.Clone(newContext.Responses.Items)
+					}
 					_ = emit(Event{Type: CompactionEnd, Reason: "overflow", OK: true})
 					continue
 				}
@@ -479,10 +518,27 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 			_ = emit(Event{Type: AgentEnd, Messages: newMsgs})
 			return newMsgs, err
 		}
-		newMsgs = append(newMsgs, asst)
-		history = append(history, asst)
+		cleanAssistant := asst
+		cleanAssistant.ResponsesItems = nil
+		newMsgs = append(newMsgs, cleanAssistant)
+		if len(asst.ResponsesItems) > 0 {
+			// Promote provider compaction immediately. Keeping it only on the
+			// transient assistant works for an in-process adapter but is lost
+			// when the next tool round crosses the extension JSON-RPC boundary
+			// (ResponsesItems is intentionally json:"-").
+			responsesContext = make([]json.RawMessage, len(asst.ResponsesItems))
+			for i, item := range asst.ResponsesItems {
+				responsesContext[i] = slices.Clone(item)
+			}
+			// ResponsesItems is the complete terminal output from the latest
+			// compaction item onward, including this assistant. Re-adding the
+			// portable assistant would duplicate its message/tool calls.
+			history = nil
+		} else {
+			history = append(history, cleanAssistant)
+		}
 
-		calls := asst.ToolCalls()
+		calls := cleanAssistant.ToolCalls()
 		var results []types.Message
 		terminate := false
 		if len(calls) > 0 {
@@ -508,10 +564,13 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		}
 		turnEndedAt := time.Now()
 		if err := emit(Event{
-			Type:        TurnEnd,
-			Timestamp:   turnEndedAt.UnixMilli(),
-			DurationMs:  turnEndedAt.Sub(turnStartedAt).Milliseconds(),
-			Message:     &asst,
+			Type:       TurnEnd,
+			Timestamp:  turnEndedAt.UnixMilli(),
+			DurationMs: turnEndedAt.Sub(turnStartedAt).Milliseconds(),
+			// Provider-owned checkpoint items are useful only to the live loop
+			// state. Keeping them on replayable TurnEnd events pins multi-MiB
+			// encrypted windows for every completed idle run.
+			Message:     &cleanAssistant,
 			ToolResults: results,
 		}); err != nil {
 			return newMsgs, err
@@ -720,8 +779,22 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				asst.ErrorMessage = "provider response failed"
 			}
 		}
+		serverCompacted := len(asst.ResponsesItems) > 0
+		if serverCompacted {
+			if err := emit(Event{Type: CompactionStart, Reason: "server"}); err != nil {
+				return asst, err
+			}
+		}
 		if err := emit(Event{Type: MessageEnd, Message: &asst}); err != nil {
+			if serverCompacted {
+				_ = emit(Event{Type: CompactionEnd, Reason: "server", OK: false})
+			}
 			return asst, err
+		}
+		if serverCompacted {
+			if err := emit(Event{Type: CompactionEnd, Reason: "server", OK: true}); err != nil {
+				return asst, err
+			}
 		}
 		if asst.StopReason == "error" {
 			last = asst

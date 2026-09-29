@@ -53,6 +53,13 @@
 // explicit branch root also ends paging without reading unrelated branches.
 // context_usage entries store model-facing context pressure;
 // patch_apply_updated stores non-executing structured patch previews.
+// A local compaction stores a portable summary plus retained tail. A remote
+// Responses compaction instead stores a canonical raw-item window bound to
+// provider/API/base/model/credential. ContextToLeaf replays it only for an exact binding;
+// MessagesToLeaf ignores remote checkpoints and remains the portable
+// projection used for model switches and local fallback. A server-compacted
+// assistant and checkpoint commit under one file gate with tail rollback.
+// Slim views never expose encrypted checkpoint items.
 // Asynchronous sideband rows never advance activeLeafId.
 // config.json owns provider/model/thinking effort plus
 // title and pin. Skills/extension enablement is process-wide ({KI_HOME}/toggles.json).

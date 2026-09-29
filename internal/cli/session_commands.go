@@ -421,7 +421,7 @@ func loadSessionShow(cfg config.Config, id, view, before, turn string, limit, ke
 			result.HasMore = true
 			path = path[len(path)-limit:]
 		}
-		result.Entries = path
+		result.Entries = session.RedactProviderContext(path)
 		if len(path) > 0 {
 			result.OldestID = path[0].ID
 		}
