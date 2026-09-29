@@ -48,13 +48,11 @@ test('foldReplies keeps only the newest in-flight work visible', () => {
   expect(foldReplies([user('u1', 'one'), asst('a1a'), asst('a1b', 'ok', true)], { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'a1b'])
 })
 
-test('foldReplies folds a stale live flag a newer node already continued past', () => {
-  // A running tool whose end was lost on a reconnect (or suppressed as
-  // already-persisted) sits before a newer reply. Honoring it would unfold the
-  // whole turn and ignore keep, which is exactly the long-absence behaviour.
-  const nodes = [user('u1', 'one'), asst('a1a'), tool('t1', true), asst('a1b')]
-  expect(foldReplies(nodes, { keep: 1 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'a1b'])
-  expect(foldReplies(nodes, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1'])
+test('foldReplies keeps an earlier running sibling visible until lifecycle settlement', () => {
+  const nodes = [user('u1', 'one'), asst('a1a'), tool('slow', true), tool('fast', false)]
+  expect(foldReplies(nodes, { keep: 1 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'slow', 'fast'])
+  const settled = nodes.map(n => n.kind === 'tool' ? { ...n, running: false } : n)
+  expect(foldReplies(settled, { keep: 1 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'fast'])
 })
 
 test('clampCompactKeep bounds the configured N', () => {

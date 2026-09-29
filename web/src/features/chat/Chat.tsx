@@ -9,8 +9,8 @@ import { AttachmentImage } from '../attachments/AttachmentImage'
 import type { Client } from '../../api/client'
 import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
-import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, isHumanPrompt, mergeLiveCompactTurn, reconcileUserNodes, requestTitle, turnStats, type CacheMiss, type TurnStats } from '../../lib/model'
-import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
+import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, isHumanPrompt, projectTurnStats, reconcileUserNodes, requestTitle, type CacheMiss, type TurnStats } from '../../lib/model'
+import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, groupTurns, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
 import { rememberRowHeight, rowHeightEstimate, UNKNOWN_WIDTH } from '../../lib/rowHeight'
 import { copyText } from '../../lib/clipboard'
 import type { ChatNode, CompactTurn } from '../../api/types'
@@ -762,32 +762,23 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   }, [scrollRef, virtualizer])
 
   const turns = useMemo(() => {
-    const out = turnStats(nodes, turnBase)
-    if (compactTurns?.length) {
-      const byId = new Map(nodes.map(n => [n.id, n]))
-      // The client's row for a turn is keyed by its *actual* last node, which a
-      // snapshot cannot know. Match by turn number so a folded turn's server
-      // stats replace that row instead of adding a second divider for the same
-      // turn at the snapshot's stale last-visible node.
-      const keyByTurn = new Map<number, string>()
-      for (const [key, stats] of out) keyByTurn.set(stats.turn, key)
-      for (const turn of compactTurns) {
-        const last = turn.visibleNodeIds.at(-1)
-        if (!last || last === turn.id || !turn.stats.steps) continue
-        const key = keyByTurn.get(turn.stats.turn)
-        if (key) {
-          // The snapshot predates a still-running turn's newest replies, so its
-          // counts are stale and its `live` flag is always false. Keep the live
-          // row and add back the replies the fold hid from the browser.
-          out.set(key, out.get(key)!.live ? mergeLiveCompactTurn(out.get(key)!, turn, id => byId.get(id)) : turn.stats)
-          if (key !== last) out.delete(last)
-        } else {
-          out.set(last, turn.stats)
-        }
-      }
+    const stats = projectTurnStats(nodes, turnBase, compactTurns)
+    const owner = new Map<string, string>()
+    for (const turn of groupTurns(nodes)) for (const node of turn.nodes) owner.set(node.id, turn.id)
+    const lastItem = new Map<string, string>()
+    for (const item of items) {
+      const turn = item.kind === 'fold' ? item.turn.id : owner.get(item.id)
+      if (turn) lastItem.set(turn, item.id)
+    }
+    const out = new Map<string, TurnStats>()
+    // keep=0 hides the final settled reply too. A divider belongs after the
+    // turn's final rendered item (possibly its fold), not a hidden raw node.
+    for (const [id, value] of stats) {
+      const key = lastItem.get(owner.get(id) ?? '')
+      if (key) out.set(key, value)
     }
     return out
-  }, [nodes, turnBase, compactTurns])
+  }, [nodes, turnBase, compactTurns, items])
   const actions = useRef({ onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches })
   actions.current = { onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches }
   const callbacks = useMemo(() => ({
@@ -812,10 +803,12 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     }))
   }, [visibleItems, items, onVisibleEntries])
   const renderItem = (it: ChatRenderItem) => {
-    if (it.kind === 'fold') return <FoldRow {...it} loading={loadingFolds.has(it.turn.id) || (loadingOlder && !compactTurns?.length)} failed={failedFolds.has(it.turn.id)} onToggle={() => void toggleFold(it.turn.id)} />
     const foot = turns.get(it.id)
     return <>
-      <ChatItem node={it.node} {...props} edit={edit?.messageId === it.id ? edit : null} branchIndex={branches?.[it.id]?.index} branchTotal={branches?.[it.id]?.total} missed={misses.get(it.id)} />
+      {it.kind === 'fold'
+        ? <FoldRow {...it} loading={loadingFolds.has(it.turn.id) || (loadingOlder && !compactTurns?.length)} failed={failedFolds.has(it.turn.id)} onToggle={() => void toggleFold(it.turn.id)} />
+        : <ChatItem node={it.node} {...props} edit={edit?.messageId === it.id ? edit : null} branchIndex={branches?.[it.id]?.index} branchTotal={branches?.[it.id]?.total} missed={misses.get(it.id)} />}
+
       {foot && (foot.steps > 0 || foot.live) ? <TurnDivider stats={foot} /> : null}
     </>
   }

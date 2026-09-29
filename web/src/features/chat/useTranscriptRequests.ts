@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import type { Client } from '../../api/client'
+import { ApiError, type Client } from '../../api/client'
 import type { SessionDetail, ViewState } from '../../api/types'
-import { applyIndex, compactBoundary, evictBodies, hydrateEntries, hydrateTurn } from '../../lib/model'
+import { applyTail, applyIndex, compactBoundary, evictBodies, hydrateEntries, hydrateTurn } from '../../lib/model'
 import type { MessageView } from '../../lib/messageView'
 
 type BodyRequest = { promise: Promise<boolean>; resolve: (ok: boolean) => void }
+type Boundary = { cursor?: string; hasMore: boolean }
 type Scope = {
   id: string | null
   abort: AbortController
-  cursor?: string
-  hasMore?: boolean
+  pendingBoundary?: Boundary & { sources: Boundary[] }
   page?: Promise<SessionDetail | null>
-  index?: Promise<void>
+  pageRequest?: { abort: AbortController; boundary: Boundary }
+  index?: Promise<boolean>
+  indexFrontier?: string
+  indexCovered?: string
+  indexRefresh?: { frontier?: string }
   bodies: Map<string, BodyRequest>
   pending: Set<string>
   timer: number
@@ -36,6 +40,8 @@ export function useTranscriptRequests(
   current.current = scope
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [olderError, setOlderError] = useState(false)
+  const [indexLoading, setIndexLoading] = useState(false)
+  const [indexError, setIndexError] = useState(false)
   const protectedIds = useRef<ReadonlySet<string>>(new Set())
   const evictionTimer = useRef(0)
   const protect = useCallback((ids: string[]) => {
@@ -48,6 +54,7 @@ export function useTranscriptRequests(
   const valid = (s: Scope) => current.current === s && !s.abort.signal.aborted
   const dispose = (s: Scope) => {
     s.abort.abort()
+    s.pageRequest?.abort.abort()
     window.clearTimeout(evictionTimer.current)
     window.clearTimeout(s.timer)
     for (const request of s.bodies.values()) request.resolve(false)
@@ -57,41 +64,101 @@ export function useTranscriptRequests(
   useLayoutEffect(() => {
     setLoadingOlder(false)
     setOlderError(false)
+    setIndexLoading(false)
+    setIndexError(false)
     return () => dispose(scope)
   }, [scope])
 
   const cancel = useCallback(() => dispose(current.current), [])
 
+  const boundary = (s: Scope) => {
+    const observed = { cursor: view.current.oldestId, hasMore: !!view.current.hasMore }
+    const pending = s.pendingBoundary
+    if (!pending) return observed
+    const acknowledged = observed.cursor === pending.cursor && observed.hasMore === pending.hasMore
+    if (acknowledged || !pending.sources.some(source => source.cursor === observed.cursor && source.hasMore === observed.hasMore)) {
+      // A page committed, or recovery reset a disconnected window. A cached
+      // false must never override the authoritative reducer boundary.
+      s.pendingBoundary = undefined
+      return observed
+    }
+    return pending
+  }
+
+  useEffect(() => {
+    const s = current.current
+    const request = s.pageRequest
+    if (!request) return
+    const next = boundary(s)
+    if (next.cursor !== request.boundary.cursor || next.hasMore !== request.boundary.hasMore) {
+      // A dead request for the abandoned window must not block paging the
+      // recovered window until a remote connection eventually times out.
+      request.abort.abort()
+    }
+  })
+
   const loadOlder = useCallback((limit = 100): Promise<SessionDetail | null> => {
     const s = current.current
     if (!s.id || !valid(s)) return Promise.resolve(null)
     if (s.page) return s.page
-    const cursor = s.cursor ?? view.current.oldestId
-    if (!(s.hasMore ?? view.current.hasMore) || !cursor) return Promise.resolve(null)
+    const start = boundary(s)
+    const cursor = start.cursor
+    if (!start.hasMore || !cursor) return Promise.resolve(null)
     setOlderError(false)
     setLoadingOlder(true)
     const compact = mode.current.mode === 'compact'
-    const page = api.get(s.id, { before: cursor, limit, view: compact ? 'compact' : undefined, keep: compact ? mode.current.keep : undefined, signal: s.abort.signal }).then(async out => {
+    const request = new AbortController()
+    s.pageRequest = { abort: request, boundary: { cursor, hasMore: start.hasMore } }
+    const page = api.get(s.id, { before: cursor, limit, view: compact ? 'compact' : undefined, keep: compact ? mode.current.keep : undefined, signal: request.signal }).then(async out => {
       await beforeCommit(s.abort.signal)
       if (!valid(s)) return null
       if (out.hasMore && (!out.entries?.length || !out.oldestId || out.oldestId === cursor)) {
         throw new Error('History cursor did not advance')
       }
-      // Advance with the response, not with a later React ref effect. A jump
-      // can otherwise request the same page repeatedly before React commits.
-      // `|| cursor`, not `??`: a page that legitimately ends the history
-      // reports an empty oldestId, and storing that as the cursor would make
-      // every later `before=` request a no-op (dead paging until reload).
-      s.cursor = out.oldestId || cursor
-      s.hasMore = !!out.hasMore
-      const meta = { hasMore: s.hasMore, oldestId: s.cursor, compactTurns: out.compactTurns }
-      setView(v => valid(s) ? hydrateEntries(v, out.entries ?? [], meta) : v)
+      const currentBoundary = boundary(s)
+      // A tail may have reset the active window while this page travelled.
+      if (currentBoundary.cursor !== cursor || currentBoundary.hasMore !== start.hasMore) return null
+      const source = { cursor: view.current.oldestId, hasMore: !!view.current.hasMore }
+      const next = { cursor: out.oldestId || cursor, hasMore: !!out.hasMore }
+      // Bridge only the response-to-commit interval, not the entire session.
+      s.pendingBoundary = { ...next, sources: [...s.pendingBoundary?.sources ?? [], source, { cursor, hasMore: start.hasMore }] }
+      const meta = { hasMore: next.hasMore, oldestId: next.cursor, compactTurns: out.compactTurns }
+      setView(v => {
+        if (!valid(s)) return v
+        const sameBoundary = (v.oldestId === cursor && !!v.hasMore === start.hasMore)
+          || (v.oldestId === source.cursor && !!v.hasMore === source.hasMore)
+        return hydrateEntries(v, out.entries ?? [], sameBoundary ? meta : { compactTurns: out.compactTurns })
+      })
       return out
-    }).catch(() => {
+    }).catch(async error => {
+      if (request.signal.aborted) return null
+      if (valid(s) && error instanceof ApiError && error.status === 409) {
+        // The cursor no longer belongs to this branch. Refresh its boundary,
+        // retain cached history, and leave retry explicit instead of silently
+        // declaring the beginning or looping the rejected cursor forever.
+        const liveRevision = view.current.liveRevision
+        const out = await api.get(s.id!, { view: compact ? 'compact' : undefined,
+          keep: compact ? mode.current.keep : undefined, signal: s.abort.signal }).catch(() => null)
+        if (out && valid(s)) {
+          s.pendingBoundary = undefined
+          setView(v => {
+            if (!valid(s)) return v
+            const next = applyTail(v, out, liveRevision)
+            // A connected tail normally preserves a reader-owned cursor, but
+            // this specific cursor was rejected: even an unchanged leaf must
+            // replace it. Never replace a boundary updated in the meantime.
+            return v.oldestId === cursor && v.liveRevision === liveRevision
+              ? { ...next, oldestId: out.oldestId, hasMore: !!out.hasMore }
+              : next
+          })
+        }
+      }
       if (valid(s)) setOlderError(true)
       return null
     }).finally(() => {
+      if (s.page !== page) return
       s.page = undefined
+      s.pageRequest = undefined
       if (valid(s)) setLoadingOlder(false)
     })
     s.page = page
@@ -139,8 +206,8 @@ export function useTranscriptRequests(
       s.page = api.get(s.id, { turn: state.oldestId, view: 'compact', keep: presentation.keep, signal: s.abort.signal }).then(async page => {
         await beforeCommit(s.abort.signal)
         if (!valid(s)) return null
-        s.cursor = page.oldestId
-        s.hasMore = page.hasMore
+        s.pendingBoundary = { cursor: page.oldestId || state.oldestId, hasMore: !!page.hasMore,
+          sources: [{ cursor: view.current.oldestId, hasMore: !!view.current.hasMore }] }
         setView(v => valid(s) ? compactBoundary(v, page) : v)
         return page
       }).catch(() => { if (valid(s)) setOlderError(true); return null }).finally(() => {
@@ -159,15 +226,50 @@ export function useTranscriptRequests(
     }
   }, [presentation.mode, presentation.keep, requestTurn, scope, view, api, setView, beforeCommit])
 
-  const requestIndex = useCallback((sessionId: string): Promise<void> => {
+  const requestIndex = useCallback((sessionId: string, refresh = false, frontier = view.current.leafId): Promise<boolean> => {
     const s = current.current
-    if (s.id !== sessionId || !valid(s) || view.current.indexLoaded) return Promise.resolve()
-    if (s.index) return s.index
-    s.index = api.get(sessionId, { fields: 'index', signal: s.abort.signal }).then(out => {
-      if (valid(s)) setView(v => valid(s) ? applyIndex(v, out) : v)
-    }).catch(() => { /* Opening the navigation again retries. */ }).finally(() => { s.index = undefined })
-    return s.index
+    if (s.id !== sessionId || !valid(s)) return Promise.resolve(false)
+    if (s.index) {
+      // Recovery arriving during a fetch invalidates its captured snapshot.
+      // Coalesce another refresh rather than trusting that older response.
+      if (refresh && frontier !== s.indexFrontier) s.indexRefresh = { frontier }
+      return s.index
+    }
+    if (view.current.indexLoaded && !refresh) return Promise.resolve(true)
+    setIndexLoading(true)
+    setIndexError(false)
+    s.indexFrontier = frontier
+    const task = api.get(sessionId, { fields: 'index', signal: s.abort.signal }).then(out => {
+      if (!valid(s)) return false
+      // Missing metadata is not an empty branch; keep an explicit retry.
+      if (!Array.isArray(out.index)) throw new Error('Session index missing')
+      setView(v => valid(s) ? applyIndex(v, out) : v)
+      s.indexCovered = frontier
+      return true
+    }).catch(() => {
+      if (valid(s)) setIndexError(true)
+      return false
+    }).finally(() => {
+      if (s.index === task) s.index = undefined
+      if (valid(s)) {
+        const refresh = s.indexRefresh
+        s.indexRefresh = undefined
+        if (refresh) void requestIndex(sessionId, true, refresh.frontier)
+        else setIndexLoading(false)
+      }
+    })
+    s.index = task
+    return task
   }, [api, setView, view])
+
+  const refreshIndex = useCallback((sessionId: string, frontier?: string) => {
+    const s = current.current
+    // Visibility and the push-ready event can recover the same frontier twice.
+    // An append-only branch needs only one metadata read per recovered leaf.
+    if (frontier && (s.indexCovered === frontier || (s.index && s.indexFrontier === frontier) || s.indexRefresh?.frontier === frontier)) return
+    // Keep initial opening cheap; only refresh metadata someone requested.
+    if (view.current.indexLoaded || s.index) void requestIndex(sessionId, true, frontier)
+  }, [requestIndex, view])
 
   const requestBody = useCallback((entryId: string): Promise<boolean> => {
     const s = current.current
@@ -217,5 +319,5 @@ export function useTranscriptRequests(
     return Promise.all(ids.map(requestBody)).then(results => results.every(Boolean))
   }, [requestBody, view])
 
-  return { cancel, loadOlder, loadingOlder, olderError, requestHydrate, requestIndex, requestTurn, protect }
+  return { cancel, loadOlder, loadingOlder, olderError, requestHydrate, requestIndex, refreshIndex, indexLoading, indexError, requestTurn, protect }
 }

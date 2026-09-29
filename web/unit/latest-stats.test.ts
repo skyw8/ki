@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
-import { cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats, mergeLiveCompactTurn, turnStats } from '../src/lib/model.ts'
+import { applyEvent, appendOptimisticUser, loadHistory, hydrateEntries, hydrateTurn, projectTurnStats, cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats, turnStats } from '../src/lib/model.ts'
 import { applyTail } from '../src/lib/model.ts'
-import type { ChatNode, Entry, SessionDetail, TrajRecord, ViewState } from '../src/api/types.ts'
+import type { ChatNode, CompactTurn, Entry, SessionDetail, TrajRecord, ViewState } from '../src/api/types.ts'
 
 function view(over: Partial<ViewState> = {}): ViewState {
   return { ...emptyView(), ...over }
@@ -335,41 +335,98 @@ test('latestStats totals the session run time and keeps the newest turn separate
   expect(folded.elapsedMs).toBe(4_000 + 2_500)
 })
 
-test('mergeLiveCompactTurn adds the replies a fold hid from the browser', () => {
-  const live = turnStats([
-    { kind: 'user', id: 'u1', text: 'hi', content: [] },
-    { kind: 'assistant', id: 'a3', text: 'newest reply' },
-    { kind: 'tool', id: 't5', name: 'Bash', running: true },
-  ]).get('t5')!
-  expect(live.live).toBe(true)
-  const node = (id: string): ChatNode | undefined => id === 't5'
-    ? { kind: 'tool', id: 't5', name: 'Bash' }
-    : id === 'a3' ? { kind: 'assistant', id: 'a3', text: 'newest reply' } : undefined
-  const merged = mergeLiveCompactTurn(live, {
-    stats: { steps: 4, tools: 5, toolFailures: 2 },
-    visibleNodeIds: ['u1', 'a3', 't5'],
-  }, node)
-  // The snapshot knew 4 steps / 5 tools; the browser only has a3 and t5.
-  expect(merged.steps).toBe(1 + 3)
-  expect(merged.tools).toBe(1 + 4)
-  expect(merged.toolFailures).toBe(0 + 2)
-  expect(merged.live).toBe(true)
+test('a confirmed second prompt never switches the live timer back to the previous turn', () => {
+  const first = msg('u1', '', 'user', { timestamp: 1_000, content: [{ type: 'text', text: 'first' }] })
+  const answer = msg('a1', 'u1', 'assistant', { timestamp: 11_000 })
+  const second = { role: 'user', timestamp: 101_000, content: [{ type: 'text', text: 'second' }] }
+  let s = loadHistory({ entries: [first, answer], leafId: 'a1' } as SessionDetail)
+  s = appendOptimisticUser(s, second.content)
+  s = applyEvent(s, { type: 'message_start', message: second })
+  s = applyEvent(s, { type: 'message_end', entryId: 'u2', message: second })
+  const stats = latestStats(s)
+  expect(stats.turnStartedAt).toBe(101_000)
+  expect(stats.elapsedMs).toBe(10_000)
+  expect(stats.elapsedMs + 106_000 - stats.turnStartedAt).toBe(15_000)
+  // An unrelated body/index rebuild must keep the confirmed prompt as well.
+  expect(latestStats(hydrateEntries(s, [first])).turnStartedAt).toBe(101_000)
 })
 
-test('turnStats marks a turn live only from its newest node', () => {
-  const stale = turnStats([
-    { kind: 'user', id: 'u1', text: 'hi', content: [] },
-    { kind: 'assistant', id: 'a1', text: 'ok' },
-    { kind: 'tool', id: 't1', name: 'Bash', running: true },
-    { kind: 'assistant', id: 'a2', text: 'done' },
-  ]).get('a2')!
-  // A running tool with a newer reply after it is stale; the turn is settled.
-  expect(stale.live).toBe(false)
-  expect(turnStats([
-    { kind: 'user', id: 'u1', text: 'hi', content: [] },
-    { kind: 'assistant', id: 'a1', text: 'ok' },
-    { kind: 'tool', id: 't1', name: 'Bash', running: true },
-  ]).get('t1')!.live).toBe(true)
+function compactFixture() {
+  const entries: Entry[] = [
+    msg('u1', '', 'user', { timestamp: 1_000 }),
+    msg('a1', 'u1', 'assistant', { timestamp: 2_000, content: [{ type: 'toolCall', id: 't1', name: 'Read' }] }),
+    { type: 'message', id: 'r1', parentId: 'a1', message: { role: 'toolResult', toolCallId: 't1', timestamp: 3_000, durationMs: 1_000 } },
+    msg('a2', 'r1', 'assistant', { timestamp: 4_000, content: [{ type: 'toolCall', id: 't2', name: 'Read' }] }),
+    { type: 'message', id: 'r2', parentId: 'a2', message: { role: 'toolResult', toolCallId: 't2', timestamp: 5_000, durationMs: 1_000 } },
+  ]
+  const full = loadHistory({ entries, leafId: 'r2' } as SessionDetail)
+  const stats = [...turnStats(full.nodes).values()][0]
+  const summary: CompactTurn = { id: 'u1', tailId: 'r2', parentId: '', entryIds: ['u1', 'a2', 'r2'], visibleNodeIds: ['u1', 't2'], omittedNodeIds: ['a2'], hiddenCount: 3, stepCount: 2, stats }
+  return { entries, summary }
+}
+
+test('compact snapshot plus hydrated overlap plus live delta counts every node once', () => {
+  const { entries, summary } = compactFixture()
+  let s = loadHistory({ entries: entries.filter(e => summary.entryIds.includes(e.id)), compactTurns: [summary], leafId: 'r2', running: true } as SessionDetail)
+  const stats = () => [...projectTurnStats(s.nodes, s.turnBase, s.compactTurns).values()].at(-1)!
+  expect(stats().tools).toBe(2)
+  expect(stats().steps).toBe(2)
+  s = hydrateTurn(s, 'u1', entries)
+  s = applyEvent(s, { type: 'tool_execution_start', toolCallId: 't3', toolName: 'Read', timestamp: 6_000 })
+  expect(stats().steps).toBe(2)
+  expect(stats().tools).toBe(3)
+  expect(stats().live).toBe(true)
+  s = applyEvent(s, { type: 'tool_execution_end', toolCallId: 't3', toolName: 'Read', timestamp: 7_000, durationMs: 1_000, isError: true, result: 'failed' })
+  expect(stats().tools).toBe(3)
+  expect(stats().toolFailures).toBe(1)
+  expect(stats().elapsedMs).toBe(6_000)
+  // A body load is not a new run snapshot and cannot erase observed results.
+  s = hydrateEntries(s, [entries[0]])
+  expect(stats().tools).toBe(3)
+  expect(stats().toolFailures).toBe(1)
+})
+
+test('a sparse compact snapshot adds only new tools before expansion', () => {
+  const { entries, summary } = compactFixture()
+  let s = loadHistory({ entries: entries.filter(e => summary.entryIds.includes(e.id)), compactTurns: [summary], leafId: 'r2', running: true } as SessionDetail)
+  s = applyEvent(s, { type: 'tool_execution_start', toolCallId: 't3', toolName: 'Read', timestamp: 6_000 })
+  const stats = [...projectTurnStats(s.nodes, s.turnBase, s.compactTurns).values()].at(-1)!
+  expect(stats.tools).toBe(3)
+  expect(stats.steps).toBe(2)
+  expect(stats.live).toBe(true)
+})
+
+test('compact elapsed includes its unseen prefix and does not shrink before index load', () => {
+  const { entries, summary } = compactFixture()
+  const s = loadHistory({ entries: entries.filter(e => summary.entryIds.includes(e.id)), compactTurns: [{ ...summary, stats: { ...summary.stats, turn: 10 }, cumulativeElapsedMs: 94_000 }], leafId: 'r2' } as SessionDetail)
+  const stats = latestStats(s)
+  expect(stats.elapsedMs + stats.turnElapsedMs).toBe(94_000)
+  expect(s.turnBase).toBe(9)
+  expect(s.turn).toBe(10)
+  let live = applyEvent(s, { type: 'tool_execution_start', toolCallId: 't3', timestamp: 6_000 })
+  live = applyEvent(live, { type: 'tool_execution_end', toolCallId: 't3', durationMs: 2_000, result: 'done' })
+  const extended = latestStats(live)
+  expect(extended.elapsedMs).toBe(90_000)
+  expect(extended.turnElapsedMs).toBe(7_000)
+  expect(extended.elapsedMs + extended.turnElapsedMs).toBe(97_000)
+})
+
+test('parallel tool completion does not settle a still-running sibling', () => {
+  const entries = [msg('u1', '', 'user', { timestamp: 1_000 }), msg('a1', 'u1', 'assistant', {
+    timestamp: 2_000, content: [{ type: 'toolCall', id: 'slow', name: 'Read' }, { type: 'toolCall', id: 'fast', name: 'Read' }],
+  })]
+  let s = loadHistory({ entries, leafId: 'a1', running: true } as SessionDetail)
+  for (const toolCallId of ['slow', 'fast']) s = applyEvent(s, { type: 'tool_execution_start', toolCallId, timestamp: 2_000 })
+  s = applyEvent(s, { type: 'tool_execution_end', toolCallId: 'fast', durationMs: 10, result: 'ok' })
+  expect([...turnStats(s.nodes).values()][0].live).toBe(true)
+  s = hydrateEntries(s, [entries[0]])
+  expect(s.nodes.find(n => n.id === 'slow')).toMatchObject({ running: true })
+  expect(s.nodes.find(n => n.id === 'fast')).toMatchObject({ running: false, result: 'ok' })
+  expect([...turnStats(s.nodes).values()][0].live).toBe(true)
+  // A later model request, unlike a sibling tool result, proves that the
+  // preceding batch has finished even if this browser lost its end event.
+  s = applyEvent(s, { type: 'message_start', message: { role: 'assistant', timestamp: 4_000 } })
+  expect(s.nodes.find(n => n.id === 'slow')).toMatchObject({ running: false })
 })
 
 test('applyTail settles a running tool the transcript now holds a result for', () => {
@@ -407,4 +464,70 @@ test('applyTail drops a stale live node a newer on-screen node continued past', 
     entries: [msg('u1', '', 'user'), msg('a2', 'u1', 'assistant', { content: [{ type: 'text', text: 'next' }] })],
   } as SessionDetail
   expect(applyTail(s, detail).nodes.some(n => n.kind === 'tool' && n.id === 'tc1')).toBe(false)
+})
+
+
+test('keep=0 recognizes live starts already counted by the hidden pending batch', () => {
+  const { entries, summary } = compactFixture()
+  const hidden: CompactTurn = { ...summary, tailId: 'a2', entryIds: ['u1'], visibleNodeIds: ['u1'], omittedNodeIds: [], hiddenCount: 4, toolStates: [{ id: 't2', finished: false }] }
+  let s = loadHistory({ entries: [entries[0]], compactTurns: [hidden], leafId: 'a2', running: true } as SessionDetail)
+  s = applyEvent(s, { type: 'tool_execution_start', toolCallId: 't2', toolName: 'Read', timestamp: 4_000 })
+  expect([...projectTurnStats(s.nodes, s.turnBase, s.compactTurns).values()].at(-1)?.tools).toBe(2)
+})
+
+
+test('keep=0 recovery retires a hidden old batch using its server assistant boundary', () => {
+  const { entries, summary } = compactFixture()
+  let s = loadHistory({ entries: entries.slice(0, 2), leafId: 'a1', running: true } as SessionDetail)
+  s = applyEvent(s, { type: 'tool_execution_start', toolCallId: 't1', toolName: 'Read', timestamp: 2_100 })
+  const hidden: CompactTurn = { ...summary, entryIds: ['u1'], visibleNodeIds: ['u1'], omittedNodeIds: [], hiddenCount: 4, assistantAt: 4_000 }
+  s = applyTail(s, { entries: [entries[0]], compactTurns: [hidden], leafId: 'r2', running: true } as SessionDetail)
+  expect(s.nodes.some(n => n.kind === 'tool' && n.running)).toBe(false)
+  expect([...projectTurnStats(s.nodes, s.turnBase, s.compactTurns).values()].at(-1)?.tools).toBe(2)
+})
+
+
+test('a delayed compact projection cannot regress the frontier, prompt or statistics', () => {
+  const { entries, summary } = compactFixture()
+  const newer: CompactTurn = { ...summary, tailId: 'a5', entryIds: ['u1', 'a5'], visibleNodeIds: ['u1', 'a5'], entryCount: 10, stepCount: 5, stats: { ...summary.stats, steps: 5 } }
+  const older: CompactTurn = { ...summary, tailId: 'a3', entryIds: ['u1', 'a3'], visibleNodeIds: ['u1', 'a3'], entryCount: 6, stepCount: 3, stats: { ...summary.stats, steps: 3 } }
+  let s = loadHistory({ entries: [entries[0], msg('a5', 'a4', 'assistant')], compactTurns: [newer], leafId: 'a5' } as SessionDetail)
+  s = hydrateEntries(s, [entries[0], msg('a3', 'a2', 'assistant')], { compactTurns: [older] })
+  expect(s.compactTurns?.[0].tailId).toBe('a5')
+  expect(s.nodes.some(n => n.id === 'u1')).toBe(true)
+  expect(latestStats(s).steps).toBe(5)
+  expect(latestStats(s).turnStartedAt).toBe(1_000)
+})
+
+
+test('hidden completed batch overlap and delayed canonical result preserve prompt and counts', () => {
+  const user = msg('u1', '', 'user', { timestamp: 1_000 })
+  const baseStats = [...turnStats([ { kind: 'user', id: 'u1', text: '', content: [], ts: 1_000 }, { kind: 'assistant', id: 'a1', text: '', ts: 2_000 }, { kind: 'tool', id: 't1', name: 'Read' } ]).values()][0]
+  const summary: CompactTurn = { id: 'u1', tailId: 'a1', entryIds: ['u1'], visibleNodeIds: ['u1'], hiddenCount: 2, entryCount: 2, stepCount: 1, stats: baseStats, toolStates: [{ id: 't1', finished: false }] }
+  let s = loadHistory({ entries: [user], compactTurns: [summary], leafId: 'a1', running: true } as SessionDetail)
+  s = applyEvent(s, { type: 'tool_execution_start', toolCallId: 't1', toolName: 'Read', timestamp: 2_100 })
+  s = applyEvent(s, { type: 'tool_execution_end', toolCallId: 't1', durationMs: 900, isError: true, result: 'failed' })
+  const completed: CompactTurn = { ...summary, tailId: 'r1', entryCount: 3, stats: { ...baseStats, elapsedMs: 2_000, toolFailures: 1 }, toolStates: [{ id: 't1', finished: true, isError: true }] }
+  s = applyTail(s, { entries: [user], compactTurns: [completed], leafId: 'r1', running: true } as SessionDetail)
+  let stats = [...projectTurnStats(s.nodes, s.turnBase, s.compactTurns).values()].at(-1)!
+  expect(stats.tools).toBe(1)
+  expect(stats.toolFailures).toBe(1)
+  s = applyEvent(s, { type: 'message_end', entryId: 'r1', parentId: 'a1', message: { role: 'toolResult', toolCallId: 't1', timestamp: 3_000, durationMs: 900, isError: true, content: [{ type: 'text', text: 'failed' }] } })
+  s = hydrateEntries(s, [user])
+  expect(s.entries.find(e => e.id === 'r1')?.parentId).toBe('a1')
+  expect(s.nodes.some(n => n.id === 'u1')).toBe(true)
+  stats = [...projectTurnStats(s.nodes, s.turnBase, s.compactTurns).values()].at(-1)!
+  expect(stats.tools).toBe(1)
+  expect(stats.toolFailures).toBe(1)
+})
+
+test('tool overlay elapsed and trajectory survive hydration until toolResult arrives', () => {
+  const entries = [msg('u1', '', 'user', { timestamp: 1_000 }), msg('a1', 'u1', 'assistant', { timestamp: 2_000, content: [{ type: 'toolCall', id: 't1', name: 'Read' }] })]
+  let s = loadHistory({ entries, leafId: 'a1', running: true } as SessionDetail)
+  s = applyEvent(s, { type: 'tool_execution_start', toolCallId: 't1', timestamp: 2_000 })
+  s = applyEvent(s, { type: 'tool_execution_end', toolCallId: 't1', durationMs: 5_000, isError: true, result: 'failed' })
+  expect(latestStats(s).turnElapsedMs).toBe(6_000)
+  s = hydrateEntries(s, [entries[0]])
+  expect(latestStats(s).turnElapsedMs).toBe(6_000)
+  expect(s.records.find(r => r.id === 't1')).toMatchObject({ durationMs: 5_000, output: 'failed', error: true, running: false })
 })

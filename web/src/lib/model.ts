@@ -100,6 +100,7 @@ export function emptyView(): ViewState {
     nodes: [],
     records: [],
     requests: [],
+    liveRevision: 0,
     busy: false,
     error: null,
     model: '',
@@ -242,11 +243,13 @@ function applyCursor(next: ViewState, detail: SessionDetail) {
  * because the transcript is append-only: they are the newest entries, so they
  * belong at the end of the file order the index follows.
  */
-export function applyTail(s: ViewState, detail: SessionDetail): ViewState {
+export function applyTail(s: ViewState, detail: SessionDetail, expectedLiveRevision = s.liveRevision): ViewState {
   const next = { ...s }
-  next.busy = !!detail.running
+  const stale = expectedLiveRevision !== s.liveRevision
+  next.busy = stale ? s.busy : !!detail.running
   if (!next.busy) {
     next.stopping = false
+    next.toolStates = undefined
     // Recovery can miss message_end/agent_end entirely. An authoritative idle
     // snapshot must retire transient rows or rebuild appends the stale partial
     // beside the persisted final answer and leaves tool spinners running.
@@ -254,16 +257,42 @@ export function applyTail(s: ViewState, detail: SessionDetail): ViewState {
     next.records = next.records.filter(r => !r.running)
     next.requests = next.requests.filter(r => r.status !== 'running')
   }
-  next.leafId = detail.leafId ?? next.leafId
+  // A GET captures a past frontier. Never rewind entries already delivered by
+  // SSE while it was in flight, even if its terminal event is still pending.
+  if (!stale) next.leafId = detail.leafId ?? next.leafId
   next.runtimeReady = detail.runtime?.ready !== false
   next.commands = detail.commands ?? next.commands
   next.queued = detail.queued ?? next.queued
   next.extQueued = detail.extQueued ?? next.extQueued
   next.extensionUi = detail.extensionUi ?? next.extensionUi
   const entries = detail.entries ?? []
+  const settledThrough = Math.max(0, ...entries.filter(e => e.message?.role === 'assistant').map(e => tsMs(e.message, e.timestamp) ?? 0), ...(detail.compactTurns ?? []).map(t => t.assistantAt ?? 0))
+  if (settledThrough > 0) {
+    // A newly observed server assistant completion proves preceding work has
+    // joined, including tools whose call/result was hidden by compact mode.
+    // Never infer this from a later sibling tool result.
+    const expired = (n: ChatNode) => (n.kind === 'tool' && n.startedAt != null && n.startedAt < settledThrough)
+      || (n.kind === 'assistant' && n.streaming && n.ts != null && n.ts < settledThrough)
+    next.nodes = next.nodes.filter(n => !expired(n) || (n.kind === 'tool' && !n.running && n.result !== undefined))
+    if (next.toolStates) next.toolStates = Object.fromEntries(Object.entries(next.toolStates).filter(([, n]) => !expired(n)))
+    next.records = next.records.filter(r => !(r.running && r.startedAt != null && r.startedAt < settledThrough))
+    next.requests = next.requests.map(r => r.status === 'running' && r.startedAt != null && r.startedAt < settledThrough ? { ...r, status: 'complete' } : r)
+  }
   addEntries(next, entries)
   mergeCompactTurns(next, detail.compactTurns)
-  applyCursor(next, detail)
+  const snapshotPath = detail.leafId && leafEntries(mergeEntries(next.index, next.entries), detail.leafId, next.compactTurns)
+  const descendant = !!(stale && detail.leafId && detail.leafId !== s.leafId && snapshotPath && snapshotPath.some(e => e.id === s.leafId))
+  // React may commit the final SSE batch after a terminal GET starts, while
+  // the server has already drained another queued prompt. Revision mismatch
+  // forbids rewinding, not advancing along a proven immutable descendant.
+  if (descendant) next.leafId = detail.leafId
+  const connected = !s.leafId || leafEntries(next.entries, next.leafId, next.compactTurns).some(e => e.id === s.leafId)
+  if (!connected && (!stale || descendant)) {
+    // Old and new tails can be disjoint after suspension. The old root/cursor
+    // describes a different loaded interval; retaining it strands the gap.
+    next.oldestId = detail.oldestId
+    next.hasMore = detail.hasMore
+  } else applyCursor(next, detail)
   if (next.indexLoaded && entries.length) {
     const known = new Set(next.index.map(row => row.id))
     const added = entries.filter(e => !known.has(e.id)).map(entryToIndex)
@@ -386,52 +415,78 @@ function rebuild(s: ViewState): ViewState {
   }
   const all = mergeEntries(next.index, next.entries)
   next.allEntries = all
-  const loaded = new Set(next.entries.map(e => e.id))
   const chain = leafEntries(all, next.leafId, next.compactTurns)
-  // Canonical order: loaded bodies follow the branch, oldest first, so the
-  // window keeps appending at the end and the pruning above drops the oldest.
-  next.entries = chain.filter(e => loaded.has(e.id))
+  let windowStart = next.oldestId ? chain.findIndex(e => e.id === next.oldestId) : 0
+  windowStart = Math.max(0, windowStart)
+  // A detailed page may start mid-turn and include its opening user as an
+  // anchor. Cached ranges before that turn must not jump across a paging gap.
+  while (windowStart > 0 && !isUserEntry(chain[windowStart])) windowStart--
+  const window = new Set(chain.slice(windowStart).map(e => e.id))
+  const loaded = new Set(next.entries.filter(e => window.has(e.id)).map(e => e.id))
+  // Keep disconnected body ranges in the cache. Only the active chain renders;
+  // a later page/index can bridge a recovery gap without losing old identities.
+  const active = new Set(chain.map(e => e.id))
+  const cached = new Set(next.entries.map(e => e.id))
+  next.entries = [...next.entries.filter(e => !active.has(e.id)), ...chain.filter(e => cached.has(e.id))]
   if (next.indexLoaded) {
     next.turnBase = chain.reduce((n, e) => n + (!loaded.has(e.id) && isUserEntry(e) ? 1 : 0), 0)
   }
   // Records are numbered from the branch root (index-only entries count too),
   // so the count below continues correctly for a live turn; turnStats adds
   // turnBase to the window's nodes, which is what the chat dividers show.
-  for (const e of chain) applyEntry(next, e, loaded.has(e.id))
+  const ordinals = new Map(next.compactTurns?.map(t => [t.id, t.stats.turn]))
+  for (const e of chain) {
+    const ordinal = ordinals.get(e.id)
+    if (ordinal != null && isUserEntry(e)) next.turn = ordinal - 1
+    applyEntry(next, e, loaded.has(e.id))
+  }
 
   const expanded = new Set(next.loadedTurnIds)
   const omitted = new Set(next.compactTurns?.filter(t => !expanded.has(t.id)).flatMap(t => t.omittedNodeIds ?? []))
   next.nodes = next.nodes.filter(n => !omitted.has(n.id))
-  if (next.compactTurns?.length) next.turnBase = Math.max(0, next.compactTurns[0].stats.turn - 1)
+  const firstUser = next.nodes.find(n => n.kind === 'user')
+  const firstRecord = firstUser && next.records.find(r => r.kind === 'user' && r.id === firstUser.id)
+  if (firstRecord) next.turnBase = Math.max(0, firstRecord.turn - 1)
 
-  // Entries that arrived live (SSE) but are not persisted yet: keep the
-  // in-flight conversation state instead of dropping it on a rebuild.
-  //
-  // The client's own node order decides what is newest. Only the trailing run
-  // of live nodes is genuinely in flight: a `running`/`streaming` node with a
-  // later node already on screen is stale, because a reconnect lost its end
-  // event (or the server suppressed it as already-persisted). Reviving it would
-  // leave a spinner that never settles, keep the turn unfolded, and freeze its
-  // counts. An entry the window already materialized also wins over its stale
-  // live copy.
-  if (streaming.length) {
-    const built = new Map(next.nodes.map(n => [n.id, n]))
-    const live = new Set<string>()
-    for (let i = s.nodes.length; i > 0 && nodeLive(s.nodes[i - 1]); i--) live.add(s.nodes[i - 1].id)
-    for (const node of streaming) {
-      if (!live.has(node.id)) continue
-      const settled = built.get(node.id)
-      if (!settled) { next.nodes.push(node); continue }
-      // The entry wins, except for a tool that has no result yet: it may still
-      // be running, so keep the live spinner the client already drew.
-      if (settled.kind === 'tool' && node.kind === 'tool' && !hasResult(settled)) {
-        next.nodes = next.nodes.map(n => n.id === node.id ? node : n)
-      }
+  // Snapshot entries settle work by identity, never by the order in which
+  // sibling tools finish. A later model request retires the previous batch in
+  // applyEvent; an ordinary hydration has no authority to end live work.
+  const built = new Map(next.nodes.map(n => [n.id, n]))
+  const retired = new Set<string>()
+  let laterAssistant = false
+  for (let i = s.nodes.length - 1; i >= 0; i--) {
+    const node = s.nodes[i]
+    if (node.kind === 'assistant' && built.get(node.id)?.kind === 'assistant' && !node.streaming) laterAssistant = true
+    else if (laterAssistant && nodeLive(node)) retired.add(node.id)
+  }
+  for (const node of streaming.filter(n => n.kind === 'assistant' && !retired.has(n.id))) {
+    if (!built.has(node.id)) next.nodes.push(node)
+  }
+  for (const node of Object.values(s.toolStates ?? {})) {
+    if (retired.has(node.id)) continue
+    const settled = built.get(node.id)
+    if (settled && hasResult(settled)) continue
+    if (!settled) next.nodes.push(node)
+    if (!next.records.some(r => r.id === node.id)) {
+      const record = s.records.find(r => r.id === node.id)
+      if (record) next.records.push({ ...record })
     }
+    // Nodes, trajectory and composer share the same overlay. Updating only
+    // the node made elapsed/output/errors disappear on unrelated hydration.
+    patchTool(next, node.id, node)
+  }
+  // Hand-constructed/in-flight states can predate the execution overlay. Keep
+  // their live tools too unless an immutable result already settled them.
+  for (const node of streaming.filter(n => n.kind === 'tool' && !s.toolStates?.[n.id] && !retired.has(n.id))) {
+    const settled = built.get(node.id)
+    if (settled && hasResult(settled)) continue
+    const at = next.nodes.findIndex(n => n.id === node.id)
+    if (at < 0) next.nodes.push(node)
+    else next.nodes[at] = node
   }
   if (runningRecords.length) {
     const have = new Set(next.records.map(r => r.id))
-    for (const rec of runningRecords) if (!have.has(rec.id)) next.records.push(rec)
+    for (const rec of runningRecords) if (!have.has(rec.id) && !retired.has(rec.id)) next.records.push(rec)
   }
   for (const req of runningRequests) {
     if (!next.requests.some(r => r.id === req.id)) next.requests.push(req)
@@ -447,7 +502,34 @@ function rebuild(s: ViewState): ViewState {
     if (old?.kind === 'assistant' && n.kind === 'assistant' && old.renderKey) n = { ...n, renderKey: old.renderKey }
     return old && sameValue(old, n) ? old : n
   })
+  attachCompactBaselines(next)
   return next
+}
+
+/** Reconstruct exactly the locally-known part of each immutable snapshot.
+ * Loading an old hidden body grows both observed stats and this overlap, so
+ * snapshot + observed - overlap never double-counts an expanded turn. */
+function attachCompactBaselines(s: ViewState) {
+  if (!s.compactTurns?.length) return
+  const loaded = new Set(s.entries.map(e => e.id))
+  const graph = branchGraph(s.allEntries, s.compactTurns)
+  s.compactTurns = s.compactTurns.map(turn => {
+    const baseline = emptyView()
+    // Stop at this turn's user and share lookup maps across turns: walking
+    // every snapshot back to the root made repeated hydration quadratic.
+    const path = walkBranch(graph, turn.tailId, turn.id)
+    for (const e of path) if (loaded.has(e.id)) applyEntry(baseline, e)
+    // Compact omits even current-batch bodies at keep=0. Batch identities and
+    // terminal flags define exactly what the snapshot already accounted for.
+    const known = new Map(baseline.nodes.map((n, i) => [n.id, i]))
+    for (const tool of turn.toolStates ?? []) {
+      const at = known.get(tool.id)
+      const n: ChatNode = { kind: 'tool', id: tool.id, name: '', ...(tool.finished ? { result: '', isError: !!tool.isError } : {}) }
+      if (at === undefined) baseline.nodes.push(n)
+      else baseline.nodes[at] = n
+    }
+    return { ...turn, baselineNodes: baseline.nodes }
+  })
 }
 
 function sameValue(a: unknown, b: unknown): boolean {
@@ -478,11 +560,21 @@ export function hydrateEntries(s: ViewState, incoming: Entry[], meta?: { hasMore
 function mergeCompactTurns(s: ViewState, incoming?: CompactTurn[]) {
   if (!incoming) return
   const turns = new Map(s.compactTurns?.map(t => [t.id, t]))
-  for (const turn of incoming) turns.set(turn.id, turn)
+  for (const turn of incoming) {
+    const previous = turns.get(turn.id)
+    // A delayed page or keep reprojection must not replace a newer sparse
+    // frontier: that would sever the current leaf from its opening user.
+    if (previous && ((turn.entryCount != null && previous.entryCount != null && turn.entryCount < previous.entryCount)
+      || (turn.entryCount == null && (turn.stats.steps < previous.stats.steps || turn.stats.tools < previous.stats.tools || turn.stats.elapsedMs < previous.stats.elapsedMs)))) continue
+    turns.set(turn.id, turn)
+  }
   s.compactTurns = [...turns.values()].sort((a, b) => a.stats.turn - b.stats.turn)
   const byId = new Map(s.entries.map(e => [e.id, e]))
   const loaded = new Set(s.loadedTurnIds)
-  for (const turn of incoming) {
+  for (const turn of s.compactTurns) {
+    // Completeness belongs to this snapshot frontier. A previously expanded
+    // prefix does not prove that hidden replies added while away are loaded.
+    loaded.delete(turn.id)
     let id: string | undefined = turn.tailId
     const seen = new Set<string>()
     while (id && !seen.has(id)) {
@@ -565,20 +657,26 @@ function indexToEntry(ix: IndexEntry): Entry {
   return entry
 }
 
-function leafEntries(entries: Entry[], leafId?: string, turns: CompactTurn[] = []): Entry[] {
-  // Sparse compact bodies keep their canonical parents for edit/fork. Only
-  // reading traversal bridges omitted ranges; a later index/full turn takes
-  // precedence and restores the original chain without rewriting any entry.
+function branchGraph(entries: Entry[], turns: CompactTurn[] = []) {
+  // Sparse compact bodies retain their canonical parents for edit/fork. Only
+  // reading traversal bridges omitted replies in adjacent whole user turns.
   const previous = new Map<string, string | undefined>()
   const tails = new Map<string, string | undefined>()
   let last: string | undefined
+  let ordinal: number | undefined
   for (const turn of turns) {
+    if (ordinal != null && turn.stats.turn !== ordinal + 1) last = undefined
+    ordinal = turn.stats.turn
     for (const id of turn.entryIds) { previous.set(id, last); last = id }
     tails.set(turn.tailId, last)
   }
-  const byId = new Map(entries.map(e => [e.id, e]))
+  return { byId: new Map(entries.map(e => [e.id, e])), previous, tails, last: entries.at(-1)?.id }
+}
+
+function walkBranch(graph: ReturnType<typeof branchGraph>, leafId?: string, stopId?: string): Entry[] {
+  const { byId, previous, tails } = graph
   const active: Entry[] = []
-  let id = leafId || entries.at(-1)?.id
+  let id = leafId || graph.last
   if (id && !byId.has(id)) id = tails.get(id)
   const seen = new Set<string>()
   while (id && !seen.has(id)) {
@@ -586,11 +684,19 @@ function leafEntries(entries: Entry[], leafId?: string, turns: CompactTurn[] = [
     const entry = byId.get(id)
     if (!entry) break
     active.push(entry)
+    if (id === stopId) break
     const parent = entry.parentId
-    id = parent && byId.has(parent) ? parent : (parent && tails.has(parent) ? tails.get(parent) : previous.get(entry.id))
+    id = parent && byId.has(parent) ? parent
+      : parent && tails.has(parent) ? tails.get(parent)
+        : entry.previousId && byId.has(entry.previousId) ? entry.previousId
+          : entry.previousId && tails.has(entry.previousId) ? tails.get(entry.previousId)
+            : previous.get(entry.id) ?? tails.get(entry.id)
   }
-  active.reverse()
-  return active
+  return active.reverse()
+}
+
+function leafEntries(entries: Entry[], leafId?: string, turns: CompactTurn[] = []): Entry[] {
+  return walkBranch(branchGraph(entries, turns), leafId)
 }
 
 
@@ -762,7 +868,7 @@ function applyEntry(s: ViewState, e: Entry, withNode = true) {
   }
   if (e.type === 'compaction') {
     const summary = e.summary || ''
-    if (withNode) s.nodes.push({ kind: 'compaction', id: e.id, summary, tokensBefore: e.tokensBefore, truncated: e.truncated })
+    if (withNode) s.nodes.push({ kind: 'compaction', id: e.id, summary, ts: tsMs(undefined, e.timestamp), tokensBefore: e.tokensBefore, truncated: e.truncated })
     s.records.push({
       id: e.id,
       kind: 'compacted',
@@ -1019,9 +1125,44 @@ function lastUserText(s: ViewState): string | null {
 //   - a message_end whose entry id is already on screen finishes a message the
 //     transcript holds -> drop the bubble the replayed start/partial opened.
 
+/** Persisted SSE messages enter the same identity graph as HTTP history.
+ * Keeping them only in nodes left the leaf stale until run end, causing clocks
+ * to reuse the old prompt and unrelated hydration to erase completed work. */
+function persistLiveEntry(s: ViewState, value: Entry) {
+  const known = s.allEntries.find(e => e.id === value.id)
+  const onBranch = known && leafEntries(s.allEntries, s.leafId, s.compactTurns).some(e => e.id === value.id)
+  const entry: Entry = {
+    ...value,
+    parentId: value.parentId ?? known?.parentId ?? (s.leafId !== value.id ? s.leafId : undefined),
+    previousId: known?.previousId ?? (!onBranch && s.leafId !== value.id ? s.leafId : undefined),
+    timestamp: value.timestamp ?? (value.message?.timestamp ? new Date(value.message.timestamp).toISOString() : undefined),
+  }
+  addEntries(s, [entry])
+  s.allEntries = mergeEntries(s.index, s.entries)
+  if (!onBranch) s.leafId = entry.id
+  if (entry.message?.role === 'toolResult' && entry.message.toolCallId && s.toolStates) {
+    s.toolStates = { ...s.toolStates }
+    delete s.toolStates[entry.message.toolCallId]
+  }
+}
+
+function rememberTool(s: ViewState, id?: string) {
+  const node = s.nodes.find(n => n.kind === 'tool' && n.id === id)
+  if (node?.kind === 'tool') s.toolStates = { ...s.toolStates, [node.id]: node }
+}
+
+function settleToolBatch(s: ViewState) {
+  // A model request starts only after the preceding parallel batch joins.
+  // Sibling completion is not such a boundary and must never settle a peer.
+  s.nodes = s.nodes.map(n => n.kind === 'tool' && n.running ? { ...n, running: false } : n)
+  s.records = s.records.map(r => r.kind === 'tool' && r.running ? { ...r, running: false } : r)
+  if (s.toolStates) s.toolStates = Object.fromEntries(Object.entries(s.toolStates).map(([id, n]) => [id, { ...n, running: false }]))
+}
+
 export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
   const next: ViewState = {
     ...s,
+    liveRevision: (s.liveRevision ?? 0) + 1,
     nodes: s.nodes.slice(),
     records: s.records.slice(),
     requests: s.requests.slice(),
@@ -1035,6 +1176,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
       next.error = null
       break
     case 'agent_end':
+      settleToolBatch(next)
       next.busy = false
       next.stopping = false
       next.nodes = next.nodes.map(n =>
@@ -1058,6 +1200,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     case 'runtime_ready':
       break
     case 'request_header': {
+      settleToolBatch(next)
       // A replayed header whose system prompt and tools repeat the previous
       // one arrives without its body (the server trims it, exactly like the
       // persisted entry): fold it back into the prompt already on screen.
@@ -1074,6 +1217,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     case 'message_end':
     case 'message_update':
       applyLiveMessage(next, ev)
+      if (ev.type === 'message_end' && ev.entryId && ev.message) persistLiveEntry(next, { type: 'message', id: ev.entryId, parentId: ev.parentId, message: ev.message })
       break
     case 'tool_execution_start':
       if (ev.toolCallId) {
@@ -1107,6 +1251,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
           ? { ...r, startedAt, running: true }
           : r)
       }
+      rememberTool(next, ev.toolCallId)
       break
     case 'compaction_start':
     case 'compaction_end': {
@@ -1155,6 +1300,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
 		  details: resultDetails,
         })
       }
+      rememberTool(next, ev.toolCallId)
       break
     default:
       break
@@ -1177,15 +1323,15 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
       //      authoritative one and is what a reload would show. Backfill it so
       //      the live view matches the reloaded view. (This was the bug where
       //      the time under a just-sent message only appeared after refresh.)
-      if (m.timestamp) {
+      if (m.timestamp || ev.entryId) {
         for (let i = s.nodes.length - 1; i >= 0; i--) {
           const n = s.nodes[i]
           if (n.kind === 'user' && n.text === text) {
 			const nextId = ev.entryId || n.id
-            s.nodes[i] = { ...n, id: nextId, content: m.content ?? n.content, ts: m.timestamp, origin: m.origin ?? n.origin }
+            s.nodes[i] = { ...n, id: nextId, content: m.content ?? n.content, ts: m.timestamp ?? n.ts, origin: m.origin ?? n.origin }
             // Keep the trajectory record in sync so the detail panel shows the
             // same start time as the chat bubble.
-			s.records = s.records.map(r => (r.id === n.id ? { ...r, id: nextId, startedAt: m.timestamp } : r))
+			s.records = s.records.map(r => (r.id === n.id ? { ...r, id: nextId, startedAt: m.timestamp ?? r.startedAt } : r))
             break
           }
         }
@@ -1195,7 +1341,7 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
     // A resume can replay a user message the transcript already rendered; the
     // entry id is authoritative, so it is never appended twice.
     if (ev.entryId && s.nodes.some(n => n.id === ev.entryId)) return
-    applyMessage(s, m, `live-user-${s.nodes.length}`, undefined)
+    applyMessage(s, m, ev.entryId || `live-user-${s.nodes.length}`, undefined)
     return
   }
   if (m.role === 'toolResult') {
@@ -1205,6 +1351,7 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
     return
   }
   if (m.role !== 'assistant') return
+  if (ev.type === 'message_start' || ev.type === 'message_end' || lastStreamingAssistant(s) < 0) settleToolBatch(s)
 
   if (ev.type === 'message_end' && ev.entryId && s.nodes.some(n => n.id === ev.entryId)) {
     // The transcript already holds this message (it finished while we were
@@ -1245,8 +1392,8 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
       // The entry id was checked above; a view whose nodes carry no ids yet
       // (a very old window) falls back to matching the finished text.
       const text = messageText(m)
-      if (text !== '' && s.nodes.some(n => n.kind === 'assistant' && !n.streaming && n.text === text)) return
-      applyMessage(s, m, `live-asst-${s.nodes.length}`, undefined)
+      if (!ev.entryId && text !== '' && s.nodes.some(n => n.kind === 'assistant' && !n.streaming && n.text === text)) return
+      applyMessage(s, m, ev.entryId || `live-asst-${s.nodes.length}`, undefined)
     }
     return
   }
@@ -1571,7 +1718,7 @@ export function latestStats(s: ViewState): LatestStats {
     if (n.kind !== 'user') continue
     // A second prompt appears optimistically before its entry reaches the
     // branch. Timing the previous persisted prompt includes all the idle time.
-    if (out.turnStartedAt === 0 || liveUserPrefix.test(n.id)) out.turnStartedAt = n.ts ?? out.turnStartedAt
+    if (n.ts != null) out.turnStartedAt = n.ts
     break
   }
   for (const e of path) {
@@ -1601,13 +1748,24 @@ export function latestStats(s: ViewState): LatestStats {
   const spans = runElapsedByTurn(s.records)
   for (const turn of s.compactTurns ?? []) {
     // Folded turns arrive only as server stats; their records were never loaded.
-    if (!spans.has(turn.stats.turn)) spans.set(turn.stats.turn, turn.stats.elapsedMs)
+    spans.set(turn.stats.turn, Math.max(spans.get(turn.stats.turn) ?? 0, turn.stats.elapsedMs))
   }
   let newest = 0
   for (const turn of spans.keys()) if (turn > newest) newest = turn
   for (const [turn, ms] of spans) {
     if (turn === newest) out.turnElapsedMs = ms
     else out.elapsedMs += ms
+  }
+  // Compact opens only a bounded set of turns. Its cumulative prefix keeps
+  // session elapsed independent of whether the optional tree index has loaded.
+  const anchor = s.compactTurns?.slice().reverse().find(t => t.cumulativeElapsedMs != null)
+  if (anchor?.cumulativeElapsedMs != null) {
+    // The cumulative prefix is frozen at the snapshot frontier. Subtracting
+    // today's extended span from it would make past work shrink as live work
+    // grows, hiding exactly that new elapsed time from the total.
+    let total = anchor.cumulativeElapsedMs + Math.max(0, (spans.get(anchor.stats.turn) ?? 0) - anchor.stats.elapsedMs)
+    for (const [turn, ms] of spans) if (turn > anchor.stats.turn) total += ms
+    out.elapsedMs = Math.max(0, total - out.turnElapsedMs)
   }
   return out
 }
@@ -1740,7 +1898,7 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
     // Live turns are kept (even before their first step lands) so a caller can
     // tell "still running" apart from "nothing to show"; a settled turn with no
     // step (a just-sent user message) is dropped.
-    if (acc.steps > 0 || acc.live) {
+    if (acc.steps > 0 || acc.tools > 0 || acc.live) {
       acc.tps = acc.decodeMs > 0 ? acc.decodeTokens / (acc.decodeMs / 1_000) : null
       out.set(acc.lastId, acc)
     }
@@ -1761,12 +1919,10 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
     }
     if (!acc) continue
     acc.lastId = n.id
-    // Only the newest node can be in flight. A `running`/`streaming` flag with
-    // a later node after it is stale (its end was lost on a reconnect or the
-    // server suppressed it as already-persisted), so the turn must not read as
-    // live — otherwise its divider keeps ticking and its folded counts freeze.
-    acc.live = nodeLive(n)
-    if (n.kind === 'assistant' && n.ts != null) acc.lastAt = n.ts
+    // Parallel tools may settle out of order. Only lifecycle reconciliation,
+    // not sibling position, decides whether work is still running.
+    acc.live ||= nodeLive(n)
+    if ((n.kind === 'assistant' || n.kind === 'compaction') && n.ts != null) acc.lastAt = Math.max(acc.lastAt, n.ts)
     if (n.kind === 'tool' && n.startedAt != null && n.durationMs != null) {
       const endedAt = n.startedAt + n.durationMs
       if (endedAt > acc.lastAt) acc.lastAt = endedAt
@@ -1830,37 +1986,37 @@ export function cacheHitPercent(s: LatestStats): number | null {
   return s.cacheRead / s.input * 100
 }
 
-/**
- * Merge a still-running turn's browser-observed stats with the server's folded
- * snapshot. Compact mode never sends the replies a turn hides, so the browser
- * sees only the newest replies: without this a live turn reports just those
- * (undercounting its tools/steps), and replacing it with the frozen snapshot
- * would stop its count from growing at all. Add back the replies the snapshot
- * hid but that the browser never loaded.
- */
-export function mergeLiveCompactTurn(
-  live: TurnStats,
-  folded: { stats: { steps: number; tools: number; toolFailures: number }; visibleNodeIds: string[] },
-  node: (id: string) => ChatNode | undefined,
-): TurnStats {
-  let visibleSteps = 0
-  let visibleTools = 0
-  let visibleFailures = 0
-  for (const id of folded.visibleNodeIds) {
-    const n = node(id)
-    if (!n) continue
-    if (n.kind === 'assistant' || n.kind === 'compaction') visibleSteps += 1
-    else if (n.kind === 'tool') {
-      visibleTools += 1
-      if (n.isError) visibleFailures += 1
+/** One projection for folded, expanded, live and settled turns. A compact
+ * snapshot contributes only what the browser has not already accounted for;
+ * current observed nodes always win over an older snapshot's live state. */
+export function projectTurnStats(nodes: ChatNode[], base = 0, summaries: CompactTurn[] = []): Map<string, TurnStats> {
+  const out = turnStats(nodes, base)
+  const byTurn = new Map<number, string>()
+  for (const [key, stats] of out) byTurn.set(stats.turn, key)
+  const current = new Set(nodes.map(n => n.id))
+  for (const summary of summaries) {
+    const key = byTurn.get(summary.stats.turn) ?? summary.visibleNodeIds.at(-1) ?? summary.id
+    if (!current.has(key)) continue
+    const observed = out.get(key)
+    if (!observed) { out.set(key, { ...summary.stats }); continue }
+    const overlapNodes = (summary.baselineNodes ?? []).filter(n => current.has(n.id))
+    const overlap = [...turnStats(overlapNodes).values()][0]
+    const merged = { ...observed, startedAt: observed.startedAt || summary.stats.startedAt }
+    // Deltas include all numeric additive metrics, not only tool counts. An
+    // end event updates a pending snapshot tool's failure without adding it.
+    for (const field of ['steps', 'tools', 'toolFailures', 'durationMs', 'input', 'output', 'cacheRead', 'cacheWrite', 'cost', 'cacheMisses'] as const) {
+      merged[field] = Math.max(0, summary.stats[field] + observed[field] - (overlap?.[field] ?? 0))
     }
+    merged.hasCost = summary.stats.hasCost || observed.hasCost
+    merged.elapsedMs = Math.max(summary.stats.elapsedMs, observed.elapsedMs)
+    merged.ttftMs = summary.stats.ttftMs || observed.ttftMs
+    // Decode duration is recoverable from the snapshot rate and output only
+    // when every step reports TTFT; keep the authoritative snapshot estimate
+    // until we have the whole turn, rather than inventing a partial average.
+    merged.tps = merged.steps === observed.steps ? observed.tps : summary.stats.tps
+    out.set(key, merged)
   }
-  return {
-    ...live,
-    steps: live.steps + Math.max(0, folded.stats.steps - visibleSteps),
-    tools: live.tools + Math.max(0, folded.stats.tools - visibleTools),
-    toolFailures: live.toolFailures + Math.max(0, folded.stats.toolFailures - visibleFailures),
-  }
+  return out
 }
 
 /** Cache-read share of a step's prompt, as a percentage (not rounded). `input`

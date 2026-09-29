@@ -108,11 +108,9 @@ function isLive(n: ChatNode): boolean {
  * streaming text or the running tool would hide exactly what the user is
  * waiting for.
  *
- * Only the *newest* run of live nodes may extend the visible tail. A live flag
- * on an earlier node is stale: its end event was lost on a reconnect (or
- * suppressed because the result was already persisted), and honoring it would
- * unfold the entire turn, ignoring `keep`. That is the "a long absence leaves
- * every turn expanded" bug.
+ * Liveness comes from lifecycle reconciliation, not node position: parallel
+ * tools finish out of order and an earlier sibling can still be running.
+ * Stale state is retired by immutable results or the next model request.
  *
  * The running turn folds like any other (measured: one in-flight turn held 61
  * reply nodes and rendered all of them, where folding renders two). Keeping a
@@ -122,9 +120,8 @@ function isLive(n: ChatNode): boolean {
  */
 function hiddenCount(rest: ChatNode[], keep: number): number {
   const cut = Math.max(0, rest.length - keep)
-  let live = rest.length
-  while (live > 0 && isLive(rest[live - 1])) live--
-  return Math.min(cut, live)
+  const live = rest.findIndex(isLive)
+  return live < 0 ? cut : Math.min(cut, live)
 }
 
 /**
@@ -146,13 +143,18 @@ export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderIte
     const rest = turn.user ? turn.nodes.slice(1) : turn.nodes
     const hidden = hiddenCount(rest, keep)
     const summary = !loaded.has(turn.id) ? summaries.get(turn.id) : undefined
-    const count = hidden + (summary?.hiddenCount ?? 0)
+    const observed = new Set(rest.map(n => n.id))
+    const snapshotReplies = summary?.baselineNodes?.filter(n => n.kind !== 'user') ?? []
+    const snapshotCount = summary ? summary.hiddenCount + summary.visibleNodeIds.filter(id => id !== summary.id).length : 0
+    const overlap = snapshotReplies.filter(n => observed.has(n.id)).length
+    const missing = summary ? Math.max(0, snapshotCount - overlap) : 0
+    const count = hidden + missing
     if (count === 0) {
       for (const n of rest) out.push({ kind: 'node', id: n.id, node: n })
       return
     }
     const expanded = opts.expanded?.has(turn.id) ?? false
-    out.push({ kind: 'fold', id: `fold:${turn.id}`, turn, nodes: rest.slice(0, hidden), expanded, count, preview: summary?.preview, firstHiddenId: summary?.firstHiddenId, remote: !!summary?.hiddenCount })
+    out.push({ kind: 'fold', id: `fold:${turn.id}`, turn, nodes: rest.slice(0, hidden), expanded, count, preview: summary?.preview, firstHiddenId: summary?.firstHiddenId, remote: missing > 0 })
     for (const n of expanded ? rest : rest.slice(hidden)) out.push({ kind: 'node', id: n.id, node: n })
   })
   return out

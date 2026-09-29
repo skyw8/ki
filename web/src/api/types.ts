@@ -49,6 +49,8 @@ export type Entry = {
   type: string
   id: string
   parentId?: string
+  /** Browser-only traversal bridge while preceding persisted metadata is absent. */
+  previousId?: string
   timestamp?: string
   message?: Message
   summary?: string
@@ -106,6 +108,7 @@ export type LoopEvent = {
 	runId?: string
 	external?: Record<string, string>
 	entryId?: string
+	parentId?: string
 	timestamp?: number
 	durationMs?: number
   message?: Message
@@ -327,12 +330,18 @@ export type CompactTurn = {
   visibleNodeIds: string[]
   omittedNodeIds?: string[]
   hiddenCount: number
+  entryCount?: number
   stepCount: number
+  cumulativeElapsedMs?: number
+  toolStates?: { id: string; finished: boolean; isError?: boolean }[]
+  assistantAt?: number
+  /** Browser-only overlap reconstructed from the immutable snapshot frontier. */
+  baselineNodes?: ChatNode[]
   lastStep?: { usage?: Usage; ttftMs: number; latencyMs: number }
   firstHiddenId?: string
   preview?: string
   stats: {
-    turn: number; steps: number; elapsedMs: number; durationMs: number
+    turn: number; steps: number; elapsedMs: number; durationMs: number; startedAt?: number
     input: number; output: number; cacheRead: number; cacheWrite: number
     tools: number; toolFailures: number; cacheMisses: number
     hasCost: boolean; cost: number; ttftMs: number; tps: number | null; live: boolean
@@ -427,7 +436,7 @@ export type ChatNode =
   | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string; truncated?: boolean }
   | { kind: 'assistant'; id: string; renderKey?: string; display?: DisplayRevision; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number; truncated?: boolean }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; startedAt?: number; running?: boolean; truncated?: boolean }
-  | { kind: 'compaction'; id: string; summary: string; tokensBefore?: number; running?: boolean; failed?: boolean; empty?: boolean; truncated?: boolean }
+  | { kind: 'compaction'; id: string; summary: string; ts?: number; tokensBefore?: number; running?: boolean; failed?: boolean; empty?: boolean; truncated?: boolean }
 
 export type PromptSnapshot = {
   provider?: string
@@ -497,6 +506,10 @@ export type TrajRecord = {
 }
 
 export type ViewState = {
+  /** Changes on live events; guards snapshots requested before newer events. */
+  liveRevision: number
+  /** Tool execution overlays until their immutable toolResult arrives. */
+  toolStates?: Record<string, Extract<ChatNode, { kind: 'tool' }>>
   nodes: ChatNode[]
   records: TrajRecord[]
   requests: RequestView[]

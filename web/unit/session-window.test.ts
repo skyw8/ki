@@ -187,3 +187,65 @@ test('body eviction preserves all ids, the visible row and the active tail', () 
   const restored = hydrateEntries(trimmed, [all[1]])
   expect(restored.entries[1]).toBe(all[1])
 })
+
+
+test('a disconnected recovery tail reopens paging instead of preserving a false root', () => {
+  const { all, index } = fixture()
+  for (const loadedIndex of [undefined, index.slice(0, 4), index]) {
+    let s = loadHistory({ entries: all.slice(0, 4), index: loadedIndex, leafId: 'a2', oldestId: 'u1', hasMore: false } as any)
+    s = applyTail(s, { entries: all.slice(-4), leafId: 'a12', oldestId: 'u11', hasMore: true } as any)
+    expect(s.oldestId).toBe('u11')
+    expect(s.hasMore).toBe(true)
+    expect(s.nodes.map(n => n.id)).toEqual(['u11', 'a11', 'u12', 'a12'])
+    // Lost ranges remain in the identity/body cache, not stranded behind an
+    // old root cursor. Paging back through the gap reconnects them.
+    s = hydrateEntries(s, all.slice(4, -4), { oldestId: 'u3', hasMore: true })
+    s = hydrateEntries(s, all.slice(0, 4), { oldestId: 'u1', hasMore: false })
+    expect(s.nodes.map(n => n.id)).toEqual(all.map(e => e.id))
+  }
+})
+
+test('a delayed idle snapshot cannot roll back a newer SSE completion or running state', () => {
+  const first = user(1)
+  let s = loadHistory({ entries: [first], leafId: first.id, running: true } as any)
+  const revision = s.liveRevision
+  s = applyEvent(s, { type: 'message_end', entryId: 'a1', message: { role: 'assistant', timestamp: 1_000, content: [{ type: 'text', text: 'new result' }] } })
+  s = applyTail(s, { entries: [first], leafId: first.id, running: false } as any, revision)
+  expect(s.leafId).toBe('a1')
+  expect(s.busy).toBe(true)
+  expect(s.nodes.map(n => n.id)).toEqual(['u1', 'a1'])
+})
+
+
+test('SSE advances to a descendant already known by a racing index response', () => {
+  let s = loadHistory({ entries: [user(1)], leafId: 'u1', running: true } as any)
+  s = applyIndex(s, { index: [row(user(1), 'prompt'), row(assistant(1), 'answer')] } as any)
+  s = applyEvent(s, { type: 'message_end', entryId: 'a1', message: assistant(1).message })
+  s = hydrateEntries(s, [user(1)])
+  expect(s.leafId).toBe('a1')
+  expect(s.nodes.map(n => n.id)).toEqual(['u1', 'a1'])
+  // Replaying an ancestor must not rewind the newly advanced frontier.
+  s = applyEvent(s, { type: 'message_end', entryId: 'u1', message: user(1).message })
+  expect(s.leafId).toBe('a1')
+})
+
+test('a newer server model boundary retires missed tools even across a recovery gap', () => {
+  let s = loadHistory({ entries: [user(1)], leafId: 'u1', running: true } as any)
+  s = applyEvent(s, { type: 'tool_execution_start', toolCallId: 'lost', toolName: 'Read', timestamp: 1_000 })
+  s = applyTail(s, { entries: [{ ...assistant(12), message: { ...assistant(12).message!, timestamp: 2_000 } }], leafId: 'a12', oldestId: 'a12', hasMore: true, running: true } as any)
+  expect(s.nodes.some(n => n.kind === 'tool' && n.running)).toBe(false)
+  expect(s.busy).toBe(true)
+})
+
+
+test('a terminal GET can advance past a queued run despite a delayed React event commit', () => {
+  let s = loadHistory({ entries: [user(1), assistant(1)], leafId: 'a1', running: true } as any)
+  const requestedRevision = s.liveRevision
+  // The reader flushes its final event batch after it has issued the GET;
+  // meanwhile the server can drain a queued prompt and finish its short run.
+  s = applyEvent(s, { type: 'agent_end' })
+  s = applyTail(s, { entries: [user(1), assistant(1), user(2), assistant(2)], leafId: 'a2', running: false } as any, requestedRevision)
+  expect(s.leafId).toBe('a2')
+  expect(s.nodes.map(n => n.id)).toEqual(['u1', 'a1', 'u2', 'a2'])
+  expect(s.busy).toBe(false)
+})

@@ -181,3 +181,188 @@ for (const mobile of [false, true]) test(`request navigation lands once and trac
     await expect(page.locator('[data-request-id="u37"]')).toHaveAttribute('aria-selected', 'true')
   } finally { await context.close() }
 })
+
+
+async function navigationFixture(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("ki-message-view", "detailed"))
+  const headers = { Authorization: `Bearer ${serverToken()}` }
+  const response = await page.request.post("/v1/sessions", { headers, data: {} })
+  const { id } = await response.json() as { id: string }
+  const title = `navigation-recovery-${id}`
+  await page.request.patch(`/v1/sessions/${id}`, { headers, data: { title } })
+  const entries: Entry[] = []
+  for (let n = 0; n < 4; n++) {
+    entries.push({ type: "message", id: `u${n}`, parentId: n ? `a${n - 1}` : "", message: { role: "user", content: [{ type: "text", text: `Recovery request ${n}` }] } })
+    entries.push({ type: "message", id: `a${n}`, parentId: `u${n}`, message: { role: "assistant", content: [{ type: "text", text: `Recovery response ${n}` }] } })
+  }
+  const index = (rows: Entry[]) => rows.map(e => ({ type: e.type, id: e.id, parentId: e.parentId, role: e.message?.role, preview: e.message?.content?.[0].text }))
+  const open = async () => {
+    await page.goto("/")
+    await page.getByTestId("session-row").filter({ hasText: title }).click()
+    await expect(page.getByTestId("assistant-message").last()).toBeVisible()
+  }
+  const navigator = async () => {
+    if (!await page.getByTestId("request-nav-panel").isVisible()) {
+      // Keyboard activation avoids a hover-open issuing an extra request before
+      // the test can observe the first failed metadata response.
+      await page.getByTestId("request-nav-toggle").focus()
+      await page.keyboard.press("Enter")
+    }
+  }
+  const jump = async (n: number) => {
+    await navigator()
+    await page.locator(`[data-request-id="u${n}"]`).click()
+  }
+  const landed = async (n: number) => {
+    const row = page.locator(`[data-item-key="u${n}"]`)
+    await expect(row).toBeVisible()
+    await expect.poll(() => row.evaluate(el => {
+      const scroll = el.closest("[data-testid=chat-scroll]")!
+      const top = el.getBoundingClientRect().top - scroll.getBoundingClientRect().top
+      return Math.abs(Math.min(top, scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop))
+    })).toBeLessThanOrEqual(2)
+  }
+  return { id, title, entries, index, open, navigator, jump, landed }
+}
+
+test("reply-only history exposes lazy navigation and explicit index and jump retries", async ({ page }) => {
+  const f = await navigationFixture(page)
+  let indexes = 0
+  let pages = 0
+  await page.route(url => url.pathname === `/v1/sessions/${f.id}`, async route => {
+    const params = new URL(route.request().url()).searchParams
+    if (params.get("fields") === "index") {
+      if (++indexes === 1) return route.fulfill({ status: 503, body: "temporary index failure" })
+      return route.fulfill({ json: { id: f.id, index: f.index(f.entries.slice(0, 4)) } })
+    }
+    if (params.has("before")) {
+      expect(params.get("before")).toBe("a1")
+      if (++pages === 1) return route.fulfill({ status: 503, body: "temporary paging failure" })
+      return route.fulfill({ json: { entries: f.entries.slice(0, 3), oldestId: "u0", hasMore: false } })
+    }
+    return route.fulfill({ json: { id: f.id, title: f.title, leafId: "a1", entries: [f.entries[3]], oldestId: "a1", hasMore: true } })
+  })
+  await f.open()
+  await expect(page.getByTestId("user-bubble")).toHaveCount(0)
+  await expect(page.getByTestId("request-nav-toggle")).toBeVisible()
+  await f.navigator()
+  await expect(page.getByTestId("request-nav-retry")).toBeVisible()
+  await page.getByTestId("request-nav-retry").click()
+  await expect(page.getByTestId("request-nav-item")).toHaveCount(2)
+  await f.jump(0)
+  await expect(page.getByTestId("retry-jump")).toBeVisible()
+  await page.getByTestId("retry-jump").click()
+  await f.landed(0)
+  await expect(page.getByTestId("retry-jump")).toHaveCount(0)
+  expect(pages).toBe(2)
+})
+
+for (const delayedPage of [false, true]) test(`resume refreshes the full request index and ${delayedPage ? "rejects an old page completion" : "reopens an exhausted paging boundary"}`, async ({ page }) => {
+  const f = await navigationFixture(page)
+  let resumed = false
+  let indexCalls = 0
+  const cursors: string[] = []
+  let releaseOld!: () => void
+  const oldPage = new Promise<void>(resolve => { releaseOld = resolve })
+  await page.route(url => url.pathname === `/v1/sessions/${f.id}`, async route => {
+    const params = new URL(route.request().url()).searchParams
+    if (params.get("fields") === "index") {
+      indexCalls++
+      return route.fulfill({ json: { id: f.id, index: f.index(resumed ? f.entries : f.entries.slice(0, 4)) } })
+    }
+    const before = params.get("before")
+    if (before) {
+      cursors.push(before)
+      if (before === "u1") {
+        if (delayedPage) await oldPage
+        return route.fulfill({ json: { entries: f.entries.slice(0, 2), oldestId: "u0", hasMore: false } })
+      }
+      if (before === "u3") return route.fulfill({ json: { entries: f.entries.slice(4, 6), oldestId: "u2", hasMore: true } })
+      if (before === "u2") return route.fulfill({ json: { entries: f.entries.slice(0, 4), oldestId: "u0", hasMore: false } })
+      throw new Error(`Unexpected cursor: ${before}`)
+    }
+    return route.fulfill({ json: { id: f.id, title: f.title, leafId: resumed ? "a3" : "a1", entries: f.entries.slice(resumed ? 6 : 2, resumed ? 8 : 4), oldestId: resumed ? "u3" : "u1", hasMore: true } })
+  })
+  await f.open()
+  await f.navigator()
+  await expect(page.getByTestId("request-nav-item")).toHaveCount(2)
+  await f.jump(0)
+  await expect.poll(() => cursors).toContain("u1")
+  if (!delayedPage) await f.landed(0)
+  const indexesBeforeResume = indexCalls
+  resumed = true
+  await page.keyboard.press("Escape")
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+  await expect(page.getByTestId("assistant-message").last()).toContainText("Recovery response 3")
+  await expect.poll(() => indexCalls).toBeGreaterThan(indexesBeforeResume)
+  if (delayedPage) {
+    // Recovery must retire the old request even while its remote reply hangs.
+    await expect(page.getByTestId("cancel-jump")).toHaveCount(0)
+    releaseOld()
+  }
+  await f.navigator()
+  await expect(page.getByTestId("request-nav-item")).toHaveCount(4)
+  await f.jump(2)
+  await f.landed(2)
+  expect(cursors).toContain("u3")
+  await f.jump(0)
+  await f.landed(0)
+  expect(cursors).toContain("u2")
+})
+
+
+test("a rejected history cursor refreshes its boundary and offers a working retry", async ({ page }) => {
+  const f = await navigationFixture(page)
+  let rejected = false
+  const cursors: string[] = []
+  await page.route(url => url.pathname === `/v1/sessions/${f.id}`, route => {
+    const params = new URL(route.request().url()).searchParams
+    if (params.get("fields") === "index") return route.fulfill({ json: { id: f.id, index: f.index(f.entries.slice(0, 4)) } })
+    const before = params.get("before")
+    if (before) {
+      cursors.push(before)
+      if (before === "obsolete") {
+        rejected = true
+        return route.fulfill({ status: 409, body: "history cursor is not on the current branch" })
+      }
+      expect(before).toBe("u1")
+      return route.fulfill({ json: { entries: f.entries.slice(0, 2), oldestId: "u0", hasMore: false } })
+    }
+    return route.fulfill({ json: { id: f.id, title: f.title, leafId: "a1", entries: f.entries.slice(2, 4), oldestId: rejected ? "u1" : "obsolete", hasMore: true } })
+  })
+  await f.open()
+  await f.navigator()
+  await expect(page.getByTestId("request-nav-item")).toHaveCount(2)
+  await f.jump(0)
+  await expect(page.getByTestId("retry-jump")).toBeVisible()
+  await page.getByTestId("retry-jump").click()
+  await f.landed(0)
+  expect(cursors).toEqual(["obsolete", "u1"])
+})
+
+test("resume supersedes a request index snapshot still in flight", async ({ page }) => {
+  const f = await navigationFixture(page)
+  let resumed = false
+  let indexCalls = 0
+  let releaseIndex!: () => void
+  const firstIndex = new Promise<void>(resolve => { releaseIndex = resolve })
+  await page.route(url => url.pathname === `/v1/sessions/${f.id}`, async route => {
+    const params = new URL(route.request().url()).searchParams
+    if (params.get("fields") === "index") {
+      const rows = resumed ? f.entries : f.entries.slice(0, 4)
+      if (++indexCalls === 1) await firstIndex
+      return route.fulfill({ json: { id: f.id, index: f.index(rows) } })
+    }
+    return route.fulfill({ json: { id: f.id, title: f.title, leafId: resumed ? "a3" : "a1", entries: f.entries.slice(resumed ? 6 : 2, resumed ? 8 : 4), oldestId: resumed ? "u3" : "u1", hasMore: true } })
+  })
+  await f.open()
+  await f.navigator()
+  await expect(page.getByTestId("request-nav-loading")).toBeVisible()
+  resumed = true
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")))
+  await expect(page.getByTestId("assistant-message").last()).toContainText("Recovery response 3")
+  releaseIndex()
+  await expect(page.getByTestId("request-nav-item")).toHaveCount(4)
+  await expect(page.getByTestId("request-nav-loading")).toHaveCount(0)
+  expect(indexCalls).toBe(2)
+})

@@ -29,6 +29,9 @@ export function RequestNav({
   activeId,
   onJump,
   onOpen,
+  loading = false,
+  failed = false,
+  onRetry,
 }: {
   items: UserRequest[]
   activeId: string | null
@@ -36,6 +39,9 @@ export function RequestNav({
   /** Called when the panel opens: the caller can fill in history the list is
    * still missing (the navigator walks the tree index, which loads lazily). */
   onOpen?: () => void
+  loading?: boolean
+  failed?: boolean
+  onRetry?: () => void
 }) {
   const { t } = useI18n()
   const hoverable = useFineHover()
@@ -114,13 +120,11 @@ export function RequestNav({
     else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight
   }, [open, activeId, visible, virtualize, virtualizer])
 
-  // Always offered once the session has a prompt: hiding the navigator for a
-  // single-prompt branch (a tool-heavy turn, a fresh session) made it look
-  // broken, and its panel is the only way back to an earlier turn.
-  if (items.length === 0) return null
+  // The tail can contain only replies while the branch index is still lazy.
+  // Hiding an empty list also hid the only control that could discover prompts.
 
   const current = items.find(item => item.id === activeId) ?? items[0]
-  const currentLabel = labelOf(current, untitled)
+  const currentLabel = current ? labelOf(current, untitled) : t('chat.requestsOpen')
 
   const cancelClose = () => window.clearTimeout(closeTimer.current)
   const scheduleClose = () => {
@@ -189,6 +193,8 @@ export function RequestNav({
     >
       {open ? (
         <div className="req-nav-panel" id={panelId} data-testid="request-nav-panel">
+          {loading ? <div className="req-nav-empty" role="status" data-testid="request-nav-loading">{t('chat.loadingRequests')}</div> : null}
+          {failed && !loading ? <button type="button" className="req-nav-item" data-testid="request-nav-retry" onClick={onRetry}>{t('chat.retryRequests')}</button> : null}
           {showFilter ? (
             <input
               className="req-nav-filter"
@@ -207,7 +213,7 @@ export function RequestNav({
             aria-label={t('chat.requests')}
           >
             {visible.length === 0 ? (
-              <div className="req-nav-empty">{t('chat.requestEmpty')}</div>
+              !loading && !failed ? <div className="req-nav-empty">{t('chat.requestEmpty')}</div> : null
             ) : virtualize ? (
               <div className="req-nav-virtual" style={{ height: virtualizer.getTotalSize() }}>
                 {virtualizer.getVirtualItems().map(row => {
@@ -244,10 +250,10 @@ export function RequestNav({
             openPanel()
             return
           }
-          setOpen(v => {
-            if (!v) onOpen?.()
-            return !v
-          })
+          // Starting metadata loading updates the parent; keep that effect
+          // outside a state updater that React may replay during rendering.
+          if (!open) onOpen?.()
+          setOpen(!open)
         }}
       >
         <IMenu />

@@ -353,12 +353,14 @@ function WorkspaceApp({ api }: { api: Client }) {
   const openAbort = useRef<AbortController | null>(null)
   const beforeHistoryCommit = useCallback((signal: AbortSignal) => chatControl.current?.preparePrepend(signal) ?? Promise.resolve(), [])
   const history = useTranscriptRequests(api, currentId, sessionRevision, viewRef, setView, messageView, beforeHistoryCommit)
-  const { requestIndex, requestHydrate, loadOlder, loadingOlder, olderError } = history
+  const { requestIndex, refreshIndex, requestHydrate, loadOlder, loadingOlder, olderError, indexLoading, indexError } = history
   const jumpVersion = useRef(0)
   const [seekingId, setSeekingId] = useState<string | null>(null)
+  const [jumpErrorId, setJumpErrorId] = useState<string | null>(null)
   const cancelJump = useCallback(() => {
     jumpVersion.current++
     setSeekingId(null)
+    setJumpErrorId(null)
     setJumpToId(null)
   }, [])
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -861,9 +863,13 @@ function WorkspaceApp({ api }: { api: Client }) {
         // A finished run is reconciled from the tail: the events already
         // arrived on this stream, so only the window and leaf need refreshing,
         // not the whole history (and the index stays warm across the run).
+        const liveRevision = viewRef.current.liveRevision
         const detail = await api.get(id, { ...transcriptOptions(), signal: ac.signal }).catch(() => null)
         if (abortRef.current === ac && !ac.signal.aborted) {
-          if (detail) setView(v => applyTail(v, detail))
+          if (detail) {
+            setView(v => applyTail(v, detail, liveRevision))
+            refreshIndex(id, detail.leafId)
+          }
           if (!detail || detail.running) {
             // A dead link must not turn into a tight GET/listen loop or make a
             // still-running session appear completed. Retrying never resends a prompt.
@@ -879,7 +885,7 @@ function WorkspaceApp({ api }: { api: Client }) {
         void refreshList()
       }
     }
-  }, [api, refreshList])
+  }, [api, refreshList, refreshIndex])
 
   const recovering = useRef<AbortController | null>(null)
   const recoverOpenTranscript = useCallback(async (restart = false) => {
@@ -899,9 +905,13 @@ function WorkspaceApp({ api }: { api: Client }) {
     try {
       for (let attempt = 0; valid(); attempt++) {
         try {
+          const liveRevision = viewRef.current.liveRevision
           const detail = await api.get(id, { ...transcriptOptions(), signal: ac.signal })
           if (!valid()) return
-          setView(v => applyTail(v, detail))
+          setView(v => applyTail(v, detail, liveRevision))
+          // A resumed tail may skip entire turns; a previously loaded index
+          // must be refreshed too, otherwise navigation never discovers them.
+          refreshIndex(id, detail.leafId)
           if (detail.running) void listen(id, detail.compactTurns?.length ? detail.leafId : undefined)
           return
         } catch (error) {
@@ -913,7 +923,7 @@ function WorkspaceApp({ api }: { api: Client }) {
     } finally {
       if (recovering.current === ac) recovering.current = null
     }
-  }, [api, listen])
+  }, [api, listen, refreshIndex])
 
   // The push channel's handler for the session this tab has open.
   const refreshOpenRuntime = useCallback(async () => {
@@ -1546,7 +1556,7 @@ function WorkspaceApp({ api }: { api: Client }) {
 	  } catch (e) { toast.from(e) }
 	}, [api, currentId, openSession, view.allEntries, view.busy])
 
-  const empty = view.nodes.length === 0
+  const empty = view.nodes.length === 0 && !view.hasMore && !view.compactTurns?.length
   const stats = useMemo(() => latestStats(view), [view])
   // The navigator walks the branch from the loaded entries and index rows, not
   // from chat nodes, so every prompt is listed without paging the chat back.
@@ -1570,14 +1580,17 @@ function WorkspaceApp({ api }: { api: Client }) {
     const version = ++jumpVersion.current
     const sessionId = currentIdRef.current
     setSeekingId(id)
-    const have = new Set(viewRef.current.entries.map(e => e.id))
-    const live = viewRef.current.nodes.some(n => n.id === id)
+    setJumpErrorId(null)
+    // Cached bodies may sit across an unloaded gap after recovery; only nodes
+    // in the active window are immediately reachable by the scroll controller.
+    const have = new Set(viewRef.current.nodes.map(n => n.id))
     try {
-      while (!live && !have.has(id)) {
+      while (!have.has(id)) {
         const page = await loadOlder(500)
-        if (version !== jumpVersion.current || sessionId !== currentIdRef.current || !page) return
+        if (version !== jumpVersion.current || sessionId !== currentIdRef.current) return
+        if (!page) { setJumpErrorId(id); return }
         for (const entry of page.entries ?? []) have.add(entry.id)
-        if (!have.has(id) && !page.hasMore) return
+        if (!have.has(id) && !page.hasMore) { setJumpErrorId(id); return }
       }
       if (version === jumpVersion.current && sessionId === currentIdRef.current) setJumpToId(id)
     } finally {
@@ -2006,9 +2019,13 @@ function WorkspaceApp({ api }: { api: Client }) {
                   items={requestItems}
                   activeId={seekingId ?? jumpToId ?? activeRequestId}
                   onJump={jumpToRequest}
-                  onOpen={() => { if (currentId && !view.indexLoaded) void requestIndex(currentId) }}
+                  loading={indexLoading}
+                  failed={indexError}
+                  onOpen={() => { if (currentId) void requestIndex(currentId, indexError) }}
+                  onRetry={() => { if (currentId) void requestIndex(currentId, true) }}
                 />
                 {seekingId ? <button type="button" className="history-seeking" data-testid="cancel-jump" onClick={cancelJump}>{t('chat.cancelJump')}</button> : null}
+                {jumpErrorId ? <button type="button" className="history-seeking" data-testid="retry-jump" onClick={() => void jumpToRequest(jumpErrorId)}>{t('chat.retryJump')}</button> : null}
                 {!atBottom ? (
                   <div className="to-bottom-slot">
                     <button type="button" className="to-bottom" data-testid="to-bottom" aria-label={t('chat.toBottom')} onClick={() => {
