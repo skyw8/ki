@@ -15,6 +15,17 @@ the WebUI is reached through a port forward. `KI_CODEX_AUTH_BASE_URL` and
 `KI_CODEX_CALLBACK_PORT` are test-only endpoint overrides; normal use talks to
 the OpenAI Codex service endpoints defined in `extension.json`.
 
+## Context windows
+
+`contextWindow` follows the OpenAI Codex bundled catalog
+(`codex-rs/models-manager/models.json`), which caps `gpt-6-astra` and the
+GPT-5.6 Sol/Terra/Luna variants at 272,000 tokens for coding clients
+(`max_context_window` 872,000 is a configuration override, not the default).
+The model API spec pages advertise 1,050,000, but the ChatGPT-backed Codex
+service this extension talks to enforces the smaller window. The built-in
+`openai` catalog entries use the same value so a Codex-issued credential and a
+direct API key see one consistent context window.
+
 ## Thinking levels
 
 `thinkingLevelMap` mirrors the built-in catalog entries for the same models.
