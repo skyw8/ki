@@ -79,6 +79,22 @@ test('foldReplies keeps an earlier running sibling visible until lifecycle settl
   expect(foldReplies(settled, { keep: 1 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'fast'])
 })
 
+const compact = (id: string, summary = 'sum'): ChatNode => ({ kind: 'compaction', id, summary })
+
+test('foldReplies never folds a compaction row or lets it consume a keep slot', () => {
+  // A checkpoint trailing the turn must not hide the newest reply.
+  const items = foldReplies([user('u1', 'one'), asst('a1a'), asst('a1b'), compact('c1')], { keep: 1 })
+  expect(items.map(i => i.id)).toEqual(['u1', 'fold:u1', 'a1b', 'c1'])
+  const folded = items.find(i => i.kind === 'fold')
+  expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1a'])
+
+  // Even keep 0 leaves the compaction visible on its own row.
+  expect(foldReplies([user('u1', 'one'), asst('a1a'), compact('c1')], { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'c1'])
+
+  // A mid-turn compaction (overflow) stays visible while older replies fold.
+  expect(foldReplies([user('u1', 'one'), asst('a1'), compact('c1'), asst('a2')], { keep: 1 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'c1', 'a2'])
+})
+
 test('clampCompactKeep bounds the configured N', () => {
   expect(clampCompactKeep(Number.NaN)).toBe(1)
   expect(clampCompactKeep(-3)).toBe(0)

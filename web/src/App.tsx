@@ -16,7 +16,7 @@ import { PromptSettings } from './features/settings/PromptSettings'
 import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
-import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, applyTail, clampThinkingEffort, emptyView, initialView, keepComposer, latestStats, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, userRequests } from './lib/model'
+import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, applyTail, clampThinkingEffort, emptyView, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats, userRequests } from './lib/model'
 import { clampCompactKeep, loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
 import type { CatalogExtension, ChatNode, Content, ExtensionUI, LoopEvent, ModelInfo, PushEvent, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './api/types'
 import { TrajectoryView } from './features/chat/Trajectory'
@@ -1557,7 +1557,7 @@ function WorkspaceApp({ api }: { api: Client }) {
 	}, [api, currentId, openSession, view.allEntries, view.busy])
 
   const empty = view.nodes.length === 0 && !view.hasMore && !view.compactTurns?.length
-  const stats = useMemo(() => latestStats(view), [view])
+  const stats = useMemo(() => sessionStats(view), [view])
   // The navigator walks the branch from the loaded entries and index rows, not
   // from chat nodes, so every prompt is listed without paging the chat back.
   const requestItems = useMemo(() => userRequests(view.allEntries, view.leafId, view.nodes, view.compactTurns), [view.allEntries, view.leafId, view.nodes, view.compactTurns])

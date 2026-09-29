@@ -29,7 +29,9 @@
 // page budget as well as a count limit. Compact views instead page whole human
 // turns: visible input/reply bodies plus a fold summary and canonical range
 // metadata. Runtime-authored user-role messages (including subagent traffic)
-// are foldable replies, not turn boundaries. Hidden replies are transferred
+// are foldable replies, not turn boundaries. Compaction rows are metadata:
+// always kept visible and never counted toward the per-turn keep, so a
+// trailing checkpoint cannot fold the newest reply. Hidden replies are transferred
 // only on explicit turn expansion; its local
 // cursor never replaces the main history cursor. Compact snapshots carry a
 // monotone per-turn entryCount, the latest assistant completion boundary, and

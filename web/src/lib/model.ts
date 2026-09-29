@@ -1669,22 +1669,24 @@ export function appendOptimisticUser(s: ViewState, content: import('../api/types
   return next
 }
 
-export type LatestStats = {
+export type SessionStats = {
   /** Branch totals — how many user turns and assistant/compaction steps exist. */
   turns: number
   steps: number
-  /** Uncached + cache read + cache write for the latest step. */
+  /** Session totals across every known step on the branch: the whole prompt
+   * (uncached + cacheRead + cacheWrite), its output, and the summed cost. */
   input: number
   output: number
   cacheRead: number
   cacheWrite: number
   hasCost: boolean
   cost: number
-  /** First-token latency of the latest step; 0 when the model reported none. */
+  /** Mean first-token latency across the session's turns, not the newest
+   * request's; 0 when the provider reported none. */
   ttftMs: number
-  /** First-token → message_end span and its output tokens, for TPS. */
-  decodeMs: number
-  decodeTokens: number
+  /** Output tokens per second for the whole session — output-weighted over the
+   * turns' decode spans; null when no turn reported a usable span. */
+  tps: number | null
   /** Unix ms of the newest turn's opening user message, 0 when unknown. Lets
    * the composer show a live elapsed while that turn runs. */
   turnStartedAt: number
@@ -1697,59 +1699,64 @@ export type LatestStats = {
   turnElapsedMs: number
 }
 
-/** Usage/timing of a single step; the branch counts live on LatestStats. */
-type StepMetrics = Pick<LatestStats, 'input' | 'output' | 'cacheRead' | 'cacheWrite' | 'hasCost' | 'cost' | 'ttftMs' | 'decodeMs' | 'decodeTokens'>
-
-function emptyStats(): LatestStats {
+function emptyStats(): SessionStats {
   return {
     turns: 0, steps: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
-    hasCost: false, cost: 0, ttftMs: 0, decodeMs: 0, decodeTokens: 0, turnStartedAt: 0,
+    hasCost: false, cost: 0, ttftMs: 0, tps: null, turnStartedAt: 0,
     elapsedMs: 0, turnElapsedMs: 0,
   }
-}
-
-function stepMetrics(usage?: Usage | null, timing?: { ttftMs?: number; latencyMs?: number }): StepMetrics {
-  const out: StepMetrics = {
-    input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
-    hasCost: false, cost: 0, ttftMs: 0, decodeMs: 0, decodeTokens: 0,
-  }
-  if (usage) {
-    out.input = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
-    out.output = usage.output ?? 0
-    out.cacheRead = usage.cacheRead ?? 0
-    out.cacheWrite = usage.cacheWrite ?? 0
-    if (usage.cost) {
-      out.hasCost = true
-      out.cost = usage.cost.total
-    }
-  }
-  if (timing?.ttftMs != null && Number.isFinite(timing.ttftMs) && timing.ttftMs > 0) {
-    out.ttftMs = timing.ttftMs
-  }
-  // Decode span is first-token → message_end. Missing TTFT is dropped rather
-  // than treating the whole latency as decode (that would inflate TPS).
-  if (timing?.latencyMs != null && out.ttftMs > 0 && (usage?.output ?? 0) > 0) {
-    const decodeMs = Math.max(0, timing.latencyMs - out.ttftMs)
-    if (decodeMs > 0) {
-      out.decodeMs = decodeMs
-      out.decodeTokens = usage?.output ?? 0
-    }
-  }
-  return out
 }
 
 function activePath(s: ViewState): Entry[] {
   return leafEntries(s.allEntries, s.leafId, s.compactTurns).reverse()
 }
 
-/** Usage/timing/features of the newest assistant step only — the last request,
- * not a whole-branch average. Live nodes that have not been persisted yet win
- * over the jsonl leaf, so a just-finished step shows before the history
- * refetch; a streaming step is skipped. turns/steps stay branch totals. */
-export function latestStats(s: ViewState): LatestStats {
+/** Session-wide usage/timing for the composer strip: the branch totals and the
+ * summed usage of every known turn, not the newest step's one-shot values.
+ * Per-turn stats come from `projectTurnStats`, so a folded compact snapshot is
+ * counted once and a just-finished live step counts before the history refetch.
+ * TTFT is the mean of the turns' first-token latency and TPS the output-weighted
+ * mean of their decode spans (total output over total decode time). turns/steps
+ * and the model run time stay branch totals, so they survive turns the browser
+ * never loaded. */
+export function sessionStats(s: ViewState): SessionStats {
   const path = activePath(s)
   const counted = new Set(path.map(e => e.id))
-  const out = { ...emptyStats(), ...latestStepMetrics(s, path, counted) }
+  const out = emptyStats()
+  // Usage/timing across every known turn. `projectTurnStats` merges the loaded
+  // window with the compact snapshots; folded turns it dropped (outside the
+  // window) still contribute their server totals once.
+  const seen = new Set<number>()
+  let ttftSum = 0
+  let ttftCount = 0
+  let decodeMs = 0
+  let decodeTokens = 0
+  const add = (t: TurnStats) => {
+    out.input += t.input
+    out.output += t.output
+    out.cacheRead += t.cacheRead
+    out.cacheWrite += t.cacheWrite
+    if (t.hasCost) { out.hasCost = true; out.cost += t.cost }
+    if (t.ttftMs > 0) { ttftSum += t.ttftMs; ttftCount += 1 }
+    // Reconstruct each turn's decode span from its rate and output; summing
+    // them yields total output over total decode time rather than a plain mean
+    // of per-turn rates.
+    if (t.tps != null && t.tps > 0 && t.output > 0) {
+      decodeTokens += t.output
+      decodeMs += t.output / t.tps * 1_000
+    }
+  }
+  for (const t of projectTurnStats(s.nodes, s.turnBase, s.compactTurns).values()) {
+    seen.add(t.turn)
+    add(t)
+  }
+  for (const turn of s.compactTurns ?? []) {
+    if (seen.has(turn.stats.turn)) continue
+    seen.add(turn.stats.turn)
+    add(turn.stats)
+  }
+  out.ttftMs = ttftCount > 0 ? ttftSum / ttftCount : 0
+  out.tps = decodeMs > 0 ? decodeTokens / (decodeMs / 1_000) : null
   // Start of the newest turn for the composer's live elapsed. activePath is
   // newest-first, so the first user entry is the current turn; a just-sent
   // prompt whose entry has not landed yet falls back to the live node.
@@ -1775,9 +1782,6 @@ export function latestStats(s: ViewState): LatestStats {
     const newer = at >= 0 ? path.slice(0, at) : []
     out.turns = summary.stats.turn + newer.filter(isUserEntry).length
     out.steps = summary.stepCount + newer.filter(e => e.message?.role === 'assistant' || (e.type === 'compaction' && e.usage)).length
-    if (summary.lastStep && !newer.some(e => e.message?.role === 'assistant') && !s.nodes.some(n => n.kind === 'assistant' && !n.streaming && !counted.has(n.id))) {
-      Object.assign(out, stepMetrics(summary.lastStep.usage, summary.lastStep))
-    }
   }
   for (const n of s.nodes) {
     if (counted.has(n.id)) continue
@@ -1836,25 +1840,6 @@ function runElapsedByTurn(records: TrajRecord[]): Map<number, number> {
   return out
 }
 
-function latestStepMetrics(s: ViewState, path: Entry[], counted: Set<string>): StepMetrics {
-  // Newest live step first: it is past the persisted leaf during the window
-  // between message_end and the next history refetch.
-  for (let i = s.nodes.length - 1; i >= 0; i--) {
-    const n = s.nodes[i]
-    if (counted.has(n.id) || n.kind !== 'assistant' || n.streaming) continue
-    return stepMetrics(n.usage, { ttftMs: n.ttftMs, latencyMs: n.latencyMs })
-  }
-  // activePath returns leaf → root, so the first assistant or compaction is the
-  // newest step persisted on this branch.
-  for (const e of path) {
-    if (e.type === 'message' && e.message?.role === 'assistant') {
-      return stepMetrics(e.message.usage, { ttftMs: e.message.ttftMs, latencyMs: e.message.latencyMs })
-    }
-    if (e.type === 'compaction' && e.usage) return stepMetrics(e.usage)
-  }
-  return stepMetrics()
-}
-
 export type TurnStats = {
   /** 1-based turn index — the nth user message on the branch. */
   turn: number
@@ -1885,14 +1870,22 @@ export type TurnStats = {
   ttftMs: number
   /** Output tokens per second over the turn's decode spans; null when unknown. */
   tps: number | null
+  /** Latest assistant step's time-to-first-token; 0 when the provider reported
+   * none. The divider shows this (the most recent message), while `ttftMs`
+   * stays the first step for the session average. Optional because the server
+   * compact snapshot carries the latest step separately as `lastStep`. */
+  lastTtftMs?: number
+  /** Latest assistant step's output tokens per second; null when unknown. */
+  lastTps?: number | null
   /** True while the turn still has a streaming assistant or a running tool. */
   live: boolean
 }
 
 /** A node whose work is still in flight: the streaming bubble, the running
- * tool, or a compaction in progress. Shared by `turnStats` and `rebuild` so the
- * chat divider and the fold boundary agree on what "live" means. */
-function nodeLive(n: ChatNode): boolean {
+ * tool, or a compaction in progress. Exported so the chat's running placeholder
+ * and the fold boundary reuse one definition instead of drifting into checks
+ * that forget a compaction. */
+export function nodeLive(n: ChatNode): boolean {
   return (n.kind === 'assistant' && !!n.streaming)
     || (n.kind === 'tool' && !!n.running)
     || (n.kind === 'compaction' && !!n.running)
@@ -1954,7 +1947,7 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
       acc = {
         turn, steps: 0, elapsedMs: 0, durationMs: 0,
         input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
-        hasCost: false, cost: 0, ttftMs: 0, tps: null, live: false,
+        hasCost: false, cost: 0, ttftMs: 0, tps: null, lastTtftMs: 0, lastTps: null, live: false,
         tools: 0, toolFailures: 0, cacheMisses: 0,
         startedAt: n.ts ?? 0, lastAt: n.ts ?? 0, decodeMs: 0, decodeTokens: 0, lastId: n.id,
       }
@@ -1975,6 +1968,10 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
       acc.steps += 1
       if (n.latencyMs != null) acc.durationMs += n.latencyMs
       if (acc.ttftMs === 0 && n.ttftMs != null && n.ttftMs > 0) acc.ttftMs = n.ttftMs
+      // The divider reports the most recent message, not the turn's first step,
+      // so the latest assistant overwrites these on every step.
+      acc.lastTtftMs = n.ttftMs != null && n.ttftMs > 0 ? n.ttftMs : 0
+      acc.lastTps = null
       const u = n.usage
       if (u) {
         const read = u.cacheRead ?? 0
@@ -2001,10 +1998,14 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
           cacheReported = cacheReported || read + write > 0
         }
       }
-      // Same decode-span rule as stepMetrics: no TTFT means no TPS estimate.
+      // Same decode-span rule throughout: no TTFT means no TPS estimate.
       if (n.latencyMs != null && n.ttftMs != null && n.ttftMs > 0 && (u?.output ?? 0) > 0) {
         const decode = n.latencyMs - n.ttftMs
-        if (decode > 0) { acc.decodeMs += decode; acc.decodeTokens += u?.output ?? 0 }
+        if (decode > 0) {
+          acc.decodeMs += decode
+          acc.decodeTokens += u?.output ?? 0
+          acc.lastTps = (u?.output ?? 0) / (decode / 1_000)
+        }
       }
     } else if (n.kind === 'tool') {
       acc.tools += 1
@@ -2014,6 +2015,10 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
       // restarts from the next step (pi clears its previous-request state too).
       prevPrompt = 0
       cacheReported = false
+      // A compaction has no first-token span, so it clears the latest-step
+      // readouts instead of leaving the previous assistant's values showing.
+      acc.lastTtftMs = 0
+      acc.lastTps = null
       if (!n.running) acc.steps += 1
     }
   }
@@ -2021,10 +2026,10 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
   return out
 }
 
-/** Cache-read share of the latest step's prompt, as a percentage. `input` is
- * the whole prompt (uncached + cacheRead + cacheWrite). Returns null when the
- * step billed no prompt tokens or read nothing from cache. */
-export function cacheHitPercent(s: LatestStats): number | null {
+/** Cache-read share of the session's whole prompt, as a percentage. `input` is
+ * the summed whole prompt (uncached + cacheRead + cacheWrite). Returns null
+ * when nothing was billed or nothing was read from cache. */
+export function cacheHitPercent(s: SessionStats): number | null {
   if (s.input <= 0 || s.cacheRead <= 0) return null
   return s.cacheRead / s.input * 100
 }
@@ -2041,7 +2046,11 @@ export function projectTurnStats(nodes: ChatNode[], base = 0, summaries: Compact
     const key = byTurn.get(summary.stats.turn) ?? summary.visibleNodeIds.at(-1) ?? summary.id
     if (!current.has(key)) continue
     const observed = out.get(key)
-    if (!observed) { out.set(key, { ...summary.stats }); continue }
+    if (!observed) {
+      const latest = lastStepReadout(summary.lastStep)
+      out.set(key, { ...summary.stats, lastTtftMs: latest.ttftMs, lastTps: latest.tps })
+      continue
+    }
     const overlapNodes = (summary.baselineNodes ?? []).filter(n => current.has(n.id))
     const overlap = [...turnStats(overlapNodes).values()][0]
     const merged = { ...observed, startedAt: observed.startedAt || summary.stats.startedAt }
@@ -2057,9 +2066,29 @@ export function projectTurnStats(nodes: ChatNode[], base = 0, summaries: Compact
     // when every step reports TTFT; keep the authoritative snapshot estimate
     // until we have the whole turn, rather than inventing a partial average.
     merged.tps = merged.steps === observed.steps ? observed.tps : summary.stats.tps
+    // The divider reads the latest assistant step. Observed nodes win (they are
+    // current); the snapshot's `lastStep` only fills a turn whose reply is
+    // entirely folded away, so the readout does not vanish at keep=0.
+    if (observed.lastTtftMs === 0 && observed.lastTps == null) {
+      const latest = lastStepReadout(summary.lastStep)
+      merged.lastTtftMs = latest.ttftMs
+      merged.lastTps = latest.tps
+    }
     out.set(key, merged)
   }
   return out
+}
+
+/** Latest-step readout for a folded turn whose reply was never sent as a body:
+ * recover the rate from the step's own output and decode span, matching
+ * `turnStats`. Returns zero/null when the snapshot carries no `lastStep`. */
+function lastStepReadout(step: CompactTurn['lastStep']): { ttftMs: number; tps: number | null } {
+  if (!step) return { ttftMs: 0, tps: null }
+  const ttftMs = step.ttftMs > 0 ? step.ttftMs : 0
+  const output = step.usage?.output ?? 0
+  const decode = step.latencyMs - step.ttftMs
+  const tps = ttftMs > 0 && decode > 0 && output > 0 ? output / (decode / 1_000) : null
+  return { ttftMs, tps }
 }
 
 /** Cache-read share of a step's prompt, as a percentage (not rounded). `input`

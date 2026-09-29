@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
-import { applyEvent, appendOptimisticUser, loadHistory, hydrateEntries, hydrateTurn, projectTurnStats, cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats, turnStats } from '../src/lib/model.ts'
+import { applyEvent, appendOptimisticUser, loadHistory, hydrateEntries, hydrateTurn, projectTurnStats, cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, sessionStats, turnStats } from '../src/lib/model.ts'
 import { applyTail } from '../src/lib/model.ts'
+import type { TurnStats } from '../src/lib/model.ts'
 import type { ChatNode, CompactTurn, Entry, SessionDetail, TrajRecord, ViewState } from '../src/api/types.ts'
 
 function view(over: Partial<ViewState> = {}): ViewState {
@@ -16,7 +17,7 @@ function msg(id: string, parentId: string, role: 'user' | 'assistant', extra: Pa
   }
 }
 
-test('latestStats counts the branch but keeps only the newest step usage', () => {
+test('sessionStats sums the loaded window but keeps branch counts', () => {
   const entries: Entry[] = [
     msg('u1', '', 'user'),
     msg('a1', 'u1', 'assistant', {
@@ -29,7 +30,7 @@ test('latestStats counts the branch but keeps only the newest step usage', () =>
     msg('a2', 'u2', 'assistant', { usage: { input: 3, output: 1, cacheRead: 7 }, ttftMs: 200, latencyMs: 700 }),
     msg('other', 'u1', 'assistant', { usage: { input: 999, output: 999 } }),
   ]
-  const s = latestStats(view({
+  const s = sessionStats(view({
     leafId: 'a2',
     allEntries: entries,
     nodes: [
@@ -37,39 +38,75 @@ test('latestStats counts the branch but keeps only the newest step usage', () =>
       { kind: 'assistant', id: 'a2', text: 'ok', usage: { input: 3, output: 1, cacheRead: 7 }, ttftMs: 200, latencyMs: 700 },
     ],
   }))
+  // Branch totals span the whole leaf path (a1, the compaction, a2).
   expect(s.turns).toBe(2)
   expect(s.steps).toBe(3)
+  // Usage sums what the loaded window holds; a2's step is input 3+7, output 1.
   expect(s.input).toBe(3 + 7)
   expect(s.output).toBe(1)
   expect(s.cacheRead).toBe(7)
   expect(s.hasCost).toBe(false)
   expect(s.ttftMs).toBe(200)
-  expect(s.decodeMs).toBe(500)
-  expect(s.decodeTokens).toBe(1)
+  // Decode span 700-200 over one output token → 2 tok/s.
+  expect(s.tps).toBeCloseTo(2)
 })
 
-test('latestStats prefers a live step that is not persisted yet', () => {
-  const s = latestStats(view({
+test('sessionStats averages TTFT/TPS and totals usage over the loaded turns', () => {
+  const nodes: ChatNode[] = [
+    { kind: 'user', id: 'u1', text: 'a', content: [] },
+    asst('a1', { input: 10, output: 10, cacheRead: 90, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 } }, { ttftMs: 100, latencyMs: 1_100 }),
+    { kind: 'user', id: 'u2', text: 'b', content: [] },
+    asst('a2', { input: 20, output: 30 }, { ttftMs: 300, latencyMs: 800 }),
+  ]
+  const s = sessionStats(view({ nodes }))
+  expect(s.input).toBe(100 + 20)
+  expect(s.output).toBe(40)
+  expect(s.cacheRead).toBe(90)
+  expect(s.hasCost).toBe(true)
+  expect(s.cost).toBeCloseTo(0.01)
+  // Mean of the turns' first-token latency.
+  expect(s.ttftMs).toBe(200)
+  // Turn rates 10/1s and 30/0.5s, weighted by output: 40 / (1s + 0.5s).
+  expect(s.tps).toBeCloseTo(40 / 1.5)
+})
+
+test('sessionStats counts folded compact turns the window never loaded', () => {
+  const stats: TurnStats = {
+    turn: 1, steps: 2, elapsedMs: 4_000, durationMs: 1_500, input: 50, output: 20, cacheRead: 30, cacheWrite: 0,
+    hasCost: false, cost: 0, tools: 0, toolFailures: 0, cacheMisses: 0, ttftMs: 100, tps: 20, live: false,
+  }
+  const summary: CompactTurn = { id: 'u1', tailId: 'a1', parentId: '', entryIds: ['u1'], visibleNodeIds: ['u1'], hiddenCount: 1, stepCount: 2, stats }
+  const s = sessionStats(view({ compactTurns: [summary] }))
+  expect(s.input).toBe(50)
+  expect(s.output).toBe(20)
+  expect(s.cacheRead).toBe(30)
+  expect(s.ttftMs).toBe(100)
+  expect(s.tps).toBeCloseTo(20)
+})
+
+test('sessionStats prefers a live step that is not persisted yet', () => {
+  const s = sessionStats(view({
     leafId: 'a1',
     allEntries: [msg('u1', '', 'user'), msg('a1', 'u1', 'assistant', { usage: { input: 1, output: 1 }, ttftMs: 50, latencyMs: 100 })],
     nodes: [
+      { kind: 'user', id: 'u1', text: 'hi', content: [] },
       { kind: 'assistant', id: 'a1', text: 'old', usage: { input: 1, output: 1 }, ttftMs: 50, latencyMs: 100 },
       { kind: 'assistant', id: 'live-asst-1', text: 'new', usage: { input: 8, output: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.012 } }, ttftMs: 100, latencyMs: 600 },
     ],
   }))
   expect(s.turns).toBe(1)
   expect(s.steps).toBe(2)
-  expect(s.input).toBe(8)
-  expect(s.output).toBe(2)
+  expect(s.input).toBe(1 + 8)
+  expect(s.output).toBe(1 + 2)
   expect(s.hasCost).toBe(true)
   expect(s.cost).toBeCloseTo(0.012)
-  expect(s.ttftMs).toBe(100)
-  expect(s.decodeMs).toBe(500)
-  expect(s.decodeTokens).toBe(2)
+  expect(s.ttftMs).toBe(50)
+  // Decode (100-50) + (600-100) over three output tokens.
+  expect(s.tps).toBeCloseTo(3 / 0.55)
 })
 
-test('latestStats skips a streaming step and a sibling branch', () => {
-  const s = latestStats(view({
+test('sessionStats skips a streaming step and a sibling branch', () => {
+  const s = sessionStats(view({
     leafId: 'a1',
     allEntries: [
       msg('u1', '', 'user'),
@@ -78,6 +115,7 @@ test('latestStats skips a streaming step and a sibling branch', () => {
       msg('a2', 'u2', 'assistant', { usage: { input: 50, output: 50 } }),
     ],
     nodes: [
+      { kind: 'user', id: 'u1', text: 'hi', content: [] },
       { kind: 'assistant', id: 'a1', text: 'ok', usage: { input: 1, output: 1 }, ttftMs: 40, latencyMs: 240 },
       { kind: 'assistant', id: 'stream', text: '…', streaming: true, usage: { input: 9, output: 9 } },
     ],
@@ -86,23 +124,25 @@ test('latestStats skips a streaming step and a sibling branch', () => {
   expect(s.steps).toBe(1)
   expect(s.input).toBe(1)
   expect(s.output).toBe(1)
-  expect(s.decodeMs).toBe(200)
-  expect(s.decodeTokens).toBe(1)
+  expect(s.ttftMs).toBe(40)
+  expect(s.tps).toBeCloseTo(5)
 })
 
-test('latestStats drops decode when the step reported no TTFT', () => {
-  const s = latestStats(view({
-    nodes: [{ kind: 'assistant', id: 'a1', text: 'ok', usage: { input: 8, output: 2 }, latencyMs: 500 }],
+test('sessionStats drops decode when the step reported no TTFT', () => {
+  const s = sessionStats(view({
+    nodes: [
+      { kind: 'user', id: 'u1', text: 'hi', content: [] },
+      { kind: 'assistant', id: 'a1', text: 'ok', usage: { input: 8, output: 2 }, latencyMs: 500 },
+    ],
   }))
   expect(s.input).toBe(8)
   expect(s.output).toBe(2)
   expect(s.ttftMs).toBe(0)
-  expect(s.decodeMs).toBe(0)
-  expect(s.decodeTokens).toBe(0)
+  expect(s.tps).toBeNull()
 })
 
 test('cacheHitPercent needs billed input and a cache read', () => {
-  const base = latestStats(view())
+  const base = sessionStats(view())
   expect(cacheHitPercent({ ...base, input: 0, cacheRead: 0 })).toBeNull()
   expect(cacheHitPercent({ ...base, input: 100, cacheRead: 0 })).toBeNull()
   expect(cacheHitPercent({ ...base, input: 100, cacheRead: 90 })).toBe(90)
@@ -273,7 +313,7 @@ test('turnStats falls back to summed latencies without timestamps', () => {
     asst('a2', { input: 1, output: 1 }, { latencyMs: 300 }),
   ])
   expect(stats.get('a2')!.elapsedMs).toBe(1_000)
-  // No TTFT means no TPS estimate, matching stepMetrics.
+  // No TTFT means no TPS estimate, matching the decode-span rule.
   expect(stats.get('a2')!.tps).toBeNull()
 })
 
@@ -293,7 +333,7 @@ test('turnStats exposes the turn start and counts a tool tail', () => {
   expect(live.elapsedMs).toBe(3_400)
 })
 
-test('latestStats exposes the current turn start for the live counter', () => {
+test('sessionStats exposes the current turn start for the live counter', () => {
   const entry: Entry = {
     type: 'message',
     id: 'u1',
@@ -301,17 +341,17 @@ test('latestStats exposes the current turn start for the live counter', () => {
     timestamp: '2026-09-27T12:00:00.000Z',
     message: { role: 'user', content: [{ type: 'text', text: 'hi' }] },
   }
-  expect(latestStats(view({ leafId: 'u1', allEntries: [entry] })).turnStartedAt)
+  expect(sessionStats(view({ leafId: 'u1', allEntries: [entry] })).turnStartedAt)
     .toBe(Date.parse('2026-09-27T12:00:00.000Z'))
   // A just-sent prompt whose entry has not landed falls back to its live node.
-  expect(latestStats(view({ nodes: [{ kind: 'user', id: 'opt', text: 'hi', content: [], ts: 42 }] })).turnStartedAt).toBe(42)
-  expect(latestStats(view()).turnStartedAt).toBe(0)
-  expect(latestStats(view({ leafId: 'u1', allEntries: [entry], nodes: [
+  expect(sessionStats(view({ nodes: [{ kind: 'user', id: 'opt', text: 'hi', content: [], ts: 42 }] })).turnStartedAt).toBe(42)
+  expect(sessionStats(view()).turnStartedAt).toBe(0)
+  expect(sessionStats(view({ leafId: 'u1', allEntries: [entry], nodes: [
     { kind: 'user', id: 'opt-user-2', text: 'next prompt', ts: 42 },
   ] })).turnStartedAt).toBe(42)
 })
 
-test('latestStats totals the session run time and keeps the newest turn separate', () => {
+test('sessionStats totals the session run time and keeps the newest turn separate', () => {
   const records: TrajRecord[] = [
     { id: 'u1', kind: 'user', turn: 1, preview: '', startedAt: 1_000 },
     { id: 'a1', kind: 'assistant', turn: 1, preview: '', startedAt: 1_200, durationMs: 800 },
@@ -319,12 +359,12 @@ test('latestStats totals the session run time and keeps the newest turn separate
     { id: 'u2', kind: 'user', turn: 2, preview: '', startedAt: 10_000 },
     { id: 'a2', kind: 'assistant', turn: 2, preview: '', startedAt: 10_500, durationMs: 500 },
   ]
-  const s = latestStats(view({ records }))
+  const s = sessionStats(view({ records }))
   // Turn 1 spans 1_000 → 5_000 (the tool tail); turn 2 spans 10_000 → 10_500.
   expect(s.elapsedMs).toBe(4_000)
   expect(s.turnElapsedMs).toBe(500)
   // A folded compact turn the browser never loaded still contributes its stats.
-  const folded = latestStats(view({
+  const folded = sessionStats(view({
     records,
     compactTurns: [{
       id: 'u0', parentId: '', tailId: 'a0', entryIds: ['u0'], visibleNodeIds: ['u0'], hiddenCount: 0,
@@ -343,12 +383,12 @@ test('a confirmed second prompt never switches the live timer back to the previo
   s = appendOptimisticUser(s, second.content)
   s = applyEvent(s, { type: 'message_start', message: second })
   s = applyEvent(s, { type: 'message_end', entryId: 'u2', message: second })
-  const stats = latestStats(s)
+  const stats = sessionStats(s)
   expect(stats.turnStartedAt).toBe(101_000)
   expect(stats.elapsedMs).toBe(10_000)
   expect(stats.elapsedMs + 106_000 - stats.turnStartedAt).toBe(15_000)
   // An unrelated body/index rebuild must keep the confirmed prompt as well.
-  expect(latestStats(hydrateEntries(s, [first])).turnStartedAt).toBe(101_000)
+  expect(sessionStats(hydrateEntries(s, [first])).turnStartedAt).toBe(101_000)
 })
 
 function compactFixture() {
@@ -399,13 +439,13 @@ test('a sparse compact snapshot adds only new tools before expansion', () => {
 test('compact elapsed includes its unseen prefix and does not shrink before index load', () => {
   const { entries, summary } = compactFixture()
   const s = loadHistory({ entries: entries.filter(e => summary.entryIds.includes(e.id)), compactTurns: [{ ...summary, stats: { ...summary.stats, turn: 10 }, cumulativeElapsedMs: 94_000 }], leafId: 'r2' } as SessionDetail)
-  const stats = latestStats(s)
+  const stats = sessionStats(s)
   expect(stats.elapsedMs + stats.turnElapsedMs).toBe(94_000)
   expect(s.turnBase).toBe(9)
   expect(s.turn).toBe(10)
   let live = applyEvent(s, { type: 'tool_execution_start', toolCallId: 't3', timestamp: 6_000 })
   live = applyEvent(live, { type: 'tool_execution_end', toolCallId: 't3', durationMs: 2_000, result: 'done' })
-  const extended = latestStats(live)
+  const extended = sessionStats(live)
   expect(extended.elapsedMs).toBe(90_000)
   expect(extended.turnElapsedMs).toBe(7_000)
   expect(extended.elapsedMs + extended.turnElapsedMs).toBe(97_000)
@@ -495,8 +535,8 @@ test('a delayed compact projection cannot regress the frontier, prompt or statis
   s = hydrateEntries(s, [entries[0], msg('a3', 'a2', 'assistant')], { compactTurns: [older] })
   expect(s.compactTurns?.[0].tailId).toBe('a5')
   expect(s.nodes.some(n => n.id === 'u1')).toBe(true)
-  expect(latestStats(s).steps).toBe(5)
-  expect(latestStats(s).turnStartedAt).toBe(1_000)
+  expect(sessionStats(s).steps).toBe(5)
+  expect(sessionStats(s).turnStartedAt).toBe(1_000)
 })
 
 
@@ -526,8 +566,8 @@ test('tool overlay elapsed and trajectory survive hydration until toolResult arr
   let s = loadHistory({ entries, leafId: 'a1', running: true } as SessionDetail)
   s = applyEvent(s, { type: 'tool_execution_start', toolCallId: 't1', timestamp: 2_000 })
   s = applyEvent(s, { type: 'tool_execution_end', toolCallId: 't1', durationMs: 5_000, isError: true, result: 'failed' })
-  expect(latestStats(s).turnElapsedMs).toBe(6_000)
+  expect(sessionStats(s).turnElapsedMs).toBe(6_000)
   s = hydrateEntries(s, [entries[0]])
-  expect(latestStats(s).turnElapsedMs).toBe(6_000)
+  expect(sessionStats(s).turnElapsedMs).toBe(6_000)
   expect(s.records.find(r => r.id === 't1')).toMatchObject({ durationMs: 5_000, output: 'failed', error: true, running: false })
 })

@@ -215,6 +215,11 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 	type node struct {
 		id, preview string
 		entries     []int
+		// compaction marks a checkpoint row. It is metadata, not a reply: it is
+		// always shown on its own and never counted toward `keep`, otherwise a
+		// compaction trailing a turn would push that turn's newest reply into
+		// the fold (see the selection below).
+		compaction bool
 	}
 	var nodes []node
 	tools := map[string]int{}
@@ -236,12 +241,12 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 		case isUserMessage(e):
 			// Why: the runtime stores subagent traffic with role=user. It is
 			// transcript output, not an always-visible human turn anchor.
-			nodes = append(nodes, node{e.ID, m.Text(), []int{i}})
+			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}})
 		case m != nil && m.Role == "assistant":
 			batch = map[string]int{}
 			toolStates = []TurnToolState{}
 			lastStep = &TurnStep{Usage: m.Usage, TTFTMs: m.TTFTMs, LatencyMs: m.LatencyMs}
-			nodes = append(nodes, node{e.ID, m.Text(), []int{i}})
+			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}})
 			stats.Steps++
 			stats.DurationMS += m.LatencyMs
 			assistantAt = max(assistantAt, entryMillis(e))
@@ -281,7 +286,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 						nodes[at].entries = append(nodes[at].entries, i)
 					} else {
 						tools[c.ID] = len(nodes)
-						nodes = append(nodes, node{c.ID, c.Name, []int{i}})
+						nodes = append(nodes, node{id: c.ID, preview: c.Name, entries: []int{i}})
 					}
 				}
 			}
@@ -303,7 +308,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 				nodes[at].entries = append(nodes[at].entries, i)
 			} else {
 				tools[id] = len(nodes)
-				nodes = append(nodes, node{id, m.ToolName, []int{i}})
+				nodes = append(nodes, node{id: id, preview: m.ToolName, entries: []int{i}})
 			}
 		case e.Type == "compaction":
 			if e.Usage != nil {
@@ -313,7 +318,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			if e.Responses != nil {
 				preview = "Provider remote compaction"
 			}
-			nodes = append(nodes, node{e.ID, preview, []int{i}})
+			nodes = append(nodes, node{id: e.ID, preview: preview, entries: []int{i}, compaction: true})
 			stats.Steps++
 			// A compaction rewrites the context, so the client restarts its
 			// cache comparison here too.
@@ -340,22 +345,49 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 		t.ID = nodes[0].id
 		selected[nodes[0].entries[0]] = true
 	}
-	cut := max(0, len(nodes)-keep)
-	t.HiddenCount = cut
-	if cut > 0 {
-		t.FirstHiddenID = nodes[0].id
-		t.Preview = utf8Prefix(strings.Join(strings.Fields(nodes[cut-1].preview), " "), 160)
+	// Fold only real replies: the newest `keep` of them stay visible, and every
+	// compaction row stays visible too. Counting a compaction toward `keep`
+	// made a trailing checkpoint hide the turn's final answer.
+	var replies []int
+	for i, n := range nodes {
+		if !n.compaction {
+			replies = append(replies, i)
+		}
 	}
-	for _, n := range nodes[cut:] {
+	hiddenCount := max(0, len(replies)-keep)
+	hidden := map[int]bool{}
+	for _, i := range replies[:hiddenCount] {
+		hidden[i] = true
+	}
+	t.HiddenCount = hiddenCount
+	if hiddenCount > 0 {
+		for i := range nodes {
+			if hidden[i] {
+				t.FirstHiddenID = nodes[i].id
+				break
+			}
+		}
+		// The preview summarises the newest folded reply, mirroring the fold
+		// row the browser builds from the hidden nodes.
+		newest := replies[hiddenCount-1]
+		t.Preview = utf8Prefix(strings.Join(strings.Fields(nodes[newest].preview), " "), 160)
+	}
+	for i, n := range nodes {
+		if hidden[i] {
+			continue
+		}
 		t.VisibleNodeIDs = append(t.VisibleNodeIDs, n.id)
-		for _, i := range n.entries {
-			selected[i] = true
+		for _, at := range n.entries {
+			selected[at] = true
 		}
 	}
 	// A visible tool may share its call entry with a hidden assistant or other
 	// tools. Tell the client which helper nodes that retained entry must omit.
-	for _, n := range nodes[:cut] {
-		if slices.ContainsFunc(n.entries, func(i int) bool { return selected[i] }) {
+	for i, n := range nodes {
+		if !hidden[i] {
+			continue
+		}
+		if slices.ContainsFunc(n.entries, func(at int) bool { return selected[at] }) {
 			t.OmittedNodeIDs = append(t.OmittedNodeIDs, n.id)
 		}
 	}

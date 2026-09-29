@@ -143,6 +143,33 @@ func TestCompactProjectionKeepsToolPairsAndZeroKeep(t *testing.T) {
 	}
 }
 
+func TestCompactProjectionNeverFoldsCompactionIntoKeepSlot(t *testing.T) {
+	entries := []Entry{
+		{Type: "message", ID: "u1", Message: &types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "one"}}}},
+		{Type: "message", ID: "a1", ParentID: "u1", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "first"}}}},
+		{Type: "message", ID: "a2", ParentID: "a1", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "final"}}}},
+		{Type: "compaction", ID: "c1", ParentID: "a2", Summary: "sum", Timestamp: "1970-01-01T00:00:03Z"},
+	}
+	// A compaction trailing the turn is metadata, not a reply: it must not take
+	// keep=1's slot and hide the turn's final answer.
+	page := BuildCompact(entries, "", "", 1)
+	turn := page.Turns[0]
+	if turn.HiddenCount != 1 || !slices.Equal(turn.VisibleNodeIDs, []string{"u1", "a2", "c1"}) {
+		t.Fatalf("compaction consumed the keep slot: %+v", turn)
+	}
+	if slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "a1" }) {
+		t.Fatal("folded reply leaked into the compact page")
+	}
+	if !slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "c1" }) {
+		t.Fatal("compaction body must stay visible on its own row")
+	}
+	// Even keep=0 shows the compaction while folding every reply.
+	page = BuildCompact(entries, "", "", 0)
+	if page.Turns[0].HiddenCount != 2 || !slices.Equal(page.Turns[0].VisibleNodeIDs, []string{"u1", "c1"}) {
+		t.Fatalf("keep=0: %+v", page.Turns[0])
+	}
+}
+
 func TestCompactTurnCountsToolFailuresAndCacheMisses(t *testing.T) {
 	usage := func(input, read int) *types.Usage { return &types.Usage{Input: input, CacheRead: read} }
 	var entries []Entry

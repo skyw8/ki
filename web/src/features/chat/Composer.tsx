@@ -13,7 +13,7 @@ import {
   formatDuration,
   formatTokens,
   formatTokensPerSecond,
-  type LatestStats,
+  type SessionStats,
 } from '../../lib/model'
 import type { Content } from '../../api/types'
 
@@ -54,16 +54,14 @@ function formatFileSize(size?: number): string {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
-function SessionStatsLine({ stats, t, elapsedMs, running }: { stats: LatestStats; t: ReturnType<typeof useI18n>['t']; elapsedMs: number; running: boolean }) {
+function SessionStatsLine({ stats, t, elapsedMs, running }: { stats: SessionStats; t: ReturnType<typeof useI18n>['t']; elapsedMs: number; running: boolean }) {
   const groups: string[] = []
   if (stats.turns > 0 || stats.steps > 0) {
     groups.push(t('stats.counts', { turns: stats.turns, steps: stats.steps }))
   }
   const speeds: string[] = []
   if (stats.ttftMs > 0) speeds.push(t('stats.ttft', { duration: formatDuration(stats.ttftMs) }))
-  if (stats.decodeMs > 0) {
-    speeds.push(t('stats.tps', { tps: formatTokensPerSecond(stats.decodeTokens / (stats.decodeMs / 1_000)) }))
-  }
+  if (stats.tps != null) speeds.push(t('stats.tps', { tps: formatTokensPerSecond(stats.tps) }))
   if (speeds.length > 0) groups.push(speeds.join(' · '))
   const hit = cacheHitPercent(stats)
   if (hit !== null) groups.push(t('stats.cacheHit', { percent: hit.toFixed(2) }))
@@ -119,7 +117,7 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   defaultThinking?: string
   onThinking?: (effort: string) => void
   contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
-  stats?: LatestStats
+  stats?: SessionStats
   mode?: 'new' | 'edit'
   hasQueued?: boolean
 }) {

@@ -1,5 +1,5 @@
 import type { ChatNode, CompactTurn } from '../api/types'
-import { isHumanPrompt } from './model'
+import { isHumanPrompt, nodeLive } from './model'
 
 /**
  * Message view mode controls how much of the transcript the chat renders.
@@ -106,14 +106,18 @@ export type FoldOptions = {
 
 /** isLive reports nodes compact mode must never hide: work in progress. */
 function isLive(n: ChatNode): boolean {
-  return (n.kind === 'assistant' && !!n.streaming) || (n.kind === 'tool' && !!n.running)
+  return nodeLive(n)
 }
 
 /**
- * hiddenCount is how many leading reply nodes of a turn fold away: everything
- * but the newest `keep`, and never a node that is still live — folding the
- * streaming text or the running tool would hide exactly what the user is
+ * hiddenReplyIds returns the ids of reply nodes compact mode folds: every
+ * reply but the newest `keep`, and never a node that is still live — folding
+ * the streaming text or the running tool would hide exactly what the user is
  * waiting for.
+ *
+ * Compaction rows are metadata, not replies: they are always shown on their own
+ * row and never counted toward `keep`. Counting them was why a compaction that
+ * trails a turn folded away that turn's final answer.
  *
  * Liveness comes from lifecycle reconciliation, not node position: parallel
  * tools finish out of order and an earlier sibling can still be running.
@@ -125,10 +129,12 @@ function isLive(n: ChatNode): boolean {
  * opening a running session expensive: the newest turn is usually the longest
  * one, and its tool chatter is exactly what compact mode hides.
  */
-function hiddenCount(rest: ChatNode[], keep: number): number {
-  const cut = Math.max(0, rest.length - keep)
-  const live = rest.findIndex(isLive)
-  return live < 0 ? cut : Math.min(cut, live)
+function hiddenReplyIds(rest: ChatNode[], keep: number): Set<string> {
+  const replies = rest.filter(n => n.kind !== 'compaction')
+  const cut = Math.max(0, replies.length - keep)
+  const live = replies.findIndex(isLive)
+  const hidden = live < 0 ? cut : Math.min(cut, live)
+  return new Set(replies.slice(0, hidden).map(n => n.id))
 }
 
 /**
@@ -137,7 +143,8 @@ function hiddenCount(rest: ChatNode[], keep: number): number {
  * Per turn: the user bubble always stays, then one fold row for the reply nodes
  * before the newest `keep`, then those newest nodes. A folded turn opens in
  * place — the row stays where it is and the hidden nodes appear right after it,
- * so expanding never reorders the transcript.
+ * so expanding never reorders the transcript. Compaction rows never fold and
+ * never count toward `keep`.
  */
 export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderItem[] {
   const turns = groupTurns(nodes)
@@ -148,7 +155,8 @@ export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderIte
   turns.forEach(turn => {
     if (turn.user) out.push({ kind: 'node', id: turn.user.id, node: turn.user })
     const rest = turn.user ? turn.nodes.slice(1) : turn.nodes
-    const hidden = hiddenCount(rest, keep)
+    const hiddenIds = hiddenReplyIds(rest, keep)
+    const hidden = hiddenIds.size
     const summary = !loaded.has(turn.id) ? summaries.get(turn.id) : undefined
     const observed = new Set(rest.map(n => n.id))
     const snapshotReplies = summary?.baselineNodes?.filter(n => n.kind !== 'user') ?? []
@@ -161,8 +169,10 @@ export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderIte
       return
     }
     const expanded = opts.expanded?.has(turn.id) ?? false
-    out.push({ kind: 'fold', id: `fold:${turn.id}`, turn, nodes: rest.slice(0, hidden), expanded, count, preview: summary?.preview, firstHiddenId: summary?.firstHiddenId, remote: missing > 0 })
-    for (const n of expanded ? rest : rest.slice(hidden)) out.push({ kind: 'node', id: n.id, node: n })
+    out.push({ kind: 'fold', id: `fold:${turn.id}`, turn, nodes: rest.filter(n => hiddenIds.has(n.id)), expanded, count, preview: summary?.preview, firstHiddenId: summary?.firstHiddenId, remote: missing > 0 })
+    for (const n of rest) {
+      if (expanded || !hiddenIds.has(n.id)) out.push({ kind: 'node', id: n.id, node: n })
+    }
   })
   return out
 }

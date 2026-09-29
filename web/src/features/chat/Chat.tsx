@@ -9,7 +9,7 @@ import { AttachmentImage } from '../attachments/AttachmentImage'
 import type { Client } from '../../api/client'
 import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
-import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, isHumanPrompt, projectTurnStats, reconcileUserNodes, requestTitle, type CacheMiss, type TurnStats } from '../../lib/model'
+import { cacheHitRate, cacheMisses, formatDuration, formatTokens, formatTokensPerSecond, isHumanPrompt, nodeLive, projectTurnStats, reconcileUserNodes, requestTitle, type CacheMiss, type TurnStats } from '../../lib/model'
 import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, groupTurns, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
 import { rememberRowHeight, rowHeightEstimate, UNKNOWN_WIDTH } from '../../lib/rowHeight'
 import { copyText } from '../../lib/clipboard'
@@ -304,11 +304,12 @@ function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> 
 }
 
 /**
- * Closes a turn: a labelled hairline over the turn's aggregate stats, split
- * across two centered rows. The numbers mirror the per-step inspector (elapsed,
- * tokens, TPS, cache) but sum the whole turn, so a long tool-heavy run stays
- * scannable at a glance. Timing and work ride the labelled first row; token
- * usage and cost take the second.
+ * Closes a turn: a labelled hairline with the turn's stats on a single centered
+ * row, so a long tool-heavy run stays scannable at a glance. The row carries the
+ * turn's elapsed/steps/tools plus the cache readouts, and — mirroring the
+ * composer strip — the TTFT and TPS of the turn's most recent message (not the
+ * first step or a whole-turn average). Token counts and cost live in the
+ * composer session strip, so the divider stays one line.
  *
  * While the turn is still running the divider is mounted too, but with a live
  * elapsed (`now - startedAt`) and a pulsing dot so the per-turn duration is
@@ -323,12 +324,14 @@ function TurnDivider({ stats }: { stats: TurnStats }) {
   const elapsedMs = live && stats.startedAt != null && stats.startedAt > 0 ? Math.max(0, now - stats.startedAt) : stats.elapsedMs
   const prompt = stats.input
   const hit = prompt > 0 && stats.cacheRead > 0 ? stats.cacheRead / prompt * 100 : null
-  const timing: ReactNode[] = [
+  const ttftMs = stats.lastTtftMs ?? 0
+  const tps = stats.lastTps ?? null
+  const cells: ReactNode[] = [
     <span className={`turn-stat${live ? ' live' : ''}`} key="elapsed" data-testid="turn-elapsed"><IClock />{t('turn.elapsed', { duration: formatDuration(elapsedMs) })}</span>,
   ]
-  if (stats.steps > 0) timing.push(<span className="turn-stat" key="steps">{t('turn.steps', { n: stats.steps })}</span>)
+  if (stats.steps > 0) cells.push(<span className="turn-stat" key="steps">{t('turn.steps', { n: stats.steps })}</span>)
   if (stats.tools > 0) {
-    timing.push(
+    cells.push(
       <span
         className={`turn-stat${stats.toolFailures > 0 ? ' turn-stat-err' : ''}`}
         key="tools"
@@ -340,15 +343,11 @@ function TurnDivider({ stats }: { stats: TurnStats }) {
       </span>,
     )
   }
-  if (stats.ttftMs > 0) timing.push(<span className="turn-stat" key="ttft">{t('stats.ttft', { duration: formatDuration(stats.ttftMs) })}</span>)
-  if (stats.tps != null) timing.push(<span className="turn-stat" key="tps">{t('stats.tps', { tps: formatTokensPerSecond(stats.tps) })}</span>)
-  const usage: ReactNode[] = []
-  if (stats.input > 0 || stats.output > 0) {
-    usage.push(<span className="turn-stat" key="tokens">{t('stats.tokens', { input: formatTokens(stats.input), output: formatTokens(stats.output) })}</span>)
-  }
-  if (hit != null) usage.push(<span className="turn-stat" key="cache">{t('stats.cacheHit', { percent: hit.toFixed(2) })}</span>)
+  if (ttftMs > 0) cells.push(<span className="turn-stat" key="ttft">{t('stats.ttft', { duration: formatDuration(ttftMs) })}</span>)
+  if (tps != null) cells.push(<span className="turn-stat" key="tps">{t('stats.tps', { tps: formatTokensPerSecond(tps) })}</span>)
+  if (hit != null) cells.push(<span className="turn-stat" key="cache">{t('stats.cacheHit', { percent: hit.toFixed(2) })}</span>)
   if (stats.steps > 0) {
-    usage.push(
+    cells.push(
       <span
         className={`turn-stat${stats.cacheMisses > 0 ? ' turn-stat-warn' : ''}`}
         key="miss"
@@ -359,7 +358,6 @@ function TurnDivider({ stats }: { stats: TurnStats }) {
       </span>,
     )
   }
-  if (stats.hasCost) usage.push(<span className="turn-stat" key="cost">{t('stats.cost', { amount: formatCost(stats.cost) })}</span>)
   return (
     <div className={`turn-end${live ? ' live' : ''}`} data-testid="turn-divider" data-turn={stats.turn} data-live={live || undefined}>
       <div className="turn-end-row">
@@ -368,10 +366,9 @@ function TurnDivider({ stats }: { stats: TurnStats }) {
           {live ? <span className="turn-live-dot" aria-hidden /> : null}
           {t('turn.label', { n: stats.turn })}
         </span>
-        {timing}
+        {cells}
         <span className="turn-end-rule" aria-hidden />
       </div>
-      {usage.length > 0 ? <div className="turn-end-row">{usage}</div> : null}
     </div>
   )
 }
@@ -679,7 +676,10 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     estimates.current.set(key, { width: listWidth, chars, size })
     return size
   }
-  const running = busy && !nodes.some(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
+  // Why: a running compaction is live work too. Without it here the generic
+  // "Running…" placeholder renders under the compaction row for the whole
+  // summarize, so the transcript reads compacting → running → compacted.
+  const running = busy && !nodes.some(nodeLive)
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,

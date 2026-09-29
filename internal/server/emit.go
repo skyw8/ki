@@ -26,7 +26,7 @@ import (
 //  4. extensions — async lifecycle notifications
 //
 // plus the context meter (persisted and buffered) and the run's threshold
-// compaction.
+// compaction (currently disabled, see compactOnRunEnd).
 //
 // Why a type instead of the closure runPrompt used to build: the stages are
 // independent contracts (jsonl shape, SSE replay, push fallback, extension
@@ -80,7 +80,7 @@ func (p *runEmitter) Emit(ev loop.Event) error {
 	if ev.Type == loop.AgentEnd {
 		// Threshold compaction runs last: it re-enters Emit with its own
 		// compaction_start/end events, which must land in loop order behind the
-		// agent_end they follow.
+		// agent_end they follow. Off by default (compactOnRunEnd).
 		p.autoCompact()
 	}
 	return nil
@@ -298,9 +298,28 @@ func (p *runEmitter) recordContextUsage(ev loop.Event) error {
 	return nil
 }
 
+// compactOnRunEnd gates the threshold compaction that runs after agent_end
+// (autoCompact). It is deliberately hardcoded off:
+//
+//   - Preflight compaction at the start of the next run applies the very same
+//     threshold to the very same context, so compacting here only moves one
+//     model call earlier without changing the outcome.
+//   - A user who never sends another message pays for that summary call (and
+//     the rewritten session entry) with no benefit.
+//   - Folding the just-finished turn can hide the newest assistant reply before
+//     the user has read it.
+//
+// The code path is kept intact so the switch can be flipped once post-run
+// compaction proves worth its cost.
+const compactOnRunEnd = false
+
 // autoCompact applies the threshold check after agent_end and compacts an
-// oversized context so the next prompt starts fresh.
+// oversized context so the next prompt starts fresh. Disabled by
+// compactOnRunEnd; see that constant for why.
 func (p *runEmitter) autoCompact() {
+	if !compactOnRunEnd {
+		return
+	}
 	if p.serverSide {
 		return
 	}
