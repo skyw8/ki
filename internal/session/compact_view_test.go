@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -50,6 +51,42 @@ func TestCompactPagesWholeTurnsWithoutHiddenBodies(t *testing.T) {
 		if strings.Contains(string(raw), "HIDDEN_") || len(raw) > 4096 {
 			t.Fatalf("folded bodies leaked into compact page: %d bytes", len(raw))
 		}
+	}
+}
+
+func TestCompactProjectionFoldsRuntimeUserMessages(t *testing.T) {
+	entries := []Entry{
+		{Type: "message", ID: "u0", Message: &types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "human"}}}},
+		{Type: "message", ID: "a0", ParentID: "u0", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "working"}}}},
+		{Type: "message", ID: "notice", ParentID: "a0", Message: &types.Message{Role: "user", Origin: "agent:task-1", Content: []types.Content{{Type: "text", Text: "<task-notification>done</task-notification>"}}}},
+		{Type: "message", ID: "a1", ParentID: "notice", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "final"}}}},
+		{Type: "message", ID: "u1", ParentID: "a1", Message: &types.Message{Role: "user", Origin: "extension:telegram-bot", Content: []types.Content{{Type: "text", Text: "next human"}}}},
+		{Type: "message", ID: "a2", ParentID: "u1", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "reply"}}}},
+	}
+	page := BuildCompact(entries, "", "", 1)
+	if len(page.Turns) != 2 || page.Turns[0].ID != "u0" || page.Turns[1].ID != "u1" {
+		t.Fatalf("runtime message split turns: %+v", page.Turns)
+	}
+	first := page.Turns[0]
+	if first.HiddenCount != 2 || !slices.Equal(first.VisibleNodeIDs, []string{"u0", "a1"}) {
+		t.Fatalf("runtime message was not folded: %+v", first)
+	}
+	if slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "notice" }) {
+		t.Fatal("folded runtime message body leaked into compact page")
+	}
+}
+
+func TestCompactProjectionKeepsFoldAnchorForMachineOnlyTurn(t *testing.T) {
+	entries := []Entry{
+		{Type: "message", ID: "directive", Message: &types.Message{Role: "user", Origin: "agent", Content: []types.Content{{Type: "text", Text: "subagent directive"}}}},
+		{Type: "message", ID: "answer", ParentID: "directive", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "done"}}}},
+	}
+	page := BuildCompact(entries, "", "", 1)
+	if len(page.Turns) != 1 || page.Turns[0].ID != "directive" || page.Turns[0].HiddenCount != 1 {
+		t.Fatalf("machine-only turn: %+v", page)
+	}
+	if !slices.Equal(page.Turns[0].VisibleNodeIDs, []string{"answer"}) || len(page.Entries) != 2 {
+		t.Fatalf("missing hidden fold anchor: %+v", page)
 	}
 }
 

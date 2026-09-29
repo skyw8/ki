@@ -77,10 +77,22 @@ type CompactPage struct {
 
 type turnRange struct{ start, end, ordinal int }
 
+// isHumanTurnMessage distinguishes real inputs from runtime-authored user-role
+// messages. Agent directives and completion notifications belong to the
+// surrounding transcript turn so compact mode may fold them; extension origins
+// still represent user input relayed from another client.
+func isHumanTurnMessage(e Entry) bool {
+	if !isUserMessage(e) {
+		return false
+	}
+	origin := e.Message.Origin
+	return origin == "" || strings.HasPrefix(origin, "extension:")
+}
+
 func turnRanges(path []Entry) []turnRange {
 	var out []turnRange
 	for i, e := range path {
-		if isUserMessage(e) {
+		if isHumanTurnMessage(e) {
 			if len(out) > 0 {
 				out[len(out)-1].end = i
 			}
@@ -219,8 +231,12 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 		clock.add(e)
 		m := e.Message
 		switch {
-		case isUserMessage(e):
+		case isHumanTurnMessage(e):
 			user = i
+		case isUserMessage(e):
+			// Why: the runtime stores subagent traffic with role=user. It is
+			// transcript output, not an always-visible human turn anchor.
+			nodes = append(nodes, node{e.ID, m.Text(), []int{i}})
 		case m != nil && m.Role == "assistant":
 			batch = map[string]int{}
 			toolStates = []TurnToolState{}
@@ -319,6 +335,12 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 		t.ID = path[user].ID
 		selected[user] = true
 		t.VisibleNodeIDs = append(t.VisibleNodeIDs, t.ID)
+	} else if len(nodes) > 0 {
+		// A subagent session can start with a machine-authored user message and
+		// have no human input at all. Keep that first node's body as a hidden
+		// anchor so the browser can attach the remote fold row to this turn.
+		t.ID = nodes[0].id
+		selected[nodes[0].entries[0]] = true
 	}
 	cut := max(0, len(nodes)-keep)
 	t.HiddenCount = cut

@@ -1,4 +1,5 @@
 import type { ChatNode, CompactTurn } from '../api/types'
+import { isHumanPrompt } from './model'
 
 /**
  * Message view mode controls how much of the transcript the chat renders.
@@ -46,9 +47,13 @@ export function saveMessageView(view: MessageView): void {
 }
 
 /**
- * ChatTurn is one user turn: the user node that opens it plus every node up to
- * the next user. Nodes before the first user (a window that starts mid-turn)
- * form a leading turn with no user.
+ * ChatTurn is one human turn: the human user node that opens it plus every
+ * node up to the next human input. Runtime-authored user messages (for example
+ * subagent directives and completion notifications) stay inside that turn so
+ * compact mode can fold them like assistant and tool replies.
+ *
+ * Nodes before the first human user (a window or child session that starts
+ * with a machine-authored message) form a leading turn with no user.
  */
 export type ChatTurn = {
   /** Stable key and anchor id: the turn's first node id. */
@@ -57,13 +62,15 @@ export type ChatTurn = {
   nodes: ChatNode[]
 }
 
-/** groupTurns splits the branch the same way turnStats numbers it: a user node
- * opens each turn. */
+/** groupTurns splits the branch at human inputs, matching the request
+ * navigator. Machine-authored user-role messages are foldable transcript
+ * replies, not permanent turn anchors. */
 export function groupTurns(nodes: ChatNode[]): ChatTurn[] {
   const turns: ChatTurn[] = []
   for (const n of nodes) {
-    if (n.kind === 'user' || turns.length === 0) {
-      turns.push({ id: n.id, user: n.kind === 'user' ? n : undefined, nodes: [n] })
+    const opensTurn = n.kind === 'user' && isHumanPrompt(n.origin)
+    if (opensTurn || turns.length === 0) {
+      turns.push({ id: n.id, user: opensTurn ? n : undefined, nodes: [n] })
       continue
     }
     turns[turns.length - 1].nodes.push(n)

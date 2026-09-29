@@ -26,9 +26,11 @@
 // catalog, and pricing snapshots. WebUI GET projects a slimmed active-leaf tail
 // (unchanged prompts omitted, large bodies truncated) and, on request, a
 // body-less index of the whole tree. Views have a 512 KiB serialized slim-entry
-// page budget as well as a count limit. Compact views instead page whole user
+// page budget as well as a count limit. Compact views instead page whole human
 // turns: visible input/reply bodies plus a fold summary and canonical range
-// metadata. Hidden replies are transferred only on explicit turn expansion; its local
+// metadata. Runtime-authored user-role messages (including subagent traffic)
+// are foldable replies, not turn boundaries. Hidden replies are transferred
+// only on explicit turn expansion; its local
 // cursor never replaces the main history cursor. Compact snapshots carry a
 // monotone per-turn entryCount, the latest assistant completion boundary, and
 // only that assistant batch's tool states for sparse live reconciliation.

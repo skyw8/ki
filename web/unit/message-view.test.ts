@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { clampCompactKeep, foldReplies, groupTurns } from '../src/lib/messageView.ts'
 import type { ChatNode } from '../src/api/types.ts'
 
-const user = (id: string, text: string): ChatNode => ({ kind: 'user', id, text, content: [] })
+const user = (id: string, text: string, origin?: string): ChatNode => ({ kind: 'user', id, text, content: [], origin })
 const asst = (id: string, text = 'ok', streaming = false): ChatNode => ({ kind: 'assistant', id, text, streaming })
 const tool = (id: string, running = false): ChatNode => ({ kind: 'tool', id, name: 'Bash', args: {}, running })
 
@@ -13,6 +13,30 @@ test('groupTurns splits at user nodes and keeps a leading group', () => {
   expect(turns[1].user?.id).toBe('u1')
   expect(turns[1].nodes.map(n => n.id)).toEqual(['u1', 'a1'])
   expect(turns[2].nodes.map(n => n.id)).toEqual(['u2', 'a2'])
+})
+
+test('foldReplies treats runtime-authored user messages as foldable replies', () => {
+  const nodes = [
+    user('u1', 'human'), asst('a1'),
+    user('notice', '<task-notification>done</task-notification>', 'agent:task-1'), asst('a2'),
+    user('u2', 'next human', 'extension:telegram-bot'), asst('a3'),
+  ]
+  const turns = groupTurns(nodes)
+  expect(turns.map(t => t.id)).toEqual(['u1', 'u2'])
+  expect(turns[0].nodes.map(n => n.id)).toEqual(['u1', 'a1', 'notice', 'a2'])
+
+  const items = foldReplies(nodes, { keep: 1 })
+  expect(items.map(i => i.id)).toEqual(['u1', 'fold:u1', 'a2', 'u2', 'a3'])
+  const folded = items.find(i => i.kind === 'fold')
+  expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1', 'notice'])
+})
+
+test('foldReplies folds the opening directive of a machine-only subagent turn', () => {
+  const nodes = [user('directive', 'subagent directive', 'agent'), asst('answer')]
+  const items = foldReplies(nodes, { keep: 1 })
+  expect(items.map(i => i.id)).toEqual(['fold:directive', 'answer'])
+  const folded = items[0]
+  expect(folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['directive'])
 })
 
 test('foldReplies keeps every user bubble and the newest keep replies of each turn', () => {

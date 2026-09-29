@@ -39,7 +39,7 @@ toolResult message 可带结构化 `details`，以及工具完成时间 `timesta
 
 ### Compact turn projection
 
-`GET /v1/sessions/{id}?view=compact&keep=N` 是面向 compact 阅读的稀疏投影，`keep` 为 0–20，默认 1。首次最多返回最近 4 个完整 user turn；同一请求加 `before=<oldestId>` 每次返回一个更早的完整 turn。响应带 `entries`、`compactTurns`、`hasMore`、`oldestId`。`oldestId` 为最早返回 turn 的输入 id，不位于折叠区中途。每轮仅传 input 和最后 N 个可见回复需要的正文，隐藏区用整轮计数、预览和统计表示。跨大 turn 不会循环下载已折叠的工具往返。初次读取会用增量 transcript 缓存确定完整分支与 turn 边界，不传整树 index。
+`GET /v1/sessions/{id}?view=compact&keep=N` 是面向 compact 阅读的稀疏投影，`keep` 为 0–20，默认 1。首次最多返回最近 4 个完整人工输入 turn；同一请求加 `before=<oldestId>` 每次返回一个更早的完整 turn。响应带 `entries`、`compactTurns`、`hasMore`、`oldestId`。`oldestId` 为最早返回 turn 的输入 id，不位于折叠区中途。每轮仅传人工 input 和最后 N 个可见回复需要的正文，隐藏区用整轮计数、预览和统计表示。带 `agent` / `agent:<id>` origin 的 runtime user-role 消息（例如 subagent 指令和完成通知）属于回复，可进入隐藏区；无 origin 或 `extension:` origin 的人工输入仍是 turn 边界并始终显示。跨大 turn 不会循环下载已折叠的工具往返。初次读取会用增量 transcript 缓存确定完整分支与 turn 边界，不传整树 index。
 
 `compactTurns[]` 保存 `id`、原始 `parentId` / `tailId`、有序 `entryIds`、`visibleNodeIds`、少量共享 entry 的 `omittedNodeIds`、`hiddenCount`、`firstHiddenId`、`preview` 与整轮 `stats`。`entryCount` 是快照覆盖的整轮 entry 数（含 metadata），用于拒绝迟到的旧投影；`assistantAt` 是最近 assistant 的完成时间；`toolStates` 仅含最近 assistant 工具批次的 `{id,finished,isError?}`，即使 keep=0 也能将正在执行或刚结束的调用与 SSE 精确去重，而不是传输全轮所有隐藏 ID。`stats.startedAt` 是开头 user 的服务端时间，`stats.elapsedMs` 覆盖 assistant、工具结果和 compaction 的最大完成时间；`cumulativeElapsedMs` 累计至该轮，未加载 index 时也包含窗口之前的耗时。`stepCount` 是截至该轮的累计步骤数，`lastStep` 保存最近步骤的用量与耗时；即使 keep=0，composer 的轮数、步骤数和最新用量也不因折叠减少。持久化 parent 边不改写；前端只在读取稀疏链时跨过省略段，收到整树 index 或展开正文后优先采用原始链。可见工具所需 call/result 成对保留，同一 call entry 内隐藏的 assistant 正文不传；完整内容仍通过原正文接口可取。
 
