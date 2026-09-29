@@ -85,7 +85,14 @@ func ClampViewLimit(n int) int {
 // cut by count starts wherever the tail limit lands — measured on real sessions,
 // 43 of 125 windows held no user entry at all, so their first turn rendered as a
 // fold row with no prompt above it.
-func BuildTail(entries []Entry, leafID string, limit int) Tail {
+//
+// `complete` reports whether entries reaches the branch root (the caller read
+// the whole transcript). A tail-first read (internal/server LeafTail) is a byte
+// window of the file, so a window whose oldest entry is the branch root of the
+// window can still have older history behind it. Without `complete`,
+// `HasMore` would be false whenever the window happens to hold exactly `limit`
+// chain entries and the reader could never page back to the rest.
+func BuildTail(entries []Entry, leafID string, limit int, complete bool) Tail {
 	limit = ClampViewLimit(limit)
 	path := leafPath(entries, leafID)
 	slimmed, tailStart := boundedWindow(path, limit)
@@ -96,7 +103,7 @@ func BuildTail(entries []Entry, leafID string, limit int) Tail {
 	} else if len(path) > 0 {
 		oldest = path[0].ID
 	}
-	return Tail{Entries: slimmed, HasMore: tailStart > 0, OldestID: oldest}
+	return Tail{Entries: slimmed, HasMore: tailStart > 0 || !complete, OldestID: oldest}
 }
 
 // withTurnOpeningUser adds the user message that opens the window's first turn.
@@ -183,7 +190,7 @@ func LeafChain(entries []Entry, leaf string) []Entry {
 
 // BuildView returns an index of every entry and a slimmed tail of the active leaf.
 func BuildView(entries []Entry, leafID string, limit int) View {
-	tail := BuildTail(entries, leafID, limit)
+	tail := BuildTail(entries, leafID, limit, true)
 	return View{
 		Index:    BuildIndex(entries),
 		Entries:  tail.Entries,

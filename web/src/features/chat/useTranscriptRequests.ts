@@ -79,7 +79,10 @@ export function useTranscriptRequests(
       }
       // Advance with the response, not with a later React ref effect. A jump
       // can otherwise request the same page repeatedly before React commits.
-      s.cursor = out.oldestId ?? cursor
+      // `|| cursor`, not `??`: a page that legitimately ends the history
+      // reports an empty oldestId, and storing that as the cursor would make
+      // every later `before=` request a no-op (dead paging until reload).
+      s.cursor = out.oldestId || cursor
       s.hasMore = !!out.hasMore
       const meta = { hasMore: s.hasMore, oldestId: s.cursor, compactTurns: out.compactTurns }
       setView(v => valid(s) ? hydrateEntries(v, out.entries ?? [], meta) : v)

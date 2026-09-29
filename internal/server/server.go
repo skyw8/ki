@@ -1337,7 +1337,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		runtime["entries"], runtime["compactTurns"] = page.Entries, page.Turns
 		runtime["hasMore"], runtime["oldestId"] = page.HasMore, page.OldestID
 	} else {
-		tail := session.BuildTail(snap.entries, snap.leafID, limit)
+		tail := session.BuildTail(snap.entries, snap.leafID, limit, snap.complete)
 		runtime["entries"], runtime["hasMore"], runtime["oldestId"] = tail.Entries, tail.HasMore, tail.OldestID
 	}
 	if withIndex || (!compact && snap.complete && snap.small) {

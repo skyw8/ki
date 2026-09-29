@@ -42,23 +42,19 @@ test('foldReplies opens a fold in place without reordering the turn', () => {
   ])
 })
 
-test('foldReplies never hides work in progress', () => {
-  // A running tool and streaming text stay visible even at keep=0.
-  const nodes = [user('u1', 'one'), asst('a1a'), tool('t1', true), asst('a1b')]
-  expect(foldReplies(nodes, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 't1', 'a1b'])
+test('foldReplies keeps only the newest in-flight work visible', () => {
+  // Trailing live work is what the user is waiting for.
+  expect(foldReplies([user('u1', 'one'), asst('a1a'), tool('t1', true)], { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 't1'])
+  expect(foldReplies([user('u1', 'one'), asst('a1a'), asst('a1b', 'ok', true)], { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'a1b'])
 })
 
-test('foldReplies folds the running turn too, keeping live work visible', () => {
-  // An in-flight turn is the longest one in practice: leaving it unfolded meant
-  // rendering all of its reply nodes (measured on a live run: 61 nodes, where
-  // folding renders 2). It folds like any other turn — only nodes that are still
-  // streaming or running stay on screen.
-  const nodes = [user('u1', 'one'), asst('a1a'), tool('t1'), asst('a1b'), user('u2', 'two'), asst('a2a'), asst('a2b')]
-  expect(foldReplies(nodes, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'u2', 'fold:u2'])
-  const live = [user('u1', 'one'), asst('a1a'), asst('a1b', 'ok', true)]
-  expect(foldReplies(live, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'a1b'])
-  const runningTool = [user('u1', 'one'), asst('a1a'), tool('t1', true), asst('a1b')]
-  expect(foldReplies(runningTool, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 't1', 'a1b'])
+test('foldReplies folds a stale live flag a newer node already continued past', () => {
+  // A running tool whose end was lost on a reconnect (or suppressed as
+  // already-persisted) sits before a newer reply. Honoring it would unfold the
+  // whole turn and ignore keep, which is exactly the long-absence behaviour.
+  const nodes = [user('u1', 'one'), asst('a1a'), tool('t1', true), asst('a1b')]
+  expect(foldReplies(nodes, { keep: 1 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'a1b'])
+  expect(foldReplies(nodes, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1'])
 })
 
 test('clampCompactKeep bounds the configured N', () => {

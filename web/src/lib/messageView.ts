@@ -108,6 +108,12 @@ function isLive(n: ChatNode): boolean {
  * streaming text or the running tool would hide exactly what the user is
  * waiting for.
  *
+ * Only the *newest* run of live nodes may extend the visible tail. A live flag
+ * on an earlier node is stale: its end event was lost on a reconnect (or
+ * suppressed because the result was already persisted), and honoring it would
+ * unfold the entire turn, ignoring `keep`. That is the "a long absence leaves
+ * every turn expanded" bug.
+ *
  * The running turn folds like any other (measured: one in-flight turn held 61
  * reply nodes and rendered all of them, where folding renders two). Keeping a
  * whole live turn unfolded was the earlier behaviour and it is what made
@@ -115,10 +121,10 @@ function isLive(n: ChatNode): boolean {
  * one, and its tool chatter is exactly what compact mode hides.
  */
 function hiddenCount(rest: ChatNode[], keep: number): number {
-  let cut = Math.max(0, rest.length - keep)
-  const live = rest.findIndex(isLive)
-  if (live >= 0 && live < cut) cut = live
-  return cut
+  const cut = Math.max(0, rest.length - keep)
+  let live = rest.length
+  while (live > 0 && isLive(rest[live - 1])) live--
+  return Math.min(cut, live)
 }
 
 /**

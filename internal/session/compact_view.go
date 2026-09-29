@@ -150,7 +150,7 @@ func BuildTurn(entries []Entry, leaf, id, before string, limit int) (Tail, bool)
 			}
 			part = part[:cut]
 		}
-		return BuildTail(part, "", limit), true
+		return BuildTail(part, "", limit, true), true
 	}
 	return Tail{}, false
 }

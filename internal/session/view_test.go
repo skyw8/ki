@@ -45,9 +45,36 @@ func TestBoundedPagesRemainContiguous(t *testing.T) {
 	}
 }
 
+// A tail-first read is a byte window of the file, not the whole branch.
+// Reaching the window's oldest entry does not mean the branch root is loaded,
+// so HasMore must stay true or the reader can never page back to the entries
+// before the window (the "beginning of conversation" the UI then shows).
+func TestIncompleteTailWindowKeepsHasMore(t *testing.T) {
+	entries := []Entry{}
+	parent := ""
+	for i := 0; i < 40; i++ {
+		e := Entry{ID: fmt.Sprintf("e%d", i), ParentID: parent, Type: "message"}
+		e.Message = &types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: fmt.Sprintf("turn %d", i)}}}
+		entries = append(entries, e)
+		parent = e.ID
+	}
+	// The window is exactly the page limit, so tailStart == 0.
+	tail := BuildTail(entries, parent, 40, false)
+	if !tail.HasMore {
+		t.Fatal("an incomplete window must still report older history")
+	}
+	if tail.OldestID != entries[0].ID {
+		t.Fatalf("cursor %q, want %q", tail.OldestID, entries[0].ID)
+	}
+	// The same window read to the branch root genuinely has nothing older.
+	if BuildTail(entries, parent, 40, true).HasMore {
+		t.Fatal("a complete window of the same length must not report older history")
+	}
+}
+
 func TestOversizedViewEntryKeepsUTF8AndHydrationIdentity(t *testing.T) {
 	e := Entry{Type: "message", ID: "huge", Message: &types.Message{Role: "toolResult", ToolCallID: "call", Content: []types.Content{{Type: "text", Text: strings.Repeat("中🙂", 20_000)}}}}
-	view := BuildTail([]Entry{e}, e.ID, 100)
+	view := BuildTail([]Entry{e}, e.ID, 100, true)
 	got := view.Entries[0]
 	if !got.Truncated || got.ID != e.ID || got.Message.ToolCallID != "call" {
 		t.Fatalf("missing preview identity: %+v", got)

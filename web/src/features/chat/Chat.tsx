@@ -9,7 +9,7 @@ import { AttachmentImage } from '../attachments/AttachmentImage'
 import type { Client } from '../../api/client'
 import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
-import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, isHumanPrompt, reconcileUserNodes, requestTitle, turnStats, type CacheMiss, type TurnStats } from '../../lib/model'
+import { cacheHitRate, cacheMisses, formatCost, formatDuration, formatTokens, formatTokensPerSecond, isHumanPrompt, mergeLiveCompactTurn, reconcileUserNodes, requestTitle, turnStats, type CacheMiss, type TurnStats } from '../../lib/model'
 import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
 import { rememberRowHeight, rowHeightEstimate, UNKNOWN_WIDTH } from '../../lib/rowHeight'
 import { copyText } from '../../lib/clipboard'
@@ -763,9 +763,28 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
 
   const turns = useMemo(() => {
     const out = turnStats(nodes, turnBase)
-    for (const turn of compactTurns ?? []) {
-      const last = turn.visibleNodeIds.at(-1)
-      if (last && last !== turn.id && turn.stats.steps) out.set(last, turn.stats)
+    if (compactTurns?.length) {
+      const byId = new Map(nodes.map(n => [n.id, n]))
+      // The client's row for a turn is keyed by its *actual* last node, which a
+      // snapshot cannot know. Match by turn number so a folded turn's server
+      // stats replace that row instead of adding a second divider for the same
+      // turn at the snapshot's stale last-visible node.
+      const keyByTurn = new Map<number, string>()
+      for (const [key, stats] of out) keyByTurn.set(stats.turn, key)
+      for (const turn of compactTurns) {
+        const last = turn.visibleNodeIds.at(-1)
+        if (!last || last === turn.id || !turn.stats.steps) continue
+        const key = keyByTurn.get(turn.stats.turn)
+        if (key) {
+          // The snapshot predates a still-running turn's newest replies, so its
+          // counts are stale and its `live` flag is always false. Keep the live
+          // row and add back the replies the fold hid from the browser.
+          out.set(key, out.get(key)!.live ? mergeLiveCompactTurn(out.get(key)!, turn, id => byId.get(id)) : turn.stats)
+          if (key !== last) out.delete(last)
+        } else {
+          out.set(last, turn.stats)
+        }
+      }
     }
     return out
   }, [nodes, turnBase, compactTurns])

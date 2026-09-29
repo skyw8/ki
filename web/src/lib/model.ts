@@ -406,11 +406,27 @@ function rebuild(s: ViewState): ViewState {
 
   // Entries that arrived live (SSE) but are not persisted yet: keep the
   // in-flight conversation state instead of dropping it on a rebuild.
+  //
+  // The client's own node order decides what is newest. Only the trailing run
+  // of live nodes is genuinely in flight: a `running`/`streaming` node with a
+  // later node already on screen is stale, because a reconnect lost its end
+  // event (or the server suppressed it as already-persisted). Reviving it would
+  // leave a spinner that never settles, keep the turn unfolded, and freeze its
+  // counts. An entry the window already materialized also wins over its stale
+  // live copy.
   if (streaming.length) {
-    const have = new Set(next.nodes.map(n => n.id))
+    const built = new Map(next.nodes.map(n => [n.id, n]))
+    const live = new Set<string>()
+    for (let i = s.nodes.length; i > 0 && nodeLive(s.nodes[i - 1]); i--) live.add(s.nodes[i - 1].id)
     for (const node of streaming) {
-      if (have.has(node.id)) next.nodes = next.nodes.map(n => n.id === node.id ? node : n)
-      else next.nodes.push(node)
+      if (!live.has(node.id)) continue
+      const settled = built.get(node.id)
+      if (!settled) { next.nodes.push(node); continue }
+      // The entry wins, except for a tool that has no result yet: it may still
+      // be running, so keep the live spinner the client already drew.
+      if (settled.kind === 'tool' && node.kind === 'tool' && !hasResult(settled)) {
+        next.nodes = next.nodes.map(n => n.id === node.id ? node : n)
+      }
     }
   }
   if (runningRecords.length) {
@@ -452,7 +468,10 @@ export function hydrateEntries(s: ViewState, incoming: Entry[], meta?: { hasMore
   addEntries(next, incoming)
   mergeCompactTurns(next, meta?.compactTurns)
   if (meta?.hasMore !== undefined) next.hasMore = meta.hasMore
-  if (meta?.oldestId !== undefined) next.oldestId = meta.oldestId
+  // An empty oldestId means the page had no older entry (the history ends
+  // here, or the cursor was not found): keep the loaded cursor instead of
+  // wiping it, which would strand every later `before=` request.
+  if (meta?.oldestId) next.oldestId = meta.oldestId
   return rebuild(next)
 }
 
@@ -1479,6 +1498,13 @@ export type LatestStats = {
   /** Unix ms of the newest turn's opening user message, 0 when unknown. Lets
    * the composer show a live elapsed while that turn runs. */
   turnStartedAt: number
+  /** Branch total of the settled model-run time of every turn except the newest
+   * (`turnElapsedMs`). The composer adds the live span (`now - turnStartedAt`)
+   * while the newest turn runs, so the session strip shows how long the model
+   * has actually been working rather than just the current turn. */
+  elapsedMs: number
+  /** Settled model-run time of the newest turn, used when it is not running. */
+  turnElapsedMs: number
 }
 
 /** Usage/timing of a single step; the branch counts live on LatestStats. */
@@ -1488,6 +1514,7 @@ function emptyStats(): LatestStats {
   return {
     turns: 0, steps: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
     hasCost: false, cost: 0, ttftMs: 0, decodeMs: 0, decodeTokens: 0, turnStartedAt: 0,
+    elapsedMs: 0, turnElapsedMs: 0,
   }
 }
 
@@ -1567,6 +1594,44 @@ export function latestStats(s: ViewState): LatestStats {
     if (n.kind === 'user') out.turns += 1
     else if (n.kind === 'assistant' && !n.streaming) out.steps += 1
   }
+  // Session total of the model's actual run time, so the composer strip is not
+  // just the current turn's wall clock (which resets on every prompt and
+  // vanishes when the run ends). The newest turn is reported separately for the
+  // composer to extend live while it runs.
+  const spans = runElapsedByTurn(s.records)
+  for (const turn of s.compactTurns ?? []) {
+    // Folded turns arrive only as server stats; their records were never loaded.
+    if (!spans.has(turn.stats.turn)) spans.set(turn.stats.turn, turn.stats.elapsedMs)
+  }
+  let newest = 0
+  for (const turn of spans.keys()) if (turn > newest) newest = turn
+  for (const [turn, ms] of spans) {
+    if (turn === newest) out.turnElapsedMs = ms
+    else out.elapsedMs += ms
+  }
+  return out
+}
+
+/** Wall-clock run time per turn from the trajectory records. Records cover the
+ * whole branch (index-only entries included), so the session total does not
+ * shrink to the loaded window. It mirrors `turnStats`: a turn starts at the
+ * prompt's timestamp and ends at the last node's timestamp, with a tool's own
+ * `startedAt + durationMs` counting as the tail (an assistant record already
+ * carries the completion timestamp, so its `durationMs` is not added again). */
+function runElapsedByTurn(records: TrajRecord[]): Map<number, number> {
+  const spans = new Map<number, { start: number; end: number }>()
+  for (const r of records) {
+    if (r.startedAt == null) continue
+    const end = r.kind === 'tool' && r.durationMs != null ? r.startedAt + r.durationMs : r.startedAt
+    const span = spans.get(r.turn)
+    if (!span) spans.set(r.turn, { start: r.startedAt, end })
+    else {
+      if (r.startedAt < span.start) span.start = r.startedAt
+      if (end > span.end) span.end = end
+    }
+  }
+  const out = new Map<number, number>()
+  for (const [turn, span] of spans) out.set(turn, Math.max(0, span.end - span.start))
   return out
 }
 
@@ -1621,6 +1686,20 @@ export type TurnStats = {
   tps: number | null
   /** True while the turn still has a streaming assistant or a running tool. */
   live: boolean
+}
+
+/** A node whose work is still in flight: the streaming bubble, the running
+ * tool, or a compaction in progress. Shared by `turnStats` and `rebuild` so the
+ * chat divider and the fold boundary agree on what "live" means. */
+function nodeLive(n: ChatNode): boolean {
+  return (n.kind === 'assistant' && !!n.streaming)
+    || (n.kind === 'tool' && !!n.running)
+    || (n.kind === 'compaction' && !!n.running)
+}
+
+/** A tool node whose result has been applied, so it cannot still be running. */
+function hasResult(n: ChatNode): boolean {
+  return n.kind === 'tool' && n.result !== undefined
 }
 
 /**
@@ -1682,13 +1761,18 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
     }
     if (!acc) continue
     acc.lastId = n.id
+    // Only the newest node can be in flight. A `running`/`streaming` flag with
+    // a later node after it is stale (its end was lost on a reconnect or the
+    // server suppressed it as already-persisted), so the turn must not read as
+    // live — otherwise its divider keeps ticking and its folded counts freeze.
+    acc.live = nodeLive(n)
     if (n.kind === 'assistant' && n.ts != null) acc.lastAt = n.ts
     if (n.kind === 'tool' && n.startedAt != null && n.durationMs != null) {
       const endedAt = n.startedAt + n.durationMs
       if (endedAt > acc.lastAt) acc.lastAt = endedAt
     }
     if (n.kind === 'assistant') {
-      if (n.streaming) { acc.live = true; continue }
+      if (n.streaming) continue
       acc.steps += 1
       if (n.latencyMs != null) acc.durationMs += n.latencyMs
       if (acc.ttftMs === 0 && n.ttftMs != null && n.ttftMs > 0) acc.ttftMs = n.ttftMs
@@ -1726,14 +1810,12 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
     } else if (n.kind === 'tool') {
       acc.tools += 1
       if (n.isError) acc.toolFailures += 1
-      if (n.running) acc.live = true
     } else if (n.kind === 'compaction') {
       // A compaction legitimately rewrites the context, so cache comparison
       // restarts from the next step (pi clears its previous-request state too).
       prevPrompt = 0
       cacheReported = false
-      if (n.running) acc.live = true
-      else acc.steps += 1
+      if (!n.running) acc.steps += 1
     }
   }
   flush()
@@ -1746,6 +1828,39 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
 export function cacheHitPercent(s: LatestStats): number | null {
   if (s.input <= 0 || s.cacheRead <= 0) return null
   return s.cacheRead / s.input * 100
+}
+
+/**
+ * Merge a still-running turn's browser-observed stats with the server's folded
+ * snapshot. Compact mode never sends the replies a turn hides, so the browser
+ * sees only the newest replies: without this a live turn reports just those
+ * (undercounting its tools/steps), and replacing it with the frozen snapshot
+ * would stop its count from growing at all. Add back the replies the snapshot
+ * hid but that the browser never loaded.
+ */
+export function mergeLiveCompactTurn(
+  live: TurnStats,
+  folded: { stats: { steps: number; tools: number; toolFailures: number }; visibleNodeIds: string[] },
+  node: (id: string) => ChatNode | undefined,
+): TurnStats {
+  let visibleSteps = 0
+  let visibleTools = 0
+  let visibleFailures = 0
+  for (const id of folded.visibleNodeIds) {
+    const n = node(id)
+    if (!n) continue
+    if (n.kind === 'assistant' || n.kind === 'compaction') visibleSteps += 1
+    else if (n.kind === 'tool') {
+      visibleTools += 1
+      if (n.isError) visibleFailures += 1
+    }
+  }
+  return {
+    ...live,
+    steps: live.steps + Math.max(0, folded.stats.steps - visibleSteps),
+    tools: live.tools + Math.max(0, folded.stats.tools - visibleTools),
+    toolFailures: live.toolFailures + Math.max(0, folded.stats.toolFailures - visibleFailures),
+  }
 }
 
 /** Cache-read share of a step's prompt, as a percentage (not rounded). `input`

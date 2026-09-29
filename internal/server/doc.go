@@ -49,7 +49,10 @@
 // WebUI needs no second request. fields=runtime omits the transcript
 // entirely; fields=index,runtime includes tail/index/runtime together.
 // entry/entries fetch full bodies; before+limit pages older leaf
-// entries backwards from oldestId. messages is not included. Opening a session (POST create, GET by id,
+// entries backwards from oldestId. The default tail is a byte window of the
+// transcript (LeafTail), not the whole branch, so hasMore stays true until a
+// read or page actually reaches the branch root; a cursor outside the active
+// branch yields an empty page. messages is not included. Opening a session (POST create, GET by id,
 // fork) prepares the session view of already-running extensions in the
 // background; List does not. runtime.ready is
 // true when that Prepare finishes (failure still counts). PATCH /v1/sessions/{id} writes model /

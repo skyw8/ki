@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
-import { cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats, turnStats } from '../src/lib/model.ts'
-import type { ChatNode, Entry, ViewState } from '../src/api/types.ts'
+import { cacheHitPercent, cacheHitRate, cacheMisses, emptyView, formatCost, formatDuration, formatTokens, formatTokensPerSecond, latestStats, mergeLiveCompactTurn, turnStats } from '../src/lib/model.ts'
+import { applyTail } from '../src/lib/model.ts'
+import type { ChatNode, Entry, SessionDetail, TrajRecord, ViewState } from '../src/api/types.ts'
 
 function view(over: Partial<ViewState> = {}): ViewState {
   return { ...emptyView(), ...over }
@@ -308,4 +309,102 @@ test('latestStats exposes the current turn start for the live counter', () => {
   expect(latestStats(view({ leafId: 'u1', allEntries: [entry], nodes: [
     { kind: 'user', id: 'opt-user-2', text: 'next prompt', ts: 42 },
   ] })).turnStartedAt).toBe(42)
+})
+
+test('latestStats totals the session run time and keeps the newest turn separate', () => {
+  const records: TrajRecord[] = [
+    { id: 'u1', kind: 'user', turn: 1, preview: '', startedAt: 1_000 },
+    { id: 'a1', kind: 'assistant', turn: 1, preview: '', startedAt: 1_200, durationMs: 800 },
+    { id: 't1', kind: 'tool', turn: 1, preview: '', startedAt: 2_000, durationMs: 3_000 },
+    { id: 'u2', kind: 'user', turn: 2, preview: '', startedAt: 10_000 },
+    { id: 'a2', kind: 'assistant', turn: 2, preview: '', startedAt: 10_500, durationMs: 500 },
+  ]
+  const s = latestStats(view({ records }))
+  // Turn 1 spans 1_000 → 5_000 (the tool tail); turn 2 spans 10_000 → 10_500.
+  expect(s.elapsedMs).toBe(4_000)
+  expect(s.turnElapsedMs).toBe(500)
+  // A folded compact turn the browser never loaded still contributes its stats.
+  const folded = latestStats(view({
+    records,
+    compactTurns: [{
+      id: 'u0', parentId: '', tailId: 'a0', entryIds: ['u0'], visibleNodeIds: ['u0'], hiddenCount: 0,
+      stats: { turn: 0, steps: 1, elapsedMs: 2_500, durationMs: 500, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, tools: 0, toolFailures: 0, cacheMisses: 0, hasCost: false, cost: 0, ttftMs: 0, tps: null, live: false },
+      stepCount: 1,
+    }],
+  }))
+  expect(folded.elapsedMs).toBe(4_000 + 2_500)
+})
+
+test('mergeLiveCompactTurn adds the replies a fold hid from the browser', () => {
+  const live = turnStats([
+    { kind: 'user', id: 'u1', text: 'hi', content: [] },
+    { kind: 'assistant', id: 'a3', text: 'newest reply' },
+    { kind: 'tool', id: 't5', name: 'Bash', running: true },
+  ]).get('t5')!
+  expect(live.live).toBe(true)
+  const node = (id: string): ChatNode | undefined => id === 't5'
+    ? { kind: 'tool', id: 't5', name: 'Bash' }
+    : id === 'a3' ? { kind: 'assistant', id: 'a3', text: 'newest reply' } : undefined
+  const merged = mergeLiveCompactTurn(live, {
+    stats: { steps: 4, tools: 5, toolFailures: 2 },
+    visibleNodeIds: ['u1', 'a3', 't5'],
+  }, node)
+  // The snapshot knew 4 steps / 5 tools; the browser only has a3 and t5.
+  expect(merged.steps).toBe(1 + 3)
+  expect(merged.tools).toBe(1 + 4)
+  expect(merged.toolFailures).toBe(0 + 2)
+  expect(merged.live).toBe(true)
+})
+
+test('turnStats marks a turn live only from its newest node', () => {
+  const stale = turnStats([
+    { kind: 'user', id: 'u1', text: 'hi', content: [] },
+    { kind: 'assistant', id: 'a1', text: 'ok' },
+    { kind: 'tool', id: 't1', name: 'Bash', running: true },
+    { kind: 'assistant', id: 'a2', text: 'done' },
+  ]).get('a2')!
+  // A running tool with a newer reply after it is stale; the turn is settled.
+  expect(stale.live).toBe(false)
+  expect(turnStats([
+    { kind: 'user', id: 'u1', text: 'hi', content: [] },
+    { kind: 'assistant', id: 'a1', text: 'ok' },
+    { kind: 'tool', id: 't1', name: 'Bash', running: true },
+  ]).get('t1')!.live).toBe(true)
+})
+
+test('applyTail settles a running tool the transcript now holds a result for', () => {
+  const s = view({
+    busy: true,
+    nodes: [
+      { kind: 'user', id: 'u1', text: 'hi', content: [] },
+      { kind: 'tool', id: 'tc1', name: 'Bash', running: true },
+    ],
+  })
+  const detail = {
+    id: 's', running: true, leafId: 'tr1',
+    entries: [
+      msg('u1', '', 'user'),
+      msg('a1', 'u1', 'assistant', { content: [{ type: 'toolCall', id: 'tc1', name: 'Bash', arguments: { command: 'x' } }] }),
+      { type: 'message', id: 'tr1', parentId: 'a1', message: { role: 'toolResult', toolCallId: 'tc1', toolName: 'Bash', content: [{ type: 'text', text: 'done' }] } },
+    ],
+  } as SessionDetail
+  const tool = applyTail(s, detail).nodes.find(n => n.kind === 'tool' && n.id === 'tc1')
+  expect(tool && tool.kind === 'tool' ? tool.running : true).toBeFalsy()
+  expect(tool && tool.kind === 'tool' ? tool.result : undefined).toBe('done')
+})
+
+test('applyTail drops a stale live node a newer on-screen node continued past', () => {
+  const s = view({
+    busy: true,
+    nodes: [
+      { kind: 'user', id: 'u1', text: 'hi', content: [] },
+      { kind: 'tool', id: 'tc1', name: 'Bash', running: true },
+      { kind: 'assistant', id: 'a2', text: 'next' },
+    ],
+  })
+  const detail = {
+    id: 's', running: true, leafId: 'a2',
+    entries: [msg('u1', '', 'user'), msg('a2', 'u1', 'assistant', { content: [{ type: 'text', text: 'next' }] })],
+  } as SessionDetail
+  expect(applyTail(s, detail).nodes.some(n => n.kind === 'tool' && n.id === 'tc1')).toBe(false)
 })
