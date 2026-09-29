@@ -418,7 +418,10 @@ func New(opt Options) (*Server, error) {
 	if st == nil {
 		st = liveFromRegistry(reg, providerExtensions, time.Duration(opt.Config.Streaming.IdleTimeoutSeconds)*time.Second)
 	}
-	ws := workspace.Open(opt.Config.Home, opt.Config.Sessions.Root)
+	ws, err := workspace.Open(opt.Config.Home, opt.Config.Sessions.Root)
+	if err != nil {
+		return nil, fmt.Errorf("load workspace registry: %w", err)
+	}
 	infos, _ := session.List(opt.Config.Sessions.Root)
 	cwds := make([]string, 0, len(infos))
 	for _, info := range infos {

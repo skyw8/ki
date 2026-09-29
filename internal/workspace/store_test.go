@@ -1,15 +1,31 @@
 package workspace
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"ki/internal/state"
 )
+
+func TestOpenRejectsNewerSchema(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "workspaces.json"), []byte(`{"version":99,"workspaces":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(home, filepath.Join(home, "sessions")); !errors.Is(err, state.ErrNewerVersion) {
+		t.Fatalf("err = %v, want state.ErrNewerVersion", err)
+	}
+}
 
 func TestCreateNormalizeAndDuplicate(t *testing.T) {
 	home := t.TempDir()
-	s := Open(home, filepath.Join(home, "sessions"))
+	s, err := Open(home, filepath.Join(home, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := filepath.Join(home, "proj")
 	rec, created, err := s.Create(dir, "")
 	if err != nil || !created {
@@ -39,7 +55,10 @@ func TestCreateNormalizeAndDuplicate(t *testing.T) {
 
 func TestCreateAppliesGivenTitleOnlyOnce(t *testing.T) {
 	home := t.TempDir()
-	s := Open(home, filepath.Join(home, "sessions"))
+	s, err := Open(home, filepath.Join(home, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := filepath.Join(home, "topic-0")
 	rec, created, err := s.Create(dir, "group-怀仁堂")
 	if err != nil || !created {
@@ -64,7 +83,10 @@ func TestCreateAppliesGivenTitleOnlyOnce(t *testing.T) {
 
 func TestEnsureTempAndMatch(t *testing.T) {
 	home := t.TempDir()
-	s := Open(home, filepath.Join(home, "sessions"))
+	s, err := Open(home, filepath.Join(home, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	a, err := s.EnsureTemp()
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +109,10 @@ func TestEnsureTempAndMatch(t *testing.T) {
 
 func TestInsertBeforeAndSessions(t *testing.T) {
 	home := t.TempDir()
-	s := Open(home, filepath.Join(home, "sessions"))
+	s, err := Open(home, filepath.Join(home, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	a, _, _ := s.Create(filepath.Join(home, "a"), "a")
 	b, _, _ := s.Create(filepath.Join(home, "b"), "b")
 	c, _, _ := s.Create(filepath.Join(home, "c"), "c")
@@ -137,7 +162,10 @@ func TestInsertBeforeAndSessions(t *testing.T) {
 
 func TestBootstrapOnce(t *testing.T) {
 	home := t.TempDir()
-	s := Open(home, filepath.Join(home, "sessions"))
+	s, err := Open(home, filepath.Join(home, "sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	d1 := filepath.Join(home, "p1")
 	d2 := filepath.Join(home, "p2")
 	_ = os.MkdirAll(d1, 0o700)

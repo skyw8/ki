@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"ki/internal/idgen"
+	"ki/internal/state"
 )
 
 const version = 1
@@ -52,18 +53,25 @@ type Store struct {
 	data         fileData
 }
 
-// Open loads {home}/workspaces.json (missing file is empty).
-func Open(home, sessionsRoot string) *Store {
+// Open loads {home}/workspaces.json (missing file is empty). A document
+// written by a newer schema is an error: silently ignoring it would let this
+// build drop fields it cannot see on the next write.
+func Open(home, sessionsRoot string) (*Store, error) {
 	s := &Store{home: home, sessionsRoot: sessionsRoot, data: fileData{Version: version}}
-	b, err := os.ReadFile(s.path())
-	if err != nil {
-		return s
+	b, _, err := state.ReadFile(s.path(), version, nil)
+	if errors.Is(err, os.ErrNotExist) {
+		return s, nil
 	}
-	_ = json.Unmarshal(b, &s.data)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(b, &s.data); err != nil {
+		return nil, fmt.Errorf("read %s: %w", s.path(), err)
+	}
 	if s.data.Version == 0 {
 		s.data.Version = version
 	}
-	return s
+	return s, nil
 }
 
 func (s *Store) path() string { return filepath.Join(s.home, "workspaces.json") }
@@ -435,21 +443,11 @@ func (s *Store) indexLocked(id string) int {
 	return -1
 }
 
-// write-to-temp-then-rename
+// writeLocked persists the registry atomically and refuses to overwrite a
+// document written by a newer schema.
 func (s *Store) writeLocked() error {
-	if err := os.MkdirAll(s.home, 0o700); err != nil {
-		return err
-	}
 	s.data.Version = version
-	b, err := json.MarshalIndent(s.data, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := s.path() + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path())
+	return state.WriteVersioned(s.path(), version, s.data, 0o600)
 }
 
 // NotFound reports whether err is a missing workspace.

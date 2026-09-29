@@ -16,7 +16,7 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 
 - `catalog.json` 随二进制嵌入，内置 OpenRouter（默认模型为 `openrouter/free`）、OpenAI、Anthropic、DeepSeek、DashScope、Z.AI、Moonshot、MiniMax、Google 和 xAI；DashScope、Z.AI、Moonshot、MiniMax 另有 `-cn` provider。它只随 Ki 发版更新，不调用供应商模型列表 API。
 - `{KI_HOME}/models.json` 保存上次选用的模型、自定义 provider/model 和内置项覆盖；`{KI_HOME}/credentials.json` 保存 API key 或 provider-owned opaque credential（0600）。密钥解析顺序为 credentials 文件再到 provider 环境变量，API 从不返回明文。
-- `models.json` 带 schema `version`。读到旧版本时在加载阶段就地迁移到当前 schema（目前 v1 的 `remoteCompaction` 展开为 v2 的 `compaction.standalone` + `compaction.inline`），迁移只作用于内存，用户文件在下次写入时才更新；读到更高版本则拒绝启动，避免静默丢弃本二进制不认识的字段。
+- `models.json` 带 schema `version`。读到旧版本时在加载阶段就地迁移到当前 schema（目前 v1 的 `remoteCompaction` 展开为 v2 的 `compaction.standalone` + `compaction.inline`），迁移只作用于内存，用户文件在下次写入时才更新；读到更高版本则拒绝启动，避免静默丢弃本二进制不认识的字段。`credentials.json` 同样带 `version`，更高版本时拒绝启动。两者的迁移都走 `internal/state`，通用规则见 [state.md](state.md)。
 - registry 按嵌入目录 → 用户配置合并，并在校验成功、原子替换文件后发布新快照。provider/model 可新增、禁用和删除；内置项删除覆盖即恢复基线。上次选用不可用时落到第一个有凭据的可用模型，再不行落到目录里第一个启用项；没有「钉死不能禁用」的 default。
 - provider 和模型可选 `completions` / `responses` / `anthropic`，模型可覆盖 provider 的 API/Base URL。Google 使用官方 OpenAI-compatible 入口。扩展 provider 的 `defaultModel` 只是可选偏好；缺失、被删除或被禁用时，自动使用第一个启用模型。
 - 模型的 `input` 声明输入模态；`applyPatchToolType: "freeform"` 声明 Responses custom/freeform patch 能力。内置 OpenAI GPT 与 bundled `codex-oauth` GPT 使用 `apply_patch`，其它模型使用 `Write` / `Edit`，编辑器不会同时暴露。Responses adapter 将 custom tool 的 grammar、raw input 和 custom output 原样编码；旧 custom history 在 Completions/Anthropic 上仍通过结构化 `input` 参数降级回放。

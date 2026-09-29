@@ -52,6 +52,10 @@
 // schema version: an older document is migrated in memory on load (v1
 // remoteCompaction becomes v2 CompactionCapabilities), while a newer one is
 // rejected so fields this binary does not know are never silently dropped.
+// credentials.json and the other {KI_HOME} JSON state files share that
+// contract through internal/state; see docs/state.md. The embedded
+// catalog.json is not a state file: its version is checked at build time
+// against CatalogVersion.
 // models.json default is
 // last-used, not a pinned setting: if it is missing or disabled, Default
 // falls back to the first available model. Extension provider defaultModel is

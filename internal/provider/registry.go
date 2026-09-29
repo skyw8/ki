@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"ki/internal/state"
 )
 
 var providerIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -93,6 +95,9 @@ type registryState struct {
 
 const modelsFileVersion = 2
 
+// credentialsFileVersion is the schema version of credentials.json.
+const credentialsFileVersion = 1
+
 // Registry owns the offline model catalog and mutable global overlays.
 type Registry struct {
 	mu                     sync.RWMutex
@@ -117,21 +122,25 @@ func NewRegistry(home string) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	creds := credentialsFile{Version: 1, Providers: map[string]credentialEntry{}}
-	if err := readStrictJSON(r.credsPath, &creds); err != nil && !errors.Is(err, os.ErrNotExist) {
+	creds := credentialsFile{Version: credentialsFileVersion, Providers: map[string]credentialEntry{}}
+	cb, _, err := state.ReadFile(r.credsPath, credentialsFileVersion, nil)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	if creds.Version == 0 {
-		creds.Version = 1
+	if err == nil {
+		if err := decodeStrictJSON(r.credsPath, cb, &creds); err != nil {
+			return nil, err
+		}
 	}
+	creds.Version = credentialsFileVersion
 	if creds.Providers == nil {
 		creds.Providers = map[string]credentialEntry{}
 	}
-	state, err := buildRegistryState(user, creds)
+	nextState, err := buildRegistryState(user, creds)
 	if err != nil {
 		return nil, err
 	}
-	r.state = state
+	r.state = nextState
 	return r, nil
 }
 
@@ -203,25 +212,12 @@ func (r *Registry) defaultRefLocked() ModelRef {
 // owns, and a hard error at startup is the only signal the user gets.
 func readModelsFile(path string) (ModelsFile, error) {
 	user := ModelsFile{Version: modelsFileVersion, Providers: map[string]Config{}}
-	b, err := os.ReadFile(path) //nolint:gosec // path is a Ki-managed catalog file
+	b, _, err := state.ReadFile(path, modelsFileVersion, modelsMigrations)
 	if errors.Is(err, os.ErrNotExist) {
 		return user, nil
 	}
 	if err != nil {
 		return ModelsFile{}, err
-	}
-	var head struct {
-		Version int `json:"version"`
-	}
-	if err := json.Unmarshal(b, &head); err != nil {
-		return ModelsFile{}, fmt.Errorf("read %s: %w", path, err)
-	}
-	if head.Version != 0 && head.Version != modelsFileVersion {
-		migrated, err := migrateModelsFile(b, head.Version)
-		if err != nil {
-			return ModelsFile{}, err
-		}
-		b = migrated
 	}
 	if err := decodeStrictJSON(path, b, &user); err != nil {
 		return ModelsFile{}, err
@@ -235,16 +231,18 @@ func readModelsFile(path string) (ModelsFile, error) {
 	return user, nil
 }
 
-// migrateModelsFile rewrites an overlay written by an older schema into the
-// current one. Version 1 carried remoteCompaction as a single protocol string;
-// version 2 splits it into CompactionCapabilities. The document is walked as
-// generic JSON so the rename holds wherever the field appears (provider model
-// seeds and per-model overrides share the shape); the strict decode that
-// follows stays the single source of field validation.
-func migrateModelsFile(raw []byte, version int) ([]byte, error) {
-	if version != 1 {
-		return nil, fmt.Errorf("models.json version %d is %w", version, errUnsupportedVersion)
-	}
+// modelsMigrations upgrades the user overlay one schema version at a time.
+var modelsMigrations = map[int]state.Migration{
+	1: migrateModelsV1ToV2,
+}
+
+// migrateModelsV1ToV2 rewrites the overlay written by schema 1 into schema 2.
+// Version 1 carried remoteCompaction as a single protocol string; version 2
+// splits it into CompactionCapabilities. The document is walked as generic JSON
+// so the rename holds wherever the field appears (provider model seeds and
+// per-model overrides share the shape); the strict decode that follows stays
+// the single source of field validation.
+func migrateModelsV1ToV2(raw []byte) ([]byte, error) {
 	var doc any
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, err
@@ -273,14 +271,6 @@ func renameRemoteCompaction(node any) {
 			renameRemoteCompaction(child)
 		}
 	}
-}
-
-func readStrictJSON(path string, dst any) error {
-	b, err := os.ReadFile(path) //nolint:gosec // path is a Ki-managed catalog or credentials file
-	if err != nil {
-		return err
-	}
-	return decodeStrictJSON(path, b, dst)
 }
 
 func decodeStrictJSON(path string, b []byte, dst any) error {
@@ -940,14 +930,14 @@ func (r *Registry) Update(mut func(*ModelsFile) error) error {
 		return err
 	}
 	next.Version = modelsFileVersion
-	state, err := buildRegistryState(next, r.state.creds)
+	nextState, err := buildRegistryState(next, r.state.creds)
 	if err != nil {
 		return err
 	}
-	if err := writeJSONAtomic(r.modelsPath, next, 0o600); err != nil {
+	if err := state.WriteVersioned(r.modelsPath, modelsFileVersion, next, 0o600); err != nil {
 		return err
 	}
-	r.state = state
+	r.state = nextState
 	r.state.defaultRef = r.defaultRefLocked()
 	return nil
 }
@@ -977,14 +967,14 @@ func (r *Registry) SetCredential(id string, key *string) error {
 		}
 		next.Providers[id] = credentialEntry{Type: typ, APIKey: *key}
 	}
-	if err := writeJSONAtomic(r.credsPath, next, 0o600); err != nil {
+	if err := state.WriteVersioned(r.credsPath, credentialsFileVersion, next, 0o600); err != nil {
 		return err
 	}
-	state, err := buildRegistryState(r.state.user, next)
+	nextState, err := buildRegistryState(r.state.user, next)
 	if err != nil {
 		return err
 	}
-	r.state = state
+	r.state = nextState
 	r.state.defaultRef = r.defaultRefLocked()
 	return nil
 }
@@ -1011,14 +1001,14 @@ func (r *Registry) SetCredentialValue(id string, typ AuthKind, value json.RawMes
 	next := r.state.creds
 	next.Providers = mapsCloneCredentials(next.Providers)
 	next.Providers[id] = credentialEntry{Type: typ, Value: append(json.RawMessage(nil), trimmed...)}
-	if err := writeJSONAtomic(r.credsPath, next, 0o600); err != nil {
+	if err := state.WriteVersioned(r.credsPath, credentialsFileVersion, next, 0o600); err != nil {
 		return err
 	}
-	state, err := buildRegistryState(r.state.user, next)
+	nextState, err := buildRegistryState(r.state.user, next)
 	if err != nil {
 		return err
 	}
-	r.state = state
+	r.state = nextState
 	r.state.defaultRef = r.defaultRefLocked()
 	return nil
 }
@@ -1026,36 +1016,6 @@ func mapsCloneCredentials(in map[string]credentialEntry) map[string]credentialEn
 	out := make(map[string]credentialEntry, len(in))
 	maps.Copy(out, in)
 	return out
-}
-
-func writeJSONAtomic(path string, value any, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer func() { _ = os.Remove(tmp) }()
-	if err = f.Chmod(perm); err == nil {
-		_, err = f.Write(b)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return replaceFile(tmp, path)
 }
 
 // SupportedThinkingLevels follows pi: standard levels are implicit; xhigh/max require explicit mappings.

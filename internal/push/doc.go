@@ -13,7 +13,9 @@
 //     {KI_HOME}/vapid.json. Its public half is handed to the browser as the
 //     applicationServerKey; its private half signs the JWT on every request.
 //   - Store is the {KI_HOME}/push-subscriptions.json registry. A subscription
-//     is the endpoint plus the client's P-256 and auth secrets.
+//     is the endpoint plus the client's P-256 and auth secrets. The registry
+//     is best-effort state: a document from a newer schema loads empty (the
+//     browser re-syncs) and is never overwritten. See docs/state.md.
 //   - Service encrypts each message for one subscription (RFC 8291, aes128gcm)
 //     and POSTs it with the VAPID authorization header. Delivery is
 //     best-effort: the server drops a notification that arrives while the

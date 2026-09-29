@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"ki/internal/state"
 )
+
+// storeVersion is the schema version of push-subscriptions.json.
+const storeVersion = 1
 
 // Subscription is one browser push registration. P256DH and Auth are the
 // client's public key and 16-byte auth secret, both base64url as the Push API
@@ -28,6 +31,12 @@ type SubscriptionKeys struct {
 	Auth   string `json:"auth"`
 }
 
+// storedFile is the on-disk document.
+type storedFile struct {
+	Version       int            `json:"version"`
+	Subscriptions []Subscription `json:"subscriptions"`
+}
+
 // Store is the on-disk subscription registry. The whole set is small (one
 // entry per browser profile that enabled notifications), so it lives in one
 // JSON document rewritten on change, like the workspace registry.
@@ -37,16 +46,18 @@ type Store struct {
 	subs []Subscription
 }
 
-// OpenStore loads path; a missing file is an empty store.
+// OpenStore loads path; a missing file is an empty store. Subscriptions are
+// best-effort: a document from a newer schema yields an empty store (browsers
+// re-sync on load), while writeLocked refuses to overwrite it.
 func OpenStore(path string) *Store {
 	s := &Store{path: path}
-	if b, err := os.ReadFile(path); err == nil {
-		var doc struct {
-			Subscriptions []Subscription `json:"subscriptions"`
-		}
-		if json.Unmarshal(b, &doc) == nil {
-			s.subs = doc.Subscriptions
-		}
+	b, _, err := state.ReadFile(path, storeVersion, nil)
+	if err != nil {
+		return s
+	}
+	var doc storedFile
+	if json.Unmarshal(b, &doc) == nil {
+		s.subs = doc.Subscriptions
 	}
 	return s
 }
@@ -100,20 +111,7 @@ func (s *Store) Delete(endpoint string) error {
 }
 
 func (s *Store) writeLocked() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(struct {
-		Subscriptions []Subscription `json:"subscriptions"`
-	}{Subscriptions: s.subs}, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
+	return state.WriteVersioned(s.path, storeVersion, storedFile{Version: storeVersion, Subscriptions: s.subs}, 0o600)
 }
 
 // ErrInvalidSubscription marks a registration the server refuses to store.

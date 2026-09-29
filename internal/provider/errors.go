@@ -1,13 +1,19 @@
 package provider
 
-import "errors"
+import (
+	"errors"
+
+	"ki/internal/state"
+)
 
 // Keep validation errors static so callers can use errors.Is while the
 // surrounding identifiers remain in the human-readable message.
 var (
-	errCatalogVersion            = errors.New("provider catalog version")
-	errTrailingJSON              = errors.New("trailing JSON")
-	errUnsupportedVersion        = errors.New("unsupported")
+	errCatalogVersion = errors.New("provider catalog version")
+	errTrailingJSON   = errors.New("trailing JSON")
+	// errUnsupportedVersion aliases the shared state sentinel so a models.json
+	// written by a newer schema reports the same error everywhere.
+	errUnsupportedVersion        = state.ErrNewerVersion
 	errInvalidID                 = errors.New("invalid id")
 	errDuplicateProvider         = errors.New("provider already exists")
 	errProviderFieldsRequired    = errors.New("name, api and baseUrl required")

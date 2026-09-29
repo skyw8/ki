@@ -1,11 +1,28 @@
 package toggles
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"ki/internal/session"
+	"ki/internal/state"
 )
+
+func TestNewerSchemaFallsBackAndSaveRefuses(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(path(home), []byte(`{"version":99,"skills":{"disabled":["alpha"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := Load(home)
+	if !f.Skills.Allowed("alpha") {
+		t.Fatalf("newer schema must fall back to defaults, got %+v", f.Skills)
+	}
+	if err := Save(home, File{}); !errors.Is(err, state.ErrNewerVersion) {
+		t.Fatalf("save err = %v, want state.ErrNewerVersion", err)
+	}
+}
 
 func TestLoadMissingIsEmpty(t *testing.T) {
 	f := Load(t.TempDir())

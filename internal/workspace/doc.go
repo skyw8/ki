@@ -4,5 +4,5 @@
 // cwd equality after Abs/EvalSymlinks. The file is {KI_HOME}/workspaces.json.
 // Cascade delete of the directory and session logs is the server's job.
 // Temporary workspaces live under {KI_HOME}/workspace/tmp+<timestamp>.
-// Contract: docs/workspace.md.
+// Contract: docs/workspace.md. Schema version and migration: docs/state.md.
 package workspace

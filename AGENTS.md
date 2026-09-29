@@ -38,6 +38,7 @@ ki/
 │   ├── toggles/         {KI_HOME}/toggles.json
 │   ├── extension/       extension.json + NDJSON sidecar
 │   ├── workspace/       workspace registry
+│   ├── state/           {KI_HOME} JSON schema versions + migrations
 │   ├── types/           Message / Usage IR
 │   ├── idgen/           session / entry id
 │   └── logging/         JSONL stderr + rotated ki.jsonl
@@ -60,6 +61,7 @@ ki/
   - `tools.md` — tool contract (names/schemas follow Claude Code, results follow pi)
   - `webui.md` — same-origin WebUI serving contract
   - `workspace.md` — workspace registry (`{KI_HOME}/workspaces.json`)
+  - `state.md` — `{KI_HOME}` JSON state files: schema versions, migrations, downgrade rules
   - `push.md` — Web Push completion notifications (VAPID, subscriptions, service worker)
   - `postmortem/` — retrospective entries
 - Package invariants are in each package's `doc.go` (`go doc ./internal/session`). Keep this file free of `todo` paths and of per-file inventories under those directories.
@@ -101,6 +103,15 @@ Prefer these commands over locating or parsing session JSONL by hand:
 - Diagnose failures from their logs and reproduce narrowly before retrying a full suite. Record the command, result and changes checked; reuse passing results until relevant edits or unresolved concerns invalidate them. Avoid duplicate concurrent runs.
 - Parallelize verified independent work and reuse read-only fixtures/browser processes; isolate mutable state and artifacts. Never drop, skip, reorder, or weaken tests for speed; coverage mismatches must fail. Tune concurrency from measurements.
 - Run required performance budgets without competing heavy workloads. Reserve extra perf/live/cross-browser suites for applicable changes or explicit requirements. Detailed commands and isolation rules live in `docs/webui.md`.
+
+## state files
+
+Every Ki-owned JSON document under `{KI_HOME}` carries a top-level integer `version` and is read and written only through `internal/state` (`state.ReadFile`, `state.WriteJSON`, `state.WriteVersioned`) — never a hand-rolled `os.ReadFile` + `os.WriteFile`. The contract is `docs/state.md`; do not add a third-party config-migration library.
+
+- `version` bumps only on a breaking change (rename, removal, semantic change), never for an added field.
+- An older document migrates forward at load time through `state.Migration` steps; a document newer than the running build returns `state.ErrNewerVersion`.
+- That error is fail-fast for `models.json`, `credentials.json`, and `workspaces.json`, and best-effort (fall back, never overwrite) for `toggles.json` and `push-subscriptions.json`; a newer document is never coerced down or overwritten.
+- `internal/provider/catalog.json` is embedded and version-checked at build time, not a runtime state file.
 
 ## constraints
 

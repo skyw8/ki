@@ -347,6 +347,16 @@ func TestRegistryRejectsNewerModelsFileVersion(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsNewerCredentialsFileVersion(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "credentials.json"), []byte(`{"version":99,"providers":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRegistry(home); !errors.Is(err, errUnsupportedVersion) {
+		t.Fatalf("newer credentials version error = %v, want %v", err, errUnsupportedVersion)
+	}
+}
+
 func TestRegistryMigratedVersionKeepsStrictFields(t *testing.T) {
 	home := t.TempDir()
 	doc := `{"version":1,"providers":{"openai":{"bogus":true}}}`

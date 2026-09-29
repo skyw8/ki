@@ -5,4 +5,5 @@
 // for every session. Built-in tool names are filtered when each request header
 // is built. PATCH writes then server.Reload() so catalogs rebuild.
 // message.busy is steer (default) or queue and does not require Reload.
+// Schema version and downgrade rules: docs/state.md.
 package toggles
