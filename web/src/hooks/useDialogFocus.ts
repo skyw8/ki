@@ -164,11 +164,14 @@ function register(entry: DialogEntry): void {
 
   // Why: move focus out of the dialog about to receive aria-hidden before
   // applying isolation. Chromium otherwise keeps its focused descendant in
-  // the accessibility tree. The animation-frame focus below is retained so
-  // descendants that run their own layout effects cannot steal final focus.
+  // the accessibility tree.
   if (hasUnderlyingDialog) focusEntry(entry)
   syncDialogIsolation()
-  entry.focusFrame = window.requestAnimationFrame(() => focusEntry(entry))
+  entry.focusFrame = window.requestAnimationFrame(() => {
+    // Why: the frame can run after the user has already moved to another
+    // field. Refocusing the initial input then redirects in-flight typing.
+    if (!entry.element.contains(document.activeElement)) focusEntry(entry)
+  })
 }
 
 function unregister(entry: DialogEntry): void {

@@ -136,6 +136,20 @@ for (const distance of [10, 30, 60]) test(`upward intent ${distance}px from the 
   }
   await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', 'reading')
   expect(Math.abs(await scroll.evaluate(el => el.scrollTop) - top)).toBeLessThanOrEqual(2)
+  // Completion changes the running-placeholder padding outside row sizes.
+  // Its layout reconciliation must preserve reading, even close to the tail.
+  await send({ type: 'message_end', seq: 6, entryId: 'final', message: { role: 'assistant', content: [{ type: 'text', text: 'First line' + '\n\nNew line'.repeat(5) }] } })
+  await expect(page.getByTestId('asst-actions')).toHaveCount(1)
+  const completionFrames = await scroll.evaluate(async el => {
+    const frames: { top: number; intent?: string }[] = []
+    for (let i = 0; i < 5; i++) {
+      await new Promise(resolve => requestAnimationFrame(resolve))
+      frames.push({ top: el.scrollTop, intent: el.querySelector<HTMLElement>('[data-scroll-intent]')?.dataset.scrollIntent })
+    }
+    return frames
+  })
+  expect(completionFrames.every(frame => frame.intent === 'reading'), JSON.stringify(completionFrames)).toBe(true)
+  expect(Math.max(...completionFrames.map(frame => Math.abs(frame.top - top)))).toBeLessThanOrEqual(2)
   await page.getByTestId('to-bottom').click()
   await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', 'following')
 })

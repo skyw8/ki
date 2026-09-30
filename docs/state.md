@@ -12,9 +12,16 @@
 | `workspaces.json` | `internal/workspace` | 1 | fail-fast：`Open` 返回错误 |
 | `toggles.json` | `internal/toggles` | 1 | best-effort：`Load` 回退默认值 |
 | `push-subscriptions.json` | `internal/push` | 1 | best-effort：`OpenStore` 返回空表（浏览器会重新订阅） |
+| session `agent.json` | `internal/tools` | 2 | 恢复该任务失败并记录 warning，绝不覆盖 |
+| session `queue.json` / `ext-queue.json` / `context-queue.json` | `internal/session` | 1 | 队列操作返回错误，绝不覆盖 |
 
 「fail-fast」用于读不到就无法正常工作的文件：宁可启动报错，也不静默丢字段。
 「best-effort」用于可恢复的旁路状态：加载失败退化为空/默认，但写入侧仍拒绝覆盖更新的文件。
+
+`agent.json` v2 将 task-only 通知标记替换为按 generation 的 delivery ledger，
+并把 pending 字符串改为带 `clientRequestId` 的输入对象。v1 迁移保留已消费 generation；
+旧的「已入队」标记不再代表已交付。队列文档为对象 envelope（`version` + `items`；
+context queue 另带 `next`），不再写裸数组。
 
 **不适用**（不要给它们加 `version`）：
 

@@ -12,4 +12,6 @@
 // toolResult. Tool results persist their completion timestamp and durationMs
 // for diagnostics and UI replay.
 // This package imports no other internal packages.
+// Message clientRequestId and completion identity are transport metadata,
+// persisted for reconciliation but excluded from provider prompts.
 package types

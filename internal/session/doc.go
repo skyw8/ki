@@ -13,9 +13,10 @@
 // rows always append; config.activeLeafId persists the selected branch across opens.
 // The main queue holds two lanes: human turns (Enqueue) and server-generated
 // turns such as agent completion notifications (EnqueueSystem; a notification
-// also records the agent task it reports through
-// EnqueueAgentNotification, which lets dispatch drop it when the parent has
-// already read that result). Dequeue serves
+// also records its task/generation completion identity). clientRequestId
+// survives queue dispatch and promotion; versioned queues use internal/state.
+// The server arbitrates completion ownership at actual persistence, not
+// enqueue. Dequeue serves
 // the oldest human turn first and FIFO within a lane, so a person waiting on a
 // reply never sits behind a system message.
 // SetLeaf moves the leaf without deleting old rows. ForkAt creates a new
@@ -31,8 +32,13 @@
 // metadata. Runtime-authored user-role messages (including subagent traffic)
 // are foldable replies, not turn boundaries. Compaction rows are metadata:
 // always kept visible and never counted toward the per-turn keep, so a
-// trailing checkpoint cannot fold the newest reply. HiddenCount counts nodes,
-// not entries: assistant messages, distinct tool call IDs,
+// trailing checkpoint cannot fold the newest reply.
+// Start/end lifecycle entries remain in compact bodies even without a
+// checkpoint: empty/failed outcomes must survive recovery. One paired status
+// row (or its committed checkpoint) renders outside folds; lifecycle progress
+// does not increment model steps. Later requests cannot finish an abandoned
+// earlier start.
+// HiddenCount counts nodes, not entries: assistant messages, distinct tool call IDs,
 // and runtime user messages. VisibleNodeIDs also includes always-visible
 // compaction/cancellation metadata and aborted assistants, so consumers must
 // classify those IDs before combining visible replies with HiddenCount.
@@ -44,6 +50,8 @@
 // per-turn entryCount (monotone within one selected branch), the latest assistant
 // completion boundary, and
 // only that assistant batch's tool states for sparse live reconciliation.
+// Runtime-only compact history starts at turn 1. Turn clocks anchor on the
+// first human (or first runtime user without a human), never later notifications.
 // Turn elapsed spans include assistant, tool-result and compaction completion;
 // cumulativeElapsedMs includes earlier turns outside the loaded compact page.
 // Detailed views keep count pagination. Trace projects the active leaf into

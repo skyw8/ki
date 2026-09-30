@@ -31,6 +31,9 @@
 // ready frame is the client's cue to refetch, which is also how a reconnect
 // catches up. The pushed agent_end carries no messages; the run's full event
 // log is replayed only to the client holding that run's SSE.
+// Run-owned and standalone compaction start/end events persist before publish;
+// lifecycleEntryId, parentId and timestamp match that entry, while entryId
+// continues to identify the committed checkpoint.
 // GET /v1/extensions lists the global extension catalog, optional extension
 // i18n resources, runtime status, and process-level extension UI projection.
 // Web Push (docs/push.md) is served by GET /v1/push/config (the VAPID public
@@ -109,8 +112,14 @@
 // completion notification uses the same Inbox while the parent run is live, so
 // it lands inside the turn that started the agent, and falls back to the durable
 // queue (system lane, tagged with its agent task) once that turn has ended.
-// Dispatch drops a queued notification whose task result the parent already read
-// or stopped. SSE
+// Live drains and queued turns arbitrate the same task/generation at actual
+// persistence; enqueue alone never consumes a completion. Setup/exit races
+// transfer an undrained Inbox atomically to the durable queue. Completion
+// acceptance is not published optimistically, since TaskOutput may still win.
+// Prompt clientRequestId is generated if absent and preserved in accepted
+// responses, steer events, queue promotion and persisted messages. Session
+// list/detail expose activeDescendantCount separately from own-run running;
+// occupy/release invalidate both without changing busy semantics. SSE
 // replays runState.evs and drains after done, emitting a `: ping` comment every
 // 15s while idle so a mobile or NAT path does not drop a connection that is
 // silent for a whole model round; GET /v1/events heartbeats the same way, and

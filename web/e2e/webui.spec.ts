@@ -281,14 +281,36 @@ test('provider settings supports a complete add and edit flow', async ({ page })
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('new-provider-dialog')).toHaveCount(0)
   await expect(page.getByTestId('settings')).toBeVisible()
+  // Queue an in-dialog focus handoff before React queues its deferred initial
+  // focus. A late frame must not send subsequent typing back to Provider ID.
+  await page.getByTestId('add-provider').evaluate(button => {
+    button.addEventListener('click', () => {
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLInputElement>('[data-testid="new-provider-form"] input[type="url"]')?.focus()
+      })
+    }, { capture: true, once: true })
+  })
   await page.getByTestId('add-provider').click()
 
   const create = page.getByTestId('new-provider-form')
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())))
+  await expect(create.getByLabel('Base URL')).toBeFocused()
   await create.getByLabel('供应商 ID').fill(providerID)
   await create.getByLabel('显示名称').fill('Playwright Provider')
   await create.getByLabel('Base URL').fill('https://example.test/v1')
-  await create.getByRole('combobox', { name: 'API 协议' }).click()
+  await expect(create.getByLabel('供应商 ID')).toHaveValue(providerID)
+  await expect(create.getByLabel('显示名称')).toHaveValue('Playwright Provider')
+  await expect(create.getByLabel('Base URL')).toHaveValue('https://example.test/v1')
+  const protocol = create.getByRole('combobox', { name: 'API 协议' })
+  await protocol.click()
+  await expect(protocol).toHaveAttribute('aria-expanded', 'true')
+  await create.getByLabel('Base URL').evaluate(input => input.dispatchEvent(new Event('scroll')))
+  await expect(protocol).toHaveAttribute('aria-expanded', 'true')
+  await create.evaluate(dialog => dialog.dispatchEvent(new Event('scroll')))
+  await expect(protocol).toHaveAttribute('aria-expanded', 'false')
+  await protocol.click()
   await page.getByRole('option', { name: 'Responses' }).click()
+  await expect(protocol).toHaveText('Responses')
   await create.getByLabel('首个模型 ID').fill('starter-model')
   await create.getByRole('button', { name: '创建供应商' }).click()
 
@@ -296,6 +318,7 @@ test('provider settings supports a complete add and edit flow', async ({ page })
   await expect(page.locator(`.provider-nav [data-provider-id="${providerID}"]`)).toHaveText('Playwright Provider')
   const connection = page.getByTestId('provider-connection-form')
   await expect(connection.getByLabel('供应商 ID')).toHaveValue(providerID)
+  await expect(connection.getByRole('combobox', { name: 'API 协议' })).toHaveText('Responses')
   await connection.getByLabel('显示名称').fill('Playwright Provider Edited')
   await connection.getByLabel('Base URL').fill('https://example.test/responses/v1')
   await connection.getByRole('button', { name: '保存更改' }).click()
@@ -566,7 +589,8 @@ test('edit branches in place with attachments and fork opens a new session', asy
 
   const before = await page.evaluate(async () => {
     const sessions = await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as Array<{ id: string; cwd: string; title?: string }>
-    return { count: sessions.length, cwd: sessions.find(s => (s.title ?? '').includes('branch-original'))!.cwd }
+    const original = sessions.find(s => (s.title ?? '').includes('branch-original'))!
+    return { count: sessions.length, cwd: original.cwd, id: original.id }
   })
   writeFileSync(join(before.cwd, 'edit-attachment.txt'), 'attachment marker')
   writeFileSync(join(before.cwd, 'preview.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'))
@@ -639,10 +663,15 @@ test('edit branches in place with attachments and fork opens a new session', asy
   await expect(editedBubble).toBeVisible()
   await expect(editedBubble).toContainText(edited)
 
+  const forkResponse = page.waitForResponse(response => response.url().endsWith(`/sessions/${before.id}/fork`) && response.request().method() === 'POST')
   await page.getByTestId('fork-msg').click()
+  const child = await (await forkResponse).json() as { id: string }
   await expect.poll(async () => page.evaluate(async () => {
     return (await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as unknown[]).length
   })).toBe(before.count + 1)
+  // The fork initially has identical text. Wait for navigation, not just its
+  // server-side creation, before exercising regeneration in the new session.
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('ki-focused-session') ?? '{}').session)).toBe(child.id)
   await expect(editedBubble).toContainText(edited)
 
   await page.getByTestId('regen-msg').click()
@@ -1034,6 +1063,11 @@ test('slash command Tab completion drives a live compaction row', async ({ page 
   await input.press('Enter')
   const row = page.getByTestId('compact-row')
   await expect(row).toBeVisible()
+  await expect(page.getByTestId('compact-btn')).toHaveClass(/empty/)
+  await expect(page.getByTestId('compact-btn')).toContainText('无需压缩')
+  await page.reload()
+  await page.getByTestId('session-row').first().click()
+  await expect(row).toHaveCount(1)
   await expect(page.getByTestId('compact-btn')).toHaveClass(/empty/)
   await expect(page.getByTestId('compact-btn')).toContainText('无需压缩')
 })

@@ -1,4 +1,6 @@
 import type { DisplayRevision } from '../lib/stream-metrics'
+import type { BodyKind } from '../lib/transcriptCoverage'
+import type { TurnId } from '../lib/transcriptIdentity'
 
 export type Usage = {
   input?: number
@@ -26,6 +28,8 @@ export type Content = {
 
 export type Message = {
   role: string
+  clientRequestId?: string
+  completion?: { taskId: string; generation: number }
   content?: Content[]
   origin?: string
 	external?: Record<string, string>
@@ -49,6 +53,8 @@ export type Message = {
 
 export type Entry = {
   type: string
+  /** Browser-only body quality; independent of the persisted entry identity. */
+  bodyKind?: BodyKind
   id: string
   parentId?: string
   /** Browser-only traversal bridge while preceding persisted metadata is absent. */
@@ -110,6 +116,8 @@ export type LoopEvent = {
 	runId?: string
 	external?: Record<string, string>
 	entryId?: string
+  /** Durable lifecycle row; entryId on compaction_end remains the checkpoint. */
+  lifecycleEntryId?: string
 	parentId?: string
 	timestamp?: number
 	durationMs?: number
@@ -178,6 +186,7 @@ export type SessionInfo = {
   forkMode?: 'flat' | 'tree'
   title: string
   running?: boolean
+  activeDescendantCount?: number
   workspaceId?: string
   pinned?: boolean
   pinnedAt?: string
@@ -316,11 +325,15 @@ export type SessionCommand = {
 
 export type QueuedItem = {
   id: string
+  clientRequestId?: string
+  completion?: { taskId: string; generation: number }
   content?: Content[]
   extension?: string
 }
 
-export type SessionDetail = SessionInfo & {
+/** Projected GET responses may carry only id plus the requested fields. */
+export type SessionDetail = Partial<SessionInfo> & {
+  id: string
   leafId?: string
   entries?: Entry[]
   compactTurns?: CompactTurn[]
@@ -452,12 +465,13 @@ export type Meta = {
 	thinkingEffort?: string
 }
 
-export type ChatNode =
-  | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string; truncated?: boolean }
+export type ChatNode = { turnId?: TurnId } & (
+  | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string; clientRequestId?: string; completion?: Message['completion']; external?: Record<string, string>; truncated?: boolean }
   | { kind: 'assistant'; id: string; renderKey?: string; display?: DisplayRevision; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; cancelReason?: string; cancelSource?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number; truncated?: boolean }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; startedAt?: number; running?: boolean; truncated?: boolean }
-  | { kind: 'compaction'; id: string; summary: string; ts?: number; tokensBefore?: number; running?: boolean; failed?: boolean; empty?: boolean; truncated?: boolean }
+  | { kind: 'compaction'; id: string; summary: string; ts?: number; tokensBefore?: number; running?: boolean; failed?: boolean; empty?: boolean; unknown?: boolean; truncated?: boolean; lifecycle?: boolean }
   | { kind: 'cancellation'; id: string; runId?: string; reason?: string; source?: string; ts?: number; truncated?: boolean }
+)
 
 export type PromptSnapshot = {
   provider?: string
@@ -476,6 +490,7 @@ export type PromptChange = {
 
 export type RequestView = {
   id: string
+  turnId?: TurnId
   turn: number
   step: number
   startedAt?: number
@@ -497,6 +512,7 @@ export type RequestView = {
 export type TrajKind = 'user' | 'assistant' | 'tool' | 'subtool' | 'compacted' | 'compact' | 'system' | 'context'
 
 export type TrajRecord = {
+  turnId?: TurnId
   truncated?: boolean
   id: string
 	parentId?: string
@@ -527,7 +543,8 @@ export type TrajRecord = {
 }
 
 export type ViewState = {
-  /** Changes on live events; guards snapshots requested before newer events. */
+  turnId?: TurnId
+  /** Live events and accepted local writes revoke older snapshot authority. */
   liveRevision: number
   /** Tool execution overlays until their immutable toolResult arrives. */
   toolStates?: Record<string, Extract<ChatNode, { kind: 'tool' }>>
@@ -553,7 +570,8 @@ export type ViewState = {
 	 */
 	entries: Entry[]
 	compactTurns?: CompactTurn[]
-	loadedTurnIds?: string[]
+	/** Complete node structure through each compact frontier; slim text may remain. */
+	loadedTurnIds?: TurnId[]
 	/**
 	 * Body-less rows for the whole tree. Fetched lazily (fields=index) because
 	 * carrying it on open made first paint wait for the full transcript; the

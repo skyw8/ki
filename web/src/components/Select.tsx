@@ -58,6 +58,9 @@ export function Select({ value, options, onChange, ariaLabel, className = '', te
       // Why: the capture listener also receives scroll events from this
       // portaled menu; closing here prevents its own scrollbar from moving.
       if (event.target instanceof Node && menu.current?.contains(event.target)) return
+      // An unrelated input can emit a delayed horizontal scroll on blur.
+      // Only scrolling an ancestor of the trigger changes this menu's anchor.
+      if (event.type === 'scroll' && event.target instanceof Node && !event.target.contains(trigger.current)) return
       setOpen(false)
     }
     document.addEventListener('pointerdown', closeOutside)

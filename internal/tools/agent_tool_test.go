@@ -27,7 +27,7 @@ func (*recordingAgentRuntime) Stop(string) (TaskSnapshot, error) {
 	return TaskSnapshot{}, nil
 }
 
-func (*recordingAgentRuntime) MarkNotified(string) {}
+func (*recordingAgentRuntime) ClaimResult(TaskSnapshot) bool { return true }
 
 func (*recordingAgentRuntime) Background(string) (TaskSnapshot, error) {
 	return TaskSnapshot{}, nil

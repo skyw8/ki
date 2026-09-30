@@ -38,8 +38,14 @@
 // keeps running: only an explicit run_in_background terminates it, and every
 // async result carries a note telling the caller where the completion lands).
 // A completion notification is delivered mid-turn when the parent run is still
-// alive and through the durable queue otherwise, and TaskOutput/TaskStop mark a
-// run whose result the caller already has so it is not reported twice. TaskStop
+// alive and through the durable queue otherwise. A task/generation ledger
+// arbitrates TaskOutput against actual notification persistence (not enqueue).
+// Explicit repeated reads remain available with read_only=true; timeout/cancel
+// do not claim results. A session-scoped reader may claim original delivery
+// only for its own child; other-session reads are read-only even before parent
+// delivery. TaskStop remains explicit global cancellation, not read inspection.
+// Metadata and queued follow-up IDs use internal/state.
+// There is no cross-file crash transaction with the parent transcript. TaskStop
 // is idempotent for terminal tasks, which may finish concurrently with a stop.
 // TaskOutput and TaskStop use a composite task store so shell and agent tasks
 // share the Claude Code-shaped lifecycle schema. File

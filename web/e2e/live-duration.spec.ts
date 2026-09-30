@@ -37,7 +37,7 @@ test('tool and turn durations tick live, then settle in place', async ({ page })
 
   // Settling replaces both values in place with the reported duration.
   await send({ type: 'tool_execution_end', runId: 'live', seq: 5, toolCallId: 'tc1', toolName: 'Bash', isError: false, durationMs: 4_200, result: 'done' })
-  await expect(toolRow.getByTestId('tool-duration')).toHaveText('4.20 s')
+  await expect(toolRow.getByTestId('tool-duration')).toHaveText('4.2s')
   await send({ type: 'turn_end', runId: 'live', seq: 6, timestamp: now, durationMs: 5_000, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } })
   await expect(divider).not.toHaveAttribute('data-live', 'true')
   await expect(divider.getByTestId('turn-elapsed')).toContainText('耗时')

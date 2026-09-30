@@ -230,6 +230,20 @@ func TestRunStripsImagesForTextOnlyModel(t *testing.T) {
 		}
 	}
 }
+
+func TestRunStripsMessageTransportIdentityFromProvider(t *testing.T) {
+	stream := &captureMessages{}
+	message := types.Message{Role: "user", ClientRequestID: "request",
+		Completion: &types.CompletionIdentity{TaskID: "child", Generation: 3},
+		Content:    []types.Content{{Type: "text", Text: "same provider text"}}}
+	_, err := RunMessage(t.Context(), message, nil, Config{Streamer: stream}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.got) != 1 || stream.got[0].ClientRequestID != "" || stream.got[0].Completion != nil || stream.got[0].Text() != "same provider text" {
+		t.Fatalf("transport metadata reached provider: %+v", stream.got)
+	}
+}
 func (oneTool) Execute(_ context.Context, _ map[string]any) ToolResult {
 	return ToolResult{Content: []types.Content{{Type: "text", Text: "file-ok"}}, Details: map[string]any{"diff": "client-only"}}
 }

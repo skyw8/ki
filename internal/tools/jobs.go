@@ -44,25 +44,30 @@ const (
 
 // TaskSnapshot is the stable, model-facing view of a background task.
 type TaskSnapshot struct {
-	TaskID       string     `json:"task_id"`
-	TaskType     string     `json:"task_type"`
-	SessionID    string     `json:"session_id,omitempty"`
-	Status       TaskStatus `json:"status"`
-	Description  string     `json:"description,omitempty"`
-	Command      string     `json:"command,omitempty"`
-	OutputFile   string     `json:"output_file,omitempty"`
-	PID          int        `json:"pid,omitzero"`
-	Output       string     `json:"output,omitempty"`
-	ExitCode     *int       `json:"exitCode,omitempty"`
-	Error        string     `json:"error,omitempty"`
-	Prompt       string     `json:"prompt,omitempty"`
-	Result       string     `json:"result,omitempty"`
-	ToolUseCount int        `json:"tool_use_count,omitzero"`
-	TotalTokens  int        `json:"total_tokens,omitzero"`
-	Bytes        int64      `json:"bytes,omitzero"`
-	Lines        int64      `json:"lines,omitzero"`
-	StartedAt    time.Time  `json:"started_at,omitzero"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	// ParentSessionID is host-private delivery ownership. A sibling may inspect
+	// the output, but that read must not consume the real parent's notification.
+	ParentSessionID string     `json:"-"`
+	ClientRequestID string     `json:"-"`
+	Generation      uint64     `json:"generation,omitzero"`
+	TaskID          string     `json:"task_id"`
+	TaskType        string     `json:"task_type"`
+	SessionID       string     `json:"session_id,omitempty"`
+	Status          TaskStatus `json:"status"`
+	Description     string     `json:"description,omitempty"`
+	Command         string     `json:"command,omitempty"`
+	OutputFile      string     `json:"output_file,omitempty"`
+	PID             int        `json:"pid,omitzero"`
+	Output          string     `json:"output,omitempty"`
+	ExitCode        *int       `json:"exitCode,omitempty"`
+	Error           string     `json:"error,omitempty"`
+	Prompt          string     `json:"prompt,omitempty"`
+	Result          string     `json:"result,omitempty"`
+	ToolUseCount    int        `json:"tool_use_count,omitzero"`
+	TotalTokens     int        `json:"total_tokens,omitzero"`
+	Bytes           int64      `json:"bytes,omitzero"`
+	Lines           int64      `json:"lines,omitzero"`
+	StartedAt       time.Time  `json:"started_at,omitzero"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
 }
 
 // TaskUpdate is emitted while a task writes output. Delta contains only the
@@ -448,9 +453,8 @@ func (s *JobStore) Stop(id string) (TaskSnapshot, error) {
 	return j.snapshot(), nil
 }
 
-// MarkNotified is the agent-only half of the TaskStore contract: a shell task
-// has no completion notification to suppress.
-func (s *JobStore) MarkNotified(string) {}
+// ClaimResult is a no-op for shell tasks, which have no completion notification.
+func (s *JobStore) ClaimResult(TaskSnapshot) bool { return true }
 
 func isTerminal(status TaskStatus) bool {
 	return status == TaskCompleted || status == TaskFailed || status == TaskKilled || status == TaskInterrupted

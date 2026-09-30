@@ -134,6 +134,7 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) loop.ToolRe
 	case waitErr != nil:
 		return errRes(waitErr.Error())
 	}
+	t.runtime.ClaimResult(snapshot)
 	if snapshot.Status != TaskCompleted {
 		message := snapshot.Error
 		if message == "" {

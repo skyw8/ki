@@ -19,14 +19,14 @@ test('requestTitle prefers the first line then attachment names', () => {
 
 test('userRequests walks the active path and drops optimistic duplicates', () => {
   const nodes: ChatNode[] = [
-    { kind: 'user', id: 'opt-user-1', text: 'same turn', content: [] },
-    { kind: 'user', id: 'u1', text: 'same turn', content: [] },
+    { kind: 'user', id: 'opt-user-1', clientRequestId: 'request-1', text: 'same turn', content: [] },
+    { kind: 'user', id: 'u1', clientRequestId: 'request-1', text: 'same turn', content: [] },
     { kind: 'assistant', id: 'a1', text: 'ok' },
     { kind: 'user', id: 'u2', text: 'next\nline', content: [] },
     { kind: 'tool', id: 't1', name: 'Bash' },
   ]
   const entries: Entry[] = [
-    { type: 'message', id: 'u1', parentId: '', message: { role: 'user', content: [{ type: 'text', text: 'same turn' }] } },
+    { type: 'message', id: 'u1', parentId: '', message: { role: 'user', clientRequestId: 'request-1', content: [{ type: 'text', text: 'same turn' }] } },
     { type: 'message', id: 'a1', parentId: 'u1', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } },
     { type: 'message', id: 'u2', parentId: 'a1', message: { role: 'user', content: [{ type: 'text', text: 'next\nline' }] } },
   ]

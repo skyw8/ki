@@ -170,26 +170,46 @@ test('confirmed prompt keeps cumulative live elapsed aligned with its settled va
 })
 
 
-test('keep zero retains one accurate divider through streaming, settlement and fold toggles', async ({ page }) => {
+test('keep zero retains one accurate divider through streaming, settlement and fold toggles', async ({ page, browserName }) => {
   const f = await seed(page, `zero-count-${Date.now()}`)
   const send = await open(page, f.id, f.title, '0')
   await expect(page.getByTestId('turn-divider')).toHaveCount(1)
   await expect(page.getByTestId('turn-tools')).toContainText('0/40')
+  await expect(page.getByTestId('session-stats')).toContainText('1 轮 · 40 步')
   await send({ type: 'message_start', runId: 'zero', seq: 1, message: { role: 'assistant', timestamp: Date.now() } })
   await expect(page.getByTestId('turn-divider')).toHaveAttribute('data-live', 'true')
   await send({ type: 'message_end', runId: 'zero', seq: 2, entryId: 'a-zero', message: { role: 'assistant', timestamp: Date.now(), content: [{ type: 'text', text: 'new zero reply' }] } })
   await expect(page.getByTestId('turn-divider')).toHaveCount(1)
   await expect(page.getByTestId('turn-divider')).not.toHaveAttribute('data-live')
   await expect(page.getByTestId('turn-divider')).toContainText('41 步')
+  await expect(page.getByTestId('session-stats')).toContainText('1 轮 · 41 步')
   await expect(page.getByTestId('turn-tools')).toContainText('0/40')
   await page.getByTestId('fold-row-btn').click()
   await expect(page.getByTestId('turn-divider')).toHaveCount(1)
   await expect(page.getByTestId('turn-tools')).toContainText('0/40')
+  // Expanding downloads the forty old steps; the composer must not add that
+  // already-counted snapshot prefix again on top of the one live completion.
+  await expect(page.getByTestId('session-stats')).toContainText('1 轮 · 41 步')
   // Expanding the newest turn intentionally keeps its tail pinned. The fold
   // is now outside the virtual window; scroll to it as a reader would.
+  const tailOffset = await page.getByTestId('chat-scroll').evaluate(el => el.scrollTop)
   await page.getByTestId('chat-scroll').hover()
   await page.mouse.wheel(0, -100_000)
+  await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', 'reading')
+  await expect.poll(() => page.getByTestId('chat-scroll').evaluate(el => el.scrollTop)).toBeLessThan(tailOffset - 1)
+  // Firefox caps even a -100000px native wheel to one page (456px in the
+  // matching plain overflow control). Continue with bounded native gestures,
+  // never a scrollTop assignment, and require progress from every gesture.
+  if (browserName === 'firefox') {
+    for (let i = 0; i < 24 && !await page.getByTestId('fold-row-btn').isVisible(); i++) {
+      const before = await page.getByTestId('chat-scroll').evaluate(el => el.scrollTop)
+      await page.mouse.wheel(0, -400)
+      await expect.poll(() => page.getByTestId('chat-scroll').evaluate(el => el.scrollTop)).toBeLessThan(before - 1)
+    }
+  }
+  await expect(page.getByTestId('fold-row-btn')).toBeVisible()
   await page.getByTestId('fold-row-btn').click()
   await expect(page.getByTestId('turn-divider')).toHaveCount(1)
   await expect(page.getByTestId('turn-divider')).toContainText('41 步')
+  await expect(page.getByTestId('session-stats')).toContainText('1 轮 · 41 步')
 })

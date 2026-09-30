@@ -1,4 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
+import { randomUUID } from 'node:crypto'
+import { openStream } from './stream-fixture'
 
 // Each browser test passed alone with its own server and home. Keep that
 // isolation when splitting this file so independent scenarios overlap safely.
@@ -22,6 +24,35 @@ async function sendPrompt(page: Page, text: string) {
   await input.fill(text)
   await page.getByTestId('composer-send').click()
 }
+
+test('offscreen stream blocks keep their source, format on visibility and finish without losing markers', async ({ page }) => {
+  await openStream(page, 0)
+  const text = Array.from({ length: 180 }, (_, i) => `Paragraph ${i} **formatted-marker** ${'body '.repeat(35)}\n\n`).join('')
+  const send = (event: unknown) => page.evaluate(event => (window as unknown as { streamSend: (event: unknown) => void }).streamSend(event), event)
+  await send({ type: 'message_update', runId: 'budget', seq: 1, messageStream: 1, message: { role: 'assistant', content: [{ type: 'text', text: text.slice(0, text.indexOf('\n\n') + 2) }] } })
+  const root = page.locator('[data-stream-seq]')
+  await expect(root).toContainText('Paragraph 0')
+  await page.evaluate(() => { (window as unknown as { promotedPiece: Element | null }).promotedPiece = document.querySelector('[data-md-block]') })
+  await send({ type: 'message_update', runId: 'budget', seq: 2, messageStream: 1, message: { role: 'assistant', content: [{ type: 'text', text }] } })
+  await expect(root).toContainText('Paragraph 179')
+  expect(await page.evaluate(() => (window as unknown as { promotedPiece: Element }).promotedPiece === document.querySelector('[data-md-block]'))).toBe(true)
+  await page.evaluate(() => { (window as unknown as { markdownRoot: Element | null }).markdownRoot = document.querySelector('[data-stream-seq]') })
+  const first = root.locator('[data-md-block]').first()
+  // Give the shared queue multiple turns: unseen sealed blocks must not use
+  // those turns while a live tail needs the same main-thread budget.
+  await page.waitForTimeout(500)
+  await expect(first).toHaveAttribute('data-md-pending', '1')
+  await expect(first.locator('[data-md-tail]')).toContainText('Paragraph 0 **formatted-marker**')
+  expect((await root.textContent())?.match(/Paragraph \d+/g)?.length).toBe(180)
+  await page.getByTestId('chat-scroll').dispatchEvent('wheel', { deltaY: -1 })
+  await page.getByTestId('chat-scroll').evaluate(el => { el.scrollTop = 0 })
+  await expect(first.locator('strong').first()).toHaveText('formatted-marker')
+  await send({ type: 'message_end', runId: 'budget', seq: 3, entryId: 'final', message: { role: 'assistant', content: [{ type: 'text', text }] } })
+  await expect(root.locator('[data-md-pending]')).toHaveCount(0)
+  await expect(root.locator('strong')).toHaveCount(180)
+  expect((await root.textContent())?.match(/Paragraph \d+/g)?.length).toBe(180)
+  expect(await page.evaluate(() => (window as unknown as { markdownRoot: Element }).markdownRoot === document.querySelector('[data-stream-seq]'))).toBe(true)
+})
 
 test('keeps the text moving while it streams', async ({ page }) => {
   test.setTimeout(60_000)
@@ -50,31 +81,64 @@ test('keeps the text moving while it streams', async ({ page }) => {
 
 test('following the tail stays pinned while the newest message grows', async ({ page }) => {
   test.setTimeout(60_000)
-  await page.goto('/')
-  await expect(page.getByTestId('hero')).toBeVisible()
-  await sendPrompt(page, 'e2e-stream-200')
+  await openStream(page, 0)
   await expect(page.getByTestId('chat-scroll')).toBeVisible()
-  // The newest message grows to ~26 KiB while the viewport follows it. Sample
-  // the distance from the tail across the growth: each measured reflow must keep
-  // the bottom pinned, so a follow that is only pinned once (or that the growth
-  // un-arms) shows up here as a drifting/lurching gap.
-  const gaps = await page.evaluate(async () => {
+  // Why: the fake's 200-item stream lasts only ~625ms. Under parallel load,
+  // delayed 50ms timers can collect five samples even with every gap at zero.
+  // Acknowledge each growing prefix before releasing the next, so coverage is
+  // distinct overflowing heights, not scheduler speed. Sample every frame while
+  // awaiting each prefix AND at its checkpoint: eventual landing cannot hide a
+  // drifting/lurching gap. Responsiveness has separate stream/perf budgets.
+  const { gaps, heights, failures } = await page.evaluate(async () => {
+    const send = (window as unknown as { streamSend: (event: unknown) => void }).streamSend
     const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
     const gaps: number[] = []
+    const heights: number[] = []
+    const failures: unknown[] = []
     const deadline = Date.now() + 15_000
-    while (Date.now() < deadline && !(el.textContent ?? '').includes('item 199')) {
-      gaps.push(Math.round(Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)))
-      await new Promise(resolve => setTimeout(resolve, 50))
+    const frame = () => new Promise<{ height: number; overflowing: boolean }>(resolve => requestAnimationFrame(() => {
+      const height = el.scrollHeight
+      const gap = Math.round(Math.max(0, height - el.clientHeight - el.scrollTop))
+      gaps.push(gap)
+      if (gap > 8) failures.push({
+        gap, height, viewport: el.clientHeight, offset: el.scrollTop,
+        seq: el.querySelector<HTMLElement>('[data-stream-seq]')?.dataset.streamSeq,
+        source: !!el.querySelector('[data-md-tail]'), running: !!el.querySelector('.status-line'),
+        rows: [...el.querySelectorAll<HTMLElement>('[data-index]')].map(row => ({ id: row.dataset.itemKey, height: row.getBoundingClientRect().height, start: row.style.transform })),
+      })
+      resolve({ height, overflowing: height > el.clientHeight })
+    }))
+    const acknowledge = async (ready: () => boolean) => {
+      do {
+        await frame()
+        if (Date.now() >= deadline) throw new Error('stream checkpoint did not render within 15s')
+      } while (!ready())
+      return frame()
     }
-    return gaps
+    let text = ''
+    for (let checkpoint = 1; checkpoint <= 10; checkpoint++) {
+      for (let i = (checkpoint - 1) * 20; i < checkpoint * 20; i++) {
+        text += `- item ${i} ${'x'.repeat(110)}\n`
+      }
+      send({ type: 'message_update', runId: 'follow', seq: checkpoint, messageStream: 1, message: { role: 'assistant', content: [{ type: 'text', text }] } })
+      const geometry = await acknowledge(() => (el.querySelector('[data-stream-seq]')?.textContent ?? '').includes(`item ${checkpoint * 20 - 1} `))
+      if (geometry.overflowing) heights.push(geometry.height)
+    }
+    send({ type: 'message_end', runId: 'follow', seq: 11, entryId: 'final', message: { role: 'assistant', content: [{ type: 'text', text }] } })
+    await acknowledge(() => el.querySelectorAll('[data-stream-seq] li').length === 200)
+    return { gaps, heights, failures }
   })
-  expect(gaps.length, 'grew for long enough to sample the follow').toBeGreaterThan(5)
-  expect(Math.max(...gaps), `distance from the tail while growing: ${gaps.join(',')}`).toBeLessThanOrEqual(8)
+  expect(gaps.length, 'sampled the follow throughout growth').toBeGreaterThan(5)
+  expect(new Set(heights).size, `distinct overflowing checkpoint heights: ${heights.join(',')}`).toBeGreaterThan(5)
+  expect(Math.max(...gaps), `distance from the tail while growing: ${gaps.join(',')}; failures: ${JSON.stringify(failures)}`).toBeLessThanOrEqual(8)
 })
 
 test('stopping generation retains already visible text and its mounted root', async ({ page }) => {
   await page.goto('/')
-  await sendPrompt(page, 'e2e-blocks-400')
+  // Multiple browser projects share this invocation's server. Reopen this
+  // stopped session, not another project's identically scripted stream.
+  const prompt = `e2e-blocks-400 stop-${randomUUID()}`
+  await sendPrompt(page, prompt)
   await expect(page.getByTestId('assistant-message')).toContainText('Paragraph 20')
   await page.evaluate(() => { (window as unknown as { stoppedRoot: Element | null }).stoppedRoot = document.querySelector('[data-stream-seq]') })
   await page.getByTestId('composer-stop').click()
@@ -91,7 +155,10 @@ test('stopping generation retains already visible text and its mounted root', as
   const persisted = await page.evaluate(async id => fetch(`/v1/sessions/${id}`).then(response => response.json()), sessionId)
   expect(JSON.stringify(persisted)).toContain('"type":"run_aborted"')
   await page.reload()
-  await page.getByTestId('session-title').filter({ hasText: 'e2e-blocks-400' }).click()
+  await expect(page.locator('main.main')).toBeVisible()
+  const navigation = page.getByTestId('mobile-nav-toggle')
+  if (await navigation.isVisible() && await navigation.getAttribute('aria-expanded') === 'false') await navigation.click()
+  await page.getByTestId('session-title').filter({ hasText: prompt }).click()
   await expect(page.getByTestId('cancel-row')).toHaveText(/Stopped by user|已由用户停止/)
   await expect(page.getByTestId('assistant-message')).not.toContainText('context canceled')
 })
@@ -129,19 +196,29 @@ test('paragraph-shaped streams parse each block once, not per delta', async ({ p
 
 test('an unbroken block is painted until it closes, then parsed', async ({ page }) => {
   test.setTimeout(120_000)
-  await page.goto('/')
-  await expect(page.getByTestId('hero')).toBeVisible()
-  await sendPrompt(page, 'e2e-stream-200')
-  await expect(page.getByTestId('chat-scroll')).toBeVisible()
+  await openStream(page, 0)
+  const lines = Array.from({ length: 200 }, (_, i) => `- item ${i} ${'x'.repeat(110)}\n`)
+  const send = (event: unknown) => page.evaluate(event => (window as unknown as { streamSend: (event: unknown) => void }).streamSend(event), event)
+  // Why: the wall-clock fake can finish between the tail-count and tail-text
+  // assertions (WebKit correctly formatted all 200 items in that round trip).
+  // Hold each source checkpoint until inspected, then explicitly close it.
+  await send({ type: 'message_update', runId: 'unbroken', seq: 1, messageStream: 1, message: { role: 'assistant', content: [{ type: 'text', text: lines.slice(0, 61).join('') }] } })
   // One ~26 KiB list block with no blank line: nothing can settle while it grows,
   // so past the tail limit it is painted as source rather than re-parsed...
   await expect(page.getByTestId('assistant-message').first()).toContainText('item 60', { timeout: 60_000 })
   await expect(page.locator('[data-md-tail]')).toHaveCount(1)
   await expect(page.locator('[data-md-tail]')).toContainText('- item 60')
-  // ...and it is parsed once when the run ends.
+  await expect(page.getByTestId('assistant-message').first().locator('li')).toHaveCount(0)
+  const text = lines.join('')
+  await send({ type: 'message_update', runId: 'unbroken', seq: 2, messageStream: 1, message: { role: 'assistant', content: [{ type: 'text', text }] } })
   await expect(page.getByTestId('assistant-message').first()).toContainText('item 199', { timeout: 60_000 })
+  await expect(page.locator('[data-md-tail]')).toHaveCount(1)
+  await expect(page.locator('[data-md-tail]')).toContainText('- item 199')
+  await expect(page.getByTestId('assistant-message').first().locator('li')).toHaveCount(0)
+  // ...and it is parsed once when the run ends.
+  await send({ type: 'message_end', runId: 'unbroken', seq: 3, entryId: 'final', message: { role: 'assistant', content: [{ type: 'text', text }] } })
   await expect(page.locator('[data-md-tail]')).toHaveCount(0)
   await expect(page.getByTestId('assistant-message').first().locator('li')).toHaveCount(200)
-  const text = (await page.getByTestId('assistant-message').first().textContent()) ?? ''
-  expect(text.match(/item \d+ /g)?.length).toBe(200)
+  const rendered = (await page.getByTestId('assistant-message').first().textContent()) ?? ''
+  expect(rendered.match(/item \d+ /g)?.length).toBe(200)
 })

@@ -1,3 +1,5 @@
+import { startTransition } from 'react'
+
 // Admit one React parse per frame. Independent idle callbacks used to wake all
 // newly mounted rows at once, moving the same long task one frame later.
 const tasks = new Set<{ run: () => void; element: () => HTMLElement | null; priority: number; queued: number }>()
@@ -18,7 +20,10 @@ function schedule() {
     if (next) {
       tasks.delete(next)
       const started = performance.now()
-      next.run()
+      // Formatting is optional work over already-visible complete source.
+      // Keep it interruptible by the external store's urgent text commits;
+      // default-priority formatting can otherwise join their synchronous work.
+      startTransition(next.run)
       // React's commit may follow the callback. Observe the whole turn before
       // admitting another parse; expensive work gets a paint opportunity first.
       frame = requestAnimationFrame(() => {

@@ -18,15 +18,13 @@ const taskOutputPrompt = `Retrieves output and status for a background task star
 Use block=false for an immediate snapshot. Use block=true to wait for completion up to timeout milliseconds. For a running task, output contains the captured output so far and output_file can be read with Read.`
 
 // TaskStore is the common lifecycle contract for shell and agent tasks.
-// MarkNotified belongs to the agent half of the store (a shell task has no
-// completion notification), so the shell implementation is a no-op.
+// Result claims are generation-specific; shell tasks have no notification.
 type TaskStore interface {
 	Get(key string) (TaskSnapshot, bool)
 	Wait(ctx context.Context, id string) (TaskSnapshot, error)
 	Stop(id string) (TaskSnapshot, error)
-	// MarkNotified records that the current run's result has been read, so its
-	// background completion notification is skipped.
-	MarkNotified(id string)
+	// ClaimResult returns true only for the first original delivery.
+	ClaimResult(TaskSnapshot) bool
 }
 
 type taskOutputTool struct{ tasks TaskStore }
@@ -50,6 +48,7 @@ func (t taskOutputTool) Validate(args map[string]any) error {
 }
 
 type taskOutputResponse struct {
+	ReadOnly        bool          `json:"read_only,omitempty"`
 	RetrievalStatus string        `json:"retrieval_status"`
 	Task            *TaskSnapshot `json:"task"`
 }
@@ -101,16 +100,26 @@ func (t taskOutputTool) Execute(ctx context.Context, args map[string]any) loop.T
 			status = "timeout"
 		}
 	}
+	// An already-terminal Get can bypass Wait. A cancelled caller must not
+	// consume that completion merely because its last snapshot was available.
+	if ctx.Err() != nil {
+		details := detailsForTask(snapshot, "cancelled")
+		details.Cancelled = true
+		res := errRes("TaskOutput aborted")
+		res.Details = details
+		return res
+	}
+	readOnly := false
 	if isTerminal(snapshot.Status) {
 		// Why: the caller now holds this result, so the agent completion
 		// notification would only spend a parent turn re-reporting it. TaskStop
 		// marks the same fact on the store's stop path.
-		t.tasks.MarkNotified(id)
+		readOnly = !t.tasks.ClaimResult(snapshot)
 	}
 	details := detailsForTask(snapshot, status)
 	details.TimedOut = status == "timeout"
 	snapshot, _ = boundedTaskSnapshot(snapshot)
-	return taskResult(taskOutputResponse{RetrievalStatus: status, Task: &snapshot}, details)
+	return taskResult(taskOutputResponse{ReadOnly: readOnly, RetrievalStatus: status, Task: &snapshot}, details)
 }
 
 type taskStopTool struct{ tasks TaskStore }
@@ -147,7 +156,7 @@ func (t taskStopTool) Execute(_ context.Context, args map[string]any) loop.ToolR
 		if errors.Is(err, errTaskNotRunning) {
 			// Completion can race with TaskStop. The requested end state already
 			// holds, so report an idempotent success instead of a false failure.
-			t.tasks.MarkNotified(id)
+			t.tasks.ClaimResult(snapshot)
 			return taskResult(map[string]any{
 				"message":   fmt.Sprintf("Task %s already finished", id),
 				"task_id":   snapshot.TaskID,

@@ -6,12 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ki/internal/idgen"
+	"ki/internal/state"
+	"ki/internal/types"
+	"log/slog"
 )
 
 // AgentRun executes one run of a logical agent. The logical agent ID remains
@@ -31,6 +35,7 @@ const MaxAgentDepth = 3
 // AgentRequest describes one child agent launch. The parent session owns the
 // child edge; the child starts from a clean context and only receives Prompt.
 type AgentRequest struct {
+	ClientRequestID string
 	Description     string
 	Prompt          string
 	RunInBackground bool
@@ -97,30 +102,36 @@ type AgentMessenger interface {
 	SendAgentMessage(context.Context, AgentMessageRequest) (AgentMessageResult, error)
 }
 
+// AgentInput keeps a follow-up's identity stable while it waits for a new run.
+type AgentInput struct {
+	Prompt          string `json:"prompt"`
+	ClientRequestID string `json:"clientRequestId"`
+}
+
+const agentMetadataVersion = 2
+
 // AgentMetadata is the durable logical-agent record. Process handles such as
 // cancel functions and goroutines are deliberately absent; a running record
 // is marked interrupted when a new server rebuilds the index.
 type AgentMetadata struct {
-	Version         int        `json:"version"`
-	TaskID          string     `json:"task_id"`
-	SessionID       string     `json:"session_id"`
-	ParentSessionID string     `json:"parent_session_id,omitempty"`
-	Description     string     `json:"description,omitempty"`
-	Prompt          string     `json:"prompt,omitempty"`
-	OutputFile      string     `json:"output_file,omitempty"`
-	Status          TaskStatus `json:"status"`
-	Result          string     `json:"result,omitempty"`
-	Error           string     `json:"error,omitempty"`
-	ToolUseCount    int        `json:"tool_use_count,omitzero"`
-	TotalTokens     int        `json:"total_tokens,omitzero"`
-	StartedAt       time.Time  `json:"started_at,omitzero"`
-	FinishedAt      *time.Time `json:"finished_at,omitempty"`
-	Pending         []string   `json:"pending,omitempty"`
-	RunCount        uint64     `json:"run_count"`
-	NotifiedRun     uint64     `json:"notified_run,omitzero"`
-	// ConsumedRun is the run whose result the caller already read, so no
-	// completion notification is owed for it.
-	ConsumedRun uint64 `json:"consumed_run,omitzero"`
+	ClientRequestID string            `json:"clientRequestId,omitempty"`
+	Version         int               `json:"version"`
+	TaskID          string            `json:"task_id"`
+	SessionID       string            `json:"session_id"`
+	ParentSessionID string            `json:"parent_session_id,omitempty"`
+	Description     string            `json:"description,omitempty"`
+	Prompt          string            `json:"prompt,omitempty"`
+	OutputFile      string            `json:"output_file,omitempty"`
+	Status          TaskStatus        `json:"status"`
+	Result          string            `json:"result,omitempty"`
+	Error           string            `json:"error,omitempty"`
+	ToolUseCount    int               `json:"tool_use_count,omitzero"`
+	TotalTokens     int               `json:"total_tokens,omitzero"`
+	StartedAt       time.Time         `json:"started_at,omitzero"`
+	FinishedAt      *time.Time        `json:"finished_at,omitempty"`
+	Pending         []AgentInput      `json:"pending,omitempty"`
+	RunCount        uint64            `json:"run_count"`
+	Deliveries      map[uint64]string `json:"deliveries,omitempty"`
 }
 
 var (
@@ -161,10 +172,10 @@ type agentTask struct {
 	metadataPath    string
 	parentSessionID string
 	backgrounded    bool
-	pending         []string
+	pending         []AgentInput
 	runCount        uint64
-	notifiedRun     uint64
-	consumedRun     uint64
+	deliveries      map[uint64]string
+	result          *TaskSnapshot
 }
 
 // NewAgentStore creates a process-scoped child-agent registry.
@@ -181,7 +192,8 @@ func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile str
 	task := &agentTask{
 		snap: TaskSnapshot{
 			TaskID: id, TaskType: "local_agent", Status: TaskPending,
-			Description: req.Description, Command: req.Prompt,
+			ParentSessionID: req.ParentSessionID,
+			Description:     req.Description, Command: req.Prompt,
 			Prompt: req.Prompt, SessionID: req.SessionID,
 			OutputFile: outputFile,
 		},
@@ -200,7 +212,7 @@ func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile str
 
 	// Why: startRun detaches the run context from the caller; the Agent tool owns
 	// the foreground/background decision after the task is registered.
-	if err := s.startRun(ctx, task, req.Prompt, req.RunInBackground); err != nil {
+	if err := s.startRun(ctx, task, req.Prompt, req.RunInBackground, req.ClientRequestID); err != nil {
 		s.mu.Lock()
 		delete(s.tasks, id)
 		s.mu.Unlock()
@@ -209,7 +221,14 @@ func (s *AgentStore) Start(ctx context.Context, req AgentRequest, outputFile str
 	return AgentLaunch{TaskID: id, SessionID: req.SessionID, Description: req.Description, Prompt: req.Prompt, OutputFile: outputFile}, nil
 }
 
-func (s *AgentStore) startRun(ctx context.Context, task *agentTask, prompt string, background bool) error {
+func (s *AgentStore) startRun(ctx context.Context, task *agentTask, prompt string, background bool, requestID string) error {
+	if requestID == "" {
+		var err error
+		requestID, err = idgen.NewV7()
+		if err != nil {
+			return err
+		}
+	}
 	s.mu.RLock()
 	if s.closed {
 		s.mu.RUnlock()
@@ -235,10 +254,14 @@ func (s *AgentStore) startRun(ctx context.Context, task *agentTask, prompt strin
 		return errAgentBusy
 	}
 	task.runCount++
+	task.snap.Generation = task.runCount
+	task.snap.ClientRequestID = requestID
+	task.backgrounded = background
 	task.active = true
 	task.cancel = cancel
 	task.runDone = make(chan struct{})
 	task.done = make(chan struct{})
+	task.result = new(TaskSnapshot)
 	task.doneClosed = false
 	task.snap.Status = TaskRunning
 	task.snap.Prompt = prompt
@@ -266,7 +289,7 @@ func (s *AgentStore) executeRun(ctx context.Context, task *agentTask, generation
 	defer close(runDone)
 	completion, err := run(ctx, task.snap.TaskID, prompt, background)
 
-	var pending string
+	var pending AgentInput
 	task.mu.Lock()
 	if generation != task.runCount {
 		task.active = false
@@ -300,13 +323,13 @@ func (s *AgentStore) executeRun(ctx context.Context, task *agentTask, generation
 	task.persistLocked()
 	task.mu.Unlock()
 
-	if pending != "" {
+	if pending.Prompt != "" {
 		// A message that arrived at the run boundary is a new detached run on
 		// the same logical agent, not a new fork or agent ID.
-		if err := s.startRun(ctx, task, pending, true); err != nil {
+		if err := s.startRun(ctx, task, pending.Prompt, true, pending.ClientRequestID); err != nil {
 			task.mu.Lock()
 			if !task.removed {
-				task.pending = append([]string{pending}, task.pending...)
+				task.pending = append([]AgentInput{pending}, task.pending...)
 				task.persistLocked()
 			}
 			task.mu.Unlock()
@@ -316,6 +339,9 @@ func (s *AgentStore) executeRun(ctx context.Context, task *agentTask, generation
 
 func (t *agentTask) closeDoneLocked() {
 	if !t.doneClosed {
+		if t.result != nil {
+			*t.result = t.snap
+		}
 		close(t.done)
 		t.doneClosed = true
 	}
@@ -323,13 +349,13 @@ func (t *agentTask) closeDoneLocked() {
 
 func (t *agentTask) metadataLocked() AgentMetadata {
 	return AgentMetadata{
-		Version: 1, TaskID: t.snap.TaskID, SessionID: t.snap.SessionID,
+		Version: agentMetadataVersion, TaskID: t.snap.TaskID, SessionID: t.snap.SessionID,
 		ParentSessionID: t.parentSessionID, Description: t.snap.Description,
-		Prompt: t.snap.Prompt, OutputFile: t.snap.OutputFile, Status: t.snap.Status, Result: t.snap.Result,
+		ClientRequestID: t.snap.ClientRequestID, Prompt: t.snap.Prompt, OutputFile: t.snap.OutputFile, Status: t.snap.Status, Result: t.snap.Result,
 		Error: t.snap.Error, ToolUseCount: t.snap.ToolUseCount,
 		TotalTokens: t.snap.TotalTokens, StartedAt: t.snap.StartedAt,
 		FinishedAt: t.snap.FinishedAt, Pending: slices.Clone(t.pending),
-		RunCount: t.runCount, NotifiedRun: t.notifiedRun, ConsumedRun: t.consumedRun,
+		RunCount: t.runCount, Deliveries: t.deliveries,
 	}
 }
 
@@ -337,20 +363,8 @@ func (t *agentTask) persistLocked() {
 	if t.metadataPath == "" {
 		return
 	}
-	meta := t.metadataLocked()
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(t.metadataPath), 0o700); err != nil {
-		return
-	}
-	tmp := t.metadataPath + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
-		return
-	}
-	if err := os.Rename(tmp, t.metadataPath); err != nil {
-		_ = os.Remove(tmp)
+	if err := state.WriteVersioned(t.metadataPath, agentMetadataVersion, t.metadataLocked(), 0o600); err != nil {
+		slog.Warn("persist agent metadata", "path", t.metadataPath, "err", err)
 	}
 }
 
@@ -358,16 +372,12 @@ func (t *agentTask) persistLocked() {
 // was live in the previous process is explicitly marked interrupted because
 // its provider goroutine and cancel function cannot be reconstructed.
 func (s *AgentStore) LoadMetadata(path string, run AgentRun) (bool, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path is the session agent.json selected by the server index
+	meta, err := ReadAgentMetadata(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
 		return false, err
-	}
-	var meta AgentMetadata
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return false, fmt.Errorf("decode agent metadata %s: %w", path, err)
 	}
 	if meta.TaskID == "" || meta.SessionID == "" {
 		return false, fmt.Errorf("%w: %s", errAgentMetadataIncomplete, path)
@@ -377,8 +387,9 @@ func (s *AgentStore) LoadMetadata(path string, run AgentRun) (bool, error) {
 	}
 	task := &agentTask{
 		snap: TaskSnapshot{
-			TaskID: meta.TaskID, TaskType: "local_agent", SessionID: meta.SessionID,
-			Status: meta.Status, Description: meta.Description, Command: meta.Prompt,
+			ClientRequestID: meta.ClientRequestID, Generation: meta.RunCount, TaskID: meta.TaskID, TaskType: "local_agent", SessionID: meta.SessionID,
+			ParentSessionID: meta.ParentSessionID,
+			Status:          meta.Status, Description: meta.Description, Command: meta.Prompt,
 			OutputFile: meta.OutputFile, Error: meta.Error, Prompt: meta.Prompt,
 			Result: meta.Result, Output: meta.Result, ToolUseCount: meta.ToolUseCount,
 			TotalTokens: meta.TotalTokens, StartedAt: meta.StartedAt, FinishedAt: meta.FinishedAt,
@@ -386,13 +397,16 @@ func (s *AgentStore) LoadMetadata(path string, run AgentRun) (bool, error) {
 		done: make(chan struct{}), doneClosed: true, run: run, metadataPath: path,
 		parentSessionID: meta.ParentSessionID,
 		pending:         slices.Clone(meta.Pending), runCount: meta.RunCount,
-		notifiedRun: meta.NotifiedRun, consumedRun: meta.ConsumedRun,
+		deliveries: meta.Deliveries,
 	}
 	if task.snap.Status == TaskRunning || task.snap.Status == TaskPending {
 		now := time.Now()
 		task.snap.Status = TaskInterrupted
 		task.snap.FinishedAt = &now
 	}
+	snapshot := task.snap
+	task.result = &snapshot
+	close(task.done)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -428,31 +442,36 @@ func (s *AgentStore) QueueOrResume(ctx context.Context, id, message string) (str
 	if !ok {
 		return "", os.ErrNotExist
 	}
+	requestID, err := idgen.NewV7()
+	if err != nil {
+		return "", err
+	}
+	input := AgentInput{Prompt: message, ClientRequestID: requestID}
 	task.mu.Lock()
 	if task.removed {
 		task.mu.Unlock()
 		return "", os.ErrNotExist
 	}
 	if task.active || task.snap.Status == TaskRunning || task.snap.Status == TaskPending {
-		task.pending = append(task.pending, message)
+		task.pending = append(task.pending, input)
 		task.persistLocked()
 		task.mu.Unlock()
 		return "queued", nil
 	}
-	prompt := message
+	prompt := input
 	if len(task.pending) > 0 {
 		prompt = task.pending[0]
 		task.pending = append(task.pending[:0], task.pending[1:]...)
-		task.pending = append(task.pending, message)
+		task.pending = append(task.pending, input)
 	}
 	task.persistLocked()
 	task.mu.Unlock()
 	// Why: resumed agents are process-owned and must outlive the delivering request.
-	if err := s.startRun(context.WithoutCancel(ctx), task, prompt, true); err != nil {
+	if err := s.startRun(context.WithoutCancel(ctx), task, prompt.Prompt, true, prompt.ClientRequestID); err != nil {
 		if errors.Is(err, errAgentBusy) {
 			task.mu.Lock()
 			if !task.removed {
-				task.pending = append([]string{prompt}, task.pending...)
+				task.pending = append([]AgentInput{prompt}, task.pending...)
 				task.persistLocked()
 			}
 			task.mu.Unlock()
@@ -486,10 +505,10 @@ func (s *AgentStore) ResumePending(id string) (bool, error) {
 	task.pending = task.pending[1:]
 	task.persistLocked()
 	task.mu.Unlock()
-	if err := s.startRun(context.Background(), task, prompt, true); err != nil {
+	if err := s.startRun(context.Background(), task, prompt.Prompt, true, prompt.ClientRequestID); err != nil {
 		task.mu.Lock()
 		if !task.removed {
-			task.pending = append([]string{prompt}, task.pending...)
+			task.pending = append([]AgentInput{prompt}, task.pending...)
 			task.persistLocked()
 		}
 		task.mu.Unlock()
@@ -498,90 +517,67 @@ func (s *AgentStore) ResumePending(id string) (bool, error) {
 	return true, nil
 }
 
-// ClaimNotification makes one completion notification idempotent per logical
-// agent run. The claim is persisted before the caller writes the parent queue,
-// so concurrent completion paths cannot enqueue the same run twice.
-//
-// It returns false for a run the caller already consumed through MarkNotified
-// (TaskOutput read the result, TaskStop ended it): notifying again would spend a
-// whole parent turn re-reporting a result that side already has.
-func (s *AgentStore) ClaimNotification(id string) bool {
-	s.mu.RLock()
-	closed := s.closed
-	s.mu.RUnlock()
-	if closed {
-		return false
-	}
-	task, ok := s.task(id)
+// CommitNotification serializes the actual parent persistence with TaskOutput.
+// Enqueue/Inbox acceptance never claims ownership: a later pull may still win.
+// The callback must persist the message before returning; on failure no claim is
+// committed, so the same generation remains eligible on another handoff.
+func (s *AgentStore) CommitNotification(identity types.CompletionIdentity, persist func() error) (bool, error) {
+	task, ok := s.task(identity.TaskID)
 	if !ok {
+		return false, nil
+	}
+	task.mu.Lock()
+	defer task.mu.Unlock()
+	if task.removed || identity.Generation == 0 || task.deliveries[identity.Generation] != "" {
+		return false, nil
+	}
+	if err := persist(); err != nil {
+		return false, err
+	}
+	task.recordDeliveryLocked(identity.Generation, "notification")
+	return true, nil
+}
+
+// ClaimResult claims exactly the returned generation. Repeated explicit reads
+// remain valid, but return false (read-only) once either delivery path won.
+func (s *AgentStore) ClaimResult(snapshot TaskSnapshot) bool {
+	task, ok := s.task(snapshot.TaskID)
+	if !ok || !isTerminal(snapshot.Status) || snapshot.Generation == 0 {
 		return false
 	}
 	task.mu.Lock()
 	defer task.mu.Unlock()
-	if task.removed || task.runCount == 0 || task.notifiedRun >= task.runCount {
+	if task.removed || task.deliveries[snapshot.Generation] != "" {
 		return false
 	}
-	task.notifiedRun = task.runCount
-	task.persistLocked()
+	task.recordDeliveryLocked(snapshot.Generation, "tool")
 	return true
 }
 
-// MarkNotified records that the caller already holds this run's result, which
-// suppresses its completion notification: notifying again would spend a whole
-// parent turn re-reporting a result that side already has. TaskOutput marks what
-// it read and Stop marks what it ended; Claude Code tracks the same fact as
-// task.notified.
-//
-// The mark is durable and per run, so a later resume still notifies — that is a
-// new run with a new result.
-func (s *AgentStore) MarkNotified(id string) {
-	s.mu.RLock()
-	closed := s.closed
-	s.mu.RUnlock()
-	if closed {
-		return
+func (t *agentTask) recordDeliveryLocked(generation uint64, owner string) {
+	if t.deliveries == nil {
+		t.deliveries = make(map[uint64]string)
 	}
-	task, ok := s.task(id)
-	if !ok {
-		return
-	}
-	task.mu.Lock()
-	defer task.mu.Unlock()
-	s.markConsumedLocked(task)
+	t.deliveries[generation] = owner
+	t.persistLocked()
 }
 
-// markConsumedLocked sets both notification bits: consumedRun stops a
-// notification that has not been delivered yet, and notifiedRun stops one that
-// has not been claimed yet (a task stopped before its runner finalized).
 func (s *AgentStore) markConsumedLocked(task *agentTask) {
-	if task.removed || task.runCount == 0 {
-		return
-	}
-	changed := false
-	if task.consumedRun < task.runCount {
-		task.consumedRun = task.runCount
-		changed = true
-	}
-	if task.notifiedRun < task.runCount {
-		task.notifiedRun = task.runCount
-		changed = true
-	}
-	if changed {
-		task.persistLocked()
+	if !task.removed && task.runCount > 0 && task.deliveries[task.runCount] == "" {
+		task.recordDeliveryLocked(task.runCount, "tool")
 	}
 }
 
-// NotificationConsumed reports whether the caller already holds the current
-// run's result. Dispatch uses it to drop a queued completion notification that
-// the parent read on its own (TaskOutput) before the turn ran.
-func (s *AgentStore) NotificationConsumed(id string) bool {
-	task, ok := s.task(id)
+// CompletionDelivered is only an optimization before enqueue/dispatch. The
+// authoritative claim still happens in CommitNotification at persistence.
+func (s *AgentStore) CompletionDelivered(identity types.CompletionIdentity) bool {
+	task, ok := s.task(identity.TaskID)
 	if !ok {
-		return false
+		return true
 	}
 	task.mu.Lock()
 	defer task.mu.Unlock()
-	return task.runCount > 0 && task.consumedRun >= task.runCount
+	return task.removed || task.deliveries[identity.Generation] != ""
 }
 
 // SetSessionID associates the in-memory task with its durable child session.
@@ -665,29 +661,27 @@ func (s *AgentStore) Get(key string) (TaskSnapshot, bool) {
 	return TaskSnapshot{}, false
 }
 
-// Wait blocks until a child reaches a terminal state or ctx is cancelled.
+// Wait binds to one generation: a concurrent resume must not replace the
+// result a waiter is about to consume. The closed channel publishes an
+// immutable snapshot retained by waiters, not an unbounded result history.
 func (s *AgentStore) Wait(ctx context.Context, id string) (TaskSnapshot, error) {
 	task, ok := s.task(id)
 	if !ok {
 		return TaskSnapshot{}, os.ErrNotExist
 	}
-	for {
+	task.mu.Lock()
+	done, result := task.done, task.result
+	task.mu.Unlock()
+	select {
+	case <-done:
+		// Finalization writes metadata under this lock after publishing done.
+		// Wait must not return while that write still races caller cleanup.
 		task.mu.Lock()
-		done := task.done
+		snapshot := *result
 		task.mu.Unlock()
-		select {
-		case <-done:
-			task.mu.Lock()
-			changed := task.done != done && task.active
-			snapshot := task.snap
-			task.mu.Unlock()
-			if changed {
-				continue
-			}
-			return snapshot, nil
-		case <-ctx.Done():
-			return s.snapshot(task), ctx.Err()
-		}
+		return snapshot, nil
+	case <-ctx.Done():
+		return s.snapshot(task), ctx.Err()
 	}
 }
 
@@ -832,4 +826,45 @@ func (s *AgentStore) snapshot(task *agentTask) TaskSnapshot {
 	task.mu.Lock()
 	defer task.mu.Unlock()
 	return task.snap
+}
+
+// ReadAgentMetadata validates the durable version before either restoration or
+// resumed-run setup. Old queue strings receive identity once during migration.
+func ReadAgentMetadata(path string) (AgentMetadata, error) {
+	data, _, err := state.ReadFile(path, agentMetadataVersion, map[int]state.Migration{1: func(raw []byte) ([]byte, error) {
+		var doc map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			return nil, err
+		}
+		var pending []string
+		if err := json.Unmarshal(doc["pending"], &pending); err != nil && len(doc["pending"]) != 0 {
+			return nil, err
+		}
+		inputs := make([]AgentInput, 0, len(pending))
+		for _, text := range pending {
+			id, err := idgen.NewV7()
+			if err != nil {
+				return nil, err
+			}
+			inputs = append(inputs, AgentInput{Prompt: text, ClientRequestID: id})
+		}
+		doc["pending"], _ = json.Marshal(inputs)
+		var consumed uint64
+		_ = json.Unmarshal(doc["consumed_run"], &consumed)
+		if consumed > 0 {
+			doc["deliveries"], _ = json.Marshal(map[uint64]string{consumed: "tool"})
+		}
+		delete(doc, "consumed_run")
+		delete(doc, "notified_run")
+		doc["version"] = json.RawMessage("2")
+		return json.Marshal(doc)
+	}})
+	if err != nil {
+		return AgentMetadata{}, err
+	}
+	var meta AgentMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return AgentMetadata{}, fmt.Errorf("decode agent metadata %s: %w", path, err)
+	}
+	return meta, nil
 }

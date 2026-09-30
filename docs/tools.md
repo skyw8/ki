@@ -157,7 +157,7 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
   session 和最近结果写入 child 目录的 `agent.json`，serve 重启时重建 agent/task
   索引。重启前仍在运行的 agent 标记为 `interrupted`，可用 `SendMessage` 续跑。
 - 默认最多阻塞等待 30 秒；`block=false` 立即返回当前快照。
-- 等待超时返回 `retrieval_status=timeout`，不会终止任务。
+- 等待超时返回 `retrieval_status=timeout`，不会终止任务或消费完成通知。Agent task 快照带 `generation`；等待绑定开始等待时的 generation，不会被并发恢复重定向到下一次 run。
 - 返回 task id/type、状态、描述、命令、PID、有界输出尾部、输出文件、退出码、错误、agent result、字节数、行数和开始/结束时间；超限日志不会被重新完整读入内存或 context。
 
 ## Agent
@@ -171,7 +171,7 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 - `run_in_background=true` 与 parent prompt 脱钩，立即返回 `{"status":"async_launched", "agentId":…, "outputFile":…}`；`TaskOutput` 可等待它，`TaskStop` 可取消它。前台 agent 返回 Claude Code 兼容的 `completed` 结果对象。两种 `async_launched` 结果都带 `note`：说明结果会以 `<task-notification>` 自动回来、不要轮询或重做它的工作、可以用 `TaskOutput(block=false)` 或读 `outputFile` 看进度（Claude Code 把同样的指引写在结果文本里，而不是只放在工具描述里——结果不进缓存前缀，加字不破坏 prefix cache）。
 - 前台 agent 最多占用 parent turn 2 分钟（`agentForegroundTimeout`）：超时后 child **转为后台继续运行**（不取消），Agent 返回与 `run_in_background` 相同的 `async_launched` 结果，**但只有显式 `run_in_background` 才 `Terminate` parent turn**（那是调用方自己选了异步，下一轮就该是完成通知）。超时提升不结束 turn：调用方请求的就是阻塞，它自己决定继续做别的事、用 `TaskOutput(block=true)` 等，还是结束回复；`note` 里会说明等待已过期、不要重复启动同一个任务。child 的 run context 与调用方解耦（`AgentStore.startRun` 用 `context.WithoutCancel`），所以 parent turn 结束（自然结束、被 `Terminate` 或提升）都不会杀掉它；唯一"父死子亡"的路径是 parent 在阻塞等待期间被 abort——那时 Agent 工具显式 `TaskStop`，避免孤儿任务。
 - 完成通知的送达路径有两条：parent 的 run 还活着时写进它的 Inbox（`pushSteerRun`），循环在下一个 model round 前 drain，于是结果落在**启动它的那个 turn 之内**（对应 Claude Code 在 tool-round 边界 attach `<task-notification>`）；没有 live run 时走 durable queue 起一轮新的。Inbox 手递手窗口由 `runPrompt` 原子关闭（最后一轮取快照后置 `steerClosed`），所以晚到的 push 要么被当作续跑轮、要么被 abort 路径持久化，要么 push 返回 false 落到队列——三条路都不会丢通知。
-- 通知在 **dispatch 时**再判一次去重：`TaskOutput` 读到终态、或 `TaskStop` 终止了某个 run，`AgentStore.MarkNotified` 会记下 `consumed_run`，队列里带着同一个 `AgentTask` 的通知在出队时直接丢弃（`Server.dequeueDispatchable`）。为什么不在通知入队时判：child 完成时 parent 往往还在跑，parent 自己用 `TaskOutput` 把结果读走可能发生在它这轮结束之前，而出队正是"读没读过"第一次可知的时刻。`notified_run`/`consumed_run` 都是按 run 计数持久化的，所以续跑（新 run）照常通知。
+- 完成结果按 `{taskId, generation}` 仲裁：`TaskOutput` 只认领它实际返回的终态 generation，超时/取消不认领；live Inbox、durable queue 和取消时的最后 handoff 都在真正持久化 message 时通过同一个 `CommitNotification` 决策。入队不消费结果。工具先读到则通知不再进入历史；通知先提交或再次显式读取时，`TaskOutput` 仍返回结果并带 `read_only:true`。恢复同一 task 会增加 generation，旧通知不会消费新结果，反之亦然。
 - child 继承当前 session 的 provider、model 和 thinking effort；Agent schema 不接受模型覆盖，避免子 agent 跨供应商使用不同凭据或协议。
 - `cwd` override 和 `worktree` isolation 不在模型可见 schema 中；child 始终继承 parent cwd，隔离依靠 session tree，不会静默提供未实现的隔离。
 - 当前 Agent prompt/schema 只描述普通 parent → child delegation；不描述 Agent Teams 的命名成员、`team_name`、permission mode、roster 或 peer messaging。
@@ -186,3 +186,12 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 - 接受 `task_id`，并兼容 `shell_id`。
 - 终止任务的整个进程组及其子进程、管道。
 - 已完成、失败或停止的任务再次停止时返回不可停止错误。
+
+完成认领账本和排队 follow-up 的 `clientRequestId` 经 `internal/state` 写入 version 2 `agent.json`。旧 version 1 已消费的 generation 可迁移；重启前 running 状态仍转为 interrupted。队列与 transcript、认领账本之间没有跨文件事务，进程崩溃、磁盘失败、队列满时不承诺 exactly-once 或无损交付；当前保证是单进程内互斥的原始交付与正常 handoff 保留，不是 crash-safe 消息总线。
+
+`Set.AgentParentSessionID` 绑定工具调用会话：只有完成通知的实际 parent 可以用
+`TaskOutput` 认领原始交付。其它 session（含 sibling）仍可读取输出，但总是
+`read_only:true`，不能消费实际 parent 的 Inbox/queue 通知。parent 信息是内部
+快照字段，不增加模型可见 payload。无 parent 信息的直接 store 调用保留原语义。
+`TaskStop` 的运行中停止仍是全局显式取消，按现有策略抑制通知；它不是只读检查，
+本次没有新增停止权限模型。

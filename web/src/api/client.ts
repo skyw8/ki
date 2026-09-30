@@ -158,7 +158,7 @@ export class Client {
     return this.json(`/v1/sessions/search?q=${encodeURIComponent(q)}`, { signal })
   }
 
-  prompt(id: string, content: import('./types').Content[], model?: string, parentId?: string, delivery?: 'steer' | 'queue', queueId?: string): Promise<{ handled?: boolean; notice?: string; error?: boolean; accepted?: boolean | string; sessionId?: string; cwd?: string; workspaceId?: string }> {
+  prompt(id: string, content: import('./types').Content[], model?: string, parentId?: string, delivery?: 'steer' | 'queue', queueId?: string, clientRequestId?: string): Promise<{ handled?: boolean; notice?: string; error?: boolean; accepted?: boolean | string; sessionId?: string; cwd?: string; workspaceId?: string; clientRequestId?: string }> {
     return this.json(`/v1/sessions/${id}/prompt`, {
       method: 'POST',
 	  body: JSON.stringify({
@@ -166,6 +166,7 @@ export class Client {
 		model,
 		...(parentId !== undefined ? { parentId } : {}),
 		...(delivery ? { delivery } : {}),
+		...(clientRequestId ? { clientRequestId } : {}),
 	  }),
     })
   }

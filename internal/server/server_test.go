@@ -735,7 +735,16 @@ func TestAgentCompletionNotificationJoinsLiveParentTurn(t *testing.T) {
 		t.Fatal("parent run never reached its second model round")
 	}
 
-	srv.notifyAgentCompletion(parentID, "a-live-1", "child review", dir+"/events.jsonl", tools.AgentCompletion{Result: "child report"}, nil)
+	launch, err := srv.agentTasks.Start(t.Context(), tools.AgentRequest{SessionID: parentID}, "", func(context.Context, string, string, bool) (tools.AgentCompletion, error) {
+		return tools.AgentCompletion{Result: "child report"}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Wait(t.Context(), launch.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	srv.notifyAgentCompletion(parentID, types.CompletionIdentity{TaskID: launch.TaskID, Generation: 1}, "child review", dir+"/events.jsonl", tools.AgentCompletion{Result: "child report"}, nil)
 	if !srv.running(parentID) {
 		t.Fatal("notification ended the parent turn")
 	}
@@ -768,7 +777,7 @@ func TestAgentCompletionNotificationJoinsLiveParentTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"origin":"agent:a-live-1"`) {
+	if !strings.Contains(string(raw), `"origin":"agent:`+launch.TaskID+`"`) {
 		t.Fatalf("notification lost its origin: %s", raw)
 	}
 }
@@ -800,13 +809,14 @@ func TestDispatchDropsConsumedAgentNotification(t *testing.T) {
 	enqueue := func(taskID string) {
 		t.Helper()
 		content := []types.Content{{Type: "text", Text: "<task-notification>\nTask " + taskID + " completed.\n</task-notification>"}}
-		if _, err := session.EnqueueAgentNotification(dir, content, "agent:"+taskID, taskID); err != nil {
+		if _, err := session.EnqueueAgentNotification(dir, content, "agent:"+taskID, types.CompletionIdentity{TaskID: taskID, Generation: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	read := startTask()
-	srv.MarkNotified(read) // the parent pulled the result with TaskOutput
+	snapshot, _ := srv.Get(read)
+	srv.ClaimResult(snapshot) // the parent pulled the result with TaskOutput
 	enqueue(read)
 	srv.dispatchQueue(id)
 	if srv.running(id) {

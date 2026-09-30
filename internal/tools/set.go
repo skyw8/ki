@@ -164,6 +164,16 @@ func (s scopedAgentRuntime) SendAgentMessage(ctx context.Context, req AgentMessa
 	return result, nil
 }
 
+func (s scopedAgentRuntime) ClaimResult(snapshot TaskSnapshot) bool {
+	// Task IDs are readable across sessions. Only the intended recipient can
+	// turn a read into original delivery; otherwise a sibling's inspection
+	// silently steals the result from the real parent's Inbox or durable queue.
+	if snapshot.ParentSessionID != "" && snapshot.ParentSessionID != s.sessionID {
+		return false
+	}
+	return s.AgentRuntime.ClaimResult(snapshot)
+}
+
 type compositeTaskStore struct {
 	shell *JobStore
 	agent TaskStore
@@ -190,7 +200,7 @@ func (s compositeTaskStore) Wait(ctx context.Context, id string) (TaskSnapshot, 
 	if s.agent != nil {
 		snap, err := s.agent.Wait(ctx, id)
 		if err != nil {
-			return TaskSnapshot{}, fmt.Errorf("wait agent task: %w", err)
+			return snap, fmt.Errorf("wait agent task: %w", err)
 		}
 		return snap, nil
 	}
@@ -206,23 +216,22 @@ func (s compositeTaskStore) Stop(id string) (TaskSnapshot, error) {
 	if s.agent != nil {
 		snap, err := s.agent.Stop(id)
 		if err != nil {
-			return TaskSnapshot{}, fmt.Errorf("stop agent task: %w", err)
+			return snap, fmt.Errorf("stop agent task: %w", err)
 		}
 		return snap, nil
 	}
 	return TaskSnapshot{}, os.ErrNotExist
 }
 
-// MarkNotified routes by ownership: only agent tasks have a completion
-// notification to suppress, and the shell store's own marking is a no-op.
-func (s compositeTaskStore) MarkNotified(id string) {
+// ClaimResult routes the exact returned generation to its owning store.
+func (s compositeTaskStore) ClaimResult(snapshot TaskSnapshot) bool {
 	if s.shell != nil {
-		if _, ok := s.shell.Get(id); ok {
-			s.shell.MarkNotified(id)
-			return
+		if _, ok := s.shell.Get(snapshot.TaskID); ok {
+			return s.shell.ClaimResult(snapshot)
 		}
 	}
 	if s.agent != nil {
-		s.agent.MarkNotified(id)
+		return s.agent.ClaimResult(snapshot)
 	}
+	return false
 }

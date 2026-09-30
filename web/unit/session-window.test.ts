@@ -57,6 +57,7 @@ test('a persisted run abort becomes a standalone history row', () => {
   ]
   const view = loadHistory({ id: 's', entries, leafId: 'x1' })
   expect(view.nodes.at(-1)).toEqual({
+    turnId: 'u1',
     kind: 'cancellation',
     id: 'x1',
     runId: undefined,

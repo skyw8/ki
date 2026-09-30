@@ -1,5 +1,9 @@
 import type { ChatNode, CompactTurn } from '../api/types'
-import { isHumanPrompt, nodeLive } from './model'
+import { nodeLive } from './model'
+import { groupTurns, isHumanPrompt } from './transcriptIdentity'
+export { groupTurns } from './transcriptIdentity'
+export type { ChatTurn } from './transcriptIdentity'
+import type { ChatTurn } from './transcriptIdentity'
 
 /**
  * Message view mode controls how much of the transcript the chat renders.
@@ -44,38 +48,6 @@ export function saveMessageView(view: MessageView): void {
   } catch {
     // Private mode / quota should not block the setting.
   }
-}
-
-/**
- * ChatTurn is one human turn: the human user node that opens it plus every
- * node up to the next human input. Runtime-authored user messages (for example
- * subagent directives and completion notifications) stay inside that turn so
- * compact mode can fold them like assistant and tool replies.
- *
- * Nodes before the first human user (a window or child session that starts
- * with a machine-authored message) form a leading turn with no user.
- */
-export type ChatTurn = {
-  /** Stable key and anchor id: the turn's first node id. */
-  id: string
-  user?: Extract<ChatNode, { kind: 'user' }>
-  nodes: ChatNode[]
-}
-
-/** groupTurns splits the branch at human inputs, matching the request
- * navigator. Machine-authored user-role messages are foldable transcript
- * replies, not permanent turn anchors. */
-export function groupTurns(nodes: ChatNode[]): ChatTurn[] {
-  const turns: ChatTurn[] = []
-  for (const n of nodes) {
-    const opensTurn = n.kind === 'user' && isHumanPrompt(n.origin)
-    if (opensTurn || turns.length === 0) {
-      turns.push({ id: n.id, user: opensTurn ? n : undefined, nodes: [n] })
-      continue
-    }
-    turns[turns.length - 1].nodes.push(n)
-  }
-  return turns
 }
 
 /**
@@ -160,8 +132,7 @@ export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderIte
   const loaded = new Set(opts.loadedTurnIds)
   const out: ChatRenderItem[] = []
   turns.forEach(turn => {
-    if (turn.user) out.push({ kind: 'node', id: turn.user.id, node: turn.user })
-    const rest = turn.user ? turn.nodes.slice(1) : turn.nodes
+    const rest = turn.nodes.filter(n => n !== turn.user)
     const hiddenIds = hiddenReplyIds(rest, keep)
     const hidden = hiddenIds.size
     const summary = !loaded.has(turn.id) ? summaries.get(turn.id) : undefined
@@ -177,14 +148,17 @@ export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderIte
     const missing = summary ? Math.max(0, snapshotCount - overlap) : 0
     const count = hidden + missing
     if (count === 0) {
-      for (const n of rest) out.push({ kind: 'node', id: n.id, node: n })
+      for (const n of turn.nodes) out.push({ kind: 'node', id: n.id, node: n })
       return
     }
     const expanded = opts.expanded?.has(turn.id) ?? false
-    out.push({ kind: 'fold', id: `fold:${turn.id}`, turn, nodes: rest.filter(n => hiddenIds.has(n.id)), expanded, count, preview: summary?.preview, firstHiddenId: summary?.firstHiddenId, remote: missing > 0 })
-    for (const n of rest) {
-      if (expanded || !hiddenIds.has(n.id)) out.push({ kind: 'node', id: n.id, node: n })
+    const fold: ChatRenderItem = { kind: 'fold', id: `fold:${turn.id}`, turn, nodes: rest.filter(n => hiddenIds.has(n.id)), expanded, count, preview: summary?.preview, firstHiddenId: summary?.firstHiddenId, remote: missing > 0 }
+    let inserted = false
+    for (const n of turn.nodes) {
+      if (n !== turn.user && !inserted) { out.push(fold); inserted = true }
+      if (n === turn.user || expanded || !hiddenIds.has(n.id)) out.push({ kind: 'node', id: n.id, node: n })
     }
+    if (!inserted) out.push(fold)
   })
   return out
 }

@@ -3,10 +3,11 @@ import { cjk } from '@streamdown/cjk'
 import { Streamdown, parseMarkdownIntoBlocks, useIsCodeFenceIncomplete, type ExtraProps } from 'streamdown'
 import { useI18n } from '../../i18n/index'
 import { ICheck, ICopy } from '../../components/icons'
-import { MarkdownDocument } from './streamText'
+import { MarkdownBlockSplitter, MarkdownDocument } from './streamText'
 import { recordStreamCommit, type DisplayRevision } from '../../lib/stream-metrics'
 import { copyText } from '../../lib/clipboard'
 import { queueMarkdown } from './parseQueue'
+import { useTranscriptRowMeasurement } from '../chat/TranscriptRow'
 
 const plugins = { cjk }
 const linkSafety = { enabled: false }
@@ -211,33 +212,65 @@ export const Markdown = memo(function Markdown({
   const parts = useMemo(() => document.update(text, !streaming), [document, text, streaming])
   // This runs after actual text was committed, never at socket receipt or setState.
   useLayoutEffect(() => recordStreamCommit(revision, root.current), [revision, text])
-  return <div ref={root} data-stream-seq={revision?.seq}>
-    {parts.segments.map((segment, index) => <MarkdownPiece key={index} text={segment} className={className} />)}
-    {parts.tail && <MarkdownPiece key="tail" text={parts.tail} live={streaming} className={className} />}
-  </div>
+  // Both kinds must share one sibling array for their keys to have the same
+  // React scope. Promote the current piece in place when it seals; a new tail
+  // gets its own plaintext-first admission instead of inheriting permission
+  // to parse synchronously during a replay burst.
+  const pieces = parts.segments.map((segment, index) => <MarkdownPiece key={index} text={segment} deferOffscreen={streaming} className={className} />)
+  if (parts.tail) pieces.push(<MarkdownPiece key={parts.segments.length} text={parts.tail} live={streaming} className={className} />)
+  return <div ref={root} data-stream-seq={revision?.seq}>{pieces}</div>
 })
 
 /** Keep content visible while an expensive block waits for its formatting turn.
  * A message finishing must not replace already-visible text with placeholders.
  * Immutable segments keep the same component through both streaming and final.
  */
-const MarkdownPiece = memo(function MarkdownPiece({ text, live = false, className }: { text: string; live?: boolean; className?: string }) {
+const MarkdownPiece = memo(function MarkdownPiece({ text, live = false, deferOffscreen = false, className }: { text: string; live?: boolean; deferOffscreen?: boolean; className?: string }) {
   const { t } = useI18n()
+  const [blocks] = useState(() => new MarkdownBlockSplitter())
   const root = useRef<HTMLDivElement>(null)
   const wasLive = useRef(live)
   if (live) wasLive.current = true
-  const immediate = wasLive.current && text.length <= 4096
+  const [admitted, setAdmitted] = useState(false)
+  const small = text.length <= 4096
+  // The first text layout (including cold fallback fonts) and first Markdown
+  // parser initialization together exceeded a phone frame budget. Commit the
+  // complete source first, then admit formatting through the existing queue.
+  // New deltas do not reset this admission; subsequent small-tail updates stay
+  // incremental and immediate.
+  useEffect(() => {
+    if (!live || admitted || !small) return
+    return queueMarkdown(() => setAdmitted(true), () => root.current, 1)
+  }, [live, admitted, small])
+  const immediate = wasLive.current && admitted && small
   const [formatted, setFormatted] = useState('')
   const [explicit, setExplicit] = useState(false)
   const allowed = text.length <= 64 * 1024 || explicit
   const ready = immediate || !live && formatted === text
+  // Formatting admission changes local DOM without changing the parent
+  // message. Join its existing pre-paint row measurement: ResizeObserver alone
+  // leaves a one-frame tail gap (166px in Firefox) after source becomes markup.
+  useTranscriptRowMeasurement([ready, allowed])
   useEffect(() => {
     if (immediate || live || !allowed || formatted === text) return
-    return queueMarkdown(() => setFormatted(text), () => root.current, wasLive.current ? 1 : 0)
-  }, [text, live, allowed, formatted, immediate])
+    const enqueue = () => queueMarkdown(() => setFormatted(text), () => root.current, wasLive.current ? 1 : 0)
+    if (!deferOffscreen || !root.current) return enqueue()
+    // A replay burst seals many blocks above the viewport. Parsing them while
+    // the newest text is still catching up consumed 28–35ms between display
+    // commits on a throttled phone. Their complete source is already mounted:
+    // format on visibility, or release all remaining work when streaming ends.
+    let cancel: (() => void) | undefined
+    const observer = new IntersectionObserver(entries => {
+      if (!entries.some(entry => entry.isIntersecting)) return
+      observer.disconnect()
+      cancel = enqueue()
+    })
+    observer.observe(root.current)
+    return () => { observer.disconnect(); cancel?.() }
+  }, [text, live, deferOffscreen, allowed, formatted, immediate])
   return <div ref={root} data-md-block="1" data-md-pending={!live && !ready && allowed ? '1' : undefined}>
     {!live && !allowed && <button type="button" className="body-load" onClick={() => setExplicit(true)}>{t('chat.formatMarkdown')}</button>}
-    {ready ? <Streamdown className={segClass(className)} plugins={plugins} mode={live ? 'streaming' : 'static'} isAnimating={live} {...shared} parseMarkdownIntoBlocksFn={live ? undefined : blocksFor}>{text}</Streamdown>
+    {ready ? <Streamdown className={segClass(className)} plugins={plugins} mode={live ? 'streaming' : 'static'} isAnimating={live} {...shared} parseMarkdownIntoBlocksFn={live ? blocks.split : blocksFor}>{text}</Streamdown>
       : <PlainText text={text} />}
   </div>
 })

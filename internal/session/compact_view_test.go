@@ -31,6 +31,47 @@ func compactFixture(turns, steps int) []Entry {
 	return entries
 }
 
+func TestCompactLifecycleIsDurableUnfoldedMetadata(t *testing.T) {
+	for _, status := range []string{"empty", "failed", "committed"} {
+		t.Run(status, func(t *testing.T) {
+			entries := []Entry{
+				{ID: "u", Type: "message", Message: &types.Message{Role: "user"}},
+				{ID: "a", ParentID: "u", Type: "message", Message: &types.Message{Role: "assistant"}},
+				{ID: "start", ParentID: "a", Type: "compaction_start", Details: map[string]any{"reason": "manual"}},
+			}
+			parent, row, steps := "start", "end", 1
+			details := map[string]any{"reason": "manual", "status": status}
+			if status == "committed" {
+				entries = append(entries, Entry{ID: "checkpoint", ParentID: parent, Type: "compaction", Summary: "summary", Usage: &types.Usage{Input: 2}})
+				parent, row, steps = "checkpoint", "checkpoint", 2
+				details["entryId"] = parent
+			}
+			entries = append(entries, Entry{ID: "end", ParentID: parent, Type: "compaction_end", Details: details})
+			for _, keep := range []int{0, 1, 20} {
+				page := BuildCompact(entries, "end", "", keep)
+				turn := page.Turns[0]
+				if turn.HiddenCount != max(0, 1-keep) || turn.StepCount != steps || turn.Stats.Steps != steps {
+					t.Fatalf("lifecycle inflated counts for keep=%d: %+v", keep, turn)
+				}
+				if !slices.Contains(turn.VisibleNodeIDs, row) || slices.Contains(turn.VisibleNodeIDs, "start") {
+					t.Fatalf("missing/duplicate lifecycle row: %+v", turn.VisibleNodeIDs)
+				}
+				for _, id := range []string{"start", "end"} {
+					if !slices.Contains(turn.EntryIDs, id) {
+						t.Fatalf("lost durable lifecycle %s", id)
+					}
+				}
+			}
+			// A detailed page containing only the terminal status still needs
+			// its human anchor, just like a page ending at a checkpoint.
+			tail := withTurnOpeningUser(entries, entries[len(entries)-1:])
+			if len(tail) != 2 || tail[0].ID != "u" {
+				t.Fatalf("missing lifecycle opening user: %+v", tail)
+			}
+		})
+	}
+}
+
 func TestCompactPagesWholeTurnsWithoutHiddenBodies(t *testing.T) {
 	entries := compactFixture(7, 320)
 	page := BuildCompact(entries, "", "", 1)
@@ -103,8 +144,41 @@ func TestCompactProjectionKeepsFoldAnchorForMachineOnlyTurn(t *testing.T) {
 	if len(page.Turns) != 1 || page.Turns[0].ID != "directive" || page.Turns[0].HiddenCount != 1 {
 		t.Fatalf("machine-only turn: %+v", page)
 	}
+	if page.Turns[0].Stats.Turn != 1 {
+		t.Fatalf("runtime-only turn must start at ordinal 1: %+v", page.Turns[0])
+	}
 	if !slices.Equal(page.Turns[0].VisibleNodeIDs, []string{"answer"}) || len(page.Entries) != 2 {
 		t.Fatalf("missing hidden fold anchor: %+v", page)
+	}
+}
+
+func TestTurnClockKeepsFirstInputAcrossNotifications(t *testing.T) {
+	for _, origin := range []string{"", "agent"} {
+		var clock turnClock
+		for _, message := range []types.Message{
+			{Role: "user", Origin: origin, Timestamp: 1000},
+			{Role: "assistant", Timestamp: 2000},
+			{Role: "user", Origin: "agent:child", Timestamp: 3000},
+			{Role: "user", Origin: "agent:child", Timestamp: 4000},
+			{Role: "assistant", Timestamp: 5000},
+		} {
+			clock.add(Entry{Type: "message", Message: &message})
+		}
+		if got := clock.elapsed(); got != 4000 {
+			t.Fatalf("origin=%q elapsed=%d, want 4000", origin, got)
+		}
+	}
+	var prelude turnClock
+	for _, m := range []types.Message{
+		{Role: "user", Origin: "agent:prelude", Timestamp: 1000},
+		{Role: "user", Timestamp: 2000},
+		{Role: "user", Origin: "agent:notice", Timestamp: 3000},
+		{Role: "assistant", Timestamp: 5000},
+	} {
+		prelude.add(Entry{Type: "message", Message: &m})
+	}
+	if prelude.start != 2000 || prelude.elapsed() != 3000 {
+		t.Fatalf("prelude overrode human clock: %+v", prelude)
 	}
 }
 

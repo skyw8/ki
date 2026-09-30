@@ -7,13 +7,14 @@ const user = (id: string, text: string, origin?: string): ChatNode => ({ kind: '
 const asst = (id: string, text = 'ok', streaming = false): ChatNode => ({ kind: 'assistant', id, text, streaming })
 const tool = (id: string, running = false): ChatNode => ({ kind: 'tool', id, name: 'Bash', args: {}, running })
 
-test('groupTurns splits at user nodes and keeps a leading group', () => {
+test('groupTurns includes an imported prelude in the first human turn like the server', () => {
+  // A separate prelude group formerly shifted display ordinals away from the
+  // server's compact turn ranges. The prelude remains in its original order.
   const turns = groupTurns([asst('a0'), user('u1', 'one'), asst('a1'), user('u2', 'two'), asst('a2')])
-  expect(turns.map(t => t.id)).toEqual(['a0', 'u1', 'u2'])
-  expect(turns[0].user).toBeUndefined()
-  expect(turns[1].user?.id).toBe('u1')
-  expect(turns[1].nodes.map(n => n.id)).toEqual(['u1', 'a1'])
-  expect(turns[2].nodes.map(n => n.id)).toEqual(['u2', 'a2'])
+  expect(turns.map(t => t.id)).toEqual(['u1', 'u2'])
+  expect(turns[0].user?.id).toBe('u1')
+  expect(turns[0].nodes.map(n => n.id)).toEqual(['a0', 'u1', 'a1'])
+  expect(turns[1].nodes.map(n => n.id)).toEqual(['u2', 'a2'])
 })
 
 test('foldReplies treats runtime-authored user messages as foldable replies', () => {

@@ -1,4 +1,9 @@
 import type { CompactTurn, ChatNode, Content, Entry, IndexEntry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from '../api/types'
+import { entryTurns, groupTurns, isHumanEntry, isHumanPrompt, isTransientUserId, reconcileUserNodes, userMessageIdentity } from './transcriptIdentity'
+import type { TurnId } from './transcriptIdentity'
+import { bodyKind, bodyRank, coveredTurns, projectedBodies } from './transcriptCoverage'
+ import { compactionOperations, isCompactionLifecycle } from './compactionLifecycle'
+export { isHumanPrompt, reconcileUserNodes } from './transcriptIdentity'
 
 const LAST_MODEL_KEY = 'ki-last-model'
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -140,8 +145,20 @@ export function messageThinking(m?: Message | null): string {
 }
 
 function previewOf(text: string, n = 160): string {
-  const t = text.replace(/\s+/g, ' ').trim()
-  return t.length > n ? t.slice(0, n) + '…' : t
+  // A streaming reply may be megabytes long; its fixed preview must not
+  // normalize the growing suffix on every delta. Defer whitespace until a
+  // following character proves it is not trimmed trailing space, and stop
+  // after the first normalized code unit beyond the visible prefix.
+  let preview = '', space = false
+  for (let i = 0; i < text.length; i++) {
+    const character = text[i]
+    if (/\s/.test(character)) { space = preview.length > 0; continue }
+    if (space) preview += ' '
+    preview += character
+    if (preview.length > n) return preview.slice(0, n) + '…'
+    space = false
+  }
+  return preview
 }
 
 function toolResultText(result: unknown): string {
@@ -194,7 +211,7 @@ export function loadHistory(detail: SessionDetail): ViewState {
 	s.oldestId = detail.oldestId
 	s.compactTurns = detail.compactTurns
 	setIndex(s, detail.index)
-	addEntries(s, detail.entries ?? [])
+	addEntries(s, projectedBodies(detail.entries ?? [], detail.compactTurns))
 	return rebuild(s)
 }
 
@@ -247,6 +264,13 @@ export function applyTail(s: ViewState, detail: SessionDetail, expectedLiveRevis
   const next = { ...s }
   const stale = expectedLiveRevision !== s.liveRevision
   next.busy = stale ? s.busy : !!detail.running
+  if (!stale) {
+    next.title = detail.title ?? next.title
+    next.cwd = detail.cwd ?? next.cwd
+    next.model = detail.model ?? next.model
+    next.provider = detail.provider ?? next.provider
+    next.thinkingEffort = detail.thinkingEffort ?? next.thinkingEffort
+  }
   if (!next.busy) {
     next.stopping = false
     next.toolStates = undefined
@@ -278,11 +302,11 @@ export function applyTail(s: ViewState, detail: SessionDetail, expectedLiveRevis
     next.records = next.records.filter(r => !(r.running && r.startedAt != null && r.startedAt < settledThrough))
     next.requests = next.requests.map(r => r.status === 'running' && r.startedAt != null && r.startedAt < settledThrough ? { ...r, status: 'complete' } : r)
   }
-  addEntries(next, entries)
+  addEntries(next, projectedBodies(entries, detail.compactTurns))
   // A different authoritative leaf may rewind or fork inside the same human
   // turn. Its smaller snapshot describes the selected branch, not an outdated
   // projection of the formerly selected, longer branch.
-  mergeCompactTurns(next, detail.compactTurns, !stale && detail.leafId != null && detail.leafId !== s.leafId)
+  mergeCompactTurns(next, detail.compactTurns, detail.leafId != null && (!stale || detail.leafId === s.leafId))
   const snapshotPath = detail.leafId && leafEntries(mergeEntries(next.index, next.entries), detail.leafId, next.compactTurns)
   const descendant = !!(stale && detail.leafId && detail.leafId !== s.leafId && snapshotPath && snapshotPath.some(e => e.id === s.leafId))
   // React may commit the final SSE batch after a terminal GET starts, while
@@ -334,7 +358,7 @@ function addEntries(s: ViewState, incoming: Entry[]) {
     if (replacement && !replacement.truncated && e.truncated) bodyPreviews.set(replacement, e)
     // Persisted entries are immutable. A late slim page must not erase a full
     // body and trigger another download when the row is mounted again.
-    return replacement && !(replacement.truncated && !e.truncated) ? replacement : e
+    return replacement && bodyRank(replacement) >= bodyRank(e) ? replacement : e
   })
   for (const e of incoming) {
     if (!known.has(e.id)) s.entries.push(e)
@@ -361,14 +385,20 @@ export function evictBodies(s: ViewState, protectedIds: ReadonlySet<string>, bud
   let bytes = s.entries.reduce((total, e) => total + (evictedPreviews.has(e) ? 0 : bodySize(e)), 0)
   if (bytes <= budget) return s
   let lastUser = -1
-  for (let i = s.entries.length - 1; i >= 0; i--) if (s.entries[i].message?.role === 'user') { lastUser = i; break }
-  if (lastUser < 0) lastUser = Math.max(0, s.entries.length - 10)
+  for (let i = s.entries.length - 1; i >= 0; i--) if (isHumanEntry(s.entries[i])) { lastUser = i; break }
+  // A runtime notice is part of the current turn, not a new eviction boundary.
+  // A runtime-only child has one group, so it pins that group like a human run.
+  if (lastUser < 0) lastUser = 0
   let changed = false
   const entries = s.entries.map((e, index) => {
+    // Lifecycle bodies contain bounded status/identity, not model payloads.
+    // Evicting these facts would turn failed/empty operations into success.
+    if (isCompactionLifecycle(e)) return e
     if (bytes <= budget || evictedPreviews.has(e) || index >= lastUser || protectedIds.has(e.id) || protectedIds.has(`system:${e.id}`) || (e.message?.toolCallId && protectedIds.has(e.message.toolCallId)) || e.message?.content?.some(c => c.id && protectedIds.has(c.id))) return e
     const base = bodyPreviews.get(e) ?? e
     const preview: Entry = {
-      ...e, truncated: true, tools: undefined, details: undefined,
+      ...e, bodyKind: bodyKind(e) === 'helper' ? 'helper' : 'slim', truncated: true, tools: undefined,
+      details: undefined,
       system: base.system?.slice(0, 160), summary: base.summary?.slice(0, 160),
       message: base.message ? { ...base.message, details: undefined, content: base.message.content?.map(c => ({
         type: c.type, id: c.id, name: c.name, path: c.path, size: c.size, mimeType: c.mimeType, toolType: c.toolType,
@@ -421,7 +451,7 @@ function entryToIndex(e: Entry): IndexEntry {
  */
 function rebuild(s: ViewState): ViewState {
   const streaming = s.nodes.filter(n => (n.kind === 'assistant' && n.streaming) || (n.kind === 'tool' && n.running))
-  const runningRecords = s.records.filter(r => r.running)
+  const runningRecords = s.records.filter(r => r.running && r.kind !== 'compact')
   const runningRequests = s.requests.filter(r => r.status === 'running')
   const next: ViewState = {
     ...s,
@@ -429,6 +459,7 @@ function rebuild(s: ViewState): ViewState {
     records: [],
     requests: [],
     turn: 0,
+    turnId: undefined,
     turnBase: 0,
     promptState: undefined,
     currentRequestId: undefined,
@@ -436,6 +467,7 @@ function rebuild(s: ViewState): ViewState {
   const all = mergeEntries(next.index, next.entries)
   next.allEntries = all
   const chain = leafEntries(all, next.leafId, next.compactTurns)
+  next.loadedTurnIds = coveredTurns(next.entries, next.compactTurns ?? [])
   let windowStart = next.oldestId ? chain.findIndex(e => e.id === next.oldestId) : 0
   windowStart = Math.max(0, windowStart)
   // A detailed page may start mid-turn and include its opening user as an
@@ -443,6 +475,12 @@ function rebuild(s: ViewState): ViewState {
   while (windowStart > 0 && !isUserEntry(chain[windowStart])) windowStart--
   const window = new Set(chain.slice(windowStart).map(e => e.id))
   const loaded = new Set(next.entries.filter(e => window.has(e.id)).map(e => e.id))
+  const operations = compactionOperations(chain)
+  const compactAt = new Map(operations.map(operation => [(operation.end ?? operation.start)!.id, operation]))
+  // A busy later run cannot resurrect an interrupted historical compaction.
+  // Metadata may follow a live start; actual requests/messages supersede it.
+  const lastExecution = chain.slice().reverse().find(e => e.type === 'message' || e.type === 'request_header'
+    || e.type === 'compaction' || isCompactionLifecycle(e))
   // Keep disconnected body ranges in the cache. Only the active chain renders;
   // a later page/index can bridge a recovery gap without losing old identities.
   const active = new Set(chain.map(e => e.id))
@@ -454,7 +492,13 @@ function rebuild(s: ViewState): ViewState {
   // Records are numbered from the branch root (index-only entries count too),
   // so the count below continues correctly for a live turn; turnStats adds
   // turnBase to the window's nodes, which is what the chat dividers show.
-  const ordinals = new Map(next.compactTurns?.map(t => [t.id, t.stats.turn]))
+  const ordinals = new Map(next.compactTurns?.map(t => [t.id, Math.max(1, t.stats.turn)]))
+  const identities = new Map<string, { id: TurnId; ordinal: number }>()
+  let ordinal = 0
+  for (const group of entryTurns(chain)) {
+    ordinal = ordinals.get(group.id) ?? ordinal + 1
+    for (const entry of group.items) identities.set(entry.id, { id: group.id, ordinal })
+  }
   const explicitCancellations = new Set<string>()
   let pendingAbortedAssistant: string | undefined
   for (const e of chain) {
@@ -469,9 +513,29 @@ function rebuild(s: ViewState): ViewState {
     }
   }
   for (const e of chain) {
-    const ordinal = ordinals.get(e.id)
-    if (ordinal != null && isUserEntry(e)) next.turn = ordinal - 1
+    const identity = identities.get(e.id)!
+    next.turn = identity.ordinal
+    next.turnId = identity.id
+    const nodeStart = next.nodes.length, recordStart = next.records.length, requestStart = next.requests.length
     applyEntry(next, e, loaded.has(e.id))
+    const operation = compactAt.get(e.id)
+    if (operation) {
+      const terminal = operation.end || operation.summary
+      const summaryLoaded = !!operation.summary && loaded.has(operation.summary.id)
+      const bodyLoaded = !!operation.start && loaded.has(operation.start.id) || !!operation.end && loaded.has(operation.end.id)
+      applyCompactEvent(next, e.id, terminal ? 'compaction_end' : 'compaction_start',
+        operation.end ? operation.end.details : (operation.summary ? { status: 'committed', ok: true } : operation.start?.details),
+        operation.start?.timestamp ?? operation.end?.timestamp, {
+          withNode: bodyLoaded && !summaryLoaded,
+          running: !terminal && next.busy && operation.start?.id === lastExecution?.id,
+          summaryId: operation.summary?.id,
+          truncated: !!operation.end && (!loaded.has(operation.end.id) || operation.end.truncated),
+          paired: true,
+        })
+    }
+    for (let i = nodeStart; i < next.nodes.length; i++) next.nodes[i].turnId = identity.id
+    for (let i = recordStart; i < next.records.length; i++) next.records[i].turnId = identity.id
+    for (let i = requestStart; i < next.requests.length; i++) next.requests[i].turnId = identity.id
     if (loaded.has(e.id) && e.type === 'message' && e.message?.role === 'assistant' &&
       e.message.stopReason === 'aborted' && !explicitCancellations.has(e.id)) {
       // Older transcripts persisted run_aborted as an unparented sideband, so
@@ -490,8 +554,9 @@ function rebuild(s: ViewState): ViewState {
 
   const expanded = new Set(next.loadedTurnIds)
   const omitted = new Set(next.compactTurns?.filter(t => !expanded.has(t.id)).flatMap(t => t.omittedNodeIds ?? []))
-  next.nodes = next.nodes.filter(n => !omitted.has(n.id))
-  const firstUser = next.nodes.find(n => n.kind === 'user')
+  const anchors = new Set(next.compactTurns?.map(t => t.id))
+  next.nodes = next.nodes.filter(n => !omitted.has(n.id) || anchors.has(n.id))
+  const firstUser = next.nodes.find(n => n.kind === 'user' && isHumanPrompt(n.origin))
   const firstRecord = firstUser && next.records.find(r => r.kind === 'user' && r.id === firstUser.id)
   if (firstRecord) next.turnBase = Math.max(0, firstRecord.turn - 1)
 
@@ -538,6 +603,14 @@ function rebuild(s: ViewState): ViewState {
   for (const req of runningRequests) {
     if (!next.requests.some(r => r.id === req.id)) next.requests.push(req)
   }
+  // A body/index refresh does not acknowledge pending requests. Keep them
+  // until the explicit correlation ID appears on this selected branch.
+  const confirmed = new Set(next.nodes.filter(n => n.kind === 'user').map(n => userMessageIdentity(n as Extract<ChatNode, { kind: 'user' }>)).filter(Boolean))
+  for (const n of s.nodes) {
+    if (n.kind !== 'user' || !isTransientUserId(n.id) || (userMessageIdentity(n) && confirmed.has(userMessageIdentity(n)))) continue
+    if (next.nodes.some(node => node.id === n.id)) continue
+    applyMessage(next, { role: 'user', content: n.content, origin: n.origin, clientRequestId: n.clientRequestId, completion: n.completion, external: n.external, timestamp: n.ts }, n.id, n.ts, n.parentId)
+  }
   if (next.requests.length) next.currentRequestId = next.requests[next.requests.length - 1].id
   // Preserve row identity across pagination/hydration. A sibling acquiring its
   // full body must not re-render every unchanged Markdown/tool row.
@@ -564,7 +637,13 @@ function attachCompactBaselines(s: ViewState) {
     const baseline = emptyView()
     // Stop at this turn's user and share lookup maps across turns: walking
     // every snapshot back to the root made repeated hydration quadratic.
-    const path = walkBranch(graph, turn.tailId, turn.id)
+    let path = walkBranch(graph, turn.tailId, turn.id)
+    const anchor = graph.byId.get(turn.id)
+    if (!turn.parentId && anchor?.parentId && path[0]?.id === turn.id) {
+      // Imported assistant/metadata prelude belongs to the first human turn
+      // on the server. Include its overlap too, or expansion bills it twice.
+      path = [...walkBranch(graph, anchor.parentId), ...path]
+    }
     for (const e of path) if (loaded.has(e.id)) applyEntry(baseline, e)
     // Compact omits even current-batch bodies at keep=0. Batch identities and
     // terminal flags define exactly what the snapshot already accounted for.
@@ -588,13 +667,13 @@ function sameValue(a: unknown, b: unknown): boolean {
 }
 
 function isUserEntry(e: Entry): boolean {
-  return e.type === 'message' && e.message?.role === 'user'
+  return isHumanEntry(e)
 }
 
 export function hydrateEntries(s: ViewState, incoming: Entry[], meta?: { hasMore?: boolean; oldestId?: string; compactTurns?: CompactTurn[] }): ViewState {
   if (!incoming.length && meta == null) return s
   const next = { ...s }
-  addEntries(next, incoming)
+  addEntries(next, projectedBodies(incoming, meta?.compactTurns))
   mergeCompactTurns(next, meta?.compactTurns)
   if (meta?.hasMore !== undefined) next.hasMore = meta.hasMore
   // An empty oldestId means the page had no older entry (the history ends
@@ -604,38 +683,41 @@ export function hydrateEntries(s: ViewState, incoming: Entry[], meta?: { hasMore
   return rebuild(next)
 }
 
-function mergeCompactTurns(s: ViewState, incoming?: CompactTurn[], branchChanged = false) {
+function mergeCompactTurns(s: ViewState, incoming?: CompactTurn[], authoritative = false) {
   if (!incoming) return
   const turns = new Map(s.compactTurns?.map(t => [t.id, t]))
+  const owners = new Map(s.compactTurns?.flatMap(turn => turn.entryIds.map(id => [id, turn.id] as const)))
+  const byId = new Map(s.entries.map(e => [e.id, e]))
+  const descendsFrom = (tail: string, ancestor: string) => {
+    const seen = new Set<string>()
+    let id: string | undefined = tail
+    while (id && !seen.has(id)) {
+      if (id === ancestor) return true
+      seen.add(id)
+      id = byId.get(id)?.parentId
+    }
+    return false
+  }
   for (const turn of incoming) {
     const previous = turns.get(turn.id)
-    // A delayed page or keep reprojection must not replace a newer sparse
-    // frontier: that would sever the current leaf from its opening user.
-    if (!branchChanged && previous && ((turn.entryCount != null && previous.entryCount != null && turn.entryCount < previous.entryCount)
-      || (turn.entryCount == null && (turn.stats.steps < previous.stats.steps || turn.stats.tools < previous.stats.tools || turn.stats.elapsedMs < previous.stats.elapsedMs)))) continue
+    // The first human request can adopt a runtime-only prefix's identity.
+    // A stale prefix snapshot may fill bodies, but cannot assign those same
+    // immutable entries back to the superseded runtime turn.
+    if (!authoritative && !previous && turn.entryIds.some(id => owners.has(id) && owners.get(id) !== turn.id)) continue
+    // Counts are not frontier authority: a longer sibling is still the wrong
+    // branch. Only recovery may select a different leaf without parent proof;
+    // presentation/hydration can advance an existing turn along known edges.
+    if (!authoritative && previous && previous.tailId !== turn.tailId && !descendsFrom(turn.tailId, previous.tailId)) continue
     turns.set(turn.id, turn)
   }
   s.compactTurns = [...turns.values()].sort((a, b) => a.stats.turn - b.stats.turn)
-  const byId = new Map(s.entries.map(e => [e.id, e]))
-  const loaded = new Set(s.loadedTurnIds)
-  for (const turn of s.compactTurns) {
-    // Completeness belongs to this snapshot frontier. A previously expanded
-    // prefix does not prove that hidden replies added while away are loaded.
-    loaded.delete(turn.id)
-    let id: string | undefined = turn.tailId
-    const seen = new Set<string>()
-    while (id && !seen.has(id)) {
-      seen.add(id)
-      if (!byId.has(id)) break
-      if (id === turn.id) { loaded.add(id); break }
-      id = byId.get(id)?.parentId
-    }
-  }
-  s.loadedTurnIds = [...loaded]
+  s.loadedTurnIds = coveredTurns(s.entries, s.compactTurns)
 }
 
 export function hydrateTurn(s: ViewState, id: string, entries: Entry[]): ViewState {
-  return hydrateEntries({ ...s, loadedTurnIds: [...new Set([...(s.loadedTurnIds ?? []), id])] }, [...new Map(entries.map(e => [e.id, e])).values()])
+  // The fetch completing is not itself coverage proof: the response can race
+  // a newer frontier, and a turn page may still be partial.
+  return hydrateEntries(s, [...new Map(entries.map(e => [e.id, e])).values()])
 }
 
 /** Convert the partial oldest detailed page to a whole compact turn without
@@ -688,6 +770,7 @@ function indexToEntry(ix: IndexEntry): Entry {
     sideband: ix.sideband,
     tokensBefore: ix.tokensBefore,
     truncated: true,
+    bodyKind: 'index',
     usage: ix.usage,
   }
   if (ix.role) {
@@ -754,7 +837,7 @@ function walkBranch(graph: ReturnType<typeof branchGraph>, leafId?: string, stop
   return active.reverse()
 }
 
-function leafEntries(entries: Entry[], leafId?: string, turns: CompactTurn[] = [], liveBridges = true): Entry[] {
+export function leafEntries(entries: Entry[], leafId?: string, turns: CompactTurn[] = [], liveBridges = true): Entry[] {
   return walkBranch(branchGraph(entries, turns), leafId, undefined, liveBridges)
 }
 
@@ -840,6 +923,7 @@ function applyRequestHeader(
   const step = nextRequestStep(s, turn)
   const request: RequestView = {
     id,
+    turnId: s.turnId,
     turn,
     step,
     startedAt,
@@ -956,11 +1040,8 @@ function applyEntry(s: ViewState, e: Entry, withNode = true) {
     })
     return
   }
-  // compaction_start/end entries are persisted alongside SSE; show them as a
-  // compact record on replay.
-  if (e.type === 'compaction_start' || e.type === 'compaction_end') {
-    applyCompactEvent(s, e.id, e.type, e.details, e.timestamp)
-  }
+  // Lifecycle operations are projected once per start/end pair by rebuild,
+  // including pairs whose bodies lie on opposite sides of the paging window.
 }
 
 function compactDetails(details?: unknown): { reason: string; status: string; ok?: boolean } {
@@ -977,38 +1058,68 @@ function compactTerminal(status: string, reason: string, ok?: boolean) {
   return { empty, failed }
 }
 
-function applyCompactEvent(s: ViewState, id: string, type: string, details?: unknown, stamp?: string) {
+function applyCompactEvent(
+  s: ViewState, id: string, type: string, details?: unknown, stamp?: string | number,
+  options: { withNode?: boolean; running?: boolean; summaryId?: string; truncated?: boolean; paired?: boolean } = {},
+) {
   const { reason, status, ok } = compactDetails(details)
-  if (type === 'compaction_start') {
-    s.records.push({
-      id,
-      kind: 'compact',
-      turn: s.turn || 1,
-      preview: `Compacting (${reason || 'auto'})…`,
-      running: true,
-      startedAt: tsMs(undefined, stamp),
-    })
-    return
-  }
-  // Persisted start/end entries have distinct JSONL IDs. Pair the terminal
-  // entry with the newest unfinished operation, just like the live event path.
-  const rec = [...s.records].reverse().find(r => r.kind === 'compact' && r.running)
-  if (rec && rec.kind === 'compact') {
-    const { empty, failed } = compactTerminal(status, reason, ok)
-    rec.running = false
-    rec.preview = empty
-      ? `Nothing to compact (${reason || 'auto'})`
+  const start = type === 'compaction_start'
+  const running = start && (options.running ?? true)
+  const terminal = compactTerminal(status, reason, ok)
+  const failed = terminal.failed || (start && !running)
+  const unknown = !start && !status && ok == null
+  const preview = running ? `Compacting (${reason || 'auto'})…`
+    : unknown ? 'Compaction status not loaded'
+    : terminal.empty ? `Nothing to compact (${reason || 'auto'})`
       : `Compacted (${reason || 'auto'})${failed ? ' (failed)' : ''}`
+  const pending = start || options.paired ? undefined : [...s.records].reverse().find(r => r.kind === 'compact' && r.running)
+  const rowId = pending?.id ?? id
+  const record: TrajRecord = {
+    id: rowId, kind: 'compact', turn: s.turn || 1, turnId: s.turnId,
+    preview, running, startedAt: tsMs(undefined, stamp), truncated: options.truncated,
+  }
+  if (pending) s.records = s.records.map(r => r === pending ? { ...r, preview, running } : r)
+  else s.records.push(record)
+  const summary = options.summaryId && s.nodes.some(n => n.kind === 'compaction' && !n.lifecycle && n.id === options.summaryId)
+  if (summary) {
+    s.nodes = s.nodes.filter(n => !(n.kind === 'compaction' && n.lifecycle && n.id === rowId))
+  } else if (options.withNode !== false) {
+    const node: ChatNode = {
+      kind: 'compaction', id: rowId, turnId: s.turnId, summary: '', lifecycle: true,
+      running, failed, empty: terminal.empty, unknown,
+      ts: tsMs(undefined, stamp), truncated: options.truncated,
+    }
+    const at = s.nodes.findIndex(n => n.id === rowId && n.kind === 'compaction' && n.lifecycle)
+    if (at < 0) s.nodes.push(node)
+    else s.nodes[at] = node
   }
 }
 
 function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | number, parentId?: string, truncated?: boolean, withNode = true) {
   if (m.role === 'user') {
     const text = messageText(m)
-    s.turn += 1
-    if (withNode) s.nodes.push({ kind: 'user', id, parentId, text, content: m.content ?? [], ts: tsMs(m, stamp), origin: m.origin, truncated })
+    if (s.turnId !== id && (isHumanPrompt(m.origin) || !s.turnId)) {
+      const firstHuman = s.turnId && isHumanPrompt(m.origin)
+        && !s.nodes.some(n => n.kind === 'user' && isHumanPrompt(n.origin))
+        && !leafEntries(s.allEntries, s.leafId, s.compactTurns).some(isHumanEntry)
+      if (firstHuman) {
+        // A child/import can receive its first human request later. Go folds
+        // that prelude into the first human group, so adopt its identity live
+        // too instead of temporarily inventing a second turn until reload.
+        const previous = s.turnId!
+        remapTurnIdentity(s, previous, id)
+        s.compactTurns = s.compactTurns?.map(t => t.id === id ? {
+          ...t, cumulativeElapsedMs: 0,
+          stats: { ...t.stats, startedAt: tsMs(m, stamp), elapsedMs: 0 },
+        } : t)
+        s.loadedTurnIds = s.loadedTurnIds?.filter(turn => turn !== id)
+      } else s.turn += 1
+      s.turnId = id
+    }
+    if (withNode) s.nodes.push({ kind: 'user', id, turnId: s.turnId, parentId, text, content: m.content ?? [], ts: tsMs(m, stamp), origin: m.origin, clientRequestId: m.clientRequestId, completion: m.completion, external: m.external, truncated })
     s.records.push({
       id,
+      turnId: s.turnId,
 	  parentId,
       kind: 'user',
       truncated,
@@ -1212,14 +1323,6 @@ function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { 
   })
 }
 
-function lastUserText(s: ViewState): string | null {
-  for (let i = s.nodes.length - 1; i >= 0; i--) {
-    const n = s.nodes[i]
-    if (n.kind === 'user') return n.text
-  }
-  return null
-}
-
 // Replay dedupe is state-based, never counted. Why: the server trims its
 // replay buffer (superseded chunks and completed messages' starts are gone) and
 // a client may resume mid-run with a cursor, so "how many messages will the
@@ -1288,7 +1391,9 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
       next.busy = false
       next.stopping = false
       next.nodes = next.nodes.map(n =>
-        n.kind === 'assistant' && n.streaming ? { ...n, streaming: false } : n.kind === 'tool' && n.running ? { ...n, running: false } : n,
+        n.kind === 'assistant' && n.streaming ? { ...n, streaming: false }
+          : n.kind === 'tool' && n.running ? { ...n, running: false }
+            : n.kind === 'compaction' && n.lifecycle && n.running ? { ...n, running: false, failed: true } : n,
       )
       next.records = next.records.map(r => r.running ? { ...r, running: false } : r)
       next.requests = next.requests.map(request => request.status === 'running'
@@ -1296,7 +1401,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
         : request)
       break
     case 'steer_accepted':
-      if (ev.message?.content) return appendOptimisticUser(s, ev.message.content)
+      if (ev.message?.content) return appendOptimisticUser(s, ev.message)
       break
     case 'run_aborted':
       next.stopping = true
@@ -1316,6 +1421,11 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
             ts: ev.timestamp,
           })
         }
+        if (ev.entryId) persistLiveEntry(next, {
+          type: 'run_aborted', id: ev.entryId, parentId: ev.parentId,
+          timestamp: ev.timestamp ? new Date(ev.timestamp).toISOString() : undefined,
+          details: { runId: ev.runId, reason: ev.reason, source: ev.cancelSource },
+        })
       }
       break
     case 'extension_notice':
@@ -1386,37 +1496,20 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
 		break
     case 'compaction_start':
     case 'compaction_end': {
-      // id is not part of the wire event; match by kind+order on the live path.
-      const stamp = Date.now()
-      if (ev.type === 'compaction_start') {
-        const id = `compact-live-${stamp}`
-        // The chat history has no run stream of its own for a manual /compact,
-        // so the same events drive both the timeline record and the chat row.
-        next.nodes = [...next.nodes, { kind: 'compaction', id, summary: '', running: true }]
-        next.records.push({
-          id,
-          kind: 'compact',
-          turn: next.turn || 1,
-          preview: `Compacting (${ev.reason || 'auto'})…`,
-          running: true,
-          startedAt: stamp,
+      if (ev.lifecycleEntryId) {
+        const known = next.allEntries.some(e => e.id === ev.lifecycleEntryId)
+        persistLiveEntry(next, {
+          id: ev.lifecycleEntryId, type: ev.type, parentId: ev.parentId,
+          timestamp: ev.timestamp == null ? undefined : new Date(ev.timestamp).toISOString(),
+          details: { reason: ev.reason, status: ev.status, ok: ev.ok, entryId: ev.entryId, tokensBefore: ev.tokensBefore },
         })
-      } else {
-        const terminal = compactTerminal(ev.status || '', ev.reason || '', ev.ok)
-        const live = [...next.nodes].reverse().find(n => n.kind === 'compaction' && n.running)
-        if (live && live.kind === 'compaction') {
-          next.nodes = next.nodes.map(n => n.id === live.id
-            ? { ...live, running: false, empty: terminal.empty, failed: terminal.failed }
-            : n)
-        }
-        const rec = [...next.records].reverse().find(r => r.kind === 'compact' && r.running)
-        if (rec) {
-          rec.running = false
-          rec.preview = terminal.empty
-            ? `Nothing to compact (${ev.reason || 'auto'})`
-            : `Compacted (${ev.reason || 'auto'})${terminal.failed ? ' (failed)' : ''}`
-        }
+        if (ev.type === 'compaction_start' && !known) next.busy = true
+        // Canonical identity makes HTTP/SSE replay commute and lets unrelated
+        // body/index hydration rebuild progress without losing or copying it.
+        return rebuild(next)
       }
+      // Bare loop events in local callers lack a persisted identity.
+      applyCompactEvent(next, `compact-live-${next.liveRevision}`, ev.type, ev, ev.timestamp ?? Date.now(), { summaryId: ev.entryId })
       break
     }
     case 'tool_execution_end':
@@ -1438,6 +1531,8 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     default:
       break
   }
+  next.nodes = next.nodes.map(n => n.turnId ? n : { ...n, turnId: next.turnId })
+  next.records = next.records.map(r => r.turnId ? r : { ...r, turnId: next.turnId })
   return next
 }
 
@@ -1445,36 +1540,10 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
   const m = ev.message ?? ev.assistantMessageEvent?.partial
   if (!m) return
   if (m.role === 'user') {
-    const text = messageText(m)
-    if (lastUserText(s) === text) {
-      // Same text is already on screen. Two cases:
-      //   1. history replay: loadHistory already read the jsonl entry, which
-      //      has the same timestamp the event carries — nothing to do.
-      //   2. optimistic append: the bubble was drawn before the request was
-      //      sent, so its ts is a client-side guess (or absent). We must NOT
-      //      skip the event entirely: the event's timestamp is the server's
-      //      authoritative one and is what a reload would show. Backfill it so
-      //      the live view matches the reloaded view. (This was the bug where
-      //      the time under a just-sent message only appeared after refresh.)
-      if (m.timestamp || ev.entryId) {
-        for (let i = s.nodes.length - 1; i >= 0; i--) {
-          const n = s.nodes[i]
-          if (n.kind === 'user' && n.text === text) {
-			const nextId = ev.entryId || n.id
-            s.nodes[i] = { ...n, id: nextId, content: m.content ?? n.content, ts: m.timestamp ?? n.ts, origin: m.origin ?? n.origin }
-            // Keep the trajectory record in sync so the detail panel shows the
-            // same start time as the chat bubble.
-			s.records = s.records.map(r => (r.id === n.id ? { ...r, id: nextId, startedAt: m.timestamp ?? r.startedAt } : r))
-            break
-          }
-        }
-      }
-      return
-    }
-    // A resume can replay a user message the transcript already rendered; the
-    // entry id is authoritative, so it is never appended twice.
-    if (ev.entryId && s.nodes.some(n => n.id === ev.entryId)) return
-    applyMessage(s, m, ev.entryId || `live-user-${s.nodes.length}`, undefined)
+    // Older frames without correlation wait for the durable end rather than
+    // guessing identity from text, timestamp or the most recent user.
+    if (!ev.entryId && !userMessageIdentity(m)) return
+    upsertUser(s, m, ev.entryId, ev.parentId)
     return
   }
   if (m.role === 'toolResult') {
@@ -1522,10 +1591,6 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
       return
     }
     if (ev.type === 'message_end') {
-      // The entry id was checked above; a view whose nodes carry no ids yet
-      // (a very old window) falls back to matching the finished text.
-      const text = messageText(m)
-      if (!ev.entryId && text !== '' && s.nodes.some(n => n.kind === 'assistant' && !n.streaming && n.text === text)) return
       applyMessage(s, m, ev.entryId || `live-asst-${s.nodes.length}`, undefined)
     }
     return
@@ -1650,48 +1715,6 @@ function dropStreamingAssistant(s: ViewState, idx: number) {
   s.records = s.records.filter(r => r.id !== node.id)
 }
 
-const liveUserPrefix = /^(live-user-|opt-user-)/
-
-/** Drop optimistic/live user bubbles once the jsonl copy of the same text exists. */
-export function reconcileUserNodes(nodes: ChatNode[]): ChatNode[] {
-  const collapsed: ChatNode[] = []
-  for (const n of nodes) {
-    const last = collapsed.at(-1)
-    // Consecutive same-text users are the optimistic bubble plus the live SSE
-    // copy, not two turns (a real second turn has an assistant in between).
-    if (n.kind === 'user' && last?.kind === 'user' && last.text.trim() === n.text.trim()) {
-      collapsed[collapsed.length - 1] = n
-      continue
-    }
-    collapsed.push(n)
-  }
-  const persisted = new Map<string, ChatNode>()
-  for (const n of collapsed) {
-    if (n.kind === 'user' && !liveUserPrefix.test(n.id)) persisted.set(n.text, n)
-  }
-  if (!persisted.size) return collapsed
-  const used = new Set<string>()
-  const out: ChatNode[] = []
-  for (const n of collapsed) {
-    if (n.kind !== 'user') {
-      out.push(n)
-      continue
-    }
-    const canonical = persisted.get(n.text)
-    if (liveUserPrefix.test(n.id) && canonical) {
-      if (!used.has(canonical.id)) {
-        out.push(canonical)
-        used.add(canonical.id)
-      }
-      continue
-    }
-    if (canonical && used.has(canonical.id) && n.id === canonical.id) continue
-    out.push(n)
-    if (canonical && n.id === canonical.id) used.add(n.id)
-  }
-  return out
-}
-
 export type UserRequest = { id: string; title: string }
 
 /** First non-empty line, else the first named attachment. Empty when the user turn has no caption. */
@@ -1705,22 +1728,6 @@ export function requestTitle(text: string, content?: Content[]): string {
     if (name) return name
   }
   return ''
-}
-
-/**
- * isHumanPrompt reports whether a user turn was typed by a person.
- *
- * Why: the runtime writes machine turns into the same user role — the Agent
- * tool's subagent directives and `<task-notification>` envelopes carry an
- * `agent`/`agent:<id>` origin. Those belong in the transcript (the chat shows
- * them as dashed bubbles) but not in the request navigator, which is a list of
- * the prompts a person sent. Extension origins stay: they relay a real user
- * (Telegram) or are turns an extension was asked to run, and both are part of
- * the conversation the navigator walks.
- */
-export function isHumanPrompt(origin?: string): boolean {
-  if (!origin) return true
-  return origin.startsWith('extension:')
 }
 
 /**
@@ -1747,17 +1754,58 @@ export function userRequests(entries: Entry[], leafId?: string, nodes: ChatNode[
   return out
 }
 
-export function appendOptimisticUser(s: ViewState, content: import('../api/types').Content[]): ViewState {
-  const text = content.filter(c => c.type === 'text' || c.type === '').map(c => c.text ?? '').join('\n')
-  if (text && lastUserText(s) === text) {
-    return { ...s, busy: true, error: null }
+let optimisticSequence = 0
+
+function remapTurnIdentity(s: ViewState, previous: TurnId, id: TurnId) {
+  s.nodes = s.nodes.map(n => n.turnId === previous ? { ...n, turnId: id } : n)
+  s.records = s.records.map(r => r.turnId === previous ? { ...r, turnId: id } : r)
+  s.requests = s.requests.map(r => r.turnId === previous ? { ...r, turnId: id } : r)
+  s.compactTurns = s.compactTurns?.map(t => t.id === previous ? { ...t, id } : t)
+  s.loadedTurnIds = s.loadedTurnIds?.map(turn => turn === previous ? id : turn)
+}
+
+function upsertUser(s: ViewState, message: Message, entryId?: string, parentId?: string) {
+  const identity = userMessageIdentity(message)
+  const at = s.nodes.findIndex(n => n.kind === 'user' && (
+    (entryId && n.id === entryId) ||
+    (identity && userMessageIdentity(n) === identity && (!entryId || isTransientUserId(n.id)))
+  ))
+  if (at < 0) {
+    applyMessage(s, message, entryId || `opt-user-${++optimisticSequence}`, message.timestamp ?? Date.now(), parentId)
+    return
   }
-  const next = { ...s, nodes: s.nodes.slice(), records: s.records.slice(), busy: true, error: null }
-  // The bubble is drawn before the server confirms, so there is no real
-  // timestamp yet. Date.now() (a number, not a string) lets tsMs use the local
-  // clock so the time shows immediately; the SSE event later backfills the
-  // server's authoritative timestamp.
-  applyMessage(next, { role: 'user', content }, `opt-user-${Date.now()}`, Date.now())
+  const previous = s.nodes[at] as Extract<ChatNode, { kind: 'user' }>
+  const id = entryId || previous.id
+  const turnId = previous.turnId === previous.id ? id : previous.turnId
+  s.nodes[at] = {
+    ...previous, id, turnId, parentId: parentId ?? previous.parentId,
+    content: message.content ?? previous.content, text: messageText(message),
+    ts: message.timestamp ?? previous.ts, origin: message.origin ?? previous.origin,
+    clientRequestId: message.clientRequestId ?? previous.clientRequestId, completion: message.completion ?? previous.completion, external: message.external ?? previous.external,
+  }
+  if (s.turnId === previous.id) s.turnId = id
+  remapTurnIdentity(s, previous.id, id)
+  s.records = s.records.map(r => ({
+    ...r,
+    ...(r.turnId === previous.id ? { turnId: id } : {}),
+    ...(r.id === previous.id ? { id, startedAt: message.timestamp ?? r.startedAt, preview: previewOf(messageText(message)) } : {}),
+  }))
+}
+
+export function appendOptimisticUser(s: ViewState, content: Content[] | Message, clientRequestId?: string): ViewState {
+  const message: Message = Array.isArray(content) ? { role: 'user', content, clientRequestId } : content
+  const identity = userMessageIdentity(message)
+  const known = identity && (s.nodes.some(n => n.kind === 'user' && userMessageIdentity(n) === identity)
+    || leafEntries(s.allEntries, s.leafId, s.compactTurns).some(e => e.message?.role === 'user' && userMessageIdentity(e.message) === identity))
+  // A newly accepted prompt is runtime authority, even before SSE starts.
+  // Invalidate idle GETs captured before it; replayed acknowledgements are not
+  // new work and must neither advance this frontier nor resurrect busy state.
+  if (known) return s
+  const next = {
+    ...s, nodes: s.nodes.slice(), records: s.records.slice(), busy: true, error: null,
+    liveRevision: s.liveRevision + 1,
+  }
+  upsertUser(next, message)
   return next
 }
 
@@ -1803,6 +1851,18 @@ function activePath(s: ViewState): Entry[] {
   return leafEntries(s.allEntries, s.leafId, s.compactTurns).reverse()
 }
 
+/** The snapshot counts through its immutable tail, not its last retained body.
+ * A keep=0 projection may retain only the opening input. Hydrating old replies
+ * must not misclassify them as new work after that snapshot. */
+function snapshotSuffix(path: Entry[], tailId: string): Entry[] {
+  const tail = path.findIndex(entry => entry.id === tailId)
+  if (tail >= 0) return path.slice(0, tail)
+  // Sparse traversal skips the absent tail body, but its first child retains
+  // either the canonical parent or the accepted live traversal bridge.
+  const child = path.findIndex(entry => entry.parentId === tailId || entry.previousId === tailId)
+  return child >= 0 ? path.slice(0, child + 1) : []
+}
+
 /** Session-wide usage/timing for the composer strip: the branch totals and the
  * summed usage of every known turn, not the newest step's one-shot values.
  * Per-turn stats come from `projectTurnStats`, so a folded compact snapshot is
@@ -1818,12 +1878,12 @@ export function sessionStats(s: ViewState): SessionStats {
   // Usage/timing across every known turn. `projectTurnStats` merges the loaded
   // window with the compact snapshots; folded turns it dropped (outside the
   // window) still contribute their server totals once.
-  const seen = new Set<number>()
+  const seen = new Set<TurnId>()
   let ttftSum = 0
   let ttftCount = 0
   let decodeMs = 0
   let decodeTokens = 0
-  const add = (t: TurnStats) => {
+  const add = (t: Omit<TurnStats, 'turnId'>) => {
     out.input += t.input
     out.output += t.output
     out.cacheRead += t.cacheRead
@@ -1838,13 +1898,14 @@ export function sessionStats(s: ViewState): SessionStats {
       decodeMs += t.output / t.tps * 1_000
     }
   }
-  for (const t of projectTurnStats(s.nodes, s.turnBase, s.compactTurns).values()) {
-    seen.add(t.turn)
+  const projected = projectTurnStats(s.nodes, s.turnBase, s.compactTurns)
+  for (const t of projected.values()) {
+    seen.add(t.turnId)
     add(t)
   }
   for (const turn of s.compactTurns ?? []) {
-    if (seen.has(turn.stats.turn)) continue
-    seen.add(turn.stats.turn)
+    if (seen.has(turn.id)) continue
+    seen.add(turn.id)
     add(turn.stats)
   }
   out.ttftMs = ttftCount > 0 ? ttftSum / ttftCount : 0
@@ -1853,47 +1914,55 @@ export function sessionStats(s: ViewState): SessionStats {
   // newest-first, so the first user entry is the current turn; a just-sent
   // prompt whose entry has not landed yet falls back to the live node.
   for (const e of path) {
-    if (e.type === 'message' && e.message?.role === 'user') { out.turnStartedAt = tsMs(e.message, e.timestamp) ?? 0; break }
+    if (isHumanEntry(e)) { out.turnStartedAt = tsMs(e.message, e.timestamp) ?? 0; break }
+  }
+  if (!out.turnStartedAt) {
+    const first = path.slice().reverse().find(e => e.type === 'message' && e.message?.role === 'user')
+    if (first) out.turnStartedAt = tsMs(first.message, first.timestamp) ?? 0
   }
   for (let i = s.nodes.length - 1; i >= 0; i--) {
     const n = s.nodes[i]
-    if (n.kind !== 'user') continue
+    if (n.kind !== 'user' || !isHumanPrompt(n.origin)) continue
     // A second prompt appears optimistically before its entry reaches the
     // branch. Timing the previous persisted prompt includes all the idle time.
     if (n.ts != null) out.turnStartedAt = n.ts
     break
   }
   for (const e of path) {
-    if (e.type === 'message' && e.message?.role === 'user') out.turns += 1
+    if (isHumanEntry(e)) out.turns += 1
     else if (e.type === 'message' && e.message?.role === 'assistant') out.steps += 1
     else if (e.type === 'compaction' && e.usage) out.steps += 1
   }
   const summary = s.compactTurns?.at(-1)
   if (summary && !s.indexLoaded) {
-    const at = path.findIndex(e => summary.entryIds.includes(e.id))
-    const newer = at >= 0 ? path.slice(0, at) : []
-    out.turns = summary.stats.turn + newer.filter(isUserEntry).length
+    const newer = snapshotSuffix(path, summary.tailId)
+    out.turns = summary.stats.turn + newer.filter(e => isUserEntry(e) && e.id !== summary.id).length
     out.steps = summary.stepCount + newer.filter(e => e.message?.role === 'assistant' || (e.type === 'compaction' && e.usage)).length
   }
+  const summarizedTurns = new Set(s.compactTurns?.map(t => t.id))
   for (const n of s.nodes) {
     if (counted.has(n.id)) continue
-    if (n.kind === 'user') out.turns += 1
+    if (n.kind === 'user' && isHumanPrompt(n.origin) && !summarizedTurns.has(n.id)) out.turns += 1
     else if (n.kind === 'assistant' && !n.streaming) out.steps += 1
   }
+  if (out.turns === 0 && (path.some(e => e.type === 'message') || s.nodes.length)) out.turns = 1
   // Session total of the model's actual run time, so the composer strip is not
   // just the current turn's wall clock (which resets on every prompt and
   // vanishes when the run ends). The newest turn is reported separately for the
   // composer to extend live while it runs.
   const spans = runElapsedByTurn(s.records)
+  for (const t of projected.values()) {
+    spans.set(t.turnId, { ordinal: t.turn, elapsedMs: Math.max(spans.get(t.turnId)?.elapsedMs ?? 0, t.elapsedMs) })
+  }
   for (const turn of s.compactTurns ?? []) {
     // Folded turns arrive only as server stats; their records were never loaded.
-    spans.set(turn.stats.turn, Math.max(spans.get(turn.stats.turn) ?? 0, turn.stats.elapsedMs))
+    spans.set(turn.id, { ordinal: turn.stats.turn, elapsedMs: Math.max(spans.get(turn.id)?.elapsedMs ?? 0, turn.stats.elapsedMs) })
   }
-  let newest = 0
-  for (const turn of spans.keys()) if (turn > newest) newest = turn
-  for (const [turn, ms] of spans) {
-    if (turn === newest) out.turnElapsedMs = ms
-    else out.elapsedMs += ms
+  let newest: TurnId | undefined
+  for (const [id, span] of spans) if (!newest || span.ordinal > spans.get(newest)!.ordinal) newest = id
+  for (const [id, span] of spans) {
+    if (id === newest) out.turnElapsedMs = span.elapsedMs
+    else out.elapsedMs += span.elapsedMs
   }
   // Compact opens only a bounded set of turns. Its cumulative prefix keeps
   // session elapsed independent of whether the optional tree index has loaded.
@@ -1902,8 +1971,8 @@ export function sessionStats(s: ViewState): SessionStats {
     // The cumulative prefix is frozen at the snapshot frontier. Subtracting
     // today's extended span from it would make past work shrink as live work
     // grows, hiding exactly that new elapsed time from the total.
-    let total = anchor.cumulativeElapsedMs + Math.max(0, (spans.get(anchor.stats.turn) ?? 0) - anchor.stats.elapsedMs)
-    for (const [turn, ms] of spans) if (turn > anchor.stats.turn) total += ms
+    let total = anchor.cumulativeElapsedMs + Math.max(0, (spans.get(anchor.id)?.elapsedMs ?? 0) - anchor.stats.elapsedMs)
+    for (const span of spans.values()) if (span.ordinal > anchor.stats.turn) total += span.elapsedMs
     out.elapsedMs = Math.max(0, total - out.turnElapsedMs)
   }
   return out
@@ -1915,25 +1984,44 @@ export function sessionStats(s: ViewState): SessionStats {
  * prompt's timestamp and ends at the last node's timestamp, with a tool's own
  * `startedAt + durationMs` counting as the tail (an assistant record already
  * carries the completion timestamp, so its `durationMs` is not added again). */
-function runElapsedByTurn(records: TrajRecord[]): Map<number, number> {
-  const spans = new Map<number, { start: number; end: number }>()
+function runElapsedByTurn(records: TrajRecord[]): Map<TurnId, { ordinal: number; elapsedMs: number }> {
+  const spans = new Map<TurnId, { ordinal: number; start: number; end: number; anchored: boolean; duration: number }>()
+  let fallback: TurnId | undefined
+  let ordinal: number | undefined
   for (const r of records) {
-    if (r.startedAt == null) continue
-    const end = r.kind === 'tool' && r.durationMs != null ? r.startedAt + r.durationMs : r.startedAt
-    const span = spans.get(r.turn)
-    if (!span) spans.set(r.turn, { start: r.startedAt, end })
-    else {
-      if (r.startedAt < span.start) span.start = r.startedAt
-      if (end > span.end) span.end = end
+    // Pure callers may provide older record shapes without turnId. Keep their
+    // first record as an identity anchor; actual projections always carry it.
+    if (!fallback || (r.kind === 'user' && ordinal !== r.turn)) fallback = r.id
+    ordinal = r.turn
+    const id = r.turnId ?? fallback
+    let span = spans.get(id)
+    if (!span) {
+      span = { ordinal: r.turn, start: 0, end: 0, anchored: false, duration: 0 }
+      spans.set(id, span)
     }
+    if (r.kind === 'assistant' && !r.requestOnly) span.duration += r.durationMs ?? 0
+    if (r.startedAt == null) continue
+    const anchored = r.kind === 'user' && r.id === id
+    const end = r.kind === 'tool' && r.durationMs != null ? r.startedAt + r.durationMs : r.startedAt
+    if (anchored || (!span.anchored && (span.start === 0 || r.startedAt < span.start))) span.start = r.startedAt
+    span.anchored ||= anchored
+    // User-role notices and request headers are not completed work. A
+    // trailing notification must not extend the settled run clock either.
+    if ((r.kind === 'tool' || r.kind === 'compacted' || (r.kind === 'assistant' && !r.requestOnly)) && end > span.end) span.end = end
   }
-  const out = new Map<number, number>()
-  for (const [turn, span] of spans) out.set(turn, Math.max(0, span.end - span.start))
+  const out = new Map<TurnId, { ordinal: number; elapsedMs: number }>()
+  for (const [id, span] of spans) out.set(id, {
+    ordinal: span.ordinal,
+    // Imported assistant-only transcripts have no request start. Treating
+    // completion timestamps as a start invents idle time absent in Go stats.
+    elapsedMs: span.anchored && span.start > 0 && span.end > span.start ? span.end - span.start : span.duration,
+  })
   return out
 }
 
 export type TurnStats = {
-  /** 1-based turn index — the nth user message on the branch. */
+  turnId: TurnId
+  /** 1-based display ordinal, never used to join projections. */
   turn: number
   /** Completed steps in the turn: assistant messages plus settled compactions. */
   steps: number
@@ -2008,6 +2096,7 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
   type Acc = TurnStats & { lastAt: number; decodeMs: number; decodeTokens: number; lastId: string }
   let acc: Acc | null = null
   let turn = base
+  const groups = new Map(groupTurns(nodes).map(group => [group.nodes[0].id, group]))
   // Cache-miss detection mirrors `cacheMisses`: `prevPrompt` is the previous
   // completed step's whole prompt and `cacheReported` turns on once any step
   // has shown cache activity (so a provider that never reports caching is not
@@ -2033,24 +2122,26 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
     acc = null
   }
   for (const n of nodes) {
-    if (n.kind === 'user') {
+    const group = groups.get(n.id)
+    if (group) {
       flush()
       turn += 1
+      const firstUser = group.user ?? group.nodes.find(n => n.kind === 'user')
+      const start = firstUser?.kind === 'user' ? firstUser.ts ?? 0 : 0
       acc = {
-        turn, steps: 0, elapsedMs: 0, durationMs: 0,
+        turnId: group.id, turn, steps: 0, elapsedMs: 0, durationMs: 0,
         input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
         hasCost: false, cost: 0, ttftMs: 0, tps: null, lastTtftMs: 0, lastTps: null, live: false,
         tools: 0, toolFailures: 0, cacheMisses: 0,
-        startedAt: n.ts ?? 0, lastAt: n.ts ?? 0, decodeMs: 0, decodeTokens: 0, lastId: n.id,
+        startedAt: start, lastAt: start, decodeMs: 0, decodeTokens: 0, lastId: n.id,
       }
-      continue
     }
     if (!acc) continue
     acc.lastId = n.id
     // Parallel tools may settle out of order. Only lifecycle reconciliation,
     // not sibling position, decides whether work is still running.
     acc.live ||= nodeLive(n)
-    if ((n.kind === 'assistant' || n.kind === 'compaction') && n.ts != null) acc.lastAt = Math.max(acc.lastAt, n.ts)
+    if ((n.kind === 'assistant' || (n.kind === 'compaction' && !n.lifecycle)) && n.ts != null) acc.lastAt = Math.max(acc.lastAt, n.ts)
     if (n.kind === 'tool' && n.startedAt != null && n.durationMs != null) {
       const endedAt = n.startedAt + n.durationMs
       if (endedAt > acc.lastAt) acc.lastAt = endedAt
@@ -2103,6 +2194,7 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
       acc.tools += 1
       if (n.isError) acc.toolFailures += 1
     } else if (n.kind === 'compaction') {
+      if (n.lifecycle) continue
       // A compaction legitimately rewrites the context, so cache comparison
       // restarts from the next step (pi clears its previous-request state too).
       prevPrompt = 0
@@ -2131,28 +2223,36 @@ export function cacheHitPercent(s: SessionStats): number | null {
  * current observed nodes always win over an older snapshot's live state. */
 export function projectTurnStats(nodes: ChatNode[], base = 0, summaries: CompactTurn[] = []): Map<string, TurnStats> {
   const out = turnStats(nodes, base)
-  const byTurn = new Map<number, string>()
-  for (const [key, stats] of out) byTurn.set(stats.turn, key)
+  const byTurn = new Map<TurnId, string>()
+  for (const [key, stats] of out) byTurn.set(stats.turnId, key)
+  const groups = new Map(groupTurns(nodes).map(group => [group.id, group]))
   const current = new Set(nodes.map(n => n.id))
   for (const summary of summaries) {
-    const key = byTurn.get(summary.stats.turn) ?? summary.visibleNodeIds.at(-1) ?? summary.id
+    const key = byTurn.get(summary.id) ?? groups.get(summary.id)?.nodes.at(-1)?.id ?? summary.visibleNodeIds.at(-1) ?? summary.id
     if (!current.has(key)) continue
     const observed = out.get(key)
     if (!observed) {
       const latest = lastStepReadout(summary.lastStep)
-      out.set(key, { ...summary.stats, lastTtftMs: latest.ttftMs, lastTps: latest.tps })
+      out.set(key, { ...summary.stats, turnId: summary.id, turn: Math.max(1, summary.stats.turn), lastTtftMs: latest.ttftMs, lastTps: latest.tps })
       continue
     }
     const overlapNodes = (summary.baselineNodes ?? []).filter(n => current.has(n.id))
     const overlap = [...turnStats(overlapNodes).values()][0]
-    const merged = { ...observed, startedAt: observed.startedAt || summary.stats.startedAt }
+    const merged = { ...observed, turnId: summary.id, turn: Math.max(1, summary.stats.turn), startedAt: observed.startedAt || summary.stats.startedAt }
     // Deltas include all numeric additive metrics, not only tool counts. An
     // end event updates a pending snapshot tool's failure without adding it.
     for (const field of ['steps', 'tools', 'toolFailures', 'durationMs', 'input', 'output', 'cacheRead', 'cacheWrite', 'cost', 'cacheMisses'] as const) {
       merged[field] = Math.max(0, summary.stats[field] + observed[field] - (overlap?.[field] ?? 0))
     }
     merged.hasCost = summary.stats.hasCost || observed.hasCost
-    merged.elapsedMs = Math.max(summary.stats.elapsedMs, observed.elapsedMs)
+    const lastAt = (groups.get(summary.id)?.nodes ?? []).reduce((end, node) => {
+      if ((node.kind === 'assistant' || (node.kind === 'compaction' && !node.lifecycle)) && node.ts != null) return Math.max(end, node.ts)
+      if (node.kind === 'tool' && node.startedAt != null && node.durationMs != null) return Math.max(end, node.startedAt + node.durationMs)
+      return end
+    }, 0)
+    // A partial body set cannot use its partial latency sum as the full
+    // clock fallback. With no real start/end span, use merged step duration.
+    merged.elapsedMs = Math.max(summary.stats.elapsedMs, merged.startedAt && lastAt > merged.startedAt ? lastAt - merged.startedAt : merged.durationMs)
     merged.ttftMs = summary.stats.ttftMs || observed.ttftMs
     // Decode duration is recoverable from the snapshot rate and output only
     // when every step reports TTFT; keep the authoritative snapshot estimate

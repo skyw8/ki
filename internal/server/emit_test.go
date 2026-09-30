@@ -106,6 +106,24 @@ func TestEmitterIdempotencyKeyConsumedOnce(t *testing.T) {
 	}
 }
 
+func TestEmitterContentRewritePreservesProtocolIdentity(t *testing.T) {
+	for _, origin := range []string{"", "agent:child"} {
+		original := types.Message{Role: "user", ClientRequestID: "accepted-request", Origin: origin,
+			Completion: &types.CompletionIdentity{TaskID: "child", Generation: 2}}
+		for _, replacement := range []types.Message{
+			{Role: "user", Content: []types.Content{{Type: "text", Text: "rewritten"}}},
+			{Role: "user", Content: []types.Content{{Type: "text", Text: "rewritten"}}, ClientRequestID: "wrong-request",
+				Origin: "extension:other", Completion: &types.CompletionIdentity{TaskID: "other", Generation: 9}},
+		} {
+			preserveMessageIdentity(original, &replacement)
+			if replacement.ClientRequestID != original.ClientRequestID || replacement.Completion != original.Completion ||
+				replacement.Origin != original.Origin || replacement.Text() != "rewritten" {
+				t.Fatalf("content rewrite changed protocol identity: %+v", replacement)
+			}
+		}
+	}
+}
+
 // TestEmitterStampsIdentityOnCallerEvent covers the stage boundary a refactor
 // broke: buffer used to take the event by value, so only the buffered copy got
 // the run id and external metadata while the stages after it — the push

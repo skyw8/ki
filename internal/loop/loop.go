@@ -96,11 +96,15 @@ func (t EventType) Lifecycle() bool {
 type Event struct {
 	Type    EventType `json:"type"`
 	EntryID string    `json:"entryId,omitempty"`
-	// ParentID is the persisted message edge, including an explicit empty root.
-	// A sparse transcript leaf is not a safe parent for a replayed message.
+	// LifecycleEntryID identifies the persisted compaction_start/end entry;
+	// EntryID still identifies the committed checkpoint on compaction_end.
+	LifecycleEntryID string `json:"lifecycleEntryId,omitempty"`
+	// ParentID is the persisted message/lifecycle edge, including an explicit
+	// empty root. A sparse transcript leaf is not a safe replay parent.
 	ParentID *string `json:"parentId,omitempty"`
 	// Timestamp is Unix milliseconds. Tool execution start/end events use it
-	// as the authoritative start/completion wall-clock time.
+	// as the authoritative start/completion wall-clock time; compaction
+	// lifecycle events use their persisted entry's timestamp.
 	Timestamp int64 `json:"timestamp,omitzero"`
 	// DurationMs is the elapsed time for one tool call, including execution and
 	// the optional AfterTool hook. It is not omitempty: a sub-millisecond call
@@ -390,6 +394,9 @@ type Config struct {
 	// Inbox receives same-run user messages. Drain happens after the current
 	// stream/tools turn, before the next streamWithRetry. A nil Inbox is idle.
 	Inbox *Inbox
+	// CommitUserMessage arbitrates runtime completion ownership at persistence,
+	// not enqueue. A false result excludes the message from provider history.
+	CommitUserMessage func(types.Message, func() error) (bool, error)
 }
 
 // Run executes one user prompt against the current messages.
@@ -413,19 +420,19 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 	if user.Timestamp == 0 {
 		user.Timestamp = time.Now().UnixMilli()
 	}
-	if err := emit(Event{Type: AgentStart}); err != nil {
-		return nil, err
-	}
 	// The turn's wall clock starts here and is stamped onto turn_start; turn_end
 	// reports the span so consumers can time a turn from the server clock.
 	turnStartedAt := time.Now()
-	if err := emit(Event{Type: TurnStart, Timestamp: turnStartedAt.UnixMilli()}); err != nil {
-		return nil, err
-	}
-	if err := emit(Event{Type: MessageStart, Message: &user}); err != nil {
-		return nil, err
-	}
-	if err := emit(Event{Type: MessageEnd, Message: &user}); err != nil {
+	accepted, err := commitUserMessage(cfg.CommitUserMessage, user, func() error {
+		if err := emit(Event{Type: AgentStart}); err != nil {
+			return err
+		}
+		if err := emit(Event{Type: TurnStart, Timestamp: turnStartedAt.UnixMilli()}); err != nil {
+			return err
+		}
+		return emitUserMessage(emit, user)
+	})
+	if err != nil || !accepted {
 		return nil, err
 	}
 	newMsgs = append(newMsgs, user)
@@ -464,7 +471,7 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		firstTurn = false
 
 		var err error
-		newMsgs, history, err = drainInbox(cfg.Inbox, emit, newMsgs, history)
+		newMsgs, history, err = drainInbox(cfg.Inbox, cfg.CommitUserMessage, emit, newMsgs, history)
 		if err != nil {
 			return newMsgs, err
 		}
@@ -638,23 +645,45 @@ func stripExternal(msgs []types.Message) []types.Message {
 	out := make([]types.Message, len(msgs))
 	for i, msg := range msgs {
 		msg.External = nil
+		msg.ClientRequestID = ""
+		msg.Completion = nil
 		out[i] = msg
 	}
 	return out
 }
 
-func drainInbox(inbox *Inbox, emit func(Event) error, newMsgs, history []types.Message) ([]types.Message, []types.Message, error) {
-	for _, user := range inbox.Take() {
+func commitUserMessage(commit func(types.Message, func() error) (bool, error), user types.Message, persist func() error) (bool, error) {
+	if commit != nil {
+		return commit(user, persist)
+	}
+	err := persist()
+	return err == nil, err
+}
+
+func emitUserMessage(emit func(Event) error, user types.Message) error {
+	if err := emit(Event{Type: MessageStart, Message: &user}); err != nil {
+		return err
+	}
+	return emit(Event{Type: MessageEnd, Message: &user})
+}
+
+func drainInbox(inbox *Inbox, commit func(types.Message, func() error) (bool, error), emit func(Event) error, newMsgs, history []types.Message) ([]types.Message, []types.Message, error) {
+	pending := inbox.Take()
+	for index, user := range pending {
 		user.Role = "user"
 		if user.Timestamp == 0 {
 			user.Timestamp = time.Now().UnixMilli()
 		}
-		u := user
-		if err := emit(Event{Type: MessageStart, Message: &u}); err != nil {
+		accepted, err := commitUserMessage(commit, user, func() error { return emitUserMessage(emit, user) })
+		if err != nil {
+			// Preserve the uncommitted suffix for the server's final handoff.
+			inbox.mu.Lock()
+			inbox.pending = append(pending[index:], inbox.pending...)
+			inbox.mu.Unlock()
 			return newMsgs, history, err
 		}
-		if err := emit(Event{Type: MessageEnd, Message: &u}); err != nil {
-			return newMsgs, history, err
+		if !accepted {
+			continue
 		}
 		newMsgs = append(newMsgs, user)
 		history = append(history, user)

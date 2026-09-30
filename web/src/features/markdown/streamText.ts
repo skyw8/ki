@@ -108,6 +108,31 @@ export function splitSettled(text: string): SettledSplit {
   return { sealed: text.slice(0, at), live: text.slice(at) }
 }
 
+/** Streamdown's live block splitter only needs semantic boundaries, not a
+ * second full Markdown tokenization before its actual Markdown parser. Reuse
+ * the same incremental scanner as the document; keep lists, fences, HTML and
+ * document-wide references intact. The caller bounds the active tail to 4K.
+ */
+export class MarkdownBlockSplitter {
+  private scanner = new SettledScanner()
+
+  split = (text: string): string[] => {
+    if (!text.startsWith(this.scanner.source)) this.scanner = new SettledScanner()
+    this.scanner.push(text.slice(this.scanner.source.length))
+    if (this.scanner.references) return [text]
+    const blocks: string[] = []
+    let start = 0
+    for (const end of this.scanner.boundaries) {
+      blocks.push(text.slice(start, end))
+      start = end
+    }
+    if (start < text.length) blocks.push(text.slice(start))
+    return blocks
+  }
+
+  get scannedCharacters() { return this.scanner.scannedCharacters }
+}
+
 export type MarkdownParts = { segments: readonly string[]; tail: string; references: boolean }
 
 /** Retain both source and semantic segments across frame commits and message_end.

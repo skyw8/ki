@@ -147,8 +147,10 @@ function compactTurn(turn: number): CompactTurn {
 test('a delayed old-root compact projection retries the recovered boundary instead of exhausting it', async ({ page }) => {
   const tail = deferred()
   const oldProjection = deferred()
+  const currentProjection = deferred()
   const f = await fixture(page, tail.promise)
   const projections: string[] = []
+  const projected: string[] = []
   const cursors: string[] = []
   await page.route(url => url.pathname === `/v1/sessions/${f.id}` && url.searchParams.has('turn'), async route => {
     const params = new URL(route.request().url()).searchParams
@@ -156,10 +158,14 @@ test('a delayed old-root compact projection retries the recovered boundary inste
     const turn = params.get('turn')!
     projections.push(turn)
     if (turn === 'u1') await oldProjection.promise
-    else expect(turn).toBe('u3')
+    else {
+      expect(turn).toBe('u3')
+      await currentProjection.promise
+    }
     const n = turn === 'u1' ? 1 : 3
-    return route.fulfill({ json: { id: f.id, entries: f.all.slice((n - 1) * 2, n * 2),
+    await route.fulfill({ json: { id: f.id, entries: f.all.slice((n - 1) * 2, n * 2),
       compactTurns: [compactTurn(n)], oldestId: turn, hasMore: n === 3 } })
+    projected.push(turn)
   })
   await page.route(url => url.pathname === `/v1/sessions/${f.id}` && url.searchParams.has('before'), async route => {
     const params = new URL(route.request().url()).searchParams
@@ -182,9 +188,16 @@ test('a delayed old-root compact projection retries the recovered boundary inste
     await page.getByTestId('settings').getByRole('button', { name: '关闭对话框' }).click()
     tail.release()
     await expect(page.getByTestId('user-bubble')).toHaveText('Recovery request 3')
+    // Recovery cancels the obsolete transport immediately. Loading now belongs
+    // to the replacement projection, not to a reply from the abandoned root.
+    await expect.poll(() => projections).toEqual(['u1', 'u3'])
     await expect(page.getByTestId('load-older')).toBeDisabled()
     oldProjection.release()
-    await expect.poll(() => projections).toEqual(['u1', 'u3'])
+    await expect.poll(() => projected).toEqual(['u1'])
+    await expect(page.getByTestId('user-bubble')).toHaveText('Recovery request 3')
+    await expect(page.getByTestId('load-older')).toBeDisabled()
+    expect(projections).toEqual(['u1', 'u3'])
+    currentProjection.release()
     await expectOpenGap(page)
     await page.getByTestId('load-older').click()
     await expect.poll(() => cursors).toEqual(['u3'])
@@ -194,5 +207,6 @@ test('a delayed old-root compact projection retries the recovered boundary inste
   } finally {
     tail.release()
     oldProjection.release()
+    currentProjection.release()
   }
 })

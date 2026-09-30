@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"ki/internal/idgen"
+	"ki/internal/state"
 	"ki/internal/types"
 )
 
@@ -43,13 +44,11 @@ const (
 
 // QueuedItem is one turn waiting for the current run to finish.
 type QueuedItem struct {
-	ID      string          `json:"id"`
-	Content []types.Content `json:"content"`
-	Origin  string          `json:"origin,omitempty"`
-	// AgentTask is the agent task this turn reports on, set for a completion
-	// notification. Dispatch drops such a turn when the parent has already read
-	// that task's result, since the notification would only restate it.
-	AgentTask string `json:"agentTask,omitempty"`
+	ID              string                    `json:"id"`
+	Content         []types.Content           `json:"content"`
+	Origin          string                    `json:"origin,omitempty"`
+	ClientRequestID string                    `json:"clientRequestId,omitempty"`
+	Completion      *types.CompletionIdentity `json:"completion,omitempty"`
 	// Lane is persisted: a restart must not promote a system turn ahead of a
 	// waiting human one.
 	Lane QueueLane `json:"lane,omitempty"`
@@ -98,23 +97,26 @@ type ContextQueuedItem struct {
 }
 
 type contextQueueState struct {
-	Next  uint64              `json:"next"`
-	Items []ContextQueuedItem `json:"items"`
+	Version int                 `json:"version"`
+	Next    uint64              `json:"next"`
+	Items   []ContextQueuedItem `json:"items"`
 }
 
 func readExtQueue(dir string) ([]ExtQueuedItem, error) {
-	b, err := os.ReadFile(extQueuePath(dir))
+	b, _, err := state.ReadFile(extQueuePath(dir), 1, nil)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read ext-queue: %w", err)
 	}
-	var items []ExtQueuedItem
-	if err := json.Unmarshal(b, &items); err != nil {
+	var doc struct {
+		Items []ExtQueuedItem `json:"items"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
 		return nil, fmt.Errorf("decode ext-queue: %w", err)
 	}
-	return items, nil
+	return doc.Items, nil
 }
 
 func writeExtQueue(dir string, items []ExtQueuedItem) error {
@@ -124,15 +126,14 @@ func writeExtQueue(dir string, items []ExtQueuedItem) error {
 		}
 		return nil
 	}
-	b, err := json.MarshalIndent(items, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode ext-queue: %w", err)
-	}
-	return writeFileAtomic(extQueuePath(dir), append(b, '\n'))
+	return state.WriteVersioned(extQueuePath(dir), 1, struct {
+		Version int             `json:"version"`
+		Items   []ExtQueuedItem `json:"items"`
+	}{1, items}, 0o600)
 }
 
 func readContextQueue(dir string) (contextQueueState, error) {
-	b, err := os.ReadFile(contextQueuePath(dir))
+	b, _, err := state.ReadFile(contextQueuePath(dir), 1, nil)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return contextQueueState{}, nil
@@ -146,15 +147,12 @@ func readContextQueue(dir string) (contextQueueState, error) {
 	return state, nil
 }
 
-func writeContextQueue(dir string, state contextQueueState) error {
+func writeContextQueue(dir string, doc contextQueueState) error {
 	// Keep an empty state after the first write so the sequence remains
 	// monotonic across drains; prompt boundaries may still reference an older
 	// sequence after the queue has temporarily become empty.
-	b, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode context queue: %w", err)
-	}
-	return writeFileAtomic(contextQueuePath(dir), append(b, '\n'))
+	doc.Version = 1
+	return state.WriteVersioned(contextQueuePath(dir), 1, doc, 0o600)
 }
 
 // EnqueueContext appends a context-only message and assigns a durable order.
@@ -184,6 +182,9 @@ func EnqueueContext(dir string, item ContextQueuedItem) (ContextQueuedItem, erro
 			return ContextQueuedItem{}, fmt.Errorf("context queue id: %w", err)
 		}
 		item.ID = id
+	}
+	if item.Message.ClientRequestID == "" {
+		item.Message.ClientRequestID = item.ID
 	}
 	state.Items = append(state.Items, item)
 	if err := writeContextQueue(dir, state); err != nil {
@@ -378,18 +379,20 @@ func ReadQueue(dir string) ([]QueuedItem, error) {
 }
 
 func readQueue(dir string) ([]QueuedItem, error) {
-	b, err := os.ReadFile(queuePath(dir))
+	b, _, err := state.ReadFile(queuePath(dir), 1, nil)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read queue: %w", err)
 	}
-	var items []QueuedItem
-	if err := json.Unmarshal(b, &items); err != nil {
+	var doc struct {
+		Items []QueuedItem `json:"items"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
 		return nil, fmt.Errorf("decode queue: %w", err)
 	}
-	return items, nil
+	return doc.Items, nil
 }
 
 func writeQueue(dir string, items []QueuedItem) error {
@@ -399,32 +402,33 @@ func writeQueue(dir string, items []QueuedItem) error {
 		}
 		return nil
 	}
-	b, err := json.MarshalIndent(items, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode queue: %w", err)
-	}
-	return writeFileAtomic(queuePath(dir), append(b, '\n'))
+	return state.WriteVersioned(queuePath(dir), 1, struct {
+		Version int          `json:"version"`
+		Items   []QueuedItem `json:"items"`
+	}{1, items}, 0o600)
 }
 
 // Enqueue appends a human turn. The session directory must already exist.
 func Enqueue(dir string, content []types.Content) (QueuedItem, error) {
-	return enqueue(dir, content, "", QueueHumanLane, "")
+	return EnqueueMessage(dir, types.Message{Content: content}, QueueHumanLane)
 }
 
 // EnqueueSystem appends a server-generated turn and preserves its origin. The
 // session directory must already exist.
 func EnqueueSystem(dir string, content []types.Content, origin string) (QueuedItem, error) {
-	return enqueue(dir, content, origin, QueueSystemLane, "")
+	return EnqueueMessage(dir, types.Message{Content: content, Origin: origin}, QueueSystemLane)
 }
 
 // EnqueueAgentNotification appends the server-generated turn that reports one
-// agent task's completion. agentTask is what lets dispatch discard the turn if
-// the parent read the task's result first.
-func EnqueueAgentNotification(dir string, content []types.Content, origin, agentTask string) (QueuedItem, error) {
-	return enqueue(dir, content, origin, QueueSystemLane, agentTask)
+// agent generation's completion. The structured identity survives live/durable
+// handoffs so dispatch cannot mistake a resumed task for an older result.
+func EnqueueAgentNotification(dir string, content []types.Content, origin string, completion types.CompletionIdentity) (QueuedItem, error) {
+	return EnqueueMessage(dir, types.Message{Content: content, Origin: origin, Completion: &completion,
+		ClientRequestID: fmt.Sprintf("%s:%d", completion.TaskID, completion.Generation)}, QueueSystemLane)
 }
 
-func enqueue(dir string, content []types.Content, origin string, lane QueueLane, agentTask string) (QueuedItem, error) {
+// EnqueueMessage preserves accepted-message identity through durable promotion.
+func EnqueueMessage(dir string, message types.Message, lane QueueLane) (QueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
 	defer gate.Unlock()
@@ -439,7 +443,11 @@ func enqueue(dir string, content []types.Content, origin string, lane QueueLane,
 	if err != nil {
 		return QueuedItem{}, fmt.Errorf("queue id: %w", err)
 	}
-	item := QueuedItem{ID: id, Content: content, Origin: origin, AgentTask: agentTask, Lane: lane}
+	if message.ClientRequestID == "" {
+		message.ClientRequestID = id
+	}
+	item := QueuedItem{ID: id, Content: message.Content, Origin: message.Origin,
+		ClientRequestID: message.ClientRequestID, Completion: message.Completion, Lane: lane}
 	if err := writeQueue(dir, insertByLane(items, item, false)); err != nil {
 		return QueuedItem{}, err
 	}

@@ -119,14 +119,24 @@ type UsageCost struct {
 	Total      float64 `json:"total"`
 }
 
+// CompletionIdentity names one result, not the resumable logical task.
+type CompletionIdentity struct {
+	TaskID     string `json:"taskId"`
+	Generation uint64 `json:"generation"`
+}
+
 // Message is a conversation item (user / assistant / toolResult).
 type Message struct {
-	Role      string    `json:"role"`
-	Content   []Content `json:"content"`
-	Timestamp int64     `json:"timestamp,omitzero"`
-	API       string    `json:"api,omitempty"`
-	Provider  string    `json:"provider,omitempty"`
-	Model     string    `json:"model,omitempty"`
+	// ClientRequestID correlates accepted input with its persisted entry. It is
+	// transport metadata, never provider prompt content or a text dedupe key.
+	ClientRequestID string              `json:"clientRequestId,omitempty"`
+	Completion      *CompletionIdentity `json:"completion,omitempty"`
+	Role            string              `json:"role"`
+	Content         []Content           `json:"content"`
+	Timestamp       int64               `json:"timestamp,omitzero"`
+	API             string              `json:"api,omitempty"`
+	Provider        string              `json:"provider,omitempty"`
+	Model           string              `json:"model,omitempty"`
 	// ResponseID is the provider response identifier used by resumable
 	// Responses-style runtimes. It is deliberately optional for other APIs.
 	ResponseID string `json:"responseId,omitempty"`

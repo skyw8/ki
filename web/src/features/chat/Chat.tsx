@@ -1,7 +1,10 @@
 import { Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { flushSync } from 'react-dom'
 import { observeElementOffset, useVirtualizer } from '@tanstack/react-virtual'
 import { useTranscriptScroll, type TranscriptScroll } from './useTranscriptScroll'
 import { useNow } from '../../hooks/useNow'
+import { Duration } from './Duration'
+import { TranscriptRow, useTranscriptRowMeasurement } from './TranscriptRow'
 import { IChev, IChevDown, IClock, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from '../../components/icons'
 import { IFile } from '../../components/icons'
 import { Composer, type Draft } from './Composer'
@@ -11,7 +14,7 @@ import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
 import { cacheHitRate, cacheMisses, formatDuration, formatTokens, formatTokensPerSecond, isHumanPrompt, nodeLive, projectTurnStats, reconcileUserNodes, requestTitle, type CacheMiss, type TurnStats } from '../../lib/model'
 import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, groupTurns, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
-import { rememberRowHeight, rowHeightEstimate, UNKNOWN_WIDTH } from '../../lib/rowHeight'
+import { COLLAPSED_TOOL_HEIGHT, rememberRowHeight, rowBodyToken, rowHeightEstimate, sameRowRevision, UNKNOWN_WIDTH, type RowHeightRevision } from '../../lib/rowHeight'
 import { copyText } from '../../lib/clipboard'
 import type { ChatNode, CompactTurn } from '../../api/types'
 
@@ -35,12 +38,6 @@ function fmtTs(ts?: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
-function fmtDuration(ms?: number): string {
-  if (ms == null) return ''
-  if (ms < 1000) return ms === 0 ? '<1 ms' : `${Math.round(ms)} ms`
-  return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`
-}
-
 function fmtFileSize(size?: number): string {
   if (size == null) return ''
   if (size < 1024) return `${size} B`
@@ -51,6 +48,7 @@ function fmtFileSize(size?: number): string {
 function Think({ text, streaming }: { text: string; streaming?: boolean }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
+  useTranscriptRowMeasurement([text, open, streaming])
   const first = text.split('\n').find(l => l.trim()) ?? ''
   return (
     <div className="think">
@@ -130,7 +128,8 @@ function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatN
   const [open, setOpen] = useState(false)
   const [overflow, setOverflow] = useState(false)
   const body = useBodyLoad(node.id, onHydrate)
-  useEffect(() => {
+  useTranscriptRowMeasurement([node, open, overflow, body.loading, body.failed])
+  useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
     if (open) {
@@ -140,14 +139,21 @@ function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatN
     // The collapsed bubble is line-clamped; if its content is taller than the
     // clamp, the message is genuinely too long and needs the expand toggle.
     // (Measuring keeps short bubbles button-free and long ones toggleable.)
-    setOverflow(el.scrollHeight > el.clientHeight + 1)
+    const measure = () => setOverflow(el.scrollHeight > el.clientHeight + 1)
+    measure()
+    // Rotation and font reflow can create overflow without changing the body.
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
   }, [node.text, open])
+  const runtime = !isHumanPrompt(node.origin)
   const folded = !open
   const images = node.content.filter(c => c.type === 'image')
   const files = node.content.filter(c => c.type === 'file' || c.type === 'workspace_file')
   const imageLayout = images.length <= 4 ? `count-${images.length}` : 'count-many'
   return (
-    <div className={`user-message${node.origin ? ' origin-external' : ''}${node.origin?.startsWith('agent:') ? ' origin-agent' : ''}`} data-testid="user-bubble">
+    <div className={`user-message${runtime ? ' runtime-notification' : ''}${node.origin ? ' origin-external' : ''}${node.origin?.startsWith('agent:') ? ' origin-agent' : ''}`} data-testid="user-bubble" role={runtime ? 'note' : undefined} aria-label={runtime ? t('chat.runtimeNotification') : undefined}>
+      {runtime ? <div className="runtime-notification-label">{t('chat.runtimeNotification')}</div> : null}
       {node.origin ? <div className="user-origin" data-testid="user-origin">{node.origin}</div> : null}
       {images.length ? <div className={`message-images ${imageLayout}`}>
         {images.map((c, i) => <AttachmentImage api={api} content={c} className="message-image" expandable key={`${c.path || c.name}-${i}`} />)}
@@ -191,6 +197,7 @@ function ToolRow({
   const [open, setOpen] = useState(false)
   const name = node.name
   const body = useBodyLoad(node.id, onHydrate)
+  useTranscriptRowMeasurement([node, open, body.loading, body.failed])
   const cmd = argStr(node.args, 'command')
   const desc = argStr(node.args, 'description')
   const oldS = argStr(node.args, 'old_string')
@@ -217,7 +224,8 @@ function ToolRow({
           type="button"
           className="tool-row-toggle"
           aria-expanded={open}
-          aria-label={open ? t('chat.collapse') : t('chat.expand')}
+          aria-label={t(open ? 'chat.collapseTool' : 'chat.expandTool', { name: title })}
+          title={title}
           disabled={!expandable}
           onClick={() => {
             if (!expandable) return
@@ -227,12 +235,12 @@ function ToolRow({
         >
           {expandable ? <IChev open={open} /> : null}
           {state === 'error' ? <span className="state-dot err" /> : node.running ? <span className="spin" /> : <IWrench />}
-          <span className="tool-name">{title}</span>
+          <span className="tool-name" title={title}>{title}</span>
         </button>
         {line ? <span className="tool-sep" aria-hidden /> : null}
         {line ? <span className={`tool-preview${fail ? ' err' : ''}`} data-testid="tool-preview" title={line}>{line}</span> : null}
-        {node.running && node.startedAt ? <span className="tool-duration live" data-testid="tool-duration">{fmtDuration(Math.max(0, now - node.startedAt))}</span> : null}
-        {!node.running && node.durationMs != null ? <span className="tool-duration" data-testid="tool-duration">{fmtDuration(node.durationMs)}</span> : null}
+        {node.running && node.startedAt ? <span className="tool-duration live" data-testid="tool-duration"><Duration ms={Math.max(0, now - node.startedAt)} /></span> : null}
+        {!node.running && node.durationMs != null ? <span className="tool-duration" data-testid="tool-duration"><Duration ms={node.durationMs} /></span> : null}
       </div>
       {open && expandable ? (
         <div className="tool-row-body">
@@ -270,19 +278,27 @@ function ToolRow({
   )
 }
 
-function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> }) {
+function Compaction({ node, onHydrate, hydrating, hydrateFailed }: {
+  node: Extract<ChatNode, { kind: 'compaction' }>
+  onHydrate: () => Promise<boolean | undefined>
+  hydrating: boolean
+  hydrateFailed: boolean
+}) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
+  useTranscriptRowMeasurement([node, open])
   // Why: compaction runs synchronously inside the /compact request, so the row
   // itself is the only progress signal. Keep it colored while it runs and
   // switch to the settled label (with the pre-compaction token count) after.
-  const label = node.running
+  const label = hydrating ? t('chat.loadingBody') : hydrateFailed ? t('chat.retryOlder') : node.running
     ? t('chat.compacting')
-    : node.empty
-      ? t('chat.nothingToCompact')
-      : node.failed
-        ? t('chat.compactFailed')
-        : t('chat.compacted')
+    : node.unknown
+      ? t('chat.compactionUnknown')
+      : node.empty
+        ? t('chat.nothingToCompact')
+        : node.failed
+          ? t('chat.compactFailed')
+          : t('chat.compacted')
   const state = node.running ? ' running' : node.empty ? ' empty' : node.failed ? ' failed' : ''
   return (
     <div className="compact-row" data-testid="compact-row">
@@ -291,8 +307,13 @@ function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> 
         className={`compact-btn${state}`}
         data-testid="compact-btn"
         aria-live={node.running ? 'polite' : undefined}
-        disabled={node.running}
-        onClick={() => setOpen(v => !v)}
+        disabled={node.running || hydrating}
+        onClick={async () => {
+          // A terminal index row can be present without its outcome body.
+          // Opening it must fetch that body instead of toggling an empty row.
+          if (node.truncated && !await onHydrate()) return
+          setOpen(v => !v)
+        }}
       >
         {node.running ? <span className="compact-spin" aria-hidden /> : <ICompact />}
         {label}
@@ -342,7 +363,7 @@ function TurnDivider({ stats }: { stats: TurnStats }) {
   const ttftMs = stats.lastTtftMs ?? 0
   const tps = stats.lastTps ?? null
   const cells: ReactNode[] = [
-    <span className={`turn-stat${live ? ' live' : ''}`} key="elapsed" data-testid="turn-elapsed"><IClock />{t('turn.elapsed', { duration: formatDuration(elapsedMs) })}</span>,
+    <span className={`turn-stat${live ? ' live' : ''}`} key="elapsed" data-testid="turn-elapsed"><IClock /><Duration ms={elapsedMs} label="elapsed" /></span>,
   ]
   if (stats.steps > 0) cells.push(<span className="turn-stat" key="steps">{t('turn.steps', { n: stats.steps })}</span>)
   if (stats.tools > 0) {
@@ -374,7 +395,7 @@ function TurnDivider({ stats }: { stats: TurnStats }) {
     )
   }
   return (
-    <div className={`turn-end${live ? ' live' : ''}`} data-testid="turn-divider" data-turn={stats.turn} data-live={live || undefined}>
+    <div className={`turn-end${live ? ' live' : ''}`} data-testid="turn-divider" data-turn={stats.turn} data-turn-id={stats.turnId} data-live={live || undefined}>
       <div className="turn-end-row">
         <span className="turn-end-rule" aria-hidden />
         <span className="turn-end-label">
@@ -466,12 +487,14 @@ const ChatItem = memo(function ChatItem({
   const bodyRef = useRef<HTMLDivElement>(null)
   const [hydrating, setHydrating] = useState(false)
   const [hydrateFailed, setHydrateFailed] = useState(false)
+  useTranscriptRowMeasurement([n, hydrating, hydrateFailed, edit])
   const hydrate = useCallback(async () => {
     if (!onHydrate) return
     setHydrating(true)
     const ok = await onHydrate(n.id)
     setHydrating(false)
     setHydrateFailed(!ok)
+    return ok
   }, [n.id, onHydrate])
   useEffect(() => {
     const el = bodyRef.current
@@ -488,17 +511,18 @@ const ChatItem = memo(function ChatItem({
   }, [n.id, n.truncated, n.kind, n.kind === 'assistant' && n.streaming, hydrate, hydrateFailed])
   if (n.kind === 'user') {
     const editing = edit?.messageId === n.id
+    const human = isHumanPrompt(n.origin)
     return (
-      <div className={`user-row${editing ? ' editing' : ''}`} data-msg-id={n.id}>
+      <div className={`user-row${human ? '' : ' runtime-row'}${editing ? ' editing' : ''}`} data-msg-id={n.id}>
         <div className="user-stack">
           {editing ? <Composer api={api} mode="edit" draft={edit!.draft} onChange={d => onEditChange?.(d)} onSend={() => onSendEdit?.()} onAttach={() => onAttachEdit?.()} onFiles={onFilesEdit} onCancel={onCancelEdit} busy={busy} uploading={uploading} /> : <UserBubble api={api} node={n} onHydrate={onHydrate} />}
           <div className="msg-foot">
             {n.ts ? <div className="msg-stats">{fmtTs(n.ts)}</div> : null}
             <div className="msg-actions" data-testid="user-actions">
               <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => void copyText(n.text)}><ICopy /></IconBtn>
-              {branchTotal == null ? <button type="button" className="branch-load" onClick={onShowBranches}>{t('chat.branches')}</button> : null}
-              {branchTotal && branchTotal > 1 ? <span className="branch-nav"><button type="button" onClick={() => onBranch?.(n, -1)}>‹</button>{(branchIndex ?? 0) + 1} / {branchTotal}<button type="button" onClick={() => onBranch?.(n, 1)}>›</button></span> : null}
-              <IconBtn label={t('chat.edit')} testid="edit-msg" onClick={() => onStartEdit?.(n)}><IEdit /></IconBtn>
+              {human && branchTotal == null ? <button type="button" className="branch-load" onClick={onShowBranches}>{t('chat.branches')}</button> : null}
+              {human && branchTotal && branchTotal > 1 ? <span className="branch-nav"><button type="button" onClick={() => onBranch?.(n, -1)}>‹</button>{(branchIndex ?? 0) + 1} / {branchTotal}<button type="button" onClick={() => onBranch?.(n, 1)}>›</button></span> : null}
+              {human ? <IconBtn label={t('chat.edit')} testid="edit-msg" onClick={() => onStartEdit?.(n)}><IEdit /></IconBtn> : null}
             </div>
           </div>
         </div>
@@ -565,7 +589,7 @@ const ChatItem = memo(function ChatItem({
       />
     )
   }
-  if (n.kind === 'compaction') return <Compaction node={n} />
+  if (n.kind === 'compaction') return <Compaction node={n} onHydrate={hydrate} hydrating={hydrating} hydrateFailed={hydrateFailed} />
   return <Cancellation node={n} />
 })
 
@@ -591,11 +615,16 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   loadedTurnIds?: string[]
   onLoadTurn?: (id: string) => Promise<boolean>
 }) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
   const measurementAnchor = useRef<string | null>(null)
   const selectedRequest = useRef<string | null>(null)
-  const navigation = useTranscriptScroll({ scrollRef, onAtBottom, onReadIntent: () => { measurementAnchor.current = null; selectedRequest.current = null; onReadIntent?.() }, onLoadOlder, hasMore, loadingOlder, olderError, pageBudget: mode === 'compact' ? 1 : 2 })
   const nodes = useMemo(() => reconcileUserNodes(rawNodes), [rawNodes])
+  // Why: a running compaction is live work too. Without it here the generic
+  // "Running…" placeholder renders under the compaction row for the whole
+  // summarize, so the transcript reads compacting → running → compacted.
+  const running = busy && !nodes.some(nodeLive)
+  const endPadding = running ? 40 : 8
+  const navigation = useTranscriptScroll({ scrollRef, onAtBottom, onReadIntent: () => { measurementAnchor.current = null; selectedRequest.current = null; onReadIntent?.() }, onLoadOlder, hasMore, loadingOlder, olderError, pageBudget: mode === 'compact' ? 1 : 2, endPadding })
   const misses = useMemo(() => cacheMisses(nodes), [nodes])
   const listRef = useRef<HTMLDivElement>(null)
   const [listWidth, setListWidth] = useState(UNKNOWN_WIDTH)
@@ -619,18 +648,11 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     // measurement) stay pinned to the bottom; any earlier fold is something the
     // reader opened to read, so anchor that row and pause follow. Cancelling an
     // in-flight jump is always wanted.
-    let tailTurnId = ''
-    for (let i = nodes.length - 1; i >= 0; i--) {
-      if (nodes[i].kind === 'user') { tailTurnId = nodes[i].id; break }
-    }
-    if (!tailTurnId) tailTurnId = nodes[0]?.id ?? ''
-    // `following` can be false while the scrollbar still sits at the bottom (an
-    // earlier fold paused it, a programmatic scroll, a clamped end). Treat the
-    // visible bottom as following too, so the newest turn's fold still pins the
-    // tail instead of anchoring at the fold row.
-    const el = scrollRef.current
-    const atBottom = !!el && Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop) <= 8
-    const keepFollowing = (navigation.following.current || atBottom) && id === tailTurnId
+    // Runtime user-role notifications are not human turn boundaries. A fold
+    // must use the same grouping as rendering, never proximity to the bottom:
+    // an explicitly paused reader may still be at the clamped end.
+    const tailTurnId = groupTurns(nodes).at(-1)?.id
+    const keepFollowing = navigation.following.current && id === tailTurnId
     onReadIntent?.()
     if (keepFollowing) {
       // Re-arm follow instead of pinning once. The revealed rows are measured
@@ -638,11 +660,8 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
       // streams, so an unarmed follow drifts between the single scrollToEnd and
       // the late measurements — the newest node visibly jumps. `latest` also
       // re-enables the virtualizer's resize pinning (scrollEndThreshold), which
-      // is what holds the tail through each growth. foldFollow pins once more
-      // after this render: inserting rows in the middle of the list (before the
-      // kept node) is not an append the library follows on its own.
+      // is what holds the tail through each growth.
       navigation.latest()
-      foldFollow.current = true
     } else {
       navigation.read()
     }
@@ -657,6 +676,9 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     const scroll = scrollRef.current
     const row = scroll?.querySelector(`[data-testid="fold-row"][data-fold="${CSS.escape(id)}"]`)
     if (!keepFollowing && scroll && row) foldAnchor.current = { id, offset: row.getBoundingClientRect().top - scroll.getBoundingClientRect().top }
+    // Hydration may have committed while awaiting the body. Arm this only for
+    // the actual fold mutation, and never override newer reading intent.
+    foldFollow.current = keepFollowing && navigation.following.current
     setFolds(prev => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
@@ -665,6 +687,33 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     })
   }, [scrollRef, navigation.read, navigation.latest, onReadIntent, folds, compactTurns, loadedTurnIds, loadingFolds, onLoadTurn, nodes])
   const items = useMemo(() => mode === 'compact' ? foldReplies(nodes, { keep, expanded: folds, summaries: compactTurns, loadedTurnIds }) : detailedItems(nodes), [mode, nodes, keep, folds, compactTurns, loadedTurnIds])
+  const turns = useMemo(() => {
+    const stats = projectTurnStats(nodes, turnBase, compactTurns)
+    const owner = new Map<string, string>()
+    for (const turn of groupTurns(nodes)) for (const node of turn.nodes) owner.set(node.id, turn.id)
+    const lastItem = new Map<string, string>()
+    for (const item of items) {
+      const turn = item.kind === 'fold' ? item.turn.id : owner.get(item.id)
+      if (turn) lastItem.set(turn, item.id)
+    }
+    const out = new Map<string, TurnStats>()
+    // keep=0 may put the footer on the fold instead of a hidden reply.
+    for (const value of stats.values()) {
+      const key = lastItem.get(value.turnId)
+      if (key) out.set(key, value)
+    }
+    return out
+  }, [nodes, turnBase, compactTurns, items])
+  const revisions = useMemo(() => new Map(items.map(it => {
+    const stats = turns.get(it.id)
+    const footer = stats && [stats.turn, stats.live, stats.steps, stats.tools, stats.toolFailures, stats.cacheMisses, stats.input, stats.cacheRead, stats.lastTtftMs, stats.lastTps]
+    return [it.id, {
+      body: rowBodyToken(it.kind === 'node' ? it.node : it.turn.user),
+      // A fold preview is one ellipsized line. Only its presence affects the
+      // decoration; geometry caches must never own copied message text.
+      decoration: JSON.stringify([lang, it.kind === 'fold' ? [it.count, it.expanded, !!it.preview] : null, footer, edit?.messageId === it.id, branches?.[it.id]]),
+    }]
+  })), [items, lang, turns, edit?.messageId, branches])
   const previousItems = useRef(items)
   const previousVirtual = navigation.virtual.current
   if (items !== previousItems.current) {
@@ -684,29 +733,47 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     const item = itemLookup.current[index]
     return item.kind === 'node' && item.node.kind === 'assistant' ? item.node.renderKey ?? item.id : item.id
   }, [])
-  const estimates = useRef(new Map<string, { width: number; chars: number; size: number }>())
+  const estimates = useRef(new Map<string, { width: number; revision: RowHeightRevision; size: number }>())
+  useLayoutEffect(() => {
+    // Keep active unknown estimates frozen, but release keys removed by folds
+    // or branch replacement. Text-only stream updates need no pruning pass.
+    for (const key of estimates.current.keys()) if (!revisions.has(key)) estimates.current.delete(key)
+  }, [items.length, items[0]?.id, items.at(-1)?.id])
   const estimateSize = (index: number) => {
-    const key = items[index].id
+    const item = items[index]
+    const key = item.id
     const chars = itemChars.get(key) ?? 0
+    const revision = revisions.get(key)!
     const cached = estimates.current.get(key)
-    if (cached && cached.width === listWidth && cached.chars === chars) return cached.size
-    const size = rowHeightEstimate(key, listWidth, chars)
-    estimates.current.set(key, { width: listWidth, chars, size })
+    if (cached && cached.width === listWidth && sameRowRevision(cached.revision, revision)) return cached.size
+    const footer = turns.get(key)
+    // Correct the known collapsed shape, not the reader's offset: even a 4px
+    // estimate correction interrupts desktop WebKit's native wheel animation.
+    // Rich/expanded/footer rows still use measured geometry and full anchoring.
+    const collapsedTool = item.kind === 'node' && item.node.kind === 'tool' && !(footer && (footer.steps > 0 || footer.live))
+    const size = rowHeightEstimate(key, listWidth, chars, revision, collapsedTool ? COLLAPSED_TOOL_HEIGHT : undefined)
+    estimates.current.set(key, { width: listWidth, revision, size })
     return size
   }
-  // Why: a running compaction is live work too. Without it here the generic
-  // "Running…" placeholder renders under the compaction row for the whole
-  // summarize, so the transcript reads compacting → running → compacted.
-  const running = busy && !nodes.some(nodeLive)
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
+    scrollToFn: navigation.scrollToFn,
     // Scroll events from our own prepend/resize compensation are not touch
     // momentum. Reporting them as user scrolling makes iOS defer the next
     // Markdown height correction while its transform already moves (~500px
     // flash). Only real input may enable that deferral; pages wait for it to
     // settle before publishing, and subsequent geometry commits stay atomic.
-    observeElementOffset: (instance, cb) => observeElementOffset(instance, (offset, scrolling) => cb(offset, scrolling && navigation.userScrolling.current)),
+    observeElementOffset: (instance, cb) => observeElementOffset(instance, (offset, scrolling) => {
+      const logicalOffset = navigation.observeOffset(offset)
+      if (scrolling && !navigation.userScrolling.current) {
+        // The library also uses isScrolling as its React flush priority.
+        // Programmatic jumps need a synchronous visible range too, otherwise
+        // the browser paints an empty viewport before React mounts that range.
+        // Keep isScrolling false so iOS does not defer geometry as momentum.
+        flushSync(() => cb(logicalOffset, false))
+      } else cb(logicalOffset, scrolling)
+    }),
     // A new key callback invalidates every measurement. Likewise, changing
     // unmeasured estimates as the global average learns silently moves rows
     // without a resizeItem delta. Freeze each estimate until its body/width
@@ -715,7 +782,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     estimateSize,
     overscan: OVERSCAN,
     paddingStart: 60,
-    paddingEnd: running ? 40 : 8,
+    paddingEnd: endPadding,
     // The library anchors the CURRENT keyed item when a response commits, not
     // the distance from the tail recorded before a slow network request.
     anchorTo: 'end',
@@ -724,11 +791,26 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     measureElement: (element, entry) => {
       const size = entry?.borderBoxSize?.[0]?.blockSize ?? element.getBoundingClientRect().height
       const key = (element as HTMLElement).dataset.itemKey
-      if (key && !element.querySelector('[data-md-pending]')) rememberRowHeight(key, listWidth, size, itemChars.get(key) ?? 0)
+      // Local expansion resets on remount. Never teach the default collapsed
+      // estimate an expanded height, or it reserves a phantom gap on return.
+      if (key && revisions.has(key) && !element.querySelector('[data-md-pending], .tool-row-body, .think-body, .compact-body, .bubble-text:not(.clamped), .editing')) {
+        rememberRowHeight(key, listWidth, size, itemChars.get(key) ?? 0, revisions.get(key)!)
+      }
       return size
     },
   })
   navigation.virtual.current = virtualizer
+  const measureMountedRow = useCallback((element: HTMLDivElement | null) => {
+    virtualizer.measureElement(element)
+    if (element && virtualizer.isScrolling) {
+      // virtual-core skips its synchronous measureElement path during input
+      // scrolling. Newly mounted rows then retain estimates for one frame,
+      // enough to expose an empty screen between long notification cards.
+      // Publish the same measurement through its resize/anchor owner now;
+      // the observer's later identical sample cannot apply a second delta.
+      virtualizer.resizeItem(Number(element.dataset.index), virtualizer.options.measureElement(element, undefined, virtualizer))
+    }
+  }, [virtualizer])
   // The library only re-measures rows through its ResizeObserver, which lands a
   // frame after the DOM already grew. That paints one frame of stale geometry:
   // while following, the tail lags the newest message (measured: a streamed
@@ -741,8 +823,8 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    for (const node of el.querySelectorAll<HTMLElement>('[data-index]')) virtualizer.measureElement(node)
-  }, [items, virtualizer, scrollRef])
+    for (const node of el.querySelectorAll<HTMLDivElement>('[data-index]')) measureMountedRow(node)
+  }, [items, listWidth, lang, measureMountedRow, scrollRef])
   // A resize above the viewport must not move the visible content. Let the
   // virtualizer apply this adjustment, including its iOS momentum deferral.
   virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) => {
@@ -750,10 +832,13 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     // the anchor row. After prepend that space contains the preceding row:
     // its resize still belongs ABOVE the content anchor, even if its estimated
     // bottom crosses scrollTop. A pixel-only predicate loses that adjustment.
-    if (measurementAnchor.current && anchorIndex >= 0) {
-      return delta !== 0 && item.index < anchorIndex
-    }
-    return delta !== 0 && (instance.itemSizeCache.has(item.key) ? item.end : item.start) <= (instance.scrollOffset ?? 0) + instance.scrollAdjustments
+    const above = measurementAnchor.current && anchorIndex >= 0
+      ? item.index < anchorIndex
+      : (instance.itemSizeCache.has(item.key) ? item.end : item.start) <= (instance.scrollOffset ?? 0) + instance.scrollAdjustments
+    // iOS's internal touch deferral moves transforms before the native offset.
+    // When our scroll owner consumes the correction visually, do not also
+    // queue the same delta inside the library.
+    return delta !== 0 && above && !navigation.deferResize(delta, instance)
   }
   useImperativeHandle(controlRef, () => ({ read: navigation.read, latest: () => {
     selectedRequest.current = null
@@ -769,39 +854,6 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     opened.current = true
     navigation.latest()
   })
-  // A viewport change (keyboard/rotation) changes the reachable end even if no
-  // message changes. Reading remains anchored; following stays at the end.
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    let previous = el.clientHeight
-    const ro = new ResizeObserver(() => {
-      if (el.clientHeight === previous) return
-      previous = el.clientHeight
-      if (navigation.following.current) virtualizer.scrollToEnd()
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [scrollRef, virtualizer])
-
-  const turns = useMemo(() => {
-    const stats = projectTurnStats(nodes, turnBase, compactTurns)
-    const owner = new Map<string, string>()
-    for (const turn of groupTurns(nodes)) for (const node of turn.nodes) owner.set(node.id, turn.id)
-    const lastItem = new Map<string, string>()
-    for (const item of items) {
-      const turn = item.kind === 'fold' ? item.turn.id : owner.get(item.id)
-      if (turn) lastItem.set(turn, item.id)
-    }
-    const out = new Map<string, TurnStats>()
-    // keep=0 hides the final settled reply too. A divider belongs after the
-    // turn's final rendered item (possibly its fold), not a hidden raw node.
-    for (const [id, value] of stats) {
-      const key = lastItem.get(owner.get(id) ?? '')
-      if (key) out.set(key, value)
-    }
-    return out
-  }, [nodes, turnBase, compactTurns, items])
   const actions = useRef({ onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches })
   actions.current = { onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches }
   const callbacks = useMemo(() => ({
@@ -842,8 +894,11 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     // otherwise leave the reader hovering above the clamped end.
     if (foldFollow.current) {
       foldFollow.current = false
-      virtualizer.scrollToEnd()
-      return
+      // A slow body request may outlive the gesture that paused following.
+      if (navigation.following.current) {
+        virtualizer.scrollToEnd()
+        return
+      }
     }
     const anchor = foldAnchor.current
     if (!anchor) return
@@ -858,9 +913,9 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
 
   useLayoutEffect(() => {
     if (!jumpToId) return
-    navigation.read()
     const index = items.findIndex(it => it.kind === 'node' && it.node.id === jumpToId)
     if (index < 0) {
+      navigation.read()
       const fold = items.find(it => it.kind === 'fold' && it.nodes.some(n => n.id === jumpToId))
       if (fold?.kind === 'fold') toggleFold(fold.turn.id)
       return
@@ -870,27 +925,8 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     // first tap above/below the prompt as virtual rows acquire real heights.
     measurementAnchor.current = items[index].id
     selectedRequest.current = jumpToId
-    virtualizer.scrollToIndex(index, { align: 'start' })
-    let frame = 0
-    let stable = 0
-    const settle = () => {
-      const el = scrollRef.current
-      if (!el || selectedRequest.current !== jumpToId) return
-      const row = el.querySelector<HTMLElement>(`[data-item-key="${CSS.escape(jumpToId)}"]`)
-      const offset = row ? row.getBoundingClientRect().top - el.getBoundingClientRect().top : Infinity
-      const remaining = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)
-      const error = Math.min(offset, remaining)
-      if (row && Math.abs(error) <= 1) stable++
-      else {
-        stable = 0
-        virtualizer.scrollToIndex(index, { align: 'start' })
-      }
-      if (stable >= 2) onJumped?.()
-      else frame = requestAnimationFrame(settle)
-    }
-    frame = requestAnimationFrame(settle)
-    return () => cancelAnimationFrame(frame)
-  }, [jumpToId, items, onJumped, virtualizer, toggleFold, navigation.read, scrollRef])
+    return navigation.seek(jumpToId, index, onJumped)
+  }, [jumpToId, items, onJumped, virtualizer, toggleFold, navigation.read, navigation.seek, scrollRef])
 
   const users = useMemo(() => items.flatMap((it, index) => it.kind === 'node' && it.node.kind === 'user' && isHumanPrompt(it.node.origin) ? [{ id: it.id, index }] : []), [items])
   useEffect(() => {
@@ -904,9 +940,10 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
       while (lo < hi) {
         const mid = Math.ceil((lo + hi) / 2)
         // Scroll targets are clamped to the bottom: several short tail turns
-        // have the same target. Reading ownership needs actual row geometry.
+        // have the same target. Match logical row geometry, including any
+        // compensation temporarily represented as a visual wheel offset.
         const offset = virtualizer.measurementsCache[users[mid].index]?.start ?? Infinity
-        if (offset <= el.scrollTop + 12) lo = mid
+        if (offset <= (virtualizer.scrollOffset ?? el.scrollTop) + 12) lo = mid
         else hi = mid - 1
       }
       const id = selectedRequest.current ?? (navigation.following.current ? users.at(-1)?.id : users[lo]?.id) ?? null
@@ -920,19 +957,20 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   }, [users, scrollRef, virtualizer, onActiveRequest, onAtBottom, navigation.following, navigation.isFollowing, jumpToId])
 
   return (
-    <div ref={listRef} className="chat-col chat-virtual" data-testid="chat" data-scroll-intent={navigation.isFollowing ? 'following' : 'reading'} data-anchor-key={measurementAnchor.current ?? undefined} data-scroll-offset={virtualizer.scrollOffset} data-library-scrolling={String(virtualizer.isScrolling)} style={{ height: virtualizer.getTotalSize() }}>
-      <div className="history-control" aria-live="polite">
-        {hasMore ? <button type="button" data-testid="load-older" disabled={loadingOlder} onClick={navigation.loadOlder}>
+    <div ref={listRef} className="chat-col chat-virtual" data-testid="chat" data-scroll-intent={navigation.scrollIntent} data-anchor-key={measurementAnchor.current ?? undefined} data-scroll-offset={virtualizer.scrollOffset} data-deferred-offset={navigation.geometryOffset || undefined} data-library-scrolling={String(virtualizer.isScrolling)} style={{ height: Math.max(0, virtualizer.getTotalSize() - navigation.geometryOffset) }}>
+      <div className="history-control" aria-live="polite" style={navigation.geometryOffset ? { transform: `translateY(${-navigation.geometryOffset}px)` } : undefined}>
+        {/* A failed view conversion can need retry even at the history root. */}
+        {hasMore || loadingOlder || olderError ? <button type="button" data-testid="load-older" disabled={loadingOlder} onClick={navigation.loadOlder}>
           {loadingOlder ? <span data-testid="older-loading">{t('chat.loadingOlder')}</span> : olderError ? t('chat.retryOlder') : t('chat.loadOlder')}
         </button> : <span>{t('chat.historyStart')}</span>}
       </div>
       {virtualizer.getVirtualItems().map(item => {
         const it = items[item.index]
-        return <div key={item.key} data-index={item.index} data-item-key={it.id} ref={virtualizer.measureElement} className="chat-virtual-item" style={{ transform: `translateY(${item.start}px)` }}>
+        return <TranscriptRow key={item.key} id={it.id} index={item.index} start={item.start - navigation.geometryOffset} measure={measureMountedRow}>
           {renderItem(it)}
-        </div>
+        </TranscriptRow>
       })}
-      {running ? <div className="status-line chat-virtual-item" style={{ transform: `translateY(${virtualizer.getTotalSize() - 32}px)` }}>{t('chat.running')}</div> : null}
+      {running ? <div className="status-line chat-virtual-item" style={{ transform: `translateY(${virtualizer.getTotalSize() - navigation.geometryOffset - 32}px)` }}>{t('chat.running')}</div> : null}
     </div>
   )
 }

@@ -64,7 +64,22 @@ async function readTop(page: Page) {
     })
   } else {
     await scroll.hover()
+    await scroll.evaluate(el => {
+      // mouse.wheel resolves before the browser necessarily delivers the
+      // event. An already-reading intent cannot acknowledge this new input:
+      // releasing a held page first would legitimately arm a second page.
+      // The bubble listener runs after the scroll owner's capture listener.
+      ;(window as unknown as { compactWheelReceipt: Promise<void> }).compactWheelReceipt = new Promise(resolve => {
+        const received = (event: Event) => {
+          if (!(event instanceof WheelEvent) || !event.isTrusted || event.deltaY !== -5) return
+          el.removeEventListener('wheel', received)
+          resolve()
+        }
+        el.addEventListener('wheel', received, { passive: true })
+      })
+    })
     await page.mouse.wheel(0, -5)
+    await page.evaluate(() => (window as unknown as { compactWheelReceipt: Promise<void> }).compactWheelReceipt)
   }
   await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', 'reading')
   await scroll.evaluate(el => { el.scrollTop = 0 })

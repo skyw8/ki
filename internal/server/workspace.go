@@ -52,20 +52,21 @@ func (s *Server) sessionMapSnap(snap *sessionSnap, extra map[string]any) map[str
 
 func (s *Server) sessionMapData(id, dir string, header session.Header, cfg session.Config, title string, extra map[string]any) map[string]any {
 	m := map[string]any{
-		"id":              id,
-		"cwd":             header.CWD,
-		"provider":        cfg.Provider,
-		"model":           cfg.Model,
-		"thinkingEffort":  cfg.ThinkingEffort,
-		"dir":             dir,
-		"parentSessionId": header.ParentSession,
-		"forkMode":        header.EffectiveForkMode(),
-		"title":           title,
-		"running":         s.running(id),
-		"pinned":          cfg.Pinned,
-		"pinnedAt":        cfg.PinnedAt,
-		"timestamp":       header.Timestamp,
-		"metadata":        cfg.Metadata,
+		"id":                    id,
+		"cwd":                   header.CWD,
+		"provider":              cfg.Provider,
+		"model":                 cfg.Model,
+		"thinkingEffort":        cfg.ThinkingEffort,
+		"dir":                   dir,
+		"parentSessionId":       header.ParentSession,
+		"forkMode":              header.EffectiveForkMode(),
+		"title":                 title,
+		"running":               s.running(id),
+		"activeDescendantCount": s.activeDescendantCount(id),
+		"pinned":                cfg.Pinned,
+		"pinnedAt":              cfg.PinnedAt,
+		"timestamp":             header.Timestamp,
+		"metadata":              cfg.Metadata,
 	}
 	if rec, ok := s.ws.Match(header.CWD); ok {
 		m["workspaceId"] = rec.ID
@@ -74,22 +75,23 @@ func (s *Server) sessionMapData(id, dir string, header session.Header, cfg sessi
 	return m
 }
 
-func (s *Server) infoMap(info session.Info) map[string]any {
+func (s *Server) infoMap(info session.Info, activity sessionActivity) map[string]any {
 	m := map[string]any{
-		"id":              info.ID,
-		"cwd":             info.CWD,
-		"dir":             info.Dir,
-		"provider":        info.Provider,
-		"model":           info.Model,
-		"timestamp":       info.Timestamp,
-		"updatedAt":       info.UpdatedAt,
-		"parentSessionId": info.ParentSessionID,
-		"forkMode":        info.ForkMode,
-		"title":           info.Title,
-		"running":         s.running(info.ID),
-		"pinned":          info.Pinned,
-		"pinnedAt":        info.PinnedAt,
-		"metadata":        info.Metadata,
+		"id":                    info.ID,
+		"cwd":                   info.CWD,
+		"dir":                   info.Dir,
+		"provider":              info.Provider,
+		"model":                 info.Model,
+		"timestamp":             info.Timestamp,
+		"updatedAt":             info.UpdatedAt,
+		"parentSessionId":       info.ParentSessionID,
+		"forkMode":              info.ForkMode,
+		"title":                 info.Title,
+		"running":               activity.running[info.ID],
+		"activeDescendantCount": activity.descendants[info.ID],
+		"pinned":                info.Pinned,
+		"pinnedAt":              info.PinnedAt,
+		"metadata":              info.Metadata,
 	}
 	if rec, ok := s.ws.Match(info.CWD); ok {
 		m["workspaceId"] = rec.ID

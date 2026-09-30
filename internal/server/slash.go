@@ -540,9 +540,11 @@ func (s *Server) patchMessage(w http.ResponseWriter, r *http.Request) {
 // completion notification, extension:<name> a relayed message); External
 // carries the metadata a relaying extension needs to correlate the turn.
 type steerRequest struct {
-	Content  []types.Content
-	Origin   string
-	External map[string]string
+	ClientRequestID string
+	Completion      *types.CompletionIdentity
+	Content         []types.Content
+	Origin          string
+	External        map[string]string
 }
 
 // pushSteerRun writes Inbox on this occupy only. Using the captured runState
@@ -554,13 +556,26 @@ func (s *Server) pushSteerRun(st *runState, req steerRequest) bool {
 	if st == nil {
 		return false
 	}
-	msg := types.Message{Role: "user", Content: req.Content, Origin: req.Origin, External: cloneExternal(req.External)}
+	msg := types.Message{Role: "user", Content: req.Content, Origin: req.Origin, External: cloneExternal(req.External), ClientRequestID: req.ClientRequestID, Completion: req.Completion}
+	if msg.ClientRequestID == "" {
+		id, err := idgen.NewV7()
+		if err != nil {
+			return false
+		}
+		msg.ClientRequestID = id
+	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.steerClosed || st.inbox == nil {
 		return false
 	}
 	st.inbox.Push(msg)
+	// A completion can still be pulled by TaskOutput before this Inbox drains.
+	// Publishing optimistic acceptance now would leave a ghost user row after
+	// that claim wins. Its first visible event is the committed message instead.
+	if msg.Completion != nil {
+		return true
+	}
 	ev := loop.Event{Type: loop.SteerAccepted, Message: &msg, RunID: st.runID, External: cloneExternal(st.external)}
 	st.appendLocked(&ev)
 	st.wait.Broadcast()
@@ -735,6 +750,7 @@ func (s *Server) dispatchQueue(id string) {
 			return
 		}
 		enableRunInbox(st)
+		st.inputMetadata.ClientRequestID = ext.ID
 		origin := ""
 		if ext.Extension != "" {
 			origin = "extension:" + ext.Extension
@@ -760,25 +776,21 @@ func (s *Server) dispatchQueue(id string) {
 		return
 	}
 	enableRunInbox(st)
+	st.inputMetadata = types.Message{ClientRequestID: item.ClientRequestID, Completion: item.Completion}
 	go s.runPrompt(ctx, st, id, item.Content, nil, "", item.Origin, "", s.takeNextTurn(id))
 }
 
-// dequeueDispatchable takes the next turn that should run, skipping completion
-// notifications the parent already read on its own.
-//
-// Why here and not when the notification is enqueued: the child finishes and
-// enqueues its notification while the parent is still busy, and the parent's own
-// TaskOutput can read the same result before its turn ends. The queue item waits
-// for that turn boundary, so this is the first moment the consumed mark exists
-// and can be honored. Dropped items are not silently removed from the client's
-// view: each skip republishes the queue.
+// dequeueDispatchable skips already-consumed generations before occupying a
+// parent. This is an optimization only: a concurrent TaskOutput may still win
+// after dequeue, so initial messages and live drains arbitrate at persistence.
+// Each skip republishes the queue rather than silently removing a visible item.
 func (s *Server) dequeueDispatchable(id, dir string) (session.QueuedItem, bool, error) {
 	for {
 		item, ok, err := session.Dequeue(dir)
 		if err != nil || !ok {
 			return session.QueuedItem{}, ok, err
 		}
-		if item.AgentTask != "" && s.agentTasks != nil && s.agentTasks.NotificationConsumed(item.AgentTask) {
+		if item.Completion != nil && s.agentTasks != nil && s.agentTasks.CompletionDelivered(*item.Completion) {
 			s.publishQueueChanged(id)
 			continue
 		}
@@ -814,7 +826,7 @@ func mapName(row map[string]any) string {
 	return name
 }
 
-func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id string, content []types.Content, parentID *string, model string) {
+func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id string, content []types.Content, parentID *string, model string, clientRequestID ...string) {
 	gate := s.inputGate(id)
 	gate.Lock()
 	defer gate.Unlock()
@@ -829,7 +841,11 @@ func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id stri
 	}
 
 	enableRunInbox(st)
+	st.inputMetadata.ClientRequestID = st.runID + ":input"
+	if len(clientRequestID) > 0 && clientRequestID[0] != "" {
+		st.inputMetadata.ClientRequestID = clientRequestID[0]
+	}
 	// runPrompt's defer release returns this occupy slot.
 	go s.runPrompt(ctx, st, id, content, parentID, model, "", "", s.takeNextTurn(id))
-	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started"})
+	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started", "clientRequestId": st.inputMetadata.ClientRequestID})
 }

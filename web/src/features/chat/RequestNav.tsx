@@ -134,6 +134,10 @@ export function RequestNav({
   }
   const openPanel = () => {
     cancelClose()
+    // A keyboard-opened error panel must not retry merely because the
+    // pointer enters it on the way to the retry button. Replacing that button
+    // during pointer movement made it impossible to click on WebKit.
+    if (open) return
     setOpen(true)
     onOpen?.()
   }

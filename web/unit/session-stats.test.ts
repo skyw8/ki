@@ -72,6 +72,7 @@ test('sessionStats averages TTFT/TPS and totals usage over the loaded turns', ()
 
 test('sessionStats counts folded compact turns the window never loaded', () => {
   const stats: TurnStats = {
+    turnId: 'u1',
     turn: 1, steps: 2, elapsedMs: 4_000, durationMs: 1_500, input: 50, output: 20, cacheRead: 30, cacheWrite: 0,
     hasCost: false, cost: 0, tools: 0, toolFailures: 0, cacheMisses: 0, ttftMs: 100, tps: 20, live: false,
   }
@@ -378,9 +379,9 @@ test('sessionStats totals the session run time and keeps the newest turn separat
 test('a confirmed second prompt never switches the live timer back to the previous turn', () => {
   const first = msg('u1', '', 'user', { timestamp: 1_000, content: [{ type: 'text', text: 'first' }] })
   const answer = msg('a1', 'u1', 'assistant', { timestamp: 11_000 })
-  const second = { role: 'user', timestamp: 101_000, content: [{ type: 'text', text: 'second' }] }
+  const second = { role: 'user', clientRequestId: 'second-request', timestamp: 101_000, content: [{ type: 'text', text: 'second' }] }
   let s = loadHistory({ entries: [first, answer], leafId: 'a1' } as SessionDetail)
-  s = appendOptimisticUser(s, second.content)
+  s = appendOptimisticUser(s, second.content, second.clientRequestId)
   s = applyEvent(s, { type: 'message_start', message: second })
   s = applyEvent(s, { type: 'message_end', entryId: 'u2', message: second })
   const stats = sessionStats(s)

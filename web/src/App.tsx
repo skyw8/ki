@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { ApiError, Client } from './api/client'
 import { AuthLoading, LoginScreen } from './features/settings/AuthScreen'
@@ -16,9 +16,9 @@ import { PromptSettings } from './features/settings/PromptSettings'
 import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
-import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, applyTail, clampThinkingEffort, emptyView, initialView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats, userRequests } from './lib/model'
+import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats, userRequests } from './lib/model'
 import { clampCompactKeep, loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
-import type { CatalogExtension, ChatNode, Content, ExtensionUI, LoopEvent, ModelInfo, PushEvent, SearchHit, SessionInfo, ViewState, WorkspaceInfo } from './api/types'
+import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, PushEvent, SearchHit, SessionInfo, WorkspaceInfo } from './api/types'
 import { TrajectoryView } from './features/chat/Trajectory'
 import { useI18n } from './i18n/index'
 import { toast } from './components/toast'
@@ -31,7 +31,9 @@ import { dropPushSubscription, ensurePushSubscription } from './lib/push'
 import { focusedSession } from './lib/tab-focus'
 import { reconcileFinishedRuns } from './lib/completion-catchup'
 import { isNetworkError } from './lib/errors'
-import { streamBatch, reconnectDelay, waitForReconnect } from './lib/stream-batch'
+import { useTranscriptStore } from './hooks/useTranscriptStore'
+import { SessionSyncController } from './lib/session-sync'
+import { clientRequestId } from './lib/client-request'
 import { ancestorsOf, buildSessionForest, orderedChildren, pinnedFirst, topLevelRoot } from './lib/session-tree'
 
 type Tab = 'conversation' | 'trajectory' | 'config'
@@ -172,12 +174,17 @@ function SessionRows({
                 aria-current={session.id === currentId ? 'page' : undefined}
                 onClick={() => onOpen(session.id)}
               >
-                <span className={`dot${session.running ? ' on' : ''}`} />
+                <span className={`dot${session.running ? ' on' : (session.activeDescendantCount ?? 0) > 0 ? ' delegated' : ''}`} aria-hidden />
                 {session.pinned && session.forkMode !== 'tree' ? <span className="pin-mark" aria-label={t('session.pinned')}><IPin /></span> : null}
                 {depth > 0 ? <span className="subagent-mark" aria-hidden title={t('session.subagent')}><IFork /></span> : null}
                 <span className="meta">
                   <div className="title" data-testid="session-title">{session.title || untitled}</div>
-                  <div className="sub">{session.model}</div>
+                  <div className="sub" data-testid={(session.activeDescendantCount ?? 0) > 0 ? 'session-child-activity' : undefined}
+                    title={(session.activeDescendantCount ?? 0) > 0 ? t(session.running ? 'session.runningChildren' : 'session.waitingChildren', { n: session.activeDescendantCount! }) : undefined}>
+                    {(session.activeDescendantCount ?? 0) > 0
+                      ? t(session.running ? 'session.runningChildren' : 'session.waitingChildren', { n: session.activeDescendantCount! })
+                      : session.model}
+                  </div>
                 </span>
               </button>
               <button
@@ -293,7 +300,7 @@ function WorkspaceApp({ api }: { api: Client }) {
   const [selectedWs, setSelectedWs] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Record<string, boolean>>(loadExpanded)
   const [showAll, setShowAll] = useState<Record<string, boolean>>({})
-  const [view, setView] = useState<ViewState>(initialView)
+  const { store, view, setView } = useTranscriptStore()
   const [draft, setDraft] = useState<Draft>({ text: '', attachments: [] })
 	const [edit, setEdit] = useState<{ messageId: string; parentId: string; draft: Draft } | null>(null)
 	const [attachmentTarget, setAttachmentTarget] = useState<'new' | 'edit' | null>(null)
@@ -329,19 +336,11 @@ function WorkspaceApp({ api }: { api: Client }) {
   const [atBottom, setAtBottom] = useState(true)
   const [jumpToId, setJumpToId] = useState<string | null>(null)
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
-  const abortRef = useRef<AbortController | null>(null)
   // The push handler is event-driven and long-lived, so it reads the open
   // session and the run stream it holds through refs instead of captured state.
   const currentIdRef = useRef<string | null>(currentId)
-  const viewRef = useRef(view)
-  const listeningIdRef = useRef<string | null>(null)
-  // Last event this tab applied per session, as the server's "<runId>:<seq>"
-  // cursor. Re-listening resumes after it instead of replaying the whole run
-  // (the server trims that replay, but a long turn still costs megabytes). The
-  // run id makes a stale cursor harmless: the server ignores a cursor from
-  // another run, so a new run always replays from its start.
-  const resumeRef = useRef<Map<string, string>>(new Map())
-  const reconnectAttempts = useRef(new Map<string, number>())
+  const viewRef = store
+  const syncRef = useRef<SessionSyncController | null>(null)
   const abortedRuns = useRef(new Set<string>())
   // Sessions this tab has seen running. Completion notifications are limited to
   // these so a run this browser never observed (CLI, agent child) stays silent.
@@ -351,8 +350,10 @@ function WorkspaceApp({ api }: { api: Client }) {
   const chatControl = useRef<TranscriptScroll>(null)
   const [sessionRevision, setSessionRevision] = useState(0)
   const openAbort = useRef<AbortController | null>(null)
+  const [openingId, setOpeningId] = useState<string | null>(null)
   const beforeHistoryCommit = useCallback((signal: AbortSignal) => chatControl.current?.preparePrepend(signal) ?? Promise.resolve(), [])
-  const history = useTranscriptRequests(api, currentId, sessionRevision, viewRef, setView, messageView, beforeHistoryCommit)
+  const requestRecovery = useCallback(() => syncRef.current?.recover(true) ?? Promise.resolve(), [])
+  const history = useTranscriptRequests(api, currentId, sessionRevision, store, messageView, beforeHistoryCommit, requestRecovery)
   const { requestIndex, refreshIndex, requestHydrate, loadOlder, loadingOlder, olderError, indexLoading, indexError } = history
   const jumpVersion = useRef(0)
   const [seekingId, setSeekingId] = useState<string | null>(null)
@@ -751,8 +752,13 @@ function WorkspaceApp({ api }: { api: Client }) {
 
 	useEffect(() => { void refreshList() }, [refreshList])
 
-  useLayoutEffect(() => { currentIdRef.current = currentId }, [currentId])
-  useLayoutEffect(() => { viewRef.current = view }, [view])
+  useLayoutEffect(() => {
+    currentIdRef.current = currentId
+    if (!currentId && store.sessionId) {
+      syncRef.current?.select(null)
+      store.reset(null, keepComposer(store.current))
+    }
+  }, [currentId, store])
 
   useTabFocus(currentId)
   const handleRunComplete = useCallback((id: string) => {
@@ -788,10 +794,13 @@ function WorkspaceApp({ api }: { api: Client }) {
 	useEffect(() => { void refreshExtensions() }, [refreshExtensions])
 	useEffect(() => {
 		if (currentId) return
+		let active = true
+		const ticket = store.capture('body')
 		void api.commands(selectedWs).then(commands => {
-			setView(v => v.commands === commands ? v : { ...v, commands })
+			if (active && store.isCurrent(ticket)) setView(v => v.commands === commands ? v : { ...v, commands })
 		}).catch(() => {})
-	}, [api, currentId, selectedWs])
+		return () => { active = false }
+	}, [api, currentId, selectedWs, store, setView])
   useEffect(() => {
     const q = filter.trim()
     if (!q) {
@@ -816,128 +825,42 @@ function WorkspaceApp({ api }: { api: Client }) {
     return () => window.clearTimeout(t)
   }, [api, filter])
 
-  const listen = useCallback(async (id: string, snapshotLeaf?: string) => {
-    // Hidden replies are represented by compact summaries, not client nodes.
-    // Tell replay which persisted snapshot is already accounted for so an
-    // attach cannot download those replies and add them to the fold again.
-    const through = snapshotLeaf ?? (currentIdRef.current === id && viewRef.current.compactTurns?.length ? viewRef.current.leafId : undefined)
-    abortRef.current?.abort()
-    const ac = new AbortController()
-    abortRef.current = ac
-    listeningIdRef.current = id
-    runningKnown.current.add(id)
-    // Why: the sidebar dot reads sessions[].running, which only refreshList()
-    // updates (after SSE ends or a manual refetch). Light it as soon as this
-    // client starts listening so a live run is green without switching tabs.
-    setSessions(ss => ss.map(s => s.id === id ? { ...s, running: true } : s))
-    const connectedAt = performance.now()
-    const batcher = streamBatch(batch => {
-      if (abortRef.current !== ac) return
-      setView(v => {
-        if (abortRef.current !== ac) return v
-        let next = v
-        for (const ev of batch) next = applyEvent(next, ev)
-        // The resume cursor belongs to committed state, not socket receipt or
-        // display animation. Advancing it earlier can skip unapplied events.
-        const last = batch[batch.length - 1]
-        if (last.runId && last.seq !== undefined) resumeRef.current.set(id, `${last.runId}:${last.seq}`)
-        return next
-      })
-    })
-    try {
-      for await (const ev of api.events(id, ac.signal, resumeRef.current.get(id), through)) {
-        batcher.enqueue(ev)
-      }
-    } catch (e) {
-      if ((e as { name?: string }).name === 'AbortError') return
-      // The run stream drops whenever the tab is suspended or the link changes;
-      // the finally block re-listens, so a transient network failure is silent.
-      if (!isNetworkError(e)) toast.from(e)
-    } finally {
-      // Apply whatever is still queued before the tail reconciliation below: it
-      // replaces the window, and the cursor must not move past an unapplied
-      // event.
-      batcher.flush()
-      batcher.dispose()
-      if (abortRef.current === ac && !ac.signal.aborted) {
-        // A finished run is reconciled from the tail: the events already
-        // arrived on this stream, so only the window and leaf need refreshing,
-        // not the whole history (and the index stays warm across the run).
-        const liveRevision = viewRef.current.liveRevision
-        const detail = await api.get(id, { ...transcriptOptions(), signal: ac.signal }).catch(() => null)
-        if (abortRef.current === ac && !ac.signal.aborted) {
-          if (detail) {
-            setView(v => applyTail(v, detail, liveRevision))
-            refreshIndex(id, detail.leafId)
-          }
-          if (!detail || detail.running) {
-            // A dead link must not turn into a tight GET/listen loop or make a
-            // still-running session appear completed. Retrying never resends a prompt.
-            const attempt = performance.now() - connectedAt >= 5000 ? 0 : (reconnectAttempts.current.get(id) ?? 0)
-            reconnectAttempts.current.set(id, attempt + 1)
-            await waitForReconnect(reconnectDelay(attempt), ac.signal).catch(() => {})
-            if (abortRef.current === ac && !ac.signal.aborted) void listen(id, detail?.compactTurns?.length ? detail.leafId : undefined)
-          } else {
-            reconnectAttempts.current.delete(id)
-            listeningIdRef.current = null
-          }
-        }
-        void refreshList()
-      }
-    }
-  }, [api, refreshList, refreshIndex])
-
-  const recovering = useRef<AbortController | null>(null)
-  const recoverOpenTranscript = useCallback(async (restart = false) => {
-    const id = currentIdRef.current
-    // The first run may contain only live nodes: entries are populated by the
-    // next tail read. Requiring persisted entries would strand fresh sessions.
-    if (!id || (!viewRef.current.entries.length && !viewRef.current.nodes.length && !viewRef.current.busy)) return
-    if (!restart && recovering.current === abortRef.current && recovering.current && !recovering.current.signal.aborted) return
-    // A healthy push socket says nothing about the run socket or missed data.
-    // Retire the old reader before taking a snapshot so its delayed frames
-    // cannot overwrite recovery, even after switching away and back to this id.
-    abortRef.current?.abort()
-    const ac = new AbortController()
-    abortRef.current = recovering.current = ac
-    listeningIdRef.current = null
-    const valid = () => abortRef.current === ac && !ac.signal.aborted && currentIdRef.current === id
-    try {
-      for (let attempt = 0; valid(); attempt++) {
-        try {
-          const liveRevision = viewRef.current.liveRevision
-          const detail = await api.get(id, { ...transcriptOptions(), signal: ac.signal })
-          if (!valid()) return
-          setView(v => applyTail(v, detail, liveRevision))
-          // A resumed tail may skip entire turns; a previously loaded index
-          // must be refreshed too, otherwise navigation never discovers them.
-          refreshIndex(id, detail.leafId)
-          if (detail.running) void listen(id, detail.compactTurns?.length ? detail.leafId : undefined)
-          return
-        } catch (error) {
-          if (!valid()) return
-          if (!isNetworkError(error)) { toast.from(error); return }
-          await waitForReconnect(reconnectDelay(attempt), ac.signal).catch(() => {})
-        }
-      }
-    } finally {
-      if (recovering.current === ac) recovering.current = null
-    }
-  }, [api, listen, refreshIndex])
+  const syncActions = useRef({ refreshIndex, refreshList })
+  syncActions.current = { refreshIndex, refreshList }
+  const sync = useMemo(() => new SessionSyncController(api, store, {
+    transcriptOptions: () => messageViewRef.current.mode === 'compact'
+      ? { view: 'compact', keep: messageViewRef.current.keep } : {},
+    onListening: id => {
+      runningKnown.current.add(id)
+      setSessions(ss => ss.map(s => s.id === id ? { ...s, running: true } : s))
+    },
+    onSnapshot: (id, detail) => syncActions.current.refreshIndex(id, detail.leafId),
+    onSettled: () => { void syncActions.current.refreshList() },
+    onError: error => toast.from(error),
+  }), [api, store])
+  syncRef.current = sync
+  const syncStatus = useSyncExternalStore(sync.subscribe, sync.getSnapshot, sync.getSnapshot)
+  useEffect(() => {
+    sync.activate()
+    return () => { openAbort.current?.abort(); sync.dispose() }
+  }, [sync])
+  const listen = useCallback((id: string, snapshotLeaf?: string) => sync.listen(id, snapshotLeaf), [sync])
+  const recoverOpenTranscript = useCallback((restart = false) => sync.recover(restart), [sync])
 
   // The push channel's handler for the session this tab has open.
   const refreshOpenRuntime = useCallback(async () => {
     const id = currentIdRef.current
     if (!id) return
+    const ticket = store.capture('body')
     try {
       const detail = await api.get(id, { fields: 'runtime' })
-      if (currentIdRef.current !== id) return
+      if (currentIdRef.current !== id || !store.isCurrent(ticket)) return
       setView(v => ({ ...applyRuntimeCatalog(v, detail), busy: v.busy || !!detail.running }))
-      if (detail.running && listeningIdRef.current !== id) void listen(id)
+      if (detail.running && !sync.isListening(id)) void listen(id)
     } catch {
       // The session may have just been deleted; the list refresh closes it.
     }
-  }, [api, listen])
+  }, [api, listen, store, sync])
 
   // Everything the server pushes to this tab arrives here: invalidate hints for
   // the sidebar/workspace/catalog state, and session sideband events for both
@@ -968,14 +891,13 @@ function WorkspaceApp({ api }: { api: Client }) {
               // The open session was deleted by another client (e.g. its
               // workspace was deleted): leave the transcript instead of showing
               // a session that no longer exists.
-              abortRef.current?.abort()
-              abortRef.current = null
-              listeningIdRef.current = null
+              sync.select(null)
+              store.reset(null, keepComposer(store.current))
               setCurrentId(null)
               setView(v => keepComposer(v))
               return
             }
-            if (info.running && listeningIdRef.current !== id) void listen(id)
+            if (info.running && !sync.isListening(id)) void listen(id)
           })
           return
         case 'extensions':
@@ -1043,7 +965,7 @@ function WorkspaceApp({ api }: { api: Client }) {
         })
         return
     }
-  }, [api, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, recoverOpenTranscript, t, catchUpMissedCompletions])
+  }, [api, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, recoverOpenTranscript, t, catchUpMissedCompletions, store, sync])
   useServerEvents(api, onServerEvent)
 
   // Safety net for a push stream that outlived a laptop sleep or a proxy idle
@@ -1056,10 +978,16 @@ function WorkspaceApp({ api }: { api: Client }) {
       if (document.visibilityState !== 'visible') return
       void refreshList().then(catchUpMissedCompletions)
       void refreshExtensions(true)
-      void recoverOpenTranscript(true)
+      void sync.resume()
     }
     const onPageShow = (event: PageTransitionEvent) => { if (event.persisted) onVisibility() }
-    const onPageHide = () => { abortRef.current?.abort(); listeningIdRef.current = null }
+    const onPageHide = () => {
+      openAbort.current?.abort()
+      // An opening GET may not yet have handed its session to the reader.
+      // Resume must still know which empty transcript needs reconciliation.
+      if (currentIdRef.current && sync.getSnapshot().sessionId !== currentIdRef.current) sync.select(currentIdRef.current)
+      sync.suspend()
+    }
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('pageshow', onPageShow)
     window.addEventListener('online', onVisibility)
@@ -1070,9 +998,12 @@ function WorkspaceApp({ api }: { api: Client }) {
       window.removeEventListener('online', onVisibility)
       window.removeEventListener('pagehide', onPageHide)
     }
-  }, [catchUpMissedCompletions, refreshExtensions, refreshList, recoverOpenTranscript])
+  }, [catchUpMissedCompletions, refreshExtensions, refreshList, sync])
 
   const openSession = useCallback(async (id: string): Promise<boolean> => {
+    // Reopening the selected session changes its epoch, not its ID. Close
+    // navigation explicitly or a mobile drawer leaves the new view inert.
+    setMobileSidebarOpen(false)
     history.cancel()
     cancelJump()
     openAbort.current?.abort()
@@ -1080,54 +1011,63 @@ function WorkspaceApp({ api }: { api: Client }) {
     openAbort.current = ac
     currentIdRef.current = id
     setSessionRevision(n => n + 1)
-    setView(v => keepComposer(v))
+    store.reset(id, { ...keepComposer(store.current), title: sessionsRef.current.find(s => s.id === id)?.title ?? '', runtimeReady: false })
+    // The initial read owns opening. Push hints cannot start a competing
+    // recovery/reader until its baseline is accepted.
+    sync.select(null)
+    setOpeningId(id)
     setAtBottom(true)
     setCurrentId(id)
 	setEdit(null)
-    abortRef.current?.abort()
-	abortRef.current = null
-    listeningIdRef.current = null
     try {
       const detail = await api.get(id, { ...transcriptOptions(), signal: ac.signal })
       if (ac.signal.aborted || currentIdRef.current !== id) return false
       const next = loadHistory(detail)
       setView(next)
+      sync.select(id)
       saveLastComposerModel({ provider: next.provider, model: next.model, thinkingEffort: next.thinkingEffort })
       setSelectedWs(detail.workspaceId ?? null)
       if (detail.workspaceId) setExpanded(e => ({ ...e, [detail.workspaceId!]: true }))
       if (detail.running) void listen(id, detail.compactTurns?.length ? detail.leafId : undefined)
       return true
     } catch (e) {
-      if (!ac.signal.aborted) toast.from(e)
+      if (!ac.signal.aborted && currentIdRef.current === id) {
+        sync.select(id)
+        void sync.recover()
+      }
       return false
+    } finally {
+      if (openAbort.current === ac) setOpeningId(null)
     }
-  }, [api, listen, history.cancel, cancelJump])
+  }, [api, listen, history.cancel, cancelJump, store, sync])
 
   useEffect(() => {
-    if (!currentId || view.runtimeReady !== false) return
+    if (!currentId || openingId === currentId || view.runtimeReady !== false) return
     const ac = new AbortController()
+    const ticket = store.capture('body')
+    const valid = () => !ac.signal.aborted && store.isCurrent(ticket)
     const started = Date.now()
     void (async () => {
-      while (!ac.signal.aborted && Date.now() - started < 25_000) {
+      while (valid() && Date.now() - started < 25_000) {
         await new Promise<void>(resolve => {
           const onAbort = () => { window.clearTimeout(timer); resolve() }
           const timer = window.setTimeout(() => { ac.signal.removeEventListener('abort', onAbort); resolve() }, 400)
           ac.signal.addEventListener('abort', onAbort, { once: true })
         })
-        if (ac.signal.aborted) return
+        if (!valid()) return
         try {
           const detail = await api.get(currentId, { fields: 'runtime' })
-          if (ac.signal.aborted) return
+          if (!valid()) return
           if (detail.runtime?.ready) {
             setView(v => applyRuntimeCatalog(v, detail))
             return
           }
         } catch { /* retry until timeout */ }
       }
-      if (!ac.signal.aborted) setView(v => ({ ...v, runtimeReady: true }))
+      if (valid()) setView(v => ({ ...v, runtimeReady: true }))
     })()
     return () => ac.abort()
-  }, [api, currentId, view.runtimeReady])
+  }, [api, currentId, sessionRevision, openingId, view.runtimeReady, store, setView])
 
   const sessionExtChips = useMemo(() => statusChips(view.extensionUi), [view.extensionUi])
   const enabledExtensions = useMemo(
@@ -1191,12 +1131,31 @@ function WorkspaceApp({ api }: { api: Client }) {
   const makeSession = useCallback(async (workspaceId?: string | null) => {
     const s = await api.create(sessionCreateBody(workspaceId, { provider: view.provider, model: view.model, thinkingEffort: view.thinkingEffort }, models))
     await refreshList()
+    history.cancel()
+    openAbort.current?.abort()
+    const ac = new AbortController()
+    openAbort.current = ac
+    currentIdRef.current = s.id
+    store.reset(s.id, { ...keepComposer(store.current), cwd: s.cwd, title: s.title, runtimeReady: false })
+    sync.select(null)
+    setOpeningId(s.id)
+    const ticket = store.capture('tail')
     setCurrentId(s.id)
+    setSessionRevision(n => n + 1)
     setSelectedWs(s.workspaceId ?? workspaceId ?? null)
     try {
-      setView(loadHistory(await api.get(s.id, transcriptOptions())))
+      const detail = await api.get(s.id, { ...transcriptOptions(), signal: ac.signal })
+      if (store.isCurrent(ticket) && !ac.signal.aborted) {
+        setView(loadHistory(detail))
+        sync.select(s.id)
+      }
     } catch {
-      setView({ ...emptyView(), cwd: s.cwd, model: s.model, provider: s.provider, thinkingEffort: s.thinkingEffort ?? '' })
+      if (store.isCurrent(ticket) && !ac.signal.aborted) {
+        setView({ ...emptyView(), cwd: s.cwd, model: s.model, provider: s.provider, thinkingEffort: s.thinkingEffort ?? '' })
+        sync.select(s.id)
+      }
+    } finally {
+      if (openAbort.current === ac) setOpeningId(null)
     }
     saveLastComposerModel({ provider: s.provider, model: s.model, thinkingEffort: s.thinkingEffort ?? '' })
     setTab('conversation')
@@ -1206,7 +1165,7 @@ function WorkspaceApp({ api }: { api: Client }) {
       setShowAll(a => ({ ...a, [s.workspaceId!]: true }))
     }
     return s
-  }, [api, models, refreshList, view.model, view.provider, view.thinkingEffort])
+  }, [api, models, refreshList, view.model, view.provider, view.thinkingEffort, history.cancel, store, sync, setView])
 
 	const uploadClientFiles = useCallback(async (target: 'new' | 'edit', files: File[]) => {
 	  if (!files.length || uploading) return
@@ -1287,11 +1246,17 @@ function WorkspaceApp({ api }: { api: Client }) {
         const s = await makeSession(selectedWs)
         id = s.id
       }
-      let result: { handled?: boolean; notice?: string; error?: boolean; accepted?: boolean | string; sessionId?: string; cwd?: string; workspaceId?: string } | undefined
+      const requestId = clientRequestId()
+      const ticket = store.capture('body')
+      let result: Awaited<ReturnType<Client['prompt']>> | undefined
       try {
         const spec = view.provider && view.model ? `${view.provider}/${view.model}` : view.model
-		result = await api.prompt(id, content, spec || undefined, parentId, delivery)
+		result = await api.prompt(id, content, spec || undefined, parentId, delivery, undefined, requestId)
         consumed = true
+        if (!store.isCurrent(ticket) || store.sessionId !== id) {
+          void refreshList()
+          return
+        }
         if (result?.handled) {
           if (result.notice) (result.error ? toast.error : toast.info)(result.notice)
           if (!result.error) {
@@ -1315,12 +1280,12 @@ function WorkspaceApp({ api }: { api: Client }) {
 	  if (result?.accepted === 'queued') {
 		try {
 		  const detail = await api.get(id, { fields: 'runtime' })
-		  setView(v => ({ ...applyRuntimeCatalog(v, detail), busy: true }))
+		  if (store.isCurrent(ticket) && store.sessionId === id) setView(v => ({ ...applyRuntimeCatalog(v, detail), busy: true }))
 		} catch (e) { toast.from(e) }
 		return
 	  }
 	  if (result?.accepted === 'steered') {
-		setView(v => appendOptimisticUser(v, content))
+		setView(v => appendOptimisticUser(v, content, result.clientRequestId ?? requestId))
 		return
 	  }
 	  if (editedMessageId) {
@@ -1328,17 +1293,17 @@ function WorkspaceApp({ api }: { api: Client }) {
 		  const cut = v.nodes.findIndex(n => n.id === editedMessageId)
 		  // Hide the abandoned descendant path immediately; the authoritative
 		  // tree is reloaded after SSE completes.
-		  return appendOptimisticUser({ ...v, nodes: cut >= 0 ? v.nodes.slice(0, cut) : v.nodes }, content)
+		  return appendOptimisticUser({ ...v, nodes: cut >= 0 ? v.nodes.slice(0, cut) : v.nodes }, content, result?.clientRequestId ?? requestId)
 		})
 	  } else {
-		setView(v => appendOptimisticUser(v, content))
+		setView(v => appendOptimisticUser(v, content, result?.clientRequestId ?? requestId))
 	  }
       void listen(id)
     } catch (e) {
       fail()
       toast.from(e)
     }
-	}, [api, currentId, listen, makeSession, openSession, selectedWs, view.model, view.provider])
+	}, [api, currentId, listen, makeSession, openSession, selectedWs, view.model, view.provider, store, setView, refreshList])
 
 	const send = useCallback((delivery?: 'steer' | 'queue') => {
 	  const content: Content[] = [...(draft.text.trim() ? [{ type: 'text', text: draft.text } as Content] : []), ...draft.attachments]
@@ -1357,18 +1322,21 @@ function WorkspaceApp({ api }: { api: Client }) {
 	  if (!currentId || !item) return
 	  try {
 	    const spec = view.provider && view.model ? `${view.provider}/${view.model}` : view.model
-	    const result = await api.prompt(currentId, [], spec || undefined, undefined, 'steer', item.id)
+	    const requestId = item.clientRequestId ?? clientRequestId()
+	    const ticket = store.capture('body')
+	    const result = await api.prompt(currentId, [], spec || undefined, undefined, 'steer', item.id, requestId)
+	    if (!store.isCurrent(ticket)) return
 	    if (result?.accepted === 'steered') {
 	      setView(v => ({
-	        ...appendOptimisticUser(v, item.content ?? []),
+	        ...appendOptimisticUser(v, item.content ?? [], result.clientRequestId ?? requestId),
 	        queued: (v.queued ?? []).filter(q => q.id !== item.id),
 	      }))
 	      return
 	    }
 	    const detail = await api.get(currentId, { fields: 'runtime' })
-	    setView(v => ({ ...v, queued: detail.queued ?? [], busy: v.busy || !!detail.running }))
+	    if (store.isCurrent(ticket) && store.sessionId === currentId) setView(v => ({ ...v, queued: detail.queued ?? [], busy: v.busy || !!detail.running }))
 	  } catch (e) { toast.from(e) }
-	}, [api, currentId, view.model, view.provider, view.queued])
+	}, [api, currentId, view.model, view.provider, view.queued, store, setView])
 
 	const sendEdit = useCallback(() => {
 	  if (!edit) return Promise.resolve()
@@ -1397,26 +1365,30 @@ function WorkspaceApp({ api }: { api: Client }) {
     saveLastComposerModel({ provider, model, thinkingEffort })
     setModelOpen(false)
     if (!currentId) return
+    const ticket = store.capture('body')
     try {
       const out = await api.patch(currentId, { model: spec, thinkingEffort })
-	  setView(v => ({ ...v, model: out.model, provider: out.provider, thinkingEffort: out.thinkingEffort ?? thinkingEffort }))
-      saveLastComposerModel({ provider: out.provider, model: out.model, thinkingEffort: out.thinkingEffort ?? thinkingEffort })
+      if (!store.isCurrent(ticket)) return
+	  setView(v => ({ ...v, liveRevision: v.liveRevision + 1, model: out.model ?? v.model, provider: out.provider ?? v.provider, thinkingEffort: out.thinkingEffort ?? thinkingEffort }))
+      saveLastComposerModel({ provider: out.provider ?? provider, model: out.model ?? model, thinkingEffort: out.thinkingEffort ?? thinkingEffort })
     } catch (e) {
       toast.from(e)
     }
-  }, [api, currentId, models, view.model, view.provider, view.thinkingEffort])
+  }, [api, currentId, models, view.model, view.provider, view.thinkingEffort, store, setView])
 
   const selectedModel = useMemo(() => models.find(m => m.provider === view.provider && m.id === view.model), [models, view.model, view.provider])
 	const switchThinking = useCallback(async (thinkingEffort: string) => {
 		setView(v => ({ ...v, thinkingEffort }))
 		if (view.provider && view.model) saveLastComposerModel({ provider: view.provider, model: view.model, thinkingEffort })
 		if (!currentId) return
+		const ticket = store.capture('body')
 		try {
 			const out = await api.patch(currentId, { thinkingEffort })
-			setView(v => ({ ...v, thinkingEffort: out.thinkingEffort ?? thinkingEffort }))
+			if (!store.isCurrent(ticket)) return
+			setView(v => ({ ...v, liveRevision: v.liveRevision + 1, thinkingEffort: out.thinkingEffort ?? thinkingEffort }))
 			if (view.provider && view.model) saveLastComposerModel({ provider: view.provider, model: view.model, thinkingEffort: out.thinkingEffort ?? thinkingEffort })
 		} catch (e) { toast.from(e) }
-	}, [api, currentId, view.model, view.provider])
+	}, [api, currentId, view.model, view.provider, store, setView])
 
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
 
@@ -1502,7 +1474,9 @@ function WorkspaceApp({ api }: { api: Client }) {
 	  if (!currentId) return
 	  try {
 		const child = await api.fork(currentId, node.id)
-		await refreshList()
+		// Navigation owns the next action; a slower sidebar refresh must not
+		// leave the old transcript interactive after the fork was acknowledged.
+		void refreshList()
 		await openSession(child.id)
 	  } catch (e) { toast.from(e) }
 	}, [api, currentId, openSession, refreshList])
@@ -1628,9 +1602,10 @@ function WorkspaceApp({ api }: { api: Client }) {
               <button type="button" className="queued-steer" data-testid="queued-steer" onClick={() => void steerQueued(item.id)}>{t('queue.steer')}</button>
               <button type="button" className="queued-remove" data-testid="queued-remove" aria-label={t('queue.remove')} onClick={() => {
                 if (!currentId) return
+                const ticket = store.capture('body')
                 const ids = queued.filter(q => q.id !== item.id).map(q => q.id)
                 void api.patch(currentId, { queued: ids }).then(() => api.get(currentId, { fields: 'runtime' })).then(detail => {
-                  setView(v => ({ ...v, queued: detail.queued ?? [] }))
+                  if (store.isCurrent(ticket)) setView(v => ({ ...v, queued: detail.queued ?? [] }))
                 }).catch(e => toast.from(e))
               }}><IClose /></button>
             </li>
@@ -1649,8 +1624,8 @@ function WorkspaceApp({ api }: { api: Client }) {
 	  onFiles={files => void uploadClientFiles('new', files)}
 	  uploading={uploading}
       busy={view.busy}
-      disabled={!!currentId && view.runtimeReady === false}
-      loading={!!currentId && view.runtimeReady === false}
+      disabled={!!currentId && (openingId === currentId || view.runtimeReady === false)}
+      loading={!!currentId && (openingId === currentId || view.runtimeReady === false)}
       hasQueued={queued.length > 0}
       cwd={view.cwd}
       model={view.model}
@@ -1906,6 +1881,12 @@ function WorkspaceApp({ api }: { api: Client }) {
               </button>
             ) : null}
             <div className="conv-title">{view.title || (currentId ? untitled : 'ki')}</div>
+            {currentId && (openingId === currentId || ['recovering', 'retrying', 'error'].includes(syncStatus.phase)) ? (
+              <div className="transcript-sync-status" data-testid="transcript-sync-status" role="status" aria-live="polite">
+                <span>{t(openingId === currentId || syncStatus.phase === 'recovering' ? 'chat.syncRecovering' : syncStatus.phase === 'error' ? 'chat.syncError' : 'chat.syncRetrying')}</span>
+                {syncStatus.phase === 'error' && openingId !== currentId ? <button type="button" onClick={() => void sync.recover(true)}>{t('chat.syncRetry')}</button> : null}
+              </div>
+            ) : null}
             <div className="ext-chips" data-testid="ext-chips">
               {extVisible.map(ui => (
                 <button

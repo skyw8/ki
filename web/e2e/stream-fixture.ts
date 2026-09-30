@@ -34,8 +34,11 @@ export async function openStream(page: Page, history: number, emptySnapshot = fa
     }
   }, { id })
   await page.goto('/')
-  if ((page.viewportSize()?.width ?? 1280) <= 760) {
-    await page.getByRole('button', { name: '打开侧栏', exact: true }).click()
+  // The responsive toggle does not exist during the initial auth check.
+  // Inspecting visibility before the shell mounts misclassifies tablet/mobile.
+  await expect(page.locator('main.main')).toBeVisible()
+  if (await page.getByTestId('mobile-nav-toggle').isVisible()) {
+    await page.getByTestId('mobile-nav-toggle').click()
   }
   await page.getByTestId('session-row').filter({ hasText: title }).click()
   await expect.poll(() => page.evaluate(() => typeof (window as unknown as { streamSend?: unknown }).streamSend)).toBe('function')

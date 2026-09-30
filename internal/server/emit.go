@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
 
 	"ki/internal/compact"
 	"ki/internal/extension"
@@ -100,16 +101,7 @@ func (p *runEmitter) persist(ev *loop.Event) error {
 	case loop.RequestHeader:
 		return p.appendRequestHeader(*ev)
 	case loop.CompactionStart, loop.CompactionEnd:
-		// Compaction progress is persisted too (decision: jsonl + SSE) so a
-		// session replay shows when compaction happened.
-		details := map[string]any{
-			"reason": ev.Reason, "ok": ev.OK, "willRetry": ev.WillRetry,
-			"strategy": ev.Strategy, "status": ev.Status,
-			"fromExtension": ev.FromExtension,
-			"entryId":       ev.EntryID, "firstKeptEntryId": ev.FirstKeptEntryID,
-			"tokensBefore": ev.TokensBefore, "usage": ev.Usage,
-		}
-		if _, err := p.sess.AppendDetailsEvent(string(ev.Type), details); err != nil {
+		if err := persistCompactionEvent(p.sess, ev); err != nil {
 			return fmt.Errorf("append loop event: %w", err)
 		}
 	case loop.ToolExecutionUpdate:
@@ -129,6 +121,30 @@ func (p *runEmitter) persist(ev *loop.Event) error {
 	return nil
 }
 
+func persistCompactionEvent(sess *session.Session, ev *loop.Event) error {
+	details := map[string]any{
+		"reason": ev.Reason, "ok": ev.OK, "willRetry": ev.WillRetry,
+		"strategy": ev.Strategy, "status": ev.Status,
+		"fromExtension": ev.FromExtension,
+		"entryId":       ev.EntryID, "firstKeptEntryId": ev.FirstKeptEntryID,
+		"tokensBefore": ev.TokensBefore, "usage": ev.Usage,
+	}
+	entry, err := sess.AppendDetailsEvent(string(ev.Type), details)
+	if err != nil {
+		return err
+	}
+	stamp, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
+	if err != nil {
+		return fmt.Errorf("parse compaction entry timestamp: %w", err)
+	}
+	// Replay and hydration must upsert the same lifecycle node, rather than
+	// inventing a second progress row or confusing it with the checkpoint.
+	ev.LifecycleEntryID = entry.ID
+	ev.ParentID = &entry.ParentID
+	ev.Timestamp = stamp.UnixMilli()
+	return nil
+}
+
 // appendMessage persists a message_end. Message rewriting stays ahead of the
 // append and of the SSE replay of the same event.
 func (p *runEmitter) appendMessage(ev *loop.Event) error {
@@ -138,6 +154,10 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 		// Opaque server compaction state is host-private and therefore omitted
 		// from extension JSON. Preserve it across an otherwise valid rewrite.
 		rewritten.ResponsesItems = responsesItems
+		// Transport identity belongs to the accepted input, not to a content
+		// rewrite. Losing it breaks optimistic acknowledgement and completion
+		// ownership even when the extension only edits the text.
+		preserveMessageIdentity(*ev.Message, &rewritten)
 		ev.Message = &rewritten
 	}
 	if ev.Message.StopReason == "aborted" {
@@ -200,6 +220,12 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 	}
 	ev.EntryID, ev.ParentID = e.ID, &e.ParentID
 	return nil
+}
+
+func preserveMessageIdentity(original types.Message, rewritten *types.Message) {
+	rewritten.ClientRequestID = original.ClientRequestID
+	rewritten.Completion = original.Completion
+	rewritten.Origin = original.Origin
 }
 
 // appendRequestHeader persists the model-facing system prompt and tool schemas

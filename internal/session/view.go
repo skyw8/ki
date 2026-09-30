@@ -145,7 +145,7 @@ func withTurnOpeningUser(path, keep []Entry) []Entry {
 func firstChatEntry(entries []Entry) *Entry {
 	for i := range entries {
 		switch entries[i].Type {
-		case "message", "compaction", "run_aborted":
+		case "message", "compaction", "compaction_start", "compaction_end", "run_aborted":
 			return &entries[i]
 		}
 	}

@@ -105,6 +105,8 @@ sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` �
 
 `message_end` 带持久化后的 `entryId` 和 `parentId`（根为显式空字符串）。稀疏快照的 leaf 可能没有正文，客户端不能把收到的同一个 leaf id 当成自己的 parent；已完成 SSE 消息立即并入身份图，使用真实 parent 边，未取得中间 metadata 时另设本地阅读桥。
 
+`compaction_start` / `compaction_end` 在 run SSE 和 standalone push 路径都先持久化，再携带该 lifecycle entry 的 `lifecycleEntryId`、`parentId`（根为显式空字符串）和 `timestamp`（Unix 毫秒）。客户端据此合并回放和历史正文，不另造进度行身份；`compaction_end.entryId` 仍指向成功提交的 checkpoint，不能用作 lifecycle entry 的身份。
+
 `tool_execution_start` 带 `timestamp`（Unix 毫秒）作为调用开始时间；
 `tool_execution_end` 带完成时间 `timestamp` 和 `durationMs`。耗时覆盖
 工具执行及 `AfterTool`；校验、拦截和未知工具也会产生有计时的成对事件
@@ -326,3 +328,29 @@ Server --> UI: 脱敏后的 auth 状态
 
 @enduml
 ```
+
+### Input identity and descendant activity
+
+Prompt JSON accepts optional `clientRequestId`; the accepted HTTP response and
+persisted/SSE `Message` carry the same value. Missing IDs are server-generated.
+`queued[].clientRequestId` survives queue promotion; a promotion request cannot
+replace the original identity. `steer_accepted` carries both this identity and
+`origin`, so runtime input is never temporarily classified as human. Equal text
+is not an acknowledgement relation. Internal queued follow-ups also retain IDs.
+
+Agent completions carry `completion:{taskId,generation}` and a stable
+`clientRequestId` derived from that pair. Enqueueing a completion does **not**
+emit `steer_accepted`: TaskOutput may still claim it before persistence. Only a
+successful message drain publishes its `message_start`/`message_end`; a suppressed
+completion leaves no optimistic ghost. `queue_changed` and ordinary session
+invalidations still wake clients for durable delivery. These identity fields are
+transport metadata, stripped before provider requests.
+Content-only `message_end` extension rewrites cannot replace `clientRequestId`,
+`completion` or `origin`; persistence and SSE retain the accepted provenance.
+
+Session list/detail (including runtime projection) retain `running` for the
+session's **own** run and add integer `activeDescendantCount`. Descendant activity
+follows all durable parent edges, tolerates missing parents/cycles, and never
+changes own-run busy/send/stop semantics. Existing sessions invalidations on
+occupy/release refresh both fields; no activity endpoint is introduced.
+`run_aborted` remains a standalone persisted non-message leaf after terminal output.

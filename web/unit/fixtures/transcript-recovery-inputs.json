@@ -1,0 +1,100 @@
+{
+  "histories": {
+    "helper": [
+      { "type": "message", "id": "u", "message": { "role": "user", "content": [{ "type": "text", "text": "u" }] } },
+      { "type": "message", "id": "call", "parentId": "u", "message": { "role": "assistant", "content": [{ "type": "text", "text": "hidden assistant prose" }, { "type": "toolCall", "id": "t1", "name": "Read" }, { "type": "toolCall", "id": "t2", "name": "Read" }] } }
+    ],
+    "notice": [
+      { "type": "message", "id": "u", "message": { "role": "user", "content": [{ "type": "text", "text": "u" }] } },
+      { "type": "message", "id": "call", "parentId": "u", "message": { "role": "assistant", "content": [{ "type": "toolCall", "id": "tool", "name": "Read" }] } },
+      { "type": "message", "id": "result", "parentId": "call", "message": { "role": "toolResult", "toolCallId": "tool", "toolName": "Read", "content": [{ "type": "text", "text": "result" }] } },
+      { "type": "message", "id": "notice", "parentId": "result", "message": { "role": "user", "origin": "agent:child", "content": [{ "type": "text", "text": "notice" }] } },
+      { "type": "message", "id": "final", "parentId": "notice", "message": { "role": "assistant", "content": [{ "type": "text", "text": "final" }] } }
+    ],
+    "oldBranch": [
+      { "type": "message", "id": "u", "message": { "role": "user", "content": [{ "type": "text", "text": "u" }] } },
+      { "type": "message", "id": "old-a1", "parentId": "u", "message": { "role": "assistant", "content": [{ "type": "text", "text": "old-a1" }] } },
+      { "type": "message", "id": "old-a2", "parentId": "old-a1", "message": { "role": "assistant", "content": [{ "type": "text", "text": "old-a2" }] } },
+      { "type": "message", "id": "v", "parentId": "old-a2", "message": { "role": "user", "content": [{ "type": "text", "text": "v" }] } },
+      { "type": "message", "id": "v-answer", "parentId": "v", "message": { "role": "assistant", "content": [{ "type": "text", "text": "v-answer" }] } },
+      { "type": "message", "id": "w", "parentId": "v-answer", "message": { "role": "user", "content": [{ "type": "text", "text": "w" }] } },
+      { "type": "message", "id": "w-answer", "parentId": "w", "message": { "role": "assistant", "content": [{ "type": "text", "text": "w-answer" }] } },
+      { "type": "message", "id": "x", "parentId": "w-answer", "message": { "role": "user", "content": [{ "type": "text", "text": "x" }] } },
+      { "type": "message", "id": "x-answer", "parentId": "x", "message": { "role": "assistant", "content": [{ "type": "text", "text": "x-answer" }] } },
+      { "type": "message", "id": "y", "parentId": "x-answer", "message": { "role": "user", "content": [{ "type": "text", "text": "y" }] } },
+      { "type": "message", "id": "y-answer", "parentId": "y", "message": { "role": "assistant", "content": [{ "type": "text", "text": "y-answer" }] } }
+    ],
+    "selected": [
+      { "type": "message", "id": "u", "message": { "role": "user", "content": [{ "type": "text", "text": "u" }] } },
+      { "type": "message", "id": "selected-a1", "parentId": "u", "message": { "role": "assistant", "content": [{ "type": "text", "text": "selected-a1" }] } }
+    ],
+    "runtimeOnly": [
+      { "type": "request_header", "id": "header", "timestamp": "1970-01-01T00:00:00.500Z", "system": "synthetic" },
+      { "type": "message", "id": "directive", "parentId": "header", "message": { "role": "user", "origin": "agent", "timestamp": 1000, "content": [{ "type": "text", "text": "directive" }] } },
+      { "type": "message", "id": "a1", "parentId": "directive", "message": { "role": "assistant", "timestamp": 2000, "latencyMs": 300, "content": [{ "type": "text", "text": "first reply" }] } },
+      { "type": "message", "id": "notice", "parentId": "a1", "message": { "role": "user", "origin": "agent:child", "timestamp": 3000, "content": [{ "type": "text", "text": "notice" }] } },
+      { "type": "message", "id": "a2", "parentId": "notice", "message": { "role": "assistant", "timestamp": 4000, "latencyMs": 400, "content": [{ "type": "text", "text": "final reply" }] } }
+    ],
+    "preludeClock": [
+      { "type": "message", "id": "directive", "message": { "role": "user", "origin": "agent", "timestamp": 1000, "content": [{ "type": "text", "text": "runtime prelude" }] } },
+      { "type": "message", "id": "prelude-answer", "parentId": "directive", "message": { "role": "assistant", "timestamp": 1600, "latencyMs": 100, "content": [{ "type": "text", "text": "prelude answer" }] } },
+      { "type": "message", "id": "human", "parentId": "prelude-answer", "message": { "role": "user", "timestamp": 2000, "content": [{ "type": "text", "text": "first human request" }] } },
+      { "type": "message", "id": "answer", "parentId": "human", "message": { "role": "assistant", "timestamp": 2600, "latencyMs": 200, "content": [{ "type": "text", "text": "answer" }] } },
+      { "type": "message", "id": "notice", "parentId": "answer", "message": { "role": "user", "origin": "agent:child", "timestamp": 3000, "content": [{ "type": "text", "text": "notice" }] } },
+      { "type": "message", "id": "final", "parentId": "notice", "message": { "role": "assistant", "timestamp": 5000, "latencyMs": 300, "content": [{ "type": "text", "text": "final" }] } }
+    ],
+    "noticeClock": [
+      { "type": "message", "id": "human", "message": { "role": "user", "timestamp": 1000, "content": [{ "type": "text", "text": "human request" }] } },
+      { "type": "message", "id": "call", "parentId": "human", "message": { "role": "assistant", "timestamp": 1200, "latencyMs": 200, "content": [{ "type": "toolCall", "id": "read", "name": "Read" }] } },
+      { "type": "message", "id": "result", "parentId": "call", "message": { "role": "toolResult", "toolCallId": "read", "toolName": "Read", "timestamp": 3000, "durationMs": 1000, "content": [{ "type": "text", "text": "read result" }] } },
+      { "type": "message", "id": "notice", "parentId": "result", "message": { "role": "user", "origin": "agent:child", "timestamp": 4000, "content": [{ "type": "text", "text": "notice" }] } },
+      { "type": "message", "id": "final", "parentId": "notice", "message": { "role": "assistant", "timestamp": 5000, "latencyMs": 250, "content": [{ "type": "text", "text": "final" }] } }
+    ],
+    "compactionLifecycle": [
+      { "type": "message", "id": "u", "message": { "role": "user", "timestamp": 1000, "content": [{ "type": "text", "text": "request" }] } },
+      { "type": "message", "id": "a", "parentId": "u", "message": { "role": "assistant", "timestamp": 1200, "latencyMs": 200, "content": [{ "type": "text", "text": "answer" }] } },
+      { "type": "compaction_start", "id": "empty-start", "parentId": "a", "timestamp": "1970-01-01T00:00:02Z", "details": { "reason": "manual", "ok": false } },
+      { "type": "compaction_end", "id": "empty-end", "parentId": "empty-start", "timestamp": "1970-01-01T00:00:03Z", "details": { "reason": "manual", "status": "empty", "ok": true } },
+      { "type": "compaction_start", "id": "failed-start", "parentId": "empty-end", "timestamp": "1970-01-01T00:00:04Z", "details": { "reason": "manual", "ok": false } },
+      { "type": "compaction_end", "id": "failed-end", "parentId": "failed-start", "timestamp": "1970-01-01T00:00:05Z", "details": { "reason": "manual", "status": "failed", "ok": false } },
+      { "type": "compaction_start", "id": "committed-start", "parentId": "failed-end", "timestamp": "1970-01-01T00:00:06Z", "details": { "reason": "manual", "ok": false } },
+      { "type": "compaction", "id": "checkpoint", "parentId": "committed-start", "timestamp": "1970-01-01T00:00:07Z", "summary": "summary", "usage": { "input": 10, "output": 5 } },
+      { "type": "compaction_end", "id": "committed-end", "parentId": "checkpoint", "timestamp": "1970-01-01T00:00:08Z", "details": { "reason": "manual", "status": "committed", "ok": true, "entryId": "checkpoint" } }
+    ],
+    "compactionOnly": [
+      { "type": "compaction_start", "id": "start", "timestamp": "1970-01-01T00:00:01Z", "details": { "reason": "manual", "ok": false } },
+      { "type": "compaction_end", "id": "end", "parentId": "start", "timestamp": "1970-01-01T00:00:02Z", "details": { "reason": "manual", "status": "empty", "ok": true } }
+    ],
+    "compactionInline": [
+      { "type": "message", "id": "inline-u", "message": { "role": "user", "timestamp": 1000, "content": [{ "type": "text", "text": "request" }] } },
+      { "type": "compaction_start", "id": "inline-start", "parentId": "inline-u", "timestamp": "1970-01-01T00:00:02Z", "details": { "reason": "server", "strategy": "openai-inline", "ok": false } },
+      { "type": "message", "id": "inline-a", "parentId": "inline-start", "message": { "role": "assistant", "timestamp": 2000, "latencyMs": 1000, "content": [{ "type": "text", "text": "answer" }] } },
+      { "type": "compaction", "id": "inline-checkpoint", "parentId": "inline-a", "timestamp": "1970-01-01T00:00:02Z", "summary": "remote checkpoint" },
+      { "type": "compaction_end", "id": "inline-end", "parentId": "inline-checkpoint", "timestamp": "1970-01-01T00:00:02Z", "details": { "reason": "server", "strategy": "openai-inline", "status": "committed", "ok": true } }
+    ],
+    "assistantOnly": [
+      { "type": "message", "id": "a1", "message": { "role": "assistant", "timestamp": 1000, "latencyMs": 100, "content": [{ "type": "text", "text": "imported reply" }] } },
+      { "type": "message", "id": "a2", "parentId": "a1", "message": { "role": "assistant", "timestamp": 3000, "latencyMs": 200, "content": [{ "type": "text", "text": "second imported reply" }] } }
+    ]
+  },
+  "cases": {
+    "helper": { "history": "helper", "leaf": "call", "keep": 1 },
+    "notice": { "history": "notice", "leaf": "final", "keep": 1 },
+    "oldTail": { "history": "oldBranch", "leaf": "y-answer", "keep": 0 },
+    "oldPage": { "history": "oldBranch", "leaf": "y-answer", "before": "v", "keep": 0 },
+    "selected": { "history": "selected", "leaf": "selected-a1", "keep": 0 },
+    "runtimeOnly": { "history": "runtimeOnly", "leaf": "a2", "keep": 1 },
+    "runtimeNoticeTail": { "history": "runtimeOnly", "leaf": "notice", "keep": 1 },
+    "preludeClock": { "history": "preludeClock", "leaf": "final", "keep": 1 },
+    "preludeRuntimePrefix": { "history": "preludeClock", "leaf": "prelude-answer", "keep": 1 },
+    "preludeFirstHuman": { "history": "preludeClock", "leaf": "human", "keep": 1 },
+    "noticeClock": { "history": "noticeClock", "leaf": "final", "keep": 1 },
+    "assistantOnly": { "history": "assistantOnly", "leaf": "a2", "keep": 1 },
+    "compactionEmpty": { "history": "compactionLifecycle", "leaf": "empty-end", "keep": 0 },
+    "compactionFailed": { "history": "compactionLifecycle", "leaf": "failed-end", "keep": 0 },
+    "compactionCommitted": { "history": "compactionLifecycle", "leaf": "committed-end", "keep": 0 },
+    "compactionStart": { "history": "compactionLifecycle", "leaf": "empty-start", "keep": 0 },
+    "compactionOnly": { "history": "compactionOnly", "leaf": "end", "keep": 0 },
+    "compactionInline": { "history": "compactionInline", "leaf": "inline-end", "keep": 0 }
+  }
+}

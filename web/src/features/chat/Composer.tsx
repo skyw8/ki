@@ -6,6 +6,7 @@ import { CommandPalette, isCommandPaletteVisible, type PalettePick } from './Com
 import { Select } from '../../components/Select'
 import { useI18n } from '../../i18n/index'
 import { useNow } from '../../hooks/useNow'
+import { Duration } from './Duration'
 import type { SessionCommand } from '../../api/types'
 import {
   cacheHitPercent,
@@ -72,14 +73,14 @@ function SessionStatsLine({ stats, t, elapsedMs, running }: { stats: SessionStat
   // The shared total leads the line: it is the session's cumulative model run
   // time and still ticks (with the pulse dot) while the newest turn runs.
   const total = Math.max(0, Math.round(elapsedMs))
-  const elapsed = total > 0 ? t('turn.elapsed', { duration: formatDuration(total) }) : ''
+  const elapsed = total > 0 || running ? t('turn.elapsed', { duration: formatDuration(total) }) : ''
   if (groups.length === 0 && !elapsed) return null
   const line = [elapsed, ...groups].filter(Boolean).join(' | ')
   return (
     <div className="session-stats" data-testid="session-stats" title={line}>
       {elapsed ? (
         <span className={`session-stats-live${running ? '' : ' settled'}`} data-testid="session-elapsed">
-          {running ? <span className="turn-live-dot" aria-hidden /> : null}{elapsed}
+          {running ? <span className="turn-live-dot" aria-hidden /> : null}<Duration ms={total} label="elapsed" />
         </span>
       ) : null}
       {groups.map((group, i) => (

@@ -14,7 +14,7 @@ func TestMessageWireProjectionAndMutableBase(t *testing.T) {
 	m := types.Message{
 		Role: "assistant", Timestamp: 9, API: "responses", Provider: "p", Model: "m", ResponseID: "r",
 		StopReason: "error", ErrorMessage: "failed", ToolCallID: "call", ToolName: "Bash", ToolType: "custom",
-		Origin: "extension:test", External: map[string]string{"key": "before"}, IsError: true,
+		ClientRequestID: "request", Completion: &types.CompletionIdentity{TaskID: "a", Generation: 7}, Origin: "extension:test", External: map[string]string{"key": "before"}, IsError: true,
 		LatencyMs: 1, TTFTMs: 2, DurationMs: 3, Details: map[string]any{"nested": []any{"before"}},
 		Usage: &types.Usage{Input: 1, Output: 2, CacheRead: 3, CacheWrite: 4, TotalTokens: 10, Cost: &types.UsageCost{Input: 1, Output: 2, CacheRead: 3, CacheWrite: 4, Total: 10}},
 		Content: []types.Content{{Type: "toolCall", Text: strings.Repeat("中🙂", 100), Data: "data", MIMEType: "image/png", Path: "image.png", Size: 23,

@@ -1,0 +1,1752 @@
+{
+  "assistantOnly": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "a1",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [],
+          "timestamp": 1000,
+          "latencyMs": 100,
+          "durationMs": 0
+        },
+        "truncated": true
+      },
+      {
+        "type": "message",
+        "id": "a2",
+        "parentId": "a1",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "second imported reply"
+            }
+          ],
+          "timestamp": 3000,
+          "latencyMs": 200,
+          "durationMs": 0
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "a1",
+        "tailId": "a2",
+        "entryCount": 2,
+        "assistantAt": 3000,
+        "toolStates": [],
+        "cumulativeElapsedMs": 300,
+        "entryIds": [
+          "a1",
+          "a2"
+        ],
+        "visibleNodeIds": [
+          "a2"
+        ],
+        "omittedNodeIds": [
+          "a1"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "a1",
+        "preview": "imported reply",
+        "stats": {
+          "turn": 1,
+          "steps": 2,
+          "elapsedMs": 300,
+          "durationMs": 300,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 2,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 200
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "a1"
+  },
+  "compactionCommitted": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "u",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "request"
+            }
+          ],
+          "timestamp": 1000,
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "compaction_start",
+        "id": "empty-start",
+        "parentId": "a",
+        "timestamp": "1970-01-01T00:00:02Z",
+        "details": {
+          "ok": false,
+          "reason": "manual"
+        }
+      },
+      {
+        "type": "compaction_end",
+        "id": "empty-end",
+        "parentId": "empty-start",
+        "timestamp": "1970-01-01T00:00:03Z",
+        "details": {
+          "ok": true,
+          "reason": "manual",
+          "status": "empty"
+        }
+      },
+      {
+        "type": "compaction_start",
+        "id": "failed-start",
+        "parentId": "empty-end",
+        "timestamp": "1970-01-01T00:00:04Z",
+        "details": {
+          "ok": false,
+          "reason": "manual"
+        }
+      },
+      {
+        "type": "compaction_end",
+        "id": "failed-end",
+        "parentId": "failed-start",
+        "timestamp": "1970-01-01T00:00:05Z",
+        "details": {
+          "ok": false,
+          "reason": "manual",
+          "status": "failed"
+        }
+      },
+      {
+        "type": "compaction_start",
+        "id": "committed-start",
+        "parentId": "failed-end",
+        "timestamp": "1970-01-01T00:00:06Z",
+        "details": {
+          "ok": false,
+          "reason": "manual"
+        }
+      },
+      {
+        "type": "compaction",
+        "id": "checkpoint",
+        "parentId": "committed-start",
+        "timestamp": "1970-01-01T00:00:07Z",
+        "summary": "summary",
+        "usage": {
+          "input": 10,
+          "output": 5,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "totalTokens": 0
+        }
+      },
+      {
+        "type": "compaction_end",
+        "id": "committed-end",
+        "parentId": "checkpoint",
+        "timestamp": "1970-01-01T00:00:08Z",
+        "details": {
+          "entryId": "checkpoint",
+          "ok": true,
+          "reason": "manual",
+          "status": "committed"
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "u",
+        "tailId": "committed-end",
+        "entryCount": 9,
+        "assistantAt": 1200,
+        "toolStates": [],
+        "cumulativeElapsedMs": 6000,
+        "entryIds": [
+          "u",
+          "empty-start",
+          "empty-end",
+          "failed-start",
+          "failed-end",
+          "committed-start",
+          "checkpoint",
+          "committed-end"
+        ],
+        "visibleNodeIds": [
+          "u",
+          "empty-end",
+          "failed-end",
+          "checkpoint"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "a",
+        "preview": "answer",
+        "stats": {
+          "turn": 1,
+          "startedAt": 1000,
+          "steps": 2,
+          "elapsedMs": 6000,
+          "durationMs": 200,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 2,
+        "lastStep": {
+          "usage": {
+            "input": 10,
+            "output": 5,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0
+          },
+          "ttftMs": 0,
+          "latencyMs": 0
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "u"
+  },
+  "compactionEmpty": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "u",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "request"
+            }
+          ],
+          "timestamp": 1000,
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "compaction_start",
+        "id": "empty-start",
+        "parentId": "a",
+        "timestamp": "1970-01-01T00:00:02Z",
+        "details": {
+          "ok": false,
+          "reason": "manual"
+        }
+      },
+      {
+        "type": "compaction_end",
+        "id": "empty-end",
+        "parentId": "empty-start",
+        "timestamp": "1970-01-01T00:00:03Z",
+        "details": {
+          "ok": true,
+          "reason": "manual",
+          "status": "empty"
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "u",
+        "tailId": "empty-end",
+        "entryCount": 4,
+        "assistantAt": 1200,
+        "toolStates": [],
+        "cumulativeElapsedMs": 200,
+        "entryIds": [
+          "u",
+          "empty-start",
+          "empty-end"
+        ],
+        "visibleNodeIds": [
+          "u",
+          "empty-end"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "a",
+        "preview": "answer",
+        "stats": {
+          "turn": 1,
+          "startedAt": 1000,
+          "steps": 1,
+          "elapsedMs": 200,
+          "durationMs": 200,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 1,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 200
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "u"
+  },
+  "compactionFailed": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "u",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "request"
+            }
+          ],
+          "timestamp": 1000,
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "compaction_start",
+        "id": "empty-start",
+        "parentId": "a",
+        "timestamp": "1970-01-01T00:00:02Z",
+        "details": {
+          "ok": false,
+          "reason": "manual"
+        }
+      },
+      {
+        "type": "compaction_end",
+        "id": "empty-end",
+        "parentId": "empty-start",
+        "timestamp": "1970-01-01T00:00:03Z",
+        "details": {
+          "ok": true,
+          "reason": "manual",
+          "status": "empty"
+        }
+      },
+      {
+        "type": "compaction_start",
+        "id": "failed-start",
+        "parentId": "empty-end",
+        "timestamp": "1970-01-01T00:00:04Z",
+        "details": {
+          "ok": false,
+          "reason": "manual"
+        }
+      },
+      {
+        "type": "compaction_end",
+        "id": "failed-end",
+        "parentId": "failed-start",
+        "timestamp": "1970-01-01T00:00:05Z",
+        "details": {
+          "ok": false,
+          "reason": "manual",
+          "status": "failed"
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "u",
+        "tailId": "failed-end",
+        "entryCount": 6,
+        "assistantAt": 1200,
+        "toolStates": [],
+        "cumulativeElapsedMs": 200,
+        "entryIds": [
+          "u",
+          "empty-start",
+          "empty-end",
+          "failed-start",
+          "failed-end"
+        ],
+        "visibleNodeIds": [
+          "u",
+          "empty-end",
+          "failed-end"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "a",
+        "preview": "answer",
+        "stats": {
+          "turn": 1,
+          "startedAt": 1000,
+          "steps": 1,
+          "elapsedMs": 200,
+          "durationMs": 200,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 1,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 200
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "u"
+  },
+  "compactionInline": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "inline-u",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "request"
+            }
+          ],
+          "timestamp": 1000,
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "compaction_start",
+        "id": "inline-start",
+        "parentId": "inline-u",
+        "timestamp": "1970-01-01T00:00:02Z",
+        "details": {
+          "ok": false,
+          "reason": "server",
+          "strategy": "openai-inline"
+        }
+      },
+      {
+        "type": "compaction",
+        "id": "inline-checkpoint",
+        "parentId": "inline-a",
+        "timestamp": "1970-01-01T00:00:02Z",
+        "summary": "remote checkpoint"
+      },
+      {
+        "type": "compaction_end",
+        "id": "inline-end",
+        "parentId": "inline-checkpoint",
+        "timestamp": "1970-01-01T00:00:02Z",
+        "details": {
+          "ok": true,
+          "reason": "server",
+          "status": "committed",
+          "strategy": "openai-inline"
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "inline-u",
+        "tailId": "inline-end",
+        "entryCount": 5,
+        "assistantAt": 2000,
+        "toolStates": [],
+        "cumulativeElapsedMs": 1000,
+        "entryIds": [
+          "inline-u",
+          "inline-start",
+          "inline-checkpoint",
+          "inline-end"
+        ],
+        "visibleNodeIds": [
+          "inline-u",
+          "inline-checkpoint"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "inline-a",
+        "preview": "answer",
+        "stats": {
+          "turn": 1,
+          "startedAt": 1000,
+          "steps": 2,
+          "elapsedMs": 1000,
+          "durationMs": 1000,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 1,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 1000
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "inline-u"
+  },
+  "compactionOnly": {
+    "entries": [
+      {
+        "type": "compaction_start",
+        "id": "start",
+        "parentId": "",
+        "timestamp": "1970-01-01T00:00:01Z",
+        "details": {
+          "ok": false,
+          "reason": "manual"
+        }
+      },
+      {
+        "type": "compaction_end",
+        "id": "end",
+        "parentId": "start",
+        "timestamp": "1970-01-01T00:00:02Z",
+        "details": {
+          "ok": true,
+          "reason": "manual",
+          "status": "empty"
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "end",
+        "tailId": "end",
+        "entryCount": 2,
+        "toolStates": [],
+        "cumulativeElapsedMs": 0,
+        "entryIds": [
+          "start",
+          "end"
+        ],
+        "visibleNodeIds": [
+          "end"
+        ],
+        "hiddenCount": 0,
+        "stats": {
+          "turn": 1,
+          "steps": 0,
+          "elapsedMs": 0,
+          "durationMs": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 0
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "end"
+  },
+  "compactionStart": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "u",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "request"
+            }
+          ],
+          "timestamp": 1000,
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "compaction_start",
+        "id": "empty-start",
+        "parentId": "a",
+        "timestamp": "1970-01-01T00:00:02Z",
+        "details": {
+          "ok": false,
+          "reason": "manual"
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "u",
+        "tailId": "empty-start",
+        "entryCount": 3,
+        "assistantAt": 1200,
+        "toolStates": [],
+        "cumulativeElapsedMs": 200,
+        "entryIds": [
+          "u",
+          "empty-start"
+        ],
+        "visibleNodeIds": [
+          "u",
+          "empty-start"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "a",
+        "preview": "answer",
+        "stats": {
+          "turn": 1,
+          "startedAt": 1000,
+          "steps": 1,
+          "elapsedMs": 200,
+          "durationMs": 200,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 1,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 200
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "u"
+  },
+  "helper": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "u",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "u"
+            }
+          ],
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "message",
+        "id": "call",
+        "parentId": "u",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "t2",
+              "name": "Read"
+            }
+          ],
+          "durationMs": 0
+        },
+        "truncated": true
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "u",
+        "tailId": "call",
+        "entryCount": 2,
+        "toolStates": [
+          {
+            "id": "t1",
+            "finished": false
+          },
+          {
+            "id": "t2",
+            "finished": false
+          }
+        ],
+        "cumulativeElapsedMs": 0,
+        "entryIds": [
+          "u",
+          "call"
+        ],
+        "visibleNodeIds": [
+          "u",
+          "t2"
+        ],
+        "omittedNodeIds": [
+          "call",
+          "t1"
+        ],
+        "hiddenCount": 2,
+        "firstHiddenId": "call",
+        "preview": "Read",
+        "stats": {
+          "turn": 1,
+          "steps": 1,
+          "elapsedMs": 0,
+          "durationMs": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 2,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 1,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 0
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "u"
+  },
+  "notice": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "u",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "u"
+            }
+          ],
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "message",
+        "id": "final",
+        "parentId": "notice",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "final"
+            }
+          ],
+          "durationMs": 0
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "u",
+        "tailId": "final",
+        "entryCount": 5,
+        "toolStates": [],
+        "cumulativeElapsedMs": 0,
+        "entryIds": [
+          "u",
+          "final"
+        ],
+        "visibleNodeIds": [
+          "u",
+          "final"
+        ],
+        "hiddenCount": 3,
+        "firstHiddenId": "call",
+        "preview": "notice",
+        "stats": {
+          "turn": 1,
+          "steps": 2,
+          "elapsedMs": 0,
+          "durationMs": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 1,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 2,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 0
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "u"
+  },
+  "noticeClock": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "human",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "human request"
+            }
+          ],
+          "timestamp": 1000,
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "message",
+        "id": "final",
+        "parentId": "notice",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "final"
+            }
+          ],
+          "timestamp": 5000,
+          "latencyMs": 250,
+          "durationMs": 0
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "human",
+        "tailId": "final",
+        "entryCount": 5,
+        "assistantAt": 5000,
+        "toolStates": [],
+        "cumulativeElapsedMs": 4000,
+        "entryIds": [
+          "human",
+          "final"
+        ],
+        "visibleNodeIds": [
+          "human",
+          "final"
+        ],
+        "hiddenCount": 3,
+        "firstHiddenId": "call",
+        "preview": "notice",
+        "stats": {
+          "turn": 1,
+          "startedAt": 1000,
+          "steps": 2,
+          "elapsedMs": 4000,
+          "durationMs": 450,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 1,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 2,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 250
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "human"
+  },
+  "oldPage": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "u",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "u"
+            }
+          ],
+          "durationMs": 0
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "u",
+        "tailId": "old-a2",
+        "entryCount": 3,
+        "toolStates": [],
+        "cumulativeElapsedMs": 0,
+        "entryIds": [
+          "u"
+        ],
+        "visibleNodeIds": [
+          "u"
+        ],
+        "hiddenCount": 2,
+        "firstHiddenId": "old-a1",
+        "preview": "old-a2",
+        "stats": {
+          "turn": 1,
+          "steps": 2,
+          "elapsedMs": 0,
+          "durationMs": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 2,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 0
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "u"
+  },
+  "oldTail": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "v",
+        "parentId": "old-a2",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "v"
+            }
+          ],
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "message",
+        "id": "w",
+        "parentId": "v-answer",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "w"
+            }
+          ],
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "message",
+        "id": "x",
+        "parentId": "w-answer",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "x"
+            }
+          ],
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "message",
+        "id": "y",
+        "parentId": "x-answer",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "y"
+            }
+          ],
+          "durationMs": 0
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "v",
+        "parentId": "old-a2",
+        "tailId": "v-answer",
+        "entryCount": 2,
+        "toolStates": [],
+        "cumulativeElapsedMs": 0,
+        "entryIds": [
+          "v"
+        ],
+        "visibleNodeIds": [
+          "v"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "v-answer",
+        "preview": "v-answer",
+        "stats": {
+          "turn": 2,
+          "steps": 1,
+          "elapsedMs": 0,
+          "durationMs": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 3,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 0
+        }
+      },
+      {
+        "id": "w",
+        "parentId": "v-answer",
+        "tailId": "w-answer",
+        "entryCount": 2,
+        "toolStates": [],
+        "cumulativeElapsedMs": 0,
+        "entryIds": [
+          "w"
+        ],
+        "visibleNodeIds": [
+          "w"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "w-answer",
+        "preview": "w-answer",
+        "stats": {
+          "turn": 3,
+          "steps": 1,
+          "elapsedMs": 0,
+          "durationMs": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 4,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 0
+        }
+      },
+      {
+        "id": "x",
+        "parentId": "w-answer",
+        "tailId": "x-answer",
+        "entryCount": 2,
+        "toolStates": [],
+        "cumulativeElapsedMs": 0,
+        "entryIds": [
+          "x"
+        ],
+        "visibleNodeIds": [
+          "x"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "x-answer",
+        "preview": "x-answer",
+        "stats": {
+          "turn": 4,
+          "steps": 1,
+          "elapsedMs": 0,
+          "durationMs": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 5,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 0
+        }
+      },
+      {
+        "id": "y",
+        "parentId": "x-answer",
+        "tailId": "y-answer",
+        "entryCount": 2,
+        "toolStates": [],
+        "cumulativeElapsedMs": 0,
+        "entryIds": [
+          "y"
+        ],
+        "visibleNodeIds": [
+          "y"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "y-answer",
+        "preview": "y-answer",
+        "stats": {
+          "turn": 5,
+          "steps": 1,
+          "elapsedMs": 0,
+          "durationMs": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 6,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 0
+        }
+      }
+    ],
+    "hasMore": true,
+    "oldestId": "v"
+  },
+  "preludeClock": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "human",
+        "parentId": "prelude-answer",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "first human request"
+            }
+          ],
+          "timestamp": 2000,
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "message",
+        "id": "final",
+        "parentId": "notice",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "final"
+            }
+          ],
+          "timestamp": 5000,
+          "latencyMs": 300,
+          "durationMs": 0
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "human",
+        "tailId": "final",
+        "entryCount": 6,
+        "assistantAt": 5000,
+        "toolStates": [],
+        "cumulativeElapsedMs": 3000,
+        "entryIds": [
+          "human",
+          "final"
+        ],
+        "visibleNodeIds": [
+          "human",
+          "final"
+        ],
+        "hiddenCount": 4,
+        "firstHiddenId": "directive",
+        "preview": "notice",
+        "stats": {
+          "turn": 1,
+          "startedAt": 2000,
+          "steps": 3,
+          "elapsedMs": 3000,
+          "durationMs": 600,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 3,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 300
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "human"
+  },
+  "preludeFirstHuman": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "prelude-answer",
+        "parentId": "directive",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "prelude answer"
+            }
+          ],
+          "timestamp": 1600,
+          "latencyMs": 100,
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "message",
+        "id": "human",
+        "parentId": "prelude-answer",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "first human request"
+            }
+          ],
+          "timestamp": 2000,
+          "durationMs": 0
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "human",
+        "tailId": "human",
+        "entryCount": 3,
+        "assistantAt": 1600,
+        "toolStates": [],
+        "cumulativeElapsedMs": 100,
+        "entryIds": [
+          "prelude-answer",
+          "human"
+        ],
+        "visibleNodeIds": [
+          "human",
+          "prelude-answer"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "directive",
+        "preview": "runtime prelude",
+        "stats": {
+          "turn": 1,
+          "startedAt": 2000,
+          "steps": 1,
+          "elapsedMs": 100,
+          "durationMs": 100,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 1,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 100
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "human"
+  },
+  "preludeRuntimePrefix": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "directive",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "runtime prelude"
+            }
+          ],
+          "timestamp": 1000,
+          "origin": "agent",
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "message",
+        "id": "prelude-answer",
+        "parentId": "directive",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "prelude answer"
+            }
+          ],
+          "timestamp": 1600,
+          "latencyMs": 100,
+          "durationMs": 0
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "directive",
+        "tailId": "prelude-answer",
+        "entryCount": 2,
+        "assistantAt": 1600,
+        "toolStates": [],
+        "cumulativeElapsedMs": 600,
+        "entryIds": [
+          "directive",
+          "prelude-answer"
+        ],
+        "visibleNodeIds": [
+          "prelude-answer"
+        ],
+        "omittedNodeIds": [
+          "directive"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "directive",
+        "preview": "runtime prelude",
+        "stats": {
+          "turn": 1,
+          "startedAt": 1000,
+          "steps": 1,
+          "elapsedMs": 600,
+          "durationMs": 100,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 1,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 100
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "directive"
+  },
+  "runtimeNoticeTail": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "directive",
+        "parentId": "header",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "directive"
+            }
+          ],
+          "timestamp": 1000,
+          "origin": "agent",
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "message",
+        "id": "notice",
+        "parentId": "a1",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "notice"
+            }
+          ],
+          "timestamp": 3000,
+          "origin": "agent:child",
+          "durationMs": 0
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "directive",
+        "tailId": "notice",
+        "entryCount": 4,
+        "assistantAt": 2000,
+        "toolStates": [],
+        "cumulativeElapsedMs": 1000,
+        "entryIds": [
+          "directive",
+          "notice"
+        ],
+        "visibleNodeIds": [
+          "notice"
+        ],
+        "omittedNodeIds": [
+          "directive"
+        ],
+        "hiddenCount": 2,
+        "firstHiddenId": "directive",
+        "preview": "first reply",
+        "stats": {
+          "turn": 1,
+          "startedAt": 1000,
+          "steps": 1,
+          "elapsedMs": 1000,
+          "durationMs": 300,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 1,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 300
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "directive"
+  },
+  "runtimeOnly": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "directive",
+        "parentId": "header",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "directive"
+            }
+          ],
+          "timestamp": 1000,
+          "origin": "agent",
+          "durationMs": 0
+        }
+      },
+      {
+        "type": "message",
+        "id": "a2",
+        "parentId": "notice",
+        "timestamp": "",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "final reply"
+            }
+          ],
+          "timestamp": 4000,
+          "latencyMs": 400,
+          "durationMs": 0
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "directive",
+        "tailId": "a2",
+        "entryCount": 5,
+        "assistantAt": 4000,
+        "toolStates": [],
+        "cumulativeElapsedMs": 3000,
+        "entryIds": [
+          "directive",
+          "a2"
+        ],
+        "visibleNodeIds": [
+          "a2"
+        ],
+        "omittedNodeIds": [
+          "directive"
+        ],
+        "hiddenCount": 3,
+        "firstHiddenId": "directive",
+        "preview": "notice",
+        "stats": {
+          "turn": 1,
+          "startedAt": 1000,
+          "steps": 2,
+          "elapsedMs": 3000,
+          "durationMs": 700,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 2,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 400
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "directive"
+  },
+  "selected": {
+    "entries": [
+      {
+        "type": "message",
+        "id": "u",
+        "parentId": "",
+        "timestamp": "",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "u"
+            }
+          ],
+          "durationMs": 0
+        }
+      }
+    ],
+    "compactTurns": [
+      {
+        "id": "u",
+        "tailId": "selected-a1",
+        "entryCount": 2,
+        "toolStates": [],
+        "cumulativeElapsedMs": 0,
+        "entryIds": [
+          "u"
+        ],
+        "visibleNodeIds": [
+          "u"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "selected-a1",
+        "preview": "selected-a1",
+        "stats": {
+          "turn": 1,
+          "steps": 1,
+          "elapsedMs": 0,
+          "durationMs": 0,
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "tools": 0,
+          "toolFailures": 0,
+          "cacheMisses": 0,
+          "hasCost": false,
+          "cost": 0,
+          "ttftMs": 0,
+          "tps": null,
+          "live": false
+        },
+        "stepCount": 1,
+        "lastStep": {
+          "ttftMs": 0,
+          "latencyMs": 0
+        }
+      }
+    ],
+    "hasMore": false,
+    "oldestId": "u"
+  }
+}

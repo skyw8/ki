@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"ki/internal/loop"
+	"ki/internal/state"
+	"ki/internal/types"
 )
 
 func TestAgentStoreBackgroundStop(t *testing.T) {
@@ -42,7 +44,7 @@ func TestAgentStoreBackgroundStop(t *testing.T) {
 	}
 }
 
-func TestAgentStoreMarkNotifiedSuppressesCompletion(t *testing.T) {
+func TestAgentStoreClaimResultSuppressesCompletion(t *testing.T) {
 	metadata := filepath.Join(t.TempDir(), "agent.json")
 	store := NewAgentStore()
 	launch, err := store.Start(context.Background(), AgentRequest{
@@ -58,11 +60,11 @@ func TestAgentStoreMarkNotifiedSuppressesCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Reading the result (TaskOutput) consumes the notification of that run.
-	store.MarkNotified(launch.TaskID)
-	if !store.NotificationConsumed(launch.TaskID) {
+	claimCurrentResult(store, launch.TaskID)
+	if !currentCompletionDelivered(store, launch.TaskID) {
 		t.Fatal("read run was not marked consumed")
 	}
-	if store.ClaimNotification(launch.TaskID) {
+	if commitCurrentNotification(store, launch.TaskID) {
 		t.Fatal("a consumed run still claimed a completion notification")
 	}
 	// A resume is a new run with a new result, so it notifies again.
@@ -72,10 +74,10 @@ func TestAgentStoreMarkNotifiedSuppressesCompletion(t *testing.T) {
 	if _, err := store.Wait(context.Background(), launch.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	if store.NotificationConsumed(launch.TaskID) {
+	if currentCompletionDelivered(store, launch.TaskID) {
 		t.Fatal("resumed run inherited the consumed mark")
 	}
-	if !store.ClaimNotification(launch.TaskID) {
+	if !commitCurrentNotification(store, launch.TaskID) {
 		t.Fatal("resumed run did not notify")
 	}
 }
@@ -97,7 +99,7 @@ func TestAgentStoreStopConsumesCompletion(t *testing.T) {
 	if _, err := store.Stop(launch.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	if store.ClaimNotification(launch.TaskID) {
+	if commitCurrentNotification(store, launch.TaskID) {
 		t.Fatal("stopped run claimed a completion notification")
 	}
 }
@@ -363,7 +365,7 @@ func TestAgentStoreNotificationClaimIsPerRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !store.ClaimNotification(launch.TaskID) || store.ClaimNotification(launch.TaskID) {
+	if !commitCurrentNotification(store, launch.TaskID) || commitCurrentNotification(store, launch.TaskID) {
 		t.Fatal("same run was claimed more than once")
 	}
 	if _, err := store.Wait(context.Background(), launch.TaskID); err != nil {
@@ -375,7 +377,7 @@ func TestAgentStoreNotificationClaimIsPerRun(t *testing.T) {
 	if _, err := store.Wait(context.Background(), launch.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	if !store.ClaimNotification(launch.TaskID) || store.ClaimNotification(launch.TaskID) {
+	if !commitCurrentNotification(store, launch.TaskID) || commitCurrentNotification(store, launch.TaskID) {
 		t.Fatal("resumed run notification claim was not isolated")
 	}
 }
@@ -668,7 +670,9 @@ func (f fakeAgentRuntime) Background(id string) (TaskSnapshot, error) {
 	return f.store.Background(id)
 }
 func (f fakeAgentRuntime) Stop(id string) (TaskSnapshot, error) { return f.store.Stop(id) }
-func (f fakeAgentRuntime) MarkNotified(id string)               { f.store.MarkNotified(id) }
+func (f fakeAgentRuntime) ClaimResult(snapshot TaskSnapshot) bool {
+	return f.store.ClaimResult(snapshot)
+}
 
 func containsText(text, want string) bool {
 	for i := 0; i+len(want) <= len(text); i++ {
@@ -677,4 +681,153 @@ func containsText(text, want string) bool {
 		}
 	}
 	return false
+}
+
+func claimCurrentResult(store *AgentStore, id string) bool {
+	snapshot, _ := store.Get(id)
+	return store.ClaimResult(snapshot)
+}
+func currentCompletionDelivered(store *AgentStore, id string) bool {
+	snapshot, _ := store.Get(id)
+	return store.CompletionDelivered(types.CompletionIdentity{TaskID: id, Generation: snapshot.Generation})
+}
+func commitCurrentNotification(store *AgentStore, id string) bool {
+	snapshot, _ := store.Get(id)
+	accepted, _ := store.CommitNotification(types.CompletionIdentity{TaskID: id, Generation: snapshot.Generation}, func() error { return nil })
+	return accepted
+}
+
+func TestCompletionClaimsAreGenerationScopedAndRestored(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.json")
+	store := NewAgentStore()
+	defer store.Close()
+	run := func(_ context.Context, _, prompt string, _ bool) (AgentCompletion, error) {
+		return AgentCompletion{Result: prompt}, nil
+	}
+	launch, err := store.Start(t.Context(), AgentRequest{SessionID: "child", ParentSessionID: "parent", Prompt: "first", MetadataPath: path}, "", run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Wait(t.Context(), launch.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.QueueOrResume(t.Context(), launch.TaskID, "second"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Wait(t.Context(), launch.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Generation != 1 || second.Generation != 2 {
+		t.Fatalf("generations: %+v %+v", first, second)
+	}
+	if !store.ClaimResult(first) {
+		t.Fatal("old snapshot could not claim its own result")
+	}
+	id := types.CompletionIdentity{TaskID: launch.TaskID, Generation: second.Generation}
+	persistErr := errors.New("persistence refused")
+	if accepted, err := store.CommitNotification(id, func() error { return persistErr }); accepted || !errors.Is(err, persistErr) {
+		t.Fatalf("failed persist committed: %v %v", accepted, err)
+	}
+	if store.CompletionDelivered(id) {
+		t.Fatal("failed persistence consumed notification")
+	}
+	if accepted, err := store.CommitNotification(id, func() error { return nil }); !accepted || err != nil {
+		t.Fatalf("new generation suppressed: %v %v", accepted, err)
+	}
+	if store.ClaimResult(second) {
+		t.Fatal("notification and tool both claimed original delivery")
+	}
+
+	reloaded := NewAgentStore()
+	defer reloaded.Close()
+	if loaded, err := reloaded.LoadMetadata(path, run); !loaded || err != nil {
+		t.Fatalf("restore: %v %v", loaded, err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	snapshot, err := reloaded.Wait(ctx, launch.TaskID)
+	if err != nil || snapshot.Generation != 2 || snapshot.ParentSessionID != "parent" {
+		t.Fatalf("restored completed Wait: %+v %v", snapshot, err)
+	}
+	for _, old := range []TaskSnapshot{first, second} {
+		if reloaded.ClaimResult(old) {
+			t.Fatalf("restored generation %d was claimed twice", old.Generation)
+		}
+	}
+}
+
+func TestAgentPendingInputIdentitySurvivesPromotion(t *testing.T) {
+	store := NewAgentStore()
+	defer store.Close()
+	path := filepath.Join(t.TempDir(), "agent.json")
+	firstRelease, secondRelease := make(chan struct{}), make(chan struct{})
+	secondStarted := make(chan TaskSnapshot, 1)
+	launch, err := store.Start(t.Context(), AgentRequest{SessionID: "child", Prompt: "first", MetadataPath: path}, "",
+		func(ctx context.Context, id, prompt string, _ bool) (AgentCompletion, error) {
+			release := firstRelease
+			if prompt == "second" {
+				snapshot, _ := store.Get(id)
+				secondStarted <- snapshot
+				release = secondRelease
+			}
+			select {
+			case <-release:
+				return AgentCompletion{Result: prompt}, nil
+			case <-ctx.Done():
+				return AgentCompletion{}, ctx.Err()
+			}
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, err := store.QueueOrResume(t.Context(), launch.TaskID, "second"); err != nil || status != "queued" {
+		t.Fatalf("queue: %s %v", status, err)
+	}
+	metadata, err := ReadAgentMetadata(path)
+	if err != nil || len(metadata.Pending) != 1 || metadata.Pending[0].ClientRequestID == "" {
+		t.Fatalf("pending identity: %+v %v", metadata.Pending, err)
+	}
+	close(firstRelease)
+	select {
+	case snapshot := <-secondStarted:
+		if snapshot.Generation != 2 || snapshot.ClientRequestID != metadata.Pending[0].ClientRequestID {
+			t.Fatalf("promoted identity: %+v", snapshot)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("follow-up did not start")
+	}
+	close(secondRelease)
+}
+
+func TestAgentMetadataMigrationKeepsConsumptionNotEnqueue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.json")
+	doc := map[string]any{"version": 1, "task_id": "child", "session_id": "child-session",
+		"run_count": 3, "consumed_run": 2, "notified_run": 3, "pending": []string{"follow-up"}}
+	if err := state.WriteJSON(path, doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := ReadAgentMetadata(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Version != 2 || meta.Deliveries[2] != "tool" || meta.Deliveries[3] != "" ||
+		len(meta.Pending) != 1 || meta.Pending[0].ClientRequestID == "" || meta.Pending[0].Prompt != "follow-up" {
+		t.Fatalf("migration: %+v", meta)
+	}
+	raw, _, err := state.ReadFile(path, 1, nil)
+	if err != nil {
+		t.Fatalf("read-only migration changed disk version: %v", err)
+	}
+	if version, _ := state.Version(raw); version != 1 {
+		t.Fatalf("read rewrote disk: %s", raw)
+	}
+	doc["version"] = 99
+	if err := state.WriteJSON(path, doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadAgentMetadata(path); !errors.Is(err, state.ErrNewerVersion) {
+		t.Fatalf("newer document was accepted: %v", err)
+	}
 }

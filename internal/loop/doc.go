@@ -13,6 +13,9 @@
 // Persisted message_end events carry entryId plus parentId, including an
 // explicit empty root parent, so sparse/replayed clients never infer a parent
 // from a leaf that may already include that message.
+// Compaction start/end events carry lifecycleEntryId, parentId (including an
+// explicit empty root), and the persisted timestamp for the same reason.
+// Their entryId remains the committed checkpoint identity, not the lifecycle.
 //
 // Events follow pi names: agent_*, turn_*, message_*, tool_execution_*,
 // compaction_start/end (reason + ok), request_header (system + tools snapshot
@@ -49,7 +52,9 @@
 // Config.Inbox injects extra user messages into the same Run after the
 // current stream and tools finish; it does not cancel an in-flight HTTP
 // request. Completions, Responses, and Anthropic all see a normal extra user
-// message on the next request.
+// message on the next request. CommitUserMessage arbitrates runtime completion
+// ownership around persistence; rejected messages never enter model history.
+// clientRequestId/completion are stripped at the provider boundary.
 //
 // QueueChanged, RunAborted, ExtensionError, ExtensionNotice, and
 // ExtensionUIPrompt are session sideband notifications. RuntimeReady is

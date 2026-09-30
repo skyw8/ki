@@ -11,8 +11,19 @@
 // The fake browser runner reuses browser processes while keeping each test's
 // context and each invocation's server state and artifacts isolated.
 //
-// Resume reconciles the opened transcript independently of push heartbeats;
-// an idle snapshot retires transient streaming rows. Request navigation owns
-// a keyed landing until real reading input, and highlights use unclamped row
-// geometry. See docs/webui.md for lifecycle and touch interaction contracts.
+// TranscriptStore commits replica facts outside React scheduling. SessionSync
+// owns reader/recovery/ACK authority; TranscriptRequests owns cancellable
+// history/body projections. Human-turn identity and body coverage are shared
+// across chat, navigation and statistics. Lifecycle status uses durable entry
+// identities, never presentation order or text equality.
+//
+// Resume reconciles independently of push heartbeats; idle snapshots retire
+// transient work. One viewport owner controls reading/following/seeking intent,
+// keyed anchors and virtualizer compensation. Changes to running-placeholder
+// padding reconcile through that owner only while already following.
+// Local Markdown formatting and row expansion join pre-paint measurements even
+// when the parent transcript node is unchanged.
+// WebKit native motion retains resize corrections as logical/visual offsets
+// until a single sign-ordered transfer can preserve the physical viewport.
+// See docs/webui.md for lifecycle, responsive geometry and touch contracts.
 package web

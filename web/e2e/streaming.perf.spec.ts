@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { writeFile } from 'node:fs/promises'
 import { openStream } from './stream-fixture'
 
 for (const profile of [{ name: 'desktop', history: 0, cpu: 1 }, { name: 'long history', history: 800, cpu: 1 }, { name: 'mobile CPU 4x', history: 0, cpu: 4 }]) {
@@ -9,12 +10,19 @@ for (const profile of [{ name: 'desktop', history: 0, cpu: 1 }, { name: 'long hi
       await cdp.send('Emulation.setCPUThrottlingRate', { rate: profile.cpu })
     }
     await openStream(page, profile.history)
-    const stats = await page.evaluate(async () => {
+    const profiler = process.env.KI_STREAM_PROFILE ? await page.context().newCDPSession(page) : null
+    if (profiler) {
+      await profiler.send('Profiler.enable')
+      await profiler.send('Profiler.start')
+      await profiler.send('Tracing.start', { categories: 'devtools.timeline,v8,blink.user_timing,disabled-by-default-devtools.timeline', transferMode: 'ReturnAsStream' })
+    }
+    const stats = await page.evaluate(async capture => {
       const send = (window as unknown as { streamSend: (value: unknown) => void }).streamSend
       const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
       let text = '', seq = 0, shown = 0, stopped = false, maxPending = 0, maxFrame = 0
       let previousFrame = performance.now()
       const times = new Map<number, number>(), lags: number[] = []
+      let worstPending: { shown: number; actualMarker: number; roots: number; issued: number; age: number; at: number } | undefined
       const errors: string[] = []
       const frame = (now: number) => {
         if (stopped) return
@@ -26,8 +34,19 @@ for (const profile of [{ name: 'desktop', history: 0, cpu: 1 }, { name: 'long hi
           if (!element?.textContent?.includes(`tick${next.toString().padStart(4, '0')}`)) errors.push(`revision ${next} committed without its text`)
           lags.push(now - (times.get(next) ?? now))
           shown = next
+          if (capture) performance.mark(`stream-visible-${next}`)
         }
-        if (seq > shown) maxPending = Math.max(maxPending, now - (times.get(shown + 1) ?? now))
+        if (seq > shown) {
+          const age = now - (times.get(shown + 1) ?? now)
+          if (age > maxPending) {
+            maxPending = age
+            if (capture) {
+              const marker = element?.textContent?.match(/tick(\d{4}):/g)?.at(-1)
+              worstPending = { shown, actualMarker: marker ? Number(marker.slice(4, 8)) : 0, roots: document.querySelectorAll('[data-stream-seq]').length, issued: seq, age, at: performance.now() }
+              performance.mark(`stream-pending-${shown}-${seq}-${Math.round(age)}`)
+            }
+          }
+        }
         if (!stopped) requestAnimationFrame(frame)
       }
       requestAnimationFrame(frame)
@@ -53,8 +72,24 @@ for (const profile of [{ name: 'desktop', history: 0, cpu: 1 }, { name: 'long hi
       const sameRoot = before === document.querySelector('[data-stream-seq]')
       const finalText = document.querySelector('[data-stream-seq]')?.textContent ?? ''
       lags.sort((a, b) => a - b)
-      return { p95: lags[Math.floor(lags.length * .95)] ?? Infinity, maxPending, maxFrame, commits: lags.length, sameRoot, errors, markers: finalText.match(/tick\d{4}:/g)?.length ?? 0, expected: seq }
-    })
+      return { p95: lags[Math.floor(lags.length * .95)] ?? Infinity, maxPending, maxFrame, commits: lags.length, sameRoot, errors, markers: finalText.match(/tick\d{4}:/g)?.length ?? 0, expected: seq, worstPending }
+    }, !!profiler)
+    if (profiler) {
+      const { profile: cpuProfile } = await profiler.send('Profiler.stop')
+      await writeFile(info.outputPath('stream.cpuprofile'), JSON.stringify(cpuProfile))
+      const complete = new Promise<string>(resolve => profiler.once('Tracing.tracingComplete', event => resolve(event.stream!)))
+      await profiler.send('Tracing.end')
+      const handle = await complete
+      let trace = ''
+      for (;;) {
+        const result = await profiler.send('IO.read', { handle })
+        trace += result.data
+        if (result.eof) break
+      }
+      await profiler.send('IO.close', { handle })
+      await writeFile(info.outputPath('stream.timeline.json'), trace)
+      await profiler.detach()
+    }
     console.log(`${profile.name}: ${JSON.stringify(stats)}`)
     expect(stats.errors).toEqual([])
     expect(stats.commits).toBeGreaterThan(20)

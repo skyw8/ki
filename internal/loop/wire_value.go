@@ -16,12 +16,15 @@ func messageWireValue(m types.Message) (map[string]any, error) {
 		"api": m.API, "provider": m.Provider, "model": m.Model, "responseId": m.ResponseID,
 		"stopReason": m.StopReason, "errorMessage": m.ErrorMessage, "toolCallId": m.ToolCallID,
 		"cancelReason": m.CancelReason, "cancelSource": m.CancelSource,
-		"toolName": m.ToolName, "toolType": m.ToolType, "origin": m.Origin,
+		"clientRequestId": m.ClientRequestID, "toolName": m.ToolName, "toolType": m.ToolType, "origin": m.Origin,
 	})
 	for k, n := range map[string]int64{"timestamp": m.Timestamp, "latencyMs": m.LatencyMs, "ttftMs": m.TTFTMs} {
 		if n != 0 {
 			v[k] = n
 		}
+	}
+	if m.Completion != nil {
+		v["completion"] = map[string]any{"taskId": m.Completion.TaskID, "generation": m.Completion.Generation}
 	}
 	if m.IsError {
 		v["isError"] = true

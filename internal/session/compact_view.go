@@ -101,7 +101,7 @@ func turnRanges(path []Entry) []turnRange {
 	}
 	// Imports can begin with an assistant/compaction before the first user.
 	if len(out) == 0 && len(path) > 0 {
-		out = append(out, turnRange{0, len(path), 0})
+		out = append(out, turnRange{0, len(path), 1})
 	} else if len(out) > 0 && out[0].start > 0 {
 		out[0].start = 0
 	}
@@ -219,6 +219,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 		// on their own and never count toward `keep`, otherwise a trailing
 		// compaction/cancellation would hide the newest real reply.
 		alwaysVisible bool
+		suppressed    bool
 	}
 	var nodes []node
 	tools := map[string]int{}
@@ -231,8 +232,21 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 	var lastStep *TurnStep
 	var clock turnClock
 	var decodeMS, decodeTokens int64
+	pendingCompaction := -1
+	pendingSummary := false
+	checkpoints := map[string]bool{}
+	for _, e := range path {
+		if e.Type == "compaction" {
+			checkpoints[e.ID] = true
+		}
+	}
 	for i, e := range path {
 		clock.add(e)
+		// A new request cannot finish an interrupted earlier compaction;
+		// inline compaction includes its assistant before the checkpoint.
+		if isUserMessage(e) || e.Type == "request_header" {
+			pendingCompaction, pendingSummary = -1, false
+		}
 		m := e.Message
 		switch {
 		case isHumanTurnMessage(e):
@@ -313,6 +327,10 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 				nodes = append(nodes, node{id: id, preview: m.ToolName, entries: []int{i}})
 			}
 		case e.Type == "compaction":
+			if pendingCompaction >= 0 {
+				nodes[pendingCompaction].suppressed = true
+				pendingSummary = true
+			}
 			if e.Usage != nil {
 				lastStep = &TurnStep{Usage: e.Usage}
 			}
@@ -327,8 +345,24 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			prevPrompt, cacheReported = 0, false
 		case e.Type == "run_aborted":
 			nodes = append(nodes, node{id: e.ID, preview: "Run cancelled", entries: []int{i}, alwaysVisible: true})
+		case e.Type == "compaction_start":
+			pendingCompaction, pendingSummary = len(nodes), false
+			nodes = append(nodes, node{id: e.ID, preview: "Compacting", entries: []int{i}, alwaysVisible: true})
+		case e.Type == "compaction_end":
+			at := []int{i}
+			if pendingCompaction >= 0 {
+				nodes[pendingCompaction].suppressed = true
+				at = append(slices.Clone(nodes[pendingCompaction].entries), i)
+			}
+			details, _ := e.Details.(map[string]any)
+			summaryID, _ := details["entryId"].(string)
+			if !pendingSummary && !checkpoints[summaryID] {
+				nodes = append(nodes, node{id: e.ID, preview: "Compaction finished", entries: at, alwaysVisible: true})
+			}
+			pendingCompaction, pendingSummary = -1, false
 		}
 	}
+	nodes = slices.DeleteFunc(nodes, func(n node) bool { return n.suppressed })
 	stats.Tools = len(tools)
 	stats.ToolFailures = len(failedTools)
 	stats.StartedAt, stats.ElapsedMS = clock.start, clock.elapsed()
@@ -338,6 +372,14 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 	}
 	t := CompactTurn{ToolStates: toolStates, EntryCount: len(path), AssistantAt: assistantAt, ID: path[0].ID, ParentID: path[0].ParentID, TailID: path[len(path)-1].ID, Stats: stats, LastStep: lastStep, EntryIDs: []string{}, VisibleNodeIDs: []string{}}
 	selected := map[int]bool{}
+	// Empty/failed operations have no checkpoint body. Their lifecycle must
+	// survive recovery too, without consuming a reply slot or a model step.
+	// Keep both identities even when a checkpoint suppresses the status row.
+	for i, e := range path {
+		if e.Type == "compaction_start" || e.Type == "compaction_end" {
+			selected[i] = true
+		}
+	}
 	if user >= 0 {
 		t.ID = path[user].ID
 		selected[user] = true
@@ -478,12 +520,22 @@ func entryMillis(e Entry) int64 {
 // turnClock shares one elapsed contract between per-turn and cumulative stats.
 // Parallel tool results can be persisted in call order, not completion order;
 // use the maximum completion time so a later sibling cannot shorten the span.
-type turnClock struct{ start, last, duration int64 }
+type turnClock struct {
+	start, last, duration int64
+	started, human        bool
+}
 
 func (c *turnClock) add(e Entry) {
 	switch {
+	case isHumanTurnMessage(e):
+		if !c.human {
+			c.start, c.started, c.human = entryMillis(e), true, true
+		}
 	case isUserMessage(e):
-		c.start = entryMillis(e)
+		// Runtime notifications belong to this turn; they must not reset its clock.
+		if !c.started {
+			c.start, c.started = entryMillis(e), true
+		}
 	case e.Message != nil && e.Message.Role == "assistant":
 		c.duration += e.Message.LatencyMs
 		c.last = max(c.last, entryMillis(e))

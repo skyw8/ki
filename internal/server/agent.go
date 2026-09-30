@@ -3,7 +3,6 @@ package server
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -192,6 +191,11 @@ func (s *Server) agentRunner(childID string, base tools.AgentRequest) tools.Agen
 		req.SessionID = childID
 		req.Prompt = prompt
 		req.RunInBackground = background
+		snapshot, exists := s.agentTasks.Get(taskID)
+		if !exists {
+			return tools.AgentCompletion{}, os.ErrNotExist
+		}
+		req.ClientRequestID = snapshot.ClientRequestID
 		completion, runErr := s.runChildAgent(ctx, childID, req)
 		// A foreground child promoted to background after agentForegroundTimeout
 		// must still notify the parent; the run itself is unchanged.
@@ -199,7 +203,8 @@ func (s *Server) agentRunner(childID string, base tools.AgentRequest) tools.Agen
 			// Session deletion removes the logical task while its cancelled
 			// callback may still be unwinding. Do not enqueue a completion for
 			// a child that no longer exists.
-			if !s.agentTasks.ClaimNotification(taskID) {
+			identity := types.CompletionIdentity{TaskID: taskID, Generation: snapshot.Generation}
+			if s.agentTasks.CompletionDelivered(identity) {
 				return completion, runErr
 			}
 			outputFile := base.OutputFile
@@ -209,7 +214,7 @@ func (s *Server) agentRunner(childID string, base tools.AgentRequest) tools.Agen
 				}
 			}
 			//nolint:contextcheck // completion notify/dispatch must outlive the child run ctx
-			s.notifyAgentCompletion(base.ParentSessionID, taskID, base.Description, outputFile, completion, runErr)
+			s.notifyAgentCompletion(base.ParentSessionID, identity, base.Description, outputFile, completion, runErr)
 		}
 		return completion, runErr
 	}
@@ -219,26 +224,17 @@ func (s *Server) restoreAgentTasks(infos []session.Info) {
 	for _, info := range infos {
 		metadataPath := filepath.Join(info.Dir, "agent.json")
 		basePath := metadataPath
-		data, readErr := os.ReadFile(metadataPath) //nolint:gosec // path is agent.json under an indexed session directory
+		metadata, readErr := tools.ReadAgentMetadata(metadataPath)
 		if readErr != nil {
 			if !os.IsNotExist(readErr) {
 				slog.Warn("read agent metadata", "path", metadataPath, "err", readErr)
 			}
 			continue
 		}
-		var metadata tools.AgentMetadata
-		if err := json.Unmarshal(data, &metadata); err != nil {
-			slog.Warn("decode agent metadata", "path", metadataPath, "err", err)
-			continue
-		}
 		loaded, err := s.agentTasks.LoadMetadata(metadataPath, func(ctx context.Context, taskID, prompt string, background bool) (tools.AgentCompletion, error) {
-			data, readErr := os.ReadFile(basePath) //nolint:gosec // path is agent.json under an indexed session directory
+			meta, readErr := tools.ReadAgentMetadata(basePath)
 			if readErr != nil {
 				return tools.AgentCompletion{}, readErr
-			}
-			var meta tools.AgentMetadata
-			if unmarshalErr := json.Unmarshal(data, &meta); unmarshalErr != nil {
-				return tools.AgentCompletion{}, unmarshalErr
 			}
 			base := tools.AgentRequest{
 				Description:     meta.Description,
@@ -259,10 +255,11 @@ func (s *Server) restoreAgentTasks(infos []session.Info) {
 	}
 }
 
-func (s *Server) notifyAgentCompletion(parentID, taskID, description, outputFile string, completion tools.AgentCompletion, runErr error) {
+func (s *Server) notifyAgentCompletion(parentID string, identity types.CompletionIdentity, description, outputFile string, completion tools.AgentCompletion, runErr error) {
 	if parentID == "" {
 		return
 	}
+	taskID := identity.TaskID
 	status := "completed"
 	result := completion.Result
 	if task, ok := s.agentTasks.Get(taskID); ok && task.Status == tools.TaskKilled {
@@ -291,7 +288,7 @@ func (s *Server) notifyAgentCompletion(parentID, taskID, description, outputFile
 	content := []types.Content{{Type: "text", Text: text}}
 	// The parent may already hold this result: TaskOutput marks a task it read,
 	// and the notification it would receive is the same text it just pulled.
-	if s.agentTasks.NotificationConsumed(taskID) {
+	if s.agentTasks.CompletionDelivered(identity) {
 		return
 	}
 	// A parent that is still mid-turn (the Agent call did not end its turn: a
@@ -303,7 +300,7 @@ func (s *Server) notifyAgentCompletion(parentID, taskID, description, outputFile
 	// arrives after the loop's last round is not lost either: runPrompt closes
 	// the Inbox handoff atomically and runs (or persists, on abort) whatever it
 	// finds there, and a push once the handoff is closed returns false here.
-	if live := s.runAt(parentID); live != nil && s.pushSteerRun(live, steerRequest{Content: content, Origin: "agent:" + taskID}) {
+	if live := s.runAt(parentID); live != nil && s.pushSteerRun(live, steerRequest{Content: content, Origin: "agent:" + taskID, Completion: &identity, ClientRequestID: fmt.Sprintf("%s:%d", taskID, identity.Generation)}) {
 		return
 	}
 	// No live run (the parent turn ended, or the child finished before it could
@@ -312,7 +309,7 @@ func (s *Server) notifyAgentCompletion(parentID, taskID, description, outputFile
 	if !ok {
 		return
 	}
-	if _, err := session.EnqueueAgentNotification(dir, content, "agent:"+taskID, taskID); err != nil {
+	if _, err := session.EnqueueAgentNotification(dir, content, "agent:"+taskID, identity); err != nil {
 		return
 	}
 	s.publishQueueChanged(parentID)
@@ -454,6 +451,7 @@ func (s *Server) runChildAgent(ctx context.Context, id string, req tools.AgentRe
 		return tools.AgentCompletion{}, err
 	}
 	enableRunInbox(st)
+	st.inputMetadata.ClientRequestID = req.ClientRequestID
 	// runPrompt owns the child occupy release and persists the complete child
 	// transcript. The clean child has no inherited history, so the directive is
 	// its first user message.
@@ -504,7 +502,7 @@ func (s *Server) Wait(ctx context.Context, id string) (tools.TaskSnapshot, error
 	}
 	snap, err := s.agentTasks.Wait(ctx, id)
 	if err != nil {
-		return tools.TaskSnapshot{}, fmt.Errorf("wait agent task: %w", err)
+		return snap, fmt.Errorf("wait agent task: %w", err)
 	}
 	return snap, nil
 }
@@ -516,17 +514,52 @@ func (s *Server) Stop(id string) (tools.TaskSnapshot, error) {
 	}
 	snap, err := s.agentTasks.Stop(id)
 	if err != nil {
-		return tools.TaskSnapshot{}, fmt.Errorf("stop agent task: %w", err)
+		return snap, fmt.Errorf("stop agent task: %w", err)
 	}
 	return snap, nil
 }
 
-// MarkNotified implements the tools.TaskStore half of AgentRuntime: TaskOutput
-// marks a task whose result the caller just read, so the completion
-// notification is not delivered on top of it.
-func (s *Server) MarkNotified(id string) {
+// ClaimResult routes TaskOutput's exact generation to the shared delivery owner.
+func (s *Server) ClaimResult(snapshot tools.TaskSnapshot) bool {
 	if s.agentTasks == nil {
+		return false
+	}
+	return s.agentTasks.ClaimResult(snapshot)
+}
+
+// commitUserMessage is shared by loop drains, initial queue turns and the final
+// canceled-run handoff. Acceptance alone must never consume a completion.
+func (s *Server) commitUserMessage(message types.Message, persist func() error) (bool, error) {
+	if message.Completion != nil && s.agentTasks != nil {
+		return s.agentTasks.CommitNotification(*message.Completion, persist)
+	}
+	err := persist()
+	return err == nil, err
+}
+
+// preserveRunInbox also runs on setup errors and the last cancellation race:
+// closing the live handoff and taking its suffix must be one atomic operation.
+// No completion is claimed here; durable dispatch arbitrates at persistence.
+func (s *Server) preserveRunInbox(id string, st *runState) {
+	st.mu.Lock()
+	st.steerClosed = true
+	pending := st.inbox.Take()
+	st.mu.Unlock()
+	if len(pending) == 0 {
 		return
 	}
-	s.agentTasks.MarkNotified(id)
+	dir, ok := s.sidx.Lookup(id)
+	if !ok {
+		return
+	}
+	for _, message := range pending {
+		lane := session.QueueSystemLane
+		if message.Origin == "" {
+			lane = session.QueueHumanLane
+		}
+		if _, err := session.EnqueueMessage(dir, message, lane); err != nil {
+			slog.Warn("preserve undrained inbox", "session_id", id, "err", err)
+		}
+	}
+	s.publishQueueChanged(id)
 }

@@ -1,5 +1,35 @@
 import { expect, test } from 'bun:test'
-import { splitSettled } from '../src/features/markdown/streamText.ts'
+import { MarkdownBlockSplitter, splitSettled } from '../src/features/markdown/streamText.ts'
+
+test('live block splitting scans each appended character once and preserves every code unit', () => {
+  const splitter = new MarkdownBlockSplitter()
+  let text = ''
+  for (const chunk of ['one', '\n', '\n', '\n', '文🙂 **two', '**\n\n', 'three']) {
+    text += chunk
+    expect(splitter.split(text).join('')).toBe(text)
+  }
+  expect(splitter.split(text)).toEqual(['one\n\n\n', '文🙂 **two**\n\n', 'three'])
+  expect(splitter.scannedCharacters).toBe(text.length)
+  expect(splitter.split('rewritten\n\nbody')).toEqual(['rewritten\n\n', 'body'])
+  expect(splitter.split('')).toEqual([])
+})
+
+test('live splitting keeps semantic blocks and references together', () => {
+  for (const text of [
+    '```js\ncode\n\nmore\n```',
+    '1. a\n\n1. b\n\n',
+    '- a\n\n- b\n\n',
+    '> a\n\n> b\n\n',
+    '    a\n\n    b\n',
+    '<pre>\n\nstill inside\n\n',
+    '<!-- comment\n\nstill inside\n\n',
+    '[link][ref]\n\nsecond paragraph\n\n[ref]: /target',
+  ]) {
+    const splitter = new MarkdownBlockSplitter()
+    for (let i = 1; i <= text.length; i++) expect(splitter.split(text.slice(0, i)).join('')).toBe(text.slice(0, i))
+    expect(splitter.split(text)).toEqual([text])
+  }
+})
 
 test('splitSettled settles whole blocks and leaves the open tail alone', () => {
   // A blank line closes a paragraph for good.

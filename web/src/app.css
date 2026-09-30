@@ -181,6 +181,7 @@
   flex: none;
 }
 .session-row .dot.on { background: var(--dsw-alias-state-success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-success) 25%, transparent); }
+.session-row .dot.delegated { background: var(--dsw-alias-state-warning); box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-state-warning) 25%, transparent); }
 
 .session-row .meta {
   min-width: 0;
@@ -386,6 +387,12 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  /* A newly expanded row must not add a classic scrollbar and change every
+     row's width, wrapping and timer position. WebKit reports stable-gutter
+     support but ignores it for styled scrollbars, so keep overflow-y: scroll
+     as well. Native overlay scrollbars still reserve no space. */
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
   padding: 16px 32px 8px;
 }
 
@@ -523,6 +530,14 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* Runtime user-role messages are transcript notes, not new human requests.
+   Keep their header/body/actions in ordinary flow; no overlaid prefix copy. */
+.runtime-row { justify-content: flex-start; }
+.runtime-row .user-stack { width: 100%; max-width: 100%; }
+.runtime-notification { align-items: stretch; padding: 12px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); }
+.runtime-notification-label { color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 600; }
+.runtime-notification .user-origin { overflow-wrap: anywhere; text-align: left; }
+.runtime-notification .user-text-bubble { align-self: stretch; padding: 0; border-radius: 0; background: transparent; }
 /* Long historical user messages fold to 6 lines; the chevron re-expands. */
 .bubble-text.clamped {
   display: -webkit-box;
@@ -627,6 +642,13 @@
   white-space: nowrap;
 }
 .turn-stat svg { width: 12px; height: 12px; opacity: 0.75; }
+/* Reserve a complete time, not a rounded large unit: seconds still advance
+   during long runs. Extremely old durations scale inside this fixed slot. */
+.duration { display: inline-flex; align-items: baseline; white-space: pre; font-variant-numeric: tabular-nums; }
+.duration-value { display: inline-block; flex: none; width: 12ch; text-align: right; font-family: var(--ds-font-family-code); }
+.transcript-sync-status { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; gap: 6px; color: var(--dsw-alias-label-secondary); font-size: 12px; white-space: nowrap; }
+.transcript-sync-status > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.transcript-sync-status button { flex: none; min-height: 40px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 /* Turn health readouts: tool failures and cache misses stay in the caption row
    but tint and chip when they are non-zero, so a bad turn stands out without
    adding chrome to the clean ones. */
@@ -2441,10 +2463,13 @@
 }
 @keyframes tool-sweep { 0% { left: -300px; } 90%, 100% { left: 100%; } }
 .tool-row-h { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 24px; padding: 2px 0; text-align: left; }
-.tool-row-toggle { display: flex; align-items: center; gap: 8px; min-width: 0; flex: none; text-align: left; }
+/* Shrink the name, never the timer or the actionable target. The complete
+   tool name remains in the button's accessible name and native tooltip. */
+.tool-row-toggle { display: flex; align-items: center; gap: 8px; min-width: 40px; min-height: 40px; flex: 0 1 auto; text-align: left; }
+.tool-row-toggle > svg, .tool-row-toggle > .spin { flex: none; }
 .tool-row-toggle:hover:not(:disabled) { color: var(--dsw-alias-label-primary); }
 .tool-row-toggle:disabled { cursor: default; }
-.tool-row .tool-name { font-size: 14px; }
+.tool-row .tool-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .tool-sep { width: 2px; height: 2px; border-radius: 1px; background: var(--dsw-alias-label-caption); flex: none; }
 .tool-row .tool-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-tertiary); font-size: 14px; user-select: text; cursor: text; }
 .tool-row .tool-preview.err { color: var(--dsw-alias-state-error); }
@@ -3352,7 +3377,6 @@ select:focus-visible {
   .scroll {
     padding: 14px 14px 8px;
     overscroll-behavior-y: contain;
-    scrollbar-gutter: auto;
   }
   .chat-col { gap: 20px; }
   /* Narrow chat columns: the side rules shrink to stubs, so drop them and use

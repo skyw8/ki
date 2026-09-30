@@ -16,17 +16,19 @@ function assistant(id: string, parentId: string, text: string): Entry {
   }
 }
 
-test('reconcileUserNodes drops optimistic copies after jsonl ids exist', () => {
+test('reconcileUserNodes acknowledges optimistic copies by request ID, not text', () => {
+  // The old text-only fixture encoded B4: two unrelated same-text inputs
+  // cannot acknowledge one another. The wire now carries explicit identity.
   const nodes = reconcileUserNodes([
-    { kind: 'user', id: 'opt-user-1', text: 'queued-promote', content: [] },
+    { kind: 'user', id: 'opt-user-1', clientRequestId: 'request-1', text: 'queued-promote', content: [] },
     { kind: 'assistant', id: 'a', text: 'ok' },
-    { kind: 'user', id: 'jsonl', text: 'queued-promote', content: [] },
+    { kind: 'user', id: 'jsonl', clientRequestId: 'request-1', text: 'queued-promote', content: [] },
   ])
   expect(nodes.filter(n => n.kind === 'user').map(n => n.id)).toEqual(['jsonl'])
   expect(nodes.map(n => n.kind)).toEqual(['user', 'assistant'])
   expect(reconcileUserNodes([
-    { kind: 'user', id: 'opt-user-1', text: 'queued-promote', content: [] },
-    { kind: 'user', id: 'live-user-2', text: 'queued-promote', content: [] },
+    { kind: 'user', id: 'opt-user-1', clientRequestId: 'request-1', text: 'queued-promote', content: [] },
+    { kind: 'user', id: 'live-user-2', clientRequestId: 'request-1', text: 'queued-promote', content: [] },
   ]).map(n => n.id)).toEqual(['live-user-2'])
 })
 
@@ -156,5 +158,5 @@ test('a manual compaction streams a running chat row that settles in place', () 
     id: 'session', cwd: '/tmp', provider: 'test', model: 'test', title: 'test', leafId: 'c1',
     entries: [{ type: 'compaction', id: 'c1', summary: 'SUM', tokensBefore: 156752 }],
   })
-  expect(settled.nodes).toEqual([{ kind: 'compaction', id: 'c1', summary: 'SUM', tokensBefore: 156752 }])
+  expect(settled.nodes).toEqual([{ kind: 'compaction', id: 'c1', turnId: 'c1', summary: 'SUM', tokensBefore: 156752 }])
 })

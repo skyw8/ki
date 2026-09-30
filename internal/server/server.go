@@ -26,6 +26,7 @@ import (
 	"ki/internal/compact"
 	"ki/internal/config"
 	"ki/internal/extension"
+	"ki/internal/idgen"
 	"ki/internal/logging"
 	"ki/internal/loop"
 	"ki/internal/prompt"
@@ -111,9 +112,10 @@ const (
 )
 
 type runState struct {
-	cancel   context.CancelFunc
-	runID    string
-	external map[string]string
+	inputMetadata types.Message
+	cancel        context.CancelFunc
+	runID         string
+	external      map[string]string
 	// cancelReason/source are first-writer-wins diagnostics. The context API
 	// collapses every caller to context.Canceled, so retain the initiating
 	// boundary before invoking cancel.
@@ -669,14 +671,7 @@ func compactionEndEvent(intent compact.Intent, outcome compactionOutcome, err er
 // publishStandaloneCompactionEvent gives manual compaction the same durable
 // and extension-visible lifecycle as run-owned compaction events.
 func (s *Server) publishStandaloneCompactionEvent(ctx context.Context, sess *session.Session, ev loop.Event) error {
-	details := map[string]any{
-		"reason": ev.Reason, "ok": ev.OK, "willRetry": ev.WillRetry,
-		"strategy": ev.Strategy, "status": ev.Status,
-		"fromExtension": ev.FromExtension,
-		"entryId":       ev.EntryID, "firstKeptEntryId": ev.FirstKeptEntryID,
-		"tokensBefore": ev.TokensBefore, "usage": ev.Usage,
-	}
-	if _, err := sess.AppendDetailsEvent(string(ev.Type), details); err != nil {
+	if err := persistCompactionEvent(sess, &ev); err != nil {
 		return fmt.Errorf("append manual compaction event: %w", err)
 	}
 	s.publishPush(sess.ID(), ev)
@@ -1695,9 +1690,10 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	activity := s.sessionActivity(infos)
 	out := make([]map[string]any, 0, len(infos))
 	for _, info := range infos {
-		out = append(out, s.infoMap(info))
+		out = append(out, s.infoMap(info, activity))
 	}
 	body, err := json.Marshal(out)
 	if err != nil {
@@ -1738,16 +1734,25 @@ func (s *Server) running(id string) bool {
 func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Text     string          `json:"text"`
-		Content  []types.Content `json:"content"`
-		ParentID *string         `json:"parentId"`
-		Model    string          `json:"model"`
-		Delivery string          `json:"delivery"`
-		QueueID  string          `json:"queueId"`
+		Text            string          `json:"text"`
+		Content         []types.Content `json:"content"`
+		ParentID        *string         `json:"parentId"`
+		Model           string          `json:"model"`
+		Delivery        string          `json:"delivery"`
+		QueueID         string          `json:"queueId"`
+		ClientRequestID string          `json:"clientRequestId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
+	}
+	if body.ClientRequestID == "" {
+		id, err := idgen.NewV7()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		body.ClientRequestID = id
 	}
 	queueID := strings.TrimSpace(body.QueueID)
 	delivery := strings.TrimSpace(body.Delivery)
@@ -1922,11 +1927,11 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	if busy {
 		dir := sess.Dir
 		_ = sess.Close()
-		if delivery == toggles.BusySteer && s.pushSteerRun(live, steerRequest{Content: body.Content}) {
-			writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "steered"})
+		if delivery == toggles.BusySteer && s.pushSteerRun(live, steerRequest{Content: body.Content, ClientRequestID: body.ClientRequestID}) {
+			writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "steered", "clientRequestId": body.ClientRequestID})
 			return
 		}
-		if _, err := session.Enqueue(dir, body.Content); err != nil {
+		if _, err := session.EnqueueMessage(dir, types.Message{Content: body.Content, ClientRequestID: body.ClientRequestID}, session.QueueHumanLane); err != nil {
 			if errors.Is(err, session.ErrQueueFull) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
@@ -1935,7 +1940,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.publishQueueChanged(id)
-		writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "queued"})
+		writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "queued", "clientRequestId": body.ClientRequestID})
 		return
 	}
 	_ = sess.Close()
@@ -1952,7 +1957,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	}
 	// The prompt is accepted asynchronously; detach it from the HTTP request
 	// cancellation while retaining request-scoped values for downstream code.
-	s.startRun(context.WithoutCancel(r.Context()), w, id, body.Content, body.ParentID, body.Model)
+	s.startRun(context.WithoutCancel(r.Context()), w, id, body.Content, body.ParentID, body.Model, body.ClientRequestID)
 }
 
 // promoteQueued takes a durable queue item and inserts it into the captured
@@ -2003,21 +2008,22 @@ func (s *Server) promoteQueued(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 	_ = sess.Close()
-	if s.pushSteerRun(live, steerRequest{Content: item.Content, Origin: item.Origin}) {
+	if s.pushSteerRun(live, steerRequest{Content: item.Content, Origin: item.Origin, ClientRequestID: item.ClientRequestID, Completion: item.Completion}) {
 		s.publishQueueChanged(id)
-		writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "steered"})
+		writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "steered", "clientRequestId": item.ClientRequestID})
 		return
 	}
 	st, ctx, err := s.occupy(context.WithoutCancel(r.Context()), id)
 	if err != nil {
 		putBack()
-		writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "queued"})
+		writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "queued", "clientRequestId": item.ClientRequestID})
 		return
 	}
 	enableRunInbox(st)
+	st.inputMetadata = types.Message{ClientRequestID: item.ClientRequestID, Completion: item.Completion}
 	go s.runPrompt(ctx, st, id, item.Content, nil, model, item.Origin, "", s.takeNextTurn(id))
 	s.publishQueueChanged(id)
-	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started"})
+	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started", "clientRequestId": item.ClientRequestID})
 }
 
 func (s *Server) handleBuiltin(w http.ResponseWriter, r *http.Request, name, args string) {
@@ -2152,6 +2158,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		// the prompt never invalidated the snapshot. release closes done (and
 		// Broadcasts) itself; a second close panics.
 		logging.Recover("prompt panic", "session_id", id)
+		s.preserveRunInbox(id, st)
 		s.release(id, st)
 	}()
 	sess, err := s.open(id)
@@ -2377,6 +2384,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		BaseDelay:               2 * time.Second,
 		Parallel:                true,
 		Inbox:                   st.inbox,
+		CommitUserMessage:       s.commitUserMessage,
 		Hooks:                   hooks,
 	}
 	if useServerCompaction {
@@ -2395,7 +2403,10 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 		return nil
 	}
-	user := types.Message{Role: "user", Content: content, Origin: origin, External: externalMeta}
+	user := types.Message{Role: "user", Content: content, Origin: origin, External: externalMeta, ClientRequestID: st.inputMetadata.ClientRequestID, Completion: st.inputMetadata.Completion}
+	if user.ClientRequestID == "" {
+		user.ClientRequestID = st.runID + ":input"
+	}
 	err = runMessage(user)
 	// loop.Run checks Inbox.Has at the end of a turn. A steer can arrive in
 	// the narrow interval after that check and before Run returns; atomically
@@ -2421,8 +2432,14 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 				// drains, so the optimistic bubble would vanish on the next
 				// jsonl reload. Commit the message here as an unanswered user
 				// turn: the text survives, and the next run sees it in history.
-				if _, _, aerr := sess.AppendMessageWithKey(steer, ""); aerr != nil {
+				if _, aerr := s.commitUserMessage(steer, func() error {
+					_, _, err := sess.AppendMessageWithKey(steer, "")
+					return err
+				}); aerr != nil {
 					slog.Warn("persist undrained steer", "session_id", id, "err", aerr)
+					// The deferred handoff retries through the durable queue;
+					// failed persistence must not consume a completion.
+					st.inbox.Push(steer)
 				}
 				continue
 			}
@@ -2541,7 +2558,7 @@ func (s *Server) withNextTurn(sess *session.Session, st *runState, hooks loop.Ho
 			if item.Extension != "" {
 				origin = "extension:" + item.Extension
 			}
-			msg := types.Message{Role: "user", Content: item.Content, Origin: origin, External: cloneExternal(item.External), Timestamp: time.Now().UnixMilli()}
+			msg := types.Message{Role: "user", ClientRequestID: item.ID, Content: item.Content, Origin: origin, External: cloneExternal(item.External), Timestamp: time.Now().UnixMilli()}
 			if e, _, aerr := sess.AppendMessageWithKey(msg, item.IdempotencyKey); aerr == nil {
 				ev := loop.Event{Type: loop.MessageEnd, Message: &msg, EntryID: e.ID, ParentID: &e.ParentID}
 				st.mu.Lock()
