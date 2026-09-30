@@ -41,7 +41,8 @@ ki/
 │   ├── state/           {KI_HOME} JSON schema versions + migrations
 │   ├── types/           Message / Usage IR
 │   ├── idgen/           session / entry id
-│   └── logging/         JSONL stderr + rotated ki.jsonl
+│   ├── logging/         JSONL stderr + rotated ki.jsonl
+│   └── telemetry/       session-local OTLP cache/tool diagnostics
 ├── AGENTS.md
 ├── README.md
 ├── pkg/

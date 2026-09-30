@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ki/internal/loop"
+	"ki/internal/telemetry"
 )
 
 const taskOutputPrompt = `Retrieves output and status for a background task started by Agent, Bash, or PowerShell.
@@ -143,6 +144,20 @@ func (t taskStopTool) Execute(_ context.Context, args map[string]any) loop.ToolR
 	}
 	snapshot, err := t.tasks.Stop(id)
 	if err != nil {
+		if errors.Is(err, errTaskNotRunning) {
+			// Completion can race with TaskStop. The requested end state already
+			// holds, so report an idempotent success instead of a false failure.
+			t.tasks.MarkNotified(id)
+			return taskResult(map[string]any{
+				"message":   fmt.Sprintf("Task %s already finished", id),
+				"task_id":   snapshot.TaskID,
+				"task_type": snapshot.TaskType,
+				"status":    snapshot.Status,
+				"command":   snapshot.Command,
+			}, detailsForTask(snapshot, "already_finished"), telemetry.ToolDiagnostic{
+				Status: "completed", Kind: "already_finished", FaultDomain: "cancellation",
+			})
+		}
 		if errors.Is(err, os.ErrNotExist) {
 			return errRes(fmt.Sprintf("task %s not found", id))
 		}
@@ -165,6 +180,11 @@ func taskResult(value any, details ...any) loop.ToolResult {
 	res := okRes(string(b))
 	if len(details) > 0 {
 		res.Details = details[0]
+	}
+	if len(details) > 1 {
+		if diagnostic, ok := details[1].(telemetry.ToolDiagnostic); ok {
+			res.Diagnostic = diagnostic
+		}
 	}
 	return res
 }

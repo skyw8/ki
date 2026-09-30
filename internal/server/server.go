@@ -33,6 +33,7 @@ import (
 	"ki/internal/push"
 	"ki/internal/resources"
 	"ki/internal/session"
+	"ki/internal/telemetry"
 	"ki/internal/toggles"
 	"ki/internal/tooloutput"
 	"ki/internal/tools"
@@ -2154,6 +2155,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		return
 	}
 	defer func() { _ = sess.Close() }()
+	runTelemetry := telemetry.NewRun(sess.Dir, id, st.runID)
+	defer runTelemetry.Close()
 	var externalMeta map[string]string
 	if len(external) > 0 {
 		externalMeta = cloneExternal(external[0])
@@ -2330,6 +2333,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			return
 		}
 		if changed && opaqueReplaySafe {
+			runTelemetry.Reset("compaction")
 			// A standalone preflight may replace an inline checkpoint with a
 			// different protocol. Resolve the newly committed binding before
 			// the first generation request instead of expanding portable
@@ -2349,6 +2353,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		SessionID:               id,
 		Tools:                   tls,
 		OutputStore:             s.outputStore,
+		Telemetry:               runTelemetry,
 		System:                  sys,
 		Provider:                sess.Config.Provider,
 		Model:                   sess.Config.Model,

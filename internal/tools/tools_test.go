@@ -83,6 +83,9 @@ func TestBuildSelectsReadCapabilities(t *testing.T) {
 	if spec.Type != "custom" || spec.Format == nil || spec.Format.Syntax != "lark" {
 		t.Fatalf("apply_patch spec = %+v", spec)
 	}
+	if !strings.Contains(spec.Description, "Include each file path once") {
+		t.Fatalf("apply_patch description omits single-path rule: %q", spec.Description)
+	}
 	catalog := set.Catalog(Profile{ApplyPatch: true})
 	for _, name := range []string{"apply_patch", "Write", "Edit"} {
 		if pick(catalog, name) == nil {
@@ -670,6 +673,11 @@ func TestTaskOutputAndTaskStopLifecycle(t *testing.T) {
 	if response.RetrievalStatus != "success" || response.Task.Status != TaskCompleted || response.Task.Output != "one\ntwo\n" {
 		t.Fatalf("task output = %+v", response)
 	}
+	alreadyFinished := stopTool.Execute(context.Background(), map[string]any{"task_id": id})
+	if alreadyFinished.IsError || !strings.Contains(alreadyFinished.Content[0].Text, "already finished") ||
+		!strings.Contains(alreadyFinished.Content[0].Text, `"status":"completed"`) {
+		t.Fatalf("stop completed task: %+v", alreadyFinished)
+	}
 
 	started = bash.Execute(context.Background(), map[string]any{
 		"command":           "sleep 120",
@@ -679,6 +687,11 @@ func TestTaskOutputAndTaskStopLifecycle(t *testing.T) {
 	stopped := stopTool.Execute(context.Background(), map[string]any{"task_id": id})
 	if stopped.IsError || !strings.Contains(stopped.Content[0].Text, "stopped") {
 		t.Fatalf("stop: %+v", stopped)
+	}
+	stoppedAgain := stopTool.Execute(context.Background(), map[string]any{"task_id": id})
+	if stoppedAgain.IsError || !strings.Contains(stoppedAgain.Content[0].Text, "already finished") ||
+		!strings.Contains(stoppedAgain.Content[0].Text, `"status":"killed"`) {
+		t.Fatalf("stop task again: %+v", stoppedAgain)
 	}
 	result = outputTool.Execute(context.Background(), map[string]any{"task_id": id, "block": false})
 	if result.IsError || !strings.Contains(result.Content[0].Text, `"status":"killed"`) {

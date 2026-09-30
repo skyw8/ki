@@ -16,7 +16,7 @@
 - `ki config path` / `ki version`：查看配置位置和版本。
 - CLI 命令和 flags 由 Cobra 管理；TOML 由 Viper 解析，只管理 server、session、compaction 和 logging 等运行参数。模型与供应商由 provider registry 的 `models.json` / `credentials.json` 管理。`ki serve --addr` 通过 Cobra flag 绑定到 Viper 的 `server.addr`，优先级高于配置文件和环境变量。
 
-进程诊断日志由 `internal/logging` 初始化为 JSONL，同时写 stderr 和 `{KI_HOME}/ki.jsonl`；日志按大小轮转，默认保留 3 个备份，可由 `[log]` 的 `max_size_mb` / `max_backups` 调整。日志带 `pid` / `role`，禁止记录 API key、token、prompt 和文件内容。HTTP、prompt 后台任务和进程入口会记录 panic 值与 stack。
+进程诊断日志由 `internal/logging` 初始化为 JSONL，同时写 stderr 和 `{KI_HOME}/ki.jsonl`；日志按大小轮转，默认保留 3 个备份，可由 `[log]` 的 `max_size_mb` / `max_backups` 调整。日志带 `pid` / `role`，禁止记录 API key、token、prompt 和文件内容。HTTP、prompt 后台任务和进程入口会记录 panic 值与 stack。每个 session 另有不进入消息树、API、SSE 或模型上下文的 `telemetry.jsonl`：每行是 OTLP/JSON `ExportLogsServiceRequest`，记录 model request 的 cache 前缀摘要与 usage、分类后的 tool outcome 和 run summary；只保存 hash、计数、状态和 trace/span ID，不保存 prompt、工具参数/结果、credential 或 opaque provider 内容。文件到 32 MiB 后保留一个 `.1` 备份，写入失败仅告警而不影响 run。
 
 续聊必须 `--session <id>`。`--model` 随 prompt 发给 server，写回**该 session** 的 `config.json`，不改 toml。`KI_FAKE=1` 用假模型。
 

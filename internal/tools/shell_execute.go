@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ki/internal/loop"
+	"ki/internal/telemetry"
 	"ki/internal/types"
 )
 
@@ -92,7 +93,23 @@ func executeShell(ctx context.Context, args map[string]any, emit func(any), shel
 }
 
 func shellToolResult(text string, isError bool, details taskDetails) loop.ToolResult {
-	return loop.ToolResult{Content: []types.Content{{Type: "text", Text: text}}, IsError: isError, Details: details}
+	diagnostic := telemetry.ToolDiagnostic{Status: "completed", Kind: "success", FaultDomain: "none"}
+	switch {
+	case details.Cancelled:
+		diagnostic = telemetry.ToolDiagnostic{Status: "cancelled", Kind: "cancelled_by_parent", FaultDomain: "cancellation"}
+	case details.TimedOut:
+		diagnostic = telemetry.ToolDiagnostic{Status: "timed_out", Kind: "timeout", FaultDomain: "environment", Retryable: true}
+	case details.ExitCode != nil && *details.ExitCode != 0:
+		// The shell and process ran correctly; the invoked command reported a
+		// negative outcome. Keep IsError for the model, but do not blame Ki.
+		diagnostic = telemetry.ToolDiagnostic{Status: "completed", Kind: "command_nonzero", FaultDomain: "external_command"}
+	case isError:
+		diagnostic = telemetry.ToolDiagnostic{Status: "failed", Kind: "spawn_or_io_failed", FaultDomain: "environment", Retryable: true}
+	}
+	return loop.ToolResult{
+		Content: []types.Content{{Type: "text", Text: text}}, IsError: isError,
+		Details: details, Diagnostic: diagnostic,
+	}
 }
 
 func isLeadingSleep(kind shellKind, command string) bool {

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"ki/internal/telemetry"
 	"ki/internal/tooloutput"
 	"ki/internal/types"
 )
@@ -217,6 +218,9 @@ type ToolResult struct {
 	Content []types.Content
 	IsError bool
 	Details any
+	// Diagnostic is private harness telemetry. Provider adapters receive only
+	// the model-facing content and IsError fields.
+	Diagnostic telemetry.ToolDiagnostic `json:"-"`
 	// Terminate hints the agent to stop after this tool batch when every
 	// finalized result in the batch sets it (pi result.terminate).
 	Terminate bool
@@ -359,6 +363,7 @@ type Config struct {
 	SessionID                 string
 	Tools                     []Tool
 	OutputStore               *tooloutput.Store
+	Telemetry                 *telemetry.Run
 	Hooks                     Hooks
 	MaxRetries                int
 	BaseDelay                 time.Duration
@@ -526,6 +531,9 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 				}
 				outcome, herr := cfg.Hooks.OnContextOverflow(ctx, request)
 				if herr == nil {
+					if cfg.Telemetry != nil {
+						cfg.Telemetry.Reset("compaction")
+					}
 					history = outcome.Context.Messages
 					responsesContext = nil
 					if outcome.Context.Responses != nil {
@@ -553,6 +561,9 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		cleanAssistant.ResponsesItems = nil
 		newMsgs = append(newMsgs, cleanAssistant)
 		if len(asst.ResponsesItems) > 0 {
+			if cfg.Telemetry != nil {
+				cfg.Telemetry.Reset("server_compaction")
+			}
 			// Promote provider compaction immediately. Keeping it only on the
 			// transient assistant works for an in-process adapter but is lost
 			// when the next tool round crosses the extension JSON-RPC boundary
@@ -734,6 +745,11 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 			lastDelta = arrived
 			return nil
 		})
+		if cfg.Telemetry != nil {
+			observation := modelTelemetry(req, asst, err, time.Since(started).Milliseconds())
+			observation.Attempt = attempt
+			cfg.Telemetry.RecordModelRequest(observation)
+		}
 		if err != nil {
 			lastErr = err
 			if ctx.Err() != nil {
@@ -894,11 +910,12 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 
 	// Phase 1: prepare (synchronous, no side effects).
 	type prep struct {
-		call      types.Content
-		args      map[string]any
-		tool      Tool
-		immediate *types.Message // set → skip execute
-		terminate bool
+		call       types.Content
+		args       map[string]any
+		tool       Tool
+		immediate  *types.Message // set → skip execute
+		diagnostic telemetry.ToolDiagnostic
+		terminate  bool
 	}
 	preps := make([]prep, len(calls))
 	for i, c := range calls {
@@ -914,6 +931,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 		if !ok {
 			m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: "unknown tool " + c.Name}}, IsError: true}
 			p.immediate = &m
+			p.diagnostic = telemetry.ToolDiagnostic{Status: "rejected", Kind: "unknown_tool", FaultDomain: "model_input"}
 			preps[i] = p
 			continue
 		}
@@ -921,6 +939,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			if err := v.Validate(args); err != nil {
 				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 				p.immediate = &m
+				p.diagnostic = telemetry.ToolDiagnostic{Status: "rejected", Kind: "invalid_arguments", FaultDomain: "model_input"}
 				preps[i] = p
 				continue
 			}
@@ -930,6 +949,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			if err != nil {
 				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 				p.immediate = &m
+				p.diagnostic = telemetry.ToolDiagnostic{Status: "failed", Kind: "extension_failed", FaultDomain: "extension"}
 				p.terminate = term
 				preps[i] = p
 				continue
@@ -939,6 +959,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			if b {
 				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: r}}, IsError: true}
 				p.immediate = &m
+				p.diagnostic = telemetry.ToolDiagnostic{Status: "rejected", Kind: "extension_rejected", FaultDomain: "extension"}
 				preps[i] = p
 				continue
 			}
@@ -965,6 +986,9 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			msg.DurationMs = dur
 			msg.Timestamp = finishedAt.UnixMilli()
 			out[i] = msg
+			if cfg.Telemetry != nil {
+				cfg.Telemetry.RecordTool(p.call.Name, p.call.ID, dur, true, p.diagnostic, nil)
+			}
 			_ = emit(Event{
 				Type:       ToolExecutionEnd,
 				Timestamp:  finishedAt.UnixMilli(),
@@ -982,7 +1006,10 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			if freeform, ok := p.tool.(FreeformTool); ok {
 				res = freeform.ExecuteRaw(ctx, raw)
 			} else {
-				res = ToolResult{Content: []types.Content{{Type: "text", Text: "tool does not accept freeform input"}}, IsError: true}
+				res = ToolResult{
+					Content: []types.Content{{Type: "text", Text: "tool does not accept freeform input"}}, IsError: true,
+					Diagnostic: telemetry.ToolDiagnostic{Status: "rejected", Kind: "invalid_arguments", FaultDomain: "model_input"},
+				}
 			}
 		} else if progress, ok := p.tool.(ProgressTool); ok {
 			progressEmit := func(value any) {
@@ -1026,6 +1053,9 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 		out[i] = msg
 		p.terminate = p.terminate || res.Terminate
 		preps[i] = p
+		if cfg.Telemetry != nil {
+			cfg.Telemetry.RecordTool(p.call.Name, p.call.ID, dur, res.IsError, res.Diagnostic, toolTelemetryAttrs(res.Details))
+		}
 		_ = emit(Event{
 			Type:       ToolExecutionEnd,
 			Timestamp:  finishedAt.UnixMilli(),
@@ -1060,6 +1090,85 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 		}
 	}
 	return out, terminate
+}
+
+func modelTelemetry(request Request, response types.Message, err error, durationMS int64) telemetry.ModelRequest {
+	chunks := make([]string, 0, len(request.ResponsesContext)+len(request.Messages))
+	for _, item := range request.ResponsesContext {
+		chunks = append(chunks, telemetry.Hash(json.RawMessage(item)))
+	}
+	for _, message := range request.Messages {
+		chunks = append(chunks, telemetry.Hash(message))
+	}
+	binding := struct {
+		Provider, API, BaseURL, Model, Compaction string
+	}{
+		request.ProviderBinding.Provider,
+		request.ProviderBinding.API,
+		request.ProviderBinding.BaseURL,
+		request.ProviderBinding.Model,
+		request.ProviderBinding.Compaction,
+	}
+	shape := struct {
+		Provider, Model, API, ThinkingEffort, ThinkingFormat, MaxTokensField string
+		MaxTokens, CompactThreshold                                          int
+		Binding                                                              any
+	}{
+		request.Provider, request.Model, request.API, request.ThinkingEffort,
+		request.ThinkingFormat, request.MaxTokensField, request.MaxTokens,
+		request.ResponsesCompactThreshold, binding,
+	}
+	errorKind := ""
+	switch {
+	case err == nil:
+	case errors.Is(err, context.Canceled):
+		errorKind = "cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		errorKind = "timeout"
+	case errors.Is(err, ErrContextOverflow):
+		errorKind = "context_overflow"
+	default:
+		errorKind = "provider_error"
+	}
+	return telemetry.ModelRequest{
+		Provider: request.Provider, Model: request.Model, API: request.API,
+		StaticHash: telemetry.Hash(struct {
+			System string
+			Tools  []ToolSpec
+		}{request.System, request.Tools}),
+		ShapeHash: telemetry.Hash(shape), BindingHash: telemetry.Hash(request.ProviderBinding), HistoryChunks: chunks,
+		Usage: response.Usage, DurationMS: durationMS, Failed: err != nil, ErrorKind: errorKind,
+	}
+}
+
+func toolTelemetryAttrs(details any) map[string]any {
+	if details == nil {
+		return nil
+	}
+	data, err := json.Marshal(details)
+	if err != nil {
+		return nil
+	}
+	var values map[string]any
+	if json.Unmarshal(data, &values) != nil {
+		return nil
+	}
+	out := map[string]any{}
+	if exit, ok := values["exit_code"].(float64); ok {
+		out["process.exit.code"] = int(exit)
+	}
+	if status, ok := values["status"].(string); ok {
+		out["ki.tool.task_status"] = status
+	}
+	if truncation, ok := values["truncation"].(map[string]any); ok {
+		if truncated, ok := truncation["truncated"].(bool); ok {
+			out["ki.tool.output_truncated"] = truncated
+		}
+		if total, ok := truncation["total_bytes"].(float64); ok {
+			out["ki.tool.output_bytes"] = int64(total)
+		}
+	}
+	return out
 }
 
 // rejectToolCalls turns every tool call into an error result without executing

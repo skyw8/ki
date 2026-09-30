@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"ki/internal/session"
+	"ki/internal/telemetry"
 	"ki/internal/workspace"
 )
 
@@ -340,6 +341,7 @@ func (s *Server) removeSessionInfo(info session.Info) error {
 		_ = s.ws.DetachSession(rec.ID, info.ID)
 	}
 	s.dropSessionSnap(info.ID)
+	telemetry.Forget(info.Dir)
 	if err := session.Remove(info.Dir); err != nil {
 		return fmt.Errorf("remove session: %w", err)
 	}

@@ -38,7 +38,8 @@
 // async result carries a note telling the caller where the completion lands).
 // A completion notification is delivered mid-turn when the parent run is still
 // alive and through the durable queue otherwise, and TaskOutput/TaskStop mark a
-// run whose result the caller already has so it is not reported twice.
+// run whose result the caller already has so it is not reported twice. TaskStop
+// is idempotent for terminal tasks, which may finish concurrently with a stop.
 // TaskOutput and TaskStop use a composite task store so shell and agent tasks
 // share the Claude Code-shaped lifecycle schema. File
 // mutations share a server-scoped per-path queue; Edit additionally
@@ -64,8 +65,9 @@
 // re-prepended by the same shim from KI_EXTENSION_PATH_DIRS.
 // Set.Build selects a text/rich Read and one model-specific editor family:
 // GPT Responses models use grammar-backed freeform apply_patch, while other
-// models use Write/Edit. apply_patch preflights the whole patch before its first
-// write, preserves mixed line endings, and records exact committed diffs. The
+// models use Write/Edit. apply_patch accepts each canonical path once, preflights
+// the whole patch before its first write, preserves mixed line endings, and
+// records exact committed diffs. The
 // server applies FilterBuiltins with the global tools toggle
 // before appending extension tools.
 //

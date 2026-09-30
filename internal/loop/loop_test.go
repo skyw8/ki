@@ -11,9 +11,25 @@ import (
 	"testing"
 	"time"
 
+	"ki/internal/telemetry"
 	"ki/internal/tooloutput"
 	"ki/internal/types"
 )
+
+func TestToolDiagnosticIsNotSerialized(t *testing.T) {
+	raw, err := json.Marshal(ToolResult{
+		IsError: true,
+		Diagnostic: telemetry.ToolDiagnostic{
+			Status: "failed", Kind: "internal_error", FaultDomain: "harness",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "Diagnostic") || strings.Contains(string(raw), "internal_error") {
+		t.Fatalf("private diagnostic serialized: %s", raw)
+	}
+}
 
 func TestRequestJSONUsesProviderFieldNames(t *testing.T) {
 	raw, err := json.Marshal(Request{

@@ -28,6 +28,8 @@
 
 Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落在同一个 session 目录里，随 session 关闭一起删除；store 拒绝创建时退回进程临时文件，任务本身照常运行。
 
+每次工具完成还会向 session 的 `telemetry.jsonl` 写一条不对外投影的 OTLP log：`status` 区分 completed/rejected/failed/cancelled/timed_out，`kind` 区分参数、前置条件、外部命令非零、生命周期和内部错误，`fault_domain` 区分 model_input/workspace_state/external_command/cancellation/environment/extension/harness。模型仍通过原有 `IsError` 理解失败；例如测试 exit 1 仍是 error tool result，但 telemetry 记为 completed + command_nonzero，而不是 Ki harness failure。
+
 ## 全局开关
 
 内置工具的全局启用状态保存在 `{KI_HOME}/toggles.json` 的 `tools.disabled`。`GET/PATCH /v1/tools` 提供目录和开关；设置目录始终列出 `Write`、`Edit` 和 `apply_patch`，并用 `available` 标出当前模型实际使用的互斥编辑器，因此切换模型或其它工具时不会丢失隐藏工具的全局禁用状态。开关在下一次 occupy 生效；已在运行的请求继续使用其 request header 中固定的工具集。
@@ -43,7 +45,7 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 | `Read` | 文本模型：`file_path`、可选行分页 `offset` / `limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
 | `Write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 Read |
 | `Edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。若 provider 同时填充两种模式的字段，只执行唯一有效的模式并提醒；两种模式都有有效修改时拒绝。模型只看到简短摘要，diff/patch 在 details |
-| `apply_patch` | Codex `*** Begin Patch` freeform grammar | GPT Responses 专用的 add/update/delete/move 批量补丁；完整预检后才写入，结果 details 带每个文件的 unified diff |
+| `apply_patch` | Codex `*** Begin Patch` freeform grammar；每个路径只出现一次，同文件修改合并进一个 update block | GPT Responses 专用的 add/update/delete/move 批量补丁；完整预检后才写入，结果 details 带每个文件的 unified diff |
 | `Grep` | `pattern`、`path`、`glob`、`output_mode`、`respect_gitignore`、上下文/分页/类型参数 | 基于内置 ripgrep；默认尊重 `.gitignore`；支持 partial results、JSON/NUL 解析、EAGAIN 降级、正则、取消/超时和统计元数据 |
 | `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
@@ -51,7 +53,7 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 | `Agent` | `description`、`prompt`；可选 `inherit_context`、`run_in_background` | 新建一个 `forkMode=tree` 的 child，固定沿用当前 session 的 provider/model；默认继承 parent 的已完成历史，后台、以及前台超过 2 分钟后返回 `async_launched` 和 `outputFile`，否则返回 `completed` |
 | `SendMessage` | `message`；可选 `to`（默认 `parent`）、`summary` | `to` 支持保留名 `"parent"` / `"main"` 或稳定 `agentId`；按目标在当前 run 边界 steer，或从目标 transcript 续跑 |
 | `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待 shell/agent 后台任务；返回有界输出、状态、结果和输出文件路径。读到**终态**的 agent 任务会标记该 run 已读，后续完成通知不再送达 |
-| `TaskStop` | `task_id`（或兼容的 `shell_id`） | 终止 shell/agent 后台任务并返回最终状态；被终止的 run 同样不再收到完成通知 |
+| `TaskStop` | `task_id`（或兼容的 `shell_id`） | 幂等地终止 shell/agent 后台任务并返回最终状态；任务已结束时返回成功，被终止的 run 同样不再收到完成通知 |
 
 ## Read
 

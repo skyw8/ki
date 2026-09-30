@@ -11,6 +11,7 @@ import (
 
 	"github.com/pmezard/go-difflib/difflib"
 	"ki/internal/loop"
+	"ki/internal/telemetry"
 	"ki/internal/types"
 )
 
@@ -39,7 +40,7 @@ type applyPatchTool struct {
 
 func (applyPatchTool) Name() string { return "apply_patch" }
 func (applyPatchTool) Description() string {
-	return "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
+	return "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON. Include each file path once; combine edits into one update block."
 }
 func (applyPatchTool) Prompt() string             { return "" }
 func (applyPatchTool) Snippet() string            { return "Apply a patch to files" }
@@ -316,10 +317,22 @@ func patchContentUnchanged(path string, expected []byte, valid bool, pio *patchF
 
 func patchResult(text string, failed bool, delta appliedPatchDelta) loop.ToolResult {
 	status := "completed"
+	diagnostic := telemetry.ToolDiagnostic{Status: "completed", Kind: "success", FaultDomain: "none"}
 	if failed {
 		status = "failed"
+		diagnostic = telemetry.ToolDiagnostic{Status: "rejected", Kind: "precondition_failed", FaultDomain: "workspace_state"}
+		if strings.Contains(text, "invalid patch:") || strings.Contains(text, "invalid hunk") {
+			diagnostic = telemetry.ToolDiagnostic{Status: "rejected", Kind: "invalid_arguments", FaultDomain: "model_input"}
+		}
+		if strings.Contains(text, "apply_patch aborted") {
+			diagnostic = telemetry.ToolDiagnostic{Status: "cancelled", Kind: "cancelled_by_parent", FaultDomain: "cancellation"}
+		}
 	}
-	return loop.ToolResult{Content: []types.Content{{Type: "text", Text: text}}, IsError: failed, Details: applyPatchDetails{Status: status, Exact: delta.exact, Changes: patchDeltaDetails(delta)}}
+	return loop.ToolResult{
+		Content: []types.Content{{Type: "text", Text: text}}, IsError: failed,
+		Details:    applyPatchDetails{Status: status, Exact: delta.exact, Changes: patchDeltaDetails(delta)},
+		Diagnostic: diagnostic,
+	}
 }
 func patchDeltaDetails(delta appliedPatchDelta) []applyPatchChangeDetail {
 	out := make([]applyPatchChangeDetail, 0, len(delta.changes))

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"ki/internal/session"
+	"ki/internal/telemetry"
 	"ki/internal/tools"
 	"ki/internal/types"
 )
@@ -54,6 +55,7 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 			_ = s.ws.DetachSession(rec.ID, childID)
 		}
 		s.dropSessionSnap(childID)
+		telemetry.Forget(childDir)
 		_ = session.Remove(childDir)
 		s.sidx.Remove(childID)
 	}

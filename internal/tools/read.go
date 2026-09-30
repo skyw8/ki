@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -120,6 +121,12 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 	}
 	st, err := ops.Stat(ctx, abs)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return diagnosticErrRes(err.Error(), "rejected", "not_found", "workspace_state")
+		}
+		if errors.Is(err, context.Canceled) {
+			return diagnosticErrRes("Read aborted", "cancelled", "cancelled_by_parent", "cancellation")
+		}
 		return errRes(err.Error())
 	}
 	if st.IsDir() {
@@ -128,6 +135,12 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) loop.ToolRes
 
 	data, err := ops.ReadFile(ctx, abs)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return diagnosticErrRes(err.Error(), "rejected", "not_found", "workspace_state")
+		}
+		if errors.Is(err, context.Canceled) {
+			return diagnosticErrRes("Read aborted", "cancelled", "cancelled_by_parent", "cancellation")
+		}
 		return errRes(err.Error())
 	}
 	if mime := imageMIME(data); mime != "" {
