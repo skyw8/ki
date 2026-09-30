@@ -109,6 +109,13 @@ function isLive(n: ChatNode): boolean {
   return nodeLive(n)
 }
 
+/** Match the server's reply-node contract, including runtime user messages. */
+function isReply(n: ChatNode): boolean {
+  return n.kind === 'tool' ||
+    (n.kind === 'assistant' && n.stopReason !== 'aborted') ||
+    (n.kind === 'user' && !isHumanPrompt(n.origin))
+}
+
 /**
  * hiddenReplyIds returns the ids of reply nodes compact mode folds: every
  * reply but the newest `keep`, and never a node that is still live — folding
@@ -130,9 +137,7 @@ function isLive(n: ChatNode): boolean {
  * one, and its tool chatter is exactly what compact mode hides.
  */
 function hiddenReplyIds(rest: ChatNode[], keep: number): Set<string> {
-  const replies = rest.filter(n =>
-    n.kind !== 'compaction' && n.kind !== 'cancellation' &&
-    !(n.kind === 'assistant' && n.stopReason === 'aborted'))
+  const replies = rest.filter(isReply)
   const cut = Math.max(0, replies.length - keep)
   const live = replies.findIndex(isLive)
   const hidden = live < 0 ? cut : Math.min(cut, live)
@@ -161,8 +166,13 @@ export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderIte
     const hidden = hiddenIds.size
     const summary = !loaded.has(turn.id) ? summaries.get(turn.id) : undefined
     const observed = new Set(rest.map(n => n.id))
-    const snapshotReplies = summary?.baselineNodes?.filter(n => n.kind !== 'user' && n.kind !== 'compaction' && n.kind !== 'cancellation') ?? []
-    const snapshotCount = summary ? summary.hiddenCount + summary.visibleNodeIds.filter(id => id !== summary.id).length : 0
+    const snapshotReplies = summary?.baselineNodes?.filter(isReply) ?? []
+    const visible = new Set(summary?.visibleNodeIds)
+    // visibleNodeIds includes lifecycle metadata, whereas hiddenCount counts
+    // only replies. Use the same predicate for totals and overlap so metadata
+    // cannot create phantom folds, and hydrated runtime user replies (including
+    // a machine-only turn's hidden anchor) are not counted a second time.
+    const snapshotCount = summary ? summary.hiddenCount + snapshotReplies.filter(n => visible.has(n.id)).length : 0
     const overlap = snapshotReplies.filter(n => observed.has(n.id)).length
     const missing = summary ? Math.max(0, snapshotCount - overlap) : 0
     const count = hidden + missing

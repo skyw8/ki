@@ -279,20 +279,40 @@ export function applyTail(s: ViewState, detail: SessionDetail, expectedLiveRevis
     next.requests = next.requests.map(r => r.status === 'running' && r.startedAt != null && r.startedAt < settledThrough ? { ...r, status: 'complete' } : r)
   }
   addEntries(next, entries)
-  mergeCompactTurns(next, detail.compactTurns)
+  // A different authoritative leaf may rewind or fork inside the same human
+  // turn. Its smaller snapshot describes the selected branch, not an outdated
+  // projection of the formerly selected, longer branch.
+  mergeCompactTurns(next, detail.compactTurns, !stale && detail.leafId != null && detail.leafId !== s.leafId)
   const snapshotPath = detail.leafId && leafEntries(mergeEntries(next.index, next.entries), detail.leafId, next.compactTurns)
   const descendant = !!(stale && detail.leafId && detail.leafId !== s.leafId && snapshotPath && snapshotPath.some(e => e.id === s.leafId))
   // React may commit the final SSE batch after a terminal GET starts, while
   // the server has already drained another queued prompt. Revision mismatch
   // forbids rewinding, not advancing along a proven immutable descendant.
   if (descendant) next.leafId = detail.leafId
-  const connected = !s.leafId || leafEntries(next.entries, next.leafId, next.compactTurns).some(e => e.id === s.leafId)
-  if (!connected && (!stale || descendant)) {
+  const boundary = s.oldestId ?? s.leafId
+  // SSE can advance the leaf across a missed range before this GET returns.
+  // Seeing that newest identity again proves no prefix continuity: the body
+  // path must still reach the reader's previous paging boundary, without an
+  // index or a speculative live bridge disguising the missing entries.
+  const connected = !boundary || leafEntries(next.entries, next.leafId, next.compactTurns, false).some(e => e.id === boundary)
+  // A racing SSE batch may already have advanced to this exact snapshot leaf.
+  // Its revision is stale, not its immutable body range; reopen that gap too,
+  // without giving the older GET authority to roll back live execution state.
+  const sameFrontier = detail.leafId != null && detail.leafId === s.leafId
+  if (!connected && (!stale || descendant || sameFrontier)) {
     // Old and new tails can be disjoint after suspension. The old root/cursor
     // describes a different loaded interval; retaining it strands the gap.
     next.oldestId = detail.oldestId
     next.hasMore = detail.hasMore
   } else applyCursor(next, detail)
+  if (next.compactTurns?.length && (!stale || descendant || sameFrontier)) {
+    // Cached snapshots from an abandoned branch must not supply its stats or
+    // sparse edges, even when both branches share the reader's root boundary.
+    // Body identities remain cached; paging the missing prefix will restore
+    // its authoritative summaries.
+    const active = new Set(leafEntries(mergeEntries(next.index, next.entries), next.leafId, next.compactTurns, false).map(e => e.id))
+    next.compactTurns = next.compactTurns.filter(turn => active.has(turn.id))
+  }
   if (next.indexLoaded && entries.length) {
     const known = new Set(next.index.map(row => row.id))
     const added = entries.filter(e => !known.has(e.id)).map(entryToIndex)
@@ -584,14 +604,14 @@ export function hydrateEntries(s: ViewState, incoming: Entry[], meta?: { hasMore
   return rebuild(next)
 }
 
-function mergeCompactTurns(s: ViewState, incoming?: CompactTurn[]) {
+function mergeCompactTurns(s: ViewState, incoming?: CompactTurn[], branchChanged = false) {
   if (!incoming) return
   const turns = new Map(s.compactTurns?.map(t => [t.id, t]))
   for (const turn of incoming) {
     const previous = turns.get(turn.id)
     // A delayed page or keep reprojection must not replace a newer sparse
     // frontier: that would sever the current leaf from its opening user.
-    if (previous && ((turn.entryCount != null && previous.entryCount != null && turn.entryCount < previous.entryCount)
+    if (!branchChanged && previous && ((turn.entryCount != null && previous.entryCount != null && turn.entryCount < previous.entryCount)
       || (turn.entryCount == null && (turn.stats.steps < previous.stats.steps || turn.stats.tools < previous.stats.tools || turn.stats.elapsedMs < previous.stats.elapsedMs)))) continue
     turns.set(turn.id, turn)
   }
@@ -620,7 +640,10 @@ export function hydrateTurn(s: ViewState, id: string, entries: Entry[]): ViewSta
 
 /** Convert the partial oldest detailed page to a whole compact turn without
  * downloading the missing folded replies or keeping their partial count. */
-export function compactBoundary(s: ViewState, detail: SessionDetail): ViewState {
+export function compactBoundary(s: ViewState, detail: SessionDetail, source: Pick<ViewState, 'oldestId' | 'hasMore' | 'leafId'>): ViewState {
+  // Presentation requests share a scope with recovery. A projection of the
+  // old window cannot restore its exhausted cursor after recovery opens a gap.
+  if (s.oldestId !== source.oldestId || !!s.hasMore !== !!source.hasMore || s.leafId !== source.leafId) return s
   const turn = detail.compactTurns?.[0]
   if (!turn) return s
   const next = { ...s }
@@ -691,39 +714,48 @@ function branchGraph(entries: Entry[], turns: CompactTurn[] = []) {
   const tails = new Map<string, string | undefined>()
   let last: string | undefined
   let ordinal: number | undefined
+  let tail: string | undefined
   for (const turn of turns) {
-    if (ordinal != null && turn.stats.turn !== ordinal + 1) last = undefined
+    // Consecutive turn numbers can belong to different branches. Only the
+    // canonical parent/tail edge proves that their omitted bodies connect.
+    if (ordinal != null && (turn.stats.turn !== ordinal + 1 || turn.parentId !== tail)) last = undefined
     ordinal = turn.stats.turn
     for (const id of turn.entryIds) { previous.set(id, last); last = id }
     tails.set(turn.tailId, last)
+    tail = turn.tailId
   }
   return { byId: new Map(entries.map(e => [e.id, e])), previous, tails, last: entries.at(-1)?.id }
 }
 
-function walkBranch(graph: ReturnType<typeof branchGraph>, leafId?: string, stopId?: string): Entry[] {
+function walkBranch(graph: ReturnType<typeof branchGraph>, leafId?: string, stopId?: string, liveBridges = true): Entry[] {
   const { byId, previous, tails } = graph
   const active: Entry[] = []
   let id = leafId || graph.last
   if (id && !byId.has(id)) id = tails.get(id)
   const seen = new Set<string>()
+  let sparsePrevious: string | undefined
   while (id && !seen.has(id)) {
     seen.add(id)
     const entry = byId.get(id)
     if (!entry) break
     active.push(entry)
     if (id === stopId) break
+    // A hidden body may load before its hidden parent. Keep the snapshot's
+    // previous visible identity as the fallback through that partial range;
+    // otherwise loading more data disconnects the turn from its input.
+    if (previous.has(entry.id)) sparsePrevious = previous.get(entry.id)
     const parent = entry.parentId
     id = parent && byId.has(parent) ? parent
       : parent && tails.has(parent) ? tails.get(parent)
-        : entry.previousId && byId.has(entry.previousId) ? entry.previousId
-          : entry.previousId && tails.has(entry.previousId) ? tails.get(entry.previousId)
-            : previous.get(entry.id) ?? tails.get(entry.id)
+        : liveBridges && entry.previousId && byId.has(entry.previousId) ? entry.previousId
+          : liveBridges && entry.previousId && tails.has(entry.previousId) ? tails.get(entry.previousId)
+            : sparsePrevious ?? tails.get(entry.id)
   }
   return active.reverse()
 }
 
-function leafEntries(entries: Entry[], leafId?: string, turns: CompactTurn[] = []): Entry[] {
-  return walkBranch(branchGraph(entries, turns), leafId)
+function leafEntries(entries: Entry[], leafId?: string, turns: CompactTurn[] = [], liveBridges = true): Entry[] {
+  return walkBranch(branchGraph(entries, turns), leafId, undefined, liveBridges)
 }
 
 

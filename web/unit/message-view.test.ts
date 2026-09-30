@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { clampCompactKeep, foldReplies, groupTurns } from '../src/lib/messageView.ts'
-import type { ChatNode } from '../src/api/types.ts'
+import { hydrateEntries, loadHistory } from '../src/lib/model.ts'
+import type { ChatNode, CompactTurn, Entry, Message, SessionDetail, ViewState } from '../src/api/types.ts'
 
 const user = (id: string, text: string, origin?: string): ChatNode => ({ kind: 'user', id, text, content: [], origin })
 const asst = (id: string, text = 'ok', streaming = false): ChatNode => ({ kind: 'assistant', id, text, streaming })
@@ -110,6 +111,164 @@ test('foldReplies keeps a legacy aborted assistant visible for its cancellation 
   const aborted: ChatNode = { kind: 'assistant', id: 'a2', text: 'partial', stopReason: 'aborted' }
   expect(foldReplies([user('u1', 'one'), asst('a1'), aborted, cancelled('x1')], { keep: 0 }).map(i => i.id))
     .toEqual(['u1', 'fold:u1', 'a2', 'x1'])
+})
+
+const message = (id: string, parentId: string, role: string, extra: Partial<Message> = {}): Entry => ({
+  type: 'message', id, parentId, message: { role, content: [{ type: 'text', text: id }], ...extra },
+})
+
+function sparseHistory(entries: Entry[], entryIds: string[], visibleNodeIds: string[], hiddenCount: number, extra: Partial<CompactTurn> = {}) {
+  const summary: CompactTurn = {
+    id: entries[0].id, tailId: entries.at(-1)!.id, entryIds, visibleNodeIds, hiddenCount,
+    entryCount: entries.length, stepCount: 2,
+    stats: {
+      turn: 1, steps: 2, elapsedMs: 0, durationMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+      tools: 0, toolFailures: 0, cacheMisses: 0, hasCost: false, cost: 0, ttftMs: 0, tps: null, live: false,
+    },
+    ...extra,
+  }
+  const state = loadHistory({
+    entries: entries.filter(e => entryIds.includes(e.id)), compactTurns: [summary],
+    leafId: summary.tailId, oldestId: summary.id,
+  } as SessionDetail)
+  return { state, summary }
+}
+
+function compactItems(s: ViewState, keep = 1) {
+  return foldReplies(s.nodes, { keep, summaries: s.compactTurns, loadedTurnIds: s.loadedTurnIds })
+}
+
+function foldedCount(s: ViewState, keep = 1) {
+  return compactItems(s, keep).reduce((count, item) => count + (item.kind === 'fold' ? item.count : 0), 0)
+}
+
+test('compact reload excludes visible compaction metadata from the folded reply count', () => {
+  // Matches BuildCompact's keep=1 projection: hiddenCount excludes c1, but
+  // visibleNodeIds includes it because lifecycle metadata always renders.
+  const entries = [
+    message('u1', '', 'user'), message('a1', 'u1', 'assistant'), message('a2', 'a1', 'assistant'),
+    { type: 'compaction', id: 'c1', parentId: 'a2', summary: 'sum' },
+  ]
+  const { state, summary } = sparseHistory(entries, ['u1', 'a2', 'c1'], ['u1', 'a2', 'c1'], 1)
+  expect(state.compactTurns?.[0].baselineNodes?.map(n => n.kind)).toEqual(['user', 'assistant', 'compaction'])
+  expect(compactItems(state).map(i => i.id)).toEqual(['u1', 'fold:u1', 'a2', 'c1'])
+  expect(foldedCount(state)).toBe(1)
+  expect(foldedCount(state, 0)).toBe(2)
+
+  const zeroKeep = sparseHistory(entries, ['u1', 'c1'], ['u1', 'c1'], 2).state
+  expect(compactItems(zeroKeep, 0).map(i => i.id)).toEqual(['u1', 'fold:u1', 'c1'])
+  expect(foldedCount(zeroKeep, 0)).toBe(2)
+
+  const hydrated = hydrateEntries(state, entries, { compactTurns: [summary] })
+  expect(hydrated.loadedTurnIds).toContain('u1')
+  expect(foldedCount(hydrated)).toBe(1)
+  expect(compactItems(hydrated).find(i => i.kind === 'fold')?.remote).toBe(false)
+})
+
+test('compact metadata alone never creates a phantom remote fold', () => {
+  const entries = [
+    message('u1', '', 'user'), message('a1', 'u1', 'assistant'),
+    { type: 'compaction', id: 'c1', parentId: 'a1', summary: 'sum' },
+  ]
+  const { state } = sparseHistory(entries, ['u1', 'a1', 'c1'], ['u1', 'a1', 'c1'], 0)
+  expect(compactItems(state).map(i => i.id)).toEqual(['u1', 'a1', 'c1'])
+  expect(foldedCount(state)).toBe(0)
+})
+
+for (const variant of ['event', 'aborted-event', 'legacy-aborted']) {
+  test(`compact reload excludes cancellation metadata: ${variant}`, () => {
+    const entries: Entry[] = [
+      message('u1', '', 'user'), message('a1', 'u1', 'assistant'), message('a2', 'a1', 'assistant'),
+    ]
+    const visible = ['u1', 'a2']
+    if (variant !== 'event') {
+      entries.push(message('a3', 'a2', 'assistant', { stopReason: 'aborted' }))
+      visible.push('a3')
+    }
+    if (variant !== 'legacy-aborted') {
+      entries.push({ type: 'run_aborted', id: 'x1', parentId: entries.at(-1)!.id, details: { reason: 'user_request', source: 'webui' } })
+      visible.push('x1')
+    }
+    const { state } = sparseHistory(entries, visible, visible, 1)
+    const renderedMetadata = variant === 'legacy-aborted' ? ['a3', 'legacy-cancellation:a3'] : visible.slice(2)
+    expect(compactItems(state).map(i => i.id)).toEqual(['u1', 'fold:u1', 'a2', ...renderedMetadata])
+    expect(foldedCount(state)).toBe(1)
+    expect(foldedCount(state, 0)).toBe(2)
+  })
+}
+
+test('compact reload counts a visible runtime-authored user reply only once', () => {
+  const entries = [
+    message('u1', '', 'user'), message('a1', 'u1', 'assistant'),
+    message('notice', 'a1', 'user', { origin: 'agent:task-1' }),
+  ]
+  const { state } = sparseHistory(entries, ['u1', 'notice'], ['u1', 'notice'], 1)
+  expect(state.compactTurns?.[0].baselineNodes?.find(n => n.id === 'notice')?.kind).toBe('user')
+  expect(compactItems(state).map(i => i.id)).toEqual(['u1', 'fold:u1', 'notice'])
+  expect(foldedCount(state)).toBe(1)
+  expect(foldedCount(state, 0)).toBe(2)
+})
+
+test('partial hydration subtracts runtime-authored user replies from snapshot overlap', () => {
+  const entries = [
+    message('u1', '', 'user'), message('a1', 'u1', 'assistant'),
+    message('notice', 'a1', 'user', { origin: 'agent:task-1' }), message('a2', 'notice', 'assistant'),
+  ]
+  const { state, summary } = sparseHistory(entries, ['u1', 'a2'], ['u1', 'a2'], 2)
+  expect(foldedCount(state)).toBe(2)
+  // Loading a single hidden body must not break the existing sparse edge
+  // when its own parent is still omitted from the immutable snapshot.
+  const bodyOnly = hydrateEntries(state, [entries[2]])
+  expect(bodyOnly.nodes.map(n => n.id)).toEqual(['u1', 'notice', 'a2'])
+  expect(bodyOnly.compactTurns?.[0].baselineNodes?.map(n => n.id)).toEqual(['u1', 'notice', 'a2'])
+  expect(foldedCount(bodyOnly)).toBe(2)
+  // A keep=2 reprojection hydrates the notice but still omits the older a1.
+  // The browser's keep=1 fold must combine that local reply with remote a1.
+  const reprojected = { ...summary, entryIds: ['u1', 'notice', 'a2'], visibleNodeIds: ['u1', 'notice', 'a2'], hiddenCount: 1 }
+  const partial = hydrateEntries(state, [entries[2]], { compactTurns: [reprojected] })
+  expect(partial.loadedTurnIds ?? []).not.toContain('u1')
+  expect(partial.compactTurns?.[0].baselineNodes?.map(n => n.id)).toEqual(['u1', 'notice', 'a2'])
+  expect(foldedCount(partial)).toBe(2)
+  expect(compactItems(partial).find(i => i.kind === 'fold')?.remote).toBe(true)
+
+  const complete = hydrateEntries(partial, [entries[1]], { compactTurns: [summary] })
+  expect(complete.loadedTurnIds).toContain('u1')
+  expect(foldedCount(complete)).toBe(2)
+  expect(compactItems(complete).find(i => i.kind === 'fold')?.remote).toBe(false)
+})
+
+test('a sparse machine-only fold counts its hidden runtime directive anchor once', () => {
+  const entries = [
+    message('directive', '', 'user', { origin: 'agent' }),
+    message('a1', 'directive', 'assistant'), message('a2', 'a1', 'assistant'),
+  ]
+  const { state } = sparseHistory(entries, ['directive', 'a2'], ['a2'], 2, { stats: {
+    turn: 0, steps: 2, elapsedMs: 0, durationMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+    tools: 0, toolFailures: 0, cacheMisses: 0, hasCost: false, cost: 0, ttftMs: 0, tps: null, live: false,
+  } })
+  expect(compactItems(state).map(i => i.id)).toEqual(['fold:directive', 'a2'])
+  expect(foldedCount(state)).toBe(2)
+  expect(foldedCount(state, 0)).toBe(3)
+})
+
+test('compact tool projection counts distinct replies rather than retained entry bodies', () => {
+  const entries = [
+    message('u1', '', 'user'),
+    message('a1', 'u1', 'assistant', { content: [
+      { type: 'toolCall', id: 't1', name: 'Bash', arguments: {} },
+      { type: 'toolCall', id: 't2', name: 'Read', arguments: {} },
+    ] }),
+    message('r1', 'a1', 'toolResult', { toolCallId: 't1', toolName: 'Bash' }),
+    message('r2', 'r1', 'toolResult', { toolCallId: 't2', toolName: 'Read' }),
+  ]
+  const { state, summary } = sparseHistory(entries, ['u1', 'a1', 'r2'], ['u1', 't2'], 2, {
+    omittedNodeIds: ['a1', 't1'], toolStates: [{ id: 't1', finished: true }, { id: 't2', finished: true }],
+  })
+  expect(compactItems(state).map(i => i.id)).toEqual(['u1', 'fold:u1', 't2'])
+  expect(foldedCount(state)).toBe(2)
+  const hydrated = hydrateEntries(state, entries, { compactTurns: [summary] })
+  expect(hydrated.nodes.map(n => n.id)).toEqual(['u1', 'a1', 't1', 't2'])
+  expect(foldedCount(hydrated)).toBe(2)
 })
 
 test('clampCompactKeep bounds the configured N', () => {

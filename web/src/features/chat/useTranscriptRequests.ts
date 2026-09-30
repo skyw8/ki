@@ -203,14 +203,50 @@ export function useTranscriptRequests(
     const state = view.current
     if (presentation.mode === 'compact' && !state.compactTurns?.length && state.entries.length && state.oldestId && s.id) {
       setLoadingOlder(true)
-      s.page = api.get(s.id, { turn: state.oldestId, view: 'compact', keep: presentation.keep, signal: s.abort.signal }).then(async page => {
-        await beforeCommit(s.abort.signal)
-        if (!valid(s)) return null
-        s.pendingBoundary = { cursor: page.oldestId || state.oldestId, hasMore: !!page.hasMore,
-          sources: [{ cursor: view.current.oldestId, hasMore: !!view.current.hasMore }] }
-        setView(v => valid(s) ? compactBoundary(v, page) : v)
-        return page
-      }).catch(() => { if (valid(s)) setOlderError(true); return null }).finally(() => {
+      s.page = (async () => {
+        let pendingSource = view.current
+        while (valid(s)) {
+          const source = pendingSource
+          if (!source.oldestId || source.compactTurns?.length) return null
+          const page = await api.get(s.id!, { turn: source.oldestId, view: 'compact', keep: presentation.keep, signal: s.abort.signal })
+          await beforeCommit(s.abort.signal)
+          if (!valid(s)) return null
+          if (!page.compactTurns?.length) throw new Error('Compact projection missing')
+          const latest = view.current
+          // Unlike ordinary pagination, conversion can share an unchanged
+          // scope with a recovered window. Retry that window instead of
+          // adopting the old projection's cursor or cross-branch summaries.
+          if (latest.oldestId !== source.oldestId || !!latest.hasMore !== !!source.hasMore || latest.leafId !== source.leafId) {
+            pendingSource = latest
+            continue
+          }
+          // React may defer the updater past another SSE/recovery commit.
+          // Publish the temporary cursor only after that updater accepts the
+          // captured source; a rejected projection must retry, not leave an
+          // unacknowledged hasMore=false bridge suppressing real pagination.
+          const commit = await new Promise<{ accepted: boolean; state: ViewState } | null>(resolve => {
+            const onAbort = () => resolve(null)
+            s.abort.signal.addEventListener('abort', onAbort, { once: true })
+            setView(v => {
+              s.abort.signal.removeEventListener('abort', onAbort)
+              if (!valid(s)) { resolve(null); return v }
+              if (v.oldestId !== source.oldestId || !!v.hasMore !== !!source.hasMore || v.leafId !== source.leafId) {
+                resolve({ accepted: false, state: v })
+                return v
+              }
+              const next = compactBoundary(v, page, source)
+              s.pendingBoundary = { cursor: next.oldestId, hasMore: !!next.hasMore,
+                sources: [{ cursor: source.oldestId, hasMore: !!source.hasMore }] }
+              resolve({ accepted: true, state: next })
+              return next
+            })
+          })
+          if (!commit || !valid(s)) return null
+          if (!commit.accepted) { pendingSource = commit.state; continue }
+          return page
+        }
+        return null
+      })().catch(() => { if (valid(s)) setOlderError(true); return null }).finally(() => {
         s.page = undefined
         if (valid(s)) setLoadingOlder(false)
       })

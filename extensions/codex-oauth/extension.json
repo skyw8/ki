@@ -23,6 +23,18 @@
       },
       "models": [
         {
+          "id": "gpt-6.1-sol",
+          "name": "GPT-6.1 Sol",
+          "contextWindow": 272000,
+          "maxTokens": 128000,
+          "input": ["text", "image"],
+          "applyPatchToolType": "freeform",
+          "compaction": {"standalone": "codex-v2"},
+          "reasoning": true,
+          "thinkingLevelMap": {"off": null, "minimal": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"},
+          "cost": {"input": 2, "output": 10, "cacheRead": 0.1, "cacheWrite": 2.5, "tiers": [{"inputTokensAbove": 272000, "input": 4, "output": 15, "cacheRead": 0.2, "cacheWrite": 5}]}
+        },
+        {
           "id": "gpt-6-astra",
           "name": "GPT-6 Astra",
           "contextWindow": 272000,

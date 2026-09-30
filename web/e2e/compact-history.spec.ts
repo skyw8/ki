@@ -259,3 +259,40 @@ test('a page arriving during an active touch waits to commit without moving the 
   await expect(page.getByTestId('older-loading')).toHaveCount(0)
   await expect.poll(async () => Math.abs(await offset() - before)).toBeLessThanOrEqual(2)
 })
+
+test('compact reload and expansion count replies without visible compaction metadata', async ({ page }) => {
+  const headers = { Authorization: `Bearer ${serverToken()}` }
+  const created = await page.request.post('/v1/sessions', { headers, data: {} })
+  expect(created.ok()).toBeTruthy()
+  const { id, dir } = await created.json() as { id: string; dir: string }
+  const path = join(dir, 'config.json')
+  const config = JSON.parse(readFileSync(path, 'utf8'))
+  const title = `metadata-count-${id}`
+  const entries: Entry[] = [
+    { type: 'message', id: 'input', parentId: '', message: { role: 'user', content: [{ type: 'text', text: 'Inspect compact count' }] } },
+    { type: 'message', id: 'hidden', parentId: 'input', message: { role: 'assistant', content: [{ type: 'text', text: 'Earlier reply' }] } },
+    { type: 'message', id: 'final', parentId: 'hidden', message: { role: 'assistant', content: [{ type: 'text', text: 'Final reply' }] } },
+    { type: 'compaction', id: 'checkpoint', parentId: 'final', summary: 'Visible checkpoint', tokensBefore: 1000 },
+  ]
+  appendFileSync(join(dir, 'events.jsonl'), entries.map(e => JSON.stringify(e)).join('\n') + '\n')
+  writeFileSync(path, JSON.stringify({ ...config, title, activeLeafId: 'checkpoint' }))
+  await page.addInitScript(() => {
+    localStorage.setItem('ki-message-view', 'compact')
+    localStorage.setItem('ki-message-view-keep', '1')
+  })
+  const open = async () => {
+    if (await page.getByTestId('mobile-nav-toggle').isVisible()) await page.getByTestId('mobile-nav-toggle').click()
+    await page.getByTestId('session-row').filter({ hasText: title }).click()
+    await expect(page.locator('[data-fold="input"] .fold-row-count')).toHaveText('已折叠 1 条消息')
+    await expect(page.locator('[data-item-key="checkpoint"]')).toBeVisible()
+    await expect(page.getByTestId('assistant-message')).toHaveCount(1)
+  }
+  await page.goto('/')
+  await open()
+  await page.reload()
+  await open()
+  await page.locator('[data-fold="input"]').getByTestId('fold-row-btn').click()
+  await expect(page.getByTestId('assistant-message')).toHaveCount(2)
+  await expect(page.locator('[data-fold="input"] .fold-row-count')).toHaveText('已折叠 1 条消息')
+  await expect(page.locator('[data-item-key="checkpoint"]')).toBeVisible()
+})

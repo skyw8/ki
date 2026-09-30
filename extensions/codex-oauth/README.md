@@ -57,8 +57,8 @@ from 0 output items`.
 ## Context windows
 
 `contextWindow` follows the OpenAI Codex bundled catalog
-(`codex-rs/models-manager/models.json`), which caps `gpt-6-astra` and the
-GPT-5.6 Sol/Terra/Luna variants at 272,000 tokens for coding clients
+(`codex-rs/models-manager/models.json`), which caps `gpt-6.1-sol`,
+`gpt-6-astra`, and the GPT-5.6 Sol/Terra/Luna variants at 272,000 tokens for coding clients
 (`max_context_window` 872,000 is a configuration override, not the default).
 The model API spec pages advertise 1,050,000, but the ChatGPT-backed Codex
 service this extension talks to enforces the smaller window. The built-in
@@ -68,9 +68,9 @@ direct API key see one consistent context window.
 ## Thinking levels
 
 `thinkingLevelMap` mirrors the built-in catalog entries for the same models.
-No GPT-6/5.6 variant accepts `minimal`, so every map hides it. The GPT-5.6
+No GPT-6.1/6/5.6 variant accepts `minimal`, so every map hides it. The GPT-5.6
 models accept `none` (the API lists `none, low, medium, high, xhigh, max`), so
 `off` stays visible and maps to the zero-reasoning floor; the sidecar skips the
-whole `reasoning` block for `off` anyway. GPT-6 Astra rejects `none` (its
-`reasoning.effort` supports only `low, medium, high, xhigh, max`), so its map
-hides `off` as well.
+whole `reasoning` block for `off` anyway. GPT-6.1 Sol and GPT-6 Astra reject
+`none` (their `reasoning.effort` supports only `low`, `medium`, `high`,
+`xhigh`, and `max`), so their maps hide `off` as well.

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { applyEvent, applyIndex, applyTail, evictBodies, hydrateEntries, loadHistory, turnStats } from '../src/lib/model.ts'
+import { applyEvent, applyIndex, applyTail, compactBoundary, evictBodies, hydrateEntries, loadHistory, turnStats } from '../src/lib/model.ts'
 import type { Entry, IndexEntry } from '../src/api/types.ts'
 
 // The WebUI loads the newest window of a session and lets the tree index arrive
@@ -255,6 +255,40 @@ test('a disconnected recovery tail reopens paging instead of preserving a false 
     s = hydrateEntries(s, all.slice(0, 4), { oldestId: 'u1', hasMore: false })
     expect(s.nodes.map(n => n.id)).toEqual(all.map(e => e.id))
   }
+})
+
+test('an SSE completion at the recovered leaf does not prove the older window is connected', () => {
+  const { all, index } = fixture()
+  for (const loadedIndex of [undefined, index]) for (const inFlight of [false, true]) {
+    let s = loadHistory({ id: 's', entries: all.slice(0, 4), index: loadedIndex, leafId: 'a2', oldestId: 'u1', hasMore: false, running: true })
+    const requestedRevision = s.liveRevision
+    // A resumed stream can deliver the final message before the tail GET.
+    // Its local reading bridge keeps the old content visible, but proves
+    // nothing about the persisted entries missed while this tab was away.
+    s = applyEvent(s, { type: 'message_end', entryId: 'a12', parentId: 'u12', message: assistant(12).message })
+    expect(s.leafId).toBe('a12')
+    s = applyTail(s, { id: 's', entries: all.slice(-4), leafId: 'a12', oldestId: 'u11', hasMore: true },
+      inFlight ? requestedRevision : s.liveRevision)
+    expect(s.oldestId).toBe('u11')
+    expect(s.hasMore).toBe(true)
+    expect(s.nodes.map(n => n.id)).toEqual(['u11', 'a11', 'u12', 'a12'])
+    s = hydrateEntries(s, all.slice(0, -4), { oldestId: 'u1', hasMore: false })
+    expect(s.nodes.map(n => n.id)).toEqual(all.map(e => e.id))
+  }
+})
+
+test('a delayed compact conversion cannot restore an exhausted boundary after recovery', () => {
+  const { all } = fixture()
+  const source = loadHistory({ id: 's', entries: all.slice(0, 4), leafId: 'a2', oldestId: 'u1', hasMore: false })
+  const recovered = applyTail(source, { id: 's', entries: all.slice(-4), leafId: 'a12', oldestId: 'u11', hasMore: true })
+  const stats = [...turnStats(source.nodes).values()][0]
+  const projected = compactBoundary(recovered, {
+    id: 's', entries: all.slice(0, 2), oldestId: 'u1', hasMore: false,
+    compactTurns: [{ id: 'u1', tailId: 'a1', entryIds: ['u1', 'a1'], visibleNodeIds: ['u1', 'a1'], hiddenCount: 0, stepCount: 1, stats }],
+  }, source)
+  expect(projected).toBe(recovered)
+  expect(projected.oldestId).toBe('u11')
+  expect(projected.hasMore).toBe(true)
 })
 
 test('a delayed idle snapshot cannot roll back a newer SSE completion or running state', () => {

@@ -31,10 +31,18 @@
 // metadata. Runtime-authored user-role messages (including subagent traffic)
 // are foldable replies, not turn boundaries. Compaction rows are metadata:
 // always kept visible and never counted toward the per-turn keep, so a
-// trailing checkpoint cannot fold the newest reply. Hidden replies are transferred
+// trailing checkpoint cannot fold the newest reply. HiddenCount counts nodes,
+// not entries: assistant messages, distinct tool call IDs,
+// and runtime user messages. VisibleNodeIDs also includes always-visible
+// compaction/cancellation metadata and aborted assistants, so consumers must
+// classify those IDs before combining visible replies with HiddenCount.
+// Sparse cross-turn edges require matching canonical parent/tail identities,
+// not merely consecutive turn ordinals, which can also occur on sibling branches.
+// Hidden reply bodies are transferred
 // only on explicit turn expansion; its local
 // cursor never replaces the main history cursor. Compact snapshots carry a
-// monotone per-turn entryCount, the latest assistant completion boundary, and
+// per-turn entryCount (monotone within one selected branch), the latest assistant
+// completion boundary, and
 // only that assistant batch's tool states for sparse live reconciliation.
 // Turn elapsed spans include assistant, tool-result and compaction completion;
 // cumulativeElapsedMs includes earlier turns outside the loaded compact page.
