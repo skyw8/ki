@@ -1023,12 +1023,27 @@ func (s *Server) ListenAndServe(addr string) error {
 	s.ln = ln
 	s.http = httpSrv
 	s.mu.Unlock()
-	if err := WriteServerFile(s.cfg.Home, File{Addr: ln.Addr().String(), Token: s.token}); err != nil {
+	if err := WriteServerFile(s.cfg.Home, File{Addr: dialAddress(ln.Addr()), Token: s.token}); err != nil {
 		slog.Warn("server.json", "err", err)
 	}
 	slog.Info("listen", "addr", ln.Addr().String())
 	s.startExtensions()
 	return httpSrv.Serve(ln)
+}
+
+func dialAddress(addr net.Addr) string {
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	// Why: wildcard listeners are valid bind addresses but not reliable client
+	// destinations (and [::] may be sent through an HTTP proxy). Persist a
+	// loopback endpoint so CLI actions reuse the live server instead of starting
+	// a second runtime and duplicate extension sidecars.
+	if host == "" || net.ParseIP(host).IsUnspecified() {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // Addr is the bound address.
@@ -1611,7 +1626,11 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if body.Model != "" || body.ThinkingEffort != nil {
+	modelSettingsRequested := body.Model != "" || body.ThinkingEffort != nil
+	selectionChanged := body.Model != "" || body.ThinkingEffort != nil || body.LeafID != nil
+	var modelRef provider.ModelRef
+	var modelEffort string
+	if modelSettingsRequested {
 		spec := cmp.Or(body.Model, sess.Config.Model)
 		ref, model, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
 		if err != nil {
@@ -1627,20 +1646,33 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
-		if err := sess.SetModelAndThinking(ref.Provider, ref.Model, effort); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		s.rememberModel(ref)
+		modelRef = ref
+		modelEffort = effort
 	}
-	if body.LeafID != nil {
-		if s.running(sess.ID()) {
-			http.Error(w, "session busy", http.StatusConflict)
+	if selectionChanged {
+		status := http.StatusInternalServerError
+		err := s.mutateIdleSession(sess.ID(), func() error {
+			if modelSettingsRequested {
+				status = http.StatusInternalServerError
+				if err := sess.SetModelAndThinking(modelRef.Provider, modelRef.Model, modelEffort); err != nil {
+					return err
+				}
+			}
+			if body.LeafID != nil {
+				status = http.StatusBadRequest
+				return sess.SetLeaf(*body.LeafID)
+			}
+			return nil
+		})
+		if err != nil {
+			if errors.Is(err, errSessionBusy) {
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
 			return
 		}
-		if err := sess.SetLeaf(*body.LeafID); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+		if modelSettingsRequested {
+			s.rememberModel(modelRef)
 		}
 	}
 	if body.Title != nil {
@@ -1675,6 +1707,12 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+	if modelSettingsRequested {
+		// A remote checkpoint is model-bound. Recompute after the complete patch
+		// (including a possible branch change) so the UI never keeps displaying
+		// usage measured against an incompatible opaque prefix.
+		s.publishContextUsage(sess)
 	}
 	s.publishInvalidation(scopeSessions)
 	s.publishInvalidation(scopeWorkspaces)
@@ -1729,6 +1767,23 @@ func (s *Server) running(id string) bool {
 	default:
 		return true
 	}
+}
+
+// mutateIdleSession closes the check-then-mutate race with occupy. Model
+// changes append a model_change entry and therefore move the active leaf just
+// like an explicit branch change; accepting either while a run or standalone
+// compaction owns the session can invalidate its prepared commit.
+func (s *Server) mutateIdleSession(id string, mutate func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st := s.runs[id]; st != nil {
+		select {
+		case <-st.done:
+		default:
+			return errSessionBusy
+		}
+	}
+	return mutate()
 }
 
 func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
@@ -2357,7 +2412,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 	}
 
-	hooks := s.composeHooks(sess, occ)
+	hooks := s.composeHooks(sess, occ, info, replayBinding, useServerCompaction)
 	if len(nextTurn) > 0 {
 		hooks = s.withNextTurn(sess, st, hooks, nextTurn)
 	}
@@ -2487,7 +2542,7 @@ func hasUsableContextUsage(messages []types.Message, after int64) bool {
 	return false
 }
 
-func (s *Server) composeHooks(sess *session.Session, occ *extension.Occupy) loop.Hooks {
+func (s *Server) composeHooks(sess *session.Session, occ *extension.Occupy, model provider.Model, binding types.ProviderBinding, serverSide bool) loop.Hooks {
 	var extHooks loop.Hooks
 	if occ != nil {
 		extHooks = occ.Hooks()
@@ -2506,6 +2561,22 @@ func (s *Server) composeHooks(sess *session.Session, occ *extension.Occupy) loop
 		},
 		BeforeTool: extHooks.BeforeTool,
 		AfterTool:  extHooks.AfterTool,
+		ShouldCompact: func() bool {
+			return !serverSide && s.shouldCompact(sess, model, binding)
+		},
+		OnContextThreshold: func(ctx context.Context) (loop.CompactionResult, error) {
+			outcome, err := s.compactSession(ctx, sess, compact.Intent{Reason: compact.ReasonThreshold}, nil)
+			if errors.Is(err, compact.ErrNothingToCompact) {
+				return loop.CompactionResult{Status: "empty"}, nil
+			}
+			if errors.Is(err, compact.ErrCompactionSkipped) {
+				return loop.CompactionResult{Status: "cancelled"}, nil
+			}
+			if err != nil && !errors.Is(err, compact.ErrCompactionSkipped) {
+				slog.Warn("threshold compact", "session_id", sess.ID(), "err", err)
+			}
+			return outcome.loopResult(), err
+		},
 		OnContextOverflow: func(ctx context.Context, failed loop.Request) (loop.CompactionResult, error) {
 			outcome, err := s.compactSession(ctx, sess, compact.Intent{
 				Reason: compact.ReasonOverflow, WillRetry: true,
@@ -2752,6 +2823,18 @@ func (s *Server) remoteCompactThreshold(model provider.Model) int {
 	return threshold
 }
 
+func (s *Server) localSummaryInputLimit(model provider.Model) int {
+	window := model.ContextWindow
+	if window <= 0 {
+		window = 128000
+	}
+	limit := window - s.cfg.Compaction.ReserveTokens
+	if limit < 1 {
+		limit = max(1, window/2)
+	}
+	return limit
+}
+
 type nonRetryableCompactionError interface {
 	NonRetryable() bool
 }
@@ -2802,7 +2885,8 @@ type compactionOutcome struct {
 
 func (o compactionOutcome) loopResult() loop.CompactionResult {
 	return loop.CompactionResult{
-		Context: o.Context, EntryID: o.Entry.ID, Strategy: o.Strategy,
+		Compacted: o.Entry.ID != "",
+		Context:   o.Context, EntryID: o.Entry.ID, Strategy: o.Strategy,
 		FromExtension: o.FromExtension, FirstKeptEntryID: o.FirstKeptEntryID,
 		TokensBefore: o.TokensBefore, Usage: o.Usage,
 	}
@@ -2890,12 +2974,14 @@ func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Sess
 	reuseRequestContext := failed != nil &&
 		opaqueReplaySafe &&
 		failed.ProviderBinding.Equal(binding)
+	portableExpanded := false
 	if !reuseRequestContext {
 		inputBinding := binding
 		if !opaqueReplaySafe {
 			inputBinding = types.ProviderBinding{}
 		}
 		current := sess.ContextToLeaf(inputBinding)
+		portableExpanded = current.Portable
 		req.Messages = current.Messages
 		req.ResponsesContext = nil
 		if current.Responses != nil {
@@ -2970,10 +3056,18 @@ func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Sess
 	if len(req.ResponsesContext) == 0 && len(req.Messages) == 0 {
 		return nil, errRemoteCompactionUnavailable
 	}
+	tokensBefore := compact.EstimateTokens(req.Messages, sess.LastCompactionAt())
+	if portableExpanded {
+		// The usage carried by these messages was measured against an opaque
+		// checkpoint that is incompatible with the selected model. The request
+		// now contains expanded portable history, so only a full-history estimate
+		// is valid.
+		tokensBefore = compact.EstimateModelContext(types.ModelContext{Messages: req.Messages, Portable: true}, sess.LastCompactionAt())
+	}
 	return &remoteCompactionPlan{
 		sourceLeafID: sess.LeafID(), request: req, binding: binding,
 		compactor:      compactor,
-		tokensBefore:   compact.EstimateTokens(req.Messages, sess.LastCompactionAt()),
+		tokensBefore:   tokensBefore,
 		contextChanged: contextChanged,
 	}, nil
 }
@@ -3072,7 +3166,11 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session, inte
 	if decision.Result != nil {
 		result = customCompactionResult(decision.Result)
 	} else {
-		result, err = compact.Generate(ctx, localPrep, s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model), s.cfg.Compaction)
+		result, err = compact.GenerateWithInputLimit(
+			ctx, localPrep,
+			s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model),
+			s.cfg.Compaction, s.localSummaryInputLimit(model),
+		)
 		if err != nil {
 			return compactionOutcome{}, fmt.Errorf("execute compaction: %w", err)
 		}

@@ -299,6 +299,11 @@ type Hooks struct {
 	// terminate (stop after this batch when every call in the batch terminates).
 	BeforeTool func(ctx context.Context, name string, args map[string]any) (map[string]any, bool, string, bool, error)
 	AfterTool  func(ctx context.Context, name string, args map[string]any, res ToolResult) (ToolResult, error)
+	// ShouldCompact is checked after a completed tool round, before the next
+	// provider request. OnContextThreshold replaces the live history with a
+	// compacted checkpoint without ending the run.
+	ShouldCompact      func() bool
+	OnContextThreshold func(ctx context.Context) (CompactionResult, error)
 	// OnContextOverflow compacts and returns the new context when a request
 	// failed with a context-overflow error. Runs at most once per Run (the
 	// compact-and-retry guard), inside the same Run so events are not replayed.
@@ -306,8 +311,10 @@ type Hooks struct {
 }
 
 // CompactionResult carries a rebuilt context plus redacted checkpoint metadata
-// from an overflow hook back to the loop's terminal compaction event.
+// from a threshold/overflow hook back to the loop's compaction event.
 type CompactionResult struct {
+	Compacted        bool
+	Status           string
 	Context          types.ModelContext
 	EntryID          string
 	Strategy         string
@@ -457,6 +464,9 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 	firstTurn := true
 	overflowRecovered := false // compact-and-retry runs at most once per Run (pi _overflowRecoveryAttempted)
 	serverCompactionFallback := false
+	thresholdCompactionStopped := false
+	thresholdCompactionFailures := 0
+	const maxThresholdCompactionFailures = 3
 	for {
 		if ctx.Err() != nil {
 			_ = emit(Event{Type: AgentEnd, Messages: newMsgs})
@@ -630,6 +640,56 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		}
 		if len(calls) == 0 && !cfg.Inbox.Has() {
 			break
+		}
+		if !thresholdCompactionStopped && cfg.Hooks.ShouldCompact != nil && cfg.Hooks.OnContextThreshold != nil && cfg.Hooks.ShouldCompact() {
+			if err := emit(Event{Type: CompactionStart, Reason: "threshold"}); err != nil {
+				return newMsgs, fmt.Errorf("emit threshold compaction start: %w", err)
+			}
+			outcome, compactErr := cfg.Hooks.OnContextThreshold(ctx)
+			if compactErr != nil {
+				thresholdCompactionFailures++
+				thresholdCompactionStopped = thresholdCompactionFailures >= maxThresholdCompactionFailures
+				if emitErr := emit(Event{Type: CompactionEnd, Reason: "threshold", Status: "failed"}); emitErr != nil {
+					return newMsgs, errors.Join(compactErr, fmt.Errorf("emit threshold compaction end: %w", emitErr))
+				}
+				if errors.Is(compactErr, context.Canceled) || errors.Is(compactErr, context.DeadlineExceeded) {
+					return newMsgs, compactErr
+				}
+				// Threshold compaction is preventive. Keep the completed tool
+				// round and retry after a later round because rate limits are often
+				// transient, but cap failures so a long tool loop cannot hammer the
+				// summarizer. Overflow recovery remains the final hard-limit path.
+				continue
+			}
+			status := outcome.Status
+			if status == "" {
+				status = "empty"
+			}
+			if outcome.Compacted {
+				thresholdCompactionFailures = 0
+				status = "committed"
+				history = outcome.Context.Messages
+				responsesContext = nil
+				if outcome.Context.Responses != nil {
+					responsesContext = slices.Clone(outcome.Context.Responses.Items)
+				}
+				if cfg.Telemetry != nil {
+					cfg.Telemetry.Reset("compaction")
+				}
+			} else {
+				// An empty or extension-cancelled plan will still satisfy the same
+				// threshold on the next tool round. Do not emit repeated lifecycle
+				// pairs for an unchanged context within this run.
+				thresholdCompactionStopped = true
+			}
+			if err := emit(Event{
+				Type: CompactionEnd, Reason: "threshold", OK: true, Status: status,
+				EntryID: outcome.EntryID, Strategy: outcome.Strategy,
+				FromExtension: outcome.FromExtension, FirstKeptEntryID: outcome.FirstKeptEntryID,
+				TokensBefore: outcome.TokensBefore, Usage: outcome.Usage,
+			}); err != nil {
+				return newMsgs, fmt.Errorf("emit threshold compaction end: %w", err)
+			}
 		}
 	}
 	if err := emit(Event{Type: AgentEnd, Messages: newMsgs}); err != nil {

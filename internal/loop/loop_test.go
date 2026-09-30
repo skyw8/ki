@@ -664,6 +664,125 @@ type serverCompactionToolStreamer struct {
 	requests []Request
 }
 
+type thresholdToolStreamer struct {
+	requests []Request
+}
+
+func (s *thresholdToolStreamer) Stream(_ context.Context, req Request, _ func(AssistantDelta) error) (types.Message, error) {
+	s.requests = append(s.requests, req)
+	if len(s.requests) == 1 {
+		return types.Message{
+			Role: "assistant", StopReason: "toolUse",
+			Content: []types.Content{{Type: "toolCall", ID: "call_1", Name: "Read", Arguments: map[string]any{}}},
+		}, nil
+	}
+	return types.Message{Role: "assistant", StopReason: "stop", Content: []types.Content{{Type: "text", Text: "done"}}}, nil
+}
+
+func TestRunCompactsAtToolRoundBoundary(t *testing.T) {
+	streamer := &thresholdToolStreamer{}
+	checks := 0
+	hooks := 0
+	var events []Event
+	_, err := Run(context.Background(), "start", nil, Config{
+		Streamer: streamer,
+		Tools:    []Tool{oneTool{}},
+		Hooks: Hooks{
+			ShouldCompact: func() bool {
+				checks++
+				return checks == 1
+			},
+			OnContextThreshold: func(context.Context) (CompactionResult, error) {
+				hooks++
+				return CompactionResult{
+					Compacted: true, EntryID: "compact-1", Strategy: "local",
+					Context: types.ModelContext{Messages: []types.Message{{
+						Role: "user", Content: []types.Content{{Type: "text", Text: "compacted"}},
+					}}},
+				}, nil
+			},
+		},
+	}, func(event Event) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hooks != 1 || len(streamer.requests) != 2 {
+		t.Fatalf("hooks=%d requests=%d", hooks, len(streamer.requests))
+	}
+	second := streamer.requests[1].Messages
+	if len(second) != 1 || second[0].Text() != "compacted" {
+		t.Fatalf("second request did not use compacted history: %+v", second)
+	}
+	start, end, secondHeader, agentEnd := -1, -1, -1, -1
+	for i, event := range events {
+		switch {
+		case event.Type == CompactionStart && event.Reason == "threshold":
+			start = i
+		case event.Type == CompactionEnd && event.Reason == "threshold" && event.Status == "committed":
+			end = i
+		case event.Type == RequestHeader && start >= 0:
+			secondHeader = i
+		case event.Type == AgentEnd:
+			agentEnd = i
+		}
+	}
+	if start < 0 || end <= start || secondHeader <= end || agentEnd <= secondHeader {
+		t.Fatalf("threshold lifecycle order: %v", EventOrder(events))
+	}
+}
+
+type thresholdRetryStreamer struct {
+	requests []Request
+}
+
+func (s *thresholdRetryStreamer) Stream(_ context.Context, req Request, _ func(AssistantDelta) error) (types.Message, error) {
+	s.requests = append(s.requests, req)
+	if len(s.requests) <= 2 {
+		id := fmt.Sprintf("call_%d", len(s.requests))
+		return types.Message{
+			Role: "assistant", StopReason: "toolUse",
+			Content: []types.Content{{Type: "toolCall", ID: id, Name: "Read", Arguments: map[string]any{}}},
+		}, nil
+	}
+	return types.Message{Role: "assistant", StopReason: "stop", Content: []types.Content{{Type: "text", Text: "done"}}}, nil
+}
+
+func TestRunRetriesTransientThresholdCompaction(t *testing.T) {
+	streamer := &thresholdRetryStreamer{}
+	hooks := 0
+	_, err := Run(context.Background(), "start", nil, Config{
+		Streamer: streamer,
+		Tools:    []Tool{oneTool{}},
+		Hooks: Hooks{
+			ShouldCompact: func() bool { return true },
+			OnContextThreshold: func(context.Context) (CompactionResult, error) {
+				hooks++
+				if hooks == 1 {
+					return CompactionResult{}, errors.New("temporary rate limit")
+				}
+				return CompactionResult{
+					Compacted: true,
+					Context: types.ModelContext{Messages: []types.Message{{
+						Role: "user", Content: []types.Content{{Type: "text", Text: "compacted after retry"}},
+					}}},
+				}, nil
+			},
+		},
+	}, func(Event) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hooks != 2 || len(streamer.requests) != 3 {
+		t.Fatalf("hooks=%d requests=%d", hooks, len(streamer.requests))
+	}
+	if got := streamer.requests[2].Messages[0].Text(); got != "compacted after retry" {
+		t.Fatalf("third request context = %q", got)
+	}
+}
+
 func (s *serverCompactionToolStreamer) Stream(_ context.Context, req Request, _ func(AssistantDelta) error) (types.Message, error) {
 	s.requests = append(s.requests, req)
 	if len(s.requests) == 1 {

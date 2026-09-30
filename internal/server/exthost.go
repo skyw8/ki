@@ -547,10 +547,15 @@ func (s *Server) PatchSession(sessionID, model, thinking string) error {
 	if err != nil {
 		return err
 	}
-	if err := sess.SetModelAndThinking(ref.Provider, ref.Model, effort); err != nil {
+	// Share the HTTP API's atomic busy check so occupy cannot start between the
+	// check and the model_change append.
+	if err := s.mutateIdleSession(sessionID, func() error {
+		return sess.SetModelAndThinking(ref.Provider, ref.Model, effort)
+	}); err != nil {
 		return fmt.Errorf("set model: %w", err)
 	}
 	s.rememberModel(ref)
+	s.publishContextUsage(sess)
 	return nil
 }
 

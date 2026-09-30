@@ -78,12 +78,6 @@ func (p *runEmitter) Emit(ev loop.Event) error {
 	if err := p.recordContextUsage(ev); err != nil {
 		return err
 	}
-	if ev.Type == loop.AgentEnd {
-		// Threshold compaction runs last: it re-enters Emit with its own
-		// compaction_start/end events, which must land in loop order behind the
-		// agent_end they follow. Off by default (compactOnRunEnd).
-		p.autoCompact()
-	}
 	return nil
 }
 
@@ -333,46 +327,6 @@ func (p *runEmitter) recordContextUsage(ev loop.Event) error {
 	}
 	p.buffer(&usage)
 	return nil
-}
-
-// compactOnRunEnd gates the threshold compaction that runs after agent_end
-// (autoCompact). It is deliberately hardcoded off:
-//
-//   - Preflight compaction at the start of the next run applies the very same
-//     threshold to the very same context, so compacting here only moves one
-//     model call earlier without changing the outcome.
-//   - A user who never sends another message pays for that summary call (and
-//     the rewritten session entry) with no benefit.
-//   - Folding the just-finished turn can hide the newest assistant reply before
-//     the user has read it.
-//
-// The code path is kept intact so the switch can be flipped once post-run
-// compaction proves worth its cost.
-const compactOnRunEnd = false
-
-// autoCompact applies the threshold check after agent_end and compacts an
-// oversized context so the next prompt starts fresh. Disabled by
-// compactOnRunEnd; see that constant for why.
-func (p *runEmitter) autoCompact() {
-	if !compactOnRunEnd {
-		return
-	}
-	if p.serverSide {
-		return
-	}
-	if !p.s.shouldCompact(p.sess, p.info, p.replayBinding) {
-		return
-	}
-	changed, err := p.compactNow(compact.Intent{Reason: compact.ReasonThreshold}, nil)
-	if err != nil && !errors.Is(err, compact.ErrNothingToCompact) &&
-		!errors.Is(err, compact.ErrCompactionSkipped) {
-		slog.Warn("threshold compaction lifecycle", "session_id", p.id, "err", err)
-	}
-	if changed {
-		// The run SSE stops at agent_end, so the rebuilt context reaches the
-		// meter through the push stream.
-		p.s.publishContextUsage(p.sess)
-	}
 }
 
 // compactNow runs one compaction and reports whether the context actually

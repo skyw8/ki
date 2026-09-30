@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"ki/internal/config"
 	"ki/internal/session"
@@ -30,7 +32,11 @@ func TestPrepareIgnoresRemoteCheckpointForLocalFallback(t *testing.T) {
 	}, 10, nil); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "new"}}})
+	_, _ = s.AppendMessage(types.Message{
+		Role: "assistant", Timestamp: 200,
+		Content: []types.Content{{Type: "text", Text: strings.Repeat("new", 400)}},
+		Usage:   &types.Usage{TotalTokens: 1},
+	})
 
 	prep, err := Prepare(s.LeafEntries(), config.Compaction{KeepRecentTokens: 1})
 	if err != nil {
@@ -48,6 +54,9 @@ func TestPrepareIgnoresRemoteCheckpointForLocalFallback(t *testing.T) {
 	}
 	if strings.Contains(text.String(), "secret") {
 		t.Fatal("opaque encrypted context entered local summary input")
+	}
+	if prep.TokensBefore <= 1 {
+		t.Fatalf("portable fallback trusted checkpoint-scoped usage: %+v", prep)
 	}
 }
 
@@ -258,6 +267,24 @@ func TestPrepareCutNeverOnToolResult(t *testing.T) {
 	}
 }
 
+func TestPrepareAtLiveToolResultKeepsCallAndResult(t *testing.T) {
+	entries := mkEntries(
+		msg("user", "old work that should be summarized"),
+		msg("assistant", "tool call"),
+		msg("toolResult", strings.Repeat("r", 4000)),
+	)
+	prep, err := Prepare(entries, config.Compaction{Enabled: true, KeepRecentTokens: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prep.FirstKeptEntryID != "e1" || len(prep.TurnPrefixMessages) != 1 {
+		t.Fatalf("live tool boundary preparation: %+v", prep)
+	}
+	if len(prep.RetainedTail) != 2 || prep.RetainedTail[0].Role != "assistant" || prep.RetainedTail[1].Role != "toolResult" {
+		t.Fatalf("tool pair was split: %+v", prep.RetainedTail)
+	}
+}
+
 func TestPrepareSplitTurn(t *testing.T) {
 	entries := mkEntries(
 		msg("user", "old work"),
@@ -359,6 +386,56 @@ func TestExecuteSplitTurnJoinsSummaries(t *testing.T) {
 
 type captureSummarizer struct {
 	user string
+}
+
+type boundedSummarizer struct {
+	limit int
+	mu    sync.Mutex
+	calls int
+	live  int
+	peak  int
+}
+
+func (s *boundedSummarizer) Summarize(_ context.Context, system, user string) (string, *types.Usage, error) {
+	if len(system)+len(user) > s.limit {
+		return "", nil, fmt.Errorf("request bytes %d exceed %d", len(system)+len(user), s.limit)
+	}
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.live++
+	s.peak = max(s.peak, s.live)
+	s.mu.Unlock()
+	time.Sleep(5 * time.Millisecond)
+	s.mu.Lock()
+	s.live--
+	s.mu.Unlock()
+	return fmt.Sprintf("summary-%d", call), &types.Usage{TotalTokens: 1}, nil
+}
+
+func TestGenerateChunksOversizedSummaryInput(t *testing.T) {
+	const limit = 4096
+	summarizer := &boundedSummarizer{limit: limit}
+	prep := &Preparation{MessagesToSummarize: []types.Message{
+		msg("user", strings.Repeat("a", 12000)),
+		msg("toolResult", strings.Repeat("中", 5000)),
+	}}
+	result, err := GenerateWithInputLimit(context.Background(), prep, summarizer, config.Compaction{}, limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summarizer.mu.Lock()
+	calls, peak := summarizer.calls, summarizer.peak
+	summarizer.mu.Unlock()
+	if result.Summary == "" || calls < 2 {
+		t.Fatalf("summary=%q calls=%d", result.Summary, calls)
+	}
+	if peak < 2 {
+		t.Fatalf("chunk map was serial: peak concurrency=%d", peak)
+	}
+	if result.Usage == nil || result.Usage.TotalTokens != calls {
+		t.Fatalf("usage=%+v calls=%d", result.Usage, calls)
+	}
 }
 
 func (c *captureSummarizer) Summarize(_ context.Context, _, user string) (string, *types.Usage, error) {

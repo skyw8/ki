@@ -9,7 +9,9 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"ki/internal/config"
 	"ki/internal/session"
@@ -210,6 +212,13 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 		}
 	}
 	compactable := append(append([]session.Entry{}, virtual...), entries[prevCompIdx+1:]...)
+	portableExpanded := false
+	for _, entry := range compactable {
+		if entry.Type == "compaction" && entry.Responses != nil {
+			portableExpanded = true
+			break
+		}
+	}
 
 	// tokensBefore: previous summary + all messages, usage-aware with the
 	// stale guard (usage from before the last compaction is ignored).
@@ -223,6 +232,13 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 		}
 	}
 	tokensBefore := EstimateTokens(msgs, lastCompactionAt)
+	if portableExpanded {
+		// Why: the newest assistant usage after an opaque checkpoint only
+		// describes that compact prefix. Local fallback expands the durable raw
+		// transcript, so reusing checkpoint-scoped usage can undercount by orders
+		// of magnitude and feed an oversized request to the summarizer.
+		tokensBefore = EstimateModelContext(types.ModelContext{Messages: msgs, Portable: true}, lastCompactionAt)
+	}
 
 	// Valid cut points: user/assistant messages; never a toolResult (a kept
 	// toolResult without its toolCall is semantically broken, pi
@@ -248,11 +264,20 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 		}
 		acc += (len(e.Message.Text()) + 3) / 4
 		if acc >= keep {
+			found := false
 			for _, c := range cutPoints {
 				if c >= i {
 					cutIndex = c
+					found = true
 					break
 				}
+			}
+			if !found {
+				// At a live tool-round boundary the newest entry is a toolResult
+				// and no later assistant cut exists yet. Retain the preceding
+				// assistant tool-call with its result; falling back to the oldest
+				// cut would incorrectly report ErrNothingToCompact.
+				cutIndex = cutPoints[len(cutPoints)-1]
 			}
 			break
 		}
@@ -329,7 +354,16 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 
 // Generate executes the local summary strategy without writing the session.
 func Generate(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.Compaction) (Result, error) {
-	summary, usage, err := Execute(ctx, prep, sum, cfg)
+	return GenerateWithInputLimit(ctx, prep, sum, cfg, 0)
+}
+
+// GenerateWithInputLimit executes a local summary while bounding every model
+// request. maxInputTokens is treated as a conservative byte budget: a BPE
+// input cannot contain more tokens than UTF-8 bytes, so even code-heavy or
+// multilingual transcripts stay inside the provider window without needing a
+// provider-specific tokenizer.
+func GenerateWithInputLimit(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.Compaction, maxInputTokens int) (Result, error) {
+	summary, usage, err := ExecuteWithInputLimit(ctx, prep, sum, cfg, maxInputTokens)
 	if err != nil {
 		return Result{}, err
 	}
@@ -339,32 +373,196 @@ func Generate(ctx context.Context, prep *Preparation, sum Summarizer, cfg config
 // Execute generates the compaction summary for a Preparation (the only stage
 // that calls the model). Returns the summary text and combined usage.
 func Execute(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.Compaction) (string, *types.Usage, error) {
+	return ExecuteWithInputLimit(ctx, prep, sum, cfg, 0)
+}
+
+// ExecuteWithInputLimit is Execute with bounded, hierarchical summarization
+// for histories larger than one model request.
+func ExecuteWithInputLimit(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.Compaction, maxInputTokens int) (string, *types.Usage, error) {
 	var summary string
 	var usage *types.Usage
 	if prep.IsSplitTurn && len(prep.TurnPrefixMessages) > 0 {
 		historyText := "No prior history."
 		if len(prep.MessagesToSummarize) > 0 {
-			s, u, err := summarize(ctx, sum, cfg, prep.MessagesToSummarize, prep.PreviousSummary, false, prep.Intent.Instructions)
+			s, u, err := summarizeBounded(ctx, sum, cfg, prep.MessagesToSummarize, prep.PreviousSummary, false, prep.Intent.Instructions, maxInputTokens)
 			if err != nil {
 				return "", nil, err
 			}
 			historyText = s
 			usage = u
 		}
-		ts, u, err := summarize(ctx, sum, cfg, prep.TurnPrefixMessages, "", true, prep.Intent.Instructions)
+		ts, u, err := summarizeBounded(ctx, sum, cfg, prep.TurnPrefixMessages, "", true, prep.Intent.Instructions, maxInputTokens)
 		if err != nil {
 			return "", nil, err
 		}
 		summary = historyText + "\n\n---\n\n**Turn Context (split turn):**\n\n" + ts
 		usage = combineUsage(usage, u)
 	} else {
-		s, u, err := summarize(ctx, sum, cfg, prep.MessagesToSummarize, prep.PreviousSummary, false, prep.Intent.Instructions)
+		s, u, err := summarizeBounded(ctx, sum, cfg, prep.MessagesToSummarize, prep.PreviousSummary, false, prep.Intent.Instructions, maxInputTokens)
 		if err != nil {
 			return "", nil, err
 		}
 		summary, usage = s, u
 	}
 	return summary, usage, nil
+}
+
+func summarizeBounded(ctx context.Context, sum Summarizer, cfg config.Compaction, msgs []types.Message, previousSummary string, splitTurn bool, instructions string, maxInputBytes int) (string, *types.Usage, error) {
+	if maxInputBytes <= 0 {
+		return summarize(ctx, sum, cfg, msgs, previousSummary, splitTurn, instructions)
+	}
+	system, user := summaryRequest(msgs, previousSummary, splitTurn, instructions)
+	if len(system)+len(user) <= maxInputBytes {
+		return callSummarizer(ctx, sum, system, user)
+	}
+
+	// Oversized local fallback cannot rely on an opaque remote checkpoint. Fold
+	// the readable transcript in bounded map/reduce rounds instead of sending
+	// one request that is guaranteed to exceed the same model's window.
+	source := append([]types.Message{}, msgs...)
+	if previousSummary != "" {
+		source = append([]types.Message{{
+			Role: "user", Content: []types.Content{{Type: "text", Text: "Previous conversation summary:\n" + previousSummary}},
+		}}, source...)
+	}
+	emptySystem, emptyUser := summaryRequest(nil, "", splitTurn, instructions)
+	payloadBytes := maxInputBytes - len(emptySystem) - len(emptyUser) - 1024
+	if payloadBytes < 1024 {
+		return "", nil, fmt.Errorf("summarization input budget %d is too small", maxInputBytes)
+	}
+
+	var totalUsage *types.Usage
+	current := source
+	for round := 0; round < 16; round++ {
+		chunks := splitSummaryMessages(current, payloadBytes)
+		if len(chunks) == 1 {
+			text, chunkUsage, err := summarize(ctx, sum, cfg, chunks[0], "", splitTurn, instructions)
+			if err != nil {
+				return "", nil, err
+			}
+			totalUsage = combineUsage(totalUsage, chunkUsage)
+			return text, totalUsage, nil
+		}
+		results, err := summarizeChunks(ctx, sum, chunks, splitTurn, instructions)
+		if err != nil {
+			return "", nil, err
+		}
+		partials := make([]types.Message, 0, len(results))
+		for i, result := range results {
+			totalUsage = combineUsage(totalUsage, result.usage)
+			partials = append(partials, types.Message{
+				Role: "user", Content: []types.Content{{
+					Type: "text", Text: fmt.Sprintf("Partial checkpoint %d of %d:\n%s", i+1, len(results), result.text),
+				}},
+			})
+		}
+		current = partials
+	}
+	return "", nil, errors.New("hierarchical summarization did not converge")
+}
+
+const summaryChunkConcurrency = 4
+
+type summaryChunkResult struct {
+	text  string
+	usage *types.Usage
+	err   error
+}
+
+func summarizeChunks(ctx context.Context, sum Summarizer, chunks [][]types.Message, splitTurn bool, instructions string) ([]summaryChunkResult, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]summaryChunkResult, len(chunks))
+	jobs := make(chan int, len(chunks))
+	for i := range chunks {
+		jobs <- i
+	}
+	close(jobs)
+
+	workers := min(summaryChunkConcurrency, len(chunks))
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				system, user := summaryRequest(chunks[i], "", splitTurn, instructions)
+				// Why: map outputs become the next round's input. Without an explicit
+				// size target a verbose model can return a checkpoint as large as its
+				// source, preventing hierarchical reduction from converging.
+				user += "\n\nThis is one segment of a larger transcript. Preserve decisions, code changes, failures, and pending work, but keep this partial checkpoint under 2,000 words."
+				text, usage, err := callSummarizer(ctx, sum, system, user)
+				results[i] = summaryChunkResult{text: text, usage: usage, err: err}
+				if err != nil {
+					cancel()
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	for _, result := range results {
+		if result.err != nil {
+			return nil, result.err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+func splitSummaryMessages(msgs []types.Message, maxBytes int) [][]types.Message {
+	var chunks [][]types.Message
+	var chunk []types.Message
+	used := 0
+	flush := func() {
+		if len(chunk) == 0 {
+			return
+		}
+		chunks = append(chunks, chunk)
+		chunk = nil
+		used = 0
+	}
+	for _, message := range msgs {
+		text := message.Text()
+		if text == "" {
+			continue
+		}
+		for len(text) > 0 {
+			overhead := len(message.Role) + 3
+			available := maxBytes - used - overhead
+			if available <= 0 {
+				flush()
+				available = maxBytes - overhead
+			}
+			take := min(len(text), available)
+			for take > 0 && take < len(text) && !utf8.RuneStart(text[take]) {
+				take--
+			}
+			if take == 0 {
+				// maxBytes is already validated above; this only handles a rune
+				// crossing the exact boundary.
+				_, size := utf8.DecodeRuneInString(text)
+				take = size
+			}
+			part := types.Message{Role: message.Role, Content: []types.Content{{Type: "text", Text: text[:take]}}}
+			chunk = append(chunk, part)
+			used += overhead + take
+			text = text[take:]
+			if used >= maxBytes {
+				flush()
+			}
+		}
+	}
+	flush()
+	if len(chunks) == 0 {
+		chunks = append(chunks, []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "(empty)"}}}})
+	}
+	return chunks
 }
 
 // Commit validates and atomically appends a generated local checkpoint.
@@ -443,6 +641,11 @@ func validateCustomUsage(usage *types.Usage) error {
 // splitTurn selects the turn-prefix prompt; otherwise previousSummary selects
 // the incremental UPDATE prompt.
 func summarize(ctx context.Context, sum Summarizer, _ config.Compaction, msgs []types.Message, previousSummary string, splitTurn bool, instructions string) (string, *types.Usage, error) {
+	system, user := summaryRequest(msgs, previousSummary, splitTurn, instructions)
+	return callSummarizer(ctx, sum, system, user)
+}
+
+func summaryRequest(msgs []types.Message, previousSummary string, splitTurn bool, instructions string) (string, string) {
 	transcript := strings.Builder{}
 	for _, m := range msgs {
 		transcript.WriteString(m.Role)
@@ -465,6 +668,10 @@ func summarize(ctx context.Context, sum Summarizer, _ config.Compaction, msgs []
 	if instructions = strings.TrimSpace(instructions); instructions != "" {
 		user += "\n\n<custom-instructions>\n" + instructions + "\n</custom-instructions>\n"
 	}
+	return system, user
+}
+
+func callSummarizer(ctx context.Context, sum Summarizer, system, user string) (string, *types.Usage, error) {
 	text, usage, err := sum.Summarize(ctx, system, user)
 	if err != nil {
 		return "", nil, fmt.Errorf("summarize context: %w", err)

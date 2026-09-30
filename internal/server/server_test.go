@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -239,6 +240,35 @@ type reqRecorder struct {
 func (r *reqRecorder) Stream(_ context.Context, req loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {
 	r.reqs = append(r.reqs, req)
 	return types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "summary"}}, StopReason: "stop", Usage: &types.Usage{TotalTokens: 3}}, nil
+}
+
+type thresholdRoundStreamer struct {
+	mu       sync.Mutex
+	requests []loop.Request
+	ordinary int
+}
+
+func (s *thresholdRoundStreamer) Stream(_ context.Context, req loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requests = append(s.requests, req)
+	if strings.Contains(req.System, "context summarization assistant") {
+		return types.Message{
+			Role: "assistant", StopReason: "stop", Usage: &types.Usage{TotalTokens: 8},
+			Content: []types.Content{{Type: "text", Text: "bounded checkpoint"}},
+		}, nil
+	}
+	s.ordinary++
+	if s.ordinary == 1 {
+		return types.Message{
+			Role: "assistant", StopReason: "toolUse", Usage: &types.Usage{TotalTokens: 100},
+			Content: []types.Content{{Type: "toolCall", ID: "missing-1", Name: "Missing", Arguments: map[string]any{}}},
+		}, nil
+	}
+	return types.Message{
+		Role: "assistant", StopReason: "stop", Usage: &types.Usage{TotalTokens: 10},
+		Content: []types.Content{{Type: "text", Text: "finished after compact"}},
+	}, nil
 }
 
 type forkAgentStreamer struct {
@@ -1564,6 +1594,96 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 	}
 }
 
+func TestThresholdCompactsBetweenToolRounds(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KI_HOME", home)
+	cfg := config.Builtin(home)
+	cfg.Sessions.Root = filepath.Join(home, "sessions")
+	cfg.Compaction.Mode = "local"
+	cfg.Compaction.MaxContextTokens = 100
+	cfg.Compaction.KeepRecentTokens = 1
+	streamer := &thresholdRoundStreamer{}
+	srv, err := New(Options{Config: cfg, Token: "tok", Streamer: streamer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(srv.Handler())
+	defer hs.Close()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	id := createSession(t, hs, t.TempDir())
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"run tools"}`))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	waitAgentEnd(t, hs, id)
+
+	streamer.mu.Lock()
+	requests := append([]loop.Request{}, streamer.requests...)
+	streamer.mu.Unlock()
+	if len(requests) != 3 {
+		kinds := make([]string, 0, len(requests))
+		for _, request := range requests {
+			kind := "ordinary"
+			if strings.Contains(request.System, "context summarization assistant") {
+				kind = "summary"
+			}
+			kinds = append(kinds, fmt.Sprintf("%s(messages=%d)", kind, len(request.Messages)))
+		}
+		debugSession, openErr := srv.open(id)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		var entryKinds []string
+		for _, entry := range debugSession.Entries() {
+			entryKinds = append(entryKinds, entry.Type)
+		}
+		_ = debugSession.Close()
+		t.Fatalf("requests=%d %v entries=%v, want first round + summary + second round", len(requests), kinds, entryKinds)
+	}
+	last := requests[len(requests)-1]
+	var sawSummary bool
+	for _, message := range last.Messages {
+		if strings.Contains(message.Text(), "Previous conversation summary:") && strings.Contains(message.Text(), "bounded checkpoint") {
+			sawSummary = true
+		}
+	}
+	if !sawSummary {
+		t.Fatalf("next tool round did not use compacted context: %+v", last.Messages)
+	}
+
+	sess, err := srv.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	var compactAt, agentEndAt int
+	for i, entry := range sess.Entries() {
+		if entry.Type == "compaction" {
+			compactAt = i + 1
+		}
+		if entry.Type == string(loop.CompactionEnd) && entry.Details != nil {
+			if details, ok := entry.Details.(map[string]any); ok && details["reason"] == "threshold" {
+				compactAt = i + 1
+			}
+		}
+	}
+	// agent_end is runtime-only, so the persisted checkpoint plus a later final
+	// assistant proves compaction happened before the run finished.
+	for i, entry := range sess.Entries() {
+		if entry.Message != nil && entry.Message.Text() == "finished after compact" {
+			agentEndAt = i + 1
+		}
+	}
+	if compactAt == 0 || agentEndAt <= compactAt {
+		t.Fatalf("checkpoint order compact=%d final=%d", compactAt, agentEndAt)
+	}
+}
+
 // A manual /compact is one synchronous request, so the WebUI cannot learn that
 // it is running from a prompt SSE stream. It must arrive as a session push
 // event (compaction_start → compaction_end) for the chat to show a live
@@ -2406,7 +2526,7 @@ func TestBrowserSessionRenewsWhileInUse(t *testing.T) {
 }
 
 func TestRequestHeaderPersistAndPatch(t *testing.T) {
-	_, hs := testServer(t)
+	srv, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"snap"}`))
 	req.Header.Set("Authorization", "Bearer tok")
@@ -2494,6 +2614,21 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	if patched["model"] != "gpt-5.6-terra" {
 		t.Fatalf("model: %+v", patched)
 	}
+	patchedSession, err := srv.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchedEntries := patchedSession.Entries()
+	_ = patchedSession.Close()
+	var recomputedMeter bool
+	for _, entry := range patchedEntries {
+		if entry.Type == "context_usage" && entry.Estimated {
+			recomputedMeter = true
+		}
+	}
+	if !recomputedMeter {
+		t.Fatalf("model patch did not return a recomputed context meter: %+v", patchedEntries)
+	}
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err = http.DefaultClient.Do(req)
@@ -2517,6 +2652,57 @@ func TestRequestHeaderPersistAndPatch(t *testing.T) {
 	}
 	if models[0]["thinkingLevels"] == nil || models[0]["defaultThinking"] == nil {
 		t.Fatalf("models missing thinking: %+v", models[0])
+	}
+}
+
+func TestDialAddressNormalizesWildcardListener(t *testing.T) {
+	for _, test := range []struct {
+		addr string
+		want string
+	}{
+		{"[::]:19800", "127.0.0.1:19800"},
+		{"0.0.0.0:19800", "127.0.0.1:19800"},
+		{"192.0.2.10:19800", "192.0.2.10:19800"},
+	} {
+		t.Run(test.addr, func(t *testing.T) {
+			addr, err := net.ResolveTCPAddr("tcp", test.addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := dialAddress(addr); got != test.want {
+				t.Fatalf("dialAddress(%q) = %q, want %q", test.addr, got, test.want)
+			}
+		})
+	}
+}
+
+func TestPatchRejectsModelChangeWhileSessionBusy(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	st, _, err := srv.occupy(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.release(id, st)
+
+	status, out := postJSON(t, hs, http.MethodPatch, "/v1/sessions/"+id, map[string]any{
+		"model": "openai/gpt-5.6-terra",
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("patch busy model = %d %+v, want 409", status, out)
+	}
+	sess, err := srv.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	if sess.Config.Provider == "openai" || sess.Config.Model == "gpt-5.6-terra" {
+		t.Fatalf("busy patch changed model: %s/%s", sess.Config.Provider, sess.Config.Model)
+	}
+	for _, entry := range sess.Entries() {
+		if entry.Type == "model_change" {
+			t.Fatalf("busy patch appended model change: %+v", entry)
+		}
 	}
 }
 

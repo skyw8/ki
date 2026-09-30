@@ -6,12 +6,16 @@
 // metadata and custom instructions. Generate calls the model; Commit validates
 // the result and atomically rejects a stale source leaf. Extensions may replace
 // summary/usage/details, while the host owns the cut and retained tail.
+// Oversized local inputs are folded through byte-bounded hierarchical summary
+// requests, so fallback never resubmits the whole over-window transcript.
+// Independent map chunks run with bounded concurrency and request concise
+// partial checkpoints so reduction converges.
 // Remote Responses checkpoints are orchestrated by the server and stored by
 // session.AppendResponsesCompaction; Prepare deliberately ignores them so a
 // model switch or remote failure can summarize the durable raw transcript.
 // session.AppendCompaction writes the local summary plus retainedTail; old jsonl
 // without a tail falls back to firstKeptEntryId. Auto: preflight, overflow
-// recovery, and agent_end when tokens >
+// recovery, and tool-round boundaries when tokens >
 // contextWindow - reserveTokens (default reserve 16384). Manual: HTTP / CLI
 // compact. Keep about keepRecentTokens (default 20000). The next model call
 // must rebuild the layered prompt.

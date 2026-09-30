@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -574,6 +575,23 @@ func TestPatchSessionRejectsUnknownModel(t *testing.T) {
 	id, _ := created["id"].(string)
 	if err := srv.PatchSession(id, "no-such-provider/no-such-model", ""); err == nil {
 		t.Fatal("expected unknown model error")
+	}
+}
+
+func TestPatchSessionRejectsBusySession(t *testing.T) {
+	srv, hs := testServer(t)
+	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{"cwd": t.TempDir()})
+	if status != http.StatusOK {
+		t.Fatal(status)
+	}
+	id, _ := created["id"].(string)
+	st, _, err := srv.occupy(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.release(id, st)
+	if err := srv.PatchSession(id, "openai/gpt-5.6-terra", ""); !errors.Is(err, errSessionBusy) {
+		t.Fatalf("PatchSession busy error = %v, want %v", err, errSessionBusy)
 	}
 }
 

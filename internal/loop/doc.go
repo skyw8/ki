@@ -43,7 +43,10 @@
 // retried; overflow returns ErrContextOverflow and Run recovers once via
 // Hooks.OnContextOverflow (the failed Request is supplied; server returns both
 // portable messages and an optional canonical Responses prefix; same Run, so
-// events are not replayed). Request may also carry context_management for
+// events are not replayed). For standalone-only compaction, ShouldCompact and
+// OnContextThreshold run after a completed tool batch and replace live history
+// before the next provider request; agent_end never triggers compaction.
+// Request may also carry context_management for
 // provider-managed compaction. stopReason "length" rejects tool calls
 // (truncated arguments) instead of executing them.
 // Cancellation retains already-emitted partial content in its aborted message.

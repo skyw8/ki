@@ -1,5 +1,8 @@
 // Package server is the local HTTP backend. It orchestrates loop, session
 // persist, tools, and providers. The same process serves the embedded WebUI.
+// A wildcard listener is advertised to local CLI clients as 127.0.0.1 in
+// server.json so commands reuse the daemon instead of spawning duplicate
+// in-process extension runtimes.
 //
 // API auth is Bearer token or a browser session cookie, except GET /v1/health
 // and the auth status/login endpoints. Browser login exchanges the bearer
@@ -68,7 +71,9 @@
 // fork) prepares the session view of already-running extensions in the
 // background; List does not. runtime.ready is
 // true when that Prepare finishes (failure still counts). PATCH /v1/sessions/{id} writes model /
-// thinking / title / pin / leaf / queued. Built-in tool, skill, and extension
+// thinking / title / pin / leaf / queued; model, thinking, and leaf changes return
+// 409 while a run or standalone compaction owns the session because all three
+// move or depend on the active leaf. Built-in tool, skill, and extension
 // enablement is {KI_HOME}/toggles.json via GET/PATCH /v1/tools, /v1/skills,
 // and /v1/extensions. The built-in tool catalog includes model-specific editors
 // even when unavailable to the selected model, with an available marker, so a
@@ -101,9 +106,10 @@
 // order, so message_end cannot be overtaken by agent_settled. One run owns one
 // event funnel (emit.go, runEmitter) that applies every loop event to jsonl,
 // the run SSE buffer, the WebUI push stream, and extension lifecycle
-// subscribers in that fixed order on the loop's goroutine. agent_end may
-// auto-compact locally or through the standalone provider capability; models
-// with server-side Responses compaction instead promote returned opaque items
+// subscribers in that fixed order on the loop's goroutine. Standalone
+// threshold compaction runs only between completed tool rounds and the next
+// provider request, never after agent_end; models with server-side Responses
+// compaction instead promote returned opaque items
 // to a binding-scoped session checkpoint at message_end. Message-visible
 // lifecycle hooks force portable replay and suppress durable server checkpoints
 // because they cannot inspect an encrypted prefix. A steer accepted into
