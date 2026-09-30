@@ -50,7 +50,7 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 | `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
 | `PowerShell` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 仅 Windows 注册；PowerShell 原生命令、退出码、流式输出和后台任务与 Bash 使用同一生命周期 |
-| `Agent` | `description`、`prompt`；可选 `inherit_context`、`run_in_background` | 新建一个 `forkMode=tree` 的 child，固定沿用当前 session 的 provider/model；默认继承 parent 的已完成历史，后台、以及前台超过 2 分钟后返回 `async_launched` 和 `outputFile`，否则返回 `completed` |
+| `Agent` | `description`、`prompt`；可选 `inherit_context`、`run_in_background` | 新建一个 `forkMode=tree` 的 child，固定沿用当前 session 的 provider/model；默认从干净上下文启动，显式 `inherit_context:true` 才继承 parent 的已完成历史；后台、以及前台超过 2 分钟后返回 `async_launched` 和 `outputFile`，否则返回 `completed` |
 | `SendMessage` | `message`；可选 `to`（默认 `parent`）、`summary` | `to` 支持保留名 `"parent"` / `"main"` 或稳定 `agentId`；按目标在当前 run 边界 steer，或从目标 transcript 续跑 |
 | `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待 shell/agent 后台任务；返回有界输出、状态、结果和输出文件路径。读到**终态**的 agent 任务会标记该 run 已读，后续完成通知不再送达 |
 | `TaskStop` | `task_id`（或兼容的 `shell_id`） | 幂等地终止 shell/agent 后台任务并返回最终状态；任务已结束时返回成功，被终止的 run 同样不再收到完成通知 |
@@ -163,7 +163,7 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 ## Agent
 
 - `description` 是 3–5 个词的短任务名，`prompt` 是子 agent 的 directive。没有 `subagent_type`：所有 child 都跑同一套 general-purpose 配置（类型化 subagent 留待后续）。
-- `inherit_context`（默认 true）把 parent 的**已完成历史**作为背景复制进 child，边界是当前 leaf 链上最新 user message 之前（见 `docs/session.md`）；因此 child 看不到触发本轮的用户消息——那条是发给 parent 的——directive 必须自带当前目标。`inherit_context:false` 建完全不继承的干净 child，directive 必须完全自包含。
+- `inherit_context` 默认 false：child 从干净上下文启动，directive 必须带齐任务、约束和必要结论。仓库调研、限定范围的实现/测试及独立审查保持 false，child 直接读取当前 workspace 和 diff；只有任务依赖无法简洁重述的既有对话决策、用户偏好或未完成推理时才显式设 true。true 会把 parent 的**已完成历史**作为背景复制进 child，边界是当前 leaf 链上最新 user message 之前（见 `docs/session.md`），因此仍看不到触发本轮的用户消息——那条是发给 parent 的。
 - child 的第一条 user 消息是 server 生成的 **subagent envelope + directive**：`You are a subagent at depth N, started by another agent through the Agent tool; the task below came from that agent (session <id>).`，空行后接 directive 原文。因为 child 是一次全新的模型调用、看不到 parent 的指令，信封必须随消息走；放进 system prompt 会让它和 parent 的系统提示不再逐字节相同，破坏跨会话的前缀缓存。depth 记的是 child 自己的层数（`parentDepth+1`）；到达上限的那一层在同一句后面追加一句 `You are at the maximum nesting depth (N), so do not call the Agent tool: complete this task yourself.`，靠提示而不是摘工具来禁止再委派。
 - 信封**不要求 child 汇报**：结果本来就通过 tool result（前台）或 `<task-notification>`（后台/提升）自动回到调用方，让 child 再 `SendMessage` 一次只会造成重复汇报、还会诱导它把"已发消息"当成任务完成。`SendMessage` 对自己那条 prompt 里列出的 `"parent"` / `"main"` 地址保留给"中途要问调用方"的场景。`SendMessage` 续跑 child 时跟进的消息不再重复信封。
 - child 沿用 parent 的 provider/model/thinking 并沿用同一条 loop；无论是否继承历史，directive 都是子会话自己的第一条消息，parent 的 user turn 永远不会被当成 child 的任务（这正是最初 fork 整段对话会导致子代理重复委派的原因）。

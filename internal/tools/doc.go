@@ -18,10 +18,11 @@
 // variables explicitly, so commands launched by them keep the same network
 // routing. Runtime configuration remains authoritative for sidecar overrides.
 // Agent delegates through a narrow AgentRuntime supplied by server. Its child
-// session is linked with forkMode=tree and, by default (inherit_context), is
-// seeded with the parent's finished history up to the user message that
-// triggered the in-flight turn; inherit_context:false starts it clean. The
-// directive itself arrives as the child's first user message wrapped in a
+// session is linked with forkMode=tree and starts with a clean context by
+// default. Explicit inherit_context seeds it with the parent's finished history
+// up to the user message that triggered the in-flight turn when prior
+// conversational decisions cannot be handed off concisely. The directive
+// itself arrives as the child's first user message wrapped in a
 // subagent envelope carrying its depth, the session that delegated, and — at
 // MaxAgentDepth — the instruction not to delegate again, so the child's system
 // prompt and tool schemas can stay byte-identical to its parent's. Set therefore

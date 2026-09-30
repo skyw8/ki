@@ -26,7 +26,9 @@ var agentForegroundTimeout = 2 * time.Minute
 
 const agentPrompt = `Launch a new agent to handle complex, multi-step tasks autonomously.
 
-The Agent tool launches a child agent that works independently with its own conversation and uses the current session's model provider and model. By default the child inherits this conversation's finished history as background; set inherit_context to false when it should start with no history at all.
+The Agent tool launches a child agent that works independently with its own conversation and uses the current session's model provider and model. By default the child starts with a clean conversation and receives only your directive.
+
+Set inherit_context=true only when the task depends on prior conversational decisions, user preferences, or unresolved reasoning that cannot be restated concisely. Keep it false for repository research, scoped implementation, testing, and independent review: the child can inspect the current workspace and diff directly.
 
 When NOT to use the Agent tool:
 - If you want to read a specific file path, use the Read tool instead of the Agent tool, to find the match more quickly.
@@ -47,7 +49,7 @@ Usage notes:
 The child does not see the user's latest request — that message was addressed to you — so the goal has to come from your directive.
 - Say what to do, where, and what "done" looks like. Include file paths and line numbers rather than delegating understanding with "based on your findings, fix the bug".
 - Describe what you already learned or ruled out when it changes the approach.
-- With the default inherit_context the child can see this conversation's finished turns; with inherit_context:false it starts empty and needs the full background restated.
+- With inherit_context=false, restate the task, constraints, and relevant conclusions. Prefer a concise handoff over inheriting a large parent history.
 - If you need a short response, say so ("report in under 200 words"). Lookups want the exact command; investigations want the question, because prescribed steps become dead weight when the premise is wrong.
 
 Terse command-style prompts produce shallow, generic work.`
@@ -71,7 +73,7 @@ func (agentTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"description":       map[string]any{"type": "string", "description": "A short (3-5 word) description of the task."},
 			"prompt":            map[string]any{"type": "string", "description": "The directive for the agent to carry out; it never sees the user's latest request."},
-			"inherit_context":   map[string]any{"type": "boolean", "description": "Give the child this conversation's finished history as background. Defaults to true; set false to start the child with a clean context."},
+			"inherit_context":   map[string]any{"type": "boolean", "description": "Inherit the parent's finished conversation. Defaults to false; enable only when prior conversational context cannot be summarized concisely."},
 			"run_in_background": map[string]any{"type": "boolean", "description": "Set to true to run this agent in the background. You will be notified when it completes."},
 		},
 	}
@@ -88,7 +90,7 @@ func (t agentTool) Execute(ctx context.Context, args map[string]any) loop.ToolRe
 	req := AgentRequest{
 		Description:     stringArg(args, "description", "Running task"),
 		Prompt:          stringArg(args, "prompt", ""),
-		InheritContext:  agentBoolArg(args, "inherit_context", true),
+		InheritContext:  agentBoolArg(args, "inherit_context", false),
 		RunInBackground: agentBoolArg(args, "run_in_background", false),
 	}
 	if req.Prompt == "" {
