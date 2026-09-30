@@ -138,8 +138,13 @@ type Message struct {
 	Usage          *Usage            `json:"usage,omitempty"`
 	StopReason     string            `json:"stopReason,omitempty"`
 	ErrorMessage   string            `json:"errorMessage,omitempty"`
-	ToolCallID     string            `json:"toolCallId,omitempty"`
-	ToolName       string            `json:"toolName,omitempty"`
+	// CancelReason and CancelSource preserve why an aborted run stopped.
+	// context.Canceled alone cannot distinguish an explicit user stop from
+	// shutdown, deletion, extension control, or an unknown parent cancellation.
+	CancelReason string `json:"cancelReason,omitempty"`
+	CancelSource string `json:"cancelSource,omitempty"`
+	ToolCallID   string `json:"toolCallId,omitempty"`
+	ToolName     string `json:"toolName,omitempty"`
 	// Details is persisted for clients and diagnostics but provider adapters
 	// deliberately omit it from model requests.
 	Details any `json:"details,omitempty"`

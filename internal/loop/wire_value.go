@@ -15,6 +15,7 @@ func messageWireValue(m types.Message) (map[string]any, error) {
 	stringsInto(v, map[string]string{
 		"api": m.API, "provider": m.Provider, "model": m.Model, "responseId": m.ResponseID,
 		"stopReason": m.StopReason, "errorMessage": m.ErrorMessage, "toolCallId": m.ToolCallID,
+		"cancelReason": m.CancelReason, "cancelSource": m.CancelSource,
 		"toolName": m.ToolName, "toolType": m.ToolType, "origin": m.Origin,
 	})
 	for k, n := range map[string]int64{"timestamp": m.Timestamp, "latencyMs": m.LatencyMs, "ttftMs": m.TTFTMs} {

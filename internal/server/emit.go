@@ -140,6 +140,17 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 		rewritten.ResponsesItems = responsesItems
 		ev.Message = &rewritten
 	}
+	if ev.Message.StopReason == "aborted" {
+		reason, source := runCancellation(p.st)
+		if reason != "" {
+			// Copy before annotating: provider accumulators may still be reused
+			// by the loop, while this metadata belongs to the persisted run.
+			annotated := *ev.Message
+			annotated.CancelReason = reason
+			annotated.CancelSource = source
+			ev.Message = &annotated
+		}
+	}
 	key := ""
 	if ev.Message.Role == "user" && p.idempotencyKey != "" {
 		key = p.idempotencyKey

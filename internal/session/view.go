@@ -140,11 +140,12 @@ func withTurnOpeningUser(path, keep []Entry) []Entry {
 }
 
 // firstChatEntry is the first entry of a window that becomes a chat node:
-// messages and compactions do, request headers and usage snapshots do not.
+// messages, compactions, and cancellation rows do; request headers and usage
+// snapshots do not.
 func firstChatEntry(entries []Entry) *Entry {
 	for i := range entries {
 		switch entries[i].Type {
-		case "message", "compaction":
+		case "message", "compaction", "run_aborted":
 			return &entries[i]
 		}
 	}

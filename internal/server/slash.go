@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"ki/internal/command"
 	"ki/internal/extension"
@@ -579,18 +580,58 @@ func (s *Server) runAt(id string) *runState {
 	return s.runs[id]
 }
 
-func (s *Server) publishRunAborted(sessionID string) {
+const (
+	cancelReasonUserRequest    = "user_request"
+	cancelReasonExtension      = "extension_request"
+	cancelReasonSessionDelete  = "session_delete"
+	cancelReasonServerShutdown = "server_shutdown"
+)
+
+// cancelRun retains the first initiating boundary before context cancellation
+// erases it. Cleanup may call cancel again; it must not relabel a user stop as
+// shutdown or normal release.
+func (s *Server) cancelRun(sessionID string, st *runState, reason, source string, publish bool) {
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	first := st.cancelReason == ""
+	if first {
+		st.cancelReason = reason
+		st.cancelSource = source
+	}
+	st.mu.Unlock()
+	if publish && first {
+		s.publishRunAborted(sessionID, reason, source)
+	}
+	st.cancel()
+}
+
+func runCancellation(st *runState) (string, string) {
+	if st == nil {
+		return "", ""
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.cancelReason, st.cancelSource
+}
+
+func (s *Server) publishRunAborted(sessionID, reason, source string) {
 	// The Web Push fallback must stay silent for an aborted run; the mark is
 	// consumed by the agent_end that follows (see notifyPushCompletion).
 	s.markPushAborted(sessionID)
-	ev := loop.Event{Type: loop.RunAborted}
+	ev := loop.Event{Type: loop.RunAborted, Reason: reason, CancelSource: source, Timestamp: time.Now().UnixMilli()}
 	if st := s.runAt(sessionID); st != nil {
 		st.mu.Lock()
 		ev.RunID = st.runID
 		ev.External = cloneExternal(st.external)
 		st.mu.Unlock()
 	}
-	s.publishSideband(sessionID, ev, true)
+	// Publish immediately, but persist only after the loop has written its
+	// terminal assistant/tool results. Appending here as a sideband made the
+	// event disappear from the branch view; appending it as a leaf here would
+	// put it before the terminal partial and race the run's Session handle.
+	s.publishSideband(sessionID, ev, false)
 }
 
 func (s *Server) publishQueueChanged(sessionID string) {
@@ -600,7 +641,17 @@ func (s *Server) publishQueueChanged(sessionID string) {
 func (s *Server) publishSideband(sessionID string, ev loop.Event, persist bool) {
 	if persist {
 		if dir, ok := s.sidx.Lookup(sessionID); ok {
-			entry, err := session.AppendSidebandEvent(dir, string(ev.Type), map[string]any{})
+			details := map[string]any{}
+			if ev.Reason != "" {
+				details["reason"] = ev.Reason
+			}
+			if ev.CancelSource != "" {
+				details["source"] = ev.CancelSource
+			}
+			if ev.RunID != "" {
+				details["runId"] = ev.RunID
+			}
+			entry, err := session.AppendSidebandEvent(dir, string(ev.Type), details)
 			if err != nil {
 				slog.Warn("persist sideband event", "session_id", sessionID, "type", ev.Type, "err", err)
 			} else {

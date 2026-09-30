@@ -48,6 +48,38 @@ test('a tail window builds nodes only for the entries it holds', () => {
   expect(view.oldestId).toBe('u9')
 })
 
+test('a persisted run abort becomes a standalone history row', () => {
+  const entries: Entry[] = [
+    { type: 'message', id: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } },
+    { type: 'message', id: 'a1', parentId: 'u1', message: { role: 'assistant', content: [], stopReason: 'aborted' } },
+    { type: 'context_usage', id: 'c1', parentId: 'a1' },
+    { type: 'run_aborted', id: 'x1', parentId: 'c1', details: { reason: 'user_request', source: 'webui' } },
+  ]
+  const view = loadHistory({ id: 's', entries, leafId: 'x1' })
+  expect(view.nodes.at(-1)).toEqual({
+    kind: 'cancellation',
+    id: 'x1',
+    runId: undefined,
+    reason: 'user_request',
+    source: 'webui',
+    ts: undefined,
+  })
+})
+
+test('a legacy aborted assistant synthesizes a generic standalone row', () => {
+  const entries: Entry[] = [
+    { type: 'message', id: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } },
+    { type: 'message', id: 'a1', parentId: 'u1', message: { role: 'assistant', content: [], stopReason: 'aborted', errorMessage: 'context canceled' } },
+  ]
+  const view = loadHistory({ id: 's', entries, leafId: 'a1' })
+  expect(view.nodes.at(-1)).toMatchObject({
+    kind: 'cancellation',
+    id: 'legacy-cancellation:a1',
+    reason: undefined,
+    source: undefined,
+  })
+})
+
 test('persisted compaction start and end pair across distinct entry ids', () => {
   const entries: Entry[] = [
     { type: 'compaction_start', id: 'compact-start', details: { reason: 'manual' } },

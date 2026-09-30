@@ -2007,8 +2007,9 @@ func TestPromptSSEAndPersist(t *testing.T) {
 func TestAbortAndCompact(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
-	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/abort", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/abort", strings.NewReader(`{"source":"webui"}`))
 	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -3050,8 +3051,9 @@ func TestAbortedRunKeepsUndrainedSteer(t *testing.T) {
 	if status != http.StatusAccepted || out["accepted"] != "steered" {
 		t.Fatalf("steer %d %+v", status, out)
 	}
-	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/abort", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/abort", strings.NewReader(`{"source":"webui"}`))
 	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -3394,8 +3396,9 @@ func TestAbortEmitsRunAborted(t *testing.T) {
 	gate.arm()
 	prompt202(t, hs, id, "first")
 	waitBuffered(t, srv, id, 6)
-	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/abort", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/abort", strings.NewReader(`{"source":"webui"}`))
 	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -3412,6 +3415,9 @@ func TestAbortEmitsRunAborted(t *testing.T) {
 		st.mu.Lock()
 		for _, ev := range st.evs {
 			if ev.Type == loop.RunAborted {
+				if ev.Reason != cancelReasonUserRequest || ev.CancelSource != "webui" {
+					t.Fatalf("run_aborted cancellation metadata: %+v", ev)
+				}
 				found = true
 				break
 			}
@@ -3423,6 +3429,40 @@ func TestAbortEmitsRunAborted(t *testing.T) {
 	}
 	gate.release()
 	waitAgentEnd(t, hs, id)
+	detail := sessionGET(t, hs, id)
+	raw := sessionBlob(detail)
+	if !strings.Contains(raw, `"cancelReason":"user_request"`) ||
+		!strings.Contains(raw, `"cancelSource":"webui"`) {
+		t.Fatalf("assistant cancellation metadata was not persisted: %s", raw)
+	}
+	if !strings.Contains(raw, `"type":"run_aborted"`) ||
+		!strings.Contains(raw, `"reason":"user_request"`) ||
+		!strings.Contains(raw, `"source":"webui"`) {
+		t.Fatalf("run_aborted history row was not projected: %s", raw)
+	}
+	dir, ok := srv.sidx.Lookup(id)
+	if !ok {
+		t.Fatal("session missing from index")
+	}
+	reopened, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	var cancellationFound bool
+	for _, entry := range reopened.Entries() {
+		if entry.Type != string(loop.RunAborted) {
+			continue
+		}
+		details, _ := entry.Details.(map[string]any)
+		if !entry.Sideband && details["reason"] == cancelReasonUserRequest && details["source"] == "webui" {
+			cancellationFound = true
+			break
+		}
+	}
+	if !cancellationFound {
+		t.Fatal("run_aborted cancellation row was not persisted on the branch")
+	}
 }
 
 func TestCompactOccupySteersAsQueue(t *testing.T) {

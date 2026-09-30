@@ -251,7 +251,7 @@ export class Client {
   }
 
   abort(id: string): Promise<void> {
-    return this.json(`/v1/sessions/${id}/abort`, { method: 'POST' })
+    return this.json(`/v1/sessions/${id}/abort`, { method: 'POST', body: JSON.stringify({ source: 'webui' }) })
   }
 
   extensionUI(id: string, body: { kind: string; extension: string; ok?: boolean; value?: string; fields?: Record<string, unknown> }): Promise<{ ok: boolean }> {

@@ -564,7 +564,7 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 	stopAbort := context.AfterFunc(ctx, func() {
 		abortCtx, abortCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer abortCancel()
-		_ = doJSONContext(abortCtx, base, token, "POST", "/v1/sessions/"+id+"/abort", nil, nil)
+		_ = doJSONContext(abortCtx, base, token, "POST", "/v1/sessions/"+id+"/abort", map[string]any{"source": "cli"}, nil)
 	})
 	// Why stopSig first: canceling ctx is what triggers the abort POST, so any
 	// runClient exit keeps aborting a run the client stops streaming — the

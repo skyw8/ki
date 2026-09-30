@@ -80,7 +80,20 @@ test('stopping generation retains already visible text and its mounted root', as
   await page.getByTestId('composer-stop').click()
   await expect(page.getByTestId('composer-stop')).toHaveCount(0)
   await expect(page.getByTestId('assistant-message')).toContainText('Paragraph 20')
+  await expect(page.getByTestId('cancel-row')).toHaveText(/Stopped by user|已由用户停止/)
+  await expect(page.getByTestId('assistant-message')).not.toContainText('context canceled')
   expect(await page.evaluate(() => (window as unknown as { stoppedRoot: Element }).stoppedRoot.isConnected)).toBe(true)
+  const sessionId = await page.evaluate(() => (JSON.parse(localStorage.getItem('ki-focused-session')!) as { session: string }).session)
+  await expect.poll(() => page.evaluate(async id => {
+    const detail = await fetch(`/v1/sessions/${id}`).then(response => response.json()) as { running?: boolean }
+    return detail.running ?? false
+  }, sessionId)).toBe(false)
+  const persisted = await page.evaluate(async id => fetch(`/v1/sessions/${id}`).then(response => response.json()), sessionId)
+  expect(JSON.stringify(persisted)).toContain('"type":"run_aborted"')
+  await page.reload()
+  await page.getByTestId('session-title').filter({ hasText: 'e2e-blocks-400' }).click()
+  await expect(page.getByTestId('cancel-row')).toHaveText(/Stopped by user|已由用户停止/)
+  await expect(page.getByTestId('assistant-message')).not.toContainText('context canceled')
 })
 
 test('paragraph-shaped streams parse each block once, not per delta', async ({ page }) => {

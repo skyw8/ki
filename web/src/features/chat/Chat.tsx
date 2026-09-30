@@ -303,6 +303,21 @@ function Compaction({ node }: { node: Extract<ChatNode, { kind: 'compaction' }> 
   )
 }
 
+function Cancellation({ node }: { node: Extract<ChatNode, { kind: 'cancellation' }> }) {
+  const { t } = useI18n()
+  const label = node.reason === 'user_request' ? t('chat.cancelled.user')
+    : node.reason === 'extension_request' ? t('chat.cancelled.extension')
+    : node.reason === 'session_delete' ? t('chat.cancelled.sessionDelete')
+    : node.reason === 'server_shutdown' ? t('chat.cancelled.serverShutdown')
+    : t('chat.cancelled.unknown')
+  return (
+    <div className="cancel-row" data-testid="cancel-row" data-cancel-id={node.id} data-run-id={node.runId} role="status" aria-live="polite">
+      <span className="cancel-mark" aria-hidden />
+      <span>{label}</span>
+    </div>
+  )
+}
+
 /**
  * Closes a turn: a labelled hairline with the turn's stats on a single centered
  * row, so a long tool-heavy run stays scannable at a glance. The row carries the
@@ -377,7 +392,8 @@ function TurnDivider({ stats }: { stats: TurnStats }) {
 function nodePreview(n: ChatNode): string {
   if (n.kind === 'user' || n.kind === 'assistant') return n.text
   if (n.kind === 'tool') return n.name
-  return n.summary
+  if (n.kind === 'compaction') return n.summary
+  return ''
 }
 
 /**
@@ -493,6 +509,7 @@ const ChatItem = memo(function ChatItem({
     const hasStats = !n.streaming && !!(n.ts || n.latencyMs || n.ttftMs || n.usage)
     const hitRate = cacheHitRate(n.usage)
     const cost = n.usage?.cost
+    const errorText = n.stopReason !== 'aborted' ? n.error : undefined
     return (
       <div ref={bodyRef} className="asst" data-testid="assistant-message">
         <div className="asst-body">
@@ -502,7 +519,7 @@ const ChatItem = memo(function ChatItem({
           ))}
           {n.text ? <Markdown text={n.text} streaming={n.streaming} revision={n.display} /> : n.streaming && !n.thinking ? <span className="status-line">…</span> : null}
           {n.truncated ? <button type="button" className="body-load" data-testid="load-body" disabled={hydrating} onClick={() => void hydrate()}>{hydrating ? t('chat.loadingBody') : hydrateFailed ? t('chat.retryOlder') : t('chat.loadBody')}</button> : null}
-          {n.error ? <div className="notice">{n.error}</div> : null}
+          {errorText ? <div className="notice" data-testid="cancel-notice">{errorText}</div> : null}
         </div>
         {!n.streaming ? (
           <div className="msg-foot">
@@ -548,7 +565,8 @@ const ChatItem = memo(function ChatItem({
       />
     )
   }
-  return <Compaction node={n} />
+  if (n.kind === 'compaction') return <Compaction node={n} />
+  return <Cancellation node={n} />
 })
 
 export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, controlRef, onHydrate, onShowBranches, onVisibleEntries, jumpToId, onJumped, onActiveRequest, onAtBottom, onReadIntent, onLoadOlder, hasMore, olderError, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP, loadingOlder, compactTurns, loadedTurnIds, onLoadTurn }: Omit<ChatItemProps, 'node' | 'missed' | 'branchIndex' | 'branchTotal'> & {

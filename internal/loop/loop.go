@@ -122,6 +122,7 @@ type Event struct {
 	System                string            `json:"system,omitempty"`
 	Tools                 []ToolSpec        `json:"tools,omitempty"`
 	Reason                string            `json:"reason,omitempty"`
+	CancelSource          string            `json:"cancelSource,omitempty"`
 	OK                    bool              `json:"ok,omitzero"`
 	WillRetry             bool              `json:"willRetry,omitzero"`
 	Strategy              string            `json:"strategy,omitempty"`

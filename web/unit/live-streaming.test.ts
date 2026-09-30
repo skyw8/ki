@@ -191,3 +191,52 @@ test('a sub-millisecond tool duration (0ms) is kept on the tool node', () => {
   // 0 is a real measurement, not "absent": the row must still render a timer.
   expect(node).toMatchObject({ durationMs: 0, running: false })
 })
+
+test('an aborted assistant retains structured cancellation metadata', () => {
+  let view = emptyView()
+  view = applyEvent(view, {
+    type: 'message_start',
+    message: { role: 'assistant', content: [] },
+  })
+  view = applyEvent(view, {
+    type: 'message_end',
+    entryId: 'cancelled-assistant',
+    message: {
+      role: 'assistant',
+      content: [],
+      stopReason: 'aborted',
+      errorMessage: 'context canceled',
+      cancelReason: 'user_request',
+      cancelSource: 'webui',
+    },
+  })
+  const node = view.nodes.find(item => item.kind === 'assistant')
+  expect(node?.kind).toBe('assistant')
+  if (node?.kind !== 'assistant') throw new Error('assistant node missing')
+  expect(node.cancelReason).toBe('user_request')
+  expect(node.cancelSource).toBe('webui')
+})
+
+test('run abort appends a standalone cancellation row', () => {
+  let view = applyEvent(emptyView(), {
+    type: 'run_aborted',
+    runId: 'run-1',
+    reason: 'user_request',
+    cancelSource: 'webui',
+    timestamp: 123,
+  })
+  expect(view.nodes.at(-1)).toEqual({
+    kind: 'cancellation',
+    id: 'run-aborted:run-1',
+    runId: 'run-1',
+    reason: 'user_request',
+    source: 'webui',
+    ts: 123,
+  })
+  view = applyEvent(view, {
+    type: 'run_aborted',
+    reason: 'user_request',
+    cancelSource: 'webui',
+  })
+  expect(view.nodes.filter(node => node.kind === 'cancellation')).toHaveLength(1)
+})

@@ -851,6 +851,26 @@
   background: var(--dsw-alias-bg-layer-1); white-space: pre-wrap; font-size: 13px;
 }
 
+.cancel-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 5px 10px;
+  border-left: 3px solid var(--dsw-alias-state-error);
+  border-radius: 5px;
+  color: var(--dsw-alias-state-error);
+  background: color-mix(in srgb, var(--dsw-alias-state-error) 9%, transparent);
+  font-size: 13px;
+}
+.cancel-mark {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+
 .status-line { color: var(--dsw-alias-label-caption); font-size: 13px; }
 
 .queued-list {

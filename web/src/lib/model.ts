@@ -435,10 +435,37 @@ function rebuild(s: ViewState): ViewState {
   // so the count below continues correctly for a live turn; turnStats adds
   // turnBase to the window's nodes, which is what the chat dividers show.
   const ordinals = new Map(next.compactTurns?.map(t => [t.id, t.stats.turn]))
+  const explicitCancellations = new Set<string>()
+  let pendingAbortedAssistant: string | undefined
+  for (const e of chain) {
+    if (e.type === 'message' && e.message?.role === 'assistant') {
+      pendingAbortedAssistant = e.message.stopReason === 'aborted' ? e.id : undefined
+    } else if (e.type === 'run_aborted' && pendingAbortedAssistant) {
+      // Context-usage snapshots and undrained steers may sit between the
+      // terminal assistant and the event leaf, so ParentID is not a reliable
+      // direct link. A later assistant starts a different model step.
+      explicitCancellations.add(pendingAbortedAssistant)
+      pendingAbortedAssistant = undefined
+    }
+  }
   for (const e of chain) {
     const ordinal = ordinals.get(e.id)
     if (ordinal != null && isUserEntry(e)) next.turn = ordinal - 1
     applyEntry(next, e, loaded.has(e.id))
+    if (loaded.has(e.id) && e.type === 'message' && e.message?.role === 'assistant' &&
+      e.message.stopReason === 'aborted' && !explicitCancellations.has(e.id)) {
+      // Older transcripts persisted run_aborted as an unparented sideband, so
+      // the branch view cannot safely attach that event. The terminal message
+      // is branch-correct and unambiguously cancelled; synthesize the generic
+      // standalone row rather than resurrecting an ambiguous sideband.
+      next.nodes.push({
+        kind: 'cancellation',
+        id: `legacy-cancellation:${e.id}`,
+        reason: e.message.cancelReason,
+        source: e.message.cancelSource,
+        ts: tsMs(e.message, e.timestamp),
+      })
+    }
   }
 
   const expanded = new Set(next.loadedTurnIds)
@@ -866,6 +893,18 @@ function applyEntry(s: ViewState, e: Entry, withNode = true) {
     applyMessage(s, e.message, e.id, e.timestamp, e.parentId, e.truncated, withNode)
     return
   }
+  if (e.type === 'run_aborted') {
+    const details = e.details && typeof e.details === 'object' ? e.details as { reason?: string; source?: string; runId?: string } : {}
+    if (withNode) s.nodes.push({
+      kind: 'cancellation',
+      id: e.id,
+      runId: details.runId,
+      reason: details.reason,
+      source: details.source,
+      ts: tsMs(undefined, e.timestamp),
+    })
+    return
+  }
 	if (e.type === 'patch_apply_updated' && e.details && typeof e.details === 'object') {
 		const details = e.details as { toolCallId?: string; toolName?: string; partialResult?: unknown }
 		if (details.toolCallId) patchApplyPreview(s, details.toolCallId, details.toolName, details.partialResult, e.timestamp)
@@ -964,6 +1003,8 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       ttftMs: m.ttftMs,
       latencyMs: m.latencyMs,
       error: m.errorMessage,
+      cancelReason: m.cancelReason,
+      cancelSource: m.cancelSource,
 	  stopReason: m.stopReason,
       ts: tsMs(m, stamp),
       truncated,
@@ -1227,6 +1268,23 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
       break
     case 'run_aborted':
       next.stopping = true
+      {
+        const id = ev.entryId || `run-aborted:${ev.runId || next.liveRevision}`
+        const repeatedLiveFrame = !!s.stopping && next.nodes.some(node =>
+          node.kind === 'cancellation' && node.reason === ev.reason && node.source === ev.cancelSource)
+        if (!next.nodes.some(node => node.id === id ||
+          (node.kind === 'cancellation' && ev.runId && node.runId === ev.runId)) &&
+          !repeatedLiveFrame) {
+          next.nodes.push({
+            kind: 'cancellation',
+            id,
+            runId: ev.runId,
+            reason: ev.reason,
+            source: ev.cancelSource,
+            ts: ev.timestamp,
+          })
+        }
+      }
       break
     case 'extension_notice':
     case 'extension_ui_prompt':
@@ -1458,6 +1516,8 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
     ttftMs: m.ttftMs ?? node.ttftMs,
     latencyMs: m.latencyMs ?? node.latencyMs,
     error: m.errorMessage || node.error,
+	cancelReason: m.cancelReason || node.cancelReason,
+	cancelSource: m.cancelSource || node.cancelSource,
 	stopReason: m.stopReason || node.stopReason,
     streaming: ev.type !== 'message_end',
   }

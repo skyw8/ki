@@ -76,6 +76,24 @@ func TestCompactProjectionFoldsRuntimeUserMessages(t *testing.T) {
 	}
 }
 
+func TestCompactProjectionKeepsRunAbortedVisible(t *testing.T) {
+	entries := []Entry{
+		{Type: "message", ID: "u0", Message: &types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "human"}}}},
+		{Type: "message", ID: "a0", ParentID: "u0", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "older"}}}},
+		{Type: "message", ID: "a1", ParentID: "a0", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "newer"}}}},
+		{Type: "message", ID: "a2", ParentID: "a1", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "partial"}}, StopReason: "aborted"}},
+		{Type: "run_aborted", ID: "x0", ParentID: "a2", Details: map[string]any{"reason": "user_request", "source": "webui"}},
+	}
+	page := BuildCompact(entries, "", "", 1)
+	if len(page.Turns) != 1 || page.Turns[0].HiddenCount != 1 ||
+		!slices.Equal(page.Turns[0].VisibleNodeIDs, []string{"u0", "a1", "a2", "x0"}) {
+		t.Fatalf("run_aborted was folded or consumed keep: %+v", page)
+	}
+	if !slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "x0" }) {
+		t.Fatal("run_aborted body missing from compact page")
+	}
+}
+
 func TestCompactProjectionKeepsFoldAnchorForMachineOnlyTurn(t *testing.T) {
 	entries := []Entry{
 		{Type: "message", ID: "directive", Message: &types.Message{Role: "user", Origin: "agent", Content: []types.Content{{Type: "text", Text: "subagent directive"}}}},

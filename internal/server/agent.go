@@ -271,6 +271,18 @@ func (s *Server) notifyAgentCompletion(parentID, taskID, description, outputFile
 	} else if task, ok := s.agentTasks.Get(taskID); ok && task.Status == tools.TaskInterrupted {
 		status = "interrupted"
 		result = task.Error
+	} else if errors.Is(runErr, context.Canceled) {
+		status = "cancelled"
+		if task, ok := s.agentTasks.Get(taskID); ok {
+			reason, source := runCancellation(s.runAt(task.SessionID))
+			result = reason
+			if source != "" {
+				result += " (" + source + ")"
+			}
+		}
+		if result == "" {
+			result = "cancelled"
+		}
 	} else if runErr != nil {
 		status = "failed"
 		result = runErr.Error()

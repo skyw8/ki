@@ -361,7 +361,7 @@ func (s *Server) abortRun(id string) {
 	if st == nil {
 		return
 	}
-	st.cancel()
+	s.cancelRun(id, st, cancelReasonSessionDelete, "server", false)
 	<-st.done
 }
 

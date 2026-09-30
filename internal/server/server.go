@@ -114,7 +114,12 @@ type runState struct {
 	cancel   context.CancelFunc
 	runID    string
 	external map[string]string
-	mu       sync.Mutex
+	// cancelReason/source are first-writer-wins diagnostics. The context API
+	// collapses every caller to context.Canceled, so retain the initiating
+	// boundary before invoking cancel.
+	cancelReason string
+	cancelSource string
+	mu           sync.Mutex
 	// evs holds pointers so a trimmed ("blank") slot collapses to one word plus
 	// the shared blankEvent instead of a 424-byte loop.Event per chunk. A
 	// long turn streams tens of thousands of chunks; their slots must not
@@ -1080,7 +1085,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			select {
 			case <-st.done:
 			default:
-				st.cancel()
+				s.cancelRun("", st, cancelReasonServerShutdown, "server", false)
 				active = append(active, st)
 			}
 		}
@@ -2155,6 +2160,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		return
 	}
 	defer func() { _ = sess.Close() }()
+	defer s.persistRunCancellation(sess, st)
 	runTelemetry := telemetry.NewRun(sess.Dir, id, st.runID)
 	defer runTelemetry.Close()
 	var externalMeta map[string]string
@@ -2427,6 +2433,27 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 	}
 	st.err = err
+}
+
+// persistRunCancellation commits the user-visible cancellation row after the
+// loop's terminal output. It is a normal non-message leaf: provider replay
+// ignores it, while session history and branch navigation retain it in the
+// exact position where the run stopped.
+func (s *Server) persistRunCancellation(sess *session.Session, st *runState) {
+	reason, source := runCancellation(st)
+	if reason == "" {
+		return
+	}
+	details := map[string]any{"reason": reason}
+	if source != "" {
+		details["source"] = source
+	}
+	if st.runID != "" {
+		details["runId"] = st.runID
+	}
+	if _, err := sess.AppendDetailsEvent(string(loop.RunAborted), details); err != nil {
+		st.err = errors.Join(st.err, fmt.Errorf("persist run cancellation: %w", err))
+	}
 }
 
 func usableUsage(usage *types.Usage) bool {
@@ -3189,18 +3216,38 @@ func parseCursor(r *http.Request, runID string) int64 {
 
 func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	var body struct {
+		Source string `json:"source"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			http.Error(w, "invalid abort request", http.StatusBadRequest)
+			return
+		}
+	}
+	source := strings.TrimSpace(body.Source)
+	if source == "" {
+		source = "api"
+	}
 	s.mu.Lock()
 	st := s.runs[id]
 	s.mu.Unlock()
 	if st != nil {
-		s.publishRunAborted(id)
-		st.cancel()
+		s.cancelRun(id, st, cancelReasonUserRequest, source, true)
+		st.mu.Lock()
+		runID := st.runID
+		st.mu.Unlock()
+		slog.Info("run abort requested", "session_id", id, "run_id", runID, "reason", cancelReasonUserRequest, "source", source)
 		if s.ext != nil {
 			s.ext.CloseSession(id)
 		}
 	}
 	s.cancelUIPrompts(id)
-	writeJSON(w, 200, map[string]any{"aborted": true})
+	writeJSON(w, 200, map[string]any{
+		"aborted": st != nil, "reason": cancelReasonUserRequest, "source": source,
+	})
 }
 
 func (s *Server) doCompact(w http.ResponseWriter, r *http.Request, suppliedInstructions ...string) {

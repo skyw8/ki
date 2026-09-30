@@ -65,7 +65,9 @@
 // Prepared standalone/local compactions re-read config.activeLeafId under that
 // same gate before append, so a second Session handle cannot commit a stale cut.
 // Slim views never expose encrypted checkpoint items.
-// Asynchronous sideband rows never advance activeLeafId.
+// Asynchronous sideband rows never advance activeLeafId. A run cancellation is
+// published live immediately, then committed after terminal output as a normal
+// non-message leaf so branch history renders it in order without model replay.
 // config.json owns provider/model/thinking effort plus
 // title and pin. Skills/extension enablement is process-wide ({KI_HOME}/toggles.json).
 // Remove deletes the session directory.

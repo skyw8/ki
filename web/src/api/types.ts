@@ -33,6 +33,8 @@ export type Message = {
   usage?: Usage | null
   stopReason?: string
   errorMessage?: string
+  cancelReason?: string
+  cancelSource?: string
   toolCallId?: string
   toolName?: string
 	toolType?: string
@@ -130,6 +132,7 @@ export type LoopEvent = {
 	/** Per-run SSE sequence number, the cursor a client resumes from. */
 	seq?: number
   reason?: string
+  cancelSource?: string
   ok?: boolean
 	status?: 'committed' | 'empty' | 'cancelled' | 'failed' | string
 	willRetry?: boolean
@@ -451,9 +454,10 @@ export type Meta = {
 
 export type ChatNode =
   | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string; truncated?: boolean }
-  | { kind: 'assistant'; id: string; renderKey?: string; display?: DisplayRevision; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number; truncated?: boolean }
+  | { kind: 'assistant'; id: string; renderKey?: string; display?: DisplayRevision; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; cancelReason?: string; cancelSource?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number; truncated?: boolean }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; startedAt?: number; running?: boolean; truncated?: boolean }
   | { kind: 'compaction'; id: string; summary: string; ts?: number; tokensBefore?: number; running?: boolean; failed?: boolean; empty?: boolean; truncated?: boolean }
+  | { kind: 'cancellation'; id: string; runId?: string; reason?: string; source?: string; ts?: number; truncated?: boolean }
 
 export type PromptSnapshot = {
   provider?: string

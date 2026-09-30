@@ -27,11 +27,15 @@ sideband 事件可以并发到达。
 | 工具执行 | `tool_execution_start`、`tool_execution_update`、`tool_execution_end` | 工具开始、进度和结束。 |
 | Patch 预览 | `patch_apply_updated` | `apply_patch` 参数仍在生成时的非执行语法预览；最终执行结果覆盖预览。 |
 | 压缩 | `compaction_start`、`compaction_end` | preflight、overflow recovery、threshold、手动 `/compact`，以及 Responses server-side compaction。`reason` 保持触发原因；end 另带 `status=committed|empty|cancelled|failed`、`strategy`、`fromExtension`、cut/token/usage 元数据，overflow 带 `willRetry=true`。 |
-| 队列和控制 | `queue_changed`、`steer_accepted`、`run_aborted` | 队列变化、实时 Inbox 接收和中止；`steer_accepted` 不是 JSONL leaf（run 在 drain 前被 abort 时，待处理 steer 会作为未回复的 user turn 落盘）。parent 的 run 还活着时，子代理完成通知也走这条 Inbox 路径（于是它以 `steer_accepted` 先到 push、随后由 drain 产生 `message_*`），run 已结束才落到 `queue_changed` + durable queue。 |
+| 队列和控制 | `queue_changed`、`steer_accepted`、`run_aborted` | 队列变化、实时 Inbox 接收和中止；`run_aborted` 的 `reason` / `cancelSource` 记录权威取消入口和诊断客户端。事件先实时发布，loop 写完终止输出后再以普通非 message leaf 持久化 `reason` / `source`，因此历史视图能在正确分支和顺序中单独显示它。对应的 aborted assistant message 也保存 `cancelReason` / `cancelSource`，诊断不必从 `context canceled` 猜原因。`steer_accepted` 不是 JSONL leaf（run 在 drain 前被 abort 时，待处理 steer 会作为未回复的 user turn 落盘）。parent 的 run 还活着时，子代理完成通知也走这条 Inbox 路径（于是它以 `steer_accepted` 先到 push、随后由 drain 产生 `message_*`），run 已结束才落到 `queue_changed` + durable queue。 |
 | 扩展 UI/状态 | `extension_error`、`extension_notice`、`extension_ui_prompt` | 扩展失败、toast，或 WebUI 确认/选择弹层。 |
 | Runtime | `runtime_ready` | session 打开时的扩展视图准备结束；成功或失败都会解锁 session。 |
 | 仅扩展生命周期 | `agent_settled` | `agent_end` 后 Host 收尾完成；发送给 lifecycle subscriber，不进入普通运行 SSE。 |
 | WebUI push | `extension_ui_updated` | 扩展 status/panel/prompt 投影变化；客户端重新读取 session。它不是 `loop.EventType` 常量，只在 `GET /v1/events` 上带 `sessionId`下发。 |
+
+WebUI 的 stop 请求发送 `source=webui`，CLI 的 Ctrl+C 发送 `source=cli`；未声明来源的
+HTTP 调用记为 `api`。服务端同时向 `{KI_HOME}/ki.jsonl` 写
+`run abort requested`，带 `session_id`、`run_id`、`reason`、`source`。
 
 `GET /v1/sessions/{id}/events` 是某个 run 的有序回放（`agent_end` 结束）。
 一个整轮模型调用期间可能长时间没有可发的帧，所以该流和 `GET /v1/events` 一样按
@@ -308,7 +312,7 @@ par 队列和控制
   User -> Server: queue / steer / abort
   Server -> SSE: queue_changed / steer_accepted / run_aborted
   Server -> Push: queue_changed / run_aborted
-  Server -> JSONL: 按情况持久化 sideband
+  Server -> JSONL: run_aborted 在终止输出后持久化为分支 leaf；其余按情况持久化 sideband
 else 扩展 UI
   Extension -> Server: notice / error / confirm / select
   Server -> Push: extension_notice / extension_error / extension_ui_prompt

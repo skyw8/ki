@@ -115,9 +115,9 @@ function isLive(n: ChatNode): boolean {
  * the streaming text or the running tool would hide exactly what the user is
  * waiting for.
  *
- * Compaction rows are metadata, not replies: they are always shown on their own
- * row and never counted toward `keep`. Counting them was why a compaction that
- * trails a turn folded away that turn's final answer.
+ * Compaction and cancellation rows are metadata, not replies: they are always
+ * shown on their own row and never counted toward `keep`. Counting them would
+ * let trailing lifecycle metadata fold away the turn's final answer.
  *
  * Liveness comes from lifecycle reconciliation, not node position: parallel
  * tools finish out of order and an earlier sibling can still be running.
@@ -130,7 +130,9 @@ function isLive(n: ChatNode): boolean {
  * one, and its tool chatter is exactly what compact mode hides.
  */
 function hiddenReplyIds(rest: ChatNode[], keep: number): Set<string> {
-  const replies = rest.filter(n => n.kind !== 'compaction')
+  const replies = rest.filter(n =>
+    n.kind !== 'compaction' && n.kind !== 'cancellation' &&
+    !(n.kind === 'assistant' && n.stopReason === 'aborted'))
   const cut = Math.max(0, replies.length - keep)
   const live = replies.findIndex(isLive)
   const hidden = live < 0 ? cut : Math.min(cut, live)
@@ -159,7 +161,7 @@ export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderIte
     const hidden = hiddenIds.size
     const summary = !loaded.has(turn.id) ? summaries.get(turn.id) : undefined
     const observed = new Set(rest.map(n => n.id))
-    const snapshotReplies = summary?.baselineNodes?.filter(n => n.kind !== 'user') ?? []
+    const snapshotReplies = summary?.baselineNodes?.filter(n => n.kind !== 'user' && n.kind !== 'compaction' && n.kind !== 'cancellation') ?? []
     const snapshotCount = summary ? summary.hiddenCount + summary.visibleNodeIds.filter(id => id !== summary.id).length : 0
     const overlap = snapshotReplies.filter(n => observed.has(n.id)).length
     const missing = summary ? Math.max(0, snapshotCount - overlap) : 0

@@ -80,6 +80,7 @@ test('foldReplies keeps an earlier running sibling visible until lifecycle settl
 })
 
 const compact = (id: string, summary = 'sum'): ChatNode => ({ kind: 'compaction', id, summary })
+const cancelled = (id: string): ChatNode => ({ kind: 'cancellation', id, reason: 'user_request', source: 'webui' })
 
 test('foldReplies never folds a compaction row or lets it consume a keep slot', () => {
   // A checkpoint trailing the turn must not hide the newest reply.
@@ -93,6 +94,22 @@ test('foldReplies never folds a compaction row or lets it consume a keep slot', 
 
   // A mid-turn compaction (overflow) stays visible while older replies fold.
   expect(foldReplies([user('u1', 'one'), asst('a1'), compact('c1'), asst('a2')], { keep: 1 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'c1', 'a2'])
+})
+
+test('foldReplies never folds a cancellation row or lets it consume a keep slot', () => {
+  const items = foldReplies([user('u1', 'one'), asst('a1a'), asst('a1b'), cancelled('x1')], { keep: 1 })
+  expect(items.map(i => i.id)).toEqual(['u1', 'fold:u1', 'a1b', 'x1'])
+  const folded = items.find(i => i.kind === 'fold')
+  expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1a'])
+
+  expect(foldReplies([user('u1', 'one'), asst('a1'), cancelled('x1')], { keep: 0 }).map(i => i.id))
+    .toEqual(['u1', 'fold:u1', 'x1'])
+})
+
+test('foldReplies keeps a legacy aborted assistant visible for its cancellation row', () => {
+  const aborted: ChatNode = { kind: 'assistant', id: 'a2', text: 'partial', stopReason: 'aborted' }
+  expect(foldReplies([user('u1', 'one'), asst('a1'), aborted, cancelled('x1')], { keep: 0 }).map(i => i.id))
+    .toEqual(['u1', 'fold:u1', 'a2', 'x1'])
 })
 
 test('clampCompactKeep bounds the configured N', () => {

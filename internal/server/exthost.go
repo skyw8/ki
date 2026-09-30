@@ -483,7 +483,7 @@ func (s *Server) AppendEntry(sessionID, extName, customType string, data any) er
 func (s *Server) Abort(sessionID string) error {
 	st := s.runAt(sessionID)
 	if st != nil {
-		st.cancel()
+		s.cancelRun(sessionID, st, cancelReasonExtension, "extension", true)
 	}
 	s.cancelUIPrompts(sessionID)
 	return nil

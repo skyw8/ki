@@ -215,11 +215,10 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 	type node struct {
 		id, preview string
 		entries     []int
-		// compaction marks a checkpoint row. It is metadata, not a reply: it is
-		// always shown on its own and never counted toward `keep`, otherwise a
-		// compaction trailing a turn would push that turn's newest reply into
-		// the fold (see the selection below).
-		compaction bool
+		// alwaysVisible marks lifecycle metadata, not a reply. These rows stay
+		// on their own and never count toward `keep`, otherwise a trailing
+		// compaction/cancellation would hide the newest real reply.
+		alwaysVisible bool
 	}
 	var nodes []node
 	tools := map[string]int{}
@@ -246,7 +245,10 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			batch = map[string]int{}
 			toolStates = []TurnToolState{}
 			lastStep = &TurnStep{Usage: m.Usage, TTFTMs: m.TTFTMs, LatencyMs: m.LatencyMs}
-			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}})
+			// Legacy sessions stored run_aborted as an unparented sideband.
+			// Keep their branch-correct aborted assistant visible so the client
+			// can synthesize the standalone cancellation row.
+			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}, alwaysVisible: m.StopReason == "aborted"})
 			stats.Steps++
 			stats.DurationMS += m.LatencyMs
 			assistantAt = max(assistantAt, entryMillis(e))
@@ -318,11 +320,13 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			if e.Responses != nil {
 				preview = "Provider remote compaction"
 			}
-			nodes = append(nodes, node{id: e.ID, preview: preview, entries: []int{i}, compaction: true})
+			nodes = append(nodes, node{id: e.ID, preview: preview, entries: []int{i}, alwaysVisible: true})
 			stats.Steps++
 			// A compaction rewrites the context, so the client restarts its
 			// cache comparison here too.
 			prevPrompt, cacheReported = 0, false
+		case e.Type == "run_aborted":
+			nodes = append(nodes, node{id: e.ID, preview: "Run cancelled", entries: []int{i}, alwaysVisible: true})
 		}
 	}
 	stats.Tools = len(tools)
@@ -346,11 +350,11 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 		selected[nodes[0].entries[0]] = true
 	}
 	// Fold only real replies: the newest `keep` of them stay visible, and every
-	// compaction row stays visible too. Counting a compaction toward `keep`
-	// made a trailing checkpoint hide the turn's final answer.
+	// lifecycle metadata row stays visible too. Counting one toward `keep`
+	// would make a trailing status hide the turn's final answer.
 	var replies []int
 	for i, n := range nodes {
-		if !n.compaction {
+		if !n.alwaysVisible {
 			replies = append(replies, i)
 		}
 	}

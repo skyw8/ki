@@ -22,6 +22,10 @@
 // "this changed, refetch it through the ordinary REST endpoint") and session
 // sideband loop events tagged with sessionId (agent_end, run_aborted,
 // runtime_ready, extension notices/UI, manual compaction, queue changes). It
+// publishes run_aborted immediately, then persists it after terminal output as
+// a branch-visible non-message leaf; the terminal assistant also retains
+// reason/source diagnostics, so clients do not infer provenance from the
+// generic context.Canceled error.
 // replaced the per-running-session notification stream, so one tab holds one
 // push connection instead of one per running session. Nothing is replayed: the
 // ready frame is the client's cue to refetch, which is also how a reconnect
