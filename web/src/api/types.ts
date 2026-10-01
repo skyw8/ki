@@ -381,6 +381,8 @@ export type SessionDetail = Partial<SessionInfo> & {
   extQueued?: QueuedItem[]
   extensionUi?: ExtensionUI[]
   runtime?: { ready: boolean }
+  /** fields=system: the newest request_header's full system prompt. */
+  systemPrompt?: string
 }
 
 /** Whole-turn sparse projection. Hidden reply bodies are fetched on expansion. */

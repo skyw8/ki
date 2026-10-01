@@ -65,7 +65,9 @@
 // pages, exact bodies and compact views never promote the full body cache. A session smaller than one
 // tail read, which is read in full anyway, still answers with the index so the
 // WebUI needs no second request. fields=runtime omits the transcript
-// entirely; fields=index,runtime includes tail/index/runtime together.
+// entirely; fields=index,runtime includes tail/index/runtime together, and
+// fields=runtime,system adds the newest request_header's system prompt
+// hydrated from the body-free snapshot without returning the tail.
 // entry/entries fetch full bodies; before+limit pages older leaf
 // entries backwards from oldestId. The default tail is a byte window of the
 // transcript (LeafTail), not the whole branch, so hasMore stays true until a

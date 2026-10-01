@@ -1201,7 +1201,13 @@ test('session info lists skills and extensions; toggles live in settings', async
   await expect(page.getByTestId('session-info')).toBeVisible()
   await expect(page.getByTestId('cfg-skill').filter({ hasText: 'demo-skill' })).toBeVisible()
   await expect(page.getByTestId('info-outline')).toContainText('demo-skill')
+  await expect(page.getByTestId('info-outline')).toContainText('系统提示词')
   await expect(page.getByTestId('info-reload')).toBeVisible()
+
+  // The last section is the complete system prompt, shown raw from the
+  // request_header the run persisted.
+  await expect(page.getByTestId('cfg-system-prompt-text')).toContainText('You are a helpful assistant operating inside ki')
+  await expect(page.getByTestId('cfg-system-prompt-copy')).toBeVisible()
 
   await page.getByTestId('info-edit').click()
   await expect(page.getByTestId('settings-tab-extensions')).toBeVisible()

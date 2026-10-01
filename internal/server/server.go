@@ -1335,18 +1335,24 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		limit = session.ClampViewLimit(n)
 	}
 	withIndex := hasField(fields, "index")
-	runtimeOnly := hasField(fields, "runtime") && !withIndex && entryID == "" && batch == "" && before == "" && turnID == ""
-	full := entryID != "" || batch != "" || before != "" || withIndex || compact || traceView || inspectView || turnID != ""
+	withSystem := hasField(fields, "system")
+	// A projection answers from a body-free snapshot: runtime readiness plus,
+	// when asked, the newest system prompt. fields=system still forces the
+	// transcript read because the request_header body only lives in the jsonl,
+	// but the response stays free of the transcript tail.
+	projectionOnly := (hasField(fields, "runtime") || withSystem) && !withIndex && entryID == "" && batch == "" && before == "" && turnID == ""
+	full := entryID != "" || batch != "" || before != "" || withIndex || compact || traceView || inspectView || turnID != "" || withSystem
 
 	var snap *sessionSnap
 	var err error
-	if runtimeOnly && !traceView && !inspectView {
-		snap, err = s.loadSessionSnap(id, false, 0)
-	} else if full && !traceView && !inspectView {
+	switch {
+	case full && !traceView && !inspectView:
 		snap, err = s.loadIndexedSessionSnap(id)
-	} else if full {
+	case full:
 		snap, err = s.loadSessionSnap(id, true, 0)
-	} else {
+	case projectionOnly:
+		snap, err = s.loadSessionSnap(id, false, 0)
+	default:
 		snap, err = s.loadSessionSnap(id, false, limit)
 	}
 	if err != nil {
@@ -1520,7 +1526,10 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if runtimeOnly {
+	if projectionOnly {
+		if withSystem {
+			runtime["systemPrompt"] = snap.systemPrompt()
+		}
 		writeJSON(w, 200, s.sessionMapSnap(snap, runtime))
 		return
 	}

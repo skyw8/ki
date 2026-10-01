@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import type { Client } from '../../api/client'
-import { ICheck, IChevDown, IEdit, IRegen } from '../../components/icons'
+import { ICheck, IChevDown, ICopy, IEdit, IRegen } from '../../components/icons'
+import { copyText } from '../../lib/clipboard'
 import { useI18n, type Lang, type MsgKey, type TFn } from '../../i18n/index'
 import { ModelPickerDialog } from './ModelPickerDialog'
 import { Select } from '../../components/Select'
@@ -121,6 +122,7 @@ export function SessionConfig({
       label: t('cfg.commands'),
       children: commands.map((item, i) => ({ id: `info-command-${i}`, label: `/${item.name}` })),
     },
+    { id: 'info-system', label: t('cfg.systemPrompt') },
   ], [commands, extensions, skills, t])
   const outlineItems = useMemo(() => flattenOutline(outlineGroups), [outlineGroups])
 
@@ -131,7 +133,7 @@ export function SessionConfig({
     }
     setLoading(true)
     try {
-      setDetail(await api.get(sessionId, { fields: 'runtime' }))
+      setDetail(await api.get(sessionId, { fields: 'runtime,system' }))
     } catch (e) {
       toast.from(e)
     } finally {
@@ -288,6 +290,7 @@ export function SessionConfig({
               </ul>
             )}
           </section>
+          <SystemPromptBlock text={detail?.systemPrompt ?? ''} loading={loading} />
           {busy ? <p className="cfg-hint">{t('cfg.hintBusy')}</p> : null}
         </div>
 
@@ -314,6 +317,52 @@ export function SessionConfig({
         </aside>
       </div>
     </div>
+  )
+}
+
+/**
+ * The complete system prompt the model last received, shown raw. It is the
+ * rendered prompt from the newest request_header, not a re-render, so the block
+ * only frames and copies it instead of interpreting the text.
+ */
+function SystemPromptBlock({ text, loading }: { text: string; loading: boolean }) {
+  const { t } = useI18n()
+  const [copied, setCopied] = useState(false)
+  const timer = useRef(0)
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+  const stats = useMemo(() => ({ lines: text ? text.split('\n').length : 0, chars: text.length }), [text])
+  return (
+    <section className="cfg-block" id="info-system">
+      <h2 className="cfg-h">{t('cfg.systemPrompt')}</h2>
+      {text ? (
+        <div className="cfg-prompt" data-testid="cfg-system-prompt">
+          <header className="cfg-prompt-bar">
+            <span className="cfg-prompt-stats" data-testid="cfg-system-prompt-stats">
+              {t('cfg.systemPromptStats', { lines: String(stats.lines), chars: String(stats.chars) })}
+            </span>
+            <button
+              type="button"
+              className={`cfg-btn cfg-prompt-copy${copied ? ' done' : ''}`}
+              data-testid="cfg-system-prompt-copy"
+              onClick={() => {
+                void copyText(text).then(ok => {
+                  if (!ok) return
+                  setCopied(true)
+                  window.clearTimeout(timer.current)
+                  timer.current = window.setTimeout(() => setCopied(false), 1500)
+                })
+              }}
+            >
+              {copied ? <ICheck /> : <ICopy />}
+              <span>{copied ? t('md.copied') : t('chat.copy')}</span>
+            </button>
+          </header>
+          <pre className="cfg-prompt-text" data-testid="cfg-system-prompt-text">{text}</pre>
+        </div>
+      ) : (
+        <p className="cfg-empty" data-testid="cfg-system-prompt-empty">{loading ? t('file.loading') : t('cfg.systemPromptEmpty')}</p>
+      )}
+    </section>
   )
 }
 

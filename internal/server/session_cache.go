@@ -150,3 +150,35 @@ func (snap *sessionSnap) index() []session.IndexEntry {
 	}
 	return session.BuildIndex(snap.entries)
 }
+
+// systemPrompt returns the system prompt of the newest request_header on the
+// active leaf. The body-free transcript snapshot clears that field, so the
+// header row is re-read by offset; the fallback covers a full snapshot whose
+// bodies were never dropped.
+func (snap *sessionSnap) systemPrompt() string {
+	entries := snap.entries
+	if snap.transcript != nil {
+		entries = snap.transcript.Entries()
+	}
+	id := ""
+	for _, e := range slices.Backward(session.LeafChain(entries, snap.leafID)) {
+		if e.Type == "request_header" {
+			id = e.ID
+			break
+		}
+	}
+	if id == "" {
+		return ""
+	}
+	if snap.transcript != nil {
+		if got, err := snap.transcript.Lookup([]string{id}); err == nil && len(got) > 0 {
+			return got[0].System
+		}
+	}
+	for _, e := range entries {
+		if e.ID == id {
+			return e.System
+		}
+	}
+	return ""
+}

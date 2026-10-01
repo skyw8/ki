@@ -2230,6 +2230,14 @@
 }
 .cfg-desc { margin: 4px 0 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-tertiary); word-break: break-word; }
 .cfg-empty, .cfg-hint { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-caption); }
+/* Raw system-prompt viewer: a framed code card with a copy affordance. The body
+   scrolls instead of stretching the info column, so a large prompt stays
+   reachable without pushing later content off screen. */
+.cfg-prompt { border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
+.cfg-prompt-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-module-platform); }
+.cfg-prompt-stats { color: var(--dsw-alias-label-caption); font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.cfg-prompt-copy { flex: none; }
+.cfg-prompt-text { margin: 0; max-height: min(52vh, 640px); overflow: auto; padding: 16px; background: var(--dsw-alias-markdown-code); color: var(--dsw-alias-label-secondary); font: 12px/19px var(--ds-font-family-code); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
 .cfg-extension-list { display: grid; gap: 16px; }
 .cfg-extension {
   padding: 16px 18px 18px;

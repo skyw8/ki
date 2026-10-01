@@ -3032,6 +3032,46 @@ func TestSessionTailAPI(t *testing.T) {
 	}
 }
 
+// TestSessionSystemPromptField: fields=runtime,system hydrates the newest
+// request_header without shipping the transcript tail, and a session that never
+// ran reports no prompt.
+func TestSessionSystemPromptField(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	dir, ok := srv.sidx.Lookup(id)
+	if !ok {
+		t.Fatal("session dir")
+	}
+	sess, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Repeated prompts land as multiple request_header rows; the viewer must
+	// still resolve the current one instead of a promptUnchanged placeholder.
+	if err := sess.SeedTranscript(session.SeedSpec{Turns: 4, Title: "system-field", RepeatSamePrompt: true}); err != nil {
+		t.Fatal(err)
+	}
+	_ = sess.Close()
+
+	got := sessionGETURL(t, hs, "/v1/sessions/"+id+"?fields=runtime,system")
+	if _, ok := got["entries"]; ok {
+		t.Fatal("fields=runtime,system must omit entries")
+	}
+	if _, ok := got["runtime"]; !ok {
+		t.Fatalf("runtime payload: %+v", got)
+	}
+	system, _ := got["systemPrompt"].(string)
+	if !strings.HasPrefix(system, "perf-system ") {
+		t.Fatalf("systemPrompt = %q", system)
+	}
+
+	empty := createSession(t, hs, t.TempDir())
+	none := sessionGETURL(t, hs, "/v1/sessions/"+empty+"?fields=runtime,system")
+	if none["systemPrompt"] != "" {
+		t.Fatalf("empty session systemPrompt = %v", none["systemPrompt"])
+	}
+}
+
 func sessionGETURL(t *testing.T, hs *httptest.Server, path string) map[string]any {
 	t.Helper()
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+path, nil)

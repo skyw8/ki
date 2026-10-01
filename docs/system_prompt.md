@@ -28,6 +28,8 @@ Prompt templates 不直接进入 system prompt，只用于 slash command 展开�
 
 内置层（`prompt.DefaultAppendSystemPrompt`）与扩展层在设置页只读：前者是 harness 不变量，后者跟随扩展包更新。要让某段文字不再出现，删对应文件即可。
 
+WebUI 的会话信息页在末尾展示该会话最近一次请求实际发送的完整 system prompt：`GET /v1/sessions/{id}?fields=runtime,system` 从最新 `request_header` 行读回 `system` 原文（按 offset 补读该行，不重新渲染），所以与模型收到的内容逐字节一致；从未运行过的会话为空。
+
 ## Reload
 
 以下情况会执行全局 reload：
