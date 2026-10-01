@@ -29,9 +29,10 @@ test('capture layout shots', async ({ page }, testInfo) => {
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
   await page.screenshot({ path: `${dir}/04-chat.png` })
 
-  await page.getByTestId('tab-trajectory').click()
-  await expect(page.getByTestId('trajectory')).toBeVisible()
-  await page.screenshot({ path: `${dir}/05-trajectory.png` })
+  await page.getByTestId('tab-context').click()
+  await expect(page.getByTestId('context-view')).toBeVisible()
+  await expect(page.getByTestId('context-step')).toHaveCount(1)
+  await page.screenshot({ path: `${dir}/05-context.png` })
 
   await page.getByTestId('tab-config').click()
   await expect(page.getByTestId('session-info')).toBeVisible()

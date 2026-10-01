@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { ApiError, Client } from './api/client'
 import { AuthLoading, LoginScreen } from './features/settings/AuthScreen'
 import { ChatView } from './features/chat/Chat'
+import { conversationTarget, conversationTargetTurn } from './features/chat/conversationTarget'
 import { ImagePreviewProvider } from './features/attachments/AttachmentImage'
 import { useTranscriptRequests } from './features/chat/useTranscriptRequests'
 import type { TranscriptScroll } from './features/chat/useTranscriptScroll'
@@ -19,7 +20,7 @@ import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, I
 import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats, userRequests } from './lib/model'
 import { clampCompactKeep, loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
 import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, PushEvent, SearchHit, SessionInfo, WorkspaceInfo } from './api/types'
-import { TrajectoryView } from './features/chat/Trajectory'
+import { ContextView } from './features/context/ContextView'
 import { useI18n } from './i18n/index'
 import { toast } from './components/toast'
 import { ExtensionInspector, localizedExtensionText, seedExtFields, statusChips, visibleStatusChips } from './features/settings/ExtensionPanel'
@@ -36,7 +37,7 @@ import { SessionSyncController } from './lib/session-sync'
 import { clientRequestId } from './lib/client-request'
 import { ancestorsOf, buildSessionForest, orderedChildren, pinnedFirst, topLevelRoot } from './lib/session-tree'
 
-type Tab = 'conversation' | 'trajectory' | 'config'
+type Tab = 'conversation' | 'context' | 'config'
 type SettingsPage = 'providers' | 'skills' | 'tools' | 'extensions' | 'prompt' | 'message' | 'notifications' | 'appearance'
 const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'extensions', 'prompt', 'message', 'notifications', 'appearance']
 const SHOW = 5
@@ -332,7 +333,8 @@ function WorkspaceApp({ api }: { api: Client }) {
   const [rename, setRename] = useState<{ kind: 'ws' | 'sess'; id: string; title: string } | null>(null)
   const renameInputRef = useRef<HTMLInputElement>(null)
   const [confirmDel, setConfirmDel] = useState<{ kind: 'ws' | 'sess'; id: string; label: string; extra?: string } | null>(null)
-  const [inspId, setInspId] = useState<string | null>(null)
+  const [contextRequestId, setContextRequestId] = useState<string | null>(null)
+  const [contextFocusId, setContextFocusId] = useState<string | null>(null)
   const [atBottom, setAtBottom] = useState(true)
   const [jumpToId, setJumpToId] = useState<string | null>(null)
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
@@ -1458,12 +1460,25 @@ function WorkspaceApp({ api }: { api: Client }) {
   }, [byId, hits, localHits, untitled, workspaces])
 
   const inspect = (n: ChatNode) => {
-    setInspId(n.id)
-    setTab('trajectory')
-    // The trajectory table is built from the tree index; fetch it now instead
-    // of downloading it speculatively when the session opens.
+    setContextRequestId(null)
+    setContextFocusId(n.id)
+    setTab('context')
+    // Request associations may live outside the chat's loaded window. Keep
+    // the entry identity until the lazy index resolves its model request.
     if (currentId && !view.indexLoaded) void requestIndex(currentId)
   }
+  const focusedContextRequest = useMemo(() => {
+    if (!contextFocusId) return contextRequestId
+    const record = view.records.find(item => item.id === contextFocusId)
+    const requestId = record?.requestId ?? view.requests.find(request => request.resultId === contextFocusId)?.id
+    if (record?.kind === 'tool' && requestId) {
+      // A tool result is input to the following request, not the request that
+      // produced its call. At the tail it belongs to Current Context instead.
+      const index = view.requests.findIndex(request => request.id === requestId)
+      return index < 0 ? null : view.requests[index + 1]?.id ?? null
+    }
+    return requestId ?? null
+  }, [contextFocusId, contextRequestId, view.records, view.requests])
 
 	const startEdit = useCallback((node: Extract<ChatNode, { kind: 'user' }>) => {
 	  if (view.busy) return
@@ -1545,7 +1560,15 @@ function WorkspaceApp({ api }: { api: Client }) {
   useEffect(() => {
     setJumpToId(null)
     setActiveRequestId(null)
+    setContextRequestId(null)
+    setContextFocusId(null)
   }, [currentId])
+
+  useEffect(() => {
+    // Switching sessions while Context stays open must still load its request
+    // metadata; ordinary conversation opens never pay for the full index.
+    if (tab === 'context' && currentId && openingId !== currentId && !view.indexLoaded) void requestIndex(currentId)
+  }, [tab, currentId, openingId, view.indexLoaded, requestIndex])
 
   /**
    * Jump to a prompt from the navigator.
@@ -1559,24 +1582,39 @@ function WorkspaceApp({ api }: { api: Client }) {
     setJumpToId(null)
     const version = ++jumpVersion.current
     const sessionId = currentIdRef.current
+    let target = conversationTarget(viewRef.current, id)
     setSeekingId(id)
     setJumpErrorId(null)
     // Cached bodies may sit across an unloaded gap after recovery; only nodes
     // in the active window are immediately reachable by the scroll controller.
-    const have = new Set(viewRef.current.nodes.map(n => n.id))
     try {
-      while (!have.has(id)) {
+      while (!target || !viewRef.current.nodes.some(node => node.id === target)) {
+        const turnId = target && conversationTargetTurn(viewRef.current, target)
+        if (turnId && !viewRef.current.loadedTurnIds?.includes(turnId)) {
+          // Compact pages already cover this turn, but omit its hidden rows.
+          // Paging older cannot reveal them; hydrate exactly the owning turn.
+          const ok = await history.requestTurn(turnId)
+          if (version !== jumpVersion.current || sessionId !== currentIdRef.current) return
+          if (!ok) { setJumpErrorId(id); return }
+          target = conversationTarget(viewRef.current, id)
+          if (target && viewRef.current.nodes.some(node => node.id === target)) break
+        }
         const page = await loadOlder(500)
         if (version !== jumpVersion.current || sessionId !== currentIdRef.current) return
         if (!page) { setJumpErrorId(id); return }
-        for (const entry of page.entries ?? []) have.add(entry.id)
-        if (!have.has(id) && !page.hasMore) { setJumpErrorId(id); return }
+        target = conversationTarget(viewRef.current, id)
+        // History commits synchronously to the store. Raw page IDs include
+        // non-rendered headers/events and compact helpers: they cannot prove
+        // that Chat can seek this target, even if the HTTP page contains it.
+        const pendingTurn = target && conversationTargetTurn(viewRef.current, target)
+        const canLoadTurn = pendingTurn && !viewRef.current.loadedTurnIds?.includes(pendingTurn)
+        if ((!target || !viewRef.current.nodes.some(node => node.id === target)) && !viewRef.current.hasMore && !canLoadTurn) { setJumpErrorId(id); return }
       }
-      if (version === jumpVersion.current && sessionId === currentIdRef.current) setJumpToId(id)
+      if (version === jumpVersion.current && sessionId === currentIdRef.current) setJumpToId(target)
     } finally {
       if (version === jumpVersion.current) setSeekingId(null)
     }
-  }, [loadOlder])
+  }, [loadOlder, history.requestTurn])
   const clearJump = useCallback(() => setJumpToId(null), [])
   const queued = view.queued ?? []
   const extQueued = view.extQueued ?? []
@@ -1923,7 +1961,7 @@ function WorkspaceApp({ api }: { api: Client }) {
           </div>
           <div className="tabs">
             <button type="button" className={`tab${tab === 'conversation' ? ' active' : ''}`} data-testid="tab-conversation" onClick={() => setTab('conversation')}>{t('tab.conversation')}</button>
-            <button type="button" className={`tab${tab === 'trajectory' ? ' active' : ''}`} data-testid="tab-trajectory" onClick={() => { setTab('trajectory'); if (currentId && !view.indexLoaded) void requestIndex(currentId) }}>{t('tab.trajectory')}</button>
+            <button type="button" className={`tab${tab === 'context' ? ' active' : ''}`} data-testid="tab-context" onClick={() => setTab('context')}>{t('tab.context')}</button>
             <button type="button" className={`tab${tab === 'config' ? ' active' : ''}`} data-testid="tab-config" onClick={() => setTab('config')}>{t('tab.info')}</button>
           </div>
         </header>
@@ -1949,10 +1987,19 @@ function WorkspaceApp({ api }: { api: Client }) {
               }}
             />
           </div>
-        ) : tab === 'trajectory' ? (
+        ) : tab === 'context' ? (
           <div className="conv-body">
-            <TrajectoryView records={view.records} requests={view.requests} selectId={inspId} onHydrate={requestHydrate} />
-            {composer}
+            <ContextView
+              key={currentId ?? 'none'}
+              view={view}
+              selectedRequestId={focusedContextRequest}
+              onSelectRequest={id => { setContextFocusId(null); setContextRequestId(id) }}
+              onHydrate={requestHydrate}
+              onLocateEntry={id => { setTab('conversation'); void jumpToRequest(id) }}
+              indexLoading={indexLoading}
+              indexError={indexError}
+              onRetryIndex={() => { if (currentId) void requestIndex(currentId, true) }}
+            />
           </div>
         ) : (
           <div className="conv-body">
@@ -1973,6 +2020,7 @@ function WorkspaceApp({ api }: { api: Client }) {
 				  <ChatView
                     key={`${currentId}:${sessionRevision}`}
                     controlRef={chatControl}
+                    navigationPending={!!seekingId}
                     onAtBottom={setAtBottom}
                     onReadIntent={cancelJump}
                     compactTurns={view.compactTurns}

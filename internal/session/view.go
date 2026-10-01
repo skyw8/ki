@@ -31,22 +31,24 @@ const indexPreviewLen = 160
 
 // IndexEntry is a body-less row used for branches, stats, and the trajectory table.
 type IndexEntry struct {
-	Type         string       `json:"type"`
-	ID           string       `json:"id"`
-	ParentID     string       `json:"parentId,omitempty"`
-	Timestamp    string       `json:"timestamp,omitempty"`
-	Role         string       `json:"role,omitempty"`
-	Name         string       `json:"name,omitempty"`
-	Preview      string       `json:"preview,omitempty"`
-	ToolCallID   string       `json:"toolCallId,omitempty"`
-	Truncated    bool         `json:"truncated,omitzero"`
-	Usage        *types.Usage `json:"usage,omitempty"`
-	DurationMs   int64        `json:"durationMs"` // not omitempty: a fast tool reports a real 0ms
-	TTFTMs       int64        `json:"ttftMs,omitzero"`
-	Origin       string       `json:"origin,omitempty"`
-	Sideband     bool         `json:"sideband,omitzero"`
-	TokensBefore int          `json:"tokensBefore,omitzero"`
-	StopReason   string       `json:"stopReason,omitempty"`
+	Type            string           `json:"type"`
+	ID              string           `json:"id"`
+	ParentID        string           `json:"parentId,omitempty"`
+	Timestamp       string           `json:"timestamp,omitempty"`
+	Role            string           `json:"role,omitempty"`
+	Name            string           `json:"name,omitempty"`
+	Preview         string           `json:"preview,omitempty"`
+	ToolCallID      string           `json:"toolCallId,omitempty"`
+	Truncated       bool             `json:"truncated,omitzero"`
+	Usage           *types.Usage     `json:"usage,omitempty"`
+	DurationMs      int64            `json:"durationMs"` // not omitempty: a fast tool reports a real 0ms
+	TTFTMs          int64            `json:"ttftMs,omitzero"`
+	Origin          string           `json:"origin,omitempty"`
+	Sideband        bool             `json:"sideband,omitzero"`
+	TokensBefore    int              `json:"tokensBefore,omitzero"`
+	StopReason      string           `json:"stopReason,omitempty"`
+	RemoteContext   bool             `json:"remoteContext,omitempty"`
+	ContextEstimate *ContextEstimate `json:"contextEstimate,omitempty"`
 }
 
 // View is the WebUI projection of one session: a full-tree index plus a slimmed leaf tail.
@@ -242,6 +244,8 @@ func LookupEntries(entries []Entry, ids []string) []Entry {
 			continue
 		}
 		if e, ok := byID[id]; ok {
+			e = withContextEstimate(e)
+			e.RemoteContext = e.RemoteContext || e.Responses != nil
 			e.Responses = nil
 			out = append(out, e)
 		}
@@ -254,6 +258,8 @@ func LookupEntries(entries []Entry, ids []string) []Entry {
 func RedactProviderContext(entries []Entry) []Entry {
 	out := slices.Clone(entries)
 	for i := range out {
+		out[i] = withContextEstimate(out[i])
+		out[i].RemoteContext = out[i].RemoteContext || out[i].Responses != nil
 		out[i].Responses = nil
 	}
 	return out
@@ -348,10 +354,12 @@ func promptCursor(entries []Entry) (string, string, bool) {
 }
 
 func slimEntry(e Entry, prevSys, prevTools *string, seenHeader *bool, digests toolsDigests) Entry {
-	out := e
+	out := withContextEstimate(e)
 	out.RetainedTail = nil
 	// Provider-owned encrypted compaction state is never part of a session
-	// view. It is replayed only at the provider boundary.
+	// view. Preserve its kind before redaction so clients do not mistake the
+	// checkpoint for an empty local summary.
+	out.RemoteContext = out.RemoteContext || out.Responses != nil
 	out.Responses = nil
 	if out.Type == "request_header" {
 		key := digests.key(out)
@@ -414,14 +422,17 @@ func slimEntry(e Entry, prevSys, prevTools *string, seenHeader *bool, digests to
 }
 
 func indexOf(e Entry) IndexEntry {
+	e = withContextEstimate(e)
 	ix := IndexEntry{
-		Type:         e.Type,
-		ID:           e.ID,
-		ParentID:     e.ParentID,
-		Timestamp:    e.Timestamp,
-		Sideband:     e.Sideband,
-		TokensBefore: e.TokensBefore,
-		Usage:        e.Usage,
+		Type:            e.Type,
+		ID:              e.ID,
+		ParentID:        e.ParentID,
+		Timestamp:       e.Timestamp,
+		Sideband:        e.Sideband,
+		TokensBefore:    e.TokensBefore,
+		Usage:           e.Usage,
+		RemoteContext:   e.RemoteContext || e.Responses != nil,
+		ContextEstimate: e.ContextEstimate,
 	}
 	if e.Message != nil {
 		ix.Role = e.Message.Role
@@ -464,7 +475,7 @@ func indexOf(e Entry) IndexEntry {
 	case "request_header":
 		ix.Preview = previewOf(e.System)
 	case "compaction":
-		if e.Responses != nil {
+		if ix.RemoteContext {
 			ix.Preview = "Provider remote compaction"
 		} else {
 			ix.Preview = previewOf(e.Summary)

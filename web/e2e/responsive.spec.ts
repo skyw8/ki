@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { serverToken, statePath } from './global-setup.ts'
 import { goBinary } from './go-toolchain.ts'
 import { MIN_TOUCH_SIZE } from './touch-target.ts'
+import { openContextCategory, openContextItem } from './context.ts'
 
 // Every test is self-contained (verified standalone on its own server), so the
 // parallel runner may split this file into one isolated process per test.
@@ -684,14 +685,26 @@ for (const profile of profiles) {
       await expect(openImage).toBeFocused()
       await page.getByRole('button', { name: /移除附件|Remove attachment/ }).click()
 
-      await page.getByTestId('tab-trajectory').click()
-      await expect(page.getByTestId('trajectory')).toBeVisible()
-      await expectTouchTarget(profile, page.getByTestId('traj-zoom-out'), `${profile.name} trajectory zoom-out`)
-      await expectTouchTarget(profile, page.locator('.tl-bar').first(), `${profile.name} trajectory timeline record`)
-      await page.locator('[data-testid="traj-row"][data-kind="assistant"]').first().click()
-      await expectInsideViewport(page, page.getByTestId('traj-inspector'), `${profile.name} trajectory inspector`)
-      await expectNoPageOverflow(page, `${profile.name} trajectory`)
-      await expectTouchButtons(profile, page.getByTestId('trajectory'), `${profile.name} trajectory`)
+      await page.getByTestId('tab-context').click()
+      await expect(page.getByTestId('context-view')).toBeVisible()
+      await expectTouchTarget(profile, page.getByTestId('context-trend-delta'), `${profile.name} context delta mode`)
+      const step = page.getByTestId('context-step').first()
+      await step.scrollIntoViewIfNeeded()
+      await expectTouchTarget(profile, step, `${profile.name} context request`)
+      await step.click()
+      const select = page.getByTestId('context-request-select')
+      await select.scrollIntoViewIfNeeded()
+      await expectInsideViewport(page, select, `${profile.name} context request selector`)
+      await expectTouchTarget(profile, select, `${profile.name} context request selector`)
+      await select.selectOption('')
+      const human = await openContextCategory(page, 'human')
+      await expectTouchTarget(profile, human.locator(':scope > summary'), `${profile.name} context category`)
+      const item = human.locator('.context-item').first()
+      await expectTouchTarget(profile, item.locator(':scope > summary'), `${profile.name} context message`)
+      await openContextItem(item)
+      await expect(item).toContainText('touch-target-content')
+      await expectNoPageOverflow(page, `${profile.name} context browser`)
+      await expectTouchButtons(profile, page.getByTestId('context-view'), `${profile.name} context`)
 
       await page.getByTestId('tab-config').click()
       await expect(page.getByTestId('session-info')).toBeVisible()

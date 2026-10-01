@@ -1,11 +1,14 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test'
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { applyFollowTail } from '../src/lib/follow-tail.ts'
 import { nodeTypes, nodeValues, parseMarkdown } from './markdown-parse.ts'
 import { serverToken, statePath } from './global-setup.ts'
 import { MIN_TOUCH_SIZE } from './touch-target.ts'
 import { newSession } from './session.ts'
+import { contextCategory, expectColoredContextSegments, expectContextItemCount, expectConversationPosition, openContextCategory, openContextItem, openSystemSources } from './context.ts'
+import type { Entry } from '../src/api/types'
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
@@ -405,7 +408,7 @@ test('markdown parse keeps fences, emphasis, CJK, and streaming closers', () => 
   expect(nodeValues(mermaid, 'code')).toEqual(['flowchart LR\n  Start --> End'])
 })
 
-test('chat and trajectory talk to the fake runtime', async ({ page }) => {
+test('chat and context browser talk to the fake runtime', async ({ page }) => {
   const prompt = `hello from playwright ${Date.now()}`
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
@@ -444,6 +447,7 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(asstActions.getByTestId('copy-msg')).toBeVisible()
   await expect(asstActions.getByTestId('fork-msg')).toBeVisible()
   await expect(asstActions.getByTestId('regen-msg')).toBeVisible()
+  await expect(asstActions.getByTestId('context-msg')).toBeVisible()
   const userActions = page.getByTestId('user-actions')
   await expect(userActions.getByTestId('copy-msg')).toBeVisible()
   await expect(userActions.getByTestId('edit-msg')).toBeVisible()
@@ -455,49 +459,57 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   })
   expect(listed.some(s => (s.title ?? '').includes(prompt))).toBeTruthy()
 
-  await page.getByTestId('tab-trajectory').click()
-  await expect(page.getByTestId('trajectory')).toBeVisible()
-  await expect(page.getByTestId('traj-timeline')).toContainText('Input')
-  await expect(page.getByTestId('traj-timeline')).toContainText('Model')
-  await expect(page.getByTestId('traj-timeline')).toContainText('Tools')
-  await expect(page.locator('[data-testid="traj-row"][data-kind="user"]')).toContainText(prompt)
-  await expect(page.locator('[data-testid="traj-row"][data-kind="assistant"]')).toContainText('ok')
-  await page.locator('[data-testid="traj-row"][data-kind="assistant"]').first().click()
-  await expect(page.getByTestId('insp-loc')).toContainText('Turn')
-  await expect(page.getByTestId('insp-loc')).toContainText('Step')
-  await expect(page.getByTestId('insp-tab-summary')).toBeVisible()
-  await expect(page.getByTestId('insp-tab-preview')).toBeVisible()
-  await expect(page.getByTestId('insp-tab-raw')).toBeVisible()
-  await page.locator('[data-testid="traj-row"][data-kind="system"]').first().click()
-  await expect(page.getByTestId('system-prompt')).not.toHaveText('—')
-  await page.getByTestId('insp-tab-tools').click()
-  await expect(page.getByTestId('system-tools')).toContainText('read')
-  const readTool = page.getByTestId('system-tools').locator('.tool-cat-item').filter({ has: page.locator('.tool-cat-name', { hasText: /^read$/ }) })
-  await readTool.locator('summary').click()
-  await expect(readTool.getByTestId('copy-tool-desc')).toBeVisible()
-  await expect(readTool.locator('.tool-cat-desc')).toContainText('Read a file')
-  await page.getByTestId('insp-tab-context').click()
-  await expect(page.getByTestId('system-diff')).toBeVisible()
+  await page.getByTestId('tab-context').click()
+  await expect(page.getByTestId('context-view')).toBeVisible()
+  await expect(page.getByTestId('context-current')).toBeVisible()
+  await expect(page.getByTestId('context-trend')).toBeVisible()
+  await expect(page.getByTestId('context-events')).toBeVisible()
+  const human = await openContextCategory(page, 'human')
+  const userItem = human.locator('.context-item').first()
+  await openContextItem(userItem)
+  await expect(userItem.getByTestId('context-item-raw')).toContainText(prompt)
+  const assistant = await openContextCategory(page, 'assistant')
+  await openContextItem(assistant.locator('.context-item').first())
+  await expect(assistant).toContainText('ok')
+  const tools = await openContextCategory(page, 'tools')
+  const readTool = tools.locator('.context-item').filter({ has: page.locator('summary', { hasText: /^read\b/ }) }).first()
+  await openContextItem(readTool)
+  await expect(readTool).toContainText('Read a file')
+  await expect(readTool).toContainText('file_path')
+  await expect(readTool.getByRole('button', { name: /复制|Copy/ })).toBeVisible()
+  const system = await openContextCategory(page, 'system')
+  await openContextItem(system.locator('.context-item').first())
+  const builtin = page.locator('.context-system-source[data-source-kind="builtin"]').first()
+  await openContextItem(builtin)
+  await expect(builtin).toContainText('You are a helpful assistant operating inside ki')
 
-  await expect(page.getByTestId('traj-follow')).toHaveAttribute('aria-pressed', 'true')
-  await page.getByTestId('traj-follow').click()
-  await expect(page.getByTestId('traj-follow')).toHaveAttribute('aria-pressed', 'false')
-  await page.getByTestId('traj-follow').click()
-  await expect(page.getByTestId('traj-follow')).toHaveAttribute('aria-pressed', 'true')
-  const atTail = await page.getByTestId('traj-table-wrap').evaluate(el =>
-    Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop) < 2)
-  expect(atTail).toBeTruthy()
-  await page.getByTestId('traj-table-wrap').evaluate(el => {
-    const node = el as HTMLElement
-    node.style.maxHeight = '48px'
-    node.scrollTop = node.scrollHeight
-  })
-  await expect.poll(async () => page.getByTestId('traj-table-wrap').evaluate(el => el.scrollHeight - el.clientHeight)).toBeGreaterThan(40)
-  await page.getByTestId('traj-table-wrap').evaluate(el => {
-    el.scrollTop = 0
-    el.dispatchEvent(new Event('scroll'))
-  })
-  await expect(page.getByTestId('traj-follow')).toHaveAttribute('aria-pressed', 'false')
+  await page.getByTestId('context-search').fill(prompt)
+  await expect(contextCategory(page, 'human').locator('.context-item')).toHaveCount(1)
+  await expect(contextCategory(page, 'assistant').locator('.context-item')).toHaveCount(0)
+  await page.getByTestId('context-search').fill('')
+  await page.getByTestId('context-trend-delta').click()
+  await expect(page.getByTestId('context-trend-delta')).toHaveAttribute('aria-pressed', 'true')
+  await page.getByTestId('context-trend-turn').click()
+  await expect(page.getByTestId('context-trend-turn')).toHaveAttribute('aria-pressed', 'true')
+  await page.getByTestId('context-trend-step').click()
+  await page.getByTestId('context-trend-total').click()
+  await page.getByTestId('context-step').first().click()
+  const requestSelect = page.getByTestId('context-request-select')
+  await expect(requestSelect).not.toHaveValue('')
+  await expect(page.getByTestId('context-browser').getByTestId('context-request-summary')).toContainText(/轮次 1.*步骤 1|Turn 1.*Step 1/)
+  // A request's input precedes its response; the current surface includes
+  // "ok", but the first request must not include its own assistant output.
+  await expectContextItemCount(page, 'assistant', 0)
+  const requestHuman = await openContextCategory(page, 'human')
+  await openContextItem(requestHuman.locator('.context-item').first())
+  await expect(requestHuman.getByTestId('context-item-raw')).toContainText(prompt)
+  await requestSelect.selectOption('')
+  await expectContextItemCount(page, 'assistant', 1)
+  await page.getByTestId('tab-conversation').click()
+  await asstActions.getByTestId('context-msg').click()
+  await expect(page.getByTestId('context-view')).toBeVisible()
+  await expect(requestSelect).not.toHaveValue('')
+  await expectContextItemCount(page, 'assistant', 0)
 
   await page.reload()
   await page.getByTestId('session-row').first().click()
@@ -505,6 +517,307 @@ test('chat and trajectory talk to the fake runtime', async ({ page }) => {
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
   // The divider is rebuilt from the persisted turn on the history path too.
   await expect(page.getByTestId('turn-divider')).toHaveCount(1)
+  await page.getByTestId('tab-context').click()
+  await expect(page.getByTestId('context-step')).toHaveCount(1)
+  await page.getByTestId('context-step').click()
+  const historicalHuman = await openContextCategory(page, 'human')
+  await openContextItem(historicalHuman.locator('.context-item').first())
+  await expect(historicalHuman.getByTestId('context-item-raw')).toContainText(prompt)
+  await expectContextItemCount(page, 'assistant', 0)
+  await historicalHuman.locator('.context-item').first().getByRole('button', { name: /在对话中查看|Show in conversation/ }).click()
+  await expect(page.getByTestId('chat')).toBeVisible()
+  await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
+})
+
+test('context separates system sources and browses the tool input of each request', async ({ page, request }) => {
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const workspace = mkdtempSync(join(tmpdir(), 'ki-context-source-'))
+  const skill = join(home, 'skills', 'context-source-skill')
+  const extension = join(home, 'extensions', 'context-source-extension')
+  const globalAppend = join(home, 'prompt', 'APPEND_SYSTEM.md')
+  const previousAppend = existsSync(globalAppend) ? readFileSync(globalAppend) : undefined
+  const headers = { Authorization: `Bearer ${serverToken()}` }
+  mkdirSync(join(workspace, '.ki', 'prompt'), { recursive: true })
+  mkdirSync(join(home, 'prompt'), { recursive: true })
+  mkdirSync(skill, { recursive: true })
+  mkdirSync(extension, { recursive: true })
+  writeFileSync(join(workspace, 'AGENTS.md'), '# Context fixture\nCONTEXT-AGENTS-MARKER\n')
+  writeFileSync(globalAppend, 'CONTEXT-GLOBAL-APPEND-MARKER\n')
+  writeFileSync(join(workspace, '.ki', 'prompt', 'APPEND_SYSTEM.md'), 'CONTEXT-PROJECT-APPEND-MARKER\n')
+  writeFileSync(join(skill, 'SKILL.md'), '---\nname: context-source-skill\ndescription: CONTEXT-SKILL-CATALOG-MARKER\n---\nCONTEXT-UNLOADED-SKILL-BODY\n')
+  writeFileSync(join(extension, 'extension.json'), JSON.stringify({
+    name: 'context-source-extension', version: '1.0.0',
+    capabilities: ['prompt.append'], prompt: { append: ['APPEND.md'] }, runtime: { kind: 'none' },
+  }))
+  writeFileSync(join(extension, 'APPEND.md'), 'CONTEXT-EXTENSION-PROMPT-MARKER\n')
+
+  try {
+    expect((await request.post('/v1/reload', { headers })).ok()).toBe(true)
+    const createdWorkspace = await request.post('/v1/workspaces', { headers, data: { path: workspace, title: 'Context sources' } })
+    expect(createdWorkspace.ok()).toBe(true)
+    const workspaceId = (await createdWorkspace.json() as { id: string }).id
+    const createdSession = await request.post('/v1/sessions', { headers, data: { workspaceId } })
+    expect(createdSession.ok()).toBe(true)
+    const sessionId = (await createdSession.json() as { id: string }).id
+    expect((await request.patch(`/v1/sessions/${sessionId}`, { headers, data: { title: 'Context sources fixture' } })).ok()).toBe(true)
+    await page.goto('/')
+    await page.getByTestId('session-title').filter({ hasText: 'Context sources fixture' }).click()
+    await sendPrompt(page, 'e2e-bash: echo KI-CONTEXT-TOOL-MARKER')
+    await expect(page.getByTestId('assistant-message').last()).toContainText('ok')
+    await page.getByTestId('tab-context').click()
+    await expect(page.getByTestId('context-step')).toHaveCount(2)
+    const viewport = page.viewportSize()
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    const desktopShot = test.info().outputPath('context-desktop.png')
+    await page.screenshot({ path: desktopShot, fullPage: true, animations: 'disabled' })
+    await test.info().attach('Context desktop', { path: desktopShot, contentType: 'image/png' })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId('mobile-nav-toggle')).toHaveAttribute('aria-expanded', 'false')
+    const mobileShot = test.info().outputPath('context-mobile.png')
+    await page.screenshot({ path: mobileShot, fullPage: true, animations: 'disabled' })
+    await test.info().attach('Context mobile', { path: mobileShot, contentType: 'image/png' })
+    await page.getByTestId('context-browser').scrollIntoViewIfNeeded()
+    const browserShot = test.info().outputPath('context-mobile-browser.png')
+    await page.screenshot({ path: browserShot, fullPage: true, animations: 'disabled' })
+    await test.info().attach('Context mobile browser', { path: browserShot, contentType: 'image/png' })
+    if (viewport) await page.setViewportSize(viewport)
+    await openContextCategory(page, 'system')
+    const systemItem = contextCategory(page, 'system').locator('.context-item').first()
+    await openContextItem(systemItem)
+    await expect(systemItem.getByTestId('context-locate-entry')).toHaveCount(0)
+    const schemas = await openContextCategory(page, 'tools')
+    const schemaItem = schemas.locator('.context-item').first()
+    await openContextItem(schemaItem)
+    await expect(schemaItem.getByTestId('context-locate-entry')).toHaveCount(0)
+    // Sources describe provenance inside System, not another counted bucket.
+    // Historical APPEND text lacks global/project wrappers, so both stay in
+    // the honest combined operator section rather than guessed attribution.
+    const projectSources = await openSystemSources(page, 'project')
+    await expect(projectSources.filter({ hasText: 'CONTEXT-AGENTS-MARKER' })).toHaveCount(1)
+    const operatorSources = await openSystemSources(page, 'append-operator')
+    await expect(operatorSources.filter({ hasText: 'CONTEXT-GLOBAL-APPEND-MARKER' })).toHaveCount(1)
+    await expect(operatorSources.filter({ hasText: 'CONTEXT-PROJECT-APPEND-MARKER' })).toHaveCount(1)
+    const extensionSources = await openSystemSources(page, 'extension')
+    await expect(extensionSources.filter({ hasText: 'CONTEXT-EXTENSION-PROMPT-MARKER' })).toHaveCount(1)
+    const skillsSources = await openSystemSources(page, 'skills')
+    await expect(skillsSources.filter({ hasText: 'CONTEXT-SKILL-CATALOG-MARKER' })).toHaveCount(1)
+    await expect(systemItem.getByTestId('context-item-raw').first()).not.toContainText('CONTEXT-UNLOADED-SKILL-BODY')
+    await expectContextItemCount(page, 'extension', 0)
+
+    const tools = await openContextCategory(page, 'tool')
+    const result = tools.locator('.context-item').first()
+    await openContextItem(result)
+    await expect(result.getByTestId('context-item-raw')).toContainText('KI-CONTEXT-TOOL-MARKER')
+    await page.getByTestId('context-step').first().click()
+    await expectContextItemCount(page, 'tool', 0)
+    await page.getByTestId('context-step').last().click()
+    const requestTools = await openContextCategory(page, 'tool')
+    await openContextItem(requestTools.locator('.context-item').first())
+    await expect(requestTools.getByTestId('context-item-raw')).toContainText('KI-CONTEXT-TOOL-MARKER')
+    await expect(page.getByTestId('context-request-select')).not.toHaveValue('')
+    await page.getByTestId('context-request-select').selectOption('')
+    await expectContextItemCount(page, 'tool', 1)
+    // Context carries the persisted result entry ID, while the chat row is
+    // keyed by toolCallId. Navigation must resolve that identity, not page
+    // forever looking for an entry that cannot be a rendered chat row.
+    const currentTools = await openContextCategory(page, 'tool')
+    const currentResult = currentTools.locator('.context-item').first()
+    await openContextItem(currentResult)
+    await currentResult.getByTestId('context-locate-entry').click()
+    await expect(page.getByTestId('chat')).toBeVisible()
+    const toolRow = page.getByTestId('tool-card').filter({ hasText: 'KI-CONTEXT-TOOL-MARKER' })
+    await expect(toolRow).toBeVisible()
+    const rowId = await toolRow.locator('xpath=ancestor::*[@data-item-key]').getAttribute('data-item-key')
+    expect(rowId).toBeTruthy()
+    await expect(page.getByTestId('chat')).toHaveAttribute('data-anchor-key', rowId!)
+  } finally {
+    if (previousAppend === undefined) rmSync(globalAppend, { force: true })
+    else writeFileSync(globalAppend, previousAppend)
+    rmSync(skill, { recursive: true, force: true })
+    rmSync(extension, { recursive: true, force: true })
+    rmSync(workspace, { recursive: true, force: true })
+    await request.post('/v1/reload', { headers })
+  }
+})
+
+test('context hydrates historical agent and compaction inputs and locates early checkpoint events', async ({ page, request }) => {
+  const headers = { Authorization: `Bearer ${serverToken()}` }
+  const created = await request.post('/v1/sessions', { headers, data: {} })
+  expect(created.ok()).toBe(true)
+  const { id, dir } = await created.json() as { id: string; dir: string }
+  const configPath = join(dir, 'config.json')
+  const config = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, unknown>
+  const title = `Context checkpoint fixture ${id}`
+  const entries: Array<Entry | (Entry & { responses: unknown })> = []
+  let parentId = ''
+  let clock = Date.parse('2026-10-01T12:00:00Z')
+  const push = (entry: Entry | (Entry & { responses: unknown })) => {
+    entries.push({ ...entry, parentId, timestamp: new Date(clock++).toISOString() })
+    parentId = entry.id
+  }
+  const input = (entryId: string, text: string, origin?: string) => push({
+    type: 'message', id: entryId, message: { role: 'user', origin, content: [{ type: 'text', text }] },
+  })
+  const header = (entryId: string) => push({
+    type: 'request_header', id: entryId, system: `Context checkpoint fixture System ${'fixture rule '.repeat(30)}`,
+    tools: [{ name: 'context_fixture_tool', description: 'Historical tool schema fixture', parameters: {
+      type: 'object', properties: { query: { type: 'string', description: 'An explicit fixture query for context classification' } },
+    } }],
+    provider: 'fake', modelId: 'free',
+  })
+  const answer = (entryId: string, text: string, inputTokens = 10) => push({
+    type: 'message', id: entryId, message: { role: 'assistant', content: [{ type: 'text', text }], usage: { input: inputTokens, output: 2 } },
+  })
+  input('context-old-human', 'Before checkpoint')
+  input('context-old-agent', `Historical agent message ${'history '.repeat(100)}CONTEXT-AGENT-FULL-END`, 'agent:history-fixture')
+  header('context-old-request')
+  push({
+    type: 'message', id: 'context-old-answer',
+    message: { role: 'assistant', content: [
+      { type: 'text', text: `Completed before checkpoint ${'assistant input '.repeat(60)}CONTEXT-ASSISTANT-FULL-END` },
+      { type: 'toolCall', id: 'context-fixture-call', name: 'context_fixture_tool', arguments: { query: 'Historical fixture' } },
+    ], usage: { input: 10, output: 2 } },
+  })
+  push({
+    type: 'message', id: 'context-old-tool-result',
+    message: { role: 'toolResult', toolCallId: 'context-fixture-call', toolName: 'context_fixture_tool',
+      content: [{ type: 'text', text: `Historical tool input ${'tool result '.repeat(100)}CONTEXT-TOOL-FULL-END` }] },
+  })
+  header('context-color-request')
+  // Reported input deliberately dwarfs known category estimates. A shared
+  // reported/estimate axis would turn every colored segment into a hairline.
+  answer('context-color-answer', 'Own response is not part of the colored request input', 200_000)
+  push({
+    type: 'compaction', id: 'context-local-checkpoint',
+    summary: `Historical local summary ${'summary '.repeat(100)}CONTEXT-SUMMARY-FULL-END`, tokensBefore: 2000,
+  })
+  push({ type: 'model_change', id: 'context-model-change', provider: 'fake', modelId: 'free' })
+  input('context-kept-human', 'After local checkpoint')
+  input('context-kept-agent', 'CONTEXT-KEPT-AGENT-MARKER', 'agent:kept-fixture')
+  header('context-local-request')
+  answer('context-local-answer', 'Completed after local checkpoint')
+  // Persist real provider-owned state rather than the view-only remoteContext
+  // marker. Public projections must derive the marker while redacting items.
+  push({
+    type: 'compaction', id: 'context-remote-checkpoint', tokensBefore: 3000,
+    responses: { binding: { provider: 'fake', model: 'free' }, items: [{ type: 'compaction', encrypted_content: 'CONTEXT-SECRET-OPAQUE' }] },
+  })
+  // More than the initial four-turn compact window forces lazy metadata and
+  // real historical paging. Twelve turns keep the target far from the tail
+  // without paying for dozens of redundant one-turn compact page requests.
+  for (let turn = 0; turn < 12; turn++) {
+    input(`context-tail-user-${turn}`, `Checkpoint tail input ${turn}`)
+    header(`context-tail-request-${turn}`)
+    answer(`context-tail-answer-${turn}`, `Checkpoint tail reply ${turn}`)
+  }
+  appendFileSync(join(dir, 'events.jsonl'), entries.map(entry => JSON.stringify(entry)).join('\n') + '\n')
+  writeFileSync(configPath, JSON.stringify({ ...config, title, activeLeafId: parentId }))
+  await page.addInitScript(() => {
+    localStorage.setItem('ki-message-view', 'compact')
+    localStorage.setItem('ki-message-view-keep', '1')
+  })
+  await page.goto('/')
+  await page.getByTestId('session-title').filter({ hasText: title }).click()
+  await expect(page.getByTestId('assistant-message').last()).toContainText('Checkpoint tail reply 11')
+  await page.getByTestId('tab-context').click()
+  const picker = page.getByTestId('context-request-select')
+  await expect(picker.locator('option[value="context-old-request"]')).toHaveCount(1)
+  expect(await page.getByTestId('context-step').count()).toBeLessThanOrEqual(24)
+  await expect(page.getByTestId('context-reported-line')).toBeVisible()
+  await expect(page.getByTestId('context-reported-bar')).toHaveCount(0)
+  await expectContextItemCount(page, 'remote', 1)
+  await expect(page.getByTestId('context-checkpoint-notice')).toBeVisible()
+  await expectContextItemCount(page, 'compaction', 0)
+  await expectContextItemCount(page, 'agent', 0)
+  const remote = await openContextCategory(page, 'remote')
+  await openContextItem(remote.locator('.context-item').first())
+  await expect(remote.getByTestId('context-item-raw')).not.toContainText('CONTEXT-SECRET-OPAQUE')
+
+  await picker.selectOption('context-old-request')
+  await expectContextItemCount(page, 'agent', 1)
+  const historicalAgent = contextCategory(page, 'agent').locator('.context-item').first()
+  await openContextItem(historicalAgent)
+  await expect.poll(async () => Number(await historicalAgent.getAttribute('data-tokens')),
+    { message: 'metadata-only Agent content must have its stored full-body estimate before hydration' }).toBeGreaterThan(0)
+  await expect(historicalAgent.getByTestId('context-item-raw')).not.toContainText('CONTEXT-AGENT-FULL-END')
+  await historicalAgent.getByTestId('context-hydrate').click()
+  await expect(historicalAgent.getByTestId('context-item-raw')).toContainText('CONTEXT-AGENT-FULL-END')
+  await expectContextItemCount(page, 'assistant', 0)
+  await expectContextItemCount(page, 'compaction', 0)
+
+  await picker.selectOption('context-color-request')
+  await expectColoredContextSegments(page, 'context-color-request', ['system', 'tools', 'assistant', 'tool'])
+  const colorColumn = page.locator('[data-testid="context-step"][data-request-id="context-color-request"]')
+  await expect(colorColumn.locator('[data-category="human"]')).toHaveCSS('background-color', 'rgb(228, 87, 86)')
+  await expect(colorColumn.locator('[data-category="tool"]')).toHaveCSS('background-color', 'rgb(19, 169, 154)')
+  await expect(page.getByTestId('context-reported-line').locator('circle[data-value="200000"]')).toHaveCount(1)
+  const historicalTool = (await openContextCategory(page, 'tool')).locator('.context-item').first()
+  await openContextItem(historicalTool)
+  await expect(historicalTool.getByTestId('context-item-raw')).not.toContainText('CONTEXT-TOOL-FULL-END')
+  await expect.poll(async () => Number(await historicalTool.getAttribute('data-tokens')),
+    { message: 'historical Tool result estimate must not require its full body' }).toBeGreaterThan(0)
+
+  await picker.selectOption('context-local-request')
+  await expectContextItemCount(page, 'compaction', 1)
+  await expectContextItemCount(page, 'agent', 1)
+  const localSummary = contextCategory(page, 'compaction').locator('.context-item').first()
+  await openContextItem(localSummary)
+  await expect(localSummary.getByTestId('context-item-raw')).not.toContainText('CONTEXT-SUMMARY-FULL-END')
+  await localSummary.getByTestId('context-hydrate').click()
+  await expect(localSummary.getByTestId('context-item-raw')).toContainText('CONTEXT-SUMMARY-FULL-END')
+  await expectContextItemCount(page, 'remote', 0)
+
+  const events = page.getByTestId('context-events')
+  let parked: Route | undefined
+  let intercepted = false
+  const historyRoute = async (route: Route) => {
+    if (!intercepted && new URL(route.request().url()).searchParams.has('before')) {
+      intercepted = true
+      parked = route
+      return
+    }
+    await route.continue()
+  }
+  const historyURL = `**/v1/sessions/${id}?**`
+  await page.route(historyURL, historyRoute)
+  try {
+    for (const entryId of ['context-remote-checkpoint', 'context-local-checkpoint']) {
+      const event = events.locator(`[data-event-id="${entryId}"]`)
+      await expect(event).toHaveAttribute('data-event-type', 'compaction')
+      await event.getByTestId('context-event-action').click()
+      await expect(page.getByTestId('chat')).toBeVisible()
+      if (entryId === 'context-remote-checkpoint') {
+        await expect.poll(() => !!parked, { message: 'event navigation must page to its older checkpoint' }).toBe(true)
+        // Mounting conversation during a slow navigation must retain explicit
+        // reading/seeking intent, not follow the current tail before paging.
+        await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', /reading|seeking/)
+        await parked!.continue()
+        parked = undefined
+      }
+      await expectConversationPosition(page, entryId)
+      await expect(page.getByTestId('user-bubble').filter({ hasText: 'Checkpoint tail input 11' })).toHaveCount(0)
+      await page.getByTestId('tab-context').click()
+    }
+    // Model changes have no chat row. Locate their preceding rendered
+    // boundary on this branch, not the current tail or a raw metadata ID.
+    const modelEvent = events.locator('[data-event-id="context-model-change"]')
+    await expect(modelEvent).toHaveAttribute('data-event-type', 'model_change')
+    await modelEvent.getByTestId('context-event-action').click()
+    await expectConversationPosition(page, 'context-local-checkpoint')
+    await page.getByTestId('tab-context').click()
+    await picker.selectOption('context-old-request')
+    const agentCategory = await openContextCategory(page, 'agent')
+    const hiddenAgent = agentCategory.locator('[data-entry-id="context-old-agent"]')
+    await openContextItem(hiddenAgent)
+    // Cached full text is not a visible compact chat row. Load the owning
+    // human turn before seeking this runtime reply folded inside that turn.
+    await hiddenAgent.getByTestId('context-locate-entry').click()
+    await expectConversationPosition(page, 'context-old-agent')
+  } finally {
+    await parked?.continue().catch(() => {})
+    await page.unroute(historyURL, historyRoute)
+  }
 })
 
 test('markdown table copy and diagram toggle/download/copy', async ({ page }) => {

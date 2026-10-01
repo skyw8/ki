@@ -335,7 +335,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 				lastStep = &TurnStep{Usage: e.Usage}
 			}
 			preview := e.Summary
-			if e.Responses != nil {
+			if e.RemoteContext || e.Responses != nil {
 				preview = "Provider remote compaction"
 			}
 			nodes = append(nodes, node{id: e.ID, preview: preview, entries: []int{i}, alwaysVisible: true})

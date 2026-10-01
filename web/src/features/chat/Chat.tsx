@@ -6,7 +6,7 @@ import { useTranscriptScroll, type TranscriptScroll } from './useTranscriptScrol
 import { useNow } from '../../hooks/useNow'
 import { Duration } from './Duration'
 import { TranscriptRow, useTranscriptRowMeasurement } from './TranscriptRow'
-import { IChev, IChevDown, IClock, ICompact, ICopy, IEdit, IFork, IRegen, ITraj, IWrench } from '../../components/icons'
+import { IChev, IChevDown, IClock, ICompact, ICopy, IEdit, IFork, IRegen, IContext, IWrench } from '../../components/icons'
 import { IFile } from '../../components/icons'
 import { Composer, type Draft } from './Composer'
 import { AttachmentImage } from '../attachments/AttachmentImage'
@@ -566,7 +566,7 @@ const ChatItem = memo(function ChatItem({
               <IconBtn label={t('chat.copy')} testid="copy-msg" onClick={() => void copyText(n.text || n.thinking || '')}><ICopy /></IconBtn>
               {n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.fork')} testid="fork-msg" onClick={() => onFork?.(n)}><IFork /></IconBtn> : null}
               {n.stopReason !== 'toolUse' ? <IconBtn label={t('chat.regen')} testid="regen-msg" disabled={busy} onClick={() => onRegen?.(n)}><IRegen /></IconBtn> : null}
-              <IconBtn label={t('chat.locate')} testid="traj-msg" onClick={() => onSelect?.(n)}><ITraj /></IconBtn>
+               <IconBtn label={t('chat.context')} testid="context-msg" onClick={() => onSelect?.(n)}><IContext /></IconBtn>
             </div>
           </div>
         ) : null}
@@ -593,7 +593,7 @@ const ChatItem = memo(function ChatItem({
   return <Cancellation node={n} />
 })
 
-export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, controlRef, onHydrate, onShowBranches, onVisibleEntries, jumpToId, onJumped, onActiveRequest, onAtBottom, onReadIntent, onLoadOlder, hasMore, olderError, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP, loadingOlder, compactTurns, loadedTurnIds, onLoadTurn }: Omit<ChatItemProps, 'node' | 'missed' | 'branchIndex' | 'branchTotal'> & {
+export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, controlRef, onHydrate, onShowBranches, onVisibleEntries, jumpToId, navigationPending, onJumped, onActiveRequest, onAtBottom, onReadIntent, onLoadOlder, hasMore, olderError, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP, loadingOlder, compactTurns, loadedTurnIds, onLoadTurn }: Omit<ChatItemProps, 'node' | 'missed' | 'branchIndex' | 'branchTotal'> & {
   branches?: Record<string, { index: number; total: number }>
   nodes: ChatNode[]
   turnBase?: number
@@ -603,6 +603,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   controlRef?: React.Ref<TranscriptScroll>
   onVisibleEntries?: (ids: string[]) => void
   jumpToId?: string | null
+  navigationPending?: boolean
   onJumped?: () => void
   onActiveRequest?: (id: string | null) => void
   onAtBottom?: (bottom: boolean) => void
@@ -624,7 +625,10 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   // summarize, so the transcript reads compacting → running → compacted.
   const running = busy && !nodes.some(nodeLive)
   const endPadding = running ? 40 : 8
-  const navigation = useTranscriptScroll({ scrollRef, onAtBottom, onReadIntent: () => { measurementAnchor.current = null; selectedRequest.current = null; onReadIntent?.() }, onLoadOlder, hasMore, loadingOlder, olderError, pageBudget: mode === 'compact' ? 1 : 2, endPadding })
+  // Context replaces (unmounts) Chat. Its locate action can be waiting for
+  // older pages before a scroll controller exists, so default-follow on this
+  // mount would visibly jump to the tail and arm late end reconciliation.
+  const navigation = useTranscriptScroll({ scrollRef, initialIntent: navigationPending || jumpToId ? 'reading' : 'following', onAtBottom, onReadIntent: () => { measurementAnchor.current = null; selectedRequest.current = null; onReadIntent?.() }, onLoadOlder, hasMore, loadingOlder, olderError, pageBudget: mode === 'compact' ? 1 : 2, endPadding })
   const misses = useMemo(() => cacheMisses(nodes), [nodes])
   const listRef = useRef<HTMLDivElement>(null)
   const [listWidth, setListWidth] = useState(UNKNOWN_WIDTH)
@@ -641,19 +645,19 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
   const [failedFolds, setFailedFolds] = useState<ReadonlySet<string>>(() => new Set())
   const foldAnchor = useRef<{ id: string; offset: number } | null>(null)
   const foldFollow = useRef(false)
-  const toggleFold = useCallback(async (id: string) => {
+  const toggleFold = useCallback(async (id: string, preserveJump = false) => {
     selectedRequest.current = null
     // Preserve the reader's intent across the toggle. The newest turn's fold
     // keeps the tail following so its revealed rows (and their late
     // measurement) stay pinned to the bottom; any earlier fold is something the
-    // reader opened to read, so anchor that row and pause follow. Cancelling an
-    // in-flight jump is always wanted.
+    // reader opened to read, so anchor that row and pause follow. A user's
+    // toggle cancels a jump; a jump's own expansion must preserve its target.
     // Runtime user-role notifications are not human turn boundaries. A fold
     // must use the same grouping as rendering, never proximity to the bottom:
     // an explicitly paused reader may still be at the clamped end.
     const tailTurnId = groupTurns(nodes).at(-1)?.id
     const keepFollowing = navigation.following.current && id === tailTurnId
-    onReadIntent?.()
+    if (!preserveJump) onReadIntent?.()
     if (keepFollowing) {
       // Re-arm follow instead of pinning once. The revealed rows are measured
       // over the next frames and the newest message keeps growing while it
@@ -681,7 +685,11 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     foldFollow.current = keepFollowing && navigation.following.current
     setFolds(prev => {
       const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
+      // A pending hydrate can publish several commits before this callback
+      // resumes. Automatic navigation opens idempotently, never toggles the
+      // target closed or cancels the seek it was asked to prepare.
+      if (preserveJump) next.add(id)
+      else if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
@@ -852,7 +860,10 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     // pass. Wait for the virtualizer to bind it before the initial end jump.
     if (opened.current || !items.length || !virtualizer.scrollElement) return
     opened.current = true
-    navigation.latest()
+    // A Context locate mounts Chat while its historical page is still pending.
+    // Initial scroll must respect that explicit reading/seek ownership, not
+    // unconditionally re-arm follow and drag the pending target to the tail.
+    if (navigation.following.current) navigation.latest()
   })
   const actions = useRef({ onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches })
   actions.current = { onSelect, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, onBranch, onShowBranches }
@@ -917,7 +928,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     if (index < 0) {
       navigation.read()
       const fold = items.find(it => it.kind === 'fold' && it.nodes.some(n => n.id === jumpToId))
-      if (fold?.kind === 'fold') toggleFold(fold.turn.id)
+      if (fold?.kind === 'fold') void toggleFold(fold.turn.id, true)
       return
     }
     // Keep the keyed target through late Markdown/body measurements. A single

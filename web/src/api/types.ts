@@ -51,6 +51,14 @@ export type Message = {
   provider?: string
 }
 
+/** View-only estimates of full persisted content, not provider tokenization. */
+export type ContextEstimate = {
+  system?: number
+  tools?: number
+  message?: number
+  summary?: number
+}
+
 export type Entry = {
   type: string
   /** Browser-only body quality; independent of the persisted entry identity. */
@@ -62,6 +70,9 @@ export type Entry = {
   timestamp?: string
   message?: Message
   summary?: string
+  /** Public marker only; provider-owned remote checkpoint payload is never exposed. */
+  remoteContext?: boolean
+  contextEstimate?: ContextEstimate
   firstKeptEntryId?: string
   tokensBefore?: number
   usage?: Usage | null
@@ -96,6 +107,8 @@ export type IndexEntry = {
   sideband?: boolean
   tokensBefore?: number
   stopReason?: string
+  remoteContext?: boolean
+  contextEstimate?: ContextEstimate
 }
 
 export type ToolSchema = {

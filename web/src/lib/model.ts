@@ -363,7 +363,8 @@ function addEntries(s: ViewState, incoming: Entry[]) {
     if (replacement && !replacement.truncated && e.truncated) bodyPreviews.set(replacement, e)
     // Persisted entries are immutable. A late slim page must not erase a full
     // body and trigger another download when the row is mounted again.
-    return replacement && bodyRank(replacement) >= bodyRank(e) ? replacement : e
+    const chosen = replacement && bodyRank(replacement) >= bodyRank(e) ? replacement : e
+    return withContextEstimate(chosen, chosen === e ? replacement?.contextEstimate : e.contextEstimate)
   })
   for (const e of incoming) {
     if (!known.has(e.id)) s.entries.push(e)
@@ -427,6 +428,8 @@ function entryToIndex(e: Entry): IndexEntry {
     timestamp: e.timestamp,
     sideband: e.sideband,
     tokensBefore: e.tokensBefore,
+    remoteContext: e.remoteContext,
+    contextEstimate: e.contextEstimate,
     usage: e.usage,
     truncated: e.truncated,
   }
@@ -759,13 +762,30 @@ export function applyRuntimeCatalog(s: ViewState, detail: SessionDetail): ViewSt
 function mergeEntries(index: IndexEntry[] | undefined, entries: Entry[]): Entry[] {
   const full = new Map(entries.map(e => [e.id, e]))
   if (!index?.length) return entries
-  const rows = index.map(ix => full.get(ix.id) ?? indexToEntry(ix))
+  const rows = index.map(ix => {
+    const body = full.get(ix.id)
+    return body ? withContextEstimate(body, ix.contextEstimate) : indexToEntry(ix)
+  })
   // Bodies the index has not seen yet (a run that landed after the index was
   // fetched) still belong at the end: the transcript is append-only, so the
   // file order the index follows puts them last.
   const known = new Set(index.map(ix => ix.id))
   for (const e of entries) if (!known.has(e.id)) rows.push(e)
   return rows
+}
+
+function withContextEstimate(entry: Entry, fallback?: Entry['contextEstimate']): Entry {
+  if (!fallback) return entry
+  const own = entry.contextEstimate
+  if (Object.entries(fallback).every(([key, value]) => value == null || own?.[key as keyof NonNullable<typeof own>] != null)) return entry
+  // Body quality and numeric coverage are independent: a cached full body or a
+  // late slim page must not discard estimates calculated before server slimming.
+  return { ...entry, contextEstimate: {
+    message: own?.message ?? fallback.message,
+    system: own?.system ?? fallback.system,
+    tools: own?.tools ?? fallback.tools,
+    summary: own?.summary ?? fallback.summary,
+  } }
 }
 
 function indexToEntry(ix: IndexEntry): Entry {
@@ -776,6 +796,8 @@ function indexToEntry(ix: IndexEntry): Entry {
     timestamp: ix.timestamp,
     sideband: ix.sideband,
     tokensBefore: ix.tokensBefore,
+    remoteContext: ix.remoteContext,
+    contextEstimate: ix.contextEstimate,
     truncated: true,
     bodyKind: 'index',
     usage: ix.usage,
@@ -871,11 +893,10 @@ function sameTools(a: ToolSchema[], b: ToolSchema[]): boolean {
 }
 
 function nextRequestStep(s: ViewState, turn: number): number {
-  let step = 0
-  for (const request of s.requests) {
-    if (request.turn === turn) step = Math.max(step, request.step)
-  }
-  return step + 1
+  // Requests are appended chronologically. Context also retains body-less
+  // historical headers, so rescanning the entire prefix per step is quadratic.
+  const previous = s.requests.at(-1)
+  return previous?.turn === turn ? previous.step + 1 : 1
 }
 
 function inspectPrompt(
@@ -900,17 +921,25 @@ function inspectPrompt(
 }
 
 function updateRequest(s: ViewState, id: string, patch: Partial<RequestView>) {
-  const previous = s.requests.find(request => request.id === id)
+  let index = s.requests.length - 1
+  while (index >= 0 && s.requests[index].id !== id) index--
+  const previous = s.requests[index]
   if (!previous || Object.entries(patch).every(([key, value]) => previous[key as keyof RequestView] === value)) return
-  s.requests = s.requests.map(request => request.id === id ? { ...request, ...patch } : request)
-  s.records = s.records.map(record => record.requestId !== id
-    ? record
-    : {
+  // Folding and applyEvent own their array copies. Replace only this request's
+  // objects rather than cloning all historical requests/records per response;
+  // metadata-only Context history would otherwise make index folding quadratic.
+  s.requests[index] = { ...previous, ...patch }
+  for (let i = s.records.length - 1; i >= 0; i--) {
+    const record = s.records[i]
+    if (record.requestId !== id) continue
+    s.records[i] = {
       ...record,
       ...(patch.durationMs === undefined ? {} : { durationMs: patch.durationMs }),
       ...(patch.ttftMs === undefined ? {} : { ttftMs: patch.ttftMs }),
       ...(patch.status === undefined ? {} : { running: patch.status === 'running', error: patch.status === 'error' }),
-    })
+    }
+    if (record.requestOnly) break
+  }
 }
 
 function applyRequestHeader(
@@ -978,8 +1007,8 @@ function applyRequestHeader(
   })
   // Why: request_header is the provider call's system/tools payload. Chat is
   // the user/assistant transcript; a SYSTEM row for the initial (or changed)
-  // prompt was noise on every conversation. Trajectory keeps the record and
-  // inspector tabs.
+  // prompt was noise on every conversation. Shared request records retain the
+  // prompt for statistics and the Context browser instead.
 }
 
 // applyEntry folds one entry into the view. withNode is false for entries that
@@ -991,16 +1020,25 @@ function applyEntry(s: ViewState, e: Entry, withNode = true) {
 		return
 	}
   if (e.type === 'request_header') {
+    if ((!e.system && !e.tools?.length && e.truncated && !e.promptUnchanged) || (e.promptUnchanged && !s.promptState)) {
+      // The index proves a request boundary, not its prompt. Unknown headers
+      // can change system/tools; never inherit a guessed earlier snapshot.
+      const turn = s.turn || 1
+      const step = nextRequestStep(s, turn)
+      const startedAt = tsMs(undefined, e.timestamp)
+      s.promptState = undefined
+      s.currentRequestId = e.id
+      s.requests.push({ id: e.id, turnId: s.turnId, turn, step, startedAt, status: 'running', provider: e.provider, model: e.modelId, thinkingEffort: e.thinkingEffort })
+      s.records.push({ id: `request:${e.id}`, requestId: e.id, kind: 'assistant', turn, step, requestOnly: true, preview: '', startedAt, running: true })
+      s.records.push({ id: `system:${e.id}`, requestId: e.id, kind: 'system', turn, step, preview: '', truncated: true })
+      return
+    }
     if (e.promptUnchanged) {
       applyRequestHeader(s, e.id, s.promptState?.system ?? '', s.promptState?.tools ?? [], e.timestamp, {
         provider: e.provider,
         model: e.modelId,
         thinkingEffort: e.thinkingEffort,
       })
-      return
-    }
-    if (!e.system && !e.tools?.length && e.truncated) {
-      s.records.push({ id: `system:${e.id}`, requestId: e.id, kind: 'system', turn: s.turn || 1, preview: '', truncated: true })
       return
     }
     applyRequestHeader(s, e.id, e.system ?? '', e.tools, e.timestamp, {

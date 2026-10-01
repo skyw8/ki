@@ -137,10 +137,12 @@ type Entry struct {
 	Pricing        any                     `json:"pricing,omitempty"`
 	System         string                  `json:"system,omitempty"`
 	Tools          []ToolSchema            `json:"tools,omitempty"`
-	// PromptUnchanged and Truncated are view-only flags for GET /v1/sessions/{id}.
+	// ContextEstimate, RemoteContext, PromptUnchanged and Truncated are view-only fields for GET /v1/sessions/{id}.
 	// They are never written to jsonl.
-	PromptUnchanged bool `json:"promptUnchanged,omitzero"`
-	Truncated       bool `json:"truncated,omitzero"`
+	RemoteContext   bool             `json:"remoteContext,omitempty"`
+	PromptUnchanged bool             `json:"promptUnchanged,omitzero"`
+	Truncated       bool             `json:"truncated,omitzero"`
+	ContextEstimate *ContextEstimate `json:"contextEstimate,omitempty"`
 }
 
 // ToolSchema is the model-visible tool list on a request_header entry.

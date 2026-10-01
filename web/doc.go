@@ -40,5 +40,20 @@
 // Runtime notifications use one rounded dashed card with a subtle themed fill,
 // never a second inner bubble frame or human input actions. Duration
 // digits use compact left-aligned format slots and tabular numbers at full size.
+// Context replaces the WebUI trace surface, not CLI trace diagnostics. It
+// reconstructs the active branch before a selected model request from persisted
+// headers and messages, with explicit missing-body and approximation notices.
+// System sources are structural hints, not authoritative extension provenance;
+// unwrapped operator append text cannot identify global versus project origin.
+// Model usage is authoritative; category token estimates and non-text payloads
+// never claim exact encoded-input counts. Bodies load only on explicit expansion.
+// Metadata-only history retains estimates derived from full stored bodies.
+// Colored category bars and reported-input lines use independent axes; neither
+// missing bodies nor large remote usage can flatten known category segments.
+// One categorical palette is shared by charts, legends, browser and events;
+// human inputs use warm red while tool results use cool teal.
+// Remote checkpoints encapsulate prior categories, not local plaintext summaries.
+// Context event navigation resolves an actual same-branch chat row and starts
+// its remounted viewport in reading intent while history is still loading.
 // See docs/webui.md for lifecycle, responsive geometry and touch contracts.
 package web

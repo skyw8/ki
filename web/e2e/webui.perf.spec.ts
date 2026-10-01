@@ -3,6 +3,7 @@ import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { statePath } from './global-setup.ts'
 import { appendTranscript } from './perf-seed.ts'
+import { openContextCategory } from './context.ts'
 
 type GetMeasure = {
   ms: number
@@ -217,10 +218,23 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
   await expect(page.getByTestId('user-bubble').first()).toHaveText('turn 0')
   await page.keyboard.press('Escape')
 
-  await page.getByTestId('tab-trajectory').click()
-  await expect(page.getByTestId('trajectory')).toBeVisible()
-  const trajRows = await page.getByTestId('traj-row').count()
-  const trajHeap = await heap(page)
+  const tContext = performance.now()
+  await page.getByTestId('tab-context').click()
+  await expect(page.getByTestId('context-view')).toBeVisible()
+  await expect(page.getByTestId('context-step').first()).toBeVisible()
+  const humanContext = await openContextCategory(page, 'human')
+  await expect(humanContext.locator('.context-item').first()).toBeVisible()
+  const contextOpenMs = performance.now() - tContext
+  const contextItems = await page.locator('.context-item').count()
+  const contextHeap = await heap(page)
+  // Keep added classification assertions outside the timed open interval so
+  // before/after UI timings do not charge browser roundtrips as render work.
+  const contextToolSegments = page.locator('[data-testid="context-category-segment"][data-category="tool"]')
+  await expect(contextToolSegments.first()).toBeVisible()
+  await expect.poll(async () => Number(await contextToolSegments.first().getAttribute('data-tokens')),
+    { message: 'long-history categories must retain stored-body estimates' }).toBeGreaterThan(0)
+  await expect.poll(async () => (await contextToolSegments.first().boundingBox())?.height ?? 0,
+    { message: 'long-history Tool content must be visible as a colored stack, not a gray input bar' }).toBeGreaterThan(1)
 
   await page.getByTestId('tab-conversation').click()
   const hydrateWait = page.waitForResponse(res => {
@@ -248,7 +262,7 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
     ['fields=runtime', `${runtime.bytes}`, runtime.ms.toFixed(0), `index=${runtime.index}`],
     ['history before', `${histBefore.bytes}`, histBefore.ms.toFixed(0), `entries=${histBefore.entries} hasMore=${histBefore.hasMore}`],
     ['history open UI', '-', historyOpenMs.toFixed(0), `asstDOM=${historyAssistants} userDOM=${historyUsers} heap=${mb(historyHeap.jsHeap)}MiB nodes=${historyHeap.nodes}`],
-    ['history traj', '-', '-', `rowsDOM=${trajRows} heap=${mb(trajHeap.jsHeap)}MiB`],
+    ['history context', '-', contextOpenMs.toFixed(0), `itemsDOM=${contextItems} heap=${mb(contextHeap.jsHeap)}MiB`],
     ['huge jsonl', `${hugeJSONL}`, '-', `truncatedGET=${hugeGet.truncated}`],
     ['huge GET', `${hugeGet.bytes}`, hugeGet.ms.toFixed(0), `entries=${hugeGet.entries}`],
     ['huge ?entry', `${hugeEntry.bytes}`, hugeEntry.ms.toFixed(0), 'full body'],
@@ -274,7 +288,10 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
   expect(historyOpenMs, 'open long history').toBeLessThan(12_000)
   expect(historyAssistants, 'chat virtualizes assistants').toBeLessThan(80)
   expect(historyUsers, 'chat virtualizes users').toBeLessThan(80)
-  expect(trajRows, 'trajectory virtualizes rows').toBeLessThan(120)
+  expect(contextItems, 'context browser bounds mounted content items').toBeLessThan(120)
+  expect(contextItems, 'context browser renders the opened category').toBeGreaterThan(0)
+  expect(contextOpenMs, 'open long context').toBeLessThan(12_000)
+  expect(contextHeap.jsHeap, 'context JS heap').toBeLessThan(400 * 1024 * 1024)
   expect(historyHeap.jsHeap, 'history JS heap').toBeLessThan(400 * 1024 * 1024)
   expect(hugeGet.truncated, 'huge assistant truncated in list').toBeGreaterThan(0)
   expect(hugeGet.bytes, 'truncated huge GET').toBeLessThan(120_000)

@@ -88,7 +88,17 @@
 // assistant and checkpoint commit under one file gate with tail rollback.
 // Prepared standalone/local compactions re-read config.activeLeafId under that
 // same gate before append, so a second Session handle cannot commit a stale cut.
-// Slim views never expose encrypted checkpoint items.
+// Public slim, compact, exact-body and index projections never expose encrypted
+// checkpoint items. Their derived remoteContext flag identifies remote
+// checkpoints without claiming that the current provider can reuse them;
+// this view-only flag is not persisted.
+// Public entries/index rows also derive contextEstimate before shortening any
+// bodies: UTF-8/4 estimates for system, tool schemas, message text/thinking/tool
+// arguments and local summary text. Known zero differs from an omitted unknown
+// component. Images, opaque signatures/checkpoints and provider usage are not
+// converted into these textual estimates. The body-free scanner discards full
+// content after estimating and caches only bounded schema digests/counts;
+// estimates are never appended to stored entries or used for provider replay.
 // Asynchronous sideband rows never advance activeLeafId. A run cancellation is
 // published live immediately, then committed after terminal output as a normal
 // non-message leaf so branch history renders it in order without model replay.

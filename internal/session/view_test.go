@@ -269,7 +269,130 @@ func TestLookupEntriesRedactsRemoteCompaction(t *testing.T) {
 		},
 	}}
 	got := LookupEntries(entries, []string{"cmp"})
-	if len(got) != 1 || got[0].Responses != nil {
+	if len(got) != 1 || got[0].Responses != nil || !got[0].RemoteContext {
 		t.Fatalf("exact lookup leaked remote checkpoint: %+v", got)
+	}
+}
+
+func TestRemoteContextPublicProjections(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "openai", "gpt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	user, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "input"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := types.ProviderBinding{Provider: "openai", API: "responses", BaseURL: "https://api.openai.com/v1", Model: "gpt", Compaction: "openai"}
+	remote, err := s.AppendResponsesCompaction(types.ResponsesContext{
+		Binding: binding,
+		Items:   []json.RawMessage{json.RawMessage(`{"type":"compaction","id":"cmp_1","encrypted_content":"CHECKPOINT_SECRET"}`)},
+	}, 100, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	end, err := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "reply"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := AllEntries(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, err := ReadTranscript(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEntries := func(name string, got []Entry) {
+		t.Helper()
+		found := false
+		for _, e := range got {
+			if e.Responses != nil {
+				t.Fatalf("%s exposes provider payload", name)
+			}
+			if e.ID == remote.ID {
+				found = true
+				if !e.RemoteContext {
+					t.Fatalf("%s lost remote marker", name)
+				}
+			} else if e.RemoteContext {
+				t.Fatalf("%s marked ordinary entry as remote: %s", name, e.ID)
+			}
+		}
+		raw, err := json.Marshal(got)
+		if err != nil || !found || strings.Contains(string(raw), "CHECKPOINT_SECRET") || strings.Contains(string(raw), `"responses":`) {
+			t.Fatalf("%s invalid public projection: found=%v err=%v body=%s", name, found, err, raw)
+		}
+	}
+	assertIndex := func(name string, got []IndexEntry) {
+		t.Helper()
+		found := false
+		for _, e := range got {
+			if e.ID == remote.ID {
+				found = true
+				if !e.RemoteContext || e.Preview != "Provider remote compaction" {
+					t.Fatalf("%s lost remote kind: %+v", name, e)
+				}
+			} else if e.RemoteContext {
+				t.Fatalf("%s marked ordinary entry as remote: %s", name, e.ID)
+			}
+		}
+		raw, err := json.Marshal(got)
+		if err != nil || !found || strings.Contains(string(raw), "CHECKPOINT_SECRET") || strings.Contains(string(raw), `"responses":`) {
+			t.Fatalf("%s invalid public index: %s (%v)", name, raw, err)
+		}
+	}
+	assertEntries("tail", BuildTail(entries, end.ID, 100, true).Entries)
+	view := BuildView(entries, end.ID, 100)
+	assertEntries("view", view.Entries)
+	assertIndex("view index", view.Index)
+	assertEntries("before", BuildBefore(entries, end.ID, end.ID, 100).Entries)
+	assertEntries("lookup", LookupEntries(entries, []string{remote.ID}))
+	redacted := RedactProviderContext(entries)
+	assertEntries("redaction", redacted)
+	assertEntries("repeated redaction", RedactProviderContext(redacted))
+	assertIndex("redacted index", BuildIndex(redacted))
+	assertEntries("compact", BuildCompact(entries, end.ID, "", 1).Entries)
+	assertEntries("redacted compact", BuildCompact(redacted, end.ID, "", 1).Entries)
+	turn, ok := BuildTurn(entries, end.ID, user.ID, "", 100)
+	if !ok {
+		t.Fatal("turn not found")
+	}
+	assertEntries("turn", turn.Entries)
+	compactTurn, ok := BuildCompactTurn(entries, end.ID, user.ID, 1)
+	if !ok {
+		t.Fatal("compact turn not found")
+	}
+	assertEntries("compact turn", compactTurn.Entries)
+	assertIndex("transcript index", tr.Index())
+	exact, err := tr.Lookup([]string{remote.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEntries("transcript exact lookup", exact)
+	tail, ok, err := tr.Tail(end.ID, "", "", 100)
+	if err != nil || !ok {
+		t.Fatalf("transcript tail: %v, %v", ok, err)
+	}
+	assertEntries("transcript tail", tail.Entries)
+	for _, turnID := range []string{"", user.ID} {
+		page, ok, err := tr.Compact(end.ID, "", turnID, 1)
+		if err != nil || !ok {
+			t.Fatalf("transcript compact: %v, %v", ok, err)
+		}
+		assertEntries("transcript compact "+turnID, page.Entries)
+	}
+	for _, e := range entries {
+		if e.RemoteContext {
+			t.Fatal("public projection changed persisted entries")
+		}
+	}
+	raw, err := json.Marshal(remote)
+	if err != nil || strings.Contains(string(raw), `"remoteContext":`) || !strings.Contains(string(raw), "CHECKPOINT_SECRET") {
+		t.Fatalf("persisted checkpoint changed: %s (%v)", raw, err)
+	}
+	if ctx := s.ContextToLeaf(binding); ctx.Responses == nil || len(ctx.Responses.Items) != 1 {
+		t.Fatal("public projection changed provider replay")
 	}
 }

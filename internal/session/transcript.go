@@ -80,6 +80,7 @@ func ReadTranscript(dir string) (*Transcript, error) {
 		return nil, err
 	}
 	r := bufio.NewReaderSize(io.LimitReader(f, stamp.size-next.end), 256<<10)
+	estimates := contextEstimateCache{}
 	for {
 		line, err := readTranscriptLine(r)
 		if errors.Is(err, io.EOF) {
@@ -105,7 +106,7 @@ func ReadTranscript(dir string) (*Transcript, error) {
 			next.locations[""] = entryLocation{offset, int64(len(line))}
 			continue
 		}
-		e, ix, err := decodeMetadata(line)
+		e, ix, err := decodeMetadataCached(line, estimates)
 		if err != nil {
 			return nil, fmt.Errorf("decode transcript metadata: %w", err)
 		}
@@ -137,11 +138,14 @@ func readTranscriptLine(r *bufio.Reader) ([]byte, error) {
 }
 
 type metadataContent struct {
-	Type     string `json:"type"`
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Text     string `json:"text"`
-	Thinking string `json:"thinking"`
+	Type         string          `json:"type"`
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Text         string          `json:"text"`
+	Thinking     string          `json:"thinking"`
+	Input        string          `json:"input"`
+	Arguments    json.RawMessage `json:"arguments"`
+	ArgumentsRaw string          `json:"argumentsRaw"`
 }
 
 type metadataMessage struct {
@@ -160,6 +164,10 @@ type metadataMessage struct {
 }
 
 func decodeMetadata(raw []byte) (Entry, IndexEntry, error) {
+	return decodeMetadataCached(raw, contextEstimateCache{})
+}
+
+func decodeMetadataCached(raw []byte, estimates contextEstimateCache) (Entry, IndexEntry, error) {
 	var wire struct {
 		Type          string           `json:"type"`
 		ID            string           `json:"id"`
@@ -173,6 +181,7 @@ func decodeMetadata(raw []byte) (Entry, IndexEntry, error) {
 		Usage         *types.Usage     `json:"usage"`
 		Message       *metadataMessage `json:"message"`
 		System        string           `json:"system"`
+		Tools         json.RawMessage  `json:"tools"`
 		Summary       string           `json:"summary"`
 		Responses     *struct{}        `json:"responses"`
 		Details       json.RawMessage  `json:"details"`
@@ -190,7 +199,31 @@ func decodeMetadata(raw []byte) (Entry, IndexEntry, error) {
 			m.Content = append(m.Content, types.Content{Type: c.Type, ID: c.ID, Name: c.Name, Text: c.Text, Thinking: c.Thinking})
 		}
 		e.Message = m
+		tokens := 0
+		for _, c := range w.Content {
+			switch c.Type {
+			case "text":
+				tokens += contextTokens(c.Text)
+			case "thinking":
+				tokens += contextTokens(c.Thinking)
+			case "toolCall":
+				arguments := c.ArgumentsRaw
+				if len(c.Arguments) > 0 && !bytes.Equal(c.Arguments, []byte("null")) {
+					arguments = string(c.Arguments)
+				}
+				tokens += toolCallTokens(c.Name, c.Input, arguments, nil)
+			}
+		}
+		e.ContextEstimate = &ContextEstimate{Message: contextNumber(tokens)}
 	}
+	if e.Type == "request_header" {
+		tools, err := estimates.tools(wire.Tools)
+		if err != nil {
+			return Entry{}, IndexEntry{}, err
+		}
+		e.ContextEstimate = &ContextEstimate{System: contextNumber(contextTokens(e.System)), Tools: contextNumber(tools)}
+	}
+	e = withContextEstimate(e)
 	ix := indexOf(e)
 	ix.Preview = strings.Clone(ix.Preview)
 	// Why clone bounded previews: a substring would otherwise pin the entire
@@ -288,6 +321,11 @@ func (t *Transcript) read(selected []Entry) ([]Entry, error) {
 		if e.ID != meta.ID {
 			return nil, errSessionChanged
 		}
+		// Exact hydration must retain the checkpoint kind without exposing its
+		// opaque payload, just like slim views and the body-free index.
+		e.ContextEstimate = meta.ContextEstimate
+		e = withContextEstimate(e)
+		e.RemoteContext = e.RemoteContext || e.Responses != nil
 		e.Responses = nil
 		out = append(out, e)
 	}

@@ -33,12 +33,13 @@ export function useTranscriptScroll(options: {
   olderError?: boolean
   pageBudget?: number
   endPadding?: number
+  initialIntent?: TranscriptIntent
 }) {
   const state = useRef(options)
   state.current = options
   const virtual = useRef<Virtualizer<HTMLDivElement, Element> | null>(null)
-  const intent = useRef<TranscriptIntent>('following')
-  const [scrollIntent, setScrollIntent] = useState<TranscriptIntent>('following')
+  const intent = useRef<TranscriptIntent>(options.initialIntent ?? 'following')
+  const [scrollIntent, setScrollIntent] = useState<TranscriptIntent>(options.initialIntent ?? 'following')
   // Compatibility with the virtualizer's boolean API is a projection, not a
   // second intent owner. Seeking and reading both disable all end pinning.
   const following = useMemo(() => ({ get current() { return intent.current === 'following' } }), [])
