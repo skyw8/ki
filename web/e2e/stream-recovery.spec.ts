@@ -2,6 +2,38 @@ import { expect, test } from '@playwright/test'
 import { openStream } from './stream-fixture'
 import type { LoopEvent } from '../src/api/types'
 
+test('evicted replay recovers the persisted terminal answer without submitting another prompt', async ({ page }) => {
+  const f = await openStream(page, 0)
+  let prompts = 0
+  let snapshots = 0
+  page.on('request', req => { if (req.url().endsWith('/prompt')) prompts++ })
+  await page.route(`**/v1/sessions/${f.id}`, route => route.fulfill({ json: {
+    id: f.id, title: f.title, running: ++snapshots === 1, leafId: 'durable',
+    entries: [...f.entries, { type: 'message', id: 'durable', parentId: 'question',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Recovered from durable history 中🙂' }] } }],
+  } }))
+  // The fixture supplies a fetch-backed stream. Override its next connection
+  // with the server's actual HTTP contract, after one still-running snapshot.
+  await page.evaluate(id => {
+    const previous = window.fetch
+    const scope = window as unknown as { streamClose: () => void; expiredReplays: number }
+    scope.expiredReplays = 0
+    window.fetch = async (...args) => {
+      if (String(args[0]).includes(`/v1/sessions/${id}/events`)) {
+        scope.expiredReplays++
+        return new Response(JSON.stringify({ error: 'replay_unavailable' }), { status: 410 })
+      }
+      return previous(...args)
+    }
+    scope.streamClose()
+  }, f.id)
+  await expect(page.getByTestId('assistant-message')).toContainText('Recovered from durable history 中🙂')
+  await expect(page.getByTestId('composer-stop')).toHaveCount(0)
+  expect(prompts).toBe(0)
+  expect(snapshots).toBe(2)
+  expect(await page.evaluate(() => (window as unknown as { expiredReplays: number }).expiredReplays)).toBe(1)
+})
+
 test('late reference definitions resolve across settled segments and completion keeps the mounted root', async ({ page }) => {
   const f = await openStream(page, 0)
   const source = '[reference][target]\n\n' + 'A settled paragraph with **formatting**.\n\n'.repeat(150)

@@ -64,6 +64,7 @@ type Server struct {
 	resources              *resources.Loader
 	mu                     sync.Mutex
 	runs                   map[string]*runState
+	replay                 replayCache
 	jobs                   map[string]*tools.JobStore
 	outputStore            *tooloutput.Store
 	agentTasks             *tools.AgentStore
@@ -476,6 +477,7 @@ func New(opt Options) (*Server, error) {
 		runtimeCtx:             runtimeCtx,
 		runtimeCancel:          runtimeCancel,
 	}
+	srv.replay = newReplayCache()
 	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
 	srv.ext.SetHost(srv)
 	// The runtime state is part of GET /v1/extensions; push a refetch hint on
@@ -623,13 +625,15 @@ func (s *Server) reloadSession(id string) {
 		s.ext.CloseSession(id)
 	}
 	s.resetRuntime(id)
-	sess, err := s.open(id)
+	dir, err := s.sessionDir(id)
 	if err != nil {
 		return
 	}
-	cwd := sess.Header.CWD
-	_ = sess.Close()
-	s.kickWarmup(id, cwd)
+	header, err := session.ReadHeader(dir)
+	if err != nil {
+		return
+	}
+	s.kickWarmup(id, header.CWD)
 }
 
 func (s *Server) requestReload(id string) bool {
@@ -1071,6 +1075,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// remove that directory underneath a warmup goroutine.
 	s.runtimeWG.Wait()
 	s.mu.Lock()
+	s.replay.closed = true
+	if s.replay.timer != nil {
+		s.replay.timer.Stop()
+	}
+	for id := range s.replay.items {
+		if st := s.runs[id]; st == s.replay.items[id].Value.(completedReplay).state {
+			delete(s.runs, id)
+		}
+		s.forgetReplayLocked(id)
+	}
 	jobs := make([]*tools.JobStore, 0, len(s.jobs))
 	for id, store := range s.jobs {
 		jobs = append(jobs, store)
@@ -1297,12 +1311,16 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		limit = session.ClampViewLimit(n)
 	}
 	withIndex := hasField(fields, "index")
-	runtimeOnly := hasField(fields, "runtime") && !withIndex && entryID == "" && batch == "" && before == ""
+	runtimeOnly := hasField(fields, "runtime") && !withIndex && entryID == "" && batch == "" && before == "" && turnID == ""
 	full := entryID != "" || batch != "" || before != "" || withIndex || compact || traceView || inspectView || turnID != ""
 
 	var snap *sessionSnap
 	var err error
-	if full {
+	if runtimeOnly && !traceView && !inspectView {
+		snap, err = s.loadSessionSnap(id, false, 0)
+	} else if full && !traceView && !inspectView {
+		snap, err = s.loadIndexedSessionSnap(id)
+	} else if full {
 		snap, err = s.loadSessionSnap(id, true, 0)
 	} else {
 		snap, err = s.loadSessionSnap(id, false, limit)
@@ -1371,7 +1389,11 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if entryID != "" {
-		got := session.LookupEntries(snap.entries, []string{entryID})
+		got, err := snap.transcript.Lookup([]string{entryID})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if len(got) == 0 {
 			http.Error(w, "entry not found", http.StatusNotFound)
 			return
@@ -1380,7 +1402,12 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if batch != "" {
-		writeJSON(w, 200, map[string]any{"entries": session.LookupEntries(snap.entries, strings.Split(batch, ","))})
+		got, err := snap.transcript.Lookup(strings.Split(batch, ","))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"entries": got})
 		return
 	}
 	// A stale cursor after a branch change is not evidence of reaching the
@@ -1392,7 +1419,11 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if turnID != "" {
 		if compact {
-			page, found := session.BuildCompactTurn(snap.entries, snap.leafID, turnID, keep)
+			page, found, err := snap.transcript.Compact(snap.leafID, "", turnID, keep)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
 			if !found {
 				http.Error(w, "turn not found on active branch", http.StatusNotFound)
 				return
@@ -1400,7 +1431,11 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, page)
 			return
 		}
-		page, found := session.BuildTurn(snap.entries, snap.leafID, turnID, before, limit)
+		page, found, err := snap.transcript.Tail(snap.leafID, before, turnID, limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if !found {
 			if before != "" {
 				if _, exists := session.BuildTurn(snap.entries, snap.leafID, turnID, "", limit); exists {
@@ -1416,10 +1451,19 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 	if before != "" {
 		if compact {
-			writeJSON(w, 200, session.BuildCompact(snap.entries, snap.leafID, before, keep))
+			page, _, err := snap.transcript.Compact(snap.leafID, before, "", keep)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+			writeJSON(w, 200, page)
 			return
 		}
-		view := session.BuildBefore(snap.entries, snap.leafID, before, limit)
+		view, _, err := snap.transcript.Tail(snap.leafID, before, "", limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		writeJSON(w, 200, map[string]any{
 			"entries":  view.Entries,
 			"hasMore":  view.HasMore,
@@ -1430,7 +1474,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	if withIndex && !hasField(fields, "runtime") {
 		// Index consumers already have a tail. Repeating it here doubled the
 		// weak-link transfer and could overwrite hydrated bodies in the UI.
-		body, err := json.Marshal(map[string]any{"id": id, "index": session.BuildIndex(snap.entries)})
+		body, err := json.Marshal(map[string]any{"id": id, "index": snap.index()})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1459,18 +1503,29 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 
 	runtime["leafId"] = snap.leafID
 	if compact {
-		page := session.BuildCompact(snap.entries, snap.leafID, "", keep)
+		page, _, err := snap.transcript.Compact(snap.leafID, "", "", keep)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		runtime["entries"], runtime["compactTurns"] = page.Entries, page.Turns
 		runtime["hasMore"], runtime["oldestId"] = page.HasMore, page.OldestID
 	} else {
 		tail := session.BuildTail(snap.entries, snap.leafID, limit, snap.complete)
+		if snap.transcript != nil {
+			tail, _, err = snap.transcript.Tail(snap.leafID, "", "", limit)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
+			}
+		}
 		runtime["entries"], runtime["hasMore"], runtime["oldestId"] = tail.Entries, tail.HasMore, tail.OldestID
 	}
 	if withIndex || (!compact && snap.complete && snap.small) {
 		// A session smaller than one tail read was read in full anyway, so its
 		// index costs nothing extra and the client needs no second request; a
 		// long one stays opt-in.
-		runtime["index"] = session.BuildIndex(snap.entries)
+		runtime["index"] = snap.index()
 	}
 	writeJSON(w, 200, s.sessionMapSnap(snap, runtime))
 }
@@ -3198,16 +3253,22 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session, inte
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.mu.Lock()
+	s.pruneReplaysLocked(time.Now())
 	st := s.runs[id]
 	s.mu.Unlock()
+	if st == nil {
+		if _, err := s.sessionDir(id); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		writeJSON(w, http.StatusGone, map[string]string{"error": "replay_unavailable", "recovery": "/v1/sessions/" + id})
+		return
+	}
 	writer := newSSEWriter(w)
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	defer writer.watch(ctx)()
-	if st == nil {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
+
 	snapshot := s.replaySnapshot(id, r.URL.Query().Get("through"))
 	// Heartbeats and event writes share one writer; a failed heartbeat cancels
 	// the reader's condition wait instead of leaving a dead connection parked.
@@ -3281,6 +3342,16 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		// marks events this client already has from an earlier connection.
 		if ev.Blank || ev.Seq <= since || snapshot.covers(ev) {
 			continue
+		}
+		if ev.Type == loop.AgentEnd {
+			// A terminal frame is a client's cue to issue the next prompt or
+			// compaction. Wait for release (including queued reload), otherwise
+			// cache work in release turns that next request into a spurious 409.
+			select {
+			case <-st.done:
+			case <-ctx.Done():
+				return
+			}
 		}
 		encodedAt := time.Now()
 		b, err := json.Marshal(encoder.Encode(snapshot.frame(*ev)))

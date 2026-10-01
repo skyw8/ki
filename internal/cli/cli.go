@@ -728,6 +728,13 @@ func streamEvents(ctx context.Context, base, token, id string) error {
 		return err
 	}
 	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode == http.StatusGone {
+		return recoverLatestTurn(ctx, base, token, id)
+	}
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+		return fmt.Errorf("%w: events: %d %s", errHTTPResponse, res.StatusCode, body)
+	}
 	sc := bufio.NewScanner(res.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	var pr streamPrinter

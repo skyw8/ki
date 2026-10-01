@@ -17,23 +17,32 @@ import (
 // repeated opens of a long session stay proportional to what was appended
 // rather than to the size of the history.
 type sessionSnap struct {
-	id       string
-	dir      string
-	header   session.Header
-	configV  session.Config
-	leafID   string
-	title    string
-	entries  []session.Entry
-	complete bool
+	id         string
+	dir        string
+	header     session.Header
+	configV    session.Config
+	leafID     string
+	title      string
+	entries    []session.Entry
+	complete   bool
+	transcript *session.Transcript
 	// small marks a transcript that one tail read covers entirely, so its index
 	// costs no extra read and can be answered inline.
 	small bool
 }
 
-// loadSessionSnap reads a session. full requests the whole transcript (id
-// lookups, older pages, the tree index); otherwise only the newest want entries
-// of the leaf chain are decoded.
+// loadSessionSnap reads full bodies for model execution/diagnostics, or a tail
+// window for ordinary detailed opens. want == 0 skips transcript decoding.
+// Historical views use loadIndexedSessionSnap and hydrate selected offsets.
 func (s *Server) loadSessionSnap(id string, full bool, want int) (*sessionSnap, error) {
+	return s.readSessionSnap(id, full, want, false)
+}
+
+func (s *Server) loadIndexedSessionSnap(id string) (*sessionSnap, error) {
+	return s.readSessionSnap(id, true, 0, true)
+}
+
+func (s *Server) readSessionSnap(id string, full bool, want int, indexed bool) (*sessionSnap, error) {
 	dir, err := s.sessionDir(id)
 	if err != nil {
 		return nil, err
@@ -55,13 +64,19 @@ func (s *Server) loadSessionSnap(id string, full bool, want int) (*sessionSnap, 
 		title:    cfg.Title,
 		complete: true,
 	}
-	if full {
+	if indexed {
+		transcript, err := session.ReadTranscript(dir)
+		if err != nil {
+			return nil, err
+		}
+		snap.transcript, snap.entries = transcript, transcript.Entries()
+	} else if full {
 		entries, err := session.AllEntries(dir)
 		if err != nil {
 			return nil, err
 		}
 		snap.entries = entries
-	} else {
+	} else if want > 0 {
 		entries, complete, err := session.LeafTail(dir, cfg.ActiveLeafID, want)
 		if err != nil {
 			return nil, err
@@ -71,14 +86,14 @@ func (s *Server) loadSessionSnap(id string, full bool, want int) (*sessionSnap, 
 			snap.small = info.Size() <= session.TailReadLimit
 		}
 	}
-	if !entryIn(snap.entries, snap.leafID) {
+	if (full || want > 0) && !entryIn(snap.entries, snap.leafID) {
 		// The active leaf is not in the window: either config points at a
 		// deleted entry or (impossible for a tail read, see LeafTail) the
 		// window missed it. Mirror session.Open and use the newest non-sideband
 		// entry that was read.
 		snap.leafID = lastNonSideband(snap.entries)
 	}
-	if snap.title == "" && !full {
+	if snap.title == "" && (!full || indexed) {
 		// Why: the tail window does not contain the session's first user
 		// message, so TitleFrom would fall back to the newest one and rename
 		// the session. The lite row is cached and only revalidates two stats.
@@ -127,4 +142,11 @@ func (s *Server) sessionDir(id string) (string, error) {
 	}
 	s.sidx.Add(id, dir)
 	return dir, nil
+}
+
+func (snap *sessionSnap) index() []session.IndexEntry {
+	if snap.transcript != nil {
+		return snap.transcript.Index()
+	}
+	return session.BuildIndex(snap.entries)
 }

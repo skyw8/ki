@@ -348,6 +348,16 @@ func (s *Server) removeSessionInfo(info session.Info) error {
 		return fmt.Errorf("remove session: %w", err)
 	}
 	s.sidx.Remove(info.ID) // only after the dir is actually gone
+	s.mu.Lock()
+	s.forgetReplayLocked(info.ID)
+	if st := s.runs[info.ID]; st != nil {
+		select {
+		case <-st.done:
+			delete(s.runs, info.ID)
+		default:
+		}
+	}
+	s.mu.Unlock()
 	s.resources.Invalidate(info.ID)
 	if s.ext != nil {
 		s.ext.CloseSession(info.ID)

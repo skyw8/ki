@@ -16,7 +16,7 @@ func (s *Server) replaySnapshot(id, leaf string) snapshotReplay {
 	if leaf == "" {
 		return out
 	}
-	snap, err := s.loadSessionSnap(id, true, 0)
+	snap, err := s.loadIndexedSessionSnap(id)
 	if err != nil || !entryIn(snap.entries, leaf) {
 		return out
 	}

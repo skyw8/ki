@@ -2,6 +2,9 @@
 // local HTTP server, and stream SSE to the terminal.
 // The SSE reader restores connection-local message patches before printing
 // newly accumulated text; message_end remains the authoritative full message.
+// A 410 from an expired run replay recovers the latest human turn on the selected
+// branch through compact metadata, index and exact body GETs, never another
+// prompt. Other HTTP errors remain errors rather than empty successful replies.
 //
 //	ki                  detached server + WebUI, then best-effort browser open
 //	ki serve [-d]       foreground or detached server + WebUI

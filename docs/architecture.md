@@ -30,6 +30,8 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 
 `Agent` 是同一工具链中的 session-scoped delegation：为 parent 建一个 `forkMode=tree` 的 child（继承 provider/model），注册 child 的 stable agent/task id 后由独立 `runState` 运行 `loop.RunMessage`。child 默认用 `session.CreateChild` 从干净上下文启动；只有显式 `inherit_context:true` 才用 `session.ForkHistoryAt` 复制 parent 到 `LastUserBoundary` 的已完成历史（最新 user message 之前，所以触发本轮的用户消息不会变成 child 的任务；只复制 message/compaction 并重连 parent 链，不把 parent 的 request header/usage 带进 child）。child 的 system prompt 与 parent 逐字节相同；它的自我认知（depth、派它的 session）由 `subagentDirective` 包在第一条 user 消息外层，既不破坏跨会话前缀缓存，也让 subagent 身份在对话里可见。信封只说明身份，不要求 child 汇报——结果走 tool result / `<task-notification>` 自动回传。前台调用等待 child 完成并把最终 assistant 文本作为 tool result；后台调用立即返回 task id/output file，`TaskOutput` / `TaskStop` 通过统一 task store 查询或取消 shell 与 agent 任务。完成通知优先在 parent 的 run 还活着时写进它的 Inbox（下一个 model round 前 drain，落在同一个 turn 内），否则进 durable queue 起新的一轮；`TaskOutput` 读到终态或 `TaskStop` 终止后该 run 的通知在出队时被丢弃。child 自己重新 Prepare 资源并拥有完整内置工具集，所以可递归形成 tree，但主会话为深度 0，Agent child 最多到深度 3。**工具集不随深度变化**：`Agent` 在任何深度都在 tool schemas 与 system prompt 里（`Set` 没有深度字段），否则深度 3 的 child 前缀会和 parent 分叉、缓存失效；限制改由 spawn 边界兜住——`parentDepth >= 3` 时 `SpawnAgent` 返回 `maximum agent depth 3 reached`，同时深度 3 的 child 在信封里被明确要求不要再委派。深度沿 `parentSession` 链数 `agent.json` 标记，所以普通 fork 不消耗深度；链上被删掉的祖先按“孤儿链到此为止”处理（`session.ErrSessionNotFound` 结束计数），只有环或读不了的祖先才 fail closed（拒绝 spawn）—— 否则删掉一个 session 会让它所有后代永久失去 spawn 能力。深度只在 spawn 时解析，不再参与每轮的工具集渲染，所以祖先变动不会让一个进行中的会话中途换掉前缀。child run 不继承调用方 ctx（`startRun` 用 `context.WithoutCancel`）：前台调用只观察它，超过 `agentForegroundTimeout`（2 分钟）就升级为 background 并把 `async_launched` 返回给 parent，child 继续跑到完成为止；**提升不结束 parent turn**（只有显式 `run_in_background` 才 `Terminate`），调用方继续这一轮或自行结束，`note` 字段告知它等待已过期、不要重启同一任务。`SendMessage` 对 live child 写入 Inbox，对 completed/stopped/interrupted child 复用原 transcript 续跑；child 旁的 `agent.json` 让 server 重启后能重建索引。
 
+主进程缓存分开管理正文、结构索引和已完成回放：正文加权 LRU 64MiB（单会话 8MiB），轻量元数据/偏移索引 16MiB，完成回放 16MiB / 2 分钟；各最多 256 项。相同 request_header 的 system/tools 在当前对象生命周期内共享，索引/分页/compact 按偏移读取所选正文。活动模型 Session 仍需要完整上下文，缓存预算不冒充进程 RSS 上限。资源 reload 只读 header 定位 cwd，不为失效资源再打开完整历史。详细约束见 [session.md](session.md) 与 [events.md](events.md)。
+
 ## HTTP
 
 除 `GET /v1/health`、`GET /v1/auth/status` 和 `POST /v1/auth/login` 外，API 要么带 `Authorization: Bearer`，要么带 WebUI 登录后设置的 HttpOnly browser session cookie。浏览器写请求还要带 `X-Ki-CSRF`，CLI 继续使用 Bearer。非 `/v1` 路径是同域 WebUI，SPA HTML 不再注入 server token；登录时由用户显式输入 token，服务端换发短期 cookie。不要把 token 放进 URL。登录会话仅保存在 server 内存中，server 重启后失效。
@@ -52,7 +54,7 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
 | POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId` / `delivery` / `queueId`；空闲 `202 started`；忙时 `steer` 插入本轮或 `queue` 排队，省略则用 `toggles.json` `message.busy`；`queueId`+`delivery=steer` 从 `queue.json` 取出插入本轮；`parentId` 且 busy 仍 **409** |
 | GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`） |
-| GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件 |
+| GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件；完成回放受 16MiB / 2 分钟 / 256 run 限制，过期或无回放时现存 session 返回 410，客户端从 session GET 恢复 |
 | POST | `/v1/sessions/{id}/extension-ui` | 面板 action / submit / confirm / select 回传 sidecar |
 | POST | `/v1/sessions/{id}/abort` | cancel |
 | POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
@@ -136,15 +138,15 @@ loop 每次事件
   R -> R : st.evs = append(st.evs, ev)\nst.wait.Broadcast()
 end
 
-C -> E : GET /v1/sessions/{id}/events\n(SSE，随时可连)
-E -> E : st := s.runs[id]；idx = 0\n（从本次运行开头重放）
+C -> E : GET /v1/sessions/{id}/events\n(SSE，活动或完成保留期内可连)
+E -> E : st := s.runs[id]；idx = 0\n（按游标重放；无 st 返回 410）
 loop 事件流
   E -> E : 没有新事件 → Cond.Wait() 睡觉
   E --> C : event: <type>\ndata: <json>
 end
 
-R -> R : loop.Run 返回\ndefer: close(st.done) + Broadcast
-E -> E : done 已关 → 排空剩余 → 关 SSE
+R -> R : loop.Run 返回\ndefer: 排队 reload → close(st.done) + Broadcast\n登记完成缓存预算/期限
+E -> E : terminal agent_end 等待 done\n排空剩余 → 关 SSE
 
 C -> S : POST /v1/sessions/{id}/abort（可选）\n→ st.cancel() → Bash 杀进程组 → loop 返回 → agent_end
 @enduml

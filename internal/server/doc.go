@@ -34,6 +34,11 @@
 // ready frame is the client's cue to refetch, which is also how a reconnect
 // catches up. The pushed agent_end carries no messages; the run's full event
 // log is replayed only to the client holding that run's SSE.
+// Completed replay ownership expires after two minutes and is bounded by
+// 16 MiB / 256 runs. Active runs and attached readers keep their own ownership.
+// Missing/expired replay returns 410 with the canonical session recovery URL;
+// missing sessions return 404. Terminal agent_end waits for release so clients
+// can immediately start work after queued resource invalidation has completed.
 // Run-owned and standalone compaction start/end events persist before publish;
 // lifecycleEntryId, parentId and timestamp match that entry, while entryId
 // continues to identify the committed checkpoint.
@@ -55,9 +60,9 @@
 // The same route's view=trace and view=inspect projections expose bounded
 // active-leaf diagnostics to CLI clients without preparing extension runtime;
 // unsupported view names are rejected rather than treated as detailed.
-// The tree index is opt-in (fields=index, only id/index, content ETag): it needs the whole transcript, and
-// carrying it on open made a long session wait for a full parse and megabytes
-// of JSON that the newest messages did not need. A session smaller than one
+// The tree index is opt-in (fields=index, only id/index, content ETag): it uses
+// a separately bounded body-free metadata/offset snapshot. Index, historical
+// pages, exact bodies and compact views never promote the full body cache. A session smaller than one
 // tail read, which is read in full anyway, still answers with the index so the
 // WebUI needs no second request. fields=runtime omits the transcript
 // entirely; fields=index,runtime includes tail/index/runtime together.

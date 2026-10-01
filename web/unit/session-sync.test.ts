@@ -25,6 +25,30 @@ function untilAbort(signal: AbortSignal) {
   })
 }
 
+test('expired replay reconciles persisted replies without reopening an idle run or writing a prompt', async () => {
+  const store = new TranscriptStore(loadHistory(initial), 's')
+  let gets = 0
+  let streams = 0
+  const api = {
+    get: async () => { gets++; return final },
+    async *events() {
+      streams++
+      throw new ApiError(410, 'replay_unavailable')
+    },
+  } as unknown as Client
+  const sync = new SessionSyncController(api, store, { transcriptOptions: () => ({}), clock: noFrames })
+  try {
+    sync.select('s')
+    await sync.listen('s')
+    await settle()
+    expect(gets).toBe(1)
+    expect(streams).toBe(1)
+    expect(sync.getSnapshot().phase).toBe('idle')
+    expect(store.current.busy).toBe(false)
+    expect(store.current.nodes.filter(node => node.kind === 'assistant').map(node => node.text)).toEqual(['answer'])
+  } finally { sync.dispose() }
+})
+
 test('EOF reconciles the canonical transcript and commits before acknowledging its resume cursor', async () => {
   const store = new TranscriptStore(loadHistory(initial), 's')
   const connections: Array<{ cursor?: string; through?: string }> = []

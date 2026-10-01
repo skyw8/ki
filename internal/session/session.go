@@ -175,6 +175,7 @@ type Session struct {
 	Header  Header
 	Config  Config
 	entries []Entry
+	prompts promptPool
 	byID    map[string]Entry
 	leafID  string
 }
@@ -303,8 +304,8 @@ func Open(dir string) (*Session, error) {
 			first = false
 			continue
 		}
-		var e Entry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
+		e, err := decodeEntry([]byte(line), &s.prompts)
+		if err != nil {
 			_ = f.Close()
 			return nil, fmt.Errorf("decode events.jsonl entry: %w", err)
 		}
@@ -1016,6 +1017,15 @@ func CustomEntries(dir, extensionName string) []map[string]any {
 func (s *Session) AppendRequestHeader(system string, tools []ToolSchema, metadata ...RequestMeta) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	rawTools, err := json.Marshal(tools)
+	if err != nil {
+		return Entry{}, err
+	}
+	tools, err = s.prompts.schemas(rawTools)
+	if err != nil {
+		return Entry{}, err
+	}
+	system = s.prompts.system(system)
 	id, err := idgen.EntryID()
 	if err != nil {
 		return Entry{}, fmt.Errorf("generate entry ID: %w", err)

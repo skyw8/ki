@@ -38,6 +38,10 @@ HTTP 调用记为 `api`。服务端同时向 `{KI_HOME}/ki.jsonl` 写
 `run abort requested`，带 `session_id`、`run_id`、`reason`、`source`。
 
 `GET /v1/sessions/{id}/events` 是某个 run 的有序回放（`agent_end` 结束）。
+终止 `agent_end` 在匹配的 `release` 完成排队资源重载、关闭 done 后才交给 SSE 客户端，避免客户端立即续跑/压缩收到伪 busy。已完成回放在 server 中最多保留 2 分钟、全局 16MiB / 256 个；单轮超过总预算不保留，活动 run 不参与淘汰。独立定时器在没有新请求时也释放过期缓存。淘汰只移除 server 所有权，已连接读者继续排空，不清空其缓冲，也不删除同 session 的替代 run。完成后 sideband 不再扩充该回放。
+
+没有可重放 run 的现存 session 返回 gzip JSON **410**：`{"error":"replay_unavailable","recovery":"/v1/sessions/<id>"}`；session 不存在返回 404。WebUI 经现有恢复控制器重读权威 snapshot，保留 partial 到恢复成功；CLI 从 compact 最新人工轮 + 当前分支 index + exact entries GET 恢复完整 assistant 回复。恢复不重发 prompt。CLI 对其它非 200 状态报错，不能当作空回复成功。
+
 一个整轮模型调用期间可能长时间没有可发的帧，所以该流和 `GET /v1/events` 一样按
 `ssePingInterval`（15s）发 `: ping` 注释帧保活移动网络/代理；SSE 客户端忽略注释，
 CLI 的行读取器只认 `data:` 前缀。WebUI 客户端同时把「收到字节」当作唯一的存活证据：

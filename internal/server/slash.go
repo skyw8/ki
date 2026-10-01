@@ -430,8 +430,12 @@ func (s *Server) onExtensionError(sessionID, name, capability, code, message str
 	s.mu.Lock()
 	if st := s.runs[sessionID]; st != nil {
 		st.mu.Lock()
-		st.appendLocked(&ev)
-		st.wait.Broadcast()
+		select {
+		case <-st.done:
+		default:
+			st.appendLocked(&ev)
+			st.wait.Broadcast()
+		}
 		st.mu.Unlock()
 	}
 	s.mu.Unlock()
@@ -442,7 +446,7 @@ func (s *Server) onExtensionError(sessionID, name, capability, code, message str
 // release: runPrompt defers that; manual compaction releases after its
 // prepare/execute/validate/commit pipeline.
 // A second occupy while done is still open returns 409. A finished run stays
-// in s.runs until the next occupy overwrites it (SSE replay after done).
+// in s.runs while the completed replay cache admits it.
 func (s *Server) occupy(parent context.Context, id string) (*runState, context.Context, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -467,16 +471,17 @@ func (s *Server) occupy(parent context.Context, id string) (*runState, context.C
 	}
 	st := &runState{cancel: cancel, runID: runID, done: make(chan struct{}), partial: -1}
 	st.wait = sync.NewCond(&st.mu)
+	s.forgetReplayLocked(id)
 	s.runs[id] = st
 	// Green dot for every other client, not just the one that prompted.
 	s.publishInvalidation(scopeSessions)
 	return st, ctx, nil
 }
 
-// release ends occupy: cancel the run, close done so SSE drains and
-// running() is false, then apply a reload queued while this run held the
-// fixed request header. The finished runState stays in s.runs so late SSE
-// subscribers can replay until the next occupy overwrites it. close(done)
+// release ends occupy: cancel the run, apply a queued resource reload, then
+// close done so SSE drains and running() is false. The finished runState stays
+// in s.runs so late SSE
+// subscribers can replay within the completed cache's byte/TTL budget. close(done)
 // before Broadcast is the events-wait protocol.
 func (s *Server) release(id string, st *runState) {
 	if st == nil {
@@ -491,14 +496,19 @@ func (s *Server) release(id string, st *runState) {
 	pending := s.pendingReload[id]
 	delete(s.pendingReload, id)
 	s.mu.Unlock()
+	// Idle must imply queued resource invalidation has already happened.
+	// Cache accounting can be expensive; never put it between done and reload.
+	if pending {
+		s.reloadSession(id)
+	}
 	st.mu.Lock()
 	st.steerClosed = true
 	close(st.done)
 	st.wait.Broadcast()
 	st.mu.Unlock()
-	if pending {
-		s.reloadSession(id)
-	}
+	// Register expiry before extension notifications or queue dispatch, which
+	// can wait on unrelated work after this run has already become idle.
+	s.retainReplay(id, st)
 	if s.ext != nil {
 		s.ext.OnEvent(context.Background(), id, extension.RedactEvent(loop.Event{Type: loop.AgentSettled, RunID: runID, External: external}, id))
 	}
@@ -677,8 +687,12 @@ func (s *Server) publishSideband(sessionID string, ev loop.Event, persist bool) 
 	s.mu.Lock()
 	if st := s.runs[sessionID]; st != nil {
 		st.mu.Lock()
-		st.appendLocked(&ev)
-		st.wait.Broadcast()
+		select {
+		case <-st.done:
+		default:
+			st.appendLocked(&ev)
+			st.wait.Broadcast()
+		}
 		st.mu.Unlock()
 	}
 	s.mu.Unlock()

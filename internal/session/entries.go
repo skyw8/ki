@@ -11,13 +11,15 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"ki/internal/memory"
 )
 
 // Why: events.jsonl is append-only, so a reader can keep the entries it already
 // decoded and extend them by decoding only the bytes appended since. The WebUI
 // opens a session on every switch and reopens it after every run, and a cold
 // parse of a 40 MB transcript costs about a second of JSON work; with the cache
-// below that cost is paid once per process, and every later read is
+// below that cost is paid while the window is admitted, and later warm reads are
 // proportional to what was appended rather than to the size of the history.
 //
 // The filesystem stays the source of truth: every read revalidates the file by
@@ -51,20 +53,16 @@ type entriesCache struct {
 	start   int64 // byte offset of the first cached entry's line; 0 means the window reaches the file start
 	size    int64 // byte offset just past the last cached entry's line
 	mtime   time.Time
+	file    os.FileInfo
 	entries []Entry
+	weight  int64
+	prompts promptPool
 }
 
-var entriesCaches sync.Map // cleaned dir → *entriesCache
+var entriesCaches = newWeightedCache[*entriesCache](EntriesCacheBytes, maxSessionEntriesBytes)
 
 func entriesCacheFor(dir string) *entriesCache {
-	key := filepath.Clean(dir)
-	v, _ := entriesCaches.LoadOrStore(key, &entriesCache{})
-	c, ok := v.(*entriesCache)
-	if !ok {
-		c = &entriesCache{}
-		entriesCaches.Store(key, c)
-	}
-	return c
+	return entriesCaches.get(filepath.Clean(dir), func() *entriesCache { return &entriesCache{} })
 }
 
 // DropEntriesCache forgets what was decoded for a session directory. The server
@@ -72,11 +70,15 @@ func entriesCacheFor(dir string) *entriesCache {
 // transcript in memory; a stale entry is harmless anyway, because every read
 // revalidates by size+mtime.
 func DropEntriesCache(dir string) {
-	entriesCaches.Delete(filepath.Clean(dir))
+	entriesCaches.drop(filepath.Clean(dir))
+	transcriptCaches.drop(filepath.Clean(dir))
 }
 
 func (c *entriesCache) reset() {
 	c.start, c.size, c.mtime, c.entries = 0, 0, time.Time{}, nil
+	c.weight = 0
+	c.prompts = promptPool{}
+	c.file = nil
 }
 
 // entriesPath is the transcript path of a session directory.
@@ -133,6 +135,7 @@ func AllEntries(dir string) ([]Entry, error) {
 	c := entriesCacheFor(dir)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() { entriesCaches.update(filepath.Clean(dir), c, c.weight) }()
 	if err := c.load(dir, 0, true); err != nil {
 		return nil, err
 	}
@@ -147,6 +150,7 @@ func TailEntries(dir string, want int) ([]Entry, bool, error) {
 	c := entriesCacheFor(dir)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	defer func() { entriesCaches.update(filepath.Clean(dir), c, c.weight) }()
 	if err := c.load(dir, want, false); err != nil {
 		return nil, false, err
 	}
@@ -185,13 +189,46 @@ func LeafTail(dir, leafID string, want int) ([]Entry, bool, error) {
 // load brings the cache up to the requested window. want is the minimum number
 // of trailing entries (0 for none); full requires a window that starts at the
 // first entry.
-func (c *entriesCache) load(dir string, want int, full bool) error {
+func (c *entriesCache) load(dir string, want int, full bool) (loadErr error) {
+	oldSize, oldStart, oldLen := c.size, c.start, len(c.entries)
+	defer func() {
+		if loadErr != nil {
+			// A failed prefix can already have interned prompts. Drop that
+			// partially decoded graph rather than leaving unaccounted storage.
+			c.reset()
+			return
+		}
+		if oldSize != c.size || oldStart != c.start || oldLen != len(c.entries) || (c.weight == 0 && len(c.entries) > 0) {
+			c.weight = memory.Weight(struct {
+				Entries []Entry
+				Systems map[[32]byte]string
+				Tools   map[[32]byte][]ToolSchema
+			}{c.entries, c.prompts.systems, c.prompts.tools})
+		}
+	}()
+	// A tail request must not inherit an ever-growing full-history window.
+	// Detach it before shrinking: earlier requests may still own that slice.
+	if !full && c.size-c.start > tailReadBytes+tailGrowBytes && len(c.entries) > max(want*2, DefaultViewLimit*2) {
+		c.reset()
+	}
+
 	path := entriesPath(dir)
-	stamp, err := stampFile(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		c.reset()
 		return err
 	}
+	stamp := fileStamp{size: info.Size(), mtime: info.ModTime()}
+	if c.file != nil && !os.SameFile(c.file, info) {
+		// Atomic replacement can preserve size and timestamps; file identity
+		// prevents a cache hit on the previous transcript's body graph.
+		c.reset()
+	}
+	defer func() {
+		if loadErr == nil {
+			c.file = info
+		}
+	}()
 	switch {
 	case c.size == 0 && c.mtime.IsZero():
 		// Cold cache: nothing decoded yet.
@@ -201,7 +238,7 @@ func (c *entriesCache) load(dir string, want int, full bool) error {
 			return nil
 		}
 	case stamp.size > c.size && !stamp.mtime.Before(c.mtime):
-		added, err := readEntries(path, c.size, stamp.size)
+		added, err := readEntriesWithPool(path, c.size, stamp.size, &c.prompts)
 		if err != nil {
 			c.reset()
 			return err
@@ -221,7 +258,7 @@ func (c *entriesCache) load(dir string, want int, full bool) error {
 		}
 		// Start from a bounded tail of the file and grow downward below.
 		start := max(stamp.size-tailReadBytes, 0)
-		tail, err := readEntries(path, start, stamp.size)
+		tail, err := readEntriesWithPool(path, start, stamp.size, &c.prompts)
 		if err != nil {
 			return err
 		}
@@ -232,7 +269,7 @@ func (c *entriesCache) load(dir string, want int, full bool) error {
 			c.start = 0
 		}
 	} else if full && c.start > 0 {
-		prefix, err := readEntries(path, 0, c.start)
+		prefix, err := readEntriesWithPool(path, 0, c.start, &c.prompts)
 		if err != nil {
 			return err
 		}
@@ -250,7 +287,7 @@ func (c *entriesCache) load(dir string, want int, full bool) error {
 	}
 	for want > 0 && len(c.entries) < want && c.start > 0 {
 		start := max(c.start-tailGrowBytes, 0)
-		head, err := readEntries(path, start, c.start)
+		head, err := readEntriesWithPool(path, start, c.start, &c.prompts)
 		if err != nil {
 			return err
 		}
@@ -275,7 +312,7 @@ func (c *entriesCache) load(dir string, want int, full bool) error {
 
 // readAll decodes the whole file into the cache.
 func (c *entriesCache) readAll(path string, stamp fileStamp) error {
-	all, err := readEntries(path, 0, stamp.size)
+	all, err := readEntriesWithPool(path, 0, stamp.size, &c.prompts)
 	if err != nil {
 		return err
 	}
@@ -323,6 +360,11 @@ type entryRange struct {
 // half-written line stops before it, so the next read picks that line up again;
 // start/end always sit on line boundaries.
 func readEntries(path string, from, to int64) (entryRange, error) {
+	var pool promptPool
+	return readEntriesWithPool(path, from, to, &pool)
+}
+
+func readEntriesWithPool(path string, from, to int64, pool *promptPool) (entryRange, error) {
 	out := entryRange{start: from, end: from}
 	if to <= from {
 		return out, nil
@@ -386,8 +428,8 @@ func readEntries(path string, from, to int64) (entryRange, error) {
 			}
 			continue
 		}
-		var e Entry
-		if err := json.Unmarshal(trimmed, &e); err != nil {
+		e, err := decodeEntry(trimmed, pool)
+		if err != nil {
 			return out, fmt.Errorf("decode events.jsonl entry: %w", err)
 		}
 		if !started {

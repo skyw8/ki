@@ -63,12 +63,19 @@
 // Oversized entries retain identity/statistics and advertise truncation; full
 // bodies stay available through entry/entries. A page's cursor is its actual
 // contiguous boundary, not its additional turn-opening user entry. Since jsonl
-// is append-only, reads use a per-directory cache that decodes only bytes appended
-// since the last read: TailEntries (LeafTail) reads just the end of the file,
-// AllEntries extends the same cache to the whole transcript, and OpenFrom
-// builds a Session from entries a caller already took from that cache. A tail
-// read from byte zero is complete even though the header is not an entry; an
-// explicit branch root also ends paging without reading unrelated branches.
+// is append-only, body reads reuse appended bytes in a weighted LRU (64 MiB
+// process-wide, 8 MiB per session, at most 256 sessions). Oversized reads are
+// served without admission; eviction detaches ownership and never mutates
+// in-flight slices. TailEntries/LeafTail trim older cached windows. OpenFrom
+// builds a Session from an immutable read. Identical system prompts and tool
+// schemas share storage within that body's pool, which expires with its owner.
+// ReadTranscript separately caches body-free branch/turn metadata and exact
+// file offsets (16 MiB, at most 256 sessions). Lookup, historical pages and
+// compact views hydrate selected bodies only, without promoting the body cache.
+// Both caches revalidate file identity, size and mtime; replacements rebuild
+// snapshots and stale offset reads fail. Runtime-only GETs skip transcript reads.
+// A tail read from byte zero is complete even though the header is not an
+// entry; an explicit branch root also ends paging without unrelated branches.
 // context_usage entries store model-facing context pressure;
 // patch_apply_updated stores non-executing structured patch previews.
 // A local compaction stores a portable summary plus retained tail. A remote

@@ -4611,9 +4611,9 @@ func TestEventsReplayAfterDone(t *testing.T) {
 	}
 }
 
-// TestEventsNoRunEmptyStream: when there is no run (st == nil), return an empty
-// 200 stream.
-func TestEventsNoRunEmptyStream(t *testing.T) {
+// A missing replay is explicit, so clients reconcile from durable history
+// instead of treating an empty stream as a completed answer.
+func TestEventsNoRunRequestsTranscriptRecovery(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
 	res, err := openEventsRaw(hs, id)
@@ -4621,15 +4621,15 @@ func TestEventsNoRunEmptyStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode != http.StatusGone {
 		t.Fatalf("status %d", res.StatusCode)
 	}
-	sc := bufio.NewScanner(res.Body)
-	if sc.Scan() {
-		t.Fatalf("expected empty stream, got %q", sc.Text())
+	var body map[string]string
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
 	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("scanner: %v", err)
+	if body["error"] != "replay_unavailable" || body["recovery"] != "/v1/sessions/"+id {
+		t.Fatalf("recovery contract: %v", body)
 	}
 }
 
