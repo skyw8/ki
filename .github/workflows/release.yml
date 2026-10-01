@@ -98,9 +98,70 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  extension-binaries:
+    name: Package extensions ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            archive: tar.gz
+          - goos: darwin
+            goarch: arm64
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build the Go extension packages
+        run: >-
+          go run ./scripts/build-extensions.go -out package/extensions
+          -only codex-oauth,deep-web-search,freerouter,goal,telegram-bot
+          -goos ${{ matrix.goos }} -goarch ${{ matrix.goarch }}
+      # Native dependencies are compiled and tested on their own OS in CI.
+      # Reuse that exact package instead of cross-compiling or rebuilding it.
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-zvec-grep-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: package/extensions/zvec-grep
+      - name: Restore executable permissions lost by artifact transport
+        run: chmod +x package/extensions/*/bin/*
+      - name: Archive each extension package
+        shell: bash
+        env:
+          TARGET_OS: ${{ matrix.goos }}
+          TARGET_ARCH: ${{ matrix.goarch }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          for path in package/extensions/*; do
+            name="${path##*/}"
+            archive="ki-extension-${name}-${version}-${TARGET_OS}-${TARGET_ARCH}"
+            if [[ "$ARCHIVE" == "zip" ]]; then
+              (cd package/extensions && zip -9 -r "../../dist/$archive.zip" "$name")
+            else
+              tar -C package/extensions -czf "dist/$archive.tar.gz" "$name"
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ki-extensions-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
   publish:
     name: Publish GitHub Release
-    needs: binaries
+    needs: [binaries, extension-binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: write

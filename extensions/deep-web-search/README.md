@@ -48,7 +48,7 @@ Tool result details include `searchDurationMs`, plus each successful provider's
 `durationMs` in `providerRuns` and each failed provider's `durationMs` in
 `diagnostics`.
 
-Every stage runs under a budget from `src/deadlines.ts`. Each plain-HTTP
+Every stage runs under a budget from `http.go`. Each plain-HTTP
 provider gets `providerSearch`; once a quorum of them is in, their stragglers
 are cut after `providerGrace`, so one slow index cannot hold the call. Codex
 gets the longer `codexSearch` budget and is exempt from that cut: a query that
@@ -59,9 +59,34 @@ resolves inside `tool`, well under the host hard timeout declared by `timeoutMs`
 A cut provider appears in `diagnostics` with `category: "timeout"`, and the host
 keeps the partial result a cancelled sidecar still returns.
 
-The source implementation uses only Node standard-library modules. Vite bundles
-`src/main.ts` into a single ESM file (`bun run build`), and the sidecar runs the
-bundle with bun (`bun dist/main.js`). `extension.json` `runtime.install` runs
-`bun run setup` (`bun install` + `bun run build`), so `dist/` is produced on
-install and is not checked in. Run `bun test` from this directory for protocol
-and toggle tests.
+The extension is written in Go and uses the Go standard library for HTTP and
+content parsing. Build and stage all bundled extensions from the repository root:
+
+```bash
+go run ./scripts/build-extensions.go -only deep-web-search
+```
+
+Copy `var/extensions/deep-web-search` to `{KI_HOME}/extensions/deep-web-search`.
+The staged package contains its manifest, locales, and `bin/deep-web-search`
+(`.exe` on Windows). Launching it needs no source code, Go compiler, Bun, or Node.
+The RPC tool schemas are embedded in the executable; the protocol remains
+language-independent.
+
+```bash
+go test -race ./extensions/deep-web-search
+```
+
+Configuration, cache, and credential documents use versioned atomic state
+operations. A document newer than the extension understands is never overwritten.
+
+Source URLs and content redirects use a pure Go WHATWG URL parser, preserving the original JavaScript URL normalization for international hostnames, encoded dot segments, backslashes, and numeric IPv4 forms. Content safety checks run against the normalized host before every request and redirect.
+
+## Source package fallback
+
+To stage a source package that can build outside this checkout, run from the repository root:
+
+```bash
+go run ./scripts/build-extensions.go -source -out var/extensions-source -only deep-web-search
+```
+
+Copy `var/extensions-source/deep-web-search` to `{KI_HOME}/extensions/deep-web-search`. When `bin/deep-web-search` (`.exe` on Windows) is missing, Ki runs `go run ./install/main.go` at the package root. The package includes a standalone Go module and minimal shared Ki sources; it excludes private configuration, state, caches, and build output. Go is required for this first build. It builds the native executable with CGO disabled. Once the binary exists, installation is skipped and no compiler or source files are needed to launch it. Default binary packages retain the same manifest metadata but omit sources and the installer; replace an incomplete binary package with a complete binary or source package.

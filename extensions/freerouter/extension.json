@@ -105,7 +105,13 @@
     "command": "bin/freerouter",
     "args": [
       "sidecar"
-    ]
+    ],
+    "install": [
+      "go",
+      "run",
+      "./install/main.go"
+    ],
+    "installWhen": "missing"
   },
   "i18n": {
     "defaultLocale": "en",

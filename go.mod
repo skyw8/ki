@@ -7,15 +7,18 @@ require (
 	github.com/gofrs/flock v0.8.0
 	github.com/google/uuid v1.6.0
 	github.com/inconshreveable/mousetrap v1.1.0
+	github.com/nlnwa/whatwg-url v0.6.2
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	golang.org/x/image v0.28.0
 	golang.org/x/sys v0.41.0
+	golang.org/x/text v0.28.0
 )
 
 require (
+	github.com/bits-and-blooms/bitset v1.20.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
@@ -26,6 +29,6 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/net v0.34.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )

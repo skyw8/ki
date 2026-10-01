@@ -127,7 +127,19 @@ curl -sS -X POST \
 {KI_HOME}/extensions/telegram-bot
 ```
 
-`{KI_HOME}` 默认为 `~/.ki`。运行 `ki serve` 的环境需要能够执行 `go`，扩展 runtime 使用 `go run .` 启动。
+`{KI_HOME}` 默认为 `~/.ki`。从仓库根构建分发包：
+
+```bash
+go run ./scripts/build-extensions.go -only telegram-bot
+```
+
+将 `var/extensions/telegram-bot` 复制到 `{KI_HOME}/extensions/telegram-bot`。
+manifest 直接启动 `bin/telegram-bot`（Windows 为 `.exe`）；运行时不需要 Go 编译器或源码。
+配置与 `state.json` 使用版本化原子读写，更新的 schema 不会被旧 executable 覆盖。
+
+```bash
+go test -race ./extensions/telegram-bot
+```
 
 启动 KI 后，在 WebUI 的 **Settings → Extensions** 中启用 `telegram-bot`。扩展会在 server 监听成功后自动启动，不需要先创建 session。
 
@@ -167,3 +179,13 @@ Telegram 的用户访问策略由 Managed Bot 在 Telegram 侧控制。扩展不
 - **群里只留下 `…` 或半截回复**：最终编辑没写进去。现在会重试并在失败后改发新消息，同时 server stderr 会有 `telegram-bot: edit final message: …`；如果一条日志都没有，看 session jsonl 确认该轮是否真的跑完（`message` 里应有 assistant 回复）。
 - **无法加入群组**：在 BotFather 中检查 `/setjoingroups`；是否能添加 Bot 仍受群组成员管理权限影响。
 - **保存后未连接**：检查 server 日志和 Extensions runtime 状态；Telegram API 网络错误会自动重试。
+
+## Source package fallback
+
+To stage a source package that can build outside this checkout, run from the repository root:
+
+```bash
+go run ./scripts/build-extensions.go -source -out var/extensions-source -only telegram-bot
+```
+
+Copy `var/extensions-source/telegram-bot` to `{KI_HOME}/extensions/telegram-bot`. When `bin/telegram-bot` (`.exe` on Windows) is missing, Ki runs `go run ./install/main.go` at the package root. The package includes a standalone Go module and minimal shared Ki sources; it excludes private configuration, state, caches, and build output. Go is required for this first build. It builds the native executable with CGO disabled. Once the binary exists, installation is skipped and no compiler or source files are needed to launch it. Default binary packages retain the same manifest metadata but omit sources and the installer; replace an incomplete binary package with a complete binary or source package.

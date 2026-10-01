@@ -1,0 +1,21 @@
+[package]
+name = "ki-zvec-native"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+build = "build.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+chrono = "0.4"
+zvec-rust = "=0.7.2"
+zg-engine = { git = "https://github.com/zvec-ai/zvec-grep", rev = "c1d2297ccd815af9305920943a1e0f08ae502d51" }
+zg-cli = { git = "https://github.com/zvec-ai/zvec-grep", rev = "c1d2297ccd815af9305920943a1e0f08ae502d51" }
+zg-daemon = { git = "https://github.com/zvec-ai/zvec-grep", rev = "c1d2297ccd815af9305920943a1e0f08ae502d51" }
+zg-daemon-protocol = { git = "https://github.com/zvec-ai/zvec-grep", rev = "c1d2297ccd815af9305920943a1e0f08ae502d51" }
+
+[build-dependencies]
+zvec-rust-build = "=0.7.2"

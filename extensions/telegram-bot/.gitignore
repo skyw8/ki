@@ -3,7 +3,7 @@
 /state.json
 
 # Local build artifacts
-/ki-telegram-bot
+/bin/
 
 # Logs and temporary files
 *.log

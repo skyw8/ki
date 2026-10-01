@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -128,7 +129,7 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := runInstall(ctx, d.root, d.manifest.Runtime.Install, env); err != nil {
+	if err := installRuntime(ctx, d.root, d.manifest.Runtime, env); err != nil {
 		return nil, err
 	}
 	// Sidecar outlives prepare; lifetime is owned by KillProcessGroup/close.
@@ -206,7 +207,7 @@ func sidecarEnv(d Descriptor, sessionID, home, cwd string) []string {
 	if cwd != "" {
 		env = append(env, "KI_CWD="+cwd)
 	}
-	for _, key := range []string{"PATH", "HOME", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "PATHEXT", "COMSPEC"} {
+	for _, key := range []string{"PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "HOMEDRIVE", "HOMEPATH", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "PATHEXT", "COMSPEC"} {
 		if v := os.Getenv(key); v != "" {
 			env = append(env, key+"="+v)
 		}
@@ -224,7 +225,7 @@ func setEnvironmentValue(env []string, key, value string) []string {
 	entry := key + "=" + value
 	for i, item := range env {
 		existing, _, ok := strings.Cut(item, "=")
-		if ok && strings.EqualFold(existing, key) {
+		if ok && normalizeEnvironmentKey(existing, runtime.GOOS) == normalizeEnvironmentKey(key, runtime.GOOS) {
 			env[i] = entry
 			return env
 		}
@@ -232,8 +233,17 @@ func setEnvironmentValue(env []string, key, value string) []string {
 	return append(env, entry)
 }
 
-// resolveRuntimeCommand uses PATH for a name with no slash and the extension
-// PATH (node, npx). A relative path is joined to the package root (bin/extension).
+func normalizeEnvironmentKey(key, goos string) string {
+	// Unix tools can configure FOO and foo independently; only Windows treats
+	// them as one variable, matching os/exec's environment deduplication.
+	if goos == "windows" {
+		return strings.ToUpper(key)
+	}
+	return key
+}
+
+// resolveRuntimeCommand leaves a name with no slash for exec's PATH lookup.
+// A relative path is joined to the package root (bin/extension).
 func resolveRuntimeCommand(root, command string) string {
 	if command == "" || filepath.IsAbs(command) {
 		return command
@@ -250,7 +260,7 @@ func runInstall(ctx context.Context, root string, argv []string, env []string) e
 	}
 	cmd := exec.CommandContext(ctx, resolveRuntimeCommand(root, argv[0]), argv[1:]...) //nolint:gosec // install argv comes from the extension manifest
 	cmd.Dir = root
-	cmd.Env = env
+	cmd.Env = installEnvironment(env)
 	// stdout would corrupt the sidecar NDJSON stream if it shared the pipe;
 	// install runs first and both streams go to the ki process stderr.
 	cmd.Stdout = os.Stderr
@@ -259,6 +269,59 @@ func runInstall(ctx context.Context, root string, argv []string, env []string) e
 		return fmt.Errorf("runtime.install: %w", err)
 	}
 	return nil
+}
+
+func installEnvironment(scoped []string) []string {
+	// Build tools need their complete configured environment, including cache
+	// and native compiler paths that a language-agnostic host cannot enumerate.
+	// Runtime sidecars keep their allowlist; only install hooks inherit these.
+	overridden := map[string]bool{}
+	for _, key := range []string{"KI_EXTENSION", "KI_HOME", "KI_EXTENSION_ROOT", "KI_SESSION_ID", "KI_CWD"} {
+		overridden[normalizeEnvironmentKey(key, runtime.GOOS)] = true
+	}
+	for _, entry := range scoped {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			overridden[normalizeEnvironmentKey(key, runtime.GOOS)] = true
+		}
+	}
+	env := make([]string, 0, len(scoped))
+	for _, entry := range processenv.ChildEnvironment() {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && overridden[normalizeEnvironmentKey(key, runtime.GOOS)] {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, scoped...)
+}
+
+func installRuntime(ctx context.Context, root string, spec RuntimeSpec, env []string) error {
+	if err := validateRuntimeInstall(root, spec); err != nil {
+		return err
+	}
+	if spec.InstallWhen == installMissing {
+		command := resolveRuntimeCommand(root, spec.Command)
+		paths := []string{command}
+		// A manifest omits platform suffixes; Windows launches the .exe built
+		// for that package without requiring a compiler on subsequent starts.
+		if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(command), ".exe") {
+			paths = append(paths, command+".exe")
+		}
+		for _, path := range paths {
+			info, err := os.Stat(path)
+			if err == nil {
+				if !info.Mode().IsRegular() {
+					return fmt.Errorf("runtime.command is not a regular file: %s", path)
+				}
+				return nil
+			}
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("runtime.command: %w", err)
+			}
+		}
+	}
+	return runInstall(ctx, root, spec.Install, env)
 }
 
 func gateSubscriptions(caps []string, reg *Registration) error {

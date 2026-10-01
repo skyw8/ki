@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ki/internal/state"
 )
 
 const (
@@ -51,6 +53,7 @@ type telegramConfig struct {
 }
 
 type telegramState struct {
+	Version  int               `json:"version"`
 	Offsets  map[string]int64  `json:"offsets"`
 	Sessions map[string]string `json:"sessions"`
 	// Topics caches forum topic names ("<chatId>:<threadId>") learned from topic
@@ -291,7 +294,7 @@ func (a *telegramApp) reloadConfig() error {
 
 func loadTelegramConfig(path string) (telegramConfig, error) {
 	cfg := telegramConfig{}
-	b, err := os.ReadFile(path) //nolint:gosec // path is the configured extension directory.
+	b, _, err := state.ReadFile(path, 1, nil)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return cfg, nil
@@ -305,46 +308,43 @@ func loadTelegramConfig(path string) (telegramConfig, error) {
 }
 
 func loadTelegramState(path string) (telegramState, error) {
-	state := telegramState{
+	saved := telegramState{
+		Version:  1,
 		Offsets:  map[string]int64{},
 		Sessions: map[string]string{},
 		Topics:   map[string]string{},
 		Forums:   map[string]bool{},
 	}
-	b, err := os.ReadFile(path) //nolint:gosec // path is the private extension state file.
+	b, _, err := state.ReadFile(path, 1, nil)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return state, nil
+			return saved, nil
 		}
-		return state, err
+		return saved, err
 	}
-	if err := json.Unmarshal(b, &state); err != nil {
-		return state, err
+	if err := json.Unmarshal(b, &saved); err != nil {
+		return saved, err
 	}
-	if state.Offsets == nil {
-		state.Offsets = map[string]int64{}
+	if saved.Offsets == nil {
+		saved.Offsets = map[string]int64{}
 	}
-	if state.Sessions == nil {
-		state.Sessions = map[string]string{}
+	if saved.Sessions == nil {
+		saved.Sessions = map[string]string{}
 	}
-	if state.Topics == nil {
-		state.Topics = map[string]string{}
+	if saved.Topics == nil {
+		saved.Topics = map[string]string{}
 	}
-	if state.Forums == nil {
-		state.Forums = map[string]bool{}
+	if saved.Forums == nil {
+		saved.Forums = map[string]bool{}
 	}
-	return state, nil
+	return saved, nil
 }
 
 func (a *telegramApp) persistStateLocked() error {
-	if err := os.MkdirAll(filepath.Dir(a.statePath), 0o700); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(a.state, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(a.statePath, append(b, '\n'), 0o600) //nolint:gosec // path is the private extension state file.
+	a.state.Version = 1
+	// Versioned atomic writes keep polling offsets and session mappings intact
+	// when the process stops mid-write, and never overwrite a newer schema.
+	return state.WriteVersioned(a.statePath, 1, a.state, 0o600)
 }
 
 func (a *telegramApp) offset(accountID string) int64 {

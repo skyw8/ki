@@ -1,0 +1,2866 @@
+[
+  {
+    "test": "test_build_compact_request_appends_trigger_after_opaque_context",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.6",
+        "input": [
+          "text"
+        ]
+      },
+      "request": {
+        "responsesContext": [
+          {
+            "type": "compaction",
+            "id": "cmp-old",
+            "encrypted_content": "opaque-old",
+            "future": {
+              "nested": [
+                1,
+                2,
+                3
+              ]
+            }
+          }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "continue"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.6",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "compaction",
+          "id": "cmp-old",
+          "encrypted_content": "opaque-old",
+          "future": {
+            "nested": [
+              1,
+              2,
+              3
+            ]
+          }
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "continue"
+            }
+          ]
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_build_request_accepts_opaque_context_without_portable_messages",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.6"
+      },
+      "request": {
+        "responsesContext": [
+          {
+            "type": "compaction",
+            "encrypted_content": "opaque"
+          }
+        ],
+        "messages": []
+      }
+    },
+    "result": {
+      "model": "gpt-5.6",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "compaction",
+          "encrypted_content": "opaque"
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_build_request_deduplicates_reasoning_items",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.6",
+        "input": [
+          "text"
+        ]
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "run"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": "summary",
+                "thinkingSignature": "{\"type\": \"reasoning\", \"id\": \"rs-dup\", \"encrypted_content\": \"opaque\"}"
+              },
+              {
+                "type": "thinking",
+                "thinking": "summary",
+                "name": "Grep",
+                "arguments": {},
+                "thinkingSignature": "{\"type\": \"reasoning\", \"id\": \"rs-dup\", \"encrypted_content\": \"opaque\"}"
+              },
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "name": "Grep",
+                "arguments": {}
+              }
+            ]
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": "call-1",
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.6",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs-dup",
+          "encrypted_content": "opaque"
+        },
+        {
+          "type": "function_call",
+          "call_id": "call-1",
+          "name": "Grep",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call-1",
+          "output": "ok"
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_build_request_preserves_replay_metadata",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4",
+        "input": [
+          "text"
+        ],
+        "api": "openai-codex-responses"
+      },
+      "request": {
+        "system": "system",
+        "sessionId": "session-1",
+        "maxTokens": 128000,
+        "thinkingEffort": "high",
+        "thinkingLevelMap": {
+          "high": "xhigh"
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "run"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "run",
+                "arguments": {
+                  "x": 1
+                }
+              }
+            ]
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": "call-1",
+            "toolType": "function",
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "name": "run",
+            "description": "run",
+            "parameters": {
+              "type": "object"
+            }
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "system",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call-1",
+          "name": "run",
+          "arguments": "{\"x\":1}",
+          "id": "fc-1"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call-1",
+          "output": "ok"
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "session-1",
+      "reasoning": {
+        "effort": "xhigh",
+        "summary": "auto"
+      },
+      "tools": [
+        {
+          "type": "function",
+          "name": "run",
+          "description": "run",
+          "parameters": {
+            "type": "object"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "test": "test_build_request_rejects_empty_input",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4"
+      },
+      "request": {
+        "messages": []
+      }
+    },
+    "error": "Codex request has no input messages"
+  },
+  {
+    "test": "test_build_request_rejects_invalid_opaque_context",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.6"
+      },
+      "request": {
+        "responsesContext": [
+          "not-an-object"
+        ],
+        "messages": []
+      }
+    },
+    "error": "Codex Responses context must be an array of objects"
+  },
+  {
+    "test": "test_build_request_rejects_tool_result_without_call_id",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4"
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "run"
+              }
+            ]
+          },
+          {
+            "role": "toolResult",
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "error": "Codex tool result has no toolCallId"
+  },
+  {
+    "test": "test_build_request_replays_encrypted_reasoning_item",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.6",
+        "input": [
+          "text"
+        ]
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "think"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": "summary",
+                "thinkingSignature": "{\"type\": \"reasoning\", \"id\": \"rs-1\", \"encrypted_content\": \"opaque\"}"
+              },
+              {
+                "type": "text",
+                "text": "answer"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.6",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "think"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs-1",
+          "encrypted_content": "opaque"
+        },
+        {
+          "type": "message",
+          "role": "assistant",
+          "status": "completed",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "answer",
+              "annotations": []
+            }
+          ],
+          "id": "msg_pi_1"
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_build_request_skips_empty_user_messages",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4"
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": []
+          }
+        ]
+      }
+    },
+    "error": "Codex request has no input messages"
+  },
+  {
+    "test": "test_build_request_strips_tool_fields_from_reasoning",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.6",
+        "input": [
+          "text"
+        ]
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "run"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": "summary",
+                "thinkingSignature": "{\"type\": \"reasoning\", \"id\": \"rs-1\", \"encrypted_content\": \"opaque\", \"name\": \"Grep\", \"arguments\": {\"pattern\": \"x\"}}"
+              },
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "name": "Grep",
+                "arguments": {
+                  "pattern": "x"
+                }
+              }
+            ]
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": "call-1",
+            "content": [
+              {
+                "type": "text",
+                "text": "ok"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.6",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs-1",
+          "encrypted_content": "opaque"
+        },
+        {
+          "type": "function_call",
+          "call_id": "call-1",
+          "name": "Grep",
+          "arguments": "{\"pattern\":\"x\"}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call-1",
+          "output": "ok"
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_compact_builder_keeps_streamed_item_over_empty_terminal_output",
+    "kind": "compact",
+    "objects": [
+      {
+        "name": "response.output_item.done",
+        "obj": {
+          "type": "response.output_item.done",
+          "output_index": 0,
+          "item": {
+            "type": "compaction",
+            "id": "cmp-1",
+            "encrypted_content": "blob",
+            "future": true
+          }
+        }
+      },
+      {
+        "name": "response.completed",
+        "obj": {
+          "type": "response.completed",
+          "response": {
+            "id": "resp-1",
+            "status": "completed",
+            "output": []
+          }
+        }
+      }
+    ],
+    "result": {
+      "items": [
+        {
+          "type": "compaction",
+          "id": "cmp-1",
+          "encrypted_content": "blob",
+          "future": true
+        }
+      ]
+    }
+  },
+  {
+    "test": "test_compact_builder_uses_terminal_output_when_nothing_streamed",
+    "kind": "compact",
+    "objects": [
+      {
+        "name": "response.completed",
+        "obj": {
+          "type": "response.completed",
+          "response": {
+            "id": "resp-2",
+            "status": "completed",
+            "output": [
+              {
+                "type": "compaction",
+                "id": "cmp-2",
+                "encrypted_content": "blob"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "result": {
+      "items": [
+        {
+          "type": "compaction",
+          "id": "cmp-2",
+          "encrypted_content": "blob"
+        }
+      ]
+    }
+  },
+  {
+    "test": "test_http_error_includes_upstream_response_body",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4",
+        "baseUrl": "http://example.test"
+      },
+      "credential": {
+        "value": {
+          "access": "access",
+          "accountId": "acct"
+        }
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "hi"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "hi"
+            }
+          ]
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_idle_stream_survives_past_header_budget",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4",
+        "provider": "openai-codex",
+        "api": "openai-codex-responses",
+        "baseUrl": "http://example.test",
+        "input": [
+          "text"
+        ]
+      },
+      "credential": {
+        "type": "oauth",
+        "value": {
+          "access": "access",
+          "accountId": "acct"
+        }
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "hi"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "hi"
+            }
+          ]
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_idle_stream_survives_past_header_budget",
+    "kind": "stream_http",
+    "message": {
+      "role": "assistant",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "model": "gpt-5.4",
+      "content": [
+        {
+          "type": "text",
+          "text": "hi",
+          "itemId": "msg-1"
+        }
+      ],
+      "responseId": "resp-idle",
+      "stopReason": "stop"
+    },
+    "model": {
+      "id": "gpt-5.4",
+      "provider": "openai-codex",
+      "api": "openai-codex-responses"
+    },
+    "requestId": "stream-idle",
+    "objects": [
+      {
+        "name": "",
+        "obj": {
+          "type": "response.created",
+          "response": {
+            "id": "resp-idle"
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_text.delta",
+          "item_id": "msg-1",
+          "delta": "hi"
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.completed",
+          "response": {
+            "status": "completed"
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-idle",
+          "type": "start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": []
+          }
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-idle",
+          "type": "text_start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "text",
+                "text": "",
+                "itemId": "msg-1"
+              }
+            ],
+            "responseId": "resp-idle"
+          },
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-idle",
+          "type": "text_delta",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "text",
+                "text": "hi",
+                "itemId": "msg-1"
+              }
+            ],
+            "responseId": "resp-idle"
+          },
+          "delta": "hi",
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-idle",
+          "type": "done",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "text",
+                "text": "hi",
+                "itemId": "msg-1"
+              }
+            ],
+            "responseId": "resp-idle",
+            "stopReason": "stop"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "test": "test_remote_compaction_v2_rejects_incomplete_and_missing_output",
+    "kind": "compact",
+    "objects": [
+      {
+        "name": "",
+        "obj": {
+          "type": "response.incomplete",
+          "response": {
+            "status": "incomplete",
+            "incomplete_details": {
+              "reason": "max_output_tokens"
+            }
+          }
+        }
+      }
+    ],
+    "error": "Codex compaction response was incomplete: max_output_tokens"
+  },
+  {
+    "test": "test_remote_compaction_v2_rejects_incomplete_and_missing_output",
+    "kind": "compact",
+    "objects": [
+      {
+        "name": "",
+        "obj": {
+          "type": "response.completed",
+          "response": {
+            "status": "completed"
+          }
+        }
+      }
+    ],
+    "error": "Codex Remote Compaction V2 expected exactly one compaction output item, got 0 from 0 output items"
+  },
+  {
+    "test": "test_remote_compaction_v2_uses_responses_and_preserves_opaque_item",
+    "kind": "request",
+    "payload": {
+      "provider": "openai-codex",
+      "model": {
+        "id": "gpt-5.6",
+        "provider": "openai-codex",
+        "api": "openai-codex-responses",
+        "baseUrl": "http://example.test",
+        "input": [
+          "text"
+        ]
+      },
+      "credential": {
+        "type": "oauth",
+        "value": {
+          "access": "access",
+          "accountId": "acct"
+        }
+      },
+      "request": {
+        "sessionId": "session-compact",
+        "responsesContext": [
+          {
+            "type": "compaction",
+            "encrypted_content": "opaque-old",
+            "unknown": true
+          }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "latest"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.6",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "compaction",
+          "encrypted_content": "opaque-old",
+          "unknown": true
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "latest"
+            }
+          ]
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "session-compact"
+    }
+  },
+  {
+    "test": "test_remote_compaction_v2_uses_responses_and_preserves_opaque_item",
+    "kind": "compact",
+    "objects": [
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_item.done",
+          "output_index": 0,
+          "item": {
+            "type": "compaction",
+            "id": "cmp-new",
+            "encrypted_content": "opaque-new",
+            "future_field": {
+              "keep": [
+                "all",
+                "fields"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.completed",
+          "response": {
+            "id": "resp-compact",
+            "status": "completed",
+            "output": [],
+            "usage": {
+              "input_tokens": 20,
+              "output_tokens": 5,
+              "total_tokens": 25,
+              "input_tokens_details": {
+                "cached_tokens": 7,
+                "cache_write_tokens": 3
+              }
+            }
+          }
+        }
+      }
+    ],
+    "result": {
+      "items": [
+        {
+          "type": "compaction",
+          "id": "cmp-new",
+          "encrypted_content": "opaque-new",
+          "future_field": {
+            "keep": [
+              "all",
+              "fields"
+            ]
+          }
+        }
+      ],
+      "usage": {
+        "input": 10,
+        "output": 5,
+        "cacheRead": 7,
+        "cacheWrite": 3,
+        "totalTokens": 25
+      }
+    }
+  },
+  {
+    "test": "test_replayable_repairs_legacy_empty_tool_ids",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4"
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "run"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "",
+                "itemId": "fc-old",
+                "name": "run",
+                "arguments": {}
+              }
+            ]
+          },
+          {
+            "role": "toolResult",
+            "toolCallId": "",
+            "content": []
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_pi_e849a4fea3c7976a7c92553feecd2402",
+          "name": "run",
+          "arguments": "{}",
+          "id": "fc-old"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_pi_e849a4fea3c7976a7c92553feecd2402",
+          "output": "(no tool output)"
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_replayable_synthetic_tool_result_uses_call_tool_id",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4"
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "run"
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "name": "run",
+                "arguments": {}
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call-1",
+          "name": "run",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call-1",
+          "output": "No result provided"
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_responses_request_advertises_codex_compaction_beta_feature",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4",
+        "provider": "openai-codex",
+        "api": "openai-codex-responses",
+        "baseUrl": "http://example.test",
+        "input": [
+          "text"
+        ]
+      },
+      "credential": {
+        "type": "oauth",
+        "value": {
+          "access": "access",
+          "accountId": "acct"
+        }
+      },
+      "request": {
+        "sessionId": "session-1",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "hi"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "hi"
+            }
+          ]
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true,
+      "prompt_cache_key": "session-1"
+    }
+  },
+  {
+    "test": "test_responses_request_advertises_codex_compaction_beta_feature",
+    "kind": "stream_http",
+    "message": {
+      "role": "assistant",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "model": "gpt-5.4",
+      "content": [],
+      "stopReason": "stop"
+    },
+    "model": {
+      "id": "gpt-5.4",
+      "provider": "openai-codex",
+      "api": "openai-codex-responses"
+    },
+    "requestId": "stream-1",
+    "objects": [
+      {
+        "name": "",
+        "obj": {
+          "type": "response.completed",
+          "response": {
+            "status": "completed"
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-1",
+          "type": "start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": []
+          }
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-1",
+          "type": "done",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [],
+            "stopReason": "stop"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "test": "test_stalled_response_headers_fail_within_header_budget",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4",
+        "baseUrl": "http://example.test"
+      },
+      "credential": {
+        "value": {
+          "access": "access",
+          "accountId": "acct"
+        }
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "hi"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "hi"
+            }
+          ]
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_stream_failed_event_preserves_response_message",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4",
+        "provider": "openai-codex",
+        "api": "openai-codex-responses",
+        "baseUrl": "http://example.test",
+        "input": [
+          "text"
+        ]
+      },
+      "credential": {
+        "type": "oauth",
+        "value": {
+          "access": "access",
+          "accountId": "acct"
+        }
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "hi"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "hi"
+            }
+          ]
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_stream_failed_event_preserves_response_message",
+    "kind": "stream_http",
+    "message": {
+      "role": "assistant",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "model": "gpt-5.4",
+      "content": [],
+      "responseId": "resp-failed",
+      "stopReason": "error",
+      "errorMessage": "quota exceeded"
+    },
+    "model": {
+      "id": "gpt-5.4",
+      "provider": "openai-codex",
+      "api": "openai-codex-responses"
+    },
+    "requestId": "stream-failed",
+    "objects": [
+      {
+        "name": "",
+        "obj": {
+          "type": "response.failed",
+          "response": {
+            "id": "resp-failed",
+            "status": "failed",
+            "error": {
+              "message": "quota exceeded"
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-failed",
+          "type": "start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": []
+          }
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-failed",
+          "type": "error",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [],
+            "responseId": "resp-failed",
+            "stopReason": "error",
+            "errorMessage": "quota exceeded"
+          },
+          "error": "quota exceeded"
+        }
+      }
+    ]
+  },
+  {
+    "test": "test_stream_function_call_and_response_done",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4",
+        "provider": "openai-codex",
+        "api": "openai-codex-responses",
+        "baseUrl": "http://example.test",
+        "input": [
+          "text"
+        ]
+      },
+      "credential": {
+        "type": "oauth",
+        "value": {
+          "access": "access",
+          "accountId": "acct"
+        }
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "run"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run"
+            }
+          ]
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_stream_function_call_and_response_done",
+    "kind": "stream_http",
+    "message": {
+      "role": "assistant",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "model": "gpt-5.4",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "call-1",
+          "itemId": "fc-1",
+          "name": "run",
+          "arguments": {
+            "x": 1
+          },
+          "argumentsRaw": "{\"x\":1}",
+          "toolType": "function",
+          "input": ""
+        },
+        {
+          "type": "toolCall",
+          "id": "call-2",
+          "itemId": "fc-2",
+          "name": "run",
+          "arguments": {
+            "y": 2
+          },
+          "argumentsRaw": "{\"y\":2}",
+          "toolType": "function",
+          "input": ""
+        }
+      ],
+      "responseId": "resp-2",
+      "usage": {
+        "input": 5,
+        "output": 4,
+        "cacheRead": 2,
+        "cacheWrite": 3,
+        "totalTokens": 17
+      },
+      "stopReason": "toolUse"
+    },
+    "model": {
+      "id": "gpt-5.4",
+      "provider": "openai-codex",
+      "api": "openai-codex-responses"
+    },
+    "requestId": "stream-2",
+    "objects": [
+      {
+        "name": "",
+        "obj": {
+          "type": "response.created",
+          "response": {
+            "id": "resp-2"
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_item.added",
+          "output_index": 0,
+          "item": {
+            "type": "function_call",
+            "id": "fc-1",
+            "call_id": "call-1",
+            "name": "run",
+            "arguments": ""
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.function_call_arguments.delta",
+          "output_index": 0,
+          "item_id": "fc-1",
+          "delta": "{\"x\":"
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.function_call_arguments.done",
+          "output_index": 0,
+          "item_id": "fc-1",
+          "arguments": "{\"x\":1}"
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_item.done",
+          "output_index": 0,
+          "item": {
+            "type": "function_call",
+            "id": "fc-1",
+            "call_id": "call-1",
+            "name": "run",
+            "arguments": "{\"x\":1}"
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_item.added",
+          "output_index": 1,
+          "item": {
+            "type": "function_call",
+            "id": "fc-2",
+            "call_id": "call-2",
+            "name": "run",
+            "arguments": ""
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.function_call_arguments.delta",
+          "output_index": 1,
+          "item_id": "fc-2",
+          "call_id": "call-2",
+          "delta": "{\"y\":2}"
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.function_call_arguments.done",
+          "output_index": 1,
+          "item_id": "fc-2",
+          "call_id": "call-2",
+          "arguments": "{\"y\":2}"
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_item.done",
+          "output_index": 1,
+          "item": {
+            "type": "function_call",
+            "id": "fc-2",
+            "call_id": "call-2",
+            "name": "run",
+            "arguments": "{\"y\":2}"
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.done",
+          "response": {
+            "id": "resp-2",
+            "status": "completed",
+            "usage": {
+              "input_tokens": 10,
+              "output_tokens": 4,
+              "total_tokens": 17,
+              "input_tokens_details": {
+                "cached_tokens": 2,
+                "cache_write_tokens": 3
+              }
+            }
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-2",
+          "type": "start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": []
+          }
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-2",
+          "type": "toolcall_start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "run",
+                "arguments": {},
+                "argumentsRaw": "",
+                "toolType": "function",
+                "input": ""
+              }
+            ],
+            "responseId": "resp-2"
+          },
+          "toolCallId": "call-1",
+          "toolName": "run",
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-2",
+          "type": "toolcall_delta",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "run",
+                "arguments": {},
+                "argumentsRaw": "{\"x\":",
+                "toolType": "function",
+                "input": ""
+              }
+            ],
+            "responseId": "resp-2"
+          },
+          "delta": "{\"x\":",
+          "toolCallId": "call-1",
+          "toolName": "run",
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-2",
+          "type": "toolcall_end",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "run",
+                "arguments": {
+                  "x": 1
+                },
+                "argumentsRaw": "{\"x\":1}",
+                "toolType": "function",
+                "input": ""
+              }
+            ],
+            "responseId": "resp-2"
+          },
+          "toolCallId": "call-1",
+          "toolName": "run",
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-2",
+          "type": "toolcall_start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "run",
+                "arguments": {
+                  "x": 1
+                },
+                "argumentsRaw": "{\"x\":1}",
+                "toolType": "function",
+                "input": ""
+              },
+              {
+                "type": "toolCall",
+                "id": "call-2",
+                "itemId": "fc-2",
+                "name": "run",
+                "arguments": {},
+                "argumentsRaw": "",
+                "toolType": "function",
+                "input": ""
+              }
+            ],
+            "responseId": "resp-2"
+          },
+          "toolCallId": "call-2",
+          "toolName": "run",
+          "contentIndex": 1
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-2",
+          "type": "toolcall_delta",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "run",
+                "arguments": {
+                  "x": 1
+                },
+                "argumentsRaw": "{\"x\":1}",
+                "toolType": "function",
+                "input": ""
+              },
+              {
+                "type": "toolCall",
+                "id": "call-2",
+                "itemId": "fc-2",
+                "name": "run",
+                "arguments": {},
+                "argumentsRaw": "{\"y\":2}",
+                "toolType": "function",
+                "input": ""
+              }
+            ],
+            "responseId": "resp-2"
+          },
+          "delta": "{\"y\":2}",
+          "toolCallId": "call-2",
+          "toolName": "run",
+          "contentIndex": 1
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-2",
+          "type": "toolcall_end",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "run",
+                "arguments": {
+                  "x": 1
+                },
+                "argumentsRaw": "{\"x\":1}",
+                "toolType": "function",
+                "input": ""
+              },
+              {
+                "type": "toolCall",
+                "id": "call-2",
+                "itemId": "fc-2",
+                "name": "run",
+                "arguments": {
+                  "y": 2
+                },
+                "argumentsRaw": "{\"y\":2}",
+                "toolType": "function",
+                "input": ""
+              }
+            ],
+            "responseId": "resp-2"
+          },
+          "toolCallId": "call-2",
+          "toolName": "run",
+          "contentIndex": 1
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-2",
+          "type": "done",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "run",
+                "arguments": {
+                  "x": 1
+                },
+                "argumentsRaw": "{\"x\":1}",
+                "toolType": "function",
+                "input": ""
+              },
+              {
+                "type": "toolCall",
+                "id": "call-2",
+                "itemId": "fc-2",
+                "name": "run",
+                "arguments": {
+                  "y": 2
+                },
+                "argumentsRaw": "{\"y\":2}",
+                "toolType": "function",
+                "input": ""
+              }
+            ],
+            "responseId": "resp-2",
+            "usage": {
+              "input": 5,
+              "output": 4,
+              "cacheRead": 2,
+              "cacheWrite": 3,
+              "totalTokens": 17
+            },
+            "stopReason": "toolUse"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "test": "test_stream_routes_item_less_delta_through_output_index",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4",
+        "provider": "openai-codex",
+        "api": "openai-codex-responses",
+        "baseUrl": "http://example.test",
+        "input": [
+          "text"
+        ]
+      },
+      "credential": {
+        "type": "oauth",
+        "value": {
+          "access": "access",
+          "accountId": "acct"
+        }
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "run"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run"
+            }
+          ]
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_stream_routes_item_less_delta_through_output_index",
+    "kind": "stream_http",
+    "message": {
+      "role": "assistant",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "model": "gpt-5.4",
+      "content": [
+        {
+          "type": "toolCall",
+          "id": "call-1",
+          "itemId": "fc-1",
+          "name": "Grep",
+          "arguments": {
+            "pattern": "y"
+          },
+          "argumentsRaw": "{\"pattern\":\"y\"}",
+          "toolType": "function",
+          "input": ""
+        }
+      ],
+      "responseId": "resp-1",
+      "stopReason": "toolUse"
+    },
+    "model": {
+      "id": "gpt-5.4",
+      "provider": "openai-codex",
+      "api": "openai-codex-responses"
+    },
+    "requestId": "stream-test",
+    "objects": [
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_item.added",
+          "output_index": 0,
+          "item": {
+            "type": "function_call",
+            "id": "fc-1",
+            "call_id": "call-1",
+            "name": "Grep",
+            "arguments": ""
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.function_call_arguments.delta",
+          "output_index": 0,
+          "call_id": "call-1",
+          "delta": "{\"pattern\":\"y\"}"
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.function_call_arguments.done",
+          "output_index": 0,
+          "call_id": "call-1",
+          "arguments": "{\"pattern\":\"y\"}"
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.completed",
+          "response": {
+            "id": "resp-1",
+            "status": "completed"
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-test",
+          "type": "start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": []
+          }
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-test",
+          "type": "toolcall_start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "Grep",
+                "arguments": {},
+                "argumentsRaw": "",
+                "toolType": "function",
+                "input": ""
+              }
+            ]
+          },
+          "toolCallId": "call-1",
+          "toolName": "Grep",
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-test",
+          "type": "toolcall_delta",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "Grep",
+                "arguments": {},
+                "argumentsRaw": "{\"pattern\":\"y\"}",
+                "toolType": "function",
+                "input": ""
+              }
+            ]
+          },
+          "delta": "{\"pattern\":\"y\"}",
+          "toolCallId": "call-1",
+          "toolName": "Grep",
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-test",
+          "type": "toolcall_end",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "Grep",
+                "arguments": {
+                  "pattern": "y"
+                },
+                "argumentsRaw": "{\"pattern\":\"y\"}",
+                "toolType": "function",
+                "input": ""
+              }
+            ]
+          },
+          "toolCallId": "call-1",
+          "toolName": "Grep",
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-test",
+          "type": "done",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "Grep",
+                "arguments": {
+                  "pattern": "y"
+                },
+                "argumentsRaw": "{\"pattern\":\"y\"}",
+                "toolType": "function",
+                "input": ""
+              }
+            ],
+            "responseId": "resp-1",
+            "stopReason": "toolUse"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "test": "test_stream_separates_reasoning_and_tool_call_with_shared_output_index",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4",
+        "provider": "openai-codex",
+        "api": "openai-codex-responses",
+        "baseUrl": "http://example.test",
+        "input": [
+          "text"
+        ]
+      },
+      "credential": {
+        "type": "oauth",
+        "value": {
+          "access": "access",
+          "accountId": "acct"
+        }
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "run"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "run"
+            }
+          ]
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_stream_separates_reasoning_and_tool_call_with_shared_output_index",
+    "kind": "stream_http",
+    "message": {
+      "role": "assistant",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "model": "gpt-5.4",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "thinking",
+          "itemId": "rs-1",
+          "thinkingSignature": "{\"type\":\"reasoning\",\"id\":\"rs-1\",\"encrypted_content\":\"opaque\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking\"}]}"
+        },
+        {
+          "type": "toolCall",
+          "id": "call-1",
+          "itemId": "fc-1",
+          "name": "Grep",
+          "arguments": {
+            "pattern": "x"
+          },
+          "argumentsRaw": "{\"pattern\":\"x\"}",
+          "toolType": "function",
+          "input": ""
+        }
+      ],
+      "responseId": "resp-1",
+      "stopReason": "toolUse"
+    },
+    "model": {
+      "id": "gpt-5.4",
+      "provider": "openai-codex",
+      "api": "openai-codex-responses"
+    },
+    "requestId": "stream-test",
+    "objects": [
+      {
+        "name": "",
+        "obj": {
+          "type": "response.created",
+          "response": {
+            "id": "resp-1"
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_item.added",
+          "output_index": 0,
+          "item": {
+            "type": "reasoning",
+            "id": "rs-1",
+            "encrypted_content": "opaque",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "thinking"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_item.added",
+          "output_index": 0,
+          "item": {
+            "type": "function_call",
+            "id": "fc-1",
+            "call_id": "call-1",
+            "name": "Grep",
+            "arguments": "{\"pattern\":\"x\"}"
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_item.done",
+          "output_index": 0,
+          "item": {
+            "type": "function_call",
+            "id": "fc-1",
+            "call_id": "call-1",
+            "name": "Grep",
+            "arguments": "{\"pattern\":\"x\"}"
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.completed",
+          "response": {
+            "id": "resp-1",
+            "status": "completed"
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-test",
+          "type": "start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": []
+          }
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-test",
+          "type": "toolcall_start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": "thinking",
+                "itemId": "rs-1",
+                "thinkingSignature": "{\"type\":\"reasoning\",\"id\":\"rs-1\",\"encrypted_content\":\"opaque\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking\"}]}"
+              },
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "Grep",
+                "arguments": {
+                  "pattern": "x"
+                },
+                "argumentsRaw": "{\"pattern\":\"x\"}",
+                "toolType": "function",
+                "input": ""
+              }
+            ],
+            "responseId": "resp-1"
+          },
+          "toolCallId": "call-1",
+          "toolName": "Grep",
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-test",
+          "type": "toolcall_end",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": "thinking",
+                "itemId": "rs-1",
+                "thinkingSignature": "{\"type\":\"reasoning\",\"id\":\"rs-1\",\"encrypted_content\":\"opaque\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking\"}]}"
+              },
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "Grep",
+                "arguments": {
+                  "pattern": "x"
+                },
+                "argumentsRaw": "{\"pattern\":\"x\"}",
+                "toolType": "function",
+                "input": ""
+              }
+            ],
+            "responseId": "resp-1"
+          },
+          "toolCallId": "call-1",
+          "toolName": "Grep",
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-test",
+          "type": "done",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "thinking",
+                "thinking": "thinking",
+                "itemId": "rs-1",
+                "thinkingSignature": "{\"type\":\"reasoning\",\"id\":\"rs-1\",\"encrypted_content\":\"opaque\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking\"}]}"
+              },
+              {
+                "type": "toolCall",
+                "id": "call-1",
+                "itemId": "fc-1",
+                "name": "Grep",
+                "arguments": {
+                  "pattern": "x"
+                },
+                "argumentsRaw": "{\"pattern\":\"x\"}",
+                "toolType": "function",
+                "input": ""
+              }
+            ],
+            "responseId": "resp-1",
+            "stopReason": "toolUse"
+          }
+        }
+      }
+    ]
+  },
+  {
+    "test": "test_stream_sse",
+    "kind": "request",
+    "payload": {
+      "model": {
+        "id": "gpt-5.4",
+        "provider": "openai-codex",
+        "api": "openai-codex-responses",
+        "baseUrl": "http://example.test",
+        "input": [
+          "text"
+        ]
+      },
+      "credential": {
+        "type": "oauth",
+        "value": {
+          "access": "access",
+          "accountId": "acct"
+        }
+      },
+      "request": {
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "hi"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "result": {
+      "model": "gpt-5.4",
+      "store": false,
+      "stream": true,
+      "instructions": "You are a helpful assistant.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "hi"
+            }
+          ]
+        }
+      ],
+      "text": {
+        "verbosity": "low"
+      },
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "tool_choice": "auto",
+      "parallel_tool_calls": true
+    }
+  },
+  {
+    "test": "test_stream_sse",
+    "kind": "stream_http",
+    "message": {
+      "role": "assistant",
+      "api": "openai-codex-responses",
+      "provider": "openai-codex",
+      "model": "gpt-5.4",
+      "content": [
+        {
+          "type": "text",
+          "text": "hello",
+          "itemId": "msg-1",
+          "textSignature": "{\"v\":1,\"id\":\"msg-1\"}"
+        }
+      ],
+      "responseId": "resp-1",
+      "stopReason": "stop"
+    },
+    "model": {
+      "id": "gpt-5.4",
+      "provider": "openai-codex",
+      "api": "openai-codex-responses"
+    },
+    "requestId": "stream-1",
+    "objects": [
+      {
+        "name": "",
+        "obj": {
+          "type": "response.created",
+          "response": {
+            "id": "resp-1"
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_item.added",
+          "item": {
+            "type": "message",
+            "id": "msg-1"
+          }
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.output_text.delta",
+          "item_id": "msg-1",
+          "delta": "hello"
+        }
+      },
+      {
+        "name": "",
+        "obj": {
+          "type": "response.completed",
+          "response": {
+            "status": "completed"
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-1",
+          "type": "start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": []
+          }
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-1",
+          "type": "text_start",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "text",
+                "text": "",
+                "itemId": "msg-1",
+                "textSignature": "{\"v\":1,\"id\":\"msg-1\"}"
+              }
+            ],
+            "responseId": "resp-1"
+          },
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-1",
+          "type": "text_delta",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "text",
+                "text": "hello",
+                "itemId": "msg-1",
+                "textSignature": "{\"v\":1,\"id\":\"msg-1\"}"
+              }
+            ],
+            "responseId": "resp-1"
+          },
+          "delta": "hello",
+          "contentIndex": 0
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "provider.stream.event",
+        "params": {
+          "requestId": "stream-1",
+          "type": "done",
+          "message": {
+            "role": "assistant",
+            "api": "openai-codex-responses",
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "content": [
+              {
+                "type": "text",
+                "text": "hello",
+                "itemId": "msg-1",
+                "textSignature": "{\"v\":1,\"id\":\"msg-1\"}"
+              }
+            ],
+            "responseId": "resp-1",
+            "stopReason": "stop"
+          }
+        }
+      }
+    ]
+  }
+]

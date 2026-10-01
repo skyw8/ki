@@ -1,6 +1,7 @@
 // Package state owns the on-disk contract for Ki's versioned JSON documents
 // under {KI_HOME}: models.json, credentials.json, workspaces.json,
-// toggles.json, and push-subscriptions.json. It exists so every store applies
+// toggles.json, push-subscriptions.json, session queues/tasks, and bundled
+// extension configuration/cache/channel/goal state. It exists so every store applies
 // the same schema rules instead of each inventing its own.
 //
 // A document carries a top-level integer "version". Loading walks forward

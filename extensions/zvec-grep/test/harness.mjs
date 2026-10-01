@@ -1,46 +1,39 @@
 // Shared harness: spawns the built sidecar and speaks its NDJSON protocol.
-// The runtime tests stub the library and CLI; the live test points at the real
-// @zvec/zvec-grep package installed in this extension.
+// The runtime tests stub the native engine and CLI; the live test points at the real native Rust engine.
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const extensionPath = dirname(dirname(fileURLToPath(import.meta.url)));
-const runtimePath = join(extensionPath, "dist", "main.js");
-const fakeLibrary = join(extensionPath, "test", "fixtures", "fake-library.mjs");
-const fakeCli = join(extensionPath, "test", "fixtures", "fake-zg.sh");
+const runtimePath = process.env.KI_ZVEC_GREP_RUNTIME || join(extensionPath, "target", "release", process.platform === "win32" ? "zvec-grep.exe" : "zvec-grep");
 
 /**
- * startSidecar launches the built sidecar against the stubbed library and CLI.
+ * startSidecar launches the built sidecar against the stubbed native engine and CLI.
  * Host calls (ui.setStatus, session.enqueue, …) are recorded and answered so the
  * sidecar can finish its work.
  */
 export function startSidecar(t, options = {}) {
   const root = mkdtempSync(join(tmpdir(), "ki-zvec-grep-"));
-  chmodSync(fakeCli, 0o755);
   const workspace = join(root, "workspace");
   mkdirSync(workspace, { recursive: true });
   const log = join(root, "log.ndjson");
   const statePath = join(root, "state.json");
   writeFileSync(log, "");
   writeFileSync(statePath, JSON.stringify(options.state ?? { items: [] }));
-  const child = spawn(process.execPath, [runtimePath], {
-    cwd: extensionPath,
+  const child = spawn(options.runtimePath || runtimePath, [], {
+    cwd: options.cwd || extensionPath,
     env: {
       ...process.env,
       KI_HOME: root,
-      // The stub package lives in the temp home; the real one has to resolve
-      // from this extension's own node_modules, and its global state stays in
+      // The stub package lives in the temp home; the native engine keeps its global state in
       // the temp home so a live run never touches ~/.zvec-grep.
-      KI_EXTENSION_ROOT: options.fake === false ? extensionPath : root,
+      KI_EXTENSION_ROOT: options.extensionRoot || (options.fake === false ? extensionPath : root),
       ...(options.fake === false ? { ZVEC_GREP_HOME: join(root, "zvec-home") } : {}),
       ...(options.fake === false
         ? {}
         : {
-            KI_ZVEC_GREP_LIB: fakeLibrary,
-            KI_ZVEC_GREP_CLI: fakeCli,
             KI_ZVEC_GREP_TEST_LOG: log,
             KI_ZVEC_GREP_TEST_STATE: statePath,
             KI_ZVEC_GREP_TEST_HANG: options.hang ? "1" : "",
@@ -50,6 +43,11 @@ export function startSidecar(t, options = {}) {
     stdio: ["pipe", "pipe", "pipe"],
   });
   t.after(() => child.kill("SIGKILL"));
+  // Killing a sidecar during teardown may race with a final host-call reply.
+  // Keep genuine transport failures visible while ignoring that expected EPIPE.
+  child.stdin.on("error", (error) => {
+    if (error.code !== "EPIPE" || !child.killed) throw error;
+  });
 
   const inbound = [];
   const messages = [];

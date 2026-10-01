@@ -2,7 +2,13 @@
   "name": "zvec-grep",
   "version": "0.1.0",
   "description": "Local hybrid (lexical + vector) workspace search over a zvec-grep index, with index management commands.",
-  "capabilities": ["tool", "settings", "prompt.append", "command", "path"],
+  "capabilities": [
+    "tool",
+    "settings",
+    "prompt.append",
+    "command",
+    "path"
+  ],
   "i18n": {
     "defaultLocale": "en",
     "resources": {
@@ -21,12 +27,21 @@
         },
         "device": {
           "type": "string",
-          "enum": ["auto", "cpu", "metal", "vulkan", "cuda"],
+          "enum": [
+            "auto",
+            "cpu",
+            "metal",
+            "vulkan",
+            "cuda"
+          ],
           "description": "Device for local embedding models, forwarded to /zg-index as well."
         },
         "mode": {
           "type": "string",
-          "enum": ["in-process", "external-daemon"],
+          "enum": [
+            "in-process",
+            "external-daemon"
+          ],
           "description": "in-process loads the library inside the sidecar; external-daemon calls the zg CLI instead."
         },
         "maxResults": {
@@ -37,7 +52,9 @@
         },
         "ignoredGlobs": {
           "type": "array",
-          "items": {"type": "string"},
+          "items": {
+            "type": "string"
+          },
           "description": "Path rules excluded from search, e.g. **/dist/**. Index scope is controlled by the zg-index command."
         },
         "searchTimeoutMs": {
@@ -63,13 +80,21 @@
     }
   },
   "prompt": {
-    "append": ["prompt/APPEND.md"]
+    "append": [
+      "prompt/APPEND.md"
+    ]
   },
   "runtime": {
     "kind": "rpc",
-    "command": "bun",
-    "args": ["dist/main.js"],
-    "install": ["bun", "run", "setup"],
-    "path": ["node_modules/.bin"]
+    "command": "bin/zvec-grep",
+    "path": [
+      "bin"
+    ],
+    "install": [
+      "go",
+      "run",
+      "./install/main.go"
+    ],
+    "installWhen": "missing"
   }
 }

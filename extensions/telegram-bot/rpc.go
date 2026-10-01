@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type rpcMessage struct {
@@ -32,11 +33,13 @@ type stdioRPC struct {
 	enc     *json.Encoder
 	pending sync.Map
 	seq     atomic.Uint64
+	done    chan struct{}
+	once    sync.Once
 	handler func(string, json.RawMessage) (any, error)
 }
 
 func newStdioRPC(in io.Reader, out io.Writer) *stdioRPC {
-	return &stdioRPC{enc: json.NewEncoder(out)}
+	return &stdioRPC{enc: json.NewEncoder(out), done: make(chan struct{})}
 }
 
 func (r *stdioRPC) onRequest(handler func(string, json.RawMessage) (any, error)) {
@@ -44,6 +47,21 @@ func (r *stdioRPC) onRequest(handler func(string, json.RawMessage) (any, error))
 }
 
 func (r *stdioRPC) serve(ctx context.Context, in io.Reader) error {
+	var requests sync.WaitGroup
+	defer func() {
+		// EOF closes reverse calls immediately, but quick request handlers still
+		// need to flush their replies before a piped executable exits. Bound the
+		// drain so a stalled handler cannot keep a disconnected sidecar alive.
+		r.once.Do(func() { close(r.done) })
+		drained := make(chan struct{})
+		go func() { requests.Wait(); close(drained) }()
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		select {
+		case <-drained:
+		case <-timer.C:
+		}
+	}()
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -65,7 +83,11 @@ func (r *stdioRPC) serve(ctx context.Context, in io.Reader) error {
 				go r.dispatchNotification(msg)
 				continue
 			}
-			go r.dispatchRequest(msg)
+			requests.Add(1)
+			go func() {
+				defer requests.Done()
+				r.dispatchRequest(msg)
+			}()
 			continue
 		}
 		if msg.ID == nil {
@@ -104,6 +126,14 @@ func (r *stdioRPC) dispatchRequest(msg rpcMessage) {
 }
 
 func (r *stdioRPC) call(ctx context.Context, method string, params any, result any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case <-r.done:
+		return io.EOF
+	default:
+	}
 	id := fmt.Sprintf("tg-%d", r.seq.Add(1))
 	ch := make(chan rpcMessage, 1)
 	r.pending.Store(id, ch)
@@ -115,6 +145,8 @@ func (r *stdioRPC) call(ctx context.Context, method string, params any, result a
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-r.done:
+		return io.EOF
 	case msg := <-ch:
 		if msg.Error != nil {
 			return fmt.Errorf("%s: %s", method, msg.Error.Message)

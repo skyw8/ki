@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"ki/internal/state"
 )
 
 // SecretValue is the redacted value returned for a configured secret. Clients
@@ -21,7 +23,7 @@ func ConfigPath(d Descriptor) string { return filepath.Join(d.root, "config.json
 // map is a detached JSON value and is safe for callers to modify.
 func LoadConfig(d Descriptor) (map[string]any, error) {
 	values := cloneConfigMap(d.Config.Defaults)
-	b, err := os.ReadFile(ConfigPath(d))
+	b, _, err := state.ReadFile(ConfigPath(d), 1, nil)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return values, validateConfig(d.Config.Schema, values)
@@ -35,6 +37,9 @@ func LoadConfig(d Descriptor) (map[string]any, error) {
 		}
 		return nil, fmt.Errorf("decode extension config: %w", err)
 	}
+	// The version describes the storage document, not an extension setting;
+	// keep it out of schema validation and the public configuration projection.
+	delete(saved, "version")
 	values = mergeConfig(values, saved, d.Config.Schema)
 	if err := validateConfig(d.Config.Schema, values); err != nil {
 		return nil, err
@@ -58,6 +63,9 @@ func UpdateConfig(d Descriptor, patch map[string]any) (map[string]any, error) {
 	if patch == nil {
 		patch = map[string]any{}
 	}
+	if _, exists := patch["version"]; exists {
+		return nil, fmt.Errorf("config.version: %w", errConfigNotAllowed)
+	}
 	current, err := LoadConfig(d)
 	if err != nil {
 		return nil, err
@@ -66,14 +74,9 @@ func UpdateConfig(d Descriptor, patch map[string]any) (map[string]any, error) {
 	if err := validateConfig(d.Config.Schema, values); err != nil {
 		return nil, err
 	}
-	b, err := json.MarshalIndent(values, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("encode extension config: %w", err)
-	}
-	if err := os.MkdirAll(d.root, 0o700); err != nil {
-		return nil, fmt.Errorf("create extension config directory: %w", err)
-	}
-	if err := os.WriteFile(ConfigPath(d), append(b, '\n'), 0o600); err != nil {
+	saved := cloneConfigMap(values)
+	saved["version"] = 1
+	if err := state.WriteVersioned(ConfigPath(d), 1, saved, 0o600); err != nil {
 		return nil, fmt.Errorf("write extension config: %w", err)
 	}
 	return sanitizedConfigMap(d.Config.Schema, values), nil

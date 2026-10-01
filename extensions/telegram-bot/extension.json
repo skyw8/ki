@@ -2,7 +2,11 @@
   "name": "telegram-bot",
   "version": "0.1.0",
   "description": "Telegram Managed Bot connector for private chats and @mentioned groups.",
-  "capabilities": ["channel", "lifecycle", "settings"],
+  "capabilities": [
+    "channel",
+    "lifecycle",
+    "settings"
+  ],
   "i18n": {
     "defaultLocale": "en",
     "resources": {
@@ -14,7 +18,10 @@
     "schema": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["botId", "token"],
+      "required": [
+        "botId",
+        "token"
+      ],
       "properties": {
         "botId": {
           "type": "string",
@@ -44,7 +51,13 @@
   },
   "runtime": {
     "kind": "rpc",
-    "command": "go",
-    "args": ["run", "."]
+    "command": "bin/telegram-bot",
+    "args": [],
+    "install": [
+      "go",
+      "run",
+      "./install/main.go"
+    ],
+    "installWhen": "missing"
   }
 }

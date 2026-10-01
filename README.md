@@ -97,6 +97,36 @@ scripts/run.sh
 
 API auth is a Bearer token from `~/.ki/server.json` (or `KI_HOME/server.json`) for CLI clients. The WebUI asks for that token once and exchanges it for a short-lived HttpOnly browser session; the token is not embedded in HTML or URLs. Config is `~/.ki/ki.toml` and `<cwd>/.ki/ki.toml`. The configured real provider is used by default; set `KI_FAKE=1` only for local plumbing tests.
 
+## Bundled extensions
+
+The extension protocol accepts sidecars written in any language. Bundled extensions
+are Go executables, with a Rust exception for `zvec-grep` and its native search engine.
+Each extension is compiled separately. Ki launches its executable as an external
+NDJSON JSON-RPC child process; it links or embeds no extension runtime or payload.
+The build script and optional installer also run outside the host process.
+
+```bash
+go run ./scripts/build-extensions.go
+# Or build only selected Go extensions:
+go run ./scripts/build-extensions.go -only goal,telegram-bot
+```
+
+Copy a staged `var/extensions/<name>` directory into `{KI_HOME}/extensions/<name>`.
+The default package launches its binary directly and needs no source files or
+language toolchain. To distribute sources that build their executable on first
+launch, use `go run ./scripts/build-extensions.go -source -out var/extensions-source`
+(optionally `-only`), then copy `var/extensions-source/<name>` into the extension
+installation directory.
+These packages work outside the checkout: each includes a standalone Go module
+and only the shared Ki sources it needs. All bundled manifests run
+`go run ./install/main.go` only when `bin/<name>` is missing; an existing binary
+always skips installation. A missing binary in a source-free package requires
+reinstalling the binary package or replacing it with a source package.
+Building `zvec-grep` needs its native Rust/C++ prerequisites;
+see [its README](extensions/zvec-grep/README.md). Its Rust index format requires
+an explicit rebuild of existing JavaScript indexes. See [the extension contract](docs/extension.md)
+for packaging and protocol details.
+
 ## Test
 
 ```bash

@@ -1,6 +1,6 @@
 # 扩展（Extensions）
 
-包是带 `extension.json` 的目录。声明式贡献并入 Snapshot；需要跑代码时只走 **NDJSON JSON-RPC 2.0 sidecar**（语言无关，不编进 ki）。实现包：`internal/extension`。
+包是带 `extension.json` 的目录。声明式贡献并入 Snapshot；需要跑代码时只走 **NDJSON JSON-RPC 2.0 sidecar**（语言无关，不编进 ki）。实现包：`internal/extension`。所有扩展均独立编译为 executable，通过 NDJSON JSON-RPC 子进程启动；Go/Rust 扩展实现和 executable payload 不链接/嵌入 Ki host，源码包的 installer 也是外部构建子进程。
 
 **不做**旧 `hook` / `intercept` / `intercept[]` 协议。代码能力对外只订事件（`lifecycle`）+ 可选 inbound Host 方法。
 
@@ -14,7 +14,13 @@
 - 启用开关是进程级 `{KI_HOME}/toggles.json` 的 `extensions.disabled`（缺省空 = 全开）。
 - 禁用的包仍出现在列表（`enabled: false`），但不贡献、不拉起 sidecar。
 - 目录列表和 prompt/lifecycle 链均按全局包名排序。
-- 仓库 `extensions/` 下是随源码分发的扩展包（各自带 README）；把目录安装到 `{KI_HOME}/extensions/<name>` 后由 manifest 的 `runtime.install` 构建。`internal/extension` 的测试会读取这些随包 manifest：manifest 校验失败、能力缺失或 locale key 不对齐都会让测试失败。
+- 仓库 `extensions/` 下的扩展使用 Go；`zvec-grep` 是使用原生 Rust 检索引擎的例外。协议仍然语言无关，第三方扩展可使用任何语言。
+- 从仓库根运行 `go run ./scripts/build-extensions.go`，在 `var/extensions/<name>/` 生成分发包；可用 `-only goal,telegram-bot` 选择包，Go 包也支持 `-goos windows -goarch amd64`。将生成的目录复制到 `{KI_HOME}/extensions/<name>`。随包 manifest 直接启动 `bin/<name>`（Windows 文件为 `.exe`），并声明 `runtime.install=["go","run","./install/main.go"]`、`runtime.installWhen="missing"`。二进制存在时完全跳过 install，运行时不需要源码或 Go / Rust / Bun / Node / Python 工具链。
+- 默认二进制分发包只含 manifest、声明式 locale/prompt 和编译后的可执行文件；install 元数据保留，但不附带源码或 install wrapper。删除二进制后须重新安装二进制包，或换用源码包，不能在缺失源码时自动编译。
+- `go run ./scripts/build-extensions.go -source -out var/extensions-source`（可配 `-only`）在独立输出目录生成可复制到仓库外的源码包：包根为独立 `ki/extensions/<name>` Go module，通过 `require ki v0.0.0` 和 `replace ki => ./_ki` 使用随包的最小共享源码；`_ki` 保留版本锁定的根 go.mod/go.sum，仅含 `pkg/extensionrpc`、`pkg/extensionbuild`、`internal/state` 的非测试源码。源码包附带 Go/Rust 源码、编译所需的 schema/prompt、锁文件与 install wrapper，不包含 config/state/cache、密钥、构建产物或依赖缓存。缺失 executable 时 Go installer 在包根以 CGO 关闭的 native `go build .` 编译；Rust 例外用 `cargo build --release --locked`，发布相同字节到 `bin/zvec-grep` 和 `bin/zg`。编译成功后原子替换 binary，包内锁防止并发首次启动重复编译。
+- Go sidecar 把运行必需的 schemas/catalog/prompt 文案嵌入二进制；Rust 检索 sidecar 将引擎、native 库及词典嵌入单个 executable，在启动时展开到 `{KI_HOME}/cache/extensions/zvec-grep/` 下按内容哈希命名的私有目录。`bin/zg` 是同一 executable 的 CLI 入口；其 PATH 声明为 `bin`。
+- Rust 包需要在目标平台用 Rust 1.98.0、C++、CMake、libclang 构建，首次构建还需网络；具体依赖和原生平台支持见 `extensions/zvec-grep/README.md`。新的 Rust 索引格式不同，旧 JavaScript 索引须由用户明确执行 `/zg-index --rebuild`；不会隐式重建。
+- `internal/extension` 的测试校验随包 manifest、能力和 locale key 对齐，并实际启动不含源码且 PATH 不含语言工具链的 Go 分发包，并通过 Host 安装/启动复制到仓库外的全部 Go 源码包。Rust 构建与协议/真实检索测试单独运行，CI 同样提供源码剥离后的 Host 握手测试。
 
 ## 包布局
 
@@ -55,7 +61,7 @@ my-ext/
     "auth": { "type": "oauth", "subscription": true },
     "models": [{ "id": "example-model", "contextWindow": 128000, "maxTokens": 16384, "input": ["text"] }]
   }],
-  "runtime": { "kind": "rpc", "command": "bin/extension", "args": [], "install": [], "env": {}, "path": ["node_modules/.bin"] }
+  "runtime": { "kind": "rpc", "command": "bin/extension", "args": [], "install": [], "installWhen": "always", "env": {}, "path": ["bin"] }
 }
 ```
 
@@ -63,7 +69,8 @@ my-ext/
 - `failClosed`：缺省 `false`。仅 **sync** 生命周期入口：`tool_call` 失败 → 合成 block；`before_provider_request` 失败 → canned stop。
 - `runtime.kind`：`none`（缺省）| `rpc`。`rpc` 须声明 `tool` / `lifecycle` / `command` / `bus` / `provider` / `channel` / `settings` 之一。
 - `runtime.command`：无路径分隔符（`node` / `bun` / `npx`）走 **PATH**；带 `/` 的相对路径相对包根（`bin/extension`）；绝对路径原样用。
-- `runtime.install`：可选 argv，sidecar **启动前**在包根执行（装依赖）。stdout 并进 stderr，避免污染 NDJSON。失败则不拉起 sidecar。
+- `runtime.install`：可选 argv，sidecar **启动前**在包根执行（装依赖或构建 executable）。stdout 并进 stderr，避免污染 NDJSON。失败则不拉起 sidecar。
+- `runtime.installWhen`：缺省/`always` 时每次启动都执行 install；`missing` 时仅当包内相对 `runtime.command` 文件不存在时执行（Windows 同时识别 `.exe`）。`missing` 必须用于 RPC，并配包内相对 command；不允许依赖 PATH/绝对路径来判断是否缺失。仅文件存在即可跳过 install；不是普通文件或无法 stat 时返回错误，不隐式覆盖。
 - `runtime.path`：可选的包内目录列表，声明后并入 shell 工具子进程的 `PATH`（详见下文「扩展 PATH 目录」）。需要 `path` 能力；缺声明但写了 `runtime.path` 会按 manifest 错误禁用整个包。目录必须相对包根且不得逃逸（绝对路径、`..`、空串都拒绝）；绝对路径按「任意平台」判定，`/`、`\` 开头或带盘符（`C:`）都拒绝，不随读取 manifest 的宿主变化（Windows 上 `filepath.IsAbs("/bin")` 为假）；**不校验目录是否存在**，因为 `node_modules/.bin` 之类由 `runtime.install` 在这些校验之后创建。
 - `i18n`：可选的扩展自有文案包。`resources` 将 locale 映射到包内的 UTF-8 JSON 文件；文件内容是扁平的 `key -> string` 字典，扩展可以自行使用点号组织 key。`defaultLocale` 缺省时优先使用 `en`，再使用字典中排序最前的 locale。路径必须留在包根内，单个资源最多 256 KiB。
 - i18n 资源是展示数据。资源文件缺失、格式错误、超限或包含非法 UTF-8 时，该 locale 会被忽略，不能阻止扩展运行；WebUI 会回退到其它 locale、`fallback` 或 key。
@@ -154,7 +161,7 @@ my-ext/
 
 ## Sidecar 协议
 
-NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` + 平台必需 + Ki 启动时继承的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`ALL_PROXY`、`NO_PROXY`（含小写变体）+ `runtime.env`。`runtime.env` 对同名变量拥有最终覆盖权；install 命令、sidecar 及其子进程沿用该环境。全局 sidecar 不固定 `KI_SESSION_ID`/`KI_CWD`；session 相关 RPC 显式携带 `sessionId`。
+NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` + 平台必需的 PATH/locale、profile（含 Windows USERPROFILE/LOCALAPPDATA/APPDATA）及 temp 变量 + Ki 启动时继承的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`ALL_PROXY`、`NO_PROXY`（含小写变体）+ `runtime.env`。`runtime.env` 对同名变量拥有最终覆盖权。install 命令继承 Ki 父进程的完整环境，再覆盖上述扩展作用域 KI_* 值和 runtime.env，因而保留 Go/Rust/native 编译所需的工具链与缓存变量；运行时 sidecar 仍使用上述 allowlist，其子进程继承 sidecar 环境。全局 install/sidecar 清除父进程继承的 `KI_SESSION_ID`/`KI_CWD`，不固定到首个 session；session 相关 RPC 显式携带 `sessionId`。
 
 超时：`initialize` 10s；sync 生命周期 2s；`tool.execute` 120s（超时后先发 `cancel`，再宽限 2s 收取 sidecar 在途的部分结果）；`command.invoke` 15s；provider stream start 10s。
 
@@ -278,4 +285,4 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 
 `path` 只展示，不当 `href`。
 
-扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影、可选 i18n catalog，以及该包已加载的 skills / tools / slash 命令 / prompt append / providers；`pathDirs` 逐条给出声明的绝对路径与当前是否存在，让“目录没生效”和“PATH 覆盖了同名命令”两件事都能被发现。查询不会启动 sidecar。sidecar 尚未握手时 tools/runtime commands 可能为空，session Info 在 `runtime.ready` 后再拉一次。manifest 校验失败不会拉起 runtime，并写入 `extensions.disabled`。sidecar 启动失败在仍启用时自动重试；session Prepare 上报 `sidecar_start` 后同样禁用。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航列出全部已启用扩展。Extensions 设置里每个已启用扩展都有 Configure，打开并定位到同一个页面（不要求必须有 config schema）；停用的扩展没有该按钮。不在 session Info 或设置页内嵌第二份编辑器。
+扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影、可选 i18n catalog，以及该包已加载的 skills / tools / slash 命令 / prompt append / providers；`pathDirs` 逐条给出声明的绝对路径与当前是否存在，让“目录没生效”和“PATH 覆盖了同名命令”两件事都能被发现。查询不会启动 sidecar。sidecar 尚未握手时 tools/runtime commands 可能为空，session Info 在 `runtime.ready` 后再拉一次。manifest 校验失败不会拉起 runtime，并写入 `extensions.disabled`。sidecar 启动失败在仍启用时自动重试；session Prepare 上报 `sidecar_start` 后同样禁用。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。私有 `config.json` 通过 `internal/state` 原子读写，顶层 `version: 1` 是存储头，不进入 schema 或 HTTP 值；请求不能修改此头，更高版本拒读和拒写。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航列出全部已启用扩展。Extensions 设置里每个已启用扩展都有 Configure，打开并定位到同一个页面（不要求必须有 config schema）；停用的扩展没有该按钮。不在 session Info 或设置页内嵌第二份编辑器。

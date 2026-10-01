@@ -1,78 +1,94 @@
 # zvec-grep
 
-`zvec-grep` is a global Ki sidecar that registers one tool, `zvec_grep_search`,
-plus the `/zg-index`, `/zg-status`, and `/zg-remove` commands. It wraps
-[`@zvec/zvec-grep`](https://github.com/zvec-ai/zvec-grep) 0.2.1: a local hybrid
-retrieval layer (lexical BM25 + vector similarity, fused and ranked) over a
-workspace index stored in `<root>/.zvec-grep/`.
+`zvec-grep` is a Ki extension that registers `zvec_grep_search` and the
+`/zg-index`, `/zg-status`, and `/zg-remove` commands. Its sidecar is written in
+Rust, using the native [zvec-grep engine](https://github.com/zvec-ai/zvec-grep/tree/c1d2297ccd815af9305920943a1e0f08ae502d51/rust)
+pinned at `c1d2297ccd815af9305920943a1e0f08ae502d51`. The engine combines lexical
+BM25 and vector similarity with rank fusion over `<root>/.zvec-grep/`.
 
-It deliberately does **not** replace the built-in search tools:
+Exact words, names, paths, keys and regular expressions stay with Ki's exhaustive
+`Grep` and `Glob` tools. Semantic and cross-file questions use this extension's
+ranked results, with `file:line` anchors for follow-up `Read` or `Grep` calls.
+The routing guidance is supplied by `prompt/APPEND.md`.
 
-- exact lookups — a known word, quotation, name, date, key, filename, or regex —
-  stay with `Grep` / `Glob`, which are exhaustive and cost nothing;
-- `zvec_grep_search` answers questions whose wording or location is unknown:
-  semantic, fuzzy, relationship, chronology, causality, comparison, and
-  cross-file synthesis. It returns a ranked sample with `file:line` anchors so
-  the model can follow up with `Read` or `Grep`.
+## Build and install
 
-The routing rules reach the model through `prompt/APPEND.md`
-(`capabilities: ["prompt.append"]`), so they travel with the extension instead
-of being hard-coded in the host.
+Runtime packages contain `extension.json`, `bin/zvec-grep` (`.exe` on Windows),
+`bin/zg`, the prompt and locales. Both executable names contain the same bytes.
+The extension starts from one executable without source files, Node, Bun, Cargo,
+CMake, or running its installation hook. `bin/zg` dispatches the management CLI and is
+added to Ki's tool PATH by `runtime.path`.
 
-## Requirements
+The executable embeds its native engine, zvec shared library, tokenizer
+resources, and any shared model runtime libraries. On first launch it extracts
+these into a private, content-addressed directory under
+`{KI_HOME}/cache/extensions/zvec-grep/`, then executes the engine there. Standalone
+CLI use without `KI_HOME` uses the user's cache directory. Publication is atomic,
+so concurrent launches do not load partial libraries. Model weights and workspace
+indexes remain ordinary engine-managed data and may be downloaded on first use.
 
-- Node 22 or newer (the library's `engines` field; Ki's sidecar runs it with
-  `bun`, which is already a Ki prerequisite).
-- Disk space for the index and the embedding model. The default
-  `local/potion-code-16m-v2` model is small (tens of KiB) and is downloaded on
-  first use; larger local models and remote models are available through
-  zvec-grep's own configuration.
-- `runtime.install` (`bun install && bun run build`) runs on install: the
-  library ships prebuilt native artifacts, so the dependency tree is installed
-  rather than bundled.
-
-## Install
-
-Copy this directory to `{KI_HOME}/extensions/zvec-grep` and let Ki run the
-manifest's `runtime.install`, or do it by hand:
+Build from this directory:
 
 ```bash
-cd "$KI_HOME/extensions/zvec-grep"
-bun run setup   # bun install && bun run build
+rustup toolchain install 1.98.0 --profile minimal
+cargo build --release --locked
 ```
 
-`{KI_HOME}/extensions/zvec-grep/node_modules/.bin` is declared in
-`runtime.path`, so once the package is enabled the `zg` CLI is also on the PATH
-of Bash and PowerShell commands (after Ki's bundled rg/fd, before the user's
-PATH).
+Building requires Rustup with Rust 1.98, Git, CMake, a C++ compiler and libclang.
+The first build downloads pinned Rust dependencies and the native SDK assets.
+On Debian/Ubuntu install `cmake clang libclang-dev g++`; on macOS use the Xcode
+command-line tools and CMake; on Windows use MSVC's C++ build tools, CMake and
+LLVM/libclang. `KI_ZVEC_GREP_BUILD_JOBS` controls native compilation concurrency
+(default four). The launcher build invokes the native Cargo build and embeds
+its complete runtime; no manual asset preparation is required.
+
+The upstream native platform set is Linux x86-64/ARM64 with glibc, macOS
+x86-64/ARM64, and Windows x86-64/MSVC. Build on the target host; the native model
+SDKs require their own target toolchains for cross compilation. This migration
+was verified on Linux x86-64. CPU inference is always available; an unavailable
+requested accelerator falls back according to the upstream model backend.
+
+Use Ki's repository packaging command to stage a complete installable package,
+or copy the release executable to `bin/zvec-grep` and `bin/zg` with the manifest,
+prompt and locales under `{KI_HOME}/extensions/zvec-grep`.
+
+The native engine uses a different index format from the previous JavaScript
+engine. Rebuild existing indexes explicitly with `/zg-index --rebuild`. Searches
+never rebuild an incompatible or missing index automatically.
 
 ## Commands
 
 | Command | Effect |
 | --- | --- |
-| `/zg-index [root] [--rebuild] [-g GLOB] [-t TYPE]` | Starts `zg index` in the background. Progress and completion appear on the extension status chip; option tokens are forwarded to `zg index`, and the `embedding`/`device` settings are forwarded ahead of them unless the command supplies its own `--embedding`/`--device`. |
-| `/zg-status [root]` | Prints the index status (and any running index job). |
-| `/zg-remove [root]` | Deletes the index after an explicit confirmation. |
+| `/zg-index [root] [--rebuild] [-g GLOB] [-t TYPE]` | Starts indexing in a background child process. Progress and completion appear on the extension status chip. Other index options are forwarded; the embedding/device settings precede them unless the command supplies its own flags. |
+| `/zg-status [root]` | Reports the workspace index status and any running job. |
+| `/zg-remove [root]` | Deletes the index after confirmation. |
 
-Indexing is intentionally CLI work, never a tool call: the first run may
-download a model, which is unbounded work far beyond the host's 120s tool
-budget. `zvec_grep_search` therefore returns an actionable error when a
-workspace has no index — it never builds one behind the user's back.
+The bundled CLI accepts the existing `zg index`, `zg status`, `zg query`,
+`zg server`, `zg config` and `zg auth` command spellings as well as the native
+engine's `--index`, `--status`, `--server`, `--config` and `--auth` forms. Indexing
+runs outside tool calls because a first build can download an embedding model
+and exceed the host's 120-second search limit.
 
 ## Settings
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `embedding` | `local/potion-code-16m-v2` | Embedding model for queries and for the indexes `/zg-index` builds. |
-| `device` | `auto` | Device for local embedding models; forwarded to `/zg-index` too. A remote model ignores it, because zg rejects a device outside `local/*`. |
-| `mode` | `in-process` | `in-process` loads the library inside the sidecar; `external-daemon` shells out to `zg` and requires a running `zg --server`. |
-| `maxResults` | `5` | Item limit used when the model does not pass `limit`. |
-| `ignoredGlobs` | `[]` | Path rules excluded from every search, on top of any rule the model supplies. |
-| `searchTimeoutMs` | `90000` | Sidecar-side search budget, kept below the host's hard limit. |
-| `notifyOnIndexComplete` | `false` | Delivers a short message to the session when a background index job finishes. |
+| `embedding` | `local/potion-code-16m-v2` | Model used for queries and `/zg-index` builds. |
+| `device` | `auto` | Local-model device; remote embeddings omit the device. |
+| `mode` | `in-process` | Native engine in the sidecar, or `external-daemon` to use a daemon the user manages. |
+| `maxResults` | `5` | Default result limit. |
+| `ignoredGlobs` | `[]` | Path exclusions applied to indexed searches independently of model-supplied scope. |
+| `searchTimeoutMs` | `90000` | Sidecar search budget below the host hard limit. |
+| `notifyOnIndexComplete` | `false` | Opt-in completion message delivered to the session. |
 
-Credentials are deliberately **not** in this schema: the model never sees an API
-key, and remote embedding providers are configured in zvec-grep's own store:
+The host writes settings to the extension's `config.json`. `config.updated`
+invalidates the cached configuration and engine. A newer state version is
+rejected without changing the file; index management falls back to defaults
+when configuration is unreadable.
+
+Remote credentials remain in zvec-grep's own store and never appear in the tool
+schema. For example:
 
 ```bash
 zg config provider set qwen --api-key "$DASHSCOPE_API_KEY"
@@ -80,86 +96,78 @@ zg config model set qwen/text-embedding-v4 --default
 zg auth grant <root> --capability embedding --scope workspace
 ```
 
-An index keeps the model it was built with. `/zg-index` forwards the `embedding`
-(and `device`) setting, so switching the setting and running `/zg-index` on an
-existing index is refused by zg with a rebuild hint; add `--rebuild` to build the
-existing index with the new model. Pass `--embedding`/`--device` on the command
-to override the setting for one run.
+An index retains its embedding model. Changing settings and updating an existing
+index surfaces a rebuild hint; `/zg-index --rebuild` replaces it. Command-level
+`--embedding`/`--device` flags override settings for that run.
 
-## Execution modes and concurrency
+## Search behavior
 
-`mode: in-process` is the default and the recommended path: the sidecar holds
-one library instance per effective configuration, refreshes changed files
-before a search (`freshness: wait_for_fresh`, the default), and bounds
-concurrent searches to four so one slow call cannot stall the sidecar.
+The tool schema, defaults, locale resources, prompt and compact preview format
+remain the same. A query can combine hybrid, lexical-only and vector-only groups,
+fuse rankings, select short/full previews, and filter by indexed paths, file
+types, symbols and modification times. Legacy scan options accepted by the tool
+remain separate from persisted index scanning policy.
 
-An auto-update keeps zvec-grep's workspace write lock for its whole refresh, and
-zg's read path refuses to run while a writer holds that lock, so the sidecar
-serializes its searches per root: a second search waits for the first instead of
-failing with "another writer holds the index write lock". Two further situations
-degrade instead of failing: a refresh that loses the race for the index write
-permit is retried once, then the search answers from the index as built (the
-result then starts with `note: refresh skipped — …`, and
-`details.refreshSkipped` records why); a search issued while `/zg-index` builds
-the same root fails immediately naming that job, because the build owns the write
-lock until it ends.
+A status header reports freshness, root, source, coverage, item count and active
+routes. Each ranked item includes its path and inclusive line range, match mode,
+score, metadata and line-numbered source. Short previews retain up to 12 lines
+and 1,000 characters; full previews retain up to 80 lines and 8,000 characters,
+plus available outlines. Total output remains bounded to 24,000 characters.
+The native engine's half-open source ranges are converted to inclusive anchors,
+and source numbering uses the content's own coordinates.
 
-`mode: external-daemon` runs `zg query` against a daemon you manage. It fails
-fast when `zg server status --check-ready` fails instead of starting a daemon
-itself. Do not run `zg --server` as a daemon and the in-process engine against
-the same workspace at the same time: zvec-grep serializes index writers with a
-lease, and mixing the two means both sides load their own embedding model.
+The sidecar bounds concurrent searches to four and serializes searches of each
+root to prevent its refreshes from colliding. Fresh searches refresh changed
+files; `freshness=eventual` reads the index as last built and reports stale items.
+A contended write permit is retried once, then refresh is skipped. Workspace
+write-lock contention is retried twice before reporting its owner. Searches
+alongside this sidecar's own index job skip refresh and report that job if the
+index cannot be read. `details.refreshSkipped` records `write_busy` or
+`index_job`, and the explanatory note preserves the observed freshness header.
 
-Searches are single calls into the library, which exposes no cancellation, so a
-cancelled tool call (host abort or sidecar timeout) reports the cancellation and
-cannot return partial rankings. `Grep` remains the fallback for an exact anchor.
+Cancellation replies once immediately and signals native work cooperatively.
+A timeout also signals cancellation and releases its slot. Neither can produce
+a partial ranking. Closing host stdin drains pending replies and exits within
+a two-second shutdown budget, including when stdout or native work is blocked.
+A missing index names `/zg-index`; a disabled index tells the
+model to use Grep/Glob and leaves re-enabling to the user.
 
-## Result shape
-
-`zvec_grep_search` answers with compact text, not JSON: a status header
-(`freshness`, `root`, `source`, `coverage`, `items`, active routes), then one
-block per ranked item with `path:startLine-endLine`, how it matched
-(`matchedBy`, `score`, query groups), a bounded source preview with line
-numbers, and — with `preview: full` — the item's outline.
-
-Item-level `status: possibly_stale` means the index has not caught up with a
-recent edit; the model is told to verify those files with `Grep` before making
-claims about their current contents. A leading `note: refresh skipped — …` means
-the search answered from the index as last built because the write lock was busy;
-`details.refreshSkipped` names the reason (`write_busy` or `index_job`). Add
-`.zvec-grep/` to the project's `.gitignore`.
+`external-daemon` requires `zg server status --check-ready` to succeed and never
+starts a daemon as a side effect of searching. Start one with `zg server on`, or
+return the extension to `in-process` mode. Finished background jobs append the
+same `zvec-grep-index` entry; optional completion notifications use the same
+session queue and idempotency key. Success status clears after 30 seconds and
+failure status after 120 seconds.
 
 ## Tests
 
 ```bash
-bun run test                  # build + protocol tests against a stubbed library and CLI
-KI_ZVEC_GREP_LIVE=1 bun test  # also index a temp workspace and search it for real
+cargo build --release --locked
+node --test test/*.test.mjs
+cargo +1.98.0 test --release --locked --manifest-path native/Cargo.toml
+KI_ZVEC_GREP_LIVE=1 node --test test/live.test.mjs
 ```
 
-The live test needs this package's dependencies installed (`bun run setup`) and
-network access for the first model download; it keeps its global zvec-grep state
-in a temp directory, so it never touches `~/.zvec-grep`.
+The protocol tests retain the original assertions for settings, routing,
+previews, cancellation, lock retries, concurrent searches, commands, progress,
+confirmation and notifications. Rust test engine and CLI seams keep
+these deterministic. Regression tests also cover JavaScript-compatible settings
+and limit coercion, whitespace handling, version headers and bounded EOF shutdown.
+A standalone test copies only the executable and launches
+it with an empty PATH, then checks initialization, missing-index search and
+status, including a final reply after stdin closes. The opt-in live test also
+copies only the executable, clears PATH and library search variables, and builds
+and queries a real semantic index in an isolated temporary home. On Linux it
+checks that zvec is loaded from the extracted runtime cache.
+`KI_ZVEC_GREP_RUNTIME` selects a packaged executable
+for the same tests.
 
-## Troubleshooting
+## Source package fallback
 
-- **"No zvec-grep index for <root>"** — the workspace is not indexed. Run
-  `/zg-index`; the model is told to ask you instead of building one itself.
-- **`zg CLI not found`** — `bun run setup` has not run in this package.
-- **Index stays "Preparing embedding model …"** — the first run is downloading
-  the model; later runs reuse the cache.
-- **`external-daemon` mode reports the daemon is not ready** — start it with
-  `zg server on`, or switch the setting back to `in-process`.
-- **`note: refresh skipped — …` on a result** — the index write lock was held, so
-  the ranking comes from the index as last built (the header's `freshness` still
-  reports what the library observed). Retry, or ask for `freshness: eventual` to
-  request that behaviour deliberately.
-- **"another writer holds the zvec-grep workspace write lock"** — another process
-  (an external `zg index`, a `zg server`, or another ki session) is writing that
-  index. zg's read path refuses to run alongside a writer, so the search retries
-  briefly and then reports the owner; run it again once that writer finishes.
-- **"cannot read the index … while an index job is building it"** — `/zg-index`
-  owns the write lock for the whole build. Wait for the job (its progress is on
-  the extension status chip) and search again.
-- **"a zvec-grep daemon owns the index writes"** — a `zg server` daemon holds
-  that root. Stop it with `zg server off`, or switch this extension's `mode`
-  setting to `external-daemon` so searches go through the daemon.
+To stage a source package that can build outside this checkout, run from the repository root:
+
+```bash
+go run ./scripts/build-extensions.go -source -out var/extensions-source -only zvec-grep
+```
+
+Copy `var/extensions-source/zvec-grep` to `{KI_HOME}/extensions/zvec-grep`. When `bin/zvec-grep` (`.exe` on Windows) is missing, Ki runs `go run ./install/main.go` at the package root. The package includes a standalone Go module and minimal shared Ki sources; it excludes private configuration, state, caches, and build output. Go is required for this first build. The installer also requires Cargo/Rust 1.98.0 and the native C++/CMake/libclang prerequisites above, then publishes the same self-contained launcher as both `bin/zvec-grep` and `bin/zg`. Once the binary exists, installation is skipped and no compiler or source files are needed to launch it. Default binary packages retain the same manifest metadata but omit sources and the installer; replace an incomplete binary package with a complete binary or source package.

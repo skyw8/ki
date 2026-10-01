@@ -1,9 +1,13 @@
 package extension
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
+
+	"ki/internal/state"
 )
 
 func TestExtensionConfigRedactsAndPreservesSecrets(t *testing.T) {
@@ -47,6 +51,52 @@ func TestExtensionConfigRedactsAndPreservesSecrets(t *testing.T) {
 	}
 	if _, err := UpdateConfig(d, map[string]any{"enabled": "yes"}); err == nil {
 		t.Fatal("invalid config value was accepted")
+	}
+}
+
+func TestExtensionConfigStorageVersionIsPrivateAndProtected(t *testing.T) {
+	d := Descriptor{root: t.TempDir(), Config: ConfigSpec{
+		Schema: map[string]any{"type": "object", "additionalProperties": false,
+			"properties": map[string]any{"enabled": map[string]any{"type": "boolean"}}},
+		Defaults: map[string]any{"enabled": false},
+	}}
+	got, err := UpdateConfig(d, map[string]any{"enabled": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := got["version"]; exists {
+		t.Fatal("storage header exposed to HTTP config")
+	}
+	raw, _, err := state.ReadFile(ConfigPath(d), 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved["version"] != float64(1) || saved["enabled"] != true {
+		t.Fatal(saved)
+	}
+	if _, err := LoadConfig(d); err != nil {
+		t.Fatalf("header entered schema validation: %v", err)
+	}
+	if _, err := UpdateConfig(d, map[string]any{"version": 2}); err == nil {
+		t.Fatal("client changed storage version")
+	}
+	newer := []byte(`{"version":99,"enabled":false,"future":"keep"}`)
+	if err := os.WriteFile(ConfigPath(d), newer, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(d); !errors.Is(err, state.ErrNewerVersion) {
+		t.Fatal(err)
+	}
+	if _, err := UpdateConfig(d, map[string]any{"enabled": true}); !errors.Is(err, state.ErrNewerVersion) {
+		t.Fatal(err)
+	}
+	gotRaw, err := os.ReadFile(ConfigPath(d))
+	if err != nil || string(gotRaw) != string(newer) {
+		t.Fatalf("newer config overwritten: %s %v", gotRaw, err)
 	}
 }
 

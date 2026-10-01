@@ -12,8 +12,14 @@
 | `workspaces.json` | `internal/workspace` | 1 | fail-fast：`Open` 返回错误 |
 | `toggles.json` | `internal/toggles` | 1 | best-effort：`Load` 回退默认值 |
 | `push-subscriptions.json` | `internal/push` | 1 | best-effort：`OpenStore` 返回空表（浏览器会重新订阅） |
+| `extensions/<name>/config.json` | `internal/extension` | 1 | 配置读取/更新报错，绝不覆盖 |
+| `extensions/deep-web-search/cache.json` | Go sidecar | 1 | best-effort：空缓存，绝不覆盖 |
+| `extensions/telegram-bot/state.json` | Go sidecar | 1 | sidecar 初始化报错，绝不覆盖 |
+| `goal/<sessionId>.json` | Go sidecar | 1 | best-effort：不恢复 goal，绝不覆盖 |
 | session `agent.json` | `internal/tools` | 2 | 恢复该任务失败并记录 warning，绝不覆盖 |
 | session `queue.json` / `ext-queue.json` / `context-queue.json` | `internal/session` | 1 | 队列操作返回错误，绝不覆盖 |
+
+扩展配置的 `version` 仅描述持久化 envelope：Host 解码时删除该头，再按 manifest 的 `config.schema` 校验业务字段。HTTP 读取不返回该头，PATCH 不能修改它。Go sidecar 共享 `internal/state`；Rust sidecar只读同样的版本头并拒绝不支持的版本。
 
 「fail-fast」用于读不到就无法正常工作的文件：宁可启动报错，也不静默丢字段。
 「best-effort」用于可恢复的旁路状态：加载失败退化为空/默认，但写入侧仍拒绝覆盖更新的文件。
@@ -28,7 +34,6 @@ context queue 另带 `next`），不再写裸数组。
 - `catalog.json` 是 `//go:embed` 进二进制的，`CatalogVersion` 与文件头的核对是构建期自检，
   不存在「新文件 + 旧二进制」。
 - `server.json` 是进程握手文件（addr + token），每次 `serve` 重写，无常驻状态。
-- 扩展的 `config.json` 由扩展 manifest 的 `config.schema` 校验，版本语义归扩展所有。
 - `ki.toml` 由 Viper 合并，不是 JSON 文档。
 
 ## 规则

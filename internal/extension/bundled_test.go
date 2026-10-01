@@ -125,7 +125,7 @@ func assertI18nParity(t *testing.T, d Descriptor) {
 }
 
 // TestBundledZvecGrepDeclaresPathAndPrompt pins the two contracts this package
-// depends on: its node_modules/.bin lands on the shell PATH once installed, and
+// depends on: its compiled bin directory lands on the shell PATH once installed, and
 // its prompt layer keeps the search routing rules.
 func TestBundledZvecGrepDeclaresPathAndPrompt(t *testing.T) {
 	bundled := filepath.Join("..", "..", "extensions", "zvec-grep")
@@ -146,10 +146,10 @@ func TestBundledZvecGrepDeclaresPathAndPrompt(t *testing.T) {
 		}
 	}
 	dirs := d.PathDirs()
-	if len(dirs) != 1 || filepath.Base(dirs[0]) != ".bin" || filepath.Base(filepath.Dir(dirs[0])) != "node_modules" {
+	if len(dirs) != 1 || filepath.Base(dirs[0]) != "bin" {
 		t.Fatalf("declared PATH dirs = %v", dirs)
 	}
-	// node_modules is not installed in this fixture, so the effective PATH list
+	// Binaries are not staged in this source fixture, so the effective PATH list
 	// must stay empty: a declared-but-missing directory is skipped per turn.
 	if effective := PathDirs(got.Enabled); len(effective) != 0 {
 		t.Fatalf("missing directory leaked into PATH: %v", effective)

@@ -1,16 +1,26 @@
-// Live test against the real @zvec/zvec-grep package and the real zg CLI.
+// Live test against the real native Rust engine and the bundled zg CLI.
 // Opt in with KI_ZVEC_GREP_LIVE=1: the first run downloads the local embedding
 // model and builds an index, so it is kept out of the default test run.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { startSidecar } from "./harness.mjs";
 
 const enabled = process.env.KI_ZVEC_GREP_LIVE === "1";
 
-test("indexes a workspace and answers a semantic query through the real library", { timeout: 600_000, skip: !enabled }, async (t) => {
-  const sidecar = startSidecar(t, { fake: false });
+test("indexes a workspace and answers a semantic query through the real native engine", { timeout: 600_000, skip: !enabled }, async (t) => {
+  const extensionPath = dirname(dirname(fileURLToPath(import.meta.url)));
+  const binary = process.env.KI_ZVEC_GREP_RUNTIME || join(extensionPath, "target", "release", process.platform === "win32" ? "zvec-grep.exe" : "zvec-grep");
+  const root = mkdtempSync(join(tmpdir(), "ki-zvec-live-standalone-"));
+  const standalone = join(root, process.platform === "win32" ? "zvec-grep.exe" : "zvec-grep");
+  copyFileSync(binary, standalone);
+  chmodSync(standalone, 0o755);
+  // Semantic inference must use resources extracted from this copied binary,
+  // with no source tree, build directory, or interpreter on its launch path.
+  const sidecar = startSidecar(t, { fake: false, runtimePath: standalone, cwd: root, extensionRoot: root, env: { PATH: "", LD_LIBRARY_PATH: "", DYLD_LIBRARY_PATH: "" } });
   mkdirSync(join(sidecar.workspace, "src"), { recursive: true });
   writeFileSync(
     join(sidecar.workspace, "src", "theme.ts"),
@@ -45,6 +55,13 @@ test("indexes a workspace and answers a semantic query through the real library"
   assert.match(text, /src\/theme\.ts/);
   assert.match(text, /1\t/);
   assert.ok(searched.result.details.items >= 1, JSON.stringify(searched.result.details));
+  if (process.platform === "linux") {
+    const mappings = readFileSync(`/proc/${sidecar.child.pid}/maps`, "utf8");
+    const nativeLibraries = mappings.split("\n").filter((line) => line.includes("libzvec_c_api.so"));
+    assert.ok(nativeLibraries.length > 0, "the genuine native search engine must be loaded");
+    assert.ok(nativeLibraries.every((line) => line.includes(join(sidecar.root, "cache", "extensions", "zvec-grep"))), "native libraries must come from the launcher's extracted resources");
+    assert.doesNotMatch(mappings, new RegExp(extensionPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
 
   const status = await sidecar.call("command.invoke", { sessionId: "s1", name: "zg-status", args: "" });
   assert.match(status.result.notice, /ready|Coverage/i);

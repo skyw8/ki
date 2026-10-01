@@ -1,14 +1,3 @@
-# Private extension settings and runtime state.
-config.json
-cache.json
-*.tmp
-*.lock
-!bun.lock
-
-# Local development dependencies and the Vite bundle.
-node_modules/
-dist/
-
-# OS/editor files.
-.DS_Store
-*.swp
+/bin/
+/cache.json
+/config.json

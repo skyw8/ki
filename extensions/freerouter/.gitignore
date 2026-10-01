@@ -1,9 +1,5 @@
-# Rust build
-/target/
-
-# Prebuilt sidecar binary (build with: cargo build --release && cp target/release/freerouter bin/freerouter)
-/bin/freerouter
-/bin/freerouter.exe
+# Compiled Go sidecar binaries
+/bin/
 
 # Local / editor
 *.swp

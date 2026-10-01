@@ -1,0 +1,190 @@
+[
+  {
+    "name": "deep_web_search",
+    "description": "Search the web through Codex OAuth, Exa, TinyFish, and DuckDuckGo in parallel; aggregate and clean distinct sources.",
+    "snippet": "Search multiple independent web indexes and return a deduplicated evidence pack.",
+    "timeoutMs": 120000,
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "One search query."
+        },
+        "queries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "description": "Multiple queries; takes precedence over query."
+        },
+        "numResults": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20,
+          "default": 5
+        },
+        "includeContent": {
+          "type": "boolean",
+          "default": false,
+          "description": "Fetch source bodies in the background."
+        },
+        "recencyFilter": {
+          "type": "string",
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "year"
+          ]
+        },
+        "domainFilter": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Include domains or exclude them with a leading '-'."
+        },
+        "provider": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "all",
+                "codex",
+                "exa",
+                "tinyfish",
+                "duckduckgo"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "codex",
+                  "exa",
+                  "tinyfish",
+                  "duckduckgo"
+                ]
+              },
+              "minItems": 1,
+              "maxItems": 4
+            }
+          ]
+        },
+        "proxy": {
+          "type": "string",
+          "description": "Reserved HTTP(S) proxy override; direct fetch is used when empty."
+        }
+      }
+    }
+  },
+  {
+    "name": "fetch_content",
+    "description": "Fetch readable text from one or more safe public HTTP(S) source URLs.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "purpose": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "get_search_content",
+    "description": "Read source bodies saved by deep_web_search by responseId, with optional offset, limit, or findText.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "responseId": {
+          "type": "string"
+        },
+        "urls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "findText": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "source_check",
+    "description": "Search for evidence and deterministically assess claims against returned source passages.",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "claim": {
+          "type": "string"
+        },
+        "numResults": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "provider": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "all",
+                "codex",
+                "exa",
+                "tinyfish",
+                "duckduckgo"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "codex",
+                  "exa",
+                  "tinyfish",
+                  "duckduckgo"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+]

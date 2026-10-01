@@ -110,6 +110,36 @@ test("config.updated rebuilds the engine with the new embedding model", async (t
   assert.equal(sidecar.entries().some((entry) => entry.event === "close"), true);
 });
 
+test("settings and search limits retain JavaScript coercion and whitespace semantics", async (t) => {
+  const sidecar = startSidecar(t, { state: { items: [] } });
+  sidecar.writeConfig({ version: 1, embedding: "\uFEFFlocal/custom\u3000", device: ["cpu"], mode: ["in-process"], maxResults: "", searchTimeoutMs: ["0x15f90"], ignoredGlobs: ["\uFEFF**/dist/**\u2003", "**/dist/**", "\u0085"] });
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  for (const args of [searchArgs({ query: "\uFEFFintent\u3000" }), searchArgs({ limit: ["0x10"] }), searchArgs({ limit: "0b11" }), searchArgs({ limit: [1, 2] })]) {
+    const response = await sidecar.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args });
+    assert.notEqual(response.result.isError, true);
+  }
+  const entries = sidecar.entries();
+  const created = entries.find((entry) => entry.event === "create");
+  assert.equal(created.options.embedding, "local/custom");
+  assert.equal(created.options.device, "cpu");
+  const contexts = entries.filter((entry) => entry.event === "context");
+  assert.deepEqual(contexts.map((entry) => entry.options.limit), [1, 16, 3, 1]);
+  assert.deepEqual(contexts[0].options.queries, ["intent"]);
+  assert.deepEqual(contexts[0].options.excludePaths, ["**/dist/**", "\u0085"]);
+});
+
+test("invalid or newer config version headers are rejected without rewriting them", async (t) => {
+  const sidecar = startSidecar(t);
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  for (const version of ["1", 1.5, true, [], {}, -1, 2]) {
+    sidecar.writeConfig({ version });
+    await sidecar.call("config.updated", {});
+    const response = await sidecar.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args: searchArgs() });
+    assert.match(response.error.message, /invalid|newer state version/);
+    assert.deepEqual(JSON.parse(readFileSync(join(sidecar.root, "config.json"), "utf8")), { version });
+  }
+});
+
 test("cancel answers the pending call once and suppresses the late result", async (t) => {
   const sidecar = startSidecar(t, { state: { items: [] }, hang: true });
   await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
@@ -386,4 +416,42 @@ test("/zg-remove asks for confirmation and forwards the drop", async (t) => {
     sidecar.entries().some((entry) => entry.event === "cli" && entry.args === `index ${sidecar.workspace} --drop --yes --mode direct`),
     true,
   );
+});
+
+test("packaged executable starts without source files or language runtimes", async (t) => {
+  const extensionPath = dirname(dirname(fileURLToPath(import.meta.url)));
+  const binary = process.env.KI_ZVEC_GREP_RUNTIME || join(extensionPath, "target", "release", process.platform === "win32" ? "zvec-grep.exe" : "zvec-grep");
+  const root = mkdtempSync(join(tmpdir(), "ki-zvec-standalone-"));
+  const standalone = join(root, process.platform === "win32" ? "zvec-grep.exe" : "zvec-grep");
+  const { copyFileSync } = await import("node:fs");
+  copyFileSync(binary, standalone);
+  chmodSync(standalone, 0o755);
+  const sidecar = startSidecar(t, { fake: false, runtimePath: standalone, cwd: root, extensionRoot: root, env: { PATH: "" } });
+  const initialized = await sidecar.call("initialize", {});
+  assert.equal(initialized.result.tools[0].name, "zvec_grep_search");
+  await sidecar.call("session.open", { sessionId: "standalone", cwd: sidecar.workspace });
+  const searched = await sidecar.call("tool.execute", { sessionId: "standalone", name: "zvec_grep_search", args: searchArgs() });
+  assert.equal(searched.result.details.code, "ZVEC_GREP.ENGINE.SERVICE.WORKSPACE_INDEX_NOT_FOUND");
+  const status = await sidecar.call("command.invoke", { sessionId: "standalone", name: "zg-status", args: "" });
+  assert.equal(status.result.handled, true);
+  assert.doesNotMatch(status.result.notice, /not found|setup|source|bun|node/i);
+  sidecar.send({ id: "final-initialize", method: "initialize", params: {} });
+  sidecar.child.stdin.end();
+  const finalReplies = await sidecar.waitForMessages((message) => message.id === "final-initialize", "the reply after stdin closes");
+  assert.equal(finalReplies[0].result.tools[0].name, "zvec_grep_search");
+});
+
+test("stdin EOF exits within its deadline when the host stops reading stdout", { timeout: 15_000 }, async (t) => {
+  const extensionPath = dirname(dirname(fileURLToPath(import.meta.url)));
+  const binary = process.env.KI_ZVEC_GREP_RUNTIME || join(extensionPath, "target", "release", process.platform === "win32" ? "zvec-grep.exe" : "zvec-grep");
+  const root = mkdtempSync(join(tmpdir(), "ki-zvec-blocked-output-"));
+  const child = spawn(binary, [], { cwd: root, env: { ...process.env, KI_HOME: root, KI_EXTENSION_ROOT: root, PATH: "" }, stdio: ["pipe", "pipe", "pipe"] });
+  t.after(() => { child.kill("SIGKILL"); child.stdout.destroy(); child.stderr.destroy(); });
+  child.stdin.on("error", (error) => { if (error.code !== "EPIPE") throw error; });
+  child.stderr.resume();
+  const exited = new Promise((resolve, reject) => { child.once("exit", (code) => resolve(code)); child.once("error", reject); });
+  // Each tool schema reply is several KB, so paused stdout fills its OS pipe.
+  child.stdin.end(Array.from({ length: 2000 }, (_, id) => JSON.stringify({ jsonrpc: "2.0", id, method: "initialize", params: {} }) + "\n").join(""));
+  const deadline = new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("EOF shutdown was blocked by unread stdout")), 8000); timer.unref(); exited.finally(() => clearTimeout(timer)); });
+  assert.equal(await Promise.race([exited, deadline]), 0);
 });

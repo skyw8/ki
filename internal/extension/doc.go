@@ -33,5 +33,20 @@
 // is skipped for that occupy and is not toggled off.
 // Install commands, sidecars, and their descendants inherit Ki's proxy
 // environment; runtime.env can explicitly override those variables.
+// Install hooks inherit the full parent build environment, then apply scoped
+// KI_* values and runtime.env overrides so arbitrary language toolchains keep
+// their configured caches and native compiler paths. Sidecars retain the
+// platform/profile/temp/proxy environment allowlist and explicit runtime.env.
+// Environment overrides preserve case-sensitive keys on Unix and match keys
+// case-insensitively on Windows.
+// Install hooks run before every sidecar start by default or with
+// runtime.installWhen=always. With installWhen=missing, a package-relative RPC
+// executable (including its Windows .exe suffix) skips installation when
+// already present, allowing source-free packages to launch without a toolchain.
+// Bundled Go executables (and the Rust search executable) launch directly from
+// source-free distribution packages; no compiler or interpreter is required.
+// This does not restrict third-party extension implementation languages.
+// Private config uses atomic versioned state; the storage header is excluded
+// from settings schema validation and public/redacted configuration values.
 // Cross-package contract: docs/extension.md.
 package extension

@@ -1,0 +1,164 @@
+{
+  "name": "zvec_grep_search",
+  "description": "Search an existing zvec-grep index of the workspace: hybrid lexical (BM25) + vector retrieval for semantic, fuzzy, relationship, and cross-file questions whose wording or location is unknown. Use the built-in Grep/Glob instead for exact words, names, paths, keys, and regexes. Results are a ranked sample with file:line anchors, so follow up with Read or Grep. The index is workspace-scoped and user-managed: never build, rebuild, or delete it yourself; report a missing index and let the user run /zg-index.",
+  "snippet": "Ranked hybrid (lexical + vector) search over a local zvec-grep index.",
+  "timeoutMs": 120000,
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "One hybrid natural-language query."
+      },
+      "queries": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 8,
+        "description": "Additional hybrid query groups."
+      },
+      "fts": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 8,
+        "description": "Ranked lexical query groups inside the index; not exhaustive occurrence lookup."
+      },
+      "vector": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 8,
+        "description": "Semantic-only query groups."
+      },
+      "fuse": {
+        "type": "boolean",
+        "description": "Fuse every query group into one ranked plan."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50,
+        "description": "Maximum items per group."
+      },
+      "preview": {
+        "type": "string",
+        "enum": [
+          "short",
+          "full"
+        ],
+        "description": "short (default) keeps a bounded snippet per hit; full adds the complete content and outline."
+      },
+      "freshness": {
+        "type": "string",
+        "enum": [
+          "wait_for_fresh",
+          "eventual"
+        ],
+        "description": "wait_for_fresh (default) refreshes changed files before searching; eventual answers immediately and marks stale items."
+      },
+      "root": {
+        "type": "string",
+        "description": "Absolute workspace root; defaults to the session working directory."
+      },
+      "globs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Ordered path rules, e.g. src/** or !**/dist/**."
+      },
+      "insensitiveGlobs": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Case-insensitive path rules."
+      },
+      "fileTypes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "ripgrep file types, e.g. ts or md."
+      },
+      "excludedFileTypes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "ripgrep file types to exclude."
+      },
+      "ignoreFiles": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Extra ignore files relative to the root."
+      },
+      "hidden": {
+        "type": "boolean",
+        "description": "Include hidden files."
+      },
+      "noIgnore": {
+        "type": "boolean",
+        "description": "Do not respect .gitignore."
+      },
+      "preferSymbol": {
+        "type": "boolean",
+        "description": "Prefer an exact indexed symbol."
+      },
+      "symbolTypes": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "module",
+            "class",
+            "interface",
+            "function",
+            "value",
+            "alias"
+          ]
+        },
+        "description": "Restrict results to these symbol types."
+      },
+      "maxDepth": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Maximum recursive directory depth."
+      },
+      "maxFileSizeBytes": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Maximum indexed file size."
+      },
+      "modifiedAfter": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          }
+        ],
+        "description": "Only files modified after this ISO date or epoch milliseconds."
+      },
+      "modifiedBefore": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          }
+        ],
+        "description": "Only files modified before this ISO date or epoch milliseconds."
+      }
+    }
+  }
+}

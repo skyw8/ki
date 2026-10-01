@@ -1,15 +1,20 @@
 # Codex OAuth provider extension
 
-This directory is a Ki provider extension source package. Install or copy it
-under `{KI_HOME}/extensions/codex-oauth` for Ki to discover it globally. The
-sidecar is started directly by `uv`:
+This directory contains the Go source for a standalone Ki provider extension.
+Build it from the repository root:
 
 ```bash
-cd extensions/codex-oauth
-uv run --project . main.py
+go build -o extensions/codex-oauth/bin/codex-oauth ./extensions/codex-oauth
 ```
 
-Restart or reload Ki after changing the source. The provider appears as `openai-codex` in
+Install the `extension.json`, `locales/`, and `bin/` files under
+`{KI_HOME}/extensions/codex-oauth`. Ki launches `bin/codex-oauth` directly;
+Windows builds use `bin/codex-oauth.exe`. The executable embeds its provider
+catalog and needs no Go installation, source files, or working-directory data
+to launch. It speaks NDJSON RPC on stdin/stdout. Rebuild the executable and
+restart or reload Ki after changing the source.
+
+The provider appears as `openai-codex` in
 the provider settings. Use Browser login locally, or Device code login when
 the WebUI is reached through a port forward. `KI_CODEX_AUTH_BASE_URL` and
 `KI_CODEX_CALLBACK_PORT` are test-only endpoint overrides; normal use talks to
@@ -74,3 +79,22 @@ models accept `none` (the API lists `none, low, medium, high, xhigh, max`), so
 whole `reasoning` block for `off` anyway. GPT-6.1 Sol and GPT-6 Astra reject
 `none` (their `reasoning.effort` supports only `low`, `medium`, `high`,
 `xhigh`, and `max`), so their maps hide `off` as well.
+
+## Verification
+
+Run `go test ./extensions/codex-oauth` from the repository root. The tests
+retain reference request bodies and complete stream event snapshots captured
+from the original implementation's 33 tests, plus native HTTP checks for
+metadata, refresh result shapes, header and idle timeouts, isolated
+cancellation, browser login, manual callback input, and device authorization.
+Provider-owned numeric values and unknown compaction fields remain opaque.
+
+## Source package fallback
+
+To stage a source package that can build outside this checkout, run from the repository root:
+
+```bash
+go run ./scripts/build-extensions.go -source -out var/extensions-source -only codex-oauth
+```
+
+Copy `var/extensions-source/codex-oauth` to `{KI_HOME}/extensions/codex-oauth`. When `bin/codex-oauth` (`.exe` on Windows) is missing, Ki runs `go run ./install/main.go` at the package root. The package includes a standalone Go module and minimal shared Ki sources; it excludes private configuration, state, caches, and build output. Go is required for this first build. It builds the native executable with CGO disabled. Once the binary exists, installation is skipped and no compiler or source files are needed to launch it. Default binary packages retain the same manifest metadata but omit sources and the installer; replace an incomplete binary package with a complete binary or source package.

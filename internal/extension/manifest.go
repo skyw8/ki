@@ -24,6 +24,8 @@ const (
 	maxI18nFile    = 256 * 1024
 	runtimeNone    = "none"
 	runtimeRPC     = "rpc"
+	installAlways  = "always"
+	installMissing = "missing"
 )
 
 var nameRe = regexp.MustCompile(namePattern)
@@ -78,12 +80,13 @@ type PromptSpec struct {
 // package is enabled; they may be created later by Install (node_modules/.bin),
 // so only their shape is validated here.
 type RuntimeSpec struct {
-	Kind    string            `json:"kind"`
-	Command string            `json:"command"`
-	Args    []string          `json:"args"`
-	Install []string          `json:"install"`
-	Env     map[string]string `json:"env"`
-	Path    []string          `json:"path"`
+	Kind        string            `json:"kind"`
+	Command     string            `json:"command"`
+	Args        []string          `json:"args"`
+	Install     []string          `json:"install"`
+	InstallWhen string            `json:"installWhen,omitempty"`
+	Env         map[string]string `json:"env"`
+	Path        []string          `json:"path"`
 }
 
 // Descriptor is one discovered package. It holds no live RPC handles.
@@ -231,6 +234,9 @@ func validateManifest(root string, m Manifest) error {
 	if needsCode && kind != runtimeRPC {
 		return errCodeCapabilitiesRequireRPC
 	}
+	if err := validateRuntimeInstall(root, m.Runtime); err != nil {
+		return err
+	}
 	if hasKind(m.Capabilities, CapProvider) {
 		if len(m.Providers) == 0 {
 			return errProviderCapabilityNeedsSpecs
@@ -278,6 +284,32 @@ func validateManifest(root string, m Manifest) error {
 		}
 	}
 	return nil
+}
+
+func validateRuntimeInstall(root string, spec RuntimeSpec) error {
+	switch spec.InstallWhen {
+	case "", installAlways:
+		return nil
+	case installMissing:
+		// PATH lookups depend on an external environment, so they cannot
+		// reliably determine whether a package needs its installation hook.
+		if spec.Kind != runtimeRPC || !strings.Contains(filepath.ToSlash(spec.Command), "/") {
+			return errInstallMissingNeedsLocalCommand
+		}
+		if err := withinRoot(root, spec.Command); err != nil {
+			return fmt.Errorf("runtime.installWhen=missing command: %w", err)
+		}
+		// The binary may not exist yet, so resolving its complete path can
+		// miss an existing parent symlink that points outside the package.
+		for parent := filepath.Dir(filepath.FromSlash(spec.Command)); parent != "."; parent = filepath.Dir(parent) {
+			if err := withinRoot(root, parent); err != nil {
+				return fmt.Errorf("runtime.installWhen=missing command: %w", err)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w %q", errUnknownInstallWhen, spec.InstallWhen)
+	}
 }
 
 func loadI18n(root string, spec I18nSpec) *I18nCatalog {
