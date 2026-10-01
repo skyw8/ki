@@ -113,14 +113,14 @@ exec_command 的完整输出文件也由该 store 创建：进程日志落在同
 
 ## grep
 
-- 在支持的目标上使用编译进 ki 的 ripgrep 15.2.0，不依赖系统 `rg`；helper 与 fd 一起物化到 `ki/tools/<goos>-<goarch>/`，该目录同时暴露给 shell（见"内置 rg 和 fd"）。不支持内嵌二进制的目标需要宿主提供可用的搜索命令。
+- 在支持的目标上使用编译进 ki 的 ripgrep 15.2.0，不依赖系统 `rg`；helper 与 fd 一起物化到 `ki/tools/<goos>-<goarch>/`，该目录同时暴露给 shell（见"内置 rg 和 fd"）。不支持内嵌二进制的目标默认没有搜索引擎；设置 `KI_USE_SYSTEM_RIPGREP=1` 后才会显式使用宿主 `rg`。
 - 通过 argv 启动并逐行解析 JSON 输出，不经过 shell；支持正则、glob、文件类型、上下文和分页。
 - 默认超时 20 秒；达到结果或原始输出上限时立即终止子进程，并保留已经解析的 partial results。
 - 默认尊重 `.gitignore`，无需任何配置；仅 `respect_gitignore=false` 时改为 `--no-ignore`，搜索被忽略的文件。
 - 资源暂时不足时自动以 `-j 1` 重试一次。
 - 无匹配的退出码 1 是正常空结果；取消、超时和命令错误分别返回对应错误，已有结果的超时标为截断而不是全部丢弃。
 - content 模式单行最多 500 字节；结果文本本身不再做 20KB 级别的截断（完整匹配交给 output spool 保存，只有 16MiB 的内存保护上限），模型看到的是统一 preview。截断保持 UTF-8 边界，匹配上限与文本上限分别提示。
-- 结果包含文件数、匹配数和 `truncated`；路径来自 JSON 字段，不解析人类可读文本。`KI_USE_SYSTEM_RIPGREP=1` 仅用于调试。
+- 结果包含文件数、匹配数和 `truncated`；路径来自 JSON 字段，不解析人类可读文本。`KI_USE_SYSTEM_RIPGREP=1` 会让 `grep` / `glob` 显式改用宿主 `rg`，仅适用于调试或不支持内嵌二进制的目标。
 
 ## glob
 
@@ -132,9 +132,9 @@ exec_command 的完整输出文件也由该 store 创建：进程日志落在同
 
 ## 内置 rg 和 fd
 
-- ki 在发布支持的六个 `GOOS/GOARCH` 目标上把 rg（ripgrep 15.2.0）和 fd（10.3.0）编译进二进制，按目标只嵌入当前目标的那一份，安装后不需要系统 `rg`/`fd`；Linux 产物使用静态 musl 构建。fd 固定 10.3.0，因为它是唯一同时提供 `x86_64-apple-darwin`（10.4.1 起移除）和 `aarch64-pc-windows-msvc`（10.3.0 才加入）的版本，与内嵌 ripgrep 覆盖同样六个目标。
+- ki 在发布支持的三个 `GOOS/GOARCH` 目标（`linux/amd64`、`darwin/arm64`、`windows/amd64`）上把 rg（ripgrep 15.2.0）和 fd（10.5.0）编译进二进制，按目标只嵌入当前目标的那一份，安装后不需要系统 `rg`/`fd`；Linux 产物使用静态 musl 构建。上游不再完全支持 Intel Mac / Windows 7，旧系统部署需另行验证。
 - 首次使用把当前目标可用的内嵌可执行文件物化到用户缓存 `ki/tools/<goos>-<goarch>/`（缓存不可写时退化为进程级临时目录），用 SHA-256 判断是否需要重写；`ToolsDir` 结果在进程内缓存一次。其它目标不提供内嵌搜索可执行文件。
-- 在支持的目标上，`exec_command` 把该目录放到子进程 `PATH` 最前，因此 shell 里的 `rg`/`fd` 始终是 ki 自带的版本，不受宿主环境影响；不支持的目标不会凭空提供这些可执行文件。`KI_USE_SYSTEM_RIPGREP=1` 只影响 `grep` / `glob` 引擎，不影响 shell 的 `PATH`。
+- 在支持的目标上，`exec_command` 把该目录放到子进程 `PATH` 最前，因此 shell 里的 `rg`/`fd` 始终是 ki 自带的版本，不受宿主环境影响；不支持的目标不会凭空提供这些可执行文件，shell 只保留宿主 `PATH`（以及扩展目录）。`KI_USE_SYSTEM_RIPGREP=1` 只影响 `grep` / `glob` 引擎，不影响 shell 的 `PATH`。
 - Bash 额外通过 `BASH_ENV` 注入一个 shim：`bash -lc` 先读 `/etc/profile` 和用户 profile，而 profile 可能整体重置 `PATH`（例如 Debian 的 `/etc/profile`），所以只在子进程环境里 prepend `PATH` 并不可靠；shim 在 startup files 之后再次把工具目录放到 `PATH` 最前。shim 通过 `KI_ORIG_BASH_ENV` 串联用户已有的 `BASH_ENV`，不覆盖用户配置。
 - `fd` 默认尊重 `.gitignore` 并跳过隐藏文件；`-H` 包含隐藏路径，`-I` 关闭 ignore。这条规则放在 system prompt 的内置追加指令里（`prompt.DefaultAppendSystemPrompt`，见 [system_prompt.md](system_prompt.md)）：shell 命令或管道中优先使用 `rg`/`fd` 而不是 `grep`/`find`（PowerShell 下即 `Select-String`/递归 `Get-ChildItem`）；不支持内嵌二进制的目标不能假定 `rg`/`fd` 存在。它是 harness 层规则，因此 `exec_command` 的工具描述都不再重复这段。
 - 子进程 `PATH` 顺序是 **ki 内嵌 rg/fd 目录 → 扩展声明的目录 → 用户原 `PATH`**（扩展目录见 [extension.md](extension.md) 的「扩展 PATH 目录」）。Bash 在 login profile 之后由 `BASH_ENV` shim 按 `KI_EXTENSION_PATH_DIRS` 再前置一次扩展目录；PowerShell 直接在子进程环境里前置。

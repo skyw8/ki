@@ -9,6 +9,9 @@ import (
 )
 
 func TestGrepAndGlobUseEmbeddedRipgrep(t *testing.T) {
+	if data, _ := embeddedRG(); len(data) == 0 {
+		t.Skip("no embedded ripgrep for this target")
+	}
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "src"), 0o700); err != nil {
 		t.Fatal(err)

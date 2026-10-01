@@ -65,6 +65,9 @@ func TestMaterializeToolsReusesMatchingBinaries(t *testing.T) {
 }
 
 func TestToolsDirExposesEmbeddedExecutables(t *testing.T) {
+	if len(embeddedBinaries()) == 0 {
+		t.Skip("no embedded executables for this target")
+	}
 	dir, err := ToolsDir()
 	if err != nil {
 		t.Fatal(err)

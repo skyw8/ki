@@ -88,9 +88,9 @@ type embeddedBinary struct {
 	data []byte
 }
 
-// embeddedBinaries lists the binaries embedded for the current target. fd is
-// absent on unsupported platforms and rg may be requested from the system, so
-// callers must tolerate either being missing.
+// embeddedBinaries lists the binaries embedded for the current target. Both
+// are absent on unsupported platforms; a host rg is selected only when the
+// caller explicitly sets KI_USE_SYSTEM_RIPGREP.
 func embeddedBinaries() []embeddedBinary {
 	var out []embeddedBinary
 	if data, name := embeddedRG(); len(data) > 0 {

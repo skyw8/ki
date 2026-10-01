@@ -9,8 +9,11 @@
 // available executables, plus a BASH_ENV shim, into one tools directory
 // (ToolsDir). The shell tools prepend that directory to PATH so bundled tools
 // take precedence over host installations, which keeps ki self-contained where
-// binaries are available; unsupported targets may require a system rg and have
-// no bundled fd. The shim also re-prepends extension-contributed directories
-// from KI_EXTENSION_PATH_DIRS after login profiles run, so the shared shim file
-// stays independent of the enabled extension set.
+// binaries are available; unsupported targets have no bundled search
+// executables. Set KI_USE_SYSTEM_RIPGREP=1 to explicitly make Grep and Glob
+// use a host rg on those targets (or for debugging). The shell tools retain the
+// host PATH when no embedded tools directory is available. The shim also
+// re-prepends extension-contributed directories from KI_EXTENSION_PATH_DIRS
+// after login profiles run, so the shared shim file stays independent of the
+// enabled extension set.
 package search

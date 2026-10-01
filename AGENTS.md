@@ -129,6 +129,7 @@ Every Ki-owned JSON document under `{KI_HOME}` carries a top-level integer `vers
 - Package comments go in that package's `doc.go`. Cross-package explanation stays in `docs/`.
 - When changing code, update the related docs that already describe that contract (`docs/*.md` and the owning `doc.go`). Do not add new todo filenames here.
 - Bugs and pitfalls get a why-comment at the fix site explaining why the code is written that way. A problem that recurs gets a retrospective entry under `docs/postmortem/`.
+- Supported release targets are exactly `linux/amd64`, `darwin/arm64`, and `windows/amd64`; do not expand platform support or treat other `GOOS/GOARCH` combinations as supported.
 - One binary: `ki serve` serves API and the embedded SPA on the same origin. `web/dist` is untracked build output: build it (`cd web && bun run build`) and compile with `-tags embed`. Without the tag, `web/stub.go` supplies an empty FS and `ki serve` reports the UI as not built; serve does not run vite or bun.
 - Naming: `extension` is the installable/runtime bundle; a provider supplied by one is an `extension provider`. Do not use `plugin` for provider code, APIs, runtime values, or UI/docs.
 - Real provider is the default runtime. `KI_FAKE=1` and `scripts/run.sh --fake` are test-only opt-ins and must not be used for normal development or manual verification.
