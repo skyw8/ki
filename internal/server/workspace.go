@@ -335,7 +335,7 @@ func sameSessionWorkspace(s *Server, a, b session.Info) bool {
 
 func (s *Server) removeSessionInfo(info session.Info) error {
 	s.abortRun(info.ID)
-	s.closeJobs(info.ID)
+	s.closeProcesses(info.ID)
 	if s.agentTasks != nil {
 		s.agentTasks.RemoveSession(info.ID)
 	}

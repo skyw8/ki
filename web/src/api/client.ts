@@ -251,8 +251,8 @@ export class Client {
 	return this.json(`/v1/extensions/${encodeURIComponent(name)}/config`, { method: 'PATCH', body: JSON.stringify({ config }) })
   }
 
-  abort(id: string): Promise<void> {
-    return this.json(`/v1/sessions/${id}/abort`, { method: 'POST', body: JSON.stringify({ source: 'webui' }) })
+  abort(id: string, scope: 'turn' | 'process' | 'tree' = 'turn', session_id?: number): Promise<void> {
+    return this.json(`/v1/sessions/${id}/abort`, { method: 'POST', body: JSON.stringify({ source: 'webui', scope, session_id }) })
   }
 
   extensionUI(id: string, body: { kind: string; extension: string; ok?: boolean; value?: string; fields?: Record<string, unknown> }): Promise<{ ok: boolean }> {

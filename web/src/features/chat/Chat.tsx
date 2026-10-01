@@ -1,3 +1,4 @@
+import { canonicalToolName } from '../../lib/toolname'
 import { Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { flushSync } from 'react-dom'
 import { observeElementOffset, useVirtualizer } from '@tanstack/react-virtual'
@@ -195,10 +196,10 @@ function ToolRow({
 }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
-  const name = node.name
+  const name = canonicalToolName(node.name)
   const body = useBodyLoad(node.id, onHydrate)
   useTranscriptRowMeasurement([node, open, body.loading, body.failed])
-  const cmd = argStr(node.args, 'command')
+  const cmd = argStr(node.args, 'cmd')
   const desc = argStr(node.args, 'description')
   const oldS = argStr(node.args, 'old_string')
   const newS = argStr(node.args, 'new_string')
@@ -215,7 +216,7 @@ function ToolRow({
   const now = useNow(!!node.running)
   const fail = state === 'error' && node.result ? firstLine(node.result) : ''
   const line = fail || summary
-  const bodyIn = name === 'Write' ? content : name === 'Bash' ? cmd : prettyArgs(node.args)
+  const bodyIn = name === 'write' ? content : name === 'exec_command' ? cmd : prettyArgs(node.args)
   const expandable = !!(node.truncated || node.result || bodyIn || oldS || newS || desc || editDiff || patchDiff)
   return (
     <div className={`tool-row${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool={name} data-state={state}>
@@ -246,18 +247,18 @@ function ToolRow({
         <div className="tool-row-body">
           {node.truncated ? <button type="button" className="body-load" disabled={body.loading} onClick={() => void body.load()}>{t(body.loading ? 'chat.loadingBody' : body.failed ? 'chat.retryOlder' : 'chat.loadBody')}</button> : null}
           {desc ? <div className="tool-desc" data-testid="tool-desc">{desc}</div> : null}
-          {name === 'Read' && node.result ? (
+          {name === 'read' && node.result ? (
             <pre className="tool-read">{node.result.split('\n').map((ln, i) => `${String(offset + i).padStart(4, ' ')}  ${ln}`).join('\n')}</pre>
-          ) : name === 'Edit' && editDiff ? (
+          ) : name === 'edit' && editDiff ? (
 			<pre className="tool-out term">{editDiff}</pre>
 		  ) : name === 'apply_patch' && patchDiff ? (
 			<pre className="tool-out term sys-diff">{patchDiff}</pre>
-		  ) : name === 'Edit' && (oldS || newS) ? (
+		  ) : name === 'edit' && (oldS || newS) ? (
             <div className="diff">
               {oldS ? <pre className="diff-old">{oldS}</pre> : null}
               {newS ? <pre className="diff-new">{newS}</pre> : null}
             </div>
-          ) : name === 'Bash' ? (
+          ) : name === 'exec_command' ? (
             <div className="tool-term">
               {cmd ? <div className="tool-term-cmd">{cmd}</div> : null}
               {node.result ? <pre className="tool-out term">{node.result}</pre> : null}
@@ -573,10 +574,10 @@ const ChatItem = memo(function ChatItem({
     )
   }
   if (n.kind === 'tool') {
-    const name = n.name
+    const name = canonicalToolName(n.name)
     const path = argStr(n.args, 'file_path')
-    const summary = name === 'Bash'
-      ? (argStr(n.args, 'description') || argStr(n.args, 'command'))
+    const summary = name === 'exec_command'
+      ? (argStr(n.args, 'description') || argStr(n.args, 'cmd'))
       : path || firstLine(n.result || prettyArgs(n.args))
     return (
       <ToolRow

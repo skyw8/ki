@@ -8,6 +8,7 @@ import (
 	"ki/internal/resources"
 	"ki/internal/session"
 	"ki/internal/skills"
+	"ki/internal/toolname"
 )
 
 // Input is everything needed to assemble the system prompt.
@@ -25,9 +26,9 @@ type Input struct {
 // DefaultAppendSystemPrompt is the built-in supplement rendered in the
 // appended-system-prompt position for every session. Search-tool preferences
 // belong to the harness rather than to one shell, so keeping them here avoids
-// repeating the same paragraph in both the Bash and PowerShell descriptions
+// repeating the same paragraph in the exec_command description
 // (and keeps them when a model has no shell tool at all).
-const DefaultAppendSystemPrompt = `IMPORTANT: Prefer Read, Grep, and Glob over shell equivalents (cat, head, sed, awk, echo).
+const DefaultAppendSystemPrompt = `IMPORTANT: Prefer read, grep, and glob over shell equivalents (cat, head, sed, awk, echo).
 
 NEVER use 'grep' or 'find' in shell commands or pipelines. ALWAYS use 'rg' and 'fd' instead — ki bundles both on PATH and they are the only supported search tools. 'fd' respects .gitignore and skips hidden files (-H shows hidden, -I disables ignore rules).`
 
@@ -84,7 +85,7 @@ func Build(in Input) string {
 		b.WriteString("(none)\n")
 	} else {
 		for _, t := range in.Tools {
-			if t.Name() == "Read" {
+			if toolname.Equal("read", t.Name()) {
 				hasRead = true
 			}
 			snip := t.Snippet()

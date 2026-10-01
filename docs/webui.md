@@ -11,7 +11,7 @@
 ## 页面
 
 - 侧栏：工作区树（创建 / 重命名 / 删除登记和会话日志、组内 `+`、pin、拖拽、每组默认 5 条「显示更多」）。置顶的会话稳定排在本组最前（同组多个 pin 之间、以及未置顶会话之间沿用 `sessionIds` 顺序，段内拖拽仍可改序），新建会话前插只落在未置顶段之前、不会盖过 pin。subagent 子会话（`forkMode=tree`）常驻嵌套在父会话下方：默认折叠，点箭头展开/收起、可多级递归展开，点行打开会话（打开子会话时切到对话页；当前会话的父链会自动展开）；子行按深度缩进并有引导线，不可拖拽排序，菜单不提供 pin；孤儿 / 跨 workspace / 环这类不可信父子边退化为顶层行。普通 `flat` fork 继续平铺，`localStorage` 不持久化展开态（刷新即折叠）。标题+正文搜索只命中非 subagent 会话；选目录、未分组只给旧脏数据
-- 对话：气泡、Markdown（Streamdown + remend 补全未闭合标记，`@streamdown/cjk` 处理中日韩强调；`mermaid` / `plantuml`（含 `puml` 别名）围栏统一走 `DiagramBlock`：顶部左侧 diagram/source 切换，右侧下载 PNG/SVG 与复制（复制在最右），图居中且可点击放大（全屏查看器，支持缩放条/滚轮缩放和拖拽平移）；mermaid 用 `@streamdown/mermaid` 在浏览器内渲染，plantuml 没有本地渲染器，改由 PlantUML 服务器出图（默认 `https://www.plantuml.com/plantuml`，可用 `localStorage['ki.plantumlServer']` 覆盖为自建/内网服务，失败时回退到源码 + 重试）；GFM 表格自带、工具条复制为 Markdown；外观仍走 `.md` 设计 token，不用 Streamdown 自带的 Tailwind/shadcn 外壳）、Think、默认折叠的工具行（Read 行号 / Edit diff / Bash 终端 / IN·OUT、Inspect；Bash `description` 和路径预览可选择、可复制）、用量脚注下 copy/fork/regen、离底「回到底部」、右侧请求导航（选中会话后保留入口，即使当前尾部暂时没有用户消息或索引尚未加载：桌面悬停或点按右侧三条杠，浮层列出当前分支的**人**发的所有 user 请求——列表走 `view.allEntries`（含惰性 index 的整条分支），不随对话窗口变化，所以不必先往上翻；`agent` / `agent:<id>` 这类运行时写入的 turn（subagent directive、`<task-notification>`）不进列表，扩展来源（Telegram 等真人中继）保留。高亮当前视口那条，点一项滚到该气泡：目标不在已加载窗口内时先按页补历史（`?before=`，detailed 每页最多 500 条、compact 每页完整一轮）再定位；打开浮层按需请求 index，显示加载状态、失败重试和确认空列表；不能以当前窗口没有 user 推断全分支没有请求。恢复/运行结束按 leaf 合并刷新已经请求过的索引，旧的在途索引完成后只补一次更新。不占第三栏。超长对话沿已有虚拟列表 `scrollToIndex`，很多请求时列表自己虚拟化，12 条以上可筛选）。每个 turn（user → 该 turn 最后一条节点）在末尾挂一条分割线，两侧各一段 hairline、中间是该 turn 的单行汇总统计（`transcriptIdentity` 的 canonical TurnId + `projectTurnStats`，统计只在该人工轮的最后渲染 item 展示）：轮次、耗时、步数、工具调用与失败数、最近一条 assistant 的 TTFT 与吞吐（`lastTtftMs` / `lastTps`，取该 turn 最后一条消息而非首步或整轮平均）、缓存命中率与缓存未命中。输入/输出和 cost 已移到 composer 会话统计条，分割线只保留这一行（窄屏自动换行）。耗时在运行中按 `now - startedAt`（首个人工 input；无人工 input 的 runtime-only 分支取首次 runtime input）实时累加，后续通知不重置起点，结束后取 user 时间戳到该 turn 最后一条节点的时间戳；工具行用 `startedAt + durationMs` 计入尾部，无时间戳时退回各步延迟之和。实时值由 `hooks/useNow` 的共享 200ms 时钟驱动，只有运行中的行订阅它，空闲时不排任何定时器。仍在流式或工具运行的 turn 标 `live`，汇总线照常就地渲染（轮次前加一个脉冲点，耗时按共享时钟变化，永不折叠），结束时在原地换成固定值，因此每轮耗时从第一刻起可见而不是结束后才冒出来；composer 的会话统计条（`session-stats-live`）改为显示整个分支的**模型运行总耗时**：历史 turn 的 settled 耗时（`lib/model.ts` 的 `sessionStats`，trajectory records 覆盖整条分支含仅 index 的 entry；compact 折叠 turn 用服务端 `compactTurns` 的 `elapsedMs` / `cumulativeElapsedMs`）加上最新 turn 的实时跨度（`now - turnStartedAt`，运行中带脉冲点；空闲时用该 turn 的 settled 值），因此不再随当前 turn 归零、运行结束后也保留。compact、展开、运行和结束统一由 `projectTurnStats` 投影：服务端快照 + 本地观察值 − 同一快照已覆盖的本地节点；展开不会重复加计，运行结束不会用旧快照覆盖新结果。当前工具批次的 `toolStates` 提供被隐藏调用的身份及结果状态；`assistantAt` 提供已完成模型步骤边界。并行工具的任意兄弟节点先结束都不能把其它调用判为陈旧。每轮只挂一条统计，挂在**最后一个渲染 item**（可以是 keep=0 的折叠行），而非必须存在的最后一个原始节点。汇总线在同一个虚拟 item 里追加，`jumpToId`/视口高亮仍按节点索引。窄屏（`max-width: 760px`）隐藏两侧 hairline，改成整宽分隔线 + 居中的统计。不展示 SYSTEM / system prompt 行（首次和变化都只在轨迹里看）。compact 消息显示（见设置）**在 turn 内**折叠：每个 turn 的用户气泡始终保留，其后只留最近 N 条回复，之间的回复（长 turn 的工具往返）由 `lib/messageView.ts` 的 `foldReplies` 折成该 turn 内的一行，位于气泡与该 turn 可见回复之间；点该行就地展开，不重排时间线；reading 或更早轮的操作锚定该行，原本 following 的最新人工轮继续跟随最新回复，`jumpToId` 落到折叠范围内会先自动展开再滚动（行本身带首个被折叠节点的 `data-msg-id`）。短列表和长列表使用同一个虚拟化实例与 DOM 外壳，折叠、分页或第 48 个节点不再切换列表结构。展开/收起保留显式意图：reading 不因几何贴底恢复 following；只有原本 following 且操作最新人工轮时继续跟随，更早轮转为 reading。仍在流式/运行中的节点永不折叠，但**运行中的最新 turn 也照常折叠**（实测一个在跑的 turn 有 61 个回复节点，旧行为会整轮渲染，折叠后只剩 2 行；这也是重新进入运行中会话慢的一半原因）。真实运行节点可以突破 N 的折叠边界；陈旧标记由同一调用的持久化结果、下一模型请求或服务器 `assistantAt` 边界清理，而不是按兄弟节点顺序猜测。重新进入（`visibilitychange` / `pageshow` / `online`）、push ready 与 run EOF 统一由 `SessionSyncController` 协调，经 `TranscriptStore` 原子接纳后投影；运行状态与正文按身份合并，SSE/已接受的新输入推进 revision，旧 idle 响应不能结束新工作。请求导航的滚动落点与视口高亮因此始终落在真实存在的用户气泡上。渲染列表由 `ChatRenderItem` 驱动，虚拟列表按 item（而非 node）计数。
+- 对话：气泡、Markdown（Streamdown + remend 补全未闭合标记，`@streamdown/cjk` 处理中日韩强调；`mermaid` / `plantuml`（含 `puml` 别名）围栏统一走 `DiagramBlock`：顶部左侧 diagram/source 切换，右侧下载 PNG/SVG 与复制（复制在最右），图居中且可点击放大（全屏查看器，支持缩放条/滚轮缩放和拖拽平移）；mermaid 用 `@streamdown/mermaid` 在浏览器内渲染，plantuml 没有本地渲染器，改由 PlantUML 服务器出图（默认 `https://www.plantuml.com/plantuml`，可用 `localStorage['ki.plantumlServer']` 覆盖为自建/内网服务，失败时回退到源码 + 重试）；GFM 表格自带、工具条复制为 Markdown；外观仍走 `.md` 设计 token，不用 Streamdown 自带的 Tailwind/shadcn 外壳）、Think、默认折叠的工具行（read 行号 / edit diff / exec_command 终端 / IN·OUT、Inspect；exec_command 的 `cmd` 和路径预览可选择、可复制）、用量脚注下 copy/fork/regen、离底「回到底部」、右侧请求导航（选中会话后保留入口，即使当前尾部暂时没有用户消息或索引尚未加载：桌面悬停或点按右侧三条杠，浮层列出当前分支的**人**发的所有 user 请求——列表走 `view.allEntries`（含惰性 index 的整条分支），不随对话窗口变化，所以不必先往上翻；`agent` / `agent:<id>` 这类运行时写入的 turn（subagent directive、`<task-notification>`）不进列表，扩展来源（Telegram 等真人中继）保留。高亮当前视口那条，点一项滚到该气泡：目标不在已加载窗口内时先按页补历史（`?before=`，detailed 每页最多 500 条、compact 每页完整一轮）再定位；打开浮层按需请求 index，显示加载状态、失败重试和确认空列表；不能以当前窗口没有 user 推断全分支没有请求。恢复/运行结束按 leaf 合并刷新已经请求过的索引，旧的在途索引完成后只补一次更新。不占第三栏。超长对话沿已有虚拟列表 `scrollToIndex`，很多请求时列表自己虚拟化，12 条以上可筛选）。每个 turn（user → 该 turn 最后一条节点）在末尾挂一条分割线，两侧各一段 hairline、中间是该 turn 的单行汇总统计（`transcriptIdentity` 的 canonical TurnId + `projectTurnStats`，统计只在该人工轮的最后渲染 item 展示）：轮次、耗时、步数、工具调用与失败数、最近一条 assistant 的 TTFT 与吞吐（`lastTtftMs` / `lastTps`，取该 turn 最后一条消息而非首步或整轮平均）、缓存命中率与缓存未命中。输入/输出和 cost 已移到 composer 会话统计条，分割线只保留这一行（窄屏自动换行）。耗时在运行中按 `now - startedAt`（首个人工 input；无人工 input 的 runtime-only 分支取首次 runtime input）实时累加，后续通知不重置起点，结束后取 user 时间戳到该 turn 最后一条节点的时间戳；工具行用 `startedAt + durationMs` 计入尾部，无时间戳时退回各步延迟之和。实时值由 `hooks/useNow` 的共享 200ms 时钟驱动，只有运行中的行订阅它，空闲时不排任何定时器。仍在流式或工具运行的 turn 标 `live`，汇总线照常就地渲染（轮次前加一个脉冲点，耗时按共享时钟变化，永不折叠），结束时在原地换成固定值，因此每轮耗时从第一刻起可见而不是结束后才冒出来；composer 的会话统计条（`session-stats-live`）改为显示整个分支的**模型运行总耗时**：历史 turn 的 settled 耗时（`lib/model.ts` 的 `sessionStats`，trajectory records 覆盖整条分支含仅 index 的 entry；compact 折叠 turn 用服务端 `compactTurns` 的 `elapsedMs` / `cumulativeElapsedMs`）加上最新 turn 的实时跨度（`now - turnStartedAt`，运行中带脉冲点；空闲时用该 turn 的 settled 值），因此不再随当前 turn 归零、运行结束后也保留。compact、展开、运行和结束统一由 `projectTurnStats` 投影：服务端快照 + 本地观察值 − 同一快照已覆盖的本地节点；展开不会重复加计，运行结束不会用旧快照覆盖新结果。当前工具批次的 `toolStates` 提供被隐藏调用的身份及结果状态；`assistantAt` 提供已完成模型步骤边界。并行工具的任意兄弟节点先结束都不能把其它调用判为陈旧。每轮只挂一条统计，挂在**最后一个渲染 item**（可以是 keep=0 的折叠行），而非必须存在的最后一个原始节点。汇总线在同一个虚拟 item 里追加，`jumpToId`/视口高亮仍按节点索引。窄屏（`max-width: 760px`）隐藏两侧 hairline，改成整宽分隔线 + 居中的统计。不展示 SYSTEM / system prompt 行（首次和变化都只在轨迹里看）。compact 消息显示（见设置）**在 turn 内**折叠：每个 turn 的用户气泡始终保留，其后只留最近 N 条回复，之间的回复（长 turn 的工具往返）由 `lib/messageView.ts` 的 `foldReplies` 折成该 turn 内的一行，位于气泡与该 turn 可见回复之间；点该行就地展开，不重排时间线；reading 或更早轮的操作锚定该行，原本 following 的最新人工轮继续跟随最新回复，`jumpToId` 落到折叠范围内会先自动展开再滚动（行本身带首个被折叠节点的 `data-msg-id`）。短列表和长列表使用同一个虚拟化实例与 DOM 外壳，折叠、分页或第 48 个节点不再切换列表结构。展开/收起保留显式意图：reading 不因几何贴底恢复 following；只有原本 following 且操作最新人工轮时继续跟随，更早轮转为 reading。仍在流式/运行中的节点永不折叠，但**运行中的最新 turn 也照常折叠**（实测一个在跑的 turn 有 61 个回复节点，旧行为会整轮渲染，折叠后只剩 2 行；这也是重新进入运行中会话慢的一半原因）。真实运行节点可以突破 N 的折叠边界；陈旧标记由同一调用的持久化结果、下一模型请求或服务器 `assistantAt` 边界清理，而不是按兄弟节点顺序猜测。重新进入（`visibilitychange` / `pageshow` / `online`）、push ready 与 run EOF 统一由 `SessionSyncController` 协调，经 `TranscriptStore` 原子接纳后投影；运行状态与正文按身份合并，SSE/已接受的新输入推进 revision，旧 idle 响应不能结束新工作。请求导航的滚动落点与视口高亮因此始终落在真实存在的用户气泡上。渲染列表由 `ChatRenderItem` 驱动，虚拟列表按 item（而非 node）计数。
 composer（命令按钮 + 行首 `/` 打开 slash 面板，数据来自 session `commands[]`；点选只填入输入框，回车才发送；面板用不透明 `bg-layer-1`，描述单行省略。thinking 未选时显示该模型 `defaultThinking`，优先 medium 而不是列表第一项 off）。composer 下方一条统计：轮/步是当前分支总数，TTFT、吞吐、缓存命中、输入/输出和 cost 都是**整个 session 的汇总**（`lib/model.ts` 的 `sessionStats`：`projectTurnStats` 把已加载窗口与 compact 快照按 turn 合并一次，未加载的折叠 turn 再用 `compactTurns` 的服务端统计按 turn 补齐，不重复计数；TTFT 取各 turn 首步延迟的平均，吞吐按输出加权的「总输出 / 总 decode 时长」，缓存命中为「总 cacheRead / 总 prompt」，输入/输出与 cost 为累计值），不再是最近一条 assistant 的单次值；没有新 HTTP 接口。窄屏（≤520px）该行改成单行横向滚动并隐藏滚动条（保留触摸拖动），不换行。edit 在原 user 位置展开为占满整列宽的编辑卡片：标题行（「编辑消息」+ Ctrl/⌘+Enter 发送 / Esc 取消提示）、自动增高并按视口封顶的输入区和附件条，文本与附件一起形成当前 session 内的 sibling branch；分支用 `‹ 1 / N ›` 切换。fork 从最终 assistant entry 创建并打开新的 session 目录（沿用源 session 的 provider/model/thinking），运行中仍可用（复制的是已落盘的完整前缀，不影响当前 run）；regenerate 留在当前 session，运行中按钮置灰、点击 toast 提示「当前对话正在运行」，避免与进行中的 loop 抢写。侧栏「新会话」和工作区 `+` 把当前 composer 的模型配置发给 `POST /v1/sessions`；本浏览器 `localStorage` 记住上次选用的模型与 thinking，server 同时记住模型。冷启动没有记录时落到第一个可用模型。侧栏会话灯在本端开始 listen 时立刻变绿（不等列表刷新），其它客户端起的 run 与删除由 push 的 `invalidate` 帧驱动；列表刷新做合并，多个 run 同时结束或连续 pin/move/delete 只发一次请求外加一次尾随刷新，响应 ETag 未变时不重建侧栏状态
 - 对话滚动几何：统一由 React Virtual 3.14.12 / virtual-core 3.17.10 管理；`anchorTo: end` 在提交新数据时按当前 item key 和内部偏移恢复位置。容器 `overflow-anchor: none`，避免浏览器再补一次。行高按实际文本列宽、正文身份和呈现 revision 校验，保留小数，LRU 2000；未测量行按字符数估算，占位不进入缓存。首次量测补偿视口上方的估算误差，重新量测只补偿上方内容；prepend 后按原内容 key 判断“上方”，包括原先位于顶部留白中的视口。量测仍由同一个虚拟实例提交；WebKit 不能立即写入的触摸/原生 wheel 修正由同一 viewport owner 保留为逻辑偏移与视觉平移，静止后一次转移，不能只延后 scrollTop 而先移动内容。没有业务侧逐帧 scrollTop 循环。overscan 为 4。
   运行占位的底部留白变化不属于行高增量；`useTranscriptScroll` 在 layout 阶段仅对既有 following 意图调用同一虚拟实例的 `scrollToEnd`，保证消息结束后的占位与格式化也贴尾，不重新开启 reading/seeking 的跟随。
@@ -303,7 +303,9 @@ Provider 新建与高级模型弹层固定头尾、只滚动字段区。轨迹�
 恢复其先前属性。延迟初始焦点只在焦点仍位于该 dialog 外时补位；用户已经移到内部其它字段
 时不得再抢回首字段，避免后续输入写错控件。命令面板的 combobox 必须显式关联 listbox，且在焦点移交给 Select 或
 dialog 时立即释放键盘；侧栏操作菜单使用 menu/menuitem 语义，支持方向键、Tab、Escape，
-并在关闭后把焦点还给触发按钮。抽屉触发目录或设置 dialog 时，焦点直接交给 dialog，关闭
+并在关闭后把焦点还给触发按钮。抽屉中的菜单打开时，Escape 归菜单所有，即使首个焦点帧
+尚未执行、焦点仍在触发按钮上；抽屉的 window 监听器不能同时关闭父层，第二次 Escape
+才关闭抽屉并回到主区触发按钮。抽屉触发目录或设置 dialog 时，焦点直接交给 dialog，关闭
 后回到主区的抽屉按钮，不得回到已变为 inert 的侧栏节点。Settings 和扩展 Details/Config
 使用完整 tablist/tab/tabpanel 关系、roving tabindex 和方向键/Home/End 导航，inactive panel
 保留关联节点但必须 hidden。`prefers-reduced-motion` 下关闭抽屉和控件过渡。
@@ -374,6 +376,11 @@ bun run test:e2e:serial   # 单进程串行，便于定位单个失败
 - 其余：超过 `KI_E2E_SPLIT` 个用例、且全部挂在顶层 describe 下的大文件按 describe 拆分
   （`responsive.spec.ts` 的历史行为），否则整文件一个进程。
 
+`transcript-presentation.spec.ts` 和 `request-nav.spec.ts` 的各条用例已分别独立验证，
+声明为 parallel。前者含一条顶层 resize 用例，不能仅按 describe 分组猜测可拆性；
+显式声明后，25 条呈现用例和 12 条导航用例各自用独立进程调度，保留每种尺寸、语言、
+时钟边界和滚动锚点断言。没有缩短计时观察窗口或放宽几何预算。
+
 默认并发 `min(CPU, 32)`，每个进程独立端口。每次 invocation 使用独立的临时状态、鉴权文件、
 二进制和随机 loopback 端口；runner 产物也放在独立的 `test-results/e2e-parallel/run-*/`，
 不会删除另一次运行的报告或可执行文件。可与 Go e2e 并行运行，不得复用固定临时状态文件。
@@ -381,7 +388,7 @@ extension UI 的只读 sidecar 由 runner 编译一次，再复制到各测试�
 Playwright（包括串行调试）则在该 invocation 的 home 中编译并复用一次。
 fake runner 默认复用最多 4 个 Chromium 进程，通过 Playwright `connectOptions` 连接；
 每条测试仍创建独立 BrowserContext，cookie、localStorage、权限和页面不会复用。
-`KI_E2E_BROWSERS` 调整进程数，`0` 关闭复用以便对照；其他浏览器项目和直接 Playwright
+`KI_E2E_BROWSERS` 调整进程数，`0` 关闭复用以便对照；直接 Playwright
 调用不使用此池。浏览器连接服务由 Node 承载（与 Playwright CLI 一致），只绑定 loopback，
 runner 完成或父进程管道关闭时释放；Bun 的该服务传输路径会在 fixture 初始化时挂起。
 `freePort()` 的探测 socket 会先关闭再由 `ki serve` 绑定，两者之间可能与另一个单元抢同一端口；
@@ -415,6 +422,17 @@ spec 仍然打到 Go 编出来的 SPA（需已 `bun install`、`bun run build` �
 关闭浏览器复用时的 30.7s 降到开启时的 24.9s；Bun 单元测试约 0.14s，增量类型检查无修改
 时约 1.7s。这些是依赖已安装、编译缓存存在时的单轮测量，不代表 CI 或性能预算。
 
+2026-10-01 同机对照：Chrome fake 矩阵保持 176 条浏览器用例、204 条 Bun 单元测试。
+呈现文件 25 条用例逐条独立验证全部通过（8 路并发 19.18s）；导航文件 12 条亦全部
+独立通过（8 路并发 6.58s），之后才声明 parallel。默认 runner 的 32 路进程并发、
+4 个共享 Chromium 不变，完整浏览器从 104.7s 降为 35.8s，`bun run test` 从
+110.02s 降为 41.30s，`go test -tags embed -count=1 ./...` 从 114.70s 降为
+45.19s。完整运行中，呈现组全部 Playwright invocation 从首个 start 到最后结束的
+跨度为 12.18s（原单个串行任务 102.5s），导航组为 7.74s（原 30.7s）。后两项是
+重叠执行跨度，不能把各条用例耗时相加再与它比较。测量复用已有构建缓存，宿主另有
+计算负载，单轮结果用于定位调度瓶颈，不代表 CI 的 4 路并发或冷编译耗时。
+
+
 长会话 / 超长消息压测不进 fake 矩阵。生成 jsonl 夹具后测尾部 GET 的体积与延迟（并验证它不带 `index`）、`fields=index` / `fields=runtime` / `before` / `entry` 的预算、打开 Chat/Trace 的 DOM 与 JS heap，以及向上翻页 / 截断正文补全：
 
 ```bash
@@ -431,6 +449,21 @@ cd web && KI_LIVE=1 bun run test:e2e:live
 
 或 `go test -tags live -timeout 5m ./e2e -run LiveWebUI`。
 
-滚动协议专项回归：先 `cd web && bunx playwright install webkit firefox`，再 `bunx playwright test --project=webkit-scroll --project=firefox-scroll`，覆盖无位移触顶/重试、延迟响应提交前锚点、小幅上滑与流式更新、切会话取消迟到响应、工具正文重试、图片预览跨行卸载，以及 520 条隐藏回复的 compact 整轮分页/按需展开；也包含 history/stream recovery、reclaim、session-state、跨尺寸呈现及完整 Markdown 流式用例。`--project=webkit-compact-touch` 另外以 iPhone UA 触发库的 iOS 路径，覆盖 compact、呈现、session-state 与 Markdown；注入触摸事件并控制位移，逐帧断言锚点偏移 ≤2px，包含按住手指时响应到达。此用例不模拟真实硬件惯性。默认使用 Playwright 浏览器；已有独立 WebKit launcher 时可用 `KI_WEBKIT_EXECUTABLE` 指定。Playwright WebKit 不等价于 iPhone Safari 真机触摸惯性。
+自动化浏览器测试只使用 Chromium（Chrome 引擎），所有 project 都继承同一浏览器设置；
+不再维护 Firefox / WebKit project 或安装步骤。默认 fake 矩阵已包含滚动、compact、
+恢复、Markdown 和跨尺寸呈现专项，桌面、平板、手机的 viewport / touch / mobile layout
+覆盖保持在同一套用例中。只跑滚动相关文件可用：
+
+```bash
+cd web && bunx playwright test --project=fake e2e/transcript-scroll.spec.ts e2e/compact-history.spec.ts
+```
+
+Chromium 的触摸事件与 viewport 仿真不代表真实 iPhone Safari 的惯性、回弹或软键盘验收。
 
 弱网预算可用 `cd web && KI_PERF_WEAK=1 bunx playwright test --project=perf --grep 'long history and huge'` 复测同一用例：Chromium 下行 1.6Mbps、上行 750Kbps、延迟 800ms、CPU 4×。与普通预算相同，不放宽 GET/UI 断言；同时记录 decoded / encoded / transfer 字节。此 profile 不代表真实端口转发和移动设备，真机需再验证惯性、回弹、软键盘和旋转。
+
+## 进程与 agent 面板
+
+Chat composer 上方的可展开运行时面板展示当前 session 的 live 进程与 root 范围 agent 身份。数据来自既有 session GET 的 processes/agents 和 process_updated/agent_updated 事件；global SSE 在 idle session 也更新面板，重新打开/恢复时用 GET 当前投影。工具卡默认显示 canonical snake_case，原始调用名仍留在 transcript。
+
+停止进程调用既有 abort 路由的 scope=process 与数值 session_id，中断 agent 调用目标 child 的 turn abort。普通 turn abort 不杀独立进程；scope=tree 为结构后代清理。面板在移动端换行，命令与输出不撑开横向布局，停止/中断按钮至少 44px；safe-area 和 composer 原有动态 viewport 规则继续生效。

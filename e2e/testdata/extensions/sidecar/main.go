@@ -243,12 +243,12 @@ func main() {
 				}
 				_ = json.Unmarshal(wrap.Payload, &p)
 				path, _ := p.Args["path"].(string)
-				cmd, _ := p.Args["command"].(string)
-				if p.Name == "Write" && strings.Contains(path, ".env") {
+				cmd, _ := p.Args["cmd"].(string)
+				if p.Name == "write" && strings.Contains(path, ".env") {
 					reply(m.ID, map[string]any{"block": true, "reason": "blocked .env"})
 					continue
 				}
-				if p.Name == "Bash" && strings.Contains(cmd, "SLEEP_INTERCEPT") {
+				if p.Name == "exec_command" && strings.Contains(cmd, "SLEEP_INTERCEPT") {
 					c := exec.Command("sleep", "30")
 					_ = c.Start()
 					if f := os.Getenv("KI_GRANDCHILD_PID_FILE"); f != "" && c.Process != nil {

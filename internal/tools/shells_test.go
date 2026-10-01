@@ -156,7 +156,7 @@ func TestDiscoverWindowsKeepsUnavailablePowerShellVisible(t *testing.T) {
 	}
 }
 
-func TestPowerShellArgumentsAndSleepDetection(t *testing.T) {
+func TestPowerShellArguments(t *testing.T) {
 	args := (shellSpec{kind: shellPowerShell, path: "pwsh"}).args("Write-Output 'ok'")
 	if len(args) != 4 || args[0] != "-NoProfile" || args[1] != "-NonInteractive" || args[2] != "-Command" {
 		t.Fatalf("args = %#v", args)
@@ -164,14 +164,7 @@ func TestPowerShellArgumentsAndSleepDetection(t *testing.T) {
 	if !strings.Contains(args[3], "$LASTEXITCODE") || !strings.Contains(args[3], "elseif ($?)") {
 		t.Fatalf("exit wrapper = %s", args[3])
 	}
-	for _, command := range []string{"Start-Sleep 10", "sleep -Seconds 10", "  Start-Sleep -Milliseconds 10; Write-Output ok"} {
-		if !isLeadingSleep(shellPowerShell, command) {
-			t.Fatalf("did not detect %q", command)
-		}
-	}
-	if isLeadingSleep(shellPowerShell, "Write-Output ok; Start-Sleep 10") {
-		t.Fatal("later sleep was treated as a leading sleep")
-	}
+
 }
 
 func envToMap(env []string) map[string]string {
@@ -344,5 +337,20 @@ func TestBashResolvesBundledToolsDespiteProfile(t *testing.T) {
 	}
 	if !strings.Contains(string(out), filepath.Base(toolsDir)) {
 		t.Fatalf("bash resolved rg/fd outside the bundled tools dir:\n%s", out)
+	}
+}
+
+func TestExecShellNameUsesDiscoveredExecutableOutsidePath(t *testing.T) {
+	bash := filepath.Join(t.TempDir(), "bash")
+	runtime := ShellRuntime{bash: shellSpec{kind: shellBash, path: bash, setShellEnv: true}}
+	selected, err := resolveExecShell(runtime, "bash", false)
+	if err != nil || selected.path != bash || selected.login == nil || *selected.login || !selected.setShellEnv {
+		t.Fatalf("discovered Bash was replaced by PATH lookup: %+v %v", selected, err)
+	}
+	powershell := filepath.Join(t.TempDir(), "pwsh.exe")
+	runtime.powerShell = &shellSpec{kind: shellPowerShell, path: powershell, powerShellEdition: powerShellCore}
+	selected, err = resolveExecShell(runtime, "PwSh.EXE", true)
+	if err != nil || selected.path != powershell || selected.powerShellEdition != powerShellCore || selected.login == nil || !*selected.login {
+		t.Fatalf("discovered PowerShell was replaced by PATH lookup: %+v %v", selected, err)
 	}
 }

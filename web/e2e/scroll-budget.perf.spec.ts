@@ -58,15 +58,15 @@ function seed(home: string, cwd: string, turns: number): string {
   for (let i = 0; i < turns; i++) {
     push({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: `turn ${i}` }], timestamp: at(), durationMs: 0 } })
     const callId = `call_${i}`
-    push({ type: 'request_header', system: `budget ${'S'.repeat(1024)}`, tools: [{ name: 'Bash', description: 'run', parameters: { type: 'object' } }], provider: 'deepseek', modelId: 'deepseek-flash' })
+    push({ type: 'request_header', system: `budget ${'S'.repeat(1024)}`, tools: [{ name: 'exec_command', description: 'run', parameters: { type: 'object' } }], provider: 'deepseek', modelId: 'deepseek-flash' })
     push({
       type: 'message',
       message: {
         role: 'assistant', timestamp: at(), provider: 'deepseek', model: 'deepseek-flash', stopReason: 'toolUse',
-        usage: { input: 8200, output: 640 }, content: [{ type: 'text', text: richReply(i) }, { type: 'toolCall', id: callId, name: 'Bash', arguments: { command: 'cd /data/hgy/ki && go test ./internal/server -count=1' } }],
+        usage: { input: 8200, output: 640 }, content: [{ type: 'text', text: richReply(i) }, { type: 'toolCall', id: callId, name: 'exec_command', arguments: { cmd: 'cd /data/hgy/ki && go test ./internal/server -count=1' } }],
       },
     })
-    push({ type: 'message', message: { role: 'toolResult', toolName: 'Bash', toolCallId: callId, timestamp: at(), durationMs: 90, content: [{ type: 'text', text: `ok\tki/internal/server\t0.0${i % 9}s\t${'result '.repeat(10)}` }] } })
+    push({ type: 'message', message: { role: 'toolResult', toolName: 'exec_command', toolCallId: callId, timestamp: at(), durationMs: 90, content: [{ type: 'text', text: `ok\tki/internal/server\t0.0${i % 9}s\t${'result '.repeat(10)}` }] } })
   }
   const dir = join(home, 'sessions', ws, `2026-09-27T10-00-00-000000000Z_${sid}`)
   mkdirSync(dir, { recursive: true })

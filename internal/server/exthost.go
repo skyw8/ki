@@ -19,6 +19,7 @@ import (
 	"ki/internal/loop"
 	"ki/internal/session"
 	"ki/internal/toggles"
+	"ki/internal/toolname"
 )
 
 type extUIState struct {
@@ -311,7 +312,7 @@ func (s *Server) Snapshot(sessionID, _ string) (extension.SessionSnapshot, error
 	s.mu.Lock()
 	active := append([]string{}, s.activeTools[sessionID]...)
 	s.mu.Unlock()
-	all := []string{"Read", "Write", "Edit", "Grep", "Glob", "Bash", "TaskOutput", "TaskStop"}
+	all := append([]string{}, toolname.Builtins...)
 	return extension.SessionSnapshot{
 		ID:          sess.ID(),
 		CWD:         sess.Header.CWD,
@@ -364,7 +365,7 @@ func (s *Server) flushContextMessages(sessionID string, maxSequence uint64) erro
 	}
 	defer func() { _ = sess.Close() }()
 	if err := session.DrainContextThrough(dir, maxSequence, func(item session.ContextQueuedItem) error {
-		_, _, err := sess.AppendMessageWithKey(item.Message, item.IdempotencyKey)
+		_, err := s.commitUserMessage(item.Message, func() error { _, _, err := sess.AppendMessageWithKey(item.Message, item.IdempotencyKey); return err })
 		if err != nil {
 			return fmt.Errorf("append message: %w", err)
 		}
@@ -561,15 +562,30 @@ func (s *Server) PatchSession(sessionID, model, thinking string) error {
 
 // SetActiveTools restricts which tools the next occupy may use.
 func (s *Server) SetActiveTools(sessionID, extName string, names []string) error {
-	known := map[string]bool{
-		"Read": true, "Write": true, "Edit": true,
-		"Grep": true, "Glob": true, "Bash": true, "PowerShell": true,
-		"TaskOutput": true, "TaskStop": true,
+	known := map[string]string{}
+	for _, name := range toolname.Builtins {
+		aliases, _ := toolname.Aliases(name)
+		for _, alias := range aliases {
+			known[alias] = name
+		}
+	}
+	if s.ext != nil {
+		for _, contribution := range s.ext.SessionContributions(sessionID) {
+			for _, spec := range contribution.Tools {
+				aliases := spec.Aliases
+				if len(aliases) == 0 {
+					aliases, _ = toolname.Aliases(spec.Name)
+				}
+				for _, alias := range aliases {
+					known[alias] = toolname.MustCanonical(spec.Name)
+				}
+			}
+		}
 	}
 	var kept, unknown []string
 	for _, n := range names {
-		if known[n] {
-			kept = append(kept, n)
+		if canonical, ok := known[n]; ok {
+			kept = append(kept, canonical)
 			continue
 		}
 		unknown = append(unknown, n)

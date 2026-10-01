@@ -1,82 +1,47 @@
-// Package tools implements model-aware built-ins: Read, Write, Edit,
-// apply_patch, Grep, Glob, Bash, PowerShell, Agent, SendMessage, TaskOutput,
-// and TaskStop.
+// Package tools implements model-aware file/search tools, terminal interaction,
+// and asynchronous logical-agent coordination. Default wire names are snake_case;
+// internal/toolname provides PascalCase aliases for one canonical schema.
 //
-// Wire names and input schemas follow Claude Code. Text results follow pi
-// (no cat -n; shell tools mix stdout/stderr; non-zero exit is an error). Relative
-// paths resolve against the session cwd. Each shell call is a new process from
-// that cwd, so cd and Set-Location are not remembered. Windows probes configured
-// paths, standard Git installations, then PATH for Bash, and additionally
-// exposes PowerShell, preferring pwsh over powershell.exe. Other platforms probe
-// /bin/bash then PATH. When Bash is unavailable, Bash is omitted
-// without preventing server startup. The session-scoped task store tracks
-// process groups, output files, status, exit code, cancellation, and progress.
-// Its complete output files are created through the tool-output store
-// (OutputSpool), so they live in the session spill directory and are removed
-// with it; a process temporary file is the fallback when the store refuses.
-// Shell and other child processes receive Ki's inherited HTTP(S)/FTP/ALL proxy
-// variables explicitly, so commands launched by them keep the same network
-// routing. Runtime configuration remains authoritative for sidecar overrides.
-// Agent delegates through a narrow AgentRuntime supplied by server. Its child
-// session is linked with forkMode=tree and starts with a clean context by
-// default. Explicit inherit_context seeds it with the parent's finished history
-// up to the user message that triggered the in-flight turn when prior
-// conversational decisions cannot be handed off concisely. The directive
-// itself arrives as the child's first user message wrapped in a
-// subagent envelope carrying its depth, the session that delegated, and — at
-// MaxAgentDepth — the instruction not to delegate again, so the child's system
-// prompt and tool schemas can stay byte-identical to its parent's. Set therefore
-// never withholds Agent; the depth limit is refused by the spawn call, not by
-// trimming the tool set (which would break the cached prefix). It is
-// bounded to three child layers below the main session. SendMessage addresses a
-// child by its stable task id, or resolves the reserved "parent"/"main"
-// addresses from the sender's session chain so a subagent can reach its caller.
-// A child run is
-// detached from its caller, and a foreground Agent call that exceeds its
-// two-minute wait is promoted to a background task instead of being cancelled
-// (the caller gets the run_in_background async_launched shape, and its turn
-// keeps running: only an explicit run_in_background terminates it, and every
-// async result carries a note telling the caller where the completion lands).
-// A completion notification is delivered mid-turn when the parent run is still
-// alive and through the durable queue otherwise. A task/generation ledger
-// arbitrates TaskOutput against actual notification persistence (not enqueue).
-// Explicit repeated reads remain available with read_only=true; timeout/cancel
-// do not claim results. A session-scoped reader may claim original delivery
-// only for its own child; other-session reads are read-only even before parent
-// delivery. TaskStop remains explicit global cancellation, not read inspection.
-// Metadata and queued follow-up IDs use internal/state.
-// There is no cross-file crash transaction with the parent transcript. TaskStop
-// is idempotent for terminal tasks, which may finish concurrently with a stop.
-// TaskOutput and TaskStop use a composite task store so shell and agent tasks
-// share the Claude Code-shaped lifecycle schema. File
-// mutations share a server-scoped per-path queue; Edit additionally
-// supports non-overlapping batch replacements against one original. When a
-// function-calling provider fills both Edit modes, the sole semantically valid
-// mode wins and reports the ignored fields; two executable modes remain an
-// error rather than an unsafe guess. Structured result details are persisted
-// for clients but omitted by provider adapters.
-// Read exposes line and UTF-8-safe byte paging, injectable operations, and
-// bounded image processing. Foreground shell results keep only a bounded,
-// ANSI-free tail in model context and point
-// truncated results at the complete session-scoped temporary output file.
-// A foreground timeout promotes a still-running command to a background task;
-// explicit background tasks can be inspected by bounded TaskOutput or stopped by
-// TaskStop. Search
-// tools use the same process-tree termination contract and run an embedded
-// ripgrep binary, so an installed ki does not require rg in PATH. ki also
-// embeds fd; both are materialized into one tools directory that Bash and
-// PowerShell prepend to PATH, and Bash additionally sources a BASH_ENV shim so
-// rg/fd stay resolvable even after a login profile rewrites PATH. Enabled
-// extensions can contribute their own PATH directories (Set.PathDirs, from the
-// session's resource snapshot); those follow the bundled directory and are
-// re-prepended by the same shim from KI_EXTENSION_PATH_DIRS.
-// Set.Build selects a text/rich Read and one model-specific editor family:
-// GPT Responses models use grammar-backed freeform apply_patch, while other
-// models use Write/Edit. apply_patch accepts each canonical path once, preflights
-// the whole patch before its first write, preserves mixed line endings, and
-// records exact committed diffs. The
-// server applies FilterBuiltins with the global tools toggle
-// before appending extension tools.
+// Set.Build selects text/rich read and one editor family: GPT Responses uses
+// grammar-backed apply_patch, while other models use write/edit. Relative paths
+// resolve against session cwd. File mutations share a per-path queue. Batch edit
+// replaces non-overlapping spans against one original; apply_patch preflights all
+// files before writing and records committed diffs, including line endings.
+// Read supports bounded paging, images and PDF for capable models. Grep/glob use
+// embedded ripgrep, honor ignore rules by default and retain partial results.
 //
-// Parameter and result tables: docs/tools.md.
+// exec_command starts a process owned by a session ShellProcessManager, then
+// observes it for a bounded yield. write_stdin collects incremental output or
+// writes PTY input. Unix PTY and Windows ConPTY support interactive terminals;
+// pipes reject ordinary stdin but accept explicit interrupt requests. Canceling
+// an observation never kills a process. Explicit process/tree stop, session
+// deletion and shutdown own termination. Subtree cleanup fences new admission
+// before collecting descendants, then stops runners before their processes. Live capacity never evicts live tasks.
+// Raw stdout/stderr is spooled; memory, model output and live previews are bounded.
+// Complete logs use OutputSpool with a manager-owned temporary-file fallback.
+// Handles are numeric, session-scoped and cannot be restored after restart.
+// Windows defaults to PowerShell then Git Bash; Unix defaults to discovered Bash.
+// Proxy variables and bundled rg/fd plus extension PATH directories are inherited.
+// Bash uses a BASH_ENV shim after login profiles to retain these directories.
+//
+// AgentController owns stable root-scoped /root/task identities independently
+// of processes. spawn_agent returns immediately. fork_turns selects all, none,
+// or N complete finished user turns. There is no fixed depth limit; root-scoped
+// active child capacity defaults to four and includes waiting turns. Completed
+// identities retain their address while releasing execution capacity.
+// send_message queues context without starting idle turns. followup_task admits
+// explicit work, retaining stable IDs while busy or capacity-limited. wait_agent
+// observes mailbox/user input; list_agents and wait_agent do not consume results.
+// interrupt_agent preserves identity and leaves owned processes running. Agent
+// metadata and queued tasks use internal/state; restoration registers identities
+// before scheduling pending work. Completion delivery uses a per-generation
+// ledger at parent persistence, with no cross-file crash transaction. Progress
+// is reduced from generation-bound run events with monotonic revision, phase,
+// bounded current tools, latest context size, per-run and lifetime usage. Queued
+// capacity and mailbox waiting are explicit; stale callbacks cannot update a
+// newer generation. Old metadata marks lifetime statistics as incomplete.
+//
+// AgentRuntime is supplied by server; tools do not depend on HTTP or providers.
+// The server applies global tool toggles before appending extension tools.
+// Parameters, ownership and state migration: docs/tools.md.
 package tools

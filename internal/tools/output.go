@@ -58,33 +58,6 @@ func truncateTail(s string) (out, note string) {
 	return chunk, fmt.Sprintf("\n\n[Showing lines %d-%d of %d (%d byte limit).]", start+1, total, total, maxBytes)
 }
 
-// truncateTaskTail uses the bounded tail already retained by JobStore while
-// reporting totals for the complete output file. Reading the whole spill file
-// here would defeat the bounded-memory shell capture contract.
-func truncateTaskTail(tail string, totalBytes, newlineCount int64, fullOutputPath string) (out, note string) {
-	totalLines := newlineCount
-	if totalBytes > 0 && !strings.HasSuffix(tail, "\n") {
-		totalLines++
-	}
-	if totalBytes <= maxBytes && totalLines <= maxLines {
-		return tail, ""
-	}
-
-	out, _ = truncateTail(tail)
-	outputLines := int64(len(splitOutputLines(out)))
-	startLine := max(int64(1), totalLines-outputLines+1)
-	if totalLines <= 1 && totalBytes > maxBytes {
-		note = fmt.Sprintf("\n\n[Showing last %d bytes of %d bytes. Full output: %s]", len(out), totalBytes, fullOutputPath)
-		return out, note
-	}
-	if totalBytes > maxBytes {
-		note = fmt.Sprintf("\n\n[Showing lines %d-%d of %d (%d byte limit). Full output: %s]", startLine, totalLines, totalLines, maxBytes, fullOutputPath)
-	} else {
-		note = fmt.Sprintf("\n\n[Showing lines %d-%d of %d. Full output: %s]", startLine, totalLines, totalLines, fullOutputPath)
-	}
-	return out, note
-}
-
 func splitOutputLines(s string) []string {
 	if s == "" {
 		return nil

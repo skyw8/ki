@@ -150,9 +150,16 @@ using the same plain red notice as chat messages.
 ```bash
 cargo build --release --locked
 node --test test/*.test.mjs
-cargo +1.98.0 test --release --locked --manifest-path native/Cargo.toml
+node test/native.mjs
 KI_ZVEC_GREP_LIVE=1 node --test test/live.test.mjs
 ```
+
+`test/native.mjs` runs the native unit tests with Rust 1.98.0, then compiles the
+launcher's test target. CI uses the same entry point. On minimal Linux hosts it
+supplies GCC's standard C header directory to bindgen, matching the launcher
+build's fallback for missing Clang headers. Explicit `BINDGEN_EXTRA_CLANG_ARGS`
+and build concurrency settings take precedence; dependency locks and existing
+Cargo caches are preserved.
 
 The protocol tests retain the original assertions for settings, routing,
 previews, cancellation, lock retries, concurrent searches, commands, progress,

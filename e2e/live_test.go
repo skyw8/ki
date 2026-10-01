@@ -56,7 +56,7 @@ func TestLiveImageAndPDF(t *testing.T) {
 	writeMarkerPDF(t, pdf, pdfMarker)
 
 	prompt := strings.Join([]string{
-		"You must use the Read tool. Do not guess.",
+		"You must use the read tool. Do not guess.",
 		"1. Read the image file " + img + " and report the dominant color as one English word.",
 		"2. Read the PDF file " + pdf + " and quote the marker token you find.",
 		"Final answer on its own line: COLOR=<word> MARKER=<token>",
@@ -74,10 +74,7 @@ func TestLiveImageAndPDF(t *testing.T) {
 		t.Fatalf("pdf marker missing:\n%s\nstderr:\n%s", out, errOut)
 	}
 	id := mustSessionID(t, out, errOut)
-	raw := readJSONL(t, sessionDir(t, home, id))
-	if !strings.Contains(raw, `"toolName":"Read"`) && !strings.Contains(raw, `"name":"Read"`) {
-		t.Fatalf("expected Read tool use in jsonl:\n%s", raw)
-	}
+	assertReadFiles(t, sessionDir(t, home, id), img, pdf)
 }
 
 func TestLiveTwoImages(t *testing.T) {
@@ -88,7 +85,7 @@ func TestLiveTwoImages(t *testing.T) {
 	writeBluePNG(t, blue)
 
 	prompt := strings.Join([]string{
-		"You must use the Read tool on BOTH files. Prefer two Read calls in one assistant turn (in parallel).",
+		"You must use the read tool on BOTH files. Prefer two read calls in one assistant turn (in parallel).",
 		"Do not guess colors from filenames.",
 		"1. " + red,
 		"2. " + blue,
@@ -107,10 +104,7 @@ func TestLiveTwoImages(t *testing.T) {
 		t.Fatalf("blue image not recognized:\n%s\nstderr:\n%s", out, errOut)
 	}
 	id := mustSessionID(t, out, errOut)
-	raw := readJSONL(t, sessionDir(t, home, id))
-	if strings.Count(strings.ToLower(raw), `"name":"read"`)+strings.Count(raw, `"toolName":"Read"`) < 1 {
-		t.Fatalf("expected Read in jsonl:\n%s", raw)
-	}
+	assertReadFiles(t, sessionDir(t, home, id), red, blue)
 }
 
 func TestLiveWebUIPlaywright(t *testing.T) {

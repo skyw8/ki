@@ -187,6 +187,10 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 		c.close()
 		return nil, err
 	}
+	if err := validateToolNames(reg.Tools); err != nil {
+		c.close()
+		return nil, err
+	}
 	reg.indexSubscriptions()
 	c.registration = reg
 	c.fallback = reg.Fallback

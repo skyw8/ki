@@ -24,7 +24,6 @@ var (
 	errImageStillTooLarge      = errors.New("image remains larger than")
 	errTaskStoreClosed         = errors.New("task store is closed")
 	errInterpreterUnavailable  = errors.New("command interpreter is unavailable")
-	errTaskOutputClosed        = errors.New("task output is closed")
 	errTaskNotRunning          = errors.New("task is not running")
 	errAgentRunnerNil          = errors.New("agent runner is nil")
 	errAgentMetadataIncomplete = errors.New("agent metadata is missing task or session ID")

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ki/internal/telemetry"
+	"ki/internal/toolname"
 	"ki/internal/tooloutput"
 	"ki/internal/types"
 )
@@ -21,6 +22,10 @@ type EventType string
 var errAssistant = errors.New("assistant error")
 
 const (
+	// ProcessUpdated projects session-owned terminal progress, independent of a turn.
+	ProcessUpdated EventType = "process_updated"
+	// AgentUpdated projects a logical child run transition.
+	AgentUpdated EventType = "agent_updated"
 	// AgentStart begins an agent run.
 	AgentStart EventType = "agent_start"
 	// AgentEnd ends an agent run.
@@ -94,6 +99,8 @@ func (t EventType) Lifecycle() bool {
 
 // Event is a loop event (pi field names).
 type Event struct {
+	Process any       `json:"process,omitempty"`
+	Agent   any       `json:"agent,omitempty"`
 	Type    EventType `json:"type"`
 	EntryID string    `json:"entryId,omitempty"`
 	// LifecycleEntryID identifies the persisted compaction_start/end entry;
@@ -119,6 +126,7 @@ type Event struct {
 	AssistantMessageEvent *AssistantDelta   `json:"assistantMessageEvent,omitempty"`
 	ToolCallID            string            `json:"toolCallId,omitempty"`
 	ToolName              string            `json:"toolName,omitempty"`
+	RequestedToolName     string            `json:"requestedToolName,omitempty"`
 	Args                  map[string]any    `json:"args,omitempty"`
 	PartialResult         any               `json:"partialResult,omitempty"`
 	Result                any               `json:"result,omitempty"`
@@ -286,9 +294,11 @@ type ToolFormat struct {
 
 func specForTool(t Tool) ToolSpec {
 	if p, ok := t.(ToolSpecProvider); ok {
-		return p.ToolSpec()
+		spec := p.ToolSpec()
+		spec.Name = toolname.MustCanonical(t.Name())
+		return spec
 	}
-	return ToolSpec{Type: "function", Name: t.Name(), Description: t.Description() + "\n\n" + t.Prompt(), Parameters: t.Parameters()}
+	return ToolSpec{Type: "function", Name: toolname.MustCanonical(t.Name()), Description: t.Description() + "\n\n" + t.Prompt(), Parameters: t.Parameters()}
 }
 
 // Hooks are awaited interception points.
@@ -332,8 +342,9 @@ var ErrContextOverflow = errors.New("context overflow")
 // Inbox holds user messages injected into a live Run (steer). It is
 // process-local and is not part of a resources snapshot.
 type Inbox struct {
-	mu      sync.Mutex
-	pending []types.Message
+	mu       sync.Mutex
+	pending  []types.Message
+	activity chan struct{}
 }
 
 // Push appends a user message to be consumed on the next model request.
@@ -344,6 +355,10 @@ func (i *Inbox) Push(m types.Message) {
 	m.Role = "user"
 	i.mu.Lock()
 	i.pending = append(i.pending, m)
+	if i.activity != nil {
+		close(i.activity)
+	}
+	i.activity = make(chan struct{})
 	i.mu.Unlock()
 }
 
@@ -371,6 +386,9 @@ func (i *Inbox) Has() bool {
 
 // Config is loop runtime options.
 type Config struct {
+	RunID                     string
+	AgentID                   string
+	Generation                uint64
 	Streamer                  Streamer
 	SessionID                 string
 	Tools                     []Tool
@@ -413,6 +431,9 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 
 // RunMessage executes one structured user message against the current history.
 func RunMessage(ctx context.Context, user types.Message, history []types.Message, cfg Config, emit func(Event) error) ([]types.Message, error) {
+	if _, err := NewToolRegistry(cfg.Tools); err != nil {
+		return nil, err
+	}
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 5
 	}
@@ -638,7 +659,7 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		if asst.StopReason == "error" || asst.StopReason == "aborted" || terminate {
 			break
 		}
-		if len(calls) == 0 && !cfg.Inbox.Has() {
+		if len(calls) == 0 && !cfg.Inbox.HasWork() {
 			break
 		}
 		if !thresholdCompactionStopped && cfg.Hooks.ShouldCompact != nil && cfg.Hooks.OnContextThreshold != nil && cfg.Hooks.ShouldCompact() {
@@ -707,6 +728,7 @@ func stripExternal(msgs []types.Message) []types.Message {
 		msg.External = nil
 		msg.ClientRequestID = ""
 		msg.Completion = nil
+		msg.ContextOnly = false
 		out[i] = msg
 	}
 	return out
@@ -804,7 +826,7 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				consumer := argumentConsumers[d.ToolCallID]
 				if consumer == nil {
 					for _, tool := range cfg.Tools {
-						if tool.Name() != d.ToolName {
+						if !toolname.Equal(d.ToolName, tool.Name()) {
 							continue
 						}
 						if provider, ok := tool.(ToolArgumentDiffProvider); ok {
@@ -992,10 +1014,7 @@ type ToolValidator interface {
 // the main loop can stop instead of requesting the model again (pi
 // shouldTerminateToolBatch).
 func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit func(Event) error) ([]types.Message, bool) {
-	byName := map[string]Tool{}
-	for _, t := range cfg.Tools {
-		byName[t.Name()] = t
-	}
+	registry, registryErr := NewToolRegistry(cfg.Tools)
 	out := make([]types.Message, len(calls))
 
 	// Phase 1: prepare (synchronous, no side effects).
@@ -1017,7 +1036,10 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			args = map[string]any{}
 		}
 		p := prep{call: c, args: args}
-		t, ok := byName[c.Name]
+		t, ok := registry.Lookup(c.Name)
+		if registryErr != nil {
+			ok = false
+		}
 		if !ok {
 			m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: "unknown tool " + c.Name}}, IsError: true}
 			p.immediate = &m
@@ -1035,7 +1057,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			}
 		}
 		if cfg.Hooks.BeforeTool != nil {
-			a, b, r, term, err := cfg.Hooks.BeforeTool(ctx, c.Name, args)
+			a, b, r, term, err := cfg.Hooks.BeforeTool(ctx, toolname.MustCanonical(t.Name()), args)
 			if err != nil {
 				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 				p.immediate = &m
@@ -1061,13 +1083,18 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 	// Phase 2: execute.
 	run := func(i int) {
 		p := preps[i]
+		canonicalName := p.call.Name
+		if p.tool != nil {
+			canonicalName = toolname.MustCanonical(p.tool.Name())
+		}
 		startedAt := time.Now()
 		_ = emit(Event{
-			Type:       ToolExecutionStart,
-			Timestamp:  startedAt.UnixMilli(),
-			ToolCallID: p.call.ID,
-			ToolName:   p.call.Name,
-			Args:       p.args,
+			Type:              ToolExecutionStart,
+			Timestamp:         startedAt.UnixMilli(),
+			ToolCallID:        p.call.ID,
+			ToolName:          canonicalName,
+			RequestedToolName: p.call.Name,
+			Args:              p.args,
 		})
 		if p.immediate != nil {
 			finishedAt := time.Now()
@@ -1077,24 +1104,26 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			msg.Timestamp = finishedAt.UnixMilli()
 			out[i] = msg
 			if cfg.Telemetry != nil {
-				cfg.Telemetry.RecordTool(p.call.Name, p.call.ID, dur, true, p.diagnostic, nil)
+				cfg.Telemetry.RecordTool(canonicalName, p.call.ID, dur, true, p.diagnostic, nil)
 			}
 			_ = emit(Event{
-				Type:       ToolExecutionEnd,
-				Timestamp:  finishedAt.UnixMilli(),
-				DurationMs: dur,
-				ToolCallID: p.call.ID,
-				ToolName:   p.call.Name,
-				Args:       p.args,
-				IsError:    true,
+				Type:              ToolExecutionEnd,
+				Timestamp:         finishedAt.UnixMilli(),
+				DurationMs:        dur,
+				ToolCallID:        p.call.ID,
+				ToolName:          canonicalName,
+				RequestedToolName: p.call.Name,
+				Args:              p.args,
+				IsError:           true,
 			})
 			return
 		}
+		executionCtx := context.WithValue(ctx, executionContextKey{}, ToolExecutionIdentity{RunID: cfg.RunID, AgentID: cfg.AgentID, Generation: cfg.Generation, CallID: p.call.ID})
 		var res ToolResult
 		if p.call.ToolType == "custom" {
 			raw, _ := p.args["input"].(string)
 			if freeform, ok := p.tool.(FreeformTool); ok {
-				res = freeform.ExecuteRaw(ctx, raw)
+				res = freeform.ExecuteRaw(executionCtx, raw)
 			} else {
 				res = ToolResult{
 					Content: []types.Content{{Type: "text", Text: "tool does not accept freeform input"}}, IsError: true,
@@ -1104,26 +1133,27 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 		} else if progress, ok := p.tool.(ProgressTool); ok {
 			progressEmit := func(value any) {
 				_ = emit(Event{
-					Type:          ToolExecutionUpdate,
-					ToolCallID:    p.call.ID,
-					ToolName:      p.call.Name,
-					Args:          p.args,
-					PartialResult: value,
+					Type:              ToolExecutionUpdate,
+					ToolCallID:        p.call.ID,
+					ToolName:          canonicalName,
+					RequestedToolName: p.call.Name,
+					Args:              p.args,
+					PartialResult:     value,
 				})
 			}
-			res = progress.ExecuteWithProgress(ctx, p.args, progressEmit)
+			res = progress.ExecuteWithProgress(executionCtx, p.args, progressEmit)
 		} else {
-			res = p.tool.Execute(ctx, p.args)
+			res = p.tool.Execute(executionCtx, p.args)
 		}
 		if cfg.Hooks.AfterTool != nil {
-			if nr, err := cfg.Hooks.AfterTool(ctx, p.call.Name, p.args, res); err == nil {
+			if nr, err := cfg.Hooks.AfterTool(ctx, canonicalName, p.args, res); err == nil {
 				res = nr
 			}
 		}
 		if cfg.OutputStore != nil {
 			// The bounded result is what reaches the model, the jsonl, and the
 			// SSE stream; the complete text stays in the session spill file.
-			content, ref := cfg.OutputStore.Normalize(cfg.SessionID, p.call.Name, p.args, res.Content, res.Details)
+			content, ref := cfg.OutputStore.Normalize(cfg.SessionID, canonicalName, p.args, res.Content, res.Details)
 			res.Content = content
 			res.Details = tooloutput.MergeDetails(res.Details, ref)
 		}
@@ -1144,17 +1174,37 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 		p.terminate = p.terminate || res.Terminate
 		preps[i] = p
 		if cfg.Telemetry != nil {
-			cfg.Telemetry.RecordTool(p.call.Name, p.call.ID, dur, res.IsError, res.Diagnostic, toolTelemetryAttrs(res.Details))
+			attrs := toolTelemetryAttrs(res.Details)
+			if attrs == nil {
+				attrs = map[string]any{}
+			}
+			attrs["ki.agent.id"] = cfg.AgentID
+			attrs["ki.agent.generation"] = cfg.Generation
+			attrs["ki.tool.requested_name"] = p.call.Name
+			if canonicalName == "wait_agent" || canonicalName == "send_message" || canonicalName == "followup_task" {
+				if raw, err := json.Marshal(res.Details); err == nil {
+					var receipt map[string]any
+					if json.Unmarshal(raw, &receipt) == nil {
+						for _, key := range []string{"wake_reason", "timed_out", "status", "task_name", "agent_id"} {
+							if value, ok := receipt[key]; ok {
+								attrs["ki.coordination."+key] = value
+							}
+						}
+					}
+				}
+			}
+			cfg.Telemetry.RecordTool(canonicalName, p.call.ID, dur, res.IsError, res.Diagnostic, attrs)
 		}
 		_ = emit(Event{
-			Type:       ToolExecutionEnd,
-			Timestamp:  finishedAt.UnixMilli(),
-			DurationMs: dur,
-			ToolCallID: p.call.ID,
-			ToolName:   p.call.Name,
-			Args:       p.args,
-			Result:     res,
-			IsError:    res.IsError,
+			Type:              ToolExecutionEnd,
+			Timestamp:         finishedAt.UnixMilli(),
+			DurationMs:        dur,
+			ToolCallID:        p.call.ID,
+			ToolName:          canonicalName,
+			RequestedToolName: p.call.Name,
+			Args:              p.args,
+			Result:            res,
+			IsError:           res.IsError,
 		})
 	}
 	if cfg.Parallel {

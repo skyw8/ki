@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"ki/internal/loop"
+	"ki/internal/toolname"
 )
 
 type sidecarTool struct {
@@ -13,7 +14,9 @@ type sidecarTool struct {
 	spec      ToolSpec
 }
 
-func (t sidecarTool) Name() string        { return t.spec.Name }
+func (t sidecarTool) Name() string      { return toolname.MustCanonical(t.spec.Name) }
+func (t sidecarTool) Aliases() []string { names, _ := toolname.Aliases(t.spec.Name); return names }
+
 func (t sidecarTool) Description() string { return t.spec.Description }
 func (t sidecarTool) Prompt() string      { return t.spec.Description }
 func (t sidecarTool) Snippet() string {
@@ -52,7 +55,7 @@ func toolsFromSpecs(c *rpcClient, sessionID string, specs []ToolSpec) []loop.Too
 	}
 	var out []loop.Tool
 	for _, spec := range specs {
-		if reservedToolNames[spec.Name] {
+		if toolname.IsBuiltin(spec.Name) {
 			continue
 		}
 		out = append(out, sidecarTool{client: c, sessionID: sessionID, spec: spec})

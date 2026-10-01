@@ -32,7 +32,7 @@ func TestLifecycleSubscribeToolCallBlock(t *testing.T) {
 	if !c.hasSync(EventToolCall) {
 		t.Fatal("expected tool_call sync subscription")
 	}
-	_, block, err := c.BeforeTool(ctx, ToolCall{Name: "Write", Args: map[string]any{"path": "/tmp/.env"}})
+	_, block, err := c.BeforeTool(ctx, ToolCall{Name: "write", Args: map[string]any{"path": "/tmp/.env"}})
 	if err != nil {
 		t.Fatal(err)
 	}

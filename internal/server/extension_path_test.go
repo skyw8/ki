@@ -29,8 +29,8 @@ func (s *probeStreamer) Stream(_ context.Context, req loop.Request, _ func(loop.
 		}
 	}
 	return types.Message{Role: "assistant", Content: []types.Content{{
-		Type: "toolCall", ID: "path-probe", Name: "Bash",
-		Arguments: map[string]any{"command": s.command},
+		Type: "toolCall", ID: "path-probe", Name: "exec_command",
+		Arguments: map[string]any{"cmd": s.command},
 	}}, StopReason: "toolUse"}, nil
 }
 

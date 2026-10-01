@@ -48,5 +48,10 @@
 // This does not restrict third-party extension implementation languages.
 // Private config uses atomic versioned state; the storage header is excluded
 // from settings schema validation and public/redacted configuration values.
+// Tool registration is atomic against canonical snake_case/PascalCase/native
+// aliases and built-in reserved names. Static names are global; dynamic names
+// collide only within one session's combined registry. Model schema/catalog and
+// lifecycle hooks use canonical names while tool.execute RPC retains native names.
+// ContextOnly is host metadata and is removed from sidecar message projections.
 // Cross-package contract: docs/extension.md.
 package extension

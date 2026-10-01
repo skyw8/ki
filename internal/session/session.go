@@ -434,7 +434,7 @@ func (s *Session) LastUserBoundary() (string, bool) {
 		if !ok {
 			break
 		}
-		if e.Type == "message" && e.Message != nil && e.Message.Role == "user" {
+		if e.Type == "message" && e.Message != nil && e.Message.Role == "user" && !e.Message.ContextOnly {
 			if e.ParentID == "" {
 				return "", false
 			}
@@ -1604,4 +1604,31 @@ func (t Toggle) Allowed(name string) bool {
 		return false
 	}
 	return !slices.Contains(t.Disabled, name)
+}
+
+// ForkRecentHistoryAt copies whole user turns from finished history. Selection
+// happens before forkAt relinks entries, so attachment and tool-pair handling
+// are identical to full-history forks.
+func ForkRecentHistoryAt(root string, src *Session, target string, turns int) (*Session, error) {
+	src.mu.Lock()
+	entries := slices.Clone(src.leafEntriesLocked(target))
+	src.mu.Unlock()
+	start := 0
+	remaining := turns
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Type == "message" && entries[i].Message != nil && entries[i].Message.Role == "user" && !entries[i].Message.ContextOnly {
+			remaining--
+			if remaining == 0 {
+				start = i
+				break
+			}
+		}
+	}
+	keep := map[string]bool{}
+	for _, e := range entries[start:] {
+		if e.Type == "message" || e.Type == "compaction" {
+			keep[e.ID] = true
+		}
+	}
+	return forkAt(root, src, target, func(e Entry) bool { return keep[e.ID] }, ForkModeTree)
 }

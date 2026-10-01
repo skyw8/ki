@@ -57,9 +57,16 @@
 // request. Completions, Responses, and Anthropic all see a normal extra user
 // message on the next request. CommitUserMessage arbitrates runtime completion
 // ownership around persistence; rejected messages never enter model history.
-// clientRequestId/completion are stripped at the provider boundary.
+// clientRequestId/completion/ContextOnly are stripped at the provider boundary.
+// QueueOnly input is context, so it does not extend a naturally finishing turn;
+// explicit work still steers/continues it. Inbox wait checks subscription and
+// pending input under one lock to avoid lost wakeups.
+// ToolRegistry resolves canonical snake_case and PascalCase/native aliases to
+// one tool/schema. Hooks/events/telemetry use canonical names; protocol calls
+// and results retain requested spelling. ToolExecutionIdentity is host-only
+// context that attributes a terminal process to its originating call/generation.
 //
-// QueueChanged, RunAborted, ExtensionError, ExtensionNotice, and
+// ProcessUpdated/AgentUpdated, QueueChanged, RunAborted, ExtensionError, ExtensionNotice, and
 // ExtensionUIPrompt are session sideband notifications. RuntimeReady is
 // process-local (not jsonl): one session's open-time Prepare finished,
 // success or failure. AgentSettled is post-agent_end wrap-up for lifecycle

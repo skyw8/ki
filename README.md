@@ -48,7 +48,7 @@ Windows builds automatically link the Ki application icon from the checked-in
 cmd/ki/rsrc_windows_{amd64,arm64}.syso`. Plain command-line binaries on Linux and
 macOS do not carry a file-manager application icon.
 
-On Windows, Ki looks for Git Bash through `KI_GIT_BASH_PATH`, `CLAUDE_CODE_GIT_BASH_PATH`, standard Git for Windows locations, and then `bash.exe` on `PATH`. If Bash is unavailable, Ki still starts with the Windows-only PowerShell tool and omits Bash-dependent tools.
+On Windows, Ki looks for Git Bash through `KI_GIT_BASH_PATH`, `CLAUDE_CODE_GIT_BASH_PATH`, standard Git for Windows locations, and then `bash.exe` on `PATH`. The unified `exec_command` tool defaults to PowerShell on Windows (preferring pwsh), then falls back to Git Bash. `write_stdin` continues an existing terminal; Unix PTY and Windows ConPTY support interactive input.
 
 ## Run
 

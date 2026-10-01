@@ -282,7 +282,7 @@ test('subagent sessions never notify', async ({ page, request }) => {
 })
 
 // A port forward that exposes the server as `http://<host>:<port>` (LAN or
-// Tailscale IP) is not a secure origin, so Chrome/Firefox never expose the
+// Tailscale IP) is not a secure origin, so Chrome never exposes the
 // Notification API there. The settings page must say why instead of failing
 // silently.
 test('plain-HTTP host access reports the secure-context requirement', async ({ page }) => {

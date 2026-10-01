@@ -343,7 +343,7 @@ is not an acknowledgement relation. Internal queued follow-ups also retain IDs.
 
 Agent completions carry `completion:{taskId,generation}` and a stable
 `clientRequestId` derived from that pair. Enqueueing a completion does **not**
-emit `steer_accepted`: TaskOutput may still claim it before persistence. Only a
+emit `steer_accepted`: generation delivery is committed at persistence. Only a
 successful message drain publishes its `message_start`/`message_end`; a suppressed
 completion leaves no optimistic ghost. `queue_changed` and ordinary session
 invalidations still wake clients for durable delivery. These identity fields are
@@ -357,3 +357,11 @@ follows all durable parent edges, tolerates missing parents/cycles, and never
 changes own-run busy/send/stop semantics. Existing sessions invalidations on
 occupy/release refresh both fields; no activity endpoint is introduced.
 `run_aborted` remains a standalone persisted non-message leaf after terminal output.
+
+### Process and logical-agent progress
+
+`process_updated` carries `process` (numeric session_id, cmd, workdir, tty, status, bounded output, output_file, exit_code and timing). `agent_updated` carries `agent` (canonical task_name, stable agent/session IDs, generation, status and current-generation statistics). Both are sideband JSONL events which leave the transcript leaf unchanged, sent through current-run SSE and the global event stream even after the initiating turn ends. Session GET projects current `processes`/`agents` for reconnect recovery. No new progress route is added. Runtime snapshots omit process handles after server restart.
+
+Tool execution events use canonical `toolName` and preserve raw spelling as `requestedToolName`. The assistant toolCall and matching toolResult preserve the requested spelling for provider protocol pairing. Mailbox `ContextOnly` is internal transport metadata: it cannot start an idle model turn and is stripped at the provider and extension context boundaries.
+
+Agent progress additionally carries revision, phase, last_activity_at, bounded current_tools, waiting_for, pending_tasks, queue_wait_ms and separate run_stats/agent_lifetime_stats. Updates reject old generation callbacks. Process revisions increase on output/exit and retain originating run/tool-call/agent/generation identity. WebUI snapshots reject older revisions; no heartbeat is interpreted as stalled work. Runtime updates are also persisted on the owning child for CLI diagnostics.

@@ -4,13 +4,15 @@
 
 范围只包括执行、输出、状态、格式、并发和交互；暂不包括安全、权限和 sandbox。
 
+exec_command/write_stdin 替换 Bash/PowerShell、六个 agent 协作工具替换旧 Agent/SendMessage/TaskOutput/TaskStop，以及 mailbox 等待、后台执行、进度和 generation 统计的调研、实施顺序及验收见 [Harness 协作与长任务调度改进方案](harness-agent-coordination.md)。此处不重复维护该清单。
+
 ## Pi
 
 参考：`/data/hgy/pi`。
 
 ### 可选工具
 
-- [ ] `Ls`：Bash 已可替代，只有需要固定格式和更小上下文时再引入；优先级低。
+- [ ] `Ls`：shell 执行已可替代，只有需要固定格式和更小上下文时再引入；优先级低。
 - [ ] `Find`：现有 Glob 已覆盖主要需求，除非需要兼容 pi 命名；优先级低。
 
 ## Codex
@@ -19,17 +21,14 @@
 
 ### Unified exec
 
-- [ ] 将“等待多久返回”和“命令最多运行多久”拆开：等待到期返回 live session，运行上限才终止进程。
-- [ ] 提供与 `write_stdin` 等价的继续接口，支持轮询、写 stdin 和获取最终退出状态。
-- [ ] 支持 TTY、显式 shell/login、环境变量和输出预算等执行参数。
+exec_command/write_stdin 的工具替换、PTY/stdin、shell/login/workdir、yield 与执行期限分离、输出预算及后台生命周期由 [协作方案 S0](harness-agent-coordination.md) 统一实施。下面只保留不阻挡此次切换的独立扩展；不维护第二份实施清单。
+
 - [ ] 为同一 session 保存必要的 shell environment snapshot，而不是每次仅重新执行 login shell。
-- [ ] 扩展 `shellSpec` 的解释器类型和参数构造，覆盖 Unix sh/zsh、Windows CMD 和显式 shell 路径。该项只在出现对应使用需求时实施，不要求增加多个模型可见工具。
+- [ ] 扩展 `shellSpec` 的解释器类型和参数构造，增加基础解释器之外的类型/方言支持，例如 Windows CMD；S0 已要求的默认解释器和显式 shell 路径解析不再列为可选。扩展只在出现使用需求时实施，继续复用 exec_command。
 
 ### 文件变更与并发
 
-- [x] 文件工具结果增加机器可读状态，同时保留简短的模型可读摘要（见 `docs/tools.md` details）。
-- [x] 同一路径的 `Write` / `Edit` 经 mutation queue 串行；只读工具仍可并行。
-- [ ] 为取消、timeout、后台完成和长任务建立跨工具统一的结构化事件。
+取消、timeout、后台完成和长任务的结构化事件统一纳入 [协作方案 S0/M3](harness-agent-coordination.md)。已实现的文件结果与 mutation queue 契约见 [tools.md](../tools.md)。
 
 ### 可选工具
 
@@ -37,7 +36,4 @@
 - [ ] `RequestUserInput`：WebUI 需要结构化选项交互时引入；优先级中。
 - [ ] `ViewImage`：现有 Read 已能读图，先完成缩放；优先级低。
 - [ ] `ToolSearch`：工具数量显著增长后再按需加载；优先级低。
-- [x] `Agent` / 多代理：已接入 `forkMode=tree` child session、前台/后台 task、
-  `TaskOutput`/`TaskStop` 统一生命周期。agent definitions、worktree 和 Agent Teams
-  不在当前契约内，见 [tools.md](../tools.md) Agent 节。
 - [ ] `Sleep` / `CurrentTime`：只有需要无副作用等待或取时才引入；优先级低。

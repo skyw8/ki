@@ -6,14 +6,14 @@
 
 System prompt 按以下顺序组装：
 
-1. **身份与职责**：说明模型运行在 ki agent harness 中，可以读取文件、执行命令、修改代码和创建文件。这一段（以及整个 system prompt）对 subagent 与主会话**逐字节相同**：subagent 的自我认知（depth、派它的 session）不放这里，而是作为它的第一条 user 消息由 server 包在 directive 外层（见 `docs/tools.md` 的 Agent 小节）。这样 parent 与 child 共享同一段 system 前缀，provider 的前缀缓存可以跨会话复用。工具集同理是前缀的一部分：`tools.Set.Build` 不随会话的 Agent 深度变化（任何深度都暴露 `Agent`），禁止再委派由信封提示 + spawn 硬拒绝承担，见 `docs/tools.md` 的 Agent 小节。
+1. **身份与职责**：说明模型运行在 ki agent harness 中，可以读取文件、执行命令、修改代码和创建文件。subagent 与 parent 的 system/tools 前缀相同；身份、派它的 agent 和 canonical task path 放在 child 首条 user 信封中。工具集合不随 busy/idle/depth 改变；执行容量在 AgentController 的 admission 边界检查，没有固定 depth=3 限制。
 2. **Ki 配置位置**：存在 `KI_HOME` 时，列出 `ki.toml`、`skills/`、`models.json`、`credentials.json`、扩展目录、项目级 `<cwd>/.ki/`，以及 `ki config path`。
 3. **可用工具**：逐项输出本轮工具的名称和简短说明；没有工具时输出 `(none)`。这里包括内置工具以及已经绑定的扩展工具，并补充项目可能提供其他自定义工具。
 4. **通用行为约束**：要求回答简洁，并在操作文件时清晰展示路径。
-5. **内置追加指令**：常量 `prompt.DefaultAppendSystemPrompt`，让模型搜索时优先用 Read/Grep/Glob，禁用 `grep`/`find`，统一用捆绑的 `rg`/`fd`（尊重 `.gitignore`，`-H`/`-I` 有说明）。这段是 harness 层规则，无条件输出（没有 shell 工具的会话也有），因此 `Bash` 和 `PowerShell` 的工具描述都只保留各自 shell 特有的部分（edition 差异、语法、工作目录、超时/后台），不再重复搜索工具偏好。
+5. **内置追加指令**：常量 prompt.DefaultAppendSystemPrompt，让模型优先使用 read/grep/glob；shell 搜索禁用 grep/find，统一用捆绑的 rg/fd（默认尊重 .gitignore，-H/-I 有说明）。这是 harness 层规则，无条件输出，exec_command 描述补充默认 shell、login、PTY、增量输出与观察预算。工具名称只发布 canonical snake_case，接受 PascalCase 调用别名。
 6. **operator 追加指令**：按来源顺序读取 `{KI_HOME}/prompt/APPEND_SYSTEM.md`（global）与 `<cwd>/.ki/prompt/APPEND_SYSTEM.md`（project）。两者**叠加**而非覆盖，global 在前、project 在后，各自整份文件作为一个块渲染（空文件或只有空白则跳过）；路径由 `resources.AppendSystemPromptPath` 统一解析，读取与设置页写入共用同一个函数。内容位于内置追加指令之后、扩展追加与 Skills 之前，不替换 Ki 的基础 prompt 和内置追加指令。
 7. **扩展追加**：启用的全局 extension `prompt.append` 文件，按扩展名序，每段 `<extension_instructions name="…">`。扩展层在 operator 追加之后、Skills 之前。
-8. **Skills**：仅当本轮存在 `Read` 工具且至少有一个启用的 skill 时输出。每个 skill 包含名称、描述和 `SKILL.md` 路径，同时说明按需读取及相对路径解析规则。
+8. **Skills**：仅当本轮存在 `read` 工具且至少有一个启用的 skill 时输出。每个 skill 包含名称、描述和 `SKILL.md` 路径，同时说明按需读取及相对路径解析规则。
 9. **项目指令**：输出 AGENTS/CLAUDE 文件的路径和完整内容。先加载 `{KI_HOME}` 下的全局文件，再按 git 仓库根目录到 cwd 的顺序加载；不在 git 仓库中时只加载 cwd。每个目录按 `AGENTS.override.md`、`AGENTS.md`、`AGENTS.MD`、`CLAUDE.md`、`CLAUDE.MD` 的优先级选取一个文件。
 10. **运行系统**：输出 OS（macOS、Windows、Linux 或 WSL）和架构。
 11. **当前环境**：输出 session cwd、资源快照创建日期和时区。

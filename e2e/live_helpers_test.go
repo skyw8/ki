@@ -13,9 +13,46 @@ import (
 	"testing"
 
 	"ki/internal/server"
+	"ki/internal/session"
+	"ki/internal/toolname"
 )
 
 const pdfMarker = "KI-PDF-MARKER-42"
+
+func assertReadFiles(t *testing.T, dir string, paths ...string) {
+	t.Helper()
+	entries, err := session.AllEntries(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Schema names in model_request are not evidence that a file was read.
+	// Match registered read spellings and pair actual calls with successful results.
+	calls := map[string]string{}
+	read := map[string]bool{}
+	for _, entry := range entries {
+		message := entry.Message
+		if message == nil {
+			continue
+		}
+		if message.Role == "assistant" {
+			for _, call := range message.ToolCalls() {
+				if path, ok := call.Arguments["file_path"].(string); ok && toolname.Equal(call.Name, "read") {
+					calls[call.ID] = filepath.Clean(path)
+				}
+			}
+		}
+		if message.Role == "toolResult" && toolname.Equal(message.ToolName, "read") && !message.IsError {
+			if path, ok := calls[message.ToolCallID]; ok {
+				read[path] = true
+			}
+		}
+	}
+	for _, path := range paths {
+		if !read[filepath.Clean(path)] {
+			t.Errorf("expected successful read of %q in the session transcript; successful files: %v", path, read)
+		}
+	}
+}
 
 func writeRedPNG(t *testing.T, path string) {
 	t.Helper()

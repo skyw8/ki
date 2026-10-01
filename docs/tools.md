@@ -1,13 +1,13 @@
 # 工具契约
 
-普通工具的对外名字和 input schema 跟 Claude Code；文本结果跟 pi。内置工具由 `internal/tools.Set.Build` 构造，包入口见 `internal/tools/doc.go`。GPT Responses 模型使用原生 freeform `apply_patch`，其它模型使用 `Write` + `Edit`；两组编辑器互斥。`Read` 仍按模型是否支持图片在富/文本两种模式间切换，而且这些选择发生在 system prompt 组装阶段（见 [architecture.md](architecture.md)）。
+工具默认使用小写 snake_case 名称，接受对应的 PascalCase 别名（如 `exec_command` / `ExecCommand`）。每个工具只向模型发布一个 canonical schema；文件/搜索参数沿用现有契约，shell 使用进程交互契约，agent 使用协作契约。文本结果保持有界。内置工具由 `internal/tools.Set.Build` 构造，包入口见 `internal/tools/doc.go`。GPT Responses 模型使用原生 freeform `apply_patch`，其它模型使用 `write` + `edit`；两组编辑器互斥。`read` 仍按模型是否支持图片在富/文本两种模式间切换，而且这些选择发生在 system prompt 组装阶段（见 [architecture.md](architecture.md)）。
 
 ## 输出溢出
 
 所有工具结果在进入 provider prompt 前都经过统一的 output spool（`internal/tooloutput`，边界在 loop 的 `AfterTool` 之后）：
 
 - 小结果直接进入 `toolResult.content`。
-- 超过 preview budget 的文本完整写入当前 session 的私有临时文件，模型只收到有界 preview、字节/行数和 `Read(file_path, offset, limit)` 提示；jsonl 和 SSE 里记录的也是这个有界结果，完整内容只存在于 spill 文件。
+- 超过 preview budget 的文本完整写入当前 session 的私有临时文件，模型只收到有界 preview、字节/行数和 `read(file_path, offset, limit)` 提示；jsonl 和 SSE 里记录的也是这个有界结果，完整内容只存在于 spill 文件。
 - 默认 preview budget 为 16KiB / 800 行；它只限制模型上下文，不改变 spill 文件的内容（`tooloutput.Config` 可覆盖）。
 - 目录结构是 `<os.TempDir>/ki-tool-output/run-<pid>-<rand>/<session>/`；目录 `0700`、文件 `0600`，全部用主机 `filepath`。
 - details 在保留工具原有字段的同时挂一个保留键 `output`：`output.path`、`output.bytes`（文件实际存了多少）、`output.totalBytes`（工具产出多少）、`output.lines`、`output.previewBytes`、`output.previewLines`、`output.truncated`、`output.incomplete`（文件只存了前缀）。
@@ -17,75 +17,78 @@
 
 - 单个 spill 文件最多 8MiB、单个 session 最多 256MiB。文件达到单文件上限时只存前缀并在 note 里说明；session 预算用完时不再落盘，模型仍拿到有界 preview 和未保存的原因。
 - 写盘失败和配额拒绝都不会把工具结果变成错误：模型始终拿到有界 preview，原因写在 note 里。
-- session 关闭（`closeJobs`）删除该 session 的目录并释放预算；server 关闭删除整个 run root。这些文件不属于 session 历史，重启后不保证旧路径仍存在。
+- session 删除或 runtime 关闭（`closeJobs`）删除该 session 的目录并释放预算；server 关闭删除整个 run root。这些文件不属于 session 历史，重启后不保证旧路径仍存在。
 - 崩溃残留靠启动时清扫：每个 run root 写 `owner.json`（pid/host/heartbeat）；启动时扫描 base 目录，同机且进程已死的 root 立即删除，心跳超过 24 小时的（其它主机、或无法判定存活）按 TTL 删除，持有者进程仍存活的 root 永不清理。
 
 谁不参与 spool：
 
-- 已带完整输出文件的工具结果（Bash / PowerShell / TaskOutput 的 `output_file`）和已带分页游标的工具结果（Read 的 `next_offset`）原样保留：它们本身就是"完整内容 + 续读方式"，再 spool 一次会让 Read 指向自己那一页。
-- 用 Read 读 spill 文件不会二次落盘（store 只 spill 不属于自己的路径）。
-- Read 的一页（2000 行 / 50KB）和 shell 的尾部（2000 行 / 50KB）是这两个工具自己的契约，不叠加 preview budget。
+- 已带完整输出文件的工具结果（exec_command / write_stdin 的 `output_file`）和已带分页游标的工具结果（read 的 `next_offset`）原样保留：它们本身就是"完整内容 + 续读方式"，再 spool 一次会让 read 指向自己那一页。
+- 用 read 读 spill 文件不会二次落盘（store 只 spill 不属于自己的路径）。
+- read 的一页（2000 行 / 50KB）与 shell 的 incremental output budget 各自生效，不叠加统一 preview budget。
 
-Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落在同一个 session 目录里，随 session 关闭一起删除；store 拒绝创建时退回进程临时文件，任务本身照常运行。
+exec_command 的完整输出文件也由该 store 创建：进程日志落在同一个 session 目录里，随 session 关闭一起删除；store 拒绝创建时退回进程临时文件，任务本身照常运行。
 
 每次工具完成还会向 session 的 `telemetry.jsonl` 写一条不对外投影的 OTLP log：`status` 区分 completed/rejected/failed/cancelled/timed_out，`kind` 区分参数、前置条件、外部命令非零、生命周期和内部错误，`fault_domain` 区分 model_input/workspace_state/external_command/cancellation/environment/extension/harness。模型仍通过原有 `IsError` 理解失败；例如测试 exit 1 仍是 error tool result，但 telemetry 记为 completed + command_nonzero，而不是 Ki harness failure。
 
 ## 全局开关
 
-内置工具的全局启用状态保存在 `{KI_HOME}/toggles.json` 的 `tools.disabled`。`GET/PATCH /v1/tools` 提供目录和开关；设置目录始终列出 `Write`、`Edit` 和 `apply_patch`，并用 `available` 标出当前模型实际使用的互斥编辑器，因此切换模型或其它工具时不会丢失隐藏工具的全局禁用状态。开关在下一次 occupy 生效；已在运行的请求继续使用其 request header 中固定的工具集。
+内置工具的全局启用状态保存在 `{KI_HOME}/toggles.json` 的 `tools.disabled`。`GET/PATCH /v1/tools` 提供目录和开关；设置目录始终列出 `write`、`edit` 和 `apply_patch`，并用 `available` 标出当前模型实际使用的互斥编辑器，因此切换模型或其它工具时不会丢失隐藏工具的全局禁用状态。开关在下一次 occupy 生效；已在运行的请求继续使用其 request header 中固定的工具集。
 
 这套开关只过滤 `internal/tools.Set.Build` 产生的内置工具，扩展工具仍由 extension 的启用状态和 session 生命周期控制。
 
-关闭 `Agent` 只阻止后续请求创建新的 child agent，不会影响主 session 的 loop、文件/搜索/shell 工具，也不会取消已经运行的 agent。`SendMessage` 仍可用于处理已有的 agent；如果要完全隐藏代理交互，还需同时关闭 `SendMessage`。`TaskOutput` / `TaskStop` 同时服务 shell 和 agent，不能只为 agent 关闭而保留 shell 任务能力。
+关闭 `spawn_agent` 只影响后续创建，不取消已有 agent。六个 agent 工具和两个 shell 工具分别有开关。全局开关、extension hooks、事件和遥测都使用 canonical 名；工具调用与配对的 toolResult 保留模型请求的拼写。`requestedToolName` 在执行事件中记录原始名称。extension 的原始注册名仍用于 `tool.execute` RPC，模型看到 snake_case，同时接受原始名与 PascalCase。非法名、canonical/alias 冲突以及内置工具保留名冲突在注册时原子拒绝。
 
 工具执行两段化（对齐 pi prepare/execute）：先 **prepare**（找工具 → `ToolValidator.Validate` schema 校验 → `BeforeTool` / lifecycle `tool_call` sync，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` / `tool_result` 变换结果）。扩展订事件见 [extension.md](extension.md)。`BeforeTool` 和 `ToolResult.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。内置工具和扩展工具都校验 required 和参数类型。
 
 | 工具 | 参数 | 结果 |
 |---|---|---|
-| `Read` | 文本模型：`file_path`、可选行分页 `offset` / `limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
-| `Write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 Read |
-| `Edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。若 provider 同时填充两种模式的字段，只执行唯一有效的模式并提醒；两种模式都有有效修改时拒绝。模型只看到简短摘要，diff/patch 在 details |
+| `read` | 文本模型：`file_path`、可选行分页 `offset` / `limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
+| `write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 read |
+| `edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。若 provider 同时填充两种模式的字段，只执行唯一有效的模式并提醒；两种模式都有有效修改时拒绝。模型只看到简短摘要，diff/patch 在 details |
 | `apply_patch` | Codex `*** Begin Patch` freeform grammar；每个路径只出现一次，同文件修改合并进一个 update block | GPT Responses 专用的 add/update/delete/move 批量补丁；完整预检后才写入，结果 details 带每个文件的 unified diff |
-| `Grep` | `pattern`、`path`、`glob`、`output_mode`、`respect_gitignore`、上下文/分页/类型参数 | 基于内置 ripgrep；默认尊重 `.gitignore`；支持 partial results、JSON/NUL 解析、EAGAIN 降级、正则、取消/超时和统计元数据 |
-| `Glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
-| `Bash` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 找到 Bash 时注册；stdout+stderr 混排并流式发送进度。非 0 当 error，前台 timeout 可转后台 |
-| `PowerShell` | `command`、`timeout`（毫秒）、`description`、`run_in_background` | 仅 Windows 注册；PowerShell 原生命令、退出码、流式输出和后台任务与 Bash 使用同一生命周期 |
-| `Agent` | `description`、`prompt`；可选 `inherit_context`、`run_in_background` | 新建一个 `forkMode=tree` 的 child，固定沿用当前 session 的 provider/model；默认从干净上下文启动，显式 `inherit_context:true` 才继承 parent 的已完成历史；后台、以及前台超过 2 分钟后返回 `async_launched` 和 `outputFile`，否则返回 `completed` |
-| `SendMessage` | `message`；可选 `to`（默认 `parent`）、`summary` | `to` 支持保留名 `"parent"` / `"main"` 或稳定 `agentId`；按目标在当前 run 边界 steer，或从目标 transcript 续跑 |
-| `TaskOutput` | `task_id`、`block`、`timeout`（毫秒） | 查询或等待 shell/agent 后台任务；返回有界输出、状态、结果和输出文件路径。读到**终态**的 agent 任务会标记该 run 已读，后续完成通知不再送达 |
-| `TaskStop` | `task_id`（或兼容的 `shell_id`） | 幂等地终止 shell/agent 后台任务并返回最终状态；任务已结束时返回成功，被终止的 run 同样不再收到完成通知 |
+| `grep` | `pattern`、`path`、`glob`、`output_mode`、`respect_gitignore`、上下文/分页/类型参数 | 基于内置 ripgrep；默认尊重 `.gitignore`；支持 partial results、JSON/NUL 解析、EAGAIN 降级、正则、取消/超时和统计元数据 |
+| `glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
+| `exec_command` | `cmd`、可选 `workdir` / `shell` / `login` / `tty` / `yield_time_ms` / `max_output_tokens` | 启动新进程，返回增量输出、退出码或数值 `session_id` |
+| `write_stdin` | `session_id`、可选 `chars` / `yield_time_ms` / `max_output_tokens` | 写入 PTY 或观察新输出；Ctrl-C 是中断请求 |
+| `spawn_agent` | `task_name`、`message`、可选 `fork_turns` | 异步创建具名 child，返回 canonical task path 和 agent/session ID |
+| `send_message` | `target`、`message` | QueueOnly：接受上下文，唤醒正在等待的目标，不启动 idle agent |
+| `followup_task` | `target`、`message` | TriggerTurn：在同一 agent 上开始新任务；busy 时持久排队，root 拒绝 |
+| `wait_agent` | 可选 `timeout_ms` | 观察调用方 mailbox / user steer；不消费完成结果、不停止 agent |
+| `interrupt_agent` | `target` | 中断目标当前 turn，返回之前状态；保留身份，不停止其 shell 进程 |
+| `list_agents` | 可选 `path_prefix` | root 范围内的身份/代次/状态；至多 128 项，另带 total/truncated |
 
-## Read
+## read
 
+- 真实模型图片/PDF 回归按 session 的实际 assistant tool call 与成功 toolResult 配对，确认每个指定文件都被读取；工具名使用当前注册的 `read` / `Read` 拼写，不用 model_request 的 schema 文本推断执行成功。
 - 相对路径按 session cwd 解析；返回原文，不添加行号。
 - 普通文本和所有 tool-output spill 文件共用 `offset` / `limit` 分页；超过 2000 行或 50KB 时保留头部，并提示下一次读取的 `offset`（这类结果自带游标，不再进 spool）。
 - 分页只使用 `offset` / `limit` 行范围参数；两者可单独使用，也可一起使用。
 - details 包含总字节/行数、当前输出大小、截断原因以及 `next_offset`。
 - `ToolProfile.input` 含 `image` 时才支持图片、PDF 和 `pages`；文本模式在执行阶段也会拒绝图片和 PDF。
 - 图片进入模型前限制到 2000×2000 和 4.5MB；需要时缩放并转成 PNG/JPEG，details 记录处理前后的尺寸、格式和大小。
-- 文件访问通过可替换的 `ReadOperations`；默认本地实现会在每个文件操作前后检查取消。
+- 文件访问通过可替换的 `readOperations`；默认本地实现会在每个文件操作前后检查取消。
 - `.ipynb` 按 cell 返回。
-- 不能读目录；列路径用 Glob。Bash 在部分环境上不会注册。
+- 不能读目录；列路径用 glob。exec_command 对不可用解释器明确报错。
 
-## Write
+## write
 
 - 相对路径按 session cwd 解析。
-- 直接创建或完整覆盖文件，不要求先调用 `Read`。
+- 直接创建或完整覆盖文件，不要求先调用 `read`。
 - 返回实际写入的字节数。
-- 提示词要求新建或完整重写使用 `Write`，修改已有文件优先使用 `Edit`。
+- 提示词要求新建或完整重写使用 `write`，修改已有文件优先使用 `edit`。
 
-## Edit
+## edit
 
 - 相对路径按 session cwd 解析。
 - 精确匹配 `old_string`；默认要求唯一，`replace_all=true` 时替换全部匹配。
 - `edits: [{old_string,new_string}]` 是互斥的批量模式：每项在同一份原文中必须唯一且各匹配区间不得重叠，最终只写一次文件。
-- 某些 function-calling provider 会给未使用模式补空值或 no-op 占位符。Edit 会分别验证两种模式：只有一种包含有效修改时执行它，忽略另一种模式的字段，并在成功文本和 details 的 `ignored_fields` 中提醒；两种模式都包含有效修改时仍拒绝，避免猜测导致误改。
+- 某些 function-calling provider 会给未使用模式补空值或 no-op 占位符。edit 会分别验证两种模式：只有一种包含有效修改时执行它，忽略另一种模式的字段，并在成功文本和 details 的 `ignored_fields` 中提醒；两种模式都包含有效修改时仍拒绝，避免猜测导致误改。
 - 基于原始字节做精确替换，未触及的 BOM 和换行符保持不变。
 - 模型可见 content 包含替换数量、路径，以及发生兼容降级时的简短提醒；展示 diff、统一 patch、首个变更行和忽略字段保存在 tool-result details，不进入 provider context。
 
 ## apply_patch
 
-- 仅模型 capability `applyPatchToolType: "freeform"` 启用；内置 OpenAI Responses GPT 和 bundled `codex-oauth` GPT 模型声明该能力。启用时替代 `Write` / `Edit`，避免两套编辑接口同时诱导模型。
+- 仅模型 capability `applyPatchToolType: "freeform"` 启用；内置 OpenAI Responses GPT 和 bundled `codex-oauth` GPT 模型声明该能力。启用时替代 `write` / `edit`，避免两套编辑接口同时诱导模型。
 - 使用 Responses custom tool 和 Lark 约束的 Codex patch grammar，不把 patch 包进 JSON。
 - 支持 add、delete、update 和 move；整份 patch 的路径、源文件和上下文在第一次写入前预检，同一路径的多个操作按规范化主机路径拒绝。
 - 更新匹配容忍行尾空白和 Unicode 标点差异，同时保留未触及内容原有的 LF、CRLF、bare CR 或混合换行。
@@ -95,10 +98,10 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 
 ## 文件变更并发
 
-- server 共享按规范化主机绝对路径索引的 mutation queue；同一路径的 `Write`、`Edit`、`apply_patch` 串行，不同路径仍可并行。
+- server 共享按规范化主机绝对路径索引的 mutation queue；同一路径的 `write`、`edit`、`apply_patch` 串行，不同路径仍可并行。
 - 等待路径锁及每个目录创建、读取、写入步骤前后检查取消；当前文件操作返回后才释放锁。
 
-## Grep
+## grep
 
 - 使用编译进 ki 的 ripgrep 15.2.0，不依赖系统 `rg`；helper 与 fd 一起物化到 `ki/tools/<goos>-<goarch>/`，该目录同时暴露给 shell（见"内置 rg 和 fd"）。
 - 通过 argv 启动并逐行解析 JSON 输出，不经过 shell；支持正则、glob、文件类型、上下文和分页。
@@ -109,7 +112,7 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 - content 模式单行最多 500 字节；结果文本本身不再做 20KB 级别的截断（完整匹配交给 output spool 保存，只有 16MiB 的内存保护上限），模型看到的是统一 preview。截断保持 UTF-8 边界，匹配上限与文本上限分别提示。
 - 结果包含文件数、匹配数和 `truncated`；路径来自 JSON 字段，不解析人类可读文本。`KI_USE_SYSTEM_RIPGREP=1` 仅用于调试。
 
-## Glob
+## glob
 
 - 使用同一内置 ripgrep 的 `--files` 和 NUL 分隔输出，不依赖 shell，特殊文件名不会破坏解析。
 - 默认最多返回 100 个结果；结果按修改时间排序，并包含文件数、limit 和 `truncated`。结果文本不做 100KB 级别的截断，超过统一 preview budget 的部分由 output spool 保存，模型只收到有界 preview。
@@ -121,77 +124,54 @@ Bash、PowerShell 的完整输出文件也由该 store 创建：任务日志落�
 
 - ki 把 rg（ripgrep 15.2.0）和 fd（10.3.0）编译进二进制，按 `GOOS/GOARCH` 只嵌入当前目标的那一份，安装后不需要系统 `rg`/`fd`；Linux 产物使用静态 musl 构建。fd 固定 10.3.0，因为它是唯一同时提供 `x86_64-apple-darwin`（10.4.1 起移除）和 `aarch64-pc-windows-msvc`（10.3.0 才加入）的版本，与内嵌 ripgrep 覆盖同样六个目标。
 - 首次使用把两个可执行文件物化到用户缓存 `ki/tools/<goos>-<goarch>/`（缓存不可写时退化为进程级临时目录），用 SHA-256 判断是否需要重写；`ToolsDir` 结果在进程内缓存一次。
-- `Bash` 和 `PowerShell` 把该目录放到子进程 `PATH` 最前，因此 shell 里的 `rg`/`fd` 始终是 ki 自带的版本，不受宿主环境影响。`KI_USE_SYSTEM_RIPGREP=1` 只影响 `Grep` / `Glob` 引擎，不影响 shell 的 `PATH`。
+- `exec_command` 把该目录放到子进程 `PATH` 最前，因此 shell 里的 `rg`/`fd` 始终是 ki 自带的版本，不受宿主环境影响。`KI_USE_SYSTEM_RIPGREP=1` 只影响 `grep` / `glob` 引擎，不影响 shell 的 `PATH`。
 - Bash 额外通过 `BASH_ENV` 注入一个 shim：`bash -lc` 先读 `/etc/profile` 和用户 profile，而 profile 可能整体重置 `PATH`（例如 Debian 的 `/etc/profile`），所以只在子进程环境里 prepend `PATH` 并不可靠；shim 在 startup files 之后再次把工具目录放到 `PATH` 最前。shim 通过 `KI_ORIG_BASH_ENV` 串联用户已有的 `BASH_ENV`，不覆盖用户配置。
-- `fd` 默认尊重 `.gitignore` 并跳过隐藏文件；`-H` 包含隐藏路径，`-I` 关闭 ignore。这条规则放在 system prompt 的内置追加指令里（`prompt.DefaultAppendSystemPrompt`，见 [system_prompt.md](system_prompt.md)）：shell 命令或管道中禁止使用 `grep`/`find`（PowerShell 下即 `Select-String`/递归 `Get-ChildItem`），必须使用内置的 `rg`/`fd`。它是 harness 层规则，因此 `Bash` 与 `PowerShell` 的工具描述都不再重复这段。
+- `fd` 默认尊重 `.gitignore` 并跳过隐藏文件；`-H` 包含隐藏路径，`-I` 关闭 ignore。这条规则放在 system prompt 的内置追加指令里（`prompt.DefaultAppendSystemPrompt`，见 [system_prompt.md](system_prompt.md)）：shell 命令或管道中禁止使用 `grep`/`find`（PowerShell 下即 `Select-String`/递归 `Get-ChildItem`），必须使用内置的 `rg`/`fd`。它是 harness 层规则，因此 `exec_command` 的工具描述都不再重复这段。
 - 子进程 `PATH` 顺序是 **ki 内嵌 rg/fd 目录 → 扩展声明的目录 → 用户原 `PATH`**（扩展目录见 [extension.md](extension.md) 的「扩展 PATH 目录」）。Bash 在 login profile 之后由 `BASH_ENV` shim 按 `KI_EXTENSION_PATH_DIRS` 再前置一次扩展目录；PowerShell 直接在子进程环境里前置。
 
-## Bash
+## exec_command / write_stdin
 
-- server 启动时解析一次可执行文件；Unix 依次查找 `/bin/bash` 和 PATH。
-- Windows 依次查找 `KI_GIT_BASH_PATH`、`CLAUDE_CODE_GIT_BASH_PATH`、Git for Windows 安装目录和 PATH 中的 `bash.exe`。
-- 找不到 Bash 时不注册 `Bash`，server 仍正常启动。
-- 每次调用都是新的 `bash -lc` 进程，会加载用户 login profile；cwd 固定为 session cwd，`cd` 不会影响后续调用。
-- Bash、PowerShell、后台任务及其后代进程显式继承 Ki 启动时可见的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`ALL_PROXY`、`NO_PROXY`（含小写变体）；不会硬编码代理地址。
-- stdout/stderr 混排并持续写入无损临时文件；实时增量最多每 100ms 通过 `ToolExecutionUpdate` 推送一次。
-- 实时增量和模型可见结果使用跨 chunk 清理器去除 ANSI 及不可见控制字符，只保留换行、制表符和可显示文本；spill 文件仍保留原始字节。
-- 超过 2000 行或 50KB 时只把 JobStore 的滚动尾部放进 tool result，并附完整输出文件的绝对路径（落在 session 的 spill 目录里，不是独立的临时文件），可用 `Read` 的 `offset` / `limit` 分页读取；生成最终结果不会重新把完整 spill 文件载入内存。
-- 非零退出码、timeout 和取消分别返回 error、后台接管提示或 aborted 状态；前台默认 timeout 为 30 秒（`timeout` 参数上限 600 秒）。
-- Bash、PowerShell 和任务工具的 details 统一记录 task/status、timeout/cancel、退出码、截断统计和完整输出路径。
-- 前台 timeout 时，普通命令转入后台并返回 task id 和输出文件；以 `sleep` 开头的命令直接终止。
-- abort 终止整个进程组及其子进程、管道；显式后台任务不受 prompt abort 影响。
-- 不提供 sandbox 开关，prompt 中也不声明 `dangerouslyDisableSandbox`。
+`ShellProcessManager` 按 session 拥有进程，生命周期独立于一次工具调用或 agent turn。每次 exec 都是新进程，默认 cwd 为 session cwd；显式 workdir 也不会改变后续调用的 cwd。
 
-## PowerShell
+- `login=true`、`tty=false`、`yield_time_ms=10000`、`max_output_tokens=10000` 为默认值。exec 观察范围 250–30000ms；达到观察预算返回 handle，命令继续运行，没有前台提升或 sleep 特例。
+- Windows 默认优先 PowerShell（pwsh，其次 Windows PowerShell），再回退 Git Bash；Unix 默认使用发现的 Bash。可显式选 bash/sh/zsh/pwsh/powershell 或主机绝对路径。找不到所选 shell 时执行报错，server 可正常启动。
+- Unix 使用 PTY，Windows 使用 ConPTY。只有 `tty=true` 支持普通 stdin 输入；pipe 模式拒绝普通输入，但 `chars="\u0003"` 仍能请求进程组中断。Ctrl-C 不保证进程退出，强制停止由 session abort 的 process scope 执行。
+- 空 chars 的观察默认 5000ms、范围 5000–300000ms；非空 chars 默认 250ms、范围 250–30000ms。取消工具观察只结束等待，保留进程及未读输出。handle 是最多 53 位的正整数，不能跨 session 使用。
+- stdout/stderr 混排；原始字节写入完整输出文件。实时增量去除 ANSI/控制字符，UTF-8 边界安全。内存缓冲最多 1MiB，模型每次收到尚未读出的增量并受输出预算限制，预算超过上限会被截断；完整输出可通过 `read` 分页。实时快照保留 16KiB 尾部；增量推送节流 100ms / 8KiB。
+- 每个 session 最多 64 个 live 进程；已退出且输出已读完的 handle 可回收，记录最多保留 256 个。达到 live 上限直接拒绝创建，不淘汰仍在运行的进程。
+- 完整 shell 日志由 OutputSpool 创建，但不走普通文本结果的 8MiB 前缀截断；创建失败时退回由 manager 清理的临时文件。进程退出只释放 OS 资源；显式停止终止进程树，session 删除/server shutdown 才关闭 manager 并清理日志。
+- 子进程继承 Ki 的代理环境和扩展 PATH；Bash profile 之后仍通过 BASH_ENV shim 恢复内嵌 rg/fd 和扩展路径。PowerShell 的 login=false 使用 NoProfile，pipe 模式使用 NonInteractive；错误及原生命令非零退出继续传播。
+- 非零退出码返回 error tool result，同时遥测记录 completed / command_nonzero / external_command。工具参数、观察取消与进程交互故障分别记录，避免把外部命令错误算作 harness 故障。
 
-- 仅 Windows 注册；优先使用 `pwsh`，其次使用 `powershell.exe`。
-- 两者都找不到时工具仍注册，调用返回 unavailable。
-- 使用 `-NoProfile -NonInteractive -Command`，并通过 `$LASTEXITCODE` 和 `$?` 保留 native exe 与 cmdlet 的失败状态。
-- 每次调用都是新进程，cwd 固定为 session cwd；`Set-Location` 不会影响后续调用。
-- 输出、截断、进程组终止和后台任务生命周期与 `Bash` 一致；前导 `Start-Sleep` 或 `sleep` 在 timeout 时直接终止。
-- 不提供 sandbox 开关，prompt 中也不声明 `dangerouslyDisableSandbox`。
+```json
+{"cmd":"bun run dev","tty":true,"yield_time_ms":1000}
+```
 
-## TaskOutput
+随后用返回的数值 handle 调用 `write_stdin`；两个工具没有 task_id，也没有 run_in_background、command、timeout 参数。
 
-- 后台 shell 任务属于当前 serve 进程；agent 任务的 stable `agentId`、child
-  session 和最近结果写入 child 目录的 `agent.json`，serve 重启时重建 agent/task
-  索引。重启前仍在运行的 agent 标记为 `interrupted`，可用 `SendMessage` 续跑。
-- 默认最多阻塞等待 30 秒；`block=false` 立即返回当前快照。
-- 等待超时返回 `retrieval_status=timeout`，不会终止任务或消费完成通知。Agent task 快照带 `generation`；等待绑定开始等待时的 generation，不会被并发恢复重定向到下一次 run。
-- 返回 task id/type、状态、描述、命令、PID、有界输出尾部、输出文件、退出码、错误、agent result、字节数、行数和开始/结束时间；超限日志不会被重新完整读入内存或 context。
+## Agent 协作
 
-## Agent
+`AgentController` 保存逻辑身份、结构父子关系、运行代次和 pending follow-up，shell manager 单独拥有进程。工具层只依赖 server 实现的 AgentRuntime。
 
-- `description` 是 3–5 个词的短任务名，`prompt` 是子 agent 的 directive。没有 `subagent_type`：所有 child 都跑同一套 general-purpose 配置（类型化 subagent 留待后续）。
-- `inherit_context` 默认 false：child 从干净上下文启动，directive 必须带齐任务、约束和必要结论。仓库调研、限定范围的实现/测试及独立审查保持 false，child 直接读取当前 workspace 和 diff；只有任务依赖无法简洁重述的既有对话决策、用户偏好或未完成推理时才显式设 true。true 会把 parent 的**已完成历史**作为背景复制进 child，边界是当前 leaf 链上最新 user message 之前（见 `docs/session.md`），因此仍看不到触发本轮的用户消息——那条是发给 parent 的。
-- child 的第一条 user 消息是 server 生成的 **subagent envelope + directive**：`You are a subagent at depth N, started by another agent through the Agent tool; the task below came from that agent (session <id>).`，空行后接 directive 原文。因为 child 是一次全新的模型调用、看不到 parent 的指令，信封必须随消息走；放进 system prompt 会让它和 parent 的系统提示不再逐字节相同，破坏跨会话的前缀缓存。depth 记的是 child 自己的层数（`parentDepth+1`）；到达上限的那一层在同一句后面追加一句 `You are at the maximum nesting depth (N), so do not call the Agent tool: complete this task yourself.`，靠提示而不是摘工具来禁止再委派。
-- 信封**不要求 child 汇报**：结果本来就通过 tool result（前台）或 `<task-notification>`（后台/提升）自动回到调用方，让 child 再 `SendMessage` 一次只会造成重复汇报、还会诱导它把"已发消息"当成任务完成。`SendMessage` 对自己那条 prompt 里列出的 `"parent"` / `"main"` 地址保留给"中途要问调用方"的场景。`SendMessage` 续跑 child 时跟进的消息不再重复信封。
-- child 沿用 parent 的 provider/model/thinking 并沿用同一条 loop；无论是否继承历史，directive 都是子会话自己的第一条消息，parent 的 user turn 永远不会被当成 child 的任务（这正是最初 fork 整段对话会导致子代理重复委派的原因）。
-- 子 agent 使用自己的 `runState`、extension Prepare、工具集和 `events.jsonl`；因此可以递归创建 tree child，且 child 的工具结果不会污染 parent context。主会话为深度 0，最多允许 Agent child 深度 3。**深度只约束“能不能 spawn”，不约束工具集**：`Set.Build` 在任何深度都暴露 `Agent`（`Set` 没有深度字段），因为工具集同时进 provider 的 tool schemas 和 system prompt 的 `Available tools` 列表、属于前缀缓存的一部分——在深度 3 摘掉 `Agent` 会让 child 与 parent 的前缀从第一个 token 分叉，正好废掉信封设计要保住的缓存复用。限制落在两处：(1) `depth >= 3` 时信封追加 `You are at the maximum nesting depth (3), so do not call the Agent tool: complete this task yourself.`；(2) `SpawnAgent` 在 `parentDepth >= MaxAgentDepth` 时硬拒绝，模型即使无视提示调用，也只会拿到 `maximum agent depth 3 reached` 的 tool result。
-- `run_in_background=true` 与 parent prompt 脱钩，立即返回 `{"status":"async_launched", "agentId":…, "outputFile":…}`；`TaskOutput` 可等待它，`TaskStop` 可取消它。前台 agent 返回 Claude Code 兼容的 `completed` 结果对象。两种 `async_launched` 结果都带 `note`：说明结果会以 `<task-notification>` 自动回来、不要轮询或重做它的工作、可以用 `TaskOutput(block=false)` 或读 `outputFile` 看进度（Claude Code 把同样的指引写在结果文本里，而不是只放在工具描述里——结果不进缓存前缀，加字不破坏 prefix cache）。
-- 前台 agent 最多占用 parent turn 2 分钟（`agentForegroundTimeout`）：超时后 child **转为后台继续运行**（不取消），Agent 返回与 `run_in_background` 相同的 `async_launched` 结果，**但只有显式 `run_in_background` 才 `Terminate` parent turn**（那是调用方自己选了异步，下一轮就该是完成通知）。超时提升不结束 turn：调用方请求的就是阻塞，它自己决定继续做别的事、用 `TaskOutput(block=true)` 等，还是结束回复；`note` 里会说明等待已过期、不要重复启动同一个任务。child 的 run context 与调用方解耦（`AgentStore.startRun` 用 `context.WithoutCancel`），所以 parent turn 结束（自然结束、被 `Terminate` 或提升）都不会杀掉它；唯一"父死子亡"的路径是 parent 在阻塞等待期间被 abort——那时 Agent 工具显式 `TaskStop`，避免孤儿任务。
-- 完成通知的送达路径有两条：parent 的 run 还活着时写进它的 Inbox（`pushSteerRun`），循环在下一个 model round 前 drain，于是结果落在**启动它的那个 turn 之内**（对应 Claude Code 在 tool-round 边界 attach `<task-notification>`）；没有 live run 时走 durable queue 起一轮新的。Inbox 手递手窗口由 `runPrompt` 原子关闭（最后一轮取快照后置 `steerClosed`），所以晚到的 push 要么被当作续跑轮、要么被 abort 路径持久化，要么 push 返回 false 落到队列——三条路都不会丢通知。
-- 完成结果按 `{taskId, generation}` 仲裁：`TaskOutput` 只认领它实际返回的终态 generation，超时/取消不认领；live Inbox、durable queue 和取消时的最后 handoff 都在真正持久化 message 时通过同一个 `CommitNotification` 决策。入队不消费结果。工具先读到则通知不再进入历史；通知先提交或再次显式读取时，`TaskOutput` 仍返回结果并带 `read_only:true`。恢复同一 task 会增加 generation，旧通知不会消费新结果，反之亦然。
-- child 继承当前 session 的 provider、model 和 thinking effort；Agent schema 不接受模型覆盖，避免子 agent 跨供应商使用不同凭据或协议。
-- `cwd` override 和 `worktree` isolation 不在模型可见 schema 中；child 始终继承 parent cwd，隔离依靠 session tree，不会静默提供未实现的隔离。
-- 当前 Agent prompt/schema 只描述普通 parent → child delegation；不描述 Agent Teams 的命名成员、`team_name`、permission mode、roster 或 peer messaging。
-- 子代理给正在**同步等待**它的 parent 发消息时，消息会先落在 parent 的 Inbox，直到 parent 拿到 tool result 才被处理；parent 用 `run_in_background`（或等 2 分钟转后台）才能及时收到。
-- `SendMessage` 的 `to` 省略时默认 `"parent"`。保留名由 server 从发送方 session 链解析：`"parent"` 是 `header.parentSession`，`"main"` 沿链走到顶端；也接受稳定的 `agentId`。解析出的 session 若是一个 agent task，走 steer / queue / resume（运行中消息在当前 model/tool round 后注入，已完成或停止的 child 从原 session transcript 续跑）；若是普通 session（如顶层 main），有 live run 就 steer，否则 `EnqueueSystem` + `dispatchQueue` 起新的一轮（`system` lane，排在等待中的人类消息之后）。`TaskOutput` 只读状态/结果，`TaskStop` 只停止当前 run。
-- 删除 session 会终止并移除其 agent task 记录；关闭 server 会把运行中的 agent
-  标记为 `interrupted`，保留 metadata 供下次启动恢复。shell 临时输出文件仍按
-  原有 JobStore 生命周期清理。
+- 根为 `/root`。child 的 task_name 使用 1–64 个小写 ASCII 字母、数字或下划线，不能为 root；同一 root 的完整路径不可重复。child 可用相对自身的路径，或 `/root/...` 绝对逻辑路径；`..`、`.`、跨 root 以及旧 parent/main 保留名不解析。
+- spawn 立即返回，child 始终 detached。`fork_turns` 默认 all，可为 none 或正整数（字符串），复制完整的已完成 user turn，排除触发当前轮的 user 输入及之后内容。QueueOnly mailbox 消息不算新的 user turn；继承工具调用/结果配对与附件路径。child 使用 parent 的 provider/model/cwd，system/tools 前缀相同；身份放在首条 user 信封里。
+- 没有固定 depth=3 限制。`agents.max_concurrent` 默认 4，按 root 限制活跃 child turn；root 自己不计数，正在 wait_agent 的 child 仍占名额。完成/被中断的身份不占名额且持续可寻址，不存在已完成常驻池。
+- send_message 先写 context queue，再通知 live Inbox；idle 时等待下次显式任务。followup_task 使用稳定 clientRequestId 持久排队：idle 且有名额时开新代次；busy 或容量满时排队，并在代次结束/名额释放时调度。它不取消或重启正在执行的轮次。
+- wait_agent 默认 30s，范围 10s–1h；收到 mailbox 或用户 steer 时醒来，观察超时/取消不影响其它 agent。模型随后正常 drain mailbox；list/wait 都不认领完成通知。
+- 每代次完成结果自动发给结构 parent，按 taskId/generation 在实际落入 transcript 时做 ledger 去重。live parent 在下一轮 model request 前消费；idle parent 接受上下文但不自动启动模型轮次。跨 queue、transcript、agent.json 不存在事务，不承诺崩溃时 exactly-once。
+- interrupt_agent 拒绝 root/self，终止当前 agent turn 并丢弃其 pending tasks，保持身份可由 followup_task 再次启动；独立 shell 进程继续运行。普通 session abort 默认 scope=turn；scope=process 配合数值 session_id 强制停止进程；scope=tree 停止结构后代 agent 和进程。
+- agent.json version 3 经 internal/state 迁移，保留稳定路径、pending 输入及 delivery ledger。server 恢复先注册全部身份，再恢复 pending tasks；重启前 running 改为 interrupted，不恢复 OS 进程 handle。删除 session 清理 agent 与其 process manager；server shutdown 等待 runner 和完成回调收尾。
 
-## TaskStop
+```json
+{"task_name":"review","message":"Review the changes and report concrete issues.","fork_turns":"all"}
+```
 
-- 接受 `task_id`，并兼容 `shell_id`。
-- 终止任务的整个进程组及其子进程、管道。
-- 已完成、失败或停止的任务再次停止时返回不可停止错误。
+新的 API 不保留 Agent / TaskOutput / TaskStop / Bash / PowerShell 的执行入口。SendMessage 仅为 send_message 的 PascalCase 别名，参数为 target/message。toggles v1 的旧禁用项迁移到相应的新能力并取保守并集，避免升级后意外重新启用工具；当前设置保存 canonical 名称。
 
-完成认领账本和排队 follow-up 的 `clientRequestId` 经 `internal/state` 写入 version 2 `agent.json`。旧 version 1 已消费的 generation 可迁移；重启前 running 状态仍转为 interrupted。队列与 transcript、认领账本之间没有跨文件事务，进程崩溃、磁盘失败、队列满时不承诺 exactly-once 或无损交付；当前保证是单进程内互斥的原始交付与正常 handoff 保留，不是 crash-safe 消息总线。
+## 运行进度与统计
 
-`Set.AgentParentSessionID` 绑定工具调用会话：只有完成通知的实际 parent 可以用
-`TaskOutput` 认领原始交付。其它 session（含 sibling）仍可读取输出，但总是
-`read_only:true`，不能消费实际 parent 的 Inbox/queue 通知。parent 信息是内部
-快照字段，不增加模型可见 payload。无 parent 信息的直接 store 调用保留原语义。
-`TaskStop` 的运行中停止仍是全局显式取消，按现有策略抑制通知；它不是只读检查，
-本次没有新增停止权限模型。
+agent snapshot 的 revision 单调递增；phase 区分 starting/executing/waiting_message/waiting_resource/settled/interrupted。current_tools 最多 8 项，waiting_for 指向 mailbox；pending_tasks 与 queue_wait_ms 表示显式任务排队。last_activity_at 由执行/输入事件更新。run_stats 保存当前代次的 tools、requests（model rounds）、tool_failures、input/output/cache-read/cache-write/total/context tokens 与 mailbox_wait_ms；agent_lifetime_stats 累加已观察代次，lifetime_stats_complete 标记历史是否完整。空正文不会复用旧结果。所有统计在事件边界归约，不反复扫描继承 transcript，不保存推理正文。
+
+进程带 originating run_id/tool_call_id/agent_id/generation 与 revision，UI 即使 agent 已完成仍能显示其 live 进程。session inspect --json 的 analysis.runtime 与 trace --json 的 runtime/sideband 显示 last-known 投影；analysis.timing 按工具/消息等待区间并集统计，未知时间保留 unknownMs。工具 telemetry 带 generation、原始请求名、通信收据及 wait wake_reason，避免并行 duration 相加。
+
+递归 tree stop 先阻止该子树的新 spawn/follow-up，再中断已有 agent，最后停止它们拥有的进程；清理结束后释放临时屏障，稳定身份仍可 follow-up。其它 sibling/root 的任务不受该屏障影响。Unix PTY 使用独立 pollable descriptor，关闭终端可释放堵塞的 stdin 写入；输出 spool 写入或收尾失败明确报告 harness I/O 错误。

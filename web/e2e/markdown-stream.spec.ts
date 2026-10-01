@@ -200,7 +200,7 @@ test('an unbroken block is painted until it closes, then parsed', async ({ page 
   const lines = Array.from({ length: 200 }, (_, i) => `- item ${i} ${'x'.repeat(110)}\n`)
   const send = (event: unknown) => page.evaluate(event => (window as unknown as { streamSend: (event: unknown) => void }).streamSend(event), event)
   // Why: the wall-clock fake can finish between the tail-count and tail-text
-  // assertions (WebKit correctly formatted all 200 items in that round trip).
+  // assertions (the browser may format all 200 items in that round trip).
   // Hold each source checkpoint until inspected, then explicitly close it.
   await send({ type: 'message_update', runId: 'unbroken', seq: 1, messageStream: 1, message: { role: 'assistant', content: [{ type: 'text', text: lines.slice(0, 61).join('') }] } })
   // One ~26 KiB list block with no blank line: nothing can settle while it grows,

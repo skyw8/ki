@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordingAgentRuntime struct {
@@ -15,55 +16,46 @@ func (r *recordingAgentRuntime) SpawnAgent(_ context.Context, request AgentReque
 	return AgentLaunch{TaskID: "agent-1", SessionID: "child-1", OutputFile: "child.jsonl"}, nil
 }
 
-func (*recordingAgentRuntime) Get(string) (TaskSnapshot, bool) {
-	return TaskSnapshot{}, false
+func (*recordingAgentRuntime) SendAgentMessage(context.Context, AgentMessageRequest) (AgentMessageResult, error) {
+	return AgentMessageResult{}, nil
 }
-
-func (*recordingAgentRuntime) Wait(context.Context, string) (TaskSnapshot, error) {
-	return TaskSnapshot{}, nil
+func (*recordingAgentRuntime) WaitAgent(context.Context, string, time.Duration) (AgentWaitResult, error) {
+	return AgentWaitResult{}, nil
 }
-
-func (*recordingAgentRuntime) Stop(string) (TaskSnapshot, error) {
-	return TaskSnapshot{}, nil
-}
-
-func (*recordingAgentRuntime) ClaimResult(TaskSnapshot) bool { return true }
-
-func (*recordingAgentRuntime) Background(string) (TaskSnapshot, error) {
-	return TaskSnapshot{}, nil
+func (*recordingAgentRuntime) ListAgents(string, string) ([]AgentView, error) { return nil, nil }
+func (*recordingAgentRuntime) InterruptAgent(context.Context, string, string) (AgentView, error) {
+	return AgentView{}, nil
 }
 
 func TestAgentToolContextInheritanceDefault(t *testing.T) {
 	runtime := &recordingAgentRuntime{}
-	result := (agentTool{runtime: runtime}).Execute(context.Background(), map[string]any{
-		"description":       "inspect repository",
-		"prompt":            "Inspect the repository.",
-		"run_in_background": true,
+	result := (agentTool{name: "spawn_agent", runtime: runtime}).Execute(context.Background(), map[string]any{
+		"task_name": "inspect_repository",
+		"message":   "Inspect the repository.",
 	})
 	if result.IsError {
 		t.Fatalf("execute: %+v", result)
 	}
-	if runtime.request.InheritContext {
-		t.Fatal("Agent inherited parent context by default")
+	if runtime.request.ForkTurns != "all" {
+		t.Fatal("spawn_agent did not inherit all completed context by default")
 	}
 
-	result = (agentTool{runtime: runtime}).Execute(context.Background(), map[string]any{
-		"description":       "continue reasoning",
-		"prompt":            "Continue the prior reasoning.",
-		"inherit_context":   true,
-		"run_in_background": true,
+	result = (agentTool{name: "spawn_agent", runtime: runtime}).Execute(context.Background(), map[string]any{
+		"task_name":  "continue_reasoning",
+		"message":    "Continue the prior reasoning.",
+		"fork_turns": "none",
 	})
 	if result.IsError {
 		t.Fatalf("execute explicit inherit: %+v", result)
 	}
-	if !runtime.request.InheritContext {
-		t.Fatal("Agent ignored explicit context inheritance")
+	if runtime.request.ForkTurns != "none" {
+		t.Fatal("spawn_agent ignored fork_turns=none")
 	}
 }
 
 func TestAgentToolPromptExplainsContextInheritance(t *testing.T) {
-	if !strings.Contains(agentPrompt, "By default the child starts with a clean conversation") ||
-		!strings.Contains(agentPrompt, "repository research, scoped implementation, testing, and independent review") {
-		t.Fatal("Agent prompt does not explain the clean-context default")
+	tool := agentTool{name: "spawn_agent"}
+	if !strings.Contains(tool.Prompt(), "returns immediately") || !strings.Contains(tool.Parameters()["properties"].(map[string]any)["fork_turns"].(map[string]any)["description"].(string), "all (default)") {
+		t.Fatal("spawn prompt/schema omitted async and fork defaults")
 	}
 }

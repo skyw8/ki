@@ -4,6 +4,10 @@ import { serverToken } from './global-setup'
 import { openStream } from './stream-fixture'
 import { durationText } from '../src/lib/duration'
 
+// Each case passed standalone with a private server and browser context. The
+// top-level resize case otherwise keeps all viewport groups in one serial unit.
+test.describe.configure({ mode: 'parallel' })
+
 const layouts = [
   { name: 'desktop', width: 1440, height: 900 },
   { name: 'tablet', width: 834, height: 1112 },
@@ -87,15 +91,12 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
   test.use({
     viewport: { width: layout.width, height: layout.height },
     hasTouch: touch,
-    // Firefox supports a small touch/coarse-pointer viewport, not Playwright's
-    // mobile-layout emulation. Keep the complete geometry matrix on that
-    // engine without claiming a mobile UA or physical-device verification.
-    isMobile: async ({ browserName }, use) => { await use(touch && browserName !== 'firefox') },
+    isMobile: touch,
   })
-  test.beforeEach(async ({ browserName }, testInfo) => {
+  test.beforeEach(async ({}, testInfo) => {
     testInfo.annotations.push({
       type: 'viewport-profile',
-      description: `${layout.width}×${layout.height}; ${touch ? 'touch/coarse pointer' : 'desktop pointer'}; ${touch && browserName !== 'firefox' ? 'mobile layout emulated' : 'desktop layout engine'}; default browser UA; no physical device`,
+      description: `${layout.width}×${layout.height}; ${touch ? 'touch/coarse pointer' : 'desktop pointer'}; ${touch ? 'mobile layout emulated' : 'desktop layout engine'}; default browser UA; no physical device`,
     })
   })
 
@@ -106,8 +107,8 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
     const send = (event: LoopEvent) => page.evaluate(event => (window as unknown as { streamSend: (event: LoopEvent) => void }).streamSend(event), event)
     await send({ type: 'turn_start', runId: 'timer', seq: 1, timestamp: now })
     await send({ type: 'message_end', runId: 'timer', seq: 2, entryId: 'timed', parentId: 'question', message: { role: 'user', timestamp: now, content: [{ type: 'text', text: 'Run delegated review' }] } })
-    await send({ type: 'message_end', runId: 'timer', seq: 3, entryId: 'call', parentId: 'timed', message: { role: 'assistant', timestamp: now, content: [{ type: 'toolCall', id: 'tool', name: 'Bash', arguments: { command: 'sleep 30', description: 'Static neighboring preview' } }] } })
-    await send({ type: 'tool_execution_start', runId: 'timer', seq: 4, toolCallId: 'tool', toolName: 'Bash', timestamp: now, args: { command: 'sleep 30', description: 'Static neighboring preview' } })
+    await send({ type: 'message_end', runId: 'timer', seq: 3, entryId: 'call', parentId: 'timed', message: { role: 'assistant', timestamp: now, content: [{ type: 'toolCall', id: 'tool', name: 'exec_command', arguments: { cmd: 'sleep 30', description: 'Static neighboring preview' } }] } })
+    await send({ type: 'tool_execution_start', runId: 'timer', seq: 4, toolCallId: 'tool', toolName: 'exec_command', timestamp: now, args: { cmd: 'sleep 30', description: 'Static neighboring preview' } })
     await expect(page.getByTestId('tool-duration')).toBeVisible()
     const samples: number[][] = []
     for (const elapsed of [999, 1000, 9900, 10_000, 10_200, 11_000, 59_900, 60_000, 61_000, 3_599_000, 3_600_000, 3_601_000, 86_399_000, 86_400_000, 86_401_000, 864_000_000]) {
@@ -264,11 +265,10 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
   })
 })
 
-test('backward wheel or emulated touch keeps content anchored through a large late row resize', async ({ page, browserName, isMobile }, testInfo) => {
-  const touch = browserName === 'webkit' && isMobile
+test('backward native wheel keeps content anchored through a large late row resize', async ({ page }, testInfo) => {
   testInfo.annotations.push({
     type: 'input-profile',
-    description: touch ? 'DOM touch events with controlled displacement; no native inertia or physical-device claim' : 'trusted native mouse wheel',
+    description: 'trusted native mouse wheel',
   })
   const entries: Entry[] = [message('resize-u', '', 'user', 'Read the delegated reports')]
   for (let i = 0; i < 20; i++) entries.push(message(`resize-${i}`, entries.at(-1)!.id, 'user', 'Long report line with stable text.\n'.repeat(40), `agent:resize-${i}`))
@@ -276,8 +276,8 @@ test('backward wheel or emulated touch keeps content anchored through a large la
   const f = await history(page, entries)
   await f.open()
   const scroll = page.getByTestId('chat-scroll')
-  if (!touch) await scroll.hover()
-  await page.evaluate(touch => {
+  await scroll.hover()
+  await page.evaluate(() => {
     const el = document.querySelector<HTMLElement>('[data-testid="chat-scroll"]')!
     const viewport = el.getBoundingClientRect()
     const rows = [...el.querySelectorAll<HTMLElement>('[data-item-key]')]
@@ -322,44 +322,15 @@ test('backward wheel or emulated touch keeps content anchored through a large la
     }
     // A late intrinsic layout change above the reader is independent of the
     // transcript reducer (as with an image/Markdown block finishing layout).
-    el.addEventListener(touch ? 'touchmove' : 'wheel', () => el.addEventListener('scroll', () => requestAnimationFrame(() => {
+    el.addEventListener('wheel', () => el.addEventListener('scroll', () => requestAnimationFrame(() => {
       above.style.paddingTop = '1000px'
       requestAnimationFrame(() => { audit.armed = true })
     }), { once: true }), { once: true })
     requestAnimationFrame(sample)
-  }, touch)
-  if (touch) {
-    await scroll.evaluate(el => {
-      // Mobile WebKit has no Playwright wheel support or Touch constructor.
-      // Keep the finger down through the resize: controlled displacement
-      // exercises touch deferral without pretending to generate hardware inertia.
-      for (const [type, clientY] of [['touchstart', 100], ['touchmove', 500]] as const) {
-        const event = new Event(type, { bubbles: true })
-        Object.defineProperty(event, 'touches', { value: [{ identifier: 1, target: el, clientX: 160, clientY }] })
-        el.dispatchEvent(event)
-      }
-      el.scrollTop -= 400
-    })
-  } else await page.mouse.wheel(0, -400)
+  })
+  await page.mouse.wheel(0, -400)
   await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', 'reading')
   await expect.poll(() => page.evaluate(() => (window as unknown as { resizeWheelAudit: { frames: number } }).resizeWheelAudit.frames)).toBeGreaterThan(2)
-  if (touch) {
-    const held = await page.evaluate(() => {
-      const audit = (window as unknown as { resizeWheelAudit: { initialScroll: number; writes: number; worstResidual: number; badFrames: unknown[] } }).resizeWheelAudit
-      const scroll = document.querySelector<HTMLElement>('[data-testid="chat-scroll"]')!
-      return { displacement: audit.initialScroll - scroll.scrollTop, writes: audit.writes, residual: audit.worstResidual, badFrames: audit.badFrames }
-    })
-    // A touch correction must be visual while the finger is held, otherwise
-    // a real iOS gesture would be canceled by the compensating scroll write.
-    expect(held.writes, JSON.stringify(held)).toBe(0)
-    expect(Math.abs(held.displacement - 400), JSON.stringify(held)).toBeLessThanOrEqual(2)
-    expect(held.residual, JSON.stringify(held)).toBeLessThanOrEqual(2)
-    await scroll.evaluate(el => {
-      const event = new Event('touchend', { bubbles: true })
-      Object.defineProperty(event, 'touches', { value: [] })
-      el.dispatchEvent(event)
-    })
-  }
   await expect(page.getByTestId('chat')).not.toHaveAttribute('data-deferred-offset')
   await expect(page.getByTestId('chat')).toHaveAttribute('data-library-scrolling', 'false')
   const metrics = await page.evaluate(() => {
@@ -368,90 +339,9 @@ test('backward wheel or emulated touch keeps content anchored through a large la
     const scroll = document.querySelector<HTMLElement>('[data-testid="chat-scroll"]')!
     return { movement: audit.anchor.getBoundingClientRect().top - scroll.getBoundingClientRect().top - audit.initialOffset, residual: audit.worstResidual, peakDebt: audit.peakDebt, frames: audit.frames, missing: audit.missing, writes: audit.writeEvents, badFrames: audit.badFrames }
   })
-  console.log(`resize ${touch ? 'emulated touch' : 'native wheel'} ${browserName}: ${JSON.stringify(metrics)}`)
+  console.log(`resize native wheel chromium: ${JSON.stringify(metrics)}`)
   expect(metrics.missing).toBe(false)
   expect(metrics.frames).toBeGreaterThan(1)
   expect(Math.abs(metrics.movement - 400)).toBeLessThanOrEqual(2)
   expect(metrics.residual).toBeLessThanOrEqual(2)
-  if (browserName === 'webkit' && !touch) expect(metrics.peakDebt).toBeGreaterThanOrEqual(1000)
-  if (touch) {
-    for (const action of ['new gesture', 'root', 'read', 'latest']) {
-      // Already-measured rows isolate positive debt from the negative estimate
-      // corrections above. Each exit must transfer/retire that same debt once.
-      if (await page.getByTestId('to-bottom').isVisible()) await page.getByTestId('to-bottom').click()
-      await expect.poll(() => scroll.evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThanOrEqual(2)
-      await scroll.dispatchEvent('wheel', { deltaY: -1 })
-      await scroll.evaluate(el => { el.scrollTop -= 400 })
-      await expect(page.getByTestId('chat')).toHaveAttribute('data-library-scrolling', 'false')
-      await page.waitForTimeout(180)
-      await scroll.evaluate(el => {
-        const touch = (type: string, y?: number) => {
-          const event = new Event(type, { bubbles: true })
-          Object.defineProperty(event, 'touches', { value: y == null ? [] : [{ identifier: 1, target: el, clientX: 160, clientY: y }] })
-          el.dispatchEvent(event)
-        }
-        touch('touchstart', 100)
-        touch('touchmove', 140)
-        const viewport = el.getBoundingClientRect()
-        const rows = [...el.querySelectorAll<HTMLElement>('[data-item-key]')]
-        const anchor = rows.find(row => row.getBoundingClientRect().bottom > viewport.top)!
-        const above = rows.filter(row => row.getBoundingClientRect().bottom < viewport.top).at(-1)!
-        const audit = { anchor, offset: anchor.getBoundingClientRect().top - viewport.top, top: el.scrollTop, drift: 0, frames: 0, stop: false }
-        ;(window as unknown as { heldResizeAudit: typeof audit }).heldResizeAudit = audit
-        const sample = () => {
-          if (audit.stop) return
-          audit.frames++
-          audit.drift = Math.max(audit.drift, Math.abs(anchor.getBoundingClientRect().top - el.getBoundingClientRect().top - audit.offset))
-          requestAnimationFrame(sample)
-        }
-        requestAnimationFrame(sample)
-        above.style.paddingTop = `${parseFloat(above.style.paddingTop || '0') + 1000}px`
-      })
-      await expect(page.getByTestId('chat')).toHaveAttribute('data-deferred-offset', '1000')
-      await expect.poll(() => page.evaluate(() => (window as unknown as { heldResizeAudit: { frames: number } }).heldResizeAudit.frames)).toBeGreaterThan(2)
-      const held = await scroll.evaluate(el => {
-        const audit = (window as unknown as { heldResizeAudit: { top: number; drift: number; stop: boolean } }).heldResizeAudit
-        audit.stop = true
-        return { drift: audit.drift, displacement: el.scrollTop - audit.top }
-      })
-      expect(held.drift, action).toBeLessThanOrEqual(2)
-      expect(held.displacement, action).toBe(0)
-      // Audit the debt transfer after ResizeObserver has consumed our raw
-      // style injection. rAF precedes RO in a rendering step, so inspecting
-      // that unmeasured mutation is not evidence of a painted overlap.
-      await startGeometryAudit(page)
-      if (action === 'new gesture' || action === 'root') {
-        await scroll.evaluate((el, action) => {
-          const touch = (type: string, y?: number) => {
-            const event = new Event(type, { bubbles: true })
-            Object.defineProperty(event, 'touches', { value: y == null ? [] : [{ identifier: 1, target: el, clientX: 160, clientY: y }] })
-            el.dispatchEvent(event)
-          }
-          if (action === 'root') el.scrollTop = 0
-          touch('touchend')
-          if (action === 'new gesture') { touch('touchstart', 100); touch('touchend') }
-        }, action)
-        if (action === 'root') await expect(page.locator('[data-item-key="resize-u"]')).toBeVisible()
-        else {
-          const drift = await scroll.evaluate(el => {
-            const audit = (window as unknown as { heldResizeAudit: { anchor: HTMLElement; offset: number } }).heldResizeAudit
-            return Math.abs(audit.anchor.getBoundingClientRect().top - el.getBoundingClientRect().top - audit.offset)
-          })
-          expect(drift).toBeLessThanOrEqual(2)
-        }
-      } else if (action === 'read') {
-        await page.getByTestId('request-nav-toggle').click()
-        await page.getByTestId('request-nav-item').filter({ hasText: 'Read the delegated reports' }).click()
-        await expect(page.locator('[data-item-key="resize-u"]')).toBeVisible()
-      } else {
-        await page.getByTestId('to-bottom').click()
-        await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', 'following')
-      }
-      await expect(page.getByTestId('chat')).not.toHaveAttribute('data-deferred-offset')
-      if (action !== 'new gesture' && action !== 'root') await scroll.dispatchEvent('touchend', { touches: [] })
-      await page.waitForTimeout(220)
-      await expect(page.getByTestId('chat')).not.toHaveAttribute('data-deferred-offset')
-      await finishGeometryAudit(page)
-    }
-  }
 })

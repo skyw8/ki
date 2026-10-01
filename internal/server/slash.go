@@ -22,6 +22,7 @@ import (
 	"ki/internal/resources"
 	"ki/internal/session"
 	"ki/internal/toggles"
+	"ki/internal/toolname"
 	"ki/internal/tools"
 	"ki/internal/types"
 )
@@ -132,7 +133,7 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 		cwd = "."
 	}
 	toolSet := tools.Set{
-		CWD: cwd, Jobs: s.jobsFor(sessionID), Agent: s,
+		CWD: cwd, Processes: s.processesFor(sessionID), Agent: s,
 		AgentParentSessionID: sessionID, Shells: s.shells, Mutations: s.mutations,
 	}
 	active := toolSet.Build(profile)
@@ -164,6 +165,13 @@ func (s *Server) patchTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f := toggles.Load(s.cfg.Home)
+	for i, name := range body.Disabled {
+		if !toolname.IsBuiltin(name) {
+			http.Error(w, "unknown tool "+name, http.StatusBadRequest)
+			return
+		}
+		body.Disabled[i] = toolname.MustCanonical(name)
+	}
 	f.Tools = session.Toggle{Disabled: body.Disabled}
 	if err := toggles.Save(s.cfg.Home, f); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -550,6 +558,7 @@ func (s *Server) patchMessage(w http.ResponseWriter, r *http.Request) {
 // completion notification, extension:<name> a relayed message); External
 // carries the metadata a relaying extension needs to correlate the turn.
 type steerRequest struct {
+	ContextOnly     bool
 	ClientRequestID string
 	Completion      *types.CompletionIdentity
 	Content         []types.Content
@@ -566,7 +575,7 @@ func (s *Server) pushSteerRun(st *runState, req steerRequest) bool {
 	if st == nil {
 		return false
 	}
-	msg := types.Message{Role: "user", Content: req.Content, Origin: req.Origin, External: cloneExternal(req.External), ClientRequestID: req.ClientRequestID, Completion: req.Completion}
+	msg := types.Message{ContextOnly: req.ContextOnly, Role: "user", Content: req.Content, Origin: req.Origin, External: cloneExternal(req.External), ClientRequestID: req.ClientRequestID, Completion: req.Completion}
 	if msg.ClientRequestID == "" {
 		id, err := idgen.NewV7()
 		if err != nil {
@@ -580,9 +589,8 @@ func (s *Server) pushSteerRun(st *runState, req steerRequest) bool {
 		return false
 	}
 	st.inbox.Push(msg)
-	// A completion can still be pulled by TaskOutput before this Inbox drains.
-	// Publishing optimistic acceptance now would leave a ghost user row after
-	// that claim wins. Its first visible event is the committed message instead.
+	// Generation ownership is committed only at persistence. Publishing an
+	// optimistic row would leave a ghost if an interrupt suppresses this input.
 	if msg.Completion != nil {
 		return true
 	}
@@ -795,8 +803,8 @@ func (s *Server) dispatchQueue(id string) {
 }
 
 // dequeueDispatchable skips already-consumed generations before occupying a
-// parent. This is an optimization only: a concurrent TaskOutput may still win
-// after dequeue, so initial messages and live drains arbitrate at persistence.
+// parent. This is an optimization only: explicit interruption may suppress
+// a generation after dequeue, so delivery is arbitrated at persistence.
 // Each skip republishes the queue rather than silently removing a visible item.
 func (s *Server) dequeueDispatchable(id, dir string) (session.QueuedItem, bool, error) {
 	for {

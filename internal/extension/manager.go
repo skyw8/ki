@@ -14,6 +14,7 @@ import (
 	"ki/internal/loop"
 	"ki/internal/provider"
 	"ki/internal/session"
+	"ki/internal/toolname"
 	"ki/internal/types"
 )
 
@@ -431,6 +432,30 @@ func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *r
 		c.close()
 		return existing
 	}
+	combined := append([]ToolSpec(nil), c.registration.Tools...)
+	for _, existing := range m.by {
+		combined = append(combined, existing.registration.Tools...)
+	}
+	if err := validateToolNames(combined); err != nil {
+		m.mu.Unlock()
+		c.close()
+		m.reportError(sessionID, d.Name, "tools", "tool_name_collision", err.Error())
+		return nil
+	}
+	// Dynamic names are session-local: the same name in two different sessions
+	// never coexists in one registry and must not reject an unrelated sidecar.
+	for _, byExtension := range m.sessionTools {
+		scoped := append([]ToolSpec(nil), combined...)
+		for _, dynamic := range byExtension {
+			scoped = append(scoped, dynamic...)
+		}
+		if err := validateToolNames(scoped); err != nil {
+			m.mu.Unlock()
+			c.close()
+			m.reportError(sessionID, d.Name, "tools", "tool_name_collision", err.Error())
+			return nil
+		}
+	}
 	m.by[d.Name] = c
 	m.mu.Unlock()
 	for _, cap := range c.undeclared {
@@ -605,11 +630,12 @@ func (m *Manager) SessionContributions(sessionID string) map[string]SessionContr
 		if hasKind(c.capabilities, CapTool) {
 			seen := map[string]bool{}
 			addTool := func(spec ToolSpec) {
-				if spec.Name == "" || reservedToolNames[spec.Name] || seen[spec.Name] {
+				if spec.Name == "" || toolname.IsBuiltin(spec.Name) || seen[spec.Name] {
 					return
 				}
 				seen[spec.Name] = true
-				contrib.Tools = append(contrib.Tools, CatalogEntry{Name: spec.Name, Description: spec.Description})
+				aliases, _ := toolname.Aliases(spec.Name)
+				contrib.Tools = append(contrib.Tools, CatalogEntry{Name: toolname.MustCanonical(spec.Name), Description: spec.Description, Aliases: aliases})
 			}
 			for _, spec := range c.registration.Tools {
 				addTool(spec)
@@ -850,6 +876,20 @@ func (m *Manager) RegisterTools(sessionID, name string, tools []ToolSpec) error 
 		return errRPC
 	}
 	m.mu.Lock()
+	combined := append([]ToolSpec{}, c.registration.Tools...)
+	combined = append(combined, m.sessionTools[sessionID][name]...)
+	combined = append(combined, tools...)
+	for other, client := range m.by {
+		if other != name {
+			combined = append(combined, client.registration.Tools...)
+			combined = append(combined, m.sessionTools[sessionID][other]...)
+		}
+	}
+	if err := validateToolNames(combined); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+
 	if m.sessionTools[sessionID] == nil {
 		m.sessionTools[sessionID] = map[string][]ToolSpec{}
 	}

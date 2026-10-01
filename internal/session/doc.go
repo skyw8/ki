@@ -12,8 +12,9 @@
 // allows that, Windows only while no handle is open). New
 // rows always append; config.activeLeafId persists the selected branch across opens.
 // The main queue holds two lanes: human turns (Enqueue) and server-generated
-// turns such as agent completion notifications (EnqueueSystem; a notification
-// also records its task/generation completion identity). clientRequestId
+// turns (EnqueueSystem). Agent communication and completions instead use the
+// context queue and never start idle turns. Completion input carries its stable
+// task/generation identity. clientRequestId
 // survives queue dispatch and promotion; versioned queues use internal/state.
 // The server arbitrates completion ownership at actual persistence, not
 // enqueue. Dequeue serves

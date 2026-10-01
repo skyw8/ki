@@ -26,6 +26,8 @@ const (
 )
 
 type shellSpec struct {
+	login             *bool
+	interactive       bool
 	kind              shellKind
 	path              string
 	powerShellEdition powerShellEdition
@@ -43,9 +45,20 @@ func (s shellSpec) args(command string) []string {
 		// from -Command. Capture it immediately so git/npm failures remain tool
 		// errors; cmdlet-only commands fall back to PowerShell's $? state.
 		command += "\n; $__ki_exit = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } elseif ($?) { 0 } else { 1 }\n; exit $__ki_exit"
-		return []string{"-NoProfile", "-NonInteractive", "-Command", command}
+		args := []string{}
+		if s.login == nil || !*s.login {
+			args = append(args, "-NoProfile")
+		}
+		if !s.interactive {
+			args = append(args, "-NonInteractive")
+		}
+		return append(args, "-Command", command)
 	}
-	return []string{"-lc", command}
+	flag := "-lc"
+	if s.login != nil && !*s.login {
+		flag = "-c"
+	}
+	return []string{flag, command}
 }
 
 func (s shellSpec) env() []string {
@@ -157,10 +170,10 @@ type ShellRuntime struct {
 	powerShell *shellSpec
 }
 
-// BashAvailable reports whether Bash and Bash-dependent tools should be exposed.
+// BashAvailable reports whether exec_command can select discovered Bash.
 func (s ShellRuntime) BashAvailable() bool { return s.bash.available() }
 
-// PowerShellEnabled reports whether the Windows-only PowerShell tool should be exposed.
+// PowerShellEnabled reports whether exec_command has a PowerShell default.
 func (s ShellRuntime) PowerShellEnabled() bool { return s.powerShell != nil }
 
 type shellDiscovery struct {
@@ -172,7 +185,7 @@ type shellDiscovery struct {
 
 // DiscoverShellRuntime resolves command interpreters once for the server.
 // Missing optional interpreters are represented as unavailable specs so the
-// corresponding model tools can be omitted instead of failing server startup.
+// execution can fail explicitly without preventing server startup.
 func DiscoverShellRuntime() ShellRuntime {
 	d := shellDiscovery{
 		goos:     runtime.GOOS,

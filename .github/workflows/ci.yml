@@ -172,10 +172,7 @@ jobs:
       - name: Build the source-free native package
         run: go run ./scripts/build-extensions.go -only zvec-grep -goos ${{ matrix.goos }} -goarch ${{ matrix.goarch }}
       - name: Run native and launcher unit tests
-        shell: bash
-        run: |
-          rustup run 1.98.0 cargo test --release --locked --manifest-path extensions/zvec-grep/native/Cargo.toml
-          cargo test --release --locked --manifest-path extensions/zvec-grep/Cargo.toml
+        run: node extensions/zvec-grep/test/native.mjs
       - name: Run the complete original protocol suite and genuine index lifecycle
         shell: bash
         env:

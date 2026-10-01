@@ -65,7 +65,7 @@ type readDetails struct {
 	Image      *imageDetails      `json:"image,omitempty"`
 }
 
-func (readTool) Name() string        { return "Read" }
+func (readTool) Name() string        { return "read" }
 func (readTool) Description() string { return "Read a file from the local filesystem." }
 func (readTool) Snippet() string     { return "Read file contents" }
 func (t readTool) Prompt() string {

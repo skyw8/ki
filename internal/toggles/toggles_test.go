@@ -35,7 +35,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	want := File{
 		Skills:     session.Toggle{Disabled: []string{"alpha"}},
-		Tools:      session.Toggle{Disabled: []string{"Agent"}},
+		Tools:      session.Toggle{Disabled: []string{"SpawnAgent", "spawn_agent"}},
 		Extensions: session.Toggle{Disabled: []string{"telegram-bot"}},
 		Message:    Message{Busy: BusyQueue},
 	}
@@ -49,8 +49,11 @@ func TestSaveRoundTrip(t *testing.T) {
 	if got.Extensions.Allowed("telegram-bot") {
 		t.Fatalf("extensions %+v", got.Extensions)
 	}
-	if got.Tools.Allowed("Agent") {
+	if got.Tools.Allowed("spawn_agent") {
 		t.Fatalf("tools %+v", got.Tools)
+	}
+	if len(got.Tools.Disabled) != 1 || got.Tools.Disabled[0] != "spawn_agent" {
+		t.Fatalf("tools were not canonicalized: %+v", got.Tools)
 	}
 	if got.Message.BusyDelivery() != BusyQueue {
 		t.Fatalf("message %+v", got.Message)

@@ -14,7 +14,7 @@ type writeTool struct {
 	mutations *MutationQueue
 }
 
-func (writeTool) Name() string        { return "Write" }
+func (writeTool) Name() string        { return "write" }
 func (writeTool) Description() string { return "Write a file to the local filesystem." }
 func (writeTool) Snippet() string     { return "Create or overwrite files" }
 func (writeTool) Prompt() string {

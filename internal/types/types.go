@@ -127,6 +127,7 @@ type CompletionIdentity struct {
 
 // Message is a conversation item (user / assistant / toolResult).
 type Message struct {
+	ContextOnly bool `json:"contextOnly,omitempty"`
 	// ClientRequestID correlates accepted input with its persisted entry. It is
 	// transport metadata, never provider prompt content or a text dedupe key.
 	ClientRequestID string              `json:"clientRequestId,omitempty"`

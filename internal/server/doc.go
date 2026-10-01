@@ -119,14 +119,13 @@
 // lifecycle hooks force portable replay and suppress durable server checkpoints
 // because they cannot inspect an encrypted prefix. A steer accepted into
 // the Inbox but never drained because the
-// run was aborted is committed to jsonl as an unanswered user turn; a subagent
-// completion notification uses the same Inbox while the parent run is live, so
-// it lands inside the turn that started the agent, and falls back to the durable
-// queue (system lane, tagged with its agent task) once that turn has ended.
-// Live drains and queued turns arbitrate the same task/generation at actual
-// persistence; enqueue alone never consumes a completion. Setup/exit races
-// transfer an undrained Inbox atomically to the durable queue. Completion
-// acceptance is not published optimistically, since TaskOutput may still win.
+// run was aborted is committed to jsonl. Agent context and completion messages
+// use QueueOnly delivery: live turns consume their Inbox at a round boundary;
+// idle sessions retain context without starting a model turn. Explicit
+// followup_task admits another generation on the same logical identity.
+// Completion task/generation ownership is committed at parent persistence;
+// enqueue, list_agents and wait_agent never consume it. Setup/exit races retain
+// undrained input through the durable context queue.
 // Prompt clientRequestId is generated if absent and preserved in accepted
 // responses, steer events, queue promotion and persisted messages. Session
 // list/detail expose activeDescendantCount separately from own-run running;
@@ -158,13 +157,20 @@
 // by session id. Settings scans are uncached. Session reload closes only that
 // session's extension view; global settings reload idle sessions and queues
 // active ones until occupy's matching release (prompt and compact).
-// Agent tool calls fork tree-mode child sessions and run them through their own
-// runState, bounded to three child layers below the main session. Agent metadata
-// beside the child transcript rebuilds the stable task registry after restart;
-// SendMessage steers a live Inbox or resumes the same child session, while
-// TaskOutput/TaskStop expose the shared task lifecycle.
+// spawn_agent creates named tree-mode children with all/none/N finished turns,
+// stable root-scoped task paths and asynchronous, detached ownership. Root-scoped
+// child execution capacity defaults to four; waiting turns retain capacity and
+// there is no fixed depth limit. Agent metadata restores identity and pending
+// work in two passes. send_message accepts context; followup_task starts work;
+// interrupt_agent preserves identity and leaves separately owned shell processes.
+// Per-generation progress/stats are reduced from run events rather than scanning
+// inherited history. Sideband process_updated/agent_updated events never advance
+// the transcript leaf and reach existing SSE and session GET runtime projections.
+// ShellProcessManager owns exec_command/write_stdin processes across turns.
+// Existing abort supports turn (default), process and structural tree scopes.
 // Shutdown sets runtimeClosed so occupy and queue dispatch refuse new runs, then
-// drains active runs until idle (release can otherwise chain a late dispatch).
+// drains runners including their completion callbacks before closing process
+// managers (release can otherwise chain a late dispatch or create a late manager).
 //
 // Routes and run lifecycle: docs/architecture.md.
 // Compact session GETs project complete turns without hidden reply bodies;

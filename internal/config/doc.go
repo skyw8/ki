@@ -10,6 +10,8 @@
 // compaction.server_side enables provider-managed Responses compaction for
 // catalog models that explicitly advertise it.
 //
+// agents.max_concurrent defaults to four active child turns per root; the root
+// itself is excluded and waiting child turns still count. There is no depth cap.
 // Provider/model settings and credentials are owned by package provider in
 // models.json and credentials.json, not TOML.
 package config

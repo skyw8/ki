@@ -3856,3 +3856,12 @@ select:focus-visible {
 .history-control button, .body-load { min-height: 44px; padding: 8px 16px; border-radius: 10px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); }
 .branch-load { min-height: 40px; padding: 4px 8px; color: var(--dsw-alias-label-secondary); }
 .history-seeking { position: absolute; z-index: 4; top: 8px; left: 50%; transform: translateX(-50%); min-height: 44px; max-width: 90%; padding: 8px 16px; border-radius: 12px; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 2px 8px rgb(0 0 0 / 8%); }
+
+.runtime-panel { border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; max-height: 35dvh; overflow: auto; }
+.runtime-panel summary { cursor: pointer; min-height: 44px; padding: 12px; }
+.runtime-items { padding: 0 12px 12px; display: grid; gap: 8px; }
+.runtime-item { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.runtime-item > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.runtime-item small { display: block; opacity: .7; }
+.runtime-item button { min-height: 44px; min-width: 44px; padding: 8px 12px; }
+.runtime-item pre { width: 100%; max-height: 140px; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }

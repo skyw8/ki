@@ -12,6 +12,7 @@ import (
 
 // Config is the merged runtime configuration.
 type Config struct {
+	Agents     Agents     `mapstructure:"agents"`
 	Home       string     `mapstructure:"-"`
 	Sessions   Sessions   `mapstructure:"sessions"`
 	Compaction Compaction `mapstructure:"compaction"`
@@ -19,6 +20,10 @@ type Config struct {
 	Log        Log        `mapstructure:"log"`
 	Push       Push       `mapstructure:"push"`
 	Streaming  Streaming  `mapstructure:"streaming"`
+}
+
+type Agents struct {
+	MaxConcurrent int `mapstructure:"max_concurrent"`
 }
 
 // Streaming configures native provider response-body liveness.
@@ -79,7 +84,8 @@ func Builtin(home string) Config {
 		home = HomeDir()
 	}
 	return Config{
-		Home: home,
+		Agents: Agents{MaxConcurrent: 4},
+		Home:   home,
 		Sessions: Sessions{
 			Root: filepath.Join(home, "sessions"),
 		},
@@ -145,6 +151,9 @@ func LoadWithViper(cwd string, settings *viper.Viper) (Config, error) {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
 	cfg.Home = home
+	if cfg.Agents.MaxConcurrent < 1 {
+		return Config{}, fmt.Errorf("agents.max_concurrent must be positive")
+	}
 	if cfg.Streaming.IdleTimeoutSeconds < 0 {
 		return Config{}, fmt.Errorf("streaming.idle_timeout_seconds must not be negative")
 	}
@@ -166,6 +175,7 @@ func LoadWithViper(cwd string, settings *viper.Viper) (Config, error) {
 }
 
 func setDefaults(settings *viper.Viper, cfg Config) {
+	settings.SetDefault("agents.max_concurrent", cfg.Agents.MaxConcurrent)
 	settings.SetDefault("sessions.root", cfg.Sessions.Root)
 	settings.SetDefault("compaction.enabled", cfg.Compaction.Enabled)
 	settings.SetDefault("compaction.reserve_tokens", cfg.Compaction.ReserveTokens)

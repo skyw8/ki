@@ -71,6 +71,11 @@ func (p *runEmitter) Emit(ev loop.Event) error {
 	// attribute an event to its run must drop it (a channel connector replies to
 	// nothing when runId/external are missing).
 	p.buffer(&ev)
+	if p.st.agentTaskID != "" {
+		if err := p.s.agentTasks.ReduceEvent(p.st.agentTaskID, p.st.agentGeneration, ev); err != nil {
+			return fmt.Errorf("persist agent progress: %w", err)
+		}
+	}
 	if ev.Type == loop.AgentEnd {
 		p.publishCompletion(ev)
 	}
@@ -166,6 +171,9 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 		}
 	}
 	key := ""
+	if ev.Message.ContextOnly {
+		key = ev.Message.ClientRequestID
+	}
 	if ev.Message.Role == "user" && p.idempotencyKey != "" {
 		key = p.idempotencyKey
 		p.idempotencyKey = ""

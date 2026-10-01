@@ -1085,7 +1085,7 @@ func TestRequestHeaderCarriesSystemAndTools(t *testing.T) {
 	if hdr.System != "you are ki" {
 		t.Fatalf("system: %q", hdr.System)
 	}
-	if len(hdr.Tools) != 1 || hdr.Tools[0].Name != "Read" || hdr.Tools[0].Description == "" {
+	if len(hdr.Tools) != 1 || hdr.Tools[0].Name != "read" || hdr.Tools[0].Description == "" {
 		t.Fatalf("tools: %+v", hdr.Tools)
 	}
 }

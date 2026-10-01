@@ -8,8 +8,13 @@
 // Development checks use incremental TypeScript and Bun unit tests. `bun run
 // test` runs both unit tests and the isolated Playwright fake-model suite; the
 // Go e2e harness and CI use this entry point to retain the complete test set.
-// The fake browser runner reuses browser processes while keeping each test's
-// context and each invocation's server state and artifacts isolated.
+// Automated browser checks use Chromium only, including desktop/tablet/phone
+// viewport and touch profiles. The fake runner reuses browser processes while
+// keeping each test's context and each invocation's server state and artifacts
+// isolated. Independent specs opt into per-test process scheduling only after
+// every case has passed standalone; ordered scenarios stay together.
+// Escape dismisses a drawer's open child menu before the drawer, including
+// the interval before the menu's initial focus frame has run.
 //
 // TranscriptStore commits replica facts outside React scheduling. SessionSync
 // owns reader/recovery/ACK authority; TranscriptRequests owns cancellable

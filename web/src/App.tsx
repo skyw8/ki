@@ -1,3 +1,4 @@
+import { RuntimePanel } from './features/chat/RuntimePanel'
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { ApiError, Client } from './api/client'
@@ -590,11 +591,13 @@ function WorkspaceApp({ api }: { api: Client }) {
   useEffect(() => {
     if (!mobileSidebarOpen) return
     const close = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileSidebarOpen(false)
+      // The child menu owns Escape even before its opening focus frame runs.
+      // Otherwise both window listeners close and leave its opener inert.
+      if (event.key === 'Escape' && !event.defaultPrevented && !menu) setMobileSidebarOpen(false)
     }
     window.addEventListener('keydown', close)
     return () => window.removeEventListener('keydown', close)
-  }, [mobileSidebarOpen])
+  }, [menu, mobileSidebarOpen])
 
   useEffect(() => {
     // Why: a selected session must become visible immediately on a phone;
@@ -942,6 +945,10 @@ function WorkspaceApp({ api }: { api: Client }) {
         // meter through the push stream; a run's context_usage still arrives on
         // its run SSE.
         setView(v => applyEvent(v, ev))
+        return
+      case 'process_updated':
+      case 'agent_updated':
+        setView(v=>applyEvent(v,ev))
         return
       case 'runtime_ready':
         void refreshOpenRuntime()
@@ -1577,6 +1584,7 @@ function WorkspaceApp({ api }: { api: Client }) {
   const steerShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘+Enter' : t('queue.steerHint')
   const composer = (
     <>
+    <RuntimePanel processes={view.processes ?? []} agents={view.agents ?? []} onStop={async processID=>{if (!currentId) return;try {await api.abort(currentId,'process',processID);await refreshOpenRuntime()} catch(error) {toast.from(error)}}} onInterrupt={async sessionID=>{try {await api.abort(sessionID);await refreshOpenRuntime()} catch(error) {toast.from(error)}}} />
     {extQueued.length ? (
       <ul className="queued-list ext-queued" data-testid="ext-queued-list">
         {extQueued.map(item => {

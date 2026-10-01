@@ -195,8 +195,8 @@ test('switching sessions cancels late paging, hydration and index responses', as
 test('tool expansion hydrates entry ids, exposes failures and retries the full result', async ({ page }) => {
   const all: Entry[] = [
     { type: 'message', id: 'u', message: { role: 'user', content: [{ type: 'text', text: 'Inspect the result' }] } },
-    { type: 'message', id: 'call-entry', parentId: 'u', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'call-id', name: 'Bash', arguments: { command: 'echo result' } }] } },
-    { type: 'message', id: 'result-entry', parentId: 'call-entry', truncated: true, message: { role: 'toolResult', toolCallId: 'call-id', toolName: 'Bash', content: [{ type: 'text', text: 'preview' }] } },
+    { type: 'message', id: 'call-entry', parentId: 'u', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'call-id', name: 'exec_command', arguments: { cmd: 'echo result' } }] } },
+    { type: 'message', id: 'result-entry', parentId: 'call-entry', truncated: true, message: { role: 'toolResult', toolCallId: 'call-id', toolName: 'exec_command', content: [{ type: 'text', text: 'preview' }] } },
   ]
   const f = await fixture(page, all, 3)
   const requested: string[] = []

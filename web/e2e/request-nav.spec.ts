@@ -3,6 +3,10 @@ import { loadHistory, requestTitle, userRequests } from '../src/lib/model.ts'
 import type { ChatNode, Entry, IndexEntry } from '../src/api/types.ts'
 import { serverToken } from './global-setup'
 
+// Every case passed standalone; private sessions, routes and contexts keep
+// navigation recovery races independent of the other cases in this file.
+test.describe.configure({ mode: 'parallel' })
+
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
   await expect(input).toBeEnabled()
@@ -23,7 +27,7 @@ test('userRequests walks the active path and drops optimistic duplicates', () =>
     { kind: 'user', id: 'u1', clientRequestId: 'request-1', text: 'same turn', content: [] },
     { kind: 'assistant', id: 'a1', text: 'ok' },
     { kind: 'user', id: 'u2', text: 'next\nline', content: [] },
-    { kind: 'tool', id: 't1', name: 'Bash' },
+    { kind: 'tool', id: 't1', name: 'exec_command' },
   ]
   const entries: Entry[] = [
     { type: 'message', id: 'u1', parentId: '', message: { role: 'user', clientRequestId: 'request-1', content: [{ type: 'text', text: 'same turn' }] } },
@@ -124,7 +128,7 @@ test('request navigator jumps to an earlier user turn', async ({ page }) => {
 
 for (const mobile of [false, true]) test(`request navigation lands once and tracks actual reading on ${mobile ? 'touch' : 'desktop'}`, async ({ browser, baseURL }) => {
   const context = await browser.newContext({ baseURL, storageState: test.info().project.use.storageState,
-    viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 }, isMobile: mobile && test.info().project.use.browserName !== 'firefox', hasTouch: mobile,
+    viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 }, isMobile: mobile, hasTouch: mobile,
   })
   const page = await context.newPage()
   try {

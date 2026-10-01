@@ -529,14 +529,14 @@ func TestSnapshotFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap, _ = srv.Snapshot(id, "goal")
-	if len(snap.ActiveTools) != 1 || snap.ActiveTools[0] != "Read" {
+	if len(snap.ActiveTools) != 1 || snap.ActiveTools[0] != "read" {
 		t.Fatalf("active tools %+v (unknown names dropped)", snap.ActiveTools)
 	}
 	if err := srv.SetActiveTools(id, "goal", []string{"Nope", "AlsoNope"}); err != nil {
 		t.Fatal(err)
 	}
 	snap, _ = srv.Snapshot(id, "goal")
-	if len(snap.ActiveTools) != 1 || snap.ActiveTools[0] != "Read" {
+	if len(snap.ActiveTools) != 1 || snap.ActiveTools[0] != "read" {
 		t.Fatalf("all-unknown must keep previous %+v", snap.ActiveTools)
 	}
 }

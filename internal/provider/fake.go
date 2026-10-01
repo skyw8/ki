@@ -198,8 +198,8 @@ func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.
 		return types.Message{
 			Role: "assistant",
 			Content: []types.Content{{
-				Type: "toolCall", ID: "call-bash-probe", Name: "Bash",
-				Arguments: map[string]any{"command": command},
+				Type: "toolCall", ID: "call-bash-probe", Name: "exec_command",
+				Arguments: map[string]any{"cmd": command},
 			}},
 			StopReason: "toolUse",
 			Provider:   req.Provider,
@@ -210,7 +210,7 @@ func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.
 		m := types.Message{
 			Role: "assistant",
 			Content: []types.Content{{
-				Type: "toolCall", ID: "call-write-env", Name: "Write",
+				Type: "toolCall", ID: "call-write-env", Name: "write",
 				Arguments: map[string]any{"path": ".env", "content": "SECRET=1"},
 			}},
 			StopReason: "toolUse",
@@ -223,8 +223,8 @@ func (s *Scripted) Stream(ctx context.Context, req loop.Request, emit func(loop.
 		m := types.Message{
 			Role: "assistant",
 			Content: []types.Content{{
-				Type: "toolCall", ID: "call-sleep", Name: "Bash",
-				Arguments: map[string]any{"command": "SLEEP_INTERCEPT"},
+				Type: "toolCall", ID: "call-sleep", Name: "exec_command",
+				Arguments: map[string]any{"cmd": "SLEEP_INTERCEPT"},
 			}},
 			StopReason: "toolUse",
 			Provider:   req.Provider,

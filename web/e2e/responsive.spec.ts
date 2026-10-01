@@ -11,6 +11,35 @@ import { MIN_TOUCH_SIZE } from './touch-target.ts'
 // parallel runner may split this file into one isolated process per test.
 test.describe.configure({ mode: 'parallel' })
 
+test.describe('drawer menu keyboard ownership', () => {
+  test.use({ viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true })
+
+  test('Escape closes an unfocused child menu without closing the phone drawer', async ({ page }) => {
+    const created = await page.request.post('/v1/sessions', {
+      headers: { Authorization: `Bearer ${serverToken()}` }, data: {},
+    })
+    expect(created.ok()).toBe(true)
+    await page.goto('/')
+    await expect(page.locator('main.main')).toBeVisible()
+    await openDrawer(page, true)
+    const trigger = page.locator('button[aria-label="会话菜单"], button[aria-label="Session menu"]').first()
+    await trigger.click()
+    await expect(page.getByTestId('pop-menu')).toBeVisible()
+    // Dispatch from the opener in the same task, before an opening focus frame
+    // can move it into the child and bypass the window-level ownership race.
+    await trigger.evaluate(el => {
+      el.focus({ preventScroll: true })
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    })
+    await expect(page.getByTestId('pop-menu')).toHaveCount(0)
+    await expect(page.getByTestId('mobile-nav-toggle')).toHaveAttribute('aria-expanded', 'true')
+    await expect(trigger).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId('mobile-nav-toggle')).toHaveAttribute('aria-expanded', 'false')
+    await expect(page.getByTestId('mobile-nav-toggle')).toBeFocused()
+  })
+})
+
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const fixtureName = 'responsive-fixture'
 const previewName = 'responsive-preview-long-name.txt'

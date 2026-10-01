@@ -8,7 +8,6 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,11 +16,12 @@ import (
 
 	"ki/internal/loop"
 	"ki/internal/session"
+	"ki/internal/toolname"
 )
 
 func pick(ts []loop.Tool, name string) loop.Tool {
 	for _, t := range ts {
-		if t.Name() == name {
+		if toolname.Equal(name, t.Name()) {
 			return t
 		}
 	}
@@ -40,14 +40,7 @@ func TestBuildSelectsReadCapabilities(t *testing.T) {
 	shells := DiscoverShellRuntime()
 	set := Set{CWD: t.TempDir(), Shells: shells}
 	classic := set.Build(Profile{})
-	wantClassic := []string{"Read", "Write", "Edit", "Grep", "Glob"}
-	if shells.BashAvailable() {
-		wantClassic = append(wantClassic, "Bash")
-	}
-	if shells.PowerShellEnabled() {
-		wantClassic = append(wantClassic, "PowerShell")
-	}
-	wantClassic = append(wantClassic, "TaskOutput", "TaskStop")
+	wantClassic := []string{"read", "write", "edit", "grep", "glob", "exec_command", "write_stdin"}
 	if got := strings.Join(names(classic), ","); got != strings.Join(wantClassic, ",") {
 		t.Fatalf("classic tools = %s", got)
 	}
@@ -61,14 +54,7 @@ func TestBuildSelectsReadCapabilities(t *testing.T) {
 	}
 
 	patch := set.Build(Profile{RichRead: true, ApplyPatch: true})
-	wantPatch := []string{"Read", "apply_patch", "Grep", "Glob"}
-	if shells.BashAvailable() {
-		wantPatch = append(wantPatch, "Bash")
-	}
-	if shells.PowerShellEnabled() {
-		wantPatch = append(wantPatch, "PowerShell")
-	}
-	wantPatch = append(wantPatch, "TaskOutput", "TaskStop")
+	wantPatch := []string{"read", "apply_patch", "grep", "glob", "exec_command", "write_stdin"}
 	if got := strings.Join(names(patch), ","); got != strings.Join(wantPatch, ",") {
 		t.Fatalf("patch tools = %s", got)
 	}
@@ -95,15 +81,15 @@ func TestBuildSelectsReadCapabilities(t *testing.T) {
 }
 
 func TestFilterBuiltinsHonorsToggle(t *testing.T) {
-	store := NewAgentStore()
+	store := NewAgentController()
 	defer store.Close()
 	set := Set{CWD: t.TempDir(), Agent: fakeAgentRuntime{store: store}}
 	all := set.Build(Profile{})
-	filtered := FilterBuiltins(all, session.Toggle{Disabled: []string{"Read", "Agent"}})
+	filtered := FilterBuiltins(all, session.Toggle{Disabled: []string{"Read", "SpawnAgent"}})
 	if pick(filtered, "Read") != nil {
 		t.Fatal("Read was not disabled")
 	}
-	if pick(filtered, "Agent") != nil {
+	if pick(filtered, "SpawnAgent") != nil {
 		t.Fatal("Agent was not disabled")
 	}
 	if pick(filtered, "Grep") == nil {
@@ -111,34 +97,23 @@ func TestFilterBuiltinsHonorsToggle(t *testing.T) {
 	}
 }
 
-func TestBuildPowerShellContract(t *testing.T) {
-	ps := shellSpec{kind: shellPowerShell, path: "pwsh", powerShellEdition: powerShellCore}
-	shells := ShellRuntime{bash: shellSpec{kind: shellBash}, powerShell: &ps}
-	all := Set{CWD: t.TempDir(), Shells: shells}.Build(Profile{})
-	if pick(all, "Bash") != nil {
-		t.Fatalf("Bash-dependent tools registered without Bash: %v", names(all))
-	}
-	tool := pick(all, "PowerShell")
-	if tool == nil {
-		t.Fatal("PowerShell was not registered")
-	}
-	props, ok := tool.Parameters()["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("PowerShell properties = %#v", tool.Parameters()["properties"])
-	}
-	for _, name := range []string{"command", "timeout", "description", "run_in_background"} {
+func TestExecCommandContract(t *testing.T) {
+	manager := NewShellProcessManager()
+	defer manager.Close()
+	tool := pick(Set{CWD: t.TempDir(), Processes: manager}.Build(Profile{}), "ExecCommand")
+	props := tool.Parameters()["properties"].(map[string]any)
+	for _, name := range []string{"cmd", "workdir", "shell", "login", "tty", "yield_time_ms", "max_output_tokens"} {
 		if props[name] == nil {
-			t.Fatalf("PowerShell missing %s schema", name)
+			t.Fatalf("missing %s", name)
 		}
 	}
-	if strings.Contains(tool.Prompt(), "dangerouslyDisableSandbox") || !strings.Contains(tool.Prompt(), "PowerShell 7+") || !strings.Contains(tool.Prompt(), "is not remembered") {
-		t.Fatalf("PowerShell prompt = %s", tool.Prompt())
+	for _, name := range []string{"command", "timeout", "run_in_background"} {
+		if props[name] != nil {
+			t.Fatalf("legacy argument %s", name)
+		}
 	}
-
-	unavailable := powerShellTool{shell: shellSpec{kind: shellPowerShell}}
-	result := unavailable.Execute(context.Background(), map[string]any{"command": "Get-Location"})
-	if result.IsError || !strings.Contains(result.Content[0].Text, "not available") {
-		t.Fatalf("unavailable result = %+v", result)
+	if tool.(loop.ToolValidator).Validate(map[string]any{"cmd": "printf ok"}) != nil || tool.(loop.ToolValidator).Validate(map[string]any{"command": "printf ok"}) == nil {
+		t.Fatal("exec schema mismatch")
 	}
 }
 
@@ -158,7 +133,7 @@ func TestTextReadRejectsImageAndPDF(t *testing.T) {
 
 func TestReadWriteEditRelativeAndNoLineNumbers(t *testing.T) {
 	cwd := t.TempDir()
-	set := Set{CWD: cwd, Jobs: NewJobStore()}
+	set := Set{CWD: cwd}
 	all := set.Build(Profile{RichRead: true})
 	read, write, edit := pick(all, "Read"), pick(all, "Write"), pick(all, "Edit")
 	res := write.Execute(context.Background(), map[string]any{
@@ -409,310 +384,172 @@ func TestOutputSanitizerHandlesSplitANSIAndControls(t *testing.T) {
 	}
 }
 
-func TestBashNonZeroIsErrorAndCwdReset(t *testing.T) {
-	cwd := t.TempDir()
-	b := bashTool{cwd: cwd, jobs: NewJobStore()}
-	res := b.Execute(context.Background(), map[string]any{"command": "exit 7"})
-	if !res.IsError || !strings.Contains(res.Content[0].Text, "exited with code 7") {
-		t.Fatalf("nonzero: %+v", res)
-	}
-	_ = os.WriteFile(filepath.Join(cwd, "here.txt"), []byte("ok"), 0o600)
-	res = b.Execute(context.Background(), map[string]any{"command": "cd / && cat here.txt"})
-	if !res.IsError {
-		t.Fatal("cat from / should fail; cwd must reset next command")
-	}
-	res = b.Execute(context.Background(), map[string]any{"command": "cat here.txt"})
-	if res.IsError || !strings.Contains(res.Content[0].Text, "ok") {
-		t.Fatalf("cwd should reset to session: %+v", res)
-	}
-}
-
-func waitPIDFile(t *testing.T, path string) int {
+func testExec(t *testing.T, spool OutputSpool) execCommandTool {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		raw, err := os.ReadFile(path) //nolint:gosec // path is a test fixture inside t.TempDir
-		if err == nil {
-			pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw)))
-			if convErr == nil && pid > 0 {
-				return pid
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
+	manager := NewSpooledShellProcessManager(spool, "test-session")
+	t.Cleanup(manager.Close)
+	shells := DiscoverShellRuntime()
+	if !shells.BashAvailable() {
+		t.Skip("Bash unavailable for POSIX command fixtures")
 	}
-	t.Fatalf("pid file %s not written", path)
-	return 0
+	shells.powerShell = nil
+	return execCommandTool{cwd: t.TempDir(), processes: manager, shells: shells}
 }
-
-// pidGoneScript prints "gone" once pid no longer runs.
-//
-// Why: `$!` reports the shell's pid namespace. Windows can keep a process that
-// an external TerminateProcess already removed in the MSYS table, which still
-// answers `kill -0`, so resolve the winpid MSYS recorded and ask the Windows
-// process list (tasklist reports "No tasks" for a pid that is gone).
-func pidGoneScript(pid int) string {
-	if runtime.GOOS == "windows" {
-		return fmt.Sprintf(`if [ ! -d /proc/%[1]d ]; then echo gone; else w=$(cat /proc/%[1]d/winpid 2>/dev/null); `+
-			`if [ -z "$w" ] || tasklist /FI "PID eq $w" 2>/dev/null | grep -qi "no tasks"; then echo gone; fi; fi`, pid)
-	}
-	return fmt.Sprintf("kill -0 %d 2>/dev/null || echo gone", pid)
-}
-
-// pidProbe reports what the shell still knows about pid for failure messages.
-// `ps -W` prints MSYS pids next to the Windows pid and parent, which is the only
-// way to see whether a surviving child is really a descendant of the launcher.
-func pidProbe(b bashTool, pid int) string {
-	res := b.Execute(context.Background(), map[string]any{
-		"command": fmt.Sprintf("if [ -d /proc/%[1]d ]; then echo \"winpid=$(cat /proc/%[1]d/winpid 2>/dev/null)\"; else echo no-proc-entry; fi; ps -W | grep -Ei 'sleep|bash|ki[.]exe' | head -20 || true", pid),
-	})
-	if len(res.Content) == 0 {
-		return "unknown"
-	}
-	return strings.TrimSpace(res.Content[0].Text)
-}
-
-func assertPIDDead(t *testing.T, b bashTool, pid int) {
+func execSnapshot(t *testing.T, result loop.ToolResult) ProcessSnapshot {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		res := b.Execute(context.Background(), map[string]any{"command": pidGoneScript(pid)})
-		if !res.IsError && strings.Contains(res.Content[0].Text, "gone") {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	var snap ProcessSnapshot
+	if len(result.Content) == 0 {
+		t.Fatal("no process result")
 	}
-	t.Fatalf("pid %d still alive after cancel/timeout (probe=%s)", pid, pidProbe(b, pid))
+	if err := json.Unmarshal([]byte(result.Content[0].Text), &snap); err != nil {
+		t.Fatalf("decode: %v result=%+v", err, result)
+	}
+	return snap
 }
-
-func TestBashCancelKillsProcessGroup(t *testing.T) {
-	cwd := t.TempDir()
-	b := bashTool{cwd: cwd, jobs: NewJobStore()}
-	pidPath := filepath.Join(cwd, "child.pid")
+func TestExecNonZeroAndCwdReset(t *testing.T) {
+	tool := testExec(t, nil)
+	result := tool.Execute(t.Context(), map[string]any{"cmd": "exit 3"})
+	snap := execSnapshot(t, result)
+	if !result.IsError || snap.ExitCode == nil || *snap.ExitCode != 3 {
+		t.Fatalf("nonzero: %+v", result)
+	}
+	child := filepath.Join(tool.cwd, "child")
+	if err := os.Mkdir(child, 0755); err != nil {
+		t.Fatal(err)
+	}
+	snap = execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": "pwd", "workdir": child}))
+	if !strings.Contains(snap.Output, "child") {
+		t.Fatalf("cwd: %+v", snap)
+	}
+	snap = execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": "pwd"}))
+	if strings.Contains(snap.Output, "child") {
+		t.Fatalf("cwd persisted: %+v", snap)
+	}
+}
+func TestExecObserverCancelPreservesProcessAndExplicitStopKillsTree(t *testing.T) {
+	tool := testExec(t, nil)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan loop.ToolResult, 1)
-	go func() {
-		done <- b.Execute(ctx, map[string]any{
-			"command": "sleep 120 & echo $! > child.pid; wait",
-		})
-	}()
-	pid := waitPIDFile(t, pidPath)
+	go func() { done <- tool.Execute(ctx, map[string]any{"cmd": "sleep 120 & echo $! > child.pid; wait"}) }()
+	pidPath := filepath.Join(tool.cwd, "child.pid")
+	var pid int
+	waitFor(t, func() bool {
+		raw, err := os.ReadFile(pidPath)
+		if err != nil {
+			return false
+		}
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(raw)))
+		return pid > 0
+	}, "child did not start")
 	cancel()
-	select {
-	case res := <-done:
-		if !res.IsError || !strings.Contains(res.Content[0].Text, "Command aborted") {
-			t.Fatalf("want aborted, got %+v", res)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Execute did not return after cancel (stdout Wait hang?)")
+	result := <-done
+	snap := execSnapshot(t, result)
+	if !result.IsError || snap.Status != "running" {
+		t.Fatalf("observer cancellation killed process: %+v", result)
 	}
-	assertPIDDead(t, b, pid)
+	probe := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": fmt.Sprintf("kill -0 %d 2>/dev/null && echo alive", pid)}))
+	if !strings.Contains(probe.Output, "alive") {
+		t.Fatal("descendant no longer alive")
+	}
+	stopped, err := tool.processes.Terminate(snap.SessionID)
+	if err != nil || stopped.Status != "exited" {
+		t.Fatalf("terminate: %+v %v", stopped, err)
+	}
+	waitFor(t, func() bool {
+		probe := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": fmt.Sprintf("kill -0 %d 2>/dev/null || echo gone", pid)}))
+		return strings.Contains(probe.Output, "gone")
+	}, "descendant survived tree termination")
 }
-
-func TestBashTimeoutPromotesToBackground(t *testing.T) {
-	cwd := t.TempDir()
-	jobs := NewJobStore()
-	defer jobs.Close()
-	b := bashTool{cwd: cwd, jobs: jobs}
-	started := time.Now()
-	res := b.Execute(context.Background(), map[string]any{
-		"command": "true; sleep 120 & echo $! > child.pid; wait",
-		"timeout": 1000,
-	})
-	if took := time.Since(started); took > 3*time.Second {
-		t.Fatalf("timeout took %s, want ~1s", took)
+func TestExecYieldAndIncrementalOutput(t *testing.T) {
+	tool := testExec(t, nil)
+	first := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": "printf 'one\n'; sleep 0.6; printf 'two\n'", "yield_time_ms": 250}))
+	if first.Status != "running" || first.Output != "one\n" {
+		t.Fatalf("initial yield: %+v", first)
 	}
-	if res.IsError || !strings.Contains(res.Content[0].Text, "continues in background") {
-		t.Fatalf("want background promotion, got %+v", res)
+	next := execSnapshot(t, (writeStdinTool{processes: tool.processes}).Execute(t.Context(), map[string]any{"session_id": first.SessionID, "yield_time_ms": 5000}))
+	if next.Status != "exited" || next.Output != "two\n" || next.OutputOffset != 4 {
+		t.Fatalf("incremental result: %+v", next)
 	}
-	pid := waitPIDFile(t, filepath.Join(cwd, "child.pid"))
-	var taskID string
-	for candidate := range jobs.jobs {
-		if strings.HasPrefix(candidate, "bg-") {
-			if snapshot, ok := jobs.Get(candidate); ok && snapshot.Status == TaskBackground {
-				taskID = candidate
-				break
-			}
-		}
+	again := execSnapshot(t, (writeStdinTool{processes: tool.processes}).Execute(t.Context(), map[string]any{"session_id": first.SessionID}))
+	if again.Output != "" {
+		t.Fatalf("output consumed twice: %+v", again)
 	}
-	if taskID == "" {
-		t.Fatal("background task was not registered")
+	raw, err := os.ReadFile(first.OutputFile)
+	if err != nil || string(raw) != "one\ntwo\n" {
+		t.Fatalf("spool: %q %v", raw, err)
 	}
-	if _, err := jobs.Stop(taskID); err != nil {
+}
+func TestExecLargeOutputSpoolsAndReadPages(t *testing.T) {
+	tool := testExec(t, nil)
+	snap := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": "i=1; while [ $i -le 8000 ]; do printf 'line-%05d\n' \"$i\"; i=$((i+1)); done", "max_output_tokens": 32}))
+	if !snap.Truncated || len(snap.Output) > 128 || !strings.Contains(snap.Output, "line-00001") {
+		t.Fatalf("bounded output: %+v", snap)
+	}
+	raw, err := os.ReadFile(snap.OutputFile)
+	if err != nil || !strings.Contains(string(raw), "line-00001\n") || !strings.Contains(string(raw), "line-08000\n") {
+		t.Fatalf("incomplete spool: %v", err)
+	}
+	result := (readTool{cwd: tool.cwd}).Execute(t.Context(), map[string]any{"file_path": snap.OutputFile, "offset": 1, "limit": 2})
+	if result.IsError || !strings.Contains(result.Content[0].Text, "line-00001\nline-00002") {
+		t.Fatalf("Read spool: %+v", result)
+	}
+	next := execSnapshot(t, (writeStdinTool{processes: tool.processes}).Execute(t.Context(), map[string]any{"session_id": snap.SessionID, "max_output_tokens": 32}))
+	if next.OutputOffset != int64(len(snap.Output)) || next.Output == snap.Output {
+		t.Fatalf("cursor: %+v", next)
+	}
+}
+func TestExecSmallOutputAndFinishedStop(t *testing.T) {
+	tool := testExec(t, nil)
+	result := tool.Execute(t.Context(), map[string]any{"cmd": "printf small"})
+	snap := execSnapshot(t, result)
+	if result.IsError || snap.Output != "small" || snap.Truncated {
+		t.Fatalf("small: %+v", result)
+	}
+	stopped, err := tool.processes.Terminate(snap.SessionID)
+	if err != nil || stopped.Status != "exited" {
+		t.Fatalf("finished stop: %+v %v", stopped, err)
+	}
+}
+func TestWriteStdinPipeAndPTY(t *testing.T) {
+	tool := testExec(t, nil)
+	pipe := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": "sleep 120", "yield_time_ms": 250}))
+	rejected := (writeStdinTool{processes: tool.processes}).Execute(t.Context(), map[string]any{"session_id": pipe.SessionID, "chars": "ordinary input\n"})
+	if !rejected.IsError {
+		t.Fatal("pipe accepted ordinary input")
+	}
+	if _, err := tool.processes.Terminate(pipe.SessionID); err != nil {
 		t.Fatal(err)
 	}
-	assertPIDDead(t, b, pid)
+	tty := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": "read value; printf 'received:%s' \"$value\"", "tty": true, "yield_time_ms": 250}))
+	input := (writeStdinTool{processes: tool.processes}).Execute(t.Context(), map[string]any{"session_id": tty.SessionID, "chars": "hello\n", "yield_time_ms": 2000})
+	end := execSnapshot(t, input)
+	if input.IsError || end.Status != "exited" || !strings.Contains(end.Output, "received:hello") {
+		t.Fatalf("PTY: %+v", input)
+	}
 }
-
-func TestBashBackgroundAndRead(t *testing.T) {
-	cwd := t.TempDir()
-	jobs := NewJobStore()
-	set := Set{CWD: cwd, Jobs: jobs}
-	all := set.Build(Profile{})
-	bash, read := pick(all, "Bash"), pick(all, "Read")
-	res := bash.Execute(context.Background(), map[string]any{
-		"command":           "echo bg-out",
-		"run_in_background": true,
-	})
-	if res.IsError {
-		t.Fatalf("%+v", res)
+func TestProcessCapacityAndSessionIsolation(t *testing.T) {
+	tool := testExec(t, nil)
+	tool.processes.limit = 1
+	snap := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": "sleep 120", "yield_time_ms": 250}))
+	if result := tool.Execute(t.Context(), map[string]any{"cmd": "printf no"}); !result.IsError {
+		t.Fatal("live capacity was not enforced")
 	}
-	text := res.Content[0].Text
-	if !strings.Contains(text, "output_file:") {
-		t.Fatalf("bg result: %s", text)
+	other := NewShellProcessManager()
+	defer other.Close()
+	if _, err := other.Interact(t.Context(), snap.SessionID, "", time.Millisecond, 10, nil); err == nil {
+		t.Fatal("another session accessed process")
 	}
-	// wait briefly for the command
-	deadline := time.Now().Add(2 * time.Second)
-	var got string
-	for time.Now().Before(deadline) {
-		_, after, _ := strings.Cut(text, "output_file: ")
-		path := strings.TrimSpace(strings.Split(after, "\n")[0])
-		r := read.Execute(context.Background(), map[string]any{"file_path": path})
-		got = r.Content[0].Text
-		if strings.Contains(got, "bg-out") {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("bg output: %q", got)
-}
-
-func TestBashForegroundTruncationSpillsAndReadCanPage(t *testing.T) {
-	cwd := t.TempDir()
-	jobs := NewJobStore()
-	defer jobs.Close()
-	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{})
-	bash, read := pick(all, "Bash"), pick(all, "Read")
-	result := bash.Execute(context.Background(), map[string]any{
-		"command": "i=1; while [ $i -le 3000 ]; do printf 'line-%04d\\n' \"$i\"; i=$((i+1)); done",
-	})
-	if result.IsError {
-		t.Fatalf("foreground bash: %+v", result)
-	}
-	text := result.Content[0].Text
-	if strings.Contains(text, "line-0001") || !strings.Contains(text, "line-3000") {
-		t.Fatalf("result should contain only the output tail: %q", text)
-	}
-	_, suffix, ok := strings.Cut(text, "Full output: ")
-	if !ok {
-		t.Fatalf("truncated result omitted full output path: %q", text)
-	}
-	path := strings.TrimSuffix(strings.TrimSpace(suffix), "]")
-	if !filepath.IsAbs(path) {
-		t.Fatalf("full output path is not absolute: %q", path)
-	}
-	full, err := os.ReadFile(path) //nolint:gosec // path is the test spill file created by the tool
-	if err != nil {
+	if _, err := tool.processes.Terminate(snap.SessionID); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(full), "line-0001\n") || !strings.Contains(string(full), "line-3000\n") {
-		t.Fatalf("spill file is incomplete: first/last lines missing")
-	}
-
-	page := read.Execute(context.Background(), map[string]any{"file_path": path, "offset": 1, "limit": 2})
-	if page.IsError || !strings.Contains(page.Content[0].Text, "line-0001\nline-0002") {
-		t.Fatalf("Read could not page spill file from its beginning: %+v", page)
+	if result := tool.Execute(t.Context(), map[string]any{"cmd": "printf yes"}); result.IsError {
+		t.Fatal("finished process still occupies live capacity")
 	}
 }
-
-func TestBashForegroundSmallOutputDoesNotExposeSpill(t *testing.T) {
-	jobs := NewJobStore()
-	defer jobs.Close()
-	bash := bashTool{cwd: t.TempDir(), jobs: jobs}
-	result := bash.Execute(context.Background(), map[string]any{"command": "printf small"})
-	if result.IsError || result.Content[0].Text != "small" {
-		t.Fatalf("small foreground result: %+v", result)
-	}
-	if strings.Contains(result.Content[0].Text, "Full output:") {
-		t.Fatalf("untruncated result exposed spill path: %q", result.Content[0].Text)
-	}
-}
-
 func TestTruncateTailBoundsLongUTF8Line(t *testing.T) {
-	input := strings.Repeat("你", maxBytes)
-	out, note := truncateTail(input)
-	if len(out) > maxBytes {
-		t.Fatalf("truncated output has %d bytes, limit %d", len(out), maxBytes)
-	}
-	if !utf8.ValidString(out) {
-		t.Fatal("truncation split a UTF-8 code point")
-	}
-	if note == "" {
-		t.Fatal("long line omitted truncation note")
-	}
-}
-
-func TestTaskOutputAndTaskStopLifecycle(t *testing.T) {
-	cwd := t.TempDir()
-	jobs := NewJobStore()
-	defer jobs.Close()
-	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{})
-	bash := pick(all, "Bash")
-	outputTool := pick(all, "TaskOutput")
-	stopTool := pick(all, "TaskStop")
-	started := bash.Execute(context.Background(), map[string]any{
-		"command":           "printf 'one\\n'; sleep 0.05; printf 'two\\n'",
-		"run_in_background": true,
-	})
-	if started.IsError {
-		t.Fatalf("start: %+v", started)
-	}
-	id := strings.Fields(strings.Split(started.Content[0].Text, "\n")[0])[3]
-	result := outputTool.Execute(context.Background(), map[string]any{
-		"task_id": id, "block": true, "timeout": 2000,
-	})
-	if result.IsError {
-		t.Fatalf("output: %+v", result)
-	}
-	var response struct {
-		RetrievalStatus string       `json:"retrieval_status"`
-		Task            TaskSnapshot `json:"task"`
-	}
-	if err := json.Unmarshal([]byte(result.Content[0].Text), &response); err != nil {
-		t.Fatal(err)
-	}
-	if response.RetrievalStatus != "success" || response.Task.Status != TaskCompleted || response.Task.Output != "one\ntwo\n" {
-		t.Fatalf("task output = %+v", response)
-	}
-	alreadyFinished := stopTool.Execute(context.Background(), map[string]any{"task_id": id})
-	if alreadyFinished.IsError || !strings.Contains(alreadyFinished.Content[0].Text, "already finished") ||
-		!strings.Contains(alreadyFinished.Content[0].Text, `"status":"completed"`) {
-		t.Fatalf("stop completed task: %+v", alreadyFinished)
-	}
-
-	started = bash.Execute(context.Background(), map[string]any{
-		"command":           "sleep 120",
-		"run_in_background": true,
-	})
-	id = strings.Fields(strings.Split(started.Content[0].Text, "\n")[0])[3]
-	stopped := stopTool.Execute(context.Background(), map[string]any{"task_id": id})
-	if stopped.IsError || !strings.Contains(stopped.Content[0].Text, "stopped") {
-		t.Fatalf("stop: %+v", stopped)
-	}
-	stoppedAgain := stopTool.Execute(context.Background(), map[string]any{"task_id": id})
-	if stoppedAgain.IsError || !strings.Contains(stoppedAgain.Content[0].Text, "already finished") ||
-		!strings.Contains(stoppedAgain.Content[0].Text, `"status":"killed"`) {
-		t.Fatalf("stop task again: %+v", stoppedAgain)
-	}
-	result = outputTool.Execute(context.Background(), map[string]any{"task_id": id, "block": false})
-	if result.IsError || !strings.Contains(result.Content[0].Text, `"status":"killed"`) {
-		t.Fatalf("stopped output: %+v", result)
-	}
-}
-
-func TestTaskOutputKeepsLargeLogsOnDisk(t *testing.T) {
-	jobs := NewJobStore()
-	defer jobs.Close()
-	all := Set{CWD: t.TempDir(), Jobs: jobs}.Build(Profile{})
-	bash, outputTool := pick(all, "Bash"), pick(all, "TaskOutput")
-	started := bash.Execute(context.Background(), map[string]any{"command": "i=1; while [ $i -le 8000 ]; do printf 'task-%05d\\n' \"$i\"; i=$((i+1)); done", "run_in_background": true})
-	id := strings.Fields(strings.Split(started.Content[0].Text, "\n")[0])[3]
-	result := outputTool.Execute(context.Background(), map[string]any{"task_id": id, "block": true, "timeout": 5000})
-	if result.IsError || len(result.Content[0].Text) > maxBytes+5000 || strings.Contains(result.Content[0].Text, "task-00001") || !strings.Contains(result.Content[0].Text, "task-08000") {
-		t.Fatalf("bounded TaskOutput: size=%d result=%+v", len(result.Content[0].Text), result)
-	}
-	details, ok := result.Details.(taskDetails)
-	if !ok || details.Truncation == nil || !details.Truncation.Truncated || details.OutputFile == "" {
-		t.Fatalf("task details: %#v", result.Details)
+	out, note := truncateTail(strings.Repeat("你", maxBytes))
+	if len(out) > maxBytes || !utf8.ValidString(out) || note == "" {
+		t.Fatal("UTF-8 tail truncation contract")
 	}
 }
 
@@ -787,52 +624,25 @@ func (s fakeSpool) CreateOutputFile(string, string) (*os.File, error) {
 	return os.CreateTemp(s.dir, "spool-*.log")
 }
 
-func TestJobStoreRootsTaskOutputInTheSessionSpool(t *testing.T) {
+func TestShellProcessSpoolAndFallback(t *testing.T) {
 	dir := t.TempDir()
-	jobs := NewSpooledJobStore(fakeSpool{dir: dir}, "session-1")
-	file, err := jobs.createOutput()
-	if err != nil {
-		t.Fatal(err)
+	tool := testExec(t, fakeSpool{dir: dir})
+	snap := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": "printf spooled-out"}))
+	if filepath.Dir(snap.OutputFile) != dir {
+		t.Fatalf("output outside session spool: %s", snap.OutputFile)
 	}
-	defer func() { _ = file.Close() }()
-	if !strings.HasPrefix(file.Name(), dir) {
-		t.Fatalf("task output %q is not in the spool directory %q", file.Name(), dir)
+	raw, err := os.ReadFile(snap.OutputFile)
+	if err != nil || string(raw) != "spooled-out" {
+		t.Fatalf("spool: %q %v", raw, err)
 	}
-
-	// A refused spool must not break shell tasks: the store falls back to a
-	// process temporary file, and JobStore.Close still removes it.
-	fallback := NewSpooledJobStore(fakeSpool{err: os.ErrPermission}, "session-1")
-	other, err := fallback.createOutput()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = other.Close()
-	_ = os.Remove(other.Name())
-}
-
-func TestBashWritesItsLogIntoTheSessionSpool(t *testing.T) {
-	cwd := t.TempDir()
-	dir := t.TempDir()
-	jobs := NewSpooledJobStore(fakeSpool{dir: dir}, "session-1")
-	defer jobs.Close()
-	all := Set{CWD: cwd, Jobs: jobs}.Build(Profile{})
-	bash := pick(all, "Bash")
-	res := bash.Execute(context.Background(), map[string]any{"command": "echo spooled-out"})
+	fallback := testExec(t, fakeSpool{err: os.ErrPermission})
+	res := fallback.Execute(t.Context(), map[string]any{"cmd": "printf fallback"})
 	if res.IsError {
-		t.Fatalf("bash: %+v", res)
+		t.Fatalf("spool refusal broke execution: %+v", res)
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected one spooled task log, got %d", len(entries))
-	}
-	raw, err := os.ReadFile(filepath.Join(dir, entries[0].Name())) //nolint:gosec // test reads its own spool directory
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), "spooled-out") {
-		t.Fatalf("task log is incomplete: %q", raw)
+	path := execSnapshot(t, res).OutputFile
+	fallback.processes.Close()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("fallback log not cleaned: %v", err)
 	}
 }

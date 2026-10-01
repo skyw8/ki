@@ -42,14 +42,12 @@ function profile(name: Profile) {
   test.use({
     viewport: { width: value.width, height: value.height },
     hasTouch: value.touch,
-    // Firefox has touch/coarse-pointer support but not mobile layout
-    // emulation. The same assertions run; no engine or test is skipped.
-    isMobile: async ({ browserName }, use) => { await use(value.touch && browserName !== 'firefox') },
+    isMobile: value.touch,
   })
-  test.beforeEach(async ({ browserName }, info) => {
+  test.beforeEach(async ({}, info) => {
     info.annotations.push({
       type: 'viewport-profile',
-      description: `${name} ${value.width}×${value.height}; ${value.touch ? 'touch/coarse pointer' : 'mouse'}; isMobile=${value.touch && browserName !== 'firefox'}; default UA; not a physical device`,
+      description: `${name} ${value.width}×${value.height}; ${value.touch ? 'touch/coarse pointer' : 'mouse'}; isMobile=${value.touch}; default UA; not a physical device`,
     })
   })
 }

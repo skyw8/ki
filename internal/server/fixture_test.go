@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -88,3 +89,7 @@ func copyFixture(t *testing.T, src, dst string) {
 		t.Fatal(err)
 	}
 }
+
+var agentTestSequence atomic.Uint64
+
+func nextAgentTestName() string { return fmt.Sprintf("child_%d", agentTestSequence.Add(1)) }

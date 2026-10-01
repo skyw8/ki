@@ -97,13 +97,12 @@ Prefer these commands over locating or parsing session JSONL by hand:
 
 ## fast feedback
 
-- **During development, iterate with focused checks, not a full suite after every edit. Run the complete required suites when the change is ready; cross-layer or test-harness changes also warrant an early integration check.**
-- Match checks to the change: affected Go packages/tests, Bun logic tests, or relevant Playwright specs. Docs-only edits need diff, link and formatting checks. In `web/`, keep `bun run typecheck:watch` and `bun run test:unit:watch` running while editing code.
-- Full WebUI: `cd web && bun run test`. Full local regression: type-check and build fresh `web/dist`, then `go test -tags embed -count=1 ./...`. With WebUI dependencies installed, the Go run includes unit and browser tests; do not run them again separately.
-- Preserve Go and TypeScript caches; let `scripts/run.sh` reuse unchanged frontend output for backend-only changes. Use `-count=1` for forced execution or timing, not every package check. Never embed stale assets.
-- Diagnose failures from their logs and reproduce narrowly before retrying a full suite. Record the command, result and changes checked; reuse passing results until relevant edits or unresolved concerns invalidate them. Avoid duplicate concurrent runs.
-- Parallelize verified independent work and reuse read-only fixtures/browser processes; isolate mutable state and artifacts. Never drop, skip, reorder, or weaken tests for speed; coverage mismatches must fail. Tune concurrency from measurements.
-- Run required performance budgets without competing heavy workloads. Reserve extra perf/live/cross-browser suites for applicable changes or explicit requirements. Detailed commands and isolation rules live in `docs/webui.md`.
+- **Iterate with focused checks; run the full regression when ready.** Check cross-layer or harness changes early. Reproduce failures narrowly from logs; reuse valid passing results. Docs-only edits need diff, link, and formatting checks.
+- Full regression: type-check and build fresh `web/dist`, then `go test -tags embed -count=1 ./...`. This includes Bun and Chromium tests when dependencies are installed; do not run them twice. In `web/`, use `typecheck:watch` and `test:unit:watch` while editing.
+- **Keep new tests cheap:** prefer Go/Bun unit tests for logic; use browser tests for browser behavior. Wait for observable state, never fixed sleeps unless elapsed time is the behavior under test. Reuse builds, browser processes, and read-only fixtures; isolate mutable state.
+- Independent browser cases must declare parallel mode after isolation is verified. Serial groups require a real ordering dependency and a why-comment; shared setup alone is not a reason. Tune concurrency from measurements.
+- Time new/changed tests and compare the affected suite's wall time before/after under the same conditions. Fix avoidable slowdowns before finishing; record unavoidable costs and their reason. Never skip coverage, weaken assertions, or shorten required observation windows for speed.
+- Preserve caches; use `-count=1` for forced runs/timing. Run perf/live only when applicable or requested, with performance budgets free of competing heavy work. Commands and isolation details: `docs/webui.md`.
 
 ## state files
 

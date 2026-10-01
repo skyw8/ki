@@ -27,7 +27,7 @@ toolResult message 可带结构化 `details`，以及工具完成时间 `timesta
 - `MessagesToLeaf` 是跨 provider 的 portable projection：沿 parent 走到根，只选择最新 local compaction，先注入 summary，再取 `retainedTail`（新条目，压缩时最近消息原文落盘）；旧 jsonl 无 `retainedTail` 时回退 `firstKeptEntryId` 截断。remote compaction 不参与 portable projection，因此切换模型仍可从 append-only 原始消息重建上下文。`LastCompactionAt` 返回最近 compaction 时间戳（stale-usage 防护用）。
 - Provider remote compaction entry 的 `responses` 保存严格绑定 `provider` / `api` / `baseUrl` / `model` / credential fingerprint / compaction protocol 的 canonical output item 数组。fingerprint 是 credential 的非秘密 SHA-256 identity，不保存 key/token；换 key、project credential 或 extension opaque credential 后不会复用旧密文。`ContextToLeaf(binding)` 仅在最新 compaction 的 binding 完全匹配时返回 opaque prefix + checkpoint 后 message suffix；否则回到标记过的 portable projection，也不会越过一个更新的不兼容 remote checkpoint 去复用旧密文；context meter 和 local/remote compact planning 对该展开历史使用完整序列化估算，不误用只覆盖 compact prefix 的旧 usage。空闲 session 切换模型后立即追加按新 binding 重算的 `context_usage`。item 使用 raw JSON 保留未知字段和顺序，单行上限 64 MiB；server-side assistant 与 checkpoint 在同一 file gate 内提交，短写/I/O/config 失败回滚 JSONL 尾部。session slim/index/compact/trace、精确 entry API 和 CLI full view 只显示固定的 remote-compaction 标签，绝不返回 encrypted payload。
 - fork：`ForkAt` 新建 session 目录，只写 root → target 路径；新 header 使用新 id，`parentSession` 保存源 session id，`forkMode` 保存处理策略。`flat` child 与 parent 独立；`tree` child 由 server 在删除 parent 时递归清理。子 session 复制源的 `provider` / `model` / `thinkingEffort`，不回落到 registry 默认。
-- Agent delegation 建 child 有两种形态，都 record 同样的 `parentSession` + `forkMode=tree` 边：默认用 `CreateChild` 建立不复制 parent transcript 的干净 child；显式 `inherit_context:true` 才用 `ForkHistoryAt` 复制 parent 的**已完成历史**——`LastUserBoundary` 返回当前 leaf 链上最新 user message 之前的那条 entry，所以触发本轮的用户消息及其引发的 in-flight 内容都不会进 child（那条消息是发给 parent 的）。`ForkHistoryAt` 只复制 model 可见的条目（`message` / `compaction`）并把保留下来的 entry 重新串成 parent 链：`request_header` / `context_usage` / `tool_execution_update` 也在 leaf 链上，但复制它们既无意义（每个 header 都重复整份 system prompt 和 tool schema），又会让 child 的 Trace 显示 parent 的系统提示。当没有可继承的前缀时退化为 `CreateChild`。两种形态下 child 自己的第一条消息都是 subagent envelope 包住的 directive（见 `docs/tools.md`），继承形态里它排在复制过来的历史之后。child 的 `events.jsonl` 作为 `TaskOutput.outputFile`。stable agent/task 状态写入 child 目录的 `agent.json`；serve 重启时运行中记录恢复为 `interrupted`，transcript、header 和 parent/child 关系继续由 session 目录保存。
+- `spawn_agent` 创建 tree child 并继承 provider/model/cwd。fork_turns=all（默认）复制触发当前轮之前的已完成历史，none 创建干净 child，正整数复制 N 个完整 user turn；QueueOnly mailbox 消息不切分 user turn，工具调用/结果和附件仍配对。身份信封放在 child 首条 user 消息中。逻辑身份、代次、pending 和 delivery ledger 保存于 agent.json v3；普通消息只入 context queue，显式 follow-up 才启动新轮次。
 - API 对外统一把 header 的 `parentSession` 映射为 `parentSessionId`，并同时返回 `forkMode`。`GET /v1/sessions`、`GET /v1/sessions/{id}` 和 fork response 使用同一组字段；`fork` body 可传 `{"entryId":"...","forkMode":"tree"}`，省略 mode 按 `flat` 处理。
 - 列表行只需要 `config.json` + jsonl header + title fallback 的首条 user message：`List` 用浅扫描，遇到首条带正文的 user message 或 `config.title` 即停，不解析整份 transcript（旧实现为渲染一行 sidebar 而解码最大 12 MB 的 jsonl）。扫描遇到无法解码的普通行会跳过，不因一条坏行把整个 session 从列表里隐藏。server 用 `session.ListCache` 按 `events.jsonl` / `config.json` 的 size+mtime 复用行；文件仍是唯一事实来源，外部进程写入的变更下次调用即生效。`GET /v1/sessions` 的响应按渲染结果打 `ETag`，命中 `If-None-Match` 时返回 304。
 - `config.json`：该 session 的 `provider` / `model` / `thinkingEffort` / `activeLeafId`，可选 `title` / `pinned` / `pinnedAt` / `metadata`。内置 tools、Skills、extensions 启用在 `{KI_HOME}/toggles.json`，不在 session 里。
@@ -79,15 +79,19 @@ ID. Queue items preserve it through ordinary dispatch, promotion and live-run
 handoff; internal messages receive an ID when accepted. Repeated identical text
 with distinct entry/request IDs remains distinct input. A runtime completion also
 carries `completion:{taskId,generation}`. Live and queued copies consult one
-AgentStore ownership ledger at actual parent persistence, never at enqueue.
+AgentController ownership ledger at actual parent persistence, never at enqueue.
 Runtime-only compact history starts at turn 1. Turn clocks start at the first
 human input, or first runtime input when no human exists, and are not reset by
 later notifications.
 
 The three queue documents now use versioned `internal/state` writes: queue and
 extension queue have `{version:1,items:[...]}`, context queue has
-`{version:1,next,items}`. Agent metadata is version 2 and records per-generation
-delivery ownership plus stable follow-up request IDs. An undrained live Inbox is
+`{version:1,next,items}`. Agent metadata is version 3 and records stable task paths, queued follow-up
+request IDs, per-generation delivery ownership, and bounded run/lifetime progress. An undrained live Inbox is
 atomically closed and transferred to the durable queue on run setup/exit races.
 These files do not form a cross-file transaction with jsonl: crash-time
 exactly-once delivery and persistence-failure recovery are not guaranteed.
+
+## 独立运行时投影
+
+session GET 的 runtime 附带 processes/agents，分别为进程 manager 与 AgentController 的当前投影。process_updated/agent_updated 追加为 sideband entry，不移动 transcript leaf；运行中的 writer 不会因外部进度事件与自己的 leaf 冲突。重启前 running agent 标为 interrupted；先恢复全部身份再调度持久 pending。OS process handle 只在当前 server 生命周期内有效。

@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func installedPowerShell(t *testing.T) shellSpec {
@@ -38,49 +37,41 @@ func TestPowerShellExecutionAndCwdReset(t *testing.T) {
 	// Why: t.TempDir can hand out a short-name %TEMP% path (RUNNER~1) while
 	// PowerShell reports the long form of its cwd; compare like for like.
 	cwd := resolveTestPath(t, t.TempDir())
-	tool := powerShellTool{cwd: cwd, jobs: NewJobStore(), shell: installedPowerShell(t)}
-	defer tool.jobs.Close()
+	shell := installedPowerShell(t)
+	manager := NewShellProcessManager()
+	defer manager.Close()
+	tool := execCommandTool{cwd: cwd, processes: manager, shells: ShellRuntime{powerShell: &shell}}
 
-	result := tool.Execute(context.Background(), map[string]any{"command": "Write-Output 'hello-ki'"})
+	result := tool.Execute(context.Background(), map[string]any{"cmd": "Write-Output 'hello-ki'"})
 	if result.IsError || !strings.Contains(result.Content[0].Text, "hello-ki") {
 		t.Fatalf("stdout = %+v", result)
 	}
-	result = tool.Execute(context.Background(), map[string]any{"command": "cmd.exe /c exit 7"})
-	if !result.IsError || !strings.Contains(result.Content[0].Text, "code 7") {
+	result = tool.Execute(context.Background(), map[string]any{"cmd": "cmd.exe /c exit 7"})
+	if !result.IsError || !strings.Contains(result.Content[0].Text, `"exit_code":7`) {
 		t.Fatalf("native exit = %+v", result)
 	}
-	result = tool.Execute(context.Background(), map[string]any{"command": "Get-Item -LiteralPath '.ki-does-not-exist' -ErrorAction SilentlyContinue"})
+	result = tool.Execute(context.Background(), map[string]any{"cmd": "Get-Item -LiteralPath '.ki-does-not-exist' -ErrorAction SilentlyContinue"})
 	if !result.IsError {
 		t.Fatalf("cmdlet failure = %+v", result)
 	}
 
 	_ = os.Mkdir(filepath.Join(cwd, "sub"), 0o700)
-	_ = tool.Execute(context.Background(), map[string]any{"command": "Set-Location 'sub'; (Get-Location).Path"})
-	result = tool.Execute(context.Background(), map[string]any{"command": "(Get-Location).Path"})
-	if result.IsError || !strings.EqualFold(strings.TrimSpace(result.Content[0].Text), cwd) {
+	_ = tool.Execute(context.Background(), map[string]any{"cmd": "Set-Location 'sub'; (Get-Location).Path"})
+	result = tool.Execute(context.Background(), map[string]any{"cmd": "(Get-Location).Path"})
+	if result.IsError || !strings.EqualFold(strings.TrimSpace(execSnapshot(t, result).Output), cwd) {
 		t.Fatalf("cwd was retained: %+v want %s", result, cwd)
 	}
 }
 
-func TestPowerShellBackgroundLifecycle(t *testing.T) {
-	jobs := NewJobStore()
-	defer jobs.Close()
-	tool := powerShellTool{cwd: t.TempDir(), jobs: jobs, shell: installedPowerShell(t)}
-	started := tool.Execute(context.Background(), map[string]any{
-		"command": "Write-Output 'one'; Start-Sleep -Milliseconds 50; Write-Output 'two'", "run_in_background": true,
-	})
-	if started.IsError {
-		t.Fatalf("start = %+v", started)
-	}
-	id := strings.Fields(strings.Split(started.Content[0].Text, "\n")[0])[3]
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	defer cancel()
-	snapshot, err := jobs.Wait(ctx, id)
-	if err != nil || snapshot.Status != TaskCompleted {
-		t.Fatalf("snapshot = %+v err=%v", snapshot, err)
-	}
-	output, _ := jobs.Output(id)
-	if !strings.Contains(output, "one") || !strings.Contains(output, "two") {
-		t.Fatalf("output = %q", output)
+func TestPowerShellYieldLifecycle(t *testing.T) {
+	shell := installedPowerShell(t)
+	manager := NewShellProcessManager()
+	defer manager.Close()
+	tool := execCommandTool{cwd: t.TempDir(), processes: manager, shells: ShellRuntime{powerShell: &shell}}
+	first := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": "Write-Output 'one'; Start-Sleep -Milliseconds 600; Write-Output 'two'", "yield_time_ms": 250}))
+	result := (writeStdinTool{processes: manager}).Execute(t.Context(), map[string]any{"session_id": first.SessionID, "yield_time_ms": 5000})
+	end := execSnapshot(t, result)
+	if result.IsError || end.Status != "exited" || !strings.Contains(first.Output+end.Output, "one") || !strings.Contains(first.Output+end.Output, "two") {
+		t.Fatalf("process: %+v %+v", first, result)
 	}
 }

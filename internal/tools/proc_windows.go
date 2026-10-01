@@ -120,3 +120,12 @@ func descendantPIDs(root uint32) []uint32 {
 	walk(root)
 	return out
 }
+
+// Closing the job after exit releases the handle and any surviving descendants.
+func releaseCmd(cmd *exec.Cmd) {
+	if entry, ok := cmdJobs.LoadAndDelete(cmd); ok {
+		if job, ok := entry.(windows.Handle); ok {
+			_ = windows.CloseHandle(job)
+		}
+	}
+}

@@ -13,5 +13,6 @@
 // for diagnostics and UI replay.
 // This package imports no other internal packages.
 // Message clientRequestId and completion identity are transport metadata,
-// persisted for reconciliation but excluded from provider prompts.
+// persisted for reconciliation but excluded from provider prompts. ContextOnly
+// marks mailbox context that cannot independently start or extend a model turn.
 package types

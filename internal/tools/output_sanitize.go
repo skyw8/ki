@@ -3,6 +3,7 @@ package tools
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 type ansiState uint8
@@ -15,7 +16,10 @@ const (
 	ansiStringEscape
 )
 
-type outputSanitizer struct{ state ansiState }
+type outputSanitizer struct {
+	state       ansiState
+	utf8Pending []byte
+}
 
 // Filter is stateful because process writes can split an escape sequence. The
 // raw spill file bypasses this filter and remains the lossless source of truth.
@@ -61,7 +65,30 @@ func (s *outputSanitizer) Filter(input []byte) []byte {
 			}
 		}
 	}
-	return out
+	// A pipe/PTY write may end in the middle of a rune. Keep that suffix until
+	// the next write so observers never consume a replacement for valid UTF-8.
+	data := append(s.utf8Pending, out...)
+	s.utf8Pending = nil
+	var text strings.Builder
+	for len(data) > 0 {
+		if !utf8.FullRune(data) {
+			s.utf8Pending = append([]byte(nil), data...)
+			break
+		}
+		r, size := utf8.DecodeRune(data)
+		text.WriteRune(r)
+		data = data[size:]
+	}
+	return []byte(cleanUnicodeControls(text.String()))
+}
+
+func (s *outputSanitizer) Flush() []byte {
+	if len(s.utf8Pending) == 0 {
+		return nil
+	}
+	text := strings.ToValidUTF8(string(s.utf8Pending), "\uFFFD")
+	s.utf8Pending = nil
+	return []byte(text)
 }
 
 func cleanUnicodeControls(text string) string {

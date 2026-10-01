@@ -34,31 +34,33 @@ type CacheMiss struct {
 
 // TraceEntry is a compact, stable diagnostic projection of one transcript row.
 type TraceEntry struct {
-	ID            string       `json:"id"`
-	ParentID      string       `json:"parentId,omitempty"`
-	Timestamp     string       `json:"timestamp"`
-	Type          string       `json:"type"`
-	Role          string       `json:"role,omitempty"`
-	Origin        string       `json:"origin,omitempty"`
-	Preview       string       `json:"preview,omitempty"`
-	ToolNames     []string     `json:"toolNames,omitempty"`
-	ToolCallID    string       `json:"toolCallId,omitempty"`
-	Provider      string       `json:"provider,omitempty"`
-	Model         string       `json:"model,omitempty"`
-	Usage         *types.Usage `json:"usage,omitempty"`
-	PromptTokens  int          `json:"promptTokens,omitzero"`
-	CacheMiss     *CacheMiss   `json:"cacheMiss,omitempty"`
-	UsedTokens    int          `json:"usedTokens,omitzero"`
-	ContextWindow int          `json:"contextWindow,omitzero"`
-	Estimated     bool         `json:"estimated,omitzero"`
-	LatencyMs     int64        `json:"latencyMs,omitzero"`
-	DurationMs    int64        `json:"durationMs,omitzero"`
-	Failed        bool         `json:"failed,omitzero"`
-	Error         string       `json:"error,omitempty"`
-	SystemHash    string       `json:"systemHash,omitempty"`
-	ToolsHash     string       `json:"toolsHash,omitempty"`
-	TokensBefore  int          `json:"tokensBefore,omitzero"`
-	StopReason    string       `json:"stopReason,omitempty"`
+	Runtime       *RuntimeTrace `json:"runtime,omitempty"`
+	Sideband      bool          `json:"sideband,omitempty"`
+	ID            string        `json:"id"`
+	ParentID      string        `json:"parentId,omitempty"`
+	Timestamp     string        `json:"timestamp"`
+	Type          string        `json:"type"`
+	Role          string        `json:"role,omitempty"`
+	Origin        string        `json:"origin,omitempty"`
+	Preview       string        `json:"preview,omitempty"`
+	ToolNames     []string      `json:"toolNames,omitempty"`
+	ToolCallID    string        `json:"toolCallId,omitempty"`
+	Provider      string        `json:"provider,omitempty"`
+	Model         string        `json:"model,omitempty"`
+	Usage         *types.Usage  `json:"usage,omitempty"`
+	PromptTokens  int           `json:"promptTokens,omitzero"`
+	CacheMiss     *CacheMiss    `json:"cacheMiss,omitempty"`
+	UsedTokens    int           `json:"usedTokens,omitzero"`
+	ContextWindow int           `json:"contextWindow,omitzero"`
+	Estimated     bool          `json:"estimated,omitzero"`
+	LatencyMs     int64         `json:"latencyMs,omitzero"`
+	DurationMs    int64         `json:"durationMs,omitzero"`
+	Failed        bool          `json:"failed,omitzero"`
+	Error         string        `json:"error,omitempty"`
+	SystemHash    string        `json:"systemHash,omitempty"`
+	ToolsHash     string        `json:"toolsHash,omitempty"`
+	TokensBefore  int           `json:"tokensBefore,omitzero"`
+	StopReason    string        `json:"stopReason,omitempty"`
 }
 
 // PromptChange records a model-visible request prefix change.
@@ -80,6 +82,8 @@ type ToolFailure struct {
 
 // Analysis summarizes the active branch of a session.
 type Analysis struct {
+	Runtime          []RuntimeTrace `json:"runtime,omitempty"`
+	Timing           Timing         `json:"timing"`
 	Entries          int            `json:"entries"`
 	UserTurns        int            `json:"userTurns"`
 	AssistantSteps   int            `json:"assistantSteps"`
@@ -99,6 +103,17 @@ type Analysis struct {
 // Trace returns an active-leaf event timeline with derived cache diagnostics.
 func Trace(entries []Entry, leafID string, filter TraceFilter) []TraceEntry {
 	path := LeafChain(entries, leafID)
+	selected := map[string]bool{}
+	for _, entry := range path {
+		selected[entry.ID] = true
+	}
+	// Host progress is session-global and does not move or join a model branch.
+	path = nil
+	for _, entry := range entries {
+		if selected[entry.ID] || entry.Sideband && runtimeTrace(entry) != nil {
+			path = append(path, entry)
+		}
+	}
 	rows := make([]TraceEntry, 0, len(path))
 	prevPrompt := 0
 	cacheReported := false
@@ -172,7 +187,24 @@ func TraceWithContext(entries []Entry, leafID string, filter TraceFilter, contex
 func Analyze(entries []Entry, leafID string) Analysis {
 	path := LeafChain(entries, leafID)
 	trace := Trace(entries, leafID, TraceFilter{})
-	out := Analysis{Entries: len(path)}
+	out := Analysis{Entries: len(path), Timing: analyzeTiming(path)}
+	lastRuntime := map[string]RuntimeTrace{}
+	for _, entry := range entries {
+		if value := runtimeTrace(entry); value != nil {
+			lastRuntime[runtimeKey(value)] = *value
+		}
+	}
+	keys := make([]string, 0, len(lastRuntime))
+	for key := range lastRuntime {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		if len(out.Runtime) == 128 {
+			break
+		}
+		out.Runtime = append(out.Runtime, lastRuntime[key])
+	}
 	lastSystem, lastTools := "", ""
 	for _, row := range trace {
 		switch {
@@ -218,6 +250,7 @@ func Analyze(entries []Entry, leafID string) Analysis {
 
 func traceEntry(e Entry) TraceEntry {
 	row := TraceEntry{
+		Runtime: runtimeTrace(e), Sideband: e.Sideband,
 		ID: e.ID, ParentID: e.ParentID, Timestamp: e.Timestamp, Type: e.Type,
 		Provider: e.Provider, Model: e.ModelID, UsedTokens: e.UsedTokens,
 		ContextWindow: e.ContextWindow, Estimated: e.Estimated, TokensBefore: e.TokensBefore,

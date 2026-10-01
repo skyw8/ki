@@ -1,3 +1,4 @@
+import { mergeAgentSnapshots, mergeProcessSnapshots } from './runtime'
 import type { CompactTurn, ChatNode, Content, Entry, IndexEntry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from '../api/types'
 import { entryTurns, groupTurns, isHumanEntry, isHumanPrompt, isTransientUserId, reconcileUserNodes, userMessageIdentity } from './transcriptIdentity'
 import type { TurnId } from './transcriptIdentity'
@@ -204,6 +205,8 @@ export function loadHistory(detail: SessionDetail): ViewState {
 	s.thinkingEffort = detail.thinkingEffort ?? ''
 	s.queued = detail.queued ?? []
 	s.extQueued = detail.extQueued ?? []
+ s.processes=detail.processes ?? []
+ s.agents=detail.agents ?? []
 	s.extensionUi = detail.extensionUi ?? []
 	s.runtimeReady = detail.runtime?.ready !== false
 	s.leafId = detail.leafId
@@ -288,6 +291,8 @@ export function applyTail(s: ViewState, detail: SessionDetail, expectedLiveRevis
   next.commands = detail.commands ?? next.commands
   next.queued = detail.queued ?? next.queued
   next.extQueued = detail.extQueued ?? next.extQueued
+ next.processes=detail.processes ?? next.processes
+ next.agents=detail.agents ?? next.agents
   next.extensionUi = detail.extensionUi ?? next.extensionUi
   const entries = detail.entries ?? []
   const settledThrough = Math.max(0, ...entries.filter(e => e.message?.role === 'assistant').map(e => tsMs(e.message, e.timestamp) ?? 0), ...(detail.compactTurns ?? []).map(t => t.assistantAt ?? 0))
@@ -742,6 +747,8 @@ export function applyRuntimeCatalog(s: ViewState, detail: SessionDetail): ViewSt
   return {
     ...s,
     runtimeReady: detail.runtime?.ready !== false,
+    processes: detail.processes ? mergeProcessSnapshots(s.processes ?? [], detail.processes) : s.processes,
+    agents: detail.agents ? mergeAgentSnapshots(s.agents ?? [], detail.agents) : s.agents,
     commands: detail.commands ?? s.commands,
     extensionUi: detail.extensionUi ?? s.extensionUi,
     queued: detail.queued ?? s.queued,
@@ -1512,6 +1519,12 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
       applyCompactEvent(next, `compact-live-${next.liveRevision}`, ev.type, ev, ev.timestamp ?? Date.now(), { summaryId: ev.entryId })
       break
     }
+    case 'process_updated':
+      if (ev.process) next.processes = mergeProcessSnapshots(next.processes ?? [], [ev.process], true)
+      break
+    case 'agent_updated':
+      if (ev.agent) next.agents = mergeAgentSnapshots(next.agents ?? [], [ev.agent], true)
+      break
     case 'tool_execution_end':
       if (ev.toolCallId) {
 		const resultDetails = ev.result && typeof ev.result === 'object'

@@ -33,8 +33,8 @@ func TestCompactSnapshotReplayKeepsConcurrentToolAndNewMessages(t *testing.T) {
 	emit(loop.Event{Type: loop.MessageEnd, Message: &user})
 	emit(loop.Event{Type: loop.RequestHeader, System: "HIDDEN_SYSTEM"})
 	emit(loop.Event{Type: loop.MessageEnd, Message: &hidden})
-	emit(loop.Event{Type: loop.ToolExecutionStart, ToolCallID: "finished", Args: map[string]any{"command": "HIDDEN_ARGS"}})
-	emit(loop.Event{Type: loop.ToolExecutionStart, ToolCallID: "running", Args: map[string]any{"command": "still needed"}})
+	emit(loop.Event{Type: loop.ToolExecutionStart, ToolCallID: "finished", Args: map[string]any{"cmd": "HIDDEN_ARGS"}})
+	emit(loop.Event{Type: loop.ToolExecutionStart, ToolCallID: "running", Args: map[string]any{"cmd": "still needed"}})
 	emit(loop.Event{Type: loop.ToolExecutionEnd, ToolCallID: "finished", Result: "HIDDEN_RESULT"})
 	emit(loop.Event{Type: loop.MessageEnd, Message: &result})
 	leaf := em.st.evs[len(em.st.evs)-1].EntryID
@@ -79,7 +79,7 @@ func TestCompactSnapshotReplayKeepsConcurrentToolAndNewMessages(t *testing.T) {
 					messages = append(messages, ev.Message.Text())
 				}
 				if ev.Type == loop.ToolExecutionStart && ev.ToolCallID == "running" {
-					running = ev.Args["command"] == "still needed"
+					running = ev.Args["cmd"] == "still needed"
 				}
 				if ev.Type == loop.AgentEnd {
 					ended = true

@@ -70,8 +70,9 @@ type CommandSpec struct {
 
 // CatalogEntry is a name/description pair in the read-only extension catalog.
 type CatalogEntry struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Aliases     []string `json:"-"`
 }
 
 // SessionContribution is the live tools and commands one sidecar currently
@@ -338,16 +339,11 @@ func (NopInterceptor) OnEvent(context.Context, Event) error { return nil }
 // ErrorFunc receives sideband extension_error notifications.
 type ErrorFunc func(sessionID, name, capability, code, message string)
 
-var reservedToolNames = map[string]bool{
-	"Read": true, "Write": true, "Edit": true,
-	"Grep": true, "Glob": true, "Bash": true, "PowerShell": true,
-	"TaskOutput": true, "TaskStop": true,
-}
-
 func redactMessages(msgs []types.Message) []types.Message {
 	out := make([]types.Message, len(msgs))
 	for i, m := range msgs {
 		out[i] = m
+		out[i].ContextOnly = false
 		cs := make([]types.Content, 0, len(m.Content))
 		for _, c := range m.Content {
 			if c.Type == "image" {

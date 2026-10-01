@@ -38,7 +38,7 @@ export function appendTranscript(dir: string, spec: PerfSeedSpec): { leafId: str
   }
   const stamp = new Date().toISOString()
   const system = `perf-system ${'S'.repeat(spec.systemBytes ?? 256)}`
-  const tools = [{ name: 'Read', description: 'Read a file', parameters: { type: 'object' } }]
+  const tools = [{ name: 'read', description: 'Read a file', parameters: { type: 'object' } }]
   const assistant = 'A'.repeat(Math.max(1, spec.assistantBytes))
   const toolBody = spec.toolResultBytes ? 'T'.repeat(spec.toolResultBytes) : ''
   const chunks: string[] = []
@@ -56,14 +56,14 @@ export function appendTranscript(dir: string, spec: PerfSeedSpec): { leafId: str
     const asstId = entryID()
     const callId = `call${i}`
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: assistant }]
-    if (toolBody) content.push({ type: 'toolCall', id: callId, name: 'Read', arguments: { file_path: 'f.txt' } })
+    if (toolBody) content.push({ type: 'toolCall', id: callId, name: 'read', arguments: { file_path: 'f.txt' } })
     chunks.push(line({ type: 'message', id: asstId, parentId, timestamp: stamp, message: { role: 'assistant', content, usage: { input: 10, output: 4 } } }))
     parentId = asstId
     if (!toolBody) continue
     const toolId = entryID()
     chunks.push(line({
       type: 'message', id: toolId, parentId, timestamp: stamp,
-      message: { role: 'toolResult', toolCallId: callId, toolName: 'Read', content: [{ type: 'text', text: toolBody }] },
+      message: { role: 'toolResult', toolCallId: callId, toolName: 'read', content: [{ type: 'text', text: toolBody }] },
     }))
     parentId = toolId
   }

@@ -959,3 +959,43 @@ func TestConfigAtomicUnderConcurrentOpenWrite(t *testing.T) {
 		t.Fatalf("%d concurrent open/write errors", n)
 	}
 }
+
+func TestForkRecentHistoryKeepsCompleteTurnsAndMailboxDoesNotCutBoundary(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "provider", "model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	appendMessage := func(m types.Message) Entry {
+		t.Helper()
+		entry, err := s.AppendMessage(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entry
+	}
+	appendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "first"}}})
+	first := appendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "first done"}}})
+	appendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "second"}}})
+	appendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ID: "call2", Name: "Read", Arguments: map[string]any{"file_path": "a"}}}})
+	appendMessage(types.Message{Role: "toolResult", ToolCallID: "call2", ToolName: "Read", Content: []types.Content{{Type: "text", Text: "content"}}})
+	appendMessage(types.Message{Role: "user", ContextOnly: true, Origin: "agent:/root/other", Content: []types.Content{{Type: "text", Text: "mailbox"}}})
+	if boundary, ok := s.LastUserBoundary(); !ok || boundary != first.ID {
+		t.Fatalf("mailbox cut turn: %s %v", boundary, ok)
+	}
+	finished := appendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "second done"}}})
+	appendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "in flight"}}})
+	boundary, ok := s.LastUserBoundary()
+	if !ok || boundary != finished.ID {
+		t.Fatalf("in-flight boundary %s %v", boundary, ok)
+	}
+	child, err := ForkRecentHistoryAt(t.TempDir(), s, boundary, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Close()
+	messages := child.MessagesToLeaf()
+	if len(messages) != 5 || messages[0].Text() != "second" || messages[1].ToolCalls()[0].ID != "call2" || messages[2].ToolCallID != "call2" || messages[3].Text() != "mailbox" || messages[4].Text() != "second done" {
+		t.Fatalf("recent fork broke whole turn: %+v", messages)
+	}
+}

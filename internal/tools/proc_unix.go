@@ -25,3 +25,6 @@ func killCmd(cmd *exec.Cmd) {
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	_ = cmd.Process.Kill()
 }
+
+// releaseCmd has no platform handle to release on Unix.
+func releaseCmd(_ *exec.Cmd) {}

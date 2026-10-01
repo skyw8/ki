@@ -21,7 +21,7 @@ const defaultGlobLimit = 100
 
 type globTool struct{ cwd string }
 
-func (globTool) Name() string        { return "Glob" }
+func (globTool) Name() string        { return "glob" }
 func (globTool) Description() string { return "Find files by name pattern or wildcard." }
 func (globTool) Snippet() string     { return "Find files by glob pattern" }
 func (globTool) Prompt() string      { return globPrompt }

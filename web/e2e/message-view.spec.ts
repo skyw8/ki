@@ -237,7 +237,7 @@ function seedBigFoldSession(home: string, cwd: string): { title: string; userNod
         content: [
           { type: 'thinking', thinking: `Step ${n}: check the tree before the release.` },
           { type: 'text', text: `Checking step ${n} of the release so the notes stay accurate.` },
-          { type: 'toolCall', id: callId, name: 'Bash', arguments: { command: `cd /data/hgy/ki && go test ./internal/server -run TestReplay -count=1` } },
+          { type: 'toolCall', id: callId, name: 'exec_command', arguments: { cmd: `cd /data/hgy/ki && go test ./internal/server -run TestReplay -count=1` } },
         ],
         timestamp: at(), provider: 'deepseek', model: 'deepseek-flash', stopReason: 'toolUse', durationMs: 0,
       },
@@ -245,7 +245,7 @@ function seedBigFoldSession(home: string, cwd: string): { title: string; userNod
     push({
       type: 'message',
       message: {
-        role: 'toolResult', toolName: 'Bash', toolCallId: callId, timestamp: at(), durationMs: 20,
+        role: 'toolResult', toolName: 'exec_command', toolCallId: callId, timestamp: at(), durationMs: 20,
         content: [{ type: 'text', text: `ok  \tki/internal/server\t2.4${n}s\n--- PASS: TestReplay (0.31s)\n--- PASS: TestReplayBounded (0.02s)\nPASS` }],
       },
     })

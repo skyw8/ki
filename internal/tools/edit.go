@@ -37,7 +37,7 @@ type editDetails struct {
 	IgnoredFields    []string `json:"ignored_fields,omitempty"`
 }
 
-func (editTool) Name() string        { return "Edit" }
+func (editTool) Name() string        { return "edit" }
 func (editTool) Description() string { return "A tool for editing files" }
 func (editTool) Snippet() string {
 	return "Make precise file edits with exact text replacement"

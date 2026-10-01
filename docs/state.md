@@ -10,13 +10,13 @@
 | `models.json` | `internal/provider` | 2 | fail-fast：`NewRegistry` 报错，serve 起不来 |
 | `credentials.json` | `internal/provider` | 1 | fail-fast |
 | `workspaces.json` | `internal/workspace` | 1 | fail-fast：`Open` 返回错误 |
-| `toggles.json` | `internal/toggles` | 1 | best-effort：`Load` 回退默认值 |
+| `toggles.json` | `internal/toggles` | 2 | best-effort：`Load` 回退默认值 |
 | `push-subscriptions.json` | `internal/push` | 1 | best-effort：`OpenStore` 返回空表（浏览器会重新订阅） |
 | `extensions/<name>/config.json` | `internal/extension` | 1 | 配置读取/更新报错，绝不覆盖 |
 | `extensions/deep-web-search/cache.json` | Go sidecar | 1 | best-effort：空缓存，绝不覆盖 |
 | `extensions/telegram-bot/state.json` | Go sidecar | 1 | sidecar 初始化报错，绝不覆盖 |
 | `goal/<sessionId>.json` | Go sidecar | 1 | best-effort：不恢复 goal，绝不覆盖 |
-| session `agent.json` | `internal/tools` | 2 | 恢复该任务失败并记录 warning，绝不覆盖 |
+| session `agent.json` | `internal/tools` | 3 | 恢复该任务失败并记录 warning，绝不覆盖 |
 | session `queue.json` / `ext-queue.json` / `context-queue.json` | `internal/session` | 1 | 队列操作返回错误，绝不覆盖 |
 
 扩展配置的 `version` 仅描述持久化 envelope：Host 解码时删除该头，再按 manifest 的 `config.schema` 校验业务字段。HTTP 读取不返回该头，PATCH 不能修改它。Go sidecar 共享 `internal/state`；Rust sidecar只读同样的版本头并拒绝不支持的版本。
@@ -26,7 +26,7 @@
 
 `agent.json` v2 将 task-only 通知标记替换为按 generation 的 delivery ledger，
 并把 pending 字符串改为带 `clientRequestId` 的输入对象。v1 迁移保留已消费 generation；
-旧的「已入队」标记不再代表已交付。队列文档为对象 envelope（`version` + `items`；
+旧的「已入队」标记不再代表已交付。v3 移除 foreground/background 与旧共享 task 语义，增加 task_name/task_path/root_session_id；v2 迁移为稳定 legacy_<sessionId> 名字，恢复时由结构父链补全路径。pending 与 ledger 保留。队列文档为对象 envelope（`version` + `items`；
 context queue 另带 `next`），不再写裸数组。
 
 **不适用**（不要给它们加 `version`）：
@@ -75,3 +75,5 @@ context queue 另带 `next`），不再写裸数组。
 Go 没有 config-migration 的事实标准；`golang-migrate` / `goose` / `atlas` 面向 SQL schema，
 套 JSON 配置是误用。这里每文件就是「读头版本 → 链式转 → 原子写」三段逻辑，共享在
 `internal/state` 里已经足够，不引第三方依赖。
+
+`toggles.json` v2 将工具名称规范为 snake_case，v1 的 Bash/PowerShell/Agent/SendMessage/TaskOutput/TaskStop 开关展开为新能力的保守并集。禁用优先，迁移不会因新名字重新启用旧禁用能力。新 schema 不恢复这些旧工具执行入口。

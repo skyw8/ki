@@ -20,8 +20,8 @@ async function seed(page: Page) {
     push({ type: 'message', id: `u${t}`, message: { role: 'user', content: [{ type: 'text', text: `Input turn ${t}` }] } })
     for (let n = 0; n < 260; n++) {
       const call = `call-${t}-${n}`
-      push({ type: 'message', id: `a-${t}-${n}`, message: { role: 'assistant', content: [{ type: 'text', text: `HIDDEN_BODY_${t}_${n}` }, { type: 'toolCall', id: call, name: 'Bash', arguments: { command: `HIDDEN_ARGUMENT_${t}_${n}` } }] } })
-      push({ type: 'message', id: `r-${t}-${n}`, message: { role: 'toolResult', toolCallId: call, toolName: 'Bash', content: [{ type: 'text', text: `HIDDEN_RESULT_${t}_${n}` }] } })
+      push({ type: 'message', id: `a-${t}-${n}`, message: { role: 'assistant', content: [{ type: 'text', text: `HIDDEN_BODY_${t}_${n}` }, { type: 'toolCall', id: call, name: 'exec_command', arguments: { cmd: `HIDDEN_ARGUMENT_${t}_${n}` } }] } })
+      push({ type: 'message', id: `r-${t}-${n}`, message: { role: 'toolResult', toolCallId: call, toolName: 'exec_command', content: [{ type: 'text', text: `HIDDEN_RESULT_${t}_${n}` }] } })
     }
     push({ type: 'message', id: `final${t}`, message: { role: 'assistant', content: [{ type: 'text', text: `## Final ${t}\n\n**Complete turn** with stable reading content.\n\n- First result\n- Second result\n\n\`\`\`ts\nconst turn = ${t}\n\`\`\`` }] } })
   }
@@ -49,7 +49,7 @@ async function readTop(page: Page) {
   const touch = await page.evaluate(() => /iPhone/.test(navigator.userAgent))
   if (touch) {
     await scroll.evaluate(el => {
-      // Desktop WebKit's iPhone emulation does not expose a Touch constructor.
+      // Browser emulation may not expose a Touch constructor.
       // Exercise touch intent/deferral with DOM events; motion is controlled
       // below, so this is not a claim of native inertial-gesture coverage.
       const touch = (type: string, y?: number) => {

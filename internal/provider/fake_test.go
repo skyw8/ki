@@ -39,13 +39,13 @@ func TestScriptedHoldWaitsForCancel(t *testing.T) {
 func TestScriptedWriteEnvOnlyOnLatestUser(t *testing.T) {
 	s := &Scripted{}
 	first, err := s.Stream(context.Background(), loop.Request{Messages: []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: WriteEnvToken}}}}}, func(loop.AssistantDelta) error { return nil })
-	if err != nil || len(first.ToolCalls()) != 1 || first.ToolCalls()[0].Name != "Write" {
+	if err != nil || len(first.ToolCalls()) != 1 || first.ToolCalls()[0].Name != "write" {
 		t.Fatalf("first %+v %v", first, err)
 	}
 	second, err := s.Stream(context.Background(), loop.Request{Messages: []types.Message{
 		{Role: "user", Content: []types.Content{{Type: "text", Text: WriteEnvToken}}},
 		first,
-		{Role: "toolResult", ToolCallID: "call-write-env", ToolName: "Write", Content: []types.Content{{Type: "text", Text: "blocked"}}},
+		{Role: "toolResult", ToolCallID: "call-write-env", ToolName: "write", Content: []types.Content{{Type: "text", Text: "blocked"}}},
 	}}, func(loop.AssistantDelta) error { return nil })
 	if err != nil || second.Text() != "ok" {
 		t.Fatalf("second should stop looping: %+v %v", second, err)

@@ -21,6 +21,7 @@
 - Go sidecar 把运行必需的 schemas/catalog/prompt 文案嵌入二进制；Rust 检索 sidecar 将引擎、native 库及词典嵌入单个 executable，在启动时展开到 `{KI_HOME}/cache/extensions/zvec-grep/` 下按内容哈希命名的私有目录。`bin/zg` 是同一 executable 的 CLI 入口；其 PATH 声明为 `bin`。
 - Rust 包需要在目标平台用 Rust 1.98.0、C++、CMake、libclang 构建，首次构建还需网络；具体依赖和原生平台支持见 `extensions/zvec-grep/README.md`。新的 Rust 索引格式不同，旧 JavaScript 索引须由用户明确执行 `/zg-index --rebuild`；不会隐式重建。
 - `internal/extension` 的测试校验随包 manifest、能力和 locale key 对齐，并实际启动不含源码且 PATH 不含语言工具链的 Go 分发包，并通过 Host 安装/启动复制到仓库外的全部 Go 源码包。Rust 构建与协议/真实检索测试单独运行，CI 同样提供源码剥离后的 Host 握手测试。
+- Rust 单元测试统一使用 `node extensions/zvec-grep/test/native.mjs`（仓库根）；它先以 Rust 1.98.0 测 native，再编译 launcher 的测试目标。Linux 自动为 bindgen 补 GCC 标准 C 头文件路径，与 launcher 的构建回退一致；显式环境设置优先，继续复用锁文件和 Cargo 缓存。
 
 ## 包布局
 
@@ -93,14 +94,14 @@ my-ext/
 
 ## 扩展 PATH 目录
 
-声明 `path` 能力并列出 `runtime.path` 后，这些目录会出现在 shell 工具（Bash / PowerShell）派生的子进程 `PATH` 里，使扩展自带的 CLI 对模型可见，而不要求用户全局安装。
+声明 `path` 能力并列出 `runtime.path` 后，这些目录会出现在 shell 工具 exec_command派生的子进程 `PATH` 里，使扩展自带的 CLI 对模型可见，而不要求用户全局安装。
 
 顺序：**ki 内嵌 rg/fd 目录 → 扩展目录（按扩展名排序）→ 用户原 `PATH`**。ki 的目录永远最前，扩展无法顶掉 `rg`/`fd`；扩展目录在用户 `PATH` 之前，保证 shell 里敲到的版本与 sidecar 使用的一致。重复声明的目录会去重。
 
 - 只有**已启用**（`toggles.json` 未禁用）且 manifest 无错误的包贡献目录；目录来自 session 的资源快照，因此启用/禁用与 reload 语义和 skills / prompt 一致：下一轮 prompt 生效，运行中的 run 保持旧环境。
 - 目录若此刻不存在会被跳过（例如依赖尚未安装），下一次组装工具时重新解析，所以 `runtime.install` 建出的目录不需要额外 reload。
 - 生效范围只有 ki shell 工具派生的子进程：不影响用户终端、扩展 sidecar 自身的环境、`Grep`/`Glob` 的内嵌引擎。
-- `bash -lc` 会先 source `/etc/profile`，Debian 的 `/etc/profile` 会整体重置 `PATH`，所以 Bash 额外通过 `BASH_ENV` 的 shim 在 profile 之后按 `KI_EXTENSION_PATH_DIRS` 再前置一次；PowerShell 不需要 shim。
+- `bash -lc` 会先 source `/etc/profile`，Debian 的 `/etc/profile` 会整体重置 `PATH`，所以 exec_command 的 Bash 解释器额外通过 `BASH_ENV` 的 shim 在 profile 之后按 `KI_EXTENSION_PATH_DIRS` 再前置一次；PowerShell 不需要 shim。
 - 扩展目录位于用户 `PATH` 之前，理论上可以 shadow 用户的同名命令。这是声明式、可见的（明细见 `runtime.path` 与 `docs/tools.md`），且目录必须留在包根内，不能指向 `/usr/bin` 之类的任意位置。
 
 ## 订事件
@@ -288,3 +289,7 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 `path` 只展示，不当 `href`。
 
 扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影、可选 i18n catalog，以及该包已加载的 skills / tools / slash 命令 / prompt append / providers；`pathDirs` 逐条给出声明的绝对路径与当前是否存在，让“目录没生效”和“PATH 覆盖了同名命令”两件事都能被发现。查询不会启动 sidecar。sidecar 尚未握手时 tools/runtime commands 可能为空，session Info 在 `runtime.ready` 后再拉一次。manifest 校验失败不会拉起 runtime，并写入 `extensions.disabled`。sidecar 启动失败在仍启用时自动重试；session Prepare 上报 `sidecar_start` 后同样禁用。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。私有 `config.json` 通过 `internal/state` 原子读写，顶层 `version: 1` 是存储头，不进入 schema 或 HTTP 值；请求不能修改此头，更高版本拒读和拒写。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航列出全部已启用扩展。Extensions 设置里每个已启用扩展都有 Configure，打开并定位到同一个页面（不要求必须有 config schema）；停用的扩展没有该按钮。不在 session Info 或设置页内嵌第二份编辑器。
+
+## 工具名称与别名
+
+registration 和动态 registerTools 保留 sidecar 原始 ToolSpec.Name，用于 tool.execute RPC。模型 schema、目录、hooks、事件和 activeTools 保存 snake_case；调用接受 snake_case、PascalCase 和原始注册名（包含 acronym 拼写）。每个工具只发布一个 schema。注册前统一验证名称与所有 alias，冲突或内置保留名导致整个注册批次拒绝，已有能力不被覆盖。静态能力按全局注册校验，动态能力按 session 与当前静态集合校验；不同 session 同名动态工具不互相冲突。消息上下文中的 ContextOnly/完成身份不向 sidecar 或 provider 暴露。

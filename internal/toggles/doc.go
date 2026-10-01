@@ -5,5 +5,7 @@
 // for every session. Built-in tool names are filtered when each request header
 // is built. PATCH writes then server.Reload() so catalogs rebuild.
 // message.busy is steer (default) or queue and does not require Reload.
+// Version 2 canonicalizes tool names and migrates removed shell/agent/task
+// names to a conservative union of replacement capabilities. Disabled wins.
 // Schema version and downgrade rules: docs/state.md.
 package toggles

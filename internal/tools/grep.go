@@ -30,7 +30,7 @@ const grepMaxLineLength = 500
 
 type grepTool struct{ cwd string }
 
-func (grepTool) Name() string        { return "Grep" }
+func (grepTool) Name() string        { return "grep" }
 func (grepTool) Description() string { return "Search file contents using ripgrep." }
 func (grepTool) Snippet() string     { return "Search file contents with regex (ripgrep)" }
 func (grepTool) Prompt() string      { return grepPrompt }

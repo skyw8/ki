@@ -8,10 +8,11 @@ import (
 
 	"ki/internal/session"
 	"ki/internal/state"
+	"ki/internal/toolname"
 )
 
 // version is the schema version of toggles.json.
-const version = 1
+const version = 2
 
 // BusySteer inserts a busy prompt into the current loop.Run.
 const BusySteer = "steer"
@@ -51,7 +52,7 @@ func Load(home string) File {
 	if home == "" {
 		return f
 	}
-	b, _, err := state.ReadFile(path(home), version, nil)
+	b, _, err := state.ReadFile(path(home), version, map[int]state.Migration{1: migrateToolNames})
 	if err != nil {
 		return f
 	}
@@ -68,5 +69,61 @@ func Save(home string, f File) error {
 		return fmt.Errorf("toggles dir: %w", err)
 	}
 	f.Version = version
+	f.Tools.Only = canonicalNames(f.Tools.Only)
+	f.Tools.Disabled = canonicalNames(f.Tools.Disabled)
 	return state.WriteVersioned(path(home), version, f, 0o600)
+}
+
+func migrateToolNames(raw []byte) ([]byte, error) {
+	var f File
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return nil, err
+	}
+	f.Version = version
+	f.Tools.Only = migrateNames(f.Tools.Only)
+	f.Tools.Disabled = migrateNames(f.Tools.Disabled)
+	return json.Marshal(f)
+}
+func migrateNames(names []string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	mapping := map[string][]string{
+		"Bash": {"exec_command", "write_stdin"}, "PowerShell": {"exec_command", "write_stdin"},
+		"Agent": {"spawn_agent", "followup_task"}, "SendMessage": {"send_message", "followup_task"},
+		"TaskOutput": {"write_stdin", "wait_agent", "list_agents"}, "TaskStop": {"write_stdin", "interrupt_agent"},
+	}
+	for _, name := range names {
+		targets := mapping[name]
+		if targets == nil {
+			canonical, err := toolname.Canonical(name)
+			if err != nil {
+				targets = []string{name}
+			} else {
+				targets = []string{canonical}
+			}
+		}
+		for _, target := range targets {
+			if !seen[target] {
+				seen[target] = true
+				out = append(out, target)
+			}
+		}
+	}
+	return out
+}
+
+func canonicalNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	seen := make(map[string]bool)
+	for _, name := range names {
+		canonical, err := toolname.Canonical(name)
+		if err == nil {
+			name = canonical
+		}
+		if !seen[name] {
+			out = append(out, name)
+			seen[name] = true
+		}
+	}
+	return out
 }

@@ -36,6 +36,7 @@ import (
 	"ki/internal/session"
 	"ki/internal/telemetry"
 	"ki/internal/toggles"
+	"ki/internal/toolname"
 	"ki/internal/tooloutput"
 	"ki/internal/tools"
 	"ki/internal/types"
@@ -65,9 +66,9 @@ type Server struct {
 	mu                     sync.Mutex
 	runs                   map[string]*runState
 	replay                 replayCache
-	jobs                   map[string]*tools.JobStore
+	processes              map[string]*tools.ShellProcessManager
 	outputStore            *tooloutput.Store
-	agentTasks             *tools.AgentStore
+	agentTasks             *tools.AgentController
 	ws                     *workspace.Store
 	sidx                   *session.Index
 	slist                  *session.ListCache
@@ -113,10 +114,12 @@ const (
 )
 
 type runState struct {
-	inputMetadata types.Message
-	cancel        context.CancelFunc
-	runID         string
-	external      map[string]string
+	agentTaskID     string
+	agentGeneration uint64
+	inputMetadata   types.Message
+	cancel          context.CancelFunc
+	runID           string
+	external        map[string]string
 	// cancelReason/source are first-writer-wins diagnostics. The context API
 	// collapses every caller to context.Canceled, so retain the initiating
 	// boundary before invoking cancel.
@@ -455,9 +458,9 @@ func New(opt Options) (*Server, error) {
 		providerAuth:           map[string]*providerAuthState{},
 		resources:              resources.NewLoader(opt.Config.Home),
 		runs:                   map[string]*runState{},
-		jobs:                   map[string]*tools.JobStore{},
+		processes:              map[string]*tools.ShellProcessManager{},
 		outputStore:            outputStore,
-		agentTasks:             tools.NewAgentStore(),
+		agentTasks:             tools.NewAgentController(),
 		ws:                     ws,
 		sidx:                   sidx,
 		slist:                  session.NewListCache(),
@@ -486,6 +489,17 @@ func New(opt Options) (*Server, error) {
 	srv.providerExtensions.SetRuntimeManager(srv.ext)
 	srv.providerExtensions.SetErrorHandler(srv.onExtensionError)
 	srv.providerExtensions.SetProviderAuthHandler(srv.onProviderAuthEvent)
+	srv.agentTasks.SetMaxConcurrent(opt.Config.Agents.MaxConcurrent)
+	srv.agentTasks.SetListener(func(snapshot tools.AgentSnapshot) {
+		event := loop.Event{Type: loop.AgentUpdated, Agent: tools.ViewAgent(snapshot)}
+		seen := map[string]bool{}
+		for _, id := range []string{snapshot.SessionID, snapshot.ParentSessionID, snapshot.RootSessionID} {
+			if id != "" && !seen[id] {
+				seen[id] = true
+				srv.publishRuntimeUpdate(id, event)
+			}
+		}
+	})
 	srv.restoreAgentTasks(infos)
 
 	// Web Push is best-effort infrastructure: a key or registry that cannot be
@@ -1074,6 +1088,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// events still write to the session directory. Wait before cleanup can
 	// remove that directory underneath a warmup goroutine.
 	s.runtimeWG.Wait()
+	if s.agentTasks != nil {
+		s.agentTasks.Close()
+	}
 	s.mu.Lock()
 	s.replay.closed = true
 	if s.replay.timer != nil {
@@ -1085,10 +1102,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 		s.forgetReplayLocked(id)
 	}
-	jobs := make([]*tools.JobStore, 0, len(s.jobs))
-	for id, store := range s.jobs {
+	jobs := make([]*tools.ShellProcessManager, 0, len(s.processes))
+	for id, store := range s.processes {
 		jobs = append(jobs, store)
-		delete(s.jobs, id)
+		delete(s.processes, id)
 	}
 	s.mu.Unlock()
 	for _, store := range jobs {
@@ -1151,21 +1168,24 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return httpSrv.Shutdown(ctx)
 }
 
-func (s *Server) jobsFor(id string) *tools.JobStore {
+func (s *Server) processesFor(id string) *tools.ShellProcessManager {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if jobs, ok := s.jobs[id]; ok {
+	if jobs, ok := s.processes[id]; ok {
 		return jobs
 	}
-	jobs := tools.NewSpooledJobStore(s.outputStore, id)
-	s.jobs[id] = jobs
+	jobs := tools.NewSpooledShellProcessManager(s.outputStore, id)
+	jobs.SetListener(func(update tools.ProcessUpdate) {
+		s.publishRuntimeUpdate(id, loop.Event{Type: loop.ProcessUpdated, Process: update.Process})
+	})
+	s.processes[id] = jobs
 	return jobs
 }
 
-func (s *Server) closeJobs(id string) {
+func (s *Server) closeProcesses(id string) {
 	s.mu.Lock()
-	jobs := s.jobs[id]
-	delete(s.jobs, id)
+	jobs := s.processes[id]
+	delete(s.processes, id)
 	s.mu.Unlock()
 	if jobs != nil {
 		jobs.Close()
@@ -1596,6 +1616,8 @@ func (s *Server) sessionRuntime(snap *sessionSnap) (map[string]any, error) {
 		}
 	}
 	return map[string]any{
+		"processes":           s.processSnapshots(snap.id),
+		"agents":              s.agentSnapshots(snap.id),
 		"leafId":              snap.leafID,
 		"availableSkills":     sk,
 		"availableExtensions": s.extensionCatalog(snapshot, snap.id),
@@ -2356,7 +2378,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	} else if credential, status, err := s.registry.Credential(info.Provider); err == nil && status.Configured {
 		bindingCredential = credential
 	}
-	jobs := s.jobsFor(id)
+	jobs := s.processesFor(id)
 	profile := toolProfile(info)
 	// The resource snapshot is loaded before the tool set because shell tools
 	// carry the extension-contributed PATH directories, and it stays the single
@@ -2370,7 +2392,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	// prefix from its parent and lost the prefix cache. Depth is enforced at
 	// spawn time instead; see tools.Set.Build and Server.SpawnAgent.
 	tls := tools.Set{
-		CWD: sess.Header.CWD, Jobs: jobs, Agent: s,
+		CWD: sess.Header.CWD, Processes: jobs, Agent: s,
 		// Leave the entry unset so SpawnAgent resolves the leaf at the actual
 		// Agent tool-call boundary, after the current user/assistant history has
 		// been appended. Capturing it while assembling tools would fork stale
@@ -2473,6 +2495,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	runCfg := loop.Config{
 		Streamer:                runStreamer,
+		RunID:                   st.runID,
+		AgentID:                 st.agentTaskID,
+		Generation:              st.agentGeneration,
 		SessionID:               id,
 		Tools:                   tls,
 		OutputStore:             s.outputStore,
@@ -2522,12 +2547,12 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	// the narrow interval after that check and before Run returns; atomically
 	// close the handoff window only after taking one last Inbox snapshot, then
 	// run any such message as a continuation. If the window is already closed,
-	// SendMessage falls back to AgentStore's durable queue/resume path.
+	// SendMessage falls back to AgentController's durable queue/resume path.
 	for {
 		st.mu.Lock()
 		var steers []types.Message
 		if !st.steerClosed && st.inbox != nil {
-			steers = st.inbox.Take()
+			steers = st.inbox.TakeWork()
 		}
 		if len(steers) == 0 {
 			st.steerClosed = true
@@ -2654,7 +2679,7 @@ func (s *Server) filterActiveTools(id string, tls []loop.Tool) []loop.Tool {
 	}
 	var out []loop.Tool
 	for _, t := range tls {
-		if allow[t.Name()] {
+		if allow[toolname.MustCanonical(t.Name())] {
 			out = append(out, t)
 		}
 	}
@@ -3403,7 +3428,9 @@ func parseCursor(r *http.Request, runID string) int64 {
 func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Source string `json:"source"`
+		Source    string `json:"source"`
+		Scope     string `json:"scope"`
+		ProcessID int64  `json:"session_id"`
 	}
 	if r.Body != nil && r.ContentLength != 0 {
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
@@ -3412,6 +3439,26 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid abort request", http.StatusBadRequest)
 			return
 		}
+	}
+	if body.Scope == "process" {
+		s.mu.Lock()
+		manager := s.processes[id]
+		s.mu.Unlock()
+		if manager == nil {
+			http.Error(w, "no process manager for session", http.StatusNotFound)
+			return
+		}
+		snapshot, err := manager.Terminate(body.ProcessID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"aborted": true, "process": snapshot})
+		return
+	}
+	if body.Scope != "" && body.Scope != "turn" && body.Scope != "tree" {
+		http.Error(w, "invalid abort scope", http.StatusBadRequest)
+		return
 	}
 	source := strings.TrimSpace(body.Source)
 	if source == "" {
@@ -3430,9 +3477,17 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 			s.ext.CloseSession(id)
 		}
 	}
+	if body.Scope == "tree" {
+		s.stopRuntimeTree(id)
+	}
+	abortedAgent := false
+	if snapshot, ok := s.agentTasks.TaskForSession(id); ok && (snapshot.Status == tools.TaskRunning || snapshot.Status == tools.TaskPending) {
+		_, err := s.agentTasks.Stop(snapshot.TaskID)
+		abortedAgent = err == nil
+	}
 	s.cancelUIPrompts(id)
 	writeJSON(w, 200, map[string]any{
-		"aborted": st != nil, "reason": cancelReasonUserRequest, "source": source,
+		"aborted": st != nil || abortedAgent, "reason": cancelReasonUserRequest, "source": source,
 	})
 }
 

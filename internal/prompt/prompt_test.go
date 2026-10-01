@@ -35,7 +35,7 @@ func TestBuildLayers(t *testing.T) {
 	if !strings.Contains(sys, "operating inside ki") {
 		t.Fatalf("identity: %s", sys[:80])
 	}
-	if !strings.Contains(sys, "- Read:") || !strings.Contains(sys, "- Bash:") {
+	if !strings.Contains(sys, "- read:") || !strings.Contains(sys, "- exec_command:") {
 		t.Fatalf("snippets: %s", sys)
 	}
 	if strings.Contains(sys, "cat -n") {

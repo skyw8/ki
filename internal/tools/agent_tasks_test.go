@@ -12,18 +12,16 @@ import (
 	"testing"
 	"time"
 
-	"ki/internal/loop"
 	"ki/internal/state"
 	"ki/internal/types"
 )
 
-func TestAgentStoreBackgroundStop(t *testing.T) {
-	store := NewAgentStore()
+func TestAgentControllerBackgroundStop(t *testing.T) {
+	store := NewAgentController()
 	started := make(chan struct{})
 	launch, err := store.Start(context.Background(), AgentRequest{
-		Description: "long child", Prompt: "wait", RunInBackground: true,
-		SessionID: "child-session",
-	}, filepath.Join(t.TempDir(), "child-events.jsonl"), func(ctx context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+		Description: "long child", Prompt: "wait", SessionID: "child-session",
+	}, filepath.Join(t.TempDir(), "child-events.jsonl"), func(ctx context.Context, _, _ string) (AgentCompletion, error) {
 		close(started)
 		<-ctx.Done()
 		return AgentCompletion{}, ctx.Err()
@@ -44,13 +42,12 @@ func TestAgentStoreBackgroundStop(t *testing.T) {
 	}
 }
 
-func TestAgentStoreClaimResultSuppressesCompletion(t *testing.T) {
+func TestAgentControllerDurableDeliverySuppressesDuplicateCompletion(t *testing.T) {
 	metadata := filepath.Join(t.TempDir(), "agent.json")
-	store := NewAgentStore()
+	store := NewAgentController()
 	launch, err := store.Start(context.Background(), AgentRequest{
-		Description: "child", Prompt: "first", RunInBackground: true,
-		SessionID: "child-session", MetadataPath: metadata,
-	}, "child.jsonl", func(_ context.Context, _, prompt string, _ bool) (AgentCompletion, error) {
+		Description: "child", Prompt: "first", SessionID: "child-session", MetadataPath: metadata,
+	}, "child.jsonl", func(_ context.Context, _, prompt string) (AgentCompletion, error) {
 		return AgentCompletion{Result: prompt}, nil
 	})
 	if err != nil {
@@ -59,8 +56,8 @@ func TestAgentStoreClaimResultSuppressesCompletion(t *testing.T) {
 	if _, err := store.Wait(context.Background(), launch.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	// Reading the result (TaskOutput) consumes the notification of that run.
-	claimCurrentResult(store, launch.TaskID)
+	// A durable parent receipt suppresses duplicate notification of that run.
+	commitCurrentNotification(store, launch.TaskID)
 	if !currentCompletionDelivered(store, launch.TaskID) {
 		t.Fatal("read run was not marked consumed")
 	}
@@ -82,12 +79,12 @@ func TestAgentStoreClaimResultSuppressesCompletion(t *testing.T) {
 	}
 }
 
-func TestAgentStoreStopConsumesCompletion(t *testing.T) {
+func TestAgentControllerStopConsumesCompletion(t *testing.T) {
 	started := make(chan struct{})
-	store := NewAgentStore()
+	store := NewAgentController()
 	launch, err := store.Start(context.Background(), AgentRequest{
-		Description: "child", Prompt: "wait", RunInBackground: true, SessionID: "child-session",
-	}, "child.jsonl", func(ctx context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+		Description: "child", Prompt: "wait", SessionID: "child-session",
+	}, "child.jsonl", func(ctx context.Context, _, _ string) (AgentCompletion, error) {
 		close(started)
 		<-ctx.Done()
 		return AgentCompletion{}, ctx.Err()
@@ -104,9 +101,9 @@ func TestAgentStoreStopConsumesCompletion(t *testing.T) {
 	}
 }
 
-func TestAgentStoreCompletionAndTaskOutputShape(t *testing.T) {
-	store := NewAgentStore()
-	launch, err := store.Start(context.Background(), AgentRequest{Description: "quick child", Prompt: "report"}, "child.jsonl", func(_ context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+func TestAgentControllerCompletionSnapshotShape(t *testing.T) {
+	store := NewAgentController()
+	launch, err := store.Start(context.Background(), AgentRequest{Description: "quick child", Prompt: "report"}, "child.jsonl", func(_ context.Context, _, _ string) (AgentCompletion, error) {
 		return AgentCompletion{Result: "done", ToolUseCount: 2, TotalTokens: 9}, nil
 	})
 	if err != nil {
@@ -124,15 +121,14 @@ func TestAgentStoreCompletionAndTaskOutputShape(t *testing.T) {
 	}
 }
 
-func TestAgentStoreResumeKeepsStableID(t *testing.T) {
+func TestAgentControllerResumeKeepsStableID(t *testing.T) {
 	metadata := filepath.Join(t.TempDir(), "agent.json")
 	var mu sync.Mutex
 	var prompts []string
-	store := NewAgentStore()
+	store := NewAgentController()
 	launch, err := store.Start(context.Background(), AgentRequest{
-		Description: "resumable child", Prompt: "first", RunInBackground: true,
-		SessionID: "child-session", MetadataPath: metadata,
-	}, "child-events.jsonl", func(_ context.Context, _, prompt string, _ bool) (AgentCompletion, error) {
+		Description: "resumable child", Prompt: "first", SessionID: "child-session", MetadataPath: metadata,
+	}, "child-events.jsonl", func(_ context.Context, _, prompt string) (AgentCompletion, error) {
 		mu.Lock()
 		prompts = append(prompts, prompt)
 		mu.Unlock()
@@ -166,15 +162,14 @@ func TestAgentStoreResumeKeepsStableID(t *testing.T) {
 	}
 }
 
-func TestAgentStoreQueuesMessageAtRunBoundary(t *testing.T) {
+func TestAgentControllerQueuesMessageAtRunBoundary(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	second := make(chan string, 1)
-	store := NewAgentStore()
+	store := NewAgentController()
 	launch, err := store.Start(context.Background(), AgentRequest{
-		Description: "boundary child", Prompt: "first", RunInBackground: true,
-		SessionID: "child-session",
-	}, "child-events.jsonl", func(_ context.Context, _, prompt string, _ bool) (AgentCompletion, error) {
+		Description: "boundary child", Prompt: "first", SessionID: "child-session",
+	}, "child-events.jsonl", func(_ context.Context, _, prompt string) (AgentCompletion, error) {
 		if prompt == "first" {
 			close(started)
 			<-release
@@ -205,14 +200,13 @@ func TestAgentStoreQueuesMessageAtRunBoundary(t *testing.T) {
 	}
 }
 
-func TestAgentStoreRehydratesInterruptedAgent(t *testing.T) {
+func TestAgentControllerRehydratesInterruptedAgent(t *testing.T) {
 	metadata := filepath.Join(t.TempDir(), "agent.json")
 	started := make(chan struct{})
-	store := NewAgentStore()
+	store := NewAgentController()
 	launch, err := store.Start(context.Background(), AgentRequest{
-		Description: "restart child", Prompt: "first", RunInBackground: true,
-		SessionID: "child-session", MetadataPath: metadata,
-	}, "child-events.jsonl", func(ctx context.Context, _, prompt string, _ bool) (AgentCompletion, error) {
+		Description: "restart child", Prompt: "first", SessionID: "child-session", MetadataPath: metadata,
+	}, "child-events.jsonl", func(ctx context.Context, _, prompt string) (AgentCompletion, error) {
 		if prompt == "first" {
 			close(started)
 			<-ctx.Done()
@@ -230,8 +224,8 @@ func TestAgentStoreRehydratesInterruptedAgent(t *testing.T) {
 		t.Fatalf("after close = %+v %v", interrupted, ok)
 	}
 
-	restarted := NewAgentStore()
-	loaded, err := restarted.LoadMetadata(metadata, func(_ context.Context, _, prompt string, _ bool) (AgentCompletion, error) {
+	restarted := NewAgentController()
+	loaded, err := restarted.LoadMetadata(metadata, func(_ context.Context, _, prompt string) (AgentCompletion, error) {
 		return AgentCompletion{Result: "resumed " + prompt}, nil
 	})
 	if err != nil || !loaded {
@@ -249,21 +243,20 @@ func TestAgentStoreRehydratesInterruptedAgent(t *testing.T) {
 	}
 }
 
-func TestAgentStoreConcurrentAgentsHaveIndependentLifecycle(t *testing.T) {
+func TestAgentControllerConcurrentAgentsHaveIndependentLifecycle(t *testing.T) {
 	const count = 4
 	started := make(chan struct{}, count)
 	release := make(chan struct{})
-	store := NewAgentStore()
+	store := NewAgentController()
 	launches := make([]AgentLaunch, 0, count)
-	run := func(_ context.Context, taskID, _ string, _ bool) (AgentCompletion, error) {
+	run := func(_ context.Context, taskID, _ string) (AgentCompletion, error) {
 		started <- struct{}{}
 		<-release
 		return AgentCompletion{Result: "done:" + taskID}, nil
 	}
 	for i := range count {
 		launch, err := store.Start(context.Background(), AgentRequest{
-			Description: "parallel child", Prompt: "work", RunInBackground: true,
-			SessionID: fmt.Sprintf("child-%d", i),
+			Description: "parallel child", Prompt: "work", SessionID: fmt.Sprintf("child-%d", i),
 		}, fmt.Sprintf("child-%d.jsonl", i), run)
 		if err != nil {
 			t.Fatal(err)
@@ -287,14 +280,13 @@ func TestAgentStoreConcurrentAgentsHaveIndependentLifecycle(t *testing.T) {
 	}
 }
 
-func TestAgentStoreStoppedAgentResumesAfterRunnerExits(t *testing.T) {
+func TestAgentControllerStoppedAgentResumesAfterRunnerExits(t *testing.T) {
 	started := make(chan struct{})
 	finished := make(chan struct{})
-	store := NewAgentStore()
+	store := NewAgentController()
 	launch, err := store.Start(context.Background(), AgentRequest{
-		Description: "stoppable child", Prompt: "first", RunInBackground: true,
-		SessionID: "child-session",
-	}, "child-events.jsonl", func(ctx context.Context, _, prompt string, _ bool) (AgentCompletion, error) {
+		Description: "stoppable child", Prompt: "first", SessionID: "child-session",
+	}, "child-events.jsonl", func(ctx context.Context, _, prompt string) (AgentCompletion, error) {
 		if prompt == "first" {
 			close(started)
 			<-ctx.Done()
@@ -326,14 +318,13 @@ func TestAgentStoreStoppedAgentResumesAfterRunnerExits(t *testing.T) {
 	}
 }
 
-func TestAgentStoreRemoveSessionForgetsTask(t *testing.T) {
+func TestAgentControllerRemoveSessionForgetsTask(t *testing.T) {
 	started := make(chan struct{})
 	finished := make(chan struct{})
-	store := NewAgentStore()
+	store := NewAgentController()
 	launch, err := store.Start(context.Background(), AgentRequest{
-		Description: "deleted child", Prompt: "wait", RunInBackground: true,
-		SessionID: "deleted-session", MetadataPath: filepath.Join(t.TempDir(), "agent.json"),
-	}, "child-events.jsonl", func(ctx context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+		Description: "deleted child", Prompt: "wait", SessionID: "deleted-session", MetadataPath: filepath.Join(t.TempDir(), "agent.json"),
+	}, "child-events.jsonl", func(ctx context.Context, _, _ string) (AgentCompletion, error) {
 		close(started)
 		<-ctx.Done()
 		close(finished)
@@ -354,12 +345,11 @@ func TestAgentStoreRemoveSessionForgetsTask(t *testing.T) {
 	}
 }
 
-func TestAgentStoreNotificationClaimIsPerRun(t *testing.T) {
-	store := NewAgentStore()
+func TestAgentControllerNotificationClaimIsPerRun(t *testing.T) {
+	store := NewAgentController()
 	launch, err := store.Start(context.Background(), AgentRequest{
-		Description: "notified child", Prompt: "first", RunInBackground: true,
-		SessionID: "child-session",
-	}, "child-events.jsonl", func(_ context.Context, _, prompt string, _ bool) (AgentCompletion, error) {
+		Description: "notified child", Prompt: "first", SessionID: "child-session",
+	}, "child-events.jsonl", func(_ context.Context, _, prompt string) (AgentCompletion, error) {
 		return AgentCompletion{Result: prompt}, nil
 	})
 	if err != nil {
@@ -383,63 +373,33 @@ func TestAgentStoreNotificationClaimIsPerRun(t *testing.T) {
 }
 
 func TestAgentToolSchemaAndBackgroundResult(t *testing.T) {
-	store := NewAgentStore()
-	runtime := scopedAgentRuntime{AgentRuntime: fakeAgentRuntime{store: store}}
-	tool := agentTool{runtime: runtime}
-	params := tool.Parameters()
-	if err := tool.Validate(map[string]any{"description": "child", "prompt": "do it", "run_in_background": true}); err != nil {
+	store := NewAgentController()
+	defer store.Close()
+	tool := agentTool{name: "spawn_agent", runtime: scopedAgentRuntime{AgentRuntime: fakeAgentRuntime{store: store}}}
+	if err := tool.Validate(map[string]any{"task_name": "child", "message": "do it"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := tool.Validate(map[string]any{"description": "child", "prompt": "do it", "model": "other/model"}); err == nil {
-		t.Fatal("model override was accepted")
-	}
-	if err := tool.Validate(map[string]any{"description": "child"}); err == nil {
-		t.Fatal("missing prompt was accepted")
-	}
-	properties, ok := params["properties"].(map[string]any)
-	if !ok || properties == nil {
-		t.Fatal("agent schema has no properties")
-	}
-	for _, name := range []string{"name", "team_name", "mode", "cwd", "isolation"} {
-		if properties[name] != nil {
-			t.Fatalf("Agent schema leaked team field %s", name)
+	for _, args := range []map[string]any{{"task_name": "child", "message": "do it", "model": "other/model"}, {"task_name": "child"}, {"task_name": "Child", "message": "do it"}, {"task_name": "child", "message": "do it", "run_in_background": true}} {
+		if err := tool.Validate(args); err == nil {
+			t.Fatalf("invalid args accepted: %v", args)
 		}
 	}
-	if properties["model"] != nil {
-		t.Fatal("Agent schema exposed a model override")
+	result := tool.Execute(t.Context(), map[string]any{"task_name": "child", "message": "do it"})
+	if result.IsError || result.Terminate {
+		t.Fatalf("spawn must return async without terminating parent: %+v", result)
 	}
-	if strings.Contains(strings.ToLower(tool.Prompt()), "team") {
-		t.Fatalf("Agent prompt leaked Agent Teams guidance: %q", tool.Prompt())
+	if len(result.Content) != 1 || !containsText(result.Content[0].Text, "task_name") {
+		t.Fatalf("spawn result %v", result.Content)
 	}
-	result := tool.Execute(context.Background(), map[string]any{
-		"description": "child", "prompt": "do it", "run_in_background": true,
-	})
-	// An explicit background call does end the parent turn: the notification is
-	// the next thing the session runs.
-	if result.IsError || !result.Terminate {
-		t.Fatalf("background result = %+v", result)
-	}
-	if len(result.Content) != 1 || !containsText(result.Content[0].Text, "async_launched") ||
-		!containsText(result.Content[0].Text, "task-notification") {
-		t.Fatalf("background content = %+v", result.Content)
-	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if len(store.tasks) == 1 {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("agent task was not registered")
 }
 
 // A child agent is process-owned: cancelling the caller must not cancel it,
 // because the Agent tool may promote it to background instead.
-func TestAgentStoreChildSurvivesCallerCancel(t *testing.T) {
-	store := NewAgentStore()
+func TestAgentControllerChildSurvivesCallerCancel(t *testing.T) {
+	store := NewAgentController()
 	caller, cancelCaller := context.WithCancel(t.Context())
 	release := make(chan struct{})
-	launch, err := store.Start(caller, AgentRequest{Description: "child", Prompt: "wait"}, "child.jsonl", func(_ context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+	launch, err := store.Start(caller, AgentRequest{Description: "child", Prompt: "wait"}, "child.jsonl", func(_ context.Context, _, _ string) (AgentCompletion, error) {
 		<-release
 		return AgentCompletion{Result: "late"}, nil
 	})
@@ -457,103 +417,53 @@ func TestAgentStoreChildSurvivesCallerCancel(t *testing.T) {
 	}, "child never completed after the caller was cancelled")
 }
 
-func TestAgentStoreBackgroundMarksWithoutCancelling(t *testing.T) {
-	store := NewAgentStore()
+func TestSpawnAgentReturnsBeforeChildCompletes(t *testing.T) {
+	store := NewAgentController()
+	defer store.Close()
 	release := make(chan struct{})
-	launch, err := store.Start(context.Background(), AgentRequest{Description: "child", Prompt: "wait"}, "child.jsonl", func(ctx context.Context, _, _ string, _ bool) (AgentCompletion, error) {
-		select {
-		case <-release:
-			return AgentCompletion{Result: "done"}, nil
-		case <-ctx.Done():
-			return AgentCompletion{}, ctx.Err()
-		}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if store.Backgrounded(launch.TaskID) {
-		t.Fatal("foreground task was already backgrounded")
-	}
-	if _, err := store.Background(launch.TaskID); err != nil {
-		t.Fatal(err)
-	}
-	if !store.Backgrounded(launch.TaskID) {
-		t.Fatal("Background did not mark the task")
-	}
-	if snapshot, _ := store.Get(launch.TaskID); snapshot.Status != TaskRunning {
-		t.Fatalf("Background cancelled the run: %s", snapshot.Status)
-	}
-	close(release)
-	waitFor(t, func() bool {
-		current, _ := store.Get(launch.TaskID)
-		return current.Status == TaskCompleted
-	}, "backgrounded child did not finish")
-}
-
-func TestAgentToolForegroundPromotesToBackgroundOnTimeout(t *testing.T) {
-	restore := agentForegroundTimeout
-	agentForegroundTimeout = 30 * time.Millisecond
-	t.Cleanup(func() { agentForegroundTimeout = restore })
-
-	release := make(chan struct{})
-	runtime := fakeAgentRuntime{store: NewAgentStore(), run: func(_ context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+	runtime := fakeAgentRuntime{store: store, run: func(_ context.Context, _, _ string) (AgentCompletion, error) {
 		<-release
 		return AgentCompletion{Result: "late"}, nil
 	}}
-	result := agentTool{runtime: runtime}.Execute(context.Background(), map[string]any{"description": "slow child", "prompt": "work"})
-	if result.IsError {
-		t.Fatalf("promoted result = %+v", result)
+	result := (agentTool{name: "spawn_agent", runtime: runtime}).Execute(t.Context(), map[string]any{"task_name": "child", "message": "work"})
+	if result.IsError || result.Terminate {
+		t.Fatalf("spawn: %+v", result)
 	}
-	// The promotion keeps the parent turn: only an explicit run_in_background
-	// call terminates it, so the caller can keep working or wait.
-	if result.Terminate {
-		t.Fatal("promotion terminated the parent turn")
-	}
-	if len(result.Content) != 1 || !containsText(result.Content[0].Text, "async_launched") {
-		t.Fatalf("promoted content = %+v", result.Content)
-	}
-	// The result itself must say why the wait ended and what to do next.
-	if !containsText(result.Content[0].Text, "foreground wait expired") ||
-		!containsText(result.Content[0].Text, "task-notification") {
-		t.Fatalf("promoted note = %+v", result.Content)
-	}
-	tasks := stackedAgentSnapshots(runtime.store)
-	if len(tasks) != 1 || !runtime.store.Backgrounded(tasks[0].TaskID) {
-		t.Fatal("promotion did not mark the task backgrounded for notification")
+	tasks := stackedAgentSnapshots(store)
+	if len(tasks) != 1 || tasks[0].Status != TaskRunning {
+		t.Fatalf("spawn waited for completion: %+v", tasks)
 	}
 	close(release)
 	waitFor(t, func() bool {
-		tasks := stackedAgentSnapshots(runtime.store)
+		tasks := stackedAgentSnapshots(store)
 		return len(tasks) == 1 && tasks[0].Status == TaskCompleted
-	}, "promoted child was not left running to completion")
+	}, "child never completed")
 }
 
-func TestAgentToolForegroundStopsChildOnParentCancel(t *testing.T) {
-	restore := agentForegroundTimeout
-	agentForegroundTimeout = time.Minute
-	t.Cleanup(func() { agentForegroundTimeout = restore })
-
+func TestSpawnedChildOutlivesParentObserver(t *testing.T) {
+	store := NewAgentController()
+	defer store.Close()
 	started := make(chan struct{})
-	runtime := fakeAgentRuntime{store: NewAgentStore(), run: func(ctx context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+	runtime := fakeAgentRuntime{store: store, run: func(ctx context.Context, _, _ string) (AgentCompletion, error) {
 		close(started)
 		<-ctx.Done()
 		return AgentCompletion{}, ctx.Err()
 	}}
 	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan loop.ToolResult, 1)
-	go func() {
-		done <- agentTool{runtime: runtime}.Execute(ctx, map[string]any{"description": "child", "prompt": "work"})
-	}()
+	result := (agentTool{name: "spawn_agent", runtime: runtime}).Execute(ctx, map[string]any{"task_name": "child", "message": "work"})
+	if result.IsError {
+		t.Fatal(result)
+	}
 	<-started
 	cancel()
-	result := <-done
-	if !result.IsError || !containsText(result.Content[0].Text, "aborted") {
-		t.Fatalf("cancel result = %+v", result)
+	tasks := stackedAgentSnapshots(store)
+	if tasks[0].Status != TaskRunning {
+		t.Fatal("parent observer canceled child")
 	}
-	waitFor(t, func() bool {
-		tasks := stackedAgentSnapshots(runtime.store)
-		return len(tasks) == 1 && isTerminal(tasks[0].Status)
-	}, "aborted parent left the child running")
+	if _, err := store.Stop(tasks[0].TaskID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { tasks := stackedAgentSnapshots(store); return isTerminal(tasks[0].Status) }, "explicit interrupt did not stop child")
 }
 
 // messengerAgentRuntime is a runtime that can also receive SendMessage, so a
@@ -564,10 +474,10 @@ func (messengerAgentRuntime) SendAgentMessage(context.Context, AgentMessageReque
 	return AgentMessageResult{Status: "steered"}, nil
 }
 
-func stackedAgentSnapshots(store *AgentStore) []TaskSnapshot {
+func stackedAgentSnapshots(store *AgentController) []AgentSnapshot {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	out := make([]TaskSnapshot, 0, len(store.tasks))
+	out := make([]AgentSnapshot, 0, len(store.tasks))
 	for _, task := range store.tasks {
 		task.mu.Lock()
 		out = append(out, task.snap)
@@ -588,91 +498,72 @@ func waitFor(t *testing.T, ok func() bool, message string) {
 	t.Fatal(message)
 }
 
-// Agent must be exposed unconditionally. The tool set is part of the provider's
-// cached prefix, so withholding Agent at MaxAgentDepth used to change the tool
-// schemas and the system prompt's tool list, invalidating the inherited prefix a
-// delegated child exists to reuse. Set deliberately has no depth input: the
-// limit is enforced by the spawn call, and a child created at the limit is told
-// not to delegate in its directive envelope.
-func TestAgentToolIsExposedAtEveryDepth(t *testing.T) {
-	runtime := messengerAgentRuntime{fakeAgentRuntime{store: NewAgentStore()}}
+// Every child exposes the same schemas; admission controls active execution.
+func TestAgentToolsAreExposedAtEveryDepth(t *testing.T) {
+	runtime := fakeAgentRuntime{store: NewAgentController()}
 	built := Set{CWD: t.TempDir(), Agent: runtime}.Build(Profile{})
-	if pick(built, "Agent") == nil {
-		t.Fatalf("Agent missing from %v", names(built))
+	for _, name := range []string{"spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent", "list_agents"} {
+		if pick(built, name) == nil {
+			t.Fatalf("%s missing from %v", name, names(built))
+		}
 	}
-	// A deepest child keeps its one non-spawning channel back to the caller.
-	if pick(built, "SendMessage") == nil {
-		t.Fatalf("SendMessage missing from %v", names(built))
-	}
-}
-
-func TestSendMessageToolContract(t *testing.T) {
-	tool := sendMessageTool{messenger: fakeMessenger{}}
-	if err := tool.Validate(map[string]any{"to": "a-1", "message": "continue"}); err != nil {
-		t.Fatal(err)
-	}
-	// `to` is optional: the default address is the parent session.
-	if err := tool.Validate(map[string]any{"message": "continue"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := tool.Validate(map[string]any{"to": "a-1"}); err == nil {
-		t.Fatal("missing message was accepted")
-	}
-	result := tool.Execute(context.Background(), map[string]any{"to": "a-1", "message": "continue"})
-	if result.IsError || !containsText(result.Content[0].Text, "steered") {
-		t.Fatalf("SendMessage result = %+v", result)
-	}
-	recorder := &recordingMessenger{}
-	if result := (sendMessageTool{messenger: recorder}).Execute(context.Background(), map[string]any{"message": "continue"}); result.IsError {
-		t.Fatalf("default target result = %+v", result)
-	}
-	if recorder.target != AgentTargetParent {
-		t.Fatalf("default target = %q, want %q", recorder.target, AgentTargetParent)
+	for _, name := range []string{"Agent", "TaskOutput", "TaskStop"} {
+		if pick(built, name) != nil {
+			t.Fatalf("retired tool %s exposed", name)
+		}
 	}
 }
 
-type fakeMessenger struct{}
-
-func (fakeMessenger) SendAgentMessage(_ context.Context, req AgentMessageRequest) (AgentMessageResult, error) {
-	if req.Target != "a-1" || req.Message != "continue" {
-		return AgentMessageResult{}, errBadMessage
+func TestSendMessageAndFollowupContracts(t *testing.T) {
+	for _, name := range []string{"send_message", "followup_task"} {
+		runtime := &recordingMessageRuntime{}
+		tool := agentTool{name: name, runtime: runtime}
+		if err := tool.Validate(map[string]any{"target": "/root/child", "message": "continue"}); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range []map[string]any{{"message": "continue"}, {"target": "child"}, {"to": "child", "message": "continue"}} {
+			if tool.Validate(args) == nil {
+				t.Fatalf("accepted legacy/incomplete args: %+v", args)
+			}
+		}
+		result := tool.Execute(t.Context(), map[string]any{"target": "/root/child", "message": "continue"})
+		if result.IsError || runtime.message.Target != "/root/child" || runtime.message.TriggerTurn != (name == "followup_task") {
+			t.Fatalf("%s: %+v %+v", name, result, runtime.message)
+		}
 	}
-	return AgentMessageResult{AgentID: req.Target, Status: "steered", Message: "steered"}, nil
 }
 
-type recordingMessenger struct{ target string }
+type recordingMessageRuntime struct {
+	fakeAgentRuntime
+	message AgentMessageRequest
+}
 
-func (m *recordingMessenger) SendAgentMessage(_ context.Context, req AgentMessageRequest) (AgentMessageResult, error) {
-	m.target = req.Target
-	return AgentMessageResult{AgentID: req.Target, Status: "queued", Message: "queued"}, nil
+func (r *recordingMessageRuntime) SendAgentMessage(_ context.Context, req AgentMessageRequest) (AgentMessageResult, error) {
+	r.message = req
+	return AgentMessageResult{Status: "queued"}, nil
 }
 
 type fakeAgentRuntime struct {
-	store *AgentStore
+	store *AgentController
 	run   AgentRun
 }
 
 func (f fakeAgentRuntime) SpawnAgent(ctx context.Context, req AgentRequest) (AgentLaunch, error) {
 	run := f.run
 	if run == nil {
-		run = func(_ context.Context, _, _ string, _ bool) (AgentCompletion, error) {
+		run = func(_ context.Context, _, _ string) (AgentCompletion, error) {
 			return AgentCompletion{Result: "done"}, nil
 		}
 	}
 	return f.store.Start(ctx, req, "child.jsonl", run)
 }
 
-func (f fakeAgentRuntime) Get(key string) (TaskSnapshot, bool) { return f.store.Get(key) }
-func (f fakeAgentRuntime) Wait(ctx context.Context, id string) (TaskSnapshot, error) {
+func (f fakeAgentRuntime) Get(key string) (AgentSnapshot, bool) { return f.store.Get(key) }
+func (f fakeAgentRuntime) Wait(ctx context.Context, id string) (AgentSnapshot, error) {
 	return f.store.Wait(ctx, id)
 }
-func (f fakeAgentRuntime) Background(id string) (TaskSnapshot, error) {
-	return f.store.Background(id)
-}
-func (f fakeAgentRuntime) Stop(id string) (TaskSnapshot, error) { return f.store.Stop(id) }
-func (f fakeAgentRuntime) ClaimResult(snapshot TaskSnapshot) bool {
-	return f.store.ClaimResult(snapshot)
-}
+
+func (f fakeAgentRuntime) Stop(id string) (AgentSnapshot, error) { return f.store.Stop(id) }
 
 func containsText(text, want string) bool {
 	for i := 0; i+len(want) <= len(text); i++ {
@@ -683,15 +574,11 @@ func containsText(text, want string) bool {
 	return false
 }
 
-func claimCurrentResult(store *AgentStore, id string) bool {
-	snapshot, _ := store.Get(id)
-	return store.ClaimResult(snapshot)
-}
-func currentCompletionDelivered(store *AgentStore, id string) bool {
+func currentCompletionDelivered(store *AgentController, id string) bool {
 	snapshot, _ := store.Get(id)
 	return store.CompletionDelivered(types.CompletionIdentity{TaskID: id, Generation: snapshot.Generation})
 }
-func commitCurrentNotification(store *AgentStore, id string) bool {
+func commitCurrentNotification(store *AgentController, id string) bool {
 	snapshot, _ := store.Get(id)
 	accepted, _ := store.CommitNotification(types.CompletionIdentity{TaskID: id, Generation: snapshot.Generation}, func() error { return nil })
 	return accepted
@@ -699,9 +586,9 @@ func commitCurrentNotification(store *AgentStore, id string) bool {
 
 func TestCompletionClaimsAreGenerationScopedAndRestored(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent.json")
-	store := NewAgentStore()
+	store := NewAgentController()
 	defer store.Close()
-	run := func(_ context.Context, _, prompt string, _ bool) (AgentCompletion, error) {
+	run := func(_ context.Context, _, prompt string) (AgentCompletion, error) {
 		return AgentCompletion{Result: prompt}, nil
 	}
 	launch, err := store.Start(t.Context(), AgentRequest{SessionID: "child", ParentSessionID: "parent", Prompt: "first", MetadataPath: path}, "", run)
@@ -722,7 +609,7 @@ func TestCompletionClaimsAreGenerationScopedAndRestored(t *testing.T) {
 	if first.Generation != 1 || second.Generation != 2 {
 		t.Fatalf("generations: %+v %+v", first, second)
 	}
-	if !store.ClaimResult(first) {
+	if !commitSnapshotNotification(store, first) {
 		t.Fatal("old snapshot could not claim its own result")
 	}
 	id := types.CompletionIdentity{TaskID: launch.TaskID, Generation: second.Generation}
@@ -736,11 +623,11 @@ func TestCompletionClaimsAreGenerationScopedAndRestored(t *testing.T) {
 	if accepted, err := store.CommitNotification(id, func() error { return nil }); !accepted || err != nil {
 		t.Fatalf("new generation suppressed: %v %v", accepted, err)
 	}
-	if store.ClaimResult(second) {
+	if commitSnapshotNotification(store, second) {
 		t.Fatal("notification and tool both claimed original delivery")
 	}
 
-	reloaded := NewAgentStore()
+	reloaded := NewAgentController()
 	defer reloaded.Close()
 	if loaded, err := reloaded.LoadMetadata(path, run); !loaded || err != nil {
 		t.Fatalf("restore: %v %v", loaded, err)
@@ -751,21 +638,21 @@ func TestCompletionClaimsAreGenerationScopedAndRestored(t *testing.T) {
 	if err != nil || snapshot.Generation != 2 || snapshot.ParentSessionID != "parent" {
 		t.Fatalf("restored completed Wait: %+v %v", snapshot, err)
 	}
-	for _, old := range []TaskSnapshot{first, second} {
-		if reloaded.ClaimResult(old) {
+	for _, old := range []AgentSnapshot{first, second} {
+		if commitSnapshotNotification(reloaded, old) {
 			t.Fatalf("restored generation %d was claimed twice", old.Generation)
 		}
 	}
 }
 
 func TestAgentPendingInputIdentitySurvivesPromotion(t *testing.T) {
-	store := NewAgentStore()
+	store := NewAgentController()
 	defer store.Close()
 	path := filepath.Join(t.TempDir(), "agent.json")
 	firstRelease, secondRelease := make(chan struct{}), make(chan struct{})
-	secondStarted := make(chan TaskSnapshot, 1)
+	secondStarted := make(chan AgentSnapshot, 1)
 	launch, err := store.Start(t.Context(), AgentRequest{SessionID: "child", Prompt: "first", MetadataPath: path}, "",
-		func(ctx context.Context, id, prompt string, _ bool) (AgentCompletion, error) {
+		func(ctx context.Context, id, prompt string) (AgentCompletion, error) {
 			release := firstRelease
 			if prompt == "second" {
 				snapshot, _ := store.Get(id)
@@ -812,7 +699,7 @@ func TestAgentMetadataMigrationKeepsConsumptionNotEnqueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if meta.Version != 2 || meta.Deliveries[2] != "tool" || meta.Deliveries[3] != "" ||
+	if meta.Version != agentMetadataVersion || meta.Deliveries[2] != "tool" || meta.Deliveries[3] != "" ||
 		len(meta.Pending) != 1 || meta.Pending[0].ClientRequestID == "" || meta.Pending[0].Prompt != "follow-up" {
 		t.Fatalf("migration: %+v", meta)
 	}
@@ -830,4 +717,20 @@ func TestAgentMetadataMigrationKeepsConsumptionNotEnqueue(t *testing.T) {
 	if _, err := ReadAgentMetadata(path); !errors.Is(err, state.ErrNewerVersion) {
 		t.Fatalf("newer document was accepted: %v", err)
 	}
+}
+
+func (f fakeAgentRuntime) SendAgentMessage(context.Context, AgentMessageRequest) (AgentMessageResult, error) {
+	return AgentMessageResult{}, nil
+}
+func (f fakeAgentRuntime) WaitAgent(context.Context, string, time.Duration) (AgentWaitResult, error) {
+	return AgentWaitResult{}, nil
+}
+func (f fakeAgentRuntime) ListAgents(string, string) ([]AgentView, error) { return nil, nil }
+func (f fakeAgentRuntime) InterruptAgent(context.Context, string, string) (AgentView, error) {
+	return AgentView{}, nil
+}
+
+func commitSnapshotNotification(store *AgentController, snapshot AgentSnapshot) bool {
+	accepted, _ := store.CommitNotification(types.CompletionIdentity{TaskID: snapshot.TaskID, Generation: snapshot.Generation}, func() error { return nil })
+	return accepted
 }
