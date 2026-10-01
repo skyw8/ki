@@ -99,6 +99,9 @@ zg auth grant <root> --capability embedding --scope workspace
 An index retains its embedding model. Changing settings and updating an existing
 index surfaces a rebuild hint; `/zg-index --rebuild` replaces it. Command-level
 `--embedding`/`--device` flags override settings for that run.
+Both search errors and failed index jobs name `/zg-index --rebuild` when the
+engine requires a rebuild, including old index formats and model mismatches.
+Plain `/zg-index` only updates a compatible index.
 
 ## Search behavior
 
@@ -136,8 +139,11 @@ model to use Grep/Glob and leaves re-enabling to the user.
 starts a daemon as a side effect of searching. Start one with `zg server on`, or
 return the extension to `in-process` mode. Finished background jobs append the
 same `zvec-grep-index` entry; optional completion notifications use the same
-session queue and idempotency key. Success status clears after 30 seconds and
-failure status after 120 seconds.
+session queue and idempotency key. Success status clears after 30 seconds;
+starting another index job cancels that expiry so it cannot erase newer progress
+or a failure. Failure status remains until the next index job replaces it.
+The unified extension dialog shows the full error above its details/config tabs
+using the same plain red notice as chat messages.
 
 ## Tests
 

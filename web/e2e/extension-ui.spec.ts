@@ -50,6 +50,58 @@ function writeExt(home: string, name: string, bin: string, extra: Record<string,
   }))
 }
 
+for (const width of [1440, 390]) test(`extension errors remain readable above details and config at ${width}px`, async ({ page, request }, testInfo) => {
+  await page.setViewportSize({ width, height: 900 })
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const name = `indexerror${width}`
+  const bin = sidecarBin(home, `index-error-sidecar-${width}`)
+  const dir = join(home, 'extensions', name)
+  mkdirSync(dir, { recursive: true })
+  const error = `Index failed for /workspace/${'long-path/'.repeat(15)}: unsupported index version 1; expected 2.\nRun /zg-index --rebuild to rebuild it in Ki.`
+  writeFileSync(join(dir, 'extension.json'), JSON.stringify({
+    name, capabilities: ['lifecycle', 'settings'],
+    config: { schema: { type: 'object', properties: { label: { type: 'string' } } }, defaults: { label: 'demo' } },
+    runtime: { kind: 'rpc', command: bin, env: { KI_SET_UI: '1', KI_STATUS_TONE: 'error', KI_STATUS_TEXT: error } },
+  }))
+  await page.goto('/')
+  await reloadServer(page, request)
+  const headers = { Authorization: `Bearer ${await tokenOf(page)}` }
+  const listed = await request.get('/v1/extensions', { headers })
+  const catalog = await listed.json() as { items?: { name: string }[] }
+  await request.patch('/v1/extensions', { headers, data: { disabled: (catalog.items ?? []).map(item => item.name).filter(item => item !== name) } })
+  await reloadServer(page, request)
+  await page.reload()
+  if (await page.getByTestId('mobile-nav-toggle').isVisible()) await page.getByTestId('mobile-nav-toggle').click()
+  await newSession(page)
+  await sendPrompt(page, `show extension error ${width}`)
+  await expect(page.getByTestId('assistant-message')).toBeVisible()
+  if (await page.getByTestId('mobile-nav-toggle').isVisible()) await page.getByTestId('mobile-nav-toggle').click()
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-extensions').click()
+  await page.getByTestId(`cfg-configure-${name}`).click()
+  const banner = page.getByTestId('ext-inspector-error')
+  await expect(banner).toHaveText(error)
+  await expect(banner).toHaveClass(/notice/)
+  await page.getByTestId('ext-inspector-config-tab').click()
+  await expect(page.getByTestId(`extension-config-${name}`)).toBeVisible()
+  await expect(banner).toHaveText(error)
+  await expect(page.getByTestId(`ext-nav-${name}`).locator('.ext-nav-dot')).toHaveClass(/tone-error/)
+  const box = await banner.boundingBox()
+  expect(box!.x).toBeGreaterThanOrEqual(0)
+  expect(box!.x + box!.width).toBeLessThanOrEqual(width)
+  expect(await banner.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('extension-error.png') })
+  await page.getByTestId('ext-panel').getByRole('button', { name: '关闭对话框' }).click()
+  await page.reload()
+  if (await page.getByTestId('mobile-nav-toggle').isVisible()) await page.getByTestId('mobile-nav-toggle').click()
+  await page.getByTestId('session-row').filter({ hasText: `show extension error ${width}` }).click()
+  if (await page.getByTestId('mobile-nav-toggle').isVisible()) await page.getByTestId('mobile-nav-toggle').click()
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-extensions').click()
+  await page.getByTestId(`cfg-configure-${name}`).click()
+  await expect(banner).toHaveText(error)
+})
+
 // The freerouter config form dispatches on the extension name; a fixture with
 // the same settings schema exercises the whole form round-trip.
 test('freerouter config form edits fields without raw JSON', async ({ page, request }) => {

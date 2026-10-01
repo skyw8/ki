@@ -168,6 +168,14 @@ export function ExtensionInspector({
   const navItems = useMemo(() => inspectorItems(items, globalItems), [globalItems, items])
   const selectedGlobal = globalItems.find(item => item.name === selectedName)
   const extensionI18n = selectedGlobal?.i18n
+  // Keep the complete diagnosis outside the clipped navigation and both tabs.
+  // A healthy sidecar does not mean its most recent operation succeeded.
+  const errors = [...new Set([
+    selected?.status?.tone === 'error' ? localizedExtensionText(selected.status.text, extensionI18n, lang) : '',
+    selectedGlobal?.ui?.status?.tone === 'error' ? localizedExtensionText(selectedGlobal.ui.status.text, extensionI18n, lang) : '',
+    selectedGlobal?.runtime?.error,
+    selectedGlobal?.error,
+  ].filter((text): text is string => !!text))]
   const hasDetails = !!selected?.panel
   const hasConfig = !!selectedGlobal?.configurable && !!renderConfig
   const defaultView = hasDetails ? 'details' : 'config'
@@ -261,6 +269,7 @@ export function ExtensionInspector({
             </div>
           ) : null}
         </header>
+        {errors.length ? <div className="notice ext-inspector-error" role="alert" data-testid="ext-inspector-error">{errors.join('\n')}</div> : null}
         {hasDetails && hasConfig ? (
           <>
             <div

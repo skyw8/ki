@@ -534,6 +534,14 @@ async fn fake_run() -> Result<(), Box<dyn std::error::Error>> {
             println!("1  {}", args.get(1).map(String::as_str).unwrap_or("query"));
         }
         "index" => {
+            let state = std::env::var("KI_ZVEC_GREP_TEST_STATE")
+                .ok()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .unwrap_or(json!({}));
+            if let Some(error) = state["indexFailure"].as_str() {
+                return Err(io::Error::other(error.to_owned()).into());
+            }
             if std::env::var("KI_ZVEC_GREP_FAKE_INDEX_FAIL").as_deref() == Ok("1") {
                 return Err(io::Error::other("Error: Embedding model does not match the existing index.\nRe-run with --rebuild to change the embedding model.").into());
             }

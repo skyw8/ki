@@ -25,5 +25,7 @@
 // when the parent transcript node is unchanged.
 // WebKit native motion retains resize corrections as logical/visual offsets
 // until a single sign-ordered transfer can preserve the physical viewport.
+// Extension inspectors show complete operation/runtime errors above either tab;
+// extension errors and transcript cancellations share the plain red notice style.
 // See docs/webui.md for lifecycle, responsive geometry and touch contracts.
 package web

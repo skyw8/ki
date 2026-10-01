@@ -27,6 +27,11 @@ func copyBundledPackage(t *testing.T, src, dst string) {
 			return err
 		}
 		if entry.IsDir() {
+			// The source fixture must omit the compiled bin directory itself:
+			// skipping its large executables alone leaks an empty directory into PATH.
+			if rel == "bin" {
+				return fs.SkipDir
+			}
 			switch entry.Name() {
 			case "node_modules", "dist", ".git", ".venv", "target", "__pycache__":
 				return fs.SkipDir

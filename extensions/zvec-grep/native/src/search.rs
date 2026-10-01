@@ -556,7 +556,7 @@ fn failure(e: Failure, p: &Plan, start: Instant, o: &Outcome, job: bool) -> Valu
         );
     }
     result_error(
-        format!(
+        crate::commands::index_error_hint(&format!(
             "zvec_grep_search failed: {}{}",
             e.message,
             if e.details.is_empty() {
@@ -564,7 +564,7 @@ fn failure(e: Failure, p: &Plan, start: Instant, o: &Outcome, job: bool) -> Valu
             } else {
                 format!("\n{}", e.details)
             }
-        ),
+        )),
         d,
     )
 }

@@ -242,6 +242,9 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
     await latest.click()
     await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', 'following')
     await expect(page.getByTestId('cancel-row')).toBeVisible()
+    await expect(page.getByTestId('cancel-row')).toHaveClass('notice')
+    await expect(page.getByTestId('cancel-row')).toHaveCSS('border-left-width', '0px')
+    await expect(page.getByTestId('cancel-row').locator('.cancel-mark')).toHaveCount(0)
     await latest.click()
     // Reading stays explicit even when a clamp/programmatic scroll reaches
     // the end. A runtime notice must not secretly create a newer turn.

@@ -238,6 +238,8 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 | `bus.broadcast` | `bus` | fire-and-forget，不等待 |
 | `bus.subscribe` / `bus.unsubscribe` | `bus` | 运行中改订阅 |
 
+error tone 的完整文案会显示在统一扩展 Modal 标题下的独立红条，详情/配置切换不隐藏；runtime/manifest 错误也在此显示。进程 ready 只表示 sidecar 可调用，不能代表索引任务已恢复。zvec-grep 的建索引失败不按时间清空，下次索引任务才替换；成功状态 30 秒后清空，下次任务会取消旧计时器。索引版本或 embedding 不兼容时，查询/建索引错误明确提示 `/zg-index --rebuild`。
+
 除 `session.create`、`session.list`、`session.get` 和 `ui.setGlobal*` / `ui.clearGlobalPanel` 外，上表 inbound 方法都必须带 `sessionId`，bus 订阅也按 session 维护。`session.open` 是 Host→sidecar 的 session 生命周期通知。`ui.setPanel` 和 `ui.setGlobalPanel` 由 WebUI 按通用壳渲染，Host 不解析扩展语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
 
 `origin` 一律 `extension:<name>`，并写进该次 occupy 的 user message（WebUI 气泡可区分）。扩展 FIFO 与用户 `queue.json` **分轨**；occupy release 后 **先用户 queue，再扩展 FIFO**。`when=settled` 在 `agent_settled` 后只写入扩展 FIFO（不直接 occupy），再走同一套 dispatch。`nextTurn` 挂到下次**用户** occupy，注入 messages，不自触发 occupy。`session.setActiveTools` 忽略未知名并发 `extension_notice` warn；全部未知名则保留上一套工具。`session.patch` 与 HTTP PATCH 同一套 ResolveSpec / thinking 校验。

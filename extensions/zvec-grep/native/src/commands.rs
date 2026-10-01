@@ -121,8 +121,28 @@ fn first_number(s: &str) -> Option<u64> {
         .find(|s| !s.is_empty())
         .and_then(|s| s.parse().ok())
 }
+pub fn index_error_hint(error: &str) -> String {
+    // Native format/version and model errors name a CLI rebuild. Ki users need
+    // the exact slash command: ordinary /zg-index only updates an existing index.
+    if error.to_lowercase().contains("rebuild") && !error.contains("/zg-index --rebuild") {
+        format!("{error}\nRun /zg-index --rebuild to rebuild it in Ki.")
+    } else {
+        error.into()
+    }
+}
+fn success_status_lifetime() -> Duration {
+    // Only the protocol test seam may shorten the real completion lifetime.
+    if std::env::var_os("KI_ZVEC_GREP_TEST_STATE").is_some() {
+        if let Some(ms) = std::env::var("KI_ZVEC_GREP_TEST_STATUS_CLEAR_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+        {
+            return Duration::from_millis(ms);
+        }
+    }
+    Duration::from_secs(30)
+}
 async fn finished(app: Arc<App>, host: Host, job: Job, c: Config, result: cli::Output) {
-    app.jobs.lock().unwrap().remove(&host.session);
     let summary = result
         .stdout
         .lines()
@@ -149,20 +169,25 @@ async fn finished(app: Arc<App>, host: Host, job: Job, c: Config, result: cli::O
         if error.is_empty() {
             error = "unknown error".into();
         }
-        // Native model mismatch diagnoses say "rebuild the index" without spelling a flag.
-        // Always name the slash command available in Ki, while retaining the original CLI diagnosis.
-        if error.to_lowercase().contains("rebuild") && error.to_lowercase().contains("embedding") {
-            error.push_str(" Use /zg-index --rebuild to rebuild it here.");
-        }
+        let error = index_error_hint(&error);
         json!({"key":"index.failed","params":{"root":job.root,"error":error},"fallback":format!("Index failed for {}: {error}",job.root)})
     };
     host.status(status, if ok { "success" } else { "error" })
         .await;
-    let clear = host.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(if ok { 30 } else { 120 })).await;
-        clear.status(json!(""), "info").await;
-    });
+    // Errors must remain visible until another index operation replaces them;
+    // clearing them on a timer exposes the healthy-sidecar green fallback.
+    if ok {
+        let clear = host.clone();
+        let timer = tokio::spawn(async move {
+            tokio::time::sleep(success_status_lifetime()).await;
+            clear.status(json!(""), "info").await;
+        });
+        app.status_timers
+            .lock()
+            .unwrap()
+            .insert(host.session.clone(), timer.abort_handle());
+    }
+    app.jobs.lock().unwrap().remove(&host.session);
     if let Err(e)=host.call("session.appendEntry",json!({"customType":"zvec-grep-index","data":{"root":job.root,"ok":ok,"files":files,"entities":entities,"seconds":seconds}})).await{eprintln!("zvec-grep appendEntry: {e}");}
     if ok && c.notify {
         let text = format!(
@@ -266,6 +291,11 @@ pub async fn invoke(app: Arc<App>, params: Value) -> Result<Value, String> {
             )));
         }
         jobs.insert(session.into(), job.clone());
+        // An earlier successful job's expiry must not erase this job's progress
+        // or a later failure. Abort before publishing the new starting status.
+        if let Some(timer) = app.status_timers.lock().unwrap().remove(session) {
+            timer.abort();
+        }
     }
     let mut args = vec!["index".into(), root.clone()];
     args.extend(setting.iter().cloned());

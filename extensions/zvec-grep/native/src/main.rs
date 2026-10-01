@@ -34,6 +34,7 @@ pub struct App {
     pub slots: Semaphore,
     pub gates: Mutex<HashMap<String, std::sync::Weak<AsyncMutex<()>>>>,
     pub jobs: Mutex<HashMap<String, commands::Job>>,
+    pub status_timers: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     pub fake_locks: AtomicUsize,
     pub fake_calls: AtomicUsize,
 }
@@ -192,6 +193,7 @@ async fn main() {
         slots: Semaphore::new(4),
         gates: Mutex::new(HashMap::new()),
         jobs: Mutex::new(HashMap::new()),
+        status_timers: Mutex::new(HashMap::new()),
         fake_locks: AtomicUsize::new(0),
         fake_calls: AtomicUsize::new(0),
     });

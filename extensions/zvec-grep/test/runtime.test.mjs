@@ -251,6 +251,43 @@ test("/zg-index failure names the slash command that rebuilds the index", async 
   assert.match(failed.params.text.fallback, /\/zg-index --rebuild/);
 });
 
+test("old index versions name the Ki rebuild command in searches and index failures", async (t) => {
+  const error = "unsupported index version 1; expected 2; rebuild the index with `zg --index --rebuild`";
+  const sidecar = startSidecar(t, { state: { failure: error, indexFailure: error } });
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  const searched = await sidecar.call("tool.execute", { sessionId: "s1", name: "zvec_grep_search", args: searchArgs() });
+  assert.equal(searched.result.isError, true);
+  assert.match(searched.result.content[0].text, /\/zg-index --rebuild/);
+  await sidecar.call("command.invoke", { sessionId: "s1", name: "zg-index", args: "" });
+  const failed = await sidecar.waitForInbound(
+    (entry) => entry.method === "ui.setStatus" && entry.params.text?.key === "index.failed",
+    "the version failure status",
+  );
+  assert.match(failed.params.text.fallback, /\/zg-index --rebuild/);
+});
+
+test("a successful job's expiry cannot clear a later failure, which remains until a retry", async (t) => {
+  const sidecar = startSidecar(t, { state: { items: [] }, env: {
+    KI_ZVEC_GREP_FAKE_INDEX_SLEEP: "0.01", KI_ZVEC_GREP_TEST_STATUS_CLEAR_MS: "300",
+  } });
+  await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });
+  await sidecar.call("command.invoke", { sessionId: "s1", name: "zg-index", args: "" });
+  await sidecar.waitForInbound((entry) => entry.method === "session.appendEntry", "first completion");
+  writeFileSync(join(sidecar.root, "state.json"), JSON.stringify({ indexFailure: "unsupported index version 1; expected 2; rebuild the index" }));
+  await sidecar.call("command.invoke", { sessionId: "s1", name: "zg-index", args: "" });
+  await sidecar.waitForInbound((entry) => entry.method === "ui.setStatus" && entry.params.tone === "error", "second job failure");
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  const statuses = () => sidecar.inbound.filter((entry) => entry.method === "ui.setStatus");
+  assert.equal(statuses().at(-1).params.tone, "error");
+  assert.equal(statuses().some((entry) => entry.params.text === ""), false);
+
+  writeFileSync(join(sidecar.root, "state.json"), JSON.stringify({ items: [] }));
+  const previous = sidecar.inbound.length;
+  await sidecar.call("command.invoke", { sessionId: "s1", name: "zg-index", args: "--rebuild" });
+  await sidecar.waitForInbound((entry) => sidecar.inbound.indexOf(entry) >= previous && entry.method === "ui.setStatus" && entry.params.tone === "success", "successful retry");
+  await sidecar.waitForInbound((entry) => entry.method === "ui.setStatus" && entry.params.text === "", "successful retry expiry");
+});
+
 test("/zg-index refuses a second job and does not accept --drop", async (t) => {
   const sidecar = startSidecar(t, { state: { items: [] } });
   await sidecar.call("session.open", { sessionId: "s1", cwd: sidecar.workspace });

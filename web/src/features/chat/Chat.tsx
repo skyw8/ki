@@ -332,9 +332,8 @@ function Cancellation({ node }: { node: Extract<ChatNode, { kind: 'cancellation'
     : node.reason === 'server_shutdown' ? t('chat.cancelled.serverShutdown')
     : t('chat.cancelled.unknown')
   return (
-    <div className="cancel-row" data-testid="cancel-row" data-cancel-id={node.id} data-run-id={node.runId} role="status" aria-live="polite">
-      <span className="cancel-mark" aria-hidden />
-      <span>{label}</span>
+    <div className="notice" data-testid="cancel-row" data-cancel-id={node.id} data-run-id={node.runId} role="status" aria-live="polite">
+      {label}
     </div>
   )
 }
