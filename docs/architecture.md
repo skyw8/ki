@@ -26,9 +26,9 @@
 
 Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和启用的 provider 扩展目录的合并结果。自定义 provider/model 和协议兼容字段通过设置 UI 或 provider API 管理；不从网络刷新目录。provider 扩展以进程级 sidecar 接管完整 streamer，普通 provider 仍由 ki 内置 HTTP adapter 处理；`--model provider/model` 只写回 session 配置。
 
-每轮 `runPrompt` 解析模型后，把 `input` 和 `applyPatchToolType` 映射为 provider-neutral `tools.Profile`，再一次性构造本轮内置工具。GPT Responses 模型使用 native custom/freeform `apply_patch`，其它模型使用 `Write` + `Edit`，两组编辑器互斥；`input` 含 `image` 的模型使用富媒体 `Read`（带 `pages`）。同一份工具集进入 prompt、loop 和 `request_header`，模型切换后的下一轮立即重建。provider 扩展收到完整 `loop.Request`，在 sidecar 内完成请求构造、传输和响应解析，Host adapter 只把紧凑事件还原成 loop 增量。
+每轮 `runPrompt` 解析模型后，把 `input` 和 `applyPatchToolType` 映射为 provider-neutral `builtin.Profile`，再一次性构造本轮内置工具。GPT Responses 模型使用 native custom/freeform `apply_patch`，其它模型使用 `Write` + `Edit`，两组编辑器互斥；`input` 含 `image` 的模型使用富媒体 `Read`（带 `pages`）。同一份工具集进入 prompt、loop 和 `request_header`，模型切换后的下一轮立即重建。provider 扩展收到完整 `loop.Request`，在 sidecar 内完成请求构造、传输和响应解析，Host adapter 只把紧凑事件还原成 loop 增量。
 
-`spawn_agent` 创建 `forkMode=tree` 的具名 child，继承 provider/model/cwd，并以独立 runState 异步执行 loop。`fork_turns` 默认 all，支持 none/N 个完整已完成 user turn；当前轮及 QueueOnly 消息不作为 fork 边界。身份信封包含 `/root/...` task path，system/tools 与 parent 前缀一致；没有固定深度限制。AgentController 按 root 限制活跃 child turn（默认 4），完成后释放容量并保留身份。send_message 先持久化 context queue 再唤醒 live Inbox，idle 时不启动模型；followup_task 接受显式工作，busy/容量满时持久排队并在名额释放时续跑。wait_agent 观察 mailbox/user steer，list/wait 不认领结果。每代次完成通知写入结构 parent，上下文交付在 transcript 持久化时按 taskId/generation 去重；idle parent 无自动新轮次。agent.json v3 恢复身份与 pending，shell handle 不恢复。exec_command/write_stdin 由 session 的 ShellProcessManager 管理，工具等待取消不终止进程；turn/process/tree 的中止 scope 分别控制运行轮次、指定进程和结构后代。进度经 sideband JSONL、现有 SSE 和 session GET 的 processes/agents 投影传递。详见 [tools.md](tools.md)。
+`spawn_agent` 创建 `forkMode=tree` 的具名 child，继承 provider/model/cwd，并以独立 runState 异步执行 loop。`fork_turns` 默认 all，支持 none/N 个完整已完成 user turn；当前轮及 QueueOnly 消息不作为 fork 边界。身份信封包含 `/root/...` task path，system/tools 与 parent 前缀一致；没有固定深度限制。agent.Controller 按 root 限制活跃 child turn（默认 4），完成后释放容量并保留身份。send_message 先持久化 context queue 再唤醒 live Inbox，idle 时不启动模型；followup_task 接受显式工作，busy/容量满时持久排队并在名额释放时续跑。wait_agent 观察 mailbox/user steer，list/wait 不认领结果。每代次完成通知写入结构 parent，上下文交付在 transcript 持久化时按 taskId/generation 去重；idle parent 无自动新轮次。agent.json v3 恢复身份与 pending，shell handle 不恢复。exec_command/write_stdin 由 session 的 process.Manager 管理，工具等待取消不终止进程；turn/process/tree 的中止 scope 分别控制运行轮次、指定进程和结构后代。进度经 sideband JSONL、现有 SSE 和 session GET 的 processes/agents 投影传递。详见 [tools.md](tools.md)。
 
 主进程缓存分开管理正文、结构索引和已完成回放：正文加权 LRU 64MiB（单会话 8MiB），轻量元数据/偏移索引 16MiB，完成回放 16MiB / 2 分钟；各最多 256 项。相同 request_header 的 system/tools 在当前对象生命周期内共享，索引/分页/compact 按偏移读取所选正文。活动模型 Session 仍需要完整上下文，缓存预算不冒充进程 RSS 上限。资源 reload 只读 header 定位 cwd，不为失效资源再打开完整历史。详细约束见 [session.md](session.md) 与 [events.md](events.md)。
 
@@ -154,6 +154,8 @@ C -> S : POST /v1/sessions/{id}/abort（可选）\n→ scope=turn: st.cancel() �
 
 `POST /prompt` 只受理（202），后台 goroutine 跑 `loop.Run`；`GET /events` 以 SSE 重放本次 run 的事件。事件先落盘（jsonl）再进缓冲，SSE 见到 `agent_end` 就关流。（见图 1）
 
+工具子系统按契约、适配和运行时分开：`tool` 提供接口、schema、注册与命名，`tool/builtin` 组装 file/shell/agent 三组适配器；agent 身份与调度由 `internal/agent` 管理，终端进程由 `internal/process` 管理。server 注入各运行时并把 loop 事件投影为 agent 进度；shell 适配器显式传递进程调用身份。运行时不反向依赖 loop 或工具实现；sidecar 直接复用 process 的进程组控制。详见 [tools.md](tools.md#模块边界)。
+
 ## 包关系
 
 **图 2：包关系**（server / runState / loop / session / compact / provider，以及 CLI / WebUI 两个消费者）
@@ -184,7 +186,7 @@ note bottom of RS
   cancel context.CancelFunc  abort 入口
 end note
 
-' ==== 事件源：loop 包（只依赖 types）====
+' ==== 事件源：loop 包（依赖中立工具契约、输出策略与 types）====
 package "internal/loop" {
   [Run(ctx, … emit)] as RUN
 }
@@ -222,4 +224,4 @@ RUNP --> COMPACT : preflight / overflow / threshold 压缩
 @enduml
 ```
 
-事件流方向与 import 方向相反：loop 只产事件（仅依赖 `types`），落盘、压缩、SSE 都是 server 挂在 `emit` 回调上的订阅者；模型实现经 `loop.Streamer` 接口注入。每轮 run 只有一个事件漏斗（`internal/server/emit.go` 的 `runEmitter`），它按固定顺序把事件喂给各订阅者：jsonl 落盘 → runState 缓冲（SSE 重放）→ WebUI push（仅终态帧）→ 扩展 lifecycle 通知，之后是 context meter 与 `agent_end` 的阈值压缩。这个顺序是契约，所以漏斗始终是 loop 所在 goroutine 上的一条同步调用链，任何一级都不得另起 goroutine（`agent_settled` 越过 `message_end` 的教训见 `notifyExtensions`）。同一份事件还要携带 run 身份：`runId` 与 `external` 由 `buffer` 写回**调用方那个事件**（因此它取指针），而不是只写在缓冲副本上，因为其后的 WebUI 终态帧与扩展 lifecycle 通知读的是同一个事件，订阅者认不出归属就只能丢弃——渠道扩展收到空 `runId` 时不会回复（教训见 `docs/postmortem/2026-09-24-extension-events-lost-run-identity.md`）。runState 是 server 包内类型，由 `runs` map 持有。空闲新 prompt occupy 并替换已结束的 runState；忙时 steer 写入 Inbox，queue 写入 `queue.json`，`queueId` 把已入队条目原子提升进 Inbox（原 occupy 已结束则放回头并 `queued` 或新 occupy），`parentId` 仍 409。（见图 2）
+事件流方向与 import 方向相反：loop 产生事件，依赖中立的 `tool` 契约、`tool/output` 输出策略、`types` 和诊断能力，落盘、压缩、SSE 都是 server 挂在 `emit` 回调上的订阅者；模型实现经 `loop.Streamer` 接口注入。每轮 run 只有一个事件漏斗（`internal/server/emit.go` 的 `runEmitter`），它按固定顺序把事件喂给各订阅者：jsonl 落盘 → runState 缓冲（SSE 重放）→ WebUI push（仅终态帧）→ 扩展 lifecycle 通知，之后是 context meter 与 `agent_end` 的阈值压缩。这个顺序是契约，所以漏斗始终是 loop 所在 goroutine 上的一条同步调用链，任何一级都不得另起 goroutine（`agent_settled` 越过 `message_end` 的教训见 `notifyExtensions`）。同一份事件还要携带 run 身份：`runId` 与 `external` 由 `buffer` 写回**调用方那个事件**（因此它取指针），而不是只写在缓冲副本上，因为其后的 WebUI 终态帧与扩展 lifecycle 通知读的是同一个事件，订阅者认不出归属就只能丢弃——渠道扩展收到空 `runId` 时不会回复（教训见 `docs/postmortem/2026-09-24-extension-events-lost-run-identity.md`）。runState 是 server 包内类型，由 `runs` map 持有。空闲新 prompt occupy 并替换已结束的 runState；忙时 steer 写入 Inbox，queue 写入 `queue.json`，`queueId` 把已入队条目原子提升进 Inbox（原 occupy 已结束则放回头并 `queued` 或新 occupy），`parentId` 仍 409。（见图 2）

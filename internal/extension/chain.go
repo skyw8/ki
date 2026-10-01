@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"ki/internal/loop"
+	toolapi "ki/internal/tool"
 	"ki/internal/types"
 )
 
@@ -114,7 +115,7 @@ func composeHooks(items []namedInterceptor, skipped *skipSet, onErr func(name, c
 			}
 			return call.Args, false, "", false, nil
 		},
-		AfterTool: func(ctx context.Context, name string, args map[string]any, res loop.ToolResult) (loop.ToolResult, error) {
+		AfterTool: func(ctx context.Context, name string, args map[string]any, res toolapi.Result) (toolapi.Result, error) {
 			patch := ResultPatch{Content: res.Content, Details: res.Details, IsError: boolPtr(res.IsError), Terminate: boolPtr(res.Terminate)}
 			call := ToolCall{Name: name, Args: args}
 			for _, it := range items {

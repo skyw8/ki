@@ -79,7 +79,7 @@ ID. Queue items preserve it through ordinary dispatch, promotion and live-run
 handoff; internal messages receive an ID when accepted. Repeated identical text
 with distinct entry/request IDs remains distinct input. A runtime completion also
 carries `completion:{taskId,generation}`. Live and queued copies consult one
-AgentController ownership ledger at actual parent persistence, never at enqueue.
+agent.Controller ownership ledger at actual parent persistence, never at enqueue.
 Runtime-only compact history starts at turn 1. Turn clocks start at the first
 human input, or first runtime input when no human exists, and are not reset by
 later notifications.
@@ -94,4 +94,4 @@ exactly-once delivery and persistence-failure recovery are not guaranteed.
 
 ## 独立运行时投影
 
-session GET 的 runtime 附带 processes/agents，分别为进程 manager 与 AgentController 的当前投影。process_updated/agent_updated 追加为 sideband entry，不移动 transcript leaf；运行中的 writer 不会因外部进度事件与自己的 leaf 冲突。重启前 running agent 标为 interrupted；先恢复全部身份再调度持久 pending。OS process handle 只在当前 server 生命周期内有效。
+session GET 的 runtime 附带 processes/agents，分别为进程 manager 与 agent.Controller 的当前投影。process_updated/agent_updated 追加为 sideband entry，不移动 transcript leaf；运行中的 writer 不会因外部进度事件与自己的 leaf 冲突。重启前 running agent 标为 interrupted；先恢复全部身份再调度持久 pending。OS process handle 只在当前 server 生命周期内有效。

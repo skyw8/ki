@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"ki/internal/loop"
+	toolapi "ki/internal/tool"
 	"ki/internal/types"
 )
 
@@ -366,7 +367,7 @@ func TestEmitterCoalescesRepeatedRequestHeaders(t *testing.T) {
 	em, _, _ := newEmitterForTest(t)
 	header := func(system string) {
 		t.Helper()
-		if err := em.Emit(loop.Event{Type: loop.RequestHeader, System: system, Tools: []loop.ToolSpec{{Name: "Read"}}}); err != nil {
+		if err := em.Emit(loop.Event{Type: loop.RequestHeader, System: system, Tools: []toolapi.Spec{{Name: "Read"}}}); err != nil {
 			t.Fatal(err)
 		}
 	}

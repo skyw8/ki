@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"ki/internal/loop"
-	"ki/internal/tools"
+	"ki/internal/process"
 	"ki/internal/types"
 )
 
@@ -98,13 +98,13 @@ func disableExtension(t *testing.T, hs *httptest.Server, name string) {
 }
 
 // TestExtensionPathDirsReachShellTools drives the whole chain: manifest path
-// capability -> resource snapshot -> tools.Set -> shell child PATH. The probe
+// capability -> resource snapshot -> builtin.Set -> shell child PATH. The probe
 // script is a POSIX shell script, so the test is POSIX-only.
 func TestExtensionPathDirsReachShellTools(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("probe script is a POSIX shell script")
 	}
-	if !tools.DiscoverShellRuntime().BashAvailable() {
+	if !process.DiscoverShellRuntime().BashAvailable() {
 		t.Skip("bash unavailable")
 	}
 	srv, hs := testServerWith(t, &probeStreamer{command: "ziprobe"})

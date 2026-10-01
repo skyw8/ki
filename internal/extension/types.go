@@ -7,6 +7,7 @@ import (
 
 	"ki/internal/loop"
 	"ki/internal/provider"
+	toolapi "ki/internal/tool"
 	"ki/internal/types"
 )
 
@@ -144,7 +145,7 @@ type BeforeCompactDecision struct {
 // ProviderRequest is before_provider_request (no System, no keys).
 type ProviderRequest struct {
 	Messages       []types.Message `json:"messages"`
-	Tools          []loop.ToolSpec `json:"tools"`
+	Tools          []toolapi.Spec  `json:"tools"`
 	Provider       string          `json:"provider"`
 	Model          string          `json:"model"`
 	MaxTokens      int             `json:"maxTokens,omitzero"`

@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"ki/internal/agent"
 	"ki/internal/command"
 	"ki/internal/compact"
 	"ki/internal/config"
@@ -36,14 +37,17 @@ import (
 	"ki/internal/session"
 	"ki/internal/telemetry"
 	"ki/internal/toggles"
-	"ki/internal/toolname"
-	"ki/internal/tooloutput"
-	"ki/internal/tools"
+	toolapi "ki/internal/tool"
+	"ki/internal/tool/builtin"
+	"ki/internal/tool/output"
 	"ki/internal/types"
 	"ki/internal/workspace"
+
+	// Options constructs a Server.
+	"ki/internal/process"
+	filetools "ki/internal/tool/builtin/file"
 )
 
-// Options constructs a Server.
 type Options struct {
 	Config   config.Config
 	Token    string
@@ -66,16 +70,16 @@ type Server struct {
 	mu                     sync.Mutex
 	runs                   map[string]*runState
 	replay                 replayCache
-	processes              map[string]*tools.ShellProcessManager
-	outputStore            *tooloutput.Store
-	agentTasks             *tools.AgentController
+	processes              map[string]*process.Manager
+	outputStore            *output.Store
+	agentTasks             *agent.Controller
 	ws                     *workspace.Store
 	sidx                   *session.Index
 	slist                  *session.ListCache
 	ln                     net.Listener
 	http                   *http.Server
-	shells                 tools.ShellRuntime
-	mutations              *tools.MutationQueue
+	shells                 process.ShellRuntime
+	mutations              *filetools.MutationQueue
 	gsMu                   sync.Mutex
 	gsubs                  map[*pushSub]struct{}
 	pendingReload          map[string]bool
@@ -383,7 +387,7 @@ func retainedValueBytes(v any) int {
 
 // promptDigest identifies a request_header payload (system prompt + tool
 // schemas) so a repeat can be stored without its body.
-func promptDigest(system string, tools []loop.ToolSpec) string {
+func promptDigest(system string, tools []toolapi.Spec) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(system))
 	b, err := json.Marshal(tools)
@@ -402,7 +406,7 @@ type File struct {
 
 // New builds a server (does not listen).
 func New(opt Options) (*Server, error) {
-	shells := tools.DiscoverShellRuntime()
+	shells := process.DiscoverShellRuntime()
 	tok := opt.Token
 	if tok == "" {
 		tok = newToken()
@@ -442,7 +446,7 @@ func New(opt Options) (*Server, error) {
 	_ = ws.Bootstrap(cwds)
 	sidx := session.NewIndex(infos) // reuse the List walk: zero extra reads
 	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
-	outputStore, err := tooloutput.New()
+	outputStore, err := output.New()
 	if err != nil {
 		runtimeCancel()
 		providerExtensions.Close()
@@ -458,14 +462,14 @@ func New(opt Options) (*Server, error) {
 		providerAuth:           map[string]*providerAuthState{},
 		resources:              resources.NewLoader(opt.Config.Home),
 		runs:                   map[string]*runState{},
-		processes:              map[string]*tools.ShellProcessManager{},
+		processes:              map[string]*process.Manager{},
 		outputStore:            outputStore,
-		agentTasks:             tools.NewAgentController(),
+		agentTasks:             agent.NewController(),
 		ws:                     ws,
 		sidx:                   sidx,
 		slist:                  session.NewListCache(),
 		shells:                 shells,
-		mutations:              tools.NewMutationQueue(),
+		mutations:              filetools.NewMutationQueue(),
 		gsubs:                  map[*pushSub]struct{}{},
 		pendingReload:          map[string]bool{},
 		extUI:                  map[string]map[string]*extUIState{},
@@ -490,8 +494,8 @@ func New(opt Options) (*Server, error) {
 	srv.providerExtensions.SetErrorHandler(srv.onExtensionError)
 	srv.providerExtensions.SetProviderAuthHandler(srv.onProviderAuthEvent)
 	srv.agentTasks.SetMaxConcurrent(opt.Config.Agents.MaxConcurrent)
-	srv.agentTasks.SetListener(func(snapshot tools.AgentSnapshot) {
-		event := loop.Event{Type: loop.AgentUpdated, Agent: tools.ViewAgent(snapshot)}
+	srv.agentTasks.SetListener(func(snapshot agent.Snapshot) {
+		event := loop.Event{Type: loop.AgentUpdated, Agent: agent.ViewSnapshot(snapshot)}
 		seen := map[string]bool{}
 		for _, id := range []string{snapshot.SessionID, snapshot.ParentSessionID, snapshot.RootSessionID} {
 			if id != "" && !seen[id] {
@@ -1102,7 +1106,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 		s.forgetReplayLocked(id)
 	}
-	jobs := make([]*tools.ShellProcessManager, 0, len(s.processes))
+	jobs := make([]*process.Manager, 0, len(s.processes))
 	for id, store := range s.processes {
 		jobs = append(jobs, store)
 		delete(s.processes, id)
@@ -1168,14 +1172,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return httpSrv.Shutdown(ctx)
 }
 
-func (s *Server) processesFor(id string) *tools.ShellProcessManager {
+func (s *Server) processesFor(id string) *process.Manager {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if jobs, ok := s.processes[id]; ok {
 		return jobs
 	}
-	jobs := tools.NewSpooledShellProcessManager(s.outputStore, id)
-	jobs.SetListener(func(update tools.ProcessUpdate) {
+	jobs := process.NewSpooledManager(s.outputStore, id)
+	jobs.SetListener(func(update process.Update) {
 		s.publishRuntimeUpdate(id, loop.Event{Type: loop.ProcessUpdated, Process: update.Process})
 	})
 	s.processes[id] = jobs
@@ -2390,8 +2394,8 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	// so making it depend on the durable parent chain meant a deep child (or a
 	// session whose ancestry changed mid-conversation) rendered a different
 	// prefix from its parent and lost the prefix cache. Depth is enforced at
-	// spawn time instead; see tools.Set.Build and Server.SpawnAgent.
-	tls := tools.Set{
+	// spawn time instead; see builtin.Set.Build and Server.SpawnAgent.
+	tls := builtin.Set{
 		CWD: sess.Header.CWD, Processes: jobs, Agent: s,
 		// Leave the entry unset so SpawnAgent resolves the leaf at the actual
 		// Agent tool-call boundary, after the current user/assistant history has
@@ -2405,7 +2409,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	// Apply the global built-in toggle before extension tools are appended. This
 	// keeps the built-in setting scoped to Set.Build and leaves extensions under
 	// their own lifecycle/session controls.
-	tls = tools.FilterBuiltins(tls, tg.Tools)
+	tls = builtin.FilterBuiltins(tls, tg.Tools)
 	// snapshot.Extensions is the global Discover.All catalog. Configure
 	// reconciles process-global sidecars; Prepare builds this session's view.
 	enabledExtensions := extension.Enabled(snapshot.Extensions, tg.Extensions)
@@ -2666,7 +2670,7 @@ func (s *Server) composeHooks(sess *session.Session, occ *extension.Occupy, mode
 	}
 }
 
-func (s *Server) filterActiveTools(id string, tls []loop.Tool) []loop.Tool {
+func (s *Server) filterActiveTools(id string, tls []toolapi.Tool) []toolapi.Tool {
 	s.mu.Lock()
 	active := append([]string{}, s.activeTools[id]...)
 	s.mu.Unlock()
@@ -2677,9 +2681,9 @@ func (s *Server) filterActiveTools(id string, tls []loop.Tool) []loop.Tool {
 	for _, n := range active {
 		allow[n] = true
 	}
-	var out []loop.Tool
+	var out []toolapi.Tool
 	for _, t := range tls {
-		if allow[toolname.MustCanonical(t.Name())] {
+		if allow[toolapi.MustCanonical(t.Name())] {
 			out = append(out, t)
 		}
 	}
@@ -2847,14 +2851,14 @@ func replayBindingForSession(sess *session.Session, model provider.Model, creden
 	return providerBindingWithCredential(model, credential)
 }
 
-func toolSpecs(tools []loop.Tool) []loop.ToolSpec {
-	out := make([]loop.ToolSpec, 0, len(tools))
+func toolSpecs(tools []toolapi.Tool) []toolapi.Spec {
+	out := make([]toolapi.Spec, 0, len(tools))
 	for _, tool := range tools {
-		if provider, ok := tool.(loop.ToolSpecProvider); ok {
+		if provider, ok := tool.(toolapi.SpecProvider); ok {
 			out = append(out, provider.ToolSpec())
 			continue
 		}
-		out = append(out, loop.ToolSpec{
+		out = append(out, toolapi.Spec{
 			Type: "function", Name: tool.Name(),
 			Description: tool.Description() + "\n\n" + tool.Prompt(),
 			Parameters:  tool.Parameters(),
@@ -2863,15 +2867,15 @@ func toolSpecs(tools []loop.Tool) []loop.ToolSpec {
 	return out
 }
 
-func requestToolSpecs(tools []session.ToolSchema) []loop.ToolSpec {
-	out := make([]loop.ToolSpec, 0, len(tools))
+func requestToolSpecs(tools []session.ToolSchema) []toolapi.Spec {
+	out := make([]toolapi.Spec, 0, len(tools))
 	for _, tool := range tools {
-		spec := loop.ToolSpec{
+		spec := toolapi.Spec{
 			Type: tool.Type, Name: tool.Name, Description: tool.Description,
 			Parameters: tool.Parameters,
 		}
 		if tool.Format != nil {
-			spec.Format = &loop.ToolFormat{
+			spec.Format = &toolapi.Format{
 				Type: tool.Format.Type, Syntax: tool.Format.Syntax, Definition: tool.Format.Definition,
 			}
 		}
@@ -3481,7 +3485,7 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 		s.stopRuntimeTree(id)
 	}
 	abortedAgent := false
-	if snapshot, ok := s.agentTasks.TaskForSession(id); ok && (snapshot.Status == tools.TaskRunning || snapshot.Status == tools.TaskPending) {
+	if snapshot, ok := s.agentTasks.TaskForSession(id); ok && (snapshot.Status == agent.Running || snapshot.Status == agent.Pending) {
 		_, err := s.agentTasks.Stop(snapshot.TaskID)
 		abortedAgent = err == nil
 	}

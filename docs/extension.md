@@ -293,3 +293,5 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 ## 工具名称与别名
 
 registration 和动态 registerTools 保留 sidecar 原始 ToolSpec.Name，用于 tool.execute RPC。模型 schema、目录、hooks、事件和 activeTools 保存 snake_case；调用接受 snake_case、PascalCase 和原始注册名（包含 acronym 拼写）。每个工具只发布一个 schema。注册前统一验证名称与所有 alias，冲突或内置保留名导致整个注册批次拒绝，已有能力不被覆盖。静态能力按全局注册校验，动态能力按 session 与当前静态集合校验；不同 session 同名动态工具不互相冲突。消息上下文中的 ContextOnly/完成身份不向 sidecar 或 provider 暴露。
+
+内置工具保留名由 `internal/tool/builtin/catalog` 统一声明，别名和 schema 校验来自 `internal/tool`；sidecar 的进程组创建、启动登记和树终止来自 `internal/process`。extension 无需依赖内置工具实现即可验证注册并管理 sidecar 进程。

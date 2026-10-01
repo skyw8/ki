@@ -18,9 +18,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ki/internal/loop"
+	"ki/internal/process"
 	"ki/internal/processenv"
-	"ki/internal/tools"
+	toolapi "ki/internal/tool"
 	"ki/internal/types"
 )
 
@@ -136,8 +136,8 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 	cmd := exec.CommandContext(context.WithoutCancel(ctx), resolveRuntimeCommand(d.root, d.manifest.Runtime.Command), d.manifest.Runtime.Args...) //nolint:gosec // command/args come from the extension manifest
 	cmd.Dir = d.root
 	cmd.Env = env
-	tools.AttachProcessGroup(cmd)
-	tools.SetWaitDelay(cmd)
+	process.AttachProcessGroup(cmd)
+	process.SetWaitDelay(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdin pipe: %w", err)
@@ -150,7 +150,7 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start sidecar: %w", err)
 	}
-	tools.AfterProcessStart(cmd)
+	process.AfterProcessStart(cmd)
 	c := &rpcClient{
 		name:               d.Name,
 		failClosed:         d.FailClosed,
@@ -575,7 +575,7 @@ func (c *rpcClient) cancelAfterWrite(id string, writeDone <-chan error) {
 		c.notify("cancel", map[string]any{"id": id})
 	case <-timer.C:
 		if c.cmd != nil {
-			tools.KillProcessGroup(c.cmd)
+			process.KillProcessGroup(c.cmd)
 		}
 	case <-c.closed:
 	}
@@ -598,7 +598,7 @@ func (c *rpcClient) close() {
 		// process so they cannot wait forever for readLoop to reach EOF.
 		c.markClosed()
 		if c.cmd != nil {
-			tools.KillProcessGroup(c.cmd)
+			process.KillProcessGroup(c.cmd)
 			_ = c.cmd.Wait()
 		}
 	})
@@ -822,7 +822,7 @@ func (c *rpcClient) notifyBeforeCompact(ctx context.Context, req BeforeCompactRe
 	})
 }
 
-func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, name string, args map[string]any, emit func(any)) loop.ToolResult {
+func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, name string, args map[string]any, emit func(any)) toolapi.Result {
 	timeout := timeoutTool
 	if spec.TimeoutMs > 0 {
 		timeout = time.Duration(spec.TimeoutMs) * time.Millisecond
@@ -844,7 +844,7 @@ func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, 
 		"sessionId": sessionIDFromContext(ctx), "toolCallId": toolCallID, "name": name, "args": args,
 	})
 	if err != nil {
-		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
+		return toolapi.Result{Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 	}
 	ch := make(chan rpcMsg, 1)
 	c.pendingMu.Lock()
@@ -859,7 +859,7 @@ func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, 
 	if err := c.enc.Encode(rpcMsg{JSONRPC: "2.0", ID: id, Method: "tool.execute", Params: raw}); err != nil {
 		c.mu.Unlock()
 		slog.Debug("extension tool.execute encode", "extension", c.name, "err", err)
-		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
+		return toolapi.Result{Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 	}
 	c.mu.Unlock()
 	var msg rpcMsg
@@ -872,16 +872,16 @@ func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, 
 		select {
 		case msg = <-ch:
 		case <-time.After(timeoutToolDrain):
-			return loop.ToolResult{Content: []types.Content{{Type: "text", Text: ctx.Err().Error()}}, IsError: true}
+			return toolapi.Result{Content: []types.Content{{Type: "text", Text: ctx.Err().Error()}}, IsError: true}
 		case <-c.closed:
-			return loop.ToolResult{Content: []types.Content{{Type: "text", Text: "sidecar closed"}}, IsError: true}
+			return toolapi.Result{Content: []types.Content{{Type: "text", Text: "sidecar closed"}}, IsError: true}
 		}
 	case <-c.closed:
-		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: "sidecar closed"}}, IsError: true}
+		return toolapi.Result{Content: []types.Content{{Type: "text", Text: "sidecar closed"}}, IsError: true}
 	case msg = <-ch:
 	}
 	if msg.Error != nil {
-		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: msg.Error.Message}}, IsError: true}
+		return toolapi.Result{Content: []types.Content{{Type: "text", Text: msg.Error.Message}}, IsError: true}
 	}
 	var out struct {
 		Content []types.Content `json:"content"`
@@ -889,9 +889,9 @@ func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, 
 		Details any             `json:"details"`
 	}
 	if err := json.Unmarshal(msg.Result, &out); err != nil {
-		return loop.ToolResult{Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
+		return toolapi.Result{Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 	}
-	return loop.ToolResult{Content: out.Content, IsError: out.IsError, Details: out.Details}
+	return toolapi.Result{Content: out.Content, IsError: out.IsError, Details: out.Details}
 }
 
 func (c *rpcClient) rewriteInput(ctx context.Context, text string) (string, bool, error) {

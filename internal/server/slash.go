@@ -22,8 +22,9 @@ import (
 	"ki/internal/resources"
 	"ki/internal/session"
 	"ki/internal/toggles"
-	"ki/internal/toolname"
-	"ki/internal/tools"
+	toolapi "ki/internal/tool"
+	"ki/internal/tool/builtin"
+	"ki/internal/tool/builtin/catalog"
 	"ki/internal/types"
 )
 
@@ -86,8 +87,8 @@ func (s *Server) getSkills(w http.ResponseWriter, r *http.Request) {
 // toolProfile is the single model-to-tool capability mapping used by both
 // Settings and occupied runs; keeping one mapping prevents the visible catalog
 // from drifting away from the request header sent to the provider.
-func toolProfile(info provider.Model) tools.Profile {
-	return tools.Profile{
+func toolProfile(info provider.Model) builtin.Profile {
+	return builtin.Profile{
 		RichRead:   slices.Contains(info.Input, "image"),
 		ApplyPatch: info.ApplyPatchToolType == "freeform",
 	}
@@ -99,7 +100,7 @@ func toolProfile(info provider.Model) tools.Profile {
 func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
-	var profile tools.Profile
+	var profile builtin.Profile
 	if sessionID != "" {
 		sess, err := s.open(sessionID)
 		if err != nil {
@@ -132,7 +133,7 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 	if cwd == "" {
 		cwd = "."
 	}
-	toolSet := tools.Set{
+	toolSet := builtin.Set{
 		CWD: cwd, Processes: s.processesFor(sessionID), Agent: s,
 		AgentParentSessionID: sessionID, Shells: s.shells, Mutations: s.mutations,
 	}
@@ -166,11 +167,11 @@ func (s *Server) patchTools(w http.ResponseWriter, r *http.Request) {
 	}
 	f := toggles.Load(s.cfg.Home)
 	for i, name := range body.Disabled {
-		if !toolname.IsBuiltin(name) {
+		if !catalog.IsReserved(name) {
 			http.Error(w, "unknown tool "+name, http.StatusBadRequest)
 			return
 		}
-		body.Disabled[i] = toolname.MustCanonical(name)
+		body.Disabled[i] = toolapi.MustCanonical(name)
 	}
 	f.Tools = session.Toggle{Disabled: body.Disabled}
 	if err := toggles.Save(s.cfg.Home, f); err != nil {

@@ -1,14 +1,24 @@
 # 工具契约
 
-工具默认使用小写 snake_case 名称，接受对应的 PascalCase 别名（如 `exec_command` / `ExecCommand`）。每个工具只向模型发布一个 canonical schema；文件/搜索参数沿用现有契约，shell 使用进程交互契约，agent 使用协作契约。文本结果保持有界。内置工具由 `internal/tools.Set.Build` 构造，包入口见 `internal/tools/doc.go`。GPT Responses 模型使用原生 freeform `apply_patch`，其它模型使用 `write` + `edit`；两组编辑器互斥。`read` 仍按模型是否支持图片在富/文本两种模式间切换，而且这些选择发生在 system prompt 组装阶段（见 [architecture.md](architecture.md)）。
+工具默认使用小写 snake_case 名称，接受对应的 PascalCase 别名（如 `exec_command` / `ExecCommand`）。每个工具只向模型发布一个 canonical schema；文件/搜索参数沿用现有契约，shell 使用进程交互契约，agent 使用协作契约。文本结果保持有界。内置工具由 `internal/tool/builtin.Set.Build` 构造，包入口见 `internal/tool/builtin/doc.go`。GPT Responses 模型使用原生 freeform `apply_patch`，其它模型使用 `write` + `edit`；两组编辑器互斥。`read` 仍按模型是否支持图片在富/文本两种模式间切换，而且这些选择发生在 system prompt 组装阶段（见 [architecture.md](architecture.md)）。
+
+## 模块边界
+
+- `internal/tool` 定义 `Tool`、`Result`、`Spec`、可选执行接口、名称/别名、注册表和参数校验；不依赖 loop、内置实现或运行时。
+- `internal/tool/builtin` 根据模型能力组装工具，并应用内置开关；`file`、`shell`、`agent` 三个子包只负责对应工具的 schema、参数和结果适配。文件变更队列归 `file` 所有。
+- `internal/tool/builtin/catalog` 是内置名称的唯一声明来源；工具实现使用其标识符，extension 仅依赖这份轻量目录检查保留名，包含当前模型不可用的编辑器与未启用的协作工具。
+- `internal/tool/output` 管理完整输出文件、预览、配额和清理；loop 在 `AfterTool` 后应用统一策略，process 通过 `OutputSpool` 接口复用同一 store。
+- `internal/agent` 管理身份、调度、消息接纳、持久化和代次进度；server 将 `loop.Event` 转成有界 `agent.ProgressEvent`，运行时不直接依赖 loop。
+- `internal/process` 管理 shell、PTY、进程组及增量输出；shell 工具将调用上下文转换为显式 `process.Identity`，extension sidecar 复用进程组控制。
+- `internal/loop` 编排工具准备/执行、hooks 和事件；`internal/server` 注入 session 所属运行时并组装每轮工具。模型工具名、参数和输出协议不受包组织影响。
 
 ## 输出溢出
 
-所有工具结果在进入 provider prompt 前都经过统一的 output spool（`internal/tooloutput`，边界在 loop 的 `AfterTool` 之后）：
+所有工具结果在进入 provider prompt 前都经过统一的 output spool（`internal/tool/output`，边界在 loop 的 `AfterTool` 之后）：
 
 - 小结果直接进入 `toolResult.content`。
 - 超过 preview budget 的文本完整写入当前 session 的私有临时文件，模型只收到有界 preview、字节/行数和 `read(file_path, offset, limit)` 提示；jsonl 和 SSE 里记录的也是这个有界结果，完整内容只存在于 spill 文件。
-- 默认 preview budget 为 16KiB / 800 行；它只限制模型上下文，不改变 spill 文件的内容（`tooloutput.Config` 可覆盖）。
+- 默认 preview budget 为 16KiB / 800 行；它只限制模型上下文，不改变 spill 文件的内容（`output.Config` 可覆盖）。
 - 目录结构是 `<os.TempDir>/ki-tool-output/run-<pid>-<rand>/<session>/`；目录 `0700`、文件 `0600`，全部用主机 `filepath`。
 - details 在保留工具原有字段的同时挂一个保留键 `output`：`output.path`、`output.bytes`（文件实际存了多少）、`output.totalBytes`（工具产出多少）、`output.lines`、`output.previewBytes`、`output.previewLines`、`output.truncated`、`output.incomplete`（文件只存了前缀）。
 - 图片、PDF 等非文本 content 不参与 spool，原样保留。
@@ -34,11 +44,11 @@ exec_command 的完整输出文件也由该 store 创建：进程日志落在同
 
 内置工具的全局启用状态保存在 `{KI_HOME}/toggles.json` 的 `tools.disabled`。`GET/PATCH /v1/tools` 提供目录和开关；设置目录始终列出 `write`、`edit` 和 `apply_patch`，并用 `available` 标出当前模型实际使用的互斥编辑器，因此切换模型或其它工具时不会丢失隐藏工具的全局禁用状态。开关在下一次 occupy 生效；已在运行的请求继续使用其 request header 中固定的工具集。
 
-这套开关只过滤 `internal/tools.Set.Build` 产生的内置工具，扩展工具仍由 extension 的启用状态和 session 生命周期控制。
+这套开关只过滤 `internal/tool/builtin.Set.Build` 产生的内置工具，扩展工具仍由 extension 的启用状态和 session 生命周期控制。
 
 关闭 `spawn_agent` 只影响后续创建，不取消已有 agent。六个 agent 工具和两个 shell 工具分别有开关。全局开关、extension hooks、事件和遥测都使用 canonical 名；工具调用与配对的 toolResult 保留模型请求的拼写。`requestedToolName` 在执行事件中记录原始名称。extension 的原始注册名仍用于 `tool.execute` RPC，模型看到 snake_case，同时接受原始名与 PascalCase。非法名、canonical/alias 冲突以及内置工具保留名冲突在注册时原子拒绝。
 
-工具执行两段化（对齐 pi prepare/execute）：先 **prepare**（找工具 → `ToolValidator.Validate` schema 校验 → `BeforeTool` / lifecycle `tool_call` sync，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` / `tool_result` 变换结果）。扩展订事件见 [extension.md](extension.md)。`BeforeTool` 和 `ToolResult.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。内置工具和扩展工具都校验 required 和参数类型。
+工具执行两段化（对齐 pi prepare/execute）：先 **prepare**（找工具 → `tool.Validator.Validate` schema 校验 → `BeforeTool` / lifecycle `tool_call` sync，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` / `tool_result` 变换结果）。扩展订事件见 [extension.md](extension.md)。`BeforeTool` 和 `tool.Result.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。内置工具和扩展工具都校验 required 和参数类型。
 
 | 工具 | 参数 | 结果 |
 |---|---|---|
@@ -131,7 +141,7 @@ exec_command 的完整输出文件也由该 store 创建：进程日志落在同
 
 ## exec_command / write_stdin
 
-`ShellProcessManager` 按 session 拥有进程，生命周期独立于一次工具调用或 agent turn。每次 exec 都是新进程，默认 cwd 为 session cwd；显式 workdir 也不会改变后续调用的 cwd。
+`process.Manager` 按 session 拥有进程，生命周期独立于一次工具调用或 agent turn。每次 exec 都是新进程，默认 cwd 为 session cwd；显式 workdir 也不会改变后续调用的 cwd。
 
 - `login=true`、`tty=false`、`yield_time_ms=10000`、`max_output_tokens=10000` 为默认值。exec 观察范围 250–30000ms；达到观察预算返回 handle，命令继续运行，没有前台提升或 sleep 特例。
 - Windows 默认优先 PowerShell（pwsh，其次 Windows PowerShell），再回退 Git Bash；Unix 默认使用发现的 Bash。可显式选 bash/sh/zsh/pwsh/powershell 或主机绝对路径。找不到所选 shell 时执行报错，server 可正常启动。
@@ -151,7 +161,7 @@ exec_command 的完整输出文件也由该 store 创建：进程日志落在同
 
 ## Agent 协作
 
-`AgentController` 保存逻辑身份、结构父子关系、运行代次和 pending follow-up，shell manager 单独拥有进程。工具层只依赖 server 实现的 AgentRuntime。
+`agent.Controller` 保存逻辑身份、结构父子关系、运行代次和 pending follow-up，shell manager 单独拥有进程。工具层只依赖 server 实现的 `agent.Runtime`。
 
 - 根为 `/root`。child 的 task_name 使用 1–64 个小写 ASCII 字母、数字或下划线，不能为 root；同一 root 的完整路径不可重复。child 可用相对自身的路径，或 `/root/...` 绝对逻辑路径；`..`、`.`、跨 root 以及旧 parent/main 保留名不解析。
 - spawn 立即返回，child 始终 detached。`fork_turns` 默认 all，可为 none 或正整数（字符串），复制完整的已完成 user turn，排除触发当前轮的 user 输入及之后内容。QueueOnly mailbox 消息不算新的 user turn；继承工具调用/结果配对与附件路径。child 使用 parent 的 provider/model/cwd，system/tools 前缀相同；身份放在首条 user 信封里。

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"ki/internal/loop"
-	"ki/internal/toolname"
+	toolapi "ki/internal/tool"
+	"ki/internal/tool/builtin/catalog"
 )
 
 type sidecarTool struct {
@@ -14,8 +14,8 @@ type sidecarTool struct {
 	spec      ToolSpec
 }
 
-func (t sidecarTool) Name() string      { return toolname.MustCanonical(t.spec.Name) }
-func (t sidecarTool) Aliases() []string { names, _ := toolname.Aliases(t.spec.Name); return names }
+func (t sidecarTool) Name() string      { return toolapi.MustCanonical(t.spec.Name) }
+func (t sidecarTool) Aliases() []string { names, _ := toolapi.Aliases(t.spec.Name); return names }
 
 func (t sidecarTool) Description() string { return t.spec.Description }
 func (t sidecarTool) Prompt() string      { return t.spec.Description }
@@ -28,34 +28,34 @@ func (t sidecarTool) Snippet() string {
 func (t sidecarTool) Parameters() map[string]any { return t.spec.Parameters }
 
 func (t sidecarTool) Validate(args map[string]any) error {
-	if msg := loop.SchemaErrors(t.Parameters(), t.spec.Name, args); msg != "" {
+	if msg := toolapi.SchemaErrors(t.Parameters(), t.spec.Name, args); msg != "" {
 		return fmt.Errorf("%w: %s", errRPC, msg)
 	}
 	return nil
 }
 
-func (t sidecarTool) Execute(ctx context.Context, args map[string]any) loop.ToolResult {
+func (t sidecarTool) Execute(ctx context.Context, args map[string]any) toolapi.Result {
 	return t.client.executeTool(withSessionID(ctx, t.sessionID), t.spec, "", t.spec.Name, args, nil)
 }
 
-func (t sidecarTool) ExecuteWithProgress(ctx context.Context, args map[string]any, emit func(any)) loop.ToolResult {
+func (t sidecarTool) ExecuteWithProgress(ctx context.Context, args map[string]any, emit func(any)) toolapi.Result {
 	return t.client.executeTool(withSessionID(ctx, t.sessionID), t.spec, "", t.spec.Name, args, emit)
 }
 
-func toolsFromRegistration(c *rpcClient, sessionID string) []loop.Tool {
+func toolsFromRegistration(c *rpcClient, sessionID string) []toolapi.Tool {
 	if c == nil || !hasKind(c.capabilities, CapTool) {
 		return nil
 	}
 	return toolsFromSpecs(c, sessionID, c.registration.Tools)
 }
 
-func toolsFromSpecs(c *rpcClient, sessionID string, specs []ToolSpec) []loop.Tool {
+func toolsFromSpecs(c *rpcClient, sessionID string, specs []ToolSpec) []toolapi.Tool {
 	if c == nil || !hasKind(c.capabilities, CapTool) {
 		return nil
 	}
-	var out []loop.Tool
+	var out []toolapi.Tool
 	for _, spec := range specs {
-		if toolname.IsBuiltin(spec.Name) {
+		if catalog.IsReserved(spec.Name) {
 			continue
 		}
 		out = append(out, sidecarTool{client: c, sessionID: sessionID, spec: spec})

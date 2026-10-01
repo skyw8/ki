@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"ki/internal/loop"
+	toolapi "ki/internal/tool"
 	"ki/internal/types"
 	"ki/pkg/llmprotocol"
 )
@@ -36,7 +37,7 @@ func TestCompletionsBodyShapesToolsAndRoles(t *testing.T) {
 			}},
 			{Role: "toolResult", ToolCallID: "c1", Content: []types.Content{{Type: "text", Text: "data"}}},
 		},
-		Tools: []loop.ToolSpec{{
+		Tools: []toolapi.Spec{{
 			Name:        "Read",
 			Description: "Read a file",
 			Parameters:  map[string]any{"type": "object"},
@@ -93,7 +94,7 @@ func TestCompletionsOpenAIRequestUsesOfficialFields(t *testing.T) {
 		Messages: []types.Message{{Role: "assistant", Content: []types.Content{{
 			Type: "toolCall", ID: "call_1", Name: "Read", ArgumentsRaw: `{"file_path":"/tmp/a"}`,
 		}}}},
-		Tools: []loop.ToolSpec{{Name: "Read", Parameters: map[string]any{"type": "object"}}},
+		Tools: []toolapi.Spec{{Name: "Read", Parameters: map[string]any{"type": "object"}}},
 	})
 	if body["max_completion_tokens"] != 2048 {
 		t.Fatalf("max completion tokens: %+v", body)
@@ -198,9 +199,9 @@ func ptr(s string) *string { return &s }
 func TestResponsesBodyReplaysCustomToolCallAndOutput(t *testing.T) {
 	body := ResponsesBody(loop.Request{
 		Model: "gpt-5.6-terra",
-		Tools: []loop.ToolSpec{
+		Tools: []toolapi.Spec{
 			{Name: "Read"},
-			{Type: "custom", Name: "apply_patch", Description: "patch", Format: &loop.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"}},
+			{Type: "custom", Name: "apply_patch", Description: "patch", Format: &toolapi.Format{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"}},
 		},
 		Messages: []types.Message{
 			{Role: "assistant", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "call_1", Name: "apply_patch", Input: "*** Begin Patch"}}},
@@ -233,7 +234,7 @@ func TestAnthropicBodyUsesCacheControlAndToolUse(t *testing.T) {
 		Messages: []types.Message{
 			{Role: "user", Content: []types.Content{{Type: "text", Text: "x"}}},
 		},
-		Tools: []loop.ToolSpec{{Name: "Bash", Description: "sh", Parameters: map[string]any{"type": "object"}}},
+		Tools: []toolapi.Spec{{Name: "Bash", Description: "sh", Parameters: map[string]any{"type": "object"}}},
 	})
 	sys := mustType[[]map[string]any](t, body["system"])
 	if sys[0]["text"] != "layered" {

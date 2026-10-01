@@ -14,7 +14,8 @@ import (
 	"ki/internal/loop"
 	"ki/internal/provider"
 	"ki/internal/session"
-	"ki/internal/toolname"
+	toolapi "ki/internal/tool"
+	"ki/internal/tool/builtin/catalog"
 	"ki/internal/types"
 )
 
@@ -330,8 +331,8 @@ func sameRuntime(a, b Descriptor) bool {
 }
 
 // Prepare opens this session's view over already-running server sidecars.
-func (m *Manager) Prepare(ctx context.Context, sessionID, cwd string, enabled []Descriptor) []loop.Tool {
-	var tools []loop.Tool
+func (m *Manager) Prepare(ctx context.Context, sessionID, cwd string, enabled []Descriptor) []toolapi.Tool {
+	var tools []toolapi.Tool
 	var order []string
 	var opened []*rpcClient
 	for _, d := range enabled {
@@ -630,12 +631,12 @@ func (m *Manager) SessionContributions(sessionID string) map[string]SessionContr
 		if hasKind(c.capabilities, CapTool) {
 			seen := map[string]bool{}
 			addTool := func(spec ToolSpec) {
-				if spec.Name == "" || toolname.IsBuiltin(spec.Name) || seen[spec.Name] {
+				if spec.Name == "" || catalog.IsReserved(spec.Name) || seen[spec.Name] {
 					return
 				}
 				seen[spec.Name] = true
-				aliases, _ := toolname.Aliases(spec.Name)
-				contrib.Tools = append(contrib.Tools, CatalogEntry{Name: toolname.MustCanonical(spec.Name), Description: spec.Description, Aliases: aliases})
+				aliases, _ := toolapi.Aliases(spec.Name)
+				contrib.Tools = append(contrib.Tools, CatalogEntry{Name: toolapi.MustCanonical(spec.Name), Description: spec.Description, Aliases: aliases})
 			}
 			for _, spec := range c.registration.Tools {
 				addTool(spec)

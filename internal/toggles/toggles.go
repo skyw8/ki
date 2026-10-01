@@ -8,7 +8,7 @@ import (
 
 	"ki/internal/session"
 	"ki/internal/state"
-	"ki/internal/toolname"
+	toolapi "ki/internal/tool"
 )
 
 // version is the schema version of toggles.json.
@@ -95,7 +95,7 @@ func migrateNames(names []string) []string {
 	for _, name := range names {
 		targets := mapping[name]
 		if targets == nil {
-			canonical, err := toolname.Canonical(name)
+			canonical, err := toolapi.Canonical(name)
 			if err != nil {
 				targets = []string{name}
 			} else {
@@ -116,7 +116,7 @@ func canonicalNames(names []string) []string {
 	out := make([]string, 0, len(names))
 	seen := make(map[string]bool)
 	for _, name := range names {
-		canonical, err := toolname.Canonical(name)
+		canonical, err := toolapi.Canonical(name)
 		if err == nil {
 			name = canonical
 		}

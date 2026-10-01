@@ -23,11 +23,12 @@ import (
 	"testing"
 	"time"
 
+	"ki/internal/agent"
 	"ki/internal/config"
 	"ki/internal/loop"
 	"ki/internal/provider"
 	"ki/internal/session"
-	"ki/internal/tools"
+	toolapi "ki/internal/tool"
 	"ki/internal/types"
 	"ki/web"
 )
@@ -590,7 +591,7 @@ func TestAgentSpawnsTreeChildAndRunsChildLoop(t *testing.T) {
 func TestBackgroundAgentStoresCompletionWithoutStartingParent(t *testing.T) {
 	srv, hs := testServerWith(t, agentEchoStreamer{})
 	parent := createSession(t, hs, t.TempDir())
-	launch, err := srv.SpawnAgent(t.Context(), tools.AgentRequest{TaskName: "child", ParentSessionID: parent, Prompt: "child directive", ForkTurns: "none"})
+	launch, err := srv.SpawnAgent(t.Context(), agent.Request{TaskName: "child", ParentSessionID: parent, Prompt: "child directive", ForkTurns: "none"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,23 +617,23 @@ func TestAgentSendMessageSteersLiveChild(t *testing.T) {
 	streamer := newSteerAgentStreamer()
 	srv, hs := testServerWith(t, streamer)
 	parentID := createSession(t, hs, t.TempDir())
-	launch, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	launch, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "steer child", Prompt: "child directive", ParentSessionID: parentID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	<-streamer.started
-	result, err := srv.SendAgentMessage(context.Background(), tools.AgentMessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, Message: "steer child now"})
+	result, err := srv.SendAgentMessage(context.Background(), agent.MessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, Message: "steer child now"})
 	if err != nil || result.Status != "queued" {
 		t.Fatalf("steer result = %+v %v", result, err)
 	}
 	close(streamer.release)
 	snapshot, err := srv.Wait(context.Background(), launch.TaskID)
-	if err != nil || snapshot.Status != tools.TaskCompleted || snapshot.Result != "initial child result" {
+	if err != nil || snapshot.Status != agent.Completed || snapshot.Result != "initial child result" {
 		t.Fatalf("steered task = %+v %v", snapshot, err)
 	}
-	result, err = srv.SendAgentMessage(t.Context(), tools.AgentMessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, Message: "continue", TriggerTurn: true})
+	result, err = srv.SendAgentMessage(t.Context(), agent.MessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, Message: "continue", TriggerTurn: true})
 	if err != nil || result.Status != "resumed" {
 		t.Fatalf("follow-up: %+v %v", result, err)
 	}
@@ -741,8 +742,8 @@ func TestAgentCompletionNotificationJoinsLiveParentTurn(t *testing.T) {
 		t.Fatal("parent run never reached its second model round")
 	}
 
-	launch, err := srv.agentTasks.Start(t.Context(), tools.AgentRequest{TaskName: nextAgentTestName(), SessionID: parentID}, "", func(context.Context, string, string) (tools.AgentCompletion, error) {
-		return tools.AgentCompletion{Result: "child report"}, nil
+	launch, err := srv.agentTasks.Start(t.Context(), agent.Request{TaskName: nextAgentTestName(), SessionID: parentID}, "", func(context.Context, string, string) (agent.Completion, error) {
+		return agent.Completion{Result: "child report"}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -750,7 +751,7 @@ func TestAgentCompletionNotificationJoinsLiveParentTurn(t *testing.T) {
 	if _, err := srv.Wait(t.Context(), launch.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	srv.notifyAgentCompletion(parentID, types.CompletionIdentity{TaskID: launch.TaskID, Generation: 1}, "child review", dir+"/events.jsonl", tools.AgentCompletion{Result: "child report"}, nil)
+	srv.notifyAgentCompletion(parentID, types.CompletionIdentity{TaskID: launch.TaskID, Generation: 1}, "child review", dir+"/events.jsonl", agent.Completion{Result: "child report"}, nil)
 	if !srv.running(parentID) {
 		t.Fatal("notification ended the parent turn")
 	}
@@ -792,8 +793,8 @@ func TestAgentCompletionNotificationJoinsLiveParentTurn(t *testing.T) {
 func TestCommittedAgentNotificationIsNotDispatchedAgain(t *testing.T) {
 	srv, hs := testServer(t)
 	parent := createSession(t, hs, t.TempDir())
-	launch, err := srv.agentTasks.Start(t.Context(), tools.AgentRequest{TaskName: "child", SessionID: "child", ParentSessionID: parent, Prompt: "work"}, "", func(context.Context, string, string) (tools.AgentCompletion, error) {
-		return tools.AgentCompletion{Result: "done"}, nil
+	launch, err := srv.agentTasks.Start(t.Context(), agent.Request{TaskName: "child", SessionID: "child", ParentSessionID: parent, Prompt: "work"}, "", func(context.Context, string, string) (agent.Completion, error) {
+		return agent.Completion{Result: "done"}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -807,7 +808,7 @@ func TestCommittedAgentNotificationIsNotDispatchedAgain(t *testing.T) {
 	if !accepted || err != nil {
 		t.Fatal("could not commit notification")
 	}
-	srv.notifyAgentCompletion(parent, identity, "child", "", tools.AgentCompletion{Result: "done"}, nil)
+	srv.notifyAgentCompletion(parent, identity, "child", "", agent.Completion{Result: "done"}, nil)
 	dir, _ := srv.sidx.Lookup(parent)
 	pending, _ := session.ReadContextQueue(dir)
 	if len(pending) != 0 || srv.running(parent) {
@@ -818,7 +819,7 @@ func TestCommittedAgentNotificationIsNotDispatchedAgain(t *testing.T) {
 func TestFollowupTaskResumesCompletedChild(t *testing.T) {
 	srv, hs := testServerWith(t, resumeAgentStreamer{})
 	parentID := createSession(t, hs, t.TempDir())
-	launch, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	launch, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "resume child", Prompt: "child directive", ParentSessionID: parentID,
 	})
 	if err != nil {
@@ -828,14 +829,14 @@ func TestFollowupTaskResumesCompletedChild(t *testing.T) {
 	if err != nil || first.Result != "initial child result" {
 		t.Fatalf("initial task = %+v %v", first, err)
 	}
-	contextReceipt, err := srv.SendAgentMessage(t.Context(), tools.AgentMessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, Message: "extra context"})
+	contextReceipt, err := srv.SendAgentMessage(t.Context(), agent.MessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, Message: "extra context"})
 	if err != nil || contextReceipt.AgentID != launch.TaskID || contextReceipt.TaskName != launch.TaskPath {
 		t.Fatalf("QueueOnly receipt mixed session and agent identity: %+v %v", contextReceipt, err)
 	}
-	if snapshot, _ := srv.Get(launch.TaskID); snapshot.Generation != first.Generation || snapshot.Status != tools.TaskCompleted {
+	if snapshot, _ := srv.Get(launch.TaskID); snapshot.Generation != first.Generation || snapshot.Status != agent.Completed {
 		t.Fatalf("QueueOnly context started a turn: %+v", snapshot)
 	}
-	result, err := srv.SendAgentMessage(context.Background(), tools.AgentMessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, TriggerTurn: true, Message: "resume child"})
+	result, err := srv.SendAgentMessage(context.Background(), agent.MessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, TriggerTurn: true, Message: "resume child"})
 	if err != nil || result.Status != "resumed" {
 		t.Fatalf("resume result = %+v %v", result, err)
 	}
@@ -859,7 +860,7 @@ func TestAgentTaskMetadataRestoresAfterServerRestart(t *testing.T) {
 	}
 	hs1 := httptest.NewServer(srv1.Handler())
 	parentID := createSession(t, hs1, t.TempDir())
-	launch, err := srv1.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	launch, err := srv1.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "restart child", Prompt: "child directive", ParentSessionID: parentID,
 	})
 	if err != nil {
@@ -883,10 +884,10 @@ func TestAgentTaskMetadataRestoresAfterServerRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = srv2.Shutdown(context.Background()) }()
-	if got, ok := srv2.Get(launch.TaskID); !ok || got.Status != tools.TaskCompleted {
+	if got, ok := srv2.Get(launch.TaskID); !ok || got.Status != agent.Completed {
 		t.Fatalf("restored task = %+v %v", got, ok)
 	}
-	result, err := srv2.SendAgentMessage(context.Background(), tools.AgentMessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, TriggerTurn: true, Message: "resume child"})
+	result, err := srv2.SendAgentMessage(context.Background(), agent.MessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, TriggerTurn: true, Message: "resume child"})
 	if err != nil || result.Status != "resumed" {
 		t.Fatalf("restored resume = %+v %v", result, err)
 	}
@@ -907,7 +908,7 @@ func TestInterruptedAgentResumesAfterServerRestart(t *testing.T) {
 	}
 	hs1 := httptest.NewServer(srv1.Handler())
 	parentID := createSession(t, hs1, t.TempDir())
-	launch, err := srv1.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	launch, err := srv1.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "interrupted child", Prompt: "child directive", ParentSessionID: parentID,
 	})
 	if err != nil {
@@ -928,15 +929,15 @@ func TestInterruptedAgentResumesAfterServerRestart(t *testing.T) {
 	}
 	defer func() { _ = srv2.Shutdown(context.Background()) }()
 	interrupted, ok := srv2.Get(launch.TaskID)
-	if !ok || interrupted.Status != tools.TaskInterrupted {
+	if !ok || interrupted.Status != agent.Interrupted {
 		t.Fatalf("restored interrupted task = %+v %v", interrupted, ok)
 	}
-	result, err := srv2.SendAgentMessage(context.Background(), tools.AgentMessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, TriggerTurn: true, Message: "resume child"})
+	result, err := srv2.SendAgentMessage(context.Background(), agent.MessageRequest{SenderSessionID: parentID, Target: launch.TaskPath, TriggerTurn: true, Message: "resume child"})
 	if err != nil || result.Status != "resumed" {
 		t.Fatalf("resume interrupted child = %+v %v", result, err)
 	}
 	got, err := srv2.Wait(context.Background(), launch.TaskID)
-	if err != nil || got.Status != tools.TaskCompleted || got.Result != "resumed child result" {
+	if err != nil || got.Status != agent.Completed || got.Result != "resumed child result" {
 		t.Fatalf("resumed interrupted child = %+v %v", got, err)
 	}
 }
@@ -944,7 +945,7 @@ func TestInterruptedAgentResumesAfterServerRestart(t *testing.T) {
 func TestAgentRecursiveSpawnAndTreeDeleteCleansTasks(t *testing.T) {
 	srv, hs := testServerWith(t, resumeAgentStreamer{})
 	rootID := createSession(t, hs, t.TempDir())
-	child, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	child, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "child", Prompt: "child directive", ParentSessionID: rootID,
 	})
 	if err != nil {
@@ -953,7 +954,7 @@ func TestAgentRecursiveSpawnAndTreeDeleteCleansTasks(t *testing.T) {
 	if _, err := srv.Wait(context.Background(), child.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	grandchild, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	grandchild, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "grandchild", Prompt: "grandchild directive", ParentSessionID: child.SessionID,
 	})
 	if err != nil {
@@ -962,7 +963,7 @@ func TestAgentRecursiveSpawnAndTreeDeleteCleansTasks(t *testing.T) {
 	if _, err := srv.Wait(context.Background(), grandchild.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	greatGrandchild, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	greatGrandchild, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "great grandchild", Prompt: "great grandchild directive", ParentSessionID: grandchild.SessionID,
 	})
 	if err != nil {
@@ -971,7 +972,7 @@ func TestAgentRecursiveSpawnAndTreeDeleteCleansTasks(t *testing.T) {
 	if _, err := srv.Wait(context.Background(), greatGrandchild.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	fourth, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	fourth, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "fourth descendant", Prompt: "fourth descendant directive", ParentSessionID: greatGrandchild.SessionID,
 	})
 	if err != nil {
@@ -1017,12 +1018,12 @@ func TestConcurrentBackgroundAgentsKeepSessionsAndNotificationsDistinct(t *testi
 	parentID := createSession(t, hs, t.TempDir())
 
 	const count = 4
-	launches := make(chan tools.AgentLaunch, count)
+	launches := make(chan agent.Launch, count)
 	errs := make(chan error, count)
 	var wg sync.WaitGroup
 	for range count {
 		wg.Go(func() {
-			launch, spawnErr := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+			launch, spawnErr := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 				Description: "parallel child", Prompt: "child directive", ParentSessionID: parentID,
 			})
 			if spawnErr != nil {
@@ -1038,7 +1039,7 @@ func TestConcurrentBackgroundAgentsKeepSessionsAndNotificationsDistinct(t *testi
 	for err := range errs {
 		t.Fatal(err)
 	}
-	var got []tools.AgentLaunch
+	var got []agent.Launch
 	for launch := range launches {
 		got = append(got, launch)
 	}
@@ -1120,7 +1121,7 @@ func TestAgentChildStartsWithCleanContext(t *testing.T) {
 	_ = res.Body.Close()
 	waitAgentEnd(t, hs, parentID)
 
-	launch, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	launch, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		ForkTurns: "none", Description: "clean child", Prompt: "child directive", ParentSessionID: parentID,
 	})
 	if err != nil {
@@ -1214,7 +1215,7 @@ func TestAgentChildInheritsCompletedHistory(t *testing.T) {
 		t.Fatal("parent has no metadata entries to filter")
 	}
 
-	launch, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	launch, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "forked child", Prompt: "child directive", ParentSessionID: parentID,
 	})
 	if err != nil {
@@ -1264,7 +1265,7 @@ func TestAgentChildInheritsCompletedHistory(t *testing.T) {
 func TestAgentIdentitySurvivesDeletedAncestor(t *testing.T) {
 	srv, hs := testServerWith(t, agentEchoStreamer{})
 	root := createSession(t, hs, t.TempDir())
-	launch, err := srv.SpawnAgent(t.Context(), tools.AgentRequest{TaskName: "child", ParentSessionID: root, Prompt: "child directive", ForkTurns: "none"})
+	launch, err := srv.SpawnAgent(t.Context(), agent.Request{TaskName: "child", ParentSessionID: root, Prompt: "child directive", ForkTurns: "none"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1292,7 +1293,7 @@ func TestAgentChildEnvelopeUsesTaskPathsAndKeepsToolsAvailable(t *testing.T) {
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	rootID := createSession(t, hs, t.TempDir())
-	child, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	child, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "child", Prompt: "child directive", ParentSessionID: rootID,
 	})
 	if err != nil {
@@ -1301,7 +1302,7 @@ func TestAgentChildEnvelopeUsesTaskPathsAndKeepsToolsAvailable(t *testing.T) {
 	if _, err := srv.Wait(context.Background(), child.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	grandchild, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	grandchild, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "grandchild", Prompt: "grandchild directive", ParentSessionID: child.SessionID,
 	})
 	if err != nil {
@@ -1327,7 +1328,7 @@ func TestAgentChildEnvelopeUsesTaskPathsAndKeepsToolsAvailable(t *testing.T) {
 		t.Fatalf("envelope must precede the directive: %q", first)
 	}
 
-	greatGrandchild, err := srv.SpawnAgent(context.Background(), tools.AgentRequest{TaskName: nextAgentTestName(),
+	greatGrandchild, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "great grandchild", Prompt: "great grandchild directive", ParentSessionID: grandchild.SessionID,
 	})
 	if err != nil {
@@ -1402,7 +1403,7 @@ func toolNames(tools []session.ToolSchema) []string {
 func TestSendAgentMessageUsesCanonicalPaths(t *testing.T) {
 	srv, hs := testServerWith(t, agentEchoStreamer{})
 	root := createSession(t, hs, t.TempDir())
-	launch, err := srv.SpawnAgent(t.Context(), tools.AgentRequest{TaskName: "child", ParentSessionID: root, Prompt: "child directive", ForkTurns: "none"})
+	launch, err := srv.SpawnAgent(t.Context(), agent.Request{TaskName: "child", ParentSessionID: root, Prompt: "child directive", ForkTurns: "none"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1410,7 +1411,7 @@ func TestSendAgentMessageUsesCanonicalPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, target := range []string{"/root", "/root/child"} {
-		result, err := srv.SendAgentMessage(t.Context(), tools.AgentMessageRequest{SenderSessionID: launch.SessionID, Target: target, Message: "status update"})
+		result, err := srv.SendAgentMessage(t.Context(), agent.MessageRequest{SenderSessionID: launch.SessionID, Target: target, Message: "status update"})
 		if err != nil || result.Status != "stored" {
 			t.Fatalf("%s: %+v %v", target, result, err)
 		}
@@ -1418,15 +1419,15 @@ func TestSendAgentMessageUsesCanonicalPaths(t *testing.T) {
 	if srv.running(root) {
 		t.Fatal("queue-only root message started work")
 	}
-	if _, err := srv.SendAgentMessage(t.Context(), tools.AgentMessageRequest{SenderSessionID: launch.SessionID, Target: "/root", Message: "start", TriggerTurn: true}); err == nil {
+	if _, err := srv.SendAgentMessage(t.Context(), agent.MessageRequest{SenderSessionID: launch.SessionID, Target: "/root", Message: "start", TriggerTurn: true}); err == nil {
 		t.Fatal("follow-up targeted root")
 	}
-	if _, err := srv.SendAgentMessage(t.Context(), tools.AgentMessageRequest{SenderSessionID: root, Target: "../child", Message: "invalid"}); err == nil {
+	if _, err := srv.SendAgentMessage(t.Context(), agent.MessageRequest{SenderSessionID: root, Target: "../child", Message: "invalid"}); err == nil {
 		t.Fatal("invalid task path accepted")
 	}
 }
 
-func requestToolNames(specs []loop.ToolSpec) []string {
+func requestToolNames(specs []toolapi.Spec) []string {
 	out := make([]string, 0, len(specs))
 	for _, spec := range specs {
 		out = append(out, spec.Name)

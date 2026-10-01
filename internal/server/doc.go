@@ -163,10 +163,11 @@
 // there is no fixed depth limit. Agent metadata restores identity and pending
 // work in two passes. send_message accepts context; followup_task starts work;
 // interrupt_agent preserves identity and leaves separately owned shell processes.
-// Per-generation progress/stats are reduced from run events rather than scanning
+// Server projects run events into agent.ProgressEvent for agent.Controller;
+// per-generation progress/stats are reduced from these boundaries rather than scanning
 // inherited history. Sideband process_updated/agent_updated events never advance
 // the transcript leaf and reach existing SSE and session GET runtime projections.
-// ShellProcessManager owns exec_command/write_stdin processes across turns.
+// process.Manager owns exec_command/write_stdin processes across turns.
 // Existing abort supports turn (default), process and structural tree scopes.
 // Shutdown sets runtimeClosed so occupy and queue dispatch refuse new runs, then
 // drains runners including their completion callbacks before closing process

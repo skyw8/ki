@@ -19,7 +19,8 @@ import (
 	"ki/internal/loop"
 	"ki/internal/session"
 	"ki/internal/toggles"
-	"ki/internal/toolname"
+	toolapi "ki/internal/tool"
+	"ki/internal/tool/builtin/catalog"
 )
 
 type extUIState struct {
@@ -312,7 +313,7 @@ func (s *Server) Snapshot(sessionID, _ string) (extension.SessionSnapshot, error
 	s.mu.Lock()
 	active := append([]string{}, s.activeTools[sessionID]...)
 	s.mu.Unlock()
-	all := append([]string{}, toolname.Builtins...)
+	all := append([]string{}, catalog.Names()...)
 	return extension.SessionSnapshot{
 		ID:          sess.ID(),
 		CWD:         sess.Header.CWD,
@@ -563,8 +564,8 @@ func (s *Server) PatchSession(sessionID, model, thinking string) error {
 // SetActiveTools restricts which tools the next occupy may use.
 func (s *Server) SetActiveTools(sessionID, extName string, names []string) error {
 	known := map[string]string{}
-	for _, name := range toolname.Builtins {
-		aliases, _ := toolname.Aliases(name)
+	for _, name := range catalog.Names() {
+		aliases, _ := toolapi.Aliases(name)
 		for _, alias := range aliases {
 			known[alias] = name
 		}
@@ -574,10 +575,10 @@ func (s *Server) SetActiveTools(sessionID, extName string, names []string) error
 			for _, spec := range contribution.Tools {
 				aliases := spec.Aliases
 				if len(aliases) == 0 {
-					aliases, _ = toolname.Aliases(spec.Name)
+					aliases, _ = toolapi.Aliases(spec.Name)
 				}
 				for _, alias := range aliases {
-					known[alias] = toolname.MustCanonical(spec.Name)
+					known[alias] = toolapi.MustCanonical(spec.Name)
 				}
 			}
 		}

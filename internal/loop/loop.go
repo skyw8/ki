@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"ki/internal/telemetry"
-	"ki/internal/toolname"
-	"ki/internal/tooloutput"
+	toolapi "ki/internal/tool"
+	"ki/internal/tool/output"
 	"ki/internal/types"
 )
 
@@ -132,7 +132,7 @@ type Event struct {
 	Result                any               `json:"result,omitempty"`
 	IsError               bool              `json:"isError,omitzero"`
 	System                string            `json:"system,omitempty"`
-	Tools                 []ToolSpec        `json:"tools,omitempty"`
+	Tools                 []toolapi.Spec    `json:"tools,omitempty"`
 	Reason                string            `json:"reason,omitempty"`
 	CancelSource          string            `json:"cancelSource,omitempty"`
 	OK                    bool              `json:"ok,omitzero"`
@@ -183,62 +183,6 @@ type AssistantDelta struct {
 	Partial    types.Message `json:"partial"`
 }
 
-// Tool is something the model can call.
-type Tool interface {
-	Name() string
-	Description() string
-	Prompt() string
-	Snippet() string
-	Parameters() map[string]any
-	Execute(ctx context.Context, args map[string]any) ToolResult
-}
-
-// ProgressTool is implemented by tools that can report incremental output
-// while Execute is still running. The callback is intentionally untyped at the
-// loop boundary: tool-specific progress is persisted as JSON and presented to
-// the model/UI as a partial result.
-type ProgressTool interface {
-	Tool
-	ExecuteWithProgress(ctx context.Context, args map[string]any, emit func(any)) ToolResult
-}
-
-// ToolSpecProvider optionally replaces the default JSON function schema.
-// It is used by grammar-backed Responses custom tools such as apply_patch.
-type ToolSpecProvider interface {
-	ToolSpec() ToolSpec
-}
-
-// FreeformTool executes the raw input of a custom tool call.
-type FreeformTool interface {
-	ExecuteRaw(ctx context.Context, input string) ToolResult
-}
-
-// ToolArgumentDiffConsumer incrementally parses a freeform tool call while
-// the provider is still producing its arguments. Results are client previews;
-// they never authorize or execute the tool.
-type ToolArgumentDiffConsumer interface {
-	Consume(delta string) (any, bool)
-	Finish() (any, bool)
-}
-
-// ToolArgumentDiffProvider creates isolated state for one streamed tool call.
-type ToolArgumentDiffProvider interface {
-	NewArgumentDiffConsumer() ToolArgumentDiffConsumer
-}
-
-// ToolResult is one tool execution outcome.
-type ToolResult struct {
-	Content []types.Content
-	IsError bool
-	Details any
-	// Diagnostic is private harness telemetry. Provider adapters receive only
-	// the model-facing content and IsError fields.
-	Diagnostic telemetry.ToolDiagnostic `json:"-"`
-	// Terminate hints the agent to stop after this tool batch when every
-	// finalized result in the batch sets it (pi result.terminate).
-	Terminate bool
-}
-
 // Streamer produces an assistant message (and stream deltas).
 type Streamer interface {
 	Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (types.Message, error)
@@ -253,7 +197,7 @@ type Request struct {
 	SessionID               string                `json:"sessionId"`
 	System                  string                `json:"system"`
 	Messages                []types.Message       `json:"messages"`
-	Tools                   []ToolSpec            `json:"tools"`
+	Tools                   []toolapi.Spec        `json:"tools"`
 	Provider                string                `json:"provider"`
 	Model                   string                `json:"model"`
 	API                     string                `json:"api"`
@@ -276,31 +220,6 @@ type Request struct {
 	ContextTransformed bool `json:"-"`
 }
 
-// ToolSpec is the schema sent to the provider.
-type ToolSpec struct {
-	Type        string         `json:"type,omitempty"`
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"`
-	Format      *ToolFormat    `json:"format,omitempty"`
-}
-
-// ToolFormat describes the grammar accepted by a Responses custom tool.
-type ToolFormat struct {
-	Type       string `json:"type"`
-	Syntax     string `json:"syntax"`
-	Definition string `json:"definition"`
-}
-
-func specForTool(t Tool) ToolSpec {
-	if p, ok := t.(ToolSpecProvider); ok {
-		spec := p.ToolSpec()
-		spec.Name = toolname.MustCanonical(t.Name())
-		return spec
-	}
-	return ToolSpec{Type: "function", Name: toolname.MustCanonical(t.Name()), Description: t.Description() + "\n\n" + t.Prompt(), Parameters: t.Parameters()}
-}
-
 // Hooks are awaited interception points.
 type Hooks struct {
 	BeforeRun        func(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error)
@@ -308,7 +227,7 @@ type Hooks struct {
 	// BeforeTool may rewrite args, block the call (with reason), and signal
 	// terminate (stop after this batch when every call in the batch terminates).
 	BeforeTool func(ctx context.Context, name string, args map[string]any) (map[string]any, bool, string, bool, error)
-	AfterTool  func(ctx context.Context, name string, args map[string]any, res ToolResult) (ToolResult, error)
+	AfterTool  func(ctx context.Context, name string, args map[string]any, res toolapi.Result) (toolapi.Result, error)
 	// ShouldCompact is checked after a completed tool round, before the next
 	// provider request. OnContextThreshold replaces the live history with a
 	// compacted checkpoint without ending the run.
@@ -391,8 +310,8 @@ type Config struct {
 	Generation                uint64
 	Streamer                  Streamer
 	SessionID                 string
-	Tools                     []Tool
-	OutputStore               *tooloutput.Store
+	Tools                     []toolapi.Tool
+	OutputStore               *output.Store
 	Telemetry                 *telemetry.Run
 	Hooks                     Hooks
 	MaxRetries                int
@@ -431,7 +350,7 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 
 // RunMessage executes one structured user message against the current history.
 func RunMessage(ctx context.Context, user types.Message, history []types.Message, cfg Config, emit func(Event) error) ([]types.Message, error) {
-	if _, err := NewToolRegistry(cfg.Tools); err != nil {
+	if _, err := toolapi.NewRegistry(cfg.Tools); err != nil {
 		return nil, err
 	}
 	if cfg.MaxRetries <= 0 {
@@ -476,9 +395,9 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		history = msgs
 	}
 
-	var specs []ToolSpec
+	var specs []toolapi.Spec
 	for _, t := range cfg.Tools {
-		specs = append(specs, specForTool(t))
+		specs = append(specs, toolapi.SpecFor(t))
 	}
 	responsesContext := slices.Clone(cfg.ResponsesContext)
 
@@ -803,7 +722,7 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 		var firstDelta time.Time
 		var lastDelta time.Time
 		deltas := 0
-		argumentConsumers := map[string]ToolArgumentDiffConsumer{}
+		argumentConsumers := map[string]toolapi.ArgumentDiffConsumer{}
 		argumentConsumerNames := map[string]string{}
 		partial := types.Message{Role: "assistant", Provider: cfg.Provider, Model: cfg.Model, Timestamp: time.Now().UnixMilli()}
 		// The start message escapes to replay readers; keep the local accumulator
@@ -826,10 +745,10 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				consumer := argumentConsumers[d.ToolCallID]
 				if consumer == nil {
 					for _, tool := range cfg.Tools {
-						if !toolname.Equal(d.ToolName, tool.Name()) {
+						if !toolapi.Equal(d.ToolName, tool.Name()) {
 							continue
 						}
-						if provider, ok := tool.(ToolArgumentDiffProvider); ok {
+						if provider, ok := tool.(toolapi.ArgumentDiffProvider); ok {
 							consumer = provider.NewArgumentDiffConsumer()
 							argumentConsumers[d.ToolCallID] = consumer
 							argumentConsumerNames[d.ToolCallID] = d.ToolName
@@ -995,33 +914,26 @@ func nonRetryableStreamError(err error) bool {
 	return errors.As(err, &failure) && failure.NonRetryable()
 }
 
-// ToolValidator is the optional pre-execution schema check (P0, pi
-// validateToolArguments). Tools may implement it to reject malformed
-// arguments before any execution starts.
-type ToolValidator interface {
-	Validate(args map[string]any) error
-}
-
 // executeTools runs a batch of tool calls in two phases (pi prepare/execute):
 //
 //  1. prepare (synchronous): resolve the tool, schema-validate via the
-//     optional ToolValidator, and run the BeforeTool hook. Failures become
+//     optional toolapi.Validator, and run the BeforeTool hook. Failures become
 //     immediate error results — nothing is executed for them.
 //  2. execute: run the prepared calls (parallel or sequential).
 //
 // The second return value is the batch terminate signal: true when every call
-// in the batch terminated (BeforeTool terminate or ToolResult.Terminate), so
+// in the batch terminated (BeforeTool terminate or toolapi.Result.Terminate), so
 // the main loop can stop instead of requesting the model again (pi
 // shouldTerminateToolBatch).
 func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit func(Event) error) ([]types.Message, bool) {
-	registry, registryErr := NewToolRegistry(cfg.Tools)
+	registry, registryErr := toolapi.NewRegistry(cfg.Tools)
 	out := make([]types.Message, len(calls))
 
 	// Phase 1: prepare (synchronous, no side effects).
 	type prep struct {
 		call       types.Content
 		args       map[string]any
-		tool       Tool
+		tool       toolapi.Tool
 		immediate  *types.Message // set → skip execute
 		diagnostic telemetry.ToolDiagnostic
 		terminate  bool
@@ -1047,7 +959,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			preps[i] = p
 			continue
 		}
-		if v, ok := t.(ToolValidator); ok && c.ToolType != "custom" {
+		if v, ok := t.(toolapi.Validator); ok && c.ToolType != "custom" {
 			if err := v.Validate(args); err != nil {
 				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 				p.immediate = &m
@@ -1057,7 +969,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			}
 		}
 		if cfg.Hooks.BeforeTool != nil {
-			a, b, r, term, err := cfg.Hooks.BeforeTool(ctx, toolname.MustCanonical(t.Name()), args)
+			a, b, r, term, err := cfg.Hooks.BeforeTool(ctx, toolapi.MustCanonical(t.Name()), args)
 			if err != nil {
 				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
 				p.immediate = &m
@@ -1085,7 +997,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 		p := preps[i]
 		canonicalName := p.call.Name
 		if p.tool != nil {
-			canonicalName = toolname.MustCanonical(p.tool.Name())
+			canonicalName = toolapi.MustCanonical(p.tool.Name())
 		}
 		startedAt := time.Now()
 		_ = emit(Event{
@@ -1118,19 +1030,19 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			})
 			return
 		}
-		executionCtx := context.WithValue(ctx, executionContextKey{}, ToolExecutionIdentity{RunID: cfg.RunID, AgentID: cfg.AgentID, Generation: cfg.Generation, CallID: p.call.ID})
-		var res ToolResult
+		executionCtx := toolapi.WithExecutionIdentity(ctx, toolapi.ExecutionIdentity{RunID: cfg.RunID, AgentID: cfg.AgentID, Generation: cfg.Generation, CallID: p.call.ID})
+		var res toolapi.Result
 		if p.call.ToolType == "custom" {
 			raw, _ := p.args["input"].(string)
-			if freeform, ok := p.tool.(FreeformTool); ok {
+			if freeform, ok := p.tool.(toolapi.FreeformTool); ok {
 				res = freeform.ExecuteRaw(executionCtx, raw)
 			} else {
-				res = ToolResult{
+				res = toolapi.Result{
 					Content: []types.Content{{Type: "text", Text: "tool does not accept freeform input"}}, IsError: true,
 					Diagnostic: telemetry.ToolDiagnostic{Status: "rejected", Kind: "invalid_arguments", FaultDomain: "model_input"},
 				}
 			}
-		} else if progress, ok := p.tool.(ProgressTool); ok {
+		} else if progress, ok := p.tool.(toolapi.ProgressTool); ok {
 			progressEmit := func(value any) {
 				_ = emit(Event{
 					Type:              ToolExecutionUpdate,
@@ -1155,7 +1067,7 @@ func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit f
 			// SSE stream; the complete text stays in the session spill file.
 			content, ref := cfg.OutputStore.Normalize(cfg.SessionID, canonicalName, p.args, res.Content, res.Details)
 			res.Content = content
-			res.Details = tooloutput.MergeDetails(res.Details, ref)
+			res.Details = output.MergeDetails(res.Details, ref)
 		}
 		finishedAt := time.Now()
 		dur := finishedAt.Sub(startedAt).Milliseconds()
@@ -1274,7 +1186,7 @@ func modelTelemetry(request Request, response types.Message, err error, duration
 		Provider: request.Provider, Model: request.Model, API: request.API,
 		StaticHash: telemetry.Hash(struct {
 			System string
-			Tools  []ToolSpec
+			Tools  []toolapi.Spec
 		}{request.System, request.Tools}),
 		ShapeHash: telemetry.Hash(shape), BindingHash: telemetry.Hash(request.ProviderBinding), HistoryChunks: chunks,
 		Usage: response.Usage, DurationMS: durationMS, Failed: err != nil, ErrorKind: errorKind,
@@ -1332,7 +1244,7 @@ func rejectToolCalls(calls []types.Content, emit func(Event) error) []types.Mess
 			ToolName:   c.Name,
 			ToolType:   c.ToolType,
 			Content: []types.Content{{Type: "text", Text: fmt.Sprintf(
-				"Tool call %q was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.", c.Name)}},
+				"toolapi.Tool call %q was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.", c.Name)}},
 			IsError:    true,
 			DurationMs: dur,
 			Timestamp:  finishedAt.UnixMilli(),

@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"ki/internal/loop"
 	"ki/internal/resources"
 	"ki/internal/session"
 	"ki/internal/skills"
-	"ki/internal/toolname"
+	toolapi "ki/internal/tool"
 )
 
 // Input is everything needed to assemble the system prompt.
@@ -19,7 +18,7 @@ import (
 // server.subagentDirective.
 type Input struct {
 	Resources resources.Snapshot
-	Tools     []loop.Tool
+	Tools     []toolapi.Tool
 	Toggle    session.Toggle
 }
 
@@ -85,7 +84,7 @@ func Build(in Input) string {
 		b.WriteString("(none)\n")
 	} else {
 		for _, t := range in.Tools {
-			if toolname.Equal("read", t.Name()) {
+			if toolapi.Equal("read", t.Name()) {
 				hasRead = true
 			}
 			snip := t.Snippet()

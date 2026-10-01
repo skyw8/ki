@@ -1,0 +1,7 @@
+// Package shelltools adapts exec_command and write_stdin to internal/process.
+// Tools validate model arguments, select the shell, translate private execution
+// attribution into an explicit process.Identity, and format bounded results and
+// diagnostics. Process lifetime, PTY ownership, incremental output and cleanup
+// belong to the process runtime, independently of an observing tool or turn.
+// Cross-package contracts: docs/tools.md.
+package shelltools

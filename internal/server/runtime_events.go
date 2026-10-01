@@ -3,14 +3,17 @@ package server
 import (
 	"ki/internal/loop"
 	"ki/internal/session"
-	"ki/internal/tools"
+
+	"ki/internal/agent"
 	"log/slog"
 	"slices"
 	"strings"
 	"time"
+
+	// Runtime ownership outlives a turn, so these events also reach the global stream.
+	"ki/internal/process"
 )
 
-// Runtime ownership outlives a turn, so these events also reach the global stream.
 func (s *Server) publishRuntimeUpdate(id string, ev loop.Event) {
 	dir, ok := s.sidx.Lookup(id)
 	if !ok {
@@ -32,32 +35,32 @@ func (s *Server) publishRuntimeUpdate(id string, ev loop.Event) {
 	}
 	s.publishPush(id, ev)
 }
-func (s *Server) processSnapshots(id string) []tools.ProcessSnapshot {
+func (s *Server) processSnapshots(id string) []process.Snapshot {
 	s.mu.Lock()
 	manager := s.processes[id]
 	s.mu.Unlock()
 	if manager == nil {
-		return []tools.ProcessSnapshot{}
+		return []process.Snapshot{}
 	}
 	return manager.Snapshots()
 }
-func (s *Server) agentSnapshots(id string) []tools.AgentView {
+func (s *Server) agentSnapshots(id string) []agent.View {
 	views, err := s.ListAgents(id, "")
 	if err != nil {
-		return []tools.AgentView{}
+		return []agent.View{}
 	}
 	// Preserve active identities under a bounded GET even after many completed tasks.
-	slices.SortStableFunc(views, func(a, b tools.AgentView) int {
+	slices.SortStableFunc(views, func(a, b agent.View) int {
 		if a.TaskName == "/root" {
 			return -1
 		}
 		if b.TaskName == "/root" {
 			return 1
 		}
-		if a.Status == tools.TaskRunning && b.Status != tools.TaskRunning {
+		if a.Status == agent.Running && b.Status != agent.Running {
 			return -1
 		}
-		if b.Status == tools.TaskRunning && a.Status != tools.TaskRunning {
+		if b.Status == agent.Running && a.Status != agent.Running {
 			return 1
 		}
 		if a.LastActivityAt.After(b.LastActivityAt) {
@@ -105,7 +108,7 @@ func (s *Server) stopRuntimeTree(id string) {
 		}
 	}
 }
-func (s *Server) existingProcesses(id string) *tools.ShellProcessManager {
+func (s *Server) existingProcesses(id string) *process.Manager {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.processes[id]

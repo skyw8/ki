@@ -2,8 +2,10 @@ package loop
 
 import (
 	"context"
-	"ki/internal/types"
 	"testing"
+
+	toolapi "ki/internal/tool"
+	"ki/internal/types"
 )
 
 type namedTool struct {
@@ -15,7 +17,7 @@ func (t namedTool) Name() string { return t.name }
 
 func TestRegistryAndProtocolUseCanonicalSchemasAndRequestedResultPairing(t *testing.T) {
 	tool := namedTool{name: "read"}
-	registry, err := NewToolRegistry([]Tool{tool})
+	registry, err := toolapi.NewRegistry([]toolapi.Tool{tool})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,14 +29,14 @@ func TestRegistryAndProtocolUseCanonicalSchemasAndRequestedResultPairing(t *test
 	if _, ok := registry.Lookup("READ"); ok {
 		t.Fatal("arbitrary case accepted")
 	}
-	if _, err := NewToolRegistry([]Tool{tool, namedTool{name: "Read"}}); err == nil {
+	if _, err := toolapi.NewRegistry([]toolapi.Tool{tool, namedTool{name: "Read"}}); err == nil {
 		t.Fatal("canonical collision allowed")
 	}
 	streamer := &scripted{}
 	var hook string
 	var result *types.Message
 	var started Event
-	_, err = Run(t.Context(), "read it", nil, Config{Streamer: streamer, Tools: []Tool{tool}, Hooks: Hooks{BeforeTool: func(_ context.Context, name string, args map[string]any) (map[string]any, bool, string, bool, error) {
+	_, err = Run(t.Context(), "read it", nil, Config{Streamer: streamer, Tools: []toolapi.Tool{tool}, Hooks: Hooks{BeforeTool: func(_ context.Context, name string, args map[string]any) (map[string]any, bool, string, bool, error) {
 		hook = name
 		return args, false, "", false, nil
 	}}}, func(ev Event) error {

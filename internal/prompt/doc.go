@@ -9,6 +9,7 @@
 // skills XML if read or its accepted alias is present; AGENTS.md / CLAUDE.md from
 // {KI_HOME} plus cwd up to the git root; cached runtime OS/architecture, cwd,
 // and local date/tz. AppendSection renders that stack for the settings preview.
+// Tool definitions use internal/tool contracts, independently of implementations.
 // Only tools and the skills toggle remain per-request
 // inputs. See docs/system_prompt.md.
 package prompt

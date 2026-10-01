@@ -2,18 +2,20 @@ package extension
 
 import (
 	"fmt"
-	"ki/internal/toolname"
+
+	toolapi "ki/internal/tool"
+	"ki/internal/tool/builtin/catalog"
 )
 
 // Validation precedes registration so collisions never replace a live capability.
 func validateToolNames(specs []ToolSpec) error {
 	seen := map[string]string{}
 	for _, spec := range specs {
-		aliases, err := toolname.Aliases(spec.Name)
+		aliases, err := toolapi.Aliases(spec.Name)
 		if err != nil {
 			return err
 		}
-		if toolname.IsBuiltin(toolname.MustCanonical(spec.Name)) {
+		if catalog.IsReserved(toolapi.MustCanonical(spec.Name)) {
 			return fmt.Errorf("reserved tool name %q", spec.Name)
 		}
 		for _, name := range aliases {

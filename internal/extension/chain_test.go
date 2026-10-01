@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"ki/internal/loop"
+	toolapi "ki/internal/tool"
 	"ki/internal/types"
 )
 
@@ -283,7 +284,7 @@ func TestAfterToolErrorIgnoredByLoopContract(t *testing.T) {
 	hooks := ComposeHooks([]namedInterceptor{{
 		name: "x", syncEvents: map[string]bool{EventToolResult: true}, inner: boomAfter{},
 	}}, nil)
-	res, err := hooks.AfterTool(context.Background(), "Read", nil, loop.ToolResult{Content: []types.Content{{Type: "text", Text: "ok"}}})
+	res, err := hooks.AfterTool(context.Background(), "Read", nil, toolapi.Result{Content: []types.Content{{Type: "text", Text: "ok"}}})
 	if err != nil || res.Content[0].Text != "ok" {
 		t.Fatalf("%v %+v", err, res)
 	}

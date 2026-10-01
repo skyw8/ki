@@ -16,7 +16,7 @@
 | `extensions/deep-web-search/cache.json` | Go sidecar | 1 | best-effort：空缓存，绝不覆盖 |
 | `extensions/telegram-bot/state.json` | Go sidecar | 1 | sidecar 初始化报错，绝不覆盖 |
 | `goal/<sessionId>.json` | Go sidecar | 1 | best-effort：不恢复 goal，绝不覆盖 |
-| session `agent.json` | `internal/tools` | 3 | 恢复该任务失败并记录 warning，绝不覆盖 |
+| session `agent.json` | `internal/agent` | 3 | 恢复该任务失败并记录 warning，绝不覆盖 |
 | session `queue.json` / `ext-queue.json` / `context-queue.json` | `internal/session` | 1 | 队列操作返回错误，绝不覆盖 |
 
 扩展配置的 `version` 仅描述持久化 envelope：Host 解码时删除该头，再按 manifest 的 `config.schema` 校验业务字段。HTTP 读取不返回该头，PATCH 不能修改它。Go sidecar 共享 `internal/state`；Rust sidecar只读同样的版本头并拒绝不支持的版本。

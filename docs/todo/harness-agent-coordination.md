@@ -72,11 +72,11 @@ shell 是解释器选择，不是工具分派：省略时沿用当前会话已�
 
 | 事实 | Ki 实现锚点 | 影响 |
 | --- | --- | --- |
-| 所有 agent 消息都可导致执行；终态 child 自动续跑 | `SendAgentMessage` / `messageAgent` / `queueSessionMessage`：[agent.go](../../internal/server/agent.go)；`QueueOrResume`：[agent_tasks.go](../../internal/tools/agent_tasks.go) | 普通沟通与追加工作没有运行语义上的区别 |
+| 所有 agent 消息都可导致执行；终态 child 自动续跑 | `SendAgentMessage` / `messageAgent` / `queueSessionMessage`：[agent.go](../../internal/server/agent.go)；`QueueOrResume`：[agent_tasks.go](../../internal/agent/tasks.go) | 普通沟通与追加工作没有运行语义上的区别 |
 | `summary` 从工具解析出来，但 server 路由只传 message | `internal/tools/send_message.go`（原实现，已移除）、[agent.go](../../internal/server/agent.go) | 没有可复用的协作消息预览与结构化收据 |
 | Inbox 只有 Push/Take/Has；工具批次完成后才 drain | [loop.go](../../internal/loop/loop.go) | 单目标阻塞等待期间，用户 steer 和其它消息只能积压 |
 | TaskOutput 只有单个 task_id，只等待终态或超时/取消 | `internal/tools/task_tools.go`（原实现，已移除） | 主 agent 需要选定一个任务等待，等待期间不能及时接入其它完成通知/用户 steer |
-| task 的工具数/token 在 startRun 清零，在 executeRun 结束时填入 | [agent_tasks.go](../../internal/tools/agent_tasks.go)、`internal/tools/jobs.go`（原实现，已移除） | 运行中没有足够的 agent 进度快照 |
+| task 的工具数/token 在 startRun 清零，在 executeRun 结束时填入 | [agent_tasks.go](../../internal/agent/tasks.go)、`internal/tools/jobs.go`（原实现，已移除） | 运行中没有足够的 agent 进度快照 |
 | runChildAgent 每次扫描整个 MessagesToLeaf，累计所有 assistant 用量并选最后非空正文 | [agent.go](../../internal/server/agent.go) | 续跑统计混入旧 generation；本次无正文时可能拾取旧结果，需定向测试确认 |
 | 显式后台 Agent 返回 Terminate=true，所有调用均 terminate 时结束 parent | `internal/tools/agent_tool.go`（原实现，已移除）、[loop.go](../../internal/loop/loop.go) | 启动后台 child 与 parent 是否继续工作耦合 |
 
@@ -201,7 +201,7 @@ Codex 中“后台”至少有三种含义；只有第一种属于这 6 个协�
 
 [clock.sleep](/data/hgy/codex/codex-rs/core/src/tools/handlers/sleep.rs) 也能订阅 input activity 提前返回，但它是时间等待控制，不是创建后台 job；durable sleep 的 idle 恢复分支另见 3.1.4。本方案不实现定时自动化或云端任务服务。
 
-**对 Ki 的直接结论**：从 `internal/tools/jobs.go`（原实现，已移除） 重构 ShellProcessManager，从 [AgentStore](../../internal/tools/agent_tasks.go) 与 server orchestration 整合 AgentController，移除 `internal/tools/task_tools.go`（原实现，已移除） 的模型工具耦合。typed identity 和取消路由分开；agent 等邮件、shell 等进程状态，可以共享 activity/revision/wait 基础设施。wait_agent 不等待 shell，terminal session_id 不填入 agent target。
+**对 Ki 的直接结论**：从 `internal/tools/jobs.go`（原实现，已移除） 重构 ShellProcessManager，从 [AgentStore](../../internal/agent/tasks.go) 与 server orchestration 整合 AgentController，移除 `internal/tools/task_tools.go`（原实现，已移除） 的模型工具耦合。typed identity 和取消路由分开；agent 等邮件、shell 等进程状态，可以共享 activity/revision/wait 基础设施。wait_agent 不等待 shell，terminal session_id 不填入 agent target。
 
 Ki 已有 context-without-cancel、后台提升、进程树终止与输出存储，本轮不重复修复。需要补齐的是后台 child 默认异步，以及 turn interrupt / shell stop / subtree shutdown 三种操作的明确契约与测试。shell yield/stdin 完整实现已纳入 S0 核心切换；[工具后续优化](tools.md) 只保留其它独立 shell 事项。
 

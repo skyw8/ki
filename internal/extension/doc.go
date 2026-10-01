@@ -48,6 +48,9 @@
 // This does not restrict third-party extension implementation languages.
 // Private config uses atomic versioned state; the storage header is excluded
 // from settings schema validation and public/redacted configuration values.
+// Tool contracts come from internal/tool; reserved builtin identifiers come
+// from its lightweight builtin/catalog. Sidecar process-tree control comes from
+// internal/process, without depending on builtin tool implementations.
 // Tool registration is atomic against canonical snake_case/PascalCase/native
 // aliases and built-in reserved names. Static names are global; dynamic names
 // collide only within one session's combined registry. Model schema/catalog and

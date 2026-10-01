@@ -11,6 +11,7 @@ import (
 	"ki/internal/loop"
 	"ki/internal/provider"
 	"ki/internal/session"
+	toolapi "ki/internal/tool"
 	"ki/internal/types"
 )
 
@@ -41,7 +42,7 @@ func newEmitterForTest(t *testing.T) (*runEmitter, *session.Session, *httptest.S
 // buffer that must also carry the synthesized context_usage event.
 func TestEmitterPersistAndBuffer(t *testing.T) {
 	em, sess, _ := newEmitterForTest(t)
-	ev := loop.Event{Type: loop.RequestHeader, System: "sys", Tools: []loop.ToolSpec{{Name: "Read"}}}
+	ev := loop.Event{Type: loop.RequestHeader, System: "sys", Tools: []toolapi.Spec{{Name: "Read"}}}
 	if err := em.Emit(ev); err != nil {
 		t.Fatal(err)
 	}

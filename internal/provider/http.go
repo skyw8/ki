@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ki/internal/loop"
+	toolapi "ki/internal/tool"
 	"ki/internal/types"
 	"ki/pkg/llmprotocol"
 )
@@ -109,7 +110,7 @@ func toProtocolRequest(req loop.Request) llmprotocol.Request {
 	return out
 }
 
-func toProtocolTools(tools []loop.ToolSpec) []llmprotocol.ToolSpec {
+func toProtocolTools(tools []toolapi.Spec) []llmprotocol.ToolSpec {
 	if len(tools) == 0 {
 		return nil
 	}

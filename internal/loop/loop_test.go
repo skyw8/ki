@@ -12,12 +12,13 @@ import (
 	"time"
 
 	"ki/internal/telemetry"
-	"ki/internal/tooloutput"
+	toolapi "ki/internal/tool"
+	"ki/internal/tool/output"
 	"ki/internal/types"
 )
 
 func TestToolDiagnosticIsNotSerialized(t *testing.T) {
-	raw, err := json.Marshal(ToolResult{
+	raw, err := json.Marshal(toolapi.Result{
 		IsError: true,
 		Diagnostic: telemetry.ToolDiagnostic{
 			Status: "failed", Kind: "internal_error", FaultDomain: "harness",
@@ -129,17 +130,17 @@ func (t *rawTool) Description() string        { return "patch" }
 func (t *rawTool) Prompt() string             { return "" }
 func (t *rawTool) Snippet() string            { return "patch" }
 func (t *rawTool) Parameters() map[string]any { return nil }
-func (t *rawTool) Execute(context.Context, map[string]any) ToolResult {
-	return ToolResult{IsError: true}
+func (t *rawTool) Execute(context.Context, map[string]any) toolapi.Result {
+	return toolapi.Result{IsError: true}
 }
-func (t *rawTool) ExecuteRaw(_ context.Context, input string) ToolResult {
+func (t *rawTool) ExecuteRaw(_ context.Context, input string) toolapi.Result {
 	t.got = input
-	return ToolResult{Content: []types.Content{{Type: "text", Text: "patched"}}}
+	return toolapi.Result{Content: []types.Content{{Type: "text", Text: "patched"}}}
 }
-func (t *rawTool) ToolSpec() ToolSpec {
-	return ToolSpec{Type: "custom", Name: t.Name(), Description: t.Description(), Format: &ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"}}
+func (t *rawTool) ToolSpec() toolapi.Spec {
+	return toolapi.Spec{Type: "custom", Name: t.Name(), Description: t.Description(), Format: &toolapi.Format{Type: "grammar", Syntax: "lark", Definition: "start: PATCH"}}
 }
-func (t *rawTool) NewArgumentDiffConsumer() ToolArgumentDiffConsumer {
+func (t *rawTool) NewArgumentDiffConsumer() toolapi.ArgumentDiffConsumer {
 	return &rawArgumentConsumer{}
 }
 
@@ -169,7 +170,7 @@ func (s *customStreamer) Stream(_ context.Context, req Request, _ func(Assistant
 
 func TestRunDispatchesFreeformTool(t *testing.T) {
 	tool := &rawTool{}
-	_, err := Run(context.Background(), "patch", nil, Config{Streamer: &customStreamer{}, Tools: []Tool{tool}}, func(Event) error { return nil })
+	_, err := Run(context.Background(), "patch", nil, Config{Streamer: &customStreamer{}, Tools: []toolapi.Tool{tool}}, func(Event) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +194,7 @@ func (s *streamingCustomStreamer) Stream(ctx context.Context, req Request, emit 
 func TestRunEmitsStreamedToolArgumentPreview(t *testing.T) {
 	tool := &rawTool{}
 	var events []Event
-	_, err := Run(context.Background(), "patch", nil, Config{Streamer: &streamingCustomStreamer{}, Tools: []Tool{tool}}, func(event Event) error {
+	_, err := Run(context.Background(), "patch", nil, Config{Streamer: &streamingCustomStreamer{}, Tools: []toolapi.Tool{tool}}, func(event Event) error {
 		events = append(events, event)
 		return nil
 	})
@@ -244,8 +245,8 @@ func TestRunStripsMessageTransportIdentityFromProvider(t *testing.T) {
 		t.Fatalf("transport metadata reached provider: %+v", stream.got)
 	}
 }
-func (oneTool) Execute(_ context.Context, _ map[string]any) ToolResult {
-	return ToolResult{Content: []types.Content{{Type: "text", Text: "file-ok"}}, Details: map[string]any{"diff": "client-only"}}
+func (oneTool) Execute(_ context.Context, _ map[string]any) toolapi.Result {
+	return toolapi.Result{Content: []types.Content{{Type: "text", Text: "file-ok"}}, Details: map[string]any{"diff": "client-only"}}
 }
 
 type scripted struct {
@@ -341,7 +342,7 @@ func TestRunToolThenSecondTurn(t *testing.T) {
 	var evs []Event
 	_, err := Run(context.Background(), "read it", nil, Config{
 		Streamer: &scripted{},
-		Tools:    []Tool{oneTool{}},
+		Tools:    []toolapi.Tool{oneTool{}},
 		Parallel: true,
 	}, func(e Event) error {
 		evs = append(evs, e)
@@ -378,7 +379,7 @@ type delayedTool struct {
 	delay time.Duration
 }
 
-func (t delayedTool) Execute(ctx context.Context, args map[string]any) ToolResult {
+func (t delayedTool) Execute(ctx context.Context, args map[string]any) toolapi.Result {
 	select {
 	case <-time.After(t.delay):
 	case <-ctx.Done():
@@ -392,7 +393,7 @@ func TestRunToolTimingIsReportedOnExecutionAndResultEvents(t *testing.T) {
 	var result *types.Message
 	_, err := Run(context.Background(), "read it", nil, Config{
 		Streamer: &scripted{},
-		Tools:    []Tool{delayedTool{delay: delay}},
+		Tools:    []toolapi.Tool{delayedTool{delay: delay}},
 	}, func(event Event) error {
 		switch event.Type {
 		case ToolExecutionStart:
@@ -438,7 +439,7 @@ func TestTurnTimingIsReportedOnTurnEvents(t *testing.T) {
 	var starts, ends []Event
 	_, err := Run(context.Background(), "read it", nil, Config{
 		Streamer: &scripted{},
-		Tools:    []Tool{delayedTool{delay: delay}},
+		Tools:    []toolapi.Tool{delayedTool{delay: delay}},
 	}, func(event Event) error {
 		switch event.Type {
 		case TurnStart:
@@ -686,7 +687,7 @@ func TestRunCompactsAtToolRoundBoundary(t *testing.T) {
 	var events []Event
 	_, err := Run(context.Background(), "start", nil, Config{
 		Streamer: streamer,
-		Tools:    []Tool{oneTool{}},
+		Tools:    []toolapi.Tool{oneTool{}},
 		Hooks: Hooks{
 			ShouldCompact: func() bool {
 				checks++
@@ -755,7 +756,7 @@ func TestRunRetriesTransientThresholdCompaction(t *testing.T) {
 	hooks := 0
 	_, err := Run(context.Background(), "start", nil, Config{
 		Streamer: streamer,
-		Tools:    []Tool{oneTool{}},
+		Tools:    []toolapi.Tool{oneTool{}},
 		Hooks: Hooks{
 			ShouldCompact: func() bool { return true },
 			OnContextThreshold: func(context.Context) (CompactionResult, error) {
@@ -808,7 +809,7 @@ func TestRunPromotesServerCompactionBeforeToolRound(t *testing.T) {
 	history := []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: "old"}}}}
 	if _, err := Run(context.Background(), "new", history, Config{
 		Streamer:                  streamer,
-		Tools:                     []Tool{oneTool{}},
+		Tools:                     []toolapi.Tool{oneTool{}},
 		ResponsesCompactThreshold: 1000,
 	}, nil); err != nil {
 		t.Fatal(err)
@@ -831,7 +832,7 @@ func TestRunDiscardsUnadvertisedInlineCheckpoint(t *testing.T) {
 	var events []Event
 	if _, err := Run(context.Background(), "new", history, Config{
 		Streamer: streamer,
-		Tools:    []Tool{oneTool{}},
+		Tools:    []toolapi.Tool{oneTool{}},
 	}, func(event Event) error {
 		events = append(events, event)
 		return nil
@@ -914,7 +915,7 @@ func TestRunLengthRejectsToolCalls(t *testing.T) {
 	var evs []Event
 	_, err := Run(context.Background(), "read it", nil, Config{
 		Streamer: &lengthToolStreamer{},
-		Tools:    []Tool{oneTool{}},
+		Tools:    []toolapi.Tool{oneTool{}},
 	}, func(e Event) error {
 		evs = append(evs, e)
 		return nil
@@ -937,7 +938,7 @@ func TestRunLengthRejectsToolCalls(t *testing.T) {
 }
 
 // validatingTool rejects calls without a file_path via the optional
-// ToolValidator (P0), and records whether Execute ever ran.
+// toolapi.Validator (P0), and records whether Execute ever ran.
 type validatingTool struct {
 	executed bool
 }
@@ -950,18 +951,18 @@ func (t *validatingTool) Parameters() map[string]any {
 	return map[string]any{"type": "object", "required": []any{"file_path"}}
 }
 func (t *validatingTool) Validate(args map[string]any) error {
-	if msg := SchemaErrors(t.Parameters(), t.Name(), args); msg != "" {
+	if msg := toolapi.SchemaErrors(t.Parameters(), t.Name(), args); msg != "" {
 		return fmt.Errorf("%w: %s", errAssistant, msg)
 	}
 	return nil
 }
-func (t *validatingTool) Execute(_ context.Context, _ map[string]any) ToolResult {
+func (t *validatingTool) Execute(_ context.Context, _ map[string]any) toolapi.Result {
 	t.executed = true
-	return ToolResult{Content: []types.Content{{Type: "text", Text: "ran"}}}
+	return toolapi.Result{Content: []types.Content{{Type: "text", Text: "ran"}}}
 }
 
 // badArgsStreamer returns one tool call with an empty argument map, so the
-// optional ToolValidator must reject it before execution.
+// optional toolapi.Validator must reject it before execution.
 type badArgsStreamer struct {
 	n int
 }
@@ -989,7 +990,7 @@ func TestRunValidateBlocksToolBeforeExecute(t *testing.T) {
 	var evs []Event
 	_, err := Run(context.Background(), "read it", nil, Config{
 		Streamer: &badArgsStreamer{},
-		Tools:    []Tool{tool},
+		Tools:    []toolapi.Tool{tool},
 		Parallel: true,
 	}, func(e Event) error {
 		evs = append(evs, e)
@@ -1042,7 +1043,7 @@ func TestRunBeforeToolTerminateStopsLoop(t *testing.T) {
 	st := &terminateToolStreamer{}
 	_, err := Run(context.Background(), "read it", nil, Config{
 		Streamer: st,
-		Tools:    []Tool{oneTool{}},
+		Tools:    []toolapi.Tool{oneTool{}},
 		Hooks: Hooks{
 			BeforeTool: func(_ context.Context, _ string, args map[string]any) (map[string]any, bool, string, bool, error) {
 				return args, false, "", true, nil // terminate after this batch
@@ -1064,7 +1065,7 @@ func TestRequestHeaderCarriesSystemAndTools(t *testing.T) {
 	_, err := Run(context.Background(), "hello", nil, Config{
 		Streamer: echo{},
 		System:   "you are ki",
-		Tools:    []Tool{oneTool{}},
+		Tools:    []toolapi.Tool{oneTool{}},
 	}, func(e Event) error {
 		evs = append(evs, e)
 		return nil
@@ -1149,8 +1150,8 @@ type bigTool struct {
 	text string
 }
 
-func (t bigTool) Execute(context.Context, map[string]any) ToolResult {
-	return ToolResult{
+func (t bigTool) Execute(context.Context, map[string]any) toolapi.Result {
+	return toolapi.Result{
 		Content: []types.Content{{Type: "text", Text: t.text}},
 		Details: map[string]any{"matches": 3},
 	}
@@ -1160,7 +1161,7 @@ func (t bigTool) Execute(context.Context, map[string]any) ToolResult {
 // preview budget is bounded there, its complete text is written to the session
 // store, and the tool's own details stay flat next to the reference.
 func TestRunSpillsOversizedToolResult(t *testing.T) {
-	store, err := tooloutput.NewWithConfig(tooloutput.Config{Root: t.TempDir()})
+	store, err := output.NewWithConfig(output.Config{Root: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1170,7 +1171,7 @@ func TestRunSpillsOversizedToolResult(t *testing.T) {
 	var result *types.Message
 	_, err = Run(context.Background(), "read it", nil, Config{
 		Streamer:    &scripted{},
-		Tools:       []Tool{bigTool{text: full}},
+		Tools:       []toolapi.Tool{bigTool{text: full}},
 		SessionID:   "session-1",
 		OutputStore: store,
 	}, func(event Event) error {
@@ -1186,7 +1187,7 @@ func TestRunSpillsOversizedToolResult(t *testing.T) {
 	if result == nil {
 		t.Fatal("missing tool result")
 	}
-	if len(result.Text()) > tooloutput.DefaultPreviewBytes+1024 {
+	if len(result.Text()) > output.DefaultPreviewBytes+1024 {
 		t.Fatalf("model-facing result is %d bytes", len(result.Text()))
 	}
 	if !strings.Contains(result.Text(), "Stored:") {

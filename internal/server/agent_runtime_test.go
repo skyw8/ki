@@ -7,11 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"ki/internal/tools"
+	"ki/internal/agent"
+	"ki/internal/process"
+	"ki/internal/tool/builtin"
 )
 
 func TestTreeAbortStopsOwnedProcessesAndPreservesUnrelatedRoot(t *testing.T) {
-	shells := tools.DiscoverShellRuntime()
+	shells := process.DiscoverShellRuntime()
 	if !shells.BashAvailable() {
 		t.Skip("Bash unavailable for POSIX process fixture")
 	}
@@ -20,20 +22,20 @@ func TestTreeAbortStopsOwnedProcessesAndPreservesUnrelatedRoot(t *testing.T) {
 	cwd := t.TempDir()
 	root := createSession(t, hs, cwd)
 	other := createSession(t, hs, t.TempDir())
-	launch, err := srv.SpawnAgent(t.Context(), tools.AgentRequest{TaskName: "child", ParentSessionID: root, Prompt: "task", ForkTurns: "none"})
+	launch, err := srv.SpawnAgent(t.Context(), agent.Request{TaskName: "child", ParentSessionID: root, Prompt: "task", ForkTurns: "none"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	<-stream.started
-	startProcess := func(owner string) tools.ProcessSnapshot {
+	startProcess := func(owner string) process.Snapshot {
 		t.Helper()
-		set := tools.Set{CWD: cwd, Shells: shells, Processes: srv.processesFor(owner)}
-		for _, tool := range set.Build(tools.Profile{}) {
+		set := builtin.Set{CWD: cwd, Shells: shells, Processes: srv.processesFor(owner)}
+		for _, tool := range set.Build(builtin.Profile{}) {
 			if tool.Name() != "exec_command" {
 				continue
 			}
 			result := tool.Execute(t.Context(), map[string]any{"cmd": "sleep 120", "shell": "bash", "yield_time_ms": 250})
-			var value tools.ProcessSnapshot
+			var value process.Snapshot
 			if result.IsError || len(result.Content) == 0 {
 				t.Fatalf("start process: %+v", result)
 			}
@@ -43,7 +45,7 @@ func TestTreeAbortStopsOwnedProcessesAndPreservesUnrelatedRoot(t *testing.T) {
 			return value
 		}
 		t.Fatal("exec_command unavailable")
-		return tools.ProcessSnapshot{}
+		return process.Snapshot{}
 	}
 	rootProcess := startProcess(root)
 	childProcess := startProcess(launch.SessionID)
@@ -82,7 +84,7 @@ func TestTreeAbortStopsOwnedProcessesAndPreservesUnrelatedRoot(t *testing.T) {
 		t.Fatalf("another root was stopped: %+v", processes)
 	}
 	// Tree cleanup releases its admission fence; explicit work can reuse the identity.
-	result, err := srv.SendAgentMessage(t.Context(), tools.AgentMessageRequest{SenderSessionID: root, Target: launch.TaskPath, TriggerTurn: true, Message: "continue"})
+	result, err := srv.SendAgentMessage(t.Context(), agent.MessageRequest{SenderSessionID: root, Target: launch.TaskPath, TriggerTurn: true, Message: "continue"})
 	if err != nil || result.Status != "resumed" {
 		t.Fatalf("reuse after tree abort: %+v %v", result, err)
 	}

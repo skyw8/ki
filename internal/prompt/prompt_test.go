@@ -6,10 +6,10 @@ import (
 	"testing"
 
 	"ki/internal/extension"
-	"ki/internal/loop"
 	"ki/internal/resources"
 	"ki/internal/skills"
-	"ki/internal/tools"
+	toolapi "ki/internal/tool"
+	"ki/internal/tool/builtin"
 )
 
 func TestBuildLayers(t *testing.T) {
@@ -30,7 +30,7 @@ func TestBuildLayers(t *testing.T) {
 	}
 	sys := Build(Input{
 		Resources: snapshot,
-		Tools:     tools.Set{CWD: cwd}.Build(tools.Profile{RichRead: true}),
+		Tools:     builtin.Set{CWD: cwd}.Build(builtin.Profile{RichRead: true}),
 	})
 	if !strings.Contains(sys, "operating inside ki") {
 		t.Fatalf("identity: %s", sys[:80])
@@ -72,7 +72,7 @@ func TestBuildLayers(t *testing.T) {
 // caching can be shared with the delegating session. The child's orientation
 // travels in its first user message instead.
 func TestBuildHasNoSubagentLayer(t *testing.T) {
-	sys := Build(Input{Tools: []loop.Tool{}})
+	sys := Build(Input{Tools: []toolapi.Tool{}})
 	if strings.Contains(sys, "subagent") || strings.Contains(sys, `to:"parent"`) {
 		t.Fatalf("subagent orientation leaked into the system prompt: %s", sys)
 	}
@@ -85,7 +85,7 @@ func TestBuildExtensionLayerAfterUserAppend(t *testing.T) {
 			ExtensionPrompts:    []extension.PromptLayer{{ExtensionID: "alpha", Text: "EXT-LAYER"}},
 			Environment:         resources.Environment{Date: "2026-08-24", Timezone: "UTC"},
 		},
-		Tools: []loop.Tool{},
+		Tools: []toolapi.Tool{},
 	})
 	user, ext, skills := strings.Index(sys, "USER-APPEND"), strings.Index(sys, "<extension_instructions name=\"alpha\">"), strings.Index(sys, "Runtime environment:")
 	if user < 0 || ext < 0 || user > ext || ext > skills {
@@ -97,7 +97,7 @@ func TestBuildExtensionLayerAfterUserAppend(t *testing.T) {
 // the system prompt: they must render even with no tools, no operator file, and
 // no session resources, and must precede any operator-supplied append text.
 func TestBuildHasBuiltinAppendSystemPrompt(t *testing.T) {
-	sys := Build(Input{Tools: []loop.Tool{}})
+	sys := Build(Input{Tools: []toolapi.Tool{}})
 	if !strings.Contains(sys, DefaultAppendSystemPrompt) {
 		t.Fatalf("built-in append system prompt missing:\n%s", sys)
 	}
@@ -111,7 +111,7 @@ func TestBuildHasBuiltinAppendSystemPrompt(t *testing.T) {
 			{Source: resources.AppendSourceGlobal, Text: "GLOBAL-APPEND"},
 			{Source: resources.AppendSourceProject, Text: "PROJECT-APPEND"},
 		}},
-		Tools: []loop.Tool{},
+		Tools: []toolapi.Tool{},
 	})
 	builtin, global, project := strings.Index(withOperator, DefaultAppendSystemPrompt), strings.Index(withOperator, "GLOBAL-APPEND"), strings.Index(withOperator, "PROJECT-APPEND")
 	if builtin < 0 || global < 0 || project < 0 || builtin > global || global > project {
@@ -120,7 +120,7 @@ func TestBuildHasBuiltinAppendSystemPrompt(t *testing.T) {
 }
 
 func TestBuildNoSkillsWithoutRead(t *testing.T) {
-	sys := Build(Input{Tools: []loop.Tool{}})
+	sys := Build(Input{Tools: []toolapi.Tool{}})
 	if strings.Contains(sys, "<available_skills>") {
 		t.Fatal("skills without Read")
 	}

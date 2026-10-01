@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ki/internal/loop"
+	toolapi "ki/internal/tool"
 	"ki/internal/types"
 )
 
@@ -52,7 +53,7 @@ func liveProtocols() []liveProtocol {
 // stores and replays.
 func TestLiveDeepSeekReplaysToolResult(t *testing.T) {
 	model, key := loadLiveDeepSeek(t)
-	tools := []loop.ToolSpec{{
+	tools := []toolapi.Spec{{
 		Name: "lookup", Description: "Look up a marker value by key.",
 		Parameters: map[string]any{
 			"type":       "object",
@@ -96,7 +97,7 @@ func TestLiveDeepSeekReplaysToolResult(t *testing.T) {
 // API allows them.
 func TestLiveDeepSeekToolImages(t *testing.T) {
 	model, key := loadLiveDeepSeek(t)
-	tools := []loop.ToolSpec{{
+	tools := []toolapi.Spec{{
 		Name: "Read", Description: "Read a file from the workspace.",
 		Parameters: map[string]any{
 			"type":       "object",

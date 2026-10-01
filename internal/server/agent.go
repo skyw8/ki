@@ -8,47 +8,47 @@ import (
 	"os"
 	"path/filepath"
 
+	"ki/internal/agent"
 	"ki/internal/session"
 	"ki/internal/telemetry"
-	"ki/internal/tools"
 	"ki/internal/types"
 )
 
-// SpawnAgent implements tools.AgentRuntime. Child agents are sessions rather
+// SpawnAgent implements agent.Runtime. Child agents are sessions rather
 // than in-process message arrays: CreateChild links the child to its parent
 // (forkMode=tree) so session deletion and sidebar nesting own the relationship,
 // while fork_turns selects complete finished history. The in-flight parent
 // user turn is never inherited as the child's task.
-func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.AgentLaunch, error) {
+func (s *Server) SpawnAgent(ctx context.Context, req agent.Request) (agent.Launch, error) {
 	if s.agentTasks == nil {
-		return tools.AgentLaunch{}, errAgentTaskStoreUnavailable
+		return agent.Launch{}, errAgentTaskStoreUnavailable
 	}
 	parent, err := s.open(req.ParentSessionID)
 	if err != nil {
-		return tools.AgentLaunch{}, err
+		return agent.Launch{}, err
 	}
 	defer func() { _ = parent.Close() }()
-	if err := tools.ValidateTaskName(req.TaskName); err != nil {
-		return tools.AgentLaunch{}, err
+	if err := agent.ValidateTaskName(req.TaskName); err != nil {
+		return agent.Launch{}, err
 	}
 	root, parentPath, err := s.agentTasks.Identity(parent.ID())
 	if err != nil {
-		return tools.AgentLaunch{}, err
+		return agent.Launch{}, err
 	}
 	req.RootSessionID = root
 	req.TaskPath = parentPath + "/" + req.TaskName
 	release, err := s.agentTasks.ReservePath(root, req.TaskPath)
 	if err != nil {
-		return tools.AgentLaunch{}, err
+		return agent.Launch{}, err
 	}
 	defer release()
-	turns, err := tools.ParseForkTurns(req.ForkTurns)
+	turns, err := agent.ParseForkTurns(req.ForkTurns)
 	if err != nil {
-		return tools.AgentLaunch{}, err
+		return agent.Launch{}, err
 	}
 	child, err := s.newAgentChild(parent, turns)
 	if err != nil {
-		return tools.AgentLaunch{}, fmt.Errorf("create agent session: %w", err)
+		return agent.Launch{}, fmt.Errorf("create agent session: %w", err)
 	}
 	childID := child.ID()
 	childDir := child.Dir
@@ -84,7 +84,7 @@ func (s *Server) SpawnAgent(ctx context.Context, req tools.AgentRequest) (tools.
 	launch, err := s.agentTasks.Start(ctx, req, outputFile, s.agentRunner(childID, req))
 	if err != nil {
 		cleanupChild()
-		return tools.AgentLaunch{}, fmt.Errorf("start agent task: %w", err)
+		return agent.Launch{}, fmt.Errorf("start agent task: %w", err)
 	}
 	launch.SessionID = childID
 	launch.TaskName = req.TaskName
@@ -106,14 +106,14 @@ func (s *Server) newAgentChild(parent *session.Session, turns int) (*session.Ses
 	return session.CreateChild(s.cfg.Sessions.Root, parent)
 }
 
-func (s *Server) agentRunner(childID string, base tools.AgentRequest) tools.AgentRun {
-	return func(ctx context.Context, taskID, prompt string) (tools.AgentCompletion, error) {
+func (s *Server) agentRunner(childID string, base agent.Request) agent.Run {
+	return func(ctx context.Context, taskID, prompt string) (agent.Completion, error) {
 		req := base
 		req.SessionID = childID
 		req.Prompt = prompt
 		snapshot, exists := s.agentTasks.Get(taskID)
 		if !exists {
-			return tools.AgentCompletion{}, os.ErrNotExist
+			return agent.Completion{}, os.ErrNotExist
 		}
 		req.ClientRequestID = snapshot.ClientRequestID
 		completion, runErr := s.runChildAgent(ctx, childID, req)
@@ -140,23 +140,23 @@ func (s *Server) agentRunner(childID string, base tools.AgentRequest) tools.Agen
 }
 
 func (s *Server) restoreAgentTasks(infos []session.Info) {
-	restored := []tools.AgentMetadata{}
+	restored := []agent.Metadata{}
 	for _, info := range infos {
 		metadataPath := filepath.Join(info.Dir, "agent.json")
 		basePath := metadataPath
-		metadata, readErr := tools.ReadAgentMetadata(metadataPath)
+		metadata, readErr := agent.ReadMetadata(metadataPath)
 		if readErr != nil {
 			if !os.IsNotExist(readErr) {
 				slog.Warn("read agent metadata", "path", metadataPath, "err", readErr)
 			}
 			continue
 		}
-		loaded, err := s.agentTasks.LoadMetadata(metadataPath, func(ctx context.Context, taskID, prompt string) (tools.AgentCompletion, error) {
-			meta, readErr := tools.ReadAgentMetadata(basePath)
+		loaded, err := s.agentTasks.LoadMetadata(metadataPath, func(ctx context.Context, taskID, prompt string) (agent.Completion, error) {
+			meta, readErr := agent.ReadMetadata(basePath)
 			if readErr != nil {
-				return tools.AgentCompletion{}, readErr
+				return agent.Completion{}, readErr
 			}
-			base := tools.AgentRequest{
+			base := agent.Request{
 				Description:     meta.Description,
 				ParentSessionID: meta.ParentSessionID,
 				SessionID:       meta.SessionID, MetadataPath: metadataPath, OutputFile: meta.OutputFile,
@@ -184,17 +184,17 @@ func (s *Server) restoreAgentTasks(infos []session.Info) {
 
 }
 
-func (s *Server) notifyAgentCompletion(parentID string, identity types.CompletionIdentity, description, outputFile string, completion tools.AgentCompletion, runErr error) {
+func (s *Server) notifyAgentCompletion(parentID string, identity types.CompletionIdentity, description, outputFile string, completion agent.Completion, runErr error) {
 	if parentID == "" {
 		return
 	}
 	taskID := identity.TaskID
 	status := "completed"
 	result := completion.Result
-	if task, ok := s.agentTasks.Get(taskID); ok && task.Status == tools.TaskKilled {
+	if task, ok := s.agentTasks.Get(taskID); ok && task.Status == agent.Killed {
 		status = "stopped"
 		result = task.Error
-	} else if task, ok := s.agentTasks.Get(taskID); ok && task.Status == tools.TaskInterrupted {
+	} else if task, ok := s.agentTasks.Get(taskID); ok && task.Status == agent.Interrupted {
 		status = "interrupted"
 		result = task.Error
 	} else if errors.Is(runErr, context.Canceled) {
@@ -227,14 +227,14 @@ func (s *Server) notifyAgentCompletion(parentID string, identity types.Completio
 }
 
 // SendAgentMessage applies QueueOnly context or explicit root-scoped follow-up work.
-func (s *Server) SendAgentMessage(ctx context.Context, req tools.AgentMessageRequest) (tools.AgentMessageResult, error) {
+func (s *Server) SendAgentMessage(ctx context.Context, req agent.MessageRequest) (agent.MessageResult, error) {
 	return s.dispatchAgentMessage(ctx, req)
 }
 
-func (s *Server) runChildAgent(ctx context.Context, id string, req tools.AgentRequest) (tools.AgentCompletion, error) {
+func (s *Server) runChildAgent(ctx context.Context, id string, req agent.Request) (agent.Completion, error) {
 	st, runCtx, err := s.occupy(ctx, id)
 	if err != nil {
-		return tools.AgentCompletion{}, err
+		return agent.Completion{}, err
 	}
 	if snapshot, ok := s.agentTasks.TaskForSession(id); ok {
 		st.agentTaskID = snapshot.TaskID
@@ -248,23 +248,23 @@ func (s *Server) runChildAgent(ctx context.Context, id string, req tools.AgentRe
 	s.runPrompt(runCtx, st, id, []types.Content{{Type: "text", Text: req.Prompt}}, nil, "", "agent", "", nil)
 	snapshot, ok := s.agentTasks.Get(st.agentTaskID)
 	if !ok {
-		return tools.AgentCompletion{}, os.ErrNotExist
+		return agent.Completion{}, os.ErrNotExist
 	}
-	return tools.AgentCompletion{Result: snapshot.Result, ToolUseCount: snapshot.RunStats.Tools, TotalTokens: snapshot.RunStats.TotalTokens}, st.err
+	return agent.Completion{Result: snapshot.Result, ToolUseCount: snapshot.RunStats.Tools, TotalTokens: snapshot.RunStats.TotalTokens}, st.err
 }
 
 // Get returns a logical-agent snapshot for host lifecycle operations.
-func (s *Server) Get(key string) (tools.AgentSnapshot, bool) {
+func (s *Server) Get(key string) (agent.Snapshot, bool) {
 	if s.agentTasks == nil {
-		return tools.AgentSnapshot{}, false
+		return agent.Snapshot{}, false
 	}
 	return s.agentTasks.Get(key)
 }
 
 // Wait blocks until an agent task reaches a terminal state or ctx cancels.
-func (s *Server) Wait(ctx context.Context, id string) (tools.AgentSnapshot, error) {
+func (s *Server) Wait(ctx context.Context, id string) (agent.Snapshot, error) {
 	if s.agentTasks == nil {
-		return tools.AgentSnapshot{}, errAgentTaskStoreUnavailable
+		return agent.Snapshot{}, errAgentTaskStoreUnavailable
 	}
 	snap, err := s.agentTasks.Wait(ctx, id)
 	if err != nil {
@@ -274,9 +274,9 @@ func (s *Server) Wait(ctx context.Context, id string) (tools.AgentSnapshot, erro
 }
 
 // Stop interrupts a running agent task.
-func (s *Server) Stop(id string) (tools.AgentSnapshot, error) {
+func (s *Server) Stop(id string) (agent.Snapshot, error) {
 	if s.agentTasks == nil {
-		return tools.AgentSnapshot{}, errAgentTaskStoreUnavailable
+		return agent.Snapshot{}, errAgentTaskStoreUnavailable
 	}
 	snap, err := s.agentTasks.Stop(id)
 	if err != nil {

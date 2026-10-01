@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"ki/internal/agent"
 	"ki/internal/loop"
 	"ki/internal/session"
-	"ki/internal/tools"
 	"ki/internal/types"
 )
 
@@ -64,7 +64,7 @@ func TestCompletionDeliveryMailboxHandoff(t *testing.T) {
 				t.Fatal(err)
 			}
 			enableRunInbox(st)
-			launch, err := srv.SpawnAgent(t.Context(), tools.AgentRequest{TaskName: "child", ParentSessionID: root, Prompt: "child task", ForkTurns: "none"})
+			launch, err := srv.SpawnAgent(t.Context(), agent.Request{TaskName: "child", ParentSessionID: root, Prompt: "child task", ForkTurns: "none"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -81,7 +81,7 @@ func TestCompletionDeliveryMailboxHandoff(t *testing.T) {
 				if _, err := srv.WaitAgent(ctx, root, time.Minute); err == nil {
 					t.Fatal("cancel ignored")
 				}
-				if snapshot, _ := srv.Get(launch.TaskID); snapshot.Status != tools.TaskRunning {
+				if snapshot, _ := srv.Get(launch.TaskID); snapshot.Status != agent.Running {
 					t.Fatal("observer canceled child")
 				}
 			}
@@ -129,7 +129,7 @@ func TestCompletionDeliveryMailboxHandoff(t *testing.T) {
 			}
 			snap, _ := srv.Get(launch.TaskID)
 			identity := types.CompletionIdentity{TaskID: launch.TaskID, Generation: snap.Generation}
-			srv.notifyAgentCompletion(root, identity, "child", "", tools.AgentCompletion{Result: "duplicate"}, nil)
+			srv.notifyAgentCompletion(root, identity, "child", "", agent.Completion{Result: "duplicate"}, nil)
 			if completionCount(t, srv, root) != 1 || srv.running(root) {
 				t.Fatal("duplicate completion changed work state")
 			}

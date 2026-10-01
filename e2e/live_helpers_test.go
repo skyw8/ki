@@ -14,7 +14,7 @@ import (
 
 	"ki/internal/server"
 	"ki/internal/session"
-	"ki/internal/toolname"
+	toolapi "ki/internal/tool"
 )
 
 const pdfMarker = "KI-PDF-MARKER-42"
@@ -36,12 +36,12 @@ func assertReadFiles(t *testing.T, dir string, paths ...string) {
 		}
 		if message.Role == "assistant" {
 			for _, call := range message.ToolCalls() {
-				if path, ok := call.Arguments["file_path"].(string); ok && toolname.Equal(call.Name, "read") {
+				if path, ok := call.Arguments["file_path"].(string); ok && toolapi.Equal(call.Name, "read") {
 					calls[call.ID] = filepath.Clean(path)
 				}
 			}
 		}
-		if message.Role == "toolResult" && toolname.Equal(message.ToolName, "read") && !message.IsError {
+		if message.Role == "toolResult" && toolapi.Equal(message.ToolName, "read") && !message.IsError {
 			if path, ok := calls[message.ToolCallID]; ok {
 				read[path] = true
 			}

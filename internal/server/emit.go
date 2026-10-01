@@ -72,7 +72,7 @@ func (p *runEmitter) Emit(ev loop.Event) error {
 	// nothing when runId/external are missing).
 	p.buffer(&ev)
 	if p.st.agentTaskID != "" {
-		if err := p.s.agentTasks.ReduceEvent(p.st.agentTaskID, p.st.agentGeneration, ev); err != nil {
+		if err := p.s.agentTasks.ReduceProgress(p.st.agentTaskID, p.st.agentGeneration, projectAgentProgress(ev)); err != nil {
 			return fmt.Errorf("persist agent progress: %w", err)
 		}
 	}

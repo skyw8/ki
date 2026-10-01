@@ -26,7 +26,9 @@ ki/
 │   ├── server/          HTTP orchestration + embedded WebUI
 │   ├── loop/            main loop; emit only
 │   ├── session/         jsonl tree
-│   ├── tools/           model-aware builtins (see internal/tools/doc.go)
+│   ├── tool/            tool contracts; builtin families, catalog, output store
+│   ├── agent/           logical-agent identity, scheduling, progress, durable state
+│   ├── process/         shell discovery, PTY, process ownership and tree control
 │   ├── search/          embedded ripgrep engines for Grep / Glob
 │   ├── provider/        catalog, registry, credentials, cost, Ki adapter
 │   ├── prompt/          system prompt renderer

@@ -3,24 +3,25 @@ package server
 import (
 	"context"
 	"fmt"
-	"ki/internal/idgen"
-	"ki/internal/session"
-	"ki/internal/tools"
-	"ki/internal/types"
 	"strings"
 	"time"
+
+	"ki/internal/agent"
+	"ki/internal/idgen"
+	"ki/internal/session"
+	"ki/internal/types"
 )
 
-func (s *Server) WaitAgent(ctx context.Context, caller string, timeout time.Duration) (tools.AgentWaitResult, error) {
+func (s *Server) WaitAgent(ctx context.Context, caller string, timeout time.Duration) (agent.WaitResult, error) {
 	st := s.runAt(caller)
 	if st == nil {
-		return tools.AgentWaitResult{}, fmt.Errorf("wait_agent requires an active caller turn")
+		return agent.WaitResult{}, fmt.Errorf("wait_agent requires an active caller turn")
 	}
 	st.mu.Lock()
 	inbox := st.inbox
 	st.mu.Unlock()
 	if inbox == nil {
-		return tools.AgentWaitResult{}, fmt.Errorf("caller mailbox unavailable")
+		return agent.WaitResult{}, fmt.Errorf("caller mailbox unavailable")
 	}
 	timedOut, err := inbox.Wait(ctx, timeout)
 	reason := inbox.WakeReason()
@@ -32,9 +33,9 @@ func (s *Server) WaitAgent(ctx context.Context, caller string, timeout time.Dura
 	if err != nil {
 		reason = "cancelled"
 	}
-	return tools.AgentWaitResult{WakeReason: reason, TimedOut: timedOut, Message: message}, err
+	return agent.WaitResult{WakeReason: reason, TimedOut: timedOut, Message: message}, err
 }
-func (s *Server) ListAgents(caller, prefix string) ([]tools.AgentView, error) {
+func (s *Server) ListAgents(caller, prefix string) ([]agent.View, error) {
 	views, err := s.agentTasks.Views(caller, prefix)
 	if err != nil {
 		return nil, err
@@ -44,41 +45,41 @@ func (s *Server) ListAgents(caller, prefix string) ([]tools.AgentView, error) {
 		if err != nil {
 			return nil, err
 		}
-		status := tools.TaskStatus("idle")
+		status := agent.Status("idle")
 		if s.running(root) {
-			status = tools.TaskRunning
+			status = agent.Running
 		}
-		views = append([]tools.AgentView{{TaskName: "/root", SessionID: root, Status: status}}, views...)
+		views = append([]agent.View{{TaskName: "/root", SessionID: root, Status: status}}, views...)
 	}
 	return views, nil
 }
-func (s *Server) InterruptAgent(ctx context.Context, caller, target string) (tools.AgentView, error) {
+func (s *Server) InterruptAgent(ctx context.Context, caller, target string) (agent.View, error) {
 	if err := ctx.Err(); err != nil {
-		return tools.AgentView{}, err
+		return agent.View{}, err
 	}
 	snap, path, err := s.agentTasks.Resolve(caller, target)
 	if err != nil {
-		return tools.AgentView{}, err
+		return agent.View{}, err
 	}
 	if path == "/root" || snap.SessionID == caller {
-		return tools.AgentView{}, fmt.Errorf("cannot interrupt root or self")
+		return agent.View{}, fmt.Errorf("cannot interrupt root or self")
 	}
-	previous := tools.ViewAgent(snap)
-	if snap.Status == tools.TaskRunning || snap.Status == tools.TaskPending {
+	previous := agent.ViewSnapshot(snap)
+	if snap.Status == agent.Running || snap.Status == agent.Pending {
 		_, err = s.agentTasks.Stop(snap.TaskID)
 	}
 	return previous, err
 }
 
 // acceptAgentContext stores QueueOnly input before exposing a live wakeup.
-func (s *Server) acceptAgentContext(target, origin, text string, completion *types.CompletionIdentity) (tools.AgentMessageResult, error) {
+func (s *Server) acceptAgentContext(target, origin, text string, completion *types.CompletionIdentity) (agent.MessageResult, error) {
 	dir, ok := s.sidx.Lookup(target)
 	if !ok {
-		return tools.AgentMessageResult{}, errSessionNotFound
+		return agent.MessageResult{}, errSessionNotFound
 	}
 	id, err := idgen.NewV7()
 	if err != nil {
-		return tools.AgentMessageResult{}, err
+		return agent.MessageResult{}, err
 	}
 	if completion != nil {
 		id = fmt.Sprintf("%s:%d", completion.TaskID, completion.Generation)
@@ -89,35 +90,35 @@ func (s *Server) acceptAgentContext(target, origin, text string, completion *typ
 	defer gate.Unlock()
 	_, err = session.EnqueueContext(dir, session.ContextQueuedItem{Message: message, IdempotencyKey: id})
 	if err != nil {
-		return tools.AgentMessageResult{}, err
+		return agent.MessageResult{}, err
 	}
 	status := "stored"
 	if live := s.runAt(target); live != nil && s.pushSteerRun(live, steerRequest{Content: message.Content, Origin: origin, ClientRequestID: id, Completion: completion, ContextOnly: true}) {
 		status = "queued"
 	}
 	s.publishQueueChanged(target)
-	return tools.AgentMessageResult{AgentID: target, Status: status, Message: "message durably accepted"}, nil
+	return agent.MessageResult{AgentID: target, Status: status, Message: "message durably accepted"}, nil
 }
-func (s *Server) dispatchAgentMessage(ctx context.Context, req tools.AgentMessageRequest) (tools.AgentMessageResult, error) {
+func (s *Server) dispatchAgentMessage(ctx context.Context, req agent.MessageRequest) (agent.MessageResult, error) {
 	if req.SenderSessionID == "" {
-		return tools.AgentMessageResult{}, errAgentSenderUnknown
+		return agent.MessageResult{}, errAgentSenderUnknown
 	}
 	if _, ok := s.sidx.Lookup(req.SenderSessionID); !ok {
-		return tools.AgentMessageResult{}, errSessionNotFound
+		return agent.MessageResult{}, errSessionNotFound
 	}
 	if err := ctx.Err(); err != nil {
-		return tools.AgentMessageResult{}, err
+		return agent.MessageResult{}, err
 	}
 	if strings.TrimSpace(req.Message) == "" {
-		return tools.AgentMessageResult{}, fmt.Errorf("message is required")
+		return agent.MessageResult{}, fmt.Errorf("message is required")
 	}
 	snap, path, err := s.agentTasks.Resolve(req.SenderSessionID, req.Target)
 	if err != nil {
-		return tools.AgentMessageResult{}, err
+		return agent.MessageResult{}, err
 	}
 	_, senderPath, err := s.agentTasks.Identity(req.SenderSessionID)
 	if err != nil {
-		return tools.AgentMessageResult{}, err
+		return agent.MessageResult{}, err
 	}
 	if !req.TriggerTurn {
 		result, err := s.acceptAgentContext(snap.SessionID, "agent:"+senderPath, req.Message, nil)
@@ -128,8 +129,8 @@ func (s *Server) dispatchAgentMessage(ctx context.Context, req tools.AgentMessag
 		return result, err
 	}
 	if path == "/root" {
-		return tools.AgentMessageResult{}, fmt.Errorf("followup_task cannot target root")
+		return agent.MessageResult{}, fmt.Errorf("followup_task cannot target root")
 	}
 	status, err := s.agentTasks.QueueOrResume(ctx, snap.TaskID, req.Message)
-	return tools.AgentMessageResult{AgentID: snap.TaskID, TaskName: path, Status: status, Message: "task accepted"}, err
+	return agent.MessageResult{AgentID: snap.TaskID, TaskName: path, Status: status, Message: "task accepted"}, err
 }
