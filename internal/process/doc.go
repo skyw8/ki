@@ -11,8 +11,9 @@
 // after restart. Live capacity never evicts live processes.
 //
 // Windows defaults to PowerShell then Git Bash; Unix uses discovered Bash. Proxy
-// variables, bundled rg/fd and extension PATH directories are inherited. Bash
-// uses a BASH_ENV shim after login profiles to retain these directories. Sidecar
-// launchers share process-group control without importing tool implementations.
+// variables, available bundled rg/fd executables, and extension PATH directories
+// are inherited. Bash uses a BASH_ENV shim after login profiles to retain these
+// directories. Sidecar launchers share process-group control without importing
+// tool implementations.
 // Cross-package contracts: docs/tools.md and docs/extension.md.
 package process

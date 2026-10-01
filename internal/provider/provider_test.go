@@ -193,9 +193,9 @@ func TestFunctionArgumentsStayValidWhenAStreamWasTruncated(t *testing.T) {
 
 func ptr(s string) *string { return &s }
 
-// Responses cannot declare a custom tool any more, but legacy history that
-// contains a custom (freeform) call still replays as custom_tool_call items so
-// the stored call/output pair round-trips.
+// Responses custom tools carry their grammar format on the wire. Legacy
+// history that contains a custom (freeform) call still replays as
+// custom_tool_call items so the stored call/output pair round-trips.
 func TestResponsesBodyReplaysCustomToolCallAndOutput(t *testing.T) {
 	body := ResponsesBody(loop.Request{
 		Model: "gpt-5.6-terra",

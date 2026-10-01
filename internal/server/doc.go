@@ -29,9 +29,9 @@
 // a branch-visible non-message leaf; the terminal assistant also retains
 // reason/source diagnostics, so clients do not infer provenance from the
 // generic context.Canceled error.
-// replaced the per-running-session notification stream, so one tab holds one
-// push connection instead of one per running session. Nothing is replayed: the
-// ready frame is the client's cue to refetch, which is also how a reconnect
+// This replaces the per-running-session notification stream, so one tab holds
+// one push connection instead of one per running session. Nothing is replayed:
+// the ready frame is the client's cue to refetch, which is also how a reconnect
 // catches up. The pushed agent_end carries no messages; the run's full event
 // log is replayed only to the client holding that run's SSE.
 // Completed replay ownership expires after two minutes and is bounded by

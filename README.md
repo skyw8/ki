@@ -38,8 +38,9 @@ cd .. && go build -tags embed -o ki ./cmd/ki
 ```
 
 Without `-tags embed`, `go build ./cmd/ki` produces the CLI/API only; `ki serve`
-then reports the UI as not built. `scripts/run.sh` rebuilds `web/dist` on every
-run and always uses `-tags embed`.
+then reports the UI as not built. `scripts/run.sh` hashes the frontend inputs and
+reuses an unchanged `web/dist`; pass `--force-web` to rebuild it explicitly.
+The script always compiles with `-tags embed`.
 
 Windows builds automatically link the Ki application icon from the checked-in
 `cmd/ki/rsrc_windows_{arch}.syso` resources. The icon is generated from the same

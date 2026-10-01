@@ -10,7 +10,7 @@ System prompt 按以下顺序组装：
 2. **Ki 配置位置**：存在 `KI_HOME` 时，列出 `ki.toml`、`skills/`、`models.json`、`credentials.json`、扩展目录、项目级 `<cwd>/.ki/`，以及 `ki config path`。
 3. **可用工具**：逐项输出本轮工具的名称和简短说明；没有工具时输出 `(none)`。这里包括内置工具以及已经绑定的扩展工具，并补充项目可能提供其他自定义工具。
 4. **通用行为约束**：要求回答简洁，并在操作文件时清晰展示路径。
-5. **内置追加指令**：常量 prompt.DefaultAppendSystemPrompt，让模型优先使用 read/grep/glob；shell 搜索禁用 grep/find，统一用捆绑的 rg/fd（默认尊重 .gitignore，-H/-I 有说明）。这是 harness 层规则，无条件输出，exec_command 描述补充默认 shell、login、PTY、增量输出与观察预算。工具名称只发布 canonical snake_case，接受 PascalCase 调用别名。
+5. **内置追加指令**：常量 prompt.DefaultAppendSystemPrompt，让模型优先使用 read/grep/glob；shell 搜索优先用 rg/fd 而不是 grep/find（支持的目标由 Ki 捆绑并放入 PATH；不支持的目标使用可用的平台搜索命令，不能假定二进制存在；默认尊重 .gitignore，-H/-I 有说明）。这是 harness 层规则，无条件输出，exec_command 描述补充默认 shell、login、PTY、增量输出与观察预算。工具名称只发布 canonical snake_case，接受 PascalCase 调用别名。
 6. **operator 追加指令**：按来源顺序读取 `{KI_HOME}/prompt/APPEND_SYSTEM.md`（global）与 `<cwd>/.ki/prompt/APPEND_SYSTEM.md`（project）。两者**叠加**而非覆盖，global 在前、project 在后，各自整份文件作为一个块渲染（空文件或只有空白则跳过）；路径由 `resources.AppendSystemPromptPath` 统一解析，读取与设置页写入共用同一个函数。内容位于内置追加指令之后、扩展追加与 Skills 之前，不替换 Ki 的基础 prompt 和内置追加指令。
 7. **扩展追加**：启用的全局 extension `prompt.append` 文件，按扩展名序，每段 `<extension_instructions name="…">`。扩展层在 operator 追加之后、Skills 之前。
 8. **Skills**：仅当本轮存在 `read` 工具且至少有一个启用的 skill 时输出。每个 skill 包含名称、描述和 `SKILL.md` 路径，同时说明按需读取及相对路径解析规则。

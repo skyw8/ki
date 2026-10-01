@@ -10,8 +10,9 @@
 // Shape:
 //
 //   - Key is the VAPID application-server key pair (RFC 8292) under
-//     {KI_HOME}/vapid.json. Its public half is handed to the browser as the
-//     applicationServerKey; its private half signs the JWT on every request.
+//     {KI_HOME}/vapid.json, a versioned fail-fast state file. Its public half
+//     is handed to the browser as the applicationServerKey; its private half
+//     signs the JWT on every request.
 //   - Store is the {KI_HOME}/push-subscriptions.json registry. A subscription
 //     is the endpoint plus the client's P-256 and auth secrets. The registry
 //     is best-effort state: a document from a newer schema loads empty (the

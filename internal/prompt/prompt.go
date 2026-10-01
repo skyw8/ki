@@ -29,7 +29,7 @@ type Input struct {
 // (and keeps them when a model has no shell tool at all).
 const DefaultAppendSystemPrompt = `IMPORTANT: Prefer read, grep, and glob over shell equivalents (cat, head, sed, awk, echo).
 
-NEVER use 'grep' or 'find' in shell commands or pipelines. ALWAYS use 'rg' and 'fd' instead — ki bundles both on PATH and they are the only supported search tools. 'fd' respects .gitignore and skips hidden files (-H shows hidden, -I disables ignore rules).`
+In shell commands or pipelines, prefer 'rg' and 'fd' over 'grep' and 'find'. Ki bundles rg and fd on supported targets and puts them on PATH; on an unsupported target, use an available platform search command rather than assuming either binary exists. 'fd' respects .gitignore and skips hidden files (-H shows hidden, -I disables ignore).`
 
 // AppendSection returns the appended-system-prompt stack as one text, in the
 // order Build renders it: the built-in supplement, the global file, the project

@@ -48,13 +48,17 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 | GET | `/v1/commands` | 按可选 `workspaceId` 扫描的内置、prompt template 和 skill 命令；用于尚未创建 session 的 WebUI composer |
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned / parentSessionId / forkMode）。每行只读 `config.json`、jsonl header 和 title fallback 的首条 user message，不解析整份 transcript；行按 `events.jsonl` / `config.json` 的 size+mtime 缓存。响应带按渲染结果计算的 `ETag`，客户端用 `If-None-Match` 命中时返回 `304`，未变时侧栏不刷新状态 |
 | POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…`；可选 `model` / `thinkingEffort`，省略则用上次选用的模型和该模型 default thinking。WebUI 传入当前 composer 的模型配置 |
-| GET | `/v1/sessions/search` | 正文字面搜索普通/flat session，最多 20 条；tree child 通过全量 session list 的 Tree 浏览器访问 |
+| GET | `/v1/sessions/search` | 正文字面搜索普通/flat session；默认 20 条，可用 `limit=1..500` 调整；tree child 通过全量 session list 的 Tree 浏览器访问 |
 | GET | `/v1/sessions/{id}` | header、leaf、模型、slim `entries`（active leaf 最新一页，默认 100 条）、`hasMore` / `oldestId`、running、只读 `availableSkills` / `availableExtensions`（含已加载的 skills / tools / commands / promptAppend / providers） / `commands` / `queued` / `extQueued` / `extensionUi` / `runtime.ready`。整棵树的 `index`（无正文）只在 `fields=index` 时返回；比一次尾部读取还短的 session 随默认响应返回。查询：`fields=runtime` 省略 transcript；`entry` / `entries` 取全文；`before` + `limit` 取更早的 leaf 尾。不返回 `messages`。打开 session 时后台 Prepare 全局 extension 的 session view |
 | PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / `queued`（保留 id 列表）；run 或独立压缩占用 session 时，会改变上下文绑定的 `model` / `thinkingEffort` / `leafId` 返回 409，避免压缩准备后的 leaf 被并发推进 |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
 | POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId` / `delivery` / `queueId`；空闲 `202 started`；忙时 `steer` 插入本轮或 `queue` 排队，省略则用 `toggles.json` `message.busy`；`queueId`+`delivery=steer` 从 `queue.json` 取出插入本轮；`parentId` 且 busy 仍 **409** |
 | GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`） |
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件；完成回放受 16MiB / 2 分钟 / 256 run 限制，过期或无回放时现存 session 返回 410，客户端从 session GET 恢复 |
+| GET | `/v1/events` | 每个 WebUI tab 的全局 push SSE；仅发送失效、终态和 session sideband，不发送 run 增量 |
+| GET | `/v1/push/config` | 返回 Web Push 是否启用及 VAPID 公钥 |
+| POST | `/v1/push/subscriptions` | 注册或更新浏览器 PushSubscription（按 endpoint 幂等） |
+| DELETE | `/v1/push/subscriptions` | 按 `endpoint` 删除浏览器订阅 |
 | POST | `/v1/sessions/{id}/extension-ui` | 面板 action / submit / confirm / select 回传 sidecar |
 | POST | `/v1/sessions/{id}/abort` | cancel |
 | POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |

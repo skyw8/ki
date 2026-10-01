@@ -11,6 +11,7 @@
 | `credentials.json` | `internal/provider` | 1 | fail-fast |
 | `workspaces.json` | `internal/workspace` | 1 | fail-fast：`Open` 返回错误 |
 | `toggles.json` | `internal/toggles` | 2 | best-effort：`Load` 回退默认值 |
+| `vapid.json` | `internal/push` | 1 | fail-fast：拒绝使用未知版本，避免更换密钥使现有订阅失效 |
 | `push-subscriptions.json` | `internal/push` | 1 | best-effort：`OpenStore` 返回空表（浏览器会重新订阅） |
 | `extensions/<name>/config.json` | `internal/extension` | 1 | 配置读取/更新报错，绝不覆盖 |
 | `extensions/deep-web-search/cache.json` | Go sidecar | 1 | best-effort：空缓存，绝不覆盖 |

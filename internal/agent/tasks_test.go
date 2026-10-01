@@ -16,7 +16,7 @@ import (
 	"ki/internal/types"
 )
 
-func TestAgentControllerBackgroundStop(t *testing.T) {
+func TestControllerBackgroundStop(t *testing.T) {
 	store := NewController()
 	started := make(chan struct{})
 	launch, err := store.Start(context.Background(), Request{
@@ -42,7 +42,7 @@ func TestAgentControllerBackgroundStop(t *testing.T) {
 	}
 }
 
-func TestAgentControllerDurableDeliverySuppressesDuplicateCompletion(t *testing.T) {
+func TestControllerDurableDeliverySuppressesDuplicateCompletion(t *testing.T) {
 	metadata := filepath.Join(t.TempDir(), "agent.json")
 	store := NewController()
 	launch, err := store.Start(context.Background(), Request{
@@ -79,7 +79,7 @@ func TestAgentControllerDurableDeliverySuppressesDuplicateCompletion(t *testing.
 	}
 }
 
-func TestAgentControllerStopConsumesCompletion(t *testing.T) {
+func TestControllerStopConsumesCompletion(t *testing.T) {
 	started := make(chan struct{})
 	store := NewController()
 	launch, err := store.Start(context.Background(), Request{
@@ -101,7 +101,7 @@ func TestAgentControllerStopConsumesCompletion(t *testing.T) {
 	}
 }
 
-func TestAgentControllerCompletionSnapshotShape(t *testing.T) {
+func TestControllerCompletionSnapshotShape(t *testing.T) {
 	store := NewController()
 	launch, err := store.Start(context.Background(), Request{Description: "quick child", Prompt: "report"}, "child.jsonl", func(_ context.Context, _, _ string) (Completion, error) {
 		return Completion{Result: "done", ToolUseCount: 2, TotalTokens: 9}, nil
@@ -121,7 +121,7 @@ func TestAgentControllerCompletionSnapshotShape(t *testing.T) {
 	}
 }
 
-func TestAgentControllerResumeKeepsStableID(t *testing.T) {
+func TestControllerResumeKeepsStableID(t *testing.T) {
 	metadata := filepath.Join(t.TempDir(), "agent.json")
 	var mu sync.Mutex
 	var prompts []string
@@ -162,7 +162,7 @@ func TestAgentControllerResumeKeepsStableID(t *testing.T) {
 	}
 }
 
-func TestAgentControllerQueuesMessageAtRunBoundary(t *testing.T) {
+func TestControllerQueuesMessageAtRunBoundary(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	second := make(chan string, 1)
@@ -200,7 +200,7 @@ func TestAgentControllerQueuesMessageAtRunBoundary(t *testing.T) {
 	}
 }
 
-func TestAgentControllerRehydratesInterruptedAgent(t *testing.T) {
+func TestControllerRehydratesInterruptedAgent(t *testing.T) {
 	metadata := filepath.Join(t.TempDir(), "agent.json")
 	started := make(chan struct{})
 	store := NewController()
@@ -243,7 +243,7 @@ func TestAgentControllerRehydratesInterruptedAgent(t *testing.T) {
 	}
 }
 
-func TestAgentControllerConcurrentAgentsHaveIndependentLifecycle(t *testing.T) {
+func TestControllerConcurrentAgentsHaveIndependentLifecycle(t *testing.T) {
 	const count = 4
 	started := make(chan struct{}, count)
 	release := make(chan struct{})
@@ -280,7 +280,7 @@ func TestAgentControllerConcurrentAgentsHaveIndependentLifecycle(t *testing.T) {
 	}
 }
 
-func TestAgentControllerStoppedAgentResumesAfterRunnerExits(t *testing.T) {
+func TestControllerStoppedAgentResumesAfterRunnerExits(t *testing.T) {
 	started := make(chan struct{})
 	finished := make(chan struct{})
 	store := NewController()
@@ -318,7 +318,7 @@ func TestAgentControllerStoppedAgentResumesAfterRunnerExits(t *testing.T) {
 	}
 }
 
-func TestAgentControllerRemoveSessionForgetsTask(t *testing.T) {
+func TestControllerRemoveSessionForgetsTask(t *testing.T) {
 	started := make(chan struct{})
 	finished := make(chan struct{})
 	store := NewController()
@@ -345,7 +345,7 @@ func TestAgentControllerRemoveSessionForgetsTask(t *testing.T) {
 	}
 }
 
-func TestAgentControllerNotificationClaimIsPerRun(t *testing.T) {
+func TestControllerNotificationClaimIsPerRun(t *testing.T) {
 	store := NewController()
 	launch, err := store.Start(context.Background(), Request{
 		Description: "notified child", Prompt: "first", SessionID: "child-session",
@@ -374,7 +374,7 @@ func TestAgentControllerNotificationClaimIsPerRun(t *testing.T) {
 
 // A child agent is process-owned: cancelling the caller must not cancel it,
 // because the Agent tool may promote it to background instead.
-func TestAgentControllerChildSurvivesCallerCancel(t *testing.T) {
+func TestControllerChildSurvivesCallerCancel(t *testing.T) {
 	store := NewController()
 	caller, cancelCaller := context.WithCancel(t.Context())
 	release := make(chan struct{})

@@ -12,9 +12,10 @@ import (
 	"math/big"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"ki/internal/state"
 )
 
 // Key is the VAPID application-server key pair (RFC 8292) plus the JWT subject.
@@ -30,16 +31,19 @@ type Key struct {
 // storedKey is the on-disk form. The private scalar is the 32-byte P-256 value
 // (fixed width, not the DER envelope) so the file stays a small JSON document.
 type storedKey struct {
+	Version int    `json:"version"`
 	Private string `json:"private"`
 	Public  string `json:"public"`
 	Subject string `json:"subject"`
 }
 
+const vapidVersion = 1
+
 // LoadOrCreateKey reads path, generating and persisting a pair on first use.
 // A missing subject falls back to the stored one, then to DefaultSubject.
 func LoadOrCreateKey(path, subject string) (*Key, error) {
 	subject = strings.TrimSpace(subject)
-	if b, err := os.ReadFile(path); err == nil {
+	if b, _, err := state.ReadFile(path, vapidVersion, nil); err == nil {
 		var sk storedKey
 		if err := json.Unmarshal(b, &sk); err != nil {
 			return nil, fmt.Errorf("decode vapid key: %w", err)
@@ -71,22 +75,15 @@ func LoadOrCreateKey(path, subject string) (*Key, error) {
 		return nil, err
 	}
 	doc := storedKey{
+		Version: vapidVersion,
 		Private: base64.RawURLEncoding.EncodeToString(priv.D.FillBytes(make([]byte, 32))),
 		Public:  public,
 		Subject: key.Subject,
 	}
-	b, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
+	if err := state.WriteVersioned(path, vapidVersion, doc, 0o600); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
-		return nil, err
-	}
-	return key, os.Rename(tmp, path)
+	return key, nil
 }
 
 // DefaultSubject is the VAPID JWT `sub` when none is configured. RFC 8292 only

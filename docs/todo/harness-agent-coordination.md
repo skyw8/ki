@@ -9,7 +9,7 @@ Ki 基线：`b5efe630ce7620303c7b255619cce03208b84b4e`。
 ## 当前实施决策
 
 - 工具面一次切换：read/write/edit/grep/glob/apply_patch；exec_command/write_stdin；六个 agent 协作工具。注册只发布 snake_case schema，调用兼容 PascalCase 与 extension 原始名；SendMessage 是新 send_message 的大小写别名，旧 to/summary 参数移除。
-- 两个独立 owner：ShellProcessManager 保存 OS 进程，AgentController 保存逻辑 agent。删除 JobStore、compositeTaskStore、Agent foreground promotion、TaskOutput/TaskStop 与固定深度上限。
+- 两个独立 owner：ShellProcessManager 保存 OS 进程，`agent.Controller` 保存逻辑 agent。删除 JobStore、compositeTaskStore、Agent foreground promotion、TaskOutput/TaskStop 与固定深度上限。
 - spawn 异步，fork_turns 默认 all；具名路径稳定，普通消息 QueueOnly，follow-up 是显式新任务。busy follow-up 进入下一代次，不取消当前工作。每 root 默认 4 个活跃 child，完成后身份保留、容量释放。
 - Unix PTY / Windows ConPTY；exec 观察预算 250–30000ms，write_stdin 空输入 5000–300000ms、非空输入 250–30000ms。pipe 拒绝普通输入，Ctrl-C 为中断请求。取消观察不杀进程，强制停止由现有 abort 的 process/tree scope 执行。
 - toggles v2 保守迁移旧开关，agent.json v3 保留路径/pending/ledger。全部身份注册后才恢复 pending；不恢复 OS handle，也不自动重跑重启前中断的当前任务。
@@ -54,7 +54,7 @@ shell 是解释器选择，不是工具分派：省略时沿用当前会话已�
 运行时拆为两个所有者：
 
 - **ShellProcessManager**：启动、PTY/pipe、stdin、输出 drain、exit、signal/kill、process capacity 和 shutdown。它由当前 JobStore 重构，不新建一个包裹旧 foreground/background 分支的 facade。
-- **AgentController**：logical agent registry、spawn/fork、消息投递、turn admission、generation、completion、interrupt 与恢复。它整合当前 AgentStore 和 server agent orchestration，不继续实现 composite TaskStore 的 shell/agent Get/Wait/Stop 混合接口。
+- **`agent.Controller`**：logical agent registry、spawn/fork、消息投递、turn admission、generation、completion、interrupt 与恢复。它整合当前 AgentStore 和 server agent orchestration，不继续实现 composite TaskStore 的 shell/agent Get/Wait/Stop 混合接口。
 
 已有 process-tree termination、OutputSpool、session tree、state 迁移、completion identity、input gate、SSE/loop.Event 和 telemetry 继续复用。删除旧模型工具不等于删除这些已验证能力。旧 TaskOutput 的“主动读取与通知争抢结果”不再作为新主路径；通知接受仍需按 identity 幂等，只有用于旧双入口仲裁的代码才删。
 
@@ -201,7 +201,7 @@ Codex 中“后台”至少有三种含义；只有第一种属于这 6 个协�
 
 [clock.sleep](/data/hgy/codex/codex-rs/core/src/tools/handlers/sleep.rs) 也能订阅 input activity 提前返回，但它是时间等待控制，不是创建后台 job；durable sleep 的 idle 恢复分支另见 3.1.4。本方案不实现定时自动化或云端任务服务。
 
-**对 Ki 的直接结论**：从 `internal/tools/jobs.go`（原实现，已移除） 重构 ShellProcessManager，从 [AgentStore](../../internal/agent/tasks.go) 与 server orchestration 整合 AgentController，移除 `internal/tools/task_tools.go`（原实现，已移除） 的模型工具耦合。typed identity 和取消路由分开；agent 等邮件、shell 等进程状态，可以共享 activity/revision/wait 基础设施。wait_agent 不等待 shell，terminal session_id 不填入 agent target。
+**对 Ki 的直接结论**：从 `internal/tools/jobs.go`（原实现，已移除） 重构 ShellProcessManager，从 [`agent.Controller`](../../internal/agent/tasks.go) 与 server orchestration 整合逻辑 agent，移除 `internal/tools/task_tools.go`（原实现，已移除） 的模型工具耦合。typed identity 和取消路由分开；agent 等邮件、shell 等进程状态，可以共享 activity/revision/wait 基础设施。wait_agent 不等待 shell，terminal session_id 不填入 agent target。
 
 Ki 已有 context-without-cancel、后台提升、进程树终止与输出存储，本轮不重复修复。需要补齐的是后台 child 默认异步，以及 turn interrupt / shell stop / subtree shutdown 三种操作的明确契约与测试。shell yield/stdin 完整实现已纳入 S0 核心切换；[工具后续优化](tools.md) 只保留其它独立 shell 事项。
 
@@ -248,7 +248,7 @@ Ki 已有 context-without-cancel、后台提升、进程树终止与输出存储
 
 ## 4. M0：代次统计与协作诊断（已实现）
 
-runEmitter 为 child 绑定 taskId/generation/runId，AgentController 按 RequestHeader、MessageEnd、工具 start/end 和 AgentEnd 归约。结果只取本代次 assistant 正文；空结果不借用旧答复。工具 attempt 按 callId，usage 的 input/output/cache-read/cache-write/total 与最近 contextTokens 分列；runStats 与 lifetimeStats 分开。恢复旧 metadata 标记累计不完整。
+runEmitter 为 child 绑定 taskId/generation/runId，`agent.Controller` 按 RequestHeader、MessageEnd、工具 start/end 和 AgentEnd 归约。结果只取本代次 assistant 正文；空结果不借用旧答复。工具 attempt 按 callId，usage 的 input/output/cache-read/cache-write/total 与最近 contextTokens 分列；runStats 与 lifetimeStats 分开。恢复旧 metadata 标记累计不完整。
 
 session inspect/trace 增加 sideband runtime 与时间诊断，工具和 wait_agent 采用区间并集，未归因区间保留 unknown；没有将不同 agent 的 duration 相加当 root elapsed。telemetry 的工具记录增加 generation、requestedName、mode receipt 和 wakeReason；queued follow-up 的 acceptedAt 与 queueWaitMs 保留排队时间。
 
@@ -260,7 +260,7 @@ ShellProcessManager 独立保存 numeric handle、owner Ki session、run/tool-ca
 
 ## 6. M1：工具面、稳定 agent 与显式任务投递（已实现）
 
-spawn_agent/send_message/followup_task/wait_agent/interrupt_agent/list_agents 共享单一 AgentRuntime 与 AgentController。具名路径按 root 校验与保留；fork_turns=all/none/N 复制完整已完成 turn。root active child 默认 4，不设固定 depth cap，完成身份持续可寻址。
+spawn_agent/send_message/followup_task/wait_agent/interrupt_agent/list_agents 共享单一 AgentRuntime 与 `agent.Controller`。具名路径按 root 校验与保留；fork_turns=all/none/N 复制完整已完成 turn。root active child 默认 4，不设固定 depth cap，完成身份持续可寻址。
 
 send_message QueueOnly：先持久化 context queue 再唤醒 Inbox，不启动 idle run。followup_task TriggerTurn：稳定 clientRequestId 的 pending，在 busy/容量满时排队；pending→active generation 在同一次 metadata 更新交接。interrupt 清除当时 pending 并保留身份，之后接受的显式 follow-up 可开启新代次。schema/前缀不随 busy/idle/depth 改变。
 
@@ -340,7 +340,8 @@ M0 定义基线统计后，给 M1–M3 做确定性协作回放：普通 idle Qu
 
 | 所有者 | 实施职责 | 必须更新的契约 |
 | --- | --- | --- |
-| `internal/tools` | 六个 agent 协作工具与 exec_command/write_stdin、ShellProcessManager、AgentController 接口、typed 结果与 generation | `internal/tools/doc.go`、[tools.md](../tools.md) |
+| `internal/tool/builtin` | 六个 agent 协作工具与 exec_command/write_stdin 的模型适配、typed 结果 | `internal/tool/builtin/doc.go`、[tools.md](../tools.md) |
+| `internal/agent` / `internal/process` | `agent.Controller` 的逻辑生命周期；ShellProcessManager 的跨平台进程生命周期 | 两个 owning `doc.go`、[tools.md](../tools.md) |
 | `internal/server` | canonical agent registry、投递/input gate、spawn cleanup、执行容量、恢复投影 | `internal/server/doc.go`、[architecture.md](../architecture.md) |
 | `internal/loop` | Inbox activity subscription、wait scope、事件定义；仍只 emit | `internal/loop/doc.go`、[events.md](../events.md) |
 | `internal/session` / `internal/types` | context sequence、metadata 和稳定身份、按 run 分析 | 两个 owning `doc.go`、[session.md](../session.md)、[state.md](../state.md) |
@@ -362,10 +363,10 @@ M0 定义基线统计后，给 M1–M3 做确定性协作回放：普通 idle Qu
 | `cd web && bun run typecheck` | 通过 | WebUI 类型 |
 | `cd web && bun run build` | 通过 | 构建新 web/dist，供 embed 使用 |
 | `go test -tags embed -count=1 ./...` | 通过 | 完整 Go、本地 CLI/server、Bun unit 与 Playwright regression，含 responsive matrix |
-| `go test -race ./internal/tools ./internal/server` | 通过 | 最终 process/agent ownership、admission、shutdown 与队列路径 |
+| `go test -race ./internal/agent ./internal/process ./internal/server` | 通过 | 最终 process/agent ownership、admission、shutdown 与队列路径 |
 | `go test -race ./internal/loop ./internal/session ./internal/extension` | 通过 | registry/Inbox、jsonl/sideband 与 extension alias 路径；后续修改未触及这些实现 |
-| `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c -o /tmp/ki-tools-windows-amd64.test.exe ./internal/tools`；同参数编译 `./internal/server` | 通过 | Windows 编译与测试编译 |
-| `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go test -c -o /tmp/ki-tools-darwin-arm64.test ./internal/tools`；同参数编译 `./internal/server` | 通过 | macOS 编译与测试编译 |
+| `GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test -c -o /tmp/ki-process-windows-amd64.test.exe ./internal/process`；同参数编译 `./internal/server` | 通过 | Windows 编译与测试编译 |
+| `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go test -c -o /tmp/ki-process-darwin-arm64.test ./internal/process`；同参数编译 `./internal/server` | 通过 | macOS 编译与测试编译 |
 | `git diff --check`、改动文档的本地链接检查 | 通过 | 格式与已移除旧源码链接 |
 
 确定性覆盖包含：完成/idle context 不启动新 turn、mailbox 超时/取消不停止 child、容量按 root 分离与释放后调度 pending、busy follow-up 的 generation 交接、重复完成通知去重、完整 turn fork、当前/累计统计与旧代次拒绝、PTY 输入与增量 UTF-8/full raw spool、观察取消后的显式 process/tree stop、清理屏障及稳定身份复用。WebUI 额外覆盖 390px/1280px 下的进度恢复、44px 控制按钮、准确的停止对象及旧 revision/generation 回放。

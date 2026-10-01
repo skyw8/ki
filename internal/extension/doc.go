@@ -28,9 +28,12 @@
 // Enablement is toggles.json extensions.disabled
 // (missing = all on). Host interceptors are test doubles only; production
 // never compiles user extensions into the ki binary.
-// Manifest errors, sidecar start failures, and undeclared capabilities disable
-// the package in toggles.json. Occupy RPC timeouts stay fail-open: the package
-// is skipped for that occupy and is not toggled off.
+// Manifest errors make a package unavailable in the catalog and exclude it
+// from runtime configuration. Sidecar start failures and undeclared
+// capabilities are reported and skipped for the affected runtime or
+// registration, while the package's manual toggles remain separate. Occupy
+// RPC timeouts stay fail-open: the package is skipped for that occupy and is
+// not toggled off.
 // Install commands, sidecars, and their descendants inherit Ki's proxy
 // environment; runtime.env can explicitly override those variables.
 // Install hooks inherit the full parent build environment, then apply scoped

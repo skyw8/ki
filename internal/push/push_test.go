@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -156,6 +157,17 @@ func TestKeyPersistsAndSignsVerifiableTokens(t *testing.T) {
 	first, err := key.PublicKey()
 	if err != nil {
 		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored["version"] != float64(vapidVersion) {
+		t.Fatalf("vapid schema version = %v, want %d", stored["version"], vapidVersion)
 	}
 	reloaded, err := LoadOrCreateKey(path, "ops@example.com")
 	if err != nil {

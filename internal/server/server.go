@@ -2551,7 +2551,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	// the narrow interval after that check and before Run returns; atomically
 	// close the handoff window only after taking one last Inbox snapshot, then
 	// run any such message as a continuation. If the window is already closed,
-	// SendMessage falls back to AgentController's durable queue/resume path.
+	// SendMessage falls back to agent.Controller's durable queue/resume path.
 	for {
 		st.mu.Lock()
 		var steers []types.Message

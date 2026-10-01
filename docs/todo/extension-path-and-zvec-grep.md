@@ -81,17 +81,17 @@ stop
 - [x] `internal/extension/manifest.go`：`RuntimeSpec.Path []string`；装载期校验（相对、`withinRoot`、非空），失败写 `d.Error`；`Descriptor.PathDirs()` 返回绝对路径（enabled + 声明能力 + 无 Error，不做存在性检查）。
 - [x] `internal/extension/merge.go`：新增 `PathDirs(enabled []Descriptor) []string`，与 `PromptLayers` / `SkillRoots` / `CommandDir` 同层，按包名排序。
 - [x] `internal/resources/loader.go`：`Snapshot.PathDirs []string`，在 `scan()` 里由 `extension.PathDirs(found.Enabled)` 填充（随快照缓存，reload 后更新）。
-- [x] `internal/tools/set.go`：`Set.PathDirs []string`；`Build(profile)` 把它透传给 `bashTool` / `powerShellTool`（`shellSpec.pathDirs`）。
-- [x] `internal/tools/shells.go`：`withBundledSearchTools(env, primary string, extra []string, kind shellKind)`；`prependPath` 支持多目录；Bash 分支额外设置 `KI_EXTENSION_PATH_DIRS`，分隔符固定为 `:`（shim 是 POSIX 脚本，与宿主 `os.PathListSeparator` 无关）。
+- [x] `internal/tool/builtin/set.go`：`Set.PathDirs []string`；`Build(profile)` 把它透传给 `bashTool` / `powerShellTool`（`shellSpec.pathDirs`）。
+- [x] `internal/process/shells.go`：`withBundledSearchTools(env, primary string, extra []string, kind shellKind)`；`prependPath` 支持多目录；Bash 分支额外设置 `KI_EXTENSION_PATH_DIRS`，分隔符固定为 `:`（shim 是 POSIX 脚本，与宿主 `os.PathListSeparator` 无关）。
 - [x] `internal/search/executable.go`：`toolsShim` 增加扩展目录循环（shim 内容变更后 `materializeShim` 会重写缓存里的文件）。
 - [x] `internal/server/server.go`：组装 `tools.Set{...}` 时填 `PathDirs: snapshot.PathDirs`（`snapshot` 已在同处 `s.resources.Load` 取到）。
 - [x] `internal/server/slash.go`：`extensionCatalog` 暴露 `pathDirs`（`[{path,exists}]`，已声明但缺失的目录也返回，见 `Descriptor.PathDirStatuses`）。
-- [x] 文档：`docs/extension.md`（manifest 表 + `runtime.path` 语义 + 失败模式）、`docs/tools.md` 的"内置 rg 和 fd"小节（PATH 顺序）、`internal/extension/doc.go`、`internal/tools/doc.go`、`internal/search/doc.go`。
+- [x] 文档：`docs/extension.md`（manifest 表 + `runtime.path` 语义 + 失败模式）、`docs/tools.md` 的"内置 rg 和 fd"小节（PATH 顺序）、`internal/extension/doc.go`、`internal/process/doc.go`、`internal/tool/builtin/doc.go`、`internal/search/doc.go`。
 
 ### 测试
 
 - [x] `internal/extension`：`pathDirs` 只返回 enabled + 声明能力 + 无 Error 的包，按名排序；绝对路径 / `..` 逃逸 → 包被禁用；缺失目录在使用时被跳过。
-- [x] `internal/tools`：PATH 顺序（ki → ext → user）；`KI_EXTENSION_PATH_DIRS` 值；**无扩展时子进程 env 与今天逐字节一致**（防回归）；PowerShell 分支同样 prepend。
+- [x] `internal/process`：PATH 顺序（ki → ext → user）；`KI_EXTENSION_PATH_DIRS` 值；**无扩展时子进程 env 与今天逐字节一致**（防回归）；PowerShell 分支同样 prepend。
 - [x] Go e2e fixture：扩展带 `bin/ziprobe`（`echo extension-path-marker`），Bash 工具能执行（新增 `e2e-bash:<cmd>` 脚本 token 驱动）；禁用该扩展后命令找不到；`runtime.install` 之后才出现的目录在下一轮生效（由 `internal/extension` 单测覆盖）。
 
 ### 风险
@@ -187,7 +187,7 @@ extensions/zvec-grep/
 
 ## 验证方式
 
-- `go test ./internal/extension ./internal/resources ./internal/tools ./internal/server`
+- `go test ./internal/extension ./internal/resources ./internal/process ./internal/server`
 - `go test ./e2e`（fake 矩阵，含新 fixture）
 - `cd web && bun run test:e2e`（仅当动了 WebUI）
 - 真实环境手动验证走 `scripts/run.sh`（真实 provider），前置条件：Node 22+、`extensions/zvec-grep` 已 install；手动用例：让模型跑 `zg --status`（验证 PATH 能力）与一次语义检索（验证扩展工具）。

@@ -39,10 +39,10 @@ test('prompt settings list every source and edit the global file', async ({ page
   // The built-in layer is harness-owned: shown, in the effective stack, never
   // editable.
   const builtin = page.getByTestId('prompt-builtin')
-  await expect(builtin).toContainText("NEVER use 'grep' or 'find'")
+  await expect(builtin).toContainText("In shell commands or pipelines, prefer 'rg' and 'fd' over 'grep' and 'find'")
   await expect(page.getByTestId('prompt-edit-builtin')).toHaveCount(0)
   await expect(page.getByTestId('prompt-source-builtin')).toContainText(/只读|Read-only/)
-  await expect(page.getByTestId('prompt-effective')).toContainText("only supported search tools")
+  await expect(page.getByTestId('prompt-effective')).toContainText('on an unsupported target')
 
   const editor = page.getByTestId('prompt-edit-global')
   await editor.fill('GLOBAL-E2E-RULE')
@@ -75,7 +75,7 @@ test('project file adds to the global layer', async ({ page, request }) => {
   const effective = page.getByTestId('prompt-effective')
   await expect(effective).toContainText('PROJECT-E2E-RULE')
   const text = (await effective.textContent()) ?? ''
-  const builtinAt = text.indexOf("NEVER use 'grep' or 'find'")
+  const builtinAt = text.indexOf("In shell commands or pipelines, prefer 'rg' and 'fd' over 'grep' and 'find'")
   const globalAt = text.indexOf('GLOBAL-E2E-RULE')
   const projectAt = text.indexOf('PROJECT-E2E-RULE')
   expect(builtinAt, `effective order: ${text}`).toBeGreaterThanOrEqual(0)
