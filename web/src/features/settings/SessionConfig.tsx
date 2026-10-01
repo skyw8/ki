@@ -9,6 +9,7 @@ import { clampCompactKeep, MAX_COMPACT_KEEP, type MessageView } from '../../lib/
 import type { NotifyPermission } from '../../lib/notifications'
 import { toast } from '../../components/toast'
 import { localizedExtensionText } from './ExtensionPanel'
+import { RuntimePanel, type RuntimePanelProps } from '../chat/RuntimePanel'
 import type { CatalogContribution, CatalogExtension, CatalogSkill, CatalogTool, ExtensionConfig, ExtensionI18n, ModelInfo, SessionCommand, SessionDetail } from '../../api/types'
 
 const SOURCE_KEY: Record<string, MsgKey> = {
@@ -32,6 +33,8 @@ function sourceLabel(source: string | undefined, t: TFn): string {
 
 const INFO_SECTIONS = [
   { id: 'info-session', label: 'cfg.session', children: [] },
+  { id: 'info-agents', label: 'runtime.agents', children: [] },
+  { id: 'info-processes', label: 'runtime.processes', children: [] },
   { id: 'info-skills', label: 'cfg.skills', children: [] },
   { id: 'info-extensions', label: 'cfg.extensions', children: [] },
   { id: 'info-commands', label: 'cfg.commands', children: [] },
@@ -75,6 +78,7 @@ export function SessionConfig({
   onEdit,
   onOpenSession,
   runtimeReady,
+  runtime,
 }: {
   api: Client
   sessionId: string | null
@@ -83,6 +87,7 @@ export function SessionConfig({
   onEdit?: (page: 'skills' | 'extensions') => void
   onOpenSession?: (id: string) => void
   runtimeReady?: boolean
+  runtime?: Omit<RuntimePanelProps, 'sessionId' | 'onOpenSession'>
 }) {
   const { t, lang } = useI18n()
   const [detail, setDetail] = useState<SessionDetail | null>(null)
@@ -95,6 +100,8 @@ export function SessionConfig({
   const commands = detail?.commands ?? []
   const outlineGroups = useMemo<OutlineItem[]>(() => [
     { id: 'info-session', label: t('cfg.session') },
+    { id: 'info-agents', label: t('runtime.agents') },
+    { id: 'info-processes', label: t('runtime.processes') },
     {
       id: 'info-skills',
       label: t('cfg.skills'),
@@ -216,6 +223,15 @@ export function SessionConfig({
               ) : null}
             </dl>
           </section>
+
+          <RuntimePanel
+            sessionId={sessionId}
+            onOpenSession={onOpenSession}
+            processes={runtime?.processes ?? detail?.processes ?? []}
+            agents={runtime?.agents ?? detail?.agents ?? []}
+            onStop={runtime?.onStop}
+            onInterrupt={runtime?.onInterrupt}
+          />
 
           <section className="cfg-block" id="info-skills">
             <h2 className="cfg-h">{t('cfg.skills')}</h2>

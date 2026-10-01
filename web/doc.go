@@ -32,5 +32,13 @@
 // until a single sign-ordered transfer can preserve the physical viewport.
 // Extension inspectors show complete operation/runtime errors above either tab;
 // extension errors and transcript cancellations share the plain red notice style.
+// Info owns live runtime progress: Agents precedes Processes, task paths form
+// collapsible agent trees, and processes group by owner. Names navigate to the
+// owner's conversation; controls address the real session/process owner.
+// Agent rows, including leaves, share one disclosure column so nested names
+// advance uniformly to the right; plain rows avoid competing card insets.
+// Runtime notifications use one rounded dashed card with a subtle themed fill,
+// never a second inner bubble frame or human input actions. Duration
+// digits use compact left-aligned format slots and tabular numbers at full size.
 // See docs/webui.md for lifecycle, responsive geometry and touch contracts.
 package web

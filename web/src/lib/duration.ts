@@ -11,3 +11,10 @@ export function durationText(milliseconds: number): string {
   if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h${minutes}`
   return `${Math.floor(seconds / 86_400)}d${pad(Math.floor(seconds / 3600) % 24)}h${minutes}`
 }
+
+/** Reserve only the current format's digits, not a days-wide slot for seconds. */
+export function durationColumns(text: string): number {
+  if (text.includes('d')) return text.length
+  const columns = text.endsWith('ms') ? 7 : text.includes('h') ? 9 : text.includes('m') ? 6 : 5
+  return Math.max(columns, text.length)
+}

@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import type { Entry, LoopEvent } from '../src/api/types'
 import { serverToken } from './global-setup'
 import { openStream } from './stream-fixture'
-import { durationText } from '../src/lib/duration'
+import { durationColumns, durationText } from '../src/lib/duration'
 
 // Each case passed standalone with a private server and browser context. The
 // top-level resize case otherwise keeps all viewport groups in one serial unit.
@@ -100,7 +100,7 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
     })
   })
 
-  for (const lang of ['zh', 'en']) test(`timers keep adjacent text within 0.5px in ${lang}`, async ({ page }) => {
+  for (const lang of ['zh', 'en']) test(`timers stay compact and keep same-format text within 0.5px in ${lang}`, async ({ page }) => {
     await page.addInitScript(lang => localStorage.setItem('ki-lang', lang), lang)
     await openStream(page, 0)
     const now = Date.now()
@@ -110,21 +110,37 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
     await send({ type: 'message_end', runId: 'timer', seq: 3, entryId: 'call', parentId: 'timed', message: { role: 'assistant', timestamp: now, content: [{ type: 'toolCall', id: 'tool', name: 'exec_command', arguments: { cmd: 'sleep 30', description: 'Static neighboring preview' } }] } })
     await send({ type: 'tool_execution_start', runId: 'timer', seq: 4, toolCallId: 'tool', toolName: 'exec_command', timestamp: now, args: { cmd: 'sleep 30', description: 'Static neighboring preview' } })
     await expect(page.getByTestId('tool-duration')).toBeVisible()
-    const samples: number[][] = []
+    const samples = new Map<number, number[]>()
     for (const elapsed of [999, 1000, 9900, 10_000, 10_200, 11_000, 59_900, 60_000, 61_000, 3_599_000, 3_600_000, 3_601_000, 86_399_000, 86_400_000, 86_401_000, 864_000_000]) {
       await page.clock.setFixedTime(new Date(now + elapsed))
-      await expect(page.getByTestId('tool-duration').locator('.duration-value')).toHaveText(durationText(elapsed))
-      samples.push(await page.evaluate(() => {
+      for (const timer of ['tool-duration', 'turn-elapsed', 'session-elapsed']) {
+        await expect(page.getByTestId(timer).locator('.duration-value')).toHaveText(durationText(elapsed))
+      }
+      const columns = durationColumns(durationText(elapsed))
+      const sample = await page.evaluate(columns => {
         const selectors = ['.turn-end-label', '.session-stats-g', '.tool-name', '[data-testid="tool-preview"]', '[data-testid="tool-duration"]', '[data-testid="turn-elapsed"]', '[data-testid="session-elapsed"]']
+        for (const slot of document.querySelectorAll<HTMLElement>('.duration-value')) {
+          const range = document.createRange()
+          range.selectNodeContents(slot)
+          const text = range.getBoundingClientRect(), box = slot.getBoundingClientRect()
+          const glyph = box.width / columns
+          if (Math.abs(box.left - text.left) > .5) throw new Error('Duration must be left aligned')
+          if (text.width > box.width + .5 || box.width - text.width > glyph * 2 + .5) throw new Error('Duration must reserve at most two spare digits')
+          if (slot.childElementCount || getComputedStyle(slot).fontSize !== getComputedStyle(slot.parentElement!).fontSize) throw new Error('Duration must not shrink its text')
+        }
         return selectors.flatMap(selector => {
           const el = document.querySelector<HTMLElement>(selector)!
           const box = el.getBoundingClientRect()
           if (box.left < -0.5 || box.right > innerWidth + 0.5) throw new Error(`Timer clipped: ${selector}`)
           return [box.left, box.top, box.width, box.height]
         })
-      }))
+      }, columns)
+      // Format transitions may resize the compact slot; ordinary ticks must
+      // still leave neighboring text and row heights in the same position.
+      const previous = samples.get(columns)
+      if (previous) sample.forEach((value, i) => expect(Math.abs(value - previous[i])).toBeLessThanOrEqual(0.5))
+      else samples.set(columns, sample)
     }
-    for (const sample of samples.slice(1)) sample.forEach((value, i) => expect(Math.abs(value - samples[0][i])).toBeLessThanOrEqual(0.5))
   })
 
   test('long extension tool names truncate accessibly without covering live or settled timers', async ({ page }) => {
@@ -168,10 +184,17 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
       if (first) {
         expect(Math.abs(box.scrollClientWidth - first.scrollClientWidth)).toBeLessThanOrEqual(.5)
         expect(Math.abs(box.headerWidth - first.headerWidth)).toBeLessThanOrEqual(.5)
-        expect(Math.abs(box.timerLeft - first.timerLeft), JSON.stringify({ first, current: box })).toBeLessThanOrEqual(.5)
-        expect(Math.abs(box.timerWidth - first.timerWidth)).toBeLessThanOrEqual(.5)
+        // The timer stays anchored to the same right edge as its format grows;
+        // same-format ticks and live→settled must retain identical geometry.
+        expect(Math.abs(box.timerLeft + box.timerWidth - first.timerLeft - first.timerWidth)).toBeLessThanOrEqual(.5)
       } else first = box
+      const previous = timerFormats.get(durationColumns(await tool.getByTestId('tool-duration').innerText()))
+      if (previous) {
+        expect(Math.abs(box.timerLeft - previous.timerLeft)).toBeLessThanOrEqual(.5)
+        expect(Math.abs(box.timerWidth - previous.timerWidth)).toBeLessThanOrEqual(.5)
+      } else timerFormats.set(durationColumns(await tool.getByTestId('tool-duration').innerText()), box)
     }
+    const timerFormats = new Map<number, Awaited<ReturnType<typeof sample>>>()
     for (const elapsed of [9900, 10_000, 3_600_000, 3_601_000]) {
       await page.clock.setFixedTime(new Date(now + elapsed))
       await expect(tool.getByTestId('tool-duration')).toHaveText(durationText(elapsed))
@@ -186,7 +209,7 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
     await assertGeometry()
   })
 
-  test('runtime cards expand, hydrate, rotate and resize without frame overlap or gaps', async ({ page }) => {
+  test('rounded runtime notes expand, hydrate, rotate and resize without overlap or gaps', async ({ page }) => {
     const entries: Entry[] = [message('u', '', 'user', 'One human request')]
     const body = '<task-notification>\nTask delegated-review completed.\nResult:\n' +
       'Sanitized implementation report with mixed English 和中文 text, long-path/with-no-boundary/'.repeat(24) +
@@ -207,6 +230,21 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
     await expect(latest).toContainText('Sanitized implementation report')
     await expect(latest.getByTestId('edit-msg')).toHaveCount(0)
     await expect(latest.getByRole('note')).toBeVisible()
+    for (const side of ['top', 'right', 'bottom', 'left']) {
+      await expect(latest.getByRole('note')).toHaveCSS(`border-${side}-width`, '1px')
+      await expect(latest.getByRole('note')).toHaveCSS(`border-${side}-style`, 'dashed')
+      await expect(latest.locator('.user-text-bubble')).toHaveCSS(`border-${side}-width`, '0px')
+    }
+    for (const corner of ['top-left', 'top-right', 'bottom-left', 'bottom-right']) {
+      await expect(latest.getByRole('note')).toHaveCSS(`border-${corner}-radius`, '12px')
+    }
+    // Both themes get a subtle filled card, while the inner body stays clear.
+    for (const theme of ['light', 'dark']) {
+      await page.locator('body').evaluate((el, theme) => { el.dataset.theme = theme }, theme)
+      await expect(latest.getByRole('note')).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+      await expect(latest.locator('.user-text-bubble')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
+    }
+    await page.locator('body').evaluate(el => { el.dataset.theme = 'light' })
     await latest.getByTestId('user-bubble-toggle').click()
     // Simulate keyboard height reduction, then portrait/landscape rotation.
     for (const viewport of [

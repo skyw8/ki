@@ -1,4 +1,3 @@
-import { RuntimePanel } from './features/chat/RuntimePanel'
 import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { ApiError, Client } from './api/client'
@@ -1584,7 +1583,6 @@ function WorkspaceApp({ api }: { api: Client }) {
   const steerShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘+Enter' : t('queue.steerHint')
   const composer = (
     <>
-    <RuntimePanel processes={view.processes ?? []} agents={view.agents ?? []} onStop={async processID=>{if (!currentId) return;try {await api.abort(currentId,'process',processID);await refreshOpenRuntime()} catch(error) {toast.from(error)}}} onInterrupt={async sessionID=>{try {await api.abort(sessionID);await refreshOpenRuntime()} catch(error) {toast.from(error)}}} />
     {extQueued.length ? (
       <ul className="queued-list ext-queued" data-testid="ext-queued-list">
         {extQueued.map(item => {
@@ -1939,6 +1937,16 @@ function WorkspaceApp({ api }: { api: Client }) {
               onEdit={page => { drawerDialogSource.current = null; setSettingsPage(page); setSettingsOpen(true) }}
               onOpenSession={id => { setTab('conversation'); void openSession(id) }}
               runtimeReady={view.runtimeReady}
+              runtime={{
+                processes: view.processes ?? [],
+                agents: view.agents ?? [],
+                onStop: async processID => {
+                  const owner = view.processes?.find(p => p.session_id === processID)?.owner_session_id || currentId
+                  if (!owner) return
+                  try { await api.abort(owner, 'process', processID); await refreshOpenRuntime() } catch (error) { toast.from(error) }
+                },
+                onInterrupt: async sessionID => { try { await api.abort(sessionID); await refreshOpenRuntime() } catch (error) { toast.from(error) } },
+              }}
             />
           </div>
         ) : tab === 'trajectory' ? (

@@ -29,7 +29,7 @@ composer（命令按钮 + 行首 `/` 打开 slash 面板，数据来自 session 
 - 会话历史里的压缩状态：`compaction_start` 显示黄色「正在压缩上下文…」，`compaction_end` 显示成功、无需压缩或失败。两种事件的 `lifecycleEntryId` / `parentId` / `timestamp` 与 jsonl 一致，实时事件立即进入身份图，重放和正文补全不会复制或丢失状态。`entryId` 仍指成功提交的 checkpoint；加载 checkpoint 后由摘要替换状态行，不重复显示。empty/failed 没有 checkpoint，也保留其持久化终态。生命周期行始终独立、不占 keep、不增加模型步数；正文缓存回收保留状态事实，只有 index 尚无状态时显示本地化的待加载文案并补全，不能冒充成功。权威 idle 或后续实际请求使未结束的历史 start 停止转圈，不能因后来的 run busy 而复活。手动 `/compact` 没有 run stream，进度仍由现有 push 流（`GET /v1/events`，session sideband）传递。
 - 对话数据：detailed 默认取最新 100 条 entry，受 512KiB slim entries 字节预算约束。compact 使用同一 GET 的 `view=compact&keep=N`，首次最多最近 4 个完整 turn，上翻每次 1 个：人工 input + 整轮折叠摘要 + 最近 N 个回复节点；压缩记录（`compaction`）单独成行、始终可见，且不占 keep 名额（否则尾随的压缩会把该轮最后一条正式回复挤进折叠区）；subagent 指令/通知等 runtime user-role 消息按回复折叠，不作为始终可见的 input。`compactTurns` 给出整轮折叠数量、预览、统计及稀疏 entry 的连接信息；只返回可见正文，不下载折叠区再交前端隐藏。游标指向整轮输入，已显示的折叠数量不随加载更早 turn 增长。点击展开才用 `turn=<id>` 获取该轮隐藏 entry（内部按 500 条/字节预算分批），收齐后一次提交；展开游标独立于历史游标，失败原地重试。调整 keep 可重新投影该轮；切到 detailed 时补该窗口缺失的正文。长会话不再定时下载整树；打开请求导航、轨迹或“查看分支”才首次请求 `fields=index`，恢复及运行结束会按已请求的 leaf 更新，仅返回 `{id,index}`，支持 ETag；小会话默认 GET 仍可顺带 index。索引只更新树元数据，不覆盖正文、leaf 或已推进的历史边界。完整正文不会被迟到的 slim 页降级。assistant 进入实际视口并稳定 100ms 后补全文，纯 overscan 不下载；工具/用户展开或 Inspect 主动补全文。正文队列 32ms 合批、单批最多 40 个 entry id、并发 1，失败可重试；tool call id 与 system 行 id 会映射到持久化 entry id。冷正文按约 8MiB 预算退回摘要，保留全部 id、顺序和分页边界；最小摘要和树元数据不计入正文预算，仍随历史条数增长；可见/邻近行和最新 turn 受保护，可超过预算。运行结束不再裁掉 400 条之外的窗口。
 - 扩展 UI 壳见下一节。打开会话（新会话和点开历史同一套）立刻渲染标题和气泡；`runtime.ready === false` 时锁 composer（输入、附件、`/`、发送），placeholder「正在加载扩展…」。就绪或预热失败后解锁。
-- Info：本会话只读元数据、skills、extensions、slash 命令；内容右侧提供 sticky outline。每个 extension 下列出它加载的 skills、tools、slash 命令、prompt append 文件、PATH 目录（标记已存在 / 缺失）和 providers。`path` 只展示字符串，不当 `href`。来源 session（`parentSessionId`）渲染为可点链接，点击切到该 parent 会话。subagent 子会话在侧栏内联展开，本页不再有独立的 Tree 浏览器。Reload 清资源快照，复用全局 extension sidecar。Edit 打开设置。不在此页开关。标题按 h2 / h3 / h4 分层。
+- Info：本会话元数据之后依次是 Agents、Processes 两节，再列 skills、extensions、slash 命令；内容右侧提供 sticky outline。运行状态不再占据 composer 上方。Agents 按 canonical task path 显示可折叠父子树（恢复时缺少父节点，挂到最近已知祖先），保留已完成任务的状态、轮次、当前工具和统计；点击名称进入该 agent 的 Conversation。Processes 按 owner session 分组为树，只列运行中的进程，命令/owner 可跳转到对应会话，输出按需展开；停止进程按实际 owner 请求，中断 agent 按其 session 请求。两节为空时仍保留标题与空状态，实时 SSE/恢复快照更新状态，移动端操作目标至少 44px，长任务名、命令和路径换行不撑宽页面。每个 extension 下列出它加载的 skills、tools、slash 命令、prompt append 文件、PATH 目录（标记已存在 / 缺失）和 providers。`path` 只展示字符串，不当 `href`。来源 session（`parentSessionId`）渲染为可点链接，点击切到该 parent 会话。subagent 子会话在侧栏内联展开，本页不再有独立的 Tree 浏览器。Reload 清资源快照，复用全局 extension sidecar。Edit 打开设置。不在此页开关。标题按 h2 / h3 / h4 分层。
 - 设置 / 选模型：各自弹窗。设置页签为「模型供应商」「Skills」「Tools」「Extensions」「System Prompt」「Message」「通知」「主题和语言」。System Prompt 页按渲染顺序列出每次请求追加进 system prompt 的来源：内置层与已启用扩展的 `prompt.append` 层只读（展示路径与文本），`{KI_HOME}/prompt/APPEND_SYSTEM.md`（全局）和当前 workspace 的 `<cwd>/.ki/prompt/APPEND_SYSTEM.md`（项目）可编辑，卡片显示真实路径、是否已创建、字节数（上限 64 KiB，超出即禁用保存）；保存（Ctrl/Cmd+S 或按钮）与删除（确认对话框）走 `PUT`/`DELETE /v1/prompt/append`，成功后 server 立即全局 reload，运行中的会话在本轮结束的 release 边界生效；空内容保存被拒绝并提示改用「删除文件」，未选中 workspace 时项目卡片显示提示而不猜 cwd。页面底部「生效内容预览」直接渲染 `GET /v1/prompt/append` 的 `effective`，与模型实际收到的追加栈一致，不再单独拼字符串。窄屏下字节计数换行、按钮换行排列，满足 40/44px 触控与响应式矩阵。通知页开关会话完成通知：开启时在用户手势里向浏览器申请 `Notification` 权限，权限被拒或非安全上下文（局域网 http）时禁用并提示；开启状态存本浏览器 `localStorage['ki-notify']`。完成感知不搭在选中会话的 run 流上（切会话就断了），也不为每个 running session 单开连接：WebUI 每个 tab 只有一条 `GET /v1/events` push 流（server 在 run 结束时把带 `sessionId` 的 `agent_end` 也投给它，见 [events.md](events.md)），所以切到别的 session 或别的程序时，先前的 run 跑完仍会通知。发送条件是「没有聚焦的 tab 正在看这个 session」：聚焦 tab 把当前 session 写进跨 tab 共享的 `localStorage['ki-focused-session']`（含 tab 标识，失焦/隐藏/关闭时清掉自己那条），完成时读取它，只有等于完成 session 才静默——切到别的 session（值不同）、切到别的程序（无值）都会通知；多开的 ki tab 共享同一份标记，因此前台 tab 正在看的那个 session 完成时其它 tab 也不会重复提醒，且多 tab 同时观察到同一次完成时按 session 去重（Notification `tag`），不会堆叠。subagent session（`forkMode=tree`）一律不通知：它挂在 parent 下、由 parent 的 run 决定通知，逐个子会话提醒是用户无法处理的噪音。用户主动 abort 的 run（先收到 `run_aborted`）不提醒。通知标题取会话标题，正文为「`{cwd}` · 会话已完成」（标题相同的短 prompt 用工作目录区分）；点击聚焦窗口。通知优先经已注册的 service worker（`registration.showNotification`）发出，没有注册时才退回 `new Notification()`：Android Chrome 根本没有 `Notification` 构造函数（`new Notification()` 抛 "Illegal constructor"），只有 service worker 能弹系统通知——否则页面侧通知（包括设置页的「发送测试通知」按钮）在手机上会静默失败，而 Web Push 的完成通知照常到达，看起来像「测试按钮坏了」。两条路都不可用时按钮会 toast 说明发送失败，而不是毫无反应。只覆盖本浏览器已知 `running` 的 session（本 tab 发起的 run、以及经 push 刷新后见过的 running 行；push 流对每个 `agent_end` 都会到达，客户端用这个已知集合过滤，避免给 CLI 起的 run 弹通知）。**挂起补发**：手机锁屏、笔记本睡眠会冻结页面并断开 push 流，这期间跑完的 session 收不到 `agent_end`，而 push 重连不回放；所以 tab 恢复可见（或 push 重连发来 `ready`）后做的那次全量刷新会顺带对比「之前 running、现在不 running」的集合，把错过的完成补成一次通知（`lib/completion-catchup.ts`；删除的 session 和本 tab 主动 abort 的不补）。**Web Push**：页面被冻结/关闭时由 Web Push 兜底——开启通知开关即注册 service worker 与 `PushManager` 订阅并发给 server，`agent_end` 同时投给推送服务，`sw.js` 在没有页面时弹系统通知（详见 [push.md](push.md)）。两条路径共用同一个 `tag`，不会重复；有聚焦且可见的 ki 窗口时 worker 让位给页面。设置页在开关下多一行状态：推送已生效（后台/锁屏可收）或该浏览器收不到后台推送及原因。**端口转发注意**：`Notification` 是安全上下文 API（和 `navigator.clipboard` 同一条规则，见下文），`http://localhost:<port>` / `http://127.0.0.1:<port>` 的转发（ssh -L、IDE/Codespaces、kubectl port-forward）可用；用 `http://<主机名或 LAN/Tailscale IP>:<port>` 明文访问时浏览器根本不暴露该接口，此时通知页显示「非安全上下文」并提示改用 localhost 转发或 HTTPS（Tailscale serve / 反向代理），而不是静默失败——`ki serve` 自身只跑 HTTP，HTTPS 由隧道/代理提供。另外 push 由单条 `GET /v1/events` 承载，连接数不随同时运行的会话数增长；明文 HTTP/1.1 下仍会与 run 流、静态资源共用同源 6 连接，高延迟链路建议走 HTTPS/HTTP2。页里还有「发送测试通知」按钮，用于验证权限和系统通知中心是否可见。Tools/Skills/Extensions 开关和 Message 忙碌策略写 `{KI_HOME}/toggles.json`；Message 页还有「消息显示」detailed / compact：compact 下每个 turn 的人工输入照常显示，只保留该 turn 最近 N 条回复，subagent 等 runtime user-role 消息和其他更早回复一起折叠成一行（带折叠条数与末条预览），N 默认 1、范围 0–20，点折叠行可就地展开（最新人工 turn 的折叠行仅在原本已 following 时**保持跟随**、始终钉住该 turn 最新那条回复的底部，而不是钉折叠行本身——展开引入的中间行不是 append，另有一次显式钉尾把新增行落到尾部，所以折叠行会随最新消息一起被移出虚拟窗口；更早的折叠行则暂停跟随并锚定该行原地不动）；这是本机显示偏好，和主题/语言一样只写 `localStorage['ki-message-view']` / `['ki-message-view-keep']`，不落 server。仍在流式或运行的节点始终展开（进行中的工作不会被折起来），该 turn 其余回复照常折叠；Tools 始终列出所有可全局开关的内置工具；`Write` / `Edit` 与 `apply_patch` 即使不适用于当前模型也保留在列表并标记「当前模型不使用」，避免切换其它开关时丢失模型专用工具的禁用状态；扩展工具不在此处管理。扩展的全局配置、goal 等 panel 和 Telegram 等表单都从统一的扩展 Modal 进入。扩展表单里凡是有选模型控件的地方（Telegram 回复模型、deep-web-search 的 Codex 模型和摘要模型），都在同一行并排一个 thinking effort 下拉框，选项取自所选模型支持的思考等级，样式与模型按钮等高；模型不支持思考时只显示模型按钮，effort 留空则跟随模型默认。顶栏 chip 和 Extensions 设置里每个**已启用**扩展的 Configure 打开同一页面（goal 没有 config schema 也一样）；停用的扩展没有 Configure，避免打开空的或不相关的 inspector。全局 UI 在没有 session 时也能显示；选中 session 后，session UI 覆盖同名的全局状态。无信任按钮、无原生文件选择器。选模型支持按 provider、model ID、显示名称和完整 spec 进行不区分大小写的子串 / 顺序模糊搜索。没有「设为默认」：composer 里切模型或 thinking 即记住；server 把上次选用的模型写入 `models.json`，本浏览器另存 thinking。冷启动没有记录时落到第一个可用模型。页签和主按钮与对话页同一套 tab / 主按钮样式。供应商页的外层不滚动，左侧供应商列表只显示名称，有凭据且启用的排在前面，与右侧连接、凭据、模型编辑区分别独立滚动，新增供应商和使用「编辑」打开的模型高级 JSON 都用二级弹窗。模型高级 JSON 编辑保留 `input` 等能力字段。目录只在本机维护，不在线刷新目录。Base URL、API 协议等表单控件共享尺寸和排版；API 协议与 thinking effort 共用 ARIA combobox/listbox 组件，支持方向键、Enter、Escape，并按可用空间向上或向下展开。主题（默认浅色）和语言（中 / 英）存在本浏览器 `localStorage`
 - 扩展 OAuth：供应商页对 `auth.type=oauth` 的 provider 显示 Browser login、Device code login 和 Logout；登录进度通过同源 `/v1/providers/{id}/auth/{requestId}` 轮询，页面只显示授权 URL、设备码和脱敏错误。Browser flow 还允许粘贴 redirect URL/code，适用于端口转发；不会在页面中打开外部窗口，也不会要求用户填 access token。
 
@@ -60,7 +60,14 @@ run 流的去重是**按状态**而不是按计数：重放里可能只有一条
 提升保留该 ID；内部消息由 server 生成。只有明确的请求 ID 确认关系能合并 optimistic
 与 canonical 消息，不用文本相等判断身份。接受新的输入也推进 revision，不能被之前
 发出的 idle GET 清掉；重复确认同一请求不复活 busy。运行中 subagent 通知采用中性的
-runtime note 卡片，不提供人工编辑/分支按钮，不把机器输入短暂显示成真人请求。
+runtime note（12px 圆角、细虚线边框和随明暗主题适配的淡背景，整张通知只保留一层边框，
+正文不再套气泡框；标题/来源/正文保持正常流式布局），不提供人工编辑/分支按钮，
+不把机器输入短暂显示成真人请求。
+
+Agents 使用无卡片底色的简单树形列表：所有节点（包括叶子）共用 44px 展开图标列，
+子层级统一右移 24px，细连接线在末个子节点处收尾；状态用次要文字，统计与名称左边界对齐，
+与名称相同的描述不重复显示。展开和会话跳转使用独立按钮，窄屏深层树仅限制视觉缩进，
+不改变父子关系。截图与几何回归覆盖 root → 带子任务的 child → leaf，防止叶节点左移。
 
 `transcriptCoverage` 区分浏览器规范化的 `index/helper/slim/full` 载荷。完整 ID 链不等于
 节点结构完整，尤其 compact helper 可以省略同一 assistant 内的正文和兄弟调用。
@@ -95,8 +102,10 @@ push hint 或迟到的 GET 不能自行解除暂停；显式 resume 才重连。
 看见。它不把父 composer 伪装成 busy，不错误显示父 Stop。计数随既有 sessions
 invalidation/GET 刷新，含 zh/en 与完整可访问文本。
 
-工具、轮与会话的 `Duration` 共用固定数值槽：短耗时保留小数，分钟/小时/天仍保留
-秒，不通过舍弃精度消除跳动；精确毫秒有本地化 title/可访问名称。虚拟行高度缓存只
+工具、轮与会话的 `Duration` 共用左对齐、正常字号的等宽数字槽：宽度按当前格式所需
+位数预留，同格式 tick 不抖动，仅单位格式或天数位数变化时调整，不为普通秒数留出
+天数的空白。短耗时保留小数，分钟/小时/天仍保留秒，不通过舍弃精度或缩小字体消除
+跳动；精确毫秒有本地化 title/可访问名称。虚拟行高度缓存只
 存正文对象的弱映射数字 token、有限呈现信息与几何，不强引用正文/图片而绕过 body
 缓存预算。工具详情/通知的局部展开与 hydrate 在 `TranscriptRow` 的 layout 测量上下文
 提交；Markdown 的源码→格式化局部状态也必须加入同一次绘制前量测，不能因为父消息
@@ -432,6 +441,19 @@ spec 仍然打到 Go 编出来的 SPA（需已 `bun install`、`bun run build` �
 重叠执行跨度，不能把各条用例耗时相加再与它比较。测量复用已有构建缓存，宿主另有
 计算负载，单轮结果用于定位调度瓶颈，不代表 CI 的 4 路并发或冷编译耗时。
 
+2026-10-01 Info/计时样式改动的 focused 对照：计时、长名称和 runtime note 共 16 条
+浏览器用例墙钟 70.11s → 73.45s（后者含约 2.53s 的新 bundle 构建），呈现 Bun
+5 → 6 条为 0.34s → 0.36s。运行状态的手机/桌面两条用例墙钟 6.39s → 10.43s
+（后者含新 bundle 构建，并增加 Info 跳转/快照恢复、父子展开与 agent 跳转覆盖；
+用例自身合计 3.4s → 5.1s）。另补充 320px 九层任务树的触控/溢出用例，以及失败/中断
+任务的文本状态断言；手机在第四层起限制视觉缩进，但保留真实父子关系和折叠行为。
+树构建新增 3 条纯逻辑测试约 0.43s，不添加固定等待。
+随后 runtime note 改为圆角虚线卡片，四档 viewport 增加明暗主题、圆角及单层边框断言；
+focused 墙钟 21.69s → 21.31s（均复用已构建 bundle），无新增固定等待。
+Agents 简化后的同机三条 focused 用例墙钟 9.38s → 11.69s，用例自身合计 6.4s → 7.8s；
+增加真实 root、逐层 24px 缩进/统计对齐断言和两张小范围截图，不添加固定等待。
+真实会话截图确认 child 名称相对 root 从左移 15px 改为右移 24px；复核新前端时仅在
+浏览器替换静态 bundle，仍连接实际 provider/session API，不重启正在工作的服务。
 
 长会话 / 超长消息压测不进 fake 矩阵。生成 jsonl 夹具后测尾部 GET 的体积与延迟（并验证它不带 `index`）、`fields=index` / `fields=runtime` / `before` / `entry` 的预算、打开 Chat/Trace 的 DOM 与 JS heap，以及向上翻页 / 截断正文补全：
 

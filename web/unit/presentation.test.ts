@@ -1,5 +1,5 @@
 import { beforeEach, expect, test } from 'bun:test'
-import { durationText } from '../src/lib/duration'
+import { durationColumns, durationText } from '../src/lib/duration'
 import { COLLAPSED_TOOL_HEIGHT, forgetRowHeights, rememberRowHeight, rowBodyToken, rowHeightEstimate, UNKNOWN_WIDTH, type RowHeightRevision } from '../src/lib/rowHeight'
 
 beforeEach(forgetRowHeights)
@@ -15,6 +15,26 @@ test('duration precision stays fixed for short runs and preserves long-run secon
   ] as const
   for (const [ms, text] of cases) expect(durationText(ms)).toBe(text)
   for (const ms of [-1, NaN, Infinity]) expect(durationText(ms)).toBe('0.0ms')
+})
+
+test('duration slots stay compact and stable within each format without shrinking long days', () => {
+  for (const [values, columns] of [
+    [[0, 9, 99, 999], 7],
+    [[1000, 9900, 10_000, 59_900], 5],
+    [[60_000, 61_000, 599_000, 3_599_000], 6],
+    [[3_600_000, 3_601_000, 35_999_000, 86_399_000], 9],
+    [[86_400_000, 86_401_000, 863_999_000], 11],
+    [[864_000_000, 864_001_000], 12],
+    [[86_400_000_000, 86_400_001_000], 14],
+  ] as const) {
+    for (const ms of values) {
+      const text = durationText(ms)
+      expect(durationColumns(text)).toBe(columns)
+      expect(durationColumns(text)).toBeGreaterThanOrEqual(text.length)
+      expect(durationColumns(text) - text.length).toBeLessThanOrEqual(2)
+    }
+  }
+  expect(durationColumns(durationText(999.99))).toBe(8)
 })
 
 test('height reuse requires body identity and presentation, not equal length', () => {

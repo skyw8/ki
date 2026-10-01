@@ -531,13 +531,21 @@
   word-break: break-word;
 }
 /* Runtime user-role messages are transcript notes, not new human requests.
-   Keep their header/body/actions in ordinary flow; no overlaid prefix copy. */
+   Frame the whole note once; a second inner bubble border would double the
+   dashed outline and leave square corners around the notification body. */
 .runtime-row { justify-content: flex-start; }
 .runtime-row .user-stack { width: 100%; max-width: 100%; }
-.runtime-notification { align-items: stretch; padding: 12px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); }
-.runtime-notification-label { color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 600; }
-.runtime-notification .user-origin { overflow-wrap: anywhere; text-align: left; }
-.runtime-notification .user-text-bubble { align-self: stretch; padding: 0; border-radius: 0; background: transparent; }
+.runtime-notification {
+  align-items: stretch;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px dashed var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-2) 65%, var(--dsw-alias-bg-base));
+}
+.runtime-notification-label { color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 600; line-height: 18px; }
+.runtime-notification .user-origin { margin: 0; color: var(--dsw-alias-label-tertiary); opacity: 1; overflow-wrap: anywhere; text-align: left; line-height: 16px; }
+.runtime-notification .user-text-bubble { align-self: stretch; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 14px; line-height: 22px; }
 /* Long historical user messages fold to 6 lines; the chevron re-expands. */
 .bubble-text.clamped {
   display: -webkit-box;
@@ -642,10 +650,10 @@
   white-space: nowrap;
 }
 .turn-stat svg { width: 12px; height: 12px; opacity: 0.75; }
-/* Reserve a complete time, not a rounded large unit: seconds still advance
-   during long runs. Extremely old durations scale inside this fixed slot. */
+/* Reserve only the current time format so ordinary seconds do not leave a
+   days-wide gap. Keep full-size, left-aligned digits and long-run seconds. */
 .duration { display: inline-flex; align-items: baseline; white-space: pre; font-variant-numeric: tabular-nums; }
-.duration-value { display: inline-block; flex: none; width: 12ch; text-align: right; font-family: var(--ds-font-family-code); }
+.duration-value { display: inline-block; flex: none; text-align: left; font-family: var(--ds-font-family-code); }
 .transcript-sync-status { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; gap: 6px; color: var(--dsw-alias-label-secondary); font-size: 12px; white-space: nowrap; }
 .transcript-sync-status > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .transcript-sync-status button { flex: none; min-height: 40px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
@@ -3148,7 +3156,6 @@
 .ext-field textarea { resize: vertical; min-height: 72px; }
 .user-origin { font-size: 11px; opacity: 0.7; margin-bottom: 4px; }
 .user-message.origin-external .user-text-bubble { border-style: dashed; }
-.user-message.origin-agent .user-text-bubble { border-style: dashed; }
 .ext-select { display: flex; flex-direction: column; gap: 8px; }
 .ext-select button {
   width: 100%;
@@ -3857,11 +3864,61 @@ select:focus-visible {
 .branch-load { min-height: 40px; padding: 4px 8px; color: var(--dsw-alias-label-secondary); }
 .history-seeking { position: absolute; z-index: 4; top: 8px; left: 50%; transform: translateX(-50%); min-height: 44px; max-width: 90%; padding: 8px 16px; border-radius: 12px; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 2px 8px rgb(0 0 0 / 8%); }
 
-.runtime-panel { border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; max-height: 35dvh; overflow: auto; }
-.runtime-panel summary { cursor: pointer; min-height: 44px; padding: 12px; }
-.runtime-items { padding: 0 12px 12px; display: grid; gap: 8px; }
-.runtime-item { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
-.runtime-item > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.runtime-item small { display: block; opacity: .7; }
-.runtime-item button { min-height: 44px; min-width: 44px; padding: 8px 12px; }
-.runtime-item pre { width: 100%; max-height: 140px; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+ .runtime-info { min-width: 0; }
+ .runtime-info .cfg-h { display: flex; align-items: center; gap: 8px; }
+ .runtime-count { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 6px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font-size: 11px; font-weight: 500; }
+ .runtime-tree { list-style: none; margin: 0 0 0 14px; padding: 0 0 0 14px; border-left: 1px solid var(--dsw-alias-border-l1); min-width: 0; }
+ .runtime-tree-root { margin: 0; padding: 0; border: 0; }
+ .runtime-tree > li { position: relative; min-width: 0; }
+ .runtime-tree:not(.runtime-tree-root) > li::before { content: ''; position: absolute; top: 28px; left: -14px; width: 10px; border-top: 1px solid var(--dsw-alias-border-l1); }
+ .runtime-item { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; margin: 6px 0; padding: 8px 12px; border-radius: 10px; background: var(--dsw-alias-bg-layer-1); }
+ .runtime-copy { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+ .runtime-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+ .runtime-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-label-tertiary); }
+ .runtime-dot.live { background: var(--dsw-alias-state-success); }
+ .runtime-dot.failed { background: var(--dsw-alias-state-error); }
+ .runtime-link { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; min-width: 44px; max-width: 100%; padding: 4px 0; color: var(--dsw-alias-label-primary); text-align: left; overflow-wrap: anywhere; font-weight: 600; }
+ .runtime-link:hover { color: var(--dsw-alias-state-success); }
+ .runtime-link > span { min-width: 0; overflow-wrap: anywhere; }
+ .runtime-link svg { width: 14px; height: 14px; flex: none; color: var(--dsw-alias-label-tertiary); }
+ .runtime-command { font-family: var(--ds-font-family-code); font-size: 12px; font-weight: 500; }
+ .runtime-title .runtime-link { flex: 1 1 120px; }
+ .runtime-phase { padding: 3px 7px; border-radius: 5px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font-size: 11px; }
+ .runtime-description { margin: 0 0 6px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+ .runtime-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+ .runtime-tools { font-family: var(--ds-font-family-code); }
+ .runtime-control { min-height: 44px; min-width: 44px; padding: 8px 12px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+ .runtime-control:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-state-error); }
+ /* Agent rows share the disclosure column, including leaves. Indentation
+    alone defines hierarchy; node cards would add a second, conflicting inset. */
+ .runtime-agent-row { display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: start; min-width: 0; }
+ .runtime-toggle-space { width: 44px; height: 44px; }
+ .runtime-agent-item { margin: 0; padding: 0 4px 10px; border-radius: 0; background: transparent; }
+ .runtime-agent-item .runtime-copy { flex-basis: 140px; }
+ .runtime-agent-item .runtime-link { font-size: 13px; }
+ .runtime-agent-item .runtime-phase { padding: 0; background: transparent; font-size: 11px; }
+ .runtime-agent-item .runtime-description { margin: 0 0 4px 14px; }
+ .runtime-agent-item .runtime-meta { margin-left: 14px; line-height: 16px; }
+ .runtime-agent-item > .runtime-control { margin-top: 0; border-color: transparent; }
+ .runtime-agent-item > .runtime-control:hover { border-color: var(--dsw-alias-border-l1); }
+ .runtime-agent-tree { margin-left: 22px; padding-left: 2px; border-left: 0; }
+ .runtime-agent-tree.runtime-tree-root { margin: 0; padding: 0; }
+ .runtime-agent-tree:not(.runtime-tree-root) > li::before { top: 0; bottom: 0; left: -2px; width: 0; border-top: 0; border-left: 1px solid var(--dsw-alias-border-l2); }
+ .runtime-agent-tree:not(.runtime-tree-root) > li:last-child::before { bottom: auto; height: 22px; }
+ .runtime-agent-tree:not(.runtime-tree-root) > li::after { content: ''; position: absolute; top: 22px; left: -2px; width: 24px; border-top: 1px solid var(--dsw-alias-border-l2); pointer-events: none; }
+ .runtime-toggle { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 8px; color: var(--dsw-alias-label-tertiary); }
+ .runtime-toggle:hover { background: var(--dsw-alias-bg-layer-2); }
+ .runtime-toggle svg { width: 14px; height: 14px; }
+ .runtime-toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
+ .runtime-owner { padding: 0 12px; }
+ .runtime-owner .runtime-link { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+ .runtime-output { width: 100%; min-width: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+ .runtime-output > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+ .runtime-output pre { max-height: 200px; overflow: auto; margin: 0; padding: 12px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--ds-font-family-code); }
+ /* Deep task trees must leave room for 44px controls on phones. Preserve the
+    hierarchy and collapse behavior while capping visual indentation. */
+ @media (max-width: 767px) {
+   .runtime-tree .runtime-tree .runtime-tree .runtime-tree { margin-left: 0; padding-left: 0; border-left: 0; }
+   .runtime-tree .runtime-tree .runtime-tree .runtime-tree > li::before,
+   .runtime-tree .runtime-tree .runtime-tree .runtime-tree > li::after { display: none; }
+ }
