@@ -241,6 +241,122 @@ func TestTerminationStopsWorkerBeforeCallbackError(t *testing.T) {
 	}
 }
 
+func TestExecuteCancellationStopsWorkerBeforeCallbackError(t *testing.T) {
+	limits := DefaultLimits()
+	local := NewLocalSession(limits)
+	parentRead, workerWrite := io.Pipe()
+	workerRead, parentWrite := io.Pipe()
+	remote := &remoteSession{ctx: context.Background(), config: Config{Limits: limits}, bindings: make(map[string]*callbackBinding)}
+	returned := make(chan struct{})
+	parent := newPeer(context.Background(), parentRead, parentWrite, limits.MaxFrameBytes, func(ctx context.Context, op string, data json.RawMessage) (any, error) {
+		result, err := remote.callback(ctx, op, data)
+		if op == "invoke" {
+			close(returned)
+		}
+		return result, err
+	})
+	stopReceived := make(chan struct{})
+	releaseStop := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseStop) }) }
+	var worker *peer
+	worker = newPeer(context.Background(), workerRead, workerWrite, limits.MaxFrameBytes, func(ctx context.Context, op string, data json.RawMessage) (any, error) {
+		switch op {
+		case "execute":
+			var req ExecuteRequest
+			if err := json.Unmarshal(data, &req); err != nil {
+				return nil, err
+			}
+			return local.Execute(worker.ctx, req, Callbacks{Invoke: func(ctx context.Context, inv Invocation) (result ToolResult, err error) {
+				err = worker.call(ctx, "invoke", inv, &result)
+				return
+			}})
+		case "wait":
+			var req WaitRequest
+			if err := json.Unmarshal(data, &req); err != nil {
+				return nil, err
+			}
+			if !req.Terminate {
+				return nil, errors.New("expected terminating wait")
+			}
+			close(stopReceived)
+			select {
+			case <-releaseStop:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return local.Wait(ctx, req)
+		default:
+			return nil, errors.New("unexpected worker operation")
+		}
+	})
+	remote.transport = parent
+	t.Cleanup(func() {
+		release()
+		parent.fail(context.Canceled)
+		worker.fail(context.Canceled)
+		_ = local.Close()
+	})
+	budget, budgetCancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer budgetCancel()
+	ctx, cancel := context.WithCancel(budget)
+	defer cancel()
+	started := make(chan struct{})
+	resp, err := remote.execute(ctx, ExecuteRequest{ParentCallID: "cancel-race", Source: `store("aborted",1);yield_control();await tools.block({});`, Tools: []ToolDefinition{{Name: "block"}}, YieldTime: time.Second}, Callbacks{Invoke: func(ctx context.Context, _ Invocation) (ToolResult, error) {
+		close(started)
+		<-ctx.Done()
+		return ToolResult{}, ctx.Err()
+	}})
+	if err != nil || !resp.Running() {
+		t.Fatalf("%+v %v", resp, err)
+	}
+	l := local.backend.(*localSession)
+	l.mu.Lock()
+	c := l.cells[resp.CellID]
+	l.mu.Unlock()
+	select {
+	case <-started:
+	case <-budget.Done():
+		t.Fatal("callback did not start")
+	}
+	remote.mu.Lock()
+	b := remote.bindings["cancel-race"]
+	remote.mu.Unlock()
+	cancel()
+	select {
+	case <-stopReceived:
+	case <-budget.Done():
+		t.Fatal("execution cancellation did not request worker stop")
+	}
+	// Hold the worker's stop handler at the IPC boundary. If cancellation
+	// already escaped into the binding, allow that error to finish the cell
+	// first, deterministically exposing the old failed-cell store commit.
+	// A correctly owned binding stays live here until the worker is stopped.
+	if b.ctx.Err() != nil {
+		select {
+		case <-returned:
+		case <-budget.Done():
+			t.Fatal("canceled callback did not return")
+		}
+		select {
+		case <-c.done:
+		case <-budget.Done():
+			t.Fatal("callback error did not finish cell")
+		}
+	}
+	release()
+	select {
+	case <-b.done:
+	case <-budget.Done():
+		t.Fatal("execution cancellation did not retire binding")
+	}
+	b.wg.Wait()
+	resp, err = remote.execute(budget, ExecuteRequest{ParentCallID: "store", Source: `text(load("aborted"));`, YieldTime: time.Second}, Callbacks{})
+	if err != nil || textOutput(resp) != "undefined" {
+		t.Fatalf("cancellation leaked cell writes: %+v %v", resp, err)
+	}
+}
+
 func TestWorkerCPUDeadlineAndCrashDoesNotReplay(t *testing.T) {
 	m := testManager(t, Limits{MaxExecutionTime: 30 * time.Millisecond})
 	s, err := m.NewSession(context.Background(), "cpu")

@@ -221,7 +221,11 @@ func (s *remoteSession) execute(ctx context.Context, req ExecuteRequest, cb Call
 	if err != nil {
 		return Response{}, err
 	}
-	bindingCtx, bindingCancel := context.WithCancel(ctx)
+	// The caller's cancellation requests worker stop; it must not independently
+	// cancel callbacks first. Otherwise a fast callback cancellation error can
+	// finish a still-live worker cell and commit its uncommitted store writes.
+	// Worker cancellation and binding retirement own callback cancellation.
+	bindingCtx, bindingCancel := context.WithCancel(context.WithoutCancel(ctx))
 	b := &callbackBinding{ctx: bindingCtx, cancel: bindingCancel, cb: cb, tools: make(map[string]bool), freeform: make(map[string]bool), seen: make(map[string]bool), done: make(chan struct{})}
 	for _, def := range req.Tools {
 		b.tools[def.Name] = true

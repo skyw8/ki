@@ -68,6 +68,8 @@ MCP 使用官方 Go SDK，配置和生命周期见 [mcp.md](mcp.md)。`search_to
 
 只有外层 provider 发出的 `exec/wait` 调用生成 transcript `toolResult`，嵌套调用通过结构化执行事件持久化。occupy 结束先取消并 join 全部 cell/callback，再关闭 hooks、telemetry 和 session；已通过 shell 工具启动的 session-owned 进程仍遵循既有生命周期，不因观察取消被误杀。
 
+Code Mode 的调用取消先请求 worker 停止 cell，再取消父进程 callback；callback binding 不直接继承原始调用的取消/deadline，避免取消错误抢先使仍活跃的 cell 失败并提交待丢弃的 store 写入。
+
 进程关系、限制和相对 Codex 的差异见 [code-mode-design.md](code-mode-design.md)。
 
 | 工具 | 参数 | 结果 |

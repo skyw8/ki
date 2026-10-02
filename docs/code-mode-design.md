@@ -94,6 +94,8 @@ occupy 结束取消并 join 所有 cell 与父进程 callback，先于 hooks、t
 
 全部终止使用两阶段屏障：worker 先将所有 cell 标记为停止并取消其执行 context，确认后父进程才关闭 callback 能力、取消并 join callback，再等待 worker 完全终止。IPC 请求 handler 并发运行，单靠发送顺序不足以建立该屏障；否则 callback 的取消错误可能先被视为普通失败，错误提交待丢弃的 store 写入。停止确认失败时关闭 worker transport，仍无条件 join 父进程 callback。
 
+父进程 callback binding 不继承原始 `Execute` 调用的取消或 deadline；原始调用取消改为请求 worker 停止 cell。callback 的取消由 worker 停止后的 IPC 取消或终态 binding 回收负责，不能独立抢在 worker 停止之前发生。该生命周期同样覆盖已 yield 的 cell，不能只在 `TerminateAll` 内调整显式取消顺序。
+
 ## 限制和相对 Codex 的差异
 
 - 默认最多 32 个逻辑 worker session、每 session 64 个未关闭 cell / 8 个并发执行 cell。名额在关闭 session 时释放。

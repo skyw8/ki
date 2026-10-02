@@ -30,6 +30,10 @@
 // fence and join only their own cell's parent callbacks, not other live cells.
 // Session termination acknowledges stopped worker cells before fencing parent
 // callbacks; otherwise a cancellation error could commit a failed cell's writes.
+// Callback bindings do not inherit the Execute caller's cancellation/deadline:
+// that caller requests worker stop instead. Only stopped worker callbacks or
+// terminal binding retirement cancel the parent callback lifetime, so original
+// caller cancellation cannot bypass the worker-before-callback ordering.
 // Session closure discards cells and values; no store state is persisted.
 // notify reports immediate bounded parent progress and also appends text for the
 // next exec/wait observation, rather than injecting provider-specific outputs.
