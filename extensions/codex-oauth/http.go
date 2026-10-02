@@ -241,7 +241,7 @@ func streamCodex(ctx context.Context, payload object, send func(object), id stri
 func compactCodex(ctx context.Context, payload object) (object, error) {
 	payload = requestIdentity(payload)
 	if ctx.Err() != nil {
-		return nil, errors.New("Codex compaction was cancelled")
+		return nil, fmt.Errorf("Codex compaction was cancelled: %w", ctx.Err())
 	}
 	body, err := buildCompactRequest(payload)
 	if err != nil {
@@ -255,6 +255,12 @@ func compactCodex(ctx context.Context, payload object) (object, error) {
 	}
 	response, conn, cleanup, err := openStream(req)
 	if err != nil {
+		// Server-side header flushing does not fence Client.Do completion.
+		// Cancellation during that race must match cancellation during reads,
+		// rather than leaking a transport-specific error to the RPC caller.
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("Codex compaction was cancelled: %w", ctx.Err())
+		}
 		return nil, err
 	}
 	defer cleanup()
@@ -263,12 +269,12 @@ func compactCodex(ctx context.Context, payload object) (object, error) {
 	builder := newCompactBuilder()
 	if err = consumeStream(ctx, response, conn, builder.feed); err != nil {
 		if ctx.Err() != nil {
-			return nil, errors.New("Codex compaction was cancelled")
+			return nil, fmt.Errorf("Codex compaction was cancelled: %w", ctx.Err())
 		}
 		return nil, err
 	}
 	if ctx.Err() != nil {
-		return nil, errors.New("Codex compaction was cancelled")
+		return nil, fmt.Errorf("Codex compaction was cancelled: %w", ctx.Err())
 	}
 	if !builder.terminal {
 		return nil, errors.New("Codex compaction stream ended before response.completed")

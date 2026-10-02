@@ -79,3 +79,27 @@ The gated shell fixture's ten repetitions improved from 6.285s to 2.619s
 package time (6.93s to 3.35s wall); the whole shell suite improved from 1.752s
 to 1.395s. Final Linux native protocol validation passed all 31 cases,
 including genuine semantic indexing/search and source-free launch.
+
+## Follow-up from the v0.0.11 preflight
+
+Native Windows main CI exposed phase-dependent Codex compaction cancellation.
+The isolation fixture flushed headers on the server before cancellation, but
+that did not prove the client's `http.Client.Do` had returned. Compaction
+translated cancellation during body reads to `Codex compaction was cancelled`,
+while the pending-header path leaked `Post ...: context canceled`.
+
+Normalize the pending-header path to the same provider cancellation error and
+wrap the context error in every cancellation phase. Preserve the error-text
+assertion and additionally require `errors.Is(err, context.Canceled)`. Withhold
+all headers in a new deterministic regression. The isolation fixture now waits
+for the cancelled response's server context to close, then releases the still
+active unrelated request; no fixed sleep substitutes for either ordering fence.
+
+Thirty repetitions of the original isolation check reproduced the old failure
+in 4.604s package / 5.21s wall time; the gated replacement passed in 0.057s /
+0.75s. The pending-header regression failed 10/10 times against the old code
+(0.021s package time). Both cancellation checks passed 30 repetitions after
+the fix (0.072s); focused cancellation and compaction RPC race checks passed
+30 repetitions (1.688s), and the complete Codex OAuth package passed (0.505s).
+The complete package race check also passed (2.068s). These are Linux results;
+native Windows/macOS CI remains the publication gate.

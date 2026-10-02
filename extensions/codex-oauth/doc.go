@@ -14,6 +14,8 @@
 // fallback identities. Reasoning signatures exclude tool fields, and opaque
 // compaction output remains complete and ordered throughout replay. Independent
 // request contexts make cancellation local to its authentication or response.
+// Compaction cancellation reports the same provider error before headers and
+// during body reads, wrapping the context cause for errors.Is.
 // Request metadata replaces only a copied top-level map; nested history and
 // tool schemas remain read-only during serialization, avoiding redundant copies.
 //

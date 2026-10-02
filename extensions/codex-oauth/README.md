@@ -43,7 +43,9 @@ implements that Codex-specific protocol by sending a normal streaming
 from OpenAI's public `POST /responses/compact` and `context_management`
 interfaces. The next canonical window keeps recent client-authored user turns
 within Codex's retained-message budget, followed by the provider's complete
-opaque output. Cancellation closes only that request's active response. The
+opaque output. Cancellation closes only that request's active response and
+reports `Codex compaction was cancelled` whether it happens before response
+headers or during body reads, preserving the context cause. The
 window is replayed only within the matching provider/model/credential/protocol
 binding.
 

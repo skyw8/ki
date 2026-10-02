@@ -422,24 +422,32 @@ func TestIdleStreamSurvivesPastHeaderBudget(t *testing.T) {
 func TestCancellationClosesOnlyBoundResponse(t *testing.T) {
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
+	finishUnrelated := make(chan struct{})
+	responseClosed := make(chan struct{})
 	server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(200)
 		w.(http.Flusher).Flush()
 		entered <- struct{}{}
 		if r.Header.Get("Session-Id") == "cancel" {
-			_, _ = io.Copy(io.Discard, r.Body)
 			select {
 			case <-r.Context().Done():
+				close(responseClosed)
 			case <-release:
 			}
 			return
 		}
-		time.Sleep(150 * time.Millisecond)
+		select {
+		case <-finishUnrelated:
+		case <-release:
+			return
+		}
 		sse(w, object{"type": "response.completed", "response": object{"status": "completed", "output": []any{object{"type": "compaction", "encrypted_content": "opaque"}}}})
 	}))
 	defer server.Close()
 	defer close(release)
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	first := basicPayload(server.URL)
 	obj(first["request"])["sessionId"] = "cancel"
 	cancelled := make(chan error, 1)
@@ -452,14 +460,61 @@ func TestCancellationClosesOnlyBoundResponse(t *testing.T) {
 	select {
 	case err := <-cancelled:
 		wantError(t, err, "cancelled")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("lost cancellation cause", err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("blocked cancellation")
 	}
+	select {
+	case <-responseClosed:
+	case <-time.After(time.Second):
+		t.Fatal("bound response remained open")
+	}
+	close(finishUnrelated)
 	if err := <-unrelated; err != nil {
 		t.Fatal("cancelled unrelated request", err)
 	}
 	_, err := compactCodex(ctx, object{})
 	wantError(t, err, "cancelled")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatal("lost cancellation cause before request", err)
+	}
+}
+func TestCompactionCancellationBeforeResponseHeaders(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		close(entered)
+		// Server-side Flush is not a client-side response fence. Withhold all
+		// headers to deterministically cancel while Client.Do is still pending.
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := compactCodex(ctx, basicPayload(server.URL)); done <- err }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("request did not reach server")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		wantError(t, err, "cancelled")
+		if !errors.Is(err, context.Canceled) {
+			t.Fatal("lost cancellation cause before headers", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked cancellation before headers")
+	}
 }
 func TestProviderCompactRPCReturnsResultAndPreservesRefreshShape(t *testing.T) {
 	s := newSidecar(io.Discard)
