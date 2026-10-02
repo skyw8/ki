@@ -482,12 +482,19 @@ func (s *providerSidecarStreamer) Stream(ctx context.Context, req loop.Request, 
 	if err != nil {
 		return types.Message{}, err
 	}
-	return c.streamProvider(ctx, ProviderStreamRequest{
+	msg, err := c.streamProvider(ctx, ProviderStreamRequest{
 		Provider:   s.model.Provider,
 		Model:      s.model,
 		Credential: s.credential,
 		Request:    req,
 	}, emit)
+	// Sidecars return normalized usage, not overlapping protocol counters.
+	// Fill missing estimates here so catalog prices reach session/SSE stats
+	// without subtracting cached input a second time or replacing explicit costs.
+	if msg.Usage != nil && msg.Usage.Cost == nil {
+		provider.CalculateNormalizedCost(s.model, msg.Usage)
+	}
+	return msg, err
 }
 
 func (s *providerSidecarStreamer) Compact(ctx context.Context, req loop.Request) (provider.CompactResult, error) {
@@ -503,6 +510,9 @@ func (s *providerSidecarStreamer) Compact(ctx context.Context, req loop.Request)
 	})
 	if err != nil {
 		return provider.CompactResult{}, err
+	}
+	if result.Usage != nil && result.Usage.Cost == nil {
+		provider.CalculateNormalizedCost(s.model, result.Usage)
 	}
 	return provider.CompactResult{Items: result.Items, Usage: result.Usage}, nil
 }

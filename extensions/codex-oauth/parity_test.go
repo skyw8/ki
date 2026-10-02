@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -214,6 +215,41 @@ func TestManifestAdvertisesCodexV2Compaction(t *testing.T) {
 	_ = decode(string(manifestBytes), &manifest)
 	equalJSON(t, manifest["runtime"], object{"kind": "rpc", "command": "bin/codex-oauth", "args": []any{}, "install": []any{"go", "run", "./install/main.go"}, "installWhen": "missing"})
 }
+
+func TestManifestPricingMatchesOpenAIStandardCatalog(t *testing.T) {
+	// OAuth costs are API-equivalent estimates, not subscription charges.
+	// Compare both catalogs so a core price update cannot leave Codex stale.
+	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "provider", "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := parsed(t, string(data))
+	costs := map[string]any{}
+	for _, value := range list(catalog["providers"]) {
+		p := obj(value)
+		if str(p["id"]) == "openai" {
+			for _, value := range list(p["models"]) {
+				model := obj(value)
+				costs[str(model["id"])] = model["cost"]
+			}
+		}
+	}
+	models := list(providerSpec()["models"])
+	if len(models) == 0 {
+		t.Fatal("no Codex models")
+	}
+	for _, value := range models {
+		model := obj(value)
+		t.Run(str(model["id"]), func(t *testing.T) {
+			cost, ok := costs[str(model["id"])]
+			if !ok || cost == nil || model["cost"] == nil {
+				t.Fatal("missing OpenAI or Codex pricing")
+			}
+			equalJSON(t, model["cost"], cost)
+		})
+	}
+}
+
 func basicPayload(base string) object {
 	return object{"provider": "openai-codex", "model": object{"id": "gpt-5.4", "provider": "openai-codex", "api": "openai-codex-responses", "baseUrl": base, "input": []any{"text"}}, "credential": object{"type": "oauth", "value": object{"access": "access", "accountId": "acct"}}, "request": object{"sessionId": "session-1", "messages": []any{object{"role": "user", "content": []any{object{"type": "text", "text": "hi"}}}}}}
 }

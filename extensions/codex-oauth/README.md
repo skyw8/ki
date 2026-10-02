@@ -20,6 +20,19 @@ the WebUI is reached through a port forward. `KI_CODEX_AUTH_BASE_URL` and
 `KI_CODEX_CALLBACK_PORT` are test-only endpoint overrides; normal use talks to
 the OpenAI Codex service endpoints defined in `extension.json`.
 
+## Pricing estimates
+
+Model costs use the same OpenAI Standard USD prices per million tokens as the
+built-in `openai` catalog, verified on 2026-10-02. This includes input, output,
+cache reads, cache writes, and the long-context tier above 272,000 input tokens
+(cached tokens included). See the [price table](../../docs/provider.md#gpt-价格).
+
+These are API-equivalent usage estimates, **not actual OAuth subscription
+charges**. Included usage and purchased credits follow the
+[Codex rate card](https://help.openai.com/en/articles/20001106-codex-rate-card).
+Ki does not convert subscription limits or credits to dollars, or apply
+Batch/Flex/Fast or regional pricing adjustments.
+
 ## Remote compaction
 
 Every bundled model advertises

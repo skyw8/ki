@@ -23,6 +23,22 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 
 配置入口是 `GET/POST/PATCH/DELETE /v1/providers` 及其 `/credential`、`/models` 子资源。创建会话、改模型或发 prompt 会把当前模型记进 `models.json` 的 last-used；`PUT /v1/default-model` 仍可显式写入同一字段。`GET /v1/models` 是同一 registry 的扁平可选视图，不存在第二份目录。
 
+## GPT 价格
+
+以下为 2026-10-02 核对的 [OpenAI Standard 官方价格](https://developers.openai.com/api/docs/pricing)，单位为 **USD / 百万 token**。内置 `openai` 与 bundled `codex-oauth` 的同名模型使用同一套价格。
+
+| 模型 | 输入 | 缓存读取 | 缓存写入 | 输出 |
+|---|---:|---:|---:|---:|
+| `gpt-6.1-sol` | 2 | 0.1 | 2.5 | 10 |
+| `gpt-6-astra` | 10 | 1 | 12.5 | 50 |
+| `gpt-5.6-sol` | 4 | 0.4 | 5 | 20 |
+| `gpt-5.6-terra` | 2 | 0.2 | 2.5 | 12 |
+| `gpt-5.6-luna` | 0.2 | 0.02 | 0.25 | 1.2 |
+
+单次请求输入总量 **>272,000** token（包含缓存读取、写入）时，整次请求使用长上下文价：输入及两种缓存单价 ×2，输出单价 ×1.5；恰好 272,000 不触发。目录已有这些 tier，默认 context window 的限制并不改变价格阈值。
+
+`codex-oauth` 的美元成本仅表示 **按 API 标准价折算的使用估算**，不表示 ChatGPT 订阅实际扣费。订阅内额度和购买的 Codex credits 以 [Codex 官方 rate card](https://help.openai.com/en/articles/20001106-codex-rate-card) 为准；Ki 不做 credits→美元换算。目录不自动应用 Batch/Flex/Fast、区域附加费或套餐折扣；用户内置模型覆盖仍可自定义 `cost`。
+
 ## 细节
 
 - 发给模型前丢掉不该回放的 assistant（对齐 pi `transformMessages`）：`stopReason` 为 `aborted` / `error` 的整条跳过；无 text / thinking / toolCall 的空 assistant 也跳过。它们后面的对应 toolResult 一并丢掉。留下的 assistant 若有 toolCall 没结果，补一条 `No result provided`。会话 jsonl 仍保留这些行给 UI。
@@ -32,6 +48,7 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 - 模型解析顺序是显式 `provider/model` → session provider 下的模型 ID → 上次选用（不可用则第一个可用模型）。新会话固定该引用；禁用后的已有会话保留历史，但下次请求明确失败。
 - `thinkingEffort` 使用 `off/minimal/low/medium/high/xhigh/max`，按模型映射到 OpenAI effort、Qwen `enable_thinking`、DeepSeek/Z.AI `thinking` 或 Anthropic adaptive/budget 形状。未指定时用该模型的 default thinking（优先 `medium`）。切换模型时夹到最近的可用等级，而不是回到 default。`GET /v1/models` 每项带 `thinkingLevels` 与 `defaultThinking`。
 - usage 先归一为互斥的 uncached input/cache read/cache write/output，再按目录每百万 token 单价计算；`cost=null` 表示未知而不是免费。长上下文 tier 命中最高阈值。DeepSeek 官方有高峰/空闲两套价，内置目录用高峰（空闲是一半）；目录不按时段切换。
+- extension provider 的 stream/standalone compact 返回已归一的 usage；Host 按本次 resolved model 的价格补齐缺失的 `usage.cost`，不再次扣除缓存 token，也不覆盖 sidecar 显式提供的成本。费用随新消息/压缩记录落盘并通过现有 SSE、session compact stats 到达 WebUI；旧的无成本记录不会因目录更新而回填。
 - 流式工具参数：function 碎片拼成完整 JSON 再 `Unmarshal`；Responses custom tool 的 `response.custom_tool_call_input.*` 保留原始文本，并把 delta、call ID 和工具名交给 loop 的参数预览消费者。回放时严格保持 function/custom 的 call-output 配对。
 - 声明 `applyPatchToolType: "freeform"` 的 Responses 模型会产生 custom `apply_patch` 调用；遗留 custom 历史也继续可读。Responses 原生回放这类 item（`custom_tool_call` / `custom_tool_call_output` 成对保留）；Completions / Anthropic 的请求编码会把它们降级：custom call 重写成同名 function call，arguments 是 `{"input": <原始文本>}`，同一 call id 和它后面的 tool result 原样保留，没有对应 call 的孤立 tool result 直接丢弃，避免跨协议续聊破坏请求形状。
 - Responses 文本消息兼容少数网关缺失 `message.id` 的返回：优先用 `item_id`，其次用 `output_index` 或唯一未关闭文本项关联；function call、custom tool 和 reasoning 仍要求有效 item ID，以保证无状态回放。

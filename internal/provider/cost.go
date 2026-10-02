@@ -12,6 +12,16 @@ func CalculateCost(model Model, usage *types.Usage) {
 	if model.API != "anthropic" {
 		usage.Input = max(0, usage.Input-usage.CacheRead-usage.CacheWrite)
 	}
+	CalculateNormalizedCost(model, usage)
+}
+
+// CalculateNormalizedCost prices mutually exclusive usage counters without
+// applying wire-protocol normalization again. Extension runtimes already return
+// uncached input, cache read, and cache write as separate buckets.
+func CalculateNormalizedCost(model Model, usage *types.Usage) {
+	if usage == nil {
+		return
+	}
 	usage.TotalTokens = usage.Input + usage.Output + usage.CacheRead + usage.CacheWrite
 	if model.Cost == nil {
 		return

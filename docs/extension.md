@@ -193,6 +193,12 @@ NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` 
 `config.updated` 是 Host 发给全局 sidecar 的配置变更通知，参数包含脱敏后的
 `config`；sidecar 应重新读取自己的私有配置文件。
 
+Provider stream 的最终 message 和 `provider.compact` 的 `usage` 使用互斥的
+`input`（未缓存）、`cacheRead`、`cacheWrite`、`output` token 桶，sidecar 负责协议归一。
+Host 按本次 resolved model 的 `cost` 补齐缺失的 `usage.cost`，不重复归一，也不覆盖
+sidecar 显式提供的费用；模型价格未知则不生成费用。该结果沿既有消息/压缩落盘和
+SSE/session stats 展示，无需额外费用 REST 接口。
+
 异步消息生命周期事件的瘦 payload 只包含路由和展示所需字段。`message_start`、
 `message_update`、`message_end` 会携带 `role`、`text`；最终消息还可能携带
 `stopReason`、`errorMessage` 和 `isError`。当 `stopReason=error` 时，扩展应丢弃

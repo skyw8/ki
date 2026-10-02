@@ -8,4 +8,8 @@
 // request contexts make cancellation local to its authentication or response.
 // Request metadata replaces only a copied top-level map; nested history and
 // tool schemas remain read-only during serialization, avoiding redundant copies.
+//
+// Embedded model costs match OpenAI Standard USD rates, including cache writes
+// and long-context tiers. They estimate API-equivalent usage; OAuth subscription
+// limits and purchased Codex credits are not dollar charges computed by Ki.
 package main

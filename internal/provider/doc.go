@@ -56,6 +56,14 @@
 // contract through internal/state; see docs/state.md. The embedded
 // catalog.json is not a state file: its version is checked at build time
 // against CatalogVersion.
+// Costs use USD per million tokens, with mutually exclusive uncached input,
+// cache read, cache write, and output counters. GPT rates follow OpenAI
+// Standard pricing; inputs above 272K (including cached tokens) select the
+// long-context rates for the entire request. Codex OAuth uses the same rates
+// for API-equivalent estimates, not actual subscription charges.
+// CalculateCost normalizes native wire counters before pricing;
+// CalculateNormalizedCost prices extension usage without subtracting cached
+// tokens again. The extension host fills only missing costs.
 // models.json default is
 // last-used, not a pinned setting: if it is missing or disabled, Default
 // falls back to the first available model. Extension provider defaultModel is

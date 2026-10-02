@@ -18,6 +18,9 @@
 // Provider sidecars that advertise compaction.standalone implement
 // provider.compact. Inline Responses items require a separate inline capability
 // and remain outside ordinary message/lifecycle JSON.
+// Provider stream/compact usage is already normalized into exclusive buckets.
+// The host fills missing costs from resolved model rates before returning usage
+// to the loop, preserving explicit sidecar costs and unknown catalog prices.
 // session_before_compact receives a portable host preparation after planning;
 // it may cancel or replace local summary generation, but cannot alter the cut.
 // A synchronous hook that can change provider-visible messages or routing
