@@ -1,7 +1,9 @@
 package tool
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -32,7 +34,7 @@ func ValidateSchema(schema map[string]any, args map[string]any) []string {
 	if req, ok := schema["required"].([]any); ok {
 		for _, r := range req {
 			name, _ := r.(string)
-			if _, ok := args[name]; !ok {
+			if value, ok := args[name]; !ok || value == nil {
 				errs = append(errs, fmt.Sprintf("  - %s: required field", name))
 			}
 		}
@@ -57,19 +59,27 @@ func typeOK(typ string, v any) bool {
 		_, ok := v.(string)
 		return ok
 	case "integer":
-		switch v.(type) {
-		case int, int64, int32, float64:
-			// float64 with a fractional part is not an integer.
-			if f, ok := v.(float64); ok {
-				return f == float64(int64(f))
-			}
+		switch n := v.(type) {
+		case int, int64, int32:
 			return true
+		case float64:
+			// Why: float64 rounds MaxInt64 up to 2^63, so the upper bound
+			// must be exclusive before any builtin converts it to an integer.
+			return n >= -0x1p63 && n < 0x1p63 && math.Trunc(n) == n
+		case json.Number:
+			_, err := n.Int64()
+			return err == nil
 		}
 		return false
 	case "number":
-		switch v.(type) {
-		case int, int64, int32, float64:
+		switch n := v.(type) {
+		case int, int64, int32:
 			return true
+		case float64:
+			return !math.IsNaN(n) && !math.IsInf(n, 0)
+		case json.Number:
+			f, err := n.Float64()
+			return err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
 		}
 		return false
 	case "boolean":

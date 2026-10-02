@@ -89,7 +89,6 @@ func (s *Server) SpawnAgent(ctx context.Context, req agent.Request) (agent.Launc
 	launch.SessionID = childID
 	launch.TaskName = req.TaskName
 	launch.TaskPath = req.TaskPath
-	s.agentTasks.SetSessionID(launch.TaskID, childID)
 	return launch, nil
 }
 

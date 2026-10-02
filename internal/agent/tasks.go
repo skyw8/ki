@@ -138,11 +138,13 @@ type Controller struct {
 	executionMu   sync.Mutex
 	executing     map[string]int
 	maxConcurrent int
-	reservations  map[string]bool
+	reservations  map[string]chan struct{}
 	blocked       map[string]int
 	mu            sync.RWMutex
 	tasks         map[string]*agentTask
 	closed        bool
+	closeDone     chan struct{}
+	runWG         sync.WaitGroup
 	seq           atomic.Uint64
 }
 
@@ -168,7 +170,7 @@ type agentTask struct {
 
 // NewController creates a process-scoped child-agent registry.
 func NewController() *Controller {
-	return &Controller{tasks: map[string]*agentTask{}, executing: map[string]int{}, maxConcurrent: 4, reservations: map[string]bool{}, blocked: map[string]int{}}
+	return &Controller{tasks: map[string]*agentTask{}, executing: map[string]int{}, maxConcurrent: 4, reservations: map[string]chan struct{}{}, blocked: map[string]int{}}
 }
 
 // Start registers and runs one logical child agent. Every child is process-owned
@@ -193,25 +195,16 @@ func (s *Controller) Start(ctx context.Context, req Request, outputFile string, 
 		metadataPath:    req.MetadataPath,
 		parentSessionID: req.ParentSessionID,
 	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return Launch{}, errTaskStoreClosed
-	}
-	s.tasks[id] = task
-	s.mu.Unlock()
-
-	// startRun detaches ownership from the calling tool turn.
-	if err := s.startRun(ctx, task, req.Prompt, req.ClientRequestID); err != nil {
-		s.mu.Lock()
-		delete(s.tasks, id)
-		s.mu.Unlock()
+	// Why: publishing a pending identity before its initial input is admitted
+	// lets a concurrent interrupt or follow-up overtake the launch. Register
+	// the identity in the same transaction that persists its first generation.
+	if err := s.startRun(ctx, task, req.Prompt, req.ClientRequestID, true); err != nil {
 		return Launch{}, err
 	}
 	return Launch{TaskID: id, SessionID: req.SessionID, Description: req.Description, Prompt: req.Prompt, OutputFile: outputFile}, nil
 }
 
-func (s *Controller) startRun(ctx context.Context, task *agentTask, prompt, requestID string) error {
+func (s *Controller) startRun(ctx context.Context, task *agentTask, prompt, requestID string, register bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -222,9 +215,16 @@ func (s *Controller) startRun(ctx context.Context, task *agentTask, prompt, requ
 			return err
 		}
 	}
-	s.mu.RLock()
+	var unlockStore func()
+	if register {
+		s.mu.Lock()
+		unlockStore = s.mu.Unlock
+	} else {
+		s.mu.RLock()
+		unlockStore = s.mu.RUnlock
+	}
 	if s.closed {
-		s.mu.RUnlock()
+		unlockStore()
 		return errTaskStoreClosed
 	}
 	// Why: a child agent is process-owned, so its run never inherits the caller's
@@ -235,13 +235,13 @@ func (s *Controller) startRun(ctx context.Context, task *agentTask, prompt, requ
 	task.mu.Lock()
 	if task.removed {
 		task.mu.Unlock()
-		s.mu.RUnlock()
+		unlockStore()
 		cancel()
 		return os.ErrNotExist
 	}
 	if task.snap.Status == Running || task.active {
 		task.mu.Unlock()
-		s.mu.RUnlock()
+		unlockStore()
 		cancel()
 		return errAgentBusy
 	}
@@ -251,17 +251,18 @@ func (s *Controller) startRun(ctx context.Context, task *agentTask, prompt, requ
 	}
 	if s.blockedLocked(root, task.snap.TaskPath) {
 		task.mu.Unlock()
-		s.mu.RUnlock()
+		unlockStore()
 		cancel()
 		return fmt.Errorf("agent subtree is stopping")
 	}
 	s.executionMu.Lock()
 	if s.executing[root] >= s.maxConcurrent {
+		limit := s.maxConcurrent
 		s.executionMu.Unlock()
 		task.mu.Unlock()
-		s.mu.RUnlock()
+		unlockStore()
 		cancel()
-		return fmt.Errorf("%w: active child turn capacity %d reached", errAgentCapacity, s.maxConcurrent)
+		return fmt.Errorf("%w: active child turn capacity %d reached", errAgentCapacity, limit)
 	}
 	s.executing[root]++
 	s.executionMu.Unlock()
@@ -319,18 +320,30 @@ func (s *Controller) startRun(ctx context.Context, task *agentTask, prompt, requ
 		task.snap.Error = err.Error()
 		task.closeDoneLocked()
 		task.mu.Unlock()
-		s.mu.RUnlock()
+		unlockStore()
 		cancel()
 		s.executionMu.Lock()
 		s.executing[root]--
 		s.executionMu.Unlock()
 		return err
 	}
+	if register {
+		s.tasks[task.snap.TaskID] = task
+	}
+	// Admission is fenced by the controller lock, so Close cannot start waiting
+	// before every accepted generation has joined the shared cleanup barrier.
+	s.runWG.Add(1)
 	task.mu.Unlock()
-	s.mu.RUnlock()
+	unlockStore()
 
 	s.publishTask(task)
-	go s.executeRun(runCtx, task, generation, prompt, run, runDone, root)
+	go func() {
+		defer s.runWG.Done()
+		// Why: the generation owns this context even when its runner succeeds.
+		// Release context-bound watchers after settlement, not only on Stop.
+		defer cancel()
+		s.executeRun(runCtx, task, generation, prompt, run, runDone, root)
+	}()
 	return nil
 }
 
@@ -581,10 +594,39 @@ func (s *Controller) startNext(ctx context.Context, task *agentTask, _ bool) (bo
 	}
 	prompt := task.pending[0]
 	task.mu.Unlock()
-	if err := s.startRun(context.WithoutCancel(ctx), task, prompt.Prompt, prompt.ClientRequestID); err != nil {
+	if err := s.startRun(context.WithoutCancel(ctx), task, prompt.Prompt, prompt.ClientRequestID, false); err != nil {
+		if errors.Is(err, errAgentCapacity) {
+			if waitErr := s.markWaitingForCapacity(task); waitErr != nil {
+				return false, waitErr
+			}
+		}
 		return false, err
 	}
 	return true, nil
+}
+
+func (s *Controller) markWaitingForCapacity(task *agentTask) error {
+	s.mu.RLock()
+	task.mu.Lock()
+	if s.closed || task.removed || task.active || len(task.pending) == 0 || task.snap.Status == Pending && task.snap.Phase == "waiting_resource" {
+		task.mu.Unlock()
+		s.mu.RUnlock()
+		return nil
+	}
+	// Why: another identity can acquire capacity between settlement and the
+	// next generation. Accepted work must remain visibly pending and stoppable,
+	// while the immutable prior-generation Wait result stays completed.
+	task.snap.Status = Pending
+	task.snap.Phase = "waiting_resource"
+	task.snap.Revision++
+	task.snap.LastActivityAt = time.Now()
+	err := task.persistLocked()
+	task.mu.Unlock()
+	s.mu.RUnlock()
+	if err == nil {
+		s.publishTask(task)
+	}
+	return err
 }
 
 // Capacity release wakes accepted tasks from other identities in the same root.
@@ -663,16 +705,6 @@ func (s *Controller) CompletionDelivered(identity types.CompletionIdentity) bool
 	return task.removed || task.deliveries[identity.Generation] != ""
 }
 
-// SetSessionID associates the in-memory task with its durable child session.
-func (s *Controller) SetSessionID(taskID, sessionID string) {
-	if task, ok := s.task(taskID); ok {
-		task.mu.Lock()
-		task.snap.SessionID = sessionID
-		task.persistLocked()
-		task.mu.Unlock()
-	}
-}
-
 // StopSession cancels all live agent tasks owned by a child session.
 func (s *Controller) StopSession(sessionID string) {
 	s.mu.RLock()
@@ -735,9 +767,12 @@ func (s *Controller) RemoveSession(sessionID string) {
 func (s *Controller) Get(key string) (Snapshot, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if task, ok := s.tasks[key]; ok {
+		return s.snapshot(task), true
+	}
 	for _, task := range s.tasks {
 		task.mu.Lock()
-		match := task.snap.TaskID == key || task.snap.OutputFile == key
+		match := task.snap.OutputFile == key
 		if match {
 			snapshot := task.snap
 			task.mu.Unlock()
@@ -783,12 +818,19 @@ func (s *Controller) Stop(id string) (Snapshot, error) {
 	}
 	task.admission.Lock()
 	task.mu.Lock()
-	if isTerminal(task.snap.Status) {
+	if isTerminal(task.snap.Status) && len(task.pending) == 0 {
 		snapshot := task.snap
+		runDone := task.runDone
 		task.mu.Unlock()
 		task.admission.Unlock()
+		// Why: terminal status precedes the final publication callback. Host
+		// deletion must drain that callback even when no running work remains.
+		if runDone != nil {
+			<-runDone
+		}
 		return snapshot, errTaskNotRunning
 	}
+	interruptedGeneration := task.active
 	if task.cancel != nil {
 		task.cancel()
 	}
@@ -802,7 +844,11 @@ func (s *Controller) Stop(id string) (Snapshot, error) {
 	task.snap.Error = "task interrupted"
 	task.pending = nil
 	task.snap.PendingTasks = 0
-	s.markConsumedLocked(task)
+	// Pending-only interruption must not suppress a previous generation's
+	// completed result that has not yet reached its structural parent.
+	if interruptedGeneration {
+		s.markConsumedLocked(task)
+	}
 	task.closeDoneLocked()
 	task.persistLocked()
 	runDone := task.runDone
@@ -818,26 +864,48 @@ func (s *Controller) Stop(id string) (Snapshot, error) {
 	return snapshot, nil
 }
 
-// Close interrupts live runs so their metadata can be resumed after a new
-// server starts. Explicit interrupt_agent remains the killed terminal state.
+// Close interrupts live runs and waits for all owned cleanup.
 func (s *Controller) Close() {
+	_ = s.CloseContext(context.Background())
+}
+
+// CloseContext fences admission once and observes a shared cleanup barrier.
+// Caller cancellation only stops observation; owned cleanup still cancels and
+// drains every accepted generation and in-flight spawn reservation.
+func (s *Controller) CloseContext(ctx context.Context) error {
 	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return
+	if !s.closed {
+		s.closed = true
+		s.closeDone = make(chan struct{})
+		tasks := make([]*agentTask, 0, len(s.tasks))
+		for _, task := range s.tasks {
+			tasks = append(tasks, task)
+		}
+		reservations := make([]<-chan struct{}, 0, len(s.reservations))
+		for _, done := range s.reservations {
+			reservations = append(reservations, done)
+		}
+		go s.closeOwned(tasks, reservations, s.closeDone)
 	}
-	s.closed = true
-	tasks := make([]*agentTask, 0, len(s.tasks))
-	for _, task := range s.tasks {
-		tasks = append(tasks, task)
-	}
+	done := s.closeDone
 	s.mu.Unlock()
-	var activeRuns []chan struct{}
+	// A completed barrier wins over an already-cancelled observer.
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Controller) closeOwned(tasks []*agentTask, reservations []<-chan struct{}, done chan struct{}) {
 	for _, task := range tasks {
 		task.mu.Lock()
-		if task.runDone != nil {
-			activeRuns = append(activeRuns, task.runDone)
-		}
 		if task.active || task.snap.Status == Running || task.snap.Status == Pending {
 			if task.cancel != nil {
 				task.cancel()
@@ -855,15 +923,15 @@ func (s *Controller) Close() {
 		}
 		task.mu.Unlock()
 	}
-	// Why: Shutdown must not let a just-started child reopen or append its
-	// transcript after the next server rebuilds the task index. Providers are
-	// context-aware; the bound keeps a misbehaving provider from hanging close.
-	for _, done := range activeRuns {
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-		}
+	// Why: a deadline bounds the caller's wait, not resource ownership. A
+	// timed-out shutdown must not let a late callback reopen a deleted child
+	// transcript or overlap a replacement server. Wait for full goroutine
+	// settlement rather than abandoning runners after per-task timeouts.
+	s.runWG.Wait()
+	for _, reservation := range reservations {
+		<-reservation
 	}
+	close(done)
 }
 
 // TaskForSession finds the logical agent that owns a child session.

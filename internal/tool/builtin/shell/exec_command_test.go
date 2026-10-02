@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -183,6 +184,62 @@ func TestWriteStdinPipeAndPTY(t *testing.T) {
 	end := execSnapshot(t, input)
 	if input.IsError || end.Status != "exited" || !strings.Contains(end.Output, "received:hello") {
 		t.Fatalf("PTY: %+v", input)
+	}
+}
+
+func TestShellObservationArgumentValidation(t *testing.T) {
+	execTool := execCommandTool{}
+	writeTool := writeStdinTool{}
+	for _, args := range []map[string]any{
+		{"cmd": "true", "yield_time_ms": -1},
+		{"cmd": "true", "max_output_tokens": 0},
+		{"cmd": "true", "max_output_tokens": -1},
+		{"cmd": "true", "yield_time_ms": json.Number("18446744073709551615")},
+	} {
+		if err := execTool.Validate(args); err == nil {
+			t.Fatalf("exec accepted invalid observation argument: %+v", args)
+		}
+	}
+	for _, args := range []map[string]any{
+		{"session_id": 0},
+		{"session_id": -1},
+		{"session_id": int64(1 << 53)},
+		{"session_id": nil},
+		{"session_id": 1, "max_output_tokens": 0},
+		{"session_id": 1, "yield_time_ms": -1},
+	} {
+		if err := writeTool.Validate(args); err == nil {
+			t.Fatalf("write accepted invalid observation argument: %+v", args)
+		}
+	}
+	// Zero yields clamp to the responsiveness floor; large positive yields
+	// clamp before duration conversion, instead of being rejected globally.
+	for _, yield := range []any{0, int64(1 << 62)} {
+		if err := execTool.Validate(map[string]any{"cmd": "true", "yield_time_ms": yield}); err != nil {
+			t.Fatalf("valid clamped yield rejected: %v", err)
+		}
+		if err := writeTool.Validate(map[string]any{"session_id": int64((1 << 53) - 1), "yield_time_ms": yield}); err != nil {
+			t.Fatalf("valid clamped yield or handle rejected: %v", err)
+		}
+	}
+}
+
+func TestTTYGitDiffDoesNotEnterInheritedPager(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("Git unavailable for pager fixture")
+	}
+	t.Setenv("PAGER", "printf pager-launched; sleep 120")
+	t.Setenv("GIT_PAGER", "printf pager-launched; sleep 120")
+	t.Setenv("GH_PAGER", "printf pager-launched; sleep 120")
+	t.Setenv("TERM", "xterm-256color")
+	tool := testExec(t, nil)
+	result := tool.Execute(t.Context(), map[string]any{
+		"cmd": "git init --quiet && printf before > tracked && git add tracked && printf after > tracked && git --paginate diff",
+		"tty": true, "login": false, "yield_time_ms": 250,
+	})
+	snapshot := execSnapshot(t, result)
+	if result.IsError || snapshot.Status != "exited" || !strings.Contains(snapshot.Output, "+after") || strings.Contains(snapshot.Output, "pager-launched") {
+		t.Fatalf("inherited pager parked agent terminal: %+v", snapshot)
 	}
 }
 

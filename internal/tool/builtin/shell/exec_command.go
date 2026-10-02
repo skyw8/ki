@@ -67,6 +67,26 @@ func (t execCommandTool) Validate(args map[string]any) error {
 	if strings.TrimSpace(support.StringArg(args, "cmd", "")) == "" {
 		return fmt.Errorf("cmd is required")
 	}
+	return validateObservationArgs(args)
+}
+
+func validateObservationArgs(args map[string]any) error {
+	for _, key := range []string{"yield_time_ms", "max_output_tokens"} {
+		value, exists := args[key]
+		if !exists {
+			continue
+		}
+		n, ok := support.AsInt(value)
+		if !ok {
+			return fmt.Errorf("%s must be a representable integer", key)
+		}
+		if n < 0 {
+			return fmt.Errorf("%s must be non-negative", key)
+		}
+		if key == "max_output_tokens" && n == 0 {
+			return fmt.Errorf("max_output_tokens must be positive")
+		}
+	}
 	return nil
 }
 
@@ -104,7 +124,10 @@ func (t execCommandTool) ExecuteWithProgress(ctx context.Context, args map[strin
 	if err != nil {
 		return support.Error(err.Error())
 	}
-	snapshot, err := t.processes.Interact(ctx, id, "", time.Duration(support.IntArg(args, "yield_time_ms", 10000))*time.Millisecond, support.IntArg(args, "max_output_tokens", 10000), processEmit(emit))
+	// Clamp before multiplying: the schema is not sufficient to stop untrusted
+	// oversized integers from wrapping a duration.
+	yield := max(250, min(30000, support.IntArg(args, "yield_time_ms", 10000)))
+	snapshot, err := t.processes.Interact(ctx, id, "", time.Duration(yield)*time.Millisecond, support.IntArg(args, "max_output_tokens", 10000), processEmit(emit))
 	return processResult(snapshot, err)
 }
 
@@ -124,7 +147,7 @@ func (writeStdinTool) Prompt() string {
 
 func (writeStdinTool) Parameters() map[string]any {
 	return support.ObjectSchema([]any{"session_id"}, map[string]any{
-		"session_id":        map[string]any{"type": "integer", "minimum": 1, "description": "Terminal handle returned by exec_command."},
+		"session_id":        map[string]any{"type": "integer", "minimum": 1, "maximum": (1 << 53) - 1, "description": "Terminal handle returned by exec_command."},
 		"chars":             map[string]any{"type": "string", "description": "Input; defaults to empty for output collection."},
 		"yield_time_ms":     map[string]any{"type": "integer", "minimum": 0, "maximum": 300000, "description": "Empty input: 5000-300000ms (default 5000); non-empty input: 250-30000ms (default 250)."},
 		"max_output_tokens": map[string]any{"type": "integer", "minimum": 1, "description": "Output budget; defaults to 10000 tokens."},
@@ -132,7 +155,14 @@ func (writeStdinTool) Parameters() map[string]any {
 }
 
 func (t writeStdinTool) Validate(args map[string]any) error {
-	return support.ValidateArgs(t.Parameters(), t.Name(), args)
+	if err := support.ValidateArgs(t.Parameters(), t.Name(), args); err != nil {
+		return err
+	}
+	id, ok := support.AsInt(args["session_id"])
+	if !ok || id < 1 || int64(id) > (1<<53)-1 {
+		return fmt.Errorf("session_id must be an integer between 1 and %d", (1<<53)-1)
+	}
+	return validateObservationArgs(args)
 }
 
 func (t writeStdinTool) Execute(ctx context.Context, args map[string]any) toolapi.Result {

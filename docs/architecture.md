@@ -30,6 +30,8 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 
 `spawn_agent` 创建 `forkMode=tree` 的具名 child，继承 provider/model/cwd，并以独立 runState 异步执行 loop。`fork_turns` 默认 all，支持 none/N 个完整已完成 user turn；当前轮及 QueueOnly 消息不作为 fork 边界。身份信封包含 `/root/...` task path，system/tools 与 parent 前缀一致；没有固定深度限制。agent.Controller 按 root 限制活跃 child turn（默认 4），完成后释放容量并保留身份。send_message 先持久化 context queue 再唤醒 live Inbox，idle 时不启动模型；followup_task 接受显式工作，busy/容量满时持久排队并在名额释放时续跑。wait_agent 观察 mailbox/user steer，list/wait 不认领结果。每代次完成通知写入结构 parent，上下文交付在 transcript 持久化时按 taskId/generation 去重；idle parent 无自动新轮次。agent.json v3 恢复身份与 pending，shell handle 不恢复。exec_command/write_stdin 由 session 的 process.Manager 管理，工具等待取消不终止进程；turn/process/tree 的中止 scope 分别控制运行轮次、指定进程和结构后代。进度经 sideband JSONL、现有 SSE 和 session GET 的 processes/agents 投影传递。详见 [tools.md](tools.md)。
 
+初始 agent publication 与首条 durable generation 接纳原子完成；spawn reservation 持有责任直到 commit 或 rollback。shutdown 是一次启动、多个观察者共享的 owned cleanup：先 fence 新占用、取消所有 root/child，并开始关闭已注册 manager 以及时停止 OS 进程；共享输出 store/files/extensions 则等 warmup、dispatch、所有代次 writer、release、完成回调与 manager final listener 屏障后才清理。关闭后的 setup 只能拿到已关闭 manager，不能新建 owner。`Shutdown(ctx)` 的期限只限制调用方等待；超时返回 context 错误，不以早删资源冒充清理完成。删除 session 也在 tree 遍历之前 fence agent admission 和 session occupy/dispatch，等待已接纳 spawn 收敛，避免遗漏 late child 或队列重启。extension activeTools 仍是各 session 的工具选择，child 独立 Prepare，不是 sandbox/权限继承机制。
+
 主进程缓存分开管理正文、结构索引和已完成回放：正文加权 LRU 64MiB（单会话 8MiB），轻量元数据/偏移索引 16MiB，完成回放 16MiB / 2 分钟；各最多 256 项。相同 request_header 的 system/tools 在当前对象生命周期内共享，索引/分页/compact 按偏移读取所选正文。活动模型 Session 仍需要完整上下文，缓存预算不冒充进程 RSS 上限。资源 reload 只读 header 定位 cwd，不为失效资源再打开完整历史。详细约束见 [session.md](session.md) 与 [events.md](events.md)。
 
 ## HTTP

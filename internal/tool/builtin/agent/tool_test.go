@@ -2,6 +2,8 @@ package agenttools
 
 import (
 	"context"
+	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,8 @@ import (
 
 type recordingAgentRuntime struct {
 	request agent.Request
+	timeout time.Duration
+	waits   int
 }
 
 func (r *recordingAgentRuntime) SpawnAgent(_ context.Context, request agent.Request) (agent.Launch, error) {
@@ -22,7 +26,9 @@ func (*recordingAgentRuntime) SendAgentMessage(context.Context, agent.MessageReq
 	return agent.MessageResult{}, nil
 }
 
-func (*recordingAgentRuntime) WaitAgent(context.Context, string, time.Duration) (agent.WaitResult, error) {
+func (r *recordingAgentRuntime) WaitAgent(_ context.Context, _ string, timeout time.Duration) (agent.WaitResult, error) {
+	r.timeout = timeout
+	r.waits++
 	return agent.WaitResult{}, nil
 }
 
@@ -62,5 +68,30 @@ func TestAgentToolPromptExplainsContextInheritance(t *testing.T) {
 	tool := agentTool{name: "spawn_agent"}
 	if !strings.Contains(tool.Prompt(), "returns immediately") || !strings.Contains(tool.Parameters()["properties"].(map[string]any)["fork_turns"].(map[string]any)["description"].(string), "all (default)") {
 		t.Fatal("spawn prompt/schema omitted async and fork defaults")
+	}
+}
+
+func TestWaitAgentValidatesTimeoutBeforeDurationConversion(t *testing.T) {
+	for _, value := range []any{0, 9999, 3600001, int64(math.MaxInt64), 10000.5, math.NaN(), math.Inf(1), json.Number("9999999999999999999999999")} {
+		runtime := &recordingAgentRuntime{}
+		result := (agentTool{name: "wait_agent", runtime: runtime}).Execute(t.Context(), map[string]any{"timeout_ms": value})
+		if !result.IsError || runtime.waits != 0 {
+			t.Errorf("timeout %v reached runtime: result=%+v, waits=%d", value, result, runtime.waits)
+		}
+	}
+	for _, test := range []struct {
+		value any
+		want  time.Duration
+	}{
+		{nil, 30 * time.Second},
+		{10000, 10 * time.Second},
+		{int32(10000), 10 * time.Second},
+		{json.Number("3600000"), time.Hour},
+	} {
+		runtime := &recordingAgentRuntime{}
+		result := (agentTool{name: "wait_agent", runtime: runtime}).Execute(t.Context(), map[string]any{"timeout_ms": test.value})
+		if result.IsError || runtime.waits != 1 || runtime.timeout != test.want {
+			t.Errorf("timeout %v: result=%+v, waits=%d, duration=%v; want %v", test.value, result, runtime.waits, runtime.timeout, test.want)
+		}
 	}
 }

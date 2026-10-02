@@ -26,7 +26,7 @@ func (c *Controller) ReservePath(root, path string) (func(), error) {
 	if c.blockedLocked(root, path) {
 		return nil, fmt.Errorf("agent subtree is stopping")
 	}
-	if c.reservations[key] {
+	if c.reservations[key] != nil {
 		return nil, fmt.Errorf("task path %s already reserved", path)
 	}
 	for _, task := range c.tasks {
@@ -37,8 +37,14 @@ func (c *Controller) ReservePath(root, path string) (func(), error) {
 			return nil, fmt.Errorf("task path %s already exists; use followup_task", path)
 		}
 	}
-	c.reservations[key] = true
-	return func() { c.mu.Lock(); delete(c.reservations, key); c.mu.Unlock() }, nil
+	done := make(chan struct{})
+	c.reservations[key] = done
+	return sync.OnceFunc(func() {
+		c.mu.Lock()
+		delete(c.reservations, key)
+		close(done)
+		c.mu.Unlock()
+	}), nil
 }
 
 func (c *Controller) SetIdentity(id, name, path, root string) error {
@@ -166,14 +172,39 @@ func ViewSnapshot(s Snapshot) View {
 // BlockSubtreeAdmission fences both reserved spawns and explicit follow-ups while
 // host cleanup stops existing descendants. The returned release is idempotent.
 func (c *Controller) BlockSubtreeAdmission(sessionID string) (func(), error) {
+	release, _, err := c.FenceSubtreeAdmission(sessionID)
+	return release, err
+}
+
+// FenceSubtreeAdmission also observes already-reserved spawns. Their release
+// occurs after host creation or rollback, so drained is safe for tree deletion.
+func (c *Controller) FenceSubtreeAdmission(sessionID string) (release func(), drained <-chan struct{}, err error) {
 	root, path, err := c.Identity(sessionID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	key := root + "\x00" + path
 	c.mu.Lock()
 	c.blocked[key]++
+	reservations := []<-chan struct{}{}
+	for reservation, done := range c.reservations {
+		reservedRoot, reservedPath, _ := strings.Cut(reservation, "\x00")
+		if reservedRoot == root && (reservedPath == path || strings.HasPrefix(reservedPath, path+"/")) {
+			reservations = append(reservations, done)
+		}
+	}
 	c.mu.Unlock()
+	done := make(chan struct{})
+	if len(reservations) == 0 {
+		close(done)
+	} else {
+		go func() {
+			for _, reservation := range reservations {
+				<-reservation
+			}
+			close(done)
+		}()
+	}
 	return sync.OnceFunc(func() {
 		c.mu.Lock()
 		c.blocked[key]--
@@ -181,7 +212,7 @@ func (c *Controller) BlockSubtreeAdmission(sessionID string) (func(), error) {
 			delete(c.blocked, key)
 		}
 		c.mu.Unlock()
-	}), nil
+	}), done, nil
 }
 
 func (c *Controller) blockedLocked(root, path string) bool {

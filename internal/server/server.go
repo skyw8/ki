@@ -71,6 +71,7 @@ type Server struct {
 	runs                   map[string]*runState
 	replay                 replayCache
 	processes              map[string]*process.Manager
+	closedProcesses        *process.Manager
 	outputStore            *output.Store
 	agentTasks             *agent.Controller
 	ws                     *workspace.Store
@@ -100,7 +101,15 @@ type Server struct {
 	runtimeCtx             context.Context
 	runtimeCancel          context.CancelFunc
 	runtimeWG              sync.WaitGroup
+	sessionWG              map[string]*sync.WaitGroup
 	runtimeClosed          bool
+	shutdownDone           chan struct{}
+	shutdownErr            error
+	deletionMu             sync.Mutex
+	deleting               map[string]bool
+	stopping               map[string]int
+	creationMu             sync.Mutex
+	deletingWorkspaces     map[string]bool
 }
 
 const (
@@ -134,11 +143,14 @@ type runState struct {
 	// the shared blankEvent instead of a 424-byte loop.Event per chunk. A
 	// long turn streams tens of thousands of chunks; their slots must not
 	// outgrow the payloads the trimming just freed.
-	evs   []*loop.Event
-	wait  *sync.Cond
-	done  chan struct{}
-	err   error
-	inbox *loop.Inbox
+	evs  []*loop.Event
+	wait *sync.Cond
+	done chan struct{}
+	// released closes after release's callbacks/queue dispatch, not merely SSE
+	// settlement. File cleanup must wait for the final writer, including release.
+	released chan struct{}
+	err      error
+	inbox    *loop.Inbox
 	// steerClosed closes the handoff window after loop.Run has returned. A
 	// message that arrives after that point must become a queued/resumed run,
 	// never a successful write to an Inbox that nobody will drain.
@@ -481,6 +493,10 @@ func New(opt Options) (*Server, error) {
 		browserSessions:        map[string]time.Time{},
 		pushAborted:            map[string]struct{}{},
 		runtime:                map[string]*runtimePrep{},
+		sessionWG:              map[string]*sync.WaitGroup{},
+		deleting:               map[string]bool{},
+		stopping:               map[string]int{},
+		deletingWorkspaces:     map[string]bool{},
 		runtimeCtx:             runtimeCtx,
 		runtimeCancel:          runtimeCancel,
 	}
@@ -1079,22 +1095,74 @@ func (s *Server) Addr() string {
 	return ln.Addr().String()
 }
 
-// Shutdown stops the HTTP server and every extension sidecar.
+// Shutdown starts owned cleanup once. A caller deadline limits observation,
+// never the lifetime of cleanup or the files still used by a cancelled runner.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.runtimeMu.Lock()
-	s.runtimeClosed = true
-	runtimeCancel := s.runtimeCancel
+	if s.shutdownDone == nil {
+		s.shutdownDone = make(chan struct{})
+		s.runtimeClosed = true
+		if s.runtimeCancel != nil {
+			s.runtimeCancel()
+		}
+		go s.shutdownOwned()
+	}
+	done := s.shutdownDone
 	s.runtimeMu.Unlock()
-	if runtimeCancel != nil {
-		runtimeCancel()
+	select {
+	case <-done:
+		return s.shutdownErr
+	default:
 	}
-	// Why: session creation starts warmup asynchronously, and its failure
-	// events still write to the session directory. Wait before cleanup can
-	// remove that directory underneath a warmup goroutine.
+	select {
+	case <-done:
+		return s.shutdownErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Server) shutdownOwned() {
+	defer close(s.shutdownDone)
+	// Cancel root occupies as well as child tasks before waiting for either.
+	// A root may own a scheduled runPrompt which has not reached tool setup yet.
+	s.mu.Lock()
+	for id, st := range s.runs {
+		s.cancelRun(id, st, cancelReasonServerShutdown, "server", false)
+	}
+	jobs := make([]*process.Manager, 0, len(s.processes))
+	for _, manager := range s.processes {
+		jobs = append(jobs, manager)
+	}
+	s.mu.Unlock()
+	// Fencing allocations makes early OS termination safe. Do not let a stalled
+	// provider keep terminals alive, but retain shared output files until every
+	// observer and the manager's final progress callback has drained.
+	managersDone := make(chan struct{})
+	go func() {
+		defer close(managersDone)
+		var owners sync.WaitGroup
+		for _, manager := range jobs {
+			owners.Go(manager.Close)
+		}
+		owners.Wait()
+	}()
+	agentsDone := make(chan struct{})
+	go func() {
+		defer close(agentsDone)
+		if s.agentTasks != nil {
+			_ = s.agentTasks.CloseContext(context.Background())
+		}
+	}()
+	// A root create accepted before the global fence may still be materializing.
+	// Cancel runners first so a slow HTTP body cannot delay their cancellation.
+	s.creationMu.Lock()
+	s.creationMu.Unlock()
+	// Admission and Add share runtimeMu. This includes scheduled occupies,
+	// warmups, dispatch and deletion; release's final callbacks are writers too.
 	s.runtimeWG.Wait()
-	if s.agentTasks != nil {
-		s.agentTasks.Close()
-	}
+	<-agentsDone
+	<-managersDone
 	s.mu.Lock()
 	s.replay.closed = true
 	if s.replay.timer != nil {
@@ -1106,51 +1174,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 		s.forgetReplayLocked(id)
 	}
-	jobs := make([]*process.Manager, 0, len(s.processes))
-	for id, store := range s.processes {
-		jobs = append(jobs, store)
+	for id := range s.processes {
 		delete(s.processes, id)
 	}
 	s.mu.Unlock()
-	for _, store := range jobs {
-		store.Close()
-	}
-	if s.agentTasks != nil {
-		s.agentTasks.Close()
-	}
-	// Why: release → dispatchQueue can spawn a run after a one-shot snapshot;
-	// drain until idle (or ctx done) so TempDir cleanup is not racing writers.
-	for {
-		s.mu.Lock()
-		active := make([]*runState, 0, len(s.runs))
-		for _, st := range s.runs {
-			if st == nil {
-				continue
-			}
-			select {
-			case <-st.done:
-			default:
-				s.cancelRun("", st, cancelReasonServerShutdown, "server", false)
-				active = append(active, st)
-			}
-		}
-		s.mu.Unlock()
-		if len(active) == 0 {
-			break
-		}
-		stopped := false
-		for _, st := range active {
-			select {
-			case <-st.done:
-			case <-ctx.Done():
-				stopped = true
-			case <-time.After(2 * time.Second):
-			}
-		}
-		if stopped || ctx.Err() != nil {
-			break
-		}
-	}
 	if s.outputStore != nil {
 		_ = s.outputStore.Close()
 	}
@@ -1167,14 +1194,27 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	httpSrv := s.http
 	s.mu.Unlock()
 	if httpSrv == nil {
-		return nil
+		return
 	}
-	return httpSrv.Shutdown(ctx)
+	s.shutdownErr = httpSrv.Shutdown(context.Background())
 }
 
 func (s *Server) processesFor(id string) *process.Manager {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.runtimeMu.Lock()
+	closed := s.runtimeClosed || s.deleting[id] || s.stopping[id] > 0
+	s.runtimeMu.Unlock()
+	if closed {
+		// Builtin shell sets treat nil as "make a standalone manager". Return a
+		// closed sentinel so late catalog/extension calls cannot create an owner
+		// which escapes shutdown, spool accounting, and listeners.
+		if s.closedProcesses == nil {
+			s.closedProcesses = process.NewManager()
+			s.closedProcesses.Close()
+		}
+		return s.closedProcesses
+	}
 	if jobs, ok := s.processes[id]; ok {
 		return jobs
 	}
@@ -1224,6 +1264,12 @@ func ReadServerFile(home string) (File, error) {
 }
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
+	s.creationMu.Lock()
+	defer s.creationMu.Unlock()
+	if err := s.sessionAdmissionError(""); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	var body struct {
 		CWD            string         `json:"cwd"`
 		WorkspaceID    string         `json:"workspaceId"`
@@ -1239,6 +1285,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			code = 404
 		}
 		http.Error(w, err.Error(), code)
+		return
+	}
+	if s.deletingWorkspaces[rec.ID] {
+		http.Error(w, errSessionNotFound.Error(), http.StatusConflict)
 		return
 	}
 	ref, selectedModel, err := s.registry.ResolveSpec(body.Model, "")
@@ -1698,6 +1748,13 @@ func (s *Server) meta(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
+	gate := s.inputGate(r.PathValue("id"))
+	gate.Lock()
+	defer gate.Unlock()
+	if err := s.sessionAdmissionError(r.PathValue("id")); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	sess, err := s.open(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -2072,6 +2129,13 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	if busy {
 		dir := sess.Dir
 		_ = sess.Close()
+		gate := s.inputGate(id)
+		gate.Lock()
+		defer gate.Unlock()
+		if err := s.sessionAdmissionError(id); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if delivery == toggles.BusySteer && s.pushSteerRun(live, steerRequest{Content: body.Content, ClientRequestID: body.ClientRequestID}) {
 			writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "steered", "clientRequestId": body.ClientRequestID})
 			return
@@ -2109,6 +2173,14 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 // run. If that occupy has already ended, the item goes back to the head so
 // dispatchQueue can start it; it is not steered into a replacement run.
 func (s *Server) promoteQueued(w http.ResponseWriter, r *http.Request, id string, sess *session.Session, live *runState, queueID, model string) {
+	gate := s.inputGate(id)
+	gate.Lock()
+	defer gate.Unlock()
+	if err := s.sessionAdmissionError(id); err != nil {
+		_ = sess.Close()
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	dir := sess.Dir
 	item, err := session.TakeQueueID(dir, queueID)
 	if err != nil {
@@ -2391,6 +2463,10 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	} else if credential, status, err := s.registry.Credential(info.Provider); err == nil && status.Configured {
 		bindingCredential = credential
 	}
+	if err := s.sessionAdmissionError(id); err != nil {
+		st.err = err
+		return
+	}
 	jobs := s.processesFor(id)
 	profile := toolProfile(info)
 	// The resource snapshot is loaded before the tool set because shell tools
@@ -2400,10 +2476,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	s.reportManifestErrors(sess.ID(), snapshot.Extensions)
 	// Why the prompt does not resolve the session's Agent depth: the tool set
 	// feeds both the provider's tool schemas and the system prompt's tool list,
-	// so making it depend on the durable parent chain meant a deep child (or a
-	// session whose ancestry changed mid-conversation) rendered a different
-	// prefix from its parent and lost the prefix cache. Depth is enforced at
-	// spawn time instead; see builtin.Set.Build and Server.SpawnAgent.
+	// so making it depend on the durable parent chain meant a deep child rendered
+	// a different prefix and lost the prefix cache. Admission limits active child
+	// turns per root, not depth; the tool schemas stay stable across the tree.
 	tls := builtin.Set{
 		CWD: sess.Header.CWD, Processes: jobs, Agent: s,
 		// Leave the entry unset so SpawnAgent resolves the leaf at the actual
@@ -3579,6 +3654,13 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request, suppliedInstr
 }
 
 func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
+	gate := s.inputGate(r.PathValue("id"))
+	gate.Lock()
+	defer gate.Unlock()
+	if err := s.sessionAdmissionError(r.PathValue("id")); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	var body struct {
 		EntryID  string `json:"entryId"`
 		ForkMode string `json:"forkMode"`

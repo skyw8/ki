@@ -15,6 +15,8 @@ const warmupTimeout = 25 * time.Second
 type runtimePrep struct {
 	ready    bool
 	inflight bool
+	done     chan struct{}
+	cancel   context.CancelFunc
 }
 
 func (s *Server) runtimeReady(id string) bool {
@@ -49,7 +51,7 @@ func (s *Server) kickWarmup(id, cwd string) {
 		return
 	}
 	s.runtimeMu.Lock()
-	if s.runtimeClosed {
+	if s.runtimeClosed || s.deleting[id] || s.stopping[id] > 0 {
 		s.runtimeMu.Unlock()
 		return
 	}
@@ -63,18 +65,21 @@ func (s *Server) kickWarmup(id, cwd string) {
 		return
 	}
 	st.inflight = true
-	s.runtimeWG.Add(1)
+	st.done = make(chan struct{})
+	ctx, cancel := context.WithTimeout(s.runtimeCtx, warmupTimeout)
+	st.cancel = cancel
+	s.addSessionWriterLocked(id)
 	s.runtimeMu.Unlock()
 	go func() {
-		defer s.runtimeWG.Done()
-		s.warmupSession(id, cwd, st)
+		defer s.finishSessionWriter(id)
+		defer close(st.done)
+		defer cancel()
+		s.warmupSession(ctx, id, cwd, st)
 	}()
 }
 
-func (s *Server) warmupSession(id, cwd string, st *runtimePrep) {
+func (s *Server) warmupSession(ctx context.Context, id, cwd string, st *runtimePrep) {
 	defer s.finishRuntime(id, st)
-	ctx, cancel := context.WithTimeout(s.runtimeCtx, warmupTimeout)
-	defer cancel()
 	if cwd == "" {
 		sess, err := s.open(id)
 		if err != nil {

@@ -3,5 +3,7 @@
 // attribution into an explicit process.Identity, and format bounded results and
 // diagnostics. Process lifetime, PTY ownership, incremental output and cleanup
 // belong to the process runtime, independently of an observing tool or turn.
+// Observation times clamp before duration conversion; token budgets must be
+// positive and terminal handles must fit the runtime's positive 53-bit range.
 // Cross-package contracts: docs/tools.md.
 package shelltools

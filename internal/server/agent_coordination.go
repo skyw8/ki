@@ -65,7 +65,7 @@ func (s *Server) InterruptAgent(ctx context.Context, caller, target string) (age
 		return agent.View{}, fmt.Errorf("cannot interrupt root or self")
 	}
 	previous := agent.ViewSnapshot(snap)
-	if snap.Status == agent.Running || snap.Status == agent.Pending {
+	if snap.Status == agent.Running || snap.Status == agent.Pending || snap.PendingTasks > 0 {
 		_, err = s.agentTasks.Stop(snap.TaskID)
 	}
 	return previous, err
@@ -88,6 +88,9 @@ func (s *Server) acceptAgentContext(target, origin, text string, completion *typ
 	gate := s.inputGate(target)
 	gate.Lock()
 	defer gate.Unlock()
+	if err := s.sessionAdmissionError(target); err != nil {
+		return agent.MessageResult{}, err
+	}
 	_, err = session.EnqueueContext(dir, session.ContextQueuedItem{Message: message, IdempotencyKey: id})
 	if err != nil {
 		return agent.MessageResult{}, err

@@ -79,13 +79,31 @@ func (s *Server) agentSnapshots(id string) []agent.View {
 func (s *Server) stopRuntimeTree(id string) {
 	// A descendant can spawn while the host traverses the tree. Fence admission
 	// before collecting owners, then stop runners before collecting their processes.
-	release, err := s.agentTasks.BlockSubtreeAdmission(id)
+	resumeRoot := s.blockSessionAdmissions([]string{id})
+	release, drained, err := s.agentTasks.FenceSubtreeAdmission(id)
 	if err != nil {
+		resumeRoot()
 		return
 	}
-	defer release()
 	views, _ := s.ListAgents(id, "")
 	owned := []string{id}
+	for _, view := range views {
+		if view.TaskName != "/root" && view.SessionID != id && s.isSessionDescendant(view.SessionID, id) {
+			owned = append(owned, view.SessionID)
+		}
+	}
+	resumeChildren := s.blockSessionAdmissions(owned[1:])
+	defer func() {
+		// Remove both kinds of fences before queued explicit work resumes.
+		release()
+		resumeChildren()
+		resumeRoot()
+	}()
+	for _, sessionID := range owned {
+		if live := s.runAt(sessionID); live != nil {
+			s.cancelRun(sessionID, live, cancelReasonUserRequest, "tree", true)
+		}
+	}
 	if snapshot, ok := s.agentTasks.TaskForSession(id); ok {
 		_, _ = s.agentTasks.Stop(snapshot.TaskID)
 	}
@@ -95,13 +113,16 @@ func (s *Server) stopRuntimeTree(id string) {
 		}
 		// Session-tree membership, not the caller's namespace, owns tree abort.
 		if s.isSessionDescendant(view.SessionID, id) {
-			owned = append(owned, view.SessionID)
 			_, _ = s.agentTasks.Stop(view.AgentID)
 			if live := s.runAt(view.SessionID); live != nil {
 				s.cancelRun(view.SessionID, live, cancelReasonUserRequest, "tree", true)
 			}
 		}
 	}
+	// The root's observer can still be unwinding tool setup; wait for release's
+	// final callbacks before collecting processes created by that turn.
+	s.waitSessionWriters(owned)
+	<-drained
 	for _, sessionID := range owned {
 		if manager := s.existingProcesses(sessionID); manager != nil {
 			manager.TerminateAll()

@@ -14,6 +14,13 @@ import (
 const maxAttachmentBytes = 25 << 20
 
 func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) {
+	gate := s.inputGate(r.PathValue("id"))
+	gate.Lock()
+	defer gate.Unlock()
+	if err := s.sessionAdmissionError(r.PathValue("id")); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	if s.running(r.PathValue("id")) {
 		http.Error(w, "session busy", http.StatusConflict)
 		return

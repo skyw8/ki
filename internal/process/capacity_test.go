@@ -1,6 +1,9 @@
 package process
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,5 +38,33 @@ func TestProcessCapacityAndSessionIsolation(t *testing.T) {
 	}
 	if _, err := manager.Start(t.Context(), shell, cwd, "printf yes", false, Identity{}); err != nil {
 		t.Fatal("finished process still occupies live capacity")
+	}
+}
+
+func TestProcessRetentionDoesNotReclaimBeforeFinalPublication(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unpublished-output")
+	if err := os.WriteFile(path, []byte("output"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager()
+	for id := int64(1); id <= 256; id++ {
+		// Completed but unread terminals must remain retained.
+		manager.processes[id] = &shellProcess{snapshot: Snapshot{Status: "exited"}, total: 1}
+	}
+	p := manager.processes[1]
+	p.total = 0
+	p.temporary = true
+	p.snapshot.OutputFile = path
+	p.publisher = newProcessPublisher(func(Update) {})
+	// Capacity is checked before the fake shell path can be executed.
+	_, err := manager.Start(t.Context(), Shell{path: "unavailable-test-shell"}, t.TempDir(), "true", false, Identity{})
+	if err == nil || !strings.Contains(err.Error(), "retention capacity") {
+		t.Fatalf("unpublished terminal was reclaimed: %v", err)
+	}
+	if manager.processes[1] != p {
+		t.Fatal("unpublished handle was removed")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("unpublished spool was removed: %v", err)
 	}
 }

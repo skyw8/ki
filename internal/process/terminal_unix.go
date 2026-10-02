@@ -5,7 +5,9 @@ package process
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"sync"
+	"syscall"
 
 	pty "github.com/aymanbagabas/go-pty"
 	"golang.org/x/sys/unix"
@@ -26,7 +28,9 @@ func prepareTerminal(terminal pty.Pty) (pty.Pty, error) {
 	fd := -1
 	var setupErr error
 	if err := native.Control(func(raw uintptr) {
-		fd, setupErr = unix.Dup(int(raw))
+		// Atomic CLOEXEC prevents unrelated concurrently spawned children from
+		// inheriting the terminal master and keeping this session alive.
+		fd, setupErr = unix.FcntlInt(raw, unix.F_DUPFD_CLOEXEC, 0)
 		if setupErr == nil {
 			setupErr = unix.SetNonblock(fd, true)
 		}
@@ -53,4 +57,19 @@ func (p *pollableTerminal) Write(data []byte) (int, error) { return p.ioFile.Wri
 func (p *pollableTerminal) Close() error {
 	p.closeOnce.Do(func() { p.closeErr = errors.Join(p.ioFile.Close(), p.UnixPty.Close()) })
 	return p.closeErr
+}
+
+func terminalReadError(err error) error {
+	// Unix terminals report EIO, rather than EOF, after the last slave closes.
+	// Closing the owned pollable descriptor also releases canceled blocked I/O.
+	if errors.Is(err, syscall.EIO) || errors.Is(err, os.ErrClosed) {
+		return nil
+	}
+	return err
+}
+
+func terminalDrainTimeoutError() error {
+	// Just like exec.Cmd.WaitDelay for pipes, forced Unix PTY closure is
+	// incomplete output, not a successful silent drain.
+	return exec.ErrWaitDelay
 }

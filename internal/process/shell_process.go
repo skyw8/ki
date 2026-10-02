@@ -1,7 +1,6 @@
 package process
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -56,6 +55,7 @@ type Manager struct {
 	mu        sync.Mutex
 	processes map[int64]*shellProcess
 	closed    bool
+	closeDone chan struct{}
 	spool     OutputSpool
 	owner     string
 	limit     int
@@ -64,9 +64,10 @@ type Manager struct {
 
 type shellProcess struct {
 	interaction   chan struct{}
+	control       sync.Mutex
 	mu            sync.Mutex
 	snapshot      Snapshot
-	buffer        []byte
+	buffer        outputRing
 	dropped       int64
 	total         int64
 	cursor        int64
@@ -78,16 +79,18 @@ type shellProcess struct {
 	done          chan struct{}
 	changed       chan struct{}
 	terminate     sync.Once
+	stopped       chan struct{}
 	publish       func(Update)
+	publisher     *processPublisher
 	temporary     bool
 	lastPublished time.Time
-	pending       []byte
+	pending       outputRing
 }
 
 func NewManager() *Manager { return NewSpooledManager(nil, "") }
 
 func NewSpooledManager(spool OutputSpool, owner string) *Manager {
-	return &Manager{processes: make(map[int64]*shellProcess), spool: spool, owner: owner, limit: 64}
+	return &Manager{processes: make(map[int64]*shellProcess), closeDone: make(chan struct{}), spool: spool, owner: owner, limit: 64}
 }
 
 func (m *Manager) SetListener(listener func(Update)) {
@@ -129,6 +132,15 @@ func (m *Manager) Start(ctx context.Context, shell Shell, cwd, command string, t
 			p.mu.Lock()
 			reclaim := p.snapshot.Status == "exited" && p.cursor >= p.total
 			p.mu.Unlock()
+			if reclaim && p.publisher != nil {
+				select {
+				case <-p.publisher.done:
+				default:
+					// Final callbacks may still inspect the process or its spool.
+					// Reclamation must not race that publication barrier.
+					reclaim = false
+				}
+			}
 			if reclaim {
 				delete(m.processes, id)
 				if p.temporary {
@@ -181,7 +193,12 @@ func (m *Manager) Start(ctx context.Context, shell Shell, cwd, command string, t
 		m.mu.Unlock()
 		return 0, err
 	}
-	p := &shellProcess{temporary: temporary, interaction: make(chan struct{}, 1), file: f, done: make(chan struct{}), changed: make(chan struct{}), snapshot: Snapshot{Revision: 1, RunID: identity.RunID, CallID: identity.CallID, AgentID: identity.AgentID, Generation: identity.Generation, SessionID: id, OwnerSessionID: m.owner, Command: command, CWD: cwd, TTY: tty, Status: "running", OutputFile: f.Name(), StartedAt: time.Now()}, publish: m.listener}
+	p := &shellProcess{temporary: temporary, interaction: make(chan struct{}, 1), file: f, done: make(chan struct{}), stopped: make(chan struct{}), changed: make(chan struct{}), snapshot: Snapshot{Revision: 1, RunID: identity.RunID, CallID: identity.CallID, AgentID: identity.AgentID, Generation: identity.Generation, SessionID: id, OwnerSessionID: m.owner, Command: command, CWD: cwd, TTY: tty, Status: "running", OutputFile: f.Name(), StartedAt: time.Now()}}
+	if m.listener != nil {
+		p.publisher = newProcessPublisher(m.listener)
+		p.publish = p.publisher.enqueue
+	}
+	initial := p.snapshot
 	m.processes[id] = p
 	// Register before yielding: a canceled observer must never become the last process owner.
 	err = p.start(shell, cwd, command, tty)
@@ -194,10 +211,10 @@ func (m *Manager) Start(ctx context.Context, shell Shell, cwd, command string, t
 	}
 	m.mu.Unlock()
 	p.mu.Lock()
-	snapshot := p.snapshot
+	initial.PID = p.snapshot.PID
 	p.mu.Unlock()
-	if p.publish != nil {
-		p.publish(Update{Process: snapshot})
+	if p.publisher != nil {
+		go p.publisher.run(initial)
 	}
 	return id, nil
 }
@@ -230,20 +247,23 @@ func (p *shellProcess) start(shell Shell, cwd, command string, tty bool) error {
 		p.mu.Lock()
 		p.snapshot.PID = c.Process.Pid
 		p.mu.Unlock()
-		copied := make(chan struct{})
-		go func() { _, _ = io.Copy(p, terminal); close(copied) }()
+		copied := make(chan error, 1)
+		go func() { _, copyErr := io.Copy(p, terminal); copied <- copyErr }()
 		go func() {
 			err := c.Wait()
 			if u, ok := terminal.(pty.UnixPty); ok {
 				_ = u.Slave().Close()
 			}
+			var copyErr error
 			select {
-			case <-copied:
+			case copyErr = <-copied:
 			case <-time.After(shellWaitDelay):
+				err = errors.Join(err, terminalDrainTimeoutError())
 				_ = terminal.Close()
-				<-copied
+				copyErr = <-copied
 			}
 			_ = terminal.Close()
+			err = errors.Join(err, terminalReadError(copyErr))
 			code := -1
 			if c.ProcessState != nil {
 				code = c.ProcessState.ExitCode()
@@ -280,66 +300,59 @@ func (p *shellProcess) start(shell Shell, cwd, command string, tty bool) error {
 
 func (p *shellProcess) Write(data []byte) (int, error) {
 	p.mu.Lock()
-	n, err := p.file.Write(data)
-	if err != nil && p.outputErr == nil {
-		// A PTY copier's return value is not the command's exit status. Retain
-		// spool failures so a successful exit cannot hide incomplete output.
+	if p.outputErr == nil {
+		n, err := p.file.Write(data)
+		if err == nil && n != len(data) {
+			err = io.ErrShortWrite
+		}
 		p.outputErr = err
+		if err != nil {
+			p.snapshot.Error = err.Error()
+		}
 	}
-	update := p.appendOutputLocked(p.sanitizer.Filter(data[:n]))
+	// A failed spool must not stop draining: otherwise the command can block
+	// forever on its output pipe or receive SIGPIPE. Preserve the diagnostic
+	// separately while still retaining bounded output for observers.
+	p.appendOutputLocked(p.sanitizer.Filter(data))
+	var update *Update
+	if time.Since(p.lastPublished) >= 100*time.Millisecond {
+		value := Update{Delta: string(p.pending.bytes(0, 0)), Process: p.snapshot}
+		update = &value
+		p.pending.reset()
+		p.lastPublished = time.Now()
+	}
 	p.signalLocked()
 	p.mu.Unlock()
 	if update != nil && p.publish != nil {
 		p.publish(*update)
 	}
-	return n, err
+	return len(data), nil
 }
 
-func (p *shellProcess) appendOutputLocked(clean []byte) *Update {
+func (p *shellProcess) appendOutputLocked(clean []byte) {
 	p.snapshot.Revision++
 	p.total += int64(len(clean))
-	p.buffer = append(p.buffer, clean...)
-	if len(p.buffer) > processBufferBytes {
-		drop := len(p.buffer) - processBufferBytes
-		for drop < len(p.buffer) && !utf8.RuneStart(p.buffer[drop]) {
-			drop++
-		}
-		p.buffer = bytes.Clone(p.buffer[drop:])
-		p.dropped += int64(drop)
-	}
+	p.dropped += int64(p.buffer.append(clean, processBufferBytes))
 	p.snapshot.TotalBytes = p.total
-	tail := p.buffer
-	if len(tail) > 16384 {
-		tail = tail[len(tail)-16384:]
-		for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
-			tail = tail[1:]
-		}
+	offset := max(0, p.buffer.size-16384)
+	tail := p.buffer.bytes(offset, 0)
+	for len(tail) > 0 && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
 	}
-	p.snapshot.Output = cleanUnicodeControls(string(tail))
-	p.pending = append(p.pending, clean...)
-	if len(p.pending) > 8192 {
-		p.pending = bytes.Clone(p.pending[len(p.pending)-8192:])
-	}
-	var update *Update
-	if time.Since(p.lastPublished) >= 100*time.Millisecond {
-		delta := p.pending
-		for len(delta) > 0 && !utf8.RuneStart(delta[0]) {
-			delta = delta[1:]
-		}
-		value := Update{Delta: cleanUnicodeControls(string(delta)), Process: p.snapshot}
-		update = &value
-		p.pending = nil
-		p.lastPublished = time.Now()
-	}
-	return update
+	p.snapshot.Output = string(tail)
+	p.pending.append(clean, 8192)
 }
 
 func (p *shellProcess) signalLocked() { close(p.changed); p.changed = make(chan struct{}) }
 
 func (p *shellProcess) finish(code int, err error) {
+	p.control.Lock()
+	defer p.control.Unlock()
 	p.mu.Lock()
 	now := time.Now()
-	_ = p.appendOutputLocked(p.sanitizer.Flush())
+	// Finalization owns the last delta. A timed publication here would clear
+	// pending bytes without delivering its update, losing the stream's tail.
+	p.appendOutputLocked(p.sanitizer.Flush())
 	p.snapshot.Revision++
 	p.snapshot.Status = "exited"
 	p.snapshot.ExitCode = &code
@@ -350,8 +363,8 @@ func (p *shellProcess) finish(code int, err error) {
 	}
 	p.signalLocked()
 	snapshot := p.snapshot
-	delta := cleanUnicodeControls(string(p.pending))
-	p.pending = nil
+	delta := string(p.pending.bytes(0, 0))
+	p.pending = outputRing{}
 	p.mu.Unlock()
 	releaseCmd(p.cmd)
 	close(p.done)
@@ -376,10 +389,15 @@ func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield ti
 	if err != nil {
 		return Snapshot{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return p.peek(), err
+	}
 	select {
 	case p.interaction <- struct{}{}:
 	case <-ctx.Done():
-		return Snapshot{}, ctx.Err()
+		// A canceled queued observer still needs its owned terminal handle, but
+		// must not consume output belonging to the interaction ahead of it.
+		return p.peek(), ctx.Err()
 	}
 	releaseInteraction := true
 	defer func() {
@@ -387,6 +405,11 @@ func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield ti
 			<-p.interaction
 		}
 	}()
+	// Both select cases can be ready when cancellation races lock acquisition.
+	// Recheck before writing so already-canceled input is never delivered.
+	if err := ctx.Err(); err != nil {
+		return p.peek(), err
+	}
 	if chars != "" {
 		p.mu.Lock()
 		live := p.snapshot.Status == "running"
@@ -420,6 +443,8 @@ func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield ti
 	}
 	timer := time.NewTimer(yield)
 	defer timer.Stop()
+	var lastEmitted time.Time
+	progressRemaining := maxProcessProgressUpdates
 	for {
 		p.mu.Lock()
 		done := p.snapshot.Status == "exited"
@@ -434,14 +459,25 @@ func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield ti
 		case <-timer.C:
 			return p.observe(budget), nil
 		case <-changed:
-			if emit != nil {
+			if emit != nil && progressRemaining > 0 && time.Since(lastEmitted) >= 100*time.Millisecond {
 				p.mu.Lock()
 				snap := p.snapshot
 				p.mu.Unlock()
 				emit(Update{Process: snap})
+				lastEmitted = time.Now()
+				progressRemaining--
 			}
 		}
 	}
+}
+
+func (p *shellProcess) peek() Snapshot {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	s := p.snapshot
+	s.Output = ""
+	s.OutputOffset = p.cursor
+	return s
 }
 
 func (p *shellProcess) observe(budget int) Snapshot {
@@ -454,10 +490,6 @@ func (p *shellProcess) observe(budget int) Snapshot {
 		s.Truncated = true
 	}
 	index := int(start - p.dropped)
-	if index > len(p.buffer) {
-		index = len(p.buffer)
-	}
-	data := p.buffer[index:]
 	if budget <= 0 {
 		budget = 10000
 	}
@@ -465,16 +497,23 @@ func (p *shellProcess) observe(budget int) Snapshot {
 		budget = 10000
 	}
 	max := budget * 4
-	if len(data) > max {
-		data = data[:max]
+	data := p.buffer.bytes(index, max)
+	if p.buffer.size-index > max {
 		for len(data) > 0 && !utf8.Valid(data) {
 			data = data[:len(data)-1]
 		}
 		s.Truncated = true
 	}
-	s.Output = cleanUnicodeControls(string(data))
+	s.Output = string(data)
 	s.OutputOffset = start
 	p.cursor = start + int64(len(data))
+	if p.snapshot.Status == "exited" && p.cursor == p.total {
+		// Why: completed handles remain addressable, but keeping their already
+		// consumed 1MiB windows can pin 256MiB per manager for no future reader.
+		// The separate immutable snapshot tail still serves runtime previews.
+		p.buffer = outputRing{}
+		p.dropped = p.total
+	}
 	return s
 }
 
@@ -495,19 +534,57 @@ func (m *Manager) Terminate(id int64) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	p.terminate.Do(func() { killCmd(p.cmd) })
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	stopped := p.requestStop()
+	select {
+	case <-stopped:
+	case <-timer.C:
+		return p.peek(), fmt.Errorf("process termination pending")
+	}
 	select {
 	case <-p.done:
-	case <-time.After(2 * time.Second):
+	case <-timer.C:
 		return p.observe(10000), fmt.Errorf("process termination pending")
 	}
 	return p.observe(10000), nil
 }
 
+func (p *shellProcess) requestStop() <-chan struct{} {
+	p.terminate.Do(func() {
+		// Windows tree fallback can take time. A single owned helper per process
+		// lets batch shutdown signal every tree without serial helper delays.
+		go func() {
+			defer close(p.stopped)
+			p.control.Lock()
+			defer p.control.Unlock()
+			p.mu.Lock()
+			live := p.snapshot.Status == "running"
+			p.mu.Unlock()
+			// Raw process-group IDs can be reused after Wait. Never signal an
+			// already-finished command when users stop a retained terminal handle.
+			if live {
+				killCmd(p.cmd)
+			}
+		}()
+	})
+	return p.stopped
+}
+
+func requestStops(ps []*shellProcess) []<-chan struct{} {
+	stopped := make([]<-chan struct{}, 0, len(ps))
+	for _, p := range ps {
+		stopped = append(stopped, p.requestStop())
+	}
+	return stopped
+}
+
 func (m *Manager) Close() {
 	m.mu.Lock()
 	if m.closed {
+		done := m.closeDone
 		m.mu.Unlock()
+		<-done
 		return
 	}
 	m.closed = true
@@ -516,23 +593,25 @@ func (m *Manager) Close() {
 		ps = append(ps, p)
 	}
 	m.mu.Unlock()
-	for _, p := range ps {
-		p.mu.Lock()
-		live := p.snapshot.Status == "running"
-		p.mu.Unlock()
-		if live {
-			p.terminate.Do(func() { killCmd(p.cmd) })
-		}
+	stopped := requestStops(ps)
+	for _, done := range stopped {
+		<-done
 	}
 	for _, p := range ps {
-		select {
-		case <-p.done:
-		case <-time.After(2 * time.Second):
+		// Close is an owner-completion barrier, not an observer timeout. Removing
+		// logs or session state while a writer/listener still runs permits late
+		// writes after deletion. Terminate(All) provide bounded observation.
+		<-p.done
+		if p.publisher != nil {
+			// A finished process is not necessarily a durably published process.
+			// Keep session teardown behind its terminal lifecycle event.
+			<-p.publisher.done
 		}
 		if p.temporary {
 			_ = os.Remove(p.snapshot.OutputFile)
 		}
 	}
+	close(m.closeDone)
 }
 
 func ResolveShell(runtime ShellRuntime, path string, login bool) (Shell, error) {
@@ -582,9 +661,29 @@ func ResolveShell(runtime ShellRuntime, path string, login bool) (Shell, error) 
 
 // TerminateAll stops current process trees while keeping the manager reusable.
 func (m *Manager) TerminateAll() {
-	for _, snapshot := range m.Snapshots() {
-		if snapshot.Status == "running" {
-			_, _ = m.Terminate(snapshot.SessionID)
+	m.mu.Lock()
+	ps := make([]*shellProcess, 0, len(m.processes))
+	for _, p := range m.processes {
+		ps = append(ps, p)
+	}
+	m.mu.Unlock()
+	// Stop every tree before waiting; one slow drainer must not delay signaling
+	// all the other session-owned processes.
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	stopped := requestStops(ps)
+	for _, done := range stopped {
+		select {
+		case <-done:
+		case <-timer.C:
+			return
+		}
+	}
+	for _, p := range ps {
+		select {
+		case <-p.done:
+		case <-timer.C:
+			return
 		}
 	}
 }

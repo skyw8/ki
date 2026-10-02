@@ -4,5 +4,7 @@
 // owns session creation, history selection, providers and run orchestration.
 // Agent identity, admission, generation statistics and durable records belong
 // to internal/agent rather than these schema/result adapters.
+// Mailbox waits reject timeouts outside the schema's inclusive bounds before
+// converting milliseconds to a duration; omitted or null timeouts use defaults.
 // Cross-package contracts: docs/tools.md.
 package agenttools

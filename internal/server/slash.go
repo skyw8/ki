@@ -117,8 +117,8 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 		profile = toolProfile(info)
 		// Why this catalog does not resolve Agent depth: the tool list shown to
 		// clients must match the tool list sent to the provider, which is
-		// deliberately independent of the session's Agent depth. A deep session
-		// still reports Agent; the spawn call itself refuses past the limit.
+		// deliberately independent of depth. Admission limits active child turns
+		// per root rather than changing tool exposure in a deep session.
 	} else if ref := s.registry.Default(); ref.Provider != "" && ref.Model != "" {
 		// Settings can be opened before a session exists. Use the last selected
 		// model when it is available, while retaining a useful fallback catalog
@@ -461,10 +461,28 @@ func (s *Server) occupy(parent context.Context, id string) (*runState, context.C
 	defer s.mu.Unlock()
 	s.runtimeMu.Lock()
 	closed := s.runtimeClosed
+	deleting := s.deleting[id]
+	stopping := s.stopping[id] > 0
+	if !closed && !deleting && !stopping {
+		s.addSessionWriterLocked(id)
+	}
 	s.runtimeMu.Unlock()
 	if closed {
 		return nil, nil, errRuntimeClosed
 	}
+	if deleting {
+		return nil, nil, errSessionNotFound
+	}
+	if stopping {
+		return nil, nil, errSessionBusy
+	}
+	// Every error before ownership is established must release this reservation.
+	claimed := false
+	defer func() {
+		if !claimed {
+			s.finishSessionWriter(id)
+		}
+	}()
 	if st, ok := s.runs[id]; ok {
 		select {
 		case <-st.done:
@@ -478,10 +496,11 @@ func (s *Server) occupy(parent context.Context, id string) (*runState, context.C
 		cancel()
 		return nil, nil, fmt.Errorf("new run id: %w", err)
 	}
-	st := &runState{cancel: cancel, runID: runID, done: make(chan struct{}), partial: -1}
+	st := &runState{cancel: cancel, runID: runID, done: make(chan struct{}), released: make(chan struct{}), partial: -1}
 	st.wait = sync.NewCond(&st.mu)
 	s.forgetReplayLocked(id)
 	s.runs[id] = st
+	claimed = true
 	// Green dot for every other client, not just the one that prompted.
 	s.publishInvalidation(scopeSessions)
 	return st, ctx, nil
@@ -496,7 +515,13 @@ func (s *Server) release(id string, st *runState) {
 	if st == nil {
 		return
 	}
-	st.cancel()
+	if st.released != nil {
+		defer s.finishSessionWriter(id)
+		defer close(st.released)
+	}
+	if st.cancel != nil {
+		st.cancel()
+	}
 	st.mu.Lock()
 	runID := st.runID
 	external := cloneExternal(st.external)
@@ -638,7 +663,9 @@ func (s *Server) cancelRun(sessionID string, st *runState, reason, source string
 	if publish && first {
 		s.publishRunAborted(sessionID, reason, source)
 	}
-	st.cancel()
+	if st.cancel != nil {
+		st.cancel()
+	}
 }
 
 func runCancellation(st *runState) (string, string) {
@@ -717,13 +744,13 @@ func (s *Server) dispatchQueue(id string) {
 	// Pin this dispatch on runtimeWG under the same lock as runtimeClosed so
 	// Shutdown's Wait cannot return while dequeue→occupy is still in flight.
 	s.runtimeMu.Lock()
-	if s.runtimeClosed {
+	if s.runtimeClosed || s.deleting[id] || s.stopping[id] > 0 {
 		s.runtimeMu.Unlock()
 		return
 	}
-	s.runtimeWG.Add(1)
+	s.addSessionWriterLocked(id)
 	s.runtimeMu.Unlock()
-	defer s.runtimeWG.Done()
+	defer s.finishSessionWriter(id)
 	if s.running(id) {
 		return
 	}
@@ -853,6 +880,10 @@ func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id stri
 	gate := s.inputGate(id)
 	gate.Lock()
 	defer gate.Unlock()
+	if err := s.sessionAdmissionError(id); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	if err := s.flushContextMessages(id, 0); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

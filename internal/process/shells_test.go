@@ -64,6 +64,27 @@ func TestShellEnvironmentCarriesProxyVariables(t *testing.T) {
 	}
 }
 
+func TestShellEnvironmentOverridesInheritedPagersAndColorLocally(t *testing.T) {
+	defaults := map[string]string{
+		"PAGER": "", "GIT_PAGER": "", "GH_PAGER": "",
+		"NO_COLOR": "1", "TERM": "dumb", "COLORTERM": "",
+	}
+	for key := range defaults {
+		t.Setenv(key, "inherited-value")
+	}
+	for _, kind := range []shellKind{shellBash, shellPowerShell} {
+		values := envToMap((Shell{kind: kind, path: "test-shell"}).env())
+		for key, want := range defaults {
+			if got := values[key]; got != want {
+				t.Fatalf("%s shell %s=%q want %q", kind, key, got, want)
+			}
+			if got := os.Getenv(key); got != "inherited-value" {
+				t.Fatalf("child environment mutated host %s=%q", key, got)
+			}
+		}
+	}
+}
+
 func TestFindWindowsBashEnvironmentPriority(t *testing.T) {
 	root := t.TempDir()
 	kiPath := filepath.Join(root, "ki", "bash.exe")

@@ -1,6 +1,8 @@
 package tool
 
 import (
+	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -35,7 +37,8 @@ func TestValidateSchema(t *testing.T) {
 		{"boolean ok", map[string]any{"file_path": "/a", "content": "x", "flag": true}, nil},
 		{"array ok", map[string]any{"file_path": "/a", "content": "x", "items": []any{1, 2}}, nil},
 		{"object ok", map[string]any{"file_path": "/a", "content": "x", "meta": map[string]any{"k": 1}}, nil},
-		{"null ignored", map[string]any{"file_path": "/a", "content": nil}, nil},
+		{"required null", map[string]any{"file_path": "/a", "content": nil}, []string{"  - content: required field"}},
+		{"optional null ignored", map[string]any{"file_path": "/a", "content": "x", "offset": nil}, nil},
 	}
 	for _, c := range cases {
 		got := ValidateSchema(schema, c.args)
@@ -47,6 +50,28 @@ func TestValidateSchema(t *testing.T) {
 			if got[i] != c.want[i] {
 				t.Errorf("%s: err %d = %q, want %q", c.name, i, got[i], c.want[i])
 			}
+		}
+	}
+}
+
+func TestSchemaNumericRepresentations(t *testing.T) {
+	for _, typ := range []string{"integer", "number"} {
+		schema := map[string]any{"properties": map[string]any{"value": map[string]any{"type": typ}}}
+		for _, value := range []any{int32(3), int64(3), float64(3), json.Number("3")} {
+			if errs := ValidateSchema(schema, map[string]any{"value": value}); len(errs) != 0 {
+				t.Fatalf("%s rejected %T: %v", typ, value, errs)
+			}
+		}
+		for _, value := range []any{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			if errs := ValidateSchema(schema, map[string]any{"value": value}); len(errs) == 0 {
+				t.Fatalf("%s accepted non-finite %v", typ, value)
+			}
+		}
+	}
+	schema := map[string]any{"properties": map[string]any{"value": map[string]any{"type": "integer"}}}
+	for _, value := range []any{float64(0x1p63), math.Nextafter(-0x1p63, math.Inf(-1)), json.Number("9223372036854775808")} {
+		if errs := ValidateSchema(schema, map[string]any{"value": value}); len(errs) == 0 {
+			t.Fatalf("integer accepted unrepresentable %v", value)
 		}
 	}
 }

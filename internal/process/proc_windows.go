@@ -3,6 +3,7 @@
 package process
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strconv"
@@ -87,13 +88,20 @@ func killCmd(cmd *exec.Cmd) {
 		for _, pid := range descendants {
 			if proc, err := os.FindProcess(int(pid)); err == nil {
 				_ = proc.Kill()
+				// FindProcess owns a Windows handle even though this process is
+				// not our child and cannot be reaped with Wait.
+				_ = proc.Release()
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	// Belt and braces for launchers whose children are not linked through the
 	// toolhelp parent field, then the launcher itself.
-	_ = exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	taskkill := exec.CommandContext(ctx, "taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid))
+	taskkill.WaitDelay = ProcessWaitDelay
+	_ = taskkill.Run()
 	_ = cmd.Process.Kill()
 }
 
@@ -110,9 +118,16 @@ func descendantPIDs(root uint32) []uint32 {
 		children[entry.ParentProcessID] = append(children[entry.ParentProcessID], entry.ProcessID)
 	}
 	var out []uint32
+	seen := map[uint32]bool{root: true}
 	var walk func(uint32)
 	walk = func(parent uint32) {
 		for _, child := range children[parent] {
+			// A PID reused since a child's birth can make the snapshot's stale
+			// parent links cyclic. Never recurse forever or target the root twice.
+			if seen[child] {
+				continue
+			}
+			seen[child] = true
 			walk(child)
 			out = append(out, child)
 		}

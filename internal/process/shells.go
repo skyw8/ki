@@ -65,6 +65,17 @@ func (s Shell) env() []string {
 	// Why: shell commands can launch networked tools such as npm or curl, so
 	// pass the same proxy environment explicitly across every process boundary.
 	env := processenv.WithProxyEnvironment(processenv.ChildEnvironment())
+	// Agent terminals are transports, not a human pager/color UI. Inherited
+	// pager settings can otherwise park git diff/help behind an unseen prompt,
+	// especially with tty=true. Keep these defaults local to the child.
+	for _, value := range [][2]string{
+		// Empty pager overrides disable git/gh paging without requiring a
+		// POSIX cat executable on native Windows shells.
+		{"PAGER", ""}, {"GIT_PAGER", ""}, {"GH_PAGER", ""},
+		{"NO_COLOR", "1"}, {"TERM", "dumb"}, {"COLORTERM", ""},
+	} {
+		env = setEnvValue(env, value[0], value[1])
+	}
 	dir, toolsErr := search.ToolsDir()
 	if toolsErr == nil {
 		env = withBundledSearchTools(env, dir, s.pathDirs, s.kind)

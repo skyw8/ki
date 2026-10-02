@@ -171,9 +171,14 @@
 // the transcript leaf and reach existing SSE and session GET runtime projections.
 // process.Manager owns exec_command/write_stdin processes across turns.
 // Existing abort supports turn (default), process and structural tree scopes.
-// Shutdown sets runtimeClosed so occupy and queue dispatch refuse new runs, then
-// drains runners including their completion callbacks before closing process
-// managers (release can otherwise chain a late dispatch or create a late manager).
+// Shutdown fences admission and starts one owned cleanup: warmups, scheduled root
+// occupies, child runners and their final callbacks drain before output files
+// close. Existing managers are fenced/terminated concurrently with runner
+// cancellation, so a stalled provider cannot keep terminals alive. Concurrent
+// callers share its completion barrier; a
+// caller deadline returns without abandoning cleanup. Deletion fences agent
+// reservations before traversal, tombstones selected sessions, and drains writers
+// through release before removing files; flat/cross-workspace edges do not cascade.
 //
 // Routes and run lifecycle: docs/architecture.md.
 // Compact session GETs project complete turns without hidden reply bodies;

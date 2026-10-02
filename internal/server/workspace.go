@@ -170,24 +170,76 @@ func (s *Server) patchWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
+	finish, err := s.beginDeletion()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	defer finish()
 	id := r.PathValue("id")
+	s.creationMu.Lock()
 	rec, ok := s.ws.Get(id)
 	if !ok {
+		s.creationMu.Unlock()
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	// Root creates accepted before this boundary have materialized under the
+	// same lock. Do not retain it while draining runners: release callbacks may
+	// themselves ask to create an unrelated root.
+	s.deletingWorkspaces[id] = true
+	s.creationMu.Unlock()
 	infos, err := session.List(s.cfg.Sessions.Root)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	var targets []session.Info
+	var reservations []<-chan struct{}
 	for _, info := range infos {
 		if m, ok := s.ws.Match(info.CWD); ok && m.ID == rec.ID {
-			if err := s.removeSessionInfo(info); err != nil {
+			release, drained, err := s.fenceAgentDeletion(info.ID)
+			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			defer release()
+			reservations = append(reservations, drained)
 		}
+	}
+	// Successful spawns just before their fence already materialized sessions.
+	// Refresh after all workspace agent roots are fenced; rejected reservations
+	// are drained before removal by deleteSessionInfos.
+	seen := map[string]bool{}
+	for {
+		infos, err = session.List(s.cfg.Sessions.Root)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var added []session.Info
+		for _, info := range infos {
+			if m, ok := s.ws.Match(info.CWD); ok && m.ID == rec.ID && !seen[info.ID] {
+				seen[info.ID] = true
+				added = append(added, info)
+				targets = append(targets, info)
+				release, drained, err := s.fenceAgentDeletion(info.ID)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				defer release()
+				reservations = append(reservations, drained)
+			}
+		}
+		if len(added) == 0 {
+			break
+		}
+		s.fenceDeletionInputs(added)
+	}
+	if err := s.deleteSessionInfos(targets, reservations); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	if _, err := s.ws.Delete(id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -256,6 +308,12 @@ func (s *Server) moveWorkspaceSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
+	finish, err := s.beginDeletion()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	defer finish()
 	sess, err := s.open(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -270,17 +328,56 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		ForkMode:        sess.Header.EffectiveForkMode(),
 	}
 	_ = sess.Close()
-
-	infos, err := session.List(s.cfg.Sessions.Root)
+	// Fence before traversal: a live descendant can otherwise spawn after the
+	// snapshot and survive deletion as an orphan. Flat/workspace edges remain
+	// governed by the same collection rules below.
+	release, drained, err := s.fenceAgentDeletion(targetID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer release()
+	s.markDeleting([]string{targetID})
+
+	var targets []session.Info
+	fenced := map[string]bool{}
+	for {
+		infos, err := session.List(s.cfg.Sessions.Root)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		targets = s.collectSessionTree(infos, target)
+		var added []session.Info
+		for _, info := range targets {
+			if !fenced[info.ID] {
+				fenced[info.ID] = true
+				added = append(added, info)
+			}
+		}
+		if len(added) == 0 {
+			break
+		}
+		// Finite: every discovered parent is fenced before its preaccepted fork
+		// drains. Refresh to include those forks; no fenced parent can add more.
+		s.fenceDeletionInputs(added)
+	}
+	slices.Reverse(targets)
+	if err := s.deleteSessionInfos(targets, []<-chan struct{}{drained}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.publishInvalidation(scopeSessions)
+	s.publishInvalidation(scopeWorkspaces)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) collectSessionTree(infos []session.Info, target session.Info) []session.Info {
 	byID := make(map[string]session.Info, len(infos)+1)
 	for _, info := range infos {
 		byID[info.ID] = info
 	}
-	byID[targetID] = target
+	byID[target.ID] = target
 	children := make(map[string][]session.Info)
 	for _, info := range infos {
 		if info.ParentSessionID == "" || info.ForkMode != session.ForkModeTree {
@@ -309,16 +406,8 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 			collect(child.ID)
 		}
 	}
-	collect(targetID)
-	for _, info := range slices.Backward(targets) {
-		if err := s.removeSessionInfo(info); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-	s.publishInvalidation(scopeSessions)
-	s.publishInvalidation(scopeWorkspaces)
-	w.WriteHeader(http.StatusNoContent)
+	collect(target.ID)
+	return targets
 }
 
 func sameSessionWorkspace(s *Server, a, b session.Info) bool {
@@ -374,7 +463,11 @@ func (s *Server) abortRun(id string) {
 		return
 	}
 	s.cancelRun(id, st, cancelReasonSessionDelete, "server", false)
-	<-st.done
+	if st.released != nil {
+		<-st.released
+	} else {
+		<-st.done
+	}
 }
 
 func (s *Server) searchSessions(w http.ResponseWriter, r *http.Request) {

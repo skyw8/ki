@@ -48,7 +48,7 @@ exec_command 的完整输出文件也由该 store 创建：进程日志落在同
 
 关闭 `spawn_agent` 只影响后续创建，不取消已有 agent。六个 agent 工具和两个 shell 工具分别有开关。全局开关、extension hooks、事件和遥测都使用 canonical 名；工具调用与配对的 toolResult 保留模型请求的拼写。`requestedToolName` 在执行事件中记录原始名称。extension 的原始注册名仍用于 `tool.execute` RPC，模型看到 snake_case，同时接受原始名与 PascalCase。非法名、canonical/alias 冲突以及内置工具保留名冲突在注册时原子拒绝。
 
-工具执行两段化（对齐 pi prepare/execute）：先 **prepare**（找工具 → `tool.Validator.Validate` schema 校验 → `BeforeTool` / lifecycle `tool_call` sync，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` / `tool_result` 变换结果）。扩展订事件见 [extension.md](extension.md)。`BeforeTool` 和 `tool.Result.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。内置工具和扩展工具都校验 required 和参数类型。
+工具执行两段化（对齐 pi prepare/execute）：先 **prepare**（找工具 → `tool.Validator.Validate` schema 校验 → `BeforeTool` / lifecycle `tool_call` sync，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` / `tool_result` 变换结果）。扩展订事件见 [extension.md](extension.md)。`BeforeTool` 和 `tool.Result.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。内置工具和扩展工具都校验 required 和参数类型：mandatory null 拒绝，optional null 使用工具默认值；整数拒绝小数、非有限值和越界转换。共享 schema 子集不执行 numeric bounds，shell/agent 适配器在转换 duration/handle 前单独校验或 clamp。
 
 | 工具 | 参数 | 结果 |
 |---|---|---|
@@ -143,14 +143,17 @@ exec_command 的完整输出文件也由该 store 创建：进程日志落在同
 
 `process.Manager` 按 session 拥有进程，生命周期独立于一次工具调用或 agent turn。每次 exec 都是新进程，默认 cwd 为 session cwd；显式 workdir 也不会改变后续调用的 cwd。
 
-- `login=true`、`tty=false`、`yield_time_ms=10000`、`max_output_tokens=10000` 为默认值。exec 观察范围 250–30000ms；达到观察预算返回 handle，命令继续运行，没有前台提升或 sleep 特例。
+- `login=true`、`tty=false`、`yield_time_ms=10000`、`max_output_tokens=10000` 为默认值。exec 观察范围 250–30000ms；非负整数 yield 在转换 duration 前 clamp，负值拒绝。输出预算必须为正整数，内部封顶 10000 tokens。达到观察预算返回 handle，命令继续运行，没有前台提升或 sleep 特例。
 - Windows 默认优先 PowerShell（pwsh，其次 Windows PowerShell），再回退 Git Bash；Unix 默认使用发现的 Bash。可显式选 bash/sh/zsh/pwsh/powershell 或主机绝对路径。找不到所选 shell 时执行报错，server 可正常启动。
 - Unix 使用 PTY，Windows 使用 ConPTY。只有 `tty=true` 支持普通 stdin 输入；pipe 模式拒绝普通输入，但 `chars="\u0003"` 仍能请求进程组中断。Ctrl-C 不保证进程退出，强制停止由 session abort 的 process scope 执行。
-- 空 chars 的观察默认 5000ms、范围 5000–300000ms；非空 chars 默认 250ms、范围 250–30000ms。取消工具观察只结束等待，保留进程及未读输出。handle 是最多 53 位的正整数，不能跨 session 使用。
-- stdout/stderr 混排；原始字节写入完整输出文件。实时增量去除 ANSI/控制字符，UTF-8 边界安全。内存缓冲最多 1MiB，模型每次收到尚未读出的增量并受输出预算限制，预算超过上限会被截断；完整输出可通过 `read` 分页。实时快照保留 16KiB 尾部；增量推送节流 100ms / 8KiB。
-- 每个 session 最多 64 个 live 进程；已退出且输出已读完的 handle 可回收，记录最多保留 256 个。达到 live 上限直接拒绝创建，不淘汰仍在运行的进程。
-- 完整 shell 日志由 OutputSpool 创建，但不走普通文本结果的 8MiB 前缀截断；创建失败时退回由 manager 清理的临时文件。进程退出只释放 OS 资源；显式停止终止进程树，session 删除/server shutdown 才关闭 manager 并清理日志。
+- 空 chars 的观察默认 5000ms、范围 5000–300000ms；非空 chars 默认 250ms、范围 250–30000ms。取消工具观察只结束等待并返回有效 session 快照，不杀进程；启动前/排队中的取消不写 stdin、不消费输出。已经进行的观察返回本次已读增量并正常推进游标，预算外输出留待续读。handle 是最多 53 位的正整数，不能跨 session 使用。
+- stdout/stderr 混排；原始字节写入完整输出文件。实时增量去除 ANSI/控制字符，UTF-8 边界安全。内存采用最多 1MiB 的环形缓冲，不在每次溢出时复制整个窗口；模型每次收到尚未读出的增量并受输出预算限制，预算超过上限会被截断；完整输出可通过 `read` 分页。
+- 实时快照保留 16KiB 尾部，delta 至多 8KiB；进度观察节流 100ms，单进程最多 10000 个中间更新。manager listener 异步交付，只保留最新 pending progress；慢持久化不能阻塞原始输出 drain。中间预览可合并或省略，不保证 delta 拼接能还原日志；初始/终态保留，finish 发布剩余 delta。最终输出以日志及 write_stdin 游标为准。
+- 每个 session 最多 64 个 live 进程；已退出且输出已读完的 handle 可回收，记录最多保留 256 个。已消费完的退出进程立即释放 retention window，仍保留不可变的 16KiB 预览和游标，避免每 manager 额外钉住 256MiB 的无用已读缓冲。达到 live 上限直接拒绝创建，不淘汰仍在运行的进程。
+- 完整 shell 日志由 OutputSpool 创建，但不走普通文本结果的 8MiB 前缀截断；创建失败时退回由 manager 清理的临时文件。写入失败仍继续 drain 外部命令，并单独报告 I/O 故障。进程退出只释放 OS 资源；显式停止终止进程树，已退出对象不再发送 raw process-group signal。session 删除/server shutdown 才关闭 manager 并清理日志；Close 完成包含最后 listener 回调，不能在自己的 listener 中同步关闭同一 manager。
+- root 退出后的输出 drain 有 200ms 上限：Unix 强制 PTY 截断明确报告，Windows ConPTY 正常 EOF 依赖终端关闭的路径不误报为截断。进程树控制不是 sandbox，不承诺回收 Unix 上显式脱离原 shell 生命周期的 daemon；不通过对已退出 PID/PGID 再发信号猜测归属。
 - 子进程继承 Ki 的代理环境和扩展 PATH；Bash profile 之后仍通过 BASH_ENV shim 恢复内嵌 rg/fd 和扩展路径。PowerShell 的 login=false 使用 NoProfile，pipe 模式使用 NonInteractive；错误及原生命令非零退出继续传播。
+- shell 子进程设置空 PAGER/GIT_PAGER/GH_PAGER、NO_COLOR=1、TERM=dumb、空 COLORTERM，避免继承的 pager 将 tty=true 命令停在不可见交互界面；不依赖 Windows 的外部 cat，也不修改 host 环境、locale 或 extension sidecar 环境。命令仍可显式启动交互程序或覆盖这些环境变量。
 - 非零退出码返回 error tool result，同时遥测记录 completed / command_nonzero / external_command。工具参数、观察取消与进程交互故障分别记录，避免把外部命令错误算作 harness 故障。
 
 ```json
@@ -164,13 +167,15 @@ exec_command 的完整输出文件也由该 store 创建：进程日志落在同
 `agent.Controller` 保存逻辑身份、结构父子关系、运行代次和 pending follow-up，shell manager 单独拥有进程。工具层只依赖 server 实现的 `agent.Runtime`。
 
 - 根为 `/root`。child 的 task_name 使用 1–64 个小写 ASCII 字母、数字或下划线，不能为 root；同一 root 的完整路径不可重复。child 可用相对自身的路径，或 `/root/...` 绝对逻辑路径；`..`、`.`、跨 root 以及旧 parent/main 保留名不解析。
-- spawn 立即返回，child 始终 detached。`fork_turns` 默认 all，可为 none 或正整数（字符串），复制完整的已完成 user turn，排除触发当前轮的 user 输入及之后内容。QueueOnly mailbox 消息不算新的 user turn；继承工具调用/结果配对与附件路径。child 使用 parent 的 provider/model/cwd，system/tools 前缀相同；身份放在首条 user 信封里。
+- spawn 立即返回，child 始终 detached。身份、初始 generation 和持久输入在同一次接纳中发布，不暴露可被 stop/follow-up 抢占的半初始化 task。`fork_turns` 默认 all，可为 none 或正整数（字符串），首尾空白统一忽略；复制完整的已完成 user turn，排除触发当前轮的 user 输入及之后内容。QueueOnly mailbox 消息不算新的 user turn；继承工具调用/结果配对与附件路径。child 使用 parent 的 provider/model/cwd，身份放在首条 user 信封里。默认 system/tools 前缀相同；全局禁用项同样生效，extension activeTools 保持 session-scoped 选择，不是继承的安全权限。
 - 没有固定 depth=3 限制。`agents.max_concurrent` 默认 4，按 root 限制活跃 child turn；root 自己不计数，正在 wait_agent 的 child 仍占名额。完成/被中断的身份不占名额且持续可寻址，不存在已完成常驻池。
-- send_message 先写 context queue，再通知 live Inbox；idle 时等待下次显式任务。followup_task 使用稳定 clientRequestId 持久排队：idle 且有名额时开新代次；busy 或容量满时排队，并在代次结束/名额释放时调度。它不取消或重启正在执行的轮次。
-- wait_agent 默认 30s，范围 10s–1h；收到 mailbox 或用户 steer 时醒来，观察超时/取消不影响其它 agent。模型随后正常 drain mailbox；list/wait 都不认领完成通知。
+- send_message 先写 context queue，再通知 live Inbox；idle 时等待下次显式任务。followup_task 使用稳定 clientRequestId 持久排队：idle 且有名额时开新代次；busy 或容量满时排队，并在代次结束/名额释放时调度。它不取消或重启正在执行的轮次。代次结束后仍有 pending 且容量不足时保持 Pending/waiting_resource，不能以 Completed 隐藏已接受工作；仅取消 pending 不抑制上一代完成结果。
+- wait_agent 默认 30s，范围 10s–1h；显式越界值拒绝，而不是 Codex 的低值 clamp。收到 mailbox 或用户 steer 时醒来，观察超时/取消不影响其它 agent。模型随后正常 drain mailbox；list/wait 都不认领完成通知。
 - 每代次完成结果自动发给结构 parent，按 taskId/generation 在实际落入 transcript 时做 ledger 去重。live parent 在下一轮 model request 前消费；idle parent 接受上下文但不自动启动模型轮次。跨 queue、transcript、agent.json 不存在事务，不承诺崩溃时 exactly-once。
 - interrupt_agent 拒绝 root/self，终止当前 agent turn 并丢弃其 pending tasks，保持身份可由 followup_task 再次启动；独立 shell 进程继续运行。普通 session abort 默认 scope=turn；scope=process 配合数值 session_id 强制停止进程；scope=tree 停止结构后代 agent 和进程。
-- agent.json version 3 经 internal/state 迁移，保留稳定路径、pending 输入及 delivery ledger。server 恢复先注册全部身份，再恢复 pending tasks；重启前 running 改为 interrupted，不恢复 OS 进程 handle。删除 session 清理 agent 与其 process manager；server shutdown 等待 runner 和完成回调收尾。
+- agent.json version 3 经 internal/state 迁移，保留稳定路径、pending 输入及 delivery ledger。server 恢复先注册全部身份，再恢复 pending tasks；重启前 running 改为 interrupted，不恢复 OS 进程 handle。
+- 每代次 settlement 释放自身 context。host Controller.CloseContext / Server.Shutdown 使用共享清理屏障；调用方 deadline 只结束观察并返回 context 错误，已开始的 owned cleanup 继续。server 先 fence/cancel 并开始关闭已注册 manager，及时停止 OS 进程；最后的共享文件/输出 store/extension 清理等待已接纳 spawn、所有代次 root/child writer、release、完成回调和 manager final publication。不能逐个等待 2s 后假定 writer 已结束。
+- 删除先 fence agent subtree 和 session occupy/dispatch，再等已接纳 spawn 和 writers 收尾、遍历 tree 并清理 manager/目录。删除 tombstone 防止队列或 late root setup 重新创建 owner；flat fork 和其它 root 不受 tree cascade 影响。
 
 ```json
 {"task_name":"review","message":"Review the changes and report concrete issues.","fork_turns":"all"}
@@ -184,4 +189,4 @@ agent snapshot 的 revision 单调递增；phase 区分 starting/executing/waiti
 
 进程带 originating run_id/tool_call_id/agent_id/generation 与 revision，UI 即使 agent 已完成仍能显示其 live 进程。session inspect --json 的 analysis.runtime 与 trace --json 的 runtime/sideband 显示 last-known 投影；analysis.timing 按工具/消息等待区间并集统计，未知时间保留 unknownMs。工具 telemetry 带 generation、原始请求名、通信收据及 wait wake_reason，避免并行 duration 相加。
 
-递归 tree stop 先阻止该子树的新 spawn/follow-up，再中断已有 agent，最后停止它们拥有的进程；清理结束后释放临时屏障，稳定身份仍可 follow-up。其它 sibling/root 的任务不受该屏障影响。Unix PTY 使用独立 pollable descriptor，关闭终端可释放堵塞的 stdin 写入；输出 spool 写入或收尾失败明确报告 harness I/O 错误。
+递归 tree stop 临时阻止该子树的新 spawn/follow-up 和 session occupy/dispatch，再中断已有 agent，最后停止它们拥有的进程；清理结束后释放临时屏障，稳定身份仍可 follow-up，保留的显式队列工作才可重新 dispatch。其它 sibling/root 的任务不受该屏障影响。Unix PTY 使用独立 close-on-exec pollable descriptor，关闭终端可释放堵塞的 stdin 写入；输出 spool 写入或收尾失败明确报告 harness I/O 错误。

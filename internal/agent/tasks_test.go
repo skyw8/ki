@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ki/internal/state"
@@ -394,6 +395,262 @@ func TestControllerChildSurvivesCallerCancel(t *testing.T) {
 		current, _ := store.Get(launch.TaskID)
 		return current.Status == Completed
 	}, "child never completed after the caller was cancelled")
+}
+
+func TestControllerSettledRunCancelsOwnedContext(t *testing.T) {
+	for _, runErr := range []error{nil, errors.New("runner failed")} {
+		t.Run(fmt.Sprint(runErr), func(t *testing.T) {
+			store := NewController()
+			defer store.Close()
+			runContext := make(chan context.Context, 1)
+			launch, err := store.Start(t.Context(), Request{Prompt: "task"}, "", func(ctx context.Context, _, _ string) (Completion, error) {
+				runContext <- ctx
+				return Completion{}, runErr
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := <-runContext
+			if _, err := store.Wait(t.Context(), launch.TaskID); err != nil {
+				t.Fatal(err)
+			}
+			// Context-owned watchers must be released on normal settlement, not
+			// only if the agent is later interrupted or the server is closed.
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+				t.Fatal("settled generation retained its owned context")
+			}
+		})
+	}
+}
+
+type initialAdmissionContext struct {
+	context.Context
+	checked chan struct{}
+	release chan struct{}
+}
+
+func (c initialAdmissionContext) Err() error {
+	close(c.checked)
+	<-c.release
+	return c.Context.Err()
+}
+
+func TestControllerInitialInputAdmittedBeforeIdentityPublication(t *testing.T) {
+	store := NewController()
+	defer store.Close()
+	ctx := initialAdmissionContext{Context: t.Context(), checked: make(chan struct{}), release: make(chan struct{})}
+	launched := make(chan Launch, 1)
+	launchErr := make(chan error, 1)
+	go func() {
+		launch, err := store.Start(ctx, Request{SessionID: "child", RootSessionID: "root", TaskPath: "/root/child", Prompt: "initial input"}, "",
+			func(_ context.Context, _, prompt string) (Completion, error) {
+				return Completion{Result: prompt}, nil
+			})
+		launched <- launch
+		launchErr <- err
+	}()
+	<-ctx.checked
+	_, exposed := store.TaskForSession("child")
+	close(ctx.release)
+	launch := <-launched
+	if err := <-launchErr; err != nil {
+		t.Fatal(err)
+	}
+	if exposed {
+		t.Error("observer saw an identity before its initial input was admitted")
+	}
+	if snapshot, err := store.Wait(t.Context(), launch.TaskID); err != nil || snapshot.Generation != 1 || snapshot.Result != "initial input" {
+		t.Fatalf("initial generation: %+v %v", snapshot, err)
+	}
+}
+
+func TestControllerCloseContextSharesFullCleanupBarrier(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := NewController()
+		cancelled := make(chan context.Context, 2)
+		release := make(chan struct{})
+		var launches []Launch
+		for _, root := range []string{"root", "other"} {
+			launch, err := store.Start(t.Context(), Request{RootSessionID: root}, "", func(ctx context.Context, _, _ string) (Completion, error) {
+				<-ctx.Done()
+				cancelled <- ctx
+				<-release // Represents a provider/notification callback still unwinding.
+				return Completion{}, ctx.Err()
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			launches = append(launches, launch)
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), time.Hour)
+		defer cancel()
+		if err := store.CloseContext(ctx); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("close deadline: %v", err)
+		}
+		for range launches {
+			<-cancelled
+		}
+		if _, err := store.Start(t.Context(), Request{}, "", func(context.Context, string, string) (Completion, error) { return Completion{}, nil }); !errors.Is(err, errTaskStoreClosed) {
+			t.Fatalf("start after close: %v", err)
+		}
+		for _, launch := range launches {
+			snapshot, _ := store.Get(launch.TaskID)
+			if snapshot.Status != Interrupted {
+				t.Fatalf("deadline abandoned cancellation: %+v", snapshot)
+			}
+		}
+		closed := make(chan struct{})
+		go func() {
+			store.Close()
+			close(closed)
+		}()
+		synctest.Wait()
+		select {
+		case <-closed:
+			t.Fatal("concurrent Close returned before accepted callbacks drained")
+		default:
+		}
+		close(release)
+		synctest.Wait()
+		select {
+		case <-closed:
+		default:
+			t.Fatal("Close did not observe completed cleanup")
+		}
+		cancelledObserver, cancelObserver := context.WithCancel(t.Context())
+		cancelObserver()
+		if err := store.CloseContext(cancelledObserver); err != nil {
+			t.Fatalf("completed close barrier did not win over observer cancellation: %v", err)
+		}
+	})
+}
+
+func TestControllerCloseContextDrainsReservedSpawnRollback(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := NewController()
+		release, err := store.ReservePath("root", "/root/child")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if err := store.CloseContext(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("close observer: %v", err)
+		}
+		if _, err := store.ReservePath("root", "/root/late"); !errors.Is(err, errTaskStoreClosed) {
+			t.Fatalf("reservation after close: %v", err)
+		}
+		done := make(chan struct{})
+		go func() {
+			store.Close()
+			close(done)
+		}()
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("Close abandoned the host's in-flight spawn rollback")
+		default:
+		}
+		release()
+		release()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("released spawn did not complete the shared close barrier")
+		}
+	})
+}
+
+func TestControllerStopTerminalDrainsCallbackTail(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := NewController()
+		defer store.Close()
+		tail := make(chan struct{})
+		store.tasks["child"] = &agentTask{snap: Snapshot{TaskID: "child", Status: Completed}, runDone: tail}
+		stopped := make(chan error, 1)
+		go func() {
+			_, err := store.Stop("child")
+			stopped <- err
+		}()
+		synctest.Wait()
+		select {
+		case err := <-stopped:
+			t.Fatalf("terminal Stop abandoned the callback tail: %v", err)
+		default:
+		}
+		close(tail)
+		if err := <-stopped; !errors.Is(err, errTaskNotRunning) {
+			t.Fatalf("terminal Stop changed its semantic error: %v", err)
+		}
+	})
+}
+
+func TestControllerStopDrainsSettledPublication(t *testing.T) {
+	store := NewController()
+	defer store.Close()
+	settled := make(chan struct{})
+	release := make(chan struct{})
+	store.SetListener(func(snapshot Snapshot) {
+		if snapshot.Status == Completed {
+			close(settled)
+			<-release
+		}
+	})
+	launch, err := store.Start(t.Context(), Request{}, "", func(context.Context, string, string) (Completion, error) {
+		return Completion{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-settled
+	task, _ := store.task(launch.TaskID)
+	// sync.Mutex is not a durably blocking operation for synctest.Wait.
+	// Assert the actual admission gate instead of waiting on fake time while
+	// the final publication callback intentionally holds that mutex.
+	if task.admission.TryLock() {
+		task.admission.Unlock()
+		close(release)
+		t.Fatal("final publication did not retain its admission gate")
+	}
+	attempted := make(chan struct{})
+	stopped := make(chan error, 1)
+	go func() {
+		close(attempted)
+		_, err := store.Stop(launch.TaskID)
+		stopped <- err
+	}()
+	<-attempted
+	select {
+	case err := <-stopped:
+		close(release)
+		t.Fatalf("Stop returned during final publication: %v", err)
+	default:
+	}
+	close(release)
+	if err := <-stopped; !errors.Is(err, errTaskNotRunning) {
+		t.Fatalf("settled Stop changed its semantic error: %v", err)
+	}
+}
+
+func BenchmarkControllerGetByID(b *testing.B) {
+	for _, count := range []int{1, 100, 10000} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			store := NewController()
+			for i := range count {
+				id := fmt.Sprintf("agent-%d", i)
+				store.tasks[id] = &agentTask{snap: Snapshot{TaskID: id}}
+			}
+			b.ResetTimer()
+			for range b.N {
+				if _, ok := store.Get("agent-0"); !ok {
+					b.Fatal("agent missing")
+				}
+			}
+		})
+	}
 }
 
 // messengerAgentRuntime is a runtime that can also receive SendMessage, so a

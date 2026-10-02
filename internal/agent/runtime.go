@@ -41,7 +41,8 @@ func ValidateTaskName(name string) error {
 
 // ParseForkTurns returns -1 for all and 0 for none.
 func ParseForkTurns(value string) (int, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
+	value = strings.TrimSpace(value)
+	switch strings.ToLower(value) {
 	case "", "all":
 		return -1, nil
 	case "none":

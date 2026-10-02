@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 
 	toolapi "ki/internal/tool"
 )
@@ -12,13 +14,21 @@ func AsInt(v any) (int, bool) {
 	switch n := v.(type) {
 	case int:
 		return n, true
-	case int64:
+	case int32:
 		return int(n), true
+	case int64:
+		return int(n), int64(int(n)) == n
 	case float64:
+		// Why: converting an out-of-range float to int is implementation-dependent.
+		// A wrapped handle or wait budget must never reach a runtime operation.
+		limit := math.Ldexp(1, strconv.IntSize-1)
+		if math.IsNaN(n) || n < -limit || n >= limit || math.Trunc(n) != n {
+			return 0, false
+		}
 		return int(n), true
 	case json.Number:
 		i, err := n.Int64()
-		return int(i), err == nil
+		return int(i), err == nil && int64(int(i)) == i
 	}
 	return 0, false
 }

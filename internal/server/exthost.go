@@ -42,12 +42,20 @@ type uiAnswer struct {
 
 // CreateSession creates a session for an extension host request.
 func (s *Server) CreateSession(req extension.SessionCreateRequest) (extension.SessionCreateResult, error) {
+	s.creationMu.Lock()
+	defer s.creationMu.Unlock()
+	if err := s.sessionAdmissionError(""); err != nil {
+		return extension.SessionCreateResult{}, err
+	}
 	if strings.TrimSpace(req.WorkspaceID) == "" && strings.TrimSpace(req.CWD) == "" {
 		return extension.SessionCreateResult{}, errWorkspaceOrCWDRequired
 	}
 	rec, err := s.resolveWorkspace(req.WorkspaceID, req.CWD, req.WorkspaceTitle)
 	if err != nil {
 		return extension.SessionCreateResult{}, err
+	}
+	if s.deletingWorkspaces[rec.ID] {
+		return extension.SessionCreateResult{}, errSessionNotFound
 	}
 	ref, model, err := s.registry.ResolveSpec(req.Model, req.Provider)
 	if err != nil {
@@ -172,6 +180,9 @@ func (s *Server) Enqueue(sessionID, extName string, req extension.EnqueueRequest
 	gate := s.inputGate(sessionID)
 	gate.Lock()
 	defer gate.Unlock()
+	if err := s.sessionAdmissionError(sessionID); err != nil {
+		return extension.EnqueueResult{}, err
+	}
 	dir, ok := s.sidx.Lookup(sessionID)
 	if !ok {
 		return extension.EnqueueResult{}, errSessionNotFound
@@ -426,6 +437,9 @@ func (s *Server) AppendMessage(sessionID, extName string, req extension.AppendMe
 	gate := s.inputGate(sessionID)
 	gate.Lock()
 	defer gate.Unlock()
+	if err := s.sessionAdmissionError(sessionID); err != nil {
+		return extension.AppendMessageResult{}, err
+	}
 	dir, ok := s.sidx.Lookup(sessionID)
 	if !ok {
 		return extension.AppendMessageResult{}, errSessionNotFound
@@ -471,6 +485,12 @@ func (s *Server) AppendMessage(sessionID, extName string, req extension.AppendMe
 
 // AppendEntry writes a custom jsonl entry for an extension.
 func (s *Server) AppendEntry(sessionID, extName, customType string, data any) error {
+	gate := s.inputGate(sessionID)
+	gate.Lock()
+	defer gate.Unlock()
+	if err := s.sessionAdmissionError(sessionID); err != nil {
+		return err
+	}
 	dir, ok := s.sidx.Lookup(sessionID)
 	if !ok {
 		return errSessionNotFound
@@ -528,6 +548,12 @@ func (s *Server) Compact(sessionID, instructions string) error {
 
 // PatchSession updates the session model and/or thinking effort.
 func (s *Server) PatchSession(sessionID, model, thinking string) error {
+	gate := s.inputGate(sessionID)
+	gate.Lock()
+	defer gate.Unlock()
+	if err := s.sessionAdmissionError(sessionID); err != nil {
+		return err
+	}
 	sess, err := s.open(sessionID)
 	if err != nil {
 		return err
