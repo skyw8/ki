@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { clampThinkingEffort, pickComposerModel, sessionCreateBody } from '../src/lib/model.ts'
+import { clampThinkingEffort, initialView, keepComposer, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody } from '../src/lib/model.ts'
 import type { ModelInfo } from '../src/api/types.ts'
 
 function model(over: Partial<ModelInfo> & Pick<ModelInfo, 'provider' | 'id'>): ModelInfo {
@@ -44,4 +44,91 @@ test('sessionCreateBody sends the current composer instead of omitting model', (
     model: 'openai/gpt-5.6-terra',
     thinkingEffort: 'high',
   })
+})
+
+const baseLevels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
+function fastModel(over: Partial<ModelInfo> = {}): ModelInfo {
+  return model({
+    provider: 'openai-codex',
+    id: 'codex',
+    fastServiceTier: 'priority',
+    thinkingLevels: baseLevels.flatMap(level => [level, `${level} fast`]),
+    ...over,
+  })
+}
+
+test('all advertised fast levels including off preserve their exact selection', () => {
+  const codex = fastModel()
+  expect(clampThinkingEffort('', codex)).toBe('medium')
+  for (const base of baseLevels) {
+    for (const effort of [base, `${base} fast`]) {
+      expect(clampThinkingEffort(effort, codex)).toBe(effort)
+      expect(sessionCreateBody('ws1', { provider: codex.provider, model: codex.id, thinkingEffort: effort }, [codex])).toEqual({
+        workspaceId: 'ws1',
+        model: codex.spec,
+        thinkingEffort: effort,
+      })
+    }
+  }
+})
+
+test('fast intent follows the nearest supported effort without inventing an option', () => {
+  const codex = fastModel({ thinkingLevels: ['low', 'low fast', 'high', 'high fast'] })
+  expect(clampThinkingEffort('medium fast', codex)).toBe('high fast')
+  expect(clampThinkingEffort('max fast', codex)).toBe('high fast')
+  expect(clampThinkingEffort('off fast', codex)).toBe('low fast')
+  expect(clampThinkingEffort('medium', codex)).toBe('high')
+  // Capability metadata cannot authorize labels absent from the actual catalog.
+  const noFastOptions = fastModel({ thinkingLevels: ['medium', 'high'] })
+  expect(clampThinkingEffort('high fast', noFastOptions)).toBe('high')
+})
+
+test('switching to standard models drops fast but retains the nearest base effort', () => {
+  const standard = model({ provider: 'other', id: 'plain', thinkingLevels: ['off', 'medium', 'high'] })
+  expect(clampThinkingEffort('high fast', standard)).toBe('high')
+  expect(clampThinkingEffort('off fast', standard)).toBe('off')
+  expect(clampThinkingEffort('xhigh fast', standard)).toBe('high')
+  expect(clampThinkingEffort('low fast', standard)).toBe('medium')
+  expect(clampThinkingEffort('high fast', model({ provider: 'other', id: 'none', thinkingLevels: [] }))).toBe('')
+})
+
+test('unknown thinking values still fall back rather than enabling fast', () => {
+  const codex = fastModel()
+  for (const invalid of ['fast', 'unknown fast', 'high fast fast', 'high  fast', 'HIGH fast', 'high fast ']) {
+    expect(clampThinkingEffort(invalid, codex)).toBe('medium')
+  }
+})
+
+test('composer reload and provider changes retain advertised fast choices and base effort', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const values = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+    },
+  })
+  try {
+    const codex = fastModel()
+    const standard = model({ provider: 'other', id: 'plain', thinkingLevels: ['off', 'medium', 'high'] })
+    for (const base of baseLevels) {
+      const choice = { provider: codex.provider, model: codex.id, thinkingEffort: `${base} fast` }
+      saveLastComposerModel(choice)
+      expect(loadLastComposerModel()).toEqual(choice)
+      expect(initialView().thinkingEffort).toBe(choice.thinkingEffort)
+      expect(keepComposer(initialView()).thinkingEffort).toBe(choice.thinkingEffort)
+      expect(pickComposerModel([codex], loadLastComposerModel())).toEqual(choice)
+    }
+    const loaded = loadLastComposerModel()!
+    const switched = pickComposerModel([standard], loaded)
+    expect(switched).toEqual({ provider: standard.provider, model: standard.id, thinkingEffort: 'high' })
+    saveLastComposerModel(switched)
+    expect(pickComposerModel([standard], loadLastComposerModel())).toEqual(switched)
+    expect(sessionCreateBody('ws1', switched, [standard]).thinkingEffort).toBe('high')
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
+  }
 })

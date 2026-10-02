@@ -54,6 +54,7 @@ func (s *sidecar) fail(id any, message string, code int) {
 }
 func (s *sidecar) shutdown() {
 	s.cancel()
+	closeCodexTransports()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, v := range s.auth {
@@ -194,7 +195,22 @@ func (s *sidecar) handle(m object) {
 			defer s.workers.Done()
 			defer cancel()
 			if err := streamCodex(ctx, payload, s.send, requestID); err != nil && ctx.Err() == nil {
-				s.send(object{"jsonrpc": "2.0", "method": "provider.stream.event", "params": object{"requestId": requestID, "type": "error", "error": safeError(err)}})
+				params := object{"requestId": requestID, "type": "error", "error": safeError(err)}
+				// The loop retries unmarked stream errors. A transport that has
+				// already observed a response must preserve its no-resend decision
+				// through the RPC boundary, not merely avoid its own HTTP fallback.
+				var fatal interface{ NonRetryable() bool }
+				if errors.As(err, &fatal) && fatal.NonRetryable() {
+					params["nonRetryable"] = true
+				}
+				var upstream *httpFailure
+				if errors.As(err, &upstream) {
+					switch upstream.status {
+					case 400, 401, 403, 404, 405, 410, 413, 415, 422:
+						params["nonRetryable"] = true
+					}
+				}
+				s.send(object{"jsonrpc": "2.0", "method": "provider.stream.event", "params": params})
 			}
 			s.mu.Lock()
 			if s.streams[requestID] == operation {

@@ -10,6 +10,7 @@ import (
 	toolapi "ki/internal/tool"
 	"ki/internal/types"
 	"ki/pkg/llmprotocol"
+	"ki/pkg/thinking"
 )
 
 // HTTPDoer is the transport used by live protocol clients.
@@ -20,6 +21,22 @@ type HTTPDoer = llmprotocol.HTTPDoer
 type Live struct {
 	client *llmprotocol.Client
 	Model  *Model
+}
+
+type coreFastThinkingError struct{ level string }
+
+func (e *coreFastThinkingError) Error() string {
+	return fmt.Sprintf("thinking selection %q requires an extension provider; core HTTP providers do not encode Fast service tiers", e.level)
+}
+func (e *coreFastThinkingError) NonRetryable() bool { return true }
+
+func rejectCoreFastThinking(level string) error {
+	// Hooks and direct NewLive users can bypass registry clamping. Reject before
+	// transport rather than forwarding a client-only suffix as reasoning.effort.
+	if _, fast := thinking.Split(level); fast {
+		return &coreFastThinkingError{level: level}
+	}
+	return nil
 }
 
 // NewLive builds a live Ki provider adapter.
@@ -39,6 +56,9 @@ func (l *Live) WithIdleTimeout(timeout time.Duration) *Live {
 
 // Stream implements loop.Streamer by translating only at the package boundary.
 func (l *Live) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
+	if err := rejectCoreFastThinking(req.ThinkingEffort); err != nil {
+		return types.Message{}, err
+	}
 	var protocolEmit func(llmprotocol.AssistantDelta) error
 	if emit != nil {
 		protocolEmit = func(delta llmprotocol.AssistantDelta) error {
@@ -59,6 +79,9 @@ func (l *Live) Stream(ctx context.Context, req loop.Request, emit func(loop.Assi
 
 // Compact implements standalone OpenAI Responses compaction.
 func (l *Live) Compact(ctx context.Context, req loop.Request) (CompactResult, error) {
+	if err := rejectCoreFastThinking(req.ThinkingEffort); err != nil {
+		return CompactResult{}, err
+	}
 	if l.client.API != llmprotocol.APIResponses {
 		return CompactResult{}, fmt.Errorf("remote compaction requires Responses API")
 	}

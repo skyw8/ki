@@ -1756,6 +1756,7 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 			"applyPatchToolType": m.ApplyPatchToolType,
 			"compaction":         m.Compaction,
 			"reasoning":          m.Reasoning,
+			"fastServiceTier":    m.FastServiceTier,
 			"thinkingLevels":     provider.SupportedThinkingLevels(m),
 			"defaultThinking":    provider.DefaultThinking(m),
 			"builtin":            m.Builtin,
@@ -3034,16 +3035,24 @@ func (s *Server) liveCompactor(ctx context.Context, sessionID string, model prov
 		providerBindingForProtocol(resolved, credential, resolved.Compaction.Standalone)
 }
 
-func (s *Server) summarizer(ctx context.Context, sessionID, prov, model string) compact.Summarizer {
-	stream := s.liveSummarizer(ctx, sessionID, prov, model)
+func (s *Server) summarizer(ctx context.Context, sessionID string, model provider.Model, effort string) compact.Summarizer {
+	stream := s.liveSummarizer(ctx, sessionID, model.Provider, model.ID)
 	return compact.StreamSummarizer{
 		Stream: func(ctx context.Context, system, user string) (string, *types.Usage, error) {
 			m, err := stream.Stream(ctx, loop.Request{
-				Provider:  prov,
-				Model:     model,
+				Provider:  model.Provider,
+				Model:     model.ID,
+				API:       model.API,
 				SessionID: sessionID,
 				System:    system,
 				Messages:  []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: user}}}},
+				// Local fallback must retain the same selected reasoning/speed
+				// as remote compaction, rather than silently disabling Fast.
+				ThinkingEffort:          effort,
+				ThinkingLevelMap:        model.ThinkingLevelMap,
+				ThinkingFormat:          model.Compat.ThinkingFormat,
+				SupportsReasoningEffort: model.Compat.SupportsReasoningEffort,
+				ForceAdaptiveThinking:   model.Compat.ForceAdaptiveThinking,
 			}, func(loop.AssistantDelta) error { return nil })
 			if err != nil {
 				return "", nil, fmt.Errorf("stream summarizer: %w", err)
@@ -3509,7 +3518,7 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session, inte
 	} else {
 		result, err = compact.GenerateWithInputLimit(
 			ctx, localPrep,
-			s.summarizer(ctx, sess.ID(), sess.Config.Provider, sess.Config.Model),
+			s.summarizer(ctx, sess.ID(), model, sess.Config.ThinkingEffort),
 			s.cfg.Compaction, s.localSummaryInputLimit(model),
 		)
 		if err != nil {

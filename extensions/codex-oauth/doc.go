@@ -1,6 +1,14 @@
 // Codex OAuth is a standalone Ki extension speaking NDJSON RPC over stdin and
 // stdout. Browser and device authorization, token refresh, Responses streams,
-// and Remote Compaction V2 use only HTTP and embedded provider metadata.
+// and Remote Compaction V2 use embedded provider metadata. Generation prefers
+// reusable Responses WebSockets with safe HTTP fallback; standalone compaction
+// uses the Codex HTTP protocol.
+// Thinking selections pair every supported base with a Fast variant. The
+// request builder splits these client IDs before mapping effort, including off,
+// and encodes Fast as service_tier:"priority", not as reasoning effort.
+// Common Codex identity, metadata and routing headers come from pkg/codexclient;
+// installation identity is versioned durable state, while turn/window routing
+// state and connection pools are bounded process-local data.
 //
 // Provider item IDs correlate SSE slots; output indexes and call IDs are
 // fallback identities. Reasoning signatures exclude tool fields, and opaque

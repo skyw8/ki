@@ -52,6 +52,9 @@
 // Cancellation retains already-emitted partial content in its aborted message.
 // RunMessage accepts provider-neutral structured user content. TextOnly
 // removes image blocks at the final model-facing boundary.
+// Request.TurnID is stable for an entire RunMessage, including retries and tool
+// continuations, and is distinct from the per-round turn_start/turn_end events.
+// Provider extensions can use it for logical-turn transport affinity.
 // Config.Inbox injects extra user messages into the same Run after the
 // current stream and tools finish; it does not cancel an in-flight HTTP
 // request. Completions, Responses, and Anthropic all see a normal extra user

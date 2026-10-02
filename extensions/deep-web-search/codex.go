@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +17,8 @@ import (
 	"unicode/utf16"
 
 	"ki/internal/state"
+	"ki/pkg/codexclient"
+	"ki/pkg/thinking"
 )
 
 type credential struct {
@@ -317,6 +320,12 @@ func sourcesFromOutput(output []any) []any {
 }
 func responsesRequest(ctx context.Context, model, prompt, effort, provider string, search obj) (obj, string, error) {
 	codex := provider != "openai"
+	// This adapter bypasses the provider sidecar, so it must also decode the
+	// client-only Fast preset instead of sending "high fast" as an API effort.
+	effort, fast := thinking.Split(jsTrim(effort))
+	if fast && !codex {
+		return nil, "", fmt.Errorf("summary-thinking-unsupported: Fast thinking requires a Codex provider")
+	}
 	access, account := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")), ""
 	if codex {
 		credential, e := getCredential(ctx)
@@ -329,20 +338,27 @@ func responsesRequest(ctx context.Context, model, prompt, effort, provider strin
 		return nil, "", fmt.Errorf("openai-auth-missing: OPENAI_API_KEY is not configured")
 	}
 	endpoint := envOr("KI_DEEP_WEB_SEARCH_OPENAI_URL", "https://api.openai.com/v1/responses")
-	headers := map[string]string{"Authorization": "Bearer " + access, "Content-Type": "application/json", "OpenAI-Beta": "responses=experimental"}
+	headers := map[string]string{"Authorization": "Bearer " + access, "Content-Type": "application/json"}
 	if codex {
 		endpoint = envOr("KI_DEEP_WEB_SEARCH_CODEX_URL", "https://chatgpt.com/backend-api/codex/responses")
 		if account != "" {
 			headers["chatgpt-account-id"] = account
-			headers["originator"] = "pi"
 		}
+		headers["Accept"] = "text/event-stream"
+	} else {
+		headers["OpenAI-Beta"] = "responses=experimental"
 	}
 	instructions := "Answer using only the supplied evidence. Do not invent citations or facts."
 	if search != nil {
 		instructions = searchInstructions(search)
 	}
 	body := obj{"model": model, "instructions": instructions, "input": []any{obj{"role": "user", "content": []any{obj{"type": "input_text", "text": prompt}}}}, "store": false, "stream": true}
-	if effort = jsTrim(effort); effort != "" && effort != "off" {
+	if fast {
+		// The direct adapter has no model catalog. Host pickers expose supported
+		// presets; the backend remains authoritative for a manually chosen model.
+		body["service_tier"] = "priority"
+	}
+	if effort != "" && effort != "off" {
 		body["reasoning"] = obj{"effort": effort}
 	}
 	budget := 30 * time.Second
@@ -357,7 +373,27 @@ func responsesRequest(ctx context.Context, model, prompt, effort, provider strin
 		body["tool_choice"] = "required"
 		body["parallel_tool_calls"] = true
 	}
-	raw, status, _, e := request(ctx, "POST", endpoint, headers, body, budget)
+	var wireBody any = body
+	if codex {
+		common, err := codexclient.Prepare(body, "", "", false)
+		if err != nil {
+			return nil, "", fmt.Errorf("codex-request-error: %w", err)
+		}
+		for name, value := range common {
+			headers[name] = value
+		}
+		raw, err := codexclient.Encode(body)
+		if err != nil {
+			return nil, "", fmt.Errorf("codex-request-error: %w", err)
+		}
+		raw, err = codexclient.Compress(raw)
+		if err != nil {
+			return nil, "", fmt.Errorf("codex-request-error: %w", err)
+		}
+		headers["Content-Encoding"] = "zstd"
+		wireBody = bytes.NewReader(raw)
+	}
+	raw, status, _, e := request(ctx, "POST", endpoint, headers, wireBody, budget)
 	if e != nil {
 		return nil, "", fmt.Errorf("codex-network-error: %w", e)
 	}

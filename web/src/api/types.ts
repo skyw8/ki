@@ -468,6 +468,7 @@ export type ModelInfo = {
 		inline?: 'openai'
 	}
 	reasoning?: boolean
+	fastServiceTier?: string
 	thinkingLevels?: string[]
 	defaultThinking?: string
 	builtin?: boolean

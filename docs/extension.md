@@ -223,6 +223,10 @@ provider capability 使用进程级 sidecar，不随 session 各拉起一个进�
 
 事件类型首版为 `start`、`text_start`/`text_delta`/`text_end`、`thinking_start`/`thinking_delta`/`thinking_end`、`toolcall_start`/`toolcall_delta`/`toolcall_end`、`custom_tool_call_input_delta`、`done`、`error`。`done` 可携带完整最终 `message`。只有模型声明 `compaction.inline:"openai"` 且该 occupy 实际启用 server-side compaction 时，sidecar 才可在 completed `done` 的私有 `responsesItems` 返回完整 canonical suffix；standalone-only sidecar 的同字段会被丢弃。
 
+模型的可选 `fastServiceTier: "priority"` 声明由 provider sidecar 负责的 Fast 编码能力。host 为所有受支持基础 thinking level 生成 `<level> fast`（包括受支持的 off），保留标准 map key；`provider.stream.start` / `provider.compact` 的 `request.thinkingEffort` 原样携带选择值，sidecar 必须拆分，不能把组合值当上游 effort。`request.turnId` 是跨同一用户 turn 的 retry/tool continuation 的可选稳定传输身份。
+
+`provider.stream.event` 的 `error` 可带 `nonRetryable: true`，host 将其保留为 loop 的确定性错误标记。已经观察到上游响应的传输失败、非法流以及确定性请求错误使用该标记；只禁止 sidecar 内部 fallback 不够，否则 loop 的通用 backoff 仍可能重复提交同一次推理。
+
 provider sidecar 的生命周期、凭据和流都是全局进程级资源；session 只通过 `requestId` 复用同一个 sidecar。Reload 时保留仍注册的 sidecar，移除或禁用的 provider 会关闭对应进程。
 
 ### sidecar → Host（inbound request）

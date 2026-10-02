@@ -13,11 +13,11 @@ import (
 
 const providerStreamQueueSize = 128
 
-type nonRetryableProviderCompactError struct{ err error }
+type nonRetryableProviderError struct{ err error }
 
-func (e *nonRetryableProviderCompactError) Error() string { return e.err.Error() }
-func (e *nonRetryableProviderCompactError) Unwrap() error { return e.err }
-func (e *nonRetryableProviderCompactError) NonRetryable() bool {
+func (e *nonRetryableProviderError) Error() string { return e.err.Error() }
+func (e *nonRetryableProviderError) Unwrap() error { return e.err }
+func (e *nonRetryableProviderError) NonRetryable() bool {
 	return true
 }
 
@@ -41,19 +41,19 @@ func (c *rpcClient) compactProvider(ctx context.Context, req ProviderCompactRequ
 		if (errors.As(err, &responseErr) && deterministicProviderRPCError(responseErr.Code)) ||
 			errors.As(err, &syntaxErr) ||
 			errors.As(err, &typeErr) {
-			return ProviderCompactResult{}, &nonRetryableProviderCompactError{err: err}
+			return ProviderCompactResult{}, &nonRetryableProviderError{err: err}
 		}
 		return ProviderCompactResult{}, err
 	}
 	if len(result.Items) == 0 {
 		err := fmt.Errorf("%w: empty compaction output", errProviderStreamFailed)
-		return ProviderCompactResult{}, &nonRetryableProviderCompactError{err: err}
+		return ProviderCompactResult{}, &nonRetryableProviderError{err: err}
 	}
 	for _, item := range result.Items {
 		var object map[string]json.RawMessage
 		if json.Unmarshal(item, &object) != nil || object == nil {
 			err := fmt.Errorf("%w: invalid compaction item", errProviderStreamFailed)
-			return ProviderCompactResult{}, &nonRetryableProviderCompactError{err: err}
+			return ProviderCompactResult{}, &nonRetryableProviderError{err: err}
 		}
 	}
 	return result, nil
@@ -139,7 +139,14 @@ func (c *rpcClient) streamProvider(ctx context.Context, req ProviderStreamReques
 				if message == "" {
 					message = "provider stream failed"
 				}
-				return acc, fmt.Errorf("%w: %s", errProviderStreamFailed, message)
+				err := fmt.Errorf("%w: %s", errProviderStreamFailed, message)
+				// The sidecar owns transport progress. Retrying after partial
+				// inference or a deterministic failure can duplicate a turn,
+				// so preserve its retry classification across the RPC boundary.
+				if event.NonRetryable {
+					return acc, &nonRetryableProviderError{err: err}
+				}
+				return acc, err
 			default:
 				if event.Message != nil && event.Type == "start" {
 					acc = *event.Message

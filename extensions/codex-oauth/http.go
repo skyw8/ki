@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -14,64 +12,20 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
-	"os"
-	"runtime"
 	"strings"
-	"sync"
 	"time"
+
+	"ki/pkg/codexclient"
 )
 
 const clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
-const originator = "codex_cli_rs"
-const betaFeatures = "remote_compaction_v2"
+const originator = codexclient.Originator
+const betaFeatures = codexclient.BetaFeatures
 
 var streamHeaderTimeout = 60 * time.Second
 var streamIdleTimeout = 300 * time.Second
-var installationID = uuid()
-var windowIDs = map[string]string{}
-var windowMu sync.Mutex
 
-func uuid() string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	s := hex.EncodeToString(b)
-	return s[:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:]
-}
-func sessionWindowID(id string) string {
-	windowMu.Lock()
-	defer windowMu.Unlock()
-	if windowIDs[id] == "" {
-		windowIDs[id] = uuid()
-	}
-	return windowIDs[id]
-}
-func codexUserAgent() string {
-	system := runtime.GOOS
-	switch system {
-	case "linux":
-		system = "Linux"
-	case "darwin":
-		system = "Mac OS"
-	case "windows":
-		system = "Windows"
-	}
-	arch := runtime.GOARCH
-	if arch == "amd64" {
-		arch = "x64"
-	}
-	terminal := os.Getenv("TERM_PROGRAM")
-	if terminal == "" {
-		terminal = os.Getenv("TERM")
-	}
-	if terminal == "" {
-		terminal = "unknown"
-	}
-	return fmt.Sprintf("%s/0.0.0 (%s %s; %s) %s", originator, system, osVersion(), arch, terminal)
-}
+func uuid() string { return codexclient.UUID() }
 func codexURL(model object) string {
 	base := strings.TrimRight(str(get(model, "baseUrl", "https://chatgpt.com/backend-api")), "/")
 	if strings.HasSuffix(base, "/codex/responses") {
@@ -82,36 +36,39 @@ func codexURL(model object) string {
 	}
 	return base + "/codex/responses"
 }
-func turnMetadata(session, thread, window, turn string, compaction bool) string {
-	kind := "turn"
-	if compaction {
-		kind = "compaction"
-	}
-	m := object{"session_id": session, "thread_id": thread, "window_id": window, "turn_id": turn, "root_turn_id": turn, "request_kind": kind}
-	if compaction {
-		m["compaction"] = object{"trigger": "manual", "reason": "user_requested", "implementation": "responses_compaction_v2", "phase": "standalone_turn", "strategy": "memento"}
-	}
-	return jsonString(m)
-}
 func codexRequest(ctx context.Context, payload, body object, compaction bool) (*http.Request, error) {
 	cred := obj(obj(payload["credential"])["value"])
 	if !truth(cred["access"]) || !truth(cred["accountId"]) {
 		return nil, errors.New("invalid Codex OAuth credential")
 	}
-	session := str(fallback(obj(payload["request"])["sessionId"], uuid()))
-	window, turn := sessionWindowID(session), uuid()
-	metadata := turnMetadata(session, session, window, turn, compaction)
 	// Only this top-level field changes. Deep-copying history and tool schemas
 	// allocated thousands of objects per request without protecting any mutation.
 	body = maps.Clone(body)
-	body["client_metadata"] = object{"x-codex-installation-id": installationID, "session_id": session, "thread_id": session, "x-codex-window-id": window, "turn_id": turn, "x-codex-turn-metadata": metadata}
-	req, err := http.NewRequestWithContext(ctx, "POST", codexURL(obj(payload["model"])), strings.NewReader(jsonString(body)))
+	scope := codexScope(payload, body)
+	headers, err := codexclient.PrepareScoped(body, str(obj(payload["request"])["sessionId"]), str(obj(payload["request"])["turnId"]), compaction, scope)
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + str(cred["access"]), "chatgpt-account-id": str(cred["accountId"]), "OpenAI-Beta": "responses=experimental", "originator": originator, "User-Agent": codexUserAgent(), "Accept": "text/event-stream", "x-codex-beta-features": betaFeatures, "session-id": session, "thread-id": session, "x-client-request-id": session, "x-codex-window-id": window, "x-codex-turn-metadata": metadata} {
+	raw, err := codexclient.Encode(body)
+	if err != nil {
+		return nil, err
+	}
+	raw, err = codexclient.Compress(raw)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(context.WithValue(ctx, codexScopeKey{}, scope), "POST", codexURL(obj(payload["model"])), bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "zstd")
+	req.Header.Set("Authorization", "Bearer "+str(cred["access"]))
+	req.Header.Set("chatgpt-account-id", str(cred["accountId"]))
+	req.Header.Set("Accept", "text/event-stream")
 	return req, nil
 }
 
@@ -121,6 +78,29 @@ type httpFailure struct {
 }
 
 func (e *httpFailure) Error() string { return e.message }
+func (e *httpFailure) NonRetryable() bool {
+	switch e.status {
+	case 400, 401, 403, 404, 405, 410, 413, 415, 422:
+		return true
+	default:
+		return false
+	}
+}
+
+// Once the backend has started a stream, host-level retries are just as unsafe
+// as transport fallback: the original inference may still execute tool calls.
+type unsafeStreamError struct{ err error }
+
+func (e *unsafeStreamError) Error() string      { return e.err.Error() }
+func (e *unsafeStreamError) Unwrap() error      { return e.err }
+func (e *unsafeStreamError) NonRetryable() bool { return true }
+
+func streamError(err error, observed bool) error {
+	if observed {
+		return &unsafeStreamError{err: err}
+	}
+	return err
+}
 func upstreamFailure(response *http.Response) error {
 	body, _ := io.ReadAll(response.Body)
 	detail := strings.TrimSpace(string(bytes.ToValidUTF8(body, []byte("�"))))
@@ -209,8 +189,13 @@ func consumeStream(ctx context.Context, response *http.Response, conn net.Conn, 
 	}
 }
 func streamCodex(ctx context.Context, payload object, send func(object), id string) error {
+	payload = requestIdentity(payload)
 	body, err := buildRequest(payload)
 	if err != nil {
+		return err
+	}
+	used, err := streamWebsocket(ctx, payload, body, send, id)
+	if used || err != nil {
 		return err
 	}
 	req, err := codexRequest(ctx, payload, body, false)
@@ -223,29 +208,38 @@ func streamCodex(ctx context.Context, payload object, send func(object), id stri
 	}
 	defer cleanup()
 	defer response.Body.Close()
+	captureHTTPState(req, response)
 	builder := newStreamBuilder(send, id, obj(payload["model"]))
-	if err := consumeStream(ctx, response, conn, builder.feed); err != nil {
+	observed := false
+	if err := consumeStream(ctx, response, conn, func(line string) (bool, error) {
+		if strings.HasPrefix(line, "data:") && strings.TrimSpace(line[5:]) != "" {
+			observed = true
+		}
+		return builder.feed(line)
+	}); err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
-		return err
+		return streamError(err, observed)
 	}
 	if ctx.Err() != nil {
 		return nil
 	}
 	if !builder.terminal {
-		return errors.New("Codex stream ended before a terminal response event")
+		return streamError(errors.New("Codex stream ended before a terminal response event"), observed)
 	}
 	kind := "done"
 	values := object{"requestId": id}
 	if builder.message["stopReason"] == "error" {
 		kind = "error"
 		values["error"] = get(builder.message, "errorMessage", "Codex response failed")
+		values["nonRetryable"] = true
 	}
 	emitEvent(send, kind, builder.message, values)
 	return nil
 }
 func compactCodex(ctx context.Context, payload object) (object, error) {
+	payload = requestIdentity(payload)
 	if ctx.Err() != nil {
 		return nil, errors.New("Codex compaction was cancelled")
 	}
@@ -265,6 +259,7 @@ func compactCodex(ctx context.Context, payload object) (object, error) {
 	}
 	defer cleanup()
 	defer response.Body.Close()
+	captureHTTPState(req, response)
 	builder := newCompactBuilder()
 	if err = consumeStream(ctx, response, conn, builder.feed); err != nil {
 		if ctx.Err() != nil {
@@ -281,8 +276,39 @@ func compactCodex(ctx context.Context, payload object) (object, error) {
 	result, err := builder.result()
 	if err == nil {
 		result["items"] = append(retained, list(result["items"])...)
+		session := req.Header.Get("thread-id")
+		codexclient.AdvanceWindow(session)
+		invalidateWebsocket(session)
 	}
 	return result, err
+}
+
+func requestIdentity(payload object) object {
+	request := maps.Clone(obj(payload["request"]))
+	if !truth(request["turnId"]) {
+		request["turnId"] = uuid()
+	}
+	if !truth(request["sessionId"]) {
+		request["sessionId"] = uuid()
+	}
+	copy := maps.Clone(payload)
+	copy["request"] = request
+	return copy
+}
+
+func captureHTTPState(req *http.Request, response *http.Response) {
+	var metadata object
+	if decode(req.Header.Get("x-codex-turn-metadata"), &metadata) == nil {
+		scope, _ := req.Context().Value(codexScopeKey{}).(string)
+		codexclient.CaptureTurnStateScoped(req.Header.Get("thread-id"), str(metadata["turn_id"]), response.Header.Get("x-codex-turn-state"), scope)
+	}
+}
+
+type codexScopeKey struct{}
+
+func codexScope(payload, body object) string {
+	credential := obj(obj(payload["credential"])["value"])
+	return shortHash(jsonString([]any{codexURL(obj(payload["model"])), credential["accountId"], credential["access"], body["model"], body["service_tier"]}))
 }
 func httpJSON(ctx context.Context, method, endpoint string, body any) (int, object, error) {
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(jsonString(body)))

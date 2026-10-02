@@ -39,6 +39,10 @@ composer（命令按钮 + 行首 `/` 打开 slash 面板，数据来自 session 
 
 run 流的去重是**按状态**而不是按计数：重放里可能只有一条 in-flight 消息的最新 partial（服务端会裁掉已持久化的 `message_start`/chunk，见 [events.md](events.md)），也可能因为续传而从任意位置开始，所以客户端只问「视图里已经有什么」——`message_update` 且没有 streaming 气泡就用 partial 开一个；`message_start` 遇到已有 streaming 气泡就原地重置（同一时刻只可能有一条在流）；`message_end` 的 `entryId` 已在视图里就丢弃重放开出来的那个气泡。重新监听会带上「本 session 最后应用的 `<runId>:<seq>`」续传，runId 不匹配时服务端忽略（新 run 必从头回放）。compact 还携带已读快照 leaf，服务端据此过滤摘要已覆盖的消息和已完成工具，避免隐藏正文重放使折叠计数翻倍；仍在执行的工具和快照之后的新消息保留。
 
+### Codex Fast thinking
+
+模型返回的 `thinkingLevels` 是选择器的权威选项。声明 Fast 的 Codex 模型为所有可用基础等级提供相邻的 `<level> fast`，包括受支持的 `off fast`；不额外显示全局 Fast toggle，默认仍是普通等级。composer、会话配置和 deep-web-search 的 Codex search/summary picker 使用同一动态列表。选择值在会话与本浏览器 last-used 配置中原样保留；模型切换时，有 Fast 能力则保留速度意图并夹取基础强度，没有则去掉 Fast 后夹取基础强度。Advanced provider model JSON 保留 `fastServiceTier`，原生 HTTP 模型不能冒充扩展编码能力。
+
 ### 上下文工具调用排行
 
 Session Context 在趋势图上方单独展示工具调用排行，统计当前分支的全部已知调用，不随 Browser 选中的请求改变。按调用次数降序排列，同次数按工具名排序；每个工具一条横条，长度相对调用最多的工具统一缩放，最左侧红段表示失败次数，其余为非失败调用（包括尚未完成的调用），并明确显示总调用数和失败数，不只靠颜色传达信息。使用完整历史 index 的轻量元数据和实时调用记录，不为排行下载工具正文；index 未加载完成时标记统计范围不完整。调用按 call ID 去重，Code Mode 内层调用独立计入对应工具。默认展示前 8 个工具，按需每次增加 20 个；窄屏保持名称可换行、计数可读，展开按钮满足触控尺寸，沿用主题色和错误色。

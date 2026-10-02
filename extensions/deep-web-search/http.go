@@ -96,6 +96,10 @@ func request(ctx context.Context, method, endpoint string, headers map[string]st
 		switch v := body.(type) {
 		case string:
 			input = strings.NewReader(v)
+		case io.Reader:
+			// Already encoded bodies (such as Codex zstd requests) must not
+			// pass through JSON marshaling, which would destroy their wire form.
+			input = v
 		default:
 			b, e := json.Marshal(v)
 			if e != nil {

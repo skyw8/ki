@@ -195,6 +195,7 @@ type ProviderStreamEvent struct {
 	ResponsesItems []json.RawMessage `json:"responsesItems,omitempty"`
 	Reason         string            `json:"reason,omitempty"`
 	Error          string            `json:"error,omitempty"`
+	NonRetryable   bool              `json:"nonRetryable,omitempty"`
 }
 
 // ProviderAuthRequest starts or advances provider-owned authentication. The

@@ -121,6 +121,7 @@ type Model struct {
 	Compaction         CompactionCapabilities `json:"compaction,omitzero"`
 	Reasoning          bool                   `json:"reasoning"`
 	ThinkingLevelMap   map[string]*string     `json:"thinkingLevelMap,omitempty"`
+	FastServiceTier    string                 `json:"fastServiceTier,omitempty"`
 	Cost               *Cost                  `json:"cost"`
 	Compat             Compat                 `json:"compat,omitzero"`
 }
@@ -171,6 +172,7 @@ type ModelSeed struct {
 	Compaction         CompactionCapabilities `json:"compaction,omitzero"`
 	Reasoning          *bool                  `json:"reasoning,omitempty"`
 	ThinkingLevelMap   map[string]*string     `json:"thinkingLevelMap,omitempty"`
+	FastServiceTier    string                 `json:"fastServiceTier,omitempty"`
 	Cost               *Cost                  `json:"cost"`
 	Compat             Compat                 `json:"compat,omitzero"`
 }
@@ -296,7 +298,7 @@ func resolveSeed(providerID, providerAPI, providerBase string, seed ModelSeed, b
 	if seed.Reasoning != nil {
 		reasoning = *seed.Reasoning
 	}
-	return Model{Provider: providerID, ID: seed.ID, Name: name, API: api, BaseURL: base, Enabled: enabled, Builtin: builtin, Customized: !builtin, ContextWindow: window, MaxTokens: maxTokens, Input: input, ApplyPatchToolType: seed.ApplyPatchToolType, Compaction: seed.Compaction, Reasoning: reasoning, ThinkingLevelMap: cloneThinkingMap(seed.ThinkingLevelMap), Cost: cloneCost(seed.Cost), Compat: seed.Compat}
+	return Model{Provider: providerID, ID: seed.ID, Name: name, API: api, BaseURL: base, Enabled: enabled, Builtin: builtin, Customized: !builtin, ContextWindow: window, MaxTokens: maxTokens, Input: input, ApplyPatchToolType: seed.ApplyPatchToolType, Compaction: seed.Compaction, Reasoning: reasoning, ThinkingLevelMap: cloneThinkingMap(seed.ThinkingLevelMap), FastServiceTier: seed.FastServiceTier, Cost: cloneCost(seed.Cost), Compat: seed.Compat}
 }
 
 func cloneThinkingMap(in map[string]*string) map[string]*string {

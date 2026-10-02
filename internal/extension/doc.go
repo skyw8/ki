@@ -21,6 +21,10 @@
 // Provider stream/compact usage is already normalized into exclusive buckets.
 // The host fills missing costs from resolved model rates before returning usage
 // to the loop, preserving explicit sidecar costs and unknown catalog prices.
+// Provider stream error events may mark nonRetryable when inference has begun
+// or failure is deterministic. The adapter preserves partial output and exposes
+// the NonRetryable error contract to the loop, preventing duplicate inference.
+// Unmarked stream errors retain the existing transient retry behavior.
 // session_before_compact receives a portable host preparation after planning;
 // it may cancel or replace local summary generation, but cannot alter the cut.
 // A synchronous hook that can change provider-visible messages or routing

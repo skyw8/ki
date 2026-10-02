@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"ki/pkg/thinking"
 )
 
 type object = map[string]any
@@ -390,7 +392,17 @@ func buildRequest(payload object) (object, error) {
 		}
 		body["prompt_cache_key"] = string(r)
 	}
-	if effort := str(request["thinkingEffort"]); effort != "" && effort != "off" {
+	// Combined selector values are client-side presets, not valid API efforts.
+	// Split before testing off so "off fast" never enables reasoning accidentally.
+	effort, fast := thinking.Split(str(request["thinkingEffort"]))
+	if fast {
+		tier := str(model["fastServiceTier"])
+		if tier == "" {
+			return nil, errors.New("Codex model does not support Fast thinking")
+		}
+		body["service_tier"] = tier
+	}
+	if effort != "" && effort != "off" {
 		mapped := get(obj(request["thinkingLevelMap"]), effort, effort)
 		if truth(mapped) {
 			body["reasoning"] = object{"effort": mapped, "summary": "auto"}

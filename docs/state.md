@@ -9,6 +9,7 @@
 |---|---|---|---|
 | `models.json` | `internal/provider` | 2 | fail-fast：`NewRegistry` 报错，serve 起不来 |
 | `credentials.json` | `internal/provider` | 1 | fail-fast |
+| `codex-client.json` | `pkg/codexclient` | 1 | 请求准备报错，绝不更换 identity 或覆盖更新版本 |
 | `mcp.json` / project `.ki/mcp.json` | `internal/config` | 1 | fail-fast：拒绝加载未知配置；不改写文件 |
 | `workspaces.json` | `internal/workspace` | 1 | fail-fast：`Open` 返回错误 |
 | `toggles.json` | `internal/toggles` | 3 | best-effort：`Load` 回退默认值 |
@@ -22,6 +23,8 @@
 | session `queue.json` / `ext-queue.json` / `context-queue.json` | `internal/session` | 1 | 队列操作返回错误，绝不覆盖 |
 
 扩展配置的 `version` 仅描述持久化 envelope：Host 解码时删除该头，再按 manifest 的 `config.schema` 校验业务字段。HTTP 读取不返回该头，PATCH 不能修改它。Go sidecar 共享 `internal/state`；Rust sidecar只读同样的版本头并拒绝不支持的版本。
+
+`codex-client.json` 保存 `installation_id`，由 Codex OAuth 与搜索 sidecar 通过同一共享 helper 读写；跨进程锁避免两个进程首次启动时生成不同身份。它不保存凭据或会话正文。窗口/turn routing state 仍为有界、进程内数据。
 
 「fail-fast」用于读不到就无法正常工作的文件：宁可启动报错，也不静默丢字段。
 「best-effort」用于可恢复的旁路状态：加载失败退化为空/默认，但写入侧仍拒绝覆盖更新的文件。

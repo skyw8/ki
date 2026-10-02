@@ -71,5 +71,11 @@
 // used. DefaultThinking is the
 // per-model fallback (prefer medium) when effort is omitted; ClampThinking
 // maps an unsupported level onto the nearest remaining one.
+// Extension models may advertise fastServiceTier:"priority". The registry
+// then pairs every supported base thinking level with "<level> fast", including
+// off when supported. Maps still contain only standard base keys. Defaults
+// remain ordinary levels; model changes retain Fast only on capable targets.
+// Composite selections are client IDs, never upstream reasoning efforts.
+// Encoding them belongs to the declaring extension, not native HTTP adapters.
 // See docs/provider.md.
 package provider

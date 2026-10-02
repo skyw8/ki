@@ -64,9 +64,13 @@ client headers the Codex CLI sends on every Responses request:
   `request_kind: "turn"` for ordinary turns and `request_kind: "compaction"`
   plus the Remote Compaction V2 descriptor for the compaction request.
 
-The window id is a client-generated UUID kept per session for the sidecar's
-lifetime; the installation id is minted once per sidecar process (Codex
-persists it, Ki does not).
+The installation id is shared by Codex OAuth and Codex search sidecars through
+versioned `{KI_HOME}/codex-client.json`, with a cross-process creation lock.
+Window ids and turn routing tokens are bounded process-local state. A successful
+remote checkpoint advances the window and invalidates its old WebSocket baseline.
+The host supplies a logical turn UUID that stays stable across retries and tool
+continuations. Compaction metadata does not invent a manual trigger/reason when
+the host has not supplied one.
 
 Sending the trigger without these headers yields
 `Codex Remote Compaction V2 expected exactly one compaction output item, got 0
@@ -84,6 +88,22 @@ service this extension talks to enforces the smaller window. The built-in
 direct API key see one consistent context window.
 
 ## Thinking levels
+
+Every supported base thinking level has an adjacent Fast variant, for example
+`low` / `low fast`, `medium` / `medium fast`, and `max` / `max fast`.
+Models that support `off` also expose `off fast`; unsupported base levels remain
+hidden. Defaults stay ordinary (prefer `medium`). There is no separate `/fast`
+toggle: the session stores the selected `thinkingEffort`, and the sidecar splits
+it before encoding the request. `high fast` sends `reasoning.effort: "high"` and
+`service_tier: "priority"`; `off fast` omits reasoning while retaining priority.
+Ordinary choices omit the service tier. The routing-hint header agrees with the
+body. Switching to a model without Fast drops only the speed suffix before
+clamping the base effort.
+
+The WebUI exposes these options wherever it displays model thinking levels.
+The CLI uses `ki run --thinking "high fast" "<prompt>"`; resume with
+`--session <id>` applies model/thinking through the existing session PATCH and
+rejects a busy session rather than silently changing its ongoing request.
 
 `thinkingLevelMap` mirrors the built-in catalog entries for the same models.
 No GPT-6.1/6/5.6 variant accepts `minimal`, so every map hides it. The GPT-5.6
@@ -105,6 +125,30 @@ Request metadata is added to a shallow copy of the body; nested history and
 tool schemas are read-only and are not recursively copied a second time.
 Measure history-heavy request construction with
 `go test -run '^$' -bench BenchmarkCodexRequestHistory -benchmem ./extensions/codex-oauth`.
+
+## Responses transport
+
+Generation prefers Codex Responses WebSockets, with isolated connection reuse
+and incremental input only when the canonical prefix and request properties
+match. Upgrade rejection can use HTTP fallback; a stream that already delivered
+events is not blindly resubmitted. Model/tier/credential/endpoint changes cannot
+reuse another route's sticky token. Cancellation invalidates that connection
+without affecting another session. HTTP fallback and standalone remote
+compaction send zstd-compressed request bodies.
+
+The WebSocket cache admits at most 64 leases (including gate waiters), evicts
+inactive connections after five minutes, and falls back to HTTP on local capacity
+pressure. Incremental baselines retain serialized prefixes rather than complete
+history object graphs, capped at 4 MiB per connection and 32 MiB globally.
+Oversized histories still work through full requests. Routing metadata retains
+at most 256 bindings and eight logical-turn tokens per binding.
+
+Client headers and metadata follow the referenced Codex CLI protocol, including
+`originator: codex_cli_rs`, the CLI User-Agent shape, beta flags, logical identity,
+and `x-codex-routing-hint`. This is protocol alignment, not a promise that TLS,
+prompts, tools, or optional attestation are indistinguishable from the official
+binary. The service decides account eligibility, actual speed, and usage limits;
+the catalog's speed description is not a subscription billing multiplier.
 
 ## Source package fallback
 

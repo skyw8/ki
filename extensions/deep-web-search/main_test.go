@@ -320,7 +320,7 @@ func TestCodexResponseSourcesAndCredentialRefresh(t *testing.T) {
 		t.Fatal(e)
 	}
 	var calls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(decodedCodexTestRequests(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/oauth/token" {
 			calls++
 			if e := r.ParseForm(); e != nil || r.Form.Get("refresh_token") != "refresh" {
@@ -338,7 +338,7 @@ func TestCodexResponseSourcesAndCredentialRefresh(t *testing.T) {
 			t.Error(body)
 		}
 		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fallback\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"content\":[{\"text\":\"Cited answer\",\"annotations\":[{\"type\":\"url_citation\",\"url\":\"https://example.com/x?utm_source=openai\",\"title\":\"Citation\"}]}]}]}}\n\n")
-	}))
+	})))
 	defer server.Close()
 	t.Setenv("KI_CODEX_AUTH_BASE_URL", server.URL)
 	t.Setenv("KI_DEEP_WEB_SEARCH_CODEX_URL", server.URL+"/responses")

@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 func BenchmarkCodexRequestHistory(b *testing.B) {
@@ -34,6 +36,18 @@ func TestCodexRequestDoesNotMutateBody(t *testing.T) {
 		t.Fatal("request construction mutated caller-owned input")
 	}
 	serialized, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Header.Get("Content-Encoding") != "zstd" {
+		t.Fatal("Codex HTTP request is not zstd-compressed")
+	}
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer decoder.Close()
+	serialized, err = decoder.DecodeAll(serialized, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

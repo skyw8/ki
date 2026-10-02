@@ -28,7 +28,14 @@
 // If server.json is healthy the client connects; otherwise it listens on
 // 127.0.0.1:0 in-process and tears the server down on exit.
 // --session is required to resume. --model is sent with the prompt and
-// persisted on that session only. --steer / --queue override the busy-message
+// persisted on that session only. --thinking selects the model's advertised
+// thinking level, including "<base> fast". New sessions receive it at creation;
+// resumes PATCH thinking and an optional model atomically before posting the
+// prompt, and a rejected PATCH never submits that prompt. Without --thinking,
+// a resume keeps the existing settings flow without a preliminary PATCH.
+// The session-show --thinking flag only displays transcript reasoning.
+// Empty prompts and conflicting --steer / --queue are rejected before config
+// loading or server/session effects. --steer / --queue override the busy-message
 // default from toggles.json. KI_FAKE=1 injects provider.Scripted.
 //
 // Request flow: docs/architecture.md.

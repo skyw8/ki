@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"ki/internal/state"
+	"ki/pkg/thinking"
 )
 
 var providerIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -58,6 +59,7 @@ type ModelOverride struct {
 	Compaction         *CompactionCapabilities `json:"compaction,omitempty"`
 	Reasoning          *bool                   `json:"reasoning,omitempty"`
 	ThinkingLevelMap   *map[string]*string     `json:"thinkingLevelMap,omitempty"`
+	FastServiceTier    *string                 `json:"fastServiceTier,omitempty"`
 	Cost               json.RawMessage         `json:"cost,omitempty"`
 	Compat             *Compat                 `json:"compat,omitempty"`
 }
@@ -537,6 +539,9 @@ func validateExtensionModel(m Model) error {
 	if err := validateCompaction(m, true); err != nil {
 		return err
 	}
+	if err := validateFastServiceTier(m); err != nil {
+		return err
+	}
 	for k := range m.ThinkingLevelMap {
 		if !slices.Contains(thinkingLevels, k) {
 			return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidThinkingLevel, k)
@@ -561,6 +566,15 @@ func validateExtensionModel(m Model) error {
 }
 
 var thinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+func validateFastServiceTier(m Model) error {
+	// A catalog capability must not turn a client selection into an arbitrary
+	// upstream routing value. Priority is the supported Codex Fast tier.
+	if m.FastServiceTier == "" || m.FastServiceTier == "priority" {
+		return nil
+	}
+	return fmt.Errorf("provider %q model %q: invalid fast service tier %q", m.Provider, m.ID, m.FastServiceTier)
+}
 
 func validateApplyPatchToolType(m Model) error {
 	if m.ApplyPatchToolType == "" || m.ApplyPatchToolType == "freeform" {
@@ -609,6 +623,9 @@ func validateModel(m Model) error {
 	}
 	if err := validateCompaction(m, false); err != nil {
 		return err
+	}
+	if m.FastServiceTier != "" {
+		return fmt.Errorf("provider %q model %q: fast service tier requires an extension provider", m.Provider, m.ID)
 	}
 	for k := range m.ThinkingLevelMap {
 		if !slices.Contains(thinkingLevels, k) {
@@ -674,6 +691,9 @@ func applyModelOverride(m Model, o ModelOverride) (Model, error) {
 	}
 	if o.ThinkingLevelMap != nil {
 		m.ThinkingLevelMap = cloneThinkingMap(*o.ThinkingLevelMap)
+	}
+	if o.FastServiceTier != nil {
+		m.FastServiceTier = *o.FastServiceTier
 	}
 	if o.Compat != nil {
 		m.Compat = *o.Compat
@@ -1018,9 +1038,14 @@ func mapsCloneCredentials(in map[string]credentialEntry) map[string]credentialEn
 	return out
 }
 
-// SupportedThinkingLevels follows pi: standard levels are implicit; xhigh/max require explicit mappings.
+// SupportedThinkingLevels follows pi: standard levels are implicit; xhigh/max
+// require explicit mappings. Fast-capable models pair each supported base with
+// its Fast selection, without expanding the thinkingLevelMap key vocabulary.
 func SupportedThinkingLevels(m Model) []string {
 	if !m.Reasoning {
+		if m.FastServiceTier == "priority" {
+			return []string{"off", "off fast"}
+		}
 		return []string{"off"}
 	}
 	var out []string
@@ -1033,6 +1058,9 @@ func SupportedThinkingLevels(m Model) []string {
 			continue
 		}
 		out = append(out, level)
+		if m.FastServiceTier == "priority" {
+			out = append(out, level+" fast")
+		}
 	}
 	return out
 }
@@ -1058,18 +1086,27 @@ func ClampThinking(m Model, requested string) (string, error) {
 	if slices.Contains(supported, requested) {
 		return requested, nil
 	}
-	idx := slices.Index(thinkingLevels, requested)
+	base, fast := thinking.Split(requested)
+	idx := slices.Index(thinkingLevels, base)
 	if idx < 0 {
 		return "", fmt.Errorf("%w %q", errInvalidThinkingEffort, requested)
 	}
+	selection := func(level string) string {
+		if fast && m.FastServiceTier == "priority" {
+			return level + " fast"
+		}
+		return level
+	}
+	// Preserve the requested base effort when changing to a non-Fast model;
+	// falling straight back to its default would silently change reasoning.
 	for i := idx; i < len(thinkingLevels); i++ {
-		if slices.Contains(supported, thinkingLevels[i]) {
-			return thinkingLevels[i], nil
+		if level := selection(thinkingLevels[i]); slices.Contains(supported, level) {
+			return level, nil
 		}
 	}
 	for i := idx - 1; i >= 0; i-- {
-		if slices.Contains(supported, thinkingLevels[i]) {
-			return thinkingLevels[i], nil
+		if level := selection(thinkingLevels[i]); slices.Contains(supported, level) {
+			return level, nil
 		}
 	}
 	return "", errNoThinkingEffort

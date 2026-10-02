@@ -37,6 +37,10 @@
 // is its flat selectable view. GET /v1/meta exposes the last-used model
 // (or the first available fallback), that model's default thinking
 // effort, and user home.
+// Model projections include extension-owned Fast capability and every supported
+// base/Fast thinking pair. Session creation, PATCH and extension-host changes
+// share registry validation; local summary and remote compaction inherit the
+// selected thinking value and base-level map.
 // GET /v1/commands exposes the workspace-scoped built-in, prompt-template,
 // and skill catalog used by the WebUI before a session exists.
 // GET /v1/events is the WebUI push channel: one SSE stream per browser tab

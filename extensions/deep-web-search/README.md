@@ -81,6 +81,16 @@ operations. A document newer than the extension understands is never overwritten
 
 Source URLs and content redirects use a pure Go WHATWG URL parser, preserving the original JavaScript URL normalization for international hostnames, encoded dot segments, backslashes, and numeric IPv4 forms. Content safety checks run against the normalized host before every request and redirect.
 
+## Codex Fast thinking
+
+Codex search and Codex-backed summary accept all model-advertised thinking
+choices, including `<level> fast` and `off fast` where supported. The selection
+is split into the base reasoning effort and `service_tier: "priority"`; it is
+never sent verbatim as reasoning effort. Ordinary choices omit the tier.
+Both direct request paths share Codex CLI identity/metadata/routing headers and
+zstd encoding with `codex-oauth`. Ad-hoc searches do not retain session state.
+The public OpenAI summary path rejects Codex-only Fast selections.
+
 ## Source package fallback
 
 To stage a source package that can build outside this checkout, run from the repository root:

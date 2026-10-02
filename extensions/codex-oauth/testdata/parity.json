@@ -1550,7 +1550,8 @@
             "stopReason": "error",
             "errorMessage": "quota exceeded"
           },
-          "error": "quota exceeded"
+          "error": "quota exceeded",
+          "nonRetryable": true
         }
       }
     ]

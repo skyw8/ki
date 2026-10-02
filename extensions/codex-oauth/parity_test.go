@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -70,6 +69,9 @@ func wantError(t *testing.T, err error, substring string) {
 // removal. Complete replay bodies and emitted event snapshots preserve their
 // assertions and catch differences the original tests did not inspect.
 func TestOriginalBehaviorParity(t *testing.T) {
+	// Reference snapshots retain the original shapes except the intentional
+	// nonRetryable safety marker: a terminal provider failure must not be
+	// resubmitted by the host's generic backoff loop.
 	data, err := os.ReadFile("testdata/parity.json")
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +102,7 @@ func TestOriginalBehaviorParity(t *testing.T) {
 				}
 			case "stream_http":
 				events := []any{}
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					for _, value := range list(fixture["objects"]) {
 						event := obj(value)
 						_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", str(event["name"]), jsonString(event["obj"]))
@@ -267,7 +269,7 @@ func TestResponsesRequestAdvertisesCodexCompactionBetaFeature(t *testing.T) {
 				body    object
 				path    string
 			}, 1)
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				raw, _ := io.ReadAll(r.Body)
 				var body object
 				_ = decode(string(raw), &body)
@@ -342,7 +344,7 @@ func TestResponsesRequestAdvertisesCodexCompactionBetaFeature(t *testing.T) {
 	}
 }
 func TestHTTPErrorIncludesUpstreamResponseBody(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		_, _ = w.Write([]byte(`{"error":{"message":"unsupported parameter: max_output_tokens"}}`))
 	}))
@@ -355,7 +357,7 @@ func TestHTTPErrorIncludesUpstreamResponseBody(t *testing.T) {
 	wantError(t, err, "unsupported parameter")
 }
 func TestStreamSSE(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sse(w, object{"type": "response.created", "response": object{"id": "resp-1"}}, object{"type": "response.output_item.added", "item": object{"type": "message", "id": "msg-1"}}, object{"type": "response.output_text.delta", "item_id": "msg-1", "delta": "hello"}, object{"type": "response.completed", "response": object{"status": "completed"}})
 	}))
 	defer server.Close()
@@ -377,7 +379,7 @@ func TestStalledResponseHeadersFailWithinHeaderBudget(t *testing.T) {
 	streamHeaderTimeout = 100 * time.Millisecond
 	defer func() { streamHeaderTimeout = old }()
 	release := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-release:
 		case <-r.Context().Done():
@@ -400,7 +402,7 @@ func TestIdleStreamSurvivesPastHeaderBudget(t *testing.T) {
 	streamHeaderTimeout = 50 * time.Millisecond
 	streamIdleTimeout = time.Second
 	defer func() { streamHeaderTimeout, streamIdleTimeout = oldHeader, oldIdle }()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		w.(http.Flusher).Flush()
@@ -420,7 +422,7 @@ func TestIdleStreamSurvivesPastHeaderBudget(t *testing.T) {
 func TestCancellationClosesOnlyBoundResponse(t *testing.T) {
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		w.(http.Flusher).Flush()
 		entered <- struct{}{}
@@ -472,7 +474,7 @@ func TestProviderCompactRPCReturnsResultAndPreservesRefreshShape(t *testing.T) {
 	s.handle(object{"id": "refresh-1", "method": "provider.auth.refresh", "params": object{"credential": future}})
 	equalJSON(t, <-sent, object{"jsonrpc": "2.0", "id": "refresh-1", "result": object{}})
 	token := object{"access_token": jwtForAccount("acct"), "refresh_token": "new-refresh", "expires_in": 3600}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		if r.Form.Get("refresh_token") != "old-refresh" {
 			t.Error(r.Form)
@@ -513,7 +515,7 @@ func TestAuthBrowserAndManualFlow(t *testing.T) {
 			listener.Close()
 			t.Setenv("KI_CODEX_CALLBACK_PORT", fmt.Sprint(port))
 			tokenSeen := make(chan url.Values, 1)
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				r.ParseForm()
 				tokenSeen <- r.Form
 				_, _ = w.Write([]byte(jsonString(object{"access_token": jwtForAccount("acct"), "refresh_token": "refresh", "expires_in": 3600})))
@@ -570,7 +572,7 @@ func TestAuthBrowserAndManualFlow(t *testing.T) {
 func TestDeviceAuthorizationPendingAndSuccess(t *testing.T) {
 	var mu sync.Mutex
 	polls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/accounts/deviceauth/usercode":
 			_, _ = w.Write([]byte(`{"device_auth_id":"device-1","user_code":"code-1","interval":"0.01"}`))

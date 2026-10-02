@@ -50,13 +50,20 @@ export function clampThinkingEffort(effort: string, model?: Pick<ModelInfo, 'thi
   const fallback = model?.defaultThinking && levels.includes(model.defaultThinking) ? model.defaultThinking : levels[0]
   if (!effort) return fallback
   if (levels.includes(effort)) return effort
-  const idx = THINKING_LEVELS.indexOf(effort)
+  const fast = effort.endsWith(' fast')
+  const base = fast ? effort.slice(0, -5) : effort
+  const idx = THINKING_LEVELS.indexOf(base)
   if (idx < 0) return fallback
+  // Keep Fast when the target offers it; otherwise strip only the speed choice,
+  // so switching providers cannot silently turn "high fast" into default medium.
+  const suffix = fast && THINKING_LEVELS.some(level => levels.includes(`${level} fast`)) ? ' fast' : ''
   for (let i = idx; i < THINKING_LEVELS.length; i++) {
-    if (levels.includes(THINKING_LEVELS[i])) return THINKING_LEVELS[i]
+    const level = THINKING_LEVELS[i] + suffix
+    if (levels.includes(level)) return level
   }
   for (let i = idx - 1; i >= 0; i--) {
-    if (levels.includes(THINKING_LEVELS[i])) return THINKING_LEVELS[i]
+    const level = THINKING_LEVELS[i] + suffix
+    if (levels.includes(level)) return level
   }
   return fallback
 }

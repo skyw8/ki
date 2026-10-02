@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"ki/internal/telemetry"
 	toolapi "ki/internal/tool"
 	"ki/internal/tool/output"
@@ -198,7 +200,10 @@ type Streamer interface {
 type Request struct {
 	// SessionID is optional provider cache affinity metadata. Core providers
 	// ignore it; provider extensions may use it for session-scoped protocol state.
-	SessionID               string                `json:"sessionId"`
+	SessionID string `json:"sessionId"`
+	// TurnID identifies the logical user turn across tool continuations and
+	// retries. Provider routing state must not be reset for each HTTP request.
+	TurnID                  string                `json:"turnId,omitempty"`
 	System                  string                `json:"system"`
 	Messages                []types.Message       `json:"messages"`
 	Tools                   []toolapi.Spec        `json:"tools"`
@@ -314,6 +319,7 @@ type Config struct {
 	Generation uint64
 	Streamer   Streamer
 	SessionID  string
+	TurnID     string
 	Tools      []toolapi.Tool
 	// ModelTools selects advertised schemas from the fixed execution registry.
 	// It receives the final model-facing history after context hooks. A nil
@@ -358,6 +364,11 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 
 // RunMessage executes one structured user message against the current history.
 func RunMessage(ctx context.Context, user types.Message, history []types.Message, cfg Config, emit func(Event) error) ([]types.Message, error) {
+	if cfg.TurnID == "" {
+		// Ki's turn_start events describe model/tool rounds. Codex transport
+		// affinity instead spans this entire user turn, including all rounds.
+		cfg.TurnID = uuid.NewString()
+	}
 	registry, err := toolapi.NewRegistry(cfg.Tools)
 	if err != nil {
 		return nil, err
@@ -458,6 +469,7 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 
 		request := Request{
 			SessionID:                 cfg.SessionID,
+			TurnID:                    cfg.TurnID,
 			System:                    system,
 			Messages:                  msgs,
 			Tools:                     specs,

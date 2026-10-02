@@ -303,7 +303,7 @@ func stageSourcePackage(root, source, stage, name string) error {
 	if err := copyFile(filepath.Join(root, "go.sum"), filepath.Join(stage, "go.sum"), 0644); err != nil {
 		return err
 	}
-	for _, shared := range []string{"pkg/extensionrpc", "pkg/extensionbuild", "internal/state"} {
+	for _, shared := range []string{"pkg/extensionrpc", "pkg/extensionbuild", "pkg/thinking", "pkg/codexclient", "internal/state"} {
 		if err := copyGoSources(filepath.Join(root, filepath.FromSlash(shared)), filepath.Join(stage, "_ki", filepath.FromSlash(shared))); err != nil {
 			return err
 		}

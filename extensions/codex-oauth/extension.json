@@ -38,6 +38,7 @@
             "standalone": "codex-v2"
           },
           "reasoning": true,
+          "fastServiceTier": "priority",
           "thinkingLevelMap": {
             "off": null,
             "minimal": null,
@@ -77,6 +78,7 @@
             "standalone": "codex-v2"
           },
           "reasoning": true,
+          "fastServiceTier": "priority",
           "thinkingLevelMap": {
             "off": null,
             "minimal": null,
@@ -116,6 +118,7 @@
             "standalone": "codex-v2"
           },
           "reasoning": true,
+          "fastServiceTier": "priority",
           "thinkingLevelMap": {
             "off": "none",
             "minimal": null,
@@ -155,6 +158,7 @@
             "standalone": "codex-v2"
           },
           "reasoning": true,
+          "fastServiceTier": "priority",
           "thinkingLevelMap": {
             "off": "none",
             "minimal": null,
@@ -194,6 +198,7 @@
             "standalone": "codex-v2"
           },
           "reasoning": true,
+          "fastServiceTier": "priority",
           "thinkingLevelMap": {
             "off": "none",
             "minimal": null,

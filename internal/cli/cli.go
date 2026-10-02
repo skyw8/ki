@@ -141,13 +141,18 @@ func newRunCommand() *cobra.Command {
 		Short: "Send a prompt and stream the agent run",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			prompt := strings.Join(args, " ")
+			if err := validateRunInput(f, prompt); err != nil {
+				return err
+			}
 			return withConfig("client", nil, func(cfg config.Config) error {
-				return runClient(cfg, f, strings.Join(args, " "))
+				return runClient(cfg, f, prompt)
 			})
 		},
 	}
 	cmd.Flags().StringVar(&f.Session, "session", "", "resume an existing session")
 	cmd.Flags().StringVar(&f.Model, "model", "", "model or provider/model to use")
+	cmd.Flags().StringVar(&f.Thinking, "thinking", "", "thinking level, including model-supported Fast variants (e.g. \"high fast\")")
 	cmd.Flags().StringVar(&f.CWD, "cwd", "", "working directory for a new session")
 	cmd.Flags().StringVar(&f.Addr, "addr", "", "server listen address when starting one")
 	cmd.Flags().BoolVar(&f.Steer, "steer", false, "insert into the current run when the session is busy")
@@ -435,12 +440,13 @@ func newSessionCommand() *cobra.Command {
 }
 
 type flags struct {
-	Session string
-	Model   string
-	CWD     string
-	Addr    string
-	Steer   bool
-	Queue   bool
+	Session  string
+	Model    string
+	Thinking string
+	CWD      string
+	Addr     string
+	Steer    bool
+	Queue    bool
 }
 
 var (
@@ -550,7 +556,22 @@ func streamer(_ config.Config) loop.Streamer {
 	return nil // Server builds the live router from the provider registry.
 }
 
+func validateRunInput(f flags, prompt string) error {
+	if strings.TrimSpace(prompt) == "" {
+		return errPromptRequired
+	}
+	if f.Steer && f.Queue {
+		return errSteerQueueExclusive
+	}
+	return nil
+}
+
 func runClient(cfg config.Config, f flags, prompt string) error {
+	// Reject invalid input before even attaching or starting a server: session
+	// creation and thinking PATCHes are durable effects, not prompt validation.
+	if err := validateRunInput(f, prompt); err != nil {
+		return err
+	}
 	base, token, stop, err := ensureServer(cfg, f)
 	if err != nil {
 		return err
@@ -561,13 +582,25 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 	id := f.Session
 	if id == "" {
 		var created map[string]any
-		if err := doJSON(base, token, "/v1/sessions", map[string]any{"cwd": f.CWD, "model": f.Model}, &created); err != nil {
+		body := map[string]any{"cwd": f.CWD, "model": f.Model}
+		if f.Thinking != "" {
+			body["thinkingEffort"] = f.Thinking
+		}
+		if err := doJSON(base, token, "/v1/sessions", body, &created); err != nil {
 			return err
 		}
 		id, _ = created["id"].(string)
-	}
-	if strings.TrimSpace(prompt) == "" {
-		return errPromptRequired
+	} else if f.Thinking != "" {
+		// Thinking is session configuration, not a prompt field. Apply model
+		// and thinking atomically so a resumed session validates the selected
+		// level against the intended model, rather than the previous one.
+		body := map[string]any{"thinkingEffort": f.Thinking}
+		if f.Model != "" {
+			body["model"] = f.Model
+		}
+		if err := doJSONContext(context.Background(), base, token, http.MethodPatch, "/v1/sessions/"+id, body, nil); err != nil {
+			return err
+		}
 	}
 	ctx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt)
 	// Why WithoutCancel: ctx is already canceled when this cleanup runs (that
@@ -587,9 +620,6 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 		stopSig()
 		stopAbort()
 	}()
-	if f.Steer && f.Queue {
-		return errSteerQueueExclusive
-	}
 	body := map[string]any{"text": prompt, "model": f.Model}
 	if f.Steer {
 		body["delivery"] = "steer"
