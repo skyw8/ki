@@ -841,26 +841,6 @@
       },
       {
         "type": "message",
-        "id": "notice",
-        "parentId": "result",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "notice"
-            }
-          ],
-          "origin": "agent:child",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 2
-        }
-      },
-      {
-        "type": "message",
         "id": "final",
         "parentId": "notice",
         "timestamp": "",
@@ -888,17 +868,15 @@
         "cumulativeElapsedMs": 0,
         "entryIds": [
           "u",
-          "notice",
           "final"
         ],
         "visibleNodeIds": [
           "u",
-          "notice",
           "final"
         ],
-        "hiddenCount": 2,
+        "hiddenCount": 3,
         "firstHiddenId": "call",
-        "preview": "Read",
+        "preview": "notice",
         "stats": {
           "turn": 1,
           "steps": 2,
@@ -951,27 +929,6 @@
       },
       {
         "type": "message",
-        "id": "notice",
-        "parentId": "result",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "notice"
-            }
-          ],
-          "timestamp": 4000,
-          "origin": "agent:child",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 2
-        }
-      },
-      {
-        "type": "message",
         "id": "final",
         "parentId": "notice",
         "timestamp": "",
@@ -1002,17 +959,15 @@
         "cumulativeElapsedMs": 4000,
         "entryIds": [
           "human",
-          "notice",
           "final"
         ],
         "visibleNodeIds": [
           "human",
-          "notice",
           "final"
         ],
-        "hiddenCount": 2,
+        "hiddenCount": 3,
         "firstHiddenId": "call",
-        "preview": "Read",
+        "preview": "notice",
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -1062,26 +1017,6 @@
         "contextEstimate": {
           "message": 1
         }
-      },
-      {
-        "type": "message",
-        "id": "notice",
-        "parentId": "result",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "notice"
-            }
-          ],
-          "origin": "agent:child",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 2
-        }
       }
     ],
     "compactTurns": [
@@ -1092,14 +1027,12 @@
         "toolStates": [],
         "cumulativeElapsedMs": 0,
         "entryIds": [
-          "u",
-          "notice"
+          "u"
         ],
         "visibleNodeIds": [
-          "u",
-          "notice"
+          "u"
         ],
-        "hiddenCount": 3,
+        "hiddenCount": 4,
         "firstHiddenId": "call",
         "preview": "final",
         "stats": {
@@ -1444,27 +1377,6 @@
     "entries": [
       {
         "type": "message",
-        "id": "directive",
-        "parentId": "",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "runtime prelude"
-            }
-          ],
-          "timestamp": 1000,
-          "origin": "agent",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 4
-        }
-      },
-      {
-        "type": "message",
         "id": "human",
         "parentId": "prelude-answer",
         "timestamp": "",
@@ -1481,27 +1393,6 @@
         },
         "contextEstimate": {
           "message": 5
-        }
-      },
-      {
-        "type": "message",
-        "id": "notice",
-        "parentId": "answer",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "notice"
-            }
-          ],
-          "timestamp": 3000,
-          "origin": "agent:child",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 2
         }
       },
       {
@@ -1535,20 +1426,16 @@
         "toolStates": [],
         "cumulativeElapsedMs": 3000,
         "entryIds": [
-          "directive",
           "human",
-          "notice",
           "final"
         ],
         "visibleNodeIds": [
           "human",
-          "directive",
-          "notice",
           "final"
         ],
-        "hiddenCount": 2,
-        "firstHiddenId": "prelude-answer",
-        "preview": "answer",
+        "hiddenCount": 4,
+        "firstHiddenId": "directive",
+        "preview": "notice",
         "stats": {
           "turn": 1,
           "startedAt": 2000,
@@ -1580,27 +1467,6 @@
   },
   "preludeFirstHuman": {
     "entries": [
-      {
-        "type": "message",
-        "id": "directive",
-        "parentId": "",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "runtime prelude"
-            }
-          ],
-          "timestamp": 1000,
-          "origin": "agent",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 4
-        }
-      },
       {
         "type": "message",
         "id": "prelude-answer",
@@ -1652,16 +1518,16 @@
         "toolStates": [],
         "cumulativeElapsedMs": 100,
         "entryIds": [
-          "directive",
           "prelude-answer",
           "human"
         ],
         "visibleNodeIds": [
           "human",
-          "directive",
           "prelude-answer"
         ],
-        "hiddenCount": 0,
+        "hiddenCount": 1,
+        "firstHiddenId": "directive",
+        "preview": "runtime prelude",
         "stats": {
           "turn": 1,
           "startedAt": 2000,
@@ -1749,10 +1615,14 @@
           "prelude-answer"
         ],
         "visibleNodeIds": [
-          "directive",
           "prelude-answer"
         ],
-        "hiddenCount": 0,
+        "omittedNodeIds": [
+          "directive"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "directive",
+        "preview": "runtime prelude",
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -1862,11 +1732,15 @@
           "notice"
         ],
         "visibleNodeIds": [
-          "directive",
           "a1",
           "notice"
         ],
-        "hiddenCount": 0,
+        "omittedNodeIds": [
+          "directive"
+        ],
+        "hiddenCount": 1,
+        "firstHiddenId": "directive",
+        "preview": "directive",
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -1918,27 +1792,6 @@
         "contextEstimate": {
           "message": 3
         }
-      },
-      {
-        "type": "message",
-        "id": "notice",
-        "parentId": "a1",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "notice"
-            }
-          ],
-          "timestamp": 3000,
-          "origin": "agent:child",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 2
-        }
       }
     ],
     "compactTurns": [
@@ -1950,16 +1803,15 @@
         "toolStates": [],
         "cumulativeElapsedMs": 1000,
         "entryIds": [
-          "directive",
-          "notice"
+          "directive"
         ],
-        "visibleNodeIds": [
-          "directive",
-          "notice"
+        "visibleNodeIds": [],
+        "omittedNodeIds": [
+          "directive"
         ],
-        "hiddenCount": 1,
-        "firstHiddenId": "a1",
-        "preview": "first reply",
+        "hiddenCount": 3,
+        "firstHiddenId": "directive",
+        "preview": "notice",
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -2014,27 +1866,6 @@
       },
       {
         "type": "message",
-        "id": "notice",
-        "parentId": "a1",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "notice"
-            }
-          ],
-          "timestamp": 3000,
-          "origin": "agent:child",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 2
-        }
-      },
-      {
-        "type": "message",
         "id": "a2",
         "parentId": "notice",
         "timestamp": "",
@@ -2065,17 +1896,17 @@
         "cumulativeElapsedMs": 3000,
         "entryIds": [
           "directive",
-          "notice",
           "a2"
         ],
         "visibleNodeIds": [
-          "directive",
-          "notice",
           "a2"
         ],
-        "hiddenCount": 1,
-        "firstHiddenId": "a1",
-        "preview": "first reply",
+        "omittedNodeIds": [
+          "directive"
+        ],
+        "hiddenCount": 3,
+        "firstHiddenId": "directive",
+        "preview": "notice",
         "stats": {
           "turn": 1,
           "startedAt": 1000,
@@ -2127,27 +1958,6 @@
         "contextEstimate": {
           "message": 3
         }
-      },
-      {
-        "type": "message",
-        "id": "notice",
-        "parentId": "a1",
-        "timestamp": "",
-        "message": {
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "notice"
-            }
-          ],
-          "timestamp": 3000,
-          "origin": "agent:child",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 2
-        }
       }
     ],
     "compactTurns": [
@@ -2159,15 +1969,14 @@
         "toolStates": [],
         "cumulativeElapsedMs": 3000,
         "entryIds": [
-          "directive",
-          "notice"
+          "directive"
         ],
-        "visibleNodeIds": [
-          "directive",
-          "notice"
+        "visibleNodeIds": [],
+        "omittedNodeIds": [
+          "directive"
         ],
-        "hiddenCount": 2,
-        "firstHiddenId": "a1",
+        "hiddenCount": 4,
+        "firstHiddenId": "directive",
         "preview": "final reply",
         "stats": {
           "turn": 1,
@@ -2394,27 +2203,6 @@
         "contextEstimate": {
           "message": 1
         }
-      },
-      {
-        "type": "message",
-        "id": "notice",
-        "parentId": "answer",
-        "timestamp": "",
-        "message": {
-          "clientRequestId": "context-mail",
-          "role": "user",
-          "content": [
-            {
-              "type": "text",
-              "text": "context-only notice"
-            }
-          ],
-          "origin": "agent:child",
-          "durationMs": 0
-        },
-        "contextEstimate": {
-          "message": 5
-        }
       }
     ],
     "compactTurns": [
@@ -2425,16 +2213,14 @@
         "toolStates": [],
         "cumulativeElapsedMs": 0,
         "entryIds": [
-          "u",
-          "notice"
+          "u"
         ],
         "visibleNodeIds": [
-          "u",
-          "notice"
+          "u"
         ],
-        "hiddenCount": 2,
+        "hiddenCount": 3,
         "firstHiddenId": "work",
-        "preview": "final answer",
+        "preview": "context-only notice",
         "stats": {
           "turn": 1,
           "steps": 2,

@@ -157,7 +157,7 @@ test('B1 golden runtime notice hydration preserves canonical turn, tools, steps 
     expect(new Set(state.records.map(r => r.turnId))).toEqual(new Set(['u']))
     expect(new Set(state.records.map(r => r.turn))).toEqual(new Set([1]))
     expect(userRequests(state.allEntries, state.leafId, state.nodes, state.compactTurns).map(r => r.id)).toEqual(['u'])
-    expect(folds(state)[0].count).toBe(2)
+    expect(folds(state)[0].count).toBe(3)
   }
 })
 
@@ -295,7 +295,7 @@ test('replayed runtime acceptance/start cannot duplicate a durable notification 
     }
     state = applyEvent(state, { type: 'agent_end' })
     state = applyTail(state, snapshot)
-    expect(state.nodes.map(n => n.id)).toEqual(['u', 'notice', 'final'])
+    expect(state.nodes.map(n => n.id)).toEqual(ids)
     expect(state.nodes.at(-1)?.id).toBe('final')
     state = hydrateEntries(state, noticeEntries())
     expect(state.nodes.map(n => n.id)).toEqual(['u', 'call', 'tool', 'notice', 'final'])

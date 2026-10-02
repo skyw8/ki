@@ -95,7 +95,7 @@ func TestCompactPagesWholeTurnsWithoutHiddenBodies(t *testing.T) {
 	}
 }
 
-func TestCompactProjectionKeepsRuntimeUserMessagesSeparate(t *testing.T) {
+func TestCompactRuntimeUserMessagesDoNotSpendKeepSlots(t *testing.T) {
 	entries := []Entry{
 		{Type: "message", ID: "u0", Message: &types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "human"}}}},
 		{Type: "message", ID: "a0", ParentID: "u0", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "working"}}}},
@@ -109,11 +109,11 @@ func TestCompactProjectionKeepsRuntimeUserMessagesSeparate(t *testing.T) {
 		t.Fatalf("runtime message split turns: %+v", page.Turns)
 	}
 	first := page.Turns[0]
-	if first.HiddenCount != 1 || !slices.Equal(first.VisibleNodeIDs, []string{"u0", "notice", "a1"}) {
+	if first.HiddenCount != 2 || !slices.Equal(first.VisibleNodeIDs, []string{"u0", "a1"}) {
 		t.Fatalf("runtime message consumed a reply slot: %+v", first)
 	}
-	if !slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "notice" }) {
-		t.Fatal("separate runtime notification body missing")
+	if slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "notice" }) {
+		t.Fatal("older runtime notification body escaped the fold")
 	}
 }
 
@@ -143,16 +143,19 @@ func TestCompactRuntimeNotificationsNeverHideFinalReply(t *testing.T) {
 							t.Fatalf("runtime notification split the human turn: %+v", page)
 						}
 						turn := page.Turns[0]
-						wantVisible := []string{"u", "notice"}
+						wantVisible := []string{"u"}
+						wantHidden := 3
 						if keep == 1 {
+							wantHidden = 2
 							if trailing {
 								wantVisible = []string{"u", "answer", "notice"}
+								wantHidden = 1
 							} else {
-								wantVisible = []string{"u", "notice", "answer"}
+								wantVisible = []string{"u", "answer"}
 							}
 						}
-						if turn.HiddenCount != 2-keep || !slices.Equal(turn.VisibleNodeIDs, wantVisible) {
-							t.Fatalf("notice folded or hid final reply: %+v", turn)
+						if turn.HiddenCount != wantHidden || !slices.Equal(turn.VisibleNodeIDs, wantVisible) {
+							t.Fatalf("notice consumed keep or escaped chronological cutoff: %+v", turn)
 						}
 						if !slices.Equal(turn.EntryIDs, wantVisible) || turn.Stats.Steps != 2 || turn.Stats.Turn != 1 {
 							t.Fatalf("projection changed order or accounting: %+v", turn)
@@ -162,7 +165,7 @@ func TestCompactRuntimeNotificationsNeverHideFinalReply(t *testing.T) {
 						}
 						reprojected, found := BuildCompactTurn(entries, "", "notice", keep)
 						if !found || !slices.Equal(reprojected.Turns[0].VisibleNodeIDs, wantVisible) {
-							t.Fatalf("turn reprojection lost separate notification: %+v", reprojected)
+							t.Fatalf("turn reprojection lost chronological cutoff: %+v", reprojected)
 						}
 					})
 				}
@@ -196,18 +199,75 @@ func TestCompactProjectionKeepsFoldAnchorForMachineOnlyTurn(t *testing.T) {
 	}
 	for _, keep := range []int{0, 1} {
 		page := BuildCompact(entries, "", "", keep)
-		if len(page.Turns) != 1 || page.Turns[0].ID != "directive" || page.Turns[0].HiddenCount != 1-keep {
+		if len(page.Turns) != 1 || page.Turns[0].ID != "directive" || page.Turns[0].HiddenCount != 2-keep {
 			t.Fatalf("machine-only turn keep=%d: %+v", keep, page)
 		}
 		if page.Turns[0].Stats.Turn != 1 {
 			t.Fatalf("runtime-only turn must start at ordinal 1: %+v", page.Turns[0])
 		}
-		want := []string{"directive"}
+		want := []string{}
+		wantEntries := []string{"directive"}
 		if keep == 1 {
 			want = append(want, "answer")
+			wantEntries = append(wantEntries, "answer")
 		}
-		if !slices.Equal(page.Turns[0].VisibleNodeIDs, want) || !slices.Equal(page.Turns[0].EntryIDs, want) {
-			t.Fatalf("missing visible runtime anchor keep=%d: %+v", keep, page)
+		if !slices.Equal(page.Turns[0].VisibleNodeIDs, want) || !slices.Equal(page.Turns[0].EntryIDs, wantEntries) {
+			t.Fatalf("missing stable folded runtime anchor keep=%d: %+v", keep, page)
+		}
+	}
+}
+
+func TestCompactRuntimeCutoffWhenAllOrNoRealRepliesAreKept(t *testing.T) {
+	entries := []Entry{
+		{Type: "message", ID: "directive", Message: &types.Message{Role: "user", Origin: "agent"}},
+		{Type: "message", ID: "first", ParentID: "directive", Message: &types.Message{Role: "assistant"}},
+		{Type: "message", ID: "middle", ParentID: "first", Message: &types.Message{Role: "user", Origin: "agent:child"}},
+		{Type: "message", ID: "final", ParentID: "middle", Message: &types.Message{Role: "assistant"}},
+		{Type: "message", ID: "trailing", ParentID: "final", Message: &types.Message{Role: "user", Origin: "agent:child"}},
+		{Type: "compaction", ID: "checkpoint", ParentID: "trailing", Summary: "summary"},
+	}
+	for _, keep := range []int{2, 20} {
+		page := BuildCompact(entries, "", "", keep)
+		turn := page.Turns[0]
+		if turn.ID != "directive" || turn.HiddenCount != 1 ||
+			!slices.Equal(turn.VisibleNodeIDs, []string{"first", "middle", "final", "trailing", "checkpoint"}) {
+			t.Fatalf("all real replies kept should fold only the preceding directive: %+v", turn)
+		}
+		if !slices.Contains(turn.EntryIDs, "directive") {
+			t.Fatal("folded directive lost its stable anchor body")
+		}
+	}
+	onlyNotices := []Entry{entries[0], {Type: "message", ID: "notice", ParentID: "directive", Message: &types.Message{Role: "user", Origin: "agent:child"}}}
+	for _, keep := range []int{0, 1, 20} {
+		page := BuildCompact(onlyNotices, "", "", keep)
+		turn := page.Turns[0]
+		if turn.ID != "directive" || turn.HiddenCount != 2 || len(turn.VisibleNodeIDs) != 0 ||
+			!slices.Equal(turn.EntryIDs, []string{"directive"}) {
+			t.Fatalf("notice-only turns have no real reply cutoff keep=%d: %+v", keep, turn)
+		}
+	}
+}
+
+func TestCompactRuntimeCutoffPreservesLiveNestedToolAndFollowingNodes(t *testing.T) {
+	entries := []Entry{
+		{Type: "message", ID: "u", Message: &types.Message{Role: "user"}},
+		{Type: "message", ID: "old", ParentID: "u", Message: &types.Message{Role: "assistant"}},
+		{Type: "message", ID: "before", ParentID: "old", Message: &types.Message{Role: "user", Origin: "agent:child"}},
+		{Type: "tool_execution_start", ID: "live-start", ParentID: "before", Details: map[string]any{
+			"toolCallId": "live-tool", "parentCallId": "exec", "cellId": "cell", "toolName": "read",
+		}},
+		{Type: "message", ID: "after", ParentID: "live-start", Message: &types.Message{Role: "user", Origin: "agent:child"}},
+		{Type: "message", ID: "latest", ParentID: "after", Message: &types.Message{Role: "assistant"}},
+		{Type: "compaction", ID: "checkpoint", ParentID: "latest", Summary: "summary"},
+	}
+	for _, keep := range []int{0, 1} {
+		turn := BuildCompact(entries, "", "", keep).Turns[0]
+		if turn.HiddenCount != 2 ||
+			!slices.Equal(turn.VisibleNodeIDs, []string{"u", "live-tool", "after", "latest", "checkpoint"}) {
+			t.Fatalf("live real reply did not bound the fold keep=%d: %+v", keep, turn)
+		}
+		if !slices.Contains(turn.EntryIDs, "live-start") {
+			t.Fatal("live nested tool lost its reconstructable start")
 		}
 	}
 }

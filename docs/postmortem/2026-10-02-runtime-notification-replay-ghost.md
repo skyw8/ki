@@ -55,7 +55,7 @@ Both Go compact projection and browser folding classified runtime user messages
 as replies, so `keep=1` retained the notification and hid the answer. Refreshing
 could not fix this projection.
 
-Runtime notifications and directives now follow the compaction/cancellation
+The interim fix made runtime notifications and directives follow the compaction/cancellation
 display rule: always visible in chronological order, outside `keep` and
 `hiddenCount`. They still belong to their original human turn (or the existing
 machine-only anchor); turn boundaries, model context and statistics do not change.
@@ -72,3 +72,27 @@ that cost covers the real endpoint and browser reload, which pure reducers
 cannot verify. The full regression passed all other cases; this case initially
 failed because the test expected reload to auto-select a session. After using
 the normal reopen action, its focused rerun passed without changing assertions.
+
+## Refinement: foldable is not the same as keep-eligible
+
+Making every runtime message visible fixed the final reply but flooded long
+turns with intermediate reports. The clarified rule separates two decisions:
+runtime messages can fold (and count in `hiddenCount`), but only normal
+assistant/tool replies consume `keep`.
+
+The first kept or still-live real reply defines the visible suffix. Older
+notifications fold with older replies; newer suffix notifications stay in their
+chronological positions without displacing the answer. `keep=0` folds notices
+too unless live work pins that suffix. Compaction/cancellation remain genuinely
+always-visible metadata. Runtime-only anchors retain their identity/body for
+expansion, not an artificial keep slot.
+
+Reprojecting the reported turn now retains the final answer and trailing
+notification, folds its two middle reports, and reports `hiddenCount=70`.
+Focused Bun coverage is 67 tests (0.50s versus 66 in 0.87s before); focused Go
+compact coverage is 0.115s versus 0.135s. The updated browser case remains 2.9s.
+The full run passed all Go/Bun cases and other browser cases except an unrelated
+diagram-fit timing failure; its focused rerun passed. The notification test also
+needed to distinguish a fold preview from a mounted message row: previews may
+contain a hidden notice's text. The corrected row assertion and the full
+notification reopen/expansion/keep=0 scenario passed together.

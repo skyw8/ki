@@ -215,9 +215,11 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 	type node struct {
 		id, preview string
 		entries     []int
-		// alwaysVisible marks runtime notifications and lifecycle metadata,
-		// not replies. They never count toward `keep`, otherwise a trailing
-		// notification/compaction/cancellation would hide the newest real reply.
+		// Only ordinary assistant/tool nodes consume keep slots. Runtime
+		// notices are foldable, but cannot displace a final real reply.
+		keepEligible bool
+		// Lifecycle metadata and independently running nested tools must stay
+		// visible. A live real reply also establishes the fold boundary.
 		alwaysVisible bool
 		suppressed    bool
 	}
@@ -258,9 +260,9 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			user = i
 		case isUserMessage(e):
 			// Why: the runtime stores subagent traffic with role=user. It is
-			// a separate notification, not a reply slot: context-only mail can
-			// be persisted after the final assistant and must not hide it.
-			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}, alwaysVisible: true})
+			// foldable context, not a keep slot. Context-only mail can be
+			// persisted after the final assistant and must not hide that reply.
+			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}})
 		case m != nil && m.Role == "assistant":
 			batch = map[string]int{}
 			toolStates = []TurnToolState{}
@@ -268,7 +270,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			// Legacy sessions stored run_aborted as an unparented sideband.
 			// Keep their branch-correct aborted assistant visible so the client
 			// can synthesize the standalone cancellation row.
-			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}, alwaysVisible: m.StopReason == "aborted"})
+			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}, keepEligible: m.StopReason != "aborted", alwaysVisible: m.StopReason == "aborted"})
 			stats.Steps++
 			stats.DurationMS += m.LatencyMs
 			assistantAt = max(assistantAt, entryMillis(e))
@@ -308,7 +310,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 						nodes[at].entries = append(nodes[at].entries, i)
 					} else {
 						tools[c.ID] = len(nodes)
-						nodes = append(nodes, node{id: c.ID, preview: c.Name, entries: []int{i}})
+						nodes = append(nodes, node{id: c.ID, preview: c.Name, entries: []int{i}, keepEligible: true})
 					}
 				}
 			}
@@ -330,7 +332,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 				nodes[at].entries = append(nodes[at].entries, i)
 			} else {
 				tools[id] = len(nodes)
-				nodes = append(nodes, node{id: id, preview: m.ToolName, entries: []int{i}})
+				nodes = append(nodes, node{id: id, preview: m.ToolName, entries: []int{i}, keepEligible: true})
 			}
 		case nestedAudit:
 			id, _ := audit["toolCallId"].(string)
@@ -367,7 +369,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 				at = len(nodes)
 				tools[id] = at
 				name, _ := audit["toolName"].(string)
-				nodes = append(nodes, node{id: id, preview: name})
+				nodes = append(nodes, node{id: id, preview: name, keepEligible: true})
 			}
 			// A yielded cell can still be running after a later assistant or
 			// wait request. Keep its start independently of the reply budget.
@@ -461,24 +463,37 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 	} else if len(nodes) > 0 {
 		// A subagent session can start with a machine-authored user message and
 		// have no human input at all. Keep the first node's body as its stable
-		// anchor, whether it is a visible notification or a hidden reply.
+		// anchor, even when that runtime directive belongs inside the fold.
 		t.ID = nodes[0].id
 		selected[nodes[0].entries[0]] = true
 	}
-	// Fold only real replies: the newest `keep` of them stay visible, and every
-	// runtime notification and lifecycle metadata row stays visible too.
-	// Counting one toward `keep` would hide the turn's final answer.
+	// Keep slots count only real replies, but the fold covers older runtime
+	// notices too. Use one chronological cutoff so a trailing notice does not
+	// hide the final answer and middle notification spam stays in the fold.
 	var replies []int
 	for i, n := range nodes {
-		if !n.alwaysVisible {
+		if n.keepEligible {
 			replies = append(replies, i)
 		}
 	}
-	hiddenCount := max(0, len(replies)-keep)
-	hidden := map[int]bool{}
-	for _, i := range replies[:hiddenCount] {
-		hidden[i] = true
+	cutoff := len(nodes)
+	if keep > 0 && len(replies) > 0 {
+		cutoff = replies[max(0, len(replies)-keep)]
 	}
+	for i, n := range nodes {
+		if n.keepEligible && n.alwaysVisible {
+			cutoff = min(cutoff, i)
+		}
+	}
+	hidden := map[int]bool{}
+	var folded []int
+	for i, n := range nodes {
+		if i < cutoff && !n.alwaysVisible {
+			hidden[i] = true
+			folded = append(folded, i)
+		}
+	}
+	hiddenCount := len(folded)
 	t.HiddenCount = hiddenCount
 	if hiddenCount > 0 {
 		for i := range nodes {
@@ -489,7 +504,7 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 		}
 		// The preview summarises the newest folded reply, mirroring the fold
 		// row the browser builds from the hidden nodes.
-		newest := replies[hiddenCount-1]
+		newest := folded[hiddenCount-1]
 		t.Preview = utf8Prefix(strings.Join(strings.Fields(nodes[newest].preview), " "), 160)
 	}
 	for i, n := range nodes {

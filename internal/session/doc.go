@@ -31,7 +31,8 @@
 // page budget as well as a count limit. Compact views instead page whole human
 // turns: visible input/reply bodies plus a fold summary and canonical range
 // metadata. Runtime-authored user-role messages (including subagent traffic)
-// are foldable replies, not turn boundaries. Compaction rows are metadata:
+// are foldable context, not turn boundaries or per-turn keep slots.
+// Compaction rows are metadata:
 // always kept visible and never counted toward the per-turn keep, so a
 // trailing checkpoint cannot fold the newest reply.
 // Start/end lifecycle entries remain in compact bodies even without a
@@ -39,12 +40,14 @@
 // row (or its committed checkpoint) renders outside folds; lifecycle progress
 // does not increment model steps. Later requests cannot finish an abandoned
 // earlier start.
-// HiddenCount counts reply nodes, not entries: assistant messages and distinct
-// tool call IDs. Runtime user messages always remain visible in chronological
-// order, separate from replies, and never consume keep slots or HiddenCount.
+// Keep counts only ordinary assistants and distinct tool call IDs. HiddenCount
+// counts every foldable node before the first kept or live real reply, including
+// runtime user messages; later notices remain visible in chronological order.
+// With no kept/live real reply, all foldable nodes hide, even runtime-only input.
+// Its first body remains a stable turn anchor independent of row visibility.
 // VisibleNodeIDs also includes compaction/cancellation metadata and aborted
 // assistants, so consumers must classify those IDs before combining visible
-// replies with HiddenCount.
+// foldable nodes with HiddenCount.
 // Sparse cross-turn edges require matching canonical parent/tail identities,
 // not merely consecutive turn ordinals, which can also occur on sibling branches.
 // Hidden reply bodies are transferred

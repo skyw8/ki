@@ -6,7 +6,7 @@ import type { Entry, SessionDetail } from '../src/api/types'
 
 test.describe.configure({ mode: 'parallel' })
 
-test('runtime notifications stay outside folds and never hide the final assistant reply after reload', async ({ page }) => {
+test('older runtime notifications fold without consuming the final assistant keep slot after reload', async ({ page }) => {
   const headers = { Authorization: `Bearer ${serverToken()}` }
   const created = await page.request.post('/v1/sessions', { headers, data: {} })
   expect(created.ok()).toBeTruthy()
@@ -31,14 +31,17 @@ test('runtime notifications stay outside folds and never hide the final assistan
   const detail = await page.request.get(`/v1/sessions/${id}?view=compact&keep=1`, { headers })
   expect(detail.ok()).toBeTruthy()
   const snapshot = await detail.json() as SessionDetail
-  expect(snapshot.compactTurns?.[0].hiddenCount).toBe(1)
-  expect(snapshot.compactTurns?.[0].visibleNodeIds).toEqual(['u', 'middle', 'final', 'trailing'])
+  expect(snapshot.compactTurns?.[0].hiddenCount).toBe(2)
+  expect(snapshot.compactTurns?.[0].visibleNodeIds).toEqual(['u', 'final', 'trailing'])
+  expect(snapshot.entries?.some(e => e.id === 'middle')).toBe(false)
   const assertVisible = async () => {
     await expect(page.getByTestId('assistant-message')).toHaveText(/Final agent reply stays visible/)
-    await expect(page.getByRole('note')).toHaveCount(2)
-    await expect(page.getByRole('note').first()).toContainText('Middle runtime notice')
-    await expect(page.getByRole('note').last()).toContainText('Trailing runtime notice')
-    await expect(page.getByTestId('fold-row')).toContainText('已折叠 1 条消息')
+    await expect(page.getByRole('note')).toHaveCount(1)
+    await expect(page.getByRole('note')).toContainText('Trailing runtime notice')
+    // The collapsed fold may preview the newest hidden notification's text;
+    // assert its actual message row is absent, not that the preview is empty.
+    await expect(page.locator('[data-item-key="middle"]')).toHaveCount(0)
+    await expect(page.getByTestId('fold-row')).toContainText('已折叠 2 条消息')
   }
   await page.goto('/')
   await page.getByTestId('session-row').filter({ hasText: title }).click()
@@ -49,14 +52,15 @@ test('runtime notifications stay outside folds and never hide the final assistan
   await page.getByTestId('fold-row-btn').click()
   await expect(page.getByTestId('assistant-message')).toHaveCount(2)
   await expect(page.getByRole('note')).toHaveCount(2)
+  await expect(page.getByRole('note').first()).toContainText('Middle runtime notice')
   await page.getByTestId('fold-row-btn').click()
   await assertVisible()
   await page.evaluate(() => localStorage.setItem('ki-message-view-keep', '0'))
   await page.reload()
   await page.getByTestId('session-row').filter({ hasText: title }).click()
   await expect(page.getByTestId('assistant-message')).toHaveCount(0)
-  await expect(page.getByRole('note')).toHaveCount(2)
-  await expect(page.getByTestId('fold-row')).toContainText('已折叠 2 条消息')
+  await expect(page.getByRole('note')).toHaveCount(0)
+  await expect(page.getByTestId('fold-row')).toContainText('已折叠 4 条消息')
 })
 
 async function seed(page: Page) {
