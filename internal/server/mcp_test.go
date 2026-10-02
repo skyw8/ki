@@ -76,12 +76,11 @@ func newMCPServerFixture(t *testing.T) *mcpServerFixture {
 	return f
 }
 
-func mcpServerConfig(t *testing.T, mode, url string) config.Config {
+func mcpServerConfig(t *testing.T, url string) config.Config {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("KI_HOME", home)
 	cfg := config.Builtin(home)
-	cfg.CodeMode.Mode = mode
 	cfg.Compaction.Enabled = false
 	cfg.MCPServers = map[string]config.MCPServer{"fixture": {URL: url}}
 	return cfg
@@ -122,24 +121,18 @@ func mcpRequestSpec(req loop.Request, name string) (toolapi.Spec, bool) {
 	return toolapi.Spec{}, false
 }
 
-func mcpAssertLoadedSchema(t *testing.T, req loop.Request, mode string, loaded bool) {
+func mcpAssertLoadedSchema(t *testing.T, req loop.Request, loaded bool) {
 	t.Helper()
 	_, direct := mcpRequestSpec(req, mcpSearchName)
-	if mode == "only" {
-		if direct {
-			t.Fatal("only mode advertised a direct MCP schema")
-		}
-		exec, ok := mcpRequestSpec(req, "exec")
-		if !ok || strings.Contains(exec.Description, "mcp_query_unique") != loaded {
-			t.Fatalf("only loaded=%v exec description=%s", loaded, exec.Description)
-		}
-		if strings.Contains(exec.Description, "document_id_unique") {
-			t.Fatal("searching one MCP tool exposed the other tool's schema")
-		}
-		return
+	exec, ok := mcpRequestSpec(req, "exec")
+	if !ok || strings.Contains(exec.Description, "mcp_query_unique") != loaded {
+		t.Fatalf("loaded=%v exec description=%s", loaded, exec.Description)
+	}
+	if strings.Contains(exec.Description, "document_id_unique") {
+		t.Fatal("searching one MCP tool exposed the other tool's schema")
 	}
 	if direct != loaded {
-		t.Fatalf("%s loaded=%v direct=%v tools=%v", mode, loaded, direct, requestToolNames(req.Tools))
+		t.Fatalf("loaded=%v direct=%v tools=%v", loaded, direct, requestToolNames(req.Tools))
 	}
 	if _, present := mcpRequestSpec(req, mcpReadName); present {
 		t.Fatal("searching one MCP tool advertised the other tool")
@@ -155,38 +148,27 @@ func mcpAssertLoadedSchema(t *testing.T, req loop.Request, mode string, loaded b
 func TestMCPServerSchemaExposureMatrix(t *testing.T) {
 	f := newMCPServerFixture(t)
 	for _, api := range []string{"completions", "responses", "anthropic"} {
-		for _, mode := range []string{"off", "mixed", "only"} {
-			t.Run(api+"/"+mode, func(t *testing.T) {
-				var got loop.Request
-				srv := newMCPIntegrationServer(t, mcpServerConfig(t, mode, f.url), codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
-					got = req
-					return codeModeStop(), nil
-				}))
-				id := codeModeTestSession(t, srv, t.TempDir(), api)
-				codeModeRunPrompt(t, srv, id, "MCP exposure")
-				search, ok := mcpRequestSpec(got, "search_tool")
-				if !ok || search.Type != "function" || search.Parameters == nil {
-					t.Fatalf("portable search schema missing: %+v", got.Tools)
-				}
-				mcpAssertLoadedSchema(t, got, mode, false)
-				if mode == "only" {
-					names := requestToolNames(got.Tools)
-					slices.Sort(names)
-					if !slices.Equal(names, []string{"exec", "search_tool", "wait"}) {
-						t.Fatalf("only entrypoints: %v", names)
-					}
-				}
-				if mode != "off" {
-					exec, _ := mcpRequestSpec(got, "exec")
-					if strings.Contains(exec.Description, "mcp_query_unique") || strings.Contains(exec.Description, "document_id_unique") {
-						t.Fatal("deferred MCP schemas leaked into initial exec description")
-					}
-					if (exec.Type == "custom") != (api == "responses") {
-						t.Fatalf("wrong exec protocol shape: api=%s spec=%+v", api, exec)
-					}
-				}
-			})
-		}
+		t.Run(api, func(t *testing.T) {
+			var got loop.Request
+			srv := newMCPIntegrationServer(t, mcpServerConfig(t, f.url), codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
+				got = req
+				return codeModeStop(), nil
+			}))
+			id := codeModeTestSession(t, srv, t.TempDir(), api)
+			codeModeRunPrompt(t, srv, id, "MCP exposure")
+			search, ok := mcpRequestSpec(got, "search_tool")
+			if !ok || search.Type != "function" || search.Parameters == nil {
+				t.Fatalf("portable search schema missing: %+v", got.Tools)
+			}
+			mcpAssertLoadedSchema(t, got, false)
+			exec, _ := mcpRequestSpec(got, "exec")
+			if strings.Contains(exec.Description, "mcp_query_unique") || strings.Contains(exec.Description, "document_id_unique") {
+				t.Fatal("deferred MCP schemas leaked into initial exec description")
+			}
+			if (exec.Type == "custom") != (api == "responses") {
+				t.Fatalf("wrong exec protocol shape: api=%s spec=%+v", api, exec)
+			}
+		})
 	}
 	if f.searchCalls.Load() != 0 || f.readCalls.Load() != 0 {
 		t.Fatal("catalog exposure executed MCP tools")
@@ -195,97 +177,84 @@ func TestMCPServerSchemaExposureMatrix(t *testing.T) {
 
 func TestMCPServerDisabledSearchFallsBackToDirect(t *testing.T) {
 	f := newMCPServerFixture(t)
-	for _, mode := range []string{"off", "mixed", "only"} {
-		t.Run(mode, func(t *testing.T) {
-			cfg := mcpServerConfig(t, mode, f.url)
-			if err := toggles.Save(cfg.Home, toggles.File{Tools: session.Toggle{Disabled: []string{"search_tool"}}}); err != nil {
-				t.Fatal(err)
-			}
-			var got loop.Request
-			srv := newMCPIntegrationServer(t, cfg, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
-				got = req
-				return codeModeStop(), nil
-			}))
-			id := codeModeTestSession(t, srv, t.TempDir(), "completions")
-			codeModeRunPrompt(t, srv, id, "search disabled")
-			if _, present := mcpRequestSpec(got, "search_tool"); present {
-				t.Fatal("disabled search was advertised")
-			}
-			if mode == "only" {
-				exec, _ := mcpRequestSpec(got, "exec")
-				for _, field := range []string{"mcp_query_unique", "document_id_unique"} {
-					if !strings.Contains(exec.Description, field) {
-						t.Fatalf("disabled search stranded nested MCP tool: missing %s", field)
-					}
-				}
-			} else {
-				for _, name := range []string{mcpSearchName, mcpReadName} {
-					if _, present := mcpRequestSpec(got, name); !present {
-						t.Fatalf("disabled search stranded direct MCP tool: %s", name)
-					}
-				}
-			}
-		})
+	cfg := mcpServerConfig(t, f.url)
+	if err := toggles.Save(cfg.Home, toggles.File{Tools: session.Toggle{Disabled: []string{"search_tool"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var got loop.Request
+	srv := newMCPIntegrationServer(t, cfg, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
+		got = req
+		return codeModeStop(), nil
+	}))
+	id := codeModeTestSession(t, srv, t.TempDir(), "completions")
+	codeModeRunPrompt(t, srv, id, "search disabled")
+	if _, present := mcpRequestSpec(got, "search_tool"); present {
+		t.Fatal("disabled search was advertised")
+	}
+	exec, _ := mcpRequestSpec(got, "exec")
+	for _, field := range []string{"mcp_query_unique", "document_id_unique"} {
+		if !strings.Contains(exec.Description, field) {
+			t.Fatalf("disabled search stranded nested MCP tool: missing %s", field)
+		}
+	}
+	for _, name := range []string{mcpSearchName, mcpReadName} {
+		if _, present := mcpRequestSpec(got, name); !present {
+			t.Fatalf("disabled search stranded direct MCP tool: %s", name)
+		}
 	}
 }
 
 func TestMCPServerSearchPromotesOnlyLiveSchemasAcrossOccupies(t *testing.T) {
 	f := newMCPServerFixture(t)
-	for _, mode := range []string{"off", "mixed", "only"} {
-		t.Run(mode, func(t *testing.T) {
-			cfg := mcpServerConfig(t, mode, f.url)
-			step := 0
-			srv := newMCPIntegrationServer(t, cfg, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
-				step++
-				mcpAssertLoadedSchema(t, req, mode, step > 1)
-				if step == 1 {
-					return types.Message{Role: "assistant", StopReason: "toolUse", Content: []types.Content{{
-						Type: "toolCall", ID: "discover-mcp", Name: "search_tool",
-						Arguments: map[string]any{"query": "unique_search_token", "limit": 1},
-					}}}, nil
-				}
-				if step == 2 {
-					_, results := codeModeTurn(req)
-					if len(results) != 1 || results[0].ToolName != "search_tool" || results[0].IsError {
-						t.Fatalf("discovery result: %+v", results)
-					}
-					if !strings.Contains(results[0].Text(), mcpSearchName) || !strings.Contains(results[0].Text(), "mcp_query_unique") {
-						t.Fatalf("discovery did not disclose selected schema: %s", results[0].Text())
-					}
-					var details struct {
-						Names []string `json:"discovered_tools"`
-					}
-					if err := json.Unmarshal([]byte(codeModeJSON(t, results[0].Details)), &details); err != nil || !slices.Equal(details.Names, []string{mcpSearchName}) {
-						t.Fatalf("discovery metadata=%+v error=%v", results[0].Details, err)
-					}
-				}
-				return codeModeStop(), nil
-			}))
-			id := codeModeTestSession(t, srv, t.TempDir(), "completions")
-			codeModeRunPrompt(t, srv, id, "discover")
-			codeModeRunPrompt(t, srv, id, "resume discovery")
-			if step != 3 {
-				t.Fatalf("request count=%d", step)
+	cfg := mcpServerConfig(t, f.url)
+	step := 0
+	srv := newMCPIntegrationServer(t, cfg, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
+		step++
+		mcpAssertLoadedSchema(t, req, step > 1)
+		if step == 1 {
+			return types.Message{Role: "assistant", StopReason: "toolUse", Content: []types.Content{{
+				Type: "toolCall", ID: "discover-mcp", Name: "search_tool",
+				Arguments: map[string]any{"query": "unique_search_token", "limit": 1},
+			}}}, nil
+		}
+		if step == 2 {
+			_, results := codeModeTurn(req)
+			if len(results) != 1 || results[0].ToolName != "search_tool" || results[0].IsError {
+				t.Fatalf("discovery result: %+v", results)
 			}
-			// Reopen persisted history with a newly filtered live MCP catalog.
-			// Old discovery names must not resurrect a now-disabled capability.
-			if err := srv.Shutdown(context.Background()); err != nil {
-				t.Fatal(err)
+			if !strings.Contains(results[0].Text(), mcpSearchName) || !strings.Contains(results[0].Text(), "mcp_query_unique") {
+				t.Fatalf("discovery did not disclose selected schema: %s", results[0].Text())
 			}
-			cfg.MCPServers = map[string]config.MCPServer{"fixture": {URL: f.url, DisabledTools: []string{"search_documents"}}}
-			reopened := newMCPIntegrationServer(t, cfg, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
-				mcpAssertLoadedSchema(t, req, mode, false)
-				if mode != "off" {
-					exec, _ := mcpRequestSpec(req, "exec")
-					if strings.Contains(exec.Description, "mcp_query_unique") {
-						t.Fatal("disabled MCP schema resurrected from discovery history")
-					}
-				}
-				return codeModeStop(), nil
-			}))
-			codeModeRunPrompt(t, reopened, id, "after MCP removal")
-		})
+			var details struct {
+				Names []string `json:"discovered_tools"`
+			}
+			if err := json.Unmarshal([]byte(codeModeJSON(t, results[0].Details)), &details); err != nil || !slices.Equal(details.Names, []string{mcpSearchName}) {
+				t.Fatalf("discovery metadata=%+v error=%v", results[0].Details, err)
+			}
+		}
+		return codeModeStop(), nil
+	}))
+	id := codeModeTestSession(t, srv, t.TempDir(), "completions")
+	codeModeRunPrompt(t, srv, id, "discover")
+	codeModeRunPrompt(t, srv, id, "resume discovery")
+	if step != 3 {
+		t.Fatalf("request count=%d", step)
 	}
+	// Reopen persisted history with a newly filtered live MCP catalog.
+	// Old discovery names must not resurrect a now-disabled capability.
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cfg.MCPServers = map[string]config.MCPServer{"fixture": {URL: f.url, DisabledTools: []string{"search_documents"}}}
+	reopened := newMCPIntegrationServer(t, cfg, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
+		mcpAssertLoadedSchema(t, req, false)
+		exec, _ := mcpRequestSpec(req, "exec")
+		if strings.Contains(exec.Description, "mcp_query_unique") {
+			t.Fatal("disabled MCP schema resurrected from discovery history")
+		}
+		return codeModeStop(), nil
+	}))
+	codeModeRunPrompt(t, reopened, id, "after MCP removal")
 }
 
 const mcpAfterToolWorkerArg = "__mcp-after-tool-fixture"
@@ -365,7 +334,7 @@ func mcpInstallAfterToolFixture(t *testing.T, home string) {
 
 func TestMCPServerCodeCanInvokeDeferredBeforeSearchWithPolicyAndAudit(t *testing.T) {
 	f := newMCPServerFixture(t)
-	cfg := mcpServerConfig(t, "only", f.url)
+	cfg := mcpServerConfig(t, f.url)
 	cfg.MCPServers = map[string]config.MCPServer{"fixture": {URL: f.url, DisabledTools: []string{"get_document"}}}
 	mcpInstallAfterToolFixture(t, cfg.Home)
 	var outer types.Message
@@ -380,7 +349,7 @@ text(result.content);
 	srv := newMCPIntegrationServer(t, cfg, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
 		_, results := codeModeTurn(req)
 		if len(results) == 0 {
-			mcpAssertLoadedSchema(t, req, "only", false)
+			mcpAssertLoadedSchema(t, req, false)
 			return codeModeExecCall(req, "outer-mcp", source), nil
 		}
 		if len(results) != 1 || results[0].ToolName != "exec" {

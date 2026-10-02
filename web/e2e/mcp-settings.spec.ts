@@ -38,7 +38,7 @@ test('MCP settings toggle configured servers without connecting or replacing too
     docs: { url: 'http://127.0.0.1:9/mcp' },
   } }))
   const endpoint = `/v1/tools?sessionId=${encodeURIComponent(id)}`
-  const saved = await request.patch(endpoint, { headers, data: { disabled: ['grep'], codeMode: 'off', mcpDisabled: ['hidden'] } })
+  const saved = await request.patch(endpoint, { headers, data: { disabled: ['grep'], mcpDisabled: ['hidden'] } })
   expect(saved.ok()).toBe(true)
   // A server absent from this workspace's editable catalog keeps its global override.
   writeFileSync(join(home, 'mcp.json'), JSON.stringify({ version: 1, mcpServers: globalServers }))
@@ -63,7 +63,7 @@ test('MCP settings toggle configured servers without connecting or replacing too
   await expect(docs).toBeEnabled()
   await expect(docs).toHaveAttribute('aria-checked', 'false')
   const settings = await (await request.get(endpoint, { headers })).json() as ToolSettings
-  expect(settings.codeMode).toBe('off')
+  expect(settings).not.toHaveProperty('codeMode')
   expect(settings.items.find(item => item.name === 'grep')?.enabled).toBe(false)
   expect(settings.mcp.find(item => item.name === 'docs')?.enabled).toBe(false)
   const toggles = JSON.parse(readFileSync(join(home, 'toggles.json'), 'utf8'))

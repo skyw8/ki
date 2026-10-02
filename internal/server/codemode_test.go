@@ -41,12 +41,11 @@ func (f codeModeServerStreamer) Stream(ctx context.Context, req loop.Request, _ 
 	return f(ctx, req)
 }
 
-func codeModeTestServer(t *testing.T, mode string, streamer loop.Streamer) *Server {
+func codeModeTestServer(t *testing.T, streamer loop.Streamer) *Server {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("KI_HOME", home)
 	cfg := config.Builtin(home)
-	cfg.CodeMode.Mode = mode
 	cfg.Compaction.Enabled = false
 	executable, err := os.Executable()
 	if err != nil {
@@ -167,104 +166,84 @@ func codeModeTurn(req loop.Request) (string, []types.Message) {
 
 func TestCodeModeServerSchemaExposure(t *testing.T) {
 	for _, api := range []string{"completions", "responses", "anthropic"} {
-		for _, mode := range []string{"off", "mixed", "only"} {
-			t.Run(api+"/"+mode, func(t *testing.T) {
-				var got loop.Request
-				srv := codeModeTestServer(t, mode, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
-					got = req
-					return codeModeStop(), nil
-				}))
-				cwd := t.TempDir()
-				skill := filepath.Join(cwd, ".ki", "skills", "code-fixture", "SKILL.md")
-				if err := os.MkdirAll(filepath.Dir(skill), 0o700); err != nil {
-					t.Fatal(err)
+		t.Run(api, func(t *testing.T) {
+			var got loop.Request
+			srv := codeModeTestServer(t, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
+				got = req
+				return codeModeStop(), nil
+			}))
+			cwd := t.TempDir()
+			skill := filepath.Join(cwd, ".ki", "skills", "code-fixture", "SKILL.md")
+			if err := os.MkdirAll(filepath.Dir(skill), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(skill, []byte("---\nname: code-fixture\ndescription: code mode skill fixture\n---\nUse this fixture.\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			id := codeModeTestSession(t, srv, cwd, api)
+			codeModeRunPrompt(t, srv, id, "schema")
+			names := make([]string, 0, len(got.Tools))
+			var exec toolapi.Spec
+			for _, spec := range got.Tools {
+				names = append(names, spec.Name)
+				if spec.Name == "exec" {
+					exec = spec
 				}
-				if err := os.WriteFile(skill, []byte("---\nname: code-fixture\ndescription: code mode skill fixture\n---\nUse this fixture.\n"), 0o600); err != nil {
-					t.Fatal(err)
+			}
+			if !slices.Contains(names, "exec") || !slices.Contains(names, "wait") {
+				t.Fatalf("missing code mode schemas: %v", names)
+			}
+			if !slices.Contains(names, "read") || !strings.Contains(got.System, "code-fixture") {
+				t.Fatalf("direct read or skill disappeared: %v / %s", names, got.System)
+			}
+			if !strings.Contains(exec.Description, "tools.read") || !strings.Contains(exec.Description, "file_path") {
+				t.Fatal("exec description omitted nested tool signatures")
+			}
+			if api == "responses" {
+				if exec.Type != "custom" || exec.Format == nil || exec.Format.Syntax != "lark" {
+					t.Fatalf("Responses exec is not native freeform: %+v", exec)
 				}
-				id := codeModeTestSession(t, srv, cwd, api)
-				codeModeRunPrompt(t, srv, id, "schema")
-				names := make([]string, 0, len(got.Tools))
-				var exec toolapi.Spec
-				for _, spec := range got.Tools {
-					names = append(names, spec.Name)
-					if spec.Name == "exec" {
-						exec = spec
-					}
-				}
-				if mode == "off" {
-					if slices.Contains(names, "exec") || slices.Contains(names, "wait") || !slices.Contains(names, "read") {
-						t.Fatalf("off schemas: %v", names)
-					}
-					return
-				}
-				if !slices.Contains(names, "exec") || !slices.Contains(names, "wait") {
-					t.Fatalf("missing code mode schemas: %v", names)
-				}
-				if mode == "only" {
-					slices.Sort(names)
-					if !slices.Equal(names, []string{"exec", "wait"}) {
-						t.Fatalf("only schemas: %v", names)
-					}
-					if !strings.Contains(got.System, "code-fixture") || !strings.Contains(got.System, "tools.read") {
-						t.Fatalf("nested read skill disappeared: %s", got.System)
-					}
-				} else if !slices.Contains(names, "read") {
-					t.Fatalf("mixed lost direct read: %v", names)
-				}
-				if !strings.Contains(exec.Description, "tools.read") || !strings.Contains(exec.Description, "file_path") {
-					t.Fatal("exec description omitted nested tool signatures")
-				}
-				if api == "responses" {
-					if exec.Type != "custom" || exec.Format == nil || exec.Format.Syntax != "lark" {
-						t.Fatalf("Responses exec is not native freeform: %+v", exec)
-					}
-				} else if exec.Type != "function" || exec.Parameters == nil {
-					t.Fatalf("JSON code fallback missing: %+v", exec)
-				}
-			})
-		}
+			} else if exec.Type != "function" || exec.Parameters == nil {
+				t.Fatalf("JSON code fallback missing: %+v", exec)
+			}
+		})
 	}
 }
 
 func TestCodeModeServerDisabledToolsCannotReappearThroughCode(t *testing.T) {
-	for _, mode := range []string{"mixed", "only"} {
-		t.Run(mode, func(t *testing.T) {
-			var result types.Message
-			srv := codeModeTestServer(t, mode, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
-				_, results := codeModeTurn(req)
-				if len(results) == 0 {
-					for _, spec := range req.Tools {
-						if spec.Name == "read" {
-							return types.Message{}, errors.New("disabled read was advertised directly")
-						}
-						if spec.Name == "exec" && strings.Contains(spec.Description, "### tools.read\n") {
-							return types.Message{}, errors.New("disabled read was advertised in exec")
-						}
-					}
-					return codeModeExecCall(req, "disabled-read", `text(JSON.stringify({listed:ALL_TOOLS.some(t=>t.name==="read"),available:typeof tools.read}));
+	var result types.Message
+	srv := codeModeTestServer(t, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
+		_, results := codeModeTurn(req)
+		if len(results) == 0 {
+			for _, spec := range req.Tools {
+				if spec.Name == "read" {
+					return types.Message{}, errors.New("disabled read was advertised directly")
+				}
+				if spec.Name == "exec" && strings.Contains(spec.Description, "### tools.read\n") {
+					return types.Message{}, errors.New("disabled read was advertised in exec")
+				}
+			}
+			return codeModeExecCall(req, "disabled-read", `text(JSON.stringify({listed:ALL_TOOLS.some(t=>t.name==="read"),available:typeof tools.read}));
 try { await tools.read({file_path:"disabled.txt"}); text("escaped"); } catch (e) { text("blocked"); }`), nil
-				}
-				if len(results) != 1 {
-					return types.Message{}, fmt.Errorf("unexpected results: %d", len(results))
-				}
-				result = results[0]
-				return codeModeStop(), nil
-			}))
-			if err := toggles.Save(srv.cfg.Home, toggles.File{Tools: session.Toggle{Disabled: []string{"read"}}}); err != nil {
-				t.Fatal(err)
-			}
-			id := codeModeTestSession(t, srv, t.TempDir(), "completions")
-			codeModeRunPrompt(t, srv, id, "disabled")
-			if result.IsError || !strings.Contains(result.Text(), `{"listed":false,"available":"undefined"}`) || !strings.Contains(result.Text(), "blocked") || strings.Contains(result.Text(), "escaped") {
-				t.Fatalf("disabled capability escaped: %+v", result)
-			}
-			for _, entry := range codeModeEntries(t, srv, id) {
-				if entry.Type == string(loop.ToolExecutionStart) && strings.Contains(codeModeJSON(t, entry.Details), `"toolName":"read"`) {
-					t.Fatalf("disabled tool reached dispatcher: %+v", entry)
-				}
-			}
-		})
+		}
+		if len(results) != 1 {
+			return types.Message{}, fmt.Errorf("unexpected results: %d", len(results))
+		}
+		result = results[0]
+		return codeModeStop(), nil
+	}))
+	if err := toggles.Save(srv.cfg.Home, toggles.File{Tools: session.Toggle{Disabled: []string{"read"}}}); err != nil {
+		t.Fatal(err)
+	}
+	id := codeModeTestSession(t, srv, t.TempDir(), "completions")
+	codeModeRunPrompt(t, srv, id, "disabled")
+	if result.IsError || !strings.Contains(result.Text(), `{"listed":false,"available":"undefined"}`) || !strings.Contains(result.Text(), "blocked") || strings.Contains(result.Text(), "escaped") {
+		t.Fatalf("disabled capability escaped: %+v", result)
+	}
+	for _, entry := range codeModeEntries(t, srv, id) {
+		if entry.Type == string(loop.ToolExecutionStart) && strings.Contains(codeModeJSON(t, entry.Details), `"toolName":"read"`) {
+			t.Fatalf("disabled tool reached dispatcher: %+v", entry)
+		}
 	}
 }
 
@@ -283,7 +262,7 @@ const lines = r.content.filter(c => c.type === "text").map(c => c.text).join("\n
 text(lines.filter(line => line.startsWith("MATCH:")).join("\n"));
 notify("read-notification");`, codeModeJSON(t, path))
 	var next loop.Request
-	srv := codeModeTestServer(t, "only", codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
+	srv := codeModeTestServer(t, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
 		_, results := codeModeTurn(req)
 		if len(results) == 0 {
 			return codeModeExecCall(req, "outer-read", source), nil
@@ -378,7 +357,7 @@ func TestCodeModeServerResponsesExecCallsFreeformPatch(t *testing.T) {
 if (r.isError) throw new Error(JSON.stringify(r));
 text("patch-completed");`, codeModeJSON(t, patch))
 	var outer types.Message
-	srv := codeModeTestServer(t, "only", codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
+	srv := codeModeTestServer(t, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
 		_, results := codeModeTurn(req)
 		if len(results) == 0 {
 			return codeModeExecCall(req, "outer-patch", source), nil
@@ -416,7 +395,7 @@ func TestCodeModeServerCommittedStoreSurvivesOccupiesAndCancellationDrainsCells(
 	ready := make(chan types.Message, 1)
 	var recovery []types.Message
 	var canceledCell string
-	srv := codeModeTestServer(t, "only", codeModeServerStreamer(func(ctx context.Context, req loop.Request) (types.Message, error) {
+	srv := codeModeTestServer(t, codeModeServerStreamer(func(ctx context.Context, req loop.Request) (types.Message, error) {
 		prompt, results := codeModeTurn(req)
 		switch prompt {
 		case "commit":

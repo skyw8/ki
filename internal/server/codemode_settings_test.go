@@ -17,6 +17,7 @@ import (
 	"ki/internal/config"
 	"ki/internal/loop"
 	"ki/internal/state"
+	"ki/internal/toggles"
 	"ki/internal/types"
 )
 
@@ -27,8 +28,7 @@ type codeModeSettingsItem struct {
 }
 
 type codeModeSettingsCatalog struct {
-	CodeMode string                 `json:"codeMode"`
-	Items    []codeModeSettingsItem `json:"items"`
+	Items []codeModeSettingsItem `json:"items"`
 }
 
 func codeModeSettingsHTTP(ctx context.Context, hs *httptest.Server, method, route, body string) (int, []byte, error) {
@@ -61,19 +61,21 @@ func codeModeSettingsRequest(t *testing.T, hs *httptest.Server, method, body str
 		if err := json.Unmarshal(raw, &got); err != nil {
 			t.Fatal(err)
 		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if _, present := fields["codeMode"]; present {
+			t.Fatalf("removed codeMode setting exposed: %s", raw)
+		}
 	}
 	return got
 }
 
-func codeModeSettingsAssertCatalog(t *testing.T, got codeModeSettingsCatalog, mode string, disabled ...string) {
+func codeModeSettingsAssertCatalog(t *testing.T, got codeModeSettingsCatalog, disabled ...string) {
 	t.Helper()
-	if got.CodeMode != mode {
-		t.Fatalf("codeMode=%q want=%q", got.CodeMode, mode)
-	}
 	for _, name := range []string{"read", "exec", "wait"} {
-		i := slices.IndexFunc(got.Items, func(item codeModeSettingsItem) bool {
-			return item.Name == name
-		})
+		i := slices.IndexFunc(got.Items, func(item codeModeSettingsItem) bool { return item.Name == name })
 		if i < 0 {
 			t.Fatalf("catalog missing %s: %+v", name, got.Items)
 		}
@@ -81,8 +83,8 @@ func codeModeSettingsAssertCatalog(t *testing.T, got codeModeSettingsCatalog, mo
 		if item.Enabled != !slices.Contains(disabled, name) {
 			t.Fatalf("%s enabled=%v disabled=%v", name, item.Enabled, disabled)
 		}
-		if (name == "exec" || name == "wait") && item.Available != (mode != "off") {
-			t.Fatalf("%s available=%v mode=%s", name, item.Available, mode)
+		if !item.Available {
+			t.Fatalf("%s unavailable", name)
 		}
 	}
 }
@@ -99,50 +101,31 @@ func codeModeSettingsPrompt(t *testing.T, hs *httptest.Server, id string) {
 	waitAgentEnd(t, hs, id)
 }
 
-func codeModeSettingsAssertTools(t *testing.T, req loop.Request, mode string) {
+func codeModeSettingsAssertTools(t *testing.T, req loop.Request, disabled ...string) {
 	t.Helper()
 	names := requestToolNames(req.Tools)
-	if mode == "only" {
-		if !slices.Equal(names, []string{"exec", "wait"}) {
-			t.Fatalf("only tools=%v", names)
-		}
-		return
-	}
-	if !slices.Contains(names, "read") {
-		t.Fatalf("%s lost direct read: %v", mode, names)
-	}
-	for _, name := range []string{"exec", "wait"} {
-		if slices.Contains(names, name) != (mode == "mixed") {
-			t.Fatalf("%s tools=%v", mode, names)
+	for _, name := range []string{"read", "exec", "wait"} {
+		if slices.Contains(names, name) != !slices.Contains(disabled, name) {
+			t.Fatalf("tools=%v disabled=%v", names, disabled)
 		}
 	}
 }
 
-func TestCodeModeSettingsDefaultAndNextPrompt(t *testing.T) {
+func TestCodeModeSettingsAlwaysMixedAndOrdinaryToggles(t *testing.T) {
 	recorder := &reqRecorder{}
 	_, hs := testServerWith(t, recorder)
 	id := createSession(t, hs, t.TempDir())
-	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodGet, "", http.StatusOK), "mixed")
-	for _, mode := range []string{"mixed", "only", "off", "mixed"} {
-		if mode != "mixed" || len(recorder.reqs) > 0 {
-			got := codeModeSettingsRequest(t, hs, http.MethodPatch, fmt.Sprintf(`{"codeMode":%q}`, mode), http.StatusOK)
-			codeModeSettingsAssertCatalog(t, got, mode)
-		}
-		codeModeSettingsPrompt(t, hs, id)
-		codeModeSettingsAssertTools(t, recorder.reqs[len(recorder.reqs)-1], mode)
-	}
-}
-
-func TestCodeModeSettingsOmittedFieldsPreserved(t *testing.T) {
-	_, hs := testServerWith(t, &reqRecorder{})
-	got := codeModeSettingsRequest(t, hs, http.MethodPatch, `{"disabled":["read"],"codeMode":"only"}`, http.StatusOK)
-	codeModeSettingsAssertCatalog(t, got, "only", "read")
-	got = codeModeSettingsRequest(t, hs, http.MethodPatch, `{"codeMode":"off"}`, http.StatusOK)
-	codeModeSettingsAssertCatalog(t, got, "off", "read")
-	got = codeModeSettingsRequest(t, hs, http.MethodPatch, `{"disabled":[]}`, http.StatusOK)
-	codeModeSettingsAssertCatalog(t, got, "off")
-	got = codeModeSettingsRequest(t, hs, http.MethodPatch, `{}`, http.StatusOK)
-	codeModeSettingsAssertCatalog(t, got, "off")
+	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodGet, "", http.StatusOK))
+	codeModeSettingsPrompt(t, hs, id)
+	codeModeSettingsAssertTools(t, recorder.reqs[len(recorder.reqs)-1])
+	got := codeModeSettingsRequest(t, hs, http.MethodPatch, `{"disabled":["exec","wait"]}`, http.StatusOK)
+	codeModeSettingsAssertCatalog(t, got, "exec", "wait")
+	codeModeSettingsPrompt(t, hs, id)
+	codeModeSettingsAssertTools(t, recorder.reqs[len(recorder.reqs)-1], "exec", "wait")
+	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodPatch, `{}`, http.StatusOK), "exec", "wait")
+	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodPatch, `{"disabled":[]}`, http.StatusOK))
+	codeModeSettingsPrompt(t, hs, id)
+	codeModeSettingsAssertTools(t, recorder.reqs[len(recorder.reqs)-1])
 }
 
 func codeModeSettingsSaved(t *testing.T, home string, version int) []byte {
@@ -156,36 +139,27 @@ func codeModeSettingsSaved(t *testing.T, home string, version int) []byte {
 
 func TestCodeModeSettingsInvalidNoMutation(t *testing.T) {
 	srv, hs := testServerWith(t, &reqRecorder{})
-	codeModeSettingsRequest(t, hs, http.MethodPatch, `{"disabled":["read"],"codeMode":"only"}`, http.StatusOK)
-	before := codeModeSettingsSaved(t, srv.cfg.Home, 2)
+	codeModeSettingsRequest(t, hs, http.MethodPatch, `{"disabled":["read"]}`, http.StatusOK)
+	before := codeModeSettingsSaved(t, srv.cfg.Home, 3)
 	for _, body := range []string{
-		`{"codeMode":"invalid","disabled":[]}`, `{"codeMode":"","disabled":[]}`,
-		`{"codeMode":null,"disabled":[]}`, `{"codeMode":7,"disabled":[]}`,
-		`{"codeMode":"off"`, `{"codeMode":"off"} {}`, `null`, ``,
-		`{"codeMode":"off","disabled":7}`,
-		`{"codeMode":"off","disabled":["not-a-tool"]}`,
+		`{"codeMode":"off","disabled":[]}`, `{"codeMode":"mixed"}`, `{"codeMode":"only"}`, `{"codeMode":null}`,
+		`{"unknown":true}`, `{"disabled":[]`, `{"disabled":[]} {}`, `null`, ``,
+		`{"disabled":7}`, `{"disabled":["not-a-tool"]}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			codeModeSettingsRequest(t, hs, http.MethodPatch, body, http.StatusBadRequest)
-			after := codeModeSettingsSaved(t, srv.cfg.Home, 2)
-			if !bytes.Equal(before, after) {
+			if after := codeModeSettingsSaved(t, srv.cfg.Home, 3); !bytes.Equal(before, after) {
 				t.Fatalf("invalid patch mutated toggles: before=%s after=%s", before, after)
 			}
-			codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodGet, "", http.StatusOK), "only", "read")
+			codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodGet, "", http.StatusOK), "read")
 		})
 	}
 }
 
-func TestCodeModeSettingsTOMLFallbackAndPersistedOverride(t *testing.T) {
-	home, cwd := t.TempDir(), t.TempDir()
+func TestCodeModeSettingsPersistedOrdinaryToggles(t *testing.T) {
+	home := t.TempDir()
 	t.Setenv("KI_HOME", home)
-	if err := os.WriteFile(filepath.Join(home, "ki.toml"), []byte("[code_mode]\nmode = \"off\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.Load(cwd)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := config.Builtin(home)
 	newServer := func() (*Server, *httptest.Server) {
 		t.Helper()
 		srv, err := New(Options{Config: cfg, Token: "tok", Streamer: &reqRecorder{}})
@@ -198,36 +172,31 @@ func TestCodeModeSettingsTOMLFallbackAndPersistedOverride(t *testing.T) {
 		return srv, hs
 	}
 	srv, hs := newServer()
-	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodGet, "", http.StatusOK), "off")
-	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodPatch, `{"codeMode":"only"}`, http.StatusOK), "only")
-	raw := codeModeSettingsSaved(t, home, 2)
-	var saved struct {
-		Version  int `json:"version"`
-		CodeMode struct {
-			Mode string `json:"mode"`
-		} `json:"code_mode"`
-	}
+	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodPatch, `{"disabled":["exec"]}`, http.StatusOK), "exec")
+	raw := codeModeSettingsSaved(t, home, 3)
+	var saved map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &saved); err != nil {
 		t.Fatal(err)
 	}
-	if saved.Version != 2 || saved.CodeMode.Mode != "only" {
-		t.Fatalf("saved override=%s", raw)
+	if string(saved["version"]) != "3" || saved["code_mode"] != nil {
+		t.Fatalf("saved toggles retained removed mode: %s", raw)
 	}
 	hs.Close()
 	if err := srv.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	_, restored := newServer()
-	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, restored, http.MethodGet, "", http.StatusOK), "only")
+	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, restored, http.MethodGet, "", http.StatusOK), "exec")
 }
 
 func TestCodeModeSettingsConcurrentIndependentPatches(t *testing.T) {
-	_, hs := testServerWith(t, &reqRecorder{})
+	srv, hs := testServerWith(t, &reqRecorder{})
+	writeMCPSettings(t, filepath.Join(srv.cfg.Home, "mcp.json"), map[string]config.MCPServer{"fixture": {Command: "never-start"}})
 	for round := range 8 {
-		codeModeSettingsRequest(t, hs, http.MethodPatch, `{"codeMode":"mixed","disabled":[]}`, http.StatusOK)
+		codeModeSettingsRequest(t, hs, http.MethodPatch, `{"mcpDisabled":[],"disabled":[]}`, http.StatusOK)
 		start := make(chan struct{})
 		results := make(chan error, 2)
-		for _, body := range []string{`{"codeMode":"only"}`, `{"disabled":["read"]}`} {
+		for _, body := range []string{`{"mcpDisabled":["fixture"]}`, `{"disabled":["read"]}`} {
 			go func() {
 				<-start
 				status, raw, err := codeModeSettingsHTTP(t.Context(), hs, http.MethodPatch, "/v1/tools", body)
@@ -243,7 +212,10 @@ func TestCodeModeSettingsConcurrentIndependentPatches(t *testing.T) {
 				t.Fatalf("round %d: %v", round, err)
 			}
 		}
-		codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodGet, "", http.StatusOK), "only", "read")
+		codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodGet, "", http.StatusOK), "read")
+		if toggles.Load(srv.cfg.Home).MCP.Allowed("fixture") {
+			t.Fatal("independent patch lost MCP toggle")
+		}
 	}
 }
 
@@ -254,11 +226,11 @@ func TestCodeModeSettingsNewerSchemaRefusesSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := codeModeSettingsSaved(t, srv.cfg.Home, 99)
-	codeModeSettingsRequest(t, hs, http.MethodPatch, `{"codeMode":"only","disabled":["read"]}`, http.StatusInternalServerError)
+	codeModeSettingsRequest(t, hs, http.MethodPatch, `{"disabled":["read"]}`, http.StatusInternalServerError)
 	if after := codeModeSettingsSaved(t, srv.cfg.Home, 99); !bytes.Equal(before, after) {
 		t.Fatalf("newer schema overwritten: %s", after)
 	}
-	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodGet, "", http.StatusOK), "mixed")
+	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodGet, "", http.StatusOK))
 }
 
 type codeModeSettingsGateStreamer struct {
@@ -314,7 +286,7 @@ func TestCodeModeSettingsOccupiedSnapshot(t *testing.T) {
 	case <-t.Context().Done():
 		t.Fatal(t.Context().Err())
 	}
-	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodPatch, `{"codeMode":"only"}`, http.StatusOK), "only")
+	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodPatch, `{"disabled":["read"]}`, http.StatusOK), "read")
 	close(streamer.release)
 	waitAgentEnd(t, hs, id)
 	streamer.mu.Lock()
@@ -324,11 +296,11 @@ func TestCodeModeSettingsOccupiedSnapshot(t *testing.T) {
 		t.Fatalf("first occupy requests=%d", len(current))
 	}
 	for _, req := range current {
-		codeModeSettingsAssertTools(t, req, "mixed")
+		codeModeSettingsAssertTools(t, req)
 	}
 	codeModeSettingsPrompt(t, hs, id)
 	streamer.mu.Lock()
 	next := streamer.reqs[len(streamer.reqs)-1]
 	streamer.mu.Unlock()
-	codeModeSettingsAssertTools(t, next, "only")
+	codeModeSettingsAssertTools(t, next, "read")
 }

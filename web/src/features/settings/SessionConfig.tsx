@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import type { Client } from '../../api/client'
 import { ICheck, IChevDown, ICopy, IEdit, IRegen } from '../../components/icons'
 import { copyText } from '../../lib/clipboard'
@@ -11,7 +11,7 @@ import type { NotifyPermission } from '../../lib/notifications'
 import { toast } from '../../components/toast'
 import { localizedExtensionText } from './ExtensionPanel'
 import { RuntimePanel, type RuntimePanelProps } from '../chat/RuntimePanel'
-import type { CatalogContribution, CatalogExtension, CatalogSkill, CatalogTool, CodeMode, ExtensionConfig, ExtensionI18n, MCPServerInfo, ModelInfo, SessionCommand, SessionDetail } from '../../api/types'
+import type { CatalogContribution, CatalogExtension, CatalogSkill, CatalogTool, ExtensionConfig, ExtensionI18n, MCPServerInfo, ModelInfo, SessionCommand, SessionDetail } from '../../api/types'
 
 const SOURCE_KEY: Record<string, MsgKey> = {
   home: 'cfg.src.home',
@@ -577,11 +577,9 @@ export function SettingsToggles({
   const { t, lang } = useI18n()
   const [items, setItems] = useState<ToggleItem[]>([])
   const [loading, setLoading] = useState(true)
-  const [codeMode, setCodeMode] = useState<CodeMode | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const pending = useRef(false)
-  const codeModeId = useId()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -590,7 +588,6 @@ export function SettingsToggles({
       if (kind === 'tools' || kind === 'mcp') {
         const next = await api.toolsSettings(sessionId, workspaceId)
         setItems(kind === 'mcp' ? next.mcp ?? [] : next.items)
-        setCodeMode(next.codeMode)
       } else {
         setItems(kind === 'skills' ? await api.skills(workspaceId) : await api.extensions())
       }
@@ -624,7 +621,6 @@ export function SettingsToggles({
       else if (kind === 'tools') {
         const updated = await api.patchTools(disabled, sessionId, workspaceId)
         setItems(updated.items)
-        setCodeMode(updated.codeMode)
       }
       else await api.patchExtensions(disabled)
       committed = true
@@ -633,32 +629,6 @@ export function SettingsToggles({
     } catch (e) {
       // A failed catalog refresh must not undo a mutation already saved by the server.
       if (!committed) setItems(prev)
-      setError(String(e instanceof Error ? e.message : e))
-      toast.from(e)
-    } finally {
-      pending.current = false
-      setSaving(false)
-    }
-  }
-
-  const patchCodeMode = async (next: CodeMode) => {
-    if (pending.current || loading || next === codeMode) return
-    pending.current = true
-    setSaving(true)
-    setError('')
-    const prev = codeMode
-    let committed = false
-    setCodeMode(next)
-    try {
-      // Mode-only updates must not replace the independently saved tool toggles.
-      const updated = await api.patchToolSettings({ codeMode: next }, sessionId, workspaceId)
-      setCodeMode(updated.codeMode)
-      setItems(updated.items)
-      committed = true
-      await onChanged?.()
-    } catch (e) {
-      // onChanged only refreshes other UI; persistence has already succeeded here.
-      if (!committed) setCodeMode(prev)
       setError(String(e instanceof Error ? e.message : e))
       toast.from(e)
     } finally {
@@ -688,29 +658,6 @@ export function SettingsToggles({
           }
         }} />
       </header>
-      {kind === 'tools' ? (
-        <section className="preference-section code-mode-section" aria-labelledby={`${codeModeId}-label`} aria-busy={loading || saving}>
-          <div className="preference-copy">
-            <label id={`${codeModeId}-label`} htmlFor={codeModeId}>{t('settings.codeMode')}</label>
-            <p id={`${codeModeId}-hint`}>{t('settings.codeModeHint')}</p>
-          </div>
-          <select
-            id={codeModeId}
-            className="code-mode-select"
-            data-testid="code-mode"
-            value={codeMode ?? 'mixed'}
-            disabled={loading || saving || !codeMode}
-            aria-describedby={`${codeModeId}-hint ${codeModeId}-description`}
-            onChange={event => void patchCodeMode(event.target.value as CodeMode)}
-          >
-            {(['off', 'mixed', 'only'] as const).map(mode => <option key={mode} value={mode}>{t(`settings.codeMode.${mode}`)}</option>)}
-          </select>
-          <p className="form-hint" id={`${codeModeId}-description`} data-testid="code-mode-description">
-            {codeMode ? t(`settings.codeMode.${codeMode}Hint`) : t('file.loading')}
-          </p>
-          {saving ? <p className="form-hint" role="status">{t('settings.codeModeSaving')}</p> : null}
-        </section>
-      ) : null}
       {error ? <p className="settings-error-inline" role="alert" data-testid={`${kind}-settings-error`}>{error}</p> : null}
       {items.length === 0 && !loading ? <p className="cfg-empty">{empty}</p> : (
         <ul className="cfg-list">

@@ -128,9 +128,6 @@ func TestLoadMissingFilesUsesBuiltin(t *testing.T) {
 	if cfg.Streaming.IdleTimeoutSeconds != 300 {
 		t.Fatalf("streaming: %+v", cfg.Streaming)
 	}
-	if cfg.CodeMode.Mode != "mixed" {
-		t.Fatalf("default code mode: %+v", cfg.CodeMode)
-	}
 	if cfg.Log.Level != "info" || cfg.Log.MaxSizeMB != 10 || cfg.Log.MaxBackups != 3 {
 		t.Fatalf("builtin log: %+v", cfg.Log)
 	}
@@ -167,7 +164,7 @@ func TestStreamingIdleTimeout(t *testing.T) {
 	}
 }
 
-func TestCodeMode(t *testing.T) {
+func TestLoadRejectsRemovedCodeMode(t *testing.T) {
 	for _, mode := range []string{"off", "mixed", "only", "invalid"} {
 		t.Run(mode, func(t *testing.T) {
 			home := t.TempDir()
@@ -175,13 +172,8 @@ func TestCodeMode(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(home, "ki.toml"), fmt.Appendf(nil, "[code_mode]\nmode = %q\n", mode), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			cfg, err := Load(t.TempDir())
-			if mode == "invalid" {
-				if err == nil || !strings.Contains(err.Error(), "code_mode.mode") {
-					t.Fatalf("invalid mode: %v", err)
-				}
-			} else if err != nil || cfg.CodeMode.Mode != mode {
-				t.Fatalf("mode: %+v, error: %v", cfg.CodeMode, err)
+			if _, err := Load(t.TempDir()); err == nil || !strings.Contains(err.Error(), "code_mode") {
+				t.Fatalf("removed setting accepted: %v", err)
 			}
 		})
 	}

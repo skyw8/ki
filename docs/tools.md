@@ -52,11 +52,11 @@ exec_command 的完整输出文件也由该 store 创建：进程日志落在同
 
 ## Code Mode
 
-`ki.toml` 的 `[code_mode] mode` 为 `off`、`mixed`（默认）或 `only`。启动 server 时加载配置；`mixed` 在普通工具之外发布 `exec/wait`，`only` 仅发布这两个入口，但保留固定的普通工具集合供 JS 调用。工具开关仍作用于底层能力，`exec/wait` 自身也出现在全局内置目录并可关闭。扩展工具只能来自本次 occupy 已 Prepare、过滤后的集合。
+Code Mode 固定为 `mixed`，在普通工具之外发布 `exec/wait`，没有 TOML 或 Settings 模式设置。工具开关仍作用于底层能力，`exec/wait` 自身也出现在全局内置目录并可关闭。扩展工具只能来自本次 occupy 已 Prepare、过滤后的集合。
 
-Settings → Tools 的 Code Mode 选择器保存全局 `toggles.json` `code_mode.mode` 覆盖；下一次 occupy 生效，无需重启，当前运行保留原模式。`GET /v1/tools` 返回 `{items, codeMode}`，`PATCH` 可仅提交 `codeMode` 或 `disabled`，省略的字段不会改变。没有有效覆盖则沿用 TOML（默认 mixed）。各设置和自动扩展禁用共用写入锁，避免不同字段的并发保存互相覆盖。
+`GET /v1/tools` 返回 `{items, mcp}`，`PATCH` 只接受可选的 `disabled` / `mcpDisabled`，省略的字段不会改变；未知字段（包括已移除的 `codeMode`）返回 400。各设置和自动扩展禁用共用写入锁，避免不同字段的并发保存互相覆盖。
 
-MCP 使用官方 Go SDK，配置和生命周期见 [mcp.md](mcp.md)。`search_tool` 可用时，允许的 MCP 工具保留在执行 registry，但完整 schema 延迟披露；关闭/排除 search_tool 则直接发布，不保留无搜索入口的 Deferred。Code Mode-only 仍提供直接 search_tool，JS tools/ALL_TOOLS 已有全部允许的 MCP 能力，搜索不授予权限。
+MCP 使用官方 Go SDK，配置和生命周期见 [mcp.md](mcp.md)。`search_tool` 可用时，允许的 MCP 工具保留在执行 registry，但完整 schema 延迟披露；关闭/排除 search_tool 则直接发布，不保留无搜索入口的 Deferred。JS tools/ALL_TOOLS 已有全部允许的 MCP 能力，搜索不授予权限。
 
 - `exec`：Responses 使用 raw-JS custom/freeform；其它协议使用 `{code: "…"}` function tool。两者都接受首行 `// @exec: {"yield_time_ms":10000,"max_output_tokens":10000}`，且只接受这两个非负 JS-safe integer 字段。
 - `wait`：`{cell_id, yield_time_ms?, max_tokens?, terminate?}`。默认等待和输出预算均为 10000（毫秒 / 估计 tokens），显式零有效。等待最多 60 秒，是观察期限，不是脚本存活期限。

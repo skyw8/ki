@@ -36,9 +36,9 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 
 ## Code Mode
 
-MCP 配置来自全局 `mcp.json` 与会话 cwd 的 `.ki/mcp.json`；项目同名服务器完整覆盖全局。服务器开关与其它全局开关共享 `toggles.json`。官方 Go SDK manager 按不可变配置快照缓存在 server 内，每个 occupy 持有引用，最多 32 个快照；只有空闲快照可被淘汰，配置或开关变化不能关闭正在使用的连接。Settings 与 Session Info 只展示无凭据配置及缓存目录，不发起连接。每次 occupy 将允许的 MCP 工具并入固定执行快照；search_tool 可用时，`loop.Config.ModelTools` 从 post-hook 模型历史投影已披露 schema，provider 声明与执行 registry 分开。没有 search_tool 就直接发布，不保留 Deferred。only 模式仍保留直接搜索入口，完整允许的 JS 能力始终在 worker tools/ALL_TOOLS。配置、SDK 生命周期与跨协议差异见 [mcp.md](mcp.md)。
+MCP 配置来自全局 `mcp.json` 与会话 cwd 的 `.ki/mcp.json`；项目同名服务器完整覆盖全局。服务器开关与其它全局开关共享 `toggles.json`。官方 Go SDK manager 按不可变配置快照缓存在 server 内，每个 occupy 持有引用，最多 32 个快照；只有空闲快照可被淘汰，配置或开关变化不能关闭正在使用的连接。Settings 与 Session Info 只展示无凭据配置及缓存目录，不发起连接。每次 occupy 将允许的 MCP 工具并入固定执行快照；search_tool 可用时，`loop.Config.ModelTools` 从 post-hook 模型历史投影已披露 schema，provider 声明与执行 registry 分开。没有 search_tool 就直接发布，不保留 Deferred。完整允许的 JS 能力始终在 worker tools/ALL_TOOLS。配置、SDK 生命周期与跨协议差异见 [mcp.md](mcp.md)。
 
-`[code_mode] mode="mixed"|"only"` 在普通工具经开关、extension Prepare 和 activeTools 过滤后，构造 `exec/wait` 与固定的嵌套 dispatcher。`only` 将 provider schemas 与执行能力分开：仅发布 `exec/wait`，但技能列表仍检测嵌套 read，并提示通过 JS 读取。`ki serve` 按 session 懒启动同一二进制的私有 goja worker；JS 仅通过双向 stdio IPC 请求父进程执行工具，WebUI 不运行这些代码。外层结果走普通消息，嵌套审计走现有 loop/jsonl/SSE；事件漏斗串行化并发 callback 与模型事件。详见 [code-mode-design.md](code-mode-design.md)。
+Code Mode 固定为 mixed：在普通工具经开关、extension Prepare 和 activeTools 过滤后，构造 `exec/wait` 与固定的嵌套 dispatcher，普通工具同时保留直接入口。`ki serve` 按 session 懒启动同一二进制的私有 goja worker；JS 仅通过双向 stdio IPC 请求父进程执行工具，WebUI 不运行这些代码。外层结果走普通消息，嵌套审计走现有 loop/jsonl/SSE；事件漏斗串行化并发 callback 与模型事件。详见 [code-mode-design.md](code-mode-design.md)。
 
 ## HTTP
 
@@ -71,7 +71,7 @@ MCP 配置来自全局 `mcp.json` 与会话 cwd 的 `.ki/mcp.json`；项目同�
 | POST | `/v1/sessions/{id}/abort` | cancel |
 | POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
 | POST | `/v1/reload` | 清空闲 session 的资源快照并重载 extension catalog；body 可带 `sessionId` 只重载该 session |
-| GET/PATCH | `/v1/tools` `/v1/skills` `/v1/extensions` | 全局启用开关（`toggles.json`）；tools 返回 `{items, codeMode}` 并接受可选 `disabled` / `codeMode`，管理内置工具与下次 occupy 的 Code Mode 全局覆盖 |
+| GET/PATCH | `/v1/tools` `/v1/skills` `/v1/extensions` | 全局启用开关（`toggles.json`）；tools 返回 `{items, mcp}` 并只接受可选 `disabled` / `mcpDisabled`，管理内置工具与 MCP 服务器开关 |
 | GET/PATCH | `/v1/extensions/{name}/config` | 扩展配置（脱敏读写） |
 | POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径；body 可传 `forkMode=flat|tree`，返回 `parentSessionId` / `forkMode`，删除时仅沿 tree 边级联。带 `entryId` 时运行中也可 fork（复制的是已落盘的完整前缀）；省略 `entryId`（fork 活动 leaf）且会话运行中仍 **409** |
 | POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |

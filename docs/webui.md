@@ -41,7 +41,7 @@ run 流的去重是**按状态**而不是按计数：重放里可能只有一条
 
 ## Code Mode 工具审计
 
-Settings → Tools 顶部提供 Code Mode 模式选择：off（直接工具）、mixed（默认，直接工具与 exec/wait）、only（经 exec/wait 调用普通工具，另保留可用的 MCP search_tool）。选择器支持触屏与窄屏，标明全局保存、下次运行生效；保存期间禁用重复提交，失败显示错误并恢复已保存状态。模式通过既有 `/v1/tools` 与工具开关一同读取，各自 PATCH 只更新自身字段，不重置禁用状态。search_tool 也在全局工具开关目录中；关闭后允许的 MCP 声明直接发布，不再 Deferred。配置见 [mcp.md](mcp.md)。
+Code Mode 固定为 mixed（直接工具与 exec/wait），Settings → Tools 不提供模式选择；exec/wait 与 search_tool 仍可在全局工具开关目录中分别启停。关闭 search_tool 后允许的 MCP 声明直接发布，不再 Deferred。配置见 [mcp.md](mcp.md)。
 
 Code Mode 的 JavaScript 在 server worker 中执行，WebUI 不执行模型生成的代码。嵌套工具继续使用既有工具卡片：`parentCallId/cellId` 保留父调用与脚本身份，开始时固定 request 归属，后续 exec yield、wait 或新 request 不把仍在运行的 callback 错挂到新步骤。
 
@@ -49,7 +49,7 @@ Code Mode 的 JavaScript 在 server worker 中执行，WebUI 不执行模型生�
 
 ## MCP 配置界面
 
-Settings → MCP 独立列出全局/项目 `mcp.json` 合并后的服务器，提供逐服务器开关、来源、传输类型和已缓存工具数量。开关至少 44px 命中区，加载/保存期间阻止重复提交；失败保留已保存状态并显示错误。文件中的 `enabled:false` 不能被界面覆盖。`mcpDisabled` PATCH 不改动工具或 Code Mode 设置；列表显示不触发连接。Session Info 增加 MCP 小节和对应目录项，展示会话 cwd 的下一次运行配置，不展示凭据或命令参数。详细配置及生效边界见 [mcp.md](mcp.md)。
+Settings → MCP 独立列出全局/项目 `mcp.json` 合并后的服务器，提供逐服务器开关、来源、传输类型和已缓存工具数量。开关至少 44px 命中区，加载/保存期间阻止重复提交；失败保留已保存状态并显示错误。文件中的 `enabled:false` 不能被界面覆盖。`mcpDisabled` PATCH 不改动工具开关；列表显示不触发连接。Session Info 增加 MCP 小节和对应目录项，展示会话 cwd 的下一次运行配置，不展示凭据或命令参数。详细配置及生效边界见 [mcp.md](mcp.md)。
 
 ## Context 数据口径
 

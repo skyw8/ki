@@ -10,7 +10,6 @@ import (
 	"ki/internal/skills"
 	toolapi "ki/internal/tool"
 	"ki/internal/tool/builtin"
-	codetools "ki/internal/tool/builtin/code"
 )
 
 func TestBuildLayers(t *testing.T) {
@@ -121,25 +120,8 @@ func TestBuildHasBuiltinAppendSystemPrompt(t *testing.T) {
 }
 
 func TestBuildNoSkillsWithoutRead(t *testing.T) {
-	sys := Build(Input{Tools: []toolapi.Tool{}})
+	sys := Build(Input{Resources: resources.Snapshot{Skills: []skills.Skill{{Name: "demo", FilePath: filepath.Join(t.TempDir(), "SKILL.md")}}}})
 	if strings.Contains(sys, "<available_skills>") {
 		t.Fatal("skills without Read")
-	}
-}
-
-func TestCodeModeOnlyRetainsSkills(t *testing.T) {
-	cwd := t.TempDir()
-	snapshot := resources.Snapshot{Skills: []skills.Skill{{Name: "demo", Description: "special task", FilePath: filepath.Join(cwd, "SKILL.md")}}}
-	in := Input{Resources: snapshot, Tools: (codetools.Set{}).Build(), NestedTools: builtin.Set{CWD: cwd}.Build(builtin.Profile{})}
-	sys := Build(in)
-	if !strings.Contains(sys, "<available_skills>") || !strings.Contains(sys, "await tools.read") {
-		t.Fatalf("nested read skills missing:\n%s", sys)
-	}
-	if strings.Contains(sys, "- read:") {
-		t.Fatal("nested read exposed directly")
-	}
-	in.NestedTools = nil
-	if strings.Contains(Build(in), "<available_skills>") {
-		t.Fatal("skills advertised without read capability")
 	}
 }

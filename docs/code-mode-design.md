@@ -4,20 +4,13 @@ Ki 使用 **goja + 同一二进制的 session-scoped worker** 实现 JavaScript 
 
 ## 配置
 
-默认以 `mixed` 模式开启，无需配置。**Settings → Tools → Code Mode** 可选择 `off`、`mixed` 或 `only`：全局保存到 `{KI_HOME}/toggles.json`，覆盖 TOML，下次运行（occupy）生效，无需重启；正在运行的代码和模型请求保持原来的工具集合。
+固定使用 `mixed`，保留直接工具并添加 `exec/wait`；Settings 和 TOML 均不再提供模式选择。旧 `[code_mode]` TOML 表作为未知配置被拒绝，需删除；`toggles.json` 的旧覆盖通过 v3 迁移移除。
 
-没有 Settings 覆盖时，使用全局 `{KI_HOME}/ki.toml` 或项目 `.ki/ki.toml` 的配置（修改 TOML 后重启 server）：
-
-```toml
-[code_mode]
-mode = "mixed" # off、mixed（默认）、only
-```
-
-`mixed` 保留直接工具并添加 `exec/wait`；`only` 通过这两个入口编排普通工具，并在 MCP Deferred 可用时额外保留直接 `search_tool`。嵌套工具来自本次 occupy 的内置开关、extension Prepare、MCP 允许目录与 activeTools 过滤后的快照。设置页始终列出保留名称 `exec/wait`，并以 `available` 标明是否启用 Code Mode。`only` 的技能列表保留嵌套 read 能力，指导通过 `tools.read` 读取。
+嵌套工具来自本次 occupy 的内置开关、extension Prepare、MCP 允许目录与 activeTools 过滤后的快照。设置页始终列出 `exec/wait`，可分别关闭；正在运行的代码和模型请求保持占用时的工具集合。
 
 MCP 声明仅在有可用 search_tool 时 Deferred：最初省略 exec 描述中的完整声明，搜索后按需补充；JS tools/ALL_TOOLS 自始拥有全部允许能力，不需要动态更新 VM。search_tool 不作为嵌套 JS 方法；关闭搜索则直接披露全部允许声明。官方 SDK、配置及回退规则见 [mcp.md](mcp.md)。
 
-既有 `GET /v1/tools` 返回 `{items, codeMode}`；`PATCH /v1/tools` 接受可选的 `codeMode` 和 `disabled`。省略字段保持已有值，因此切换模式不会重新启用禁用的工具，切换工具也不会覆盖模式。模式必须为三个有效字符串之一；写入使用状态文件的原子/版本检查，未知新版本不能被覆盖。
+既有 `GET /v1/tools` 返回 `{items, mcp}`；`PATCH /v1/tools` 只接受可选的 `disabled` 和 `mcpDisabled`，省略字段保持已有值，未知字段被拒绝。写入使用状态文件的原子/版本检查，未知新版本不能被覆盖。
 
 ## 进程关系
 

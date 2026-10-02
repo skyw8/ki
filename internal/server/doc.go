@@ -1,10 +1,9 @@
 // Package server is the local HTTP backend. It orchestrates loop, session
 // persist, tools, and providers. The same process serves the embedded WebUI.
-// code_mode.mode enables exec/wait alongside direct tools (mixed) or instead of
-// them (only).
-// GET/PATCH /v1/tools exposes codeMode and saves its global toggles.json override.
-// Optional mode and disabled-list patches preserve the omitted field; a mode
-// snapshot applies for one occupy, so Settings changes need no server restart.
+// exec/wait are always offered alongside direct tools, subject to ordinary
+// built-in toggles. GET/PATCH /v1/tools exposes built-in and MCP enablement;
+// patches accept only disabled/mcpDisabled and preserve omitted fields.
+// Capability snapshots apply for one occupy, so Settings changes need no restart.
 // Official-SDK MCP clients are server-owned and lazy; admitted schemas defer
 // only when search_tool is available. Execution capabilities remain fixed,
 // while ModelTools projects disclosures from post-hook provider history.

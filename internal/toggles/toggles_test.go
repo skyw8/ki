@@ -1,7 +1,9 @@
 package toggles
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,7 +41,6 @@ func TestSaveRoundTrip(t *testing.T) {
 		Extensions: session.Toggle{Disabled: []string{"telegram-bot"}},
 		MCP:        session.Toggle{Disabled: []string{"Read", "read", "my-server"}},
 		Message:    Message{Busy: BusyQueue},
-		CodeMode:   CodeMode{Mode: "only"},
 	}
 	if err := Save(home, want); err != nil {
 		t.Fatal(err)
@@ -60,9 +61,6 @@ func TestSaveRoundTrip(t *testing.T) {
 	if got.Message.BusyDelivery() != BusyQueue {
 		t.Fatalf("message %+v", got.Message)
 	}
-	if got.CodeMode.Mode != "only" {
-		t.Fatalf("code mode %+v", got.CodeMode)
-	}
 	if len(got.MCP.Disabled) != 3 || got.MCP.Disabled[0] != "Read" || got.MCP.Disabled[1] != "read" || got.MCP.Allowed("my-server") {
 		t.Fatalf("raw MCP names must not use tool canonicalization: %+v", got.MCP)
 	}
@@ -71,19 +69,30 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 }
 
-func TestCodeModeEffectiveMode(t *testing.T) {
-	for _, override := range []string{"", "invalid", "off", "mixed", "only"} {
-		for _, fallback := range []string{"", "invalid", "off", "mixed", "only"} {
-			want := "mixed"
-			if fallback == "off" || fallback == "mixed" || fallback == "only" {
-				want = fallback
-			}
-			if override == "off" || override == "mixed" || override == "only" {
-				want = override
-			}
-			if got := (CodeMode{Mode: override}).EffectiveMode(fallback); got != want {
-				t.Fatalf("override=%q fallback=%q: got %q, want %q", override, fallback, got, want)
-			}
+func TestRemoveCodeModeMigration(t *testing.T) {
+	for _, oldVersion := range []int{1, 2} {
+		home := t.TempDir()
+		raw := []byte(fmt.Sprintf(`{"version":%d,"tools":{"disabled":["read"]},"mcp":{"disabled":["RawName"]},"message":{"busy":"queue"},"code_mode":{"mode":"only"}}`, oldVersion))
+		if err := state.WriteJSON(path(home), json.RawMessage(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got := Load(home)
+		if got.Version != version || got.Tools.Allowed("read") || got.MCP.Allowed("RawName") || got.Message.BusyDelivery() != BusyQueue {
+			t.Fatalf("migration from v%d lost settings: %+v", oldVersion, got)
+		}
+		if err := Save(home, got); err != nil {
+			t.Fatal(err)
+		}
+		saved, _, err := state.ReadFile(path(home), version, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(saved, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := fields["code_mode"]; exists {
+			t.Fatalf("removed code mode persisted: %s", saved)
 		}
 	}
 }

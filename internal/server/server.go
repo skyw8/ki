@@ -2523,9 +2523,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		PathDirs: snapshot.PathDirs,
 	}.Build(profile)
 	tg := toggles.Load(cfg.Home)
-	// Keep one mode snapshot for the entire occupy, just like tool capabilities.
-	// Settings may change while a yielded cell still owns this run's callbacks.
-	codeMode := tg.CodeMode.EffectiveMode(cfg.CodeMode.Mode)
 	// Apply the global built-in toggle before extension tools are appended. This
 	// keeps the built-in setting scoped to Set.Build and leaves extensions under
 	// their own lifecycle/session controls.
@@ -2597,56 +2594,49 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	var codeDispatcher *loop.ToolDispatcher
 	var codeSession *codemode.Session
 	var codeSessionMu sync.Mutex
-	var codeSet *codetools.Set
-	if codeMode == "mixed" || codeMode == "only" {
-		// A yielded cell retains this occupy's hooks, identity and event funnel.
-		// Drain it before session/telemetry close; only committed JSON state may
-		// survive into the next occupy with a newly filtered capability snapshot.
-		defer func() {
-			codeSessionMu.Lock()
-			session := codeSession
-			codeSessionMu.Unlock()
-			if cleanupErr := session.TerminateAll(context.Background()); cleanupErr != nil {
-				st.err = errors.Join(st.err, fmt.Errorf("stop code mode cells: %w", cleanupErr))
+	// A yielded cell retains this occupy's hooks, identity and event funnel.
+	// Drain it before session/telemetry close; only committed JSON state may
+	// survive into the next occupy with a newly filtered capability snapshot.
+	defer func() {
+		codeSessionMu.Lock()
+		session := codeSession
+		codeSessionMu.Unlock()
+		if cleanupErr := session.TerminateAll(context.Background()); cleanupErr != nil {
+			st.err = errors.Join(st.err, fmt.Errorf("stop code mode cells: %w", cleanupErr))
+		}
+	}()
+	getCodeSession := func() (*codemode.Session, error) {
+		codeSessionMu.Lock()
+		defer codeSessionMu.Unlock()
+		if codeSession == nil {
+			var sessionErr error
+			codeSession, sessionErr = s.codeModeFor(id)
+			if sessionErr != nil {
+				return nil, sessionErr
 			}
-		}()
-		getCodeSession := func() (*codemode.Session, error) {
-			codeSessionMu.Lock()
-			defer codeSessionMu.Unlock()
-			if codeSession == nil {
-				var sessionErr error
-				codeSession, sessionErr = s.codeModeFor(id)
-				if sessionErr != nil {
-					return nil, sessionErr
-				}
-			}
-			return codeSession, nil
 		}
-		callbacks := codemode.Callbacks{
-			Invoke: func(callCtx context.Context, invocation codemode.Invocation) (codemode.ToolResult, error) {
-				call := loop.NestedToolCall{ParentCallID: invocation.ParentCallID, CellID: invocation.CellID, Name: invocation.Name, Arguments: invocation.Arguments}
-				if invocation.Freeform {
-					call.Input = &invocation.Input
-				}
-				res, invokeErr := codeDispatcher.DispatchNested(callCtx, call)
-				return codemode.ToolResult{Content: res.Content, Details: res.Details, IsError: res.IsError, Terminate: res.Terminate}, invokeErr
-			},
-			Notify: func(callCtx context.Context, notification codemode.Notification) error {
-				if err := callCtx.Err(); err != nil {
-					return err
-				}
-				return codeDispatcher.NotifyNested(notification.ParentCallID, notification.CellID, notification.Text)
-			},
-		}
-		codeSet = &codetools.Set{GetSession: getCodeSession, Callbacks: callbacks, Nested: nestedTools, Deferred: deferredNames, Freeform: info.API == "responses"}
-		codeTools := codeSet.Build()
-		codeTools = builtin.FilterBuiltins(codeTools, tg.Tools)
-		if codeMode == "only" {
-			executionTools = codeTools
-		} else {
-			executionTools = append(executionTools, codeTools...)
-		}
+		return codeSession, nil
 	}
+	callbacks := codemode.Callbacks{
+		Invoke: func(callCtx context.Context, invocation codemode.Invocation) (codemode.ToolResult, error) {
+			call := loop.NestedToolCall{ParentCallID: invocation.ParentCallID, CellID: invocation.CellID, Name: invocation.Name, Arguments: invocation.Arguments}
+			if invocation.Freeform {
+				call.Input = &invocation.Input
+			}
+			res, invokeErr := codeDispatcher.DispatchNested(callCtx, call)
+			return codemode.ToolResult{Content: res.Content, Details: res.Details, IsError: res.IsError, Terminate: res.Terminate}, invokeErr
+		},
+		Notify: func(callCtx context.Context, notification codemode.Notification) error {
+			if err := callCtx.Err(); err != nil {
+				return err
+			}
+			return codeDispatcher.NotifyNested(notification.ParentCallID, notification.CellID, notification.Text)
+		},
+	}
+	codeSet := codetools.Set{GetSession: getCodeSession, Callbacks: callbacks, Nested: nestedTools, Deferred: deferredNames, Freeform: info.API == "responses"}
+	codeTools := codeSet.Build()
+	codeTools = builtin.FilterBuiltins(codeTools, tg.Tools)
+	executionTools = append(executionTools, codeTools...)
 	executionTools = append(executionTools, searchTools...)
 	modelTools := func(history []types.Message) []toolapi.Tool {
 		remaining := make(map[string]bool, len(deferredNames))
@@ -2659,20 +2649,16 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			}
 		}
 		var visible []toolapi.Tool
-		if codeMode != "only" {
-			for _, t := range nestedTools {
-				if !remaining[toolapi.MustCanonical(t.Name())] {
-					visible = append(visible, t)
-				}
+		for _, t := range nestedTools {
+			if !remaining[toolapi.MustCanonical(t.Name())] {
+				visible = append(visible, t)
 			}
 		}
-		if codeSet != nil {
-			promptSet := *codeSet
-			promptSet.Deferred = remaining
-			visible = append(visible, builtin.FilterBuiltins(promptSet.Build(), tg.Tools)...)
-		}
-		// The discovery function remains direct even in Code Mode-only; it is
-		// deliberately absent from the worker's nested tools and ALL_TOOLS.
+		promptSet := codeSet
+		promptSet.Deferred = remaining
+		visible = append(visible, builtin.FilterBuiltins(promptSet.Build(), tg.Tools)...)
+		// Discovery is deliberately direct-only and absent from the worker's
+		// nested tools and ALL_TOOLS.
 		return append(visible, searchTools...)
 	}
 	tls = modelTools(nil)
@@ -2688,14 +2674,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	// The snapshot is fixed for the session until reload, while the prompt is
 	// rendered per request so tool schemas and runtime metadata stay current.
 	promptInput := prompt.Input{Resources: snapshot, Tools: tls, Toggle: tg.Skills}
-	if codeMode == "only" {
-		for _, t := range tls {
-			if toolapi.Equal(t.Name(), "exec") {
-				promptInput.NestedTools = nestedTools
-				break
-			}
-		}
-	}
 	sys := prompt.Build(promptInput)
 
 	useServerCompaction := s.serverSideCompaction(info) && occ.HTTPDoer() == nil
@@ -2798,14 +2776,12 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	if searchCatalog != nil {
 		runCfg.ModelTools = modelTools
 	}
-	if codeMode == "mixed" || codeMode == "only" {
-		nestedCfg := runCfg
-		nestedCfg.Tools = nestedTools
-		codeDispatcher, err = loop.NewToolDispatcher(nestedCfg, emit)
-		if err != nil {
-			st.err = fmt.Errorf("prepare code mode dispatcher: %w", err)
-			return
-		}
+	nestedCfg := runCfg
+	nestedCfg.Tools = nestedTools
+	codeDispatcher, err = loop.NewToolDispatcher(nestedCfg, emit)
+	if err != nil {
+		st.err = fmt.Errorf("prepare code mode dispatcher: %w", err)
+		return
 	}
 	if useServerCompaction {
 		runCfg.ResponsesCompactThreshold = s.remoteCompactThreshold(info)

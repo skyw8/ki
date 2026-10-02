@@ -147,10 +147,7 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	codeMode := tg.CodeMode.EffectiveMode(s.cfg.CodeMode.Mode)
-	if codeMode == "mixed" || codeMode == "only" {
-		available["exec"], available["wait"] = true, true
-	}
+	available["exec"], available["wait"] = true, true
 	for name, server := range mcpSnapshot.Servers {
 		if server.IsEnabled() && tg.MCP.Allowed(name) {
 			available[catalog.SearchTool] = true
@@ -167,16 +164,18 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 			"available":   available[tool.Name()],
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "codeMode": codeMode, "mcp": s.mcpInfos(mcpSnapshot, tg.MCP)})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "mcp": s.mcpInfos(mcpSnapshot, tg.MCP)})
 }
 
 func (s *Server) patchTools(w http.ResponseWriter, r *http.Request) {
 	var body *struct {
 		Disabled    *[]string       `json:"disabled"`
-		CodeMode    json.RawMessage `json:"codeMode"`
 		MCPDisabled json.RawMessage `json:"mcpDisabled"`
 	}
 	decoder := json.NewDecoder(r.Body)
+	// Settings only accept supported toggle fields; removed controls must not
+	// silently succeed while leaving clients with an ineffective setting.
+	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil || body == nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
@@ -187,25 +186,12 @@ func (s *Server) patchTools(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	var requestedMode string
 	var mcpDisabled []string
 	if body.MCPDisabled != nil {
 		var err error
 		mcpDisabled, err = validateMCPDisabled(body.MCPDisabled)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
-	if body.CodeMode != nil {
-		if err := json.Unmarshal(body.CodeMode, &requestedMode); err != nil {
-			http.Error(w, "codeMode must be off, mixed, or only", http.StatusBadRequest)
-			return
-		}
-		switch requestedMode {
-		case "off", "mixed", "only":
-		default:
-			http.Error(w, "codeMode must be off, mixed, or only", http.StatusBadRequest)
 			return
 		}
 	}
@@ -243,9 +229,6 @@ func (s *Server) patchTools(w http.ResponseWriter, r *http.Request) {
 	if err := s.updateToggles(func(f *toggles.File) {
 		if body.Disabled != nil {
 			f.Tools = session.Toggle{Disabled: *body.Disabled}
-		}
-		if body.CodeMode != nil {
-			f.CodeMode.Mode = requestedMode
 		}
 		if body.MCPDisabled != nil {
 			f.MCP.Disabled = mergeMCPDisabled(f.MCP.Disabled, mcpDisabled, editableMCP)

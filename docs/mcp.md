@@ -41,7 +41,7 @@ stdio 不经 shell 启动，默认仅继承 PATH、HOME、临时目录等运行�
 
 ### Settings 与 Session Info
 
-Settings → MCP 显示服务器来源、传输方式和启用状态，可分别切换服务器。开关保存到全局 `toggles.json` 的 `mcp.disabled`，按原始服务器名作用于所有工作区，不会修改配置文件或覆盖工具/Code Mode 开关。更新当前列表时保留其它项目不可见服务器的禁用状态。配置文件中 `enabled:false` 是硬禁用，界面不能将其重新启用。
+Settings → MCP 显示服务器来源、传输方式和启用状态，可分别切换服务器。开关保存到全局 `toggles.json` 的 `mcp.disabled`，按原始服务器名作用于所有工作区，不会修改配置文件或覆盖工具开关。更新当前列表时保留其它项目不可见服务器的禁用状态。配置文件中 `enabled:false` 是硬禁用，界面不能将其重新启用。
 
 配置文件与开关在下一次运行捕获快照；进行中的运行继续使用原能力和连接，不被设置变更中断。禁用的服务器不启动、不连接，`required` 也不强制启动已禁用的服务器。设置目录只读取配置及已缓存元数据，不为了显示列表调用 MCP。
 
@@ -71,13 +71,13 @@ MCP text/image/audio 投影到 Ki Content；resource/resource_link 保持为惰�
 3. `search_tool({query, limit?})` 在宿主对工具名称、描述、来源和参数做本地词法 BM25 搜索，不访问 MCP 服务器搜索接口，也不使用 embedding。
 4. 成功结果返回匹配工具的完整 schema。下一次模型请求按已接受的搜索结果补充声明；重载时从配对的 assistant search 调用与成功 toolResult 中恢复，始终重新对照当前允许目录。
 
-**没有可用的 `search_tool`，就没有 Deferred。** 关闭该工具或用 activeTools 排除它后，允许的 MCP 工具直接进入 provider tools；Code Mode-only 则直接进入 exec 工具描述。没有 MCP 工具时，不发布空搜索入口。
+**没有可用的 `search_tool`，就没有 Deferred。** 关闭该工具或用 activeTools 排除它后，允许的 MCP 工具直接进入 provider tools 和 exec 工具描述。没有 MCP 工具时，不发布空搜索入口。
 
 三个 provider 协议都使用普通 function tool `search_tool`，不是 Codex 专用的 Responses `tool_search_call/tool_search_output`。搜索输出在工具正文中，后续真实 schemas 在既有 request_header/模型请求中；没有新增 REST 路由或伪造 provider 消息。成功披露只取 post-hook、实际模型历史中的结果；失败或被删除的搜索结果不激活声明。过时/被禁用名称不能通过历史恢复重新获取能力。
 
 ## 与 Code Mode 配合
 
-`mixed` 保留直接工具和 exec/wait；`only` 保留 exec/wait **以及直接的 search_tool**。only 搜索后把声明加入 exec 描述，不把 MCP 工具改为直接入口。
+Code Mode 固定为 `mixed`，保留直接工具和 exec/wait；搜索后把声明同时加入 provider tools 和 exec 描述。
 
 Deferred 是声明披露优化，**不是权限加载机制**：
 
@@ -90,7 +90,7 @@ Deferred 是声明披露优化，**不是权限加载机制**：
 
 ## 测试
 
-MCP adapter 使用 SDK 的真实 HTTP server 与同一 test binary 的 stdio server 验证协议、分页、过滤、验证、取消与回收。服务端矩阵覆盖三个模型 API、三个 Code Mode 模式、搜索关闭回退、搜索后声明/历史恢复，以及未搜索前的 MCP JS 调用经过 AfterTool 和嵌套审计；不增加重复构建或浏览器用例。
+MCP adapter 使用 SDK 的真实 HTTP server 与同一 test binary 的 stdio server 验证协议、分页、过滤、验证、取消与回收。服务端矩阵覆盖三个模型 API、固定 mixed 的 Code Mode、搜索关闭回退、搜索后声明/历史恢复，以及未搜索前的 MCP JS 调用经过 AfterTool 和嵌套审计；不增加重复构建或浏览器用例。
 
 强制运行实测 MCP SDK 包约 0.08 秒，发现层约 0.01 秒；Code Mode/MCP 服务端合并用例约 1.08 秒（原 Code Mode 约 0.33 秒），新增成本来自真实 HTTP/worker/AfterTool sidecar 边界。完整 fresh WebUI + embed 回归约 54.5 秒，相关 race 与三个支持目标的无 CGO 构建均通过。耗时为当前机器观测，不是性能保证。
 

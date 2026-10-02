@@ -9,8 +9,8 @@
 // compaction.mode selects auto, local, or remote checkpoints;
 // compaction.server_side enables provider-managed Responses compaction for
 // catalog models that explicitly advertise it.
-// code_mode.mode selects off, mixed (default: direct tools plus exec/wait), or
-// only (exec/wait with the allowed tools available through JavaScript).
+// Code Mode always exposes direct tools plus exec/wait (mixed); it has no
+// TOML setting.
 // MCP configuration lives separately in version-1 mcp.json documents under
 // KI_HOME and <cwd>/.ki. Project entries replace whole global entries with the
 // same case-sensitive name. Camel-case mcpServers fields select official-SDK

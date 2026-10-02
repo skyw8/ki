@@ -277,8 +277,6 @@ export type CatalogTool = {
   available?: boolean
 }
 
-export type CodeMode = 'off' | 'mixed' | 'only'
-
 export type MCPServerInfo = {
   name: string
   source: 'global' | 'project' | 'runtime'
@@ -290,13 +288,11 @@ export type MCPServerInfo = {
 
 export type ToolSettings = {
   items: CatalogTool[]
-  codeMode: CodeMode
   mcp: MCPServerInfo[]
 }
 
 export type ToolSettingsPatch = {
   disabled?: string[]
-  codeMode?: CodeMode
   mcpDisabled?: string[]
 }
 

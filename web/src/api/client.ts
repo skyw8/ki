@@ -213,7 +213,7 @@ export class Client {
     return this.patchToolSettings({ mcpDisabled }, sessionId, workspaceId)
   }
 
-  patchToolSettings(patch: import('./types').ToolSettingsPatch, sessionId?: string | null, workspaceId?: string | null): Promise<import('./types').ToolSettings> {
+  private patchToolSettings(patch: import('./types').ToolSettingsPatch, sessionId?: string | null, workspaceId?: string | null): Promise<import('./types').ToolSettings> {
     const p = new URLSearchParams()
     if (sessionId) p.set('sessionId', sessionId)
     if (workspaceId) p.set('workspaceId', workspaceId)

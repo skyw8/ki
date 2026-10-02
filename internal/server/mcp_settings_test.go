@@ -86,24 +86,24 @@ func TestMCPSettingsScopeSourcesAndNoEffects(t *testing.T) {
 	if !slices.EqualFunc(infos, decodeMCPSettings(t, runtime, "availableMCP"), func(a, b MCPServerInfo) bool { return a == b }) {
 		t.Fatalf("session/runtime scope mismatch: %s", runtime)
 	}
-	mcpSettingsHTTP(t, hs, route, http.MethodPatch, `{"mcpDisabled":["shared"],"codeMode":"only","disabled":["read"]}`, http.StatusOK)
+	mcpSettingsHTTP(t, hs, route, http.MethodPatch, `{"mcpDisabled":["shared"],"disabled":["read"]}`, http.StatusOK)
 	saved := toggles.Load(srv.cfg.Home)
-	if saved.MCP.Allowed("shared") || saved.Tools.Allowed("read") || saved.CodeMode.Mode != "only" {
+	if saved.MCP.Allowed("shared") || saved.Tools.Allowed("read") {
 		t.Fatalf("saved=%+v", saved)
 	}
-	mcpSettingsHTTP(t, hs, route, http.MethodPatch, `{"codeMode":"off"}`, http.StatusOK)
+	mcpSettingsHTTP(t, hs, route, http.MethodPatch, `{}`, http.StatusOK)
 	mcpSettingsHTTP(t, hs, route, http.MethodPatch, `{"disabled":[]}`, http.StatusOK)
 	infos = decodeMCPSettings(t, mcpSettingsHTTP(t, hs, route, http.MethodGet, "", http.StatusOK), "mcp")
-	if infos[1].Enabled || !infos[1].ConfiguredEnabled || toggles.Load(srv.cfg.Home).CodeMode.Mode != "off" {
+	if infos[1].Enabled || !infos[1].ConfiguredEnabled {
 		t.Fatalf("independent patches lost MCP setting: %+v", infos)
 	}
-	before := codeModeSettingsSaved(t, srv.cfg.Home, 2)
+	before := codeModeSettingsSaved(t, srv.cfg.Home, 3)
 	for _, body := range []string{
-		`{"mcpDisabled":null,"codeMode":"mixed"}`, `{"mcpDisabled":{}}`, `{"mcpDisabled":[null]}`,
+		`{"mcpDisabled":null}`, `{"mcpDisabled":{}}`, `{"mcpDisabled":[null]}`,
 		`{"mcpDisabled":[7]}`, `{"mcpDisabled":[""]}`, `{"mcpDisabled":["  "]}`, `{"mcpDisabled":["same","same"]}`,
 	} {
 		mcpSettingsHTTP(t, hs, route, http.MethodPatch, body, http.StatusBadRequest)
-		if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 2)) {
+		if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 3)) {
 			t.Fatalf("invalid patch mutated settings: %s", body)
 		}
 	}
@@ -118,7 +118,7 @@ func TestMCPSettingsDisabledRequiredNoConnection(t *testing.T) {
 	defer endpoint.Close()
 	for _, configuredDisabled := range []bool{false, true} {
 		t.Run(fmt.Sprint(configuredDisabled), func(t *testing.T) {
-			srv := codeModeTestServer(t, "off", &reqRecorder{})
+			srv := codeModeTestServer(t, &reqRecorder{})
 			enabled := !configuredDisabled
 			writeMCPSettings(t, filepath.Join(srv.cfg.Home, "mcp.json"), map[string]config.MCPServer{
 				"required-server": {URL: endpoint.URL, Required: true, Enabled: &enabled},
@@ -139,7 +139,7 @@ func TestMCPSettingsDisabledRequiredNoConnection(t *testing.T) {
 
 func TestMCPSettingsProjectExecutionAndCacheCount(t *testing.T) {
 	global, project := newMCPServerFixture(t), newMCPServerFixture(t)
-	cfg := mcpServerConfig(t, "off", global.url)
+	cfg := mcpServerConfig(t, global.url)
 	streamer := codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
 		_, results := codeModeTurn(req)
 		if len(results) == 0 {
@@ -178,7 +178,7 @@ func TestMCPSettingsProjectExecutionAndCacheCount(t *testing.T) {
 }
 
 func TestMCPSettingsNoServeProjectFallback(t *testing.T) {
-	srv := codeModeTestServer(t, "off", &reqRecorder{})
+	srv := codeModeTestServer(t, &reqRecorder{})
 	srv.cfg.MCPServers = map[string]config.MCPServer{"serve-project": {Command: "never-start"}}
 	srv.cfg.MCPFromFiles = true
 	snapshot, err := srv.resolveMCP(t.TempDir())
@@ -225,10 +225,10 @@ func TestMCPSettingsScopedPatchPreservesOtherWorkspace(t *testing.T) {
 	if got.Allowed("server-A") || got.Allowed("removed-server") || got.Allowed("file-disabled") || !got.Allowed("server-B") {
 		t.Fatalf("scope-local edit lost another workspace's settings: %+v", got)
 	}
-	before := codeModeSettingsSaved(t, srv.cfg.Home, 2)
+	before := codeModeSettingsSaved(t, srv.cfg.Home, 3)
 	for _, body := range []string{`{"mcpDisabled":["server-A"]}`, `{"mcpDisabled":["file-disabled"]}`} {
 		mcpSettingsHTTP(t, hs, routeB, http.MethodPatch, body, http.StatusBadRequest)
-		if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 2)) {
+		if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 3)) {
 			t.Fatal("invalid scope patch mutated state")
 		}
 	}
@@ -237,15 +237,15 @@ func TestMCPSettingsScopedPatchPreservesOtherWorkspace(t *testing.T) {
 	if err := state.WriteJSON(filepath.Join(b, ".ki", "mcp.json"), map[string]any{"version": 99, "mcpServers": map[string]any{}}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	mcpSettingsHTTP(t, hs, routeB, http.MethodPatch, `{"codeMode":"off","disabled":["read"]}`, http.StatusInternalServerError)
-	if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 2)) {
+	mcpSettingsHTTP(t, hs, routeB, http.MethodPatch, `{"disabled":["read"]}`, http.StatusInternalServerError)
+	if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 3)) {
 		t.Fatal("invalid configuration allowed unrelated settings mutation")
 	}
 }
 
 func TestMCPSettingsOccupiedConfigSnapshot(t *testing.T) {
 	oldFixture, nextFixture := newMCPServerFixture(t), newMCPServerFixture(t)
-	cfg := mcpServerConfig(t, "off", oldFixture.url)
+	cfg := mcpServerConfig(t, oldFixture.url)
 	started, release := make(chan struct{}), make(chan struct{})
 	var requestNumber atomic.Int32
 	streamer := codeModeServerStreamer(func(ctx context.Context, req loop.Request) (types.Message, error) {

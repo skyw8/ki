@@ -12,7 +12,7 @@ import (
 )
 
 // version is the schema version of toggles.json.
-const version = 2
+const version = 3
 
 // BusySteer inserts a busy prompt into the current loop.Run.
 const BusySteer = "steer"
@@ -23,25 +23,6 @@ const BusyQueue = "queue"
 // Message is the process-wide default for a prompt while a session is busy.
 type Message struct {
 	Busy string `json:"busy,omitempty"`
-}
-
-// CodeMode is an optional global override of the configured tool exposure mode.
-type CodeMode struct {
-	Mode string `json:"mode,omitempty"`
-}
-
-// EffectiveMode falls back to TOML when no valid settings override is stored.
-func (c CodeMode) EffectiveMode(fallback string) string {
-	switch c.Mode {
-	case "off", "mixed", "only":
-		return c.Mode
-	}
-	switch fallback {
-	case "off", "mixed", "only":
-		return fallback
-	default:
-		return "mixed"
-	}
 }
 
 // BusyDelivery returns steer or queue. Empty defaults to steer.
@@ -60,7 +41,6 @@ type File struct {
 	Extensions session.Toggle `json:"extensions"`
 	MCP        session.Toggle `json:"mcp"`
 	Message    Message        `json:"message"`
-	CodeMode   CodeMode       `json:"code_mode"`
 }
 
 func path(home string) string { return filepath.Join(home, "toggles.json") }
@@ -73,7 +53,7 @@ func Load(home string) File {
 	if home == "" {
 		return f
 	}
-	b, _, err := state.ReadFile(path(home), version, map[int]state.Migration{1: migrateToolNames})
+	b, _, err := state.ReadFile(path(home), version, map[int]state.Migration{1: migrateToolNames, 2: removeCodeMode})
 	if err != nil {
 		return f
 	}
@@ -100,10 +80,21 @@ func migrateToolNames(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, err
 	}
-	f.Version = version
+	f.Version = 2
 	f.Tools.Only = migrateNames(f.Tools.Only)
 	f.Tools.Disabled = migrateNames(f.Tools.Disabled)
 	return json.Marshal(f)
+}
+
+func removeCodeMode(raw []byte) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	// Code Mode is fixed to mixed; stale overrides must not survive a rewrite.
+	delete(fields, "code_mode")
+	fields["version"] = json.RawMessage("3")
+	return json.Marshal(fields)
 }
 func migrateNames(names []string) []string {
 	out := []string{}
