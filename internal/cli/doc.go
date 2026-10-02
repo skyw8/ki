@@ -14,6 +14,9 @@
 // command-line splash (MousetrapHelpText is cleared in Main). A double-click
 // hides the console window and reports fatal errors in a message box, because
 // that console closes with the process.
+// The printed and opened WebUI URL carries server.json's token in a fragment.
+// The SPA clears it before exchanging it for a browser session cookie, so a
+// fresh browser needs no manual login. Treat this launcher link as a secret.
 //
 //	ki run [flags] text create/resume session, POST prompt, print events
 //	ki session compact  compact an existing session

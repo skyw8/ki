@@ -36,6 +36,7 @@ import { useTranscriptStore } from './hooks/useTranscriptStore'
 import { SessionSyncController } from './lib/session-sync'
 import { clientRequestId } from './lib/client-request'
 import { ancestorsOf, buildSessionForest, orderedChildren, pinnedFirst, topLevelRoot } from './lib/session-tree'
+import type { LauncherAuth } from './lib/launcher-auth'
 
 type Tab = 'conversation' | 'context' | 'config'
 type SettingsPage = 'providers' | 'skills' | 'tools' | 'mcp' | 'extensions' | 'prompt' | 'message' | 'notifications' | 'appearance'
@@ -253,24 +254,26 @@ function Modal({ title, onClose, children, testid, wide, className, initialFocus
   )
 }
 
-export function App() {
+export function App({ launcherAuth }: { launcherAuth: LauncherAuth }) {
   const [generation, setGeneration] = useState(0)
   const api = useMemo(() => new Client(), [generation])
   const [auth, setAuth] = useState<'checking' | 'required' | 'authenticated'>('checking')
 
-  useEffect(() => {
-    let active = true
-    void api.authStatus()
-      .then(status => { if (active) setAuth(status.authenticated ? 'authenticated' : 'required') })
-      .catch(() => { if (active) setAuth('required') })
-    return () => { active = false }
-  }, [api])
   const onServerChange = useCallback(() => {
     // A forwarded origin can now point at a different daemon. Discard every
     // resource identity and cached validator before authenticating the new one.
     setAuth('checking')
     setGeneration(n => n + 1)
   }, [])
+  useEffect(() => {
+    let active = true
+    void launcherAuth.check(api).then(result => {
+      if (!active) return
+      if (result === 'serverChanged') onServerChange()
+      else setAuth(result)
+    })
+    return () => { active = false }
+  }, [api, launcherAuth, onServerChange])
 
   if (auth === 'checking') return <AuthLoading />
   if (auth === 'required') return <LoginScreen api={api} onLogin={() => setAuth('authenticated')} onServerChange={onServerChange} />

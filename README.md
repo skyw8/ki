@@ -58,7 +58,7 @@ On Windows, Ki looks for Git Bash through `KI_GIT_BASH_PATH`, `CLAUDE_CODE_GIT_B
 # open the WebUI with the host's LAN IP, or pass --addr to narrow the listener
 scripts/run.sh
 
-# open the WebUI (starts a detached server and tries to open a browser);
+# open the WebUI (starts a detached server and opens an auto-login link);
 # a double-click reaches this same path on Windows and macOS (via Terminal),
 # while a Linux desktop needs a .desktop entry because file managers do not
 # run ELF binaries directly
@@ -96,7 +96,7 @@ scripts/run.sh
 ./ki provider logout <provider>
 ```
 
-API auth is a Bearer token from `~/.ki/server.json` (or `KI_HOME/server.json`) for CLI clients. The WebUI asks for that token once and exchanges it for a short-lived HttpOnly browser session; the token is not embedded in HTML or URLs. Config is `~/.ki/ki.toml` and `<cwd>/.ki/ki.toml`. The configured real provider is used by default; set `KI_FAKE=1` only for local plumbing tests.
+API auth is a Bearer token from `~/.ki/server.json` (or `KI_HOME/server.json`) for CLI clients. Bare `ki` (including double-click launch) prints and opens an auto-login link with that token in the URL fragment (`#token=…`). The WebUI immediately removes the fragment and exchanges the token for a short-lived HttpOnly browser session; no extra login is needed. Treat this link as a secret and do not share it. Plain WebUI URLs still offer manual token login. The token is never embedded in HTML or a URL query. Config is `~/.ki/ki.toml` and `<cwd>/.ki/ki.toml`. The configured real provider is used by default; set `KI_FAKE=1` only for local plumbing tests.
 
 ## Bundled extensions
 

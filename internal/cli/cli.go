@@ -498,7 +498,7 @@ func runDefault(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	url := browserURL(sf.Addr)
+	url := browserURL(sf.Addr, sf.Token)
 	if started {
 		fmt.Fprintf(os.Stderr, "ki server %s pid %d\n", sf.Addr, pid)
 	}

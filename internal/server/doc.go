@@ -26,8 +26,10 @@
 // API auth is Bearer token or a browser session cookie, except GET /v1/health
 // and the auth status/login endpoints. Browser login exchanges the bearer
 // secret for an HttpOnly session cookie and a separate CSRF token; the token
-// is never embedded in the SPA HTML. Unsafe browser requests must echo the
-// CSRF token in X-Ki-CSRF. The CLI continues to use Bearer auth. Browser
+// is never embedded in the SPA HTML. Bare ki supplies it in a launcher URL
+// fragment, cleared by the SPA before login; plain URLs require manual login.
+// Unsafe browser requests must echo the CSRF token in X-Ki-CSRF. The CLI
+// continues to use Bearer auth. Browser
 // cookie pairs are named per random server instance because cookies ignore ports;
 // auth status advertises serverId and csrfCookieName. Push ready carries the
 // same identity so forwarded origins cannot retain another backend's UI state.

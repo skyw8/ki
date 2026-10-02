@@ -42,7 +42,7 @@ Code Mode 固定为 mixed：在普通工具经开关、extension Prepare 和 act
 
 ## HTTP
 
-除 `GET /v1/health`、`GET /v1/auth/status` 和 `POST /v1/auth/login` 外，API 要么带 `Authorization: Bearer`，要么带 WebUI 登录后设置的 HttpOnly browser session cookie。浏览器写请求还要带 `X-Ki-CSRF`，CLI 继续使用 Bearer。非 `/v1` 路径是同域 WebUI，SPA HTML 不再注入 server token；登录时由用户显式输入 token，服务端换发短期 cookie。不要把 token 放进 URL。登录会话仅保存在 server 内存中，server 重启后失效。
+除 `GET /v1/health`、`GET /v1/auth/status` 和 `POST /v1/auth/login` 外，API 要么带 `Authorization: Bearer`，要么带 WebUI 登录后设置的 HttpOnly browser session cookie。浏览器写请求还要带 `X-Ki-CSRF`，CLI 继续使用 Bearer。非 `/v1` 路径是同域 WebUI，SPA HTML 不注入 server token。裸 `ki`（含双击启动）打印并打开带 `#token=…` fragment 的自动登录链接：fragment 不随 HTTP 请求或 Referer 发送；SPA 读取后立即用 `history.replaceState` 清除，再先查询 auth status 绑定 serverId，通过现有登录接口换发短期 cookie，已有有效 cookie 时无需重复登录。链接本身是凭据，不应分享；不得把 token 放进 URL query、路径或 HTML，也不写入浏览器存储。普通 URL 和自动登录失败仍保留手动输入 token 的登录页。登录会话仅保存在 server 内存中，server 重启后失效；切换后端不会重用已消费的 fragment token。
 
 | 方法 | 路径 | 作用 |
 |---|---|---|

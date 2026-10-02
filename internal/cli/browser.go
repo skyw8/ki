@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os/exec"
 	"runtime"
 
@@ -13,15 +14,21 @@ import (
 
 var errBrowserUnavailable = errors.New("browser opener unavailable")
 
-func browserURL(addr string) string {
+func browserURL(addr, token string) string {
 	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return "http://" + addr + "/"
+	if err == nil {
+		if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+			host = "127.0.0.1"
+		}
+		addr = net.JoinHostPort(host, port)
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
-		host = "127.0.0.1"
+	base := "http://" + addr + "/"
+	if token == "" {
+		return base
 	}
-	return "http://" + net.JoinHostPort(host, port) + "/"
+	// A fragment is not sent in HTTP requests or Referer headers. The SPA
+	// removes it before exchanging the secret for its normal session cookie.
+	return base + "#token=" + url.QueryEscape(token)
 }
 
 func openBrowser(url string) error {

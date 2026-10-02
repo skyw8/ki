@@ -2,7 +2,7 @@
 
 `ki serve` 同域出页面：一个二进制，静态资源嵌在 `web/dist`，API 仍是 `/v1/*`。所有文本响应（SPA 资源、`/v1` JSON）统一 gzip，`text/event-stream` 除外（SSE 逐事件 Flush，压缩缓冲会拖延流）；`assets/` 是 Vite 内容哈希产物（包括浏览器 tab 使用的 Ki SVG favicon；页面内容不重复展示该品牌图标），响应带 `Cache-Control: public, max-age=31536000, immutable`，端口转发/慢链路下刷新不再逐个回源校验；SPA HTML 仍 `no-store`。PWA 的 `sw.js` 与 `manifest.webmanifest` 位于根路径、不带哈希，改带 `no-cache` 强制每次校验（service worker 被长期缓存会钉住旧的推送处理器）。
 
-浏览器打开 `http://127.0.0.1:19800/`，或经 SSH/IDE **端口转发** 打开同一端口；`scripts/run.sh` 默认监听 `0.0.0.0:19800` 时，应使用主机的 LAN IP。首次打开时在登录页输入本机 `server.json` 中的 token，WebUI 通过 `POST /v1/auth/login` 换取短期 HttpOnly session cookie；SPA HTML 和 URL 都不包含 server token。浏览器 API 写请求同时带同源 CSRF header，前端只用同域相对路径调 `/v1/*` 和 `/assets/*`，不把宿主文件路径写进 `href`，也不用系统选目录。
+浏览器打开 `http://127.0.0.1:19800/`，或经 SSH/IDE **端口转发** 打开同一端口；`scripts/run.sh` 默认监听 `0.0.0.0:19800` 时，应使用主机的 LAN IP。裸 `ki` 或双击二进制会打印并自动打开带 `#token=…` 的认证链接，浏览器无需再输入 token。SPA 读取 fragment 后立即清除，先查询 auth status 绑定 serverId，再通过 `POST /v1/auth/login` 换取短期 HttpOnly session cookie；已有有效 cookie 时直接进入。fragment 不发送到服务器或 Referer，不写入浏览器存储；链接本身是凭据，不要分享。普通 URL 首次打开仍可在登录页输入本机 `server.json` 中的 token，自动登录失败也回退到此流程。SPA HTML 和 URL query 不包含 server token。浏览器 API 写请求同时带同源 CSRF header，前端只用同域相对路径调 `/v1/*` 和 `/assets/*`，不把宿主文件路径写进 `href`，也不用系统选目录。server 重启后原 browser session 失效，可手动重新登录或再次运行 `ki` 获取新认证链接；切换后端不会重用已消费的 fragment token。
 
 当前移动端恢复、折叠、subagent 状态的已复现缺陷、历史截图复核和分阶段重构计划见
 [2026-09-30 架构复盘](postmortem/2026-09-30-mobile-transcript-recovery-architecture.md)。

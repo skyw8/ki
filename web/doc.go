@@ -20,6 +20,9 @@
 // browser preferences never force an unavailable extension provider.
 // Model defaults come from the server; workspace expansion is page-local.
 // Auth and push ready identify a server instance, not merely a browser origin.
+// Launcher URLs carry #token=... for automatic cookie login. Startup strips
+// that fragment before requests and consumes it once, never persisting it or
+// replaying it after a backend change; plain URLs retain manual token login.
 // Backend changes remount runtime state and recheck authentication; CSRF cookie
 // names and expiring cross-tab focus markers are scoped to that instance.
 // Web Push subscriptions are reused only when their VAPID key still matches.
