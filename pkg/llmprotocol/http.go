@@ -75,6 +75,9 @@ func validObjectArgumentsRaw(raw string) string {
 
 // Stream implements Streamer.
 func (l *Client) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (Message, error) {
+	if err := validateToolSpecs(req.Tools, l.API); err != nil {
+		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, &nonRetryableError{err: err}
+	}
 	var msg Message
 	var err error
 	switch l.API {
@@ -199,16 +202,16 @@ func assistantHasReplayableContent(m Message) bool {
 // absent from the replayed history is dropped instead of being sent as an
 // unpaired role:tool / tool_result message, which every gateway rejects.
 //
-// Responses keeps Replayable: it is the only protocol that can carry custom
-// calls, and downgrading there would discard the item identity it depends on.
-func structuredToolReplay(msgs []Message) []Message {
+// Responses retains native custom calls unless their current declaration is
+// a function; its item adapter also changes the paired output type.
+func structuredToolReplay(msgs []Message, tools []ToolSpec) []Message {
 	replayed := Replayable(msgs)
 	out := make([]Message, 0, len(replayed))
 	calls := map[string]bool{}
 	for _, m := range replayed {
 		switch m.Role {
 		case "assistant":
-			m = downgradeCustomCalls(m)
+			m = downgradeCustomCalls(m, tools)
 			for _, c := range m.Content {
 				if c.Type == "toolCall" && c.ID != "" {
 					calls[c.ID] = true
@@ -231,7 +234,7 @@ func structuredToolReplay(msgs []Message) []Message {
 
 // downgradeCustomCalls rewrites custom tool calls as function calls. It copies
 // the content slice before mutating, so the caller's history is never changed.
-func downgradeCustomCalls(m Message) Message {
+func downgradeCustomCalls(m Message, tools []ToolSpec) Message {
 	rewritten := false
 	content := m.Content
 	for i := range content {
@@ -243,7 +246,12 @@ func downgradeCustomCalls(m Message) Message {
 			rewritten = true
 		}
 		c := &content[i]
-		c.ArgumentsRaw = customCallArguments(*c)
+		field, _, _ := customInputField(tools, c.Name)
+		if field == "input" {
+			c.ArgumentsRaw = customCallArguments(*c)
+		} else {
+			c.ArgumentsRaw = marshalArguments(map[string]any{field: c.Input})
+		}
 		c.Arguments = nil
 		c.ToolType = ""
 		c.Input = ""
@@ -258,13 +266,7 @@ func downgradeCustomCalls(m Message) Message {
 // customCallArguments encodes a custom call's opaque input as the JSON object
 // that a function tool call requires.
 func customCallArguments(c Content) string {
-	if c.Input != "" {
-		return marshalArguments(map[string]any{"input": c.Input})
-	}
-	if c.Arguments != nil {
-		return marshalArguments(c.Arguments)
-	}
-	return "{}"
+	return marshalArguments(map[string]any{"input": c.Input})
 }
 
 func (l *Client) oaHeaders() http.Header {

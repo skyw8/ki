@@ -90,7 +90,7 @@ func (s *Server) getSkills(w http.ResponseWriter, r *http.Request) {
 func toolProfile(info provider.Model) builtin.Profile {
 	return builtin.Profile{
 		RichRead:   slices.Contains(info.Input, "image"),
-		ApplyPatch: info.ApplyPatchToolType == "freeform",
+		ApplyPatch: info.SupportsFreeformApplyPatch(),
 	}
 }
 

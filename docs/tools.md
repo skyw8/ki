@@ -1,6 +1,6 @@
 # 工具契约
 
-工具默认使用小写 snake_case 名称，接受对应的 PascalCase 别名（如 `exec_command` / `ExecCommand`）。每个工具只向模型发布一个 canonical schema；文件/搜索参数沿用现有契约，shell 使用进程交互契约，agent 使用协作契约。文本结果保持有界。内置工具由 `internal/tool/builtin.Set.Build` 构造，包入口见 `internal/tool/builtin/doc.go`。GPT Responses 模型使用原生 freeform `apply_patch`，其它模型使用 `write` + `edit`；两组编辑器互斥。`read` 仍按模型是否支持图片在富/文本两种模式间切换，而且这些选择发生在 system prompt 组装阶段（见 [architecture.md](architecture.md)）。
+工具默认使用小写 snake_case 名称，接受对应的 PascalCase 别名（如 `exec_command` / `ExecCommand`）。每个工具只向模型发布一个 canonical schema；文件/搜索参数沿用现有契约，shell 使用进程交互契约，agent 使用协作契约。文本结果保持有界。内置工具由 `internal/tool/builtin.Set.Build` 构造，包入口见 `internal/tool/builtin/doc.go`。明确声明能力的 Responses 模型使用原生 freeform `apply_patch`，其它模型使用 `write` + `edit`；两组编辑器互斥。`read` 仍按模型是否支持图片在富/文本两种模式间切换，而且这些选择发生在 system prompt 组装阶段（见 [architecture.md](architecture.md)）。
 
 ## 模块边界
 
@@ -58,7 +58,7 @@ Code Mode 固定为 `mixed`，在普通工具之外发布 `exec/wait`，没有 T
 
 MCP 使用官方 Go SDK，配置和生命周期见 [mcp.md](mcp.md)。`search_tool` 可用时，允许的 MCP 工具保留在执行 registry，但完整 schema 延迟披露；关闭/排除 search_tool 则直接发布，不保留无搜索入口的 Deferred。JS tools/ALL_TOOLS 已有全部允许的 MCP 能力，搜索不授予权限。
 
-- `exec`：Responses 使用 raw-JS custom/freeform；其它协议使用 `{code: "…"}` function tool。两者都接受首行 `// @exec: {"yield_time_ms":10000,"max_output_tokens":10000}`，且只接受这两个非负 JS-safe integer 字段。
+- `exec`：只有同时使用 Responses 且明确声明 `execToolType: "freeform"` 的模型使用 raw-JS custom/freeform；扩展私有 API 可显式声明并自行兑现同一契约。其它模型（包括 DeepSeek Responses）及 Completions / Anthropic 均使用 `{code: "…"}` function tool。该能力与 `applyPatchToolType` 独立，支持 custom `apply_patch` 不代表支持 custom `exec`。两者都接受首行 `// @exec: {"yield_time_ms":10000,"max_output_tokens":10000}`，且只接受这两个非负 JS-safe integer 字段。
 - `wait`：`{cell_id, yield_time_ms?, max_tokens?, terminate?}`。默认等待和输出预算均为 10000（毫秒 / 估计 tokens），显式零有效。等待最多 60 秒，是观察期限，不是脚本存活期限。
 - 每次执行使用新 goja VM；`tools.xxx` 返回 Promise，参数对象用于 function，字符串用于 freeform。`text/image` 显式输出，表达式值不自动返回。`ALL_TOOLS` 提供允许的工具元数据。
 - `store/load` 是 session 内存中的 JSON 快照/提交机制；完成（包括 JS 错误）才提交写入，yield 不提交，终止丢弃。状态不恢复到新 server、fork 或关闭后的 worker。
@@ -77,7 +77,7 @@ Code Mode 的调用取消先请求 worker 停止 cell，再取消父进程 callb
 | `read` | 文本模型：`file_path`、可选行分页 `offset` / `limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
 | `write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 read |
 | `edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。若 provider 同时填充两种模式的字段，只执行唯一有效的模式并提醒；两种模式都有有效修改时拒绝。模型只看到简短摘要，diff/patch 在 details |
-| `apply_patch` | Codex `*** Begin Patch` freeform grammar；每个路径只出现一次，同文件修改合并进一个 update block | GPT Responses 专用的 add/update/delete/move 批量补丁；完整预检后才写入，结果 details 带每个文件的 unified diff |
+| `apply_patch` | Codex `*** Begin Patch` freeform grammar；每个路径只出现一次，同文件修改合并进一个 update block | 明确声明 native patch 能力的 add/update/delete/move 批量补丁；完整预检后才写入，结果 details 带每个文件的 unified diff |
 | `grep` | `pattern`、`path`、`glob`、`output_mode`、`respect_gitignore`、上下文/分页/类型参数 | 基于内置 ripgrep；默认尊重 `.gitignore`；支持 partial results、JSON/NUL 解析、EAGAIN 降级、正则、取消/超时和统计元数据 |
 | `glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
 | `exec_command` | `cmd`、可选 `workdir` / `shell` / `login` / `tty` / `yield_time_ms` / `max_output_tokens` | 启动新进程，返回增量输出、退出码或数值 `session_id` |
@@ -122,7 +122,7 @@ Code Mode 的调用取消先请求 worker 停止 cell，再取消父进程 callb
 
 ## apply_patch
 
-- 仅模型 capability `applyPatchToolType: "freeform"` 启用；内置 OpenAI Responses GPT 和 bundled `codex-oauth` GPT 模型声明该能力。启用时替代 `write` / `edit`，避免两套编辑接口同时诱导模型。
+- 仅 Responses 模型 capability `applyPatchToolType: "freeform"` 启用；扩展 provider 的私有 API 由其声明并兑现 freeform 契约。内置 OpenAI Responses GPT 和 bundled `codex-oauth` GPT 模型声明该能力。覆盖为 Completions / Anthropic 后仍使用 `write` / `edit`；启用 patch 时替代它们，避免两套编辑接口同时诱导模型。
 - 使用 Responses custom tool 和 Lark 约束的 Codex patch grammar，不把 patch 包进 JSON。
 - 支持 add、delete、update 和 move；整份 patch 的路径、源文件和上下文在第一次写入前预检，同一路径的多个操作按规范化主机路径拒绝。
 - 更新匹配容忍行尾空白和 Unicode 标点差异，同时保留未触及内容原有的 LF、CRLF、bare CR 或混合换行。

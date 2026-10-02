@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -88,6 +90,11 @@ func codeModeTestSession(t *testing.T, srv *Server, cwd, api string) string {
 	if ref.Model == "" {
 		t.Fatalf("no catalog model with API %q", api)
 	}
+	return codeModeTestSessionRef(t, srv, cwd, ref)
+}
+
+func codeModeTestSessionRef(t *testing.T, srv *Server, cwd string, ref provider.ModelRef) string {
+	t.Helper()
 	sess, err := session.Create(srv.cfg.Sessions.Root, cwd, ref.Provider, ref.Model)
 	if err != nil {
 		t.Fatal(err)
@@ -165,13 +172,41 @@ func codeModeTurn(req loop.Request) (string, []types.Message) {
 }
 
 func TestCodeModeServerSchemaExposure(t *testing.T) {
-	for _, api := range []string{"completions", "responses", "anthropic"} {
-		t.Run(api, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, provider, model, api string
+		clearExec, patchOnly       bool
+		nativeExec, nativePatch    bool
+	}{
+		{name: "openai/responses", provider: "openai", model: "gpt-5.6-terra", api: "responses", nativeExec: true, nativePatch: true},
+		{name: "openai/completions", provider: "openai", model: "gpt-5.6-terra", api: "completions"},
+		{name: "openai/anthropic", provider: "openai", model: "gpt-5.6-terra", api: "anthropic"},
+		{name: "deepseek/completions", provider: "deepseek", model: "deepseek-flash", api: "completions"},
+		{name: "deepseek/responses", provider: "deepseek", model: "deepseek-flash", api: "responses"},
+		{name: "deepseek/anthropic", provider: "deepseek", model: "deepseek-flash", api: "anthropic"},
+		{name: "openai/exec-disabled", provider: "openai", model: "gpt-5.6-terra", api: "responses", clearExec: true, nativePatch: true},
+		{name: "deepseek/patch-only", provider: "deepseek", model: "deepseek-flash", api: "responses", patchOnly: true, nativePatch: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var got loop.Request
 			srv := codeModeTestServer(t, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
 				got = req
 				return codeModeStop(), nil
 			}))
+			if err := srv.registry.Update(func(cfg *provider.ModelsFile) error {
+				override := provider.ModelOverride{API: &tc.api, Compaction: &provider.CompactionCapabilities{}}
+				if tc.clearExec {
+					value := ""
+					override.ExecToolType = &value
+				}
+				if tc.patchOnly {
+					value := "freeform"
+					override.ApplyPatchToolType = &value
+				}
+				cfg.Providers[tc.provider] = provider.Config{ModelOverrides: map[string]provider.ModelOverride{tc.model: override}}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
 			cwd := t.TempDir()
 			skill := filepath.Join(cwd, ".ki", "skills", "code-fixture", "SKILL.md")
 			if err := os.MkdirAll(filepath.Dir(skill), 0o700); err != nil {
@@ -180,7 +215,7 @@ func TestCodeModeServerSchemaExposure(t *testing.T) {
 			if err := os.WriteFile(skill, []byte("---\nname: code-fixture\ndescription: code mode skill fixture\n---\nUse this fixture.\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			id := codeModeTestSession(t, srv, cwd, api)
+			id := codeModeTestSessionRef(t, srv, cwd, provider.ModelRef{Provider: tc.provider, Model: tc.model})
 			codeModeRunPrompt(t, srv, id, "schema")
 			names := make([]string, 0, len(got.Tools))
 			var exec toolapi.Spec
@@ -199,12 +234,100 @@ func TestCodeModeServerSchemaExposure(t *testing.T) {
 			if !strings.Contains(exec.Description, "tools.read") || !strings.Contains(exec.Description, "file_path") {
 				t.Fatal("exec description omitted nested tool signatures")
 			}
-			if api == "responses" {
+			if tc.nativeExec {
 				if exec.Type != "custom" || exec.Format == nil || exec.Format.Syntax != "lark" {
 					t.Fatalf("Responses exec is not native freeform: %+v", exec)
 				}
-			} else if exec.Type != "function" || exec.Parameters == nil {
-				t.Fatalf("JSON code fallback missing: %+v", exec)
+			} else {
+				if exec.Type != "function" || exec.Parameters == nil || exec.Format != nil {
+					t.Fatalf("JSON code fallback missing: %+v", exec)
+				}
+				props, _ := exec.Parameters["properties"].(map[string]any)
+				if props["code"] == nil || props["input"] != nil {
+					t.Fatalf("exec must accept code, not a downgraded raw input: %+v", exec.Parameters)
+				}
+			}
+			if slices.Contains(names, "apply_patch") != tc.nativePatch ||
+				slices.Contains(names, "write") == tc.nativePatch ||
+				slices.Contains(names, "edit") == tc.nativePatch {
+				t.Fatalf("wrong editor fallback: %v", names)
+			}
+			// Settings and occupied runs must expose the same editor capability,
+			// even when a catalog model retains native flags after an API switch.
+			w := httptest.NewRecorder()
+			srv.getTools(w, httptest.NewRequest(http.MethodGet, "/v1/tools?sessionId="+id, nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("tool settings: %d %s", w.Code, w.Body.String())
+			}
+			var settings struct {
+				Items []struct {
+					Name      string `json:"name"`
+					Available bool   `json:"available"`
+				} `json:"items"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &settings); err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range settings.Items {
+				switch item.Name {
+				case "apply_patch":
+					if item.Available != tc.nativePatch {
+						t.Fatalf("settings patch capability differs: %+v", item)
+					}
+				case "write", "edit":
+					if item.Available == tc.nativePatch {
+						t.Fatalf("settings JSON editor capability differs: %+v", item)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCodeModeServerDeepSeekExecUsesJSON(t *testing.T) {
+	for _, api := range []string{"completions", "responses", "anthropic"} {
+		t.Run(api, func(t *testing.T) {
+			cwd := t.TempDir()
+			path := filepath.Join(cwd, "marker.txt")
+			if err := os.WriteFile(path, []byte("deepseek-json-exec-marker"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var outer types.Message
+			srv := codeModeTestServer(t, codeModeServerStreamer(func(_ context.Context, req loop.Request) (types.Message, error) {
+				_, results := codeModeTurn(req)
+				if len(results) == 0 {
+					spec, ok := mcpRequestSpec(req, "exec")
+					if !ok || spec.Type != "function" {
+						return types.Message{}, errors.New("DeepSeek exec must be a JSON function")
+					}
+					source := fmt.Sprintf(`const r = await tools.read({file_path:%s}); if(r.isError) throw new Error(JSON.stringify(r)); text(r.content);`, codeModeJSON(t, path))
+					return codeModeExecCall(req, "deepseek-exec", source), nil
+				}
+				if len(results) != 1 {
+					return types.Message{}, fmt.Errorf("unexpected provider results: %d", len(results))
+				}
+				outer = results[0]
+				return codeModeStop(), nil
+			}))
+			if err := srv.registry.Update(func(cfg *provider.ModelsFile) error {
+				cfg.Providers["deepseek"] = provider.Config{API: api}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			id := codeModeTestSessionRef(t, srv, cwd, provider.ModelRef{Provider: "deepseek", Model: "deepseek-flash"})
+			codeModeRunPrompt(t, srv, id, "read marker through exec")
+			if outer.IsError || outer.ToolType == "custom" || !strings.Contains(outer.Text(), "deepseek-json-exec-marker") {
+				t.Fatalf("JSON exec result = %+v", outer)
+			}
+			var reads int
+			for _, entry := range codeModeEntries(t, srv, id) {
+				if entry.Type == string(loop.ToolExecutionEnd) && strings.Contains(codeModeJSON(t, entry.Details), `"toolName":"read"`) {
+					reads++
+				}
+			}
+			if reads != 1 {
+				t.Fatalf("nested read completions = %d", reads)
 			}
 		})
 	}

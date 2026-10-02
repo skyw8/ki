@@ -212,6 +212,8 @@ func TestManifestAdvertisesCodexV2Compaction(t *testing.T) {
 	}
 	for _, v := range list(provider["models"]) {
 		equalJSON(t, obj(v)["compaction"], object{"standalone": "codex-v2"})
+		equalJSON(t, obj(v)["execToolType"], "freeform")
+		equalJSON(t, obj(v)["applyPatchToolType"], "freeform")
 	}
 	var manifest object
 	_ = decode(string(manifestBytes), &manifest)

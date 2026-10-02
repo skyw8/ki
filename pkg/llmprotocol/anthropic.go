@@ -14,7 +14,7 @@ func AnthropicBody(req Request) map[string]any {
 	// Combine consecutive toolResults into one user message containing multiple
 	// tool_result blocks. Anthropic permits images in each tool_result.content,
 	// so do not split them into trailing user messages.
-	history := structuredToolReplay(req.Messages)
+	history := structuredToolReplay(req.Messages, req.Tools)
 	for i := 0; i < len(history); i++ {
 		m := history[i]
 		if m.Role != "toolResult" {
@@ -470,7 +470,10 @@ func applyAnthropicStopReason(acc *Message, reason string) {
 }
 
 func validateAnthropicRequest(req Request) error {
-	for _, message := range structuredToolReplay(req.Messages) {
+	if err := validateStructuredToolReplay(req); err != nil {
+		return err
+	}
+	for _, message := range structuredToolReplay(req.Messages, req.Tools) {
 		if message.Role == "toolResult" {
 			if message.ToolCallID == "" {
 				return errAnthropicToolResultNoToolUseID

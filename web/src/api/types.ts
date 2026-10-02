@@ -471,6 +471,7 @@ export type ModelInfo = {
 	maxTokens?: number
 	input?: string[]
 	applyPatchToolType?: 'freeform'
+	execToolType?: 'freeform'
 	compaction?: {
 		standalone?: 'openai' | 'codex-v2'
 		inline?: 'openai'

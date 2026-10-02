@@ -56,6 +56,7 @@ type ModelOverride struct {
 	MaxTokens          *int                    `json:"maxTokens,omitempty"`
 	Input              *[]string               `json:"input,omitempty"`
 	ApplyPatchToolType *string                 `json:"applyPatchToolType,omitempty"`
+	ExecToolType       *string                 `json:"execToolType,omitempty"`
 	Compaction         *CompactionCapabilities `json:"compaction,omitempty"`
 	Reasoning          *bool                   `json:"reasoning,omitempty"`
 	ThinkingLevelMap   *map[string]*string     `json:"thinkingLevelMap,omitempty"`
@@ -533,7 +534,7 @@ func validateExtensionModel(m Model) error {
 	if !slices.Contains(m.Input, "text") {
 		return fmt.Errorf("provider %q model %q: %w", m.Provider, m.ID, errTextInputRequired)
 	}
-	if err := validateApplyPatchToolType(m); err != nil {
+	if err := validateNativeToolTypes(m); err != nil {
 		return err
 	}
 	if err := validateCompaction(m, true); err != nil {
@@ -576,11 +577,14 @@ func validateFastServiceTier(m Model) error {
 	return fmt.Errorf("provider %q model %q: invalid fast service tier %q", m.Provider, m.ID, m.FastServiceTier)
 }
 
-func validateApplyPatchToolType(m Model) error {
-	if m.ApplyPatchToolType == "" || m.ApplyPatchToolType == "freeform" {
-		return nil
+func validateNativeToolTypes(m Model) error {
+	if m.ApplyPatchToolType != "" && m.ApplyPatchToolType != "freeform" {
+		return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidApplyPatchToolType, m.ApplyPatchToolType)
 	}
-	return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidApplyPatchToolType, m.ApplyPatchToolType)
+	if m.ExecToolType != "" && m.ExecToolType != "freeform" {
+		return fmt.Errorf("provider %q model %q: %w %q", m.Provider, m.ID, errInvalidExecToolType, m.ExecToolType)
+	}
+	return nil
 }
 
 func validateCompaction(m Model, extensionOwned bool) error {
@@ -618,7 +622,7 @@ func validateModel(m Model) error {
 	if !slices.Contains(m.Input, "text") {
 		return fmt.Errorf("provider %q model %q: %w", m.Provider, m.ID, errTextInputRequired)
 	}
-	if err := validateApplyPatchToolType(m); err != nil {
+	if err := validateNativeToolTypes(m); err != nil {
 		return err
 	}
 	if err := validateCompaction(m, false); err != nil {
@@ -682,6 +686,9 @@ func applyModelOverride(m Model, o ModelOverride) (Model, error) {
 	}
 	if o.ApplyPatchToolType != nil {
 		m.ApplyPatchToolType = *o.ApplyPatchToolType
+	}
+	if o.ExecToolType != nil {
+		m.ExecToolType = *o.ExecToolType
 	}
 	if o.Compaction != nil {
 		m.Compaction = *o.Compaction

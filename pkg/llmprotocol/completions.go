@@ -26,7 +26,7 @@ func CompletionsBody(req Request) map[string]any {
 	// so stable prefix bytes can preserve prompt-cache hits.
 	// When there are no images, do not insert a user message; this matches the
 	// previous plain-text path.
-	history := structuredToolReplay(req.Messages)
+	history := structuredToolReplay(req.Messages, req.Tools)
 	for i := 0; i < len(history); i++ {
 		m := history[i]
 		if m.Role != "toolResult" {
@@ -386,7 +386,10 @@ func completionToolCallAt(m *Message, index int) *Content {
 }
 
 func validateCompletionsRequest(req Request) error {
-	for _, message := range structuredToolReplay(req.Messages) {
+	if err := validateStructuredToolReplay(req); err != nil {
+		return err
+	}
+	for _, message := range structuredToolReplay(req.Messages, req.Tools) {
 		switch message.Role {
 		case "toolResult":
 			if message.ToolCallID == "" {

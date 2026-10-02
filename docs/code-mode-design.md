@@ -58,7 +58,7 @@ end note
 
 ## 执行契约
 
-Responses 的 `exec` 接收 raw JS；其它协议使用 `{code: "…"}`。两者均可使用首行 pragma：
+只有 Responses 模型明确声明 `execToolType: "freeform"` 时，`exec` 才接收 raw JS；扩展 provider 的私有 API 可显式声明并自行兑现同一契约。未声明的 Responses 模型及 Completions / Anthropic 使用 `{code: "…"}`。不能由协议名或 custom `apply_patch` 能力推断任意 custom 工具支持；DeepSeek Responses 只允许名为 `apply_patch` 的 custom 工具，`exec` 必须使用 function 格式。两者均可使用首行 pragma：
 
 ```javascript
 // @exec: {"yield_time_ms": 10000, "max_output_tokens": 10000}
@@ -90,6 +90,8 @@ text(result.content.filter(item => item.type === "text").map(item => item.text).
 
 只有外层 provider-issued exec/wait 生成 transcript toolResult。嵌套 start/update/end 通过现有事件目录持久化，带父调用、cell 和父进程分配的调用身份；SSE 与历史重建同一张工具卡片。事件漏斗串行化 callback 与模型事件，不跨工具执行持有漏斗锁。
 
+工具格式切换只改变请求编码，不重写会话历史。旧 custom exec 在当前 function 声明下包装为 `{code: <原始 JS>}` 并保持 call/output 配对；Completions / Anthropic 不接收 custom 声明，不能通过省略 schema 假装为 function。协议回放与失败规则见 [provider.md](provider.md)。
+
 occupy 结束取消并 join 所有 cell 与父进程 callback，先于 hooks、telemetry、session 和 release 关闭。已提交 store 留在 worker，但旧 occupy 的工具、身份和 callback 不跨轮复用。shell 的 session-owned 进程保持已有生命周期，取消 JS 等待不等于杀掉合法启动的 shell。
 
 全部终止使用两阶段屏障：worker 先将所有 cell 标记为停止并取消其执行 context，确认后父进程才关闭 callback 能力、取消并 join callback，再等待 worker 完全终止。IPC 请求 handler 并发运行，单靠发送顺序不足以建立该屏障；否则 callback 的取消错误可能先被视为普通失败，错误提交待丢弃的 store 写入。停止确认失败时关闭 worker transport，仍无条件 join 父进程 callback。
@@ -113,3 +115,5 @@ occupy 结束取消并 join 所有 cell 与父进程 callback，先于 hooks、t
 完整验证为 fresh WebUI typecheck/build 后的 `go test -tags embed -count=1 ./...`（含已安装的 Bun/Chromium 测试，约 53.5 秒），以及 runtime/loop/server/session race 检查、三个支持目标的无 CGO embed 构建和真实 `ki` worker 入口 smoke。此处耗时只是当前机器的观测，不是运行性能承诺。
 
 Settings 模式切换新增 7 个 Go 服务端用例（约 0.27 秒，race 约 2.7 秒）和 1 个独立浏览器用例（约 3 秒，含启动命令约 4.5 秒）。浏览器覆盖原生 select/触屏尺寸、保存失败与 reload，纯数据校验、并发部分更新和运行中快照留在便宜的 Go 测试中；既有工具开关测试保留。
+
+工具能力矩阵覆盖同一 Responses 协议下 OpenAI / DeepSeek 的不同声明，以及 Completions / Anthropic 的编辑器回退；新增 schema/Settings 断言使服务端聚焦测试约从 0.18 秒增至 0.34 秒，代价来自额外能力组合。协议包约从 0.007 秒增至 0.009 秒。真实二进制 worker smoke 复用 e2e 构建，执行约 20 毫秒；真实 DeepSeek 三协议 exec + 嵌套 read + 结果 continuation 约 4.51 秒，只在 `-tags live` 下运行。该 live 测试使用真正的 `ki serve`，不能让进程内 `cli.Main` 启动 worker：此时 `os.Executable()` 是测试二进制，其测试输出会污染 NDJSON。本次 fresh WebUI 后全量 embed 回归约 58.62 秒，相关协议/provider/server race 检查也通过。

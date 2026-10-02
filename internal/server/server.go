@@ -1781,6 +1781,7 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 			"maxTokens":          m.MaxTokens,
 			"input":              m.Input,
 			"applyPatchToolType": m.ApplyPatchToolType,
+			"execToolType":       m.ExecToolType,
 			"compaction":         m.Compaction,
 			"reasoning":          m.Reasoning,
 			"fastServiceTier":    m.FastServiceTier,
@@ -2661,7 +2662,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			return codeDispatcher.NotifyNested(notification.ParentCallID, notification.CellID, notification.Text)
 		},
 	}
-	codeSet := codetools.Set{GetSession: getCodeSession, Callbacks: callbacks, Nested: nestedTools, Deferred: deferredNames, Freeform: info.API == "responses"}
+	codeSet := codetools.Set{GetSession: getCodeSession, Callbacks: callbacks, Nested: nestedTools, Deferred: deferredNames, Freeform: info.SupportsFreeformExec()}
 	codeTools := codeSet.Build()
 	codeTools = builtin.FilterBuiltins(codeTools, tg.Tools)
 	executionTools = append(executionTools, codeTools...)

@@ -13,6 +13,9 @@ import (
 // retained as input items on the next turn.
 func ResponsesBody(req Request) map[string]any {
 	input := responsesInput(req.ResponsesWindow, req.Messages)
+	if adapted, err := adaptResponsesToolReplay(input, req.Tools); err == nil {
+		input = adapted
+	}
 	body := map[string]any{
 		"model":   req.Model,
 		"input":   input,
@@ -391,6 +394,9 @@ func (l *Client) CompactResponses(ctx context.Context, req ResponsesCompactReque
 }
 
 func (l *Client) streamResponses(ctx context.Context, req Request, emit func(AssistantDelta) error) (Message, error) {
+	if _, err := adaptResponsesToolReplay(responsesInput(req.ResponsesWindow, req.Messages), req.Tools); err != nil {
+		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, &nonRetryableError{err: err}
+	}
 	body := ResponsesBody(req)
 	if err := validateResponsesBody(body); err != nil {
 		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, &nonRetryableError{err: err}

@@ -16,7 +16,13 @@
 // applies it to routed, occupied and compaction requests. Extension providers
 // retain ownership of their transport liveness policy.
 // Models explicitly advertise independent compaction.standalone and
-// compaction.inline protocols; Responses alone implies neither. Live
+// compaction.inline protocols; Responses alone implies neither.
+// Tool capabilities are likewise independent: applyPatchToolType and
+// execToolType opt into their respective freeform tools only on Responses
+// for core models; private extension APIs own their advertised tool contract.
+// API selection alone never enables custom exec; compatible providers may
+// support only custom apply_patch. Other targets use JSON exec and write/edit.
+// Live
 // implements OpenAI standalone /responses/compact and inline
 // context_management. Extension providers may implement Codex V2 standalone.
 // Opaque checkpoints are scoped by endpoint, model, credential, and protocol.

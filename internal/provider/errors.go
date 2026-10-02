@@ -28,6 +28,7 @@ var (
 	errTextInputRequired         = errors.New("input must include text")
 	errInvalidThinkingLevel      = errors.New("invalid thinking level")
 	errInvalidApplyPatchToolType = errors.New("invalid applyPatchToolType")
+	errInvalidExecToolType       = errors.New("invalid execToolType")
 	errInvalidCompaction         = errors.New("invalid compaction capability")
 	errCostTierOrder             = errors.New("cost tiers must have increasing thresholds")
 	errNegativeCostRates         = errors.New("cost rates must not be negative")

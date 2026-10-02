@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ki/internal/session"
+	toolapi "ki/internal/tool"
 )
 
 // DeepSeek is the live provider. It serves all three wire protocols from one
@@ -43,6 +46,69 @@ func TestLivePing(t *testing.T) {
 			raw := readJSONL(t, sessionDir(t, home, id))
 			if !strings.Contains(raw, `"role":"assistant"`) {
 				t.Fatalf("jsonl:\n%s", raw)
+			}
+		})
+	}
+}
+
+// Publishing schemas is not enough: exercise JSON exec and its tool-result
+// continuation with every DeepSeek endpoint through the real server harness.
+func TestLiveCodeModeExec(t *testing.T) {
+	for _, ref := range []string{liveModel, liveModelResponses, liveModelAnthropic} {
+		t.Run(strings.ReplaceAll(ref, "/", "_"), func(t *testing.T) {
+			home, proj := isolateLive(t)
+			// runKI itself embeds cli.Main in e2e.test. Use a genuine server
+			// binary so os.Executable launches Ki's private worker entrypoint,
+			// not the Go test runner with its non-JSON stdout.
+			sf := startServeLive(t, home, proj)
+			t.Setenv("KI_SERVER_ADDR", sf.Addr)
+			const marker = "KI-LIVE-EXEC-MARKER-53"
+			path := filepath.Join(proj, "marker.txt")
+			if err := os.WriteFile(path, []byte(marker+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			quotedPath, err := json.Marshal(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			code := "const r = await tools.read({file_path: " + string(quotedPath) + "}); text(r);"
+			out, errOut, exit := runKI(t, "--cwd", proj, "--model", ref,
+				"Use the exec tool with this JavaScript code (not exec_command or a direct read): "+
+					code+"\nThen reply with only the marker found in its output.")
+			if exit != 0 {
+				t.Fatalf("exit %d\nstdout:\n%s\nstderr:\n%s", exit, out, errOut)
+			}
+			if !strings.Contains(out, marker) {
+				t.Fatalf("exec output marker missing:\n%s", out)
+			}
+			entries, err := session.AllEntries(sessionDir(t, home, mustSessionID(t, out, errOut)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := make(map[string]bool)
+			completed := false
+			var transcript []string
+			for _, entry := range entries {
+				m := entry.Message
+				if m == nil {
+					continue
+				}
+				transcript = append(transcript, m.Role+" "+m.ToolName+" "+m.ToolCallID+" "+m.Text())
+				for _, call := range m.ToolCalls() {
+					if toolapi.Equal(call.Name, "exec") {
+						if call.ToolType == "custom" || call.Arguments["code"] == nil {
+							t.Fatalf("DeepSeek must use JSON exec: %+v", call)
+						}
+						calls[call.ID] = true
+					}
+				}
+				if m.Role == "toolResult" && calls[m.ToolCallID] && !m.IsError && strings.Contains(m.Text(), marker) {
+					completed = true
+				}
+			}
+			if !completed {
+				t.Fatalf("missing successful exec call/output pair containing the fixture marker; calls: %v\ntranscript:\n%s\nstdout:\n%s\nstderr:\n%s",
+					calls, strings.Join(transcript, "\n"), out, errOut)
 			}
 		})
 	}

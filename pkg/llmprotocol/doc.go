@@ -4,7 +4,12 @@
 // does classify deterministic client and wire-protocol failures so a caller's
 // retry policy can avoid replaying an identical invalid request, and it adapts
 // replayed history to each protocol's tool-call model (Responses custom calls
-// are downgraded for Completions and Anthropic). Responses supports both
+// are downgraded for Completions and Anthropic). Historical custom calls use
+// the current function declaration's single string field when available,
+// otherwise the conventional input envelope; Responses also adapts custom
+// history when that tool is now a function, including its paired output.
+// Unsupported custom declarations fail locally on the other two protocols.
+// Responses supports both
 // standalone /responses/compact and server-side context management; canonical
 // compaction windows remain opaque ordered JSON items for lossless replay.
 // Client.IdleTimeout bounds blocked response-body reads, counting heartbeat

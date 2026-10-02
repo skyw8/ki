@@ -118,12 +118,32 @@ type Model struct {
 	MaxTokens          int                    `json:"maxTokens"`
 	Input              []string               `json:"input"`
 	ApplyPatchToolType string                 `json:"applyPatchToolType,omitempty"`
+	ExecToolType       string                 `json:"execToolType,omitempty"`
 	Compaction         CompactionCapabilities `json:"compaction,omitzero"`
 	Reasoning          bool                   `json:"reasoning"`
 	ThinkingLevelMap   map[string]*string     `json:"thinkingLevelMap,omitempty"`
 	FastServiceTier    string                 `json:"fastServiceTier,omitempty"`
 	Cost               *Cost                  `json:"cost"`
 	Compat             Compat                 `json:"compat,omitzero"`
+}
+
+// SupportsFreeformExec reports whether exec may use native raw-source input.
+func (m Model) SupportsFreeformExec() bool {
+	return m.supportsFreeformTool(m.ExecToolType)
+}
+
+// SupportsFreeformApplyPatch reports whether the native patch editor is usable.
+func (m Model) SupportsFreeformApplyPatch() bool {
+	return m.supportsFreeformTool(m.ApplyPatchToolType)
+}
+
+func (m Model) supportsFreeformTool(toolType string) bool {
+	// Responses compatibility alone does not imply arbitrary custom tools:
+	// DeepSeek accepts only custom apply_patch. The two capabilities stay
+	// independent, and changing to either JSON-only core API must fall back.
+	// Other API IDs belong to extensions, whose explicit declarations own
+	// their transport contract; do not infer support from a private API name.
+	return toolType == "freeform" && m.API != "completions" && m.API != "anthropic"
 }
 
 // Provider describes a connection plus its resolved models.
@@ -169,6 +189,7 @@ type ModelSeed struct {
 	MaxTokens          int                    `json:"maxTokens,omitzero"`
 	Input              []string               `json:"input,omitempty"`
 	ApplyPatchToolType string                 `json:"applyPatchToolType,omitempty"`
+	ExecToolType       string                 `json:"execToolType,omitempty"`
 	Compaction         CompactionCapabilities `json:"compaction,omitzero"`
 	Reasoning          *bool                  `json:"reasoning,omitempty"`
 	ThinkingLevelMap   map[string]*string     `json:"thinkingLevelMap,omitempty"`
@@ -298,7 +319,7 @@ func resolveSeed(providerID, providerAPI, providerBase string, seed ModelSeed, b
 	if seed.Reasoning != nil {
 		reasoning = *seed.Reasoning
 	}
-	return Model{Provider: providerID, ID: seed.ID, Name: name, API: api, BaseURL: base, Enabled: enabled, Builtin: builtin, Customized: !builtin, ContextWindow: window, MaxTokens: maxTokens, Input: input, ApplyPatchToolType: seed.ApplyPatchToolType, Compaction: seed.Compaction, Reasoning: reasoning, ThinkingLevelMap: cloneThinkingMap(seed.ThinkingLevelMap), FastServiceTier: seed.FastServiceTier, Cost: cloneCost(seed.Cost), Compat: seed.Compat}
+	return Model{Provider: providerID, ID: seed.ID, Name: name, API: api, BaseURL: base, Enabled: enabled, Builtin: builtin, Customized: !builtin, ContextWindow: window, MaxTokens: maxTokens, Input: input, ApplyPatchToolType: seed.ApplyPatchToolType, ExecToolType: seed.ExecToolType, Compaction: seed.Compaction, Reasoning: reasoning, ThinkingLevelMap: cloneThinkingMap(seed.ThinkingLevelMap), FastServiceTier: seed.FastServiceTier, Cost: cloneCost(seed.Cost), Compat: seed.Compat}
 }
 
 func cloneThinkingMap(in map[string]*string) map[string]*string {

@@ -165,7 +165,16 @@ func TestMCPServerSchemaExposureMatrix(t *testing.T) {
 			if strings.Contains(exec.Description, "mcp_query_unique") || strings.Contains(exec.Description, "document_id_unique") {
 				t.Fatal("deferred MCP schemas leaked into initial exec description")
 			}
-			if (exec.Type == "custom") != (api == "responses") {
+			sess, err := srv.open(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, model, ok := srv.registry.FindModel(sess.Config.Provider, sess.Config.Model)
+			_ = sess.Close()
+			if !ok {
+				t.Fatal("session model missing")
+			}
+			if (exec.Type == "custom") != model.SupportsFreeformExec() {
 				t.Fatalf("wrong exec protocol shape: api=%s spec=%+v", api, exec)
 			}
 		})

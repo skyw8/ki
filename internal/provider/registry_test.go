@@ -113,7 +113,7 @@ func TestRegistryRegistersExtensionProviderAndOpaqueCredential(t *testing.T) {
 	spec := ExtensionProviderSpec{
 		ID: "codex", Name: "Codex", API: "openai-codex-responses", BaseURL: "https://chatgpt.com/backend-api",
 		DefaultModel: "codex-mini", Auth: AuthSpec{Type: AuthOAuth, Name: "Codex", Subscription: true},
-		Models: []ModelSeed{{ID: "codex-mini", ContextWindow: 128000, MaxTokens: 16384, Input: []string{"text"}, ApplyPatchToolType: "freeform"}},
+		Models: []ModelSeed{{ID: "codex-mini", ContextWindow: 128000, MaxTokens: 16384, Input: []string{"text"}, ApplyPatchToolType: "freeform", ExecToolType: "freeform"}},
 	}
 	if err := r.ReplaceExtensionProviders([]ExtensionProviderSpec{spec}); err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestRegistryRegistersExtensionProviderAndOpaqueCredential(t *testing.T) {
 	if found == nil || found.Runtime != "extension" || found.Auth.Type != AuthOAuth || found.Credential.Configured {
 		t.Fatalf("extension view=%+v", found)
 	}
-	if len(found.Models) != 1 || found.Models[0].ApplyPatchToolType != "freeform" {
+	if len(found.Models) != 1 || found.Models[0].ApplyPatchToolType != "freeform" || found.Models[0].ExecToolType != "freeform" {
 		t.Fatalf("extension model capability=%+v", found.Models)
 	}
 	if _, _, _, err := r.Resolve(spec.ID, "codex-mini"); !strings.Contains(err.Error(), "configured credential") {

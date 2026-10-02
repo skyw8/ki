@@ -1,6 +1,7 @@
 // Package builtin assembles model-aware built-in tool families. Set.Build
-// selects rich/text read and one editor family: GPT Responses uses freeform
-// apply_patch, while other models use write/edit. File, shell and agent adapters
+// selects rich/text read and one editor family: Responses models explicitly
+// opting into freeform apply_patch use it; other targets use write/edit.
+// File, shell and agent adapters
 // depend on tool contracts and their own runtime services, never on the loop.
 //
 // Set.Catalog includes every model-selectable editor so a hidden editor retains
