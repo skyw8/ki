@@ -60,7 +60,8 @@ type invalidateFrame struct {
 // readyFrame flushes the response so the client's fetch resolves. Receiving it
 // means "the subscription is live", which is the client's cue to refetch.
 type readyFrame struct {
-	Type string `json:"type"`
+	Type     string `json:"type"`
+	ServerID string `json:"serverId"`
 }
 
 // globalEvent is the payload of a sideband frame: the loop event plus the
@@ -209,7 +210,7 @@ func (s *Server) pushEvents(w http.ResponseWriter, r *http.Request) {
 	// Subscribe first, then flush: the client fetches only after this frame
 	// arrives, so a change that happened while it was disconnected cannot be
 	// missed between the fetch and the subscription.
-	if !write("ready", readyFrame{Type: "ready"}) {
+	if !write("ready", readyFrame{Type: "ready", ServerID: s.serverID}) {
 		return
 	}
 	ticker := time.NewTicker(ssePingInterval)

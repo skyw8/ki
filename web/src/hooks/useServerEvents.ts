@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { Client } from '../api/client'
+import { ApiError, type Client } from '../api/client'
 import type { PushEvent } from '../api/types'
 import { reconnectDelay } from '../lib/stream-batch'
 
@@ -25,9 +25,11 @@ import { reconnectDelay } from '../lib/stream-batch'
  *     heartbeats; transport activity cannot prove the UI received every event;
  *   - `pagehide`/`pageshow`: close subscriptions while cached, then recover.
  */
-export function useServerEvents(api: Client, onEvent: (ev: PushEvent) => void): void {
+export function useServerEvents(api: Client, onEvent: (ev: PushEvent) => void, onUnauthorized?: () => void): void {
   const handler = useRef(onEvent)
+  const unauthorized = useRef(onUnauthorized)
   useEffect(() => { handler.current = onEvent }, [onEvent])
+  useEffect(() => { unauthorized.current = onUnauthorized }, [onUnauthorized])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -64,7 +66,13 @@ export function useServerEvents(api: Client, onEvent: (ev: PushEvent) => void): 
           for await (const ev of api.serverEvents(conn.signal)) {
             handler.current(ev)
           }
-        } catch {
+        } catch (error) {
+          // A replaced/restarted backend has new browser credentials. Retrying
+          // the old stream forever cannot recover; re-enter the auth boundary.
+          if (!ac.signal.aborted && error instanceof ApiError && [401, 403, 421].includes(error.status) && unauthorized.current) {
+            unauthorized.current()
+            return
+          }
           // Unmount or a forced reconnect; anything else is a dropped stream,
           // retried below.
         }

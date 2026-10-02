@@ -199,15 +199,23 @@ export type LoopEvent = {
 	options?: string[]
 }
 
+export type AuthStatus = {
+  authenticated: boolean
+  serverId: string
+  csrfCookieName: string
+}
+
 /**
- * One frame of `GET /v1/events`. The server pushes two kinds:
- *   - `{ type: 'ready' }` — the subscription is live; refetch everything, since
- *     the stream replays nothing.
+ * One frame of `GET /v1/events`:
+ *   - `{ type: 'ready', serverId }` — the subscription is live; refetch
+ *     everything, since the stream replays nothing. A changed identity
+ *     requires reauthentication before using state from this instance.
  *   - `{ type: 'invalidate', scope }` — that slice of state changed; refetch it
  *     through the ordinary REST endpoint.
  *   - a session sideband loop event carrying the `sessionId` it belongs to.
  */
 export type PushEvent = LoopEvent & {
+  serverId?: string
 	sessionId?: string
 	scope?: string
 }

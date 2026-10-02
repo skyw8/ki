@@ -66,6 +66,9 @@ type Options struct {
 type Server struct {
 	cfg                    config.Config
 	token                  string
+	serverID               string
+	browserSessionCookie   string
+	browserCSRFCookie      string
 	streamer               loop.Streamer
 	registry               *provider.Registry
 	providerExtensions     *extension.ProviderManager
@@ -125,9 +128,7 @@ type Server struct {
 }
 
 const (
-	browserSessionCookie = "ki_session"
-	browserCSRFCookie    = "ki_csrf"
-	browserSessionTTL    = 12 * time.Hour
+	browserSessionTTL = 12 * time.Hour
 )
 
 type authSource uint8
@@ -433,6 +434,10 @@ func New(opt Options) (*Server, error) {
 	if err := config.ValidateMCPServers(opt.Config.MCPServers); err != nil {
 		return nil, err
 	}
+	serverID, err := idgen.NewV7()
+	if err != nil {
+		return nil, fmt.Errorf("generate server identity: %w", err)
+	}
 	shells := process.DiscoverShellRuntime()
 	tok := opt.Token
 	if tok == "" {
@@ -480,8 +485,13 @@ func New(opt Options) (*Server, error) {
 		return nil, fmt.Errorf("create tool output store: %w", err)
 	}
 	srv := &Server{
-		cfg:                    opt.Config,
-		token:                  tok,
+		cfg:      opt.Config,
+		token:    tok,
+		serverID: serverID,
+		// Cookies ignore ports, so fixed names let separate localhost
+		// port-forwards overwrite each other's authentication and CSRF pair.
+		browserSessionCookie:   "ki_session_" + serverID,
+		browserCSRFCookie:      "ki_csrf_" + serverID,
 		streamer:               st,
 		registry:               reg,
 		providerExtensions:     providerExtensions,
@@ -845,6 +855,19 @@ func (s *Server) Handler() http.Handler {
 	// shares one compression path.
 	return gzipHandler(recoverHTTP(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1" || strings.HasPrefix(r.URL.Path, "/v1/") {
+			// Cookies ignore ports and a browser may already be logged in to
+			// both targets of a reused forward. Bind requests to the instance
+			// selected by auth/status so a late mutation cannot reach the wrong
+			// backend, even when its cookies or bearer token are valid there.
+			// Status remains unbound so clients can discover and rebind; CLI
+			// callers that omit the instance header retain bearer-only access.
+			if r.URL.Path != "/v1/auth/status" && r.URL.Path != "/v1/health" {
+				if bound := r.Header.Get("X-Ki-Server-ID"); bound != "" && bound != s.serverID {
+					w.Header().Set("Cache-Control", "no-store")
+					http.Error(w, "server instance changed", http.StatusMisdirectedRequest)
+					return
+				}
+			}
 			api.ServeHTTP(w, r)
 			return
 		}
@@ -889,7 +912,7 @@ func (s *Server) authenticate(r *http.Request) authSource {
 	if got := bearerToken(r); got != "" && sameSecret(got, s.token) {
 		return authBearer
 	}
-	if cookie, err := r.Cookie(browserSessionCookie); err == nil && s.validBrowserSession(cookie.Value) {
+	if cookie, err := r.Cookie(s.browserSessionCookie); err == nil && s.validBrowserSession(cookie.Value) {
 		return authBrowserSession
 	}
 	return authNone
@@ -941,11 +964,11 @@ func (s *Server) validBrowserSession(value string) bool {
 // while an abandoned session still ages out. Rewriting on every request would
 // be needless churn, hence the half-TTL threshold.
 func (s *Server) renewBrowserSession(w http.ResponseWriter, r *http.Request) {
-	sessionCookie, err := r.Cookie(browserSessionCookie)
+	sessionCookie, err := r.Cookie(s.browserSessionCookie)
 	if err != nil {
 		return
 	}
-	csrfCookie, err := r.Cookie(browserCSRFCookie)
+	csrfCookie, err := r.Cookie(s.browserCSRFCookie)
 	if err != nil {
 		// The pair is written together at login; without the CSRF half a
 		// rewrite would break unsafe methods, so let this session expire.
@@ -960,16 +983,16 @@ func (s *Server) renewBrowserSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s.browserSessions[sessionCookie.Value] = now.Add(browserSessionTTL)
 	s.mu.Unlock()
-	setBrowserCookies(w, sessionCookie.Value, csrfCookie.Value, now, requestIsSecure(r))
+	s.setBrowserCookies(w, sessionCookie.Value, csrfCookie.Value, now, requestIsSecure(r))
 }
 
 // setBrowserCookies writes the session/CSRF cookie pair with one shared expiry,
 // so login and renewal cannot drift apart.
-func setBrowserCookies(w http.ResponseWriter, sessionID, csrf string, now time.Time, secure bool) {
+func (s *Server) setBrowserCookies(w http.ResponseWriter, sessionID, csrf string, now time.Time, secure bool) {
 	expires := now.Add(browserSessionTTL)
 	maxAge := int(browserSessionTTL / time.Second)
 	http.SetCookie(w, &http.Cookie{
-		Name:     browserSessionCookie,
+		Name:     s.browserSessionCookie,
 		Value:    sessionID,
 		Path:     "/",
 		Expires:  expires,
@@ -979,7 +1002,7 @@ func setBrowserCookies(w http.ResponseWriter, sessionID, csrf string, now time.T
 		SameSite: http.SameSiteStrictMode,
 	})
 	http.SetCookie(w, &http.Cookie{
-		Name:     browserCSRFCookie,
+		Name:     s.browserCSRFCookie,
 		Value:    csrf,
 		Path:     "/",
 		Expires:  expires,
@@ -990,7 +1013,7 @@ func setBrowserCookies(w http.ResponseWriter, sessionID, csrf string, now time.T
 }
 
 func (s *Server) validCSRF(r *http.Request) bool {
-	cookie, err := r.Cookie(browserCSRFCookie)
+	cookie, err := r.Cookie(s.browserCSRFCookie)
 	if err != nil {
 		return false
 	}
@@ -999,7 +1022,11 @@ func (s *Server) validCSRF(r *http.Request) bool {
 
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": s.authenticate(r) != authNone})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated":  s.authenticate(r) != authNone,
+		"serverId":       s.serverID,
+		"csrfCookieName": s.browserCSRFCookie,
+	})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -1028,25 +1055,25 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	s.browserSessions[sessionID] = now.Add(browserSessionTTL)
 	s.mu.Unlock()
 
-	setBrowserCookies(w, sessionID, csrf, now, requestIsSecure(r))
+	s.setBrowserCookies(w, sessionID, csrf, now, requestIsSecure(r))
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(browserSessionCookie); err == nil {
+	if cookie, err := r.Cookie(s.browserSessionCookie); err == nil {
 		s.mu.Lock()
 		delete(s.browserSessions, cookie.Value)
 		s.mu.Unlock()
 	}
 	secure := requestIsSecure(r)
-	for _, name := range []string{browserSessionCookie, browserCSRFCookie} {
+	for _, name := range []string{s.browserSessionCookie, s.browserCSRFCookie} {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
-			HttpOnly: name == browserSessionCookie,
+			HttpOnly: name == s.browserSessionCookie,
 			Secure:   secure,
 			SameSite: http.SameSiteStrictMode,
 		})
@@ -3912,6 +3939,12 @@ func resolveThinking(model provider.Model, requested string) (string, error) {
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	// A port-forward can point this origin at a different server instance.
+	// Dynamic JSON must not survive that switch, but explicit route cache
+	// policies (including conditional ETag reads) remain authoritative.
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	w.WriteHeader(code)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Error("write JSON response", "err", err)

@@ -2222,7 +2222,7 @@ func TestUIServesPWAAssets(t *testing.T) {
 }
 
 func TestBrowserLoginSessionAndCSRF(t *testing.T) {
-	_, hs := testServer(t)
+	srv, hs := testServer(t)
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -2310,7 +2310,7 @@ func TestBrowserLoginSessionAndCSRF(t *testing.T) {
 	}
 	csrf := ""
 	for _, cookie := range jar.Cookies(serverURL) {
-		if cookie.Name == browserCSRFCookie {
+		if cookie.Name == srv.browserCSRFCookie {
 			csrf = cookie.Value
 		}
 	}
@@ -2363,7 +2363,7 @@ func TestBrowserSessionRenewsWhileInUse(t *testing.T) {
 	}
 	sessionID := ""
 	for _, c := range jar.Cookies(serverURL) {
-		if c.Name == browserSessionCookie {
+		if c.Name == srv.browserSessionCookie {
 			sessionID = c.Value
 		}
 	}
@@ -2394,7 +2394,7 @@ func TestBrowserSessionRenewsWhileInUse(t *testing.T) {
 	}
 	renewed := false
 	for _, c := range res.Cookies() {
-		if c.Name == browserSessionCookie && c.MaxAge > 0 {
+		if c.Name == srv.browserSessionCookie && c.MaxAge > 0 {
 			renewed = true
 		}
 	}

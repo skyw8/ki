@@ -43,6 +43,10 @@ async function waitHealth(url: string): Promise<void> {
 async function seedBrowserSession(baseURL: string, home: string): Promise<void> {
   const server = JSON.parse(readFileSync(join(home, 'server.json'), 'utf8')) as { token?: string }
   if (!server.token) throw new Error('server.json has no token')
+  const auth = await fetch(`${baseURL}/v1/auth/status`, { cache: 'no-store' })
+  if (!auth.ok) throw new Error(`browser auth status failed: ${auth.status}`)
+  const { serverId, csrfCookieName } = await auth.json() as { serverId: string; csrfCookieName: string }
+  const sessionCookieName = `ki_session_${serverId}`
   const res = await fetch(`${baseURL}/v1/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -66,12 +70,12 @@ async function seedBrowserSession(baseURL: string, home: string): Promise<void> 
       domain: host,
       path: '/',
       expires,
-      httpOnly: name === 'ki_session',
+      httpOnly: name === sessionCookieName,
       secure: false,
       sameSite: 'Strict' as const,
     }]
   })
-  if (!cookies.some(cookie => cookie.name === 'ki_session') || !cookies.some(cookie => cookie.name === 'ki_csrf')) {
+  if (!cookies.some(cookie => cookie.name === sessionCookieName) || !cookies.some(cookie => cookie.name === csrfCookieName)) {
     throw new Error('browser session login did not set both cookies')
   }
   writeFileSync(storageStatePath, JSON.stringify({ cookies, origins: [] }))

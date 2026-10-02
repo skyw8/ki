@@ -7,7 +7,7 @@ export function AuthLoading() {
   return <main className="auth-screen"><div className="auth-card"><div className="auth-mark">ki</div><p>{t('auth.checking')}</p></div></main>
 }
 
-export function LoginScreen({ api, onLogin }: { api: Client; onLogin: () => void }) {
+export function LoginScreen({ api, onLogin, onServerChange }: { api: Client; onLogin: () => void; onServerChange: () => void }) {
   const { t } = useI18n()
   const [token, setToken] = useState('')
   const [error, setError] = useState('')
@@ -23,7 +23,10 @@ export function LoginScreen({ api, onLogin }: { api: Client; onLogin: () => void
       setToken('')
       onLogin()
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) setError(t('auth.invalid'))
+      // A forward may be retargeted while the login form is open too. Do not
+      // retry credentials against an identity discovered from the old backend.
+      if (err instanceof ApiError && err.status === 421) onServerChange()
+      else if (err instanceof ApiError && err.status === 401) setError(t('auth.invalid'))
       else setError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)

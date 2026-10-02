@@ -1,4 +1,4 @@
-import type { FsListing, LoopEvent, Meta, ProviderAuthStatus, ProviderCatalog, PushEvent, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
+import type { AuthStatus, FsListing, LoopEvent, Meta, ProviderAuthStatus, ProviderCatalog, PushEvent, SearchHit, SessionDetail, SessionInfo, WorkspaceInfo } from './types'
 import { messageDecoder } from './messageStream'
 import { readSSE } from './sse'
 
@@ -11,14 +11,20 @@ export class ApiError extends Error {
 }
 
 export class Client {
+  serverId = ''
+  private csrfCookieName = ''
   constructor(readonly token = '') {}
 
   private headers(json = false, method = 'GET'): HeadersInit {
     const h: Record<string, string> = {}
+    if (this.serverId) h['X-Ki-Server-ID'] = this.serverId
     if (this.token) h.Authorization = `Bearer ${this.token}`
     if (json) h['Content-Type'] = 'application/json'
-    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())) {
-      const csrf = document.cookie.split('; ').find(item => item.startsWith('ki_csrf='))?.slice('ki_csrf='.length)
+    if (this.csrfCookieName && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())) {
+      // Cookies ignore ports: read only this server's advertised cookie, never
+      // a fixed name or another localhost port-forward's matching prefix.
+      const prefix = `${this.csrfCookieName}=`
+      const csrf = document.cookie.split(';').map(item => item.trim()).find(item => item.startsWith(prefix))?.slice(prefix.length)
       if (csrf) h['X-Ki-CSRF'] = decodeURIComponent(csrf)
     }
     return h
@@ -28,6 +34,7 @@ export class Client {
     const method = (init?.method ?? 'GET').toString().toUpperCase()
     const res = await fetch(path, { // same-origin relative; works behind a port-forward
       ...init,
+      cache: 'no-store',
       credentials: 'same-origin',
       headers: { ...this.headers(init?.body != null, method), ...(init?.headers ?? {}) },
     })
@@ -39,15 +46,18 @@ export class Client {
     return res.json() as Promise<T>
   }
 
-  async authStatus(): Promise<{ authenticated: boolean }> {
-    return this.json('/v1/auth/status')
+  async authStatus(): Promise<AuthStatus> {
+    const status = await this.json<AuthStatus>('/v1/auth/status')
+    this.serverId = status.serverId
+    this.csrfCookieName = status.csrfCookieName
+    return status
   }
 
   async login(token: string): Promise<void> {
     const res = await fetch('/v1/auth/login', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.headers(true, 'POST'),
       body: JSON.stringify({ token }),
     })
     if (!res.ok) {
@@ -378,6 +388,7 @@ export class Client {
 
   private async *sse<T extends { type: string }>(path: string, signal?: AbortSignal, extra?: Record<string, string>): AsyncGenerator<T> {
     const res = await fetch(path, {
+      cache: 'no-store',
       credentials: 'same-origin',
       headers: { ...this.headers(false, 'GET') as Record<string, string>, ...extra },
       signal,

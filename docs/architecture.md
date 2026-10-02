@@ -46,7 +46,7 @@ Code Mode 固定为 mixed：在普通工具经开关、extension Prepare 和 act
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| GET | `/v1/auth/status` | 返回当前 browser session 是否已登录，不返回 token |
+| GET | `/v1/auth/status` | 返回是否已登录、进程级随机 `serverId` 与 `csrfCookieName`，不返回 token |
 | POST | `/v1/auth/login` | 校验 body 中的 token，换发 HttpOnly browser session 和 CSRF cookie |
 | POST | `/v1/auth/logout` | 清除当前 browser session 和 CSRF cookie |
 | GET | `/v1/models` | registry 的可选模型扁平视图（含 `thinkingLevels` / `defaultThinking`） |

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { permissionFrom, shouldNotify } from '../src/lib/notifications.ts'
 import { reconcileFinishedRuns } from '../src/lib/completion-catchup.ts'
 import { serverToken } from './global-setup.ts'
-import { newSession } from './session.ts'
+import { focusedSessionReader, newSession } from './session.ts'
 
 // Every test is self-contained, so the parallel runner may split this file into
 // one isolated process per test.
@@ -312,17 +312,12 @@ test('a focused tab suppresses notifications in other ki tabs', async ({ page, c
   await setBackground(other, true)
   await setBackground(page, false)
   await newSession(page)
-  await expect.poll(async () => page.evaluate(() => {
-    const raw = localStorage.getItem('ki-focused-session')
-    return raw ? (JSON.parse(raw) as { session?: string }).session ?? null : null
-  })).toBeTruthy()
-  const sessionId = await page.evaluate(() => (JSON.parse(localStorage.getItem('ki-focused-session')!) as { session: string }).session)
+  const readFocusedSession = await focusedSessionReader(page)
+  await expect.poll(() => readFocusedSession()).toBeTruthy()
+  const sessionId = await readFocusedSession()
 
   // The other tab reads the same shared marker.
-  await expect.poll(async () => other.evaluate(() => {
-    const raw = localStorage.getItem('ki-focused-session')
-    return raw ? (JSON.parse(raw) as { session?: string }).session ?? null : null
-  })).toBe(sessionId)
+  await expect.poll(() => readFocusedSession(other)).toBe(sessionId)
 
   await other.close()
 })

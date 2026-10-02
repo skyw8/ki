@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import { randomUUID } from 'node:crypto'
 import { openStream } from './stream-fixture'
+import { focusedSessionReader } from './session.ts'
 
 // Each browser test passed alone with its own server and home. Keep that
 // isolation when splitting this file so independent scenarios overlap safely.
@@ -147,7 +148,9 @@ test('stopping generation retains already visible text and its mounted root', as
   await expect(page.getByTestId('cancel-row')).toHaveText(/Stopped by user|已由用户停止/)
   await expect(page.getByTestId('assistant-message')).not.toContainText('context canceled')
   expect(await page.evaluate(() => (window as unknown as { stoppedRoot: Element }).stoppedRoot.isConnected)).toBe(true)
-  const sessionId = await page.evaluate(() => (JSON.parse(localStorage.getItem('ki-focused-session')!) as { session: string }).session)
+  const readFocusedSession = await focusedSessionReader(page)
+  const sessionId = await readFocusedSession()
+  expect(sessionId).toBeTruthy()
   await expect.poll(() => page.evaluate(async id => {
     const detail = await fetch(`/v1/sessions/${id}`).then(response => response.json()) as { running?: boolean }
     return detail.running ?? false

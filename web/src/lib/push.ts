@@ -39,6 +39,12 @@ async function registerWorker(): Promise<ServiceWorkerRegistration | null> {
   }
 }
 
+function sameApplicationServerKey(previous: ArrayBuffer | null, current: Uint8Array<ArrayBuffer>): boolean {
+  if (!previous) return false
+  const bytes = new Uint8Array(previous)
+  return bytes.length === current.length && bytes.every((value, index) => value === current[index])
+}
+
 /**
  * Ensure this browser holds a push subscription the server knows about.
  * Returns true only when the server can reach this browser with the page
@@ -56,11 +62,20 @@ export async function ensurePushSubscription(api: Client): Promise<boolean> {
     // subscribe() requires an *active* registration; register() resolves as
     // soon as the script is fetched, which may still be installing.
     await navigator.serviceWorker.ready
-    const subscription = await registration.pushManager.getSubscription()
-      ?? await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(config.publicKey),
-      })
+    const applicationServerKey = urlBase64ToUint8Array(config.publicKey)
+    let subscription = await registration.pushManager.getSubscription()
+    // A reused localhost port can now point at another server/KI_HOME. Push
+    // subscriptions belong to the origin, but only their original VAPID key
+    // can send to them; re-POSTing one with an old key cannot heal delivery.
+    if (subscription && !sameApplicationServerKey(subscription.options.applicationServerKey, applicationServerKey)) {
+      if (!await subscription.unsubscribe()) return false
+      await api.deletePushSubscription(subscription.endpoint).catch(() => {})
+      subscription = null
+    }
+    subscription ??= await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey,
+    })
     const json = subscription.toJSON()
     if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return false
     await api.putPushSubscription({ endpoint: json.endpoint, keys: { p256dh: json.keys.p256dh, auth: json.keys.auth } })

@@ -6,7 +6,7 @@ import { applyFollowTail } from '../src/lib/follow-tail.ts'
 import { nodeTypes, nodeValues, parseMarkdown } from './markdown-parse.ts'
 import { serverToken, statePath } from './global-setup.ts'
 import { MIN_TOUCH_SIZE } from './touch-target.ts'
-import { newSession } from './session.ts'
+import { focusedSessionReader, newSession } from './session.ts'
 import { contextCategory, expectColoredContextSegments, expectContextItemCount, expectConversationPosition, openContextCategory, openContextItem, openSystemSources } from './context.ts'
 import type { Entry } from '../src/api/types'
 
@@ -985,7 +985,8 @@ test('edit branches in place with attachments and fork opens a new session', asy
   })).toBe(before.count + 1)
   // The fork initially has identical text. Wait for navigation, not just its
   // server-side creation, before exercising regeneration in the new session.
-  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('ki-focused-session') ?? '{}').session)).toBe(child.id)
+  const readFocusedSession = await focusedSessionReader(page)
+  await expect.poll(() => readFocusedSession()).toBe(child.id)
   await expect(editedBubble).toContainText(edited)
 
   await page.getByTestId('regen-msg').click()
@@ -1030,7 +1031,7 @@ test('fork works while running and regenerate reports the busy block', async ({ 
   }
 })
 
-test('new session keeps the current model and thinking effort', async ({ page }) => {
+test('new session keeps tab choices while reload uses the server default', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
   const chip = page.getByTestId('open-model')
@@ -1069,6 +1070,10 @@ test('new session keeps the current model and thinking effort', async ({ page })
 
   await page.reload()
   await expect(page.getByTestId('open-model')).toHaveText('gpt-5.6-terra')
+  await expect(page.getByTestId('thinking-select')).toHaveText('medium')
+  // Cold startup has no origin-scoped thinking preference, but the existing
+  // session's saved selection must still survive reload unchanged.
+  await page.getByTestId('session-row').first().locator('.session-main').click()
   await expect(page.getByTestId('thinking-select')).toHaveText('high')
 })
 

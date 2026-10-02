@@ -15,6 +15,14 @@
 // every case has passed standalone; ordered scenarios stay together.
 // Escape dismisses a drawer's open child menu before the drawer, including
 // the interval before the menu's initial focus frame has run.
+// New sessions send only model selections validated against the current
+// catalog. Missing or not-yet-loaded selections defer to the server default;
+// browser preferences never force an unavailable extension provider.
+// Model defaults come from the server; workspace expansion is page-local.
+// Auth and push ready identify a server instance, not merely a browser origin.
+// Backend changes remount runtime state and recheck authentication; CSRF cookie
+// names and expiring cross-tab focus markers are scoped to that instance.
+// Web Push subscriptions are reused only when their VAPID key still matches.
 //
 // TranscriptStore commits replica facts outside React scheduling. SessionSync
 // owns reader/recovery/ACK authority; TranscriptRequests owns cancellable

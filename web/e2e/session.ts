@@ -1,5 +1,19 @@
 import { expect, type Page } from '@playwright/test'
 
+// Resolve the server namespace once, not on every polling iteration. The
+// returned reader may also inspect another tab sharing this browser context.
+export async function focusedSessionReader(page: Page): Promise<(target?: Page) => Promise<string | null>> {
+  const response = await page.request.get('/v1/auth/status')
+  expect(response.ok()).toBe(true)
+  const { serverId } = await response.json() as { serverId: string }
+  expect(serverId).toBeTruthy()
+  const key = `ki-focused-session:${serverId}`
+  return (target = page) => target.evaluate(key => {
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as { session?: string }).session ?? null : null
+  }, key)
+}
+
 // newSession clicks the sidebar's new-session button and waits for the created
 // session to become current.
 //

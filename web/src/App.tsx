@@ -17,7 +17,7 @@ import { PromptSettings } from './features/settings/PromptSettings'
 import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
-import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, keepComposer, loadHistory, loadLastComposerModel, pickComposerModel, saveLastComposerModel, sessionCreateBody, sessionStats, userRequests } from './lib/model'
+import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, keepComposer, loadHistory, reconcileComposerModel, sessionCreateBody, sessionStats, userRequests } from './lib/model'
 import { clampCompactKeep, loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
 import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, PushEvent, SearchHit, SessionInfo, WorkspaceInfo } from './api/types'
 import { ContextView } from './features/context/ContextView'
@@ -41,7 +41,6 @@ type Tab = 'conversation' | 'context' | 'config'
 type SettingsPage = 'providers' | 'skills' | 'tools' | 'mcp' | 'extensions' | 'prompt' | 'message' | 'notifications' | 'appearance'
 const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'mcp', 'extensions', 'prompt', 'message', 'notifications', 'appearance']
 const SHOW = 5
-const EXPAND_KEY = 'ki-ws-expanded'
 const COMPACT_LAYOUT_QUERY = '(max-width: 900px)'
 
 function useCompactLayout(): boolean {
@@ -54,11 +53,6 @@ function useCompactLayout(): boolean {
     return () => query.removeEventListener('change', update)
   }, [])
   return compact
-}
-
-function loadExpanded(): Record<string, boolean> {
-  try { return JSON.parse(localStorage.getItem(EXPAND_KEY) || '{}') as Record<string, boolean> }
-  catch { return {} }
 }
 
 function extensionRuntimeTone(item: CatalogExtension): string {
@@ -260,25 +254,37 @@ function Modal({ title, onClose, children, testid, wide, className, initialFocus
 }
 
 export function App() {
-  const api = useMemo(() => new Client(), [])
+  const [generation, setGeneration] = useState(0)
+  const api = useMemo(() => new Client(), [generation])
   const [auth, setAuth] = useState<'checking' | 'required' | 'authenticated'>('checking')
 
   useEffect(() => {
+    let active = true
     void api.authStatus()
-      .then(status => setAuth(status.authenticated ? 'authenticated' : 'required'))
-      .catch(() => setAuth('required'))
+      .then(status => { if (active) setAuth(status.authenticated ? 'authenticated' : 'required') })
+      .catch(() => { if (active) setAuth('required') })
+    return () => { active = false }
   }, [api])
+  const onServerChange = useCallback(() => {
+    // A forwarded origin can now point at a different daemon. Discard every
+    // resource identity and cached validator before authenticating the new one.
+    setAuth('checking')
+    setGeneration(n => n + 1)
+  }, [])
 
   if (auth === 'checking') return <AuthLoading />
-  if (auth === 'required') return <LoginScreen api={api} onLogin={() => setAuth('authenticated')} />
-  return <ImagePreviewProvider><WorkspaceApp api={api} /></ImagePreviewProvider>
+  if (auth === 'required') return <LoginScreen api={api} onLogin={() => setAuth('authenticated')} onServerChange={onServerChange} />
+  return <ImagePreviewProvider key={generation}><WorkspaceApp api={api} onServerChange={onServerChange} /></ImagePreviewProvider>
 }
 
-function WorkspaceApp({ api }: { api: Client }) {
+function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: () => void }) {
   const { t, lang, setLang } = useI18n()
   const untitled = t('session.untitled')
   const compactLayout = useCompactLayout()
-  const [dark, setDark] = useState(() => localStorage.getItem('ki-theme') === 'dark')
+  const [dark, setDark] = useState(() => {
+    try { return localStorage.getItem('ki-theme') === 'dark' }
+    catch { return false }
+  })
   const [collapsed, setCollapsed] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
   const [settled, setSettled] = useState(false)
@@ -299,7 +305,10 @@ function WorkspaceApp({ api }: { api: Client }) {
   // its ancestor chain for this App lifetime, and a reload starts fresh.
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({})
   const [selectedWs, setSelectedWs] = useState<string | null>(null)
-  const [expanded, setExpanded] = useState<Record<string, boolean>>(loadExpanded)
+  const selectedWsRef = useRef(selectedWs)
+  selectedWsRef.current = selectedWs
+  // Workspace IDs belong to this server, not to the browser origin.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [showAll, setShowAll] = useState<Record<string, boolean>>({})
   const { store, view, setView } = useTranscriptStore()
   const [draft, setDraft] = useState<Draft>({ text: '', attachments: [] })
@@ -496,7 +505,9 @@ function WorkspaceApp({ api }: { api: Client }) {
   useEffect(() => {
     document.body.dataset.theme = dark ? 'dark' : 'light'
     document.body.toggleAttribute('data-ds-dark-theme', dark)
-    localStorage.setItem('ki-theme', dark ? 'dark' : 'light')
+    // Storage may be denied in private/embedded browser contexts; theme
+    // application must remain usable even when its preference cannot persist.
+    try { localStorage.setItem('ki-theme', dark ? 'dark' : 'light') } catch { /* browser preference only */ }
   }, [dark])
 
   // The message view is a per-browser display preference (like the theme), so
@@ -505,8 +516,6 @@ function WorkspaceApp({ api }: { api: Client }) {
     setMessageView({ mode: next.mode, keep: clampCompactKeep(next.keep) })
     saveMessageView(next)
   }, [])
-
-  useEffect(() => { localStorage.setItem(EXPAND_KEY, JSON.stringify(expanded)) }, [expanded])
 
   // Run-completion notifications are decoupled from the selected session's view
   // stream (which is torn down on switch): the single push stream delivers
@@ -662,33 +671,19 @@ function WorkspaceApp({ api }: { api: Client }) {
     return () => document.removeEventListener('mousedown', onDown)
   }, [searchOpen, filter])
 
-  useEffect(() => {
-    void Promise.all([api.models(), api.meta()]).then(([list, meta]) => {
-      setModels(list)
-		setDefaultModel(meta.provider && meta.model ? `${meta.provider}/${meta.model}` : '')
-      setView(v => {
-        if (v.provider && v.model) {
-          const found = list.find(m => m.provider === v.provider && m.id === v.model)
-          if (found) {
-            const thinkingEffort = clampThinkingEffort(v.thinkingEffort, found)
-            saveLastComposerModel({ provider: v.provider, model: v.model, thinkingEffort })
-            return thinkingEffort === v.thinkingEffort ? v : { ...v, thinkingEffort }
-          }
-          if (v.nodes.length > 0) return v
-        }
-        const picked = pickComposerModel(list, loadLastComposerModel(), meta)
-        saveLastComposerModel(picked)
-        if (v.provider === picked.provider && v.model === picked.model && v.thinkingEffort === picked.thinkingEffort) return v
-        return { ...v, provider: picked.provider, model: picked.model, thinkingEffort: picked.thinkingEffort }
-      })
-    }).catch(() => setModels([]))
-  }, [api])
+  const modelRefresh = useRef(0)
 	const refreshModels = useCallback(() => {
+    const generation = ++modelRefresh.current
 		void Promise.all([api.models(), api.meta()]).then(([list, meta]) => {
+      if (generation !== modelRefresh.current) return
 			setModels(list)
 			setDefaultModel(meta.provider && meta.model ? `${meta.provider}/${meta.model}` : '')
-		}).catch(() => setModels([]))
-	}, [api])
+      setView(v => reconcileComposerModel(v, !!currentIdRef.current || !!store.sessionId, list, meta))
+		}).catch(() => {
+      if (generation === modelRefresh.current) setModels([])
+    })
+	}, [api, store, setView])
+  useEffect(() => { refreshModels() }, [refreshModels])
 	const refreshExtensions = useCallback(async (silent = false) => {
 		try {
 			setGlobalExtensions(await api.extensions())
@@ -721,6 +716,8 @@ function WorkspaceApp({ api }: { api: Client }) {
         try {
           while (gate.dirty) {
             gate.dirty = false
+            const requestedId = currentIdRef.current
+            const requestedWs = selectedWsRef.current
             const [ss, ws] = await Promise.all([api.list(listEtag.current ?? undefined), api.workspaces()])
             if (!ss.notModified) {
               listEtag.current = ss.etag
@@ -731,6 +728,21 @@ function WorkspaceApp({ api }: { api: Client }) {
               for (const session of ss.sessions) {
                 if (session.running) runningKnown.current.add(session.id)
               }
+              // A reconnect can reveal deletion without an invalidate event.
+              // Do not close a different session opened after this read began.
+              if (requestedId && currentIdRef.current === requestedId && !ss.sessions.some(s => s.id === requestedId)) {
+                openAbort.current?.abort()
+                currentIdRef.current = null
+                syncRef.current?.select(null)
+                store.reset(null, keepComposer(store.current))
+                setCurrentId(null)
+                setOpeningId(null)
+                setEdit(null)
+              }
+            }
+            if (requestedWs && selectedWsRef.current === requestedWs && !ws.some(w => w.id === requestedWs)) {
+              selectedWsRef.current = null
+              setSelectedWs(null)
             }
             const nextWs = JSON.stringify(ws)
             if (nextWs !== wsKey.current) {
@@ -752,7 +764,7 @@ function WorkspaceApp({ api }: { api: Client }) {
         }
       })()
     })
-  }, [api])
+  }, [api, store])
 
 	useEffect(() => { void refreshList() }, [refreshList])
 
@@ -764,13 +776,13 @@ function WorkspaceApp({ api }: { api: Client }) {
     }
   }, [currentId, store])
 
-  useTabFocus(currentId)
+  useTabFocus(api.serverId, currentId)
   const handleRunComplete = useCallback((id: string) => {
     const session = sessionsRef.current.find(s => s.id === id)
     void notifyCompletion({
       enabled: notifyEnabled,
       sessionId: id,
-      focusedSession: focusedSession(),
+      focusedSession: focusedSession(api.serverId),
       // Subagent sessions nest under a parent whose run owns the notification;
       // announcing each child would be noise the user cannot act on.
       subagent: session?.forkMode === 'tree',
@@ -871,12 +883,20 @@ function WorkspaceApp({ api }: { api: Client }) {
   // the open session and background completions. Why one handler: see
   // useServerEvents and docs/events.md — one stream replaces the previous
   // one-notification-stream-per-running-session.
+  const serverChanged = useRef(false)
   const onServerEvent = useCallback((ev: PushEvent) => {
+    if (serverChanged.current) return
     if (ev.type === 'ready') {
+      if (ev.serverId !== api.serverId) {
+        serverChanged.current = true
+        onServerChange()
+        return
+      }
       // A fresh subscription replays nothing, so refetching everything is what
       // makes a reconnect catch up on whatever it missed.
       void refreshList().then(catchUpMissedCompletions)
       void refreshExtensions(true)
+      refreshModels()
       void recoverOpenTranscript()
       return
     }
@@ -906,6 +926,7 @@ function WorkspaceApp({ api }: { api: Client }) {
           return
         case 'extensions':
           void refreshExtensions(true)
+          refreshModels()
           void refreshOpenRuntime()
           return
         case 'providers':
@@ -973,8 +994,8 @@ function WorkspaceApp({ api }: { api: Client }) {
         })
         return
     }
-  }, [api, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, recoverOpenTranscript, t, catchUpMissedCompletions, store, sync])
-  useServerEvents(api, onServerEvent)
+  }, [api, onServerChange, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, recoverOpenTranscript, t, catchUpMissedCompletions, store, sync])
+  useServerEvents(api, onServerEvent, onServerChange)
 
   // Safety net for a push stream that outlived a laptop sleep or a proxy idle
   // timeout without raising a read error yet: resync when the tab is shown
@@ -986,6 +1007,7 @@ function WorkspaceApp({ api }: { api: Client }) {
       if (document.visibilityState !== 'visible') return
       void refreshList().then(catchUpMissedCompletions)
       void refreshExtensions(true)
+      refreshModels()
       void sync.resume()
     }
     const onPageShow = (event: PageTransitionEvent) => { if (event.persisted) onVisibility() }
@@ -1006,7 +1028,7 @@ function WorkspaceApp({ api }: { api: Client }) {
       window.removeEventListener('online', onVisibility)
       window.removeEventListener('pagehide', onPageHide)
     }
-  }, [catchUpMissedCompletions, refreshExtensions, refreshList, sync])
+  }, [catchUpMissedCompletions, refreshExtensions, refreshList, refreshModels, sync])
 
   const openSession = useCallback(async (id: string): Promise<boolean> => {
     // Reopening the selected session changes its epoch, not its ID. Close
@@ -1033,7 +1055,6 @@ function WorkspaceApp({ api }: { api: Client }) {
       const next = loadHistory(detail)
       setView(next)
       sync.select(id)
-      saveLastComposerModel({ provider: next.provider, model: next.model, thinkingEffort: next.thinkingEffort })
       setSelectedWs(detail.workspaceId ?? null)
       if (detail.workspaceId) setExpanded(e => ({ ...e, [detail.workspaceId!]: true }))
       if (detail.running) void listen(id, detail.leafId)
@@ -1165,7 +1186,6 @@ function WorkspaceApp({ api }: { api: Client }) {
     } finally {
       if (openAbort.current === ac) setOpeningId(null)
     }
-    saveLastComposerModel({ provider: s.provider, model: s.model, thinkingEffort: s.thinkingEffort ?? '' })
     setTab('conversation')
 	setEdit(null)
     if (s.workspaceId) {
@@ -1365,12 +1385,11 @@ function WorkspaceApp({ api }: { api: Client }) {
 
   const switchModel = useCallback(async (spec: string) => {
     const next = models.find(m => m.spec === spec)
-    const [p, m] = spec.includes('/') ? spec.split('/') : [view.provider, spec]
-    const provider = next?.provider || p || view.provider
-    const model = next?.id || m || view.model
+    if (!next) return
+    const provider = next.provider
+    const model = next.id
     const thinkingEffort = clampThinkingEffort(view.thinkingEffort, next)
     setView(v => ({ ...v, provider, model, thinkingEffort }))
-    saveLastComposerModel({ provider, model, thinkingEffort })
     setModelOpen(false)
     if (!currentId) return
     const ticket = store.capture('body')
@@ -1378,7 +1397,6 @@ function WorkspaceApp({ api }: { api: Client }) {
       const out = await api.patch(currentId, { model: spec, thinkingEffort })
       if (!store.isCurrent(ticket)) return
 	  setView(v => ({ ...v, liveRevision: v.liveRevision + 1, model: out.model ?? v.model, provider: out.provider ?? v.provider, thinkingEffort: out.thinkingEffort ?? thinkingEffort }))
-      saveLastComposerModel({ provider: out.provider ?? provider, model: out.model ?? model, thinkingEffort: out.thinkingEffort ?? thinkingEffort })
     } catch (e) {
       toast.from(e)
     }
@@ -1387,14 +1405,12 @@ function WorkspaceApp({ api }: { api: Client }) {
   const selectedModel = useMemo(() => models.find(m => m.provider === view.provider && m.id === view.model), [models, view.model, view.provider])
 	const switchThinking = useCallback(async (thinkingEffort: string) => {
 		setView(v => ({ ...v, thinkingEffort }))
-		if (view.provider && view.model) saveLastComposerModel({ provider: view.provider, model: view.model, thinkingEffort })
 		if (!currentId) return
 		const ticket = store.capture('body')
 		try {
 			const out = await api.patch(currentId, { thinkingEffort })
 			if (!store.isCurrent(ticket)) return
 			setView(v => ({ ...v, liveRevision: v.liveRevision + 1, thinkingEffort: out.thinkingEffort ?? thinkingEffort }))
-			if (view.provider && view.model) saveLastComposerModel({ provider: view.provider, model: view.model, thinkingEffort: out.thinkingEffort ?? thinkingEffort })
 		} catch (e) { toast.from(e) }
 	}, [api, currentId, view.model, view.provider, store, setView])
 

@@ -32,6 +32,11 @@ server 侧（都要鉴权；写操作走 CSRF，与其它浏览器请求一致�
   （404/410）后 server 剪掉该行、客户端下次访问自愈的路径。
 - `DELETE /v1/push/subscriptions?endpoint=...`。
 
+浏览器订阅属于 origin，而不是端口转发目标。客户端重用订阅前逐字节比较
+`subscription.options.applicationServerKey` 与当前服务端公钥；不一致或缺失时先
+unsubscribe、尽力删除旧 endpoint，再按当前密钥重建。退订或重建失败不提交旧订阅，
+也不报告订阅成功，避免换服务器或密钥轮换后表面已订阅却无法收到推送。
+
 endpoint 必须是 `https://`，或 `http://127.0.0.1` / `http://localhost`（仅测试与纯本机
 场景）；`p256dh` 必须解出 65 字节 P-256 点、`auth` 16 字节，否则 400。
 

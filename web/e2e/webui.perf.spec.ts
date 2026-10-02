@@ -25,7 +25,9 @@ async function api<T>(page: Page, path: string, init?: { method?: string; body?:
     const headers: Record<string, string> = {}
     const method = init?.method ?? 'GET'
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
-      const csrf = document.cookie.split('; ').find(item => item.startsWith('ki_csrf='))?.slice('ki_csrf='.length)
+      const { csrfCookieName } = await (await fetch('/v1/auth/status', { cache: 'no-store' })).json() as { csrfCookieName: string }
+      const prefix = `${csrfCookieName}=`
+      const csrf = document.cookie.split(';').map(item => item.trim()).find(item => item.startsWith(prefix))?.slice(prefix.length)
       if (csrf) headers['X-Ki-CSRF'] = decodeURIComponent(csrf)
       headers['Content-Type'] = 'application/json'
     }

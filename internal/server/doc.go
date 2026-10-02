@@ -27,8 +27,14 @@
 // and the auth status/login endpoints. Browser login exchanges the bearer
 // secret for an HttpOnly session cookie and a separate CSRF token; the token
 // is never embedded in the SPA HTML. Unsafe browser requests must echo the
-// CSRF token in X-Ki-CSRF. The CLI continues to use Bearer auth. A browser
-// session expires after 12h idle and, once more than half that window has
+// CSRF token in X-Ki-CSRF. The CLI continues to use Bearer auth. Browser
+// cookie pairs are named per random server instance because cookies ignore ports;
+// auth status advertises serverId and csrfCookieName. Push ready carries the
+// same identity so forwarded origins cannot retain another backend's UI state.
+// Bound X-Ki-Server-ID requests reject a different instance with 421 before
+// side effects; auth status/health remain discovery endpoints.
+// Dynamic JSON defaults to no-store; explicit per-route cache contracts remain.
+// A browser session expires after 12h idle and, once more than half that window has
 // elapsed, an authenticated request rewrites both cookies to extend it, so a
 // tab left in use stays signed in while an abandoned one still ages out.
 // Provider CRUD manages the offline registry and credentials; provider

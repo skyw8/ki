@@ -6,37 +6,9 @@ import { bodyKind, bodyRank, coveredTurns, projectedBodies } from './transcriptC
  import { compactionOperations, isCompactionLifecycle } from './compactionLifecycle'
 export { isHumanPrompt, reconcileUserNodes } from './transcriptIdentity'
 
-const LAST_MODEL_KEY = 'ki-last-model'
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
 export type ComposerModel = { provider: string; model: string; thinkingEffort: string }
-
-export function loadLastComposerModel(): ComposerModel | null {
-  try {
-    const raw = localStorage.getItem(LAST_MODEL_KEY)
-    if (!raw) return null
-    const v = JSON.parse(raw) as Partial<ComposerModel>
-    if (!v.provider || !v.model) return null
-    return { provider: v.provider, model: v.model, thinkingEffort: v.thinkingEffort ?? '' }
-  } catch {
-    return null
-  }
-}
-
-export function saveLastComposerModel(cfg: ComposerModel): void {
-  if (!cfg.provider || !cfg.model) return
-  try {
-    localStorage.setItem(LAST_MODEL_KEY, JSON.stringify(cfg))
-  } catch {
-    // Private mode / quota should not block composer updates.
-  }
-}
-
-export function initialView(): ViewState {
-  const last = loadLastComposerModel()
-  if (!last) return emptyView()
-  return { ...emptyView(), provider: last.provider, model: last.model, thinkingEffort: last.thinkingEffort }
-}
 
 export function keepComposer(view: ViewState): ViewState {
   return { ...emptyView(), provider: view.provider, model: view.model, thinkingEffort: view.thinkingEffort }
@@ -80,17 +52,27 @@ export function pickComposerModel(
     ?? models[0]
   const effortHint = preferred?.thinkingEffort || fallback?.thinkingEffort || ''
   if (!chosen) {
-    return {
-      provider: preferred?.provider || fallback?.provider || '',
-      model: preferred?.model || fallback?.model || '',
-      thinkingEffort: effortHint,
-    }
+    return { provider: '', model: '', thinkingEffort: '' }
   }
   return {
     provider: chosen.provider,
     model: chosen.id,
     thinkingEffort: clampThinkingEffort(effortHint, chosen),
   }
+}
+
+export function reconcileComposerModel(
+  view: ViewState,
+  hasSession: boolean,
+  models: ModelInfo[],
+  fallback: Pick<Meta, 'provider' | 'model' | 'thinkingEffort'>,
+): ViewState {
+  // Even an empty persisted session owns its model. Catalog refreshes may
+  // reconcile only a new composer, never silently rewrite session settings.
+  if (hasSession) return view
+  const picked = pickComposerModel(models, view, fallback)
+  if (view.provider === picked.provider && view.model === picked.model && view.thinkingEffort === picked.thinkingEffort) return view
+  return { ...view, ...picked }
 }
 
 export function sessionCreateBody(
@@ -101,9 +83,12 @@ export function sessionCreateBody(
   const body: { workspaceId?: string; model?: string; thinkingEffort?: string } = {}
   if (workspaceId) body.workspaceId = workspaceId
   const found = models.find(m => m.provider === composer.provider && m.id === composer.model)
-  const spec = found?.spec || (composer.provider && composer.model ? `${composer.provider}/${composer.model}` : composer.model)
-  if (spec) body.model = spec
-  const effort = found ? clampThinkingEffort(composer.thinkingEffort, found) : composer.thinkingEffort
+  // Browser preferences can outlive a server or its extensions, and creation
+  // can race catalog loading. Only send a validated selection; otherwise let
+  // the server choose its credential-aware default, without stale effort.
+  if (!found) return body
+  body.model = found.spec || `${found.provider}/${found.id}`
+  const effort = clampThinkingEffort(composer.thinkingEffort, found)
   if (effort) body.thinkingEffort = effort
   return body
 }

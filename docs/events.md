@@ -107,6 +107,11 @@ sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` �
 「这个 session 结束了」。因此 push 可以丢帧而不影响正确性：状态永远由 REST
 重取得出，`ready`/重连后的一次全量刷新即可追平。
 
+WebUI push 的 `ready` 带进程级随机 `serverId`，与现有
+`GET /v1/auth/status` 的标识一致。同实例重连还须重取 models/meta，不能只重取
+会话与扩展；不同实例（包括同 origin 的转发换后端）先撤销旧页面状态、重新认证。
+订阅在新实例返回 401/403/421 时也走认证恢复，而不是无限重试旧 Cookie。
+
 `message_end`、`request_header`、`context_usage`、压缩事件、工具进度、patch 预览
 和部分 sideband 会按各自的 server 路径持久化。并非每个 SSE
 事件都会推进 conversation leaf。
