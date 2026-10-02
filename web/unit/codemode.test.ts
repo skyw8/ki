@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import type { ChatNode, Entry, LoopEvent, Message, ViewState } from '../src/api/types'
+import type { ChatNode, Entry, IndexEntry, LoopEvent, Message, ViewState } from '../src/api/types'
 import { applyEvent, applyIndex, applyTail, hydrateEntries, loadHistory } from '../src/lib/model'
 
 const text = (value: string) => [{ type: 'text', text: value }]
@@ -87,6 +87,27 @@ test('nested Code Mode audit has identical live and reloaded cards without provi
   expect(reloaded.records.find(r => r.id === 'nested-1')).toMatchObject({
     parentCallId: 'exec-1', cellId: 'cell-1', requestId: 'r1', step: 1, output: 'module ki', outputBlocks: text('module ki'),
   })
+})
+
+test('metadata audits deduplicate start/update/end and exclude sibling branches without fabricating bodies', () => {
+  const nested = { toolCallId: 'nested-1', name: 'read', parentCallId: 'exec-1', cellId: 'cell-1', requestedToolName: 'Read' }
+  const index: IndexEntry[] = [
+    { type: 'message', id: 'u', role: 'user' },
+    { type: 'tool_execution_start', id: 'start', parentId: 'u', ...nested },
+    { type: 'tool_execution_update', id: 'update', parentId: 'start', ...nested },
+    { type: 'tool_execution_end', id: 'end', parentId: 'update', ...nested, isError: true, durationMs: 9 },
+    { type: 'tool_execution_end', id: 'sibling', parentId: 'u', ...nested, toolCallId: 'sibling-call', name: 'write' },
+    { type: 'message', id: 'tail', parentId: 'end', role: 'assistant' },
+  ]
+  let state = loadHistory({ id: 's', leafId: 'tail', entries: [{ type: 'message', id: 'tail', parentId: 'end', message: { role: 'assistant', content: text('done') } }] })
+  state = applyIndex(state, { id: 's', leafId: 'tail', index })
+  const records = state.records.filter(record => record.kind === 'tool')
+  expect(records).toHaveLength(1)
+  expect(records[0]).toMatchObject({ id: 'nested-1', name: 'read', parentCallId: 'exec-1', cellId: 'cell-1', requestedToolName: 'Read', error: true, durationMs: 9 })
+  expect(records[0]?.input).toBeUndefined()
+  expect(records[0]?.outputBlocks).toBeUndefined()
+  expect(records[0]?.output).toBe('')
+  expect(state.nodes.filter(node => node.kind === 'tool')).toHaveLength(0)
 })
 
 test('yielded callbacks stay running across a later request and keep their original request ownership', () => {

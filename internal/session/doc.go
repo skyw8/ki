@@ -27,7 +27,9 @@
 // request_header entries store system/tools (including custom type/grammar)
 // plus provider, model, thinking, catalog, and pricing snapshots. WebUI GET projects a slimmed active-leaf tail
 // (unchanged prompts omitted, large bodies truncated) and, on request, a
-// body-less index of the whole tree. Views have a 512 KiB serialized slim-entry
+// body-less index of the whole tree. The index preserves tool-result call
+// identity, name and failure status, so statistics on an active branch do not
+// require historical result bodies. Views have a 512 KiB serialized slim-entry
 // page budget as well as a count limit. Compact views instead page whole human
 // turns: visible input/reply bodies plus a fold summary and canonical range
 // metadata. Runtime-authored user-role messages (including subagent traffic)
@@ -131,4 +133,8 @@
 // stays the source of truth and misses fall back to Find. On-disk layout: docs/session.md.
 // Code Mode nested tool audits are non-message details entries. Their parent
 // call and cell identity never create an unmatched provider toolResult.
+// The body-free scanner and index retain scalar audit call/parent/cell/name
+// and outcome metadata, never nested arguments or results. Historical audits
+// can therefore reconcile one invocation across start/update/end on a selected
+// branch without fetching hidden bodies.
 package session

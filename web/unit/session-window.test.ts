@@ -115,6 +115,20 @@ test('the lazy index renumbers turns without adding nodes', () => {
   expect(view.allEntries).toHaveLength(24)
 })
 
+test('metadata-only tool results retain their name and error on the active branch', () => {
+  const index: IndexEntry[] = [
+    { type: 'message', id: 'u1', role: 'user' },
+    { type: 'message', id: 'failed', parentId: 'u1', role: 'toolResult', toolCallId: 'read-call', name: 'read', isError: true, durationMs: 7 },
+    { type: 'message', id: 'sibling', parentId: 'u1', role: 'toolResult', toolCallId: 'sibling-call', name: 'exec' },
+    { type: 'message', id: 'latest', parentId: 'failed', role: 'assistant' },
+  ]
+  let view = loadHistory({ id: 's', leafId: 'latest', entries: [{ type: 'message', id: 'latest', parentId: 'failed', message: { role: 'assistant', content: [] } }] })
+  view = applyIndex(view, { id: 's', leafId: 'latest', index })
+  expect(view.nodes.some(node => node.id === 'read-call')).toBe(false)
+  expect(view.records.filter(record => record.kind === 'tool')).toHaveLength(1)
+  expect(view.records.find(record => record.id === 'read-call')).toMatchObject({ name: 'read', error: true, durationMs: 7 })
+})
+
 test('paging older history prepends nodes and keeps the offset exact', () => {
   const { all, entries, index, leafId } = fixture()
   let view = loadHistory({ id: 's', cwd: '/tmp', provider: 'p', model: 'm', title: 't', leafId, entries, index })

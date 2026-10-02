@@ -99,6 +99,10 @@ export type IndexEntry = {
   name?: string
   preview?: string
   toolCallId?: string
+  isError?: boolean
+  parentCallId?: string
+  cellId?: string
+  requestedToolName?: string
   truncated?: boolean
   usage?: Usage | null
   durationMs?: number

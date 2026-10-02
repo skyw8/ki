@@ -226,6 +226,34 @@ func decodeMetadataCached(raw []byte, estimates contextEstimateCache) (Entry, In
 		e.ContextEstimate = &ContextEstimate{System: contextNumber(contextTokens(e.System)), Tools: contextNumber(tools)}
 	}
 	e = withContextEstimate(e)
+	switch e.Type {
+	case "tool_execution_start", "tool_execution_update", "tool_execution_end":
+		// Decode only scalar audit facts: keeping nested results here would
+		// silently turn the body-free transcript cache into a body cache.
+		var audit struct {
+			ToolCallID        string `json:"toolCallId"`
+			ParentCallID      string `json:"parentCallId"`
+			CellID            string `json:"cellId"`
+			ToolName          string `json:"toolName"`
+			RequestedToolName string `json:"requestedToolName"`
+			Timestamp         int64  `json:"timestamp"`
+			DurationMs        int64  `json:"durationMs"`
+			IsError           bool   `json:"isError"`
+		}
+		if len(wire.Details) > 0 {
+			if err := json.Unmarshal(wire.Details, &audit); err != nil {
+				return Entry{}, IndexEntry{}, err
+			}
+			if audit.ToolCallID != "" && audit.ParentCallID != "" {
+				e.Details = map[string]any{
+					"toolCallId": audit.ToolCallID, "parentCallId": audit.ParentCallID,
+					"cellId": audit.CellID, "toolName": audit.ToolName,
+					"requestedToolName": audit.RequestedToolName, "timestamp": audit.Timestamp,
+					"durationMs": audit.DurationMs, "isError": audit.IsError,
+				}
+			}
+		}
+	}
 	ix := indexOf(e)
 	ix.Preview = strings.Clone(ix.Preview)
 	// Why clone bounded previews: a substring would otherwise pin the entire

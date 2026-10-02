@@ -441,10 +441,23 @@ function entryToIndex(e: Entry): IndexEntry {
     row.ttftMs = e.message.ttftMs
     row.stopReason = e.message.stopReason
     row.toolCallId = e.message.toolCallId
+    row.isError = e.message.isError
     row.name = e.message.toolName
     row.preview = previewOf(messageText(e.message) || messageThinking(e.message))
   } else if (e.type === 'compaction') {
     row.preview = previewOf(e.summary ?? '')
+  }
+  if (e.details && typeof e.details === 'object') {
+    const audit = { ...e.details as LoopEvent, type: e.type }
+    if (isNestedToolEvent(audit)) {
+      row.toolCallId = audit.toolCallId
+      row.name = audit.toolName
+      row.parentCallId = audit.parentCallId
+      row.cellId = audit.cellId
+      row.requestedToolName = audit.requestedToolName
+      row.durationMs = audit.durationMs
+      row.isError = audit.isError
+    }
   }
   return row
 }
@@ -811,11 +824,25 @@ function indexToEntry(ix: IndexEntry): Entry {
       ttftMs: ix.ttftMs,
       stopReason: ix.stopReason,
       toolCallId: ix.toolCallId,
+      isError: ix.isError,
       toolName: ix.name,
       content: [{ type: 'text', text: ix.preview || '' }],
     }
   }
   if (ix.type === 'compaction') entry.summary = ix.preview
+  if (ix.parentCallId && ix.toolCallId) {
+    // A bounded audit projection is enough to reconcile one durable subtool
+    // across start/update/end, without inventing its unloaded args or output.
+    entry.details = {
+      toolCallId: ix.toolCallId,
+      toolName: ix.name,
+      parentCallId: ix.parentCallId,
+      cellId: ix.cellId,
+      requestedToolName: ix.requestedToolName,
+      durationMs: ix.durationMs,
+      isError: ix.isError,
+    }
+  }
   return entry
 }
 

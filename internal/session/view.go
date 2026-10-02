@@ -31,24 +31,28 @@ const indexPreviewLen = 160
 
 // IndexEntry is a body-less row used for branches, stats, and the trajectory table.
 type IndexEntry struct {
-	Type            string           `json:"type"`
-	ID              string           `json:"id"`
-	ParentID        string           `json:"parentId,omitempty"`
-	Timestamp       string           `json:"timestamp,omitempty"`
-	Role            string           `json:"role,omitempty"`
-	Name            string           `json:"name,omitempty"`
-	Preview         string           `json:"preview,omitempty"`
-	ToolCallID      string           `json:"toolCallId,omitempty"`
-	Truncated       bool             `json:"truncated,omitzero"`
-	Usage           *types.Usage     `json:"usage,omitempty"`
-	DurationMs      int64            `json:"durationMs"` // not omitempty: a fast tool reports a real 0ms
-	TTFTMs          int64            `json:"ttftMs,omitzero"`
-	Origin          string           `json:"origin,omitempty"`
-	Sideband        bool             `json:"sideband,omitzero"`
-	TokensBefore    int              `json:"tokensBefore,omitzero"`
-	StopReason      string           `json:"stopReason,omitempty"`
-	RemoteContext   bool             `json:"remoteContext,omitempty"`
-	ContextEstimate *ContextEstimate `json:"contextEstimate,omitempty"`
+	Type              string           `json:"type"`
+	ID                string           `json:"id"`
+	ParentID          string           `json:"parentId,omitempty"`
+	Timestamp         string           `json:"timestamp,omitempty"`
+	Role              string           `json:"role,omitempty"`
+	Name              string           `json:"name,omitempty"`
+	Preview           string           `json:"preview,omitempty"`
+	ToolCallID        string           `json:"toolCallId,omitempty"`
+	IsError           bool             `json:"isError,omitzero"`
+	ParentCallID      string           `json:"parentCallId,omitempty"`
+	CellID            string           `json:"cellId,omitempty"`
+	RequestedToolName string           `json:"requestedToolName,omitempty"`
+	Truncated         bool             `json:"truncated,omitzero"`
+	Usage             *types.Usage     `json:"usage,omitempty"`
+	DurationMs        int64            `json:"durationMs"` // not omitempty: a fast tool reports a real 0ms
+	TTFTMs            int64            `json:"ttftMs,omitzero"`
+	Origin            string           `json:"origin,omitempty"`
+	Sideband          bool             `json:"sideband,omitzero"`
+	TokensBefore      int              `json:"tokensBefore,omitzero"`
+	StopReason        string           `json:"stopReason,omitempty"`
+	RemoteContext     bool             `json:"remoteContext,omitempty"`
+	ContextEstimate   *ContextEstimate `json:"contextEstimate,omitempty"`
 }
 
 // View is the WebUI projection of one session: a full-tree index plus a slimmed leaf tail.
@@ -449,6 +453,9 @@ func indexOf(e Entry) IndexEntry {
 		ix.TTFTMs = e.Message.TTFTMs
 		ix.StopReason = e.Message.StopReason
 		ix.ToolCallID = e.Message.ToolCallID
+		// Tool outcomes must survive body paging; a preview cannot establish
+		// whether an older call failed.
+		ix.IsError = e.Message.IsError
 		ix.Name = e.Message.ToolName
 		text := e.Message.Text()
 		if text == "" {
@@ -486,6 +493,26 @@ func indexOf(e Entry) IndexEntry {
 			ix.Preview = "Provider remote compaction"
 		} else {
 			ix.Preview = previewOf(e.Summary)
+		}
+	}
+	if audit, ok := codeModeToolAudit(e); ok {
+		// Only scalar audit identity/outcome belongs in the index. Arguments
+		// and result bodies stay behind exact-body hydration.
+		ix.ToolCallID, _ = audit["toolCallId"].(string)
+		ix.Name, _ = audit["toolName"].(string)
+		ix.ParentCallID, _ = audit["parentCallId"].(string)
+		ix.CellID, _ = audit["cellId"].(string)
+		ix.RequestedToolName, _ = audit["requestedToolName"].(string)
+		ix.IsError, _ = audit["isError"].(bool)
+		switch value := audit["durationMs"].(type) {
+		case int:
+			ix.DurationMs = int64(value)
+		case int64:
+			ix.DurationMs = value
+		case float64:
+			ix.DurationMs = int64(value)
+		case json.Number:
+			ix.DurationMs, _ = value.Int64()
 		}
 	}
 	return ix

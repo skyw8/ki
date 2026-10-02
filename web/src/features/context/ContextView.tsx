@@ -11,6 +11,7 @@ import {
 import './context.css'
 import { trendRows } from './trend'
 import { CATEGORY_COLORS } from './palette'
+import { buildToolActivity } from './tool-activity'
 
 export type ContextViewProps = {
   view: ViewState
@@ -71,6 +72,9 @@ const copy = {
     sourceAppendOperator: 'Operator APPEND (global / project)', sourceExtension: 'Extension instructions',
     sourceSkills: 'Skills directory', sourceProject: 'AGENTS / CLAUDE project instructions',
     sourceEnvironment: 'Runtime environment', sourceUnknown: 'Unattributed System content',
+    toolActivity: 'Tool activity', toolActivityScope: 'Current branch · ranked by call count',
+    toolFailures: 'Failed', toolOther: 'Other calls', emptyTools: 'No tool calls recorded yet.',
+    moreTools: 'Show more tools', toolPartial: 'Available history only; the ranking will update when history loads.',
   },
   zh: {
     title: '会话上下文', stats: '会话统计', current: '当前上下文', trend: '上下文趋势',
@@ -119,6 +123,9 @@ const copy = {
     sourceAppendOperator: 'Operator APPEND（全局 / 项目）', sourceExtension: '扩展指令',
     sourceSkills: 'Skills 目录', sourceProject: 'AGENTS / CLAUDE 项目指令',
     sourceEnvironment: '运行环境', sourceUnknown: '无法归属的 System 内容',
+    toolActivity: '工具调用排行', toolActivityScope: '当前分支 · 按调用次数排序',
+    toolFailures: '失败', toolOther: '其他调用', emptyTools: '尚未记录工具调用。',
+    moreTools: '显示更多工具', toolPartial: '目前仅统计可用历史，历史加载后排行会更新。',
   },
 } as const
 
@@ -312,6 +319,57 @@ function CurrentContext({ view, groups, totalTokens, t }: {
         </details>
       )}
       <p className="context-caption">{t.nextHint}</p>
+    </Card>
+  )
+}
+
+function ToolActivity({ view, t }: { view: ViewState; t: Copy }) {
+  const rows = useMemo(() => buildToolActivity(view.records), [view.records])
+  const [limit, setLimit] = useState(8)
+  const total = rows.reduce((sum, row) => sum + row.calls, 0)
+  const failures = rows.reduce((sum, row) => sum + row.failures, 0)
+  const maximum = rows[0]?.calls ?? 1
+  return (
+    <Card title={t.toolActivity} testId="context-tool-activity" className="context-tool-card"
+      extra={<div className="context-tool-totals"><span>{t.tools} <strong>{total.toLocaleString()}</strong></span>
+        <span className={failures ? 'has-failures' : ''}>{t.toolFailures} <strong>{failures.toLocaleString()}</strong></span></div>}>
+      {rows.length === 0 ? <p className="context-empty">{t.emptyTools}</p> : (
+        <ol className="context-tool-ranking">
+          {rows.slice(0, limit).map((row, index) => (
+            <li key={row.name} data-testid="context-tool-row" data-tool-name={row.name}>
+              <span className="context-tool-rank" aria-hidden>{index + 1}</span>
+              <div className="context-tool-detail">
+                <div className="context-tool-heading">
+                  <span className="context-tool-name">{row.name}</span>
+                  <div className="context-tool-counts">
+                    {row.failures > 0 && <span className="context-tool-failures">{t.toolFailures} {row.failures.toLocaleString()}</span>}
+                    <strong>{row.calls.toLocaleString()}</strong>
+                  </div>
+                </div>
+                <div className="context-tool-track" role="img"
+                  aria-label={`${row.name}: ${t.tools} ${row.calls}, ${t.toolFailures} ${row.failures}`}>
+                  <span className="context-tool-bar" style={{ width: `${row.calls / maximum * 100}%` }}>
+                    {row.failures > 0 && <i className="context-tool-bar-failed" data-testid="context-tool-failed"
+                      style={{ width: `${row.failures / row.calls * 100}%` }} />}
+                    {row.calls > row.failures && <i className="context-tool-bar-other"
+                      style={{ width: `${(row.calls - row.failures) / row.calls * 100}%` }} />}
+                  </span>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+      {rows.length > limit && <button type="button" className="context-button context-tool-more"
+        onClick={() => setLimit(value => value + 20)}>{t.moreTools} · +{Math.min(20, rows.length - limit)}</button>}
+      <div className="context-tool-footer">
+        <span>{t.toolActivityScope}</span>
+        {rows.length > 0 && <div className="context-tool-key" aria-hidden>
+          <span><i className="context-tool-bar-failed" />{t.toolFailures}</span>
+          <span><i className="context-tool-bar-other" />{t.toolOther}</span>
+        </div>}
+      </div>
+      {!view.indexLoaded && <p className="context-caption">{t.toolPartial}</p>}
     </Card>
   )
 }
@@ -758,6 +816,7 @@ export function ContextView({
             onClick={onRetryIndex}>{t.retry}</button>}
         </div>
       )}
+      <ToolActivity view={view} t={t} />
       <ContextTrend points={points} requests={view.requests} selectedId={selectedId} onSelect={onSelect} t={t} />
       <div className="context-grid">
         <div className="context-overview-column">

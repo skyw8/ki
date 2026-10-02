@@ -96,6 +96,30 @@
 .context-model { min-width: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .context-card-header .context-model { max-width: 65%; }
 
+.context-tool-card { margin-bottom: 16px; }
+.context-tool-totals { display: flex; flex-wrap: wrap; gap: 16px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.context-tool-totals strong { margin-left: 4px; color: var(--dsw-alias-label-primary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.context-tool-totals .has-failures strong { color: var(--dsw-alias-state-error); }
+.context-tool-ranking { display: grid; gap: 16px; margin: 0; padding: 0; list-style: none; }
+.context-tool-ranking > li { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.context-tool-rank { flex: none; width: 18px; text-align: right; color: var(--dsw-alias-label-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.context-tool-detail { flex: 1; min-width: 0; }
+.context-tool-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 7px; font-size: 12px; }
+.context-tool-name { min-width: 0; overflow-wrap: anywhere; font-family: var(--ds-font-family-code); }
+.context-tool-counts { display: flex; align-items: baseline; flex: none; gap: 12px; font-variant-numeric: tabular-nums; }
+.context-tool-counts strong { min-width: 24px; text-align: right; font-weight: 600; }
+.context-tool-failures { color: var(--dsw-alias-state-error); font-size: 11px; }
+.context-tool-track { height: 8px; overflow: hidden; border-radius: 4px; background: var(--dsw-alias-bg-layer-2); }
+.context-tool-bar { display: flex; height: 100%; overflow: hidden; border-radius: inherit; }
+.context-tool-bar > i { display: block; height: 100%; flex: none; }
+.context-tool-bar-failed { background: var(--dsw-alias-state-error); }
+.context-tool-bar-other { background: color-mix(in srgb, var(--dsw-alias-brand) 65%, var(--dsw-alias-bg-layer-1)); }
+.context-tool-more { margin-top: 16px; }
+.context-tool-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; margin-top: 18px; color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.context-tool-key, .context-tool-key > span { display: flex; align-items: center; gap: 6px; }
+.context-tool-key { gap: 14px; }
+.context-tool-key i { width: 7px; height: 7px; border-radius: 2px; }
+
 .context-occupancy-heading { flex-wrap: wrap; align-items: baseline; }
 .context-occupancy-heading strong { font-size: 27px; font-variant-numeric: tabular-nums; }
 .context-occupancy-heading span { color: var(--dsw-alias-label-secondary); font-size: 12px; }
