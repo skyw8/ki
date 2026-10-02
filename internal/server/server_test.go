@@ -4501,9 +4501,10 @@ func TestEventsClientDisconnect(t *testing.T) {
 	_ = res.Body.Close()
 	gate.release() // The run completes normally.
 
-	// Disconnecting does not affect the run: all events are buffered and remain
-	// available for complete replay.
-	waitBuffered(t, srv, id, 12)
+	// A buffer length is not a completion fence: it includes superseded partials
+	// and can reach 12 before message_end retires them. Wait for release before
+	// asserting the exact completed replay, rather than racing a live snapshot.
+	waitRunEnd(t, srv, id)
 	//nolint:bodyclose // collectSSE owns and closes the response body.
 	if replay := collectSSE(t, mustOpenEvents(t, hs, id)); !slices.Equal(replay, wantReplay()) {
 		t.Fatalf("replay after disconnect: %v", replay)

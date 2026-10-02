@@ -52,7 +52,8 @@ test("indexes a workspace and answers a semantic query through the real native e
   assert.notEqual(searched.result.isError, true, JSON.stringify(searched.result));
   const text = searched.result.content[0].text;
   assert.match(text, /freshness: (fresh|possibly_stale)/);
-  assert.match(text, /src\/theme\.ts/);
+  // Native result anchors use host path separators, including Windows '\'.
+  assert.match(text, /src[\\/]theme\.ts/);
   assert.match(text, /1\t/);
   assert.ok(searched.result.details.items >= 1, JSON.stringify(searched.result.details));
   if (process.platform === "linux") {

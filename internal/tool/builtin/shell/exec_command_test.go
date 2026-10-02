@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,10 +100,56 @@ func TestExecObserverCancelPreservesProcessAndExplicitStopKillsTree(t *testing.T
 }
 
 func TestExecYieldAndIncrementalOutput(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	tool := testExec(t, nil)
-	first := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": "printf 'one\n'; sleep 0.6; printf 'two\n'", "yield_time_ms": 250}))
+	// Why: Windows Git Bash may not emit its first byte within 250ms. Gate
+	// the second chunk on an explicit release rather than a sleep, and wait for
+	// first-chunk readiness without consuming the process output cursor. Also
+	// gate the first chunk so the empty initial yield is covered on every host.
+	quotedExecutable := "'" + strings.ReplaceAll(filepath.ToSlash(executable), "'", "'\"'\"'") + "'"
+	command := fmt.Sprintf("%s -test.run=^TestExecIncrementalOutputHelper$ -- ki-incremental-output-helper %s", quotedExecutable, listener.Addr())
+	first := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": command, "yield_time_ms": 250}))
+	if first.Status != "running" || first.Output != "" {
+		t.Fatalf("initial yield: %+v", first)
+	}
+	gate, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Close()
+	if _, err := gate.Write([]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		for _, snapshot := range tool.processes.Snapshots() {
+			if snapshot.SessionID == first.SessionID {
+				return snapshot.TotalBytes >= 4
+			}
+		}
+		return false
+	}, "first output chunk was not drained")
+	// The gate keeps the helper live. Read the now-ready chunk without the
+	// empty write_stdin tool's five-second wait on that same gate.
+	first, err = tool.processes.Interact(t.Context(), first.SessionID, "", 0, 10000, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if first.Status != "running" || first.Output != "one\n" {
 		t.Fatalf("initial yield: %+v", first)
+	}
+	if _, err := gate.Write([]byte{1}); err != nil {
+		t.Fatal(err)
 	}
 	next := execSnapshot(t, (writeStdinTool{processes: tool.processes}).Execute(t.Context(), map[string]any{"session_id": first.SessionID, "yield_time_ms": 5000}))
 	if next.Status != "exited" || next.Output != "two\n" || next.OutputOffset != 4 {
@@ -115,6 +163,34 @@ func TestExecYieldAndIncrementalOutput(t *testing.T) {
 	if err != nil || string(raw) != "one\ntwo\n" {
 		t.Fatalf("spool: %q %v", raw, err)
 	}
+}
+
+func TestExecIncrementalOutputHelper(t *testing.T) {
+	if len(os.Args) < 2 || os.Args[len(os.Args)-2] != "ki-incremental-output-helper" {
+		return
+	}
+	gate, err := net.DialTimeout("tcp", os.Args[len(os.Args)-1], 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(gate, make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(os.Stdout, "one\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(gate, make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(os.Stdout, "two\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = gate.Close()
+	// Keep the raw spool limited to the fixture bytes, without test-runner PASS.
+	os.Exit(0)
 }
 
 func TestExecLargeOutputSpoolsAndReadPages(t *testing.T) {

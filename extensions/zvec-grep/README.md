@@ -66,6 +66,8 @@ never rebuild an incompatible or missing index automatically.
 
 Command workspace roots are lexically normalized, including trailing path
 separators supplied by macOS and Windows temporary-directory environments.
+Result file anchors use host-native path separators (`/` on Linux/macOS,
+`\` on Windows); protocol assertions must not assume POSIX spelling.
 
 The bundled CLI accepts the existing `zg index`, `zg status`, `zg query`,
 `zg server`, `zg config` and `zg auth` command spellings as well as the native

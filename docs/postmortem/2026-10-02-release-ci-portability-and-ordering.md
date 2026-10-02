@@ -49,3 +49,33 @@ checks and the package race suite passed. Final preflight passed WebUI
 typecheck/build, `go vet ./...`, `go test -tags embed -count=1 ./...` (including
 the installed Bun/Chromium harness), and the complete native/launcher Rust unit
 entrypoint. Native macOS/Windows execution remains the release workflow's duty.
+
+## Follow-up from the v0.0.8 tag
+
+The tag's native Linux, WebUI, quality and Linux Go jobs passed. Native
+Windows/macOS Go jobs exposed two further test synchronization assumptions:
+
+- Incremental shell output expected `one` within the first 250ms, before Git
+  Bash necessarily started. Both the main and tag Windows jobs failed there.
+  A readiness gate must hold the second output until the first segment is
+  observed; a startup deadline is not an output delimiter.
+- The disconnect test used a replay buffer count of 12 as a completion fence.
+  That count can include a superseded partial, so a live replay differed from
+  the exact completed replay. Wait for run release before the unchanged replay
+  assertion. Twenty repetitions measured 1.156s before / 1.138s after (4.72s /
+  4.74s wall), without an added fixed wait.
+
+No v0.0.8 release assets were published. Keep its pushed tag immutable and use
+v0.0.9 for the corrected release rather than force-replacing a public tag.
+
+The native Windows protocol job subsequently passed unit tests and genuine
+indexing/search, but its semantic-result assertion accepted only `src/theme.ts`
+while the correct host-native anchor was `src\theme.ts`. Accept either host
+separator without changing the expected file, semantic search, freshness,
+source-line, source-free binary or index lifecycle assertions. Native Linux
+and macOS protocol jobs both passed.
+
+The gated shell fixture's ten repetitions improved from 6.285s to 2.619s
+package time (6.93s to 3.35s wall); the whole shell suite improved from 1.752s
+to 1.395s. Final Linux native protocol validation passed all 31 cases,
+including genuine semantic indexing/search and source-free launch.

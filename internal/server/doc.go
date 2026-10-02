@@ -55,6 +55,8 @@
 // the ready frame is the client's cue to refetch, which is also how a reconnect
 // catches up. The pushed agent_end carries no messages; the run's full event
 // log is replayed only to the client holding that run's SSE.
+// Replay buffer length is not a completion fence: live snapshots can retain
+// partials until message_end, so exact completed replay requires run release.
 // Completed replay ownership expires after two minutes and is bounded by
 // 16 MiB / 256 runs. Active runs and attached readers keep their own ownership.
 // Missing/expired replay returns 410 with the canonical session recovery URL;

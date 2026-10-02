@@ -7,5 +7,7 @@
 // positive and terminal handles must fit the runtime's positive 53-bit range.
 // A running snapshot, even without output, is not a command failure; callers
 // needing completion continue observing its handle with write_stdin.
+// Incremental-output tests synchronize on readiness and an explicit release,
+// not a shell startup deadline or a sleep between output chunks.
 // Cross-package contracts: docs/tools.md.
 package shelltools

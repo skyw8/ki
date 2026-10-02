@@ -177,6 +177,7 @@ MCP 使用官方 Go SDK，配置和生命周期见 [mcp.md](mcp.md)。`search_to
 - 子进程继承 Ki 的代理环境和扩展 PATH；Bash profile 之后仍通过 BASH_ENV shim 恢复内嵌 rg/fd 和扩展路径。PowerShell 的 login=false 使用 NoProfile，pipe 模式使用 NonInteractive；错误及原生命令非零退出继续传播。
 - shell 子进程设置空 PAGER/GIT_PAGER/GH_PAGER、NO_COLOR=1、TERM=dumb、空 COLORTERM，避免继承的 pager 将 tty=true 命令停在不可见交互界面；不依赖 Windows 的外部 cat，也不修改 host 环境、locale 或 extension sidecar 环境。命令仍可显式启动交互程序或覆盖这些环境变量。
 - 非零退出码返回 error tool result，同时遥测记录 completed / command_nonzero / external_command。工具参数、观察取消与进程交互故障分别记录，避免把外部命令错误算作 harness 故障。
+- 增量输出回归使用真实子进程的 readiness 和显式 gate：首段就绪后才消费，释放 gate 后验证第二段、游标和完整日志；不假设 Windows shell 在250ms内输出首字节，也不用固定 sleep 分隔两段。
 
 ```json
 {"cmd":"bun run dev","tty":true,"yield_time_ms":1000}
