@@ -67,7 +67,32 @@ test('EOF reconciles the canonical transcript and commits before acknowledging i
     await sync.listen('s')
     await settle()
     expect(gets).toBe(1)
-    expect(connections).toEqual([{ cursor: undefined, through: undefined }, { cursor: 'run:7', through: undefined }])
+    expect(connections).toEqual([{ cursor: undefined, through: 'u' }, { cursor: 'run:7', through: 'a' }])
+    expect(store.current.nodes.filter(node => node.kind === 'assistant').map(node => node.id)).toEqual(['a'])
+  } finally { sync.dispose() }
+})
+
+test('detailed tail opens and resumes with snapshot coverage instead of replaying older notification bodies', async () => {
+  const store = new TranscriptStore(loadHistory({ ...final, running: true, oldestId: 'a', hasMore: true,
+    entries: [final.entries![1]] }), 's')
+  const connections: Array<{ cursor?: string; through?: string }> = []
+  const api = {
+    get: async () => ({ ...final, running: true }),
+    async *events(_id: string, signal: AbortSignal, cursor?: string, through?: string) {
+      connections.push({ cursor, through })
+      await untilAbort(signal)
+    },
+  } as unknown as Client
+  const sync = new SessionSyncController(api, store, { transcriptOptions: () => ({}) })
+  try {
+    sync.select('s')
+    await sync.listen('s')
+    await settle()
+    sync.suspend()
+    await sync.resume()
+    await settle()
+    expect(connections).toEqual([{ cursor: undefined, through: 'a' }, { cursor: undefined, through: 'a' }])
+    expect(store.current.compactTurns?.length ?? 0).toBe(0)
     expect(store.current.nodes.filter(node => node.kind === 'assistant').map(node => node.id)).toEqual(['a'])
   } finally { sync.dispose() }
 })

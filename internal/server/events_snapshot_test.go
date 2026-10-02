@@ -6,11 +6,95 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"ki/internal/loop"
 	"ki/internal/types"
 )
+
+func TestSnapshotReplayUserIdentityBeforeEndBuffered(t *testing.T) {
+	em, sess, _ := newEmitterForTest(t)
+	hidden := types.Message{Role: "user", Origin: "agent:/root/child", ClientRequestID: "persisted",
+		Content: []types.Content{{Type: "text", Text: "same text"}}}
+	end := loop.Event{Type: loop.MessageEnd, Message: &hidden}
+	// Reproduce the exact persist-before-buffer window without a timing race.
+	if err := em.persist(&end); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := em.s.replaySnapshot(sess.ID(), end.EntryID)
+	if snapshot.through != 0 || !snapshot.users[hidden.ClientRequestID] {
+		t.Fatalf("snapshot lost persisted identity: %+v", snapshot)
+	}
+	later := hidden
+	later.ClientRequestID = "not-on-snapshot-branch"
+	laterEnd := loop.Event{Type: loop.MessageEnd, Message: &later}
+	if err := em.persist(&laterEnd); err != nil {
+		t.Fatal(err)
+	}
+	// A later persisted entry must not count as part of an older snapshot.
+	snapshot = em.s.replaySnapshot(sess.ID(), end.EntryID)
+	for _, kind := range []loop.EventType{loop.SteerAccepted, loop.MessageStart} {
+		if !snapshot.covers(&loop.Event{Type: kind, Message: &hidden, Seq: 10}) {
+			t.Fatalf("%s escaped snapshot before end was buffered", kind)
+		}
+		if snapshot.covers(&loop.Event{Type: kind, Message: &later, Seq: 1}) {
+			t.Fatalf("%s covered an identity outside the snapshot", kind)
+		}
+	}
+	// Acceptance can be older than the last completed message, but that does
+	// not establish persistence: the accepted message may still be in Inbox.
+	snapshot.observe(&loop.Event{Type: loop.MessageEnd, EntryID: end.EntryID, Seq: 20})
+	if snapshot.covers(&loop.Event{Type: loop.SteerAccepted, Message: &later, Seq: 1}) {
+		t.Fatal("sequence cutoff swallowed undrained acceptance")
+	}
+	if snapshot.covers(&loop.Event{Type: loop.MessageStart, Message: &later, Seq: 1}) {
+		t.Fatal("sequence cutoff swallowed a user start outside the snapshot")
+	}
+	unidentified := hidden
+	unidentified.ClientRequestID = ""
+	if snapshot.covers(&loop.Event{Type: loop.SteerAccepted, Message: &unidentified, Seq: 1}) {
+		t.Fatal("equal text established acceptance identity")
+	}
+	if !snapshot.covers(&end) {
+		t.Fatal("persisted end escaped snapshot")
+	}
+}
+
+func TestSteerAcceptanceOnlyPublishesHumanInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		request steerRequest
+		visible bool
+	}{
+		{name: "human", visible: true},
+		{name: "extension relay", request: steerRequest{Origin: "extension:telegram"}, visible: true},
+		{name: "runtime directive", request: steerRequest{Origin: "agent:/root/child"}},
+		{name: "runtime mailbox", request: steerRequest{Origin: "agent:/root/child", ContextOnly: true}},
+		{name: "context-only", request: steerRequest{ContextOnly: true}},
+		{name: "completion", request: steerRequest{Completion: &types.CompletionIdentity{TaskID: "child", Generation: 1}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &runState{inbox: &loop.Inbox{}, partial: -1}
+			st.wait = sync.NewCond(&st.mu)
+			if !(&Server{}).pushSteerRun(st, tc.request) {
+				t.Fatal("input was rejected")
+			}
+			pending := st.inbox.Take()
+			if len(pending) != 1 || pending[0].ClientRequestID == "" ||
+				pending[0].Origin != tc.request.Origin || pending[0].ContextOnly != tc.request.ContextOnly {
+				t.Fatalf("input was not retained: %+v", pending)
+			}
+			if got := len(st.evs) != 0; got != tc.visible {
+				t.Fatalf("optimistic acceptance = %v, want %v", got, tc.visible)
+			}
+			if tc.visible && (len(st.evs) != 1 || st.evs[0].Type != loop.SteerAccepted ||
+				st.evs[0].Message.ClientRequestID != pending[0].ClientRequestID) {
+				t.Fatalf("acceptance lost correlation: %+v", st.evs)
+			}
+		})
+	}
+}
 
 func TestCompactSnapshotReplayKeepsConcurrentToolAndNewMessages(t *testing.T) {
 	em, sess, hs := newEmitterForTest(t)

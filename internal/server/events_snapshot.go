@@ -8,6 +8,7 @@ import (
 type snapshotReplay struct {
 	entries map[string]bool
 	tools   map[string]bool
+	users   map[string]bool
 	through int64
 }
 
@@ -21,8 +22,12 @@ func (s *Server) replaySnapshot(id, leaf string) snapshotReplay {
 		return out
 	}
 	out.entries, out.tools = map[string]bool{}, map[string]bool{}
+	out.users = map[string]bool{}
 	for _, e := range session.LeafChain(snap.entries, leaf) {
 		out.entries[e.ID] = true
+		if e.Message != nil && e.Message.Role == "user" && e.Message.ClientRequestID != "" {
+			out.users[e.Message.ClientRequestID] = true
+		}
 		if e.Message != nil && e.Message.Role == "toolResult" {
 			out.tools[e.Message.ToolCallID] = true
 		}
@@ -46,7 +51,18 @@ func (s snapshotReplay) covers(ev *loop.Event) bool {
 	if ev.EntryID != "" && s.entries[ev.EntryID] {
 		return true
 	}
+	if (ev.Type == loop.SteerAccepted || ev.Type == loop.MessageStart) &&
+		ev.Message != nil && ev.Message.Role == "user" {
+		// Persistence precedes buffering: the snapshot can include a hidden
+		// user message before observe sees its message_end. Identity must cover
+		// its start/acceptance too, or replay creates a ghost whose end is filtered.
+		return ev.Message.ClientRequestID != "" && s.users[ev.Message.ClientRequestID]
+	}
 	switch ev.Type {
+	case loop.SteerAccepted:
+		// Acceptance can precede the cutoff while the Inbox is still undrained.
+		// Only an identity proven persisted on this branch is covered.
+		return false
 	case loop.MessageStart, loop.MessageUpdate, loop.RequestHeader, loop.CompactionStart, loop.CompactionEnd:
 		return s.through > 0 && ev.Seq <= s.through
 	case loop.ToolExecutionStart, loop.ToolExecutionUpdate, loop.ToolExecutionEnd, loop.PatchApplyUpdated:

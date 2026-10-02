@@ -1446,8 +1446,11 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
         : request)
       break
     case 'steer_accepted':
-      if (ev.message?.content) return appendOptimisticUser(s, ev.message)
-      break
+      // Runtime mail is context, not an optimistic human prompt. It may stay
+      // undrained when a turn ends, or already be hidden in a compact snapshot;
+      // displaying acceptance would leave a ghost after the final answer.
+      if (ev.message?.content && isHumanPrompt(ev.message.origin)) return appendOptimisticUser(s, ev.message)
+      return s
     case 'run_aborted':
       next.stopping = true
       {
@@ -1591,6 +1594,10 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
   const m = ev.message ?? ev.assistantMessageEvent?.partial
   if (!m) return
   if (m.role === 'user') {
+    // Only the durable end gives runtime notifications a transcript position.
+    // A reconnect can cover that end while replaying its earlier start; a
+    // transient row here would never be acknowledged and would obscure the reply.
+    if (!isHumanPrompt(m.origin) && ev.type !== 'message_end') return
     // Older frames without correlation wait for the durable end rather than
     // guessing identity from text, timestamp or the most recent user.
     if (!ev.entryId && !userMessageIdentity(m)) return

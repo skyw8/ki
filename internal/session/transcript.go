@@ -149,18 +149,20 @@ type metadataContent struct {
 }
 
 type metadataMessage struct {
-	Role       string            `json:"role"`
-	Origin     string            `json:"origin"`
-	ToolCallID string            `json:"toolCallId"`
-	ToolName   string            `json:"toolName"`
-	StopReason string            `json:"stopReason"`
-	IsError    bool              `json:"isError"`
-	Timestamp  int64             `json:"timestamp"`
-	DurationMs int64             `json:"durationMs"`
-	LatencyMs  int64             `json:"latencyMs"`
-	TTFTMs     int64             `json:"ttftMs"`
-	Usage      *types.Usage      `json:"usage"`
-	Content    []metadataContent `json:"content"`
+	// Replay coverage needs accepted-input identity even for hidden bodies.
+	ClientRequestID string            `json:"clientRequestId"`
+	Role            string            `json:"role"`
+	Origin          string            `json:"origin"`
+	ToolCallID      string            `json:"toolCallId"`
+	ToolName        string            `json:"toolName"`
+	StopReason      string            `json:"stopReason"`
+	IsError         bool              `json:"isError"`
+	Timestamp       int64             `json:"timestamp"`
+	DurationMs      int64             `json:"durationMs"`
+	LatencyMs       int64             `json:"latencyMs"`
+	TTFTMs          int64             `json:"ttftMs"`
+	Usage           *types.Usage      `json:"usage"`
+	Content         []metadataContent `json:"content"`
 }
 
 func decodeMetadata(raw []byte) (Entry, IndexEntry, error) {
@@ -194,7 +196,7 @@ func decodeMetadataCached(raw []byte, estimates contextEstimateCache) (Entry, In
 		e.Responses = &types.ResponsesContext{}
 	}
 	if w := wire.Message; w != nil {
-		m := &types.Message{Role: w.Role, Origin: w.Origin, ToolCallID: w.ToolCallID, ToolName: w.ToolName, StopReason: w.StopReason, IsError: w.IsError, Timestamp: w.Timestamp, DurationMs: w.DurationMs, LatencyMs: w.LatencyMs, TTFTMs: w.TTFTMs, Usage: w.Usage}
+		m := &types.Message{ClientRequestID: w.ClientRequestID, Role: w.Role, Origin: w.Origin, ToolCallID: w.ToolCallID, ToolName: w.ToolName, StopReason: w.StopReason, IsError: w.IsError, Timestamp: w.Timestamp, DurationMs: w.DurationMs, LatencyMs: w.LatencyMs, TTFTMs: w.TTFTMs, Usage: w.Usage}
 		for _, c := range w.Content {
 			m.Content = append(m.Content, types.Content{Type: c.Type, ID: c.ID, Name: c.Name, Text: c.Text, Thinking: c.Thinking})
 		}

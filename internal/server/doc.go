@@ -128,6 +128,11 @@
 // Completion task/generation ownership is committed at parent persistence;
 // enqueue, list_agents and wait_agent never consume it. Setup/exit races retain
 // undrained input through the durable context queue.
+// Runtime-authored and context-only Inbox inputs do not emit optimistic
+// steer_accepted rows; human inputs (including extension relays) still do.
+// Snapshot replay covers user starts and acceptances by persisted
+// clientRequestId on that branch, even before message_end reaches the buffer.
+// An accepted but undrained input is never covered by a sequence cutoff alone.
 // Prompt clientRequestId is generated if absent and preserved in accepted
 // responses, steer events, queue promotion and persisted messages. Session
 // list/detail expose activeDescendantCount separately from own-run running;

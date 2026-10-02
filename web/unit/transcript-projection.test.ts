@@ -265,17 +265,64 @@ test('B10 accepted runtime identity/origin remains runtime through every replay 
     let state = loadHistory({ id: 's', entries: [first], leafId: 'u' })
     for (const operation of order) {
       state = operation(state)
-      expect(state.liveRevision).toBeGreaterThan(0)
       expect(groupTurns(state.nodes).map(t => t.id)).toEqual(['u'])
       expect(sessionStats(state).turns).toBe(1)
       expect(userRequests(state.allEntries, state.leafId, state.nodes).map(r => r.id)).toEqual(['u'])
-      expect(state.nodes.at(-1)).toMatchObject({
+      const notice = state.nodes.find(n => n.id === 'notice')
+      if (notice) expect(notice).toMatchObject({
         origin: 'agent:child', clientRequestId: 'child:4', completion: { taskId: 'child', generation: 4 }, external: { source: 'test' },
       })
+      else expect(state.nodes.map(n => n.id)).toEqual(['u'])
     }
     expect(state.nodes.map(n => n.id)).toEqual(['u', 'notice'])
     expect(new Set(state.records.map(r => r.turnId))).toEqual(new Set(['u']))
   }
+})
+
+test('replayed runtime acceptance/start cannot resurrect a hidden notification after the final reply', () => {
+  const snapshot: SessionDetail = { id: 's', ...fixtures.notice, leafId: 'final', running: false }
+  const notice = noticeEntries().find(e => e.id === 'notice')!.message!
+  for (const running of [false, true]) {
+    let state = loadHistory({ ...snapshot, running })
+    const ids = state.nodes.map(n => n.id)
+    const folded = folds(state)
+    for (const type of ['steer_accepted', 'message_start'] as const) {
+      state = applyEvent(state, { type, message: notice })
+      expect(state.nodes.map(n => n.id)).toEqual(ids)
+      expect(state.nodes.at(-1)?.id).toBe('final')
+      expect(state.busy).toBe(running)
+      expect(folds(state)).toEqual(folded)
+    }
+    state = applyEvent(state, { type: 'agent_end' })
+    state = applyTail(state, snapshot)
+    expect(state.nodes.map(n => n.id)).not.toContain('notice')
+    expect(state.nodes.at(-1)?.id).toBe('final')
+    state = hydrateEntries(state, noticeEntries())
+    expect(state.nodes.map(n => n.id)).toEqual(['u', 'call', 'tool', 'notice', 'final'])
+    expect(foldReplies(state.nodes, { keep: 1 }).at(-1)?.id).toBe('final')
+  }
+})
+
+test('undrained runtime mail never displaces the terminal assistant but persisted mail still renders in order', () => {
+  const first = message('u', undefined, 'user')
+  const notification: Message = { role: 'user', origin: 'agent:child', clientRequestId: 'mail',
+    content: [{ type: 'text', text: 'runtime mail' }] }
+  let state = loadHistory({ id: 's', entries: [first], leafId: 'u', running: true })
+  state = applyEvent(state, { type: 'message_start', message: { role: 'assistant', content: [] } })
+  state = applyEvent(state, { type: 'steer_accepted', message: notification })
+  state = applyEvent(state, { type: 'message_end', entryId: 'a', parentId: 'u',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }] } })
+  state = applyEvent(state, { type: 'agent_end' })
+  expect(state.nodes.map(n => n.id)).toEqual(['u', 'a'])
+  expect(foldReplies(state.nodes, { keep: 1 }).at(-1)?.id).toBe('a')
+  expect(state.busy).toBe(false)
+
+  state = applyEvent(state, { type: 'agent_start' })
+  state = applyEvent(state, { type: 'message_end', entryId: 'notice', parentId: 'a', message: notification })
+  state = applyEvent(state, { type: 'message_end', entryId: 'final', parentId: 'notice',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'handled mail' }] } })
+  expect(state.nodes.map(n => n.id)).toEqual(['u', 'a', 'notice', 'final'])
+  expect(hydrateEntries(state, [first]).nodes.map(n => n.id)).toEqual(['u', 'a', 'notice', 'final'])
 })
 
 test('runtime-only history has one stable first group and no invented human navigation request', () => {

@@ -71,7 +71,9 @@
 // builds a Session from an immutable read. Identical system prompts and tool
 // schemas share storage within that body's pool, which expires with its owner.
 // ReadTranscript separately caches body-free branch/turn metadata and exact
-// file offsets (16 MiB, at most 256 sessions). Lookup, historical pages and
+// file offsets (16 MiB, at most 256 sessions). Metadata retains accepted-input
+// clientRequestId for replay coverage, including hidden messages.
+// Lookup, historical pages and
 // compact views hydrate selected bodies only, without promoting the body cache.
 // Both caches revalidate file identity, size and mtime; replacements rebuild
 // snapshots and stale offset reads fail. Runtime-only GETs skip transcript reads.

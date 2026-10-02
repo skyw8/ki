@@ -1036,7 +1036,7 @@ function WorkspaceApp({ api }: { api: Client }) {
       saveLastComposerModel({ provider: next.provider, model: next.model, thinkingEffort: next.thinkingEffort })
       setSelectedWs(detail.workspaceId ?? null)
       if (detail.workspaceId) setExpanded(e => ({ ...e, [detail.workspaceId!]: true }))
-      if (detail.running) void listen(id, detail.compactTurns?.length ? detail.leafId : undefined)
+      if (detail.running) void listen(id, detail.leafId)
       return true
     } catch (e) {
       if (!ac.signal.aborted && currentIdRef.current === id) {

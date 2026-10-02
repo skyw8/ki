@@ -338,7 +338,9 @@ Prompt JSON accepts optional `clientRequestId`; the accepted HTTP response and
 persisted/SSE `Message` carry the same value. Missing IDs are server-generated.
 `queued[].clientRequestId` survives queue promotion; a promotion request cannot
 replace the original identity. `steer_accepted` carries both this identity and
-`origin`, so runtime input is never temporarily classified as human. Equal text
+`origin` for human input (including extension relays). Runtime-authored and
+context-only Inbox inputs do not publish optimistic acceptance rows: they may
+remain undrained when a run finishes. Equal text
 is not an acknowledgement relation. Internal queued follow-ups also retain IDs.
 
 Agent completions carry `completion:{taskId,generation}` and a stable
@@ -348,6 +350,10 @@ successful message drain publishes its `message_start`/`message_end`; a suppress
 completion leaves no optimistic ghost. `queue_changed` and ordinary session
 invalidations still wake clients for durable delivery. These identity fields are
 transport metadata, stripped before provider requests.
+Snapshot replay with `through` covers user `message_start` and `steer_accepted`
+only when their `clientRequestId` is already persisted on the snapshot branch.
+This also covers the persistence-before-buffering interval; a sequence cutoff
+alone cannot prove that an accepted Inbox input was drained.
 Content-only `message_end` extension rewrites cannot replace `clientRequestId`,
 `completion` or `origin`; persistence and SSE retain the accepted provenance.
 

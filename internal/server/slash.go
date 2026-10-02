@@ -615,9 +615,11 @@ func (s *Server) pushSteerRun(st *runState, req steerRequest) bool {
 		return false
 	}
 	st.inbox.Push(msg)
-	// Generation ownership is committed only at persistence. Publishing an
-	// optimistic row would leave a ghost if an interrupt suppresses this input.
-	if msg.Completion != nil {
+	// Runtime input is transcript output, not an optimistic human prompt.
+	// Context-only mail can remain undrained at natural finish, and completion
+	// ownership can be suppressed: neither should leave an uncommitted ghost.
+	// Extension origins still relay human input, matching compact turn anchors.
+	if msg.Completion != nil || msg.ContextOnly || (msg.Origin != "" && !strings.HasPrefix(msg.Origin, "extension:")) {
 		return true
 	}
 	ev := loop.Event{Type: loop.SteerAccepted, Message: &msg, RunID: st.runID, External: cloneExternal(st.external)}

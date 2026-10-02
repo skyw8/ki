@@ -71,6 +71,8 @@
 // process-local (not jsonl): one session's open-time Prepare finished,
 // success or failure. AgentSettled is post-agent_end wrap-up for lifecycle
 // subscribers, not ordinary run SSE. SteerAccepted is live-run only
-// (Inbox accepted a user; drain later emits message_*). Event catalog:
+// (Inbox accepted human input, including extension relays; drain later emits
+// message_*). Runtime-authored/context-only inputs have no optimistic acceptance.
+// Event catalog:
 // docs/events.md. Event order: docs/architecture.md.
 package loop

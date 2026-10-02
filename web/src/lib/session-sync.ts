@@ -175,7 +175,7 @@ export class SessionSyncController {
           this.options.onSettled?.()
           return
         }
-        through = detail.compactTurns?.length ? detail.leafId : undefined
+        through = detail.leafId
         // Repeated short EOFs are a broken transport, not completed work.
         // Bound reconnects without delaying the first authoritative tail read.
         if (streamEnded) {
@@ -188,7 +188,9 @@ export class SessionSyncController {
       this.options.onListening?.(id)
       job.resolve()
       const connectedAt = performance.now()
-      const replayThrough = through ?? (this.store.current.compactTurns?.length ? this.store.current.leafId : undefined)
+      // Detailed tails also omit older bodies. Without snapshot coverage a
+      // reconnect replays every old notification as fresh transcript content.
+      const replayThrough = through ?? this.store.current.leafId
       const batcher = streamBatch(events => {
         if (!valid()) return
         this.store.applyEvents(events)
