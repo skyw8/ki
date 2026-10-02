@@ -18,7 +18,13 @@ import (
 )
 
 func TestRuntimeInstallWhenValidation(t *testing.T) {
-	root := t.TempDir()
+	// Discovery canonicalizes package roots before validation. macOS /var and
+	// Windows short temp paths can alias the real root; missing commands cannot
+	// resolve that alias themselves, so the fixture must use the discovered form.
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tt := range []struct {
 		name, when, command string
 		want                error

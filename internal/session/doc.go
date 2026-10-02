@@ -81,7 +81,10 @@
 // Lookup, historical pages and
 // compact views hydrate selected bodies only, without promoting the body cache.
 // Both caches revalidate file identity, size and mtime; replacements rebuild
-// snapshots and stale offset reads fail. Runtime-only GETs skip transcript reads.
+// snapshots and stale offset reads fail. Identity is captured by handle Stat,
+// not deferred path lookup, so size/mtime-preserving replacements invalidate
+// even the first cached read on Windows. Handles close within each read and
+// are never retained by caches. Runtime-only GETs skip transcript reads.
 // A tail read from byte zero is complete even though the header is not an
 // entry; an explicit branch root also ends paging without unrelated branches.
 // context_usage entries store model-facing context pressure;

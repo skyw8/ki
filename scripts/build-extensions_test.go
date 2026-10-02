@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,6 +168,19 @@ func TestSourcePackagesArePortableAndExcludeRuntimeArtifacts(t *testing.T) {
 						t.Fatal(file, err)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestStandaloneModuleAcceptsCheckoutLineEndings(t *testing.T) {
+	const module = "module ki\n\ngo 1.25.0\n\nrequire example.org/dependency v1.2.3\n"
+	const want = "module ki/extensions/goal\n\ngo 1.25.0\n\nrequire example.org/dependency v1.2.3\n\nrequire ki v0.0.0\n\nreplace ki => ./_ki\n"
+	for _, ending := range []string{"\n", "\r\n"} {
+		t.Run(fmt.Sprintf("%q", ending), func(t *testing.T) {
+			got := standaloneModule([]byte(strings.ReplaceAll(module, "\n", ending)), "goal")
+			if got != want {
+				t.Fatalf("standalone module = %q, want %q", got, want)
 			}
 		})
 	}

@@ -28,6 +28,8 @@
 // A parent watchdog may kill a stuck worker, but parent callbacks are still
 // joined unconditionally and must honor cancellation. Terminal Execute/Wait
 // fence and join only their own cell's parent callbacks, not other live cells.
+// Session termination acknowledges stopped worker cells before fencing parent
+// callbacks; otherwise a cancellation error could commit a failed cell's writes.
 // Session closure discards cells and values; no store state is persisted.
 // notify reports immediate bounded parent progress and also appends text for the
 // next exec/wait observation, rather than injecting provider-specific outputs.

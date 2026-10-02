@@ -191,15 +191,19 @@ func TestSessionActivityListAndDetail(t *testing.T) {
 	want[root], want[child] = wantActivity{count: 1}, wantActivity{count: 1}
 	assert(want)
 
-	// A fresh subscriber sees the release invalidate after agent_end; retained
-	// completed run states must no longer contribute to the ancestor counts.
+	// A fresh subscriber sees both completion and release invalidation. Scopes
+	// coalesce and have writer priority, so invalidate can arrive before the
+	// already-queued agent_end; waiting sequentially would discard that frame.
+	// Retained completed runs must no longer contribute to ancestor counts.
 	settled := pushEvents(t, hs, "tok")
 	waitPush(t, settled, "ready", func(ev pushEvent) bool { return ev.Type == "ready" })
 	unblock()
-	waitPush(t, settled, "descendant agent_end", func(ev pushEvent) bool {
-		return ev.Type == loop.AgentEnd && ev.SessionID == grandchild
+	var ended, invalidated bool
+	waitPush(t, settled, "descendant completion and release invalidation", func(ev pushEvent) bool {
+		ended = ended || ev.Type == loop.AgentEnd && ev.SessionID == grandchild
+		invalidated = invalidated || isInvalidate(scopeSessions)(ev)
+		return ended && invalidated
 	})
-	waitPush(t, settled, "descendant release invalidation", isInvalidate(scopeSessions))
 	waitRunEnd(t, srv, grandchild)
 	waitRunEnd(t, srv, unrelated)
 	for id := range want {

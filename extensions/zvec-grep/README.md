@@ -64,6 +64,9 @@ never rebuild an incompatible or missing index automatically.
 | `/zg-status [root]` | Reports the workspace index status and any running job. |
 | `/zg-remove [root]` | Deletes the index after confirmation. |
 
+Command workspace roots are lexically normalized, including trailing path
+separators supplied by macOS and Windows temporary-directory environments.
+
 The bundled CLI accepts the existing `zg index`, `zg status`, `zg query`,
 `zg server`, `zg config` and `zg auth` command spellings as well as the native
 engine's `--index`, `--status`, `--server`, `--config` and `--auth` forms. Indexing

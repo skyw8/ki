@@ -165,7 +165,7 @@ MCP 使用官方 Go SDK，配置和生命周期见 [mcp.md](mcp.md)。`search_to
 
 `process.Manager` 按 session 拥有进程，生命周期独立于一次工具调用或 agent turn。每次 exec 都是新进程，默认 cwd 为 session cwd；显式 workdir 也不会改变后续调用的 cwd。
 
-- `login=true`、`tty=false`、`yield_time_ms=10000`、`max_output_tokens=10000` 为默认值。exec 观察范围 250–30000ms；非负整数 yield 在转换 duration 前 clamp，负值拒绝。输出预算必须为正整数，内部封顶 10000 tokens。达到观察预算返回 handle，命令继续运行，没有前台提升或 sleep 特例。
+- `login=true`、`tty=false`、`yield_time_ms=10000`、`max_output_tokens=10000` 为默认值。exec 观察范围 250–30000ms；非负整数 yield 在转换 duration 前 clamp，负值拒绝。输出预算必须为正整数，内部封顶 10000 tokens。达到观察预算返回 handle，命令继续运行，没有前台提升或 sleep 特例。短观察期限可能在 shell/子进程启动、尚无输出时返回 running（尤其 Windows Git Bash/ConPTY）；需要终态的调用方应使用 `write_stdin` 在合理期限内继续观察，而不能把首次 running 当作命令失败或 pager 卡住。
 - Windows 默认优先 PowerShell（pwsh，其次 Windows PowerShell），再回退 Git Bash；Unix 默认使用发现的 Bash。可显式选 bash/sh/zsh/pwsh/powershell 或主机绝对路径。找不到所选 shell 时执行报错，server 可正常启动。
 - Unix 使用 PTY，Windows 使用 ConPTY。只有 `tty=true` 支持普通 stdin 输入；pipe 模式拒绝普通输入，但 `chars="\u0003"` 仍能请求进程组中断。Ctrl-C 不保证进程退出，强制停止由 session abort 的 process scope 执行。
 - 空 chars 的观察默认 5000ms、范围 5000–300000ms；非空 chars 默认 250ms、范围 250–30000ms。取消工具观察只结束等待并返回有效 session 快照，不杀进程；启动前/排队中的取消不写 stdin、不消费输出。已经进行的观察返回本次已读增量并正常推进游标，预算外输出留待续读。handle 是最多 53 位的正整数，不能跨 session 使用。

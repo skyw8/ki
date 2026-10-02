@@ -92,6 +92,8 @@ text(result.content.filter(item => item.type === "text").map(item => item.text).
 
 occupy 结束取消并 join 所有 cell 与父进程 callback，先于 hooks、telemetry、session 和 release 关闭。已提交 store 留在 worker，但旧 occupy 的工具、身份和 callback 不跨轮复用。shell 的 session-owned 进程保持已有生命周期，取消 JS 等待不等于杀掉合法启动的 shell。
 
+全部终止使用两阶段屏障：worker 先将所有 cell 标记为停止并取消其执行 context，确认后父进程才关闭 callback 能力、取消并 join callback，再等待 worker 完全终止。IPC 请求 handler 并发运行，单靠发送顺序不足以建立该屏障；否则 callback 的取消错误可能先被视为普通失败，错误提交待丢弃的 store 写入。停止确认失败时关闭 worker transport，仍无条件 join 父进程 callback。
+
 ## 限制和相对 Codex 的差异
 
 - 默认最多 32 个逻辑 worker session、每 session 64 个未关闭 cell / 8 个并发执行 cell。名额在关闭 session 时释放。

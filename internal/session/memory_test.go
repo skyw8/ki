@@ -48,36 +48,62 @@ func TestBodyCacheRejectsOversizedReadsAndShrinksTail(t *testing.T) {
 }
 
 func TestBodyCacheRevalidatesAtomicReplacement(t *testing.T) {
-	s, dir := seedTailSession(t, 1)
-	t.Cleanup(func() { DropEntriesCache(dir) })
-	old, err := AllEntries(dir)
-	if err != nil {
-		t.Fatal(err)
+	for _, mode := range []string{"full", "tail"} {
+		t.Run(mode, func(t *testing.T) {
+			s, dir := seedTailSession(t, 1)
+			t.Cleanup(func() { DropEntriesCache(dir) })
+			t.Cleanup(func() { _ = s.Close() })
+			read := func() ([]Entry, error) {
+				if mode == "full" {
+					return AllEntries(dir)
+				}
+				entries, _, err := TailEntries(dir, 1)
+				return entries, err
+			}
+			old, err := read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := entriesPath(dir)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replacement := strings.Replace(string(raw), "turn 0", "turn X", 1)
+			if replacement == string(raw) {
+				t.Fatal("replacement did not change transcript")
+			}
+			if err := os.WriteFile(path+".new", []byte(replacement), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(path+".new", time.Now(), info.ModTime()); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(path+".new", path); err != nil {
+				t.Fatal(err)
+			}
+			replaced, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Size/mtime must match so only captured file identity can invalidate
+			// the cache; do not warm it before replacing (Windows IDs are lazy).
+			if replaced.Size() != info.Size() || !replaced.ModTime().Equal(info.ModTime()) {
+				t.Fatal("replacement changed size or mtime")
+			}
+			updated, err := read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(updated) != len(old) || updated[0].Message.Text() != "turn X" || old[0].Message.Text() != "turn 0" {
+				t.Fatalf("replacement reused stale storage: updated=%v old=%v", updated, old)
+			}
+		})
 	}
-	path := entriesPath(dir)
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	replacement := strings.Replace(string(raw), "turn 0", "turn X", 1)
-	if err := os.WriteFile(path+".new", []byte(replacement), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(path+".new", time.Now(), info.ModTime()); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(path+".new", path); err != nil {
-		t.Fatal(err)
-	}
-	updated, err := AllEntries(dir)
-	if err != nil || updated[0].Message.Text() != "turn X" || old[0].Message.Text() != "turn 0" {
-		t.Fatalf("replacement reused stale storage: %v", err)
-	}
-	_ = s.Close()
 }
 
 func TestWeightedCacheBudgetsAndStaleReaders(t *testing.T) {

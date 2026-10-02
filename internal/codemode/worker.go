@@ -72,6 +72,9 @@ func ServeWorker(ctx context.Context, r io.Reader, w io.Writer, limits Limits) e
 			return s.Wait(ctx, req)
 		case "terminateAll":
 			return struct{}{}, s.TerminateAll(ctx)
+		case "stopAll":
+			s.backend.(*localSession).stopAll()
+			return struct{}{}, nil
 		case "terminate":
 			var req WaitRequest
 			if err := json.Unmarshal(data, &req); err != nil {

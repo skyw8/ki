@@ -238,6 +238,18 @@ func TestTTYGitDiffDoesNotEnterInheritedPager(t *testing.T) {
 		"tty": true, "login": false, "yield_time_ms": 250,
 	})
 	snapshot := execSnapshot(t, result)
+	// Git Bash/ConPTY startup and the Git subprocesses can exceed the 250ms
+	// observation budget on Windows before emitting anything. A running handle
+	// is not proof of a parked pager: observe completion with a bounded deadline,
+	// preserving every output chunk so a launched pager cannot go unnoticed.
+	if !result.IsError && snapshot.Status == "running" {
+		initialOutput := snapshot.Output
+		result = (writeStdinTool{processes: tool.processes}).Execute(t.Context(), map[string]any{
+			"session_id": snapshot.SessionID, "yield_time_ms": 5000,
+		})
+		snapshot = execSnapshot(t, result)
+		snapshot.Output = initialOutput + snapshot.Output
+	}
 	if result.IsError || snapshot.Status != "exited" || !strings.Contains(snapshot.Output, "+after") || strings.Contains(snapshot.Output, "pager-launched") {
 		t.Fatalf("inherited pager parked agent terminal: %+v", snapshot)
 	}

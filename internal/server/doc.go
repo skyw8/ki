@@ -42,7 +42,9 @@
 // GET /v1/events is the WebUI push channel: one SSE stream per browser tab
 // carrying invalidate frames (scope sessions/workspaces/providers/extensions:
 // "this changed, refetch it through the ordinary REST endpoint") and session
-// sideband loop events tagged with sessionId (agent_end, run_aborted,
+// sideband events. Scopes coalesce and may precede already-queued sideband
+// events; only sideband-to-sideband arrival order is preserved. Session
+// sideband loop events are tagged with sessionId (agent_end, run_aborted,
 // runtime_ready, extension notices/UI, manual compaction, queue changes). It
 // publishes run_aborted immediately, then persists it after terminal output as
 // a branch-visible non-message leaf; the terminal assistant also retains

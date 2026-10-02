@@ -5,5 +5,7 @@
 // belong to the process runtime, independently of an observing tool or turn.
 // Observation times clamp before duration conversion; token budgets must be
 // positive and terminal handles must fit the runtime's positive 53-bit range.
+// A running snapshot, even without output, is not a command failure; callers
+// needing completion continue observing its handle with write_stdin.
 // Cross-package contracts: docs/tools.md.
 package shelltools

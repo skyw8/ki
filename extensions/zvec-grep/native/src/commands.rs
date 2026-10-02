@@ -334,7 +334,9 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(parsed, root);
+        // macOS and Windows temp directories can retain a trailing separator;
+        // target normalizes it, so compare paths rather than their spelling.
+        assert_eq!(Path::new(&parsed), Path::new(&root));
         assert_eq!(
             args,
             ["--embedding", "local/other", "--device=metal", "--rebuild"]
@@ -346,5 +348,18 @@ mod tests {
                 .contains("use /zg-remove")
         );
         assert!(target("--rebuild", &root, false).is_err());
+    }
+
+    #[test]
+    fn command_target_normalizes_trailing_workspace_separators() {
+        let root = std::env::temp_dir();
+        let expected = clean(root.clone()).to_string_lossy().into_owned();
+        let separator = std::path::MAIN_SEPARATOR.to_string();
+        for suffix in ["", separator.as_str()] {
+            let cwd = format!("{}{suffix}", root.display());
+            let (parsed, args) = target("", &cwd, false).unwrap();
+            assert_eq!(parsed, expected);
+            assert!(args.is_empty());
+        }
     }
 }

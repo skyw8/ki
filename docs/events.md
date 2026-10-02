@@ -98,6 +98,8 @@ run 与 push SSE 都发送 `X-Accel-Buffering: no`，每次 write/flush 有 30s 
 
 `GET /v1/events` 是每个 tab 的 push 流，只带「失效」和「终态/边带」信息，不带
 run 内的增量：`invalidate` 帧让客户端重取（sidebar 用 ETag 304 收尾），
+同 scope 的失效会合并并优先发送，可能先于已排队的 `agent_end` 到达；
+不能把「失效一定在终态之后」作为同步条件。只有 sideband 之间保持入队顺序。
 sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` 在 push 流上
 **不带 `messages`**——整份 run 消息只回放给持有该 run SSE 的客户端，push 只广播
 「这个 session 结束了」。因此 push 可以丢帧而不影响正确性：状态永远由 REST

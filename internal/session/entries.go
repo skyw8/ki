@@ -23,9 +23,9 @@ import (
 // proportional to what was appended rather than to the size of the history.
 //
 // The filesystem stays the source of truth: every read revalidates the file by
-// size+mtime, a file that only grew is extended from the recorded offset, and a
-// file that shrank or was rewritten (moved clock, replaced directory) is read
-// from scratch.
+// identity+size+mtime, a file that only grew is extended from the recorded
+// offset, and a file that shrank or was rewritten (moved clock, replaced
+// directory) is read from scratch.
 //
 // Callers must treat the returned slice as read-only: it is shared with the
 // cache and with every other caller until the file changes.
@@ -68,7 +68,7 @@ func entriesCacheFor(dir string) *entriesCache {
 // DropEntriesCache forgets what was decoded for a session directory. The server
 // calls it when a session is deleted so the cache cannot pin a removed
 // transcript in memory; a stale entry is harmless anyway, because every read
-// revalidates by size+mtime.
+// revalidates by identity+size+mtime.
 func DropEntriesCache(dir string) {
 	entriesCaches.drop(filepath.Clean(dir))
 	transcriptCaches.drop(filepath.Clean(dir))
@@ -213,7 +213,17 @@ func (c *entriesCache) load(dir string, want int, full bool) (loadErr error) {
 	}
 
 	path := entriesPath(dir)
-	info, err := os.Stat(path)
+	// Windows os.Stat defers file-ID lookup until SameFile, by which time an
+	// atomic replacement may have rebound the old FileInfo to the new path.
+	// Stat an open handle to capture identity now, then close it so cached
+	// snapshots never prevent session deletion or replacement on Windows.
+	f, err := os.Open(path)
+	if err != nil {
+		c.reset()
+		return err
+	}
+	info, err := f.Stat()
+	_ = f.Close()
 	if err != nil {
 		c.reset()
 		return err

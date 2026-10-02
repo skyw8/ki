@@ -58,8 +58,12 @@
 // runtime.installWhen=always. With installWhen=missing, a package-relative RPC
 // executable (including its Windows .exe suffix) skips installation when
 // already present, allowing source-free packages to launch without a toolchain.
+// Discovery canonicalizes package-root symlinks before validating paths to
+// missing executables, so temporary-directory aliases do not imply an escape.
 // Bundled Go executables (and the Rust search executable) launch directly from
 // source-free distribution packages; no compiler or interpreter is required.
+// Source distribution modules normalize checkout line endings before rewriting
+// their module identity, including Windows CRLF checkouts.
 // This does not restrict third-party extension implementation languages.
 // Private config uses atomic versioned state; the storage header is excluded
 // from settings schema validation and public/redacted configuration values.

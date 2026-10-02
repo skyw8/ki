@@ -111,6 +111,7 @@ type remoteSession struct {
 	processDone     chan struct{}
 	bindings        map[string]*callbackBinding
 	closed          bool
+	stopping        bool
 	callbacksClosed bool
 	callbackWG      sync.WaitGroup
 }
@@ -227,7 +228,7 @@ func (s *remoteSession) execute(ctx context.Context, req ExecuteRequest, cb Call
 		b.freeform[def.Name] = def.Freeform
 	}
 	s.mu.Lock()
-	if s.callbacksClosed || s.closed {
+	if s.stopping || s.callbacksClosed || s.closed {
 		s.mu.Unlock()
 		bindingCancel()
 		return Response{}, errors.New("code mode session is closing")
@@ -412,6 +413,24 @@ func (s *remoteSession) removeBindingLocked(parent string) *callbackBinding {
 func (s *remoteSession) terminateAll(ctx context.Context) error {
 	s.mu.Lock()
 	p := s.transport
+	if p != nil {
+		s.stopping = true
+	}
+	s.mu.Unlock()
+	if p == nil {
+		return nil
+	}
+	// The worker watchdog is bounded even when owned parent cleanup must join
+	// indefinitely. Killing a stuck worker does not cancel that ownership duty.
+	workerCtx, cancel := context.WithTimeout(ctx, s.config.Limits.DrainTimeout+time.Second)
+	// A callback may return its cancellation error immediately and make the
+	// worker commit a failed cell's writes. Wait for the worker's stop ACK before
+	// fencing callbacks: FIFO frames alone do not order asynchronous handlers.
+	err := p.call(workerCtx, "stopAll", struct{}{}, nil)
+	if err != nil {
+		p.fail(err)
+	}
+	s.mu.Lock()
 	s.callbacksClosed = true
 	for _, b := range s.bindings {
 		if b.cancel != nil {
@@ -419,16 +438,9 @@ func (s *remoteSession) terminateAll(ctx context.Context) error {
 		}
 	}
 	s.mu.Unlock()
-	if p == nil {
-		s.mu.Lock()
-		s.callbacksClosed = s.closed
-		s.mu.Unlock()
-		return nil
+	if err == nil {
+		err = p.call(workerCtx, "terminateAll", struct{}{}, nil)
 	}
-	// The worker watchdog is bounded even when owned parent cleanup must join
-	// indefinitely. Killing a stuck worker does not cancel that ownership duty.
-	workerCtx, cancel := context.WithTimeout(ctx, s.config.Limits.DrainTimeout+time.Second)
-	err := p.call(workerCtx, "terminateAll", struct{}{}, nil)
 	cancel()
 	if err != nil {
 		p.fail(err)
@@ -441,6 +453,7 @@ func (s *remoteSession) terminateAll(ctx context.Context) error {
 		s.removeBindingLocked(parent)
 	}
 	s.callbacksClosed = s.closed
+	s.stopping = false
 	s.mu.Unlock()
 	return err
 }

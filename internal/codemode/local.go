@@ -112,14 +112,19 @@ func (s *localSession) wait(ctx context.Context, req WaitRequest) (Response, err
 	return c.observe(ctx, yieldTime(req.YieldTime, req.YieldTimeSet, s.limits), req.MaxOutputBytes, req.MaxOutputBytesSet)
 }
 
-func (s *localSession) terminateAll(ctx context.Context) error {
+func (s *localSession) stopAll() []*cell {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	cells := make([]*cell, 0, len(s.cells))
 	for _, c := range s.cells {
 		cells = append(cells, c)
 		c.stop()
 	}
-	s.mu.Unlock()
+	return cells
+}
+
+func (s *localSession) terminateAll(ctx context.Context) error {
+	cells := s.stopAll()
 	var cleanupErr error
 	for _, c := range cells {
 		select {

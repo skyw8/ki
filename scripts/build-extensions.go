@@ -291,7 +291,7 @@ func stageSourcePackage(root, source, stage, name string) error {
 	if err != nil {
 		return err
 	}
-	sourceModule := strings.Replace(string(module), "module ki\n", "module ki/extensions/"+name+"\n", 1) + "\nrequire ki v0.0.0\n\nreplace ki => ./_ki\n"
+	sourceModule := standaloneModule(module, name)
 	if err := os.WriteFile(filepath.Join(stage, "go.mod"), []byte(sourceModule), 0644); err != nil {
 		return err
 	}
@@ -352,6 +352,14 @@ func stageSourcePackage(root, source, stage, name string) error {
 	}
 	return nil
 }
+
+func standaloneModule(module []byte, name string) string {
+	// Windows checkouts can use CRLF. Normalize before replacing the declaration,
+	// or the package remains module ki and its local ki dependency is ignored.
+	normalized := strings.ReplaceAll(string(module), "\r\n", "\n")
+	return strings.Replace(normalized, "module ki\n", "module ki/extensions/"+name+"\n", 1) + "\nrequire ki v0.0.0\n\nreplace ki => ./_ki\n"
+}
+
 func copyGoSources(source, destination string) error {
 	entries, err := os.ReadDir(source)
 	if err != nil {
