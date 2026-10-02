@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"ki/internal/state"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -125,6 +128,9 @@ func TestLoadMissingFilesUsesBuiltin(t *testing.T) {
 	if cfg.Streaming.IdleTimeoutSeconds != 300 {
 		t.Fatalf("streaming: %+v", cfg.Streaming)
 	}
+	if cfg.CodeMode.Mode != "mixed" {
+		t.Fatalf("default code mode: %+v", cfg.CodeMode)
+	}
 	if cfg.Log.Level != "info" || cfg.Log.MaxSizeMB != 10 || cfg.Log.MaxBackups != 3 {
 		t.Fatalf("builtin log: %+v", cfg.Log)
 	}
@@ -156,6 +162,83 @@ func TestStreamingIdleTimeout(t *testing.T) {
 				}
 			} else if err != nil || cfg.Streaming.IdleTimeoutSeconds != seconds {
 				t.Fatalf("timeout: %+v, error: %v", cfg.Streaming, err)
+			}
+		})
+	}
+}
+
+func TestCodeMode(t *testing.T) {
+	for _, mode := range []string{"off", "mixed", "only", "invalid"} {
+		t.Run(mode, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("KI_HOME", home)
+			if err := os.WriteFile(filepath.Join(home, "ki.toml"), fmt.Appendf(nil, "[code_mode]\nmode = %q\n", mode), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(t.TempDir())
+			if mode == "invalid" {
+				if err == nil || !strings.Contains(err.Error(), "code_mode.mode") {
+					t.Fatalf("invalid mode: %v", err)
+				}
+			} else if err != nil || cfg.CodeMode.Mode != mode {
+				t.Fatalf("mode: %+v, error: %v", cfg.CodeMode, err)
+			}
+		})
+	}
+}
+
+func TestMCPEnvironmentKeysPreserveCaseAcrossOverlays(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	t.Setenv("KI_HOME", home)
+	if err := state.WriteJSON(filepath.Join(home, "mcp.json"), map[string]any{
+		"version": 1, "mcpServers": map[string]MCPServer{
+			"Example": {Command: "mcp-server", Env: map[string]string{"API_TOKEN": "global", "MixedCase": "preserved"}},
+		},
+	}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cwd, ".ki"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.WriteJSON(filepath.Join(cwd, ".ki", "mcp.json"), map[string]any{
+		"version": 1, "mcpServers": map[string]MCPServer{
+			"Example": {Command: "project-server", Env: map[string]string{"API_TOKEN": "project", "api_token": "different"}},
+		},
+	}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"API_TOKEN": "project", "api_token": "different"}
+	if !reflect.DeepEqual(cfg.MCPServers["Example"].Env, want) {
+		t.Fatalf("env = %#v, want %#v", cfg.MCPServers["Example"].Env, want)
+	}
+}
+
+func TestMCPToolAllowListPresence(t *testing.T) {
+	for _, entry := range []struct {
+		name  string
+		value string
+		allow bool
+	}{
+		{name: "omitted", allow: true},
+		{name: "empty", value: `,"enabledTools":[]`},
+		{name: "selected", value: `,"enabledTools":["read"]`, allow: true},
+	} {
+		t.Run(entry.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("KI_HOME", home)
+			if err := os.WriteFile(filepath.Join(home, "mcp.json"), []byte(`{"version":1,"mcpServers":{"example":{"command":"mcp-server"`+entry.value+`}}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.MCPServers["example"].AllowsTool("read"); got != entry.allow {
+				t.Fatalf("read allowed=%v, want %v; enabledTools=%#v", got, entry.allow, cfg.MCPServers["example"].EnabledTools)
 			}
 		})
 	}

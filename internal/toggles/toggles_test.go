@@ -37,7 +37,9 @@ func TestSaveRoundTrip(t *testing.T) {
 		Skills:     session.Toggle{Disabled: []string{"alpha"}},
 		Tools:      session.Toggle{Disabled: []string{"SpawnAgent", "spawn_agent"}},
 		Extensions: session.Toggle{Disabled: []string{"telegram-bot"}},
+		MCP:        session.Toggle{Disabled: []string{"Read", "read", "my-server"}},
 		Message:    Message{Busy: BusyQueue},
+		CodeMode:   CodeMode{Mode: "only"},
 	}
 	if err := Save(home, want); err != nil {
 		t.Fatal(err)
@@ -58,7 +60,30 @@ func TestSaveRoundTrip(t *testing.T) {
 	if got.Message.BusyDelivery() != BusyQueue {
 		t.Fatalf("message %+v", got.Message)
 	}
+	if got.CodeMode.Mode != "only" {
+		t.Fatalf("code mode %+v", got.CodeMode)
+	}
+	if len(got.MCP.Disabled) != 3 || got.MCP.Disabled[0] != "Read" || got.MCP.Disabled[1] != "read" || got.MCP.Allowed("my-server") {
+		t.Fatalf("raw MCP names must not use tool canonicalization: %+v", got.MCP)
+	}
 	if _, err := filepath.Rel(home, path(home)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCodeModeEffectiveMode(t *testing.T) {
+	for _, override := range []string{"", "invalid", "off", "mixed", "only"} {
+		for _, fallback := range []string{"", "invalid", "off", "mixed", "only"} {
+			want := "mixed"
+			if fallback == "off" || fallback == "mixed" || fallback == "only" {
+				want = fallback
+			}
+			if override == "off" || override == "mixed" || override == "only" {
+				want = override
+			}
+			if got := (CodeMode{Mode: override}).EffectiveMode(fallback); got != want {
+				t.Fatalf("override=%q fallback=%q: got %q, want %q", override, fallback, got, want)
+			}
+		}
 	}
 }

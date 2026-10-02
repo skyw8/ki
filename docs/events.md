@@ -109,6 +109,8 @@ sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` �
 
 `message_end` 带持久化后的 `entryId` 和 `parentId`（根为显式空字符串）。稀疏快照的 leaf 可能没有正文，客户端不能把收到的同一个 leaf id 当成自己的 parent；已完成 SSE 消息立即并入身份图，使用真实 parent 边，未取得中间 metadata 时另设本地阅读桥。
 
+Runtime user-role 通知沿同一持久化消息顺序显示，不占 compact 回复的 `keep` 名额，也不计入 `hiddenCount`。通知即使落在最后 assistant 之后，仍作为独立可见行保留；`keep=1` 保留的是最后回复，而不是最后通知。
+
 `compaction_start` / `compaction_end` 在 run SSE 和 standalone push 路径都先持久化，再携带该 lifecycle entry 的 `lifecycleEntryId`、`parentId`（根为显式空字符串）和 `timestamp`（Unix 毫秒）。客户端据此合并回放和历史正文，不另造进度行身份；`compaction_end.entryId` 仍指向成功提交的 checkpoint，不能用作 lifecycle entry 的身份。
 
 `tool_execution_start` 带 `timestamp`（Unix 毫秒）作为调用开始时间；
@@ -118,6 +120,14 @@ sideband 帧带 `sessionId` 让客户端只处理相关 session。`agent_end` �
 并落入 jsonl；start/end 本身仍是实时事件，不单独生成 conversation entry。
 `durationMs` 不做 `omitempty`：亚毫秒的调用（例如读小文件的 `Read`）真实
 测得 0，字段必须保留，否则 WebUI 会把「0ms」误当成「无计时」而不显示。
+
+Code Mode 的嵌套执行是例外：复用 `tool_execution_start/update/end`，但带
+`parentCallId`、`cellId` 以及父进程生成的 `toolCallId`，以有界结构化 details
+先持久化，再携带该审计 entry 的 `entryId/parentId` 发布。它们不生成独立
+provider toolResult；只有外层 exec/wait 与模型调用配对。`notify` 的进度使用
+外层调用 ID，并保留 cell/parent 归属。WebUI 直播与历史折叠同一组事件，
+不会在刷新后把嵌套调用变成未配对或丢失的工具行。事件漏斗串行化这些并发
+callback 和普通 loop 事件；审计失败阻止新效果或使正在运行的 cell 失败。
 
 `turn_start` 带开始时间 `timestamp`，`turn_end` 带完成时间 `timestamp` 和
 `durationMs`（从 `turn_start` 起算的墙钟，覆盖本轮全部请求与工具）。这两个

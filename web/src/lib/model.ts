@@ -1054,6 +1054,13 @@ function applyEntry(s: ViewState, e: Entry, withNode = true) {
     applyMessage(s, e.message, e.id, e.timestamp, e.parentId, e.truncated, withNode)
     return
   }
+  if (e.details && typeof e.details === 'object') {
+    const event = { ...e.details as LoopEvent, type: e.type }
+    if (isNestedToolEvent(event)) {
+      applyNestedToolEvent(s, event, withNode, e.timestamp, e.truncated)
+      return
+    }
+  }
   if (e.type === 'run_aborted') {
     const details = e.details && typeof e.details === 'object' ? e.details as { reason?: string; source?: string; runId?: string } : {}
     if (withNode) s.nodes.push({
@@ -1360,11 +1367,71 @@ function patchTool(s: ViewState, id: string, patch: Partial<Extract<ChatNode, { 
       durationMs: patch.durationMs ?? r.durationMs,
       startedAt: patch.startedAt ?? r.startedAt,
       name: patch.name || r.name,
+      ...(patch.parentCallId === undefined ? {} : { parentCallId: patch.parentCallId }),
+      ...(patch.cellId === undefined ? {} : { cellId: patch.cellId }),
+      ...(patch.requestedToolName === undefined ? {} : { requestedToolName: patch.requestedToolName }),
       details: patch.details ?? r.details,
       ...(outputBlocks === undefined ? {} : { outputBlocks }),
       ...(sourceBlocks === undefined ? {} : { sourceBlocks }),
       preview: previewOf((patch.name || r.name || 'tool') + ' ' + (result || compactArgs(r.input))),
     }
+  })
+}
+
+function isNestedToolEvent(event: LoopEvent): boolean {
+  return !!event.parentCallId && !!event.toolCallId
+    && ['tool_execution_start', 'tool_execution_update', 'tool_execution_end'].includes(event.type)
+}
+
+function applyNestedToolEvent(s: ViewState, event: LoopEvent, withNode = true, stamp?: string, truncated?: boolean) {
+  const id = event.toolCallId!
+  // notify belongs to the outer call even after exec has yielded. An update
+  // without a start must not invent another pending provider tool call.
+  if (id === event.parentCallId) {
+    if (event.type === 'tool_execution_update') patchTool(s, id, { details: event.partialResult })
+    return
+  }
+  const metadata = {
+    parentCallId: event.parentCallId,
+    cellId: event.cellId,
+    requestedToolName: event.requestedToolName,
+  }
+  const node = s.nodes.find(n => n.kind === 'tool' && n.id === id)
+  const record = s.records.find(r => r.kind === 'tool' && r.id === id)
+  const finished = event.type === 'tool_execution_end'
+  const timestamp = event.timestamp ?? tsMs(undefined, stamp)
+  const startedAt = record?.startedAt ?? (timestamp != null && finished && event.durationMs != null
+    ? timestamp - Math.max(0, event.durationMs) : timestamp)
+  const running = !finished && s.busy && !(node && hasResult(node))
+  const name = event.toolName || record?.name || 'tool'
+  if (withNode && !node) {
+    s.nodes.push({ kind: 'tool', id, turnId: s.turnId, name, args: event.args, startedAt, running, truncated, ...metadata })
+  }
+  if (!record) {
+    // A yielded cell may finish under a later wait/model request. Bind its
+    // audit once, preferably to the enclosing call, never to the end frame.
+    const parent = s.records.find(r => r.kind === 'tool' && r.id === event.parentCallId)
+    const requestId = parent?.requestId ?? s.currentRequestId
+    const request = s.requests.find(r => r.id === requestId)
+    s.records.push({
+      id, kind: 'tool', turnId: s.turnId, turn: s.turn || 1,
+      step: parent?.step ?? request?.step, requestId,
+      preview: previewOf(name + ' ' + compactArgs(event.args)),
+      name, input: event.args, startedAt, running, truncated, ...metadata,
+    })
+  }
+  const result = event.result && typeof event.result === 'object' ? event.result as Record<string, unknown> : undefined
+  const content = result?.content ?? result?.Content
+  patchTool(s, id, {
+    ...metadata, name, startedAt, truncated, running,
+    ...(event.type === 'tool_execution_update' ? { details: event.partialResult } : {}),
+    ...(finished ? {
+      result: toolResultText(event.result),
+      isError: event.isError,
+      durationMs: event.durationMs,
+      details: result?.details ?? result?.Details,
+      ...(Array.isArray(content) ? { outputBlocks: content as Content[] } : {}),
+    } : {}),
   })
 }
 
@@ -1410,9 +1477,10 @@ function rememberTool(s: ViewState, id?: string) {
 function settleToolBatch(s: ViewState) {
   // A model request starts only after the preceding parallel batch joins.
   // Sibling completion is not such a boundary and must never settle a peer.
-  s.nodes = s.nodes.map(n => n.kind === 'tool' && n.running ? { ...n, running: false } : n)
-  s.records = s.records.map(r => r.kind === 'tool' && r.running ? { ...r, running: false } : r)
-  if (s.toolStates) s.toolStates = Object.fromEntries(Object.entries(s.toolStates).map(([id, n]) => [id, { ...n, running: false }]))
+  // A yielded code cell's callbacks do not join the outer model tool batch.
+  s.nodes = s.nodes.map(n => n.kind === 'tool' && n.running && !n.parentCallId ? { ...n, running: false } : n)
+  s.records = s.records.map(r => r.kind === 'tool' && r.running && !r.parentCallId ? { ...r, running: false } : r)
+  if (s.toolStates) s.toolStates = Object.fromEntries(Object.entries(s.toolStates).map(([id, n]) => [id, n.parentCallId ? n : { ...n, running: false }]))
 }
 
 export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
@@ -1422,6 +1490,35 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     nodes: s.nodes.slice(),
     records: s.records.slice(),
     requests: s.requests.slice(),
+  }
+  if (isNestedToolEvent(ev)) {
+    if (ev.entryId) {
+      const known = next.entries.some(entry => entry.id === ev.entryId && !entry.truncated && entry.details)
+      // Nested calls are durable audit entries, not toolResult messages. Use
+      // the server's entry identity so replay/reload cannot duplicate cards.
+      persistLiveEntry(next, {
+        type: ev.type, id: ev.entryId, parentId: ev.parentId,
+        timestamp: ev.timestamp == null ? undefined : new Date(ev.timestamp).toISOString(),
+        details: {
+          toolCallId: ev.toolCallId, parentCallId: ev.parentCallId, cellId: ev.cellId,
+          toolName: ev.toolName, requestedToolName: ev.requestedToolName,
+          timestamp: ev.timestamp, durationMs: ev.durationMs, isError: ev.isError,
+          args: ev.args, partialResult: ev.partialResult, result: ev.result,
+        },
+      })
+      if (next.toolStates?.[ev.toolCallId!]) {
+        next.toolStates = { ...next.toolStates }
+        delete next.toolStates[ev.toolCallId!]
+      }
+      // The live request header may not have its durable identity yet. Fold
+      // once in place instead of rebuilding away that start-time attribution;
+      // replayed older frames must never restart a completed nested tool.
+      if (!known) applyNestedToolEvent(next, ev)
+      return next
+    }
+    applyNestedToolEvent(next, { ...ev, timestamp: ev.timestamp ?? Date.now() })
+    if (ev.toolCallId !== ev.parentCallId) rememberTool(next, ev.toolCallId)
+    return next
   }
   switch (ev.type) {
 	case 'context_usage':

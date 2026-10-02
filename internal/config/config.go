@@ -12,14 +12,24 @@ import (
 
 // Config is the merged runtime configuration.
 type Config struct {
-	Agents     Agents     `mapstructure:"agents"`
-	Home       string     `mapstructure:"-"`
-	Sessions   Sessions   `mapstructure:"sessions"`
-	Compaction Compaction `mapstructure:"compaction"`
-	Server     Server     `mapstructure:"server"`
-	Log        Log        `mapstructure:"log"`
-	Push       Push       `mapstructure:"push"`
-	Streaming  Streaming  `mapstructure:"streaming"`
+	Agents     Agents               `mapstructure:"agents"`
+	Home       string               `mapstructure:"-"`
+	Sessions   Sessions             `mapstructure:"sessions"`
+	Compaction Compaction           `mapstructure:"compaction"`
+	Server     Server               `mapstructure:"server"`
+	Log        Log                  `mapstructure:"log"`
+	Push       Push                 `mapstructure:"push"`
+	Streaming  Streaming            `mapstructure:"streaming"`
+	CodeMode   CodeMode             `mapstructure:"code_mode"`
+	MCPServers map[string]MCPServer `mapstructure:"-"`
+	// MCPFromFiles prevents injected-config fallback from leaking a different
+	// workspace's file-derived capabilities into a workspace without files.
+	MCPFromFiles bool `mapstructure:"-"`
+}
+
+// CodeMode selects model-facing JavaScript tool orchestration.
+type CodeMode struct {
+	Mode string `mapstructure:"mode"`
 }
 
 type Agents struct {
@@ -100,6 +110,7 @@ func Builtin(home string) Config {
 		Log:       Log{Level: "info", MaxSizeMB: 10, MaxBackups: 3},
 		Push:      Push{Enabled: true, Subject: "mailto:ki@localhost"},
 		Streaming: Streaming{IdleTimeoutSeconds: 300},
+		CodeMode:  CodeMode{Mode: "mixed"},
 	}
 }
 
@@ -151,6 +162,12 @@ func LoadWithViper(cwd string, settings *viper.Viper) (Config, error) {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
 	cfg.Home = home
+	mcpSnapshot, err := LoadMCPSnapshot(home, cwd)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.MCPServers = mcpSnapshot.Servers
+	cfg.MCPFromFiles = mcpSnapshot.FilesPresent
 	if cfg.Agents.MaxConcurrent < 1 {
 		return Config{}, fmt.Errorf("agents.max_concurrent must be positive")
 	}
@@ -161,6 +178,11 @@ func LoadWithViper(cwd string, settings *viper.Viper) (Config, error) {
 	case "auto", "local", "remote":
 	default:
 		return Config{}, fmt.Errorf("compaction.mode must be auto, local, or remote")
+	}
+	switch cfg.CodeMode.Mode {
+	case "off", "mixed", "only":
+	default:
+		return Config{}, fmt.Errorf("code_mode.mode must be off, mixed, or only")
 	}
 	if cfg.Sessions.Root == "" {
 		cfg.Sessions.Root = filepath.Join(cfg.Home, "sessions")
@@ -190,6 +212,7 @@ func setDefaults(settings *viper.Viper, cfg Config) {
 	settings.SetDefault("push.enabled", cfg.Push.Enabled)
 	settings.SetDefault("push.subject", cfg.Push.Subject)
 	settings.SetDefault("streaming.idle_timeout_seconds", cfg.Streaming.IdleTimeoutSeconds)
+	settings.SetDefault("code_mode.mode", cfg.CodeMode.Mode)
 }
 
 func mergeEnv(settings *viper.Viper) error {

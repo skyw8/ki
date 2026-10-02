@@ -17,7 +17,7 @@ test('groupTurns includes an imported prelude in the first human turn like the s
   expect(turns[1].nodes.map(n => n.id)).toEqual(['u2', 'a2'])
 })
 
-test('foldReplies treats runtime-authored user messages as foldable replies', () => {
+test('foldReplies displays runtime notifications separately without counting them as replies', () => {
   const nodes = [
     user('u1', 'human'), asst('a1'),
     user('notice', '<task-notification>done</task-notification>', 'agent:task-1'), asst('a2'),
@@ -28,17 +28,36 @@ test('foldReplies treats runtime-authored user messages as foldable replies', ()
   expect(turns[0].nodes.map(n => n.id)).toEqual(['u1', 'a1', 'notice', 'a2'])
 
   const items = foldReplies(nodes, { keep: 1 })
-  expect(items.map(i => i.id)).toEqual(['u1', 'fold:u1', 'a2', 'u2', 'a3'])
+  expect(items.map(i => i.id)).toEqual(['u1', 'fold:u1', 'notice', 'a2', 'u2', 'a3'])
   const folded = items.find(i => i.kind === 'fold')
-  expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1', 'notice'])
+  expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1'])
+  expect(folded?.kind === 'fold' ? folded.count : 0).toBe(1)
 })
 
-test('foldReplies folds the opening directive of a machine-only subagent turn', () => {
+test('foldReplies keeps the opening directive of a machine-only subagent turn visible', () => {
   const nodes = [user('directive', 'subagent directive', 'agent'), asst('answer')]
   const items = foldReplies(nodes, { keep: 1 })
-  expect(items.map(i => i.id)).toEqual(['fold:directive', 'answer'])
-  const folded = items[0]
-  expect(folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['directive'])
+  expect(items.map(i => i.id)).toEqual(['directive', 'answer'])
+  expect(foldReplies(nodes, { keep: 0 }).map(i => i.id)).toEqual(['fold:directive', 'directive'])
+})
+
+test('trailing runtime notifications never replace the final reply or consume fold counts', () => {
+  const nodes = [
+    user('u', 'human'), asst('earlier'),
+    user('middle', 'progress', 'agent:child'), asst('final'),
+    user('trailing', 'done', 'agent:child'),
+  ]
+  for (const keep of [0, 1, 2]) {
+    const items = foldReplies(nodes, { keep })
+    expect(items.filter(i => i.kind === 'node' && i.node.kind === 'user').map(i => i.id))
+      .toEqual(['u', 'middle', 'trailing'])
+    expect(items.filter(i => i.kind === 'fold').map(i => i.count)).toEqual(keep < 2 ? [2 - keep] : [])
+    if (keep === 1) expect(items.map(i => i.id)).toEqual(['u', 'fold:u', 'middle', 'final', 'trailing'])
+    const expanded = foldReplies(nodes, { keep, expanded: new Set(['u']) })
+    expect(expanded.filter(i => i.kind === 'node').map(i => i.id)).toEqual(nodes.map(n => n.id))
+  }
+  expect(foldReplies([user('notice', 'done', 'agent:child')], { keep: 0 }).map(i => i.id))
+    .toEqual(['notice'])
 })
 
 test('foldReplies keeps every user bubble and the newest keep replies of each turn', () => {
@@ -198,58 +217,59 @@ for (const variant of ['event', 'aborted-event', 'legacy-aborted']) {
   })
 }
 
-test('compact reload counts a visible runtime-authored user reply only once', () => {
+test('compact reload excludes runtime notifications while retaining the final reply', () => {
   const entries = [
     message('u1', '', 'user'), message('a1', 'u1', 'assistant'),
     message('notice', 'a1', 'user', { origin: 'agent:task-1' }),
   ]
-  const { state } = sparseHistory(entries, ['u1', 'notice'], ['u1', 'notice'], 1)
+  const { state } = sparseHistory(entries, ['u1', 'a1', 'notice'], ['u1', 'a1', 'notice'], 0)
   expect(state.compactTurns?.[0].baselineNodes?.find(n => n.id === 'notice')?.kind).toBe('user')
-  expect(compactItems(state).map(i => i.id)).toEqual(['u1', 'fold:u1', 'notice'])
-  expect(foldedCount(state)).toBe(1)
-  expect(foldedCount(state, 0)).toBe(2)
+  expect(compactItems(state).map(i => i.id)).toEqual(['u1', 'a1', 'notice'])
+  expect(foldedCount(state)).toBe(0)
+  expect(foldedCount(state, 0)).toBe(1)
+  expect(compactItems(state, 0).map(i => i.id)).toEqual(['u1', 'fold:u1', 'notice'])
 })
 
-test('partial hydration subtracts runtime-authored user replies from snapshot overlap', () => {
+test('partial hydration of replies never counts independently visible runtime notifications', () => {
   const entries = [
     message('u1', '', 'user'), message('a1', 'u1', 'assistant'),
     message('notice', 'a1', 'user', { origin: 'agent:task-1' }), message('a2', 'notice', 'assistant'),
   ]
-  const { state, summary } = sparseHistory(entries, ['u1', 'a2'], ['u1', 'a2'], 2)
-  expect(foldedCount(state)).toBe(2)
+  const { state, summary } = sparseHistory(entries, ['u1', 'notice', 'a2'], ['u1', 'notice', 'a2'], 1)
+  expect(foldedCount(state)).toBe(1)
   // Loading a single hidden body must not break the existing sparse edge
   // when its own parent is still omitted from the immutable snapshot.
   const bodyOnly = hydrateEntries(state, [entries[2]])
   expect(bodyOnly.nodes.map(n => n.id)).toEqual(['u1', 'notice', 'a2'])
   expect(bodyOnly.compactTurns?.[0].baselineNodes?.map(n => n.id)).toEqual(['u1', 'notice', 'a2'])
-  expect(foldedCount(bodyOnly)).toBe(2)
-  // A keep=2 reprojection hydrates the notice but still omits the older a1.
-  // The browser's keep=1 fold must combine that local reply with remote a1.
-  const reprojected = { ...summary, entryIds: ['u1', 'notice', 'a2'], visibleNodeIds: ['u1', 'notice', 'a2'], hiddenCount: 1 }
-  const partial = hydrateEntries(state, [entries[2]], { compactTurns: [reprojected] })
-  expect(partial.loadedTurnIds ?? []).not.toContain('u1')
-  expect(partial.compactTurns?.[0].baselineNodes?.map(n => n.id)).toEqual(['u1', 'notice', 'a2'])
-  expect(foldedCount(partial)).toBe(2)
-  expect(compactItems(partial).find(i => i.kind === 'fold')?.remote).toBe(true)
+  expect(foldedCount(bodyOnly)).toBe(1)
+  // A keep=2 reprojection exposes the older a1 as well as the notice.
+  // The browser's keep=1 fold still counts only a1.
+  const reprojected = { ...summary, entryIds: entries.map(e => e.id), visibleNodeIds: entries.map(e => e.id), hiddenCount: 0 }
+  const partial = hydrateEntries(state, [entries[1]], { compactTurns: [reprojected] })
+  expect(partial.loadedTurnIds).toContain('u1')
+  expect(partial.compactTurns?.[0].baselineNodes?.map(n => n.id)).toEqual(['u1', 'a1', 'notice', 'a2'])
+  expect(foldedCount(partial)).toBe(1)
+  expect(compactItems(partial).find(i => i.kind === 'fold')?.remote).toBe(false)
 
   const complete = hydrateEntries(partial, [entries[1]], { compactTurns: [summary] })
   expect(complete.loadedTurnIds).toContain('u1')
-  expect(foldedCount(complete)).toBe(2)
+  expect(foldedCount(complete)).toBe(1)
   expect(compactItems(complete).find(i => i.kind === 'fold')?.remote).toBe(false)
 })
 
-test('a sparse machine-only fold counts its hidden runtime directive anchor once', () => {
+test('a sparse machine-only fold excludes its always-visible runtime directive anchor', () => {
   const entries = [
     message('directive', '', 'user', { origin: 'agent' }),
     message('a1', 'directive', 'assistant'), message('a2', 'a1', 'assistant'),
   ]
-  const { state } = sparseHistory(entries, ['directive', 'a2'], ['a2'], 2, { stats: {
+  const { state } = sparseHistory(entries, ['directive', 'a2'], ['directive', 'a2'], 1, { stats: {
     turn: 0, steps: 2, elapsedMs: 0, durationMs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
     tools: 0, toolFailures: 0, cacheMisses: 0, hasCost: false, cost: 0, ttftMs: 0, tps: null, live: false,
   } })
-  expect(compactItems(state).map(i => i.id)).toEqual(['fold:directive', 'a2'])
-  expect(foldedCount(state)).toBe(2)
-  expect(foldedCount(state, 0)).toBe(3)
+  expect(compactItems(state).map(i => i.id)).toEqual(['fold:directive', 'directive', 'a2'])
+  expect(foldedCount(state)).toBe(1)
+  expect(foldedCount(state, 0)).toBe(2)
 })
 
 test('compact tool projection counts distinct replies rather than retained entry bodies', () => {

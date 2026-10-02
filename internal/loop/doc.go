@@ -65,6 +65,18 @@
 // one tool/schema. Hooks/events/telemetry use canonical names; protocol calls
 // and results retain requested spelling. tool.ExecutionIdentity is host-only
 // context that attributes a terminal process to its originating call/generation.
+// ToolDispatcher snapshots a run's allowed registry and shares the full
+// prepare/execute policy with Code Mode callbacks. Nested calls cannot invoke
+// exec/wait recursively. They receive the full post-AfterTool intermediate
+// result under the caller's RPC budget, while separately bounded audit
+// tool_execution_* events carry parentCallId/cellId and a host-assigned call ID.
+// These events never create provider toolResult messages. Audit limits cover
+// arguments, progress, Details and non-text result payloads, independent of
+// model-facing output spool. Emit failures stop nested dispatch; progress
+// failures cancel its context. Nested dispatch Go errors are cell-fatal, not
+// merely catchable JavaScript rejections. Nested AfterTool failures fail closed.
+// Nested BeforeTool/Result.Terminate is returned to the enclosing code runtime,
+// which must stop accepting work and propagate the outer terminate signal.
 //
 // ProcessUpdated/AgentUpdated, QueueChanged, RunAborted, ExtensionError, ExtensionNotice, and
 // ExtensionUIPrompt are session sideband notifications. RuntimeReady is
@@ -75,4 +87,11 @@
 // message_*). Runtime-authored/context-only inputs have no optimistic acceptance.
 // Event catalog:
 // docs/events.md. Event order: docs/architecture.md.
+// Config.ModelTools optionally separates model-advertised schemas from the
+// fixed Config.Tools execution registry. It runs for each request after
+// BeforeRun/TransformContext and final content filtering, with the actual
+// provider history. Only canonical members of the registry may be advertised;
+// hiding a declaration does not revoke a capability or bypass tool policy.
+// search_tool, like nested JS calls, fails closed if AfterTool returns an error:
+// original discovery content and identities must not bypass output policy.
 package loop

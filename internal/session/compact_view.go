@@ -31,9 +31,9 @@ type CompactTurn struct {
 	LastStep            *TurnStep       `json:"lastStep,omitempty"`
 }
 
-// TurnToolState covers only the latest assistant tool batch, not the hidden
-// history. It lets sparse snapshots deduplicate both running and completed
-// tools against events received while the snapshot was in flight.
+// TurnToolState covers the latest assistant tool batch plus nested Code Mode
+// identities across batches. It lets sparse snapshots deduplicate both running
+// and completed tools against events received while the snapshot was in flight.
 type TurnToolState struct {
 	ID       string `json:"id"`
 	Finished bool   `json:"finished"`
@@ -79,8 +79,8 @@ type turnRange struct{ start, end, ordinal int }
 
 // isHumanTurnMessage distinguishes real inputs from runtime-authored user-role
 // messages. Agent directives and completion notifications belong to the
-// surrounding transcript turn so compact mode may fold them; extension origins
-// still represent user input relayed from another client.
+// surrounding transcript turn without consuming its reply slots; extension
+// origins still represent user input relayed from another client.
 func isHumanTurnMessage(e Entry) bool {
 	if !isUserMessage(e) {
 		return false
@@ -215,9 +215,9 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 	type node struct {
 		id, preview string
 		entries     []int
-		// alwaysVisible marks lifecycle metadata, not a reply. These rows stay
-		// on their own and never count toward `keep`, otherwise a trailing
-		// compaction/cancellation would hide the newest real reply.
+		// alwaysVisible marks runtime notifications and lifecycle metadata,
+		// not replies. They never count toward `keep`, otherwise a trailing
+		// notification/compaction/cancellation would hide the newest real reply.
 		alwaysVisible bool
 		suppressed    bool
 	}
@@ -226,6 +226,10 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 	failedTools := map[string]bool{}
 	batch := map[string]int{}
 	toolStates := []TurnToolState{}
+	nestedStates := []TurnToolState{}
+	nestedBatch := map[string]int{}
+	nestedStarted := map[string]bool{}
+	nestedProgress := map[string]int{}
 	var assistantAt int64
 	user := -1
 	stats := TurnStats{Turn: ordinal}
@@ -248,13 +252,15 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 			pendingCompaction, pendingSummary = -1, false
 		}
 		m := e.Message
+		audit, nestedAudit := codeModeToolAudit(e)
 		switch {
 		case isHumanTurnMessage(e):
 			user = i
 		case isUserMessage(e):
 			// Why: the runtime stores subagent traffic with role=user. It is
-			// transcript output, not an always-visible human turn anchor.
-			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}})
+			// a separate notification, not a reply slot: context-only mail can
+			// be persisted after the final assistant and must not hide it.
+			nodes = append(nodes, node{id: e.ID, preview: m.Text(), entries: []int{i}, alwaysVisible: true})
 		case m != nil && m.Role == "assistant":
 			batch = map[string]int{}
 			toolStates = []TurnToolState{}
@@ -326,6 +332,64 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 				tools[id] = len(nodes)
 				nodes = append(nodes, node{id: id, preview: m.ToolName, entries: []int{i}})
 			}
+		case nestedAudit:
+			id, _ := audit["toolCallId"].(string)
+			parent, _ := audit["parentCallId"].(string)
+			if id == parent {
+				// notify is progress for the enclosing exec, not another tool.
+				if at, ok := tools[id]; ok && e.Type == "tool_execution_update" {
+					if slot, found := nestedProgress[id]; found {
+						nodes[at].entries[slot] = i
+					} else {
+						nestedProgress[id] = len(nodes[at].entries)
+						nodes[at].entries = append(nodes[at].entries, i)
+					}
+				}
+				continue
+			}
+			stateAt, exists := nestedBatch[id]
+			if !exists {
+				stateAt = len(nestedStates)
+				nestedBatch[id] = stateAt
+				nestedStates = append(nestedStates, TurnToolState{ID: id})
+			}
+			if e.Type == "tool_execution_end" {
+				isError, _ := audit["isError"].(bool)
+				nestedStates[stateAt].Finished, nestedStates[stateAt].IsError = true, isError
+				if isError {
+					failedTools[id] = true
+				} else {
+					delete(failedTools, id)
+				}
+			}
+			at, exists := tools[id]
+			if !exists {
+				at = len(nodes)
+				tools[id] = at
+				name, _ := audit["toolName"].(string)
+				nodes = append(nodes, node{id: id, preview: name})
+			}
+			// A yielded cell can still be running after a later assistant or
+			// wait request. Keep its start independently of the reply budget.
+			nodes[at].alwaysVisible = !nestedStates[stateAt].Finished
+			switch e.Type {
+			case "tool_execution_start":
+				if !nestedStarted[id] {
+					nodes[at].entries = append(nodes[at].entries, i)
+					nestedStarted[id] = true
+				}
+			case "tool_execution_update":
+				// Compact needs the latest progress, not the entire immutable
+				// audit stream. Expansion still exposes every original frame.
+				if slot, ok := nestedProgress[id]; ok {
+					nodes[at].entries[slot] = i
+				} else {
+					nestedProgress[id] = len(nodes[at].entries)
+					nodes[at].entries = append(nodes[at].entries, i)
+				}
+			case "tool_execution_end":
+				nodes[at].entries = append(nodes[at].entries, i)
+			}
 		case e.Type == "compaction":
 			if pendingCompaction >= 0 {
 				nodes[pendingCompaction].suppressed = true
@@ -370,6 +434,16 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 		tps := float64(decodeTokens) / (float64(decodeMS) / 1000)
 		stats.TPS = &tps
 	}
+	// Ordinary batches reset at each assistant. Nested identities must not:
+	// even folded callbacks are covered by the snapshot, and their cells can
+	// finish under a later model request without changing attribution.
+	for _, state := range nestedStates {
+		if at, exists := batch[state.ID]; exists {
+			toolStates[at] = state
+		} else {
+			toolStates = append(toolStates, state)
+		}
+	}
 	t := CompactTurn{ToolStates: toolStates, EntryCount: len(path), AssistantAt: assistantAt, ID: path[0].ID, ParentID: path[0].ParentID, TailID: path[len(path)-1].ID, Stats: stats, LastStep: lastStep, EntryIDs: []string{}, VisibleNodeIDs: []string{}}
 	selected := map[int]bool{}
 	// Empty/failed operations have no checkpoint body. Their lifecycle must
@@ -386,14 +460,14 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 		t.VisibleNodeIDs = append(t.VisibleNodeIDs, t.ID)
 	} else if len(nodes) > 0 {
 		// A subagent session can start with a machine-authored user message and
-		// have no human input at all. Keep that first node's body as a hidden
-		// anchor so the browser can attach the remote fold row to this turn.
+		// have no human input at all. Keep the first node's body as its stable
+		// anchor, whether it is a visible notification or a hidden reply.
 		t.ID = nodes[0].id
 		selected[nodes[0].entries[0]] = true
 	}
 	// Fold only real replies: the newest `keep` of them stay visible, and every
-	// lifecycle metadata row stays visible too. Counting one toward `keep`
-	// would make a trailing status hide the turn's final answer.
+	// runtime notification and lifecycle metadata row stays visible too.
+	// Counting one toward `keep` would hide the turn's final answer.
 	var replies []int
 	for i, n := range nodes {
 		if !n.alwaysVisible {
@@ -510,6 +584,22 @@ func entryMillis(e Entry) int64 {
 	if e.Message != nil && e.Message.Timestamp > 0 {
 		return e.Message.Timestamp
 	}
+	if audit, ok := codeModeToolAudit(e); ok {
+		var stamp int64
+		switch value := audit["timestamp"].(type) {
+		case int:
+			stamp = int64(value)
+		case int64:
+			stamp = value
+		case float64:
+			stamp = int64(value)
+		case json.Number:
+			stamp, _ = value.Int64()
+		}
+		if stamp > 0 {
+			return stamp
+		}
+	}
 	t, _ := time.Parse(time.RFC3339Nano, e.Timestamp)
 	if t.IsZero() {
 		return 0
@@ -541,6 +631,10 @@ func (c *turnClock) add(e Entry) {
 		c.last = max(c.last, entryMillis(e))
 	case e.Message != nil && e.Message.Role == "toolResult", e.Type == "compaction":
 		c.last = max(c.last, entryMillis(e))
+	case e.Type == "tool_execution_end":
+		if _, ok := codeModeToolAudit(e); ok {
+			c.last = max(c.last, entryMillis(e))
+		}
 	}
 }
 
@@ -562,5 +656,51 @@ func cumulativeTurnElapsed(path []Entry, ranges []turnRange) []int64 {
 		total += clock.elapsed()
 		out[i] = total
 	}
+	return out
+}
+
+func codeModeToolAudit(e Entry) (map[string]any, bool) {
+	switch e.Type {
+	case "tool_execution_start", "tool_execution_update", "tool_execution_end":
+		details, _ := e.Details.(map[string]any)
+		id, _ := details["toolCallId"].(string)
+		parent, _ := details["parentCallId"].(string)
+		return details, id != "" && parent != ""
+	}
+	return nil, false
+}
+
+// slimCodeModeAudit preserves the identities required to reconstruct and
+// deduplicate a tool card. Replacing Details wholesale with {truncated:true}
+// would turn a real nested execution into a missing/ghost card after reload.
+func slimCodeModeAudit(details map[string]any, limit int) map[string]any {
+	out := map[string]any{}
+	for _, key := range []string{"toolCallId", "parentCallId", "cellId", "toolName", "requestedToolName", "timestamp", "durationMs", "isError"} {
+		if value, ok := details[key]; ok {
+			out[key] = value
+		}
+	}
+	metadata, _ := json.Marshal(out)
+	fieldLimit := max(128, (limit-len(metadata)-128)/3)
+	for _, key := range []string{"args", "partialResult", "result"} {
+		value, ok := details[key]
+		if !ok {
+			continue
+		}
+		raw, err := json.Marshal(value)
+		if err == nil && len(raw) <= fieldLimit {
+			out[key] = value
+			continue
+		}
+		if key == "result" {
+			out[key] = map[string]any{
+				"Content": []map[string]any{{"type": "text", "text": "[nested audit result truncated]"}},
+				"IsError": details["isError"], "Details": map[string]any{"truncated": true},
+			}
+		} else {
+			out[key] = map[string]any{"truncated": true}
+		}
+	}
+	out["truncated"] = true
 	return out
 }

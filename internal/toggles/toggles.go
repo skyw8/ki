@@ -25,6 +25,25 @@ type Message struct {
 	Busy string `json:"busy,omitempty"`
 }
 
+// CodeMode is an optional global override of the configured tool exposure mode.
+type CodeMode struct {
+	Mode string `json:"mode,omitempty"`
+}
+
+// EffectiveMode falls back to TOML when no valid settings override is stored.
+func (c CodeMode) EffectiveMode(fallback string) string {
+	switch c.Mode {
+	case "off", "mixed", "only":
+		return c.Mode
+	}
+	switch fallback {
+	case "off", "mixed", "only":
+		return fallback
+	default:
+		return "mixed"
+	}
+}
+
 // BusyDelivery returns steer or queue. Empty defaults to steer.
 func (m Message) BusyDelivery() string {
 	if m.Busy == BusyQueue {
@@ -39,7 +58,9 @@ type File struct {
 	Skills     session.Toggle `json:"skills"`
 	Tools      session.Toggle `json:"tools"`
 	Extensions session.Toggle `json:"extensions"`
+	MCP        session.Toggle `json:"mcp"`
 	Message    Message        `json:"message"`
+	CodeMode   CodeMode       `json:"code_mode"`
 }
 
 func path(home string) string { return filepath.Join(home, "toggles.json") }

@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"ki/internal/codemode"
 	"ki/internal/config"
 	"ki/internal/logging"
 	"ki/internal/loop"
@@ -37,6 +38,16 @@ func Main(args []string) (exitCode int) {
 			exitCode = 1
 		}
 	}()
+
+	if len(args) == 1 && args[0] == codemode.WorkerArg {
+		// Workers must not discover project config, credentials or extensions:
+		// all capabilities arrive over the parent's private IPC connection.
+		if err := codemode.ServeWorker(context.Background(), os.Stdin, os.Stdout, codemode.Limits{}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
 
 	// Cobra's Windows mousetrap prints "This is a command line tool. You need
 	// to open cmd.exe and run it from there." and exits when the binary is
@@ -360,6 +371,9 @@ func newConfigCommand() *cobra.Command {
 				_, _ = fmt.Fprintf(os.Stdout, "home: %s\n", cfg.Home)
 				_, _ = fmt.Fprintf(os.Stdout, "global: %s\n", filepath.Join(cfg.Home, "ki.toml"))
 				_, _ = fmt.Fprintf(os.Stdout, "project: %s\n", filepath.Join(cwd, ".ki", "ki.toml"))
+				globalMCP, projectMCP := config.MCPPaths(cfg.Home, cwd)
+				_, _ = fmt.Fprintf(os.Stdout, "mcp global: %s\n", globalMCP)
+				_, _ = fmt.Fprintf(os.Stdout, "mcp project: %s\n", projectMCP)
 				return nil
 			})
 		},

@@ -372,7 +372,7 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	}
 
 	gpt := prompt("openai/gpt-5.6-terra")
-	gptWant := []string{"read", "apply_patch", "grep", "glob", "exec_command", "write_stdin", "spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent", "list_agents"}
+	gptWant := []string{"read", "apply_patch", "grep", "glob", "exec_command", "write_stdin", "spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent", "list_agents", "exec", "wait"}
 	if got := requestToolNames(gpt.Tools); !slices.Equal(got, gptWant) {
 		t.Fatalf("GPT tools = %v", got)
 	}
@@ -389,7 +389,7 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 
 	// Text-only models must not advertise image or PDF reading in Read.
 	textOnly := prompt("zai/glm-5.3")
-	textOnlyWant := []string{"read", "write", "edit", "grep", "glob", "exec_command", "write_stdin", "spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent", "list_agents"}
+	textOnlyWant := []string{"read", "write", "edit", "grep", "glob", "exec_command", "write_stdin", "spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent", "list_agents", "exec", "wait"}
 	if got := requestToolNames(textOnly.Tools); !slices.Equal(got, textOnlyWant) {
 		t.Fatalf("text-only tools = %v", got)
 	}

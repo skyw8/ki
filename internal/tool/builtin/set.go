@@ -7,8 +7,10 @@ import (
 	toolapi "ki/internal/tool"
 	agenttools "ki/internal/tool/builtin/agent"
 	"ki/internal/tool/builtin/catalog"
+	codetools "ki/internal/tool/builtin/code"
 	filetools "ki/internal/tool/builtin/file"
 	shelltools "ki/internal/tool/builtin/shell"
+	"ki/internal/tool/discovery"
 )
 
 // Profile is the provider-neutral subset of model capabilities that affects
@@ -54,7 +56,8 @@ func (s Set) Catalog(profile Profile) []toolapi.Tool {
 			out = append(out, patchTool)
 		}
 	}
-	return out
+	out = append(out, (codetools.Set{}).Build()...)
+	return append(out, discovery.New(nil).SearchTool())
 }
 
 // FilterBuiltins applies a global built-in tool toggle to a tool slice. The

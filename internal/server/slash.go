@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -99,7 +99,11 @@ func toolProfile(info provider.Model) builtin.Profile {
 // changing another switch cannot erase their global disabled state.
 func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
-	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
+	cwd, status, err := s.toolSettingsCWD(r)
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
 	var profile builtin.Profile
 	if sessionID != "" {
 		sess, err := s.open(sessionID)
@@ -127,12 +131,6 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 			profile = toolProfile(info)
 		}
 	}
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
-	if cwd == "" {
-		cwd = "."
-	}
 	toolSet := builtin.Set{
 		CWD: cwd, Processes: s.processesFor(sessionID), Agent: s,
 		AgentParentSessionID: sessionID, Shells: s.shells, Mutations: s.mutations,
@@ -144,6 +142,21 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 	}
 	builtins := toolSet.Catalog(profile)
 	tg := toggles.Load(s.cfg.Home)
+	mcpSnapshot, err := s.resolveMCP(cwd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	codeMode := tg.CodeMode.EffectiveMode(s.cfg.CodeMode.Mode)
+	if codeMode == "mixed" || codeMode == "only" {
+		available["exec"], available["wait"] = true, true
+	}
+	for name, server := range mcpSnapshot.Servers {
+		if server.IsEnabled() && tg.MCP.Allowed(name) {
+			available[catalog.SearchTool] = true
+			break
+		}
+	}
 	items := make([]map[string]any, 0, len(builtins))
 	for _, tool := range builtins {
 		items = append(items, map[string]any{
@@ -154,27 +167,90 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 			"available":   available[tool.Name()],
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "codeMode": codeMode, "mcp": s.mcpInfos(mcpSnapshot, tg.MCP)})
 }
 
 func (s *Server) patchTools(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Disabled []string `json:"disabled"`
+	var body *struct {
+		Disabled    *[]string       `json:"disabled"`
+		CodeMode    json.RawMessage `json:"codeMode"`
+		MCPDisabled json.RawMessage `json:"mcpDisabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&body); err != nil || body == nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	f := toggles.Load(s.cfg.Home)
-	for i, name := range body.Disabled {
-		if !catalog.IsReserved(name) {
-			http.Error(w, "unknown tool "+name, http.StatusBadRequest)
+	// Validate the entire patch before saving: a trailing document must not
+	// silently commit the first object or make malformed requests appear valid.
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	var requestedMode string
+	var mcpDisabled []string
+	if body.MCPDisabled != nil {
+		var err error
+		mcpDisabled, err = validateMCPDisabled(body.MCPDisabled)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		body.Disabled[i] = toolapi.MustCanonical(name)
 	}
-	f.Tools = session.Toggle{Disabled: body.Disabled}
-	if err := toggles.Save(s.cfg.Home, f); err != nil {
+	if body.CodeMode != nil {
+		if err := json.Unmarshal(body.CodeMode, &requestedMode); err != nil {
+			http.Error(w, "codeMode must be off, mixed, or only", http.StatusBadRequest)
+			return
+		}
+		switch requestedMode {
+		case "off", "mixed", "only":
+		default:
+			http.Error(w, "codeMode must be off, mixed, or only", http.StatusBadRequest)
+			return
+		}
+	}
+	if body.Disabled != nil {
+		for i, name := range *body.Disabled {
+			if !catalog.IsReserved(name) {
+				http.Error(w, "unknown tool "+name, http.StatusBadRequest)
+				return
+			}
+			(*body.Disabled)[i] = toolapi.MustCanonical(name)
+		}
+	}
+	cwd, status, err := s.toolSettingsCWD(r)
+	if err != nil {
+		http.Error(w, err.Error(), status)
+		return
+	}
+	mcpSnapshot, err := s.resolveMCP(cwd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	editableMCP := make(map[string]bool, len(mcpSnapshot.Servers))
+	for name, server := range mcpSnapshot.Servers {
+		if server.IsEnabled() {
+			editableMCP[name] = true
+		}
+	}
+	for _, name := range mcpDisabled {
+		if !editableMCP[name] {
+			http.Error(w, "MCP server not editable in this workspace: "+name, http.StatusBadRequest)
+			return
+		}
+	}
+	if err := s.updateToggles(func(f *toggles.File) {
+		if body.Disabled != nil {
+			f.Tools = session.Toggle{Disabled: *body.Disabled}
+		}
+		if body.CodeMode != nil {
+			f.CodeMode.Mode = requestedMode
+		}
+		if body.MCPDisabled != nil {
+			f.MCP.Disabled = mergeMCPDisabled(f.MCP.Disabled, mcpDisabled, editableMCP)
+		}
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -182,6 +258,16 @@ func (s *Server) patchTools(w http.ResponseWriter, r *http.Request) {
 	// set for an occupied session and applies it at the next occupy boundary.
 	s.Reload()
 	s.getTools(w, r)
+}
+
+// updateToggles serializes read-modify-write across independent settings and
+// automatic extension disablement, so saving one field cannot erase another.
+func (s *Server) updateToggles(change func(*toggles.File)) error {
+	s.toggleMu.Lock()
+	defer s.toggleMu.Unlock()
+	f := toggles.Load(s.cfg.Home)
+	change(&f)
+	return toggles.Save(s.cfg.Home, f)
 }
 
 func (s *Server) getCommands(w http.ResponseWriter, r *http.Request) {
@@ -200,9 +286,9 @@ func (s *Server) patchSkills(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	f := toggles.Load(s.cfg.Home)
-	f.Skills = session.Toggle{Disabled: body.Disabled}
-	if err := toggles.Save(s.cfg.Home, f); err != nil {
+	if err := s.updateToggles(func(f *toggles.File) {
+		f.Skills = session.Toggle{Disabled: body.Disabled}
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -225,9 +311,9 @@ func (s *Server) patchExtensions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	f := toggles.Load(s.cfg.Home)
-	f.Extensions = session.Toggle{Disabled: body.Disabled}
-	if err := toggles.Save(s.cfg.Home, f); err != nil {
+	if err := s.updateToggles(func(f *toggles.File) {
+		f.Extensions = session.Toggle{Disabled: body.Disabled}
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -570,9 +656,9 @@ func (s *Server) patchMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "busy must be steer or queue", http.StatusBadRequest)
 		return
 	}
-	f := toggles.Load(s.cfg.Home)
-	f.Message.Busy = body.Busy
-	if err := toggles.Save(s.cfg.Home, f); err != nil {
+	if err := s.updateToggles(func(f *toggles.File) {
+		f.Message.Busy = body.Busy
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

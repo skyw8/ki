@@ -6,7 +6,8 @@
 // canonical snake_case snippets (full prompts stay on tool definitions); guidelines; the appended
 // system prompt stack (the built-in DefaultAppendSystemPrompt, then the additive
 // global and project files, then enabled extension prompt.append, name-sorted);
-// skills XML if read or its accepted alias is present; AGENTS.md / CLAUDE.md from
+// skills XML if read or its accepted alias is present (including a nested
+// code-mode capability, with exec/tools.read guidance); AGENTS.md / CLAUDE.md from
 // {KI_HOME} plus cwd up to the git root; cached runtime OS/architecture, cwd,
 // and local date/tz. AppendSection renders that stack for the settings preview.
 // Tool definitions use internal/tool contracts, independently of implementations.

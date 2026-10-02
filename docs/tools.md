@@ -50,6 +50,26 @@ exec_command 的完整输出文件也由该 store 创建：进程日志落在同
 
 工具执行两段化（对齐 pi prepare/execute）：先 **prepare**（找工具 → `tool.Validator.Validate` schema 校验 → `BeforeTool` / lifecycle `tool_call` sync，同步、无副作用；失败立即返回 error 结果，不执行），再 **execute**（并行/串行，`AfterTool` / `tool_result` 变换结果）。扩展订事件见 [extension.md](extension.md)。`BeforeTool` 和 `tool.Result.Terminate` 可标记 terminate：当批次内所有调用都 terminate 时主循环停止，不再请求模型（pi `shouldTerminateToolBatch`）。内置工具和扩展工具都校验 required 和参数类型：mandatory null 拒绝，optional null 使用工具默认值；整数拒绝小数、非有限值和越界转换。共享 schema 子集不执行 numeric bounds，shell/agent 适配器在转换 duration/handle 前单独校验或 clamp。
 
+## Code Mode
+
+`ki.toml` 的 `[code_mode] mode` 为 `off`、`mixed`（默认）或 `only`。启动 server 时加载配置；`mixed` 在普通工具之外发布 `exec/wait`，`only` 仅发布这两个入口，但保留固定的普通工具集合供 JS 调用。工具开关仍作用于底层能力，`exec/wait` 自身也出现在全局内置目录并可关闭。扩展工具只能来自本次 occupy 已 Prepare、过滤后的集合。
+
+Settings → Tools 的 Code Mode 选择器保存全局 `toggles.json` `code_mode.mode` 覆盖；下一次 occupy 生效，无需重启，当前运行保留原模式。`GET /v1/tools` 返回 `{items, codeMode}`，`PATCH` 可仅提交 `codeMode` 或 `disabled`，省略的字段不会改变。没有有效覆盖则沿用 TOML（默认 mixed）。各设置和自动扩展禁用共用写入锁，避免不同字段的并发保存互相覆盖。
+
+MCP 使用官方 Go SDK，配置和生命周期见 [mcp.md](mcp.md)。`search_tool` 可用时，允许的 MCP 工具保留在执行 registry，但完整 schema 延迟披露；关闭/排除 search_tool 则直接发布，不保留无搜索入口的 Deferred。Code Mode-only 仍提供直接 search_tool，JS tools/ALL_TOOLS 已有全部允许的 MCP 能力，搜索不授予权限。
+
+- `exec`：Responses 使用 raw-JS custom/freeform；其它协议使用 `{code: "…"}` function tool。两者都接受首行 `// @exec: {"yield_time_ms":10000,"max_output_tokens":10000}`，且只接受这两个非负 JS-safe integer 字段。
+- `wait`：`{cell_id, yield_time_ms?, max_tokens?, terminate?}`。默认等待和输出预算均为 10000（毫秒 / 估计 tokens），显式零有效。等待最多 60 秒，是观察期限，不是脚本存活期限。
+- 每次执行使用新 goja VM；`tools.xxx` 返回 Promise，参数对象用于 function，字符串用于 freeform。`text/image` 显式输出，表达式值不自动返回。`ALL_TOOLS` 提供允许的工具元数据。
+- `store/load` 是 session 内存中的 JSON 快照/提交机制；完成（包括 JS 错误）才提交写入，yield 不提交，终止丢弃。状态不恢复到新 server、fork 或关闭后的 worker。
+- `notify` 发布有归属的即时进度，文本在下次 `exec/wait` 观察返回；不注入 Codex 的独立 `custom_tool_call_output`。`yield_control` 可提前返回当前输出，后续 `wait` 只返回新增内容。
+
+普通工具与嵌套工具共用 `loop.ToolDispatcher` 的 prepare/execute。JS 取得 **AfterTool 后、模型 preview 截断前**的中间结果（包括 `content/details/isError`），受独立 RPC 预算限制；jsonl/SSE 使用另行有界的审计副本。嵌套调用的 `AfterTool` 失败时 fail closed，不把未经策略处理的原始结果返回 JS。每个嵌套调用的身份由父进程分配，记录 `parentCallId/cellId`，不得调用 `exec/wait` 自身。审计/RPC 错误必须使 cell 失败，不能被 JS catch 后继续执行。
+
+只有外层 provider 发出的 `exec/wait` 调用生成 transcript `toolResult`，嵌套调用通过结构化执行事件持久化。occupy 结束先取消并 join 全部 cell/callback，再关闭 hooks、telemetry 和 session；已通过 shell 工具启动的 session-owned 进程仍遵循既有生命周期，不因观察取消被误杀。
+
+进程关系、限制和相对 Codex 的差异见 [code-mode-design.md](code-mode-design.md)。
+
 | 工具 | 参数 | 结果 |
 |---|---|---|
 | `read` | 文本模型：`file_path`、可选行分页 `offset` / `limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
@@ -66,6 +86,8 @@ exec_command 的完整输出文件也由该 store 创建：进程日志落在同
 | `wait_agent` | 可选 `timeout_ms` | 观察调用方 mailbox / user steer；不消费完成结果、不停止 agent |
 | `interrupt_agent` | `target` | 中断目标当前 turn，返回之前状态；保留身份，不停止其 shell 进程 |
 | `list_agents` | 可选 `path_prefix` | root 范围内的身份/代次/状态；至多 128 项，另带 total/truncated |
+| `exec` | raw JS 或 `{code}`，可选首行 pragma | 显式输出和 completed/failed/running 状态；running 返回 cell ID |
+| `wait` | `cell_id`、可选 `yield_time_ms` / `max_tokens` / `terminate` | 仅新增 cell 输出或终态 |
 
 ## read
 

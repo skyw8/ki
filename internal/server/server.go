@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"ki/internal/agent"
+	"ki/internal/codemode"
 	"ki/internal/command"
 	"ki/internal/compact"
 	"ki/internal/config"
@@ -30,6 +31,7 @@ import (
 	"ki/internal/idgen"
 	"ki/internal/logging"
 	"ki/internal/loop"
+	mcpruntime "ki/internal/mcp"
 	"ki/internal/prompt"
 	"ki/internal/provider"
 	"ki/internal/push"
@@ -39,6 +41,8 @@ import (
 	"ki/internal/toggles"
 	toolapi "ki/internal/tool"
 	"ki/internal/tool/builtin"
+	codetools "ki/internal/tool/builtin/code"
+	"ki/internal/tool/discovery"
 	"ki/internal/tool/output"
 	"ki/internal/types"
 	"ki/internal/workspace"
@@ -53,6 +57,9 @@ type Options struct {
 	Token    string
 	Streamer loop.Streamer
 	Registry *provider.Registry
+	// CodeModeConfig overrides the worker executable for embedding and tests;
+	// nil uses this same ki binary's private worker entrypoint.
+	CodeModeConfig *codemode.Config
 }
 
 // Server is the HTTP API.
@@ -73,6 +80,11 @@ type Server struct {
 	processes              map[string]*process.Manager
 	closedProcesses        *process.Manager
 	outputStore            *output.Store
+	codeMode               *codemode.Manager
+	mcpMu                  sync.Mutex
+	mcpManagers            map[string]*mcpManagerEntry
+	mcpClosed              bool
+	mcpClock               uint64
 	agentTasks             *agent.Controller
 	ws                     *workspace.Store
 	sidx                   *session.Index
@@ -418,6 +430,9 @@ type File struct {
 
 // New builds a server (does not listen).
 func New(opt Options) (*Server, error) {
+	if err := config.ValidateMCPServers(opt.Config.MCPServers); err != nil {
+		return nil, err
+	}
 	shells := process.DiscoverShellRuntime()
 	tok := opt.Token
 	if tok == "" {
@@ -500,6 +515,11 @@ func New(opt Options) (*Server, error) {
 		runtimeCtx:             runtimeCtx,
 		runtimeCancel:          runtimeCancel,
 	}
+	codeConfig := codemode.Config{}
+	if opt.CodeModeConfig != nil {
+		codeConfig = *opt.CodeModeConfig
+	}
+	srv.codeMode = codemode.NewManager(codeConfig)
 	srv.replay = newReplayCache()
 	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
 	srv.ext.SetHost(srv)
@@ -1163,6 +1183,10 @@ func (s *Server) shutdownOwned() {
 	s.runtimeWG.Wait()
 	<-agentsDone
 	<-managersDone
+	if s.codeMode != nil {
+		_ = s.codeMode.Close()
+	}
+	s.shutdownErr = errors.Join(s.shutdownErr, s.closeMCPManagers())
 	s.mu.Lock()
 	s.replay.closed = true
 	if s.replay.timer != nil {
@@ -1196,7 +1220,7 @@ func (s *Server) shutdownOwned() {
 	if httpSrv == nil {
 		return
 	}
-	s.shutdownErr = httpSrv.Shutdown(context.Background())
+	s.shutdownErr = errors.Join(s.shutdownErr, httpSrv.Shutdown(context.Background()))
 }
 
 func (s *Server) processesFor(id string) *process.Manager {
@@ -1233,6 +1257,9 @@ func (s *Server) closeProcesses(id string) {
 	s.mu.Unlock()
 	if jobs != nil {
 		jobs.Close()
+	}
+	if s.codeMode != nil {
+		_ = s.codeMode.CloseSession(id)
 	}
 	if s.outputStore != nil {
 		_ = s.outputStore.CloseSession(id)
@@ -1642,6 +1669,11 @@ func (s *Server) sessionRuntime(snap *sessionSnap) (map[string]any, error) {
 	snapshot := s.resources.Load(snap.id, snap.header.CWD)
 	sk := s.sessionCatalog(snapshot)
 	tg := toggles.Load(s.cfg.Home)
+	mcpSnapshot, err := s.resolveMCP(snap.header.CWD)
+	if err != nil {
+		return nil, err
+	}
+	mcpInfo := s.mcpInfos(mcpSnapshot, tg.MCP)
 	queued, err := session.ReadQueue(snap.dir)
 	if err != nil {
 		return nil, err
@@ -1684,6 +1716,7 @@ func (s *Server) sessionRuntime(snap *sessionSnap) (map[string]any, error) {
 		"leafId":              snap.leafID,
 		"availableSkills":     sk,
 		"availableExtensions": s.extensionCatalog(snapshot, snap.id),
+		"availableMCP":        mcpInfo,
 		"commands":            cmds,
 		"queued":              queued,
 		"extQueued":           extQueued,
@@ -2490,6 +2523,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		PathDirs: snapshot.PathDirs,
 	}.Build(profile)
 	tg := toggles.Load(cfg.Home)
+	// Keep one mode snapshot for the entire occupy, just like tool capabilities.
+	// Settings may change while a yielded cell still owns this run's callbacks.
+	codeMode := tg.CodeMode.EffectiveMode(cfg.CodeMode.Mode)
 	// Apply the global built-in toggle before extension tools are appended. This
 	// keeps the built-in setting scoped to Set.Build and leaves extensions under
 	// their own lifecycle/session controls.
@@ -2500,11 +2536,146 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	s.ext.Configure(enabledExtensions)
 	extTools := s.ext.Prepare(ctx, sess.ID(), sess.Header.CWD, enabledExtensions)
 	tls = append(tls, extTools...)
+	var mcpTools []toolapi.Tool
+	var mcpErr error
+	mcpSnapshot, err := s.resolveMCP(sess.Header.CWD)
+	if err != nil {
+		st.err = fmt.Errorf("MCP configuration: %w", err)
+		return
+	}
+	mcpManager, releaseMCP, err := s.acquireMCP(mcpSnapshot, tg.MCP)
+	if err != nil {
+		st.err = err
+		return
+	}
+	defer releaseMCP()
+	if mcpManager != nil {
+		mcpTools, mcpErr = mcpManager.Tools(ctx)
+		if errors.Is(mcpErr, mcpruntime.ErrRequired) {
+			st.err = fmt.Errorf("prepare required MCP server: %w", mcpErr)
+			return
+		}
+		if mcpErr != nil {
+			slog.Warn("MCP discovery incomplete", "session_id", id, "err", mcpErr)
+		}
+		tls = append(tls, mcpTools...)
+	}
 	if ctx.Err() != nil {
 		st.err = ctx.Err()
 		return
 	}
 	tls = s.filterActiveTools(id, tls)
+	nestedTools := slices.Clone(tls)
+	mcpNames := make(map[string]bool, len(mcpTools))
+	for _, t := range mcpTools {
+		mcpNames[toolapi.MustCanonical(t.Name())] = true
+	}
+	var deferredMCP []toolapi.Tool
+	for _, t := range nestedTools {
+		if mcpNames[toolapi.MustCanonical(t.Name())] {
+			deferredMCP = append(deferredMCP, t)
+		}
+	}
+	var searchCatalog *discovery.Catalog
+	var searchTools []toolapi.Tool
+	if len(deferredMCP) > 0 {
+		candidate := discovery.New(deferredMCP)
+		searchTools = s.filterActiveTools(id, builtin.FilterBuiltins([]toolapi.Tool{candidate.SearchTool()}, tg.Tools))
+		if len(searchTools) > 0 {
+			searchCatalog = candidate
+		}
+	}
+	// Deferral is disclosure, not authorization. Keep the fixed executable
+	// snapshot, but omit MCP schemas only when a usable search entrypoint exists.
+	deferredNames := make(map[string]bool)
+	if searchCatalog != nil {
+		for _, name := range searchCatalog.Names() {
+			deferredNames[name] = true
+		}
+	}
+	executionTools := slices.Clone(nestedTools)
+	var codeDispatcher *loop.ToolDispatcher
+	var codeSession *codemode.Session
+	var codeSessionMu sync.Mutex
+	var codeSet *codetools.Set
+	if codeMode == "mixed" || codeMode == "only" {
+		// A yielded cell retains this occupy's hooks, identity and event funnel.
+		// Drain it before session/telemetry close; only committed JSON state may
+		// survive into the next occupy with a newly filtered capability snapshot.
+		defer func() {
+			codeSessionMu.Lock()
+			session := codeSession
+			codeSessionMu.Unlock()
+			if cleanupErr := session.TerminateAll(context.Background()); cleanupErr != nil {
+				st.err = errors.Join(st.err, fmt.Errorf("stop code mode cells: %w", cleanupErr))
+			}
+		}()
+		getCodeSession := func() (*codemode.Session, error) {
+			codeSessionMu.Lock()
+			defer codeSessionMu.Unlock()
+			if codeSession == nil {
+				var sessionErr error
+				codeSession, sessionErr = s.codeModeFor(id)
+				if sessionErr != nil {
+					return nil, sessionErr
+				}
+			}
+			return codeSession, nil
+		}
+		callbacks := codemode.Callbacks{
+			Invoke: func(callCtx context.Context, invocation codemode.Invocation) (codemode.ToolResult, error) {
+				call := loop.NestedToolCall{ParentCallID: invocation.ParentCallID, CellID: invocation.CellID, Name: invocation.Name, Arguments: invocation.Arguments}
+				if invocation.Freeform {
+					call.Input = &invocation.Input
+				}
+				res, invokeErr := codeDispatcher.DispatchNested(callCtx, call)
+				return codemode.ToolResult{Content: res.Content, Details: res.Details, IsError: res.IsError, Terminate: res.Terminate}, invokeErr
+			},
+			Notify: func(callCtx context.Context, notification codemode.Notification) error {
+				if err := callCtx.Err(); err != nil {
+					return err
+				}
+				return codeDispatcher.NotifyNested(notification.ParentCallID, notification.CellID, notification.Text)
+			},
+		}
+		codeSet = &codetools.Set{GetSession: getCodeSession, Callbacks: callbacks, Nested: nestedTools, Deferred: deferredNames, Freeform: info.API == "responses"}
+		codeTools := codeSet.Build()
+		codeTools = builtin.FilterBuiltins(codeTools, tg.Tools)
+		if codeMode == "only" {
+			executionTools = codeTools
+		} else {
+			executionTools = append(executionTools, codeTools...)
+		}
+	}
+	executionTools = append(executionTools, searchTools...)
+	modelTools := func(history []types.Message) []toolapi.Tool {
+		remaining := make(map[string]bool, len(deferredNames))
+		for name := range deferredNames {
+			remaining[name] = true
+		}
+		if searchCatalog != nil {
+			for _, t := range searchCatalog.Loaded(history) {
+				delete(remaining, toolapi.MustCanonical(t.Name()))
+			}
+		}
+		var visible []toolapi.Tool
+		if codeMode != "only" {
+			for _, t := range nestedTools {
+				if !remaining[toolapi.MustCanonical(t.Name())] {
+					visible = append(visible, t)
+				}
+			}
+		}
+		if codeSet != nil {
+			promptSet := *codeSet
+			promptSet.Deferred = remaining
+			visible = append(visible, builtin.FilterBuiltins(promptSet.Build(), tg.Tools)...)
+		}
+		// The discovery function remains direct even in Code Mode-only; it is
+		// deliberately absent from the worker's nested tools and ALL_TOOLS.
+		return append(visible, searchTools...)
+	}
+	tls = modelTools(nil)
 	occ := s.ext.Occupy(id)
 	if s.requireModelCredential {
 		if s.providerExtensions != nil && s.providerExtensions.HasProvider(liveModel.Provider) {
@@ -2517,6 +2688,14 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	// The snapshot is fixed for the session until reload, while the prompt is
 	// rendered per request so tool schemas and runtime metadata stay current.
 	promptInput := prompt.Input{Resources: snapshot, Tools: tls, Toggle: tg.Skills}
+	if codeMode == "only" {
+		for _, t := range tls {
+			if toolapi.Equal(t.Name(), "exec") {
+				promptInput.NestedTools = nestedTools
+				break
+			}
+		}
+	}
 	sys := prompt.Build(promptInput)
 
 	useServerCompaction := s.serverSideCompaction(info) && occ.HTTPDoer() == nil
@@ -2537,6 +2716,12 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		binding: inlineBinding, replayBinding: replayBinding,
 	}
 	emit := emitter.Emit
+	if mcpErr != nil {
+		if err := emit(loop.Event{Type: loop.ExtensionNotice, Server: "mcp", MessageText: "MCP discovery incomplete: " + mcpErr.Error(), Status: "warn"}); err != nil {
+			st.err = err
+			return
+		}
+	}
 
 	// Preflight before running: a resumed session or a very large prompt may already
 	// exceed the context window, so compact once before loop.Run. This is non-blocking:
@@ -2547,7 +2732,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			SessionID: id, System: sys, Messages: current.Messages,
 			Provider: info.Provider, Model: info.ID, API: info.API,
 			ProviderBinding:         requestBinding,
-			Tools:                   toolSpecs(tls),
+			Tools:                   toolSpecs(modelTools(current.Messages)),
 			MaxTokens:               info.MaxTokens,
 			ThinkingEffort:          sess.Config.ThinkingEffort,
 			ThinkingFormat:          info.Compat.ThinkingFormat,
@@ -2587,7 +2772,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		AgentID:                 st.agentTaskID,
 		Generation:              st.agentGeneration,
 		SessionID:               id,
-		Tools:                   tls,
+		Tools:                   executionTools,
 		OutputStore:             s.outputStore,
 		Telemetry:               runTelemetry,
 		System:                  sys,
@@ -2609,6 +2794,18 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		Inbox:                   st.inbox,
 		CommitUserMessage:       s.commitUserMessage,
 		Hooks:                   hooks,
+	}
+	if searchCatalog != nil {
+		runCfg.ModelTools = modelTools
+	}
+	if codeMode == "mixed" || codeMode == "only" {
+		nestedCfg := runCfg
+		nestedCfg.Tools = nestedTools
+		codeDispatcher, err = loop.NewToolDispatcher(nestedCfg, emit)
+		if err != nil {
+			st.err = fmt.Errorf("prepare code mode dispatcher: %w", err)
+			return
+		}
 	}
 	if useServerCompaction {
 		runCfg.ResponsesCompactThreshold = s.remoteCompactThreshold(info)

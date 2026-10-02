@@ -20,6 +20,9 @@ type Input struct {
 	Resources resources.Snapshot
 	Tools     []toolapi.Tool
 	Toggle    session.Toggle
+	// NestedTools retains capabilities hidden from direct model schemas in
+	// code-mode-only requests, so skills still see their read capability.
+	NestedTools []toolapi.Tool
 }
 
 // DefaultAppendSystemPrompt is the built-in supplement rendered in the
@@ -76,7 +79,7 @@ func Build(in Input) string {
 	// settings. Keep the list in sync with docs/*.md.
 	env := in.Resources.Environment
 	if env.KIHome != "" {
-		fmt.Fprintf(&b, "Ki configuration (KI_HOME: %s, default ~/.ki): ki.toml = server/compaction/log, skills/ = SKILL.md packages, models.json + credentials.json = providers; project overrides in <cwd>/.ki/; `ki config path` prints the locations.\n\n", env.KIHome)
+		fmt.Fprintf(&b, "Ki configuration (KI_HOME: %s, default ~/.ki): ki.toml = server/compaction/log/code_mode, skills/ = SKILL.md packages, models.json + credentials.json = providers; project overrides in <cwd>/.ki/; `ki config path` prints the locations.\n\n", env.KIHome)
 	}
 	b.WriteString("Available tools:\n")
 	hasRead := false
@@ -95,6 +98,13 @@ func Build(in Input) string {
 		}
 	}
 	b.WriteString("\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\n")
+	nestedRead := false
+	for _, t := range in.NestedTools {
+		if toolapi.Equal("read", t.Name()) {
+			nestedRead = true
+			break
+		}
+	}
 	b.WriteString("Guidelines:\n- Be concise in your responses\n- Show file paths clearly when working with files\n")
 	// The append stack sits after Ki's built-in guidance and before task-scoped
 	// resources: the built-in supplement leads (so operator text adds to the
@@ -107,9 +117,13 @@ func Build(in Input) string {
 
 	// Toggle already dropped disabled names; this is listing, not a process.
 	sk := skills.Filter(in.Resources.Skills, in.Toggle)
-	if hasRead && len(sk) > 0 {
+	if (hasRead || nestedRead) && len(sk) > 0 {
 		b.WriteString("\n\nThe following skills provide specialized instructions for specific tasks.\n")
-		b.WriteString("Use the read tool to load a skill's file when the task matches its description.\n")
+		if !hasRead && nestedRead {
+			b.WriteString("Use exec with `await tools.read({file_path: \"<absolute skill path>\"})` and `text(...)` to load a skill's file when the task matches its description.\n")
+		} else {
+			b.WriteString("Use the read tool to load a skill's file when the task matches its description.\n")
+		}
 		b.WriteString("When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n\n")
 		b.WriteString("<available_skills>\n")
 		for _, s := range sk {

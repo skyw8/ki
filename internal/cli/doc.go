@@ -22,7 +22,7 @@
 //	ki extension list   list globally discovered extensions
 //	ki provider login   authenticate a provider extension (browser or device code)
 //	ki provider logout  remove a provider extension credential
-//	ki config path      print config file locations
+//	ki config path      print global/project ki.toml and mcp.json locations
 //	ki version          print the build version
 //
 // If server.json is healthy the client connects; otherwise it listens on
@@ -32,4 +32,6 @@
 // default from toggles.json. KI_FAKE=1 injects provider.Scripted.
 //
 // Request flow: docs/architecture.md.
+// The private __code-mode-worker entrypoint runs before Cobra/config/logging
+// discovery and exposes only its parent's bounded stdio protocol, never HTTP.
 package cli

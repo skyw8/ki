@@ -1484,6 +1484,10 @@
 .preference-section { margin-top: 24px; padding: 20px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 14px; background: var(--dsw-alias-bg-base); }
 .preference-section.inline { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(240px, 320px); align-items: center; gap: 32px; }
 .preference-copy h4 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
+.code-mode-section .preference-copy label { font-size: 14px; line-height: 20px; font-weight: 600; }
+.code-mode-select { width: 100%; min-width: 0; min-height: 44px; padding: 8px 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-specific-input); color: var(--dsw-alias-label-primary); font: inherit; }
+.code-mode-select:focus-visible { outline: 2px solid var(--dsw-alias-brand); outline-offset: 2px; }
+.code-mode-select:disabled { opacity: .55; }
 .preference-copy p { margin: 4px 0 16px; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
 .preference-section.inline .preference-copy p { margin-bottom: 0; }
 .notify-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
@@ -2229,6 +2233,10 @@
   font-weight: 500;
 }
 .cfg-desc { margin: 4px 0 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-tertiary); word-break: break-word; }
+.mcp-metadata { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.mcp-settings .switch { min-width: 44px; min-height: 44px; }
+.mcp-settings .switch::before { top: 12px; }
+.mcp-settings .switch-knob { top: 14px; }
 .cfg-empty, .cfg-hint { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-caption); }
 /* Raw system-prompt viewer: a framed code card with a copy affordance. The body
    scrolls instead of stretching the info column, so a large prompt stays

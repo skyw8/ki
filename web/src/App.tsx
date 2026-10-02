@@ -38,8 +38,8 @@ import { clientRequestId } from './lib/client-request'
 import { ancestorsOf, buildSessionForest, orderedChildren, pinnedFirst, topLevelRoot } from './lib/session-tree'
 
 type Tab = 'conversation' | 'context' | 'config'
-type SettingsPage = 'providers' | 'skills' | 'tools' | 'extensions' | 'prompt' | 'message' | 'notifications' | 'appearance'
-const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'extensions', 'prompt', 'message', 'notifications', 'appearance']
+type SettingsPage = 'providers' | 'skills' | 'tools' | 'mcp' | 'extensions' | 'prompt' | 'message' | 'notifications' | 'appearance'
+const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'mcp', 'extensions', 'prompt', 'message', 'notifications', 'appearance']
 const SHOW = 5
 const EXPAND_KEY = 'ki-ws-expanded'
 const COMPACT_LAYOUT_QUERY = '(max-width: 900px)'
@@ -2325,6 +2325,7 @@ function WorkspaceApp({ api }: { api: Client }) {
               ['providers', t('settings.providers')],
               ['skills', t('settings.skills')],
               ['tools', t('settings.tools')],
+              ['mcp', t('settings.mcp')],
               ['extensions', t('settings.extensions')],
               ['prompt', t('settings.prompt')],
               ['message', t('settings.message')],
@@ -2364,6 +2365,8 @@ function WorkspaceApp({ api }: { api: Client }) {
                   <SettingsToggles kind="tools" api={api} sessionId={currentId} workspaceId={selectedWs} />
                 ) : page === 'extensions' ? (
                   <SettingsToggles kind="extensions" api={api} onConfigure={openExtensionConfig} onChanged={refreshExtensions} />
+                ) : page === 'mcp' ? (
+                  <SettingsToggles kind="mcp" api={api} sessionId={currentId} workspaceId={selectedWs} />
                 ) : page === 'prompt' ? (
                   <PromptSettings api={api} workspaceId={selectedWs} />
                 ) : page === 'message' ? (

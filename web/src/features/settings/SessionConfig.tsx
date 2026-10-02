@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import type { Client } from '../../api/client'
 import { ICheck, IChevDown, ICopy, IEdit, IRegen } from '../../components/icons'
 import { copyText } from '../../lib/clipboard'
@@ -11,10 +11,11 @@ import type { NotifyPermission } from '../../lib/notifications'
 import { toast } from '../../components/toast'
 import { localizedExtensionText } from './ExtensionPanel'
 import { RuntimePanel, type RuntimePanelProps } from '../chat/RuntimePanel'
-import type { CatalogContribution, CatalogExtension, CatalogSkill, CatalogTool, ExtensionConfig, ExtensionI18n, ModelInfo, SessionCommand, SessionDetail } from '../../api/types'
+import type { CatalogContribution, CatalogExtension, CatalogSkill, CatalogTool, CodeMode, ExtensionConfig, ExtensionI18n, MCPServerInfo, ModelInfo, SessionCommand, SessionDetail } from '../../api/types'
 
 const SOURCE_KEY: Record<string, MsgKey> = {
   home: 'cfg.src.home',
+  global: 'cfg.src.global',
   'user-agents': 'cfg.src.user-agents',
   project: 'cfg.src.project',
   'ancestor-agents': 'cfg.src.ancestor-agents',
@@ -37,6 +38,7 @@ const INFO_SECTIONS = [
   { id: 'info-agents', label: 'runtime.agents', children: [] },
   { id: 'info-processes', label: 'runtime.processes', children: [] },
   { id: 'info-skills', label: 'cfg.skills', children: [] },
+  { id: 'info-mcp', label: 'settings.mcp', children: [] },
   { id: 'info-extensions', label: 'cfg.extensions', children: [] },
   { id: 'info-commands', label: 'cfg.commands', children: [] },
 ] as const
@@ -97,6 +99,7 @@ export function SessionConfig({
   const configRef = useRef<HTMLDivElement>(null)
   const model = detail ? [detail.provider, detail.model].filter(Boolean).join('/') : ''
   const skills = detail?.availableSkills ?? []
+  const mcp = detail?.availableMCP ?? []
   const extensions = detail?.availableExtensions ?? []
   const commands = detail?.commands ?? []
   const outlineGroups = useMemo<OutlineItem[]>(() => [
@@ -107,6 +110,11 @@ export function SessionConfig({
       id: 'info-skills',
       label: t('cfg.skills'),
       children: skills.map((item, i) => ({ id: `info-skill-${i}`, label: item.name })),
+    },
+    {
+      id: 'info-mcp',
+      label: t('settings.mcp'),
+      children: mcp.map((item, i) => ({ id: `info-mcp-${i}`, label: item.name })),
     },
     {
       id: 'info-extensions',
@@ -123,7 +131,7 @@ export function SessionConfig({
       children: commands.map((item, i) => ({ id: `info-command-${i}`, label: `/${item.name}` })),
     },
     { id: 'info-system', label: t('cfg.systemPrompt') },
-  ], [commands, extensions, skills, t])
+  ], [commands, extensions, mcp, skills, t])
   const outlineItems = useMemo(() => flattenOutline(outlineGroups), [outlineGroups])
 
   const load = useCallback(async () => {
@@ -250,6 +258,29 @@ export function SessionConfig({
                         <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
                       </div>
                       {item.description ? <p className="cfg-desc">{item.description}</p> : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="cfg-block" id="info-mcp">
+            <h2 className="cfg-h">{t('settings.mcp')}</h2>
+            <p className="cfg-hint">{t('cfg.mcpSnapshotHint')}</p>
+            {mcp.length === 0 && !loading ? (
+              <p className="cfg-empty">{t('cfg.mcpEmpty')}</p>
+            ) : (
+              <ul className="cfg-list">
+                {mcp.map((item, i) => (
+                  <li key={item.name} id={`info-mcp-${i}`} className="cfg-row" data-testid="cfg-mcp-info" data-name={item.name}>
+                    <div className="cfg-copy">
+                      <div className="cfg-name">
+                        {item.name}
+                        <span className="cfg-src">{sourceLabel(item.source, t)}</span>
+                        <span className={`cfg-flag${item.enabled ? ' on' : ''}`}>{item.enabled ? t('cfg.enabled') : t('cfg.disabled')}</span>
+                      </div>
+                      <MCPMetadata item={item} t={t} />
                     </div>
                   </li>
                 ))}
@@ -516,6 +547,18 @@ function ContribGroup({
   )
 }
 
+function MCPMetadata({ item, t }: { item: MCPServerInfo; t: TFn }) {
+  return (
+    <p className="cfg-desc mcp-metadata">
+      <span>{item.transport === 'stdio' ? t('cfg.mcpStdio') : t('cfg.mcpHTTP')}</span>
+      <span>{item.tools === undefined ? t('cfg.mcpToolsUnknown') : t('cfg.mcpTools', { count: String(item.tools) })}</span>
+      {!item.configuredEnabled ? <span>{t('cfg.mcpConfigDisabled')}</span> : null}
+    </p>
+  )
+}
+
+type ToggleItem = CatalogSkill | CatalogTool | CatalogExtension | MCPServerInfo
+
 export function SettingsToggles({
   kind,
   api,
@@ -524,7 +567,7 @@ export function SettingsToggles({
   onConfigure,
   onChanged,
 }: {
-  kind: 'skills' | 'tools' | 'extensions'
+  kind: 'skills' | 'tools' | 'extensions' | 'mcp'
   api: Client
   sessionId?: string | null
   workspaceId?: string | null
@@ -532,15 +575,27 @@ export function SettingsToggles({
   onChanged?: () => void | Promise<void>
 }) {
   const { t, lang } = useI18n()
-  const [items, setItems] = useState<Array<CatalogSkill | CatalogTool | CatalogExtension>>([])
-  const [loading, setLoading] = useState(false)
+  const [items, setItems] = useState<ToggleItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [codeMode, setCodeMode] = useState<CodeMode | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const pending = useRef(false)
+  const codeModeId = useId()
 
   const load = useCallback(async () => {
     setLoading(true)
+    setError('')
     try {
-      const next = kind === 'skills' ? await api.skills(workspaceId) : kind === 'tools' ? await api.tools(sessionId, workspaceId) : await api.extensions()
-      setItems(next)
+      if (kind === 'tools' || kind === 'mcp') {
+        const next = await api.toolsSettings(sessionId, workspaceId)
+        setItems(kind === 'mcp' ? next.mcp ?? [] : next.items)
+        setCodeMode(next.codeMode)
+      } else {
+        setItems(kind === 'skills' ? await api.skills(workspaceId) : await api.extensions())
+      }
     } catch (e) {
+      setError(String(e instanceof Error ? e.message : e))
       toast.from(e)
     } finally {
       setLoading(false)
@@ -549,36 +604,114 @@ export function SettingsToggles({
 
   useEffect(() => { void load() }, [load])
 
-  const patch = async (next: Array<CatalogSkill | CatalogTool | CatalogExtension>) => {
+  const patch = async (next: ToggleItem[]) => {
+    if (pending.current || loading) return
+    pending.current = true
+    setSaving(true)
+    setError('')
     const prev = items
+    let committed = false
     setItems(next)
     try {
       const disabled = next.filter(s => !s.enabled).map(s => s.name)
       if (kind === 'skills') await api.patchSkills(disabled)
-      else if (kind === 'tools') await api.patchTools(disabled, sessionId, workspaceId)
+      else if (kind === 'mcp') {
+        // File-disabled servers cannot be enabled here or become redundant global overrides.
+        const mcpDisabled = next.filter(s => !s.enabled && 'configuredEnabled' in s && s.configuredEnabled).map(s => s.name)
+        const updated = await api.patchMCP(mcpDisabled, sessionId, workspaceId)
+        setItems(updated.mcp ?? [])
+      }
+      else if (kind === 'tools') {
+        const updated = await api.patchTools(disabled, sessionId, workspaceId)
+        setItems(updated.items)
+        setCodeMode(updated.codeMode)
+      }
       else await api.patchExtensions(disabled)
-      const listed = kind === 'skills' ? await api.skills(workspaceId) : kind === 'tools' ? await api.tools(sessionId, workspaceId) : await api.extensions()
-      setItems(listed)
+      committed = true
+      if (kind !== 'tools' && kind !== 'mcp') setItems(kind === 'skills' ? await api.skills(workspaceId) : await api.extensions())
       await onChanged?.()
     } catch (e) {
-      setItems(prev)
+      // A failed catalog refresh must not undo a mutation already saved by the server.
+      if (!committed) setItems(prev)
+      setError(String(e instanceof Error ? e.message : e))
       toast.from(e)
+    } finally {
+      pending.current = false
+      setSaving(false)
     }
   }
 
-  const empty = kind === 'skills' ? t('cfg.skillsEmpty') : kind === 'tools' ? t('cfg.toolsEmpty') : t('cfg.extensionsEmpty')
-  const title = kind === 'skills' ? t('settings.skills') : kind === 'tools' ? t('settings.tools') : t('settings.extensions')
-  const hint = kind === 'skills' ? t('settings.skillsHint') : kind === 'tools' ? t('settings.toolsHint') : t('settings.extensionsHint')
-  const itemKind = kind === 'skills' ? 'skill' : kind === 'tools' ? 'tool' : 'extension'
+  const patchCodeMode = async (next: CodeMode) => {
+    if (pending.current || loading || next === codeMode) return
+    pending.current = true
+    setSaving(true)
+    setError('')
+    const prev = codeMode
+    let committed = false
+    setCodeMode(next)
+    try {
+      // Mode-only updates must not replace the independently saved tool toggles.
+      const updated = await api.patchToolSettings({ codeMode: next }, sessionId, workspaceId)
+      setCodeMode(updated.codeMode)
+      setItems(updated.items)
+      committed = true
+      await onChanged?.()
+    } catch (e) {
+      // onChanged only refreshes other UI; persistence has already succeeded here.
+      if (!committed) setCodeMode(prev)
+      setError(String(e instanceof Error ? e.message : e))
+      toast.from(e)
+    } finally {
+      pending.current = false
+      setSaving(false)
+    }
+  }
+
+  const empty = kind === 'skills' ? t('cfg.skillsEmpty') : kind === 'tools' ? t('cfg.toolsEmpty') : kind === 'mcp' ? t('cfg.mcpEmpty') : t('cfg.extensionsEmpty')
+  const title = kind === 'skills' ? t('settings.skills') : kind === 'tools' ? t('settings.tools') : kind === 'mcp' ? t('settings.mcp') : t('settings.extensions')
+  const hint = kind === 'skills' ? t('settings.skillsHint') : kind === 'tools' ? t('settings.toolsHint') : kind === 'mcp' ? t('settings.mcpHint') : t('settings.extensionsHint')
+  const itemKind = kind === 'skills' ? 'skill' : kind === 'tools' ? 'tool' : kind === 'mcp' ? 'mcp' : 'extension'
   return (
-    <div className="preference-page" data-testid={`${kind}-settings`}>
+    <div className={`preference-page${kind === 'mcp' ? ' mcp-settings' : ''}`} data-testid={`${kind}-settings`}>
       <header className="settings-page-title">
         <div>
           <h3>{title}</h3>
           <p>{hint}</p>
         </div>
-        <ReloadButton testid={`${kind}-reload`} run={async () => { await api.reload(); await load(); await onChanged?.() }} />
+        <ReloadButton testid={`${kind}-reload`} disabled={loading || saving} run={async () => {
+          if (pending.current) return
+          pending.current = true
+          setSaving(true)
+          try { await api.reload(); await load(); await onChanged?.() } finally {
+            pending.current = false
+            setSaving(false)
+          }
+        }} />
       </header>
+      {kind === 'tools' ? (
+        <section className="preference-section code-mode-section" aria-labelledby={`${codeModeId}-label`} aria-busy={loading || saving}>
+          <div className="preference-copy">
+            <label id={`${codeModeId}-label`} htmlFor={codeModeId}>{t('settings.codeMode')}</label>
+            <p id={`${codeModeId}-hint`}>{t('settings.codeModeHint')}</p>
+          </div>
+          <select
+            id={codeModeId}
+            className="code-mode-select"
+            data-testid="code-mode"
+            value={codeMode ?? 'mixed'}
+            disabled={loading || saving || !codeMode}
+            aria-describedby={`${codeModeId}-hint ${codeModeId}-description`}
+            onChange={event => void patchCodeMode(event.target.value as CodeMode)}
+          >
+            {(['off', 'mixed', 'only'] as const).map(mode => <option key={mode} value={mode}>{t(`settings.codeMode.${mode}`)}</option>)}
+          </select>
+          <p className="form-hint" id={`${codeModeId}-description`} data-testid="code-mode-description">
+            {codeMode ? t(`settings.codeMode.${codeMode}Hint`) : t('file.loading')}
+          </p>
+          {saving ? <p className="form-hint" role="status">{t('settings.codeModeSaving')}</p> : null}
+        </section>
+      ) : null}
+      {error ? <p className="settings-error-inline" role="alert" data-testid={`${kind}-settings-error`}>{error}</p> : null}
       {items.length === 0 && !loading ? <p className="cfg-empty">{empty}</p> : (
         <ul className="cfg-list">
           {items.map(item => (
@@ -589,6 +722,7 @@ export function SettingsToggles({
                   {kind !== 'extensions' && 'source' in item && item.source ? <span className="cfg-src">{sourceLabel(item.source, t)}</span> : null}
                   {kind === 'tools' && 'available' in item && item.available === false ? <span className="cfg-src">{t('cfg.toolUnavailable')}</span> : null}
                 </div>
+                {kind === 'mcp' && 'transport' in item ? <MCPMetadata item={item} t={t} /> : null}
 	              {'description' in item && kind === 'extensions' && extensionDescription(item, lang) ? <p className="cfg-desc">{extensionDescription(item, lang)}</p> : null}
 	              {'description' in item && kind !== 'extensions' && item.description ? <p className="cfg-desc">{item.description}</p> : null}
 	              {'error' in item && item.error ? <p className="cfg-desc settings-error-inline" data-testid={`${kind}-error-${item.name}`} role="alert">{item.error}</p> : null}
@@ -603,6 +737,7 @@ export function SettingsToggles({
                 testid={`${itemKind}-on-${item.name}`}
                 ariaLabel={`${t('cfg.enabled')} ${item.name}`}
                 on={item.enabled}
+                disabled={loading || saving || ('configuredEnabled' in item && !item.configuredEnabled)}
                 onChange={on => void patch(items.map(s => s.name === item.name ? { ...s, enabled: on } : s))}
               />
             </li>
@@ -1207,7 +1342,7 @@ export function NotificationSettings({ enabled, permission, pushReady, onToggle,
   )
 }
 
-function ReloadButton({ testid, run }: { testid: string; run: () => Promise<void> }) {
+function ReloadButton({ testid, run, disabled }: { testid: string; run: () => Promise<void>; disabled?: boolean }) {
   const { t } = useI18n()
   const [phase, setPhase] = useState<'idle' | 'busy' | 'done'>('idle')
   useEffect(() => {
@@ -1220,10 +1355,10 @@ function ReloadButton({ testid, run }: { testid: string; run: () => Promise<void
       type="button"
       className={`cfg-btn${phase === 'busy' ? ' busy' : ''}${phase === 'done' ? ' done' : ''}`}
       data-testid={testid}
-      disabled={phase === 'busy'}
+      disabled={disabled || phase === 'busy'}
       aria-busy={phase === 'busy'}
       onClick={() => {
-        if (phase === 'busy') return
+        if (disabled || phase === 'busy') return
         setPhase('busy')
         void run().then(
           () => setPhase('done'),
@@ -1240,9 +1375,9 @@ function ReloadButton({ testid, run }: { testid: string; run: () => Promise<void
   )
 }
 
-function Switch({ on, onChange, testid, ariaLabel }: { on: boolean; onChange: (on: boolean) => void; testid?: string; ariaLabel: string }) {
+function Switch({ on, onChange, testid, ariaLabel, disabled }: { on: boolean; onChange: (on: boolean) => void; testid?: string; ariaLabel: string; disabled?: boolean }) {
   return (
-    <button type="button" role="switch" aria-label={ariaLabel} aria-checked={on} className={`switch${on ? ' on' : ''}`} data-testid={testid} onClick={() => onChange(!on)}>
+    <button type="button" role="switch" aria-label={ariaLabel} aria-checked={on} className={`switch${on ? ' on' : ''}`} data-testid={testid} disabled={disabled} onClick={() => onChange(!on)}>
       <span className="switch-knob" aria-hidden />
     </button>
   )

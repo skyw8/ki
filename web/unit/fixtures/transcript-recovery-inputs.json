@@ -11,6 +11,12 @@
       { "type": "message", "id": "notice", "parentId": "result", "message": { "role": "user", "origin": "agent:child", "content": [{ "type": "text", "text": "notice" }] } },
       { "type": "message", "id": "final", "parentId": "notice", "message": { "role": "assistant", "content": [{ "type": "text", "text": "final" }] } }
     ],
+    "trailingNotice": [
+      { "type": "message", "id": "u", "message": { "role": "user", "content": [{ "type": "text", "text": "u" }] } },
+      { "type": "message", "id": "work", "parentId": "u", "message": { "role": "assistant", "content": [{ "type": "text", "text": "working" }] } },
+      { "type": "message", "id": "answer", "parentId": "work", "message": { "role": "assistant", "content": [{ "type": "text", "text": "final answer" }] } },
+      { "type": "message", "id": "notice", "parentId": "answer", "message": { "role": "user", "origin": "agent:child", "clientRequestId": "context-mail", "content": [{ "type": "text", "text": "context-only notice" }] } }
+    ],
     "oldBranch": [
       { "type": "message", "id": "u", "message": { "role": "user", "content": [{ "type": "text", "text": "u" }] } },
       { "type": "message", "id": "old-a1", "parentId": "u", "message": { "role": "assistant", "content": [{ "type": "text", "text": "old-a1" }] } },
@@ -80,11 +86,16 @@
   "cases": {
     "helper": { "history": "helper", "leaf": "call", "keep": 1 },
     "notice": { "history": "notice", "leaf": "final", "keep": 1 },
+    "noticeZero": { "history": "notice", "leaf": "final", "keep": 0 },
+    "trailingNotice": { "history": "trailingNotice", "leaf": "notice", "keep": 1 },
+    "trailingNoticeZero": { "history": "trailingNotice", "leaf": "notice", "keep": 0 },
     "oldTail": { "history": "oldBranch", "leaf": "y-answer", "keep": 0 },
     "oldPage": { "history": "oldBranch", "leaf": "y-answer", "before": "v", "keep": 0 },
     "selected": { "history": "selected", "leaf": "selected-a1", "keep": 0 },
     "runtimeOnly": { "history": "runtimeOnly", "leaf": "a2", "keep": 1 },
+    "runtimeOnlyZero": { "history": "runtimeOnly", "leaf": "a2", "keep": 0 },
     "runtimeNoticeTail": { "history": "runtimeOnly", "leaf": "notice", "keep": 1 },
+    "runtimeNoticeTailZero": { "history": "runtimeOnly", "leaf": "notice", "keep": 0 },
     "preludeClock": { "history": "preludeClock", "leaf": "final", "keep": 1 },
     "preludeRuntimePrefix": { "history": "preludeClock", "leaf": "prelude-answer", "keep": 1 },
     "preludeFirstHuman": { "history": "preludeClock", "leaf": "human", "keep": 1 },

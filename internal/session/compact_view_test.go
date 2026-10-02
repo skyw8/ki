@@ -95,7 +95,7 @@ func TestCompactPagesWholeTurnsWithoutHiddenBodies(t *testing.T) {
 	}
 }
 
-func TestCompactProjectionFoldsRuntimeUserMessages(t *testing.T) {
+func TestCompactProjectionKeepsRuntimeUserMessagesSeparate(t *testing.T) {
 	entries := []Entry{
 		{Type: "message", ID: "u0", Message: &types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "human"}}}},
 		{Type: "message", ID: "a0", ParentID: "u0", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "working"}}}},
@@ -109,11 +109,65 @@ func TestCompactProjectionFoldsRuntimeUserMessages(t *testing.T) {
 		t.Fatalf("runtime message split turns: %+v", page.Turns)
 	}
 	first := page.Turns[0]
-	if first.HiddenCount != 2 || !slices.Equal(first.VisibleNodeIDs, []string{"u0", "a1"}) {
-		t.Fatalf("runtime message was not folded: %+v", first)
+	if first.HiddenCount != 1 || !slices.Equal(first.VisibleNodeIDs, []string{"u0", "notice", "a1"}) {
+		t.Fatalf("runtime message consumed a reply slot: %+v", first)
 	}
-	if slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "notice" }) {
-		t.Fatal("folded runtime message body leaked into compact page")
+	if !slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "notice" }) {
+		t.Fatal("separate runtime notification body missing")
+	}
+}
+
+func TestCompactRuntimeNotificationsNeverHideFinalReply(t *testing.T) {
+	for _, humanOrigin := range []string{"", "extension:telegram"} {
+		for _, trailing := range []bool{false, true} {
+			for _, runtimeOrigin := range []string{"agent:child", "runtime:mailbox"} {
+				for _, keep := range []int{0, 1} {
+					t.Run(fmt.Sprintf("human=%s/trailing=%v/runtime=%s/keep=%d", humanOrigin, trailing, runtimeOrigin, keep), func(t *testing.T) {
+						entries := []Entry{
+							{Type: "message", ID: "u", Message: &types.Message{Role: "user", Origin: humanOrigin}},
+							{Type: "message", ID: "work", ParentID: "u", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "working"}}}},
+						}
+						add := func(id string, m types.Message) {
+							entries = append(entries, Entry{Type: "message", ID: id, ParentID: entries[len(entries)-1].ID, Message: &m})
+						}
+						notice := types.Message{Role: "user", Origin: runtimeOrigin, Content: []types.Content{{Type: "text", Text: "context-only notice"}}}
+						if !trailing {
+							add("notice", notice)
+						}
+						add("answer", types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "final answer"}}})
+						if trailing {
+							add("notice", notice)
+						}
+						page := BuildCompact(entries, "", "", keep)
+						if len(page.Turns) != 1 {
+							t.Fatalf("runtime notification split the human turn: %+v", page)
+						}
+						turn := page.Turns[0]
+						wantVisible := []string{"u", "notice"}
+						if keep == 1 {
+							if trailing {
+								wantVisible = []string{"u", "answer", "notice"}
+							} else {
+								wantVisible = []string{"u", "notice", "answer"}
+							}
+						}
+						if turn.HiddenCount != 2-keep || !slices.Equal(turn.VisibleNodeIDs, wantVisible) {
+							t.Fatalf("notice folded or hid final reply: %+v", turn)
+						}
+						if !slices.Equal(turn.EntryIDs, wantVisible) || turn.Stats.Steps != 2 || turn.Stats.Turn != 1 {
+							t.Fatalf("projection changed order or accounting: %+v", turn)
+						}
+						if turn.FirstHiddenID != "work" || slices.Contains(turn.OmittedNodeIDs, "notice") {
+							t.Fatalf("notice affected hidden reply identities: %+v", turn)
+						}
+						reprojected, found := BuildCompactTurn(entries, "", "notice", keep)
+						if !found || !slices.Equal(reprojected.Turns[0].VisibleNodeIDs, wantVisible) {
+							t.Fatalf("turn reprojection lost separate notification: %+v", reprojected)
+						}
+					})
+				}
+			}
+		}
 	}
 }
 
@@ -140,15 +194,21 @@ func TestCompactProjectionKeepsFoldAnchorForMachineOnlyTurn(t *testing.T) {
 		{Type: "message", ID: "directive", Message: &types.Message{Role: "user", Origin: "agent", Content: []types.Content{{Type: "text", Text: "subagent directive"}}}},
 		{Type: "message", ID: "answer", ParentID: "directive", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "done"}}}},
 	}
-	page := BuildCompact(entries, "", "", 1)
-	if len(page.Turns) != 1 || page.Turns[0].ID != "directive" || page.Turns[0].HiddenCount != 1 {
-		t.Fatalf("machine-only turn: %+v", page)
-	}
-	if page.Turns[0].Stats.Turn != 1 {
-		t.Fatalf("runtime-only turn must start at ordinal 1: %+v", page.Turns[0])
-	}
-	if !slices.Equal(page.Turns[0].VisibleNodeIDs, []string{"answer"}) || len(page.Entries) != 2 {
-		t.Fatalf("missing hidden fold anchor: %+v", page)
+	for _, keep := range []int{0, 1} {
+		page := BuildCompact(entries, "", "", keep)
+		if len(page.Turns) != 1 || page.Turns[0].ID != "directive" || page.Turns[0].HiddenCount != 1-keep {
+			t.Fatalf("machine-only turn keep=%d: %+v", keep, page)
+		}
+		if page.Turns[0].Stats.Turn != 1 {
+			t.Fatalf("runtime-only turn must start at ordinal 1: %+v", page.Turns[0])
+		}
+		want := []string{"directive"}
+		if keep == 1 {
+			want = append(want, "answer")
+		}
+		if !slices.Equal(page.Turns[0].VisibleNodeIDs, want) || !slices.Equal(page.Turns[0].EntryIDs, want) {
+			t.Fatalf("missing visible runtime anchor keep=%d: %+v", keep, page)
+		}
 	}
 }
 

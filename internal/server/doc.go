@@ -1,5 +1,25 @@
 // Package server is the local HTTP backend. It orchestrates loop, session
 // persist, tools, and providers. The same process serves the embedded WebUI.
+// code_mode.mode enables exec/wait alongside direct tools (mixed) or instead of
+// them (only).
+// GET/PATCH /v1/tools exposes codeMode and saves its global toggles.json override.
+// Optional mode and disabled-list patches preserve the omitted field; a mode
+// snapshot applies for one occupy, so Settings changes need no server restart.
+// Official-SDK MCP clients are server-owned and lazy; admitted schemas defer
+// only when search_tool is available. Execution capabilities remain fixed,
+// while ModelTools projects disclosures from post-hook provider history.
+// Global/project mcp.json is resolved at the session or settings workspace cwd,
+// not the daemon's original cwd. Settings mcp and session availableMCP are
+// credential-free next-occupy projections with optional cached tool counts;
+// reading them never connects. mcpDisabled patches edit configured-enabled
+// servers in that scope and preserve hidden/file-disabled names. Up to 32
+// immutable SDK configurations are cached; active occupies pin their clients,
+// and only idle entries can be evicted when settings or files change.
+// Lazy, session-scoped workers use this same binary and goja; tool requests
+// return through the run's fixed, filtered dispatcher and serialized
+// event funnel. Nested calls are attributed audit events, not provider messages.
+// Occupy closure cancels and joins cells before hooks/session/telemetry close;
+// committed JSON store values survive occupies, but not worker/runtime closure.
 // A wildcard listener is advertised to local CLI clients as 127.0.0.1 in
 // server.json so commands reuse the daemon instead of spawning duplicate
 // in-process extension runtimes.
@@ -54,7 +74,7 @@
 // workspace (or a tmp+ workspace). GET /v1/sessions/{id} returns a WebUI
 // view: the newest entries of the active leaf (unchanged request_header
 // system/tools omitted; large bodies truncated) plus a read-only catalog
-// (availableSkills / availableExtensions, including loaded
+// (availableMCP / availableSkills / availableExtensions, including loaded
 // skills/tools/commands/promptAppend/providers and global extension i18n/UI,
 // commands[]), session extensionUi, and runtime.ready.
 // The same route's view=trace and view=inspect projections expose bounded

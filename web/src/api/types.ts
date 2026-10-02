@@ -155,6 +155,8 @@ export type LoopEvent = {
 	durationMs?: number
   message?: Message
   toolCallId?: string
+  parentCallId?: string
+  cellId?: string
   toolName?: string
   args?: Record<string, unknown>
   result?: unknown
@@ -275,6 +277,29 @@ export type CatalogTool = {
   available?: boolean
 }
 
+export type CodeMode = 'off' | 'mixed' | 'only'
+
+export type MCPServerInfo = {
+  name: string
+  source: 'global' | 'project' | 'runtime'
+  transport: 'stdio' | 'http'
+  enabled: boolean
+  configuredEnabled: boolean
+  tools?: number
+}
+
+export type ToolSettings = {
+  items: CatalogTool[]
+  codeMode: CodeMode
+  mcp: MCPServerInfo[]
+}
+
+export type ToolSettingsPatch = {
+  disabled?: string[]
+  codeMode?: CodeMode
+  mcpDisabled?: string[]
+}
+
 export type ExtensionText = string | number | boolean | {
   key: string
   params?: Record<string, string | number>
@@ -374,6 +399,7 @@ export type SessionDetail = Partial<SessionInfo> & {
   oldestId?: string
   availableSkills?: CatalogSkill[]
   availableExtensions?: CatalogExtension[]
+  availableMCP?: MCPServerInfo[]
   commands?: SessionCommand[]
   queued?: QueuedItem[]
   processes?: ProcessSnapshot[]
@@ -504,7 +530,7 @@ export type Meta = {
 export type ChatNode = { turnId?: TurnId } & (
   | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string; clientRequestId?: string; completion?: Message['completion']; external?: Record<string, string>; truncated?: boolean }
   | { kind: 'assistant'; id: string; renderKey?: string; display?: DisplayRevision; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; cancelReason?: string; cancelSource?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number; truncated?: boolean }
-  | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; startedAt?: number; running?: boolean; truncated?: boolean }
+  | { kind: 'tool'; id: string; name: string; parentCallId?: string; cellId?: string; requestedToolName?: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; startedAt?: number; running?: boolean; truncated?: boolean }
   | { kind: 'compaction'; id: string; summary: string; ts?: number; tokensBefore?: number; running?: boolean; failed?: boolean; empty?: boolean; unknown?: boolean; truncated?: boolean; lifecycle?: boolean }
   | { kind: 'cancellation'; id: string; runId?: string; reason?: string; source?: string; ts?: number; truncated?: boolean }
 )
@@ -552,6 +578,9 @@ export type TrajRecord = {
   truncated?: boolean
   id: string
 	parentId?: string
+  parentCallId?: string
+  cellId?: string
+  requestedToolName?: string
   kind: TrajKind
   turn: number
   step?: number

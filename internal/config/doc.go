@@ -9,6 +9,14 @@
 // compaction.mode selects auto, local, or remote checkpoints;
 // compaction.server_side enables provider-managed Responses compaction for
 // catalog models that explicitly advertise it.
+// code_mode.mode selects off, mixed (default: direct tools plus exec/wait), or
+// only (exec/wait with the allowed tools available through JavaScript).
+// MCP configuration lives separately in version-1 mcp.json documents under
+// KI_HOME and <cwd>/.ki. Project entries replace whole global entries with the
+// same case-sensitive name. Camel-case mcpServers fields select official-SDK
+// transports and raw-tool policies; environment keys retain their exact case.
+// Missing documents are optional, malformed/newer documents fail loading, and
+// legacy mcp_servers TOML tables are rejected rather than silently ignored.
 //
 // agents.max_concurrent defaults to four active child turns per root; the root
 // itself is excluded and waiting child turns still count. There is no depth cap.

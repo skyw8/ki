@@ -13,7 +13,7 @@ System prompt 按以下顺序组装：
 5. **内置追加指令**：常量 prompt.DefaultAppendSystemPrompt，让模型优先使用 read/grep/glob；shell 搜索优先用 rg/fd 而不是 grep/find（支持的目标由 Ki 捆绑并放入 PATH；不支持的目标使用可用的平台搜索命令，不能假定二进制存在；默认尊重 .gitignore，-H/-I 有说明）。这是 harness 层规则，无条件输出，exec_command 描述补充默认 shell、login、PTY、增量输出与观察预算。工具名称只发布 canonical snake_case，接受 PascalCase 调用别名。
 6. **operator 追加指令**：按来源顺序读取 `{KI_HOME}/prompt/APPEND_SYSTEM.md`（global）与 `<cwd>/.ki/prompt/APPEND_SYSTEM.md`（project）。两者**叠加**而非覆盖，global 在前、project 在后，各自整份文件作为一个块渲染（空文件或只有空白则跳过）；路径由 `resources.AppendSystemPromptPath` 统一解析，读取与设置页写入共用同一个函数。内容位于内置追加指令之后、扩展追加与 Skills 之前，不替换 Ki 的基础 prompt 和内置追加指令。
 7. **扩展追加**：启用的全局 extension `prompt.append` 文件，按扩展名序，每段 `<extension_instructions name="…">`。扩展层在 operator 追加之后、Skills 之前。
-8. **Skills**：仅当本轮存在 `read` 工具且至少有一个启用的 skill 时输出。每个 skill 包含名称、描述和 `SKILL.md` 路径，同时说明按需读取及相对路径解析规则。
+8. **Skills**：仅当本轮直接或嵌套能力中存在 `read` 工具且至少有一个启用的 skill 时输出。Code Mode only 模式通过单独的 `NestedTools` 保留能力检测，提示使用 `exec` 中的 `await tools.read(...)`，不错误隐藏 skills。每个 skill 包含名称、描述和 `SKILL.md` 路径，同时说明按需读取及相对路径解析规则。
 9. **项目指令**：输出 AGENTS/CLAUDE 文件的路径和完整内容。先加载 `{KI_HOME}` 下的全局文件，再按 git 仓库根目录到 cwd 的顺序加载；不在 git 仓库中时只加载 cwd。每个目录按 `AGENTS.override.md`、`AGENTS.md`、`AGENTS.MD`、`CLAUDE.md`、`CLAUDE.MD` 的优先级选取一个文件。
 10. **运行系统**：输出 OS（macOS、Windows、Linux 或 WSL）和架构。
 11. **当前环境**：输出 session cwd、资源快照创建日期和时区。

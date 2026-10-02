@@ -194,20 +194,31 @@ export class Client {
   }
 
   async tools(sessionId?: string | null, workspaceId?: string | null): Promise<import('./types').CatalogTool[]> {
-    const p = new URLSearchParams()
-    if (sessionId) p.set('sessionId', sessionId)
-    if (workspaceId) p.set('workspaceId', workspaceId)
-    const q = p.size ? `?${p}` : ''
-    const got = await this.json<{ items: import('./types').CatalogTool[] }>(`/v1/tools${q}`)
-    return got.items ?? []
+    return (await this.toolsSettings(sessionId, workspaceId)).items
   }
 
-  patchTools(disabled: string[], sessionId?: string | null, workspaceId?: string | null): Promise<{ items: import('./types').CatalogTool[] }> {
+  async toolsSettings(sessionId?: string | null, workspaceId?: string | null): Promise<import('./types').ToolSettings> {
     const p = new URLSearchParams()
     if (sessionId) p.set('sessionId', sessionId)
     if (workspaceId) p.set('workspaceId', workspaceId)
     const q = p.size ? `?${p}` : ''
-    return this.json(`/v1/tools${q}`, { method: 'PATCH', body: JSON.stringify({ disabled }) })
+    return this.json(`/v1/tools${q}`)
+  }
+
+  patchTools(disabled: string[], sessionId?: string | null, workspaceId?: string | null): Promise<import('./types').ToolSettings> {
+    return this.patchToolSettings({ disabled }, sessionId, workspaceId)
+  }
+
+  patchMCP(mcpDisabled: string[], sessionId?: string | null, workspaceId?: string | null): Promise<import('./types').ToolSettings> {
+    return this.patchToolSettings({ mcpDisabled }, sessionId, workspaceId)
+  }
+
+  patchToolSettings(patch: import('./types').ToolSettingsPatch, sessionId?: string | null, workspaceId?: string | null): Promise<import('./types').ToolSettings> {
+    const p = new URLSearchParams()
+    if (sessionId) p.set('sessionId', sessionId)
+    if (workspaceId) p.set('workspaceId', workspaceId)
+    const q = p.size ? `?${p}` : ''
+    return this.json(`/v1/tools${q}`, { method: 'PATCH', body: JSON.stringify(patch) })
   }
 
   async extensions(): Promise<import('./types').CatalogExtension[]> {

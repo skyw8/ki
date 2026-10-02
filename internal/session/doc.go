@@ -39,10 +39,12 @@
 // row (or its committed checkpoint) renders outside folds; lifecycle progress
 // does not increment model steps. Later requests cannot finish an abandoned
 // earlier start.
-// HiddenCount counts nodes, not entries: assistant messages, distinct tool call IDs,
-// and runtime user messages. VisibleNodeIDs also includes always-visible
-// compaction/cancellation metadata and aborted assistants, so consumers must
-// classify those IDs before combining visible replies with HiddenCount.
+// HiddenCount counts reply nodes, not entries: assistant messages and distinct
+// tool call IDs. Runtime user messages always remain visible in chronological
+// order, separate from replies, and never consume keep slots or HiddenCount.
+// VisibleNodeIDs also includes compaction/cancellation metadata and aborted
+// assistants, so consumers must classify those IDs before combining visible
+// replies with HiddenCount.
 // Sparse cross-turn edges require matching canonical parent/tail identities,
 // not merely consecutive turn ordinals, which can also occur on sibling branches.
 // Hidden reply bodies are transferred
@@ -121,4 +123,6 @@
 // full transcript. ListCache reuses rows while config.json and events.jsonl keep
 // their size and mtime. Index caches id→dir for O(1) lookup; the filesystem
 // stays the source of truth and misses fall back to Find. On-disk layout: docs/session.md.
+// Code Mode nested tool audits are non-message details entries. Their parent
+// call and cell identity never create an unmatched provider toolResult.
 package session

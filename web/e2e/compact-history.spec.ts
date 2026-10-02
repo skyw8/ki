@@ -6,6 +6,59 @@ import type { Entry, SessionDetail } from '../src/api/types'
 
 test.describe.configure({ mode: 'parallel' })
 
+test('runtime notifications stay outside folds and never hide the final assistant reply after reload', async ({ page }) => {
+  const headers = { Authorization: `Bearer ${serverToken()}` }
+  const created = await page.request.post('/v1/sessions', { headers, data: {} })
+  expect(created.ok()).toBeTruthy()
+  const { id, dir } = await created.json() as { id: string; dir: string }
+  const title = `runtime-fold-${id}`
+  const entries: Entry[] = [
+    { type: 'message', id: 'u', parentId: '', message: { role: 'user', content: [{ type: 'text', text: 'Human prompt' }] } },
+    { type: 'message', id: 'early', parentId: 'u', message: { role: 'assistant', content: [{ type: 'text', text: 'Earlier reply' }] } },
+    { type: 'message', id: 'middle', parentId: 'early', message: { role: 'user', origin: 'agent:child', content: [{ type: 'text', text: 'Middle runtime notice' }] } },
+    { type: 'message', id: 'final', parentId: 'middle', message: { role: 'assistant', content: [{ type: 'text', text: 'Final agent reply stays visible' }] } },
+    // Real mailbox delivery can persist after the terminal assistant. Keep its
+    // chronological position, but never let it consume the final reply slot.
+    { type: 'message', id: 'trailing', parentId: 'final', message: { role: 'user', origin: 'agent:child', content: [{ type: 'text', text: 'Trailing runtime notice' }] } },
+  ]
+  appendFileSync(join(dir, 'events.jsonl'), entries.map(e => JSON.stringify(e)).join('\n') + '\n')
+  const path = join(dir, 'config.json')
+  writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), activeLeafId: 'trailing', title }))
+  await page.addInitScript(() => {
+    localStorage.setItem('ki-message-view', 'compact')
+    if (localStorage.getItem('ki-message-view-keep') == null) localStorage.setItem('ki-message-view-keep', '1')
+  })
+  const detail = await page.request.get(`/v1/sessions/${id}?view=compact&keep=1`, { headers })
+  expect(detail.ok()).toBeTruthy()
+  const snapshot = await detail.json() as SessionDetail
+  expect(snapshot.compactTurns?.[0].hiddenCount).toBe(1)
+  expect(snapshot.compactTurns?.[0].visibleNodeIds).toEqual(['u', 'middle', 'final', 'trailing'])
+  const assertVisible = async () => {
+    await expect(page.getByTestId('assistant-message')).toHaveText(/Final agent reply stays visible/)
+    await expect(page.getByRole('note')).toHaveCount(2)
+    await expect(page.getByRole('note').first()).toContainText('Middle runtime notice')
+    await expect(page.getByRole('note').last()).toContainText('Trailing runtime notice')
+    await expect(page.getByTestId('fold-row')).toContainText('已折叠 1 条消息')
+  }
+  await page.goto('/')
+  await page.getByTestId('session-row').filter({ hasText: title }).click()
+  await assertVisible()
+  await page.reload()
+  await page.getByTestId('session-row').filter({ hasText: title }).click()
+  await assertVisible()
+  await page.getByTestId('fold-row-btn').click()
+  await expect(page.getByTestId('assistant-message')).toHaveCount(2)
+  await expect(page.getByRole('note')).toHaveCount(2)
+  await page.getByTestId('fold-row-btn').click()
+  await assertVisible()
+  await page.evaluate(() => localStorage.setItem('ki-message-view-keep', '0'))
+  await page.reload()
+  await page.getByTestId('session-row').filter({ hasText: title }).click()
+  await expect(page.getByTestId('assistant-message')).toHaveCount(0)
+  await expect(page.getByRole('note')).toHaveCount(2)
+  await expect(page.getByTestId('fold-row')).toContainText('已折叠 2 条消息')
+})
+
 async function seed(page: Page) {
   const headers = { Authorization: `Bearer ${serverToken()}` }
   const created = await page.request.post('/v1/sessions', { headers, data: {} })

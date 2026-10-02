@@ -524,6 +524,7 @@ for (const profile of profiles) {
         ['providers', 'provider-settings'],
         ['skills', 'skills-settings'],
         ['tools', 'tools-settings'],
+        ['mcp', 'mcp-settings'],
         ['extensions', 'extensions-settings'],
         ['prompt', 'prompt-settings'],
         ['message', 'message-settings'],

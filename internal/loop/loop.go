@@ -155,6 +155,10 @@ type Event struct {
 	Options               []string          `json:"options,omitempty"`
 	RunID                 string            `json:"runId,omitempty"`
 	External              map[string]string `json:"external,omitempty"`
+	// ParentCallID and CellID attribute nested tool audits to the enclosing
+	// provider-issued code call. They do not create transcript tool messages.
+	ParentCallID string `json:"parentCallId,omitempty"`
+	CellID       string `json:"cellId,omitempty"`
 	// Seq is the per-run sequence number the server stamps when it buffers the
 	// event for SSE replay. It travels with the event so a client can resume
 	// with the last one it saw (the SSE id line, or ?since=) instead of asking
@@ -305,12 +309,16 @@ func (i *Inbox) Has() bool {
 
 // Config is loop runtime options.
 type Config struct {
-	RunID                     string
-	AgentID                   string
-	Generation                uint64
-	Streamer                  Streamer
-	SessionID                 string
-	Tools                     []toolapi.Tool
+	RunID      string
+	AgentID    string
+	Generation uint64
+	Streamer   Streamer
+	SessionID  string
+	Tools      []toolapi.Tool
+	// ModelTools selects advertised schemas from the fixed execution registry.
+	// It receives the final model-facing history after context hooks. A nil
+	// callback advertises Tools unchanged; hidden schemas do not revoke tools.
+	ModelTools                func([]types.Message) []toolapi.Tool
 	OutputStore               *output.Store
 	Telemetry                 *telemetry.Run
 	Hooks                     Hooks
@@ -350,7 +358,8 @@ func Run(ctx context.Context, prompt string, history []types.Message, cfg Config
 
 // RunMessage executes one structured user message against the current history.
 func RunMessage(ctx context.Context, user types.Message, history []types.Message, cfg Config, emit func(Event) error) ([]types.Message, error) {
-	if _, err := toolapi.NewRegistry(cfg.Tools); err != nil {
+	registry, err := toolapi.NewRegistry(cfg.Tools)
+	if err != nil {
 		return nil, err
 	}
 	if cfg.MaxRetries <= 0 {
@@ -395,10 +404,6 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		history = msgs
 	}
 
-	var specs []toolapi.Spec
-	for _, t := range cfg.Tools {
-		specs = append(specs, toolapi.SpecFor(t))
-	}
 	responsesContext := slices.Clone(cfg.ResponsesContext)
 
 	firstTurn := true
@@ -441,6 +446,12 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		}
 		msgs = stripExternal(msgs)
 
+		// Discovery depends on accepted post-hook results in the actual provider
+		// history, not on an execution side channel or a stale first-turn schema.
+		specs, err := modelToolSpecs(cfg, registry, msgs)
+		if err != nil {
+			return newMsgs, err
+		}
 		if err := emit(Event{Type: RequestHeader, System: system, Tools: slices.Clone(specs), Provider: cfg.Provider, Model: cfg.Model}); err != nil {
 			return newMsgs, err
 		}
@@ -636,6 +647,33 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		return newMsgs, err
 	}
 	return newMsgs, nil
+}
+
+func modelToolSpecs(cfg Config, registry *toolapi.Registry, history []types.Message) ([]toolapi.Spec, error) {
+	tools := cfg.Tools
+	if cfg.ModelTools != nil {
+		tools = cfg.ModelTools(slices.Clone(history))
+	}
+	var specs []toolapi.Spec
+	seen := map[string]bool{}
+	for _, t := range tools {
+		if t == nil {
+			return nil, fmt.Errorf("model tools contains nil tool")
+		}
+		name, err := toolapi.Canonical(t.Name())
+		if err != nil {
+			return nil, fmt.Errorf("model tool: %w", err)
+		}
+		if _, allowed := registry.Lookup(name); !allowed {
+			return nil, fmt.Errorf("model tool %q is not in the execution registry", name)
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		specs = append(specs, toolapi.SpecFor(t))
+	}
+	return specs, nil
 }
 
 func stripExternal(msgs []types.Message) []types.Message {
@@ -926,222 +964,14 @@ func nonRetryableStreamError(err error) bool {
 // the main loop can stop instead of requesting the model again (pi
 // shouldTerminateToolBatch).
 func executeTools(ctx context.Context, cfg Config, calls []types.Content, emit func(Event) error) ([]types.Message, bool) {
-	registry, registryErr := toolapi.NewRegistry(cfg.Tools)
-	out := make([]types.Message, len(calls))
-
-	// Phase 1: prepare (synchronous, no side effects).
-	type prep struct {
-		call       types.Content
-		args       map[string]any
-		tool       toolapi.Tool
-		immediate  *types.Message // set → skip execute
-		diagnostic telemetry.ToolDiagnostic
-		terminate  bool
+	dispatcher, err := NewToolDispatcher(cfg, emit)
+	if err != nil {
+		// RunMessage validates the registry before any effects. Keep direct
+		// callers fail-closed too, with the usual unknown-tool results.
+		cfg.Tools = nil
+		dispatcher, _ = NewToolDispatcher(cfg, emit)
 	}
-	preps := make([]prep, len(calls))
-	for i, c := range calls {
-		args := c.Arguments
-		if c.ToolType == "custom" {
-			args = map[string]any{"input": c.Input}
-		}
-		if args == nil {
-			args = map[string]any{}
-		}
-		p := prep{call: c, args: args}
-		t, ok := registry.Lookup(c.Name)
-		if registryErr != nil {
-			ok = false
-		}
-		if !ok {
-			m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: "unknown tool " + c.Name}}, IsError: true}
-			p.immediate = &m
-			p.diagnostic = telemetry.ToolDiagnostic{Status: "rejected", Kind: "unknown_tool", FaultDomain: "model_input"}
-			preps[i] = p
-			continue
-		}
-		if v, ok := t.(toolapi.Validator); ok && c.ToolType != "custom" {
-			if err := v.Validate(args); err != nil {
-				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
-				p.immediate = &m
-				p.diagnostic = telemetry.ToolDiagnostic{Status: "rejected", Kind: "invalid_arguments", FaultDomain: "model_input"}
-				preps[i] = p
-				continue
-			}
-		}
-		if cfg.Hooks.BeforeTool != nil {
-			a, b, r, term, err := cfg.Hooks.BeforeTool(ctx, toolapi.MustCanonical(t.Name()), args)
-			if err != nil {
-				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: err.Error()}}, IsError: true}
-				p.immediate = &m
-				p.diagnostic = telemetry.ToolDiagnostic{Status: "failed", Kind: "extension_failed", FaultDomain: "extension"}
-				p.terminate = term
-				preps[i] = p
-				continue
-			}
-			args, p.terminate = a, term
-			p.args = args
-			if b {
-				m := types.Message{Role: "toolResult", ToolCallID: c.ID, ToolName: c.Name, ToolType: c.ToolType, Content: []types.Content{{Type: "text", Text: r}}, IsError: true}
-				p.immediate = &m
-				p.diagnostic = telemetry.ToolDiagnostic{Status: "rejected", Kind: "extension_rejected", FaultDomain: "extension"}
-				preps[i] = p
-				continue
-			}
-		}
-		p.args, p.tool = args, t
-		preps[i] = p
-	}
-
-	// Phase 2: execute.
-	run := func(i int) {
-		p := preps[i]
-		canonicalName := p.call.Name
-		if p.tool != nil {
-			canonicalName = toolapi.MustCanonical(p.tool.Name())
-		}
-		startedAt := time.Now()
-		_ = emit(Event{
-			Type:              ToolExecutionStart,
-			Timestamp:         startedAt.UnixMilli(),
-			ToolCallID:        p.call.ID,
-			ToolName:          canonicalName,
-			RequestedToolName: p.call.Name,
-			Args:              p.args,
-		})
-		if p.immediate != nil {
-			finishedAt := time.Now()
-			dur := finishedAt.Sub(startedAt).Milliseconds()
-			msg := *p.immediate
-			msg.DurationMs = dur
-			msg.Timestamp = finishedAt.UnixMilli()
-			out[i] = msg
-			if cfg.Telemetry != nil {
-				cfg.Telemetry.RecordTool(canonicalName, p.call.ID, dur, true, p.diagnostic, nil)
-			}
-			_ = emit(Event{
-				Type:              ToolExecutionEnd,
-				Timestamp:         finishedAt.UnixMilli(),
-				DurationMs:        dur,
-				ToolCallID:        p.call.ID,
-				ToolName:          canonicalName,
-				RequestedToolName: p.call.Name,
-				Args:              p.args,
-				IsError:           true,
-			})
-			return
-		}
-		executionCtx := toolapi.WithExecutionIdentity(ctx, toolapi.ExecutionIdentity{RunID: cfg.RunID, AgentID: cfg.AgentID, Generation: cfg.Generation, CallID: p.call.ID})
-		var res toolapi.Result
-		if p.call.ToolType == "custom" {
-			raw, _ := p.args["input"].(string)
-			if freeform, ok := p.tool.(toolapi.FreeformTool); ok {
-				res = freeform.ExecuteRaw(executionCtx, raw)
-			} else {
-				res = toolapi.Result{
-					Content: []types.Content{{Type: "text", Text: "tool does not accept freeform input"}}, IsError: true,
-					Diagnostic: telemetry.ToolDiagnostic{Status: "rejected", Kind: "invalid_arguments", FaultDomain: "model_input"},
-				}
-			}
-		} else if progress, ok := p.tool.(toolapi.ProgressTool); ok {
-			progressEmit := func(value any) {
-				_ = emit(Event{
-					Type:              ToolExecutionUpdate,
-					ToolCallID:        p.call.ID,
-					ToolName:          canonicalName,
-					RequestedToolName: p.call.Name,
-					Args:              p.args,
-					PartialResult:     value,
-				})
-			}
-			res = progress.ExecuteWithProgress(executionCtx, p.args, progressEmit)
-		} else {
-			res = p.tool.Execute(executionCtx, p.args)
-		}
-		if cfg.Hooks.AfterTool != nil {
-			if nr, err := cfg.Hooks.AfterTool(ctx, canonicalName, p.args, res); err == nil {
-				res = nr
-			}
-		}
-		if cfg.OutputStore != nil {
-			// The bounded result is what reaches the model, the jsonl, and the
-			// SSE stream; the complete text stays in the session spill file.
-			content, ref := cfg.OutputStore.Normalize(cfg.SessionID, canonicalName, p.args, res.Content, res.Details)
-			res.Content = content
-			res.Details = output.MergeDetails(res.Details, ref)
-		}
-		finishedAt := time.Now()
-		dur := finishedAt.Sub(startedAt).Milliseconds()
-		msg := types.Message{
-			Role:       "toolResult",
-			ToolCallID: p.call.ID,
-			ToolName:   p.call.Name,
-			ToolType:   p.call.ToolType,
-			Content:    res.Content,
-			Details:    res.Details,
-			IsError:    res.IsError,
-			DurationMs: dur,
-			Timestamp:  finishedAt.UnixMilli(),
-		}
-		out[i] = msg
-		p.terminate = p.terminate || res.Terminate
-		preps[i] = p
-		if cfg.Telemetry != nil {
-			attrs := toolTelemetryAttrs(res.Details)
-			if attrs == nil {
-				attrs = map[string]any{}
-			}
-			attrs["ki.agent.id"] = cfg.AgentID
-			attrs["ki.agent.generation"] = cfg.Generation
-			attrs["ki.tool.requested_name"] = p.call.Name
-			if canonicalName == "wait_agent" || canonicalName == "send_message" || canonicalName == "followup_task" {
-				if raw, err := json.Marshal(res.Details); err == nil {
-					var receipt map[string]any
-					if json.Unmarshal(raw, &receipt) == nil {
-						for _, key := range []string{"wake_reason", "timed_out", "status", "task_name", "agent_id"} {
-							if value, ok := receipt[key]; ok {
-								attrs["ki.coordination."+key] = value
-							}
-						}
-					}
-				}
-			}
-			cfg.Telemetry.RecordTool(canonicalName, p.call.ID, dur, res.IsError, res.Diagnostic, attrs)
-		}
-		_ = emit(Event{
-			Type:              ToolExecutionEnd,
-			Timestamp:         finishedAt.UnixMilli(),
-			DurationMs:        dur,
-			ToolCallID:        p.call.ID,
-			ToolName:          canonicalName,
-			RequestedToolName: p.call.Name,
-			Args:              p.args,
-			Result:            res,
-			IsError:           res.IsError,
-		})
-	}
-	if cfg.Parallel {
-		var wg sync.WaitGroup
-		for i := range calls {
-			wg.Go(func() {
-				run(i)
-			})
-		}
-		wg.Wait()
-	} else {
-		for i := range calls {
-			run(i)
-		}
-	}
-
-	// Batch terminate: every call terminated (pi shouldTerminateToolBatch).
-	terminate := len(calls) > 0
-	for _, p := range preps {
-		if !p.terminate {
-			terminate = false
-			break
-		}
-	}
-	return out, terminate
+	return dispatcher.executeBatch(ctx, calls)
 }
 
 func modelTelemetry(request Request, response types.Message, err error, durationMS int64) telemetry.ModelRequest {

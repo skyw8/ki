@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	"ki/internal/compact"
@@ -33,9 +34,11 @@ import (
 // independent contracts (jsonl shape, SSE replay, push fallback, extension
 // ordering, context accounting) that were only reachable through a full run.
 // The order between them is still a contract, so Emit stays one synchronous
-// call chain on the loop's goroutine — no stage may spawn a goroutine, see
-// notifyExtensions.
+// serialized call chain — no stage may spawn a goroutine, see notifyExtensions.
+// Nested code callbacks can arrive while the loop streams; they share the same
+// funnel lock instead of racing persistence or lifecycle notifications.
 type runEmitter struct {
+	mu   sync.Mutex
 	s    *Server
 	ctx  context.Context
 	id   string
@@ -63,6 +66,10 @@ type runEmitter struct {
 // Emit applies one loop event to every subscriber. An error aborts the run:
 // the loop stops on the first event the server could not persist.
 func (p *runEmitter) Emit(ev loop.Event) error {
+	// Hold only the event funnel, never a tool execution: nested tools may emit
+	// progress or callbacks before the enclosing execution returns.
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if err := p.persist(&ev); err != nil {
 		return err
 	}
@@ -91,6 +98,25 @@ func (p *runEmitter) Emit(ev loop.Event) error {
 // extension message_end rewrite and the appended entry id must reach the SSE
 // subscriber, which is why it takes a pointer.
 func (p *runEmitter) persist(ev *loop.Event) error {
+	if ev.ParentCallID != "" && (ev.Type == loop.ToolExecutionStart || ev.Type == loop.ToolExecutionUpdate || ev.Type == loop.ToolExecutionEnd) {
+		bounded, err := loop.BoundNestedToolEvent(*ev)
+		if err != nil {
+			return err
+		}
+		*ev = bounded
+		details := map[string]any{
+			"toolCallId": ev.ToolCallID, "parentCallId": ev.ParentCallID, "cellId": ev.CellID,
+			"toolName": ev.ToolName, "requestedToolName": ev.RequestedToolName,
+			"timestamp": ev.Timestamp, "durationMs": ev.DurationMs, "isError": ev.IsError,
+			"args": ev.Args, "partialResult": ev.PartialResult, "result": ev.Result,
+		}
+		entry, err := p.sess.AppendDetailsEvent(string(ev.Type), details)
+		if err != nil {
+			return fmt.Errorf("append nested tool audit: %w", err)
+		}
+		ev.EntryID, ev.ParentID = entry.ID, &entry.ParentID
+		return nil
+	}
 	switch ev.Type {
 	case loop.MessageEnd:
 		if ev.Message == nil {

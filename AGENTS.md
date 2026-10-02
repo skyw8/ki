@@ -31,6 +31,7 @@ ki/
 │   ├── process/         shell discovery, PTY, process ownership and tree control
 │   ├── search/          embedded ripgrep engines for Grep / Glob
 │   ├── provider/        catalog, registry, credentials, cost, Ki adapter
+│   ├── mcp/             official Go SDK clients and immutable tool catalogs
 │   ├── prompt/          system prompt renderer
 │   ├── resources/       session-scoped runtime and filesystem snapshots
 │   ├── compact/         compaction
@@ -62,6 +63,7 @@ ki/
   - `provider.md` — provider registry and protocol shapes (Completions / Responses / Anthropic)
   - `extension.md` — extension.json packages, toggles, sidecar JSON-RPC, lifecycle
   - `tools.md` — tool contract (names/schemas follow Claude Code, results follow pi)
+  - `mcp.md` — official-SDK transports, MCP policy, Deferred discovery and Code Mode
   - `webui.md` — same-origin WebUI serving contract
   - `workspace.md` — workspace registry (`{KI_HOME}/workspaces.json`)
   - `state.md` — `{KI_HOME}` JSON state files: schema versions, migrations, downgrade rules

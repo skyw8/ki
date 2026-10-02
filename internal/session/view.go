@@ -150,6 +150,9 @@ func firstChatEntry(entries []Entry) *Entry {
 		case "message", "compaction", "compaction_start", "compaction_end", "run_aborted":
 			return &entries[i]
 		}
+		if audit, ok := codeModeToolAudit(entries[i]); ok && audit["toolCallId"] != audit["parentCallId"] {
+			return &entries[i]
+		}
 	}
 	return nil
 }
@@ -415,7 +418,11 @@ func slimEntry(e Entry, prevSys, prevTools *string, seenHeader *bool, digests to
 		out.Truncated = true
 	}
 	if tooBig(out.Details) {
-		out.Details = map[string]any{"truncated": true}
+		if audit, ok := codeModeToolAudit(out); ok {
+			out.Details = slimCodeModeAudit(audit, MaxViewBytes)
+		} else {
+			out.Details = map[string]any{"truncated": true}
+		}
 		out.Truncated = true
 	}
 	return out
@@ -556,6 +563,7 @@ func compactViewEntryLimit(e Entry, limit int) Entry {
 	if len(raw) <= limit {
 		return e
 	}
+	audit, nestedAudit := codeModeToolAudit(e)
 	e.Truncated = true
 	e.Details, e.Pricing, e.Tools = nil, nil, nil
 	e.System = utf8Prefix(e.System, 4096)
@@ -575,6 +583,10 @@ func compactViewEntryLimit(e Entry, limit int) Entry {
 			c.Arguments = nil
 		}
 		e.Message = &m
+	}
+	if nestedAudit {
+		base, _ := json.Marshal(e)
+		e.Details = slimCodeModeAudit(audit, max(0, limit-len(base)-32))
 	}
 	return e
 }

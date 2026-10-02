@@ -1,6 +1,6 @@
 import type { ChatNode, CompactTurn } from '../api/types'
 import { nodeLive } from './model'
-import { groupTurns, isHumanPrompt } from './transcriptIdentity'
+import { groupTurns } from './transcriptIdentity'
 export { groupTurns } from './transcriptIdentity'
 export type { ChatTurn } from './transcriptIdentity'
 import type { ChatTurn } from './transcriptIdentity'
@@ -81,11 +81,10 @@ function isLive(n: ChatNode): boolean {
   return nodeLive(n)
 }
 
-/** Match the server's reply-node contract, including runtime user messages. */
+/** Only assistant/tool output consumes reply slots, matching server compact. */
 function isReply(n: ChatNode): boolean {
   return n.kind === 'tool' ||
-    (n.kind === 'assistant' && n.stopReason !== 'aborted') ||
-    (n.kind === 'user' && !isHumanPrompt(n.origin))
+    (n.kind === 'assistant' && n.stopReason !== 'aborted')
 }
 
 /**
@@ -94,9 +93,9 @@ function isReply(n: ChatNode): boolean {
  * the streaming text or the running tool would hide exactly what the user is
  * waiting for.
  *
- * Compaction and cancellation rows are metadata, not replies: they are always
- * shown on their own row and never counted toward `keep`. Counting them would
- * let trailing lifecycle metadata fold away the turn's final answer.
+ * Runtime notifications, compaction and cancellation rows are not replies:
+ * they always have their own rows and never count toward `keep` or fold counts.
+ * Otherwise a notification persisted after completion hides the final answer.
  *
  * Liveness comes from lifecycle reconciliation, not node position: parallel
  * tools finish out of order and an earlier sibling can still be running.
@@ -122,8 +121,8 @@ function hiddenReplyIds(rest: ChatNode[], keep: number): Set<string> {
  * Per turn: the user bubble always stays, then one fold row for the reply nodes
  * before the newest `keep`, then those newest nodes. A folded turn opens in
  * place — the row stays where it is and the hidden nodes appear right after it,
- * so expanding never reorders the transcript. Compaction rows never fold and
- * never count toward `keep`.
+ * so expanding never reorders the transcript. Runtime notifications and
+ * compaction/cancellation rows never fold and never count toward `keep`.
  */
 export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderItem[] {
   const turns = groupTurns(nodes)
@@ -141,8 +140,8 @@ export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderIte
     const visible = new Set(summary?.visibleNodeIds)
     // visibleNodeIds includes lifecycle metadata, whereas hiddenCount counts
     // only replies. Use the same predicate for totals and overlap so metadata
-    // cannot create phantom folds, and hydrated runtime user replies (including
-    // a machine-only turn's hidden anchor) are not counted a second time.
+    // cannot create phantom folds. Runtime notifications and machine-only
+    // directives stay visible without contributing to totals or overlap.
     const snapshotCount = summary ? summary.hiddenCount + snapshotReplies.filter(n => visible.has(n.id)).length : 0
     const overlap = snapshotReplies.filter(n => observed.has(n.id)).length
     const missing = summary ? Math.max(0, snapshotCount - overlap) : 0
