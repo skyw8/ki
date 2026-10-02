@@ -603,14 +603,25 @@ func (w *telegramWorker) downloadFile(fileID, target string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	b, err := w.api.download(ctx, info.FilePath)
-	if err != nil {
-		return "", err
-	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(target, b, 0o600); err != nil { //nolint:gosec // target is inside the session cwd.
+	file, err := os.CreateTemp(filepath.Dir(target), ".download-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(file.Name())
+	// Failed or cancelled streams must not replace an existing attachment with
+	// a partial file. Keep the temporary file beside the target for rename.
+	err = w.api.download(ctx, info.FilePath, file)
+	closeErr := file.Close()
+	if err != nil {
+		return "", err
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if err := os.Rename(file.Name(), target); err != nil {
 		return "", err
 	}
 	return target, nil

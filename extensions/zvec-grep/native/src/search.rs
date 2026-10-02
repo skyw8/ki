@@ -46,7 +46,11 @@ impl Failure {
 pub fn log(value: Value) {
     if let Ok(path) = std::env::var("KI_ZVEC_GREP_TEST_LOG") {
         if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(f, "{value}");
+            // Value's Display formatter writes JSON in fragments, which can
+            // interleave across concurrent searches. Append one complete record.
+            let mut line = serde_json::to_vec(&value).unwrap();
+            line.push(b'\n');
+            let _ = f.write_all(&line);
         }
     }
 }
@@ -223,6 +227,15 @@ async fn fake_context(app: &App, options: &Value) -> Result<Value, Failure> {
         .unwrap_or(json!({}));
     let root = string(&options["root"]);
     let refreshing = options["autoUpdate"] != false;
+    if let Some(release) = state["blockingRelease"].as_str() {
+        // Native storage can block inside an async poll. The protocol regression
+        // holds all search workers here until the host proves control RPCs still run.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !Path::new(release).exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        log(json!({"event":"context_unblocked","root":root}));
+    }
     if std::env::var("KI_ZVEC_GREP_TEST_HANG").as_deref() == Ok("1") {
         tokio::time::sleep(Duration::from_secs(60)).await;
     }

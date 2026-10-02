@@ -165,6 +165,7 @@ Telegram 的用户访问策略由 Managed Bot 在 Telegram 侧控制。扩展不
 - workspace 自动创建在 `{KI_HOME}/workspace/telegram/<accountId>/chat-<chatId>/topic-<threadId>`，不同 chat/topic 不会共用目录；注册时的显示名是 `group-<群名>`、`group-<群名>-<话题名|thread-id>`、`private-<@username|姓名|chatId>`（`session.create` 的 `workspaceTitle`，只在新建 workspace 时生效，之后你在 WebUI 里改的名字不会被覆盖）。论坛话题名只能从 `forum_topic_created` / `forum_topic_edited` 服务消息里学到并缓存在 `state.json`。
 - 群里**回复 Bot 自己的消息**等同 @ 它：普通 `@` 和 reply 都会触发 run，未 @ 也未回复 Bot 的消息仍然只进历史。
 - 群组消息会带简短的发送者名称和 `user_id`，用于区分多人发言。
+- 图片和文件直接流式写入 workspace `.telegram` 目录下的临时文件，不在内存中保留整份附件；下载完成后才替换目标文件。超过现有 50 MiB 上限、网络中断或取消时删除临时文件，保留原目标，不会把截断文件作为附件提交。
 - 未 @ 的群组消息通过 `session.appendMessage` 进入正常历史，不启动模型；@ 消息通过 `session.enqueue` 触发 prompt，并读取此前已提交的完整历史。
 - 私聊或群组明确 @ Bot 的消息会尽力添加 `👀` reaction；未 @ 的群组消息不添加 reaction，只记录历史并确认处理。私聊使用 Telegram 的 30 秒临时草稿流式更新，并在结束时发送普通消息固化，群组使用占位消息编辑；不会发送 thinking、原始 tool call、参数和完整 tool result。
 - 预览更新（草稿、工具状态、占位编辑）按每个 chat 约 1 秒的节奏写入，避免触发 Telegram 的限流；最后一条回复不受节奏限制，一定写入。
@@ -179,6 +180,12 @@ Telegram 的用户访问策略由 Managed Bot 在 Telegram 侧控制。扩展不
 - **群里只留下 `…` 或半截回复**：最终编辑没写进去。现在会重试并在失败后改发新消息，同时 server stderr 会有 `telegram-bot: edit final message: …`；如果一条日志都没有，看 session jsonl 确认该轮是否真的跑完（`message` 里应有 assistant 回复）。
 - **无法加入群组**：在 BotFather 中检查 `/setjoingroups`；是否能添加 Bot 仍受群组成员管理权限影响。
 - **保存后未连接**：检查 server 日志和 Extensions runtime 状态；Telegram API 网络错误会自动重试。
+
+附件下载的分配与吞吐基准：
+
+```bash
+go test -run '^$' -bench BenchmarkTelegramDownload -benchmem ./extensions/telegram-bot
+```
 
 ## Source package fallback
 

@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -157,6 +157,49 @@ test("cancel answers the pending call once and suppresses the late result", asyn
   assert.equal(replies[0].result.isError, true);
   assert.match(replies[0].result.content[0].text, /was cancelled/);
   assert.equal(replies[0].result.details.root, sidecar.workspace);
+});
+
+test("synchronously blocked native searches leave a control worker responsive", async (t) => {
+  // Hosts with five CPUs exercise all four slots; smaller runtimes only have
+  // enough workers to block CPU-count minus one searches and retain control.
+  const blocked = Math.min(4, availableParallelism() - 1);
+  if (blocked === 0) return t.skip("a single-CPU runtime has no spare async worker");
+  const blockRoot = mkdtempSync(join(tmpdir(), "ki-zvec-block-"));
+  const release = join(blockRoot, "release");
+  let sidecar;
+  t.after(async () => {
+    // Release before terminating the sidecar; only remove the marker directory
+    // after exit so a still-running native poll cannot miss the release.
+    writeFileSync(release, "");
+    if (sidecar && sidecar.child.exitCode === null && sidecar.child.signalCode === null) {
+      await new Promise((resolve) => {
+        sidecar.child.once("exit", resolve);
+        sidecar.child.kill("SIGKILL");
+      });
+    }
+    rmSync(blockRoot, { recursive: true, force: true });
+  });
+  sidecar = startSidecar(t, { state: { items: [], blockingRelease: release } });
+  const roots = Array.from({ length: blocked }, (_, index) => join(sidecar.workspace, `root-${index}`));
+  for (const root of roots) mkdirSync(root);
+  // Different roots bypass the per-root gate. Each context is observed before
+  // cancelling any, so this cannot pass by accidentally serializing all searches.
+  for (const [index, root] of roots.entries()) {
+    sidecar.send({ id: 5000 + index, method: "tool.execute", params: { name: "zvec_grep_search", args: searchArgs({ root }) } });
+  }
+  for (const root of roots) {
+    await sidecar.waitForLog((entry) => entry.event === "context" && entry.options.root === root, "all blocked searches to start");
+  }
+  const initialized = await sidecar.call("initialize", {});
+  assert.equal(initialized.result.tools[0].name, "zvec_grep_search");
+  assert.equal(sidecar.entries().some((entry) => entry.event === "context_unblocked"), false);
+  for (const index of roots.keys()) sidecar.send({ method: "cancel", params: { id: 5000 + index } });
+  for (const index of roots.keys()) {
+    const replies = await sidecar.waitForMessages((message) => message.id === 5000 + index, "the cancelled search");
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].result.details.cancelled, true);
+  }
+  writeFileSync(release, "");
 });
 
 test("/zg-status reports the CLI status and the running job", async (t) => {

@@ -6,4 +6,6 @@
 // fallback identities. Reasoning signatures exclude tool fields, and opaque
 // compaction output remains complete and ordered throughout replay. Independent
 // request contexts make cancellation local to its authentication or response.
+// Request metadata replaces only a copied top-level map; nested history and
+// tool schemas remain read-only during serialization, avoiding redundant copies.
 package main

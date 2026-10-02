@@ -88,6 +88,10 @@ from the original implementation's 33 tests, plus native HTTP checks for
 metadata, refresh result shapes, header and idle timeouts, isolated
 cancellation, browser login, manual callback input, and device authorization.
 Provider-owned numeric values and unknown compaction fields remain opaque.
+Request metadata is added to a shallow copy of the body; nested history and
+tool schemas are read-only and are not recursively copied a second time.
+Measure history-heavy request construction with
+`go test -run '^$' -bench BenchmarkCodexRequestHistory -benchmem ./extensions/codex-oauth`.
 
 ## Source package fallback
 

@@ -269,7 +269,25 @@ func runInstall(ctx context.Context, root string, argv []string, env []string) e
 	// install runs first and both streams go to the ki process stderr.
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	// Installers often launch another compiler through go run or Cargo. Killing
+	// only the launcher leaves costly builds running and holding install locks.
+	process.AttachProcessGroup(cmd)
+	process.SetWaitDelay(cmd)
+	attached := make(chan struct{})
+	cmd.Cancel = func() error {
+		// CommandContext can cancel as soon as Start returns internally. Wait
+		// until Windows job ownership is installed before terminating the tree.
+		<-attached
+		process.KillProcessGroup(cmd)
+		return nil
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("runtime.install: %w", err)
+	}
+	process.AfterProcessStart(cmd)
+	close(attached)
+	defer process.ReleaseProcessGroup(cmd)
+	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("runtime.install: %w", err)
 	}
 	return nil
@@ -586,6 +604,10 @@ func (c *rpcClient) notify(method string, params any) {
 	if err != nil {
 		return
 	}
+	c.notifyRaw(method, raw)
+}
+
+func (c *rpcClient) notifyRaw(method string, raw json.RawMessage) {
 	c.mu.Lock()
 	c.encodeLocked(rpcMsg{JSONRPC: "2.0", Method: method, Params: raw})
 	c.mu.Unlock()
@@ -805,9 +827,7 @@ func (c *rpcClient) OnEvent(ctx context.Context, ev Event) error {
 	if !c.hasAsync(ev.Type) {
 		return nil
 	}
-	c.notify("lifecycle.event", map[string]any{
-		"sessionId": sessionIDFromContext(ctx), "event": ev.Type, "payload": ev,
-	})
+	c.notify("lifecycle.event", lifecycleNotification{SessionID: sessionIDFromContext(ctx), Event: ev.Type, Payload: ev})
 	return nil
 }
 

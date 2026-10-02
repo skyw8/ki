@@ -119,8 +119,16 @@ plus available outlines. Total output remains bounded to 24,000 characters.
 The native engine's half-open source ranges are converted to inclusive anchors,
 and source numbering uses the content's own coordinates.
 
-The sidecar bounds concurrent searches to four and serializes searches of each
-root to prevent its refreshes from colliding. Fresh searches refresh changed
+The sidecar bounds concurrent searches to four and uses at most five Tokio async
+workers (fewer on smaller hosts), rather than eagerly creating one worker per
+CPU at startup. On hosts with at least five CPUs, the extra worker keeps control
+RPCs responsive alongside four native searches whose async polls can include
+synchronous storage work.
+Native model-compute and blocking-I/O pools remain independent
+and unchanged; the management CLI, background index process and standalone daemon
+retain the upstream runtime's default parallelism. Initialization does not load
+the engine or model. The sidecar serializes searches of each root to prevent its
+refreshes from colliding. Fresh searches refresh changed
 files; `freshness=eventual` reads the index as last built and reports stale items.
 A contended write permit is retried once, then refresh is skipped. Workspace
 write-lock contention is retried twice before reporting its owner. Searches
@@ -166,6 +174,9 @@ previews, cancellation, lock retries, concurrent searches, commands, progress,
 confirmation and notifications. Rust test engine and CLI seams keep
 these deterministic. Regression tests also cover JavaScript-compatible settings
 and limit coercion, whitespace handling, version headers and bounded EOF shutdown.
+Native runtime tests verify the sidecar worker bound and unchanged CLI defaults;
+protocol tests check cancellation and host responsiveness with up to four search
+slots synchronously blocked (all four on hosts with at least five CPUs).
 A standalone test copies only the executable and launches
 it with an empty PATH, then checks initialization, missing-index search and
 status, including a final reply after stdin closes. The opt-in live test also

@@ -20,6 +20,29 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use zg_engine::ZvecGrep;
 
+const SEARCH_CONCURRENCY: usize = 4;
+const SIDECAR_WORKERS: usize = SEARCH_CONCURRENCY + 1;
+
+fn runtime(cli: bool) -> tokio::runtime::Runtime {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if !cli {
+        // Reserve a control worker alongside the four admitted native searches,
+        // whose async polls can include synchronous storage work. Tokio's CPU-count default
+        // eagerly starts dozens of idle async workers on large hosts. Native model
+        // compute and blocking I/O use separate pools; leave those and CLI/index
+        // parallelism unchanged.
+        let workers = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .min(SIDECAR_WORKERS);
+        builder.worker_threads(workers);
+    }
+    builder
+        .enable_all()
+        .build()
+        .expect("create zvec-grep runtime")
+}
+
 pub struct PendingSearch {
     pub id: Value,
     pub root: String,
@@ -174,8 +197,11 @@ impl App {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    runtime(std::env::args_os().len() > 1).block_on(run());
+}
+
+async fn run() {
     if std::env::args_os().len() > 1 {
         if let Err(e) = cli::run().await {
             eprintln!("{e}");
@@ -190,7 +216,7 @@ async fn main() {
         active: Mutex::new(HashMap::new()),
         config: Mutex::new(None),
         engine: Mutex::new(None),
-        slots: Semaphore::new(4),
+        slots: Semaphore::new(SEARCH_CONCURRENCY),
         gates: Mutex::new(HashMap::new()),
         jobs: Mutex::new(HashMap::new()),
         status_timers: Mutex::new(HashMap::new()),
@@ -239,4 +265,37 @@ async fn main() {
         tokio::time::timeout_at(deadline, tokio::task::spawn_blocking(move || app.dispose())).await;
     // Dropping Tokio waits for blocking stdout/native threads; process exit enforces the EOF deadline.
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    #[test]
+    fn sidecar_workers_reserve_control_capacity_without_scaling_with_host_cpus() {
+        let runtime = runtime(false);
+        let expected = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .min(SIDECAR_WORKERS);
+        assert_eq!(runtime.metrics().num_workers(), expected);
+        assert_eq!(
+            runtime.handle().runtime_flavor(),
+            tokio::runtime::RuntimeFlavor::MultiThread
+        );
+    }
+
+    #[test]
+    fn cli_retains_tokio_worker_defaults() {
+        let runtime = runtime(true);
+        let expected = std::env::var("TOKIO_WORKER_THREADS")
+            .ok()
+            .map(|value| value.parse::<usize>().unwrap())
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(usize::from)
+                    .unwrap_or(1)
+            });
+        assert_eq!(runtime.metrics().num_workers(), expected);
+    }
 }

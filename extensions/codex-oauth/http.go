@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -100,7 +101,9 @@ func codexRequest(ctx context.Context, payload, body object, compaction bool) (*
 	session := str(fallback(obj(payload["request"])["sessionId"], uuid()))
 	window, turn := sessionWindowID(session), uuid()
 	metadata := turnMetadata(session, session, window, turn, compaction)
-	body = clone(body).(object)
+	// Only this top-level field changes. Deep-copying history and tool schemas
+	// allocated thousands of objects per request without protecting any mutation.
+	body = maps.Clone(body)
 	body["client_metadata"] = object{"x-codex-installation-id": installationID, "session_id": session, "thread_id": session, "x-codex-window-id": window, "turn_id": turn, "x-codex-turn-metadata": metadata}
 	req, err := http.NewRequestWithContext(ctx, "POST", codexURL(obj(payload["model"])), strings.NewReader(jsonString(body)))
 	if err != nil {

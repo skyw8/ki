@@ -13,6 +13,8 @@
 - `name` 是主键。`name` 须匹配 `^[a-z0-9][a-z0-9-]{0,62}$`，禁止 `ki.` 前缀。
 - 启用开关是进程级 `{KI_HOME}/toggles.json` 的 `extensions.disabled`（缺省空 = 全开）。
 - 禁用的包仍出现在列表（`enabled: false`），但不贡献、不拉起 sidecar。
+- runtime 启动失败每 2s 重试；初始化成功后若不足 30s 就退出，首次立即重试，连续快速退出按 1/2/4/8/16/30s 退避，稳定运行 30s 后重置。修改或禁用该包立即唤醒等待；无关 catalog 变更不取消已有退避。安装/初始化尚未完成时遇到 catalog 代际变更或关闭，旧进程不能发布为运行态，会被关闭。
+- session 快照可在全局 reload 前临时接纳新发现的包名；已被 catalog 移除/禁用的已知名字不能由旧快照重新启用。下一次全局 Configure 接管这些临时启动，并阻止旧代际初始化完成后再发布。
 - 目录列表和 prompt/lifecycle 链均按全局包名排序。
 - 仓库 `extensions/` 下的扩展使用 Go；`zvec-grep` 是使用原生 Rust 检索引擎的例外。协议仍然语言无关，第三方扩展可使用任何语言。
 - 从仓库根运行 `go run ./scripts/build-extensions.go`，在 `var/extensions/<name>/` 生成分发包；可用 `-only goal,telegram-bot` 选择包，Go 包也支持 `-goos windows -goarch amd64`。将生成的目录复制到 `{KI_HOME}/extensions/<name>`。随包 manifest 直接启动 `bin/<name>`（Windows 文件为 `.exe`），并声明 `runtime.install=["go","run","./install/main.go"]`、`runtime.installWhen="missing"`。二进制存在时完全跳过 install，运行时不需要源码或 Go / Rust / Bun / Node / Python 工具链。
@@ -22,6 +24,7 @@
 - Rust 包需要在目标平台用 Rust 1.98.0、C++、CMake、libclang 构建，首次构建还需网络；具体依赖和原生平台支持见 `extensions/zvec-grep/README.md`。新的 Rust 索引格式不同，旧 JavaScript 索引须由用户明确执行 `/zg-index --rebuild`；不会隐式重建。
 - `internal/extension` 的测试校验随包 manifest、能力和 locale key 对齐，并实际启动不含源码且 PATH 不含语言工具链的 Go 分发包，并通过 Host 安装/启动复制到仓库外的全部 Go 源码包。Rust 构建与协议/真实检索测试单独运行，CI 同样提供源码剥离后的 Host 握手测试。
 - Rust 单元测试统一使用 `node extensions/zvec-grep/test/native.mjs`（仓库根）；它先以 Rust 1.98.0 测 native，再编译 launcher 的测试目标。Linux 自动为 bindgen 补 GCC 标准 C 头文件路径，与 launcher 的构建回退一致；显式环境设置优先，继续复用锁文件和 Cargo 缓存。
+- Telegram 附件下载直接流入目标旁的临时文件，成功关闭后 rename 发布；失败或取消不覆盖已有附件。50 MiB 下载上限保持不变，超过上限明确报错，不发布截断文件。
 
 ## 包布局
 
@@ -71,6 +74,7 @@ my-ext/
 - `runtime.kind`：`none`（缺省）| `rpc`。`rpc` 须声明 `tool` / `lifecycle` / `command` / `bus` / `provider` / `channel` / `settings` 之一。
 - `runtime.command`：无路径分隔符（`node` / `bun` / `npx`）走 **PATH**；带 `/` 的相对路径相对包根（`bin/extension`）；绝对路径原样用。
 - `runtime.install`：可选 argv，sidecar **启动前**在包根执行（装依赖或构建 executable）。stdout 并进 stderr，避免污染 NDJSON。失败则不拉起 sidecar。
+- install 使用独立进程组（Windows job）；取消安装时同时终止 installer/compiler 后代，避免只杀 `go run` 启动器而遗留后台构建和安装锁。等待退出后释放平台进程组资源。
 - `runtime.installWhen`：缺省/`always` 时每次启动都执行 install；`missing` 时仅当包内相对 `runtime.command` 文件不存在时执行（Windows 同时识别 `.exe`）。`missing` 必须用于 RPC，并配包内相对 command；不允许依赖 PATH/绝对路径来判断是否缺失。仅文件存在即可跳过 install；不是普通文件或无法 stat 时返回错误，不隐式覆盖。
 - `runtime.path`：可选的包内目录列表，声明后并入 shell 工具子进程的 `PATH`（详见下文「扩展 PATH 目录」）。需要 `path` 能力；缺声明但写了 `runtime.path` 会按 manifest 错误禁用整个包。目录必须相对包根且不得逃逸（绝对路径、`..`、空串都拒绝）；绝对路径按「任意平台」判定，`/`、`\` 开头或带盘符（`C:`）都拒绝，不随读取 manifest 的宿主变化（Windows 上 `filepath.IsAbs("/bin")` 为假）；**不校验目录是否存在**，因为 `node_modules/.bin` 之类由 `runtime.install` 在这些校验之后创建。
 - `i18n`：可选的扩展自有文案包。`resources` 将 locale 映射到包内的 UTF-8 JSON 文件；文件内容是扁平的 `key -> string` 字典，扩展可以自行使用点号组织 key。`defaultLocale` 缺省时优先使用 `en`，再使用字典中排序最前的 locale。路径必须留在包根内，单个资源最多 256 KiB。
@@ -124,6 +128,7 @@ my-ext/
 - 声明了 `lifecycle` 但没有任何有效订阅：**整包加载失败**。
 - **sync**：停靠点 `lifecycle.invoke`（`event` + payload + `ctx`），await，应用 result。
 - **async**：persist/SSE **之后** notification `lifecycle.event`；瘦 DTO；fail-open。同一 run 的通知保持 loop 产生顺序，尤其 `message_end` 必须先于该 run 的 `agent_settled`。
+- Host 按具体事件筛选订阅者；无人订阅时不分配 fan-out payload，同一事件的 JSON payload 只编码一次供全部订阅者复用。写入仍在原事件调用内按扩展顺序完成，不增加保留流式消息快照的异步队列。
 - 异步 `tool_execution_start/end` DTO 带 Unix 毫秒 `timestamp`；end 还带 `durationMs`，便于扩展记录工具执行耗时。
 - 同一 event：先 sync 链，再 async（async 见最终态）。
 - 链序：全局按名。

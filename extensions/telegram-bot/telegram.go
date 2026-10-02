@@ -17,7 +17,10 @@ import (
 	"unicode/utf8"
 )
 
-const telegramMessageLimit = 4096
+const (
+	telegramMessageLimit  = 4096
+	telegramDownloadLimit = 50 << 20
+)
 
 type telegramError struct {
 	Code        int
@@ -210,21 +213,31 @@ func (a *botAPI) getFile(ctx context.Context, fileID string) (fileInfo, error) {
 	return out, err
 }
 
-func (a *botAPI) download(ctx context.Context, filePath string) ([]byte, error) {
+func (a *botAPI) download(ctx context.Context, filePath string, out io.Writer) error {
 	url := a.base + "/file/bot" + a.token + "/" + strings.TrimLeft(filePath, "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	res, err := a.client.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("telegram file download returned %s", res.Status)
+		return fmt.Errorf("telegram file download returned %s", res.Status)
 	}
-	return io.ReadAll(io.LimitReader(res.Body, 50<<20))
+	// Stream into the caller's temporary file: ReadAll retained the complete
+	// attachment and its growing buffer during download. An extra byte detects
+	// oversized responses instead of silently publishing a truncated attachment.
+	n, err := io.Copy(out, io.LimitReader(res.Body, telegramDownloadLimit+1))
+	if err != nil {
+		return err
+	}
+	if n > telegramDownloadLimit {
+		return fmt.Errorf("telegram file exceeds %d bytes", telegramDownloadLimit)
+	}
+	return nil
 }
 
 type update struct {

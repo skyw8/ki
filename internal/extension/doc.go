@@ -12,6 +12,9 @@
 // one NDJSON sidecar per enabled package, owned by the server process. Provider
 // capabilities use the same process-level lifetime and are shared by all
 // sessions.
+// Async lifecycle fan-out selects exact subscribers before allocation and
+// shares one encoded payload across them. Writes remain synchronous and ordered;
+// the host does not retain another queue of streaming message snapshots.
 // Provider sidecars that advertise compaction.standalone implement
 // provider.compact. Inline Responses items require a separate inline capability
 // and remain outside ordinary message/lifecycle JSON.
@@ -34,12 +37,21 @@
 // registration, while the package's manual toggles remain separate. Occupy
 // RPC timeouts stay fail-open: the package is skipped for that occupy and is
 // not toggled off.
+// Startup failures retry after two seconds. Repeated post-initialize exits
+// before thirty seconds of uptime back off to thirty seconds; a stable runtime
+// resets that history. Changed/removed descriptors wake retry waits immediately,
+// and in-flight launches cannot publish across a catalog generation change.
+// Session snapshots may provisionally admit newly discovered package names
+// before global reload; known removed/disabled names cannot be resurrected by
+// stale snapshots, and Configure supersedes provisional starts.
 // Install commands, sidecars, and their descendants inherit Ki's proxy
 // environment; runtime.env can explicitly override those variables.
 // Install hooks inherit the full parent build environment, then apply scoped
 // KI_* values and runtime.env overrides so arbitrary language toolchains keep
 // their configured caches and native compiler paths. Sidecars retain the
 // platform/profile/temp/proxy environment allowlist and explicit runtime.env.
+// Install hooks own a process tree too: cancellation terminates compiler
+// descendants, and Wait releases platform process-group ownership.
 // Environment overrides preserve case-sensitive keys on Unix and match keys
 // case-insensitively on Windows.
 // Install hooks run before every sidecar start by default or with

@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"ki/internal/loop"
 	"ki/internal/provider"
@@ -32,7 +31,13 @@ type Manager struct {
 	sessionOpen   map[string]map[string]bool
 	descs         map[string]Descriptor
 	status        map[string]RuntimeStatus
-	watching      map[string]bool
+	watching      map[string]chan struct{}
+	configured    bool
+	closed        bool
+	known         map[string]bool
+	adopted       map[string]Descriptor
+	generation    uint64
+	changed       chan struct{}
 	runtimeCtx    context.Context
 	runtimeCancel context.CancelFunc
 	providerAuth  func(ProviderAuthEvent)
@@ -134,7 +139,10 @@ func NewManager(home string, onErr ErrorFunc) *Manager {
 		sessionOpen:  map[string]map[string]bool{},
 		descs:        map[string]Descriptor{},
 		status:       map[string]RuntimeStatus{},
-		watching:     map[string]bool{},
+		watching:     map[string]chan struct{}{},
+		known:        map[string]bool{},
+		adopted:      map[string]Descriptor{},
+		changed:      make(chan struct{}),
 		onErr:        onErr,
 		home:         home,
 	}
@@ -178,6 +186,19 @@ func (m *Manager) Configure(descriptors []Descriptor) {
 		}
 	}
 	m.mu.Lock()
+	if !m.configured || len(m.adopted) > 0 || !sameRuntimes(m.descs, desired) {
+		m.generation++
+		close(m.changed)
+		m.changed = make(chan struct{})
+	}
+	m.configured = true
+	// A fresh session snapshot may discover a package before global reload.
+	// This authoritative catalog supersedes those provisional admissions,
+	// including in-flight starts, while retaining removed-name tombstones.
+	for _, d := range descriptors {
+		m.known[d.Name] = true
+	}
+	m.adopted = map[string]Descriptor{}
 	var closing []*rpcClient
 	for name, c := range m.by {
 		d, ok := desired[name]
@@ -217,6 +238,10 @@ func (m *Manager) Configure(descriptors []Descriptor) {
 // enabled; one extension never blocks the others.
 func (m *Manager) Start(ctx context.Context, descriptors []Descriptor) {
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
 	if m.runtimeCancel == nil {
 		m.runtimeCtx, m.runtimeCancel = context.WithCancel(ctx)
 	}
@@ -228,15 +253,16 @@ func (m *Manager) Start(ctx context.Context, descriptors []Descriptor) {
 			continue
 		}
 		m.mu.Lock()
-		if m.watching[d.Name] {
+		if m.watching[d.Name] != nil {
 			m.mu.Unlock()
 			continue
 		}
-		m.watching[d.Name] = true
+		done := make(chan struct{})
+		m.watching[d.Name] = done
 		m.status[d.Name] = RuntimeStatus{Name: d.Name, State: "starting", Capabilities: slices.Clone(d.Capabilities)}
 		m.mu.Unlock()
 		//nolint:contextcheck // sidecars share process runtimeCtx across Start calls
-		go m.watchRuntime(runtimeCtx, d)
+		go m.watchRuntime(runtimeCtx, d, done, defaultRuntimeHooks(m))
 	}
 }
 
@@ -253,58 +279,14 @@ func (m *Manager) RuntimeStatuses() []RuntimeStatus {
 	return out
 }
 
-func (m *Manager) watchRuntime(ctx context.Context, d Descriptor) {
-	defer func() {
-		m.mu.Lock()
-		delete(m.watching, d.Name)
-		m.mu.Unlock()
-	}()
-	for {
-		m.mu.Lock()
-		desired, ok := m.descs[d.Name]
-		m.mu.Unlock()
-		if !ok || ctx.Err() != nil {
-			return
-		}
-		// Reload may replace a manifest while this watcher is waiting for the
-		// old process to exit. Re-read the descriptor here so one watcher follows
-		// the replacement instead of leaving the new runtime unstarted.
-		d = desired
-		c := m.ensure(ctx, "", d)
-		if c == nil {
-			m.setRuntimeStatus(d.Name, "failed", "sidecar failed to start", d.Capabilities)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-			}
-			continue
-		}
-		m.setRuntimeStatus(d.Name, "ready", "", d.Capabilities)
-		select {
-		case <-ctx.Done():
-			return
-		case <-c.closed:
-		}
-		m.mu.Lock()
-		if current := m.by[d.Name]; current == c {
-			delete(m.by, d.Name)
-			for sessionID, opened := range m.sessionOpen {
-				delete(opened, d.Name)
-				if len(opened) == 0 {
-					delete(m.sessionOpen, sessionID)
-				}
-			}
-		}
-		m.mu.Unlock()
-		c.close()
-		m.setRuntimeStatus(d.Name, "restarting", "sidecar exited", d.Capabilities)
-	}
-}
-
-func (m *Manager) setRuntimeStatus(name, state, message string, caps []string) {
-	st := RuntimeStatus{Name: name, State: state, Error: message, Capabilities: slices.Clone(caps)}
+func (m *Manager) setRuntimeStatus(d Descriptor, state, message string) {
+	name := d.Name
+	st := RuntimeStatus{Name: name, State: state, Error: message, Capabilities: slices.Clone(d.Capabilities)}
 	m.mu.Lock()
+	if desired, ok := m.descs[name]; !ok || !sameRuntime(desired, d) {
+		m.mu.Unlock()
+		return
+	}
 	prev, seen := m.status[name]
 	m.status[name] = st
 	notify := m.onStatus
@@ -382,6 +364,11 @@ func (m *Manager) markSessionOpen(sessionID, name string) bool {
 
 func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *rpcClient {
 	m.mu.Lock()
+	m.adoptSnapshotLocked(d)
+	if !m.desiredLocked(d) {
+		m.mu.Unlock()
+		return nil
+	}
 	if c := m.by[d.Name]; c != nil {
 		select {
 		case <-c.closed:
@@ -399,6 +386,10 @@ func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *r
 	startLock.Lock()
 	defer startLock.Unlock()
 	m.mu.Lock()
+	if !m.desiredLocked(d) {
+		m.mu.Unlock()
+		return nil
+	}
 	if c := m.by[d.Name]; c != nil {
 		select {
 		case <-c.closed:
@@ -410,6 +401,7 @@ func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *r
 	}
 	host := m.host
 	home := m.home
+	generation := m.generation
 	m.mu.Unlock()
 	c, err := startRPC(ctx, d, "", home, "", host)
 	if err != nil {
@@ -423,11 +415,22 @@ func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *r
 		c.close()
 		return nil
 	}
+	return m.publishRuntime(ctx, sessionID, d, generation, c)
+}
+
+func (m *Manager) publishRuntime(ctx context.Context, sessionID string, d Descriptor, generation uint64, c *rpcClient) *rpcClient {
 	m.mu.Lock()
 	providerAuth := m.providerAuth
 	m.mu.Unlock()
 	c.setProviderAuthHandler(providerAuth)
 	m.mu.Lock()
+	// Configure/Close cannot see a process still installing or initializing.
+	// Reject that old launch here instead of publishing a disabled orphan.
+	if ctx.Err() != nil || generation != m.generation || !m.desiredLocked(d) {
+		m.mu.Unlock()
+		c.close()
+		return nil
+	}
 	if existing := m.by[d.Name]; existing != nil {
 		m.mu.Unlock()
 		c.close()
@@ -458,6 +461,7 @@ func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *r
 		}
 	}
 	m.by[d.Name] = c
+	m.known[d.Name] = true
 	m.mu.Unlock()
 	for _, cap := range c.undeclared {
 		m.reportError(sessionID, d.Name, cap, "undeclared", "initialize returned "+cap+" without capability")
@@ -716,31 +720,6 @@ func (m *Manager) InvokeCommand(ctx context.Context, sessionID, name, args strin
 	return client.invokeCommand(withSessionID(ctx, sessionID), name, args)
 }
 
-// OnEvent fans out a redacted event to async subscribers.
-func (m *Manager) OnEvent(ctx context.Context, sessionID string, ev Event) {
-	m.mu.Lock()
-	clients := make([]*rpcClient, 0, len(m.order[sessionID]))
-	seen := map[string]bool{}
-	for _, name := range m.order[sessionID] {
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		c := m.by[name]
-		if c == nil {
-			continue
-		}
-		if len(c.registration.asyncEvents) > 0 {
-			clients = append(clients, c)
-		}
-	}
-	m.mu.Unlock()
-	ctx = withSessionID(ctx, sessionID)
-	for _, c := range clients {
-		_ = c.OnEvent(ctx, ev)
-	}
-}
-
 // CloseSession drops only session state. Global sidecars stay alive until
 // Close, allowing another session to reuse the same process.
 func (m *Manager) CloseSession(sessionID string) {
@@ -797,7 +776,13 @@ func (m *Manager) Close() {
 	m.sessionOpen = map[string]map[string]bool{}
 	m.descs = map[string]Descriptor{}
 	m.status = map[string]RuntimeStatus{}
-	m.watching = map[string]bool{}
+	m.watching = map[string]chan struct{}{}
+	m.configured = true
+	m.closed = true
+	m.adopted = map[string]Descriptor{}
+	m.generation++
+	close(m.changed)
+	m.changed = make(chan struct{})
 	m.mu.Unlock()
 	if runtimeCancel != nil {
 		runtimeCancel()

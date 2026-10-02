@@ -1,11 +1,15 @@
 package extension
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -76,6 +80,17 @@ func TestRuntimeInstallFixture(t *testing.T) {
 		fail(err)
 	}
 	switch os.Getenv("KI_INSTALL_ACTION") {
+	case "tree":
+		binary, err := os.Executable()
+		if err != nil {
+			fail(err)
+		}
+		child := exec.Command(binary, "-test.run=^TestRuntimeInstallTreeChild$")
+		child.Env = os.Environ()
+		child.Stdout, child.Stderr = os.Stderr, os.Stderr
+		if err := child.Run(); err != nil {
+			fail(err)
+		}
 	case "copy":
 		data, err := os.ReadFile(os.Getenv("KI_INSTALL_SOURCE"))
 		if err != nil {
@@ -105,6 +120,76 @@ func TestRuntimeInstallFixture(t *testing.T) {
 		fail(errors.New("unknown fixture install action"))
 	}
 	os.Exit(0)
+}
+
+func TestRuntimeInstallTreeChild(t *testing.T) {
+	addr := os.Getenv("KI_INSTALL_READY_ADDR")
+	if addr == "" {
+		return
+	}
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		os.Exit(17)
+	}
+	if _, err := io.WriteString(conn, "ready\n"); err != nil {
+		os.Exit(17)
+	}
+	// The test owns the other end, so even a broken cancellation path cannot
+	// leave the helper behind after cleanup closes the connection.
+	_, _ = io.Copy(io.Discard, conn)
+	_ = conn.Close()
+	os.Exit(0)
+}
+
+func TestRuntimeInstallCancellationKillsDescendants(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	d, _, _ := installDescriptor(t, "", "tree", installAlways)
+	d.manifest.Runtime.Env["KI_INSTALL_READY_ADDR"] = listener.Addr().String()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	home := t.TempDir()
+	done := make(chan error, 1)
+	go func() {
+		done <- installRuntime(ctx, d.root, d.manifest.Runtime, sidecarEnv(d, "", home, ""))
+	}()
+	// Accept/read deadlines are failure bounds, not fixed sleeps. Cancellation
+	// starts only after the compiler descendant has explicitly signalled ready.
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	if ready, err := reader.ReadString('\n'); err != nil || ready != "ready\n" {
+		t.Fatalf("descendant readiness = %q, %v", ready, err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled install succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled install did not return")
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.ReadByte(); err == nil {
+		t.Fatal("unexpected descendant output")
+	} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatal("compiler descendant survived installer cancellation")
+	}
 }
 
 func TestRuntimeInstallEnvironmentInheritsBuildConfigurationAndOverrides(t *testing.T) {

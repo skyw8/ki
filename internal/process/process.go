@@ -24,6 +24,12 @@ func AfterProcessStart(cmd *exec.Cmd) {
 	afterStart(cmd)
 }
 
+// ReleaseProcessGroup releases platform ownership after cmd.Wait. On Windows,
+// closing the job also terminates any descendants left by an exited launcher.
+func ReleaseProcessGroup(cmd *exec.Cmd) {
+	releaseCmd(cmd)
+}
+
 // KillProcessGroup terminates cmd and its descendants.
 func KillProcessGroup(cmd *exec.Cmd) {
 	killCmd(cmd)

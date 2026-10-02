@@ -23,6 +23,7 @@
 // are inherited. Child-local pager/color defaults keep agent terminals out of
 // inherited interactive pagers. Bash uses a BASH_ENV shim after login profiles to retain these
 // directories. Sidecar launchers share process-group control without importing
-// tool implementations.
+// tool implementations. Install launchers use the same group cancellation;
+// ReleaseProcessGroup releases platform handles after the command is reaped.
 // Cross-package contracts: docs/tools.md and docs/extension.md.
 package process
