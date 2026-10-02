@@ -49,6 +49,8 @@ Code Mode 的 JavaScript 在 server worker 中执行，WebUI 不执行模型生�
 
 ## MCP 配置界面
 
+Settings 的 Skills、Tools、MCP、Extensions 页统一在顶部说明与下方配置列表（或空状态）之间保留 24px 间距，桌面和移动端一致；不影响 Info 中嵌套列表的间距。
+
 Settings → MCP 独立列出全局/项目 `mcp.json` 合并后的服务器，提供逐服务器开关、来源、传输类型和已缓存工具数量。开关至少 44px 命中区，加载/保存期间阻止重复提交；失败保留已保存状态并显示错误。文件中的 `enabled:false` 不能被界面覆盖。`mcpDisabled` PATCH 不改动工具开关；列表显示不触发连接。Session Info 增加 MCP 小节和对应目录项，展示会话 cwd 的下一次运行配置，不展示凭据或命令参数。详细配置及生效边界见 [mcp.md](mcp.md)。
 
 ## Context 数据口径
@@ -450,6 +452,8 @@ runner 仅在"一个用例都没跑 + `address already in use`"时换端口重�
 
 用例需要"先锁后放"这类瞬态时，不要靠固定 sleep 撞窗口（高并发下会偶发）：`sidecar` fixture
 支持 `KI_INIT_WAIT_FILE`，测试可以先断言锁定态、再写文件放行。
+
+折叠行的滚动回归在同一个浏览器任务里采样点击前几何并点击，等待该行 `aria-expanded=true` 后再检查位置，运行结束后再次检查；自动跟随期间不得把较早任务里的采样当成点击瞬间的位置。保持 `rowTop`、`scrollTop` 精确相等断言，不用固定等待或扩大误差掩盖跳位。
 
 `go test ./e2e -run WebUI` 运行 `bun run test`，包含 Bun 单元测试和同一个浏览器 runner，
 并用 `KI_BIN` 指向 Go 构建的二进制，因此每个

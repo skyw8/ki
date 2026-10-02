@@ -23,17 +23,21 @@ async function useCompact(page: Page, keep: string) {
 }
 
 /** Position of one fold row (by turn id) inside the chat scroller. */
-function foldProbe(page: Page, fold: string) {
-  return page.evaluate((f: string) => {
+function foldProbe(page: Page, fold: string, { click = false }: { click?: boolean } = {}) {
+  return page.evaluate(({ fold: f, click }) => {
     const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
     const row = document.querySelector(`[data-testid="fold-row"][data-fold="${f}"]`) as HTMLElement | null
-    return {
+    const probe = {
       scrollTop: Math.round(el.scrollTop),
       maxScroll: Math.round(el.scrollHeight - el.clientHeight),
       rowTop: row ? Math.round(row.getBoundingClientRect().top - el.getBoundingClientRect().top) : null,
       toBottom: !!document.querySelector('[data-testid="to-bottom"]'),
     }
-  }, fold)
+    // While following, a pending layout can move the tail between browser
+    // tasks. Capture the actual pointer-target baseline in the click's task.
+    if (click) (row!.querySelector('[data-testid="fold-row-btn"]') as HTMLElement).click()
+    return probe
+  }, { fold, click })
 }
 
 /** Tail position of the chat scroller: are we pinned to the end and following? */
@@ -46,13 +50,6 @@ function tailProbe(page: Page) {
       toBottom: !!document.querySelector('[data-testid="to-bottom"]'),
     }
   })
-}
-
-async function clickFold(page: Page, fold: string) {
-  await page.evaluate((f: string) => {
-    const row = document.querySelector(`[data-testid="fold-row"][data-fold="${f}"]`) as HTMLElement
-    ;(row.querySelector('[data-testid="fold-row-btn"]') as HTMLElement).click()
-  }, fold)
 }
 
 test('compact mode folds each turn\'s earlier replies and keeps the prompt visible', async ({ page }) => {
@@ -139,11 +136,11 @@ test('opening a fold under the viewport keeps the row put and pauses follow-tail
     return fold
   }).not.toBe('')
   await expect.poll(async () => (await foldProbe(page, fold)).toBottom).toBe(false)
-  const before = await foldProbe(page, fold)
+  const before = await foldProbe(page, fold, { click: true })
   expect(before.rowTop).not.toBeNull()
   expect(before.toBottom).toBe(false)
 
-  await clickFold(page, fold)
+  await expect(page.locator(`[data-testid="fold-row"][data-fold="${fold}"]`).getByTestId('fold-row-btn')).toHaveAttribute('aria-expanded', 'true')
   const after = await foldProbe(page, fold)
   // The row is the pointer target: it must not move, and the viewport must not
   // keep claiming it is at the tail now that the fold pushed the tail away.

@@ -2234,6 +2234,8 @@
 .mcp-settings .switch::before { top: 12px; }
 .mcp-settings .switch-knob { top: 14px; }
 .cfg-empty, .cfg-hint { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-caption); }
+/* Keep settings copy separate from its controls without spacing nested Info lists. */
+.preference-page > .cfg-list, .preference-page > .cfg-empty { margin-top: 24px; }
 /* Raw system-prompt viewer: a framed code card with a copy affordance. The body
    scrolls instead of stretching the info column, so a large prompt stays
    reachable without pushing later content off screen. */

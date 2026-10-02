@@ -533,6 +533,16 @@ for (const profile of profiles) {
       ] as const) {
         await page.getByTestId(`settings-tab-${tab}`).click()
         await expect(page.getByTestId(content)).toBeVisible()
+        if (['skills', 'tools', 'mcp', 'extensions'].includes(tab)) {
+          const section = page.getByTestId(content)
+          await expect(section.locator(':scope > .cfg-list, :scope > .cfg-empty')).toBeVisible()
+          const gap = await section.evaluate(element => {
+            const header = element.querySelector('.settings-page-title')!.getBoundingClientRect()
+            const controls = element.querySelector(':scope > .cfg-list, :scope > .cfg-empty')!.getBoundingClientRect()
+            return controls.top - header.bottom
+          })
+          expect(gap, `${profile.name} ${tab}: description-to-controls spacing`).toBeGreaterThanOrEqual(24)
+        }
         await expectInsideViewport(page, settings.locator('.modal-head'), `${profile.name} settings ${tab} header`)
         await expectNoPageOverflow(page, `${profile.name} settings ${tab}`)
         await expectTouchButtons(profile, settings, `${profile.name} settings ${tab}`)
