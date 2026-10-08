@@ -23,7 +23,7 @@
 - Go sidecar 把运行必需的 schemas/catalog/prompt 文案嵌入二进制；Rust 检索 sidecar 将引擎、native 库及词典嵌入单个 executable，在启动时展开到 `{KI_HOME}/cache/extensions/zvec-grep/` 下按内容哈希命名的私有目录。`bin/zg` 是同一 executable 的 CLI 入口；其 PATH 声明为 `bin`。
 - 源码包生成先规范化根 go.mod 的 LF/CRLF 行尾，再改写独立 module 名称；Windows checkout 不会保留 `module ki` 而丢失本地共享模块依赖。发现阶段先解析包根的真实路径，安装前的缺失 executable 路径校验使用同一规范化根，不把 macOS/Windows 临时目录别名误判成逃逸。
 - Rust 包需要在目标平台用 Rust 1.98.0、C++、CMake、libclang 构建，首次构建还需网络；具体依赖和原生平台支持见 `extensions/zvec-grep/README.md`。新的 Rust 索引格式不同，旧 JavaScript 索引须由用户明确执行 `/zg-index --rebuild`；不会隐式重建。
-- `internal/extension` 的测试校验随包 manifest、能力和 locale key 对齐，并实际启动不含源码且 PATH 不含语言工具链的 Go 分发包，并通过 Host 安装/启动复制到仓库外的全部 Go 源码包。Rust 构建与协议/真实检索测试单独运行，CI 同样提供源码剥离后的 Host 握手测试。
+- `internal/extension` 的测试校验随包 manifest、能力和 locale key 对齐，并实际启动不含源码且 PATH 不含语言工具链的 Go 分发包，并通过 Host 安装/启动复制到仓库外的全部 Go 源码包。这些 Host/契约测试仍属于默认核心 Go 套件；Rust 构建与协议/真实检索测试单独运行，CI 的 `zvec-native` 和 extension transport 检查通过手动启用 CI 的 `extensions` 输入后执行。
 - Rust 单元测试统一使用 `node extensions/zvec-grep/test/native.mjs`（仓库根）；它先以 Rust 1.98.0 测 native，再编译 launcher 的测试目标。Linux 自动为 bindgen 补 GCC 标准 C 头文件路径，与 launcher 的构建回退一致；显式环境设置优先，继续复用锁文件和 Cargo 缓存。
 - Telegram 附件下载直接流入目标旁的临时文件，成功关闭后 rename 发布；失败或取消不覆盖已有附件。50 MiB 下载上限保持不变，超过上限明确报错，不发布截断文件。
 

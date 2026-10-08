@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuiltinGPTStandardPricing(t *testing.T) {
-	// Snapshot of OpenAI Standard pricing verified on 2026-10-02. Explicit
+	// Snapshot of OpenAI Standard pricing verified on 2026-10-08. Explicit
 	// rates catch accidental use of Batch/Flex/Fast prices or lost cache fees.
 	cases := []struct {
 		id         string
@@ -17,6 +17,7 @@ func TestBuiltinGPTStandardPricing(t *testing.T) {
 	}{
 		{"gpt-6.1-sol", CostRates{Input: 2, Output: 10, CacheRead: .1, CacheWrite: 2.5}, CostRates{Input: 4, Output: 15, CacheRead: .2, CacheWrite: 5}},
 		{"gpt-6-astra", CostRates{Input: 10, Output: 50, CacheRead: 1, CacheWrite: 12.5}, CostRates{Input: 20, Output: 75, CacheRead: 2, CacheWrite: 25}},
+		{"gpt-6-luna", CostRates{Input: .1, Output: .5, CacheRead: .01, CacheWrite: .125}, CostRates{Input: .2, Output: .75, CacheRead: .02, CacheWrite: .25}},
 		{"gpt-5.6-sol", CostRates{Input: 4, Output: 20, CacheRead: .4, CacheWrite: 5}, CostRates{Input: 8, Output: 30, CacheRead: .8, CacheWrite: 10}},
 		{"gpt-5.6-terra", CostRates{Input: 2, Output: 12, CacheRead: .2, CacheWrite: 2.5}, CostRates{Input: 4, Output: 18, CacheRead: .4, CacheWrite: 5}},
 		{"gpt-5.6-luna", CostRates{Input: .2, Output: 1.2, CacheRead: .02, CacheWrite: .25}, CostRates{Input: .4, Output: 1.8, CacheRead: .04, CacheWrite: .5}},

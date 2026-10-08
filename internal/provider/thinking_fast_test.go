@@ -296,7 +296,7 @@ func TestBundledCodexModelsDeclareFastServiceTier(t *testing.T) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.Providers) != 1 || len(manifest.Providers[0].Models) != 5 {
+	if len(manifest.Providers) != 1 || len(manifest.Providers[0].Models) != 6 {
 		t.Fatalf("unexpected bundled catalog: %+v", manifest)
 	}
 	p, err := BuildExtensionProvider(manifest.Providers[0])

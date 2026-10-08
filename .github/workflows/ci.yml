@@ -12,10 +12,20 @@ on:
         required: false
         type: boolean
         default: false
+      extensions:
+        description: Run bundled extension build and transport checks
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       live_tests:
         description: Run the credentialed live provider tests
+        required: false
+        type: boolean
+        default: false
+      extensions:
+        description: Run bundled extension build and transport checks
         required: false
         type: boolean
         default: false
@@ -54,7 +64,18 @@ jobs:
             exit 1
           fi
       - name: Vet Go packages
-        run: go vet ./...
+        shell: bash
+        env:
+          RUN_EXTENSION_TESTS: ${{ inputs.extensions }}
+        run: |
+          if [[ "$RUN_EXTENSION_TESTS" == "true" ]]; then
+            packages="$(go list ./...)"
+          else
+            # The host still needs internal/extension and its contract tests;
+            # only the standalone bundled sidecar packages are opt-in.
+            packages="$(go list ./... | rg -v '^ki/extensions/')"
+          fi
+          go vet $packages
       - name: Type-check WebUI
         working-directory: web
         run: bun run typecheck
@@ -77,9 +98,18 @@ jobs:
           cache: true
       - name: Run Go and CLI tests
         shell: bash
+        env:
+          RUN_EXTENSION_TESTS: ${{ inputs.extensions }}
         run: |
           set -o pipefail
-          go test -timeout 10m ./... 2>&1 | tee "${RUNNER_TEMP}/go-test.log"
+          if [[ "$RUN_EXTENSION_TESTS" == "true" ]]; then
+            packages="$(go list ./...)"
+          else
+            # The host still needs internal/extension and its contract tests;
+            # only the standalone bundled sidecar packages are opt-in.
+            packages="$(go list ./... | rg -v '^ki/extensions/')"
+          fi
+          go test -timeout 10m $packages 2>&1 | tee "${RUNNER_TEMP}/go-test.log"
       # Why: a failed job only shows "exit code 1" to anyone without log access,
       # so every failing test is published as an annotation carrying its own
       # output, and the summary keeps the full digest.
@@ -104,6 +134,7 @@ jobs:
 
   extension-rpc:
     name: Extension transport race checks
+    if: inputs.extensions == true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -116,6 +147,7 @@ jobs:
 
   zvec-native:
     name: Native zvec-grep (${{ matrix.os }})
+    if: inputs.extensions == true
     timeout-minutes: 60
     strategy:
       fail-fast: false

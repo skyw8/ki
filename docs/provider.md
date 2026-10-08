@@ -26,12 +26,13 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 
 ## GPT 价格
 
-以下为 2026-10-02 核对的 [OpenAI Standard 官方价格](https://developers.openai.com/api/docs/pricing)，单位为 **USD / 百万 token**。内置 `openai` 与 bundled `codex-oauth` 的同名模型使用同一套价格。
+以下为 2026-10-08 核对的 [OpenAI Standard 官方价格](https://developers.openai.com/api/docs/pricing)，单位为 **USD / 百万 token**。内置 `openai` 与 bundled `codex-oauth` 的同名模型使用同一套价格。
 
 | 模型 | 输入 | 缓存读取 | 缓存写入 | 输出 |
 |---|---:|---:|---:|---:|
 | `gpt-6.1-sol` | 2 | 0.1 | 2.5 | 10 |
 | `gpt-6-astra` | 10 | 1 | 12.5 | 50 |
+| `gpt-6-luna` | 0.1 | 0.01 | 0.125 | 0.5 |
 | `gpt-5.6-sol` | 4 | 0.4 | 5 | 20 |
 | `gpt-5.6-terra` | 2 | 0.2 | 2.5 | 12 |
 | `gpt-5.6-luna` | 0.2 | 0.02 | 0.25 | 1.2 |

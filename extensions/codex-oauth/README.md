@@ -23,7 +23,7 @@ the OpenAI Codex service endpoints defined in `extension.json`.
 ## Pricing estimates
 
 Model costs use the same OpenAI Standard USD prices per million tokens as the
-built-in `openai` catalog, verified on 2026-10-02. This includes input, output,
+built-in `openai` catalog, verified on 2026-10-08. This includes input, output,
 cache reads, cache writes, and the long-context tier above 272,000 input tokens
 (cached tokens included). See the [price table](../../docs/provider.md#gpt-价格).
 
@@ -82,7 +82,7 @@ from 0 output items`.
 
 `contextWindow` follows the OpenAI Codex bundled catalog
 (`codex-rs/models-manager/models.json`), which caps `gpt-6.1-sol`,
-`gpt-6-astra`, and the GPT-5.6 Sol/Terra/Luna variants at 272,000 tokens for coding clients
+`gpt-6-astra`, `gpt-6-luna`, and the GPT-5.6 Sol/Terra/Luna variants at 272,000 tokens for coding clients
 (`max_context_window` 872,000 is a configuration override, not the default).
 The model API spec pages advertise 1,050,000, but the ChatGPT-backed Codex
 service this extension talks to enforces the smaller window. The built-in
@@ -109,11 +109,11 @@ rejects a busy session rather than silently changing its ongoing request.
 
 `thinkingLevelMap` mirrors the built-in catalog entries for the same models.
 No GPT-6.1/6/5.6 variant accepts `minimal`, so every map hides it. The GPT-5.6
-models accept `none` (the API lists `none, low, medium, high, xhigh, max`), so
-`off` stays visible and maps to the zero-reasoning floor; the sidecar skips the
-whole `reasoning` block for `off` anyway. GPT-6.1 Sol and GPT-6 Astra reject
-`none` (their `reasoning.effort` supports only `low`, `medium`, `high`,
-`xhigh`, and `max`), so their maps hide `off` as well.
+models and GPT-6 Luna accept `none` (the API lists `none, low, medium, high,
+xhigh, max`), so `off` stays visible and maps to the zero-reasoning floor; the
+sidecar skips the whole `reasoning` block for `off` anyway. GPT-6.1 Sol and GPT-6
+Astra reject `none` (their `reasoning.effort` supports only `low`, `medium`,
+`high`, `xhigh`, and `max`), so their maps hide `off` as well.
 
 ## Verification
 

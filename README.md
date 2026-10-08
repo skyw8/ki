@@ -132,7 +132,10 @@ for packaging and protocol details.
 
 ```bash
 (cd web && bun run typecheck && bun run build)
-go test -tags embed -count=1 ./... # includes CLI, WebUI unit tests and fake browser tests
+# The default CI command omits standalone bundled sidecar packages:
+go test -tags embed -count=1 $(go list ./... | rg -v '^ki/extensions/')
+# Include bundled sidecars when changing one:
+go test -tags embed -count=1 ./...
 # Focused development checks; no need to repeat these after the full run passes:
 go test ./internal/... ./pkg/...
 (cd web && bun run test:unit)      # pure logic; test:unit:watch for continuous feedback
@@ -153,22 +156,28 @@ Live tests call DeepSeek `deepseek-flash` over all three wire protocols
 
 ## CI and releases
 
-GitHub Actions runs formatting, vet, WebUI type/build checks, Go tests on Linux,
-macOS, and Windows, the complete fake-model Playwright suite, screenshot coverage,
-and the long-history performance suite. Configure branch protection for `main`
-to require the `CI` workflow checks before merging.
+GitHub Actions runs formatting, vet, WebUI type/build checks, core Go tests on
+Linux, macOS, and Windows, the complete fake-model Playwright suite, screenshot
+coverage, and the long-history performance suite. Standalone bundled sidecar
+package tests, extension transport races, and native `zvec-grep` checks are
+opt-in: use the `CI` workflow's manual dispatch and enable `extensions` when
+changing an extension. Host extension runtime and contract tests remain in the
+core suite. Configure branch protection for `main` to require the `CI` workflow
+checks before merging.
 
-Releases are created only from semantic-version tags. Add
-`DEEPSEEK_API_KEY` as a GitHub Actions repository secret, then push an
-annotated tag:
+Releases are created only from semantic-version tags. The default release does
+not need provider credentials; add `DEEPSEEK_API_KEY` only if you manually run
+the opt-in live CI suite. Push an annotated tag:
 
 ```bash
 git tag -a v0.1.0 -m "v0.1.0"
 git push origin v0.1.0
 ```
 
-The release workflow reruns every CI test except the credentialed live-provider
-suite, which stays opt-in, against that exact tag. Only after the tests pass does
-it build the Linux amd64, macOS arm64, and Windows amd64 archives, inject the tag's version
-(the tag without its `v` prefix, matching the checked-in `internal/cli/version.go`)
-into `ki version`, generate SHA-256 checksums, and publish the GitHub Release.
+The release workflow reruns the default CI gate (excluding both credentialed live
+tests and bundled extension checks) against that exact tag. Only after the tests
+pass does it build the Linux amd64, macOS arm64, and Windows amd64 archives,
+inject the tag's version (the tag without its `v` prefix, matching the checked-in
+`internal/cli/version.go`) into `ki version`, generate SHA-256 checksums, and
+publish the GitHub Release. Extension packages can still be built separately
+with the commands in [Bundled extensions](#bundled-extensions).
