@@ -73,7 +73,7 @@ jobs:
           else
             # The host still needs internal/extension and its contract tests;
             # only the standalone bundled sidecar packages are opt-in.
-            packages="$(go list ./... | rg -v '^ki/extensions/')"
+            packages="$(go list ./... | grep -v '^ki/extensions/')"
           fi
           go vet $packages
       - name: Type-check WebUI
@@ -107,7 +107,7 @@ jobs:
           else
             # The host still needs internal/extension and its contract tests;
             # only the standalone bundled sidecar packages are opt-in.
-            packages="$(go list ./... | rg -v '^ki/extensions/')"
+            packages="$(go list ./... | grep -v '^ki/extensions/')"
           fi
           go test -timeout 10m $packages 2>&1 | tee "${RUNNER_TEMP}/go-test.log"
       # Why: a failed job only shows "exit code 1" to anyone without log access,
