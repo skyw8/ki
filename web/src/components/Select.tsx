@@ -35,7 +35,7 @@ export function Select({ value, options, onChange, ariaLabel, className = '', te
     const viewportHeight = visual?.height ?? window.innerHeight
     const viewportRight = viewportLeft + viewportWidth
     const viewportBottom = viewportTop + viewportHeight
-    const menuWidth = Math.min(Math.max(112, rect.width), viewportWidth - 16)
+    const menuWidth = Math.min(Math.max(128, rect.width), viewportWidth - 16)
     const below = viewportBottom - rect.bottom - gap - 8
     const above = rect.top - viewportTop - gap - 8
     const upward = below < 180 && above > below
@@ -147,7 +147,7 @@ export function Select({ value, options, onChange, ariaLabel, className = '', te
           onMouseDown={event => event.preventDefault()}
           onClick={() => choose(index)}
         >
-          <span>{option.label}</span><span className="ds-select-check">{option.value === value ? <ICheck /> : null}</span>
+          <span className="ds-select-option-label">{option.label}</span><span className="ds-select-check">{option.value === value ? <ICheck /> : null}</span>
         </div>)}
       </div>,
       document.body,

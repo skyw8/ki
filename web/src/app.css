@@ -1265,11 +1265,16 @@
   font-size: 12px;
 }
 .model-chip:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
-.thinking-select { flex: none; max-width: 100px; }
+/* Why: let the chip size to its label so ordinary efforts stay compact while
+   compound choices such as "medium fast" remain legible on narrow screens. */
+.thinking-select { flex: none; width: max-content; max-width: 112px; }
 .thinking-select .ds-select-trigger {
-  min-width: 58px; height: 26px; gap: 3px; padding: 0 7px 0 9px; border: 0; border-radius: 999px;
+  width: auto; min-width: 68px; height: 26px; gap: 3px; padding: 0 7px; border: 0; border-radius: 999px;
+  justify-content: center;
   background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); font-size: 12px;
 }
+.thinking-select .ds-select-value { flex: none; max-width: 80px; }
+.thinking-select .ds-select-chevron { width: 12px; height: 12px; }
 .thinking-select .ds-select-trigger:hover, .thinking-select.open .ds-select-trigger { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .context-meter {
   --context-pct: 0%; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
@@ -1655,6 +1660,7 @@
   padding: 7px 9px; border-radius: 7px; color: var(--dsw-alias-label-secondary);
   font-family: inherit; font-size: 13px; line-height: 20px; cursor: default;
 }
+.ds-select-option-label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ds-select-option.active { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 .ds-select-option.selected { color: var(--dsw-alias-label-primary); font-weight: 500; }
 .ds-select-option[aria-disabled='true'] { opacity: .4; }
@@ -2948,8 +2954,6 @@ select:focus-visible {
   .composer { gap: 8px; padding: 9px 10px; border-radius: 18px; }
   .composer-row { gap: 5px; }
   .model-chip { flex: 1 1 42px; max-width: none; min-width: 0; padding-right: 7px; padding-left: 7px; }
-  .thinking-select { max-width: 76px; }
-  .thinking-select .ds-select-trigger { min-width: 52px; padding-right: 5px; padding-left: 7px; }
   .session-stats { padding-bottom: 0; font-size: 11px; line-height: 16px; }
   .session-stats-sep { margin: 0 5px; }
   .to-bottom-slot { padding-right: 8px; }

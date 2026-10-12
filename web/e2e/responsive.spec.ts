@@ -41,6 +41,57 @@ test.describe('drawer menu keyboard ownership', () => {
   })
 })
 
+test.describe('compound thinking effort layout', () => {
+  test.use({ viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true })
+
+  test('keeps "medium fast" compact, centered, and fully visible', async ({ page }) => {
+    await page.route('**/v1/models', async route => {
+      const response = await route.fetch()
+      const models = await response.json() as Array<{ thinkingLevels?: string[] }>
+      await route.fulfill({
+        response,
+        json: models.map(model => ({
+          ...model,
+          thinkingLevels: [...new Set([...(model.thinkingLevels ?? []), 'medium fast'])],
+        })),
+      })
+    })
+    await page.goto('/')
+    const thinking = page.getByTestId('thinking-select')
+    await expect(thinking).toBeVisible()
+    await thinking.click()
+    const option = page.getByRole('option', { name: 'medium fast', exact: true })
+    await expect(option).toBeVisible()
+    const optionLabel = await option.locator('.ds-select-option-label').evaluate(element => {
+      const label = element as HTMLElement
+      return { height: label.getBoundingClientRect().height, clientWidth: label.clientWidth, scrollWidth: label.scrollWidth }
+    })
+    expect(optionLabel.height).toBeLessThanOrEqual(20)
+    expect(optionLabel.scrollWidth).toBeLessThanOrEqual(optionLabel.clientWidth)
+    await option.click()
+    await expect(thinking).toHaveText('medium fast')
+    const layout = await thinking.evaluate(element => {
+      const trigger = element as HTMLButtonElement
+      const label = trigger.querySelector<HTMLElement>('.ds-select-value')!
+      const chevron = trigger.querySelector<SVGElement>('.ds-select-chevron')!
+      const triggerRect = trigger.getBoundingClientRect()
+      const labelRect = label.getBoundingClientRect()
+      const chevronRect = chevron.getBoundingClientRect()
+      return {
+        width: triggerRect.width,
+        labelClientWidth: label.clientWidth,
+        labelScrollWidth: label.scrollWidth,
+        contentCenter: (labelRect.left + chevronRect.right) / 2,
+        triggerCenter: (triggerRect.left + triggerRect.right) / 2,
+      }
+    })
+    expect(layout.width).toBeLessThanOrEqual(112)
+    expect(layout.labelScrollWidth).toBeLessThanOrEqual(layout.labelClientWidth)
+    expect(Math.abs(layout.contentCenter - layout.triggerCenter)).toBeLessThanOrEqual(2)
+    await expectNoPageOverflow(page, 'compound thinking effort')
+  })
+})
+
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const fixtureName = 'responsive-fixture'
 const previewName = 'responsive-preview-long-name.txt'

@@ -189,6 +189,57 @@ func TestBuildCompactRequestAppendsTriggerAfterOpaqueContext(t *testing.T) {
 		t.Fatal("mutated original")
 	}
 }
+
+func TestBuildRequestOmitsOutputStatusFromInputHistory(t *testing.T) {
+	checkpoint := object{
+		"type": "message", "role": "assistant", "status": "completed",
+		"id": "msg_checkpoint", "content": []any{object{"type": "output_text", "text": "old"}},
+	}
+	payload := basicPayload("")
+	request := obj(payload["request"])
+	request["responsesContext"] = []any{checkpoint}
+	assistant := object{
+		"role": "assistant",
+		"content": []any{
+			object{"type": "thinking", "thinking": "reasoning", "thinkingSignature": `{"type":"reasoning","id":"rs_1","status":"completed","content":[{"type":"reasoning_text","text":"private"}],"encrypted_content":"opaque"}`},
+			object{"type": "text", "text": "answer", "textSignature": `{"type":"message","id":"msg_1","phase":"final","status":"completed"}`},
+		},
+	}
+	request["messages"] = append(list(request["messages"]), assistant)
+
+	body, err := buildRequest(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := list(body["input"])
+	if len(input) != 4 {
+		t.Fatalf("input length=%d: %v", len(input), input)
+	}
+	for i, raw := range input {
+		if _, exists := obj(raw)["status"]; exists {
+			t.Fatalf("input[%d] retained output-only status: %v", i, raw)
+		}
+	}
+	if obj(input[0])["encrypted_content"] != nil ||
+		obj(input[0])["id"] != "msg_checkpoint" ||
+		obj(input[0])["content"] == nil {
+		t.Fatalf("checkpoint fields changed beyond status: %v", input[0])
+	}
+	if obj(input[2])["encrypted_content"] != "opaque" || obj(input[2])["id"] != "rs_1" || obj(input[2])["content"] != nil {
+		t.Fatalf("reasoning history was not preserved: %v", input[2])
+	}
+	if obj(input[3])["id"] != "msg_1" || obj(input[3])["phase"] != "final" {
+		t.Fatalf("assistant message metadata was not preserved: %v", input[3])
+	}
+	// The compatibility projection is request-only; canonical session history
+	// must remain intact for later providers and compaction.
+	if checkpoint["status"] != "completed" ||
+		!strings.Contains(str(obj(list(assistant["content"])[0])["thinkingSignature"]), `"status":"completed"`) ||
+		!strings.Contains(str(obj(list(assistant["content"])[0])["thinkingSignature"]), `"content"`) {
+		t.Fatal("request encoding mutated the source history")
+	}
+}
+
 func TestRemoteCompactionV2RetainsRecentUserTurnsOnly(t *testing.T) {
 	items := list(parsed(t, `{"items":[{"type":"message","role":"user","content":[{"type":"input_text","text":"old"}]},{"type":"function_call","call_id":"call-1"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"reply"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"latest"}]}]}`)["items"])
 	retained := retainedCompactionItems(items)

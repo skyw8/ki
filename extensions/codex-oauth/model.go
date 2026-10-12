@@ -220,9 +220,11 @@ func reasoningKey(i object) string {
 
 // Filter signatures because gateways that reuse output indexes can attach tool
 // fields to reasoning items; replaying those fields poisons every later turn.
+// Content and status are output-only reasoning fields; strict Responses input
+// validators reject them when the item is replayed.
 func reasoningPayload(i object) object {
 	m := object{}
-	for _, k := range []string{"type", "id", "summary", "content", "encrypted_content", "status", "phase"} {
+	for _, k := range []string{"type", "id", "summary", "encrypted_content", "phase"} {
 		if v, ok := i[k]; ok {
 			m[k] = v
 		}
@@ -296,7 +298,9 @@ func inputItems(m, model object, index int) ([]any, error) {
 			}
 		}
 		if text := textOf(m); text != "" {
-			item := object{"type": "message", "role": "assistant", "status": "completed", "content": []any{object{"type": "output_text", "text": text, "annotations": []any{}}}}
+			// Why: status describes a completed output item; Luna's Responses
+			// input validator rejects it when that item is replayed as history.
+			item := object{"type": "message", "role": "assistant", "content": []any{object{"type": "output_text", "text": text, "annotations": []any{}}}}
 			signature := ""
 			for _, v := range list(m["content"]) {
 				i := obj(v)
@@ -369,10 +373,16 @@ func buildRequest(payload object) (object, error) {
 	}
 	input := []any{}
 	for _, v := range ctx {
-		if _, ok := v.(map[string]any); !ok {
+		item, ok := v.(map[string]any)
+		if !ok {
 			return nil, errors.New("Codex Responses context must be an array of objects")
 		}
-		input = append(input, clone(v))
+		// Why: canonical compaction history is retained unchanged in the
+		// session, but output-only status metadata is not accepted by every
+		// Responses input implementation (including Luna).
+		copy := clone(item).(map[string]any)
+		delete(copy, "status")
+		input = append(input, copy)
 	}
 	for index, v := range replayable(list(request["messages"])) {
 		items, err := inputItems(obj(v), model, index)
