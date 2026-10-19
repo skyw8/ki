@@ -3,13 +3,18 @@
 `deep-web-search` is a global Ki sidecar that registers `deep_web_search`,
 `fetch_content`, `get_search_content`, and `source_check`.
 
-It deliberately combines different source types instead of registering four
+It deliberately combines different source types instead of registering five
 model providers:
 
 - `codex` reads the existing `KI_HOME/credentials.json` OAuth value written by
   `codex-oauth` and calls the Codex Responses web-search tool.
 - `exa` uses `/search` or `/answer` with `exaApiKey`, and uses Exa MCP when no
   key is configured.
+- `deepseek` uses the in-house Search (`/v1/tools/search`) and Fetch
+  (`/v1/tools/fetch`) APIs with `deepseekApiKey`, `DEEPSEEK_API_KEY`, or the
+  credential Ki already stores for its DeepSeek model provider. Search maps
+  domain and recency filters onto DeepSeek's `site:`, `-site:`, and `after:`
+  query operators and reuses returned page content when `includeContent` is on.
 - `tinyfish` uses `tinyfishApiKey` (or `TINYFISH_API_KEY`) for search and fetch.
 - `duckduckgo` uses the public HTML endpoint and requires no credential or
   self-hosted service.
@@ -18,8 +23,8 @@ The sidecar keeps provider credentials out of tool results, jsonl entries,
 progress events, and logs. Search results are URL-normalized, deduplicated,
 ranked with reciprocal-rank style scoring, capped for domain diversity, and
 stored in a short-lived private cache. `includeContent` fetches readable public
-HTTP(S) pages with redirect, SSRF, size, and timeout checks; TinyFish Fetch is
-used as a fallback when configured. For `deep_web_search` the bodies are
+HTTP(S) pages with redirect, SSRF, size, and timeout checks; DeepSeek Fetch and
+TinyFish Fetch are used as fallbacks when configured. For `deep_web_search` the bodies are
 hydrated off the critical path: the source pack returns as soon as providers
 settle, and `get_search_content` reads the bodies once the background pass
 finishes. `source_check`, which needs passages in-band, hydrates inside the

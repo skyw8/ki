@@ -375,15 +375,15 @@ func normalizeQueries(args obj) []string {
 	return nil
 }
 
-var providers = []string{"codex", "exa", "tinyfish", "duckduckgo"}
-var defaultConfig = obj{"exaMode": "auto", "codexModel": "gpt-6-astra", "codexThinkingEffort": "", "provider": "all", "providerToggles": obj{"codex": true, "exa": true, "tinyfish": true, "duckduckgo": true}, "maxResults": 5, "fetchContent": false, "summaryModel": "openai-codex/gpt-6-astra", "summaryThinkingEffort": "", "summaryGenerationDeadlineMs": 30000, "workflow": "none"}
+var providers = []string{"codex", "exa", "deepseek", "tinyfish", "duckduckgo"}
+var defaultConfig = obj{"exaMode": "auto", "codexModel": "gpt-6-astra", "codexThinkingEffort": "", "provider": "all", "providerToggles": obj{"codex": true, "exa": true, "deepseek": true, "tinyfish": true, "duckduckgo": true}, "maxResults": 5, "fetchContent": false, "summaryModel": "openai-codex/gpt-6-astra", "summaryThinkingEffort": "", "summaryGenerationDeadlineMs": 30000, "workflow": "none"}
 
 func normalizeConfig(config obj) obj {
 	out := merge(defaultConfig, config)
 	out["providerToggles"] = merge(record(defaultConfig["providerToggles"]), record(out["providerToggles"]))
 	out["maxResults"] = clamp(out["maxResults"], 1, 20, 5)
 	out["summaryGenerationDeadlineMs"] = clamp(out["summaryGenerationDeadlineMs"], 1000, 120000, 30000)
-	if !oneOf(rawStr(out["provider"]), "auto", "all", "codex", "exa", "tinyfish", "duckduckgo") {
+	if !oneOf(rawStr(out["provider"]), "auto", "all", "codex", "exa", "deepseek", "tinyfish", "duckduckgo") {
 		out["provider"] = "all"
 	}
 	if !oneOf(rawStr(out["exaMode"]), "auto", "api", "mcp") {
@@ -398,7 +398,7 @@ func normalizeOptions(args, config obj) (obj, error) {
 	provider := config["provider"]
 	if _, ok := args["provider"].([]any); ok {
 		provider = unique(stringList(args["provider"]))
-	} else if oneOf(rawStr(args["provider"]), "auto", "all", "codex", "exa", "tinyfish", "duckduckgo") {
+	} else if oneOf(rawStr(args["provider"]), "auto", "all", "codex", "exa", "deepseek", "tinyfish", "duckduckgo") {
 		provider = args["provider"]
 	}
 	v, exists := args["numResults"]

@@ -102,8 +102,8 @@ for (const width of [1440, 390]) test(`extension errors remain readable above de
   await expect(banner).toHaveText(error)
 })
 
-// The freerouter config form dispatches on the extension name; a fixture with
-// the same settings schema exercises the whole form round-trip.
+// The schema renderer drives the same settings form for every extension; reuse
+// the real manifest to exercise x-ki-ui and the full round-trip.
 test('freerouter config form edits fields without raw JSON', async ({ page, request }) => {
   test.setTimeout(60_000)
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
@@ -111,31 +111,11 @@ test('freerouter config form edits fields without raw JSON', async ({ page, requ
   const name = 'freerouter'
   const dir = join(home, 'extensions', name)
   mkdirSync(dir, { recursive: true })
-  const number = (description: string) => ({ type: 'number', description })
-  writeFileSync(join(dir, 'extension.json'), JSON.stringify({
-    name,
-    capabilities: ['settings'],
-    config: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          apiKey: { type: 'string', secret: true },
-          baseUrl: { type: 'string' },
-          raceWidth: { ...number('raced per round'), minimum: 1, maximum: 8 },
-          maxBatches: { ...number('rounds per request'), minimum: 1, maximum: 6 },
-          exhaustedTtlMs: number('quota cooldown'),
-          slowTtlMs: number('slow cooldown'),
-          firstTokenTimeoutMs: number('first token deadline'),
-          idleTimeoutMs: number('stream idle deadline'),
-          refreshIntervalMs: number('model list refresh'),
-          listen: { type: 'string' },
-        },
-      },
-      defaults: { raceWidth: 2, maxBatches: 3, exhaustedTtlMs: 90000, slowTtlMs: 15000, firstTokenTimeoutMs: 10000, idleTimeoutMs: 30000, refreshIntervalMs: 3600000, listen: '127.0.0.1:18427' },
-    },
-    runtime: { kind: 'rpc', command: bin },
-  }))
+  const manifest = JSON.parse(readFileSync(join(repo, 'extensions', name, 'extension.json'), 'utf8')) as Record<string, unknown>
+  delete manifest.i18n
+  manifest.runtime = { kind: 'rpc', command: bin }
+  writeFileSync(join(dir, 'extension.json'), JSON.stringify(manifest))
+
 
   await page.goto('/')
   await reloadServer(page, request)
@@ -165,8 +145,9 @@ test('freerouter config form edits fields without raw JSON', async ({ page, requ
   // Defaults surface in seconds; edit raceWidth and save.
   await expect(page.getByTestId('freerouter-exhausted-ttl')).toHaveValue('90')
   await raceWidth.fill('4')
+  const freerouterSaved = page.waitForResponse(response => response.url().includes('/v1/extensions/freerouter/config') && response.request().method() === 'PATCH')
   await page.getByTestId('freerouter-config-save').click()
-  await expect(page.getByTestId('freerouter-race-width')).toBeVisible()
+  await freerouterSaved
 
   // The saved value survives a reload of the editor.
   await page.reload()
@@ -180,32 +161,64 @@ test('freerouter config form edits fields without raw JSON', async ({ page, requ
   await request.patch('/v1/extensions', { headers, data: { disabled: [name] } })
 })
 
+test('telegram config form renders schema fields and saves required inputs', async ({ page, request }) => {
+  test.setTimeout(60_000)
+  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
+  const name = 'telegram-bot'
+  const dir = join(home, 'extensions', name)
+  mkdirSync(dir, { recursive: true })
+  const manifest = JSON.parse(readFileSync(join(repo, 'extensions', name, 'extension.json'), 'utf8')) as Record<string, unknown>
+  delete manifest.i18n
+  manifest.runtime = { kind: 'rpc', command: process.execPath, args: [join(repo, 'extensions/telegram-bot/dist/main.js')] }
+  writeFileSync(join(dir, 'extension.json'), JSON.stringify(manifest))
+
+  await page.goto('/')
+  await reloadServer(page, request)
+  const headers = { Authorization: `Bearer ${await tokenOf(page)}` }
+  const listed = await request.get('/v1/extensions', { headers })
+  const catalog = await listed.json() as { items?: { name: string }[] }
+  await request.patch('/v1/extensions', {
+    headers,
+    data: { disabled: (catalog.items ?? []).map(item => item.name).filter(item => item !== name) },
+  })
+  await reloadServer(page, request)
+  await page.reload()
+
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-extensions').click()
+  await page.getByTestId(`cfg-configure-${name}`).click()
+  await expect(page.getByTestId(`extension-config-${name}`)).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByTestId('telegram-bot-id')).toBeVisible()
+  await expect(page.getByTestId('telegram-bot-token')).toBeVisible()
+  await expect(page.getByTestId('telegram-model-picker')).toBeVisible()
+  await expect(page.getByTestId('telegram-config-save')).toBeVisible()
+
+  await page.getByTestId('telegram-bot-id').fill('123456')
+  await page.getByTestId('telegram-bot-token').fill('test-token')
+  const telegramSaved = page.waitForResponse(response => response.url().includes('/v1/extensions/telegram-bot/config') && response.request().method() === 'PATCH')
+  await page.getByTestId('telegram-config-save').click()
+  await telegramSaved
+  await page.reload()
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-extensions').click()
+  await page.getByTestId(`cfg-configure-${name}`).click()
+  await expect(page.getByTestId('telegram-bot-id')).toHaveValue('123456', { timeout: 15_000 })
+  await expect(page.getByTestId('telegram-bot-token')).toHaveValue('')
+  await expect(page.getByTestId('telegram-bot-token')).toHaveAttribute('placeholder', /configured|config\.tokenConfigured/i)
+
+  await request.patch('/v1/extensions', { headers, data: { disabled: [name] } })
+})
+
 test('deep web search keeps the Codex model with the Codex provider', async ({ page, request }) => {
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
   const name = 'deep-web-search'
   const dir = join(home, 'extensions', name)
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'extension.json'), JSON.stringify({
-    name,
-    capabilities: ['settings'],
-    config: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          codexModel: { type: 'string' },
-          provider: { type: 'string' },
-          providerToggles: { type: 'object' },
-          maxResults: { type: 'integer' },
-          summaryModel: { type: 'string' },
-          workflow: { type: 'string' },
-          fetchContent: { type: 'boolean' },
-        },
-      },
-      defaults: { codexModel: 'gpt-6-astra', provider: 'all', maxResults: 5, summaryModel: '', workflow: 'none', fetchContent: false },
-    },
-    runtime: { kind: 'rpc', command: process.execPath, args: [join(repo, 'extensions/deep-web-search/dist/main.js')] },
-  }))
+  const manifest = JSON.parse(readFileSync(join(repo, 'extensions', name, 'extension.json'), 'utf8')) as Record<string, unknown>
+  delete manifest.i18n
+  manifest.runtime = { kind: 'rpc', command: process.execPath, args: [join(repo, 'extensions/deep-web-search/dist/main.js')] }
+  writeFileSync(join(dir, 'extension.json'), JSON.stringify(manifest))
+
 
   await page.goto('/')
   await reloadServer(page, request)
@@ -234,15 +247,25 @@ test('deep web search keeps the Codex model with the Codex provider', async ({ p
   await expect(codexToggle).toHaveAccessibleName(/Codex|provider\.codex/)
   await expectMinTarget(codexToggle, 'deep-web Codex toggle')
   await expect(providers.getByTestId('deep-web-search-toggle-exa')).toBeVisible()
+  await expect(providers.getByTestId('deep-web-search-toggle-deepseek')).toBeVisible()
   await expect(providers.getByTestId('deep-web-search-toggle-tinyfish')).toBeVisible()
   await expect(providers.getByTestId('deep-web-search-toggle-duckduckgo')).toBeVisible()
   await expect(page.getByTestId('deep-web-search-provider-codex')).toContainText(/Codex|provider\.codex/)
+  await expect(page.getByTestId('deep-web-search-provider-deepseek')).toContainText(/DeepSeek|provider\.deepseek/)
   await expect(codexToggle).toHaveAttribute('aria-checked', 'true')
   await codexToggle.click()
   await expect(page.getByTestId('deep-web-search-provider-codex')).toHaveClass(/is-off/)
   await expect(codexToggle).toHaveAttribute('aria-checked', 'false')
+  const deepSaved = page.waitForResponse(response => response.url().includes('/v1/extensions/deep-web-search/config') && response.request().method() === 'PATCH')
+  await page.getByTestId('deep-web-search-config-save').click()
+  await deepSaved
+  await page.reload()
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings-tab-extensions').click()
+  await page.getByTestId(`cfg-configure-${name}`).click()
+  await expect(page.getByTestId('deep-web-search-toggle-codex')).toHaveAttribute('aria-checked', 'false', { timeout: 15_000 })
   const fetchContent = page.getByTestId('deep-web-search-fetch-content')
-  const fetchTarget = page.locator('.deep-web-search-options label').filter({ has: fetchContent })
+  const fetchTarget = page.locator('.extension-config-options label').filter({ has: fetchContent })
   await expect(fetchContent).toHaveAccessibleName(/.+/)
   await expectMinTarget(fetchTarget, 'deep-web fetch-content checkbox')
 

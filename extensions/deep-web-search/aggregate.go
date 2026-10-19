@@ -18,7 +18,7 @@ var regexpMarkdownLink = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
 func mergeResults(runs []any, limit int) []any {
 	merged := map[string]obj{}
 	order := []string{}
-	weights := map[string]float64{"codex": 1.15, "exa": 1.08, "tinyfish": 1, "duckduckgo": .88}
+	weights := map[string]float64{"codex": 1.15, "exa": 1.08, "deepseek": 1.04, "tinyfish": 1, "duckduckgo": .88}
 	for _, v := range runs {
 		run := record(v)
 		provider := str(run["provider"])

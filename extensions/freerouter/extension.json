@@ -14,48 +14,184 @@
         "apiKey": {
           "type": "string",
           "secret": true,
-          "description": "OpenRouter API key (free tier is enough). Falls back to the free-router provider credential, then OPENROUTER_API_KEY."
+          "description": "OpenRouter API key (free tier is enough). Falls back to the free-router provider credential, then OPENROUTER_API_KEY.",
+          "x-ki-ui": {
+            "widget": "password",
+            "label": "config.apiKey",
+            "hint": false,
+            "placeholder": "config.keyPlaceholder",
+            "configuredPlaceholder": "config.configured",
+            "autoComplete": "new-password",
+            "testid": "freerouter-api-key",
+            "writeCredential": {
+              "provider": "free-router",
+              "clearOnSuccess": true,
+              "failureMessage": "config.keySaveFailed"
+            }
+          }
         },
         "baseUrl": {
           "type": "string",
-          "description": "OpenRouter API base URL override (for testing)."
+          "description": "OpenRouter API base URL override (for testing).",
+          "x-ki-ui": {
+            "widget": "text",
+            "label": "config.baseUrl",
+            "hint": "config.baseUrlHint",
+            "placeholder": "https://openrouter.ai/api/v1",
+            "spellCheck": false,
+            "testid": "freerouter-base-url"
+          }
         },
         "raceWidth": {
           "type": "integer",
           "minimum": 1,
           "maximum": 8,
-          "description": "How many available free models to race in parallel each round."
+          "description": "How many available free models to race in parallel each round.",
+          "x-ki-ui": {
+            "widget": "number",
+            "label": "config.raceWidth",
+            "hint": "config.raceWidthHint",
+            "invalidMessage": "config.invalidNumber",
+            "testid": "freerouter-race-width"
+          }
         },
         "maxBatches": {
           "type": "integer",
           "minimum": 1,
           "maximum": 6,
-          "description": "Maximum candidate rounds per request."
+          "description": "Maximum candidate rounds per request.",
+          "x-ki-ui": {
+            "widget": "number",
+            "label": "config.maxBatches",
+            "hint": "config.maxBatchesHint",
+            "invalidMessage": "config.invalidNumber",
+            "testid": "freerouter-max-batches"
+          }
         },
         "exhaustedTtlMs": {
           "type": "integer",
-          "description": "Cooldown for quota-exhausted (429/5xx/400/422) models."
+          "description": "Cooldown for quota-exhausted (429/5xx/400/422) models.",
+          "x-ki-ui": {
+            "widget": "number",
+            "label": "config.exhaustedTtl",
+            "hint": "config.exhaustedTtlHint",
+            "invalidMessage": "config.invalidNumber",
+            "displayScale": 0.001,
+            "testid": "freerouter-exhausted-ttl",
+            "minimum": 1,
+            "step": 1
+          }
         },
         "slowTtlMs": {
           "type": "integer",
-          "description": "Cooldown for models that timed out before the first token."
+          "description": "Cooldown for models that timed out before the first token.",
+          "x-ki-ui": {
+            "widget": "number",
+            "label": "config.slowTtl",
+            "hint": "config.slowTtlHint",
+            "invalidMessage": "config.invalidNumber",
+            "displayScale": 0.001,
+            "testid": "freerouter-slow-ttl",
+            "minimum": 1,
+            "step": 1
+          }
         },
         "firstTokenTimeoutMs": {
           "type": "integer",
-          "description": "First-batch first-token timeout; later batches loosen to 1.5x/2x."
+          "description": "First-batch first-token timeout; later batches loosen to 1.5x/2x.",
+          "x-ki-ui": {
+            "widget": "number",
+            "label": "config.firstTokenTimeout",
+            "hint": "config.firstTokenTimeoutHint",
+            "invalidMessage": "config.invalidNumber",
+            "displayScale": 0.001,
+            "testid": "freerouter-first-token-timeout",
+            "minimum": 1,
+            "step": 1
+          }
         },
         "idleTimeoutMs": {
           "type": "integer",
-          "description": "Max silence allowed from a winning stream before it is aborted."
+          "description": "Max silence allowed from a winning stream before it is aborted.",
+          "x-ki-ui": {
+            "widget": "number",
+            "label": "config.idleTimeout",
+            "hint": "config.idleTimeoutHint",
+            "invalidMessage": "config.invalidNumber",
+            "displayScale": 0.001,
+            "testid": "freerouter-idle-timeout",
+            "minimum": 1,
+            "step": 1
+          }
         },
         "refreshIntervalMs": {
           "type": "integer",
-          "description": "Background refresh interval for the free model list."
+          "description": "Background refresh interval for the free model list.",
+          "x-ki-ui": {
+            "widget": "number",
+            "label": "config.refresh",
+            "hint": "config.refreshHint",
+            "invalidMessage": "config.invalidNumber",
+            "displayScale": 1.6666666666666667e-05,
+            "testid": "freerouter-refresh",
+            "minimum": 1,
+            "step": 1
+          }
         },
         "listen": {
           "type": "string",
-          "description": "HTTP listen address for the always-on Chat Completions proxy (default 127.0.0.1:18427)."
+          "description": "HTTP listen address for the always-on Chat Completions proxy (default 127.0.0.1:18427).",
+          "x-ki-ui": {
+            "widget": "text",
+            "label": "config.listen",
+            "hint": "config.listenHint",
+            "placeholder": "127.0.0.1:18427",
+            "spellCheck": false,
+            "testid": "freerouter-listen"
+          }
         }
+      },
+      "x-ki-ui": {
+        "version": 1,
+        "intro": "config.hint",
+        "scroll": true,
+        "saveTestid": "freerouter-config-save",
+        "sections": [
+          {
+            "id": "auth",
+            "title": "config.authTitle",
+            "description": "config.authHint",
+            "columns": 2,
+            "fields": [
+              "apiKey",
+              "baseUrl",
+              "listen"
+            ]
+          },
+          {
+            "id": "routing",
+            "title": "config.routingTitle",
+            "description": "config.routingHint",
+            "columns": 2,
+            "fields": [
+              "raceWidth",
+              "maxBatches"
+            ]
+          },
+          {
+            "id": "timeouts",
+            "title": "config.timeoutsTitle",
+            "description": "config.timeoutsHint",
+            "columns": 2,
+            "fields": [
+              "exhaustedTtlMs",
+              "slowTtlMs",
+              "firstTokenTimeoutMs",
+              "idleTimeoutMs",
+              "refreshIntervalMs"
+            ]
+          }
+        ]
       }
     },
     "defaults": {

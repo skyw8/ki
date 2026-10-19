@@ -95,7 +95,59 @@ my-ext/
 | `bus` | sidecar | 扩展间总线 |
 | `provider` | 进程级 sidecar | 注册模型/认证元数据并接管 provider stream |
 | `channel` | 进程级 sidecar | 接入外部消息渠道并调用 Host session 能力 |
-| `settings` | 进程级 sidecar | 声明全局配置 schema，由 Host 脱敏、校验和通知变更 |
+| `settings` | 进程级 sidecar | 声明全局配置 schema（含可选 `x-ki-ui`），由 Host 脱敏、校验、渲染并通知变更 |
+
+## 配置 UI（`x-ki-ui`）
+
+扩展配置页完全由 `config.schema` 渲染，WebUI 不再按扩展名分派专用表单。标准 JSON Schema 继续负责类型、必填、范围和 `secret`；可选的 `x-ki-ui` 只描述布局和控件，不改变配置值。
+
+```json
+{
+  "type": "object",
+  "x-ki-ui": {
+    "version": 1,
+    "intro": "config.hint",
+    "scroll": true,
+    "saveTestid": "example-config-save",
+    "sections": [{
+      "id": "providers",
+      "title": "config.providersTitle",
+      "description": "config.providersHint",
+      "layout": "cards",
+      "cards": [{
+        "id": "deepseek",
+        "toggle": ["providerToggles", "deepseek"],
+        "title": "provider.deepseek",
+        "description": "provider.deepseekDescription",
+        "accent": "blue",
+        "fields": ["deepseekApiKey"]
+      }]
+    }]
+  },
+  "properties": {
+    "deepseekApiKey": {
+      "type": "string",
+      "secret": true,
+      "x-ki-ui": {
+        "widget": "password",
+        "label": "config.deepseekKey",
+        "hint": "config.deepseekKeyHint",
+        "placeholder": "config.keyPlaceholder",
+        "configuredPlaceholder": "config.configured"
+      }
+    }
+  }
+}
+```
+
+- 根级支持 `fields` / `sections`、`columns`、`cards`、`options`、`scroll`、`intro`、`saveTestid`。没有列出的可见字段会自动追加到最后一个 section，避免升级后丢字段。
+- 支持的 widget：`text`、`textarea`、`password`、`number`、`select`、`switch`、`checkbox`、`model`。未知 widget 或缺失 `x-ki-ui` 时使用安全默认值；没有 `properties` 时回退到原始 JSON 编辑器。
+- 字段级 `label` / `hint` / `placeholder` / `configuredPlaceholder` / `enumLabels` / `invalidMessage` / `requiredMessage` / `testid` 都是扩展 i18n key（`hint: false` 可显式隐藏 schema description）。
+- `secret: true` 的字段读取 `"<configured>"` 占位，未修改时保存回 `"<configured>"`，不会覆盖原值。
+- `displayScale` 只改变显示值（例如配置存毫秒、UI 显示秒）；保存时按原始 schema 单位写回。字段级 `minimum` / `maximum` / `step` 是按显示单位解释的覆盖值，`writeCredential` 是受控动作：先写 provider credential，再保存扩展配置。
+- `model` 字段复用宿主模型选择器，支持 `providerFilter`、`store`（`bare` / `spec`）、`legacyBareProvider`、`useDefaultModel`、`thinkingField` 和 `clearable`；thinking 字段本身应标记 `hidden`。
+- `cards` 的 `toggle` 支持嵌套路径；卡片强调色只接受 `violet` / `teal` / `blue` / `orange` / `amber` 语义 token，不接受扩展 CSS。
+- `x-ki-ui` 版本化、只允许声明式数据。Host 不执行扩展提供的 HTML、JavaScript 或 CSS；新增扩展配置不需要修改 `web/src`。
 
 ## 扩展 PATH 目录
 

@@ -23,6 +23,8 @@ func providerAvailable(name string, config obj) bool {
 		return true
 	case "tinyfish":
 		return apiKey(config, "tinyfishApiKey", "TINYFISH_API_KEY") != ""
+	case "deepseek":
+		return deepseekAPIKey(config) != ""
 	case "codex":
 		v, e := readCredential()
 		return e == nil && str(v.Value["access"]) != "" && credentialAccount(v.Value) != ""
@@ -43,6 +45,8 @@ func searchProvider(ctx context.Context, name, query string, options, config obj
 		return searchCodex(ctx, query, options, config)
 	case "exa":
 		return searchExa(ctx, query, options, config)
+	case "deepseek":
+		return searchDeepseek(ctx, query, options, config)
 	case "tinyfish":
 		return searchTinyfish(ctx, query, options, config)
 	case "duckduckgo":

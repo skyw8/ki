@@ -1,7 +1,7 @@
 {
   "name": "deep-web-search",
   "version": "0.1.0",
-  "description": "Four-provider parallel web search with source cleaning, content extraction, evidence checks, and automatic summary fallback.",
+  "description": "Five-provider parallel web search with source cleaning, content extraction, evidence checks, and automatic summary fallback.",
   "capabilities": [
     "tool",
     "settings"
@@ -21,7 +21,16 @@
         "exaApiKey": {
           "type": "string",
           "secret": true,
-          "description": "Optional Exa API key. Without it, Exa MCP is used."
+          "description": "Optional Exa API key. Without it, Exa MCP is used.",
+          "x-ki-ui": {
+            "widget": "password",
+            "label": "config.exaKey",
+            "hint": "config.exaKeyHint",
+            "placeholder": "config.keyPlaceholder",
+            "configuredPlaceholder": "config.configured",
+            "autoComplete": "new-password",
+            "testid": "deep-web-search-exa-key"
+          }
         },
         "exaMode": {
           "type": "string",
@@ -30,20 +39,70 @@
             "api",
             "mcp"
           ],
-          "description": "Exa transport selection."
+          "description": "Exa transport selection.",
+          "x-ki-ui": {
+            "widget": "select",
+            "label": "config.exaMode",
+            "testid": "deep-web-search-exa-mode",
+            "enumLabels": {
+              "auto": "option.exaMode.auto",
+              "api": "option.exaMode.api",
+              "mcp": "option.exaMode.mcp"
+            }
+          }
+        },
+        "deepseekApiKey": {
+          "type": "string",
+          "secret": true,
+          "description": "Optional DeepSeek API key. Empty reuses the Ki DeepSeek provider credential or DEEPSEEK_API_KEY.",
+          "x-ki-ui": {
+            "widget": "password",
+            "label": "config.deepseekKey",
+            "hint": "config.deepseekKeyHint",
+            "placeholder": "config.keyPlaceholder",
+            "configuredPlaceholder": "config.configured",
+            "autoComplete": "new-password",
+            "testid": "deep-web-search-deepseek-key"
+          }
         },
         "tinyfishApiKey": {
           "type": "string",
           "secret": true,
-          "description": "TinyFish API key from the TinyFish console."
+          "description": "TinyFish API key from the TinyFish console.",
+          "x-ki-ui": {
+            "widget": "password",
+            "label": "config.tinyfishKey",
+            "hint": "config.tinyfishKeyHint",
+            "placeholder": "config.keyPlaceholder",
+            "configuredPlaceholder": "config.configured",
+            "autoComplete": "new-password",
+            "testid": "deep-web-search-tinyfish-key"
+          }
         },
         "codexModel": {
           "type": "string",
-          "description": "Codex model used by the web-search provider."
+          "description": "Codex model used by the web-search provider.",
+          "x-ki-ui": {
+            "widget": "model",
+            "label": "config.codexModel",
+            "hint": "config.codexModelHint",
+            "emptyLabel": "config.modelUnavailable",
+            "emptyDetail": "config.modelUnavailable",
+            "customDetail": "config.modelCustom",
+            "dialogTitle": "config.codexModelPickerTitle",
+            "providerFilter": "openai-codex",
+            "store": "bare",
+            "thinkingField": "codexThinkingEffort",
+            "testid": "deep-web-search-codex-model-picker",
+            "dialogTestid": "deep-web-search-codex-model-dialog"
+          }
         },
         "codexThinkingEffort": {
           "type": "string",
-          "description": "Thinking effort for the Codex web-search model; empty uses the model default."
+          "description": "Thinking effort for the Codex web-search model; empty uses the model default.",
+          "x-ki-ui": {
+            "hidden": true
+          }
         },
         "provider": {
           "type": "string",
@@ -52,10 +111,25 @@
             "all",
             "codex",
             "exa",
+            "deepseek",
             "tinyfish",
             "duckduckgo"
           ],
-          "description": "Default provider selection."
+          "description": "Default provider selection.",
+          "x-ki-ui": {
+            "widget": "select",
+            "label": "config.provider",
+            "testid": "deep-web-search-provider",
+            "enumLabels": {
+              "all": "option.provider.all",
+              "auto": "option.provider.auto",
+              "codex": "option.provider.codex",
+              "exa": "option.provider.exa",
+              "deepseek": "option.provider.deepseek",
+              "tinyfish": "option.provider.tinyfish",
+              "duckduckgo": "option.provider.duckduckgo"
+            }
+          }
         },
         "providerToggles": {
           "type": "object",
@@ -67,33 +141,74 @@
             "exa": {
               "type": "boolean"
             },
+            "deepseek": {
+              "type": "boolean"
+            },
             "tinyfish": {
               "type": "boolean"
             },
             "duckduckgo": {
               "type": "boolean"
             }
+          },
+          "x-ki-ui": {
+            "hidden": true
           }
         },
         "maxResults": {
           "type": "integer",
-          "description": "Maximum distinct sources returned by one query."
+          "description": "Maximum distinct sources returned by one query.",
+          "x-ki-ui": {
+            "widget": "number",
+            "label": "config.maxResults",
+            "testid": "deep-web-search-max-results",
+            "minimum": 1,
+            "maximum": 20,
+            "step": 1
+          }
         },
         "fetchContent": {
           "type": "boolean",
-          "description": "Fetch source bodies in the background."
+          "description": "Fetch source bodies in the background.",
+          "x-ki-ui": {
+            "widget": "checkbox",
+            "label": "config.fetchContent",
+            "hint": false,
+            "testid": "deep-web-search-fetch-content"
+          }
         },
         "summaryModel": {
           "type": "string",
-          "description": "Model spec such as openai-codex/gpt-6-astra; empty disables model summaries."
+          "description": "Model spec such as openai-codex/gpt-6-astra; empty disables model summaries.",
+          "x-ki-ui": {
+            "widget": "model",
+            "label": "config.summaryModel",
+            "hint": "config.summaryModelHint",
+            "emptyLabel": "config.summaryDisabled",
+            "emptyDetail": "config.summaryDisabled",
+            "customDetail": "config.modelCustom",
+            "dialogTitle": "config.summaryModelPickerTitle",
+            "clearLabel": "config.summaryDisable",
+            "clearable": true,
+            "legacyBareProvider": "openai-codex",
+            "thinkingField": "summaryThinkingEffort",
+            "testid": "deep-web-search-summary-model-picker",
+            "dialogTestid": "deep-web-search-summary-model-dialog"
+          }
         },
         "summaryThinkingEffort": {
           "type": "string",
-          "description": "Thinking effort for the summary model; empty uses the model default."
+          "description": "Thinking effort for the summary model; empty uses the model default.",
+          "x-ki-ui": {
+            "hidden": true
+          }
         },
         "summaryGenerationDeadlineMs": {
           "type": "integer",
-          "description": "Summary generation deadline in milliseconds."
+          "description": "Summary generation deadline in milliseconds.",
+          "x-ki-ui": {
+            "hidden": true
+          }
         },
         "workflow": {
           "type": "string",
@@ -101,8 +216,134 @@
             "none",
             "auto-summary"
           ],
-          "description": "Result workflow selected by the user."
+          "description": "Result workflow selected by the user.",
+          "x-ki-ui": {
+            "widget": "select",
+            "label": "config.workflow",
+            "testid": "deep-web-search-workflow",
+            "enumLabels": {
+              "none": "option.workflow.none",
+              "auto-summary": "option.workflow.auto-summary"
+            }
+          }
         }
+      },
+      "x-ki-ui": {
+        "version": 1,
+        "intro": "config.hint",
+        "scroll": true,
+        "saveTestid": "deep-web-search-config-save",
+        "sections": [
+          {
+            "id": "global",
+            "title": "config.globalTitle",
+            "description": "config.globalHint",
+            "columns": 2,
+            "fields": [
+              "provider",
+              "workflow",
+              "maxResults",
+              "summaryModel"
+            ],
+            "options": [
+              "fetchContent"
+            ]
+          },
+          {
+            "id": "providers",
+            "title": "config.providersTitle",
+            "description": "config.providersHint",
+            "layout": "cards",
+            "toggleHint": "config.toggleHint",
+            "cards": [
+              {
+                "id": "codex",
+                "toggle": [
+                  "providerToggles",
+                  "codex"
+                ],
+                "title": "provider.codex",
+                "description": "provider.codexDescription",
+                "accent": "violet",
+                "headerStatus": "provider.codexStatus",
+                "fields": [
+                  "codexModel"
+                ],
+                "link": {
+                  "label": "status.connected",
+                  "text": "codex-oauth"
+                },
+                "testid": "deep-web-search-provider-codex",
+                "toggleTestid": "deep-web-search-toggle-codex"
+              },
+              {
+                "id": "exa",
+                "toggle": [
+                  "providerToggles",
+                  "exa"
+                ],
+                "title": "provider.exa",
+                "description": "provider.exaDescription",
+                "accent": "teal",
+                "fields": [
+                  "exaApiKey",
+                  "exaMode"
+                ],
+                "testid": "deep-web-search-provider-exa",
+                "toggleTestid": "deep-web-search-toggle-exa"
+              },
+              {
+                "id": "deepseek",
+                "toggle": [
+                  "providerToggles",
+                  "deepseek"
+                ],
+                "title": "provider.deepseek",
+                "description": "provider.deepseekDescription",
+                "accent": "blue",
+                "fields": [
+                  "deepseekApiKey"
+                ],
+                "testid": "deep-web-search-provider-deepseek",
+                "toggleTestid": "deep-web-search-toggle-deepseek"
+              },
+              {
+                "id": "tinyfish",
+                "toggle": [
+                  "providerToggles",
+                  "tinyfish"
+                ],
+                "title": "provider.tinyfish",
+                "description": "provider.tinyfishDescription",
+                "accent": "orange",
+                "fields": [
+                  "tinyfishApiKey"
+                ],
+                "testid": "deep-web-search-provider-tinyfish",
+                "toggleTestid": "deep-web-search-toggle-tinyfish"
+              },
+              {
+                "id": "duckduckgo",
+                "toggle": [
+                  "providerToggles",
+                  "duckduckgo"
+                ],
+                "title": "provider.duckduckgo",
+                "description": "provider.duckduckgoDescription",
+                "accent": "amber",
+                "fields": [],
+                "badges": [
+                  {
+                    "label": "status.noAuth",
+                    "tone": "free"
+                  }
+                ],
+                "testid": "deep-web-search-provider-duckduckgo",
+                "toggleTestid": "deep-web-search-toggle-duckduckgo"
+              }
+            ]
+          }
+        ]
       }
     },
     "defaults": {
@@ -113,6 +354,7 @@
       "providerToggles": {
         "codex": true,
         "exa": true,
+        "deepseek": true,
         "tinyfish": true,
         "duckduckgo": true
       },

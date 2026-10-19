@@ -25,21 +25,69 @@
       "properties": {
         "botId": {
           "type": "string",
-          "description": "Managed Bot numeric ID. Enter it as a string to avoid precision loss."
+          "description": "Managed Bot numeric ID. Enter it as a string to avoid precision loss.",
+          "x-ki-ui": {
+            "widget": "text",
+            "label": "config.botId",
+            "hint": false,
+            "placeholder": "config.botIdPlaceholder",
+            "inputMode": "numeric",
+            "autoComplete": "off",
+            "requiredMessage": "config.botIdRequired",
+            "testid": "telegram-bot-id"
+          }
         },
         "token": {
           "type": "string",
           "secret": true,
-          "description": "Managed Bot token from Manager Bot or BotFather."
+          "description": "Managed Bot token from Manager Bot or BotFather.",
+          "x-ki-ui": {
+            "widget": "password",
+            "label": "config.token",
+            "hint": "config.tokenHint",
+            "placeholder": "config.tokenPlaceholder",
+            "configuredPlaceholder": "config.tokenConfigured",
+            "autoComplete": "new-password",
+            "requiredMessage": "config.tokenRequired",
+            "testid": "telegram-bot-token"
+          }
         },
         "model": {
           "type": "string",
-          "description": "Model specification for Telegram replies; leave empty to follow the global default."
+          "description": "Model specification for Telegram replies; leave empty to follow the global default.",
+          "x-ki-ui": {
+            "widget": "model",
+            "label": "config.model",
+            "hint": "config.modelHint",
+            "emptyLabel": "config.modelDefault",
+            "emptyDetail": "config.modelDefaultHint",
+            "customDetail": "config.modelCustom",
+            "clearLabel": "config.modelReset",
+            "clearable": true,
+            "useDefaultModel": true,
+            "thinkingField": "thinkingEffort",
+            "testid": "telegram-model-picker",
+            "dialogTestid": "telegram-model-dialog"
+          }
         },
         "thinkingEffort": {
           "type": "string",
-          "description": "Thinking effort for the reply model; leave empty to use the model default."
+          "description": "Thinking effort for the reply model; leave empty to use the model default.",
+          "x-ki-ui": {
+            "hidden": true
+          }
         }
+      },
+      "x-ki-ui": {
+        "version": 1,
+        "intro": "config.hint",
+        "columns": 2,
+        "fields": [
+          "botId",
+          "token",
+          "model"
+        ],
+        "saveTestid": "telegram-config-save"
       }
     },
     "defaults": {

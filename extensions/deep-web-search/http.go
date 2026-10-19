@@ -315,6 +315,12 @@ func fetchContents(ctx context.Context, results []any, config obj) []any {
 					merged["error"] = nil
 				} else {
 					fetched := fetchOneContent(ctx, str(item["url"]))
+					if str(fetched["content"]) == "" && record(config["providerToggles"])["deepseek"] != false && deepseekAPIKey(config) != "" {
+						if alternative, e := fetchDeepseek(ctx, str(item["url"]), config); e == nil {
+							fetched = alternative
+							fetched["error"] = nil
+						}
+					}
 					if str(fetched["content"]) == "" && record(config["providerToggles"])["tinyfish"] != false && apiKey(config, "tinyfishApiKey", "TINYFISH_API_KEY") != "" {
 						alternatives, e := fetchTinyfish(ctx, []string{str(item["url"])}, config)
 						if e == nil && len(alternatives) > 0 && str(record(alternatives[0])["content"]) != "" {

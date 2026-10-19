@@ -64,7 +64,7 @@ func TestWorkflowIsSetting(t *testing.T) {
 }
 func TestAllProviderTogglesBeforeNetwork(t *testing.T) {
 	a := testApp(t)
-	cfg := obj{"version": 1, "providerToggles": obj{"codex": false, "exa": false, "tinyfish": false, "duckduckgo": false}}
+	cfg := obj{"version": 1, "providerToggles": obj{"codex": false, "exa": false, "deepseek": false, "tinyfish": false, "duckduckgo": false}}
 	if e := state.WriteVersioned(filepath.Join(a.root, "config.json"), 1, cfg, 0600); e != nil {
 		t.Fatal(e)
 	}
