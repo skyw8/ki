@@ -1,7 +1,0 @@
-# Compiled Go sidecar binaries
-/bin/
-
-# Local / editor
-*.swp
-*~
-.DS_Store
