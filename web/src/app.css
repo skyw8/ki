@@ -1600,6 +1600,8 @@
 .provider-settings { position: relative; width: 100%; min-width: 0; min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .provider-page-title { flex: none; padding: 24px 24px 20px; }
 .provider-page-title > div { min-width: 0; }
+.provider-model-head-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.provider-model-head-actions .ui-button { min-height: 40px; }
 .ui-button {
   min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   padding: 0 14px; border: 1px solid transparent; border-radius: 8px;
@@ -1628,6 +1630,25 @@
 .settings-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .settings-section-head h4, .danger-section h4 { margin: 0; color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 20px; font-weight: 600; }
 .settings-section-head p { margin: 3px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+.magpie-sync-card {
+  display: flex; align-items: center; gap: 14px; min-width: 0;
+  margin: 0 0 18px; padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-brand) 24%, var(--dsw-alias-border-l2));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--dsw-alias-brand) 5%, var(--dsw-alias-bg-layer-1));
+}
+.magpie-sync-mark {
+  flex: none; width: 40px; height: 40px; display: grid; place-items: center;
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-brand) 22%, transparent);
+  border-radius: 12px; color: var(--dsw-alias-brand);
+  background: color-mix(in srgb, var(--dsw-alias-brand) 10%, transparent);
+}
+.magpie-sync-mark svg { width: 18px; height: 18px; }
+.magpie-sync-copy { min-width: 0; flex: 1; }
+.magpie-sync-copy strong { display: block; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 19px; font-weight: 600; }
+.magpie-sync-copy p { margin: 3px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.magpie-sync-button { flex: none; min-height: 44px; padding-inline: 16px; border-radius: 10px; }
+.magpie-sync-button svg { width: 15px; height: 15px; }
 .form-grid { display: grid; gap: 14px 16px; }
 .form-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .form-grid .full { grid-column: 1 / -1; }
@@ -3312,6 +3333,10 @@ select:focus-visible {
   .extension-config-editor .extension-config-card-head {
     flex-wrap: wrap;
   }
+  .provider-model-head-actions { width: 100%; justify-content: flex-start; }
+  .magpie-sync-card { align-items: flex-start; flex-wrap: wrap; padding: 13px; }
+  .magpie-sync-copy { flex-basis: calc(100% - 54px); }
+  .magpie-sync-button { width: 100%; }
 }
 
 @container (max-width: 420px) {

@@ -38,11 +38,14 @@ type ModelsFile struct {
 
 // Config describes user overrides for one provider.
 type Config struct {
-	Name           string                   `json:"name,omitempty"`
-	API            string                   `json:"api,omitempty"`
-	BaseURL        string                   `json:"baseUrl,omitempty"`
-	Enabled        *bool                    `json:"enabled,omitempty"`
-	Models         []ModelSeed              `json:"models,omitempty"`
+	Name    string      `json:"name,omitempty"`
+	API     string      `json:"api,omitempty"`
+	BaseURL string      `json:"baseUrl,omitempty"`
+	Enabled *bool       `json:"enabled,omitempty"`
+	Models  []ModelSeed `json:"models,omitempty"`
+	// SyncedModels tracks remote catalog entries so a refresh can replace its
+	// snapshot without deleting user-created models in the same provider.
+	SyncedModels   []string                 `json:"syncedModels,omitempty"`
 	ModelOverrides map[string]ModelOverride `json:"modelOverrides,omitempty"`
 }
 
@@ -885,6 +888,19 @@ func (r *Registry) Credential(id string) (Credential, CredentialStatus, error) {
 	return credential, status, nil
 }
 
+// ProviderCredential atomically snapshots the resolved provider connection and
+// credential for an explicit provider operation.
+func (r *Registry) ProviderCredential(id string) (Provider, Credential, CredentialStatus, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.providerLocked(id)
+	if !ok {
+		return Provider{}, Credential{}, CredentialStatus{}, fmt.Errorf("provider %q: %w", id, errProviderNotFound)
+	}
+	credential, status := r.credentialLocked(p)
+	return cloneProvider(p), credential, status, nil
+}
+
 func (r *Registry) credentialLocked(p Provider) (Credential, CredentialStatus) {
 	if p.Auth.Type == AuthNone {
 		return Credential{Type: AuthNone}, CredentialStatus{Configured: true, Source: "none", Type: AuthNone}
@@ -956,6 +972,57 @@ func (r *Registry) Update(mut func(*ModelsFile) error) error {
 	if err := mut(&next); err != nil {
 		return err
 	}
+	return r.persistModelsLocked(next)
+}
+
+// SyncModelsIfCurrent atomically reconciles an imported model snapshot only if
+// its connection and credential still match the values used for the fetch.
+func (r *Registry) SyncModelsIfCurrent(id, baseURL, apiKey string, models []ModelSeed) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.providerLocked(id)
+	if !ok {
+		return fmt.Errorf("provider %q: %w", id, errProviderNotFound)
+	}
+	credential, status := r.credentialLocked(p)
+	if p.BaseURL != baseURL || !status.Configured || credential.APIKey != apiKey {
+		return ErrProviderConfigChanged
+	}
+
+	next := cloneModelsFile(r.state.user)
+	pc := next.Providers[id]
+	previouslySynced := make(map[string]bool, len(pc.SyncedModels))
+	for _, modelID := range pc.SyncedModels {
+		previouslySynced[modelID] = true
+	}
+	incoming := make(map[string]bool, len(models))
+	var syncedIDs []string
+	for _, model := range models {
+		incoming[model.ID] = true
+		syncedIDs = append(syncedIDs, model.ID)
+	}
+
+	// Keep user-created models, but replace the previous imported snapshot.
+	// Same-ID model overrides remain attached to the synced model.
+	seeds := append([]ModelSeed(nil), models...)
+	for _, model := range pc.Models {
+		if !previouslySynced[model.ID] && !incoming[model.ID] {
+			seeds = append(seeds, model)
+			incoming[model.ID] = true
+		}
+	}
+	pc.Models = seeds
+	pc.SyncedModels = syncedIDs
+	for modelID := range pc.ModelOverrides {
+		if !incoming[modelID] {
+			delete(pc.ModelOverrides, modelID)
+		}
+	}
+	next.Providers[id] = pc
+	return r.persistModelsLocked(next)
+}
+
+func (r *Registry) persistModelsLocked(next ModelsFile) error {
 	next.Version = modelsFileVersion
 	nextState, err := buildRegistryState(next, r.state.creds)
 	if err != nil {

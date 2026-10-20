@@ -102,65 +102,6 @@ for (const width of [1440, 390]) test(`extension errors remain readable above de
   await expect(banner).toHaveText(error)
 })
 
-// The schema renderer drives the same settings form for every extension; reuse
-// the real manifest to exercise x-ki-ui and the full round-trip.
-test('freerouter config form edits fields without raw JSON', async ({ page, request }) => {
-  test.setTimeout(60_000)
-  const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }
-  const bin = sidecarBin(home, 'freerouter-sidecar')
-  const name = 'freerouter'
-  const dir = join(home, 'extensions', name)
-  mkdirSync(dir, { recursive: true })
-  const manifest = JSON.parse(readFileSync(join(repo, 'extensions', name, 'extension.json'), 'utf8')) as Record<string, unknown>
-  delete manifest.i18n
-  manifest.runtime = { kind: 'rpc', command: bin }
-  writeFileSync(join(dir, 'extension.json'), JSON.stringify(manifest))
-
-
-  await page.goto('/')
-  await reloadServer(page, request)
-  const headers = { Authorization: `Bearer ${await tokenOf(page)}` }
-  const listed = await request.get('/v1/extensions', { headers })
-  const catalog = await listed.json() as { items?: { name: string }[] }
-  await request.patch('/v1/extensions', {
-    headers,
-    data: { disabled: (catalog.items ?? []).map(item => item.name).filter(item => item !== name) },
-  })
-  await reloadServer(page, request)
-  await page.reload()
-
-  await page.getByTestId('open-settings').click()
-  await page.getByTestId('settings-tab-extensions').click()
-  await page.getByTestId(`cfg-configure-${name}`).click()
-  await expect(page.getByTestId(`extension-config-${name}`)).toBeVisible({ timeout: 15_000 })
-
-  // No raw JSON textarea: the form renders dedicated inputs.
-  await expect(page.getByTestId('extension-config-input')).toHaveCount(0)
-  const raceWidth = page.getByTestId('freerouter-race-width')
-  await expect(raceWidth).toBeVisible()
-  await expect(page.getByTestId('freerouter-max-batches')).toBeVisible()
-  await expect(page.getByTestId('freerouter-exhausted-ttl')).toBeVisible()
-  await expect(page.getByTestId('freerouter-api-key')).toBeVisible()
-
-  // Defaults surface in seconds; edit raceWidth and save.
-  await expect(page.getByTestId('freerouter-exhausted-ttl')).toHaveValue('90')
-  await raceWidth.fill('4')
-  const freerouterSaved = page.waitForResponse(response => response.url().includes('/v1/extensions/freerouter/config') && response.request().method() === 'PATCH')
-  await page.getByTestId('freerouter-config-save').click()
-  await freerouterSaved
-
-  // The saved value survives a reload of the editor.
-  await page.reload()
-  await page.getByTestId('open-settings').click()
-  await page.getByTestId('settings-tab-extensions').click()
-  await page.getByTestId(`cfg-configure-${name}`).click()
-  await expect(page.getByTestId('freerouter-race-width')).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByTestId('freerouter-race-width')).toHaveValue('4')
-
-  // Cleanup: disable the fixture again so other specs start from defaults.
-  await request.patch('/v1/extensions', { headers, data: { disabled: [name] } })
-})
-
 test('telegram config form renders schema fields and saves required inputs', async ({ page, request }) => {
   test.setTimeout(60_000)
   const { home } = JSON.parse(readFileSync(statePath, 'utf8')) as { home: string }

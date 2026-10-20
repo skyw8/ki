@@ -6,6 +6,10 @@ import (
 	"ki/internal/state"
 )
 
+// ErrProviderConfigChanged reports that a provider connection or credential
+// changed while a network-backed catalog operation was in flight.
+var ErrProviderConfigChanged = errors.New("provider connection or credential changed during model refresh")
+
 // Keep validation errors static so callers can use errors.Is while the
 // surrounding identifiers remain in the human-readable message.
 var (

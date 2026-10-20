@@ -14,15 +14,18 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 
 ## 离线目录与配置
 
-- `catalog.json` 随二进制嵌入，内置 OpenRouter（默认模型为 `openrouter/free`）、OpenAI、Anthropic、DeepSeek、DashScope、Z.AI、Moonshot、MiniMax、Google 和 xAI；DashScope、Z.AI、Moonshot、MiniMax 另有 `-cn` provider。它只随 Ki 发版更新，不调用供应商模型列表 API。
+- `catalog.json` 随二进制嵌入，内置 OpenRouter（默认模型为 `openrouter/free`）、OpenAI、Anthropic、DeepSeek、DashScope、Z.AI、Moonshot、MiniMax、Google、xAI 和 Magpie；DashScope、Z.AI、Moonshot、MiniMax 另有 `-cn` provider。除 Magpie 外，目录随 Ki 发版更新，不调用供应商模型列表 API。Magpie 默认 base URL 为 `http://127.0.0.1:3425/v1`，使用内置 Completions adapter；设置页的显式刷新请求先校验 `/api/hello` 身份，再读取 `/v1/models`，不会在列出 provider 或模型时联网。
 - `{KI_HOME}/models.json` 保存上次选用的模型、自定义 provider/model 和内置项覆盖；`{KI_HOME}/credentials.json` 保存 API key 或 provider-owned opaque credential（0600）。密钥解析顺序为 credentials 文件再到 provider 环境变量，API 从不返回明文。
 - `models.json` 带 schema `version`。读到旧版本时在加载阶段就地迁移到当前 schema（目前 v1 的 `remoteCompaction` 展开为 v2 的 `compaction.standalone` + `compaction.inline`），迁移只作用于内存，用户文件在下次写入时才更新；读到更高版本则拒绝启动，避免静默丢弃本二进制不认识的字段。`credentials.json` 同样带 `version`，更高版本时拒绝启动。两者的迁移都走 `internal/state`，通用规则见 [state.md](state.md)。
 - registry 按嵌入目录 → 用户配置合并，并在校验成功、原子替换文件后发布新快照。provider/model 可新增、禁用和删除；内置项删除覆盖即恢复基线。上次选用不可用时落到第一个有凭据的可用模型，再不行落到目录里第一个启用项；没有「钉死不能禁用」的 default。
 - provider 和模型可选 `completions` / `responses` / `anthropic`，模型可覆盖 provider 的 API/Base URL。Google 使用官方 OpenAI-compatible 入口。扩展 provider 的 `defaultModel` 只是可选偏好；缺失、被删除或被禁用时，自动使用第一个启用模型。
+- Magpie 模型 ID（包括 `vendor/model` 和路由组 ID）原样保留为上游请求 ID。刷新会原子替换先前同步的目录，保留用户手动添加模型和仍匹配的逐模型覆盖；Magpie 已移除的同步模型及其孤立覆盖会清理。同步 ID 记录在 `models.json` provider overlay 的 `syncedModels` 字段中，这是向前兼容的新增字段，不改变 schema version。Magpie 未提供的限制值使用 32K context / 4K output 保守估值（并非上游承诺的限制，可在模型设置中修改）；未给出受支持推理等级的模型不暴露推理选择，价格保持未知（`cost:null`）。
+- 刷新根据 provider base URL 自动定位 Magpie 根地址下的 `/api/hello` 与 `/v1/models`，所以 Completions 常见的 `/v1` base 和 Anthropic 所需的根 base 都可用。请求先原子快照连接与凭据、禁止跨站重定向；若网络请求期间连接或凭据变更，刷新以 409 结束而不写入过时目录。
+- 本机 Magpie 接受任意 key，可填 `magpie-ki` 进行用量归因；远端 Magpie 必须使用用户配置的 gateway key。Ki server（不是浏览器）连接到 Magpie，所以两者必须网络可达；远端使用时需在 Magpie 开启网络共享并使用正确 gateway key。
 - 模型的 `input` 声明输入模态；`applyPatchToolType: "freeform"` 声明 Responses custom/freeform patch 能力，`execToolType: "freeform"` 独立声明 custom/freeform JavaScript 能力。core 中两者只在 Responses 上生效，不能从 API 名推断，也不能互相推断；扩展 provider 的私有 API（如 Codex）自行声明并兑现该工具契约，host 不硬编码其 API 别名。内置 OpenAI GPT 与 bundled `codex-oauth` GPT 明确声明两种能力；Completions / Anthropic 以及未声明 patch 能力的模型使用 `Write` / `Edit`，编辑器不会同时暴露。未声明 exec 能力的模型使用普通 function `exec`，参数为 `{code: "…"}`。新增字段不改变 state schema 版本。
 - DeepSeek Responses 的 [custom 工具兼容性](https://api-docs.deepseek.com/guides/responses_api)只允许 `apply_patch` 名称，其余 custom 名称返回 400；普通 function 工具受支持。因此 DeepSeek 三种协议都发布 function `exec`，不因切换为 Responses 而启用任意 custom 工具。
 
-配置入口是 `GET/POST/PATCH/DELETE /v1/providers` 及其 `/credential`、`/models` 子资源。创建会话、改模型或发 prompt 会把当前模型记进 `models.json` 的 last-used；`PUT /v1/default-model` 仍可显式写入同一字段。`GET /v1/models` 是同一 registry 的扁平可选视图，不存在第二份目录。
+配置入口是 `GET/POST/PATCH/DELETE /v1/providers` 及其 `/credential`、`/models` 子资源；Magpie 显式同步使用受保护的 `POST /v1/providers/magpie/models/refresh`。创建会话、改模型或发 prompt 会把当前模型记进 `models.json` 的 last-used；`PUT /v1/default-model` 仍可显式写入同一字段。`GET /v1/models` 是同一 registry 的扁平可选视图，不存在第二份目录。
 
 ## GPT 价格
 
@@ -83,6 +86,8 @@ Responses **不能**把 Completions 的 `role: tool` 塞进 `input`，否则第�
 服务端把完整 `loop.Request` 通过 `provider.stream.start` 交给 sidecar；sidecar 负责 request body、headers、网络、SSE 和 provider-specific 状态。声明 `compaction.standalone` 的 sidecar 还要实现同步 `provider.compact`，返回完整 `{items,usage?}` canonical window；只有声明并实际启用 `compaction.inline:"openai"` 的 occupy 才接受 stream event 的私有 `responsesItems`。
 
 扩展 provider 不写入 `models.json`，其目录随扩展启用状态动态替换；provider/model 的 CRUD 端点对这类目录只读。API key 继续使用 `{"apiKey":"..."}`，OAuth 或其他扩展凭据使用 `{"type":"oauth","value":{...}}`，`value` 原样保存和私有传递，catalog/status 不包含明文。
+
+扩展 provider 目录仍由扩展描述符静态声明；目前没有扩展模型发现/刷新 RPC。Magpie 使用已支持的公共 wire API，不需要 sidecar；其特例是由 host 显式拉取并持久化模型快照。
 
 OAuth provider 的登录/刷新也由 sidecar 完成：`provider.auth.start` 启动 browser 或 `device_code` 流程，`provider.auth.event` 只上报 UI-neutral 的授权 URL、设备码、完成或错误；`provider.auth.input` 接收手工 redirect URL/code，`provider.auth.cancel` 终止流程，`provider.auth.refresh` 在凭据临近过期时返回新的 opaque value。Server 的 `/v1/providers/{id}/auth/*` 只暴露脱敏状态，完成事件才原子写入 `credentials.json`，因此 WebUI 不需要、也不能把 OAuth access token 当 API key 输入。
 

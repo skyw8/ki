@@ -52,10 +52,12 @@
 //
 // Replay skips aborted/error/empty assistants (and their toolResults)
 // and synthesizes missing tool results while preserving their call kind.
-// Registry merges the embedded offline catalog with {KI_HOME}/models.json;
-// credentials.json and provider environment variables supply secrets. There
-// is deliberately no remote model-list refresh. The on-disk overlay carries a
-// schema version: an older document is migrated in memory on load (v1
+// Registry merges the embedded catalog with {KI_HOME}/models.json;
+// credentials.json and provider environment variables supply secrets. The
+// embedded catalogs remain offline; Magpie is the explicit exception with an
+// authenticated, user-triggered catalog refresh that persists a reconciled
+// snapshot. The on-disk overlay carries a schema version: an older document is
+// migrated in memory on load (v1
 // remoteCompaction becomes v2 CompactionCapabilities), while a newer one is
 // rejected so fields this binary does not know are never silently dropped.
 // credentials.json and the other {KI_HOME} JSON state files share that

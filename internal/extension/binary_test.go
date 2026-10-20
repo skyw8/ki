@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"io/fs"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,10 +17,9 @@ import (
 	"time"
 
 	"ki/internal/session"
-	"ki/internal/state"
 )
 
-var bundledGoNames = []string{"codex-oauth", "deep-web-search", "freerouter", "goal", "telegram-bot"}
+var bundledGoNames = []string{"codex-oauth", "deep-web-search", "goal", "telegram-bot"}
 
 func TestBundledGoBinariesWithoutSource(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -107,16 +104,6 @@ func assertPackagedInitialize(t *testing.T, root, home string, d Descriptor) {
 	t.Helper() // A private empty PATH proves no source-language interpreter or compiler is used.
 	emptyPath := t.TempDir()
 	d.manifest.Runtime.Env = map[string]string{"PATH": emptyPath, "HOME": t.TempDir(), "USERPROFILE": t.TempDir()}
-	if d.Name == "freerouter" {
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":[]}`))
-		}))
-		t.Cleanup(upstream.Close)
-		if err := state.WriteVersioned(filepath.Join(d.root, "config.json"), 1, map[string]any{"baseUrl": upstream.URL, "listen": "127.0.0.1:0"}, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	client, err := startRPC(ctx, d, "", home, t.TempDir(), nil)
@@ -133,10 +120,6 @@ func assertPackagedInitialize(t *testing.T, root, home string, d Descriptor) {
 		assertJSONEqual(t, reg.Providers, d.Providers)
 		if len(reg.Tools) != 0 || len(reg.Commands) != 0 {
 			t.Fatal(reg)
-		}
-	case "freerouter":
-		if len(reg.Tools) != 0 || len(reg.Commands) != 0 || len(reg.Subscriptions) != 0 || reg.Fallback || len(d.Providers) != 1 || d.Providers[0].ID != "free-router" {
-			t.Fatal(reg, d.Providers)
 		}
 	case "goal":
 		assertEmbeddedTools(t, root, d.Name, "tools.json", reg.Tools)
@@ -375,16 +358,6 @@ func TestBundledGoSourceFallbackOutsideRepository(t *testing.T) {
 				return nil
 			}); err != nil {
 				t.Fatal(err)
-			}
-			if d.Name == "freerouter" {
-				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.Header().Set("Content-Type", "application/json")
-					_, _ = w.Write([]byte(`{"data":[]}`))
-				}))
-				defer upstream.Close()
-				if err := state.WriteVersioned(filepath.Join(d.root, "config.json"), 1, map[string]any{"baseUrl": upstream.URL, "listen": "127.0.0.1:0"}, 0600); err != nil {
-					t.Fatal(err)
-				}
 			}
 			d.manifest.Runtime.Env = map[string]string{"GOWORK": "off"}
 			ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)

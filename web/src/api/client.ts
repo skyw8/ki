@@ -353,6 +353,9 @@ export class Client {
   createModel(id: string, body: Record<string, unknown>): Promise<ProviderCatalog> {
 	return this.json(`/v1/providers/${encodeURIComponent(id)}/models`, { method: 'POST', body: JSON.stringify(body) })
   }
+  refreshProviderModels(id: string): Promise<ProviderCatalog> {
+	return this.json(`/v1/providers/${encodeURIComponent(id)}/models/refresh`, { method: 'POST' })
+  }
   patchModel(id: string, body: Record<string, unknown>): Promise<ProviderCatalog> {
 	return this.json(`/v1/providers/${encodeURIComponent(id)}/models`, { method: 'PATCH', body: JSON.stringify(body) })
   }

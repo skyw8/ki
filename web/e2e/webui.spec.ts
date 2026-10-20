@@ -276,6 +276,30 @@ test('nested dialogs isolate lower layers and restore attributes after out-of-or
 test('provider settings supports a complete add and edit flow', async ({ page }) => {
   const providerID = `pw-provider-${Date.now()}`
   const modelID = `pw-model-${Date.now()}`
+  let refreshedMagpie = false
+  await page.route('**/v1/providers', async route => {
+    if (route.request().method() !== 'GET') return route.continue()
+    const response = await route.fetch()
+    const catalog = await response.json() as { providers: Array<{ id: string; models: unknown[]; customized?: boolean; defaultModel: string; credential: unknown }> }
+    if (refreshedMagpie) {
+      const magpie = catalog.providers.find(provider => provider.id === 'magpie')
+      if (magpie) {
+        magpie.models = [{
+          id: 'vendor/model/nested', name: 'Magpie Synced Model', provider: 'magpie',
+          api: 'completions', baseUrl: 'http://127.0.0.1:3425/v1', enabled: true, builtin: false,
+          contextWindow: 262144, maxTokens: 32768, input: ['text', 'image'], reasoning: true, cost: null,
+        }]
+        magpie.defaultModel = 'vendor/model/nested'
+        magpie.customized = true
+        magpie.credential = { configured: true, source: 'stored', type: 'api_key' }
+      }
+    }
+    await route.fulfill({ status: response.status(), contentType: 'application/json', body: JSON.stringify(catalog) })
+  })
+  await page.route('**/v1/providers/magpie/models/refresh', async route => {
+    refreshedMagpie = true
+    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+  })
   await page.goto('/')
   await page.getByTestId('open-settings').click()
   await page.getByTestId('add-provider').click()
@@ -364,6 +388,16 @@ test('provider settings supports a complete add and edit flow', async ({ page })
 
   await page.getByRole('button', { name: '删除供应商' }).click()
   await expect(page.locator(`.provider-nav [data-provider-id="${providerID}"]`)).toHaveCount(0)
+  await page.locator('.provider-nav [data-provider-id="magpie"]').click()
+  const refreshMagpie = page.getByTestId('refresh-magpie-models')
+  await expect(page.locator('.magpie-sync-card')).toBeVisible()
+  await expect(refreshMagpie).toBeVisible()
+  await expect(refreshMagpie).toHaveText('自动获取模型列表')
+  await expectMinTarget(refreshMagpie, 'Magpie catalog refresh')
+  await refreshMagpie.click()
+  const synced = page.getByTestId('provider-model-row').filter({ hasText: 'vendor/model/nested' })
+  await expect(synced).toContainText('Magpie Synced Model')
+  await expect(synced).toContainText('262,144 ctx')
 })
 
 test('markdown parse keeps fences, emphasis, CJK, and streaming closers', () => {

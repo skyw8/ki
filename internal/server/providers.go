@@ -2,13 +2,23 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"ki/internal/provider"
+)
+
+const (
+	magpieProviderID = "magpie"
+	magpieMaxBody    = 4 << 20
 )
 
 func (s *Server) providers(w http.ResponseWriter, _ *http.Request) {
@@ -321,6 +331,112 @@ func (s *Server) deleteProviderModel(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishInvalidation(scopeProviders)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) refreshProviderModels(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id != magpieProviderID {
+		registryError(w, errProviderNotFound)
+		return
+	}
+	current, credential, status, err := s.registry.ProviderCredential(id)
+	if err != nil {
+		registryError(w, err)
+		return
+	}
+	if !status.Configured || credential.APIKey == "" {
+		http.Error(w, "configure a Magpie gateway API key before refreshing models", http.StatusUnprocessableEntity)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	models, err := fetchMagpieModels(ctx, current.BaseURL, credential.APIKey)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	err = s.registry.SyncModelsIfCurrent(id, current.BaseURL, credential.APIKey, models)
+	if err != nil {
+		if errors.Is(err, provider.ErrProviderConfigChanged) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		registryError(w, err)
+		return
+	}
+	s.writeProviders(w, r)
+}
+
+func fetchMagpieModels(ctx context.Context, baseURL, apiKey string) ([]provider.ModelSeed, error) {
+	base, err := url.Parse(baseURL)
+	if err != nil || !base.IsAbs() || (base.Scheme != "http" && base.Scheme != "https") ||
+		base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		return nil, fmt.Errorf("invalid Magpie base URL")
+	}
+	path := strings.TrimRight(base.Path, "/")
+	if strings.HasSuffix(path, "/v1") {
+		path = strings.TrimSuffix(path, "/v1")
+	}
+	modelsURL := *base
+	modelsURL.Path = path + "/v1/models"
+	modelsURL.RawPath = ""
+	helloURL := *base
+	helloURL.Path = path + "/api/hello"
+	helloURL.RawPath = ""
+
+	// Do not follow redirects: the credential is intended for this configured
+	// gateway, and model refresh must not forward it to a redirect target.
+	client := &http.Client{
+		Timeout: 12 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	hello, err := magpieGET(ctx, client, helloURL.String(), apiKey, 64<<10)
+	if err != nil {
+		return nil, err
+	}
+	var identity struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(hello, &identity); err != nil || !strings.EqualFold(identity.Name, "magpie") {
+		return nil, fmt.Errorf("configured gateway did not identify itself as Magpie")
+	}
+	raw, err := magpieGET(ctx, client, modelsURL.String(), apiKey, magpieMaxBody)
+	if err != nil {
+		return nil, err
+	}
+	models, err := provider.ParseMagpieModels(raw)
+	if err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+func magpieGET(ctx context.Context, client *http.Client, endpoint, apiKey string, maxBytes int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create Magpie request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request Magpie model catalog: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Magpie returned HTTP %d", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read Magpie response: %w", err)
+	}
+	if int64(len(raw)) > maxBytes {
+		return nil, fmt.Errorf("Magpie response exceeds %d bytes", maxBytes)
+	}
+	return raw, nil
 }
 
 func (s *Server) putDefaultModel(w http.ResponseWriter, r *http.Request) {

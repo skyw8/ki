@@ -804,6 +804,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /v1/providers/{id}/auth/{requestId}/cancel", s.auth(s.cancelProviderAuth))
 	api.HandleFunc("POST /v1/providers/{id}/auth/logout", s.auth(s.logoutProviderAuth))
 	api.HandleFunc("POST /v1/providers/{id}/models", s.auth(s.createProviderModel))
+	api.HandleFunc("POST /v1/providers/{id}/models/refresh", s.auth(s.refreshProviderModels))
 	api.HandleFunc("PATCH /v1/providers/{id}/models", s.auth(s.patchProviderModel))
 	api.HandleFunc("DELETE /v1/providers/{id}/models", s.auth(s.deleteProviderModel))
 	api.HandleFunc("PUT /v1/default-model", s.auth(s.putDefaultModel))
