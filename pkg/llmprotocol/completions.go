@@ -336,8 +336,10 @@ func parseCompletionsSSE(_, data string, acc *Message) sseParseResult {
 			deltas = append(deltas, AssistantDelta{Type: "toolcall_delta", Delta: tc.Function.Arguments, ToolCallID: call.ID, ToolName: call.Name, Partial: *acc})
 		}
 	}
-	if d.FunctionCall != nil {
+	if d.FunctionCall != nil && (d.FunctionCall.Name != "" || d.FunctionCall.Arguments != "") {
 		const idx = 0
+		// Some compatible gateways include an empty function_call beside ordinary
+		// text deltas. Ignore that placeholder so it cannot become a nameless call.
 		// function_call is the deprecated single-call shape and has no call ID
 		// in the wire contract; keep a stable internal ID for tool-result replay.
 		appendToolCallDelta(acc, "call_completion_0", "", d.FunctionCall.Name, d.FunctionCall.Arguments, idx)

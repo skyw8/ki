@@ -32,10 +32,11 @@
 // images in function_call_output.
 // Completions follows the Chat Completions SSE shape: content/refusal and
 // indexed tool-call deltas are accumulated, the deprecated single
-// function_call shape remains readable for compatible gateways, and the
-// provider's prompt_tokens/cache detail counters are preserved until cost
-// normalization. Anthropic follows the Messages event lifecycle and requires
-// indexed content blocks, message_stop, valid tool JSON objects, and replayable
+// function_call shape remains readable for compatible gateways (empty
+// function_call placeholders beside text are ignored), and the provider's
+// prompt_tokens/cache detail counters are preserved until cost normalization.
+// Anthropic follows the Messages event lifecycle and requires indexed content
+// blocks, message_stop, valid tool JSON objects, and replayable
 // thinking signatures/redacted-thinking data.
 //
 // Provider-capable extensions register an offline model/auth descriptor and
