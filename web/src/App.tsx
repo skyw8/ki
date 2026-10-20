@@ -25,6 +25,7 @@ import { useI18n } from './i18n/index'
 import { toast } from './components/toast'
 import { ExtensionInspector, localizedExtensionText, seedExtFields, statusChips, visibleStatusChips } from './features/settings/ExtensionPanel'
 import { useDialogFocus } from './hooks/useDialogFocus'
+import { useKeyboardInset } from './hooks/useKeyboardInset'
 import { useTabFocus } from './hooks/useTabFocus'
 import { useServerEvents } from './hooks/useServerEvents'
 import { currentPermission, loadNotifyPref, notifyCompletion, requestPermission, saveNotifyPref, showNotification, type NotifyPermission } from './lib/notifications'
@@ -258,6 +259,7 @@ export function App({ launcherAuth }: { launcherAuth: LauncherAuth }) {
   const [generation, setGeneration] = useState(0)
   const api = useMemo(() => new Client(), [generation])
   const [auth, setAuth] = useState<'checking' | 'required' | 'authenticated'>('checking')
+  useKeyboardInset()
 
   const onServerChange = useCallback(() => {
     // A forwarded origin can now point at a different daemon. Discard every

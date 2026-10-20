@@ -4,6 +4,9 @@
   --ds-font-family-code: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
     'Liberation Mono', Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
   --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Software-keyboard occlusion in px, published by useKeyboardInset; 0 when
+     the layout viewport already resizes (Chrome) or no field is focused. */
+  --keyboard-inset: 0px;
   color-scheme: light;
 }
 

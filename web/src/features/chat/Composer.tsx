@@ -151,17 +151,35 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   useEffect(() => {
     const el = ref.current
     if (!el) return
-    // Why: the edit dialog exists to work on one message, so it may grow much
-    // taller than the compact new-message composer before scrolling. Cap it
-    // against the viewport too, otherwise a wall of text pushes the actions
-    // off-screen on short windows.
-    const max = mode === 'edit'
-      ? Math.min(420, Math.round(window.innerHeight * 0.5))
-      : 180
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, max)}px`
+    const fit = () => {
+      // Why: the edit dialog exists to work on one message, so it may grow much
+      // taller than the compact new-message composer before scrolling. Cap it
+      // against the viewport too, otherwise a wall of text pushes the actions
+      // off-screen on short windows. visualViewport (not innerHeight) reflects
+      // the band left above an open software keyboard.
+      const viewport = window.visualViewport?.height ?? window.innerHeight
+      const max = mode === 'edit'
+        ? Math.min(420, Math.round(viewport * 0.5))
+        : 180
+      el.style.height = 'auto'
+      el.style.height = `${Math.min(el.scrollHeight, max)}px`
+    }
+    fit()
+    // Refit when the software keyboard changes the visible band mid-edit.
+    window.visualViewport?.addEventListener('resize', fit)
+    return () => window.visualViewport?.removeEventListener('resize', fit)
   }, [draft.text, mode])
-  useEffect(() => { if (mode === 'edit') ref.current?.focus({ preventScroll: true }) }, [mode])
+  useEffect(() => {
+    if (mode !== 'edit') return
+    const el = ref.current
+    if (!el) return
+    el.focus({ preventScroll: true })
+    // Why: programmatic focus leaves the caret at index 0, which on mobile
+    // reads as "the keyboard moved my cursor to the start". Editing tweaks a
+    // message near its tail, so park the caret at the end.
+    const end = el.value.length
+    el.setSelectionRange(end, end)
+  }, [mode])
   useEffect(() => {
     if (disabled) closePalette()
   }, [closePalette, disabled])

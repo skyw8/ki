@@ -96,13 +96,27 @@ web_hash="$(web_inputs_hash)"
 # Keep the fingerprint out of web/dist: `//go:embed all:dist` embeds dotfiles,
 # so a file there would ship inside the binary and be served.
 web_hash_file="$ROOT/web/node_modules/.cache/ki/web-dist-hash"
+# Why: also fingerprint the built index.html. Other build paths (playwright's
+# ensureWebDist) rebuild dist by mtime alone — e.g. while a stash has sources
+# temporarily reverted — and leave a dist that no longer matches the recorded
+# input hash once the sources come back. Trusting the input hash alone then
+# ships a stale UI in a fresh binary; comparing the recorded output hash
+# catches the swapped dist.
+dist_index_hash=""
+[[ -f "$ROOT/web/dist/index.html" ]] && dist_index_hash="$(hash_file "$ROOT/web/dist/index.html")"
+recorded_index_hash=""
+if [[ -f "$web_hash_file.index" ]]; then
+  recorded_index_hash="$(cat "$web_hash_file.index")"
+fi
 if [[ $FORCE_WEB != 1 && -f "$ROOT/web/dist/index.html" && -f "$web_hash_file" \
-  && "$(cat "$web_hash_file")" == "$web_hash" ]]; then
+  && "$(cat "$web_hash_file")" == "$web_hash" \
+  && "$recorded_index_hash" == "$dist_index_hash" ]]; then
   echo "web/dist unchanged, skipping frontend build (--force-web to rebuild)"
 else
   (cd web && bun run build)
   mkdir -p "$(dirname "$web_hash_file")"
   printf '%s\n' "$web_hash" > "$web_hash_file"
+  printf '%s\n' "$(hash_file "$ROOT/web/dist/index.html")" > "$web_hash_file.index"
 fi
 if [[ ! -f web/dist/index.html ]]; then
   echo "error: web/dist/index.html is missing (run 'cd web && bun install' first)" >&2

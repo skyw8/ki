@@ -420,12 +420,21 @@
 .hero {
   flex: 1;
   display: grid;
+  /* Why: without an explicit track the single column sizes to the widest
+     item's max-content — a long model-chip label pushes the composer past
+     narrow phone viewports, and with overflow-y:auto that grows a draggable
+     horizontal scrollbar. minmax(0, 1fr) clamps the track so the chip's
+     flex shrink and ellipsis do their job. */
+  grid-template-columns: minmax(0, 1fr);
   justify-items: center;
   align-content: center;
   gap: 28px;
   padding: 24px 48px;
   width: 100%;
   box-sizing: border-box;
+  /* The hero must scroll once the software keyboard shrinks the usable band,
+     otherwise its centered composer overflows both edges unreachably. */
+  overflow-y: auto;
 }
 
 .hero h1 {
@@ -2952,8 +2961,9 @@ select:focus-visible {
   .hero {
     align-content: center;
     gap: 22px;
-    padding: 24px 12px max(24px, env(safe-area-inset-bottom));
+    padding: 24px 12px calc(max(24px, env(safe-area-inset-bottom)) + var(--keyboard-inset, 0px));
   }
+  .auth-screen { padding-bottom: calc(24px + var(--keyboard-inset, 0px)); }
   .hero h1 { font-size: 24px; }
   .user-stack { max-width: 92%; }
   .user-text-bubble { padding: 9px 13px; border-radius: 18px; }
@@ -2966,8 +2976,12 @@ select:focus-visible {
   .diff { grid-template-columns: minmax(0, 1fr); }
   .tool-row-h { min-height: 40px; }
   .tool-preview { max-width: 44%; }
+  /* --keyboard-inset lifts the docked composer above the software keyboard on
+     platforms where the layout viewport does not resize (iOS Safari). The
+     inline edit composer (edit-pos) keeps padding 0 from its own rule: it
+     lives inside the transcript, which the browser pans to reveal the caret. */
   .composer-wrap {
-    padding: 0 max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    padding: 0 max(8px, env(safe-area-inset-right)) calc(max(8px, env(safe-area-inset-bottom)) + var(--keyboard-inset, 0px)) max(8px, env(safe-area-inset-left));
     background: linear-gradient(to bottom, transparent, var(--dsw-alias-bg-base) 14px);
   }
   .queued-list { padding: 0 max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left)); }
@@ -2987,25 +3001,25 @@ select:focus-visible {
     height: auto;
     min-height: 100dvh;
     align-items: end;
-    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) calc(max(12px, env(safe-area-inset-bottom)) + var(--keyboard-inset, 0px)) max(12px, env(safe-area-inset-left));
   }
   .modal {
     width: 100%;
-    max-height: min(88dvh, 680px);
+    max-height: min(calc(88dvh - var(--keyboard-inset, 0px)), 680px);
     border-radius: 18px;
   }
   .modal.model-picker-modal {
     width: 100%;
-    height: min(88dvh, 720px);
-    max-height: min(88dvh, 720px);
+    height: min(calc(88dvh - var(--keyboard-inset, 0px)), 720px);
+    max-height: min(calc(88dvh - var(--keyboard-inset, 0px)), 720px);
   }
   .modal.settings-modal,
   .modal.modal-ext {
     width: 100%;
     min-width: 0;
     max-width: 100%;
-    height: 100dvh;
-    max-height: 100dvh;
+    height: calc(100dvh - var(--keyboard-inset, 0px));
+    max-height: calc(100dvh - var(--keyboard-inset, 0px));
     border: 0;
     border-radius: 0;
   }
@@ -3044,15 +3058,19 @@ select:focus-visible {
   .theme-picks { gap: 8px; }
   .theme-swatch { height: 66px; }
   .provider-page-title { padding-top: 18px; padding-bottom: 16px; }
+  /* While the software keyboard is open the band above it is scarce; the
+     section headings yield their share to the form being edited. */
+  html[data-keyboard="open"] .provider-page-title,
+  html[data-keyboard="open"] .settings-page-title { display: none; }
   .provider-nav button { min-height: 44px; }
   .provider-detail-head { min-height: 74px; align-items: flex-start; }
   .provider-dialog-mask {
     align-items: end;
-    padding: max(12px, env(safe-area-inset-top)) 0 0;
+    padding: max(12px, env(safe-area-inset-top)) 0 var(--keyboard-inset, 0px);
   }
   .provider-dialog {
     width: 100%;
-    max-height: 92dvh;
+    max-height: calc(92dvh - var(--keyboard-inset, 0px));
     padding: 18px 16px max(18px, env(safe-area-inset-bottom));
     border-right: 0;
     border-bottom: 0;
@@ -3070,8 +3088,8 @@ select:focus-visible {
   .attachment-browser,
   .dir-browser {
     width: 100%;
-    height: 100dvh;
-    max-height: 100dvh;
+    height: calc(100dvh - var(--keyboard-inset, 0px));
+    max-height: calc(100dvh - var(--keyboard-inset, 0px));
     border: 0;
     border-radius: 0;
   }

@@ -346,7 +346,9 @@ WebUI 以动态视口为边界，不假设固定桌面尺寸。桌面保留可�
 
 手机宽度（不超过 760px）以及不超过 540px 高的横屏使用完整移动布局：设置、扩展、
 附件和目录占满可用视口；header、可滚动 body、sticky footer 各自分层，不得让
-内容画到 footer 下方。平板可以保留居中弹窗，但内部必须使用与 compact 壳一致的单列或
+内容画到 footer 下方。Hero 等单列网格必须用 `minmax(0, 1fr)` 约束轨道，否则隐式列按
+最大内容（如长模型名）撑宽，窄屏出现可拖动的横向滚动；长模型名在 composer chip 内
+省略号截断，不得改变布局宽度。平板可以保留居中弹窗，但内部必须使用与 compact 壳一致的单列或
 横向导航布局。目录的 Miller 两列在手机上纵向排列并各自滚动。
 侧栏的 subagent 分支在触控端把展开箭头和行菜单放大到至少 40px，缩进引导线随箭头尺寸
 一起缩放，保证多级嵌套仍可点。
@@ -355,7 +357,21 @@ Provider 新建与高级模型弹层固定头尾、只滚动字段区。轨迹�
 放大按钮；矮横屏保持单行工具栏，为记录列表保留可点击高度，选中后再钻取详情。
 
 页面高度使用 `dvh`，浮动菜单同时读取 `visualViewport`，四边 padding 合并
-`safe-area-inset-*`。移动端可编辑的 input、textarea、select 字号至少 16px，避免 iOS
+`safe-area-inset-*`。软键盘遮挡由 `useKeyboardInset` 统一处理：可编辑控件聚焦时比较
+layout viewport 与 `visualViewport` 的高度差，以 `--keyboard-inset` 发布到 `:root`；底部
+composer、底弹 dialog 的 padding 与全屏 dialog（设置、扩展、附件、目录）的高度都减去该
+值。不扣减 `visualViewport.offsetTop`：不支持 resizes-content 的浏览器靠平移视觉视口露出
+聚焦字段，若把平移量记作可见，inset 会归零、全屏对话框保持超出可视带的高度（用户只能拖
+着看）；收缩进可视带后由 reveal 把平移收敛回 0。Chrome 的 `interactive-widget=resizes-content` 已同步缩小 layout viewport，差值自然为
+0，该机制只在 iOS Safari 等平台生效；页面缩放（scale > 1）时交给浏览器自行平移。浏览器
+原生 reveal 在固定高度外壳与嵌套滚动区（dialog body、消息列表）下会滚错容器或对齐到仍在
+动画中的可视带，因此每次视口 resize 都对落在可视带外的聚焦字段重做
+`scrollIntoView({ block: 'nearest' })`（配合聚焦后 300/600ms 的动画收尾复查）收敛到可见；
+内部滚动器不触发 visualViewport 事件，用户主动滚离聚焦字段不会被拉回。聚焦且可视带低于
+会话最高 layout 高度 75% 时置 `html[data-keyboard="open"]`，移动端设置/供应商页的章节
+标题区据此隐藏，把空间让给表单。进入消息编辑时 textarea 聚焦并把光标移到文末（程序聚焦
+默认把光标放在 0 处），其最大高度同样按 `visualViewport` 而非 `innerHeight` 计算并随键盘
+开合重算。移动端可编辑的 input、textarea、select 字号至少 16px，避免 iOS
 聚焦缩放。主要触控目标至少 40px，列表行和关键导航目标至少 44px；关闭的抽屉和弹层
 不能被 Tab 聚焦。底部 composer 的 textarea 不显示品牌色 focus outline（不影响布局），
 其他可交互控件保留键盘焦点提示。所有 dialog 均需 `aria-modal`、Escape 只关闭栈顶、Tab 焦点圈定和关闭
