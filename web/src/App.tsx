@@ -1419,6 +1419,24 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
 
+  useEffect(() => {
+    // Keep running sessions discoverable in the sidebar even when they were
+    // started in another tab or before this WebUI loaded.
+    const runningWorkspaces = new Set(sessions.filter(s => s.running && s.workspaceId).map(s => s.workspaceId!))
+    if (!runningWorkspaces.size) return
+    setExpanded(current => {
+      let changed = false
+      const next = { ...current }
+      for (const id of runningWorkspaces) {
+        if (next[id] !== true) {
+          next[id] = true
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }, [sessions])
+
   const forest = useMemo(() => buildSessionForest(sessions, workspaces), [sessions, workspaces])
 
   const trees = useMemo(() => {
@@ -1818,7 +1836,8 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             </>
           ) : null}
           {sidebarWide && !filter.trim() && trees.groups.map(({ ws, rows }) => {
-            const open = expanded[ws.id] !== false
+            // Workspaces start collapsed; only explicit navigation or a live run opens one.
+            const open = expanded[ws.id] === true
             const shown = open ? visibleRows(ws.id, rows) : []
             return (
               <div key={ws.id} data-testid="workspace-group" data-ws={ws.id}>
@@ -2294,7 +2313,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
         api={api}
         open={dirOpen}
         busy={dirBusy}
-        initialPath={sessions.find(s => s.id === currentId && s.running)?.cwd}
         restoreFocusRef={drawerDialogSource.current === 'dir' ? mobileNavToggleRef : undefined}
         onClose={() => { setDirOpen(false); drawerDialogSource.current = null }}
         onOpen={path => {
