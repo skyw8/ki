@@ -1838,8 +1838,9 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             </>
           ) : null}
           {sidebarWide && !filter.trim() && trees.groups.map(({ ws, rows }) => {
-            // Workspaces start collapsed; only explicit navigation or a live run opens one.
-            const open = expanded[ws.id] === true
+            // Workspaces are expanded by default so sessions remain discoverable
+            // on first load; a user can explicitly collapse one.
+            const open = expanded[ws.id] !== false
             const shown = open ? visibleRows(ws.id, rows) : []
             return (
               <div key={ws.id} data-testid="workspace-group" data-ws={ws.id}>

@@ -824,7 +824,7 @@ for (const profile of profiles) {
       await configTab.click()
       const config = page.getByTestId(`extension-config-${fixtureName}`)
       await expectInsideViewport(page, config, `${profile.name} extension config`)
-      const configSave = page.getByTestId('extension-config-save')
+      const configSave = page.getByTestId(`${fixtureName}-config-save`)
       await configSave.scrollIntoViewIfNeeded()
       await expectInsideViewport(page, configSave, `${profile.name} extension config footer action`)
       await expectInsideViewport(page, page.locator('.ext-inspector-head'), `${profile.name} extension config header`)
