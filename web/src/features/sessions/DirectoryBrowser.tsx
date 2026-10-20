@@ -82,11 +82,12 @@ function Column({
 }
 
 export function DirectoryBrowser({
-  api, open, busy, onOpen, onClose, restoreFocusRef,
+  api, open, busy, initialPath, onOpen, onClose, restoreFocusRef,
 }: {
   api: Client
   open: boolean
   busy?: boolean
+  initialPath?: string
   onOpen: (path: string) => void
   onClose: () => void
   restoreFocusRef?: RefObject<HTMLElement>
@@ -235,8 +236,27 @@ export function DirectoryBrowser({
       setLoading(false)
       return
     }
-    navigate()
-  }, [open, navigate])
+    if (initialPath) {
+      navigate(initialPath)
+      return
+    }
+    // Start at home without selecting it: landing on a path normally expands
+    // its parent chain, which is useful for a running session's cwd but noisy
+    // for a fresh workspace picker.
+    const { n, p } = list()
+    setLoading(true)
+    p.then(target => {
+      if (n !== seq.current) return
+      setParent(target)
+      setSelected(null)
+      setChild(null)
+      setLoading(false)
+    }).catch(e => {
+      if (n !== seq.current) return
+      setLoading(false)
+      setErr(e instanceof Error ? e.message : String(e))
+    })
+  }, [initialPath, list, navigate, open])
 
   useEffect(() => {
     if (!loading) {

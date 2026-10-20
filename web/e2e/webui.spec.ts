@@ -1096,6 +1096,8 @@ test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }
   await page.getByTestId('add-workspace').click()
   await expect(page.getByTestId('dir-browser')).toBeVisible()
   await expect(page.getByRole('navigation').getByRole('button', { name: '主目录' })).toBeVisible()
+  await expect(page.locator('.dir-col')).toHaveCount(1)
+  await expect(page.locator('.dir-row.on')).toHaveCount(0)
   await page.getByTestId('dir-new-folder').click()
   await expect(page.getByTestId('dir-create')).toBeVisible()
   await page.getByTestId('dir-create').getByRole('button', { name: '取消' }).click()

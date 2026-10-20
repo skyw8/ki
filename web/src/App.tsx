@@ -2294,6 +2294,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
         api={api}
         open={dirOpen}
         busy={dirBusy}
+        initialPath={sessions.find(s => s.id === currentId && s.running)?.cwd}
         restoreFocusRef={drawerDialogSource.current === 'dir' ? mobileNavToggleRef : undefined}
         onClose={() => { setDirOpen(false); drawerDialogSource.current = null }}
         onOpen={path => {
