@@ -145,8 +145,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+      - name: Build Go release zips
+        shell: bash
+        # The Go packages need no native toolchain, so they are built first and
+        # unconditionally: a Rust-only failure below must not withhold them.
+        run: go run ./scripts/build-extensions.go -zip -only codex-oauth,deep-web-search,goal,telegram-bot -out var/release-extensions
+      # Why best-effort: zvec-grep compiles a native Rust/C++ engine against a
+      # pinned toolchain, and that path is the most likely to break on a runner
+      # image update. The other four packages still ship; the installer reports
+      # a missing asset for this one instead of the whole release failing.
       - name: Install the pinned native Rust toolchain
         shell: bash
+        continue-on-error: true
         run: rustup toolchain install 1.98.0 --profile minimal
       - uses: actions/cache@v4
         with:
@@ -156,9 +166,10 @@ jobs:
             extensions/zvec-grep/target
             extensions/zvec-grep/native/target
           key: ${{ runner.os }}-zvec-rust-1.98-${{ hashFiles('extensions/zvec-grep/**/Cargo.lock') }}
-      - name: Build release zips
+      - name: Build native release zip
         shell: bash
-        run: go run ./scripts/build-extensions.go -zip -out var/release-extensions
+        continue-on-error: true
+        run: go run ./scripts/build-extensions.go -zip -only zvec-grep -out var/release-extensions
       - uses: actions/upload-artifact@v4
         with:
           name: extensions-${{ matrix.goos }}-${{ matrix.goarch }}
