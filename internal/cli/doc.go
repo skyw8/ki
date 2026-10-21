@@ -18,6 +18,14 @@
 // The SPA clears it before exchanging it for a browser session cookie, so a
 // fresh browser needs no manual login. Treat this launcher link as a secret.
 //
+// A detached child reports a startup failure through the private
+// KI_STARTUP_REPORT file and inherits /dev/null rather than a pipe, so the
+// launcher can print the child's own reason (bad config, occupied port, …)
+// instead of only "server did not come up"; io.Discard would make the child's
+// log writes hit EPIPE once the launcher exits. Failures that never reach
+// logging setup still surface this way. Daemon-only commands
+// (reload/extension list) append a `ki serve -d` hint when no server is live.
+//
 //	ki run [flags] text create/resume session, POST prompt, print events
 //	ki session compact  compact an existing session
 //	ki session fork     fork an existing session

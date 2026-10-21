@@ -31,6 +31,24 @@ import (
 	"ki/internal/types"
 )
 
+// startupReportEnv names the file a detached child writes its startup failure
+// to. A detached `ki`/`ki serve -d` parent cannot read the child's stderr (and
+// must not share a pipe with it), so without this the only report was
+// "server did not come up" even for a bad ki.toml or an occupied port.
+const startupReportEnv = "KI_STARTUP_REPORT"
+
+// writeStartupReport records err for the detached parent. Errors raised before
+// logging.Setup (config decode, invalid MCP json) never reach ki.jsonl, so this
+// file is the only reason a failed launch can show.
+func writeStartupReport(err error) {
+	path := os.Getenv(startupReportEnv)
+	if path == "" || err == nil {
+		return
+	}
+	//nolint:gosec // path is a private temp file chosen by the parent process.
+	_ = os.WriteFile(path, []byte(err.Error()+"\n"), 0o600)
+}
+
 // Main is the process entrypoint.
 func Main(args []string) (exitCode int) {
 	defer func() {
@@ -63,6 +81,7 @@ func Main(args []string) (exitCode int) {
 	cmd := newRootCommand()
 	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {
+		writeStartupReport(err)
 		if shellLaunch {
 			showFatalBox("ki", err.Error())
 		} else {
@@ -176,7 +195,7 @@ func newExtensionCommand() *cobra.Command {
 			return withConfig("client", nil, func(cfg config.Config) error {
 				sf, err := server.ReadServerFile(cfg.Home)
 				if err != nil || sf.Addr == "" || !ping("http://"+sf.Addr, sf.Token) {
-					return errNoLiveServer
+					return errHint(errNoLiveServer, noLiveServerHint)
 				}
 				q := "/v1/extensions"
 				var out struct {
@@ -244,7 +263,7 @@ func newReloadCommand() *cobra.Command {
 func runReload(cfg config.Config) error {
 	sf, err := server.ReadServerFile(cfg.Home)
 	if err != nil || sf.Addr == "" || !ping("http://"+sf.Addr, sf.Token) {
-		return errNoLiveServer
+		return errHint(errNoLiveServer, noLiveServerHint)
 	}
 	var out map[string]any
 	if err := doJSON("http://"+sf.Addr, sf.Token, "/v1/reload", nil, &out); err != nil {
@@ -449,6 +468,20 @@ type flags struct {
 	Queue    bool
 }
 
+// noLiveServerHint is the next step when a daemon-only command finds no
+// healthy server.json. These commands never start an in-process server, so the
+// bare "ki server is not running" left the user to guess.
+const noLiveServerHint = "start the daemon with `ki serve -d` (or bare `ki`) and retry"
+
+// errHint appends an actionable next step to an error without hiding the
+// original: wrapping with %w keeps errors.Is working for callers and tests.
+func errHint(err error, hint string) error {
+	if err == nil || hint == "" {
+		return err
+	}
+	return fmt.Errorf("%w\nhint: %s", err, hint)
+}
+
 var (
 	errSessionRequired       = errors.New("--session is required")
 	errServerDidNotComeUp    = errors.New("server did not come up")
@@ -475,7 +508,11 @@ func runServe(cfg config.Config, addr string) error {
 	}
 	if err := srv.ListenAndServe(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server stopped", "err", err)
-		return fmt.Errorf("serve HTTP: %w", err)
+		err = fmt.Errorf("serve HTTP: %w", err)
+		if isAddrInUse(err) {
+			return errHint(err, fmt.Sprintf("another process owns %s; stop it or pass a free `ki serve --addr host:port`", addr))
+		}
+		return err
 	}
 	return nil
 }
@@ -511,6 +548,15 @@ func runDefault(cfg config.Config) error {
 	return nil
 }
 
+// startDetached launches `ki serve` as an independent process and waits for it
+// to publish a fresh server.json that answers /v1/health.
+//
+// The child inherits /dev/null rather than io.Discard: io.Discard makes os/exec
+// insert a pipe, and the child's log writes then hit EPIPE (SIGPIPE on Unix)
+// as soon as this parent exits — which killed the detached daemon shortly after
+// its own launcher returned. Startup failures are reported through
+// KI_STARTUP_REPORT instead of stderr, so the parent can explain *why* the
+// child exited (bad config, occupied port, …) rather than only that it did.
 func startDetached(cfg config.Config, addr string) (sf server.File, pid int, started bool, err error) {
 	if existing, e := server.ReadServerFile(cfg.Home); e == nil && existing.Addr != "" && ping("http://"+existing.Addr, existing.Token) {
 		return existing, 0, false, nil
@@ -521,32 +567,80 @@ func startDetached(cfg config.Config, addr string) (sf server.File, pid int, sta
 	}
 	self, err := os.Executable()
 	if err != nil {
-		return server.File{}, 0, false, err
+		return server.File{}, 0, false, fmt.Errorf("resolve executable: %w", err)
 	}
 	if addr == "" {
 		addr = cfg.Server.Addr
 	}
+	report, err := os.CreateTemp("", "ki-startup-*.log")
+	if err != nil {
+		return server.File{}, 0, false, fmt.Errorf("create startup report: %w", err)
+	}
+	reportPath := report.Name()
+	_ = report.Close()
+	//nolint:gosec // path is the temp file just created above.
+	defer func() { _ = os.Remove(reportPath) }()
+
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return server.File{}, 0, false, fmt.Errorf("open %s: %w", os.DevNull, err)
+	}
+	defer func() { _ = devNull.Close() }()
+
 	//nolint:gosec // self is the current executable resolved by os.Executable.
 	cmd := exec.CommandContext(context.Background(), self, "serve", "--addr", addr)
-	cmd.Env = processenv.WithProxyEnvironment(processenv.ChildEnvironment())
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	cmd.Env = append(processenv.WithProxyEnvironment(processenv.ChildEnvironment()), startupReportEnv+"="+reportPath)
+	cmd.Stdout = devNull
+	cmd.Stderr = devNull
 	cmd.SysProcAttr = detachedSysProcAttr()
 	if err := cmd.Start(); err != nil {
 		return server.File{}, 0, false, fmt.Errorf("start detached server: %w", err)
 	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
 	// Wait for both the child to publish a fresh server file and the endpoint
 	// to answer. Checking only file existence lets a stale server.json report a
-	// failed child as healthy.
+	// failed child as healthy. Also stop waiting once the child exits: a failed
+	// launch would otherwise burn the full timeout and hide the real error.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if current, e := server.ReadServerFile(cfg.Home); e == nil && current.Addr != "" && current.Token != oldToken && ping("http://"+current.Addr, current.Token) {
 			return current, cmd.Process.Pid, true, nil
 		}
+		select {
+		case waitErr := <-exited:
+			return server.File{}, 0, false, detachedFailure(waitErr, reportPath, addr)
+		default:
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	select {
+	case waitErr := <-exited:
+		return server.File{}, 0, false, detachedFailure(waitErr, reportPath, addr)
+	default:
+	}
 	_ = cmd.Process.Kill()
-	return server.File{}, 0, false, errServerDidNotComeUp
+	return server.File{}, 0, false, errHint(errServerDidNotComeUp,
+		fmt.Sprintf("the detached `ki serve --addr %s` did not answer within 5s; run `ki serve --addr %s` in the foreground to see what it prints", addr, addr))
+}
+
+// detachedFailure turns a detached child's exit into an error that carries the
+// child's own reason. The child writes it to reportPath before exiting; a
+// signal-only exit means it was killed from outside.
+func detachedFailure(waitErr error, reportPath, addr string) error {
+	detail := ""
+	if b, readErr := os.ReadFile(reportPath); readErr == nil { //nolint:gosec // parent-owned temp file
+		detail = strings.TrimSpace(string(b))
+	}
+	if detail == "" {
+		if waitErr == nil {
+			detail = "the server process exited during startup"
+		} else {
+			detail = waitErr.Error()
+		}
+	}
+	return errHint(fmt.Errorf("%w: %s", errServerDidNotComeUp, detail),
+		fmt.Sprintf("run `ki serve --addr %s` in the foreground for the full log, and check {KI_HOME}/ki.jsonl", addr))
 }
 
 func streamer(_ config.Config) loop.Streamer {

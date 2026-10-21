@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -125,6 +126,75 @@ func TestDetachLeavesServer(t *testing.T) {
 	}
 	if !strings.Contains(out, "ok") {
 		t.Fatalf("fake text: %s", out)
+	}
+}
+
+func TestDetachReportsStartupFailure(t *testing.T) {
+	home, _ := isolate(t)
+	// Occupy a port so the detached child fails after the launcher has handed
+	// off. The launcher must relay the child's own reason instead of only
+	// "server did not come up".
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	out, code := runBin(t, home, "serve", "-d", "--addr", ln.Addr().String())
+	if code == 0 {
+		t.Fatalf("detach onto an occupied port must fail, output: %s", out)
+	}
+	for _, want := range []string{"server did not come up", "address already in use", "hint: run `ki serve"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("startup failure output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A detached server inherits a closed launcher: its log writes must not hit a
+// pipe owned by the exited parent. io.Discard made os/exec create exactly that
+// pipe, so the first slog line after launch (a reload, a request log) killed
+// the daemon with SIGPIPE — a silent death that looked like a random crash.
+func TestDetachedServerSurvivesLauncherExit(t *testing.T) {
+	home, proj := isolate(t)
+	out, code := runBin(t, home, "serve", "-d", "--addr", "127.0.0.1:0")
+	if code != 0 {
+		t.Fatalf("detach: %d %s", code, out)
+	}
+	var sf server.File
+	var readErr error
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if sf, readErr = server.ReadServerFile(home); readErr == nil && sf.Addr != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if sf.Addr == "" {
+		t.Fatalf("server.json not written: %v\n%s", readErr, out)
+	}
+
+	// Any authenticated request makes the daemon write a JSONL log line to the
+	// inherited stderr; that write is what used to kill it.
+	runBin(t, home, "reload")
+	time.Sleep(200 * time.Millisecond)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+sf.Addr+"/v1/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("daemon died after the launcher exited: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("health after reload: %d", res.StatusCode)
+	}
+
+	_, clientCode := runBin(t, home, "run", "--cwd", proj, "hello")
+	if clientCode != 0 {
+		t.Fatalf("prompt after launcher exit: %d", clientCode)
 	}
 }
 
