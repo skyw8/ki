@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { expandWorkspaces } from './sidebar.ts'
 import { readFileSync } from 'node:fs'
 import { permissionFrom, shouldNotify } from '../src/lib/notifications.ts'
 import { reconcileFinishedRuns } from '../src/lib/completion-catchup.ts'
@@ -265,6 +266,7 @@ test('subagent sessions never notify', async ({ page, request }) => {
   // on navigation, so enable notifications only after the last reload.
   await page.reload()
   await enableNotifications(page)
+  await expandWorkspaces(page)
   const parentRow = page.locator('[data-testid="session-row"]').filter({ hasText: parentTitle })
   await expect(parentRow).toBeVisible()
   await parentRow.getByTestId('session-toggle').click()

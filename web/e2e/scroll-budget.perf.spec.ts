@@ -7,6 +7,7 @@
 // open that fetches history nobody asked for, and the markdown parse of every
 // newly mounted row landing in one frame.
 import { expect, test, type Page } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { statePath } from './global-setup.ts'
@@ -183,7 +184,7 @@ test.describe('scroll budgets', () => {
     await page.goto('/')
     await expect(page.getByTestId('hero')).toBeVisible()
     await page.getByTestId('mobile-nav-toggle').click()
-    await page.getByTestId('session-row').filter({ hasText: 'scroll-budget' }).first().click()
+    await openSessionRow(page, 'scroll-budget')
     await expect(page.getByTestId('assistant-message').first()).toBeVisible({ timeout: 30_000 })
     await page.waitForTimeout(2000)
 
@@ -326,7 +327,7 @@ test.describe('perf hud', () => {
     await expect(page.getByTestId('hero')).toBeVisible()
     await expect(page.getByTestId('perf-hud')).toHaveCount(0)
     await page.getByTestId('mobile-nav-toggle').click()
-    await page.getByTestId('session-row').filter({ hasText: 'scroll-budget' }).first().click()
+    await openSessionRow(page, 'scroll-budget')
     await expect(page.getByTestId('assistant-message').first()).toBeVisible({ timeout: 30_000 })
     await expect(page.getByTestId('perf-hud')).toHaveCount(0)
 
@@ -334,7 +335,7 @@ test.describe('perf hud', () => {
     await page.reload()
     // The overlay lives in the conversation view, which a reload does not reopen.
     await page.getByTestId('mobile-nav-toggle').click()
-    await page.getByTestId('session-row').filter({ hasText: 'scroll-budget' }).first().click()
+    await openSessionRow(page, 'scroll-budget')
     await expect(page.getByTestId('perf-hud')).toBeVisible({ timeout: 30_000 })
     await expect(page.getByTestId('perf-hud')).toContainText('fps')
     await expect(page.getByTestId('perf-hud')).toContainText('drift')

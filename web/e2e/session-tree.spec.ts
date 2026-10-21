@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { expandWorkspaces } from './sidebar.ts'
 import { ancestorsOf, buildSessionForest, orderedChildren, topLevelRoot } from '../src/lib/session-tree.ts'
 import type { SessionInfo, WorkspaceInfo } from '../src/api/types.ts'
 import { serverToken } from './global-setup.ts'
@@ -73,6 +74,7 @@ test('sidebar expands subagent children by arrow, opens by row', async ({ page, 
   await create(childBTitle, childA)
 
   await page.reload()
+  await expandWorkspaces(page)
   const rowFor = (title: string) => page.locator('[data-testid="session-row"]').filter({ hasText: title })
   const rootRow = rowFor(rootTitle)
 
@@ -114,6 +116,7 @@ test('sidebar expands subagent children by arrow, opens by row', async ({ page, 
 
   // Expansion is App-lifetime navigation state, not a durable preference.
   await page.reload()
+  await expandWorkspaces(page)
   await expect(rowFor(rootTitle)).toBeVisible()
   await expect(page.getByTestId('session-title').filter({ hasText: childATitle })).toHaveCount(0)
 

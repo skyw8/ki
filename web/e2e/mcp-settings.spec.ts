@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { expandWorkspaces } from './sidebar.ts'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { serverToken, statePath } from './global-setup.ts'
@@ -71,6 +72,7 @@ test('MCP settings toggle configured servers without connecting or replacing too
 
   await page.reload()
   // Reload does not implicitly select a session; Info needs the same explicit owner.
+  await expandWorkspaces(page)
   await page.getByTestId('session-title').click()
   await expect(page.locator('.session-row.active')).toHaveCount(1)
   await page.getByTestId('open-settings').click()

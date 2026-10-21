@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import { serverToken } from './global-setup'
 import type { Entry, LoopEvent } from '../src/api/types'
 
@@ -32,7 +33,7 @@ async function fixture(page: Page, all: Entry[], tail: number, running = false) 
     : route.fallback())
   return { id, indexRequests: () => indexRequests, open: async () => {
     await page.goto('/')
-    await page.getByTestId('session-row').filter({ hasText: title }).click()
+    await openSessionRow(page, title)
     await expect(page.getByTestId('chat')).toBeVisible()
     await page.setViewportSize({ width: 390, height: 844 })
     await expect.poll(() => page.getByTestId('chat-scroll').evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(9)

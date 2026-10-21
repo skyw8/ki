@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { statePath } from './global-setup.ts'
@@ -278,7 +279,7 @@ test.describe('big fold on a phone', () => {
     })
     await page.goto('/')
     await page.getByTestId('mobile-nav-toggle').click()
-    await page.getByTestId('session-row').filter({ hasText: 'fold warmup' }).first().click()
+    await openSessionRow(page, 'fold warmup')
     await expect(page.getByTestId('fold-row').first()).toBeVisible({ timeout: 20_000 })
 
     // Reader's place: the fold row a third down the viewport, with transcript

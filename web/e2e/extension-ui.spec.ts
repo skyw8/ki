@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -93,8 +94,7 @@ for (const width of [1440, 390]) test(`extension errors remain readable above de
   await page.screenshot({ path: testInfo.outputPath('extension-error.png') })
   await page.getByTestId('ext-panel').getByRole('button', { name: '关闭对话框' }).click()
   await page.reload()
-  if (await page.getByTestId('mobile-nav-toggle').isVisible()) await page.getByTestId('mobile-nav-toggle').click()
-  await page.getByTestId('session-row').filter({ hasText: `show extension error ${width}` }).click()
+  await openSessionRow(page, `show extension error ${width}`)
   if (await page.getByTestId('mobile-nav-toggle').isVisible()) await page.getByTestId('mobile-nav-toggle').click()
   await page.getByTestId('open-settings').click()
   await page.getByTestId('settings-tab-extensions').click()
@@ -240,7 +240,7 @@ test('extension ui.setStatus chip opens panel modal', async ({ page, request }) 
   if (!JSON.stringify(ui).includes('Goal · active')) {
     throw new Error(`API missing chip: ${JSON.stringify(ui)}`)
   }
-  await page.getByTestId('session-row').first().click()
+  await openSessionRow(page)
   await expect(page.getByTestId('ext-chip-goalui')).toBeVisible({ timeout: 15_000 })
   await expect(page.getByTestId('ext-chip-goalui')).toContainText('Goal · active')
   await expect(page.getByTestId('ext-chips-more')).toBeVisible()

@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import type { Entry, LoopEvent, SessionDetail, SessionInfo } from '../src/api/types'
 import { serverToken } from './global-setup'
 
@@ -193,8 +194,7 @@ async function sidebar(page: Page) {
 }
 
 async function open(page: Page, session: SessionInfo) {
-  await sidebar(page)
-  await page.getByTestId('session-row').filter({ hasText: session.title }).locator('.session-main').click()
+  await openSessionRow(page, session.title)
   const toggle = page.getByTestId('mobile-nav-toggle')
   if (await toggle.isVisible()) await expect(toggle).toHaveAttribute('aria-expanded', 'false')
 }

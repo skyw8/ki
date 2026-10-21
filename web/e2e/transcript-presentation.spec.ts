@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import type { Entry, LoopEvent } from '../src/api/types'
 import { serverToken } from './global-setup'
 import { openStream } from './stream-fixture'
@@ -34,9 +35,7 @@ async function history(page: Page, entries: Entry[], compact = false) {
   }, { compact })
   return { id, open: async () => {
     await page.goto('/')
-    await expect(page.locator('main.main')).toBeVisible()
-    if (await page.getByTestId('mobile-nav-toggle').isVisible()) await page.getByTestId('mobile-nav-toggle').click()
-    await page.getByTestId('session-row').filter({ hasText: title }).click()
+    await openSessionRow(page, title)
     await expect(page.getByTestId('chat')).toBeVisible()
     await expect.poll(() => page.getByTestId('chat-scroll').evaluate(el => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(9)
   } }

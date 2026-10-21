@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import { serverToken } from './global-setup'
 
 export async function openStream(page: Page, history: number, emptySnapshot = false) {
@@ -40,7 +41,7 @@ export async function openStream(page: Page, history: number, emptySnapshot = fa
   if (await page.getByTestId('mobile-nav-toggle').isVisible()) {
     await page.getByTestId('mobile-nav-toggle').click()
   }
-  await page.getByTestId('session-row').filter({ hasText: title }).click()
+  await openSessionRow(page, title)
   await expect.poll(() => page.evaluate(() => typeof (window as unknown as { streamSend?: unknown }).streamSend)).toBe('function')
   return { id, title, entries }
 }

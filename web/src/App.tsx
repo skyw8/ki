@@ -1426,15 +1426,17 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
 
   useEffect(() => {
-    // Keep running sessions discoverable in the sidebar even when they were
-    // started in another tab or before this WebUI loaded.
+    // Workspaces start collapsed; a live run is the one thing that opens one by
+    // itself, so work started in another tab or before this page loaded stays
+    // visible. An explicit collapse (false) wins: re-expanding it on every list
+    // refresh would make the toggle impossible to use while a run is active.
     const runningWorkspaces = new Set(sessions.filter(s => s.running && s.workspaceId).map(s => s.workspaceId!))
     if (!runningWorkspaces.size) return
     setExpanded(current => {
       let changed = false
       const next = { ...current }
       for (const id of runningWorkspaces) {
-        if (next[id] !== true) {
+        if (next[id] === undefined) {
           next[id] = true
           changed = true
         }
@@ -1842,9 +1844,10 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             </>
           ) : null}
           {sidebarWide && !filter.trim() && trees.groups.map(({ ws, rows }) => {
-            // Workspaces are expanded by default so sessions remain discoverable
-            // on first load; a user can explicitly collapse one.
-            const open = expanded[ws.id] !== false
+            // Collapsed by default: a workspace opens only for an explicit
+            // navigation (open/new session) or because one of its sessions is
+            // running (see the auto-expand effect above).
+            const open = expanded[ws.id] === true
             const shown = open ? visibleRows(ws.id, rows) : []
             return (
               <div key={ws.id} data-testid="workspace-group" data-ws={ws.id}>
@@ -1864,7 +1867,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
                     void api.moveWorkspace(id, before).then(setWorkspaces).catch(er => toast.from(er))
                   }}
                 >
-                  <button type="button" className="ws-toggle" onClick={() => { setSelectedWs(ws.id); setExpanded(e => ({ ...e, [ws.id]: !open })) }}>
+                  <button type="button" className="ws-toggle" aria-expanded={open} onClick={() => { setSelectedWs(ws.id); setExpanded(e => ({ ...e, [ws.id]: !open })) }}>
                     <IChev open={open} />
                     <IFolder />
                     <span className="title">{ws.title}{ws.temp ? ` · ${t('workspace.temp')}` : ''}</span>

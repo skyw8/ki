@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -70,8 +71,7 @@ async function seed(page: Page, withTools: boolean) {
 
 async function openContext(page: Page, title: string) {
   await page.goto('/')
-  if (await page.getByTestId('mobile-nav-toggle').isVisible()) await page.getByTestId('mobile-nav-toggle').click()
-  await page.getByTestId('session-row').filter({ hasText: title }).click()
+  await openSessionRow(page, title)
   await page.getByTestId('tab-context').click()
   await expect(page.getByTestId('context-tool-activity')).toBeVisible()
 }
@@ -115,7 +115,7 @@ test('tool ranking restores older failures from the index, excludes siblings, an
   // A fresh document discards loaded state: the same counts must survive an
   // actual refresh with the old results still available only in the index.
   await page.reload()
-  await page.getByTestId('session-row').filter({ hasText: title }).click()
+  await openSessionRow(page, title)
   await page.getByTestId('tab-context').click()
   await assertRanking()
   expect(snapshots.filter(snapshot => snapshot.fields === 'index').length).toBeGreaterThanOrEqual(2)

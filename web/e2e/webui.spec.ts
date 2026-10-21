@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test'
+import { expandWorkspaces, openSessionRow } from './sidebar.ts'
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -547,7 +548,7 @@ test('chat and context browser talk to the fake runtime', async ({ page }) => {
   await expectContextItemCount(page, 'assistant', 0)
 
   await page.reload()
-  await page.getByTestId('session-row').first().click()
+  await openSessionRow(page)
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
   // The divider is rebuilt from the persisted turn on the history path too.
@@ -596,6 +597,7 @@ test('context separates system sources and browses the tool input of each reques
     const sessionId = (await createdSession.json() as { id: string }).id
     expect((await request.patch(`/v1/sessions/${sessionId}`, { headers, data: { title: 'Context sources fixture' } })).ok()).toBe(true)
     await page.goto('/')
+    await expandWorkspaces(page)
     await page.getByTestId('session-title').filter({ hasText: 'Context sources fixture' }).click()
     await sendPrompt(page, 'e2e-bash: echo KI-CONTEXT-TOOL-MARKER')
     await expect(page.getByTestId('assistant-message').last()).toContainText('ok')
@@ -753,6 +755,7 @@ test('context hydrates historical agent and compaction inputs and locates early 
     localStorage.setItem('ki-message-view-keep', '1')
   })
   await page.goto('/')
+  await expandWorkspaces(page)
   await page.getByTestId('session-title').filter({ hasText: title }).click()
   await expect(page.getByTestId('assistant-message').last()).toContainText('Checkpoint tail reply 11')
   await page.getByTestId('tab-context').click()
@@ -1107,7 +1110,7 @@ test('new session keeps tab choices while reload uses the server default', async
   await expect(page.getByTestId('thinking-select')).toHaveText('medium')
   // Cold startup has no origin-scoped thinking preference, but the existing
   // session's saved selection must still survive reload unchanged.
-  await page.getByTestId('session-row').first().locator('.session-main').click()
+  await openSessionRow(page)
   await expect(page.getByTestId('thinking-select')).toHaveText('high')
 })
 
@@ -1180,6 +1183,9 @@ test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }
   // than the optimistic frame that renders the new row before the workspace
   // order arrives; that frame would pass even while the pin loses its slot.
   await page.reload()
+  // A reload drops the in-memory expansion, so the group has to be opened
+  // again before its rows exist.
+  await expandWorkspaces(page)
   await expect(rows).toHaveCount(before + 1)
   await expect(rows.first().locator('.pin-mark')).toBeVisible()
 })
@@ -1427,7 +1433,7 @@ test('slash command Tab completion drives a live compaction row', async ({ page 
   await expect(page.getByTestId('compact-btn')).toHaveClass(/empty/)
   await expect(page.getByTestId('compact-btn')).toContainText('无需压缩')
   await page.reload()
-  await page.getByTestId('session-row').first().click()
+  await openSessionRow(page)
   await expect(row).toHaveCount(1)
   await expect(page.getByTestId('compact-btn')).toHaveClass(/empty/)
   await expect(page.getByTestId('compact-btn')).toContainText('无需压缩')
@@ -1541,7 +1547,7 @@ test('busy enter queues and ctrl+enter promotes the tail', async ({ page }) => {
   // A steer accepted into the run must survive its abort in history: the reload
   // proves it was committed to jsonl, not only rendered optimistically.
   await page.reload()
-  await page.getByTestId('session-row').first().click()
+  await openSessionRow(page)
   await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-promote' })).toBeVisible()
   await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-keep' })).toBeVisible()
 })

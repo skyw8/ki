@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { serverToken } from './global-setup'
@@ -44,10 +45,10 @@ test('older runtime notifications fold without consuming the final assistant kee
     await expect(page.getByTestId('fold-row')).toContainText('已折叠 2 条消息')
   }
   await page.goto('/')
-  await page.getByTestId('session-row').filter({ hasText: title }).click()
+  await openSessionRow(page, title)
   await assertVisible()
   await page.reload()
-  await page.getByTestId('session-row').filter({ hasText: title }).click()
+  await openSessionRow(page, title)
   await assertVisible()
   await page.getByTestId('fold-row-btn').click()
   await expect(page.getByTestId('assistant-message')).toHaveCount(2)
@@ -57,7 +58,7 @@ test('older runtime notifications fold without consuming the final assistant kee
   await assertVisible()
   await page.evaluate(() => localStorage.setItem('ki-message-view-keep', '0'))
   await page.reload()
-  await page.getByTestId('session-row').filter({ hasText: title }).click()
+  await openSessionRow(page, title)
   await expect(page.getByTestId('assistant-message')).toHaveCount(0)
   await expect(page.getByRole('note')).toHaveCount(0)
   await expect(page.getByTestId('fold-row')).toContainText('已折叠 4 条消息')
@@ -93,8 +94,7 @@ async function seed(page: Page) {
   await page.setViewportSize({ width: 390, height: 844 })
   return { id, open: async () => {
     await page.goto('/')
-    await page.getByTestId('mobile-nav-toggle').click()
-    await page.getByTestId('session-row').filter({ hasText: config.title }).click()
+    await openSessionRow(page, config.title)
     await expect(page.locator('[data-item-key="final8"]')).toBeVisible()
     await expect(page.locator('[data-md-pending]')).toHaveCount(0)
     await expect(page.getByTestId('session-stats')).toContainText('9 轮 · 2349 步')
@@ -353,8 +353,7 @@ test('compact reload and expansion count replies without visible compaction meta
     localStorage.setItem('ki-message-view-keep', '1')
   })
   const open = async () => {
-    if (await page.getByTestId('mobile-nav-toggle').isVisible()) await page.getByTestId('mobile-nav-toggle').click()
-    await page.getByTestId('session-row').filter({ hasText: title }).click()
+    await openSessionRow(page, title)
     await expect(page.locator('[data-fold="input"] .fold-row-count')).toHaveText('已折叠 1 条消息')
     await expect(page.locator('[data-item-key="checkpoint"]')).toBeVisible()
     await expect(page.getByTestId('assistant-message')).toHaveCount(1)

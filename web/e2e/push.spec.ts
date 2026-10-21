@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { expandWorkspaces } from './sidebar.ts'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -47,10 +48,15 @@ test('a run in another tab turns the sidebar dot green and back without a reload
   const other = await context.newPage()
   await page.goto('/')
   await other.goto('/')
+  await expandWorkspaces(page)
+  await expandWorkspaces(other)
   await expect(other.getByTestId('session-row')).toHaveCount(0)
 
   // Session creation is pushed: the second tab grows the row with no refresh.
+  // An idle session does not auto-expand its group, so open it here; only the
+  // running transition below is allowed to open a group on its own.
   await newSession(page)
+  await expandWorkspaces(other)
   await expect(other.getByTestId('session-row')).toHaveCount(1)
 
   // Run start is pushed as a sessions invalidation, so the dot comes on here
@@ -96,6 +102,7 @@ test('a session deleted with its workspace closes in another tab', async ({ page
 
     // Open the pushed-in session in the second tab. Scope by workspace: the
     // shared server keeps the previous test's session around.
+    await expandWorkspaces(other)
     const group = other.getByTestId('workspace-group').filter({ hasText: ws.title })
     const sessionRow = group.getByTestId('session-row')
     await expect(sessionRow).toHaveCount(1)

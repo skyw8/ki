@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import { serverToken } from './global-setup'
 import type { CompactTurn, Entry, LoopEvent } from '../src/api/types'
 
@@ -69,7 +70,7 @@ async function fixture(page: Page, tailGate = Promise.resolve()) {
   const open = async () => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/')
-    await page.getByTestId('session-row').filter({ hasText: title }).click()
+    await openSessionRow(page, title)
     await expect(page.getByTestId('user-bubble')).toHaveText('Recovery request 1')
     await expect(page.locator('.history-control')).toHaveText('已到最早消息')
     await expect.poll(() => page.evaluate(() => typeof (window as unknown as Partial<StreamControls>).historySend)).toBe('function')

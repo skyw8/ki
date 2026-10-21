@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { expandWorkspaces } from './sidebar.ts'
 import { randomUUID } from 'node:crypto'
 import { openStream } from './stream-fixture'
 import { focusedSessionReader } from './session.ts'
@@ -158,9 +159,7 @@ test('stopping generation retains already visible text and its mounted root', as
   const persisted = await page.evaluate(async id => fetch(`/v1/sessions/${id}`).then(response => response.json()), sessionId)
   expect(JSON.stringify(persisted)).toContain('"type":"run_aborted"')
   await page.reload()
-  await expect(page.locator('main.main')).toBeVisible()
-  const navigation = page.getByTestId('mobile-nav-toggle')
-  if (await navigation.isVisible() && await navigation.getAttribute('aria-expanded') === 'false') await navigation.click()
+  await expandWorkspaces(page)
   await page.getByTestId('session-title').filter({ hasText: prompt }).click()
   await expect(page.getByTestId('cancel-row')).toHaveText(/Stopped by user|已由用户停止/)
   await expect(page.getByTestId('assistant-message')).not.toContainText('context canceled')

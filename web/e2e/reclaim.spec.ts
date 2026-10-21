@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { serverToken } from './global-setup'
@@ -55,7 +56,7 @@ async function open(page: Page, id: string, title: string, keep: string) {
     await route.fulfill({ response, json: { ...await response.json(), running: true } })
   })
   await page.goto('/')
-  await page.getByTestId('session-row').filter({ hasText: title }).click()
+  await openSessionRow(page, title)
   await expect(page.getByTestId('turn-divider').first()).toBeVisible()
   return (ev: unknown) => page.evaluate(ev => (window as unknown as { streamSend: (v: unknown) => void }).streamSend(ev), ev)
 }

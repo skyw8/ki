@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { openSessionRow } from './sidebar.ts'
 import { loadHistory, requestTitle, userRequests } from '../src/lib/model.ts'
 import type { ChatNode, Entry, IndexEntry } from '../src/api/types.ts'
 import { serverToken } from './global-setup'
@@ -147,8 +148,7 @@ for (const mobile of [false, true]) test(`request navigation lands once and trac
       return route.fulfill({ json: { id, title, leafId: 'u44', entries, running: false } })
     })
     await page.goto('/')
-    if (mobile) await page.getByTestId('mobile-nav-toggle').click()
-    await page.getByTestId('session-row').filter({ hasText: title }).click()
+    await openSessionRow(page, title)
     const toggle = page.getByTestId('request-nav-toggle')
     const select = async (n: number) => {
       if (!await page.getByTestId('request-nav-panel').isVisible()) await toggle.click()
@@ -202,7 +202,7 @@ async function navigationFixture(page: Page) {
   const index = (rows: Entry[]) => rows.map(e => ({ type: e.type, id: e.id, parentId: e.parentId, role: e.message?.role, preview: e.message?.content?.[0].text }))
   const open = async () => {
     await page.goto("/")
-    await page.getByTestId("session-row").filter({ hasText: title }).click()
+    await openSessionRow(page, title)
     await expect(page.getByTestId("assistant-message").last()).toBeVisible()
   }
   const navigator = async () => {

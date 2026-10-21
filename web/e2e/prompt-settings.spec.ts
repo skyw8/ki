@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { expandWorkspaces } from './sidebar.ts'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { serverToken, statePath } from './global-setup.ts'
@@ -25,6 +26,7 @@ async function openPromptSettings(page: Page, request: APIRequestContext): Promi
   expect(titled.ok()).toBe(true)
 
   await page.goto('/')
+  await expandWorkspaces(page)
   const row = page.getByTestId('session-row').filter({ hasText: marker })
   await expect(row).toBeVisible()
   await row.click()

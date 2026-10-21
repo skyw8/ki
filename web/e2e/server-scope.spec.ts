@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { expandWorkspaces } from './sidebar.ts'
 import type { Meta, ModelInfo, SessionDetail, SessionInfo } from '../src/api/types'
 import { serverToken } from './global-setup'
 import { newSession } from './session'
@@ -136,6 +137,7 @@ test('same-origin server replacement retires the session, draft and old catalog'
   const previous = await response.json() as SessionInfo
   await installTransport(page, nextModel, previous)
   await page.goto('/')
+  await expandWorkspaces(page)
   await expect(page.getByTestId('session-row')).toHaveCount(1)
   await page.locator('.session-main').click()
   await expect(page.getByTestId('user-bubble').getByText('Previous backend transcript', { exact: true })).toBeVisible()
@@ -145,6 +147,7 @@ test('same-origin server replacement retires the session, draft and old catalog'
   await expect(page.getByTestId('hero')).toBeVisible()
   await expect(page.getByTestId('composer-input')).toHaveValue('')
   await expect(page.getByText('Previous backend transcript', { exact: true })).toHaveCount(0)
+  await expandWorkspaces(page)
   await expect(page.getByTestId('session-row')).toHaveCount(0)
   await expect.poll(() => page.evaluate(() => window.serverScopeFixture.authChecks)).toBeGreaterThan(1)
   await newSession(page)

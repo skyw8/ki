@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test'
+import { expandWorkspaces } from './sidebar.ts'
 
 // Resolve the server namespace once, not on every polling iteration. The
 // returned reader may also inspect another tab sharing this browser context.
@@ -22,6 +23,9 @@ export async function focusedSessionReader(page: Page): Promise<(target?: Page) 
 // different session than the one holding the run, and assertions about that run
 // (stop button, streaming) never see it.
 export async function newSession(page: Page): Promise<void> {
+  // The workspace holding the new session opens itself on creation, but its
+  // group must be open before the row count can be compared.
+  await expandWorkspaces(page)
   const rows = page.locator('.session-row')
   const before = await rows.count()
   await page.getByTestId('new-session').click()

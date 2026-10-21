@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
+import { expandWorkspaces } from './sidebar.ts'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -23,6 +24,7 @@ test.describe('drawer menu keyboard ownership', () => {
     await page.goto('/')
     await expect(page.locator('main.main')).toBeVisible()
     await openDrawer(page, true)
+    await expandWorkspaces(page)
     const trigger = page.locator('button[aria-label="会话菜单"], button[aria-label="Session menu"]').first()
     await trigger.click()
     await expect(page.getByTestId('pop-menu')).toBeVisible()
@@ -856,6 +858,7 @@ for (const profile of profiles) {
       const treeFixture = await createTreeFixture(request)
       await page.reload()
       await openDrawer(page, profile.compact)
+      await expandWorkspaces(page)
       const treeRoot = page.locator('[data-testid="session-row"]').filter({ hasText: treeFixture.rootTitle })
       await expect(treeRoot).toBeVisible()
       const toggle = treeRoot.getByTestId('session-toggle')
