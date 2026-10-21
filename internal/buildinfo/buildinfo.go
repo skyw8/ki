@@ -8,7 +8,7 @@
 package buildinfo
 
 // Version is the semantic version of this build.
-var Version = "0.3.2"
+var Version = "0.3.3"
 
 // ReleaseTag is the release the extension installer downloads from. It is empty
 // for a local build, which then follows the newest published release instead of
