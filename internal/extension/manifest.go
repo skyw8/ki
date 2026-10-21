@@ -131,6 +131,13 @@ func Discover(home string, toggle session.Toggle) Discovery {
 			if !e.IsDir() {
 				continue
 			}
+			// Hidden directories are never packages: editors and macOS leave
+			// dot-directories behind, and an installer may stage a replacement
+			// nearby. Listing one would show a bogus name (it cannot match
+			// namePattern) and disable it as a manifest error.
+			if strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
 			root := filepath.Join(dir, e.Name())
 			d, ok := loadPackage(root)
 			if !ok {

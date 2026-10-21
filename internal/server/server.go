@@ -76,6 +76,7 @@ type Server struct {
 	providerAuthMu         sync.Mutex
 	providerAuth           map[string]*providerAuthState
 	ext                    *extension.Manager
+	extInstall             *extensionInstaller
 	resources              *resources.Loader
 	mu                     sync.Mutex
 	runs                   map[string]*runState
@@ -497,6 +498,7 @@ func New(opt Options) (*Server, error) {
 		providerExtensions:     providerExtensions,
 		requireModelCredential: requireCredential,
 		providerAuth:           map[string]*providerAuthState{},
+		extInstall:             newExtensionInstaller(),
 		resources:              resources.NewLoader(opt.Config.Home),
 		runs:                   map[string]*runState{},
 		processes:              map[string]*process.Manager{},
@@ -835,6 +837,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PATCH /v1/tools", s.auth(s.patchTools))
 	api.HandleFunc("GET /v1/extensions", s.auth(s.getExtensions))
 	api.HandleFunc("PATCH /v1/extensions", s.auth(s.patchExtensions))
+	api.HandleFunc("GET /v1/extensions/available", s.auth(s.getAvailableExtensions))
+	api.HandleFunc("POST /v1/extensions/{name}/install", s.auth(s.installExtension))
 	api.HandleFunc("GET /v1/commands", s.auth(s.getCommands))
 	api.HandleFunc("GET /v1/prompt/append", s.auth(s.getPromptAppend))
 	api.HandleFunc("PUT /v1/prompt/append", s.auth(s.putPromptAppend))

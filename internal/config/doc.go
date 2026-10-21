@@ -1,9 +1,15 @@
 // Package config loads and merges Ki configuration through Viper.
 //
 // Order (low to high): compiled defaults, ~/.ki/ki.toml (KI_HOME overrides
-// the home), <cwd>/.ki/ki.toml, then KI_SERVER_ADDR.
+// the home), <cwd>/.ki/ki.toml, then KI_SERVER_ADDR, KI_EXTENSIONS_SOURCE and
+// KI_EXTENSIONS_RELEASE.
 // Session config.json is owned by package session, not this package.
 // CLI --model does not write toml.
+// extensions.release selects the release path whose assets are downloaded by the
+// WebUI installer: a release build pins download/<its tag>, a local build follows
+// latest/download. extensions.source is the release base URL, defaulting to the
+// project's GitHub releases. A file:// source serves a local mirror and works
+// offline.
 // streaming.idle_timeout_seconds bounds native provider response-body reads
 // (default 300, zero disables); it is not a whole-request timeout.
 // compaction.mode selects auto, local, or remote checkpoints;

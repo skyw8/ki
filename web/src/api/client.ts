@@ -246,6 +246,16 @@ export class Client {
     return this.json('/v1/extensions', { method: 'PATCH', body: JSON.stringify({ disabled }) })
   }
 
+  // Installing only starts a download; the response is 202 and the settings
+  // page follows progress through the extensions invalidation.
+  availableExtensions(): Promise<import('./types').AvailableExtensions> {
+    return this.json('/v1/extensions/available')
+  }
+
+  installExtension(name: string): Promise<{ name: string; state: string }> {
+    return this.json(`/v1/extensions/${encodeURIComponent(name)}/install`, { method: 'POST' })
+  }
+
   // The editor sends a source name, never a path: the server resolves both
   // writable files from KI_HOME and the selected workspace.
   promptAppend(workspaceId?: string | null): Promise<import('./types').PromptAppendView> {

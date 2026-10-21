@@ -72,6 +72,8 @@ Code Mode 固定为 mixed：在普通工具经开关、extension Prepare 和 act
 | POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
 | POST | `/v1/reload` | 清空闲 session 的资源快照并重载 extension catalog；body 可带 `sessionId` 只重载该 session |
 | GET/PATCH | `/v1/tools` `/v1/skills` `/v1/extensions` | 全局启用开关（`toggles.json`）；tools 返回 `{items, mcp}` 并只接受可选 `disabled` / `mcpDisabled`，管理内置工具与 MCP 服务器开关 |
+| GET | `/v1/extensions/available` | 可安装包清单（内置 catalog × 磁盘现状 × 安装阶段），不联网 |
+| POST | `/v1/extensions/{name}/install` | 后台从 release 下载安装，202；阶段经 `scope=extensions` invalidation 推送 |
 | GET/PATCH | `/v1/extensions/{name}/config` | 扩展配置（脱敏读写） |
 | POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径；body 可传 `forkMode=flat|tree`，返回 `parentSessionId` / `forkMode`，删除时仅沿 tree 边级联。带 `entryId` 时运行中也可 fork（复制的是已落盘的完整前缀）；省略 `entryId`（fork 活动 leaf）且会话运行中仍 **409** |
 | POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |

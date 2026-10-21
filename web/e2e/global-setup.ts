@@ -1,11 +1,12 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { baseURLForAddress, runID, statePath, storageStatePath } from './run-state.ts'
 import { goBinary } from './go-toolchain.ts'
 import { buildWebDist, webDistStale } from './web-dist.ts'
+import { writeExtensionMirror } from './extension-mirror.ts'
 
 const webDir = join(dirname(fileURLToPath(import.meta.url)), '..')
 const root = join(webDir, '..')
@@ -168,6 +169,10 @@ export default async function globalSetup(): Promise<void> {
   } else {
     env.KI_FAKE = '1'
   }
+  // Install tests download from a local release mirror so the fake suite stays
+  // offline. The release tag must match the directory the mirror publishes.
+  env.KI_EXTENSIONS_SOURCE = writeExtensionMirror()
+  env.KI_EXTENSIONS_RELEASE = 'v0.0.0-test'
 
   const child = spawn(bin, ['serve', '--addr', addr], {
     env,

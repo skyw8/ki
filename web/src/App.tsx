@@ -324,6 +324,9 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const [models, setModels] = useState<ModelInfo[]>([])
 	const [defaultModel, setDefaultModel] = useState('')
 	const [globalExtensions, setGlobalExtensions] = useState<CatalogExtension[]>([])
+	// Bumped after every global catalog read so the install list refetches its
+	// availability view (which also carries live install stages) alongside it.
+	const [extensionCatalogRev, setExtensionCatalogRev] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>('providers')
   const [messageView, setMessageView] = useState<MessageView>(loadMessageView)
@@ -692,6 +695,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 	const refreshExtensions = useCallback(async (silent = false) => {
 		try {
 			setGlobalExtensions(await api.extensions())
+			setExtensionCatalogRev(rev => rev + 1)
 		} catch (e) {
 			// A push-driven refresh is a background sync; toasting every transient
 			// failure would spam while an extension restarts.
@@ -2405,7 +2409,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
                 ) : page === 'tools' ? (
                   <SettingsToggles kind="tools" api={api} sessionId={currentId} workspaceId={selectedWs} />
                 ) : page === 'extensions' ? (
-                  <SettingsToggles kind="extensions" api={api} onConfigure={openExtensionConfig} onChanged={refreshExtensions} />
+                  <SettingsToggles kind="extensions" api={api} onConfigure={openExtensionConfig} onChanged={refreshExtensions} refreshKey={extensionCatalogRev} />
                 ) : page === 'mcp' ? (
                   <SettingsToggles kind="mcp" api={api} sessionId={currentId} workspaceId={selectedWs} />
                 ) : page === 'prompt' ? (

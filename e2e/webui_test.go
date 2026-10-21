@@ -51,7 +51,12 @@ func webSuiteEnv(bin string) []string {
 			strings.HasPrefix(entry, "KI_SERVE_ADDR=") ||
 			strings.HasPrefix(entry, "KI_BASE_URL=") ||
 			strings.HasPrefix(entry, "KI_SKIP_SERVER=") ||
-			strings.HasPrefix(entry, "KI_BIN=") {
+			strings.HasPrefix(entry, "KI_BIN=") ||
+			// The extension install suite supplies its own file:// mirror; an
+			// inherited source or release would point the fake run at the
+			// developer's real release channel.
+			strings.HasPrefix(entry, "KI_EXTENSIONS_SOURCE=") ||
+			strings.HasPrefix(entry, "KI_EXTENSIONS_RELEASE=") {
 			continue
 		}
 		env = append(env, entry)

@@ -110,9 +110,19 @@ The build script and optional installer also run outside the host process.
 go run ./scripts/build-extensions.go
 # Or build only selected Go extensions:
 go run ./scripts/build-extensions.go -only goal,telegram-bot
+# Release assets (one zip per package, consumed by the WebUI installer):
+go run ./scripts/build-extensions.go -zip -out var/release-extensions
 ```
 
-Copy a staged `var/extensions/<name>` directory into `{KI_HOME}/extensions/<name>`.
+Installing normally needs no manual copy: Settings → Extensions lists the packages
+in the embedded catalog and downloads the matching `<name>-<goos>-<goarch>.zip`
+from the release (`extensions.source` / `extensions.release` in `ki.toml`, or
+`KI_EXTENSIONS_SOURCE` / `KI_EXTENSIONS_RELEASE`). Downloads are verified against
+`checksums.txt` and unpacked into `{KI_HOME}/extensions/<name>`. A `file://`
+source serves a local mirror, which is also how the offline test suite runs.
+
+To install by hand, copy a staged `var/extensions/<name>` directory into
+`{KI_HOME}/extensions/<name>`.
 The default package launches its binary directly and needs no source files or
 language toolchain. To distribute sources that build their executable on first
 launch, use `go run ./scripts/build-extensions.go -source -out var/extensions-source`
@@ -178,6 +188,7 @@ The release workflow reruns the default CI gate (excluding both credentialed liv
 tests and bundled extension checks) against that exact tag. Only after the tests
 pass does it build the Linux amd64, macOS arm64, and Windows amd64 archives,
 inject the tag's version (the tag without its `v` prefix, matching the checked-in
-`internal/cli/version.go`) into `ki version`, generate SHA-256 checksums, and
-publish the GitHub Release. Extension packages can still be built separately
-with the commands in [Bundled extensions](#bundled-extensions).
+`internal/buildinfo/buildinfo.go`) into `ki version`, build one extension zip per
+package and platform, generate SHA-256 checksums over both families, and publish
+the GitHub Release. A release build pins that tag as its extension source, so
+Settings → Extensions installs the packages that shipped with it.

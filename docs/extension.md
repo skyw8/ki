@@ -17,7 +17,8 @@
 - session 快照可在全局 reload 前临时接纳新发现的包名；已被 catalog 移除/禁用的已知名字不能由旧快照重新启用。下一次全局 Configure 接管这些临时启动，并阻止旧代际初始化完成后再发布。
 - 目录列表和 prompt/lifecycle 链均按全局包名排序。
 - 仓库 `extensions/` 下的扩展使用 Go；`zvec-grep` 是使用原生 Rust 检索引擎的例外。协议仍然语言无关，第三方扩展可使用任何语言。
-- 从仓库根运行 `go run ./scripts/build-extensions.go`，在 `var/extensions/<name>/` 生成分发包；可用 `-only goal,telegram-bot` 选择包，Go 包也支持 `-goos windows -goarch amd64`。将生成的目录复制到 `{KI_HOME}/extensions/<name>`。随包 manifest 直接启动 `bin/<name>`（Windows 文件为 `.exe`），并声明 `runtime.install=["go","run","./install/main.go"]`、`runtime.installWhen="missing"`。二进制存在时完全跳过 install，运行时不需要源码或 Go / Rust / Bun / Node / Python 工具链。
+- 发现只扫描 `{KI_HOME}/extensions` 下的**非隐藏**目录。安装器把临时目录（`.stage-*` / `.replaced-*` / `.download-*`）放在同一目录以保证 rename 原子性，隐藏前缀让它们永不被当作包。
+- 从仓库根运行 `go run ./scripts/build-extensions.go`，在 `var/extensions/<name>/` 生成分发包；可用 `-only goal,telegram-bot` 选择包，Go 包也支持 `-goos windows -goarch amd64`。加 `-zip` 则输出 `<name>-<goos>-<goarch>.zip`（发布资产）。手工安装时把生成的目录复制到 `{KI_HOME}/extensions/<name>`；常规安装直接走 Settings → Extensions（见下文「从发布安装」）。随包 manifest 直接启动 `bin/<name>`（Windows 文件为 `.exe`），并声明 `runtime.install=["go","run","./install/main.go"]`、`runtime.installWhen="missing"`。二进制存在时完全跳过 install，运行时不需要源码或 Go / Rust / Bun / Node / Python 工具链。
 - 默认二进制分发包只含 manifest、声明式 locale/prompt 和编译后的可执行文件；install 元数据保留，但不附带源码或 install wrapper。删除二进制后须重新安装二进制包，或换用源码包，不能在缺失源码时自动编译。
 - `go run ./scripts/build-extensions.go -source -out var/extensions-source`（可配 `-only`）在独立输出目录生成可复制到仓库外的源码包：包根为独立 `ki/extensions/<name>` Go module，通过 `require ki v0.0.0` 和 `replace ki => ./_ki` 使用随包的最小共享源码；`_ki` 保留版本锁定的根 go.mod/go.sum，仅含 `pkg/extensionrpc`、`pkg/extensionbuild`、`internal/state` 的非测试源码。源码包附带 Go/Rust 源码、编译所需的 schema/prompt、锁文件与 install wrapper，不包含 config/state/cache、密钥、构建产物或依赖缓存。缺失 executable 时 Go installer 在包根以 CGO 关闭的 native `go build .` 编译；Rust 例外用 `cargo build --release --locked`，发布相同字节到 `bin/zvec-grep` 和 `bin/zg`。编译成功后原子替换 binary，包内锁防止并发首次启动重复编译。
 - Go sidecar 把运行必需的 schemas/catalog/prompt 文案嵌入二进制；Rust 检索 sidecar 将引擎、native 库及词典嵌入单个 executable，在启动时展开到 `{KI_HOME}/cache/extensions/zvec-grep/` 下按内容哈希命名的私有目录。`bin/zg` 是同一 executable 的 CLI 入口；其 PATH 声明为 `bin`。
@@ -350,6 +351,8 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET / PATCH | `/v1/extensions` | 全局列表 / `disabled`，包含 runtime 状态、全局 `ui` 投影、声明的 `pathDirs`，以及已加载的 skills / tools / commands / promptAppend / providers |
+| GET | `/v1/extensions/available` | 可安装列表：内置 catalog × 磁盘现状 × 进行中的安装阶段；不联网 |
+| POST | `/v1/extensions/{name}/install` | 后台下载并安装一个 catalog 包，返回 202；进度通过 `scope=extensions` invalidation 推送 |
 | GET / PATCH | `/v1/extensions/{name}/config` | 读取脱敏配置 / 校验并保存扩展配置 |
 | GET | `/v1/sessions/{id}` | `availableExtensions`（含已加载的 skills / tools / commands / promptAppend / providers / `pathDirs`）、`commands`、`extensionUi`、`queued`、`extQueued`、`runtime.ready` |
 | POST | `/v1/reload` | 重新扫描并协调 sidecar |
@@ -357,6 +360,19 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 `path` 只展示，不当 `href`。
 
 扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影、可选 i18n catalog，以及该包已加载的 skills / tools / slash 命令 / prompt append / providers；`pathDirs` 逐条给出声明的绝对路径与当前是否存在，让“目录没生效”和“PATH 覆盖了同名命令”两件事都能被发现。查询不会启动 sidecar。sidecar 尚未握手时 tools/runtime commands 可能为空，session Info 在 `runtime.ready` 后再拉一次。manifest 校验失败不会拉起 runtime，并写入 `extensions.disabled`。sidecar 启动失败在仍启用时自动重试；session Prepare 上报 `sidecar_start` 后同样禁用。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。私有 `config.json` 通过 `internal/state` 原子读写，顶层 `version: 1` 是存储头，不进入 schema 或 HTTP 值；请求不能修改此头，更高版本拒读和拒写。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航列出全部已启用扩展。Extensions 设置里每个已启用扩展都有 Configure，打开并定位到同一个页面（不要求必须有 config schema）；停用的扩展没有该按钮。不在 session Info 或设置页内嵌第二份编辑器。
+
+## 从发布安装
+
+仓库 `extensions/` 下的包不再需要手工复制：Settings → Extensions 里有「可安装」区，按需从 GitHub Release 下载。
+
+- **catalog**：`internal/extension/installcatalog.json`（`//go:embed`）只列包名、版本、描述、能力；**不含 URL**。资源名由运行平台推导：`<name>-<goos>-<goarch>.zip`，URL 为 `<source>/<release>/<asset>`，`checksums.txt` 同目录。因此发版不需要改 catalog，换 tag 即可。catalog 与仓库 manifest 的版本一致性由 `internal/extension` 的测试校验。
+- **配置**：`[extensions] source`（默认 `https://github.com/skyw8/ki/releases`）与 `release`（`source` 下的一段路径）。发布构建把 `-X ki/internal/buildinfo.ReleaseTag=<tag>` 写死为 `download/<tag>`；本地构建为空，使用 `latest/download`，因此不猜一个可能不存在的 tag。环境变量 `KI_EXTENSIONS_SOURCE` / `KI_EXTENSIONS_RELEASE` 覆盖；`source` 支持 `file://` 与绝对路径，便于离线镜像和测试。
+- **发布产物**：`scripts/build-extensions.go -zip -out <dir>` 为每个包生成 `<name>-<goos>-<goarch>.zip`（内含单一 `<name>/` 顶层目录，保留可执行位）。`release.yml` 的 `extension-assets` job 在三个支持平台各跑一次，`publish` 把 `ki-*` 与 `*.zip` 一起写进 `checksums.txt`。
+- **下载与校验**：先取 `checksums.txt`，按资产名查 sha256；下载后比对，不一致直接失败。解压拒绝符号链接、非普通文件、绝对路径与 `..` 逃逸，单文件 256 MiB、总计 1 GiB、条目数 8192 上限。解压后必须能通过 `Discover` 的 manifest 校验，且 `name` 与 catalog 一致。
+- **发布方式**：解压到 `{KI_HOME}/extensions/.stage-<name>-*`（隐藏目录，Discover 跳过），再把旧包挪到 `.replaced-<name>-*` 并 `rename` 新包；两步都在同一文件系统。失败会尝试把旧包放回。安装/更新会保留 `config.json` / `cache.json` / `state.json`，不保留其它旧文件。
+- **保护**：`{KI_HOME}/extensions` 本身是符号链接（常见于把仓库 `extensions/` 链进来开发）时拒绝安装；目标包是符号链接时同样拒绝，绝不删除 checkout。
+- **状态**：安装是后台任务。`POST` 立即 202，`GET /v1/extensions/available` 的 `install.state` 依次为 `download` → `extract` → `done` / `failed`（带 `error`）；每次阶段变化推 `scope=extensions` invalidation。成功后调用一次全局 Reload，运行中的会话沿用旧快照，release 后生效。同一包重复点击是幂等的（返回当前阶段），不会并发解压。
+- **清理**：安装开始时删除超过一小时的 `.stage-*` / `.replaced-*` / `.download-*` 残留。
 
 ## 工具名称与别名
 

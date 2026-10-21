@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -34,6 +35,7 @@ type extensionManifest struct {
 func main() {
 	out := flag.String("out", "var/extensions", "Directory containing the distributable extension packages")
 	sourceOnly := flag.Bool("source", false, "Stage self-contained source packages that build their missing executable at first launch")
+	archive := flag.Bool("zip", false, "Publish one <name>-<goos>-<goarch>.zip per package instead of plain directories")
 	only := flag.String("only", "", "Comma-separated extension names (default: every bundled extension)")
 	goos := flag.String("goos", runtime.GOOS, "Target operating system for Go extensions")
 	goarch := flag.String("goarch", runtime.GOARCH, "Target architecture for Go extensions")
@@ -64,9 +66,27 @@ func main() {
 	if err := os.MkdirAll(destination, 0o755); err != nil {
 		fail(err)
 	}
+	// Archives are assembled in a staging directory and renamed in, so a
+	// concurrent `ki` that points at this mirror never sees a partial zip.
+	stageRoot := destination
+	if *archive {
+		stageRoot, err = os.MkdirTemp(filepath.Dir(destination), ".extension-zips-")
+		if err != nil {
+			fail(err)
+		}
+		defer os.RemoveAll(stageRoot)
+	}
 	for _, name := range names {
-		if err := buildPackage(root, destination, name, *goos, *goarch, *sourceOnly); err != nil {
+		if err := buildPackage(root, stageRoot, name, *goos, *goarch, *sourceOnly); err != nil {
 			fail(fmt.Errorf("%s: %w", name, err))
+		}
+		if *archive {
+			archiveName := fmt.Sprintf("%s-%s-%s.zip", name, *goos, *goarch)
+			if err := zipPackage(filepath.Join(stageRoot, name), filepath.Join(destination, archiveName), name); err != nil {
+				fail(fmt.Errorf("%s: %w", name, err))
+			}
+			fmt.Fprintf(os.Stderr, "Archived %s/%s\n", destination, archiveName)
+			continue
 		}
 		if *sourceOnly {
 			fmt.Fprintf(os.Stderr, "Staged source package %s/%s\n", destination, name)
@@ -76,6 +96,73 @@ func main() {
 	}
 }
 func fail(err error) { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+
+// zipPackage writes one release asset. Every entry is stored under a single
+// <name>/ directory, which the installer strips, so unpacking by hand and by
+// `ki` produce the same layout. Executable bits are preserved because the
+// runtime launches bin/<name> directly.
+func zipPackage(source, destination, name string) error {
+	output, err := os.Create(destination)
+	if err != nil {
+		return err
+	}
+	archive := zip.NewWriter(output)
+	walkErr := filepath.WalkDir(source, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		if relative == "." {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() && !entry.IsDir() {
+			return fmt.Errorf("package entry must be a regular file: %s", relative)
+		}
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = name + "/" + filepath.ToSlash(relative)
+		header.Method = zip.Deflate
+		writer, err := archive.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		input, err := os.Open(path) //nolint:gosec // path comes from the staged package
+		if err != nil {
+			return err
+		}
+		defer func() { _ = input.Close() }()
+		_, err = io.Copy(writer, input)
+		return err
+	})
+	closeErr := archive.Close()
+	outputErr := output.Close()
+	if walkErr != nil {
+		_ = os.Remove(destination)
+		return walkErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(destination)
+		return closeErr
+	}
+	if outputErr != nil {
+		_ = os.Remove(destination)
+		return outputErr
+	}
+	return nil
+}
+
 func within(parent, path string) bool {
 	relative, err := filepath.Rel(parent, path)
 	return err == nil && (relative == "." || filepath.IsLocal(relative))

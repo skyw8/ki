@@ -62,6 +62,8 @@ Code Mode 的 JavaScript 在 server worker 中执行，WebUI 不执行模型生�
 
 Settings 的 Skills、Tools、MCP、Extensions 页统一在顶部说明与下方配置列表（或空状态）之间保留 24px 间距，桌面和移动端一致；不影响 Info 中嵌套列表的间距。
 
+Settings → Extensions 在开关列表下方还有「可安装」区（`GET /v1/extensions/available`）：每行显示包名、版本、描述、能力所需工具链、资源名和安装/更新/重试按钮。按钮只发 `POST /v1/extensions/{name}/install`（202），随后完全依赖 server 的 `scope=extensions` invalidation 刷新阶段（下载中 / 解压中 / 失败原因），不轮询；失败行保留在列表里可重试，成功后该行消失并出现在上方已安装列表。`channel` / `provider` 包安装前弹一次确认，提示安装后仍需配置凭据。构建没有对应 release 时按钮禁用并显示说明。窄屏下每行改为纵向，按钮整行宽且至少 44px。协议细节见 [extension.md](extension.md)。
+
 Settings → MCP 独立列出全局/项目 `mcp.json` 合并后的服务器，提供逐服务器开关、来源、传输类型和已缓存工具数量。开关至少 44px 命中区，加载/保存期间阻止重复提交；失败保留已保存状态并显示错误。文件中的 `enabled:false` 不能被界面覆盖。`mcpDisabled` PATCH 不改动工具开关；列表显示不触发连接。Session Info 增加 MCP 小节和对应目录项，展示会话 cwd 的下一次运行配置，不展示凭据或命令参数。详细配置及生效边界见 [mcp.md](mcp.md)。
 
 ## Context 数据口径

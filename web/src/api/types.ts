@@ -358,6 +358,36 @@ export type ExtensionConfig = {
 	i18n?: ExtensionI18n
 }
 
+/**
+ * One catalog extension that can be installed from the configured release.
+ * `install` is present only while a download is in flight or after it failed;
+ * the settings page follows it through the extensions invalidation instead of
+ * polling.
+ */
+export type AvailableExtension = {
+	name: string
+	version?: string
+	description?: string
+	capabilities?: string[]
+	asset?: string
+	installed: boolean
+	installedVersion?: string
+	updateAvailable?: boolean
+	install?: { state: 'download' | 'extract' | 'done' | 'failed'; error?: string }
+}
+
+export type AvailableExtensions = {
+	items: AvailableExtension[]
+	/**
+	 * Path segment under `source` whose assets are downloaded. A release build
+	 * pins its own tag; a local build uses `latest/download`.
+	 */
+	release?: string
+	source?: string
+	/** True when `release` follows the newest published release. */
+	latest?: boolean
+}
+
 /** One appended-system-prompt source as the settings editor sees it. */
 export type PromptAppendItem = {
 	source: 'builtin' | 'global' | 'project' | 'extension' | string

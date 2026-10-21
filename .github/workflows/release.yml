@@ -87,7 +87,7 @@ jobs:
 
           mkdir -p "package/$package" dist
           go build -trimpath -tags embed \
-            -ldflags="-s -w -X ki/internal/cli.Version=${version}" \
+            -ldflags="-s -w -X ki/internal/buildinfo.Version=${version} -X ki/internal/buildinfo.ReleaseTag=${GITHUB_REF_NAME}" \
             -o "package/$package/$binary" ./cmd/ki
           cp README.md LICENSE "package/$package/"
 
@@ -103,9 +103,78 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Extension packages are separate assets: `ki` downloads and verifies them on
+  # demand from the WebUI instead of embedding them in the binary. Every
+  # supported target builds its own set, including the native Rust search
+  # engine, and the installer derives the asset name from GOOS/GOARCH.
+  extension-assets:
+    name: Extension assets ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: tests
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+    runs-on: ${{ matrix.os }}
+    env:
+      KI_ZVEC_GREP_BUILD_JOBS: "4"
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install native Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev g++
+      - name: Locate macOS libclang
+        if: runner.os == 'macOS'
+        shell: bash
+        run: echo "LIBCLANG_PATH=$(dirname "$(xcrun --find clang)")/../lib" >> "$GITHUB_ENV"
+      - name: Locate Windows libclang
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+      - name: Install the pinned native Rust toolchain
+        shell: bash
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            extensions/zvec-grep/target
+            extensions/zvec-grep/native/target
+          key: ${{ runner.os }}-zvec-rust-1.98-${{ hashFiles('extensions/zvec-grep/**/Cargo.lock') }}
+      - name: Build release zips
+        shell: bash
+        run: go run ./scripts/build-extensions.go -zip -out var/release-extensions
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extensions-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: var/release-extensions/*.zip
+          if-no-files-found: error
+          retention-days: 1
+
   publish:
     name: Publish GitHub Release
-    needs: [binaries]
+    needs: [binaries, extension-assets]
+    # Why not a plain `needs` gate: the native Rust extension build is the
+    # slowest and most platform-specific job here, and a failure in it must not
+    # withhold the ki binaries. Publish only requires the binaries to have been
+    # built; a missing extension family simply means the installer reports that
+    # no asset exists for this release until the job is re-run.
+    if: always() && needs.binaries.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -120,9 +189,37 @@ jobs:
           pattern: ki-*
           path: release-assets
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: extensions-*
+          path: release-assets
+          merge-multiple: true
+        # A platform that failed to build its native package must not block the
+        # ki binaries; checksums.txt then simply has no zip for it, and the
+        # installer reports a missing asset instead of unpacking a bad one.
+        continue-on-error: true
       - name: Write checksums
         working-directory: release-assets
-        run: sha256sum ki-* > checksums.txt
+        shell: bash
+        # Why both families: `ki` verifies its own archives against this file,
+        # and the extension installer looks up <name>-<goos>-<goarch>.zip in the
+        # same document before unpacking anything. The Windows binary archive is
+        # a .zip too, so it matches both globs; dedupe or checksums.txt would
+        # list it twice.
+        run: |
+          shopt -s nullglob
+          declare -A seen=()
+          files=()
+          for file in ki-* *.zip; do
+            [[ -n "${seen[$file]:-}" ]] && continue
+            seen[$file]=1
+            files+=("$file")
+          done
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "no release assets to hash"
+            exit 1
+          fi
+          sha256sum "${files[@]}" > checksums.txt
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

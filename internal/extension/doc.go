@@ -82,5 +82,16 @@
 // collide only within one session's combined registry. Model schema/catalog and
 // lifecycle hooks use canonical names while tool.execute RPC retains native names.
 // ContextOnly is host metadata and is removed from sidecar message projections.
+//
+// Installation is separate from discovery. The embedded install catalog names
+// the bundled packages only; asset URLs are derived per platform and release
+// from the configured release base URL, so publishing a release never rewrites
+// the catalog. Listing is offline; installing downloads checksums.txt, verifies
+// the archive digest, rejects symlinks and escaping entries, validates the
+// unpacked manifest, and only then atomically replaces the target directory.
+// Private state documents (config/cache/state) from a previous install are
+// carried into the new one. A symlinked package is a development checkout and
+// is never replaced.
+//
 // Cross-package contract: docs/extension.md.
 package extension

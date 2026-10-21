@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+
+	"ki/internal/buildinfo"
 )
 
 // Config is the merged runtime configuration.
@@ -20,6 +22,7 @@ type Config struct {
 	Log        Log                  `mapstructure:"log"`
 	Push       Push                 `mapstructure:"push"`
 	Streaming  Streaming            `mapstructure:"streaming"`
+	Extensions Extensions           `mapstructure:"extensions"`
 	MCPServers map[string]MCPServer `mapstructure:"-"`
 	// MCPFromFiles prevents injected-config fallback from leaking a different
 	// workspace's file-derived capabilities into a workspace without files.
@@ -33,6 +36,28 @@ type Agents struct {
 // Streaming configures native provider response-body liveness.
 type Streaming struct {
 	IdleTimeoutSeconds int `mapstructure:"idle_timeout_seconds"`
+}
+
+// Extensions configures extension installation. Source is the release base URL
+// and Release is the path segment under it; GitHub serves a tagged release at
+// download/<tag> and the newest one at latest/download, so one URL shape covers
+// both a local build and a release build. A file:// source uses the same shape
+// with a plain directory name.
+type Extensions struct {
+	Source  string `mapstructure:"source"`
+	Release string `mapstructure:"release"`
+}
+
+// DefaultExtensionSource is the release base URL of the project.
+const DefaultExtensionSource = "https://github.com/skyw8/ki/releases"
+
+// extensionReleasePath is the catalog path for this build: a release build
+// installs the exact tag it came from, a local build follows the newest release.
+func extensionReleasePath() string {
+	if tag := strings.TrimSpace(buildinfo.ReleaseTag); tag != "" {
+		return "download/" + tag
+	}
+	return "latest/download"
 }
 
 // Sessions holds session storage settings.
@@ -104,6 +129,10 @@ func Builtin(home string) Config {
 		Log:       Log{Level: "info", MaxSizeMB: 10, MaxBackups: 3},
 		Push:      Push{Enabled: true, Subject: "mailto:ki@localhost"},
 		Streaming: Streaming{IdleTimeoutSeconds: 300},
+		Extensions: Extensions{
+			Source:  DefaultExtensionSource,
+			Release: extensionReleasePath(),
+		},
 	}
 }
 
@@ -200,12 +229,28 @@ func setDefaults(settings *viper.Viper, cfg Config) {
 	settings.SetDefault("push.enabled", cfg.Push.Enabled)
 	settings.SetDefault("push.subject", cfg.Push.Subject)
 	settings.SetDefault("streaming.idle_timeout_seconds", cfg.Streaming.IdleTimeoutSeconds)
+	settings.SetDefault("extensions.source", cfg.Extensions.Source)
+	settings.SetDefault("extensions.release", cfg.Extensions.Release)
 }
 
 func mergeEnv(settings *viper.Viper) error {
 	envSettings := map[string]any{}
 	if value := strings.TrimSpace(os.Getenv("KI_SERVER_ADDR")); value != "" {
 		envSettings["server"] = map[string]any{"addr": value}
+	}
+	// The extension installer needs an offline/self-hosted path: a mirror can
+	// be selected without editing ki.toml, and tests point at a local file://
+	// directory instead of the network.
+	if value := strings.TrimSpace(os.Getenv("KI_EXTENSIONS_SOURCE")); value != "" {
+		envSettings["extensions"] = map[string]any{"source": value}
+	}
+	if value := strings.TrimSpace(os.Getenv("KI_EXTENSIONS_RELEASE")); value != "" {
+		existing, _ := envSettings["extensions"].(map[string]any)
+		if existing == nil {
+			existing = map[string]any{}
+			envSettings["extensions"] = existing
+		}
+		existing["release"] = value
 	}
 	if len(envSettings) == 0 {
 		return nil

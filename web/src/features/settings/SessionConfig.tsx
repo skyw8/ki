@@ -8,6 +8,7 @@ import { clampCompactKeep, MAX_COMPACT_KEEP, type MessageView } from '../../lib/
 import type { NotifyPermission } from '../../lib/notifications'
 import { toast } from '../../components/toast'
 import { localizedExtensionText } from './ExtensionPanel'
+import { ExtensionInstallList } from './ExtensionInstallList'
 import { RuntimePanel, type RuntimePanelProps } from '../chat/RuntimePanel'
 import type { CatalogContribution, CatalogExtension, CatalogSkill, CatalogTool, ExtensionI18n, MCPServerInfo, SessionCommand, SessionDetail } from '../../api/types'
 
@@ -560,6 +561,7 @@ export function SettingsToggles({
   workspaceId,
   onConfigure,
   onChanged,
+  refreshKey = 0,
 }: {
   kind: 'skills' | 'tools' | 'extensions' | 'mcp'
   api: Client
@@ -567,6 +569,8 @@ export function SettingsToggles({
   workspaceId?: string | null
   onConfigure?: (name: string) => void
   onChanged?: () => void | Promise<void>
+  /** Bumped whenever the global extension catalog is refetched. */
+  refreshKey?: number
 }) {
   const { t, lang } = useI18n()
   const [items, setItems] = useState<ToggleItem[]>([])
@@ -593,7 +597,7 @@ export function SettingsToggles({
     }
   }, [api, kind, sessionId, workspaceId])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { void load() }, [load, refreshKey])
 
   const patch = async (next: ToggleItem[]) => {
     if (pending.current || loading) return
@@ -685,6 +689,15 @@ export function SettingsToggles({
           ))}
         </ul>
       )}
+      {/* Installing lives next to the toggle list: an installed package moves
+          from here into the list above on the next catalog refresh. */}
+      {kind === 'extensions' ? (
+        <ExtensionInstallList
+          api={api}
+          refreshKey={refreshKey}
+          onInstalled={async () => { await load(); await onChanged?.() }}
+        />
+      ) : null}
     </div>
   )
 }

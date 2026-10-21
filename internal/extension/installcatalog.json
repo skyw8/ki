@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "extensions": [
+    {
+      "name": "codex-oauth",
+      "version": "0.1.0",
+      "description": "OpenAI Codex subscription provider with ChatGPT OAuth",
+      "capabilities": ["provider"]
+    },
+    {
+      "name": "deep-web-search",
+      "version": "0.1.0",
+      "description": "Five-provider parallel web search with source cleaning, content extraction, evidence checks, and automatic summary fallback.",
+      "capabilities": ["tool", "settings"]
+    },
+    {
+      "name": "goal",
+      "version": "0.1.0",
+      "description": "Session-scoped /goal: continue from idle until complete, blocked, paused, or the continuation cap.",
+      "capabilities": ["command", "tool", "lifecycle"]
+    },
+    {
+      "name": "telegram-bot",
+      "version": "0.1.0",
+      "description": "Telegram Managed Bot connector for private chats and @mentioned groups.",
+      "capabilities": ["channel", "lifecycle", "settings"]
+    },
+    {
+      "name": "zvec-grep",
+      "version": "0.1.0",
+      "description": "Local hybrid (lexical + vector) workspace search over a zvec-grep index, with index management commands.",
+      "capabilities": ["tool", "settings", "prompt.append", "command", "path"]
+    }
+  ]
+}
