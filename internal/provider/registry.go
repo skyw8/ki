@@ -790,6 +790,26 @@ func (r *Registry) FindModel(providerID, modelID string) (Provider, Model, bool)
 	return Provider{}, Model{}, false
 }
 
+// ResolveRef resolves an already separated provider/model reference.
+func (r *Registry) ResolveRef(ref ModelRef) (Model, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.resolveRefLocked(ref)
+}
+
+func (r *Registry) resolveRefLocked(ref ModelRef) (Model, error) {
+	p, ok := r.providerLocked(ref.Provider)
+	if !ok || !p.Enabled {
+		return Model{}, fmt.Errorf("provider %q is %w", ref.Provider, errUnavailable)
+	}
+	for _, m := range p.Models {
+		if m.ID == ref.Model && m.Enabled {
+			return m, nil
+		}
+	}
+	return Model{}, fmt.Errorf("model %q/%q is %w", ref.Provider, ref.Model, errUnavailable)
+}
+
 // ResolveSpec resolves a model specification against the registry default.
 func (r *Registry) ResolveSpec(spec, fallbackProvider string) (ModelRef, Model, error) {
 	r.mu.RLock()
@@ -804,16 +824,11 @@ func (r *Registry) ResolveSpec(spec, fallbackProvider string) (ModelRef, Model, 
 			ref.Model = spec
 		}
 	}
-	p, ok := r.providerLocked(ref.Provider)
-	if !ok || !p.Enabled {
-		return ModelRef{}, Model{}, fmt.Errorf("provider %q is %w", ref.Provider, errUnavailable)
+	model, err := r.resolveRefLocked(ref)
+	if err != nil {
+		return ModelRef{}, Model{}, err
 	}
-	for _, m := range p.Models {
-		if m.ID == ref.Model && m.Enabled {
-			return ref, m, nil
-		}
-	}
-	return ModelRef{}, Model{}, fmt.Errorf("model %q/%q is %w", ref.Provider, ref.Model, errUnavailable)
+	return ref, model, nil
 }
 
 // Resolve returns an enabled model and its configured API credential.

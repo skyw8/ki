@@ -1841,8 +1841,7 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 	var modelRef provider.ModelRef
 	var modelEffort string
 	if modelSettingsRequested {
-		spec := cmp.Or(body.Model, sess.Config.Model)
-		ref, model, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
+		ref, model, err := s.resolveSessionModel(sess, body.Model)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
@@ -2163,8 +2162,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		s.promoteQueued(w, r, id, sess, live, queueID, body.Model)
 		return
 	}
-	spec := cmp.Or(body.Model, sess.Config.Model)
-	ref, selectedModel, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
+	ref, selectedModel, err := s.resolveSessionModel(sess, body.Model)
 	if err == nil && s.requireModelCredential {
 		_, selectedModel, _, err = s.registry.Resolve(ref.Provider, ref.Model)
 	}
@@ -2268,8 +2266,7 @@ func (s *Server) promoteQueued(w http.ResponseWriter, r *http.Request, id string
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	spec := cmp.Or(model, sess.Config.Model)
-	ref, selectedModel, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
+	ref, selectedModel, err := s.resolveSessionModel(sess, model)
 	if err == nil && s.requireModelCredential {
 		_, selectedModel, _, err = s.registry.Resolve(ref.Provider, ref.Model)
 	}
@@ -3922,6 +3919,18 @@ func (s *Server) rememberModel(ref provider.ModelRef) {
 	if err := s.registry.RememberDefault(ref); err != nil {
 		slog.Warn("remember last model", "provider", ref.Provider, "model", ref.Model, "err", err)
 	}
+}
+
+func (s *Server) resolveSessionModel(sess *session.Session, requested string) (provider.ModelRef, provider.Model, error) {
+	if requested == "" {
+		// Why: model IDs may themselves contain slashes (for example Magpie's
+		// vendor/model IDs). Resolve the stored fields as a structured reference
+		// instead of mistaking the first model segment for a provider.
+		ref := provider.ModelRef{Provider: sess.Config.Provider, Model: sess.Config.Model}
+		model, err := s.registry.ResolveRef(ref)
+		return ref, model, err
+	}
+	return s.registry.ResolveSpec(requested, sess.Config.Provider)
 }
 
 // resolveThinking uses the model's default when the client omits effort,

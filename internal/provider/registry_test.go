@@ -94,6 +94,10 @@ func TestRegistryPersistsCustomProviderAndCredential(t *testing.T) {
 	if err != nil || gotKey != key || model.ContextWindow != 8192 || model.Builtin {
 		t.Fatalf("resolve = model %+v key %q err %v", model, gotKey, err)
 	}
+	model, err = r.ResolveRef(ModelRef{Provider: "local", Model: "example/model"})
+	if err != nil || model.ID != "example/model" {
+		t.Fatalf("resolve structured ref = model %+v err %v", model, err)
+	}
 	if got := r.Default(); got.Provider != "local" || got.Model != "example/model" {
 		t.Fatalf("default = %+v", got)
 	}

@@ -55,6 +55,9 @@
 // and synthesizes missing tool results while preserving their call kind.
 // Registry merges the embedded catalog with {KI_HOME}/models.json;
 // credentials.json and provider environment variables supply secrets. The
+// provider/model boundary remains structured after selection because model IDs
+// themselves may contain slashes; only explicit model specs are parsed.
+// The
 // embedded catalogs remain offline; Magpie is the explicit exception with an
 // authenticated, user-triggered catalog refresh that persists a reconciled
 // snapshot. The on-disk overlay carries a schema version: an older document is

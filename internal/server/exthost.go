@@ -17,6 +17,7 @@ import (
 	"ki/internal/compact"
 	"ki/internal/extension"
 	"ki/internal/loop"
+	"ki/internal/provider"
 	"ki/internal/session"
 	"ki/internal/toggles"
 	toolapi "ki/internal/tool"
@@ -57,7 +58,16 @@ func (s *Server) CreateSession(req extension.SessionCreateRequest) (extension.Se
 	if s.deletingWorkspaces[rec.ID] {
 		return extension.SessionCreateResult{}, errSessionNotFound
 	}
-	ref, model, err := s.registry.ResolveSpec(req.Model, req.Provider)
+	var ref provider.ModelRef
+	var model provider.Model
+	if req.Provider != "" && req.Model != "" {
+		// Extension session requests carry provider and model as separate
+		// fields; keep that boundary because model IDs may contain slashes.
+		ref = provider.ModelRef{Provider: req.Provider, Model: req.Model}
+		model, err = s.registry.ResolveRef(ref)
+	} else {
+		ref, model, err = s.registry.ResolveSpec(req.Model, req.Provider)
+	}
 	if err != nil {
 		return extension.SessionCreateResult{}, fmt.Errorf("resolve model: %w", err)
 	}
@@ -562,8 +572,7 @@ func (s *Server) PatchSession(sessionID, model, thinking string) error {
 	if model == "" && thinking == "" {
 		return nil
 	}
-	spec := cmp.Or(model, sess.Config.Model)
-	ref, selected, err := s.registry.ResolveSpec(spec, sess.Config.Provider)
+	ref, selected, err := s.resolveSessionModel(sess, model)
 	if err != nil {
 		return fmt.Errorf("resolve model: %w", err)
 	}

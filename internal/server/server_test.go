@@ -2604,6 +2604,74 @@ func TestPatchRejectsModelChangeWhileSessionBusy(t *testing.T) {
 	}
 }
 
+func TestSessionKeepsProviderBoundaryForModelIDWithSlash(t *testing.T) {
+	srv, hs := testServer(t)
+	on := true
+	reasoning := true
+	low, high := "low", "high"
+	if err := srv.registry.Update(func(cfg *provider.ModelsFile) error {
+		cfg.Providers["gateway"] = provider.Config{
+			Name: "Gateway", API: "completions", BaseURL: "http://127.0.0.1:1/v1", Enabled: &on,
+			Models: []provider.ModelSeed{{
+				ID: "vendor/model", ContextWindow: 8192, MaxTokens: 1024, Input: []string{"text"}, Reasoning: &reasoning,
+				ThinkingLevelMap: map[string]*string{"low": &low, "high": &high},
+			}},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{
+		"cwd": t.TempDir(), "model": "gateway/vendor/model", "thinkingEffort": "low",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("create %d %+v", status, created)
+	}
+	id, _ := created["id"].(string)
+
+	status, patched := postJSON(t, hs, http.MethodPatch, "/v1/sessions/"+id, map[string]any{"thinkingEffort": "high"})
+	if status != http.StatusOK {
+		t.Fatalf("thinking-only patch %d %+v", status, patched)
+	}
+	if patched["provider"] != "gateway" || patched["model"] != "vendor/model" || patched["thinkingEffort"] != "high" {
+		t.Fatalf("thinking-only patch lost model reference: %+v", patched)
+	}
+
+	createdByExtension, err := srv.NewSession(id, "")
+	if err != nil {
+		t.Fatalf("extension new session with persisted nested model: %v", err)
+	}
+	extensionSession, err := srv.open(createdByExtension.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extensionSession.Config.Provider != "gateway" || extensionSession.Config.Model != "vendor/model" || extensionSession.Config.ThinkingEffort != "high" {
+		t.Fatalf("extension new session lost model reference: %+v", extensionSession.Config)
+	}
+	_ = extensionSession.Close()
+
+	status, prompted := postJSON(t, hs, http.MethodPost, "/v1/sessions/"+id+"/prompt", map[string]any{"text": "hello"})
+	if status != http.StatusAccepted {
+		t.Fatalf("prompt with persisted nested model %d %+v", status, prompted)
+	}
+	waitAgentEnd(t, hs, id)
+	sess, err := srv.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	for _, entry := range sess.Entries() {
+		if entry.Type == "request_header" {
+			if entry.Provider != "gateway" || entry.ModelID != "vendor/model" || entry.ThinkingEffort != "high" {
+				t.Fatalf("request header lost model reference: %+v", entry)
+			}
+			return
+		}
+	}
+	t.Fatal("request header missing")
+}
+
 func TestCreateAndForkKeepModelAndThinking(t *testing.T) {
 	_, hs := testServer(t)
 	cwd := t.TempDir()
