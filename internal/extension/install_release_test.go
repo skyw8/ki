@@ -352,3 +352,55 @@ func TestEmbeddedCatalogListsBundledExtensions(t *testing.T) {
 		}
 	}
 }
+
+func TestListMarksLinkedPackagesAndRoot(t *testing.T) {
+	home := t.TempDir()
+	checkout := t.TempDir()
+	// A single linked package inside a real root is the shape that matters:
+	// discovery uses it, and an install would otherwise replace a checkout.
+	if err := os.MkdirAll(filepath.Join(home, "extensions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(checkout, "goal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "goal", "extension.json"), []byte(`{"name":"goal","version":"0.1.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(checkout, "goal"), filepath.Join(home, "extensions", "goal")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	installer := Installer{Home: home, Catalog: InstallCatalog{Version: InstallCatalogVersion, Extensions: []InstallEntry{
+		{Name: "goal", Version: "0.1.0"},
+		{Name: "telegram-bot", Version: "0.1.0"},
+	}}}
+	listed := installer.List()
+	if len(listed) != 2 {
+		t.Fatalf("listed=%+v", listed)
+	}
+	if !listed[0].Installed || !listed[0].Linked {
+		t.Errorf("linked package: %+v", listed[0])
+	}
+	if listed[1].Installed || listed[1].Linked {
+		t.Errorf("absent package: %+v", listed[1])
+	}
+	if installer.LinkedRoot() {
+		t.Errorf("a real extensions root reported as linked")
+	}
+
+	// A linked root marks every catalog entry, because none of them can be
+	// replaced without writing through the link.
+	linkedHome := t.TempDir()
+	if err := os.Symlink(checkout, filepath.Join(linkedHome, "extensions")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	linked := Installer{Home: linkedHome, Catalog: installer.Catalog}
+	if !linked.LinkedRoot() {
+		t.Fatal("linked root not detected")
+	}
+	for _, item := range linked.List() {
+		if !item.Linked {
+			t.Errorf("%s not marked linked: %+v", item.Name, item)
+		}
+	}
+}

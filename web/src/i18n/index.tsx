@@ -147,6 +147,9 @@ const zh = {
 	'ext.installExtracting': '解压中…',
 	'ext.installHint': '下载内容会校验 checksums.txt 中的 sha256；已有配置在更新时保留。',
 	'ext.installConfirm': '安装 {name} 后还需要配置凭据。继续安装？',
+	'ext.linkedBadge': '开发链接',
+	'ext.linkedRootHint': '{KI_HOME}/extensions 是指向仓库的符号链接：其中的扩展都可用，但安装不会覆盖它们。要安装发布版，请把该链接换成一个真实目录。',
+	'ext.allInstalled': '目录中的扩展都已安装。',
 
   'theme.light': '浅色',
   'theme.dark': '深色',
@@ -546,6 +549,9 @@ const en: Record<MsgKey, string> = {
 	'ext.installExtracting': 'Unpacking…',
 	'ext.installHint': 'Downloads are verified against the sha256 in checksums.txt; existing configuration survives an update.',
 	'ext.installConfirm': 'Installing {name} still needs credentials configured afterwards. Continue?',
+	'ext.linkedBadge': 'Linked checkout',
+	'ext.linkedRootHint': '{KI_HOME}/extensions is a symlink into a checkout: its packages work, but install will not overwrite them. Replace the link with a real directory to install release builds.',
+	'ext.allInstalled': 'Every catalog extension is installed.',
 
   'theme.light': 'Light',
   'theme.dark': 'Dark',

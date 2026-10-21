@@ -373,6 +373,12 @@ export type AvailableExtension = {
 	installed: boolean
 	installedVersion?: string
 	updateAvailable?: boolean
+	/**
+	 * The package resolves through a symlink (a development checkout). It is
+	 * discovered and usable, but installing over it would replace sources, so
+	 * the row explains that instead of offering a button.
+	 */
+	linked?: boolean
 	install?: { state: 'download' | 'extract' | 'done' | 'failed'; error?: string }
 }
 
@@ -386,6 +392,8 @@ export type AvailableExtensions = {
 	source?: string
 	/** True when `release` follows the newest published release. */
 	latest?: boolean
+	/** `{KI_HOME}/extensions` is a symlink, so no install can be written. */
+	linkedRoot?: boolean
 }
 
 /** One appended-system-prompt source as the settings editor sees it. */

@@ -91,6 +91,9 @@ func (s *Server) getAvailableExtensions(w http.ResponseWriter, _ *http.Request) 
 		if item.InstalledVersion != "" {
 			row["installedVersion"] = item.InstalledVersion
 		}
+		if item.Linked {
+			row["linked"] = true
+		}
 		if state, ok := s.extInstall.get(item.Name); ok {
 			row["install"] = map[string]any{"state": state.state, "error": state.err}
 		}
@@ -103,6 +106,10 @@ func (s *Server) getAvailableExtensions(w http.ResponseWriter, _ *http.Request) 
 		// A local build follows the newest published release instead of a tag
 		// it cannot know; the UI says so instead of showing "latest/download".
 		"latest": strings.HasPrefix(s.cfg.Extensions.Release, "latest/"),
+		// A linked extensions root is a checkout: discovery uses it, but every
+		// install is refused, so the UI explains that instead of offering a
+		// button that always fails.
+		"linkedRoot": s.installer().LinkedRoot(),
 	})
 }
 
@@ -120,6 +127,10 @@ func (s *Server) installExtension(w http.ResponseWriter, r *http.Request) {
 	}
 	if !found {
 		http.Error(w, "extension is not in the install catalog", http.StatusNotFound)
+		return
+	}
+	if installer.LinkedRoot() {
+		http.Error(w, "KI_HOME/extensions is a symlink to a checkout; install into a real directory", http.StatusConflict)
 		return
 	}
 	if installer.Release == "" {

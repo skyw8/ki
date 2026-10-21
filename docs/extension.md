@@ -370,7 +370,8 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 - **发布产物**：`scripts/build-extensions.go -zip -out <dir>` 为每个包生成 `<name>-<goos>-<goarch>.zip`（内含单一 `<name>/` 顶层目录，保留可执行位）。`release.yml` 的 `extension-assets` job 在三个支持平台各跑一次，`publish` 把 `ki-*` 与 `*.zip` 一起写进 `checksums.txt`。
 - **下载与校验**：先取 `checksums.txt`，按资产名查 sha256；下载后比对，不一致直接失败。解压拒绝符号链接、非普通文件、绝对路径与 `..` 逃逸，单文件 256 MiB、总计 1 GiB、条目数 8192 上限。解压后必须能通过 `Discover` 的 manifest 校验，且 `name` 与 catalog 一致。
 - **发布方式**：解压到 `{KI_HOME}/extensions/.stage-<name>-*`（隐藏目录，Discover 跳过），再把旧包挪到 `.replaced-<name>-*` 并 `rename` 新包；两步都在同一文件系统。失败会尝试把旧包放回。安装/更新会保留 `config.json` / `cache.json` / `state.json`，不保留其它旧文件。
-- **保护**：`{KI_HOME}/extensions` 本身是符号链接（常见于把仓库 `extensions/` 链进来开发）时拒绝安装；目标包是符号链接时同样拒绝，绝不删除 checkout。
+- **保护**：`{KI_HOME}/extensions` 本身是符号链接（常见于把仓库 `extensions/` 链进来开发）时拒绝安装；目标包是符号链接时同样拒绝，绝不删除 checkout。`GET /v1/extensions/available` 会返回 `linkedRoot` 和逐项 `linked`，`POST` 返回 **409**，UI 据此显示「开发链接」而不是一个必然失败的按钮。
+- **空列表**：五个包都已安装时设置页仍渲染「可安装」区，并写明「目录中的扩展都已安装」——整段消失会让人误以为构建里没有这个功能。
 - **状态**：安装是后台任务。`POST` 立即 202，`GET /v1/extensions/available` 的 `install.state` 依次为 `download` → `extract` → `done` / `failed`（带 `error`）；每次阶段变化推 `scope=extensions` invalidation。成功后调用一次全局 Reload，运行中的会话沿用旧快照，release 后生效。同一包重复点击是幂等的（返回当前阶段），不会并发解压。
 - **清理**：安装开始时删除超过一小时的 `.stage-*` / `.replaced-*` / `.download-*` 残留。
 

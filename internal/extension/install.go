@@ -109,6 +109,11 @@ type Available struct {
 	// UpdateAvailable means a package is installed with a different manifest
 	// version than the catalog offers.
 	UpdateAvailable bool `json:"updateAvailable,omitempty"`
+	// Linked means the package (and usually the whole extensions root) is a
+	// symlink into a checkout. It is discovered and usable, but installing over
+	// it would overwrite the sources, so the installer refuses and the UI says
+	// why instead of offering a button that cannot work.
+	Linked bool `json:"linked,omitempty"`
 }
 
 // Install stages reported while a download installs.
@@ -247,9 +252,17 @@ func (i Installer) entry(name string) (InstallEntry, bool) {
 	return InstallEntry{}, false
 }
 
+// LinkedRoot reports whether {KI_HOME}/extensions is a symlink, which is how a
+// developer points Ki at a checkout. Discovery follows it; installing must not.
+func (i Installer) LinkedRoot() bool {
+	info, err := os.Lstat(i.root())
+	return err == nil && info.Mode()&os.ModeSymlink != 0
+}
+
 // List merges the catalog with installed packages without any network access.
 func (i Installer) List() []Available {
 	root := i.root()
+	linkedRoot := i.LinkedRoot()
 	out := make([]Available, 0, len(i.catalog().Extensions))
 	for _, entry := range i.catalog().Extensions {
 		item := Available{
@@ -259,11 +272,17 @@ func (i Installer) List() []Available {
 			Capabilities: slices.Clone(entry.Capabilities),
 			Asset:        i.AssetName(entry.Name),
 		}
-		if d, ok := loadPackage(filepath.Join(root, entry.Name)); ok && d.Name == entry.Name {
+		pkg := filepath.Join(root, entry.Name)
+		if d, ok := loadPackage(pkg); ok && d.Name == entry.Name {
 			item.Installed = true
 			item.InstalledVersion = d.Version
 			item.UpdateAvailable = d.Version != "" && entry.Version != "" && d.Version != entry.Version
 		}
+		// Why per package and not only for the root: a single package can be
+		// linked even when the root is a real directory, and that is the case
+		// an install would otherwise silently replace.
+		info, err := os.Lstat(pkg)
+		item.Linked = linkedRoot || (err == nil && info.Mode()&os.ModeSymlink != 0)
 		out = append(out, item)
 	}
 	return out

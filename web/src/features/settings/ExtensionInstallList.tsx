@@ -27,6 +27,7 @@ export function ExtensionInstallList({ api, refreshKey, onInstalled }: {
   const [items, setItems] = useState<AvailableExtension[]>([])
   const [release, setRelease] = useState('')
   const [latest, setLatest] = useState(false)
+  const [linkedRoot, setLinkedRoot] = useState(false)
   const [source, setSource] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -46,6 +47,7 @@ export function ExtensionInstallList({ api, refreshKey, onInstalled }: {
       setItems(next)
       setRelease(got.release ?? '')
       setLatest(!!got.latest)
+      setLinkedRoot(!!got.linkedRoot)
       setSource(got.source ?? '')
       setError('')
       const arrived = next.filter(item => item.installed && awaiting.current.has(item.name))
@@ -82,9 +84,11 @@ export function ExtensionInstallList({ api, refreshKey, onInstalled }: {
     }
   }
 
-  const candidates = items.filter(item => !item.installed || item.updateAvailable || item.install?.state === 'failed')
+  // Why not hide when empty: an empty section is indistinguishable from a build
+  // without the feature, which is exactly how a linked checkout looked before.
+  // The section always renders, and an all-installed list says so.
+  const candidates = items.filter(item => !item.installed || item.updateAvailable || item.linked || item.install?.state === 'failed')
   if (loading) return null
-  if (!candidates.length) return null
 
   return (
     <section className="ext-install" data-testid="extensions-available">
@@ -99,6 +103,10 @@ export function ExtensionInstallList({ api, refreshKey, onInstalled }: {
       </header>
       {error ? <p className="settings-error-inline" role="alert">{error}</p> : null}
       {!release ? <p className="cfg-hint" data-testid="extensions-no-release">{t('ext.availableNoReleaseHint')}</p> : null}
+      {linkedRoot ? (
+        <p className="cfg-hint" data-testid="extensions-linked-root">{t('ext.linkedRootHint')}</p>
+      ) : null}
+      {!candidates.length ? <p className="cfg-hint" data-testid="extensions-all-installed">{t('ext.allInstalled')}</p> : null}
       <ul className="cfg-list">
         {candidates.map(item => {
           const stage = item.install?.state === 'download'
@@ -123,22 +131,26 @@ export function ExtensionInstallList({ api, refreshKey, onInstalled }: {
                 ) : null}
                 {busy ? <p className="cfg-desc" data-testid={`ext-install-stage-${item.name}`}>{stage}</p> : null}
               </div>
-              <button
-                type="button"
-                className="primary-btn ext-install-btn"
-                data-testid={`ext-install-${item.name}`}
-                disabled={busy || !release}
-                onClick={() => void install(item)}
-              >
-                {busy ? <span className="spin" aria-hidden /> : null}
-                {busy
-                  ? stage
-                  : item.install?.state === 'failed'
-                    ? t('ext.retry')
-                    : item.installed && item.updateAvailable
-                      ? t('ext.update')
-                      : t('ext.install')}
-              </button>
+              {item.linked ? (
+                <span className="cfg-src" data-testid={`ext-linked-${item.name}`}>{t('ext.linkedBadge')}</span>
+              ) : (
+                <button
+                  type="button"
+                  className="primary-btn ext-install-btn"
+                  data-testid={`ext-install-${item.name}`}
+                  disabled={busy || !release || linkedRoot}
+                  onClick={() => void install(item)}
+                >
+                  {busy ? <span className="spin" aria-hidden /> : null}
+                  {busy
+                    ? stage
+                    : item.install?.state === 'failed'
+                      ? t('ext.retry')
+                      : item.installed && item.updateAvailable
+                        ? t('ext.update')
+                        : t('ext.install')}
+                </button>
+              )}
             </li>
           )
         })}

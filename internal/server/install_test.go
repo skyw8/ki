@@ -262,3 +262,64 @@ func TestInstallExtensionRequiresRelease(t *testing.T) {
 		t.Fatalf("status=%d", res.StatusCode)
 	}
 }
+
+func TestAvailableAndInstallReportALinkedRoot(t *testing.T) {
+	srv, hs := testServer(t)
+	checkout := t.TempDir()
+	// Replace the real extensions directory with the developer layout: a link
+	// at the checkout. Discovery follows it, installs must refuse, and the API
+	// has to say which one is happening instead of leaving the UI to guess.
+	if err := os.RemoveAll(filepath.Join(srv.cfg.Home, "extensions")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(checkout, "goal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "goal", "extension.json"), []byte(`{"name":"goal","version":"0.1.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(checkout, filepath.Join(srv.cfg.Home, "extensions")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	srv.cfg.Extensions.Release = "v9.9.9"
+
+	res, err := authedGet(t, hs, "/v1/extensions/available")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	var out struct {
+		Items []struct {
+			Name      string `json:"name"`
+			Installed bool   `json:"installed"`
+			Linked    bool   `json:"linked"`
+		} `json:"items"`
+		LinkedRoot bool `json:"linkedRoot"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.LinkedRoot {
+		t.Fatal("linkedRoot not reported")
+	}
+	for _, item := range out.Items {
+		if !item.Linked {
+			t.Errorf("%s not marked linked", item.Name)
+		}
+	}
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/extensions/goal/install", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	post, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = post.Body.Close()
+	if post.StatusCode != http.StatusConflict {
+		t.Fatalf("status=%d, want 409 for a linked root", post.StatusCode)
+	}
+	// The checkout must be untouched.
+	if _, err := os.Stat(filepath.Join(checkout, "goal", "extension.json")); err != nil {
+		t.Fatalf("checkout damaged: %v", err)
+	}
+}
