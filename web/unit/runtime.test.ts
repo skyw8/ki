@@ -30,4 +30,9 @@ test('tool display normalizes snake and Pascal names without changing the protoc
  expect(canonicalToolName('WriteStdin')).toBe('write_stdin')
  expect(canonicalToolName('spawn_agent')).toBe('spawn_agent')
  expect(canonicalToolName('HTTPFetch')).toBe('http_fetch')
+ // Provider-native spellings collapse onto the Ki tool that renders them.
+ expect(canonicalToolName('Bash')).toBe('exec_command')
+ expect(canonicalToolName('TaskOutput')).toBe('write_stdin')
+ expect(canonicalToolName('Agent')).toBe('spawn_agent')
+ expect(canonicalToolName('Read')).toBe('read')
 })

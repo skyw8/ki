@@ -633,6 +633,9 @@ function rebuild(s: ViewState): ViewState {
     // Final SSE identity becomes the persisted entry id, while the mounted row
     // keeps its render key and parsed segments through the tail reconciliation.
     if (old?.kind === 'assistant' && n.kind === 'assistant' && old.renderKey) n = { ...n, renderKey: old.renderKey }
+    // A running shell emits progress snapshots that are not persisted as the
+    // row's result. Rebuilding from disk must not blank the live output.
+    if (old?.kind === 'tool' && n.kind === 'tool' && old.running && old.details && n.details === undefined) n = { ...n, details: old.details }
     return old && sameValue(old, n) ? old : n
   })
   attachCompactBaselines(next)

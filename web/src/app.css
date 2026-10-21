@@ -1349,10 +1349,91 @@
 .tool-spec-h { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
 .tool-out { margin: 0; padding: 8px 10px; max-height: 240px; overflow: auto; font-family: var(--ds-font-family-code); font-size: 12px; white-space: pre-wrap; background: var(--dsw-alias-markdown-code); }
 .tool-out.term { background: #111; color: #d6ffd6; }
-.diff { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--dsw-alias-border-l2); }
-.diff-old, .diff-new { margin: 0; padding: 8px; font-size: 12px; white-space: pre-wrap; font-family: var(--ds-font-family-code); max-height: 200px; overflow: auto; }
-.diff-old { background: color-mix(in srgb, var(--dsw-alias-state-error) 12%, var(--dsw-alias-bg-base)); }
-.diff-new { background: color-mix(in srgb, var(--dsw-alias-state-success) 12%, var(--dsw-alias-bg-base)); }
+
+/* Diff chrome. react-diff-view's stylesheet is variable-driven, so the whole
+   palette maps onto design tokens instead of its GitHub defaults. */
+.diffs { display: flex; flex-direction: column; gap: 8px; }
+.diff-file { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; background: var(--dsw-alias-bg-base); }
+.diff-head { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 2px 6px 2px 10px; background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.diff-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-family: var(--ds-font-family-code); font-size: 12px; }
+.diff-path:hover:not(:disabled) { text-decoration: underline; }
+.diff-path:disabled { cursor: default; }
+.diff-kind { flex: none; padding: 0 6px; border-radius: 6px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font-size: 11px; }
+.diff-kind.add { color: var(--dsw-alias-state-success); }
+.diff-kind.delete { color: var(--dsw-alias-state-error); }
+.diff-stat { flex: none; display: inline-flex; gap: 6px; font-family: var(--ds-font-family-code); font-size: 11px; font-variant-numeric: tabular-nums; }
+.diff-add { color: var(--dsw-alias-state-success); }
+.diff-del { color: var(--dsw-alias-state-error); }
+.diff-copy { flex: none; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px; color: var(--dsw-alias-label-caption); }
+.diff-copy:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.diff-body { --diff-font-family: var(--ds-font-family-code); --diff-text-color: var(--dsw-alias-label-primary); --diff-background-color: var(--dsw-alias-bg-base); --diff-gutter-selected-background-color: var(--dsw-alias-bg-layer-2); --diff-code-selected-background-color: var(--dsw-alias-bg-layer-2); --diff-code-insert-background-color: color-mix(in srgb, var(--dsw-alias-state-success) 14%, transparent); --diff-code-delete-background-color: color-mix(in srgb, var(--dsw-alias-state-error) 14%, transparent); --diff-gutter-insert-background-color: color-mix(in srgb, var(--dsw-alias-state-success) 24%, transparent); --diff-gutter-delete-background-color: color-mix(in srgb, var(--dsw-alias-state-error) 24%, transparent); --diff-code-insert-edit-background-color: color-mix(in srgb, var(--dsw-alias-state-success) 30%, transparent); --diff-code-delete-edit-background-color: color-mix(in srgb, var(--dsw-alias-state-error) 30%, transparent); font-size: 12px; max-height: 420px; overflow: auto; }
+.diff-body .diff-line { line-height: 1.5; }
+.diff-body .diff-code { white-space: pre; word-break: normal; padding: 0 10px 0 .8em; }
+.diff-body .diff-gutter { padding: 0 8px; color: var(--dsw-alias-label-caption); }
+.diff-empty, .diff-total { padding: 8px 10px; color: var(--dsw-alias-label-tertiary); font-size: 12px; }
+.diff-more { display: block; width: 100%; min-height: 32px; padding: 6px 10px; border-top: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); font-size: 12px; text-align: left; }
+.diff-more:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+
+/* Search hits and file lists. Rows are buttons so the path is actionable, but
+   they stay flush with the transcript instead of looking like controls. */
+.hits { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; background: var(--dsw-alias-bg-base); }
+.hit { display: flex; gap: 10px; width: 100%; min-height: 28px; padding: 3px 10px; text-align: left; font-family: var(--ds-font-family-code); font-size: 12px; }
+.hit:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.hit:disabled { cursor: default; }
+.hit-path { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-secondary); }
+.hit-line, .hit-count { flex: none; min-width: 3ch; text-align: right; color: var(--dsw-alias-label-caption); font-variant-numeric: tabular-nums; }
+.hit-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; color: var(--dsw-alias-label-primary); }
+.hits-meta { padding: 4px 10px; border-top: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+
+/* read: the file keeps its own scroll so a long page does not push the row. */
+.read-block { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; }
+.read-block .tool-read { border-radius: 0; }
+.read-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 4px 10px; border-top: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-caption); font-size: 11px; }
+.read-next { color: var(--dsw-alias-label-secondary); }
+
+/* Coordination receipts: one line of labelled values. */
+.receipt { display: flex; flex-wrap: wrap; gap: 4px 8px; padding: 6px 0; }
+.receipt-item { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; max-width: 100%; padding: 2px 8px; border-radius: 6px; background: var(--dsw-alias-bg-layer-1); font-size: 12px; }
+.receipt-label { flex: none; color: var(--dsw-alias-label-caption); font-size: 11px; }
+.receipt-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ds-font-family-code); user-select: text; cursor: text; }
+.receipt-status .receipt-value, .receipt-message .receipt-value { font-family: inherit; }
+
+/* Code Mode results: one block per nested call, failures called out. */
+.cell-result { display: flex; flex-direction: column; gap: 6px; }
+.cell-call { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; }
+.cell-call.err { border-color: color-mix(in srgb, var(--dsw-alias-state-error) 45%, var(--dsw-alias-border-l1)); }
+.cell-call-head { display: flex; gap: 8px; padding: 4px 10px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-caption); font-size: 11px; }
+.cell-call-index { font-variant-numeric: tabular-nums; }
+.cell-call-state { color: var(--dsw-alias-state-success); }
+.cell-call-state.err { color: var(--dsw-alias-state-error); }
+.cell-call-body { margin: 0; padding: 6px 10px; max-height: 320px; overflow: auto; font-family: var(--ds-font-family-code); font-size: 12px; white-space: pre; }
+
+/* Terminal card. Output stays `pre` so columns line up; only the block
+   scrolls, never the page, and a phone-width viewport switches to wrapping
+   because a horizontal scroll there is unusable. */
+.term { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; background: var(--dsw-alias-bg-layer-1); }
+.term-bar { display: flex; gap: 8px; padding: 7px 10px; background: var(--dsw-alias-bg-layer-2); border-bottom: 1px solid var(--dsw-alias-border-l2); }
+.term-prompt { flex: none; color: var(--dsw-alias-label-caption); font-family: var(--ds-font-family-code); font-size: 12px; user-select: none; }
+.term-cmd { flex: 1; min-width: 0; font-family: var(--ds-font-family-code); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; cursor: text; }
+.term-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 4px 10px; color: var(--dsw-alias-label-caption); font-size: 11px; }
+.term-meta-item { min-width: 0; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.term-meta-item.warn { color: var(--dsw-alias-state-warning); }
+.term-exit { margin-left: auto; padding: 0 6px; border-radius: 6px; font-family: var(--ds-font-family-code); font-variant-numeric: tabular-nums; }
+.term-exit.ok { color: var(--dsw-alias-state-success); background: color-mix(in srgb, var(--dsw-alias-state-success) 12%, transparent); }
+.term-exit.failed { color: var(--dsw-alias-state-error); background: color-mix(in srgb, var(--dsw-alias-state-error) 12%, transparent); }
+.term-exit.running { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); }
+.term-out { margin: 0; padding: 8px 10px; max-height: 320px; overflow: auto; font-family: var(--ds-font-family-code); font-size: 12px; line-height: 1.45; white-space: pre; tab-size: 4; background: var(--dsw-alias-markdown-code); user-select: text; cursor: text; }
+.term-full { display: block; width: 100%; min-height: 40px; padding: 8px 10px; border-top: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); font-size: 12px; text-align: left; }
+.term-full:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.tool-exit { flex: none; padding: 0 5px; border-radius: 6px; color: var(--dsw-alias-label-caption); background: var(--dsw-alias-bg-layer-2); font-family: var(--ds-font-family-code); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tool-exit.err { color: var(--dsw-alias-state-error); background: color-mix(in srgb, var(--dsw-alias-state-error) 12%, transparent); }
+
+/* Full-output modal: the file is streamed from the server, so the browser
+   only ever sees same-origin bytes. */
+.output-preview { width: min(960px, calc(100vw - 32px)); height: min(720px, calc(100dvh - 32px)); display: flex; flex-direction: column; border: 1px solid var(--dsw-alias-border-l2); border-radius: 16px; background: var(--dsw-alias-bg-layer-1); box-shadow: var(--dsw-shadow-lv4); overflow: hidden; }
+.output-preview-meta { flex: none; padding: 4px 16px 8px; color: var(--dsw-alias-label-caption); font-size: 11px; overflow-wrap: anywhere; }
+.output-preview-note { flex: none; margin: 0 16px 8px; padding: 6px 9px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.output-preview-body { flex: 1; min-height: 0; margin: 0; padding: 0 16px 16px; overflow: auto; font-family: var(--ds-font-family-code); font-size: 12px; white-space: pre; tab-size: 4; user-select: text; }
 .md table { border-collapse: collapse; width: 100%; margin: 0; font-size: 14px; }
 .md th, .md td { border: 1px solid var(--dsw-alias-border-l2); padding: 4px 8px; }
 .md pre code { display: block; }
@@ -1438,7 +1519,6 @@
 .diagram-zoom-stage:active { cursor: grabbing; }
 .diagram-zoom-canvas { margin: auto; }
 .diagram-zoom-canvas img { display: block; width: 100%; height: 100%; user-select: none; }
-.sys-diff { font-size: 12px; }
 
 .modal-mask {
   position: fixed;
@@ -2985,7 +3065,15 @@ select:focus-visible {
   .message-images.count-many { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .md-table-scroll { -webkit-overflow-scrolling: touch; }
   .md table { white-space: nowrap; }
-  .diff { grid-template-columns: minmax(0, 1fr); }
+  /* A horizontal scroll on a phone is unusable, so the terminal wraps there. */
+  .term-out { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .diff-body { max-height: 60dvh; }
+  .hit-path { max-width: 40%; }
+  .hit-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .receipt-item { max-width: 100%; }
+  .receipt-value { white-space: normal; overflow-wrap: anywhere; }
+  .output-preview { width: 100vw; height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom)); border-radius: 0; border: 0; }
+  .output-preview-body { white-space: pre-wrap; overflow-wrap: anywhere; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
   .tool-row-h { min-height: 40px; }
   .tool-preview { max-width: 44%; }
   /* --keyboard-inset lifts the docked composer above the software keyboard on

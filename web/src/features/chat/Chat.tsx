@@ -1,4 +1,11 @@
 import { canonicalToolName } from '../../lib/toolname'
+import { TerminalBlock } from './tools/TerminalBlock'
+import { DiffView } from './tools/DiffView'
+import { ReadBlock } from './tools/ReadBlock'
+import { GrepHits, PathsFromGlob } from './tools/SearchResults'
+import { AgentList, AgentReceipt } from './tools/Receipts'
+import { CodeModeResult } from './tools/CodeModeResult'
+import { diffFiles, execSnapshotFromProcess, execSnapshotOf, globDetails, grepDetails, readDetails, syntheticEdit, writeDetails, writeDiff } from './tools/parse'
 import { Fragment, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { flushSync } from 'react-dom'
 import { observeElementOffset, useVirtualizer } from '@tanstack/react-virtual'
@@ -17,9 +24,12 @@ import { cacheHitRate, cacheMisses, formatDuration, formatTokens, formatTokensPe
 import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, groupTurns, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
 import { COLLAPSED_TOOL_HEIGHT, rememberRowHeight, rowBodyToken, rowHeightEstimate, sameRowRevision, UNKNOWN_WIDTH, type RowHeightRevision } from '../../lib/rowHeight'
 import { copyText } from '../../lib/clipboard'
-import type { ChatNode, CompactTurn } from '../../api/types'
+import type { ChatNode, CompactTurn, ProcessSnapshot } from '../../api/types'
 
 const OVERSCAN = 4
+
+// Coordination tools whose result is a receipt, not a payload.
+const RECEIPT_TOOLS = new Set(['spawn_agent', 'send_message', 'followup_task', 'wait_agent', 'interrupt_agent', 'list_agents'])
 
 function fmtUsage(u: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }): string {
   let s = `${u.input ?? 0}→${u.output ?? 0}`
@@ -186,16 +196,24 @@ function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatN
 }
 
 function ToolRow({
-  node, title, summary, onInspect, onHydrate,
+  node, title, summary, processes, open, onToggle, onInspect, onHydrate, onOpenFile,
 }: {
   node: Extract<ChatNode, { kind: 'tool' }>
   title: string
   summary: string
+  processes?: ProcessSnapshot[]
+  /**
+   * Expansion is owned by ChatView: the virtualizer remounts tail rows while
+   * a batch settles, so a local `useState` silently discarded the reader's
+   * toggle. Keying it by row id survives that unmount.
+   */
+  open: boolean
+  onToggle: () => void
   onInspect?: (n: ChatNode) => void
   onHydrate?: (id: string) => Promise<boolean>
+  onOpenFile?: (path: string) => void
 }) {
   const { t } = useI18n()
-  const [open, setOpen] = useState(false)
   const name = canonicalToolName(node.name)
   const body = useBodyLoad(node.id, onHydrate)
   useTranscriptRowMeasurement([node, open, body.loading, body.failed])
@@ -205,19 +223,33 @@ function ToolRow({
   const newS = argStr(node.args, 'new_string')
   const content = argStr(node.args, 'content')
   const offset = Number(argStr(node.args, 'offset') || '1') || 1
-	const editDiff = node.details && typeof node.details === 'object'
-	  ? String((node.details as Record<string, unknown>).diff ?? '')
-	  : ''
-	const patchDiff = name === 'apply_patch' && node.details && typeof node.details === 'object'
-	  ? (((node.details as Record<string, unknown>).changes as Array<Record<string, unknown>> | undefined) ?? []).map(c => String(c.unified_diff ?? '')).filter(Boolean).join('\n')
-	  : ''
+  // Shell rows read their structured snapshot instead of the model-facing JSON
+  // text. A finished row persists it in details; a running one only has the
+  // live process list, whose snapshots are cumulative rather than deltas.
+  const live = name === 'exec_command' || name === 'write_stdin'
+    ? processes?.find(p => p.tool_call_id === node.id) ?? undefined
+    : undefined
+  const terminal = live ? execSnapshotFromProcess(live) : execSnapshotOf(node.details, node.result ?? '')
+  const patchDiffs = diffFiles(node.details)
+  const written = name === 'write' ? writeDetails(node.details) : null
+  const grep = name === 'grep' ? grepDetails(node.details) : null
+  const globbed = name === 'glob' ? globDetails(node.details) : null
+  const read = name === 'read' ? readDetails(node.details) : null
+  const receipt = RECEIPT_TOOLS.has(name)
+  const CellResult = name === 'exec' || name === 'wait' ? CodeModeResult : null
+  const editDiff = patchDiffs.length > 0 ? patchDiffs[0].diff : ''
+  const patchDiff = name === 'apply_patch' && patchDiffs.length > 0 ? patchDiffs.map(file => file.diff).join('\n') : ''
   const state = node.running ? 'running' : node.isError ? 'error' : 'ok'
   // Ticks only while this row is running, from the server's start timestamp.
   const now = useNow(!!node.running)
-  const fail = state === 'error' && node.result ? firstLine(node.result) : ''
+  // A shell's result text is its formatted snapshot, so the generic
+  // first-line failure preview would print JSON. Its failure is the command
+  // and exit status instead.
+  const fail = state === 'error' && node.result && !terminal ? firstLine(node.result) : ''
   const line = fail || summary
   const bodyIn = name === 'write' ? content : name === 'exec_command' ? cmd : prettyArgs(node.args)
-  const expandable = !!(node.truncated || node.result || bodyIn || oldS || newS || desc || editDiff || patchDiff)
+  const structured = !!terminal || patchDiffs.length > 0 || !!grep || !!globbed || receipt || !!CellResult
+  const expandable = !!(node.truncated || node.result || bodyIn || oldS || newS || desc || editDiff || patchDiff || structured)
   return (
     <div className={`tool-row${node.isError ? ' error' : ''}`} data-testid="tool-card" data-tool={name} data-state={state}>
       <div className="tool-row-h">
@@ -231,7 +263,7 @@ function ToolRow({
           onClick={() => {
             if (!expandable) return
             if (!open && node.truncated) void body.load()
-            setOpen(v => !v)
+            onToggle()
           }}
         >
           {expandable ? <IChev open={open} /> : null}
@@ -240,6 +272,9 @@ function ToolRow({
         </button>
         {line ? <span className="tool-sep" aria-hidden /> : null}
         {line ? <span className={`tool-preview${fail ? ' err' : ''}`} data-testid="tool-preview" title={line}>{line}</span> : null}
+        {terminal && terminal.status !== 'running' && terminal.exitCode !== undefined ? (
+          <span className={`tool-exit${terminal.exitCode === 0 ? '' : ' err'}`} data-testid="tool-exit">{terminal.exitCode}</span>
+        ) : null}
         {node.running && node.startedAt ? <span className="tool-duration live" data-testid="tool-duration"><Duration ms={Math.max(0, now - node.startedAt)} /></span> : null}
         {!node.running && node.durationMs != null ? <span className="tool-duration" data-testid="tool-duration"><Duration ms={node.durationMs} /></span> : null}
       </div>
@@ -247,22 +282,36 @@ function ToolRow({
         <div className="tool-row-body">
           {node.truncated ? <button type="button" className="body-load" disabled={body.loading} onClick={() => void body.load()}>{t(body.loading ? 'chat.loadingBody' : body.failed ? 'chat.retryOlder' : 'chat.loadBody')}</button> : null}
           {desc ? <div className="tool-desc" data-testid="tool-desc">{desc}</div> : null}
-          {name === 'read' && node.result ? (
+          {terminal ? (
+            <TerminalBlock
+              snapshot={terminal}
+              cmd={cmd || desc}
+              input={name === 'write_stdin' ? argStr(node.args, 'chars') : undefined}
+              running={node.running}
+              onOpenFile={onOpenFile}
+            />
+          ) : name === 'list_agents' ? (
+            <AgentList details={node.details} />
+          ) : receipt ? (
+            <AgentReceipt details={node.details} />
+          ) : CellResult ? (
+            <CellResult result={node.result ?? ''} />
+          ) : name === 'read' && read?.truncation ? (
+            <ReadBlock text={node.result ?? ''} details={read.truncation} offset={offset} />
+          ) : name === 'read' && node.result ? (
             <pre className="tool-read">{node.result.split('\n').map((ln, i) => `${String(offset + i).padStart(4, ' ')}  ${ln}`).join('\n')}</pre>
-          ) : name === 'edit' && editDiff ? (
-			<pre className="tool-out term">{editDiff}</pre>
-		  ) : name === 'apply_patch' && patchDiff ? (
-			<pre className="tool-out term sys-diff">{patchDiff}</pre>
-		  ) : name === 'edit' && (oldS || newS) ? (
-            <div className="diff">
-              {oldS ? <pre className="diff-old">{oldS}</pre> : null}
-              {newS ? <pre className="diff-new">{newS}</pre> : null}
-            </div>
-          ) : name === 'exec_command' ? (
-            <div className="tool-term">
-              {cmd ? <div className="tool-term-cmd">{cmd}</div> : null}
-              {node.result ? <pre className="tool-out term">{node.result}</pre> : null}
-            </div>
+          ) : grep ? (
+            <GrepHits details={grep} onOpenFile={onOpenFile} />
+          ) : globbed ? (
+            <PathsFromGlob details={globbed} onOpenFile={onOpenFile} />
+          ) : name === 'write' && content && written ? (
+            <DiffView files={[writeDiff(written, content)]} onOpenFile={onOpenFile} />
+          ) : patchDiffs.length ? (
+            <DiffView files={patchDiffs} onOpenFile={onOpenFile} />
+          ) : name === 'edit' && (oldS || newS) ? (
+            // A session from before structured details: build the diff from
+            // the arguments the model actually sent.
+            <DiffView files={[syntheticEdit(node.args, oldS, newS)]} onOpenFile={onOpenFile} />
           ) : (
             <div className="io-card">
               {bodyIn ? <div className="io-sec"><span className="io-lab">IN</span><span className="io-txt">{bodyIn}</span></div> : null}
@@ -476,12 +525,19 @@ type ChatItemProps = {
 	onBranch?: (n: Extract<ChatNode, { kind: 'user' }>, delta: number) => void
 	onShowBranches?: () => void
 	onHydrate?: (id: string) => Promise<boolean>
+	/** Live process snapshots, used for a running shell's output. */
+	processes?: ProcessSnapshot[]
+	/** Tool-row expansion, keyed by row id in ChatView. */
+	openTools: ReadonlySet<string>
+	onToggleTool: (id: string) => void
+	/** Open a tool's spill or task log; never navigates to a host path. */
+	onOpenFile?: (path: string) => void
 	/** Assistant node id → notable prompt-cache miss for that step. */
 	missed?: CacheMiss
 }
 
 const ChatItem = memo(function ChatItem({
-	api, node: n, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branchIndex, branchTotal, onBranch, onHydrate, onShowBranches, missed,
+	api, node: n, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branchIndex, branchTotal, onBranch, onHydrate, processes, openTools, onToggleTool, onOpenFile, onShowBranches, missed,
 }: ChatItemProps) {
   const { t } = useI18n()
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -576,16 +632,28 @@ const ChatItem = memo(function ChatItem({
   if (n.kind === 'tool') {
     const name = canonicalToolName(n.name)
     const path = argStr(n.args, 'file_path')
+    const terminal = name === 'exec_command' || name === 'write_stdin'
+      ? execSnapshotOf(n.details, n.result ?? '')
+      : null
     const summary = name === 'exec_command'
       ? (argStr(n.args, 'description') || argStr(n.args, 'cmd'))
       : path || firstLine(n.result || prettyArgs(n.args))
+    // A shell row's preview is its own metadata: a failed command's preview
+    // must explain the failure rather than print the formatted result JSON.
+    const preview = terminal && n.isError
+      ? (terminal.cmd ? `exit ${terminal.exitCode ?? '?'}: ${terminal.cmd}` : firstLine(terminal.output))
+      : summary
     return (
       <ToolRow
         node={n}
         title={name}
-        summary={summary}
+        summary={preview}
+        processes={processes}
+        open={openTools.has(n.id)}
+        onToggle={() => onToggleTool(n.id)}
         onInspect={onSelect}
         onHydrate={onHydrate}
+        onOpenFile={onOpenFile}
       />
     )
   }
@@ -593,7 +661,7 @@ const ChatItem = memo(function ChatItem({
   return <Cancellation node={n} />
 })
 
-export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, controlRef, onHydrate, onShowBranches, onVisibleEntries, jumpToId, navigationPending, onJumped, onActiveRequest, onAtBottom, onReadIntent, onLoadOlder, hasMore, olderError, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP, loadingOlder, compactTurns, loadedTurnIds, onLoadTurn }: Omit<ChatItemProps, 'node' | 'missed' | 'branchIndex' | 'branchTotal'> & {
+export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit, onStartEdit, onEditChange, onCancelEdit, onSendEdit, onAttachEdit, onFilesEdit, onFork, onRegen, branches, onBranch, scrollRef, controlRef, onHydrate, processes, onOpenFile, onShowBranches, onVisibleEntries, jumpToId, navigationPending, onJumped, onActiveRequest, onAtBottom, onReadIntent, onLoadOlder, hasMore, olderError, turnBase = 0, mode = 'detailed', keep = DEFAULT_COMPACT_KEEP, loadingOlder, compactTurns, loadedTurnIds, onLoadTurn }: Omit<ChatItemProps, 'node' | 'missed' | 'branchIndex' | 'branchTotal' | 'openTools' | 'onToggleTool'> & {
   branches?: Record<string, { index: number; total: number }>
   nodes: ChatNode[]
   turnBase?: number
@@ -639,6 +707,17 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     setListWidth(el.clientWidth)
     ro.observe(el)
     return () => ro.disconnect()
+  }, [])
+  // Tool expansion lives here, not in ToolRow: the virtualizer remounts tail
+  // rows as a batch settles, which would reset row-local state mid-click.
+  const [openTools, setOpenTools] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleTool = useCallback((id: string) => {
+    setOpenTools(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   }, [])
   const [folds, setFolds] = useState<ReadonlySet<string>>(() => new Set())
   const [loadingFolds, setLoadingFolds] = useState<ReadonlySet<string>>(() => new Set())
@@ -880,7 +959,7 @@ export function ChatView({ api, nodes: rawNodes, busy, uploading, onSelect, edit
     onRegen: (...args: Parameters<NonNullable<ChatItemProps['onRegen']>>) => actions.current.onRegen?.(...args),
     onBranch: (...args: Parameters<NonNullable<ChatItemProps['onBranch']>>) => actions.current.onBranch?.(...args),
   }), [])
-  const props = { api, busy, uploading, ...callbacks, onHydrate }
+  const props = { api, busy, uploading, ...callbacks, onHydrate, processes, openTools, onToggleTool: toggleTool, onOpenFile }
   const visibleItems = virtualizer.getVirtualItems()
   useEffect(() => {
     onVisibleEntries?.(visibleItems.flatMap(item => {

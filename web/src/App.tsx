@@ -11,6 +11,7 @@ import { PerfHud } from './features/chat/PerfHud'
 import { RequestNav } from './features/chat/RequestNav'
 import { Composer, type Draft } from './features/chat/Composer'
 import { AttachmentBrowser } from './features/attachments/AttachmentBrowser'
+import { OutputPreview } from './features/chat/tools/OutputPreview'
 import { DirectoryBrowser } from './features/sessions/DirectoryBrowser'
 import { ExtensionConfigEditor, MessageSettings, NotificationSettings, SessionConfig, SettingsToggles } from './features/settings/SessionConfig'
 import { PromptSettings } from './features/settings/PromptSettings'
@@ -319,6 +320,9 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const [draft, setDraft] = useState<Draft>({ text: '', attachments: [] })
 	const [edit, setEdit] = useState<{ messageId: string; parentId: string; draft: Draft } | null>(null)
 	const [attachmentTarget, setAttachmentTarget] = useState<'new' | 'edit' | null>(null)
+	// A tool's spill file or task log, shown through /v1/fs preview. Kept as a
+	// path (not a blob) so re-opening is cheap and the modal owns the fetch.
+	const [previewPath, setPreviewPath] = useState<string | null>(null)
 	const [uploading, setUploading] = useState(false)
   const [fileDragActive, setFileDragActive] = useState(false)
   const [models, setModels] = useState<ModelInfo[]>([])
@@ -2082,6 +2086,8 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 					busy={view.busy}
 					scrollRef={scrollRef}
 					onHydrate={requestHydrate}
+					processes={view.processes}
+					onOpenFile={setPreviewPath}
                     onVisibleEntries={history.protect}
 					onSelect={inspect}
 					edit={edit}
@@ -2339,6 +2345,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             .finally(() => setDirBusy(false))
         }}
       />
+	  <OutputPreview api={api} path={previewPath} onClose={() => setPreviewPath(null)} />
 	  <AttachmentBrowser
 		api={api}
 		open={attachmentTarget !== null}
