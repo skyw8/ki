@@ -11,6 +11,12 @@ export type Usage = {
 	 cost?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
 }
 
+/** Server-derived cache diagnostic; it is view metadata, not provider usage. */
+export type CacheMiss = {
+  missedTokens: number
+  missRatio: number
+}
+
 export type Content = {
   type: string
   text?: string
@@ -76,6 +82,7 @@ export type Entry = {
   firstKeptEntryId?: string
   tokensBefore?: number
   usage?: Usage | null
+  cacheMiss?: CacheMiss
   details?: unknown
 	sideband?: boolean
   provider?: string
@@ -187,6 +194,7 @@ export type LoopEvent = {
 	firstKeptEntryId?: string
 	tokensBefore?: number
 	usage?: Usage
+  cacheMiss?: CacheMiss
 	provider?: string
 	model?: string
 	catalogVersion?: number
@@ -577,7 +585,7 @@ export type Meta = {
 
 export type ChatNode = { turnId?: TurnId } & (
   | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string; clientRequestId?: string; completion?: Message['completion']; external?: Record<string, string>; truncated?: boolean }
-  | { kind: 'assistant'; id: string; renderKey?: string; display?: DisplayRevision; parentId?: string; text: string; thinking?: string; usage?: Usage | null; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; cancelReason?: string; cancelSource?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number; truncated?: boolean }
+  | { kind: 'assistant'; id: string; renderKey?: string; display?: DisplayRevision; parentId?: string; text: string; thinking?: string; usage?: Usage | null; cacheMiss?: CacheMiss; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; cancelReason?: string; cancelSource?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number; truncated?: boolean }
   | { kind: 'tool'; id: string; name: string; parentCallId?: string; cellId?: string; requestedToolName?: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; startedAt?: number; running?: boolean; truncated?: boolean }
   | { kind: 'compaction'; id: string; summary: string; ts?: number; tokensBefore?: number; running?: boolean; failed?: boolean; empty?: boolean; unknown?: boolean; truncated?: boolean; lifecycle?: boolean }
   | { kind: 'cancellation'; id: string; runId?: string; reason?: string; source?: string; ts?: number; truncated?: boolean }

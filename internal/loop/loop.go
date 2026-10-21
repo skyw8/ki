@@ -145,6 +145,7 @@ type Event struct {
 	FirstKeptEntryID      string            `json:"firstKeptEntryId,omitempty"`
 	TokensBefore          int               `json:"tokensBefore,omitzero"`
 	Usage                 *types.Usage      `json:"usage,omitempty"`
+	CacheMiss             *types.CacheMiss  `json:"cacheMiss,omitempty"`
 	Provider              string            `json:"provider,omitempty"`
 	Model                 string            `json:"model,omitempty"`
 	CatalogVersion        int               `json:"catalogVersion,omitzero"`

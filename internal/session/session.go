@@ -159,6 +159,9 @@ type Entry struct {
 	PromptUnchanged bool             `json:"promptUnchanged,omitzero"`
 	Truncated       bool             `json:"truncated,omitzero"`
 	ContextEstimate *ContextEstimate `json:"contextEstimate,omitempty"`
+	// CacheMiss is derived from the active branch for API views and SSE. It is
+	// never written to jsonl because it is recomputable from adjacent usage.
+	CacheMiss *types.CacheMiss `json:"cacheMiss,omitempty"`
 }
 
 // ToolSchema is the model-visible tool list on a request_header entry.
@@ -1135,6 +1138,9 @@ func Remove(dir string) error {
 }
 
 func (s *Session) appendLocked(e Entry) error {
+	// CacheMiss belongs only to a projected view; keeping it out of the
+	// append-only transcript prevents a derived diagnostic from going stale.
+	e.CacheMiss = nil
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -1154,6 +1160,9 @@ func (s *Session) appendLocked(e Entry) error {
 }
 
 func (s *Session) appendPreparedLocked(e Entry, expectedLeaf string) error {
+	// Prepared appends bypass appendLocked, but view metadata has the same
+	// non-persistence rule on every JSONL write path.
+	e.CacheMiss = nil
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err

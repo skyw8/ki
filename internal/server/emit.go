@@ -60,7 +60,10 @@ type runEmitter struct {
 	// idempotencyKey is consumed by the first user message_end, so a retried
 	// extension enqueue appends one entry instead of two. Empty when the run
 	// carries no key.
-	idempotencyKey string
+	idempotencyKey     string
+	cachePrevPrompt    int
+	cacheReported      bool
+	cacheBaselineReady bool
 }
 
 // Emit applies one loop event to every subscriber. An error aborts the run:
@@ -129,6 +132,9 @@ func (p *runEmitter) persist(ev *loop.Event) error {
 		if err := persistCompactionEvent(p.sess, ev); err != nil {
 			return fmt.Errorf("append loop event: %w", err)
 		}
+		if ev.Type == loop.CompactionEnd && ev.Status == "committed" {
+			p.cachePrevPrompt, p.cacheReported, p.cacheBaselineReady = 0, false, true
+		}
 	case loop.ToolExecutionUpdate:
 		progress, err := json.Marshal(ev.PartialResult)
 		if err != nil {
@@ -196,6 +202,27 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 			ev.Message = &annotated
 		}
 	}
+	ev.CacheMiss = nil
+	if ev.Message.Role == "assistant" && ev.Message.Usage != nil {
+		if !p.cacheBaselineReady {
+			// Why: read the entries and active leaf atomically; separate
+			// Entries/LeafID snapshots could straddle an append and lose the
+			// baseline entry needed by this live completion.
+			entries := p.sess.LeafEntries()
+			leafID := ""
+			if len(entries) > 0 {
+				leafID = entries[len(entries)-1].ID
+			}
+			p.cachePrevPrompt, p.cacheReported = session.PromptCacheBaseline(entries, leafID)
+			p.cacheBaselineReady = true
+		}
+		ev.CacheMiss = session.ClassifyCacheMiss(p.cachePrevPrompt, p.cacheReported, ev.Message.Usage)
+		prompt := ev.Message.Usage.Input + ev.Message.Usage.CacheRead + ev.Message.Usage.CacheWrite
+		if prompt > 0 {
+			p.cachePrevPrompt = prompt
+			p.cacheReported = p.cacheReported || ev.Message.Usage.CacheRead+ev.Message.Usage.CacheWrite > 0
+		}
+	}
 	key := ""
 	if ev.Message.ContextOnly {
 		key = ev.Message.ClientRequestID
@@ -234,6 +261,9 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 				return fmt.Errorf("append server compaction checkpoint: %w", checkpointErr)
 			}
 			ev.EntryID, ev.ParentID = messageEntry.ID, &messageEntry.ParentID
+			// The checkpoint intentionally starts a fresh cache-comparison
+			// baseline for the next provider request.
+			p.cachePrevPrompt, p.cacheReported, p.cacheBaselineReady = 0, false, true
 			// The dedicated checkpoint owns encrypted state. Never buffer it
 			// into ordinary message SSE or extension notifications. Copy
 			// instead of mutating the loop's assistant value: the same live

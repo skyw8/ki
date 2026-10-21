@@ -33,7 +33,8 @@ type sessionSnap struct {
 
 // loadSessionSnap reads full bodies for model execution/diagnostics, or a tail
 // window for ordinary detailed opens. want == 0 skips transcript decoding.
-// Historical views use loadIndexedSessionSnap and hydrate selected offsets.
+// Historical and default UI views use loadIndexedSessionSnap for body-free
+// branch metadata, then hydrate only the selected offsets.
 func (s *Server) loadSessionSnap(id string, full bool, want int) (*sessionSnap, error) {
 	return s.readSessionSnap(id, full, want, false)
 }
@@ -70,6 +71,9 @@ func (s *Server) readSessionSnap(id string, full bool, want int, indexed bool) (
 			return nil, err
 		}
 		snap.transcript, snap.entries = transcript, transcript.Entries()
+		if info, err := os.Stat(filepath.Join(dir, "events.jsonl")); err == nil {
+			snap.small = info.Size() <= session.TailReadLimit
+		}
 	} else if full {
 		entries, err := session.AllEntries(dir)
 		if err != nil {

@@ -350,6 +350,46 @@ test.describe('opening lifecycle', () => {
 test.describe('reader authority', () => {
   profile('tablet')
 
+  test('a sparse compact assistant row renders its server-projected cache miss', async ({ page }) => {
+    const session = await createSession(page, 'sparse-cache-miss')
+    const initial = snapshot(session, 'Prompt with a hidden previous request')
+    const answer: Entry = {
+      type: 'message',
+      id: 'cache-miss-answer',
+      parentId: initial.entries![0].id,
+      cacheMiss: { missedTokens: 191_743, missRatio: 0.9829 },
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'The sparse row still shows its cache miss' }],
+        usage: { input: 192_015, output: 204, cacheRead: 3_328 },
+        latencyMs: 3_850,
+        ttftMs: 3_130,
+      },
+    }
+    initial.entries!.push(answer)
+    initial.leafId = answer.id
+    initial.compactTurns = [{
+      id: initial.entries![0].id,
+      tailId: answer.id,
+      entryIds: [initial.entries![0].id, answer.id],
+      visibleNodeIds: [initial.entries![0].id, answer.id],
+      hiddenCount: 120,
+      entryCount: 122,
+      stepCount: 57,
+      stats: {
+        turn: 1, steps: 57, tools: 0, toolFailures: 0, elapsedMs: 0, durationMs: 0,
+        input: 192_015, output: 204, cacheRead: 3_328, cacheWrite: 0, cacheMisses: 1,
+        hasCost: false, cost: 0, ttftMs: 3_130, tps: null, live: false,
+      },
+    }]
+    await install(page, [session], [initial], 'en', 'compact')
+    await page.goto('/')
+    await open(page, session)
+
+    await expect(page.getByTestId('assistant-message')).toContainText('The sparse row still shows its cache miss')
+    await expect(page.getByTestId('cache-miss')).toBeVisible()
+  })
+
   test('an exhausted root still offers retry after compact conversion fails', async ({ page }) => {
     const session = await createSession(page, 'root-conversion')
     const initial = snapshot(session, 'Root input')

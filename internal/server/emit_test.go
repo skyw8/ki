@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -104,6 +106,78 @@ func TestEmitterIdempotencyKeyConsumedOnce(t *testing.T) {
 	}
 	if len(entries) != 2 || entries[0].IdempotencyKey != "" || entries[1].IdempotencyKey != "key-1" {
 		t.Fatalf("entries: %+v", entries)
+	}
+}
+
+func TestEmitterPublishesCacheMissWithoutPersistingIt(t *testing.T) {
+	em, sess, _ := newEmitterForTest(t)
+	if _, err := sess.AppendMessage(types.Message{Role: "assistant", Usage: &types.Usage{Input: 100, CacheRead: 29_900}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := em.Emit(loop.Event{Type: loop.MessageEnd, Message: &types.Message{
+		Role: "assistant", Content: []types.Content{{Type: "text", Text: "miss"}},
+		Usage: &types.Usage{Input: 30_000},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	var event *loop.Event
+	for _, got := range em.st.evs {
+		if got.Type == loop.MessageEnd {
+			event = got
+			break
+		}
+	}
+	if event == nil || event.CacheMiss == nil || event.CacheMiss.MissedTokens != 30_000 || event.CacheMiss.MissRatio != 1 {
+		t.Fatalf("message_end did not carry the derived cache miss: %+v", event)
+	}
+	rawEvent, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		CacheMiss *types.CacheMiss `json:"cacheMiss"`
+	}
+	if err := json.Unmarshal(rawEvent, &wire); err != nil || wire.CacheMiss == nil || wire.CacheMiss.MissedTokens != 30_000 {
+		t.Fatalf("message_end wire omitted its cache miss: raw=%s error=%v", rawEvent, err)
+	}
+	entries, err := session.AllEntries(sess.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.CacheMiss != nil {
+			t.Fatalf("view-only miss was persisted: %+v", entry)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(sess.Dir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"cacheMiss"`) {
+		t.Fatal("cache miss was added to the append-only transcript")
+	}
+}
+
+func TestEmitterCompactionResetsLiveCacheMissBaseline(t *testing.T) {
+	em, sess, _ := newEmitterForTest(t)
+	if _, err := sess.AppendMessage(types.Message{Role: "assistant", Usage: &types.Usage{Input: 100, CacheRead: 29_900}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := em.Emit(loop.Event{Type: loop.CompactionEnd, Status: "committed"}); err != nil {
+		t.Fatal(err)
+	}
+	if !em.cacheBaselineReady || em.cachePrevPrompt != 0 || em.cacheReported {
+		t.Fatalf("committed compaction did not reset the live cache baseline: %+v", em)
+	}
+	if err := em.Emit(loop.Event{Type: loop.MessageEnd, Message: &types.Message{
+		Role: "assistant", Usage: &types.Usage{Input: 30_000},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range em.st.evs {
+		if event.Type == loop.MessageEnd && event.CacheMiss != nil {
+			t.Fatalf("post-compaction request was compared against pre-compaction usage: %+v", event.CacheMiss)
+		}
 	}
 }
 

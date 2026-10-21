@@ -1,10 +1,11 @@
 import { mergeAgentSnapshots, mergeProcessSnapshots } from './runtime'
-import type { CompactTurn, ChatNode, Content, Entry, IndexEntry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from '../api/types'
+import type { CacheMiss, CompactTurn, ChatNode, Content, Entry, IndexEntry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from '../api/types'
 import { entryTurns, groupTurns, isHumanEntry, isHumanPrompt, isTransientUserId, reconcileUserNodes, userMessageIdentity } from './transcriptIdentity'
 import type { TurnId } from './transcriptIdentity'
 import { bodyKind, bodyRank, coveredTurns, projectedBodies } from './transcriptCoverage'
- import { compactionOperations, isCompactionLifecycle } from './compactionLifecycle'
+import { compactionOperations, isCompactionLifecycle } from './compactionLifecycle'
 export { isHumanPrompt, reconcileUserNodes } from './transcriptIdentity'
+export type { CacheMiss } from '../api/types'
 
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
@@ -1073,7 +1074,7 @@ function applyEntry(s: ViewState, e: Entry, withNode = true) {
     return
   }
   if (e.type === 'message' && e.message) {
-    applyMessage(s, e.message, e.id, e.timestamp, e.parentId, e.truncated, withNode)
+    applyMessage(s, e.message, e.id, e.timestamp, e.parentId, e.truncated, withNode, e.cacheMiss)
     return
   }
   if (e.details && typeof e.details === 'object') {
@@ -1169,7 +1170,7 @@ function applyCompactEvent(
   }
 }
 
-function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | number, parentId?: string, truncated?: boolean, withNode = true) {
+function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | number, parentId?: string, truncated?: boolean, withNode = true, cacheMiss?: CacheMiss) {
   if (m.role === 'user') {
     const text = messageText(m)
     if (s.turnId !== id && (isHumanPrompt(m.origin) || !s.turnId)) {
@@ -1217,6 +1218,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       text,
       thinking,
       usage: m.usage,
+      cacheMiss,
       ttftMs: m.ttftMs,
       latencyMs: m.latencyMs,
       error: m.errorMessage,
@@ -1619,7 +1621,7 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     case 'message_end':
     case 'message_update':
       applyLiveMessage(next, ev)
-      if (ev.type === 'message_end' && ev.entryId && ev.message) persistLiveEntry(next, { type: 'message', id: ev.entryId, parentId: ev.parentId, message: ev.message })
+      if (ev.type === 'message_end' && ev.entryId && ev.message) persistLiveEntry(next, { type: 'message', id: ev.entryId, parentId: ev.parentId, message: ev.message, cacheMiss: ev.cacheMiss })
       break
     case 'tool_execution_start':
       if (ev.toolCallId) {
@@ -1739,6 +1741,11 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
     // stream forever next to the persisted node.
     const stale = lastStreamingAssistant(s)
     if (stale >= 0) dropStreamingAssistant(s, stale)
+    if (ev.cacheMiss) {
+      s.nodes = s.nodes.map(n => n.kind === 'assistant' && n.id === ev.entryId
+        ? { ...n, cacheMiss: ev.cacheMiss }
+        : n)
+    }
     return
   }
 
@@ -1768,7 +1775,7 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
       return
     }
     if (ev.type === 'message_end') {
-      applyMessage(s, m, ev.entryId || `live-asst-${s.nodes.length}`, undefined)
+      applyMessage(s, m, ev.entryId || `live-asst-${s.nodes.length}`, undefined, undefined, false, true, ev.cacheMiss)
     }
     return
   }
@@ -1787,6 +1794,7 @@ function applyLiveMessage(s: ViewState, ev: LoopEvent) {
     // value, which wins when present.
     ts: m.timestamp ?? node.ts,
     usage: m.usage ?? node.usage,
+    cacheMiss: ev.cacheMiss ?? node.cacheMiss,
     ttftMs: m.ttftMs ?? node.ttftMs,
     latencyMs: m.latencyMs ?? node.latencyMs,
     error: m.errorMessage || node.error,
@@ -2220,8 +2228,7 @@ export type TurnStats = {
   /** Completed tool calls in the turn, and how many of them failed. */
   tools: number
   toolFailures: number
-  /** Notable prompt-cache misses in the turn; same rule as `cacheMisses`, so
-   * the divider count matches the per-step cache-miss badges. */
+  /** Notable prompt-cache misses in the turn, as projected by the server. */
   cacheMisses: number
   /** First step's time-to-first-token; 0 when the provider reported none. */
   ttftMs: number
@@ -2274,12 +2281,6 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
   let acc: Acc | null = null
   let turn = base
   const groups = new Map(groupTurns(nodes).map(group => [group.nodes[0].id, group]))
-  // Cache-miss detection mirrors `cacheMisses`: `prevPrompt` is the previous
-  // completed step's whole prompt and `cacheReported` turns on once any step
-  // has shown cache activity (so a provider that never reports caching is not
-  // counted). Compaction clears both because the context legitimately changed.
-  let prevPrompt = 0
-  let cacheReported = false
   const flush = () => {
     if (!acc) return
     // The span reaches the turn's last node timestamp. Tool nodes carry their
@@ -2341,23 +2342,8 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
         acc.cacheRead += read
         acc.cacheWrite += write
         if (u.cost) { acc.hasCost = true; acc.cost += u.cost.total }
-        // Mirrors `cacheMisses` exactly: a miss is how much of the previous
-        // prompt this step failed to read back, once it clears the noise floor
-        // and the notice gate. First step, no-cache providers, and appends to
-        // the prefix never count.
-        const prompt = (u.input ?? 0) + read + write
-        if (prompt > 0) {
-          if (prevPrompt > 0 && (read + write > 0 || cacheReported)) {
-            const missedTokens = Math.min(prevPrompt, prompt) - read
-            if (missedTokens > CACHE_MISS_NOISE_FLOOR) {
-              const missRatio = missedTokens / prevPrompt
-              if (missedTokens >= CACHE_MISS_NOTICE_TOKENS || missRatio >= CACHE_MISS_NOTICE_RATIO) acc.cacheMisses += 1
-            }
-          }
-          prevPrompt = prompt
-          cacheReported = cacheReported || read + write > 0
-        }
       }
+      if (n.cacheMiss) acc.cacheMisses += 1
       // Same decode-span rule throughout: no TTFT means no TPS estimate.
       if (n.latencyMs != null && n.ttftMs != null && n.ttftMs > 0 && (u?.output ?? 0) > 0) {
         const decode = n.latencyMs - n.ttftMs
@@ -2372,10 +2358,6 @@ export function turnStats(nodes: ChatNode[], base = 0): Map<string, TurnStats> {
       if (n.isError) acc.toolFailures += 1
     } else if (n.kind === 'compaction') {
       if (n.lifecycle) continue
-      // A compaction legitimately rewrites the context, so cache comparison
-      // restarts from the next step (pi clears its previous-request state too).
-      prevPrompt = 0
-      cacheReported = false
       // A compaction has no first-token span, so it clears the latest-step
       // readouts instead of leaving the previous assistant's values showing.
       acc.lastTtftMs = 0
@@ -2470,72 +2452,11 @@ export function cacheHitRate(usage?: Usage | null): number | null {
   return (usage.cacheRead ?? 0) / prompt * 100
 }
 
-/** Prompt-cache misses at or below this many tokens are cache-breakpoint
- * granularity noise, not a real break. Mirrors pi's `NOISE_FLOOR_TOKENS` and
- * the ~1K-token minimum cacheable prefix OpenAI and Anthropic document, below
- * which a sub-prefix cannot be cached at all. */
-export const CACHE_MISS_NOISE_FLOOR = 1024
-
-/** pi's transcript-notice gate: a counted miss only surfaces when it re-billed
- * at least this many tokens, or this fraction of the previous prompt. The
- * ratio catches prefix rewrites on smaller contexts that never reach 20K. */
-export const CACHE_MISS_NOTICE_TOKENS = 20_000
-export const CACHE_MISS_NOTICE_RATIO = 0.5
-
-export type CacheMiss = {
-  /** Tokens that were in the previous step's prompt but not read from cache. */
-  missedTokens: number
-  /** `missedTokens / previous prompt` — the share of the re-used prefix that
-   * was re-billed instead of read from cache. */
-  missRatio: number
-}
-
-/**
- * Notable prompt-cache misses on a branch, keyed by assistant node id. Uses
- * pi's definition (packages/coding-agent/src/core/cache-stats.ts): a miss is
- * how much of the *previous* request's prompt this request failed to read back
- * from cache — `min(prevPrompt, prompt) - cacheRead`, where
- * `prompt = input + cacheRead + cacheWrite` and `input` is the uncached
- * bucket. A single cached token is not a hit: the delta must exceed the noise
- * floor. Appended new content is never a miss (it was not in the previous
- * prompt); only a rewritten prefix is. The first step, providers that never
- * report cache activity, streaming steps, and sub-noise-floor deltas produce no
- * entry. Compaction resets the comparison because the context legitimately
- * changed (pi clears its previous-request state there too).
- *
- * Only misses large enough to matter are returned: `missedTokens >=
- * CACHE_MISS_NOTICE_TOKENS || missRatio >= CACHE_MISS_NOTICE_RATIO`.
- */
+/** Per-message cache badges use the server's active-branch projection. */
 export function cacheMisses(nodes: ChatNode[]): Map<string, CacheMiss> {
   const out = new Map<string, CacheMiss>()
-  let prevPrompt = 0
-  let reported = false
   for (const n of nodes) {
-    if (n.kind === 'compaction') {
-      prevPrompt = 0
-      reported = false
-      continue
-    }
-    if (n.kind !== 'assistant' || n.streaming) continue
-    const u = n.usage
-    if (!u) continue
-    const read = u.cacheRead ?? 0
-    const write = u.cacheWrite ?? 0
-    const prompt = (u.input ?? 0) + read + write
-    if (prompt <= 0) continue
-    // A zero-cache step only counts as a miss once some request has reported
-    // cache activity; otherwise the provider may simply not report caching.
-    if (prevPrompt > 0 && (read + write > 0 || reported)) {
-      const missedTokens = Math.min(prevPrompt, prompt) - read
-      if (missedTokens > CACHE_MISS_NOISE_FLOOR) {
-        const missRatio = missedTokens / prevPrompt
-        if (missedTokens >= CACHE_MISS_NOTICE_TOKENS || missRatio >= CACHE_MISS_NOTICE_RATIO) {
-          out.set(n.id, { missedTokens, missRatio })
-        }
-      }
-    }
-    prevPrompt = prompt
-    reported = reported || read + write > 0
+    if (n.kind === 'assistant' && n.cacheMiss) out.set(n.id, n.cacheMiss)
   }
   return out
 }

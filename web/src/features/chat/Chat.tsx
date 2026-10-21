@@ -20,11 +20,11 @@ import { AttachmentImage } from '../attachments/AttachmentImage'
 import type { Client } from '../../api/client'
 import { useI18n } from '../../i18n/index'
 import { Markdown } from '../markdown/Markdown'
-import { cacheHitRate, cacheMisses, formatDuration, formatTokens, formatTokensPerSecond, isHumanPrompt, nodeLive, projectTurnStats, reconcileUserNodes, requestTitle, type CacheMiss, type TurnStats } from '../../lib/model'
+import { cacheHitRate, cacheMisses, formatDuration, formatTokens, formatTokensPerSecond, isHumanPrompt, nodeLive, projectTurnStats, reconcileUserNodes, requestTitle, type TurnStats } from '../../lib/model'
 import { DEFAULT_COMPACT_KEEP, detailedItems, foldReplies, groupTurns, type ChatRenderItem, type ChatTurn, type MessageViewMode } from '../../lib/messageView'
 import { COLLAPSED_TOOL_HEIGHT, rememberRowHeight, rowBodyToken, rowHeightEstimate, sameRowRevision, UNKNOWN_WIDTH, type RowHeightRevision } from '../../lib/rowHeight'
 import { copyText } from '../../lib/clipboard'
-import type { ChatNode, CompactTurn, ProcessSnapshot } from '../../api/types'
+import type { CacheMiss, ChatNode, CompactTurn, ProcessSnapshot } from '../../api/types'
 
 const OVERSCAN = 4
 

@@ -5417,6 +5417,73 @@ func TestSessionPagingRejectsStaleCursors(t *testing.T) {
 	}
 }
 
+func TestSessionViewsCarryCacheMissOnTheAssistantEntry(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	dir, _ := srv.sidx.Lookup(id)
+	sess, err := session.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	appendMessage := func(message types.Message) session.Entry {
+		t.Helper()
+		entry, err := sess.AppendMessage(message)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return entry
+	}
+	appendMessage(types.Message{Role: "user"})
+	prior := appendMessage(types.Message{Role: "assistant", Usage: &types.Usage{Input: 100, CacheRead: 29_900}})
+	target := appendMessage(types.Message{Role: "user"})
+	missed := appendMessage(types.Message{Role: "assistant", Usage: &types.Usage{Input: 30_000}})
+
+	check := func(path, shape string) map[string]any {
+		t.Helper()
+		got := sessionGETURL(t, hs, path)
+		var entries []any
+		switch shape {
+		case "entry":
+			entries = []any{got["entry"]}
+		case "page":
+			entries = got["entries"].([]any)
+		}
+		for _, raw := range entries {
+			entry, ok := raw.(map[string]any)
+			if !ok || entry["id"] != missed.ID {
+				continue
+			}
+			miss, ok := entry["cacheMiss"].(map[string]any)
+			if !ok || miss["missedTokens"] != float64(30_000) || miss["missRatio"] != float64(1) {
+				t.Fatalf("%s lost the server-derived miss: %v", path, entry)
+			}
+			return got
+		}
+		t.Fatalf("%s did not return the missed assistant entry: %v", path, got)
+		return nil
+	}
+	check("/v1/sessions/"+id+"?view=compact&keep=1", "page")
+	// The ordinary tail is deliberately sparse: its first assistant row must
+	// still be classified against usage outside the transferred page.
+	sparse := check("/v1/sessions/"+id+"?limit=1", "page")
+	for _, raw := range sparse["entries"].([]any) {
+		if raw.(map[string]any)["id"] == prior.ID {
+			t.Fatal("sparse tail unexpectedly included the previous assistant")
+		}
+	}
+	check("/v1/sessions/"+id+"?entry="+missed.ID, "entry")
+	check("/v1/sessions/"+id+"?entries="+missed.ID, "page")
+	check("/v1/sessions/"+id+"?turn="+target.ID, "page")
+
+	// Add a later turn so the missed entry is now in a paged before-query,
+	// rather than being the current tail.
+	after := appendMessage(types.Message{Role: "user"})
+	appendMessage(types.Message{Role: "assistant", Usage: &types.Usage{Input: 30_000, CacheRead: 30_000}})
+	check("/v1/sessions/"+id+"?before="+after.ID+"&limit=10", "page")
+	check("/v1/sessions/"+id+"?view=compact&before="+after.ID, "page")
+}
+
 func TestSessionColdSmallTailIncludesCompleteIndex(t *testing.T) {
 	srv, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())

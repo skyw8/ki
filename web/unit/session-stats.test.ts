@@ -156,42 +156,43 @@ function asst(id: string, usage: NonNullable<Extract<ChatNode, { kind: 'assistan
   return { kind: 'assistant', id, text: id, usage, ...extra }
 }
 
-test('cacheMisses compares each step against the previous prompt', () => {
-  // No previous request → nothing to miss, so the session's first step is never flagged.
-  expect(cacheMisses([asst('a1', { input: 30000, cacheRead: 0 })]).size).toBe(0)
-  // Full read-back of the previous prompt → no miss.
-  expect(cacheMisses([asst('a1', { input: 100, cacheRead: 29900 }), asst('a2', { input: 100, cacheRead: 30000 })]).size).toBe(0)
-  // Appended content was not in the previous prompt, so it is never a miss.
-  expect(cacheMisses([asst('a1', { input: 100, cacheRead: 29900 }), asst('a2', { input: 10000, cacheRead: 29900 })]).size).toBe(0)
-  // A miss above the 20K token gate is reported with its token count and ratio.
-  const miss = cacheMisses([asst('a1', { input: 100, cacheRead: 29900 }), asst('a2', { input: 30000, cacheRead: 0 })])
-  expect(miss.get('a2')).toEqual({ missedTokens: 30000, missRatio: 1 })
+test('cacheMisses trusts server annotations even when the loaded page lacks the baseline', () => {
+  const miss = { missedTokens: 191_743, missRatio: 0.9829 }
+  // Usage alone is insufficient: a sparse page must not infer a comparison
+  // from whichever unrelated assistant messages happen to be loaded.
+  expect(cacheMisses([asst('visible', { input: 192_015, cacheRead: 3_328 })]).size).toBe(0)
+  expect(cacheMisses([asst('visible', { input: 192_015, cacheRead: 3_328 }, { cacheMiss: miss })]).get('visible')).toEqual(miss)
 })
 
-test('cacheMisses also surfaces misses over half the previous prompt', () => {
-  // 6K missed of a 10K previous prompt: under 20K but 60% → flagged.
-  const ratio = cacheMisses([asst('a1', { input: 100, cacheRead: 9900 }), asst('a2', { input: 6000, cacheRead: 4000 })])
-  expect(ratio.get('a2')).toEqual({ missedTokens: 6000, missRatio: 0.6 })
-  // 10K missed of a 30K previous prompt: neither gate clears → not flagged.
-  const quiet = cacheMisses([asst('a1', { input: 100, cacheRead: 29900 }), asst('a2', { input: 22000, cacheRead: 20000 })])
-  expect(quiet.size).toBe(0)
-  // Below the noise floor is never flagged, even at 100% of a small prompt.
-  expect(cacheMisses([asst('a1', { input: 100, cacheRead: 900 }), asst('a2', { input: 2000, cacheRead: 0 })]).size).toBe(0)
+test('history and live message_end preserve the server cache-miss annotation', () => {
+  const miss = { missedTokens: 191_743, missRatio: 0.9829 }
+  const visible: Entry = {
+    ...msg('visible', 'turn-user', 'assistant', {
+      usage: { input: 192_015, output: 204, cacheRead: 3_328 },
+      content: [{ type: 'text', text: 'visible reply' }],
+    }),
+    cacheMiss: miss,
+  }
+  const history = loadHistory({ id: 'session', leafId: visible.id, entries: [visible] })
+  expect(cacheMisses(history.nodes).get(visible.id)).toEqual(miss)
+
+  const live = applyEvent(emptyView(), {
+    type: 'message_end',
+    entryId: visible.id,
+    parentId: 'turn-user',
+    message: visible.message,
+    cacheMiss: miss,
+  })
+  expect(cacheMisses(live.nodes).get(visible.id)).toEqual(miss)
+  expect(live.entries.find(entry => entry.id === visible.id)?.cacheMiss).toEqual(miss)
 })
 
-test('cacheMisses ignores a provider that never reports caching', () => {
-  expect(cacheMisses([asst('a1', { input: 30000, cacheRead: 0, cacheWrite: 0 }), asst('a2', { input: 40000, cacheRead: 0, cacheWrite: 0 })]).size).toBe(0)
-})
-
-test('cacheMisses resets across compaction and skips streaming steps', () => {
-  const nodes: ChatNode[] = [
-    asst('a1', { input: 100, cacheRead: 29900 }),
-    { kind: 'compaction', id: 'c1', summary: 'sum' },
-    asst('a2', { input: 30000, cacheRead: 0, cacheWrite: 100 }),
-  ]
-  expect(cacheMisses(nodes).size).toBe(0)
-  // The live streaming step is not compared until it is complete.
-  expect(cacheMisses([asst('a1', { input: 100, cacheRead: 29900 }), asst('live', { input: 30000 }, { streaming: true })]).size).toBe(0)
+test('turnStats counts cache misses from per-entry server metadata', () => {
+  const stats = turnStats([
+    { kind: 'user', id: 'u1', text: 'go', content: [] },
+    asst('a1', { input: 192_015, output: 204, cacheRead: 3_328 }, { cacheMiss: { missedTokens: 191_743, missRatio: 0.9829 } }),
+  ]).get('a1')
+  expect(stats?.cacheMisses).toBe(1)
 })
 
 test('cacheHitRate is the cache-read share of the prompt, shown to 2 decimals', () => {
@@ -265,8 +266,8 @@ test('turnStats counts tool failures and notable cache misses per turn', () => {
     asst('a1', { input: 100, cacheRead: 29_900 }),
     { kind: 'tool', id: 't1', name: 'Bash' },
     { kind: 'tool', id: 't2', name: 'Edit', isError: true },
-    // The previous prompt (30K) is re-billed instead of read back → one miss.
-    asst('a2', { input: 30_000, cacheRead: 0 }),
+    // The server tags the request after comparing against the full branch.
+    asst('a2', { input: 30_000, cacheRead: 0 }, { cacheMiss: { missedTokens: 30_000, missRatio: 1 } }),
     { kind: 'user', id: 'u2', text: 'again', content: [] },
     // Reads the whole previous prompt back → no miss.
     asst('a3', { input: 30_000, cacheRead: 30_000 }),
@@ -280,7 +281,7 @@ test('turnStats counts tool failures and notable cache misses per turn', () => {
   expect(second.tools).toBe(0)
   expect(second.toolFailures).toBe(0)
   expect(second.cacheMisses).toBe(0)
-  // A compaction clears the previous-prompt baseline, so the rewrite is not a miss.
+  // The server's compact projection has already applied the compaction reset.
   const afterCompact = turnStats([
     { kind: 'user', id: 'u1', text: 'hi', content: [] },
     asst('a1', { input: 100, cacheRead: 29_900 }),

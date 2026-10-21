@@ -1,6 +1,9 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +25,113 @@ func TestTraceCacheMissesResetAtCompaction(t *testing.T) {
 	}
 	if rows[0].CacheMiss.MissedTokens != 29_900 {
 		t.Fatalf("missed tokens = %d", rows[0].CacheMiss.MissedTokens)
+	}
+}
+
+func TestClassifyCacheMissThresholds(t *testing.T) {
+	cases := []struct {
+		name          string
+		prev          int
+		reported      bool
+		usage         *types.Usage
+		wantMiss      int
+		wantMissRatio float64
+	}{
+		{name: "first request", usage: &types.Usage{Input: 30_000}},
+		{name: "provider never reports cache", prev: 30_000, usage: &types.Usage{Input: 30_000}},
+		{name: "full cache hit", prev: 30_000, reported: true, usage: &types.Usage{Input: 1, CacheRead: 30_000}},
+		{name: "appended content", prev: 10_000, reported: true, usage: &types.Usage{Input: 10_000, CacheRead: 10_000}},
+		{name: "below noise floor", prev: 10_000, reported: true, usage: &types.Usage{Input: 1_024, CacheRead: 8_976}},
+		{name: "below both notice gates", prev: 30_000, reported: true, usage: &types.Usage{Input: 22_000, CacheRead: 20_000}},
+		{name: "ratio notice gate", prev: 10_000, reported: true, usage: &types.Usage{Input: 6_000, CacheRead: 4_000}, wantMiss: 6_000, wantMissRatio: 0.6},
+		{name: "token notice gate", prev: 30_000, reported: true, usage: &types.Usage{Input: 30_000}, wantMiss: 30_000, wantMissRatio: 1},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifyCacheMiss(tt.prev, tt.reported, tt.usage)
+			if tt.wantMiss == 0 {
+				if got != nil {
+					t.Fatalf("unexpected miss: %+v", got)
+				}
+				return
+			}
+			if got == nil || got.MissedTokens != tt.wantMiss || got.MissRatio != tt.wantMissRatio {
+				t.Fatalf("miss = %+v, want tokens=%d ratio=%v", got, tt.wantMiss, tt.wantMissRatio)
+			}
+		})
+	}
+}
+
+func TestCacheMissProjectionUsesFullActiveLeafAndStaysViewOnly(t *testing.T) {
+	usage := func(input, read int) *types.Usage { return &types.Usage{Input: input, CacheRead: read} }
+	entries := []Entry{
+		{Type: "message", ID: "prior", Message: &types.Message{Role: "assistant", Usage: usage(100, 29_900)}},
+		{Type: "message", ID: "miss", ParentID: "prior", Message: &types.Message{Role: "assistant", Usage: usage(30_000, 0)}},
+		{Type: "message", ID: "sibling", ParentID: "prior", Message: &types.Message{Role: "assistant", Usage: usage(40_000, 0)}},
+		{Type: "compaction", ID: "compact", ParentID: "miss"},
+		{Type: "message", ID: "after", ParentID: "compact", Message: &types.Message{Role: "assistant", Usage: usage(30_000, 0)}},
+	}
+	misses := CacheMissesByID(entries, "after")
+	if got := misses["miss"]; got == nil || got.MissedTokens != 30_000 || got.MissRatio != 1 {
+		t.Fatalf("active-branch miss = %+v", got)
+	}
+	if misses["sibling"] != nil || misses["after"] != nil {
+		t.Fatalf("sibling or post-compaction entry was classified: %+v", misses)
+	}
+	page := WithCacheMisses([]Entry{entries[1]}, entries, "after")
+	if len(page) != 1 || page[0].CacheMiss == nil || page[0].CacheMiss.MissedTokens != 30_000 {
+		t.Fatalf("sparse page missed annotation: %+v", page)
+	}
+	if entries[1].CacheMiss != nil {
+		t.Fatal("view decoration mutated the source transcript entry")
+	}
+
+	sess, err := Create(t.TempDir(), t.TempDir(), "p", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	prior, err := sess.AppendMessage(types.Message{Role: "assistant", Usage: usage(100, 29_900)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := sess.AppendMessage(types.Message{Role: "assistant", Usage: usage(30_000, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := WithCacheMisses([]Entry{current}, sess.Entries(), sess.LeafID())
+	if view[0].CacheMiss == nil {
+		t.Fatalf("view miss not derived from persisted usage after %s", prior.ID)
+	}
+	parent := sess.LeafID()
+	sess.mu.Lock()
+	err = sess.appendLocked(Entry{
+		Type: "message", ID: "view-only", ParentID: parent,
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Message:   &types.Message{Role: "assistant"},
+		CacheMiss: &types.CacheMiss{MissedTokens: 30_000, MissRatio: 1},
+	})
+	sess.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent = sess.LeafID()
+	sess.mu.Lock()
+	err = sess.appendPreparedLocked(Entry{
+		Type: "compaction", ID: "prepared-view-only", ParentID: parent,
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		CacheMiss: &types.CacheMiss{MissedTokens: 30_000, MissRatio: 1},
+	}, parent)
+	sess.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(sess.Dir, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"cacheMiss"`) {
+		t.Fatal("derived cache miss was persisted into events.jsonl")
 	}
 }
 

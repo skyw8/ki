@@ -100,6 +100,12 @@ type Analysis struct {
 	ContextWindow    int            `json:"contextWindow"`
 }
 
+const (
+	cacheMissNoiseFloor   = 1024
+	cacheMissNoticeTokens = 20_000
+	cacheMissNoticeRatio  = 0.5
+)
+
 // Trace returns an active-leaf event timeline with derived cache diagnostics.
 func Trace(entries []Entry, leafID string, filter TraceFilter) []TraceEntry {
 	path := LeafChain(entries, leafID)
@@ -154,6 +160,79 @@ func classifyCacheMiss(prevPrompt int, cacheReported bool, u *types.Usage) *Cach
 		return nil
 	}
 	return &CacheMiss{MissedTokens: missed, Ratio: ratio, Previous: prevPrompt, Prompt: prompt}
+}
+
+// ClassifyCacheMiss applies the shared prompt-cache threshold to a single
+// request and returns the compact view DTO used by history and live events.
+func ClassifyCacheMiss(prevPrompt int, cacheReported bool, usage *types.Usage) *types.CacheMiss {
+	miss := classifyCacheMiss(prevPrompt, cacheReported, usage)
+	if miss == nil {
+		return nil
+	}
+	return &types.CacheMiss{MissedTokens: miss.MissedTokens, MissRatio: miss.Ratio}
+}
+
+// CacheMissesByID derives notable cache misses for the active leaf. The result
+// is keyed by assistant entry ID so sparse history pages can retain the
+// diagnostic without loading the preceding assistant body.
+func CacheMissesByID(entries []Entry, leafID string) map[string]*types.CacheMiss {
+	out := make(map[string]*types.CacheMiss)
+	prevPrompt, cacheReported := 0, false
+	for _, entry := range LeafChain(entries, leafID) {
+		if entry.Type == "compaction" {
+			prevPrompt, cacheReported = 0, false
+			continue
+		}
+		if entry.Message == nil || entry.Message.Role != "assistant" || entry.Message.Usage == nil {
+			continue
+		}
+		usage := entry.Message.Usage
+		prompt := usage.Input + usage.CacheRead + usage.CacheWrite
+		if prompt <= 0 {
+			continue
+		}
+		if miss := ClassifyCacheMiss(prevPrompt, cacheReported, usage); miss != nil {
+			out[entry.ID] = miss
+		}
+		prevPrompt = prompt
+		cacheReported = cacheReported || usage.CacheRead+usage.CacheWrite > 0
+	}
+	return out
+}
+
+// PromptCacheBaseline returns the latest prompt size and whether the provider
+// has reported cache activity on the selected leaf.
+func PromptCacheBaseline(entries []Entry, leafID string) (int, bool) {
+	prevPrompt, cacheReported := 0, false
+	for _, entry := range LeafChain(entries, leafID) {
+		if entry.Type == "compaction" {
+			prevPrompt, cacheReported = 0, false
+			continue
+		}
+		if entry.Message == nil || entry.Message.Role != "assistant" || entry.Message.Usage == nil {
+			continue
+		}
+		usage := entry.Message.Usage
+		prompt := usage.Input + usage.CacheRead + usage.CacheWrite
+		if prompt <= 0 {
+			continue
+		}
+		prevPrompt = prompt
+		cacheReported = cacheReported || usage.CacheRead+usage.CacheWrite > 0
+	}
+	return prevPrompt, cacheReported
+}
+
+// WithCacheMisses decorates a selected entry page with diagnostics computed
+// from the complete active-leaf path. Copying prevents view decoration from
+// mutating cached entries or the persisted transcript snapshot.
+func WithCacheMisses(selected, entries []Entry, leafID string) []Entry {
+	misses := CacheMissesByID(entries, leafID)
+	out := slices.Clone(selected)
+	for i := range out {
+		out[i].CacheMiss = misses[out[i].ID]
+	}
+	return out
 }
 
 // TraceWithContext includes neighboring rows around filter matches. It lets a

@@ -118,6 +118,8 @@ WebUI push 的 `ready` 带进程级随机 `serverId`，与现有
 
 `message_end` 带持久化后的 `entryId` 和 `parentId`（根为显式空字符串）。稀疏快照的 leaf 可能没有正文，客户端不能把收到的同一个 leaf id 当成自己的 parent；已完成 SSE 消息立即并入身份图，使用真实 parent 边，未取得中间 metadata 时另设本地阅读桥。
 
+assistant `message_end` 可在外层事件携带 `cacheMiss: {missedTokens, missRatio}`；它由 server 按完整 active leaf 的前序 assistant usage 计算，compaction 后重置，REST session Entry 使用同一投影。它是 view-only 诊断，不属于 `message` / provider `Usage`，也不写入 JSONL。WebUI 直接按 entry id 展示该值，不从稀疏历史窗口猜测前序 baseline。
+
 Runtime user-role 通知不占 compact 回复的 `keep` 名额，但仍可折叠：只用正常 assistant 和按调用 ID 去重的 tool 确定首个保留或 live 回复的边界，边界之前的通知随旧回复一起进入 `hiddenCount`，边界及之后的通知按持久化顺序显示。因此 `keep=1` 不会让尾随通知挤掉最后 assistant，也不会让中途通知全部展开；`keep=0` 且无 live 回复时折叠全部通知和普通回复。压缩/中止等生命周期元数据始终单独显示。
 
 `compaction_start` / `compaction_end` 在 run SSE 和 standalone push 路径都先持久化，再携带该 lifecycle entry 的 `lifecycleEntryId`、`parentId`（根为显式空字符串）和 `timestamp`（Unix 毫秒）。客户端据此合并回放和历史正文，不另造进度行身份；`compaction_end.entryId` 仍指向成功提交的 checkpoint，不能用作 lifecycle entry 的身份。

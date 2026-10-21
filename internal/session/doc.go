@@ -111,6 +111,12 @@
 // converted into these textual estimates. The body-free scanner discards full
 // content after estimating and caches only bounded schema digests/counts;
 // estimates are never appended to stored entries or used for provider replay.
+// Public assistant entry projections also carry a view-only cacheMiss
+// diagnostic derived from usage on the complete active leaf. It uses the same
+// thresholds as Trace/compact turn statistics and resets at compaction, so a
+// sparse page does not need its preceding assistant bodies. The metadata is
+// also carried by live message_end events and is never persisted in jsonl or
+// included in provider usage.
 // Asynchronous sideband rows never advance activeLeafId. A run cancellation is
 // published live immediately, then committed after terminal output as a normal
 // non-message leaf so branch history renders it in order without model replay.

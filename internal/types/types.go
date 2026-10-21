@@ -119,6 +119,13 @@ type UsageCost struct {
 	Total      float64 `json:"total"`
 }
 
+// CacheMiss is a view-only diagnostic for an assistant request whose reused
+// prompt prefix was billed again instead of being read from cache.
+type CacheMiss struct {
+	MissedTokens int     `json:"missedTokens"`
+	MissRatio    float64 `json:"missRatio"`
+}
+
 // CompletionIdentity names one result, not the resumable logical task.
 type CompletionIdentity struct {
 	TaskID     string `json:"taskId"`

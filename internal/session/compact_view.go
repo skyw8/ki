@@ -203,14 +203,6 @@ func BuildCompactTurn(entries []Entry, leaf, id string, keep int) (CompactPage, 
 	return CompactPage{}, false
 }
 
-// Prompt-cache miss thresholds mirror the client's `cacheMisses` so a folded
-// turn's count matches the per-step badges for turns the browser computes.
-const (
-	cacheMissNoiseFloor   = 1024
-	cacheMissNoticeTokens = 20_000
-	cacheMissNoticeRatio  = 0.5
-)
-
 func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReported bool) (CompactTurn, []Entry, int64, bool) {
 	type node struct {
 		id, preview string
@@ -559,8 +551,8 @@ func projectTurn(path []Entry, ordinal, keep int, prevPrompt int64, cacheReporte
 }
 
 // cacheBaseline replays the prompt-cache comparison over the turns preceding a
-// projected page, so a folded turn's miss count matches the client's
-// `cacheMisses` when the browser never sees those steps. It mirrors the
+// projected page, so folded-turn counts stay consistent with per-entry cache
+// miss metadata when the browser never sees those steps. It mirrors the
 // assistant/compaction handling in projectTurn and returns the carried state.
 func cacheBaseline(path []Entry) (int64, bool) {
 	var prevPrompt int64

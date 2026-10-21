@@ -1403,12 +1403,13 @@ func (s *Server) open(id string) (*session.Session, error) {
 // get answers the WebUI session view.
 //
 // The default response is the conversation tail: the newest leaf entries plus
-// the cursor for older pages. The full-tree index is opt-in via fields=index
-// (the trajectory table, branch navigation), and fields=runtime answers the
-// readiness poll without reading the transcript at all. Why: first paint used
-// to carry an index of every entry, so opening a long session waited for the
-// whole file to be parsed and for megabytes of JSON, none of which the newest
-// messages needed.
+// the cursor for older pages. The full-tree index is returned only via
+// fields=index (the trajectory table, branch navigation), and fields=runtime
+// answers the readiness poll without reading the transcript at all. Ordinary
+// views scan/cache body-free metadata to derive cache-miss annotations, but
+// hydrate and transfer only the requested bodies. Why: first paint used to
+// carry an index of every entry, so opening a long session waited for megabytes
+// of JSON that none of the newest messages needed.
 func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	q := r.URL.Query()
@@ -1462,7 +1463,11 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	case projectionOnly:
 		snap, err = s.loadSessionSnap(id, false, 0)
 	default:
-		snap, err = s.loadSessionSnap(id, false, limit)
+		// Why: a bounded tail cannot establish the previous prompt/cache state
+		// for its first assistant row. Read the cached body-free transcript
+		// metadata for classification, while still hydrating only the requested
+		// tail bodies below and omitting the full index from the response.
+		snap, err = s.loadIndexedSessionSnap(id)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -1537,6 +1542,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "entry not found", http.StatusNotFound)
 			return
 		}
+		got = session.WithCacheMisses(got, snap.entries, snap.leafID)
 		writeJSON(w, 200, map[string]any{"entry": got[0]})
 		return
 	}
@@ -1546,6 +1552,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
+		got = session.WithCacheMisses(got, snap.entries, snap.leafID)
 		writeJSON(w, 200, map[string]any{"entries": got})
 		return
 	}
@@ -1567,6 +1574,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "turn not found on active branch", http.StatusNotFound)
 				return
 			}
+			page.Entries = session.WithCacheMisses(page.Entries, snap.entries, snap.leafID)
 			writeJSON(w, 200, page)
 			return
 		}
@@ -1585,6 +1593,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "turn not found on active branch", http.StatusNotFound)
 			return
 		}
+		page.Entries = session.WithCacheMisses(page.Entries, snap.entries, snap.leafID)
 		writeJSON(w, 200, map[string]any{"entries": page.Entries, "hasMore": page.HasMore, "oldestId": page.OldestID})
 		return
 	}
@@ -1595,6 +1604,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusConflict)
 				return
 			}
+			page.Entries = session.WithCacheMisses(page.Entries, snap.entries, snap.leafID)
 			writeJSON(w, 200, page)
 			return
 		}
@@ -1603,6 +1613,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
+		view.Entries = session.WithCacheMisses(view.Entries, snap.entries, snap.leafID)
 		writeJSON(w, 200, map[string]any{
 			"entries":  view.Entries,
 			"hasMore":  view.HasMore,
@@ -1650,6 +1661,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
+		page.Entries = session.WithCacheMisses(page.Entries, snap.entries, snap.leafID)
 		runtime["entries"], runtime["compactTurns"] = page.Entries, page.Turns
 		runtime["hasMore"], runtime["oldestId"] = page.HasMore, page.OldestID
 	} else {
@@ -1661,6 +1673,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		tail.Entries = session.WithCacheMisses(tail.Entries, snap.entries, snap.leafID)
 		runtime["entries"], runtime["hasMore"], runtime["oldestId"] = tail.Entries, tail.HasMore, tail.OldestID
 	}
 	if withIndex || (!compact && snap.complete && snap.small) {
