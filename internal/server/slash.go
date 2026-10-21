@@ -624,23 +624,45 @@ func (s *Server) release(id string, st *runState) {
 
 func (s *Server) getMessage(w http.ResponseWriter, _ *http.Request) {
 	tg := toggles.Load(s.cfg.Home)
-	writeJSON(w, 200, map[string]any{"busy": tg.Message.BusyDelivery()})
+	writeJSON(w, 200, map[string]any{
+		"busy":          tg.Message.BusyDelivery(),
+		"contextWindow": tg.Message.ContextWindowLimit(),
+	})
 }
+
+// maxMessageContextWindow bounds the configurable ceiling. It is a sanity
+// guard against typos (a stray extra digit), not a model limit: the value is a
+// hard upper bound applied on top of each model's own window.
+const maxMessageContextWindow = 100_000_000
 
 func (s *Server) patchMessage(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Busy string `json:"busy"`
+		Busy          *string `json:"busy"`
+		ContextWindow *int    `json:"contextWindow"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if body.Busy != toggles.BusySteer && body.Busy != toggles.BusyQueue {
+	if body.Busy == nil && body.ContextWindow == nil {
+		http.Error(w, "busy or contextWindow is required", http.StatusBadRequest)
+		return
+	}
+	if body.Busy != nil && *body.Busy != toggles.BusySteer && *body.Busy != toggles.BusyQueue {
 		http.Error(w, "busy must be steer or queue", http.StatusBadRequest)
 		return
 	}
+	if body.ContextWindow != nil && (*body.ContextWindow < 1 || *body.ContextWindow > maxMessageContextWindow) {
+		http.Error(w, fmt.Sprintf("contextWindow must be between 1 and %d", maxMessageContextWindow), http.StatusBadRequest)
+		return
+	}
 	if err := s.updateToggles(func(f *toggles.File) {
-		f.Message.Busy = body.Busy
+		if body.Busy != nil {
+			f.Message.Busy = *body.Busy
+		}
+		if body.ContextWindow != nil {
+			f.Message.ContextWindow = *body.ContextWindow
+		}
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

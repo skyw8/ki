@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"ki/internal/session"
@@ -30,6 +31,29 @@ func TestLoadMissingIsEmpty(t *testing.T) {
 	f := Load(t.TempDir())
 	if !f.Skills.Allowed("x") || !f.Extensions.Allowed("y") {
 		t.Fatalf("%+v", f)
+	}
+	if got := f.Message.ContextWindowLimit(); got != DefaultContextWindow {
+		t.Fatalf("default context window = %d, want %d", got, DefaultContextWindow)
+	}
+}
+
+func TestMessageContextWindowRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	if err := Save(home, File{Message: Message{Busy: BusySteer, ContextWindow: 1_000_000}}); err != nil {
+		t.Fatal(err)
+	}
+	got := Load(home)
+	if got.Message.ContextWindow != 1_000_000 || got.Message.ContextWindowLimit() != 1_000_000 {
+		t.Fatalf("message %+v", got.Message)
+	}
+	// An explicit value survives the v3 migration: it is an added field, so the
+	// schema version stays put (docs/state.md).
+	raw, _, err := state.ReadFile(path(home), version, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"contextWindow": 1000000`) {
+		t.Fatalf("saved toggles: %s", raw)
 	}
 }
 

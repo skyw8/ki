@@ -28,6 +28,7 @@ import (
 	"ki/internal/loop"
 	"ki/internal/provider"
 	"ki/internal/session"
+	"ki/internal/toggles"
 	toolapi "ki/internal/tool"
 	"ki/internal/types"
 	"ki/web"
@@ -3171,6 +3172,9 @@ func TestMessageBusyToggle(t *testing.T) {
 	if res.StatusCode != http.StatusOK || got["busy"] != "steer" {
 		t.Fatalf("default message %+v %d", got, res.StatusCode)
 	}
+	if got["contextWindow"] != float64(toggles.DefaultContextWindow) {
+		t.Fatalf("default contextWindow %+v", got)
+	}
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/message", strings.NewReader(`{"busy":"queue"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
@@ -3183,6 +3187,73 @@ func TestMessageBusyToggle(t *testing.T) {
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusOK || got["busy"] != "queue" {
 		t.Fatalf("patched message %+v %d", got, res.StatusCode)
+	}
+}
+
+func TestMessageContextWindowCap(t *testing.T) {
+	srv, hs := testServer(t)
+	patch := func(body string) (int, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/message", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer tok")
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		out := map[string]any{}
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		return res.StatusCode, out
+	}
+
+	// The cap is a ceiling: a model configured far above it is clamped.
+	huge := provider.Model{ID: "m", ContextWindow: 9_000_000}
+	if got := srv.effectiveContextWindow(huge); got != toggles.DefaultContextWindow {
+		t.Fatalf("default cap: effective window %d, want %d", got, toggles.DefaultContextWindow)
+	}
+	// Below the default ceiling the model's own window wins (no inflation).
+	if got := srv.effectiveContextWindow(provider.Model{ID: "m1m", ContextWindow: 1_000_000}); got != 1_000_000 {
+		t.Fatalf("1M model window = %d, want 1000000", got)
+	}
+	status, out := patch(`{"contextWindow":1000}`)
+	if status != http.StatusOK || out["contextWindow"] != float64(1000) || out["busy"] != "steer" {
+		t.Fatalf("patch contextWindow: %d %+v", status, out)
+	}
+	// busy is untouched by a contextWindow-only patch and vice versa.
+	if got := srv.effectiveContextWindow(huge); got != 1000 {
+		t.Fatalf("capped effective window = %d, want 1000", got)
+	}
+	// A cap never inflates a smaller model window.
+	if got := srv.effectiveContextWindow(provider.Model{ID: "small", ContextWindow: 512}); got != 512 {
+		t.Fatalf("cap inflated a smaller window: %d", got)
+	}
+	// Unknown (0) windows keep their unknown sentinel; callers apply fallbacks.
+	if got := srv.effectiveContextWindow(provider.Model{ID: "unknown"}); got != 0 {
+		t.Fatalf("unknown window = %d, want 0", got)
+	}
+	// compaction.max_context_tokens still applies first, so the lower bound wins.
+	srv.cfg.Compaction.MaxContextTokens = 400
+	if got := srv.effectiveContextWindow(huge); got != 400 {
+		t.Fatalf("compaction cap: %d, want 400", got)
+	}
+	srv.cfg.Compaction.MaxContextTokens = 0
+	srv.cfg.Compaction.ReserveTokens = 100
+	if got := srv.remoteCompactThreshold(huge); got != 900 {
+		t.Fatalf("remote threshold %d, want 900", got)
+	}
+	status, _ = patch(`{"busy":"queue"}`)
+	if status != http.StatusOK {
+		t.Fatalf("busy-only patch %d", status)
+	}
+	if tg := toggles.Load(srv.cfg.Home); tg.Message.ContextWindow != 1000 || tg.Message.BusyDelivery() != toggles.BusyQueue {
+		t.Fatalf("persisted message %+v", tg.Message)
+	}
+
+	for _, body := range []string{`{"contextWindow":0}`, `{"contextWindow":-5}`, `{"contextWindow":100000001}`, `{}`, `{"busy":"later"}`} {
+		if status, _ := patch(body); status != http.StatusBadRequest {
+			t.Fatalf("patch %s = %d, want 400", body, status)
+		}
 	}
 }
 

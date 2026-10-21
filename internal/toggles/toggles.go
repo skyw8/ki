@@ -20,9 +20,21 @@ const BusySteer = "steer"
 // BusyQueue persists a busy prompt until the current run releases.
 const BusyQueue = "queue"
 
-// Message is the process-wide default for a prompt while a session is busy.
+// DefaultContextWindow is the hard upper bound applied to every model's
+// effective context window when toggles.json does not override it. It is far
+// above current models, so it only guards against absurd per-model values.
+const DefaultContextWindow = 5_000_000
+
+// Message is the process-wide default for a prompt while a session is busy,
+// plus the hard cap on the context window the server plans against.
 type Message struct {
 	Busy string `json:"busy,omitempty"`
+	// ContextWindow caps the effective model window for context accounting,
+	// compaction thresholds, and server-side compaction. It is a ceiling, never
+	// an inflation: a model configured above the cap is clamped (setting the
+	// cap to 500000 clamps a 1M model), while a smaller window keeps its own
+	// value. 0 means DefaultContextWindow.
+	ContextWindow int `json:"contextWindow,omitempty"`
 }
 
 // BusyDelivery returns steer or queue. Empty defaults to steer.
@@ -31,6 +43,14 @@ func (m Message) BusyDelivery() string {
 		return BusyQueue
 	}
 	return BusySteer
+}
+
+// ContextWindowLimit returns the stored cap, or DefaultContextWindow.
+func (m Message) ContextWindowLimit() int {
+	if m.ContextWindow > 0 {
+		return m.ContextWindow
+	}
+	return DefaultContextWindow
 }
 
 // File is {KI_HOME}/toggles.json.

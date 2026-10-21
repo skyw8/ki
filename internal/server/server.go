@@ -3193,11 +3193,24 @@ func (s *Server) serverSideCompaction(model provider.Model) bool {
 		supportsWire
 }
 
-func (s *Server) remoteCompactThreshold(model provider.Model) int {
-	window := model.ContextWindow
-	if cap := s.cfg.Compaction.MaxContextTokens; cap > 0 && cap < window {
-		window = cap
+// effectiveContextWindow is the window every planning decision must use: the
+// model catalog value, capped by compaction.max_context_tokens and by the
+// Message settings' hard ceiling (toggles.json message.contextWindow, default
+// 5,000,000). Min semantics only: a cap never inflates a smaller model window,
+// and an unknown (0) window stays unknown so callers keep their fallback.
+func (s *Server) effectiveContextWindow(info provider.Model) int {
+	window := info.ContextWindow
+	if window <= 0 {
+		return window
 	}
+	if maxContext := s.cfg.Compaction.MaxContextTokens; maxContext > 0 {
+		window = min(window, maxContext)
+	}
+	return min(window, toggles.Load(s.cfg.Home).Message.ContextWindowLimit())
+}
+
+func (s *Server) remoteCompactThreshold(model provider.Model) int {
+	window := s.effectiveContextWindow(model)
 	threshold := window - s.cfg.Compaction.ReserveTokens
 	if threshold < 1 {
 		return 1
@@ -3206,6 +3219,11 @@ func (s *Server) remoteCompactThreshold(model provider.Model) int {
 }
 
 func (s *Server) localSummaryInputLimit(model provider.Model) int {
+	// Why the raw model window: this bounds how much history the summarizer
+	// request may carry. The compaction thresholds use the effective (capped)
+	// window, but shrinking the summarizer input along with a small
+	// compaction.max_context_tokens would make summaries fail with
+	// "input budget too small" instead of compacting.
 	window := model.ContextWindow
 	if window <= 0 {
 		window = 128000
@@ -3250,7 +3268,9 @@ func compactRemoteWithRetry(ctx context.Context, compactor provider.Compactor, r
 
 func (s *Server) shouldCompact(sess *session.Session, model provider.Model, binding types.ProviderBinding) bool {
 	modelContext := sess.ContextToLeaf(binding)
-	return compact.ShouldRun(compact.EstimateModelContext(modelContext, sess.LastCompactionAt()), model.ContextWindow, s.cfg.Compaction)
+	// effectiveContextWindow already folds in compaction.max_context_tokens and
+	// the Message settings ceiling; ShouldRun's own cap can only repeat it.
+	return compact.ShouldRun(compact.EstimateModelContext(modelContext, sess.LastCompactionAt()), s.effectiveContextWindow(model), s.cfg.Compaction)
 }
 
 var errRemoteCompactionUnavailable = errors.New("remote compaction is unavailable")

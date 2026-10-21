@@ -704,17 +704,42 @@ export function SettingsToggles({
 
 export { SchemaConfigForm as ExtensionConfigEditor } from './schema/SchemaConfigForm'
 
+// Mirrors maxMessageContextWindow in internal/server/slash.go.
+const MAX_CONTEXT_WINDOW = 100_000_000
+
 export function MessageSettings({ api, view, onView }: { api: Client; view: MessageView; onView: (view: MessageView) => void }) {
   const { t } = useI18n()
   const [busy, setBusy] = useState<'steer' | 'queue'>('steer')
+  const [contextWindow, setContextWindow] = useState<number | null>(null)
+  const [draft, setDraft] = useState('')
+  const [savingWindow, setSavingWindow] = useState(false)
   useEffect(() => {
-    void api.message().then(got => setBusy(got.busy)).catch(e => toast.from(e))
+    void api.message()
+      .then(got => { setBusy(got.busy); setContextWindow(got.contextWindow); setDraft(String(got.contextWindow)) })
+      .catch(e => toast.from(e))
   }, [api])
   const save = async (next: 'steer' | 'queue') => {
     const prev = busy
     setBusy(next)
-    try { await api.patchMessage(next) }
+    try { await api.patchMessage({ busy: next }) }
     catch (e) { setBusy(prev); toast.from(e) }
+  }
+  const parsed = Number(draft)
+  const windowValid = Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_CONTEXT_WINDOW
+  const windowDirty = contextWindow !== null && parsed !== contextWindow
+  const saveWindow = async () => {
+    if (!windowValid || !windowDirty || savingWindow) return
+    setSavingWindow(true)
+    try {
+      const got = await api.patchMessage({ contextWindow: parsed })
+      setContextWindow(got.contextWindow)
+      setDraft(String(got.contextWindow))
+      toast.info(t('settings.contextWindowSaved'))
+    } catch (e) {
+      toast.from(e)
+    } finally {
+      setSavingWindow(false)
+    }
   }
   return (
     <div className="preference-page" data-testid="message-settings">
@@ -753,6 +778,40 @@ export function MessageSettings({ api, view, onView }: { api: Client; view: Mess
             <p className="cfg-hint">{t('settings.viewKeepHint', { max: MAX_COMPACT_KEEP })}</p>
           </div>
         ) : null}
+      </section>
+      <section className="preference-section">
+        <div className="preference-copy">
+          <h4>{t('settings.contextWindow')}</h4>
+          <p>{t('settings.contextWindowHint')}</p>
+        </div>
+        <div className="view-keep">
+          <label htmlFor="message-context-window">{t('settings.contextWindowLabel')}</label>
+          <input
+            id="message-context-window"
+            data-testid="message-context-window"
+            type="number"
+            min={1}
+            max={MAX_CONTEXT_WINDOW}
+            step={1000}
+            inputMode="numeric"
+            value={draft}
+            aria-invalid={!windowValid}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') void saveWindow() }}
+          />
+          <button
+            type="button"
+            className="cfg-btn"
+            data-testid="message-context-save"
+            disabled={!windowValid || !windowDirty || savingWindow}
+            onClick={() => void saveWindow()}
+          >
+            {savingWindow ? t('settings.contextWindowSaving') : t('settings.contextWindowSave')}
+          </button>
+          <p className="cfg-hint" data-testid="message-context-hint">
+            {windowValid ? t('settings.contextWindowRange', { max: MAX_CONTEXT_WINDOW.toLocaleString() }) : t('settings.contextWindowInvalid', { max: MAX_CONTEXT_WINDOW.toLocaleString() })}
+          </p>
+        </div>
       </section>
       <section className="preference-section">
         <div className="preference-copy">

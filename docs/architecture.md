@@ -61,7 +61,7 @@ Code Mode 固定为 mixed：在普通工具经开关、extension Prepare 和 act
 | PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / `queued`（保留 id 列表）；run 或独立压缩占用 session 时，会改变上下文绑定的 `model` / `thinkingEffort` / `leafId` 返回 409，避免压缩准备后的 leaf 被并发推进 |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
 | POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId` / `delivery` / `queueId`；空闲 `202 started`；忙时 `steer` 插入本轮或 `queue` 排队，省略则用 `toggles.json` `message.busy`；`queueId`+`delivery=steer` 从 `queue.json` 取出插入本轮；`parentId` 且 busy 仍 **409** |
-| GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`） |
+| GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`）与上下文窗口硬上限（`contextWindow`，默认 5,000,000，1–100,000,000）；两者都可单独 PATCH |
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件；完成回放受 16MiB / 2 分钟 / 256 run 限制，过期或无回放时现存 session 返回 410，客户端从 session GET 恢复 |
 | GET | `/v1/events` | 每个 WebUI tab 的全局 push SSE；仅发送失效、终态和 session sideband，不发送 run 增量 |
 | GET | `/v1/push/config` | 返回 Web Push 是否启用及 VAPID 公钥 |
@@ -102,7 +102,7 @@ Code Mode 固定为 mixed：在普通工具经开关、extension Prepare 和 act
 
 每次成功压缩都会对该 session 触发 reload：压缩发生在 prompt 或手动 `/compact` 的 occupy 中，统一走 `requestReload`，排队到匹配的 `release`。上下文已重建，下一次 `prompt.Build` 必须使用重读磁盘后的快照。`POST /v1/reload` 和 `/reload` 是全局/session reload 入口；忙时排队到对应 run 的 `release`。设置页写入或删除 `APPEND_SYSTEM.md` 后同样走一次全局 reload，否则改了文件的下一次 prompt 仍会用缓存里的旧快照。run 之外的手动 `/compact` 完成后立即重算并追加 `context_usage`（char/4，加上最后一次 `request_header` 的 system/tools 估算）并经 push 下发；run 内 threshold 会在下一次 `request_header` 立即产生新 meter。空闲 session 切换模型也按新 binding 立即重算，不能继续展示旧 remote checkpoint 的 usage。
 
-host 阈值判定 `compact.ShouldRun(tokens, contextWindow, cfg)`：`tokens > contextWindow - reserveTokens`，窗口缺省 128000。`cfg.MaxContextTokens`（ki.toml `[compaction] max_context_tokens`）取 min 兜底——小于模型窗口时以它为准，小值让压缩提前触发（低成本测试不烧 token），0 = 只用模型窗口；同一个有效窗口也用于 server-side `compact_threshold`。
+host 阈值判定 `compact.ShouldRun(tokens, contextWindow, cfg)`：`tokens > contextWindow - reserveTokens`，窗口缺省 128000。`cfg.MaxContextTokens`（ki.toml `[compaction] max_context_tokens`）取 min 兜底——小于模型窗口时以它为准，小值让压缩提前触发（低成本测试不烧 token），0 = 只用模型窗口；同一个有效窗口也用于 server-side `compact_threshold`。Settings → Message 的 `contextWindow`（`toggles.json` `message.contextWindow`，默认 5,000,000）是叠在模型窗口之上的硬上限，和 `max_context_tokens` 一样只取 min，不会抬高更小的模型窗口；context meter、host 阈值、server-side `compact_threshold` 都通过同一个 `effectiveContextWindow` 计算。未知（0）模型窗口保持未知，由各调用点保留自己的默认值。摘要请求的输入预算仍按模型原始窗口计算，避免很小的上限把摘要本身压到无法生成。
 
 压缩 no-op 保护（对齐 pi `prepareCompaction` 返回 undefined）：切点预算（`keep_recent_tokens`，char/4 口径）装下整个对话时没有值得摘要的内容，`Prepare` 返回 `ErrNothingToCompact`——不调模型、不落盘；自动路径（A/D）静默跳过，手动 `/compact` 返回 409 "nothing to compact (session too small)"。
 

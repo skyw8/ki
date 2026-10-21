@@ -427,10 +427,7 @@ func (s *Server) contextUsageEstimate(sess *session.Session, info provider.Model
 	messages := modelContext.Messages
 	last := sess.LastCompactionAt()
 	used = compact.EstimateModelContext(modelContext, last)
-	window = info.ContextWindow
-	if maxContext := s.cfg.Compaction.MaxContextTokens; maxContext > 0 {
-		window = min(window, maxContext)
-	}
+	window = s.effectiveContextWindow(info)
 	if hasUsableContextUsage(messages, last) {
 		return used, window, nil
 	}

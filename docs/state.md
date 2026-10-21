@@ -83,6 +83,6 @@ Go 没有 config-migration 的事实标准；`golang-migrate` / `goose` / `atlas
 
 `toggles.json` v2 将工具名称规范为 snake_case，v1 的 Bash/PowerShell/Agent/SendMessage/TaskOutput/TaskStop 开关展开为新能力的保守并集。禁用优先，迁移不会因新名字重新启用旧禁用能力。新 schema 不恢复这些旧工具执行入口。
 
-`toggles.json` v3 移除 `code_mode` 字段，v2 → v3 迁移删除旧模式覆盖并保留其它开关；Code Mode 固定为 `mixed`。只读加载不改写文件，下次保存经 `internal/state` 原子写入并拒绝覆盖更高版本。
+`toggles.json` v3 移除 `code_mode` 字段，v2 → v3 迁移删除旧模式覆盖并保留其它开关；Code Mode 固定为 `mixed`。`message.contextWindow` 是 v3 之后新增的字段（Message 设置里的上下文窗口硬上限，缺省 5,000,000），属于新增而非破坏性变更，不提升 schema 版本。只读加载不改写文件，下次保存经 `internal/state` 原子写入并拒绝覆盖更高版本。
 
 可选新增字段 `mcp.disabled` 保存 Settings → MCP 的全局服务器禁用名单；比较原始服务器名，区分大小写，不做工具名称规范化。字段新增不升版本，MCP 开关更新与其它设置共享原子 read-modify-write 边界，不覆盖其它开关。

@@ -185,6 +185,18 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('busy-queue')).toHaveText('Queue')
   await page.getByTestId('busy-queue').click()
   await expect(page.getByTestId('busy-queue')).toHaveAttribute('aria-checked', 'true')
+  // The ceiling is server state (toggles.json), so it must survive a refetch.
+  // 4,000,000 stays above every fixture model window, keeping the rest of this
+  // test's context-meter expectations unchanged.
+  const contextWindow = page.getByTestId('message-context-window')
+  await expect(contextWindow).toHaveValue('5000000')
+  await expect(page.getByTestId('message-context-save')).toBeDisabled()
+  await contextWindow.fill('4000000')
+  await page.getByTestId('message-context-save').click()
+  await expect(page.getByTestId('message-context-save')).toBeDisabled()
+  await page.getByTestId('settings-tab-appearance').click()
+  await page.getByTestId('settings-tab-message').click()
+  await expect(contextWindow).toHaveValue('4000000')
   await page.getByTestId('settings-tab-appearance').click()
   await page.getByTestId('lang-en').click()
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('Theme & language')

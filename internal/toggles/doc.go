@@ -1,10 +1,14 @@
 // Package toggles stores global built-in tool, MCP server, skill, and extension enablement
-// plus the busy-message delivery default in {KI_HOME}/toggles.json.
+// plus the busy-message delivery default and context window ceiling in
+// {KI_HOME}/toggles.json.
 //
 // Discovery still uses home + cwd; this file records global choices shared
 // by every session. Built-in tool names are filtered when each request header
 // is built. PATCH writes then server.Reload() so catalogs rebuild.
 // message.busy is steer (default) or queue and does not require Reload.
+// message.contextWindow is a hard ceiling on the effective model context window
+// used for usage accounting and compaction thresholds (default 5,000,000); it
+// never raises a smaller model window and does not require Reload.
 // mcp contains raw, case-sensitive server names, not canonical tool names.
 // Workspace-scoped settings preserve disabled names outside their editable
 // catalog, so one project cannot silently re-enable another project's servers.

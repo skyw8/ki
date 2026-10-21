@@ -181,12 +181,12 @@ export class Client {
     })
   }
 
-  message(): Promise<{ busy: 'steer' | 'queue' }> {
+  message(): Promise<{ busy: 'steer' | 'queue'; contextWindow: number }> {
     return this.json('/v1/message')
   }
 
-  patchMessage(busy: 'steer' | 'queue'): Promise<{ busy: 'steer' | 'queue' }> {
-    return this.json('/v1/message', { method: 'PATCH', body: JSON.stringify({ busy }) })
+  patchMessage(patch: { busy?: 'steer' | 'queue'; contextWindow?: number }): Promise<{ busy: 'steer' | 'queue'; contextWindow: number }> {
+    return this.json('/v1/message', { method: 'PATCH', body: JSON.stringify(patch) })
   }
 
   reload(sessionId?: string): Promise<{ ok: boolean; queued?: boolean }> {
