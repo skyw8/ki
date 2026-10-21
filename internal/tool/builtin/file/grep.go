@@ -13,6 +13,7 @@ import (
 	toolapi "ki/internal/tool"
 	"ki/internal/tool/builtin/catalog"
 	"ki/internal/tool/builtin/internal/support"
+	"ki/internal/types"
 )
 
 const grepPrompt = `A powerful search tool built on ripgrep
@@ -141,7 +142,73 @@ func (t grepTool) Execute(ctx context.Context, args map[string]any) toolapi.Resu
 	}
 
 	output := formatGrepResult(result, mode, t.cwd, offset, headLimit, before, after, showLine)
-	return support.Text(output)
+	return toolapi.Result{
+		Content: []types.Content{{Type: "text", Text: output}},
+		Details: grepDetails(result, mode, t.cwd, offset, headLimit, before, after),
+	}
+}
+
+// grepDetails is the structured form of the same bounded page the model sees.
+// The WebUI renders hits instead of re-parsing "path:line: text", and paging
+// stays the tool's own decision rather than a client guess.
+func grepDetails(result search.GrepResult, mode, cwd string, offset, limit, before, after int) grepDetailSet {
+	details := grepDetailSet{
+		Mode: mode, Files: len(result.Files), Matches: result.TotalMatch,
+		Truncated: result.Truncated, Offset: offset, Limit: limit,
+		ContextBefore: before, ContextAfter: after,
+	}
+	switch mode {
+	case "content":
+		start, end := pageBounds(len(result.Matches), offset, limit)
+		details.Hits = make([]grepHit, 0, end-start)
+		for _, match := range result.Matches[start:end] {
+			text, truncated := truncateSearchLine(match.Text)
+			details.Hits = append(details.Hits, grepHit{
+				Path: displaySearchPath(cwd, match.Path), Line: match.LineNumber,
+				Text: text, Truncated: truncated,
+			})
+		}
+	case "count":
+		start, end := pageBounds(len(result.Counts), offset, limit)
+		details.Counts = make([]grepCount, 0, end-start)
+		for _, count := range result.Counts[start:end] {
+			details.Counts = append(details.Counts, grepCount{Path: displaySearchPath(cwd, count.Path), Count: count.Count})
+		}
+	default:
+		files := sortedGrepFiles(result.Files)
+		start, end := pageBounds(len(files), offset, limit)
+		details.Paths = make([]string, 0, end-start)
+		for _, file := range files[start:end] {
+			details.Paths = append(details.Paths, displaySearchPath(cwd, file))
+		}
+	}
+	return details
+}
+
+type grepDetailSet struct {
+	Paths         []string    `json:"paths,omitempty"`
+	Hits          []grepHit   `json:"hits,omitempty"`
+	Counts        []grepCount `json:"counts,omitempty"`
+	Mode          string      `json:"mode"`
+	Files         int         `json:"files"`
+	Matches       int         `json:"matches"`
+	Truncated     bool        `json:"truncated"`
+	Offset        int         `json:"offset,omitempty"`
+	Limit         int         `json:"limit,omitempty"`
+	ContextBefore int         `json:"context_before,omitempty"`
+	ContextAfter  int         `json:"context_after,omitempty"`
+}
+
+type grepHit struct {
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+type grepCount struct {
+	Path  string `json:"path"`
+	Count int    `json:"count"`
 }
 
 func contextLines(args map[string]any) (before, after int) {
@@ -201,15 +268,7 @@ func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLi
 		return output + note + searchMetadata(result)
 
 	default:
-		files := slices.Clone(result.Files)
-		slices.SortFunc(files, func(a, b string) int {
-			left, leftErr := os.Stat(a)
-			right, rightErr := os.Stat(b)
-			if leftErr == nil && rightErr == nil && !left.ModTime().Equal(right.ModTime()) {
-				return right.ModTime().Compare(left.ModTime())
-			}
-			return cmp.Compare(a, b)
-		})
+		files := sortedGrepFiles(result.Files)
 		start, end := pageBounds(len(files), offset, headLimit)
 		if start == end {
 			return "No files found" + searchMetadata(result)
@@ -221,6 +280,21 @@ func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLi
 		output, note := limitSearchOutput(strings.Join(lines, "\n"), spillSafetyLimit)
 		return fmt.Sprintf("Found %d files\n%s", len(lines), output) + note + searchMetadata(result)
 	}
+}
+
+// sortedGrepFiles orders file hits newest-first so both the model-facing text
+// and the structured details page the same list.
+func sortedGrepFiles(files []string) []string {
+	out := slices.Clone(files)
+	slices.SortFunc(out, func(a, b string) int {
+		left, leftErr := os.Stat(a)
+		right, rightErr := os.Stat(b)
+		if leftErr == nil && rightErr == nil && !left.ModTime().Equal(right.ModTime()) {
+			return right.ModTime().Compare(left.ModTime())
+		}
+		return cmp.Compare(a, b)
+	})
+	return out
 }
 
 func searchMetadata(result search.GrepResult) string {

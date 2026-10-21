@@ -76,11 +76,14 @@ func (t globTool) Execute(ctx context.Context, args map[string]any) toolapi.Resu
 		return support.Error(formatSearchError(err))
 	}
 	if len(result.Files) == 0 {
-		return globResult("No files found", root, 0, false)
+		return globResult("No files found", root, nil, false)
 	}
+	paths := make([]string, 0, len(result.Files))
 	lines := make([]string, 0, len(result.Files)+1)
 	for _, file := range result.Files {
-		lines = append(lines, displaySearchPath(t.cwd, file))
+		path := displaySearchPath(t.cwd, file)
+		paths = append(paths, path)
+		lines = append(lines, path)
 	}
 	output, note := limitSearchOutput(strings.Join(lines, "\n"), spillSafetyLimit)
 	if result.Truncated {
@@ -90,17 +93,23 @@ func (t globTool) Execute(ctx context.Context, args map[string]any) toolapi.Resu
 			note += "\n\n[Results are truncated. Consider using a more specific path or pattern.]"
 		}
 	}
-	return globResult(fmt.Sprintf("Found %d files\n%s%s", len(result.Files), output, note), root, len(result.Files), result.Truncated)
+	return globResult(fmt.Sprintf("Found %d files\n%s%s", len(result.Files), output, note), root, paths, result.Truncated)
 }
 
 type globDetails struct {
-	Root      string `json:"root"`
-	Files     int    `json:"files"`
-	Limit     int    `json:"limit"`
-	Truncated bool   `json:"truncated"`
+	// Paths is the same bounded list the model sees, so the WebUI can render
+	// file rows without re-parsing the text block.
+	Paths     []string `json:"paths,omitempty"`
+	Root      string   `json:"root"`
+	Files     int      `json:"files"`
+	Limit     int      `json:"limit"`
+	Truncated bool     `json:"truncated"`
 }
 
-func globResult(text, root string, files int, truncated bool) toolapi.Result {
-	meta := fmt.Sprintf("\n\n[root: %s; files: %d; limit: %d; truncated: %t]", root, files, defaultGlobLimit, truncated)
-	return toolapi.Result{Content: []types.Content{{Type: "text", Text: text + meta}}, Details: globDetails{Root: root, Files: files, Limit: defaultGlobLimit, Truncated: truncated}}
+func globResult(text, root string, paths []string, truncated bool) toolapi.Result {
+	meta := fmt.Sprintf("\n\n[root: %s; files: %d; limit: %d; truncated: %t]", root, len(paths), defaultGlobLimit, truncated)
+	return toolapi.Result{
+		Content: []types.Content{{Type: "text", Text: text + meta}},
+		Details: globDetails{Paths: paths, Root: root, Files: len(paths), Limit: defaultGlobLimit, Truncated: truncated},
+	}
 }

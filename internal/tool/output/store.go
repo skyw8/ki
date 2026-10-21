@@ -50,7 +50,7 @@ type Config struct {
 }
 
 // Reference describes a complete tool result stored outside the model prompt.
-// It is merged into tool details under the reserved "output" key.
+// It is merged into tool details under the reserved "spill" key.
 type Reference struct {
 	Path         string `json:"path"`
 	Bytes        int    `json:"bytes"`
@@ -344,14 +344,19 @@ func (s *Store) newPath(sessionID, toolName string) (string, error) {
 	return filepath.Join(dir, name), nil
 }
 
-// MergeDetails attaches ref under the reserved "output" key while keeping the
-// tool's own detail fields flat, so clients read details.output.path without
+// MergeDetails attaches ref under the reserved "spill" key while keeping the
+// tool's own detail fields flat, so clients read details.spill.path without
 // walking a nested copy of the original details.
+//
+// Why the key is not "output": several tools already publish a string field
+// named "output" (the Code Mode exec cell and the process snapshot both do),
+// and writing the reference there silently replaced the tool's own result for
+// any result large enough to spill.
 func MergeDetails(details any, ref *Reference) any {
 	if ref == nil {
 		return details
 	}
-	merged := map[string]any{"output": ref}
+	merged := map[string]any{"spill": ref}
 	if details == nil {
 		return merged
 	}
@@ -366,7 +371,7 @@ func MergeDetails(details any, ref *Reference) any {
 		return merged
 	}
 	for key, value := range existing {
-		if key == "output" {
+		if key == "spill" {
 			continue
 		}
 		merged[key] = value

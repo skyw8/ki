@@ -148,7 +148,7 @@ func TestNormalizeStopsSpillingWhenTheSessionBudgetIsGone(t *testing.T) {
 	}
 }
 
-func TestMergeDetailsKeepsToolFieldsFlatAndSetsOutput(t *testing.T) {
+func TestMergeDetailsKeepsToolFieldsFlatAndSetsSpill(t *testing.T) {
 	ref := &Reference{Path: "/tmp/x", Bytes: 4, TotalBytes: 9, Truncated: true}
 	merged := MergeDetails(map[string]any{"matches": float64(3), "truncated": true}, ref)
 	raw, err := json.Marshal(merged)
@@ -162,16 +162,29 @@ func TestMergeDetailsKeepsToolFieldsFlatAndSetsOutput(t *testing.T) {
 	if got["matches"] != float64(3) {
 		t.Fatalf("tool details were nested or lost: %v", got)
 	}
-	output, ok := got["output"].(map[string]any)
-	if !ok || output["path"] != "/tmp/x" {
-		t.Fatalf("output reference missing: %v", got)
+	spill, ok := got["spill"].(map[string]any)
+	if !ok || spill["path"] != "/tmp/x" {
+		t.Fatalf("spill reference missing: %v", got)
 	}
 	if MergeDetails(nil, nil) != nil {
 		t.Fatal("nil reference must not change details")
 	}
 	nilDetails, ok := MergeDetails(nil, ref).(map[string]any)
-	if !ok || nilDetails["output"] != ref {
+	if !ok || nilDetails["spill"] != ref {
 		t.Fatalf("details = %v", MergeDetails(nil, ref))
+	}
+}
+
+// A tool's own "output" field must survive a spill: Code Mode exec cells and
+// process snapshots both publish one, and clobbering it hid their result.
+func TestMergeDetailsKeepsToolOwnOutputField(t *testing.T) {
+	ref := &Reference{Path: "/tmp/x", Bytes: 4, TotalBytes: 9, Truncated: true}
+	got := MergeDetails(map[string]any{"output": "cell 1 log", "status": "completed"}, ref).(map[string]any)
+	if got["output"] != "cell 1 log" {
+		t.Fatalf("tool output field was replaced: %v", got)
+	}
+	if spill, ok := got["spill"].(*Reference); !ok || spill.Path != "/tmp/x" {
+		t.Fatalf("spill reference missing: %v", got)
 	}
 }
 

@@ -339,3 +339,43 @@ func TestGrepKeepsCompleteResultForTheSpool(t *testing.T) {
 		t.Fatalf("grep still applies the removed 20KB limit")
 	}
 }
+
+// The WebUI renders these details instead of re-parsing the model-facing text,
+// so each tool's structured shape is part of the contract.
+func TestSearchAndWriteToolsPublishStructuredDetails(t *testing.T) {
+	cwd := t.TempDir()
+	write := writeTool{cwd: cwd}
+	first := write.Execute(context.Background(), map[string]any{"file_path": "notes/a.txt", "content": "alpha\nbeta\n"})
+	if first.IsError {
+		t.Fatalf("write: %+v", first)
+	}
+	created, ok := first.Details.(writeDetails)
+	if !ok || created.Path != "notes/a.txt" || created.Bytes != len("alpha\nbeta\n") || created.Lines != 2 || !created.Created {
+		t.Fatalf("write details = %#v", first.Details)
+	}
+	again := write.Execute(context.Background(), map[string]any{"file_path": "notes/a.txt", "content": "alpha\n"})
+	if overwritten, ok := again.Details.(writeDetails); !ok || overwritten.Created || overwritten.Lines != 1 {
+		t.Fatalf("overwrite details = %#v", again.Details)
+	}
+
+	grep := grepTool{cwd: cwd}.Execute(context.Background(), map[string]any{"pattern": "alpha", "output_mode": "content"})
+	hits, ok := grep.Details.(grepDetailSet)
+	if !ok || grep.IsError {
+		t.Fatalf("grep details = %#v (%+v)", grep.Details, grep)
+	}
+	if len(hits.Hits) != 1 || hits.Hits[0].Path != "notes/a.txt" || hits.Hits[0].Line != 1 || hits.Hits[0].Text != "alpha" {
+		t.Fatalf("grep hits = %#v", hits.Hits)
+	}
+	if hits.Mode != "content" || hits.Files != 1 {
+		t.Fatalf("grep metadata = %#v", hits)
+	}
+	files, ok := grepTool{cwd: cwd}.Execute(context.Background(), map[string]any{"pattern": "a"}).Details.(grepDetailSet)
+	if !ok || len(files.Paths) != 1 || files.Paths[0] != "notes/a.txt" {
+		t.Fatalf("grep file mode details = %#v", files)
+	}
+
+	globbed, ok := globTool{cwd: cwd}.Execute(context.Background(), map[string]any{"pattern": "**/*.txt"}).Details.(globDetails)
+	if !ok || len(globbed.Paths) != 1 || globbed.Paths[0] != "notes/a.txt" || globbed.Files != 1 || globbed.Truncated {
+		t.Fatalf("glob details = %#v", globbed)
+	}
+}

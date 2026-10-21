@@ -20,7 +20,7 @@
 - 超过 preview budget 的文本完整写入当前 session 的私有临时文件，模型只收到有界 preview、字节/行数和 `read(file_path, offset, limit)` 提示；jsonl 和 SSE 里记录的也是这个有界结果，完整内容只存在于 spill 文件。
 - 默认 preview budget 为 16KiB / 800 行；它只限制模型上下文，不改变 spill 文件的内容（`output.Config` 可覆盖）。
 - 目录结构是 `<os.TempDir>/ki-tool-output/run-<pid>-<rand>/<session>/`；目录 `0700`、文件 `0600`，全部用主机 `filepath`。
-- details 在保留工具原有字段的同时挂一个保留键 `output`：`output.path`、`output.bytes`（文件实际存了多少）、`output.totalBytes`（工具产出多少）、`output.lines`、`output.previewBytes`、`output.previewLines`、`output.truncated`、`output.incomplete`（文件只存了前缀）。
+- details 在保留工具原有字段的同时挂一个保留键 `spill`：`spill.path`、`spill.bytes`（文件实际存了多少）、`spill.totalBytes`（工具产出多少）、`spill.lines`、`spill.previewBytes`、`spill.previewLines`、`spill.truncated`、`spill.incomplete`（文件只存了前缀）。键名不是 `output`，因为 exec 的 cell 和 shell 快照都有自己的 `output` 字段，写在那里会把工具结果覆盖掉。
 - 图片、PDF 等非文本 content 不参与 spool，原样保留。
 
 配额与生命周期：
@@ -75,11 +75,11 @@ Code Mode 的调用取消先请求 worker 停止 cell，再取消父进程 callb
 | 工具 | 参数 | 结果 |
 |---|---|---|
 | `read` | 文本模型：`file_path`、可选行分页 `offset` / `limit`；图片模型另有 `pages` | 原文，**不打** `cat -n`；返回结构化截断信息。只有 `input` 含 `image` 的模型能读图片和 PDF；`.ipynb` 按 cell |
-| `write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 read |
+| `write` | `file_path`、`content` | `Successfully wrote N bytes to …`；不要求先 read。details 带 `path`、`bytes`、`lines`、`created`（写入前是否已存在），WebUI 据此区分新建与覆盖 |
 | `edit` | 单次：`file_path`、`old_string`、`new_string`、`replace_all`；批量：`file_path`、`edits[]` | 精确替换；批量替换基于同一原文且不得重叠。若 provider 同时填充两种模式的字段，只执行唯一有效的模式并提醒；两种模式都有有效修改时拒绝。模型只看到简短摘要，diff/patch 在 details |
 | `apply_patch` | Codex `*** Begin Patch` freeform grammar；每个路径只出现一次，同文件修改合并进一个 update block | 明确声明 native patch 能力的 add/update/delete/move 批量补丁；完整预检后才写入，结果 details 带每个文件的 unified diff |
-| `grep` | `pattern`、`path`、`glob`、`output_mode`、`respect_gitignore`、上下文/分页/类型参数 | 基于内置 ripgrep；默认尊重 `.gitignore`；支持 partial results、JSON/NUL 解析、EAGAIN 降级、正则、取消/超时和统计元数据 |
-| `glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据 |
+| `grep` | `pattern`、`path`、`glob`、`output_mode`、`respect_gitignore`、上下文/分页/类型参数 | 基于内置 ripgrep；默认尊重 `.gitignore`；支持 partial results、JSON/NUL 解析、EAGAIN 降级、正则、取消/超时和统计元数据。details 与模型看到的同一页：`mode`、`files`、`matches`、`truncated`、`offset`、`limit`，以及按模式二选一的 `hits[{path,line,text,truncated}]`、`counts[{path,count}]` 或 `paths[]` |
+| `glob` | `pattern`、`path`、`respect_gitignore` | 基于内置 ripgrep `--files`；返回按修改时间排序的路径、root、limit、截断和统计元数据。details 另带同序的 `paths[]` |
 | `exec_command` | `cmd`、可选 `workdir` / `shell` / `login` / `tty` / `yield_time_ms` / `max_output_tokens` | 启动新进程，返回增量输出、退出码或数值 `session_id` |
 | `write_stdin` | `session_id`、可选 `chars` / `yield_time_ms` / `max_output_tokens` | 写入 PTY 或观察新输出；Ctrl-C 是中断请求 |
 | `spawn_agent` | `task_name`、`message`、可选 `fork_turns` | 异步创建具名 child，返回 canonical task path 和 agent/session ID |

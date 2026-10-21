@@ -1205,11 +1205,11 @@ func TestRunSpillsOversizedToolResult(t *testing.T) {
 	if details["matches"] != float64(3) {
 		t.Fatalf("tool details were nested or lost: %#v", details)
 	}
-	output, ok := details["output"].(map[string]any)
+	spill, ok := details["spill"].(map[string]any)
 	if !ok {
-		t.Fatalf("missing output reference: %#v", details)
+		t.Fatalf("missing spill reference: %#v", details)
 	}
-	path, _ := output["path"].(string)
+	path, _ := spill["path"].(string)
 	raw, readErr := os.ReadFile(path)
 	if readErr != nil {
 		t.Fatal(readErr)

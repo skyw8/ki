@@ -2,13 +2,16 @@ package filetools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	toolapi "ki/internal/tool"
 	"ki/internal/tool/builtin/catalog"
 	"ki/internal/tool/builtin/internal/support"
+	"ki/internal/types"
 )
 
 type writeTool struct {
@@ -73,11 +76,38 @@ func (t writeTool) Execute(ctx context.Context, args map[string]any) toolapi.Res
 	if err := ctx.Err(); err != nil {
 		return support.Error("Write aborted")
 	}
+	// Capture existence before the write so the WebUI can tell an overwrite
+	// from a new file without re-reading the path.
+	_, statErr := os.Stat(abs)
+	created := errors.Is(statErr, os.ErrNotExist)
 	if err := os.WriteFile(abs, []byte(content), 0o600); err != nil {
 		return support.Error(err.Error())
 	}
 	if err := ctx.Err(); err != nil {
 		return support.Error("Write aborted")
 	}
-	return support.Text(fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), path))
+	return toolapi.Result{
+		Content: []types.Content{{Type: "text", Text: fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), path)}},
+		Details: writeDetails{Path: path, Bytes: len(content), Lines: lineCount(content), Created: created},
+	}
+}
+
+type writeDetails struct {
+	Path    string `json:"path"`
+	Bytes   int    `json:"bytes"`
+	Lines   int    `json:"lines"`
+	Created bool   `json:"created"`
+}
+
+// lineCount matches the editor convention: a trailing newline does not start
+// another line.
+func lineCount(text string) int {
+	if text == "" {
+		return 0
+	}
+	lines := strings.Count(text, "\n")
+	if !strings.HasSuffix(text, "\n") {
+		lines++
+	}
+	return lines
 }

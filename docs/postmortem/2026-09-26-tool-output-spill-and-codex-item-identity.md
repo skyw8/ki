@@ -45,7 +45,7 @@
 ## 验证
 
 - `internal/tooloutput`：溢出、preview 边界、非文本块保留、跳过规则（`output_file` / `next_offset` / 读自己的 spill）、单文件上限、session 预算、owner 清扫（死进程 / 存活 / 外部主机 / 无 owner）、Close 清理。
-- `internal/loop`：一次完整 Run 断言模型可见结果有界、`details.output.path` 指向的文件与工具原始输出逐字节相同、工具自身 details 仍平铺。
+- `internal/loop`：一次完整 Run 断言模型可见结果有界、`details.spill.path` 指向的文件与工具原始输出逐字节相同、工具自身 details 仍平铺。
 - `internal/server`：session 关闭删 spill 文件、server shutdown 删 run root。
 - `internal/tools`：Grep 结果不再有 20KB 上限；JobStore 把任务日志写进 session spill 目录，store 拒绝时退回临时文件；Bash 端到端确认日志落在 spool 目录。
 - `extensions/codex-oauth`：19 个单测，含"同一 `output_index`、不同 item ID → reasoning 与 toolCall 各一条且 reasoning 不带 `name`/`arguments`"、"delta 缺 item ID 时经 call_id / output_index 回到已注册 item"、"回放时剥掉 reasoning 上的工具字段"。
