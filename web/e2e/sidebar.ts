@@ -30,6 +30,13 @@ async function openSidebar(page: Page): Promise<void> {
 export async function expandWorkspaces(page: Page): Promise<void> {
   await expect(page.locator('main.main')).toBeVisible()
   await openSidebar(page)
+  // The session list arrives with the sidebar's first refresh, so "zero
+  // collapsed toggles" means either "all expanded" or "nothing rendered yet".
+  // Wait for the list itself rather than for a workspace group: a server with
+  // no workspaces never renders one, and returning on an empty DOM leaves every
+  // later session-row assertion waiting for a row that a still-collapsed group
+  // never renders (this is the flake that failed four CI specs at once).
+  await expect(page.getByTestId('session-list')).toHaveAttribute('data-ready', 'true')
   const collapsed = page.locator('.ws-toggle[aria-expanded="false"]')
   // Bounded: each click removes one collapsed toggle, so this terminates even
   // if a group appears late. The bound only guards against a toggle that

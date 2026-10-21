@@ -712,6 +712,11 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   // read. Every caller's promise resolves after a refresh that started at or
   // after its call, so `await refreshList()` still guarantees fresh state.
   // The server's ETag lets an unchanged list skip setSessions entirely.
+  // The first sidebar refresh gates `session-list`'s data-ready marker. Tests
+  // and the empty-state hint both need to tell "nothing matched yet" apart from
+  // "loaded and there is nothing to show"; workspace-group alone cannot, because
+  // a server with no workspaces renders no group at all.
+  const [listLoaded, setListLoaded] = useState(false)
   const listEtag = useRef<string | null>(null)
   const wsKey = useRef<string | null>(null)
   const refreshGate = useRef({ active: false, dirty: false, waiters: [] as Array<() => void> })
@@ -734,6 +739,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             const [ss, ws] = await Promise.all([api.list(listEtag.current ?? undefined), api.workspaces()])
             if (!ss.notModified) {
               listEtag.current = ss.etag
+              setListLoaded(true)
               // Eager copy: the resume catch-up reads sessionsRef synchronously
               // from the promise callback, before React has re-rendered.
               sessionsRef.current = ss.sessions
@@ -1832,7 +1838,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             <button type="button" className="icon-btn" data-testid="add-workspace" onClick={openDirectoryFromSidebar} aria-label={t('workspace.add')} title={t('workspace.add')}><IFolder /></button>
           </div>
         )}
-        <div className="session-list">
+        <div className="session-list" data-testid="session-list" data-ready={listLoaded ? 'true' : undefined}>
           {sidebarWide && filter.trim() ? (
             <>
               {mergedHits.map(h => (
