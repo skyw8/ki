@@ -1,6 +1,6 @@
 # 扩展（Extensions）
 
-包是带 `extension.json` 的目录。声明式贡献并入 Snapshot；需要跑代码时只走 **NDJSON JSON-RPC 2.0 sidecar**（语言无关，不编进 ki）。实现包：`internal/extension`。所有扩展均独立编译为 executable，通过 NDJSON JSON-RPC 子进程启动；Go/Rust 扩展实现和 executable payload 不链接/嵌入 Ki host，源码包的 installer 也是外部构建子进程。
+包是带 `extension.json` 的目录。声明式贡献并入 Snapshot；需要跑代码时只走 **NDJSON JSON-RPC 2.0 sidecar**（语言无关，不编进 ki）。实现包：`internal/extension`。所有扩展均独立编译为 executable，通过 NDJSON JSON-RPC 子进程启动；扩展实现和 executable payload 不链接/嵌入 Ki host，源码包的 installer 也是外部构建子进程。
 
 **不做**旧 `hook` / `intercept` / `intercept[]` 协议。代码能力对外只订事件（`lifecycle`）+ 可选 inbound Host 方法。
 
@@ -16,16 +16,14 @@
 - runtime 启动失败每 2s 重试；初始化成功后若不足 30s 就退出，首次立即重试，连续快速退出按 1/2/4/8/16/30s 退避，稳定运行 30s 后重置。修改或禁用该包立即唤醒等待；无关 catalog 变更不取消已有退避。安装/初始化尚未完成时遇到 catalog 代际变更或关闭，旧进程不能发布为运行态，会被关闭。
 - session 快照可在全局 reload 前临时接纳新发现的包名；已被 catalog 移除/禁用的已知名字不能由旧快照重新启用。下一次全局 Configure 接管这些临时启动，并阻止旧代际初始化完成后再发布。
 - 目录列表和 prompt/lifecycle 链均按全局包名排序。
-- 仓库 `extensions/` 下的扩展使用 Go；`zvec-grep` 是使用原生 Rust 检索引擎的例外。协议仍然语言无关，第三方扩展可使用任何语言。
+- 仓库 `extensions/` 下的扩展都使用 Go。协议仍然语言无关，第三方扩展可使用任何语言。
 - 发现只扫描 `{KI_HOME}/extensions` 下的**非隐藏**目录。安装器把临时目录（`.stage-*` / `.replaced-*` / `.download-*`）放在同一目录以保证 rename 原子性，隐藏前缀让它们永不被当作包。
-- 从仓库根运行 `go run ./scripts/build-extensions.go`，在 `var/extensions/<name>/` 生成分发包；可用 `-only goal,telegram-bot` 选择包，Go 包也支持 `-goos windows -goarch amd64`。加 `-zip` 则输出 `<name>-<goos>-<goarch>.zip`（发布资产）。手工安装时把生成的目录复制到 `{KI_HOME}/extensions/<name>`；常规安装直接走 Settings → Extensions（见下文「从发布安装」）。随包 manifest 直接启动 `bin/<name>`（Windows 文件为 `.exe`），并声明 `runtime.install=["go","run","./install/main.go"]`、`runtime.installWhen="missing"`。二进制存在时完全跳过 install，运行时不需要源码或 Go / Rust / Bun / Node / Python 工具链。
+- 从仓库根运行 `go run ./scripts/build-extensions.go`，在 `var/extensions/<name>/` 生成分发包；可用 `-only goal,telegram-bot` 选择包，Go 包也支持 `-goos windows -goarch amd64`。加 `-zip` 则输出 `<name>-<goos>-<goarch>.zip`（发布资产）。手工安装时把生成的目录复制到 `{KI_HOME}/extensions/<name>`；常规安装直接走 Settings → Extensions（见下文「从发布安装」）。随包 manifest 直接启动 `bin/<name>`（Windows 文件为 `.exe`），并声明 `runtime.install=["go","run","./install/main.go"]`、`runtime.installWhen="missing"`。二进制存在时完全跳过 install，运行时不需要源码或语言工具链。
 - 默认二进制分发包只含 manifest、声明式 locale/prompt 和编译后的可执行文件；install 元数据保留，但不附带源码或 install wrapper。删除二进制后须重新安装二进制包，或换用源码包，不能在缺失源码时自动编译。
-- `go run ./scripts/build-extensions.go -source -out var/extensions-source`（可配 `-only`）在独立输出目录生成可复制到仓库外的源码包：包根为独立 `ki/extensions/<name>` Go module，通过 `require ki v0.0.0` 和 `replace ki => ./_ki` 使用随包的最小共享源码；`_ki` 保留版本锁定的根 go.mod/go.sum，仅含 `pkg/extensionrpc`、`pkg/extensionbuild`、`internal/state` 的非测试源码。源码包附带 Go/Rust 源码、编译所需的 schema/prompt、锁文件与 install wrapper，不包含 config/state/cache、密钥、构建产物或依赖缓存。缺失 executable 时 Go installer 在包根以 CGO 关闭的 native `go build .` 编译；Rust 例外用 `cargo build --release --locked`，发布相同字节到 `bin/zvec-grep` 和 `bin/zg`。编译成功后原子替换 binary，包内锁防止并发首次启动重复编译。
-- Go sidecar 把运行必需的 schemas/catalog/prompt 文案嵌入二进制；Rust 检索 sidecar 将引擎、native 库及词典嵌入单个 executable，在启动时展开到 `{KI_HOME}/cache/extensions/zvec-grep/` 下按内容哈希命名的私有目录。`bin/zg` 是同一 executable 的 CLI 入口；其 PATH 声明为 `bin`。
+- `go run ./scripts/build-extensions.go -source -out var/extensions-source`（可配 `-only`）在独立输出目录生成可复制到仓库外的源码包：包根为独立 `ki/extensions/<name>` Go module，通过 `require ki v0.0.0` 和 `replace ki => ./_ki` 使用随包的最小共享源码；`_ki` 保留版本锁定的根 go.mod/go.sum，仅含 `pkg/extensionrpc`、`pkg/extensionbuild`、`internal/state` 的非测试源码。源码包附带 Go 源码、编译所需的 schema/prompt、锁文件与 install wrapper，不包含 config/state/cache、密钥、构建产物或依赖缓存。缺失 executable 时 installer 在包根以 CGO 关闭的 native `go build .` 编译，成功后原子替换 binary，包内锁防止并发首次启动重复编译。
+- Go sidecar 把运行必需的 schemas/catalog/prompt 文案嵌入二进制。
 - 源码包生成先规范化根 go.mod 的 LF/CRLF 行尾，再改写独立 module 名称；Windows checkout 不会保留 `module ki` 而丢失本地共享模块依赖。发现阶段先解析包根的真实路径，安装前的缺失 executable 路径校验使用同一规范化根，不把 macOS/Windows 临时目录别名误判成逃逸。
-- Rust 包需要在目标平台用 Rust 1.98.0、C++、CMake、libclang 构建，首次构建还需网络；具体依赖和原生平台支持见 `extensions/zvec-grep/README.md`。新的 Rust 索引格式不同，旧 JavaScript 索引须由用户明确执行 `/zg-index --rebuild`；不会隐式重建。
-- `internal/extension` 的测试校验随包 manifest、能力和 locale key 对齐，并实际启动不含源码且 PATH 不含语言工具链的 Go 分发包，并通过 Host 安装/启动复制到仓库外的全部 Go 源码包。这些 Host/契约测试仍属于默认核心 Go 套件；Rust 构建与协议/真实检索测试单独运行，CI 的 `zvec-native` 和 extension transport 检查通过手动启用 CI 的 `extensions` 输入后执行。
-- Rust 单元测试统一使用 `node extensions/zvec-grep/test/native.mjs`（仓库根）；它先以 Rust 1.98.0 测 native，再编译 launcher 的测试目标。Linux 自动为 bindgen 补 GCC 标准 C 头文件路径，与 launcher 的构建回退一致；显式环境设置优先，继续复用锁文件和 Cargo 缓存。
+- `internal/extension` 的测试校验随包 manifest、能力和 locale key 对齐，并实际启动不含源码且 PATH 不含语言工具链的 Go 分发包，并通过 Host 安装/启动复制到仓库外的全部 Go 源码包。这些 Host/契约测试属于默认核心 Go 套件；extension transport 检查通过手动启用 CI 的 `extensions` 输入后执行。
 - Telegram 附件下载直接流入目标旁的临时文件，成功关闭后 rename 发布；失败或取消不覆盖已有附件。50 MiB 下载上限保持不变，超过上限明确报错，不发布截断文件。
 
 ## 包布局
@@ -221,7 +219,7 @@ my-ext/
 
 ## Sidecar 协议
 
-NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` + 平台必需的 PATH/locale、profile（含 Windows USERPROFILE/LOCALAPPDATA/APPDATA）及 temp 变量 + Ki 启动时继承的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`ALL_PROXY`、`NO_PROXY`（含小写变体）+ `runtime.env`。`runtime.env` 对同名变量拥有最终覆盖权。install 命令继承 Ki 父进程的完整环境，再覆盖上述扩展作用域 KI_* 值和 runtime.env，因而保留 Go/Rust/native 编译所需的工具链与缓存变量；运行时 sidecar 仍使用上述 allowlist，其子进程继承 sidecar 环境。全局 install/sidecar 清除父进程继承的 `KI_SESSION_ID`/`KI_CWD`，不固定到首个 session；session 相关 RPC 显式携带 `sessionId`。
+NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` + 平台必需的 PATH/locale、profile（含 Windows USERPROFILE/LOCALAPPDATA/APPDATA）及 temp 变量 + Ki 启动时继承的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`ALL_PROXY`、`NO_PROXY`（含小写变体）+ `runtime.env`。`runtime.env` 对同名变量拥有最终覆盖权。install 命令继承 Ki 父进程的完整环境，再覆盖上述扩展作用域 KI_* 值和 runtime.env，因而保留源码包编译所需的工具链与缓存变量；运行时 sidecar 仍使用上述 allowlist，其子进程继承 sidecar 环境。全局 install/sidecar 清除父进程继承的 `KI_SESSION_ID`/`KI_CWD`，不固定到首个 session；session 相关 RPC 显式携带 `sessionId`。
 
 超时：`initialize` 10s；sync 生命周期 2s；`tool.execute` 120s（超时后先发 `cancel`，再宽限 2s 收取 sidecar 在途的部分结果）；`command.invoke` 15s；provider stream start 10s。
 
@@ -308,7 +306,7 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 | `bus.broadcast` | `bus` | fire-and-forget，不等待 |
 | `bus.subscribe` / `bus.unsubscribe` | `bus` | 运行中改订阅 |
 
-error tone 的完整文案会显示在统一扩展 Modal 标题下的独立红条，详情/配置切换不隐藏；runtime/manifest 错误也在此显示。进程 ready 只表示 sidecar 可调用，不能代表索引任务已恢复。zvec-grep 的建索引失败不按时间清空，下次索引任务才替换；成功状态 30 秒后清空，下次任务会取消旧计时器。索引版本或 embedding 不兼容时，查询/建索引错误明确提示 `/zg-index --rebuild`。
+error tone 的完整文案会显示在统一扩展 Modal 标题下的独立红条，详情/配置切换不隐藏；runtime/manifest 错误也在此显示。进程 ready 只表示 sidecar 可调用，不能代表后台任务已恢复。长时间任务的状态应由扩展自己持有：失败状态保留到下一次任务替换它，成功状态 30 秒后清空，下一次任务会取消旧计时器。
 
 除 `session.create`、`session.list`、`session.get` 和 `ui.setGlobal*` / `ui.clearGlobalPanel` 外，上表 inbound 方法都必须带 `sessionId`，bus 订阅也按 session 维护。`session.open` 是 Host→sidecar 的 session 生命周期通知。`ui.setPanel` 和 `ui.setGlobalPanel` 由 WebUI 按通用壳渲染，Host 不解析扩展语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
 

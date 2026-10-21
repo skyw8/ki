@@ -105,8 +105,8 @@ jobs:
 
   # Extension packages are separate assets: `ki` downloads and verifies them on
   # demand from the WebUI instead of embedding them in the binary. Every
-  # supported target builds its own set, including the native Rust search
-  # engine, and the installer derives the asset name from GOOS/GOARCH.
+  # supported target builds its own set, and the installer derives the asset
+  # name from GOOS/GOARCH.
   extension-assets:
     name: Extension assets ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: tests
@@ -125,51 +125,14 @@ jobs:
             goos: windows
             goarch: amd64
     runs-on: ${{ matrix.os }}
-    env:
-      KI_ZVEC_GREP_BUILD_JOBS: "4"
-      CMAKE_BUILD_PARALLEL_LEVEL: "4"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: Install native Linux build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev g++
-      - name: Locate macOS libclang
-        if: runner.os == 'macOS'
-        shell: bash
-        run: echo "LIBCLANG_PATH=$(dirname "$(xcrun --find clang)")/../lib" >> "$GITHUB_ENV"
-      - name: Locate Windows libclang
-        if: runner.os == 'Windows'
-        shell: bash
-        run: echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
-      - name: Build Go release zips
-        shell: bash
-        # The Go packages need no native toolchain, so they are built first and
-        # unconditionally: a Rust-only failure below must not withhold them.
-        run: go run ./scripts/build-extensions.go -zip -only codex-oauth,deep-web-search,goal,telegram-bot -out var/release-extensions
-      # Why best-effort: zvec-grep compiles a native Rust/C++ engine against a
-      # pinned toolchain, and that path is the most likely to break on a runner
-      # image update. The other four packages still ship; the installer reports
-      # a missing asset for this one instead of the whole release failing.
-      - name: Install the pinned native Rust toolchain
-        shell: bash
-        continue-on-error: true
-        run: rustup toolchain install 1.98.0 --profile minimal
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            extensions/zvec-grep/target
-            extensions/zvec-grep/native/target
-          key: ${{ runner.os }}-zvec-rust-1.98-${{ hashFiles('extensions/zvec-grep/**/Cargo.lock') }}
-      - name: Build native release zip
-        shell: bash
-        continue-on-error: true
-        run: go run ./scripts/build-extensions.go -zip -only zvec-grep -out var/release-extensions
+      - name: Build extension zips
+        run: go run ./scripts/build-extensions.go -zip -out var/release-extensions
       - uses: actions/upload-artifact@v4
         with:
           name: extensions-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -180,11 +143,11 @@ jobs:
   publish:
     name: Publish GitHub Release
     needs: [binaries, extension-assets]
-    # Why not a plain `needs` gate: the native Rust extension build is the
-    # slowest and most platform-specific job here, and a failure in it must not
-    # withhold the ki binaries. Publish only requires the binaries to have been
-    # built; a missing extension family simply means the installer reports that
-    # no asset exists for this release until the job is re-run.
+    # Why not a plain `needs` gate: a single extension package that fails to
+    # build must not withhold the ki binaries. Publish only requires the
+    # binaries to have been built; a missing extension family simply means the
+    # installer reports that no asset exists for this release until the job is
+    # re-run.
     if: always() && needs.binaries.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -205,8 +168,8 @@ jobs:
           pattern: extensions-*
           path: release-assets
           merge-multiple: true
-        # A platform that failed to build its native package must not block the
-        # ki binaries; checksums.txt then simply has no zip for it, and the
+        # A platform that failed to build its packages must not block the ki
+        # binaries; checksums.txt then simply has no zip for it, and the
         # installer reports a missing asset instead of unpacking a bad one.
         continue-on-error: true
       - name: Write checksums

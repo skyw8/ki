@@ -29,9 +29,9 @@ const InstallCatalogVersion = 1
 const DefaultExtensionSource = "https://github.com/skyw8/ki/releases"
 
 const (
-	// maxArchiveBytes bounds a downloaded extension archive. The largest
-	// bundled package (zvec-grep) is under 100 MiB, so this leaves room without
-	// letting a wrong URL stream unbounded data into KI_HOME.
+	// maxArchiveBytes bounds a downloaded extension archive. Bundled packages are
+	// single-digit megabytes, so this leaves room for a larger third-party
+	// package without letting a wrong URL stream unbounded data into KI_HOME.
 	maxArchiveBytes = 512 << 20
 	// maxExtractedBytes bounds the unpacked package for the same reason.
 	maxExtractedBytes = 1 << 30

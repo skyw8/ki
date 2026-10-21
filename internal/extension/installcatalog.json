@@ -24,12 +24,6 @@
       "version": "0.1.0",
       "description": "Telegram Managed Bot connector for private chats and @mentioned groups.",
       "capabilities": ["channel", "lifecycle", "settings"]
-    },
-    {
-      "name": "zvec-grep",
-      "version": "0.1.0",
-      "description": "Local hybrid (lexical + vector) workspace search over a zvec-grep index, with index management commands.",
-      "capabilities": ["tool", "settings", "prompt.append", "command", "path"]
     }
   ]
 }

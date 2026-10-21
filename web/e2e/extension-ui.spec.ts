@@ -58,7 +58,7 @@ for (const width of [1440, 390]) test(`extension errors remain readable above de
   const bin = sidecarBin(home, `index-error-sidecar-${width}`)
   const dir = join(home, 'extensions', name)
   mkdirSync(dir, { recursive: true })
-  const error = `Index failed for /workspace/${'long-path/'.repeat(15)}: unsupported index version 1; expected 2.\nRun /zg-index --rebuild to rebuild it in Ki.`
+  const error = `Index failed for /workspace/${'long-path/'.repeat(15)}: unsupported index version 1; expected 2.\nRebuild the index from the extension settings to continue.`
   writeFileSync(join(dir, 'extension.json'), JSON.stringify({
     name, capabilities: ['lifecycle', 'settings'],
     config: { schema: { type: 'object', properties: { label: { type: 'string' } } }, defaults: { label: 'demo' } },

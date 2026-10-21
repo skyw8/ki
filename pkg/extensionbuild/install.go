@@ -47,11 +47,7 @@ func Install(ctx context.Context, root, name string, output io.Writer) error {
 	if installed(binary) {
 		return nil
 	}
-	if name == "zvec-grep" {
-		if _, err := os.Stat(filepath.Join(root, "Cargo.toml")); err != nil {
-			return fmt.Errorf("cannot install missing executable: Rust sources are missing (Cargo.toml); use a binary package or the complete source package")
-		}
-	} else if _, err := os.Stat(filepath.Join(root, "main.go")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "main.go")); err != nil {
 		return fmt.Errorf("cannot install missing executable: Go sources are missing (main.go); use a binary package or the complete source package")
 	}
 	if err := os.MkdirAll(filepath.Dir(binary), 0755); err != nil {
@@ -77,41 +73,12 @@ func Install(ctx context.Context, root, name string, output io.Writer) error {
 	pending := temp.Name()
 	_ = temp.Close()
 	defer os.Remove(pending)
-	if name == "zvec-grep" {
-		command := exec.CommandContext(ctx, "cargo", "build", "--release", "--locked", "--manifest-path", filepath.Join(root, "Cargo.toml"))
-		command.Dir = root
-		command.Env = environment(os.Environ(), "CARGO_TARGET_DIR", filepath.Join(root, "target"))
-		command.Stdout, command.Stderr = output, output
-		if err := command.Run(); err != nil {
-			return fmt.Errorf("build Rust extension (requires Cargo/Rust 1.98.0, CMake, C++, and libclang): %w", err)
-		}
-		if err := copyExecutable(filepath.Join(root, "target", "release", executable(name)), pending); err != nil {
-			return err
-		}
-		alias := filepath.Join(root, "bin", executable("zg"))
-		// Publish the CLI alias before the main executable, so a successful install
-		// always has both entry points with identical self-contained launcher bytes.
-		aliasTemp, err := os.CreateTemp(filepath.Dir(alias), ".zg-build-")
-		if err != nil {
-			return err
-		}
-		aliasPending := aliasTemp.Name()
-		_ = aliasTemp.Close()
-		defer os.Remove(aliasPending)
-		if err := copyExecutable(pending, aliasPending); err != nil {
-			return err
-		}
-		if err := replaceFile(aliasPending, alias); err != nil {
-			return fmt.Errorf("publish zg: %w", err)
-		}
-	} else {
-		command := exec.CommandContext(ctx, "go", "build", "-trimpath", "-ldflags=-s -w", "-o", pending, ".")
-		command.Dir = root
-		command.Env = environment(environment(environment(os.Environ(), "CGO_ENABLED", "0"), "GOOS", runtime.GOOS), "GOARCH", runtime.GOARCH)
-		command.Stdout, command.Stderr = output, output
-		if err := command.Run(); err != nil {
-			return fmt.Errorf("build Go extension (requires Go and the complete source package): %w", err)
-		}
+	command := exec.CommandContext(ctx, "go", "build", "-trimpath", "-ldflags=-s -w", "-o", pending, ".")
+	command.Dir = root
+	command.Env = environment(environment(environment(os.Environ(), "CGO_ENABLED", "0"), "GOOS", runtime.GOOS), "GOARCH", runtime.GOARCH)
+	command.Stdout, command.Stderr = output, output
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("build Go extension (requires Go and the complete source package): %w", err)
 	}
 	if err := os.Chmod(pending, 0755); err != nil {
 		return err
@@ -120,29 +87,6 @@ func Install(ctx context.Context, root, name string, output io.Writer) error {
 		return fmt.Errorf("publish %s: %w", name, err)
 	}
 	return nil
-}
-func copyExecutable(source, destination string) error {
-	in, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(destination, os.O_WRONLY|os.O_TRUNC, 0755)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(out, in)
-	if err == nil {
-		err = out.Chmod(0755)
-	}
-	if err == nil {
-		err = out.Sync()
-	}
-	closeErr := out.Close()
-	if err == nil {
-		err = closeErr
-	}
-	return err
 }
 func environment(env []string, key, value string) []string {
 	out := make([]string, 0, len(env)+1)

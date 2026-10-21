@@ -1,9 +1,0 @@
-/target/
-/native/target/
-/bin/
-/config.json
-*.tmp
-*.lock
-!Cargo.lock
-.DS_Store
-*.swp

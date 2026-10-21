@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"testing"
 
 	"ki/internal/session"
@@ -125,50 +124,6 @@ func assertI18nParity(t *testing.T, d Descriptor) {
 			if _, ok := base[key]; !ok {
 				t.Errorf("%s: locale %s has extra key %q", d.Name, locale, key)
 			}
-		}
-	}
-}
-
-// TestBundledZvecGrepDeclaresPathAndPrompt pins the two contracts this package
-// depends on: its compiled bin directory lands on the shell PATH once installed, and
-// its prompt layer keeps the search routing rules.
-func TestBundledZvecGrepDeclaresPathAndPrompt(t *testing.T) {
-	bundled := filepath.Join("..", "..", "extensions", "zvec-grep")
-	home := t.TempDir()
-	copyBundledPackage(t, bundled, filepath.Join(home, "extensions", "zvec-grep"))
-
-	got := Discover(home, session.Toggle{})
-	if len(got.All) != 1 {
-		t.Fatalf("discovered %+v", got.All)
-	}
-	d := got.All[0]
-	if d.Error != "" {
-		t.Fatalf("zvec-grep does not load: %s", d.Error)
-	}
-	for _, kind := range []Kind{CapTool, CapSettings, CapPromptAppend, CapCommand, CapPath} {
-		if !hasKind(d.Capabilities, kind) {
-			t.Errorf("zvec-grep is missing capability %q", kind)
-		}
-	}
-	dirs := d.PathDirs()
-	if len(dirs) != 1 || filepath.Base(dirs[0]) != "bin" {
-		t.Fatalf("declared PATH dirs = %v", dirs)
-	}
-	// Binaries are not staged in this source fixture, so the effective PATH list
-	// must stay empty: a declared-but-missing directory is skipped per turn.
-	if effective := PathDirs(got.Enabled); len(effective) != 0 {
-		t.Fatalf("missing directory leaked into PATH: %v", effective)
-	}
-	if statuses := d.PathDirStatuses(); len(statuses) != 1 || statuses[0].Exists {
-		t.Fatalf("PathDirStatuses = %+v", statuses)
-	}
-	if files := d.PromptAppendFiles(); len(files) != 1 || files[0] != "prompt/APPEND.md" {
-		t.Fatalf("prompt append files = %v", files)
-	}
-	text := d.promptText()
-	for _, want := range []string{"zvec_grep_search", "Grep", "/zg-index"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("prompt text does not mention %q:\n%s", want, text)
 		}
 	}
 }

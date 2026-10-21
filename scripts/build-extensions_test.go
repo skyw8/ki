@@ -135,7 +135,7 @@ func TestSourcePackagesArePortableAndExcludeRuntimeArtifacts(t *testing.T) {
 	destination := t.TempDir()
 	// Source staging itself needs no compiler or native build dependencies.
 	t.Setenv("PATH", t.TempDir())
-	for _, name := range []string{"codex-oauth", "deep-web-search", "goal", "telegram-bot", "zvec-grep"} {
+	for _, name := range []string{"codex-oauth", "deep-web-search", "goal", "telegram-bot"} {
 		t.Run(name, func(t *testing.T) {
 			if err := buildPackage(root, destination, name, "windows", "arm64", true); err != nil {
 				t.Fatal(err)
@@ -161,13 +161,6 @@ func TestSourcePackagesArePortableAndExcludeRuntimeArtifacts(t *testing.T) {
 				return nil
 			}); err != nil {
 				t.Fatal(err)
-			}
-			if name == "zvec-grep" {
-				for _, file := range []string{"Cargo.lock", "launcher/main.rs", "native/Cargo.lock", "native/src/main.rs", "native/search-tool.json", "native/UPSTREAM-LICENSE"} {
-					if _, err := os.Stat(filepath.Join(packageRoot, filepath.FromSlash(file))); err != nil {
-						t.Fatal(file, err)
-					}
-				}
 			}
 		})
 	}

@@ -9,6 +9,7 @@ web/playwright-report
 web/blob-report
 web/playwright/.cache
 extensions/*/config.json
-# zvec-grep workspace index: binary shards, not source (would also drown rg/fd).
-.zvec-grep/
+# A removed search extension can still leave its local index in a checkout.
+# Keep it ignored so `git add -A` never stages binary shards.
+/.zvec-grep/
 tmp*

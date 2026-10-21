@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -62,13 +61,6 @@ func assertBinaryPackage(t *testing.T, d Descriptor) {
 		binary += ".exe"
 	}
 	assets[binary] = true
-	if d.Name == "zvec-grep" {
-		alias := filepath.Join("bin", "zg")
-		if runtime.GOOS == "windows" {
-			alias += ".exe"
-		}
-		assets[alias] = true
-	}
 	seen := map[string]bool{}
 	err := filepath.WalkDir(d.root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -139,35 +131,6 @@ func assertPackagedInitialize(t *testing.T, root, home string, d Descriptor) {
 			want = append(want, Subscription{Event: event, Mode: "async"})
 		}
 		assertJSONEqual(t, reg.Subscriptions, want)
-	case "zvec-grep":
-		if len(reg.Tools) != 1 || reg.Tools[0].Name != "zvec_grep_search" {
-			t.Fatal(reg)
-		}
-		if reg.Tools[0].Parameters["type"] != "object" || reg.Tools[0].Parameters["properties"] == nil {
-			t.Fatal("missing native search schema", reg.Tools[0])
-		}
-		names := []string{}
-		for _, cmd := range reg.Commands {
-			names = append(names, cmd.Name)
-		}
-		slices.Sort(names)
-		assertJSONEqual(t, names, []string{"zg-index", "zg-remove", "zg-status"})
-		if got := d.PromptAppendFiles(); len(got) != 1 || got[0] != "prompt/APPEND.md" {
-			t.Fatal(got)
-		}
-		if dirs := PathDirs([]Descriptor{d}); len(dirs) != 1 || dirs[0] != filepath.Join(d.root, "bin") {
-			t.Fatal(dirs)
-		}
-		alias := filepath.Join(d.root, "bin", "zg")
-		if runtime.GOOS == "windows" {
-			alias += ".exe"
-		}
-		cli := exec.CommandContext(ctx, alias, "--help")
-		cli.Dir = t.TempDir()
-		cli.Env = sidecarEnv(d, "", home, cli.Dir)
-		if data, err := cli.CombinedOutput(); err != nil || !strings.Contains(strings.ToLower(string(data)), "usage:") {
-			t.Fatalf("packaged zg alias: %v\n%s", err, data)
-		}
 	}
 	if err := client.call(ctx, "shutdown", map[string]any{}, nil); err != nil {
 		t.Errorf("source-free shutdown: %v", err)
@@ -245,140 +208,5 @@ func assertJSONEqual(t *testing.T, actual, wanted any) {
 		a, _ := json.Marshal(actual)
 		b, _ := json.Marshal(wanted)
 		t.Fatalf("got %s\nwant %s", a, b)
-	}
-}
-
-// Native C++/Rust builds are kept out of the ordinary Go suite. The dedicated
-// native CI job supplies the already-built executable and exercises the same
-// host launch contract after copying only distributable assets into a new home.
-func TestBundledRustBinaryWithoutSource(t *testing.T) {
-	compiled := os.Getenv("KI_ZVEC_GREP_RUNTIME")
-	if compiled == "" {
-		t.Skip("native Rust suite supplies KI_ZVEC_GREP_RUNTIME")
-	}
-	compiled, err := filepath.Abs(compiled)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	home := t.TempDir()
-	destination := filepath.Join(home, "extensions", "zvec-grep")
-	source := filepath.Join(root, "extensions", "zvec-grep")
-	data, err := os.ReadFile(filepath.Join(source, "extension.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var manifest Manifest
-	if err = json.Unmarshal(data, &manifest); err != nil {
-		t.Fatal(err)
-	}
-	assets := []string{"extension.json"}
-	for _, file := range manifest.I18n.Resources {
-		assets = append(assets, file)
-	}
-	assets = append(assets, manifest.Prompt.Append...)
-	for _, file := range assets {
-		sourceFile := filepath.Join(source, filepath.FromSlash(file))
-		data, err := os.ReadFile(sourceFile)
-		if err != nil {
-			t.Fatal(err)
-		}
-		dest := filepath.Join(destination, filepath.FromSlash(file))
-		if err = os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err = os.WriteFile(dest, data, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	binaryData, err := os.ReadFile(compiled)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"zvec-grep", "zg"} {
-		if runtime.GOOS == "windows" {
-			name += ".exe"
-		}
-		file := filepath.Join(destination, "bin", name)
-		if err = os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err = os.WriteFile(file, binaryData, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	discovery := Discover(home, session.Toggle{})
-	if len(discovery.All) != 1 {
-		t.Fatal(discovery)
-	}
-	d := discovery.All[0]
-	assertBinaryPackage(t, d)
-	assertPackagedInitialize(t, root, home, d)
-}
-
-func TestBundledGoSourceFallbackOutsideRepository(t *testing.T) {
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	home := t.TempDir()
-	output := filepath.Join(home, "extensions")
-	command := exec.Command("go", "run", "./scripts/build-extensions.go", "-source", "-out", output, "-only", strings.Join(bundledGoNames, ","))
-	command.Dir = root
-	if data, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("stage standalone source packages: %v\n%s", err, data)
-	}
-	discovery := Discover(home, session.Toggle{})
-	if len(discovery.All) != len(bundledGoNames) {
-		t.Fatal(discovery)
-	}
-	for _, d := range discovery.All {
-		t.Run(d.Name, func(t *testing.T) {
-			if d.Error != "" {
-				t.Fatal(d.Error)
-			}
-			for _, file := range []string{"go.mod", "go.sum", "main.go", "install/main.go", "_ki/go.mod", "_ki/pkg/extensionbuild/install.go"} {
-				if _, err := os.Stat(filepath.Join(d.root, filepath.FromSlash(file))); err != nil {
-					t.Fatal(file, err)
-				}
-			}
-			if err := filepath.WalkDir(d.root, func(path string, entry fs.DirEntry, err error) error {
-				if err != nil {
-					return err
-				}
-				if entry.IsDir() {
-					return nil
-				}
-				if strings.HasSuffix(entry.Name(), "_test.go") || entry.Name() == "config.json" || entry.Name() == "cache.json" || strings.HasSuffix(entry.Name(), ".exe") {
-					t.Errorf("source package leaked runtime/test artifact: %s", path)
-				}
-				return nil
-			}); err != nil {
-				t.Fatal(err)
-			}
-			d.manifest.Runtime.Env = map[string]string{"GOWORK": "off"}
-			ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
-			defer cancel()
-			client, err := startRPC(ctx, d, "", home, t.TempDir(), nil)
-			if err != nil {
-				t.Fatalf("install and initialize standalone source package: %v", err)
-			}
-			if err := client.call(ctx, "shutdown", map[string]any{}, nil); err != nil {
-				t.Fatal(err)
-			}
-			client.close()
-			binary := resolveRuntimeCommand(d.root, d.manifest.Runtime.Command)
-			if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(binary), ".exe") {
-				binary += ".exe"
-			}
-			if info, err := os.Stat(binary); err != nil || !info.Mode().IsRegular() {
-				t.Fatal("missing built executable", binary, err)
-			}
-			// Once compiled, the same source package must launch with no toolchain too.
-			assertPackagedInitialize(t, root, home, d)
-		})
 	}
 }

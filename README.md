@@ -101,9 +101,9 @@ API auth is a Bearer token from `~/.ki/server.json` (or `KI_HOME/server.json`) f
 ## Bundled extensions
 
 The extension protocol accepts sidecars written in any language. Bundled extensions
-are Go executables, with a Rust exception for `zvec-grep` and its native search engine.
-Each extension is compiled separately. Ki launches its executable as an external
-NDJSON JSON-RPC child process; it links or embeds no extension runtime or payload.
+are Go executables. Each extension is compiled separately. Ki launches its executable
+as an external NDJSON JSON-RPC child process; it links or embeds no extension runtime
+or payload.
 The build script and optional installer also run outside the host process.
 
 ```bash
@@ -133,10 +133,7 @@ and only the shared Ki sources it needs. All bundled manifests run
 `go run ./install/main.go` only when `bin/<name>` is missing; an existing binary
 always skips installation. A missing binary in a source-free package requires
 reinstalling the binary package or replacing it with a source package.
-Building `zvec-grep` needs its native Rust/C++ prerequisites;
-see [its README](extensions/zvec-grep/README.md). Its Rust index format requires
-an explicit rebuild of existing JavaScript indexes. See [the extension contract](docs/extension.md)
-for packaging and protocol details.
+See [the extension contract](docs/extension.md) for packaging and protocol details.
 
 ## Test
 
@@ -169,9 +166,8 @@ Live tests call DeepSeek `deepseek-flash` over all three wire protocols
 GitHub Actions runs formatting, vet, WebUI type/build checks, core Go tests on
 Linux, macOS, and Windows, the complete fake-model Playwright suite, screenshot
 coverage, and the long-history performance suite. Standalone bundled sidecar
-package tests, extension transport races, and native `zvec-grep` checks are
-opt-in: use the `CI` workflow's manual dispatch and enable `extensions` when
-changing an extension. Host extension runtime and contract tests remain in the
+package tests and extension transport races are opt-in: use the `CI` workflow's
+manual dispatch and enable `extensions` when changing an extension. Host extension runtime and contract tests remain in the
 core suite. Configure branch protection for `main` to require the `CI` workflow
 checks before merging.
 

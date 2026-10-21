@@ -60,7 +60,7 @@ func main(){info,_:=debug.ReadBuildInfo();for _,setting:=range info.Settings{if 
 	}
 }
 func TestInstallReportsMissingSourcesAndToolchain(t *testing.T) {
-	for _, name := range []string{"goal", "zvec-grep"} {
+	for _, name := range []string{"goal", "deep-web-search"} {
 		err := Install(t.Context(), t.TempDir(), name, io.Discard)
 		if err == nil || !strings.Contains(err.Error(), "sources are missing") {
 			t.Fatal(name, err)

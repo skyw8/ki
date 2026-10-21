@@ -325,44 +325,13 @@ func buildPackage(root, destination, name, goos, goarch string, sourceOnly bool)
 		if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
 			return err
 		}
-		if _, err := os.Stat(filepath.Join(source, "Cargo.toml")); err == nil {
-			if name != "zvec-grep" {
-				return errors.New("only zvec-grep is a bundled Rust extension")
-			}
-			if goos != runtime.GOOS || goarch != runtime.GOARCH {
-				return errors.New("zvec-grep requires a native Rust/C++ build; use -only to cross-compile the Go extensions separately")
-			}
-			command := exec.Command("cargo", "build", "--release", "--locked", "--manifest-path", filepath.Join(source, "Cargo.toml"))
-			command.Dir = root
-			command.Env = setEnv(os.Environ(), "CARGO_TARGET_DIR", filepath.Join(source, "target"))
-			command.Stdout = os.Stderr
-			command.Stderr = os.Stderr
-			if err := command.Run(); err != nil {
-				return err
-			}
-			compiled := filepath.Join(source, "target", "release", name)
-			alias := filepath.Join(stage, "bin", "zg")
-			if goos == "windows" {
-				compiled += ".exe"
-				alias += ".exe"
-			}
-			if err := copyFile(compiled, binary, 0o755); err != nil {
-				return err
-			}
-			if err := copyFile(compiled, alias, 0o755); err != nil {
-				return err
-			}
-		} else if !os.IsNotExist(err) {
+		command := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", binary, "./extensions/"+name)
+		command.Dir = root
+		command.Env = setEnv(setEnv(setEnv(os.Environ(), "GOOS", goos), "GOARCH", goarch), "CGO_ENABLED", "0")
+		command.Stdout = os.Stderr
+		command.Stderr = os.Stderr
+		if err := command.Run(); err != nil {
 			return err
-		} else {
-			command := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", binary, "./extensions/"+name)
-			command.Dir = root
-			command.Env = setEnv(setEnv(setEnv(os.Environ(), "GOOS", goos), "GOARCH", goarch), "CGO_ENABLED", "0")
-			command.Stdout = os.Stderr
-			command.Stderr = os.Stderr
-			if err := command.Run(); err != nil {
-				return err
-			}
 		}
 	}
 	final := filepath.Join(destination, name)
@@ -400,29 +369,6 @@ func stageSourcePackage(root, source, stage, name string) error {
 	}
 	if err := copyAsset(source, stage, "README.md"); err != nil {
 		return err
-	}
-	if name == "zvec-grep" {
-		for _, file := range []string{"Cargo.toml", "Cargo.lock", "build.rs", "launcher/main.rs", "native/Cargo.toml", "native/Cargo.lock", "native/build.rs", "native/search-tool.json", "native/UPSTREAM-LICENSE"} {
-			if err := copyAsset(source, stage, file); err != nil {
-				return err
-			}
-		}
-		return filepath.WalkDir(filepath.Join(source, "native", "src"), func(path string, entry os.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				return nil
-			}
-			if filepath.Ext(path) != ".rs" {
-				return nil
-			}
-			relative, err := filepath.Rel(source, path)
-			if err != nil {
-				return err
-			}
-			return copyAsset(source, stage, filepath.ToSlash(relative))
-		})
 	}
 	if err := copyGoSources(source, stage); err != nil {
 		return err
