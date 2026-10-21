@@ -22,6 +22,7 @@ toolResult message 可带结构化 `details`，以及工具完成时间 `timesta
 
 ## 细节
 
+- Session GET 中出现的 `index` 始终是 JSON 数组，空索引返回 `[]` 而非 `null`。header-only session 也遵守此数组契约，避免客户端误将 nil 索引标记为已完整加载。
 - Transcript 缓存的文件 identity 使用短命 open handle 的 `Stat` 在读取时捕获，不缓存句柄。Windows 的 `os.Stat(path)` 会延迟到 `os.SameFile` 才按路径读取 file ID：若两次读取之间原子替换，旧 `FileInfo` 也会绑定新文件，导致 size/mtime 未变时误命中旧正文。正文和元数据缓存均必须保存读取当时的 identity，同时及时关闭句柄，避免阻止 Windows 删除或替换会话。
 - 新行永远 append 在文件末尾；`config.activeLeafId` 持久化当前分支。append 使用 `O_APPEND` 的短命句柄（写完即关），`Session` 不长期持有 `events.jsonl`：POSIX 允许删除仍被打开的文件，Windows 不允许，长期句柄会让「删除运行中的 session」和 `t.TempDir` 清理在 Windows 上失败；`session.Remove` 对仍有一瞬写入的目录做短暂重试。旧数据没有该字段时，重载以最后一条非 header 为 leaf。
 - `SetLeaf` 只切换 active leaf 并写 config，旧行不删。edit/regenerate 从指定 parent append sibling branch。

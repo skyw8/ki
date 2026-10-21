@@ -448,7 +448,7 @@ export type SessionDetail = Partial<SessionInfo> & {
   leafId?: string
   entries?: Entry[]
   compactTurns?: CompactTurn[]
-  index?: IndexEntry[]
+  index?: IndexEntry[] | null
   hasMore?: boolean
   oldestId?: string
   availableSkills?: CatalogSkill[]

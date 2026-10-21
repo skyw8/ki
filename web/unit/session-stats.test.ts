@@ -51,6 +51,25 @@ test('sessionStats sums the loaded window but keeps branch counts', () => {
   expect(s.tps).toBeCloseTo(2)
 })
 
+test('null index from an empty session stays lazy when the first prompt arrives', () => {
+  const opened = loadHistory({ id: 'session', entries: [], index: null })
+  expect(opened.indexLoaded).toBe(false)
+  expect(opened.index).toEqual([])
+
+  const answer = msg('a1', 'u1', 'assistant', { content: [{ type: 'text', text: 'ok' }] })
+  const afterPrompt = applyTail(opened, {
+    id: 'session',
+    leafId: answer.id,
+    entries: [
+      msg('u1', '', 'user', { content: [{ type: 'text', text: 'hello' }] }),
+      answer,
+    ],
+    index: null,
+  })
+  expect(afterPrompt.nodes.map(node => node.id)).toEqual(['u1', 'a1'])
+  expect(afterPrompt.indexLoaded).toBe(false)
+})
+
 test('sessionStats averages TTFT/TPS and totals usage over the loaded turns', () => {
   const nodes: ChatNode[] = [
     { kind: 'user', id: 'u1', text: 'a', content: [] },

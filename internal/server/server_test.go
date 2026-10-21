@@ -2994,6 +2994,17 @@ func TestSessionViewAPI(t *testing.T) {
 	}
 }
 
+func TestSessionViewEmptyIndexIsArray(t *testing.T) {
+	_, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+
+	got := sessionGET(t, hs, id)
+	index, ok := got["index"].([]any)
+	if !ok || index == nil || len(index) != 0 {
+		t.Fatalf("empty session index = %#v, want empty JSON array", got["index"])
+	}
+}
+
 // TestSessionTailAPI covers the tail-first contract: a session with more history
 // than one page answers with the newest entries only, plus a cursor that pages
 // backwards, and the index stays opt-in.

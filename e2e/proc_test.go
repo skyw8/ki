@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -70,29 +71,9 @@ func TestDetachLeavesServer(t *testing.T) {
 		t.Fatalf("detach: %v\n%s", err, b)
 	}
 	text := string(b)
+	registerDetachedCleanup(t, text)
 	if !strings.Contains(text, "ki server") {
 		t.Fatalf("detach output: %s", text)
-	}
-	pid := detachPID(text)
-	if pid > 0 {
-		t.Cleanup(func() {
-			p, err := os.FindProcess(pid)
-			if err == nil {
-				_ = p.Kill()
-			}
-		})
-	} else {
-		t.Cleanup(func() {
-			if sf, err := server.ReadServerFile(home); err == nil && sf.Addr != "" {
-				req, reqErr := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+sf.Addr+"/v1/health", nil)
-				if reqErr == nil {
-					res, doErr := http.DefaultClient.Do(req)
-					if doErr == nil {
-						_ = res.Body.Close()
-					}
-				}
-			}
-		})
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -145,7 +126,7 @@ func TestDetachReportsStartupFailure(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("detach onto an occupied port must fail, output: %s", out)
 	}
-	for _, want := range []string{"server did not come up", "address already in use", "hint: run `ki serve"} {
+	for _, want := range []string{"server did not come up", "another process owns", "hint: run `ki serve"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("startup failure output missing %q:\n%s", want, out)
 		}
@@ -162,6 +143,7 @@ func TestDetachedServerSurvivesLauncherExit(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("detach: %d %s", code, out)
 	}
+	registerDetachedCleanup(t, out)
 	var sf server.File
 	var readErr error
 	deadline := time.Now().Add(3 * time.Second)
@@ -251,4 +233,25 @@ func detachPID(s string) int {
 	rest = strings.Fields(rest)[0]
 	n, _ := strconv.Atoi(rest)
 	return n
+}
+
+func registerDetachedCleanup(t *testing.T, output string) {
+	t.Helper()
+	pid := detachPID(output)
+	if pid <= 0 {
+		t.Fatalf("detached server output missing pid: %s", output)
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatalf("find detached server %d: %v", pid, err)
+	}
+	t.Cleanup(func() {
+		if err := p.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("kill detached server %d: %v", pid, err)
+			return
+		}
+		if err := waitDetachedProcess(p); err != nil {
+			t.Errorf("wait for detached server %d to exit: %v", pid, err)
+		}
+	})
 }

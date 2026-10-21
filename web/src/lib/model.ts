@@ -211,11 +211,13 @@ export function loadHistory(detail: SessionDetail): ViewState {
 	return rebuild(s)
 }
 
-/** setIndex records the tree index of a session detail. `undefined` leaves the
- * index unloaded; the server omits it when it would have to parse the whole
- * transcript, and the WebUI asks for it separately. */
-function setIndex(s: ViewState, index?: IndexEntry[]) {
-  if (index === undefined) return
+/** setIndex records the tree index of a session detail. `undefined` or `null`
+ * leaves the index unloaded; the server omits it when it would have to parse
+ * the whole transcript, and the WebUI asks for it separately. */
+function setIndex(s: ViewState, index?: IndexEntry[] | null) {
+  // Why: a header-only session may serialize a nil Go index as null. Treat it
+  // as omitted so appending the first entries cannot poison the loaded index.
+  if (index == null) return
   s.index = index
   s.indexLoaded = true
 }

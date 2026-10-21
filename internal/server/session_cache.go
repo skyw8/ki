@@ -149,10 +149,19 @@ func (s *Server) sessionDir(id string) (string, error) {
 }
 
 func (snap *sessionSnap) index() []session.IndexEntry {
+	var index []session.IndexEntry
 	if snap.transcript != nil {
-		return snap.transcript.Index()
+		index = snap.transcript.Index()
+	} else {
+		index = session.BuildIndex(snap.entries)
 	}
-	return session.BuildIndex(snap.entries)
+	// Why: a header-only transcript has no metadata rows, but the public index
+	// field is an array. Encoding a nil slice as null breaks clients that append
+	// the first entries before lazily loading the index.
+	if index == nil {
+		return []session.IndexEntry{}
+	}
+	return index
 }
 
 // systemPrompt returns the system prompt of the newest request_header on the
