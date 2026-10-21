@@ -96,7 +96,7 @@ func TestLocalSummaryRetainsAllThinkingSelections(t *testing.T) {
 		t.Run(level, func(t *testing.T) {
 			recorder := &reqRecorder{}
 			srv := &Server{streamer: recorder}
-			if _, _, err := srv.summarizer(context.Background(), "session", model, level).Summarize(context.Background(), "summary system", "summary input"); err != nil {
+			if _, _, err := srv.summarizer(context.Background(), "session", "", model, level).Summarize(context.Background(), "summary system", "summary input"); err != nil {
 				t.Fatal(err)
 			}
 			if len(recorder.reqs) != 1 {

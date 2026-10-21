@@ -999,3 +999,74 @@ func TestForkRecentHistoryKeepsCompleteTurnsAndMailboxDoesNotCutBoundary(t *test
 		t.Fatalf("recent fork broke whole turn: %+v", messages)
 	}
 }
+
+func TestForkInheritsCacheAffinityKey(t *testing.T) {
+	root := t.TempDir()
+	s, err := Create(root, t.TempDir(), "openai-codex", "gpt-6.1-sol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "hi"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if s.CacheAffinityKey() != s.ID() {
+		t.Fatalf("own affinity: %q != %q", s.CacheAffinityKey(), s.ID())
+	}
+	parentKey := s.CacheAffinityKey()
+	parentID := s.ID()
+
+	forked, err := Fork(root, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = forked.Close() }()
+	// Why: the child replays the parent's prefix, so it must present the
+	// parent's cache key; its own id stays the session identity.
+	if forked.ID() == parentID {
+		t.Fatal("fork should mint a new session id")
+	}
+	if forked.CacheAffinityKey() != parentKey {
+		t.Fatalf("fork affinity: %q != %q", forked.CacheAffinityKey(), parentKey)
+	}
+	if forked.Config.CacheKey != parentKey {
+		t.Fatalf("fork config cacheKey: %q", forked.Config.CacheKey)
+	}
+
+	// A fork of a fork keeps the original source key instead of chaining.
+	grandchild, err := Fork(root, forked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = grandchild.Close() }()
+	if grandchild.CacheAffinityKey() != parentKey {
+		t.Fatalf("grandchild affinity: %q", grandchild.CacheAffinityKey())
+	}
+
+	// Reopening preserves it; the key is durable config, not memory state.
+	reopened, err := Open(forked.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	if reopened.CacheAffinityKey() != parentKey {
+		t.Fatalf("reopened affinity: %q", reopened.CacheAffinityKey())
+	}
+}
+
+func TestCreateChildDoesNotInheritCacheAffinityKey(t *testing.T) {
+	root := t.TempDir()
+	s, err := Create(root, t.TempDir(), "openai-codex", "gpt-6.1-sol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := CreateChild(root, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = child.Close() }()
+	// A delegated child starts from a clean context, so it shares no prefix
+	// with the parent and must not claim the parent's cache entry.
+	if child.CacheAffinityKey() != child.ID() || child.Config.CacheKey != "" {
+		t.Fatalf("child affinity: %q cacheKey %q", child.CacheAffinityKey(), child.Config.CacheKey)
+	}
+}

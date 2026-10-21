@@ -56,7 +56,9 @@
 // Registry merges the embedded catalog with {KI_HOME}/models.json;
 // credentials.json and provider environment variables supply secrets. The
 // provider/model boundary remains structured after selection because model IDs
-// themselves may contain slashes; only explicit model specs are parsed.
+// themselves may contain slashes; an explicit spec is parsed as a known
+// provider prefix, then as a model ID owned by the caller's provider, and only
+// then by its first slash.
 // The
 // embedded catalogs remain offline; Magpie is the explicit exception with an
 // authenticated, user-triggered catalog refresh that persists a reconciled

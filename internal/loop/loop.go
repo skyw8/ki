@@ -201,6 +201,10 @@ type Request struct {
 	// SessionID is optional provider cache affinity metadata. Core providers
 	// ignore it; provider extensions may use it for session-scoped protocol state.
 	SessionID string `json:"sessionId"`
+	// CacheKey is the inherited provider cache-affinity identity (a fork's
+	// source session). Empty means "same as SessionID". Extensions use it only
+	// for cache routing; session/thread identity stays SessionID.
+	CacheKey string `json:"cacheKey,omitempty"`
 	// TurnID identifies the logical user turn across tool continuations and
 	// retries. Provider routing state must not be reset for each HTTP request.
 	TurnID                  string                `json:"turnId,omitempty"`
@@ -319,8 +323,11 @@ type Config struct {
 	Generation uint64
 	Streamer   Streamer
 	SessionID  string
-	TurnID     string
-	Tools      []toolapi.Tool
+	// CacheKey is the provider cache-affinity identity for this session; a fork
+	// inherits its source so the replayed prefix can be read from cache.
+	CacheKey string
+	TurnID   string
+	Tools    []toolapi.Tool
 	// ModelTools selects advertised schemas from the fixed execution registry.
 	// It receives the final model-facing history after context hooks. A nil
 	// callback advertises Tools unchanged; hidden schemas do not revoke tools.
@@ -469,6 +476,7 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 
 		request := Request{
 			SessionID:                 cfg.SessionID,
+			CacheKey:                  cfg.CacheKey,
 			TurnID:                    cfg.TurnID,
 			System:                    system,
 			Messages:                  msgs,

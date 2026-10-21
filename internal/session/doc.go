@@ -116,6 +116,10 @@
 // non-message leaf so branch history renders it in order without model replay.
 // config.json owns provider/model/thinking effort plus
 // title and pin. Skills/extension enablement is process-wide ({KI_HOME}/toggles.json).
+// A fork also records the source's cache-affinity identity in config.cacheKey:
+// the child replays the parent prefix, so it can read that prefix from cache
+// while keeping its own session id as the stored identity. CreateChild copies
+// no transcript and therefore inherits no cache key.
 // Remove deletes the session directory.
 // CreateChild makes a clean delegated-agent session: it records the same parent
 // edge and forkMode=tree but copies no transcript, so a subagent only sees the

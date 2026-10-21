@@ -395,8 +395,11 @@ func buildRequest(payload object) (object, error) {
 		return nil, errors.New("Codex request has no input messages")
 	}
 	body := object{"model": get(model, "id", ""), "store": false, "stream": true, "instructions": fallback(request["system"], "You are a helpful assistant."), "input": input, "text": object{"verbosity": "low"}, "include": []any{"reasoning.encrypted_content"}, "tool_choice": "auto", "parallel_tool_calls": true}
-	if session := str(request["sessionId"]); session != "" {
-		r := []rune(session)
+	// A fork replays its source's prefix, so it inherits that source's cache
+	// key; its own session identity still drives headers and stored state.
+	cacheKey := str(fallback(request["cacheKey"], request["sessionId"]))
+	if cacheKey != "" {
+		r := []rune(cacheKey)
 		if len(r) > 64 {
 			r = r[:64]
 		}

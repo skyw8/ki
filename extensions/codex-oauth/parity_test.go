@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"ki/pkg/codexclient"
 	"net"
 	"net/http"
 	"net/url"
@@ -766,5 +767,41 @@ func TestRPCCompactionCancellationAndDuplicate(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cancel blocked")
+	}
+}
+
+func TestForkCacheKeyReusesPromptCacheAffinity(t *testing.T) {
+	payload := basicPayload("")
+	request := obj(payload["request"])
+	request["cacheKey"] = "parent-session"
+	request["sessionId"] = "child-session"
+	body, err := buildRequest(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Why: a fork replays its source's prefix, so the cache key must stay on the
+	// source even though the child owns the session identity.
+	if body["prompt_cache_key"] != "parent-session" {
+		t.Fatalf("prompt_cache_key: %v", body["prompt_cache_key"])
+	}
+	headers, err := codexclient.PrepareScoped(body, "child-session", "", false, "", "parent-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if headers["thread-id"] != "child-session" || headers["session-id"] != "parent-session" {
+		t.Fatalf("headers: %v", headers)
+	}
+	if metadata := obj(body["client_metadata"]); metadata["session_id"] != "child-session" {
+		t.Fatalf("metadata identity: %v", metadata)
+	}
+
+	plain := basicPayload("")
+	delete(obj(plain["request"]), "cacheKey")
+	plainBody, err := buildRequest(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plainBody["prompt_cache_key"] != "session-1" {
+		t.Fatalf("own prompt_cache_key: %v", plainBody["prompt_cache_key"])
 	}
 }

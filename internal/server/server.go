@@ -2738,7 +2738,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	if !useServerCompaction && s.shouldCompact(sess, info, replayBinding) {
 		current := sess.ContextToLeaf(replayBinding)
 		preflight := &loop.Request{
-			SessionID: id, System: sys, Messages: current.Messages,
+			SessionID: id, CacheKey: sess.CacheAffinityKey(), System: sys, Messages: current.Messages,
 			Provider: info.Provider, Model: info.ID, API: info.API,
 			ProviderBinding:         requestBinding,
 			Tools:                   toolSpecs(modelTools(current.Messages)),
@@ -2781,6 +2781,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		AgentID:                 st.agentTaskID,
 		Generation:              st.agentGeneration,
 		SessionID:               id,
+		CacheKey:                sess.CacheAffinityKey(),
 		Tools:                   executionTools,
 		OutputStore:             s.outputStore,
 		Telemetry:               runTelemetry,
@@ -3065,7 +3066,7 @@ func (s *Server) liveCompactor(ctx context.Context, sessionID string, model prov
 		providerBindingForProtocol(resolved, credential, resolved.Compaction.Standalone)
 }
 
-func (s *Server) summarizer(ctx context.Context, sessionID string, model provider.Model, effort string) compact.Summarizer {
+func (s *Server) summarizer(ctx context.Context, sessionID, cacheKey string, model provider.Model, effort string) compact.Summarizer {
 	stream := s.liveSummarizer(ctx, sessionID, model.Provider, model.ID)
 	return compact.StreamSummarizer{
 		Stream: func(ctx context.Context, system, user string) (string, *types.Usage, error) {
@@ -3074,6 +3075,7 @@ func (s *Server) summarizer(ctx context.Context, sessionID string, model provide
 				Model:     model.ID,
 				API:       model.API,
 				SessionID: sessionID,
+				CacheKey:  cacheKey,
 				System:    system,
 				Messages:  []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: user}}}},
 				// Local fallback must retain the same selected reasoning/speed
@@ -3337,7 +3339,7 @@ func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Sess
 	}
 
 	req := loop.Request{
-		SessionID: sess.ID(), Provider: model.Provider, Model: model.ID, API: model.API,
+		SessionID: sess.ID(), CacheKey: sess.CacheAffinityKey(), Provider: model.Provider, Model: model.ID, API: model.API,
 		ProviderBinding:         binding,
 		MaxTokens:               model.MaxTokens,
 		ThinkingEffort:          sess.Config.ThinkingEffort,
@@ -3548,7 +3550,7 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session, inte
 	} else {
 		result, err = compact.GenerateWithInputLimit(
 			ctx, localPrep,
-			s.summarizer(ctx, sess.ID(), model, sess.Config.ThinkingEffort),
+			s.summarizer(ctx, sess.ID(), sess.CacheAffinityKey(), model, sess.Config.ThinkingEffort),
 			s.cfg.Compaction, s.localSummaryInputLimit(model),
 		)
 		if err != nil {

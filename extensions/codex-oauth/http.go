@@ -45,7 +45,8 @@ func codexRequest(ctx context.Context, payload, body object, compaction bool) (*
 	// allocated thousands of objects per request without protecting any mutation.
 	body = maps.Clone(body)
 	scope := codexScope(payload, body)
-	headers, err := codexclient.PrepareScoped(body, str(obj(payload["request"])["sessionId"]), str(obj(payload["request"])["turnId"]), compaction, scope)
+	request := obj(payload["request"])
+	headers, err := codexclient.PrepareScoped(body, str(request["sessionId"]), str(request["turnId"]), compaction, scope, str(request["cacheKey"]))
 	if err != nil {
 		return nil, err
 	}

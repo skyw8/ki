@@ -110,7 +110,7 @@ func TestMalformedIdentityFailsClosed(t *testing.T) {
 func TestBindingAndConcurrentTurnIsolation(t *testing.T) {
 	isolate(t)
 	makeRequest := func(binding, turn string) map[string]string {
-		headers, err := PrepareScoped(map[string]any{"model": "test"}, "session", turn, false, binding)
+		headers, err := PrepareScoped(map[string]any{"model": "test"}, "session", turn, false, binding, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -210,5 +210,34 @@ func TestEncodeCompressionAndSanitizedAgent(t *testing.T) {
 	}
 	if ua := UserAgent(); strings.ContainsAny(ua, "\n\u2603") || !strings.HasPrefix(ua, "codex_cli_rs/0.0.0 (") {
 		t.Fatal(ua)
+	}
+}
+
+func TestForkInheritsCacheAffinityWithoutSharingSessionIdentity(t *testing.T) {
+	isolate(t)
+	childBody := map[string]any{"model": "gpt-6-astra"}
+	headers, err := PrepareScoped(childBody, "child-session", "turn-1", false, "", "parent-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Why: ChatGPT derives prompt-cache affinity from the session-id header, so
+	// a fork must present its source there. Thread identity and routing state
+	// stay bound to the child so it cannot resume the parent's stream.
+	if headers["session-id"] != "parent-session" {
+		t.Fatalf("session-id: %q", headers["session-id"])
+	}
+	if headers["thread-id"] != "child-session" || headers["x-client-request-id"] != "child-session" {
+		t.Fatalf("child identity lost: %v", headers)
+	}
+	metadata := childBody["client_metadata"].(map[string]any)
+	if metadata["session_id"] != "child-session" || metadata["thread_id"] != "child-session" {
+		t.Fatalf("metadata identity: %v", metadata)
+	}
+	own, err := PrepareScoped(map[string]any{"model": "gpt-6-astra"}, "own-session", "turn-1", false, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if own["session-id"] != "own-session" {
+		t.Fatalf("own session-id: %q", own["session-id"])
 	}
 }

@@ -5443,3 +5443,51 @@ func TestSessionHistoryReenterAfterAppendKeepsAllPrompts(t *testing.T) {
 		}
 	}
 }
+
+// Slash-containing model ids are the norm for Magpie ("codex/gpt-6.1-sol"),
+// so every entry point must treat provider and model as separate fields
+// instead of splitting on the first slash.
+func TestSlashModelIDResolvesOnCreateAndPatch(t *testing.T) {
+	srv, hs := testServer(t)
+	on, reasoning := true, true
+	low, high := "low", "high"
+	if err := srv.registry.Update(func(cfg *provider.ModelsFile) error {
+		cfg.Providers["gateway"] = provider.Config{
+			Name: "Gateway", API: "completions", BaseURL: "http://127.0.0.1:1/v1", Enabled: &on,
+			Models: []provider.ModelSeed{{
+				ID: "vendor/model", ContextWindow: 8192, MaxTokens: 1024, Input: []string{"text"}, Reasoning: &reasoning,
+				ThinkingLevelMap: map[string]*string{"low": &low, "high": &high},
+			}},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	create := func(model string) (int, map[string]any) {
+		return postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{
+			"cwd": t.TempDir(), "model": model, "thinkingEffort": "low",
+		})
+	}
+	// Explicit spec and a bare id that only one provider owns both work.
+	for _, model := range []string{"gateway/vendor/model", "vendor/model"} {
+		status, out := create(model)
+		if status != http.StatusOK || out["provider"] != "gateway" || out["model"] != "vendor/model" {
+			t.Fatalf("create %q = %d %+v", model, status, out)
+		}
+	}
+	status, created := create("gateway/vendor/model")
+	if status != http.StatusOK {
+		t.Fatalf("create = %d %+v", status, created)
+	}
+	id, _ := created["id"].(string)
+	for _, patch := range []map[string]any{
+		{"model": "vendor/model"},
+		{"model": "gateway/vendor/model"},
+		{"thinkingEffort": "high"},
+	} {
+		status, out := postJSON(t, hs, http.MethodPatch, "/v1/sessions/"+id, patch)
+		if status != http.StatusOK || out["provider"] != "gateway" || out["model"] != "vendor/model" {
+			t.Fatalf("patch %v = %d %+v", patch, status, out)
+		}
+	}
+}

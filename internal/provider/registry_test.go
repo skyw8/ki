@@ -371,3 +371,63 @@ func TestRegistryMigratedVersionKeepsStrictFields(t *testing.T) {
 		t.Fatal("unknown field must still fail after migration")
 	}
 }
+
+func TestResolveSpecPrefersKnownProviderThenFallbackModelID(t *testing.T) {
+	r, err := NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	on, off, reasoning := true, false, false
+	if err := r.Update(func(cfg *ModelsFile) error {
+		cfg.Providers["magpie"] = Config{
+			Name: "Magpie", API: "completions", BaseURL: "http://127.0.0.1:1/v1", Enabled: &on,
+			Models: []ModelSeed{
+				{ID: "codex/gpt-6.1-sol", ContextWindow: 8192, MaxTokens: 1024, Input: []string{"text"}, Reasoning: &reasoning},
+				{ID: "vendor/other", ContextWindow: 8192, MaxTokens: 1024, Input: []string{"text"}, Reasoning: &reasoning},
+				{ID: "solo", ContextWindow: 8192, MaxTokens: 1024, Input: []string{"text"}, Reasoning: &reasoning},
+			},
+		}
+		cfg.Providers["codex"] = Config{
+			Name: "Codex", API: "responses", BaseURL: "http://127.0.0.1:2/v1", Enabled: &on,
+			Models: []ModelSeed{{ID: "gpt-6.1-sol", ContextWindow: 8192, MaxTokens: 1024, Input: []string{"text"}, Reasoning: &reasoning}},
+		}
+		cfg.Providers["disabled"] = Config{
+			Name: "Disabled", API: "responses", BaseURL: "http://127.0.0.1:3/v1", Enabled: &off,
+			Models: []ModelSeed{{ID: "vendor/model", ContextWindow: 8192, MaxTokens: 1024, Input: []string{"text"}, Reasoning: &reasoning}},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, spec, fallback, provider, model string
+	}{
+		// Nested model id behind an explicit provider: the prefix wins, the rest
+		// is the model id even though it still contains a slash.
+		{"nested spec", "magpie/codex/gpt-6.1-sol", "", "magpie", "codex/gpt-6.1-sol"},
+		// Creation has no fallback provider: a unique owner settles it.
+		{"unique owner", "vendor/other", "", "magpie", "vendor/other"},
+		// A first segment that is not a provider is the fallback's model id.
+		{"fallback nested id", "vendor/other", "magpie", "magpie", "vendor/other"},
+		{"bare id", "solo", "magpie", "magpie", "solo"},
+		// A real provider prefix still wins over the fallback's model id.
+		{"provider wins", "codex/gpt-6.1-sol", "magpie", "codex", "gpt-6.1-sol"},
+		{"disabled provider", "disabled/vendor/model", "", "disabled", "vendor/model"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ref, model, err := r.ResolveSpec(tc.spec, tc.fallback)
+			if tc.provider == "disabled" {
+				if err == nil || !strings.Contains(err.Error(), `provider "disabled" is unavailable`) {
+					t.Fatalf("disabled provider = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ref.Provider != tc.provider || ref.Model != tc.model || model.ID != tc.model {
+				t.Fatalf("resolve %q/%q = %+v %q", tc.spec, tc.fallback, ref, model.ID)
+			}
+		})
+	}
+}

@@ -811,24 +811,103 @@ func (r *Registry) resolveRefLocked(ref ModelRef) (Model, error) {
 }
 
 // ResolveSpec resolves a model specification against the registry default.
+//
+// A specification is either "<provider>/<model>" or a bare model id taken from
+// fallbackProvider. Splitting on the first slash is not enough: model ids may
+// contain slashes themselves (Magpie serves "codex/gpt-6.1-sol"), so
+// "magpie/codex/gpt-6.1-sol" must not become provider "magpie" + model "codex"
+// and "codex/gpt-6.1-sol" must not become provider "codex". Prefer a known
+// provider prefix, then a model id the fallback provider actually has, and only
+// then the historical first-slash reading so the error names the token the
+// caller typed.
 func (r *Registry) ResolveSpec(spec, fallbackProvider string) (ModelRef, Model, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	ref := r.state.defaultRef
 	if spec != "" {
-		if p, m, ok := strings.Cut(spec, "/"); ok {
-			ref = ModelRef{Provider: p, Model: m}
-		} else if fallbackProvider != "" {
-			ref = ModelRef{Provider: fallbackProvider, Model: spec}
-		} else {
-			ref.Model = spec
-		}
+		ref = r.specRefLocked(spec, fallbackProvider)
 	}
 	model, err := r.resolveRefLocked(ref)
 	if err != nil {
 		return ModelRef{}, Model{}, err
 	}
 	return ref, model, nil
+}
+
+// specRefLocked maps a client-supplied specification onto one provider/model
+// pair without assuming the model id is slash-free.
+func (r *Registry) specRefLocked(spec, fallbackProvider string) ModelRef {
+	if idx := strings.IndexByte(spec, '/'); idx > 0 {
+		p, m := spec[:idx], spec[idx+1:]
+		// An enabled provider whose id is exactly the first segment is the
+		// unambiguous reading; a disabled one still names itself so callers get
+		// "provider X is unavailable" rather than a misleading model error.
+		if _, ok := r.providerLocked(p); ok {
+			return ModelRef{Provider: p, Model: m}
+		}
+		// Otherwise the whole string may be a model id of the fallback
+		// provider, which is how Magpie's "vendor/model" ids resolve.
+		if fallbackProvider != "" {
+			if _, ok := r.modelLocked(fallbackProvider, spec); ok {
+				return ModelRef{Provider: fallbackProvider, Model: spec}
+			}
+		}
+		// Creation has no fallback provider, so find the one that owns this
+		// exact id. A unique owner is the only reading that cannot be wrong.
+		if ref, ok := r.ownerLocked(spec); ok {
+			return ref
+		}
+		return ModelRef{Provider: p, Model: m}
+	}
+	if fallbackProvider != "" {
+		return ModelRef{Provider: fallbackProvider, Model: spec}
+	}
+	// A bare id stays with the default provider. Creation has no session
+	// provider to fall back on, but inventing a provider from an unqualified
+	// name would let a typo cross a credential boundary.
+	ref := r.state.defaultRef
+	ref.Model = spec
+	return ref
+}
+
+// modelLocked reports whether providerID owns modelID, enabled or not, so
+// specification parsing can distinguish an id from a provider prefix.
+func (r *Registry) modelLocked(providerID, modelID string) (Model, bool) {
+	p, ok := r.providerLocked(providerID)
+	if !ok {
+		return Model{}, false
+	}
+	for _, m := range p.Models {
+		if m.ID == modelID {
+			return m, true
+		}
+	}
+	return Model{}, false
+}
+
+// ownerLocked finds the single provider that owns modelID. Ambiguous ids stay
+// unresolved so the caller reports the token it typed instead of guessing.
+func (r *Registry) ownerLocked(modelID string) (ModelRef, bool) {
+	var found ModelRef
+	for _, id := range r.providerOrderLocked() {
+		p, ok := r.providerLocked(id)
+		if !ok {
+			continue
+		}
+		if _, ok := r.modelLocked(id, modelID); !ok {
+			continue
+		}
+		if p.Enabled {
+			return ModelRef{Provider: id, Model: modelID}, true
+		}
+		if found.Provider == "" {
+			found = ModelRef{Provider: id, Model: modelID}
+		}
+	}
+	if found.Provider != "" {
+		return found, true
+	}
+	return ModelRef{}, false
 }
 
 // Resolve returns an enabled model and its configured API credential.

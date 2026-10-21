@@ -152,12 +152,17 @@ func UserAgent() string {
 // returns auth-independent HTTP headers. Callers must split thinking presets
 // before calling: service_tier is an upstream routing value, never a UI label.
 func Prepare(body map[string]any, sessionID, turnID string, compaction bool) (map[string]string, error) {
-	return PrepareScoped(body, sessionID, turnID, compaction, "")
+	return PrepareScoped(body, sessionID, turnID, compaction, "", "")
 }
 
 // PrepareScoped isolates routing state by an opaque endpoint/credential/model
 // binding. Concurrent logical turns cannot reset each other's sticky tokens.
-func PrepareScoped(body map[string]any, sessionID, turnID string, compaction bool, scope string) (map[string]string, error) {
+//
+// cacheKey is the inherited cache-affinity identity, empty for a session's own.
+// The ChatGPT backend derives cache affinity from the session-id header, so a
+// fork replays its source prefix under that key while thread-id and all local
+// window/turn state stay bound to the child session.
+func PrepareScoped(body map[string]any, sessionID, turnID string, compaction bool, scope, cacheKey string) (map[string]string, error) {
 	id, err := installationID()
 	if err != nil {
 		return nil, fmt.Errorf("Codex client identity: %w", err)
@@ -245,6 +250,11 @@ func PrepareScoped(body map[string]any, sessionID, turnID string, compaction boo
 		"originator": Originator, "User-Agent": UserAgent(), "x-codex-beta-features": BetaFeatures,
 		"session-id": sessionID, "thread-id": sessionID, "x-client-request-id": sessionID,
 		"x-codex-window-id": window, "x-codex-turn-metadata": string(raw), "x-codex-routing-hint": routing,
+	}
+	if cacheKey != "" && cacheKey != sessionID {
+		// Cache affinity only: thread identity, metadata, and retained window
+		// state stay on the child session so it cannot resume the parent stream.
+		headers["session-id"] = cacheKey
 	}
 	if sticky != "" {
 		headers["x-codex-turn-state"] = sticky

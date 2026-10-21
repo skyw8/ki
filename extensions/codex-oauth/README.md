@@ -66,6 +66,19 @@ client headers the Codex CLI sends on every Responses request:
   `request_kind: "turn"` for ordinary turns and `request_kind: "compaction"`
   plus the Remote Compaction V2 descriptor for the compaction request.
 
+## Prompt cache affinity
+
+Every Responses request carries `prompt_cache_key` equal to the session id, so
+consecutive turns and tool continuations keep one cache entry. A forked session
+inherits its source's key (`config.cacheKey` in the session directory): it
+replays the parent prefix verbatim, so the first child request can read that
+prefix from cache instead of paying a full cache write. In that case the
+`session-id` header also names the source — the ChatGPT backend derives cache
+affinity from that header — while `thread-id`, `client_metadata.session_id`,
+the window id, and the turn routing token stay bound to the child session, so a
+fork never resumes the parent's stream. Delegated child agents
+(`CreateChild`) copy no transcript and therefore inherit no key.
+
 The installation id is shared by Codex OAuth and Codex search sidecars through
 versioned `{KI_HOME}/codex-client.json`, with a cross-process creation lock.
 Window ids and turn routing tokens are bounded process-local state. A successful

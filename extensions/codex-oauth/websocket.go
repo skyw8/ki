@@ -244,7 +244,7 @@ func streamWebsocket(ctx context.Context, payload, original object, send func(ob
 	body := maps.Clone(original)
 	request := obj(payload["request"])
 	scope := codexScope(payload, body)
-	headers, err := codexclient.PrepareScoped(body, str(request["sessionId"]), str(request["turnId"]), false, scope)
+	headers, err := codexclient.PrepareScoped(body, str(request["sessionId"]), str(request["turnId"]), false, scope, str(request["cacheKey"]))
 	if err != nil {
 		return true, err
 	}
@@ -304,7 +304,7 @@ func streamWebsocket(ctx context.Context, payload, original object, send func(ob
 		metadata := maps.Clone(obj(wire["client_metadata"]))
 		// A reused socket has no new handshake. Carry the turn routing state
 		// in body metadata as Codex does for incremental response.create.
-		if updated, prepareErr := codexclient.PrepareScoped(body, session, turn, false, scope); prepareErr == nil {
+		if updated, prepareErr := codexclient.PrepareScoped(body, session, turn, false, scope, str(request["cacheKey"])); prepareErr == nil {
 			headers = updated
 		} else {
 			stopCancel()

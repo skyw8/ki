@@ -101,6 +101,22 @@ type Config struct {
 	Pinned         bool           `json:"pinned,omitzero"`
 	PinnedAt       string         `json:"pinnedAt,omitempty"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
+	// CacheKey is the provider cache-affinity identity inherited from the fork
+	// source. A fork replays the parent's exact prefix, so reusing its affinity
+	// key lets the first child request read that prefix from cache instead of
+	// paying a full rewrite. Empty means "use this session's own ID".
+	CacheKey string `json:"cacheKey,omitempty"`
+}
+
+// CacheAffinityKey returns the identity used for provider cache affinity. It is
+// the session's own ID unless the session inherited one from a fork source.
+func (s *Session) CacheAffinityKey() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Config.CacheKey != "" {
+		return s.Config.CacheKey
+	}
+	return s.Header.ID
 }
 
 // CreateOptions controls optional session metadata at creation time.
@@ -1342,6 +1358,10 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, req
 	src.mu.Lock()
 	cwd := src.Header.CWD
 	parent := src.Header.ID
+	cacheKey := src.Config.CacheKey
+	if cacheKey == "" {
+		cacheKey = src.Header.ID
+	}
 	cfg := src.Config
 	if target == "" {
 		target = src.leafID
@@ -1389,6 +1409,10 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, req
 	}
 	dst.Config = cfg
 	dst.Config.ActiveLeafID = ""
+	// Why: the child starts with the parent's exact replayed prefix, so it can
+	// read that prefix from cache on its first request. Only the affinity key is
+	// shared; the child keeps its own session id and storage identity.
+	dst.Config.CacheKey = cacheKey
 	dst.Header.ParentSession = parent
 	dst.Header.ForkMode = forkMode
 	if err := dst.writeConfig(); err != nil {
@@ -1447,6 +1471,10 @@ func CreateChild(root string, src *Session) (*Session, error) {
 	}
 	dst.Config = cfg
 	dst.Config.ActiveLeafID = ""
+	// Why: a delegated child copies no transcript, so it shares no prefix with
+	// the parent. It must not claim the parent's (or a fork ancestor's) cache
+	// entry, even when the parent is itself a fork.
+	dst.Config.CacheKey = ""
 	dst.Header.ParentSession = parent
 	dst.Header.ForkMode = ForkModeTree
 	if err := dst.writeConfig(); err != nil {
