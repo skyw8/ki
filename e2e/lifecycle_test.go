@@ -1,9 +1,11 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -140,6 +142,7 @@ func TestStopFallsBackToSignalForPreLifecycleServer(t *testing.T) {
 func TestRestartKeepsAddressAndSwitchesBuild(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
+	stopOnCleanup(t, home)
 
 	out, code := runBin(t, home, "restart", "--json")
 	if code != 0 {
@@ -198,6 +201,7 @@ func TestServeReplaceRefusesSameBuild(t *testing.T) {
 func TestServeReplaceSwapsMismatchedBuild(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
+	stopOnCleanup(t, home)
 
 	old := sf
 	old.Build = "0.0.1-old"
@@ -251,6 +255,7 @@ func TestStatusReportsOlderServerBuild(t *testing.T) {
 func TestBareKIActivatesNewBuild(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
+	stopOnCleanup(t, home)
 	sf.Build = "0.0.1-old"
 	if err := server.WriteServerFile(home, sf); err != nil {
 		t.Fatal(err)
@@ -279,6 +284,25 @@ func TestBareKIActivatesNewBuild(t *testing.T) {
 	if !pingAddr(t, next.Addr) {
 		t.Fatal("replacement server does not answer")
 	}
+}
+
+// stopOnCleanup ends any daemon this test leaves behind. Replacement daemons
+// started by restart/--replace/bare ki are detached, so startServe's cleanup
+// does not own them; on Windows such a process keeps KI_HOME open and
+// t.TempDir's RemoveAll then fails with a sharing violation. Registered after
+// startServe, so it runs before that cleanup (cleanups are LIFO) and before the
+// temp directory is removed.
+func stopOnCleanup(t *testing.T, home string) {
+	t.Helper()
+	t.Cleanup(func() {
+		// Why not runBin: it derives the command from t.Context(), which Go
+		// cancels just before cleanups run, so the stop would fail with
+		// "context canceled" and leave the daemon running.
+		//nolint:gosec // the test-built binary with fixed arguments
+		cmd := exec.CommandContext(context.Background(), builtKI(t), "stop", "--timeout", "5s")
+		cmd.Env = childEnv(home)
+		_, _ = cmd.CombinedOutput()
+	})
 }
 
 func pingAddr(t *testing.T, addr string) bool {

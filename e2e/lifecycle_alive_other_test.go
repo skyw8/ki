@@ -1,4 +1,4 @@
-//go:build unix
+//go:build !linux && !darwin && !windows
 
 package e2e
 
