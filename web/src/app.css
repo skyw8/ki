@@ -1600,6 +1600,14 @@
 .prompt-bytes { margin-right: auto; color: var(--dsw-alias-label-caption); font-size: 12px; }
 .prompt-source-blocked { margin: 12px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
 .preference-footnote { margin: 14px 2px 0; color: var(--dsw-alias-label-caption); font-size: 12px; }
+/* About is a read-only key/value list; values wrap instead of widening the
+   modal, because an executable path or KI_HOME can be long. */
+.about-list { display: grid; gap: 10px; margin: 14px 0 0; }
+.about-row { display: grid; grid-template-columns: minmax(120px, 200px) minmax(0, 1fr); gap: 12px; align-items: baseline; }
+.about-row dt { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+.about-row dd { margin: 0; min-width: 0; color: var(--dsw-alias-label-primary); font-size: 13px; line-height: 18px; overflow-wrap: anywhere; user-select: text; cursor: text; }
+.about-row dd.mono { font-family: var(--ds-font-family-code); font-size: 12px; }
+.about-empty { margin: 14px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; }
 .theme-picks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .theme-pick {
   display: flex;
@@ -1888,6 +1896,9 @@
   .model-actions { width: 100%; flex-wrap: wrap; }
   .preference-page { padding: 22px 16px 28px; }
   .preference-section.inline { gap: 16px; }
+  /* A narrow column cannot hold a 200px label plus a long path; stack the pair
+     so About stays readable in the phone layout. */
+  .about-row { grid-template-columns: 1fr; gap: 2px; }
   .provider-content { flex: 1; }
   .provider-dialog-mask { padding: 12px; }
   .provider-dialog { max-height: 92dvh; padding: 18px; }

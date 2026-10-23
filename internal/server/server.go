@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"ki/internal/agent"
+	"ki/internal/buildinfo"
 	"ki/internal/codemode"
 	"ki/internal/command"
 	"ki/internal/compact"
@@ -64,9 +65,17 @@ type Options struct {
 
 // Server is the HTTP API.
 type Server struct {
-	cfg                    config.Config
-	token                  string
-	serverID               string
+	cfg      config.Config
+	token    string
+	serverID string
+	// identity describes this process in server.json and /v1/meta. They are
+	// captured once at construction so a later executable replacement on disk
+	// cannot make the running daemon misreport what it is.
+	pid                    int
+	exe                    string
+	startedAt              time.Time
+	stopOnce               sync.Once
+	stopReq                chan struct{}
 	browserSessionCookie   string
 	browserCSRFCookie      string
 	streamer               loop.Streamer
@@ -424,10 +433,25 @@ func promptDigest(system string, tools []toolapi.Spec) string {
 	return string(h.Sum(nil))
 }
 
-// File is ~/.ki/server.json
+// File is ~/.ki/server.json: the handshake a client uses to reach the daemon.
+//
+// PID/Build/Exe/StartedAt are facts about the process that wrote the file, so
+// a client can tell "this is the daemon I am talking to" apart from a stale file
+// and can notice that the running binary is not the one just installed. Older
+// files lack them, so every reader treats a zero value as unknown rather than
+// as a mismatch.
+//
+// Why Build and not Version: `version` is reserved for the integer schema
+// field every Ki-owned JSON document may carry (docs/state.md), and
+// server.json deliberately has none. Reusing that name for a string would make
+// a reader that honors the convention fail to decode the handshake.
 type File struct {
-	Addr  string `json:"addr"`
-	Token string `json:"token"`
+	Addr      string    `json:"addr"`
+	Token     string    `json:"token"`
+	PID       int       `json:"pid,omitempty"`
+	Build     string    `json:"build,omitempty"`
+	Exe       string    `json:"exe,omitempty"`
+	StartedAt time.Time `json:"startedAt,omitempty"`
 }
 
 // New builds a server (does not listen).
@@ -489,6 +513,12 @@ func New(opt Options) (*Server, error) {
 		cfg:      opt.Config,
 		token:    tok,
 		serverID: serverID,
+		pid:      os.Getpid(),
+		exe:      executablePath(),
+		// The HTTP listener binds after construction; measuring uptime from
+		// here keeps "started" meaningful even for an in-process server.
+		startedAt: time.Now(),
+		stopReq:   make(chan struct{}),
 		// Cookies ignore ports, so fixed names let separate localhost
 		// port-forwards overwrite each other's authentication and CSRF pair.
 		browserSessionCookie:   "ki_session_" + serverID,
@@ -789,7 +819,9 @@ func (s *Server) publishContextUsage(sess *session.Session) {
 func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, 200, map[string]any{"ok": true})
+		// Version lets a client (and the WebUI) tell a just-started daemon from
+		// the one it was already talking to without authenticating first.
+		writeJSON(w, 200, map[string]any{"ok": true, "version": buildinfo.Version})
 	})
 	api.HandleFunc("GET /v1/auth/status", s.authStatus)
 	api.HandleFunc("POST /v1/auth/login", s.login)
@@ -811,6 +843,11 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("DELETE /v1/providers/{id}/models", s.auth(s.deleteProviderModel))
 	api.HandleFunc("PUT /v1/default-model", s.auth(s.putDefaultModel))
 	api.HandleFunc("GET /v1/meta", s.auth(s.meta))
+	// Shutdown lets `ki stop`/`ki restart` end this daemon the same way a
+	// signal does, but through owned cleanup. Without it the only way to stop a
+	// daemon was SIGKILL, which skipped Manager/extension/session teardown and
+	// left a stale server.json behind.
+	api.HandleFunc("POST /v1/shutdown", s.auth(s.shutdown))
 	api.HandleFunc("GET /v1/events", s.auth(s.pushEvents))
 	api.HandleFunc("GET /v1/push/config", s.auth(s.pushConfig))
 	api.HandleFunc("POST /v1/push/subscriptions", s.auth(s.putPushSubscription))
@@ -1096,6 +1133,11 @@ func requestIsSecure(r *http.Request) bool {
 }
 
 // ListenAndServe binds addr (empty uses cfg).
+//
+// The handshake is written before Serve so a client that saw the file can
+// always connect, and it is left in place when Serve returns an error (the
+// failure path keeps the reason visible in the log). A clean stop removes it so
+// the next `ki` invocation does not mistake it for a live daemon.
 func (s *Server) ListenAndServe(addr string) error {
 	if addr == "" {
 		addr = s.cfg.Server.Addr
@@ -1113,12 +1155,30 @@ func (s *Server) ListenAndServe(addr string) error {
 	s.ln = ln
 	s.http = httpSrv
 	s.mu.Unlock()
-	if err := WriteServerFile(s.cfg.Home, File{Addr: dialAddress(ln.Addr()), Token: s.token}); err != nil {
+	handshake := File{
+		Addr:      dialAddress(ln.Addr()),
+		Token:     s.token,
+		PID:       s.pid,
+		Build:     buildinfo.Version,
+		Exe:       s.exe,
+		StartedAt: s.startedAt,
+	}
+	if err := WriteServerFile(s.cfg.Home, handshake); err != nil {
 		slog.Warn("server.json", "err", err)
 	}
 	slog.Info("listen", "addr", ln.Addr().String())
 	s.startExtensions()
-	return httpSrv.Serve(ln)
+	err = httpSrv.Serve(ln)
+	if !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	// A successful stop (signal or /v1/shutdown) reached the cleanup path.
+	// Removing the handshake here covers both, and the token check keeps a
+	// daemon that was displaced by a newer instance from deleting its file.
+	if rmErr := RemoveServerFile(s.cfg.Home, s.token); rmErr != nil {
+		slog.Warn("server.json", "err", rmErr)
+	}
+	return nil
 }
 
 func dialAddress(addr net.Addr) string {
@@ -1298,7 +1358,11 @@ func (s *Server) closeProcesses(id string) {
 	}
 }
 
-// WriteServerFile persists addr+token.
+// WriteServerFile persists the handshake.
+//
+// Why temp-file + rename: a concurrent `ki` client polls this file while a
+// daemon starts, and an in-place write exposes an empty or half-written JSON
+// document to that read. The rename is atomic on every supported platform.
 func WriteServerFile(home string, f File) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
@@ -1307,7 +1371,47 @@ func WriteServerFile(home string, f File) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(home, "server.json"), append(b, '\n'), 0o600)
+	tmp, err := os.CreateTemp(home, "server.json.*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(name, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(name, filepath.Join(home, "server.json"))
+}
+
+// RemoveServerFile deletes the handshake, but only when it still belongs to the
+// given token. A daemon that lost its file to a newer instance (or to a manual
+// removal) must not delete the replacement's handshake on its way out.
+func RemoveServerFile(home, token string) error {
+	current, err := ReadServerFile(home)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if token != "" && current.Token != token {
+		return nil
+	}
+	if err := os.Remove(filepath.Join(home, "server.json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // ReadServerFile loads ~/.ki/server.json.
@@ -1824,7 +1928,43 @@ func (s *Server) meta(w http.ResponseWriter, _ *http.Request) {
 	if _, model, ok := s.registry.FindModel(def.Provider, def.Model); ok {
 		out["thinkingEffort"] = provider.DefaultThinking(model)
 	}
+	// Process identity, so Settings → About can show which build is serving
+	// this tab without reading server.json (a browser cannot).
+	out["version"] = buildinfo.Version
+	out["releaseTag"] = buildinfo.ReleaseTag
+	out["pid"] = s.pid
+	out["startedAt"] = s.startedAt
+	out["exe"] = s.exe
+	out["kiHome"] = s.cfg.Home
 	writeJSON(w, 200, out)
+}
+
+// StopRequested is closed once someone asked this process to exit (signal or
+// POST /v1/shutdown). The listener owner selects on it to leave Serve.
+func (s *Server) StopRequested() <-chan struct{} { return s.stopReq }
+
+// RequestStop asks the process owner to exit. It is idempotent.
+func (s *Server) RequestStop() {
+	s.stopOnce.Do(func() { close(s.stopReq) })
+}
+
+func (s *Server) shutdown(w http.ResponseWriter, _ *http.Request) {
+	// Answer before shutting down: the caller is watching this response to
+	// decide whether it must escalate to a signal.
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "pid": s.pid})
+	slog.Info("shutdown requested", "pid", s.pid)
+	s.RequestStop()
+}
+
+// executablePath reports the path this process was started from, for
+// server.json/About. It is advisory: a deleted or replaced binary can make the
+// call fail, which must not prevent serving.
+func executablePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return exe
 }
 
 func (s *Server) patch(w http.ResponseWriter, r *http.Request) {

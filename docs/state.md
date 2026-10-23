@@ -38,7 +38,14 @@ context queue 另带 `next`），不再写裸数组。
 
 - `catalog.json` 是 `//go:embed` 进二进制的，`CatalogVersion` 与文件头的核对是构建期自检，
   不存在「新文件 + 旧二进制」。
-- `server.json` 是进程握手文件（addr + token），每次 `serve` 重写，无常驻状态。
+- `server.json` 是进程握手文件，每次 `serve` 重写，无常驻状态。它带
+  `addr` / `token` 加进程身份 `pid` / `build` / `exe` / `startedAt`：
+  `ki status`、`ki stop`、`ki restart` 和 `--replace` 靠它判断「回话的是
+  哪个进程、哪个构建」。字段名叫 `build` 而不是 `version`：`version` 在本目录
+  约定里是整数 schema 字段，而 `server.json` 明确不使用该约定，用字符串占用
+  这个名字会让遵守约定的读取方解码失败。旧文件缺少身份字段时一律按「未知」
+  处理，而不是按不匹配处理。写入走临时文件 + rename，避免并发读取看到半截
+  JSON；正常退出时按 token 校验后删除。
 - `ki.toml` 由 Viper 合并，不是 JSON 文档。
 
 ## 规则

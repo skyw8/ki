@@ -57,12 +57,29 @@ try {
   if (-not (Test-Path $Source)) { throw "$Archive does not contain $Bin" }
 
   New-Item -ItemType Directory -Force $Dest | Out-Null
-  Copy-Item $Source (Join-Path $Dest $Bin) -Force
+  try {
+    Copy-Item $Source (Join-Path $Dest $Bin) -Force
+  } catch {
+    # A running ki.exe keeps its image open, so the copy fails with a sharing
+    # violation. Say what to do instead of letting the raw Win32 error stand:
+    # stopping the old daemon is also the step that activates the new build.
+    throw "could not replace $(Join-Path $Dest $Bin) because a ki server is running from it; run 'ki stop' and re-run this installer ($_)"
+  }
 } finally {
   Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 }
 
 Write-Host "installed ki $Version to $(Join-Path $Dest $Bin)"
+
+# Installing replaces the file on disk; it cannot replace the daemon already
+# running in memory. Point at the one command that swaps it, instead of leaving
+# "I upgraded but the version did not change" as the user's next surprise.
+$KiHome = if ($env:KI_HOME) { $env:KI_HOME } else { Join-Path $env:USERPROFILE ".ki" }
+if (Test-Path (Join-Path $KiHome "server.json")) {
+  Write-Host ""
+  Write-Host "a ki server is running from the previous build; activate $Version with:"
+  Write-Host "  `"$(Join-Path $Dest $Bin)`" restart"
+}
 # Why the empty-entry filter: a user PATH that was never set reads back as null,
 # and appending to it must not produce a leading empty segment.
 $UserPath = [Environment]::GetEnvironmentVariable("PATH", "User")

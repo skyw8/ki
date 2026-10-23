@@ -112,3 +112,15 @@ case ":${PATH}:" in
 	say "  export PATH=\"${dir}:\$PATH\""
 	;;
 esac
+
+# Why this hint: installing a binary never changes the process that is already
+# serving. Without it the user is left with a new file on disk and an old
+# daemon in memory, which is exactly the "I upgraded but nothing changed"
+# report. Restarting is left to the user (and is never forced), because an
+# active run would be interrupted.
+if [ -f "${KI_HOME:-$HOME/.ki}/server.json" ]; then
+	say ""
+	say "a ki server is running from the previous build; activate ${version} with:"
+	say "  ${dir}/ki restart"
+	say "(this stops the old server and starts ${dir}/ki on the same address)"
+fi

@@ -583,6 +583,7 @@ for (const profile of profiles) {
         ['message', 'message-settings'],
         ['notifications', 'notifications-settings'],
         ['appearance', 'appearance-settings'],
+        ['about', 'about-settings'],
       ] as const) {
         await page.getByTestId(`settings-tab-${tab}`).click()
         await expect(page.getByTestId(content)).toBeVisible()

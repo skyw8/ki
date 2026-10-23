@@ -78,7 +78,8 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('settings-tab-message')).toHaveText('Message')
   await expect(page.getByTestId('settings-tab-notifications')).toHaveText('通知')
   await expect(page.getByTestId('settings-tab-appearance')).toHaveText('主题和语言')
-  for (const pageName of ['providers', 'skills', 'tools', 'mcp', 'extensions', 'prompt', 'message', 'notifications', 'appearance']) {
+  await expect(page.getByTestId('settings-tab-about')).toHaveText('关于')
+  for (const pageName of ['providers', 'skills', 'tools', 'mcp', 'extensions', 'prompt', 'message', 'notifications', 'appearance', 'about']) {
     await expect(page.locator(`#settings-panel-${pageName}`)).toHaveCount(1)
   }
   await expect(page.locator('#settings-panel-skills')).toHaveAttribute('hidden', '')
@@ -87,12 +88,13 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(providersTab).toHaveAttribute('aria-controls', 'settings-panel-providers')
   await providersTab.focus()
   await providersTab.press('End')
-  const appearanceTab = page.getByTestId('settings-tab-appearance')
-  await expect(appearanceTab).toBeFocused()
-  await expect(appearanceTab).toHaveAttribute('aria-selected', 'true')
-  await expect(page.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'settings-tab-appearance-control')
+  // End moves to the last tab, which is About.
+  const aboutTab = page.getByTestId('settings-tab-about')
+  await expect(aboutTab).toBeFocused()
+  await expect(aboutTab).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'settings-tab-about-control')
   await expect(page.locator('#settings-panel-providers')).toHaveAttribute('hidden', '')
-  await appearanceTab.press('Home')
+  await aboutTab.press('Home')
   await expect(providersTab).toBeFocused()
   await expect(providersTab).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('tabpanel')).toHaveAttribute('id', 'settings-panel-providers')

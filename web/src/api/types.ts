@@ -581,6 +581,13 @@ export type Meta = {
 	provider: string
 	model: string
 	thinkingEffort?: string
+	// Process identity of the daemon serving this tab, shown in Settings → About.
+	version?: string
+	releaseTag?: string
+	pid?: number
+	startedAt?: string
+	exe?: string
+	kiHome?: string
 }
 
 export type ChatNode = { turnId?: TurnId } & (

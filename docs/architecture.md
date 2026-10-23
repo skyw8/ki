@@ -4,11 +4,26 @@
 
 ## 进程
 
-- `ki`：后台启动或复用 HTTP server，尝试打开同源 WebUI。
+- `ki`：后台启动或复用 HTTP server，尝试打开同源 WebUI。已运行的 daemon
+  若是另一个构建（`server.json` 的 `build`/`exe` 与当前二进制不同），先停掉
+  再启动新构建——这就是「装完直接再跑 `ki`」的升级路径。
 - `ki serve [--addr]`：前台 HTTP，默认 `127.0.0.1:19800`，复用已有
-  `~/.ki/server.json` 的 token（不存在时首次生成），并写回当前 addr + token。
-- `ki serve -d`：后台启动或复用 server，CLI 退出后 server 继续运行。
-- `ki run [flags] <text>`：client。`server.json` health 通则连；否则本进程听 `127.0.0.1:0`，退出带走。
+  `~/.ki/server.json` 的 token（不存在时首次生成），并写回当前 addr + token
+  以及 `pid` / `version` / `exe` / `startedAt`。SIGINT/SIGTERM 触发 `Shutdown`
+  （取消 run、关进程 manager、关扩展），正常退出后删除 `server.json`。
+- `ki serve -d [--replace]`：后台启动或复用 server，CLI 退出后 server 继续运行。
+  `--replace` 只在运行中的 daemon 是另一个构建时才替换；同一构建则退化为
+  「already running」，避免为无意义的重启打断进行中的 run。地址沿用
+  `server.json` 记录的地址，保证端口转发和书签继续可用。
+- `ki stop [--timeout]`：先 `POST /v1/shutdown` 走 owned cleanup；没有该路由
+  的旧 daemon 退回 SIGTERM → SIGKILL；然后按 token 校验删除 `server.json`。
+  幂等，没有运行中的 server 时也是成功。
+- `ki restart [--timeout]`：`stop` 后在同一地址用当前二进制重新 detach。
+- `ki status [--json]`：只读，报告 addr、pid（含 pid 来源）、version、exe、
+  启动时间和「当前 CLI 与 daemon 是否同一构建」。它只关心本 `KI_HOME` 的
+  `server.json`，不扫描机器上其它 ki 进程。
+- `ki run [flags] <text>`：client。`server.json` health 通则连；否则本进程听
+  `127.0.0.1:0`，退出带走。连到不同构建的 daemon 时只打一行 warning，不失败。
 - `ki session compact|fork --session <id>`：对已有 session 执行管理操作。
 - `ki reload`：对已运行的 daemon 发 `POST /v1/reload`（不在本进程起 server）。
 - `ki extension list`：列出全局发现的扩展。
@@ -46,13 +61,15 @@ Code Mode 固定为 mixed：在普通工具经开关、extension Prepare 和 act
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
+| GET | `/v1/health` | 存活探测，无需鉴权；返回 `ok` 与当前构建 `version`，供客户端在登录前判断对面是不是新启动的实例 |
 | GET | `/v1/auth/status` | 返回是否已登录、进程级随机 `serverId` 与 `csrfCookieName`，不返回 token |
 | POST | `/v1/auth/login` | 校验 body 中的 token，换发 HttpOnly browser session 和 CSRF cookie |
 | POST | `/v1/auth/logout` | 清除当前 browser session 和 CSRF cookie |
 | GET | `/v1/models` | registry 的可选模型扁平视图（含 `thinkingLevels` / `defaultThinking`） |
 | GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential、OAuth login/logout 和 model 管理；扩展 provider 目录只读 |
 | PUT | `/v1/default-model` | 显式记住上次选用的模型；WebUI 切模型时 server 也会写 |
-| GET | `/v1/meta` | 上次选用的模型（不可用则第一个可用项）、该模型 default thinking、用户 home（无进程 cwd） |
+| GET | `/v1/meta` | 上次选用的模型（不可用则第一个可用项）、该模型 default thinking、用户 home，以及本进程身份 `version` / `releaseTag` / `pid` / `startedAt` / `exe` / `kiHome`（Settings → About 只读展示，浏览器读不到 `server.json`，是 WebUI 显示版本号的唯一来源） |
+| POST | `/v1/shutdown` | 请求 daemon 退出；先回 `202 {ok, pid}` 再触发 owned cleanup。`ki stop` / `ki restart` 使用；旧构建没有该路由时客户端退回信号 |
 | GET | `/v1/commands` | 按可选 `workspaceId` 扫描的内置、prompt template 和 skill 命令；用于尚未创建 session 的 WebUI composer |
 | GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned / parentSessionId / forkMode）。每行只读 `config.json`、jsonl header 和 title fallback 的首条 user message，不解析整份 transcript；行按 `events.jsonl` / `config.json` 的 size+mtime 缓存。响应带按渲染结果计算的 `ETag`，客户端用 `If-None-Match` 命中时返回 `304`，未变时侧栏不刷新状态 |
 | POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…`；可选 `model` / `thinkingEffort`，省略则用上次选用的模型和该模型 default thinking。WebUI 传入当前 composer 的模型配置 |

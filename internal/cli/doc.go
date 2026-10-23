@@ -29,12 +29,26 @@
 //	ki run [flags] text create/resume session, POST prompt, print events
 //	ki session compact  compact an existing session
 //	ki session fork     fork an existing session
+//	ki stop             stop the daemon through owned cleanup (signal fallback)
+//	ki restart          stop, then start this binary on the recorded address
+//	ki status           read-only addr/pid/version/exe of the live daemon
 //	ki reload           POST /v1/reload on a live daemon (no in-process serve)
 //	ki extension list   list globally discovered extensions
 //	ki provider login   authenticate a provider extension (browser or device code)
 //	ki provider logout  remove a provider extension credential
 //	ki config path      print global/project ki.toml and mcp.json locations
 //	ki version          print the build version
+//
+// Lifecycle is driven by server.json, which now carries pid/build/exe/
+// startedAt next to addr/token (build, not version: `version` is reserved for
+// the integer schema field, which server.json deliberately does not use). `ki status` compares that identity with the
+// current binary; `ki stop` prefers POST /v1/shutdown, falls back to SIGTERM →
+// SIGKILL for a build that predates the route, and removes the handshake only
+// after checking its token still matches. `ki restart` and bare `ki` reuse the
+// recorded address, so port-forwards and WebUI bookmarks survive an upgrade.
+// A daemon running a different build is reported once as a warning by clients
+// but never blocks them. Commands only ever act on this KI_HOME's handshake;
+// they do not scan for unrelated ki processes on the machine.
 //
 // If server.json is healthy the client connects; otherwise it listens on
 // 127.0.0.1:0 in-process and tears the server down on exit.

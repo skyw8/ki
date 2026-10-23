@@ -22,6 +22,15 @@
 // A wildcard listener is advertised to local CLI clients as 127.0.0.1 in
 // server.json so commands reuse the daemon instead of spawning duplicate
 // in-process extension runtimes.
+// server.json is the process handshake: addr/token plus pid/build/exe/
+// startedAt, written atomically before Serve and removed on a clean stop after
+// verifying the token still belongs to this process. That identity is what lets
+// `ki status`/`ki stop`/`ki restart` distinguish the live daemon from a stale
+// file and detect that the installed binary is newer than the running one.
+// POST /v1/shutdown asks the process owner to exit through owned cleanup; the
+// CLI signals SIGINT/SIGTERM into the same path. GET /v1/health reports the
+// build version without authentication, and GET /v1/meta carries the full
+// identity for Settings → About.
 //
 // API auth is Bearer token or a browser session cookie, except GET /v1/health
 // and the auth status/login endpoints. Browser login exchanges the bearer

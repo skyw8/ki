@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"ki/internal/buildinfo"
 	"ki/internal/codemode"
 	"ki/internal/config"
 	"ki/internal/logging"
@@ -104,7 +105,9 @@ func newRootCommand() *cobra.Command {
 	}
 	root.Version = Version
 	root.SetVersionTemplate("ki {{.Version}}\n")
-	root.AddCommand(newServeCommand(), newRunCommand(), newConfigCommand(), newSessionCommand(), newReloadCommand(), newExtensionCommand(), newProviderCommand(), newVersionCommand())
+	root.AddCommand(newServeCommand(), newRunCommand(), newConfigCommand(), newSessionCommand(), newReloadCommand(),
+		newStopCommand(), newRestartCommand(), newStatusCommand(),
+		newExtensionCommand(), newProviderCommand(), newVersionCommand())
 	return root
 }
 
@@ -130,6 +133,7 @@ func withConfig(role string, settings *viper.Viper, fn func(config.Config) error
 
 func newServeCommand() *cobra.Command {
 	var detach bool
+	var replace bool
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the HTTP server and embedded WebUI",
@@ -142,13 +146,29 @@ func newServeCommand() *cobra.Command {
 			}
 			return withConfig("server", settings, func(cfg config.Config) error {
 				if detach {
-					return runDetach(cfg, flags{Addr: cfg.Server.Addr})
+					// Why the recorded address: after an upgrade the existing
+					// port-forwards and WebUI bookmarks must keep working, and
+					// the daemon being replaced is listening there. An explicit
+					// --addr still wins.
+					addr := cfg.Server.Addr
+					if !cmd.Flags().Changed("addr") {
+						addr = daemonAddr(cfg)
+					}
+					if replace {
+						return replaceDetached(cfg, flags{Addr: addr})
+					}
+					return runDetach(cfg, flags{Addr: addr})
+				}
+				if replace {
+					return errHint(errors.New("--replace requires --detach"),
+						"run `ki restart` to replace a foreground server")
 				}
 				return runServe(cfg, cfg.Server.Addr)
 			})
 		},
 	}
 	cmd.Flags().BoolVarP(&detach, "detach", "d", false, "run the server in the background")
+	cmd.Flags().BoolVar(&replace, "replace", false, "stop a running server from a different build first (with --detach)")
 	cmd.Flags().String("addr", "", "listen address")
 	return cmd
 }
@@ -506,15 +526,46 @@ func runServe(cfg config.Config, addr string) error {
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}
-	if err := srv.ListenAndServe(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("server stopped", "err", err)
-		err = fmt.Errorf("serve HTTP: %w", err)
-		if isAddrInUse(err) {
-			return errHint(err, fmt.Sprintf("another process owns %s; stop it or pass a free `ki serve --addr host:port`", addr))
+	// Why a signal handler: without one, SIGTERM/SIGINT killed the process
+	// outright, so extensions, shells and tool-output roots were never closed
+	// and server.json survived the daemon. Shutdown is idempotent, so a second
+	// signal (or POST /v1/shutdown racing it) is harmless.
+	ctx, stop := signal.NotifyContext(context.Background(), stopSignals()...)
+	defer stop()
+	served := make(chan error, 1)
+	go func() {
+		defer logging.Recover("serve HTTP panic")
+		served <- srv.ListenAndServe(addr)
+	}()
+	select {
+	case err := <-served:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return serveError(err, addr)
 		}
-		return err
+		return nil
+	case <-ctx.Done():
+	case <-srv.StopRequested():
+	}
+	stop()
+	slog.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown: %w", err)
+	}
+	if err := <-served; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return serveError(err, addr)
 	}
 	return nil
+}
+
+func serveError(err error, addr string) error {
+	slog.Error("server stopped", "err", err)
+	err = fmt.Errorf("serve HTTP: %w", err)
+	if isAddrInUse(err) {
+		return errHint(err, fmt.Sprintf("another process owns %s; stop it or pass a free `ki serve --addr host:port`", addr))
+	}
+	return err
 }
 
 func runDetach(cfg config.Config, f flags) error {
@@ -526,12 +577,59 @@ func runDetach(cfg config.Config, f flags) error {
 		fmt.Fprintf(os.Stderr, "ki server %s pid %d\n", sf.Addr, pid)
 	} else {
 		fmt.Fprintf(os.Stderr, "ki server %s already running\n", sf.Addr)
+		warnBuildMismatch(sf)
 	}
 	return nil
 }
 
+// replaceDetached implements `ki serve -d --replace`: the upgrade path.
+//
+// Why it refuses to stop a server that already runs this build: `--replace`
+// exists to swap binaries. Replacing an identical one would kill a working
+// daemon and its in-flight runs for nothing, so the command degrades into the
+// ordinary "already running" answer instead.
+func replaceDetached(cfg config.Config, f flags) error {
+	if sf, err := server.ReadServerFile(cfg.Home); err == nil && sf.Addr != "" && ping("http://"+sf.Addr, sf.Token) {
+		if buildMismatch(sf) == "" {
+			fmt.Fprintf(os.Stderr, "ki server %s already running version %s\n", sf.Addr, buildinfo.Version)
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "replacing ki server %s (%s)\n", sf.Addr, buildMismatch(sf))
+		if err := stopDaemon(cfg, defaultStopTimeout, false, io.Discard); err != nil {
+			return err
+		}
+	}
+	return runDetach(cfg, f)
+}
+
+// warnBuildMismatch tells the user that the daemon answering their commands is
+// not the binary they just invoked. It is advisory and never fails a command:
+// an automated client must still work against an older daemon.
+func warnBuildMismatch(sf server.File) {
+	if msg := buildMismatch(sf); msg != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s; run `ki restart`\n", msg)
+	}
+}
+
 func runDefault(cfg config.Config) error {
-	sf, pid, started, err := startDetached(cfg, cfg.Server.Addr)
+	// Why capture the address first: stopDaemon deletes server.json, so reading
+	// it afterwards would silently fall back to the configured default port and
+	// move a running server's port-forwards and bookmarks out from under the
+	// user.
+	addr := daemonAddr(cfg)
+	// Bare `ki` is the upgrade entry point too: installing a new binary and
+	// running `ki` again is what a user naturally does, so a daemon still
+	// serving the previous build is replaced (interrupting its runs, like
+	// `ki restart`) instead of leaving the new binary unused.
+	if sf, err := server.ReadServerFile(cfg.Home); err == nil && sf.Addr != "" && ping("http://"+sf.Addr, sf.Token) {
+		if msg := buildMismatch(sf); msg != "" {
+			fmt.Fprintf(os.Stderr, "replacing ki server %s (%s)\n", sf.Addr, msg)
+			if err := stopDaemon(cfg, defaultStopTimeout, false, io.Discard); err != nil {
+				return err
+			}
+		}
+	}
+	sf, pid, started, err := startDetached(cfg, addr)
 	if err != nil {
 		return err
 	}
@@ -546,6 +644,16 @@ func runDefault(cfg config.Config) error {
 		fmt.Fprintf(os.Stderr, "could not open browser: %v\n", err)
 	}
 	return nil
+}
+
+// daemonAddr prefers the address a live daemon already recorded. Port-forwards,
+// bookmarks and the WebUI URL keep working across a restart, and an explicit
+// server.addr only applies when nothing is running yet.
+func daemonAddr(cfg config.Config) string {
+	if sf, err := server.ReadServerFile(cfg.Home); err == nil && sf.Addr != "" {
+		return sf.Addr
+	}
+	return cfg.Server.Addr
 }
 
 // startDetached launches `ki serve` as an independent process and waits for it

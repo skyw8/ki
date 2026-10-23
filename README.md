@@ -70,6 +70,12 @@ scripts/run.sh
 # detached server
 ./ki serve -d
 
+# lifecycle of a running server
+./ki status                       # addr, pid, version, exe, uptime
+./ki stop                         # owned cleanup; signal fallback for old builds
+./ki restart                      # stop, then start this binary on the same address
+./ki serve -d --replace           # replace only if the daemon runs another build
+
 # one-shot prompt (starts an in-process server if none is up)
 ./ki run "what is in this repo?"
 ./ki run --session <id> "continue"
@@ -97,6 +103,8 @@ scripts/run.sh
 ```
 
 API auth is a Bearer token from `~/.ki/server.json` (or `KI_HOME/server.json`) for CLI clients. Bare `ki` (including double-click launch) prints and opens an auto-login link with that token in the URL fragment (`#token=…`). The WebUI immediately removes the fragment and exchanges the token for a short-lived HttpOnly browser session; no extra login is needed. Treat this link as a secret and do not share it. Plain WebUI URLs still offer manual token login. The token is never embedded in HTML or a URL query. Config is `~/.ki/ki.toml` and `<cwd>/.ki/ki.toml`. The configured real provider is used by default; set `KI_FAKE=1` only for local plumbing tests.
+
+Upgrading: `install.sh` replaces the binary on disk, never the daemon in memory. Run `ki restart` (or `ki serve -d --replace`, or bare `ki`, which replaces a daemon from a different build) to activate the new version on the same address. `ki status` and Settings → About show which build is actually serving; clients warn once when they attach to an older daemon.
 
 ## Bundled extensions
 

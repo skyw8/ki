@@ -15,12 +15,13 @@ import { OutputPreview } from './features/chat/tools/OutputPreview'
 import { DirectoryBrowser } from './features/sessions/DirectoryBrowser'
 import { ExtensionConfigEditor, MessageSettings, NotificationSettings, SessionConfig, SettingsToggles } from './features/settings/SessionConfig'
 import { PromptSettings } from './features/settings/PromptSettings'
+import { AboutSettings } from './features/settings/AboutSettings'
 import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
 import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
 import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, keepComposer, loadHistory, reconcileComposerModel, sessionCreateBody, sessionStats, userRequests } from './lib/model'
 import { clampCompactKeep, loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
-import type { CatalogExtension, ChatNode, Content, ExtensionUI, ModelInfo, PushEvent, SearchHit, SessionInfo, WorkspaceInfo } from './api/types'
+import type { CatalogExtension, ChatNode, Content, ExtensionUI, Meta, ModelInfo, PushEvent, SearchHit, SessionInfo, WorkspaceInfo } from './api/types'
 import { ContextView } from './features/context/ContextView'
 import { useI18n } from './i18n/index'
 import { toast } from './components/toast'
@@ -41,8 +42,8 @@ import { ancestorsOf, buildSessionForest, orderedChildren, pinnedFirst, topLevel
 import type { LauncherAuth } from './lib/launcher-auth'
 
 type Tab = 'conversation' | 'context' | 'config'
-type SettingsPage = 'providers' | 'skills' | 'tools' | 'mcp' | 'extensions' | 'prompt' | 'message' | 'notifications' | 'appearance'
-const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'mcp', 'extensions', 'prompt', 'message', 'notifications', 'appearance']
+type SettingsPage = 'providers' | 'skills' | 'tools' | 'mcp' | 'extensions' | 'prompt' | 'message' | 'notifications' | 'appearance' | 'about'
+const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'mcp', 'extensions', 'prompt', 'message', 'notifications', 'appearance', 'about']
 const SHOW = 5
 const COMPACT_LAYOUT_QUERY = '(max-width: 900px)'
 
@@ -327,6 +328,9 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const [fileDragActive, setFileDragActive] = useState(false)
   const [models, setModels] = useState<ModelInfo[]>([])
 	const [defaultModel, setDefaultModel] = useState('')
+	// Server identity for Settings → About, refreshed with the model list so the
+	// page always describes the daemon actually answering this tab.
+	const [serverMeta, setServerMeta] = useState<Meta | null>(null)
 	const [globalExtensions, setGlobalExtensions] = useState<CatalogExtension[]>([])
 	// Bumped after every global catalog read so the install list refetches its
 	// availability view (which also carries live install stages) alongside it.
@@ -689,6 +693,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 		void Promise.all([api.models(), api.meta()]).then(([list, meta]) => {
       if (generation !== modelRefresh.current) return
 			setModels(list)
+			setServerMeta(meta)
 			setDefaultModel(meta.provider && meta.model ? `${meta.provider}/${meta.model}` : '')
       setView(v => reconcileComposerModel(v, !!currentIdRef.current || !!store.sessionId, list, meta))
 		}).catch(() => {
@@ -2392,6 +2397,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
               ['message', t('settings.message')],
               ['notifications', t('settings.notifications')],
               ['appearance', t('settings.appearanceLanguage')],
+              ['about', t('settings.about')],
             ] as const).map(([page, label]) => (
               <button
                 key={page}
@@ -2440,6 +2446,8 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
                     onToggle={on => void toggleNotify(on)}
                     onTest={sendTestNotification}
                   />
+                ) : page === 'about' ? (
+                  <AboutSettings meta={serverMeta} />
                 ) : (
                   <div className="preference-page" data-testid="appearance-settings">
                     <header className="settings-page-title"><div><h3>{t('settings.appearanceLanguage')}</h3><p>{t('settings.preferenceHint')}</p></div></header>
