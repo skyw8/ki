@@ -70,8 +70,6 @@ func TestCreateAppliesGivenTitleOnlyOnce(t *testing.T) {
 	if err := s.SetTitle(rec.ID, "my name"); err != nil {
 		t.Fatal(err)
 	}
-	// A connector that re-registers its workspace must not overwrite the name the
-	// user gave it in the WebUI.
 	again, created, err := s.Create(dir, "group-怀仁堂")
 	if err != nil || created {
 		t.Fatalf("re-register: created=%v err=%v", created, err)
@@ -116,7 +114,6 @@ func TestInsertBeforeAndSessions(t *testing.T) {
 	a, _, _ := s.Create(filepath.Join(home, "a"), "a")
 	b, _, _ := s.Create(filepath.Join(home, "b"), "b")
 	c, _, _ := s.Create(filepath.Join(home, "c"), "c")
-	// create prepends: c, b, a
 	if err := s.InsertBefore(a.ID, c.ID); err != nil {
 		t.Fatal(err)
 	}

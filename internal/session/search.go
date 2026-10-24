@@ -6,7 +6,6 @@ import (
 	"unicode/utf8"
 )
 
-// SearchOptions controls transcript text search.
 type SearchOptions struct {
 	Context       context.Context
 	Query         string
@@ -15,14 +14,11 @@ type SearchOptions struct {
 	CWD           string
 }
 
-// SearchHit identifies a matching session and a short surrounding excerpt.
 type SearchHit struct {
 	Info
 	Snippet string `json:"snippet,omitempty"`
 }
 
-// Search scans human and assistant text, including visible thinking summaries.
-// It returns the first match per session in newest-session order.
 func Search(root string, opts SearchOptions) ([]SearchHit, bool, error) {
 	query := strings.TrimSpace(strings.ReplaceAll(opts.Query, "\x00", ""))
 	if query == "" {

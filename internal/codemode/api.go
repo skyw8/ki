@@ -13,8 +13,6 @@ import (
 
 const WorkerArg = "__code-mode-worker"
 
-// Limits bound transport, retained values and work. They are not a hard heap
-// limit: goja shares the worker's Go heap, so process isolation remains required.
 type Limits struct {
 	MaxSourceBytes      int           `json:"maxSourceBytes"`
 	MaxFrameBytes       int           `json:"maxFrameBytes"`
@@ -110,15 +108,13 @@ type Callbacks struct {
 }
 
 type ExecuteRequest struct {
-	ParentCallID string           `json:"parentCallId"`
-	Source       string           `json:"source"`
-	Tools        []ToolDefinition `json:"tools"`
-	YieldTime    time.Duration    `json:"yieldTime"`
-	// YieldTimeSet distinguishes an explicit zero (immediate observation) from
-	// the default yield interval. Positive YieldTime also implies it is set.
-	YieldTimeSet      bool `json:"yieldTimeSet,omitempty"`
-	MaxOutputBytes    int  `json:"maxOutputBytes,omitempty"`
-	MaxOutputBytesSet bool `json:"maxOutputBytesSet,omitempty"`
+	ParentCallID      string           `json:"parentCallId"`
+	Source            string           `json:"source"`
+	Tools             []ToolDefinition `json:"tools"`
+	YieldTime         time.Duration    `json:"yieldTime"`
+	YieldTimeSet      bool             `json:"yieldTimeSet,omitempty"`
+	MaxOutputBytes    int              `json:"maxOutputBytes,omitempty"`
+	MaxOutputBytesSet bool             `json:"maxOutputBytesSet,omitempty"`
 }
 
 type WaitRequest struct {
@@ -148,8 +144,6 @@ type sessionBackend interface {
 	close() error
 }
 
-// Session owns one logical session's cells and JSON store. A yielded cell keeps
-// the callbacks advertised by its original Execute, never callbacks from Wait.
 type Session struct{ backend sessionBackend }
 
 func (s *Session) Execute(ctx context.Context, req ExecuteRequest, cb Callbacks) (Response, error) {

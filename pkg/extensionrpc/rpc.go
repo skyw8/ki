@@ -34,7 +34,6 @@ type Handler func(context.Context, string, json.RawMessage) (any, error)
 
 type requestIDKey struct{}
 
-// RequestID returns the host ID for progress notifications from a handler.
 func RequestID(ctx context.Context) string {
 	id, _ := ctx.Value(requestIDKey{}).(string)
 	return id
@@ -70,7 +69,6 @@ func (p *Peer) Notify(method string, params any) error {
 }
 
 func (p *Peer) Call(ctx context.Context, method string, params, result any) error {
-	// A canceled or closed call must not trigger an external host action.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -79,8 +77,6 @@ func (p *Peer) Call(ctx context.Context, method string, params, result any) erro
 		return io.EOF
 	default:
 	}
-	// Host IDs are plain numbers/strings. A distinct namespace prevents an
-	// inbound callback response from satisfying an unrelated host request.
 	id, _ := json.Marshal(fmt.Sprintf("ext-%d", p.seq.Add(1)))
 	raw, err := json.Marshal(params)
 	if err != nil {
@@ -126,8 +122,6 @@ func (p *Peer) Serve(ctx context.Context, in io.Reader, handler Handler) error {
 	defer cancel()
 	defer p.Close()
 	var requests sync.WaitGroup
-	// Queue notifications without blocking the reader: a notification handler
-	// may await a host response, which must still be read from the same pipe.
 	var queueMu sync.Mutex
 	var queue []Message
 	wake := make(chan struct{}, 1)
@@ -225,9 +219,6 @@ func (p *Peer) Serve(ctx context.Context, in io.Reader, handler Handler) error {
 			_ = p.send(response)
 		}(msg)
 	}
-	// A piped request closes stdin before its goroutine can write the reply.
-	// Cancel work immediately, then let quick handlers flush without allowing
-	// an uncooperative handler or blocked stdout to prevent process shutdown.
 	cancel()
 	p.Close()
 	drained := make(chan struct{})

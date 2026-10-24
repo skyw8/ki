@@ -23,33 +23,27 @@ import (
 var providerIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 var apiIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
-// ModelRef identifies a provider and one of its models.
 type ModelRef struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 }
 
-// ModelsFile is the user-editable provider overlay document.
 type ModelsFile struct {
 	Version   int               `json:"version"`
 	Default   ModelRef          `json:"default"`
 	Providers map[string]Config `json:"providers"`
 }
 
-// Config describes user overrides for one provider.
 type Config struct {
-	Name    string      `json:"name,omitempty"`
-	API     string      `json:"api,omitempty"`
-	BaseURL string      `json:"baseUrl,omitempty"`
-	Enabled *bool       `json:"enabled,omitempty"`
-	Models  []ModelSeed `json:"models,omitempty"`
-	// SyncedModels tracks remote catalog entries so a refresh can replace its
-	// snapshot without deleting user-created models in the same provider.
+	Name           string                   `json:"name,omitempty"`
+	API            string                   `json:"api,omitempty"`
+	BaseURL        string                   `json:"baseUrl,omitempty"`
+	Enabled        *bool                    `json:"enabled,omitempty"`
+	Models         []ModelSeed              `json:"models,omitempty"`
 	SyncedModels   []string                 `json:"syncedModels,omitempty"`
 	ModelOverrides map[string]ModelOverride `json:"modelOverrides,omitempty"`
 }
 
-// ModelOverride describes field-level overrides for one model.
 type ModelOverride struct {
 	Name               *string                 `json:"name,omitempty"`
 	Enabled            *bool                   `json:"enabled,omitempty"`
@@ -78,14 +72,12 @@ type credentialsFile struct {
 	Providers map[string]credentialEntry `json:"providers"`
 }
 
-// CredentialStatus reports whether a provider credential is available.
 type CredentialStatus struct {
 	Configured bool     `json:"configured"`
 	Source     string   `json:"source,omitempty"`
 	Type       AuthKind `json:"type,omitempty"`
 }
 
-// View combines a provider catalog entry with credential metadata.
 type View struct {
 	Provider
 	Credential CredentialStatus `json:"credential"`
@@ -101,10 +93,8 @@ type registryState struct {
 
 const modelsFileVersion = 2
 
-// credentialsFileVersion is the schema version of credentials.json.
 const credentialsFileVersion = 1
 
-// Registry owns the offline model catalog and mutable global overlays.
 type Registry struct {
 	mu                     sync.RWMutex
 	home                   string
@@ -115,7 +105,6 @@ type Registry struct {
 	extensionProviderOrder []string
 }
 
-// NewRegistry loads the provider catalog and credentials rooted at home.
 func NewRegistry(home string) (*Registry, error) {
 	r := &Registry{
 		home:                   home,
@@ -150,8 +139,6 @@ func NewRegistry(home string) (*Registry, error) {
 	return r, nil
 }
 
-// ReplaceExtensionProviders replaces the ephemeral provider catalog supplied
-// by enabled extensions. These entries are never written to models.json.
 func (r *Registry) ReplaceExtensionProviders(specs []ExtensionProviderSpec) error {
 	next := make(map[string]Provider, len(specs))
 	order := make([]string, 0, len(specs))
@@ -167,8 +154,6 @@ func (r *Registry) ReplaceExtensionProviders(specs []ExtensionProviderSpec) erro
 		order = append(order, p.ID)
 	}
 	r.mu.Lock()
-	// An extension provider must not silently replace a built-in or user-configured
-	// provider. Selection would otherwise depend on extension load order.
 	for id := range next {
 		if _, exists := r.state.providers[id]; exists {
 			r.mu.Unlock()
@@ -182,7 +167,6 @@ func (r *Registry) ReplaceExtensionProviders(specs []ExtensionProviderSpec) erro
 	return nil
 }
 
-// ExtensionProvider reports whether a provider is implemented by an extension.
 func (r *Registry) ExtensionProvider(id string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -212,10 +196,6 @@ func (r *Registry) defaultRefLocked() ModelRef {
 	return pickDefault(providers, r.providerOrderLocked(), r.state.creds, r.state.user.Default)
 }
 
-// readModelsFile loads the user provider overlay, upgrading a document written
-// by an older schema. A newer version is rejected instead of being coerced: it
-// may carry fields this binary would silently drop from configuration the user
-// owns, and a hard error at startup is the only signal the user gets.
 func readModelsFile(path string) (ModelsFile, error) {
 	user := ModelsFile{Version: modelsFileVersion, Providers: map[string]Config{}}
 	b, _, err := state.ReadFile(path, modelsFileVersion, modelsMigrations)
@@ -228,8 +208,6 @@ func readModelsFile(path string) (ModelsFile, error) {
 	if err := decodeStrictJSON(path, b, &user); err != nil {
 		return ModelsFile{}, err
 	}
-	// A migrated document still carries its old version field, and a hand-written
-	// one may omit it; either way the decoded overlay is the current schema.
 	user.Version = modelsFileVersion
 	if user.Providers == nil {
 		user.Providers = map[string]Config{}
@@ -237,17 +215,10 @@ func readModelsFile(path string) (ModelsFile, error) {
 	return user, nil
 }
 
-// modelsMigrations upgrades the user overlay one schema version at a time.
 var modelsMigrations = map[int]state.Migration{
 	1: migrateModelsV1ToV2,
 }
 
-// migrateModelsV1ToV2 rewrites the overlay written by schema 1 into schema 2.
-// Version 1 carried remoteCompaction as a single protocol string; version 2
-// splits it into CompactionCapabilities. The document is walked as generic JSON
-// so the rename holds wherever the field appears (provider model seeds and
-// per-model overrides share the shape); the strict decode that follows stays
-// the single source of field validation.
 func migrateModelsV1ToV2(raw []byte) ([]byte, error) {
 	var doc any
 	if err := json.Unmarshal(raw, &doc); err != nil {
@@ -257,9 +228,6 @@ func migrateModelsV1ToV2(raw []byte) ([]byte, error) {
 	return json.Marshal(doc)
 }
 
-// renameRemoteCompaction maps the version 1 capability onto the version 2 split:
-// the old field gated both an explicit compaction request (standalone) and
-// automatic server-side compaction on an ordinary request (inline).
 func renameRemoteCompaction(node any) {
 	switch n := node.(type) {
 	case map[string]any:
@@ -402,9 +370,6 @@ func buildRegistryState(user ModelsFile, creds credentialsFile) (*registryState,
 	return &registryState{providers: providers, order: order, defaultRef: def, user: user, creds: creds}, nil
 }
 
-// pickDefault treats models.json default as last-used, not a pinned setting.
-// If that ref is missing or disabled, fall back to the first enabled model
-// with credentials, then the first enabled model in catalog order.
 func pickDefault(providers map[string]Provider, order []string, creds credentialsFile, preferred ModelRef) ModelRef {
 	if modelRefEnabled(providers, preferred) {
 		return preferred
@@ -476,9 +441,6 @@ func validAPI(api string) bool {
 	return api == "completions" || api == "responses" || api == "anthropic"
 }
 
-// ValidateExtensionProviderSpec validates a provider catalog supplied by an
-// extension. Extension APIs are intentionally open-ended; the owning sidecar, rather than
-// the built-in HTTP adapters, is responsible for implementing them.
 func ValidateExtensionProviderSpec(spec ExtensionProviderSpec) error {
 	if !providerIDPattern.MatchString(spec.ID) {
 		return fmt.Errorf("provider %q: %w", spec.ID, errInvalidID)
@@ -513,10 +475,6 @@ func ValidateExtensionProviderSpec(spec ExtensionProviderSpec) error {
 			return err
 		}
 	}
-	// The manifest's defaultModel is only a preference. Extensions commonly
-	// trim their model list without updating that field; BuildExtensionProvider
-	// deliberately falls back to the first enabled model instead of making the
-	// entire provider disappear.
 	return nil
 }
 
@@ -572,8 +530,6 @@ func validateExtensionModel(m Model) error {
 var thinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 func validateFastServiceTier(m Model) error {
-	// A catalog capability must not turn a client selection into an arbitrary
-	// upstream routing value. Priority is the supported Codex Fast tier.
 	if m.FastServiceTier == "" || m.FastServiceTier == "priority" {
 		return nil
 	}
@@ -722,7 +678,6 @@ func applyModelOverride(m Model, o ModelOverride) (Model, error) {
 	return m, nil
 }
 
-// Providers returns the resolved providers in stable presentation order.
 func (r *Registry) Providers() []View {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -751,13 +706,8 @@ func cloneProvider(p Provider) Provider {
 	return p
 }
 
-// Default returns the last selected provider/model reference.
 func (r *Registry) Default() ModelRef { r.mu.RLock(); defer r.mu.RUnlock(); return r.state.defaultRef }
 
-// RememberDefault records the last selected model. No-op when unchanged.
-// Why: there is no pinned "set as default"; switching a model is what
-// subsequent creates fall back to, and a stale last-used is skipped by
-// pickDefault instead of blocking disable/delete.
 func (r *Registry) RememberDefault(ref ModelRef) error {
 	if ref.Provider == "" || ref.Model == "" {
 		return nil
@@ -774,7 +724,6 @@ func (r *Registry) RememberDefault(ref ModelRef) error {
 	})
 }
 
-// FindModel returns an enabled model without requiring a provider credential.
 func (r *Registry) FindModel(providerID, modelID string) (Provider, Model, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -790,7 +739,6 @@ func (r *Registry) FindModel(providerID, modelID string) (Provider, Model, bool)
 	return Provider{}, Model{}, false
 }
 
-// ResolveRef resolves an already separated provider/model reference.
 func (r *Registry) ResolveRef(ref ModelRef) (Model, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -810,16 +758,6 @@ func (r *Registry) resolveRefLocked(ref ModelRef) (Model, error) {
 	return Model{}, fmt.Errorf("model %q/%q is %w", ref.Provider, ref.Model, errUnavailable)
 }
 
-// ResolveSpec resolves a model specification against the registry default.
-//
-// A specification is either "<provider>/<model>" or a bare model id taken from
-// fallbackProvider. Splitting on the first slash is not enough: model ids may
-// contain slashes themselves (Magpie serves "codex/gpt-6.1-sol"), so
-// "magpie/codex/gpt-6.1-sol" must not become provider "magpie" + model "codex"
-// and "codex/gpt-6.1-sol" must not become provider "codex". Prefer a known
-// provider prefix, then a model id the fallback provider actually has, and only
-// then the historical first-slash reading so the error names the token the
-// caller typed.
 func (r *Registry) ResolveSpec(spec, fallbackProvider string) (ModelRef, Model, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -834,26 +772,17 @@ func (r *Registry) ResolveSpec(spec, fallbackProvider string) (ModelRef, Model, 
 	return ref, model, nil
 }
 
-// specRefLocked maps a client-supplied specification onto one provider/model
-// pair without assuming the model id is slash-free.
 func (r *Registry) specRefLocked(spec, fallbackProvider string) ModelRef {
 	if idx := strings.IndexByte(spec, '/'); idx > 0 {
 		p, m := spec[:idx], spec[idx+1:]
-		// An enabled provider whose id is exactly the first segment is the
-		// unambiguous reading; a disabled one still names itself so callers get
-		// "provider X is unavailable" rather than a misleading model error.
 		if _, ok := r.providerLocked(p); ok {
 			return ModelRef{Provider: p, Model: m}
 		}
-		// Otherwise the whole string may be a model id of the fallback
-		// provider, which is how Magpie's "vendor/model" ids resolve.
 		if fallbackProvider != "" {
 			if _, ok := r.modelLocked(fallbackProvider, spec); ok {
 				return ModelRef{Provider: fallbackProvider, Model: spec}
 			}
 		}
-		// Creation has no fallback provider, so find the one that owns this
-		// exact id. A unique owner is the only reading that cannot be wrong.
 		if ref, ok := r.ownerLocked(spec); ok {
 			return ref
 		}
@@ -862,16 +791,11 @@ func (r *Registry) specRefLocked(spec, fallbackProvider string) ModelRef {
 	if fallbackProvider != "" {
 		return ModelRef{Provider: fallbackProvider, Model: spec}
 	}
-	// A bare id stays with the default provider. Creation has no session
-	// provider to fall back on, but inventing a provider from an unqualified
-	// name would let a typo cross a credential boundary.
 	ref := r.state.defaultRef
 	ref.Model = spec
 	return ref
 }
 
-// modelLocked reports whether providerID owns modelID, enabled or not, so
-// specification parsing can distinguish an id from a provider prefix.
 func (r *Registry) modelLocked(providerID, modelID string) (Model, bool) {
 	p, ok := r.providerLocked(providerID)
 	if !ok {
@@ -885,8 +809,6 @@ func (r *Registry) modelLocked(providerID, modelID string) (Model, bool) {
 	return Model{}, false
 }
 
-// ownerLocked finds the single provider that owns modelID. Ambiguous ids stay
-// unresolved so the caller reports the token it typed instead of guessing.
 func (r *Registry) ownerLocked(modelID string) (ModelRef, bool) {
 	var found ModelRef
 	for _, id := range r.providerOrderLocked() {
@@ -910,7 +832,6 @@ func (r *Registry) ownerLocked(modelID string) (ModelRef, bool) {
 	return ModelRef{}, false
 }
 
-// Resolve returns an enabled model and its configured API credential.
 func (r *Registry) Resolve(providerID, modelID string) (Provider, Model, string, error) {
 	provider, model, credential, err := r.ResolveCredential(providerID, modelID)
 	if err != nil {
@@ -919,10 +840,6 @@ func (r *Registry) Resolve(providerID, modelID string) (Provider, Model, string,
 	return provider, model, credential.APIKey, nil
 }
 
-// ResolveCredential atomically snapshots an enabled model and the credential
-// that a caller must use for it. Keeping both under one read lock prevents a
-// concurrent login from giving the HTTP client one key and opaque binding
-// metadata for another.
 func (r *Registry) ResolveCredential(providerID, modelID string) (Provider, Model, Credential, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -968,9 +885,6 @@ func credentialFrom(creds credentialsFile, id string, envVars []string) (string,
 	return "", CredentialStatus{}
 }
 
-// Credential resolves the provider-owned credential without exposing it in
-// provider catalog views. Environment API keys are represented as api_key
-// credentials; opaque values are returned exactly as stored.
 func (r *Registry) Credential(id string) (Credential, CredentialStatus, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -982,8 +896,6 @@ func (r *Registry) Credential(id string) (Credential, CredentialStatus, error) {
 	return credential, status, nil
 }
 
-// ProviderCredential atomically snapshots the resolved provider connection and
-// credential for an explicit provider operation.
 func (r *Registry) ProviderCredential(id string) (Provider, Credential, CredentialStatus, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -1017,7 +929,6 @@ func (r *Registry) credentialLocked(p Provider) (Credential, CredentialStatus) {
 	return Credential{}, CredentialStatus{}
 }
 
-// Models returns enabled models, optionally limited to credentialed providers.
 func (r *Registry) Models(availableOnly bool) []Model {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -1040,7 +951,6 @@ func (r *Registry) Models(availableOnly bool) []Model {
 	return out
 }
 
-// UserConfig returns a detached copy of the user provider overlay.
 func (r *Registry) UserConfig() ModelsFile {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -1058,7 +968,6 @@ func cloneModelsFile(in ModelsFile) ModelsFile {
 	return out
 }
 
-// Update validates and atomically persists a mutation to the user overlay.
 func (r *Registry) Update(mut func(*ModelsFile) error) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1069,8 +978,6 @@ func (r *Registry) Update(mut func(*ModelsFile) error) error {
 	return r.persistModelsLocked(next)
 }
 
-// SyncModelsIfCurrent atomically reconciles an imported model snapshot only if
-// its connection and credential still match the values used for the fetch.
 func (r *Registry) SyncModelsIfCurrent(id, baseURL, apiKey string, models []ModelSeed) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1096,8 +1003,6 @@ func (r *Registry) SyncModelsIfCurrent(id, baseURL, apiKey string, models []Mode
 		syncedIDs = append(syncedIDs, model.ID)
 	}
 
-	// Keep user-created models, but replace the previous imported snapshot.
-	// Same-ID model overrides remain attached to the synced model.
 	seeds := append([]ModelSeed(nil), models...)
 	for _, model := range pc.Models {
 		if !previouslySynced[model.ID] && !incoming[model.ID] {
@@ -1130,7 +1035,6 @@ func (r *Registry) persistModelsLocked(next ModelsFile) error {
 	return nil
 }
 
-// SetCredential stores or removes the credential for one provider.
 func (r *Registry) SetCredential(id string, key *string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1167,8 +1071,6 @@ func (r *Registry) SetCredential(id string, key *string) error {
 	return nil
 }
 
-// SetCredentialValue stores an opaque provider-owned credential, such as an
-// OAuth token bundle. The value is not interpreted by the registry.
 func (r *Registry) SetCredentialValue(id string, typ AuthKind, value json.RawMessage) error {
 	if typ == "" || typ == AuthNone {
 		return errAPIKeyRequired
@@ -1206,9 +1108,6 @@ func mapsCloneCredentials(in map[string]credentialEntry) map[string]credentialEn
 	return out
 }
 
-// SupportedThinkingLevels follows pi: standard levels are implicit; xhigh/max
-// require explicit mappings. Fast-capable models pair each supported base with
-// its Fast selection, without expanding the thinkingLevelMap key vocabulary.
 func SupportedThinkingLevels(m Model) []string {
 	if !m.Reasoning {
 		if m.FastServiceTier == "priority" {
@@ -1233,7 +1132,6 @@ func SupportedThinkingLevels(m Model) []string {
 	return out
 }
 
-// DefaultThinking follows pi's useful default while respecting model maps.
 func DefaultThinking(m Model) string {
 	supported := SupportedThinkingLevels(m)
 	if slices.Contains(supported, "medium") {
@@ -1245,7 +1143,6 @@ func DefaultThinking(m Model) string {
 	return ""
 }
 
-// ClampThinking maps a requested effort to the nearest supported level.
 func ClampThinking(m Model, requested string) (string, error) {
 	if requested == "" {
 		return "", nil
@@ -1265,8 +1162,6 @@ func ClampThinking(m Model, requested string) (string, error) {
 		}
 		return level
 	}
-	// Preserve the requested base effort when changing to a non-Fast model;
-	// falling straight back to its default would silently change reasoning.
 	for i := idx; i < len(thinkingLevels); i++ {
 		if level := selection(thinkingLevels[i]); slices.Contains(supported, level) {
 			return level, nil

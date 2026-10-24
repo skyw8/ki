@@ -21,8 +21,6 @@ type outputSanitizer struct {
 	utf8Pending []byte
 }
 
-// Filter is stateful because process writes can split an escape sequence. The
-// raw spill file bypasses this filter and remains the lossless source of truth.
 func (s *outputSanitizer) Filter(input []byte) []byte {
 	out := make([]byte, 0, len(input))
 	for _, b := range input {
@@ -65,8 +63,6 @@ func (s *outputSanitizer) Filter(input []byte) []byte {
 			}
 		}
 	}
-	// A pipe/PTY write may end in the middle of a rune. Keep that suffix until
-	// the next write so observers never consume a replacement for valid UTF-8.
 	data := append(s.utf8Pending, out...)
 	s.utf8Pending = nil
 	var text strings.Builder

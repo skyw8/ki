@@ -85,9 +85,6 @@ func (t agentTool) Validate(args map[string]any) error {
 		}
 	}
 	if t.name == catalog.WaitAgent && args["timeout_ms"] != nil {
-		// Why: schema numeric bounds are not enforced by the shared validator.
-		// Bound the integer before multiplying it into a time.Duration so an
-		// oversized model argument cannot overflow or bypass the polling floor.
 		timeout, ok := support.AsInt(args["timeout_ms"])
 		if !ok || timeout < 10000 || timeout > 3600000 {
 			return fmt.Errorf("timeout_ms must be an integer between 10000 and 3600000")

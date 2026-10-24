@@ -25,8 +25,6 @@ func assertReadFiles(t *testing.T, dir string, paths ...string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Schema names in model_request are not evidence that a file was read.
-	// Match registered read spellings and pair actual calls with successful results.
 	calls := map[string]string{}
 	read := map[string]bool{}
 	for _, entry := range entries {

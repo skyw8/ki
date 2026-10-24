@@ -95,7 +95,6 @@ func TestCodeModeCompactVisibleAuditReconstructsGroupedNode(t *testing.T) {
 	if slices.Contains(turn.EntryIDs, "child-old-progress") || slices.Contains(turn.EntryIDs, "notify-old") {
 		t.Fatalf("superseded progress inflated compact body: %+v", turn.EntryIDs)
 	}
-	// Exact expansion remains immutable and contains the complete audit stream.
 	full, found := BuildTurn(entries, "", "human", "", 100)
 	if !found || !slices.ContainsFunc(full.Entries, func(e Entry) bool { return e.ID == "child-old-progress" }) {
 		t.Fatal("compact progress selection changed immutable detailed expansion")

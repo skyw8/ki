@@ -6,7 +6,6 @@ import (
 	"slices"
 )
 
-// ContextFile is one loaded AGENTS/CLAUDE instruction file.
 type ContextFile struct {
 	Path    string
 	Content string
@@ -14,7 +13,6 @@ type ContextFile struct {
 
 var contextCandidates = []string{"AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"}
 
-// collectContextFiles loads global context followed by repository root→cwd.
 func collectContextFiles(home, cwd string) []ContextFile {
 	var out []ContextFile
 	seen := map[string]bool{}
@@ -39,7 +37,6 @@ func collectContextFiles(home, cwd string) []ContextFile {
 		stack = append(stack, d)
 		if root == "" || sameDir(d, root) || sameDir(d, filepath.Dir(d)) {
 			if root == "" {
-				// Without a repository boundary, only the explicit cwd contributes.
 				stack = []string{cwd}
 			}
 			break

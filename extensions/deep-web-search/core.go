@@ -22,8 +22,6 @@ import (
 
 type obj = map[string]any
 
-// Keep JavaScript's original trim/coercion boundaries: BOM is whitespace,
-// while NEL is content. Go's default Unicode whitespace set differs.
 func jsWhitespace(r rune) bool {
 	return r >= '\t' && r <= '\r' || r == ' ' || r == '\uFEFF' || r == '\u2028' || r == '\u2029' || unicode.Is(unicode.Zs, r)
 }
@@ -194,7 +192,6 @@ func clamp(v any, low, high, fallback int) int {
 	if math.IsNaN(n) || math.IsInf(n, 0) {
 		return fallback
 	}
-	// Clamp before converting: a finite JS number can exceed Go's integer range.
 	if n <= float64(low) {
 		return low
 	}
@@ -252,8 +249,6 @@ func rewriteURLQuery(href, query string, remove func(string, string) bool) strin
 	if !changed {
 		return href
 	}
-	// Keep URLSearchParams' insertion order and form-encoding rules. Accessing
-	// the Go parser's SearchParams would eagerly rewrite untouched query bytes.
 	escape := func(s string) string {
 		return strings.ReplaceAll(strings.ReplaceAll(url.QueryEscape(s), "~", "%7E"), "%2A", "*")
 	}
@@ -285,9 +280,6 @@ func queryValue(query, name string) string {
 	return ""
 }
 func canonical(raw string) string {
-	// Browser URL semantics also determine source identity and the host checked
-	// before content fetches. net/url alone leaves IDNs, encoded dot segments,
-	// backslashes, and abbreviated IPv4 addresses unnormalized.
 	u, err := whatwg.Parse(raw)
 	if err != nil || !oneOf(u.Scheme(), "http", "https") {
 		return ""
@@ -494,8 +486,6 @@ func (c *searchCache) load() {
 	if json.Unmarshal(raw, &doc) != nil {
 		return
 	}
-	// Go maps sort their JSON keys, while the original cache evicts in insertion
-	// order. Read and write entries in document order to retain that policy.
 	decoder := json.NewDecoder(strings.NewReader(string(doc.Entries)))
 	if token, e := decoder.Token(); e != nil || token != json.Delim('{') {
 		return

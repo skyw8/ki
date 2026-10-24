@@ -105,8 +105,6 @@ func TestShutdownDrainsScheduledRootBeforeProcessCleanup(t *testing.T) {
 		t.Fatal("shutdown completed before runPrompt started")
 	default:
 	}
-	// occupy -> scheduled runPrompt is a real asynchronous boundary. A cancelled
-	// scheduled callback must release ownership without recreating resources.
 	srv.runPrompt(runCtx, st, id, []types.Content{{Type: "text", Text: "task"}}, nil, "", "", "", nil)
 	if err := srv.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
@@ -150,7 +148,6 @@ func TestShutdownDeadlineSharesRootAndChildCleanupBarrier(t *testing.T) {
 	releaseRoot := sync.OnceFunc(func() { close(g.rootGate) })
 	releaseChild := sync.OnceFunc(func() { close(g.childGate) })
 	srv := lifecycleServer(t, g)
-	// Unblock before lifecycleServer's cleanup even when an assertion fails.
 	t.Cleanup(releaseChild)
 	t.Cleanup(releaseRoot)
 	root, _ := lifecycleSession(t, srv)
@@ -223,8 +220,6 @@ func TestDeleteFencesQueuedReleaseAndReservedSpawn(t *testing.T) {
 	if _, err := session.Enqueue(dir, []types.Content{{Type: "text", Text: "queued user task"}}); err != nil {
 		t.Fatal(err)
 	}
-	// Park release after done but before queue dispatch to make the formerly
-	// unsafe done -> directory removal interval deterministic.
 	gate := srv.inputGate(root)
 	gate.Lock()
 	unlock := sync.OnceFunc(gate.Unlock)
@@ -326,8 +321,6 @@ func testDeleteDrainsAgentCompletionCallback(t *testing.T) {
 	_, err = srv.agentTasks.Start(t.Context(), req, req.OutputFile, func(ctx context.Context, taskID, prompt string) (agent.Completion, error) {
 		req.Prompt = prompt
 		completion, runErr := srv.runChildAgent(ctx, childID, req)
-		// This is the real server boundary: runPrompt has released the child
-		// occupy, but its agentRunner completion handler is still a writer.
 		close(callbackStarted)
 		<-callbackGate
 		_, exists := srv.sidx.Lookup(childID)
@@ -355,8 +348,6 @@ func testDeleteDrainsAgentCompletionCallback(t *testing.T) {
 	}()
 	<-runCtx.Done()
 	srv.release(root, st)
-	// Stop now waits on the real generation's runDone channel, not a mutex.
-	// synctest.Wait proves deletion reached that wait before the assertion.
 	synctest.Wait()
 	if _, ok := srv.sidx.Lookup(childID); !ok {
 		t.Fatal("occupy settlement was mistaken for callback completion")
@@ -417,7 +408,7 @@ func TestShutdownStopsTerminalWhileRootCallbackIsStalled(t *testing.T) {
 		t.Fatalf("deadline: %v", err)
 	}
 	<-runCtx.Done()
-	<-stopped // host shutdown must terminate OS handles before the root unblocks
+	<-stopped
 	select {
 	case <-srv.shutdownDone:
 		t.Fatal("stalled root ownership was abandoned")
@@ -475,7 +466,7 @@ func TestDeleteIncludesPreacceptedHTTPFork(t *testing.T) {
 		srv.fork(forkResponse, forkRequest)
 		close(forked)
 	}()
-	<-body.started // fork already owns the input gate and passed admission
+	<-body.started
 	deleteResponse := httptest.NewRecorder()
 	deleteRequest := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+root, nil)
 	deleteRequest.SetPathValue("id", root)
@@ -484,7 +475,7 @@ func TestDeleteIncludesPreacceptedHTTPFork(t *testing.T) {
 		srv.deleteSession(deleteResponse, deleteRequest)
 		close(deleted)
 	}()
-	<-runCtx.Done() // traversal fenced the root while its fork is materializing
+	<-runCtx.Done()
 	releaseBody()
 	<-forked
 	if forkResponse.Code != http.StatusOK {

@@ -170,8 +170,6 @@ func TestSessionActivityListAndDetail(t *testing.T) {
 	want[root], want[child], want[unrelated] = wantActivity{count: 2}, wantActivity{running: true, count: 1}, wantActivity{running: true}
 	assert(want)
 
-	// Descendant activity is a display projection, not parent run ownership:
-	// an idle parent can start its own real run while its children are active.
 	prompt202(t, hs, root, "activity-root")
 	want[root] = wantActivity{running: true, count: 2}
 	assert(want)
@@ -191,10 +189,6 @@ func TestSessionActivityListAndDetail(t *testing.T) {
 	want[root], want[child] = wantActivity{count: 1}, wantActivity{count: 1}
 	assert(want)
 
-	// A fresh subscriber sees both completion and release invalidation. Scopes
-	// coalesce and have writer priority, so invalidate can arrive before the
-	// already-queued agent_end; waiting sequentially would discard that frame.
-	// Retained completed runs must no longer contribute to ancestor counts.
 	settled := pushEvents(t, hs, "tok")
 	waitPush(t, settled, "ready", func(ev pushEvent) bool { return ev.Type == "ready" })
 	unblock()

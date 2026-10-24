@@ -1,25 +1,3 @@
-// e2e-parallel.ts runs the Playwright e2e project as isolated parallel processes.
-//
-// Why: a single `playwright test` run drives one `ki serve` with one KI_HOME, and
-// several specs mutate global state (extension toggles, skills/commands under
-// KI_HOME). Each invocation gets a random run ID and a private home, cwd and
-// port from run-state.ts and global-setup.ts; isolated processes can overlap.
-//
-// Coverage is never traded for speed: every executed spec is reconciled against
-// `playwright test --list`, and the run fails if a test was dropped or duplicated.
-//
-// Env:
-//   KI_E2E_PROJECT      Playwright project to run (default: fake)
-//   KI_E2E_JOBS         Max concurrent processes (default: min(CPUs, 32))
-//   KI_E2E_BROWSERS     Shared Chromium processes for fake tests (default: 4; 0 disables reuse)
-//   KI_E2E_SPLIT        Min tests before a non-serial file is split (default: 12)
-//   KI_BIN              Reuse an already-built ki binary instead of building one
-//   KI_SKIP_WEB_BUILD   Fail instead of running `bun run build` when dist is absent
-//
-// A spec file may opt in to one-process-per-test by declaring
-// `test.describe.configure({ mode: 'parallel' })`; that is the file's assertion
-// that its tests are independent (verify by running each one standalone first).
-// Files that declare `mode: 'serial'` are always kept in a single process.
 import { spawn } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
@@ -43,7 +21,6 @@ function positiveInt(value: string | undefined, fallback: number): number {
 
 const jobs = positiveInt(process.env.KI_E2E_JOBS, Math.max(2, Math.min(cpus().length, 32)))
 const splitThreshold = positiveInt(process.env.KI_E2E_SPLIT, 12)
-// Concurrent invocations must not erase another run's binary or reports.
 const resultRoot = join(webDir, 'test-results', 'e2e-parallel')
 mkdirSync(resultRoot, { recursive: true })
 const runDir = mkdtempSync(join(resultRoot, 'run-'))
@@ -147,9 +124,6 @@ function listTests(): Promise<Map<string, FileTests>> {
   })
 }
 
-// grepPattern turns a "describe › title" path into a -g pattern. Why: Playwright
-// matches -g against that joined path but does not accept the literal separator,
-// so the escaped parts are joined with ".*".
 function grepPattern(path: string): string {
   return path.split(' › ').map(escapeRegExp).join('.*')
 }
@@ -160,13 +134,10 @@ function buildUnits(files: Map<string, FileTests>): Unit[] {
     const source = readFileSync(join(webDir, 'e2e', file), 'utf8')
     const relative = `e2e/${file}`
     if (/mode:\s*['"]serial['"]/.test(source)) {
-      // Serial files encode an ordered narrative and must stay in one process.
       units.push({ label: file, file, args: [relative], expected: info.ids })
       continue
     }
     if (/mode:\s*['"]parallel['"]/.test(source)) {
-      // "parallel" is the spec's assertion that its tests are independent (each
-      // was verified standalone), so every test gets its own isolated process.
       for (const [index, path] of info.paths.entries()) {
         units.push({ label: path, file, args: [relative, '-g', grepPattern(path)], expected: [info.ids[index]] })
       }
@@ -186,7 +157,6 @@ function buildUnits(files: Map<string, FileTests>): Unit[] {
       units.push({ label: file, file, args: [relative], expected: info.ids })
     }
   }
-  // Start the longest units first so the tail of the run stays balanced.
   units.sort((a, b) => b.expected.length - a.expected.length)
   return units
 }
@@ -195,8 +165,6 @@ async function ensureBinary(): Promise<string> {
   const provided = process.env.KI_BIN?.trim()
   if (provided) return provided
   if (webDistStale()) {
-    // Why: rebuilding only when dist is missing would run every spec against
-    // the previous UI after a source edit; see e2e/web-dist.ts.
     if (existsSync(join(webDir, 'dist', 'index.html')) && process.env.KI_SKIP_WEB_BUILD) {
       console.warn('warning: web/dist is older than the frontend sources and KI_SKIP_WEB_BUILD is set')
     } else {
@@ -219,8 +187,6 @@ async function buildSidecar(files: Map<string, FileTests>): Promise<string | und
   if (!files.has('extension-ui.spec.ts')) return undefined
   const bin = join(runDir, `sidecar${process.platform === 'win32' ? '.exe' : ''}`)
   const logFile = join(runDir, 'sidecar-build.log')
-  // All extension UI tests use the same read-only fixture. Compile it once,
-  // then let each isolated server receive its own copy.
   if (await runCapture(goBinary(), ['build', '-o', bin, './e2e/testdata/extensions/sidecar'], process.env, logFile, rootDir) !== 0) {
     throw new Error(`sidecar build failed; see ${logFile}`)
   }
@@ -274,7 +240,6 @@ async function runUnit(unit: Unit, index: number, kiBin: string, sidecar: string
         KI_SERVE_ADDR: `127.0.0.1:${port}`,
         PLAYWRIGHT_JSON_OUTPUT_NAME: jsonFile,
       }
-      // A stale base URL would override KI_SERVE_ADDR in playwright.config.ts.
       delete env.KI_BASE_URL
       delete env.KI_SKIP_SERVER
       const args = ['x', 'playwright', 'test', `--project=${project}`, ...unit.args, '--reporter=line', '--reporter=json']
@@ -289,11 +254,7 @@ async function runUnit(unit: Unit, index: number, kiBin: string, sidecar: string
       executed = specs.filter(spec => spec.executed).map(spec => spec.id)
       failed = specs.filter(spec => !spec.ok).length
     } catch {
-      // A missing report means the unit ran no test; the coverage guard catches it.
     }
-    // Why: freePort() closes its probe socket before ki binds the port, so two
-    // units can race for it. A bind failure runs no test at all (executed.length === 0),
-    // so retrying on a fresh port cannot mask a real test failure.
     if (attempt === maxAttempts || executed.length > 0 || !/address already in use/.test(readFileSync(logFile, 'utf8'))) break
     process.stdout.write(`  retry    ${unit.label} (port race)\n`)
   }
@@ -328,8 +289,6 @@ async function main(): Promise<number> {
     }
   }
   try {
-    // Reuse browser processes, not contexts or server state. Playwright still
-    // creates a fresh context per test; every unit keeps its own Ki home/port.
     const browserCount = process.env.KI_E2E_BROWSERS === '0' ? 0 : positiveInt(process.env.KI_E2E_BROWSERS, 4)
     if (project === 'fake') {
       for (let i = 0; i < Math.min(browserCount, concurrent); i++) {

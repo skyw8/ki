@@ -16,7 +16,6 @@ import (
 	"ki/internal/types"
 )
 
-// The same test executable acts as a worker; no extra compiler/build per case.
 func TestWorkerProcessHelper(t *testing.T) {
 	if os.Args[len(os.Args)-1] != WorkerArg {
 		return
@@ -188,9 +187,6 @@ func TestTerminationStopsWorkerBeforeCallbackError(t *testing.T) {
 			local.backend.(*localSession).stopAll()
 			return struct{}{}, nil
 		case "terminateAll":
-			// Force the cancellation error to finish the cell before join can
-			// run. Without stopAll's ACK this commits writes deterministically,
-			// instead of depending on subprocess/transport scheduling.
 			select {
 			case <-returned:
 			case <-ctx.Done():
@@ -328,10 +324,6 @@ func TestExecuteCancellationStopsWorkerBeforeCallbackError(t *testing.T) {
 	case <-budget.Done():
 		t.Fatal("execution cancellation did not request worker stop")
 	}
-	// Hold the worker's stop handler at the IPC boundary. If cancellation
-	// already escaped into the binding, allow that error to finish the cell
-	// first, deterministically exposing the old failed-cell store commit.
-	// A correctly owned binding stays live here until the worker is stopped.
 	if b.ctx.Err() != nil {
 		select {
 		case <-returned:
@@ -377,7 +369,6 @@ func TestWorkerCPUDeadlineAndCrashDoesNotReplay(t *testing.T) {
 	if _, err = s.Execute(context.Background(), ExecuteRequest{ParentCallID: "afterCrash", Source: `text(1)`}, Callbacks{}); err == nil {
 		t.Fatal("crashed worker silently restarted")
 	}
-	// Closing a failed transport reports the transport error but joins ownership.
 	if err = m.CloseSession("cpu"); err == nil {
 		t.Fatal("crash not reported on close")
 	}

@@ -249,8 +249,6 @@ func TestMCPServerSearchPromotesOnlyLiveSchemasAcrossOccupies(t *testing.T) {
 	if step != 3 {
 		t.Fatalf("request count=%d", step)
 	}
-	// Reopen persisted history with a newly filtered live MCP catalog.
-	// Old discovery names must not resurrect a now-disabled capability.
 	if err := srv.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -268,8 +266,6 @@ func TestMCPServerSearchPromotesOnlyLiveSchemasAcrossOccupies(t *testing.T) {
 
 const mcpAfterToolWorkerArg = "__mcp-after-tool-fixture"
 
-// The lifecycle fixture uses the current test executable, avoiding an extra Go
-// build and portable-shell dependency. Exit before testing prints its banner.
 func TestMCPServerAfterToolProcess(t *testing.T) {
 	if len(os.Args) == 0 || os.Args[len(os.Args)-1] != mcpAfterToolWorkerArg {
 		return

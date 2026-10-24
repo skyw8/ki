@@ -33,8 +33,6 @@ func TestSetupAndClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat(%q) error = %v", path, err)
 	}
-	// Why: Windows has no POSIX mode bits; Go synthesizes 0666 for a writable
-	// file there, so the 0600 assertion only applies to POSIX platforms.
 	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("log mode = %o, want 600", got)
 	}

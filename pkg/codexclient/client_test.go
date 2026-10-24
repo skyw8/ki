@@ -220,9 +220,6 @@ func TestForkInheritsCacheAffinityWithoutSharingSessionIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Why: ChatGPT derives prompt-cache affinity from the session-id header, so
-	// a fork must present its source there. Thread identity and routing state
-	// stay bound to the child so it cannot resume the parent's stream.
 	if headers["session-id"] != "parent-session" {
 		t.Fatalf("session-id: %q", headers["session-id"])
 	}

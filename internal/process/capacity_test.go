@@ -48,7 +48,6 @@ func TestProcessRetentionDoesNotReclaimBeforeFinalPublication(t *testing.T) {
 	}
 	manager := NewManager()
 	for id := int64(1); id <= 256; id++ {
-		// Completed but unread terminals must remain retained.
 		manager.processes[id] = &shellProcess{snapshot: Snapshot{Status: "exited"}, total: 1}
 	}
 	p := manager.processes[1]
@@ -56,7 +55,6 @@ func TestProcessRetentionDoesNotReclaimBeforeFinalPublication(t *testing.T) {
 	p.temporary = true
 	p.snapshot.OutputFile = path
 	p.publisher = newProcessPublisher(func(Update) {})
-	// Capacity is checked before the fake shell path can be executed.
 	_, err := manager.Start(t.Context(), Shell{path: "unavailable-test-shell"}, t.TempDir(), "true", false, Identity{})
 	if err == nil || !strings.Contains(err.Error(), "retention capacity") {
 		t.Fatalf("unpublished terminal was reclaimed: %v", err)

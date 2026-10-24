@@ -1,16 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { streamMetrics } from '../../lib/stream-metrics'
 
-/**
- * A read-only performance overlay for checking the transcript on a real device.
- *
- * Headless Chromium cannot reproduce a phone's touch fling, its slower CPU, or
- * iOS's deferred scroll writes, so the numbers that matter — how long a frame
- * blocks, how often long tasks land while scrolling, and how far the content
- * drifts from the scroll position — can only be read on the device itself.
- * Enable it with `localStorage['ki-perf-hud'] = '1'` and reload; the overlay is
- * inert (no listeners, no timers) while the flag is unset.
- */
 type Sample = {
   frames: number[]
   longTasks: number[]
@@ -44,7 +34,6 @@ export function PerfHud({ target }: { target: React.RefObject<HTMLElement | null
         s.longTotal += entry.duration
       }
     })
-    // WebKit does not expose longtask entries; the frame/stream probes still work.
     if (PerformanceObserver.supportedEntryTypes.includes('longtask')) observer.observe({ type: 'longtask', buffered: false })
     const tick = (t: number) => {
       const dt = t - last
@@ -53,9 +42,6 @@ export function PerfHud({ target }: { target: React.RefObject<HTMLElement | null
       if (s.frames.length > WINDOW) s.frames.shift()
       const el = target.current
       if (el) {
-        // Content drift within one frame: the scroll moved the list by dTop, so a
-        // row that moved by anything other than -dTop is a jump the browser had
-        // to paint.
         const row = el.querySelector('[data-item-key]') as HTMLElement | null
         const rowTop = row ? Math.round(row.getBoundingClientRect().top) : -1
         if (lastTop >= 0 && rowTop >= 0 && lastRow >= 0) {
@@ -108,7 +94,7 @@ export function PerfHud({ target }: { target: React.RefObject<HTMLElement | null
         onClick={() => {
           try {
             localStorage.removeItem('ki-perf-hud')
-          } catch { /* private mode */ }
+          } catch {}
           window.location.reload()
         }}
       >

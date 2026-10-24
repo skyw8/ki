@@ -3,8 +3,6 @@ import { openSessionRow } from './sidebar.ts'
 import type { Entry, LoopEvent, SessionDetail, SessionInfo } from '../src/api/types'
 import { serverToken } from './global-setup'
 
-// These are state-machine races, not a Cartesian product of device sizes.
-// Exercise every lifecycle on a touch client and retain a desktop control.
 const profiles = {
   desktop: { width: 1440, height: 900, touch: false },
   phone: { width: 390, height: 844, touch: true },
@@ -75,12 +73,6 @@ async function createSession(page: Page, label: string): Promise<SessionInfo> {
   return { ...session, title, running: false }
 }
 
-/**
- * Auth, the SPA, catalogs and workspace membership come from the isolated real
- * fake server. Only this test's session reads/acknowledgements and SSE transport
- * are deterministic. Held GETs intentionally ignore abort: cancellation alone
- * must not be the authority check for responses already delivered by a proxy.
- */
 async function install(page: Page, sessions: SessionInfo[], details: SessionDetail[], lang = 'en', mode = 'detailed') {
   await page.addInitScript(({ sessions, details, lang, mode }) => {
     localStorage.setItem('ki-lang', lang)
@@ -134,8 +126,6 @@ async function install(page: Page, sessions: SessionInfo[], details: SessionDeta
             }
             if (init?.signal?.aborted) abort()
             else init?.signal?.addEventListener('abort', abort, { once: true })
-            // Model the server's ACK rule: an acknowledged event is not sent
-            // again, even if a client discarded the state it acknowledged.
             for (const event of state.replay[id] ?? []) {
               const acknowledged = cursor?.startsWith(`${event.runId}:`)
                 ? Number(cursor.slice(cursor.lastIndexOf(':') + 1)) : 0
@@ -186,8 +176,6 @@ async function install(page: Page, sessions: SessionInfo[], details: SessionDeta
 }
 
 async function sidebar(page: Page) {
-  // isVisible() does not wait: during auth bootstrap the missing mobile
-  // toggle otherwise looks like a desktop layout, leaving its rows hidden.
   await expect(page.locator('main.main')).toBeVisible()
   const toggle = page.getByTestId('mobile-nav-toggle')
   if (await toggle.isVisible() && await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
@@ -212,8 +200,6 @@ async function hold(page: Page, id: string, fields = '') {
 }
 
 async function drain(page: Page) {
-  // Let fetch/json promise continuations, the stream batch deadline and React
-  // paint all run before negative assertions; this is not network polling.
   await page.waitForTimeout(200)
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())))
 }
@@ -337,10 +323,8 @@ test.describe('opening lifecycle', () => {
     await open(page, session)
     await expect.poll(() => !!opening).toBe(true)
     expect(await runStreams(page, session.id)).toHaveLength(0)
-    // A real document unload, not a Fiber/devtools hook. React-only dispose
-    // authority is separately covered by the controller's unit regressions.
     await page.goto('/v1/health')
-    await opening!.fulfill({ json: initial }).catch(() => { /* The browser may already have canceled the old transport. */ })
+    await opening!.fulfill({ json: initial }).catch(() => {})
     await drain(page)
     expect(await page.evaluate(() => Number(sessionStorage.getItem('session-state-readers') ?? 0))).toBe(0)
     await expect(page.getByTestId('composer-stop')).toHaveCount(0)
@@ -434,7 +418,6 @@ test.describe('reader authority', () => {
       window.sessionStateFixture.send(id, partial)
     }, { id: session.id, partial })
     await expect(page.getByTestId('assistant-message')).toHaveText('Retained partial from a stalled provider')
-    // First verify this is an applied ACK, not an event still in a frame queue.
     await page.evaluate(() => window.dispatchEvent(new Event('online')))
     await expect.poll(() => runStreams(page, session.id).then(streams => streams.length)).toBe(2)
     expect((await runStreams(page, session.id))[1].cursor).toBe('same-active-run:10')

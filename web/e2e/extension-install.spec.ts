@@ -3,9 +3,6 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { serverToken, statePath } from './global-setup.ts'
 
-// Every test opens the settings dialog and installs from the local mirror that
-// global-setup published; nothing here mutates shared state beyond its own
-// KI_HOME, so the parallel runner may split the file per test.
 test.describe.configure({ mode: 'parallel' })
 
 function homeDir(): string {
@@ -26,8 +23,6 @@ async function openExtensions(page: import('@playwright/test').Page) {
 
 test('settings installs an extension from the configured release', async ({ page, request }) => {
   const auth = { Authorization: `Bearer ${serverToken()}` }
-  // Why: a previous spec in the same isolated home may have installed the
-  // fixture already; remove it so this test owns the whole transition.
   const listed = await request.get('/v1/extensions/available', { headers: auth })
   const before = await listed.json() as { items?: { name: string; installed: boolean; asset: string }[] }
   const goalBefore = before.items?.find(item => item.name === 'goal')
@@ -46,8 +41,6 @@ test('settings installs an extension from the configured release', async ({ page
   await page.getByTestId('ext-install-goal').click()
   expect((await started).status()).toBe(202)
 
-  // Discovery picks the package up after the server reloads, which is the same
-  // signal the toggle list above uses.
   await expect(page.getByTestId('cfg-extension').filter({ hasText: 'goal' })).toBeVisible({ timeout: 20_000 })
   await expect(row).toHaveCount(0)
 
@@ -56,15 +49,12 @@ test('settings installs an extension from the configured release', async ({ page
   const goal = catalog.items?.find(item => item.name === 'goal')
   expect(goal?.installed).toBe(true)
   expect(goal?.installedVersion).toBe('0.1.0')
-  // The archive's single wrapping directory must be stripped on unpack.
   expect(readFileSync(join(homeDir(), 'extensions', 'goal', 'prompt', 'APPEND.md'), 'utf8')).toContain('fixture install prompt')
   await expect(page.getByTestId('extension-on-goal')).toHaveAttribute('aria-checked', 'true')
 })
 
 test('install failure stays visible and does not publish a package', async ({ page, request }) => {
   const auth = { Authorization: `Bearer ${serverToken()}` }
-  // A catalog name whose asset the mirror does not publish: the checksum lookup
-  // fails before anything reaches KI_HOME/extensions.
   const missing = 'codex-oauth'
   const res = await request.post(`/v1/extensions/${missing}/install`, { headers: auth })
   expect(res.status()).toBe(202)
@@ -79,6 +69,5 @@ test('install failure stays visible and does not publish a package', async ({ pa
   await expect(row).toBeVisible()
   await expect(page.getByTestId(`ext-install-error-${missing}`)).toBeVisible()
   await expect(page.getByTestId(`ext-install-${missing}`)).toHaveText(/重试|Retry/)
-  // The failed download must not leave a discoverable package behind.
   await expect(page.getByTestId('cfg-extension').filter({ hasText: missing })).toHaveCount(0)
 })

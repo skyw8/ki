@@ -17,8 +17,6 @@ type providerStreamTestWriter func([]byte) (int, error)
 
 func (write providerStreamTestWriter) Write(data []byte) (int, error) { return write(data) }
 
-// Exercise the actual RPC pipe without starting a process: the sidecar event
-// flag is JSON-decoded, just as it would be by readLoop in production.
 func streamErrorTestClient(t *testing.T, terminal ProviderStreamEvent) (*rpcClient, *int) {
 	t.Helper()
 	c := &rpcClient{
@@ -146,8 +144,6 @@ func TestProviderStreamErrorMarkerControlsLoopRetries(t *testing.T) {
 			if failed == nil || !failed.IsError || failed.StopReason != "error" {
 				t.Fatalf("loop lost failed assistant: %+v", failed)
 			}
-			// The loop returns the original accumulator for a marked failure;
-			// its existing exhausted-transient-retries path returns only error.
 			if marked && failed.Text() != "partial" {
 				t.Fatalf("marked failure lost its partial output: %+v", failed)
 			}

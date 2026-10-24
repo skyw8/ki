@@ -19,8 +19,6 @@ func AsInt(v any) (int, bool) {
 	case int64:
 		return int(n), int64(int(n)) == n
 	case float64:
-		// Why: converting an out-of-range float to int is implementation-dependent.
-		// A wrapped handle or wait budget must never reach a runtime operation.
 		limit := math.Ldexp(1, strconv.IntSize-1)
 		if math.IsNaN(n) || n < -limit || n >= limit || math.Trunc(n) != n {
 			return 0, false
@@ -33,7 +31,6 @@ func AsInt(v any) (int, bool) {
 	return 0, false
 }
 
-// ValidateArgs runs the tool schema against model arguments (tool.Validator).
 func ValidateArgs(schema map[string]any, name string, args map[string]any) error {
 	if msg := toolapi.SchemaErrors(schema, name, args); msg != "" {
 		return fmt.Errorf("%w: %s", ErrExecution, msg)

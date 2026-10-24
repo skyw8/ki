@@ -15,9 +15,6 @@ import (
 	"ki/internal/types"
 )
 
-// ProviderManager owns the process-level sidecars that implement provider
-// runtimes. Unlike Manager, it is not keyed by session: one provider process
-// can serve concurrent streams from many sessions.
 type ProviderManager struct {
 	mu            sync.Mutex
 	home          string
@@ -33,7 +30,6 @@ type ProviderManager struct {
 	runtime       *Manager
 }
 
-// NewProviderManager creates an empty process-level provider runtime manager.
 func NewProviderManager(home string) *ProviderManager {
 	return &ProviderManager{
 		home:         home,
@@ -45,16 +41,12 @@ func NewProviderManager(home string) *ProviderManager {
 	}
 }
 
-// SetErrorHandler installs the callback for provider sidecar startup errors.
 func (m *ProviderManager) SetErrorHandler(fn ErrorFunc) {
 	m.mu.Lock()
 	m.onErr = fn
 	m.mu.Unlock()
 }
 
-// SetRuntimeManager makes provider calls reuse the ordinary extension runtime.
-// This keeps one extension package at one server-level sidecar process even
-// when it declares both provider and channel/lifecycle capabilities.
 func (m *ProviderManager) SetRuntimeManager(runtime *Manager) {
 	m.mu.Lock()
 	m.runtime = runtime
@@ -68,17 +60,11 @@ func (m *ProviderManager) SetRuntimeManager(runtime *Manager) {
 	}
 	m.mu.Unlock()
 	if runtime != nil {
-		// New wires the managers before ListenAndServe. Configure the provider
-		// descriptors so a direct in-process request can still use the normal
-		// shared client; ListenAndServe later reconciles the complete catalog.
 		runtime.Configure(descriptors)
 		runtime.SetProviderAuthHandler(m.handleAuthEvent)
 	}
 }
 
-// SetProviderAuthHandler installs the process-wide callback for private auth
-// notifications from provider sidecars. The handler must not block the RPC
-// reader; the manager invokes it from a separate goroutine.
 func (m *ProviderManager) SetProviderAuthHandler(fn func(ProviderAuthEvent)) {
 	m.authHandlerMu.Lock()
 	m.authHandler = fn
@@ -107,8 +93,6 @@ func (m *ProviderManager) handleAuthEvent(event ProviderAuthEvent) {
 	}
 }
 
-// Replace registers provider descriptors from globally enabled extensions.
-// A provider runtime and its catalog/credential are shared by all sessions.
 func (m *ProviderManager) Replace(descriptors []Descriptor) error {
 	nextDescs := map[string]Descriptor{}
 	nextSpecs := map[string]provider.ExtensionProviderSpec{}
@@ -164,7 +148,6 @@ func (m *ProviderManager) clientByName(name string) *rpcClient {
 	return m.clients[name]
 }
 
-// Specs returns the currently registered provider catalog in stable order.
 func (m *ProviderManager) Specs() []provider.ExtensionProviderSpec {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -178,7 +161,6 @@ func (m *ProviderManager) Specs() []provider.ExtensionProviderSpec {
 	return out
 }
 
-// HasProvider reports whether a provider is owned by a registered sidecar.
 func (m *ProviderManager) HasProvider(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -186,20 +168,14 @@ func (m *ProviderManager) HasProvider(id string) bool {
 	return ok
 }
 
-// NewStreamer creates a host-side adapter for a provider sidecar stream.
 func (m *ProviderManager) NewStreamer(model provider.Model, credential provider.Credential) provider.Streamer {
 	return &providerSidecarStreamer{manager: m, model: model, credential: credential}
 }
 
-// NewCompactor creates a host-side adapter for a provider sidecar's optional
-// standalone remote-compaction method.
 func (m *ProviderManager) NewCompactor(model provider.Model, credential provider.Credential) provider.Compactor {
 	return &providerSidecarStreamer{manager: m, model: model, credential: credential}
 }
 
-// Start launches provider runtimes together with ordinary extension runtimes.
-// Model listing and the first stream therefore do not determine process
-// startup timing.
 func (m *ProviderManager) Start(ctx context.Context) {
 	m.mu.Lock()
 	if m.runtime != nil {
@@ -258,8 +234,6 @@ func (m *ProviderManager) start(ctx context.Context, d Descriptor, epoch uint64)
 	m.mu.Unlock()
 }
 
-// StartAuth starts a provider-owned login flow. Progress is delivered through
-// the handler installed with SetProviderAuthHandler.
 func (m *ProviderManager) StartAuth(ctx context.Context, providerID, mode string) (string, error) {
 	c, err := m.client(ctx, providerID)
 	if err != nil {
@@ -278,8 +252,6 @@ func (m *ProviderManager) StartAuth(ctx context.Context, providerID, mode string
 	return requestID, nil
 }
 
-// AuthInput supplies a manual redirect URL or authorization code to a login
-// flow that advertised manual input support.
 func (m *ProviderManager) AuthInput(ctx context.Context, providerID, requestID, value string) error {
 	c, err := m.client(ctx, providerID)
 	if err != nil {
@@ -297,8 +269,6 @@ func (m *ProviderManager) AuthInput(ctx context.Context, providerID, requestID, 
 	return nil
 }
 
-// LockCredential serializes mutations of one provider's credential with
-// refreshes. The returned function releases the lock.
 func (m *ProviderManager) LockCredential(providerID string) func() {
 	m.mu.Lock()
 	lock := m.refreshLocks[providerID]
@@ -311,7 +281,6 @@ func (m *ProviderManager) LockCredential(providerID string) func() {
 	return lock.Unlock
 }
 
-// CancelAuth asks a sidecar to abandon one login flow.
 func (m *ProviderManager) CancelAuth(ctx context.Context, providerID, requestID string) error {
 	c, err := m.client(ctx, providerID)
 	if err != nil {
@@ -321,9 +290,6 @@ func (m *ProviderManager) CancelAuth(ctx context.Context, providerID, requestID 
 	return nil
 }
 
-// RefreshCredential lets the provider decide whether an opaque credential is
-// near expiry. It serializes refreshes per provider so a rotating refresh
-// token cannot be consumed concurrently by multiple sessions.
 func (m *ProviderManager) RefreshCredential(ctx context.Context, registry *provider.Registry, providerID string, credential provider.Credential) (provider.Credential, error) {
 	if credential.Type != provider.AuthOAuth {
 		return credential, nil
@@ -331,8 +297,6 @@ func (m *ProviderManager) RefreshCredential(ctx context.Context, registry *provi
 	unlockCredential := m.LockCredential(providerID)
 	defer unlockCredential()
 
-	// Re-read after waiting: another session may have persisted a fresh token
-	// while this request was queued on the provider lock.
 	if registry != nil {
 		current, status, err := registry.Credential(providerID)
 		if err != nil {
@@ -370,8 +334,6 @@ func (m *ProviderManager) RefreshCredential(ctx context.Context, registry *provi
 			return provider.Credential{}, fmt.Errorf("%w: %q", errProviderCredentialRemoved, providerID)
 		}
 		if current.Type != credential.Type || current.APIKey != credential.APIKey || string(current.Value) != string(credential.Value) {
-			// A concurrent login/logout won the credential race. Do not let a
-			// delayed refresh resurrect or overwrite the user's newer choice.
 			return current, nil
 		}
 		if err := registry.SetCredentialValue(providerID, result.Credential.Type, result.Credential.Value); err != nil {
@@ -381,10 +343,7 @@ func (m *ProviderManager) RefreshCredential(ctx context.Context, registry *provi
 	return *result.Credential, nil
 }
 
-// Close terminates all provider sidecars. It is safe to call more than once.
 func (m *ProviderManager) Close() {
-	// Clear identities before terminating processes so concurrent lookups fail
-	// closed instead of attaching a new stream to a shutting-down sidecar.
 	m.mu.Lock()
 	clients := m.clients
 	m.epoch++
@@ -414,8 +373,6 @@ func (m *ProviderManager) client(ctx context.Context, providerID string) (*rpcCl
 	if c := m.clients[owner]; c != nil {
 		select {
 		case <-c.closed:
-			// Why: a sidecar may exit after a canceled or malformed RPC.
-			// Evict the dead shared client so later sessions can restart it.
 			delete(m.clients, owner)
 		default:
 			m.mu.Unlock()
@@ -441,8 +398,6 @@ func (m *ProviderManager) client(ctx context.Context, providerID string) (*rpcCl
 		return c, nil
 	}
 
-	// Standalone ProviderManager users retain lazy startup; the server wires a
-	// shared Manager above and starts it after the HTTP listener is ready.
 	c, err := startRPC(ctx, d, "", m.home, "", nil)
 	if err != nil {
 		m.mu.Lock()
@@ -488,9 +443,6 @@ func (s *providerSidecarStreamer) Stream(ctx context.Context, req loop.Request, 
 		Credential: s.credential,
 		Request:    req,
 	}, emit)
-	// Sidecars return normalized usage, not overlapping protocol counters.
-	// Fill missing estimates here so catalog prices reach session/SSE stats
-	// without subtracting cached input a second time or replacing explicit costs.
 	if msg.Usage != nil && msg.Usage.Cost == nil {
 		provider.CalculateNormalizedCost(s.model, msg.Usage)
 	}

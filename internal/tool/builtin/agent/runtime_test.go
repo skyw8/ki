@@ -80,8 +80,6 @@ func TestSpawnedChildOutlivesParentObserver(t *testing.T) {
 	waitFor(t, func() bool { tasks := agentSnapshots(t, store, result); return tasks[0].Status == agent.Killed }, "explicit interrupt did not stop child")
 }
 
-// messengerAgentRuntime is a runtime that can also receive SendMessage, so a
-// Set build exposes both Agent and SendMessage.
 type messengerAgentRuntime struct{ fakeAgentRuntime }
 
 func (messengerAgentRuntime) SendAgentMessage(context.Context, agent.MessageRequest) (agent.MessageResult, error) {
@@ -175,7 +173,6 @@ func (f fakeAgentRuntime) InterruptAgent(context.Context, string, string) (agent
 	return agent.View{}, nil
 }
 
-// agentSnapshots inspects the public identity returned by the tool.
 func agentSnapshots(t *testing.T, store *agent.Controller, result toolapi.Result) []agent.Snapshot {
 	t.Helper()
 	var launch struct {

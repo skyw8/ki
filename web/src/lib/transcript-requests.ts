@@ -55,12 +55,10 @@ const idle: TranscriptRequestStatus = Object.freeze({
   loadingOlder: false, olderError: false, indexLoading: false, indexError: false,
 })
 
-/** Also settles when a test transport, gesture gate, or remote peer ignores abort. */
 function wait<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     const abort = () => reject(new DOMException('Request canceled', 'AbortError'))
     if (signal.aborted) {
-      // Observe a transport rejection even when it was canceled synchronously.
       void promise.catch(() => {})
       abort()
       return
@@ -70,10 +68,6 @@ function wait<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   })
 }
 
-/**
- * Owns network lifetimes, not transcript truth. Every projected response must
- * present its captured capability to the synchronous store at commit time.
- */
 export class TranscriptRequests {
   private scope?: Scope
   private status = idle
@@ -94,7 +88,6 @@ export class TranscriptRequests {
     for (const listener of this.listeners) listener()
   }
 
-  /** Restartable for React's setup-cleanup-setup lifetime probe. */
   start = (): void => {
     if (this.scope && this.valid(this.scope)) return
     const { store, id } = this.options
@@ -110,8 +103,6 @@ export class TranscriptRequests {
       if (!this.valid(s)) { this.stop(s); return }
       const page = s.page
       if (page && !page.committing && !store.canCommit(page.ticket)) {
-        // Disconnected windows must release the paging slot immediately, not
-        // after an abandoned request eventually returns over a slow link.
         page.abort.abort()
         if (page.ticket.kind === 'page') {
           s.page = undefined
@@ -195,8 +186,6 @@ export class TranscriptRequests {
       } catch (error) {
         if (!this.valid(s) || job.abort.signal.aborted) return null
         if (error instanceof ApiError && error.status === 409 && store.canCommit(ticket)) {
-          // A rejected cursor is not the beginning of history. Reconcile its
-          // boundary, but leave loading the replacement page an explicit retry.
           const recovery = store.capture('tail')
           try {
             const compact = presentation.mode === 'compact'
@@ -206,7 +195,7 @@ export class TranscriptRequests {
               job.committing = true
               store.commit(recovery, out, { rejectedCursor: ticket.oldestId })
             }
-          } catch { /* The explicit retry remains available if recovery fails. */ }
+          } catch {}
         }
         if (this.valid(s) && !job.abort.signal.aborted) this.setStatus({ olderError: true })
         return null
@@ -223,8 +212,6 @@ export class TranscriptRequests {
   private convert(s: Scope): Promise<SessionDetail | null> {
     if (s.page) return s.page.promise
     const { store, api, id, presentation, onRecoverNeeded } = this.options
-    // Conversion retries are one public operation with independently canceled
-    // transports, so a stale projection can never publish a temporary cursor.
     const outer = this.job(s, store.capture('body'), null as SessionDetail | null)
     this.setStatus({ loadingOlder: true, olderError: false })
     let reconciled = false
@@ -233,19 +220,14 @@ export class TranscriptRequests {
         const source = store.current
         if (!id || !source.oldestId || source.compactTurns?.length) return null
         const ticket = store.capture('compact')
-        // Record manual attempts and changed-window retries too. An unrelated
-        // body/status commit must not automatically repeat a failed conversion.
         s.projections.set('compact', `compact:${ticket.frontier}:${ticket.leafId}:${ticket.oldestId}:${ticket.hasMore}`)
         const job = this.job(s, ticket, null as SessionDetail | null)
-        // Callers deduplicate against the whole conversion, not this transport.
         job.promise = outer.promise
         s.page = job
         try {
           const page = await wait(api.get(id, { turn: ticket.oldestId, view: 'compact',
             keep: presentation.keep, signal: job.abort.signal }), job.abort.signal)
           if (!await this.gate(s, job)) {
-            // The gate may settle just before a synchronous recovery aborts
-            // this transport; that window still needs the same fresh retry.
             if (this.valid(s) && !store.canCommit(ticket)) continue
             return null
           }
@@ -255,9 +237,6 @@ export class TranscriptRequests {
           if (store.commit(ticket, page)) return page
           job.committing = false
           if (!store.canCommit(ticket)) continue
-          // A still-current ticket cannot authorize a sibling tail selected
-          // remotely. Reconcile once instead of looping a valid-but-foreign
-          // response or admitting its sparse branch edges as body metadata.
           if (reconciled || !onRecoverNeeded) {
             this.setStatus({ olderError: true })
             return null
@@ -311,7 +290,6 @@ export class TranscriptRequests {
           before = page.oldestId
           cursors.add(before)
         } while (this.valid(s))
-        // Publish one complete expansion, never a sequence of partial folds.
         if (!await this.gate(s, job)) return false
         job.committing = true
         return store.commit(ticket, { id, entries })
@@ -337,11 +315,9 @@ export class TranscriptRequests {
           if (!await this.gate(s, job)) return false
           if (store.commit(ticket, page)) return true
           if (attempt || !onRecoverNeeded) return false
-          // A server-selected tail cannot be adopted by a keep response.
-          // Recovery first establishes authority, then one fresh projection.
           await wait(this.recover(s), job.abort.signal)
         }
-      } catch { /* Keep the existing projection and allow another mode change. */ }
+      } catch {}
       finally { if (s.keeps.get(turnId) === job) s.keeps.delete(turnId) }
       return false
     })().then(job.resolve)
@@ -350,8 +326,6 @@ export class TranscriptRequests {
 
   private recover(s: Scope): Promise<void> {
     if (s.recovery) return s.recovery
-    // Several stale turns share one reconciliation. Restarting the main
-    // reader for each response would cancel another turn's recovery waiter.
     const task = wait(Promise.resolve().then(() => {
       if (this.valid(s)) return this.options.onRecoverNeeded?.()
     }), s.abort.signal)
@@ -383,8 +357,6 @@ export class TranscriptRequests {
         if (loaded.has(turn.id)) continue
         const key = `${presentation.mode}:${frontier}:${turn.id}:${turn.tailId}`
         if (s.projections.get(`turn:${turn.id}`) === key) continue
-        // Remember only the latest attempt per turn, not every recovery
-        // generation of a session that may remain open for hours.
         s.projections.set(`turn:${turn.id}`, key)
         if (presentation.mode === 'detailed') void this.requestTurn(turn.id)
         else if (presentation.keep > turn.visibleNodeIds.length - 1) void this.requestKeep(s, turn.id)
@@ -465,11 +437,10 @@ export class TranscriptRequests {
         let received = new Set<string>()
         try {
           const out = await wait(api.getEntries(id, ids, s.abort.signal), s.abort.signal)
-          // Body responses deliberately cannot carry compact coverage metadata.
           if (this.valid(s) && store.commit(ticket, { id, entries: out.entries })) {
             received = new Set((out.entries ?? []).map(entry => entry.id))
           }
-        } catch { /* A preview remains visible with explicit row retry. */ }
+        } catch {}
         for (const key of ids) {
           s.bodies.get(key)?.resolve(received.has(key))
           s.bodies.delete(key)
@@ -482,7 +453,6 @@ export class TranscriptRequests {
     const s = this.scope
     if (!s || !this.valid(s)) return Promise.resolve(false)
     const id = nodeId.replace(/^system:/, '')
-    // Tool row IDs are call IDs; both their call and result entries need bodies.
     const matches = this.options.store.current.allEntries.filter(entry =>
       entry.id === id || entry.message?.toolCallId === id
       || entry.message?.content?.some(content => content.type === 'toolCall' && content.id === id))
@@ -495,7 +465,6 @@ export class TranscriptRequests {
     if (!s || !this.valid(s)) return
     s.protectedIds = new Set(ids)
     clearTimeout(s.evictionTimer)
-    // Settle the visible range before evicting overscan bodies or fold content.
     s.evictionTimer = setTimeout(() => {
       if (this.valid(s)) this.options.store.update(state => evictBodies(state, s.protectedIds))
     }, 500)

@@ -98,9 +98,6 @@ func TestBrowserSessionsIsolatedAcrossLocalhostPorts(t *testing.T) {
 	if firstCSRF == "" || secondCSRF == "" || firstCSRF == secondCSRF {
 		t.Fatal("both independent CSRF cookies must coexist in the shared jar")
 	}
-	// The forward may switch before SSE reconnects. Even valid cookies for
-	// both backends (or their shared test bearer token) cannot authorize a
-	// request still bound to the previous backend.
 	secondURL, err := url.Parse(b.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +156,6 @@ func TestBrowserSessionsIsolatedAcrossLocalhostPorts(t *testing.T) {
 	expectStatus(call(a.URL, http.MethodPost, "/v1/auth/logout", "", secondCSRF), http.StatusForbidden)
 	status(a.URL, first, true)
 
-	// Renewal on one port must not overwrite the other server's cookie pair.
 	secondSession := cookie(second.browserSessionCookie)
 	first.mu.Lock()
 	first.browserSessions[cookie(first.browserSessionCookie)] = time.Now().Add(browserSessionTTL/2 - time.Minute)
@@ -174,7 +170,6 @@ func TestBrowserSessionsIsolatedAcrossLocalhostPorts(t *testing.T) {
 		t.Fatal("renewal changed the other server's cookies")
 	}
 
-	// The ready frame must let a client detect a port-forward retargeting.
 	events := call(a.URL, http.MethodGet, "/v1/events", "", "")
 	scanner := bufio.NewScanner(events.Body)
 	var ready readyFrame

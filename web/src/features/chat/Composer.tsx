@@ -70,8 +70,6 @@ function SessionStatsLine({ stats, t, elapsedMs, running }: { stats: SessionStat
     groups.push(t('stats.tokens', { input: formatTokens(stats.input), output: formatTokens(stats.output) }))
   }
   if (stats.hasCost) groups.push(t('stats.cost', { amount: formatCost(stats.cost) }))
-  // The shared total leads the line: it is the session's cumulative model run
-  // time and still ticks (with the pulse dot) while the newest turn runs.
   const total = Math.max(0, Math.round(elapsedMs))
   const elapsed = total > 0 || running ? t('turn.elapsed', { duration: formatDuration(total) }) : ''
   if (groups.length === 0 && !elapsed) return null
@@ -123,12 +121,8 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   hasQueued?: boolean
 }) {
   const { t } = useI18n()
-  // The composer's total-run clock: only ticks while a turn with a known start
-  // is running, so an idle composer schedules nothing.
   const liveTurn = !!busy && !!stats && stats.turnStartedAt > 0
   const now = useNow(liveTurn)
-  // Past turns' settled run time plus the newest turn: its live span while it
-  // runs, its settled span once it ends.
   const totalElapsedMs = stats
     ? stats.elapsedMs + (liveTurn ? Math.max(0, now - stats.turnStartedAt) : stats.turnElapsedMs)
     : 0
@@ -140,8 +134,6 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
   const [paletteQuery, setPaletteQuery] = useState<string | null>(null)
   const [paletteActive, setPaletteActive] = useState<string>()
   const paletteMode = useRef<PaletteMode>('replace')
-  // Why: selecting a command changes the draft to slash-prefixed text. The
-  // following draft update must not reopen the palette after we just closed it.
   const suppressAutoOpen = useRef(false)
   const closePalette = useCallback(() => {
     setPalette(false)
@@ -152,11 +144,6 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
     const el = ref.current
     if (!el) return
     const fit = () => {
-      // Why: the edit dialog exists to work on one message, so it may grow much
-      // taller than the compact new-message composer before scrolling. Cap it
-      // against the viewport too, otherwise a wall of text pushes the actions
-      // off-screen on short windows. visualViewport (not innerHeight) reflects
-      // the band left above an open software keyboard.
       const viewport = window.visualViewport?.height ?? window.innerHeight
       const max = mode === 'edit'
         ? Math.min(420, Math.round(viewport * 0.5))
@@ -165,7 +152,6 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
       el.style.height = `${Math.min(el.scrollHeight, max)}px`
     }
     fit()
-    // Refit when the software keyboard changes the visible band mid-edit.
     window.visualViewport?.addEventListener('resize', fit)
     return () => window.visualViewport?.removeEventListener('resize', fit)
   }, [draft.text, mode])
@@ -174,9 +160,6 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
     const el = ref.current
     if (!el) return
     el.focus({ preventScroll: true })
-    // Why: programmatic focus leaves the caret at index 0, which on mobile
-    // reads as "the keyboard moved my cursor to the start". Editing tweaks a
-    // message near its tail, so park the caret at the end.
     const end = el.value.length
     el.setSelectionRange(end, end)
   }, [mode])
@@ -210,8 +193,6 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
     setPalette(true)
     ref.current?.focus()
   }
-  // Why: argumentHint is a grey label, not body text. Inserting it (and
-  // completions.join) produced the screenshot capsule `/goal[pause|…]`.
   const insertCommand = (pick: PalettePick) => {
     if (pick.kind === 'completion') {
       const prefix = `/${pick.item.name}`
@@ -238,8 +219,6 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
     suppressAutoOpen.current = text !== draft.text
     onChange({ ...draft, text })
     if (item.completions?.length) {
-      // Keep the original draft in the textarea, but use a command-only
-      // query so existing user text does not filter out every completion.
       setPaletteQuery(`${prefix} `)
       setPalette(true)
     } else {
@@ -311,8 +290,6 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
                 return
               }
               const ctrl = e.ctrlKey || e.metaKey
-              // Why: Ctrl+Enter never aborts. Empty Ctrl+Enter used to call
-              // onStop, which cancelled the live Stream (assistant "context canceled").
               if (ctrl) {
                 if (busy && canSend && !slashDraft) onSend('steer')
                 else if (busy && !canSend && !slashDraft && hasQueued) onSteerQueued?.()
@@ -348,7 +325,6 @@ export function Composer({ api, draft, onChange, onSend, onStop, onSteerQueued, 
               onPick={insertCommand}
             />
           ) : null}
-          {/* Why: thinkingLevels[0] is "off"; an omitted effort should show defaultThinking (medium). */}
           {mode === 'new' && thinkingLevels && thinkingLevels.length > 1 ? <Select className="thinking-select" testid="thinking-select" ariaLabel="Thinking effort" value={thinkingEffort || defaultThinking || thinkingLevels[0]} options={thinkingLevels.map(level => ({ value: level, label: level }))} onChange={value => onThinking?.(value)} /> : null}
           <span className="grow" />
 		  {uploading ? <span className="uploading-label">{t('composer.uploading')}</span> : null}

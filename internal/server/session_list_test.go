@@ -48,7 +48,6 @@ func TestSessionListETag(t *testing.T) {
 		t.Fatalf("304 etag %q != %q", res.Header.Get("ETag"), etag)
 	}
 
-	// A new session changes the rendered rows, so the tag must change too.
 	_ = createSession(t, hs, t.TempDir())
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions", nil)
 	req.Header.Set("Authorization", "Bearer tok")
@@ -66,8 +65,6 @@ func TestSessionListETag(t *testing.T) {
 	}
 }
 
-// The list cache must not hide a change written outside this process: the
-// filesystem stays the source of truth for list rows.
 func TestSessionListSeesExternalConfigChange(t *testing.T) {
 	srv, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())

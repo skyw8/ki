@@ -18,18 +18,11 @@ import (
 	"ki/internal/state"
 )
 
-// Key is the VAPID application-server key pair (RFC 8292) plus the JWT subject.
-//
-// The pair is generated once and persisted: the browser pins the public key in
-// its subscription, so replacing it would silently break every existing
-// subscription until the client re-subscribes.
 type Key struct {
 	priv    *ecdsa.PrivateKey
 	Subject string
 }
 
-// storedKey is the on-disk form. The private scalar is the 32-byte P-256 value
-// (fixed width, not the DER envelope) so the file stays a small JSON document.
 type storedKey struct {
 	Version int    `json:"version"`
 	Private string `json:"private"`
@@ -39,8 +32,6 @@ type storedKey struct {
 
 const vapidVersion = 1
 
-// LoadOrCreateKey reads path, generating and persisting a pair on first use.
-// A missing subject falls back to the stored one, then to DefaultSubject.
 func LoadOrCreateKey(path, subject string) (*Key, error) {
 	subject = strings.TrimSpace(subject)
 	if b, _, err := state.ReadFile(path, vapidVersion, nil); err == nil {
@@ -86,12 +77,8 @@ func LoadOrCreateKey(path, subject string) (*Key, error) {
 	return key, nil
 }
 
-// DefaultSubject is the VAPID JWT `sub` when none is configured. RFC 8292 only
-// requires a mailto: or https: identifier; push services do not deliver mail.
 const DefaultSubject = "mailto:ki@localhost"
 
-// NormalizeSubject coerces a configured subject into the mailto:/https: form
-// RFC 8292 expects, so a bare address still produces a valid claim.
 func NormalizeSubject(subject string) string {
 	subject = strings.TrimSpace(subject)
 	if subject == "" {
@@ -103,8 +90,6 @@ func NormalizeSubject(subject string) string {
 	return "mailto:" + subject
 }
 
-// PublicKey is the base64url (unpadded) uncompressed P-256 point the browser
-// passes to PushManager.subscribe as applicationServerKey.
 func (k *Key) PublicKey() (string, error) {
 	if k == nil || k.priv == nil {
 		return "", errors.New("push key is not loaded")
@@ -116,9 +101,6 @@ func (k *Key) PublicKey() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// authorization builds the VAPID `Authorization` header for one endpoint. The
-// audience is the endpoint's origin and the token expires well inside the 24h
-// ceiling the spec allows.
 func (k *Key) authorization(endpoint string, now time.Time) (string, error) {
 	audience, err := endpointOrigin(endpoint)
 	if err != nil {
@@ -143,8 +125,6 @@ func (k *Key) authorization(endpoint string, now time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// JOSE ES256 carries the signature as raw r||s, not the ASN.1 envelope
-	// ecdsa.Sign produces.
 	sig := make([]byte, 64)
 	r.FillBytes(sig[:32])
 	s.FillBytes(sig[32:])
@@ -174,9 +154,6 @@ func keyFromScalar(raw []byte) (*Key, error) {
 	}}, nil
 }
 
-// decodeBase64 accepts the padded and unpadded standard/URL variants a browser
-// may produce for subscription keys, so a valid subscription is never rejected
-// over alphabet padding.
 func decodeBase64(value string) ([]byte, error) {
 	value = strings.TrimRight(strings.TrimSpace(value), "=")
 	for _, enc := range []*base64.Encoding{base64.RawURLEncoding, base64.RawStdEncoding} {

@@ -66,8 +66,6 @@ func main() {
 	if err := os.MkdirAll(destination, 0o755); err != nil {
 		fail(err)
 	}
-	// Archives are assembled in a staging directory and renamed in, so a
-	// concurrent `ki` that points at this mirror never sees a partial zip.
 	stageRoot := destination
 	if *archive {
 		stageRoot, err = os.MkdirTemp(filepath.Dir(destination), ".extension-zips-")
@@ -97,10 +95,6 @@ func main() {
 }
 func fail(err error) { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
 
-// zipPackage writes one release asset. Every entry is stored under a single
-// <name>/ directory, which the installer strips, so unpacking by hand and by
-// `ki` produce the same layout. Executable bits are preserved because the
-// runtime launches bin/<name> directly.
 func zipPackage(source, destination, name string) error {
 	output, err := os.Create(destination)
 	if err != nil {
@@ -168,8 +162,6 @@ func within(parent, path string) bool {
 	return err == nil && (relative == "." || filepath.IsLocal(relative))
 }
 
-// Resolve existing ancestors before creating output. A symlink to extensions
-// would otherwise pass a lexical check and RemoveAll could erase the sources.
 func resolvedPath(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
@@ -189,7 +181,6 @@ func resolvedPath(path string) (string, error) {
 			return "", err
 		}
 		if _, statErr := os.Lstat(current); statErr == nil {
-			// An existing broken link must not be interpreted as a new path.
 			return "", fmt.Errorf("cannot resolve output path %s: %w", current, err)
 		} else if !os.IsNotExist(statErr) {
 			return "", statErr
@@ -215,8 +206,6 @@ func safeOutputDirectory(root, destination string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Ancestor output can contain a package directory that is itself the
-	// repository or one of its ancestors, so package replacement is unsafe.
 	if within(output, canonicalRoot) || within(output, sources) || within(sources, output) {
 		return "", errors.New("output must be outside extension sources and cannot be the repository or its ancestor")
 	}
@@ -341,8 +330,6 @@ func buildPackage(root, destination, name, goos, goarch string, sourceOnly bool)
 	return os.Rename(stage, final)
 }
 func stageSourcePackage(root, source, stage, name string) error {
-	// A small standalone module can be copied away from the repository. Keep the
-	// Ki module path for internal/state's visibility, with only shared runtime code.
 	module, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {
 		return err
@@ -387,8 +374,6 @@ func stageSourcePackage(root, source, stage, name string) error {
 }
 
 func standaloneModule(module []byte, name string) string {
-	// Windows checkouts can use CRLF. Normalize before replacing the declaration,
-	// or the package remains module ki and its local ki dependency is ignored.
 	normalized := strings.ReplaceAll(string(module), "\r\n", "\n")
 	return strings.Replace(normalized, "module ki\n", "module ki/extensions/"+name+"\n", 1) + "\nrequire ki v0.0.0\n\nreplace ki => ./_ki\n"
 }

@@ -6,9 +6,6 @@ import (
 	"ki/internal/session"
 )
 
-// Admission and writer accounting share runtimeMu. Keep per-session owners as
-// well as the server-wide barrier: a new occupy can replace s.runs[id] after
-// done while the old release callback is still writing.
 func (s *Server) addSessionWriterLocked(id string) {
 	group := s.sessionWG[id]
 	if group == nil {
@@ -27,8 +24,6 @@ func (s *Server) finishSessionWriter(id string) {
 	s.runtimeWG.Done()
 }
 
-// sessionAdmissionError is checked while an input gate is held before mutating
-// a queue. Selection is session-scoped; deletion/shutdown own this lifecycle fence.
 func (s *Server) sessionAdmissionError(id string) error {
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
@@ -59,8 +54,6 @@ func (s *Server) blockSessionAdmissions(ids []string) func() {
 			}
 		}
 		s.runtimeMu.Unlock()
-		// Queue contents survive tree abort. Only resume after old processes and
-		// callbacks are cleaned; a replacement run must not join that cleanup.
 		for _, id := range ids {
 			s.dispatchQueue(id)
 		}
@@ -82,7 +75,6 @@ func (s *Server) waitSessionWriters(ids []string) {
 }
 
 func (s *Server) beginDeletion() (func(), error) {
-	// Serialize overlapping cascades, without serializing unrelated agent work.
 	s.deletionMu.Lock()
 	s.runtimeMu.Lock()
 	if s.runtimeClosed {
@@ -129,8 +121,6 @@ func (s *Server) fenceDeletionInputs(infos []session.Info) {
 		}
 	}
 	s.mu.Unlock()
-	// A preaccepted HTTP fork holds this gate through child materialization.
-	// Drain it before the next traversal; that child must join the cascade.
 	for _, id := range ids {
 		gate := s.inputGate(id)
 		gate.Lock()
@@ -144,8 +134,6 @@ func (s *Server) deleteSessionInfos(infos []session.Info, reservations []<-chan 
 		ids = append(ids, info.ID)
 	}
 	warmups := s.markDeleting(ids)
-	// Cancel every writer before waiting for any: a parent may be waiting for
-	// a child, or spawning while a child is unwinding. No input can reoccupy.
 	s.mu.Lock()
 	runs := make([]*runState, 0, len(ids))
 	for _, id := range ids {
@@ -176,8 +164,6 @@ func (s *Server) deleteSessionInfos(infos []session.Info, reservations []<-chan 
 	for _, done := range warmups {
 		<-done
 	}
-	// Callers supply descendants first. Input gates drain accepted queue writes
-	// before removal; new messages see the tombstone instead of recreating files.
 	for _, info := range infos {
 		gate := s.inputGate(info.ID)
 		gate.Lock()
@@ -190,8 +176,6 @@ func (s *Server) deleteSessionInfos(infos []session.Info, reservations []<-chan 
 	return nil
 }
 
-// fenceAgentDeletion also waits for spawns reserved before the fence. Those
-// reservations release only after SpawnAgent's rollback removes the child.
 func (s *Server) fenceAgentDeletion(id string) (func(), <-chan struct{}, error) {
 	if s.agentTasks != nil {
 		return s.agentTasks.FenceSubtreeAdmission(id)

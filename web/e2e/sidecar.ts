@@ -9,8 +9,6 @@ export function sidecarBin(home: string, name: string): string {
   mkdirSync(dir, { recursive: true })
   const suffix = process.platform === 'win32' ? '.exe' : ''
   const shared = process.env.KI_E2E_SIDECAR || join(dir, `sidecar-fixture${suffix}`)
-  // The parallel runner supplies a fixture built once for the whole run. Direct
-  // Playwright invocations build once in their own home, including serial runs.
   if (!process.env.KI_E2E_SIDECAR && !existsSync(shared)) {
     const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
     execFileSync(goBinary(), ['build', '-o', shared, './e2e/testdata/extensions/sidecar'], { cwd: root, stdio: 'inherit' })

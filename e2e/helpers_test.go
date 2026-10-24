@@ -117,8 +117,6 @@ var (
 	errRuntimeCaller = errors.New("runtime.Caller failed")
 )
 
-// exeSuffix is the platform executable suffix. Why: `go build -o name` writes
-// exactly that name, and Windows cannot start a process image without .exe.
 func exeSuffix() string {
 	if runtime.GOOS == "windows" {
 		return ".exe"
@@ -176,10 +174,6 @@ func builtKI(t *testing.T) string {
 	return kiBin
 }
 
-// embedTags returns the go build tags that embed the SPA. web/dist is build
-// output and is not tracked by git, so it is built here on demand when the web
-// toolchain is available; otherwise the build falls back to the stub UI
-// (web/stub.go) so CLI-only tests can run without bun.
 func embedTags(ctx context.Context, root string) ([]string, error) {
 	webDir := filepath.Join(root, "web")
 	if _, err := os.Stat(filepath.Join(webDir, "dist", "index.html")); err == nil {
@@ -202,7 +196,6 @@ func embedTags(ctx context.Context, root string) ([]string, error) {
 
 func runBin(t *testing.T, home string, args ...string) (out string, code int) {
 	t.Helper()
-	// The executable is the test-built Ki binary; args are controlled by the test.
 	//nolint:gosec // this subprocess is intentionally the e2e system under test
 	cmd := exec.CommandContext(t.Context(), builtKI(t), args...)
 	cmd.Env = childEnv(home)
@@ -238,7 +231,6 @@ func startServe(t *testing.T, home string) server.File {
 
 func startServeEnv(t *testing.T, home, dir string, env []string) server.File {
 	t.Helper()
-	// The executable is the test-built Ki binary and the address is fixed below.
 	//nolint:gosec // this subprocess is intentionally the e2e system under test
 	cmd := exec.CommandContext(t.Context(), builtKI(t), "serve", "--addr", "127.0.0.1:0")
 	cmd.Env = env
@@ -295,9 +287,6 @@ func serveJSON(t *testing.T, sf server.File, method, path string, body any) (int
 	return res.StatusCode, out
 }
 
-// serveRaw reports the status, the raw body, and the body read error, so a
-// failure can show what the server actually answered instead of the empty map
-// serveJSON falls back to.
 func serveRaw(t *testing.T, sf server.File, method, path string, body any) (int, string, error) {
 	t.Helper()
 	var r io.Reader

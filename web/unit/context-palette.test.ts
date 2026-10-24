@@ -18,7 +18,6 @@ test('every category has its own swatch without near-identical RGB aliases', () 
   const colors = Object.values(CATEGORY_COLORS).map(rgb)
   for (let i = 0; i < colors.length; i++) {
     for (let j = i + 1; j < colors.length; j++) {
-      // This guards accidental aliases, not a claim of color-vision accessibility.
       expect(distance(colors[i], colors[j])).toBeGreaterThan(50)
     }
   }

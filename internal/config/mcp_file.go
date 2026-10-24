@@ -14,14 +14,12 @@ import (
 
 const MCPConfigVersion = 1
 
-// MCPSnapshot is the merged configuration and origin of each effective server.
 type MCPSnapshot struct {
 	Servers      map[string]MCPServer
 	Sources      map[string]string
 	FilesPresent bool
 }
 
-// MCPPaths returns the global and project configuration locations.
 func MCPPaths(home, cwd string) (global, project string) {
 	if home == "" {
 		home = HomeDir()
@@ -36,19 +34,16 @@ func MCPPaths(home, cwd string) (global, project string) {
 	return global, project
 }
 
-// LoadMCP reads optional global and project documents, replacing whole servers.
 func LoadMCP(home, cwd string) (map[string]MCPServer, error) {
 	snapshot, err := LoadMCPSnapshot(home, cwd)
 	return snapshot.Servers, err
 }
 
-// LoadMCPWithSources returns effective servers and their global/project origins.
 func LoadMCPWithSources(home, cwd string) (map[string]MCPServer, map[string]string, error) {
 	snapshot, err := LoadMCPSnapshot(home, cwd)
 	return snapshot.Servers, snapshot.Sources, err
 }
 
-// LoadMCPSnapshot preserves file presence and winning origins for clients.
 func LoadMCPSnapshot(home, cwd string) (MCPSnapshot, error) {
 	snapshot := MCPSnapshot{
 		Servers: make(map[string]MCPServer),
@@ -71,8 +66,6 @@ func LoadMCPSnapshot(home, cwd string) (MCPSnapshot, error) {
 		if err != nil {
 			return MCPSnapshot{}, fmt.Errorf("read MCP config %s: %w", file.path, err)
 		}
-		// A server is a single transport capability. Merging individual fields
-		// could retain global credentials or mix stdio options into HTTP.
 		for name, server := range servers {
 			snapshot.Servers[name] = server
 			snapshot.Sources[name] = file.source
@@ -104,8 +97,6 @@ func decodeMCP(raw []byte) (map[string]MCPServer, error) {
 	if document.MCPServers == nil {
 		return nil, fmt.Errorf("mcpServers must be a non-null object")
 	}
-	// encoding/json accepts null for scalar values and case-insensitive field
-	// names. Configuration must not silently turn either into default policy.
 	var shape map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &shape); err != nil {
 		return nil, err

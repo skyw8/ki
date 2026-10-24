@@ -4,10 +4,6 @@ import "sync"
 
 const maxProcessProgressUpdates = 10000
 
-// processPublisher decouples output draining from slow durable/event consumers.
-// Only the newest progress snapshot is queued; lifecycle transitions are always
-// delivered. The final publication has a separate completion barrier because a
-// listener may re-enter process observation/termination after the process exits.
 type processPublisher struct {
 	mu        sync.Mutex
 	wake      chan struct{}
@@ -29,8 +25,6 @@ func newProcessPublisher(listener func(Update)) *processPublisher {
 func (p *processPublisher) enqueue(update Update) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// Output writers can release their mutex in one order but enqueue in
-	// another. Revisions make a late writer unable to roll back final state.
 	if p.finished || update.Process.Revision <= p.revision {
 		return
 	}

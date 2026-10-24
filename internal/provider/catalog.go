@@ -10,8 +10,6 @@ import (
 	"strings"
 )
 
-// CredentialFingerprint returns a non-secret identity for binding encrypted
-// provider context to the credential that created it.
 func CredentialFingerprint(credential Credential) string {
 	hash := sha256.New()
 	_, _ = hash.Write([]byte(credential.Type))
@@ -22,51 +20,38 @@ func CredentialFingerprint(credential Credential) string {
 	return fmt.Sprintf("%x", hash.Sum(nil)[:16])
 }
 
-// AuthKind identifies the credential protocol owned by a provider runtime.
 type AuthKind string
 
-// Built-in credential protocols for AuthSpec and Credential.
 const (
 	AuthNone   AuthKind = "none"
 	AuthAPIKey AuthKind = "api_key"
 	AuthOAuth  AuthKind = "oauth"
 )
 
-// AuthSpec describes provider authentication without exposing credentials.
 type AuthSpec struct {
 	Type         AuthKind `json:"type,omitempty"`
 	Name         string   `json:"name,omitempty"`
 	Subscription bool     `json:"subscription,omitzero"`
 }
 
-// Credential is the resolved value passed to a provider runtime. Value is
-// provider-owned JSON for credentials such as OAuth; APIKey is kept separate
-// so ordinary API-key providers do not need to decode an envelope.
 type Credential struct {
 	Type   AuthKind        `json:"type,omitempty"`
 	APIKey string          `json:"apiKey,omitempty"`
 	Value  json.RawMessage `json:"value,omitempty"`
 }
 
-// ExtensionProviderSpec is the declarative catalog and auth contract
-// contributed by a provider-capable extension. The extension process owns the
-// implementation.
 type ExtensionProviderSpec struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	API     string `json:"api"`
-	BaseURL string `json:"baseUrl"`
-	// DefaultModel is an optional preference. A removed or disabled preference
-	// falls back to the first enabled model when the provider is built.
+	ID           string      `json:"id"`
+	Name         string      `json:"name"`
+	API          string      `json:"api"`
+	BaseURL      string      `json:"baseUrl"`
 	DefaultModel string      `json:"defaultModel,omitempty"`
 	Auth         AuthSpec    `json:"auth,omitzero"`
 	Models       []ModelSeed `json:"models"`
 }
 
-// CatalogVersion is the schema version of the embedded provider catalog.
 const CatalogVersion = 4
 
-// CostRates are USD prices per million tokens.
 type CostRates struct {
 	Input      float64 `json:"input"`
 	Output     float64 `json:"output"`
@@ -74,19 +59,16 @@ type CostRates struct {
 	CacheWrite float64 `json:"cacheWrite"`
 }
 
-// CostTier applies rates after a cumulative input-token threshold.
 type CostTier struct {
 	InputTokensAbove int `json:"inputTokensAbove"`
 	CostRates
 }
 
-// Cost contains base rates and optional volume tiers.
 type Cost struct {
 	CostRates
 	Tiers []CostTier `json:"tiers,omitempty"`
 }
 
-// Compat contains only request-shape differences Ki implements.
 type Compat struct {
 	ThinkingFormat           string `json:"thinkingFormat,omitempty"`
 	SupportsReasoningEffort  bool   `json:"supportsReasoningEffort,omitzero"`
@@ -96,15 +78,11 @@ type Compat struct {
 	ForceAdaptiveThinking    bool   `json:"forceAdaptiveThinking,omitzero"`
 }
 
-// CompactionCapabilities declares provider-owned compaction protocols
-// independently. Standalone is used for an explicit compaction request;
-// Inline is used on an ordinary generation request.
 type CompactionCapabilities struct {
 	Standalone string `json:"standalone,omitempty"`
 	Inline     string `json:"inline,omitempty"`
 }
 
-// Model is a fully resolved selectable model.
 type Model struct {
 	Provider           string                 `json:"provider"`
 	ID                 string                 `json:"id"`
@@ -127,26 +105,18 @@ type Model struct {
 	Compat             Compat                 `json:"compat,omitzero"`
 }
 
-// SupportsFreeformExec reports whether exec may use native raw-source input.
 func (m Model) SupportsFreeformExec() bool {
 	return m.supportsFreeformTool(m.ExecToolType)
 }
 
-// SupportsFreeformApplyPatch reports whether the native patch editor is usable.
 func (m Model) SupportsFreeformApplyPatch() bool {
 	return m.supportsFreeformTool(m.ApplyPatchToolType)
 }
 
 func (m Model) supportsFreeformTool(toolType string) bool {
-	// Responses compatibility alone does not imply arbitrary custom tools:
-	// DeepSeek accepts only custom apply_patch. The two capabilities stay
-	// independent, and changing to either JSON-only core API must fall back.
-	// Other API IDs belong to extensions, whose explicit declarations own
-	// their transport contract; do not infer support from a private API name.
 	return toolType == "freeform" && m.API != "completions" && m.API != "anthropic"
 }
 
-// Provider describes a connection plus its resolved models.
 type Provider struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
@@ -178,7 +148,6 @@ type catalogEntry struct {
 	Models       []ModelSeed `json:"models"`
 }
 
-// ModelSeed is the on-disk model definition used by built-in and user catalogs.
 type ModelSeed struct {
 	ID                 string                 `json:"id"`
 	Name               string                 `json:"name,omitempty"`
@@ -198,9 +167,6 @@ type ModelSeed struct {
 	Compat             Compat                 `json:"compat,omitzero"`
 }
 
-// BuildExtensionProvider resolves a manifest provider into the same selectable
-// model shape used by the built-in registry. It does not attach executable
-// behavior; the provider-capable extension owns that runtime.
 func BuildExtensionProvider(spec ExtensionProviderSpec) (Provider, error) {
 	if err := ValidateExtensionProviderSpec(spec); err != nil {
 		return Provider{}, err
@@ -256,7 +222,6 @@ func mustBuiltinCatalog() catalogFile {
 	return c
 }
 
-// BuiltinProviders returns a fresh copy of the embedded provider catalog.
 func BuiltinProviders() []Provider {
 	out := make([]Provider, 0, len(builtinCatalog.Providers))
 	for _, p := range builtinCatalog.Providers {
@@ -347,5 +312,4 @@ func cloneCost(in *Cost) *Cost {
 	return &out
 }
 
-// ProviderOrder defines the stable presentation order for provider IDs.
 var ProviderOrder = []string{"openrouter", "anthropic", "openai", "deepseek", "dashscope-cn", "dashscope", "zai-cn", "zai", "moonshot-cn", "moonshot", "minimax-cn", "minimax", "google", "xai", "magpie"}

@@ -19,8 +19,6 @@ async function sendPrompt(page: Page, text: string) {
 }
 
 async function expectMinTarget(locator: Locator, label: string): Promise<void> {
-  // Why: boundingBox returns null before the control is rendered, and the chat
-  // clamp toggle appears one frame after the bubble, so wait for visibility.
   await expect(locator, `${label} should be visible`).toBeVisible()
   const box = await locator.boundingBox()
   expect(box, `${label} should have a layout box`).toBeTruthy()
@@ -28,9 +26,6 @@ async function expectMinTarget(locator: Locator, label: string): Promise<void> {
   expect(box!.height, `${label} height`).toBeGreaterThanOrEqual(MIN_TOUCH_SIZE)
 }
 
-// Every test here is self-contained (verified by running each one alone on its
-// own server), so the parallel runner may split this file into one isolated
-// process per test instead of serializing the whole file.
 test.describe.configure({ mode: 'parallel' })
 
 test('slash palette is available before creating a session', async ({ page }) => {
@@ -42,9 +37,6 @@ test('slash palette is available before creating a session', async ({ page }) =>
   await expect(page.getByTestId('command-item-new')).toBeVisible()
 })
 
-// The sidebar refetches /v1/sessions often; the conditional request must reach
-// the server and come back 304 so an unchanged list does not rebuild the
-// sidebar (the browser HTTP cache must not swallow the conditional GET).
 test('session list conditional fetch returns 304', async ({ page }) => {
   await page.goto('/')
   const out = await page.evaluate(async () => {
@@ -88,7 +80,6 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(providersTab).toHaveAttribute('aria-controls', 'settings-panel-providers')
   await providersTab.focus()
   await providersTab.press('End')
-  // End moves to the last tab, which is About.
   const aboutTab = page.getByTestId('settings-tab-about')
   await expect(aboutTab).toBeFocused()
   await expect(aboutTab).toHaveAttribute('aria-selected', 'true')
@@ -187,9 +178,6 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await expect(page.getByTestId('busy-queue')).toHaveText('Queue')
   await page.getByTestId('busy-queue').click()
   await expect(page.getByTestId('busy-queue')).toHaveAttribute('aria-checked', 'true')
-  // The ceiling is server state (toggles.json), so it must survive a refetch.
-  // 4,000,000 stays above every fixture model window, keeping the rest of this
-  // test's context-meter expectations unchanged.
   const contextWindow = page.getByTestId('message-context-window')
   await expect(contextWindow).toHaveValue('5000000')
   await expect(page.getByTestId('message-context-save')).toBeDisabled()
@@ -231,10 +219,6 @@ test('nested dialogs isolate lower layers and restore attributes after out-of-or
   const settings = page.getByTestId('settings')
   await expect(settings).toBeVisible()
 
-  // Exercise exact restoration, including values that differ from the
-  // hook-owned aria-hidden="true" and empty inert overrides. JavaScript click
-  // is intentional because the preserved inert state makes the opener
-  // correctly unavailable to user interaction.
   await settings.evaluate(element => {
     element.setAttribute('aria-hidden', 'false')
     element.setAttribute('inert', 'preserve-me')
@@ -254,8 +238,6 @@ test('nested dialogs isolate lower layers and restore attributes after out-of-or
   await page.keyboard.press('Tab')
   await expect(provider.locator('.provider-dialog-close')).toBeFocused()
 
-  // Open a third registered dialog, then remove the middle entry first. This
-  // models React unmounting portalled dialogs out of visual stack order.
   await page.locator('button[aria-label="添加图片或文件"]').first().evaluate(element => (element as HTMLButtonElement).click())
   const attachments = page.getByRole('dialog', { name: '选择图片或文件' })
   await expect(attachments).toBeVisible()
@@ -324,8 +306,6 @@ test('provider settings supports a complete add and edit flow', async ({ page })
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('new-provider-dialog')).toHaveCount(0)
   await expect(page.getByTestId('settings')).toBeVisible()
-  // Queue an in-dialog focus handoff before React queues its deferred initial
-  // focus. A late frame must not send subsequent typing back to Provider ID.
   await page.getByTestId('add-provider').evaluate(button => {
     button.addEventListener('click', () => {
       requestAnimationFrame(() => {
@@ -437,7 +417,6 @@ test('markdown parse keeps fences, emphasis, CJK, and streaming closers', () => 
   expect(nodeTypes(em)).toEqual(expect.arrayContaining(['strong', 'emphasis']))
   expect(nodeValues(em, 'text')).toEqual(['bold', ' and ', 'em'])
 
-  // CommonMark drops emphasis next to CJK punctuation; @streamdown/cjk keeps it.
   const cjk = parseMarkdown('这是**强调。**结尾')
   expect(nodeTypes(cjk)).toContain('strong')
   expect(nodeValues(cjk, 'text')).toEqual(['这是', '强调。', '结尾'])
@@ -466,30 +445,21 @@ test('chat and context browser talk to the fake runtime', async ({ page }) => {
   await expect(input).toBeEnabled()
   await input.fill(prompt)
   await input.press('Enter')
-  // The fake model answers instantly, and the sidebar now repaints from the
-  // server's invalidate frame, so the optimistic `.dot.on` is not a stable
-  // observable here. The live dot (turns on for a running session, clears when
-  // it ends, in this tab and in another) is covered in push.spec.ts.
   await expect(page.locator('.session-row.active')).toBeVisible()
 
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
-  // The navigator is offered from the first prompt on (its panel is the way
-  // back to an earlier turn); the panel itself stays closed until asked for.
   await expect(page.getByTestId('request-nav')).toHaveCount(1)
   await expect(page.getByTestId('request-nav-panel')).toHaveCount(0)
   await expect(page.getByTestId('assistant-message').first()).toContainText('ok')
   await expect(page.getByTestId('chat-system-prompt')).toHaveCount(0)
-  // The stats strip renders the hit rate to 2 decimals (90/98).
   await expect(page.getByTestId('session-stats')).toContainText('缓存命中 91.84%')
   await expect(page.getByTestId('session-stats')).toContainText('输入 98 · 输出 2')
-  // The settled turn closes with a divider carrying its own aggregates.
   const turnDivider = page.getByTestId('turn-divider')
   await expect(turnDivider).toHaveCount(1)
   await expect(turnDivider).toHaveAttribute('data-turn', '1')
   await expect(turnDivider).toContainText('第 1 轮')
   await expect(turnDivider).toContainText('1 步')
   await expect(turnDivider).toContainText('缓存命中 91.84%')
-  // The divider also reports turn health: tool calls and notable cache misses.
   await expect(turnDivider.getByTestId('turn-cache-miss')).toContainText('缓存未命中 0 次')
   await expect(turnDivider.getByTestId('turn-elapsed')).toBeVisible()
   await expect(page.getByTestId('session-title').filter({ hasText: prompt })).toBeVisible()
@@ -547,8 +517,6 @@ test('chat and context browser talk to the fake runtime', async ({ page }) => {
   const requestSelect = page.getByTestId('context-request-select')
   await expect(requestSelect).not.toHaveValue('')
   await expect(page.getByTestId('context-browser').getByTestId('context-request-summary')).toContainText(/轮次 1.*步骤 1|Turn 1.*Step 1/)
-  // A request's input precedes its response; the current surface includes
-  // "ok", but the first request must not include its own assistant output.
   await expectContextItemCount(page, 'assistant', 0)
   const requestHuman = await openContextCategory(page, 'human')
   await openContextItem(requestHuman.locator('.context-item').first())
@@ -565,7 +533,6 @@ test('chat and context browser talk to the fake runtime', async ({ page }) => {
   await openSessionRow(page)
   await expect(page.getByTestId('user-bubble')).toHaveText(prompt)
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
-  // The divider is rebuilt from the persisted turn on the history path too.
   await expect(page.getByTestId('turn-divider')).toHaveCount(1)
   await page.getByTestId('tab-context').click()
   await expect(page.getByTestId('context-step')).toHaveCount(1)
@@ -641,9 +608,6 @@ test('context separates system sources and browses the tool input of each reques
     const schemaItem = schemas.locator('.context-item').first()
     await openContextItem(schemaItem)
     await expect(schemaItem.getByTestId('context-locate-entry')).toHaveCount(0)
-    // Sources describe provenance inside System, not another counted bucket.
-    // Historical APPEND text lacks global/project wrappers, so both stay in
-    // the honest combined operator section rather than guessed attribution.
     const projectSources = await openSystemSources(page, 'project')
     await expect(projectSources.filter({ hasText: 'CONTEXT-AGENTS-MARKER' })).toHaveCount(1)
     const operatorSources = await openSystemSources(page, 'append-operator')
@@ -669,9 +633,6 @@ test('context separates system sources and browses the tool input of each reques
     await expect(page.getByTestId('context-request-select')).not.toHaveValue('')
     await page.getByTestId('context-request-select').selectOption('')
     await expectContextItemCount(page, 'tool', 1)
-    // Context carries the persisted result entry ID, while the chat row is
-    // keyed by toolCallId. Navigation must resolve that identity, not page
-    // forever looking for an entry that cannot be a rendered chat row.
     const currentTools = await openContextCategory(page, 'tool')
     const currentResult = currentTools.locator('.context-item').first()
     await openContextItem(currentResult)
@@ -736,8 +697,6 @@ test('context hydrates historical agent and compaction inputs and locates early 
       content: [{ type: 'text', text: `Historical tool input ${'tool result '.repeat(100)}CONTEXT-TOOL-FULL-END` }] },
   })
   header('context-color-request')
-  // Reported input deliberately dwarfs known category estimates. A shared
-  // reported/estimate axis would turn every colored segment into a hairline.
   answer('context-color-answer', 'Own response is not part of the colored request input', 200_000)
   push({
     type: 'compaction', id: 'context-local-checkpoint',
@@ -748,15 +707,10 @@ test('context hydrates historical agent and compaction inputs and locates early 
   input('context-kept-agent', 'CONTEXT-KEPT-AGENT-MARKER', 'agent:kept-fixture')
   header('context-local-request')
   answer('context-local-answer', 'Completed after local checkpoint')
-  // Persist real provider-owned state rather than the view-only remoteContext
-  // marker. Public projections must derive the marker while redacting items.
   push({
     type: 'compaction', id: 'context-remote-checkpoint', tokensBefore: 3000,
     responses: { binding: { provider: 'fake', model: 'free' }, items: [{ type: 'compaction', encrypted_content: 'CONTEXT-SECRET-OPAQUE' }] },
   })
-  // More than the initial four-turn compact window forces lazy metadata and
-  // real historical paging. Twelve turns keep the target far from the tail
-  // without paying for dozens of redundant one-turn compact page requests.
   for (let turn = 0; turn < 12; turn++) {
     input(`context-tail-user-${turn}`, `Checkpoint tail input ${turn}`)
     header(`context-tail-request-${turn}`)
@@ -841,8 +795,6 @@ test('context hydrates historical agent and compaction inputs and locates early 
       await expect(page.getByTestId('chat')).toBeVisible()
       if (entryId === 'context-remote-checkpoint') {
         await expect.poll(() => !!parked, { message: 'event navigation must page to its older checkpoint' }).toBe(true)
-        // Mounting conversation during a slow navigation must retain explicit
-        // reading/seeking intent, not follow the current tail before paging.
         await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', /reading|seeking/)
         await parked!.continue()
         parked = undefined
@@ -851,8 +803,6 @@ test('context hydrates historical agent and compaction inputs and locates early 
       await expect(page.getByTestId('user-bubble').filter({ hasText: 'Checkpoint tail input 11' })).toHaveCount(0)
       await page.getByTestId('tab-context').click()
     }
-    // Model changes have no chat row. Locate their preceding rendered
-    // boundary on this branch, not the current tail or a raw metadata ID.
     const modelEvent = events.locator('[data-event-id="context-model-change"]')
     await expect(modelEvent).toHaveAttribute('data-event-type', 'model_change')
     await modelEvent.getByTestId('context-event-action').click()
@@ -862,8 +812,6 @@ test('context hydrates historical agent and compaction inputs and locates early 
     const agentCategory = await openContextCategory(page, 'agent')
     const hiddenAgent = agentCategory.locator('[data-entry-id="context-old-agent"]')
     await openContextItem(hiddenAgent)
-    // Cached full text is not a visible compact chat row. Load the owning
-    // human turn before seeking this runtime reply folded inside that turn.
     await hiddenAgent.getByTestId('context-locate-entry').click()
     await expectConversationPosition(page, 'context-old-agent')
   } finally {
@@ -873,8 +821,6 @@ test('context hydrates historical agent and compaction inputs and locates early 
 })
 
 test('markdown table copy and diagram toggle/download/copy', async ({ page }) => {
-  // The plantuml block fetches from a PlantUML server; stub it so the test
-  // never depends on the network.
   const stubSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="#eee"/></svg>'
   await page.route('https://www.plantuml.com/**', route => route.fulfill({ contentType: 'image/svg+xml', body: stubSvg }))
   await page.goto('/')
@@ -890,10 +836,8 @@ test('markdown table copy and diagram toggle/download/copy', async ({ page }) =>
   await expect(mermaid).toBeVisible()
   await expect(mermaid.getByTestId('md-mermaid-diagram')).toHaveAttribute('aria-pressed', 'true')
   await expect(mermaid.getByTestId('md-mermaid-svg').locator('svg')).toBeVisible()
-  // Download buttons first, copy last (far right).
   const actionIds = await mermaid.locator('.md-block-actions button').evaluateAll(els => els.map(el => el.getAttribute('data-testid')))
   expect(actionIds).toEqual(['md-mermaid-download-png', 'md-mermaid-download-svg', 'md-mermaid-copy'])
-  // Clicking the diagram opens the zoom viewer.
   await mermaid.getByTestId('md-mermaid-svg').click()
   const mermaidZoom = page.getByTestId('md-mermaid-zoom')
   await expect(mermaidZoom).toBeVisible()
@@ -923,8 +867,6 @@ test('markdown table copy and diagram toggle/download/copy', async ({ page }) =>
   await expect(plantuml).toBeVisible()
   await expect(plantuml.getByTestId('md-plantuml-diagram')).toHaveAttribute('aria-pressed', 'true')
   await expect(plantuml.getByTestId('md-plantuml-svg').locator('img')).toBeVisible()
-  // The stub is far narrower than the block, so this asserts the diagram is
-  // horizontally centered (part of the unified diagram chrome).
   const frame = await plantuml.getByTestId('md-plantuml-svg').boundingBox()
   const image = await plantuml.getByTestId('md-plantuml-svg').locator('img').boundingBox()
   expect(frame && image).toBeTruthy()
@@ -1005,8 +947,6 @@ test('edit branches in place with attachments and fork opens a new session', asy
 	await expect(page.getByTestId('global-drop-overlay')).toHaveCount(0)
 	await expect(page.locator('.attachment-draft-file[title="global-drop.go"]')).toBeVisible()
   await page.getByTestId('edit-send').click()
-  // Why: an edit appends a branch, and the replaced branch can still be attached
-  // for a frame, so address each branch by its own text instead of the testid.
   const editedBubble = page.getByTestId('user-bubble').filter({ hasText: edited })
   const originalBubble = page.getByTestId('user-bubble').filter({ hasText: original })
   await expect(editedBubble).toContainText(edited)
@@ -1034,8 +974,6 @@ test('edit branches in place with attachments and fork opens a new session', asy
   await expect.poll(async () => page.evaluate(async () => {
     return (await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as unknown[]).length
   })).toBe(before.count + 1)
-  // The fork initially has identical text. Wait for navigation, not just its
-  // server-side creation, before exercising regeneration in the new session.
   const readFocusedSession = await focusedSessionReader(page)
   await expect.poll(() => readFocusedSession()).toBe(child.id)
   await expect(editedBubble).toContainText(edited)
@@ -1056,7 +994,6 @@ test('fork works while running and regenerate reports the busy block', async ({ 
     await fetch('/v1/sessions', { credentials: 'same-origin' }).then(r => r.json()) as unknown[]
   ).length)
 
-  // Hold the run open so the session stays busy while we act on the settled turn.
   await sendPrompt(page, 'e2e-hold')
   await expect(page.getByTestId('composer-stop')).toBeVisible()
   const parentId = await page.evaluate(async () => {
@@ -1067,14 +1004,11 @@ test('fork works while running and regenerate reports the busy block', async ({ 
   const before = await count()
 
   try {
-    // Regenerate would rewrite the running turn's branch, so it is dimmed and
-    // explains itself on click instead of silently doing nothing.
     const regen = page.getByTestId('regen-msg').first()
     await expect(regen).toHaveAttribute('data-disabled', 'true')
     await regen.click()
     await expect(page.getByTestId('toaster')).toContainText('当前对话正在运行')
 
-    // Fork copies settled history into a new session and never touches the run.
     await page.getByTestId('fork-msg').first().click()
     await expect.poll(count).toBe(before + 1)
   } finally {
@@ -1122,8 +1056,6 @@ test('new session keeps tab choices while reload uses the server default', async
   await page.reload()
   await expect(page.getByTestId('open-model')).toHaveText('gpt-5.6-terra')
   await expect(page.getByTestId('thinking-select')).toHaveText('medium')
-  // Cold startup has no origin-scoped thinking preference, but the existing
-  // session's saved selection must still survive reload unchanged.
   await openSessionRow(page)
   await expect(page.getByTestId('thinking-select')).toHaveText('high')
 })
@@ -1173,32 +1105,22 @@ test('workspace tree, pin, search, directory picker, to-bottom', async ({ page }
   await page.getByTestId('composer-input').fill(tall)
   await page.getByTestId('composer-send').click()
   await expect(page.getByTestId('user-bubble').nth(1)).toBeVisible()
-  // Long user bubbles are clamped to 6 lines; expand so the chat overflows.
   await expectMinTarget(page.getByTestId('user-bubble-toggle'), 'long-message toggle')
   await page.getByTestId('user-bubble-toggle').click()
   await expect(page.getByTestId('user-bubble-toggle')).toHaveAttribute('aria-label', '收起')
   const scroll = page.getByTestId('chat-scroll')
-  // Expanding grows scrollHeight without firing a scroll event, so jump to the
-  // bottom first, then up, to make the container report a real scroll position.
   await scroll.evaluate(el => { el.scrollTop = el.scrollHeight })
   await scroll.evaluate(el => { el.scrollTop = 0 })
   await expect(page.getByTestId('to-bottom')).toBeVisible()
   await page.getByTestId('to-bottom').click()
   await expect(page.getByTestId('to-bottom')).toHaveCount(0)
 
-  // A session created later is prepended to the group, so without the
-  // pinned-first partition it would take the top slot away from the pin.
   await page.getByRole('button', { name: '清除搜索' }).click()
   const rows = page.getByTestId('session-row')
   const before = await rows.count()
   await page.getByTestId('ws-new-session').first().click()
   await expect(rows).toHaveCount(before + 1)
-  // Reload so the assertion reads the settled order the server stored rather
-  // than the optimistic frame that renders the new row before the workspace
-  // order arrives; that frame would pass even while the pin loses its slot.
   await page.reload()
-  // A reload drops the in-memory expansion, so the group has to be opened
-  // again before its rows exist.
   await expandWorkspaces(page)
   await expect(rows).toHaveCount(before + 1)
   await expect(rows.first().locator('.pin-mark')).toBeVisible()
@@ -1266,8 +1188,6 @@ test('session info lists skills and extensions; toggles live in settings', async
   await expect(page.getByTestId('info-outline')).toContainText('系统提示词')
   await expect(page.getByTestId('info-reload')).toBeVisible()
 
-  // The last section is the complete system prompt, shown raw from the
-  // request_header the run persisted.
   await expect(page.getByTestId('cfg-system-prompt-text')).toContainText('You are a helpful assistant operating inside ki')
   await expect(page.getByTestId('cfg-system-prompt-copy')).toBeVisible()
 
@@ -1294,9 +1214,6 @@ test('session info lists extension-loaded skills, commands, and prompt with head
   writeFileSync(join(dir, 'commands', 'exthello.md'), '---\ndescription: hello from infox\n---\nHi\n')
   writeFileSync(join(dir, 'APPEND.md'), 'EXT-PROMPT-LAYER\n')
   mkdirSync(join(dir, 'bin'), { recursive: true })
-  // The loader resolves the extension root, so the paths it reports are
-  // canonical: the fixture home is unresolved on macOS (/var -> /private/var)
-  // and under Windows short-name %TEMP% paths.
   const realDir = realpathSync(dir)
 
   const headers = { Authorization: `Bearer ${serverToken()}` }
@@ -1403,7 +1320,6 @@ test('command palette is opaque, one-line, and inserts without sending', async (
   await expect(composerInput).toHaveValue('/ro')
   await expect(bubbles).toHaveCount(before)
 
-  // Tab completes the highlighted row in place and never sends.
   await composerInput.fill('/rel')
   await expect(page.getByTestId('command-item-reload')).toBeVisible()
   await expect(palette.locator('[role="option"]')).toHaveCount(1)
@@ -1439,8 +1355,6 @@ test('slash command Tab completion drives a live compaction row', async ({ page 
   await expect(input).toHaveValue('/compact')
   await expect(page.getByTestId('command-palette')).toHaveCount(0)
 
-  // Enter sends directly now that the palette is closed. The fake session is
-  // too small to summarize, so the row settles on the non-error "empty" state.
   await input.press('Enter')
   const row = page.getByTestId('compact-row')
   await expect(row).toBeVisible()
@@ -1465,8 +1379,6 @@ test('composer clears before a slow slash command returns', async ({ page }) => 
   await input.press('Tab')
   await expect(input).toHaveValue('/compact')
   await input.press('Enter')
-  // The request is still parked in the route handler: the input must already be
-  // empty instead of echoing /compact until compaction finishes.
   await expect(input).toHaveValue('')
   await expect.poll(() => !!parked).toBe(true)
   await parked!.continue()
@@ -1558,8 +1470,6 @@ test('busy enter queues and ctrl+enter promotes the tail', async ({ page }) => {
   await expect(page.getByTestId('composer-stop')).toHaveCount(0)
   await expect.poll(async () => (await sessionQueue(page)).texts).toEqual([])
   await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-keep' })).toBeVisible()
-  // A steer accepted into the run must survive its abort in history: the reload
-  // proves it was committed to jsonl, not only rendered optimistically.
   await page.reload()
   await openSessionRow(page)
   await expect(page.getByTestId('user-bubble').filter({ hasText: 'queued-promote' })).toBeVisible()

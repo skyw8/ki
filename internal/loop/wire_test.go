@@ -143,8 +143,6 @@ func TestMessageWireLinearBytesAndReconnect(t *testing.T) {
 				t.Fatalf("decode %d: %v", i, err)
 			}
 			if i == count/2 {
-				// Slow replay / reconnect starts at an arbitrary global seq. It
-				// must be independently decodable, with no earlier patch base.
 				var freshEncoder MessageEncoder
 				var freshDecoder MessageDecoder
 				snapshot := freshEncoder.Encode(ev)

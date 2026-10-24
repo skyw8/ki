@@ -66,13 +66,7 @@ func wantError(t *testing.T, err error, substring string) {
 	}
 }
 
-// These fixtures were captured from all 33 original Python tests before their
-// removal. Complete replay bodies and emitted event snapshots preserve their
-// assertions and catch differences the original tests did not inspect.
 func TestOriginalBehaviorParity(t *testing.T) {
-	// Reference snapshots retain the original shapes except the intentional
-	// nonRetryable safety marker: a terminal provider failure must not be
-	// resubmitted by the host's generic backoff loop.
 	data, err := os.ReadFile("testdata/parity.json")
 	if err != nil {
 		t.Fatal(err)
@@ -232,8 +226,6 @@ func TestBuildRequestOmitsOutputStatusFromInputHistory(t *testing.T) {
 	if obj(input[3])["id"] != "msg_1" || obj(input[3])["phase"] != "final" {
 		t.Fatalf("assistant message metadata was not preserved: %v", input[3])
 	}
-	// The compatibility projection is request-only; canonical session history
-	// must remain intact for later providers and compaction.
 	if checkpoint["status"] != "completed" ||
 		!strings.Contains(str(obj(list(assistant["content"])[0])["thinkingSignature"]), `"status":"completed"`) ||
 		!strings.Contains(str(obj(list(assistant["content"])[0])["thinkingSignature"]), `"content"`) {
@@ -273,8 +265,6 @@ func TestManifestAdvertisesCodexV2Compaction(t *testing.T) {
 }
 
 func TestManifestPricingMatchesOpenAIStandardCatalog(t *testing.T) {
-	// OAuth costs are API-equivalent estimates, not subscription charges.
-	// Compare both catalogs so a core price update cannot leave Codex stale.
 	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "provider", "catalog.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -541,8 +531,6 @@ func TestCompactionCancellationBeforeResponseHeaders(t *testing.T) {
 	server := newHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		close(entered)
-		// Server-side Flush is not a client-side response fence. Withhold all
-		// headers to deterministically cancel while Client.Do is still pending.
 		select {
 		case <-r.Context().Done():
 		case <-release:
@@ -779,8 +767,6 @@ func TestForkCacheKeyReusesPromptCacheAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Why: a fork replays its source's prefix, so the cache key must stay on the
-	// source even though the child owns the session identity.
 	if body["prompt_cache_key"] != "parent-session" {
 		t.Fatalf("prompt_cache_key: %v", body["prompt_cache_key"])
 	}

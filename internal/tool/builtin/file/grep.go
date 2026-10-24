@@ -116,7 +116,6 @@ func (t grepTool) Execute(ctx context.Context, args map[string]any) toolapi.Resu
 		maxResults = offset + headLimit
 	}
 
-	// Respect .gitignore by default; only an explicit false opts into --no-ignore.
 	respectGitignore := true
 	if v, ok := args["respect_gitignore"].(bool); ok {
 		respectGitignore = v
@@ -148,9 +147,6 @@ func (t grepTool) Execute(ctx context.Context, args map[string]any) toolapi.Resu
 	}
 }
 
-// grepDetails is the structured form of the same bounded page the model sees.
-// The WebUI renders hits instead of re-parsing "path:line: text", and paging
-// stays the tool's own decision rather than a client guess.
 func grepDetails(result search.GrepResult, mode, cwd string, offset, limit, before, after int) grepDetailSet {
 	details := grepDetailSet{
 		Mode: mode, Files: len(result.Files), Matches: result.TotalMatch,
@@ -282,8 +278,6 @@ func formatGrepResult(result search.GrepResult, mode, cwd string, offset, headLi
 	}
 }
 
-// sortedGrepFiles orders file hits newest-first so both the model-facing text
-// and the structured details page the same list.
 func sortedGrepFiles(files []string) []string {
 	out := slices.Clone(files)
 	slices.SortFunc(out, func(a, b string) int {

@@ -90,8 +90,6 @@ func TestNormalizeSkipsResultsThatAlreadyCarryAReference(t *testing.T) {
 	}
 }
 
-// Reading a spill file through Read must not create a second copy of it; the
-// model would otherwise chase a reference that points at its own page.
 func TestNormalizeSkipsReadOfOwnSpillFile(t *testing.T) {
 	store := newTestStore(t, Config{PreviewBytes: 8, PreviewLines: 1})
 	_, ref := store.Normalize("session-1", "Grep", nil, textBlock(strings.Repeat("y", 128)), nil)
@@ -142,7 +140,6 @@ func TestNormalizeStopsSpillingWhenTheSessionBudgetIsGone(t *testing.T) {
 	if body, _, _ := strings.Cut(content[0].Text, "\n\n["); len(body) > 4 {
 		t.Fatalf("preview is not bounded: %q", body)
 	}
-	// A different session has its own budget.
 	if _, ref := store.Normalize("session-2", "Grep", nil, textBlock(full), nil); ref == nil {
 		t.Fatal("a second session should still be able to spill")
 	}
@@ -175,8 +172,6 @@ func TestMergeDetailsKeepsToolFieldsFlatAndSetsSpill(t *testing.T) {
 	}
 }
 
-// A tool's own "output" field must survive a spill: Code Mode exec cells and
-// process snapshots both publish one, and clobbering it hid their result.
 func TestMergeDetailsKeepsToolOwnOutputField(t *testing.T) {
 	ref := &Reference{Path: "/tmp/x", Bytes: 4, TotalBytes: 9, Truncated: true}
 	got := MergeDetails(map[string]any{"output": "cell 1 log", "status": "completed"}, ref).(map[string]any)
@@ -225,9 +220,6 @@ func TestCloseSessionRemovesSpillFiles(t *testing.T) {
 func TestSweepRemovesDeadOwnersAndKeepsLiveOnes(t *testing.T) {
 	base := t.TempDir()
 	now := time.Now()
-	// A PID above every pid_max is safely not running. The heartbeat is also
-	// older than the TTL, so a platform whose liveness check cannot answer
-	// (Windows) still sweeps it through the documented heartbeat fallback.
 	dead := filepath.Join(base, runDirPrefix+"dead")
 	mkdirOwner(t, dead, ownerInfo{PID: 1 << 30, Host: testHost(t), StartedAt: now.Add(-2 * time.Hour), Heartbeat: now.Add(-2 * time.Hour)})
 	live := filepath.Join(base, runDirPrefix+fmt.Sprint(os.Getpid())+"-live")
@@ -290,8 +282,6 @@ func TestCloseRemovesTheRunRoot(t *testing.T) {
 	}
 }
 
-// mkdirOwner writes a run root whose timestamps match its recorded heartbeat,
-// which is what a real root looks like: the last write refreshes both.
 func mkdirOwner(t *testing.T, dir string, info ownerInfo) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {

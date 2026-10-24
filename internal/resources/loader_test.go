@@ -88,9 +88,6 @@ func TestScanWithoutExtensionsMatchesBarePromptFields(t *testing.T) {
 	}
 }
 
-// TestScanIncludesExtensionPathDirs pins that extension PATH directories ride
-// the resource snapshot, so the tools toggle/reload path is the only one that
-// has to invalidate them.
 func TestScanIncludesExtensionPathDirs(t *testing.T) {
 	home := resolvedTempDir(t)
 	cwd := t.TempDir()
@@ -109,10 +106,6 @@ func TestScanIncludesExtensionPathDirs(t *testing.T) {
 	}
 }
 
-// resolvedTempDir returns a temp dir whose symlinks are already resolved, so
-// expectations built from it match the extension roots the loader derives:
-// t.TempDir is unresolved on macOS (/var -> /private/var) and Windows
-// short-name %TEMP%.
 func resolvedTempDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

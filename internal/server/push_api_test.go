@@ -16,8 +16,6 @@ import (
 	"time"
 )
 
-// pushClient is the browser half of a subscription: the P-256 key and auth
-// secret a PushManager.subscribe call would produce.
 type pushClient struct {
 	private *ecdh.PrivateKey
 	auth    []byte
@@ -108,8 +106,6 @@ func TestPushSubscriptionValidation(t *testing.T) {
 	}
 }
 
-// A finished run reaches the browser's push service, which is the whole point
-// of the feature: the page may already be frozen.
 func TestRunCompletionSendsWebPush(t *testing.T) {
 	hits := make(chan http.Header, 4)
 	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -148,8 +144,6 @@ func TestRunCompletionSendsWebPush(t *testing.T) {
 	}
 }
 
-// Subagent sessions are an implementation detail of the parent run, so they
-// never raise a push of their own.
 func TestSubagentCompletionDoesNotPush(t *testing.T) {
 	hits := make(chan struct{}, 4)
 	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -206,9 +200,6 @@ func mustDecode(t *testing.T, value string) []byte {
 	return b
 }
 
-// A user abort ends the run with a normal agent_end; the push fallback must not
-// announce it as a finished run (the WebUI suppresses its own notification the
-// same way).
 func TestAbortedRunDoesNotPush(t *testing.T) {
 	hits := make(chan struct{}, 4)
 	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

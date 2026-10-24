@@ -71,7 +71,6 @@ func (s *Server) InterruptAgent(ctx context.Context, caller, target string) (age
 	return previous, err
 }
 
-// acceptAgentContext stores QueueOnly input before exposing a live wakeup.
 func (s *Server) acceptAgentContext(target, origin, text string, completion *types.CompletionIdentity) (agent.MessageResult, error) {
 	dir, ok := s.sidx.Lookup(target)
 	if !ok {

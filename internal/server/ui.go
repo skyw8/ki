@@ -28,8 +28,6 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 	f, err := root.Open(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			// Host paths like /data/hgy/tmp are not assets. Serve the SPA
-			// here (do not 302 — a full navigation must not go blank).
 			s.writeIndex(w, root)
 			return
 		}
@@ -42,16 +40,9 @@ func (s *Server) serveUI(w http.ResponseWriter, r *http.Request) {
 		s.writeIndex(w, root)
 		return
 	}
-	// Vite fingerprints every file under assets/ with a content hash, so the URL
-	// changes whenever the bytes do. immutable stops a reload from revalidating
-	// each asset with a round trip, which is what makes port-forwarded reloads
-	// feel slow. index.html and the SPA fallback keep writeIndex's no-store.
 	if strings.HasPrefix(path, "assets/") {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	}
-	// The service worker must never be served from a stale cache: a browser
-	// checks it on navigation, and a long max-age would pin an old notification
-	// handler for up to a day. The manifest can revalidate cheaply.
 	switch path {
 	case "sw.js":
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")

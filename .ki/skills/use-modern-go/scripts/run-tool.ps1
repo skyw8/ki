@@ -11,7 +11,6 @@ if ($env:LOCALAPPDATA) {
     exit 1
 }
 
-# GO_MODERN_GUIDELINES_DEV runs the binary built by dev-install.
 if ($env:GO_MODERN_GUIDELINES_DEV) {
     $devBinary = Join-Path (Join-Path $cacheRoot "dev") $binaryName
     if (-not (Test-Path -LiteralPath $devBinary -PathType Leaf)) {

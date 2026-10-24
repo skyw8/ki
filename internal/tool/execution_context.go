@@ -6,8 +6,6 @@ import (
 
 type executionContextKey struct{}
 
-// ExecutionIdentity attributes a process to the tool call that started it.
-// It is host-only metadata and never expands model-visible schemas.
 type ExecutionIdentity struct {
 	RunID      string
 	CallID     string
@@ -20,8 +18,6 @@ func ExecutionFromContext(ctx context.Context) ExecutionIdentity {
 	return identity
 }
 
-// WithExecutionIdentity carries host attribution to tool adapters. Runtime
-// services receive their own explicit identity rather than reading this context.
 func WithExecutionIdentity(ctx context.Context, identity ExecutionIdentity) context.Context {
 	return context.WithValue(ctx, executionContextKey{}, identity)
 }

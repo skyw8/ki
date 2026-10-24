@@ -19,7 +19,6 @@ function line(obj: unknown): string {
   return JSON.stringify(obj)
 }
 
-// Append a synthetic transcript onto an existing session directory (header already present).
 export function appendTranscript(dir: string, spec: PerfSeedSpec): { leafId: string; jsonlBytes: number } {
   const configPath = join(dir, 'config.json')
   const jsonlPath = join(dir, 'events.jsonl')

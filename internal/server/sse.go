@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// sseWriter serializes heartbeats and events and bounds a stopped reader's
-// socket write. A global HTTP WriteTimeout would instead kill healthy long runs.
 type sseWriter struct {
 	w       http.ResponseWriter
 	control *http.ResponseController
@@ -36,8 +34,6 @@ func (s *sseWriter) write(format string, args ...any) error {
 		return err
 	}
 	defer func() { _ = s.control.SetWriteDeadline(time.Time{}) }()
-	// Cancellation can fire between the first check and installing the deadline.
-	// Never replace its immediate deadline with another full write window.
 	if s.ctx != nil && s.ctx.Err() != nil {
 		return s.ctx.Err()
 	}
@@ -51,8 +47,6 @@ func (s *sseWriter) write(format string, args ...any) error {
 	return err
 }
 
-// Cancel a blocked write without waiting for the heartbeat to acquire the same
-// write mutex. Join the callback before the handler stops owning its writer.
 func (s *sseWriter) watch(ctx context.Context) func() {
 	s.ctx = ctx
 	done := make(chan struct{})
@@ -64,8 +58,6 @@ func (s *sseWriter) watch(ctx context.Context) func() {
 		if !stop() {
 			<-done
 		}
-		// net/http still has to write its final chunk after ServeHTTP returns.
-		// A cancellation deadline left installed turns a clean EOF into truncation.
 		_ = s.control.SetWriteDeadline(time.Time{})
 	}
 }

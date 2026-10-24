@@ -32,15 +32,8 @@ import (
 	"ki/internal/types"
 )
 
-// startupReportEnv names the file a detached child writes its startup failure
-// to. A detached `ki`/`ki serve -d` parent cannot read the child's stderr (and
-// must not share a pipe with it), so without this the only report was
-// "server did not come up" even for a bad ki.toml or an occupied port.
 const startupReportEnv = "KI_STARTUP_REPORT"
 
-// writeStartupReport records err for the detached parent. Errors raised before
-// logging.Setup (config decode, invalid MCP json) never reach ki.jsonl, so this
-// file is the only reason a failed launch can show.
 func writeStartupReport(err error) {
 	path := os.Getenv(startupReportEnv)
 	if path == "" || err == nil {
@@ -50,7 +43,6 @@ func writeStartupReport(err error) {
 	_ = os.WriteFile(path, []byte(err.Error()+"\n"), 0o600)
 }
 
-// Main is the process entrypoint.
 func Main(args []string) (exitCode int) {
 	defer func() {
 		if logging.Recover("process panic") {
@@ -59,8 +51,6 @@ func Main(args []string) (exitCode int) {
 	}()
 
 	if len(args) == 1 && args[0] == codemode.WorkerArg {
-		// Workers must not discover project config, credentials or extensions:
-		// all capabilities arrive over the parent's private IPC connection.
 		if err := codemode.ServeWorker(context.Background(), os.Stdin, os.Stdout, codemode.Limits{}); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -68,11 +58,6 @@ func Main(args []string) (exitCode int) {
 		return 0
 	}
 
-	// Cobra's Windows mousetrap prints "This is a command line tool. You need
-	// to open cmd.exe and run it from there." and exits when the binary is
-	// double-clicked in Explorer. Bare `ki` is the WebUI launcher, so that
-	// splash blocks exactly the flow a double-click should start; disabling it
-	// lets RunE run the detached server and open the browser instead.
 	cobra.MousetrapHelpText = ""
 	shellLaunch := len(args) == 0 && launchedFromShell()
 	if shellLaunch {
@@ -146,10 +131,6 @@ func newServeCommand() *cobra.Command {
 			}
 			return withConfig("server", settings, func(cfg config.Config) error {
 				if detach {
-					// Why the recorded address: after an upgrade the existing
-					// port-forwards and WebUI bookmarks must keep working, and
-					// the daemon being replaced is listening there. An explicit
-					// --addr still wins.
 					addr := cfg.Server.Addr
 					if !cmd.Flags().Changed("addr") {
 						addr = daemonAddr(cfg)
@@ -488,13 +469,8 @@ type flags struct {
 	Queue    bool
 }
 
-// noLiveServerHint is the next step when a daemon-only command finds no
-// healthy server.json. These commands never start an in-process server, so the
-// bare "ki server is not running" left the user to guess.
 const noLiveServerHint = "start the daemon with `ki serve -d` (or bare `ki`) and retry"
 
-// errHint appends an actionable next step to an error without hiding the
-// original: wrapping with %w keeps errors.Is working for callers and tests.
 func errHint(err error, hint string) error {
 	if err == nil || hint == "" {
 		return err
@@ -526,10 +502,6 @@ func runServe(cfg config.Config, addr string) error {
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}
-	// Why a signal handler: without one, SIGTERM/SIGINT killed the process
-	// outright, so extensions, shells and tool-output roots were never closed
-	// and server.json survived the daemon. Shutdown is idempotent, so a second
-	// signal (or POST /v1/shutdown racing it) is harmless.
 	ctx, stop := signal.NotifyContext(context.Background(), stopSignals()...)
 	defer stop()
 	served := make(chan error, 1)
@@ -582,12 +554,6 @@ func runDetach(cfg config.Config, f flags) error {
 	return nil
 }
 
-// replaceDetached implements `ki serve -d --replace`: the upgrade path.
-//
-// Why it refuses to stop a server that already runs this build: `--replace`
-// exists to swap binaries. Replacing an identical one would kill a working
-// daemon and its in-flight runs for nothing, so the command degrades into the
-// ordinary "already running" answer instead.
 func replaceDetached(cfg config.Config, f flags) error {
 	if sf, err := server.ReadServerFile(cfg.Home); err == nil && sf.Addr != "" && ping("http://"+sf.Addr, sf.Token) {
 		if buildMismatch(sf) == "" {
@@ -602,9 +568,6 @@ func replaceDetached(cfg config.Config, f flags) error {
 	return runDetach(cfg, f)
 }
 
-// warnBuildMismatch tells the user that the daemon answering their commands is
-// not the binary they just invoked. It is advisory and never fails a command:
-// an automated client must still work against an older daemon.
 func warnBuildMismatch(sf server.File) {
 	if msg := buildMismatch(sf); msg != "" {
 		fmt.Fprintf(os.Stderr, "warning: %s; run `ki restart`\n", msg)
@@ -612,15 +575,7 @@ func warnBuildMismatch(sf server.File) {
 }
 
 func runDefault(cfg config.Config) error {
-	// Why capture the address first: stopDaemon deletes server.json, so reading
-	// it afterwards would silently fall back to the configured default port and
-	// move a running server's port-forwards and bookmarks out from under the
-	// user.
 	addr := daemonAddr(cfg)
-	// Bare `ki` is the upgrade entry point too: installing a new binary and
-	// running `ki` again is what a user naturally does, so a daemon still
-	// serving the previous build is replaced (interrupting its runs, like
-	// `ki restart`) instead of leaving the new binary unused.
 	if sf, err := server.ReadServerFile(cfg.Home); err == nil && sf.Addr != "" && ping("http://"+sf.Addr, sf.Token) {
 		if msg := buildMismatch(sf); msg != "" {
 			fmt.Fprintf(os.Stderr, "replacing ki server %s (%s)\n", sf.Addr, msg)
@@ -639,16 +594,11 @@ func runDefault(cfg config.Config) error {
 	}
 	fmt.Fprintf(os.Stderr, "ki web %s\n", url)
 	if err := openBrowser(url); err != nil {
-		// Browser launch is deliberately best-effort: headless shells and SSH
-		// sessions are valid Ki clients even when no GUI opener is available.
 		fmt.Fprintf(os.Stderr, "could not open browser: %v\n", err)
 	}
 	return nil
 }
 
-// daemonAddr prefers the address a live daemon already recorded. Port-forwards,
-// bookmarks and the WebUI URL keep working across a restart, and an explicit
-// server.addr only applies when nothing is running yet.
 func daemonAddr(cfg config.Config) string {
 	if sf, err := server.ReadServerFile(cfg.Home); err == nil && sf.Addr != "" {
 		return sf.Addr
@@ -656,15 +606,6 @@ func daemonAddr(cfg config.Config) string {
 	return cfg.Server.Addr
 }
 
-// startDetached launches `ki serve` as an independent process and waits for it
-// to publish a fresh server.json that answers /v1/health.
-//
-// The child inherits /dev/null rather than io.Discard: io.Discard makes os/exec
-// insert a pipe, and the child's log writes then hit EPIPE (SIGPIPE on Unix)
-// as soon as this parent exits — which killed the detached daemon shortly after
-// its own launcher returned. Startup failures are reported through
-// KI_STARTUP_REPORT instead of stderr, so the parent can explain *why* the
-// child exited (bad config, occupied port, …) rather than only that it did.
 func startDetached(cfg config.Config, addr string) (sf server.File, pid int, started bool, err error) {
 	if existing, e := server.ReadServerFile(cfg.Home); e == nil && existing.Addr != "" && ping("http://"+existing.Addr, existing.Token) {
 		return existing, 0, false, nil
@@ -706,10 +647,6 @@ func startDetached(cfg config.Config, addr string) (sf server.File, pid int, sta
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
-	// Wait for both the child to publish a fresh server file and the endpoint
-	// to answer. Checking only file existence lets a stale server.json report a
-	// failed child as healthy. Also stop waiting once the child exits: a failed
-	// launch would otherwise burn the full timeout and hide the real error.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if current, e := server.ReadServerFile(cfg.Home); e == nil && current.Addr != "" && current.Token != oldToken && ping("http://"+current.Addr, current.Token) {
@@ -732,9 +669,6 @@ func startDetached(cfg config.Config, addr string) (sf server.File, pid int, sta
 		fmt.Sprintf("the detached `ki serve --addr %s` did not answer within 5s; run `ki serve --addr %s` in the foreground to see what it prints", addr, addr))
 }
 
-// detachedFailure turns a detached child's exit into an error that carries the
-// child's own reason. The child writes it to reportPath before exiting; a
-// signal-only exit means it was killed from outside.
 func detachedFailure(waitErr error, reportPath, addr string) error {
 	detail := ""
 	if b, readErr := os.ReadFile(reportPath); readErr == nil { //nolint:gosec // parent-owned temp file
@@ -755,7 +689,7 @@ func streamer(_ config.Config) loop.Streamer {
 	if os.Getenv("KI_FAKE") == "1" {
 		return &provider.Scripted{}
 	}
-	return nil // Server builds the live router from the provider registry.
+	return nil
 }
 
 func validateRunInput(f flags, prompt string) error {
@@ -769,8 +703,6 @@ func validateRunInput(f flags, prompt string) error {
 }
 
 func runClient(cfg config.Config, f flags, prompt string) error {
-	// Reject invalid input before even attaching or starting a server: session
-	// creation and thinking PATCHes are durable effects, not prompt validation.
 	if err := validateRunInput(f, prompt); err != nil {
 		return err
 	}
@@ -793,9 +725,6 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 		}
 		id, _ = created["id"].(string)
 	} else if f.Thinking != "" {
-		// Thinking is session configuration, not a prompt field. Apply model
-		// and thinking atomically so a resumed session validates the selected
-		// level against the intended model, rather than the previous one.
 		body := map[string]any{"thinkingEffort": f.Thinking}
 		if f.Model != "" {
 			body["model"] = f.Model
@@ -805,19 +734,11 @@ func runClient(cfg config.Config, f flags, prompt string) error {
 		}
 	}
 	ctx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt)
-	// Why WithoutCancel: ctx is already canceled when this cleanup runs (that
-	// is what triggered it). Reusing it would cancel the abort HTTP request
-	// before serve sees it, so Ctrl+C would never reach POST /abort.
-	// WithoutCancel keeps the abort request alive after the signal context is
-	// canceled while retaining any values attached to the client context.
 	stopAbort := context.AfterFunc(ctx, func() {
 		abortCtx, abortCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer abortCancel()
 		_ = doJSONContext(abortCtx, base, token, "POST", "/v1/sessions/"+id+"/abort", map[string]any{"source": "cli"}, nil)
 	})
-	// Why stopSig first: canceling ctx is what triggers the abort POST, so any
-	// runClient exit keeps aborting a run the client stops streaming — the
-	// previous ctx.Done watcher goroutine behaved the same way.
 	defer func() {
 		stopSig()
 		stopAbort()
@@ -883,7 +804,6 @@ func ensureServer(cfg config.Config, f flags) (base, token string, stop func(), 
 			return "http://" + sf.Addr, sf.Token, nil, nil
 		}
 	}
-	// in-process
 	srv, err := server.New(server.Options{Config: cfg, Streamer: streamer(cfg)})
 	if err != nil {
 		return "", "", nil, fmt.Errorf("create in-process server: %w", err)
@@ -1006,22 +926,17 @@ func streamEvents(ctx context.Context, base, token, id string) error {
 	return sc.Err()
 }
 
-// print writes the part of text stdout has not seen yet.
 func (p *streamPrinter) print(text string) {
 	if text == "" {
 		return
 	}
 	if !strings.HasPrefix(text, p.printed) {
-		// The accumulation changed shape (a provider that drops reasoning from a
-		// later partial): resync on the whole text rather than pretend the
-		// suffix lines up.
 		p.printed = ""
 	}
 	_, _ = fmt.Fprint(os.Stdout, text[len(p.printed):])
 	p.printed = text
 }
 
-// thinkingText returns concatenated thinking blocks.
 func thinkingText(m types.Message) string {
 	var s strings.Builder
 	for _, c := range m.Content {
@@ -1032,18 +947,7 @@ func thinkingText(m types.Message) string {
 	return s.String()
 }
 
-// streamPrinter writes a run's assistant text to stdout.
-//
-// Why it diffs the accumulated text instead of printing the event's delta: the
-// server drops superseded chunks from a replay (each repeats the whole partial,
-// see runState.trimLocked), and it stops honouring a reader that fell further
-// behind than the retention caps there. A process that attaches mid-message —
-// or that falls behind — therefore receives a partial that has moved on by more
-// than one chunk, and printing raw deltas would silently drop the text in
-// between. Writing the missing suffix of the accumulated partial is correct in
-// both cases, and identical to the delta for a live stream.
 type streamPrinter struct {
-	// printed is the text already written for the message in flight.
 	printed string
 	started bool
 }
@@ -1054,10 +958,6 @@ func (p *streamPrinter) event(ev loop.Event) {
 		p.started = false
 		p.printed = ""
 	case loop.MessageEnd:
-		// A run can finish before this process connects (a cached or local
-		// model): the replay then carries only the message_end, its chunks
-		// already trimmed. The end carries the final text, so anything the
-		// stream did not show is written here.
 		if m := ev.Message; m != nil && m.Role == "assistant" {
 			p.print(thinkingText(*m) + m.Text())
 		}

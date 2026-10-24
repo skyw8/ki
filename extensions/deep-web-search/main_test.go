@@ -461,7 +461,7 @@ func TestCacheEvictsInInsertionOrderAcrossExpiryAndReload(t *testing.T) {
 		t.Fatal("not expired")
 	}
 	c.put("expired", obj{"v": 3})
-	c.put("kept", obj{"v": 4}) // Updating an entry does not move it to the back.
+	c.put("kept", obj{"v": 4})
 	c = &searchCache{path: path}
 	c.mu.Lock()
 	c.load()
@@ -607,8 +607,6 @@ func TestBackgroundHydrationTracksActiveCancellationButSurvivesReply(t *testing.
 }
 
 func TestWHATWGCanonicalURLsMatchOriginalConstructor(t *testing.T) {
-	// Expected strings come from the original JavaScript URL constructor. These
-	// cases affect both source deduplication and hosts admitted by content fetches.
 	for _, tc := range []struct{ raw, want string }{
 		{"https://例え.テスト/a/../b/", "https://xn--r8jz45g.xn--zckzah/b"},
 		{"HTTPS://BÜCHER.Example:443/a/%2e/%2E%2e/b/", "https://xn--bcher-kva.example/b"},

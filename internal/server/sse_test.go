@@ -41,7 +41,6 @@ func TestSSEWriterBoundsStalledReadersAndCancellation(t *testing.T) {
 		t.Run(map[bool]string{false: "deadline", true: "cancel"}[cancelEarly], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				w := &stalledWriter{ResponseRecorder: httptest.NewRecorder(), expired: make(chan struct{})}
-				// Exercise ResponseController through the actual gzip wrapper.
 				writer := newSSEWriter(&gzipWriter{ResponseWriter: w, status: 200})
 				writer.timeout = 30 * time.Second
 				ctx, cancel := context.WithCancel(context.Background())

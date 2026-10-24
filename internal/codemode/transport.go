@@ -29,8 +29,6 @@ type inboundRequest struct {
 	done   chan struct{}
 }
 
-// A peer always reads responses independently from callback work. Otherwise a
-// tool callback waiting for a response can deadlock the bidirectional pipe.
 type peer struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -153,8 +151,6 @@ func (p *peer) call(ctx context.Context, op string, data any, out any) error {
 		}
 		return nil
 	case <-ctx.Done():
-		// Best-effort cancellation is followed by caller-side lifecycle cleanup;
-		// abandoning the observer never grants the worker a new capability.
 		cancelCtx, cancel := context.WithTimeout(p.ctx, 50*time.Millisecond)
 		_ = p.send(cancelCtx, wireFrame{Kind: "cancel", ID: id})
 		cancel()

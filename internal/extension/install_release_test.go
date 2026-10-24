@@ -14,8 +14,6 @@ import (
 	"ki/internal/session"
 )
 
-// releaseFixture writes a release directory (checksums.txt + one asset) that the
-// installer reads through a file:// source, so tests never touch the network.
 type releaseFixture struct {
 	dir    string
 	assets map[string][]byte
@@ -106,7 +104,6 @@ func TestInstallVerifiesChecksumAndPublishesPackage(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, "extensions", "goal", "extension.json")); err != nil {
 		t.Fatal(err)
 	}
-	// The archive had a single wrapping directory; it must be stripped.
 	if _, err := os.Stat(filepath.Join(home, "extensions", "goal", "goal")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("wrapping directory survived: %v", err)
 	}
@@ -114,8 +111,6 @@ func TestInstallVerifiesChecksumAndPublishesPackage(t *testing.T) {
 		t.Fatalf("stages=%v", stages)
 	}
 	listed := installer.List()
-	// The embedded catalog does not carry this fixture's version, so List is
-	// exercised through an explicit catalog entry instead.
 	installer.Catalog = InstallCatalog{Version: InstallCatalogVersion, Extensions: []InstallEntry{{Name: "goal", Version: "1.0.0"}}}
 	listed = installer.List()
 	if len(listed) != 1 || listed[0].Name != "goal" || !listed[0].Installed || listed[0].InstalledVersion != "1.0.0" {
@@ -127,7 +122,6 @@ func TestInstallRejectsChecksumMismatch(t *testing.T) {
 	release := newReleaseFixture(t)
 	release.add(t, "goal-linux-amd64.zip", manifestFiles(), nil)
 	release.write(t)
-	// Corrupt the published digest without touching the asset.
 	sums := filepath.Join(release.dir, "v9.9.9", checksumFile)
 	body, err := os.ReadFile(sums)
 	if err != nil {
@@ -208,7 +202,6 @@ func TestInstallUpgradeKeepsPrivateStateAndReplacesFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(current, "extension.json"), []byte(`{"name":"goal","version":"0.1.0"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Private documents must survive; a stale source file must not.
 	if err := os.WriteFile(filepath.Join(current, "config.json"), []byte(`{"version":1,"token":"secret"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -356,8 +349,6 @@ func TestEmbeddedCatalogListsBundledExtensions(t *testing.T) {
 func TestListMarksLinkedPackagesAndRoot(t *testing.T) {
 	home := t.TempDir()
 	checkout := t.TempDir()
-	// A single linked package inside a real root is the shape that matters:
-	// discovery uses it, and an install would otherwise replace a checkout.
 	if err := os.MkdirAll(filepath.Join(home, "extensions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -388,8 +379,6 @@ func TestListMarksLinkedPackagesAndRoot(t *testing.T) {
 		t.Errorf("a real extensions root reported as linked")
 	}
 
-	// A linked root marks every catalog entry, because none of them can be
-	// replaced without writing through the link.
 	linkedHome := t.TempDir()
 	if err := os.Symlink(checkout, filepath.Join(linkedHome, "extensions")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)

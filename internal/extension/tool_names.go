@@ -7,7 +7,6 @@ import (
 	"ki/internal/tool/builtin/catalog"
 )
 
-// Validation precedes registration so collisions never replace a live capability.
 func validateToolNames(specs []ToolSpec) error {
 	seen := map[string]string{}
 	for _, spec := range specs {

@@ -1,6 +1,6 @@
 # 一次 prompt 怎么走
 
-跨 `cli` → `server` → `loop` 的编排。包内不变量见各自 `doc.go`。
+跨 `cli` → `server` → `loop` 的编排。
 
 ## 进程
 

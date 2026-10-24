@@ -17,11 +17,6 @@ type SyncOptions = {
   wait?: (ms: number, signal: AbortSignal) => Promise<void>
 }
 
-/**
- * One run reader/reconciler per open transcript. Lifecycle, push invalidation,
- * EOF and failed transport all use this state machine, never competing loops.
- * Reconnection only reads snapshots/events; it has no prompt-writing API.
- */
 export class SessionSyncController {
   private id: string | null = null
   private paused = false
@@ -57,16 +52,11 @@ export class SessionSyncController {
     job?.resolve()
   }
 
-  /** A navigation is explicit, including reopening the same selected branch. */
   select(id: string | null): void {
     if (!this.active) return
     this.stop()
     this.id = id
-    // An ACK is a capability backed by applied state, not a session bookmark.
-    // Opening discards transient overlays; replay must reconstruct them.
     this.cursor = undefined
-    // Navigation is not a page lifecycle resume. A delayed opening response
-    // must never reopen a socket after pagehide or bfcache suspension.
     this.phase(this.paused ? 'paused' : 'idle')
   }
 
@@ -74,7 +64,6 @@ export class SessionSyncController {
     return this.id === id && this.status.phase === 'listening' && !!this.job && !this.job.abort.signal.aborted
   }
 
-  /** A running hint cannot reopen subscriptions while the page is in bfcache. */
   listen(id: string, through?: string): Promise<void> {
     if (!this.active || this.id !== id || this.paused || this.store.sessionId !== id) return Promise.resolve()
     this.runningHint++
@@ -106,7 +95,6 @@ export class SessionSyncController {
     this.listeners.clear()
   }
 
-  /** Restartable effect lifetime; only mounting, never a network callback. */
   activate(): void { this.active = true }
 
   private launch(recover: boolean, through?: string): Promise<void> {
@@ -151,22 +139,12 @@ export class SessionSyncController {
           }
           this.phase('retrying')
           await wait(reconnectDelay(attempt++), signal).catch(() => {})
-          // A failed history read must not also strand a known live run.
-          // Retain its applied state/ACK and try the reader again; its next
-          // close goes through this same reconciliation path. An idle/empty
-          // replica has no such evidence and continues retrying the snapshot.
           if (valid() && this.store.current.busy) recovering = false
           continue
         }
         if (!valid()) return
-        // A list/accepted-run hint received after this request began may
-        // describe a new run. Confirm it rather than stopping on an old idle
-        // response, or canceling recovery before it can fill missed history.
         if (!detail.running && runningHint !== this.runningHint) continue
         if (!this.store.commit(ticket, detail)) continue
-        // Sideband or other committed work can make this GET too old to
-        // settle execution. Do not leave a busy replica without a reader:
-        // acquire runtime authority with a fresh snapshot first.
         if (!!detail.running !== this.store.current.busy) continue
         this.options.onSnapshot?.(id, detail)
         job.resolve()
@@ -176,8 +154,6 @@ export class SessionSyncController {
           return
         }
         through = detail.leafId
-        // Repeated short EOFs are a broken transport, not completed work.
-        // Bound reconnects without delaying the first authoritative tail read.
         if (streamEnded) {
           this.phase('retrying')
           await wait(reconnectDelay(attempt++), signal).catch(() => {})
@@ -188,14 +164,10 @@ export class SessionSyncController {
       this.options.onListening?.(id)
       job.resolve()
       const connectedAt = performance.now()
-      // Detailed tails also omit older bodies. Without snapshot coverage a
-      // reconnect replays every old notification as fresh transcript content.
       const replayThrough = through ?? this.store.current.leafId
       const batcher = streamBatch(events => {
         if (!valid()) return
         this.store.applyEvents(events)
-        // A cursor advances only after the synchronous atomic commit, not
-        // receipt, rAF scheduling or a deferred React state updater.
         const last = events.at(-1)
         if (last?.runId && last.seq !== undefined) this.cursor = `${last.runId}:${last.seq}`
       }, this.options.clock)
@@ -205,8 +177,6 @@ export class SessionSyncController {
           batcher.enqueue(event)
         }
       } catch {
-        // The same snapshot path handles EOF and transport/read errors.
-        // HTTP/auth failures are reported by the authoritative GET below.
       } finally {
         batcher.flush()
         batcher.dispose()

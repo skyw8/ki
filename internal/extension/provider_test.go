@@ -62,9 +62,6 @@ func TestProviderManagerStreamsConcurrentAndCancels(t *testing.T) {
 	if got := probe.Prepare(context.Background(), "session", t.TempDir(), []Descriptor{d}); len(got) != 0 {
 		t.Fatalf("provider descriptor must not become a session tool set: %v", got)
 	}
-	// Why: an extension manager starts a sidecar for every descriptor with a
-	// runtime, so the probe has to be closed. A live sidecar keeps its working
-	// directory open, and Windows then refuses to remove that temp dir.
 	probe.Close()
 	t.Cleanup(pm.Close)
 

@@ -14,8 +14,6 @@ export function PDFPreview({ url }: { url: string }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Pass an explicit URL object: PDF.js 6 no longer classifies blob: strings
-    // passed as the shorthand source form.
     const task = getDocument({ url })
     let active = true
     setDoc(null)

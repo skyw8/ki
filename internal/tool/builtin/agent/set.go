@@ -10,7 +10,6 @@ import (
 	"ki/internal/tool/builtin/catalog"
 )
 
-// Build constructs session-scoped adapters around the host agent runtime.
 func Build(runtime agent.Runtime, sessionID string) []toolapi.Tool {
 	if runtime == nil {
 		return nil

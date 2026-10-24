@@ -9,11 +9,6 @@ import (
 	"github.com/inconshreveable/mousetrap"
 )
 
-// Why: Windows attaches a fresh console window to a console-subsystem binary
-// that Explorer double-clicks, and that window disappears the moment the
-// process exits. The bare `ki` command is the WebUI launcher, so the window is
-// hidden and a failed launch is reported in a message box: stderr text would
-// vanish with the console before anyone could read it.
 var (
 	user32          = syscall.NewLazyDLL("user32.dll")
 	procGetConsole  = user32.NewProc("GetConsoleWindow")
@@ -28,8 +23,6 @@ const (
 	mbSetForeground = 0x00010000
 )
 
-// launchedFromShell reports whether Explorer started the process, i.e. the user
-// double-clicked ki.exe rather than running it from a terminal.
 func launchedFromShell() bool { return mousetrap.StartedByExplorer() }
 
 func hideOwnConsole() {

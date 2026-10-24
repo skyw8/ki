@@ -25,7 +25,6 @@ func TestBlockedTTYInputObserverCanCancelWithoutKillingProcess(t *testing.T) {
 	if _, err := tool.processes.Terminate(snapshot.SessionID); err != nil {
 		t.Fatal(err)
 	}
-	// Termination unblocks the manager-owned write and releases its input lock.
 	ctx2, cancel2 := context.WithTimeout(t.Context(), time.Second)
 	defer cancel2()
 	if value, err := tool.processes.Interact(ctx2, snapshot.SessionID, "", time.Millisecond, 100, nil); err != nil || value.Status != "exited" {

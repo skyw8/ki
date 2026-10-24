@@ -208,7 +208,6 @@ export function ProviderSettings({ api, onChanged }: Props) {
                 providerReady(provider) ? '' : 'needs-setup',
                 provider.enabled ? '' : 'is-disabled',
               ].filter(Boolean).join(' ')
-              // Name only: id + "API key needed" read as a second grey copy of the same row.
               return (
                 <Fragment key={provider.id}>
                   {split ? <div className="provider-nav-split" role="separator" data-testid="provider-nav-split" /> : null}
@@ -312,8 +311,6 @@ export function ProviderSettings({ api, onChanged }: Props) {
                       <div className="model-main"><strong>{model.name || model.id}</strong><small>{model.id}</small><div className="model-tags"><span>{model.contextWindow?.toLocaleString()} ctx</span>{model.reasoning ? <span>{c.reasoning}</span> : null}{model.input?.includes('image') ? <span>{c.vision}</span> : null}<span>{extensionManaged ? c.extension : model.builtin ? c.builtIn : c.custom}</span></div></div>
                       <div className="model-actions">
                         {!extensionManaged ? <><button type="button" className="icon-text-button" data-testid="edit-model" onClick={() => editModel(model)}><IEdit />{c.edit}</button>
-                        {/* Why: the compact switch has no visible text and title alone is not
-                            exposed as a reliable accessible name across browsers. */}
                         <label className="compact-switch" title={model.enabled ? c.enabled : c.disabled}><input type="checkbox" aria-label={`${model.name || model.id}: ${model.enabled ? c.enabled : c.disabled}`} checked={model.enabled} disabled={!!busy} onChange={e => void run('model-enabled', () => api.patchModel(current.id, { id: model.id, enabled: e.target.checked }))} /><span aria-hidden /></label>
                         {model.builtin && model.customized ? <button type="button" className="icon-text-button" onClick={() => void run('restore-model', () => api.deleteModel(current.id, model.id))}><IRegen />{c.restore}</button> : null}
                         {!model.builtin ? <button type="button" className="icon-text-button danger" disabled={!!busy} onClick={() => void run('delete-model', () => api.deleteModel(current.id, model.id))}><ITrash />{c.remove}</button> : null}</> : null}

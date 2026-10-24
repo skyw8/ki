@@ -346,11 +346,6 @@ export function SessionConfig({
   )
 }
 
-/**
- * The complete system prompt the model last received, shown raw. It is the
- * rendered prompt from the newest request_header, not a re-render, so the block
- * only frames and copies it instead of interpreting the text.
- */
 function SystemPromptBlock({ text, loading }: { text: string; loading: boolean }) {
   const { t } = useI18n()
   const [copied, setCopied] = useState(false)
@@ -569,7 +564,6 @@ export function SettingsToggles({
   workspaceId?: string | null
   onConfigure?: (name: string) => void
   onChanged?: () => void | Promise<void>
-  /** Bumped whenever the global extension catalog is refetched. */
   refreshKey?: number
 }) {
   const { t, lang } = useI18n()
@@ -611,7 +605,6 @@ export function SettingsToggles({
       const disabled = next.filter(s => !s.enabled).map(s => s.name)
       if (kind === 'skills') await api.patchSkills(disabled)
       else if (kind === 'mcp') {
-        // File-disabled servers cannot be enabled here or become redundant global overrides.
         const mcpDisabled = next.filter(s => !s.enabled && 'configuredEnabled' in s && s.configuredEnabled).map(s => s.name)
         const updated = await api.patchMCP(mcpDisabled, sessionId, workspaceId)
         setItems(updated.mcp ?? [])
@@ -625,7 +618,6 @@ export function SettingsToggles({
       if (kind !== 'tools' && kind !== 'mcp') setItems(kind === 'skills' ? await api.skills(workspaceId) : await api.extensions())
       await onChanged?.()
     } catch (e) {
-      // A failed catalog refresh must not undo a mutation already saved by the server.
       if (!committed) setItems(prev)
       setError(String(e instanceof Error ? e.message : e))
       toast.from(e)
@@ -672,11 +664,6 @@ export function SettingsToggles({
 	              {'description' in item && kind !== 'extensions' && item.description ? <p className="cfg-desc">{item.description}</p> : null}
 	              {'error' in item && item.error ? <p className="cfg-desc settings-error-inline" data-testid={`${kind}-error-${item.name}`} role="alert">{item.error}</p> : null}
 	              </div>
-	              {/* Why: the inspector catalog is enabled extensions only.
-	                  Disabled packages have no live sidecar view, so Configure
-	                  would open an empty or unrelated inspector. Goal and other
-	                  UI-only packages have no config schema, but they still
-	                  use the same inspector as configurable extensions. */}
 	              {kind === 'extensions' && item.enabled ? <button type="button" className="cfg-btn" data-testid={`cfg-configure-${item.name}`} onClick={() => onConfigure?.(item.name)}>{t('cfg.configure')}</button> : null}
               <Switch
                 testid={`${itemKind}-on-${item.name}`}
@@ -689,8 +676,6 @@ export function SettingsToggles({
           ))}
         </ul>
       )}
-      {/* Installing lives next to the toggle list: an installed package moves
-          from here into the list above on the next catalog refresh. */}
       {kind === 'extensions' ? (
         <ExtensionInstallList
           api={api}
@@ -704,7 +689,6 @@ export function SettingsToggles({
 
 export { SchemaConfigForm as ExtensionConfigEditor } from './schema/SchemaConfigForm'
 
-// Mirrors maxMessageContextWindow in internal/server/slash.go.
 const MAX_CONTEXT_WINDOW = 100_000_000
 
 export function MessageSettings({ api, view, onView }: { api: Client; view: MessageView; onView: (view: MessageView) => void }) {

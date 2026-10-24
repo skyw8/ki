@@ -60,8 +60,6 @@ func (s *Server) doReload(w http.ResponseWriter, r *http.Request) {
 		queued = s.requestReload(body.SessionID)
 	}
 	slog.Info("reload")
-	// Both branches change what /v1/extensions and the open session's runtime
-	// catalog report; a per-session reload has no other refetch signal.
 	s.publishInvalidation(scopeExtensions)
 	s.publishInvalidation(scopeSessions)
 	writeJSON(w, 200, map[string]any{"ok": true, "queued": queued})
@@ -84,9 +82,6 @@ func (s *Server) getSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"items": items})
 }
 
-// toolProfile is the single model-to-tool capability mapping used by both
-// Settings and occupied runs; keeping one mapping prevents the visible catalog
-// from drifting away from the request header sent to the provider.
 func toolProfile(info provider.Model) builtin.Profile {
 	return builtin.Profile{
 		RichRead:   slices.Contains(info.Input, "image"),
@@ -94,9 +89,6 @@ func toolProfile(info provider.Model) builtin.Profile {
 	}
 }
 
-// getTools returns every globally toggleable built-in. The selected model is
-// reported through available, but model-specific editors remain visible so
-// changing another switch cannot erase their global disabled state.
 func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 	cwd, status, err := s.toolSettingsCWD(r)
@@ -119,14 +111,7 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		profile = toolProfile(info)
-		// Why this catalog does not resolve Agent depth: the tool list shown to
-		// clients must match the tool list sent to the provider, which is
-		// deliberately independent of depth. Admission limits active child turns
-		// per root rather than changing tool exposure in a deep session.
 	} else if ref := s.registry.Default(); ref.Provider != "" && ref.Model != "" {
-		// Settings can be opened before a session exists. Use the last selected
-		// model when it is available, while retaining a useful fallback catalog
-		// if the provider catalog is not configured yet.
 		if _, info, ok := s.registry.FindModel(ref.Provider, ref.Model); ok {
 			profile = toolProfile(info)
 		}
@@ -173,15 +158,11 @@ func (s *Server) patchTools(w http.ResponseWriter, r *http.Request) {
 		MCPDisabled json.RawMessage `json:"mcpDisabled"`
 	}
 	decoder := json.NewDecoder(r.Body)
-	// Settings only accept supported toggle fields; removed controls must not
-	// silently succeed while leaving clients with an ineffective setting.
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil || body == nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	// Validate the entire patch before saving: a trailing document must not
-	// silently commit the first object or make malformed requests appear valid.
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
@@ -237,14 +218,10 @@ func (s *Server) patchTools(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// The current run keeps its request header; Reload queues the new tool
-	// set for an occupied session and applies it at the next occupy boundary.
 	s.Reload()
 	s.getTools(w, r)
 }
 
-// updateToggles serializes read-modify-write across independent settings and
-// automatic extension disablement, so saving one field cannot erase another.
 func (s *Server) updateToggles(change func(*toggles.File)) error {
 	s.toggleMu.Lock()
 	defer s.toggleMu.Unlock()
@@ -466,9 +443,6 @@ func (s *Server) extensionCatalog(snapshot resources.Snapshot, sessionID string)
 		if files := d.PromptAppendFiles(); len(files) > 0 {
 			item["promptAppend"] = files
 		}
-		// PATH contributions are shown with their current existence: an enabled
-		// package whose directory never appears is invisible otherwise, and PATH
-		// shadowing has to stay observable.
 		if dirs := d.PathDirStatuses(); len(dirs) > 0 {
 			item["pathDirs"] = dirs
 		}
@@ -520,11 +494,6 @@ func (s *Server) onExtensionError(sessionID, name, capability, code, message str
 	s.publishPush(sessionID, ev)
 }
 
-// occupy claims exclusive run ownership for id. The caller must pair it with
-// release: runPrompt defers that; manual compaction releases after its
-// prepare/execute/validate/commit pipeline.
-// A second occupy while done is still open returns 409. A finished run stays
-// in s.runs while the completed replay cache admits it.
 func (s *Server) occupy(parent context.Context, id string) (*runState, context.Context, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -545,7 +514,6 @@ func (s *Server) occupy(parent context.Context, id string) (*runState, context.C
 	if stopping {
 		return nil, nil, errSessionBusy
 	}
-	// Every error before ownership is established must release this reservation.
 	claimed := false
 	defer func() {
 		if !claimed {
@@ -570,16 +538,10 @@ func (s *Server) occupy(parent context.Context, id string) (*runState, context.C
 	s.forgetReplayLocked(id)
 	s.runs[id] = st
 	claimed = true
-	// Green dot for every other client, not just the one that prompted.
 	s.publishInvalidation(scopeSessions)
 	return st, ctx, nil
 }
 
-// release ends occupy: cancel the run, apply a queued resource reload, then
-// close done so SSE drains and running() is false. The finished runState stays
-// in s.runs so late SSE
-// subscribers can replay within the completed cache's byte/TTL budget. close(done)
-// before Broadcast is the events-wait protocol.
 func (s *Server) release(id string, st *runState) {
 	if st == nil {
 		return
@@ -599,8 +561,6 @@ func (s *Server) release(id string, st *runState) {
 	pending := s.pendingReload[id]
 	delete(s.pendingReload, id)
 	s.mu.Unlock()
-	// Idle must imply queued resource invalidation has already happened.
-	// Cache accounting can be expensive; never put it between done and reload.
 	if pending {
 		s.reloadSession(id)
 	}
@@ -609,15 +569,11 @@ func (s *Server) release(id string, st *runState) {
 	close(st.done)
 	st.wait.Broadcast()
 	st.mu.Unlock()
-	// Register expiry before extension notifications or queue dispatch, which
-	// can wait on unrelated work after this run has already become idle.
 	s.retainReplay(id, st)
 	if s.ext != nil {
 		s.ext.OnEvent(context.Background(), id, extension.RedactEvent(loop.Event{Type: loop.AgentSettled, RunID: runID, External: external}, id))
 	}
 	s.flushSettled(id)
-	// Publish after dispatchQueue: it may occupy again for a queued message, and
-	// the last frame then already reflects the next run starting.
 	s.dispatchQueue(id)
 	s.publishInvalidation(scopeSessions)
 }
@@ -630,9 +586,6 @@ func (s *Server) getMessage(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// maxMessageContextWindow bounds the configurable ceiling. It is a sanity
-// guard against typos (a stray extra digit), not a model limit: the value is a
-// hard upper bound applied on top of each model's own window.
 const maxMessageContextWindow = 100_000_000
 
 func (s *Server) patchMessage(w http.ResponseWriter, r *http.Request) {
@@ -670,10 +623,6 @@ func (s *Server) patchMessage(w http.ResponseWriter, r *http.Request) {
 	s.getMessage(w, r)
 }
 
-// steerRequest is one user-role message injected into a live run. Origin marks
-// who produced it (empty is the human, agent:<task-id> a subagent or its
-// completion notification, extension:<name> a relayed message); External
-// carries the metadata a relaying extension needs to correlate the turn.
 type steerRequest struct {
 	ContextOnly     bool
 	ClientRequestID string
@@ -683,11 +632,6 @@ type steerRequest struct {
 	External        map[string]string
 }
 
-// pushSteerRun writes Inbox on this occupy only. Using the captured runState
-// avoids steering a later occupy that replaced s.runs[id] after TakeQueueID.
-//
-// A false return means the message did not enter this run: the caller must
-// deliver it another way (durable queue) rather than drop it.
 func (s *Server) pushSteerRun(st *runState, req steerRequest) bool {
 	if st == nil {
 		return false
@@ -706,10 +650,6 @@ func (s *Server) pushSteerRun(st *runState, req steerRequest) bool {
 		return false
 	}
 	st.inbox.Push(msg)
-	// Runtime input is transcript output, not an optimistic human prompt.
-	// Context-only mail can remain undrained at natural finish, and completion
-	// ownership can be suppressed: neither should leave an uncommitted ghost.
-	// Extension origins still relay human input, matching compact turn anchors.
 	if msg.Completion != nil || msg.ContextOnly || (msg.Origin != "" && !strings.HasPrefix(msg.Origin, "extension:")) {
 		return true
 	}
@@ -739,9 +679,6 @@ const (
 	cancelReasonServerShutdown = "server_shutdown"
 )
 
-// cancelRun retains the first initiating boundary before context cancellation
-// erases it. Cleanup may call cancel again; it must not relabel a user stop as
-// shutdown or normal release.
 func (s *Server) cancelRun(sessionID string, st *runState, reason, source string, publish bool) {
 	if st == nil {
 		return
@@ -771,8 +708,6 @@ func runCancellation(st *runState) (string, string) {
 }
 
 func (s *Server) publishRunAborted(sessionID, reason, source string) {
-	// The Web Push fallback must stay silent for an aborted run; the mark is
-	// consumed by the agent_end that follows (see notifyPushCompletion).
 	s.markPushAborted(sessionID)
 	ev := loop.Event{Type: loop.RunAborted, Reason: reason, CancelSource: source, Timestamp: time.Now().UnixMilli()}
 	if st := s.runAt(sessionID); st != nil {
@@ -781,10 +716,6 @@ func (s *Server) publishRunAborted(sessionID, reason, source string) {
 		ev.External = cloneExternal(st.external)
 		st.mu.Unlock()
 	}
-	// Publish immediately, but persist only after the loop has written its
-	// terminal assistant/tool results. Appending here as a sideband made the
-	// event disappear from the branch view; appending it as a leaf here would
-	// put it before the terminal partial and race the run's Session handle.
 	s.publishSideband(sessionID, ev, false)
 }
 
@@ -825,8 +756,6 @@ func (s *Server) publishSideband(sessionID string, ev loop.Event, persist bool) 
 		st.mu.Unlock()
 	}
 	s.mu.Unlock()
-	// Fan out after releasing s.mu: push subscribers never block, but keeping
-	// the two locks unnested documents the order for future publishers.
 	s.publishPush(sessionID, ev)
 }
 
@@ -834,8 +763,6 @@ func (s *Server) dispatchQueue(id string) {
 	gate := s.inputGate(id)
 	gate.Lock()
 	defer gate.Unlock()
-	// Pin this dispatch on runtimeWG under the same lock as runtimeClosed so
-	// Shutdown's Wait cannot return while dequeue→occupy is still in flight.
 	s.runtimeMu.Lock()
 	if s.runtimeClosed || s.deleting[id] || s.stopping[id] > 0 {
 		s.runtimeMu.Unlock()
@@ -923,10 +850,6 @@ func (s *Server) dispatchQueue(id string) {
 	go s.runPrompt(ctx, st, id, item.Content, nil, "", item.Origin, "", s.takeNextTurn(id))
 }
 
-// dequeueDispatchable skips already-consumed generations before occupying a
-// parent. This is an optimization only: explicit interruption may suppress
-// a generation after dequeue, so delivery is arbitrated at persistence.
-// Each skip republishes the queue rather than silently removing a visible item.
 func (s *Server) dequeueDispatchable(id, dir string) (session.QueuedItem, bool, error) {
 	for {
 		item, ok, err := session.Dequeue(dir)
@@ -962,8 +885,6 @@ func hasNonText(content []types.Content) bool {
 	return slices.ContainsFunc(content, func(c types.Content) bool { return c.Type != "text" })
 }
 
-// mapName returns a catalog row's "name" field, treating a non-string as empty
-// so sorting stays total.
 func mapName(row map[string]any) string {
 	name, _ := row["name"].(string)
 	return name
@@ -992,7 +913,6 @@ func (s *Server) startRun(parent context.Context, w http.ResponseWriter, id stri
 	if len(clientRequestID) > 0 && clientRequestID[0] != "" {
 		st.inputMetadata.ClientRequestID = clientRequestID[0]
 	}
-	// runPrompt's defer release returns this occupy slot.
 	go s.runPrompt(ctx, st, id, content, parentID, model, "", "", s.takeNextTurn(id))
 	writeJSON(w, 202, map[string]any{"session_id": id, "accepted": "started", "clientRequestId": st.inputMetadata.ClientRequestID})
 }

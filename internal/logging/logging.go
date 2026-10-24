@@ -24,9 +24,6 @@ var (
 	errInvalidLogLevel = errors.New("invalid log level")
 )
 
-// Recover logs a recovered panic with its stack. It is intended for deferred
-// boundary handlers; callers should decide whether the surrounding operation
-// can safely continue after recovery.
 func Recover(message string, attrs ...any) bool {
 	if value := recover(); value != nil {
 		attrs = append(attrs, "panic", fmt.Sprint(value), "stack", string(debug.Stack()))
@@ -36,12 +33,9 @@ func Recover(message string, attrs ...any) bool {
 	return false
 }
 
-// Options controls process logging.
 type Options struct {
-	Home  string
-	Level string
-	// Role identifies the process role in shared JSONL logs, for example
-	// "client", "server", or "test". It is a log field, not a permission.
+	Home       string
+	Level      string
 	Role       string
 	MaxSizeMB  int
 	MaxBackups int
@@ -59,7 +53,6 @@ type rotatingFile struct {
 }
 
 func newRotatingFile(path, lockPath string, maxBytes int64, maxBackups int) (*rotatingFile, error) {
-	// path is constructed from the configured Ki home and never from request data.
 	//nolint:gosec // the logger must open the configured absolute log path
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -179,11 +172,8 @@ func removeIfExists(path string) error {
 	return err
 }
 
-// Setup installs the default JSONL slog logger and returns the log file closer.
-// Callers must close the returned handle when the process is shutting down.
 func Setup(opts Options) (io.Closer, error) {
 	home := cmp.Or(opts.Home, os.Getenv("KI_HOME"))
-	// home is the configured Ki home, not an attacker-controlled request path.
 	//nolint:gosec // create the configured logging directory
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return nil, err

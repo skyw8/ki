@@ -5,7 +5,6 @@ import (
 	"ki/internal/loop"
 )
 
-// projectAgentProgress keeps the scheduler independent of the loop event union.
 func projectAgentProgress(ev loop.Event) agent.ProgressEvent {
 	progress := agent.ProgressEvent{Timestamp: ev.Timestamp, RunID: ev.RunID, CallID: ev.ToolCallID, ToolName: ev.ToolName, DurationMs: ev.DurationMs, IsError: ev.IsError}
 	switch ev.Type {

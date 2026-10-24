@@ -95,9 +95,6 @@ func TestRefreshMagpieProviderModels(t *testing.T) {
 		t.Fatalf("mapped model = %+v", current)
 	}
 
-	// A refresh replaces only the previously imported snapshot. User-added
-	// models and same-ID overrides survive, while removed remote models and
-	// their overrides are pruned so the registry cannot retain stale entries.
 	disabled := false
 	overrideName := "Local display override"
 	if err := srv.registry.Update(func(cfg *provider.ModelsFile) error {

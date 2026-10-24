@@ -13,7 +13,6 @@ function apply(processor: Processor, plugins: Pluggable[]) {
   }
 }
 
-// Same remend → remark-cjk-friendly → remark-gfm order Streamdown uses.
 export function parseMarkdown(src: string, streaming = false) {
   const text = streaming ? remend(normalizeMarkdown(src)) : normalizeMarkdown(src)
   const processor = unified().use(remarkParse)

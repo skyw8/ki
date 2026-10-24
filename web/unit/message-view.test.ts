@@ -8,8 +8,6 @@ const asst = (id: string, text = 'ok', streaming = false): ChatNode => ({ kind: 
 const tool = (id: string, running = false): ChatNode => ({ kind: 'tool', id, name: 'Bash', args: {}, running })
 
 test('groupTurns includes an imported prelude in the first human turn like the server', () => {
-  // A separate prelude group formerly shifted display ordinals away from the
-  // server's compact turn ranges. The prelude remains in its original order.
   const turns = groupTurns([asst('a0'), user('u1', 'one'), asst('a1'), user('u2', 'two'), asst('a2')])
   expect(turns.map(t => t.id)).toEqual(['u1', 'u2'])
   expect(turns[0].user?.id).toBe('u1')
@@ -77,7 +75,6 @@ test('foldReplies keeps every user bubble and the newest keep replies of each tu
     user('u1', 'one'), asst('a1a'), tool('t1'), asst('a1b'),
     user('u2', 'two'), asst('a2a'), tool('t2'), asst('a2b'),
   ]
-  // One reply kept per turn: the fold row sits between the prompt and it.
   expect(foldReplies(nodes, { keep: 1 }).map(i => i.id)).toEqual([
     'u1', 'fold:u1', 'a1b',
     'u2', 'fold:u2', 'a2b',
@@ -85,10 +82,8 @@ test('foldReplies keeps every user bubble and the newest keep replies of each tu
   const folded = foldReplies(nodes, { keep: 1 }).find(i => i.kind === 'fold')
   expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1a', 't1'])
 
-  // keep 0 folds every reply, keep 2 leaves the short turns alone.
   expect(foldReplies(nodes, { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'u2', 'fold:u2'])
   expect(foldReplies(nodes, { keep: 3 }).map(i => i.id)).toEqual(nodes.map(n => n.id))
-  // A turn that is only a prompt has nothing to fold.
   expect(foldReplies([user('u1', 'one')], { keep: 0 }).map(i => i.id)).toEqual(['u1'])
 })
 
@@ -100,7 +95,6 @@ test('foldReplies opens a fold in place without reordering the turn', () => {
 })
 
 test('foldReplies keeps only the newest in-flight work visible', () => {
-  // Trailing live work is what the user is waiting for.
   expect(foldReplies([user('u1', 'one'), asst('a1a'), tool('t1', true)], { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 't1'])
   expect(foldReplies([user('u1', 'one'), asst('a1a'), asst('a1b', 'ok', true)], { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'a1b'])
 })
@@ -116,16 +110,13 @@ const compact = (id: string, summary = 'sum'): ChatNode => ({ kind: 'compaction'
 const cancelled = (id: string): ChatNode => ({ kind: 'cancellation', id, reason: 'user_request', source: 'webui' })
 
 test('foldReplies never folds a compaction row or lets it consume a keep slot', () => {
-  // A checkpoint trailing the turn must not hide the newest reply.
   const items = foldReplies([user('u1', 'one'), asst('a1a'), asst('a1b'), compact('c1')], { keep: 1 })
   expect(items.map(i => i.id)).toEqual(['u1', 'fold:u1', 'a1b', 'c1'])
   const folded = items.find(i => i.kind === 'fold')
   expect(folded && folded.kind === 'fold' ? folded.nodes.map(n => n.id) : []).toEqual(['a1a'])
 
-  // Even keep 0 leaves the compaction visible on its own row.
   expect(foldReplies([user('u1', 'one'), asst('a1a'), compact('c1')], { keep: 0 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'c1'])
 
-  // A mid-turn compaction (overflow) stays visible while older replies fold.
   expect(foldReplies([user('u1', 'one'), asst('a1'), compact('c1'), asst('a2')], { keep: 1 }).map(i => i.id)).toEqual(['u1', 'fold:u1', 'c1', 'a2'])
 })
 
@@ -175,8 +166,6 @@ function foldedCount(s: ViewState, keep = 1) {
 }
 
 test('compact reload excludes visible compaction metadata from the folded reply count', () => {
-  // Matches BuildCompact's keep=1 projection: hiddenCount excludes c1, but
-  // visibleNodeIds includes it because lifecycle metadata always renders.
   const entries = [
     message('u1', '', 'user'), message('a1', 'u1', 'assistant'), message('a2', 'a1', 'assistant'),
     { type: 'compaction', id: 'c1', parentId: 'a2', summary: 'sum' },
@@ -249,14 +238,10 @@ test('partial notification hydration preserves fold counts and sparse parent lin
   ]
   const { state, summary } = sparseHistory(entries, ['u1', 'a2'], ['u1', 'a2'], 2)
   expect(foldedCount(state)).toBe(2)
-  // Loading a single hidden body must not break the existing sparse edge
-  // when its own parent is still omitted from the immutable snapshot.
   const bodyOnly = hydrateEntries(state, [entries[2]])
   expect(bodyOnly.nodes.map(n => n.id)).toEqual(['u1', 'notice', 'a2'])
   expect(bodyOnly.compactTurns?.[0].baselineNodes?.map(n => n.id)).toEqual(['u1', 'notice', 'a2'])
   expect(foldedCount(bodyOnly)).toBe(2)
-  // A keep=2 reprojection exposes the older a1 as well as the notice.
-  // The browser's keep=1 fold counts a1 plus the older notice.
   const reprojected = { ...summary, entryIds: entries.map(e => e.id), visibleNodeIds: entries.map(e => e.id), hiddenCount: 0 }
   const partial = hydrateEntries(bodyOnly, [entries[1]], { compactTurns: [reprojected] })
   expect(partial.loadedTurnIds).toContain('u1')
@@ -310,4 +295,3 @@ test('clampCompactKeep bounds the configured N', () => {
   expect(clampCompactKeep(2.6)).toBe(3)
   expect(clampCompactKeep(99)).toBe(20)
 })
-

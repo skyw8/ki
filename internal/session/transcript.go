@@ -19,9 +19,6 @@ import (
 	"ki/internal/types"
 )
 
-// Transcript is an immutable body-free snapshot of an events.jsonl file.
-// Offsets hydrate only selected entries; historical prompts, arguments,
-// attachments, progress payloads and provider checkpoints are not retained.
 type Transcript struct {
 	dir       string
 	stamp     fileStamp
@@ -41,8 +38,6 @@ type transcriptCache struct {
 
 var transcriptCaches = newWeightedCache[*transcriptCache](TranscriptCacheBytes, maxSessionTranscriptBytes)
 
-// ReadTranscript incrementally scans metadata, revalidating the filesystem on
-// every call. Old snapshots remain valid across appends and cache eviction.
 func ReadTranscript(dir string) (*Transcript, error) {
 	key := filepath.Clean(dir)
 	c := transcriptCaches.get(key, func() *transcriptCache { return &transcriptCache{} })
@@ -85,7 +80,7 @@ func ReadTranscript(dir string) (*Transcript, error) {
 		line, err := readTranscriptLine(r)
 		if errors.Is(err, io.EOF) {
 			break
-		} // keep a torn append's offset for the next scan
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +97,6 @@ func ReadTranscript(dir string) (*Transcript, error) {
 			if h.ID == "" || h.Type != "session" {
 				return nil, fmt.Errorf("%w: %s", errSessionHeader, dir)
 			}
-			// The header marker also handles a header-only snapshot that grows.
 			next.locations[""] = entryLocation{offset, int64(len(line))}
 			continue
 		}
@@ -119,8 +113,6 @@ func ReadTranscript(dir string) (*Transcript, error) {
 	return next, nil
 }
 
-// readTranscriptLine bounds transient storage even for a corrupt or enormous
-// JSONL record. ReadSlice lets metadata scans reuse the buffer for normal rows.
 func readTranscriptLine(r *bufio.Reader) ([]byte, error) {
 	line, err := r.ReadSlice('\n')
 	if err != bufio.ErrBufferFull {
@@ -149,7 +141,6 @@ type metadataContent struct {
 }
 
 type metadataMessage struct {
-	// Replay coverage needs accepted-input identity even for hidden bodies.
 	ClientRequestID string            `json:"clientRequestId"`
 	Role            string            `json:"role"`
 	Origin          string            `json:"origin"`
@@ -228,8 +219,6 @@ func decodeMetadataCached(raw []byte, estimates contextEstimateCache) (Entry, In
 	e = withContextEstimate(e)
 	switch e.Type {
 	case "tool_execution_start", "tool_execution_update", "tool_execution_end":
-		// Decode only scalar audit facts: keeping nested results here would
-		// silently turn the body-free transcript cache into a body cache.
 		var audit struct {
 			ToolCallID        string `json:"toolCallId"`
 			ParentCallID      string `json:"parentCallId"`
@@ -256,8 +245,6 @@ func decodeMetadataCached(raw []byte, estimates contextEstimateCache) (Entry, In
 	}
 	ix := indexOf(e)
 	ix.Preview = strings.Clone(ix.Preview)
-	// Why clone bounded previews: a substring would otherwise pin the entire
-	// decoded message, defeating the body-free index's memory contract.
 	e.System = ""
 	e.Summary = metadataPreview(e.Summary)
 	if m := e.Message; m != nil {
@@ -286,9 +273,6 @@ func decodeMetadataCached(raw []byte, estimates contextEstimateCache) (Entry, In
 }
 
 func metadataPreview(s string) string {
-	// Keep a few bytes beyond the compact fold's 160-byte cut, so a second
-	// whitespace normalization cannot change that boundary. Stop scanning once
-	// it is covered instead of allocating fields for an entire hidden body.
 	const limit = 164
 	var out strings.Builder
 	out.Grow(limit + utf8.UTFMax)
@@ -310,11 +294,8 @@ func metadataPreview(s string) string {
 	return strings.Clone(utf8Prefix(out.String(), limit))
 }
 
-// Entries returns read-only structural metadata for branch/turn selection.
-// It must never be serialized as if it were a complete entry body.
 func (t *Transcript) Entries() []Entry { return t.entries }
 
-// Index returns the ordinary body-less wire index in file order.
 func (t *Transcript) Index() []IndexEntry { return t.index }
 
 func (t *Transcript) read(selected []Entry) ([]Entry, error) {
@@ -351,8 +332,6 @@ func (t *Transcript) read(selected []Entry) ([]Entry, error) {
 		if e.ID != meta.ID {
 			return nil, errSessionChanged
 		}
-		// Exact hydration must retain the checkpoint kind without exposing its
-		// opaque payload, just like slim views and the body-free index.
 		e.ContextEstimate = meta.ContextEstimate
 		e = withContextEstimate(e)
 		e.RemoteContext = e.RemoteContext || e.Responses != nil
@@ -362,7 +341,6 @@ func (t *Transcript) read(selected []Entry) ([]Entry, error) {
 	return out, nil
 }
 
-// Lookup reads exact bodies by file offset, preserving order and duplicates.
 func (t *Transcript) Lookup(ids []string) ([]Entry, error) {
 	if len(ids) > MaxViewBatch {
 		ids = ids[:MaxViewBatch]
@@ -380,8 +358,6 @@ func (t *Transcript) Lookup(ids []string) ([]Entry, error) {
 	return t.read(selected)
 }
 
-// Tail hydrates a bounded branch window; before and turn are validated against
-// structural metadata before any historical body is decoded.
 func (t *Transcript) Tail(leaf, before, turn string, limit int) (Tail, bool, error) {
 	path := leafPath(t.entries, leaf)
 	if turn != "" {
@@ -425,9 +401,6 @@ func (t *Transcript) Tail(leaf, before, turn string, limit int) (Tail, bool, err
 	}
 }
 
-// Compact selects visible bodies using structural metadata, then reprojects
-// with only those bodies hydrated. Hidden replies keep their exact stats and
-// node identities without retaining their prose, arguments or attachments.
 func (t *Transcript) Compact(leaf, before, turn string, keep int) (CompactPage, bool, error) {
 	var plan CompactPage
 	found := true

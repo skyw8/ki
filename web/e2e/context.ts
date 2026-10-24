@@ -24,15 +24,11 @@ export async function openSystemSources(page: Page, kind: string): Promise<Locat
 
 export async function expectContextItemCount(page: Page, category: string, count: number): Promise<void> {
   const section = await openContextCategory(page, category)
-  // Closed native details mount no items. The model's count must agree too,
-  // otherwise a historical exclusion could pass before the body renders.
   await expect(section.locator('.context-category-count')).toHaveText(new RegExp(`^${count} (项|items)$`))
   await expect(section.locator('.context-item')).toHaveCount(count)
 }
 
 export async function expectColoredContextSegments(page: Page, requestId: string, categories: string[]): Promise<void> {
-  // Scope by the request identity itself: other points may have full bodies
-  // already, which must not hide a blank metadata-only historical column.
   const column = page.locator(`[data-testid="context-step"][data-request-id="${requestId}"]`)
   await expect(column).toBeVisible()
   const colors: string[] = []
@@ -59,8 +55,6 @@ export async function expectConversationPosition(page: Page, entryId: string): P
   await expect(chat).toHaveAttribute('data-anchor-key', entryId)
   const row = page.locator(`[data-item-key="${entryId}"]`)
   await expect(row).toBeVisible()
-  // A mounted virtual row or a visible chat tab does not prove navigation:
-  // the bug left the transcript at the tail with the requested ID pending.
   await expect.poll(async () => {
     const target = await row.boundingBox()
     const viewport = await page.getByTestId('chat-scroll').boundingBox()

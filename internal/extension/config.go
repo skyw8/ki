@@ -12,15 +12,10 @@ import (
 	"ki/internal/state"
 )
 
-// SecretValue is the redacted value returned for a configured secret. Clients
-// may send it back unchanged, but it is never written as the real secret.
 const SecretValue = "<configured>"
 
-// ConfigPath returns the private configuration file for one extension.
 func ConfigPath(d Descriptor) string { return filepath.Join(d.root, "config.json") }
 
-// LoadConfig loads defaults and the extension's persisted values. The returned
-// map is a detached JSON value and is safe for callers to modify.
 func LoadConfig(d Descriptor) (map[string]any, error) {
 	values := cloneConfigMap(d.Config.Defaults)
 	b, _, err := state.ReadFile(ConfigPath(d), 1, nil)
@@ -37,8 +32,6 @@ func LoadConfig(d Descriptor) (map[string]any, error) {
 		}
 		return nil, fmt.Errorf("decode extension config: %w", err)
 	}
-	// The version describes the storage document, not an extension setting;
-	// keep it out of schema validation and the public configuration projection.
 	delete(saved, "version")
 	values = mergeConfig(values, saved, d.Config.Schema)
 	if err := validateConfig(d.Config.Schema, values); err != nil {
@@ -47,8 +40,6 @@ func LoadConfig(d Descriptor) (map[string]any, error) {
 	return values, nil
 }
 
-// SanitizedConfig returns the current configuration with secret fields
-// replaced by SecretValue. The schema is returned separately by the HTTP API.
 func SanitizedConfig(d Descriptor) (map[string]any, error) {
 	values, err := LoadConfig(d)
 	if err != nil {
@@ -57,8 +48,6 @@ func SanitizedConfig(d Descriptor) (map[string]any, error) {
 	return sanitizedConfigMap(d.Config.Schema, values), nil
 }
 
-// UpdateConfig merges a partial JSON object, validates the result, and writes
-// it with private permissions. Omitting a secret preserves its current value.
 func UpdateConfig(d Descriptor, patch map[string]any) (map[string]any, error) {
 	if patch == nil {
 		patch = map[string]any{}

@@ -45,7 +45,6 @@ var sessions = struct {
 	values map[string]*sessionState
 }{values: make(map[string]*sessionState)}
 
-// UUID returns a fresh request identity without relying on host-specific paths.
 func UUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -92,8 +91,6 @@ func installationID() (string, error) {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return "", err
 	}
-	// Multiple extension sidecars can start together. Lock and re-read so all
-	// processes use one installation identity instead of replacing each other.
 	lock := flock.New(path + ".lock")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -124,8 +121,6 @@ func validUUID(id string) bool {
 	return err == nil && len(raw) == 16
 }
 
-// UserAgent follows the Codex CLI shape. The source checkout's version is
-// 0.0.0; no release, attestation, or terminal capability is invented.
 func UserAgent() string {
 	system, version := hostOS()
 	arch := runtime.GOARCH
@@ -148,20 +143,10 @@ func UserAgent() string {
 	}, ua)
 }
 
-// Prepare replaces host-owned metadata with a consistent request snapshot and
-// returns auth-independent HTTP headers. Callers must split thinking presets
-// before calling: service_tier is an upstream routing value, never a UI label.
 func Prepare(body map[string]any, sessionID, turnID string, compaction bool) (map[string]string, error) {
 	return PrepareScoped(body, sessionID, turnID, compaction, "", "")
 }
 
-// PrepareScoped isolates routing state by an opaque endpoint/credential/model
-// binding. Concurrent logical turns cannot reset each other's sticky tokens.
-//
-// cacheKey is the inherited cache-affinity identity, empty for a session's own.
-// The ChatGPT backend derives cache affinity from the session-id header, so a
-// fork replays its source prefix under that key while thread-id and all local
-// window/turn state stay bound to the child session.
 func PrepareScoped(body map[string]any, sessionID, turnID string, compaction bool, scope, cacheKey string) (map[string]string, error) {
 	id, err := installationID()
 	if err != nil {
@@ -175,8 +160,6 @@ func PrepareScoped(body map[string]any, sessionID, turnID string, compaction boo
 		turnID = UUID()
 	}
 	sessions.Lock()
-	// Read-only direct searches have no session and are never retained. Bound
-	// the least-recently-used metadata without rotating idle active windows.
 	now := time.Now()
 	key := sessionID + "\x00" + scope
 	s := sessions.values[key]
@@ -224,8 +207,6 @@ func PrepareScoped(body map[string]any, sessionID, turnID string, compaction boo
 		"window_id": window, "turn_id": turnID, "root_turn_id": turnID, "request_kind": kind,
 	}
 	if compaction {
-		// The host does not currently expose trigger/reason. Omit those rather
-		// than describing automatic checkpoints as manual user requests.
 		metadata["compaction"] = map[string]any{
 			"implementation": "responses_compaction_v2", "phase": "standalone_turn", "strategy": "memento",
 		}
@@ -252,8 +233,6 @@ func PrepareScoped(body map[string]any, sessionID, turnID string, compaction boo
 		"x-codex-window-id": window, "x-codex-turn-metadata": string(raw), "x-codex-routing-hint": routing,
 	}
 	if cacheKey != "" && cacheKey != sessionID {
-		// Cache affinity only: thread identity, metadata, and retained window
-		// state stay on the child session so it cannot resume the parent stream.
 		headers["session-id"] = cacheKey
 	}
 	if sticky != "" {
@@ -262,13 +241,10 @@ func PrepareScoped(body map[string]any, sessionID, turnID string, compaction boo
 	return headers, nil
 }
 
-// CaptureTurnState keeps the first server routing token for the logical turn.
-// A delayed response from an old/canceled turn must not contaminate its successor.
 func CaptureTurnState(sessionID, turnID, value string) {
 	CaptureTurnStateScoped(sessionID, turnID, value, "")
 }
 
-// CaptureTurnStateScoped captures only within the request's actual binding.
 func CaptureTurnStateScoped(sessionID, turnID, value, scope string) {
 	if value == "" {
 		return
@@ -282,7 +258,6 @@ func CaptureTurnStateScoped(sessionID, turnID, value, scope string) {
 	}
 }
 
-// AdvanceWindow starts a new affinity window after a checkpoint succeeds.
 func AdvanceWindow(sessionID string) {
 	sessions.Lock()
 	defer sessions.Unlock()
@@ -294,8 +269,6 @@ func AdvanceWindow(sessionID string) {
 	}
 }
 
-// Encode places routing fields first, matching Codex's Responses serializers.
-// Gateways can route without buffering an entire multi-megabyte input history.
 func Encode(body map[string]any) ([]byte, error) {
 	rest := make(map[string]any, len(body))
 	for key, value := range body {
@@ -341,8 +314,6 @@ var compressor struct {
 	err     error
 }
 
-// Compress uses the Codex HTTP fallback's zstd request encoding. The encoder
-// uses one worker so tiny requests do not create a CPU-sized goroutine pool.
 func Compress(raw []byte) ([]byte, error) {
 	compressor.Do(func() {
 		compressor.encoder, compressor.err = zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1))

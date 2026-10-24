@@ -78,9 +78,6 @@ func TestCWDEncodesSessionPath(t *testing.T) {
 	}
 	id := mustSessionID(t, out, errOut)
 	dir := sessionDir(t, home, id)
-	// Why: the server stores the normalized cwd (Abs + EvalSymlinks), so the
-	// expectation must be normalized too. t.TempDir is unresolved on macOS
-	// (/var -> /private/var) and under Windows short-name %TEMP% paths.
 	abs, err := workspace.Normalize(proj, "")
 	if err != nil {
 		t.Fatal(err)
@@ -120,8 +117,6 @@ func TestModelWritebackIsSessionAndLastUsed(t *testing.T) {
 	if cfg["provider"] != "openai" || cfg["model"] != "gpt-5.6-terra" {
 		t.Fatalf("writeback: %+v", cfg)
 	}
-	// The session owns the active model, while models.json remembers the last
-	// selected model for the next new session.
 	//nolint:gosec // the config path is created inside the isolated temp home.
 	raw, err := os.ReadFile(modelsFile)
 	if err != nil {
@@ -189,9 +184,6 @@ func TestCompactCLI(t *testing.T) {
 		t.Fatalf("first: %d %s %s", code, out, errOut)
 	}
 	id := mustSessionID(t, out, errOut)
-	// A tiny session has nothing worth summarizing: compact must refuse with a
-	// clear error (pi "Nothing to compact (session too small)") instead of
-	// stamping an empty summary over the context.
 	out, errOut, code = runCommand(t, "session", "compact", "--session", id)
 	if code == 0 {
 		t.Fatalf("compact on tiny session should fail, got: %s", out)

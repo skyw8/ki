@@ -25,12 +25,9 @@ import (
 )
 
 const (
-	timeoutInit = 10 * time.Second
-	timeoutHook = 2 * time.Second
-	timeoutTool = 120 * time.Second
-	// timeoutToolDrain lets a sidecar flush the partial tool result it already
-	// computed before the host deadline, instead of the host discarding it and
-	// reporting only "context deadline exceeded".
+	timeoutInit          = 10 * time.Second
+	timeoutHook          = 2 * time.Second
+	timeoutTool          = 120 * time.Second
 	timeoutToolDrain     = 2 * time.Second
 	timeoutCommand       = 15 * time.Second
 	timeoutProviderStart = 10 * time.Second
@@ -132,7 +129,6 @@ func startRPC(ctx context.Context, d Descriptor, sessionID, home, cwd string, ho
 	if err := installRuntime(ctx, d.root, d.manifest.Runtime, env); err != nil {
 		return nil, err
 	}
-	// Sidecar outlives prepare; lifetime is owned by KillProcessGroup/close.
 	cmd := exec.CommandContext(context.WithoutCancel(ctx), resolveRuntimeCommand(d.root, d.manifest.Runtime.Command), d.manifest.Runtime.Args...) //nolint:gosec // command/args come from the extension manifest
 	cmd.Dir = d.root
 	cmd.Env = env
@@ -203,8 +199,6 @@ func sidecarEnv(d Descriptor, sessionID, home, cwd string) []string {
 		"KI_HOME=" + home,
 		"KI_EXTENSION_ROOT=" + d.root,
 	}
-	// Global sidecars serve many sessions. Do not pin them to the first
-	// session/cwd; each session-scoped RPC carries its own sessionId instead.
 	if sessionID != "" {
 		env = append(env, "KI_SESSION_ID="+sessionID)
 	}
@@ -216,8 +210,6 @@ func sidecarEnv(d Descriptor, sessionID, home, cwd string) []string {
 			env = append(env, key+"="+v)
 		}
 	}
-	// Why: sidecars use an explicit allowlist, so network clients and their
-	// descendants would otherwise lose Ki's system proxy configuration.
 	env = processenv.WithProxyEnvironment(env)
 	for k, v := range d.manifest.Runtime.Env {
 		env = setEnvironmentValue(env, k, v)
@@ -238,16 +230,12 @@ func setEnvironmentValue(env []string, key, value string) []string {
 }
 
 func normalizeEnvironmentKey(key, goos string) string {
-	// Unix tools can configure FOO and foo independently; only Windows treats
-	// them as one variable, matching os/exec's environment deduplication.
 	if goos == "windows" {
 		return strings.ToUpper(key)
 	}
 	return key
 }
 
-// resolveRuntimeCommand leaves a name with no slash for exec's PATH lookup.
-// A relative path is joined to the package root (bin/extension).
 func resolveRuntimeCommand(root, command string) string {
 	if command == "" || filepath.IsAbs(command) {
 		return command
@@ -265,18 +253,12 @@ func runInstall(ctx context.Context, root string, argv []string, env []string) e
 	cmd := exec.CommandContext(ctx, resolveRuntimeCommand(root, argv[0]), argv[1:]...) //nolint:gosec // install argv comes from the extension manifest
 	cmd.Dir = root
 	cmd.Env = installEnvironment(env)
-	// stdout would corrupt the sidecar NDJSON stream if it shared the pipe;
-	// install runs first and both streams go to the ki process stderr.
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
-	// Installers often launch another compiler through go run or Cargo. Killing
-	// only the launcher leaves costly builds running and holding install locks.
 	process.AttachProcessGroup(cmd)
 	process.SetWaitDelay(cmd)
 	attached := make(chan struct{})
 	cmd.Cancel = func() error {
-		// CommandContext can cancel as soon as Start returns internally. Wait
-		// until Windows job ownership is installed before terminating the tree.
 		<-attached
 		process.KillProcessGroup(cmd)
 		return nil
@@ -294,9 +276,6 @@ func runInstall(ctx context.Context, root string, argv []string, env []string) e
 }
 
 func installEnvironment(scoped []string) []string {
-	// Build tools need their complete configured environment, including cache
-	// and native compiler paths that a language-agnostic host cannot enumerate.
-	// Runtime sidecars keep their allowlist; only install hooks inherit these.
 	overridden := map[string]bool{}
 	for _, key := range []string{"KI_EXTENSION", "KI_HOME", "KI_EXTENSION_ROOT", "KI_SESSION_ID", "KI_CWD"} {
 		overridden[normalizeEnvironmentKey(key, runtime.GOOS)] = true
@@ -325,8 +304,6 @@ func installRuntime(ctx context.Context, root string, spec RuntimeSpec, env []st
 	if spec.InstallWhen == installMissing {
 		command := resolveRuntimeCommand(root, spec.Command)
 		paths := []string{command}
-		// A manifest omits platform suffixes; Windows launches the .exe built
-		// for that package without requiring a compiler on subsequent starts.
 		if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(command), ".exe") {
 			paths = append(paths, command+".exe")
 		}
@@ -369,8 +346,6 @@ func gateSubscriptions(caps []string, reg *Registration) error {
 	return nil
 }
 
-// applyRegistrationGates drops initialize tools/commands whose capability
-// was not declared (KD 11). Host still emits extension_error for each drop.
 func applyRegistrationGates(caps []string, reg *Registration) []string {
 	if reg == nil {
 		return nil
@@ -394,9 +369,6 @@ func applyRegistrationGates(caps []string, reg *Registration) []string {
 func (c *rpcClient) readLoop(r io.Reader) {
 	defer c.markClosed()
 	sc := bufio.NewScanner(r)
-	// Remote compaction may legitimately return a canonical window near the
-	// session's 64 MiB entry limit. Keep one bounded RPC line large enough for
-	// its JSON-RPC envelope instead of closing the sidecar at the old 8 MiB cap.
 	sc.Buffer(make([]byte, 0, 64*1024), maxRPCLineBytes)
 	for sc.Scan() {
 		line := sc.Bytes()
@@ -431,8 +403,6 @@ func (c *rpcClient) readLoop(r io.Reader) {
 			ch := c.providerStreams[event.RequestID]
 			c.providerStreamMu.Unlock()
 			if ch != nil {
-				// A bounded channel makes a slow loop consumer apply backpressure
-				// to the sidecar without retaining an unbounded token queue.
 				select {
 				case ch.events <- event:
 				case <-ch.done:
@@ -446,9 +416,6 @@ func (c *rpcClient) readLoop(r io.Reader) {
 			if err := json.Unmarshal(msg.Params, &event); err != nil || event.RequestID == "" {
 				continue
 			}
-			// Queue auth events instead of spawning one goroutine per event. OAuth
-			// progress is ordered (URL/device code must precede completed), while
-			// the worker still keeps filesystem/UI work off the RPC reader.
 			select {
 			case c.providerAuthEvents <- event:
 			case <-c.closed:
@@ -483,8 +450,6 @@ func (c *rpcClient) readLoop(r io.Reader) {
 			}
 		}
 	}
-	// Why: gopls flags Scan loops without Err(); a truncated NDJSON line is the
-	// only interesting failure mode once the peer closes stdout.
 	if err := sc.Err(); err != nil {
 		slog.Debug("extension rpc read", "extension", c.name, "err", err)
 	}
@@ -558,10 +523,6 @@ func (c *rpcClient) call(ctx context.Context, method string, params any, result 
 			return err
 		}
 	case <-ctx.Done():
-		// A provider sidecar is shared by every session. Do not kill it merely
-		// because one large request was canceled: once the in-flight pipe write
-		// drains, cancel that RPC specifically. A genuinely wedged reader is
-		// terminated after a grace period so it cannot hold the writer forever.
 		go c.cancelAfterWrite(id, writeDone)
 		return ctx.Err()
 	case <-c.closed:
@@ -615,9 +576,6 @@ func (c *rpcClient) notifyRaw(method string, raw json.RawMessage) {
 
 func (c *rpcClient) close() {
 	c.closeOnce.Do(func() {
-		// A provider stream may have filled its bounded event queue while its
-		// consumer is being torn down. Signal readers before waiting for the
-		// process so they cannot wait forever for readLoop to reach EOF.
 		c.markClosed()
 		if c.cmd != nil {
 			process.KillProcessGroup(c.cmd)
@@ -886,9 +844,6 @@ func (c *rpcClient) executeTool(ctx context.Context, spec ToolSpec, toolCallID, 
 	select {
 	case <-ctx.Done():
 		c.notify("cancel", withSessionParam(sessionIDFromContext(ctx), map[string]any{"id": id}))
-		// Drain grace: after canceling, give the sidecar a brief window to return
-		// the partial result it computed before the deadline. Losing it turns a
-		// usable partial answer into a bare deadline error.
 		select {
 		case msg = <-ch:
 		case <-time.After(timeoutToolDrain):

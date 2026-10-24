@@ -28,8 +28,6 @@ func prepareTerminal(terminal pty.Pty) (pty.Pty, error) {
 	fd := -1
 	var setupErr error
 	if err := native.Control(func(raw uintptr) {
-		// Atomic CLOEXEC prevents unrelated concurrently spawned children from
-		// inheriting the terminal master and keeping this session alive.
 		fd, setupErr = unix.FcntlInt(raw, unix.F_DUPFD_CLOEXEC, 0)
 		if setupErr == nil {
 			setupErr = unix.SetNonblock(fd, true)
@@ -43,9 +41,6 @@ func prepareTerminal(terminal pty.Pty) (pty.Pty, error) {
 		}
 		return nil, setupErr
 	}
-	// PTY setup calls File.Fd(), which switches Go's original descriptor to
-	// blocking I/O. A fresh nonblocking descriptor restores runtime polling so
-	// Close can release a write blocked behind a process that never reads stdin.
 	file := os.NewFile(uintptr(fd), native.Master().Name())
 	return &pollableTerminal{UnixPty: native, ioFile: file}, nil
 }
@@ -60,8 +55,6 @@ func (p *pollableTerminal) Close() error {
 }
 
 func terminalReadError(err error) error {
-	// Unix terminals report EIO, rather than EOF, after the last slave closes.
-	// Closing the owned pollable descriptor also releases canceled blocked I/O.
 	if errors.Is(err, syscall.EIO) || errors.Is(err, os.ErrClosed) {
 		return nil
 	}
@@ -69,7 +62,5 @@ func terminalReadError(err error) error {
 }
 
 func terminalDrainTimeoutError() error {
-	// Just like exec.Cmd.WaitDelay for pipes, forced Unix PTY closure is
-	// incomplete output, not a successful silent drain.
 	return exec.ErrWaitDelay
 }

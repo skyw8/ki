@@ -4,23 +4,11 @@ import type { AvailableExtension } from '../../api/types'
 import { toast } from '../../components/toast'
 import { useI18n } from '../../i18n/index'
 
-/** Capabilities that need user-supplied configuration right after install. */
 const CONFIGURED_CAPABILITIES = new Set(['channel', 'provider'])
 
-/**
- * ExtensionInstallList is the "available to install" half of Settings →
- * Extensions. It talks to GET /v1/extensions/available and follows progress
- * through the extensions invalidation pushed by the server, so a slow download
- * survives a closed tab and a second tab sees the same stage.
- *
- * `refreshKey` changes whenever the extension catalog is refetched; the server
- * publishes that invalidation on every install stage, so this component never
- * polls.
- */
 export function ExtensionInstallList({ api, refreshKey, onInstalled }: {
   api: Client
   refreshKey: number
-  /** Refresh the installed list once a new package becomes discoverable. */
   onInstalled?: () => void | Promise<void>
 }) {
   const { t } = useI18n()
@@ -32,11 +20,7 @@ export function ExtensionInstallList({ api, refreshKey, onInstalled }: {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const pending = useRef(false)
-  // Names this tab asked to install. When discovery starts reporting them as
-  // installed, the toggle list above is stale and has to refetch.
   const awaiting = useRef(new Set<string>())
-  // Why a ref: the parent passes an inline callback, and a dependency on its
-  // identity would re-run the fetch on every render.
   const installedCallback = useRef(onInstalled)
   installedCallback.current = onInstalled
 
@@ -84,9 +68,6 @@ export function ExtensionInstallList({ api, refreshKey, onInstalled }: {
     }
   }
 
-  // Why not hide when empty: an empty section is indistinguishable from a build
-  // without the feature, which is exactly how a linked checkout looked before.
-  // The section always renders, and an all-installed list says so.
   const candidates = items.filter(item => !item.installed || item.updateAvailable || item.linked || item.install?.state === 'failed')
   if (loading) return null
 

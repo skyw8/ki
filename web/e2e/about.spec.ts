@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { serverToken } from './global-setup.ts'
 
-// Read-only assertions against its own isolated server; nothing is mutated.
 test.describe.configure({ mode: 'parallel' })
 
 test('About shows the version and process identity of the serving daemon', async ({ page, request }) => {
@@ -19,12 +18,9 @@ test('About shows the version and process identity of the serving daemon', async
   const about = page.getByTestId('about-settings')
   await expect(about).toBeVisible()
   const server = page.getByTestId('about-server')
-  // The version must come from the server, not the bundle: assert the exact
-  // string /v1/meta reported for this daemon.
   await expect(server).toContainText(meta.version)
   await expect(server).toContainText(String(meta.pid))
 
-  // Switching language re-renders the labels but keeps the same facts.
   await page.getByTestId('settings-tab-appearance').click()
   await page.getByTestId('lang-en').click()
   await page.getByTestId('settings-tab-about').click()
@@ -38,13 +34,11 @@ test('About shows the version and process identity of the serving daemon', async
 test('About is read-only and fits a phone viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')
-  // Compact layouts hide the settings button behind the nav drawer.
   await page.getByTestId('mobile-nav-toggle').click()
   await page.getByTestId('open-settings').click()
   await page.getByTestId('settings-tab-about').click()
   const about = page.getByTestId('about-settings')
   await expect(about).toBeVisible()
-  // No controls: About reports, it does not configure.
   await expect(about.locator('button, input, textarea, select')).toHaveCount(0)
   const overflow = await about.evaluate(el => el.scrollWidth - el.clientWidth)
   expect(overflow, 'About must not overflow horizontally').toBeLessThanOrEqual(1)

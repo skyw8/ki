@@ -12,90 +12,49 @@ import (
 	"ki/internal/loop"
 )
 
-// WebUI push channel: GET /v1/events is one SSE stream per browser tab that
-// carries everything the server pushes that no client request asked for.
-//
-// Two frame kinds:
-//
-//   - invalidate: "this slice of server state changed, refetch it". State is
-//     never pushed inline; the client re-reads the ordinary REST endpoint, and
-//     GET /v1/sessions carries an ETag so an unchanged list answers 304.
-//   - session sideband loop events (agent_end, run_aborted, runtime_ready,
-//     extension notices/UI, manual compaction progress) tagged with sessionId.
-//
-// Why one stream: a tab used to hold one notification SSE per running session
-// plus one for the selected session, and plaintext HTTP/1.1 caps a browser at
-// six connections per origin (see docs/webui.md). One stream also removes the
-// per-session subscribe-time runtime_ready catch-up: the client reads
-// runtime.ready from GET /v1/sessions/{id} instead.
 const (
-	// Invalidate scopes name the client-side refetch handler.
 	scopeSessions   = "sessions"
 	scopeWorkspaces = "workspaces"
 	scopeProviders  = "providers"
 	scopeExtensions = "extensions"
 
-	// pushQueueLimit bounds one slow subscriber's sideband backlog. Overflow
-	// closes the connection instead of silently dropping a terminal agent_end:
-	// the client reconnects and refetches rather than losing a completion.
 	pushQueueLimit = 512
 )
 
-// ssePingInterval is the idle heartbeat for every SSE response. A mobile
-// browser or an intermediary (carrier NAT, a proxy) drops an idle connection
-// long before a slow model round produces its next event, so a comment frame
-// keeps both the run stream and the push stream alive. SSE clients ignore
-// comments, and the CLI's line reader skips anything without a "data:" prefix.
-//
-// A var, not a const: a test shortens it to observe a heartbeat without waiting
-// out the production interval.
 var ssePingInterval = 15 * time.Second
 
-// invalidateFrame is the payload of an event: invalidate frame.
 type invalidateFrame struct {
 	Type  string `json:"type"`
 	Scope string `json:"scope"`
 }
 
-// readyFrame flushes the response so the client's fetch resolves. Receiving it
-// means "the subscription is live", which is the client's cue to refetch.
 type readyFrame struct {
 	Type     string `json:"type"`
 	ServerID string `json:"serverId"`
 }
 
-// globalEvent is the payload of a sideband frame: the loop event plus the
-// session it belongs to, now that one stream serves every session.
 type globalEvent struct {
 	loop.Event
 	SessionID string `json:"sessionId,omitempty"`
 }
 
-// pushFrame is one queued sideband frame.
 type pushFrame struct {
 	sessionID string
 	event     loop.Event
 }
 
-// pushSub is one GET /v1/events connection. Invalidations coalesce into a
-// scope set because they describe current state, so an intermediate frame is
-// redundant rather than lost; sideband frames keep their arrival order.
 type pushSub struct {
 	mu     sync.Mutex
 	scopes map[string]bool
 	events []pushFrame
-	// dead is set on queue overflow. The writer ends the response; the client
-	// reconnects within its backoff instead of the server dropping the frame.
-	dead bool
-	wake chan struct{}
+	dead   bool
+	wake   chan struct{}
 }
 
 func newPushSub() *pushSub {
 	return &pushSub{scopes: map[string]bool{}, wake: make(chan struct{}, 1)}
 }
 
-// signal wakes the writer without blocking the publisher, which may run while
-// holding Server.mu.
 func (p *pushSub) signal() {
 	select {
 	case p.wake <- struct{}{}:
@@ -121,8 +80,6 @@ func (p *pushSub) push(f pushFrame) {
 	p.signal()
 }
 
-// takeScopes returns the coalesced scopes and clears them. Sorted so a test or
-// log sees a deterministic order.
 func (p *pushSub) takeScopes() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -163,8 +120,6 @@ func (s *Server) unsubscribePush(p *pushSub) {
 	s.gsMu.Unlock()
 }
 
-// publishPush fans a session sideband event out to every push subscriber. The
-// session id lets each client pick out the events it acts on.
 func (s *Server) publishPush(sessionID string, ev loop.Event) {
 	f := pushFrame{sessionID: sessionID, event: ev}
 	s.gsMu.Lock()
@@ -174,9 +129,6 @@ func (s *Server) publishPush(sessionID string, ev loop.Event) {
 	s.gsMu.Unlock()
 }
 
-// publishInvalidation tells every client that a slice of state changed. It
-// carries no session id on purpose: the client refetches the authoritative
-// list, which is also how it notices that the session it has open was deleted.
 func (s *Server) publishInvalidation(scope string) {
 	s.gsMu.Lock()
 	for p := range s.gsubs {
@@ -185,7 +137,6 @@ func (s *Server) publishInvalidation(scope string) {
 	s.gsMu.Unlock()
 }
 
-// pushEvents streams every push frame to one client.
 func (s *Server) pushEvents(w http.ResponseWriter, r *http.Request) {
 	s.runtimeMu.Lock()
 	closed, shutdown := s.runtimeClosed, s.runtimeCtx
@@ -207,9 +158,6 @@ func (s *Server) pushEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		return writer.write("event: %s\ndata: %s\n\n", name, b) == nil
 	}
-	// Subscribe first, then flush: the client fetches only after this frame
-	// arrives, so a change that happened while it was disconnected cannot be
-	// missed between the fetch and the subscription.
 	if !write("ready", readyFrame{Type: "ready", ServerID: s.serverID}) {
 		return
 	}
@@ -240,8 +188,6 @@ func (s *Server) pushEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-p.wake:
 		case <-ticker.C:
-			// Comment frames keep an idle connection (and any intermediary)
-			// alive; SSE clients ignore them.
 			if err := writer.write(": ping\n\n"); err != nil {
 				return
 			}

@@ -1,22 +1,8 @@
-# Install ki from a GitHub release on Windows.
-#
-#   irm https://raw.githubusercontent.com/skyw8/ki/main/scripts/install.ps1 | iex
-#
-# Environment:
-#   KI_VERSION  release tag to install, with or without the leading v
-#               (default: the latest release)
-#   KI_BIN_DIR  directory to install into
-#               (default: %LOCALAPPDATA%\Programs\Ki)
-#
-# Why a fixed install directory: later `ki` releases replace the same ki.exe, so
-# the PATH entry a user adds once keeps working across upgrades.
-
 $ErrorActionPreference = "Stop"
 
 $Repo = "skyw8/ki"
 $Bin = "ki.exe"
 
-# Only an amd64 archive is published; Windows on ARM runs it under emulation.
 $Arch = "amd64"
 if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") {
   Write-Host "no arm64 archive is published; installing the amd64 build, which runs under emulation"
@@ -60,9 +46,6 @@ try {
   try {
     Copy-Item $Source (Join-Path $Dest $Bin) -Force
   } catch {
-    # A running ki.exe keeps its image open, so the copy fails with a sharing
-    # violation. Say what to do instead of letting the raw Win32 error stand:
-    # stopping the old daemon is also the step that activates the new build.
     throw "could not replace $(Join-Path $Dest $Bin) because a ki server is running from it; run 'ki stop' and re-run this installer ($_)"
   }
 } finally {
@@ -71,17 +54,12 @@ try {
 
 Write-Host "installed ki $Version to $(Join-Path $Dest $Bin)"
 
-# Installing replaces the file on disk; it cannot replace the daemon already
-# running in memory. Point at the one command that swaps it, instead of leaving
-# "I upgraded but the version did not change" as the user's next surprise.
 $KiHome = if ($env:KI_HOME) { $env:KI_HOME } else { Join-Path $env:USERPROFILE ".ki" }
 if (Test-Path (Join-Path $KiHome "server.json")) {
   Write-Host ""
   Write-Host "a ki server is running from the previous build; activate $Version with:"
   Write-Host "  `"$(Join-Path $Dest $Bin)`" restart"
 }
-# Why the empty-entry filter: a user PATH that was never set reads back as null,
-# and appending to it must not produce a leading empty segment.
 $UserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 $Parts = @($UserPath -split ';' | Where-Object { $_ })
 if ($Parts -notcontains $Dest) {

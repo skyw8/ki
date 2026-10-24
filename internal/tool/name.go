@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-// Canonical splits ASCII CamelCase words, including acronym boundaries.
 func Canonical(name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("empty tool name")
@@ -30,7 +29,6 @@ func Canonical(name string) (string, error) {
 	return b.String(), nil
 }
 
-// Pascal returns the single advertised case alias for a canonical name.
 func Pascal(name string) string {
 	var b strings.Builder
 	upper := true
@@ -57,7 +55,6 @@ func MustCanonical(name string) string {
 	return n
 }
 
-// Aliases includes the native extension spelling without making matching case-insensitive.
 func Aliases(name string) ([]string, error) {
 	c, err := Canonical(name)
 	if err != nil {
@@ -78,7 +75,6 @@ func Aliases(name string) ([]string, error) {
 	return out, nil
 }
 
-// Equal compares registered spellings, not arbitrary case variants.
 func Equal(request, registered string) bool {
 	aliases, err := Aliases(registered)
 	if err != nil {

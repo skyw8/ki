@@ -1,10 +1,5 @@
 import { expect, test } from '@playwright/test'
 
-// Why: Chromium cannot emulate a software keyboard, but the layout contracts
-// that keep mobile editing usable can be tested. Shrinking the viewport is
-// what Android Chrome does under interactive-widget=resizes-content when the
-// keyboard opens; the app must keep the focused field inside the remaining
-// band, and message edit must start with the caret at the end of the text.
 test.describe.configure({ mode: 'parallel' })
 test.use({ viewport: { width: 390, height: 844 } })
 
@@ -21,9 +16,6 @@ test('hero composer with a long model name fits the phone viewport', async ({ pa
   await page.goto('/')
   const chip = page.getByTestId('open-model')
   await expect(chip).toBeVisible()
-  // Why: the layout contract (the hero grid must clamp its track so the chip
-  // ellipsizes) is independent of where the label comes from, so inject a long
-  // one directly; data flow for real model names is covered elsewhere.
   await chip.evaluate(el => {
     el.textContent = 'workbuddy-ai/a-very-long-model-name-that-must-be-truncated'
   })
@@ -31,7 +23,6 @@ test('hero composer with a long model name fits the phone viewport', async ({ pa
     const hero = document.querySelector('.hero')
     return !!hero && hero.scrollWidth <= window.innerWidth && document.documentElement.scrollWidth <= window.innerWidth
   }, null, { message: 'hero must not overflow horizontally' })).toBe(true)
-  // The clipped label proves the ellipsis, not a wider composer, absorbed it.
   await expect.poll(() => chip.evaluate(el => el.scrollWidth > el.clientWidth + 1), null, { message: 'long model name should be truncated' }).toBe(true)
 })
 
@@ -56,8 +47,6 @@ test('message edit focuses with the caret at the end and stays in the band', asy
   await page.getByTestId('edit-msg').click()
   const input = page.getByTestId('edit-input')
   await expect(input).toBeFocused()
-  // Why: programmatic focus leaves the caret at index 0; editing tweaks the
-  // tail of the message, so the composer parks the caret at the end.
   const [caret, length] = await input.evaluate(el => {
     const textarea = el as HTMLTextAreaElement
     return [textarea.selectionStart, textarea.value.length] as const

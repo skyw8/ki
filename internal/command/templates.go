@@ -19,7 +19,6 @@ func templateByName(snapshot resources.Snapshot, name string) (resources.PromptT
 	return resources.PromptTemplate{}, false
 }
 
-// ExpandTemplate substitutes $1 / $@ style args. Unknown name returns false.
 func ExpandTemplate(snapshot resources.Snapshot, name, args string) (string, bool) {
 	t, ok := templateByName(snapshot, name)
 	if !ok {

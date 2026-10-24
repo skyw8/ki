@@ -13,42 +13,30 @@ import (
 	"ki/internal/state"
 )
 
-// storeVersion is the schema version of push-subscriptions.json.
 const storeVersion = 1
 
-// Subscription is one browser push registration. P256DH and Auth are the
-// client's public key and 16-byte auth secret, both base64url as the Push API
-// reports them.
 type Subscription struct {
 	Endpoint string           `json:"endpoint"`
 	Keys     SubscriptionKeys `json:"keys"`
 	Created  string           `json:"createdAt,omitempty"`
 }
 
-// SubscriptionKeys is the PushSubscription.toJSON().keys half.
 type SubscriptionKeys struct {
 	P256DH string `json:"p256dh"`
 	Auth   string `json:"auth"`
 }
 
-// storedFile is the on-disk document.
 type storedFile struct {
 	Version       int            `json:"version"`
 	Subscriptions []Subscription `json:"subscriptions"`
 }
 
-// Store is the on-disk subscription registry. The whole set is small (one
-// entry per browser profile that enabled notifications), so it lives in one
-// JSON document rewritten on change, like the workspace registry.
 type Store struct {
 	mu   sync.Mutex
 	path string
 	subs []Subscription
 }
 
-// OpenStore loads path; a missing file is an empty store. Subscriptions are
-// best-effort: a document from a newer schema yields an empty store (browsers
-// re-sync on load), while writeLocked refuses to overwrite it.
 func OpenStore(path string) *Store {
 	s := &Store{path: path}
 	b, _, err := state.ReadFile(path, storeVersion, nil)
@@ -62,16 +50,12 @@ func OpenStore(path string) *Store {
 	return s
 }
 
-// List returns a copy in registration order.
 func (s *Store) List() []Subscription {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]Subscription(nil), s.subs...)
 }
 
-// Put validates and upserts by endpoint. Registering the same endpoint twice
-// (the client re-syncs on every load) refreshes its keys instead of duplicating
-// the row.
 func (s *Store) Put(sub Subscription) error {
 	if err := validateSubscription(sub); err != nil {
 		return err
@@ -92,8 +76,6 @@ func (s *Store) Put(sub Subscription) error {
 	return s.writeLocked()
 }
 
-// Delete removes an endpoint. A missing endpoint is not an error: the push
-// service reports a dead subscription with the same idempotency.
 func (s *Store) Delete(endpoint string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,12 +96,8 @@ func (s *Store) writeLocked() error {
 	return state.WriteVersioned(s.path, storeVersion, storedFile{Version: storeVersion, Subscriptions: s.subs}, 0o600)
 }
 
-// ErrInvalidSubscription marks a registration the server refuses to store.
 var ErrInvalidSubscription = errors.New("invalid push subscription")
 
-// validateSubscription rejects an endpoint or key material the sender could not
-// use. The endpoint must be an absolute https URL, or http on loopback so tests
-// (and a purely local setup) can point at a stub push service.
 func validateSubscription(sub Subscription) error {
 	if strings.TrimSpace(sub.Endpoint) == "" {
 		return fmt.Errorf("%w: empty endpoint", ErrInvalidSubscription)

@@ -8,9 +8,6 @@ import (
 	"strings"
 )
 
-// ResponsesBody is the OpenAI Responses API payload. The request is replayed
-// statelessly, so reasoning items with encrypted content must be requested and
-// retained as input items on the next turn.
 func ResponsesBody(req Request) map[string]any {
 	input := responsesInput(req.ResponsesWindow, req.Messages)
 	if adapted, err := adaptResponsesToolReplay(input, req.Tools); err == nil {
@@ -68,9 +65,6 @@ func responsesInput(window ResponsesWindow, messages []Message) []any {
 	}
 	for _, m := range Replayable(messages) {
 		items := toResponsesItems(m)
-		// A server-side compaction item supersedes every earlier stateless
-		// input item. Reset only for items emitted by an ordinary response;
-		// standalone /responses/compact windows remain canonical and unpruned.
 		if len(m.ResponsesItems) > 0 {
 			input = input[:0]
 		}
@@ -79,9 +73,6 @@ func responsesInput(window ResponsesWindow, messages []Message) []any {
 	return input
 }
 
-// ResponsesItemsForMessage converts one message to the exact ordered Responses
-// items used for stateless replay. It is used by hosts to turn a server-side
-// compaction response into a durable canonical checkpoint.
 func ResponsesItemsForMessage(message Message) (ResponsesWindow, error) {
 	if len(message.ResponsesItems) > 0 {
 		out := make(ResponsesWindow, len(message.ResponsesItems))
@@ -109,8 +100,6 @@ func ResponsesItemsForMessage(message Message) (ResponsesWindow, error) {
 func toResponsesItems(m Message) []any {
 	switch m.Role {
 	case "toolResult":
-		// Responses keeps each tool result paired with its function/custom call.
-		// Images belong inside output rather than in a separate user message.
 		outputType := "function_call_output"
 		if m.ToolType == "custom" {
 			outputType = "custom_tool_call_output"
@@ -326,8 +315,6 @@ func responsesImageParts(m Message) []map[string]any {
 	return imgs
 }
 
-// ResponsesCompactBody builds the wire payload for POST /responses/compact.
-// The provider-owned window is retained in front of newly converted messages.
 func ResponsesCompactBody(req ResponsesCompactRequest) map[string]any {
 	body := map[string]any{
 		"model": req.Model,
@@ -339,9 +326,6 @@ func ResponsesCompactBody(req ResponsesCompactRequest) map[string]any {
 	return body
 }
 
-// CompactResponses invokes OpenAI's standalone Responses compaction endpoint.
-// Output is the complete canonical next context window and must be replayed
-// without pruning.
 func (l *Client) CompactResponses(ctx context.Context, req ResponsesCompactRequest) (ResponsesCompactResult, error) {
 	body := ResponsesCompactBody(req)
 	if err := validateResponsesBody(body); err != nil {
@@ -663,9 +647,6 @@ func responseOutputIndex(obj map[string]any) int {
 	return -1
 }
 
-// responseTextReference accepts item_id as the normal identity, but also
-// correlates text by output_index or the sole open text item. Some compatible
-// gateways omit message item ids while still returning the text stream.
 func responseTextReference(acc *Message, obj map[string]any) (string, int, error) {
 	itemID := responseItemID(obj)
 	outputIndex := responseOutputIndex(obj)
@@ -772,9 +753,6 @@ func applyResponsesOutputItem(acc *Message, item map[string]any, outputIndex int
 }
 
 func rawResponsesCompactionWindow(data []byte, eventType string) ResponsesWindow {
-	// Only a completed response defines a canonical next window. An item seen
-	// before response.incomplete/failed may be followed by output the provider
-	// never committed and must not replace durable context.
 	if eventType != "response.completed" && eventType != "response.done" {
 		return nil
 	}
@@ -939,9 +917,6 @@ func mergeResponseText(acc *Message, itemID string, outputIndex int, text string
 		block.Text = text
 		return delta
 	}
-	// A final event can repair a partial stream. The final message is the
-	// source of truth, but replaying the replacement as a delta would duplicate
-	// text in clients that already rendered earlier fragments.
 	block.Text = text
 	return ""
 }

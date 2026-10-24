@@ -41,8 +41,6 @@ func codexRequest(ctx context.Context, payload, body object, compaction bool) (*
 	if !truth(cred["access"]) || !truth(cred["accountId"]) {
 		return nil, errors.New("invalid Codex OAuth credential")
 	}
-	// Only this top-level field changes. Deep-copying history and tool schemas
-	// allocated thousands of objects per request without protecting any mutation.
 	body = maps.Clone(body)
 	scope := codexScope(payload, body)
 	request := obj(payload["request"])
@@ -88,8 +86,6 @@ func (e *httpFailure) NonRetryable() bool {
 	}
 }
 
-// Once the backend has started a stream, host-level retries are just as unsafe
-// as transport fallback: the original inference may still execute tool calls.
 type unsafeStreamError struct{ err error }
 
 func (e *unsafeStreamError) Error() string      { return e.err.Error() }
@@ -127,8 +123,6 @@ func safeError(err error) string {
 	return s
 }
 
-// Every stream owns its connection: idle deadlines and cancellation must not
-// affect an unrelated session, including on gateways supporting HTTP/2.
 func openStream(req *http.Request) (*http.Response, net.Conn, func(), error) {
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: (&net.Dialer{Timeout: streamHeaderTimeout, KeepAlive: 30 * time.Second}).DialContext, TLSHandshakeTimeout: streamHeaderTimeout, ResponseHeaderTimeout: streamHeaderTimeout, DisableKeepAlives: true}
 	var conn net.Conn
@@ -256,9 +250,6 @@ func compactCodex(ctx context.Context, payload object) (object, error) {
 	}
 	response, conn, cleanup, err := openStream(req)
 	if err != nil {
-		// Server-side header flushing does not fence Client.Do completion.
-		// Cancellation during that race must match cancellation during reads,
-		// rather than leaking a transport-specific error to the RPC caller.
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("Codex compaction was cancelled: %w", ctx.Err())
 		}

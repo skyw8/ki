@@ -7,9 +7,6 @@ function safeRunID(value: string): string {
   return safe || randomUUID()
 }
 
-// Why: separate Playwright invocations may run at the same time (for example,
-// Go e2e plus a local responsive run). Fixed files let one teardown erase the
-// other run's auth and server state, which also leaves the first server alive.
 export const runID = safeRunID(
   process.env.KI_PW_RUN_ID?.trim() || `${process.pid}-${randomUUID()}`,
 )

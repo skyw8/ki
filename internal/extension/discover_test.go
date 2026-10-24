@@ -168,7 +168,6 @@ func TestDiscoverRejectsProviderWithoutSidecar(t *testing.T) {
 }
 
 func TestEnabledChainOrderMatchesDiscover(t *testing.T) {
-	// Global catalog and chain order are both name-sorted.
 	home := t.TempDir()
 	cwd := t.TempDir()
 	writePkg(t, filepath.Join(home, "extensions"), "zeta", `{
@@ -190,7 +189,6 @@ func TestEnabledChainOrderMatchesDiscover(t *testing.T) {
 	if len(got.Enabled) != 1 || got.Enabled[0].Name != "zeta" {
 		t.Fatalf("Discover.Enabled want zeta: %+v", namesOf(got.Enabled))
 	}
-	// Server feeds Prepare with Enabled(snapshot.Extensions) where Extensions is All.
 	ordered := Enabled(got.All, session.Toggle{})
 	if len(ordered) != 1 || ordered[0].Name != "zeta" {
 		t.Fatalf("Enabled(All) must match Discover chain, got %v", namesOf(ordered))

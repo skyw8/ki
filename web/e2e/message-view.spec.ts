@@ -4,8 +4,6 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { statePath } from './global-setup.ts'
 
-// Each browser test passed alone with its own server and home. Keep that
-// isolation when splitting this file so independent scenarios overlap safely.
 test.describe.configure({ mode: 'parallel' })
 
 async function sendPrompt(page: Page, text: string) {
@@ -23,7 +21,6 @@ async function useCompact(page: Page, keep: string) {
   await page.getByTestId('settings').getByRole('button', { name: '关闭对话框' }).click()
 }
 
-/** Position of one fold row (by turn id) inside the chat scroller. */
 function foldProbe(page: Page, fold: string, { click = false }: { click?: boolean } = {}) {
   return page.evaluate(({ fold: f, click }) => {
     const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
@@ -34,14 +31,11 @@ function foldProbe(page: Page, fold: string, { click = false }: { click?: boolea
       rowTop: row ? Math.round(row.getBoundingClientRect().top - el.getBoundingClientRect().top) : null,
       toBottom: !!document.querySelector('[data-testid="to-bottom"]'),
     }
-    // While following, a pending layout can move the tail between browser
-    // tasks. Capture the actual pointer-target baseline in the click's task.
     if (click) (row!.querySelector('[data-testid="fold-row-btn"]') as HTMLElement).click()
     return probe
   }, { fold, click })
 }
 
-/** Tail position of the chat scroller: are we pinned to the end and following? */
 function tailProbe(page: Page) {
   return page.evaluate(() => {
     const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
@@ -57,25 +51,17 @@ test('compact mode folds each turn\'s earlier replies and keeps the prompt visib
   test.setTimeout(60_000)
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
-  // The fake assistant answers with a Bash call for this prompt, so the turn
-  // has more than one reply node and something to fold.
   await sendPrompt(page, 'e2e-bash:echo fold-me')
   await expect(page.getByTestId('tool-card')).toHaveCount(1)
-  // Wait for the turn to settle before sending again: a second prompt while the
-  // run is still busy steers the in-flight one, whose final reply then never
-  // arrives under load (the assistant count below stalls at two).
   await expect(page.getByTestId('composer-stop')).toHaveCount(0)
   await sendPrompt(page, 'fold-beta')
   await expect(page.getByTestId('session-stats')).toContainText('2 轮 ·')
 
-  // Detailed shows both turns in full: the tool call, its result, two replies.
   await expect(page.getByTestId('fold-row')).toHaveCount(0)
   await expect(page.getByTestId('user-bubble')).toHaveCount(2)
   await expect(page.getByTestId('assistant-message')).toHaveCount(3)
   await expect(page.getByTestId('tool-card')).toHaveCount(1)
 
-  // Keep the default 1: the tool turn folds its earlier replies, the plain turn
-  // has nothing to fold, and no user bubble is ever folded away.
   await useCompact(page, '1')
   await expect(page.getByTestId('fold-row')).toHaveCount(1)
   await expect(page.getByTestId('user-bubble')).toHaveCount(2)
@@ -83,22 +69,18 @@ test('compact mode folds each turn\'s earlier replies and keeps the prompt visib
   await expect(page.getByTestId('assistant-message')).toHaveCount(2)
   await expect(page.getByTestId('tool-card')).toHaveCount(0)
 
-  // The fold opens in place: the hidden tool call and its result come back…
   await page.getByTestId('fold-row-btn').click()
   await expect(page.getByTestId('fold-row-btn')).toHaveAttribute('aria-expanded', 'true')
   await expect(page.getByTestId('tool-card')).toHaveCount(1)
-  // …and closes again from the same row.
   await page.getByTestId('fold-row-btn').click()
   await expect(page.getByTestId('fold-row-btn')).toHaveAttribute('aria-expanded', 'false')
   await expect(page.getByTestId('tool-card')).toHaveCount(0)
 
-  // N=0 folds every reply, still keeping both prompts on screen.
   await useCompact(page, '0')
   await expect(page.getByTestId('fold-row')).toHaveCount(2)
   await expect(page.getByTestId('user-bubble')).toHaveCount(2)
   await expect(page.getByTestId('assistant-message')).toHaveCount(0)
 
-  // The preference is per-browser and survives a reload.
   const saved = await page.evaluate(() => [localStorage.getItem('ki-message-view'), localStorage.getItem('ki-message-view-keep')])
   expect(saved).toEqual(['compact', '0'])
 })
@@ -114,16 +96,12 @@ test('opening a fold under the viewport keeps the row put and pauses follow-tail
   await useCompact(page, '0')
   await expect(page.getByTestId('fold-row').first()).toBeVisible()
 
-  // A run that stays busy for a few seconds: the tail keeps moving after the
-  // click, which is what used to drag the reader away.
   await sendPrompt(page, 'e2e-delay-3000 keep-streaming')
   await expect(page.getByTestId('composer-stop')).toBeVisible()
   await page.evaluate(() => {
     const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
     el.scrollTop = el.scrollHeight
   })
-  // Virtual rows commit after the scroll event. Reading them in the same task
-  // as scrollTop can find no visible fold, especially with shared browsers.
   let fold = ''
   await expect.poll(async () => {
     fold = await page.evaluate(() => {
@@ -143,14 +121,10 @@ test('opening a fold under the viewport keeps the row put and pauses follow-tail
 
   await expect(page.locator(`[data-testid="fold-row"][data-fold="${fold}"]`).getByTestId('fold-row-btn')).toHaveAttribute('aria-expanded', 'true')
   const after = await foldProbe(page, fold)
-  // The row is the pointer target: it must not move, and the viewport must not
-  // keep claiming it is at the tail now that the fold pushed the tail away.
   expect(after.rowTop).toBe(before.rowTop)
   expect(after.scrollTop).toBe(before.scrollTop)
   expect(after.toBottom).toBe(true)
 
-  // Wait for the real completion rewrite: a fixed sleep wastes time and can
-  // still inspect a running turn when the machine is busy.
   await expect(page.getByTestId('composer-stop')).toHaveCount(0)
   const ended = await foldProbe(page, fold)
   expect(ended.rowTop).toBe(before.rowTop)
@@ -162,12 +136,10 @@ test('expanding or collapsing the newest fold at the tail keeps following the bo
   test.setTimeout(60_000)
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
-  // Enough turns that the transcript scrolls, so "at the tail" is meaningful.
   for (let i = 0; i < 8; i++) {
     await sendPrompt(page, `fold-msg-${i}`)
     await expect(page.getByTestId('session-stats')).toContainText(`${i + 1} 轮 ·`)
   }
-  // A tool turn gives the newest turn several reply nodes to fold.
   await sendPrompt(page, 'e2e-bash:echo fold-me')
   await expect(page.getByTestId('session-stats')).toContainText('9 轮 ·')
   await useCompact(page, '0')
@@ -179,8 +151,6 @@ test('expanding or collapsing the newest fold at the tail keeps following the bo
   const before = await tailProbe(page)
   expect(before.scrollTop).toBe(before.maxScroll)
 
-  // Expanding the newest fold reveals rows below the pointer. While following
-  // the tail must stay pinned, not drag the reader above the new end.
   await page.getByTestId('fold-row-btn').last().click()
   await expect(page.getByTestId('fold-row-btn').last()).toHaveAttribute('aria-expanded', 'true')
   await expect.poll(async () => {
@@ -189,8 +159,6 @@ test('expanding or collapsing the newest fold at the tail keeps following the bo
   }).toBe(true)
   expect((await tailProbe(page)).toBottom).toBe(false)
 
-  // Collapsing removes rows, which followOnAppend does not cover: the tail must
-  // still stay pinned instead of leaving the reader above a clamped end.
   await page.getByTestId('fold-row-btn').last().click()
   await expect(page.getByTestId('fold-row-btn').last()).toHaveAttribute('aria-expanded', 'false')
   await expect.poll(async () => {
@@ -200,16 +168,7 @@ test('expanding or collapsing the newest fold at the tail keeps following the bo
   expect((await tailProbe(page)).toBottom).toBe(false)
 })
 
-/**
- * A session whose big turn is what a long tool run really looks like: dozens of
- * assistant/tool round trips in a single turn, so one fold row hides the whole
- * block. Written straight into the fixture home (the same place webui.spec.ts
- * drops skill and extension fixtures) because the fake model cannot produce a
- * turn anywhere near this size.
- */
 function seedBigFoldSession(home: string, cwd: string): { title: string; userNodeId: string } {
-  // Mirrors internal/session.EncodeCWD: the workspace directory a session with
-  // this cwd belongs to.
   const ws = `--${cwd.replace(/^[/\\]+/, '').replace(/[/\\:]/g, '-')}--`
   const node = (n: number): string => `01a0deadbeef${n.toString(16).padStart(22, '0')}`
   const sid = node(1)
@@ -282,8 +241,6 @@ test.describe('big fold on a phone', () => {
     await openSessionRow(page, 'fold warmup')
     await expect(page.getByTestId('fold-row').first()).toBeVisible({ timeout: 20_000 })
 
-    // Reader's place: the fold row a third down the viewport, with transcript
-    // above it for the row to fall back to.
     const before = await page.evaluate((fold: string) => {
       const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
       const row = document.querySelector(`[data-testid="fold-row"][data-fold="${fold}"]`) as HTMLElement
@@ -310,8 +267,6 @@ test.describe('big fold on a phone', () => {
     for (const wait of [50, 300, 1200]) {
       await page.waitForTimeout(wait)
       const now = await probe()
-      // The list may not rebuild itself under the reader's finger, and the
-      // scroll position must not be clamped back to the top of the window.
       expect(now.rowTop).toBe(start.rowTop)
       expect(now.scrollTop).toBe(start.scrollTop)
     }
@@ -326,15 +281,8 @@ test('a running turn folds its replies like any finished turn', async ({ page })
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
   await useCompact(page, '0')
-  // Two rounds, each delayed: while the second one is pending the turn already
-  // has a tool call plus its result to fold, and the run is still live.
   await sendPrompt(page, `e2e-write-env e2e-delay-2500 ${Date.now()}`)
-  // composer-stop is the live-run control, so the assertions below run while the
-  // turn is still in flight.
   await expect(page.getByTestId('composer-stop')).toBeVisible({ timeout: 20_000 })
-  // The turn already has a tool call and its result, and both are folded away;
-  // the prompt stays on screen. Before this, a live turn rendered every reply
-  // node it had.
   await expect(page.getByTestId('fold-row')).toHaveCount(1, { timeout: 20_000 })
   await expect(page.getByTestId('user-bubble')).toHaveCount(1)
   await expect(page.getByTestId('assistant-message')).toHaveCount(0)
@@ -345,8 +293,6 @@ test('a burst of streaming chunks keeps the main thread responsive', async ({ pa
   test.setTimeout(90_000)
   await page.goto('/')
   await expect(page.getByTestId('hero')).toBeVisible()
-  // 400 chunks of ~130 bytes: each one repeats the whole accumulated text, so an
-  // un-throttled client re-lexes a message that grows to ~50 KiB on every delta.
   await sendPrompt(page, 'e2e-stream-400')
   await expect(page.getByTestId('chat-scroll')).toBeVisible()
   const stats = await page.evaluate(async () => {
@@ -357,7 +303,7 @@ test('a burst of streaming chunks keeps the main thread responsive', async ({ pa
     })
     try {
       obs.observe({ type: 'longtask', buffered: false })
-    } catch { /* not supported: no budget check below */ }
+    } catch {}
     const deadline = Date.now() + 40_000
     while (Date.now() < deadline) {
       if ((root.textContent ?? '').includes('item 399')) break
@@ -372,8 +318,6 @@ test('a burst of streaming chunks keeps the main thread responsive', async ({ pa
     }
   })
   console.log(`burst stats: ${JSON.stringify(stats)}`)
-  // The block is the number, not the count of long tasks in isolation: before the
-  // throttle the same run blocked for seconds (every delta re-parsed the message).
   expect(stats.done, 'the stream finished').toBe(true)
   expect(stats.total, `long task total ${stats.tasks} tasks, worst ${stats.worst}ms`).toBeLessThan(2000)
   expect(stats.worst, `worst long task (total ${stats.total}ms)`).toBeLessThan(400)

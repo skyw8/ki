@@ -6,17 +6,11 @@ import (
 	"ki/internal/state"
 )
 
-// ErrProviderConfigChanged reports that a provider connection or credential
-// changed while a network-backed catalog operation was in flight.
 var ErrProviderConfigChanged = errors.New("provider connection or credential changed during model refresh")
 
-// Keep validation errors static so callers can use errors.Is while the
-// surrounding identifiers remain in the human-readable message.
 var (
-	errCatalogVersion = errors.New("provider catalog version")
-	errTrailingJSON   = errors.New("trailing JSON")
-	// errUnsupportedVersion aliases the shared state sentinel so a models.json
-	// written by a newer schema reports the same error everywhere.
+	errCatalogVersion            = errors.New("provider catalog version")
+	errTrailingJSON              = errors.New("trailing JSON")
 	errUnsupportedVersion        = state.ErrNewerVersion
 	errInvalidID                 = errors.New("invalid id")
 	errDuplicateProvider         = errors.New("provider already exists")

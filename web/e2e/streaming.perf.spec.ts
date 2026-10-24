@@ -58,7 +58,6 @@ for (const profile of [{ name: 'desktop', history: 0, cpu: 1 }, { name: 'long hi
         send(seq === 1 ? { type: 'message_update', runId: 'budget', seq, messageStream: 1, message: { role: 'assistant', content: [{ type: 'text', text }] } }
           : { type: 'message_update', runId: 'budget', seq, messageStream: 1, messagePatch: { baseSeq: seq - 1, changes: [{ path: ['content', '0', 'text'], op: 'append', value: delta }] } })
       }
-      // Dense input, a pause and a replay burst exercise different scheduling paths.
       for (let i = 0; i < 180; i++) { chunk(); await sleep(5) }
       await sleep(150)
       for (let i = 0; i < 240; i++) chunk()
@@ -66,7 +65,6 @@ for (const profile of [{ name: 'desktop', history: 0, cpu: 1 }, { name: 'long hi
       await sleep(150)
       const before = document.querySelector('[data-stream-seq]')
       send({ type: 'message_end', runId: 'budget', seq: seq + 1, entryId: 'final', message: { role: 'assistant', content: [{ type: 'text', text }] } })
-      // The terminal marker is not another text delta; stop the delta probe first.
       stopped = true
       await sleep(100)
       const sameRoot = before === document.querySelector('[data-stream-seq]')

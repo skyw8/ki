@@ -12,8 +12,6 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// The shared Codex helper persists identity even when a test does not need
-	// OAuth. Never let such a test write into the developer's real Ki home.
 	home, err := os.MkdirTemp("", "ki-dws-test-home-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -38,8 +36,6 @@ func decodeCodexTestBody(raw []byte) ([]byte, error) {
 	return decoder.DecodeAll(raw, nil)
 }
 
-// decodedCodexTestRequests keeps semantic parity fixtures focused on decoded
-// JSON. Wire assertions use the original request body instead of this wrapper.
 func decodedCodexTestRequests(t *testing.T, next http.Handler) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

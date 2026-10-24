@@ -111,8 +111,6 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
     method: 'POST',
     body: { workspaceId },
   })
-  // Bigger than one tail read, so the conversation GET is a window of the file
-  // and the tree index stays a separate, opt-in request.
   const histSeed = appendTranscript(history.dir, {
     title: 'perf-history',
     turns: 200,
@@ -173,20 +171,16 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
   const historyAssistants = await page.getByTestId('assistant-message').count()
   const historyUsers = await page.getByTestId('user-bubble').count()
 
-  // A real gesture: older history is only paged in for a reader, not for a
-  // scripted scrollTop write (see loadOlder in App.tsx).
   let olderDone = false
   const onOlder = (res: import('@playwright/test').Response) => {
     try {
       const url = new URL(res.url())
       if (url.pathname.endsWith(`/v1/sessions/${history.id}`) && url.searchParams.has('before') && res.ok()) olderDone = true
-    } catch { /* not a URL we track */ }
+    } catch {}
   }
   page.on('response', onOlder)
   const scrollBox = await page.getByTestId('chat-scroll').boundingBox()
   if (scrollBox) await page.mouse.move(scrollBox.x + scrollBox.width / 2, scrollBox.y + scrollBox.height / 2)
-  // Scroll down first so there is room above regardless of where the open left
-  // the view, then walk up until the page is requested.
   await page.mouse.wheel(0, 1200)
   await page.waitForTimeout(120)
   for (let i = 0; i < 400 && !olderDone; i++) {
@@ -196,9 +190,6 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
   page.off('response', onOlder)
   expect(olderDone, 'scrolling to the top pages older history in').toBeTruthy()
 
-  // The navigator lists the whole branch even though the chat holds only the
-  // newest window, and jumping to a prompt outside that window pages history
-  // in instead of requiring the user to scroll there.
   const navToggle = page.getByTestId('request-nav-toggle')
   await expect(navToggle).toBeVisible()
   await navToggle.click()
@@ -229,8 +220,6 @@ test('long history and huge message stay within GET/UI budgets', async ({ page }
   const contextOpenMs = performance.now() - tContext
   const contextItems = await page.locator('.context-item').count()
   const contextHeap = await heap(page)
-  // Keep added classification assertions outside the timed open interval so
-  // before/after UI timings do not charge browser roundtrips as render work.
   const contextToolSegments = page.locator('[data-testid="context-category-segment"][data-category="tool"]')
   await expect(contextToolSegments.first()).toBeVisible()
   await expect.poll(async () => Number(await contextToolSegments.first().getAttribute('data-tokens')),

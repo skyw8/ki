@@ -22,8 +22,6 @@ type completedReplay struct {
 	expires time.Time
 }
 
-// replayCache is guarded by Server.mu. Its single timer expires idle caches
-// even when no more requests arrive; reconnects never extend the deadline.
 type replayCache struct {
 	order  list.List
 	items  map[string]*list.Element
@@ -40,8 +38,6 @@ func newReplayCache() replayCache {
 
 func (s *Server) retainReplay(id string, st *runState) {
 	st.mu.Lock()
-	// Slots matter too: trimming payloads left an unbounded pointer array in
-	// long turns. Include its backing capacity and all retained payload graphs.
 	bytes := memory.Weight(struct {
 		Events   []*loop.Event
 		Input    types.Message
@@ -80,8 +76,6 @@ func (s *Server) pruneReplaysLocked(now time.Time) {
 		if record.expires.After(now) && s.replay.bytes <= s.replay.limit && len(s.replay.items) <= maxCompletedReplays {
 			break
 		}
-		// Why only detach: already-attached SSE readers own this runState and
-		// must still drain it. Never clear their buffer or evict a replacement run.
 		if s.runs[record.id] == record.state {
 			delete(s.runs, record.id)
 		}

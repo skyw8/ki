@@ -13,10 +13,6 @@ import (
 	"ki/internal/server"
 )
 
-// TestHandshakeRecordsProcessIdentity pins the fields `ki status` and
-// `ki restart` depend on. Build identity is what lets a client tell "the daemon
-// answering me is the binary I just installed" apart from "an older daemon
-// still owns the handshake".
 func TestHandshakeRecordsProcessIdentity(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
@@ -37,8 +33,6 @@ func TestHandshakeRecordsProcessIdentity(t *testing.T) {
 	}
 }
 
-// TestStatusReportsRunningServer covers the text/JSON contract of `ki status`:
-// it must describe the live daemon and stay read-only.
 func TestStatusReportsRunningServer(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
@@ -76,8 +70,6 @@ func TestStatusReportsRunningServer(t *testing.T) {
 	}
 }
 
-// TestStopEndsServerAndClearsHandshake covers what `ki stop` is for: owned
-// cleanup, a released listener, no stale handshake, and idempotence.
 func TestStopEndsServerAndClearsHandshake(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
@@ -106,15 +98,11 @@ func TestStopEndsServerAndClearsHandshake(t *testing.T) {
 		t.Fatalf("server.json not removed: %v", err)
 	}
 
-	// A second stop must be a no-op, not an error: scripts call it blindly.
 	if out, code := runBin(t, home, "stop"); code != 0 {
 		t.Fatalf("second stop: %d %s", code, out)
 	}
 }
 
-// TestStopFallsBackToSignalForPreLifecycleServer covers the first upgrade over a
-// daemon that has neither the shutdown route nor a pid in server.json — the
-// migration path this feature exists for.
 func TestStopFallsBackToSignalForPreLifecycleServer(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fallback identifies the listener through /proc or lsof")
@@ -122,7 +110,6 @@ func TestStopFallsBackToSignalForPreLifecycleServer(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
 
-	// Simulate an old handshake: addr and token only.
 	if err := server.WriteServerFile(home, server.File{Addr: sf.Addr, Token: sf.Token}); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +125,6 @@ func TestStopFallsBackToSignalForPreLifecycleServer(t *testing.T) {
 	}
 }
 
-// TestRestartKeepsAddressAndSwitchesBuild is the upgrade flow end to end.
 func TestRestartKeepsAddressAndSwitchesBuild(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
@@ -177,8 +163,6 @@ func TestRestartKeepsAddressAndSwitchesBuild(t *testing.T) {
 	}
 }
 
-// TestServeReplaceRefusesSameBuild pins the degradation of --replace: swapping
-// an identical binary would kill in-flight work for no benefit.
 func TestServeReplaceRefusesSameBuild(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
@@ -196,8 +180,6 @@ func TestServeReplaceRefusesSameBuild(t *testing.T) {
 	}
 }
 
-// TestServeReplaceSwapsMismatchedBuild covers swapping a different build, which
-// is what a freshly installed binary sees.
 func TestServeReplaceSwapsMismatchedBuild(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
@@ -227,8 +209,6 @@ func TestServeReplaceSwapsMismatchedBuild(t *testing.T) {
 	}
 }
 
-// TestStatusReportsOlderServerBuild keeps the advisory mismatch honest and
-// checks it is a warning, not a failure.
 func TestStatusReportsOlderServerBuild(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
@@ -247,11 +227,6 @@ func TestStatusReportsOlderServerBuild(t *testing.T) {
 	}
 }
 
-// TestBareKIActivatesNewBuild covers the flow users actually take after
-// installing a release: run `ki` again. It must replace a daemon from a
-// different build, and keep its address (stop deletes server.json, so an
-// implementation that reads the address afterwards would silently move the
-// server to the configured default port).
 func TestBareKIActivatesNewBuild(t *testing.T) {
 	home, _ := isolate(t)
 	sf := startServe(t, home)
@@ -286,18 +261,9 @@ func TestBareKIActivatesNewBuild(t *testing.T) {
 	}
 }
 
-// stopOnCleanup ends any daemon this test leaves behind. Replacement daemons
-// started by restart/--replace/bare ki are detached, so startServe's cleanup
-// does not own them; on Windows such a process keeps KI_HOME open and
-// t.TempDir's RemoveAll then fails with a sharing violation. Registered after
-// startServe, so it runs before that cleanup (cleanups are LIFO) and before the
-// temp directory is removed.
 func stopOnCleanup(t *testing.T, home string) {
 	t.Helper()
 	t.Cleanup(func() {
-		// Why not runBin: it derives the command from t.Context(), which Go
-		// cancels just before cleanups run, so the stop would fail with
-		// "context canceled" and leave the daemon running.
 		//nolint:gosec // the test-built binary with fixed arguments
 		cmd := exec.CommandContext(context.Background(), builtKI(t), "stop", "--timeout", "5s")
 		cmd.Env = childEnv(home)

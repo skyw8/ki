@@ -47,8 +47,6 @@ test('metadata-only model requests retain identity, usage and hydrate their own 
   const header: Entry = { type: 'request_header', id: 'r1', parentId: 'u', system: 'recorded first System', tools: [{ name: 'read' }] }
   const hydrated = hydrateEntries(view, [header])
   expect(hydrated.requests[0].prompt?.system).toBe('recorded first System')
-  // An unknown later header might have changed the prompt. Hydrating an older
-  // request must not retroactively attribute it to a metadata-only successor.
   expect(hydrated.requests[1].prompt).toBeUndefined()
   expect(hydrated.requests.map(request => request.id)).toEqual(['r1', 'r2'])
 })

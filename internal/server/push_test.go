@@ -13,15 +13,12 @@ import (
 	"ki/internal/loop"
 )
 
-// pushEvent is one decoded GET /v1/events frame. Sideband frames embed the
-// loop event next to the session id; invalidate frames carry a scope.
 type pushEvent struct {
 	loop.Event
 	SessionID string `json:"sessionId,omitempty"`
 	Scope     string `json:"scope,omitempty"`
 }
 
-// pushEvents subscribes to the WebUI push channel and yields decoded frames.
 func pushEvents(t *testing.T, hs *httptest.Server, token string) <-chan pushEvent {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -57,8 +54,6 @@ func pushEvents(t *testing.T, hs *httptest.Server, token string) <-chan pushEven
 	return out
 }
 
-// waitPush blocks until a frame matches. It fails the test on timeout or a
-// closed stream so a missing push cannot silently pass.
 func waitPush(t *testing.T, events <-chan pushEvent, what string, match func(pushEvent) bool) pushEvent {
 	t.Helper()
 	deadline := time.After(5 * time.Second)
@@ -81,9 +76,6 @@ func isInvalidate(scope string) func(pushEvent) bool {
 	return func(ev pushEvent) bool { return ev.Type == "invalidate" && ev.Scope == scope }
 }
 
-// The subscribe handshake must arrive first: the client only refetches after
-// it, so a change that happened while it was disconnected cannot slip through
-// the gap between connecting and fetching.
 func TestPushReadyHandshake(t *testing.T) {
 	_, hs := testServer(t)
 	events := pushEvents(t, hs, "tok")
@@ -101,8 +93,6 @@ func TestPushInvalidatesSessionsAndWorkspaces(t *testing.T) {
 	id := createSession(t, hs, t.TempDir())
 	waitPush(t, events, "sessions invalidate on create", isInvalidate(scopeSessions))
 
-	// A run start/end must invalidate the sidebar: that is how a second client
-	// turns the dot green or clears it without refreshing.
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")

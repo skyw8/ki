@@ -64,7 +64,6 @@ func buildTestSidecar(t *testing.T) string {
 }
 
 func TestStartRPCInitialize(t *testing.T) {
-	// This test deletes its sidecar binary, so it works on a private copy.
 	bin := copyFixture(t, buildTestSidecar(t))
 	root := t.TempDir()
 	d := Descriptor{
@@ -154,8 +153,6 @@ func TestPrepareEmitsUndeclaredExtensionError(t *testing.T) {
 }
 
 func TestPrepareOrderFollowsDiscoverEnabled(t *testing.T) {
-	// Drive the same path server uses: Discover → Enabled(All) → Prepare → items.
-	// Global sidecars are ordered by name.
 	bin := buildTestSidecar(t)
 	home := t.TempDir()
 	cwd := t.TempDir()
@@ -186,7 +183,6 @@ func TestPrepareOrderFollowsDiscoverEnabled(t *testing.T) {
 	if len(got.Enabled) != 2 || got.Enabled[0].Name != "alpha" || got.Enabled[1].Name != "zeta" {
 		t.Fatalf("Discover.Enabled %v", namesOf(got.Enabled))
 	}
-	// Mirror server: snapshot.Extensions is All; Prepare gets Enabled(All, toggle).
 	chain := Enabled(got.All, session.Toggle{})
 	m := NewManager(home, nil)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -203,9 +199,6 @@ func TestPrepareOrderFollowsDiscoverEnabled(t *testing.T) {
 }
 
 func TestResolveRuntimeCommand(t *testing.T) {
-	// Why: the absolute-path case needs a root the host considers absolute; a
-	// POSIX-looking literal like "/pkg" is a rooted-but-not-absolute path on
-	// Windows, which would exercise the package-relative branch instead.
 	root := t.TempDir()
 	if got := resolveRuntimeCommand(root, "node"); got != "node" {
 		t.Fatalf("PATH name %q", got)
@@ -303,9 +296,6 @@ func TestExecuteToolDrainsPartialResultAfterDeadline(t *testing.T) {
 	spec := c.registration.Tools[0]
 	started := time.Now()
 	res := c.executeTool(ctx, spec, "call-1", spec.Name, map[string]any{}, nil)
-	// The host deadline fires at 50ms and cancels the sidecar; the reply arrives
-	// at 300ms. The drain window must preserve that partial result instead of
-	// reporting a bare deadline error.
 	if res.IsError {
 		t.Fatalf("want drained partial result, got error %+v", res.Content)
 	}

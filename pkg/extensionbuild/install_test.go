@@ -82,7 +82,6 @@ func TestFailedBuildPreservesExistingFileAndCleansTemporaryOutput(t *testing.T) 
 	if err := os.MkdirAll(filepath.Dir(binary), 0755); err != nil {
 		t.Fatal(err)
 	}
-	// A non-executable file triggers installation but must survive a failed build.
 	if runtime.GOOS != "windows" {
 		if err := os.WriteFile(binary, []byte("previous file"), 0600); err != nil {
 			t.Fatal(err)

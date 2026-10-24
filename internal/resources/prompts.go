@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-// PromptTemplate is one prompts/*.md slash-command template.
 type PromptTemplate struct {
 	Name         string
 	Description  string

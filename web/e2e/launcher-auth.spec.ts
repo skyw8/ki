@@ -1,7 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { serverToken } from './global-setup'
 
-// Each case starts signed out with its own cookies, storage and transport.
 test.describe.configure({ mode: 'parallel' })
 test.use({ storageState: { cookies: [], origins: [] } })
 
@@ -42,7 +41,7 @@ async function observeLauncher(page: Page, switchable = false) {
         const stream = new ReadableStream<Uint8Array>({
           start(current) {
             controller = current
-            init?.signal?.addEventListener('abort', () => { try { current.close() } catch { /* Already closed. */ } }, { once: true })
+            init?.signal?.addEventListener('abort', () => { try { current.close() } catch {} }, { once: true })
           },
         })
         return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })
@@ -80,7 +79,6 @@ test('launcher exchanges the actual bearer once, scrubs before requests, and reu
   await page.reload()
   await expect(page.getByTestId('composer-input')).toBeVisible()
   expect((await requests(page)).filter(request => request.path === '/v1/auth/login')).toHaveLength(0)
-  // An already valid cookie must win even over a new, invalid launcher token.
   await page.goto('/#token=unused-invalid-token')
   await expect(page.getByTestId('composer-input')).toBeVisible()
   expect(new URL(page.url()).hash).toBe('')

@@ -66,9 +66,6 @@ func (f patchSourceFile) texts() []string {
 }
 
 func (f *patchSourceFile) apply(repls []patchReplacement) {
-	// Equal-position insertions must be applied in reverse declaration order:
-	// every insertion happens before the current contents at that position, so
-	// applying them forwards would reverse the model's chunks.
 	slices.SortFunc(repls, func(a, b patchReplacement) int {
 		if byStart := cmp.Compare(b.start, a.start); byStart != 0 {
 			return byStart
@@ -130,8 +127,6 @@ func derivePatchUpdate(contents, path string, chunks []patchChunk) (string, stri
 			return "", "", fmt.Errorf("%w in %s:\n%s", errPatchLinesMissing, path, strings.Join(chunk.old, "\n"))
 		}
 		newLines := insertedPatchLines(replacement, source.preferred)
-		// Context lines are semantically unchanged. Reuse their source records so
-		// mixed line endings do not turn a small edit into a whole-file diff.
 		for _, pair := range chunk.contextLines {
 			oldIdx, newIdx := pair[0], pair[1]
 			if oldIdx < len(pattern) && newIdx < len(newLines) && idx+oldIdx < len(source.lines) {

@@ -9,9 +9,6 @@ import (
 	"strings"
 )
 
-// listenerPID finds the process listening on addr with lsof, because Darwin has
-// no procfs. A missing lsof yields 0 (unknown), which callers treat as "cannot
-// identify the daemon" rather than as "nothing is running".
 func listenerPID(addr string) int {
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {

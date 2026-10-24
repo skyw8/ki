@@ -82,13 +82,8 @@ test('a delayed prepend preserves the item being read just before the response',
   await scroll.hover()
   await page.mouse.wheel(0, -10)
   await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', 'reading')
-  // Enter reading before accelerating to the page boundary. A scripted
-  // scrollTop write alone is not user intent and can race viewport-follow
-  // measurement after the fixture changes from desktop to mobile width.
   await scroll.evaluate(el => { el.scrollTop = 240 })
   await expect.poll(() => requests).toBe(1)
-  // Continue reading during the slow response. The request-start offset is
-  // deliberately wrong now; capture a stable key before releasing the page.
   await scroll.evaluate(el => { el.scrollTop = 900 })
   await page.waitForTimeout(800)
   const anchor = await scroll.evaluate(el => {
@@ -137,8 +132,6 @@ for (const distance of [10, 30, 60]) test(`upward intent ${distance}px from the 
   }
   await expect(page.getByTestId('chat')).toHaveAttribute('data-scroll-intent', 'reading')
   expect(Math.abs(await scroll.evaluate(el => el.scrollTop) - top)).toBeLessThanOrEqual(2)
-  // Completion changes the running-placeholder padding outside row sizes.
-  // Its layout reconciliation must preserve reading, even close to the tail.
   await send({ type: 'message_end', seq: 6, entryId: 'final', message: { role: 'assistant', content: [{ type: 'text', text: 'First line' + '\n\nNew line'.repeat(5) }] } })
   await expect(page.getByTestId('asst-actions')).toHaveCount(1)
   const completionFrames = await scroll.evaluate(async el => {

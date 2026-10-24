@@ -63,8 +63,6 @@ func (s *Server) listFS(w http.ResponseWriter, r *http.Request) {
 		serveFSPreview(w, r, path)
 		return
 	}
-	// workspace.Normalize intentionally permits the host-absolute paths exposed
-	// by the directory browser; this is not an archive extraction boundary.
 	//nolint:gosec // the normalized browser path is an intentional user selection
 	st, err := os.Stat(path)
 	if err != nil || !st.IsDir() {
@@ -77,8 +75,6 @@ func (s *Server) listFS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	includeFiles := r.URL.Query().Get("files") == "1"
-	// JSON null makes browser clients distinguish an empty directory from a
-	// normal listing and previously crashed the attachment picker on `.length`.
 	dirs := make([]fsEntry, 0)
 	files := make([]fsEntry, 0)
 	for _, e := range ents {
@@ -90,7 +86,6 @@ func (s *Server) listFS(w http.ResponseWriter, r *http.Request) {
 		isDir := e.IsDir()
 		if !isDir {
 			if resolved, err := filepath.EvalSymlinks(child); err == nil {
-				// The symlink target is inspected only to classify a browser entry.
 				//nolint:gosec // this is a normalized, user-selected browser path
 				if st, err := os.Stat(resolved); err == nil && st.IsDir() {
 					isDir = true
@@ -132,9 +127,6 @@ func (s *Server) listFS(w http.ResponseWriter, r *http.Request) {
 }
 
 func serveFSPreview(w http.ResponseWriter, r *http.Request, path string) {
-	// The WebUI may be on a different host behind a port-forward, so host paths
-	// cannot be used as preview URLs. Stream only recognized safe formats over the
-	// authenticated, same-origin filesystem endpoint.
 	f, err := os.Open(path) //nolint:gosec // path is the explicit host file selected in the browser
 	if err != nil {
 		http.Error(w, "file-unreadable", http.StatusBadRequest)
@@ -167,8 +159,6 @@ func serveFSPreview(w http.ResponseWriter, r *http.Request, path string) {
 	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if isText && !isImage && !isPDF {
-		// HTML, SVG, and source files are deliberately served as plain text so a
-		// selected host file can never execute inside the WebUI origin.
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		if st.Size() > maxTextPreviewBytes {
 			w.Header().Set("X-Ki-Preview-Truncated", "1")

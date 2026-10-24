@@ -29,8 +29,6 @@ func fakeDiscovery(goos string, env, paths map[string]string, files map[string]b
 }
 
 func TestDiscoverShellRuntimeNonWindowsDoesNotExposePowerShell(t *testing.T) {
-	// Why: the fake discovery matches paths it is handed, so the POSIX fixture
-	// has to be expressed in the host's separator form to model a POSIX host.
 	bashPath := filepath.FromSlash("/usr/local/bin/bash")
 	got := discoverShellRuntime(fakeDiscovery("linux", nil, map[string]string{ //nolint:gosec // fake shell paths are test fixtures, not credentials
 		"bash": bashPath, "pwsh": filepath.FromSlash("/usr/bin/pwsh"),
@@ -235,10 +233,6 @@ func TestBundledSearchToolsDoesNotSetBashEnvForPowerShell(t *testing.T) {
 	}
 }
 
-// TestBundledSearchToolsPrependExtensionDirs pins the PATH contract: ki's own
-// tools directory stays first so an extension can never shadow rg/fd, extension
-// directories follow it in order, and the shim receives them separately because
-// login profiles can rewrite PATH after the child environment is fixed.
 func TestBundledSearchToolsPrependExtensionDirs(t *testing.T) {
 	dir := filepath.Join(string(filepath.Separator)+"opt", "ki-tools")
 	extA := filepath.Join(string(filepath.Separator)+"home", "x", "extensions", "alpha", "node_modules", ".bin")
@@ -268,18 +262,12 @@ func TestBundledSearchToolsWithoutExtensionsKeepsPathUnchanged(t *testing.T) {
 	if got, want := values["PATH"], dir+string(os.PathListSeparator)+"/usr/bin:/bin"; got != want {
 		t.Fatalf("PATH = %q, want %q", got, want)
 	}
-	// A shell spec without extension dirs must produce exactly the legacy
-	// environment: proxy passthrough plus the bundled tools directory.
 	spec := envToMap((Shell{kind: shellBash, path: "/bin/bash", pathDirs: nil}).env())
 	if _, ok := spec[ExtensionPathEnv]; ok {
 		t.Fatalf("shell env exported %s without extension dirs", ExtensionPathEnv)
 	}
 }
 
-// clearExtensionPathEnv removes an inherited KI_EXTENSION_PATH_DIRS. Shell
-// environments pass the process environment through, so running `go test` from
-// a ki session (which exports its own extension dirs) would otherwise make the
-// "no extension dirs" assertions fail for the wrong reason.
 func clearExtensionPathEnv(t *testing.T) {
 	t.Helper()
 	previous, had := os.LookupEnv(ExtensionPathEnv)
@@ -295,9 +283,6 @@ func clearExtensionPathEnv(t *testing.T) {
 	})
 }
 
-// TestBashResolvesExtensionCliDespiteProfile guards the same failure mode as
-// the bundled-tools test for extension-contributed directories: the login
-// profile resets PATH before BASH_ENV runs, so the shim has to re-add them.
 func TestBashResolvesExtensionCliDespiteProfile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX login-profile PATH reset scenario")
@@ -329,9 +314,6 @@ func TestBashResolvesExtensionCliDespiteProfile(t *testing.T) {
 	}
 }
 
-// TestBashResolvesBundledToolsDespiteProfile guards the reason the shim exists:
-// bash -lc runs the login profile before BASH_ENV, and a profile that resets
-// PATH would otherwise hide the embedded rg/fd.
 func TestBashResolvesBundledToolsDespiteProfile(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX login-profile PATH reset scenario")

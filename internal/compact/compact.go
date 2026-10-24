@@ -18,21 +18,14 @@ import (
 	"ki/internal/types"
 )
 
-// Summarizer produces a structured summary. compact builds the full prompt
-// (system + user), aligned with pi: SUMMARIZATION / UPDATE / TURN_PREFIX.
 type Summarizer interface {
 	Summarize(ctx context.Context, system, user string) (string, *types.Usage, error)
 }
 
-// ErrNothingToCompact reports that Prepare found no messages worth summarizing.
-// The compaction is skipped and no model call happens.
 var ErrNothingToCompact = errors.New("nothing to compact")
 
-// ErrCompactionSkipped reports that a session_before_compact interceptor
-// vetoed the operation without changing context.
 var ErrCompactionSkipped = errors.New("compaction skipped")
 
-// Reason identifies why a compaction was requested.
 type Reason string
 
 const (
@@ -43,21 +36,12 @@ const (
 	ReasonServer    Reason = "server"
 )
 
-// Intent is trigger metadata shared by planning, extensions, execution, and
-// terminal events.
 type Intent struct {
 	Reason       Reason `json:"reason"`
 	WillRetry    bool   `json:"willRetry"`
 	Instructions string `json:"instructions,omitempty"`
 }
 
-// EstimateTokens estimates the model-facing context size. Primary source is
-// the newest assistant message with usage (pi calculateContextTokens:
-// totalTokens, falling back to input+output+cacheRead+cacheWrite), plus
-// char/4 for any trailing messages after it (pi trailingTokens). Falls back
-// to pure char/4 when no usable usage exists. recentCompaction guards stale
-// usage: a usage recorded before the last compaction reflects the old,
-// larger context and would falsely re-trigger compaction.
 func EstimateTokens(msgs []types.Message, recentCompaction int64) int {
 	if tokens, ok := estimateFromUsage(msgs, recentCompaction); ok {
 		return tokens
@@ -84,10 +68,6 @@ func estimateFromUsage(msgs []types.Message, recentCompaction int64) (int, bool)
 	return 0, false
 }
 
-// EstimateModelContext includes an opaque Responses prefix using the same
-// conservative char/4 fallback as ordinary messages. Provider usage cannot
-// describe a standalone compacted window's next rendered size, so treating the
-// encrypted bytes as zero would immediately under-report context pressure.
 func EstimateModelContext(ctx types.ModelContext, recentCompaction int64) int {
 	if ctx.Portable {
 		if raw, err := json.Marshal(ctx.Messages); err == nil {
@@ -97,8 +77,6 @@ func EstimateModelContext(ctx types.ModelContext, recentCompaction int64) int {
 	}
 	if ctx.Responses != nil {
 		if tokens, ok := estimateFromUsage(ctx.Messages, recentCompaction); ok {
-			// Usage from a request with this checkpoint already includes its
-			// provider-side token cost; adding ciphertext bytes would double it.
 			return tokens
 		}
 	}
@@ -127,7 +105,6 @@ func char4(msgs []types.Message) int {
 	return n
 }
 
-// ShouldRun reports auto-compaction.
 func ShouldRun(tokens, contextWindow int, cfg config.Compaction) bool {
 	if !cfg.Enabled {
 		return false
@@ -135,17 +112,12 @@ func ShouldRun(tokens, contextWindow int, cfg config.Compaction) bool {
 	if contextWindow <= 0 {
 		contextWindow = 128000
 	}
-	// Global floor: MaxContextTokens caps the model window so a small value
-	// triggers compaction early (e.g. low-cost testing). Min semantics: the
-	// model window never inflates past the configured cap.
 	if cfg.MaxContextTokens > 0 && cfg.MaxContextTokens < contextWindow {
 		contextWindow = cfg.MaxContextTokens
 	}
 	return tokens > contextWindow-cfg.ReserveTokens
 }
 
-// Preparation is the pure-function output of Prepare, ready for Execute
-// (aligned with pi CompactionPreparation: cut, segments, iterative summary).
 type Preparation struct {
 	Intent              Intent
 	SourceLeafID        string
@@ -158,8 +130,6 @@ type Preparation struct {
 	PreviousSummary     string
 }
 
-// Result is a generated local checkpoint. The host-owned cut point and
-// retained tail remain on Preparation so an extension cannot forge them.
 type Result struct {
 	Summary       string
 	Usage         *types.Usage
@@ -167,19 +137,10 @@ type Result struct {
 	FromExtension bool
 }
 
-// Prepare computes everything needed for one compaction without calling the
-// model or writing anything. entries must be the leaf-chain entries
-// (root → leaf, session.LeafEntries). It finds the previous compaction for the
-// incremental summary, virtually expands its retained tail into the cut search
-// (pi virtualRetainedEntries), picks a cut point that never splits a tool
-// result, and detects a split turn (cut inside a turn → prefix summarized
-// separately).
 func Prepare(entries []session.Entry, cfg config.Compaction) (*Preparation, error) {
 	return PrepareWithIntent(entries, cfg, Intent{})
 }
 
-// PrepareWithIntent attaches trigger metadata to the otherwise pure local
-// compaction plan.
 func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent Intent) (*Preparation, error) {
 	keep := cfg.KeepRecentTokens
 	if keep <= 0 {
@@ -187,9 +148,6 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 	}
 	prevCompIdx := -1
 	for i, v := range slices.Backward(entries) {
-		// Remote Responses checkpoints are opaque and model-bound. A local
-		// fallback or model switch must summarize the durable transcript, not
-		// mistake an unreadable checkpoint for an empty local summary.
 		if v.Type == "compaction" && v.Responses == nil {
 			prevCompIdx = i
 			break
@@ -220,8 +178,6 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 		}
 	}
 
-	// tokensBefore: previous summary + all messages, usage-aware with the
-	// stale guard (usage from before the last compaction is ignored).
 	msgs := []types.Message{}
 	if previousSummary != "" {
 		msgs = append(msgs, types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "Previous conversation summary:\n" + previousSummary}}})
@@ -233,16 +189,9 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 	}
 	tokensBefore := EstimateTokens(msgs, lastCompactionAt)
 	if portableExpanded {
-		// Why: the newest assistant usage after an opaque checkpoint only
-		// describes that compact prefix. Local fallback expands the durable raw
-		// transcript, so reusing checkpoint-scoped usage can undercount by orders
-		// of magnitude and feed an oversized request to the summarizer.
 		tokensBefore = EstimateModelContext(types.ModelContext{Messages: msgs, Portable: true}, lastCompactionAt)
 	}
 
-	// Valid cut points: user/assistant messages; never a toolResult (a kept
-	// toolResult without its toolCall is semantically broken, pi
-	// findValidCutPoints).
 	var cutPoints []int
 	for i, e := range compactable {
 		if e.Type == "message" && e.Message != nil && e.Message.Role != "toolResult" {
@@ -253,8 +202,6 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 		return nil, ErrNothingToCompact
 	}
 
-	// Walk newest → oldest until the recent-token budget is filled; cut at the
-	// earliest valid cut point not older than the budget position.
 	acc := 0
 	cutIndex := cutPoints[0]
 	for i, v := range slices.Backward(compactable) {
@@ -273,16 +220,11 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 				}
 			}
 			if !found {
-				// At a live tool-round boundary the newest entry is a toolResult
-				// and no later assistant cut exists yet. Retain the preceding
-				// assistant tool-call with its result; falling back to the oldest
-				// cut would incorrectly report ErrNothingToCompact.
 				cutIndex = cutPoints[len(cutPoints)-1]
 			}
 			break
 		}
 	}
-	// Never walk the cut back past a message or compaction boundary.
 	for cutIndex > 0 {
 		prev := compactable[cutIndex-1]
 		if prev.Type == "compaction" || prev.Type == "message" {
@@ -291,8 +233,6 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 		cutIndex--
 	}
 
-	// Map the cut index back to a real entry id (virtual entries map into the
-	// entries slice right after the previous compaction).
 	var firstKept string
 	switch {
 	case cutIndex < len(virtual):
@@ -301,7 +241,6 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 		firstKept = entries[prevCompIdx+1+cutIndex-len(virtual)].ID
 	}
 
-	// Split turn: cut lands inside a turn (cut entry is not a user message).
 	cutEntry := compactable[cutIndex]
 	isUserCut := cutEntry.Type == "message" && cutEntry.Message != nil && cutEntry.Message.Role == "user"
 	historyEnd := cutIndex
@@ -352,16 +291,10 @@ func PrepareWithIntent(entries []session.Entry, cfg config.Compaction, intent In
 	}, nil
 }
 
-// Generate executes the local summary strategy without writing the session.
 func Generate(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.Compaction) (Result, error) {
 	return GenerateWithInputLimit(ctx, prep, sum, cfg, 0)
 }
 
-// GenerateWithInputLimit executes a local summary while bounding every model
-// request. maxInputTokens is treated as a conservative byte budget: a BPE
-// input cannot contain more tokens than UTF-8 bytes, so even code-heavy or
-// multilingual transcripts stay inside the provider window without needing a
-// provider-specific tokenizer.
 func GenerateWithInputLimit(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.Compaction, maxInputTokens int) (Result, error) {
 	summary, usage, err := ExecuteWithInputLimit(ctx, prep, sum, cfg, maxInputTokens)
 	if err != nil {
@@ -370,14 +303,10 @@ func GenerateWithInputLimit(ctx context.Context, prep *Preparation, sum Summariz
 	return Result{Summary: summary, Usage: usage}, nil
 }
 
-// Execute generates the compaction summary for a Preparation (the only stage
-// that calls the model). Returns the summary text and combined usage.
 func Execute(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.Compaction) (string, *types.Usage, error) {
 	return ExecuteWithInputLimit(ctx, prep, sum, cfg, 0)
 }
 
-// ExecuteWithInputLimit is Execute with bounded, hierarchical summarization
-// for histories larger than one model request.
 func ExecuteWithInputLimit(ctx context.Context, prep *Preparation, sum Summarizer, cfg config.Compaction, maxInputTokens int) (string, *types.Usage, error) {
 	var summary string
 	var usage *types.Usage
@@ -416,9 +345,6 @@ func summarizeBounded(ctx context.Context, sum Summarizer, cfg config.Compaction
 		return callSummarizer(ctx, sum, system, user)
 	}
 
-	// Oversized local fallback cannot rely on an opaque remote checkpoint. Fold
-	// the readable transcript in bounded map/reduce rounds instead of sending
-	// one request that is guaranteed to exceed the same model's window.
 	source := append([]types.Message{}, msgs...)
 	if previousSummary != "" {
 		source = append([]types.Message{{
@@ -490,9 +416,6 @@ func summarizeChunks(ctx context.Context, sum Summarizer, chunks [][]types.Messa
 					return
 				}
 				system, user := summaryRequest(chunks[i], "", splitTurn, instructions)
-				// Why: map outputs become the next round's input. Without an explicit
-				// size target a verbose model can return a checkpoint as large as its
-				// source, preventing hierarchical reduction from converging.
 				user += "\n\nThis is one segment of a larger transcript. Preserve decisions, code changes, failures, and pending work, but keep this partial checkpoint under 2,000 words."
 				text, usage, err := callSummarizer(ctx, sum, system, user)
 				results[i] = summaryChunkResult{text: text, usage: usage, err: err}
@@ -544,8 +467,6 @@ func splitSummaryMessages(msgs []types.Message, maxBytes int) [][]types.Message 
 				take--
 			}
 			if take == 0 {
-				// maxBytes is already validated above; this only handles a rune
-				// crossing the exact boundary.
 				_, size := utf8.DecodeRuneInString(text)
 				take = size
 			}
@@ -565,7 +486,6 @@ func splitSummaryMessages(msgs []types.Message, maxBytes int) [][]types.Message 
 	return chunks
 }
 
-// Commit validates and atomically appends a generated local checkpoint.
 func Commit(s *session.Session, prep *Preparation, result Result) (session.Entry, error) {
 	if prep == nil {
 		return session.Entry{}, errors.New("missing compaction preparation")
@@ -637,9 +557,6 @@ func validateCustomUsage(usage *types.Usage) error {
 	return nil
 }
 
-// summarize builds the prompt (aligned with pi prompts) and calls the model.
-// splitTurn selects the turn-prefix prompt; otherwise previousSummary selects
-// the incremental UPDATE prompt.
 func summarize(ctx context.Context, sum Summarizer, _ config.Compaction, msgs []types.Message, previousSummary string, splitTurn bool, instructions string) (string, *types.Usage, error) {
 	system, user := summaryRequest(msgs, previousSummary, splitTurn, instructions)
 	return callSummarizer(ctx, sum, system, user)
@@ -703,26 +620,20 @@ func parseTime(ts string) (int64, error) {
 	return t.UnixMilli(), nil
 }
 
-// Static is a test summarizer.
 type Static struct{ Text string }
 
-// Summarize implements Summarizer.
 func (s Static) Summarize(_ context.Context, _ string, user string) (string, *types.Usage, error) {
 	t := cmp.Or(s.Text, "Summary of earlier conversation.")
 	return t + "\n" + fmt.Sprintf("(source chars=%d)", len(user)), &types.Usage{Output: 20, TotalTokens: 20}, nil
 }
 
-// SystemPrompt is the base prompt for context summarization.
 const SystemPrompt = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`
 
-// UpdateSystemPrompt is appended to SystemPrompt for incremental summaries
-// (pi UPDATE_SUMMARIZATION_PROMPT semantics).
 const UpdateSystemPrompt = `
 Update the existing summary with the NEW conversation messages provided in the <conversation> tags, preserving the <previous-summary> content. PRESERVE all existing information, ADD new progress, decisions, and context, and PRESERVE exact file paths, function names, and error messages.`
 
-// SummarizationPrompt asks the model to summarize a conversation checkpoint.
 const SummarizationPrompt = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
@@ -756,7 +667,6 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`
 
-// UpdateSummarizationPrompt asks the model to update an existing summary.
 const UpdateSummarizationPrompt = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
 Use this EXACT format:
@@ -788,7 +698,6 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`
 
-// TurnPrefixSummarizationPrompt asks the model to summarize a retained turn prefix.
 const TurnPrefixSummarizationPrompt = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 
 Summarize the prefix to provide context for the retained suffix:
@@ -804,12 +713,10 @@ Summarize the prefix to provide context for the retained suffix:
 
 Be concise. Focus on what's needed to understand the kept suffix.`
 
-// StreamSummarizer asks a Streamer to summarize.
 type StreamSummarizer struct {
 	Stream func(ctx context.Context, system, user string) (string, *types.Usage, error)
 }
 
-// Summarize implements Summarizer.
 func (s StreamSummarizer) Summarize(ctx context.Context, system, user string) (string, *types.Usage, error) {
 	if s.Stream == nil {
 		return Static{}.Summarize(ctx, system, user)

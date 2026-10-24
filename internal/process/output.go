@@ -22,8 +22,6 @@ func truncateTail(s string) (out, note string) {
 		chunk = strings.Join(lines[start:], "\n")
 	}
 	if len(chunk) > maxBytes {
-		// A single line can exceed the byte limit. Keep its tail without splitting
-		// a UTF-8 code point so one noisy line cannot bypass the context bound.
 		chunk = validUTF8Tail(chunk, maxBytes)
 	}
 	return chunk, fmt.Sprintf("\n\n[Showing lines %d-%d of %d (%d byte limit).]", start+1, total, total, maxBytes)

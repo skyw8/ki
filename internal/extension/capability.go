@@ -2,10 +2,8 @@ package extension
 
 import "slices"
 
-// Kind is a top-level capability declared in extension.json.
 type Kind string
 
-// Capability kinds declared in extension.json.
 const (
 	CapPromptAppend Kind = "prompt.append"
 	CapSkill        Kind = "skill"
@@ -16,11 +14,7 @@ const (
 	CapProvider     Kind = "provider"
 	CapChannel      Kind = "channel"
 	CapSettings     Kind = "settings"
-	// CapPath lets a package contribute its own executable directories to the
-	// PATH of shell tools. It is declarative (no sidecar), but gated like the
-	// other contributions so an enabled package cannot silently change command
-	// resolution across every session.
-	CapPath Kind = "path"
+	CapPath         Kind = "path"
 )
 
 var knownKinds = map[Kind]bool{

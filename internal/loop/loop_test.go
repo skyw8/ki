@@ -429,11 +429,6 @@ func TestRunToolTimingIsReportedOnExecutionAndResultEvents(t *testing.T) {
 	}
 }
 
-// A turn's wall clock is stamped onto turn_start (timestamp) and turn_end
-// (timestamp + durationMs) so a client can run a live per-turn counter from the
-// server clock. The tool delay inside the first turn must be covered by its
-// duration, which is what makes turn timing more than the sum of the model's
-// own latencies.
 func TestTurnTimingIsReportedOnTurnEvents(t *testing.T) {
 	const delay = 20 * time.Millisecond
 	var starts, ends []Event
@@ -469,9 +464,6 @@ func TestTurnTimingIsReportedOnTurnEvents(t *testing.T) {
 	}
 }
 
-// A tool that finishes in under a millisecond reports DurationMs 0. The field
-// must still be serialized, otherwise fast tools (Read) show no timing in the
-// WebUI because `omitempty` dropped the zero value.
 func TestZeroToolDurationIsSerialized(t *testing.T) {
 	raw, err := json.Marshal(Event{Type: ToolExecutionEnd, ToolCallID: "c1", ToolName: "Read"})
 	if err != nil {
@@ -497,7 +489,6 @@ func TestZeroToolDurationIsSerialized(t *testing.T) {
 	}
 }
 
-// overflowStreamer fails once with a context-overflow error, then succeeds.
 type overflowStreamer struct {
 	n        int
 	requests []Request
@@ -571,7 +562,6 @@ func TestRunOverflowRecovery(t *testing.T) {
 	if asst == nil || asst.Text() != "retried ok" {
 		t.Fatalf("retried assistant: %+v", asst)
 	}
-	// Compaction events must be ordered around the recovery, before the retry.
 	iStart, iEnd := -1, -1
 	for i, e := range evs {
 		if e.Type == CompactionStart {
@@ -586,8 +576,6 @@ func TestRunOverflowRecovery(t *testing.T) {
 	}
 }
 
-// alwaysOverflowStreamer always fails with overflow; the recovery must run at
-// most once (pi _overflowRecoveryAttempted) and then give up.
 type alwaysOverflowStreamer struct{}
 
 func (alwaysOverflowStreamer) Stream(_ context.Context, _ Request, _ func(AssistantDelta) error) (types.Message, error) {
@@ -887,8 +875,6 @@ func TestRunAutoRetriesWithoutRejectedContextManagement(t *testing.T) {
 	}
 }
 
-// lengthToolStreamer returns a truncated (length) message with a tool call on
-// the first attempt, then a normal reply (model re-issuing after rejection).
 type lengthToolStreamer struct {
 	n int
 }
@@ -937,8 +923,6 @@ func TestRunLengthRejectsToolCalls(t *testing.T) {
 	}
 }
 
-// validatingTool rejects calls without a file_path via the optional
-// toolapi.Validator (P0), and records whether Execute ever ran.
 type validatingTool struct {
 	executed bool
 }
@@ -961,8 +945,6 @@ func (t *validatingTool) Execute(_ context.Context, _ map[string]any) toolapi.Re
 	return toolapi.Result{Content: []types.Content{{Type: "text", Text: "ran"}}}
 }
 
-// badArgsStreamer returns one tool call with an empty argument map, so the
-// optional toolapi.Validator must reject it before execution.
 type badArgsStreamer struct {
 	n int
 }
@@ -1020,8 +1002,6 @@ func TestRunValidateBlocksToolBeforeExecute(t *testing.T) {
 	}
 }
 
-// terminateToolStreamer returns one tool call; the model would normally be
-// called again after the result, but the batch terminate signal must stop it.
 type terminateToolStreamer struct {
 	n int
 }
@@ -1046,15 +1026,13 @@ func TestRunBeforeToolTerminateStopsLoop(t *testing.T) {
 		Tools:    []toolapi.Tool{oneTool{}},
 		Hooks: Hooks{
 			BeforeTool: func(_ context.Context, _ string, args map[string]any) (map[string]any, bool, string, bool, error) {
-				return args, false, "", true, nil // terminate after this batch
+				return args, false, "", true, nil
 			},
 		},
 	}, func(_ Event) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Batch terminate must stop the loop after one request; the model must not
-	// be called again.
 	if st.n != 1 {
 		t.Fatalf("Stream called %d times, want 1 (terminate should stop the loop)", st.n)
 	}
@@ -1157,9 +1135,6 @@ func (t bigTool) Execute(context.Context, map[string]any) toolapi.Result {
 	}
 }
 
-// The loop is the single spool boundary: every tool result that exceeds the
-// preview budget is bounded there, its complete text is written to the session
-// store, and the tool's own details stay flat next to the reference.
 func TestRunSpillsOversizedToolResult(t *testing.T) {
 	store, err := output.NewWithConfig(output.Config{Root: t.TempDir()})
 	if err != nil {
@@ -1193,7 +1168,6 @@ func TestRunSpillsOversizedToolResult(t *testing.T) {
 	if !strings.Contains(result.Text(), "Stored:") {
 		t.Fatalf("result does not point at the spill file: %q", result.Text())
 	}
-	// Details reach the jsonl/WebUI as JSON, so assert on the marshalled shape.
 	rawDetails, err := json.Marshal(result.Details)
 	if err != nil {
 		t.Fatal(err)

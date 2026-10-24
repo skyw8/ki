@@ -24,7 +24,6 @@ func TestIndexLookupAddRemove(t *testing.T) {
 	}
 	defer func() { _ = s2.Close() }()
 
-	// NewIndex built from the same walk List does (the server path).
 	infos, err := List(root)
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +42,6 @@ func TestIndexLookupAddRemove(t *testing.T) {
 		t.Fatal("unknown id must miss")
 	}
 
-	// Add after the fact (create/fork path).
 	s3, err := Create(root, cwd, "anthropic", "claude-sonnet-4-5")
 	if err != nil {
 		t.Fatal(err)

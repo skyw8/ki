@@ -53,9 +53,6 @@ function initialValues(form: CompiledForm, config: JsonObject): { values: JsonOb
       const parsed = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : NaN
       const fallback = typeof field.schema.default === 'number' ? field.schema.default : 0
       const displayed = (Number.isFinite(parsed) ? parsed : fallback) * field.displayScale
-      // Scaling milliseconds to minutes can produce 60.00000000000001, which a
-      // step=1 input rejects before submit. Keep display values stable without
-      // changing the stored unit.
       values[field.name] = Math.round(displayed * 1e6) / 1e6
       continue
     }
@@ -111,8 +108,6 @@ export function SchemaConfigForm({ api, name, onClose, embedded = false, models 
       if (alive) setLoading(false)
     })
     return () => { alive = false }
-    // apply only initializes state from the response; including it would restart
-    // the request on every field edit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, name])
 
@@ -447,7 +442,6 @@ export function SchemaConfigForm({ api, name, onClose, embedded = false, models 
       </>
     )
     return form.scroll ? <div className="extension-config-scroll">{content}</div> : content
-    // Rendering depends on every form/value edit; the helpers close over both.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form, values, configured, config, lang, models, defaultModel])
 

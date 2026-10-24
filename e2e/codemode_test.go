@@ -11,12 +11,7 @@ import (
 
 func TestCodeModeWorkerRealBinary(t *testing.T) {
 	t.Parallel()
-	// Unit workers dispatch through a test-only entry point. Use the shared
-	// real CLI build to verify default worker argv, secret-free environment,
-	// bootstrap limits, and stdout framing through the production entry point.
 	manager := codemode.NewManager(codemode.Config{Executable: builtKI(t)})
-	// t.Context is canceled before cleanup; keep the worker lifetime alive
-	// until Manager.Close has completed its graceful shutdown IPC.
 	ctx, cancel := context.WithCancel(context.WithoutCancel(t.Context()))
 	t.Cleanup(func() {
 		defer cancel()
@@ -53,8 +48,6 @@ func TestCodeModeWorkerRealBinary(t *testing.T) {
 	default:
 		t.Fatal("real worker did not invoke the parent callback")
 	}
-	// Reuse the worker to check that no startup noise/relaunch corrupts the
-	// next IPC exchange and completed cells commit their session store.
 	response, err = session.Execute(t.Context(), codemode.ExecuteRequest{
 		ParentCallID: "outer-2", Source: "text(load('marker'));",
 	}, codemode.Callbacks{})

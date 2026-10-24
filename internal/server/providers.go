@@ -25,8 +25,6 @@ func (s *Server) providers(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"version": provider.CatalogVersion, "default": s.registry.Default(), "providers": s.registry.Providers()})
 }
 
-// writeProviders answers a successful registry mutation with the catalog and
-// tells other tabs (and this one's model picker) to refetch it.
 func (s *Server) writeProviders(w http.ResponseWriter, r *http.Request) {
 	s.publishInvalidation(scopeProviders)
 	s.providers(w, r)
@@ -385,8 +383,6 @@ func fetchMagpieModels(ctx context.Context, baseURL, apiKey string) ([]provider.
 	helloURL.Path = path + "/api/hello"
 	helloURL.RawPath = ""
 
-	// Do not follow redirects: the credential is intended for this configured
-	// gateway, and model refresh must not forward it to a redirect target.
 	client := &http.Client{
 		Timeout: 12 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {

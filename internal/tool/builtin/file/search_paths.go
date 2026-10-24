@@ -23,9 +23,6 @@ func displaySearchPath(cwd, path string) string {
 	return filepath.ToSlash(rel)
 }
 
-// splitAbsoluteGlob mirrors Claude Code's optimization: an absolute glob is
-// split into a traversal root and a relative --glob pattern because ripgrep's
-// glob filter is relative to its search root.
 func splitAbsoluteGlob(pattern string) (root, relative string, ok bool) {
 	if !filepath.IsAbs(pattern) {
 		return "", pattern, false

@@ -18,7 +18,6 @@ func TestSnapshotReplayUserIdentityBeforeEndBuffered(t *testing.T) {
 	hidden := types.Message{Role: "user", Origin: "agent:/root/child", ClientRequestID: "persisted",
 		Content: []types.Content{{Type: "text", Text: "same text"}}}
 	end := loop.Event{Type: loop.MessageEnd, Message: &hidden}
-	// Reproduce the exact persist-before-buffer window without a timing race.
 	if err := em.persist(&end); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +31,6 @@ func TestSnapshotReplayUserIdentityBeforeEndBuffered(t *testing.T) {
 	if err := em.persist(&laterEnd); err != nil {
 		t.Fatal(err)
 	}
-	// A later persisted entry must not count as part of an older snapshot.
 	snapshot = em.s.replaySnapshot(sess.ID(), end.EntryID)
 	for _, kind := range []loop.EventType{loop.SteerAccepted, loop.MessageStart} {
 		if !snapshot.covers(&loop.Event{Type: kind, Message: &hidden, Seq: 10}) {
@@ -42,8 +40,6 @@ func TestSnapshotReplayUserIdentityBeforeEndBuffered(t *testing.T) {
 			t.Fatalf("%s covered an identity outside the snapshot", kind)
 		}
 	}
-	// Acceptance can be older than the last completed message, but that does
-	// not establish persistence: the accepted message may still be in Inbox.
 	snapshot.observe(&loop.Event{Type: loop.MessageEnd, EntryID: end.EntryID, Seq: 20})
 	if snapshot.covers(&loop.Event{Type: loop.SteerAccepted, Message: &later, Seq: 1}) {
 		t.Fatal("sequence cutoff swallowed undrained acceptance")

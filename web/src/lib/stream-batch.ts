@@ -16,10 +16,6 @@ const browserClock: FrameClock = {
   cancelDelay: id => window.clearTimeout(id),
 }
 
-/** Decode first, then replace only consecutive snapshots of the same message.
- * One clock owns display pacing. New input never postpones an existing frame
- * or deadline, and a terminal event cannot wait behind a playback animation.
- */
 export function streamBatch(apply: (events: LoopEvent[]) => void, clock: FrameClock = browserClock) {
   let queue: LoopEvent[] = []
   let frame = 0
@@ -44,8 +40,6 @@ export function streamBatch(apply: (events: LoopEvent[]) => void, clock: FrameCl
       const prev = queue.at(-1)
       if (event.type === 'message_update' && prev?.type === 'message_update'
         && event.runId === prev.runId && event.messageStream === prev.messageStream) {
-        // Preserve the age of work still owed to the screen, not just the newest
-        // token's time; resetting it would hide starvation under constant input.
         if (event.display && prev.display) event = { ...event, display: { ...event.display, pendingSince: prev.display.pendingSince } }
         queue[queue.length - 1] = event
       } else queue.push(event)
@@ -54,7 +48,6 @@ export function streamBatch(apply: (events: LoopEvent[]) => void, clock: FrameCl
         flush()
       } else {
         if (!frame) frame = clock.frame(flush)
-        // rAF pauses in hidden tabs. Bound retained lifecycle events there too.
         if (!timer) timer = clock.delay(flush, 100)
       }
     },
@@ -63,7 +56,6 @@ export function streamBatch(apply: (events: LoopEvent[]) => void, clock: FrameCl
   }
 }
 
-/** A real task boundary, unlike Promise.resolve(), lets paint and input run. */
 export function yieldToMain(signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(signal.reason); return }

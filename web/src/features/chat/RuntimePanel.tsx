@@ -25,8 +25,6 @@ function AgentItem({ branch: { agent: a, children }, sessionId, onOpenSession, o
   const childrenID = useId()
   const name = a.task_name.split('/').pop() || a.task_name
   const live = a.status === 'running' || a.status === 'pending'
-  // Failed/killed agents also settle; their outcome must remain readable,
-  // including for screen readers that cannot see the decorative status dot.
   const phase = ['failed', 'killed', 'interrupted'].includes(a.status) ? a.status : a.phase || a.status
   const row = <article className="runtime-item runtime-agent-item" data-testid="runtime-agent" data-task={a.task_name}>
     <div className="runtime-copy">
@@ -48,11 +46,7 @@ function AgentItem({ branch: { agent: a, children }, sessionId, onOpenSession, o
   </article>
   return <li className="runtime-agent-node">
     <div className="runtime-branch">
-      {/* Branch toggling must be separate from navigation/stop controls: a
-          summary's center can otherwise activate a nested session link. */}
       <div className="runtime-agent-row">
-        {/* Every node reserves the same disclosure column. Without a leaf
-            spacer, children render to the left of their parent's name. */}
         {children.length ? <button type="button" className="runtime-toggle" aria-expanded={expanded} aria-controls={childrenID} aria-label={t(expanded ? 'runtime.collapse' : 'runtime.expand', { name: a.task_name })} onClick={() => setExpanded(value => !value)}><IChevDown /></button> : <span className="runtime-toggle-space" aria-hidden />}
         {row}
       </div>

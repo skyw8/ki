@@ -101,8 +101,6 @@ func TestRegistryPersistsCustomProviderAndCredential(t *testing.T) {
 	if got := r.Default(); got.Provider != "local" || got.Model != "example/model" {
 		t.Fatalf("default = %+v", got)
 	}
-	// Why: Windows has no POSIX mode bits; Go reports 0666 for a writable file
-	// there, so the group/other-bits assertion only applies to POSIX platforms.
 	if info, err := os.Stat(filepath.Join(home, "credentials.json")); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
 		t.Fatalf("credential permissions: info=%v err=%v", info, err)
 	}
@@ -283,9 +281,6 @@ func TestRegistryStrictJSONRejectsTrailingValue(t *testing.T) {
 
 func TestRegistryMigratesVersion1RemoteCompaction(t *testing.T) {
 	home := t.TempDir()
-	// openrouter/free exercises the per-model override path; custom/m and
-	// custom/m-off exercise the model seed path. m-off guards the empty value:
-	// version 1 treated it as "no capability", not as a protocol named "".
 	doc := `{
   "version": 1,
   "default": {"provider": "openrouter", "model": "free"},
@@ -330,8 +325,6 @@ func TestRegistryMigratesVersion1RemoteCompaction(t *testing.T) {
 	if _, m, ok := r.FindModel("custom", "m-off"); !ok || m.Compaction != (CompactionCapabilities{}) {
 		t.Fatalf("empty remoteCompaction compaction = %+v, want none", m.Compaction)
 	}
-	// Migration is a read path: the user's file is rewritten only on the next
-	// mutation, so a plain load must leave it untouched.
 	onDisk, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -402,15 +395,10 @@ func TestResolveSpecPrefersKnownProviderThenFallbackModelID(t *testing.T) {
 	for _, tc := range []struct {
 		name, spec, fallback, provider, model string
 	}{
-		// Nested model id behind an explicit provider: the prefix wins, the rest
-		// is the model id even though it still contains a slash.
 		{"nested spec", "magpie/codex/gpt-6.1-sol", "", "magpie", "codex/gpt-6.1-sol"},
-		// Creation has no fallback provider: a unique owner settles it.
 		{"unique owner", "vendor/other", "", "magpie", "vendor/other"},
-		// A first segment that is not a provider is the fallback's model id.
 		{"fallback nested id", "vendor/other", "magpie", "magpie", "vendor/other"},
 		{"bare id", "solo", "magpie", "magpie", "solo"},
-		// A real provider prefix still wins over the fallback's model id.
 		{"provider wins", "codex/gpt-6.1-sol", "magpie", "codex", "gpt-6.1-sol"},
 		{"disabled provider", "disabled/vendor/model", "", "disabled", "vendor/model"},
 	} {

@@ -232,8 +232,6 @@ func TestMCPSettingsScopedPatchPreservesOtherWorkspace(t *testing.T) {
 			t.Fatal("invalid scope patch mutated state")
 		}
 	}
-	// Reading a newer or malformed MCP document must precede every mutation,
-	// even when the request only updates an unrelated tools field.
 	if err := state.WriteJSON(filepath.Join(b, ".ki", "mcp.json"), map[string]any{"version": 99, "mcpServers": map[string]any{}}, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +295,6 @@ func TestMCPSettingsOccupiedConfigSnapshot(t *testing.T) {
 		t.Fatal(t.Context().Err())
 	}
 	writeMCPSettings(t, configPath, map[string]config.MCPServer{"fixture": {URL: nextFixture.url}})
-	// Constructing the next immutable client must not close the captured one.
 	snapshot, err := srv.resolveMCP(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

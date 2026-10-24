@@ -5,27 +5,12 @@ import { useTranscriptRowMeasurement } from '../TranscriptRow'
 import { formatBytes } from './format'
 import type { ExecSnapshot } from './parse'
 
-/**
- * A read-only terminal card.
- *
- * Output is kept byte-faithful: `white-space: pre` with horizontal scrolling,
- * because wrapping destroys the column layout of test output, `ps`, and
- * tables. Only when the caller is on a narrow viewport does the component fall
- * back to wrapping, where a horizontal scroll would otherwise be unusable.
- *
- * The window is tail-anchored while a command runs (the newest output is what
- * the reader wants) and head-anchored once it settles or after the reader
- * scrolls up, so a streaming command does not fight someone reading history.
- */
-
 const ANSI = /\x1b\[[0-9;]*[A-Za-z]/
 const MAX_RENDERED_LINES = 2000
 
 export type TerminalBlockProps = {
   snapshot: ExecSnapshot
-  /** Command text for the prompt row; falls back to the snapshot's own. */
   cmd?: string
-  /** TTY input echoed by write_stdin. */
   input?: string
   running?: boolean
   onOpenFile?: (path: string) => void
@@ -44,8 +29,6 @@ export const TerminalBlock = memo(function TerminalBlock({
   const scroller = useRef<HTMLPreElement | null>(null)
   useTranscriptRowMeasurement([shown, tail, running])
 
-  // Follow the tail only while running and only while the reader has not
-  // scrolled away; one upward scroll pins the window until they return.
   useEffect(() => {
     if (!running || !tail) return
     const element = scroller.current
@@ -98,11 +81,6 @@ export const TerminalBlock = memo(function TerminalBlock({
   )
 })
 
-/**
- * ANSI SGR only. Cursor movement and screen clearing have no meaning in a
- * captured pipe, and interpreting them would corrupt the scrollback that the
- * reader is trying to read.
- */
 const AnsiText = memo(function AnsiText({ text }: { text: string }) {
   const spans = Anser.ansiToJson(text, { json: true, remove_empty: true, use_classes: false })
   return (

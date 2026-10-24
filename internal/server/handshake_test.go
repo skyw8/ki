@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// TestWriteServerFileIsAtomicAndComplete guards the handshake against the read
-// race a client hits while a daemon starts: a poller must never observe an
-// empty or half-written document.
 func TestWriteServerFileIsAtomicAndComplete(t *testing.T) {
 	home := t.TempDir()
 	want := File{
@@ -44,9 +41,6 @@ func TestWriteServerFileIsAtomicAndComplete(t *testing.T) {
 	}
 }
 
-// TestRemoveServerFileKeepsAnotherInstancesHandshake covers the displacement
-// case: a daemon that lost its handshake to a newer instance must not delete the
-// replacement's file when it finally exits.
 func TestRemoveServerFileKeepsAnotherInstancesHandshake(t *testing.T) {
 	home := t.TempDir()
 	if err := WriteServerFile(home, File{Addr: "127.0.0.1:1", Token: "new"}); err != nil {
@@ -69,16 +63,11 @@ func TestRemoveServerFileKeepsAnotherInstancesHandshake(t *testing.T) {
 	if _, err := ReadServerFile(home); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("owner did not remove its handshake: %v", err)
 	}
-	// Removing an already absent file is success: `ki stop` runs twice in
-	// ordinary scripts.
 	if err := RemoveServerFile(home, "new"); err != nil {
 		t.Fatalf("idempotent remove: %v", err)
 	}
 }
 
-// TestHealthAndMetaReportBuildIdentity keeps the two discovery endpoints honest:
-// health is unauthenticated and minimal but still carries the version, while
-// meta (authenticated) describes the process for Settings → About.
 func TestHealthAndMetaReportBuildIdentity(t *testing.T) {
 	srv, hs := testServer(t)
 
@@ -122,8 +111,6 @@ func TestHealthAndMetaReportBuildIdentity(t *testing.T) {
 	}
 }
 
-// TestShutdownRouteSignalsOwner checks the route `ki stop` calls: it answers
-// before stopping, and it only closes the stop channel.
 func TestShutdownRouteSignalsOwner(t *testing.T) {
 	srv, hs := testServer(t)
 	req, err := http.NewRequest(http.MethodPost, hs.URL+"/v1/shutdown", nil)
@@ -152,8 +139,6 @@ func TestShutdownRouteSignalsOwner(t *testing.T) {
 	}
 }
 
-// TestShutdownRouteRequiresAuth keeps a forwarded origin's visitor from ending
-// the daemon with a plain POST.
 func TestShutdownRouteRequiresAuth(t *testing.T) {
 	_, hs := testServer(t)
 	res, err := http.Post(hs.URL+"/v1/shutdown", "application/json", nil)

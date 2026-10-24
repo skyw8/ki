@@ -15,43 +15,16 @@ import (
 	"ki/internal/memory"
 )
 
-// Why: events.jsonl is append-only, so a reader can keep the entries it already
-// decoded and extend them by decoding only the bytes appended since. The WebUI
-// opens a session on every switch and reopens it after every run, and a cold
-// parse of a 40 MB transcript costs about a second of JSON work; with the cache
-// below that cost is paid while the window is admitted, and later warm reads are
-// proportional to what was appended rather than to the size of the history.
-//
-// The filesystem stays the source of truth: every read revalidates the file by
-// identity+size+mtime, a file that only grew is extended from the recorded
-// offset, and a file that shrank or was rewritten (moved clock, replaced
-// directory) is read from scratch.
-//
-// Callers must treat the returned slice as read-only: it is shared with the
-// cache and with every other caller until the file changes.
-
-// tailReadBytes is the first backward read of a tail request. One megabyte
-// covers the default 100-entry window for ordinary transcripts; a tool-heavy
-// transcript grows from there.
 const tailReadBytes = 1 << 20
 
-// TailReadLimit is the transcript size below which one tail read covers the
-// whole file. Callers use it to tell "a small session that was read in full"
-// from "a long session that happens to be cached in full", which matters when
-// deciding whether extra derived data is free to include.
 const TailReadLimit = tailReadBytes
 
-// tailGrowBytes is the step a short window grows by. It is smaller than the
-// first read because overshooting costs a full parse of the extra bytes for
-// entries the caller never sees: a window that missed its target by a few
-// entries should not pull in another megabyte.
 const tailGrowBytes = 256 << 10
 
-// entriesCache holds the entries decoded from one events.jsonl so far.
 type entriesCache struct {
 	mu      sync.Mutex
-	start   int64 // byte offset of the first cached entry's line; 0 means the window reaches the file start
-	size    int64 // byte offset just past the last cached entry's line
+	start   int64
+	size    int64
 	mtime   time.Time
 	file    os.FileInfo
 	entries []Entry
@@ -65,10 +38,6 @@ func entriesCacheFor(dir string) *entriesCache {
 	return entriesCaches.get(filepath.Clean(dir), func() *entriesCache { return &entriesCache{} })
 }
 
-// DropEntriesCache forgets what was decoded for a session directory. The server
-// calls it when a session is deleted so the cache cannot pin a removed
-// transcript in memory; a stale entry is harmless anyway, because every read
-// revalidates by identity+size+mtime.
 func DropEntriesCache(dir string) {
 	entriesCaches.drop(filepath.Clean(dir))
 	transcriptCaches.drop(filepath.Clean(dir))
@@ -81,10 +50,8 @@ func (c *entriesCache) reset() {
 	c.file = nil
 }
 
-// entriesPath is the transcript path of a session directory.
 func entriesPath(dir string) string { return filepath.Join(dir, "events.jsonl") }
 
-// ReadHeader reads the session header (the first jsonl line).
 func ReadHeader(dir string) (Header, error) {
 	//nolint:gosec // dir is an internally generated session directory.
 	f, err := os.Open(entriesPath(dir))
@@ -110,10 +77,6 @@ func ReadHeader(dir string) (Header, error) {
 	return h, nil
 }
 
-// ReadConfig reads a session's config.json. It takes the same file gate as Open
-// and writeConfig: on Windows the reader that lands inside a replace fails with
-// ERROR_SHARING_VIOLATION ("being used by another process"), so config reads and
-// writes have to be ordered rather than raced.
 func ReadConfig(dir string) (Config, error) {
 	gate := fileGate(dir)
 	gate.RLock()
@@ -130,7 +93,6 @@ func ReadConfig(dir string) (Config, error) {
 	return cfg, nil
 }
 
-// AllEntries returns every entry of the session transcript.
 func AllEntries(dir string) ([]Entry, error) {
 	c := entriesCacheFor(dir)
 	c.mu.Lock()
@@ -142,10 +104,6 @@ func AllEntries(dir string) ([]Entry, error) {
 	return c.entries, nil
 }
 
-// TailEntries returns the trailing window of the transcript that holds at least
-// want entries (fewer only when the session has fewer). complete reports whether
-// the window reaches the file's first entry, i.e. whether it is the whole
-// history.
 func TailEntries(dir string, want int) ([]Entry, bool, error) {
 	c := entriesCacheFor(dir)
 	c.mu.Lock()
@@ -157,27 +115,17 @@ func TailEntries(dir string, want int) ([]Entry, bool, error) {
 	return c.entries, c.start == 0, nil
 }
 
-// LeafTail returns the trailing window covering the last want entries of the
-// active leaf chain. It grows the window when the tail holds fewer chain entries
-// (a branchy or tool-heavy tail carries many entries off the branch), so callers
-// can treat the result as "the newest want messages of this branch".
 func LeafTail(dir, leafID string, want int) ([]Entry, bool, error) {
 	want = max(1, want)
 	entries, complete, err := TailEntries(dir, want)
 	if err != nil {
 		return nil, false, err
 	}
-	// The window grows until the leaf chain is covered; TailEntries reports
-	// complete once the window reaches the file start, which ends the loop even
-	// when the chain is shorter than want.
 	for !complete {
 		chain := LeafChain(entries, leafID)
 		if len(chain) >= want || (len(chain) > 0 && chain[0].ParentID == "") {
 			break
 		}
-		// A recent branch can reach its root before the file window reaches
-		// byte zero. Grow the decoded window, not the chain target, otherwise
-		// unrelated branches force a complete reread while chasing that target.
 		entries, complete, err = TailEntries(dir, len(entries)+max(8, want/4))
 		if err != nil {
 			return nil, false, err
@@ -186,15 +134,10 @@ func LeafTail(dir, leafID string, want int) ([]Entry, bool, error) {
 	return entries, complete, nil
 }
 
-// load brings the cache up to the requested window. want is the minimum number
-// of trailing entries (0 for none); full requires a window that starts at the
-// first entry.
 func (c *entriesCache) load(dir string, want int, full bool) (loadErr error) {
 	oldSize, oldStart, oldLen := c.size, c.start, len(c.entries)
 	defer func() {
 		if loadErr != nil {
-			// A failed prefix can already have interned prompts. Drop that
-			// partially decoded graph rather than leaving unaccounted storage.
 			c.reset()
 			return
 		}
@@ -206,17 +149,11 @@ func (c *entriesCache) load(dir string, want int, full bool) (loadErr error) {
 			}{c.entries, c.prompts.systems, c.prompts.tools})
 		}
 	}()
-	// A tail request must not inherit an ever-growing full-history window.
-	// Detach it before shrinking: earlier requests may still own that slice.
 	if !full && c.size-c.start > tailReadBytes+tailGrowBytes && len(c.entries) > max(want*2, DefaultViewLimit*2) {
 		c.reset()
 	}
 
 	path := entriesPath(dir)
-	// Windows os.Stat defers file-ID lookup until SameFile, by which time an
-	// atomic replacement may have rebound the old FileInfo to the new path.
-	// Stat an open handle to capture identity now, then close it so cached
-	// snapshots never prevent session deletion or replacement on Windows.
 	f, err := os.Open(path)
 	if err != nil {
 		c.reset()
@@ -230,8 +167,6 @@ func (c *entriesCache) load(dir string, want int, full bool) (loadErr error) {
 	}
 	stamp := fileStamp{size: info.Size(), mtime: info.ModTime()}
 	if c.file != nil && !os.SameFile(c.file, info) {
-		// Atomic replacement can preserve size and timestamps; file identity
-		// prevents a cache hit on the previous transcript's body graph.
 		c.reset()
 	}
 	defer func() {
@@ -241,9 +176,7 @@ func (c *entriesCache) load(dir string, want int, full bool) (loadErr error) {
 	}()
 	switch {
 	case c.size == 0 && c.mtime.IsZero():
-		// Cold cache: nothing decoded yet.
 	case stamp.size == c.size && stamp.mtime.Equal(c.mtime):
-		// Unchanged since the last read: the window only has to be big enough.
 		if (full && c.start == 0) || (!full && (want <= 0 || len(c.entries) >= want || c.start == 0)) {
 			return nil
 		}
@@ -257,8 +190,6 @@ func (c *entriesCache) load(dir string, want int, full bool) (loadErr error) {
 		c.size = added.end
 		c.mtime = stamp.mtime
 	default:
-		// Truncated, replaced, or rewritten: the decoded window no longer
-		// describes the file.
 		c.reset()
 	}
 
@@ -266,15 +197,12 @@ func (c *entriesCache) load(dir string, want int, full bool) (loadErr error) {
 		if full {
 			return c.readAll(path, stamp)
 		}
-		// Start from a bounded tail of the file and grow downward below.
 		start := max(stamp.size-tailReadBytes, 0)
 		tail, err := readEntriesWithPool(path, start, stamp.size, &c.prompts)
 		if err != nil {
 			return err
 		}
 		c.start, c.size, c.mtime, c.entries = tail.start, tail.end, stamp.mtime, tail.entries
-		// readEntries skips the header and returns the first entry offset.
-		// A read from byte zero is nevertheless the complete transcript.
 		if start == 0 {
 			c.start = 0
 		}
@@ -301,11 +229,7 @@ func (c *entriesCache) load(dir string, want int, full bool) (loadErr error) {
 		if err != nil {
 			return err
 		}
-		// Progress belongs to the decoded prefix; c.entries has not been
-		// merged yet, so comparing its length here always forces a full read.
 		if head.end != c.start || len(head.entries) == 0 {
-			// The range before the window held no complete line: fall back to a
-			// full read so callers always get an answer instead of looping.
 			return c.readAll(path, stamp)
 		}
 		merged := make([]Entry, 0, len(head.entries)+len(c.entries))
@@ -320,7 +244,6 @@ func (c *entriesCache) load(dir string, want int, full bool) (loadErr error) {
 	return nil
 }
 
-// readAll decodes the whole file into the cache.
 func (c *entriesCache) readAll(path string, stamp fileStamp) error {
 	all, err := readEntriesWithPool(path, 0, stamp.size, &c.prompts)
 	if err != nil {
@@ -330,12 +253,6 @@ func (c *entriesCache) readAll(path string, stamp fileStamp) error {
 	return nil
 }
 
-// OpenFrom builds a Session handle over an already-read header, config and
-// entry list, so a caller that just took them from the shared entry cache does
-// not decode the transcript a second time. The entries are copied: the cache
-// shares its slice with other readers, and the returned Session appends to its
-// own copy (with cap == len, so an append can never write into the shared
-// backing array).
 func OpenFrom(dir string, header Header, cfg Config, entries []Entry) *Session {
 	s := &Session{Dir: dir, Header: header, Config: cfg, byID: make(map[string]Entry, len(entries))}
 	if len(entries) > 0 {
@@ -352,23 +269,16 @@ func OpenFrom(dir string, header Header, cfg Config, entries []Entry) *Session {
 		if _, ok := s.byID[cfg.ActiveLeafID]; ok {
 			s.leafID = cfg.ActiveLeafID
 		}
-		// Config may point at a leaf that is not in the read window (a
-		// concurrent append): keep the newest entry that was read instead.
 	}
 	return s
 }
 
-// entryRange is the decoded result of one contiguous byte range.
 type entryRange struct {
 	entries []Entry
-	start   int64 // offset of the first decoded line (or of the resume point when the range decoded nothing)
-	end     int64 // offset just past the last decoded line
+	start   int64
+	end     int64
 }
 
-// readEntries decodes the whole jsonl lines in [from, to). A range that starts
-// mid-line (a backward read) drops that partial line, and a range that ends in a
-// half-written line stops before it, so the next read picks that line up again;
-// start/end always sit on line boundaries.
 func readEntries(path string, from, to int64) (entryRange, error) {
 	var pool promptPool
 	return readEntriesWithPool(path, from, to, &pool)
@@ -398,12 +308,12 @@ func readEntriesWithPool(path string, from, to int64, pool *promptPool) (entryRa
 	}
 	r := bufio.NewReaderSize(io.LimitReader(f, to-from), 256*1024)
 	offset := from
-	headerPending := from == 0 // the file's first line is the session header, not an entry
+	headerPending := from == 0
 	started := false
 	for {
 		line, err := r.ReadBytes('\n')
 		if errors.Is(err, io.EOF) {
-			break // trailing line without a newline: leave it for the next read
+			break
 		}
 		if err != nil {
 			return out, err

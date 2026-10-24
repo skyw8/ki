@@ -128,7 +128,6 @@ func (t editTool) Execute(ctx context.Context, args map[string]any) toolapi.Resu
 		return support.Error(err.Error())
 	}
 	next := applyEditMatches(text, matches)
-	// resolve validates the tool path against the session working directory.
 
 	if err := os.WriteFile(abs, []byte(next), 0o600); err != nil {
 		return support.Error(err.Error())
@@ -151,10 +150,6 @@ func resolveEditInputs(args map[string]any) (resolvedEdit, error) {
 	batchValid := hasBatch && batchErr == nil
 	singleValid := hasSingle && singleErr == nil
 
-	// Why: some function-calling models populate every optional schema field
-	// with empty or no-op placeholders. Select the sole meaningful mode instead
-	// of rejecting an otherwise unambiguous edit, but never guess when both
-	// modes contain executable changes.
 	switch {
 	case batchValid && singleValid:
 		return resolvedEdit{}, errors.New("both edits and old_string/new_string contain executable changes; provide only one Edit mode")

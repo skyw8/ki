@@ -14,14 +14,11 @@ type mutationEntry struct {
 	refs  int
 }
 
-// MutationQueue serializes mutations of the same canonical host path while
-// allowing unrelated files to proceed independently.
 type MutationQueue struct {
 	mu      sync.Mutex
 	entries map[string]*mutationEntry
 }
 
-// NewMutationQueue creates an empty path mutation queue.
 func NewMutationQueue() *MutationQueue { return &MutationQueue{entries: map[string]*mutationEntry{}} }
 
 func canonicalMutationPath(path string) string {
@@ -72,7 +69,6 @@ func (q *MutationQueue) drop(key string, e *mutationEntry) {
 	q.mu.Unlock()
 }
 
-// LockPaths acquires all distinct paths in a stable order and returns a release function.
 func (q *MutationQueue) LockPaths(ctx context.Context, paths ...string) (func(), error) {
 	keys := make([]string, 0, len(paths))
 	seen := map[string]bool{}

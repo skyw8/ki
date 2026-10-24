@@ -11,7 +11,6 @@ export type Usage = {
 	 cost?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
 }
 
-/** Server-derived cache diagnostic; it is view metadata, not provider usage. */
 export type CacheMiss = {
   missedTokens: number
   missRatio: number
@@ -57,7 +56,6 @@ export type Message = {
   provider?: string
 }
 
-/** View-only estimates of full persisted content, not provider tokenization. */
 export type ContextEstimate = {
   system?: number
   tools?: number
@@ -67,16 +65,13 @@ export type ContextEstimate = {
 
 export type Entry = {
   type: string
-  /** Browser-only body quality; independent of the persisted entry identity. */
   bodyKind?: BodyKind
   id: string
   parentId?: string
-  /** Browser-only traversal bridge while preceding persisted metadata is absent. */
   previousId?: string
   timestamp?: string
   message?: Message
   summary?: string
-  /** Public marker only; provider-owned remote checkpoint payload is never exposed. */
   remoteContext?: boolean
   contextEstimate?: ContextEstimate
   firstKeptEntryId?: string
@@ -150,7 +145,6 @@ export type LoopEvent = {
  process?: ProcessSnapshot
  agent?: AgentSnapshot
  requestedToolName?: string
-  /** Local monotonic receive/queue times; never sent to the server. */
   display?: DisplayRevision
   messageStream?: number
   messagePatch?: { baseSeq: number; changes: { path: string[]; op: 'set' | 'append' | 'remove' | 'resize'; value?: unknown }[] }
@@ -159,7 +153,6 @@ export type LoopEvent = {
 	runId?: string
 	external?: Record<string, string>
 	entryId?: string
-  /** Durable lifecycle row; entryId on compaction_end remains the checkpoint. */
   lifecycleEntryId?: string
 	parentId?: string
 	timestamp?: number
@@ -176,13 +169,7 @@ export type LoopEvent = {
   assistantMessageEvent?: { type: string; delta?: string; partial?: Message }
   system?: string
   tools?: ToolSchema[]
-	/**
-	 * The server drops the system/tools body of a replayed request_header that
-	 * repeats the previous one and sets this instead; the client reuses the
-	 * prompt it already has (same rule as the persisted entry).
-	 */
 	promptUnchanged?: boolean
-	/** Per-run SSE sequence number, the cursor a client resumes from. */
 	seq?: number
   reason?: string
   cancelSource?: string
@@ -213,15 +200,6 @@ export type AuthStatus = {
   csrfCookieName: string
 }
 
-/**
- * One frame of `GET /v1/events`:
- *   - `{ type: 'ready', serverId }` — the subscription is live; refetch
- *     everything, since the stream replays nothing. A changed identity
- *     requires reauthentication before using state from this instance.
- *   - `{ type: 'invalidate', scope }` — that slice of state changed; refetch it
- *     through the ordinary REST endpoint.
- *   - a session sideband loop event carrying the `sessionId` it belongs to.
- */
 export type PushEvent = LoopEvent & {
   serverId?: string
 	sessionId?: string
@@ -366,12 +344,6 @@ export type ExtensionConfig = {
 	i18n?: ExtensionI18n
 }
 
-/**
- * One catalog extension that can be installed from the configured release.
- * `install` is present only while a download is in flight or after it failed;
- * the settings page follows it through the extensions invalidation instead of
- * polling.
- */
 export type AvailableExtension = {
 	name: string
 	version?: string
@@ -381,30 +353,18 @@ export type AvailableExtension = {
 	installed: boolean
 	installedVersion?: string
 	updateAvailable?: boolean
-	/**
-	 * The package resolves through a symlink (a development checkout). It is
-	 * discovered and usable, but installing over it would replace sources, so
-	 * the row explains that instead of offering a button.
-	 */
 	linked?: boolean
 	install?: { state: 'download' | 'extract' | 'done' | 'failed'; error?: string }
 }
 
 export type AvailableExtensions = {
 	items: AvailableExtension[]
-	/**
-	 * Path segment under `source` whose assets are downloaded. A release build
-	 * pins its own tag; a local build uses `latest/download`.
-	 */
 	release?: string
 	source?: string
-	/** True when `release` follows the newest published release. */
 	latest?: boolean
-	/** `{KI_HOME}/extensions` is a symlink, so no install can be written. */
 	linkedRoot?: boolean
 }
 
-/** One appended-system-prompt source as the settings editor sees it. */
 export type PromptAppendItem = {
 	source: 'builtin' | 'global' | 'project' | 'extension' | string
 	editable: boolean
@@ -413,7 +373,6 @@ export type PromptAppendItem = {
 	exists?: boolean
 	text: string
 	bytes: number
-	/** Why an editable source cannot be written, e.g. workspace-required. */
 	reason?: string
 	name?: string
 	paths?: string[]
@@ -421,7 +380,6 @@ export type PromptAppendItem = {
 
 export type PromptAppendView = {
 	items: PromptAppendItem[]
-	/** The append stack exactly as the model receives it, in render order. */
 	effective: string
 }
 
@@ -442,7 +400,6 @@ export type QueuedItem = {
   extension?: string
 }
 
-/** Projected GET responses may carry only id plus the requested fields. */
 export type SessionDetail = Partial<SessionInfo> & {
   id: string
   leafId?: string
@@ -461,11 +418,9 @@ export type SessionDetail = Partial<SessionInfo> & {
   extQueued?: QueuedItem[]
   extensionUi?: ExtensionUI[]
   runtime?: { ready: boolean }
-  /** fields=system: the newest request_header's full system prompt. */
   systemPrompt?: string
 }
 
-/** Whole-turn sparse projection. Hidden reply bodies are fetched on expansion. */
 export type CompactTurn = {
   id: string
   parentId?: string
@@ -479,7 +434,6 @@ export type CompactTurn = {
   cumulativeElapsedMs?: number
   toolStates?: { id: string; finished: boolean; isError?: boolean }[]
   assistantAt?: number
-  /** Browser-only overlap reconstructed from the immutable snapshot frontier. */
   baselineNodes?: ChatNode[]
   lastStep?: { usage?: Usage; ttftMs: number; latencyMs: number }
   firstHiddenId?: string
@@ -581,7 +535,6 @@ export type Meta = {
 	provider: string
 	model: string
 	thinkingEffort?: string
-	// Process identity of the daemon serving this tab, shown in Settings → About.
 	version?: string
 	releaseTag?: string
 	pid?: number
@@ -672,9 +625,7 @@ export type TrajRecord = {
 
 export type ViewState = {
   turnId?: TurnId
-  /** Live events and accepted local writes revoke older snapshot authority. */
   liveRevision: number
-  /** Tool execution overlays until their immutable toolResult arrives. */
   toolStates?: Record<string, Extract<ChatNode, { kind: 'tool' }>>
   nodes: ChatNode[]
   records: TrajRecord[]
@@ -691,24 +642,11 @@ export type ViewState = {
 	thinkingEffort: string
 	contextUsage?: { usedTokens: number; contextWindow: number; estimated: boolean }
 	leafId?: string
-	/**
-	 * Body-loaded entries: the tail window the server returned plus every page
-	 * hydrated since. Chat nodes are built from these only, so a long session
-	 * renders a bounded number of them.
-	 */
 	entries: Entry[]
 	compactTurns?: CompactTurn[]
-	/** Complete node structure through each compact frontier; slim text may remain. */
 	loadedTurnIds?: TurnId[]
-	/**
-	 * Body-less rows for the whole tree. Fetched lazily (fields=index) because
-	 * carrying it on open made first paint wait for the full transcript; the
-	 * trajectory table, branch navigation and absolute turn numbers need it.
-	 */
 	index: IndexEntry[]
-	/** Whether `index` covers the tree (an empty tree counts as loaded). */
 	indexLoaded: boolean
-	/** Users on the branch before the loaded window, known from the index. */
 	turnBase: number
 	allEntries: Entry[]
 	hasMore?: boolean

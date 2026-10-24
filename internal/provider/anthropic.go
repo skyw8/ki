@@ -6,13 +6,10 @@ import (
 	"ki/pkg/llmprotocol"
 )
 
-// AnthropicBody delegates wire encoding to the reusable protocol package.
 func AnthropicBody(req loop.Request) map[string]any {
 	return llmprotocol.AnthropicBody(toProtocolRequest(req))
 }
 
-// toAnthropicMessage is retained as a package-local inspection helper for Ki's
-// provider tests; production encoding lives in llmprotocol.
 func toAnthropicMessage(message types.Message) map[string]any {
 	body := llmprotocol.AnthropicBody(toProtocolRequest(loop.Request{Messages: []types.Message{message}}))
 	messages, _ := body["messages"].([]map[string]any)
@@ -22,8 +19,6 @@ func toAnthropicMessage(message types.Message) map[string]any {
 	return messages[0]
 }
 
-// anthropicToolResultBlock is retained as a package-local inspection helper
-// for Ki's provider tests; production encoding lives in llmprotocol.
 func anthropicToolResultBlock(message types.Message) map[string]any {
 	body := llmprotocol.AnthropicBody(toProtocolRequest(loop.Request{Messages: []types.Message{message}}))
 	messages, _ := body["messages"].([]map[string]any)

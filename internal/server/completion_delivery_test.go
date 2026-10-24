@@ -14,7 +14,6 @@ import (
 	"ki/internal/types"
 )
 
-// A gated child lets tests exercise durable completion and mailbox handoff without sleeps.
 type completionRaceStreamer struct {
 	started chan struct{}
 	release chan struct{}
@@ -92,7 +91,6 @@ func TestCompletionDeliveryMailboxHandoff(t *testing.T) {
 			if _, err := srv.Wait(t.Context(), launch.TaskID); err != nil {
 				t.Fatal(err)
 			}
-			// Inspection cannot consume a completion; repeat reads remain observational.
 			for range 2 {
 				views, err := srv.ListAgents(root, "")
 				if err != nil || len(views) != 2 {

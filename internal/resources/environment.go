@@ -9,7 +9,6 @@ import (
 	"time"
 )
 
-// Environment is runtime metadata captured with a session's resource snapshot.
 type Environment struct {
 	KIHome       string
 	CWD          string
@@ -55,9 +54,6 @@ func detectOSWith(goos string, getenv func(string) string, readFile func(string)
 }
 
 func isWSL(getenv func(string) string, readFile func(string) ([]byte, error)) bool {
-	// WSL runs a Linux userspace, so runtime.GOOS alone cannot distinguish it
-	// from native Linux. Prefer the process markers, then inspect the kernel
-	// identity as a fallback for services that start with a reduced environment.
 	if strings.TrimSpace(getenv("WSL_DISTRO_NAME")) != "" ||
 		strings.TrimSpace(getenv("WSL_INTEROP")) != "" {
 		return true

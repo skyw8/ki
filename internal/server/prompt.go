@@ -13,14 +13,8 @@ import (
 	"ki/internal/resources"
 )
 
-// maxAppendSystemPromptBytes bounds one editable supplement file. Every byte of
-// it enters the system prompt of each following request, so the editor rejects a
-// runaway paste instead of silently inflating every session's context.
 const maxAppendSystemPromptBytes = 64 << 10
 
-// getPromptAppend lists every appended-system-prompt source for the settings
-// page: the read-only built-in layer, the two editable files, the read-only
-// extension layers, and the effective append stack.
 func (s *Server) getPromptAppend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.promptAppendView(s.workspacePath(r.URL.Query().Get("workspaceId"))))
 }
@@ -51,10 +45,6 @@ func (s *Server) promptAppendView(cwd string) map[string]any {
 			"bytes":     0,
 		}
 		if !available {
-			// An editable source is always relative to something the server
-			// resolves: the global file needs KI_HOME, the project file needs a
-			// workspace. Say which one is missing instead of showing a path the
-			// editor would write somewhere else.
 			reason := "workspace-required"
 			if source == resources.AppendSourceGlobal {
 				reason = "home-required"
@@ -91,9 +81,6 @@ func (s *Server) promptAppendView(cwd string) map[string]any {
 	return map[string]any{"items": items, "effective": prompt.AppendSection(snapshot)}
 }
 
-// putPromptAppend writes one editable source file. The client sends a source
-// name, never a path: the two write targets are resolved server-side from
-// KI_HOME and the selected workspace.
 func (s *Server) putPromptAppend(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Source string `json:"source"`
@@ -123,9 +110,6 @@ func (s *Server) putPromptAppend(w http.ResponseWriter, r *http.Request) {
 	s.getPromptAppend(w, r)
 }
 
-// deletePromptAppend removes one editable source file, which drops its layer on
-// the next reload. Removing a missing file is not an error: the wanted state is
-// "no file".
 func (s *Server) deletePromptAppend(w http.ResponseWriter, r *http.Request) {
 	path, ok := s.appendSystemPromptTarget(w, r, r.URL.Query().Get("source"))
 	if !ok {
@@ -139,14 +123,10 @@ func (s *Server) deletePromptAppend(w http.ResponseWriter, r *http.Request) {
 	s.getPromptAppend(w, r)
 }
 
-// appendSystemPromptTarget resolves the writable file for one source, answering
-// a client error for everything the editor cannot write.
 func (s *Server) appendSystemPromptTarget(w http.ResponseWriter, r *http.Request, source string) (string, bool) {
 	cwd := s.workspacePath(r.URL.Query().Get("workspaceId"))
 	path, ok := resources.AppendSystemPromptPath(s.cfg.Home, cwd, source)
 	if ok && source == resources.AppendSourceProject {
-		// A registered workspace can be gone; recreating its .ki tree for a
-		// prompt edit would write into a path the user did not open.
 		if st, err := os.Stat(cwd); err != nil || !st.IsDir() {
 			http.Error(w, "workspace directory is unavailable", http.StatusBadRequest)
 			return "", false
@@ -163,19 +143,12 @@ func (s *Server) appendSystemPromptTarget(w http.ResponseWriter, r *http.Request
 	return "", false
 }
 
-// reloadPromptResources drops every cached snapshot and reloads extensions after
-// an edit. A running session keeps the prompt it started with and picks the new
-// file up at its next occupy boundary; without this the edit would only appear
-// after a manual reload.
 func (s *Server) reloadPromptResources() {
 	//nolint:contextcheck // reload rewarm is process-owned via runtimeCtx
 	s.Reload()
 	s.publishInvalidation(scopeSessions)
 }
 
-// writePromptFileAtomic creates the parent directory and replaces path in one
-// rename. A session reload reads the file concurrently, and an in-place
-// truncate-then-write would let it observe a half-written prompt.
 func writePromptFileAtomic(path, text string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

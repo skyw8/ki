@@ -15,18 +15,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// cmdJobs maps a started command to the job object that owns its process tree.
 var cmdJobs sync.Map
 
 func detachCmd(cmd *exec.Cmd) {
-	// New process group so the serve console's Ctrl+C is not the only
-	// cancellation path; killCmd reaps the tree itself.
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
 }
 
-// afterStart joins a running command to a kill-on-close job object. Every
-// process the command spawns afterwards inherits the membership, so terminating
-// the job reaps descendants even when their recorded parent pid says otherwise.
 func afterStart(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
@@ -66,20 +60,12 @@ func killCmd(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	// The job owns the tree: a launcher that does not record parent pids the way
-	// the process snapshot expects is still terminated here.
 	if entry, ok := cmdJobs.LoadAndDelete(cmd); ok {
 		if job, ok := entry.(windows.Handle); ok {
 			_ = windows.TerminateJobObject(job, 1)
 			_ = windows.CloseHandle(job)
 		}
 	}
-	// Why: Process.Kill is TerminateProcess and leaves descendants behind, and
-	// `taskkill /T` walks the parent chain recorded by the process launcher,
-	// which misses children of an MSYS shell. Walk the toolhelp snapshot instead
-	// and terminate deepest first, repeating while descendants remain: the
-	// launcher can spawn another child between the snapshot and the kill, and a
-	// surviving child keeps the stdout pipe open, which hangs Wait.
 	for attempt := 0; attempt < 3; attempt++ {
 		descendants := descendantPIDs(uint32(cmd.Process.Pid))
 		if len(descendants) == 0 {
@@ -88,15 +74,11 @@ func killCmd(cmd *exec.Cmd) {
 		for _, pid := range descendants {
 			if proc, err := os.FindProcess(int(pid)); err == nil {
 				_ = proc.Kill()
-				// FindProcess owns a Windows handle even though this process is
-				// not our child and cannot be reaped with Wait.
 				_ = proc.Release()
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	// Belt and braces for launchers whose children are not linked through the
-	// toolhelp parent field, then the launcher itself.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	taskkill := exec.CommandContext(ctx, "taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid))
@@ -105,7 +87,6 @@ func killCmd(cmd *exec.Cmd) {
 	_ = cmd.Process.Kill()
 }
 
-// descendantPIDs returns every process under root, children before parents.
 func descendantPIDs(root uint32) []uint32 {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
@@ -122,8 +103,6 @@ func descendantPIDs(root uint32) []uint32 {
 	var walk func(uint32)
 	walk = func(parent uint32) {
 		for _, child := range children[parent] {
-			// A PID reused since a child's birth can make the snapshot's stale
-			// parent links cyclic. Never recurse forever or target the root twice.
 			if seen[child] {
 				continue
 			}
@@ -136,7 +115,6 @@ func descendantPIDs(root uint32) []uint32 {
 	return out
 }
 
-// Closing the job after exit releases the handle and any surviving descendants.
 func releaseCmd(cmd *exec.Cmd) {
 	if entry, ok := cmdJobs.LoadAndDelete(cmd); ok {
 		if job, ok := entry.(windows.Handle); ok {

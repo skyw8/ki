@@ -58,8 +58,6 @@ func (t globTool) Execute(ctx context.Context, args map[string]any) toolapi.Resu
 		root = absoluteRoot
 		pattern = relativePattern
 	}
-	// Respect .gitignore by default so callers do not have to configure it;
-	// only an explicit false opts back into the no-ignore search behavior.
 	respectGitignore := true
 	if v, ok := args["respect_gitignore"].(bool); ok {
 		respectGitignore = v
@@ -97,8 +95,6 @@ func (t globTool) Execute(ctx context.Context, args map[string]any) toolapi.Resu
 }
 
 type globDetails struct {
-	// Paths is the same bounded list the model sees, so the WebUI can render
-	// file rows without re-parsing the text block.
 	Paths     []string `json:"paths,omitempty"`
 	Root      string   `json:"root"`
 	Files     int      `json:"files"`

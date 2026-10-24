@@ -10,9 +10,6 @@ import (
 	"ki/internal/types"
 )
 
-// SessionHost is implemented by the HTTP server. Sidecar inbound RPCs call it.
-// Methods must return quickly; enqueue and appendMessage must not wait for a
-// full model run.
 type SessionHost interface {
 	CreateSession(req SessionCreateRequest) (SessionCreateResult, error)
 	NewSession(sessionID string, cwd string) (SessionCreateResult, error)
@@ -40,30 +37,22 @@ type SessionHost interface {
 	BusBroadcast(sessionID, from, channel string, data any) error
 }
 
-// EnqueueRequest is session.enqueue params.
 type EnqueueRequest struct {
-	Content        []types.Content   `json:"content"`
-	DeliverAs      string            `json:"deliverAs"`
-	When           string            `json:"when"`
-	IdempotencyKey string            `json:"idempotencyKey"`
-	Kind           string            `json:"kind"`
-	CustomType     string            `json:"customType"`
-	Display        *bool             `json:"display"`
-	External       map[string]string `json:"external,omitempty"`
-	// ContextSequence is assigned by the Host for prompt ordering and is not
-	// supplied by sidecars.
-	ContextSequence uint64 `json:"-"`
-	ContextBoundary bool   `json:"-"`
+	Content         []types.Content   `json:"content"`
+	DeliverAs       string            `json:"deliverAs"`
+	When            string            `json:"when"`
+	IdempotencyKey  string            `json:"idempotencyKey"`
+	Kind            string            `json:"kind"`
+	CustomType      string            `json:"customType"`
+	Display         *bool             `json:"display"`
+	External        map[string]string `json:"external,omitempty"`
+	ContextSequence uint64            `json:"-"`
+	ContextBoundary bool              `json:"-"`
 }
 
-// SessionCreateRequest is the channel-safe session creation contract.
 type SessionCreateRequest struct {
-	WorkspaceID string `json:"workspaceId,omitempty"`
-	CWD         string `json:"cwd,omitempty"`
-	// WorkspaceTitle names the workspace this session registers. It only applies
-	// when that directory is registered for the first time, so a channel
-	// connector can give its chats readable names without overriding a rename the
-	// user made in the WebUI.
+	WorkspaceID    string         `json:"workspaceId,omitempty"`
+	CWD            string         `json:"cwd,omitempty"`
 	WorkspaceTitle string         `json:"workspaceTitle,omitempty"`
 	Provider       string         `json:"provider,omitempty"`
 	Model          string         `json:"model,omitempty"`
@@ -71,7 +60,6 @@ type SessionCreateRequest struct {
 	Metadata       map[string]any `json:"metadata,omitempty"`
 }
 
-// SessionCreateResult is returned to a channel after create/new/cd.
 type SessionCreateResult struct {
 	SessionID   string         `json:"sessionId"`
 	CWD         string         `json:"cwd"`
@@ -79,27 +67,22 @@ type SessionCreateResult struct {
 	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
-// EnqueueResult is the accept acknowledgement.
 type EnqueueResult struct {
 	Accepted string `json:"accepted"`
 	QueueID  string `json:"queueId,omitempty"`
 }
 
-// AppendMessageRequest appends a normal user message without starting a run.
 type AppendMessageRequest struct {
 	Message        types.Message `json:"message"`
 	IdempotencyKey string        `json:"idempotencyKey,omitempty"`
 }
 
-// AppendMessageResult reports whether a message was committed or waits for a
-// currently running prompt to release the session transcript.
 type AppendMessageResult struct {
 	Accepted string `json:"accepted"`
 	EntryID  string `json:"entryId,omitempty"`
 	Sequence uint64 `json:"sequence,omitzero"`
 }
 
-// SessionSnapshot is session.snapshot.
 type SessionSnapshot struct {
 	ID          string         `json:"id,omitempty"`
 	CWD         string         `json:"cwd,omitempty"`
@@ -117,13 +100,8 @@ type SessionSnapshot struct {
 	Commands    []string       `json:"commands,omitempty"`
 }
 
-// UIText is either a raw string/value or an extension-local translation
-// descriptor such as {"key":"title","params":{"count":2}}. It is kept
-// opaque to the host so a global sidecar can serve clients with different
-// browser locales without racing to rewrite one shared projection.
 type UIText = any
 
-// UITextEmpty reports whether a text payload should clear a status/prompt.
 func UITextEmpty(value UIText) bool {
 	if value == nil {
 		return true
@@ -139,8 +117,6 @@ func UITextEmpty(value UIText) bool {
 	return false
 }
 
-// UITextFallback returns a locale-neutral string for sideband logs. WebUI
-// still receives the original structured value and performs the real lookup.
 func UITextFallback(value UIText) string {
 	if value == nil {
 		return ""
@@ -166,9 +142,6 @@ func UITextFallback(value UIText) string {
 	return string(raw)
 }
 
-// UIPanel is the generic detail model for any extension (not goal-specific).
-// WebUI renders title/summary, then sections (items/kv/markdown/text), fields,
-// then actions. Extensions decide which actions/fields apply; the shell does not.
 type UIPanel struct {
 	Title       UIText           `json:"title,omitempty"`
 	Summary     UIText           `json:"summary,omitempty"`
@@ -178,7 +151,6 @@ type UIPanel struct {
 	SubmitLabel UIText           `json:"submitLabel,omitempty"`
 }
 
-// UIAction is one panel button. Disabled is shown but not clickable.
 type UIAction struct {
 	ID       string `json:"id"`
 	Label    UIText `json:"label"`
@@ -187,7 +159,6 @@ type UIAction struct {
 	Title    UIText `json:"title,omitempty"`
 }
 
-// UIField is one editable field.
 type UIField struct {
 	ID      string   `json:"id"`
 	Label   UIText   `json:"label,omitempty"`
@@ -196,7 +167,6 @@ type UIField struct {
 	Options []string `json:"options,omitempty"`
 }
 
-// UIPrompt is a pending confirm/select dialog.
 type UIPrompt struct {
 	Kind    string   `json:"kind"`
 	Title   UIText   `json:"title,omitempty"`
@@ -204,9 +174,6 @@ type UIPrompt struct {
 	Options []string `json:"options,omitempty"`
 }
 
-// UI is the WebUI projection for one extension. Session responses contain
-// session-scoped values; the extension catalog may contain a global value
-// emitted by a process-level sidecar.
 type UI struct {
 	Extension string    `json:"extension"`
 	Status    *UIStatus `json:"status,omitempty"`
@@ -214,7 +181,6 @@ type UI struct {
 	Prompt    *UIPrompt `json:"prompt,omitempty"`
 }
 
-// UIStatus is a top-bar chip.
 type UIStatus struct {
 	Key  string `json:"key"`
 	Text UIText `json:"text"`
@@ -238,7 +204,6 @@ func (c *rpcClient) replyResult(id any, result any) {
 	c.mu.Unlock()
 }
 
-// encodeLocked writes one NDJSON frame. Caller must hold c.mu.
 func (c *rpcClient) encodeLocked(msg rpcMsg) {
 	if err := c.enc.Encode(msg); err != nil {
 		slog.Debug("extension rpc encode", "extension", c.name, "err", err)

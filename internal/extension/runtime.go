@@ -7,7 +7,6 @@ import (
 
 const runtimeStableUptime = 30 * time.Second
 
-// runtimeRetry limits repeated post-initialize crashes, not ordinary reloads.
 type runtimeRetry struct {
 	fastExits int
 }
@@ -21,7 +20,6 @@ func (r *runtimeRetry) afterExit(uptime time.Duration) time.Duration {
 	if r.fastExits < 2 {
 		return 0
 	}
-	// Saturate the counter too: a broken extension can run for months.
 	if r.fastExits > 7 {
 		r.fastExits = 7
 	}
@@ -63,9 +61,6 @@ func sameRuntimes(a, b map[string]Descriptor) bool {
 	return true
 }
 
-// A session can discover an installed package before the next global reload.
-// Admit only new names; a stale snapshot must not resurrect a name the
-// authoritative catalog already removed or disabled.
 func (m *Manager) adoptSnapshotLocked(d Descriptor) {
 	if !m.configured && !m.closed {
 		m.known[d.Name] = true
@@ -77,9 +72,6 @@ func (m *Manager) adoptSnapshotLocked(d Descriptor) {
 	}
 }
 
-// Direct in-process Prepare users need not configure a global catalog first.
-// Configured managers also admit freshly discovered snapshot packages, but
-// Configure supersedes their provisional admission before publication.
 func (m *Manager) desiredLocked(d Descriptor) bool {
 	if m.closed {
 		return false
@@ -110,8 +102,6 @@ func (m *Manager) watchRuntime(ctx context.Context, d Descriptor, done chan stru
 		desired, ok := m.descs[d.Name]
 		changed := m.changed
 		if !ok || ctx.Err() != nil {
-			// Remove ownership under the same lock as the desired lookup so a
-			// concurrent re-enable can install its new watcher without a gap.
 			if m.watching[d.Name] == done {
 				delete(m.watching, d.Name)
 			}
@@ -167,9 +157,6 @@ func (m *Manager) watchRuntime(ctx context.Context, d Descriptor, done chan stru
 		m.mu.Unlock()
 		c.close()
 		m.setRuntimeStatus(d, "restarting", "sidecar exited")
-		// A ready-then-crash loop previously spawned without a pause and
-		// flooded status pushes. First retry is prompt; repeated fast exits
-		// back off. Explicit reloads must never wait on the old crash history.
 		delay := time.Duration(0)
 		if !reloaded {
 			delay = retry.afterExit(hooks.now().Sub(started))
@@ -199,8 +186,6 @@ func (m *Manager) waitRuntimeRetry(ctx context.Context, d Descriptor, changed <-
 		if !ok || !sameRuntime(desired, d) {
 			return ctx.Err() == nil
 		}
-		// Unrelated catalog changes wake every watcher but must not bypass
-		// this extension's remaining crash backoff.
 		delay = deadline.Sub(hooks.now())
 	}
 	return ctx.Err() == nil

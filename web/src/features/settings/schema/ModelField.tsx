@@ -26,10 +26,6 @@ export type ModelFieldProps = {
   onThinking?: (effort: string) => void
 }
 
-// Shared model row for schema-rendered extension settings. The thinking effort
-// select sits next to the model so one row expresses both the model and how
-// hard it should reason; its options follow the selected model's supported
-// levels, matching the composer's thinking select.
 export function ModelField({
   fieldLabel,
   hint,
@@ -57,8 +53,6 @@ export function ModelField({
     ? (selected.name && selected.name !== selected.id ? `${selected.provider} / ${selected.id}` : selected.provider)
     : value ? customDetail : emptyDetail
   const levels = onThinking ? selected?.thinkingLevels ?? [] : []
-  // Why: thinkingLevels[0] is "off"; an omitted effort should show the model
-  // default (medium) instead of the first supported level.
   const effort = clampThinkingEffort(thinkingEffort, selected) || selected?.defaultThinking || levels[0] || ''
 
   return (

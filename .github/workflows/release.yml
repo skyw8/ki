@@ -14,8 +14,6 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       live_tests: false
-      # Extensions are distributed separately from the ki executable and are
-      # intentionally not part of the default release gate.
       extensions: false
 
   web:
@@ -103,10 +101,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Extension packages are separate assets: `ki` downloads and verifies them on
-  # demand from the WebUI instead of embedding them in the binary. Every
-  # supported target builds its own set, and the installer derives the asset
-  # name from GOOS/GOARCH.
   extension-assets:
     name: Extension assets ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: tests
@@ -143,18 +137,11 @@ jobs:
   publish:
     name: Publish GitHub Release
     needs: [binaries, extension-assets]
-    # Why not a plain `needs` gate: a single extension package that fails to
-    # build must not withhold the ki binaries. Publish only requires the
-    # binaries to have been built; a missing extension family simply means the
-    # installer reports that no asset exists for this release until the job is
-    # re-run.
     if: always() && needs.binaries.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      # gh release works inside a repository: it reads the pushed tag and walks
-      # the history for --generate-notes, so this job needs the checkout.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -168,18 +155,10 @@ jobs:
           pattern: extensions-*
           path: release-assets
           merge-multiple: true
-        # A platform that failed to build its packages must not block the ki
-        # binaries; checksums.txt then simply has no zip for it, and the
-        # installer reports a missing asset instead of unpacking a bad one.
         continue-on-error: true
       - name: Write checksums
         working-directory: release-assets
         shell: bash
-        # Why both families: `ki` verifies its own archives against this file,
-        # and the extension installer looks up <name>-<goos>-<goarch>.zip in the
-        # same document before unpacking anything. The Windows binary archive is
-        # a .zip too, so it matches both globs; dedupe or checksums.txt would
-        # list it twice.
         run: |
           shopt -s nullglob
           declare -A seen=()

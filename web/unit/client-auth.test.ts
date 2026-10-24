@@ -7,8 +7,6 @@ function fixture(run: (requests: Array<{ path: string; headers: Headers; cache?:
   const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
   const requests: Array<{ path: string; headers: Headers; cache?: RequestCache }> = []
   let status: AuthStatus = { authenticated: true, serverId: 'one', csrfCookieName: 'ki_csrf_one' }
-  // Every localhost port shares this cookie string; even the legacy fixed
-  // cookie must not be used in place of a server-advertised name.
   Object.defineProperty(globalThis, 'document', {
     configurable: true,
     value: {

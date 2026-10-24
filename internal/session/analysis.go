@@ -11,7 +11,6 @@ import (
 	"ki/internal/types"
 )
 
-// TraceFilter selects rows from an active-leaf diagnostic trace.
 type TraceFilter struct {
 	Types       []string
 	Roles       []string
@@ -22,9 +21,6 @@ type TraceFilter struct {
 	Until       string
 }
 
-// CacheMiss describes how much of the preceding prompt was not served from
-// cache. Compaction resets the baseline, so rebuilding a rewritten context is
-// not reported as a miss.
 type CacheMiss struct {
 	MissedTokens int     `json:"missedTokens"`
 	Ratio        float64 `json:"ratio"`
@@ -32,7 +28,6 @@ type CacheMiss struct {
 	Prompt       int     `json:"promptTokens"`
 }
 
-// TraceEntry is a compact, stable diagnostic projection of one transcript row.
 type TraceEntry struct {
 	Runtime       *RuntimeTrace `json:"runtime,omitempty"`
 	Sideband      bool          `json:"sideband,omitempty"`
@@ -63,7 +58,6 @@ type TraceEntry struct {
 	StopReason    string        `json:"stopReason,omitempty"`
 }
 
-// PromptChange records a model-visible request prefix change.
 type PromptChange struct {
 	ID         string `json:"id"`
 	Timestamp  string `json:"timestamp"`
@@ -71,7 +65,6 @@ type PromptChange struct {
 	ToolsHash  string `json:"toolsHash"`
 }
 
-// ToolFailure is one failed tool result.
 type ToolFailure struct {
 	ID         string `json:"id"`
 	Timestamp  string `json:"timestamp"`
@@ -80,7 +73,6 @@ type ToolFailure struct {
 	Error      string `json:"error,omitempty"`
 }
 
-// Analysis summarizes the active branch of a session.
 type Analysis struct {
 	Runtime          []RuntimeTrace `json:"runtime,omitempty"`
 	Timing           Timing         `json:"timing"`
@@ -106,14 +98,12 @@ const (
 	cacheMissNoticeRatio  = 0.5
 )
 
-// Trace returns an active-leaf event timeline with derived cache diagnostics.
 func Trace(entries []Entry, leafID string, filter TraceFilter) []TraceEntry {
 	path := LeafChain(entries, leafID)
 	selected := map[string]bool{}
 	for _, entry := range path {
 		selected[entry.ID] = true
 	}
-	// Host progress is session-global and does not move or join a model branch.
 	path = nil
 	for _, entry := range entries {
 		if selected[entry.ID] || entry.Sideband && runtimeTrace(entry) != nil {
@@ -162,8 +152,6 @@ func classifyCacheMiss(prevPrompt int, cacheReported bool, u *types.Usage) *Cach
 	return &CacheMiss{MissedTokens: missed, Ratio: ratio, Previous: prevPrompt, Prompt: prompt}
 }
 
-// ClassifyCacheMiss applies the shared prompt-cache threshold to a single
-// request and returns the compact view DTO used by history and live events.
 func ClassifyCacheMiss(prevPrompt int, cacheReported bool, usage *types.Usage) *types.CacheMiss {
 	miss := classifyCacheMiss(prevPrompt, cacheReported, usage)
 	if miss == nil {
@@ -172,9 +160,6 @@ func ClassifyCacheMiss(prevPrompt int, cacheReported bool, usage *types.Usage) *
 	return &types.CacheMiss{MissedTokens: miss.MissedTokens, MissRatio: miss.Ratio}
 }
 
-// CacheMissesByID derives notable cache misses for the active leaf. The result
-// is keyed by assistant entry ID so sparse history pages can retain the
-// diagnostic without loading the preceding assistant body.
 func CacheMissesByID(entries []Entry, leafID string) map[string]*types.CacheMiss {
 	out := make(map[string]*types.CacheMiss)
 	prevPrompt, cacheReported := 0, false
@@ -200,8 +185,6 @@ func CacheMissesByID(entries []Entry, leafID string) map[string]*types.CacheMiss
 	return out
 }
 
-// PromptCacheBaseline returns the latest prompt size and whether the provider
-// has reported cache activity on the selected leaf.
 func PromptCacheBaseline(entries []Entry, leafID string) (int, bool) {
 	prevPrompt, cacheReported := 0, false
 	for _, entry := range LeafChain(entries, leafID) {
@@ -223,9 +206,6 @@ func PromptCacheBaseline(entries []Entry, leafID string) (int, bool) {
 	return prevPrompt, cacheReported
 }
 
-// WithCacheMisses decorates a selected entry page with diagnostics computed
-// from the complete active-leaf path. Copying prevents view decoration from
-// mutating cached entries or the persisted transcript snapshot.
 func WithCacheMisses(selected, entries []Entry, leafID string) []Entry {
 	misses := CacheMissesByID(entries, leafID)
 	out := slices.Clone(selected)
@@ -235,9 +215,6 @@ func WithCacheMisses(selected, entries []Entry, leafID string) []Entry {
 	return out
 }
 
-// TraceWithContext includes neighboring rows around filter matches. It lets a
-// diagnostic client fetch one bounded report instead of issuing one request
-// per interesting entry.
 func TraceWithContext(entries []Entry, leafID string, filter TraceFilter, contextLines int) []TraceEntry {
 	if contextLines <= 0 {
 		return Trace(entries, leafID, filter)
@@ -261,8 +238,6 @@ func TraceWithContext(entries []Entry, leafID string, filter TraceFilter, contex
 	return out
 }
 
-// Analyze summarizes the active leaf using the same cache rules as Trace and
-// the compact WebUI projection.
 func Analyze(entries []Entry, leafID string) Analysis {
 	path := LeafChain(entries, leafID)
 	trace := Trace(entries, leafID, TraceFilter{})
@@ -428,8 +403,6 @@ func first(v []string) string {
 	return v[0]
 }
 
-// CacheMissPercent returns a display percentage without exposing floating
-// point formatting choices to every client.
 func CacheMissPercent(m *CacheMiss) int {
 	if m == nil {
 		return 0

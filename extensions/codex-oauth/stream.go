@@ -11,8 +11,6 @@ type slotRegistry struct{ byIndex, byCall map[string]string }
 
 func newSlots() *slotRegistry { return &slotRegistry{map[string]string{}, map[string]string{}} }
 
-// Gateway output indexes may be reused or absent. Provider item IDs keep
-// reasoning and tool calls separate; ambiguous deltas reach the latest item.
 func (s *slotRegistry) resolve(o object, itemID, callID string) string {
 	index := ""
 	if o["output_index"] != nil {
@@ -400,8 +398,6 @@ func (b *streamBuilder) process(name string, o object) error {
 		if !ok {
 			response = o
 		}
-		// Terminal output is authoritative when intermediate item events were
-		// omitted; replay through the normal path to retain IDs and signatures.
 		for index, v := range list(response["output"]) {
 			if item, ok := v.(map[string]any); ok {
 				if err := b.process("response.output_item.done", object{"type": "response.output_item.done", "output_index": index, "item": item}); err != nil {
@@ -549,7 +545,7 @@ func (b *compactBuilder) process(name string, o object) error {
 			if _, ok := v.(map[string]any); !ok {
 				return errors.New("Codex compaction terminal output is invalid")
 			}
-		} // V2 delivers the checkpoint incrementally and often completes with output: [].
+		}
 		if len(a) > 0 && len(b.output) == 0 {
 			b.output = clone(a).([]any)
 		}

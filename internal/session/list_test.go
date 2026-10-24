@@ -8,8 +8,6 @@ import (
 	"ki/internal/types"
 )
 
-// List must not hide a session because one transcript row is undecodable: the
-// lite scan skips rows it cannot read and keeps looking for the title.
 func TestListToleratesUndecodableEntry(t *testing.T) {
 	root := t.TempDir()
 	s, err := Create(root, t.TempDir(), "openai", "model")

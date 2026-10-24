@@ -6,7 +6,6 @@ import (
 
 type AliasesProvider interface{ Aliases() []string }
 
-// Registry resolves every accepted spelling to one tool instance.
 type Registry struct{ tools map[string]Tool }
 
 func NewRegistry(tools []Tool) (*Registry, error) {

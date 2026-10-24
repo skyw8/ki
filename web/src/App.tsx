@@ -98,9 +98,6 @@ function mergeExtensionUI(globalItems: ExtensionUI[], sessionItems: ExtensionUI[
   return statusChips(Array.from(byName.values()))
 }
 
-// SessionRows renders a workspace's session list as a parent/child tree.
-// Subagent sessions (children) nest under their parent and are collapsed by
-// default; the arrow toggles the branch while the row itself opens the session.
 type SessionRowsProps = {
   rows: SessionInfo[]
   depth: number
@@ -218,9 +215,6 @@ function SessionRows({
   )
 }
 
-// Why: .pop-menu used to be hard-coded at left:200/top:120, so a click on a
-// lower-row ⋯ opened the menu at the top of the sidebar. Anchor to the trigger
-// and clamp to the viewport so the menu stays under the pointer.
 function popMenuStyle(anchor: DOMRect, menu: HTMLElement): CSSProperties {
   const gap = 4
   const pad = 8
@@ -264,8 +258,6 @@ export function App({ launcherAuth }: { launcherAuth: LauncherAuth }) {
   useKeyboardInset()
 
   const onServerChange = useCallback(() => {
-    // A forwarded origin can now point at a different daemon. Discard every
-    // resource identity and cached validator before authenticating the new one.
     setAuth('checking')
     setGeneration(n => n + 1)
   }, [])
@@ -307,33 +299,23 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const [searchMore, setSearchMore] = useState(false)
   const [searchErr, setSearchErr] = useState<string | null>(null)
   const [currentId, setCurrentId] = useState<string | null>(null)
-  // Why: sidebar branch expansion is navigation state, not a durable
-  // preference. Subagent branches start collapsed; opening a session expands
-  // its ancestor chain for this App lifetime, and a reload starts fresh.
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({})
   const [selectedWs, setSelectedWs] = useState<string | null>(null)
   const selectedWsRef = useRef(selectedWs)
   selectedWsRef.current = selectedWs
-  // Workspace IDs belong to this server, not to the browser origin.
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [showAll, setShowAll] = useState<Record<string, boolean>>({})
   const { store, view, setView } = useTranscriptStore()
   const [draft, setDraft] = useState<Draft>({ text: '', attachments: [] })
 	const [edit, setEdit] = useState<{ messageId: string; parentId: string; draft: Draft } | null>(null)
 	const [attachmentTarget, setAttachmentTarget] = useState<'new' | 'edit' | null>(null)
-	// A tool's spill file or task log, shown through /v1/fs preview. Kept as a
-	// path (not a blob) so re-opening is cheap and the modal owns the fetch.
 	const [previewPath, setPreviewPath] = useState<string | null>(null)
 	const [uploading, setUploading] = useState(false)
   const [fileDragActive, setFileDragActive] = useState(false)
   const [models, setModels] = useState<ModelInfo[]>([])
 	const [defaultModel, setDefaultModel] = useState('')
-	// Server identity for Settings → About, refreshed with the model list so the
-	// page always describes the daemon actually answering this tab.
 	const [serverMeta, setServerMeta] = useState<Meta | null>(null)
 	const [globalExtensions, setGlobalExtensions] = useState<CatalogExtension[]>([])
-	// Bumped after every global catalog read so the install list refetches its
-	// availability view (which also carries live install stages) alongside it.
 	const [extensionCatalogRev, setExtensionCatalogRev] = useState(0)
   const [settingsOpen, setSettingsOpen] = useState(false)
 	const [settingsPage, setSettingsPage] = useState<SettingsPage>('providers')
@@ -343,8 +325,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const transcriptOptions = () => messageViewRef.current.mode === 'compact' ? { view: 'compact' as const, keep: messageViewRef.current.keep } : {}
   const [notifyEnabled, setNotifyEnabled] = useState<boolean>(loadNotifyPref)
   const [notifyPerm, setNotifyPerm] = useState<NotifyPermission>(currentPermission)
-  // Whether the server can reach this browser with the page closed (a Web Push
-  // subscription is registered). Gates the "works while suspended" hint.
   const [pushReady, setPushReady] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [dirOpen, setDirOpen] = useState(false)
@@ -363,14 +343,10 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const [atBottom, setAtBottom] = useState(true)
   const [jumpToId, setJumpToId] = useState<string | null>(null)
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
-  // The push handler is event-driven and long-lived, so it reads the open
-  // session and the run stream it holds through refs instead of captured state.
   const currentIdRef = useRef<string | null>(currentId)
   const viewRef = store
   const syncRef = useRef<SessionSyncController | null>(null)
   const abortedRuns = useRef(new Set<string>())
-  // Sessions this tab has seen running. Completion notifications are limited to
-  // these so a run this browser never observed (CLI, agent child) stays silent.
   const runningKnown = useRef(new Set<string>())
   const searchAc = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -425,9 +401,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   }, [])
 
   const handoffMenuToDialog = useCallback(() => {
-    // The next dialog captures document.activeElement as its restore target.
-    // Move focus back to the opener before the menu unmounts so dialog close
-    // never tries to restore a detached menu item.
     menuTriggerRef.current?.focus({ preventScroll: true })
     setMenu(null)
   }, [])
@@ -450,9 +423,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       const trigger = menuTriggerRef.current
       if (anchor && trigger?.isConnected) {
         const current = trigger.getBoundingClientRect()
-        // Why: browsers may deliver the trigger's scroll-into-view event after
-        // the click has mounted the menu. That stale event must not immediately
-        // dismiss a menu whose anchor is already at the recorded position.
         if (
           Math.abs(current.top - anchor.top) < 0.5
           && Math.abs(current.right - anchor.right) < 0.5
@@ -512,8 +482,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     const page = tabs[next]?.dataset.settingsPage as SettingsPage | undefined
     if (!page || !SETTINGS_PAGES.includes(page)) return
     event.preventDefault()
-    // Horizontal tab strips can scroll on compact layouts; focus the newly
-    // active tab so keyboard users receive the same visible context as taps.
     setSettingsPage(page)
     window.requestAnimationFrame(() => tabs[next]?.focus({ preventScroll: false }))
   }
@@ -521,23 +489,13 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   useEffect(() => {
     document.body.dataset.theme = dark ? 'dark' : 'light'
     document.body.toggleAttribute('data-ds-dark-theme', dark)
-    // Storage may be denied in private/embedded browser contexts; theme
-    // application must remain usable even when its preference cannot persist.
-    try { localStorage.setItem('ki-theme', dark ? 'dark' : 'light') } catch { /* browser preference only */ }
+    try { localStorage.setItem('ki-theme', dark ? 'dark' : 'light') } catch {}
   }, [dark])
 
-  // The message view is a per-browser display preference (like the theme), so
-  // it lives in localStorage instead of the server's toggles.
   const changeMessageView = useCallback((next: MessageView) => {
     setMessageView({ mode: next.mode, keep: clampCompactKeep(next.keep) })
     saveMessageView(next)
   }, [])
-
-  // Run-completion notifications are decoupled from the selected session's view
-  // stream (which is torn down on switch): the single push stream delivers
-  // every run's agent_end, and the tab marker lets another tab's focus suppress
-  // the ping for the session it is showing. The handler is wired up below,
-  // after refreshList() is defined.
 
   const toggleNotify = useCallback(async (on: boolean) => {
     if (!on) {
@@ -553,14 +511,11 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       toast.error(t(perm === 'insecure' ? 'settings.notifyInsecure' : 'settings.notifyUnsupported'))
       return
     }
-    // Permission must be requested from a user gesture; the toggle click is it.
     const granted = perm === 'granted' ? perm : await requestPermission()
     setNotifyPerm(granted)
     if (granted === 'granted') {
       setNotifyEnabled(true)
       saveNotifyPref(true)
-      // Registering the Web Push subscription also happens in this gesture:
-      // some browsers only allow subscribe() from one.
       void ensurePushSubscription(api).then(setPushReady)
     } else {
       setNotifyEnabled(false)
@@ -578,21 +533,13 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     }
     if (perm !== 'granted') { toast.error(t('settings.notifyDenied')); return }
     const shown = await showNotification({ title: t('settings.notifyTestTitle'), body: t('settings.notifyTestBody') })
-    // Silence here reads as a broken button (a phone with no service worker
-    // registered cannot raise a page notification at all), so say why.
     if (!shown) toast.error(t('settings.notifyTestFailed'))
   }, [t])
 
-  // Permission can change in browser settings while the page is open; refresh
-  // the displayed state whenever the settings modal opens.
   useEffect(() => {
     if (settingsOpen) setNotifyPerm(currentPermission())
   }, [settingsOpen])
 
-  // Re-assert the Web Push subscription whenever the page loads with
-  // notifications on. The server may have pruned the endpoint (the push service
-  // reported it gone) or lost its registry; re-POSTing is an upsert and heals
-  // either case without user action.
   useEffect(() => {
     if (!notifyEnabled || currentPermission() !== 'granted') return
     void ensurePushSubscription(api).then(setPushReady)
@@ -617,8 +564,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   useEffect(() => {
     if (!mobileSidebarOpen) return
     const close = (event: KeyboardEvent) => {
-      // The child menu owns Escape even before its opening focus frame runs.
-      // Otherwise both window listeners close and leave its opener inert.
       if (event.key === 'Escape' && !event.defaultPrevented && !menu) setMobileSidebarOpen(false)
     }
     window.addEventListener('keydown', close)
@@ -626,8 +571,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   }, [menu, mobileSidebarOpen])
 
   useEffect(() => {
-    // Why: a selected session must become visible immediately on a phone;
-    // leaving the navigation drawer above it made taps appear to do nothing.
     if (compactLayout) setMobileSidebarOpen(false)
   }, [compactLayout, currentId])
 
@@ -635,17 +578,11 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     const sidebar = sidebarRef.current
     const main = mainRef.current
     if (!sidebar || !main) return
-    // Why: visibility and aria-hidden do not remove descendants from every
-    // browser's tab order. inert makes the closed off-canvas drawer truly
-    // unavailable until its scrim and content are visible.
     sidebar.toggleAttribute('inert', compactLayout && !mobileSidebarOpen)
     main.toggleAttribute('inert', compactLayout && mobileSidebarOpen)
     if (compactLayout && mobileSidebarOpen) {
       requestAnimationFrame(() => sidebar.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled)')?.focus({ preventScroll: true }))
     } else if (compactLayout && mobileSidebarWasOpen.current) {
-      // Why: a dialog opened from the drawer owns initial focus and has an
-      // explicit return target. The ordinary drawer-close frame must not steal
-      // focus back to the hamburger after that dialog has mounted.
       const handingOffToDialog = (drawerDialogSource.current === 'settings' && settingsOpen)
         || (drawerDialogSource.current === 'dir' && dirOpen)
       if (!handingOffToDialog) requestAnimationFrame(() => mobileNavToggleRef.current?.focus({ preventScroll: true }))
@@ -706,21 +643,10 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 			setGlobalExtensions(await api.extensions())
 			setExtensionCatalogRev(rev => rev + 1)
 		} catch (e) {
-			// A push-driven refresh is a background sync; toasting every transient
-			// failure would spam while an extension restarts.
 			if (!silent) toast.from(e)
 		}
 	}, [api])
 
-  // Sidebar refreshes are coalesced: runs ending together, or rapid pin/move/
-  // delete actions, collapse into one in-flight read plus at most one trailing
-  // read. Every caller's promise resolves after a refresh that started at or
-  // after its call, so `await refreshList()` still guarantees fresh state.
-  // The server's ETag lets an unchanged list skip setSessions entirely.
-  // The first sidebar refresh gates `session-list`'s data-ready marker. Tests
-  // and the empty-state hint both need to tell "nothing matched yet" apart from
-  // "loaded and there is nothing to show"; workspace-group alone cannot, because
-  // a server with no workspaces renders no group at all.
   const [listLoaded, setListLoaded] = useState(false)
   const listEtag = useRef<string | null>(null)
   const wsKey = useRef<string | null>(null)
@@ -745,15 +671,11 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             if (!ss.notModified) {
               listEtag.current = ss.etag
               setListLoaded(true)
-              // Eager copy: the resume catch-up reads sessionsRef synchronously
-              // from the promise callback, before React has re-rendered.
               sessionsRef.current = ss.sessions
               setSessions(ss.sessions)
               for (const session of ss.sessions) {
                 if (session.running) runningKnown.current.add(session.id)
               }
-              // A reconnect can reveal deletion without an invalidate event.
-              // Do not close a different session opened after this read began.
               if (requestedId && currentIdRef.current === requestedId && !ss.sessions.some(s => s.id === requestedId)) {
                 openAbort.current?.abort()
                 currentIdRef.current = null
@@ -775,10 +697,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             }
           }
         } catch (e) {
-          // A resume/visibility resync or a push-driven refetch can land while
-          // the phone's radio is still reattaching; the stream reconnects and
-          // the next refresh succeeds, so a transient network failure must not
-          // echo the browser's message as an error toast. HTTP errors still do.
           if (!isNetworkError(e)) toast.from(e)
         } finally {
           gate.active = false
@@ -807,21 +725,13 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       enabled: notifyEnabled,
       sessionId: id,
       focusedSession: focusedSession(api.serverId),
-      // Subagent sessions nest under a parent whose run owns the notification;
-      // announcing each child would be noise the user cannot act on.
       subagent: session?.forkMode === 'tree',
       title: session?.title || t('session.untitled'),
-      // The cwd disambiguates sessions that share a title (e.g. short prompts).
       body: session?.cwd ? t('notify.doneBodyDir', { cwd: session.cwd }) : t('notify.doneBody'),
     })
     void refreshList()
   }, [notifyEnabled, refreshList, t])
 
-  // A run that finished while this tab was suspended (phone locked, laptop
-  // asleep) never reached the agent_end sideband, and the push stream replays
-  // nothing on reconnect. The resume refresh is the only place that sees "was
-  // running, now stopped", so it is where the missed completion is announced.
-  // Call it after a refresh so sessionsRef already holds the new list.
   const catchUpMissedCompletions = useCallback(() => {
     reconcileFinishedRuns({
       known: runningKnown.current,
@@ -887,7 +797,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const listen = useCallback((id: string, snapshotLeaf?: string) => sync.listen(id, snapshotLeaf), [sync])
   const recoverOpenTranscript = useCallback((restart = false) => sync.recover(restart), [sync])
 
-  // The push channel's handler for the session this tab has open.
   const refreshOpenRuntime = useCallback(async () => {
     const id = currentIdRef.current
     if (!id) return
@@ -898,15 +807,9 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       setView(v => ({ ...applyRuntimeCatalog(v, detail), busy: v.busy || !!detail.running }))
       if (detail.running && !sync.isListening(id)) void listen(id)
     } catch {
-      // The session may have just been deleted; the list refresh closes it.
     }
   }, [api, listen, store, sync])
 
-  // Everything the server pushes to this tab arrives here: invalidate hints for
-  // the sidebar/workspace/catalog state, and session sideband events for both
-  // the open session and background completions. Why one handler: see
-  // useServerEvents and docs/events.md — one stream replaces the previous
-  // one-notification-stream-per-running-session.
   const serverChanged = useRef(false)
   const onServerEvent = useCallback((ev: PushEvent) => {
     if (serverChanged.current) return
@@ -916,8 +819,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
         onServerChange()
         return
       }
-      // A fresh subscription replays nothing, so refetching everything is what
-      // makes a reconnect catch up on whatever it missed.
       void refreshList().then(catchUpMissedCompletions)
       void refreshExtensions(true)
       refreshModels()
@@ -928,17 +829,11 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       switch (ev.scope) {
         case 'sessions':
         case 'workspaces':
-          // A run that started elsewhere, a workspace deleted elsewhere, or a
-          // session created/removed: refetch the list, then reconcile the open
-          // session against it.
           void refreshList().then(() => {
             const id = currentIdRef.current
             if (!id) return
             const info = sessionsRef.current.find(s => s.id === id)
             if (!info) {
-              // The open session was deleted by another client (e.g. its
-              // workspace was deleted): leave the transcript instead of showing
-              // a session that no longer exists.
               sync.select(null)
               store.reset(null, keepComposer(store.current))
               setCurrentId(null)
@@ -962,18 +857,12 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     const sessionId = ev.sessionId
     if (!sessionId) return
     if (ev.type === 'run_aborted') {
-      // Abort still ends with agent_end; remember it so the completion is not
-      // announced as a finished run.
       abortedRuns.current.add(sessionId)
       if (sessionId === currentIdRef.current) setView(v => applyEvent(v, ev))
       return
     }
     if (ev.type === 'agent_end') {
       const wasAborted = abortedRuns.current.delete(sessionId)
-      // Only announce a run this tab had seen as running. The push stream is
-      // global, so an unfiltered handler would raise a desktop notification for
-      // any run in the process, including `ki run` sessions and agent children
-      // this browser never observed (docs/webui.md).
       const known = runningKnown.current.delete(sessionId)
       if (!wasAborted && known) handleRunComplete(sessionId)
       return
@@ -982,14 +871,9 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     switch (ev.type) {
       case 'compaction_start':
       case 'compaction_end':
-        // A manual /compact is a synchronous request, so its progress arrives
-        // as a session notification rather than on a run stream.
         setView(v => applyEvent(v, ev))
         return
       case 'context_usage':
-        // A compaction outside a run (manual /compact, threshold) refreshes the
-        // meter through the push stream; a run's context_usage still arrives on
-        // its run SSE.
         setView(v => applyEvent(v, ev))
         return
       case 'process_updated':
@@ -1021,11 +905,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   }, [api, onServerChange, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, recoverOpenTranscript, t, catchUpMissedCompletions, store, sync])
   useServerEvents(api, onServerEvent, onServerChange)
 
-  // Safety net for a push stream that outlived a laptop sleep or a proxy idle
-  // timeout without raising a read error yet: resync when the tab is shown
-  // again. The refetch goes through the ETag, so an idle tab costs a 304. It is
-  // also where a completion missed while the page was suspended is recovered:
-  // the refresh reports the session as no longer running (see completion-catchup).
   useEffect(() => {
     const onVisibility = () => {
       if (document.visibilityState !== 'visible') return
@@ -1037,8 +916,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     const onPageShow = (event: PageTransitionEvent) => { if (event.persisted) onVisibility() }
     const onPageHide = () => {
       openAbort.current?.abort()
-      // An opening GET may not yet have handed its session to the reader.
-      // Resume must still know which empty transcript needs reconciliation.
       if (currentIdRef.current && sync.getSnapshot().sessionId !== currentIdRef.current) sync.select(currentIdRef.current)
       sync.suspend()
     }
@@ -1055,8 +932,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   }, [catchUpMissedCompletions, refreshExtensions, refreshList, refreshModels, sync])
 
   const openSession = useCallback(async (id: string): Promise<boolean> => {
-    // Reopening the selected session changes its epoch, not its ID. Close
-    // navigation explicitly or a mobile drawer leaves the new view inert.
     setMobileSidebarOpen(false)
     history.cancel()
     cancelJump()
@@ -1066,8 +941,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     currentIdRef.current = id
     setSessionRevision(n => n + 1)
     store.reset(id, { ...keepComposer(store.current), title: sessionsRef.current.find(s => s.id === id)?.title ?? '', runtimeReady: false })
-    // The initial read owns opening. Push hints cannot start a competing
-    // recovery/reader until its baseline is accepted.
     sync.select(null)
     setOpeningId(id)
     setAtBottom(true)
@@ -1115,7 +988,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             setView(v => applyRuntimeCatalog(v, detail))
             return
           }
-        } catch { /* retry until timeout */ }
+        } catch {}
       }
       if (valid()) setView(v => ({ ...v, runtimeReady: true }))
     })()
@@ -1286,10 +1159,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 
   const sendContent = useCallback(async (content: Content[], parentId?: string, editedMessageId?: string, delivery?: 'steer' | 'queue', restore?: () => void) => {
 	if (!content.some(c => (c.type === 'text' && !!c.text?.trim()) || c.type !== 'text')) return
-    // Why: callers clear the composer before awaiting this. Slash commands such
-    // as /compact stay inside the HTTP request until the work finishes, so
-    // clearing on response would leave the typed command visible for seconds.
-    // Anything accepted stays cleared; a pre-acceptance failure restores it.
     let consumed = false
     const fail = () => { if (!consumed) restore?.() }
     try {
@@ -1343,8 +1212,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 	  if (editedMessageId) {
 		setView(v => {
 		  const cut = v.nodes.findIndex(n => n.id === editedMessageId)
-		  // Hide the abandoned descendant path immediately; the authoritative
-		  // tree is reloaded after SSE completes.
 		  return appendOptimisticUser({ ...v, nodes: cut >= 0 ? v.nodes.slice(0, cut) : v.nodes }, content, result?.clientRequestId ?? requestId)
 		})
 	  } else {
@@ -1360,10 +1227,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 	const send = useCallback((delivery?: 'steer' | 'queue') => {
 	  const content: Content[] = [...(draft.text.trim() ? [{ type: 'text', text: draft.text } as Content] : []), ...draft.attachments]
 	  const snapshot = draft
-	  // Why: clear the input the moment the user submits so the command never
-	  // looks unsent while a slow server-side slash command runs. A failed send
-	  // restores the snapshot, but only when the user has not typed something
-	  // new in the meantime.
 	  setDraft({ text: '', attachments: [] })
 	  return sendContent(content, undefined, undefined, delivery, () => setDraft(d => (d.text || d.attachments.length) ? d : snapshot))
 	}, [draft, sendContent])
@@ -1394,8 +1257,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 	  if (!edit) return Promise.resolve()
 	  const content: Content[] = [...(edit.draft.text.trim() ? [{ type: 'text', text: edit.draft.text } as Content] : []), ...edit.draft.attachments]
 	  const snapshot = edit
-	  // Same optimistic close as the composer: submit closes the editor, and a
-	  // rejected send only reopens it if the user did not start another edit.
 	  setEdit(null)
 	  return sendContent(content, snapshot.parentId, snapshot.messageId, undefined, () => setEdit(e => e ?? snapshot))
 	}, [edit, sendContent])
@@ -1441,10 +1302,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const byId = useMemo(() => new Map(sessions.map(s => [s.id, s])), [sessions])
 
   useEffect(() => {
-    // Workspaces start collapsed; a live run is the one thing that opens one by
-    // itself, so work started in another tab or before this page loaded stays
-    // visible. An explicit collapse (false) wins: re-expanding it on every list
-    // refresh would make the toggle impossible to use while a run is active.
     const runningWorkspaces = new Set(sessions.filter(s => s.running && s.workspaceId).map(s => s.workspaceId!))
     if (!runningWorkspaces.size) return
     setExpanded(current => {
@@ -1463,16 +1320,12 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const forest = useMemo(() => buildSessionForest(sessions, workspaces), [sessions, workspaces])
 
   const trees = useMemo(() => {
-    // Top-level rows are sessions without a trusted parent edge. Subagent
-    // children are rendered recursively by SessionRows, not listed here.
     const rootsOf = (rows: SessionInfo[]) => rows.filter(session => !forest.parentOf.has(session.id))
     const used = new Set<string>()
     const groups = workspaces.map(ws => {
       const order = ws.sessionIds?.length
         ? [...ws.sessionIds, ...sessions.filter(s => s.workspaceId === ws.id && !ws.sessionIds!.includes(s.id)).map(s => s.id)]
         : sessions.filter(s => s.workspaceId === ws.id).map(s => s.id)
-      // Pin first: the account order is stored order, which starts with the
-      // newest session, so a freshly created one would otherwise sit above a pin.
       const allRows = pinnedFirst(order.map(id => byId.get(id)).filter((s): s is SessionInfo => !!s))
       allRows.forEach(s => used.add(s.id))
       return { ws, rows: rootsOf(allRows) }
@@ -1488,8 +1341,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   }, [])
 
   const openSessionRow = useCallback((id: string) => {
-    // A subagent result is a transcript, so surface it on the conversation tab
-    // rather than whatever tab the parent was left on.
     if (byId.get(id)?.forkMode === 'tree') setTab('conversation')
     void openSession(id)
   }, [byId, openSession])
@@ -1523,8 +1374,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     setContextRequestId(null)
     setContextFocusId(n.id)
     setTab('context')
-    // Request associations may live outside the chat's loaded window. Keep
-    // the entry identity until the lazy index resolves its model request.
     if (currentId && !view.indexLoaded) void requestIndex(currentId)
   }
   const focusedContextRequest = useMemo(() => {
@@ -1532,8 +1381,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     const record = view.records.find(item => item.id === contextFocusId)
     const requestId = record?.requestId ?? view.requests.find(request => request.resultId === contextFocusId)?.id
     if (record?.kind === 'tool' && requestId) {
-      // A tool result is input to the following request, not the request that
-      // produced its call. At the tail it belongs to Current Context instead.
       const index = view.requests.findIndex(request => request.id === requestId)
       return index < 0 ? null : view.requests[index + 1]?.id ?? null
     }
@@ -1550,21 +1397,15 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 	}, [view.busy])
 
 	const forkMessage = useCallback(async (node: Extract<ChatNode, { kind: 'assistant' }>) => {
-	  // Fork copies settled history up to this message and runs in a new session,
-	  // so it never touches the current (possibly running) turn.
 	  if (!currentId) return
 	  try {
 		const child = await api.fork(currentId, node.id)
-		// Navigation owns the next action; a slower sidebar refresh must not
-		// leave the old transcript interactive after the fork was acknowledged.
 		void refreshList()
 		await openSession(child.id)
 	  } catch (e) { toast.from(e) }
 	}, [api, currentId, openSession, refreshList])
 
 	const regenerate = useCallback((node: Extract<ChatNode, { kind: 'assistant' }>) => {
-	  // Regenerate edits the user turn in place (a new branch), which would race
-	  // the running loop; refuse and tell the user instead of silently no-oping.
 	  if (view.busy) { toast.info(t('chat.regenBusy')); return }
 	  const idx = view.nodes.findIndex(n => n.id === node.id)
 	  for (let i = idx - 1; i >= 0; i--) {
@@ -1595,8 +1436,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 	  if (!target) return
 	  const byId = new Map(view.allEntries.map(e => [e.id, e]))
 	  let leaf = target.id
-	  // A branch selection targets its newest descendant so tool/result pairs
-	  // remain complete instead of exposing an arbitrary physical jsonl tail.
 	  for (let i = view.allEntries.length - 1; i >= 0; i--) {
 		let id: string | undefined = view.allEntries[i].id
 		while (id) {
@@ -1613,8 +1452,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 
   const empty = view.nodes.length === 0 && !view.hasMore && !view.compactTurns?.length
   const stats = useMemo(() => sessionStats(view), [view])
-  // The navigator walks the branch from the loaded entries and index rows, not
-  // from chat nodes, so every prompt is listed without paging the chat back.
   const requestItems = useMemo(() => userRequests(view.allEntries, view.leafId, view.nodes, view.compactTurns), [view.allEntries, view.leafId, view.nodes, view.compactTurns])
 
   useEffect(() => {
@@ -1625,18 +1462,9 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   }, [currentId])
 
   useEffect(() => {
-    // Switching sessions while Context stays open must still load its request
-    // metadata; ordinary conversation opens never pay for the full index.
     if (tab === 'context' && currentId && openingId !== currentId && !view.indexLoaded) void requestIndex(currentId)
   }, [tab, currentId, openingId, view.indexLoaded, requestIndex])
 
-  /**
-   * Jump to a prompt from the navigator.
-   *
-   * The list covers the whole branch, but chat nodes only cover the loaded
-   * window, so a jump to older history pages it in first — the same pages
-   * scrolling up would fetch, in larger steps. history runs out at hasMore.
-   */
   const jumpToRequest = useCallback(async (id: string) => {
     chatControl.current?.read()
     setJumpToId(null)
@@ -1645,14 +1473,10 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     let target = conversationTarget(viewRef.current, id)
     setSeekingId(id)
     setJumpErrorId(null)
-    // Cached bodies may sit across an unloaded gap after recovery; only nodes
-    // in the active window are immediately reachable by the scroll controller.
     try {
       while (!target || !viewRef.current.nodes.some(node => node.id === target)) {
         const turnId = target && conversationTargetTurn(viewRef.current, target)
         if (turnId && !viewRef.current.loadedTurnIds?.includes(turnId)) {
-          // Compact pages already cover this turn, but omit its hidden rows.
-          // Paging older cannot reveal them; hydrate exactly the owning turn.
           const ok = await history.requestTurn(turnId)
           if (version !== jumpVersion.current || sessionId !== currentIdRef.current) return
           if (!ok) { setJumpErrorId(id); return }
@@ -1663,9 +1487,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
         if (version !== jumpVersion.current || sessionId !== currentIdRef.current) return
         if (!page) { setJumpErrorId(id); return }
         target = conversationTarget(viewRef.current, id)
-        // History commits synchronously to the store. Raw page IDs include
-        // non-rendered headers/events and compact helpers: they cannot prove
-        // that Chat can seek this target, even if the HTTP page contains it.
         const pendingTurn = target && conversationTargetTurn(viewRef.current, target)
         const canLoadTurn = pendingTurn && !viewRef.current.loadedTurnIds?.includes(pendingTurn)
         if ((!target || !viewRef.current.nodes.some(node => node.id === target)) && !viewRef.current.hasMore && !canLoadTurn) { setJumpErrorId(id); return }
@@ -1748,16 +1569,12 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 
   const visibleRows = (wsId: string, rows: SessionInfo[]) => {
     if (showAll[wsId]) return rows
-    // Opening a subagent child must keep its top-level branch in the slice,
-    // otherwise the expanded row would be cut off by the show-more limit.
     const anchorId = currentId ? topLevelRoot(forest, currentId) : null
     const idx = anchorId ? rows.findIndex(s => s.id === anchorId) : -1
     const n = idx >= SHOW ? idx + 1 : SHOW
     return rows.slice(0, n)
   }
 
-  // Opening a session (including a deep subagent child restored from the URL)
-  // expands its ancestor chain so the active row is reachable in the tree.
   useEffect(() => {
     if (!currentId) return
     const chain = ancestorsOf(forest, currentId)
@@ -1859,9 +1676,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             </>
           ) : null}
           {sidebarWide && !filter.trim() && trees.groups.map(({ ws, rows }) => {
-            // Collapsed by default: a workspace opens only for an explicit
-            // navigation (open/new session) or because one of its sessions is
-            // running (see the auto-expand effect above).
             const open = expanded[ws.id] === true
             const shown = open ? visibleRows(ws.id, rows) : []
             return (
@@ -1961,8 +1775,6 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       </aside>
 
       {compactLayout ? (
-        // Why: the scrim is a pointer shortcut, not a second keyboard control;
-        // the labeled collapse button inside the trapped drawer owns that job.
         <div
           className="mobile-sidebar-backdrop"
           aria-hidden="true"

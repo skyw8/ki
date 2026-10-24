@@ -10,21 +10,14 @@ import (
 	"ki/internal/extension"
 )
 
-// installState is one in-flight or finished installation. Downloads can take
-// minutes on a slow link, so the request only starts the work; every client
-// follows the same state through GET /v1/extensions/available and the
-// extensions invalidation instead of holding a request open.
 type installState struct {
-	state string // download | extract | done | failed
+	state string
 	err   string
 }
 
-// extensionInstaller owns install bookkeeping for this server.
 type extensionInstaller struct {
-	mu    sync.Mutex
-	items map[string]*installState
-	// running guards one goroutine per extension name. A second click while a
-	// download is in flight must not start a competing extraction.
+	mu      sync.Mutex
+	items   map[string]*installState
 	running map[string]bool
 }
 
@@ -62,9 +55,6 @@ func (in *extensionInstaller) set(name, state, errText string) {
 	}
 }
 
-// installer builds the downloader from the merged configuration. Release may be
-// empty on a local build, in which case installing reports that no release is
-// known instead of guessing a tag.
 func (s *Server) installer() extension.Installer {
 	return extension.Installer{
 		Home:    s.cfg.Home,
@@ -73,8 +63,6 @@ func (s *Server) installer() extension.Installer {
 	}
 }
 
-// getAvailableExtensions lists installable packages and merges live install
-// state. It never touches the network.
 func (s *Server) getAvailableExtensions(w http.ResponseWriter, _ *http.Request) {
 	items := s.installer().List()
 	out := make([]map[string]any, 0, len(items))
@@ -100,20 +88,14 @@ func (s *Server) getAvailableExtensions(w http.ResponseWriter, _ *http.Request) 
 		out = append(out, row)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":   out,
-		"release": s.cfg.Extensions.Release,
-		"source":  s.cfg.Extensions.Source,
-		// A local build follows the newest published release instead of a tag
-		// it cannot know; the UI says so instead of showing "latest/download".
-		"latest": strings.HasPrefix(s.cfg.Extensions.Release, "latest/"),
-		// A linked extensions root is a checkout: discovery uses it, but every
-		// install is refused, so the UI explains that instead of offering a
-		// button that always fails.
+		"items":      out,
+		"release":    s.cfg.Extensions.Release,
+		"source":     s.cfg.Extensions.Source,
+		"latest":     strings.HasPrefix(s.cfg.Extensions.Release, "latest/"),
 		"linkedRoot": s.installer().LinkedRoot(),
 	})
 }
 
-// installExtension starts one installation in the background.
 func (s *Server) installExtension(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	installer := s.installer()
@@ -138,8 +120,6 @@ func (s *Server) installExtension(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.extInstall.begin(name) {
-		// Idempotent: another tab already started this install. Report the
-		// current stage instead of failing the click.
 		state, _ := s.extInstall.get(name)
 		writeJSON(w, http.StatusAccepted, map[string]any{"name": name, "state": state.state})
 		return
@@ -155,9 +135,6 @@ func (s *Server) runInstall(name string) {
 		s.extInstall.set(name, stage, "")
 		s.publishInvalidation(scopeExtensions)
 	}
-	// Abandoned staging directories from an earlier crash are cleaned here
-	// rather than at startup: install is rare, and a cleanup at boot would race
-	// a second ki process installing into the same home.
 	_ = extension.CleanStaging(s.cfg.Home)
 	ctx, cancel := context.WithTimeout(s.runtimeCtx, 30*time.Minute)
 	defer cancel()
@@ -170,8 +147,5 @@ func (s *Server) runInstall(name string) {
 	if state, ok := s.extInstall.get(name); !ok || state.state != "done" {
 		return
 	}
-	// Discovery has to see the new directory before sessions can use it. A
-	// reload is process-wide, so an active run keeps its current snapshot and
-	// picks the package up on release, exactly like a manual reload.
 	s.Reload()
 }

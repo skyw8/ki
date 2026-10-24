@@ -5,26 +5,17 @@ import (
 	"path/filepath"
 )
 
-// Sources of system-prompt supplement files. Both files are additive: the
-// global file and the project file are concatenated in this order, so a project
-// file can add to or refine the global one instead of hiding it.
 const (
 	AppendSourceGlobal  = "global"
 	AppendSourceProject = "project"
 )
 
-// AppendSystemPrompt is one supplement file layer that exists on disk. The
-// settings view lists these per source and prompt.Build renders their text.
 type AppendSystemPrompt struct {
 	Source string
 	Path   string
 	Text   string
 }
 
-// AppendSystemPromptPath resolves the file backing one source. The loader and
-// the settings writer both go through it, so the read path and the write path
-// cannot drift apart. The second result is false for an unknown source and for
-// a project source with no cwd to resolve against.
 func AppendSystemPromptPath(home, cwd, source string) (string, bool) {
 	switch source {
 	case AppendSourceGlobal:
@@ -41,7 +32,6 @@ func AppendSystemPromptPath(home, cwd, source string) (string, bool) {
 	return "", false
 }
 
-// loadAppendSystemPrompts reads every supplement file that exists, global first.
 func loadAppendSystemPrompts(home, cwd string) []AppendSystemPrompt {
 	out := make([]AppendSystemPrompt, 0, 2)
 	for _, source := range []string{AppendSourceGlobal, AppendSourceProject} {

@@ -19,30 +19,17 @@ import (
 )
 
 const (
-	stateFileName  = "state.json"
-	configFileName = "config.json"
-	// outputDebounce coalesces a burst of deltas into one preview write.
-	outputDebounce = 250 * time.Millisecond
-	// minOutputWriteInterval paces the writes to one chat. Telegram throttles
-	// rapid chat writes, and a group reply is delivered by editing a placeholder
-	// message: an unpaced preview turned a long answer into an edit storm, and
-	// the throttled final edit then lost the answer.
+	stateFileName          = "state.json"
+	configFileName         = "config.json"
+	outputDebounce         = 250 * time.Millisecond
 	minOutputWriteInterval = time.Second
-	// previewSendTimeout budgets one preview write (draft, placeholder, edit).
-	previewSendTimeout = 15 * time.Second
-	// finalSendTimeout budgets one final write, including a throttled retry. Each
-	// part of a split answer gets its own budget, so a slow earlier part cannot
-	// spend the deadline the remaining parts need.
-	finalSendTimeout = 30 * time.Second
-	// telegramRetryAttempts caps throttled (429) retries per Telegram call.
-	telegramRetryAttempts = 2
-	// telegramRetryMaxDelay caps one retry wait. The lifecycle goroutine writes
-	// every session's replies in order, so a long server-side retry_after must
-	// not stall it.
-	telegramRetryMaxDelay = 10 * time.Second
-	settleDelay           = 500 * time.Millisecond
-	outputRetention       = 30 * time.Second
-	secretValue           = "<configured>"
+	previewSendTimeout     = 15 * time.Second
+	finalSendTimeout       = 30 * time.Second
+	telegramRetryAttempts  = 2
+	telegramRetryMaxDelay  = 10 * time.Second
+	settleDelay            = 500 * time.Millisecond
+	outputRetention        = 30 * time.Second
+	secretValue            = "<configured>"
 )
 
 type telegramConfig struct {
@@ -56,12 +43,8 @@ type telegramState struct {
 	Version  int               `json:"version"`
 	Offsets  map[string]int64  `json:"offsets"`
 	Sessions map[string]string `json:"sessions"`
-	// Topics caches forum topic names ("<chatId>:<threadId>") learned from topic
-	// service messages; Telegram has no method to query a topic name.
-	Topics map[string]string `json:"topics,omitempty"`
-	// Forums caches the is_forum flag per chat, so a sidecar does not have to ask
-	// getChat again for every message that carries a thread id.
-	Forums map[string]bool `json:"forums,omitempty"`
+	Topics   map[string]string `json:"topics,omitempty"`
+	Forums   map[string]bool   `json:"forums,omitempty"`
 }
 
 type sessionCreateResult struct {
@@ -155,9 +138,7 @@ type outputState struct {
 	draftOK       bool
 	placeholderID int64
 	statusID      int64
-	// lastWriteAt paces this chat's writes at minOutputWriteInterval; guarded by
-	// the app's outputMu.
-	lastWriteAt time.Time
+	lastWriteAt   time.Time
 }
 
 func newTelegramApp(rpc *stdioRPC) *telegramApp {
@@ -210,9 +191,6 @@ func (a *telegramApp) handle(method string, raw json.RawMessage) (any, error) {
 			}
 		}
 	case "session.open", "session.close":
-		// The connector keeps session identity in metadata and does not need a
-		// per-session in-memory object. These notifications remain useful to
-		// other extensions and are intentionally accepted here.
 	case "shutdown":
 		a.close()
 	}
@@ -342,8 +320,6 @@ func loadTelegramState(path string) (telegramState, error) {
 
 func (a *telegramApp) persistStateLocked() error {
 	a.state.Version = 1
-	// Versioned atomic writes keep polling offsets and session mappings intact
-	// when the process stops mid-write, and never overwrite a newer schema.
 	return state.WriteVersioned(a.statePath, 1, a.state, 0o600)
 }
 
@@ -460,8 +436,6 @@ func (w *telegramWorker) handleUpdate(item update) error {
 	if msg == nil {
 		return nil
 	}
-	// Topic service messages are the only place a topic name is ever revealed, so
-	// they are recorded before anything else may drop the update.
 	w.rememberTopic(msg)
 	if msg.From == nil || msg.From.IsBot {
 		return nil
@@ -473,22 +447,15 @@ func (w *telegramWorker) handleUpdate(item update) error {
 		text = msg.Caption
 		entities = msg.CaptionEntities
 	}
-	// A reply to one of the bot's own messages addresses it just like a mention.
 	addressed := !group || mentionsBot(text, entities, w.me) || repliesToBot(msg, w.me)
 	if group && addressed {
 		text = stripBotMention(text, entities, w.me)
 	}
 	if shouldReact(group, addressed) {
-		// Ordinary Bot API updates have no user-client read marker. A reaction is
-		// only an acknowledgement for private or explicitly addressed messages;
-		// advancing the polling offset acknowledges an ordinary group message.
 		reactionCtx, cancel := context.WithTimeout(w.ctx, 5*time.Second)
 		_ = w.api.setReaction(reactionCtx, msg.Chat.ID, msg.MessageID)
 		cancel()
 	}
-	// Telegram enforces Managed Bot access restrictions. The mention only
-	// controls whether a group message starts a run; all received group
-	// messages are retained as context for the next addressed message.
 	name, args, slash := parseSlash(text)
 	control := slash && (name == "new" || name == "cd" || name == "compact" || name == "reload")
 
@@ -611,8 +578,6 @@ func (w *telegramWorker) downloadFile(fileID, target string) (string, error) {
 		return "", err
 	}
 	defer os.Remove(file.Name())
-	// Failed or cancelled streams must not replace an existing attachment with
-	// a partial file. Keep the temporary file beside the target for rename.
 	err = w.api.download(ctx, info.FilePath, file)
 	closeErr := file.Close()
 	if err != nil {
@@ -645,9 +610,6 @@ func (w *telegramWorker) externalMetadata(msg *message, threadID int64) map[stri
 	}
 }
 
-// conversationThread is the thread id that identifies this message's
-// conversation, plus one getChat probe per chat: replies create threads in every
-// group, and only a forum's topics are conversations of their own.
 func (w *telegramWorker) conversationThread(msg *message) int64 {
 	forum := msg.Chat.IsForum
 	if isGroup(msg.Chat) && !forum && msg.MessageThreadID > 1 {
@@ -656,9 +618,6 @@ func (w *telegramWorker) conversationThread(msg *message) int64 {
 	return sessionThread(msg.Chat, msg.MessageThreadID, w.me.HasTopicsEnabled, forum)
 }
 
-// forumChat reports whether the chat is a forum, cached in state.json. Updates
-// carry is_forum, but a sidecar started before the group gained topics would
-// otherwise keep merging that forum's topics into one session.
 func (w *telegramWorker) forumChat(chatID int64) bool {
 	key := strconv.FormatInt(chatID, 10)
 	w.app.stateMu.Lock()
@@ -671,8 +630,6 @@ func (w *telegramWorker) forumChat(chatID int64) bool {
 	got, err := w.api.getChat(ctx, chatID)
 	cancel()
 	if err != nil {
-		// Keep the parent session until a later message can classify the chat;
-		// guessing "forum" would fork a session out of an ordinary group.
 		return false
 	}
 	w.app.stateMu.Lock()
@@ -687,16 +644,12 @@ func (w *telegramWorker) forumChat(chatID int64) bool {
 	return got.IsForum
 }
 
-// rememberTopic caches the name of a forum topic. Telegram only reveals it in the
-// forum_topic_created / forum_topic_edited service messages, and the label of the
-// topic's workspace needs it.
 func (w *telegramWorker) rememberTopic(msg *message) {
 	name := ""
 	switch {
 	case msg.ForumTopicCreated != nil:
 		name = msg.ForumTopicCreated.Name
 	case msg.ForumTopicEdited != nil:
-		// An edit may only change the icon, which carries no new name.
 		name = msg.ForumTopicEdited.Name
 	}
 	if strings.TrimSpace(name) == "" || msg.MessageThreadID <= 1 {
@@ -728,8 +681,6 @@ func topicKey(chatID, threadID int64) string {
 	return strconv.FormatInt(chatID, 10) + ":" + strconv.FormatInt(threadID, 10)
 }
 
-// workspaceTitle is the display name given to a workspace when the connector
-// registers it: group-怀仁堂, group-怀仁堂-项目讨论, private-@ki_user.
 func (w *telegramWorker) workspaceTitle(chat chat, threadID int64) string {
 	return chatLabel(chat, threadID, w.topicName(chat.ID, threadID))
 }
@@ -774,10 +725,7 @@ func (w *telegramWorker) sessionFor(key string, msg *message, threadID int64) (s
 	var created sessionCreateResult
 	ctx, cancel = context.WithTimeout(w.ctx, 15*time.Second)
 	params := map[string]any{
-		"cwd": cwd,
-		// The workspace keeps this name until the user renames it in the WebUI:
-		// session.create applies workspaceTitle only when the directory is
-		// registered for the first time.
+		"cwd":            cwd,
 		"workspaceTitle": w.workspaceTitle(msg.Chat, threadID),
 		"metadata":       metadata,
 	}
@@ -809,8 +757,6 @@ func (w *telegramWorker) applyModel(sess sessionSnapshot) error {
 	if w.model != "" && w.model != sess.Model && w.model != sess.Provider+"/"+sess.Model {
 		patch["model"] = w.model
 	}
-	// The session keeps its model default while thinking is unset; only a
-	// configured effort is pushed, and only when it differs.
 	if w.thinking != "" && w.thinking != sess.Thinking {
 		patch["thinkingEffort"] = w.thinking
 	}
@@ -968,9 +914,6 @@ func (a *telegramApp) settleOutput(runID string) {
 		a.outputMu.Unlock()
 		return
 	}
-	// Keep accumulated text until it has been persisted with sendMessage.
-	// settle is a fallback terminal signal: message_end normally finalizes first,
-	// while the delayed fallback covers a missing or formerly reordered end.
 	st.settled = true
 	if st.timer != nil {
 		st.timer.Stop()
@@ -1013,8 +956,6 @@ func (a *telegramApp) beginOutput(ev lifecycleEvent, w *telegramWorker) *outputS
 	if st == nil || st.final || st.failed {
 		return st
 	}
-	// A retry starts a fresh assistant attempt under the same run ID. Clear
-	// the previous partial so a transient failure cannot concatenate replies.
 	if st.text != "" {
 		st.text = ""
 		if st.timer != nil {
@@ -1052,11 +993,6 @@ func (a *telegramApp) appendOutput(ev lifecycleEvent, w *telegramWorker) {
 	a.outputMu.Unlock()
 }
 
-// reserveWrite reports whether a preview write may reach Telegram now, and
-// records the attempt when it may. Telegram throttles per-chat writes, so a
-// preview that would land inside the pacing window is skipped: the next delta
-// schedules another tick, and the final write is never paced. Must be called
-// with outputMu held.
 func (st *outputState) reserveWrite(now time.Time) bool {
 	if now.Sub(st.lastWriteAt) < minOutputWriteInterval {
 		return false
@@ -1065,11 +1001,6 @@ func (st *outputState) reserveWrite(now time.Time) bool {
 	return true
 }
 
-// outputDelay returns how long to wait before the pending preview write: never
-// inside the pacing window, and at least outputDebounce after the newest delta.
-// Deferring the timer, instead of writing on every delta, keeps the placeholder
-// rendering without spending the chat's whole write budget on one answer. Must
-// be called with outputMu held.
 func (st *outputState) outputDelay(now time.Time) time.Duration {
 	if wait := minOutputWriteInterval - now.Sub(st.lastWriteAt); wait > outputDebounce {
 		return wait
@@ -1088,8 +1019,6 @@ func (a *telegramApp) finishOutput(ev lifecycleEvent, w *telegramWorker) {
 		st.text = ev.Text
 	}
 	if ev.StopReason == "toolUse" {
-		// message_end is emitted for every assistant turn. A tool call ends one
-		// turn, not the run; the later assistant turn owns the durable reply.
 		if st.timer != nil {
 			st.timer.Stop()
 			st.timer = nil
@@ -1161,14 +1090,8 @@ func (a *telegramApp) failOutput(ev lifecycleEvent, w *telegramWorker, override 
 	ctx, cancel := context.WithTimeout(a.ctx, previewSendTimeout)
 	defer cancel()
 	if private && draftOK && draftID != 0 {
-		// Replace a private draft before sending the durable error message.
-		// The final send also closes the draft on Telegram clients that support
-		// sendMessageDraft.
 		_ = worker.api.sendMessageDraft(ctx, chatID, threadID, draftID, text)
 	}
-	// The notice explaining why there is no answer is a terminal write: it
-	// retries throttling and does not reuse the edit's context, which that edit
-	// may have spent.
 	noticeCtx, noticeCancel := context.WithTimeout(a.ctx, finalSendTimeout)
 	defer noticeCancel()
 	if placeholderID != 0 {
@@ -1232,9 +1155,6 @@ func (a *telegramApp) flushOutput(runID string, final bool) {
 	}
 	a.outputMu.Unlock()
 
-	// Failure handling and preview flushing share one send lock. Without the
-	// second state check, a timer that already captured partial text could send
-	// "pong" after failOutput had replaced the placeholder with an error.
 	st.sendMu.Lock()
 	defer st.sendMu.Unlock()
 	a.outputMu.Lock()
@@ -1246,9 +1166,6 @@ func (a *telegramApp) flushOutput(runID string, final bool) {
 	worker := st.worker
 	chatID, threadID := st.chatID, st.threadID
 	private, draftID, draftOK, placeholderID, statusID := st.private, st.draftID, st.draftOK, st.placeholderID, st.statusID
-	// Every write to the chat is paced, and a preview that arrives inside the
-	// pacing window is skipped; the final write is never skipped, so the answer
-	// reaches Telegram even when it completes inside that window.
 	paced := st.reserveWrite(time.Now())
 	a.outputMu.Unlock()
 	if text == "" {
@@ -1294,9 +1211,6 @@ func (a *telegramApp) flushOutput(runID string, final bool) {
 			}
 		}
 		if placeholderID != 0 {
-			// A rejected preview is dropped on purpose: the next tick or the final
-			// edit carries the newer text, and retrying would deepen a throttle
-			// that is already rejecting this chat's writes.
 			_ = worker.api.editMessage(ctx, chatID, placeholderID, part)
 		}
 		return
@@ -1305,10 +1219,6 @@ func (a *telegramApp) flushOutput(runID string, final bool) {
 	a.scheduleOutputCleanup(runID, st)
 }
 
-// flushFinal writes the completed answer. Every part gets its own budget so a
-// slow or throttled earlier part cannot spend the deadline the remaining parts
-// need, and a write that fails is reported: an answer that does not reach
-// Telegram must not disappear without a trace.
 func (a *telegramApp) flushFinal(w *telegramWorker, chatID, threadID, placeholderID, statusID int64, text string) {
 	for i, part := range splitTelegram(text) {
 		ctx, cancel := context.WithTimeout(a.ctx, finalSendTimeout)
@@ -1326,20 +1236,11 @@ func (a *telegramApp) flushFinal(w *telegramWorker, chatID, threadID, placeholde
 	}
 }
 
-// writeFinalPlaceholder writes the final text into the group's placeholder
-// message. The placeholder *is* the reply, so a failed edit cannot be dropped:
-// throttled edits are retried, and a still-failing edit falls back to a fresh
-// message and removes the stub. The fallback gets its own context because the
-// failed edit may have spent the caller's deadline.
 func (a *telegramApp) writeFinalPlaceholder(ctx context.Context, w *telegramWorker, chatID, threadID, placeholderID int64, part string) {
 	err := w.api.editMessageRetry(ctx, chatID, placeholderID, part)
 	if err == nil {
 		return
 	}
-	// The placeholder may also be gone (removed by hand, or a rejected edit that
-	// Telegram never applied), so a fresh message is the only way to show the
-	// answer. The stub is deleted only after that send succeeded: deleting first
-	// would destroy a partial answer when the fallback also fails.
 	reportError("edit final message: " + err.Error())
 	sendCtx, cancel := context.WithTimeout(a.ctx, finalSendTimeout)
 	defer cancel()
@@ -1362,9 +1263,6 @@ func (a *telegramApp) sendToolStatus(ev lifecycleEvent, w *telegramWorker) {
 	defer st.sendMu.Unlock()
 	a.outputMu.Lock()
 	settled := st.failed || st.settled
-	// Tool status and preview share one per-chat write budget: a run with many
-	// tool calls would otherwise spend the budget the reply's placeholder edit
-	// needs. A skipped status keeps the previous tool row.
 	write := st.reserveWrite(time.Now())
 	a.outputMu.Unlock()
 	if settled || !write {

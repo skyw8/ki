@@ -2,13 +2,6 @@ import { memo } from 'react'
 import { useI18n } from '../../../i18n/index'
 import type { ReadDetails } from './parse'
 
-/**
- * `read` output with line numbers and a truncation footer.
- *
- * `read` returns the raw file text plus an inline `[Showing lines X-Y of Z]`
- * note. The note is replaced by real chrome: the reader can see how much of
- * the file they got and what offset continues it, without reading prose.
- */
 export const ReadBlock = memo(function ReadBlock({ text, details, offset }: {
   text: string
   details: NonNullable<ReadDetails['truncation']>

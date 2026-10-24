@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// RuntimeTrace is a bounded last-known host snapshot, independent of the selected conversation branch.
 type RuntimeTrace struct {
 	Agent   any `json:"agent,omitempty"`
 	Process any `json:"process,omitempty"`
@@ -37,8 +36,6 @@ func runtimeKey(value *RuntimeTrace) string {
 	return ""
 }
 
-// Timing reports unions rather than adding parallel tool durations. Unknown
-// retains model/input/unattributed intervals; it is not guessed resource time.
 type Timing struct {
 	ElapsedMs     int64 `json:"elapsedMs"`
 	ToolMs        int64 `json:"toolMs"`

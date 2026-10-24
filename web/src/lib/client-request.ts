@@ -1,4 +1,3 @@
-/** Correlate optimistic UI with accepted and persisted messages, never text. */
 export function clientRequestId(): string {
   const bytes = new Uint8Array(16)
   crypto.getRandomValues(bytes)

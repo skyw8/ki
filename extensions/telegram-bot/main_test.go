@@ -12,14 +12,11 @@ import (
 	"time"
 )
 
-// telegramCall is one recorded Bot API request.
 type telegramCall struct {
 	method string
 	params map[string]any
 }
 
-// fakeTelegram records the connector's requests and answers request number N
-// with reply(method, N)'s raw Bot API body.
 func fakeTelegram(t *testing.T, reply func(method string, ordinal int) string) (*httptest.Server, func() []telegramCall) {
 	t.Helper()
 	var mu sync.Mutex
@@ -44,7 +41,6 @@ func fakeTelegram(t *testing.T, reply func(method string, ordinal int) string) (
 	}
 }
 
-// groupOutput builds a connector whose final reply owns a group placeholder.
 func groupOutput(t *testing.T, server *httptest.Server) (*telegramApp, *telegramWorker, lifecycleEvent, *outputState) {
 	t.Helper()
 	app := &telegramApp{ctx: context.Background(), outputs: map[string]*outputState{}, workers: map[string]*telegramWorker{}}
@@ -64,7 +60,6 @@ func groupOutput(t *testing.T, server *httptest.Server) (*telegramApp, *telegram
 func TestMentionsBotUsesTelegramEntities(t *testing.T) {
 	me := user{ID: 42, Username: "ki_bot"}
 	text := "你好 😀 @Ki_Bot 请处理"
-	// Telegram offsets count UTF-16 code units: 你好(2) + space(1) + 😀(2) + space(1).
 	mention := entity{Type: "mention", Offset: 6, Length: 7}
 	if !mentionsBot(text, []entity{mention}, me) {
 		t.Fatal("expected mention to match")
@@ -357,8 +352,6 @@ func TestSessionThreadMergesOrdinaryGroupReplies(t *testing.T) {
 		botTopics, forum bool
 		want             int64
 	}{
-		// Telegram creates a thread for every reply, but only a forum's topics are
-		// conversations of their own.
 		{"reply thread in an ordinary group", group, 145, false, false, 0},
 		{"forum topic", forum, 145, false, true, 145},
 		{"general topic", forum, 1, false, true, 0},
@@ -417,8 +410,6 @@ func TestRepliesToBotCountsAsAddressed(t *testing.T) {
 }
 
 func TestGeneralTopicThreadIsNotSent(t *testing.T) {
-	// Telegram answers message_thread_id=1 with "message thread not found": the
-	// General topic is addressed by omitting the field.
 	if _, ok := sendMessageParams(-100, 1, "hi")["message_thread_id"]; ok {
 		t.Fatal("thread 1 must be omitted")
 	}
@@ -451,12 +442,10 @@ func TestTopicNamesAreCachedForWorkspaceLabels(t *testing.T) {
 	if got := worker.workspaceTitle(created.Chat, 145); got != "group-怀仁堂-项目讨论" {
 		t.Fatalf("workspace title = %q", got)
 	}
-	// An icon-only rename carries no name and must keep the cached one.
 	worker.rememberTopic(&message{MessageThreadID: 145, Chat: created.Chat, ForumTopicEdited: &forumTopic{}})
 	if got := worker.topicName(-1004449407453, 145); got != "项目讨论" {
 		t.Fatalf("topic name after icon edit = %q", got)
 	}
-	// A topic-less message must not invent an entry.
 	worker.rememberTopic(&message{Chat: created.Chat, ForumTopicCreated: &forumTopic{Name: "General"}})
 	if got := worker.topicName(-1004449407453, 0); got != "" {
 		t.Fatalf("general topic name = %q", got)
@@ -466,15 +455,12 @@ func TestTopicNamesAreCachedForWorkspaceLabels(t *testing.T) {
 func TestFinalEditRetriesThrottlingAndIgnoresPacing(t *testing.T) {
 	server, calls := fakeTelegram(t, func(method string, ordinal int) string {
 		if method == "editMessageText" && ordinal == 1 {
-			// Throttle answer without retry_after: the retry only depends on the
-			// 429 code, and waiting a real second would only slow the test down.
 			return `{"ok":false,"error_code":429,"description":"Too Many Requests: retry later"}`
 		}
 		return `{"ok":true,"result":{"message_id":7}}`
 	})
 	app, worker, ev, st := groupOutput(t, server)
 	st.placeholderID = 99
-	// A preview write just went out; the final answer must not be paced out.
 	st.reserveWrite(time.Now())
 	app.finishOutput(ev, worker)
 
@@ -493,7 +479,6 @@ func TestFinalEditRetriesThrottlingAndIgnoresPacing(t *testing.T) {
 func TestFailedFinalEditFallsBackToFreshMessage(t *testing.T) {
 	server, calls := fakeTelegram(t, func(method string, _ int) string {
 		if method == "editMessageText" {
-			// A 4xx is not retried; the answer still has to reach the chat.
 			return `{"ok":false,"error_code":400,"description":"message to edit not found"}`
 		}
 		return `{"ok":true,"result":{"message_id":7}}`

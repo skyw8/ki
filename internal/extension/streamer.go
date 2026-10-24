@@ -122,10 +122,6 @@ func applyBeforeProvider(
 	return live, "", nil
 }
 
-// applyProviderMutations copies interceptor-returned Model/Provider/tools onto
-// the live request. Messages stay the original (unredacted) slice unless the
-// interceptor actually changed them: the view strips image Data, and writing
-// that view back would drop attachments before Live.Stream.
 func applyProviderMutations(live *loop.Request, view, next ProviderRequest) {
 	live.Provider = next.Provider
 	live.Model = next.Model
@@ -184,8 +180,6 @@ func (d *headerDoer) Do(req *http.Request) (*http.Response, error) {
 			if secretHTTPHeader(k) {
 				continue
 			}
-			// Empty value is delete: Header.Set("",) would leave a present
-			// empty header instead of removing the name.
 			if v == "" {
 				req.Header.Del(k)
 				continue

@@ -9,8 +9,6 @@ import (
 )
 
 func TestBuiltinGPTStandardPricing(t *testing.T) {
-	// Snapshot of OpenAI Standard pricing verified on 2026-10-08. Explicit
-	// rates catch accidental use of Batch/Flex/Fast prices or lost cache fees.
 	cases := []struct {
 		id         string
 		base, long CostRates
@@ -41,8 +39,6 @@ func TestBuiltinGPTStandardPricing(t *testing.T) {
 				t.Fatalf("cost = %+v, want %+v", model.Cost, want)
 			}
 			for _, input := range []int{272000, 272001} {
-				// Cached input is part of the threshold too; normalization
-				// must not turn a long-context request into a short one.
 				u := &types.Usage{Input: input, Output: 1000, CacheRead: 200000, CacheWrite: 1000}
 				CalculateCost(model, u)
 				rates := tc.base

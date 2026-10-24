@@ -1,18 +1,5 @@
 import { expect, type Page } from '@playwright/test'
 
-// Workspaces start collapsed, so a session row does not exist in the DOM until
-// its group is open. Tests that only care about the session (transcript, tools,
-// settings) use these helpers instead of depending on the default state; the
-// default itself is asserted in sidebar-expand.spec.ts.
-//
-// Why click the toggles rather than expand every group through app state: the
-// toggle is the user's own path, so a helper that goes through it fails the same
-// way a user would if the row became unreachable.
-
-// openSidebar makes the workspace list usable on a compact layout. The toggle is
-// mounted by the conversation shell, not by the auth bootstrap, so it can appear
-// a beat after `main`; retrying avoids a click on a node that a re-render
-// detached (which surfaces as "waiting for mobile-nav-toggle" for 30s).
 async function openSidebar(page: Page): Promise<void> {
   const nav = page.getByTestId('mobile-nav-toggle')
   for (let attempt = 0; attempt < 40; attempt++) {
@@ -21,7 +8,6 @@ async function openSidebar(page: Page): Promise<void> {
     try {
       await nav.click({ timeout: 2_000 })
     } catch {
-      // The shell re-rendered between the lookup and the click; look again.
     }
   }
   throw new Error('mobile sidebar did not open')
@@ -30,17 +16,8 @@ async function openSidebar(page: Page): Promise<void> {
 export async function expandWorkspaces(page: Page): Promise<void> {
   await expect(page.locator('main.main')).toBeVisible()
   await openSidebar(page)
-  // The session list arrives with the sidebar's first refresh, so "zero
-  // collapsed toggles" means either "all expanded" or "nothing rendered yet".
-  // Wait for the list itself rather than for a workspace group: a server with
-  // no workspaces never renders one, and returning on an empty DOM leaves every
-  // later session-row assertion waiting for a row that a still-collapsed group
-  // never renders (this is the flake that failed four CI specs at once).
   await expect(page.getByTestId('session-list')).toHaveAttribute('data-ready', 'true')
   const collapsed = page.locator('.ws-toggle[aria-expanded="false"]')
-  // Bounded: each click removes one collapsed toggle, so this terminates even
-  // if a group appears late. The bound only guards against a toggle that
-  // ignores its click.
   for (let guard = 0; guard < 64; guard++) {
     const count = await collapsed.count()
     if (!count) return
@@ -50,8 +27,6 @@ export async function expandWorkspaces(page: Page): Promise<void> {
   throw new Error('workspace toggles stayed collapsed after repeated clicks')
 }
 
-// openSessionRow opens the sidebar row for `title` (or the first row when no
-// title is given) after making the row reachable.
 export async function openSessionRow(page: Page, title?: string): Promise<void> {
   await expandWorkspaces(page)
   const rows = page.getByTestId('session-row')

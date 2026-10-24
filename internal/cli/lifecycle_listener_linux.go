@@ -11,13 +11,6 @@ import (
 	"strings"
 )
 
-// listenerPID finds the process listening on addr by matching the socket inode
-// in /proc/net/tcp{,6} against the open file descriptors under /proc.
-//
-// Why this exists: server.json written by a build without the pid field has no
-// other way to identify its daemon. Without it, the first `ki stop` after an
-// upgrade could only explain the problem instead of fixing it, and stale
-// `KI_HOME=/tmp/...` daemons would keep ports open forever.
 func listenerPID(addr string) int {
 	host, portText, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -35,7 +28,6 @@ func listenerPID(addr string) int {
 		}
 		for _, line := range strings.Split(string(raw), "\n")[1:] {
 			fields := strings.Fields(line)
-			// sl local_address rem_address st ... inode is field 9.
 			if len(fields) < 10 || fields[3] != "0A" {
 				continue
 			}
@@ -49,8 +41,6 @@ func listenerPID(addr string) int {
 	if len(inodes) == 0 {
 		return 0
 	}
-	// A wildcard listener is reachable through loopback, and dialAddress has
-	// already rewritten it to 127.0.0.1, so no extra host filtering is needed.
 	_ = host
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
@@ -80,7 +70,6 @@ func listenerPID(addr string) int {
 	return 0
 }
 
-// splitProcAddr decodes the "0100007F:4D4C" form used by /proc/net/tcp.
 func splitProcAddr(field string) (host string, port int, ok bool) {
 	parts := strings.Split(field, ":")
 	if len(parts) != 2 {
@@ -94,7 +83,5 @@ func splitProcAddr(field string) (host string, port int, ok bool) {
 	if err != nil {
 		return "", 0, false
 	}
-	// /proc stores the address in network byte order per 32-bit word, which
-	// for 127.0.0.1 reads as 0100007F.
 	return net.IPv4(raw[3], raw[2], raw[1], raw[0]).String(), int(p), true
 }

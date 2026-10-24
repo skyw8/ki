@@ -3,15 +3,6 @@ import { useI18n } from '../../../i18n/index'
 import { globDetails, grepDetails } from './parse'
 import { formatCount } from './format'
 
-/**
- * Structured renderers for the file/search tools.
- *
- * The model-facing text is a compact listing; every renderer here reads the
- * structured details so paths stay clickable rows instead of a `<pre>` blob.
- * When details are missing (a session from before the field existed), the
- * caller falls back to the text.
- */
-
 export const GrepHits = memo(function GrepHits({ details, onOpenFile }: {
   details: NonNullable<ReturnType<typeof grepDetails>>
   onOpenFile?: (path: string) => void

@@ -124,8 +124,6 @@ func (t execCommandTool) ExecuteWithProgress(ctx context.Context, args map[strin
 	if err != nil {
 		return support.Error(err.Error())
 	}
-	// Clamp before multiplying: the schema is not sufficient to stop untrusted
-	// oversized integers from wrapping a duration.
 	yield := max(250, min(30000, support.IntArg(args, "yield_time_ms", 10000)))
 	snapshot, err := t.processes.Interact(ctx, id, "", time.Duration(yield)*time.Millisecond, support.IntArg(args, "max_output_tokens", 10000), processEmit(emit))
 	return processResult(snapshot, err)

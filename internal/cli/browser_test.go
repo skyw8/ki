@@ -23,7 +23,6 @@ func TestBrowserURL(t *testing.T) {
 			if got := browserURL(tc.addr, ""); got != tc.want {
 				t.Fatalf("URL without token = %q, want %q", got, tc.want)
 			}
-			// Include delimiters so the token cannot inject fragment fields.
 			token := "secret+/=&?# %你好"
 			got := browserURL(tc.addr, token)
 			u, err := url.Parse(got)

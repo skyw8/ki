@@ -22,8 +22,6 @@ type readTool struct {
 	ops  ReadOperations
 }
 
-// ReadOperations is replaceable so Read can target a remote or virtual
-// filesystem without changing its model-visible contract.
 type ReadOperations interface {
 	Stat(context.Context, string) (os.FileInfo, error)
 	ReadFile(context.Context, string) ([]byte, error)
@@ -109,8 +107,6 @@ func (t readTool) Parameters() map[string]any {
 	}
 }
 
-// Validate checks the model-supplied arguments against the tool schema before
-// any execution (pi validateToolArguments; tool.Validator).
 func (t readTool) Validate(args map[string]any) error {
 	return support.ValidateArgs(t.Parameters(), t.Name(), args)
 }
@@ -151,8 +147,6 @@ func (t readTool) Execute(ctx context.Context, args map[string]any) toolapi.Resu
 	}
 	if mime := imageMIME(data); mime != "" {
 		if !t.rich {
-			// The execution guard matters for stale calls from a previous model
-			// turn: schema hiding alone cannot prevent replayed rich Read args.
 			return support.Error("image files are unavailable for the selected text-only model")
 		}
 		processed, outMIME, details, err := resizeImageForModel(data, mime)

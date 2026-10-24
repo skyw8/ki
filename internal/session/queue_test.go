@@ -62,9 +62,6 @@ func TestQueuePreservesOrigin(t *testing.T) {
 	}
 }
 
-// A person waiting on a reply must never sit behind a system turn: the
-// completion notification was enqueued first, but the human turn is served
-// first, and system turns keep their own FIFO order.
 func TestDequeueServesHumanTurnFirst(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := EnqueueSystem(dir, []types.Content{{Type: "text", Text: "notification"}}, "agent:a-1"); err != nil {
@@ -106,9 +103,6 @@ func TestDequeueKeepsSystemFIFOWithoutHumanTurn(t *testing.T) {
 	}
 }
 
-// An empty lane comes from a queue written before lanes existed. It must read
-// as system: the real human turn is still served first, and the legacy item
-// keeps its FIFO position among system turns.
 func TestDequeueTreatsLegacyItemAsSystem(t *testing.T) {
 	dir := t.TempDir()
 	legacy := QueuedItem{ID: "legacy", Content: []types.Content{{Type: "text", Text: "legacy"}}}
@@ -132,8 +126,6 @@ func TestDequeueTreatsLegacyItemAsSystem(t *testing.T) {
 	}
 }
 
-// A retry must rejoin its own lane: the human turn keeps outranking the system
-// item that was requeued after a failed dispatch.
 func TestEnqueueFrontRestoresIntoItsLane(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := EnqueueSystem(dir, []types.Content{{Type: "text", Text: "system"}}, "agent:a"); err != nil {

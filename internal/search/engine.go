@@ -22,8 +22,6 @@ import (
 )
 
 const (
-	// DefaultTimeout matches Claude Code's normal ripgrep timeout. Callers can
-	// still cancel earlier through the context supplied to Grep or Glob.
 	DefaultTimeout = 20 * time.Second
 	maxRGOutput    = 20 * 1024 * 1024
 	maxRGStderr    = 1 * 1024 * 1024
@@ -31,18 +29,14 @@ const (
 )
 
 var (
-	// ErrAborted indicates that a search was canceled before completion.
 	ErrAborted = errors.New("search aborted")
-	// ErrTimeout indicates that a search exceeded its configured timeout.
 	ErrTimeout = errors.New("search timed out")
 )
 
-// Engine runs embedded ripgrep searches.
 type Engine struct {
 	Timeout time.Duration
 }
 
-// GrepRequest describes a ripgrep content search.
 type GrepRequest struct {
 	Pattern       string
 	Root          string
@@ -61,21 +55,17 @@ type GrepRequest struct {
 	IncludeHidden bool
 }
 
-// Match is one ripgrep match event.
 type Match struct {
 	Path       string
 	LineNumber int
 	Text       string
 }
 
-// Count is the number of matches in one file.
 type Count struct {
 	Path  string
 	Count int
 }
 
-// GrepResult contains raw search results. Formatting and pagination belong to
-// the model-facing Grep tool, not to the process runner.
 type GrepResult struct {
 	Matches    []Match
 	Files      []string
@@ -84,7 +74,6 @@ type GrepResult struct {
 	TotalMatch int
 }
 
-// GlobRequest describes a file-name search.
 type GlobRequest struct {
 	Pattern       string
 	Root          string
@@ -94,14 +83,11 @@ type GlobRequest struct {
 	SortModified  bool
 }
 
-// GlobResult contains absolute paths returned by ripgrep.
 type GlobResult struct {
 	Files     []string
 	Truncated bool
 }
 
-// Grep runs ripgrep in JSON mode so paths and line contents do not need to be
-// parsed from the ambiguous "path:line:text" human output format.
 func (e Engine) Grep(ctx context.Context, req GrepRequest) (GrepResult, error) {
 	root, err := cleanExistingPath(req.Root)
 	if err != nil {
@@ -174,8 +160,6 @@ func (e Engine) Grep(ctx context.Context, req GrepRequest) (GrepResult, error) {
 		return lineBuffer.feed(chunk, consume)
 	})
 	if err != nil {
-		// Keep data already parsed before a timeout. ripgrep may have produced
-		// useful matches even though the traversal did not finish.
 		if !errors.Is(err, ErrTimeout) || (len(result.Matches) == 0 && len(result.Files) == 0) {
 			return GrepResult{}, err
 		}
@@ -282,8 +266,6 @@ func grepArgs(req GrepRequest, root string, jsonOutput bool) []string {
 	return append(args, "--", root)
 }
 
-// Glob lists files with ripgrep's --files traversal. NUL delimiters keep paths
-// containing newlines unambiguous.
 func (e Engine) Glob(ctx context.Context, req GlobRequest) (GlobResult, error) {
 	root, err := cleanExistingPath(req.Root)
 	if err != nil {
@@ -305,8 +287,6 @@ func (e Engine) Glob(ctx context.Context, req GlobRequest) (GlobResult, error) {
 	if req.NoIgnore {
 		args = append(args, "--glob", req.Pattern)
 	} else {
-		// An explicit ripgrep --glob whitelist overrides ignore files. Filter
-		// the already ignored file list instead when respect-ignore is enabled.
 		matcher, err = globmatch.Compile(filepath.ToSlash(req.Pattern), '/')
 		if err != nil {
 			return GlobResult{}, fmt.Errorf("invalid glob pattern: %w", err)
@@ -321,9 +301,6 @@ func (e Engine) Glob(ctx context.Context, req GlobRequest) (GlobResult, error) {
 	if req.IncludeHidden {
 		args = append(args, "--hidden")
 	}
-	// Run from root and search "." so ripgrep discovers repository ignore
-	// files. Passing the same directory as an explicit absolute operand causes
-	// ripgrep to bypass those rules even when --no-ignore is absent.
 	args = append(args, "--", ".")
 
 	limit := max(req.MaxResults, 0)
@@ -448,8 +425,6 @@ func (e Engine) run(ctx context.Context, dir string, args []string, consume chun
 	if err == nil || ctx.Err() != nil || (!strings.Contains(message, "eagain") && !strings.Contains(message, "resource temporarily unavailable")) {
 		return result, err
 	}
-	// Large repositories can make ripgrep's parallel workers hit EAGAIN. A
-	// serial retry is preferable to turning a valid search into a hard error.
 	retryArgs := append([]string{"-j", "1"}, args...)
 	return e.runOnce(ctx, dir, retryArgs, consume)
 }
@@ -493,8 +468,6 @@ func (e Engine) runOnce(ctx context.Context, dir string, args []string, consume 
 	go func() {
 		var b bytes.Buffer
 		_, _ = io.CopyN(&b, stderr, maxRGStderr)
-		// Drain the remainder so a noisy child cannot block on a full stderr
-		// pipe after the diagnostic cap has been reached.
 		_, _ = io.Copy(io.Discard, stderr)
 		stderrDone <- strings.TrimSpace(b.String())
 	}()

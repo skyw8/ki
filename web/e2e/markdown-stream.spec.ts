@@ -4,21 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { openStream } from './stream-fixture'
 import { focusedSessionReader } from './session.ts'
 
-// Each browser test passed alone with its own server and home. Keep that
-// isolation when splitting this file so independent scenarios overlap safely.
 test.describe.configure({ mode: 'parallel' })
-
-/**
- * Streaming render budget.
- *
- * Streamdown re-lexes its whole text into markdown blocks whenever that text
- * changes, and the block cache is off while streaming (every delta is a new
- * text), so a reply used to cost more per delta the longer it got. `streamText.ts`
- * splits the text into a settled prefix (sealed into segments that are parsed
- * once, ever) and a moving tail (parsed while it is short, painted as source
- * while it is long). These tests pin that split, the rendering it drives, and the
- * fact that the text still moves while it streams.
- */
 
 async function sendPrompt(page: Page, text: string) {
   const input = page.getByTestId('composer-input')
@@ -40,8 +26,6 @@ test('offscreen stream blocks keep their source, format on visibility and finish
   expect(await page.evaluate(() => (window as unknown as { promotedPiece: Element }).promotedPiece === document.querySelector('[data-md-block]'))).toBe(true)
   await page.evaluate(() => { (window as unknown as { markdownRoot: Element | null }).markdownRoot = document.querySelector('[data-stream-seq]') })
   const first = root.locator('[data-md-block]').first()
-  // Give the shared queue multiple turns: unseen sealed blocks must not use
-  // those turns while a live tail needs the same main-thread budget.
   await page.waitForTimeout(500)
   await expect(first).toHaveAttribute('data-md-pending', '1')
   await expect(first.locator('[data-md-tail]')).toContainText('Paragraph 0 **formatted-marker**')
@@ -62,11 +46,6 @@ test('keeps the text moving while it streams', async ({ page }) => {
   await expect(page.getByTestId('hero')).toBeVisible()
   await sendPrompt(page, 'e2e-blocks-300')
   await expect(page.getByTestId('chat-scroll')).toBeVisible()
-  // Deltas arrive every few milliseconds. A render limiter that is reset on every
-  // delta is a debounce and never fires, which froze the text for the whole stream
-  // (measured: the bubble jumped from 1.2 KiB to 55 KiB in one step at the end).
-  // Sample inside the page: 120 driver round trips stretch the same 60 samples
-  // far beyond six seconds under parallel load. Keep the cadence and assertions.
   const lengths = await page.evaluate(async () => {
     const lengths = new Set<number>()
     for (let i = 0; i < 60; i++) {
@@ -77,7 +56,6 @@ test('keeps the text moving while it streams', async ({ page }) => {
   })
   const growing = lengths.filter(n => n > 0).sort((a, b) => a - b)
   expect(growing.length, `rendered lengths: ${growing.join(',')}`).toBeGreaterThan(4)
-  // Nothing renders before the first delta, and the last one is the whole text.
   expect(growing.at(-1), 'final length').toBeGreaterThan(30_000)
 })
 
@@ -85,12 +63,6 @@ test('following the tail stays pinned while the newest message grows', async ({ 
   test.setTimeout(60_000)
   await openStream(page, 0)
   await expect(page.getByTestId('chat-scroll')).toBeVisible()
-  // Why: the fake's 200-item stream lasts only ~625ms. Under parallel load,
-  // delayed 50ms timers can collect five samples even with every gap at zero.
-  // Acknowledge each growing prefix before releasing the next, so coverage is
-  // distinct overflowing heights, not scheduler speed. Sample every frame while
-  // awaiting each prefix AND at its checkpoint: eventual landing cannot hide a
-  // drifting/lurching gap. Responsiveness has separate stream/perf budgets.
   const { gaps, heights, failures } = await page.evaluate(async () => {
     const send = (window as unknown as { streamSend: (event: unknown) => void }).streamSend
     const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
@@ -137,8 +109,6 @@ test('following the tail stays pinned while the newest message grows', async ({ 
 
 test('stopping generation retains already visible text and its mounted root', async ({ page }) => {
   await page.goto('/')
-  // Multiple browser projects share this invocation's server. Reopen this
-  // stopped session, not another project's identically scripted stream.
   const prompt = `e2e-blocks-400 stop-${randomUUID()}`
   await sendPrompt(page, prompt)
   await expect(page.getByTestId('assistant-message')).toContainText('Paragraph 20')
@@ -171,8 +141,6 @@ test('paragraph-shaped streams parse each block once, not per delta', async ({ p
   await expect(page.getByTestId('hero')).toBeVisible()
   await sendPrompt(page, 'e2e-blocks-400')
   await expect(page.getByTestId('chat-scroll')).toBeVisible()
-  // ~54 KiB of paragraphs. Mid-stream the settled part is already sealed into
-  // segments that are never re-parsed; a long moving block would be painted.
   await expect(page.getByTestId('assistant-message').first()).toContainText('Paragraph 120', { timeout: 60_000 })
   const mid = await page.evaluate(() => {
     const nodes = [...document.querySelectorAll('[data-testid="assistant-message"] .md')] as HTMLElement[]
@@ -180,16 +148,10 @@ test('paragraph-shaped streams parse each block once, not per delta', async ({ p
   })
   console.log(`paragraph pieces mid-stream (longest first): ${mid.slice(0, 8).join(',')} of ${mid.length}`)
   expect(mid.length, 'sealed segments mid-stream').toBeGreaterThan(2)
-  // No piece ever holds the growing whole, so no render re-lexes more than one
-  // sealed chunk plus the open block — that is the whole point of the split.
   expect(Math.max(...mid), `longest piece mid-stream: ${Math.max(...mid)}`).toBeLessThan(12_000)
-  // The whole message lands without replacing the stream's mounted segments.
   await expect(page.getByTestId('assistant-message').first()).toContainText('Paragraph 399', { timeout: 60_000 })
   await expect(page.getByTestId('assistant-message').first().locator('p')).toHaveCount(400)
   await expect(page.locator('[data-md-tail]')).toHaveCount(0)
-  // Splitting at blank lines must not duplicate or drop text. The finalize
-  // re-seals the tail into segments, so poll instead of reading one instant:
-  // a single read can land mid-render and see only the settled part.
   await expect.poll(async () => {
     const text = (await page.getByTestId('assistant-message').first().textContent()) ?? ''
     return text.match(/Paragraph \d+:/g)?.length
@@ -201,12 +163,7 @@ test('an unbroken block is painted until it closes, then parsed', async ({ page 
   await openStream(page, 0)
   const lines = Array.from({ length: 200 }, (_, i) => `- item ${i} ${'x'.repeat(110)}\n`)
   const send = (event: unknown) => page.evaluate(event => (window as unknown as { streamSend: (event: unknown) => void }).streamSend(event), event)
-  // Why: the wall-clock fake can finish between the tail-count and tail-text
-  // assertions (the browser may format all 200 items in that round trip).
-  // Hold each source checkpoint until inspected, then explicitly close it.
   await send({ type: 'message_update', runId: 'unbroken', seq: 1, messageStream: 1, message: { role: 'assistant', content: [{ type: 'text', text: lines.slice(0, 61).join('') }] } })
-  // One ~26 KiB list block with no blank line: nothing can settle while it grows,
-  // so past the tail limit it is painted as source rather than re-parsed...
   await expect(page.getByTestId('assistant-message').first()).toContainText('item 60', { timeout: 60_000 })
   await expect(page.locator('[data-md-tail]')).toHaveCount(1)
   await expect(page.locator('[data-md-tail]')).toContainText('- item 60')
@@ -217,7 +174,6 @@ test('an unbroken block is painted until it closes, then parsed', async ({ page 
   await expect(page.locator('[data-md-tail]')).toHaveCount(1)
   await expect(page.locator('[data-md-tail]')).toContainText('- item 199')
   await expect(page.getByTestId('assistant-message').first().locator('li')).toHaveCount(0)
-  // ...and it is parsed once when the run ends.
   await send({ type: 'message_end', runId: 'unbroken', seq: 3, entryId: 'final', message: { role: 'assistant', content: [{ type: 'text', text }] } })
   await expect(page.locator('[data-md-tail]')).toHaveCount(0)
   await expect(page.getByTestId('assistant-message').first().locator('li')).toHaveCount(200)

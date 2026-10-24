@@ -1,14 +1,6 @@
 import { useI18n } from '../../i18n/index'
 import type { Meta } from '../../api/types'
 
-/**
- * Settings → About.
- *
- * The version comes from the server's /v1/meta, not from the SPA bundle: after
- * a port-forward is retargeted, or after `ki restart`, the tab may still hold
- * an older bundle, and "which build is serving me?" is exactly the question
- * this page answers. Everything is read-only.
- */
 export function AboutSettings({ meta }: { meta: Meta | null }) {
   const { t, lang } = useI18n()
   const rows: { label: string; value: string; mono?: boolean }[] = []

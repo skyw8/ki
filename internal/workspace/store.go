@@ -29,7 +29,6 @@ var (
 	errRefuseDelete          = errors.New("refusing to delete workspace root")
 )
 
-// Record is one registered workspace.
 type Record struct {
 	ID         string   `json:"id"`
 	Path       string   `json:"path"`
@@ -45,7 +44,6 @@ type fileData struct {
 	Workspaces   []Record `json:"workspaces"`
 }
 
-// Store is the on-disk workspace registry.
 type Store struct {
 	mu           sync.Mutex
 	home         string
@@ -53,9 +51,6 @@ type Store struct {
 	data         fileData
 }
 
-// Open loads {home}/workspaces.json (missing file is empty). A document
-// written by a newer schema is an error: silently ignoring it would let this
-// build drop fields it cannot see on the next write.
 func Open(home, sessionsRoot string) (*Store, error) {
 	s := &Store{home: home, sessionsRoot: sessionsRoot, data: fileData{Version: version}}
 	b, _, err := state.ReadFile(s.path(), version, nil)
@@ -76,7 +71,6 @@ func Open(home, sessionsRoot string) (*Store, error) {
 
 func (s *Store) path() string { return filepath.Join(s.home, "workspaces.json") }
 
-// List returns registry order.
 func (s *Store) List() []Record {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,7 +79,6 @@ func (s *Store) List() []Record {
 	return out
 }
 
-// Get looks up by id.
 func (s *Store) Get(id string) (Record, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -96,7 +89,6 @@ func (s *Store) Get(id string) (Record, bool) {
 	return s.data.Workspaces[i], true
 }
 
-// Create registers path (mkdir if missing). A duplicate path returns the existing record.
 func (s *Store) Create(path, title string) (Record, bool, error) {
 	norm, err := Normalize(path, s.home)
 	if err != nil {
@@ -146,7 +138,6 @@ func (s *Store) Create(path, title string) (Record, bool, error) {
 	return rec, true, nil
 }
 
-// EnsureTemp creates {home}/workspace/tmp+<timestamp> and registers it.
 func (s *Store) EnsureTemp() (Record, error) {
 	parent := filepath.Join(s.home, "workspace")
 	if err := os.MkdirAll(parent, 0o700); err != nil {
@@ -171,7 +162,6 @@ func (s *Store) EnsureTemp() (Record, error) {
 	return Record{}, errTempWorkspace
 }
 
-// SetTitle updates the display title.
 func (s *Store) SetTitle(id, title string) error {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -188,7 +178,6 @@ func (s *Store) SetTitle(id, title string) error {
 	return s.writeLocked()
 }
 
-// InsertBefore moves id before beforeID (empty beforeID appends).
 func (s *Store) InsertBefore(id, beforeID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -226,7 +215,6 @@ func (s *Store) InsertBefore(id, beforeID string) error {
 	return s.writeLocked()
 }
 
-// InsertSessionBefore moves sid before beforeID within the workspace account.
 func (s *Store) InsertSessionBefore(wsID, sid, beforeID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -254,7 +242,6 @@ func (s *Store) InsertSessionBefore(wsID, sid, beforeID string) error {
 	return s.writeLocked()
 }
 
-// AttachSession prepends sid if not already accounted.
 func (s *Store) AttachSession(wsID, sid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -270,7 +257,6 @@ func (s *Store) AttachSession(wsID, sid string) error {
 	return s.writeLocked()
 }
 
-// DetachSession removes sid from the account.
 func (s *Store) DetachSession(wsID, sid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -291,7 +277,6 @@ func (s *Store) DetachSession(wsID, sid string) error {
 	return s.writeLocked()
 }
 
-// Delete removes the registry row only.
 func (s *Store) Delete(id string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -306,7 +291,6 @@ func (s *Store) Delete(id string) (bool, error) {
 	return true, nil
 }
 
-// Match finds the workspace whose path equals cwd.
 func (s *Store) Match(cwd string) (Record, bool) {
 	norm, err := Normalize(cwd, s.home)
 	if err != nil {
@@ -322,17 +306,12 @@ func (s *Store) Match(cwd string) (Record, bool) {
 	return Record{}, false
 }
 
-// IsTemp reports whether rec lives under {home}/workspace/tmp+.
 func (s *Store) IsTemp(rec Record) bool {
 	root := normalizeForCompare(s.home, filepath.Join(s.home, "workspace"))
 	parent := normalizeForCompare(s.home, filepath.Dir(rec.Path))
 	return SamePath(parent, root) && strings.HasPrefix(filepath.Base(rec.Path), "tmp+")
 }
 
-// normalizeForCompare resolves one side of a path comparison. Why: record paths
-// are stored normalized (EvalSymlinks), while home may arrive unresolved — on
-// macOS /var/folders and on Windows short-name %TEMP% paths — so both sides of
-// an IsTemp check must be resolved with the same rules.
 func normalizeForCompare(home, path string) string {
 	if n, err := Normalize(path, home); err == nil {
 		return n
@@ -340,7 +319,6 @@ func normalizeForCompare(home, path string) string {
 	return path
 }
 
-// Bootstrap registers distinct existing cwds once.
 func (s *Store) Bootstrap(cwds []string) error {
 	s.mu.Lock()
 	if s.data.Bootstrapped {
@@ -372,7 +350,6 @@ func (s *Store) Bootstrap(cwds []string) error {
 	return s.writeLocked()
 }
 
-// SafeToRemoveDir rejects volume roots, user home, KI_HOME, and the sessions root.
 func SafeToRemoveDir(path, home, sessionsRoot string) error {
 	norm, err := Normalize(path, home)
 	if err != nil {
@@ -399,7 +376,6 @@ func SafeToRemoveDir(path, home, sessionsRoot string) error {
 	return nil
 }
 
-// Normalize Abs+Clean, then EvalSymlinks when the path exists.
 func Normalize(path, base string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -418,7 +394,6 @@ func Normalize(path, base string) (string, error) {
 	return path, nil
 }
 
-// SamePath compares normalized paths; case-insensitive on Windows and Darwin.
 func SamePath(a, b string) bool {
 	if a == b {
 		return true
@@ -429,7 +404,6 @@ func SamePath(a, b string) bool {
 	return false
 }
 
-// ErrNotFound is a missing workspace id.
 var ErrNotFound = errors.New("workspace not found")
 
 var errNotFound = ErrNotFound
@@ -443,14 +417,11 @@ func (s *Store) indexLocked(id string) int {
 	return -1
 }
 
-// writeLocked persists the registry atomically and refuses to overwrite a
-// document written by a newer schema.
 func (s *Store) writeLocked() error {
 	s.data.Version = version
 	return state.WriteVersioned(s.path(), version, s.data, 0o600)
 }
 
-// NotFound reports whether err is a missing workspace.
 func NotFound(err error) bool {
 	return errors.Is(err, errNotFound)
 }

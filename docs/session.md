@@ -1,6 +1,6 @@
 # 会话格式
 
-一个 session 一个目录，append-only jsonl 树。包入口见 `internal/session/doc.go`。
+一个 session 一个目录，append-only jsonl 树。
 
 ## 路径
 

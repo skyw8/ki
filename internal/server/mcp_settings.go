@@ -15,7 +15,6 @@ import (
 	"ki/internal/session"
 )
 
-// MCPServerInfo is a credential-free projection of next-occupy configuration.
 type MCPServerInfo struct {
 	Name              string `json:"name"`
 	Source            string `json:"source"`
@@ -54,9 +53,6 @@ func (s *Server) toolSettingsCWD(r *http.Request) (string, int, error) {
 }
 
 func mergeMCPDisabled(previous, requested []string, editable map[string]bool) []string {
-	// A global settings document is edited through workspace-local catalogs.
-	// Replacing the entire list would silently re-enable another workspace's
-	// servers, including servers temporarily absent or disabled in their file.
 	names := make([]string, 0, len(previous)+len(requested))
 	for _, name := range previous {
 		if !editable[name] {
@@ -72,8 +68,6 @@ func (s *Server) resolveMCP(cwd string) (config.MCPSnapshot, error) {
 		return snapshot, err
 	}
 	if !snapshot.FilesPresent && !s.cfg.MCPFromFiles {
-		// Injected configurations are useful to embedders and protocol tests;
-		// an explicitly empty JSON document must still replace this fallback.
 		snapshot.Servers = s.cfg.MCPServers
 		snapshot.Sources = make(map[string]string, len(snapshot.Servers))
 		for name := range snapshot.Servers {
@@ -82,7 +76,6 @@ func (s *Server) resolveMCP(cwd string) (config.MCPSnapshot, error) {
 	}
 	servers := make(map[string]config.MCPServer, len(snapshot.Servers))
 	for name, server := range snapshot.Servers {
-		// A session's program starts in that workspace, never the daemon cwd.
 		if server.Command != "" && server.CWD == "" {
 			server.CWD = cwd
 		}
@@ -107,8 +100,6 @@ func mcpConfigKey(servers map[string]config.MCPServer) string {
 	return fmt.Sprintf("%x", sha256.Sum256(raw))
 }
 
-// acquireMCP pins a frozen configuration through the whole occupy. Idle
-// snapshots may be evicted, but updating settings never closes active clients.
 func (s *Server) acquireMCP(snapshot config.MCPSnapshot, toggle session.Toggle) (*mcpruntime.Manager, func(), error) {
 	servers := allowedMCP(snapshot, toggle)
 	if len(servers) == 0 {
@@ -147,8 +138,6 @@ func (s *Server) acquireMCP(snapshot config.MCPSnapshot, toggle session.Toggle) 
 	s.mcpClock++
 	entry.used, entry.refs = s.mcpClock, entry.refs+1
 	s.mcpMu.Unlock()
-	// SDK close/discovery must not hold the cache lock: either can wait for
-	// peer I/O, while unrelated occupies and read-only settings must progress.
 	if retired != nil {
 		_ = retired.Close()
 	}

@@ -4,8 +4,6 @@ import { loadHistory, requestTitle, userRequests } from '../src/lib/model.ts'
 import type { ChatNode, Entry, IndexEntry } from '../src/api/types.ts'
 import { serverToken } from './global-setup'
 
-// Every case passed standalone; private sessions, routes and contexts keep
-// navigation recovery races independent of the other cases in this file.
 test.describe.configure({ mode: 'parallel' })
 
 async function sendPrompt(page: Page, text: string) {
@@ -42,8 +40,6 @@ test('userRequests walks the active path and drops optimistic duplicates', () =>
 })
 
 test('userRequests covers the whole branch from index rows and keeps a pending prompt', () => {
-  // The conversation loaded only the newest prompt; the two older ones are
-  // body-less index rows (a preview, no message body).
   const index: IndexEntry[] = [
     { type: 'message', id: 'u1', parentId: '', role: 'user', preview: 'first ask' },
     { type: 'message', id: 'a1', parentId: 'u1', role: 'assistant', preview: 'ok' },
@@ -71,17 +67,14 @@ test('userRequests lists human prompts only', () => {
     { type: 'message', id: 'u1', parentId: '', message: { role: 'user', content: [{ type: 'text', text: 'typed here' }] } },
     {
       type: 'message', id: 'u2', parentId: 'u1',
-      // The Agent tool's completion notification: a user turn the runtime wrote.
       message: { role: 'user', origin: 'agent:task-1', content: [{ type: 'text', text: '<task-notification>…' }] },
     },
     {
       type: 'message', id: 'u3', parentId: 'u2',
-      // A subagent's own directive, again runtime-written.
       message: { role: 'user', origin: 'agent', content: [{ type: 'text', text: 'You are a subagent…' }] },
     },
     {
       type: 'message', id: 'u4', parentId: 'u3',
-      // Extension-relayed input is still a person's turn.
       message: { role: 'user', origin: 'extension:telegram-bot', content: [{ type: 'text', text: '[Telegram] hi' }] },
     },
   ]
@@ -159,8 +152,6 @@ for (const mobile of [false, true]) test(`request navigation lands once and trac
     const landingError = (n: number) => page.locator(`[data-item-key="u${n}"]`).evaluate(el => {
       const scroll = el.closest('[data-testid="chat-scroll"]')!
       const offset = el.getBoundingClientRect().top - scroll.getBoundingClientRect().top
-      // A short final turn cannot reach the top; it must be fully visible at
-      // the reachable end and remain selected, not select a later sibling.
       return Math.abs(Math.min(offset, scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop))
     })
     for (const n of [8, 31, 0, 40]) {
@@ -169,7 +160,6 @@ for (const mobile of [false, true]) test(`request navigation lands once and trac
       expect(await offset(n)).toBeGreaterThanOrEqual(-2)
       if (mobile) await toggle.click()
       await expect(page.locator(`[data-request-id="u${n}"]`)).toHaveAttribute('aria-selected', 'true')
-      // A late measurement/selection must not steal the landing after one tap.
       await page.waitForTimeout(250)
       expect(await landingError(n)).toBeLessThanOrEqual(2)
     }
@@ -207,8 +197,6 @@ async function navigationFixture(page: Page) {
   }
   const navigator = async () => {
     if (!await page.getByTestId("request-nav-panel").isVisible()) {
-      // Keyboard activation avoids a hover-open issuing an extra request before
-      // the test can observe the first failed metadata response.
       await page.getByTestId("request-nav-toggle").focus()
       await page.keyboard.press("Enter")
     }
@@ -300,7 +288,6 @@ for (const delayedPage of [false, true]) test(`resume refreshes the full request
   await expect(page.getByTestId("assistant-message").last()).toContainText("Recovery response 3")
   await expect.poll(() => indexCalls).toBeGreaterThan(indexesBeforeResume)
   if (delayedPage) {
-    // Recovery must retire the old request even while its remote reply hangs.
     await expect(page.getByTestId("cancel-jump")).toHaveCount(0)
     releaseOld()
   }

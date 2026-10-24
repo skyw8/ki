@@ -26,9 +26,6 @@ type magpieReasoningLevel struct {
 	Effort string `json:"effort"`
 }
 
-// ParseMagpieModels converts Magpie's OpenAI-compatible catalog into Ki model
-// seeds. Unknown fields are intentionally ignored because Magpie adds metadata
-// independently of the subset Ki currently understands.
 func ParseMagpieModels(raw []byte) ([]ModelSeed, error) {
 	var list magpieModelList
 	if err := json.Unmarshal(raw, &list); err != nil {
@@ -58,14 +55,9 @@ func ParseMagpieModels(raw []byte) ([]ModelSeed, error) {
 			name = source.ID
 		}
 		seed := ModelSeed{
-			// Magpie IDs include namespaces and route-group names. Keep them
-			// byte-for-byte: this is the identifier sent back to its gateway.
 			ID: source.ID, Name: name, ContextWindow: source.ContextWindow,
 			MaxTokens: source.MaxOutputTokens, Input: []string{"text"}, Cost: nil,
 		}
-		// Magpie omits limits when an upstream does not publish them. Ki's
-		// generic seed fallback is intentionally optimistic, so use smaller
-		// import-time estimates here and let users tune them in model settings.
 		if seed.ContextWindow <= 0 {
 			seed.ContextWindow = 32_000
 		}
@@ -87,8 +79,6 @@ func ParseMagpieModels(raw []byte) ([]ModelSeed, error) {
 		reasoning := len(mappedLevels) > 0 && (source.Reasoning == nil || *source.Reasoning)
 		seed.Reasoning = &reasoning
 		if reasoning {
-			// Ki treats unmapped basic levels as supported. Explicit nil entries
-			// prevent sparse Magpie metadata from advertising levels it did not list.
 			levelMap := make(map[string]*string, len(thinkingLevels))
 			for _, level := range thinkingLevels {
 				levelMap[level] = nil
@@ -115,9 +105,6 @@ func magpieSupportsImage(raw json.RawMessage) bool {
 	if json.Unmarshal(raw, &object) != nil {
 		return false
 	}
-	// Magpie's current model catalog uses the OpenRouter-style
-	// {"input":["text","image"],"output":["text"]} shape. Older catalog
-	// producers may use a flat modality map, so accept that too.
 	for _, key := range []string{"input", "input_modalities"} {
 		if input, ok := object[key]; ok {
 			return modalityValueHasImage(input)

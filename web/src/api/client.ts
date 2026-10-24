@@ -21,8 +21,6 @@ export class Client {
     if (this.token) h.Authorization = `Bearer ${this.token}`
     if (json) h['Content-Type'] = 'application/json'
     if (this.csrfCookieName && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase())) {
-      // Cookies ignore ports: read only this server's advertised cookie, never
-      // a fixed name or another localhost port-forward's matching prefix.
       const prefix = `${this.csrfCookieName}=`
       const csrf = document.cookie.split(';').map(item => item.trim()).find(item => item.startsWith(prefix))?.slice(prefix.length)
       if (csrf) h['X-Ki-CSRF'] = decodeURIComponent(csrf)
@@ -32,7 +30,7 @@ export class Client {
 
   private async json<T>(path: string, init?: RequestInit): Promise<T> {
     const method = (init?.method ?? 'GET').toString().toUpperCase()
-    const res = await fetch(path, { // same-origin relative; works behind a port-forward
+    const res = await fetch(path, {
       ...init,
       cache: 'no-store',
       credentials: 'same-origin',
@@ -70,9 +68,6 @@ export class Client {
     await this.json('/v1/auth/logout', { method: 'POST' })
   }
 
-  // The sidebar refetches this list often. The server tags the rendered rows
-  // with an ETag, so an unchanged list comes back as 304 and the caller can
-  // skip a redundant state update.
   async list(etag?: string): Promise<{ sessions: SessionInfo[]; etag: string | null; notModified: boolean }> {
     const headers: Record<string, string> = { ...(this.headers(false, 'GET') as Record<string, string>) }
     if (etag) headers['If-None-Match'] = etag
@@ -246,8 +241,6 @@ export class Client {
     return this.json('/v1/extensions', { method: 'PATCH', body: JSON.stringify({ disabled }) })
   }
 
-  // Installing only starts a download; the response is 202 and the settings
-  // page follows progress through the extensions invalidation.
   availableExtensions(): Promise<import('./types').AvailableExtensions> {
     return this.json('/v1/extensions/available')
   }
@@ -256,8 +249,6 @@ export class Client {
     return this.json(`/v1/extensions/${encodeURIComponent(name)}/install`, { method: 'POST' })
   }
 
-  // The editor sends a source name, never a path: the server resolves both
-  // writable files from KI_HOME and the selected workspace.
   promptAppend(workspaceId?: string | null): Promise<import('./types').PromptAppendView> {
     const q = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
     return this.json(`/v1/prompt/append${q}`)
@@ -290,8 +281,6 @@ export class Client {
     return this.json(`/v1/sessions/${id}/extension-ui`, { method: 'POST', body: JSON.stringify(body) })
   }
 
-  // Web Push: the config supplies the VAPID public key the browser subscribes
-  // with; the subscription registry is what the server pushes to.
   pushConfig(): Promise<{ enabled: boolean; publicKey: string }> {
     return this.json('/v1/push/config')
   }
@@ -373,12 +362,6 @@ export class Client {
 	return this.json(`/v1/providers/${encodeURIComponent(id)}/models?model=${encodeURIComponent(model)}`, { method: 'DELETE' })
   }
 
-	/**
-	 * lastEventId resumes a run's stream: the server's `id:` line is
-	 * `<runId>:<seq>`, and sending the last one back replays only what came
-	 * after it. A cursor from another run is ignored server-side, so a stale
-	 * value is safe.
-	 */
   async *events(id: string, signal?: AbortSignal, lastEventId?: string, through?: string): AsyncGenerator<LoopEvent> {
     const decode = messageDecoder()
     const query = through ? `?through=${encodeURIComponent(through)}` : ''
@@ -389,12 +372,6 @@ export class Client {
     }
   }
 
-  /**
-   * The single push stream for this tab: invalidate hints plus session
-   * sideband events tagged with `sessionId`. It replaces the one-notification-
-   * stream-per-running-session the UI used to hold, which ran into the browser's
-   * per-origin connection cap over plaintext HTTP/1.1.
-   */
   async *serverEvents(signal?: AbortSignal): AsyncGenerator<PushEvent> {
     yield* this.sse<PushEvent>('/v1/events', signal)
   }

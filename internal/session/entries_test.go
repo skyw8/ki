@@ -24,8 +24,6 @@ func seedTailSession(t *testing.T, turns int) (*Session, string) {
 	return s, s.Dir
 }
 
-// seedBigSession writes a transcript larger than one tail read, so the tests
-// exercise a real window instead of a file that fits in the first read.
 func seedBigSession(t *testing.T) (*Session, string) {
 	t.Helper()
 	s, dir := seedTailSession(t, 400)
@@ -64,14 +62,12 @@ func TestTailEntriesWindow(t *testing.T) {
 	if len(all) != total {
 		t.Fatalf("all = %d want %d", len(all), total)
 	}
-	// The window must be the tail of the file, in the same order.
 	offset := len(all) - len(entries)
 	for i, e := range entries {
 		if e.ID != all[offset+i].ID {
 			t.Fatalf("window[%d] = %s want %s", i, e.ID, all[offset+i].ID)
 		}
 	}
-	// A request for more than the file holds returns everything.
 	entries, complete, err = TailEntries(dir, total*2)
 	if err != nil {
 		t.Fatal(err)
@@ -81,8 +77,6 @@ func TestTailEntriesWindow(t *testing.T) {
 	}
 }
 
-// The cache must follow an append-only file: entries written after a read are
-// picked up without re-reading what was already decoded.
 func TestTailEntriesFollowsAppend(t *testing.T) {
 	s, dir := seedTailSession(t, 30)
 	defer func() { _ = s.Close() }()
@@ -108,7 +102,6 @@ func TestTailEntriesFollowsAppend(t *testing.T) {
 			t.Fatalf("cached prefix changed at %d", i)
 		}
 	}
-	// A tail read served after the full read keeps the same trailing order.
 	tail, _, err := TailEntries(dir, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -120,15 +113,12 @@ func TestTailEntriesFollowsAppend(t *testing.T) {
 	}
 }
 
-// A file that shrank or was replaced must be read from scratch rather than
-// extended from an offset that no longer describes it.
 func TestTailEntriesResetsRewrittenFile(t *testing.T) {
 	s, dir := seedTailSession(t, 20)
 	defer func() { _ = s.Close() }()
 	if _, err := AllEntries(dir); err != nil {
 		t.Fatal(err)
 	}
-	// Replace the transcript with one short session: fewer bytes, same path.
 	fresh, err := Create(filepath.Dir(filepath.Dir(dir)), t.TempDir(), "provider", "model")
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +144,6 @@ func TestTailEntriesResetsRewrittenFile(t *testing.T) {
 	}
 }
 
-// A half-written trailing line is left for the next read instead of failing.
 func TestTailEntriesSkipsTornLine(t *testing.T) {
 	s, dir := seedTailSession(t, 3)
 	defer func() { _ = s.Close() }()
@@ -176,8 +165,6 @@ func TestTailEntriesSkipsTornLine(t *testing.T) {
 	}
 }
 
-// The window of a leaf that sits on an older branch grows until the chain is
-// covered, instead of returning a window the branch does not reach.
 func TestLeafTailCoversOlderBranch(t *testing.T) {
 	s, dir := seedBigSession(t)
 	defer func() { _ = s.Close() }()
@@ -185,7 +172,6 @@ func TestLeafTailCoversOlderBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Re-point the leaf at an early entry, as an edit/regenerate would.
 	old := all[2].ID
 	if err := s.SetLeaf(old); err != nil {
 		t.Fatal(err)
@@ -248,8 +234,6 @@ func TestOpenFromMatchesOpen(t *testing.T) {
 	if len(from.Entries()) != len(opened.Entries()) {
 		t.Fatalf("entries %d/%d", len(from.Entries()), len(opened.Entries()))
 	}
-	// The handle must not alias the shared cache: appending goes to the file and
-	// to its own slice only.
 	before := len(entries)
 	if _, err := from.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "after OpenFrom"}}}); err != nil {
 		t.Fatal(err)
@@ -271,12 +255,6 @@ func readFile(t *testing.T, path string) []byte {
 	return b
 }
 
-// TestReadConfigWaitsForTheFileGate pins that ReadConfig shares the session file
-// gate with writeConfig. Windows refuses an open that lands inside the temp-file
-// + rename replace ("The process cannot access the file because it is being used
-// by another process"), so the gate — not luck — is what makes a config read
-// safe while a run appends. Without it the Windows e2e run saw spurious 404s
-// from POST /v1/sessions/{id}/prompt.
 func TestReadConfigWaitsForTheFileGate(t *testing.T) {
 	s, err := Create(t.TempDir(), t.TempDir(), "provider", "model")
 	if err != nil {

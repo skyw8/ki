@@ -8,9 +8,6 @@ import (
 	"ki/internal/types"
 )
 
-// ContextEstimate is a view-only UTF-8/4 estimate of retained textual content.
-// A nil field is unknown/not applicable; a present zero is a known empty block.
-// Provider usage, encoding transformations and opaque content are not estimated.
 type ContextEstimate struct {
 	System  *int `json:"system,omitempty"`
 	Tools   *int `json:"tools,omitempty"`
@@ -64,8 +61,6 @@ func messageContextTokens(message *types.Message) int {
 
 func estimateContext(e Entry) *ContextEstimate {
 	if e.Truncated || e.PromptUnchanged {
-		// Public shortened bodies cannot recover their original size. Preserve
-		// an earlier estimate rather than pricing a preview as complete content.
 		return e.ContextEstimate
 	}
 	switch e.Type {
@@ -96,7 +91,6 @@ func withContextEstimate(e Entry) Entry {
 	return e
 }
 
-// Retain only small digests/counts, never decoded tool bodies, during a scan.
 type contextEstimateCache map[[32]byte]int
 
 func (cache contextEstimateCache) tools(raw json.RawMessage) (int, error) {

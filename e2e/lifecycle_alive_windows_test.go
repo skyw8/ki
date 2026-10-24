@@ -4,8 +4,6 @@ package e2e
 
 import "syscall"
 
-// pidAlive opens the process and reads its exit code; Windows keeps the pid
-// reserved until the process object is gone.
 func pidAlive(pid int) bool {
 	if pid <= 0 {
 		return false

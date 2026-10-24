@@ -10,7 +10,6 @@ var (
 	errNoSubscriptions = errors.New("lifecycle capability requires at least one valid subscription")
 )
 
-// Lifecycle event names (Host catalog).
 const (
 	EventBeforeAgentStart      = "before_agent_start"
 	EventContext               = "context"
@@ -40,16 +39,13 @@ const (
 	EventRunAborted            = "run_aborted"
 )
 
-// Mode is a subscription mode.
 type Mode string
 
-// Subscription delivery modes.
 const (
 	ModeSync  Mode = "sync"
 	ModeAsync Mode = "async"
 )
 
-// Subscription is one initialize subscription.
 type Subscription struct {
 	Event string `json:"event"`
 	Mode  string `json:"mode"`
@@ -94,7 +90,6 @@ func catalogPolicy(event string) (eventPolicy, bool) {
 	return p, ok
 }
 
-// AcceptSubscription validates one subscription. Returns false if it must be dropped.
 func AcceptSubscription(sub Subscription) error {
 	p, ok := catalogPolicy(sub.Event)
 	if !ok {
@@ -115,7 +110,6 @@ func AcceptSubscription(sub Subscription) error {
 	return nil
 }
 
-// CompactCtx is the sync lifecycle context snapshot (no full history).
 type CompactCtx struct {
 	Idle    bool   `json:"idle"`
 	Model   string `json:"model,omitempty"`

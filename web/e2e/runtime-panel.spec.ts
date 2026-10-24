@@ -24,8 +24,6 @@ for (const width of [390, 1280]) {
   await expect(page.getByTestId('info-outline')).toContainText('Processes')
   await expect(panel).toContainText('等待消息')
   await expect(panel).toContainText('wait_agent')
-  // Runtime links reopen the owner's conversation; Info restores from its GET
-  // snapshot rather than depending on another stream frame.
   const ownerNavigation = page.waitForRequest(request => request.method() === 'GET' && request.url().includes(`/v1/sessions/${fixture.id}`) && !request.url().includes('/events'))
   await panel.locator('.runtime-command').click()
   await ownerNavigation
@@ -45,7 +43,6 @@ for (const width of [390, 1280]) {
   const agentRequest = page.waitForRequest(request => request.url().endsWith('/v1/sessions/child-session/abort'))
   await interrupt.click()
   expect((await agentRequest).postDataJSON()).toMatchObject({ scope: 'turn' })
-  // An older stream frame cannot regress a new generation or settled process.
   await send({ type: 'process_updated', process: { ...process, revision: 6, status: 'exited', exit_code: 0 } })
   await send({ type: 'process_updated', process })
   await expect(panel.getByTestId('runtime-process')).toHaveCount(0)
@@ -58,7 +55,6 @@ for (const width of [390, 1280]) {
   await expect(panel.locator('[data-task="/root/review"] .runtime-phase')).toHaveText('失败')
   await send({ type: 'agent_updated', agent: { ...agent, revision: 10, phase: 'settled', status: 'killed' } })
   await expect(panel.locator('[data-task="/root/review"] .runtime-phase')).toHaveText('已中断')
-  // A nested snapshot belongs under its canonical parent, even if delivered later.
   const nested = { ...agent, task_name: '/root/review/check', session_id: 'nested-session', revision: 1, status: 'completed', phase: 'settled' }
   await send({ type: 'agent_updated', agent: nested })
   await send({ type: 'agent_updated', agent: { task_name: '/root', session_id: fixture.id, status: 'running', phase: 'executing', generation: 1 } })
@@ -69,7 +65,6 @@ for (const width of [390, 1280]) {
   const leafX = await nameX('/root/review/check')
   expect(childX - rootX).toBeCloseTo(24, 0)
   expect(leafX - childX).toBeCloseTo(24, 0)
-  // Plain rows keep metadata aligned with names instead of a second card inset.
   for (const task of ['/root', '/root/review', '/root/review/check']) {
    const item = panel.locator(`[data-task="${task}"]`)
    await expect(item).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')

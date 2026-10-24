@@ -162,9 +162,6 @@ func TestSessionViewPerf(t *testing.T) {
 		"huge ?entry", len(entryBody), entryDur.Round(time.Millisecond), "full body",
 	)
 
-	// Why: the tail must not grow with the transcript. A 1 MB jsonl answers in
-	// a few hundred KB even before the index is asked for, and the index fetch
-	// stays bounded by the older per-response cap.
 	if int64(len(raw)) >= jsonl.Size() {
 		t.Fatalf("tail GET %dB >= jsonl %dB", len(raw), jsonl.Size())
 	}

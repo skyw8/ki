@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-// MCPServer selects one official MCP transport and its raw-tool policy.
 type MCPServer struct {
 	Command               string            `json:"command,omitempty"`
 	Args                  []string          `json:"args,omitempty"`
@@ -29,7 +28,6 @@ type MCPServer struct {
 	DisabledTools         []string          `json:"disabledTools,omitempty"`
 }
 
-// MarshalJSON preserves the difference between an omitted allowlist and [].
 func (s MCPServer) MarshalJSON() ([]byte, error) {
 	type plain MCPServer
 	var enabledTools *[]string
@@ -58,13 +56,11 @@ func (s MCPServer) ToolTimeout() time.Duration {
 	return time.Duration(s.ToolTimeoutSeconds) * time.Second
 }
 
-// AllowsTool compares protocol names, never the normalized model-facing alias.
 func (s MCPServer) AllowsTool(name string) bool {
 	return (s.EnabledTools == nil || slices.Contains(s.EnabledTools, name)) &&
 		!slices.Contains(s.DisabledTools, name)
 }
 
-// ValidateMCPServers rejects ambiguous transports and malformed local settings.
 func ValidateMCPServers(servers map[string]MCPServer) error {
 	names := make([]string, 0, len(servers))
 	for name := range servers {

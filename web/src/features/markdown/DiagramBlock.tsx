@@ -16,9 +16,6 @@ function nextRenderId(): string {
 }
 
 function retargetSvgId(svg: string, renderId: string): string {
-  // Why: mermaid.render(id) creates #id / #d{id} and later removeExistingElements
-  // looks them up with getElementById. If the SVG we inject keeps that id,
-  // the next render yanks it out of our tree and React throws removeChild.
   return svg.replaceAll(renderId, `${renderId}v`)
 }
 
@@ -51,7 +48,6 @@ function saveBlob(blob: Blob, filename: string) {
   document.body.appendChild(a)
   a.click()
   a.remove()
-  // Revoke on the next frame so the browser has started the download.
   window.setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
@@ -61,11 +57,6 @@ async function fetchBlob(url: string): Promise<Blob> {
   return res.blob()
 }
 
-// Mermaid only hands us the SVG string, so a PNG download has to go through an
-// offscreen canvas. Mermaid emits `width="100%"` on the root, which gives an
-// <img> no intrinsic size, so dimensions are read from the viewBox and pinned
-// back onto the SVG before rasterizing. The 2x scale keeps exported text crisp
-// on HiDPI screens.
 function svgDimensions(svg: string): { width: number; height: number } | null {
   const vb = /viewBox="([^"]+)"/.exec(svg)
   if (vb) {
@@ -116,10 +107,6 @@ async function svgToPngBlob(svg: string): Promise<Blob> {
   }
 }
 
-// DiagramZoom is the click-to-enlarge viewer. It re-renders the same diagram as
-// an <img> (mermaid's SVG blob or the plantuml server URL) so it never duplicates
-// the block's DOM ids; the stage scrolls and the canvas is sized explicitly so
-// auto margins can center it even when zoomed past the viewport.
 const MIN_SCALE = 0.1
 const MAX_SCALE = 16
 
@@ -149,8 +136,6 @@ function DiagramZoom({
   const [scale, setScale] = useState(1)
   const [fitTick, setFitTick] = useState(0)
 
-  // Mermaid gives us markup, not a URL. Pin a pixel size first: `width="100%"`
-  // has no intrinsic size, so an <img> would otherwise collapse.
   useEffect(() => {
     if (kind !== 'mermaid' || !svg) {
       setPinned('')
@@ -170,7 +155,6 @@ function DiagramZoom({
     setScale(Number.isFinite(fit) && fit > 0 ? fit : 1)
   }, [dims, fitTick])
 
-  // React attaches onWheel passively, so the zoom listener is registered natively.
   useEffect(() => {
     const stage = stageRef.current
     if (!stage) return
@@ -182,7 +166,6 @@ function DiagramZoom({
     return () => stage.removeEventListener('wheel', onWheel)
   }, [])
 
-  // Drag anywhere on the stage to pan; scrolling keeps the canvas centered.
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
     const stage = stageRef.current
@@ -244,10 +227,6 @@ function DiagramZoom({
   )
 }
 
-// DiagramBlock renders both mermaid and plantuml fences with one shell: a top
-// bar (diagram/source toggle, then download PNG/SVG, then copy), a centered
-// diagram body, and the source fallback. Mermaid renders in-browser; plantuml
-// delegates to a PlantUML server (see plantuml.ts).
 export default function DiagramBlock({
   kind,
   code,
@@ -271,8 +250,6 @@ export default function DiagramBlock({
   const copiedTimer = useRef(0)
   const prefix = kind === 'mermaid' ? 'md-mermaid' : 'md-plantuml'
   const source = code.replace(/\n$/, '')
-  // Why: rendering is expensive and incomplete fences throw or flicker on
-  // every token. Keep the source visible until the fence closes.
   const showDiagram = view === 'diagram' && !isIncomplete
   const ready = kind === 'mermaid' ? !!svg : !!imgUrl
   const showSvg = showDiagram && kind === 'mermaid' && !error && !!svg
@@ -307,9 +284,6 @@ export default function DiagramBlock({
           suppressErrorRendering: true,
           theme: dark ? 'dark' : 'neutral',
           fontFamily: getComputedStyle(document.body).fontFamily,
-          // Why: HTML labels are emitted as <foreignObject>, and Chromium taints
-          // a canvas that draws an SVG containing one, which breaks PNG export.
-          // SVG <text> labels keep the download path working.
           htmlLabels: false,
         })
         const { svg: next } = await api.render(renderId, source)
@@ -462,8 +436,6 @@ export default function DiagramBlock({
           </div>
         ) : null}
         {kind === 'mermaid' ? (
-          // Mermaid owns this node's innerHTML; keep it separate from the
-          // plantuml <img> below so React never fights direct DOM writes.
           <div
             className="md-diagram-svg"
             data-testid={`${prefix}-svg`}

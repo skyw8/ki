@@ -1,6 +1,5 @@
 import type { LoopEvent, Message } from './types'
 
-/** Decode before batching React updates: skipping a patch would lose its base. */
 export function messageDecoder() {
   let message: Message | undefined
   let seq: number | undefined
@@ -10,8 +9,6 @@ export function messageDecoder() {
     if (event.type !== 'message_update') return event
     if (event.messagePatch) {
       if (!message || seq !== event.messagePatch.baseSeq || stream !== event.messageStream) throw new Error('Message patch base mismatch')
-      // Copy only the changed path. The previous yielded snapshot may still be
-      // rendered or waiting in App's frame batch and must remain immutable.
       let next: unknown = message
       for (const change of event.messagePatch.changes) {
         const apply = (node: unknown, depth: number): unknown => {
@@ -31,8 +28,6 @@ export function messageDecoder() {
           if (change.op === 'remove' && depth === change.path.length - 1 && !Array.isArray(node)) delete copy[key]
           else {
             const value = apply(Object.hasOwn(copy, key) ? copy[key] : undefined, depth + 1)
-            // Tool arguments may legitimately contain __proto__/constructor.
-            // Define a data property instead of invoking Object's setter.
             Object.defineProperty(copy, key, { value, enumerable: true, configurable: true, writable: true })
           }
           return copy

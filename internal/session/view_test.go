@@ -45,10 +45,6 @@ func TestBoundedPagesRemainContiguous(t *testing.T) {
 	}
 }
 
-// A tail-first read is a byte window of the file, not the whole branch.
-// Reaching the window's oldest entry does not mean the branch root is loaded,
-// so HasMore must stay true or the reader can never page back to the entries
-// before the window (the "beginning of conversation" the UI then shows).
 func TestIncompleteTailWindowKeepsHasMore(t *testing.T) {
 	entries := []Entry{}
 	parent := ""
@@ -58,7 +54,6 @@ func TestIncompleteTailWindowKeepsHasMore(t *testing.T) {
 		entries = append(entries, e)
 		parent = e.ID
 	}
-	// The window is exactly the page limit, so tailStart == 0.
 	window := entries[10:]
 	tail := BuildTail(window, parent, 30, false)
 	if !tail.HasMore {
@@ -67,7 +62,6 @@ func TestIncompleteTailWindowKeepsHasMore(t *testing.T) {
 	if tail.OldestID != window[0].ID {
 		t.Fatalf("cursor %q, want %q", tail.OldestID, window[0].ID)
 	}
-	// The same window read to the branch root genuinely has nothing older.
 	if BuildTail(entries, parent, 40, true).HasMore {
 		t.Fatal("a complete window of the same length must not report older history")
 	}
@@ -91,8 +85,6 @@ func TestOversizedViewEntryKeepsUTF8AndHydrationIdentity(t *testing.T) {
 	}
 }
 
-// indexOf must keep durationMs for tool results that finished in under a
-// millisecond: the WebUI reads the index to render per-tool timing.
 func TestIndexEntryKeepsZeroDuration(t *testing.T) {
 	ix := indexOf(Entry{Type: "message", ID: "e1", Message: &types.Message{
 		Role:       "toolResult",

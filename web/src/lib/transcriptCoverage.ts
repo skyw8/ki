@@ -1,11 +1,5 @@
 import type { CompactTurn, Entry } from '../api/types'
 
-/**
- * Body quality is independent of immutable entry identity and branch coverage.
- * Slim bodies contain every node with shortened payloads. Projection helpers
- * can omit entire assistant/tool nodes, so a contiguous helper ID chain is not
- * evidence that expanding a fold needs no fetch.
- */
 export type BodyKind = 'index' | 'helper' | 'slim' | 'full'
 
 export function bodyKind(entry: Entry): BodyKind {
@@ -24,7 +18,6 @@ export function bodyRank(entry: Entry): number {
   return { index: 0, helper: 1, slim: 2, full: 3 }[bodyKind(entry)]
 }
 
-/** Coverage requires canonical parent edges and every node-bearing body. */
 export function coveredTurns(entries: Entry[], turns: CompactTurn[]): string[] {
   const byId = new Map(entries.map(e => [e.id, e]))
   return turns.filter(turn => {

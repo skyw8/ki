@@ -8,8 +8,6 @@ import (
 	"sync"
 )
 
-// ServeWorker serves one session over bounded, bidirectional NDJSON. Stdout is
-// exclusively protocol traffic; the CLI entry must not print startup banners.
 func ServeWorker(ctx context.Context, r io.Reader, w io.Writer, limits Limits) error {
 	limits = limits.normalized()
 	var mu sync.Mutex
@@ -52,8 +50,6 @@ func ServeWorker(ctx context.Context, r io.Reader, w io.Writer, limits Limits) e
 				},
 				Notify: func(ctx context.Context, n Notification) error { return transport.call(ctx, "notify", n, nil) },
 			}
-			// The request observer ends on yield, but the cell context must live
-			// until terminal completion, cancellation, or worker disconnection.
 			runCtx, cancel := context.WithCancel(transport.ctx)
 			stop := context.AfterFunc(ctx, cancel)
 			resp, err := s.Execute(runCtx, req, cb)
@@ -87,7 +83,6 @@ func ServeWorker(ctx context.Context, r io.Reader, w io.Writer, limits Limits) e
 			if c == nil {
 				return struct{}{}, nil
 			}
-			// Cancellation must not contend with an observer that is unwinding.
 			c.stop()
 			select {
 			case <-c.done:
@@ -99,8 +94,6 @@ func ServeWorker(ctx context.Context, r io.Reader, w io.Writer, limits Limits) e
 			return nil, errors.New("unknown code mode worker operation")
 		}
 	}
-	// Publish the peer before starting its reader: callbacks may arrive as soon
-	// as the parent sends init/execute on an already-buffered stream.
 	ready := make(chan struct{})
 	transport = newPeer(ctx, r, w, limits.MaxFrameBytes, func(ctx context.Context, op string, data json.RawMessage) (any, error) {
 		<-ready

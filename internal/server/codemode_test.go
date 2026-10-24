@@ -24,8 +24,6 @@ import (
 	"ki/internal/types"
 )
 
-// The worker reuses this test executable rather than building another binary.
-// Exit directly: testing's PASS banner would corrupt the NDJSON transport.
 func TestCodeModeServerWorkerProcess(t *testing.T) {
 	if len(os.Args) == 0 || os.Args[len(os.Args)-1] != codemode.WorkerArg {
 		return
@@ -252,8 +250,6 @@ func TestCodeModeServerSchemaExposure(t *testing.T) {
 				slices.Contains(names, "edit") == tc.nativePatch {
 				t.Fatalf("wrong editor fallback: %v", names)
 			}
-			// Settings and occupied runs must expose the same editor capability,
-			// even when a catalog model retains native flags after an API switch.
 			w := httptest.NewRecorder()
 			srv.getTools(w, httptest.NewRequest(http.MethodGet, "/v1/tools?sessionId="+id, nil))
 			if w.Code != http.StatusOK {
@@ -373,8 +369,6 @@ try { await tools.read({file_path:"disabled.txt"}); text("escaped"); } catch (e)
 func TestCodeModeServerReadFiltersFullIntermediateAndPersistsNestedAudit(t *testing.T) {
 	cwd := t.TempDir()
 	path := filepath.Join(cwd, "large.txt")
-	// The marker is past both the 16KiB and 800-line preview boundaries, but
-	// inside read's own 2000-line/50KB page. JS must not filter the audit copy.
 	body := strings.Repeat("skip:01234567890123456789\n", 1100) + "MATCH:full-intermediate\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -527,8 +521,6 @@ func TestCodeModeServerCommittedStoreSurvivesOccupiesAndCancellationDrainsCells(
 			}
 		case "cancel":
 			if len(results) == 0 {
-				// A mailbox observation provides a real pending parent callback.
-				// Cancellation, not elapsed time, must drain it and close the cell.
 				return codeModeExecCall(req, "outer-cancel", `store("discarded","uncommitted");const pending=tools.wait_agent({timeout_ms:60000});text("pending");yield_control();await pending;notify("late-notification");`), nil
 			}
 			ready <- results[0]
@@ -578,8 +570,6 @@ func TestCodeModeServerCommittedStoreSurvivesOccupiesAndCancellationDrainsCells(
 	case <-ctx.Done():
 		t.Fatalf("cell did not yield: %v", ctx.Err())
 	}
-	// Wait for actual parent-side dispatch, rather than assuming the returned
-	// yield means that every worker callback has already crossed the IPC link.
 	wake := context.AfterFunc(ctx, func() {
 		st.mu.Lock()
 		st.wait.Broadcast()

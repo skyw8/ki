@@ -67,8 +67,6 @@ func boundedDimensions(w, h, limit int) (int, int) {
 	return max(1, w*limit/h), limit
 }
 
-// Nearest-neighbor resampling keeps this path dependency-light and works for every
-// image format decoded by the standard image interfaces.
 func scaleImage(src image.Image, width, height int) *image.NRGBA {
 	dst := image.NewNRGBA(image.Rect(0, 0, width, height))
 	b := src.Bounds()
@@ -101,7 +99,6 @@ func encodeModelImage(img image.Image, transparent bool) ([]byte, string, error)
 		err := png.Encode(&out, img)
 		return out.Bytes(), "image/png", err
 	}
-	// Flatten any non-opaque color implementation before JPEG encoding.
 	flat := image.NewRGBA(img.Bounds())
 	for y := img.Bounds().Min.Y; y < img.Bounds().Max.Y; y++ {
 		for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {

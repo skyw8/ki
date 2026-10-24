@@ -175,8 +175,6 @@ test('B2 golden helper snapshot is idempotent and does not prove body coverage',
     expect(bodyKind(state.entries.find(e => e.id === 'call')!)).toBe('helper')
     expect(folds(state)).toEqual(original)
   }
-  // Even an explicitly completed HTTP operation cannot turn a helper body
-  // into coverage. A full/slim node-bearing body must replace the helper.
   state = hydrateTurn(state, 'u', state.entries)
   expect(state.loadedTurnIds).not.toContain('u')
   expect(folds(state)).toEqual(original)
@@ -228,8 +226,6 @@ test('B4 distinct canonical same-text inputs survive history, reconciliation, ev
   expect(reconcileUserNodes(state.nodes).map(n => n.id)).toEqual(['first', 'second'])
   expect(userRequests(state.allEntries, state.leafId, state.nodes).map(r => r.id)).toEqual(['first', 'second'])
   expect(sessionStats(state).turns).toBe(2)
-  // Correlation is only an acknowledgement rule for transient rows, never a
-  // license to remove two different durable IDs with identical metadata.
   const copies = state.nodes.map(n => n.kind === 'user' ? { ...n, clientRequestId: 'same' } : n)
   expect(reconcileUserNodes(copies).map(n => n.id)).toEqual(['first', 'second'])
 })

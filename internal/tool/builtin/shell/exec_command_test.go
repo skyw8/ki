@@ -113,10 +113,6 @@ func TestExecYieldAndIncrementalOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := testExec(t, nil)
-	// Why: Windows Git Bash may not emit its first byte within 250ms. Gate
-	// the second chunk on an explicit release rather than a sleep, and wait for
-	// first-chunk readiness without consuming the process output cursor. Also
-	// gate the first chunk so the empty initial yield is covered on every host.
 	quotedExecutable := "'" + strings.ReplaceAll(filepath.ToSlash(executable), "'", "'\"'\"'") + "'"
 	command := fmt.Sprintf("%s -test.run=^TestExecIncrementalOutputHelper$ -- ki-incremental-output-helper %s", quotedExecutable, listener.Addr())
 	first := execSnapshot(t, tool.Execute(t.Context(), map[string]any{"cmd": command, "yield_time_ms": 250}))
@@ -139,8 +135,6 @@ func TestExecYieldAndIncrementalOutput(t *testing.T) {
 		}
 		return false
 	}, "first output chunk was not drained")
-	// The gate keeps the helper live. Read the now-ready chunk without the
-	// empty write_stdin tool's five-second wait on that same gate.
 	first, err = tool.processes.Interact(t.Context(), first.SessionID, "", 0, 10000, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +183,6 @@ func TestExecIncrementalOutputHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = gate.Close()
-	// Keep the raw spool limited to the fixture bytes, without test-runner PASS.
 	os.Exit(0)
 }
 
@@ -288,8 +281,6 @@ func TestShellObservationArgumentValidation(t *testing.T) {
 			t.Fatalf("write accepted invalid observation argument: %+v", args)
 		}
 	}
-	// Zero yields clamp to the responsiveness floor; large positive yields
-	// clamp before duration conversion, instead of being rejected globally.
 	for _, yield := range []any{0, int64(1 << 62)} {
 		if err := execTool.Validate(map[string]any{"cmd": "true", "yield_time_ms": yield}); err != nil {
 			t.Fatalf("valid clamped yield rejected: %v", err)
@@ -314,10 +305,6 @@ func TestTTYGitDiffDoesNotEnterInheritedPager(t *testing.T) {
 		"tty": true, "login": false, "yield_time_ms": 250,
 	})
 	snapshot := execSnapshot(t, result)
-	// Git Bash/ConPTY startup and the Git subprocesses can exceed the 250ms
-	// observation budget on Windows before emitting anything. A running handle
-	// is not proof of a parked pager: observe completion with a bounded deadline,
-	// preserving every output chunk so a launched pager cannot go unnoticed.
 	if !result.IsError && snapshot.Status == "running" {
 		initialOutput := snapshot.Output
 		result = (writeStdinTool{processes: tool.processes}).Execute(t.Context(), map[string]any{

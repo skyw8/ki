@@ -109,8 +109,6 @@ func TestHTTPPaginationSchemaAndFrozenCatalog(t *testing.T) {
 		t.Fatalf("execute: %+v", res)
 	}
 	s.AddTool(&sdk.Tool{Name: "first", Description: "changed", InputSchema: json.RawMessage(`{"type":"object"}`)}, fn)
-	// Wait for observable catalog notification, not a fixed delay. Calling the
-	// iterator remains cheap after each cached acquisition.
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	tick := time.NewTicker(time.Millisecond)
@@ -176,9 +174,6 @@ func TestCallCancellationAndShutdownJoin(t *testing.T) {
 	if result := <-done; !result.IsError {
 		t.Fatal("closed manager did not cancel owned call")
 	}
-	// Local callbacks must retire before closure can finish. SDK cancellation
-	// delivery is best effort; release the remote fixture explicitly rather
-	// than claiming the host can force remote code to stop.
 	releaseOnce.Do(func() { close(release) })
 	if err := <-closed; err != nil {
 		t.Fatal(err)
@@ -327,8 +322,6 @@ func TestSDKStdioRoundTripAndConcurrentClose(t *testing.T) {
 	t.Setenv("MCP_SECRET", "excluded")
 	m := NewManager(map[string]config.MCPServer{"stdio": {
 		Command: executable, Args: []string{"-test.run=^TestSDKStdioHelper$"},
-		// The race runtime's default post-exit sleep is not MCP shutdown work
-		// and would trigger the real transport's process termination deadline.
 		Env: map[string]string{"KI_MCP_STDIO_FIXTURE": "1", "MCP_EXPLICIT": "set", "GORACE": "atexit_sleep_ms=0"}, EnvVars: []string{"MCP_ALLOW"},
 	}})
 	tools := toolsFor(t, m)

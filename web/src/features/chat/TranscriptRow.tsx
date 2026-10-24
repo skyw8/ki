@@ -2,7 +2,6 @@ import { createContext, useCallback, useContext, useLayoutEffect, useRef, type D
 
 const MeasureRow = createContext<() => void>(() => {})
 
-/** Local expansions must join the same pre-paint measurement as body updates. */
 export function useTranscriptRowMeasurement(changes: DependencyList) {
   const measure = useContext(MeasureRow)
   useLayoutEffect(measure, [measure, ...changes])

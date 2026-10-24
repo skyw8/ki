@@ -45,7 +45,6 @@ test('buffered SSE yields real tasks, preserves UTF-8/CRLF and patch order', asy
   for (let i = 2; i <= count; i++) events.push({ type: 'message_update', seq: i, messageStream: 1, messagePatch: { baseSeq: i - 1, changes: [{ path: ['content', '0', 'text'], op: 'append', value: '中🙂' }] } })
   const bytes = new TextEncoder().encode(events.map(ev => `: ping\r\nevent: message_update\r\ndata: ${JSON.stringify(ev)}\r\n\r\n`).join(''))
   const body = new ReadableStream<Uint8Array>({ start(controller) {
-    // Deliberately split a multibyte character and CRLF across reads.
     for (let i = 0; i < 127; i++) controller.enqueue(bytes.slice(i, i + 1))
     controller.enqueue(bytes.slice(127))
     controller.close()
@@ -72,8 +71,6 @@ test('malformed SSE fails before a later cursor and releases the reader', async 
 })
 
 test('a read-idle guard ends a stalled stream so the caller reconnects', async () => {
-  // A half-open socket: one frame arrives, then the peer is silently gone. No
-  // `document` in this runtime, so the guard treats the tab as visible.
   const body = new ReadableStream<Uint8Array>({
     start(c) { c.enqueue(new TextEncoder().encode('event: ready\ndata: {"type":"ready"}\n\n')) },
   })
@@ -103,8 +100,6 @@ test('the read-idle guard leaves a hidden tab alone until it is visible again', 
     })()
     await new Promise(resolve => setTimeout(resolve, 300))
     expect(seen).toHaveLength(1)
-    // Hidden: a frozen page cannot read a reopened stream, so the guard must
-    // not churn reconnects while it waits.
     expect(ended).toBe(false)
     hidden = false
     for (const notify of [...listeners]) notify()
@@ -131,15 +126,11 @@ test('a short background reconnects on resume, long before the idle timeout', as
     const seen: LoopEvent[] = []
     let ended = false
     const run = (async () => {
-      // A timeout far longer than the test: only the resume check can end it.
       for await (const event of readSSE<LoopEvent>(body, undefined, { idleTimeoutMs: 100_000 })) seen.push(event)
       ended = true
     })()
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(seen).toHaveLength(1)
-    // Background for ~2s: a resumed page that read nothing while hidden is
-    // stale (the OS drops the socket) even though the idle timeout is minutes
-    // away, so it must reconnect rather than wait.
     hidden = true
     for (const notify of [...listeners]) notify()
     await new Promise(resolve => setTimeout(resolve, 2100))
@@ -157,7 +148,7 @@ test('canceling an idle stream releases a pending read immediately', async () =>
   let canceled = false
   const body = new ReadableStream<Uint8Array>({ cancel() { canceled = true } })
   const controller = new AbortController()
-  const result = (async () => { for await (const _ of readSSE<LoopEvent>(body, controller.signal)) { /* no input */ } })()
+  const result = (async () => { for await (const _ of readSSE<LoopEvent>(body, controller.signal)) {} })()
   controller.abort()
   await expect(result).rejects.toThrow()
   expect(canceled).toBe(true)

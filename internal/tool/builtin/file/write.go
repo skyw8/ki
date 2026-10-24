@@ -76,8 +76,6 @@ func (t writeTool) Execute(ctx context.Context, args map[string]any) toolapi.Res
 	if err := ctx.Err(); err != nil {
 		return support.Error("Write aborted")
 	}
-	// Capture existence before the write so the WebUI can tell an overwrite
-	// from a new file without re-reading the path.
 	_, statErr := os.Stat(abs)
 	created := errors.Is(statErr, os.ErrNotExist)
 	if err := os.WriteFile(abs, []byte(content), 0o600); err != nil {
@@ -99,8 +97,6 @@ type writeDetails struct {
 	Created bool   `json:"created"`
 }
 
-// lineCount matches the editor convention: a trailing newline does not start
-// another line.
 func lineCount(text string) int {
 	if text == "" {
 		return 0

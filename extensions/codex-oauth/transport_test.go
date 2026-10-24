@@ -88,8 +88,6 @@ func TestWebSocketReuseIncrementalAndRouting(t *testing.T) {
 	if h.Get("OpenAI-Beta") != codexclient.WebSocketBeta || h.Get("X-Codex-Routing-Hint") != "model=gpt-6-astra;tier=priority" || handshakes.Load() != 1 {
 		t.Fatal(h, handshakes.Load())
 	}
-	// A tier change requires a new handshake, never incremental reuse on a
-	// socket that was originally routed to a different service tier.
 	delete(body, "service_tier")
 	used, err := streamWebsocket(context.Background(), payload, body, func(object) {}, "request-3")
 	if !used || err != nil {
@@ -318,8 +316,6 @@ func TestHTTPFallbackTurnStateScopeAndCheckpoint(t *testing.T) {
 	if first.Get("X-Codex-Turn-State") != "" || continuation.Get("X-Codex-Turn-State") != "sticky-http" {
 		t.Fatal(first, continuation)
 	}
-	// A credential change during the same logical turn must not send a token
-	// issued to the previous backend/account binding.
 	obj(obj(payload["credential"])["value"])["access"] = "different-access"
 	if err := streamCodex(context.Background(), payload, func(object) {}, "new-auth"); err != nil {
 		t.Fatal(err)

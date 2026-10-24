@@ -158,8 +158,6 @@ func replayable(messages []any) []any {
 				call := obj(v)
 				id := str(call["id"])
 				if id == "" {
-					// Older transcripts persisted empty call IDs. Recover the same
-					// deterministic identity for the call and its following result.
 					id = "call_pi_" + shortHash(fmt.Sprintf("%d:%d:%s", index, ci, str(call["itemId"])))
 					call["id"] = id
 				}
@@ -218,10 +216,6 @@ func reasoningKey(i object) string {
 	return ""
 }
 
-// Filter signatures because gateways that reuse output indexes can attach tool
-// fields to reasoning items; replaying those fields poisons every later turn.
-// Content and status are output-only reasoning fields; strict Responses input
-// validators reject them when the item is replayed.
 func reasoningPayload(i object) object {
 	m := object{}
 	for _, k := range []string{"type", "id", "summary", "encrypted_content", "phase"} {
@@ -298,8 +292,6 @@ func inputItems(m, model object, index int) ([]any, error) {
 			}
 		}
 		if text := textOf(m); text != "" {
-			// Why: status describes a completed output item; Luna's Responses
-			// input validator rejects it when that item is replayed as history.
 			item := object{"type": "message", "role": "assistant", "content": []any{object{"type": "output_text", "text": text, "annotations": []any{}}}}
 			signature := ""
 			for _, v := range list(m["content"]) {
@@ -377,9 +369,6 @@ func buildRequest(payload object) (object, error) {
 		if !ok {
 			return nil, errors.New("Codex Responses context must be an array of objects")
 		}
-		// Why: canonical compaction history is retained unchanged in the
-		// session, but output-only status metadata is not accepted by every
-		// Responses input implementation (including Luna).
 		copy := clone(item).(map[string]any)
 		delete(copy, "status")
 		input = append(input, copy)
@@ -395,8 +384,6 @@ func buildRequest(payload object) (object, error) {
 		return nil, errors.New("Codex request has no input messages")
 	}
 	body := object{"model": get(model, "id", ""), "store": false, "stream": true, "instructions": fallback(request["system"], "You are a helpful assistant."), "input": input, "text": object{"verbosity": "low"}, "include": []any{"reasoning.encrypted_content"}, "tool_choice": "auto", "parallel_tool_calls": true}
-	// A fork replays its source's prefix, so it inherits that source's cache
-	// key; its own session identity still drives headers and stored state.
 	cacheKey := str(fallback(request["cacheKey"], request["sessionId"]))
 	if cacheKey != "" {
 		r := []rune(cacheKey)
@@ -405,8 +392,6 @@ func buildRequest(payload object) (object, error) {
 		}
 		body["prompt_cache_key"] = string(r)
 	}
-	// Combined selector values are client-side presets, not valid API efforts.
-	// Split before testing off so "off fast" never enables reasoning accidentally.
 	effort, fast := thinking.Split(str(request["thinkingEffort"]))
 	if fast {
 		tier := str(model["fastServiceTier"])
@@ -472,8 +457,6 @@ func retainedCompactionItems(input []any) []any {
 	return retained
 }
 
-// Python estimated retention using ASCII-escaped JSON. Preserve that budget for
-// non-ASCII text as well, so the migration cannot retain a larger canonical window.
 func pythonJSONLength(v any) int {
 	s := jsonString(v)
 	s = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(s, `\u003c`, "<"), `\u003e`, ">"), `\u0026`, "&")

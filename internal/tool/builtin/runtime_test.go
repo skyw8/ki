@@ -45,8 +45,6 @@ func (f fakeAgentRuntime) InterruptAgent(context.Context, string, string) (agent
 	return agent.View{}, nil
 }
 
-// A runtime-enabled build exposes the same schemas to every child; admission
-// controls active execution rather than hiding tools by nesting depth.
 func TestAgentToolsAreExposedWhenRuntimeIsAvailable(t *testing.T) {
 	runtime := fakeAgentRuntime{store: agent.NewController()}
 	built := Set{CWD: t.TempDir(), Agent: runtime}.Build(Profile{})

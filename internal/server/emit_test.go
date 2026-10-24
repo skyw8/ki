@@ -17,11 +17,6 @@ import (
 	"ki/internal/types"
 )
 
-// newEmitterForTest builds a funnel over a fresh session. Why: the funnel was
-// split out of runPrompt so its stages can be asserted directly — driving a
-// whole loop.Run just to observe a jsonl shape is what the split removed. hs is
-// the httptest server backing srv, for the stages that reach a subscriber over
-// HTTP (the WebUI push stream).
 func newEmitterForTest(t *testing.T) (*runEmitter, *session.Session, *httptest.Server) {
 	t.Helper()
 	srv, hs := testServer(t)
@@ -39,9 +34,6 @@ func newEmitterForTest(t *testing.T) (*runEmitter, *session.Session, *httptest.S
 	return em, sess, hs
 }
 
-// TestEmitterPersistAndBuffer covers the two stages a request_header goes
-// through: the jsonl entry plus the context meter entry, and the SSE replay
-// buffer that must also carry the synthesized context_usage event.
 func TestEmitterPersistAndBuffer(t *testing.T) {
 	em, sess, _ := newEmitterForTest(t)
 	ev := loop.Event{Type: loop.RequestHeader, System: "sys", Tools: []toolapi.Spec{{Name: "Read"}}}
@@ -77,9 +69,6 @@ func TestEmitterPersistAndBuffer(t *testing.T) {
 	}
 }
 
-// TestEmitterIdempotencyKeyConsumedOnce pins the state that used to live in a
-// captured closure variable: only the first user message_end spends the key,
-// and the message_end event carries the appended entry id.
 func TestEmitterIdempotencyKeyConsumedOnce(t *testing.T) {
 	em, sess, _ := newEmitterForTest(t)
 	em.idempotencyKey = "key-1"
@@ -199,12 +188,6 @@ func TestEmitterContentRewritePreservesProtocolIdentity(t *testing.T) {
 	}
 }
 
-// TestEmitterStampsIdentityOnCallerEvent covers the stage boundary a refactor
-// broke: buffer used to take the event by value, so only the buffered copy got
-// the run id and external metadata while the stages after it — the push
-// completion frame and the extension lifecycle notification — saw an anonymous
-// event. A channel connector drops a lifecycle event without a run id, so the
-// symptom was a bot that stopped replying at all.
 func TestEmitterStampsIdentityOnCallerEvent(t *testing.T) {
 	em, _, hs := newEmitterForTest(t)
 	em.st.external = map[string]string{"connector": "telegram-bot"}
@@ -273,8 +256,6 @@ func TestEmitterPromotesServerCompactionToPrivateCheckpoint(t *testing.T) {
 	if err := em.Emit(ev); err != nil {
 		t.Fatal(err)
 	}
-	// Persisting/buffering must not mutate the loop's in-memory assistant: its
-	// next tool round still needs the item to prune the previous request.
 	if len(message.ResponsesItems) != 2 {
 		t.Fatal("emitter cleared live provider context")
 	}

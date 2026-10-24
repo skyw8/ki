@@ -14,44 +14,28 @@ import (
 	"ki/internal/types"
 )
 
-// MaxQueueItems is the per-session FIFO cap.
 const MaxQueueItems = 100
 
 var (
-	// ErrQueueFull means enqueue was refused because the session already has MaxQueueItems.
-	ErrQueueFull = errors.New("session queue is full")
-	// ErrQueueItemNotFound means TakeQueueID did not match a live item.
+	ErrQueueFull         = errors.New("session queue is full")
 	ErrQueueItemNotFound = errors.New("queue item not found")
-	// Why: completion notifications and queue dispatch can mutate one FIFO
-	// concurrently; serializing the read-modify-write protects items in the
-	// same serve process without adding another API or route.
-	queueGates sync.Map // map[clean session dir]*sync.Mutex
+	queueGates           sync.Map
 )
 
-// QueueLane tells a queued turn apart by who asked for it. Dequeue always
-// serves the human lane first; within a lane the queue stays FIFO.
 type QueueLane string
 
 const (
-	// QueueHumanLane carries turns a person submitted while the session was busy
-	// (POST prompt with delivery=queue).
-	QueueHumanLane QueueLane = "human"
-	// QueueSystemLane carries turns the server generated, such as an agent
-	// completion notification or a message an agent sent its caller. An empty
-	// lane (a queue written before lanes existed) is read as system.
+	QueueHumanLane  QueueLane = "human"
 	QueueSystemLane QueueLane = "system"
 )
 
-// QueuedItem is one turn waiting for the current run to finish.
 type QueuedItem struct {
 	ID              string                    `json:"id"`
 	Content         []types.Content           `json:"content"`
 	Origin          string                    `json:"origin,omitempty"`
 	ClientRequestID string                    `json:"clientRequestId,omitempty"`
 	Completion      *types.CompletionIdentity `json:"completion,omitempty"`
-	// Lane is persisted: a restart must not promote a system turn ahead of a
-	// waiting human one.
-	Lane QueueLane `json:"lane,omitempty"`
+	Lane            QueueLane                 `json:"lane,omitempty"`
 }
 
 func queuePath(dir string) string { return filepath.Join(dir, "queue.json") }
@@ -71,24 +55,19 @@ func queueGate(dir string) *sync.Mutex {
 	return mu
 }
 
-// ExtQueuedItem is one extension-origin turn waiting after user queue.
 type ExtQueuedItem struct {
-	ID             string          `json:"id"`
-	Content        []types.Content `json:"content"`
-	Extension      string          `json:"extension,omitempty"`
-	Kind           string          `json:"kind,omitempty"`
-	CustomType     string          `json:"customType,omitempty"`
-	When           string          `json:"when,omitempty"`
-	IdempotencyKey string          `json:"idempotencyKey,omitempty"`
-	// ContextSequence is the last context-only message that belongs before
-	// this prompt. It prevents later messages from entering this prompt.
+	ID              string            `json:"id"`
+	Content         []types.Content   `json:"content"`
+	Extension       string            `json:"extension,omitempty"`
+	Kind            string            `json:"kind,omitempty"`
+	CustomType      string            `json:"customType,omitempty"`
+	When            string            `json:"when,omitempty"`
+	IdempotencyKey  string            `json:"idempotencyKey,omitempty"`
 	ContextSequence uint64            `json:"contextSequence,omitzero"`
 	ContextBoundary bool              `json:"contextBoundary,omitzero"`
 	External        map[string]string `json:"external,omitempty"`
 }
 
-// ContextQueuedItem is a normal user message waiting to be committed to the
-// session transcript without starting a model run.
 type ContextQueuedItem struct {
 	ID             string        `json:"id"`
 	Sequence       uint64        `json:"sequence"`
@@ -148,14 +127,10 @@ func readContextQueue(dir string) (contextQueueState, error) {
 }
 
 func writeContextQueue(dir string, doc contextQueueState) error {
-	// Keep an empty state after the first write so the sequence remains
-	// monotonic across drains; prompt boundaries may still reference an older
-	// sequence after the queue has temporarily become empty.
 	doc.Version = 1
 	return state.WriteVersioned(contextQueuePath(dir), 1, doc, 0o600)
 }
 
-// EnqueueContext appends a context-only message and assigns a durable order.
 func EnqueueContext(dir string, item ContextQueuedItem) (ContextQueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -193,8 +168,6 @@ func EnqueueContext(dir string, item ContextQueuedItem) (ContextQueuedItem, erro
 	return item, nil
 }
 
-// PendingContextSequence returns the greatest sequence still waiting to be
-// committed. Removed entries are already present in the session transcript.
 func PendingContextSequence(dir string) (uint64, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -209,9 +182,6 @@ func PendingContextSequence(dir string) (uint64, error) {
 	return state.Items[len(state.Items)-1].Sequence, nil
 }
 
-// DrainContextThrough gives context-only messages to consume in order and
-// removes each item only after the consumer succeeds. A crash between the
-// consumer and queue rewrite is safe when the consumer is idempotent.
 func DrainContextThrough(dir string, maxSequence uint64, consume func(ContextQueuedItem) error) error {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -236,7 +206,6 @@ func DrainContextThrough(dir string, maxSequence uint64, consume func(ContextQue
 	return nil
 }
 
-// ReadContextQueue returns pending context-only messages.
 func ReadContextQueue(dir string) ([]ContextQueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -248,7 +217,6 @@ func ReadContextQueue(dir string) ([]ContextQueuedItem, error) {
 	return slices.Clone(state.Items), nil
 }
 
-// EnqueueExt appends an extension FIFO item.
 func EnqueueExt(dir string, item ExtQueuedItem) (ExtQueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -274,7 +242,6 @@ func EnqueueExt(dir string, item ExtQueuedItem) (ExtQueuedItem, error) {
 	return item, nil
 }
 
-// EnqueueExtFront restores an extension item after dispatch could not start it.
 func EnqueueExtFront(dir string, item ExtQueuedItem) error {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -289,7 +256,6 @@ func EnqueueExtFront(dir string, item ExtQueuedItem) error {
 	return writeExtQueue(dir, append([]ExtQueuedItem{item}, items...))
 }
 
-// DequeueExt removes the head extension FIFO item.
 func DequeueExt(dir string) (ExtQueuedItem, bool, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -308,8 +274,6 @@ func DequeueExt(dir string) (ExtQueuedItem, bool, error) {
 	return head, true, nil
 }
 
-// DequeueExtOccupy removes the first item that may start an occupy.
-// nextTurn items stay put until a user occupy consumes them.
 func DequeueExtOccupy(dir string) (ExtQueuedItem, bool, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -336,7 +300,6 @@ func DequeueExtOccupy(dir string) (ExtQueuedItem, bool, error) {
 	return head, true, nil
 }
 
-// TakeNextTurn removes every nextTurn item. User occupy injects them; they never start a run.
 func TakeNextTurn(dir string) ([]ExtQueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -362,7 +325,6 @@ func TakeNextTurn(dir string) ([]ExtQueuedItem, error) {
 	return taken, nil
 }
 
-// ReadExtQueue returns the extension FIFO.
 func ReadExtQueue(dir string) ([]ExtQueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -370,7 +332,6 @@ func ReadExtQueue(dir string) ([]ExtQueuedItem, error) {
 	return readExtQueue(dir)
 }
 
-// ReadQueue loads the durable FIFO. A missing file is empty.
 func ReadQueue(dir string) ([]QueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -408,26 +369,19 @@ func writeQueue(dir string, items []QueuedItem) error {
 	}{1, items}, 0o600)
 }
 
-// Enqueue appends a human turn. The session directory must already exist.
 func Enqueue(dir string, content []types.Content) (QueuedItem, error) {
 	return EnqueueMessage(dir, types.Message{Content: content}, QueueHumanLane)
 }
 
-// EnqueueSystem appends a server-generated turn and preserves its origin. The
-// session directory must already exist.
 func EnqueueSystem(dir string, content []types.Content, origin string) (QueuedItem, error) {
 	return EnqueueMessage(dir, types.Message{Content: content, Origin: origin}, QueueSystemLane)
 }
 
-// EnqueueAgentNotification appends the server-generated turn that reports one
-// agent generation's completion. The structured identity survives live/durable
-// handoffs so dispatch cannot mistake a resumed task for an older result.
 func EnqueueAgentNotification(dir string, content []types.Content, origin string, completion types.CompletionIdentity) (QueuedItem, error) {
 	return EnqueueMessage(dir, types.Message{Content: content, Origin: origin, Completion: &completion,
 		ClientRequestID: fmt.Sprintf("%s:%d", completion.TaskID, completion.Generation)}, QueueSystemLane)
 }
 
-// EnqueueMessage preserves accepted-message identity through durable promotion.
 func EnqueueMessage(dir string, message types.Message, lane QueueLane) (QueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -454,11 +408,6 @@ func EnqueueMessage(dir string, message types.Message, lane QueueLane) (QueuedIt
 	return item, nil
 }
 
-// insertByLane keeps the queue file ordered the way Dequeue serves it — human
-// turns ahead of system turns, FIFO within a lane — so the client's list shows
-// the real dispatch order. A new turn joins the end of its lane; a retry
-// (front) rejoins the head of its lane, because it was dequeued before anything
-// still waiting.
 func insertByLane(items []QueuedItem, item QueuedItem, front bool) []QueuedItem {
 	humans := 0
 	for _, it := range items {
@@ -469,13 +418,11 @@ func insertByLane(items []QueuedItem, item QueuedItem, front bool) []QueuedItem 
 	idx := len(items)
 	switch {
 	case item.Lane == QueueHumanLane:
-		// End of the human region; a retry goes before every waiting human.
 		idx = humans
 		if front {
 			idx = 0
 		}
 	case front:
-		// Front of the system region: humans stay ahead of the retry.
 		idx = humans
 	}
 	ordered := make([]QueuedItem, 0, len(items)+1)
@@ -485,10 +432,6 @@ func insertByLane(items []QueuedItem, item QueuedItem, front bool) []QueuedItem 
 	return ordered
 }
 
-// EnqueueFront restores an item after dispatch could not start it, at the head
-// of its own lane. The item was dequeued before anything still queued, so it
-// stays first within its lane; a human turn that arrived in the meantime keeps
-// its priority over a system retry.
 func EnqueueFront(dir string, item QueuedItem) error {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -503,17 +446,6 @@ func EnqueueFront(dir string, item QueuedItem) error {
 	return writeQueue(dir, insertByLane(items, item, true))
 }
 
-// Dequeue removes and returns the next turn: the oldest waiting human turn, or
-// the oldest system turn when no person is waiting.
-//
-// Why not plain FIFO: completion notifications are enqueued from a child's
-// goroutine and dispatched as soon as the session is idle, so a notification
-// that lands a moment before a user message would otherwise start its own turn
-// first and leave the person waiting behind a system message. Human input
-// outranking system turns is the same rule as Claude Code's queue, where
-// pending notifications take the lowest priority so user input is never
-// starved. FIFO still holds within each lane, so notifications never reorder
-// among themselves.
 func Dequeue(dir string) (QueuedItem, bool, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -540,7 +472,6 @@ func Dequeue(dir string) (QueuedItem, bool, error) {
 	return head, true, nil
 }
 
-// TakeQueueID removes one item by id. Remaining items keep their order.
 func TakeQueueID(dir, id string) (QueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()
@@ -567,8 +498,6 @@ func TakeQueueID(dir, id string) (QueuedItem, error) {
 	return item, nil
 }
 
-// KeepQueueIDs replaces the queue with the listed ids in that order. Unknown
-// ids are skipped. This is the v1 delete/reorder-by-subset API.
 func KeepQueueIDs(dir string, ids []string) ([]QueuedItem, error) {
 	gate := queueGate(dir)
 	gate.Lock()

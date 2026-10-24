@@ -261,7 +261,7 @@ func TestEOFDrainRemainsBounded(t *testing.T) {
 			err := peer.Serve(t.Context(), input, func(ctx context.Context, _ string, _ json.RawMessage) (any, error) {
 				defer close(finished)
 				if !blockedOutput {
-					<-release // Deliberately ignore cancellation to exercise the shutdown budget.
+					<-release
 				}
 				return nil, ctx.Err()
 			})

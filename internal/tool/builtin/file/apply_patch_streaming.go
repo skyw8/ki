@@ -26,8 +26,6 @@ func (c *applyPatchArgumentConsumer) Consume(delta string) (any, bool) {
 	if err != nil || len(hunks) == 0 {
 		return nil, false
 	}
-	// This snapshot is syntax-only and must never be confused with the
-	// committed delta produced after filesystem verification and execution.
 	changes := previewPatchChanges(hunks)
 	now := time.Now()
 	if !c.lastSent.IsZero() && now.Sub(c.lastSent) < applyPatchPreviewInterval {

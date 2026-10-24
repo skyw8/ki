@@ -76,8 +76,6 @@ func TestProcessFinishPublishesPendingOutputAndIncompleteRune(t *testing.T) {
 		snapshot: Snapshot{Status: "running"},
 		publish:  func(update Update) { updates = append(updates, update) },
 	}
-	// Suppress timed publication until finalization. No fixed sleep is needed
-	// to exercise the elapsed-time branch that formerly discarded the update.
 	p.lastPublished = time.Now()
 	if _, err := p.Write([]byte("tail\xF0")); err != nil {
 		t.Fatal(err)

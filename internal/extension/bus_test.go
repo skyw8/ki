@@ -138,8 +138,6 @@ func TestBusMutexHandshake(t *testing.T) {
 	}
 }
 
-// mutexSidecarSource keeps the inline fixture source in one stable directory so
-// the binary can be built once and shared across tests.
 var mutexSidecarSource = sync.OnceValues(func() (string, error) {
 	base, err := fixturesDir()
 	if err != nil {

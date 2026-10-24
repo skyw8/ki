@@ -21,30 +21,18 @@ import (
 	"time"
 )
 
-// InstallCatalogVersion is the schema version of the embedded install catalog.
 const InstallCatalogVersion = 1
 
-// DefaultExtensionSource is the release base URL used when neither ki.toml nor
-// the environment overrides it. The installer appends "/<release>/<asset>".
 const DefaultExtensionSource = "https://github.com/skyw8/ki/releases"
 
 const (
-	// maxArchiveBytes bounds a downloaded extension archive. Bundled packages are
-	// single-digit megabytes, so this leaves room for a larger third-party
-	// package without letting a wrong URL stream unbounded data into KI_HOME.
-	maxArchiveBytes = 512 << 20
-	// maxExtractedBytes bounds the unpacked package for the same reason.
+	maxArchiveBytes   = 512 << 20
 	maxExtractedBytes = 1 << 30
 	maxArchiveEntry   = 256 << 20
 	maxArchiveEntries = 8192
-	// checksumFile is the release asset listing every published digest. The
-	// installer refuses to unpack anything it cannot verify against it.
-	checksumFile = "checksums.txt"
+	checksumFile      = "checksums.txt"
 )
 
-// InstallEntry is one bundled extension offered by the embedded catalog. It
-// carries no URL: the asset name is derived from the running platform and the
-// release tag, so a catalog never has to be regenerated per release.
 type InstallEntry struct {
 	Name         string   `json:"name"`
 	Version      string   `json:"version"`
@@ -52,7 +40,6 @@ type InstallEntry struct {
 	Capabilities []string `json:"capabilities"`
 }
 
-// InstallCatalog is installcatalog.json.
 type InstallCatalog struct {
 	Version    int            `json:"version"`
 	Extensions []InstallEntry `json:"extensions"`
@@ -85,7 +72,6 @@ func mustInstallCatalog() InstallCatalog {
 	return c
 }
 
-// BuiltinInstallCatalog returns a fresh copy of the embedded catalog.
 func BuiltinInstallCatalog() InstallCatalog {
 	out := InstallCatalog{Version: builtinInstallCatalog.Version, Extensions: slices.Clone(builtinInstallCatalog.Extensions)}
 	for i := range out.Extensions {
@@ -94,47 +80,31 @@ func BuiltinInstallCatalog() InstallCatalog {
 	return out
 }
 
-// Available is one installable extension as the settings UI sees it. It merges
-// the embedded catalog with what is already on disk; listing never touches the
-// network.
 type Available struct {
-	Name         string   `json:"name"`
-	Version      string   `json:"version"`
-	Description  string   `json:"description"`
-	Capabilities []string `json:"capabilities"`
-	Asset        string   `json:"asset"`
-	Installed    bool     `json:"installed"`
-	// InstalledVersion is the manifest version currently on disk, if any.
-	InstalledVersion string `json:"installedVersion,omitempty"`
-	// UpdateAvailable means a package is installed with a different manifest
-	// version than the catalog offers.
-	UpdateAvailable bool `json:"updateAvailable,omitempty"`
-	// Linked means the package (and usually the whole extensions root) is a
-	// symlink into a checkout. It is discovered and usable, but installing over
-	// it would overwrite the sources, so the installer refuses and the UI says
-	// why instead of offering a button that cannot work.
-	Linked bool `json:"linked,omitempty"`
+	Name             string   `json:"name"`
+	Version          string   `json:"version"`
+	Description      string   `json:"description"`
+	Capabilities     []string `json:"capabilities"`
+	Asset            string   `json:"asset"`
+	Installed        bool     `json:"installed"`
+	InstalledVersion string   `json:"installedVersion,omitempty"`
+	UpdateAvailable  bool     `json:"updateAvailable,omitempty"`
+	Linked           bool     `json:"linked,omitempty"`
 }
 
-// Install stages reported while a download installs.
 const (
 	StageDownload = "download"
 	StageExtract  = "extract"
 )
 
-// Installer downloads release assets into {KI_HOME}/extensions.
 type Installer struct {
-	Home string
-	// Source is the release base URL. Release is appended as one path segment.
+	Home    string
 	Source  string
 	Release string
 	GOOS    string
 	GOARCH  string
 	Client  *http.Client
-	// Catalog defaults to the embedded catalog.
 	Catalog InstallCatalog
-	// OnStage reports coarse progress (StageDownload, StageExtract). It is
-	// called synchronously from Install and may be nil.
 	OnStage func(stage string)
 }
 
@@ -144,7 +114,6 @@ func (i Installer) stage(stage string) {
 	}
 }
 
-// AssetName is the release asset for one extension on this platform.
 func (i Installer) AssetName(name string) string {
 	goos := i.GOOS
 	if goos == "" {
@@ -157,7 +126,6 @@ func (i Installer) AssetName(name string) string {
 	return fmt.Sprintf("%s-%s-%s.zip", name, goos, goarch)
 }
 
-// AssetURL is the full download URL for one extension.
 func (i Installer) AssetURL(name string) string {
 	base := strings.TrimRight(i.Source, "/")
 	if base == "" {
@@ -166,7 +134,6 @@ func (i Installer) AssetURL(name string) string {
 	return base + "/" + i.Release + "/" + i.AssetName(name)
 }
 
-// ChecksumURL is the release-wide digest list.
 func (i Installer) ChecksumURL() string {
 	base := strings.TrimRight(i.Source, "/")
 	if base == "" {
@@ -177,10 +144,6 @@ func (i Installer) ChecksumURL() string {
 
 func (i Installer) root() string { return filepath.Join(i.Home, "extensions") }
 
-// checkRoot refuses to install when {KI_HOME}/extensions is a link. A developer
-// commonly links it at a checkout (as the repository does for its own
-// `extensions/`); installing through that link would overwrite sources with a
-// release build instead of installing into Ki's home.
 func (i Installer) checkRoot() error {
 	info, err := os.Lstat(i.root())
 	if errors.Is(err, os.ErrNotExist) {
@@ -190,8 +153,6 @@ func (i Installer) checkRoot() error {
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		// Why explicit: a linked root is a development checkout, and writing a
-		// release build into it would replace sources the user is editing.
 		return fmt.Errorf("%w: %s (link it away from a checkout or unset KI_HOME/extensions)", errLinkedExtensionsRoot, i.root())
 	}
 	if !info.IsDir() {
@@ -200,18 +161,10 @@ func (i Installer) checkRoot() error {
 	return nil
 }
 
-// stagingDir returns a hidden directory inside {KI_HOME}/extensions. Keeping
-// staging on the same filesystem makes publishing a plain rename, and the
-// leading dot keeps discovery from treating a half-written package as a
-// package.
 func (i Installer) stagingDir(name string) (string, error) {
 	return os.MkdirTemp(i.root(), ".stage-"+name+"-*")
 }
 
-// CleanStaging removes abandoned staging directories from an interrupted
-// install (a crash or a killed server). Only entries older than an hour are
-// removed so a concurrent install in another process keeps its work. Discovery
-// already ignores these dot-directories; this only stops them accumulating.
 func CleanStaging(home string) error {
 	root := filepath.Join(home, "extensions")
 	entries, err := os.ReadDir(root)
@@ -252,14 +205,11 @@ func (i Installer) entry(name string) (InstallEntry, bool) {
 	return InstallEntry{}, false
 }
 
-// LinkedRoot reports whether {KI_HOME}/extensions is a symlink, which is how a
-// developer points Ki at a checkout. Discovery follows it; installing must not.
 func (i Installer) LinkedRoot() bool {
 	info, err := os.Lstat(i.root())
 	return err == nil && info.Mode()&os.ModeSymlink != 0
 }
 
-// List merges the catalog with installed packages without any network access.
 func (i Installer) List() []Available {
 	root := i.root()
 	linkedRoot := i.LinkedRoot()
@@ -278,9 +228,6 @@ func (i Installer) List() []Available {
 			item.InstalledVersion = d.Version
 			item.UpdateAvailable = d.Version != "" && entry.Version != "" && d.Version != entry.Version
 		}
-		// Why per package and not only for the root: a single package can be
-		// linked even when the root is a real directory, and that is the case
-		// an install would otherwise silently replace.
 		info, err := os.Lstat(pkg)
 		item.Linked = linkedRoot || (err == nil && info.Mode()&os.ModeSymlink != 0)
 		out = append(out, item)
@@ -288,16 +235,12 @@ func (i Installer) List() []Available {
 	return out
 }
 
-// Installed describes the package that now sits in {KI_HOME}/extensions.
 type Installed struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 	Path    string `json:"path"`
 }
 
-// Install downloads, verifies and unpacks one catalog extension. The new
-// package replaces an older install atomically; private state (config.json,
-// cache.json, state.json) from the previous install is carried over.
 func (i Installer) Install(ctx context.Context, name string) (Installed, error) {
 	entry, ok := i.entry(name)
 	if !ok {
@@ -375,8 +318,6 @@ func (i Installer) Install(ctx context.Context, name string) (Installed, error) 
 	return Installed{Name: d.Name, Version: d.Version, Path: dest}, nil
 }
 
-// privateStateFiles are extension-owned state documents that must survive an
-// upgrade. They never come from the archive.
 var privateStateFiles = []string{"config.json", "cache.json", "state.json"}
 
 func carryPrivateState(current, stage string) error {
@@ -387,8 +328,6 @@ func carryPrivateState(current, stage string) error {
 	if err != nil {
 		return err
 	}
-	// A linked package is a development checkout, not an installation. Moving
-	// it aside would delete the checkout, so refuse instead.
 	if info.Mode()&os.ModeSymlink != 0 {
 		return errLinkedPackage
 	}
@@ -411,11 +350,6 @@ func carryPrivateState(current, stage string) error {
 	return nil
 }
 
-// publishPackage swaps stage into dest. The stage directory is a hidden sibling
-// of dest inside {KI_HOME}/extensions, so both renames stay on one filesystem;
-// the previous package is parked in another hidden sibling and removed only
-// after the new one is in place. Discovery skips dot-directories, so a crash
-// between the two renames leaves an ignorable leftover, never a broken package.
 func publishPackage(dest, stage string) error {
 	parent := filepath.Dir(dest)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
@@ -436,8 +370,6 @@ func publishPackage(dest, stage string) error {
 		return err
 	}
 	if err := os.Rename(stage, dest); err != nil {
-		// Put the previous install back: a failed upgrade must not leave the
-		// user without the extension they already had.
 		if restoreErr := os.Rename(parked, dest); restoreErr != nil {
 			return fmt.Errorf("%w (restore failed: %v)", err, restoreErr)
 		}
@@ -480,9 +412,6 @@ func fetchAll(ctx context.Context, client *http.Client, url string, limit int64)
 	return buf.Bytes(), nil
 }
 
-// fetchInto copies url into w, refusing bodies larger than limit. file:// URLs
-// (and plain absolute paths) read from disk so offline installs and tests never
-// need a network.
 func fetchInto(ctx context.Context, client *http.Client, url string, w io.Writer, limit int64) (int64, error) {
 	if local, ok := localPath(url); ok {
 		f, err := os.Open(local) //nolint:gosec // operator-supplied source path
@@ -523,9 +452,6 @@ func fetchInto(ctx context.Context, client *http.Client, url string, w io.Writer
 
 func localPath(url string) (string, bool) {
 	if rest, ok := strings.CutPrefix(url, "file://"); ok {
-		// Two accepted spellings: `file:///tmp/x` (the canonical form) and
-		// `file://C:/x` on Windows. Strip the separator that belongs to the URL
-		// rather than to the path, so a mirror works on every platform.
 		if len(rest) >= 3 && rest[0] == '/' && rest[2] == ':' &&
 			((rest[1] >= 'a' && rest[1] <= 'z') || (rest[1] >= 'A' && rest[1] <= 'Z')) {
 			rest = rest[1:]
@@ -538,10 +464,6 @@ func localPath(url string) (string, bool) {
 	return "", false
 }
 
-// unzip unpacks src into dst. Every entry must stay inside dst; directories,
-// regular files and executable modes are the only accepted shapes. A single
-// wrapping top-level directory named after the package is stripped so archives
-// produced by plain `zip -r` still work.
 func unzip(src, dst, name string) error {
 	reader, err := zip.OpenReader(src)
 	if err != nil {
@@ -647,8 +569,6 @@ func safeArchivePath(dst, rel string) (string, error) {
 		return "", fmt.Errorf("%w: %s", errArchivePathEscapes, rel)
 	}
 	target := filepath.Join(dst, filepath.FromSlash(clean))
-	// Join already cleaned the path, but the final check keeps a future
-	// refactor from reintroducing an escape.
 	if inner, err := filepath.Rel(dst, target); err != nil || inner == ".." || strings.HasPrefix(inner, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%w: %s", errArchivePathEscapes, rel)
 	}

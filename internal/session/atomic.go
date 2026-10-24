@@ -5,10 +5,6 @@ import (
 	"path/filepath"
 )
 
-// writeFileAtomic replaces path with data via a same-dir temp file + rename.
-// Why: os.WriteFile truncates then writes; concurrent Open/ReadFile can observe
-// partial JSON and fail with unexpected EOF. A unique temp name is required so
-// two writers cannot clobber the same *.tmp before rename.
 func writeFileAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp.*")

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	// Runtime ownership outlives a turn, so these events also reach the global stream.
 	"ki/internal/process"
 )
 
@@ -19,7 +18,6 @@ func (s *Server) publishRuntimeUpdate(id string, ev loop.Event) {
 	if !ok {
 		return
 	}
-	// Runtime transitions must not advance a live writer's transcript leaf.
 	entry, err := session.AppendSidebandEvent(dir, string(ev.Type), map[string]any{"process": ev.Process, "agent": ev.Agent})
 	if err != nil {
 		slog.Warn("persist runtime update", "session_id", id, "error", err)
@@ -49,7 +47,6 @@ func (s *Server) agentSnapshots(id string) []agent.View {
 	if err != nil {
 		return []agent.View{}
 	}
-	// Preserve active identities under a bounded GET even after many completed tasks.
 	slices.SortStableFunc(views, func(a, b agent.View) int {
 		if a.TaskName == "/root" {
 			return -1
@@ -77,8 +74,6 @@ func (s *Server) agentSnapshots(id string) []agent.View {
 	return views
 }
 func (s *Server) stopRuntimeTree(id string) {
-	// A descendant can spawn while the host traverses the tree. Fence admission
-	// before collecting owners, then stop runners before collecting their processes.
 	resumeRoot := s.blockSessionAdmissions([]string{id})
 	release, drained, err := s.agentTasks.FenceSubtreeAdmission(id)
 	if err != nil {
@@ -94,7 +89,6 @@ func (s *Server) stopRuntimeTree(id string) {
 	}
 	resumeChildren := s.blockSessionAdmissions(owned[1:])
 	defer func() {
-		// Remove both kinds of fences before queued explicit work resumes.
 		release()
 		resumeChildren()
 		resumeRoot()
@@ -111,7 +105,6 @@ func (s *Server) stopRuntimeTree(id string) {
 		if view.TaskName == "/root" || view.SessionID == id {
 			continue
 		}
-		// Session-tree membership, not the caller's namespace, owns tree abort.
 		if s.isSessionDescendant(view.SessionID, id) {
 			_, _ = s.agentTasks.Stop(view.AgentID)
 			if live := s.runAt(view.SessionID); live != nil {
@@ -119,8 +112,6 @@ func (s *Server) stopRuntimeTree(id string) {
 			}
 		}
 	}
-	// The root's observer can still be unwinding tool setup; wait for release's
-	// final callbacks before collecting processes created by that turn.
 	s.waitSessionWriters(owned)
 	<-drained
 	for _, sessionID := range owned {

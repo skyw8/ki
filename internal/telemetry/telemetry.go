@@ -25,8 +25,6 @@ const (
 	maxTelemetryBytes = 32 << 20
 )
 
-// ToolDiagnostic classifies an execution without changing the model-facing
-// ToolResult.IsError contract.
 type ToolDiagnostic struct {
 	Status      string
 	Kind        string
@@ -34,7 +32,6 @@ type ToolDiagnostic struct {
 	Retryable   bool
 }
 
-// ModelRequest is the privacy-safe shape needed to diagnose provider cache use.
 type ModelRequest struct {
 	Provider, Model, API  string
 	StaticHash, ShapeHash string
@@ -58,9 +55,8 @@ type cacheState struct {
 	resetReason  string
 }
 
-var sessionCache sync.Map // telemetry path -> *cacheState
+var sessionCache sync.Map
 
-// Run writes correlated records for one occupied session run.
 type Run struct {
 	path, lockPath, sessionID, runID string
 	traceID                          string
@@ -76,8 +72,6 @@ type Run struct {
 	started                          time.Time
 }
 
-// NewRun creates a best-effort recorder. It does not open the file until the
-// first record, so telemetry setup can never block session creation.
 func NewRun(dir, sessionID, runID string) *Run {
 	path := filepath.Join(dir, FileName)
 	state, _ := sessionCache.LoadOrStore(path, &cacheState{})
@@ -87,12 +81,10 @@ func NewRun(dir, sessionID, runID string) *Run {
 	}
 }
 
-// Forget releases process-local cache comparison state for a deleted session.
 func Forget(dir string) {
 	sessionCache.Delete(filepath.Join(dir, FileName))
 }
 
-// Hash returns a short deterministic digest suitable for equality diagnostics.
 func Hash(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -102,7 +94,6 @@ func Hash(v any) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// Reset marks the next model request as an expected cache boundary.
 func (r *Run) Reset(reason string) {
 	if r == nil {
 		return
@@ -113,7 +104,6 @@ func (r *Run) Reset(reason string) {
 	r.mu.Unlock()
 }
 
-// RecordModelRequest classifies cache reuse and writes one OTLP log record.
 func (r *Run) RecordModelRequest(obs ModelRequest) {
 	if r == nil {
 		return
@@ -179,7 +169,6 @@ func (r *Run) RecordModelRequest(obs ModelRequest) {
 	r.cache.resetReason = ""
 }
 
-// RecordTool writes one classified tool completion.
 func (r *Run) RecordTool(name, callID string, durationMS int64, isError bool, diag ToolDiagnostic, attrs map[string]any) {
 	if r == nil {
 		return
@@ -229,7 +218,6 @@ func (r *Run) RecordTool(name, callID string, durationMS int64, isError bool, di
 	r.writeLocked(severity, "tool call completed", values)
 }
 
-// Close emits the run summary. Telemetry remains best-effort.
 func (r *Run) Close() {
 	if r == nil {
 		return
@@ -353,7 +341,6 @@ func (r *Run) writeLocked(severity, body string, attrs map[string]any) {
 			return
 		}
 	}
-	// The path is the indexed session directory, never request-controlled.
 	//nolint:gosec // telemetry belongs beside the session transcript
 	file, err := os.OpenFile(r.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -380,7 +367,6 @@ func randomID(n int) string {
 		sum := sha256.Sum256([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
 		b = sum[:n]
 	}
-	// OTLP/JSON uses protobuf JSON encoding for bytes fields.
 	return base64.StdEncoding.EncodeToString(b)
 }
 

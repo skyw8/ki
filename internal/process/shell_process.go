@@ -20,7 +20,6 @@ import (
 
 const processBufferBytes = 1 << 20
 
-// Snapshot is a session-owned terminal projection, never an agent identity.
 type Snapshot struct {
 	Revision       uint64     `json:"revision"`
 	RunID          string     `json:"run_id,omitempty"`
@@ -50,7 +49,6 @@ type Update struct {
 	Process Snapshot `json:"process"`
 }
 
-// Manager retains processes independently of tool/turn contexts.
 type Manager struct {
 	mu        sync.Mutex
 	processes map[int64]*shellProcess
@@ -136,8 +134,6 @@ func (m *Manager) Start(ctx context.Context, shell Shell, cwd, command string, t
 				select {
 				case <-p.publisher.done:
 				default:
-					// Final callbacks may still inspect the process or its spool.
-					// Reclamation must not race that publication barrier.
 					reclaim = false
 				}
 			}
@@ -185,7 +181,6 @@ func (m *Manager) Start(ctx context.Context, shell Shell, cwd, command string, t
 	}
 	temporary := m.spool == nil
 	if err != nil && m.spool != nil {
-		// A session spool failure must not prevent execution; the manager owns and cleans the fallback.
 		f, err = os.CreateTemp("", "ki-process-*.log")
 		temporary = true
 	}
@@ -200,7 +195,6 @@ func (m *Manager) Start(ctx context.Context, shell Shell, cwd, command string, t
 	}
 	initial := p.snapshot
 	m.processes[id] = p
-	// Register before yielding: a canceled observer must never become the last process owner.
 	err = p.start(shell, cwd, command, tty)
 	if err != nil {
 		delete(m.processes, id)
@@ -240,8 +234,6 @@ func (p *shellProcess) start(shell Shell, cwd, command string, tty bool) error {
 			_ = terminal.Close()
 			return err
 		}
-		// The PTY starts its own session on Unix; the existing tree helper can own
-		// its process group and the Windows Job Object using this process handle.
 		p.cmd = &exec.Cmd{Process: c.Process}
 		afterStart(p.cmd)
 		p.mu.Lock()
@@ -310,9 +302,6 @@ func (p *shellProcess) Write(data []byte) (int, error) {
 			p.snapshot.Error = err.Error()
 		}
 	}
-	// A failed spool must not stop draining: otherwise the command can block
-	// forever on its output pipe or receive SIGPIPE. Preserve the diagnostic
-	// separately while still retaining bounded output for observers.
 	p.appendOutputLocked(p.sanitizer.Filter(data))
 	var update *Update
 	if time.Since(p.lastPublished) >= 100*time.Millisecond {
@@ -350,8 +339,6 @@ func (p *shellProcess) finish(code int, err error) {
 	defer p.control.Unlock()
 	p.mu.Lock()
 	now := time.Now()
-	// Finalization owns the last delta. A timed publication here would clear
-	// pending bytes without delivering its update, losing the stream's tail.
 	p.appendOutputLocked(p.sanitizer.Flush())
 	p.snapshot.Revision++
 	p.snapshot.Status = "exited"
@@ -383,7 +370,6 @@ func (m *Manager) get(id int64) (*shellProcess, error) {
 	return p, nil
 }
 
-// Interact serializes both stdin and incremental output consumption per process.
 func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield time.Duration, budget int, emit func(Update)) (Snapshot, error) {
 	p, err := m.get(id)
 	if err != nil {
@@ -395,8 +381,6 @@ func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield ti
 	select {
 	case p.interaction <- struct{}{}:
 	case <-ctx.Done():
-		// A canceled queued observer still needs its owned terminal handle, but
-		// must not consume output belonging to the interaction ahead of it.
 		return p.peek(), ctx.Err()
 	}
 	releaseInteraction := true
@@ -405,8 +389,6 @@ func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield ti
 			<-p.interaction
 		}
 	}()
-	// Both select cases can be ready when cancellation races lock acquisition.
-	// Recheck before writing so already-canceled input is never delivered.
 	if err := ctx.Err(); err != nil {
 		return p.peek(), err
 	}
@@ -427,8 +409,6 @@ func (m *Manager) Interact(ctx context.Context, id int64, chars string, yield ti
 					return p.observe(budget), err
 				}
 			case <-ctx.Done():
-				// A terminal may block when its process does not read stdin. The
-				// observer can leave while the manager retains ordered input ownership.
 				releaseInteraction = false
 				go func() { <-written; <-p.interaction }()
 				return p.observe(budget), ctx.Err()
@@ -508,9 +488,6 @@ func (p *shellProcess) observe(budget int) Snapshot {
 	s.OutputOffset = start
 	p.cursor = start + int64(len(data))
 	if p.snapshot.Status == "exited" && p.cursor == p.total {
-		// Why: completed handles remain addressable, but keeping their already
-		// consumed 1MiB windows can pin 256MiB per manager for no future reader.
-		// The separate immutable snapshot tail still serves runtime previews.
 		p.buffer = outputRing{}
 		p.dropped = p.total
 	}
@@ -552,8 +529,6 @@ func (m *Manager) Terminate(id int64) (Snapshot, error) {
 
 func (p *shellProcess) requestStop() <-chan struct{} {
 	p.terminate.Do(func() {
-		// Windows tree fallback can take time. A single owned helper per process
-		// lets batch shutdown signal every tree without serial helper delays.
 		go func() {
 			defer close(p.stopped)
 			p.control.Lock()
@@ -561,8 +536,6 @@ func (p *shellProcess) requestStop() <-chan struct{} {
 			p.mu.Lock()
 			live := p.snapshot.Status == "running"
 			p.mu.Unlock()
-			// Raw process-group IDs can be reused after Wait. Never signal an
-			// already-finished command when users stop a retained terminal handle.
 			if live {
 				killCmd(p.cmd)
 			}
@@ -598,13 +571,8 @@ func (m *Manager) Close() {
 		<-done
 	}
 	for _, p := range ps {
-		// Close is an owner-completion barrier, not an observer timeout. Removing
-		// logs or session state while a writer/listener still runs permits late
-		// writes after deletion. Terminate(All) provide bounded observation.
 		<-p.done
 		if p.publisher != nil {
-			// A finished process is not necessarily a durably published process.
-			// Keep session teardown behind its terminal lifecycle event.
 			<-p.publisher.done
 		}
 		if p.temporary {
@@ -624,8 +592,6 @@ func ResolveShell(runtime ShellRuntime, path string, login bool) (Shell, error) 
 		}
 	} else {
 		name := strings.TrimSuffix(strings.ToLower(path), ".exe")
-		// Discovery can find Git Bash outside PATH or through a configured host
-		// path. Selecting the known shell by name must use that same executable.
 		if name == "bash" && runtime.bash.available() {
 			shell = runtime.bash
 		} else if (name == "pwsh" || name == "powershell") && runtime.powerShell != nil && runtime.powerShell.available() &&
@@ -659,7 +625,6 @@ func ResolveShell(runtime ShellRuntime, path string, login bool) (Shell, error) 
 	return shell, nil
 }
 
-// TerminateAll stops current process trees while keeping the manager reusable.
 func (m *Manager) TerminateAll() {
 	m.mu.Lock()
 	ps := make([]*shellProcess, 0, len(m.processes))
@@ -667,8 +632,6 @@ func (m *Manager) TerminateAll() {
 		ps = append(ps, p)
 	}
 	m.mu.Unlock()
-	// Stop every tree before waiting; one slow drainer must not delay signaling
-	// all the other session-owned processes.
 	timer := time.NewTimer(2 * time.Second)
 	defer timer.Stop()
 	stopped := requestStops(ps)

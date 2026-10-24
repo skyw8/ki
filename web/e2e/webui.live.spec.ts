@@ -11,7 +11,6 @@ async function sendPrompt(page: Page, text: string) {
   await page.getByTestId('composer-send').click()
 }
 
-// Each case creates its own session; the tool case only reads the setup fixture.
 test.describe.configure({ mode: 'parallel' })
 
 test('live ping through chat and context', async ({ page }) => {
@@ -38,9 +37,6 @@ test('live ping through chat and context', async ({ page }) => {
 })
 
 test('live tool call shows in chat and context', async ({ page }) => {
-  // A fresh home gives every session an empty temporary workspace, so the
-  // fixture can only be reached by its absolute path (which the Read tool
-  // accepts) rather than a workspace-relative name.
   const { cwd } = JSON.parse(readFileSync(statePath, 'utf8')) as { cwd: string }
   expect(cwd).toBeTruthy()
   const markerFile = join(cwd, 'pw-live.txt')

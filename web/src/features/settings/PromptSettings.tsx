@@ -4,9 +4,6 @@ import { toast } from '../../components/toast'
 import { useI18n } from '../../i18n/index'
 import type { PromptAppendItem, PromptAppendView } from '../../api/types'
 
-// Mirrors maxAppendSystemPromptBytes in internal/server/prompt.go. Every byte
-// lands in the system prompt of each following request, so the editor warns
-// before the server has to reject a paste.
 const MAX_BYTES = 64 * 1024
 
 const EDITABLE_SOURCES = ['global', 'project'] as const
@@ -16,15 +13,6 @@ function isEditable(item: PromptAppendItem): item is PromptAppendItem & { source
   return item.editable && (EDITABLE_SOURCES as readonly string[]).includes(item.source)
 }
 
-/**
- * The appended-system-prompt editor. Sources are listed in render order and only
- * the operator files are writable: the built-in layer and extension layers are
- * read-only because they belong to the harness and to extension packages.
- *
- * Why no workspace picker: the project file is relative to the selected
- * workspace, which the sidebar already owns, so the card explains the missing
- * workspace instead of guessing a cwd.
- */
 export function PromptSettings({ api, workspaceId }: { api: Client; workspaceId: string | null }) {
   const { t } = useI18n()
   const [view, setView] = useState<PromptAppendView | null>(null)
@@ -35,9 +23,6 @@ export function PromptSettings({ api, workspaceId }: { api: Client; workspaceId:
     try {
       const next = await api.promptAppend(workspaceId)
       setView(next)
-      // Drafts are dropped on every load: switching workspace or saving returns
-      // the stored text, and keeping a stale draft would show edits that are not
-      // what the next prompt uses.
       setDrafts({})
     } catch (e) {
       toast.from(e)
@@ -138,8 +123,6 @@ export function PromptSettings({ api, workspaceId }: { api: Client; workspaceId:
                   value={text}
                   onChange={e => setDrafts(prev => ({ ...prev, [item.source]: e.target.value }))}
                   onKeyDown={e => {
-                    // Ctrl/Cmd+S is the editor shortcut users expect; the modal
-                    // has no form, so nothing else claims the chord.
                     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
                       e.preventDefault()
                       if (!overLimit && dirty(item)) void save(item)

@@ -9,8 +9,6 @@ import (
 	"strings"
 )
 
-// listenerPID finds the listening pid with netstat, which every supported
-// Windows build ships. A parse failure yields 0 (unknown).
 func listenerPID(addr string) int {
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {

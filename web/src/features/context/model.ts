@@ -19,7 +19,6 @@ export type ContextItem = {
   title: string
   text: string
   tokens: number
-  /** False for unavailable metadata estimates; numeric zero is otherwise valid. */
   tokensKnown?: boolean
   truncated: boolean
   sourceTags: string[]
@@ -46,7 +45,6 @@ export type ContextTrendPoint = {
   basis: 'usage' | 'meter' | 'estimate' | 'unavailable'
   approximate: true
   partial?: boolean
-  /** Missing numeric coverage, independent of whether the bodies are hydrated. */
   estimatesPartial?: boolean
   contextWindow?: number
   checkpoint?: 'remote' | 'local'
@@ -54,14 +52,12 @@ export type ContextTrendPoint = {
 
 const encoder = new TextEncoder()
 
-/** Match the harness's cheap UTF-8/4 fallback, not a provider tokenizer. */
 export function estimateTokens(text: string): number {
   return Math.ceil(encoder.encode(text).byteLength / 4)
 }
 
 type Span = { start: number; end: number; source: SystemSource; title: string }
 
-/** Structural hints only: operator APPEND files have no source delimiters. */
 export function systemSections(system: string): SystemSection[] {
   if (!system) return []
   const spans: Span[] = []
@@ -90,14 +86,12 @@ export function systemSections(system: string): SystemSection[] {
     bytes += encoder.encode(text).byteLength
     const total = Math.ceil(bytes / 4)
     result.push({
-      // Price a partition of one system block, not independently rounded duplicate blocks.
       id: `system-section-${result.length}`, source, title, text, tokens: total - priced,
       attribution: source === 'unknown' || source === 'append-operator' ? 'unknown' : 'structural',
     })
     priced = total
   }
   const gap = (text: string) => {
-    // Keep wrapper/separator bytes in the partition without presenting them as operator instructions.
     const wrapperOnly = !text.replace(/<\/?project_context>|Project-specific instructions and guidelines:/g, '').trim()
     if (!text.trim() || wrapperOnly) push(text, 'builtin', 'Ki structure')
     else if (cursor === 0 && text.startsWith('You are a helpful assistant operating inside ki,')) push(text, 'builtin', 'Ki base instructions')
@@ -131,7 +125,6 @@ function branchOf(entries: Entry[], leafId?: string): Branch {
     result.push(entry)
     const parent = entry.parentId
     if (parent && !byId.has(parent) && entry.previousId && byId.has(entry.previousId)) {
-      // A browser projection bridge permits browsing, but does not prove contiguous history.
       missing.push(parent)
       id = entry.previousId
     } else id = parent
@@ -156,7 +149,6 @@ function blockText(block: Content): string {
   if (block.type === 'toolCall') {
     return `${block.name ?? 'tool'}\n${block.input ?? JSON.stringify(block.arguments ?? {}, null, 2)}`
   }
-  // Binary payloads are never stringified or priced as if they were text tokens.
   return `[${block.type}${block.path ? `: ${block.path}` : ''}${block.mimeType ? ` (${block.mimeType})` : ''}]`
 }
 
@@ -181,8 +173,6 @@ function messageItem(entry: Entry, calls: Map<string, Content>): ContextItem {
 }
 
 function entryMessageTokens(entry: Entry): number | undefined {
-  // The server prices full persisted content before it removes bodies. Never
-  // price an index preview as that body, or change the estimate on hydration.
   return entry.contextEstimate?.message ?? (partialBody(entry) ? undefined : entry.message ? messageTokens(entry.message) : undefined)
 }
 
@@ -216,7 +206,6 @@ function remoteCompaction(entry: Entry): boolean {
 }
 
 function retainedTail(entry: Entry): Message[] | undefined {
-  // Full entry responses can carry retainedTail even though the slim frontend Entry omits it.
   return (entry as Entry & { retainedTail?: Message[] }).retainedTail
 }
 
@@ -230,17 +219,12 @@ function contextSurface(entries: Entry[], notices: Set<string>): Entry[] {
   const suffix = entries.slice(checkpoint + 1).filter(e => e.message && !e.sideband)
   if (remoteCompaction(comp)) {
     notices.add('remote-context')
-    // Earlier messages are encapsulated in provider-owned opaque state, not
-    // missing plaintext categories. Their effective contents/counts are unknown.
     notices.add('remote-history-encapsulated')
     return [comp, ...suffix]
   }
-  // Summary content replaces earlier messages; an empty category does not
-  // mean those historical messages never existed in this session.
   notices.add('local-history-summarized')
   const tail = retainedTail(comp)
   if (tail?.length) {
-    // Retained messages may differ from their original entries; do not offer a false hydration ID.
     return [comp, ...tail.map((message, i) => ({ type: 'message', id: `retained:${comp.id}:${i}`, message })), ...suffix]
   }
   if (comp.firstKeptEntryId) {
@@ -260,7 +244,6 @@ function promptAt(entries: Entry[], request?: RequestView): PromptSnapshot | und
   for (const entry of entries) {
     if (entry.type !== 'request_header') continue
     if (!entry.promptUnchanged) {
-      // A bodyless header is a new unknown epoch, not evidence that the old prompt survived.
       prompt = partialBody(entry) && !entry.system && !entry.tools?.length ? undefined
         : { system: entry.system ?? '', tools: entry.tools ?? [], provider: entry.provider, model: entry.modelId, thinkingEffort: entry.thinkingEffort }
     }
@@ -282,7 +265,6 @@ function promptItems(prompt: PromptSnapshot | undefined): { system: ContextItem[
   }
 }
 
-/** Browse only loaded, branch-bound content; never claim this reproduces provider mutations. */
 export function buildContext(input: ContextInput): ContextProjection {
   const request = input.requestId ? input.requests.find(r => r.id === input.requestId) : undefined
   const branch = branchOf(input.entries, input.requestId ?? input.leafId)
@@ -309,8 +291,6 @@ export function buildContext(input: ContextInput): ContextProjection {
         if (systemEstimate !== undefined) item.tokens = systemEstimate
         else if (partialBody(header)) item.tokens = 0
         item.tokensKnown = systemEstimate !== undefined || !partialBody(header)
-        // Partial System text cannot partition the full captured size into
-        // sources. Keep the known total, hydrate before source attribution.
         if (partialBody(header)) item.systemSections = undefined
       } else if (partialBody(header)) {
         item.tokensKnown = false
@@ -325,9 +305,6 @@ export function buildContext(input: ContextInput): ContextProjection {
         tokensKnown: systemEstimate !== undefined, truncated: true, sourceTags: [],
       })
       if (toolsEstimate !== undefined) {
-        // A header estimate knows the schema-set total, not each preview's
-        // contribution. Keep one aggregate item rather than proportionally
-        // assigning its tokens to truncated individual schema bodies.
         parts.tools = toolsEstimate > 0 ? [{
           id: 'schema:metadata', entryId: header.id, title: 'Tool schema aggregate (not loaded)',
           text: prompt?.tools.length ? JSON.stringify(prompt.tools, null, 2) : '',
@@ -383,7 +360,6 @@ function inputUsage(request: RequestView): number | undefined {
   return (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
 }
 
-/** One chronological pass over loaded entries; no per-step body fetch or repeated branch reconstruction. */
 export function buildContextTrend(input: Omit<ContextInput, 'requestId'>): ContextTrendPoint[] {
   const branch = branchOf(input.entries, input.leafId)
   const requests = new Map(input.requests.map(request => [request.id, request]))
@@ -434,9 +410,6 @@ export function buildContextTrend(input: Omit<ContextInput, 'requestId'>): Conte
       const effectivePrompt = request.prompt ?? prompt
       const incomplete = partial || (partialBody(entry) && !request.prompt) || !effectivePrompt
       const inferredPrompt = promptPrice(effectivePrompt)
-      // Every persisted header carries full system/tools estimates, even when
-      // its public body is omitted. Legacy explicit unchanged headers may
-      // inherit a proven prior estimate; an unknown new header may not.
       systemTokens = entry.contextEstimate?.system ?? (entry.promptUnchanged ? systemTokens
         : partialBody(entry) ? undefined : inferredPrompt.system)
       toolsTokens = entry.contextEstimate?.tools ?? (entry.promptUnchanged ? toolsTokens
@@ -456,7 +429,6 @@ export function buildContextTrend(input: Omit<ContextInput, 'requestId'>): Conte
       }
       points.set(request.id, activePoint)
     } else if (entry.type === 'context_usage' && activePoint && entry.usedTokens !== undefined) {
-      // Only the meter adjacent to a request header is a request-input anchor.
       if (activePoint.basis !== 'usage') {
         activePoint.tokens = entry.usedTokens
         activePoint.basis = 'meter'
@@ -472,8 +444,6 @@ export function buildContextTrend(input: Omit<ContextInput, 'requestId'>): Conte
       if (remoteCompaction(entry)) {
         totals.remote = 0
         checkpoint = 'remote'
-        // A fully loaded public marker still cannot disclose encrypted input.
-        // Usage/meter may measure it, but plaintext estimates remain incomplete.
         partial = true
         estimatesPartial = true
       }
@@ -481,8 +451,6 @@ export function buildContextTrend(input: Omit<ContextInput, 'requestId'>): Conte
         checkpoint = 'local'
         const estimate = summaryTokens(entry)
         if (estimate !== undefined) totals.compaction = estimate
-        // A checkpoint index lacks its retained-tail contract even when the
-        // summary estimate is known. Do not mark the whole context complete.
         estimatesPartial = estimate === undefined || partialBody(entry)
         partial ||= !entry.summary
         const tail = retainedTail(entry)
@@ -519,7 +487,6 @@ export function buildContextTrend(input: Omit<ContextInput, 'requestId'>): Conte
       addMessage(entry)
     }
   }
-  // Requests can exist as metadata without their header/message bodies. Usage remains useful.
   return input.requests.map(request => points.get(request.id) ?? {
     requestId: request.id, turn: request.turn, step: request.step, categories: {},
     tokens: inputUsage(request), basis: inputUsage(request) !== undefined ? 'usage' : 'unavailable', approximate: true,

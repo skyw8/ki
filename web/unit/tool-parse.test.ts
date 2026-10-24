@@ -17,9 +17,6 @@ import {
   writeDiff,
 } from '../src/features/chat/tools/parse'
 
-// Shapes below are copied from real session jsonl, so a parser change that
-// drifts from the Go tool payloads fails here rather than in the browser.
-
 const execResult = (details: unknown, text = '') => execSnapshotOf(details, text)
 
 test('exec snapshot parses the persisted process shape', () => {
@@ -38,17 +35,14 @@ test('exec snapshot parses the persisted process shape', () => {
 })
 
 test('exec snapshot unwraps live progress and falls back to result JSON', () => {
-  // process.Update wraps the same snapshot under `process`.
   const live = execSnapshot({ delta: 'k', process: { revision: 2, session_id: 7, status: 'running', cmd: 'sleep 1', output: 'ok' } }, '')
   expect(live?.status).toBe('running')
   expect(live?.sessionID).toBe(7)
 
-  // Older sessions persisted the snapshot as the model-facing text.
   const legacy = execSnapshotFromResult('{"revision":1,"session_id":3,"status":"exited","output":"hi","cmd":"ls","tty":false}')
   expect(legacy?.output).toBe('hi')
   expect(legacy?.cmd).toBe('ls')
 
-  // Anything else must not be mistaken for a snapshot.
   expect(execResult(undefined, 'plain text')).toBeNull()
   expect(execSnapshot({ revision: 1 }, '')).toBeNull()
   expect(execSnapshotFromResult('{not json')).toBeNull()
@@ -69,7 +63,6 @@ test('diff details cover edit and multi-file apply_patch', () => {
     patch: 'same',
     first_changed_line: 1,
   })
-  // edit carries no explicit path, so it comes from the diff header.
   expect(edit).toEqual([{ path: '/repo/a.go', kind: 'update', diff: expect.stringContaining('+new') }])
   expect(diffStat(edit)).toEqual({ added: 1, removed: 0 })
 
@@ -122,13 +115,11 @@ test('spill references are read without shadowing a tool output field', () => {
 })
 
 test('a legacy edit and a fresh write both produce a renderable diff', () => {
-  // Details from before the `diff` field: build one from the arguments.
   const legacy = syntheticEdit({ file_path: 'a.go', first_changed_line: 12 }, 'old line', 'new line')
   expect(legacy).toEqual({
     path: 'a.go', kind: 'update',
     diff: '--- a.go\n+++ a.go\n@@ -12,1 +12,1 @@\n-old line\n+new line\n',
   })
-  // write publishes no previous content, so it renders as one added file.
   const written = writeDiff({ path: 'b.go', bytes: 8, lines: 2, created: true }, 'one\ntwo\n')
   expect(written.kind).toBe('add')
   expect(written.diff).toContain('@@ -0,0 +1,3 @@')

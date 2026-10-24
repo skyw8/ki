@@ -1,6 +1,6 @@
 # 供应商协议
 
-三套协议的请求形状不能混用。可复用的协议客户端入口见 `pkg/llmprotocol`；Ki 的目录、凭据和运行时适配入口见 `internal/provider/doc.go`。Live occupy 可经扩展 `before_provider_request` / `before_provider_headers` 包装 Streamer 与 headers-only HTTPDoer；compact 只用 HTTPDoer，看不见 `before_provider_request`。见 [extension.md](extension.md)。
+三套协议的请求形状不能混用。可复用的协议客户端入口见 `pkg/llmprotocol`；Ki 的目录、凭据和运行时适配入口见 `internal/provider`。Live occupy 可经扩展 `before_provider_request` / `before_provider_headers` 包装 Streamer 与 headers-only HTTPDoer；compact 只用 HTTPDoer，看不见 `before_provider_request`。见 [extension.md](extension.md)。
 
 ## 协议
 

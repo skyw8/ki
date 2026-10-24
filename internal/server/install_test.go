@@ -17,8 +17,6 @@ import (
 	"time"
 )
 
-// writeReleaseMirror lays out a file:// release directory the way the publish
-// job does: one zip per extension plus checksums.txt.
 func writeReleaseMirror(t *testing.T, release string, packages map[string]map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -55,9 +53,6 @@ func writeReleaseMirror(t *testing.T, release string, packages map[string]map[st
 	return dir
 }
 
-// installTestServer builds a server whose installer points at a local mirror.
-// The configuration is mutated before the first request, which is safe because
-// handlers read s.cfg per request.
 func installTestServer(t *testing.T, mirror string) (*Server, *httptest.Server, string) {
 	t.Helper()
 	srv, hs := testServer(t)
@@ -81,7 +76,6 @@ func waitInstallState(t *testing.T, srv *Server, name string) installState {
 
 func TestAvailableExtensionsMergeCatalogWithDisk(t *testing.T) {
 	srv, hs := testServer(t)
-	// A catalog entry whose package is not installed must still be listed.
 	srv.cfg.Extensions.Release = "v9.9.9"
 	res, err := authedGet(t, hs, "/v1/extensions/available")
 	if err != nil {
@@ -153,7 +147,6 @@ func TestInstallExtensionDownloadsVerifiesAndReloads(t *testing.T) {
 	if !strings.Contains(string(body), "9.9.9") {
 		t.Fatalf("manifest=%s", body)
 	}
-	// The reload after install must make the package discoverable.
 	res2, err := authedGet(t, hs, "/v1/extensions")
 	if err != nil {
 		t.Fatal(err)
@@ -179,8 +172,6 @@ func TestInstallExtensionDownloadsVerifiesAndReloads(t *testing.T) {
 }
 
 func TestInstallExtensionReportsFailureAndKeepsCatalog(t *testing.T) {
-	// The mirror has no checksum entry for goal, so the install must fail
-	// without touching {KI_HOME}/extensions.
 	mirror := writeReleaseMirror(t, "v9.9.9", map[string]map[string]string{
 		"telegram-bot": {
 			"extension.json": `{"name":"telegram-bot","version":"9.9.9","capabilities":["settings"],"config":{"schema":{"type":"object"}}}`,
@@ -204,7 +195,6 @@ func TestInstallExtensionReportsFailureAndKeepsCatalog(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, "extensions", "goal")); !os.IsNotExist(err) {
 		t.Fatalf("failed install left a package: %v", err)
 	}
-	// A failed install is reported through the same listing endpoint.
 	res2, err := authedGet(t, hs, "/v1/extensions/available")
 	if err != nil {
 		t.Fatal(err)
@@ -266,9 +256,6 @@ func TestInstallExtensionRequiresRelease(t *testing.T) {
 func TestAvailableAndInstallReportALinkedRoot(t *testing.T) {
 	srv, hs := testServer(t)
 	checkout := t.TempDir()
-	// Replace the real extensions directory with the developer layout: a link
-	// at the checkout. Discovery follows it, installs must refuse, and the API
-	// has to say which one is happening instead of leaving the UI to guess.
 	if err := os.RemoveAll(filepath.Join(srv.cfg.Home, "extensions")); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +305,6 @@ func TestAvailableAndInstallReportALinkedRoot(t *testing.T) {
 	if post.StatusCode != http.StatusConflict {
 		t.Fatalf("status=%d, want 409 for a linked root", post.StatusCode)
 	}
-	// The checkout must be untouched.
 	if _, err := os.Stat(filepath.Join(checkout, "goal", "extension.json")); err != nil {
 		t.Fatalf("checkout damaged: %v", err)
 	}

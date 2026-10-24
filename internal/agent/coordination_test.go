@@ -29,7 +29,6 @@ func TestAgentCapacityIsPerRootAndQueuedFollowupWakesOnRelease(t *testing.T) {
 	if _, err = c.Wait(t.Context(), quick.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	// Wait observes a finished result before controller callbacks have fully drained.
 	c.tasks[quick.TaskID].mu.Lock()
 	done := c.tasks[quick.TaskID].runDone
 	c.tasks[quick.TaskID].mu.Unlock()
@@ -129,7 +128,6 @@ func TestProgressIsGenerationScopedAndKeepsLifetimeStats(t *testing.T) {
 	emit(2, ProgressEvent{Type: ToolFinished, CallID: "wait", DurationMs: 13})
 	emit(2, ProgressEvent{Type: ToolStarted, CallID: "read", ToolName: "read"})
 	emit(2, ProgressEvent{Type: ToolFinished, CallID: "read"})
-	// A callback from the first generation cannot overwrite the current result.
 	emit(1, ProgressEvent{Type: MessageCompleted, Text: "stale"})
 	emit(2, ProgressEvent{Type: MessageCompleted, Usage: &types.Usage{Input: 4, Output: 1, TotalTokens: 5}})
 	released <- struct{}{}
@@ -266,8 +264,6 @@ func TestCapacityBlockedFollowupRemainsInterruptibleWithoutConsumingPriorResult(
 		if snapshot.SessionID != "child" || snapshot.Status != Completed || snapshot.PendingTasks != 1 {
 			return
 		}
-		// Deterministically let another identity take the released slot before
-		// this completed generation can admit its already-accepted follow-up.
 		blocker, err := controller.Start(t.Context(), Request{RootSessionID: "root"}, "", func(ctx context.Context, _, _ string) (Completion, error) {
 			<-ctx.Done()
 			return Completion{}, ctx.Err()

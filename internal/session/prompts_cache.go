@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 )
 
-// promptPool belongs to one decoded snapshot/Session, never to the process.
-// Why: a global intern table would retain prompts after body-cache eviction.
 type promptPool struct {
 	systems map[[32]byte]string
 	tools   map[[32]byte][]ToolSchema
@@ -46,8 +44,6 @@ func (p *promptPool) schemas(raw []byte) ([]ToolSchema, error) {
 }
 
 func decodeEntry(raw []byte, pool *promptPool) (Entry, error) {
-	// Override tools while decoding the rest of Entry, so repeated schemas
-	// never allocate thousands of maps just to discard them after interning.
 	type wireEntry Entry
 	var e Entry
 	wire := struct {

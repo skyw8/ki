@@ -146,8 +146,6 @@ func getCredential(ctx context.Context) (credential, error) {
 	latest.Value = next
 	record(record(latest.Document["providers"])["openai-codex"])["value"] = next
 	latest.Document["version"] = 1
-	// Read again under the file lock so refreshed credentials do not overwrite
-	// unrelated provider changes made while the HTTP refresh was in flight.
 	if e := state.WriteVersioned(c.Path, 1, latest.Document, 0600); e != nil {
 		return c, e
 	}
@@ -320,8 +318,6 @@ func sourcesFromOutput(output []any) []any {
 }
 func responsesRequest(ctx context.Context, model, prompt, effort, provider string, search obj) (obj, string, error) {
 	codex := provider != "openai"
-	// This adapter bypasses the provider sidecar, so it must also decode the
-	// client-only Fast preset instead of sending "high fast" as an API effort.
 	effort, fast := thinking.Split(jsTrim(effort))
 	if fast && !codex {
 		return nil, "", fmt.Errorf("summary-thinking-unsupported: Fast thinking requires a Codex provider")
@@ -354,8 +350,6 @@ func responsesRequest(ctx context.Context, model, prompt, effort, provider strin
 	}
 	body := obj{"model": model, "instructions": instructions, "input": []any{obj{"role": "user", "content": []any{obj{"type": "input_text", "text": prompt}}}}, "store": false, "stream": true}
 	if fast {
-		// The direct adapter has no model catalog. Host pickers expose supported
-		// presets; the backend remains authoritative for a manually chosen model.
 		body["service_tier"] = "priority"
 	}
 	if effort != "" && effort != "off" {

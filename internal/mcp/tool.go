@@ -49,8 +49,6 @@ func newAdapter(m *Manager, session *sdk.ClientSession, server, source string, t
 	if err := json.Unmarshal(data, &schema); err != nil {
 		return nil, err
 	}
-	// A nil loader rejects remote references instead of performing network or
-	// filesystem access while resolving an untrusted tool's input schema.
 	validator, err := schema.Resolve(nil)
 	if err != nil {
 		return nil, err
@@ -68,7 +66,6 @@ func (t *adapter) Prompt() string               { return "" }
 func (t *adapter) Snippet() string              { return "" }
 func (t *adapter) SourceInfo() (string, string) { return t.server, t.source }
 func (t *adapter) Parameters() map[string]any {
-	// Callers may render/augment schemas. Never expose the frozen catalog map.
 	data, _ := json.Marshal(t.parameters)
 	var out map[string]any
 	_ = json.Unmarshal(data, &out)
@@ -129,8 +126,6 @@ func projectResult(server, raw string, result *sdk.CallToolResult) tool.Result {
 	details["_mcp"] = map[string]any{"server": server, "tool": raw}
 	out := tool.Result{IsError: result.IsError, Details: details}
 	content, _ := details["content"].([]any)
-	// Content is the sole copy of model-facing payloads. Keeping raw MCP text
-	// or media in Details would bypass an AfterTool redaction of Content.
 	delete(details, "content")
 	var metadata []any
 	for _, rawBlock := range content {
@@ -146,7 +141,6 @@ func projectResult(server, raw string, result *sdk.CallToolResult) tool.Result {
 			mime, _ := block["mimeType"].(string)
 			out.Content = append(out.Content, types.Content{Type: kind, Data: data, MIMEType: mime})
 		default:
-			// Resources and links remain inert data, never ambient capabilities.
 			text, _ := json.Marshal(rawBlock)
 			out.Content = append(out.Content, types.Content{Type: "text", Text: string(text)})
 		}

@@ -44,7 +44,6 @@ func mustTool(t *testing.T, m types.Message, name string) types.Content {
 }
 
 func TestLiveCompletionsAccumulatesFragmentedToolArgs(t *testing.T) {
-	// Fragments that are not valid JSON alone — old upsertToolCall dropped these.
 	sse := dataJSON(map[string]any{
 		"choices": []any{map[string]any{"delta": map[string]any{
 			"tool_calls": []any{map[string]any{

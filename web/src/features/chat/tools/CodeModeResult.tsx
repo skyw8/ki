@@ -1,18 +1,6 @@
 import { memo } from 'react'
 import { useI18n } from '../../../i18n/index'
 
-/**
- * Code Mode (`exec` / `wait`) returns its nested tool results concatenated:
- * `Script completed` followed by one JSON envelope per call, with `content`,
- * `details` and `isError`. Showing that string verbatim is the single least
- * readable row in a transcript.
- *
- * Parsing is deliberately narrow. The nested payloads are separate JSON
- * objects laid end to end, so a scan with a JSON value reader (not `split` on
- * braces) is the only way to split strings that contain braces. Anything that
- * does not parse stays as the original text.
- */
-
 export type NestedCall = { text: string; isError: boolean }
 
 const PREFIXES = ['Script completed', 'Script running'] as const
@@ -50,7 +38,6 @@ export function nestedCalls(result: string): NestedCall[] | null {
   return calls.length ? calls : null
 }
 
-/** End index (exclusive) of one JSON value starting at `start`, or -1. */
 function jsonValueEnd(text: string, start: number): number {
   const open = text[start]
   if (open !== '{' && open !== '[') return -1

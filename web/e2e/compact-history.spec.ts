@@ -18,8 +18,6 @@ test('older runtime notifications fold without consuming the final assistant kee
     { type: 'message', id: 'early', parentId: 'u', message: { role: 'assistant', content: [{ type: 'text', text: 'Earlier reply' }] } },
     { type: 'message', id: 'middle', parentId: 'early', message: { role: 'user', origin: 'agent:child', content: [{ type: 'text', text: 'Middle runtime notice' }] } },
     { type: 'message', id: 'final', parentId: 'middle', message: { role: 'assistant', content: [{ type: 'text', text: 'Final agent reply stays visible' }] } },
-    // Real mailbox delivery can persist after the terminal assistant. Keep its
-    // chronological position, but never let it consume the final reply slot.
     { type: 'message', id: 'trailing', parentId: 'final', message: { role: 'user', origin: 'agent:child', content: [{ type: 'text', text: 'Trailing runtime notice' }] } },
   ]
   appendFileSync(join(dir, 'events.jsonl'), entries.map(e => JSON.stringify(e)).join('\n') + '\n')
@@ -39,8 +37,6 @@ test('older runtime notifications fold without consuming the final assistant kee
     await expect(page.getByTestId('assistant-message')).toHaveText(/Final agent reply stays visible/)
     await expect(page.getByRole('note')).toHaveCount(1)
     await expect(page.getByRole('note')).toContainText('Trailing runtime notice')
-    // The collapsed fold may preview the newest hidden notification's text;
-    // assert its actual message row is absent, not that the preview is empty.
     await expect(page.locator('[data-item-key="middle"]')).toHaveCount(0)
     await expect(page.getByTestId('fold-row')).toContainText('已折叠 2 条消息')
   }
@@ -106,9 +102,6 @@ async function readTop(page: Page) {
   const touch = await page.evaluate(() => /iPhone/.test(navigator.userAgent))
   if (touch) {
     await scroll.evaluate(el => {
-      // Browser emulation may not expose a Touch constructor.
-      // Exercise touch intent/deferral with DOM events; motion is controlled
-      // below, so this is not a claim of native inertial-gesture coverage.
       const touch = (type: string, y?: number) => {
         const event = new Event(type, { bubbles: true })
         Object.defineProperty(event, 'touches', { value: y == null ? [] : [{ identifier: 1, target: el, clientX: 160, clientY: y }] })
@@ -122,10 +115,6 @@ async function readTop(page: Page) {
   } else {
     await scroll.hover()
     await scroll.evaluate(el => {
-      // mouse.wheel resolves before the browser necessarily delivers the
-      // event. An already-reading intent cannot acknowledge this new input:
-      // releasing a held page first would legitimately arm a second page.
-      // The bubble listener runs after the scroll owner's capture listener.
       ;(window as unknown as { compactWheelReceipt: Promise<void> }).compactWheelReceipt = new Promise(resolve => {
         const received = (event: Event) => {
           if (!(event instanceof WheelEvent) || !event.isTrusted || event.deltaY !== -5) return
@@ -202,8 +191,6 @@ test('compact paging adds one complete turn and keeps the same content through s
     const before = await probe()
     const fold = page.locator(`[data-fold="${key}"] .fold-row-count`)
     await expect(fold).toHaveText('已折叠 520 条消息')
-    // More input events during the same pending load must not queue a second
-    // turn merely because its measured height leaves us near the boundary.
     await readTop(page)
     await page.evaluate(({ key, before }) => {
       const state = { active: true, worst: 0, missing: false, trace: [] as unknown[] }
@@ -255,13 +242,6 @@ test('compact expands hidden contents only on demand and preserves its paging cu
   })
   await f.open()
   expect(expansions).toHaveLength(0)
-  // The newest turn's fold follows the tail: expanding fetches the hidden
-  // replies on demand and pins the newest revealed node to the bottom, so the
-  // fold row itself scrolls out of the virtualized window. The proof it opened
-  // is the fetched reply, not the row's own attribute.
-  // Following the newest message must not jump while the revealed rows are
-  // measured over the next frames: sample the distance from the tail across the
-  // expansion. A follow that only pins once drifts, which is the visible jitter.
   const shiftProbe = page.evaluate(async () => {
     const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
     const gaps: number[] = []
@@ -277,13 +257,9 @@ test('compact expands hidden contents only on demand and preserves its paging cu
   expect(Math.max(...gaps), `distance from the tail across the expansion: ${gaps.join(',')}`).toBeLessThanOrEqual(8)
   expect(expansions.length).toBeGreaterThan(1)
   expect(expansions.every(id => id === 'u8')).toBe(true)
-  // Expanding must not page: the history cursor only moves when the reader
-  // scrolls up, not when a fold grows in place.
   expect(pages).toBe(0)
   await readTop(page)
   await expect.poll(() => pages).toBe(1)
-  // An earlier fold is something the reader opened to read: it anchors in place
-  // and toggles closed on the same row, keeping its count.
   const older = page.locator('[data-fold="u5"]')
   await expect(older.locator('.fold-row-count')).toHaveText('已折叠 520 条消息')
   await older.getByTestId('fold-row-btn').click()

@@ -11,33 +11,19 @@ import (
 	toolapi "ki/internal/tool"
 )
 
-// version is the schema version of toggles.json.
 const version = 3
 
-// BusySteer inserts a busy prompt into the current loop.Run.
 const BusySteer = "steer"
 
-// BusyQueue persists a busy prompt until the current run releases.
 const BusyQueue = "queue"
 
-// DefaultContextWindow is the hard upper bound applied to every model's
-// effective context window when toggles.json does not override it. It is far
-// above current models, so it only guards against absurd per-model values.
 const DefaultContextWindow = 5_000_000
 
-// Message is the process-wide default for a prompt while a session is busy,
-// plus the hard cap on the context window the server plans against.
 type Message struct {
-	Busy string `json:"busy,omitempty"`
-	// ContextWindow caps the effective model window for context accounting,
-	// compaction thresholds, and server-side compaction. It is a ceiling, never
-	// an inflation: a model configured above the cap is clamped (setting the
-	// cap to 500000 clamps a 1M model), while a smaller window keeps its own
-	// value. 0 means DefaultContextWindow.
-	ContextWindow int `json:"contextWindow,omitempty"`
+	Busy          string `json:"busy,omitempty"`
+	ContextWindow int    `json:"contextWindow,omitempty"`
 }
 
-// BusyDelivery returns steer or queue. Empty defaults to steer.
 func (m Message) BusyDelivery() string {
 	if m.Busy == BusyQueue {
 		return BusyQueue
@@ -45,7 +31,6 @@ func (m Message) BusyDelivery() string {
 	return BusySteer
 }
 
-// ContextWindowLimit returns the stored cap, or DefaultContextWindow.
 func (m Message) ContextWindowLimit() int {
 	if m.ContextWindow > 0 {
 		return m.ContextWindow
@@ -53,7 +38,6 @@ func (m Message) ContextWindowLimit() int {
 	return DefaultContextWindow
 }
 
-// File is {KI_HOME}/toggles.json.
 type File struct {
 	Version    int            `json:"version"`
 	Skills     session.Toggle `json:"skills"`
@@ -65,9 +49,6 @@ type File struct {
 
 func path(home string) string { return filepath.Join(home, "toggles.json") }
 
-// Load reads toggles.json; a missing file is all-enabled. Toggles are
-// best-effort: a document this build cannot read falls back to defaults rather
-// than failing startup, but Save refuses to overwrite a newer one.
 func Load(home string) File {
 	f := File{Version: version}
 	if home == "" {
@@ -84,7 +65,6 @@ func Load(home string) File {
 	return f
 }
 
-// Save writes toggles.json atomically, refusing to clobber a newer schema.
 func Save(home string, f File) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return fmt.Errorf("toggles dir: %w", err)
@@ -111,7 +91,6 @@ func removeCodeMode(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, err
 	}
-	// Code Mode is fixed to mixed; stale overrides must not survive a rewrite.
 	delete(fields, "code_mode")
 	fields["version"] = json.RawMessage("3")
 	return json.Marshal(fields)

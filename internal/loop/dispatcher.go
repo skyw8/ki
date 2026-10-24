@@ -19,9 +19,6 @@ import (
 	"ki/internal/types"
 )
 
-// NestedToolCall is a host-attributed tool request, not a provider message.
-// The parent supplies ParentCallID/CellID from its trusted execution binding.
-// Input selects freeform execution; otherwise Arguments is a JSON function input.
 type NestedToolCall struct {
 	ParentCallID string
 	CellID       string
@@ -30,9 +27,6 @@ type NestedToolCall struct {
 	Input        *string
 }
 
-// ToolDispatcher owns the fixed tool capabilities and policy of one run.
-// It returns full post-hook intermediate results to nested callers, while only
-// separately bounded audit events reach persistence and SSE.
 type ToolDispatcher struct {
 	cfg      Config
 	registry *toolapi.Registry
@@ -40,8 +34,6 @@ type ToolDispatcher struct {
 	nextCall atomic.Uint64
 }
 
-// NewToolDispatcher snapshots the allowed tools. A worker cannot expand this
-// registry, choose execution identities, or bypass the normal interception path.
 func NewToolDispatcher(cfg Config, emit func(Event) error) (*ToolDispatcher, error) {
 	cfg.Tools = slices.Clone(cfg.Tools)
 	registry, err := toolapi.NewRegistry(cfg.Tools)
@@ -54,10 +46,6 @@ func NewToolDispatcher(cfg Config, emit func(Event) error) (*ToolDispatcher, err
 	return &ToolDispatcher{cfg: cfg, registry: registry, emit: emit}, nil
 }
 
-// DispatchNested executes a single nested request without creating a transcript
-// toolResult. Only the enclosing provider-issued call has such a message.
-// Terminate combines BeforeTool and the tool result; the enclosing runtime must
-// stop accepting work and propagate it to its own outer result.
 func (d *ToolDispatcher) DispatchNested(ctx context.Context, call NestedToolCall) (toolapi.Result, error) {
 	if call.ParentCallID == "" || call.CellID == "" {
 		return toolapi.Result{}, errors.New("nested tool call requires a parent call and cell")
@@ -75,8 +63,6 @@ func (d *ToolDispatcher) DispatchNested(ctx context.Context, call NestedToolCall
 	return outcome.full, outcome.err
 }
 
-// NotifyNested publishes attributed progress rather than an unmatched extra
-// provider toolResult. The enclosing runtime supplies only its bound identities.
 func (d *ToolDispatcher) NotifyNested(parentCallID, cellID string, value any) error {
 	if parentCallID == "" || cellID == "" {
 		return errors.New("nested notification requires a parent call and cell")
@@ -128,8 +114,6 @@ func (d *ToolDispatcher) prepare(ctx context.Context, call types.Content, nested
 		p.immediate = rejectedTool("unknown tool "+call.Name, "rejected", "unknown_tool", "model_input")
 		return p
 	}
-	// Keep the resolved tool even on rejection: aliases must never change the
-	// canonical policy/audit name when validation fails.
 	p.tool = t
 	canonical := toolapi.MustCanonical(t.Name())
 	if nested && (canonical == "exec" || canonical == "wait") {
@@ -177,7 +161,6 @@ func (d *ToolDispatcher) execute(ctx context.Context, p preparedTool, origin nes
 	start := event(ToolExecutionStart)
 	start.Timestamp = startedAt.UnixMilli()
 	if err := d.emitEvent(start, nested); err != nil {
-		// Never execute effects whose start cannot be durably attributed.
 		return dispatchedTool{err: err}
 	}
 	var res toolapi.Result
@@ -192,8 +175,6 @@ func (d *ToolDispatcher) execute(ctx context.Context, p preparedTool, origin nes
 			var cancel context.CancelFunc
 			executionCtx, cancel = context.WithCancel(executionCtx)
 			defer cancel()
-			// ProgressTool cannot return emitter errors. Retain the first and
-			// cancel execution so a failed audit stream does not silently continue.
 			var progressMu sync.Mutex
 			var progressErr error
 			res = executePreparedTool(executionCtx, p, func(value any) {
@@ -222,8 +203,6 @@ func (d *ToolDispatcher) execute(ctx context.Context, p preparedTool, origin nes
 			if nr, err := d.cfg.Hooks.AfterTool(ctx, canonical, p.args, res); err == nil {
 				res = nr
 			} else if nested || canonical == discovery.Name {
-				// Failed output policy cannot expose original results to JS or
-				// publish discovery identities that would load their schemas.
 				terminate := res.Terminate
 				res = *rejectedTool(err.Error(), "failed", "extension_failed", "extension")
 				res.Terminate = terminate
@@ -311,7 +290,6 @@ func (d *ToolDispatcher) emitEvent(ev Event, strict bool) error {
 		}
 		return d.emit(ev)
 	}
-	// Ordinary execution retains its historical best-effort event behavior.
 	_ = d.emit(ev)
 	return nil
 }
@@ -319,10 +297,6 @@ func (d *ToolDispatcher) emitEvent(ev Event, strict bool) error {
 const nestedAuditFieldBytes = 16 << 10
 const nestedAuditResultBytes = 64 << 10
 
-// BoundNestedToolEvent snapshots and bounds nested payloads, including Details
-// and non-text content. These are audit limits, not intermediate JS limits.
-// A serialized oversized value is replaced by an explicit preview, never
-// silently presented as the complete original value.
 func BoundNestedToolEvent(ev Event) (Event, error) {
 	if ev.ParentCallID == "" {
 		return ev, nil
@@ -335,8 +309,6 @@ func BoundNestedToolEvent(ev Event) (Event, error) {
 		ev.Args = value.(map[string]any)
 	}
 	if result, ok := ev.Result.(toolapi.Result); ok && result.Details != nil {
-		// Preserve the bounded content envelope even when a tool produces a
-		// large diff/detail payload; text-only spool does not bound Details.
 		details, err := boundAuditValue(result.Details, nestedAuditFieldBytes)
 		if err != nil {
 			return ev, fmt.Errorf("encode nested tool details: %w", err)
@@ -377,13 +349,10 @@ func boundAuditValue(value any, limit int) (any, error) {
 	}
 	var copy any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
-	// Audit snapshots must not round integer arguments/details through float64.
 	decoder.UseNumber()
 	if err := decoder.Decode(&copy); err != nil {
 		return nil, err
 	}
-	// encoding/json snapshots remove shared mutable maps/slices before an
-	// asynchronous subscriber can observe subsequent tool or hook mutations.
 	return copy, nil
 }
 

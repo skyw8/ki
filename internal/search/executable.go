@@ -12,20 +12,10 @@ import (
 	"sync"
 )
 
-// ToolsShimName is the shell fragment written next to the bundled binaries and
-// sourced through BASH_ENV by the shell tools.
 const ToolsShimName = "shim.sh"
 
 var toolsDir = sync.OnceValues(resolveToolsDir)
 
-// ToolsDir returns a directory that holds the embedded search executables (rg
-// and, where available, fd) together with the BASH_ENV shim. The Bash and
-// PowerShell tools put this directory on PATH so shell commands can use rg/fd
-// regardless of what the host has installed.
-//
-// Binaries are materialized once per user and reused while their SHA-256 still
-// matches the embedded bytes. When no writable cache directory exists the tools
-// fall back to a process-lifetime temporary directory.
 func ToolsDir() (string, error) {
 	return toolsDir()
 }
@@ -41,10 +31,6 @@ func resolveToolsDir() (string, error) {
 		}
 	}
 
-	// Why: a locked-down container may have no writable cache directory. A
-	// process-lifetime temp dir still lets shell commands resolve rg/fd; unlike
-	// the previous per-call temp file it is intentionally not removed, because
-	// PATH points at it for as long as ki runs.
 	dir, err := os.MkdirTemp("", "ki-tools-*")
 	if err != nil {
 		return "", fmt.Errorf("create temporary tools directory: %w", err)
@@ -56,9 +42,6 @@ func resolveToolsDir() (string, error) {
 	return dir, nil
 }
 
-// executable returns a stable rg executable path plus a cleanup function. The
-// normal path is the shared tools directory, so the same binary backs both the
-// Grep/Glob engines and shell commands.
 func executable() (string, func(), error) {
 	if truthy(os.Getenv("KI_USE_SYSTEM_RIPGREP")) {
 		path, err := exec.LookPath("rg")
@@ -88,9 +71,6 @@ type embeddedBinary struct {
 	data []byte
 }
 
-// embeddedBinaries lists the binaries embedded for the current target. Both
-// are absent on unsupported platforms; a host rg is selected only when the
-// caller explicitly sets KI_USE_SYSTEM_RIPGREP.
 func embeddedBinaries() []embeddedBinary {
 	var out []embeddedBinary
 	if data, name := embeddedRG(); len(data) > 0 {
@@ -154,15 +134,6 @@ func materializeCached(dir, name string, data []byte, digest string) (string, bo
 	return destination, true
 }
 
-// toolsShim re-prepends the bundled tools directory and the extension PATH
-// directories to PATH. bash -lc sources /etc/profile and the user's profile
-// before BASH_ENV, and those files may reset PATH entirely (Debian's
-// /etc/profile does), so exporting PATH on the child process alone is not
-// enough. KI_ORIG_BASH_ENV chains to any BASH_ENV the user already had so the
-// shim does not shadow it, and KI_EXTENSION_PATH_DIRS carries the directories
-// contributed by enabled extensions: they cannot be baked into this file
-// because it is one shared artifact whose content must not depend on the
-// session.
 const toolsShim = `# ki: expose bundled rg/fd to shell commands.
 [ -n "${KI_ORIG_BASH_ENV:-}" ] && [ -r "$KI_ORIG_BASH_ENV" ] && . "$KI_ORIG_BASH_ENV"
 _ki_tools_dir=$(cd "$(dirname "$BASH_SOURCE")" 2>/dev/null && pwd)

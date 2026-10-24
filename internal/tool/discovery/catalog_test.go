@@ -146,7 +146,6 @@ func TestLoadedAcceptsOnlyPairedSuccessfulCurrentIdentities(t *testing.T) {
 	if got := c.Loaded(history); len(got) != 1 || got[0].Name() != read.Name() {
 		t.Fatalf("loaded %v", got)
 	}
-	// Details cannot resurrect a schema that output policy did not disclose.
 	history[1].Content = []types.Content{{Type: "text", Text: `{"tools":[{"name":"different","parameters":{}}]}`}}
 	if got := c.Loaded(history); len(got) != 0 {
 		t.Fatal(got)

@@ -7,12 +7,6 @@ import (
 	"strings"
 )
 
-// compressibleTypes lists the response media types worth gzipping. These are
-// the SPA assets (web/dist) and the JSON API bodies; the session view can carry
-// hundreds of kilobytes of index JSON, so the API matters as much as the bundle.
-//
-// text/event-stream is deliberately absent: the WebUI reads SSE with a Flush per
-// event, and buffering those writes inside gzip would stall the stream.
 var compressibleTypes = map[string]bool{
 	"application/json":          true,
 	"application/javascript":    true,
@@ -26,12 +20,6 @@ var compressibleTypes = map[string]bool{
 	"text/xml":                  true,
 }
 
-// gzipHandler compresses eligible responses in place for one code path that
-// covers both serveUI and every /v1 handler.
-//
-// It is the outermost wrapper so recoverHTTP's error write is compressed too.
-// HEAD is left alone because there is no body to compress and the handler's
-// Content-Length (which we would have to drop) is the only useful part.
 func gzipHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead || !acceptsGzip(r) {
@@ -44,21 +32,13 @@ func gzipHandler(next http.Handler) http.Handler {
 	})
 }
 
-// gzipWriter delays committing the status until the first body write. Handlers
-// set Content-Type right before they write (writeJSON, http.ServeContent), so
-// the type is only final at Write time; deciding earlier could compress a type
-// we must not touch, or miss one we should.
-//
-// The delay is also what lets us drop the Content-Length that http.ServeContent
-// computed for the uncompressed body: the compressed length is unknown, so the
-// response has to fall back to chunked framing instead of a stale number.
 type gzipWriter struct {
 	http.ResponseWriter
 	gz       *gzip.Writer
 	status   int
-	header   bool // WriteHeader already seen from the handler
-	decided  bool // first write inspected and framing chosen
-	passthru bool // this response is not compressed
+	header   bool
+	decided  bool
+	passthru bool
 }
 
 func (w *gzipWriter) WriteHeader(code int) {
@@ -82,22 +62,17 @@ func (w *gzipWriter) Write(b []byte) (int, error) {
 	return w.gz.Write(b)
 }
 
-// decide inspects the first body chunk and commits the response.
 func (w *gzipWriter) decide(first []byte) {
 	w.decided = true
 	h := w.Header()
 	switch {
 	case w.status == http.StatusNoContent, w.status == http.StatusNotModified, w.status == http.StatusPartialContent:
-		// 206 comes from http.ServeContent answering a Range request; the bytes
-		// are a slice of the file, not a whole representation to compress.
 		w.passthru = true
 	case h.Get("Content-Encoding") != "":
 		w.passthru = true
 	default:
 		ct := h.Get("Content-Type")
 		if ct == "" {
-			// Mirror net/http sniffing: without this the client would see the
-			// gzip bytes' type instead of the payload's.
 			ct = http.DetectContentType(first)
 			h.Set("Content-Type", ct)
 		}
@@ -116,8 +91,6 @@ func (w *gzipWriter) decide(first []byte) {
 	w.gz = gzip.NewWriter(w.ResponseWriter)
 }
 
-// close finishes the gzip stream (the trailer is buffered until here) or, for a
-// body-less response such as 304, commits the status we deferred.
 func (w *gzipWriter) close() {
 	if w.gz != nil {
 		_ = w.gz.Close()
@@ -128,8 +101,6 @@ func (w *gzipWriter) close() {
 	}
 }
 
-// Flush keeps SSE working through the wrapper. SSE is never compressed, so this
-// only has to forward to the underlying writer.
 func (w *gzipWriter) Flush() {
 	_ = w.FlushError()
 }
@@ -143,7 +114,6 @@ func (w *gzipWriter) FlushError() error {
 	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
-// Unwrap exposes the underlying writer to http.ResponseController.
 func (w *gzipWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func mediaType(ct string) string {
@@ -164,8 +134,6 @@ func addVary(h http.Header, value string) {
 	h.Add("Vary", value)
 }
 
-// acceptsGzip reports whether the client offered gzip. An explicit q=0 is a
-// refusal even though the token is present.
 func acceptsGzip(r *http.Request) bool {
 	for part := range strings.SplitSeq(r.Header.Get("Accept-Encoding"), ",") {
 		enc, params, _ := strings.Cut(strings.TrimSpace(part), ";")

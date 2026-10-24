@@ -62,8 +62,6 @@ func TestCompactLifecycleIsDurableUnfoldedMetadata(t *testing.T) {
 					}
 				}
 			}
-			// A detailed page containing only the terminal status still needs
-			// its human anchor, just like a page ending at a checkpoint.
 			tail := withTurnOpeningUser(entries, entries[len(entries)-1:])
 			if len(tail) != 2 || tail[0].ID != "u" {
 				t.Fatalf("missing lifecycle opening user: %+v", tail)
@@ -332,8 +330,6 @@ func TestCompactTurnExpansionHasIndependentCursor(t *testing.T) {
 
 func TestCompactProjectionKeepsToolPairsAndZeroKeep(t *testing.T) {
 	entries := compactFixture(1, 3)
-	// A turn ending at the last tool result: keep=1 selects that tool, not
-	// the helper assistant node emitted by its call entry.
 	page := BuildCompact(entries[:len(entries)-1], "", "", 1)
 	turn := page.Turns[0]
 	if len(page.Entries) != 3 || turn.HiddenCount != 5 || len(turn.OmittedNodeIDs) != 1 || turn.VisibleNodeIDs[1] != "c0-2" {
@@ -347,7 +343,6 @@ func TestCompactProjectionKeepsToolPairsAndZeroKeep(t *testing.T) {
 	if len(page.Entries) != 1 || page.Turns[0].HiddenCount != 7 {
 		t.Fatalf("keep=0: %+v", page)
 	}
-	// Sibling entries outside the chosen leaf never enter a compact turn.
 	branched := append(entries, Entry{Type: "message", ID: "sibling", ParentID: entries[0].ID, Message: &types.Message{Role: "assistant"}})
 	page = BuildCompact(branched, "sibling", "", 1)
 	if len(page.Entries) != 2 || page.Turns[0].HiddenCount != 0 || page.Entries[1].ID != "sibling" {
@@ -362,8 +357,6 @@ func TestCompactProjectionNeverFoldsCompactionIntoKeepSlot(t *testing.T) {
 		{Type: "message", ID: "a2", ParentID: "a1", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "final"}}}},
 		{Type: "compaction", ID: "c1", ParentID: "a2", Summary: "sum", Timestamp: "1970-01-01T00:00:03Z"},
 	}
-	// A compaction trailing the turn is metadata, not a reply: it must not take
-	// keep=1's slot and hide the turn's final answer.
 	page := BuildCompact(entries, "", "", 1)
 	turn := page.Turns[0]
 	if turn.HiddenCount != 1 || !slices.Equal(turn.VisibleNodeIDs, []string{"u1", "a2", "c1"}) {
@@ -375,7 +368,6 @@ func TestCompactProjectionNeverFoldsCompactionIntoKeepSlot(t *testing.T) {
 	if !slices.ContainsFunc(page.Entries, func(e Entry) bool { return e.ID == "c1" }) {
 		t.Fatal("compaction body must stay visible on its own row")
 	}
-	// Even keep=0 shows the compaction while folding every reply.
 	page = BuildCompact(entries, "", "", 0)
 	if page.Turns[0].HiddenCount != 2 || !slices.Equal(page.Turns[0].VisibleNodeIDs, []string{"u1", "c1"}) {
 		t.Fatalf("keep=0: %+v", page.Turns[0])
@@ -393,12 +385,10 @@ func TestCompactTurnCountsToolFailuresAndCacheMisses(t *testing.T) {
 		entries = append(entries, Entry{Type: "message", ID: id, ParentID: parent, Message: &m})
 	}
 	add("u0", types.Message{Role: "user"})
-	// Reads the whole 30K prompt back: healthy, no miss.
 	add("a0", types.Message{Role: "assistant", Usage: usage(100, 29900)})
 	add("a0c", types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ID: "t1", Name: "Bash"}}})
 	add("r1", types.Message{Role: "toolResult", ToolCallID: "t1"})
 	add("r2", types.Message{Role: "toolResult", ToolCallID: "t2", IsError: true})
-	// Re-bills the previous 30K prompt → one notable miss.
 	add("a1", types.Message{Role: "assistant", Usage: usage(30000, 0)})
 
 	page := BuildCompact(entries, "", "", 1)
@@ -418,8 +408,6 @@ func TestCompactCacheMissBaselineSurvivesPaging(t *testing.T) {
 		}
 		entries = append(entries, Entry{Type: "message", ID: id, ParentID: parent, Message: &m})
 	}
-	// Turn 0 warms a 30K prompt. Turn 1 re-bills it, but the page below only
-	// carries turns 1..4, so turn 1 owes its miss count to the baseline.
 	add("u0", types.Message{Role: "user"})
 	add("a0", types.Message{Role: "assistant", Usage: usage(100, 29900)})
 	add("u1", types.Message{Role: "user"})

@@ -48,29 +48,22 @@ import (
 	"ki/internal/types"
 	"ki/internal/workspace"
 
-	// Options constructs a Server.
 	"ki/internal/process"
 	filetools "ki/internal/tool/builtin/file"
 )
 
 type Options struct {
-	Config   config.Config
-	Token    string
-	Streamer loop.Streamer
-	Registry *provider.Registry
-	// CodeModeConfig overrides the worker executable for embedding and tests;
-	// nil uses this same ki binary's private worker entrypoint.
+	Config         config.Config
+	Token          string
+	Streamer       loop.Streamer
+	Registry       *provider.Registry
 	CodeModeConfig *codemode.Config
 }
 
-// Server is the HTTP API.
 type Server struct {
-	cfg      config.Config
-	token    string
-	serverID string
-	// identity describes this process in server.json and /v1/meta. They are
-	// captured once at construction so a later executable replacement on disk
-	// cannot make the running daemon misreport what it is.
+	cfg                    config.Config
+	token                  string
+	serverID               string
 	pid                    int
 	exe                    string
 	startedAt              time.Time
@@ -156,56 +149,27 @@ type runState struct {
 	cancel          context.CancelFunc
 	runID           string
 	external        map[string]string
-	// cancelReason/source are first-writer-wins diagnostics. The context API
-	// collapses every caller to context.Canceled, so retain the initiating
-	// boundary before invoking cancel.
-	cancelReason string
-	cancelSource string
-	mu           sync.Mutex
-	// evs holds pointers so a trimmed ("blank") slot collapses to one word plus
-	// the shared blankEvent instead of a 424-byte loop.Event per chunk. A
-	// long turn streams tens of thousands of chunks; their slots must not
-	// outgrow the payloads the trimming just freed.
-	evs  []*loop.Event
-	wait *sync.Cond
-	done chan struct{}
-	// released closes after release's callbacks/queue dispatch, not merely SSE
-	// settlement. File cleanup must wait for the final writer, including release.
-	released chan struct{}
-	err      error
-	inbox    *loop.Inbox
-	// steerClosed closes the handoff window after loop.Run has returned. A
-	// message that arrives after that point must become a queued/resumed run,
-	// never a successful write to an Inbox that nobody will drain.
-	steerClosed bool
-	// seq numbers every buffered event; readers echo it back to resume.
-	seq int64
-	// promptKey is the system+tools digest of the last buffered request_header,
-	// so a repeat can be stored as promptUnchanged instead of the full payload.
-	promptKey string
-	// pending holds the indices of buffered transient events (a message's start
-	// and chunks, tool progress) still eligible for payload trimming; partial is
-	// the one index that must survive it — the newest chunk of the message in
-	// flight, which a reader attaching now still needs to render. readers is the
-	// set of attached SSE readers by their next read index. Trimming needs all
-	// three: a payload may go only once every reader has passed it and it is not
-	// the in-flight partial.
-	pending []int
-	partial int
-	readers map[*runReader]struct{}
+	cancelReason    string
+	cancelSource    string
+	mu              sync.Mutex
+	evs             []*loop.Event
+	wait            *sync.Cond
+	done            chan struct{}
+	released        chan struct{}
+	err             error
+	inbox           *loop.Inbox
+	steerClosed     bool
+	seq             int64
+	promptKey       string
+	pending         []int
+	partial         int
+	readers         map[*runReader]struct{}
 }
 
-// runReader is one attached SSE reader's next index into runState.evs.
-// Guarded by the owning runState.mu.
 type runReader struct{ pos int }
 
-// blankEvent is every trimmed slot's payload. One shared value keeps a blanked
-// chunk at one pointer per slot; readers skip it and it is never marshaled.
 var blankEvent = &loop.Event{Blank: true}
 
-// minReaderPos returns the smallest index no attached reader has consumed:
-// everything below it has been delivered (or there is no reader, so nothing is
-// owed). Must be called with mu held.
 func (st *runState) minReaderPos() int {
 	min := len(st.evs)
 	for r := range st.readers {
@@ -216,8 +180,6 @@ func (st *runState) minReaderPos() int {
 	return min
 }
 
-// addReader and removeReader track attached SSE readers. Must be called with mu
-// held. The map is created lazily so a runState literal (tests) needs no setup.
 func (st *runState) addReader(r *runReader) {
 	if st.readers == nil {
 		st.readers = map[*runReader]struct{}{}
@@ -227,41 +189,11 @@ func (st *runState) addReader(r *runReader) {
 
 func (st *runState) removeReader(r *runReader) { delete(st.readers, r) }
 
-// transient reports whether a buffered event is superseded by a later one:
-// streaming chunks carry the whole accumulated partial, a message_start is
-// superseded by its own chunks, and tool progress is superseded by the next
-// progress tick. Only the newest of a run of them can matter to a reader that
-// arrives later — once the message is persisted even that one stops mattering
-// (see appendLocked).
 func transient(t loop.EventType) bool {
 	return t == loop.MessageStart || t == loop.MessageUpdate || t == loop.ToolExecutionUpdate || t == loop.PatchApplyUpdated
 }
 
-// appendLocked buffers one event for replay and stamps it with the run's next
-// sequence number.
-//
-// Why payload trimming lives here: the SSE replay exists for a client that
-// attaches mid-run, and the transcript (GET /v1/sessions/{id}) already carries
-// every persisted entry. Two payloads grow with the run's *output* rather than
-// with its number of rounds, so storing them verbatim made the buffer quadratic
-// in a long turn's streaming text and made every re-attach resend it:
-//
-//   - message_update / tool_execution_update repeat the whole accumulated
-//     partial on every chunk, so all but the newest per message are redundant
-//     (see trimLocked);
-//   - request_header repeats the run's system prompt and tool schemas every
-//     round, so the repeat is stored as promptUnchanged — the same shape the
-//     session view already gives the persisted entries, which the WebUI already
-//     folds back into the previous prompt body.
-//
-// The caller's event keeps its full payload: the stages after buffer
-// (context-usage estimation, extension lifecycle) need it. Must be called with
-// mu held.
 func (st *runState) appendLocked(ev *loop.Event) {
-	// Every buffered event carries the run identity, whichever path appended it
-	// (the loop funnel, a queue drain, a sideband). A reader that attaches later
-	// must be able to attribute what it replays, and a client builds its resume
-	// cursor from these fields.
 	ev.RunID = st.runID
 	if ev.External == nil {
 		ev.External = cloneExternal(st.external)
@@ -286,23 +218,15 @@ func (st *runState) appendLocked(ev *loop.Event) {
 	st.evs = append(st.evs, &stored)
 	switch {
 	case transient(ev.Type):
-		// The previous partial loses its exemption; the new one becomes the
-		// payload a reader attaching right now still needs.
 		st.retirePartialLocked()
 		st.partial = idx
 		st.trimLocked()
 	case ev.Type == loop.MessageEnd && stored.EntryID != "":
-		// The message is on disk: its start and every chunk are in the
-		// transcript this reader can fetch, so the group is no longer in-flight
-		// state and the whole of it may be trimmed. A message_end without an
-		// entry id (the append failed) is not on disk, so it stays.
 		st.retirePartialLocked()
 		st.trimLocked()
 	}
 }
 
-// retirePartialLocked stops exempting the in-flight partial from trimming; its
-// index joins pending so the next trim may drop it. Must be called with mu held.
 func (st *runState) retirePartialLocked() {
 	if st.partial >= 0 {
 		st.pending = append(st.pending, st.partial)
@@ -310,40 +234,13 @@ func (st *runState) retirePartialLocked() {
 	}
 }
 
-// Bounds on the superseded streaming payloads a run keeps for a reader that
-// attaches later.
-//
-// Why a bound exists at all: trimming used to be gated purely on reader
-// positions ('never drop a chunk a reader has not read yet'), and one stalled
-// client — a backgrounded tab, a suspended phone page, a port-forward that
-// stopped reading — then pinned the whole buffer. A live run in the wild held
-// 14,766 events / 286 MB of superseded message_update payloads and left the
-// daemon at ~1 GB RSS, and every fresh page load replayed all of it (the
-// stall's send queue measured 3.1 MB) before it could render anything.
-//
-// Why dropping them is safe: a message_update carries the whole accumulated
-// partial, so the newest one per message is all a reader needs, and everything
-// older than that is on disk in the transcript the same reader can fetch. A
-// client that falls this far behind cannot be shown a live stream anyway; the
-// CLI prints the accumulated partial and the missing suffix instead of the raw
-// increments (see internal/cli streamPrinter).
 const (
 	maxKeptSuperseded      = 128
 	maxKeptSupersededBytes = 4 << 20
 )
 
-// trimLocked blanks superseded payloads, keeping memory proportional to the
-// in-flight partial instead of to the whole run's streamed output.
-//
-// The in-flight partial always stays: a reader attaching right now still gets
-// one chunk to render, and the next live chunk carries the whole accumulated
-// message anyway. Everything else goes once every attached reader has passed it,
-// or — for a reader that is further behind than the caps above — once it is
-// older than the newest maxKeptSuperseded payloads. Must be called with mu held.
 func (st *runState) trimLocked() {
 	limit := st.minReaderPos()
-	// Pass one, newest first: the retention caps keep the payloads a client
-	// attaching now can still use, and mark everything else blank.
 	kept, bytes := 0, 0
 	for i := len(st.pending) - 1; i >= 0; i-- {
 		idx := st.pending[i]
@@ -358,8 +255,6 @@ func (st *runState) trimLocked() {
 		kept++
 		bytes += size
 	}
-	// Pass two compacts in place, oldest first. The write cursor stays behind the
-	// read cursor because pending is scanned in the same order it was built.
 	out := st.pending[:0]
 	for _, idx := range st.pending {
 		if st.evs[idx] == blankEvent {
@@ -370,9 +265,6 @@ func (st *runState) trimLocked() {
 	st.pending = out
 }
 
-// eventPayloadBytes approximates what a buffered event retains, for the
-// retention cap. The exact size needs a marshal, and the cap only has to be
-// right about the order of magnitude.
 func eventPayloadBytes(ev *loop.Event) int {
 	if ev == nil {
 		return 0
@@ -420,8 +312,6 @@ func retainedValueBytes(v any) int {
 	}
 }
 
-// promptDigest identifies a request_header payload (system prompt + tool
-// schemas) so a repeat can be stored without its body.
 func promptDigest(system string, tools []toolapi.Spec) string {
 	h := sha256.New()
 	_, _ = h.Write([]byte(system))
@@ -433,18 +323,6 @@ func promptDigest(system string, tools []toolapi.Spec) string {
 	return string(h.Sum(nil))
 }
 
-// File is ~/.ki/server.json: the handshake a client uses to reach the daemon.
-//
-// PID/Build/Exe/StartedAt are facts about the process that wrote the file, so
-// a client can tell "this is the daemon I am talking to" apart from a stale file
-// and can notice that the running binary is not the one just installed. Older
-// files lack them, so every reader treats a zero value as unknown rather than
-// as a mismatch.
-//
-// Why Build and not Version: `version` is reserved for the integer schema
-// field every Ki-owned JSON document may carry (docs/state.md), and
-// server.json deliberately has none. Reusing that name for a string would make
-// a reader that honors the convention fail to decode the handshake.
 type File struct {
 	Addr      string    `json:"addr"`
 	Token     string    `json:"token"`
@@ -454,7 +332,6 @@ type File struct {
 	StartedAt time.Time `json:"startedAt,omitempty"`
 }
 
-// New builds a server (does not listen).
 func New(opt Options) (*Server, error) {
 	if err := config.ValidateMCPServers(opt.Config.MCPServers); err != nil {
 		return nil, err
@@ -501,7 +378,7 @@ func New(opt Options) (*Server, error) {
 		cwds = append(cwds, info.CWD)
 	}
 	_ = ws.Bootstrap(cwds)
-	sidx := session.NewIndex(infos) // reuse the List walk: zero extra reads
+	sidx := session.NewIndex(infos)
 	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
 	outputStore, err := output.New()
 	if err != nil {
@@ -510,17 +387,13 @@ func New(opt Options) (*Server, error) {
 		return nil, fmt.Errorf("create tool output store: %w", err)
 	}
 	srv := &Server{
-		cfg:      opt.Config,
-		token:    tok,
-		serverID: serverID,
-		pid:      os.Getpid(),
-		exe:      executablePath(),
-		// The HTTP listener binds after construction; measuring uptime from
-		// here keeps "started" meaningful even for an in-process server.
-		startedAt: time.Now(),
-		stopReq:   make(chan struct{}),
-		// Cookies ignore ports, so fixed names let separate localhost
-		// port-forwards overwrite each other's authentication and CSRF pair.
+		cfg:                    opt.Config,
+		token:                  tok,
+		serverID:               serverID,
+		pid:                    os.Getpid(),
+		exe:                    executablePath(),
+		startedAt:              time.Now(),
+		stopReq:                make(chan struct{}),
 		browserSessionCookie:   "ki_session_" + serverID,
 		browserCSRFCookie:      "ki_csrf_" + serverID,
 		streamer:               st,
@@ -565,8 +438,6 @@ func New(opt Options) (*Server, error) {
 	srv.replay = newReplayCache()
 	srv.ext = extension.NewManager(opt.Config.Home, srv.onExtensionError)
 	srv.ext.SetHost(srv)
-	// The runtime state is part of GET /v1/extensions; push a refetch hint on
-	// every transition instead of making the WebUI poll that endpoint.
 	srv.ext.SetStatusHandler(func(extension.RuntimeStatus) { srv.publishInvalidation(scopeExtensions) })
 	srv.providerExtensions.SetRuntimeManager(srv.ext)
 	srv.providerExtensions.SetErrorHandler(srv.onExtensionError)
@@ -584,9 +455,6 @@ func New(opt Options) (*Server, error) {
 	})
 	srv.restoreAgentTasks(infos)
 
-	// Web Push is best-effort infrastructure: a key or registry that cannot be
-	// read only disables the off-page channel, never the server. The WebUI falls
-	// back to its live-tab notification when push reports unavailable.
 	if opt.Config.Push.Enabled {
 		key, err := push.LoadOrCreateKey(filepath.Join(opt.Config.Home, "vapid.json"), opt.Config.Push.Subject)
 		if err != nil {
@@ -649,12 +517,8 @@ func newToken() string {
 	return hex.EncodeToString(b[:])
 }
 
-// Token is the bearer secret.
 func (s *Server) Token() string { return s.token }
 
-// Reload drops idle sessions' resource snapshots and extension views so the
-// next prompt/GET rebuilds them. Occupied sessions are queued onto pendingReload
-// and applied at release. Per-session invalidation is reloadSession.
 func (s *Server) Reload() bool {
 	s.mu.Lock()
 	active := make(map[string]bool, len(s.runs))
@@ -679,9 +543,6 @@ func (s *Server) Reload() bool {
 	return len(active) > 0
 }
 
-// startExtensions discovers the enabled global catalog and launches all
-// executable extension runtimes. It is called after the listener exists and
-// again during a global reload; declarative extensions remain process-free.
 func (s *Server) startExtensions() {
 	discovery := extension.Discover(s.cfg.Home, toggles.Load(s.cfg.Home).Extensions)
 	if err := s.disableManifestExtensions(discovery.All); err != nil {
@@ -712,9 +573,6 @@ func (s *Server) reloadProviderExtensions() {
 	s.publishInvalidation(scopeExtensions)
 }
 
-// reloadSession invalidates one idle session. A live run keeps its fixed tool
-// header and connection; requestReload records pendingReload, and release
-// applies it after occupy ends (prompt defer or compact).
 func (s *Server) reloadSession(id string) {
 	s.resources.Invalidate(id)
 	if s.ext != nil {
@@ -768,8 +626,6 @@ func compactionEndEvent(intent compact.Intent, outcome compactionOutcome, err er
 	}
 }
 
-// publishStandaloneCompactionEvent gives manual compaction the same durable
-// and extension-visible lifecycle as run-owned compaction events.
 func (s *Server) publishStandaloneCompactionEvent(ctx context.Context, sess *session.Session, ev loop.Event) error {
 	if err := persistCompactionEvent(sess, &ev); err != nil {
 		return fmt.Errorf("append manual compaction event: %w", err)
@@ -781,21 +637,11 @@ func (s *Server) publishStandaloneCompactionEvent(ctx context.Context, sess *ses
 	return nil
 }
 
-// publishContextUsage recomputes and persists the model-facing context size
-// after a compaction that ran outside a request (manual /compact, threshold
-// auto-compaction), then pushes the value so the WebUI context meter updates
-// immediately instead of waiting for the next prompt's request_header.
-//
-// The estimate is char/4: the newest assistant usage predates the compaction,
-// so EstimateTokens falls back and contextUsageEstimate adds the system prompt
-// and tool schemas from the persisted last request header.
 func (s *Server) publishContextUsage(sess *session.Session) {
 	_, info, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
 	if !ok {
 		return
 	}
-	// No live request: the compaction already ran, so the schemas come from the
-	// last persisted request_header.
 	used, window, err := s.contextUsageEstimate(sess, info, s.providerBinding(info), nil)
 	if err != nil {
 		slog.Warn("marshal tool schemas", "session_id", sess.ID(), "err", err)
@@ -815,12 +661,9 @@ func (s *Server) publishContextUsage(sess *session.Session) {
 	})
 }
 
-// Handler returns the HTTP handler.
 func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("GET /v1/health", func(w http.ResponseWriter, _ *http.Request) {
-		// Version lets a client (and the WebUI) tell a just-started daemon from
-		// the one it was already talking to without authenticating first.
 		writeJSON(w, 200, map[string]any{"ok": true, "version": buildinfo.Version})
 	})
 	api.HandleFunc("GET /v1/auth/status", s.authStatus)
@@ -843,10 +686,6 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("DELETE /v1/providers/{id}/models", s.auth(s.deleteProviderModel))
 	api.HandleFunc("PUT /v1/default-model", s.auth(s.putDefaultModel))
 	api.HandleFunc("GET /v1/meta", s.auth(s.meta))
-	// Shutdown lets `ki stop`/`ki restart` end this daemon the same way a
-	// signal does, but through owned cleanup. Without it the only way to stop a
-	// daemon was SIGKILL, which skipped Manager/extension/session teardown and
-	// left a stale server.json behind.
 	api.HandleFunc("POST /v1/shutdown", s.auth(s.shutdown))
 	api.HandleFunc("GET /v1/events", s.auth(s.pushEvents))
 	api.HandleFunc("GET /v1/push/config", s.auth(s.pushConfig))
@@ -892,17 +731,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /v1/workspaces/{id}/sessions/move", s.auth(s.moveWorkspaceSession))
 	api.HandleFunc("GET /v1/fs", s.auth(s.listFS))
 	api.HandleFunc("POST /v1/fs", s.auth(s.createFS))
-	// gzip sits outside recoverHTTP so panics recovered there are still written
-	// through the compressing writer, and every route (SPA assets and /v1 JSON)
-	// shares one compression path.
 	return gzipHandler(recoverHTTP(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1" || strings.HasPrefix(r.URL.Path, "/v1/") {
-			// Cookies ignore ports and a browser may already be logged in to
-			// both targets of a reused forward. Bind requests to the instance
-			// selected by auth/status so a late mutation cannot reach the wrong
-			// backend, even when its cookies or bearer token are valid there.
-			// Status remains unbound so clients can discover and rebind; CLI
-			// callers that omit the instance header retain bearer-only access.
 			if r.URL.Path != "/v1/auth/status" && r.URL.Path != "/v1/health" {
 				if bound := r.Header.Get("X-Ki-Server-ID"); bound != "" && bound != s.serverID {
 					w.Header().Set("Cache-Control", "no-store")
@@ -920,8 +750,6 @@ func (s *Server) Handler() http.Handler {
 func recoverHTTP(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
-			// Recover here so handler panics become structured JSONL records instead
-			// of net/http's stderr-only unstructured output.
 			if logging.Recover("http handler panic", "method", r.Method, "path", r.URL.Path) {
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 			}
@@ -938,8 +766,6 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if source == authBrowserSession {
-			// Idle-based expiry: a tab left open across a working day keeps
-			// refreshing its window instead of dying at a fixed 12h mark.
 			s.renewBrowserSession(w, r)
 			if unsafeMethod(r.Method) && !s.validCSRF(r) {
 				http.Error(w, "forbidden", http.StatusForbidden)
@@ -1000,11 +826,6 @@ func (s *Server) validBrowserSession(value string) bool {
 	return ok && expiresAt.After(now)
 }
 
-// renewBrowserSession extends a browser session once more than half its TTL has
-// been used, and rewrites both cookies to match. Sliding expiry keeps a tab
-// that is actively in use (a phone left on the WebUI across a day) signed in,
-// while an abandoned session still ages out. Rewriting on every request would
-// be needless churn, hence the half-TTL threshold.
 func (s *Server) renewBrowserSession(w http.ResponseWriter, r *http.Request) {
 	sessionCookie, err := r.Cookie(s.browserSessionCookie)
 	if err != nil {
@@ -1012,8 +833,6 @@ func (s *Server) renewBrowserSession(w http.ResponseWriter, r *http.Request) {
 	}
 	csrfCookie, err := r.Cookie(s.browserCSRFCookie)
 	if err != nil {
-		// The pair is written together at login; without the CSRF half a
-		// rewrite would break unsafe methods, so let this session expire.
 		return
 	}
 	now := time.Now()
@@ -1028,8 +847,6 @@ func (s *Server) renewBrowserSession(w http.ResponseWriter, r *http.Request) {
 	s.setBrowserCookies(w, sessionCookie.Value, csrfCookie.Value, now, requestIsSecure(r))
 }
 
-// setBrowserCookies writes the session/CSRF cookie pair with one shared expiry,
-// so login and renewal cannot drift apart.
 func (s *Server) setBrowserCookies(w http.ResponseWriter, sessionID, csrf string, now time.Time, secure bool) {
 	expires := now.Add(browserSessionTTL)
 	maxAge := int(browserSessionTTL / time.Second)
@@ -1132,12 +949,6 @@ func requestIsSecure(r *http.Request) bool {
 	return strings.EqualFold(forwarded, "https")
 }
 
-// ListenAndServe binds addr (empty uses cfg).
-//
-// The handshake is written before Serve so a client that saw the file can
-// always connect, and it is left in place when Serve returns an error (the
-// failure path keeps the reason visible in the log). A clean stop removes it so
-// the next `ki` invocation does not mistake it for a live daemon.
 func (s *Server) ListenAndServe(addr string) error {
 	if addr == "" {
 		addr = s.cfg.Server.Addr
@@ -1172,9 +983,6 @@ func (s *Server) ListenAndServe(addr string) error {
 	if !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	// A successful stop (signal or /v1/shutdown) reached the cleanup path.
-	// Removing the handshake here covers both, and the token check keeps a
-	// daemon that was displaced by a newer instance from deleting its file.
 	if rmErr := RemoveServerFile(s.cfg.Home, s.token); rmErr != nil {
 		slog.Warn("server.json", "err", rmErr)
 	}
@@ -1186,17 +994,12 @@ func dialAddress(addr net.Addr) string {
 	if err != nil {
 		return addr.String()
 	}
-	// Why: wildcard listeners are valid bind addresses but not reliable client
-	// destinations (and [::] may be sent through an HTTP proxy). Persist a
-	// loopback endpoint so CLI actions reuse the live server instead of starting
-	// a second runtime and duplicate extension sidecars.
 	if host == "" || net.ParseIP(host).IsUnspecified() {
 		host = "127.0.0.1"
 	}
 	return net.JoinHostPort(host, port)
 }
 
-// Addr is the bound address.
 func (s *Server) Addr() string {
 	s.mu.Lock()
 	ln := s.ln
@@ -1207,8 +1010,6 @@ func (s *Server) Addr() string {
 	return ln.Addr().String()
 }
 
-// Shutdown starts owned cleanup once. A caller deadline limits observation,
-// never the lifetime of cleanup or the files still used by a cancelled runner.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.runtimeMu.Lock()
 	if s.shutdownDone == nil {
@@ -1236,8 +1037,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) shutdownOwned() {
 	defer close(s.shutdownDone)
-	// Cancel root occupies as well as child tasks before waiting for either.
-	// A root may own a scheduled runPrompt which has not reached tool setup yet.
 	s.mu.Lock()
 	for id, st := range s.runs {
 		s.cancelRun(id, st, cancelReasonServerShutdown, "server", false)
@@ -1247,9 +1046,6 @@ func (s *Server) shutdownOwned() {
 		jobs = append(jobs, manager)
 	}
 	s.mu.Unlock()
-	// Fencing allocations makes early OS termination safe. Do not let a stalled
-	// provider keep terminals alive, but retain shared output files until every
-	// observer and the manager's final progress callback has drained.
 	managersDone := make(chan struct{})
 	go func() {
 		defer close(managersDone)
@@ -1266,12 +1062,8 @@ func (s *Server) shutdownOwned() {
 			_ = s.agentTasks.CloseContext(context.Background())
 		}
 	}()
-	// A root create accepted before the global fence may still be materializing.
-	// Cancel runners first so a slow HTTP body cannot delay their cancellation.
 	s.creationMu.Lock()
 	s.creationMu.Unlock()
-	// Admission and Add share runtimeMu. This includes scheduled occupies,
-	// warmups, dispatch and deletion; release's final callbacks are writers too.
 	s.runtimeWG.Wait()
 	<-agentsDone
 	<-managersDone
@@ -1322,9 +1114,6 @@ func (s *Server) processesFor(id string) *process.Manager {
 	closed := s.runtimeClosed || s.deleting[id] || s.stopping[id] > 0
 	s.runtimeMu.Unlock()
 	if closed {
-		// Builtin shell sets treat nil as "make a standalone manager". Return a
-		// closed sentinel so late catalog/extension calls cannot create an owner
-		// which escapes shutdown, spool accounting, and listeners.
 		if s.closedProcesses == nil {
 			s.closedProcesses = process.NewManager()
 			s.closedProcesses.Close()
@@ -1358,11 +1147,6 @@ func (s *Server) closeProcesses(id string) {
 	}
 }
 
-// WriteServerFile persists the handshake.
-//
-// Why temp-file + rename: a concurrent `ki` client polls this file while a
-// daemon starts, and an in-place write exposes an empty or half-written JSON
-// document to that read. The rename is atomic on every supported platform.
 func WriteServerFile(home string, f File) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
@@ -1394,9 +1178,6 @@ func WriteServerFile(home string, f File) error {
 	return os.Rename(name, filepath.Join(home, "server.json"))
 }
 
-// RemoveServerFile deletes the handshake, but only when it still belongs to the
-// given token. A daemon that lost its file to a newer instance (or to a manual
-// removal) must not delete the replacement's handshake on its way out.
 func RemoveServerFile(home, token string) error {
 	current, err := ReadServerFile(home)
 	if err != nil {
@@ -1414,7 +1195,6 @@ func RemoveServerFile(home, token string) error {
 	return nil
 }
 
-// ReadServerFile loads ~/.ki/server.json.
 func ReadServerFile(home string) (File, error) {
 	//nolint:gosec // home is the configured private Ki directory.
 	b, err := os.ReadFile(filepath.Join(home, "server.json"))
@@ -1504,16 +1284,6 @@ func (s *Server) open(id string) (*session.Session, error) {
 	return session.OpenFrom(dir, header, cfg, entries), nil
 }
 
-// get answers the WebUI session view.
-//
-// The default response is the conversation tail: the newest leaf entries plus
-// the cursor for older pages. The full-tree index is returned only via
-// fields=index (the trajectory table, branch navigation), and fields=runtime
-// answers the readiness poll without reading the transcript at all. Ordinary
-// views scan/cache body-free metadata to derive cache-miss annotations, but
-// hydrate and transfer only the requested bodies. Why: first paint used to
-// carry an index of every entry, so opening a long session waited for megabytes
-// of JSON that none of the newest messages needed.
 func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	q := r.URL.Query()
@@ -1550,10 +1320,6 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	}
 	withIndex := hasField(fields, "index")
 	withSystem := hasField(fields, "system")
-	// A projection answers from a body-free snapshot: runtime readiness plus,
-	// when asked, the newest system prompt. fields=system still forces the
-	// transcript read because the request_header body only lives in the jsonl,
-	// but the response stays free of the transcript tail.
 	projectionOnly := (hasField(fields, "runtime") || withSystem) && !withIndex && entryID == "" && batch == "" && before == "" && turnID == ""
 	full := entryID != "" || batch != "" || before != "" || withIndex || compact || traceView || inspectView || turnID != "" || withSystem
 
@@ -1567,10 +1333,6 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	case projectionOnly:
 		snap, err = s.loadSessionSnap(id, false, 0)
 	default:
-		// Why: a bounded tail cannot establish the previous prompt/cache state
-		// for its first assistant row. Read the cached body-free transcript
-		// metadata for classification, while still hydrating only the requested
-		// tail bodies below and omitting the full index from the response.
 		snap, err = s.loadIndexedSessionSnap(id)
 	}
 	if err != nil {
@@ -1660,9 +1422,6 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"entries": got})
 		return
 	}
-	// A stale cursor after a branch change is not evidence of reaching the
-	// root. Returning an empty successful page would permanently hide older
-	// history until the browser is reloaded.
 	if before != "" && !slices.ContainsFunc(session.LeafChain(snap.entries, snap.leafID), func(e session.Entry) bool { return e.ID == before }) {
 		http.Error(w, "history cursor not found on active branch", http.StatusConflict)
 		return
@@ -1726,8 +1485,6 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if withIndex && !hasField(fields, "runtime") {
-		// Index consumers already have a tail. Repeating it here doubled the
-		// weak-link transfer and could overwrite hydrated bodies in the UI.
 		body, err := json.Marshal(map[string]any{"id": id, "index": snap.index()})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1781,9 +1538,6 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		runtime["entries"], runtime["hasMore"], runtime["oldestId"] = tail.Entries, tail.HasMore, tail.OldestID
 	}
 	if withIndex || (!compact && snap.complete && snap.small) {
-		// A session smaller than one tail read was read in full anyway, so its
-		// index costs nothing extra and the client needs no second request; a
-		// long one stays opt-in.
 		runtime["index"] = snap.index()
 	}
 	writeJSON(w, 200, s.sessionMapSnap(snap, runtime))
@@ -1804,7 +1558,6 @@ func queryBool(raw string) bool {
 	return value
 }
 
-// hasField reports whether a comma-separated fields query contains name.
 func hasField(fields, name string) bool {
 	for f := range strings.SplitSeq(fields, ",") {
 		if strings.TrimSpace(f) == name {
@@ -1839,8 +1592,6 @@ func (s *Server) sessionRuntime(snap *sessionSnap) (map[string]any, error) {
 	}
 	//nolint:contextcheck // session warmup is process-owned via runtimeCtx, not the HTTP request
 	s.kickWarmup(snap.id, snap.header.CWD)
-	// Why: ready is set after Prepare, so read ready first then RuntimeCommands
-	// to avoid ready:true with an empty slash catalog.
 	ready := s.runtimeReady(snap.id)
 	cmds := command.Catalog(snapshot, tg.Skills)
 	if s.ext != nil {
@@ -1928,8 +1679,6 @@ func (s *Server) meta(w http.ResponseWriter, _ *http.Request) {
 	if _, model, ok := s.registry.FindModel(def.Provider, def.Model); ok {
 		out["thinkingEffort"] = provider.DefaultThinking(model)
 	}
-	// Process identity, so Settings → About can show which build is serving
-	// this tab without reading server.json (a browser cannot).
 	out["version"] = buildinfo.Version
 	out["releaseTag"] = buildinfo.ReleaseTag
 	out["pid"] = s.pid
@@ -1939,26 +1688,18 @@ func (s *Server) meta(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-// StopRequested is closed once someone asked this process to exit (signal or
-// POST /v1/shutdown). The listener owner selects on it to leave Serve.
 func (s *Server) StopRequested() <-chan struct{} { return s.stopReq }
 
-// RequestStop asks the process owner to exit. It is idempotent.
 func (s *Server) RequestStop() {
 	s.stopOnce.Do(func() { close(s.stopReq) })
 }
 
 func (s *Server) shutdown(w http.ResponseWriter, _ *http.Request) {
-	// Answer before shutting down: the caller is watching this response to
-	// decide whether it must escalate to a signal.
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "pid": s.pid})
 	slog.Info("shutdown requested", "pid", s.pid)
 	s.RequestStop()
 }
 
-// executablePath reports the path this process was started from, for
-// server.json/About. It is advisory: a deleted or replaced binary can make the
-// call fail, which must not prevent serving.
 func executablePath() string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -2075,9 +1816,6 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if modelSettingsRequested {
-		// A remote checkpoint is model-bound. Recompute after the complete patch
-		// (including a possible branch change) so the UI never keeps displaying
-		// usage measured against an incompatible opaque prefix.
 		s.publishContextUsage(sess)
 	}
 	s.publishInvalidation(scopeSessions)
@@ -2085,9 +1823,6 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.sessionMap(sess, nil))
 }
 
-// list renders the session sidebar. Rows come from the stamp-validated
-// ListCache, and the response carries an ETag over the rendered body so a
-// refresh that finds nothing changed returns 304 instead of a new array.
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	infos, err := s.slist.List(s.cfg.Sessions.Root)
 	if err != nil {
@@ -2104,10 +1839,6 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Why hash the body instead of the file stamps: the row also carries
-	// in-memory state (running) and the workspace mapping, so anything derived
-	// from those must invalidate the tag too. Hashing the exact bytes keeps the
-	// tag correct for every display-affecting input without tracking them.
 	sum := sha256.Sum256(body)
 	etag := `"` + hex.EncodeToString(sum[:]) + `"`
 	w.Header().Set("ETag", etag)
@@ -2135,10 +1866,6 @@ func (s *Server) running(id string) bool {
 	}
 }
 
-// mutateIdleSession closes the check-then-mutate race with occupy. Model
-// changes append a model_change entry and therefore move the active leaf just
-// like an explicit branch change; accepting either while a run or standalone
-// compaction owns the session can invalidate its prepared commit.
 func (s *Server) mutateIdleSession(id string, mutate func() error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2213,7 +1940,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	parsed = command.ResolveCommand(parsed, snapshot, runtimeCmds)
 	if parsed.Kind == command.KindUnknown && s.ext != nil {
 		tgPre := toggles.Load(s.cfg.Home)
-		s.ext.Prepare(r.Context(), id, sess.Header.CWD, extension.Enabled(snapshot.Extensions, tgPre.Extensions)) // chain order via Enabled
+		s.ext.Prepare(r.Context(), id, sess.Header.CWD, extension.Enabled(snapshot.Extensions, tgPre.Extensions))
 		for name := range s.ext.RuntimeCommands(id) {
 			runtimeCmds[name] = struct{}{}
 		}
@@ -2289,8 +2016,6 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 			}
 			body.Content = []types.Content{{Type: "text", Text: promptText}}
 		case command.KindPrompt:
-			// The outer condition normally excludes this case; keep the switch
-			// exhaustive so a future parser change follows the normal prompt path.
 		case command.KindUnknown:
 			_ = sess.Close()
 			writeHandled(w, "unknown command /"+parsed.Name, true)
@@ -2382,14 +2107,9 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 			body.Content = []types.Content{{Type: "text", Text: next}}
 		}
 	}
-	// The prompt is accepted asynchronously; detach it from the HTTP request
-	// cancellation while retaining request-scoped values for downstream code.
 	s.startRun(context.WithoutCancel(r.Context()), w, id, body.Content, body.ParentID, body.Model, body.ClientRequestID)
 }
 
-// promoteQueued takes a durable queue item and inserts it into the captured
-// run. If that occupy has already ended, the item goes back to the head so
-// dispatchQueue can start it; it is not steered into a replacement run.
 func (s *Server) promoteQueued(w http.ResponseWriter, r *http.Request, id string, sess *session.Session, live *runState, queueID, model string) {
 	gate := s.inputGate(id)
 	gate.Lock()
@@ -2509,18 +2229,12 @@ func validateUserContent(content []types.Content) error {
 				if err != nil {
 					return fmt.Errorf("content[%d]: %w", i, errAttachmentPathInvalid)
 				}
-				// The WebUI intentionally selects host files through the authenticated
-				// server-side browser; re-stat the normalized absolute path so a stale
-				// or directory selection cannot enter persisted model context.
 				st, err := os.Stat(abs)
 				if err != nil || !st.Mode().IsRegular() {
 					return fmt.Errorf("content[%d]: %w", i, errAttachmentUnreadable)
 				}
 				c.Path = abs
 				c.Size = st.Size()
-				// Images are materialized into base64 for provider requests. Bound the
-				// read here so a selected disk image cannot multiply into an unbounded
-				// request allocation; ordinary file references are never inlined.
 				if c.Type == "image" && st.Size() > maxInlineImage {
 					return fmt.Errorf("content[%d]: %w", i, errImageTooLarge)
 				}
@@ -2587,10 +2301,6 @@ func hasUnresolvedToolCalls(messages []types.Message) bool {
 func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content []types.Content, parentID *string, reqModel, origin, idempotencyKey string, nextTurn []session.ExtQueuedItem, external ...map[string]string) {
 	//nolint:contextcheck // release may rewarm/reload/dispatch after the run ctx is cancelled
 	defer func() {
-		// Why: occupy must be paired with release. Closing done here used to
-		// mark SSE idle without consuming pendingReload, so a /reload during
-		// the prompt never invalidated the snapshot. release closes done (and
-		// Broadcasts) itself; a second close panics.
 		logging.Recover("prompt panic", "session_id", id)
 		s.preserveRunInbox(id, st)
 		s.release(id, st)
@@ -2636,9 +2346,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 	}
 	if parentID != nil {
-		// A per-request model change is metadata, not the parent of an edited
-		// user message. Re-select the requested base so user alternatives remain
-		// true siblings and branch navigation does not depend on model settings.
 		if err := sess.SetLeaf(*parentID); err != nil {
 			st.err = err
 			return
@@ -2674,8 +2381,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	bindingCredential := provider.Credential{}
 	if s.requireModelCredential {
-		// Use the credential snapshot held by this run rather than mutable
-		// registry state; a concurrent login must not relabel opaque output.
 		bindingCredential = liveCredential
 	} else if credential, status, err := s.registry.Credential(info.Provider); err == nil && status.Configured {
 		bindingCredential = credential
@@ -2686,33 +2391,16 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	jobs := s.processesFor(id)
 	profile := toolProfile(info)
-	// The resource snapshot is loaded before the tool set because shell tools
-	// carry the extension-contributed PATH directories, and it stays the single
-	// source for this session's extension catalog below.
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
 	s.reportManifestErrors(sess.ID(), snapshot.Extensions)
-	// Why the prompt does not resolve the session's Agent depth: the tool set
-	// feeds both the provider's tool schemas and the system prompt's tool list,
-	// so making it depend on the durable parent chain meant a deep child rendered
-	// a different prefix and lost the prefix cache. Admission limits active child
-	// turns per root, not depth; the tool schemas stay stable across the tree.
 	tls := builtin.Set{
 		CWD: sess.Header.CWD, Processes: jobs, Agent: s,
-		// Leave the entry unset so SpawnAgent resolves the leaf at the actual
-		// Agent tool-call boundary, after the current user/assistant history has
-		// been appended. Capturing it while assembling tools would fork stale
-		// parent context.
 		AgentParentSessionID: sess.ID(),
 		Shells:               s.shells, Mutations: s.mutations,
 		PathDirs: snapshot.PathDirs,
 	}.Build(profile)
 	tg := toggles.Load(cfg.Home)
-	// Apply the global built-in toggle before extension tools are appended. This
-	// keeps the built-in setting scoped to Set.Build and leaves extensions under
-	// their own lifecycle/session controls.
 	tls = builtin.FilterBuiltins(tls, tg.Tools)
-	// snapshot.Extensions is the global Discover.All catalog. Configure
-	// reconciles process-global sidecars; Prepare builds this session's view.
 	enabledExtensions := extension.Enabled(snapshot.Extensions, tg.Extensions)
 	s.ext.Configure(enabledExtensions)
 	extTools := s.ext.Prepare(ctx, sess.ID(), sess.Header.CWD, enabledExtensions)
@@ -2766,8 +2454,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			searchCatalog = candidate
 		}
 	}
-	// Deferral is disclosure, not authorization. Keep the fixed executable
-	// snapshot, but omit MCP schemas only when a usable search entrypoint exists.
 	deferredNames := make(map[string]bool)
 	if searchCatalog != nil {
 		for _, name := range searchCatalog.Names() {
@@ -2778,9 +2464,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	var codeDispatcher *loop.ToolDispatcher
 	var codeSession *codemode.Session
 	var codeSessionMu sync.Mutex
-	// A yielded cell retains this occupy's hooks, identity and event funnel.
-	// Drain it before session/telemetry close; only committed JSON state may
-	// survive into the next occupy with a newly filtered capability snapshot.
 	defer func() {
 		codeSessionMu.Lock()
 		session := codeSession
@@ -2841,8 +2524,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		promptSet := codeSet
 		promptSet.Deferred = remaining
 		visible = append(visible, builtin.FilterBuiltins(promptSet.Build(), tg.Tools)...)
-		// Discovery is deliberately direct-only and absent from the worker's
-		// nested tools and ALL_TOOLS.
 		return append(visible, searchTools...)
 	}
 	tls = modelTools(nil)
@@ -2855,8 +2536,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			runStreamer = occ.WrapStreamer(runStreamer)
 		}
 	}
-	// The snapshot is fixed for the session until reload, while the prompt is
-	// rendered per request so tool schemas and runtime metadata stay current.
 	promptInput := prompt.Input{Resources: snapshot, Tools: tls, Toggle: tg.Skills}
 	sys := prompt.Build(promptInput)
 
@@ -2866,9 +2545,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	inlineBinding := providerBindingForProtocol(info, bindingCredential, info.Compaction.Inline)
 	opaqueReplaySafe := occ.OpaqueReplaySafe()
 	if !opaqueReplaySafe {
-		// Lifecycle hooks only see portable messages. Replaying an encrypted
-		// prefix would bypass a newly enabled DLP/moderation hook, and provider
-		// hooks can redirect it outside the scope recorded in its binding.
 		replayBinding = types.ProviderBinding{}
 		useServerCompaction = false
 	}
@@ -2885,9 +2561,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 	}
 
-	// Preflight before running: a resumed session or a very large prompt may already
-	// exceed the context window, so compact once before loop.Run. This is non-blocking:
-	// a compaction failure only emits a warning.
 	if !useServerCompaction && s.shouldCompact(sess, info, replayBinding) {
 		current := sess.ContextToLeaf(replayBinding)
 		preflight := &loop.Request{
@@ -2914,10 +2587,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 		if changed && opaqueReplaySafe {
 			runTelemetry.Reset("compaction")
-			// A standalone preflight may replace an inline checkpoint with a
-			// different protocol. Resolve the newly committed binding before
-			// the first generation request instead of expanding portable
-			// history through the stale preflight binding.
 			replayBinding = replayBindingForSession(sess, info, bindingCredential)
 			requestBinding = replayBinding
 			emitter.replayBinding = replayBinding
@@ -2989,11 +2658,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		user.ClientRequestID = st.runID + ":input"
 	}
 	err = runMessage(user)
-	// loop.Run checks Inbox.Has at the end of a turn. A steer can arrive in
-	// the narrow interval after that check and before Run returns; atomically
-	// close the handoff window only after taking one last Inbox snapshot, then
-	// run any such message as a continuation. If the window is already closed,
-	// SendMessage falls back to agent.Controller's durable queue/resume path.
 	for {
 		st.mu.Lock()
 		var steers []types.Message
@@ -3008,18 +2672,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		st.mu.Unlock()
 		for _, steer := range steers {
 			if ctx.Err() != nil {
-				// Why: an accepted steer is committed to the tree only when
-				// loop.Run drains the Inbox. A canceled run (abort) never
-				// drains, so the optimistic bubble would vanish on the next
-				// jsonl reload. Commit the message here as an unanswered user
-				// turn: the text survives, and the next run sees it in history.
 				if _, aerr := s.commitUserMessage(steer, func() error {
 					_, _, err := sess.AppendMessageWithKey(steer, "")
 					return err
 				}); aerr != nil {
 					slog.Warn("persist undrained steer", "session_id", id, "err", aerr)
-					// The deferred handoff retries through the durable queue;
-					// failed persistence must not consume a completion.
 					st.inbox.Push(steer)
 				}
 				continue
@@ -3033,10 +2690,6 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	st.err = err
 }
 
-// persistRunCancellation commits the user-visible cancellation row after the
-// loop's terminal output. It is a normal non-message leaf: provider replay
-// ignores it, while session history and branch navigation retain it in the
-// exact position where the run stopped.
 func (s *Server) persistRunCancellation(sess *session.Session, st *runState) {
 	reason, source := runCancellation(st)
 	if reason == "" {
@@ -3145,8 +2798,6 @@ func (s *Server) takeNextTurn(id string) []session.ExtQueuedItem {
 	return items
 }
 
-// withNextTurn injects deliverAs=nextTurn items after the user message and
-// before before_agent_start. Those items never start their own occupy.
 func (s *Server) withNextTurn(sess *session.Session, st *runState, hooks loop.Hooks, items []session.ExtQueuedItem) loop.Hooks {
 	inner := hooks.BeforeRun
 	hooks.BeforeRun = func(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error) {
@@ -3224,15 +2875,13 @@ func (s *Server) summarizer(ctx context.Context, sessionID, cacheKey string, mod
 	return compact.StreamSummarizer{
 		Stream: func(ctx context.Context, system, user string) (string, *types.Usage, error) {
 			m, err := stream.Stream(ctx, loop.Request{
-				Provider:  model.Provider,
-				Model:     model.ID,
-				API:       model.API,
-				SessionID: sessionID,
-				CacheKey:  cacheKey,
-				System:    system,
-				Messages:  []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: user}}}},
-				// Local fallback must retain the same selected reasoning/speed
-				// as remote compaction, rather than silently disabling Fast.
+				Provider:                model.Provider,
+				Model:                   model.ID,
+				API:                     model.API,
+				SessionID:               sessionID,
+				CacheKey:                cacheKey,
+				System:                  system,
+				Messages:                []types.Message{{Role: "user", Content: []types.Content{{Type: "text", Text: user}}}},
 				ThinkingEffort:          effort,
 				ThinkingLevelMap:        model.ThinkingLevelMap,
 				ThinkingFormat:          model.Compat.ThinkingFormat,
@@ -3346,11 +2995,6 @@ func (s *Server) serverSideCompaction(model provider.Model) bool {
 		supportsWire
 }
 
-// effectiveContextWindow is the window every planning decision must use: the
-// model catalog value, capped by compaction.max_context_tokens and by the
-// Message settings' hard ceiling (toggles.json message.contextWindow, default
-// 5,000,000). Min semantics only: a cap never inflates a smaller model window,
-// and an unknown (0) window stays unknown so callers keep their fallback.
 func (s *Server) effectiveContextWindow(info provider.Model) int {
 	window := info.ContextWindow
 	if window <= 0 {
@@ -3372,11 +3016,6 @@ func (s *Server) remoteCompactThreshold(model provider.Model) int {
 }
 
 func (s *Server) localSummaryInputLimit(model provider.Model) int {
-	// Why the raw model window: this bounds how much history the summarizer
-	// request may carry. The compaction thresholds use the effective (capped)
-	// window, but shrinking the summarizer input along with a small
-	// compaction.max_context_tokens would make summaries fail with
-	// "input budget too small" instead of compacting.
 	window := model.ContextWindow
 	if window <= 0 {
 		window = 128000
@@ -3421,8 +3060,6 @@ func compactRemoteWithRetry(ctx context.Context, compactor provider.Compactor, r
 
 func (s *Server) shouldCompact(sess *session.Session, model provider.Model, binding types.ProviderBinding) bool {
 	modelContext := sess.ContextToLeaf(binding)
-	// effectiveContextWindow already folds in compaction.max_context_tokens and
-	// the Message settings ceiling; ShouldRun's own cap can only repeat it.
 	return compact.ShouldRun(compact.EstimateModelContext(modelContext, sess.LastCompactionAt()), s.effectiveContextWindow(model), s.cfg.Compaction)
 }
 
@@ -3467,9 +3104,6 @@ func extensionPreparation(strategy string, prep *compact.Preparation, sess *sess
 			TokensBefore: prep.TokensBefore, PreviousSummary: prep.PreviousSummary,
 		}
 	}
-	// A standalone provider can compact a window that is too small for the
-	// local cut policy. The hook still receives a portable plan, never the
-	// opaque Responses prefix.
 	messages := sess.MessagesToLeaf()
 	return extension.CompactPreparation{
 		Strategy: strategy, SourceLeafID: sess.LeafID(),
@@ -3493,9 +3127,6 @@ func customCompactionResult(in *extension.CustomCompactResult) compact.Result {
 }
 
 func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Session, model provider.Model, failed *loop.Request) (*remoteCompactionPlan, error) {
-	// Header interceptors can replace the endpoint or project/account identity
-	// after binding is computed. Until they expose a stable scope fingerprint,
-	// encrypted context cannot safely cross that boundary.
 	if s.ext != nil && s.ext.HTTPDoer(sess.ID()) != nil {
 		return nil, fmt.Errorf("%w with provider header interception", errRemoteCompactionUnavailable)
 	}
@@ -3505,9 +3136,6 @@ func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Sess
 	}
 	if failed != nil && failed.ProviderBinding.Provider != "" &&
 		!failed.ProviderBinding.SameScope(binding) {
-		// Overflow recovery resumes through the already occupied streamer. A
-		// rotated credential or protocol would make the new checkpoint unsafe
-		// for that stream.
 		return nil, errors.New("provider credential or compaction scope changed during remote compaction")
 	}
 
@@ -3596,7 +3224,6 @@ func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Sess
 	if s.ext != nil {
 		transformed, transformErr := s.ext.Occupy(sess.ID()).TransformProviderRequest(ctx, req)
 		if transformErr != nil {
-			// A failed provider policy must not be bypassed by local fallback.
 			return nil, fmt.Errorf("transform remote compaction request: %w", transformErr)
 		}
 		req = transformed
@@ -3613,10 +3240,6 @@ func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Sess
 	}
 	tokensBefore := compact.EstimateTokens(req.Messages, sess.LastCompactionAt())
 	if portableExpanded {
-		// The usage carried by these messages was measured against an opaque
-		// checkpoint that is incompatible with the selected model. The request
-		// now contains expanded portable history, so only a full-history estimate
-		// is valid.
 		tokensBefore = compact.EstimateModelContext(types.ModelContext{Messages: req.Messages, Portable: true}, sess.LastCompactionAt())
 	}
 	return &remoteCompactionPlan{
@@ -3627,9 +3250,6 @@ func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Sess
 	}, nil
 }
 
-// compactSession is the shared orchestrator for manual, preflight, threshold,
-// and overflow compaction. Planning, extension interception, strategy
-// execution, validation, and commit are separate stages.
 func (s *Server) compactSession(ctx context.Context, sess *session.Session, intent compact.Intent, request *loop.Request) (compactionOutcome, error) {
 	_, model, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
 	if !ok {
@@ -3734,8 +3354,6 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session, inte
 	if err != nil {
 		return compactionOutcome{}, err
 	}
-	// compactSession runs inside an occupied prompt, so this queues until
-	// runPrompt's release instead of closing this turn's extension views.
 	//nolint:contextcheck // reload/warmup is deferred to release and must outlive this compact ctx
 	s.requestReload(sess.ID())
 	strategy = "local"
@@ -3770,8 +3388,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	defer writer.watch(ctx)()
 
 	snapshot := s.replaySnapshot(id, r.URL.Query().Get("through"))
-	// Heartbeats and event writes share one writer; a failed heartbeat cancels
-	// the reader's condition wait instead of leaving a dead connection parked.
 	write := writer.write
 	stopPing := make(chan struct{})
 	pingStopped := make(chan struct{})
@@ -3802,9 +3418,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	for _, ev := range st.evs {
 		snapshot.observe(ev)
 	}
-	// Registering before the first read tells the emitter which buffered
-	// payloads this reader is still owed, so nothing is trimmed out from under
-	// it (see runState.trimLocked).
 	st.addReader(reader)
 	st.mu.Unlock()
 	defer func() {
@@ -3817,7 +3430,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		st.mu.Lock()
 		st.wait.Broadcast()
 		st.mu.Unlock()
-	}() // Prevent a client disconnect from leaking the goroutine.
+	}()
 	for {
 		if ctx.Err() != nil {
 			return
@@ -3838,15 +3451,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		ev := st.evs[reader.pos]
 		reader.pos++
 		st.mu.Unlock()
-		// Blank carries a payload the emitter dropped as superseded; since
-		// marks events this client already has from an earlier connection.
 		if ev.Blank || ev.Seq <= since || snapshot.covers(ev) {
 			continue
 		}
 		if ev.Type == loop.AgentEnd {
-			// A terminal frame is a client's cue to issue the next prompt or
-			// compaction. Wait for release (including queued reload), otherwise
-			// cache work in release turns that next request into a spurious 409.
 			select {
 			case <-st.done:
 			case <-ctx.Done():
@@ -3874,10 +3482,6 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// parseCursor reads the resume position the client sent, from the SSE
-// Last-Event-ID header (EventSource resends it on its own) or a `since` query
-// (fetch clients set it themselves). Both carry "<runID>:<seq>"; a cursor from
-// another run is ignored so a stale value cannot skip the current run.
 func parseCursor(r *http.Request, runID string) int64 {
 	raw := strings.TrimSpace(r.Header.Get("Last-Event-ID"))
 	if raw == "" {
@@ -3994,9 +3598,6 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request, suppliedInstr
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	// Why: /compact is answered by one synchronous request, so the chat UI has
-	// no run stream to watch. Publish progress on the session notification
-	// stream so the history shows a live "compacting" row.
 	intent := compact.Intent{Reason: compact.ReasonManual, Instructions: instructions}
 	if err := s.publishStandaloneCompactionEvent(ctx, sess, loop.Event{
 		Type: loop.CompactionStart, Reason: string(intent.Reason),
@@ -4030,8 +3631,6 @@ func (s *Server) doCompact(w http.ResponseWriter, r *http.Request, suppliedInstr
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// A manual /compact has no run stream, so its rebuilt context would not
-	// reach the meter until the next prompt's request_header without this push.
 	s.publishContextUsage(sess)
 	writeJSON(w, 200, map[string]any{
 		"id": outcome.Entry.ID, "type": outcome.Entry.Type,
@@ -4058,10 +3657,6 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// An explicit entryId copies a settled prefix, so it is safe to fork a live
-	// session at a specific message (the WebUI only offers per-message forks).
-	// A leaf fork (no entryId) would copy whatever the running turn has written
-	// so far, so it stays rejected while the session is busy.
 	if body.EntryID == "" && s.running(r.PathValue("id")) {
 		http.Error(w, "session busy", http.StatusConflict)
 		return
@@ -4102,9 +3697,6 @@ func (s *Server) rememberModel(ref provider.ModelRef) {
 
 func (s *Server) resolveSessionModel(sess *session.Session, requested string) (provider.ModelRef, provider.Model, error) {
 	if requested == "" {
-		// Why: model IDs may themselves contain slashes (for example Magpie's
-		// vendor/model IDs). Resolve the stored fields as a structured reference
-		// instead of mistaking the first model segment for a provider.
 		ref := provider.ModelRef{Provider: sess.Config.Provider, Model: sess.Config.Model}
 		model, err := s.registry.ResolveRef(ref)
 		return ref, model, err
@@ -4112,10 +3704,6 @@ func (s *Server) resolveSessionModel(sess *session.Session, requested string) (p
 	return s.registry.ResolveSpec(requested, sess.Config.Provider)
 }
 
-// resolveThinking uses the model's default when the client omits effort,
-// otherwise clamps to the nearest supported level. Why: create/patch/prompt
-// share this so an empty thinkingEffort never silently becomes "off" (the
-// first supported level) and a kept effort survives a model switch.
 func resolveThinking(model provider.Model, requested string) (string, error) {
 	if requested == "" {
 		return provider.DefaultThinking(model), nil
@@ -4129,9 +3717,6 @@ func resolveThinking(model provider.Model, requested string) (string, error) {
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	// A port-forward can point this origin at a different server instance.
-	// Dynamic JSON must not survive that switch, but explicit route cache
-	// policies (including conditional ETag reads) remain authoritative.
 	if w.Header().Get("Cache-Control") == "" {
 		w.Header().Set("Cache-Control", "no-store")
 	}

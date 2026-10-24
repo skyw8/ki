@@ -127,9 +127,6 @@ func TestPromptAppendListsSources(t *testing.T) {
 	}
 }
 
-// TestPromptAppendWritesBothSourcesAdditively pins the write path, the file
-// permissions, and the additive read-back: the project file must not hide the
-// global one, and a saved file must reach a session's snapshot.
 func TestPromptAppendWritesBothSourcesAdditively(t *testing.T) {
 	srv, hs := testServer(t)
 	cwd := t.TempDir()
@@ -159,9 +156,6 @@ func TestPromptAppendWritesBothSourcesAdditively(t *testing.T) {
 	if !project.Exists || project.Text != "PROJECT-RULE" {
 		t.Fatalf("project after write = %+v", project)
 	}
-	// The workspace registry stores the normalized path, so the expectation has
-	// to be normalized too: t.TempDir is unresolved on macOS (/var ->
-	// /private/var) and under Windows short-name %TEMP% paths.
 	normalized, err := workspace.Normalize(cwd, "")
 	if err != nil {
 		t.Fatal(err)
@@ -176,8 +170,6 @@ func TestPromptAppendWritesBothSourcesAdditively(t *testing.T) {
 		t.Fatalf("effective order builtin=%d global=%d project=%d: %q", builtinAt, globalAt, projectAt, view.Effective)
 	}
 
-	// The settings write must reach sessions, not only the settings view: a
-	// cached snapshot would keep serving the prompt from before the edit.
 	snapshot := srv.resources.Load("prompt-append-session", cwd)
 	if len(snapshot.AppendSystemPrompts) != 2 ||
 		snapshot.AppendSystemPrompts[0].Text != "GLOBAL-RULE" ||
@@ -196,7 +188,6 @@ func TestPromptAppendWritesBothSourcesAdditively(t *testing.T) {
 	if strings.Contains(view.Effective, "PROJECT-RULE") {
 		t.Fatalf("effective still holds the deleted layer: %q", view.Effective)
 	}
-	// Deleting a missing file is not an error: the wanted state is "no file".
 	promptAppendRequest(t, hs, http.MethodDelete, query+"&source=project", nil)
 }
 
@@ -235,8 +226,6 @@ func TestPromptAppendRejectsInvalidWrites(t *testing.T) {
 	}
 }
 
-// TestPromptAppendRejectsUnknownWorkspace pins the write boundary: an
-// unregistered workspace id must not create a .ki tree at an arbitrary path.
 func TestPromptAppendRejectsUnknownWorkspace(t *testing.T) {
 	srv, hs := testServer(t)
 	query := "?workspaceId=nope"

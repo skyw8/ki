@@ -128,8 +128,6 @@ func TestResponsesHistoricalFunctionRetainedWithCustomDeclaration(t *testing.T) 
 	})
 	items := body["input"].([]any)
 	item, output := items[0].(map[string]any), items[1].(map[string]any)
-	// Historical items describe what actually happened; a current custom
-	// declaration does not require rewriting prior JSON calls into raw input.
 	if item["type"] != "function_call" || item["arguments"] != call.ArgumentsRaw ||
 		item["name"] != call.Name || item["call_id"] != call.ID ||
 		output["type"] != "function_call_output" || output["call_id"] != call.ID {
@@ -189,8 +187,6 @@ func TestResponsesCanonicalCustomReplayUsesCurrentFunction(t *testing.T) {
 	if string(before) != string(after) {
 		t.Fatal("caller window was mutated")
 	}
-	// Server-side compaction retains canonical items on the assistant message
-	// rather than the prefix; those items must follow the same adaptation.
 	body = ResponsesBody(Request{Tools: []ToolSpec{functionEnvelope("orchestrate", "code")},
 		Messages: []Message{{Role: "assistant", ResponsesItems: window}}})
 	if !reflect.DeepEqual(body["input"], items) {

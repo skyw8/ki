@@ -1,7 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { serverToken } from './global-setup.ts'
 
-// This case owns its isolated server/home and mutates no shared fixtures.
 test.describe.configure({ mode: 'parallel' })
 
 async function openTools(page: Page): Promise<void> {
@@ -42,7 +41,6 @@ test('Tools settings persist toggles without a Code Mode setting', async ({ page
   await expect(grep).toHaveAttribute('aria-checked', 'false')
   await expect(read).toHaveAttribute('aria-checked', 'false')
 
-  // Failure rolls back the toggle and shows a retryable error without changing saved settings.
   await page.route('**/v1/tools*', async route => {
     if (route.request().method() !== 'PATCH') return route.continue()
     await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'settings-save-unavailable' }) })

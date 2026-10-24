@@ -16,15 +16,12 @@ import (
 )
 
 type Config struct {
-	Executable string
-	// Args replaces the default WorkerArg argv, chiefly for isolated tests.
+	Executable  string
 	Args        []string
 	Limits      Limits
 	MaxSessions int
 }
 
-// Manager owns lazy workers. NewSession does not start a process; the first
-// Execute does, and no worker restart silently replays tool side effects.
 type Manager struct {
 	mu       sync.Mutex
 	config   Config
@@ -161,8 +158,6 @@ func (s *remoteSession) start(ctx context.Context) (*peer, error) {
 		_ = stdin.Close()
 		return nil, err
 	}
-	// The worker is a capability-restricted JS host, not a shell. It must not
-	// inherit API secrets merely because the daemon needed them for providers.
 	cmd.Env = safeWorkerEnv()
 	cmd.Stderr = io.Discard
 	if err = cmd.Start(); err != nil {
@@ -201,8 +196,6 @@ func (s *remoteSession) start(ctx context.Context) (*peer, error) {
 
 func safeWorkerEnv() []string {
 	var result []string
-	// Preserve only OS runtime essentials, not arbitrary provider or extension
-	// environment. JS still receives no process/env object.
 	allowed := map[string]bool{"systemroot": true, "windir": true, "temp": true, "tmp": true, "tmpdir": true, "path": true, "lang": true, "lc_all": true}
 	for _, entry := range os.Environ() {
 		name, _, ok := strings.Cut(entry, "=")
@@ -221,10 +214,6 @@ func (s *remoteSession) execute(ctx context.Context, req ExecuteRequest, cb Call
 	if err != nil {
 		return Response{}, err
 	}
-	// The caller's cancellation requests worker stop; it must not independently
-	// cancel callbacks first. Otherwise a fast callback cancellation error can
-	// finish a still-live worker cell and commit its uncommitted store writes.
-	// Worker cancellation and binding retirement own callback cancellation.
 	bindingCtx, bindingCancel := context.WithCancel(context.WithoutCancel(ctx))
 	b := &callbackBinding{ctx: bindingCtx, cancel: bindingCancel, cb: cb, tools: make(map[string]bool), freeform: make(map[string]bool), seen: make(map[string]bool), done: make(chan struct{})}
 	for _, def := range req.Tools {
@@ -247,8 +236,6 @@ func (s *remoteSession) execute(ctx context.Context, req ExecuteRequest, cb Call
 	var resp Response
 	err = p.call(ctx, "execute", req, &resp)
 	if err != nil {
-		// An interrupted Execute may have admitted a cell before its response;
-		// terminate all rather than guess an ID or replay the execution.
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), s.config.Limits.DrainTimeout+time.Second)
 		_ = s.terminateAll(cleanupCtx)
 		cancel()
@@ -424,12 +411,7 @@ func (s *remoteSession) terminateAll(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
-	// The worker watchdog is bounded even when owned parent cleanup must join
-	// indefinitely. Killing a stuck worker does not cancel that ownership duty.
 	workerCtx, cancel := context.WithTimeout(ctx, s.config.Limits.DrainTimeout+time.Second)
-	// A callback may return its cancellation error immediately and make the
-	// worker commit a failed cell's writes. Wait for the worker's stop ACK before
-	// fencing callbacks: FIFO frames alone do not order asynchronous handlers.
 	err := p.call(workerCtx, "stopAll", struct{}{}, nil)
 	if err != nil {
 		p.fail(err)

@@ -8,12 +8,8 @@ import (
 	"net/http"
 )
 
-// AnthropicBody is the Anthropic Messages payload.
 func AnthropicBody(req Request) map[string]any {
 	msgs := make([]map[string]any, 0, len(req.Messages))
-	// Combine consecutive toolResults into one user message containing multiple
-	// tool_result blocks. Anthropic permits images in each tool_result.content,
-	// so do not split them into trailing user messages.
 	history := structuredToolReplay(req.Messages, req.Tools)
 	for i := 0; i < len(history); i++ {
 		m := history[i]
@@ -183,8 +179,6 @@ func anthropicMediaBlocks(m Message) []map[string]any {
 }
 
 func (l *Client) streamAnthropic(ctx context.Context, req Request, emit func(AssistantDelta) error) (Message, error) {
-	// A deterministic request failure can only fail again: retrying it would
-	// rebuild the same body and hide the error behind the loop's backoff.
 	if err := validateAnthropicRequest(req); err != nil {
 		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, &nonRetryableError{err: err}
 	}
@@ -273,9 +267,6 @@ func parseAnthropicSSE(event, data string, acc *Message) sseParseResult {
 			return sseParseResult{err: errAnthropicStartNoContentBlock}
 		}
 		t, _ := blk["type"].(string)
-		// Anthropic's index is the identity of a content block. Rejecting a
-		// duplicate start prevents a retry or malformed stream from silently
-		// overwriting already accumulated thinking/tool state.
 		if anthropicContentBlockAt(acc, index) != nil {
 			return sseParseResult{err: fmt.Errorf("%w: %d", errAnthropicBlockStartedTwice, index)}
 		}
@@ -400,9 +391,6 @@ func anthropicContentBlockAt(m *Message, index int) *Content {
 func anthropicExistingContentBlock(m *Message, index int, typ string) (*Content, error) {
 	block := anthropicContentBlockAt(m, index)
 	if block == nil {
-		// Do not recreate a block from a delta: the protocol requires start →
-		// delta ordering, and recreating here would associate a late delta with
-		// the wrong logical output item.
 		return nil, fmt.Errorf("%w %d", errAnthropicDeltaUnknownIndex, index)
 	}
 	if block.Type != typ {
@@ -460,8 +448,6 @@ func applyAnthropicStopReason(acc *Message, reason string) {
 	case "end_turn", "stop_sequence":
 		acc.StopReason = "stop"
 	case "pause_turn":
-		// This client has no resumable pause state; preserve the completed stream
-		// as a normal stop rather than retrying a request that may have side effects.
 		acc.StopReason = "stop"
 	case "refusal", "model_context_window_exceeded":
 		acc.StopReason = "error"
@@ -498,9 +484,6 @@ func validateAnthropicRequest(req Request) error {
 						return fmt.Errorf("%w: %q", errAnthropicToolUseInputNotObject, block.ID)
 					}
 					if validObjectArgumentsRaw(block.ArgumentsRaw) == "" {
-						// A length-truncated tool call is followed by an error
-						// tool_result. Its partial raw text cannot be replayed as
-						// Anthropic input, so the request encoder will send {}.
 						if message.StopReason != "length" {
 							return fmt.Errorf("%w: %q", errAnthropicToolUseInputNotObject, block.ID)
 						}

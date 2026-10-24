@@ -6,7 +6,6 @@ import (
 	"ki/internal/skills"
 )
 
-// PromptLayers returns enabled append texts in chain order.
 func PromptLayers(enabled []Descriptor) []PromptLayer {
 	var out []PromptLayer
 	for _, d := range enabled {
@@ -19,7 +18,6 @@ func PromptLayers(enabled []Descriptor) []PromptLayer {
 	return out
 }
 
-// SkillRoots returns extra skill directories from globally discovered packages.
 func SkillRoots(enabled []Descriptor) []skills.Root {
 	var out []skills.Root
 	for _, d := range enabled {
@@ -31,13 +29,11 @@ func SkillRoots(enabled []Descriptor) []skills.Root {
 	return out
 }
 
-// CommandDir is one commands/ folder contributed by an enabled package.
 type CommandDir struct {
 	Path      string
 	Extension string
 }
 
-// CommandDirs lists slash-template directories from enabled packages.
 func CommandDirs(enabled []Descriptor) []CommandDir {
 	var out []CommandDir
 	for _, d := range enabled {
@@ -48,10 +44,6 @@ func CommandDirs(enabled []Descriptor) []CommandDir {
 	return out
 }
 
-// PathDirs returns the PATH directories contributed by enabled packages in
-// chain order, deduplicated, keeping only those that exist right now. Existence
-// is resolved per call rather than at load time because runtime.install can
-// create the directory (node_modules/.bin) after the manifest was validated.
 func PathDirs(enabled []Descriptor) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -71,8 +63,6 @@ func PathDirs(enabled []Descriptor) []string {
 	return out
 }
 
-// existingDir returns the resolved absolute path when dir is an existing
-// directory, and "" otherwise.
 func existingDir(dir string) string {
 	if !isDir(dir) {
 		return ""

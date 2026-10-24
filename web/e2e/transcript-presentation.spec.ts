@@ -5,8 +5,6 @@ import { serverToken } from './global-setup'
 import { openStream } from './stream-fixture'
 import { durationColumns, durationText } from '../src/lib/duration'
 
-// Each case passed standalone with a private server and browser context. The
-// top-level resize case otherwise keeps all viewport groups in one serial unit.
 test.describe.configure({ mode: 'parallel' })
 
 const layouts = [
@@ -41,8 +39,6 @@ async function history(page: Page, entries: Entry[], compact = false) {
   } }
 }
 
-/** Every animation frame, not just the settled screenshot. Only adjacent
- * mounted indexes may be compared; an unmounted overscan interval is not a gap. */
 async function startGeometryAudit(page: Page) {
   await page.evaluate(() => {
     const scope = window as unknown as { presentationAudit: { frames: number; violations: string[]; stop: boolean } }
@@ -134,8 +130,6 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
           return [box.left, box.top, box.width, box.height]
         })
       }, columns)
-      // Format transitions may resize the compact slot; ordinary ticks must
-      // still leave neighboring text and row heights in the same position.
       const previous = samples.get(columns)
       if (previous) sample.forEach((value, i) => expect(Math.abs(value - previous[i])).toBeLessThanOrEqual(0.5))
       else samples.set(columns, sample)
@@ -183,8 +177,6 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
       if (first) {
         expect(Math.abs(box.scrollClientWidth - first.scrollClientWidth)).toBeLessThanOrEqual(.5)
         expect(Math.abs(box.headerWidth - first.headerWidth)).toBeLessThanOrEqual(.5)
-        // The timer stays anchored to the same right edge as its format grows;
-        // same-format ticks and live→settled must retain identical geometry.
         expect(Math.abs(box.timerLeft + box.timerWidth - first.timerLeft - first.timerWidth)).toBeLessThanOrEqual(.5)
       } else first = box
       const previous = timerFormats.get(durationColumns(await tool.getByTestId('tool-duration').innerText()))
@@ -237,7 +229,6 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
     for (const corner of ['top-left', 'top-right', 'bottom-left', 'bottom-right']) {
       await expect(latest.getByRole('note')).toHaveCSS(`border-${corner}-radius`, '12px')
     }
-    // Both themes get a subtle filled card, while the inner body stays clear.
     for (const theme of ['light', 'dark']) {
       await page.locator('body').evaluate((el, theme) => { el.dataset.theme = theme }, theme)
       await expect(latest.getByRole('note')).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)')
@@ -245,7 +236,6 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
     }
     await page.locator('body').evaluate(el => { el.dataset.theme = 'light' })
     await latest.getByTestId('user-bubble-toggle').click()
-    // Simulate keyboard height reduction, then portrait/landscape rotation.
     for (const viewport of [
       { width: layout.width, height: Math.max(360, layout.height - 300) },
       { width: layout.height, height: layout.width },
@@ -284,8 +274,6 @@ for (const layout of layouts) test.describe(`transcript presentation ${layout.na
     await expect(page.getByTestId('cancel-row')).toHaveCSS('border-left-width', '0px')
     await expect(page.getByTestId('cancel-row').locator('.cancel-mark')).toHaveCount(0)
     await latest.click()
-    // Reading stays explicit even when a clamp/programmatic scroll reaches
-    // the end. A runtime notice must not secretly create a newer turn.
     await page.getByTestId('chat-scroll').dispatchEvent('wheel', { deltaY: -1 })
     await page.getByTestId('chat-scroll').evaluate(el => { el.scrollTop = el.scrollHeight })
     await latest.click()
@@ -357,8 +345,6 @@ test('backward native wheel keeps content anchored through a large late row resi
       }
       requestAnimationFrame(sample)
     }
-    // A late intrinsic layout change above the reader is independent of the
-    // transcript reducer (as with an image/Markdown block finishing layout).
     el.addEventListener('wheel', () => el.addEventListener('scroll', () => requestAnimationFrame(() => {
       above.style.paddingTop = '1000px'
       requestAnimationFrame(() => { audit.armed = true })

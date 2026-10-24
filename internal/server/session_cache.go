@@ -9,13 +9,6 @@ import (
 	"ki/internal/session"
 )
 
-// sessionSnap is one read of a session for one request.
-//
-// entries is a window of the transcript, not necessarily all of it: a request
-// that only needs the conversation tail reads the tail (complete is false), and
-// the read is served from the process-wide entry cache in internal/session, so
-// repeated opens of a long session stay proportional to what was appended
-// rather than to the size of the history.
 type sessionSnap struct {
 	id         string
 	dir        string
@@ -26,15 +19,9 @@ type sessionSnap struct {
 	entries    []session.Entry
 	complete   bool
 	transcript *session.Transcript
-	// small marks a transcript that one tail read covers entirely, so its index
-	// costs no extra read and can be answered inline.
-	small bool
+	small      bool
 }
 
-// loadSessionSnap reads full bodies for model execution/diagnostics, or a tail
-// window for ordinary detailed opens. want == 0 skips transcript decoding.
-// Historical and default UI views use loadIndexedSessionSnap for body-free
-// branch metadata, then hydrate only the selected offsets.
 func (s *Server) loadSessionSnap(id string, full bool, want int) (*sessionSnap, error) {
 	return s.readSessionSnap(id, full, want, false)
 }
@@ -91,16 +78,9 @@ func (s *Server) readSessionSnap(id string, full bool, want int, indexed bool) (
 		}
 	}
 	if (full || want > 0) && !entryIn(snap.entries, snap.leafID) {
-		// The active leaf is not in the window: either config points at a
-		// deleted entry or (impossible for a tail read, see LeafTail) the
-		// window missed it. Mirror session.Open and use the newest non-sideband
-		// entry that was read.
 		snap.leafID = lastNonSideband(snap.entries)
 	}
 	if snap.title == "" && (!full || indexed) {
-		// Why: the tail window does not contain the session's first user
-		// message, so TitleFrom would fall back to the newest one and rename
-		// the session. The lite row is cached and only revalidates two stats.
 		if info, err := s.slist.Row(dir); err == nil {
 			snap.title = info.Title
 		}
@@ -155,19 +135,12 @@ func (snap *sessionSnap) index() []session.IndexEntry {
 	} else {
 		index = session.BuildIndex(snap.entries)
 	}
-	// Why: a header-only transcript has no metadata rows, but the public index
-	// field is an array. Encoding a nil slice as null breaks clients that append
-	// the first entries before lazily loading the index.
 	if index == nil {
 		return []session.IndexEntry{}
 	}
 	return index
 }
 
-// systemPrompt returns the system prompt of the newest request_header on the
-// active leaf. The body-free transcript snapshot clears that field, so the
-// header row is re-read by offset; the fallback covers a full snapshot whose
-// bodies were never dropped.
 func (snap *sessionSnap) systemPrompt() string {
 	entries := snap.entries
 	if snap.transcript != nil {

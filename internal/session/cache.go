@@ -5,10 +5,6 @@ import (
 	"sync"
 )
 
-// Why byte budgets, rather than a session count: one decoded tool-heavy
-// transcript can exceed hundreds of ordinary sessions. Oversized reads are
-// served normally but never admitted; eviction only drops cache ownership so
-// in-flight readers keep their immutable snapshots.
 const (
 	EntriesCacheBytes         = 64 << 20
 	maxSessionEntriesBytes    = 8 << 20
@@ -54,7 +50,7 @@ func (c *weightedCache[T]) update(key string, value T, bytes int64) {
 	defer c.mu.Unlock()
 	e := c.items[key]
 	if e == nil || e.Value.(cacheItem[T]).value != value {
-		return // an evicted reader cannot replace a newer snapshot
+		return
 	}
 	if bytes > c.perItem || bytes <= 0 {
 		c.remove(e)

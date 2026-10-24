@@ -3,8 +3,6 @@ import { openSessionRow } from './sidebar.ts'
 import { serverToken } from './global-setup'
 import type { CompactTurn, Entry, LoopEvent } from '../src/api/types'
 
-// Each test owns its session, browser routes and stream; no shared fixture
-// state is mutated when the parallel runner gives them separate servers.
 test.describe.configure({ mode: 'parallel' })
 
 function deferred() {
@@ -79,8 +77,6 @@ async function fixture(page: Page, tailGate = Promise.resolve()) {
     await page.evaluate(event => (window as unknown as StreamControls).historySend(event), {
       type: 'message_end', runId: 'recovery-run', seq: 1, entryId: 'a3', parentId: 'u3', message: all[5].message,
     } satisfies LoopEvent)
-    // Observe the SSE completion before closing: the terminal GET must see
-    // the same latest leaf, rather than merely introducing a new frontier.
     await expect(page.getByTestId('assistant-message').filter({ hasText: 'Recovery answer 3' })).toBeVisible()
     recovered = true
     await page.evaluate(() => (window as unknown as StreamControls).historyClose())
@@ -122,8 +118,6 @@ for (const method of ['load earlier', 'request navigation'] as const) {
       await page.getByTestId('request-nav-toggle').focus()
       await page.keyboard.press('Enter')
       await expect(page.getByTestId('request-nav-item')).toHaveCount(3)
-      // u1's body is cached but disconnected from the active window. Jumping
-      // to it must page the missing range, not stop at that cached identity.
       await page.locator('[data-request-id="u1"]').click()
       await expect(page.getByTestId('cancel-jump')).toHaveCount(0)
       await expect(page.getByTestId('retry-jump')).toHaveCount(0)
@@ -179,8 +173,6 @@ test('a delayed old-root compact projection retries the recovered boundary inste
   try {
     await f.open()
     await f.finishStream()
-    // Recovery captured a detailed GET before the preference changed. Its
-    // delayed response legitimately lacks compact summaries for the new tail.
     expect(f.tailViews).toEqual([null])
     await page.getByTestId('open-settings').click()
     await page.getByTestId('settings-tab-message').click()
@@ -189,8 +181,6 @@ test('a delayed old-root compact projection retries the recovered boundary inste
     await page.getByTestId('settings').getByRole('button', { name: '关闭对话框' }).click()
     tail.release()
     await expect(page.getByTestId('user-bubble')).toHaveText('Recovery request 3')
-    // Recovery cancels the obsolete transport immediately. Loading now belongs
-    // to the replacement projection, not to a reply from the abandoned root.
     await expect.poll(() => projections).toEqual(['u1', 'u3'])
     await expect(page.getByTestId('load-older')).toBeDisabled()
     oldProjection.release()

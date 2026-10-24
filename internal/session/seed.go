@@ -12,7 +12,6 @@ import (
 	"ki/internal/types"
 )
 
-// SeedSpec builds a synthetic transcript for view/HTTP/WebUI performance tests.
 type SeedSpec struct {
 	Turns            int
 	AssistantBytes   int
@@ -22,9 +21,6 @@ type SeedSpec struct {
 	RepeatSamePrompt bool
 }
 
-// SeedTranscript appends Turns of user / request_header / assistant (/ toolResult)
-// in one write. Why: production appends fsync every row; that would dominate
-// fixture setup and hide Open/BuildView cost.
 func (s *Session) SeedTranscript(spec SeedSpec) error {
 	if spec.Turns <= 0 {
 		return fmt.Errorf("turns required")
@@ -70,8 +66,6 @@ func (s *Session) SeedTranscript(spec SeedSpec) error {
 		}
 		headerSys := system
 		if !spec.RepeatSamePrompt {
-			// Why: the view only omits system/tools when the prompt is unchanged.
-			// Varying the body lets tests contrast that path against RepeatSamePrompt.
 			headerSys = system + " " + strconv.Itoa(i)
 		}
 		header := Entry{

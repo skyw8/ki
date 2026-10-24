@@ -5,16 +5,6 @@ export { groupTurns } from './transcriptIdentity'
 export type { ChatTurn } from './transcriptIdentity'
 import type { ChatTurn } from './transcriptIdentity'
 
-/**
- * Message view mode controls how much of the transcript the chat renders.
- *
- * detailed is the full transcript. compact keeps every user prompt — it is what
- * a turn is, and the anchor the request navigator scrolls to — and the newest
- * `keep` reply nodes of each turn; the reply nodes in between (the tool chatter
- * of a long turn) fold into one row per turn. This is a per-browser display
- * preference, stored next to the theme and language rather than in the server's
- * toggles.
- */
 export type MessageViewMode = 'detailed' | 'compact'
 
 export type MessageView = { mode: MessageViewMode; keep: number }
@@ -36,7 +26,6 @@ export function loadMessageView(): MessageView {
     const raw = localStorage.getItem(KEEP_KEY)
     return { mode, keep: raw == null ? DEFAULT_COMPACT_KEEP : clampCompactKeep(Number(raw)) }
   } catch {
-    // Private mode / blocked storage: fall back to the default view.
     return { mode: 'detailed', keep: DEFAULT_COMPACT_KEEP }
   }
 }
@@ -46,19 +35,9 @@ export function saveMessageView(view: MessageView): void {
     localStorage.setItem(MODE_KEY, view.mode)
     localStorage.setItem(KEEP_KEY, String(clampCompactKeep(view.keep)))
   } catch {
-    // Private mode / quota should not block the setting.
   }
 }
 
-/**
- * ChatRenderItem is one row of the (virtualized) chat list.
- *
- * compact mode folds some nodes away, so the render list is no longer the node
- * list. A fold row's synthetic id is prefixed so it can never collide with the
- * node id it was derived from; the nodes it hides and the ones that stay are
- * emitted as ordinary node items, so virtualization and the turn dividers keep
- * working per node.
- */
 export type ChatRenderItem =
   | { kind: 'node'; id: string; node: ChatNode }
   | { kind: 'fold'; id: string; turn: ChatTurn; nodes: ChatNode[]; expanded: boolean; count: number; preview?: string; firstHiddenId?: string; remote?: boolean }
@@ -68,51 +47,25 @@ export function detailedItems(nodes: ChatNode[]): ChatRenderItem[] {
 }
 
 export type FoldOptions = {
-  /** Newest reply nodes kept visible in each turn. */
   keep: number
-  /** Turn ids the user expanded by hand (they stay open). */
   expanded?: ReadonlySet<string>
   summaries?: CompactTurn[]
   loadedTurnIds?: string[]
 }
 
-/** isLive reports nodes compact mode must never hide: work in progress. */
 function isLive(n: ChatNode): boolean {
   return nodeLive(n)
 }
 
-/** Only assistant/tool output consumes keep slots, matching server compact. */
 function isKeepReply(n: ChatNode): boolean {
   return n.kind === 'tool' ||
     (n.kind === 'assistant' && n.stopReason !== 'aborted')
 }
 
-/** Runtime notices fold with older output, but cannot replace a kept reply. */
 function isFoldable(n: ChatNode): boolean {
   return isKeepReply(n) || (n.kind === 'user' && !isHumanPrompt(n.origin))
 }
 
-/**
- * hiddenReplyIds returns the ids of reply nodes compact mode folds: every
- * reply but the newest `keep`, and never a node that is still live — folding
- * the streaming text or the running tool would hide exactly what the user is
- * waiting for.
- *
- * Runtime notifications do not consume `keep`, but older ones still fold.
- * The first kept real reply defines the visible suffix, including newer
- * notifications. Otherwise mid-turn notices spam the view, or a trailing
- * notification hides the final answer. Compaction/cancellation never fold.
- *
- * Liveness comes from lifecycle reconciliation, not node position: parallel
- * tools finish out of order and an earlier sibling can still be running.
- * Stale state is retired by immutable results or the next model request.
- *
- * The running turn folds like any other (measured: one in-flight turn held 61
- * reply nodes and rendered all of them, where folding renders two). Keeping a
- * whole live turn unfolded was the earlier behaviour and it is what made
- * opening a running session expensive: the newest turn is usually the longest
- * one, and its tool chatter is exactly what compact mode hides.
- */
 function hiddenReplyIds(rest: ChatNode[], keep: number): Set<string> {
   const foldable = rest.filter(isFoldable)
   const replies = foldable.filter(isKeepReply)
@@ -123,15 +76,6 @@ function hiddenReplyIds(rest: ChatNode[], keep: number): Set<string> {
   return new Set(foldable.slice(0, hidden).map(n => n.id))
 }
 
-/**
- * foldReplies builds the compact render list.
- *
- * Per turn: the user bubble always stays, then one fold row for the reply nodes
- * before the newest `keep`, then those newest nodes. A folded turn opens in
- * place — the row stays where it is and the hidden nodes appear right after it,
- * so expanding never reorders the transcript. Runtime notices before the kept
- * suffix fold too, without consuming keep slots; compaction/cancellation never fold.
- */
 export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderItem[] {
   const turns = groupTurns(nodes)
   const keep = clampCompactKeep(opts.keep)
@@ -146,10 +90,6 @@ export function foldReplies(nodes: ChatNode[], opts: FoldOptions): ChatRenderIte
     const observed = new Set(rest.map(n => n.id))
     const snapshotReplies = summary?.baselineNodes?.filter(isFoldable) ?? []
     const visible = new Set(summary?.visibleNodeIds)
-    // visibleNodeIds includes lifecycle metadata, whereas hiddenCount counts
-    // only replies. Use the same predicate for totals and overlap so metadata
-    // cannot create phantom folds. Runtime notices and machine-only directives
-    // contribute to fold totals/overlap, but not the keep-slot calculation.
     const snapshotCount = summary ? summary.hiddenCount + snapshotReplies.filter(n => visible.has(n.id)).length : 0
     const overlap = snapshotReplies.filter(n => observed.has(n.id)).length
     const missing = summary ? Math.max(0, snapshotCount - overlap) : 0

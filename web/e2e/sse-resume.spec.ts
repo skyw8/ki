@@ -1,13 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { openStream } from './stream-fixture'
 
-// Mobile tabs are suspended while backgrounded and the OS drops the socket, but
-// a resume arrives long before the read-idle timeout (45s) elapses. The guard
-// therefore has a separate resume rule: a page that was hidden and read nothing
-// since must reconnect the push stream as soon as it is visible again, so the
-// open session catches up without a manual refresh. This drives that resume
-// signal directly (the real browser fires it on focus; a test must dispatch it
-// after overriding the visibility getters).
 test.describe.configure({ mode: 'parallel' })
 
 test('a resumed tab reconnects the push stream before the read-idle timeout', async ({ page }) => {
@@ -23,8 +16,6 @@ test('a resumed tab reconnects the push stream before the read-idle timeout', as
   await expect.poll(() => events.length).toBeGreaterThanOrEqual(1)
   const before = events.length
 
-  // Hide for seconds, far under the 45s idle timeout: the stream must stay open
-  // (no reconnect while hidden), because a frozen page cannot read a new one.
   await page.evaluate(() => {
     const w = window as unknown as { __kiHidden: boolean }
     w.__kiHidden = true
@@ -33,7 +24,6 @@ test('a resumed tab reconnects the push stream before the read-idle timeout', as
   await page.waitForTimeout(2500)
   expect(events.length).toBe(before)
 
-  // Resume: reconnect immediately.
   await page.evaluate(() => {
     const w = window as unknown as { __kiHidden: boolean }
     w.__kiHidden = false
@@ -59,8 +49,6 @@ for (const scenario of ['visibilitychange', 'pageshow', 'online', 'first-turn'])
       ],
     } })
   })
-  // No idle deadline, socket error or missing heartbeat: lifecycle recovery
-  // must reconcile data even if a proxy kept the connection apparently alive.
   await page.evaluate(signal => {
     if (signal === 'visibilitychange') document.dispatchEvent(new Event(signal))
     else if (signal === 'pageshow') window.dispatchEvent(new PageTransitionEvent(signal, { persisted: true }))

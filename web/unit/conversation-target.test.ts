@@ -65,7 +65,6 @@ test('compact hidden targets load their exact owning turn, including paired tool
     { id: 'result', parentId: 'agent', type: 'message', message: { role: 'toolResult', toolCallId: 'call', content: [] } },
     message('u2', 'result'), message('last', 'u2'),
   ]
-  // Only IDs matter to the ownership lookup; bodies/stats stay on the store.
   const compact = { allEntries: entries, compactTurns: [{ id: 'u1' }, { id: 'u2' }] } as Pick<ViewState, 'allEntries' | 'compactTurns'>
   expect(conversationTargetTurn(compact, 'agent')).toBe('u1')
   expect(conversationTargetTurn(compact, 'call')).toBe('u1')
@@ -85,8 +84,6 @@ test('compact ownership does not cross missing parents or select a sibling turn'
 })
 
 test('ordinary chat mounts follow, but pending navigation starts without end pinning', () => {
-  // Rendering without a DOM exercises the hook's initial ownership only.
-  // Browser coverage checks the later layout/seek effects and paging gate.
   function Initial({ initialIntent }: { initialIntent?: TranscriptIntent }) {
     const navigation = useTranscriptScroll({ scrollRef: { current: null }, initialIntent })
     return createElement('span', {

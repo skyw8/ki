@@ -11,8 +11,6 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Protocol identity is durable runtime state. Tests must never create or
-	// replace installation identity in the developer's real Ki home.
 	home, err := os.MkdirTemp("", "ki-codex-tests-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -29,8 +27,6 @@ func TestMain(m *testing.M) {
 }
 
 func newHTTPTestServer(handler http.Handler) *httptest.Server {
-	// Existing parity fixtures exercise Codex's supported HTTP fallback.
-	// Decline WebSocket negotiation before the fixture consumes its POST body.
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Upgrade") != "" {
 			http.Error(w, "HTTP fixture", http.StatusUpgradeRequired)

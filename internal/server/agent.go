@@ -14,11 +14,6 @@ import (
 	"ki/internal/types"
 )
 
-// SpawnAgent implements agent.Runtime. Child agents are sessions rather
-// than in-process message arrays: CreateChild links the child to its parent
-// (forkMode=tree) so session deletion and sidebar nesting own the relationship,
-// while fork_turns selects complete finished history. The in-flight parent
-// user turn is never inherited as the child's task.
 func (s *Server) SpawnAgent(ctx context.Context, req agent.Request) (agent.Launch, error) {
 	if s.agentTasks == nil {
 		return agent.Launch{}, errAgentTaskStoreUnavailable
@@ -68,15 +63,9 @@ func (s *Server) SpawnAgent(ctx context.Context, req agent.Request) (agent.Launc
 		s.sidx.Remove(childID)
 	}
 
-	// Why: CreateChild copies the active provider/model. Agent delegation must
-	// stay on that provider so a child cannot silently cross credentials or
-	// protocol boundaries through a model override.
 	_ = child.Close()
 
 	outputFile := filepath.Join(childDir, "events.jsonl")
-	// The child's first user message is the delegating agent's prompt plus the
-	// subagent envelope; the tool result echoes the prompt as the caller wrote
-	// it, so the master's context is not restating the envelope.
 	req.Prompt = fmt.Sprintf("You are %s, a child agent of %s. The task below comes from that agent. Final results are delivered automatically; use send_message to request a decision.\n\n%s", req.TaskPath, parentPath, req.Prompt)
 	req.SessionID = childID
 	req.MetadataPath = filepath.Join(childDir, "agent.json")
@@ -116,11 +105,7 @@ func (s *Server) agentRunner(childID string, base agent.Request) agent.Run {
 		}
 		req.ClientRequestID = snapshot.ClientRequestID
 		completion, runErr := s.runChildAgent(ctx, childID, req)
-		// Every detached generation reports to its structural parent.
 		{
-			// Session deletion removes the logical task while its cancelled
-			// callback may still be unwinding. Do not enqueue a completion for
-			// a child that no longer exists.
 			identity := types.CompletionIdentity{TaskID: taskID, Generation: snapshot.Generation}
 			if s.agentTasks.CompletionDelivered(identity) {
 				return completion, runErr
@@ -225,7 +210,6 @@ func (s *Server) notifyAgentCompletion(parentID string, identity types.Completio
 
 }
 
-// SendAgentMessage applies QueueOnly context or explicit root-scoped follow-up work.
 func (s *Server) SendAgentMessage(ctx context.Context, req agent.MessageRequest) (agent.MessageResult, error) {
 	return s.dispatchAgentMessage(ctx, req)
 }
@@ -241,9 +225,6 @@ func (s *Server) runChildAgent(ctx context.Context, id string, req agent.Request
 	}
 	enableRunInbox(st)
 	st.inputMetadata.ClientRequestID = req.ClientRequestID
-	// runPrompt owns the child occupy release and persists the complete child
-	// transcript. The clean child has no inherited history, so the directive is
-	// its first user message.
 	s.runPrompt(runCtx, st, id, []types.Content{{Type: "text", Text: req.Prompt}}, nil, "", "agent", "", nil)
 	snapshot, ok := s.agentTasks.Get(st.agentTaskID)
 	if !ok {
@@ -252,7 +233,6 @@ func (s *Server) runChildAgent(ctx context.Context, id string, req agent.Request
 	return agent.Completion{Result: snapshot.Result, ToolUseCount: snapshot.RunStats.Tools, TotalTokens: snapshot.RunStats.TotalTokens}, st.err
 }
 
-// Get returns a logical-agent snapshot for host lifecycle operations.
 func (s *Server) Get(key string) (agent.Snapshot, bool) {
 	if s.agentTasks == nil {
 		return agent.Snapshot{}, false
@@ -260,7 +240,6 @@ func (s *Server) Get(key string) (agent.Snapshot, bool) {
 	return s.agentTasks.Get(key)
 }
 
-// Wait blocks until an agent task reaches a terminal state or ctx cancels.
 func (s *Server) Wait(ctx context.Context, id string) (agent.Snapshot, error) {
 	if s.agentTasks == nil {
 		return agent.Snapshot{}, errAgentTaskStoreUnavailable
@@ -272,7 +251,6 @@ func (s *Server) Wait(ctx context.Context, id string) (agent.Snapshot, error) {
 	return snap, nil
 }
 
-// Stop interrupts a running agent task.
 func (s *Server) Stop(id string) (agent.Snapshot, error) {
 	if s.agentTasks == nil {
 		return agent.Snapshot{}, errAgentTaskStoreUnavailable
@@ -284,8 +262,6 @@ func (s *Server) Stop(id string) (agent.Snapshot, error) {
 	return snap, nil
 }
 
-// commitUserMessage is shared by loop drains, initial queue turns and the final
-// canceled-run handoff. Acceptance alone must never consume a completion.
 func (s *Server) commitUserMessage(message types.Message, persist func() error) (bool, error) {
 	if message.Completion != nil && s.agentTasks != nil {
 		return s.agentTasks.CommitNotification(*message.Completion, persist)
@@ -294,9 +270,6 @@ func (s *Server) commitUserMessage(message types.Message, persist func() error) 
 	return err == nil, err
 }
 
-// preserveRunInbox also runs on setup errors and the last cancellation race:
-// closing the live handoff and taking its suffix must be one atomic operation.
-// No completion is claimed here; durable dispatch arbitrates at persistence.
 func (s *Server) preserveRunInbox(id string, st *runState) {
 	st.mu.Lock()
 	st.steerClosed = true

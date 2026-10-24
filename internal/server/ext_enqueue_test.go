@@ -812,8 +812,6 @@ func TestRuntimeReadyNotification(t *testing.T) {
 	bin := buildExtSidecar(t)
 	srv, hs := testServer(t)
 	installSidecar(t, srv.cfg.Home, "slow", bin, `"lifecycle"`, `{"KI_INIT_SLEEP_MS":"200"}`)
-	// Subscribe before creating: runtime_ready is a live transition now, not a
-	// per-session catch-up frame, so the subscriber must already be connected.
 	events := pushEvents(t, hs, "tok")
 	waitPush(t, events, "ready", func(ev pushEvent) bool { return ev.Type == "ready" })
 	status, created := postJSON(t, hs, http.MethodPost, "/v1/sessions", map[string]any{"cwd": t.TempDir()})

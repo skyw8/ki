@@ -2,9 +2,6 @@ package provider
 
 import "ki/internal/types"
 
-// CalculateCost normalizes overlapping provider counters and records USD cost.
-// OpenAI-compatible APIs report cached tokens as part of input_tokens, whereas
-// Anthropic reports input_tokens as the uncached remainder.
 func CalculateCost(model Model, usage *types.Usage) {
 	if usage == nil {
 		return
@@ -15,9 +12,6 @@ func CalculateCost(model Model, usage *types.Usage) {
 	CalculateNormalizedCost(model, usage)
 }
 
-// CalculateNormalizedCost prices mutually exclusive usage counters without
-// applying wire-protocol normalization again. Extension runtimes already return
-// uncached input, cache read, and cache write as separate buckets.
 func CalculateNormalizedCost(model Model, usage *types.Usage) {
 	if usage == nil {
 		return

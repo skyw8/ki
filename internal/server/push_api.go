@@ -10,13 +10,6 @@ import (
 	"ki/internal/session"
 )
 
-// Web Push API for the WebUI settings page.
-//
-// GET /v1/push/config hands the browser the VAPID public key it needs to build
-// a subscription. POST/DELETE keep the server's registry in step with the
-// browser: the client re-POSTs on every load, so an endpoint the server pruned
-// (push service reported it gone) heals on the next visit.
-
 func (s *Server) pushConfig(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	body := map[string]any{"enabled": false, "publicKey": ""}
@@ -78,18 +71,6 @@ func (s *Server) deletePushSubscription(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// notifyPushCompletion queues a Web Push for a finished run. It is a no-op
-// without a push service, for a session without a directory, or for a subagent
-// session: a tree child is an implementation detail of a parent run whose own
-// completion already notifies.
-//
-// A user abort is silent for the same reason the WebUI suppresses its own
-// notification: the browser's `run_aborted` sideband marks the run, and the
-// agent_end that follows consumes the mark.
-//
-// Best-effort by design. The queue never blocks the run's event funnel, and a
-// dropped message only means the browser learns of the completion from its own
-// stream (or the resume catch-up) instead of the push service.
 func (s *Server) notifyPushCompletion(id string) {
 	aborted := s.consumePushAborted(id)
 	if s.push == nil || aborted {
@@ -113,17 +94,12 @@ func (s *Server) notifyPushCompletion(id string) {
 	s.push.Notify(push.Message{SessionID: id, Title: title, CWD: info.CWD})
 }
 
-// markPushAborted records that the user aborted a run, before the loop emits
-// the agent_end that would otherwise push a "finished" notification.
 func (s *Server) markPushAborted(id string) {
 	s.pushAbortMu.Lock()
 	s.pushAborted[id] = struct{}{}
 	s.pushAbortMu.Unlock()
 }
 
-// consumePushAborted reports and clears the abort mark. Clearing on the
-// completion (rather than on the abort) keeps a later run of the same session
-// notifying: the mark belongs to exactly one agent_end.
 func (s *Server) consumePushAborted(id string) bool {
 	s.pushAbortMu.Lock()
 	defer s.pushAbortMu.Unlock()

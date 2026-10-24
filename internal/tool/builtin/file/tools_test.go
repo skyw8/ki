@@ -307,9 +307,6 @@ func TestReadNotebookAndPDFPages(t *testing.T) {
 	}
 }
 
-// The model-visible bound moved to the loop spill, so Grep must hand over the
-// complete result instead of cutting it at 20KB; otherwise the spill file would
-// only ever contain an already-truncated page.
 func TestGrepKeepsCompleteResultForTheSpool(t *testing.T) {
 	cwd := t.TempDir()
 	var content strings.Builder
@@ -340,8 +337,6 @@ func TestGrepKeepsCompleteResultForTheSpool(t *testing.T) {
 	}
 }
 
-// The WebUI renders these details instead of re-parsing the model-facing text,
-// so each tool's structured shape is part of the contract.
 func TestSearchAndWriteToolsPublishStructuredDetails(t *testing.T) {
 	cwd := t.TempDir()
 	write := writeTool{cwd: cwd}

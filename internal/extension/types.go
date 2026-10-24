@@ -11,7 +11,6 @@ import (
 	"ki/internal/types"
 )
 
-// Event is the redacted DTO delivered to sidecars. No prompt, args, or bodies.
 type Event struct {
 	Type             string            `json:"type"`
 	SessionID        string            `json:"sessionId,omitempty"`
@@ -21,7 +20,7 @@ type Event struct {
 	ToolCallID       string            `json:"toolCallId,omitempty"`
 	ToolName         string            `json:"toolName,omitempty"`
 	IsError          bool              `json:"isError,omitzero"`
-	DurationMs       int64             `json:"durationMs"` // not omitempty: sidecars may key on the field at 0ms
+	DurationMs       int64             `json:"durationMs"`
 	Reason           string            `json:"reason,omitempty"`
 	OK               bool              `json:"ok,omitzero"`
 	WillRetry        bool              `json:"willRetry,omitzero"`
@@ -41,7 +40,6 @@ type Event struct {
 	External         map[string]string `json:"external,omitempty"`
 }
 
-// Registration is the frozen initialize result.
 type Registration struct {
 	Tools         []ToolSpec                       `json:"tools"`
 	Commands      []CommandSpec                    `json:"commands"`
@@ -52,7 +50,6 @@ type Registration struct {
 	asyncEvents   map[string]bool
 }
 
-// ToolSpec is a sidecar-declared tool schema.
 type ToolSpec struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
@@ -61,7 +58,6 @@ type ToolSpec struct {
 	TimeoutMs   int            `json:"timeoutMs,omitzero"`
 }
 
-// CommandSpec is a sidecar-declared executable slash handler.
 type CommandSpec struct {
 	Name         string   `json:"name"`
 	Description  string   `json:"description,omitempty"`
@@ -69,21 +65,17 @@ type CommandSpec struct {
 	Completions  []string `json:"completions,omitempty"`
 }
 
-// CatalogEntry is a name/description pair in the read-only extension catalog.
 type CatalogEntry struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description,omitempty"`
 	Aliases     []string `json:"-"`
 }
 
-// SessionContribution is the live tools and commands one sidecar currently
-// exposes to a session (initialize result plus session.RegisterTools).
 type SessionContribution struct {
 	Tools    []CatalogEntry
 	Commands []CatalogEntry
 }
 
-// ToolCall is one tool_call payload.
 type ToolCall struct {
 	ID       string         `json:"id"`
 	Name     string         `json:"name"`
@@ -91,13 +83,11 @@ type ToolCall struct {
 	ToolType string         `json:"toolType,omitempty"`
 }
 
-// Block stops a tool call.
 type Block struct {
 	Reason    string `json:"reason"`
 	Terminate bool   `json:"terminate,omitzero"`
 }
 
-// ResultPatch is tool_result.
 type ResultPatch struct {
 	Content   []types.Content `json:"content,omitempty"`
 	Details   any             `json:"details,omitempty"`
@@ -105,9 +95,6 @@ type ResultPatch struct {
 	Terminate *bool           `json:"terminate,omitempty"`
 }
 
-// CompactPreparation is the portable, provider-neutral plan exposed to a
-// session_before_compact hook. It never contains Responses opaque items,
-// credentials, provider bindings, or transformed provider requests.
 type CompactPreparation struct {
 	Strategy            string          `json:"strategy"`
 	SourceLeafID        string          `json:"sourceLeafId,omitempty"`
@@ -120,7 +107,6 @@ type CompactPreparation struct {
 	PreviousSummary     string          `json:"previousSummary,omitempty"`
 }
 
-// BeforeCompactRequest is the structured session_before_compact payload.
 type BeforeCompactRequest struct {
 	Reason       string             `json:"reason"`
 	WillRetry    bool               `json:"willRetry"`
@@ -128,21 +114,17 @@ type BeforeCompactRequest struct {
 	Preparation  CompactPreparation `json:"preparation"`
 }
 
-// CustomCompactResult replaces local summary generation while leaving the
-// host-owned cut point and retained tail unchanged.
 type CustomCompactResult struct {
 	Summary string       `json:"summary"`
 	Usage   *types.Usage `json:"usage,omitempty"`
 	Details any          `json:"details,omitempty"`
 }
 
-// BeforeCompactDecision is returned by session_before_compact.
 type BeforeCompactDecision struct {
 	Cancel bool                 `json:"cancel,omitempty"`
 	Result *CustomCompactResult `json:"result,omitempty"`
 }
 
-// ProviderRequest is before_provider_request (no System, no keys).
 type ProviderRequest struct {
 	Messages       []types.Message `json:"messages"`
 	Tools          []toolapi.Spec  `json:"tools"`
@@ -152,9 +134,6 @@ type ProviderRequest struct {
 	ThinkingEffort string          `json:"thinkingEffort,omitempty"`
 }
 
-// ProviderStreamRequest is the complete host-to-provider payload. The
-// provider sidecar receives the model and opaque credential once, then owns
-// request construction and response parsing for the whole stream.
 type ProviderStreamRequest struct {
 	Provider   string              `json:"provider"`
 	Model      provider.Model      `json:"model"`
@@ -162,9 +141,6 @@ type ProviderStreamRequest struct {
 	Request    loop.Request        `json:"request"`
 }
 
-// ProviderCompactRequest is the complete host-to-provider standalone
-// compaction payload. Provider sidecars that advertise compaction.standalone
-// own the wire request and return a canonical ordered window.
 type ProviderCompactRequest struct {
 	Provider   string              `json:"provider"`
 	Model      provider.Model      `json:"model"`
@@ -172,34 +148,26 @@ type ProviderCompactRequest struct {
 	Request    loop.Request        `json:"request"`
 }
 
-// ProviderCompactResult is returned by provider.compact.
 type ProviderCompactResult struct {
 	Items []json.RawMessage `json:"items"`
 	Usage *types.Usage      `json:"usage,omitempty"`
 }
 
-// ProviderStreamEvent is a compact provider-to-host stream event. Partial
-// messages are intentionally reconstructed by the host adapter rather than
-// serialized once per token.
 type ProviderStreamEvent struct {
-	RequestID    string         `json:"requestId"`
-	Type         string         `json:"type"`
-	Delta        string         `json:"delta,omitempty"`
-	ContentIndex int            `json:"contentIndex,omitzero"`
-	ToolCallID   string         `json:"toolCallId,omitempty"`
-	ToolName     string         `json:"toolName,omitempty"`
-	ToolCall     *types.Content `json:"toolCall,omitempty"`
-	Message      *types.Message `json:"message,omitempty"`
-	// ResponsesItems carries provider-owned compaction output outside ordinary
-	// message JSON so it is never forwarded to clients or lifecycle hooks.
+	RequestID      string            `json:"requestId"`
+	Type           string            `json:"type"`
+	Delta          string            `json:"delta,omitempty"`
+	ContentIndex   int               `json:"contentIndex,omitzero"`
+	ToolCallID     string            `json:"toolCallId,omitempty"`
+	ToolName       string            `json:"toolName,omitempty"`
+	ToolCall       *types.Content    `json:"toolCall,omitempty"`
+	Message        *types.Message    `json:"message,omitempty"`
 	ResponsesItems []json.RawMessage `json:"responsesItems,omitempty"`
 	Reason         string            `json:"reason,omitempty"`
 	Error          string            `json:"error,omitempty"`
 	NonRetryable   bool              `json:"nonRetryable,omitempty"`
 }
 
-// ProviderAuthRequest starts or advances provider-owned authentication. The
-// host never interprets Credential.Value; it only stores and forwards it.
 type ProviderAuthRequest struct {
 	RequestID  string              `json:"requestId"`
 	Provider   string              `json:"provider"`
@@ -208,9 +176,6 @@ type ProviderAuthRequest struct {
 	Value      string              `json:"value,omitempty"`
 }
 
-// ProviderAuthEvent is a UI-neutral notification emitted by a provider
-// sidecar. Credential is present only on the private completed event and is
-// never returned by the HTTP status endpoint.
 type ProviderAuthEvent struct {
 	RequestID        string               `json:"requestId"`
 	Provider         string               `json:"provider"`
@@ -225,33 +190,27 @@ type ProviderAuthEvent struct {
 	Error            string               `json:"error,omitempty"`
 }
 
-// ProviderAuthResult is the response to a provider auth RPC. A refresh that
-// does not need network access returns Refreshed=false and no credential.
 type ProviderAuthResult struct {
 	Accepted   bool                 `json:"accepted,omitzero"`
 	Refreshed  bool                 `json:"refreshed,omitzero"`
 	Credential *provider.Credential `json:"credential,omitempty"`
 }
 
-// ShortCircuit skips the live provider call.
 type ShortCircuit struct {
 	Text string `json:"text"`
 }
 
-// Fallback is provider_error.
 type Fallback struct {
 	Text string `json:"text,omitempty"`
 	Skip bool   `json:"skip,omitzero"`
 }
 
-// HTTPRequestView is a body-less view of a live HTTP request.
 type HTTPRequestView struct {
 	Method  string            `json:"method"`
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers"`
 }
 
-// HTTPRequestPatch mutates URL and headers only.
 type HTTPRequestPatch struct {
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
@@ -280,8 +239,6 @@ func (r Registration) hasAsync(event string) bool {
 	return r.asyncEvents[event]
 }
 
-// Interceptor is the Host-internal surface implemented by rpcClient
-// and _test.go fakes. Authors do not implement this interface.
 type Interceptor interface {
 	BeforeRun(ctx context.Context, system string, msgs []types.Message) (string, []types.Message, error)
 	TransformContext(ctx context.Context, msgs []types.Message) ([]types.Message, error)
@@ -294,51 +251,40 @@ type Interceptor interface {
 	OnEvent(ctx context.Context, ev Event) error
 }
 
-// NopInterceptor is a test stub.
 type NopInterceptor struct{}
 
-// BeforeRun implements Interceptor.
 func (NopInterceptor) BeforeRun(_ context.Context, system string, msgs []types.Message) (string, []types.Message, error) {
 	return system, msgs, nil
 }
 
-// TransformContext implements Interceptor.
 func (NopInterceptor) TransformContext(_ context.Context, msgs []types.Message) ([]types.Message, error) {
 	return msgs, nil
 }
 
-// BeforeTool implements Interceptor.
 func (NopInterceptor) BeforeTool(_ context.Context, in ToolCall) (ToolCall, *Block, error) {
 	return in, nil, nil
 }
 
-// AfterTool implements Interceptor.
 func (NopInterceptor) AfterTool(_ context.Context, _ ToolCall, res ResultPatch) (ResultPatch, error) {
 	return res, nil
 }
 
-// BeforeProvider implements Interceptor.
 func (NopInterceptor) BeforeProvider(_ context.Context, req ProviderRequest) (ProviderRequest, *ShortCircuit, error) {
 	return req, nil, nil
 }
 
-// BeforeProviderHTTP implements Interceptor.
 func (NopInterceptor) BeforeProviderHTTP(_ context.Context, _ HTTPRequestView) (HTTPRequestPatch, error) {
 	return HTTPRequestPatch{}, nil
 }
 
-// AfterProviderHTTP implements Interceptor.
 func (NopInterceptor) AfterProviderHTTP(context.Context, int, map[string]string) error { return nil }
 
-// AfterProviderError implements Interceptor.
 func (NopInterceptor) AfterProviderError(context.Context, string) (Fallback, error) {
 	return Fallback{}, nil
 }
 
-// OnEvent implements Interceptor.
 func (NopInterceptor) OnEvent(context.Context, Event) error { return nil }
 
-// ErrorFunc receives sideband extension_error notifications.
 type ErrorFunc func(sessionID, name, capability, code, message string)
 
 func redactMessages(msgs []types.Message) []types.Message {
@@ -367,8 +313,6 @@ func viewHTTP(req *http.Request) HTTPRequestView {
 	}
 	for k, v := range req.Header {
 		lk := http.CanonicalHeaderKey(k)
-		// Cookie travels with Authorization/X-Api-Key: the HTTP intercept
-		// view is headers/URL only and must not leak session credentials.
 		if lk == "Authorization" || lk == "X-Api-Key" || lk == "Cookie" {
 			continue
 		}

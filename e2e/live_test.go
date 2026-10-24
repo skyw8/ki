@@ -17,10 +17,6 @@ import (
 	toolapi "ki/internal/tool"
 )
 
-// DeepSeek is the live provider. It serves all three wire protocols from one
-// credential: the built-in `deepseek` provider speaks Completions, and the two
-// overlay providers below point the same model at its Responses and Anthropic
-// endpoints. `--model` then selects the protocol per session.
 const (
 	liveModel                 = "deepseek/deepseek-flash"
 	liveModelResponses        = "deepseek-responses/deepseek-flash"
@@ -51,15 +47,10 @@ func TestLivePing(t *testing.T) {
 	}
 }
 
-// Publishing schemas is not enough: exercise JSON exec and its tool-result
-// continuation with every DeepSeek endpoint through the real server harness.
 func TestLiveCodeModeExec(t *testing.T) {
 	for _, ref := range []string{liveModel, liveModelResponses, liveModelAnthropic} {
 		t.Run(strings.ReplaceAll(ref, "/", "_"), func(t *testing.T) {
 			home, proj := isolateLive(t)
-			// runKI itself embeds cli.Main in e2e.test. Use a genuine server
-			// binary so os.Executable launches Ki's private worker entrypoint,
-			// not the Go test runner with its non-JSON stdout.
 			sf := startServeLive(t, home, proj)
 			t.Setenv("KI_SERVER_ADDR", sf.Addr)
 			const marker = "KI-LIVE-EXEC-MARKER-53"
@@ -199,8 +190,6 @@ func TestLiveWebUIPlaywright(t *testing.T) {
 		"KI_BASE_URL=http://"+sf.Addr,
 		"KI_SKIP_SERVER=1",
 		"KI_LIVE=1",
-		// global-setup records this for specs that need the fixture directory;
-		// the live tool spec reads pw-live.txt from it.
 		"KI_PW_CWD="+proj,
 	)
 	out, err := cmd.CombinedOutput()
@@ -228,8 +217,6 @@ func isolateLive(t *testing.T) (home, proj string) {
 	return home, proj
 }
 
-// modelsJSON pins the default to DeepSeek Completions and adds the Responses and
-// Anthropic overlays so one home can run every protocol.
 func modelsJSON(t *testing.T) string {
 	t.Helper()
 	seed := map[string]any{

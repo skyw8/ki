@@ -1,7 +1,3 @@
-/** Stateful block-boundary scanning. Only newly completed lines are inspected;
- * unterminated lines remain mutable, even when a single code fence is enormous.
- * Document-wide reference definitions disable independent segment rendering.
- */
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/
 const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
 const ORDERED = /^ {0,3}\d{1,9}[.)][ \t]/
@@ -89,8 +85,6 @@ export class SettledScanner {
   }
 
   get references(): boolean {
-    // An unfinished definition may already resolve a link, so invalidate before
-    // its newline as well. Only inspect the uncommitted line here.
     return this.hasReferences || /^ {0,3}\[[^\]]+\]:/.test(this.source.slice(this.lineStart))
   }
 }
@@ -108,11 +102,6 @@ export function splitSettled(text: string): SettledSplit {
   return { sealed: text.slice(0, at), live: text.slice(at) }
 }
 
-/** Streamdown's live block splitter only needs semantic boundaries, not a
- * second full Markdown tokenization before its actual Markdown parser. Reuse
- * the same incremental scanner as the document; keep lists, fences, HTML and
- * document-wide references intact. The caller bounds the active tail to 4K.
- */
 export class MarkdownBlockSplitter {
   private scanner = new SettledScanner()
 
@@ -135,10 +124,6 @@ export class MarkdownBlockSplitter {
 
 export type MarkdownParts = { segments: readonly string[]; tail: string; references: boolean }
 
-/** Retain both source and semantic segments across frame commits and message_end.
- * Checking append identity is still O(prefix), but normalization and line/HTML/
- * fence scanning no longer repeat over that prefix. Rewrites reset the scanner.
- */
 export class MarkdownDocument {
   private raw = ''
   private pendingCR = false

@@ -8,7 +8,6 @@ import (
 	"ki/internal/session"
 )
 
-// Skill is one discovered skill.
 type Skill struct {
 	Name        string
 	Description string
@@ -21,7 +20,6 @@ type scanDir struct {
 	source string
 }
 
-// Filter applies a toggle to an already discovered skill snapshot.
 func Filter(all []Skill, toggle session.Toggle) []Skill {
 	var out []Skill
 	for _, s := range all {
@@ -32,14 +30,11 @@ func Filter(all []Skill, toggle session.Toggle) []Skill {
 	return out
 }
 
-// Root is one extra skill directory inserted after project .ki/skills and
-// before ancestor .agents/skills.
 type Root struct {
 	Path   string
 	Source string
 }
 
-// Scan discovers every skill without caching or applying a toggle.
 func Scan(home, cwd string, extra ...Root) []Skill {
 	seen := map[string]bool{}
 	var out []Skill
@@ -57,10 +52,6 @@ func Scan(home, cwd string, extra ...Root) []Skill {
 	return out
 }
 
-// walkSkillRoot visits SKILL.md in each top-level package (symlinks followed).
-//
-// Do not filepath.Walk the package: office skills ship large xsd/script trees,
-// and that walk ran on every prompt. The model loads extra files via Read.
 func walkSkillRoot(root string, visit func(path string)) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -79,8 +70,6 @@ func walkSkillRoot(root string, visit func(path string)) {
 			continue
 		}
 		dir := p
-		// filepath.Walk does not follow a skill dir that is a symlink
-		// ({KI_HOME}/skills/docx -> elsewhere).
 		if resolved, err := filepath.EvalSymlinks(p); err == nil && resolved != "" {
 			dir = resolved
 		}
@@ -113,7 +102,6 @@ func scanDirs(home, cwd string, extra []Root) []scanDir {
 		dirs = append(dirs, scanDir{path: r.Path, source: r.Source})
 	}
 	if cwd != "" {
-		// ancestors' .agents/skills up to git root (or cwd only if no git)
 		root := gitRoot(cwd)
 		stop := cwd
 		if root != "" {

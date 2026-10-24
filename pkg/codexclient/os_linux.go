@@ -8,7 +8,6 @@ import (
 )
 
 func hostOS() (string, string) {
-	// os_info uses distribution metadata on Linux, not the kernel release.
 	if raw, err := os.ReadFile("/etc/os-release"); err == nil {
 		values := make(map[string]string)
 		for line := range strings.SplitSeq(string(raw), "\n") {

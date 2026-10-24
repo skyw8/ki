@@ -11,8 +11,6 @@ type sessionActivity struct {
 	descendants map[string]int
 }
 
-// sessionActivity projects a whole list from one run snapshot. Rebuilding the
-// ancestry graph per row would make sidebar refreshes quadratic.
 func (s *Server) sessionActivity(infos []session.Info) sessionActivity {
 	running := s.activeSessions()
 	return sessionActivity{running: running, descendants: countActiveDescendants(infos, running)}
@@ -34,8 +32,6 @@ func (s *Server) activeSessions() map[string]bool {
 
 func (s *Server) activeDescendantCount(id string) int {
 	active := s.activeSessions()
-	// An idle server (or only this session running) needs no filesystem walk
-	// for its detail view. A session is never its own active descendant.
 	if len(active) == 0 || len(active) == 1 && active[id] {
 		return 0
 	}
@@ -47,9 +43,6 @@ func (s *Server) activeDescendantCount(id string) int {
 	return countActiveDescendants(infos, active)[id]
 }
 
-// countActiveDescendants follows durable parentSession edges, independently of
-// fork display mode and workspace. Each reachable active session counts once,
-// excluding the session itself even when malformed ancestry contains a cycle.
 func countActiveDescendants(infos []session.Info, active map[string]bool) map[string]int {
 	type node struct {
 		parent   string
@@ -89,9 +82,6 @@ func countActiveDescendants(infos []session.Info, active map[string]bool) map[st
 			}
 		}
 	}
-	// Leaf removal leaves only cycles. Every member reaches the same cycle
-	// and attached trees, so sum those totals once rather than walking every
-	// ancestor chain. Missing parents simply terminate their own component.
 	for id, n := range nodes {
 		if n.children == 0 {
 			continue

@@ -9,27 +9,20 @@ import (
 	"ki/internal/types"
 )
 
-// DefaultViewLimit is the leaf-path tail returned as full (slimmed) entries.
 const DefaultViewLimit = 100
 
-// MaxViewBytes caps text-like fields in the WebUI session view.
 const MaxViewBytes = 24 * 1024
 
-// MaxViewPageBytes bounds the encoded entries array, before HTTP compression.
 const MaxViewPageBytes = 512 * 1024
 
-// Folded tool output needs a preview; its full body is fetched on expansion.
 const toolPreviewBytes = 1024
 
-// MaxViewEntries is the upper bound for limit= on GET /v1/sessions/{id}.
 const MaxViewEntries = 500
 
-// MaxViewBatch is the maximum number of ids accepted by ?entries=.
 const MaxViewBatch = 40
 
 const indexPreviewLen = 160
 
-// IndexEntry is a body-less row used for branches, stats, and the trajectory table.
 type IndexEntry struct {
 	Type              string           `json:"type"`
 	ID                string           `json:"id"`
@@ -45,7 +38,7 @@ type IndexEntry struct {
 	RequestedToolName string           `json:"requestedToolName,omitempty"`
 	Truncated         bool             `json:"truncated,omitzero"`
 	Usage             *types.Usage     `json:"usage,omitempty"`
-	DurationMs        int64            `json:"durationMs"` // not omitempty: a fast tool reports a real 0ms
+	DurationMs        int64            `json:"durationMs"`
 	TTFTMs            int64            `json:"ttftMs,omitzero"`
 	Origin            string           `json:"origin,omitempty"`
 	Sideband          bool             `json:"sideband,omitzero"`
@@ -55,7 +48,6 @@ type IndexEntry struct {
 	ContextEstimate   *ContextEstimate `json:"contextEstimate,omitempty"`
 }
 
-// View is the WebUI projection of one session: a full-tree index plus a slimmed leaf tail.
 type View struct {
 	Index    []IndexEntry
 	Entries  []Entry
@@ -63,17 +55,12 @@ type View struct {
 	OldestID string
 }
 
-// Tail is the WebUI's conversation view: the slimmed tail of the active leaf
-// plus the cursor for paging further back. It is what a session open needs, and
-// it deliberately excludes the tree index so first paint costs the tail rather
-// than the whole history.
 type Tail struct {
 	Entries  []Entry
 	HasMore  bool
 	OldestID string
 }
 
-// ClampViewLimit normalizes the GET limit query. 0 or negative uses the default.
 func ClampViewLimit(n int) int {
 	if n <= 0 {
 		return DefaultViewLimit
@@ -84,20 +71,6 @@ func ClampViewLimit(n int) int {
 	return n
 }
 
-// BuildTail returns a slimmed window of the active leaf, oldest entry first.
-//
-// The window opens with the user message that opens its first turn (see
-// withTurnOpeningUser): compact mode renders one prompt per turn, and a window
-// cut by count starts wherever the tail limit lands — measured on real sessions,
-// 43 of 125 windows held no user entry at all, so their first turn rendered as a
-// fold row with no prompt above it.
-//
-// `complete` reports whether entries reaches the branch root (the caller read
-// the whole transcript). A tail-first read (internal/server LeafTail) is a byte
-// window of the file, so a window whose oldest entry is the branch root of the
-// window can still have older history behind it. Without `complete`,
-// `HasMore` would be false whenever the window happens to hold exactly `limit`
-// chain entries and the reader could never page back to the rest.
 func BuildTail(entries []Entry, leafID string, limit int, complete bool) Tail {
 	limit = ClampViewLimit(limit)
 	path := leafPath(entries, leafID)
@@ -109,19 +82,10 @@ func BuildTail(entries []Entry, leafID string, limit int, complete bool) Tail {
 	} else if len(path) > 0 {
 		oldest = path[0].ID
 	}
-	// An explicit root is conclusive even when older unrelated branches are
-	// outside the file window; a missing parent is not a root.
 	missingPrefix := !complete && (len(path) == 0 || path[0].ParentID != "")
 	return Tail{Entries: slimmed, HasMore: tailStart > 0 || missingPrefix, OldestID: oldest}
 }
 
-// withTurnOpeningUser adds the user message that opens the window's first turn.
-//
-// It is one extra entry, not a wider window: HasMore and OldestID keep their
-// meaning, so ?before= still walks the branch entry by entry and the entries
-// between the prompt and the window — a turn can be longer than the window —
-// stay reachable. A window that already opens with its turn's prompt (or one
-// whose turn goes back to the branch root) is returned unchanged.
 func withTurnOpeningUser(path, keep []Entry) []Entry {
 	first := firstChatEntry(keep)
 	if first == nil || isUserMessage(*first) {
@@ -145,9 +109,6 @@ func withTurnOpeningUser(path, keep []Entry) []Entry {
 	return out
 }
 
-// firstChatEntry is the first entry of a window that becomes a chat node:
-// messages, compactions, and cancellation rows do; request headers and usage
-// snapshots do not.
 func firstChatEntry(entries []Entry) *Entry {
 	for i := range entries {
 		switch entries[i].Type {
@@ -161,7 +122,6 @@ func firstChatEntry(entries []Entry) *Entry {
 	return nil
 }
 
-// userMessageBefore returns the nearest user message before id on the branch.
 func userMessageBefore(path []Entry, id string) *Entry {
 	at := -1
 	for i := range path {
@@ -182,7 +142,6 @@ func isUserMessage(e Entry) bool {
 	return e.Type == "message" && e.Message != nil && e.Message.Role == "user"
 }
 
-// BuildIndex returns a body-less row per entry, in file order.
 func BuildIndex(entries []Entry) []IndexEntry {
 	index := make([]IndexEntry, 0, len(entries))
 	for _, e := range entries {
@@ -191,17 +150,10 @@ func BuildIndex(entries []Entry) []IndexEntry {
 	return index
 }
 
-// LeafChain returns the entries of the active branch, root first.
-//
-// The leaf resolution matches BuildView: an empty leafID means the newest
-// non-sideband entry. Entries that are not in the given slice are ignored, so a
-// caller holding only a window of the transcript gets the visible part of the
-// branch instead of an error.
 func LeafChain(entries []Entry, leaf string) []Entry {
 	return leafPath(entries, leaf)
 }
 
-// BuildView returns an index of every entry and a slimmed tail of the active leaf.
 func BuildView(entries []Entry, leafID string, limit int) View {
 	tail := BuildTail(entries, leafID, limit, true)
 	return View{
@@ -212,7 +164,6 @@ func BuildView(entries []Entry, leafID string, limit int) View {
 	}
 }
 
-// BuildBefore returns slimmed leaf entries strictly older than beforeID.
 func BuildBefore(entries []Entry, leafID, beforeID string, limit int) View {
 	limit = ClampViewLimit(limit)
 	path := leafPath(entries, leafID)
@@ -233,9 +184,6 @@ func BuildBefore(entries []Entry, leafID, beforeID string, limit int) View {
 	return View{Entries: slimmed, HasMore: start > 0, OldestID: oldest}
 }
 
-// LookupEntries returns unslimmed user-visible entries for the given ids,
-// preserving request order. Provider-owned encrypted checkpoints are always
-// redacted, including exact-body APIs.
 func LookupEntries(entries []Entry, ids []string) []Entry {
 	if len(ids) > MaxViewBatch {
 		ids = ids[:MaxViewBatch]
@@ -260,8 +208,6 @@ func LookupEntries(entries []Entry, ids []string) []Entry {
 	return out
 }
 
-// RedactProviderContext removes encrypted provider checkpoints from a copy of
-// entries without applying ordinary body truncation.
 func RedactProviderContext(entries []Entry) []Entry {
 	out := slices.Clone(entries)
 	for i := range out {
@@ -301,9 +247,6 @@ func leafPath(entries []Entry, leaf string) []Entry {
 	return rev
 }
 
-// boundedWindow keeps a contiguous leaf range and its actual boundary. The
-// extra opening user is context, never the cursor. Count alone permitted pages
-// with hundreds of 24 KiB fields, blocking phones on both transfer and parsing.
 func boundedWindow(path []Entry, limit int) ([]Entry, int) {
 	if len(path) == 0 {
 		return []Entry{}, 0
@@ -316,16 +259,10 @@ func boundedWindow(path []Entry, limit int) ([]Entry, int) {
 		if len(raw) <= MaxViewPageBytes || start == len(path)-1 {
 			return out, start
 		}
-		// Shrink geometrically, then recompute the prompt and turn context for
-		// the new boundary. At least one entry always makes forward progress.
 		start += max(1, (len(path)-start)/2)
 	}
 }
 
-// toolsDigests memoizes the tool-schema fingerprint of a request_header within
-// one view build. Why: marshaling a full tool schema is the most expensive part
-// of slimming a header, and both the keep-selection and the slim pass compare
-// the same headers against their predecessor.
 type toolsDigests map[string]string
 
 func (d toolsDigests) key(e Entry) string {
@@ -363,9 +300,6 @@ func promptCursor(entries []Entry) (string, string, bool) {
 func slimEntry(e Entry, prevSys, prevTools *string, seenHeader *bool, digests toolsDigests) Entry {
 	out := withContextEstimate(e)
 	out.RetainedTail = nil
-	// Provider-owned encrypted compaction state is never part of a session
-	// view. Preserve its kind before redaction so clients do not mistake the
-	// checkpoint for an empty local summary.
 	out.RemoteContext = out.RemoteContext || out.Responses != nil
 	out.Responses = nil
 	if out.Type == "request_header" {
@@ -453,8 +387,6 @@ func indexOf(e Entry) IndexEntry {
 		ix.TTFTMs = e.Message.TTFTMs
 		ix.StopReason = e.Message.StopReason
 		ix.ToolCallID = e.Message.ToolCallID
-		// Tool outcomes must survive body paging; a preview cannot establish
-		// whether an older call failed.
 		ix.IsError = e.Message.IsError
 		ix.Name = e.Message.ToolName
 		text := e.Message.Text()
@@ -496,8 +428,6 @@ func indexOf(e Entry) IndexEntry {
 		}
 	}
 	if audit, ok := codeModeToolAudit(e); ok {
-		// Only scalar audit identity/outcome belongs in the index. Arguments
-		// and result bodies stay behind exact-body hydration.
 		ix.ToolCallID, _ = audit["toolCallId"].(string)
 		ix.Name, _ = audit["toolName"].(string)
 		ix.ParentCallID, _ = audit["parentCallId"].(string)
@@ -518,10 +448,6 @@ func indexOf(e Entry) IndexEntry {
 	return ix
 }
 
-// previewScanBytes bounds how much of a body the index preview looks at. Why:
-// previewOf used to split every field of the whole body — a 300 KB tool result
-// becomes a slice of ~50k words — just to keep 160 runes, which dominated the
-// index build on long transcripts.
 const previewScanBytes = 4 * 1024
 
 func previewOf(text string) string {
@@ -579,8 +505,6 @@ func toolsKey(tools []ToolSchema) string {
 	return string(b)
 }
 
-// compactViewEntry prevents one multi-block body, inline image or prompt from
-// defeating the page budget. The immutable original remains available by id.
 func compactViewEntry(e Entry) Entry {
 	return compactViewEntryLimit(e, 64*1024)
 }

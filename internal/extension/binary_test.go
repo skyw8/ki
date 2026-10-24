@@ -93,7 +93,7 @@ func assertBinaryPackage(t *testing.T, d Descriptor) {
 	assertI18nParity(t, d)
 }
 func assertPackagedInitialize(t *testing.T, root, home string, d Descriptor) {
-	t.Helper() // A private empty PATH proves no source-language interpreter or compiler is used.
+	t.Helper()
 	emptyPath := t.TempDir()
 	d.manifest.Runtime.Env = map[string]string{"PATH": emptyPath, "HOME": t.TempDir(), "USERPROFILE": t.TempDir()}
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
@@ -147,7 +147,6 @@ func assertPipedInitialize(t *testing.T, home string, d Descriptor) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Closing stdin after one request must still flush its reply before exit.
 	command := exec.CommandContext(ctx, resolveRuntimeCommand(d.root, d.manifest.Runtime.Command), d.manifest.Runtime.Args...)
 	command.Dir = cwd
 	command.Env = sidecarEnv(d, "", home, cwd)

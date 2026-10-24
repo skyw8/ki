@@ -1,6 +1,6 @@
 # 工具契约
 
-工具默认使用小写 snake_case 名称，接受对应的 PascalCase 别名（如 `exec_command` / `ExecCommand`）。每个工具只向模型发布一个 canonical schema；文件/搜索参数沿用现有契约，shell 使用进程交互契约，agent 使用协作契约。文本结果保持有界。内置工具由 `internal/tool/builtin.Set.Build` 构造，包入口见 `internal/tool/builtin/doc.go`。明确声明能力的 Responses 模型使用原生 freeform `apply_patch`，其它模型使用 `write` + `edit`；两组编辑器互斥。`read` 仍按模型是否支持图片在富/文本两种模式间切换，而且这些选择发生在 system prompt 组装阶段（见 [architecture.md](architecture.md)）。
+工具默认使用小写 snake_case 名称，接受对应的 PascalCase 别名（如 `exec_command` / `ExecCommand`）。每个工具只向模型发布一个 canonical schema；文件/搜索参数沿用现有契约，shell 使用进程交互契约，agent 使用协作契约。文本结果保持有界。内置工具由 `internal/tool/builtin.Set.Build` 构造，包入口见 `internal/tool/builtin`。明确声明能力的 Responses 模型使用原生 freeform `apply_patch`，其它模型使用 `write` + `edit`；两组编辑器互斥。`read` 仍按模型是否支持图片在富/文本两种模式间切换，而且这些选择发生在 system prompt 组装阶段（见 [architecture.md](architecture.md)）。
 
 ## 模块边界
 

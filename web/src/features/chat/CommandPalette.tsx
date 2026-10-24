@@ -37,8 +37,6 @@ function paletteRows(query: string, items: SessionCommand[]): Row[] {
   return items.map((item, index) => {
     const name = item.name.toLowerCase()
     const desc = oneLine(item.description).toLowerCase()
-    // Why: an exact `/name` must beat a description match, otherwise a
-    // prompt template can lose to an unrelated extension command.
     const score = !namePart ? 0
       : name === namePart ? 0
         : name.startsWith(namePart) ? 1
@@ -116,11 +114,6 @@ export function CommandPalette({
     const viewportHeight = visual?.height ?? window.innerHeight
     const viewportRight = viewportLeft + viewportWidth
     const viewportBottom = viewportTop + viewportHeight
-    // Why: the palette used to anchor to the / button in the composer row.
-    // "Upward" then sat on top of the textarea and hid the input. Anchor the
-    // whole composer card and prefer sitting above it so the field stays visible.
-    // visualViewport keeps this math inside the area left above an on-screen
-    // keyboard; innerHeight alone can still describe the obscured layout viewport.
     const width = Math.min(Math.max(rect.width, 280), viewportWidth - 16)
     const above = rect.top - gap - viewportTop - 8
     const below = viewportBottom - rect.bottom - gap - 8
@@ -144,9 +137,6 @@ export function CommandPalette({
     const closeOutside = (event: PointerEvent) => {
       const node = event.target as Node
       const queryInput = anchor.current?.querySelector('textarea')
-      // Why: model, attachment, and Select controls also live inside the
-      // composer card. Only the query input and palette are true palette
-      // owners; any sibling control must dismiss it before opening its popup.
       if (!queryInput?.contains(node) && !menu.current?.contains(node)) onCloseRef.current()
     }
     const closeOnFocus = (event: FocusEvent) => {
@@ -184,16 +174,12 @@ export function CommandPalette({
     const onKey = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229) return
       const queryInput = anchor.current?.querySelector('textarea')
-      // A portalled dialog or Select moves focus away from the textarea. Do
-      // not let a stale palette capture that surface's Enter/arrows/Escape.
       if (!(event.target instanceof Node) || !queryInput?.contains(event.target)) {
         onCloseRef.current()
         return
       }
       const list = rowsRef.current
       if (event.key === 'Tab') {
-        // Why: Tab is the muscle-memory completion key for slash commands.
-        // Shift+Tab walks the list backwards instead of completing.
         event.preventDefault()
         event.stopPropagation()
         if (event.shiftKey) {
@@ -233,9 +219,6 @@ export function CommandPalette({
         onCloseRef.current()
         return
       }
-      // Already-typed `/name` or `/name args` (or a completed subcommand):
-      // the first Enter only dismisses the palette. Without stopping this
-      // event, Composer would see the same Enter and submit the command.
       if (matchesDraft(queryRef.current, row)) {
         event.preventDefault()
         event.stopPropagation()

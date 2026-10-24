@@ -4,7 +4,6 @@ import type { Entry } from '../src/api/types'
 import { serverToken } from './global-setup'
 import { openStream } from './stream-fixture'
 
-// Each case owns a private server session and browser context.
 test.describe.configure({ mode: 'parallel' })
 
 const execDetails = {
@@ -32,8 +31,6 @@ function entries(): Entry[] {
       type: 'message', id: 'result', parentId: 'call',
       message: {
         role: 'toolResult', toolName: 'exec_command', toolCallId: 'call-exec', timestamp: stamp + 2000, durationMs: 2000, isError: true,
-        // The snapshot text is what older sessions stored; the card must read
-        // details, never this raw JSON.
         content: [{ type: 'text', text: JSON.stringify(execDetails) }],
         details: execDetails,
       },
@@ -51,11 +48,8 @@ async function openTranscript(page: Page) {
   await page.route(url => url.pathname === `/v1/sessions/${id}`, route => route.request().method() === 'GET'
     ? route.fulfill({ json: { id, title, entries: list, running: false, leafId: 'result', oldestId: 'u', hasMore: false } })
     : route.fallback())
-  // The full-output action opens the spill file through the existing preview
-  // endpoint; serve it locally so the assertion does not depend on /tmp state.
   await page.route(url => url.pathname === '/v1/fs' && url.searchParams.get('preview') === '1', route =>
     route.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: 'complete output line\n' }))
-  // Assertions below are written in English; the default language is zh.
   await page.addInitScript(() => localStorage.setItem('ki-lang', 'en'))
   await page.goto('/')
   await openSessionRow(page, title)
@@ -66,7 +60,6 @@ test('a shell card renders the snapshot instead of the result JSON', async ({ pa
   await openTranscript(page)
   const card = page.getByTestId('tool-card').filter({ hasText: 'exec_command' })
   await expect(card).toHaveAttribute('data-state', 'error')
-  // Collapsed row carries the exit code, never a JSON blob.
   await expect(card.getByTestId('tool-exit')).toHaveText('1')
   await expect(card.getByTestId('tool-preview')).not.toContainText('"revision"')
 
@@ -74,7 +67,6 @@ test('a shell card renders the snapshot instead of the result JSON', async ({ pa
   await expect(card.getByTestId('terminal-cmd')).toHaveText('go test ./internal/...')
   await expect(card.getByTestId('terminal-exit')).toHaveText('Exit 1')
   const output = card.getByTestId('terminal-output')
-  // Columns survive: the tab-separated test line keeps its exact spacing.
   await expect(output).toContainText('ok  ki/internal/session\t0.42s')
   expect(await output.evaluate(el => getComputedStyle(el).whiteSpace)).toBe('pre')
 
@@ -94,7 +86,6 @@ test('terminal output stays inside the transcript on a phone', async ({ page }) 
     viewport: innerWidth,
   }))
   expect(width.page).toBeLessThanOrEqual(width.viewport)
-  // A narrow viewport wraps rather than growing a horizontal scroll.
   expect(await page.getByTestId('terminal-output').evaluate(el => getComputedStyle(el).whiteSpace)).toBe('pre-wrap')
 })
 
@@ -116,7 +107,6 @@ test('a running shell grows its output from live process snapshots', async ({ pa
   await process(1, 'compiling\n', 'running')
   await expect(card.getByTestId('terminal-output')).toHaveText('compiling\n')
   await expect(card.getByTestId('terminal-exit')).toHaveText('Running')
-  // Snapshots are cumulative: the second one replaces, never appends.
   await process(2, 'compiling\ndone\n', 'exited')
   await expect(card.getByTestId('terminal-output')).toHaveText('compiling\ndone\n')
 })
@@ -166,14 +156,12 @@ test('an edit renders a coloured unified diff with line numbers', async ({ page 
   await openSessionRow(page, title)
 
   const card = page.getByTestId('tool-card').filter({ hasText: 'edit' })
-  // The collapsed preview names the file and its net change, not a diff blob.
   await expect(card.getByTestId('tool-preview')).toContainText('internal/session/session.go')
   await card.locator('.tool-row-toggle').click()
 
   const file = card.getByTestId('diff-file')
   await expect(file).toHaveAttribute('data-path', '/repo/internal/session/session.go')
   await expect(file.getByTestId('diff-kind')).toHaveText('modified')
-  // Insert and delete rows are distinguishable by row class and by colour.
   const rows = file.locator('.diff-code')
   await expect(rows.filter({ hasText: 'CacheKey string' })).toHaveClass(/diff-code-insert/)
   await expect(rows.filter({ hasText: 'Removed bool' })).toHaveClass(/diff-code-delete/)
@@ -185,8 +173,6 @@ test('an edit renders a coloured unified diff with line numbers', async ({ page 
     return { insert: pick('.diff-code-insert'), remove: pick('.diff-code-delete') }
   })
   expect(colours.insert).not.toBe(colours.remove)
-  // Line numbers come from the hunk header, not a running counter: unified
-  // view prints the new number once per inserted line, starting at 103.
   await expect(file.locator('.diff-gutter-insert').filter({ hasText: /^103$/ })).toHaveCount(1)
 })
 
@@ -248,7 +234,6 @@ test('search, read and coordination rows render their structured details', async
   await grepCard.locator('.tool-row-toggle').click()
   await expect(grepCard.getByTestId('grep-hit')).toHaveCount(2)
   await expect(grepCard.getByTestId('grep-hit').first()).toContainText('docs/provider.md')
-  // The model-facing text is not the renderer's source: no bracket metadata.
   await expect(grepCard).not.toContainText('[files: 2; matches: 2')
 
   const globCard = cardOf('glob')
@@ -266,7 +251,6 @@ test('search, read and coordination rows render their structured details', async
 
   const cellCard = cardOf('exec')
   await cellCard.locator('.tool-row-toggle').click()
-  // Two envelopes become two blocks; the failed one is marked.
   await expect(cellCard.getByTestId('cell-call')).toHaveCount(2)
   await expect(cellCard.getByTestId('cell-call').nth(1)).toHaveClass(/err/)
   await expect(cellCard.getByTestId('cell-call').nth(0)).toContainText('cell one')

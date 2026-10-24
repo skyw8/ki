@@ -2,8 +2,6 @@ package process
 
 import "unicode/utf8"
 
-// outputRing retains a UTF-8 suffix without copying the whole retention window
-// on every write from a noisy process. The backing allocation is strictly capped.
 type outputRing struct {
 	data []byte
 	head int
@@ -16,8 +14,6 @@ func (r *outputRing) append(chunk []byte, limit int) int {
 	}
 	needed := min(limit, r.size+len(chunk))
 	if needed > len(r.data) {
-		// Most commands print only a few lines. Grow lazily rather than reserving
-		// the full 1 MiB window for every retained completed terminal.
 		data := make([]byte, min(limit, max(1024, max(needed, 2*len(r.data)))))
 		copy(data, r.bytes(0, 0))
 		r.data, r.head = data, 0
@@ -38,7 +34,6 @@ func (r *outputRing) append(chunk []byte, limit int) int {
 		copy(r.data, chunk[n:])
 		r.size += len(chunk)
 	}
-	// Both callers append complete runes, but the byte cap can split the first.
 	for r.size > 0 && !utf8.RuneStart(r.data[r.head]) {
 		r.head = (r.head + 1) % len(r.data)
 		r.size--

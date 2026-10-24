@@ -31,7 +31,6 @@ const (
 var nameRe = regexp.MustCompile(namePattern)
 var localeRe = regexp.MustCompile(`^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$`)
 
-// Manifest is extension.json.
 type Manifest struct {
 	Name         string                           `json:"name"`
 	Version      string                           `json:"version"`
@@ -47,38 +46,25 @@ type Manifest struct {
 	Runtime      RuntimeSpec                      `json:"runtime"`
 }
 
-// I18nSpec declares static, extension-owned translation files. The host reads
-// these files as data and exposes the validated bundle to WebUI clients; it
-// never merges extension keys into the host dictionary.
 type I18nSpec struct {
 	DefaultLocale string            `json:"defaultLocale,omitempty"`
 	Resources     map[string]string `json:"resources,omitempty"`
 }
 
-// I18nCatalog is the validated translation bundle exposed in the extension
-// catalog. Resource values are flat keys so an extension can use dots in its
-// own namespace without making the host understand its message hierarchy.
 type I18nCatalog struct {
 	DefaultLocale string                       `json:"defaultLocale,omitempty"`
 	Resources     map[string]map[string]string `json:"resources,omitempty"`
 }
 
-// ConfigSpec declares the JSON-schema-like form rendered by the generic
-// settings UI. The host stores values separately and never exposes secrets.
 type ConfigSpec struct {
 	Schema   map[string]any `json:"schema,omitempty"`
 	Defaults map[string]any `json:"defaults,omitempty"`
 }
 
-// PromptSpec lists files to append as system-prompt layer 6.
 type PromptSpec struct {
 	Append []string `json:"append"`
 }
 
-// RuntimeSpec describes the optional JSON-RPC sidecar. Path lists directories
-// inside the package that are added to the PATH of shell tools while the
-// package is enabled; they may be created later by Install (node_modules/.bin),
-// so only their shape is validated here.
 type RuntimeSpec struct {
 	Kind        string            `json:"kind"`
 	Command     string            `json:"command"`
@@ -89,7 +75,6 @@ type RuntimeSpec struct {
 	Path        []string          `json:"path"`
 }
 
-// Descriptor is one discovered package. It holds no live RPC handles.
 type Descriptor struct {
 	Name         string                           `json:"name"`
 	Version      string                           `json:"version"`
@@ -106,20 +91,16 @@ type Descriptor struct {
 	root         string
 }
 
-// PromptLayer is one extension append segment.
 type PromptLayer struct {
 	ExtensionID string
 	Text        string
 }
 
-// Discovery is the identity-resolved scan of global packages.
 type Discovery struct {
 	All     []Descriptor
-	Enabled []Descriptor // chain order: enabled global packages by name
+	Enabled []Descriptor
 }
 
-// Discover reads extension.json from the global extension directory.
-// toggle.Allowed filters Enabled; disabled packages stay in All with Enabled=false.
 func Discover(home string, toggle session.Toggle) Discovery {
 	byName := map[string]Descriptor{}
 	loadDir := func(dir string) {
@@ -131,10 +112,6 @@ func Discover(home string, toggle session.Toggle) Discovery {
 			if !e.IsDir() {
 				continue
 			}
-			// Hidden directories are never packages: editors and macOS leave
-			// dot-directories behind, and an installer may stage a replacement
-			// nearby. Listing one would show a bogus name (it cannot match
-			// namePattern) and disable it as a manifest error.
 			if strings.HasPrefix(e.Name(), ".") {
 				continue
 			}
@@ -155,13 +132,9 @@ func Discover(home string, toggle session.Toggle) Discovery {
 		all = append(all, d)
 	}
 	slices.SortFunc(all, func(a, b Descriptor) int { return cmp.Compare(a.Name, b.Name) })
-	// All and Enabled are both globally name-sorted. Keep separate slices so
-	// callers can use All for catalog listing without re-filtering disabled packages.
 	return Discovery{All: all, Enabled: chainOrder(all)}
 }
 
-// chainOrder is the lifecycle and prompt-append order: enabled global packages
-// with no load error, sorted by name.
 func chainOrder(in []Descriptor) []Descriptor {
 	var globals []Descriptor
 	for _, d := range in {
@@ -298,16 +271,12 @@ func validateRuntimeInstall(root string, spec RuntimeSpec) error {
 	case "", installAlways:
 		return nil
 	case installMissing:
-		// PATH lookups depend on an external environment, so they cannot
-		// reliably determine whether a package needs its installation hook.
 		if spec.Kind != runtimeRPC || !strings.Contains(filepath.ToSlash(spec.Command), "/") {
 			return errInstallMissingNeedsLocalCommand
 		}
 		if err := withinRoot(root, spec.Command); err != nil {
 			return fmt.Errorf("runtime.installWhen=missing command: %w", err)
 		}
-		// The binary may not exist yet, so resolving its complete path can
-		// miss an existing parent symlink that points outside the package.
 		for parent := filepath.Dir(filepath.FromSlash(spec.Command)); parent != "."; parent = filepath.Dir(parent) {
 			if err := withinRoot(root, parent); err != nil {
 				return fmt.Errorf("runtime.installWhen=missing command: %w", err)
@@ -334,9 +303,6 @@ func loadI18n(root string, spec I18nSpec) *I18nCatalog {
 		}
 		raw, readErr := io.ReadAll(io.LimitReader(file, maxI18nFile+1))
 		_ = file.Close()
-		// Why: translation assets are optional presentation data. A broken or
-		// oversized locale must not prevent an otherwise usable extension from
-		// starting; WebUI will use the declared fallback/locale key instead.
 		if readErr != nil || len(raw) > maxI18nFile || !utf8.Valid(raw) {
 			continue
 		}
@@ -397,12 +363,6 @@ func withinRoot(root, rel string) error {
 	return nil
 }
 
-// isRootedManifestPath reports whether rel is rooted for some platform, not only
-// for the host one. Why: extension.json travels between machines, so the
-// manifest rule ("paths stay inside the package") must not depend on where it is
-// read. filepath.IsAbs answers for the host alone — on Windows it is false for
-// "/bin" (no volume name), which would let a POSIX-rooted path fold into the
-// package root instead of being rejected.
 func isRootedManifestPath(rel string) bool {
 	if strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, `\`) {
 		return true
@@ -410,8 +370,6 @@ func isRootedManifestPath(rel string) bool {
 	if filepath.VolumeName(rel) != "" {
 		return true
 	}
-	// A Windows drive prefix is two characters, so it is spelled out here
-	// instead of relying on the host's volume rules.
 	if len(rel) >= 2 && rel[1] == ':' {
 		c := rel[0]
 		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
@@ -427,7 +385,6 @@ func (d Descriptor) wantsSidecar() bool {
 	return kind == runtimeRPC
 }
 
-// HasRuntime reports whether this descriptor declares an enabled RPC runtime.
 func (d Descriptor) HasRuntime() bool { return d.wantsSidecar() }
 
 func (d Descriptor) promptText() string {
@@ -478,9 +435,6 @@ func (d Descriptor) skillRoots() []string {
 	return out
 }
 
-// PromptAppendFiles lists declared system-prompt append paths. Catalog display
-// uses this even when the package is disabled so Info can show what the
-// package contains; prompt loading still goes through promptText().
 func (d Descriptor) PromptAppendFiles() []string {
 	if !hasKind(d.Capabilities, CapPromptAppend) || d.Error != "" {
 		return nil
@@ -502,11 +456,6 @@ func (d Descriptor) commandDirs() []string {
 	return out
 }
 
-// PathDirs lists the directories this package declares for the shell PATH.
-// Existence is deliberately not checked: runtime.install may create
-// node_modules/.bin after the manifest was validated, so callers filter and
-// stat at use time. Like PromptAppendFiles, the catalog reads this for disabled
-// packages too; enablement is applied by PathDirs in merge.go.
 func (d Descriptor) PathDirs() []string {
 	if !hasKind(d.Capabilities, CapPath) || d.Error != "" {
 		return nil
@@ -518,16 +467,11 @@ func (d Descriptor) PathDirs() []string {
 	return out
 }
 
-// PathDirStatus is one declared PATH directory and whether it exists right now.
 type PathDirStatus struct {
 	Path   string `json:"path"`
 	Exists bool   `json:"exists"`
 }
 
-// PathDirStatuses lists declared PATH directories with their current state. The
-// catalog shows declarations even when the directory is missing, because a
-// directory that never appears (typo in the manifest, failed install) is the
-// failure mode an operator has to see.
 func (d Descriptor) PathDirStatuses() []PathDirStatus {
 	declared := d.PathDirs()
 	out := make([]PathDirStatus, 0, len(declared))

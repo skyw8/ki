@@ -3,8 +3,6 @@ import type { TrajRecord } from '../../api/types'
 export type ToolActivity = { name: string; calls: number; failures: number }
 
 export function buildToolActivity(records: TrajRecord[]): ToolActivity[] {
-  // Calls, results, history hydration and live overlays share a call identity.
-  // Count it once; a partial duplicate must not erase a recorded failure.
   const calls = new Map<string, { name: string; failed: boolean }>()
   for (const record of records) {
     if (record.kind !== 'tool') continue

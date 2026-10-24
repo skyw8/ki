@@ -1,7 +1,3 @@
-// Command extmirror writes a fake extension release directory: one
-// <name>-<goos>-<goarch>.zip per package plus checksums.txt. The WebUI install
-// tests point ki at it through a file:// extensions.source, so they exercise
-// the real download, checksum and unpack path with no network.
 package main
 
 import (

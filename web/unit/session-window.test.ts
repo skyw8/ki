@@ -2,10 +2,6 @@ import { expect, test } from 'bun:test'
 import { applyEvent, applyIndex, applyTail, compactBoundary, evictBodies, hydrateEntries, loadHistory, turnStats } from '../src/lib/model.ts'
 import type { Entry, IndexEntry } from '../src/api/types.ts'
 
-// The WebUI loads the newest window of a session and lets the tree index arrive
-// afterwards, so that opening a long session does not wait for a parse of the
-// whole transcript. These tests pin the window semantics of the model layer.
-
 function user(n: number): Entry {
   return { type: 'message', id: `u${n}`, parentId: `a${n - 1}`, message: { role: 'user', content: [{ type: 'text', text: `turn ${n}` }] } }
 }
@@ -24,7 +20,6 @@ function row(e: Entry, preview: string): IndexEntry {
   }
 }
 
-/** Twelve turns; the tail window holds the newest four. */
 function fixture() {
   const all: Entry[] = []
   for (let n = 1; n <= 12; n++) all.push(user(n), assistant(n))
@@ -40,8 +35,6 @@ test('a tail window builds nodes only for the entries it holds', () => {
 
   expect(view.nodes.map(n => n.id)).toEqual(entries.map(e => e.id))
   expect(view.nodes.filter(n => n.kind === 'user').map(n => n.id)).toEqual(['u9', 'u10', 'u11', 'u12'])
-  // Without the index the branch numbering is relative: the caller knows the
-  // window, not how much history precedes it.
   expect(view.indexLoaded).toBe(false)
   expect(view.turnBase).toBe(0)
   expect(view.records.filter(r => r.kind === 'user')).toHaveLength(4)
@@ -110,7 +103,6 @@ test('the lazy index renumbers turns without adding nodes', () => {
   expect(view.turnBase).toBe(8)
   expect(view.nodes.map(n => n.id)).toEqual(entries.map(e => e.id))
   expect([...turnStats(view.nodes, view.turnBase).values()].map(s => s.turn)).toEqual([9, 10, 11, 12])
-  // The trajectory table and branch navigation see the whole tree.
   expect(view.records.filter(r => r.kind === 'user')).toHaveLength(12)
   expect(view.allEntries).toHaveLength(24)
 })
@@ -154,11 +146,7 @@ test('a finished run refreshes the tail and keeps the index warm', () => {
 
   expect(view.indexLoaded).toBe(true)
   expect(view.index.map(r => r.id)).toContain('u13')
-  // The window slides forward and keeps the entries already loaded around it
-  // (u9/a9 here), which is what makes the refresh cheap: no page is refetched.
   expect(view.nodes.map(n => n.id)).toEqual(['u9', 'a9', ...window.map(e => e.id)])
-  // Records still cover the whole branch (the trajectory table, the request
-  // navigator), including entries whose bodies are only in the index.
   const users = view.records.filter(r => r.kind === 'user')
   expect(users).toHaveLength(13)
   expect(users.map(r => r.turn)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
@@ -192,8 +180,6 @@ test('an idle recovery snapshot retires missed terminal events without losing lo
 })
 
 test('a late index over a long branch stays cheap', () => {
-  // 2000 entries on the branch: the index rebuild walks them to number turns
-  // and fill the trajectory table, but it must never build chat nodes for them.
   const all: Entry[] = []
   for (let n = 1; n <= 1000; n++) all.push(user(n), assistant(n))
   all[0] = { ...all[0], parentId: '' }
@@ -264,8 +250,6 @@ test('a disconnected recovery tail reopens paging instead of preserving a false 
     expect(s.oldestId).toBe('u11')
     expect(s.hasMore).toBe(true)
     expect(s.nodes.map(n => n.id)).toEqual(['u11', 'a11', 'u12', 'a12'])
-    // Lost ranges remain in the identity/body cache, not stranded behind an
-    // old root cursor. Paging back through the gap reconnects them.
     s = hydrateEntries(s, all.slice(4, -4), { oldestId: 'u3', hasMore: true })
     s = hydrateEntries(s, all.slice(0, 4), { oldestId: 'u1', hasMore: false })
     expect(s.nodes.map(n => n.id)).toEqual(all.map(e => e.id))
@@ -277,9 +261,6 @@ test('an SSE completion at the recovered leaf does not prove the older window is
   for (const loadedIndex of [undefined, index]) for (const inFlight of [false, true]) {
     let s = loadHistory({ id: 's', entries: all.slice(0, 4), index: loadedIndex, leafId: 'a2', oldestId: 'u1', hasMore: false, running: true })
     const requestedRevision = s.liveRevision
-    // A resumed stream can deliver the final message before the tail GET.
-    // Its local reading bridge keeps the old content visible, but proves
-    // nothing about the persisted entries missed while this tab was away.
     s = applyEvent(s, { type: 'message_end', entryId: 'a12', parentId: 'u12', message: assistant(12).message })
     expect(s.leafId).toBe('a12')
     s = applyTail(s, { id: 's', entries: all.slice(-4), leafId: 'a12', oldestId: 'u11', hasMore: true },
@@ -325,7 +306,6 @@ test('SSE advances to a descendant already known by a racing index response', ()
   s = hydrateEntries(s, [user(1)])
   expect(s.leafId).toBe('a1')
   expect(s.nodes.map(n => n.id)).toEqual(['u1', 'a1'])
-  // Replaying an ancestor must not rewind the newly advanced frontier.
   s = applyEvent(s, { type: 'message_end', entryId: 'u1', message: user(1).message })
   expect(s.leafId).toBe('a1')
 })
@@ -342,8 +322,6 @@ test('a newer server model boundary retires missed tools even across a recovery 
 test('a terminal GET can advance past a queued run despite a delayed React event commit', () => {
   let s = loadHistory({ entries: [user(1), assistant(1)], leafId: 'a1', running: true } as any)
   const requestedRevision = s.liveRevision
-  // The reader flushes its final event batch after it has issued the GET;
-  // meanwhile the server can drain a queued prompt and finish its short run.
   s = applyEvent(s, { type: 'agent_end' })
   s = applyTail(s, { entries: [user(1), assistant(1), user(2), assistant(2)], leafId: 'a2', running: false } as any, requestedRevision)
   expect(s.leafId).toBe('a2')

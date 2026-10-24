@@ -124,8 +124,6 @@ func (t applyPatchTool) ExecuteRaw(ctx context.Context, input string) toolapi.Re
 	if pio == nil {
 		pio = &localPatchIO
 	}
-	// Verify every deterministic read and context match before the first write;
-	// otherwise a later bad hunk would leave an avoidable committed prefix.
 	verified, err := verifyApplyPatch(ctx, t.cwd, hunks, pio)
 	if err != nil {
 		return patchResult("apply_patch verification failed: "+err.Error(), true, appliedPatchDelta{exact: true})
@@ -206,8 +204,6 @@ func applyVerifiedPatch(ctx context.Context, verified verifiedPatch, pio *patchF
 		case patchAdd:
 			overwritten := optionalPatchContent(path, pio, &delta.exact)
 			if err := writePatchFile(path, []byte(intended.content), pio); err != nil {
-				// WriteFile may truncate before returning ENOSPC or another error,
-				// so the observed failure cannot prove the target is unchanged.
 				delta.exact = false
 				return "", delta, fmt.Errorf("failed to write file %s: %w", path, err)
 			}

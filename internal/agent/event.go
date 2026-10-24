@@ -4,8 +4,6 @@ import (
 	"ki/internal/types"
 )
 
-// ProgressEvent is a bounded host projection of a run boundary. The server
-// translates loop events before they enter the agent scheduler.
 type ProgressEvent struct {
 	Type                          ProgressEventType
 	Timestamp                     int64

@@ -16,7 +16,6 @@ else
 	exit 1
 fi
 
-# GO_MODERN_GUIDELINES_DEV runs the binary built by make dev-install.
 if [ -n "${GO_MODERN_GUIDELINES_DEV:-}" ]; then
 	dev_binary="${cache_root}/dev/${binary_name}"
 	if [ ! -x "${dev_binary}" ]; then

@@ -4,30 +4,19 @@ import (
 	"time"
 )
 
-// Status is the lifecycle state of a logical agent.
 type Status string
 
 const (
-	// Pending is reserved for agents accepted before turn admission.
-	Pending Status = "pending"
-	// Running identifies an active child turn, including mailbox waits.
-	Running Status = "running"
-	// Completed identifies a task that exited successfully.
-	Completed Status = "completed"
-	// Failed identifies a task that exited unsuccessfully.
-	Failed Status = "failed"
-	// Killed identifies a task explicitly terminated by the user or abort.
-	Killed Status = "killed"
-	// Interrupted identifies a task whose server stopped before it reached
-	// a normal terminal state. The durable agent metadata can be resumed later.
+	Pending     Status = "pending"
+	Running     Status = "running"
+	Completed   Status = "completed"
+	Failed      Status = "failed"
+	Killed      Status = "killed"
 	Interrupted Status = "interrupted"
 )
 
-// Snapshot is the durable host view of a logical agent.
 type Snapshot struct {
 	Progress
-	// ParentSessionID is host-private delivery ownership. A sibling may inspect
-	// the output, but that read must not consume the real parent's notification.
 	ParentSessionID string     `json:"-"`
 	ClientRequestID string     `json:"-"`
 	Generation      uint64     `json:"generation,omitzero"`

@@ -42,19 +42,13 @@ const execPrompt = `Run JavaScript to orchestrate and compose tool calls.
 - The pragma accepts only those two fields as non-negative safe integers, including zero. Yield time is an observation timeout, not an execution deadline; observations cap at 60000ms.
 - Output tokens are approximated as four UTF-8 bytes each and bounded by the runtime output cap. Only explicit output reaches the model. Audio is not supported.`
 
-// Set binds exec/wait to a logical session and its advertised capabilities.
-// A nil Session is useful for the settings catalog but cannot execute.
 type Set struct {
-	Session *codemode.Session
-	// GetSession lazily reserves a worker session on the first actual call;
-	// publishing schemas must not consume the worker admission budget.
+	Session    *codemode.Session
 	GetSession func() (*codemode.Session, error)
 	Callbacks  codemode.Callbacks
 	Nested     []toolapi.Tool
-	// Deferred contains canonical names whose declarations are omitted from
-	// the exec prompt. Runtime tools and ALL_TOOLS retain these capabilities.
-	Deferred map[string]bool
-	Freeform bool
+	Deferred   map[string]bool
+	Freeform   bool
 }
 
 func (s Set) Build() []toolapi.Tool {
@@ -280,7 +274,6 @@ func safeInteger(value any, field string) (int, error) {
 }
 
 func observationTime(ms int) time.Duration {
-	// Clamp before multiplication: safe JS integers can overflow Go durations.
 	return time.Duration(min(ms, 60000)) * time.Millisecond
 }
 func tokenBytes(tokens int) int {

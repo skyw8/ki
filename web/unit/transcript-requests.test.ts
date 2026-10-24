@@ -102,8 +102,6 @@ test('conversion retries when recovery wins after its gesture promise settles', 
     presentation: compact,
     beforeCommit: async () => {
       if (++gates !== 1) return
-      // Resolve wait(), then change authority before gate() resumes. No React
-      // dispatcher or deferred state updater participates in this race.
       queueMicrotask(() => queueMicrotask(() => store.update(state => ({ ...state, oldestId: 'u' }))))
     },
   })

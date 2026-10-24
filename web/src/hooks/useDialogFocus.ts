@@ -84,8 +84,6 @@ function onDocumentKeyDown(event: KeyboardEvent): void {
   }
   if (event.key !== 'Tab') return
 
-  // Why: portals can still bubble through a parent dialog. A single global
-  // stack ensures only the visually topmost dialog owns the Tab boundary.
   event.stopPropagation()
   event.stopImmediatePropagation()
   const focusable = focusableElements(entry.element)
@@ -140,9 +138,6 @@ function syncDialogIsolation(): void {
       continue
     }
     if (!entry.isolation) {
-      // Why: snapshot at the transition to an underlying layer, not at initial
-      // registration. The dialog may legitimately change either attribute
-      // while it is topmost, and closing a child must restore that exact state.
       entry.isolation = {
         ariaHidden: entry.element.getAttribute('aria-hidden'),
         inert: entry.element.getAttribute('inert'),
@@ -154,22 +149,14 @@ function syncDialogIsolation(): void {
 }
 
 function register(entry: DialogEntry): void {
-  // Listen after component handlers so a transient child such as Select can
-  // consume Escape first. Capture would close the parent dialog before its
-  // open listbox had a chance to handle the same key.
   const hasUnderlyingDialog = dialogStack.length > 0
   if (!hasUnderlyingDialog) document.addEventListener('keydown', onDocumentKeyDown)
   dialogStack.push(entry)
   lockBodyScroll()
 
-  // Why: move focus out of the dialog about to receive aria-hidden before
-  // applying isolation. Chromium otherwise keeps its focused descendant in
-  // the accessibility tree.
   if (hasUnderlyingDialog) focusEntry(entry)
   syncDialogIsolation()
   entry.focusFrame = window.requestAnimationFrame(() => {
-    // Why: the frame can run after the user has already moved to another
-    // field. Refocusing the initial input then redirects in-flight typing.
     if (!entry.element.contains(document.activeElement)) focusEntry(entry)
   })
 }
@@ -181,15 +168,9 @@ function unregister(entry: DialogEntry): void {
   const wasTop = index === dialogStack.length - 1
   dialogStack.splice(index, 1)
 
-  // Why: cleanup is not guaranteed to follow visual stack order when a React
-  // parent unmounts before a portalled child. Restore the removed element and
-  // recompute every survivor instead of assuming only the old top changed.
   restoreIsolation(entry)
   syncDialogIsolation()
 
-  // Why: React may unmount a parent dialog before its portalled child. Carry
-  // the parent's opener through the child so the final close still restores
-  // focus outside the now-disconnected dialog subtree.
   for (const remaining of dialogStack.slice(index)) {
     if (!remaining.restoreFocus || entry.element.contains(remaining.restoreFocus)) {
       remaining.restoreFocus = entry.restoreFocus
@@ -236,8 +217,6 @@ export function useDialogFocus<T extends HTMLElement>({
       element,
       initialFocus: () => initialRef.current?.current ?? null,
       onEscape: () => escapeRef.current(),
-      // A dialog launched while an off-canvas drawer is closing cannot return
-      // to its clicked opener: that node becomes inert in the same commit.
       restoreFocus: restoreRef.current?.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null),
       focusFrame: 0,
       isolation: null,

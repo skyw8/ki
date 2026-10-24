@@ -13,11 +13,8 @@ import (
 	"ki/pkg/thinking"
 )
 
-// HTTPDoer is the transport used by live protocol clients.
 type HTTPDoer = llmprotocol.HTTPDoer
 
-// Live adapts the reusable protocol client to Ki's loop and message IR. Model
-// metadata remains here because cost calculation is a Ki catalog concern.
 type Live struct {
 	client *llmprotocol.Client
 	Model  *Model
@@ -31,20 +28,16 @@ func (e *coreFastThinkingError) Error() string {
 func (e *coreFastThinkingError) NonRetryable() bool { return true }
 
 func rejectCoreFastThinking(level string) error {
-	// Hooks and direct NewLive users can bypass registry clamping. Reject before
-	// transport rather than forwarding a client-only suffix as reasoning.effort.
 	if _, fast := thinking.Split(level); fast {
 		return &coreFastThinkingError{level: level}
 	}
 	return nil
 }
 
-// NewLive builds a live Ki provider adapter.
 func NewLive(api, base, key string, doer HTTPDoer) *Live {
 	return &Live{client: llmprotocol.NewClient(api, base, key, doer)}
 }
 
-// NewLiveModel creates a live adapter from a resolved Ki model.
 func NewLiveModel(model Model, key string, doer HTTPDoer) *Live {
 	return &Live{client: llmprotocol.NewClient(model.API, model.BaseURL, key, doer), Model: &model}
 }
@@ -54,7 +47,6 @@ func (l *Live) WithIdleTimeout(timeout time.Duration) *Live {
 	return l
 }
 
-// Stream implements loop.Streamer by translating only at the package boundary.
 func (l *Live) Stream(ctx context.Context, req loop.Request, emit func(loop.AssistantDelta) error) (types.Message, error) {
 	if err := rejectCoreFastThinking(req.ThinkingEffort); err != nil {
 		return types.Message{}, err
@@ -77,7 +69,6 @@ func (l *Live) Stream(ctx context.Context, req loop.Request, emit func(loop.Assi
 	return converted, nil
 }
 
-// Compact implements standalone OpenAI Responses compaction.
 func (l *Live) Compact(ctx context.Context, req loop.Request) (CompactResult, error) {
 	if err := rejectCoreFastThinking(req.ThinkingEffort); err != nil {
 		return CompactResult{}, err
@@ -228,9 +219,6 @@ func fromProtocolUsage(usage *llmprotocol.Usage) *types.Usage {
 	return &types.Usage{Input: usage.Input, Output: usage.Output, CacheRead: usage.CacheRead, CacheWrite: usage.CacheWrite, TotalTokens: usage.TotalTokens, Cost: cost}
 }
 
-// ResponsesCheckpointItems returns the canonical suffix beginning with a
-// server-emitted compaction item and including the assistant output that
-// followed it in the same response.
 func ResponsesCheckpointItems(message types.Message) ([]json.RawMessage, error) {
 	if len(message.ResponsesItems) == 0 {
 		return nil, nil

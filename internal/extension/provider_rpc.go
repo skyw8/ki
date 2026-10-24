@@ -140,9 +140,6 @@ func (c *rpcClient) streamProvider(ctx context.Context, req ProviderStreamReques
 					message = "provider stream failed"
 				}
 				err := fmt.Errorf("%w: %s", errProviderStreamFailed, message)
-				// The sidecar owns transport progress. Retrying after partial
-				// inference or a deterministic failure can duplicate a turn,
-				// so preserve its retry classification across the RPC boundary.
 				if event.NonRetryable {
 					return acc, &nonRetryableProviderError{err: err}
 				}

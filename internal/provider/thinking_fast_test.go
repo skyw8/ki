@@ -150,9 +150,6 @@ func TestFastServiceTierValidationPreservesThinkingMapWhitelist(t *testing.T) {
 
 func TestFastServiceTierCatalogMergeCloneAndPersistence(t *testing.T) {
 	priority, empty, reasoning := "priority", "", true
-	// Definition documents share the seed/override schema with the registry.
-	// Loading an extension-owned capability into the core registry is tested
-	// separately below; this checks its lossless storage and clone contract.
 	cfg := ModelsFile{Providers: map[string]Config{
 		"custom": {
 			Name: "Custom", API: "openai-codex-responses", BaseURL: "https://example.test/v1",
@@ -270,7 +267,6 @@ func TestLiveRejectsFastThinkingBeforeTransport(t *testing.T) {
 			})
 		}
 	}
-	// Ordinary selections still reach the transport rather than the Fast guard.
 	called := false
 	live := NewLive("responses", "https://example.test/v1", "key", roundTrip(func(*http.Request) (*http.Response, error) {
 		called = true

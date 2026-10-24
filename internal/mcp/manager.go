@@ -93,7 +93,6 @@ func (m *Manager) begin(ctx context.Context) (context.Context, func(), error) {
 	return ctx, func() { stop(); cancel(); m.wg.Done() }, nil
 }
 
-// Tools acquires the allowed catalog for a new occupy, never mutating old tools.
 func (m *Manager) Tools(ctx context.Context) ([]tool.Tool, error) {
 	ctx, done, err := m.begin(ctx)
 	if err != nil {
@@ -111,8 +110,6 @@ func (m *Manager) Tools(ctx context.Context) ([]tool.Tool, error) {
 	}
 	close(jobs)
 	var workers sync.WaitGroup
-	// Independent servers must not multiply first-occupy startup timeouts.
-	// The outer owned operation joins this bounded pool before publishing.
 	for range min(8, len(m.entries)) {
 		workers.Go(func() {
 			for i := range jobs {
@@ -147,7 +144,6 @@ func (m *Manager) Tools(ctx context.Context) ([]tool.Tool, error) {
 	return out, errors.Join(failures...)
 }
 
-// Catalog returns only the last acquired catalog and has no connection effects.
 func (m *Manager) Catalog() []tool.Tool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -236,8 +232,6 @@ func (m *Manager) load(ctx context.Context, e *serverEntry) ([]*adapter, error) 
 		}
 		catalog = append(catalog, t)
 	}
-	// An empty successful catalog is cached too. A notification arriving during
-	// fetch leaves a newer revision, forcing another refresh at the next occupy.
 	e.catalog = catalog
 	if e.catalog == nil {
 		e.catalog = []*adapter{}
@@ -248,15 +242,11 @@ func (m *Manager) load(ctx context.Context, e *serverEntry) ([]*adapter, error) 
 
 func (m *Manager) transport(cfg config.MCPServer) (sdk.Transport, error) {
 	if cfg.Command != "" {
-		// Do not bind a persistent MCP subprocess to the startup observation
-		// context: its timeout must not kill a successfully connected server.
 		cmd := exec.Command(cfg.Command, cfg.Args...)
 		process.AttachProcessGroup(cmd)
 		process.SetWaitDelay(cmd)
 		cmd.Dir = cfg.CWD
 		env := make(map[string]string)
-		// Do not inherit provider credentials or the whole daemon environment.
-		// Explicit env/env_vars opt additional variables into this MCP process.
 		keysToInherit := append([]string{
 			"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP",
 			"SystemRoot", "SYSTEMROOT", "WINDIR", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "COMSPEC",
@@ -275,7 +265,6 @@ func (m *Manager) transport(cfg config.MCPServer) (sdk.Transport, error) {
 		for _, k := range keys {
 			cmd.Env = append(cmd.Env, k+"="+env[k])
 		}
-		// MCP stdout is exclusively protocol; stderr never contaminates frames.
 		cmd.Stderr = os.Stderr
 		return &commandTransport{command: cmd, sdk: &sdk.CommandTransport{Command: cmd, TerminateDuration: 250 * time.Millisecond}}, nil
 	}
@@ -293,8 +282,7 @@ func (m *Manager) transport(cfg config.MCPServer) (sdk.Transport, error) {
 	return &sdk.StreamableClientTransport{
 		Endpoint: cfg.URL,
 		HTTPClient: &http.Client{
-			Transport: &headerTransport{ctx: m.transportCtx, headers: headers, base: http.DefaultTransport},
-			// Credentials are never forwarded to a redirected, unconfigured endpoint.
+			Transport:     &headerTransport{ctx: m.transportCtx, headers: headers, base: http.DefaultTransport},
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}, nil
@@ -307,8 +295,6 @@ func (m *Manager) Close() error {
 		m.catalog = nil
 		m.cancel()
 		m.mu.Unlock()
-		// begin/Add is fenced by the same mutex, so no owned operation can
-		// appear after this join. SDK sessions are then stable to close.
 		m.wg.Wait()
 		var failures []error
 		for _, e := range m.entries {
@@ -318,9 +304,6 @@ func (m *Manager) Close() error {
 				}
 			}
 		}
-		// Keep transports alive while the SDK sends cancellation notifications
-		// and its DELETE session cleanup. Canceling HTTP first strands remote
-		// calls whose server context is detached from the POST connection.
 		m.transportCancel()
 		m.monitorWG.Wait()
 		m.closeErr = errors.Join(failures...)
@@ -351,8 +334,6 @@ type commandConnection struct {
 
 func (c *commandConnection) Close() error {
 	c.once.Do(func() {
-		// The official transport owns Wait and protocol shutdown; the host adds
-		// a tree watchdog because descendants may keep protocol pipes open.
 		done := make(chan error, 1)
 		go func() { done <- c.Connection.Close() }()
 		timer := time.NewTimer(time.Second)
@@ -387,8 +368,6 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		cancel()
 		return nil, err
 	}
-	// SSE response bodies outlive RoundTrip. Keep their lifetime cancellation
-	// until Close instead of canceling the stream on returning HTTP headers.
 	resp.Body = &ownedBody{ReadCloser: resp.Body, done: func() { stop(); cancel() }}
 	return resp, nil
 }

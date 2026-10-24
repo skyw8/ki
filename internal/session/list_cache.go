@@ -9,17 +9,6 @@ import (
 	"time"
 )
 
-// ListCache reuses list rows across calls.
-//
-// Why: the WebUI fetches GET /v1/sessions on every refresh. Even with the lite
-// scan, re-reading config.json plus the first jsonl lines for every session on
-// every request is avoidable work once nothing changed. A row is reused only
-// while events.jsonl and config.json keep the same size and mtime, so the
-// filesystem stays the source of truth: a change written by another process
-// still surfaces on the next call.
-//
-// Rows are treated as immutable. Callers must not mutate the returned Info or
-// its Metadata map; they may be shared with earlier results.
 type ListCache struct {
 	mu   sync.Mutex
 	rows map[string]cachedInfo
@@ -36,15 +25,10 @@ type fileStamp struct {
 	mtime time.Time
 }
 
-// NewListCache returns an empty cache.
 func NewListCache() *ListCache {
 	return &ListCache{rows: map[string]cachedInfo{}}
 }
 
-// List returns the same rows as List, reusing rows whose files are unchanged.
-//
-// The whole walk runs under the cache lock, so a burst of concurrent requests
-// does one pass of revalidation instead of one per request.
 func (c *ListCache) List(root string) ([]Info, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -84,8 +68,6 @@ func (c *ListCache) List(root string) ([]Info, error) {
 		}
 		return nil, err
 	}
-	// Drop rows for directories that no longer exist so a deleted session does
-	// not pin its directory in memory forever.
 	for dir := range c.rows {
 		if _, ok := seen[dir]; !ok {
 			delete(c.rows, dir)
@@ -95,10 +77,6 @@ func (c *ListCache) List(root string) ([]Info, error) {
 	return out, nil
 }
 
-// Row returns one session's list row, reusing the cached row while the session
-// files are unchanged. It is the per-directory counterpart of List: callers
-// that hold a directory (the session view needs a title even when it only read
-// a tail of the transcript) get the lite row without walking the whole root.
 func (c *ListCache) Row(dir string) (Info, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

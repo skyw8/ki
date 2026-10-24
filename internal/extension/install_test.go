@@ -18,9 +18,6 @@ import (
 )
 
 func TestRuntimeInstallWhenValidation(t *testing.T) {
-	// Discovery canonicalizes package roots before validation. macOS /var and
-	// Windows short temp paths can alias the real root; missing commands cannot
-	// resolve that alias themselves, so the fixture must use the discovered form.
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -65,8 +62,6 @@ func TestRuntimeInstallMissingRejectsOutsideSymlinkAncestors(t *testing.T) {
 	}
 }
 
-// TestRuntimeInstallFixture runs the current test executable as a portable
-// install command; no shell, compiler, or source is needed by its child process.
 func TestRuntimeInstallFixture(t *testing.T) {
 	if os.Getenv("KI_INSTALL_FIXTURE") != "1" {
 		return
@@ -140,8 +135,6 @@ func TestRuntimeInstallTreeChild(t *testing.T) {
 	if _, err := io.WriteString(conn, "ready\n"); err != nil {
 		os.Exit(17)
 	}
-	// The test owns the other end, so even a broken cancellation path cannot
-	// leave the helper behind after cleanup closes the connection.
 	_, _ = io.Copy(io.Discard, conn)
 	_ = conn.Close()
 	os.Exit(0)
@@ -162,8 +155,6 @@ func TestRuntimeInstallCancellationKillsDescendants(t *testing.T) {
 	go func() {
 		done <- installRuntime(ctx, d.root, d.manifest.Runtime, sidecarEnv(d, "", home, ""))
 	}()
-	// Accept/read deadlines are failure bounds, not fixed sleeps. Cancellation
-	// starts only after the compiler descendant has explicitly signalled ready.
 	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatal(err)
 	}

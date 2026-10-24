@@ -57,7 +57,6 @@ func TestControllerDurableDeliverySuppressesDuplicateCompletion(t *testing.T) {
 	if _, err := store.Wait(context.Background(), launch.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	// A durable parent receipt suppresses duplicate notification of that run.
 	commitCurrentNotification(store, launch.TaskID)
 	if !currentCompletionDelivered(store, launch.TaskID) {
 		t.Fatal("read run was not marked consumed")
@@ -65,7 +64,6 @@ func TestControllerDurableDeliverySuppressesDuplicateCompletion(t *testing.T) {
 	if commitCurrentNotification(store, launch.TaskID) {
 		t.Fatal("a consumed run still claimed a completion notification")
 	}
-	// A resume is a new run with a new result, so it notifies again.
 	if status, err := store.QueueOrResume(context.Background(), launch.TaskID, "second"); err != nil || status != "resumed" {
 		t.Fatalf("resume = %q %v", status, err)
 	}
@@ -373,8 +371,6 @@ func TestControllerNotificationClaimIsPerRun(t *testing.T) {
 	}
 }
 
-// A child agent is process-owned: cancelling the caller must not cancel it,
-// because the Agent tool may promote it to background instead.
 func TestControllerChildSurvivesCallerCancel(t *testing.T) {
 	store := NewController()
 	caller, cancelCaller := context.WithCancel(t.Context())
@@ -414,8 +410,6 @@ func TestControllerSettledRunCancelsOwnedContext(t *testing.T) {
 			if _, err := store.Wait(t.Context(), launch.TaskID); err != nil {
 				t.Fatal(err)
 			}
-			// Context-owned watchers must be released on normal settlement, not
-			// only if the agent is later interrupted or the server is closed.
 			select {
 			case <-ctx.Done():
 			case <-time.After(time.Second):
@@ -476,7 +470,7 @@ func TestControllerCloseContextSharesFullCleanupBarrier(t *testing.T) {
 			launch, err := store.Start(t.Context(), Request{RootSessionID: root}, "", func(ctx context.Context, _, _ string) (Completion, error) {
 				<-ctx.Done()
 				cancelled <- ctx
-				<-release // Represents a provider/notification callback still unwinding.
+				<-release
 				return Completion{}, ctx.Err()
 			})
 			if err != nil {
@@ -607,9 +601,6 @@ func TestControllerStopDrainsSettledPublication(t *testing.T) {
 	}
 	<-settled
 	task, _ := store.task(launch.TaskID)
-	// sync.Mutex is not a durably blocking operation for synctest.Wait.
-	// Assert the actual admission gate instead of waiting on fake time while
-	// the final publication callback intentionally holds that mutex.
 	if task.admission.TryLock() {
 		task.admission.Unlock()
 		close(release)
@@ -653,8 +644,6 @@ func BenchmarkControllerGetByID(b *testing.B) {
 	}
 }
 
-// messengerAgentRuntime is a runtime that can also receive SendMessage, so a
-// Set build exposes both Agent and SendMessage.
 type messengerAgentRuntime struct{ fakeAgentRuntime }
 
 func (messengerAgentRuntime) SendAgentMessage(context.Context, MessageRequest) (MessageResult, error) {

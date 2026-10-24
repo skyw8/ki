@@ -66,8 +66,6 @@ test('a missing extension preference falls back to the registry default then fir
 test('new sessions never send an unvalidated cached model or its thinking effort', () => {
   const stale = { provider: 'openai-codex', model: 'gpt-5.4', thinkingEffort: 'high fast' }
   const models = [model({ provider: 'deepseek', id: 'deepseek-flash' })]
-  // Catalog loading/failure and extension removal both delegate to the server
-  // default instead of turning browser state into an explicit invalid request.
   for (const catalog of [[], models]) {
     expect(sessionCreateBody('ws1', stale, catalog)).toEqual({ workspaceId: 'ws1' })
     expect(sessionCreateBody(null, stale, catalog)).toEqual({})
@@ -108,7 +106,6 @@ test('fast intent follows the nearest supported effort without inventing an opti
   expect(clampThinkingEffort('max fast', codex)).toBe('high fast')
   expect(clampThinkingEffort('off fast', codex)).toBe('low fast')
   expect(clampThinkingEffort('medium', codex)).toBe('high')
-  // Capability metadata cannot authorize labels absent from the actual catalog.
   const noFastOptions = fastModel({ thinkingLevels: ['medium', 'high'] })
   expect(clampThinkingEffort('high fast', noFastOptions)).toBe('high')
 })
@@ -155,7 +152,6 @@ test('catalog refresh reconciles new composers but never changes an existing emp
   expect(reconcileComposerModel(choice, false, catalog, fallback)).toBe(choice)
   expect(reconcileComposerModel(choice, false, [defaultModel], fallback)).toEqual({ ...choice, provider: defaultModel.provider, model: defaultModel.id })
   expect(reconcileComposerModel(choice, false, [], fallback)).toEqual({ ...choice, provider: '', model: '', thinkingEffort: '' })
-  // nodes.length is zero, but a persisted session is not a new composer.
   expect(reconcileComposerModel(choice, true, [defaultModel], fallback)).toBe(choice)
   expect(reconcileComposerModel(choice, true, [], fallback)).toBe(choice)
 })

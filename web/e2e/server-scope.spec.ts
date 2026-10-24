@@ -4,8 +4,6 @@ import type { Meta, ModelInfo, SessionDetail, SessionInfo } from '../src/api/typ
 import { serverToken } from './global-setup'
 import { newSession } from './session'
 
-// Each case owns its browser state, fetch fixture and server mutations; there
-// is no dependency on another case's login, sessions or model selection.
 test.describe.configure({ mode: 'parallel' })
 
 type ScopeFixture = {
@@ -44,9 +42,6 @@ async function installTransport(page: Page, nextModel?: ModelInfo, previous?: Se
     const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } })
     const original = window.fetch.bind(window)
     const passThrough: typeof window.fetch = (input, init) => {
-      // The virtual backend has a different identity, but real API writes
-      // still use the isolated fixture server. Translate only the transport
-      // identity header; leave model/body/CSRF assertions and auth intact.
       const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
       if (backingServerId && headers.has('X-Ki-Server-ID')) headers.set('X-Ki-Server-ID', backingServerId)
       return original(input, { ...init, headers })
@@ -71,7 +66,7 @@ async function installTransport(page: Page, nextModel?: ModelInfo, previous?: Se
             init?.signal?.addEventListener('abort', () => {
               if (closed) return
               closed = true
-              try { current.close() } catch { /* A test-triggered close can win. */ }
+              try { current.close() } catch {}
             }, { once: true })
             current.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ type: 'ready', serverId: state.serverId })}\n\n`))
           },

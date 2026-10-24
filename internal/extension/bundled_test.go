@@ -10,10 +10,6 @@ import (
 	"ki/internal/session"
 )
 
-// copyBundledPackage copies a bundled extension into a temp home, skipping build
-// output and dependencies: that is exactly what a user's first Discover sees
-// before runtime.install runs. Symlinks are skipped too, so a vendored
-// environment (a .venv/lib64 symlink, for instance) cannot break the copy.
 func copyBundledPackage(t *testing.T, src, dst string) {
 	t.Helper()
 	const maxCopiedFile = 1 << 20
@@ -26,8 +22,6 @@ func copyBundledPackage(t *testing.T, src, dst string) {
 			return err
 		}
 		if entry.IsDir() {
-			// The source fixture must omit the compiled bin directory itself:
-			// skipping its large executables alone leaks an empty directory into PATH.
 			if rel == "bin" {
 				return fs.SkipDir
 			}
@@ -58,9 +52,6 @@ func copyBundledPackage(t *testing.T, src, dst string) {
 	}
 }
 
-// TestBundledExtensionsLoad keeps every package under extensions/ installable:
-// a manifest error disables the package for real users and is easy to miss in
-// review, so the suite reads the shipped manifests instead of only fixtures.
 func TestBundledExtensionsLoad(t *testing.T) {
 	bundled := filepath.Join("..", "..", "extensions")
 	entries, err := os.ReadDir(bundled)

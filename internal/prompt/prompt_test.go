@@ -67,10 +67,6 @@ func TestBuildLayers(t *testing.T) {
 	}
 }
 
-// TestBuildHasNoSubagentLayer pins the subagent orientation out of the system
-// prompt: it must stay byte-identical to the parent's so provider prefix
-// caching can be shared with the delegating session. The child's orientation
-// travels in its first user message instead.
 func TestBuildHasNoSubagentLayer(t *testing.T) {
 	sys := Build(Input{Tools: []toolapi.Tool{}})
 	if strings.Contains(sys, "subagent") || strings.Contains(sys, `to:"parent"`) {
@@ -93,9 +89,6 @@ func TestBuildExtensionLayerAfterUserAppend(t *testing.T) {
 	}
 }
 
-// TestBuildHasBuiltinAppendSystemPrompt pins the harness-level search rules into
-// the system prompt: they must render even with no tools, no operator file, and
-// no session resources, and must precede any operator-supplied append text.
 func TestBuildHasBuiltinAppendSystemPrompt(t *testing.T) {
 	sys := Build(Input{Tools: []toolapi.Tool{}})
 	if !strings.Contains(sys, DefaultAppendSystemPrompt) {

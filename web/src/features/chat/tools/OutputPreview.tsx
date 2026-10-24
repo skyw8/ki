@@ -6,14 +6,6 @@ import { useI18n } from '../../../i18n/index'
 import { useDialogFocus } from '../../../hooks/useDialogFocus'
 import { formatBytes } from './format'
 
-/**
- * Full output for a spilled/task-log file.
- *
- * The file lives on the server host, so it is streamed through the existing
- * authenticated `/v1/fs` preview endpoint: the browser never receives a host
- * path it could navigate to, which keeps the port-forwarded WebUI working.
- * Text is capped server-side, and the cap is reported rather than hidden.
- */
 export function OutputPreview({ api, path, onClose }: { api: Client; path: string | null; onClose: () => void }) {
   const { t } = useI18n()
   const [text, setText] = useState('')
@@ -31,8 +23,6 @@ export function OutputPreview({ api, path, onClose }: { api: Client; path: strin
     setLoading(true)
     void api.previewFS(path, ac.signal)
       .then(async blob => {
-        // The preview endpoint caps text at 1 MiB; a full 1 MiB payload is the
-        // only way to tell "clipped" apart from "exactly this long".
         const full = await blob.text()
         setClipped(blob.size >= 1 << 20)
         setText(full)

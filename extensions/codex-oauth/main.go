@@ -196,9 +196,6 @@ func (s *sidecar) handle(m object) {
 			defer cancel()
 			if err := streamCodex(ctx, payload, s.send, requestID); err != nil && ctx.Err() == nil {
 				params := object{"requestId": requestID, "type": "error", "error": safeError(err)}
-				// The loop retries unmarked stream errors. A transport that has
-				// already observed a response must preserve its no-resend decision
-				// through the RPC boundary, not merely avoid its own HTTP fallback.
 				var fatal interface{ NonRetryable() bool }
 				if errors.As(err, &fatal) && fatal.NonRetryable() {
 					params["nonRetryable"] = true

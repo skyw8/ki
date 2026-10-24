@@ -8,8 +8,6 @@ import { sidecarBin } from './sidecar.ts'
 import { MIN_TOUCH_SIZE } from './touch-target.ts'
 import { newSession } from './session.ts'
 
-// Every test is self-contained (verified standalone on its own server), so the
-// parallel runner may split this file into one isolated process per test.
 test.describe.configure({ mode: 'parallel' })
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -22,8 +20,6 @@ async function sendPrompt(page: Page, text: string) {
 }
 
 async function expectMinTarget(locator: Locator, label: string): Promise<void> {
-  // Why: boundingBox returns null before the control is rendered, and the chat
-  // clamp toggle appears one frame after the bubble, so wait for visibility.
   await expect(locator, `${label} should be visible`).toBeVisible()
   const box = await locator.boundingBox()
   expect(box, `${label} should have a layout box`).toBeTruthy()
@@ -277,8 +273,6 @@ test('opening a session locks composer until runtime.ready', async ({ page, requ
   await expect(input).toBeDisabled()
   await expect(input).toHaveAttribute('placeholder', /正在加载扩展|Loading extensions/)
   await expect(page.getByTestId('command-btn')).toBeDisabled()
-  // Why: release the sidecar gate only after observing the locked composer; a
-  // fixed init sleep either flakes under load or wastes time.
   writeFileSync(join(home, 'slowboot-release'), '')
   await expect(input).toBeEnabled({ timeout: 15_000 })
 })
@@ -359,8 +353,6 @@ test('top bar folds extra chips into one inspector modal', async ({ page, reques
   await expect(page.getByTestId('ext-chip-notesx')).toHaveCount(0)
   await expect(page.getByTestId('ext-chips-more').locator('.ext-more-wide')).toHaveText('+2')
 
-  // Why: independent Playwright invocations can exercise this fixture at the
-  // same time. The per-test output path prevents their screenshots colliding.
   const shotDir = process.env.KI_SHOT_DIR || testInfo.outputPath('ext-inspector')
   mkdirSync(shotDir, { recursive: true })
   await page.screenshot({ path: `${shotDir}/01-header.png` })

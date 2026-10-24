@@ -12,10 +12,6 @@ const webDir = join(dirname(fileURLToPath(import.meta.url)), '..')
 const root = join(webDir, '..')
 export { statePath, storageStatePath }
 
-// web/dist is build output and is not tracked by git. Build it before embedding:
-// `go build -tags embed` fails when dist is missing, and a stub binary would make
-// every spec fail against a 503 page. It is also rebuilt when a frontend source
-// is newer than the bundle, so a suite never passes against the previous UI.
 function ensureWebDist(): void {
   if (!webDistStale()) return
   buildWebDist()
@@ -34,7 +30,6 @@ async function waitHealth(url: string): Promise<void> {
       const res = await fetch(url)
       if (res.ok) return
     } catch {
-      // still booting
     }
     await new Promise(r => setTimeout(r, 100))
   }
@@ -115,15 +110,10 @@ function deepseekKey(): string {
 
 export default async function globalSetup(): Promise<void> {
   if (process.env.KI_SKIP_SERVER === '1') {
-    // The Go harness (go test ./e2e) started the server itself and set
-    // KI_HOME; keep the fixture home discoverable so specs can still drop
-    // skills and extension fixtures next to the real session dir.
     writeFileSync(statePath, JSON.stringify({
       pid: 0,
       home: process.env.KI_HOME ?? '',
       addr: '',
-      // Why: the Go harness owns the server and its cross-platform temporary
-      // workspace, so Playwright cannot infer that workspace from this process.
       cwd: process.env.KI_PW_CWD ?? '',
     }))
     const baseURL = process.env.KI_BASE_URL
@@ -169,8 +159,6 @@ export default async function globalSetup(): Promise<void> {
   } else {
     env.KI_FAKE = '1'
   }
-  // Install tests download from a local release mirror so the fake suite stays
-  // offline. The release tag must match the directory the mirror publishes.
   env.KI_EXTENSIONS_SOURCE = writeExtensionMirror()
   env.KI_EXTENSIONS_RELEASE = 'v0.0.0-test'
 
@@ -187,10 +175,7 @@ export default async function globalSetup(): Promise<void> {
     await waitHealth(`${serveURL}/v1/health`)
     await seedBrowserSession(serveURL, home)
   } catch (error) {
-    // Why: setup failures happen before the normal teardown lifecycle is
-    // guaranteed. Stop this run's server here so a bind/auth error cannot
-    // strand a daemon that poisons the next invocation.
-    try { process.kill(child.pid, 'SIGTERM') } catch { /* already gone */ }
+    try { process.kill(child.pid, 'SIGTERM') } catch {}
     throw error
   }
 }

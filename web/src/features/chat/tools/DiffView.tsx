@@ -7,23 +7,7 @@ import { ICopy } from '../../../components/icons'
 import { diffStat, type DiffFile } from './parse'
 import 'react-diff-view/style/index.css'
 
-/**
- * Unified diff for `edit` / `apply_patch` / `write`.
- *
- * The backend already produces the unified diff (context 3 for edit, per-file
- * for apply_patch), so the component parses rather than diffs. Parsing is pure
- * and memoized per file text: a re-render from a sibling row must not
- * re-tokenize the same patch.
- *
- * Large diffs collapse their unchanged context. React Diff View's own
- * `gutterType="omit"` still renders every line, so a 3000-line patch would
- * mount 9000 cells inside a virtualized row; the hunks are filtered here
- * instead and the omitted count is an explicit, clickable control.
- */
-
-/** Per file; also bounds the DOM inside one transcript row. */
 const MAX_HUNKS = 40
-/** Unchanged lines kept on each side of a hunk before folding. */
 const CONTEXT = 3
 
 export type DiffViewProps = {
@@ -111,11 +95,6 @@ type Parsed = {
 const cache = new Map<string, Parsed>()
 const CACHE_LIMIT = 64
 
-/**
- * `parseDiff` throws on a malformed patch, and a truncated detail body (a
- * bounded audit copy) can be malformed. A bad patch must degrade to its text,
- * never blank the row, so the return type carries no exception path.
- */
 function parse(diff: string): Parsed {
   const hit = cache.get(diff)
   if (hit) return hit
@@ -137,14 +116,12 @@ function parse(diff: string): Parsed {
   return parsed
 }
 
-/** Keep the first and last hunks of a very long patch, plus their neighbors. */
 function capHunks(hunks: FileData['hunks']): FileData['hunks'] {
   if (hunks.length <= MAX_HUNKS) return hunks
   const head = hunks.slice(0, MAX_HUNKS - 4)
   return [...head, ...hunks.slice(-4)]
 }
 
-/** Unchanged run length between two changed lines, for the fold hint. */
 export function contextRunLengths(diff: string): number[] {
   const runs: number[] = []
   let run = 0

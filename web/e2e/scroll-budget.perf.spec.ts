@@ -1,18 +1,9 @@
-// Scrolling budgets for a long transcript. Run with:
-//   cd web && bun run test:perf
-//
-// The cases here are the measured failure modes of the virtual list on a phone
-// viewport (see docs/webui.md): a gesture that is swallowed by a scroll
-// correction, a page of older history that lands under the reader's feet, an
-// open that fetches history nobody asked for, and the markdown parse of every
-// newly mounted row landing in one frame.
 import { expect, test, type Page } from '@playwright/test'
 import { openSessionRow } from './sidebar.ts'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { statePath } from './global-setup.ts'
 
-/** A realistic assistant reply: the shapes that actually cost parse time. */
 function richReply(n: number): string {
   const code = Array.from({ length: 18 }, (_, i) => `  const row${i} = table.filter(r => r.turn === ${n} + ${i}) // 步骤 ${i}`).join('\n')
   const log = Array.from({ length: 10 }, (_, i) => `2026-09-27T08:${String(i).padStart(2, '0')}:11.482Z INFO  turn=${n} step=${i} 已处理 1234 条记录，写入 assets/index-${i}.js`).join('\n')
@@ -110,11 +101,6 @@ async function stopFrames(page: Page): Promise<{ frames: number; longTasks: numb
   return page.evaluate(() => {
     const w = window as unknown as { __frames: Frame[]; __long: number[]; __raf: number }
     cancelAnimationFrame(w.__raf)
-    // The marked row is the reader's reference: in one frame it may only move by
-    // as much as the reader asked for (a wheel is 400px here). A bigger step is
-    // the layout changing without the scroll following it — the list jumping
-    // under the reader. Frames where the mark was re-pinned (the row left the
-    // window) are skipped: their offsets are not comparable.
     let worst = 0
     let trace = ''
     for (let i = 1; i < w.__frames.length; i++) {
@@ -138,12 +124,6 @@ async function stopFrames(page: Page): Promise<{ frames: number; longTasks: numb
   })
 }
 
-/**
- * markOffset tracks the topmost visible reply: it is the reader's reference, and
- * its on-screen offset is what a jump would move. The element is marked so the
- * same row is measured across frames and steps (a new mark means the row left the
- * window, and the two offsets are not comparable).
- */
 async function markOffset(page: Page): Promise<{ id: string; offset: number } | null> {
   return page.evaluate(() => {
     const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
@@ -178,7 +158,7 @@ test.describe('scroll budgets', () => {
       try {
         const url = new URL(res.url())
         if (url.pathname.startsWith('/v1/sessions/')) requests.push(url.pathname.split('/').pop() + url.search)
-      } catch { /* not a URL we care about */ }
+      } catch {}
     })
 
     await page.goto('/')
@@ -194,26 +174,14 @@ test.describe('scroll budgets', () => {
     })
     expect(opened.top + opened.client, `opened at ${JSON.stringify(opened)}`).toBeGreaterThanOrEqual(opened.height - 2)
 
-    // Opening a session must not fetch history nobody asked to see: the list
-    // paints at scrollTop 0 before follow-tail takes it to the bottom, and that
-    // used to trip the "near the top" rule.
     expect(requests.filter(r => r.includes('before=')), `open fetched ${JSON.stringify(requests)}`).toEqual([])
 
     const box = await page.getByTestId('chat-scroll').boundingBox()
     if (!box) throw new Error('no chat scroller')
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-    // Start inside the loaded window, above the fold.
     await page.getByTestId('chat-scroll').evaluate(el => { const e = el as HTMLElement; e.scrollTop = (e.scrollHeight - e.clientHeight) * 0.5 })
     await page.waitForTimeout(1200)
 
-    // Paging older history, while the loaded window is short enough to reach the
-    // top: the row the reader is on must not move.
-    //
-    // The intent comes from the wheel above; the trigger itself is a discrete
-    // jump to the top, because a wheel step is applied over several frames and the
-    // page would be requested in the middle of it — the reader's remaining deltas
-    // then move the view after the page landed, which is correct behaviour but
-    // makes the position at request time impossible to compare against.
     let paged = false
     let releasePage!: () => void
     const pageGate = new Promise<void>(resolve => { releasePage = resolve })
@@ -224,18 +192,13 @@ test.describe('scroll budgets', () => {
     const onResponse = (res: import('@playwright/test').Response) => {
       try {
         if (new URL(res.url()).searchParams.has('before')) paged = true
-      } catch { /* not a URL we track */ }
+      } catch {}
     }
     page.on('response', onResponse)
     await wheelUp(page, 5, -400)
     await page.waitForTimeout(400)
     await startFrames(page)
     await page.getByTestId('chat-scroll').evaluate(el => { (el as HTMLElement).scrollTop = 0 })
-    // Read the row the reader is on, but only once the virtual window has caught
-    // up with the jump: for a frame after a one-shot scroll the mounted rows are
-    // still laid out for the previous position, and their offsets belong to a
-    // different frame (measured: 56,094px). A row that actually crosses the top of
-    // the viewport is the fresh window.
     const readAnchor = () => page.evaluate(() => {
       const el = document.querySelector('[data-testid="chat-scroll"]') as HTMLElement
       const box = el.getBoundingClientRect()
@@ -245,8 +208,6 @@ test.describe('scroll budgets', () => {
       const offset = row ? Math.round(row.getBoundingClientRect().top - box.top) : null
       return { key: row?.dataset.itemKey ?? null, offset }
     })
-    // Capture BEFORE the response. Capturing afterwards could accept the
-    // wrong row after a prepend jump; prefetch can also begin before top=0.
     await expect.poll(async () => {
       const read = await readAnchor()
       return read.offset != null && Math.abs(read.offset) < 600
@@ -264,18 +225,10 @@ test.describe('scroll budgets', () => {
       const row = el.querySelector(`[data-item-key="${CSS.escape(key)}"]`) as HTMLElement | null
       return { offset: row ? Math.round(row.getBoundingClientRect().top - box.top) : null, users: document.querySelectorAll('[data-testid="user-bubble"]').length }
     }, anchor.key)
-    // The prepended page goes in *above* the reader: the row they were on stays
-    // where it was, instead of the view being thrown a page back (before the fix
-    // scrollTop stayed at 0 while the height grew by ~60,000px, and the reader was
-    // left ~25 turns earlier). What is left is the drift of the rows that were
-    // measured while the page was in flight — under a row, not a screen.
     expect(after.offset, `anchor row is gone (users=${after.users})`).not.toBeNull()
     expect(Math.abs(after.offset! - anchor.offset), `anchor moved from ${anchor.offset} to ${after.offset}`).toBeLessThanOrEqual(8)
     expect(pagingScroll.worstLurch, `page load lurched (${pagingScroll.trace})`).toBeLessThan(600)
 
-    // First pass: rows are visited for the first time, so their height is only
-    // as good as the learned estimate. Nothing may lurch, and the content must
-    // still move by the gesture.
     await startFrames(page)
     const steps: number[] = []
     let prevMark = await markOffset(page)
@@ -293,8 +246,6 @@ test.describe('scroll budgets', () => {
     expect(Math.max(...measured.map(d => Math.abs(d - 400))), `first pass content moved ${JSON.stringify(steps)} for a 400px gesture`).toBeLessThan(150)
     expect(first.worstLurch, `first pass lurch (${first.trace})`).toBeLessThan(600)
 
-    // Second pass over the same rows: every height is known, so each gesture
-    // moves the view by exactly what it asked for.
     await page.waitForTimeout(600)
     await startFrames(page)
     const revisited: number[] = []
@@ -333,7 +284,6 @@ test.describe('perf hud', () => {
 
     await page.evaluate(() => localStorage.setItem('ki-perf-hud', '1'))
     await page.reload()
-    // The overlay lives in the conversation view, which a reload does not reopen.
     await page.getByTestId('mobile-nav-toggle').click()
     await openSessionRow(page, 'scroll-budget')
     await expect(page.getByTestId('perf-hud')).toBeVisible({ timeout: 30_000 })

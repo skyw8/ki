@@ -8,24 +8,11 @@ import (
 	"strings"
 )
 
-// CompletionsBody encodes an OpenAI Chat Completions request.
 func CompletionsBody(req Request) map[string]any {
 	msgs := []map[string]any{}
 	if req.System != "" {
 		msgs = append(msgs, map[string]any{"role": "system", "content": req.System})
 	}
-	// Completions role:tool accepts only a string, so images must use a user image_url.
-	// We cannot append an image-bearing user message after every toolResult: the
-	// role:tool messages for one assistant.tool_calls batch must remain contiguous;
-	// inserting a user message between them causes most gateways to return 400.
-	//
-	// Encode consecutive toolResults from one parallel batch as role:tool
-	// messages first, using plain text only; collect that batch's images in one
-	// user message after the tool group. Keep images from earlier turns after
-	// their original group rather than moving them to the end of the conversation
-	// so stable prefix bytes can preserve prompt-cache hits.
-	// When there are no images, do not insert a user message; this matches the
-	// previous plain-text path.
 	history := structuredToolReplay(req.Messages, req.Tools)
 	for i := 0; i < len(history); i++ {
 		m := history[i]
@@ -122,7 +109,6 @@ func toOpenAIMessage(m Message) map[string]any {
 			case "text", "":
 				text.WriteString(c.Text)
 			case "thinking":
-				// OpenAI-compat reasoning_content
 				if c.Thinking != "" {
 					out["reasoning_content"] = c.Thinking
 				}
@@ -220,8 +206,6 @@ func openAIToolImageFollowup(imgs []map[string]any) map[string]any {
 }
 
 func (l *Client) streamCompletions(ctx context.Context, req Request, emit func(AssistantDelta) error) (Message, error) {
-	// A deterministic request failure can only fail again: retrying it would
-	// rebuild the same body and hide the error behind the loop's backoff.
 	if err := validateCompletionsRequest(req); err != nil {
 		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, &nonRetryableError{err: err}
 	}
@@ -282,9 +266,6 @@ func parseCompletionsSSE(_, data string, acc *Message) sseParseResult {
 			cached = chunk.Usage.PromptDetails.CachedTokens
 		}
 		acc.Usage = &Usage{
-			// Chat Completions prompt_tokens includes cached tokens. Keep the
-			// Keep the provider's counters verbatim; the caller can normalize them
-			// when applying its own pricing model.
 			Input:       chunk.Usage.PromptTokens,
 			Output:      chunk.Usage.CompletionTokens,
 			CacheRead:   cached,
@@ -338,10 +319,6 @@ func parseCompletionsSSE(_, data string, acc *Message) sseParseResult {
 	}
 	if d.FunctionCall != nil && (d.FunctionCall.Name != "" || d.FunctionCall.Arguments != "") {
 		const idx = 0
-		// Some compatible gateways include an empty function_call beside ordinary
-		// text deltas. Ignore that placeholder so it cannot become a nameless call.
-		// function_call is the deprecated single-call shape and has no call ID
-		// in the wire contract; keep a stable internal ID for tool-result replay.
 		appendToolCallDelta(acc, "call_completion_0", "", d.FunctionCall.Name, d.FunctionCall.Arguments, idx)
 		call := completionToolCallAt(acc, idx)
 		if call != nil && d.FunctionCall.Arguments != "" {

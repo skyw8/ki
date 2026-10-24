@@ -10,9 +10,6 @@ import (
 	"syscall"
 )
 
-// pidAlive mirrors the CLI's liveness probe so a lifecycle test can assert that
-// the daemon process itself is gone, not just its listener. A zombie counts as
-// gone: the process finished shutdown, only its parent has not reaped it yet.
 func pidAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -21,7 +18,6 @@ func pidAlive(pid int) bool {
 	if err != nil && !errors.Is(err, syscall.EPERM) {
 		return false
 	}
-	// A path that does not exist (non-Linux unix) simply skips the check.
 	raw, readErr := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if readErr != nil {
 		return true

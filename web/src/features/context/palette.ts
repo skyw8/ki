@@ -1,7 +1,5 @@
 import type { ContextCategory } from './model'
 
-// Keep high-volume input/result categories in different hue families. Close
-// green/teal swatches were indistinguishable in thin stacks and small legends.
 export const CATEGORY_COLORS: Record<ContextCategory, string> = {
   system: '#7468e7',
   tools: '#d88d13',

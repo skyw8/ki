@@ -1,7 +1,6 @@
 import { useI18n } from '../../i18n'
 import { durationColumns, durationText } from '../../lib/duration'
 
-/** A compact format-sized slot prevents tick jitter without hiding seconds. */
 export function Duration({ ms, label }: { ms: number; label?: 'elapsed' | 'ttft' }) {
   const { t } = useI18n()
   const text = durationText(ms)

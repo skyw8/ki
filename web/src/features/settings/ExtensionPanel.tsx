@@ -11,7 +11,6 @@ const TONE_RANK: Record<string, number> = {
   info: 4,
 }
 
-/** Soft cap: 4 chips all fit; past that keep 3 and fold the rest. */
 export const EXT_CHIP_SOFT = 4
 export const EXT_CHIP_HARD = 3
 
@@ -100,9 +99,6 @@ function localeCandidates(lang: Lang, i18n?: ExtensionI18n): string[] {
   return out
 }
 
-// Extension-owned text is resolved from the extension catalog. Keeping this
-// resolver generic is important: the host chooses the browser locale, but it
-// must not know the extension's message keys or copy.
 export function localizedExtensionText(v: unknown, i18n: ExtensionI18n | undefined, lang: Lang): string {
   if (v == null) return ''
   if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v)
@@ -168,8 +164,6 @@ export function ExtensionInspector({
   const navItems = useMemo(() => inspectorItems(items, globalItems), [globalItems, items])
   const selectedGlobal = globalItems.find(item => item.name === selectedName)
   const extensionI18n = selectedGlobal?.i18n
-  // Keep the complete diagnosis outside the clipped navigation and both tabs.
-  // A healthy sidecar does not mean its most recent operation succeeded.
   const errors = [...new Set([
     selected?.status?.tone === 'error' ? localizedExtensionText(selected.status.text, extensionI18n, lang) : '',
     selectedGlobal?.ui?.status?.tone === 'error' ? localizedExtensionText(selectedGlobal.ui.status.text, extensionI18n, lang) : '',
@@ -205,8 +199,6 @@ export function ExtensionInspector({
   }
 
   useEffect(() => {
-    // A newly selected extension should open on its details when available;
-    // otherwise a config-only extension would inherit the previous tab.
     setViewChoice({ extension: selectedName, view: defaultView })
   }, [defaultView, hasConfig, selectedName])
   useEffect(() => {

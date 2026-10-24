@@ -60,7 +60,6 @@ func (c *Controller) SetIdentity(id, name, path, root string) error {
 	return task.persistLocked()
 }
 
-// Identity follows durable structural parents, allowing restoration in any order.
 func (c *Controller) Identity(sessionID string) (root, path string, err error) {
 	return c.identity(sessionID, map[string]bool{})
 }
@@ -169,15 +168,11 @@ func ViewSnapshot(s Snapshot) View {
 	return View{Progress: s.Progress, TaskName: s.TaskPath, SessionID: s.SessionID, AgentID: s.TaskID, Generation: s.Generation, Status: s.Status, Description: s.Description, StartedAt: s.StartedAt, FinishedAt: s.FinishedAt, ToolUseCount: s.ToolUseCount, TotalTokens: s.TotalTokens}
 }
 
-// BlockSubtreeAdmission fences both reserved spawns and explicit follow-ups while
-// host cleanup stops existing descendants. The returned release is idempotent.
 func (c *Controller) BlockSubtreeAdmission(sessionID string) (func(), error) {
 	release, _, err := c.FenceSubtreeAdmission(sessionID)
 	return release, err
 }
 
-// FenceSubtreeAdmission also observes already-reserved spawns. Their release
-// occurs after host creation or rollback, so drained is safe for tree deletion.
 func (c *Controller) FenceSubtreeAdmission(sessionID string) (release func(), drained <-chan struct{}, err error) {
 	root, path, err := c.Identity(sessionID)
 	if err != nil {

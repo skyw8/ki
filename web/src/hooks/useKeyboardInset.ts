@@ -6,36 +6,17 @@ function isEditable(element: Element | null): boolean {
   if (element.isContentEditable) return true
   if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return true
   if (element instanceof HTMLInputElement) {
-    // Only text-like inputs summon the software keyboard.
     return /^(text|search|url|tel|email|password|number|date|time|datetime-local|month|week)$/.test(element.type)
   }
   return false
 }
 
-/**
- * Publishes the software-keyboard occlusion as `--keyboard-inset` on :root so
- * CSS can lift the bottom composer and shrink full-screen dialogs above it.
- * Stays 0 wherever the layout viewport already resizes (Chrome's
- * resizes-content) or no editable control is focused.
- *
- * Also keeps the focused field inside the visible band above the keyboard.
- * The browser's own reveal loses against our fixed-height shell and nested
- * scrollers (modal bodies, the transcript): it pans the wrong scroller or
- * aligns against a band that is still animating. Revealing on every viewport
- * resize (not once) converges as the keyboard finishes its animation; inner
- * scrollers never emit visualViewport events, so a user scrolling away from a
- * focused field is never yanked back.
- */
 export function useKeyboardInset(): void {
   useEffect(() => {
     const viewport = window.visualViewport
     if (!viewport) return
     const root = document.documentElement
     let frame = 0
-    // Largest layout height seen this session: the no-keyboard reference. The
-    // visible band dropping under three quarters of it means the software
-    // keyboard is open even where innerHeight itself shrank (resizes-content),
-    // so this works on both Android Chrome and iOS Safari.
     let baseline = window.innerHeight
     const timers = new Set<number>()
     const later = (ms: number) => {
@@ -66,9 +47,6 @@ export function useKeyboardInset(): void {
         editable,
       )
       root.style.setProperty('--keyboard-inset', `${inset}px`)
-      // data-keyboard lets CSS reclaim dialog chrome (page titles, section
-      // headers) while typing: on a phone the band above the keyboard is a
-      // few hundred px tall and the form needs it more than the headings do.
       baseline = Math.max(baseline, window.innerHeight)
       const keyboardOpen = editable && viewport.height < baseline * 0.75
       if (keyboardOpen) root.dataset.keyboard = 'open'
@@ -80,13 +58,9 @@ export function useKeyboardInset(): void {
     }
     const onFocusIn = () => {
       schedule()
-      // Keyboard animations run ~300ms; recheck after they settle so the
-      // reveal lands against the final band, not a mid-animation one.
       later(300)
       later(600)
     }
-    // focusout fires before the next field's focusin; defer so a focus move
-    // between two inputs never flashes the inset to 0.
     const onFocusOut = () => later(0)
     viewport.addEventListener('resize', schedule)
     viewport.addEventListener('scroll', schedule)

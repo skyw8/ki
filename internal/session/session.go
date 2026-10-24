@@ -21,25 +21,19 @@ const version = 1
 
 const maxJSONLLineBytes = 64 * 1024 * 1024
 
-// ForkMode values for ForkAt (flat copies the leaf chain; tree keeps branching).
 const (
 	ForkModeFlat = "flat"
 	ForkModeTree = "tree"
 )
 
 var (
-	errCWDRequired   = errors.New("cwd required")
-	errSessionHeader = errors.New("session header missing")
-	// ErrSessionNotFound distinguishes a session that no longer exists from an
-	// IO failure. Callers that walk session ancestry treat a deleted session as
-	// an orphaned chain instead of a damaged one.
+	errCWDRequired     = errors.New("cwd required")
+	errSessionHeader   = errors.New("session header missing")
 	ErrSessionNotFound = errors.New("session not found")
 	errEntryNotFound   = errors.New("entry")
 	errInvalidForkMode = errors.New("invalid forkMode")
 	errSessionChanged  = errors.New("session changed after compaction preparation")
-	// Why: distinct Session handles on one directory do not share Session.mu;
-	// serializing config/jsonl IO prevents Open from decoding a torn append.
-	fileGates sync.Map // cleaned dir → *sync.RWMutex
+	fileGates          sync.Map
 )
 
 func fileGate(dir string) *sync.RWMutex {
@@ -53,7 +47,6 @@ func fileGate(dir string) *sync.RWMutex {
 	return mu
 }
 
-// Header is the first jsonl line.
 type Header struct {
 	Type          string `json:"type"`
 	Version       int    `json:"version"`
@@ -64,8 +57,6 @@ type Header struct {
 	ForkMode      string `json:"forkMode,omitempty"`
 }
 
-// NormalizeForkMode validates a fork handling mode and supplies the default
-// for ordinary forks and sessions created before the mode was persisted.
 func NormalizeForkMode(mode string) (string, error) {
 	if mode == "" {
 		return ForkModeFlat, nil
@@ -76,7 +67,6 @@ func NormalizeForkMode(mode string) (string, error) {
 	return mode, nil
 }
 
-// EffectiveForkMode treats an absent mode in an old header as a flat session.
 func (h Header) EffectiveForkMode() string {
 	mode, err := NormalizeForkMode(h.ForkMode)
 	if err != nil {
@@ -85,13 +75,11 @@ func (h Header) EffectiveForkMode() string {
 	return mode
 }
 
-// Toggle filters discovered skills or extensions.
 type Toggle struct {
 	Only     []string `json:"only,omitempty"`
 	Disabled []string `json:"disabled,omitempty"`
 }
 
-// Config is session-level config.json.
 type Config struct {
 	Provider       string         `json:"provider"`
 	Model          string         `json:"model"`
@@ -101,15 +89,9 @@ type Config struct {
 	Pinned         bool           `json:"pinned,omitzero"`
 	PinnedAt       string         `json:"pinnedAt,omitempty"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
-	// CacheKey is the provider cache-affinity identity inherited from the fork
-	// source. A fork replays the parent's exact prefix, so reusing its affinity
-	// key lets the first child request read that prefix from cache instead of
-	// paying a full rewrite. Empty means "use this session's own ID".
-	CacheKey string `json:"cacheKey,omitempty"`
+	CacheKey       string         `json:"cacheKey,omitempty"`
 }
 
-// CacheAffinityKey returns the identity used for provider cache affinity. It is
-// the session's own ID unless the session inherited one from a fork source.
 func (s *Session) CacheAffinityKey() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -119,52 +101,43 @@ func (s *Session) CacheAffinityKey() string {
 	return s.Header.ID
 }
 
-// CreateOptions controls optional session metadata at creation time.
 type CreateOptions struct {
 	ThinkingEffort string
 	Metadata       map[string]any
 }
 
-// Entry is one jsonl record after the header.
 type Entry struct {
-	Type             string          `json:"type"`
-	ID               string          `json:"id"`
-	ParentID         string          `json:"parentId"`
-	Timestamp        string          `json:"timestamp"`
-	IdempotencyKey   string          `json:"idempotencyKey,omitempty"`
-	Message          *types.Message  `json:"message,omitempty"`
-	Summary          string          `json:"summary,omitempty"`
-	FirstKeptEntryID string          `json:"firstKeptEntryId,omitempty"`
-	TokensBefore     int             `json:"tokensBefore,omitzero"`
-	Usage            *types.Usage    `json:"usage,omitempty"`
-	RetainedTail     []types.Message `json:"retainedTail,omitempty"`
-	// Responses is the complete canonical output of a remote Responses
-	// compaction. It is provider-owned opaque state, not a readable summary.
-	Responses      *types.ResponsesContext `json:"responses,omitempty"`
-	Details        any                     `json:"details,omitempty"`
-	Sideband       bool                    `json:"sideband,omitzero"`
-	Provider       string                  `json:"provider,omitempty"`
-	ModelID        string                  `json:"modelId,omitempty"`
-	ThinkingEffort string                  `json:"thinkingEffort,omitempty"`
-	CatalogVersion int                     `json:"catalogVersion,omitzero"`
-	UsedTokens     int                     `json:"usedTokens,omitzero"`
-	ContextWindow  int                     `json:"contextWindow,omitzero"`
-	Estimated      bool                    `json:"estimated,omitzero"`
-	Pricing        any                     `json:"pricing,omitempty"`
-	System         string                  `json:"system,omitempty"`
-	Tools          []ToolSchema            `json:"tools,omitempty"`
-	// ContextEstimate, RemoteContext, PromptUnchanged and Truncated are view-only fields for GET /v1/sessions/{id}.
-	// They are never written to jsonl.
-	RemoteContext   bool             `json:"remoteContext,omitempty"`
-	PromptUnchanged bool             `json:"promptUnchanged,omitzero"`
-	Truncated       bool             `json:"truncated,omitzero"`
-	ContextEstimate *ContextEstimate `json:"contextEstimate,omitempty"`
-	// CacheMiss is derived from the active branch for API views and SSE. It is
-	// never written to jsonl because it is recomputable from adjacent usage.
-	CacheMiss *types.CacheMiss `json:"cacheMiss,omitempty"`
+	Type             string                  `json:"type"`
+	ID               string                  `json:"id"`
+	ParentID         string                  `json:"parentId"`
+	Timestamp        string                  `json:"timestamp"`
+	IdempotencyKey   string                  `json:"idempotencyKey,omitempty"`
+	Message          *types.Message          `json:"message,omitempty"`
+	Summary          string                  `json:"summary,omitempty"`
+	FirstKeptEntryID string                  `json:"firstKeptEntryId,omitempty"`
+	TokensBefore     int                     `json:"tokensBefore,omitzero"`
+	Usage            *types.Usage            `json:"usage,omitempty"`
+	RetainedTail     []types.Message         `json:"retainedTail,omitempty"`
+	Responses        *types.ResponsesContext `json:"responses,omitempty"`
+	Details          any                     `json:"details,omitempty"`
+	Sideband         bool                    `json:"sideband,omitzero"`
+	Provider         string                  `json:"provider,omitempty"`
+	ModelID          string                  `json:"modelId,omitempty"`
+	ThinkingEffort   string                  `json:"thinkingEffort,omitempty"`
+	CatalogVersion   int                     `json:"catalogVersion,omitzero"`
+	UsedTokens       int                     `json:"usedTokens,omitzero"`
+	ContextWindow    int                     `json:"contextWindow,omitzero"`
+	Estimated        bool                    `json:"estimated,omitzero"`
+	Pricing          any                     `json:"pricing,omitempty"`
+	System           string                  `json:"system,omitempty"`
+	Tools            []ToolSchema            `json:"tools,omitempty"`
+	RemoteContext    bool                    `json:"remoteContext,omitempty"`
+	PromptUnchanged  bool                    `json:"promptUnchanged,omitzero"`
+	Truncated        bool                    `json:"truncated,omitzero"`
+	ContextEstimate  *ContextEstimate        `json:"contextEstimate,omitempty"`
+	CacheMiss        *types.CacheMiss        `json:"cacheMiss,omitempty"`
 }
 
-// ToolSchema is the model-visible tool list on a request_header entry.
 type ToolSchema struct {
 	Type        string         `json:"type,omitempty"`
 	Name        string         `json:"name"`
@@ -173,14 +146,12 @@ type ToolSchema struct {
 	Format      *ToolFormat    `json:"format,omitempty"`
 }
 
-// ToolFormat is the persisted grammar format of a custom tool.
 type ToolFormat struct {
 	Type       string `json:"type"`
 	Syntax     string `json:"syntax"`
 	Definition string `json:"definition"`
 }
 
-// RequestMeta pins catalog identity used to build a provider request.
 type RequestMeta struct {
 	Provider       string
 	Model          string
@@ -189,7 +160,6 @@ type RequestMeta struct {
 	Pricing        any
 }
 
-// Session is an open conversation directory.
 type Session struct {
 	mu      sync.Mutex
 	Dir     string
@@ -201,7 +171,6 @@ type Session struct {
 	leafID  string
 }
 
-// EncodeCWD matches pi: --abs-path-with-dashes--
 func EncodeCWD(cwd string) string {
 	cwd = filepath.Clean(cwd)
 	if vol := filepath.VolumeName(cwd); vol != "" {
@@ -217,7 +186,6 @@ func EncodeCWD(cwd string) string {
 	return "--" + cwd + "--"
 }
 
-// Create makes a new session directory under root.
 func Create(root, cwd, provider, model string, thinking ...string) (*Session, error) {
 	opts := CreateOptions{}
 	if len(thinking) > 0 {
@@ -226,7 +194,6 @@ func Create(root, cwd, provider, model string, thinking ...string) (*Session, er
 	return CreateWithOptions(root, cwd, provider, model, opts)
 }
 
-// CreateWithOptions makes a new session and persists its routing metadata.
 func CreateWithOptions(root, cwd, provider, model string, opts CreateOptions) (*Session, error) {
 	if cwd == "" {
 		return nil, errCWDRequired
@@ -289,7 +256,6 @@ func cloneMetadata(in map[string]any) map[string]any {
 	return out
 }
 
-// Open loads an existing session directory.
 func Open(dir string) (*Session, error) {
 	gate := fileGate(dir)
 	gate.RLock()
@@ -348,13 +314,10 @@ func Open(dir string) (*Session, error) {
 		if _, ok := s.byID[s.Config.ActiveLeafID]; ok {
 			s.leafID = s.Config.ActiveLeafID
 		}
-		// If config points at a leaf not yet visible in this jsonl snapshot
-		// (concurrent append), keep the last non-sideband entry already scanned.
 	}
 	return s, nil
 }
 
-// Find looks up a session id under root.
 func Find(root, id string) (string, error) {
 	suffix := "_" + id
 	found := ""
@@ -378,26 +341,20 @@ func Find(root, id string) (string, error) {
 	return found, nil
 }
 
-// Close releases the session. It is kept because callers own a session's
-// lifetime, but there is nothing to release: every append opens events.jsonl
-// only for the duration of the write, so a closed session holds no descriptor.
 func (s *Session) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return nil
 }
 
-// ID is the session uuid.
 func (s *Session) ID() string { return s.Header.ID }
 
-// LeafID is the current tree leaf.
 func (s *Session) LeafID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.leafID
 }
 
-// Entries returns a copy of persisted entries.
 func (s *Session) Entries() []Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -406,7 +363,6 @@ func (s *Session) Entries() []Entry {
 	return out
 }
 
-// Lookup returns one persisted entry by id.
 func (s *Session) Lookup(id string) (Entry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -414,19 +370,12 @@ func (s *Session) Lookup(id string) (Entry, bool) {
 	return e, ok
 }
 
-// LeafEntries returns leaf-chain entries in chronological order (root → leaf),
-// for compaction preparation (pure-function input, no session dependency).
 func (s *Session) LeafEntries() []Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.leafEntriesLocked(s.leafID)
 }
 
-// LastRequestHeader returns the system prompt and tool schemas of the newest
-// request_header on the active leaf path. A post-compaction context estimate
-// adds their char/4 size because the compaction entry retains neither, mirroring
-// how a request_header sizes the first request after compaction. ok is false
-// when the session has never run.
 func (s *Session) LastRequestHeader() (string, []ToolSchema, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -438,12 +387,6 @@ func (s *Session) LastRequestHeader() (string, []ToolSchema, bool) {
 	return "", nil, false
 }
 
-// LastUserBoundary returns the entry id just before the newest user-role
-// message on the current leaf path. A delegated child forks at this boundary to
-// inherit only history that had already finished: the user message that
-// triggered the in-flight turn (and everything after it) was addressed to the
-// parent, not to the child. ok is false when there is no user message or
-// nothing precedes it, i.e. the child has no completed history to inherit.
 func (s *Session) LastUserBoundary() (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -466,7 +409,6 @@ func (s *Session) LastUserBoundary() (string, bool) {
 	return "", false
 }
 
-// EntriesTo returns the root-to-leaf entry path for an entry in this session.
 func (s *Session) EntriesTo(leaf string) ([]Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -478,10 +420,6 @@ func (s *Session) EntriesTo(leaf string) ([]Entry, error) {
 	return slices.Clone(s.leafEntriesLocked(leaf)), nil
 }
 
-// SetLeaf selects the active branch without rewriting or deleting old rows.
-// Persisting it is required because the server opens a fresh Session for each
-// request; an in-memory-only revert would silently jump back to the last
-// physical jsonl row on the next request.
 func (s *Session) SetLeaf(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -512,15 +450,9 @@ func (s *Session) leafEntriesLocked(leaf string) []Entry {
 	return rev
 }
 
-// LastCompactionAt returns the unix-ms timestamp of the most recent compaction
-// entry, or 0 when none exists. Used for the stale-usage guard: usage from a
-// message older than the last compaction reflects the pre-compaction (larger)
-// context and would falsely trigger compaction right after one finished.
 func (s *Session) LastCompactionAt() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Compactions on abandoned edit branches must not affect stale-usage checks
-	// for the selected branch.
 	for _, v := range slices.Backward(s.leafEntriesLocked(s.leafID)) {
 		if v.Type != "compaction" {
 			continue
@@ -534,23 +466,18 @@ func (s *Session) LastCompactionAt() int64 {
 	return 0
 }
 
-// MessagesToLeaf walks parent links from leaf to root and returns messages in order.
 func (s *Session) MessagesToLeaf() []types.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.messagesLocked(s.leafID)
 }
 
-// ContextToLeaf returns the model-facing history for target. A compatible
-// remote checkpoint becomes an opaque Responses prefix plus messages appended
-// after it; every other target receives the portable local-summary projection.
 func (s *Session) ContextToLeaf(target types.ProviderBinding) types.ModelContext {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.contextLocked(s.leafID, target)
 }
 
-// ContextTo is ContextToLeaf for an arbitrary branch point.
 func (s *Session) ContextTo(leaf string, target types.ProviderBinding) (types.ModelContext, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -562,7 +489,6 @@ func (s *Session) ContextTo(leaf string, target types.ProviderBinding) (types.Mo
 	return s.contextLocked(leaf, target), nil
 }
 
-// MessagesTo returns model-facing history for an arbitrary branch point.
 func (s *Session) MessagesTo(leaf string) ([]types.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -587,7 +513,6 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 		rev = append(rev, e)
 		id = e.ParentID
 	}
-	// chronological root → leaf (rev is dead after this point, reverse in place)
 	slices.Reverse(rev)
 	chrono := rev
 	compIdx := -1
@@ -613,9 +538,6 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 			Content: []types.Content{{Type: "text", Text: "Previous conversation summary:\n" + comp.Summary}},
 		})
 	}
-	// New entries carry the verbatim retained tail; old jsonl without it falls
-	// back to slicing chrono from FirstKeptEntryID. In both cases entries AFTER
-	// the compaction (messages appended since it ran) must still be included.
 	if len(comp.RetainedTail) > 0 {
 		msgs = append(msgs, comp.RetainedTail...)
 		start := compIdx + 1
@@ -681,15 +603,11 @@ func cloneResponsesContext(in *types.ResponsesContext) *types.ResponsesContext {
 	return out
 }
 
-// AppendMessage writes a message as a child of the current leaf.
 func (s *Session) AppendMessage(m types.Message) (Entry, error) {
 	e, _, err := s.AppendMessageWithKey(m, "")
 	return e, err
 }
 
-// AppendMessageWithKey appends a normal model-facing message unless the same
-// idempotency key was already committed. The key is persisted on the entry so
-// a retry after a process crash cannot duplicate an external message.
 func (s *Session) AppendMessageWithKey(m types.Message, key string) (Entry, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -718,7 +636,6 @@ func (s *Session) AppendMessageWithKey(m types.Message, key string) (Entry, bool
 	return e, false, nil
 }
 
-// AppendModelChange records a session default model update.
 func (s *Session) AppendModelChange(provider, model string, efforts ...string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -748,15 +665,10 @@ func (s *Session) AppendModelChange(provider, model string, efforts ...string) e
 	return s.writeConfig()
 }
 
-// AppendCompaction records a compaction checkpoint. retainedTail is the
-// recent messages kept verbatim after the cut (pi retainedTail); old entries
-// without it fall back to FirstKeptEntryID slicing in MessagesToLeaf.
 func (s *Session) AppendCompaction(summary, firstKept string, tokensBefore int, usage *types.Usage, retainedTail []types.Message) (Entry, error) {
 	return s.appendCompaction("", false, summary, firstKept, tokensBefore, usage, retainedTail, nil)
 }
 
-// AppendPreparedCompaction commits a planned local checkpoint only while the
-// session is still at the leaf from which it was prepared.
 func (s *Session) AppendPreparedCompaction(expectedLeaf, summary, firstKept string, tokensBefore int, usage *types.Usage, retainedTail []types.Message, details any) (Entry, error) {
 	return s.appendCompaction(expectedLeaf, true, summary, firstKept, tokensBefore, usage, retainedTail, details)
 }
@@ -792,15 +704,10 @@ func (s *Session) appendCompaction(expectedLeaf string, prepared bool, summary, 
 	return e, nil
 }
 
-// AppendResponsesCompaction records the complete canonical window returned by
-// a remote Responses compaction. Validation happens before the append so a
-// malformed or oversized provider result cannot advance the session leaf.
 func (s *Session) AppendResponsesCompaction(checkpoint types.ResponsesContext, tokensBefore int, usage *types.Usage) (Entry, error) {
 	return s.appendResponsesCompaction("", false, checkpoint, tokensBefore, usage)
 }
 
-// AppendPreparedResponsesCompaction commits a standalone provider checkpoint
-// only while the source leaf is unchanged.
 func (s *Session) AppendPreparedResponsesCompaction(expectedLeaf string, checkpoint types.ResponsesContext, tokensBefore int, usage *types.Usage) (Entry, error) {
 	return s.appendResponsesCompaction(expectedLeaf, true, checkpoint, tokensBefore, usage)
 }
@@ -843,9 +750,6 @@ func (s *Session) appendResponsesCompaction(expectedLeaf string, prepared bool, 
 	return e, nil
 }
 
-// AppendMessageAndResponsesCompaction commits a server-compacted assistant and
-// its canonical checkpoint in one append. The checkpoint is the child so later
-// tool results naturally become its suffix.
 func (s *Session) AppendMessageAndResponsesCompaction(
 	message types.Message,
 	checkpoint types.ResponsesContext,
@@ -944,16 +848,10 @@ func validateJSONLLine(value any) error {
 	return nil
 }
 
-// AppendEvent records a non-message event entry (compaction_start/end) so
-// replay of the session shows when compaction happened. MessagesToLeaf ignores
-// these types.
 func (s *Session) AppendEvent(typ, reason string, ok bool) (Entry, error) {
 	return s.AppendDetailsEvent(typ, map[string]any{"reason": reason, "ok": ok})
 }
 
-// AppendDetailsEvent records a structured non-message event. It keeps streamed
-// tool previews on the same jsonl trajectory as the SSE event without turning
-// them into model-facing messages.
 func (s *Session) AppendDetailsEvent(typ string, details any) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -974,9 +872,6 @@ func (s *Session) AppendDetailsEvent(typ string, details any) (Entry, error) {
 	return e, nil
 }
 
-// AppendSidebandEvent persists an asynchronous event without advancing the
-// conversation leaf. Extension notifications can arrive while no Session object is
-// open, and making them parents of model messages would corrupt the trajectory.
 func AppendSidebandEvent(dir, typ string, details any) (Entry, error) {
 	id, err := idgen.EntryID()
 	if err != nil {
@@ -987,8 +882,6 @@ func AppendSidebandEvent(dir, typ string, details any) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	// O_APPEND is required because a live prompt may hold another descriptor.
-	// Without it an idle SDK notification could overwrite that writer's tail.
 	//nolint:gosec // dir comes from the server's indexed session record.
 	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -1004,13 +897,11 @@ func AppendSidebandEvent(dir, typ string, details any) (Entry, error) {
 	return e, nil
 }
 
-// AppendCustomEntry writes an extension custom row that does not enter provider context.
 func AppendCustomEntry(dir, extensionName, customType string, data any) (Entry, error) {
 	details := map[string]any{"extension": extensionName, "customType": customType, "data": data}
 	return AppendSidebandEvent(dir, "custom", details)
 }
 
-// CustomEntries returns custom jsonl rows for one extension (own data only).
 func CustomEntries(dir, extensionName string) []map[string]any {
 	s, err := Open(dir)
 	if err != nil {
@@ -1034,7 +925,6 @@ func CustomEntries(dir, extensionName string) []map[string]any {
 	return out
 }
 
-// AppendRequestHeader records the system prompt and tools sent on one turn.
 func (s *Session) AppendRequestHeader(system string, tools []ToolSchema, metadata ...RequestMeta) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1072,17 +962,14 @@ func (s *Session) AppendRequestHeader(system string, tools []ToolSchema, metadat
 	return e, nil
 }
 
-// SetModel updates config.json and appends model_change.
 func (s *Session) SetModel(provider, model string) error {
 	return s.AppendModelChange(provider, model)
 }
 
-// SetModelAndThinking updates the selected model and thinking effort together.
 func (s *Session) SetModelAndThinking(provider, model, effort string) error {
 	return s.AppendModelChange(provider, model, effort)
 }
 
-// AppendContextUsage records the model-facing context size for the session.
 func (s *Session) AppendContextUsage(used, window int, estimated bool) (Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1097,7 +984,6 @@ func (s *Session) AppendContextUsage(used, window int, estimated bool) (Entry, e
 	return e, nil
 }
 
-// SetTitle writes a pinned display title (empty clears the override).
 func (s *Session) SetTitle(title string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1105,7 +991,6 @@ func (s *Session) SetTitle(title string) error {
 	return s.writeConfig()
 }
 
-// SetPinned writes the pin flag. pinnedAt is stamped on the first pin.
 func (s *Session) SetPinned(on bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1121,12 +1006,7 @@ func (s *Session) SetPinned(on bool) error {
 	return s.writeConfig()
 }
 
-// Remove closes and deletes a session directory.
 func Remove(dir string) error {
-	// Why: POSIX unlinks a file that another goroutine is appending to, Windows
-	// refuses while the handle is open. Appends now hold a handle only for the
-	// write itself, so retrying briefly turns that instant into a success
-	// instead of a failed delete (deleting a running session, t.TempDir cleanup).
 	var err error
 	for attempt := 0; attempt < 40; attempt++ {
 		if err = os.RemoveAll(dir); err == nil {
@@ -1138,8 +1018,6 @@ func Remove(dir string) error {
 }
 
 func (s *Session) appendLocked(e Entry) error {
-	// CacheMiss belongs only to a projected view; keeping it out of the
-	// append-only transcript prevents a derived diagnostic from going stale.
 	e.CacheMiss = nil
 	b, err := json.Marshal(e)
 	if err != nil {
@@ -1160,8 +1038,6 @@ func (s *Session) appendLocked(e Entry) error {
 }
 
 func (s *Session) appendPreparedLocked(e Entry, expectedLeaf string) error {
-	// Prepared appends bypass appendLocked, but view metadata has the same
-	// non-persistence rule on every JSONL write path.
 	e.CacheMiss = nil
 	b, err := json.Marshal(e)
 	if err != nil {
@@ -1189,16 +1065,10 @@ func (s *Session) writeLine(v any) error {
 	return s.appendRaw(append(b, '\n'))
 }
 
-// appendRaw appends serialized jsonl records under the session's file gate.
 func (s *Session) appendRaw(b []byte) error {
 	gate := fileGate(s.Dir)
 	gate.Lock()
 	defer gate.Unlock()
-	// Why: the append handle lives only for this write. A session-lifetime
-	// descriptor would keep events.jsonl open for as long as the session object
-	// exists, and Windows refuses to delete an open file, so deleting a session
-	// that another goroutine or process still holds would fail there while it
-	// succeeds on POSIX. O_APPEND still makes concurrent appends atomic.
 	f, err := os.OpenFile(filepath.Join(s.Dir, "events.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
@@ -1210,8 +1080,6 @@ func (s *Session) appendRaw(b []byte) error {
 	return f.Sync()
 }
 
-// appendRawAndConfigAtLeaf commits an append and active leaf under one file
-// gate. It re-reads config so another Session handle cannot race a stale parent.
 func (s *Session) appendRawAndConfigAtLeaf(b []byte, expectedLeaf, nextLeaf string) (Config, error) {
 	gate := fileGate(s.Dir)
 	gate.Lock()
@@ -1226,9 +1094,6 @@ func (s *Session) appendRawAndConfigAtLeaf(b []byte, expectedLeaf, nextLeaf stri
 	}
 	activeLeaf := current.ActiveLeafID
 	if activeLeaf == "" && expectedLeaf != "" {
-		// Old config.json files predate activeLeafId and derive the leaf from
-		// the final non-sideband JSONL row. Preserve that compatibility while
-		// still validating the authoritative on-disk state under the file gate.
 		activeLeaf, err = lastActiveLeaf(s.Dir)
 		if err != nil {
 			return Config{}, err
@@ -1327,28 +1192,20 @@ func (s *Session) writeConfig() error {
 	return writeFileAtomic(filepath.Join(s.Dir, "config.json"), append(b, '\n'))
 }
 
-// SaveConfig writes config.json.
 func (s *Session) SaveConfig() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.writeConfig()
 }
 
-// Fork creates a new session containing the current active path.
 func Fork(root string, src *Session) (*Session, error) {
 	return ForkAt(root, src, src.LeafID())
 }
 
-// ForkAt creates a new session directory containing only root -> target.
 func ForkAt(root string, src *Session, target string, requestedMode ...string) (*Session, error) {
 	return forkAt(root, src, target, nil, requestedMode...)
 }
 
-// ForkHistoryAt is ForkAt restricted to model-facing entries: messages and
-// compaction markers. A delegated child inherits finished history as
-// background, so copying the parent's request headers, usage samples, and
-// streamed updates would replay the parent's system prompt and tool schemas
-// into the child's transcript view and its jsonl for no benefit.
 func ForkHistoryAt(root string, src *Session, target string, requestedMode ...string) (*Session, error) {
 	return forkAt(root, src, target, func(e Entry) bool {
 		return e.Type == "message" || e.Type == "compaction"
@@ -1383,10 +1240,6 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, req
 	}
 	entries := slices.Clone(src.leafEntriesLocked(target))
 	if keep != nil {
-		// Metadata entries (request headers, usage samples, streamed updates)
-		// sit on the parent chain, so dropping them has to relink the survivors;
-		// otherwise the child's chain walk stops at the first gap and the
-		// inherited history is truncated.
 		filtered := make([]Entry, 0, len(entries))
 		prev := ""
 		for _, e := range entries {
@@ -1418,9 +1271,6 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, req
 	}
 	dst.Config = cfg
 	dst.Config.ActiveLeafID = ""
-	// Why: the child starts with the parent's exact replayed prefix, so it can
-	// read that prefix from cache on its first request. Only the affinity key is
-	// shared; the child keeps its own session id and storage identity.
 	dst.Config.CacheKey = cacheKey
 	dst.Header.ParentSession = parent
 	dst.Header.ForkMode = forkMode
@@ -1455,12 +1305,6 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, req
 	return dst, nil
 }
 
-// CreateChild creates a delegated child session linked to src without copying
-// any transcript. A subagent must start from a clean context: it only sees the
-// directive the parent passes, so it cannot mistake the parent's user turn for
-// its own task or re-delegate it. The parent edge (parentSession + tree mode)
-// and the routing config are still inherited so deletion, sidebar nesting, and
-// provider/model boundaries behave like a fork.
 func CreateChild(root string, src *Session) (*Session, error) {
 	src.mu.Lock()
 	cwd := src.Header.CWD
@@ -1480,9 +1324,6 @@ func CreateChild(root string, src *Session) (*Session, error) {
 	}
 	dst.Config = cfg
 	dst.Config.ActiveLeafID = ""
-	// Why: a delegated child copies no transcript, so it shares no prefix with
-	// the parent. It must not claim the parent's (or a fork ancestor's) cache
-	// entry, even when the parent is itself a fork.
 	dst.Config.CacheKey = ""
 	dst.Header.ParentSession = parent
 	dst.Header.ForkMode = ForkModeTree
@@ -1637,7 +1478,6 @@ func rewriteHeader(s *Session) error {
 	return out.Close()
 }
 
-// Allowed reports whether name is enabled by t.
 func (t Toggle) Allowed(name string) bool {
 	if len(t.Only) > 0 && !slices.Contains(t.Only, name) {
 		return false
@@ -1645,9 +1485,6 @@ func (t Toggle) Allowed(name string) bool {
 	return !slices.Contains(t.Disabled, name)
 }
 
-// ForkRecentHistoryAt copies whole user turns from finished history. Selection
-// happens before forkAt relinks entries, so attachment and tool-pair handling
-// are identical to full-history forks.
 func ForkRecentHistoryAt(root string, src *Session, target string, turns int) (*Session, error) {
 	src.mu.Lock()
 	entries := slices.Clone(src.leafEntriesLocked(target))

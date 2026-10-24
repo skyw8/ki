@@ -26,8 +26,6 @@ func browserURL(addr, token string) string {
 	if token == "" {
 		return base
 	}
-	// A fragment is not sent in HTTP requests or Referer headers. The SPA
-	// removes it before exchanging the secret for its normal session cookie.
 	return base + "#token=" + url.QueryEscape(token)
 }
 

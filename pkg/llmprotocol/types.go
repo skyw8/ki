@@ -9,41 +9,31 @@ import (
 	"time"
 )
 
-// Supported wire protocol names accepted by Client.API.
 const (
 	APICompletions = "completions"
 	APIResponses   = "responses"
 	APIAnthropic   = "anthropic"
 )
 
-// Content is one block in a protocol-neutral message.
 type Content struct {
-	Type      string         `json:"type"`
-	Text      string         `json:"text,omitempty"`
-	Data      string         `json:"data,omitempty"`
-	MIMEType  string         `json:"mimeType,omitempty"`
-	Thinking  string         `json:"thinking,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	ToolType  string         `json:"toolType,omitempty"`
-	Input     string         `json:"input,omitempty"`
-	Arguments map[string]any `json:"arguments,omitempty"`
-	// ItemID is a provider item identifier, for example an OpenAI Responses
-	// output item id that must be retained when an assistant turn is replayed.
-	ItemID string `json:"itemId,omitempty"`
-	// ArgumentsRaw retains valid streamed function arguments or opaque custom
-	// tool input for providers that need the original wire representation.
-	ArgumentsRaw string `json:"argumentsRaw,omitempty"`
-	// ThinkingSignature and ThinkingData are opaque provider-owned reasoning
-	// state. The protocol package does not interpret their contents.
-	ThinkingSignature string `json:"thinkingSignature,omitempty"`
-	ThinkingData      string `json:"thinkingData,omitempty"`
-	TextSignature     string `json:"textSignature,omitempty"`
-	// StreamIndex is transient parser state and is never serialized.
-	StreamIndex int `json:"-"`
+	Type              string         `json:"type"`
+	Text              string         `json:"text,omitempty"`
+	Data              string         `json:"data,omitempty"`
+	MIMEType          string         `json:"mimeType,omitempty"`
+	Thinking          string         `json:"thinking,omitempty"`
+	ID                string         `json:"id,omitempty"`
+	Name              string         `json:"name,omitempty"`
+	ToolType          string         `json:"toolType,omitempty"`
+	Input             string         `json:"input,omitempty"`
+	Arguments         map[string]any `json:"arguments,omitempty"`
+	ItemID            string         `json:"itemId,omitempty"`
+	ArgumentsRaw      string         `json:"argumentsRaw,omitempty"`
+	ThinkingSignature string         `json:"thinkingSignature,omitempty"`
+	ThinkingData      string         `json:"thinkingData,omitempty"`
+	TextSignature     string         `json:"textSignature,omitempty"`
+	StreamIndex       int            `json:"-"`
 }
 
-// Usage is provider token accounting. Cost is not calculated by this package.
 type Usage struct {
 	Input       int        `json:"input"`
 	Output      int        `json:"output"`
@@ -53,7 +43,6 @@ type Usage struct {
 	Cost        *UsageCost `json:"cost,omitempty"`
 }
 
-// UsageCost is optional caller-owned pricing information.
 type UsageCost struct {
 	Input      float64 `json:"input"`
 	Output     float64 `json:"output"`
@@ -62,13 +51,8 @@ type UsageCost struct {
 	Total      float64 `json:"total"`
 }
 
-// ResponsesItem is one opaque OpenAI Responses input/output item. The package
-// validates that it is a JSON object but deliberately does not interpret or
-// discard fields: compaction windows are provider-owned canonical state.
 type ResponsesItem []byte
 
-// MarshalJSON preserves the provider-owned object rather than base64-encoding
-// its bytes.
 func (i ResponsesItem) MarshalJSON() ([]byte, error) {
 	if err := validateResponsesItem(i); err != nil {
 		return nil, err
@@ -76,7 +60,6 @@ func (i ResponsesItem) MarshalJSON() ([]byte, error) {
 	return i, nil
 }
 
-// UnmarshalJSON copies and validates one provider-owned Responses item.
 func (i *ResponsesItem) UnmarshalJSON(data []byte) error {
 	if i == nil {
 		return fmt.Errorf("cannot unmarshal Responses item into nil receiver")
@@ -88,12 +71,10 @@ func (i *ResponsesItem) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// RawJSON returns a copy of the item's provider-owned JSON.
 func (i ResponsesItem) RawJSON() []byte {
 	return append([]byte(nil), i...)
 }
 
-// Type returns the Responses item type, or an empty string when absent.
 func (i ResponsesItem) Type() string {
 	var header struct {
 		Type string `json:"type"`
@@ -115,29 +96,22 @@ func validateResponsesItem(data []byte) error {
 	return nil
 }
 
-// ResponsesWindow is an ordered canonical Responses context window. Callers
-// must retain every item and its order when replaying compaction output.
 type ResponsesWindow []ResponsesItem
 
-// Message is a protocol-neutral user, assistant, or tool-result message.
 type Message struct {
-	Role         string    `json:"role"`
-	Content      []Content `json:"content"`
-	ResponseID   string    `json:"responseId,omitempty"`
-	Usage        *Usage    `json:"usage,omitempty"`
-	StopReason   string    `json:"stopReason,omitempty"`
-	ErrorMessage string    `json:"errorMessage,omitempty"`
-	ToolCallID   string    `json:"toolCallId,omitempty"`
-	ToolName     string    `json:"toolName,omitempty"`
-	ToolType     string    `json:"toolType,omitempty"`
-	IsError      bool      `json:"isError,omitzero"`
-	// ResponsesItems retains the complete canonical output suffix from the
-	// latest server-side compaction item onward, so a stateless Responses
-	// request can replace its previous window on the next turn.
+	Role           string          `json:"role"`
+	Content        []Content       `json:"content"`
+	ResponseID     string          `json:"responseId,omitempty"`
+	Usage          *Usage          `json:"usage,omitempty"`
+	StopReason     string          `json:"stopReason,omitempty"`
+	ErrorMessage   string          `json:"errorMessage,omitempty"`
+	ToolCallID     string          `json:"toolCallId,omitempty"`
+	ToolName       string          `json:"toolName,omitempty"`
+	ToolType       string          `json:"toolType,omitempty"`
+	IsError        bool            `json:"isError,omitzero"`
 	ResponsesItems ResponsesWindow `json:"responsesItems,omitempty"`
 }
 
-// Text returns concatenated text blocks.
 func (m Message) Text() string {
 	var b strings.Builder
 	for _, c := range m.Content {
@@ -148,7 +122,6 @@ func (m Message) Text() string {
 	return b.String()
 }
 
-// ToolCalls returns tool-call content blocks.
 func (m Message) ToolCalls() []Content {
 	var out []Content
 	for _, c := range m.Content {
@@ -159,7 +132,6 @@ func (m Message) ToolCalls() []Content {
 	return out
 }
 
-// AssistantDelta is one incremental assistant update.
 type AssistantDelta struct {
 	Type       string  `json:"type"`
 	Delta      string  `json:"delta,omitempty"`
@@ -168,7 +140,6 @@ type AssistantDelta struct {
 	Partial    Message `json:"partial"`
 }
 
-// ToolSpec describes a function or custom tool exposed to a provider.
 type ToolSpec struct {
 	Type        string         `json:"type,omitempty"`
 	Name        string         `json:"name"`
@@ -177,39 +148,29 @@ type ToolSpec struct {
 	Format      *ToolFormat    `json:"format,omitempty"`
 }
 
-// ToolFormat describes the grammar accepted by a Responses custom tool.
 type ToolFormat struct {
 	Type       string `json:"type"`
 	Syntax     string `json:"syntax"`
 	Definition string `json:"definition"`
 }
 
-// Request is one provider call. Provider-specific request options are kept
-// explicit so callers can use the same neutral IR with all three protocols.
 type Request struct {
-	System                  string             `json:"system"`
-	Messages                []Message          `json:"messages"`
-	Tools                   []ToolSpec         `json:"tools"`
-	Provider                string             `json:"provider"`
-	Model                   string             `json:"model"`
-	MaxTokens               int                `json:"maxTokens,omitzero"`
-	ThinkingEffort          string             `json:"thinkingEffort,omitempty"`
-	ThinkingFormat          string             `json:"thinkingFormat,omitempty"`
-	MaxTokensField          string             `json:"maxTokensField,omitempty"`
-	SupportsReasoningEffort bool               `json:"supportsReasoningEffort,omitzero"`
-	ForceAdaptiveThinking   bool               `json:"forceAdaptiveThinking,omitzero"`
-	ThinkingLevelMap        map[string]*string `json:"thinkingLevelMap,omitempty"`
-	// ResponsesWindow is a canonical provider-owned prefix inserted before
-	// Messages when encoding an OpenAI Responses request.
-	ResponsesWindow ResponsesWindow `json:"responsesWindow,omitempty"`
-	// ResponsesCompactThreshold enables OpenAI server-side compaction when
-	// positive by sending context_management with a compaction threshold.
-	ResponsesCompactThreshold int `json:"responsesCompactThreshold,omitzero"`
+	System                    string             `json:"system"`
+	Messages                  []Message          `json:"messages"`
+	Tools                     []ToolSpec         `json:"tools"`
+	Provider                  string             `json:"provider"`
+	Model                     string             `json:"model"`
+	MaxTokens                 int                `json:"maxTokens,omitzero"`
+	ThinkingEffort            string             `json:"thinkingEffort,omitempty"`
+	ThinkingFormat            string             `json:"thinkingFormat,omitempty"`
+	MaxTokensField            string             `json:"maxTokensField,omitempty"`
+	SupportsReasoningEffort   bool               `json:"supportsReasoningEffort,omitzero"`
+	ForceAdaptiveThinking     bool               `json:"forceAdaptiveThinking,omitzero"`
+	ThinkingLevelMap          map[string]*string `json:"thinkingLevelMap,omitempty"`
+	ResponsesWindow           ResponsesWindow    `json:"responsesWindow,omitempty"`
+	ResponsesCompactThreshold int                `json:"responsesCompactThreshold,omitzero"`
 }
 
-// ResponsesCompactRequest is a standalone POST /responses/compact request.
-// Window is replayed before Messages; Instructions maps to the wire-level
-// instructions field.
 type ResponsesCompactRequest struct {
 	Model        string
 	Instructions string
@@ -217,30 +178,24 @@ type ResponsesCompactRequest struct {
 	Messages     []Message
 }
 
-// ResponsesCompactResult is the canonical context returned by standalone
-// Responses compaction.
 type ResponsesCompactResult struct {
 	ID     string
 	Output ResponsesWindow
 	Usage  *Usage
 }
 
-// HTTPDoer is the transport injected into a Client. *http.Client satisfies it.
 type HTTPDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-// Client streams one of the supported provider protocols.
 type Client struct {
-	Doer   HTTPDoer
-	APIKey string
-	Base   string
-	API    string // APICompletions | APIResponses | APIAnthropic
-	// IdleTimeout bounds a blocked response-body read. Zero disables it.
+	Doer        HTTPDoer
+	APIKey      string
+	Base        string
+	API         string
 	IdleTimeout time.Duration
 }
 
-// NewClient builds a protocol client. A nil doer uses http.DefaultClient.
 func NewClient(api, base, key string, doer HTTPDoer) *Client {
 	if doer == nil {
 		doer = http.DefaultClient
@@ -248,12 +203,10 @@ func NewClient(api, base, key string, doer HTTPDoer) *Client {
 	return &Client{Doer: doer, APIKey: key, Base: strings.TrimRight(base, "/"), API: api, IdleTimeout: 5 * time.Minute}
 }
 
-// Streamer produces an assistant message and incremental deltas.
 type Streamer interface {
 	Stream(context.Context, Request, func(AssistantDelta) error) (Message, error)
 }
 
-// ResponsesCompactor performs standalone OpenAI Responses compaction.
 type ResponsesCompactor interface {
 	CompactResponses(context.Context, ResponsesCompactRequest) (ResponsesCompactResult, error)
 }

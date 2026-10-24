@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# scripts/run.sh — build ki and run the real configured provider inside a dedicated tmux session.
-#
-# The session (default name: ki) has two windows:
-#   server — runs `./ki serve`
-#   cli    — a shell for operating ki (attach and type `./ki ...` there)
-#
-# Re-running rebuilds and respawns only the server window, so the cli
-# window keeps its history. Attach with `tmux attach -t ki`.
 
 set -euo pipefail
 
@@ -50,11 +42,6 @@ command -v tmux >/dev/null || { echo "error: tmux is required" >&2; exit 1; }
 
 cd "$ROOT"
 
-# Rebuilding web/dist on every run costs seconds even when nothing changed, so
-# hash the inputs that determine it and reuse the existing build when they match.
-# Everything that feeds dist is covered: sources, public assets, configs,
-# lockfile and bun's version. Things not covered by construction (a hand-edited
-# dependency, a build cache that lies) are what --force-web is for.
 WEB_HASH_VERSION=1
 
 hash_stream() {
@@ -93,15 +80,7 @@ web_inputs_hash() {
 
 echo "building web/dist ..."
 web_hash="$(web_inputs_hash)"
-# Keep the fingerprint out of web/dist: `//go:embed all:dist` embeds dotfiles,
-# so a file there would ship inside the binary and be served.
 web_hash_file="$ROOT/web/node_modules/.cache/ki/web-dist-hash"
-# Why: also fingerprint the built index.html. Other build paths (playwright's
-# ensureWebDist) rebuild dist by mtime alone — e.g. while a stash has sources
-# temporarily reverted — and leave a dist that no longer matches the recorded
-# input hash once the sources come back. Trusting the input hash alone then
-# ships a stale UI in a fresh binary; comparing the recorded output hash
-# catches the swapped dist.
 dist_index_hash=""
 [[ -f "$ROOT/web/dist/index.html" ]] && dist_index_hash="$(hash_file "$ROOT/web/dist/index.html")"
 recorded_index_hash=""
@@ -137,8 +116,6 @@ else
   done
 fi
 
-# tmux servers keep their own environment snapshot. Refresh proxy variables
-# before respawning Ki so a long-lived tmux server does not run with stale data.
 for key in "${PROXY_ENV_KEYS[@]}"; do
   if [[ -v $key ]]; then
     tmux set-environment -t "$SESSION" "$key" "${!key}"
@@ -152,13 +129,8 @@ cmd=""
 cmd+="./ki serve --addr $ADDR"
 [[ ${#SERVE_ARGS[@]} -gt 0 ]] && cmd+=" ${SERVE_ARGS[*]}"
 
-# Keep a failed server pane around so its stderr remains available for
-# diagnosis instead of disappearing when the command exits.
 tmux set-option -w -t "$SESSION:server" remain-on-exit failed
 
-# Stop the previous server and wait for its listener to disappear before
-# starting the replacement. Without this wait, a fast restart can race the
-# old process's shutdown and make the new server fail with "address in use".
 port="${ADDR##*:}"
 tmux send-keys -t "$SESSION:server" C-c 2>/dev/null || true
 for _ in {1..50}; do
@@ -168,13 +140,9 @@ for _ in {1..50}; do
   sleep 0.1
 done
 
-# Rebuild first, then replace the stopped server with the new binary.
 tmux respawn-window -k -t "$SESSION:server" -c "$ROOT" "$cmd"
 tmux select-window -t "$SESSION:server"
 
-# tmux returns as soon as it has launched the command. Wait for the HTTP
-# listener so a bind/startup failure is reported by this script rather than
-# being hidden in the detached server window.
 ready=0
 for _ in {1..30}; do
   if curl --silent --show-error --fail --max-time 1 "http://127.0.0.1:$port/" >/dev/null 2>&1; then

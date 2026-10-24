@@ -6,8 +6,6 @@ import (
 	"io"
 )
 
-// writeJSONLine prints one compact JSON document, matching the machine-readable
-// output of the session commands (`--json`).
 func writeJSONLine(out io.Writer, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {

@@ -18,9 +18,6 @@ type providerCostWriter func([]byte) (int, error)
 
 func (write providerCostWriter) Write(data []byte) (int, error) { return write(data) }
 
-// Keep cost integration checks in memory: process startup and HTTP/SSE parsing
-// already have separate coverage, while both host adapters must price the same
-// normalized sidecar usage without compiling a second sidecar fixture.
 func costTestProvider(t *testing.T, model provider.Model, usage *types.Usage) *ProviderManager {
 	t.Helper()
 	c := &rpcClient{
@@ -42,8 +39,6 @@ func costTestProvider(t *testing.T, model provider.Model, usage *types.Usage) *P
 			if err := json.Unmarshal(request.Params, &params); err != nil {
 				return 0, err
 			}
-			// JSON decoding gives the adapter ownership of the usage, just
-			// like a real sidecar, without mutating the test's expected data.
 			raw, err := json.Marshal(ProviderStreamEvent{
 				RequestID: params.RequestID, Type: "done",
 				Message: &types.Message{Role: "assistant", StopReason: "stop", Usage: usage},

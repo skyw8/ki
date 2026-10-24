@@ -18,39 +18,25 @@ import (
 )
 
 const (
-	// DefaultPreviewBytes and DefaultPreviewLines bound what the model sees.
-	DefaultPreviewBytes = 16 * 1024
-	DefaultPreviewLines = 800
-	// DefaultMaxFileBytes bounds one spilled file, so a single runaway tool
-	// result cannot fill the disk.
-	DefaultMaxFileBytes int64 = 8 << 20
-	// DefaultMaxSessionBytes bounds every spilled file of one session.
+	DefaultPreviewBytes          = 16 * 1024
+	DefaultPreviewLines          = 800
+	DefaultMaxFileBytes    int64 = 8 << 20
 	DefaultMaxSessionBytes int64 = 256 << 20
-	// DefaultTTL is how long an abandoned run root survives a crashed owner.
-	DefaultTTL = 24 * time.Hour
+	DefaultTTL                   = 24 * time.Hour
 )
 
-// ErrSessionBudget reports that a session already spilled its byte budget, so
-// the current result is only bounded, not stored. Callers keep the preview and
-// tell the model why no file exists.
 var ErrSessionBudget = errors.New("session tool output budget exhausted")
 
-// Config bounds and locates one store.
 type Config struct {
-	// Root is the base directory holding run roots. It defaults to
-	// <os.TempDir>/ki-tool-output.
 	Root            string
 	PreviewBytes    int
 	PreviewLines    int
 	MaxFileBytes    int64
 	MaxSessionBytes int64
 	TTL             time.Duration
-	// Now is a test seam for TTL decisions.
-	Now func() time.Time
+	Now             func() time.Time
 }
 
-// Reference describes a complete tool result stored outside the model prompt.
-// It is merged into tool details under the reserved "spill" key.
 type Reference struct {
 	Path         string `json:"path"`
 	Bytes        int    `json:"bytes"`
@@ -59,12 +45,9 @@ type Reference struct {
 	PreviewBytes int    `json:"previewBytes"`
 	PreviewLines int    `json:"previewLines"`
 	Truncated    bool   `json:"truncated"`
-	// Incomplete marks a file that holds only a prefix of the tool output
-	// because a size limit was reached.
-	Incomplete bool `json:"incomplete,omitempty"`
+	Incomplete   bool   `json:"incomplete,omitempty"`
 }
 
-// Store owns session-scoped overflow files.
 type Store struct {
 	root            string
 	ownerPath       string
@@ -81,14 +64,10 @@ type Store struct {
 	sessionBytes map[string]int64
 }
 
-// New creates a store rooted in the shared tool-output base directory and
-// sweeps run roots whose owner no longer exists.
 func New() (*Store, error) {
 	return NewWithConfig(Config{})
 }
 
-// NewWithConfig creates a store with explicit limits. Zero values fall back to
-// the package defaults.
 func NewWithConfig(cfg Config) (*Store, error) {
 	if cfg.Root == "" {
 		cfg.Root = filepath.Join(os.TempDir(), baseDirName)
@@ -156,7 +135,6 @@ func (s *Store) now() time.Time {
 	return s.nowFn()
 }
 
-// Root is the store's private run directory.
 func (s *Store) Root() string {
 	if s == nil {
 		return ""
@@ -164,8 +142,6 @@ func (s *Store) Root() string {
 	return s.root
 }
 
-// Owns reports whether path is inside this store. Read uses it to avoid
-// spilling a file that the model is already paging through the store.
 func (s *Store) Owns(path string) bool {
 	if s == nil || s.root == "" || path == "" {
 		return false
@@ -181,7 +157,6 @@ func (s *Store) Owns(path string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
-// Close removes every overflow file owned by this store.
 func (s *Store) Close() error {
 	if s == nil || s.root == "" {
 		return nil
@@ -194,7 +169,6 @@ func (s *Store) Close() error {
 	return os.RemoveAll(root)
 }
 
-// CloseSession removes one session's overflow files and releases its budget.
 func (s *Store) CloseSession(sessionID string) error {
 	if s == nil || sessionID == "" {
 		return nil
@@ -208,8 +182,6 @@ func (s *Store) CloseSession(sessionID string) error {
 	return os.RemoveAll(filepath.Join(s.root, safePart(sessionID)))
 }
 
-// CreateOutputFile creates an empty file inside one session's directory. Shell
-// task logs use it so every complete-output file shares one lifecycle.
 func (s *Store) CreateOutputFile(sessionID, toolName string) (*os.File, error) {
 	if s == nil {
 		return nil, errors.New("tool output store is unavailable")
@@ -226,11 +198,6 @@ func (s *Store) CreateOutputFile(sessionID, toolName string) (*os.File, error) {
 	return file, nil
 }
 
-// Normalize bounds text content and spills the complete text when it exceeds
-// the preview budget. It always returns model-facing content no larger than the
-// preview budget; the reference is nil when the tool already carries its own
-// reference or paging cursor, or when the result had to stay bounded without a
-// file.
 func (s *Store) Normalize(sessionID, toolName string, args map[string]any, content []types.Content, details any) ([]types.Content, *Reference) {
 	if s == nil || s.skip(toolName, args, details) {
 		return content, nil
@@ -256,8 +223,6 @@ func (s *Store) Normalize(sessionID, toolName string, args map[string]any, conte
 	}
 }
 
-// spill writes the complete text, or as much of it as the file and session
-// budgets allow, and reports what was actually stored.
 func (s *Store) spill(sessionID, toolName, raw string) (path string, bytes int, incomplete bool, err error) {
 	keep := raw
 	if int64(len(keep)) > s.maxFileBytes {
@@ -272,8 +237,6 @@ func (s *Store) spill(sessionID, toolName, raw string) (path string, bytes int, 
 		return "", 0, incomplete, err
 	}
 	if err = os.WriteFile(path, []byte(keep), 0o600); err != nil {
-		// A failed write can still leave a partial file behind; the release
-		// below only returns the budget.
 		_ = os.Remove(path)
 		s.release(sessionID, int64(len(keep)))
 		return "", 0, incomplete, fmt.Errorf("write tool output: %w", err)
@@ -304,7 +267,6 @@ func (s *Store) release(sessionID string, n int64) {
 	s.sessionBytes[sessionID] = used
 }
 
-// skip reports whether the result must stay exactly as the tool produced it.
 func (s *Store) skip(toolName string, args map[string]any, details any) bool {
 	if details != nil {
 		raw, err := json.Marshal(details)
@@ -312,9 +274,6 @@ func (s *Store) skip(toolName string, args map[string]any, details any) bool {
 			var value any
 			if json.Unmarshal(raw, &value) == nil {
 				if hasStringKey(value, "output_file") || hasNumberKey(value, "next_offset") {
-					// The tool already handed the model a complete file or its
-					// own paging cursor; spilling again would nest references
-					// and can make Read point at a copy of its own page.
 					return true
 				}
 			}
@@ -344,14 +303,6 @@ func (s *Store) newPath(sessionID, toolName string) (string, error) {
 	return filepath.Join(dir, name), nil
 }
 
-// MergeDetails attaches ref under the reserved "spill" key while keeping the
-// tool's own detail fields flat, so clients read details.spill.path without
-// walking a nested copy of the original details.
-//
-// Why the key is not "output": several tools already publish a string field
-// named "output" (the Code Mode exec cell and the process snapshot both do),
-// and writing the reference there silently replaced the tool's own result for
-// any result large enough to spill.
 func MergeDetails(details any, ref *Reference) any {
 	if ref == nil {
 		return details
@@ -379,8 +330,6 @@ func MergeDetails(details any, ref *Reference) any {
 	return merged
 }
 
-// joinText concatenates the text blocks of one result and reports the index of
-// the first one, which is where the bounded preview is written back.
 func joinText(content []types.Content) (string, int, bool) {
 	var text strings.Builder
 	first := -1
@@ -398,9 +347,6 @@ func joinText(content []types.Content) (string, int, bool) {
 	return text.String(), first, true
 }
 
-// replaceText puts the bounded text in the first text block and drops the
-// remaining text blocks; their content is in the spill file. Non-text blocks
-// (images, PDFs) are preserved in order.
 func replaceText(content []types.Content, firstText int, text string) []types.Content {
 	bounded := make([]types.Content, 0, len(content))
 	written := false
@@ -519,8 +465,6 @@ func previewHead(text string, maxBytes, maxLines int) string {
 	return out
 }
 
-// validUTF8Head cuts text at a UTF-8 boundary so a byte budget cannot split a
-// code point.
 func validUTF8Head(text string, limit int) string {
 	if len(text) <= limit {
 		return text

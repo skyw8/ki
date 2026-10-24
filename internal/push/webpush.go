@@ -21,16 +21,12 @@ import (
 	"time"
 )
 
-// Message is one completion notification. The service worker turns it into an
-// OS notification, so the fields are display-ready.
 type Message struct {
 	SessionID string `json:"sessionId"`
 	Title     string `json:"title"`
 	CWD       string `json:"cwd,omitempty"`
 }
 
-// payload is the wire form. The type field lets the service worker ignore a
-// message from a newer or older build without throwing.
 type payload struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionId"`
@@ -39,24 +35,13 @@ type payload struct {
 }
 
 const (
-	// payloadLimit is the largest plaintext one aes128gcm record can carry:
-	// the 4096-byte record minus the 16-byte GCM tag minus the 1-byte pad
-	// delimiter. A longer completion frame would need record splitting, which
-	// a title plus path never requires.
 	payloadLimit = 4096 - 16 - 1
-	// ttlSeconds tells the push service how long to retry an undelivered
-	// message. A day covers a phone that was off overnight.
-	ttlSeconds = 24 * 60 * 60
-	// queueDepth bounds pending notifications; a burst beyond it is dropped
-	// rather than stalling the run that produced it. Delivery is best-effort
-	// by design — the WebUI's own stream is the source of truth.
-	queueDepth = 64
+	ttlSeconds   = 24 * 60 * 60
+	queueDepth   = 64
 )
 
-// errSubscriptionGone marks a subscription the push service no longer has.
 var errSubscriptionGone = errors.New("push subscription is gone")
 
-// Service encrypts and delivers notifications to every stored subscription.
 type Service struct {
 	key    *Key
 	store  *Store
@@ -66,7 +51,6 @@ type Service struct {
 	wg     sync.WaitGroup
 }
 
-// NewService returns a service that has not started its worker yet.
 func NewService(key *Key, store *Store) *Service {
 	return &Service{
 		key:    key,
@@ -77,8 +61,6 @@ func NewService(key *Key, store *Store) *Service {
 	}
 }
 
-// Start launches the single delivery worker. ctx bounds the HTTP requests; the
-// worker also stops when Close is called.
 func (s *Service) Start(ctx context.Context) {
 	s.wg.Add(1)
 	go func() {
@@ -96,7 +78,6 @@ func (s *Service) Start(ctx context.Context) {
 	}()
 }
 
-// Close stops the worker and waits for the in-flight delivery to finish.
 func (s *Service) Close() {
 	select {
 	case <-s.done:
@@ -106,18 +87,12 @@ func (s *Service) Close() {
 	s.wg.Wait()
 }
 
-// PublicKey is the VAPID application-server key the browser subscribes with.
 func (s *Service) PublicKey() (string, error) { return s.key.PublicKey() }
 
-// PutSubscription validates and stores one browser registration.
 func (s *Service) PutSubscription(sub Subscription) error { return s.store.Put(sub) }
 
-// RemoveSubscription forgets one endpoint (the client unsubscribed).
 func (s *Service) RemoveSubscription(endpoint string) error { return s.store.Delete(endpoint) }
 
-// Notify enqueues a completion without blocking the caller (the run's event
-// funnel). A full queue drops the message: a push is a fallback for a client
-// that missed the WebUI stream, never the authoritative signal.
 func (s *Service) Notify(m Message) {
 	if s == nil {
 		return
@@ -129,8 +104,6 @@ func (s *Service) Notify(m Message) {
 	}
 }
 
-// deliver encrypts one payload per subscription and POSTs it. A subscription
-// the push service reports as gone is pruned so the registry self-heals.
 func (s *Service) deliver(ctx context.Context, m Message) {
 	subs := s.store.List()
 	if len(subs) == 0 {
@@ -174,8 +147,6 @@ func (s *Service) send(ctx context.Context, sub Subscription, body []byte) error
 	req.Header.Set("Content-Encoding", "aes128gcm")
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("TTL", fmt.Sprint(ttlSeconds))
-	// A VAPID token is single-use per endpoint; Topic would let a service
-	// collapse duplicates, but the client-side notification tag already does.
 	res, err := s.client.Do(req)
 	if err != nil {
 		return err
@@ -188,7 +159,6 @@ func (s *Service) send(ctx context.Context, sub Subscription, body []byte) error
 	case res.StatusCode >= 200 && res.StatusCode < 300:
 		return nil
 	default:
-		// Push services put the reason in the body; the status is enough here.
 		return fmt.Errorf("push endpoint %s: %s", endpointHost(sub.Endpoint), res.Status)
 	}
 }
@@ -201,9 +171,6 @@ func endpointHost(endpoint string) string {
 	return u.Host
 }
 
-// encrypt builds the aes128gcm body of one message (RFC 8291) for the client
-// public key and auth secret. The header carries the ephemeral public key the
-// receiver needs to redo the key agreement.
 func encrypt(plaintext []byte, p256dhB64, authB64 string) ([]byte, error) {
 	if len(plaintext)+1 > payloadLimit {
 		return nil, fmt.Errorf("push payload too large: %d bytes", len(plaintext))
@@ -235,9 +202,6 @@ func encrypt(plaintext []byte, p256dhB64, authB64 string) ([]byte, error) {
 		return nil, err
 	}
 
-	// RFC 8291 §3.4: extract with the auth secret as salt, expand with the
-	// "WebPush: info" context, then re-extract with the random salt for the
-	// content keys.
 	prk, err := hkdf.Extract(sha256.New, secret, authSecret)
 	if err != nil {
 		return nil, err
@@ -271,7 +235,6 @@ func encrypt(plaintext []byte, p256dhB64, authB64 string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 0x02 is the delimiter of the final (here: only) record.
 	record := append(append([]byte{}, plaintext...), 0x02)
 	ciphertext := gcm.Seal(nil, nonce, record, nil)
 

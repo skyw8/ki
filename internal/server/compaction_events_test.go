@@ -52,7 +52,6 @@ func checkCompactionLifecyclePersistence(t *testing.T, sess *session.Session, pu
 	seen := map[string]bool{}
 	check := func(ev loop.Event) {
 		t.Helper()
-		// Persistence, not an emitter's guesses, owns all three graph fields.
 		wrongParent := "not-the-session-leaf"
 		ev.ParentID, ev.Timestamp, ev.LifecycleEntryID = &wrongParent, -1, "not-persisted"
 		got := publish(ev)

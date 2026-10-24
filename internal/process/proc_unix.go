@@ -8,13 +8,10 @@ import (
 )
 
 func detachCmd(cmd *exec.Cmd) {
-	// Own process group so abort/timeout can kill grandchildren (find, pipelines),
-	// not just the bash launcher. CommandContext only signals cmd.Process.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
 func afterStart(cmd *exec.Cmd) {
-	// Setpgid already makes the process group the unit of cancellation.
 	_ = cmd
 }
 
@@ -26,5 +23,4 @@ func killCmd(cmd *exec.Cmd) {
 	_ = cmd.Process.Kill()
 }
 
-// releaseCmd has no platform handle to release on Unix.
 func releaseCmd(_ *exec.Cmd) {}

@@ -19,18 +19,14 @@ func isProxyKey(key string) bool {
 	return ok
 }
 
-// ChildEnvironment returns a copy of Ki's current environment for explicit
-// use as an exec.Cmd environment.
 func ChildEnvironment() []string {
 	return slices.Clone(os.Environ())
 }
 
-// ProxyEnvironment returns the proxy variables currently visible to Ki.
 func ProxyEnvironment() []string {
 	return ProxyEnvironmentFrom(os.Environ())
 }
 
-// ProxyEnvironmentFrom filters an environment down to standard proxy keys.
 func ProxyEnvironmentFrom(env []string) []string {
 	result := make([]string, 0, len(env))
 	for _, item := range env {
@@ -45,14 +41,10 @@ func ProxyEnvironmentFrom(env []string) []string {
 	return result
 }
 
-// WithProxyEnvironment adds inherited proxy variables unless the child
-// environment already defines the same key.
 func WithProxyEnvironment(env []string) []string {
 	return WithProxyEnvironmentFrom(env, os.Environ())
 }
 
-// WithProxyEnvironmentFrom adds proxy variables from source to env unless the
-// child environment already defines the same key.
 func WithProxyEnvironmentFrom(env, source []string) []string {
 	result := slices.Clone(env)
 	present := make(map[string]struct{}, len(result))

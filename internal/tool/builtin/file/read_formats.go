@@ -51,7 +51,6 @@ func joinSrc(v any) string {
 }
 
 func extractPDFText(data []byte, pages string) string {
-	// Best-effort: pull printable strings from PDF streams.
 	var b strings.Builder
 	if pages != "" {
 		fmt.Fprintf(&b, "[pages=%s]\n", pages)

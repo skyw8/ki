@@ -10,32 +10,16 @@ import (
 	toolapi "ki/internal/tool"
 )
 
-// Input is everything needed to assemble the system prompt.
-//
-// A subagent's orientation (identity, depth, reply address) is not part of the
-// system prompt: it travels in the child's first user message instead, so the
-// child's prompt stays byte-identical to its parent's for prefix caching. See
-// server.subagentDirective.
 type Input struct {
 	Resources resources.Snapshot
 	Tools     []toolapi.Tool
 	Toggle    session.Toggle
 }
 
-// DefaultAppendSystemPrompt is the built-in supplement rendered in the
-// appended-system-prompt position for every session. Search-tool preferences
-// belong to the harness rather than to one shell, so keeping them here avoids
-// repeating the same paragraph in the exec_command description
-// (and keeps them when a model has no shell tool at all).
 const DefaultAppendSystemPrompt = `IMPORTANT: Prefer read, grep, and glob over shell equivalents (cat, head, sed, awk, echo).
 
 In shell commands or pipelines, prefer 'rg' and 'fd' over 'grep' and 'find'. Ki bundles rg and fd on supported targets and puts them on PATH; on an unsupported target, use an available platform search command rather than assuming either binary exists. 'fd' respects .gitignore and skips hidden files (-H shows hidden, -I disables ignore).`
 
-// AppendSection returns the appended-system-prompt stack as one text, in the
-// order Build renders it: the built-in supplement, the global file, the project
-// file, then each enabled extension layer. The settings API serves it so the
-// editor can preview exactly what the model receives without rebuilding a whole
-// system prompt (which would need this session's tools and skills).
 func AppendSection(res resources.Snapshot) string {
 	var b strings.Builder
 	for i, block := range appendBlocks(res) {
@@ -47,8 +31,6 @@ func AppendSection(res resources.Snapshot) string {
 	return b.String()
 }
 
-// appendBlocks lists the append stack in render order, dropping empty layers so
-// a blank file cannot leave stray blank lines in the prompt.
 func appendBlocks(res resources.Snapshot) []string {
 	blocks := make([]string, 0, len(res.AppendSystemPrompts)+len(res.ExtensionPrompts)+1)
 	blocks = append(blocks, DefaultAppendSystemPrompt)
@@ -67,13 +49,9 @@ func appendBlocks(res resources.Snapshot) []string {
 	return blocks
 }
 
-// Build renders a system prompt from an already loaded resource snapshot.
 func Build(in Input) string {
 	var b strings.Builder
 	b.WriteString("You are a helpful assistant operating inside ki, a agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\n")
-	// Ki self-configuration (the single-binary analogue of pi's docs section):
-	// one short line the model reads when asked where to change server/skills
-	// settings. Keep the list in sync with docs/*.md.
 	env := in.Resources.Environment
 	if env.KIHome != "" {
 		fmt.Fprintf(&b, "Ki configuration (KI_HOME: %s, default ~/.ki): ki.toml = server/compaction/log, skills/ = SKILL.md packages, models.json + credentials.json = providers; project overrides in <cwd>/.ki/; `ki config path` prints the locations.\n\n", env.KIHome)
@@ -96,16 +74,11 @@ func Build(in Input) string {
 	}
 	b.WriteString("\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\n")
 	b.WriteString("Guidelines:\n- Be concise in your responses\n- Show file paths clearly when working with files\n")
-	// The append stack sits after Ki's built-in guidance and before task-scoped
-	// resources: the built-in supplement leads (so operator text adds to the
-	// harness rules instead of replacing them) and every operator layer follows
-	// in source order.
 	for _, block := range appendBlocks(in.Resources) {
 		b.WriteString("\n\n")
 		b.WriteString(block)
 	}
 
-	// Toggle already dropped disabled names; this is listing, not a process.
 	sk := skills.Filter(in.Resources.Skills, in.Toggle)
 	if hasRead && len(sk) > 0 {
 		b.WriteString("\n\nThe following skills provide specialized instructions for specific tasks.\n")

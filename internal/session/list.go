@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 )
 
-// Info is a session row for listing.
 type Info struct {
 	ID              string         `json:"id"`
 	CWD             string         `json:"cwd"`
@@ -30,13 +29,6 @@ type Info struct {
 	Metadata        map[string]any `json:"metadata,omitempty"`
 }
 
-// List walks the session root and returns every readable session, newest first.
-//
-// A list row only needs config.json, the jsonl header, and the first user
-// message used as a title fallback. Parsing each session's full transcript here
-// made one list request O(total history): a 12 MB session was decoded in full
-// to render one sidebar line. liteInfo reads at most a few lines per session,
-// so listing cost tracks the number of sessions, not the size of their history.
 func List(root string) ([]Info, error) {
 	var out []Info
 	err := walkSessionDirs(root, func(dir string) bool {
@@ -57,8 +49,6 @@ func List(root string) ([]Info, error) {
 	return out, nil
 }
 
-// liteInfo reads one list row without decoding transcript bodies beyond the
-// first user message.
 func liteInfo(dir string) (Info, error) {
 	gate := fileGate(dir)
 	gate.RLock()
@@ -107,12 +97,8 @@ func liteInfo(dir string) (Info, error) {
 	}, nil
 }
 
-// maxListLineBytes matches Open's scanner so a single oversized row is never
-// the reason a session disappears from the list.
 const maxListLineBytes = 16 * 1024 * 1024
 
-// scanHeaderAndTitle decodes only the header and — when config.json has no
-// title — the first user message. It stops as soon as the title is known.
 func scanHeaderAndTitle(r io.Reader, cfg Config) (Header, string, error) {
 	title := strings.TrimSpace(cfg.Title)
 	sc := bufio.NewScanner(r)
@@ -130,16 +116,12 @@ func scanHeaderAndTitle(r io.Reader, cfg Config) (Header, string, error) {
 			}
 			haveHeader = true
 			if title != "" {
-				// config.title is authoritative; never touch the entries.
 				return header, title, nil
 			}
 			continue
 		}
 		var e liteEntry
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			// A row this scan cannot decode also cannot contribute a title.
-			// Skip it instead of hiding the whole session from the list, which
-			// a torn append at the transcript tail would otherwise cause.
 			continue
 		}
 		if e.Type != "message" || e.Message == nil || e.Message.Role != "user" {
@@ -155,9 +137,6 @@ func scanHeaderAndTitle(r io.Reader, cfg Config) (Header, string, error) {
 	return header, title, nil
 }
 
-// liteEntry is the minimal transcript shape needed for the title fallback.
-// Decoding a full Entry here would reintroduce the tool args and thinking
-// payloads this path exists to avoid.
 type liteEntry struct {
 	Type    string   `json:"type"`
 	Message *liteMsg `json:"message"`
@@ -173,7 +152,6 @@ type liteContent struct {
 	Text string `json:"text"`
 }
 
-// liteText mirrors types.Message.Text: concatenate text or untyped blocks.
 func liteText(m *liteMsg) string {
 	var b strings.Builder
 	for _, c := range m.Content {
@@ -184,12 +162,10 @@ func liteText(m *liteMsg) string {
 	return b.String()
 }
 
-// TitleOf prefers config.json title, else the first user message, truncated.
 func TitleOf(s *Session) string {
 	return TitleFrom(s.Config, s.Entries())
 }
 
-// TitleFrom prefers config.json title, else the first user message, truncated.
 func TitleFrom(cfg Config, entries []Entry) string {
 	if t := strings.TrimSpace(cfg.Title); t != "" {
 		return t
@@ -207,8 +183,6 @@ func TitleFrom(cfg Config, entries []Entry) string {
 	return ""
 }
 
-// truncateTitle clips an auto title to 80 runes, keeping the sidebar row shape
-// identical whether the title came from a full Entry or the lite scan.
 func truncateTitle(t string) string {
 	if utf8.RuneCountInString(t) > 80 {
 		return string([]rune(t)[:80]) + "…"

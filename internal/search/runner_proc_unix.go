@@ -8,7 +8,6 @@ import (
 )
 
 func detachRGCommand(cmd *exec.Cmd) {
-	// Own a process group so timeout/cancel also terminates ripgrep's children.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 

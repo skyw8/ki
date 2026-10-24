@@ -26,8 +26,6 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
-// stdioRPC is the small JSON-RPC transport shared by the Telegram sidecar.
-// Host requests and sidecar-initiated session calls may be concurrent.
 type stdioRPC struct {
 	encMu   sync.Mutex
 	enc     *json.Encoder
@@ -49,9 +47,6 @@ func (r *stdioRPC) onRequest(handler func(string, json.RawMessage) (any, error))
 func (r *stdioRPC) serve(ctx context.Context, in io.Reader) error {
 	var requests sync.WaitGroup
 	defer func() {
-		// EOF closes reverse calls immediately, but quick request handlers still
-		// need to flush their replies before a piped executable exits. Bound the
-		// drain so a stalled handler cannot keep a disconnected sidecar alive.
 		r.once.Do(func() { close(r.done) })
 		drained := make(chan struct{})
 		go func() { requests.Wait(); close(drained) }()
@@ -75,8 +70,6 @@ func (r *stdioRPC) serve(ctx context.Context, in io.Reader) error {
 		if msg.Method != "" {
 			if msg.ID == nil {
 				if msg.Method == "lifecycle.event" {
-					// The host writes lifecycle notifications in loop order. Preserve
-					// that order while the handler queues the actual Telegram work.
 					r.dispatchNotification(msg)
 					continue
 				}

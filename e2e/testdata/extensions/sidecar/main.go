@@ -97,9 +97,6 @@ func main() {
 					time.Sleep(time.Duration(n) * time.Millisecond)
 				}
 			}
-			// KI_INIT_WAIT_FILE holds initialize until the file exists (bounded by
-			// a safety cap) so a test can observe the runtime-loading state instead
-			// of racing a fixed sleep.
 			if gate := os.Getenv("KI_INIT_WAIT_FILE"); gate != "" {
 				deadline := time.Now().Add(30 * time.Second)
 				for time.Now().Before(deadline) {
@@ -142,8 +139,6 @@ func main() {
 					"description": "echo from extension",
 					"parameters":  map[string]any{"type": "object", "properties": map[string]any{}},
 				}
-				// KI_TOOL_TIMEOUT_MS lets a test force the host tool deadline so it
-				// can observe the cancel drain path.
 				if ms := os.Getenv("KI_TOOL_TIMEOUT_MS"); ms != "" {
 					if n, err := strconv.Atoi(ms); err == nil {
 						tool["timeoutMs"] = n
@@ -172,10 +167,7 @@ func main() {
 			if initParams.SessionID == "" {
 				sendUI("")
 			}
-			// Global sidecars learn the target session from the lifecycle RPC.
 		case "tool.execute":
-			// KI_TOOL_SLEEP_MS makes the reply arrive after the host tool deadline
-			// set by KI_TOOL_TIMEOUT_MS, exercising the host cancel drain.
 			if ms := os.Getenv("KI_TOOL_SLEEP_MS"); ms != "" {
 				if n, err := strconv.Atoi(ms); err == nil && n > 0 {
 					time.Sleep(time.Duration(n) * time.Millisecond)

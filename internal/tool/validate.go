@@ -7,17 +7,6 @@ import (
 	"strings"
 )
 
-// ValidateSchema is a minimal JSON-Schema subset validator used by
-// Validator implementations (P0, pi validateToolArguments): type
-// checking per property, required fields, and a top-level object shape.
-// It intentionally covers the subset providers and extensions actually
-// emit — full JSON Schema (draft-07+) would need a dependency.
-//
-// schema follows the OpenAI tool schema shape:
-//
-//	{"type":"object","properties":{"p":{"type":"string",...}},"required":["p"]}
-//
-// Returns a list of human-readable violations (empty = valid).
 func ValidateSchema(schema map[string]any, args map[string]any) []string {
 	var errs []string
 	if schema == nil {
@@ -63,8 +52,6 @@ func typeOK(typ string, v any) bool {
 		case int, int64, int32:
 			return true
 		case float64:
-			// Why: float64 rounds MaxInt64 up to 2^63, so the upper bound
-			// must be exclusive before any builtin converts it to an integer.
 			return n >= -0x1p63 && n < 0x1p63 && math.Trunc(n) == n
 		case json.Number:
 			_, err := n.Int64()
@@ -95,8 +82,6 @@ func typeOK(typ string, v any) bool {
 	return true
 }
 
-// SchemaErrors formats ValidateSchema output like pi validateToolArguments:
-// a tool named header plus one line per violation, or "" when valid.
 func SchemaErrors(schema map[string]any, name string, args map[string]any) string {
 	errs := ValidateSchema(schema, args)
 	if len(errs) == 0 {

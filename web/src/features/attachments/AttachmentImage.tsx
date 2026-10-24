@@ -8,8 +8,6 @@ import { useDialogFocus } from '../../hooks/useDialogFocus'
 
 const ImagePreview = createContext<((url: string, name: string, blob?: Blob) => void) | null>(null)
 
-/** The lightbox must outlive a virtual row leaving the viewport or an
- * optimistic row being replaced by its persisted entry during a live run. */
 export function ImagePreviewProvider({ children }: { children: ReactNode }) {
   const { t } = useI18n()
   const [preview, setPreview] = useState<{ url: string; name: string; owned: boolean } | null>(null)

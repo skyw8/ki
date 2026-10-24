@@ -1,17 +1,4 @@
 #!/bin/sh
-# Install ki from a GitHub release.
-#
-#   curl -fsSL https://raw.githubusercontent.com/skyw8/ki/main/scripts/install.sh | sh
-#
-# Environment:
-#   KI_VERSION  release tag to install, with or without the leading v
-#               (default: the latest release)
-#   KI_BIN_DIR  directory to install into (default: ~/.local/bin)
-#
-# Why a script and not a documented tar/curl sequence: the archive name encodes
-# the os/arch pair the release matrix builds, and the download has to be checked
-# against the release checksums.txt, so a one-liner install cannot avoid
-# detecting the platform and verifying the archive.
 
 set -eu
 
@@ -37,14 +24,12 @@ arm64 | aarch64) arch=arm64 ;;
 *) die "unsupported machine $(uname -m); build from source" ;;
 esac
 
-# Why the fixed pairs: the release matrix publishes exactly these archives, so
-# any other combination has to fail here instead of at a 404 from the download.
 case "${os}-${arch}" in
 linux-amd64 | darwin-arm64) ;;
 *) die "no release archive for ${os}/${arch}; the release builds linux/amd64, darwin/arm64 and windows/amd64, otherwise build from source" ;;
 esac
 
-fetch() { # url -> stdout
+fetch() {
 	if command -v curl >/dev/null 2>&1; then
 		curl -fsSL "$1"
 	elif command -v wget >/dev/null 2>&1; then
@@ -54,11 +39,11 @@ fetch() { # url -> stdout
 	fi
 }
 
-download() { # url dest
+download() {
 	fetch "$1" >"$2"
 }
 
-sha256() { # file -> hex digest
+sha256() {
 	if command -v sha256sum >/dev/null 2>&1; then
 		sha256sum "$1" | cut -d' ' -f1
 	elif command -v shasum >/dev/null 2>&1; then
@@ -113,11 +98,6 @@ case ":${PATH}:" in
 	;;
 esac
 
-# Why this hint: installing a binary never changes the process that is already
-# serving. Without it the user is left with a new file on disk and an old
-# daemon in memory, which is exactly the "I upgraded but nothing changed"
-# report. Restarting is left to the user (and is never forced), because an
-# active run would be interrupted.
 if [ -f "${KI_HOME:-$HOME/.ki}/server.json" ]; then
 	say ""
 	say "a ki server is running from the previous build; activate ${version} with:"

@@ -9,7 +9,6 @@ import (
 	"ki/internal/toggles"
 )
 
-// warmupTimeout bounds one open-session extension view preparation.
 const warmupTimeout = 25 * time.Second
 
 type runtimePrep struct {
@@ -42,10 +41,6 @@ func (s *Server) resetRuntimeExcept(active map[string]bool) {
 	s.runtimeMu.Unlock()
 }
 
-// kickWarmup starts the session extension view preparation in the background.
-// Why: the warmup boundary is opening this session (create/GET/fork), not
-// List. The sidecars themselves are started at server boot; this only sends
-// session.open and builds the session-scoped registration view.
 func (s *Server) kickWarmup(id, cwd string) {
 	if id == "" {
 		return
@@ -107,7 +102,5 @@ func (s *Server) finishRuntime(id string, st *runtimePrep) {
 	if !still {
 		return
 	}
-	// Why: runtime_ready is a session notification, not an occupy event.
-	// Putting it on runState.evs prepends it to prompt SSE replay.
 	s.publishPush(id, loop.Event{Type: loop.RuntimeReady, OK: true})
 }

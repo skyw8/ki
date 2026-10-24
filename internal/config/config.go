@@ -12,47 +12,35 @@ import (
 	"ki/internal/buildinfo"
 )
 
-// Config is the merged runtime configuration.
 type Config struct {
-	Agents     Agents               `mapstructure:"agents"`
-	Home       string               `mapstructure:"-"`
-	Sessions   Sessions             `mapstructure:"sessions"`
-	Compaction Compaction           `mapstructure:"compaction"`
-	Server     Server               `mapstructure:"server"`
-	Log        Log                  `mapstructure:"log"`
-	Push       Push                 `mapstructure:"push"`
-	Streaming  Streaming            `mapstructure:"streaming"`
-	Extensions Extensions           `mapstructure:"extensions"`
-	MCPServers map[string]MCPServer `mapstructure:"-"`
-	// MCPFromFiles prevents injected-config fallback from leaking a different
-	// workspace's file-derived capabilities into a workspace without files.
-	MCPFromFiles bool `mapstructure:"-"`
+	Agents       Agents               `mapstructure:"agents"`
+	Home         string               `mapstructure:"-"`
+	Sessions     Sessions             `mapstructure:"sessions"`
+	Compaction   Compaction           `mapstructure:"compaction"`
+	Server       Server               `mapstructure:"server"`
+	Log          Log                  `mapstructure:"log"`
+	Push         Push                 `mapstructure:"push"`
+	Streaming    Streaming            `mapstructure:"streaming"`
+	Extensions   Extensions           `mapstructure:"extensions"`
+	MCPServers   map[string]MCPServer `mapstructure:"-"`
+	MCPFromFiles bool                 `mapstructure:"-"`
 }
 
 type Agents struct {
 	MaxConcurrent int `mapstructure:"max_concurrent"`
 }
 
-// Streaming configures native provider response-body liveness.
 type Streaming struct {
 	IdleTimeoutSeconds int `mapstructure:"idle_timeout_seconds"`
 }
 
-// Extensions configures extension installation. Source is the release base URL
-// and Release is the path segment under it; GitHub serves a tagged release at
-// download/<tag> and the newest one at latest/download, so one URL shape covers
-// both a local build and a release build. A file:// source uses the same shape
-// with a plain directory name.
 type Extensions struct {
 	Source  string `mapstructure:"source"`
 	Release string `mapstructure:"release"`
 }
 
-// DefaultExtensionSource is the release base URL of the project.
 const DefaultExtensionSource = "https://github.com/skyw8/ki/releases"
 
-// extensionReleasePath is the catalog path for this build: a release build
-// installs the exact tag it came from, a local build follows the newest release.
 func extensionReleasePath() string {
 	if tag := strings.TrimSpace(buildinfo.ReleaseTag); tag != "" {
 		return "download/" + tag
@@ -60,54 +48,34 @@ func extensionReleasePath() string {
 	return "latest/download"
 }
 
-// Sessions holds session storage settings.
 type Sessions struct {
 	Root string `mapstructure:"root"`
 }
 
-// Compaction holds auto-compaction thresholds (pi defaults).
 type Compaction struct {
-	Enabled          bool `mapstructure:"enabled"`
-	ReserveTokens    int  `mapstructure:"reserve_tokens"`
-	KeepRecentTokens int  `mapstructure:"keep_recent_tokens"`
-	// Mode selects the checkpoint implementation: local uses a readable model
-	// summary, remote requires a provider compaction capability, and auto uses
-	// remote when available with a local fallback.
-	Mode string `mapstructure:"mode"`
-	// ServerSide enables provider-managed compaction during ordinary Responses
-	// generation. Manual and overflow compaction remain explicit checkpoints.
-	ServerSide bool `mapstructure:"server_side"`
-	// MaxContextTokens caps the context window used for the threshold check
-	// (min of model window and this value; 0 = model window only). A small
-	// value triggers compaction early, useful for low-cost testing without
-	// burning tokens on huge contexts.
-	MaxContextTokens int `mapstructure:"max_context_tokens"`
+	Enabled          bool   `mapstructure:"enabled"`
+	ReserveTokens    int    `mapstructure:"reserve_tokens"`
+	KeepRecentTokens int    `mapstructure:"keep_recent_tokens"`
+	Mode             string `mapstructure:"mode"`
+	ServerSide       bool   `mapstructure:"server_side"`
+	MaxContextTokens int    `mapstructure:"max_context_tokens"`
 }
 
-// Server is the local HTTP bind address.
 type Server struct {
 	Addr string `mapstructure:"addr"`
 }
 
-// Log is process log settings.
 type Log struct {
 	Level      string `mapstructure:"level"`
 	MaxSizeMB  int    `mapstructure:"max_size_mb"`
 	MaxBackups int    `mapstructure:"max_backups"`
 }
 
-// Push configures Web Push completion notifications.
 type Push struct {
-	// Enabled turns the server-side sender off entirely; with it off the WebUI
-	// still raises notifications from a live tab, but never while the page is
-	// suspended.
-	Enabled bool `mapstructure:"enabled"`
-	// Subject is the VAPID JWT `sub` claim (RFC 8292): a mailto: address or
-	// https URL. A bare address is normalized to mailto: by internal/push.
+	Enabled bool   `mapstructure:"enabled"`
 	Subject string `mapstructure:"subject"`
 }
 
-// Builtin returns compiled-in defaults.
 func Builtin(home string) Config {
 	if home == "" {
 		home = HomeDir()
@@ -136,7 +104,6 @@ func Builtin(home string) Config {
 	}
 }
 
-// HomeDir is KI_HOME or ~/.ki.
 func HomeDir() string {
 	if h := strings.TrimSpace(os.Getenv("KI_HOME")); h != "" {
 		return h
@@ -148,14 +115,10 @@ func HomeDir() string {
 	return filepath.Join(user, ".ki")
 }
 
-// Load merges builtin ← global ki.toml ← project ki.toml ← env keys.
 func Load(cwd string) (Config, error) {
 	return LoadWithViper(cwd, nil)
 }
 
-// LoadWithViper is Load with an optional Viper instance supplied by the CLI.
-// A caller can bind Cobra/pflag values to this instance before loading so
-// command-line overrides participate in the same final decode.
 func LoadWithViper(cwd string, settings *viper.Viper) (Config, error) {
 	home := HomeDir()
 	builtin := Builtin(home)
@@ -238,9 +201,6 @@ func mergeEnv(settings *viper.Viper) error {
 	if value := strings.TrimSpace(os.Getenv("KI_SERVER_ADDR")); value != "" {
 		envSettings["server"] = map[string]any{"addr": value}
 	}
-	// The extension installer needs an offline/self-hosted path: a mirror can
-	// be selected without editing ki.toml, and tests point at a local file://
-	// directory instead of the network.
 	if value := strings.TrimSpace(os.Getenv("KI_EXTENSIONS_SOURCE")); value != "" {
 		envSettings["extensions"] = map[string]any{"source": value}
 	}
@@ -276,8 +236,6 @@ func mergeFile(settings *viper.Viper, path string) error {
 	if err := fileSettings.ReadConfig(bytes.NewReader(data)); err != nil {
 		return fmt.Errorf("read config %s: %w", path, err)
 	}
-	// MergeConfigMap recursively overlays tables; this preserves provider
-	// fields from the global file when the project file only changes one key.
 	if err := settings.MergeConfigMap(fileSettings.AllSettings()); err != nil {
 		return fmt.Errorf("merge file config: %w", err)
 	}

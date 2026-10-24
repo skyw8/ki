@@ -75,9 +75,6 @@ func (s *Server) startProviderAuth(w http.ResponseWriter, r *http.Request) {
 		state = &providerAuthState{Provider: id, RequestID: requestID, Status: "pending", CreatedAt: time.Now()}
 		s.providerAuth[providerAuthKey(id, requestID)] = state
 	} else if state.Status == "" {
-		// A very fast sidecar may emit completed before the start RPC response
-		// reaches this handler. Do not overwrite that terminal transition with
-		// pending when the HTTP start response is assembled.
 		state.Status = "pending"
 	}
 	s.providerAuthMu.Unlock()
@@ -179,9 +176,6 @@ func (s *Server) logoutProviderAuth(w http.ResponseWriter, r *http.Request) {
 	unlockCredential := s.providerExtensions.LockCredential(id)
 	var active []string
 	s.providerAuthMu.Lock()
-	// Why: completion events arrive asynchronously from the sidecar. Serialize
-	// clearing credentials with completion persistence so Logout cannot be
-	// undone by an in-flight OAuth callback.
 	if err := s.registry.SetCredential(id, nil); err != nil {
 		s.providerAuthMu.Unlock()
 		unlockCredential()
@@ -221,8 +215,6 @@ func (s *Server) onProviderAuthEvent(event extension.ProviderAuthEvent) {
 	key := providerAuthKey(event.Provider, event.RequestID)
 	var unlockCredential func()
 	if event.Type == "completed" && s.providerExtensions != nil {
-		// Keep the same lock order as Logout: credential mutation first, then
-		// auth state. This also prevents refresh from racing a completed login.
 		unlockCredential = s.providerExtensions.LockCredential(event.Provider)
 		defer unlockCredential()
 	}
@@ -275,17 +267,12 @@ func (s *Server) onProviderAuthEvent(event extension.ProviderAuthEvent) {
 		state.Error = "provider returned an invalid OAuth credential"
 		return
 	}
-	// Keep the auth state lock while persisting. Logout takes the same lock, so
-	// either the completed credential wins and is then cleared, or cancellation
-	// wins and this event is discarded above.
 	if err := s.registry.SetCredentialValue(event.Provider, provider.AuthOAuth, event.Credential.Value); err != nil {
 		state.Status = "error"
 		state.Error = fmt.Sprintf("save credential: %v", err)
 		return
 	}
 	state.Status = "completed"
-	// The credential is now usable everywhere: the model picker and provider
-	// page in other tabs refetch from this.
 	s.publishInvalidation(scopeProviders)
 }
 

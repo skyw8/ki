@@ -1,13 +1,5 @@
 import type { ProcessSnapshot } from '../../../api/types'
 
-/**
- * Structured tool payloads. Every tool result reaches the WebUI as
- * `details` (the Go `toolapi.Result.Details`), sometimes wrapped by the
- * spill reference under `spill`. Renderers read these shapes instead of
- * re-parsing the model-facing text; each helper below degrades to text when a
- * session predates the structured field.
- */
-
 export type ExecSnapshot = {
   cmd: string
   workdir: string
@@ -34,7 +26,6 @@ export type SpillReference = {
 
 export type DiffFile = {
   path: string
-  /** add / delete / update / move, matching apply_patch's `kind`. */
   kind: string
   movePath?: string
   diff: string
@@ -92,7 +83,6 @@ function bool(value: unknown): boolean {
   return value === true
 }
 
-/** The spill reference a store attaches to any result it had to write to disk. */
 export function spillOf(details: unknown): SpillReference | null {
   const spill = object(object(details)?.spill)
   if (!spill) return null
@@ -108,11 +98,6 @@ export function spillOf(details: unknown): SpillReference | null {
   }
 }
 
-/**
- * Live progress arrives as `{delta, process}` (process.Update) while the
- * finished result is the bare snapshot; both carry the same snapshot fields,
- * so unwrap rather than duplicating the parser.
- */
 function snapshotSource(details: unknown): Record<string, unknown> | null {
   const outer = object(details)
   if (!outer) return null
@@ -124,8 +109,6 @@ export function execSnapshot(details: unknown, result: string): ExecSnapshot | n
   const raw = snapshotSource(details)
   if (!raw) return null
   const sessionID = num(raw.session_id)
-  // `revision` + `status` is the snapshot identity; a generic tool payload
-  // must not be mistaken for one.
   if (sessionID === undefined || num(raw.revision) === undefined) return null
   const exitCode = num(raw.exit_code)
   return {
@@ -144,10 +127,6 @@ export function execSnapshot(details: unknown, result: string): ExecSnapshot | n
   }
 }
 
-/**
- * Older sessions stored the whole snapshot as the result text. Parse it rather
- * than showing raw JSON, but only when it really is a snapshot.
- */
 export function execSnapshotFromResult(result: string): ExecSnapshot | null {
   const text = result.trim()
   if (!text.startsWith('{')) return null
@@ -162,7 +141,6 @@ export function execSnapshotOf(details: unknown, result: string): ExecSnapshot |
   return execSnapshot(details, result) ?? execSnapshotFromResult(result)
 }
 
-/** Merge live process snapshots (cumulative, not deltas) onto tool rows. */
 export function execSnapshotFromProcess(process: ProcessSnapshot): ExecSnapshot {
   return {
     cmd: process.cmd ?? '',
@@ -184,7 +162,6 @@ export function diffFiles(details: unknown): DiffFile[] {
   const outer = object(details)
   if (!outer) return []
   const files: DiffFile[] = []
-  // edit publishes one diff; apply_patch publishes one per changed file.
   const single = str(outer.diff)
   if (single) {
     files.push({ path: diffPath(single), kind: 'update', diff: single })
@@ -206,7 +183,6 @@ export function diffFiles(details: unknown): DiffFile[] {
   return files
 }
 
-/** A diff's own header is the most reliable path when details omit one. */
 function diffPath(diff: string): string {
   const match = /^\+\+\+ (?:[ab]\/)?(.+)$/m.exec(diff)
   return match ? match[1].trim() : ''
@@ -293,7 +269,6 @@ export function readDetails(details: unknown): ReadDetails | null {
   }
 }
 
-/** Added/removed line counts for a file header, from the diff body. */
 export function diffStat(files: DiffFile[]): { added: number; removed: number } {
   let added = 0
   let removed = 0
@@ -306,11 +281,6 @@ export function diffStat(files: DiffFile[]): { added: number; removed: number } 
   return { added, removed }
 }
 
-/**
- * Reconstruct a unified diff for an `edit` whose details predate the `diff`
- * field. Only the replaced block is shown, because the old file content is not
- * on the client; the header carries the line range when the tool recorded it.
- */
 export function syntheticEdit(args: unknown, oldText: string, newText: string): DiffFile {
   const raw = object(args)
   const path = raw ? str(raw.file_path) : ''
@@ -329,11 +299,6 @@ export function syntheticEdit(args: unknown, oldText: string, newText: string): 
   }
 }
 
-/**
- * An entire new file, for `write`. The tool does not record the previous
- * content, so a rewrite cannot show a real diff; the row still gets file
- * chrome and the line count instead of a wall of raw content.
- */
 export function writeDiff(details: WriteDetails, content: string): DiffFile {
   const lines = content ? content.split('\n') : []
   return {

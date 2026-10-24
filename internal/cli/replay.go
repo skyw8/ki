@@ -12,9 +12,6 @@ import (
 	"ki/internal/session"
 )
 
-// Why this fallback exists: completed SSE logs have a finite lifetime and
-// budget. A late CLI reader must print durable replies instead of interpreting
-// an unavailable replay as a successful empty answer. Recovery never prompts.
 func recoverLatestTurn(ctx context.Context, base, token, id string) error {
 	path := "/v1/sessions/" + url.PathEscape(id)
 	var detail struct {

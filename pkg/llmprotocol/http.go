@@ -15,9 +15,6 @@ import (
 
 var errProviderHTTP = errors.New("provider HTTP error")
 
-// nonRetryableError marks deterministic request and response failures. Retrying
-// the same request cannot repair a client error or wire-format violation and
-// could replay text or tool calls already emitted to clients.
 type nonRetryableError struct {
 	err error
 }
@@ -33,9 +30,6 @@ func retryableProviderResponse(status int, body []byte) bool {
 	case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly, http.StatusTooManyRequests:
 		return true
 	case http.StatusBadRequest:
-		// Some compatible gateways use this code when their own upstream returns
-		// a transient bad status. The exact same request can succeed immediately
-		// afterwards, unlike schema/auth 4xx failures which must not be replayed.
 		var envelope struct {
 			Error struct {
 				Type string `json:"type"`
@@ -60,9 +54,6 @@ func marshalArguments(v any) string {
 }
 
 func validObjectArgumentsRaw(raw string) string {
-	// A length-truncated assistant tool call is still present in session
-	// history; only replay valid JSON objects or the next provider request can
-	// fail before the model gets the explanatory tool_result.
 	if raw == "" {
 		return ""
 	}
@@ -73,7 +64,6 @@ func validObjectArgumentsRaw(raw string) string {
 	return raw
 }
 
-// Stream implements Streamer.
 func (l *Client) Stream(ctx context.Context, req Request, emit func(AssistantDelta) error) (Message, error) {
 	if err := validateToolSpecs(req.Tools, l.API); err != nil {
 		return Message{Role: "assistant", StopReason: "error", ErrorMessage: err.Error()}, &nonRetryableError{err: err}
@@ -104,8 +94,6 @@ func mappedThinking(req Request) string {
 	return req.ThinkingEffort
 }
 
-// Replayable removes assistant turns that cannot be sent back to a provider
-// and synthesizes missing tool results for retained tool calls.
 func Replayable(msgs []Message) []Message {
 	skipIDs := map[string]bool{}
 	for _, m := range msgs {
@@ -193,17 +181,6 @@ func assistantHasReplayableContent(m Message) bool {
 	return false
 }
 
-// structuredToolReplay adapts replayed history for protocols whose tool calls
-// are always JSON function calls (Chat Completions, Anthropic Messages).
-// Responses-style custom (freeform) calls have no wire representation there,
-// so each one is downgraded in place to a function call whose arguments carry
-// the original opaque input; the call id and the following tool result are
-// preserved, so the turn stays valid and readable. A tool result whose call is
-// absent from the replayed history is dropped instead of being sent as an
-// unpaired role:tool / tool_result message, which every gateway rejects.
-//
-// Responses retains native custom calls unless their current declaration is
-// a function; its item adapter also changes the paired output type.
 func structuredToolReplay(msgs []Message, tools []ToolSpec) []Message {
 	replayed := Replayable(msgs)
 	out := make([]Message, 0, len(replayed))
@@ -219,8 +196,6 @@ func structuredToolReplay(msgs []Message, tools []ToolSpec) []Message {
 			}
 			out = append(out, m)
 		case "toolResult":
-			// A missing call id is a malformed request that validation should
-			// still report; only a genuinely absent call is dropped.
 			if m.ToolCallID != "" && !calls[m.ToolCallID] {
 				continue
 			}
@@ -232,8 +207,6 @@ func structuredToolReplay(msgs []Message, tools []ToolSpec) []Message {
 	return out
 }
 
-// downgradeCustomCalls rewrites custom tool calls as function calls. It copies
-// the content slice before mutating, so the caller's history is never changed.
 func downgradeCustomCalls(m Message, tools []ToolSpec) Message {
 	rewritten := false
 	content := m.Content
@@ -263,8 +236,6 @@ func downgradeCustomCalls(m Message, tools []ToolSpec) Message {
 	return m
 }
 
-// customCallArguments encodes a custom call's opaque input as the JSON object
-// that a function tool call requires.
 func customCallArguments(c Content) string {
 	return marshalArguments(map[string]any{"input": c.Input})
 }
@@ -368,8 +339,6 @@ func (l *Client) postStream(ctx context.Context, url string, body any, hdr http.
 			continue
 		}
 		if after, ok := strings.CutPrefix(line, "data:"); ok {
-			// SSE removes one optional leading space from each data field; all
-			// remaining fields are joined with newlines by the SSE contract.
 			dataLines = append(dataLines, strings.TrimPrefix(after, " "))
 		}
 	}
@@ -380,8 +349,6 @@ func (l *Client) postStream(ctx context.Context, url string, body any, hdr http.
 		streamErr = sc.Err()
 	}
 	if streamErr != nil {
-		// Resending after partial output can duplicate an answer or a tool call.
-		// End this attempt with its retained content instead of appending a retry.
 		if errors.Is(streamErr, errStreamIdle) && len(acc.Content) > 0 {
 			return acc, &nonRetryableError{err: streamErr}
 		}
@@ -425,9 +392,6 @@ func (l *Client) postJSON(ctx context.Context, url string, body any, hdr http.He
 		return nil, fmt.Errorf("send provider request: %w", err)
 	}
 	defer func() { _ = res.Body.Close() }()
-	// Standalone compaction can be a long model pass too. Use the same
-	// per-read liveness bound as streaming responses instead of allowing a
-	// silent body to hold manual/overflow compaction forever.
 	const maxJSONResponseBytes = 65 * 1024 * 1024
 	responseBody, readErr := io.ReadAll(io.LimitReader(
 		idleReader{ReadCloser: res.Body, timeout: l.IdleTimeout},

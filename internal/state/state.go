@@ -9,22 +9,14 @@ import (
 	"time"
 )
 
-// ErrNewerVersion reports that a document was written by a schema newer than
-// the running build understands. Callers fail fast or fall back, but never
-// rewrite the document: dropping fields the build cannot see would be silent
-// data loss.
 var ErrNewerVersion = errors.New("unsupported")
 
-// Migration rewrites a document from one schema version to the next.
 type Migration func(raw []byte) ([]byte, error)
 
 type header struct {
 	Version int `json:"version"`
 }
 
-// Version reads the schema version header of a JSON document. A document
-// without a header is version 0, which callers treat as current (hand-written
-// or pre-version).
 func Version(raw []byte) (int, error) {
 	var h header
 	if err := json.Unmarshal(raw, &h); err != nil {
@@ -33,10 +25,6 @@ func Version(raw []byte) (int, error) {
 	return h.Version, nil
 }
 
-// Migrate returns raw rewritten as current. A missing (0) or already-current
-// version is returned unchanged. An older version is walked through steps[from]
-// until it reaches current; a missing step is an error. A newer version returns
-// ErrNewerVersion, and is never downgraded.
 func Migrate(raw []byte, current int, steps map[int]Migration) (out []byte, migrated bool, err error) {
 	v, err := Version(raw)
 	if err != nil {
@@ -64,9 +52,6 @@ func Migrate(raw []byte, current int, steps map[int]Migration) (out []byte, migr
 	return out, migrated, nil
 }
 
-// ReadFile reads and migrates a versioned document. A missing file returns
-// os.ErrNotExist unchanged. migrated reports whether a step ran; callers keep
-// the migrated bytes in memory and persist them on their next write.
 func ReadFile(path string, current int, steps map[int]Migration) (raw []byte, migrated bool, err error) {
 	b, err := os.ReadFile(path) //nolint:gosec // path is a Ki-managed state file
 	if err != nil {
@@ -79,9 +64,6 @@ func ReadFile(path string, current int, steps map[int]Migration) (raw []byte, mi
 	return out, migrated, nil
 }
 
-// WriteJSON atomically replaces path with indented JSON: a same-directory temp
-// file is written, synced and renamed over the target, so a concurrent reader
-// never observes a half-written document.
 func WriteJSON(path string, v any, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -112,10 +94,6 @@ func WriteJSON(path string, v any, perm os.FileMode) error {
 	return replaceFile(tmp, path)
 }
 
-// WriteVersioned is WriteJSON that refuses to overwrite a document written by a
-// newer schema, surfacing ErrNewerVersion instead of clobbering fields the
-// build cannot see. When the existing document is an older schema it is backed
-// up first, so a forward rewrite keeps a recoverable copy.
 func WriteVersioned(path string, current int, v any, perm os.FileMode) error {
 	b, err := os.ReadFile(path) //nolint:gosec // path is a Ki-managed state file
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -138,8 +116,6 @@ func WriteVersioned(path string, current int, v any, perm os.FileMode) error {
 	return WriteJSON(path, v, perm)
 }
 
-// Backup copies path to a sibling "path.bak-<UTC timestamp>" and returns the
-// new path. A missing source returns "" and no error.
 func Backup(path string) (string, error) {
 	b, err := os.ReadFile(path) //nolint:gosec // path is a Ki-managed state file
 	if errors.Is(err, os.ErrNotExist) {

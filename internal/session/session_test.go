@@ -88,7 +88,6 @@ func TestLastRequestHeaderFollowsLeaf(t *testing.T) {
 	if !ok || system != "first prompt" || tools != nil {
 		t.Fatalf("header = %q, %+v, %v", system, tools, ok)
 	}
-	// A newer header wins on the leaf path.
 	if _, err := s.AppendRequestHeader("second prompt", []ToolSchema{{Name: "Read"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +147,6 @@ func TestForkHistoryAtKeepsMessagesAndRelinks(t *testing.T) {
 	if _, err := s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "hello"}}}); err != nil {
 		t.Fatal(err)
 	}
-	// request_header and context_usage sit on the leaf chain between messages.
 	if _, err := s.AppendRequestHeader("system prompt", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +261,6 @@ func TestCreateReloadFork(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// events.jsonl starts with session header
 	//nolint:gosec // dir is the test's isolated session directory.
 	f, err := os.Open(filepath.Join(dir, "events.jsonl"))
 	if err != nil {
@@ -432,8 +429,6 @@ func TestRequestHeaderAndTogglesReload(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	// Responses custom calls and their schemas must survive jsonl reload so
-	// protocol replay and the request inspector preserve their wire shape.
 	if _, err := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ToolType: "custom", ID: "c1", Name: "apply_patch", Input: "PATCH"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -484,17 +479,14 @@ func TestCompactionRetainedTailReload(t *testing.T) {
 	if _, err := s.AppendMessage(m2); err != nil {
 		t.Fatal(err)
 	}
-	// Append a compaction whose retained tail duplicates the kept messages.
 	tail := []types.Message{m2}
 	if _, err := s.AppendCompaction("SUM", "", 10, &types.Usage{Input: 10, TotalTokens: 10}, tail); err != nil {
 		t.Fatal(err)
 	}
-	// New-style: MessagesToLeaf uses the persisted retained tail verbatim.
 	hist := s.MessagesToLeaf()
 	if len(hist) != 2 || !strings.Contains(hist[0].Text(), "SUM") || hist[1].Text() != "two" {
 		t.Fatalf("history: %+v", hist)
 	}
-	// Reload: retained tail survives jsonl round-trip.
 	dir := s.Dir
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
@@ -537,7 +529,6 @@ func TestMessagesToLeafIncludesMessagesAfterCompaction(t *testing.T) {
 		_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: fmt.Sprintf("u%d", i)}}})
 		_, _ = s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: fmt.Sprintf("a%d", i)}}})
 	}
-	// Compact, keeping the last two messages as the retained tail.
 	tail := []types.Message{
 		{Role: "user", Content: []types.Content{{Type: "text", Text: "u1"}}},
 		{Role: "assistant", Content: []types.Content{{Type: "text", Text: "a1"}}},
@@ -547,8 +538,6 @@ func TestMessagesToLeafIncludesMessagesAfterCompaction(t *testing.T) {
 	if _, err := s.AppendCompaction("SUM", "", 10, &types.Usage{Input: 10, TotalTokens: 10}, tail); err != nil {
 		t.Fatal(err)
 	}
-	// Messages sent AFTER the compaction must still reach the model-facing
-	// context; the retained tail is the head, not a terminator.
 	_, _ = s.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "u3"}}})
 	_, _ = s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "a3"}}})
 	hist := s.MessagesToLeaf()
@@ -686,7 +675,6 @@ func TestAppendResponsesCompactionRejectsMalformedWindow(t *testing.T) {
 }
 
 func TestCompactionRetainedTailFallback(t *testing.T) {
-	// Old jsonl without retainedTail falls back to FirstKeptEntryID slicing.
 	root := t.TempDir()
 	cwd := filepath.Join(t.TempDir(), "proj")
 	if err := os.MkdirAll(cwd, 0o700); err != nil {
@@ -733,7 +721,7 @@ func TestCompactionEventsPersist(t *testing.T) {
 	if _, err := s.AppendDetailsEvent("tool_details", map[string]any{"toolCallId": "call-1", "partialResult": map[string]any{"changes": []any{map[string]any{"path": "a.txt"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	hist := s.MessagesToLeaf() // must ignore event entries
+	hist := s.MessagesToLeaf()
 	if len(hist) != 0 {
 		t.Fatalf("event entries leaked into history: %+v", hist)
 	}
@@ -932,9 +920,6 @@ func TestConfigAtomicUnderConcurrentOpenWrite(t *testing.T) {
 					errCh <- err
 				}
 				_ = sess.Close()
-				// Why: the reopened session must be closed too. Windows cannot
-				// delete events.jsonl while a handle is open, and t.TempDir
-				// cleanup runs after this test returns.
 				extra, err := Open(dir)
 				if err != nil {
 					errCh <- err
@@ -1020,8 +1005,6 @@ func TestForkInheritsCacheAffinityKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = forked.Close() }()
-	// Why: the child replays the parent's prefix, so it must present the
-	// parent's cache key; its own id stays the session identity.
 	if forked.ID() == parentID {
 		t.Fatal("fork should mint a new session id")
 	}
@@ -1032,7 +1015,6 @@ func TestForkInheritsCacheAffinityKey(t *testing.T) {
 		t.Fatalf("fork config cacheKey: %q", forked.Config.CacheKey)
 	}
 
-	// A fork of a fork keeps the original source key instead of chaining.
 	grandchild, err := Fork(root, forked)
 	if err != nil {
 		t.Fatal(err)
@@ -1042,7 +1024,6 @@ func TestForkInheritsCacheAffinityKey(t *testing.T) {
 		t.Fatalf("grandchild affinity: %q", grandchild.CacheAffinityKey())
 	}
 
-	// Reopening preserves it; the key is durable config, not memory state.
 	reopened, err := Open(forked.Dir)
 	if err != nil {
 		t.Fatal(err)
@@ -1064,8 +1045,6 @@ func TestCreateChildDoesNotInheritCacheAffinityKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = child.Close() }()
-	// A delegated child starts from a clean context, so it shares no prefix
-	// with the parent and must not claim the parent's cache entry.
 	if child.CacheAffinityKey() != child.ID() || child.Config.CacheKey != "" {
 		t.Fatalf("child affinity: %q cacheKey %q", child.CacheAffinityKey(), child.Config.CacheKey)
 	}

@@ -1,15 +1,8 @@
 import type { SessionInfo, WorkspaceInfo } from '../api/types'
 
-// SessionForest is the sidebar's parent/child view over the full session list.
-// It is intentionally independent of the "current" session: subagent sessions
-// (forkMode=tree) nest under their parent everywhere, and the sidebar decides
-// which branches are expanded.
 export type SessionForest = {
   parentOf: Map<string, string>
   childrenOf: Map<string, SessionInfo[]>
-  // unresolved holds tree children whose parent edge cannot be trusted (missing
-  // parent, cross-workspace, self/cycle). They render as top-level rows so a
-  // broken edge never hides a session.
   unresolved: Set<string>
   order: Map<string, number>
 }
@@ -71,14 +64,6 @@ function reachesCycle(id: string, parentCandidates: Map<string, string>, cycles:
   return cycles.has(cursor)
 }
 
-// pinnedFirst splits rows into the pinned part and the rest, keeping the
-// incoming order inside each part.
-//
-// Why a stable partition instead of a sort by `pinnedAt`: a pin is sticky, and
-// a new session is prepended to the workspace account, so without this the pin
-// is pushed below every session created afterwards. Ordering inside each part
-// still comes from the stored order, so dragging a row reorders it inside its
-// own part instead of being overwritten by the pin key.
 export function pinnedFirst(rows: SessionInfo[]): SessionInfo[] {
   const pinned = rows.filter(row => row.pinned)
   if (pinned.length === 0 || pinned.length === rows.length) return rows
@@ -130,8 +115,6 @@ export function orderedChildren(forest: SessionForest, parentId: string): Sessio
   return forest.childrenOf.get(parentId) ?? []
 }
 
-// topLevelRoot walks the trusted parent edges to the row that owns the branch.
-// The sidebar uses it to keep a collapsed-away child's root visible.
 export function topLevelRoot(forest: SessionForest, id: string): string {
   const seen = new Set<string>()
   let cursor = id

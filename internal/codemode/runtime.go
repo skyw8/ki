@@ -83,8 +83,6 @@ func (c *cell) run(snapshot map[string]json.RawMessage) {
 			runErr = fmt.Errorf("code runtime failed: %v", p)
 			status = "failed"
 		}
-		// The watcher must be stopped before final cancellation, otherwise a
-		// normal completion races a spurious interrupt into notification drain.
 		close(interruptDone)
 		for _, t := range v.timers {
 			t.timer.Stop()
@@ -105,8 +103,6 @@ func (c *cell) run(snapshot map[string]json.RawMessage) {
 			runErr = err
 			status = "failed"
 		}
-		// Unawaited tool promises are discarded, but a dispatcher failure or
-		// terminate decision cannot disappear merely because JS did not await it.
 		for {
 			select {
 			case e := <-c.events:
@@ -196,8 +192,6 @@ func drainTasks(tasks *sync.WaitGroup, timeout time.Duration) error {
 	case <-done:
 		return nil
 	case <-timer.C:
-		// Report a budget violation, never completion while callback code can
-		// still mutate the harness. The parent watchdog can kill a stuck worker.
 		<-done
 		return errors.New("code mode callback cancellation cleanup exceeded deadline")
 	}
@@ -209,8 +203,6 @@ func (v *cellVM) drainNotifications() error {
 	for v.notifications > 0 {
 		select {
 		case e := <-v.cell.events:
-			// Completed tool promises and timers are intentionally not resumed
-			// after the top-level promise's terminal frontier.
 			if e.notify {
 				v.notifications--
 				if e.err != nil {
@@ -429,7 +421,6 @@ func (v *cellVM) install() error {
 			return err
 		}
 	}
-	// Ki's IR represents generated images as ordinary image content.
 	if err := vm.Set("generatedImage", vm.Get("image")); err != nil {
 		return err
 	}
@@ -482,8 +473,6 @@ func (v *cellVM) invoke(def ToolDefinition, arg goja.Value) goja.Value {
 				raw = nil
 			}
 		}
-		// Fatal dispatcher errors must also preempt JS that ignored the promise
-		// and entered a CPU-bound loop; only Interrupt is used cross-thread.
 		fatal := err != nil && v.toolCtx.Err() == nil
 		if v.toolCtx.Err() == nil {
 			if err != nil {
@@ -522,14 +511,10 @@ func (v *cellVM) apply(e completion) error {
 	delete(v.pending, e.id)
 	v.terminate = v.terminate || e.terminate
 	if e.err != nil {
-		// Dispatcher Go errors represent harness/policy failures, unlike an
-		// ordinary resolved IsError result. Never let JS catch and bypass them.
 		v.vm.Interrupt(e.err)
 		return e.err
 	}
 	if e.terminate {
-		// Terminate is an execution-control decision, not ordinary JSON data.
-		// Stop before resolving the promise so JS cannot issue later effects.
 		v.vm.Interrupt(successfulExit{})
 		return errCellStopped
 	}

@@ -8,7 +8,6 @@ import (
 	"ki/internal/types"
 )
 
-// RunStats separates usage accumulated during a generation from its latest context size.
 type RunStats struct {
 	MailboxWaitMs    int64 `json:"mailbox_wait_ms"`
 	Tools            int   `json:"tools"`
@@ -28,7 +27,6 @@ type ToolActivity struct {
 	StartedAt time.Time `json:"started_at"`
 }
 
-// Progress is an event-reduced snapshot. It never includes reasoning content.
 type Progress struct {
 	PendingTasks          int            `json:"pending_tasks"`
 	LifetimeStatsComplete bool           `json:"lifetime_stats_complete"`
@@ -59,7 +57,6 @@ func (s *RunStats) addUsage(u *types.Usage) {
 	s.ContextTokens = u.Input + u.CacheRead + u.CacheWrite
 }
 
-// ReduceProgress ignores callbacks from old generations and only persists bounded execution boundaries.
 func (c *Controller) ReduceProgress(id string, generation uint64, ev ProgressEvent) error {
 	switch ev.Type {
 	case RunStarted, RequestStarted, MessageCompleted, ToolStarted, ToolFinished, CompactionCompleted, RunFinished:

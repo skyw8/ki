@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// HasWork separates explicit tasks/user steer from QueueOnly context at turn end.
 func (i *Inbox) HasWork() bool {
 	if i == nil {
 		return false
@@ -39,7 +38,6 @@ func (i *Inbox) TakeWork() []types.Message {
 	return work
 }
 
-// Wait subscribes and checks under one lock; notifications may coalesce but messages cannot.
 func (i *Inbox) Wait(ctx context.Context, timeout time.Duration) (bool, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()

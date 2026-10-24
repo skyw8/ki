@@ -4,7 +4,6 @@ import (
 	toolapi "ki/internal/tool"
 )
 
-// Set binds file tools to one session workspace and mutation queue.
 type Set struct {
 	CWD       string
 	ReadOps   ReadOperations

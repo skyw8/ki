@@ -89,8 +89,6 @@ type goalReply struct {
 	err   error
 }
 
-// JavaScript trims Unicode space separators and BOM, but does not trim NEL.
-// Preserve the original objective and tool-validation boundaries after the port.
 func jsWhitespace(r rune) bool {
 	return r >= '\t' && r <= '\r' || r == ' ' || r == '\uFEFF' || r == '\u2028' || r == '\u2029' || unicode.Is(unicode.Zs, r)
 }
@@ -187,8 +185,6 @@ func normalizeWaiting(raw json.RawMessage) *goalWait {
 	return wait
 }
 func (a *app) restore(ctx context.Context) (bool, error) {
-	// A restored deadline may already be due. Hold the same lock as the timer
-	// callback so it cannot change goal state while initialization reads it.
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	raw, _, err := state.ReadFile(a.statePath(), 1, nil)
@@ -201,8 +197,6 @@ func (a *app) restore(ctx context.Context) (bool, error) {
 			if idRaw, exists := saved.Goal["id"]; exists && string(idRaw) != "null" && json.Unmarshal(idRaw, &id) == nil {
 				waiting := normalizeWaiting(saved.Goal["waiting"])
 				delete(saved.Goal, "waiting")
-				// Invalid waiting metadata must not discard an otherwise valid goal.
-				// The original loader normalizes the optional wait independently.
 				b, _ := json.Marshal(saved.Goal)
 				var goal goalState
 				if json.Unmarshal(b, &goal) == nil {
@@ -273,8 +267,6 @@ func (a *app) queueJob(job asyncGoalJob) {
 	}
 	a.asyncRunning = true
 	a.asyncMu.Unlock()
-	// UI confirmation may wait for human input. Keep that wait in this session's
-	// ordered queue so it cannot stall lifecycle notifications for other sessions.
 	go func() {
 		for {
 			a.asyncMu.Lock()
@@ -682,7 +674,6 @@ func (s *sidecar) handle(ctx context.Context, method string, raw json.RawMessage
 	p := map[string]any{}
 	_ = json.Unmarshal(raw, &p)
 	id := stringValue(p["sessionId"])
-	// Timer jobs stay internal; unknown host RPC methods retain their no-op behavior.
 	if strings.HasPrefix(method, "_goal.") {
 		return map[string]any{}, nil
 	}

@@ -83,7 +83,6 @@ func TestTreeAbortStopsOwnedProcessesAndPreservesUnrelatedRoot(t *testing.T) {
 	if processes := srv.processSnapshots(other); len(processes) != 1 || processes[0].Status != "running" {
 		t.Fatalf("another root was stopped: %+v", processes)
 	}
-	// Tree cleanup releases its admission fence; explicit work can reuse the identity.
 	result, err := srv.SendAgentMessage(t.Context(), agent.MessageRequest{SenderSessionID: root, Target: launch.TaskPath, TriggerTurn: true, Message: "continue"})
 	if err != nil || result.Status != "resumed" {
 		t.Fatalf("reuse after tree abort: %+v %v", result, err)

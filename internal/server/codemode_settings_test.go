@@ -266,8 +266,6 @@ func TestCodeModeSettingsOccupiedSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	streamer := &codeModeSettingsGateStreamer{started: make(chan struct{}), release: make(chan struct{}), path: path}
-	// Release the observable gate even if a preceding assertion fails, so
-	// fixture shutdown never waits for a model callback held by this test.
 	defer func() {
 		select {
 		case <-streamer.release:

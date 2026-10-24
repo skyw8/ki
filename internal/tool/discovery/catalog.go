@@ -24,8 +24,6 @@ const (
 	maxSourceBytes = 4096
 )
 
-// SourceInfo optionally describes a tool's server or extension without exposing
-// the server's complete tool inventory in the initial model request.
 type SourceInfo interface {
 	SourceInfo() (name, description string)
 }
@@ -42,7 +40,6 @@ type posting struct {
 	frequency int
 }
 
-// Catalog owns frozen schemas for tools already admitted by the host's policy.
 type Catalog struct {
 	entries       []entry
 	byName        map[string]int
@@ -51,7 +48,6 @@ type Catalog struct {
 	sources       string
 }
 
-// New builds a catalog of deferred tools, not the whole execution registry.
 func New(tools []toolapi.Tool) *Catalog {
 	c := &Catalog{byName: map[string]int{}, index: map[string][]posting{}}
 	sources := map[string]string{}
@@ -71,8 +67,6 @@ func New(tools []toolapi.Tool) *Catalog {
 		if err != nil {
 			continue
 		}
-		// Freeze nested schema maps so caller mutation cannot change the index or
-		// turn a loaded historical ID into a different declaration mid-occupy.
 		if json.Unmarshal(raw, &spec) != nil {
 			continue
 		}
@@ -111,7 +105,6 @@ func New(tools []toolapi.Tool) *Catalog {
 	return c
 }
 
-// Names returns the current canonical deferred identities in stable order.
 func (c *Catalog) Names() []string {
 	if c == nil {
 		return nil
@@ -124,7 +117,6 @@ func (c *Catalog) Names() []string {
 	return names
 }
 
-// SourceSummary lists sources, not individual tools or schemas.
 func (c *Catalog) SourceSummary() string {
 	if c == nil {
 		return ""
@@ -160,7 +152,6 @@ func boundText(s string, bytes int) string {
 	if len(s) <= bytes {
 		return s
 	}
-	// Keep UTF-8 intact at all metadata boundaries.
 	for bytes > 0 && bytes < len(s) && s[bytes]&0xc0 == 0x80 {
 		bytes--
 	}
@@ -304,8 +295,6 @@ func (t *searchTool) Execute(ctx context.Context, args map[string]any) toolapi.R
 	omitted := []map[string]string{}
 	bytes := 0
 	for _, e := range matches {
-		// Never shorten an input schema: a partial declaration changes argument
-		// semantics. Explicit omissions do not enter the loaded identity list.
 		if bytes+len(e.raw) > maxResultBytes-2048 {
 			omitted = append(omitted, map[string]string{"name": boundText(e.name, 128), "reason": "complete schema exceeds discovery output budget"})
 			continue
@@ -319,7 +308,6 @@ func (t *searchTool) Execute(ctx context.Context, args map[string]any) toolapi.R
 	}
 	body := map[string]any{"tools": tools}
 	if len(omitted) > 0 {
-		// Reserve the final bytes for a bounded omission notice, not another schema.
 		notice, _ := json.Marshal(omitted)
 		if len(notice) <= 1800 {
 			body["omitted_tools"] = omitted
@@ -331,8 +319,6 @@ func (t *searchTool) Execute(ctx context.Context, args map[string]any) toolapi.R
 	return toolapi.Result{Content: []types.Content{{Type: "text", Text: string(raw)}}, Details: map[string]any{"discovered_tools": names}}
 }
 
-// Loaded extracts accepted discovery identities from actual model-facing
-// history. Pairing consumes each search call once, including failed results.
 func (c *Catalog) Loaded(history []types.Message) []toolapi.Tool {
 	if c == nil {
 		return nil
@@ -400,9 +386,6 @@ func (c *Catalog) Loaded(history []types.Message) []toolapi.Tool {
 	return result
 }
 
-// disclosedSchemas proves that the post-hook body actually disclosed the
-// complete current schema. Details alone cannot resurrect content redacted by
-// output policy; stale or truncated bodies require discovery again.
 func (c *Catalog) disclosedSchemas(text string) map[string]bool {
 	if len(text) > maxResultBytes {
 		return nil
@@ -433,8 +416,6 @@ func (c *Catalog) disclosedSchemas(text string) map[string]bool {
 	return proven
 }
 
-// publishedTool delegates behavior but advertises the occupy's frozen schema.
-// Persisted search output schemas never replace the current catalog declaration.
 type publishedTool struct {
 	toolapi.Tool
 	raw json.RawMessage

@@ -257,9 +257,6 @@ export function compileForm(input: unknown): CompiledForm {
   for (const field of Object.values(fieldsByName)) {
     if (field.hidden || used.has(field.name)) continue
     const type = asString(field.schema.type)
-    // Complex values are preserved but not guessed into a text input. A schema
-    // without explicit x-ki-ui falls back to the JSON editor instead of
-    // silently dropping fields it cannot render.
     if (type === 'object' || type === 'array') {
       unsupported = true
       continue

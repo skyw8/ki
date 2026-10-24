@@ -6,7 +6,6 @@ import (
 	toolapi "ki/internal/tool"
 )
 
-// Names returns all reserved built-in identifiers, including unavailable tools.
 func Names() []string {
 	return slices.Concat(FileNames(), ShellNames(), AgentNames(), CodeNames(), []string{SearchTool})
 }

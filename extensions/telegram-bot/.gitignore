@@ -1,10 +1,7 @@
-# Local secrets and runtime state
 /config.json
 /state.json
 
-# Local build artifacts
 /bin/
 
-# Logs and temporary files
 *.log
 tmp/

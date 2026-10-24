@@ -170,8 +170,6 @@ func contentFromResult(result, args obj) string {
 				limit = math.Max(1, math.Min(50000, n))
 			}
 		}
-		// String.slice truncates the two endpoints separately; truncating the
-		// fractional limit first loses a character when offset+limit crosses it.
 		length := float64(len(utf16.Encode([]rune(content))))
 		content = sliceText(content, int(math.Min(length, offset)), int(math.Min(length, offset+limit)))
 		if content == "" {
@@ -349,8 +347,6 @@ func (a *searchApp) deepSearch(ctx context.Context, args, config obj, toolCallID
 				budget = min(budget, time.Until(deadline))
 			}
 			hydrationCtx, cancel := context.WithTimeout(a.ctx, budget)
-			// Honor a cancel while the tool is still running, but keep hydration
-			// alive after a successful reply closes the RPC request context.
 			stop := context.AfterFunc(ctx, cancel)
 			defer stop()
 			a.bg.Add(1)

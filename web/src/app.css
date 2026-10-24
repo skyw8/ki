@@ -333,8 +333,6 @@
   background: var(--dsw-specific-input);
 }
 .auth-field input:focus { outline: 2px solid var(--dsw-alias-brand); outline-offset: -1px; border-color: transparent; }
-/* A failed fetch can surface a URL or identifier with no spaces; keep it
-   inside the narrow authentication card instead of widening the viewport. */
 .auth-error { max-width: 100%; overflow-wrap: anywhere; color: var(--dsw-alias-state-error) !important; font-size: 12px; }
 .auth-submit { align-self: flex-end; margin-top: 4px; }
 
@@ -347,13 +345,9 @@
   overflow: auto;
 }
 .error-boundary h1 { margin: 0 0 16px; font-size: 18px; }
-/* Error messages often contain host paths or generated identifiers with no
-   spaces, so normal preformatted wrapping can still widen a phone viewport. */
 .error-boundary pre { max-width: 100%; margin: 0 0 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .error-boundary .primary-btn { min-height: 40px; }
 
-/* Backend failures may include unbroken URLs, paths, or generated IDs. These
-   status surfaces must shrink with their owner instead of widening it. */
 .notice,
 .attachment-error,
 .pdf-preview-error,
@@ -387,10 +381,6 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
-  /* A newly expanded row must not add a classic scrollbar and change every
-     row's width, wrapping and timer position. WebKit reports stable-gutter
-     support but ignores it for styled scrollbars, so keep overflow-y: scroll
-     as well. Native overlay scrollbars still reserve no space. */
   overflow-y: scroll;
   scrollbar-gutter: stable;
   padding: 16px 32px 8px;
@@ -420,11 +410,6 @@
 .hero {
   flex: 1;
   display: grid;
-  /* Why: without an explicit track the single column sizes to the widest
-     item's max-content — a long model-chip label pushes the composer past
-     narrow phone viewports, and with overflow-y:auto that grows a draggable
-     horizontal scrollbar. minmax(0, 1fr) clamps the track so the chip's
-     flex shrink and ellipsis do their job. */
   grid-template-columns: minmax(0, 1fr);
   justify-items: center;
   align-content: center;
@@ -432,8 +417,6 @@
   padding: 24px 48px;
   width: 100%;
   box-sizing: border-box;
-  /* The hero must scroll once the software keyboard shrinks the usable band,
-     otherwise its centered composer overflows both edges unreachably. */
   overflow-y: auto;
 }
 
@@ -461,8 +444,6 @@
   max-width: min(525px, 82%);
   min-width: 0;
 }
-/* While editing, the row widens to the full chat column so long drafts and
-   attachments are not squeezed into the 525px bubble width. */
 .user-row.editing { align-items: stretch; }
 .user-row.editing .user-stack { max-width: 100%; width: 100%; }
 .asst-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -539,9 +520,6 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
-/* Runtime user-role messages are transcript notes, not new human requests.
-   Frame the whole note once; a second inner bubble border would double the
-   dashed outline and leave square corners around the notification body. */
 .runtime-row { justify-content: flex-start; }
 .runtime-row .user-stack { width: 100%; max-width: 100%; }
 .runtime-notification {
@@ -555,14 +533,12 @@
 .runtime-notification-label { color: var(--dsw-alias-label-secondary); font-size: 12px; font-weight: 600; line-height: 18px; }
 .runtime-notification .user-origin { margin: 0; color: var(--dsw-alias-label-tertiary); opacity: 1; overflow-wrap: anywhere; text-align: left; line-height: 16px; }
 .runtime-notification .user-text-bubble { align-self: stretch; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 14px; line-height: 22px; }
-/* Long historical user messages fold to 6 lines; the chevron re-expands. */
 .bubble-text.clamped {
   display: -webkit-box;
   -webkit-line-clamp: 6;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-/* Small chevron anchored inside the bubble's bottom-right corner. */
 .bubble-toggle {
   flex: none;
   display: grid;
@@ -587,9 +563,6 @@
   min-width: 0;
 }
 
-/* Compact message view: the row standing in for a turn's folded reply nodes.
-   It sits between the turn's user bubble and the nodes that stayed visible
-   (never folding the user bubble itself) and opens them in place. */
 .fold-row { display: flex; margin: 6px 0; }
 .fold-row-btn {
   display: flex;
@@ -613,9 +586,6 @@
 .view-keep { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
 .view-keep input { width: 72px; }
 
-/* Turn footer: a hairline rule on either side of the turn's aggregate stats,
-   mounted after the turn's last node. Keeps long runs scannable and gives the
-   next user bubble breathing room. */
 .turn-end {
   display: flex;
   flex-direction: column;
@@ -659,16 +629,11 @@
   white-space: nowrap;
 }
 .turn-stat svg { width: 12px; height: 12px; opacity: 0.75; }
-/* Reserve only the current time format so ordinary seconds do not leave a
-   days-wide gap. Keep full-size, left-aligned digits and long-run seconds. */
 .duration { display: inline-flex; align-items: baseline; white-space: pre; font-variant-numeric: tabular-nums; }
 .duration-value { display: inline-block; flex: none; text-align: left; font-family: var(--ds-font-family-code); }
 .transcript-sync-status { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; gap: 6px; color: var(--dsw-alias-label-secondary); font-size: 12px; white-space: nowrap; }
 .transcript-sync-status > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .transcript-sync-status button { flex: none; min-height: 40px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-/* Turn health readouts: tool failures and cache misses stay in the caption row
-   but tint and chip when they are non-zero, so a bad turn stands out without
-   adding chrome to the clean ones. */
 .turn-stat-err,
 .turn-stat-warn {
   padding: 0 7px;
@@ -678,9 +643,6 @@
 .turn-stat-err { color: var(--dsw-alias-state-error); }
 .turn-stat-warn { color: var(--dsw-alias-state-warning); }
 .turn-stat-err svg { opacity: 1; }
-/* Live durations: the running turn and its tools tick from the first moment.
-   A pulsing dot marks the value as in-progress so it never reads as final, and
-   `prefers-reduced-motion` drops the motion but keeps the dot. */
 .turn-live-dot {
   flex: none;
   width: 6px;
@@ -766,14 +728,7 @@
 }
 .md p { margin: 0 0 10px; }
 .md p:last-child { margin-bottom: 0; }
-/* A streaming message is rendered as several streamdown wrappers (settled
-   segments plus the open tail), which are siblings — so `p:last-child` above
-   flattens the gap at a segment boundary. Restore it there: the boundary is a
-   blank line, and a blank line means one block gap. Specificity beats
-   `.md p:last-child`. */
 [data-md-block]:not(:last-child) { margin-bottom: 10px; }
-/* The open tail of a long block, painted as source until it closes: same
-   metrics as parsed text (`.md` sets the font), but newlines are kept. */
 .md-tail { white-space: pre-wrap; margin: 0 0 10px; }
 .md-tail:last-child { margin-bottom: 0; }
 .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 16px 0 8px; line-height: 1.3; }
@@ -871,8 +826,6 @@
   width: 100%; height: 24px; padding: 0 4px; border-radius: 6px; text-align: left;
 }
 .compact-btn:hover { background: var(--dsw-alias-interactive-bg-hover); }
-/* Why: compaction can run for a long time inside one synchronous request, so
-   the row carries its own color-coded state instead of relying on a toast. */
 .compact-btn.running { color: var(--dsw-alias-state-warning); cursor: default; }
 .compact-btn.running:hover { background: transparent; }
 .compact-btn.failed { color: var(--dsw-alias-state-error); }
@@ -1063,8 +1016,6 @@
   overflow: auto;
   padding: 4px;
   border-radius: 12px;
-  /* Why: --dsw-alias-bg-elevated is not a theme token, so the old background
-     was invalid and the list painted transparent over the chat. */
   background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
   box-shadow: var(--dsw-shadow-lv2);
@@ -1144,8 +1095,6 @@
   font-size: 16px;
   line-height: 24px;
 }
-/* The in-place message editor: a full-column card with a header, a tall
-   auto-growing textarea and named attachment chips. */
 .composer-edit {
   gap: 10px;
   padding: 12px 14px;
@@ -1198,7 +1147,6 @@
 .attachment-image > svg { width: 22px; height: 22px; }
 .attachment-draft { position: relative; width: 60px; height: 60px; flex: none; }
 .attachment-draft .composer-image { width: 60px; height: 60px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; }
-/* Files carry their name, so the tile is a chip rather than a fixed square. */
 .attachment-draft-file { width: auto; height: auto; max-width: 100%; }
 .attachment-file-tile { display: flex; align-items: center; gap: 9px; min-width: 0; max-width: 230px; padding: 7px 12px 7px 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-secondary); }
 .attachment-file-icon { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: 8px; background: var(--dsw-alias-bg-layer-1); }
@@ -1274,8 +1222,6 @@
   font-size: 12px;
 }
 .model-chip:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
-/* Why: let the chip size to its label so ordinary efforts stay compact while
-   compound choices such as "medium fast" remain legible on narrow screens. */
 .thinking-select { flex: none; width: max-content; max-width: 112px; }
 .thinking-select .ds-select-trigger {
   width: auto; min-width: 68px; height: 26px; gap: 3px; padding: 0 7px; border: 0; border-radius: 999px;
@@ -1350,8 +1296,6 @@
 .tool-out { margin: 0; padding: 8px 10px; max-height: 240px; overflow: auto; font-family: var(--ds-font-family-code); font-size: 12px; white-space: pre-wrap; background: var(--dsw-alias-markdown-code); }
 .tool-out.term { background: #111; color: #d6ffd6; }
 
-/* Diff chrome. react-diff-view's stylesheet is variable-driven, so the whole
-   palette maps onto design tokens instead of its GitHub defaults. */
 .diffs { display: flex; flex-direction: column; gap: 8px; }
 .diff-file { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; background: var(--dsw-alias-bg-base); }
 .diff-head { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 2px 6px 2px 10px; background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l2); }
@@ -1374,8 +1318,6 @@
 .diff-more { display: block; width: 100%; min-height: 32px; padding: 6px 10px; border-top: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-secondary); font-size: 12px; text-align: left; }
 .diff-more:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 
-/* Search hits and file lists. Rows are buttons so the path is actionable, but
-   they stay flush with the transcript instead of looking like controls. */
 .hits { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; background: var(--dsw-alias-bg-base); }
 .hit { display: flex; gap: 10px; width: 100%; min-height: 28px; padding: 3px 10px; text-align: left; font-family: var(--ds-font-family-code); font-size: 12px; }
 .hit:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
@@ -1385,20 +1327,17 @@
 .hit-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; color: var(--dsw-alias-label-primary); }
 .hits-meta { padding: 4px 10px; border-top: 1px solid var(--dsw-alias-border-l2); color: var(--dsw-alias-label-tertiary); font-size: 11px; }
 
-/* read: the file keeps its own scroll so a long page does not push the row. */
 .read-block { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; }
 .read-block .tool-read { border-radius: 0; }
 .read-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 4px 10px; border-top: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-caption); font-size: 11px; }
 .read-next { color: var(--dsw-alias-label-secondary); }
 
-/* Coordination receipts: one line of labelled values. */
 .receipt { display: flex; flex-wrap: wrap; gap: 4px 8px; padding: 6px 0; }
 .receipt-item { display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; max-width: 100%; padding: 2px 8px; border-radius: 6px; background: var(--dsw-alias-bg-layer-1); font-size: 12px; }
 .receipt-label { flex: none; color: var(--dsw-alias-label-caption); font-size: 11px; }
 .receipt-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--ds-font-family-code); user-select: text; cursor: text; }
 .receipt-status .receipt-value, .receipt-message .receipt-value { font-family: inherit; }
 
-/* Code Mode results: one block per nested call, failures called out. */
 .cell-result { display: flex; flex-direction: column; gap: 6px; }
 .cell-call { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; }
 .cell-call.err { border-color: color-mix(in srgb, var(--dsw-alias-state-error) 45%, var(--dsw-alias-border-l1)); }
@@ -1408,9 +1347,6 @@
 .cell-call-state.err { color: var(--dsw-alias-state-error); }
 .cell-call-body { margin: 0; padding: 6px 10px; max-height: 320px; overflow: auto; font-family: var(--ds-font-family-code); font-size: 12px; white-space: pre; }
 
-/* Terminal card. Output stays `pre` so columns line up; only the block
-   scrolls, never the page, and a phone-width viewport switches to wrapping
-   because a horizontal scroll there is unusable. */
 .term { border: 1px solid var(--dsw-alias-border-l1); border-radius: 10px; overflow: hidden; background: var(--dsw-alias-bg-layer-1); }
 .term-bar { display: flex; gap: 8px; padding: 7px 10px; background: var(--dsw-alias-bg-layer-2); border-bottom: 1px solid var(--dsw-alias-border-l2); }
 .term-prompt { flex: none; color: var(--dsw-alias-label-caption); font-family: var(--ds-font-family-code); font-size: 12px; user-select: none; }
@@ -1428,8 +1364,6 @@
 .tool-exit { flex: none; padding: 0 5px; border-radius: 6px; color: var(--dsw-alias-label-caption); background: var(--dsw-alias-bg-layer-2); font-family: var(--ds-font-family-code); font-size: 11px; font-variant-numeric: tabular-nums; }
 .tool-exit.err { color: var(--dsw-alias-state-error); background: color-mix(in srgb, var(--dsw-alias-state-error) 12%, transparent); }
 
-/* Full-output modal: the file is streamed from the server, so the browser
-   only ever sees same-origin bytes. */
 .output-preview { width: min(960px, calc(100vw - 32px)); height: min(720px, calc(100dvh - 32px)); display: flex; flex-direction: column; border: 1px solid var(--dsw-alias-border-l2); border-radius: 16px; background: var(--dsw-alias-bg-layer-1); box-shadow: var(--dsw-shadow-lv4); overflow: hidden; }
 .output-preview-meta { flex: none; padding: 4px 16px 8px; color: var(--dsw-alias-label-caption); font-size: 11px; overflow-wrap: anywhere; }
 .output-preview-note { flex: none; margin: 0 16px 8px; padding: 6px 9px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); font-size: 12px; }
@@ -1492,7 +1426,6 @@
 }
 .md-table-scroll { overflow-x: auto; max-width: 100%; }
 .md-diagram pre { margin: 0; border-radius: 0; }
-/* Center the diagram; `overflow: auto` still scrolls oversized diagrams. */
 .md-diagram-svg { display: flex; justify-content: center; align-items: flex-start; overflow: auto; padding: 12px; cursor: zoom-in; }
 .md-diagram-svg[hidden] { display: none; }
 .md-diagram-svg:focus-visible { outline: 2px solid var(--dsw-alias-brand); outline-offset: -2px; }
@@ -1507,8 +1440,6 @@
   font-size: 12px;
   white-space: pre-wrap;
 }
-/* Full-screen zoom viewer. The stage scrolls; auto margins on the canvas keep
-   it centered even when a zoomed diagram overflows the viewport. */
 .diagram-zoom { position: fixed; inset: 0; z-index: 12000; display: flex; flex-direction: column; background: rgba(8, 10, 14, .92); backdrop-filter: blur(8px); }
 .diagram-zoom-bar { position: fixed; top: 18px; right: 22px; z-index: 1; display: inline-flex; align-items: center; gap: 4px; padding: 4px; border-radius: 12px; background: rgba(20, 24, 32, .72); }
 .diagram-zoom-bar button { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 8px; color: #fff; }
@@ -1600,8 +1531,6 @@
 .prompt-bytes { margin-right: auto; color: var(--dsw-alias-label-caption); font-size: 12px; }
 .prompt-source-blocked { margin: 12px 0 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
 .preference-footnote { margin: 14px 2px 0; color: var(--dsw-alias-label-caption); font-size: 12px; }
-/* About is a read-only key/value list; values wrap instead of widening the
-   modal, because an executable path or KI_HOME can be long. */
 .about-list { display: grid; gap: 10px; margin: 14px 0 0; }
 .about-row { display: grid; grid-template-columns: minmax(120px, 200px) minmax(0, 1fr); gap: 12px; align-items: baseline; }
 .about-row dt { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
@@ -1896,8 +1825,6 @@
   .model-actions { width: 100%; flex-wrap: wrap; }
   .preference-page { padding: 22px 16px 28px; }
   .preference-section.inline { gap: 16px; }
-  /* A narrow column cannot hold a 200px label plus a long path; stack the pair
-     so About stays readable in the phone layout. */
   .about-row { grid-template-columns: 1fr; gap: 2px; }
   .provider-content { flex: 1; }
   .provider-dialog-mask { padding: 12px; }
@@ -2062,15 +1989,11 @@
 .icon-btn.tiny { width: 24px; height: 24px; }
 .session-row { --session-toggle-size: 20px; position: relative; padding-right: 4px; padding-left: calc(10px + var(--session-depth, 0) * 14px); }
 .session-main { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; text-align: left; }
-/* Subagent branches: the arrow expands deeper, the row opens the session. The
-   spacer keeps leaf rows aligned with their parent's toggle column. */
 .session-toggle,
 .session-toggle-spacer { flex: none; width: var(--session-toggle-size); height: var(--session-toggle-size); display: grid; place-items: center; }
 .session-toggle { border-radius: 6px; color: var(--dsw-alias-label-caption); }
 .session-toggle:hover { background: var(--dsw-specific-nav-hover); color: var(--dsw-alias-label-primary); }
 .session-toggle-spacer { visibility: hidden; }
-/* A faint guide under the parent's toggle column connects a child row to the
-   branch it belongs to, so deep nesting stays readable. */
 .session-child::before {
   content: '';
   position: absolute;
@@ -2104,8 +2027,6 @@
 }
 @keyframes tool-sweep { 0% { left: -300px; } 90%, 100% { left: 100%; } }
 .tool-row-h { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 24px; padding: 2px 0; text-align: left; }
-/* Shrink the name, never the timer or the actionable target. The complete
-   tool name remains in the button's accessible name and native tooltip. */
 .tool-row-toggle { display: flex; align-items: center; gap: 8px; min-width: 40px; min-height: 40px; flex: 0 1 auto; text-align: left; }
 .tool-row-toggle > svg, .tool-row-toggle > .spin { flex: none; }
 .tool-row-toggle:hover:not(:disabled) { color: var(--dsw-alias-label-primary); }
@@ -2134,8 +2055,6 @@
 .insp-pill:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 
 .to-bottom-slot {
-  /* Center to the same width as the composer, then right-align the button so
-     it sits at the input box's top-right corner instead of the window edge. */
   position: relative; z-index: 4; height: 0;
   width: 100%; max-width: var(--composer-max); margin: 0 auto;
   display: flex; justify-content: flex-end; padding-right: 12px;
@@ -2234,8 +2153,6 @@
   white-space: nowrap;
   cursor: pointer;
 }
-/* Touch browsers retain :hover after a tap. Only the selected request should
-   stay shaded when the panel is reopened. */
 @media (hover: hover) and (pointer: fine) {
   .req-nav-item:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
 }
@@ -2361,11 +2278,7 @@
 .mcp-settings .switch::before { top: 12px; }
 .mcp-settings .switch-knob { top: 14px; }
 .cfg-empty, .cfg-hint { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-caption); }
-/* Keep settings copy separate from its controls without spacing nested Info lists. */
 .preference-page > .cfg-list, .preference-page > .cfg-empty { margin-top: 24px; }
-/* Raw system-prompt viewer: a framed code card with a copy affordance. The body
-   scrolls instead of stretching the info column, so a large prompt stays
-   reachable without pushing later content off screen. */
 .cfg-prompt { border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; background: var(--dsw-alias-bg-layer-1); overflow: hidden; }
 .cfg-prompt-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-module-platform); }
 .cfg-prompt-stats { color: var(--dsw-alias-label-caption); font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
@@ -2395,8 +2308,6 @@
 .cfg-flag { margin-left: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-caption); }
 .cfg-flag.on { color: var(--dsw-alias-brand); }
 .settings-error-inline { margin-top: 8px; color: var(--dsw-alias-state-error); }
-/* Install section: a separate block under the toggle list, with its own rule
-   so it reads as "not installed yet" rather than another toggle row. */
 .ext-install { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--dsw-alias-border-l2); }
 .ext-install-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .ext-install-head > div { min-width: 0; }
@@ -2433,8 +2344,6 @@
 .extension-model-value small { color: var(--dsw-alias-label-caption); font-size: 11px; line-height: 16px; }
 .extension-model-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; }
 .extension-model-meta .cfg-btn { flex: none; height: 24px; padding: 0 7px; font-size: 11px; }
-/* Model + thinking effort share one row: the model trigger stretches while the
-   effort select keeps a compact fixed column so both controls stay aligned. */
 .extension-model-row { display: flex; align-items: stretch; gap: 10px; }
 .extension-model-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .extension-model-col > span { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; font-weight: 500; }
@@ -2501,7 +2410,6 @@
 .extension-config-card-value code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--ds-font-family-code); }
 .extension-config-badge { padding: 3px 8px; border: 1px solid color-mix(in srgb, var(--dsw-alias-state-success) 35%, var(--dsw-alias-border-l2)); border-radius: 999px; color: var(--dsw-alias-state-success); background: color-mix(in srgb, var(--dsw-alias-state-success) 9%, var(--dsw-alias-bg-layer-1)); font-size: 10px; white-space: nowrap; }
 .extension-config-badge.free { color: var(--dsw-alias-label-secondary); border-color: var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); }
-/* Keep the action footer outside the scroll layer so provider fields cannot be painted beneath it. */
 .extension-config-actions.fixed { flex: none; z-index: 2; margin: 0 !important; padding: 16px 0 2px; border-top: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-1); box-shadow: 0 -8px 14px -12px var(--dsw-alias-label-caption); }
 .cfg-hint { margin-top: 8px; }
 .cfg-outline {
@@ -2857,17 +2765,12 @@ select:focus-visible {
   outline-offset: 2px;
 }
 
-/* Why: the composer is already visually contained by its card, so the global
-   brand focus outline is distracting here; keep focus indicators on controls. */
 .composer textarea:focus,
 .composer textarea:focus-visible {
   outline: none;
   box-shadow: none;
 }
 
-/* Why: the session search field is focused programmatically when the cap opens.
-   Its overflow:hidden plus rounded border clips the global brand focus ring into
-   a stray blue box, so the expanded cap border is the focus affordance instead. */
 .search-cap .session-search:focus,
 .search-cap .session-search:focus-visible {
   outline: none;
@@ -2903,15 +2806,10 @@ select:focus-visible {
   .extension-config-card-controls { gap: 12px; }
   }
 
-/* Responsive shell ------------------------------------------------------- */
-
 .mobile-nav-toggle,
 .mobile-sidebar-backdrop { display: none; }
 
 @media (max-width: 900px) {
-  /* Why: collapsing the first grid track to zero left the still-280px
-     sidebar painted over the app with no way to reopen it. Compact layouts
-     use an independent, modal navigation drawer instead. */
   .app,
   .app.sidebar-collapsed {
     display: block;
@@ -3006,9 +2904,6 @@ select:focus-visible {
     overflow-y: hidden;
     scroll-padding-inline: 8px;
   }
-  /* Why: the desktop rule gives each provider button width:100%. Keeping
-     that percentage in a horizontal flex scroller makes its intrinsic width
-     feed back into itself, expanding a 320px dialog to thousands of pixels. */
   .provider-nav button {
     width: auto;
     min-width: 132px;
@@ -3048,8 +2943,6 @@ select:focus-visible {
     overscroll-behavior-y: contain;
   }
   .chat-col { gap: 20px; }
-  /* Narrow chat columns: the side rules shrink to stubs, so drop them and use
-     one full-width hairline above the (possibly wrapped) stats instead. */
   .turn-end {
     gap: 3px;
     margin: 2px 0;
@@ -3076,7 +2969,6 @@ select:focus-visible {
   .message-images.count-many { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .md-table-scroll { -webkit-overflow-scrolling: touch; }
   .md table { white-space: nowrap; }
-  /* A horizontal scroll on a phone is unusable, so the terminal wraps there. */
   .term-out { white-space: pre-wrap; overflow-wrap: anywhere; }
   .diff-body { max-height: 60dvh; }
   .hit-path { max-width: 40%; }
@@ -3087,10 +2979,6 @@ select:focus-visible {
   .output-preview-body { white-space: pre-wrap; overflow-wrap: anywhere; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
   .tool-row-h { min-height: 40px; }
   .tool-preview { max-width: 44%; }
-  /* --keyboard-inset lifts the docked composer above the software keyboard on
-     platforms where the layout viewport does not resize (iOS Safari). The
-     inline edit composer (edit-pos) keeps padding 0 from its own rule: it
-     lives inside the transcript, which the browser pans to reveal the caret. */
   .composer-wrap {
     padding: 0 max(8px, env(safe-area-inset-right)) calc(max(8px, env(safe-area-inset-bottom)) + var(--keyboard-inset, 0px)) max(8px, env(safe-area-inset-left));
     background: linear-gradient(to bottom, transparent, var(--dsw-alias-bg-base) 14px);
@@ -3134,8 +3022,6 @@ select:focus-visible {
     border: 0;
     border-radius: 0;
   }
-  /* Full-screen dialogs own their safe-area padding in their headers and
-     footers; retaining mask padding would make a 100dvh child clip vertically. */
   .modal-mask:has(> .settings-modal),
   .modal-mask:has(> .modal-ext),
   .modal-mask:has(> .attachment-browser),
@@ -3152,9 +3038,6 @@ select:focus-visible {
   .modal-head .icon-btn { width: 40px; height: 40px; }
   .modal-body { padding: 8px 14px max(14px, env(safe-area-inset-bottom)); }
   .settings-tabs { padding: 0 8px; scroll-padding-inline: 8px; }
-  /* Settings has five labels, so it is a true horizontal scroller rather
-     than an equal-width tab row. flex-grow here fed the row's min-content
-     width back into its full-screen grid item on narrow mobile viewports. */
   .settings-tabs .tab {
     flex: 0 0 auto;
     min-width: auto;
@@ -3163,14 +3046,11 @@ select:focus-visible {
   }
   .preference-page { padding: 20px 14px max(28px, env(safe-area-inset-bottom)); }
   .preference-section { margin-top: 18px; padding: 16px; }
-  /* Narrow screens cannot keep byte counter, delete, and save on one line. */
   .prompt-editor-actions { flex-wrap: wrap; }
   .prompt-bytes { flex-basis: 100%; margin-right: 0; }
   .theme-picks { gap: 8px; }
   .theme-swatch { height: 66px; }
   .provider-page-title { padding-top: 18px; padding-bottom: 16px; }
-  /* While the software keyboard is open the band above it is scarce; the
-     section headings yield their share to the form being edited. */
   html[data-keyboard="open"] .provider-page-title,
   html[data-keyboard="open"] .settings-page-title { display: none; }
   .provider-nav button { min-height: 44px; }
@@ -3190,8 +3070,6 @@ select:focus-visible {
   }
   .model-opt { min-height: 54px; }
 
-  /* iOS zooms the visual viewport when an editable control is below 16px,
-     which can move fixed headers and composer controls over their content. */
   input,
   textarea,
   select { font-size: 16px !important; }
@@ -3245,8 +3123,6 @@ select:focus-visible {
   .cfg-extension { padding: 14px 12px 16px; }
   .cfg-row { gap: 10px; }
   .cfg-actions { flex-wrap: wrap; }
-  /* The install row stacks: description text and a full-width button keep the
-     44px touch target without squeezing the copy into a narrow column. */
   .ext-install-head { flex-direction: column; gap: 8px; }
   .ext-install-source { max-width: 100%; }
   .ext-install .cfg-row { flex-wrap: wrap; }
@@ -3292,9 +3168,6 @@ select:focus-visible {
   .attach-btn { width: 32px; height: 32px; }
   .send { flex: none; }
   .composer-row:has(.send.stop) .context-meter { display: none; }
-  /* Why: the stats strip exceeds the width on phones, so it scrolls sideways.
-     The scrollbar would eat a row of scarce vertical space, so hide it while
-     keeping touch/drag scrolling. */
   .session-stats { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
   .session-stats::-webkit-scrollbar { display: none; }
   .session-stats-g { flex: none; }
@@ -3417,8 +3290,6 @@ select:focus-visible {
   .search-cap.expanded,
   .search-cap .session-search { height: 40px; }
   .header-actions { max-width: 40px; }
-  /* Preserve the compact 20px visual close affordance while its actual hit
-     box meets the touch target contract. */
   .attachment-draft > .attachment-remove {
     top: -10px;
     right: -10px;
@@ -3491,9 +3362,6 @@ select:focus-visible {
   }
 }
 
-/* Placeholder for a message whose markdown is parsed on the next idle callback
-   (see features/markdown/Markdown.tsx). It reserves the estimated height, so the
-   virtual list does not resize when the real body replaces it. */
 .md-pending {
   min-height: 3.5em;
   border-radius: 8px;
@@ -3506,8 +3374,6 @@ select:focus-visible {
   50% { opacity: .5; }
 }
 
-/* Read-only performance overlay for checking scrolling on a real device; only
-   mounted when localStorage['ki-perf-hud'] = '1' (see features/chat/PerfHud). */
 .perf-hud {
   position: absolute;
   right: 8px;
@@ -3538,8 +3404,6 @@ select:focus-visible {
   text-decoration: underline;
 }
 
-/* The virtualizer owns anchoring and includes both vertical paddings in its
-   extent. Browser anchoring would otherwise compensate a prepend twice. */
 .chat-stage .scroll { padding-top: 0; padding-bottom: 0; overflow-anchor: none; }
 .history-control { position: absolute; top: 8px; left: 0; right: 0; height: 44px; display: flex; align-items: center; justify-content: center; color: var(--dsw-alias-label-secondary); font-size: 12px; }
 .history-control button, .body-load { min-height: 44px; padding: 8px 16px; border-radius: 10px; color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-1); }
@@ -3571,8 +3435,6 @@ select:focus-visible {
  .runtime-tools { font-family: var(--ds-font-family-code); }
  .runtime-control { min-height: 44px; min-width: 44px; padding: 8px 12px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 8px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
  .runtime-control:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-state-error); }
- /* Agent rows share the disclosure column, including leaves. Indentation
-    alone defines hierarchy; node cards would add a second, conflicting inset. */
  .runtime-agent-row { display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: start; min-width: 0; }
  .runtime-toggle-space { width: 44px; height: 44px; }
  .runtime-agent-item { margin: 0; padding: 0 4px 10px; border-radius: 0; background: transparent; }
@@ -3597,8 +3459,6 @@ select:focus-visible {
  .runtime-output { width: 100%; min-width: 0; color: var(--dsw-alias-label-secondary); font-size: 12px; }
  .runtime-output > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
  .runtime-output pre { max-height: 200px; overflow: auto; margin: 0; padding: 12px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2); white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--ds-font-family-code); }
- /* Deep task trees must leave room for 44px controls on phones. Preserve the
-    hierarchy and collapse behavior while capping visual indentation. */
  @media (max-width: 767px) {
    .runtime-tree .runtime-tree .runtime-tree .runtime-tree { margin-left: 0; padding-left: 0; border-left: 0; }
    .runtime-tree .runtime-tree .runtime-tree .runtime-tree > li::before,

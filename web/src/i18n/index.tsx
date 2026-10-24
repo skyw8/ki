@@ -924,13 +924,13 @@ export function detectLang(): Lang {
   try {
     const saved = localStorage.getItem(LANG_KEY)
     if (saved === 'zh' || saved === 'en') return saved
-  } catch { /* ignore */ }
+  } catch {}
   const nav = (typeof navigator !== 'undefined' ? navigator.language : '') || ''
   return nav.toLowerCase().startsWith('zh') ? 'zh' : 'en'
 }
 
 export function applyLang(lang: Lang) {
-  try { localStorage.setItem(LANG_KEY, lang) } catch { /* ignore */ }
+  try { localStorage.setItem(LANG_KEY, lang) } catch {}
   if (typeof document !== 'undefined') document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en'
 }
 

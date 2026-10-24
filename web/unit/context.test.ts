@@ -170,7 +170,7 @@ describe('context reconstruction', () => {
     expect(current.notices).toContain('remote-history-encapsulated')
 
     const trend = buildContextTrend({ entries, requests, leafId: 'agent-after' })
-    expect(trend[0].categories.agent).toBeUndefined() // Legacy metadata proves identity, not a zero-sized body.
+    expect(trend[0].categories.agent).toBeUndefined()
     expect(trend[0].estimatesPartial).toBe(true)
     expect(trend[0].partial).toBe(true)
     expect(trend[1].categories.agent).toBeUndefined()

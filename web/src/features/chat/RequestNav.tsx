@@ -36,8 +36,6 @@ export function RequestNav({
   items: UserRequest[]
   activeId: string | null
   onJump: (id: string) => void
-  /** Called when the panel opens: the caller can fill in history the list is
-   * still missing (the navigator walks the tree index, which loads lazily). */
   onOpen?: () => void
   loading?: boolean
   failed?: boolean
@@ -109,19 +107,11 @@ export function RequestNav({
     const list = listRef.current
     const el = list?.querySelector<HTMLElement>('.req-nav-item.active')
     if (!list || !el) return
-    // Why: scrollIntoView can also move the conversation scroller; keep the
-    // highlight inside this panel without disturbing the chat.
-    // offsetTop uses the positioned navigator as its origin for ordinary
-    // rows, but the virtual list for virtual rows. Rects keep both in the
-    // list's scroll coordinates, including filter and panel padding.
     const top = el.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop
     const bottom = top + el.offsetHeight
     if (top < list.scrollTop) list.scrollTop = top
     else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight
   }, [open, activeId, visible, virtualize, virtualizer])
-
-  // The tail can contain only replies while the branch index is still lazy.
-  // Hiding an empty list also hid the only control that could discover prompts.
 
   const current = items.find(item => item.id === activeId) ?? items[0]
   const currentLabel = current ? labelOf(current, untitled) : t('chat.requestsOpen')
@@ -134,17 +124,12 @@ export function RequestNav({
   }
   const openPanel = () => {
     cancelClose()
-    // A keyboard-opened error panel must not retry merely because the
-    // pointer enters it on the way to the retry button. Replacing that button
-    // during pointer movement made it impossible to click on WebKit.
     if (open) return
     setOpen(true)
     onOpen?.()
   }
 
   const jump = (id: string) => {
-    // Retire focus before unmounting a touch option / closing its keyboard.
-    // Browser focus scrolling must not run after the transcript's jump.
     if (!hoverable) toggleRef.current?.focus({ preventScroll: true })
     onJump(id)
     if (!hoverable) setOpen(false)
@@ -247,15 +232,10 @@ export function RequestNav({
         title={currentLabel}
         onClick={e => {
           cancelClose()
-          // Why: desktop hover already opens the panel on mouseenter; a
-          // pointer click then would toggle it shut. Keyboard clicks have
-          // detail 0 and still need to toggle.
           if (hoverable && e.detail > 0) {
             openPanel()
             return
           }
-          // Starting metadata loading updates the parent; keep that effect
-          // outside a state updater that React may replay during rendering.
           if (!open) onOpen?.()
           setOpen(!open)
         }}

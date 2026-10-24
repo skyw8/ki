@@ -18,9 +18,6 @@ import (
 	"ki/internal/types"
 )
 
-// Manager owns process-global sidecar processes and session-scoped views of
-// their registrations. Session IDs are carried on every RPC that can touch
-// session state, so one sidecar can safely serve multiple sessions.
 type Manager struct {
 	mu            sync.Mutex
 	startMu       sync.Mutex
@@ -47,7 +44,6 @@ type Manager struct {
 	host          SessionHost
 }
 
-// RuntimeStatus describes one server-level extension runtime.
 type RuntimeStatus struct {
 	Name         string   `json:"name"`
 	State        string   `json:"state"`
@@ -55,8 +51,6 @@ type RuntimeStatus struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 }
 
-// sessionInterceptor binds a global RPC client to one session for all
-// outbound lifecycle calls. The client itself remains shared.
 type sessionInterceptor struct {
 	client    *rpcClient
 	sessionID string
@@ -98,17 +92,12 @@ func (s sessionInterceptor) OnEvent(ctx context.Context, ev Event) error {
 	return s.client.OnEvent(s.ctx(ctx), ev)
 }
 
-// Occupy is one prompt occupy: lifecycle chain plus the skip set shared by
-// the occupy Streamer and the session HTTPDoer for that run.
 type Occupy struct {
 	items   []namedInterceptor
 	skipped *skipSet
 	onErr   func(name, capability, code, message string)
 }
 
-// OpaqueReplaySafe reports whether persisted provider-owned context can bypass
-// this occupy's message-visible lifecycle hooks. These hooks cannot inspect an
-// encrypted prefix, and provider hooks may also change its routing scope.
 func (o *Occupy) OpaqueReplaySafe() bool {
 	if o == nil {
 		return true
@@ -129,7 +118,6 @@ func (o *Occupy) OpaqueReplaySafe() bool {
 	return true
 }
 
-// NewManager creates a manager. onErr may be nil.
 func NewManager(home string, onErr ErrorFunc) *Manager {
 	return &Manager{
 		by:           map[string]*rpcClient{},
@@ -148,11 +136,8 @@ func NewManager(home string, onErr ErrorFunc) *Manager {
 	}
 }
 
-// SetHost attaches inbound Host methods (session enqueue, bus, UI).
 func (m *Manager) SetHost(h SessionHost) { m.host = h }
 
-// SetProviderAuthHandler forwards private provider-auth notifications from
-// the shared server-level sidecars to the provider HTTP/UI owner.
 func (m *Manager) SetProviderAuthHandler(fn func(ProviderAuthEvent)) {
 	m.mu.Lock()
 	m.providerAuth = fn
@@ -166,18 +151,12 @@ func (m *Manager) SetProviderAuthHandler(fn func(ProviderAuthEvent)) {
 	}
 }
 
-// SetStatusHandler registers a callback for runtime status transitions
-// (starting/ready/restarting/failed). The WebUI push channel uses it so the
-// extensions catalog stays current without the client polling.
 func (m *Manager) SetStatusHandler(fn func(RuntimeStatus)) {
 	m.mu.Lock()
 	m.onStatus = fn
 	m.mu.Unlock()
 }
 
-// Configure reconciles the process-global sidecars with the latest global
-// catalog. Disabled, removed, or changed packages are no longer available to
-// new session views and their old processes are closed.
 func (m *Manager) Configure(descriptors []Descriptor) {
 	desired := map[string]Descriptor{}
 	for _, d := range descriptors {
@@ -192,9 +171,6 @@ func (m *Manager) Configure(descriptors []Descriptor) {
 		m.changed = make(chan struct{})
 	}
 	m.configured = true
-	// A fresh session snapshot may discover a package before global reload.
-	// This authoritative catalog supersedes those provisional admissions,
-	// including in-flight starts, while retaining removed-name tombstones.
 	for _, d := range descriptors {
 		m.known[d.Name] = true
 	}
@@ -232,10 +208,6 @@ func (m *Manager) Configure(descriptors []Descriptor) {
 	}
 }
 
-// Start launches every enabled executable extension after the server has
-// begun listening. It is intentionally independent of session creation.
-// A failed sidecar is recorded and retried while its descriptor remains
-// enabled; one extension never blocks the others.
 func (m *Manager) Start(ctx context.Context, descriptors []Descriptor) {
 	m.mu.Lock()
 	if m.closed {
@@ -266,7 +238,6 @@ func (m *Manager) Start(ctx context.Context, descriptors []Descriptor) {
 	}
 }
 
-// RuntimeStatuses returns a stable snapshot for the settings page and logs.
 func (m *Manager) RuntimeStatuses() []RuntimeStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -291,12 +262,7 @@ func (m *Manager) setRuntimeStatus(d Descriptor, state, message string) {
 	m.status[name] = st
 	notify := m.onStatus
 	m.mu.Unlock()
-	// A stuck sidecar reports "failed" on every retry. Only a real transition is
-	// worth telling clients about: the handler is the server's push fan-out and
-	// a client refetches the catalog for each call.
 	if notify != nil && (!seen || !sameStatus(prev, st)) {
-		// Called outside the lock: the handler must not run under Manager.mu
-		// while other goroutines take it.
 		notify(st)
 	}
 }
@@ -312,7 +278,6 @@ func sameRuntime(a, b Descriptor) bool {
 		reflect.DeepEqual(a.manifest.Runtime, b.manifest.Runtime)
 }
 
-// Prepare opens this session's view over already-running server sidecars.
 func (m *Manager) Prepare(ctx context.Context, sessionID, cwd string, enabled []Descriptor) []toolapi.Tool {
 	var tools []toolapi.Tool
 	var order []string
@@ -344,9 +309,6 @@ func (m *Manager) Prepare(ctx context.Context, sessionID, cwd string, enabled []
 	return tools
 }
 
-// markSessionOpen records the session view per sidecar. A runtime can fail
-// during the first prepare and become ready later; keeping this state per
-// extension lets the next prepare deliver session.open exactly once.
 func (m *Manager) markSessionOpen(sessionID, name string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -379,9 +341,6 @@ func (m *Manager) ensure(ctx context.Context, sessionID string, d Descriptor) *r
 		}
 	}
 	m.mu.Unlock()
-	// Only one goroutine may launch a given global sidecar at a time. The
-	// second lookup after acquiring the lock avoids duplicate processes when
-	// two sessions prepare the same extension concurrently.
 	startLock := m.startLock(d.Name)
 	startLock.Lock()
 	defer startLock.Unlock()
@@ -424,8 +383,6 @@ func (m *Manager) publishRuntime(ctx context.Context, sessionID string, d Descri
 	m.mu.Unlock()
 	c.setProviderAuthHandler(providerAuth)
 	m.mu.Lock()
-	// Configure/Close cannot see a process still installing or initializing.
-	// Reject that old launch here instead of publishing a disabled orphan.
 	if ctx.Err() != nil || generation != m.generation || !m.desiredLocked(d) {
 		m.mu.Unlock()
 		c.close()
@@ -446,8 +403,6 @@ func (m *Manager) publishRuntime(ctx context.Context, sessionID string, d Descri
 		m.reportError(sessionID, d.Name, "tools", "tool_name_collision", err.Error())
 		return nil
 	}
-	// Dynamic names are session-local: the same name in two different sessions
-	// never coexists in one registry and must not reject an unrelated sidecar.
 	for _, byExtension := range m.sessionTools {
 		scoped := append([]ToolSpec(nil), combined...)
 		for _, dynamic := range byExtension {
@@ -480,9 +435,6 @@ func (m *Manager) startLock(name string) *sync.Mutex {
 	return lock
 }
 
-// globalClient returns a shared server-level sidecar for provider requests.
-// The fallback launch keeps direct in-process users working before ListenAndServe;
-// the normal server path has already started every runtime after binding.
 func (m *Manager) globalClient(ctx context.Context, name string) (*rpcClient, error) {
 	m.mu.Lock()
 	c := m.by[name]
@@ -537,12 +489,10 @@ func (m *Manager) errFn(sessionID string) func(name, capability, code, message s
 	}
 }
 
-// Occupy binds this session's interceptors to one occupy-wide skip set.
 func (m *Manager) Occupy(sessionID string) *Occupy {
 	return &Occupy{items: m.items(sessionID), skipped: newSkipSet(), onErr: m.errFn(sessionID)}
 }
 
-// Hooks returns occupy-scoped loop hooks for this session's interceptors.
 func (o *Occupy) Hooks() loop.Hooks {
 	if o == nil {
 		return loop.Hooks{}
@@ -550,7 +500,6 @@ func (o *Occupy) Hooks() loop.Hooks {
 	return composeHooks(o.items, o.skipped, o.onErr)
 }
 
-// WrapStreamer wraps the live occupy streamer with provider lifecycle hooks.
 func (o *Occupy) WrapStreamer(inner loop.Streamer) loop.Streamer {
 	if o == nil {
 		return inner
@@ -558,9 +507,6 @@ func (o *Occupy) WrapStreamer(inner loop.Streamer) loop.Streamer {
 	return wrapStreamer(inner, o.items, o.skipped, o.onErr)
 }
 
-// TransformProviderRequest applies the same before_provider_request mutations
-// used by an occupied stream to a standalone provider request. A short-circuit
-// cannot supply a canonical compaction window, so it is returned as an error.
 func (o *Occupy) TransformProviderRequest(ctx context.Context, req loop.Request) (loop.Request, error) {
 	if o == nil {
 		return req, nil
@@ -575,7 +521,6 @@ func (o *Occupy) TransformProviderRequest(ctx context.Context, req loop.Request)
 	return live, nil
 }
 
-// HTTPDoer returns an HTTP round-tripper that applies before_provider_headers.
 func (o *Occupy) HTTPDoer() provider.HTTPDoer {
 	if o == nil {
 		return nil
@@ -588,18 +533,14 @@ func (o *Occupy) HTTPDoer() provider.HTTPDoer {
 	return nil
 }
 
-// Hooks returns occupy-scoped loop hooks for sidecars on this session.
 func (m *Manager) Hooks(sessionID string) loop.Hooks {
 	return m.Occupy(sessionID).Hooks()
 }
 
-// WrapStreamer wraps the live occupy streamer with provider lifecycle.
 func (m *Manager) WrapStreamer(sessionID string, inner loop.Streamer) loop.Streamer {
 	return m.Occupy(sessionID).WrapStreamer(inner)
 }
 
-// HTTPDoer returns a headers-only wrapping doer, or nil if unused.
-// Compact uses this session-level Doer (no occupy skip). Live occupy uses Occupy.HTTPDoer.
 func (m *Manager) HTTPDoer(sessionID string) provider.HTTPDoer {
 	items := m.items(sessionID)
 	for _, it := range items {
@@ -610,11 +551,6 @@ func (m *Manager) HTTPDoer(sessionID string) provider.HTTPDoer {
 	return nil
 }
 
-// SessionContributions lists tools and commands currently registered on
-// running sidecars. sessionID "" uses process-level initialize results only;
-// a session id also includes that session's RegisterTools specs. Occupied
-// tool execution still waits for the next Prepare; the catalog can show
-// registrations as soon as the sidecar has them.
 func (m *Manager) SessionContributions(sessionID string) map[string]SessionContribution {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -667,8 +603,6 @@ func (m *Manager) SessionContributions(sessionID string) map[string]SessionContr
 	return out
 }
 
-// RuntimeCommands lists executable slash handlers from the session's enabled
-// view of the global sidecars.
 func (m *Manager) RuntimeCommands(sessionID string) map[string]CommandSpec {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -694,7 +628,6 @@ func (m *Manager) RuntimeCommands(sessionID string) map[string]CommandSpec {
 	return out
 }
 
-// InvokeCommand runs a sidecar slash handler.
 func (m *Manager) InvokeCommand(ctx context.Context, sessionID, name, args string) (handled bool, notice, prompt string, err error) {
 	m.mu.Lock()
 	var client *rpcClient
@@ -720,8 +653,6 @@ func (m *Manager) InvokeCommand(ctx context.Context, sessionID, name, args strin
 	return client.invokeCommand(withSessionID(ctx, sessionID), name, args)
 }
 
-// CloseSession drops only session state. Global sidecars stay alive until
-// Close, allowing another session to reuse the same process.
 func (m *Manager) CloseSession(sessionID string) {
 	m.mu.Lock()
 	var clients []*rpcClient
@@ -744,8 +675,6 @@ func (m *Manager) CloseSession(sessionID string) {
 	}
 }
 
-// CloseExcept drops session state for sessions not in active. It does not
-// terminate global sidecars.
 func (m *Manager) CloseExcept(active map[string]bool) {
 	m.mu.Lock()
 	var ids []string
@@ -760,7 +689,6 @@ func (m *Manager) CloseExcept(active map[string]bool) {
 	}
 }
 
-// Close terminates all process-global sidecars.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	runtimeCancel := m.runtimeCancel
@@ -792,7 +720,6 @@ func (m *Manager) Close() {
 	}
 }
 
-// ApplyInput runs sync input subscribers. swallow true means drop the prompt.
 func (m *Manager) ApplyInput(ctx context.Context, sessionID, text string) (string, bool) {
 	for _, it := range m.items(sessionID) {
 		if !it.hasSync(EventInput) {
@@ -814,7 +741,6 @@ func (m *Manager) ApplyInput(ctx context.Context, sessionID, text string) (strin
 	return text, false
 }
 
-// ApplyMessageEnd lets sync subscribers replace a same-role message.
 func (m *Manager) ApplyMessageEnd(ctx context.Context, sessionID string, msg types.Message) types.Message {
 	for _, it := range m.items(sessionID) {
 		if !it.hasSync(EventMessageEnd) {
@@ -835,8 +761,6 @@ func (m *Manager) ApplyMessageEnd(ctx context.Context, sessionID string, msg typ
 	return msg
 }
 
-// BeforeCompact runs session_before_compact after the host has prepared a
-// portable plan. A custom result replaces local generation, not host policy.
 func (m *Manager) BeforeCompact(ctx context.Context, sessionID string, req BeforeCompactRequest) BeforeCompactDecision {
 	decision := BeforeCompactDecision{}
 	for _, it := range m.items(sessionID) {
@@ -855,7 +779,6 @@ func (m *Manager) BeforeCompact(ctx context.Context, sessionID string, req Befor
 	return decision
 }
 
-// RegisterTools appends tool specs for this session's next occupy Prepare.
 func (m *Manager) RegisterTools(sessionID, name string, tools []ToolSpec) error {
 	c := m.client(sessionID, name)
 	if c == nil {
@@ -884,7 +807,6 @@ func (m *Manager) RegisterTools(sessionID, name string, tools []ToolSpec) error 
 	return nil
 }
 
-// Notify sends a Host→sidecar JSON-RPC notification (ui.action / ui.submit).
 func (m *Manager) Notify(sessionID, name, method string, params any) {
 	c := m.client(sessionID, name)
 	if c == nil {
@@ -893,9 +815,6 @@ func (m *Manager) Notify(sessionID, name, method string, params any) {
 	c.notify(method, withSessionParam(sessionID, params))
 }
 
-// NotifyGlobal sends a process-level notification to one running sidecar.
-// Extensions that support configuration should reload their private config
-// file after receiving config.updated; a stopped sidecar reads it on startup.
 func (m *Manager) NotifyGlobal(name, method string, params any) {
 	m.mu.Lock()
 	c := m.by[name]
@@ -914,7 +833,6 @@ func (m *Manager) client(sessionID, name string) *rpcClient {
 	return nil
 }
 
-// BusEmit deep-copies data and fans out to other bus subscribers, returning merged data.
 func (m *Manager) BusEmit(sessionID, from, channel string, data any) (any, error) {
 	cloned := cloneJSON(data)
 	m.mu.Lock()
@@ -936,7 +854,6 @@ func (m *Manager) BusEmit(sessionID, from, channel string, data any) (any, error
 	return cloned, nil
 }
 
-// BusBroadcast fire-and-forget to other subscribers.
 func (m *Manager) BusBroadcast(sessionID, from, channel string, data any) error {
 	cloned := cloneJSON(data)
 	m.mu.Lock()
@@ -973,9 +890,6 @@ func cloneJSON(v any) any {
 	return out
 }
 
-// Enabled filters snapshot.Extensions (Discover.All) with the live toggle and
-// returns Discover chain order (global-by-name). Server Prepare must use this
-// (or Discover.Enabled), never a bare name-sorted All.
 func Enabled(all []Descriptor, toggle session.Toggle) []Descriptor {
 	var filtered []Descriptor
 	for _, d := range all {

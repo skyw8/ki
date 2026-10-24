@@ -38,16 +38,13 @@ test('sessionStats sums the loaded window but keeps branch counts', () => {
       { kind: 'assistant', id: 'a2', text: 'ok', usage: { input: 3, output: 1, cacheRead: 7 }, ttftMs: 200, latencyMs: 700 },
     ],
   }))
-  // Branch totals span the whole leaf path (a1, the compaction, a2).
   expect(s.turns).toBe(2)
   expect(s.steps).toBe(3)
-  // Usage sums what the loaded window holds; a2's step is input 3+7, output 1.
   expect(s.input).toBe(3 + 7)
   expect(s.output).toBe(1)
   expect(s.cacheRead).toBe(7)
   expect(s.hasCost).toBe(false)
   expect(s.ttftMs).toBe(200)
-  // Decode span 700-200 over one output token → 2 tok/s.
   expect(s.tps).toBeCloseTo(2)
 })
 
@@ -83,9 +80,7 @@ test('sessionStats averages TTFT/TPS and totals usage over the loaded turns', ()
   expect(s.cacheRead).toBe(90)
   expect(s.hasCost).toBe(true)
   expect(s.cost).toBeCloseTo(0.01)
-  // Mean of the turns' first-token latency.
   expect(s.ttftMs).toBe(200)
-  // Turn rates 10/1s and 30/0.5s, weighted by output: 40 / (1s + 0.5s).
   expect(s.tps).toBeCloseTo(40 / 1.5)
 })
 
@@ -121,7 +116,6 @@ test('sessionStats prefers a live step that is not persisted yet', () => {
   expect(s.hasCost).toBe(true)
   expect(s.cost).toBeCloseTo(0.012)
   expect(s.ttftMs).toBe(50)
-  // Decode (100-50) + (600-100) over three output tokens.
   expect(s.tps).toBeCloseTo(3 / 0.55)
 })
 
@@ -166,7 +160,6 @@ test('cacheHitPercent needs billed input and a cache read', () => {
   expect(cacheHitPercent({ ...base, input: 0, cacheRead: 0 })).toBeNull()
   expect(cacheHitPercent({ ...base, input: 100, cacheRead: 0 })).toBeNull()
   expect(cacheHitPercent({ ...base, input: 100, cacheRead: 90 })).toBe(90)
-  // Unrounded, so the strip can render it to 2 decimals.
   const hit = cacheHitPercent({ ...base, input: 74_932, cacheRead: 3_584 })
   expect(hit!.toFixed(2)).toBe('4.78')
 })
@@ -177,8 +170,6 @@ function asst(id: string, usage: NonNullable<Extract<ChatNode, { kind: 'assistan
 
 test('cacheMisses trusts server annotations even when the loaded page lacks the baseline', () => {
   const miss = { missedTokens: 191_743, missRatio: 0.9829 }
-  // Usage alone is insufficient: a sparse page must not infer a comparison
-  // from whichever unrelated assistant messages happen to be loaded.
   expect(cacheMisses([asst('visible', { input: 192_015, cacheRead: 3_328 })]).size).toBe(0)
   expect(cacheMisses([asst('visible', { input: 192_015, cacheRead: 3_328 }, { cacheMiss: miss })]).get('visible')).toEqual(miss)
 })
@@ -250,12 +241,10 @@ test('turnStats aggregates a turn and keeps the first step TTFT', () => {
     asst('a3', { input: 5, output: 5 }, { ttftMs: 50, latencyMs: 100, ts: 9_400 }),
   ]
   const stats = turnStats(nodes)
-  // Keyed by the turn's last node so the chat mounts the strip after it.
   expect([...stats.keys()]).toEqual(['a2', 'a3'])
   const first = stats.get('a2')!
   expect(first.turn).toBe(1)
   expect(first.steps).toBe(2)
-  // Wall clock spans the turn, including the tool call in between.
   expect(first.elapsedMs).toBe(4_000)
   expect(first.input).toBe(100 + 10 + 90)
   expect(first.output).toBe(50)
@@ -267,7 +256,6 @@ test('turnStats aggregates a turn and keeps the first step TTFT', () => {
   expect(first.tools).toBe(2)
   expect(first.toolFailures).toBe(1)
   expect(first.cacheMisses).toBe(0)
-  // Decode spans: (1200-200) + (800-300) over 50 output tokens.
   expect(first.tps).toBeCloseTo(50 / 1.5)
   const second = stats.get('a3')!
   expect(second.turn).toBe(2)
@@ -281,14 +269,11 @@ test('turnStats aggregates a turn and keeps the first step TTFT', () => {
 test('turnStats counts tool failures and notable cache misses per turn', () => {
   const nodes: ChatNode[] = [
     { kind: 'user', id: 'u1', text: 'hi', content: [] },
-    // Full read-back of the previous prompt: healthy, no miss.
     asst('a1', { input: 100, cacheRead: 29_900 }),
     { kind: 'tool', id: 't1', name: 'Bash' },
     { kind: 'tool', id: 't2', name: 'Edit', isError: true },
-    // The server tags the request after comparing against the full branch.
     asst('a2', { input: 30_000, cacheRead: 0 }, { cacheMiss: { missedTokens: 30_000, missRatio: 1 } }),
     { kind: 'user', id: 'u2', text: 'again', content: [] },
-    // Reads the whole previous prompt back → no miss.
     asst('a3', { input: 30_000, cacheRead: 30_000 }),
   ]
   const stats = turnStats(nodes)
@@ -300,7 +285,6 @@ test('turnStats counts tool failures and notable cache misses per turn', () => {
   expect(second.tools).toBe(0)
   expect(second.toolFailures).toBe(0)
   expect(second.cacheMisses).toBe(0)
-  // The server's compact projection has already applied the compaction reset.
   const afterCompact = turnStats([
     { kind: 'user', id: 'u1', text: 'hi', content: [] },
     asst('a1', { input: 100, cacheRead: 29_900 }),
@@ -334,7 +318,6 @@ test('turnStats falls back to summed latencies without timestamps', () => {
     asst('a2', { input: 1, output: 1 }, { latencyMs: 300 }),
   ])
   expect(stats.get('a2')!.elapsedMs).toBe(1_000)
-  // No TTFT means no TPS estimate, matching the decode-span rule.
   expect(stats.get('a2')!.tps).toBeNull()
 })
 
@@ -347,10 +330,7 @@ test('turnStats exposes the turn start and counts a tool tail', () => {
   ])
   const live = stats.get('s1')!
   expect(live.live).toBe(true)
-  // The live divider ticks `now - startedAt`; without the start it cannot.
   expect(live.startedAt).toBe(1_000)
-  // A tool tail extends the span past the last assistant timestamp (1_400):
-  // the tool ends at 4_400, so the turn has run 3_400ms from 1_000.
   expect(live.elapsedMs).toBe(3_400)
 })
 
@@ -364,7 +344,6 @@ test('sessionStats exposes the current turn start for the live counter', () => {
   }
   expect(sessionStats(view({ leafId: 'u1', allEntries: [entry] })).turnStartedAt)
     .toBe(Date.parse('2026-09-27T12:00:00.000Z'))
-  // A just-sent prompt whose entry has not landed falls back to its live node.
   expect(sessionStats(view({ nodes: [{ kind: 'user', id: 'opt', text: 'hi', content: [], ts: 42 }] })).turnStartedAt).toBe(42)
   expect(sessionStats(view()).turnStartedAt).toBe(0)
   expect(sessionStats(view({ leafId: 'u1', allEntries: [entry], nodes: [
@@ -381,10 +360,8 @@ test('sessionStats totals the session run time and keeps the newest turn separat
     { id: 'a2', kind: 'assistant', turn: 2, preview: '', startedAt: 10_500, durationMs: 500 },
   ]
   const s = sessionStats(view({ records }))
-  // Turn 1 spans 1_000 → 5_000 (the tool tail); turn 2 spans 10_000 → 10_500.
   expect(s.elapsedMs).toBe(4_000)
   expect(s.turnElapsedMs).toBe(500)
-  // A folded compact turn the browser never loaded still contributes its stats.
   const folded = sessionStats(view({
     records,
     compactTurns: [{
@@ -408,7 +385,6 @@ test('a confirmed second prompt never switches the live timer back to the previo
   expect(stats.turnStartedAt).toBe(101_000)
   expect(stats.elapsedMs).toBe(10_000)
   expect(stats.elapsedMs + 106_000 - stats.turnStartedAt).toBe(15_000)
-  // An unrelated body/index rebuild must keep the confirmed prompt as well.
   expect(sessionStats(hydrateEntries(s, [first])).turnStartedAt).toBe(101_000)
 })
 
@@ -441,7 +417,6 @@ test('compact snapshot plus hydrated overlap plus live delta counts every node o
   expect(stats().tools).toBe(3)
   expect(stats().toolFailures).toBe(1)
   expect(stats().elapsedMs).toBe(6_000)
-  // A body load is not a new run snapshot and cannot erase observed results.
   s = hydrateEntries(s, [entries[0]])
   expect(stats().tools).toBe(3)
   expect(stats().toolFailures).toBe(1)
@@ -484,8 +459,6 @@ test('parallel tool completion does not settle a still-running sibling', () => {
   expect(s.nodes.find(n => n.id === 'slow')).toMatchObject({ running: true })
   expect(s.nodes.find(n => n.id === 'fast')).toMatchObject({ running: false, result: 'ok' })
   expect([...turnStats(s.nodes).values()][0].live).toBe(true)
-  // A later model request, unlike a sibling tool result, proves that the
-  // preceding batch has finished even if this browser lost its end event.
   s = applyEvent(s, { type: 'message_start', message: { role: 'assistant', timestamp: 4_000 } })
   expect(s.nodes.find(n => n.id === 'slow')).toMatchObject({ running: false })
 })

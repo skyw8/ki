@@ -97,8 +97,6 @@ func request(ctx context.Context, method, endpoint string, headers map[string]st
 		case string:
 			input = strings.NewReader(v)
 		case io.Reader:
-			// Already encoded bodies (such as Codex zstd requests) must not
-			// pass through JSON marshaling, which would destroy their wire form.
 			input = v
 		default:
 			b, e := json.Marshal(v)
@@ -177,8 +175,6 @@ var tags = regexp.MustCompile(`<[^>]*>`)
 var entities = regexp.MustCompile(`(?i)&(#x?[0-9a-f]+|amp|lt|gt|quot|apos|nbsp);`)
 
 func decodeEntities(s string) string {
-	// The extension's excerpts use its limited entity table, not the browser's
-	// complete HTML decoder (which also remaps numeric control characters).
 	return entities.ReplaceAllStringFunc(s, func(entity string) string {
 		value := strings.ToLower(entity[1 : len(entity)-1])
 		if named, ok := map[string]string{"amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'", "nbsp": " "}[value]; ok {
@@ -188,7 +184,6 @@ func decodeEntities(s string) string {
 		if strings.HasPrefix(value, "#x") {
 			digits, radix = value[2:], 16
 		} else {
-			// JavaScript parseInt accepts the decimal prefix of e.g. &#123abc;.
 			for i, c := range digits {
 				if c < '0' || c > '9' {
 					digits = digits[:i]

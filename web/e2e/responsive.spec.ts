@@ -9,8 +9,6 @@ import { goBinary } from './go-toolchain.ts'
 import { MIN_TOUCH_SIZE } from './touch-target.ts'
 import { openContextCategory, openContextItem } from './context.ts'
 
-// Every test is self-contained (verified standalone on its own server), so the
-// parallel runner may split this file into one isolated process per test.
 test.describe.configure({ mode: 'parallel' })
 
 test.describe('drawer menu keyboard ownership', () => {
@@ -28,8 +26,6 @@ test.describe('drawer menu keyboard ownership', () => {
     const trigger = page.locator('button[aria-label="会话菜单"], button[aria-label="Session menu"]').first()
     await trigger.click()
     await expect(page.getByTestId('pop-menu')).toBeVisible()
-    // Dispatch from the opener in the same task, before an opening focus frame
-    // can move it into the child and bypass the window-level ownership race.
     await trigger.evaluate(el => {
       el.focus({ preventScroll: true })
       el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
@@ -136,8 +132,6 @@ type Profile = {
   scale: number
 }
 
-// Keep the dimensions in the test titles so a slow or failing slice can be
-// rerun directly with --grep without weakening the complete device matrix.
 const profiles: readonly Profile[] = [
   { name: 'phone-320x568', width: 320, height: 568, compact: true, mobile: true, touch: true, scale: 2 },
   { name: 'phone-390x844', width: 390, height: 844, compact: true, mobile: true, touch: true, scale: 3 },
@@ -252,7 +246,6 @@ async function expectTouchButtons(profile: Profile, root: Locator, surface: stri
     'label:has(input[type="checkbox"])',
     'label:has(input[type="radio"])',
   ].join(', ')
-  // The floor is passed in because the callback body runs inside the page.
   const undersized = await root.locator(controls).evaluateAll((elements, minSize) => elements.flatMap(control => {
     const element = control as HTMLElement
     const style = getComputedStyle(element)
@@ -370,8 +363,6 @@ async function clickDrawerBackdrop(page: Page): Promise<void> {
   const backdrop = page.locator('.mobile-sidebar-backdrop')
   const box = await backdrop.boundingBox()
   expect(box, 'navigation drawer backdrop should have a layout box').toBeTruthy()
-  // The backdrop spans beneath the higher-z-index drawer. Click its exposed
-  // right edge instead of the covered center used by Locator.click by default.
   await backdrop.click({ position: { x: Math.max(1, box!.width - 4), y: Math.max(1, box!.height / 2) } })
 }
 
@@ -441,8 +432,6 @@ test.beforeAll(async ({ request }) => {
 
   const dir = join(home, 'extensions', fixtureName)
   mkdirSync(dir, { recursive: true })
-  // The extension declares these under its own root; the first one exists so the
-  // info card can show the present/missing pair.
   mkdirSync(join(dir, 'playwright-bin'), { recursive: true })
   writeFileSync(join(dir, 'extension.json'), JSON.stringify({
     name: fixtureName,
@@ -461,8 +450,6 @@ test.beforeAll(async ({ request }) => {
     runtime: {
       kind: 'rpc',
       command: bin,
-      // One existing and one missing directory: the info card has to show both
-      // states, and the long absolute path must not overflow a phone viewport.
       path: ['playwright-bin', 'playwright-bin-not-installed-with-a-long-name'],
       env: {
         KI_SET_UI: '1',
@@ -496,8 +483,6 @@ test.afterAll(async ({ request }) => {
 
 for (const profile of profiles) {
   test.describe(profile.name, () => {
-    // setViewportSize alone does not enable meta-viewport or coarse-pointer
-    // behavior. These options create a genuine mobile/touch browser context.
     test.use({
       viewport: { width: profile.width, height: profile.height },
       contextOptions: { screen: { width: profile.width, height: profile.height } },
@@ -626,7 +611,6 @@ for (const profile of profiles) {
       await input.fill(`req-nav-a ${profile.name} ${Date.now()}`)
       await page.getByTestId('composer-send').click()
       await expect(page.getByTestId('assistant-message')).toContainText('ok')
-      // Present (closed) from the first prompt on, then reopened below with two.
       await expect(page.getByTestId('request-nav')).toHaveCount(1)
       await expect(page.getByTestId('request-nav-panel')).toHaveCount(0)
 
@@ -688,8 +672,6 @@ for (const profile of profiles) {
 
       const thinking = page.getByTestId('thinking-select')
       if (await thinking.count()) {
-        // Keyboard focus moving to a sibling popup must retire the command
-        // palette before that popup receives its own Enter/Escape handling.
         await thinking.focus()
         await thinking.press('Enter')
         await expect(palette).toHaveCount(0)
@@ -704,8 +686,6 @@ for (const profile of profiles) {
         await expect(palette).toHaveCount(0)
       }
 
-      // Clear any command draft so remounting the composer on another tab does
-      // not intentionally reopen the palette.
       await page.getByTestId('composer-input').fill('')
 
       await page.getByRole('button', { name: /添加图片或文件|Add image or file/ }).click()
@@ -780,8 +760,6 @@ for (const profile of profiles) {
       await expectTouchButtons(profile, page.getByTestId('session-info'), `${profile.name} info`)
 
       if (profile.compact) {
-        // Compact layouts intentionally hide/reduce individual status chips;
-        // the supported entry point is the aggregate inspector button.
         await expect(page.getByTestId('ext-chips-more')).toBeVisible({ timeout: 15_000 })
         await expectTouchTarget(profile, page.getByTestId('ext-chips-more'), `${profile.name} extension aggregate`)
         await page.getByTestId('ext-chips-more').click()

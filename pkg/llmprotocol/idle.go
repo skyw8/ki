@@ -8,9 +8,6 @@ import (
 
 var errStreamIdle = errors.New("provider stream idle timeout")
 
-// idleReader times actual blocked reads, not time spent parsing or emitting to
-// downstream consumers. Heartbeat bytes count as activity even without text.
-// Closing the HTTP body interrupts its pending Read without a leaked goroutine.
 type idleReader struct {
 	io.ReadCloser
 	timeout time.Duration

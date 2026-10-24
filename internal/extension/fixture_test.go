@@ -11,8 +11,6 @@ import (
 )
 
 var (
-	// fixturesDir creates the shared fixture directory on first use; TestMain
-	// removes it once the suite finishes.
 	fixturesDir = sync.OnceValues(func() (string, error) {
 		return os.MkdirTemp("", "ki-extension-fixtures-")
 	})
@@ -22,7 +20,6 @@ var (
 	fixtureErrs = map[string]error{}
 )
 
-// TestMain drops the shared fixture binaries once the suite finishes.
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if dir, err := fixturesDir(); err == nil {
@@ -31,9 +28,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// fixtureExeSuffix is the platform executable suffix. Why: `go build -o name`
-// writes exactly that name, and Windows cannot start a process image without
-// .exe, so the sidecar fixtures must carry it.
 func fixtureExeSuffix() string {
 	if runtime.GOOS == "windows" {
 		return ".exe"
@@ -41,9 +35,6 @@ func fixtureExeSuffix() string {
 	return ""
 }
 
-// buildFixture compiles a test sidecar once per process and reuses the binary.
-// Why: linking the fixture dominates these tests and a dozen of them build the
-// very same one; the binary is read-only at run time, so sharing it is invisible.
 func buildFixture(t *testing.T, key, srcDir string) string {
 	t.Helper()
 	fixtureMu.Lock()
@@ -69,15 +60,11 @@ func buildFixture(t *testing.T, key, srcDir string) string {
 	return bin
 }
 
-// fixtureSource resolves e2e/testdata/extensions/<name> from this file.
 func fixtureSource(name string) string {
 	_, file, _, _ := runtime.Caller(0)
 	return filepath.Join(filepath.Dir(file), "..", "..", "e2e", "testdata", "extensions", name)
 }
 
-// copyFixture copies a shared fixture binary into a per-test directory.
-// Why: a test that deletes its sidecar to exercise a failure path must not
-// remove the binary the other tests share.
 func copyFixture(t *testing.T, src string) string {
 	t.Helper()
 	data, err := os.ReadFile(src)

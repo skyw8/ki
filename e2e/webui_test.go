@@ -24,9 +24,6 @@ func TestWebUIPlaywright(t *testing.T) {
 	if err != nil {
 		t.Skip("bun not found in PATH; install bun to run the WebUI suite")
 	}
-	// Why: the runner starts one isolated server per work unit from this exact
-	// binary, so every spec still exercises the Go-built SPA while the phone,
-	// tablet, and desktop matrix runs concurrently instead of serially.
 	bin := builtKI(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
@@ -39,9 +36,6 @@ func TestWebUIPlaywright(t *testing.T) {
 	}
 }
 
-// webSuiteEnv isolates the Playwright runner from server settings inherited from
-// the Go harness (which owns its own server and KI_HOME) and pins the binary
-// under test.
 func webSuiteEnv(bin string) []string {
 	env := make([]string, 0, len(os.Environ())+2)
 	for _, entry := range os.Environ() {
@@ -52,9 +46,6 @@ func webSuiteEnv(bin string) []string {
 			strings.HasPrefix(entry, "KI_BASE_URL=") ||
 			strings.HasPrefix(entry, "KI_SKIP_SERVER=") ||
 			strings.HasPrefix(entry, "KI_BIN=") ||
-			// The extension install suite supplies its own file:// mirror; an
-			// inherited source or release would point the fake run at the
-			// developer's real release channel.
 			strings.HasPrefix(entry, "KI_EXTENSIONS_SOURCE=") ||
 			strings.HasPrefix(entry, "KI_EXTENSIONS_RELEASE=") {
 			continue

@@ -90,8 +90,6 @@ func TestBodyCacheRevalidatesAtomicReplacement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Size/mtime must match so only captured file identity can invalidate
-			// the cache; do not warm it before replacing (Windows IDs are lazy).
 			if replaced.Size() != info.Size() || !replaced.ModTime().Equal(info.ModTime()) {
 				t.Fatal("replacement changed size or mtime")
 			}

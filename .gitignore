@@ -9,7 +9,5 @@ web/playwright-report
 web/blob-report
 web/playwright/.cache
 extensions/*/config.json
-# A removed search extension can still leave its local index in a checkout.
-# Keep it ignored so `git add -A` never stages binary shards.
 /.zvec-grep/
 tmp*

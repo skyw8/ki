@@ -68,8 +68,6 @@ func TestManagerCloseWaitsForFinalPublicationAndSupportsReentrantObservation(t *
 		if update.Process.Status != "exited" {
 			return
 		}
-		// Final callbacks may inspect/terminate the process without waiting on
-		// their own publication barrier.
 		if _, err := manager.Terminate(update.Process.SessionID); err != nil {
 			t.Error(err)
 		}
@@ -89,12 +87,10 @@ func TestManagerCloseWaitsForFinalPublicationAndSupportsReentrantObservation(t *
 	<-final
 	closed := make(chan struct{})
 	go func() { manager.Close(); close(closed) }()
-	// The callback is observably blocked, so Close must not report completion.
 	select {
 	case <-closed:
 		t.Fatal("Close abandoned a final listener")
 	case <-time.After(25 * time.Millisecond):
-		// This interval tests the blocking contract itself, not process startup.
 	}
 	once.Do(func() { close(release) })
 	<-closed
@@ -108,8 +104,6 @@ func TestBatchStopRequestsFanOutBeforeAnyHelperCompletes(t *testing.T) {
 	ps := make([]*shellProcess, 8)
 	for i := range ps {
 		ps[i] = &shellProcess{stopped: make(chan struct{}), snapshot: Snapshot{Status: "exited"}}
-		// Gate the platform helper's signaling lock without fixed sleeps or
-		// spawning actual processes. Request fanout must never take this lock.
 		ps[i].control.Lock()
 	}
 	stopped := requestStops(ps)

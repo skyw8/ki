@@ -38,15 +38,11 @@ async function seed(page: Page, withTools: boolean) {
         } })
       }
     }
-    // Persist a sibling in the same tree, not a separate session: a whole-tree
-    // index must not leak its tool activity onto the active branch.
     entries.push({ type: 'message', id: 'sibling-result', parentId: 'old-input', message: {
       role: 'toolResult', toolCallId: 'sibling-call', toolName: 'SIBLING_ONLY', isError: true,
       content: [{ type: 'text', text: 'Sibling failure' }],
     } })
   }
-  // Keep the ranked tools outside the four-turn initial body window. The
-  // browser must recover failures from metadata without hydrating old bodies.
   for (let turn = 0; turn < 7; turn++) {
     push({ type: 'message', id: `tail-user-${turn}`, message: {
       role: 'user', content: [{ type: 'text', text: `Tail input ${turn}` }],
@@ -112,8 +108,6 @@ test('tool ranking restores older failures from the index, excludes siblings, an
     expect(bodyRequests).toBe(0)
   }
   assertIndexOnly()
-  // A fresh document discards loaded state: the same counts must survive an
-  // actual refresh with the old results still available only in the index.
   await page.reload()
   await openSessionRow(page, title)
   await page.getByTestId('tab-context').click()

@@ -62,7 +62,6 @@ func Install(ctx context.Context, root, name string, output io.Writer) error {
 		return fmt.Errorf("wait for extension build: %w", ctx.Err())
 	}
 	defer lock.Unlock()
-	// A second first launch may have finished while this process waited.
 	if installed(binary) {
 		return nil
 	}

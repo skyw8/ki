@@ -86,8 +86,6 @@ func TestWatchRuntimeRetryInterrupted(t *testing.T) {
 				},
 				wait: func(ctx context.Context, changed <-chan struct{}, delay time.Duration) bool {
 					delays <- delay
-					// The real wait/select is exercised, but only a catalog
-					// notification or cancellation can release this fake clock.
 					return waitRuntimeChange(ctx, changed, time.Hour)
 				},
 			}
@@ -100,7 +98,7 @@ func TestWatchRuntimeRetryInterrupted(t *testing.T) {
 			if action == "initialize-failure" {
 				wantDelay = 2 * time.Second
 			} else {
-				receiveRuntime(t, attempts) // first crash retries promptly
+				receiveRuntime(t, attempts)
 			}
 			if got := receiveRuntime(t, delays); got > wantDelay || got < wantDelay-100*time.Millisecond {
 				t.Fatalf("retry delay = %v, want approximately %v", got, wantDelay)
@@ -113,8 +111,6 @@ func TestWatchRuntimeRetryInterrupted(t *testing.T) {
 				if restarted.d.Version != "2" {
 					t.Fatalf("reload launched stale descriptor %s", restarted.d.Version)
 				}
-				// A changed runtime's first fast crash should retry immediately,
-				// independent of the old descriptor's accumulated crash history.
 				restarted.c.markClosed()
 				retried := receiveRuntime(t, attempts)
 				if retried.d.Version != "2" {

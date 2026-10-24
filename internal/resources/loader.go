@@ -9,24 +9,18 @@ import (
 	"ki/internal/toggles"
 )
 
-// Snapshot is the complete immutable resource view pinned to one session.
 type Snapshot struct {
 	Environment         Environment
 	ContextFiles        []ContextFile
 	AppendSystemPrompts []AppendSystemPrompt
 	ExtensionPrompts    []extension.PromptLayer
-	// PathDirs are existing extension-contributed shell PATH directories, in
-	// chain order. They live in the snapshot so toggling a package takes effect
-	// with the same reload as its skills and prompt layers.
-	PathDirs   []string
-	Skills     []skills.Skill
-	Prompts    []PromptTemplate
-	Extensions []extension.Descriptor
-	Revision   uint64
+	PathDirs            []string
+	Skills              []skills.Skill
+	Prompts             []PromptTemplate
+	Extensions          []extension.Descriptor
+	Revision            uint64
 }
 
-// Loader caches complete snapshots by real session id. It belongs to one
-// Server, so its configured home provides the cache namespace.
 type Loader struct {
 	home      string
 	mu        sync.Mutex
@@ -34,14 +28,10 @@ type Loader struct {
 	revisions map[string]uint64
 }
 
-// NewLoader creates a server-scoped resource loader.
 func NewLoader(home string) *Loader {
 	return &Loader{home: home, entries: map[string]Snapshot{}, revisions: map[string]uint64{}}
 }
 
-// Load returns the snapshot pinned to sessionID, discovering every resource
-// together on the first call. The lock intentionally covers discovery: reload
-// cannot interleave and publish a mixed old/new snapshot.
 func (l *Loader) Load(sessionID, cwd string) Snapshot {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -55,8 +45,6 @@ func (l *Loader) Load(sessionID, cwd string) Snapshot {
 	return snapshot
 }
 
-// Scan discovers a current snapshot without caching it. Settings views use
-// this because they are workspace-scoped and do not have a real session id.
 func (l *Loader) Scan(cwd string) Snapshot {
 	return l.scan(cwd)
 }
@@ -102,7 +90,6 @@ func (l *Loader) scan(cwd string) Snapshot {
 	}
 }
 
-// Invalidate drops one session's snapshot.
 func (l *Loader) Invalidate(sessionID string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -110,7 +97,6 @@ func (l *Loader) Invalidate(sessionID string) {
 	l.revisions[sessionID]++
 }
 
-// InvalidateAll drops every session snapshot. Subsequent access re-reads disk.
 func (l *Loader) InvalidateAll() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -120,8 +106,6 @@ func (l *Loader) InvalidateAll() {
 	}
 }
 
-// InvalidateAllExcept preserves snapshots owned by active runs. Their reload
-// is queued by the server and applied after the fixed request header finishes.
 func (l *Loader) InvalidateAllExcept(keep map[string]bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

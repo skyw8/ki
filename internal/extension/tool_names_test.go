@@ -19,7 +19,6 @@ func TestExtensionNativeAcronymAliasesAndAtomicNameValidation(t *testing.T) {
 			t.Fatalf("missing alias %s: %v", want, aliases)
 		}
 	}
-	// The adapter retains the RPC contract's original name alongside its model name.
 	if tool.spec.Name != "HTTPFetch" {
 		t.Fatal("native RPC name overwritten")
 	}

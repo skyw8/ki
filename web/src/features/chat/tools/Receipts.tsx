@@ -1,14 +1,6 @@
 import { memo } from 'react'
 import { useI18n } from '../../../i18n/index'
 
-/**
- * Receipt rows for the coordination tools.
- *
- * These results are a handful of fields (`task_name`, `status`, `agent_id`)
- * that the generic IN/OUT card buries in pretty-printed JSON. A receipt is one
- * line: what happened, to whom, and a short id for cross-referencing.
- */
-
 type Receipt = { label: string; value: string }
 
 const FIELDS: [string, string][] = [
@@ -50,7 +42,6 @@ export const AgentReceipt = memo(function AgentReceipt({ details, testId }: { de
   )
 })
 
-/** `list_agents` returns count + rows; show the count, not the agent array. */
 export function agentListSummary(details: unknown): { total: number; active: number } | null {
   if (!details || typeof details !== 'object') return null
   const raw = details as { agents?: unknown[]; total?: unknown }

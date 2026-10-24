@@ -92,9 +92,6 @@ func testServerWith(t *testing.T, st loop.Streamer) (*Server, *httptest.Server) 
 	return srv, hs
 }
 
-// The session spill directory is runtime state, not session history: closing a
-// session removes its files and shutting the server down removes the whole run
-// root, so a restart never reuses a stale temporary path.
 func TestSessionSpillFilesFollowTheSessionLifecycle(t *testing.T) {
 	srv, _ := testServer(t)
 	file, err := srv.outputStore.CreateOutputFile("session-1", "bash")
@@ -202,8 +199,6 @@ func TestFSPreview(t *testing.T) {
 	}
 }
 
-// waitAgentEnd reads the events SSE until agent_end (the prompt turn finished
-// and the session is fully persisted).
 func waitAgentEnd(t *testing.T, hs *httptest.Server, id string) {
 	t.Helper()
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
@@ -225,15 +220,11 @@ func waitAgentEnd(t *testing.T, hs *httptest.Server, id string) {
 			break
 		}
 	}
-	// Scan returns false for both clean EOF and read errors, so inspect Err
-	// after the loop to avoid treating a truncated event stream as complete.
 	if err := sc.Err(); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// reqRecorder captures every Stream request so tests can assert what the
-// server passes through (provider/model on the compaction summarizer).
 type reqRecorder struct {
 	reqs []loop.Request
 }
@@ -388,7 +379,6 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 		t.Fatal("GPT rich Read is missing pages")
 	}
 
-	// Text-only models must not advertise image or PDF reading in Read.
 	textOnly := prompt("zai/glm-5.3")
 	textOnlyWant := []string{"read", "write", "edit", "grep", "glob", "exec_command", "write_stdin", "spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent", "list_agents", "exec", "wait"}
 	if got := requestToolNames(textOnly.Tools); !slices.Equal(got, textOnlyWant) {
@@ -531,7 +521,6 @@ func TestAgentSpawnsTreeChildAndRunsChildLoop(t *testing.T) {
 	if child == nil || child.ForkMode != session.ForkModeTree {
 		t.Fatalf("tree child not found: %+v", infos)
 	}
-	// spawn_agent is asynchronous: parent completion is not child completion.
 	snapshot, ok := srv.agentTasks.TaskForSession(child.ID)
 	if !ok {
 		t.Fatal("child agent not registered")
@@ -644,8 +633,6 @@ func TestAgentSendMessageSteersLiveChild(t *testing.T) {
 	}
 }
 
-// holdTurnStreamer keeps a run alive across a second model round so a test can
-// hand the run a message while it is still going.
 type holdTurnStreamer struct {
 	mu               sync.Mutex
 	once             sync.Once
@@ -659,8 +646,6 @@ func newHoldTurnStreamer() *holdTurnStreamer {
 	return &holdTurnStreamer{entered: make(chan struct{}, 1), release: make(chan struct{})}
 }
 
-// unblock releases the held model round. It is idempotent so a failing test can
-// register it as cleanup and still let the server shut down.
 func (s *holdTurnStreamer) unblock() { s.once.Do(func() { close(s.release) }) }
 
 func (s *holdTurnStreamer) Stream(_ context.Context, _ loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {
@@ -670,7 +655,6 @@ func (s *holdTurnStreamer) Stream(_ context.Context, _ loop.Request, _ func(loop
 	s.mu.Unlock()
 	switch call {
 	case 1:
-		// One tool call, so the loop takes another round instead of ending here.
 		return types.Message{Role: "assistant", Content: []types.Content{{
 			Type: "toolCall", ID: "keep-alive", Name: "exec_command",
 			Arguments: map[string]any{"cmd": "echo keep-alive"},
@@ -690,7 +674,6 @@ func (s *holdTurnStreamer) Stream(_ context.Context, _ loop.Request, _ func(loop
 	}
 }
 
-// readRunEvents replays one run's SSE until agent_end.
 func readRunEvents(t *testing.T, hs *httptest.Server, id string) []loop.Event {
 	t.Helper()
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions/"+id+"/events", nil)
@@ -721,9 +704,6 @@ func readRunEvents(t *testing.T, hs *httptest.Server, id string) []loop.Event {
 	return events
 }
 
-// A completion that arrives while the parent is mid-turn is injected into that
-// same run (Claude Code's tool-round-boundary attachment) instead of waiting for
-// the durable queue, so the parent never has to be restarted to learn the news.
 func TestAgentCompletionNotificationJoinsLiveParentTurn(t *testing.T) {
 	streamer := newHoldTurnStreamer()
 	streamer.keepToolBoundary = true
@@ -790,7 +770,6 @@ func TestAgentCompletionNotificationJoinsLiveParentTurn(t *testing.T) {
 	}
 }
 
-// A completion already persisted by the structural parent is not dispatched again.
 func TestCommittedAgentNotificationIsNotDispatchedAgain(t *testing.T) {
 	srv, hs := testServer(t)
 	parent := createSession(t, hs, t.TempDir())
@@ -1103,9 +1082,6 @@ func TestConcurrentBackgroundAgentsKeepSessionsAndNotificationsDistinct(t *testi
 	t.Fatalf("concurrent child completion notifications were lost: got=%d queue=%d messages=%d", lastNotifications, len(remaining), len(parent.MessagesToLeaf()))
 }
 
-// A delegated child must start from a clean context: only the directive is
-// visible, never the parent's user turn. Replaying that turn made subagents
-// re-delegate the parent task instead of executing their own directive.
 func TestAgentChildStartsWithCleanContext(t *testing.T) {
 	srv, hs := testServerWith(t, resumeAgentStreamer{})
 	defer hs.Close()
@@ -1157,8 +1133,6 @@ func TestAgentChildStartsWithCleanContext(t *testing.T) {
 	}
 }
 
-// agentEchoStreamer replies with the text of the last user message so tests can
-// tell turns apart.
 type agentEchoStreamer struct{}
 
 func (agentEchoStreamer) Stream(_ context.Context, req loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {
@@ -1192,8 +1166,6 @@ func postPrompt(t *testing.T, hs *httptest.Server, id, text string) {
 	waitAgentEnd(t, hs, id)
 }
 
-// A child created with inherit_context sees the parent's finished history, but
-// not the user message that triggered the in-flight turn.
 func TestAgentChildInheritsCompletedHistory(t *testing.T) {
 	srv, hs := testServerWith(t, agentEchoStreamer{})
 
@@ -1260,9 +1232,6 @@ func TestAgentChildInheritsCompletedHistory(t *testing.T) {
 	}
 }
 
-// Deleting a session orphans its descendants (the sidebar nests them at top
-// level). The depth walk must end at the hole instead of failing closed, which
-// used to withhold the Agent tool from every descendant of a deleted session.
 func TestAgentIdentitySurvivesDeletedAncestor(t *testing.T) {
 	srv, hs := testServerWith(t, agentEchoStreamer{})
 	root := createSession(t, hs, t.TempDir())
@@ -1441,7 +1410,7 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 	t.Setenv("KI_HOME", home)
 	cfg := config.Builtin(home)
 	cfg.Sessions.Root = filepath.Join(home, "sessions")
-	cfg.Compaction.KeepRecentTokens = 1 // tiny budget: any session compacts
+	cfg.Compaction.KeepRecentTokens = 1
 	rec := &reqRecorder{}
 	srv, err := New(Options{Config: cfg, Token: "tok", Streamer: rec})
 	if err != nil {
@@ -1452,8 +1421,6 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	id := createSession(t, hs, t.TempDir())
-	// Prompt is async (goroutine); wait for agent_end via the events stream so
-	// the assistant turn is persisted before compacting.
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"hello"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
@@ -1463,9 +1430,6 @@ func TestSummarizerCarriesSessionProviderModel(t *testing.T) {
 	}
 	_ = res0.Body.Close()
 	waitAgentEnd(t, hs, id)
-	// Manual compact drives compactSession, whose summarizer must call the
-	// streamer with the session's provider/model — otherwise liveFromConfig
-	// resolves an empty base URL and the summarization request fails.
 	req, _ = http.NewRequestWithContext(
 		t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/compact",
 		strings.NewReader(`{"instructions":"Preserve database migration commands."}`),
@@ -1571,8 +1535,6 @@ func TestThresholdCompactsBetweenToolRounds(t *testing.T) {
 			}
 		}
 	}
-	// agent_end is runtime-only, so the persisted checkpoint plus a later final
-	// assistant proves compaction happened before the run finished.
 	for i, entry := range sess.Entries() {
 		if entry.Message != nil && entry.Message.Text() == "finished after compact" {
 			agentEndAt = i + 1
@@ -1583,16 +1545,12 @@ func TestThresholdCompactsBetweenToolRounds(t *testing.T) {
 	}
 }
 
-// A manual /compact is one synchronous request, so the WebUI cannot learn that
-// it is running from a prompt SSE stream. It must arrive as a session push
-// event (compaction_start → compaction_end) for the chat to show a live
-// "compacting" row.
 func TestManualCompactPublishesNotifications(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KI_HOME", home)
 	cfg := config.Builtin(home)
 	cfg.Sessions.Root = filepath.Join(home, "sessions")
-	cfg.Compaction.KeepRecentTokens = 1 // tiny budget: any session compacts
+	cfg.Compaction.KeepRecentTokens = 1
 	srv, err := New(Options{
 		Config:   cfg,
 		Token:    "tok",
@@ -1616,7 +1574,6 @@ func TestManualCompactPublishesNotifications(t *testing.T) {
 	_ = res0.Body.Close()
 	waitAgentEnd(t, hs, id)
 
-	// Subscribe before compacting so the start event cannot be missed.
 	events := pushEvents(t, hs, "tok")
 	waitPush(t, events, "ready", func(ev pushEvent) bool { return ev.Type == "ready" })
 
@@ -1644,8 +1601,6 @@ func TestManualCompactPublishesNotifications(t *testing.T) {
 	if !end.OK || end.Reason != "manual" {
 		t.Fatalf("compaction_end reported failure: %+v", end)
 	}
-	// The rebuilt context must reach the meter right away, not at the next
-	// prompt's request_header.
 	usage := waitPush(t, events, "context_usage", func(ev pushEvent) bool {
 		return ev.Type == loop.ContextUsage && ev.SessionID == id
 	})
@@ -1654,9 +1609,6 @@ func TestManualCompactPublishesNotifications(t *testing.T) {
 	}
 }
 
-// A run's terminal agent_end must also reach push subscribers: a WebUI tab that
-// is not holding the run SSE (background session, or the user switched to
-// another session) needs to learn the run finished to raise a notification.
 func TestAgentEndPublishesNotification(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KI_HOME", home)
@@ -1676,7 +1628,6 @@ func TestAgentEndPublishesNotification(t *testing.T) {
 
 	id := createSession(t, hs, t.TempDir())
 
-	// Subscribe before prompting so the completion cannot be missed.
 	events := pushEvents(t, hs, "tok")
 	waitPush(t, events, "ready", func(ev pushEvent) bool { return ev.Type == "ready" })
 
@@ -1695,8 +1646,6 @@ func TestAgentEndPublishesNotification(t *testing.T) {
 	if ev.Type == loop.RunAborted {
 		t.Fatal("completed run must not publish run_aborted")
 	}
-	// The push frame carries the completion only: re-broadcasting the run's
-	// message array to every tab would be pure bandwidth.
 	if len(ev.Messages) != 0 {
 		t.Fatalf("agent_end push frame carried %d messages", len(ev.Messages))
 	}
@@ -2019,10 +1968,8 @@ func TestPromptSSEAndPersist(t *testing.T) {
 		t.Fatalf("jsonl missing messages:\n%s", raw)
 	}
 
-	// concurrent prompt 409
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"again"}`))
 	req.Header.Set("Authorization", "Bearer tok")
-	// after done, should be 202 not 409
 	res2, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -2147,9 +2094,6 @@ func TestListHistory(t *testing.T) {
 	}
 }
 
-// TestUIServesEmbeddedSPA covers the same-origin SPA and its fallback. web/dist
-// is untracked build output, so this is skipped unless the test binary was
-// compiled with -tags embed.
 func TestUIServesEmbeddedSPA(t *testing.T) {
 	if !web.HasAssets() {
 		t.Skip("web/dist not embedded; run go test -tags embed to cover the UI")
@@ -2188,9 +2132,6 @@ func TestUIServesEmbeddedSPA(t *testing.T) {
 	}
 }
 
-// TestUIServesPWAAssets checks the two files that must not be cached like an
-// asset: the service worker (a stale handler would ignore pushes) and the
-// manifest. Skipped without the embedded SPA, like TestUIServesEmbeddedSPA.
 func TestUIServesPWAAssets(t *testing.T) {
 	if !web.HasAssets() {
 		t.Skip("web/dist not embedded; run go test -tags embed to cover the UI")
@@ -2334,10 +2275,6 @@ func TestBrowserLoginSessionAndCSRF(t *testing.T) {
 	}
 }
 
-// The browser session expires on idle, not on absolute age: a tab left open
-// across a working day keeps refreshing its 12h window, so a phone that comes
-// back after hours is still signed in. A session with plenty of life left is
-// left untouched.
 func TestBrowserSessionRenewsWhileInUse(t *testing.T) {
 	srv, hs := testServer(t)
 	jar, err := cookiejar.New(nil)
@@ -2383,8 +2320,6 @@ func TestBrowserSessionRenewsWhileInUse(t *testing.T) {
 		return res
 	}
 
-	// More than half spent: the next authenticated request renews it, and the
-	// response rewrites the cookie pair the browser holds.
 	srv.mu.Lock()
 	srv.browserSessions[sessionID] = time.Now().Add(browserSessionTTL/2 - time.Minute)
 	srv.mu.Unlock()
@@ -2409,7 +2344,6 @@ func TestBrowserSessionRenewsWhileInUse(t *testing.T) {
 		t.Fatalf("session not renewed: %v left", time.Until(expiresAt))
 	}
 
-	// Plenty of life left: the stored expiry is untouched.
 	fixed := time.Now().Add(browserSessionTTL - time.Hour)
 	srv.mu.Lock()
 	srv.browserSessions[sessionID] = fixed
@@ -2880,15 +2814,11 @@ func promptJSON(t *testing.T, hs *httptest.Server, id, text string, extra map[st
 	return res.StatusCode, out
 }
 
-// sessionGET fetches the full session view. The tree index is opt-in on the
-// wire (the WebUI's conversation view does not need it), so these tests ask for
-// it explicitly.
 func sessionGET(t *testing.T, hs *httptest.Server, id string) map[string]any {
 	t.Helper()
 	return sessionGETFields(t, hs, id, "index,runtime")
 }
 
-// sessionTailGET fetches the default (conversation tail) session view.
 func sessionTailGET(t *testing.T, hs *httptest.Server, id string) map[string]any {
 	t.Helper()
 	return sessionGETFields(t, hs, id, "")
@@ -2931,10 +2861,6 @@ func TestSessionViewAPI(t *testing.T) {
 	if len(ents) == 0 {
 		t.Fatal("missing entries")
 	}
-	// Default view: the conversation tail. Why: the index is what made opening
-	// a long session wait for a full parse of the transcript. A session shorter
-	// than one tail read still carries it inline, because it costs nothing
-	// there; TestSessionTailAPI pins the windowed case.
 	tail := sessionTailGET(t, hs, id)
 	if tail["entries"] == nil || tail["leafId"] == nil {
 		t.Fatalf("default GET missing tail: %+v", tail)
@@ -3005,9 +2931,6 @@ func TestSessionViewEmptyIndexIsArray(t *testing.T) {
 	}
 }
 
-// TestSessionTailAPI covers the tail-first contract: a session with more history
-// than one page answers with the newest entries only, plus a cursor that pages
-// backwards, and the index stays opt-in.
 func TestSessionTailAPI(t *testing.T) {
 	srv, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
@@ -3019,8 +2942,6 @@ func TestSessionTailAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Bigger than one tail read, so the response is a real window of the file
-	// and the index is left to the explicit fields=index request.
 	if err := sess.SeedTranscript(session.SeedSpec{Turns: 300, AssistantBytes: 4096, ToolResultBytes: 64, Title: "tail-first", RepeatSamePrompt: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -3046,9 +2967,6 @@ func TestSessionTailAPI(t *testing.T) {
 	if got["hasMore"] != true {
 		t.Fatal("expected hasMore")
 	}
-	// The cursor names the oldest entry of the window. A retained
-	// request_header (its system/tools differ from its predecessor) can sit
-	// before it in the response, which is why the cursor is not always entries[0].
 	oldest, _ := got["oldestId"].(string)
 	var boundary map[string]any
 	for _, raw := range entries {
@@ -3061,7 +2979,6 @@ func TestSessionTailAPI(t *testing.T) {
 		t.Fatalf("oldestId %q not in entries", oldest)
 	}
 
-	// The window is the newest entries, so the cursor pages strictly backwards.
 	older := sessionGETURL(t, hs, "/v1/sessions/"+id+"?before="+oldest)
 	olderEntries, _ := older["entries"].([]any)
 	if len(olderEntries) == 0 {
@@ -3070,8 +2987,6 @@ func TestSessionTailAPI(t *testing.T) {
 	if _, ok := older["index"]; ok {
 		t.Fatal("before page must omit the index")
 	}
-	// The two pages must meet: before= returns entries strictly older, so the
-	// older page ends at the parent of the cursor entry.
 	lastOlder, _ := olderEntries[len(olderEntries)-1].(map[string]any)
 	if lastOlder["id"] != boundary["parentId"] {
 		t.Fatalf("pages do not meet: %v then %v (parent %v)", lastOlder["id"], oldest, boundary["parentId"])
@@ -3080,7 +2995,6 @@ func TestSessionTailAPI(t *testing.T) {
 		t.Fatal("expected more history before the older page")
 	}
 
-	// The index still describes the whole tree when asked for explicitly.
 	full := sessionGET(t, hs, id)
 	index, _ := full["index"].([]any)
 	if len(index) != total {
@@ -3112,9 +3026,6 @@ func TestSessionTailAPI(t *testing.T) {
 	}
 }
 
-// TestSessionSystemPromptField: fields=runtime,system hydrates the newest
-// request_header without shipping the transcript tail, and a session that never
-// ran reports no prompt.
 func TestSessionSystemPromptField(t *testing.T) {
 	srv, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
@@ -3126,8 +3037,6 @@ func TestSessionSystemPromptField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Repeated prompts land as multiple request_header rows; the viewer must
-	// still resolve the current one instead of a promptUnchanged placeholder.
 	if err := sess.SeedTranscript(session.SeedSpec{Turns: 4, Title: "system-field", RepeatSamePrompt: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -3218,12 +3127,10 @@ func TestMessageContextWindowCap(t *testing.T) {
 		return res.StatusCode, out
 	}
 
-	// The cap is a ceiling: a model configured far above it is clamped.
 	huge := provider.Model{ID: "m", ContextWindow: 9_000_000}
 	if got := srv.effectiveContextWindow(huge); got != toggles.DefaultContextWindow {
 		t.Fatalf("default cap: effective window %d, want %d", got, toggles.DefaultContextWindow)
 	}
-	// Below the default ceiling the model's own window wins (no inflation).
 	if got := srv.effectiveContextWindow(provider.Model{ID: "m1m", ContextWindow: 1_000_000}); got != 1_000_000 {
 		t.Fatalf("1M model window = %d, want 1000000", got)
 	}
@@ -3231,19 +3138,15 @@ func TestMessageContextWindowCap(t *testing.T) {
 	if status != http.StatusOK || out["contextWindow"] != float64(1000) || out["busy"] != "steer" {
 		t.Fatalf("patch contextWindow: %d %+v", status, out)
 	}
-	// busy is untouched by a contextWindow-only patch and vice versa.
 	if got := srv.effectiveContextWindow(huge); got != 1000 {
 		t.Fatalf("capped effective window = %d, want 1000", got)
 	}
-	// A cap never inflates a smaller model window.
 	if got := srv.effectiveContextWindow(provider.Model{ID: "small", ContextWindow: 512}); got != 512 {
 		t.Fatalf("cap inflated a smaller window: %d", got)
 	}
-	// Unknown (0) windows keep their unknown sentinel; callers apply fallbacks.
 	if got := srv.effectiveContextWindow(provider.Model{ID: "unknown"}); got != 0 {
 		t.Fatalf("unknown window = %d, want 0", got)
 	}
-	// compaction.max_context_tokens still applies first, so the lower bound wins.
 	srv.cfg.Compaction.MaxContextTokens = 400
 	if got := srv.effectiveContextWindow(huge); got != 400 {
 		t.Fatalf("compaction cap: %d, want 400", got)
@@ -3292,8 +3195,6 @@ func TestBusyPromptSteersSameRun(t *testing.T) {
 	}
 }
 
-// userPathTexts walks the active leaf chain from a session GET, mirroring what
-// the WebUI renders, and returns the preview of every user entry on it.
 func userPathTexts(t *testing.T, detail map[string]any) []string {
 	t.Helper()
 	byID := map[string]map[string]any{}
@@ -3345,8 +3246,6 @@ func TestAbortedRunKeepsUndrainedSteer(t *testing.T) {
 	_ = res.Body.Close()
 	waitAgentEnd(t, hs, id)
 	waitRunIdle(t, srv, id)
-	// The canceled run never drains the Inbox, so the accepted steer must still
-	// be committed as a user turn rather than silently dropped.
 	detail := sessionGET(t, hs, id)
 	users := userPathTexts(t, detail)
 	if !slices.Contains(users, "steer-me") {
@@ -3410,7 +3309,6 @@ func TestForkBusyAllowsExplicitEntry(t *testing.T) {
 	prompt202(t, hs, id, "first")
 	waitBuffered(t, srv, id, 6)
 
-	// The live leaf cannot be forked while the turn is still running.
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/fork", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
@@ -3422,7 +3320,6 @@ func TestForkBusyAllowsExplicitEntry(t *testing.T) {
 		t.Fatalf("leaf fork while busy = %d, want 409", res.StatusCode)
 	}
 
-	// An explicit settled entryId copies a complete prefix and is allowed.
 	dir, err := session.Find(srv.cfg.Sessions.Root, id)
 	if err != nil {
 		t.Fatal(err)
@@ -3662,7 +3559,6 @@ func TestCompactPromoteQueueIdRestoresHead(t *testing.T) {
 		queued, _ := detail["queued"].([]any)
 		raw := sessionBlob(detail)
 		running, _ := detail["running"].(bool)
-		// Wait until occupy finished so TempDir cleanup is not racing jsonl writers.
 		if !running && len(queued) == 0 && strings.Contains(raw, "during-compact") {
 			return
 		}
@@ -4019,7 +3915,6 @@ func TestWorkspacesFSSearch(t *testing.T) {
 	_ = json.NewDecoder(res.Body).Decode(&inWS)
 	_ = res.Body.Close()
 	if inWS["cwd"] != other && !strings.HasPrefix(fmt.Sprint(inWS["cwd"]), other) {
-		// Normalize may EvalSymlinks
 		if inWS["workspaceId"] != wsID {
 			t.Fatalf("create in ws: %+v", inWS)
 		}
@@ -4141,27 +4036,6 @@ func TestWorkspacesFSSearch(t *testing.T) {
 	_ = srv
 }
 
-// ---------------------------------------------------------------------------
-// Dedicated tests for the events (SSE) wait loop.
-//
-// Deterministically exercise the three key paths in the events handler wait loop:
-//  1) Wait path: a reader connects mid-run and waits on Cond when the buffer is empty;
-//  2) Multi-reader broadcast: two SSE readers subscribe to one run and each receives
-//     the same complete event stream;
-//  3) Client disconnect: the reader is awakened by the sentinel and exits without
-//     leaking a goroutine or blocking later runs.
-// Together with `go test -race`, -race verifies lock discipline while these tests
-// verify behavior. The tests cannot prove concurrent correctness; that requires
-// invariants/model checking (see tmp/tla-demo). They provide regression protection:
-// refactoring the wait loop must preserve the byte-for-byte behavior.
-// ---------------------------------------------------------------------------
-
-// gateStreamer blocks in Stream until release(), allowing a test to freeze a run
-// before streaming output. At that point the buffer contains only the five events
-// from agent_start through request_header, so an SSE reader connecting afterward
-// must enter the Cond.Wait path (without releasing the gate, it cannot be elsewhere).
-// arm() installs a gate for the next run; release() opens it and clears the gate so
-// later runs pass through directly.
 type gateStreamer struct {
 	inner loop.Streamer
 	mu    sync.Mutex
@@ -4206,8 +4080,6 @@ func (g *gateStreamer) release() {
 	g.mu.Unlock()
 }
 
-// wantSSE is every event one complete prompt emits with the gated Scripted
-// model — what a reader sees when it is attached before the run starts.
 func wantSSE() []string {
 	return []string{
 		"agent_start",
@@ -4222,14 +4094,6 @@ func wantSSE() []string {
 	}
 }
 
-// wantReplay is what a reader that attaches after the run finished receives.
-//
-// The emitter trims the replay to what a later reader cannot reconstruct from
-// the transcript: a message's start and chunks stop being in-flight state once
-// its message_end is persisted, and they are dropped when no attached reader is
-// owed them. A reader that was already attached keeps every event (see
-// wantSSE), and one attaching mid-stream keeps the events it replays, minus the
-// ones trimmed before it registered (see wantLiveFromWait).
 func wantReplay() []string {
 	return []string{
 		"agent_start",
@@ -4244,9 +4108,6 @@ func wantReplay() []string {
 	}
 }
 
-// wantLiveFromWait is wantSSE minus the events the emitter had already trimmed
-// when the wait-path tests attach their reader: waitBuffered waits for the user
-// message_end, which retires the user message_start.
 func wantLiveFromWait() []string {
 	return slices.DeleteFunc(slices.Clone(wantSSE()), func(s string) bool { return s == "message_start:user" })
 }
@@ -4397,12 +4258,6 @@ func TestUploadAttachmentStoresContentAddressedBlob(t *testing.T) {
 	}
 }
 
-// waitBuffered polls until the runState buffer contains at least n events. It reads
-// internal state in this package, locking in srv.mu / st.mu order.
-// waitRunEnd waits for a run to finish without opening its SSE stream: a
-// reader attached during the run is owed every delta (that is what keeps the
-// CLI's increments intact), so the trimmed replay only exists for a reader that
-// arrives after it.
 func waitRunEnd(t *testing.T, srv *Server, id string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -4452,7 +4307,6 @@ func mustOpenEvents(t *testing.T, hs *httptest.Server, id string) *http.Response
 	return res
 }
 
-// sseLabel reduces a data: line to "type[:role]".
 func sseLabel(line string) string {
 	var ev loop.Event
 	_ = json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &ev)
@@ -4463,7 +4317,6 @@ func sseLabel(line string) string {
 	return s
 }
 
-// scanN reads n SSE events from scanner, counting only data: lines.
 func scanN(t *testing.T, sc *bufio.Scanner, n int) []string {
 	t.Helper()
 	var out []string
@@ -4480,7 +4333,6 @@ func scanN(t *testing.T, sc *bufio.Scanner, n int) []string {
 	return out
 }
 
-// scanAll reads through agent_end, or until the stream ends.
 func scanAll(t *testing.T, sc *bufio.Scanner) []string {
 	t.Helper()
 	var out []string
@@ -4501,7 +4353,6 @@ func scanAll(t *testing.T, sc *bufio.Scanner) []string {
 	return out
 }
 
-// collectSSE reads an entire SSE response through agent_end.
 func collectSSE(t *testing.T, res *http.Response) []string {
 	t.Helper()
 	defer func() { _ = res.Body.Close() }()
@@ -4524,9 +4375,6 @@ func collectSSE(t *testing.T, res *http.Response) []string {
 	return out
 }
 
-// readSSE asynchronously reads the complete event stream and signals ready after
-// reading the first n events. This lets the test confirm both readers replayed the
-// buffer and entered the wait before releasing the run.
 type sseResult struct {
 	stream []string
 	err    error
@@ -4557,10 +4405,6 @@ func readSSE(hs *httptest.Server, id string, n int, ready chan<- struct{}) sseRe
 	return sseResult{stream: out, err: sc.Err()}
 }
 
-// TestEventsWaitPathSingleReader: a reader connecting mid-run must wait on Cond
-// after draining the buffer, then be awakened by Broadcast and receive the
-// remaining events. This is the core path of the events wait loop (single-select
-// version).
 func TestEventsWaitPathSingleReader(t *testing.T) {
 	gate := &gateStreamer{inner: &provider.Scripted{}}
 	srv, hs := testServerWith(t, gate)
@@ -4568,17 +4412,14 @@ func TestEventsWaitPathSingleReader(t *testing.T) {
 
 	gate.arm()
 	prompt202(t, hs, id, "hello")
-	waitBuffered(t, srv, id, 6) // context_usage is published after request_header.
+	waitBuffered(t, srv, id, 6)
 
 	res := mustOpenEvents(t, hs, id)
 	defer func() { _ = res.Body.Close() }()
 	sc := bufio.NewScanner(res.Body)
-	// After draining the replayable buffer the server reader must be in
-	// Cond.Wait: the gate is closed, so no new event is possible, and the run is
-	// unfinished, so done cannot be closed.
 	want := wantLiveFromWait()
 	first := scanN(t, sc, len(want)-6)
-	gate.release() // Release the run; Broadcast must awaken the reader.
+	gate.release()
 	rest := scanAll(t, sc)
 
 	got := append(append([]string{}, first...), rest...)
@@ -4587,8 +4428,6 @@ func TestEventsWaitPathSingleReader(t *testing.T) {
 	}
 }
 
-// TestEventsMultiReader: two SSE readers subscribe to one run (the WebUI + CLI
-// scenario); one Broadcast wakes both, and each receives the same complete stream.
 func TestEventsMultiReader(t *testing.T) {
 	gate := &gateStreamer{inner: &provider.Scripted{}}
 	srv, hs := testServerWith(t, gate)
@@ -4612,7 +4451,7 @@ func TestEventsMultiReader(t *testing.T) {
 			t.Fatalf("reader %d never drained the replay", i)
 		}
 	}
-	gate.release() // Both readers are now in Cond.Wait.
+	gate.release()
 
 	for i, rc := range []<-chan sseResult{r1, r2} {
 		r := <-rc
@@ -4625,9 +4464,6 @@ func TestEventsMultiReader(t *testing.T) {
 	}
 }
 
-// TestEventsClientDisconnect: after a client disconnects halfway through the
-// stream, the sentinel broadcast must wake and exit the reader without leaking a
-// goroutine, blocking later runs, or affecting buffer replay.
 func TestEventsClientDisconnect(t *testing.T) {
 	gate := &gateStreamer{inner: &provider.Scripted{}}
 	srv, hs := testServerWith(t, gate)
@@ -4646,28 +4482,23 @@ func TestEventsClientDisconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	sc := bufio.NewScanner(res.Body)
-	scanN(t, sc, len(wantLiveFromWait())-6) // The reader drained the replay and is waiting.
-	cancel()                                // Client disconnects; the sentinel broadcasts and the reader exits.
+	scanN(t, sc, len(wantLiveFromWait())-6)
+	cancel()
 	_ = res.Body.Close()
-	gate.release() // The run completes normally.
+	gate.release()
 
-	// A buffer length is not a completion fence: it includes superseded partials
-	// and can reach 12 before message_end retires them. Wait for release before
-	// asserting the exact completed replay, rather than racing a live snapshot.
 	waitRunEnd(t, srv, id)
 	//nolint:bodyclose // collectSSE owns and closes the response body.
 	if replay := collectSSE(t, mustOpenEvents(t, hs, id)); !slices.Equal(replay, wantReplay()) {
 		t.Fatalf("replay after disconnect: %v", replay)
 	}
 
-	// A new prompt works normally, showing that no goroutine holds a lock that blocks it.
 	prompt202(t, hs, id, "again")
 	//nolint:bodyclose // collectSSE owns and closes the response body.
 	if got := collectSSE(t, mustOpenEvents(t, hs, id)); len(got) == 0 || got[len(got)-1] != "agent_end" {
 		t.Fatalf("run after disconnect: %v", got)
 	}
 
-	// The disconnected reader goroutine should have exited, returning to the baseline.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if runtime.NumGoroutine() <= baseline+2 {
@@ -4678,15 +4509,10 @@ func TestEventsClientDisconnect(t *testing.T) {
 	t.Fatalf("goroutines leaked: baseline=%d now=%d", baseline, runtime.NumGoroutine())
 }
 
-// TestEventsReplayAfterDone: after a run ends, runState remains in the runs table,
-// so a new connection can replay the complete event stream from the beginning
-// (frontend refresh and reconnect depend on this behavior).
 func TestEventsReplayAfterDone(t *testing.T) {
 	srv, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
 	prompt202(t, hs, id, "hi")
-	// Wait without a reader attached: with one attached the run streams to it
-	// live (wantSSE), so the trimmed replay only exists for a later reader.
 	waitRunEnd(t, srv, id)
 	//nolint:bodyclose // collectSSE owns and closes the response body.
 	first := collectSSE(t, mustOpenEvents(t, hs, id))
@@ -4700,8 +4526,6 @@ func TestEventsReplayAfterDone(t *testing.T) {
 	}
 }
 
-// A missing replay is explicit, so clients reconcile from durable history
-// instead of treating an empty stream as a completed answer.
 func TestEventsNoRunRequestsTranscriptRecovery(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
@@ -4722,10 +4546,6 @@ func TestEventsNoRunRequestsTranscriptRecovery(t *testing.T) {
 	}
 }
 
-// A run can be silent for a whole model round; a mobile or NAT path drops an
-// idle connection long before that, so the run stream must send a comment
-// heartbeat like the push stream does. The CLI skips non-"data:" lines, so the
-// extra frames are invisible to it.
 func TestRunEventsSendIdleHeartbeat(t *testing.T) {
 	old := ssePingInterval
 	ssePingInterval = 25 * time.Millisecond
@@ -4783,7 +4603,6 @@ func TestOpenIndexLifecycle(t *testing.T) {
 		t.Fatal("create must index the new session")
 	}
 
-	// DELETE drops the index entry (dir removal succeeded).
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodDelete, hs.URL+"/v1/sessions/"+id, nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
@@ -4798,8 +4617,6 @@ func TestOpenIndexLifecycle(t *testing.T) {
 		t.Fatal("delete must drop the index entry")
 	}
 
-	// A session created outside the server (direct session.Create) is an index
-	// miss: open falls back to a scan and self-heals.
 	root := srv.cfg.Sessions.Root
 	ext, err := session.Create(root, t.TempDir(), "anthropic", "claude-sonnet-4-5")
 	if err != nil {
@@ -4822,7 +4639,6 @@ func TestOpenIndexLifecycle(t *testing.T) {
 		t.Fatal("fallback must self-heal the index")
 	}
 
-	// Stale entry (dir deleted behind the server's back) heals on open too.
 	dir, _ := srv.sidx.Lookup(extID)
 	if err := session.Remove(dir); err != nil {
 		t.Fatal(err)
@@ -4946,15 +4762,11 @@ func TestForkModeCascadeDelete(t *testing.T) {
 	}
 }
 
-// TestReloadInvalidatesCachedResources pins the server-level reload entry
-// point: one session's resources stay pinned until srv.Reload(), after which
-// the next session catalog sees disk changes.
 func TestReloadInvalidatesCachedResources(t *testing.T) {
 	srv, hs := testServer(t)
 	cwd := t.TempDir()
 	home := srv.cfg.Home
 
-	// Seed one home skill before first discovery.
 	skillDir := filepath.Join(home, "skills", "alpha")
 	if err := os.MkdirAll(skillDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -4994,7 +4806,6 @@ func TestReloadInvalidatesCachedResources(t *testing.T) {
 		t.Fatalf("first catalog: %+v", got)
 	}
 
-	// Disk changes after first discovery: cache must stay pinned.
 	beta := filepath.Join(home, "skills", "beta")
 	if err := os.MkdirAll(beta, 0o700); err != nil {
 		t.Fatal(err)
@@ -5007,7 +4818,6 @@ func TestReloadInvalidatesCachedResources(t *testing.T) {
 		t.Fatalf("catalog picked up disk change before reload: %+v", got)
 	}
 
-	// srv.Reload() invalidates the unified snapshot; next catalog sees beta.
 	srv.Reload()
 	if got := names(); !got["beta"] {
 		t.Fatalf("catalog stale after reload: %+v", got)
@@ -5042,15 +4852,12 @@ func TestReloadInvalidatesCachedResources(t *testing.T) {
 	}
 }
 
-// TestCompactInvalidatesCachedResources pins the contract that a successful
-// compaction is a reload point: the next prompt build re-reads skills and
-// AGENTS/CLAUDE from disk instead of the session-pinned snapshot.
 func TestCompactInvalidatesCachedResources(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KI_HOME", home)
 	cfg := config.Builtin(home)
 	cfg.Sessions.Root = filepath.Join(home, "sessions")
-	cfg.Compaction.KeepRecentTokens = 1 // tiny budget: any session compacts
+	cfg.Compaction.KeepRecentTokens = 1
 	rec := &reqRecorder{}
 	srv, err := New(Options{Config: cfg, Token: "tok", Streamer: rec})
 	if err != nil {
@@ -5061,7 +4868,6 @@ func TestCompactInvalidatesCachedResources(t *testing.T) {
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	cwd := t.TempDir()
-	// Seed one skill and one AGENTS.md before first discovery.
 	skillDir := filepath.Join(home, "skills", "alpha")
 	if err := os.MkdirAll(skillDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -5080,9 +4886,8 @@ func TestCompactInvalidatesCachedResources(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = res0.Body.Close()
-	waitAgentEnd(t, hs, id) // first prompt discovered the cached snapshot
+	waitAgentEnd(t, hs, id)
 
-	// Add a skill on disk after discovery; the running snapshot must not see it.
 	beta := filepath.Join(home, "skills", "beta")
 	if err := os.MkdirAll(beta, 0o700); err != nil {
 		t.Fatal(err)
@@ -5092,7 +4897,6 @@ func TestCompactInvalidatesCachedResources(t *testing.T) {
 	}
 	_ = os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("CWD-TWO"), 0o600)
 
-	// Manual compact succeeds and must invalidate the caches.
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/compact", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	res, err := http.DefaultClient.Do(req)
@@ -5105,7 +4909,6 @@ func TestCompactInvalidatesCachedResources(t *testing.T) {
 		t.Fatalf("compact %d %s", res.StatusCode, b)
 	}
 
-	// Next prompt must rebuild the prompt from disk: beta visible now.
 	req, _ = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/sessions/"+id+"/prompt", strings.NewReader(`{"text":"again"}`))
 	req.Header.Set("Authorization", "Bearer tok")
 	req.Header.Set("Content-Type", "application/json")
@@ -5116,7 +4919,6 @@ func TestCompactInvalidatesCachedResources(t *testing.T) {
 	_ = res1.Body.Close()
 	waitAgentEnd(t, hs, id)
 
-	// The rebuilt system prompt must carry beta and the new AGENTS content.
 	if len(rec.reqs) == 0 {
 		t.Fatal("no stream requests captured")
 	}
@@ -5346,9 +5148,6 @@ func TestPromptWithSidecarExtensionFinishes(t *testing.T) {
 	waitAgentEnd(t, hs, id)
 }
 
-// TestSessionTailTitleUsesFirstUserMessage guards the tail view's title: the
-// window does not hold the session's first user message, so the fallback title
-// must come from the lite list row instead of the newest message in the window.
 func TestSessionTailTitleUsesFirstUserMessage(t *testing.T) {
 	_, hs := testServer(t)
 	id := createSession(t, hs, t.TempDir())
@@ -5475,8 +5274,6 @@ func TestSessionViewsCarryCacheMissOnTheAssistantEntry(t *testing.T) {
 		return nil
 	}
 	check("/v1/sessions/"+id+"?view=compact&keep=1", "page")
-	// The ordinary tail is deliberately sparse: its first assistant row must
-	// still be classified against usage outside the transferred page.
 	sparse := check("/v1/sessions/"+id+"?limit=1", "page")
 	for _, raw := range sparse["entries"].([]any) {
 		if raw.(map[string]any)["id"] == prior.ID {
@@ -5487,8 +5284,6 @@ func TestSessionViewsCarryCacheMissOnTheAssistantEntry(t *testing.T) {
 	check("/v1/sessions/"+id+"?entries="+missed.ID, "page")
 	check("/v1/sessions/"+id+"?turn="+target.ID, "page")
 
-	// Add a later turn so the missed entry is now in a paged before-query,
-	// rather than being the current tail.
 	after := appendMessage(types.Message{Role: "user"})
 	appendMessage(types.Message{Role: "assistant", Usage: &types.Usage{Input: 30_000, CacheRead: 30_000}})
 	check("/v1/sessions/"+id+"?before="+after.ID+"&limit=10", "page")
@@ -5529,8 +5324,6 @@ func TestSessionHistoryReenterAfterAppendKeepsAllPrompts(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = sessionGETURL(t, hs, "/v1/sessions/"+id)
-	// More turns land while the browser is away, then a process cold read and a
-	// separately warmed full index must expose exactly the same branch prompts.
 	if err := sess.SeedTranscript(session.SeedSpec{Turns: 3, AssistantBytes: 64}); err != nil {
 		t.Fatal(err)
 	}
@@ -5593,9 +5386,6 @@ func TestSessionHistoryReenterAfterAppendKeepsAllPrompts(t *testing.T) {
 	}
 }
 
-// Slash-containing model ids are the norm for Magpie ("codex/gpt-6.1-sol"),
-// so every entry point must treat provider and model as separate fields
-// instead of splitting on the first slash.
 func TestSlashModelIDResolvesOnCreateAndPatch(t *testing.T) {
 	srv, hs := testServer(t)
 	on, reasoning := true, true
@@ -5617,7 +5407,6 @@ func TestSlashModelIDResolvesOnCreateAndPatch(t *testing.T) {
 			"cwd": t.TempDir(), "model": model, "thinkingEffort": "low",
 		})
 	}
-	// Explicit spec and a bare id that only one provider owns both work.
 	for _, model := range []string{"gateway/vendor/model", "vendor/model"} {
 		status, out := create(model)
 		if status != http.StatusOK || out["provider"] != "gateway" || out["model"] != "vendor/model" {

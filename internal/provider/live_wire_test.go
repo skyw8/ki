@@ -20,11 +20,6 @@ import (
 	"ki/internal/types"
 )
 
-// DeepSeek serves every wire protocol Ki speaks from one credential:
-// Completions and Responses share the OpenAI-compatible root, Anthropic lives
-// under /anthropic. A single live run therefore proves each protocol adapter can
-// stream a real tool call and then replay its result — the second round whose
-// tool shape used to 400 when it was encoded wrongly.
 const (
 	liveDeepSeekModel     = "deepseek-flash"
 	liveDeepSeekBase      = "https://api.deepseek.com"
@@ -46,11 +41,6 @@ func liveProtocols() []liveProtocol {
 	}
 }
 
-// TestLiveDeepSeekReplaysToolResult runs a real tool call and feeds its result
-// back, so the model must read the replayed result on each protocol's wire
-// encoding. DeepSeek's thinking mode only accepts a replayed assistant turn that
-// still carries the reasoning the model produced, which is exactly what the loop
-// stores and replays.
 func TestLiveDeepSeekReplaysToolResult(t *testing.T) {
 	model, key := loadLiveDeepSeek(t)
 	tools := []toolapi.Spec{{
@@ -91,10 +81,6 @@ func TestLiveDeepSeekReplaysToolResult(t *testing.T) {
 	}
 }
 
-// TestLiveDeepSeekToolImages calls Read twice in one turn, then returns two image
-// tool results — the packing that used to insert a user message between
-// role:tool entries — and checks that each protocol places the images where its
-// API allows them.
 func TestLiveDeepSeekToolImages(t *testing.T) {
 	model, key := loadLiveDeepSeek(t)
 	tools := []toolapi.Spec{{
@@ -123,7 +109,6 @@ func TestLiveDeepSeekToolImages(t *testing.T) {
 				t.Fatalf("%s round 1: want two Read calls, got %d in %q", proto.name, len(calls), first.Text())
 			}
 			if proto.api == "completions" {
-				// Guard the image follow-up shape before we spend a second live call.
 				roles := completionsRoles(t, []types.Message{user, first, toolResultWithImage(calls[0].ID, red), toolResultWithImage(calls[1].ID, blue)})
 				if got := strings.Join(roles, ","); got != "system,user,assistant,tool,tool,user" {
 					t.Fatalf("unexpected completions wire roles: %s", got)
@@ -138,8 +123,6 @@ func TestLiveDeepSeekToolImages(t *testing.T) {
 					toolResultWithImage(calls[1].ID, blue),
 				},
 			})
-			// A is the red image and B the blue one, so the only correct answer is
-			// this exact line; anything else means an image was dropped or swapped.
 			if got := strings.ToUpper(strings.TrimSpace(second.Text())); !strings.Contains(got, "COLOR_A=RED") || !strings.Contains(got, "COLOR_B=BLUE") {
 				t.Fatalf("%s did not report A=red B=blue: %q", proto.name, second.Text())
 			}

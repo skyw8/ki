@@ -48,8 +48,6 @@ var sockets = struct {
 }{values: make(map[string]*codexSocket)}
 
 func acquireSocket(ctx context.Context, key string) (*codexSocket, func(), error) {
-	// Bound both active leases and same-key gate waiters. Never create an
-	// untracked overflow connection or an unbounded transport-side queue.
 	select {
 	case <-ctx.Done():
 		return nil, nil, ctx.Err()
@@ -176,8 +174,6 @@ func (s *codexSocket) retainBaseline(body object, output []any, responseID strin
 			raw := jsonString(item)
 			size += len(raw)
 			if size > websocketBaselineLimit {
-				// Keep the connection but use full canonical requests: history
-				// compression is an optimization, not a correctness requirement.
 				s.clearBaseline()
 				return
 			}
@@ -233,9 +229,6 @@ func dialCodexSocket(ctx context.Context, endpoint string, headers map[string]st
 	return dialer.DialContext(ctx, address, h)
 }
 
-// streamWebsocket returns used=false only when HTTP fallback is safe. Once any
-// response event is observed, an error is returned rather than re-submitting
-// a possibly-running inference and duplicating its output or tool calls.
 func streamWebsocket(ctx context.Context, payload, original object, send func(object), requestID string) (used bool, err error) {
 	credential := obj(obj(payload["credential"])["value"])
 	if !truth(credential["access"]) || !truth(credential["accountId"]) {
@@ -254,8 +247,6 @@ func streamWebsocket(ctx context.Context, payload, original object, send func(ob
 	socket, release, err := acquireSocket(ctx, key)
 	if err != nil {
 		if errors.Is(err, errSocketCapacity) {
-			// Admission rejection is local and no inference has been sent.
-			// HTTP remains available without overflowing retained WS resources.
 			return false, nil
 		}
 		return true, err
@@ -292,18 +283,14 @@ func streamWebsocket(ctx context.Context, payload, original object, send func(ob
 			socket.connection.Store(conn)
 			conn.SetReadLimit(128 << 20)
 		}
-		// A socket is exclusively leased to this request; cancellation never
-		// touches another session and invalidates the incremental baseline.
 		stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
 		wire := maps.Clone(body)
 		wire["type"] = "response.create"
-		wire["reasoning"] = body["reasoning"] // Codex WS serializes null when absent.
+		wire["reasoning"] = body["reasoning"]
 		if delta, previous := socket.continuation(body); previous != "" {
 			wire["previous_response_id"], wire["input"] = previous, delta
 		}
 		metadata := maps.Clone(obj(wire["client_metadata"]))
-		// A reused socket has no new handshake. Carry the turn routing state
-		// in body metadata as Codex does for incremental response.create.
 		if updated, prepareErr := codexclient.PrepareScoped(body, session, turn, false, scope, str(request["cacheKey"])); prepareErr == nil {
 			headers = updated
 		} else {
@@ -360,8 +347,6 @@ func streamWebsocket(ctx context.Context, payload, original object, send func(ob
 			code := str(obj(event["error"])["code"])
 			if typ == "error" && !observed && !fullRetry &&
 				(code == "previous_response_not_found" && wire["previous_response_id"] != nil || code == "websocket_connection_limit_reached") {
-				// These explicit rejection events mean inference did not start.
-				// Reconnect and send the full canonical input exactly once.
 				stopCancel()
 				socket.close()
 				fullRetry, retry = true, true

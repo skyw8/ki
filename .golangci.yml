@@ -1,8 +1,6 @@
 version: "2"
 
 linters:
-  # Keep the official default set and add checks with a good signal-to-noise
-  # ratio for this service and its CLI.
   default: standard
   enable:
     - bodyclose
@@ -40,8 +38,6 @@ linters:
       require-explanation: true
       require-specific: true
     wrapcheck:
-      # Standard-library plumbing is intentionally propagated; package and
-      # third-party errors still require contextual wrapping.
       ignore-package-globs:
         - bufio
         - context

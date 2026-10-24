@@ -193,9 +193,6 @@ func TestFunctionArgumentsStayValidWhenAStreamWasTruncated(t *testing.T) {
 
 func ptr(s string) *string { return &s }
 
-// Responses custom tools carry their grammar format on the wire. Legacy
-// history that contains a custom (freeform) call still replays as
-// custom_tool_call items so the stored call/output pair round-trips.
 func TestResponsesBodyReplaysCustomToolCallAndOutput(t *testing.T) {
 	body := ResponsesBody(loop.Request{
 		Model: "gpt-5.6-terra",
@@ -408,8 +405,6 @@ func TestCompletionsBodyBatchesParallelToolImages(t *testing.T) {
 }
 
 func TestReplayableDropsAbortedAndEmptyAssistants(t *testing.T) {
-	// tmp3: hello -> abort (empty assistant) -> hello. Empty aborted assistant
-	// must not be replayed or Completions/Anthropic 400.
 	hist := []types.Message{
 		{Role: "user", Content: []types.Content{{Type: "text", Text: "你好"}}},
 		{Role: "assistant", StopReason: "aborted", ErrorMessage: "context canceled"},
@@ -457,7 +452,7 @@ func TestReplayableDropsErrorEmptyAndOrphanToolResults(t *testing.T) {
 			{Type: "toolCall", ID: "c1", Name: "Read"},
 		}},
 		{Role: "toolResult", ToolCallID: "c1", Content: []types.Content{{Type: "text", Text: "partial"}}},
-		{Role: "assistant"}, // empty, no stopReason
+		{Role: "assistant"},
 		{Role: "user", Content: []types.Content{{Type: "text", Text: "b"}}},
 	}
 	got := replayable(hist)
@@ -603,8 +598,6 @@ type roundTrip func(*http.Request) (*http.Response, error)
 func (f roundTrip) Do(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestUsageParsingPerProtocol(t *testing.T) {
-	// Completions: prompt_tokens includes cached tokens, while the cache detail
-	// is reported separately. Preserve the API total when it is available.
 	t.Run("completions", func(t *testing.T) {
 		sse := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"total_tokens\":120,\"prompt_cache_hit_tokens\":30}}\n\n" +
 			"data: [DONE]\n"
@@ -620,8 +613,6 @@ func TestUsageParsingPerProtocol(t *testing.T) {
 			t.Fatalf("completions usage: %+v", u)
 		}
 	})
-	// Responses: cached_tokens → CacheRead, total_tokens comes straight from
-	// the API (may not equal the four-part sum).
 	t.Run("responses", func(t *testing.T) {
 		sse := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":20,\"cached_tokens\":30,\"total_tokens\":150}}}\n\n" +
 			"event: response.completed\ndata: [DONE]\n"
@@ -637,8 +628,6 @@ func TestUsageParsingPerProtocol(t *testing.T) {
 			t.Fatalf("responses usage: %+v", u)
 		}
 	})
-	// Anthropic: cache_read_input_tokens on message_start + message_delta;
-	// TotalTokens is the four-part sum.
 	t.Run("anthropic", func(t *testing.T) {
 		sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}}\n\n" +
 			"event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":20,\"cache_read_input_tokens\":30,\"cache_creation_input_tokens\":5}}\n\n" +

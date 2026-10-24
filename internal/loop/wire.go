@@ -10,24 +10,17 @@ import (
 	"ki/internal/types"
 )
 
-// MessagePatch belongs to one SSE connection. BaseSeq names the previous
-// message frame, not the previous global event (tool events may intervene).
 type MessagePatch struct {
 	BaseSeq int64        `json:"baseSeq"`
 	Changes []WireChange `json:"changes"`
 }
 
-// WireChange updates one JSON value. Paths contain object keys or array indices;
-// append operates on strings, so Unicode needs no cross-language byte offsets.
 type WireChange struct {
 	Path  []string        `json:"path"`
 	Op    string          `json:"op"`
 	Value json.RawMessage `json:"value,omitempty"`
 }
 
-// MessageEncoder leaves the canonical loop event untouched: persistence and
-// extensions keep complete messages. Each new connection starts with a snapshot,
-// including when replay trimming or a resume cursor skipped earlier updates.
 type MessageEncoder struct {
 	previous any
 	seq      int64
@@ -45,7 +38,6 @@ func (c *MessageEncoder) Encode(ev Event) Event {
 	if err != nil {
 		return ev
 	}
-	// The old wire shape serialized the same growing partial twice.
 	ev.AssistantMessageEvent = nil
 	if c.previous == nil {
 		c.stream = ev.Seq
@@ -53,9 +45,6 @@ func (c *MessageEncoder) Encode(ev Event) Event {
 		patch := &MessagePatch{BaseSeq: c.seq, Changes: []WireChange{}}
 		diffWire(c.previous, next, []string{}, &patch.Changes)
 		encoded, err := json.Marshal(patch)
-		// Strings are immutable: projecting the typed fields shares their bytes
-		// instead of marshaling and reparsing the growing answer for every token.
-		// Only measure a full snapshot when the patch exceeds its cheap lower bound.
 		smaller := err == nil && len(encoded) < wireSizeLowerBound(next)
 		if err == nil && !smaller {
 			raw, snapshotErr := json.Marshal(next)
@@ -124,8 +113,6 @@ func diffWire(old, next any, path []string, changes *[]WireChange) {
 	*changes = append(*changes, WireChange{Path: path, Op: op, Value: raw})
 }
 
-// MessageDecoder rejects a missing base before changing its state. A fetch
-// client reconnects from its last successfully decoded cursor to get a snapshot.
 type MessageDecoder struct {
 	previous any
 	seq      int64
@@ -143,8 +130,6 @@ func (c *MessageDecoder) Decode(ev Event) (Event, error) {
 		if c.previous == nil || p.BaseSeq != c.seq || ev.MessageStream != c.stream {
 			return ev, fmt.Errorf("message patch base mismatch")
 		}
-		// Clone before applying so a malformed frame cannot partially corrupt
-		// the base used to resume the stream.
 		raw, _ := json.Marshal(c.previous)
 		var next any
 		_ = json.Unmarshal(raw, &next)
@@ -167,8 +152,6 @@ func (c *MessageDecoder) Decode(ev Event) (Event, error) {
 		if err != nil {
 			return ev, err
 		}
-		// Unmarshal reuses a non-nil map and keeps absent keys. A replacement
-		// snapshot (or remove patch) must also remove fields from the next base.
 		var previous any
 		if err := json.Unmarshal(raw, &previous); err != nil {
 			return ev, err

@@ -2,9 +2,6 @@ package llmprotocol
 
 import "fmt"
 
-// validateToolSpecs rejects shapes an encoder would otherwise silently turn
-// into a function with no schema. Model-specific custom support belongs to the
-// caller; Responses as a protocol supports both function and custom tools.
 func validateToolSpecs(tools []ToolSpec, api string) error {
 	for _, tool := range tools {
 		switch tool.Type {
@@ -20,9 +17,6 @@ func validateToolSpecs(tools []ToolSpec, api string) error {
 	return nil
 }
 
-// customInputField finds the function envelope for a historical raw call.
-// Inferring a single required string field avoids baking tool names (exec/code,
-// apply_patch/input) or provider capabilities into the protocol layer.
 func customInputField(tools []ToolSpec, name string) (field string, function bool, err error) {
 	for _, tool := range tools {
 		if tool.Name != name || tool.Type == "custom" {
@@ -74,9 +68,6 @@ func validateStructuredToolReplay(req Request) error {
 	return nil
 }
 
-// adaptResponsesToolReplay changes historical custom calls only when the
-// currently advertised tool is a function. Preserve native custom tools and
-// opaque compaction items, and pair output types with their actual calls.
 func adaptResponsesToolReplay(input []any, tools []ToolSpec) ([]any, error) {
 	out := append([]any(nil), input...)
 	callTypes := make(map[string]string)
@@ -99,7 +90,6 @@ func adaptResponsesToolReplay(input []any, tools []ToolSpec) ([]any, error) {
 				if !ok {
 					return nil, fmt.Errorf("custom tool %q input must be a string", name)
 				}
-				// Map-backed items and canonical raw items are caller-owned.
 				item = cloneToolItem(item)
 				item["type"] = "function_call"
 				item["arguments"] = marshalArguments(map[string]any{field: value})

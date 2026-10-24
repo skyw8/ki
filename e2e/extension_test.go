@@ -324,8 +324,6 @@ func installSpawner(t *testing.T, home, marker string) {
 	}
 }
 
-// installPathExtension writes a declarative package that contributes bin/ to
-// the shell PATH and ships one probe executable.
 func installPathExtension(t *testing.T, home, name, command string) {
 	t.Helper()
 	dir := filepath.Join(home, "extensions", name)
@@ -342,9 +340,6 @@ func installPathExtension(t *testing.T, home, name, command string) {
 	}
 }
 
-// TestExtensionPathDirsReachBashTool proves the path capability end to end
-// through the real CLI: an enabled package's directory is on the Bash tool's
-// PATH, and disabling the package removes it again.
 func TestExtensionPathDirsReachBashTool(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("probe command is a POSIX shell script")

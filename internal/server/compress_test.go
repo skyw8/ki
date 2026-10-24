@@ -13,8 +13,6 @@ import (
 	"ki/web"
 )
 
-// TestHashedAssetsAreImmutableAndCompressed exercises the whole stack (embed →
-// serveUI → gzipHandler). It needs the built SPA, so it only runs with -tags embed.
 func TestHashedAssetsAreImmutableAndCompressed(t *testing.T) {
 	if !web.HasAssets() {
 		t.Skip("web/dist not embedded; run go test -tags embed to cover the UI")
@@ -38,8 +36,6 @@ func TestHashedAssetsAreImmutableAndCompressed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Set Accept-Encoding ourselves: the transport only auto-decompresses what it
-	// negotiated, so the header must survive for us to assert on it.
 	req.Header.Set("Accept-Encoding", "gzip")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -183,9 +179,6 @@ func TestGzipSkippedForBinary(t *testing.T) {
 	}
 }
 
-// TestGzipDropsServeContentLength covers the http.ServeContent interaction: it
-// sets Content-Length for the uncompressed file before writing, which must not
-// survive into a gzipped response.
 func TestGzipDropsServeContentLength(t *testing.T) {
 	body := strings.Repeat("body{color:red}", 500)
 	h := gzipHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -8,8 +8,6 @@ import (
 	"testing"
 )
 
-// customCall is a Responses-style freeform tool call: identity in ID/Name and
-// the opaque payload in Input, with no JSON arguments.
 func customCall() Content {
 	return Content{Type: "toolCall", ToolType: "custom", ID: "call_1", Name: "apply_patch", Input: "*** Begin Patch"}
 }
@@ -42,7 +40,6 @@ func TestCompletionsReplayDowngradesCustomToolCall(t *testing.T) {
 	if msgs[1]["role"] != "tool" || msgs[1]["tool_call_id"] != "call_1" {
 		t.Fatalf("tool result: %+v", msgs[1])
 	}
-	// The caller's history must stay a custom call: only the encoder rewrites it.
 	if history[0].Content[0].ToolType != "custom" || history[0].Content[0].Input != "*** Begin Patch" {
 		t.Fatalf("history mutated: %+v", history[0].Content[0])
 	}
@@ -124,8 +121,6 @@ func TestAnthropicValidationFailureIsNonRetryable(t *testing.T) {
 	}
 }
 
-// TestCustomToolCallArgumentsAreJSON pins the exact wire shape the downgrade
-// produces, since a non-object argument string is rejected by gateways.
 func TestCustomToolCallArgumentsAreJSON(t *testing.T) {
 	raw := customCallArguments(Content{Type: "toolCall", ToolType: "custom", Input: "line1\nline2"})
 	var parsed map[string]any

@@ -1,10 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { clearTabFocus, publishTabFocus } from '../lib/tab-focus'
 
-// Keeps the shared "focused session" marker in sync with this tab so other tabs
-// can tell whether the user is looking at a session that just completed. The
-// marker must follow focus, visibility, and navigation, and be cleared on
-// unload; otherwise a stale entry would suppress a real notification.
 export function useTabFocus(serverId: string, sessionId: string | null): void {
   const tabId = useRef('')
   if (!tabId.current) tabId.current = Math.random().toString(36).slice(2)

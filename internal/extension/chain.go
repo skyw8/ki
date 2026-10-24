@@ -20,9 +20,6 @@ type namedInterceptor struct {
 
 func (n namedInterceptor) hasSync(event string) bool { return n.syncEvents[event] }
 
-// skipSet is occupy-wide: a failed interceptor is omitted from later hook
-// and provider intercept points in the same occupy (BeforeTool skip still
-// applies to BeforeProvider, and vice versa).
 type skipSet struct {
 	mu sync.Mutex
 	m  map[string]bool
@@ -48,8 +45,6 @@ func (s *skipSet) mark(name string) {
 	s.mu.Unlock()
 }
 
-// ComposeHooks builds occupy-scoped loop.Hooks with a private skip set.
-// Manager.Occupy shares one skipSet with the occupy Streamer.
 func ComposeHooks(items []namedInterceptor, onErr func(name, capability, code, message string)) loop.Hooks {
 	return composeHooks(items, newSkipSet(), onErr)
 }
@@ -148,7 +143,6 @@ func composeHooks(items []namedInterceptor, skipped *skipSet, onErr func(name, c
 
 func boolPtr(v bool) *bool { return &v }
 
-// RedactEvent copies a loop event into the extension-facing Event shape.
 func RedactEvent(ev loop.Event, sessionID string) Event {
 	out := Event{
 		Type:             string(ev.Type),

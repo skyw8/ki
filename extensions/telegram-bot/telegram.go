@@ -89,11 +89,6 @@ func (a *botAPI) call(ctx context.Context, method string, params any, result any
 	return nil
 }
 
-// callRetry runs one Telegram call and retries only throttling (HTTP 429), which
-// is the expected rejection for rapid per-chat writes. retry_after is honored and
-// capped: the lifecycle goroutine writes every session's replies in order, so a
-// long server-side delay must not stall it. A final reply must not be lost to a
-// 429 that only the caller could have waited out.
 func (a *botAPI) callRetry(ctx context.Context, method string, params any, result any) error {
 	for attempt := 0; ; attempt++ {
 		err := a.call(ctx, method, params, result)
@@ -114,9 +109,6 @@ func (a *botAPI) getMe(ctx context.Context) (user, error) {
 	return out, err
 }
 
-// getChat reads one chat's metadata. Updates may omit is_forum, and a chat title
-// is only carried by the messages that change it, so a sidecar that needs either
-// asks here once per chat.
 func (a *botAPI) getChat(ctx context.Context, chatID int64) (chat, error) {
 	var out chat
 	err := a.call(ctx, "getChat", map[string]any{"chat_id": chatID}, &out)
@@ -124,9 +116,6 @@ func (a *botAPI) getChat(ctx context.Context, chatID int64) (chat, error) {
 }
 
 func (a *botAPI) deleteWebhook(ctx context.Context) error {
-	// Long polling and webhook delivery are mutually exclusive. Telegram should
-	// not replay messages sent while this connector was offline; the connector
-	// still persists its offset for retries during one active polling lifecycle.
 	return a.call(ctx, "deleteWebhook", map[string]any{"drop_pending_updates": true}, nil)
 }
 
@@ -150,9 +139,6 @@ func (a *botAPI) setReaction(ctx context.Context, chatID, messageID int64) error
 	}, nil)
 }
 
-// threadParams adds message_thread_id when Telegram accepts one. The General
-// topic is thread 1 in API terms but is addressed by omitting the field:
-// sendMessage answers thread 1 with "Bad Request: message thread not found".
 func threadParams(params map[string]any, threadID int64) map[string]any {
 	if threadID > 1 {
 		params["message_thread_id"] = threadID
@@ -170,8 +156,6 @@ func (a *botAPI) sendMessage(ctx context.Context, chatID, threadID int64, text s
 	return out, err
 }
 
-// sendMessageRetry is sendMessage with throttling retried: the final answer is
-// the one write the connector cannot afford to lose.
 func (a *botAPI) sendMessageRetry(ctx context.Context, chatID, threadID int64, text string) (message, error) {
 	var out message
 	err := a.callRetry(ctx, "sendMessage", sendMessageParams(chatID, threadID, text), &out)
@@ -191,9 +175,6 @@ func (a *botAPI) editMessage(ctx context.Context, chatID, messageID int64, text 
 	return a.call(ctx, "editMessageText", editMessageParams(chatID, messageID, text), nil)
 }
 
-// editMessageRetry is editMessage with throttling retried: a group reply is
-// delivered by editing its placeholder message, so a throttled edit must be
-// waited out instead of being abandoned.
 func (a *botAPI) editMessageRetry(ctx context.Context, chatID, messageID int64, text string) error {
 	return a.callRetry(ctx, "editMessageText", editMessageParams(chatID, messageID, text), nil)
 }
@@ -227,9 +208,6 @@ func (a *botAPI) download(ctx context.Context, filePath string, out io.Writer) e
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return fmt.Errorf("telegram file download returned %s", res.Status)
 	}
-	// Stream into the caller's temporary file: ReadAll retained the complete
-	// attachment and its growing buffer during download. An extra byte detects
-	// oversized responses instead of silently publishing a truncated attachment.
 	n, err := io.Copy(out, io.LimitReader(res.Body, telegramDownloadLimit+1))
 	if err != nil {
 		return err
@@ -246,14 +224,12 @@ type update struct {
 }
 
 type user struct {
-	ID        int64  `json:"id"`
-	IsBot     bool   `json:"is_bot"`
-	FirstName string `json:"first_name"`
-	LastName  string `json:"last_name"`
-	Username  string `json:"username"`
-	// HasTopicsEnabled reports BotFather's threaded mode for private chats: only
-	// then does a private chat's message thread identify its own conversation.
-	HasTopicsEnabled bool `json:"has_topics_enabled,omitempty"`
+	ID               int64  `json:"id"`
+	IsBot            bool   `json:"is_bot"`
+	FirstName        string `json:"first_name"`
+	LastName         string `json:"last_name"`
+	Username         string `json:"username"`
+	HasTopicsEnabled bool   `json:"has_topics_enabled,omitempty"`
 }
 
 type chat struct {
@@ -263,25 +239,21 @@ type chat struct {
 	Username  string `json:"username"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
-	// IsForum is set for supergroups with topics enabled; their topics are
-	// separate conversations, while a reply thread in an ordinary group is not.
-	IsForum bool `json:"is_forum,omitempty"`
+	IsForum   bool   `json:"is_forum,omitempty"`
 }
 
 type message struct {
-	MessageID       int64       `json:"message_id"`
-	MessageThreadID int64       `json:"message_thread_id,omitzero"`
-	From            *user       `json:"from,omitempty"`
-	Chat            chat        `json:"chat"`
-	Text            string      `json:"text,omitempty"`
-	Caption         string      `json:"caption,omitempty"`
-	Entities        []entity    `json:"entities,omitempty"`
-	CaptionEntities []entity    `json:"caption_entities,omitempty"`
-	Photo           []photoSize `json:"photo,omitempty"`
-	Document        *document   `json:"document,omitempty"`
-	ReplyTo         *message    `json:"reply_to_message,omitempty"`
-	// Topic service messages are the only source of a forum topic's name; the Bot
-	// API has no method to query it (getForumTopic does not exist).
+	MessageID         int64       `json:"message_id"`
+	MessageThreadID   int64       `json:"message_thread_id,omitzero"`
+	From              *user       `json:"from,omitempty"`
+	Chat              chat        `json:"chat"`
+	Text              string      `json:"text,omitempty"`
+	Caption           string      `json:"caption,omitempty"`
+	Entities          []entity    `json:"entities,omitempty"`
+	CaptionEntities   []entity    `json:"caption_entities,omitempty"`
+	Photo             []photoSize `json:"photo,omitempty"`
+	Document          *document   `json:"document,omitempty"`
+	ReplyTo           *message    `json:"reply_to_message,omitempty"`
 	ForumTopicCreated *forumTopic `json:"forum_topic_created,omitempty"`
 	ForumTopicEdited  *forumTopic `json:"forum_topic_edited,omitempty"`
 }
@@ -317,15 +289,7 @@ type fileInfo struct {
 
 func isGroup(c chat) bool { return c.Type == "group" || c.Type == "supergroup" }
 
-// sessionThread is the thread id that identifies a conversation. Telegram creates
-// a message thread for every reply — in forums and in ordinary groups alike
-// (https://core.telegram.org/api/threads: the thread id is the id of the
-// replied-to message) — but only a forum's topics are conversations of their
-// own. An ordinary group therefore keeps all of its replies in one session
-// instead of forking a session per replied-to message.
 func sessionThread(c chat, threadID int64, botTopics, forum bool) int64 {
-	// 0 is "no thread"; 1 is the General topic, which must not be addressed as a
-	// thread (sendMessage rejects message_thread_id=1).
 	if threadID <= 1 {
 		return 0
 	}
@@ -344,9 +308,6 @@ func sessionThread(c chat, threadID int64, botTopics, forum bool) int64 {
 	return threadID
 }
 
-// repliesToBot reports whether msg answers one of the bot's own messages. In a
-// group that counts as addressing the bot, exactly like a mention, so replying
-// to an answer starts the next turn instead of only appending context.
 func repliesToBot(msg *message, me user) bool {
 	if msg == nil || msg.ReplyTo == nil || msg.ReplyTo.From == nil || me.ID == 0 {
 		return false
@@ -354,9 +315,6 @@ func repliesToBot(msg *message, me user) bool {
 	return msg.ReplyTo.From.ID == me.ID
 }
 
-// chatDisplayName is the user-visible name of a chat, whose title lives in the
-// group fields for groups and in the name fields for private chats. The username
-// wins for private chats: it survives profile renames.
 func chatDisplayName(c chat) string {
 	if title := strings.TrimSpace(c.Title); title != "" {
 		return title
@@ -367,8 +325,6 @@ func chatDisplayName(c chat) string {
 	return strings.TrimSpace(strings.TrimSpace(c.FirstName) + " " + strings.TrimSpace(c.LastName))
 }
 
-// chatLabel is the workspace title for one Telegram conversation, e.g.
-// group-怀仁堂, group-怀仁堂-项目讨论, private-@ki_user.
 func chatLabel(c chat, threadID int64, topicName string) string {
 	name := labelPart(chatDisplayName(c))
 	if name == "" {
@@ -387,7 +343,6 @@ func chatLabel(c chat, threadID int64, topicName string) string {
 	return label
 }
 
-// labelPart keeps a display name on one line and short enough for a sidebar.
 func labelPart(name string) string {
 	fields := strings.Fields(name)
 	if len(fields) == 0 {
@@ -481,8 +436,6 @@ func mentionBoundaryBefore(text string, index int) bool {
 	if unicode.IsSpace(r) || unicode.IsPunct(r) {
 		return true
 	}
-	// Telegram usernames are ASCII. Allow adjacent CJK text while rejecting
-	// email/identifier-like ASCII strings such as a@bot.
 	return r >= utf8.RuneSelf
 }
 
@@ -531,9 +484,6 @@ func mentionsBot(text string, entities []entity, me user) bool {
 			}
 		}
 	}
-	// Telegram normally supplies entities, but clients and forwarded/captioned
-	// messages can omit them. Keep the fallback exact to this bot's username so
-	// group privacy mode is not weakened into replying to every message.
 	return len(fallbackMentionSpans(text, me)) > 0
 }
 

@@ -41,8 +41,6 @@ test('compact recovery never treats consecutive turn numbers as proof of a share
     compactTurns: [first.summary, oldSecond.summary],
     leafId: 'old-a2', oldestId: 'u1', hasMore: false,
   }))
-  // The server changed its active branch while the client was away. Its four
-  // newest turns start after a replacement turn 2 that this client never read.
   const incoming = suffix('new-a2')
   const recovered = applyTail(old, detail({
     entries: incoming.flatMap(t => t.entries), compactTurns: incoming.map(t => t.summary),
@@ -52,8 +50,6 @@ test('compact recovery never treats consecutive turn numbers as proof of a share
   expect(recovered.oldestId).toBe('u3')
   expect(recovered.hasMore).toBe(true)
   expect(recovered.nodes.map(n => n.id)).toEqual(incoming.flatMap(t => t.entries.map(e => e.id)))
-  // Incompatible metadata must not become a synthetic ancestry edge again
-  // when a later page fills the gap. Cached immutable bodies may remain.
   expect(recovered.compactTurns?.some(t => t.id === 'old-u2')).toBe(false)
 
   const replacement = projection(2, 'new-u2', 'new-a2', 'a1')
@@ -78,8 +74,6 @@ test('same-branch compact recovery retains its root across canonically adjacent 
     compactTurns: [first.summary, second.summary],
     leafId: 'a2', oldestId: 'u1', hasMore: false,
   }))
-  // keep=0 omits every assistant body, but each next turn's parent still
-  // matches the preceding snapshot tail. That is a valid sparse connection.
   const incoming = suffix('a2', 0)
   const recovered = applyTail(old, detail({
     entries: incoming.flatMap(t => t.entries), compactTurns: incoming.map(t => t.summary),

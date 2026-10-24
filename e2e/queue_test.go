@@ -11,8 +11,6 @@ import (
 	"ki/internal/server"
 )
 
-// promptJSON posts a prompt and also returns the raw body, so a failure shows
-// what the server answered instead of the empty map serveJSON falls back to.
 func promptJSON(t *testing.T, sf server.File, id string, body map[string]any) (int, map[string]any, string) {
 	t.Helper()
 	status, raw, err := serveRaw(t, sf, http.MethodPost, "/v1/sessions/"+id+"/prompt", body)

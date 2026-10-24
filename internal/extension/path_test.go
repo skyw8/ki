@@ -53,10 +53,6 @@ func TestDiscoverRejectsEscapingPathDirs(t *testing.T) {
 	}
 }
 
-// TestPathDirsListsExistingDirsInChainOrder pins the resolution rules: only
-// enabled packages with the capability contribute, directories are ordered by
-// package name, duplicate declarations collapse, and missing directories are
-// skipped because runtime.install may create them after this point.
 func TestPathDirsListsExistingDirsInChainOrder(t *testing.T) {
 	home := resolvedTempDir(t)
 	extensionsDir := filepath.Join(home, "extensions")
@@ -66,15 +62,12 @@ func TestPathDirsListsExistingDirsInChainOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// beta's directory does not exist yet, so only alpha contributes.
 	got := Discover(home, session.Toggle{})
 	dirs := PathDirs(got.Enabled)
 	if len(dirs) != 1 || dirs[0] != filepath.Join(alphaDir, "bin") {
 		t.Fatalf("PathDirs = %v, want only alpha/bin", dirs)
 	}
 
-	// node_modules/.bin appears only after runtime.install: the next turn sees
-	// it without any reload.
 	installed := filepath.Join(betaDir, "bin")
 	if err := os.MkdirAll(installed, 0o700); err != nil {
 		t.Fatal(err)
@@ -91,9 +84,6 @@ func TestPathDirsListsExistingDirsInChainOrder(t *testing.T) {
 	}
 }
 
-// resolvedTempDir returns a temp dir whose symlinks are already resolved, so
-// expectations built from it match the roots the loader derives: t.TempDir is
-// unresolved on macOS (/var -> /private/var) and Windows short-name %TEMP%.
 func resolvedTempDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

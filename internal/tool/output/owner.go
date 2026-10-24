@@ -10,18 +10,11 @@ import (
 )
 
 const (
-	// baseDirName is the shared base directory for run roots.
-	baseDirName = "ki-tool-output"
-	// runDirPrefix marks the per-process roots this package may sweep.
-	runDirPrefix = "run-"
-	// ownerFileName records which process owns one run root.
+	baseDirName   = "ki-tool-output"
+	runDirPrefix  = "run-"
 	ownerFileName = "owner.json"
 )
 
-// ownerInfo is the durable identity of one run root. The PID is advisory: the
-// sweep trusts it only while the process is provably alive, and falls back to
-// the recorded heartbeat for other hosts and for platforms where liveness
-// cannot be checked.
 type ownerInfo struct {
 	PID       int       `json:"pid"`
 	Host      string    `json:"host"`
@@ -41,9 +34,6 @@ func (s *Store) writeOwner() error {
 	return nil
 }
 
-// touchOwner refreshes the heartbeat without rewriting the file, so a long
-// running server that spills rarely still looks alive to a later sweep that
-// cannot inspect its PID (other host, or a platform without liveness checks).
 func (s *Store) touchOwner() {
 	if s.ownerPath == "" {
 		return
@@ -52,9 +42,6 @@ func (s *Store) touchOwner() {
 	_ = os.Chtimes(s.ownerPath, now, now)
 }
 
-// sweep removes run roots that no live process can still be using. It only
-// looks at this package's own base directory and only at run roots, so a test
-// or an unrelated directory in the same location is never touched.
 func (s *Store) sweep(base string) {
 	entries, err := os.ReadDir(base)
 	if err != nil {
@@ -80,8 +67,6 @@ func (s *Store) abandoned(path string, now time.Time) bool {
 	heartbeat := info.ModTime()
 	owner, err := readOwner(filepath.Join(path, ownerFileName))
 	if err != nil || owner == nil {
-		// No usable identity: only an untouched directory older than the TTL
-		// is safe to remove.
 		return now.Sub(heartbeat) > s.ttl
 	}
 	if owner.Heartbeat.After(heartbeat) {

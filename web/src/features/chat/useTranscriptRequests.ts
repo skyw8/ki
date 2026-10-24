@@ -4,7 +4,6 @@ import type { MessageView } from '../../lib/messageView'
 import { TranscriptRequests } from '../../lib/transcript-requests'
 import type { TranscriptStore } from '../../lib/transcript-store'
 
-/** React owns only this controller's lifetime and snapshot subscription. */
 export function useTranscriptRequests(
   api: Client,
   id: string | null,

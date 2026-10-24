@@ -19,9 +19,6 @@ func deepseekBaseURL() string {
 	return strings.TrimRight(envOr("KI_DEEPSEEK_BASE_URL", envOr("DEEPSEEK_BASE_URL", "https://api.deepseek.com")), "/")
 }
 
-// deepseekAPIKey follows the same precedence as ordinary providers: the
-// extension's own config, DEEPSEEK_API_KEY, then the DeepSeek credential that
-// Ki already stores for model calls.
 func deepseekAPIKey(config obj) string {
 	if key := apiKey(config, "deepseekApiKey", "DEEPSEEK_API_KEY"); key != "" {
 		return key
@@ -65,9 +62,6 @@ func deepseekDateFilter(recency string) string {
 	return "after:" + now.Format("2006-01-02")
 }
 
-// DeepSeek exposes site, exclusion, lang, and date operators rather than
-// structured filters. Operators share the query's 128-character budget, so
-// keep the original wording in ori_question when a filter changes it.
 func deepseekQuery(query string, options obj) (string, string) {
 	original := deepseekClamp(jsTrim(query), deepseekQueryLimit)
 	parts := []string{}

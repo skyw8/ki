@@ -1,8 +1,5 @@
 //go:build ignore
 
-// Regenerate the shared synthetic fixtures from the repository root:
-// go run ./web/unit/fixtures/transcript-recovery.go
-// The Go conformance test is the sole loader/generator of the data-driven cases.
 package main
 
 import (

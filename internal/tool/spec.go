@@ -1,6 +1,5 @@
 package tool
 
-// Spec is the schema sent to the provider.
 type Spec struct {
 	Type        string         `json:"type,omitempty"`
 	Name        string         `json:"name"`
@@ -9,7 +8,6 @@ type Spec struct {
 	Format      *Format        `json:"format,omitempty"`
 }
 
-// Format describes the grammar accepted by a Responses custom tool.
 type Format struct {
 	Type       string `json:"type"`
 	Syntax     string `json:"syntax"`

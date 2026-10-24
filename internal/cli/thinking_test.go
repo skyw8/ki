@@ -23,8 +23,6 @@ type thinkingRequest struct {
 	Body   map[string]any
 }
 
-// Handled prompts exercise only HTTP orchestration: no model, SSE timing, or
-// in-process server is needed to verify durable settings precede submission.
 func thinkingClientFixture(t *testing.T, patchStatus int) (config.Config, func() []thinkingRequest) {
 	t.Helper()
 	var mu sync.Mutex

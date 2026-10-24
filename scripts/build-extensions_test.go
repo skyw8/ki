@@ -133,7 +133,6 @@ func TestSourcePackagesArePortableAndExcludeRuntimeArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	destination := t.TempDir()
-	// Source staging itself needs no compiler or native build dependencies.
 	t.Setenv("PATH", t.TempDir())
 	for _, name := range []string{"codex-oauth", "deep-web-search", "goal", "telegram-bot"} {
 		t.Run(name, func(t *testing.T) {

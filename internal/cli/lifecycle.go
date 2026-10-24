@@ -19,10 +19,6 @@ import (
 	"ki/internal/server"
 )
 
-// defaultStopTimeout bounds how long `ki stop`/`ki restart` wait for a daemon
-// to finish its owned cleanup before escalating to a signal. Cleanup closes
-// extension sidecars, process managers and open runs, so a short wait avoids
-// leaving a half-dead tree behind on every upgrade.
 const defaultStopTimeout = 10 * time.Second
 
 func newStopCommand() *cobra.Command {
@@ -79,7 +75,6 @@ func newStatusCommand() *cobra.Command {
 	return cmd
 }
 
-// serverStatus is the projection `ki status` prints and --json exports.
 type serverStatus struct {
 	Running       bool      `json:"running"`
 	Addr          string    `json:"addr,omitempty"`
@@ -93,10 +88,8 @@ type serverStatus struct {
 	Home          string    `json:"home"`
 	ClientVersion string    `json:"clientVersion"`
 	ClientExe     string    `json:"clientExe,omitempty"`
-	// Mismatch explains why this client's binary is not the one serving, so
-	// `ki status` answers "did the upgrade take effect?" without a second look.
-	Mismatch string `json:"mismatch,omitempty"`
-	Stale    bool   `json:"stale,omitempty"`
+	Mismatch      string    `json:"mismatch,omitempty"`
+	Stale         bool      `json:"stale,omitempty"`
 }
 
 func printStatus(cfg config.Config, asJSON bool, out io.Writer) error {
@@ -129,8 +122,6 @@ func printStatus(cfg config.Config, asJSON bool, out io.Writer) error {
 	return nil
 }
 
-// inspectServer reads the handshake and asks the endpoint whether it is live.
-// It never mutates anything: `ki status` is safe to run while a run is active.
 func inspectServer(cfg config.Config) serverStatus {
 	st := serverStatus{Home: cfg.Home, ClientVersion: buildinfo.Version, ClientExe: currentExe()}
 	sf, err := server.ReadServerFile(cfg.Home)
@@ -152,9 +143,6 @@ func inspectServer(cfg config.Config) serverStatus {
 	}
 	st.Running = true
 	if st.PID <= 0 {
-		// A daemon from before the lifecycle commands left no pid. Its listener
-		// still identifies it, which is what makes the first upgrade over an old
-		// server possible without a manual kill.
 		if pid := listenerPID(sf.Addr); pid > 0 {
 			st.PID = pid
 			st.PIDSource = "listener"
@@ -168,8 +156,6 @@ func inspectServer(cfg config.Config) serverStatus {
 	return st
 }
 
-// buildMismatch names the difference between the live daemon and this binary.
-// An empty result means the daemon already runs this build.
 func buildMismatch(sf server.File) string {
 	if sf.Build == "" && sf.Exe == "" {
 		return "the running server predates build identity reporting"
@@ -215,12 +201,6 @@ func orUnknown(s string) string {
 	return s
 }
 
-// stopDaemon ends the daemon described by the handshake and waits for it.
-//
-// Stop is idempotent: with no handshake, or with one that no longer answers,
-// it reports that nothing is running and cleans up the stale file. The graceful
-// path (POST /v1/shutdown) runs owned cleanup; the signal path exists for
-// daemons built before that route, and is the migration step for an upgrade.
 func stopDaemon(cfg config.Config, timeout time.Duration, asJSON bool, out io.Writer) error {
 	if timeout <= 0 {
 		timeout = defaultStopTimeout
@@ -246,9 +226,6 @@ func stopDaemon(cfg config.Config, timeout time.Duration, asJSON bool, out io.Wr
 		pid = listenerPID(sf.Addr)
 	}
 
-	// Graceful first. A 404 means the daemon predates the route, which is the
-	// expected first step when upgrading from a build without lifecycle
-	// commands; the signal fallback below covers it.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	gracefulErr := doJSONContext(ctx, "http://"+sf.Addr, sf.Token, http.MethodPost, "/v1/shutdown", nil, nil)
 	cancel()
@@ -259,8 +236,6 @@ func stopDaemon(cfg config.Config, timeout time.Duration, asJSON bool, out io.Wr
 			return errHint(fmt.Errorf("ki server at %s did not stop", sf.Addr),
 				"the running build predates `ki stop` and did not record its pid; stop it once by hand and retry")
 		}
-		// SIGTERM lets a daemon that predates /v1/shutdown still reap its
-		// children through the ordinary OS teardown.
 		_ = terminateProcess(pid)
 		wait := timeout
 		if wait > 5*time.Second {
@@ -301,9 +276,6 @@ func reportStop(out io.Writer, asJSON bool, v map[string]any) error {
 	return nil
 }
 
-// waitStopped reports whether the daemon stopped answering and, when its pid is
-// known, whether the process actually exited. Checking only health would call a
-// daemon "stopped" while its cleanup still holds ports and child processes.
 func waitStopped(sf server.File, pid int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -319,7 +291,6 @@ func waitStopped(sf server.File, pid int, timeout time.Duration) bool {
 	}
 }
 
-// restartDaemon replaces the daemon with one started from this binary.
 func restartDaemon(cfg config.Config, timeout time.Duration, asJSON bool, out io.Writer) error {
 	addr := daemonAddr(cfg)
 	if err := stopDaemon(cfg, timeout, false, io.Discard); err != nil {

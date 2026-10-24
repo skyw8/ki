@@ -9,8 +9,6 @@ import (
 	"ki/internal/toggles"
 )
 
-// disableExtensions disables broken extension packages and reconciles both
-// extension managers so a failed package cannot be used again in this server.
 func (s *Server) disableExtensions(names ...string) {
 	if len(names) == 0 {
 		return
@@ -36,8 +34,6 @@ func (s *Server) disableExtensions(names ...string) {
 		return
 	}
 
-	// Re-read the catalog after changing the toggle so both the ordinary and
-	// provider managers immediately drop the failed package.
 	snapshot := s.resources.Scan("")
 	if s.ext != nil {
 		s.ext.Configure(snapshot.Extensions)

@@ -17,8 +17,6 @@ function assistant(id: string, parentId: string, text: string): Entry {
 }
 
 test('reconcileUserNodes acknowledges optimistic copies by request ID, not text', () => {
-  // The old text-only fixture encoded B4: two unrelated same-text inputs
-  // cannot acknowledge one another. The wire now carries explicit identity.
   const nodes = reconcileUserNodes([
     { kind: 'user', id: 'opt-user-1', clientRequestId: 'request-1', text: 'queued-promote', content: [] },
     { kind: 'assistant', id: 'a', text: 'ok' },
@@ -125,8 +123,6 @@ test('live request headers retain request metadata while rendering one prompt', 
 })
 
 test('a manual compaction streams a running chat row that settles in place', () => {
-  // /compact is one synchronous request, so the chat row is driven by the
-  // session notification events rather than a prompt stream.
   let view = applyEvent(emptyView(), { type: 'compaction_start', reason: 'manual' })
   expect(view.nodes).toHaveLength(1)
   expect(view.nodes[0]).toMatchObject({ kind: 'compaction', running: true })
@@ -136,7 +132,6 @@ test('a manual compaction streams a running chat row that settles in place', () 
   expect(view.nodes[0]).toMatchObject({ kind: 'compaction', running: false, failed: false, empty: false })
   expect(view.records.filter(r => r.kind === 'compact')).toHaveLength(1)
 
-  // "Nothing to compact" is not a failure: no model call happened.
   let skipped = applyEvent(emptyView(), { type: 'compaction_start', reason: 'manual' })
   skipped = applyEvent(skipped, { type: 'compaction_end', reason: 'empty', ok: true })
   expect(skipped.nodes[0]).toMatchObject({ kind: 'compaction', running: false, empty: true, failed: false })
@@ -153,7 +148,6 @@ test('a manual compaction streams a running chat row that settles in place', () 
   cancelled = applyEvent(cancelled, { type: 'compaction_end', reason: 'manual', status: 'cancelled' })
   expect(cancelled.nodes[0]).toMatchObject({ kind: 'compaction', running: false, failed: true })
 
-  // The reloaded history replaces the live row with the persisted summary.
   const settled = loadHistory({
     id: 'session', cwd: '/tmp', provider: 'test', model: 'test', title: 'test', leafId: 'c1',
     entries: [{ type: 'compaction', id: 'c1', summary: 'SUM', tokensBefore: 156752 }],

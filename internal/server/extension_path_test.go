@@ -16,8 +16,6 @@ import (
 	"ki/internal/types"
 )
 
-// probeStreamer asks the Bash tool to run one command and then finishes, so a
-// test can observe what the shell tool actually resolved.
 type probeStreamer struct {
 	command string
 }
@@ -49,8 +47,6 @@ func writePathExtension(t *testing.T, home, name string) {
 	}
 }
 
-// runProbe prompts the session and returns the persisted transcript, which
-// contains the Bash tool result.
 func runProbe(t *testing.T, hs *httptest.Server, id string) string {
 	t.Helper()
 	body, _ := marshalJSON(map[string]any{"text": "run the probe"})
@@ -97,9 +93,6 @@ func disableExtension(t *testing.T, hs *httptest.Server, name string) {
 	}
 }
 
-// TestExtensionPathDirsReachShellTools drives the whole chain: manifest path
-// capability -> resource snapshot -> builtin.Set -> shell child PATH. The probe
-// script is a POSIX shell script, so the test is POSIX-only.
 func TestExtensionPathDirsReachShellTools(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("probe script is a POSIX shell script")
@@ -115,9 +108,6 @@ func TestExtensionPathDirsReachShellTools(t *testing.T) {
 		t.Fatalf("extension CLI was not on the shell PATH:\n%s", blob)
 	}
 
-	// Disabling the package must drop the directory: the toggle reloads
-	// resources, so a session loaded afterwards sees no PATH entry and the
-	// command is not found.
 	disableExtension(t, hs, "pathprobe")
 	disabledID := createSession(t, hs, t.TempDir())
 	blob := runProbe(t, hs, disabledID)

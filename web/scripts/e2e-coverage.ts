@@ -22,8 +22,6 @@ export interface ReportSpec {
   ok: boolean
 }
 
-// Use the same JSON identities for discovery and execution. Counts alone can
-// accept a duplicate test in place of a missing one, or count a skipped spec.
 export function reportSpecs(report: { suites?: ReportSuite[] }): ReportSpec[] {
   const specs: ReportSpec[] = []
   const visit = (suites: ReportSuite[], parents: string[]): void => {

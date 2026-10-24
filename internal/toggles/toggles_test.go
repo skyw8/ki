@@ -46,8 +46,6 @@ func TestMessageContextWindowRoundTrip(t *testing.T) {
 	if got.Message.ContextWindow != 1_000_000 || got.Message.ContextWindowLimit() != 1_000_000 {
 		t.Fatalf("message %+v", got.Message)
 	}
-	// An explicit value survives the v3 migration: it is an added field, so the
-	// schema version stays put (docs/state.md).
 	raw, _, err := state.ReadFile(path(home), version, nil)
 	if err != nil {
 		t.Fatal(err)

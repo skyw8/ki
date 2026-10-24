@@ -1,8 +1,3 @@
-// PlantUML has no client-side renderer, so diagrams are produced by a PlantUML
-// server: the source is deflate-compressed and re-encoded with PlantUML's URL
-// alphabet, then fetched as `/svg/<code>` or `/png/<code>`. The public server is
-// the default; a browser can point elsewhere (self-hosted / intranet) through
-// localStorage so the same build works offline.
 const DEFAULT_SERVER = 'https://www.plantuml.com/plantuml'
 
 const OVERRIDE_KEY = 'ki.plantumlServer'
@@ -15,8 +10,6 @@ export function plantumlServer(): string {
   }
 }
 
-// encode6bit / append3bytes implement PlantUML's base64 variant, which is not
-// standard base64: index 62/63 map to '-' and '_' instead of '+' and '/'.
 function encode6bit(b: number): string {
   if (b < 10) return String.fromCharCode(48 + b)
   b -= 10
@@ -48,13 +41,10 @@ function encode64(bytes: Uint8Array): string {
 }
 
 async function deflateRaw(input: Uint8Array): Promise<Uint8Array> {
-  // TextEncoder always returns an ArrayBuffer-backed view, but TS types the
-  // buffer as ArrayBufferLike (which includes SharedArrayBuffer).
   const stream = new Blob([input as BlobPart]).stream().pipeThrough(new CompressionStream('deflate-raw'))
   return new Uint8Array(await new Response(stream).arrayBuffer())
 }
 
-// plantumlUrl returns the server URL that renders source in the given format.
 export async function plantumlUrl(source: string, format: 'svg' | 'png'): Promise<string> {
   const compressed = await deflateRaw(new TextEncoder().encode(source))
   return `${plantumlServer()}/${format}/${encode64(compressed)}`

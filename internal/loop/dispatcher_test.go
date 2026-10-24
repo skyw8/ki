@@ -88,7 +88,6 @@ func TestNestedDispatcherHooksAliasIdentityAndFullIntermediate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Replacing the caller's backing slice must not change the capability set.
 	allowed[0] = namedTool{name: "other"}
 	res, err := d.DispatchNested(t.Context(), NestedToolCall{
 		ParentCallID: "outer", CellID: "cell", Name: "Read", Arguments: map[string]any{"file_path": "a"},

@@ -12,8 +12,6 @@ test('evicted replay recovers the persisted terminal answer without submitting a
     entries: [...f.entries, { type: 'message', id: 'durable', parentId: 'question',
       message: { role: 'assistant', content: [{ type: 'text', text: 'Recovered from durable history 中🙂' }] } }],
   } }))
-  // The fixture supplies a fetch-backed stream. Override its next connection
-  // with the server's actual HTTP contract, after one still-running snapshot.
   await page.evaluate(id => {
     const previous = window.fetch
     const scope = window as unknown as { streamClose: () => void; expiredReplays: number }

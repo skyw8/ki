@@ -44,8 +44,6 @@ type cell struct {
 	explicitStop  bool
 }
 
-// NewLocalSession is an in-process runtime, primarily for cheap contract tests.
-// Production callers should use Manager so VM heap pressure is process-scoped.
 func NewLocalSession(limits Limits) *Session {
 	l := &localSession{limits: limits.normalized(), cells: make(map[string]*cell), store: make(map[string]json.RawMessage)}
 	return &Session{backend: l}
@@ -80,8 +78,6 @@ func (s *localSession) execute(ctx context.Context, req ExecuteRequest, cb Callb
 	for k, v := range s.store {
 		snapshot[k] = v
 	}
-	// Cell identities survive transcript replay; a restarted worker must not
-	// reuse cell-1 and collide with earlier nested tool audit events.
 	unique, err := idgen.NewV7()
 	if err != nil {
 		s.mu.Unlock()
@@ -131,12 +127,9 @@ func (s *localSession) terminateAll(ctx context.Context) error {
 		case <-c.done:
 		case <-ctx.Done():
 			cleanupErr = ctx.Err()
-			// Cancellation changes the reported observation, not callback
-			// ownership. Local callers must still join the work they admitted.
 			<-c.done
 		}
 	}
-	// Occupy closure must not leave terminal cells consuming admission slots.
 	s.mu.Lock()
 	for _, c := range cells {
 		delete(s.cells, c.id)
@@ -252,8 +245,6 @@ func (c *cell) observe(ctx context.Context, duration time.Duration, maxBytes int
 			resp := Response{CellID: c.id, Status: c.status, Error: c.errorText, Terminate: c.terminate, Content: []types.Content{}}
 			budget := maxBytes
 			for _, item := range c.output {
-				// Image payloads are bounded by the cell/IPC budget, not the text
-				// preview budget; slicing base64 would corrupt the image.
 				if item.Type != "text" {
 					resp.Content = append(resp.Content, item)
 					continue

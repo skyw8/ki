@@ -18,68 +18,30 @@ import (
 	"ki/internal/types"
 )
 
-// runEmitter is one run's event funnel. loop.Run produces events and calls Emit
-// for each of them; the funnel applies an event to its subscribers in a fixed
-// order:
-//
-//  1. persist    — the jsonl entry, when the event has one
-//  2. buffer     — this run's SSE replay log in runState
-//  3. push       — the WebUI push stream (terminal frames only)
-//  4. extensions — async lifecycle notifications
-//
-// plus the context meter (persisted and buffered) and the run's threshold
-// compaction (currently disabled, see compactOnRunEnd).
-//
-// Why a type instead of the closure runPrompt used to build: the stages are
-// independent contracts (jsonl shape, SSE replay, push fallback, extension
-// ordering, context accounting) that were only reachable through a full run.
-// The order between them is still a contract, so Emit stays one synchronous
-// serialized call chain — no stage may spawn a goroutine, see notifyExtensions.
-// Nested code callbacks can arrive while the loop streams; they share the same
-// funnel lock instead of racing persistence or lifecycle notifications.
 type runEmitter struct {
-	mu   sync.Mutex
-	s    *Server
-	ctx  context.Context
-	id   string
-	sess *session.Session
-	st   *runState
-	// info is the resolved catalog entry for the session's provider/model. It
-	// supplies the context window and the pricing pinned into the request
-	// header.
-	info provider.Model
-	// serverSide is the effective per-occupy decision after extension transport
-	// checks, not merely the catalog/config capability.
-	serverSide bool
-	// binding is the provider scope actually occupied by this run, including
-	// its credential snapshot. replayBinding is empty when lifecycle hooks must
-	// receive the portable transcript instead of an opaque prefix.
+	mu            sync.Mutex
+	s             *Server
+	ctx           context.Context
+	id            string
+	sess          *session.Session
+	st            *runState
+	info          provider.Model
+	serverSide    bool
 	binding       types.ProviderBinding
 	replayBinding types.ProviderBinding
 
-	// idempotencyKey is consumed by the first user message_end, so a retried
-	// extension enqueue appends one entry instead of two. Empty when the run
-	// carries no key.
 	idempotencyKey     string
 	cachePrevPrompt    int
 	cacheReported      bool
 	cacheBaselineReady bool
 }
 
-// Emit applies one loop event to every subscriber. An error aborts the run:
-// the loop stops on the first event the server could not persist.
 func (p *runEmitter) Emit(ev loop.Event) error {
-	// Hold only the event funnel, never a tool execution: nested tools may emit
-	// progress or callbacks before the enclosing execution returns.
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err := p.persist(&ev); err != nil {
 		return err
 	}
-	// buffer stamps the run identity onto ev itself; publishCompletion and
-	// notifyExtensions below read that same event and a subscriber that cannot
-	// attribute an event to its run must drop it (a channel connector replies to
-	// nothing when runId/external are missing).
 	p.buffer(&ev)
 	if p.st.agentTaskID != "" {
 		if err := p.s.agentTasks.ReduceProgress(p.st.agentTaskID, p.st.agentGeneration, projectAgentProgress(ev)); err != nil {
@@ -96,10 +58,6 @@ func (p *runEmitter) Emit(ev loop.Event) error {
 	return nil
 }
 
-// persist writes the event's jsonl entry before the event is buffered, so a
-// client that sees an event can always find it on disk. It may rewrite ev: an
-// extension message_end rewrite and the appended entry id must reach the SSE
-// subscriber, which is why it takes a pointer.
 func (p *runEmitter) persist(ev *loop.Event) error {
 	if ev.ParentCallID != "" && (ev.Type == loop.ToolExecutionStart || ev.Type == loop.ToolExecutionUpdate || ev.Type == loop.ToolExecutionEnd) {
 		bounded, err := loop.BoundNestedToolEvent(*ev)
@@ -168,34 +126,23 @@ func persistCompactionEvent(sess *session.Session, ev *loop.Event) error {
 	if err != nil {
 		return fmt.Errorf("parse compaction entry timestamp: %w", err)
 	}
-	// Replay and hydration must upsert the same lifecycle node, rather than
-	// inventing a second progress row or confusing it with the checkpoint.
 	ev.LifecycleEntryID = entry.ID
 	ev.ParentID = &entry.ParentID
 	ev.Timestamp = stamp.UnixMilli()
 	return nil
 }
 
-// appendMessage persists a message_end. Message rewriting stays ahead of the
-// append and of the SSE replay of the same event.
 func (p *runEmitter) appendMessage(ev *loop.Event) error {
 	responsesItems := slices.Clone(ev.Message.ResponsesItems)
 	if p.s.ext != nil {
 		rewritten := p.s.ext.ApplyMessageEnd(p.ctx, p.id, *ev.Message)
-		// Opaque server compaction state is host-private and therefore omitted
-		// from extension JSON. Preserve it across an otherwise valid rewrite.
 		rewritten.ResponsesItems = responsesItems
-		// Transport identity belongs to the accepted input, not to a content
-		// rewrite. Losing it breaks optimistic acknowledgement and completion
-		// ownership even when the extension only edits the text.
 		preserveMessageIdentity(*ev.Message, &rewritten)
 		ev.Message = &rewritten
 	}
 	if ev.Message.StopReason == "aborted" {
 		reason, source := runCancellation(p.st)
 		if reason != "" {
-			// Copy before annotating: provider accumulators may still be reused
-			// by the loop, while this metadata belongs to the persisted run.
 			annotated := *ev.Message
 			annotated.CancelReason = reason
 			annotated.CancelSource = source
@@ -205,9 +152,6 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 	ev.CacheMiss = nil
 	if ev.Message.Role == "assistant" && ev.Message.Usage != nil {
 		if !p.cacheBaselineReady {
-			// Why: read the entries and active leaf atomically; separate
-			// Entries/LeafID snapshots could straddle an append and lose the
-			// baseline entry needed by this live completion.
 			entries := p.sess.LeafEntries()
 			leafID := ""
 			if len(entries) > 0 {
@@ -235,18 +179,10 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 	persisted.ResponsesItems = nil
 	if len(ev.Message.ResponsesItems) > 0 {
 		if !p.serverSide {
-			// Why: ResponsesItems is a private server-compaction checkpoint,
-			// not ordinary assistant content. A standalone-only or buggy
-			// provider must not inject opaque replay state unless this occupy
-			// explicitly enabled the advertised inline protocol.
 			ev.Message = &persisted
 		} else if !p.replayBinding.SameScope(p.binding) ||
 			(ev.Message.Provider != "" && ev.Message.Provider != p.info.Provider) ||
 			(ev.Message.Model != "" && ev.Message.Model != p.info.ID) {
-			// A message-visible lifecycle hook cannot rewrite the encrypted
-			// canonical suffix. Keep only the portable transcript so changing
-			// or disabling that hook cannot later replay state under the wrong
-			// routing or moderation policy.
 			ev.Message = &persisted
 		} else {
 			items, checkpointErr := provider.ResponsesCheckpointItems(*ev.Message)
@@ -261,13 +197,7 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 				return fmt.Errorf("append server compaction checkpoint: %w", checkpointErr)
 			}
 			ev.EntryID, ev.ParentID = messageEntry.ID, &messageEntry.ParentID
-			// The checkpoint intentionally starts a fresh cache-comparison
-			// baseline for the next provider request.
 			p.cachePrevPrompt, p.cacheReported, p.cacheBaselineReady = 0, false, true
-			// The dedicated checkpoint owns encrypted state. Never buffer it
-			// into ordinary message SSE or extension notifications. Copy
-			// instead of mutating the loop's assistant value: the same live
-			// run still needs the canonical suffix for its next tool round.
 			ev.Message = &persisted
 			return nil
 		}
@@ -286,8 +216,6 @@ func preserveMessageIdentity(original types.Message, rewritten *types.Message) {
 	rewritten.Origin = original.Origin
 }
 
-// appendRequestHeader persists the model-facing system prompt and tool schemas
-// of one provider request.
 func (p *runEmitter) appendRequestHeader(ev loop.Event) error {
 	tools := make([]session.ToolSchema, 0, len(ev.Tools))
 	for _, t := range ev.Tools {
@@ -310,47 +238,18 @@ func (p *runEmitter) appendRequestHeader(ev loop.Event) error {
 	return nil
 }
 
-// buffer stamps this run's identity onto ev, appends it to the run's replay log
-// and wakes its SSE readers. Every buffered event carries the run id and the
-// run's external metadata, so a reader that starts mid-run can still attribute
-// what it replays. The log trims payloads a later reader cannot use (see
-// runState.appendLocked), so it stays proportional to the newest partial rather
-// than to the run's total streamed output.
-//
-// It stamps the caller's event rather than a copy, for the same reason persist
-// takes a pointer: the stages after it (the push completion frame and the
-// extension lifecycle notification) must see the identity too. Buffering a copy
-// made agent_end reach extensions with an empty runId, which channel connectors
-// read as "not mine" and silently dropped.
 func (p *runEmitter) buffer(ev *loop.Event) {
 	p.st.mu.Lock()
 	defer p.st.mu.Unlock()
-	p.st.appendLocked(ev) // stamps the run identity onto ev
+	p.st.appendLocked(ev)
 	p.st.wait.Broadcast()
 }
 
-// publishCompletion fans a terminal event out to push subscribers: a WebUI tab
-// that is not holding this run's SSE (background session, or the user switched
-// to another session) still needs to learn the run finished. run_aborted
-// already fans out through publishSideband.
-//
-// Publish without Messages: the run SSE replays them for the one client that
-// asked, while every tab needs only the completion. The full event still
-// reaches extensions.
 func (p *runEmitter) publishCompletion(ev loop.Event) {
 	p.s.publishPush(p.id, loop.Event{Type: ev.Type, RunID: ev.RunID, External: ev.External})
-	// The push stream only reaches a running page. Web Push wakes the service
-	// worker after the tab is frozen, so a locked phone still learns the run
-	// finished (the worker suppresses it while a focused tab is watching).
 	p.s.notifyPushCompletion(p.id)
 }
 
-// notifyExtensions forwards a lifecycle notification to async subscribers.
-//
-// Lifecycle notifications are asynchronous from the extension's point of view,
-// but their write order must match the loop. Spawning one goroutine per event
-// allowed agent_settled to overtake message_end, leaving channel connectors with
-// an ephemeral draft but no final reply.
 func (p *runEmitter) notifyExtensions(ev loop.Event) {
 	if !ev.Type.Lifecycle() {
 		return
@@ -358,9 +257,6 @@ func (p *runEmitter) notifyExtensions(ev loop.Event) {
 	p.s.ext.OnEvent(p.ctx, p.id, extension.RedactEvent(ev, p.id))
 }
 
-// recordContextUsage persists and buffers the context meter after a
-// request_header and after an assistant message_end: the only two points where
-// the model-facing size can change. Other events are not persisted here.
 func (p *runEmitter) recordContextUsage(ev loop.Event) error {
 	live := ev.Type == loop.RequestHeader
 	if !live && (ev.Type != loop.MessageEnd || ev.Message == nil || ev.Message.Role != "assistant") {
@@ -368,8 +264,6 @@ func (p *runEmitter) recordContextUsage(ev loop.Event) error {
 	}
 	var request *loop.Event
 	if live {
-		// The live request supplies the system prompt and tool schemas that the
-		// message estimate does not cover.
 		request = &ev
 	}
 	used, window, err := p.s.contextUsageEstimate(p.sess, p.info, p.replayBinding, request)
@@ -393,10 +287,6 @@ func (p *runEmitter) recordContextUsage(ev loop.Event) error {
 	return nil
 }
 
-// compactNow runs one compaction and reports whether the context actually
-// changed. The compaction events go through Emit like every other event, so
-// they are persisted, buffered, and fanned out in loop order. A compaction that
-// finds nothing to do is not an error.
 func (p *runEmitter) compactNow(intent compact.Intent, request *loop.Request) (bool, error) {
 	reason := string(intent.Reason)
 	if err := p.Emit(loop.Event{
@@ -441,17 +331,6 @@ func (p *runEmitter) compactNow(intent compact.Intent, request *loop.Request) (b
 	return err == nil, err
 }
 
-// contextUsageEstimate returns the model-facing token estimate and the effective
-// context window for sess.
-//
-// The message estimate is char/4 whenever the newest assistant usage is missing
-// or predates the last compaction, and it never covers the system prompt and
-// tool schemas. Those are added from request when the caller serves that request
-// (request_header), otherwise from the session's persisted last request header —
-// an assistant message_end without usable usage, or a compaction that ran
-// outside a run, has no live request left. The returned estimate is still useful
-// when marshaling the live schemas fails; the error is reported so the
-// request_header path can abort the run.
 func (s *Server) contextUsageEstimate(sess *session.Session, info provider.Model, binding types.ProviderBinding, request *loop.Event) (used, window int, err error) {
 	modelContext := sess.ContextToLeaf(binding)
 	messages := modelContext.Messages

@@ -111,9 +111,6 @@ func TestClientStreamsResponsesFunctionCall(t *testing.T) {
 }
 
 func TestClientStreamsResponsesMessageWithoutItemID(t *testing.T) {
-	// Some OpenAI-compatible gateways omit the message item's id but keep the
-	// output index. Text remains usable and can acquire the id from a later
-	// delta without weakening tool/reasoning item validation.
 	sse := "event: response.output_item.added\n" + protocolJSON(map[string]any{
 		"type": "response.output_item.added", "output_index": 0,
 		"item": map[string]any{"type": "message", "role": "assistant"},

@@ -3,7 +3,6 @@ import { applyEvent, applyIndex, applyTail, compactBoundary, emptyView, hydrateE
 
 export type TranscriptRequestKind = 'tail' | 'page' | 'index' | 'body' | 'turn' | 'keep' | 'compact'
 
-/** A local request capability, not a server branch identifier. */
 export type TranscriptTicket = {
   kind: TranscriptRequestKind
   sessionId: string | null
@@ -19,11 +18,6 @@ export type TranscriptTicket = {
 
 export type ViewUpdate = ViewState | ((current: ViewState) => ViewState)
 
-/**
- * The transcript's atomic commit boundary lives outside React scheduling.
- * Requests observe exactly the state that has committed, even before React
- * renders it. Payload hydration cannot grant authority over branch coverage.
- */
 export class TranscriptStore {
   private value: ViewState
   private id: string | null
@@ -51,13 +45,10 @@ export class TranscriptStore {
     for (const listener of this.listeners) listener()
   }
 
-  /** Opening even the same session again revokes every old response. */
   reset(sessionId: string | null, initial: ViewState): void {
     this.epoch++
     this.frontier++
     this.id = sessionId
-    // Even a same-object reset changes request authority. Controllers must
-    // hear it although React may correctly skip rendering an identical view.
     this.value = initial
     for (const listener of this.listeners) listener()
   }
@@ -90,7 +81,6 @@ export class TranscriptStore {
     return true
   }
 
-  /** No promise resolution or network acknowledgement runs inside a reducer. */
   commit(ticket: TranscriptTicket, detail: SessionDetail, options?: { rejectedCursor?: string }): boolean {
     if (!this.canCommit(ticket)) return false
     const state = this.value
@@ -101,8 +91,6 @@ export class TranscriptStore {
         if (options?.rejectedCursor && state.oldestId === options.rejectedCursor && state.liveRevision === ticket.liveRevision) {
           next = { ...next, oldestId: detail.oldestId, hasMore: !!detail.hasMore }
         }
-        // A confirmed snapshot revokes projections issued against its
-        // predecessor, even if both snapshots share the same human input.
         this.frontier++
         break
       case 'page':
@@ -113,9 +101,6 @@ export class TranscriptStore {
         })
         break
       case 'compact': {
-        // The server may select another sibling while the request travels.
-        // A stable local ticket alone cannot authorize that response's tail.
-        // Only recovery can choose a previously unknown branch frontier.
         const active = new Set(leafEntries(state.allEntries, state.leafId, state.compactTurns, false).map(entry => entry.id))
         if (!detail.compactTurns?.length || detail.compactTurns.some(turn => !active.has(turn.tailId))) return false
         next = compactBoundary(state, detail, ticket)
@@ -123,8 +108,6 @@ export class TranscriptStore {
       }
       case 'keep': {
         const turn = detail.compactTurns?.find(turn => turn.id === ticket.turnId)
-        // A projection of a different tail is not authority to choose it.
-        // The controller must recover the selected branch before retrying.
         if (!turn || turn.tailId !== ticket.turnTailId) return false
         next = hydrateEntries(state, detail.entries ?? [], { compactTurns: [turn] })
         break

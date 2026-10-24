@@ -6,10 +6,6 @@ import (
 	"ki/internal/types"
 )
 
-// messageWireValue snapshots typed fields without copying growing strings.
-// Mutable, provider-owned values still cross a JSON boundary: a reused argument
-// map must not silently modify the previous patch base. Keep this projection in
-// sync with Message/Content's JSON contract (the round-trip test covers fields).
 func messageWireValue(m types.Message) (map[string]any, error) {
 	v := map[string]any{"role": m.Role, "content": nil, "durationMs": m.DurationMs}
 	stringsInto(v, map[string]string{
@@ -97,8 +93,6 @@ func snapshotJSON(v any) (any, error) {
 	return snapshot, err
 }
 
-// Escaping can only make a string's JSON representation larger. This cheap
-// estimate avoids serializing the snapshot merely to compare it with a delta.
 func wireSizeLowerBound(v any) int {
 	switch v := v.(type) {
 	case string:

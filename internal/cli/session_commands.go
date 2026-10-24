@@ -468,15 +468,11 @@ func loadSessionTrace(cfg config.Config, id string, filter session.TraceFilter, 
 		if err != nil {
 			return sessionTraceResult{}, err
 		}
-		// Older servers treated unknown views as detailed and returned no trace
-		// envelope. Fall back to the local reader during rolling upgrades.
 		if online.ID != "" && online.Trace != nil {
 			if limit > 0 {
 				online.SchemaVersion = sessionOutputSchemaVersion
 				return online, nil
 			}
-			// --all remains one CLI operation but follows the server's bounded
-			// pages so a long trace never creates an unbounded HTTP response.
 			for online.HasMore && online.OldestID != "" {
 				query.Set("before", online.OldestID)
 				var older sessionTraceResult
@@ -538,7 +534,6 @@ func loadSessionInspect(cfg config.Config, id string) (sessionInspectResult, err
 		if err != nil {
 			return sessionInspectResult{}, err
 		}
-		// See loadSessionTrace: an old server has no inspect envelope.
 		if online.ID != "" && online.Analysis != nil {
 			return sessionInspectResult{
 				SchemaVersion: sessionOutputSchemaVersion, ID: online.ID, LeafID: online.LeafID,

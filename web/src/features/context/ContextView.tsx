@@ -227,9 +227,6 @@ function Card({ title, children, className = '', testId, extra }: {
 function Stats({ view, t }: { view: ViewState; t: Copy }) {
   const stats = useMemo(() => sessionStats(view), [view])
   const tools = useMemo(() => {
-    // The body window omits old calls even with a complete metadata index.
-    // Shared records retain their identities; compact projections account for
-    // unseen calls and reconcile the current live suffix without double-counting.
     const counts = new Map<number, number>()
     for (const turn of projectTurnStats(view.nodes, view.turnBase, view.compactTurns).values()) {
       counts.set(turn.turn, Math.max(counts.get(turn.turn) ?? 0, turn.tools))
@@ -406,8 +403,6 @@ function ContextTrend({ points, requests, selectedId, onSelect, t }: {
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
-    // Fit the visible window to actual card width instead of rendering a
-    // multi-screen strip of 120 almost unreadable columns. Touch targets stay 44px.
     const observer = new ResizeObserver(() => setPageSize(Math.max(1, Math.min(24, Math.floor((chart.clientWidth - 4) / 46)))))
     observer.observe(chart)
     return () => observer.disconnect()
@@ -582,8 +577,6 @@ function ContentBody({ text, t }: { text: string; t: Copy }) {
   const [mode, setMode] = useState<'raw' | 'markdown'>('raw')
   const [full, setFull] = useState(false)
   const [copied, setCopied] = useState(false)
-  // Large bodies and Markdown are mounted only after explicit expansion. A
-  // folded browser must not parse megabytes of off-screen tool output.
   const preview = !full && text.length > TEXT_PREVIEW_LIMIT
   const shown = preview ? text.slice(0, TEXT_PREVIEW_LIMIT) : text
   return (
@@ -647,8 +640,6 @@ function BrowserItem({ item, t, onHydrate, onLocateEntry }: {
   item: ContextItem; t: Copy; onHydrate?: ContextViewProps['onHydrate']; onLocateEntry?: ContextViewProps['onLocateEntry']
 }) {
   const [open, setOpen] = useState(false)
-  // Header entries supply System/schemas but deliberately have no chat row.
-  // A conversation jump for them would page history to a nonexistent target.
   const canLocate = item.id !== 'system' && !item.id.startsWith('schema:')
   return (
     <details className="context-item" data-entry-id={item.entryId} data-tokens={item.tokens}

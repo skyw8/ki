@@ -8,9 +8,6 @@ import (
 	"testing"
 )
 
-// TestTranscriptConformance makes the browser's synthetic recovery fixtures a
-// checked wire contract, not a manually maintained approximation of compact
-// responses. Both Go and Bun consume these inputs and exact projected outputs.
 func TestTranscriptConformance(t *testing.T) {
 	dir := filepath.Join("..", "..", "web", "unit", "fixtures")
 	var input struct {
@@ -42,8 +39,6 @@ func TestTranscriptConformance(t *testing.T) {
 		}
 	}
 	path := filepath.Join(dir, "transcript-recovery.json")
-	// Regeneration and verification deliberately use the same case loader.
-	// Normal CI never sets this explicit opt-in and must fail on stale output.
 	if os.Getenv("KI_UPDATE_TRANSCRIPT_FIXTURES") == "1" {
 		raw, err := json.MarshalIndent(actual, "", "  ")
 		if err != nil {
@@ -77,8 +72,6 @@ func TestTranscriptConformance(t *testing.T) {
 			if err := json.Unmarshal(want, &wantJSON); err != nil {
 				t.Fatal(err)
 			}
-			// Compare wire JSON, not decoded CompactPage values: an added
-			// zero-valued wire field must invalidate the browser fixture too.
 			if !reflect.DeepEqual(gotJSON, wantJSON) {
 				got, _ := json.MarshalIndent(gotJSON, "", "  ")
 				want, _ := json.MarshalIndent(wantJSON, "", "  ")

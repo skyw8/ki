@@ -117,7 +117,6 @@ func TestScriptedStreamsGrowingChunks(t *testing.T) {
 	if deltas != 8 {
 		t.Fatalf("deltas = %d, want 8", deltas)
 	}
-	// Every partial carries the whole accumulated text, like the real adapters.
 	if got, want := partials[7].Text(), msg.Text(); got != want {
 		t.Fatalf("last partial %q, final %q", got, want)
 	}

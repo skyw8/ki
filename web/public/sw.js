@@ -1,17 +1,3 @@
-// ki service worker: Web Push completion notifications.
-//
-// It deliberately has no fetch handler. The SPA and its API must always reach
-// the network — an offline cache would only serve a stale UI behind a live
-// session, and session data must never be cached on a shared device.
-//
-// The notification rule mirrors the page's (src/lib/notifications.ts): a run
-// that finishes while a *focused* ki tab is on screen is left to that tab,
-// which learns about it over its own push stream. The worker only sees whether
-// some window client is focused, not which session it shows, but that is
-// enough: a focused page holds a live push stream for every session and already
-// applies the exact-session rule there. If no window is focused (phone locked,
-// app switched, tab closed), the push is the only signal left.
-
 self.addEventListener('install', () => self.skipWaiting())
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()))
 self.addEventListener('push', event => event.waitUntil(handlePush(event)))
@@ -31,8 +17,6 @@ async function handlePush(event) {
 
   await self.registration.showNotification(data.title || 'ki', {
     body: notificationBody(data),
-    // Same tag as the page's Notification: a completion observed by both the
-    // page and the worker collapses into one notification instead of stacking.
     tag: 'ki-run-' + data.sessionId,
     data: { sessionId: data.sessionId },
     icon: '/icon-192.png',
@@ -40,8 +24,6 @@ async function handlePush(event) {
   })
 }
 
-// notificationBody mirrors the page's notify.doneBody / notify.doneBodyDir
-// strings, which are not reachable from the worker's own script.
 function notificationBody(data) {
   const language = (self.navigator && self.navigator.language) || ''
   const done = language.toLowerCase().startsWith('zh') ? '会话已完成' : 'Session finished'

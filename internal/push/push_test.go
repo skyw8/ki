@@ -23,8 +23,6 @@ import (
 	"time"
 )
 
-// testClient is a browser-side subscription key pair: the P-256 key the browser
-// generates in PushManager.subscribe plus its auth secret.
 type testClient struct {
 	private *ecdh.PrivateKey
 	auth    []byte
@@ -54,9 +52,6 @@ func (c testClient) subscription(t *testing.T, endpoint string) Subscription {
 	}
 }
 
-// decrypt is the receiver half of RFC 8291. The package's own RFC 8291
-// correctness is proven by round-tripping through it rather than by comparing
-// ciphertext to a fixture.
 func (c testClient) decrypt(t *testing.T, body []byte) []byte {
 	t.Helper()
 	if len(body) < 21 {
@@ -130,7 +125,6 @@ func TestEncryptRoundTripsThroughTheClientKey(t *testing.T) {
 		t.Fatalf("plaintext: %q", got)
 	}
 
-	// A second message must not reuse the ephemeral key or salt.
 	again, err := encrypt([]byte(`{"type":"run_complete"}`), sub.Keys.P256DH, sub.Keys.Auth)
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +235,6 @@ func TestStoreUpsertsAndValidates(t *testing.T) {
 	if err := store.Put(sub); err != nil {
 		t.Fatal(err)
 	}
-	// A re-registration of the same endpoint refreshes rather than duplicates.
 	sub.Keys.Auth = base64.RawURLEncoding.EncodeToString(make([]byte, 16))
 	if err := store.Put(sub); err != nil {
 		t.Fatal(err)
@@ -257,7 +250,6 @@ func TestStoreUpsertsAndValidates(t *testing.T) {
 		t.Fatal("short keys were accepted")
 	}
 
-	// The registry survives a reopen and Delete is idempotent.
 	reopened := OpenStore(path)
 	if got := reopened.List(); len(got) != 1 {
 		t.Fatalf("reopen: %+v", got)

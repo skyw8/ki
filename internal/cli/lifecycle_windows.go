@@ -10,15 +10,10 @@ import (
 	"syscall"
 )
 
-// stopSignals is limited to the console interrupt on Windows: there is no
-// SIGTERM, and the portable way to stop a detached daemon here is
-// POST /v1/shutdown (or taskkill for a pre-lifecycle build).
 func stopSignals() []os.Signal {
 	return []os.Signal{os.Interrupt}
 }
 
-// processAlive opens the process and asks for its exit code; Windows keeps the
-// pid reserved while the handle is closed but the process is still running.
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -39,9 +34,6 @@ func processAlive(pid int) bool {
 	return code == stillActive
 }
 
-// terminateProcess asks taskkill for a normal close. A console app has no
-// window to close, so Windows usually ends it outright; that is still the
-// documented pre-force step, and forceKillProcess is the guaranteed one.
 func terminateProcess(pid int) error {
 	if pid <= 0 {
 		return nil

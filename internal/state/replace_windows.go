@@ -13,7 +13,5 @@ func replaceFile(source, destination string) error {
 	if err != nil {
 		return err
 	}
-	// MoveFileEx is the Windows equivalent of rename-over: REPLACE_EXISTING
-	// avoids a delete/write gap and WRITE_THROUGH waits for the disk update.
 	return windows.MoveFileEx(src, dst, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 }

@@ -16,9 +16,6 @@ import (
 	"ki/internal/workspace"
 )
 
-// resolveWorkspace picks the workspace for a new session: the named one, the one
-// registered for cwd, or a temporary directory. title only reaches a workspace
-// that is registered now, since Store.Create keeps an existing record as it is.
 func (s *Server) resolveWorkspace(id, cwd, title string) (workspace.Record, error) {
 	if id != "" {
 		rec, ok := s.ws.Get(id)
@@ -184,9 +181,6 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	// Root creates accepted before this boundary have materialized under the
-	// same lock. Do not retain it while draining runners: release callbacks may
-	// themselves ask to create an unrelated root.
 	s.deletingWorkspaces[id] = true
 	s.creationMu.Unlock()
 	infos, err := session.List(s.cfg.Sessions.Root)
@@ -207,9 +201,6 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			reservations = append(reservations, drained)
 		}
 	}
-	// Successful spawns just before their fence already materialized sessions.
-	// Refresh after all workspace agent roots are fenced; rejected reservations
-	// are drained before removal by deleteSessionInfos.
 	seen := map[string]bool{}
 	for {
 		infos, err = session.List(s.cfg.Sessions.Root)
@@ -245,7 +236,6 @@ func (s *Server) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Deleting a workspace deletes its sessions, so the sidebar refetches both.
 	s.publishInvalidation(scopeSessions)
 	s.publishInvalidation(scopeWorkspaces)
 	w.WriteHeader(http.StatusNoContent)
@@ -328,9 +318,6 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		ForkMode:        sess.Header.EffectiveForkMode(),
 	}
 	_ = sess.Close()
-	// Fence before traversal: a live descendant can otherwise spawn after the
-	// snapshot and survive deletion as an orphan. Flat/workspace edges remain
-	// governed by the same collection rules below.
 	release, drained, err := s.fenceAgentDeletion(targetID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -358,8 +345,6 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		if len(added) == 0 {
 			break
 		}
-		// Finite: every discovered parent is fenced before its preaccepted fork
-		// drains. Refresh to include those forks; no fenced parent can add more.
 		s.fenceDeletionInputs(added)
 	}
 	slices.Reverse(targets)
@@ -411,9 +396,6 @@ func (s *Server) collectSessionTree(infos []session.Info, target session.Info) [
 }
 
 func sameSessionWorkspace(s *Server, a, b session.Info) bool {
-	// Why: a parent id alone must not make a tree edge cross workspace
-	// boundaries; cross-workspace children are orphaned and must survive a
-	// cascade from the other workspace.
 	ar, aok := s.ws.Match(a.CWD)
 	br, bok := s.ws.Match(b.CWD)
 	if aok && bok {
@@ -436,7 +418,7 @@ func (s *Server) removeSessionInfo(info session.Info) error {
 	if err := session.Remove(info.Dir); err != nil {
 		return fmt.Errorf("remove session: %w", err)
 	}
-	s.sidx.Remove(info.ID) // only after the dir is actually gone
+	s.sidx.Remove(info.ID)
 	s.mu.Lock()
 	s.forgetReplayLocked(info.ID)
 	if st := s.runs[info.ID]; st != nil {

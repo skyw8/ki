@@ -13,8 +13,6 @@ const plugins = { cjk }
 const linkSafety = { enabled: false }
 const DiagramBlock = lazy(() => import('./DiagramBlock'))
 
-// Fences rendered by DiagramBlock: mermaid renders in-browser, plantuml via a
-// PlantUML server (plantuml.ts). `puml` is plantuml's common short alias.
 const DIAGRAM_KINDS: Record<string, 'mermaid' | 'plantuml'> = {
   mermaid: 'mermaid',
   plantuml: 'plantuml',
@@ -23,12 +21,6 @@ const DIAGRAM_KINDS: Record<string, 'mermaid' | 'plantuml'> = {
 
 type MdProps<T extends keyof JSX.IntrinsicElements> = JSX.IntrinsicElements[T] & ExtraProps
 
-// Streamdown's defaults ship Tailwind/shadcn chrome (code toolbar, table
-// copy, link-safety modal, strong-as-span). Those classes do nothing here
-// (this app is not on Tailwind) and would not match the chat bubble.
-// Semantic tags let `.md` CSS own the look. Mermaid and plantuml fences go
-// through DiagramBlock instead of Streamdown's mermaid chrome, so both share
-// the diagram/source toggle, copy, and download on the same design tokens.
 function md<T extends keyof JSX.IntrinsicElements>(tag: T) {
   return function MdEl({ node: _node, children, ...rest }: MdProps<T>) {
     return createElement(tag, rest, children)
@@ -137,11 +129,6 @@ function MdImg({ node: _node, alt, ...rest }: MdProps<'img'>) {
   return <img alt={alt ?? ''} loading="lazy" decoding="async" {...rest} />
 }
 
-/**
- * Block lexing is the first pass over a message body, and Streamdown runs it per
- * mount. Caching the split per text means a body that left the window and came
- * back (scrolling up is mostly revisits) is lexed once.
- */
 const BLOCK_CACHE_LIMIT = 300
 const BLOCK_CACHE_BYTES = 8 * 1024 * 1024
 let blockCacheBytes = 0
@@ -150,14 +137,10 @@ const blockBytes = (text: string, blocks: string[]) => 2 * (text.length + blocks
 function blocksFor(text: string): string[] {
   const hit = blockCache.get(text)
   if (hit) {
-    // Refresh the insertion order so the limit evicts the coldest text.
     blockCache.delete(text)
     blockCache.set(text, hit)
     return hit
   }
-  // A giant semantic block (list/fence/reference document) is already a safe
-  // unit. Re-running marked's block splitter over it can be quadratic; the
-  // underlying Markdown renderer accepts multiple blocks in one input too.
   const blocks = text.length > 4096 ? [text] : parseMarkdownIntoBlocks(text)
   const bytes = blockBytes(text, blocks)
   if (bytes > BLOCK_CACHE_BYTES) return blocks
@@ -210,21 +193,12 @@ export const Markdown = memo(function Markdown({
   const [document] = useState(() => new MarkdownDocument())
   const root = useRef<HTMLDivElement>(null)
   const parts = useMemo(() => document.update(text, !streaming), [document, text, streaming])
-  // This runs after actual text was committed, never at socket receipt or setState.
   useLayoutEffect(() => recordStreamCommit(revision, root.current), [revision, text])
-  // Both kinds must share one sibling array for their keys to have the same
-  // React scope. Promote the current piece in place when it seals; a new tail
-  // gets its own plaintext-first admission instead of inheriting permission
-  // to parse synchronously during a replay burst.
   const pieces = parts.segments.map((segment, index) => <MarkdownPiece key={index} text={segment} deferOffscreen={streaming} className={className} />)
   if (parts.tail) pieces.push(<MarkdownPiece key={parts.segments.length} text={parts.tail} live={streaming} className={className} />)
   return <div ref={root} data-stream-seq={revision?.seq}>{pieces}</div>
 })
 
-/** Keep content visible while an expensive block waits for its formatting turn.
- * A message finishing must not replace already-visible text with placeholders.
- * Immutable segments keep the same component through both streaming and final.
- */
 const MarkdownPiece = memo(function MarkdownPiece({ text, live = false, deferOffscreen = false, className }: { text: string; live?: boolean; deferOffscreen?: boolean; className?: string }) {
   const { t } = useI18n()
   const [blocks] = useState(() => new MarkdownBlockSplitter())
@@ -233,11 +207,6 @@ const MarkdownPiece = memo(function MarkdownPiece({ text, live = false, deferOff
   if (live) wasLive.current = true
   const [admitted, setAdmitted] = useState(false)
   const small = text.length <= 4096
-  // The first text layout (including cold fallback fonts) and first Markdown
-  // parser initialization together exceeded a phone frame budget. Commit the
-  // complete source first, then admit formatting through the existing queue.
-  // New deltas do not reset this admission; subsequent small-tail updates stay
-  // incremental and immediate.
   useEffect(() => {
     if (!live || admitted || !small) return
     return queueMarkdown(() => setAdmitted(true), () => root.current, 1)
@@ -247,18 +216,11 @@ const MarkdownPiece = memo(function MarkdownPiece({ text, live = false, deferOff
   const [explicit, setExplicit] = useState(false)
   const allowed = text.length <= 64 * 1024 || explicit
   const ready = immediate || !live && formatted === text
-  // Formatting admission changes local DOM without changing the parent
-  // message. Join its existing pre-paint row measurement: ResizeObserver alone
-  // leaves a one-frame tail gap (166px in Firefox) after source becomes markup.
   useTranscriptRowMeasurement([ready, allowed])
   useEffect(() => {
     if (immediate || live || !allowed || formatted === text) return
     const enqueue = () => queueMarkdown(() => setFormatted(text), () => root.current, wasLive.current ? 1 : 0)
     if (!deferOffscreen || !root.current) return enqueue()
-    // A replay burst seals many blocks above the viewport. Parsing them while
-    // the newest text is still catching up consumed 28–35ms between display
-    // commits on a throttled phone. Their complete source is already mounted:
-    // format on visibility, or release all remaining work when streaming ends.
     let cancel: (() => void) | undefined
     const observer = new IntersectionObserver(entries => {
       if (!entries.some(entry => entry.isIntersecting)) return
@@ -281,7 +243,6 @@ function PlainText({ text }: { text: string }) {
     const result: string[] = []
     for (let at = 0; at < text.length;) {
       let end = Math.min(at + 4096, text.length)
-      // Never split a surrogate pair into separate DOM text nodes.
       if (end < text.length && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff) end--
       result.push(text.slice(at, end))
       at = end
@@ -291,7 +252,6 @@ function PlainText({ text }: { text: string }) {
   return <div className="md md-tail" data-md-tail="1">{chunks.map((chunk, i) => <TextChunk key={i} text={chunk} />)}</div>
 }
 
-/** Shared props of every piece a streaming message is rendered as. */
 const shared = {
   parseIncompleteMarkdown: true,
   controls: false,

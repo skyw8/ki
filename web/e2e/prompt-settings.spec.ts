@@ -4,9 +4,6 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { serverToken, statePath } from './global-setup.ts'
 
-// Every test here is self-contained: the parallel runner may split the file into
-// one isolated fake server per test, and each test writes only to its own
-// KI_HOME and workspace.
 test.describe.configure({ mode: 'parallel' })
 
 function testHome(): string {
@@ -14,9 +11,6 @@ function testHome(): string {
 }
 
 async function openPromptSettings(page: Page, request: APIRequestContext): Promise<void> {
-  // Open a session through the API and select its row instead of newSession():
-  // this spec can share a server with earlier tests, where the sidebar list
-  // renders after the helper has already counted rows.
   const headers = { Authorization: `Bearer ${serverToken()}` }
   const marker = `prompt-settings-${Date.now()}-${Math.random().toString(16).slice(2)}`
   const created = await request.post('/v1/sessions', { headers, data: {} })
@@ -38,8 +32,6 @@ async function openPromptSettings(page: Page, request: APIRequestContext): Promi
 test('prompt settings list every source and edit the global file', async ({ page, request }) => {
   await openPromptSettings(page, request)
 
-  // The built-in layer is harness-owned: shown, in the effective stack, never
-  // editable.
   const builtin = page.getByTestId('prompt-builtin')
   await expect(builtin).toContainText("In shell commands or pipelines, prefer 'rg' and 'fd' over 'grep' and 'find'")
   await expect(page.getByTestId('prompt-edit-builtin')).toHaveCount(0)
@@ -63,8 +55,6 @@ test('prompt settings list every source and edit the global file', async ({ page
   expect(existsSync(globalPath)).toBe(false)
 })
 
-// The project file must not hide the global one: both layers reach the prompt,
-// global first, and the project path is the selected workspace's .ki tree.
 test('project file adds to the global layer', async ({ page, request }) => {
   const headers = { Authorization: `Bearer ${serverToken()}` }
   const saved = await request.put('/v1/prompt/append', { headers, data: { source: 'global', text: 'GLOBAL-E2E-RULE' } })
@@ -89,12 +79,8 @@ test('project file adds to the global layer', async ({ page, request }) => {
   expect(readFileSync(projectPath, 'utf8')).toBe('PROJECT-E2E-RULE')
 })
 
-// A blank editor would render nothing while leaving a file behind, so the
-// server rejects it and the UI offers delete instead.
 test('empty prompt text is rejected', async ({ page, request }) => {
   await openPromptSettings(page, request)
-  // The home is shared when the suite runs in one process, so compare the file
-  // before and after instead of assuming it does not exist.
   const path = join(testHome(), 'prompt', 'APPEND_SYSTEM.md')
   const before = existsSync(path) ? readFileSync(path, 'utf8') : null
   await page.getByTestId('prompt-edit-global').fill('   ')

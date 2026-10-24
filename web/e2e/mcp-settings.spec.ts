@@ -5,7 +5,6 @@ import { join } from 'node:path'
 import { serverToken, statePath } from './global-setup.ts'
 import type { ToolSettings } from '../src/api/types'
 
-// The parallel runner gives this case its own home, workspace and server.
 test.describe.configure({ mode: 'parallel' })
 
 test('MCP settings toggle configured servers without connecting or replacing tool settings', async ({ page, request }) => {
@@ -17,14 +16,12 @@ test('MCP settings toggle configured servers without connecting or replacing too
   await expect(page.getByTestId('mcp-settings')).toContainText('.ki/mcp.json')
   await page.getByTestId('settings').getByRole('button', { name: '关闭对话框' }).click()
 
-  // Create the session before installing servers: no prompt in this case needs MCP.
   await page.getByTestId('composer-input').fill('mcp-settings-fixture')
   await page.getByTestId('composer-send').click()
   await expect(page.getByTestId('assistant-message')).toContainText('ok')
   await expect(page.getByTestId('composer-stop')).toHaveCount(0)
   const sessions = await (await request.get('/v1/sessions', { headers })).json()
   const id = sessions[0].id as string
-  // Default sessions get their own temporary workspace, not the daemon's cwd.
   const cwd = sessions[0].cwd as string
   const marker = join(cwd, 'mcp-must-not-connect')
   const command = { command: process.execPath, args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)},'connected')`] }
@@ -41,7 +38,6 @@ test('MCP settings toggle configured servers without connecting or replacing too
   const endpoint = `/v1/tools?sessionId=${encodeURIComponent(id)}`
   const saved = await request.patch(endpoint, { headers, data: { disabled: ['grep'], mcpDisabled: ['hidden'] } })
   expect(saved.ok()).toBe(true)
-  // A server absent from this workspace's editable catalog keeps its global override.
   writeFileSync(join(home, 'mcp.json'), JSON.stringify({ version: 1, mcpServers: globalServers }))
 
   await page.getByTestId('open-settings').click()
@@ -71,7 +67,6 @@ test('MCP settings toggle configured servers without connecting or replacing too
   expect(toggles.mcp.disabled).toEqual(expect.arrayContaining(['docs', 'hidden']))
 
   await page.reload()
-  // Reload does not implicitly select a session; Info needs the same explicit owner.
   await expandWorkspaces(page)
   await page.getByTestId('session-title').click()
   await expect(page.locator('.session-row.active')).toHaveCount(1)
