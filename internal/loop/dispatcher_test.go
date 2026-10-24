@@ -36,6 +36,29 @@ func (t dispatchTestTool) Execute(ctx context.Context, args map[string]any) tool
 	return t.namedTool.Execute(ctx, args)
 }
 
+func TestCanceledBatchRejectsUnstartedTools(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var executed []string
+	tool := dispatchTestTool{namedTool: namedTool{name: "read"}, execute: func(_ context.Context, args map[string]any) toolapi.Result {
+		id, _ := args["id"].(string)
+		executed = append(executed, id)
+		cancel()
+		return toolapi.Result{Content: []types.Content{{Type: "text", Text: "completed"}}}
+	}}
+	calls := []types.Content{
+		{Type: "toolCall", ID: "first", Name: "read", Arguments: map[string]any{"id": "first"}},
+		{Type: "toolCall", ID: "second", Name: "read", Arguments: map[string]any{"id": "second"}},
+	}
+	results, _ := executeTools(ctx, Config{Tools: []toolapi.Tool{tool}}, calls, nil)
+	if !slices.Equal(executed, []string{"first"}) || len(results) != 2 {
+		t.Fatalf("executed=%v results=%+v", executed, results)
+	}
+	if results[0].IsError || !results[1].IsError || results[1].ToolCallID != "second" || !strings.Contains(results[1].Text(), "canceled") {
+		t.Fatalf("cancellation lost results: %+v", results)
+	}
+}
+
 func TestNestedDispatcherHooksAliasIdentityAndFullIntermediate(t *testing.T) {
 	store, err := output.NewWithConfig(output.Config{Root: t.TempDir(), PreviewBytes: 32})
 	if err != nil {

@@ -31,7 +31,7 @@ func (t agentTool) Description() string {
 	case catalog.WaitAgent:
 		return "Wait for your mailbox or a user steer."
 	case catalog.InterruptAgent:
-		return "Interrupt a child agent's current turn, retaining its identity."
+		return "Interrupt a child agent and all descendants, discard their queued tasks, and retain their identities."
 	default:
 		return "Inspect registered agents in this root tree."
 	}
@@ -40,7 +40,7 @@ func (t agentTool) Description() string {
 func (t agentTool) Snippet() string { return t.Description() }
 
 func (t agentTool) Prompt() string {
-	return t.Description() + " Use canonical paths such as /root/research; relative targets resolve from the caller. spawn_agent returns immediately. send_message is QueueOnly and does not resume idle agents; followup_task explicitly starts work and cannot target root. Final results are delivered automatically to the structural parent. After independent work, use wait_agent rather than sleep, repeated polling, or duplicate delegation. Waiting child turns still occupy execution capacity. interrupt_agent does not terminate owned shell processes. Names accept snake_case or PascalCase; prefer snake_case."
+	return t.Description() + " Use canonical paths such as /root/research; relative targets resolve from the caller. spawn_agent returns immediately. send_message is QueueOnly and does not resume idle agents; followup_task explicitly starts work and cannot target root. Final results are delivered automatically to the structural parent. After independent work, use wait_agent rather than sleep, repeated polling, or duplicate delegation. Waiting child turns still occupy execution capacity. interrupt_agent rejects root, self and ancestors; it does not terminate owned shell processes. Names accept snake_case or PascalCase; prefer snake_case."
 }
 
 func (t agentTool) Parameters() map[string]any {
@@ -58,7 +58,7 @@ func (t agentTool) Parameters() map[string]any {
 		properties["message"] = map[string]any{"type": "string", "description": "Message or task instruction."}
 	case catalog.InterruptAgent:
 		required = []any{"target"}
-		properties["target"] = map[string]any{"type": "string", "description": "Child task path; root and self cannot be interrupted."}
+		properties["target"] = map[string]any{"type": "string", "description": "Subtree task path; root, self and ancestors cannot be interrupted."}
 	case catalog.WaitAgent:
 		properties["timeout_ms"] = map[string]any{"type": "integer", "minimum": 10000, "maximum": 3600000, "description": "Mailbox observation budget; defaults to 30000ms."}
 	case catalog.ListAgents:

@@ -125,6 +125,17 @@ API 对外统一把 header 的 `parentSession` 映射为 `parentSessionId`，并
 
 ### 上下文投影
 
+中断或崩溃可能留下已持久化的 assistant toolCall，却没有对应 toolResult。上下文投影在
+`run_aborted`、后续 `request_header` 或 assistant 消息边界为仍缺失的调用补充 error
+结果，保留原调用 ID、名称和 toolType，并明确执行结果未知、重试前应核实副作用。投影先
+检查所选分支内真实的后续结果，不为尚有真实结果的调用重复补充；单独插入的 steering
+user 消息不构成中断边界。投影不改写原始 jsonl，也不改变 active leaf。
+
+空闲会话启动下一轮时，server 为活动 leaf 末尾仍未闭合的调用追加同样的 error
+结果，再追加新用户 prompt；重复恢复不会重复写入，也不会重新执行工具。显式 parent
+可选择空闲活动 leaf 或已跨越中断边界的历史前缀；落在历史工具交换中间、尚无结果的
+parent 仍拒绝，运行中携带 parent 仍返回 409。
+
 `MessagesToLeaf` 是跨 provider 的 portable projection：沿 parent 走到根，只选择最新 local
 compaction，先注入 summary，再取 `retainedTail`（新条目，压缩时最近消息原文落盘）；旧
 jsonl 无 `retainedTail` 时回退 `firstKeptEntryId` 截断。remote compaction 不参与 portable

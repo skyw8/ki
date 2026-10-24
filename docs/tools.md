@@ -39,7 +39,7 @@ system prompt 组装阶段（见 [architecture.md](architecture.md)）。
 | `send_message` | `target`、`message` | QueueOnly：接受上下文，唤醒正在等待的目标，不启动 idle agent |
 | `followup_task` | `target`、`message` | TriggerTurn：在同一 agent 上开始新任务；busy 时持久排队，root 拒绝 |
 | `wait_agent` | 可选 `timeout_ms` | 观察调用方 mailbox / user steer；不消费完成结果、不停止 agent |
-| `interrupt_agent` | `target` | 中断目标当前 turn，返回之前状态；保留身份，不停止其 shell 进程 |
+| `interrupt_agent` | `target` | 中断目标及所有后代 turn，丢弃 pending tasks，返回目标之前状态；保留身份，shell 进程继续运行 |
 | `list_agents` | 可选 `path_prefix` | root 范围内的身份/代次/状态；至多 128 项，另带 total/truncated |
 | `request_user_input_async` | `questions[]`：必填 `title`，可选非空字符串数组 `options` | 持久接受后立即返回 `{"accepted":true}`；答案之后作为新的 user message 到达 |
 | `exec` | raw JS 或 `{code}`，可选首行 pragma | 显式输出和 completed/failed/running 状态；running 返回 cell ID |
@@ -50,7 +50,9 @@ system prompt 组装阶段（见 [architecture.md](architecture.md)）。
 ### 异步用户提问
 
 `request_user_input_async` 沿用 Codex 的 description 与 schema，不受模型名称或 Plan 模式限制。
-主会话绑定持久化 host callback 后才向模型发布；子代理和旁聊不提供。工具接受一批问题，
+普通主会话与子代理绑定相同 schema 和 host callback，保持继承历史时的 provider 缓存前缀。
+工具 description、共享 system 与 child user 信封均说明仅主会话可以调用；callback 执行时
+拒绝子代理，且不创建问题。只读旁聊不提供此工具。工具接受一批问题，
 全部验证后一次提交，不等待用户、不占用等待 channel，也不结束当前 turn。它是直接控制工具，
 不出现在 Code Mode 的 `tools` 命名空间。工具目录始终保留其名称及独立全局开关。
 
@@ -82,6 +84,10 @@ user 输入，而不是使用轮询、`sleep` 或重复调用工具来保持运�
 1. **prepare**：找工具 → `tool.Validator.Validate` schema 校验 → `BeforeTool` / lifecycle
    `tool_call` sync。同步、无副作用；失败立即返回 error 结果，不执行。
 2. **execute**：并行/串行执行，`AfterTool` / `tool_result` 变换结果。
+
+已持久化的 assistant toolCalls 必须逐一配对 toolResult。模型输出因中断或失败结束时，
+其中的调用只生成 error toolResult，不执行；批次执行期间取消也会为尚未启动的调用生成
+error toolResult，避免恢复后留下悬空调用或补执行已取消的副作用。
 
 扩展订阅事件见 [extension.md](extension.md)。
 
@@ -427,14 +433,20 @@ turn；继承工具调用/结果配对与附件路径。child 使用 parent 的 
 
 ### 中断与停止
 
-`interrupt_agent` 拒绝 root/self，终止当前 agent turn 并丢弃其 pending tasks，保持身份可由
-`followup_task` 再次启动；独立 shell 进程继续运行。
+`interrupt_agent` 拒绝 root/self 及包含调用方的祖先子树，终止目标和所有深度后代的 turn，
+并丢弃它们的 pending tasks；即使目标已空闲，仍会清理活跃后代。所有身份保留，可由
+`followup_task` 再次启动；独立 shell 进程继续运行。祖先拒绝避免同步清理等待调用方自己。
 
-普通 session abort 默认 `scope=turn`；`scope=process` 配合数值 session_id 强制停止进程；
-`scope=tree` 停止结构后代 agent 和进程。递归 tree stop 临时阻止该子树的新 spawn/follow-up
-和 session occupy/dispatch，再中断已有 agent，最后停止它们拥有的进程；清理结束后释放临时
-屏障，稳定身份仍可 follow-up，保留的显式队列工作才可重新 dispatch。其它 sibling/root 的
-任务不受该屏障影响。
+普通 session abort 默认 `scope=turn`，取消自身并级联中断所有后代 agent、清除其 pending
+任务；root 已空闲时也执行级联。extension abort 先取消自身，再清理后代，避免等待自身
+工具调用。级联临时阻止该子树的新 spawn/follow-up，先向所有目标发出取消，再等待全部
+turn 和已预约的 spawn 清理完成，最后释放屏障。仅清理 pending 的 agent 保留上一代完成
+结果的通知权；其它 sibling/root 的任务不受影响。
+
+`scope=process` 配合数值 session_id 强制停止进程；`scope=tree` 另外停止子树拥有的进程。
+递归 tree stop 还临时阻止 session occupy/dispatch，再中断已有 agent，最后停止它们拥有
+的进程；清理结束后释放临时屏障，稳定身份仍可 follow-up，保留的显式 session 队列工作
+才可重新 dispatch。
 
 ### 持久化与恢复
 

@@ -31,7 +31,8 @@ export async function installQuestions(page: Page, lang = 'zh') {
     const root: SessionInfo = { id: 'question-main', title: '发布策略与上线准备', cwd: '/workspace', provider: 'test', model: 'reasoner', workspaceId: 'question-workspace' }
     const source: Entry = { type: 'message', id: 'main-user', message: { role: 'user', content: [{ type: 'text', text: '请检查发布方案，并在需要决策时向我提问。' }] } }
     const assistant: Entry = { type: 'message', id: 'main-assistant', parentId: source.id, message: { role: 'assistant', content: [{ type: 'text', text: '已完成基础检查。我会继续核对兼容性，发布范围需要你确认。' }] } }
-    const question: Question = { questionItemId: '["request_user_input_async","question-call",0]', callId: 'question-call', index: 0, title: '这次发布应该覆盖哪些用户？', options: ['先灰度 10%，观察后再扩大', '直接向全部用户发布'], status: 'pending', revision: 1, createdAt: '2026-10-24T01:00:00Z', updatedAt: '2026-10-24T01:00:00Z', sourceEntryId: assistant.id, snapshotEntryId: source.id, sourceBranchValid: true }
+    const question: Question = JSON.parse(sessionStorage.getItem('question-fixture-reload') ?? 'null') ?? { questionItemId: '["request_user_input_async","question-call",0]', callId: 'question-call', index: 0, title: '这次发布应该覆盖哪些用户？', options: ['先灰度 10%，观察后再扩大', '直接向全部用户发布'], status: 'pending', revision: 1, createdAt: '2026-10-24T01:00:00Z', updatedAt: '2026-10-24T01:00:00Z', sourceEntryId: assistant.id, snapshotEntryId: source.id, sourceBranchValid: true }
+    sessionStorage.removeItem('question-fixture-reload')
     const controllers = new Map<string, Set<ReadableStreamDefaultController<Uint8Array>>>()
     const heldLists: (() => void)[] = []
     const heldWorkspaces: (() => void)[] = []

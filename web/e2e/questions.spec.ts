@@ -344,14 +344,11 @@ for (const width of [1440, 390]) test(`confirmed answers keep the original reado
   await rail.getByRole('button', { name: /历史问题/ }).click()
   await rail.getByTestId('question-card').click()
   await assertForm()
-  await page.reload()
   await page.evaluate(receipt => {
     sessionStorage.clear()
-    const state = window.questionFixture
-    state.question = receipt
-    state.details['question-main'].questions = [receipt]
-    state.emit('server', { type: 'question_updated', sessionId: 'question-main', question: receipt })
+    sessionStorage.setItem('question-fixture-reload', JSON.stringify(receipt))
   }, receipt)
+  await page.reload()
   await openSessionRow(page, '发布策略与上线准备')
   if (await rail.locator('.questions-mobile-toggle').isVisible()) await rail.locator('.questions-mobile-toggle').click()
   await rail.getByRole('button', { name: /历史问题/ }).click()

@@ -8,9 +8,134 @@ import (
 	"testing"
 
 	"ki/internal/agent"
+	"ki/internal/loop"
 	"ki/internal/process"
 	"ki/internal/tool/builtin"
+	"ki/internal/types"
 )
+
+type cascadeStreamer struct {
+	started chan struct{}
+}
+
+func (s *cascadeStreamer) Stream(ctx context.Context, _ loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {
+	s.started <- struct{}{}
+	<-ctx.Done()
+	return types.Message{}, ctx.Err()
+}
+
+func TestAgentInterruptCascadesThroughIdleParentsAndRejectsAncestors(t *testing.T) {
+	stream := &cascadeStreamer{started: make(chan struct{}, 8)}
+	srv, hs := testServerWith(t, stream)
+	srv.agentTasks.SetMaxConcurrent(8)
+	root := createSession(t, hs, t.TempDir())
+	spawn := func(parent, name string) agent.Launch {
+		t.Helper()
+		launch, err := srv.SpawnAgent(t.Context(), agent.Request{TaskName: name, ParentSessionID: parent, Prompt: "wait", ForkTurns: "none"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-stream.started
+		return launch
+	}
+	child := spawn(root, "child")
+	grandchild := spawn(child.SessionID, "grandchild")
+	deep := spawn(grandchild.SessionID, "deep")
+	sibling := spawn(root, "sibling")
+	if _, err := srv.InterruptAgent(t.Context(), deep.SessionID, child.TaskPath); err == nil {
+		t.Fatal("ancestor interruption would wait on its caller")
+	}
+	for _, launch := range []agent.Launch{child, grandchild, deep} {
+		if _, err := srv.SendAgentMessage(t.Context(), agent.MessageRequest{SenderSessionID: root, Target: launch.TaskPath, Message: "discard", TriggerTurn: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previous, err := srv.InterruptAgent(t.Context(), root, child.TaskPath)
+	if err != nil || previous.Status != agent.Running {
+		t.Fatalf("interrupt receipt: %+v %v", previous, err)
+	}
+	for _, launch := range []agent.Launch{child, grandchild, deep} {
+		snapshot, ok := srv.Get(launch.TaskID)
+		if !ok || snapshot.Status != agent.Killed || snapshot.PendingTasks != 0 || snapshot.Generation != 1 {
+			t.Fatalf("descendant survived: %+v", snapshot)
+		}
+	}
+	if snapshot, _ := srv.Get(sibling.TaskID); snapshot.Status != agent.Running {
+		t.Fatalf("sibling stopped: %+v", snapshot)
+	}
+	if _, err := srv.SendAgentMessage(t.Context(), agent.MessageRequest{SenderSessionID: root, Target: deep.TaskPath, Message: "resume", TriggerTurn: true}); err != nil {
+		t.Fatal(err)
+	}
+	<-stream.started
+	if _, err := srv.InterruptAgent(t.Context(), root, child.TaskPath); err != nil {
+		t.Fatalf("idle parent did not cascade: %v", err)
+	}
+	if snapshot, _ := srv.Get(deep.TaskID); snapshot.Status != agent.Killed || snapshot.Generation != 2 {
+		t.Fatalf("resumed descendant survived idle parent: %+v", snapshot)
+	}
+}
+
+func TestSessionTurnAbortCascadesFromRootAndParent(t *testing.T) {
+	for _, target := range []string{"root", "child"} {
+		t.Run(target, func(t *testing.T) {
+			stream := &cascadeStreamer{started: make(chan struct{}, 8)}
+			srv, hs := testServerWith(t, stream)
+			root := createSession(t, hs, t.TempDir())
+			child, err := srv.SpawnAgent(t.Context(), agent.Request{TaskName: "child", ParentSessionID: root, Prompt: "wait", ForkTurns: "none"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-stream.started
+			grandchild, err := srv.SpawnAgent(t.Context(), agent.Request{TaskName: "grandchild", ParentSessionID: child.SessionID, Prompt: "wait", ForkTurns: "none"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-stream.started
+			if _, err := srv.SendAgentMessage(t.Context(), agent.MessageRequest{SenderSessionID: root, Target: grandchild.TaskPath, Message: "discard", TriggerTurn: true}); err != nil {
+				t.Fatal(err)
+			}
+			id := root
+			if target == "child" {
+				id = child.SessionID
+			}
+			status, result := postJSON(t, hs, http.MethodPost, "/v1/sessions/"+id+"/abort", map[string]any{"scope": "turn"})
+			if status != http.StatusOK || result["aborted"] != true {
+				t.Fatalf("abort response: %d %+v", status, result)
+			}
+			for _, launch := range []agent.Launch{child, grandchild} {
+				snapshot, _ := srv.Get(launch.TaskID)
+				if snapshot.Status != agent.Killed || snapshot.PendingTasks != 0 {
+					t.Fatalf("turn abort missed descendant: %+v", snapshot)
+				}
+			}
+		})
+	}
+}
+
+func TestExtensionAbortCancelsOwnTurnBeforeWaitingForDescendants(t *testing.T) {
+	stream := &cascadeStreamer{started: make(chan struct{}, 8)}
+	srv, hs := testServerWith(t, stream)
+	root := createSession(t, hs, t.TempDir())
+	st, runCtx, err := srv.occupy(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.release(root, st)
+	child, err := srv.SpawnAgent(t.Context(), agent.Request{TaskName: "child", ParentSessionID: root, Prompt: "wait", ForkTurns: "none"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-stream.started
+	if err := srv.Abort(root); err != nil {
+		t.Fatal(err)
+	}
+	if runCtx.Err() != context.Canceled {
+		t.Fatal("extension abort omitted own cancellation")
+	}
+	if snapshot, _ := srv.Get(child.TaskID); snapshot.Status != agent.Killed {
+		t.Fatalf("extension abort omitted descendant: %+v", snapshot)
+	}
+}
 
 func TestTreeAbortStopsOwnedProcessesAndPreservesUnrelatedRoot(t *testing.T) {
 	shells := process.DiscoverShellRuntime()

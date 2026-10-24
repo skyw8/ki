@@ -446,6 +446,8 @@ func RunMessage(ctx context.Context, user types.Message, history []types.Message
 		if len(calls) > 0 {
 			if asst.StopReason == "length" {
 				results = rejectToolCalls(calls, emit)
+			} else if asst.StopReason == "aborted" {
+				results = rejectToolCallsWithReason(calls, "the assistant response was interrupted before tool execution; re-issue the call with complete arguments if still needed", emit)
 			} else {
 				results, terminate = executeTools(ctx, cfg, calls, emit)
 			}
@@ -704,15 +706,22 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				asst.Role = "assistant"
 				asst.StopReason = "aborted"
 				asst.ErrorMessage = ctx.Err().Error()
-				_ = emit(Event{Type: MessageEnd, Message: &asst})
+				if emitErr := emitFailedAssistant(asst, emit); emitErr != nil {
+					return asst, errors.Join(err, emitErr)
+				}
 				return asst, fmt.Errorf("stream assistant response: %w", err)
 			}
 			if asst.StopReason == "error" && IsContextOverflow(asst) {
 				last = asst
-				_ = emit(Event{Type: MessageEnd, Message: &asst})
+				if emitErr := emitFailedAssistant(asst, emit); emitErr != nil {
+					return last, errors.Join(ErrContextOverflow, emitErr)
+				}
 				return last, ErrContextOverflow
 			}
 			if nonRetryableStreamError(err) {
+				if len(asst.Content) == 0 {
+					asst = latest
+				}
 				if asst.Role == "" {
 					asst.Role = "assistant"
 				}
@@ -729,7 +738,9 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				if asst.Model == "" {
 					asst.Model = cfg.Model
 				}
-				_ = emit(Event{Type: MessageEnd, Message: &asst})
+				if emitErr := emitFailedAssistant(asst, emit); emitErr != nil {
+					return asst, errors.Join(err, emitErr)
+				}
 				return asst, fmt.Errorf("stream assistant response: %w", err)
 			}
 			continue
@@ -773,11 +784,17 @@ func streamWithRetry(ctx context.Context, cfg Config, req Request, emit func(Eve
 				return asst, err
 			}
 		}
-		if err := emit(Event{Type: MessageEnd, Message: &asst}); err != nil {
+		var endErr error
+		if asst.StopReason == "error" {
+			endErr = emitFailedAssistant(asst, emit)
+		} else {
+			endErr = emit(Event{Type: MessageEnd, Message: &asst})
+		}
+		if endErr != nil {
 			if serverCompacted {
 				_ = emit(Event{Type: CompactionEnd, Reason: "server", Strategy: "openai-inline", Status: "failed"})
 			}
-			return asst, err
+			return asst, endErr
 		}
 		if serverCompacted {
 			if err := emit(Event{Type: CompactionEnd, Reason: "server", OK: true, Strategy: "openai-inline", Status: "committed"}); err != nil {
@@ -902,7 +919,27 @@ func toolTelemetryAttrs(details any) map[string]any {
 	return out
 }
 
+func emitFailedAssistant(asst types.Message, emit func(Event) error) error {
+	if err := emit(Event{Type: MessageEnd, Message: &asst}); err != nil {
+		return err
+	}
+	results := rejectToolCallsWithReason(asst.ToolCalls(), "the assistant response failed or was interrupted before tool execution; re-issue the call with complete arguments if still needed", emit)
+	for _, result := range results {
+		if err := emit(Event{Type: MessageStart, Message: &result}); err != nil {
+			return err
+		}
+		if err := emit(Event{Type: MessageEnd, Message: &result}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func rejectToolCalls(calls []types.Content, emit func(Event) error) []types.Message {
+	return rejectToolCallsWithReason(calls, "the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.", emit)
+}
+
+func rejectToolCallsWithReason(calls []types.Content, reason string, emit func(Event) error) []types.Message {
 	out := make([]types.Message, 0, len(calls))
 	for _, c := range calls {
 		args := c.Arguments
@@ -919,7 +956,7 @@ func rejectToolCalls(calls []types.Content, emit func(Event) error) []types.Mess
 			ToolName:   c.Name,
 			ToolType:   c.ToolType,
 			Content: []types.Content{{Type: "text", Text: fmt.Sprintf(
-				"toolapi.Tool call %q was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.", c.Name)}},
+				"Tool call %q was not executed: %s", c.Name, reason)}},
 			IsError:    true,
 			DurationMs: dur,
 			Timestamp:  finishedAt.UnixMilli(),

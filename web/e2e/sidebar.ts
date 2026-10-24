@@ -17,6 +17,7 @@ export async function expandWorkspaces(page: Page): Promise<void> {
   await expect(page.locator('main.main')).toBeVisible()
   await openSidebar(page)
   await expect(page.getByTestId('session-list')).toHaveAttribute('data-ready', 'true')
+  await expect(page.getByTestId('session-list')).toHaveAttribute('data-workspaces-ready', 'true')
   const collapsed = page.locator('.ws-toggle[aria-expanded="false"]')
   for (let guard = 0; guard < 64; guard++) {
     const count = await collapsed.count()

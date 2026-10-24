@@ -537,13 +537,7 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 		}
 	}
 	if compIdx < 0 {
-		var msgs []types.Message
-		for _, e := range chrono {
-			if e.Type == "message" && e.Message != nil {
-				msgs = append(msgs, *e.Message)
-			}
-		}
-		return msgs
+		return projectToolExchanges(chrono, nil)
 	}
 	comp := chrono[compIdx]
 	var msgs []types.Message
@@ -555,13 +549,7 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 	}
 	if len(comp.RetainedTail) > 0 {
 		msgs = append(msgs, comp.RetainedTail...)
-		start := compIdx + 1
-		for _, e := range chrono[start:] {
-			if e.Type == "message" && e.Message != nil {
-				msgs = append(msgs, *e.Message)
-			}
-		}
-		return msgs
+		return projectToolExchanges(chrono[compIdx+1:], msgs)
 	}
 	start := compIdx + 1
 	if comp.FirstKeptEntryID != "" {
@@ -572,12 +560,7 @@ func (s *Session) messagesLocked(leaf string) []types.Message {
 			}
 		}
 	}
-	for _, e := range chrono[start:] {
-		if e.Type == "message" && e.Message != nil {
-			msgs = append(msgs, *e.Message)
-		}
-	}
-	return msgs
+	return projectToolExchanges(chrono[start:], msgs)
 }
 
 func (s *Session) contextLocked(leaf string, target types.ProviderBinding) types.ModelContext {
@@ -592,19 +575,118 @@ func (s *Session) contextLocked(leaf string, target types.ProviderBinding) types
 		comp := chrono[latestCompaction]
 		if comp.Responses != nil && comp.Responses.Binding.Equal(target) {
 			ctx := cloneResponsesContext(comp.Responses)
-			var msgs []types.Message
-			for _, e := range chrono[latestCompaction+1:] {
-				if e.Type == "message" && e.Message != nil {
-					msgs = append(msgs, *e.Message)
-				}
-			}
-			return types.ModelContext{Responses: ctx, Messages: msgs}
+			return types.ModelContext{Responses: ctx, Messages: projectToolExchanges(chrono[latestCompaction+1:], nil)}
 		}
 		if comp.Responses != nil {
 			return types.ModelContext{Messages: s.messagesLocked(leaf), Portable: true}
 		}
 	}
 	return types.ModelContext{Messages: s.messagesLocked(leaf)}
+}
+
+func projectToolExchanges(entries []Entry, prefix []types.Message) []types.Message {
+	messages := slices.Clone(prefix)
+	results := map[string]bool{}
+	for _, e := range entries {
+		if e.Message != nil && e.Message.Role == "toolResult" {
+			results[e.Message.ToolCallID] = true
+		}
+	}
+	pending := unresolvedToolCalls(prefix)
+	closeInterrupted := func() {
+		var remaining []types.Content
+		for _, call := range pending {
+			if results[call.ID] {
+				remaining = append(remaining, call)
+				continue
+			}
+			messages = append(messages, interruptedToolResult(call))
+		}
+		pending = remaining
+	}
+	for _, e := range entries {
+		if e.Type == "run_aborted" || e.Type == "request_header" ||
+			(e.Type == "message" && e.Message != nil && e.Message.Role == "assistant") {
+			closeInterrupted()
+		}
+		if e.Type != "message" || e.Message == nil {
+			continue
+		}
+		m := *e.Message
+		messages = append(messages, m)
+		pending = append(pending, m.ToolCalls()...)
+		if m.Role == "toolResult" {
+			pending = slices.DeleteFunc(pending, func(call types.Content) bool { return call.ID == m.ToolCallID })
+		}
+	}
+	return messages
+}
+
+func unresolvedToolCalls(messages []types.Message) []types.Content {
+	var pending []types.Content
+	for _, m := range messages {
+		for _, call := range m.ToolCalls() {
+			if call.ID != "" {
+				pending = append(pending, call)
+			}
+		}
+		if m.Role == "toolResult" {
+			pending = slices.DeleteFunc(pending, func(call types.Content) bool { return call.ID == m.ToolCallID })
+		}
+	}
+	return pending
+}
+
+func interruptedToolResult(call types.Content) types.Message {
+	return types.Message{
+		Role: "toolResult", ToolCallID: call.ID, ToolName: call.Name, ToolType: call.ToolType,
+		IsError: true,
+		Content: []types.Content{{Type: "text", Text: "Tool execution was interrupted before a result was recorded. Its outcome is unknown; verify any side effects before retrying."}},
+	}
+}
+
+func (s *Session) IsInterruptedToolTail(leaf string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if leaf != s.leafID {
+		return false
+	}
+	pending := unresolvedToolCalls(s.messagesLocked(leaf))
+	if len(pending) == 0 {
+		return false
+	}
+	ids := make(map[string]bool, len(pending))
+	for _, call := range pending {
+		ids[call.ID] = true
+	}
+	for _, e := range s.entries {
+		if e.Message != nil && e.Message.Role == "toolResult" && ids[e.Message.ToolCallID] {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Session) RecoverInterruptedToolCalls() ([]Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending := unresolvedToolCalls(s.messagesLocked(s.leafID))
+	var recovered []Entry
+	for _, call := range pending {
+		id, err := idgen.EntryID()
+		if err != nil {
+			return recovered, fmt.Errorf("generate entry ID: %w", err)
+		}
+		m := interruptedToolResult(call)
+		now := time.Now().UTC()
+		m.Timestamp = now.UnixMilli()
+		e := Entry{Type: "message", ID: id, ParentID: s.leafID, Timestamp: now.Format(time.RFC3339Nano), Message: &m}
+		if err := s.appendLocked(e); err != nil {
+			return recovered, err
+		}
+		recovered = append(recovered, e)
+	}
+	return recovered, nil
 }
 
 func cloneResponsesContext(in *types.ResponsesContext) *types.ResponsesContext {

@@ -120,7 +120,7 @@ func (d *ToolDispatcher) prepare(ctx context.Context, call types.Content, nested
 		p.immediate = rejectedTool(canonical+" cannot be called from code mode", "rejected", "recursive_tool", "model_input")
 		return p
 	}
-	if nested && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		p.immediate = rejectedTool(ctx.Err().Error(), "cancelled", "cancelled", "cancellation")
 		return p
 	}
@@ -240,6 +240,9 @@ func (d *ToolDispatcher) execute(ctx context.Context, p preparedTool, origin nes
 }
 
 func executePreparedTool(ctx context.Context, p preparedTool, progressEmit func(any)) toolapi.Result {
+	if err := ctx.Err(); err != nil {
+		return *rejectedTool(err.Error(), "cancelled", "cancelled", "cancellation")
+	}
 	if p.call.ToolType == "custom" {
 		raw, _ := p.args["input"].(string)
 		if freeform, ok := p.tool.(toolapi.FreeformTool); ok {

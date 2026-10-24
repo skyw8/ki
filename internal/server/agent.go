@@ -66,7 +66,7 @@ func (s *Server) SpawnAgent(ctx context.Context, req agent.Request) (agent.Launc
 	_ = child.Close()
 
 	outputFile := filepath.Join(childDir, "events.jsonl")
-	req.Prompt = fmt.Sprintf("You are %s, a child agent of %s. The task below comes from that agent. Final results are delivered automatically; use send_message to request a decision.\n\n%s", req.TaskPath, parentPath, req.Prompt)
+	req.Prompt = fmt.Sprintf("You are %s, a child agent of %s. The task below comes from that agent. Final results are delivered automatically; use send_message to request a decision. The request_user_input_async tool is reserved for the main agent and rejects child-agent calls; send questions to your parent with send_message.\n\n%s", req.TaskPath, parentPath, req.Prompt)
 	req.SessionID = childID
 	req.MetadataPath = filepath.Join(childDir, "agent.json")
 	req.OutputFile = outputFile

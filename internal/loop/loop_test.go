@@ -60,6 +60,85 @@ func TestRequestJSONUsesProviderFieldNames(t *testing.T) {
 
 type echo struct{}
 
+type interruptedToolStream struct {
+	cancel context.CancelFunc
+	kind   string
+}
+
+func (s interruptedToolStream) Stream(_ context.Context, _ Request, emit func(AssistantDelta) error) (types.Message, error) {
+	m := types.Message{Role: "assistant", Content: []types.Content{
+		{Type: "toolCall", ID: "partial-read", Name: "read", ArgumentsRaw: `{"file_path":`},
+		{Type: "toolCall", ID: "partial-patch", Name: "apply_patch", ToolType: "custom", Input: "incomplete"},
+	}}
+	if err := emit(AssistantDelta{Type: "toolcall_delta", Partial: m}); err != nil {
+		return m, err
+	}
+	switch s.kind {
+	case "cancel":
+		s.cancel()
+		return types.Message{}, context.Canceled
+	case "aborted":
+		m.StopReason = "aborted"
+		return m, nil
+	case "failure":
+		return m, testNonRetryableStreamError{}
+	default:
+		m.StopReason = "error"
+		m.ErrorMessage = "provider failed"
+		return m, nil
+	}
+}
+
+func TestInterruptedToolStreamClosesEveryPersistedCall(t *testing.T) {
+	for _, kind := range []string{"cancel", "aborted", "failure", "error"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			tool := &rawTool{}
+			pending := map[string]bool{}
+			results := 0
+			_, err := Run(ctx, "start", nil, Config{
+				Streamer: interruptedToolStream{cancel: cancel, kind: kind},
+				Tools:    []toolapi.Tool{tool}, MaxRetries: 1, BaseDelay: time.Nanosecond,
+			}, func(ev Event) error {
+				if ev.Type == ToolExecutionStart && !pending[ev.ToolCallID] {
+					t.Fatalf("tool lifecycle before assistant call: %+v", ev)
+				}
+				if ev.Type != MessageEnd || ev.Message == nil {
+					return nil
+				}
+				for _, c := range ev.Message.ToolCalls() {
+					if pending[c.ID] {
+						t.Fatalf("unclosed tool call on retry: %s", c.ID)
+					}
+					pending[c.ID] = true
+				}
+				if ev.Message.Role == "toolResult" {
+					m := ev.Message
+					if !pending[m.ToolCallID] || !m.IsError || !strings.Contains(m.Text(), "not executed") {
+						t.Fatalf("invalid rejection: %+v", m)
+					}
+					if m.ToolCallID == "partial-patch" && m.ToolType != "custom" {
+						t.Fatalf("lost custom tool result type: %+v", m)
+					}
+					delete(pending, m.ToolCallID)
+					results++
+				}
+				return nil
+			})
+			if kind != "aborted" && err == nil {
+				t.Fatal("missing stream error")
+			}
+			if kind == "cancel" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation error: %v", err)
+			}
+			if len(pending) != 0 || results < 2 || tool.got != "" {
+				t.Fatalf("pending=%v results=%d executed=%q", pending, results, tool.got)
+			}
+		})
+	}
+}
+
 type cancelPartial struct{ cancel context.CancelFunc }
 
 func (s cancelPartial) Stream(_ context.Context, _ Request, emit func(AssistantDelta) error) (types.Message, error) {

@@ -1034,6 +1034,119 @@ func TestForkInheritsCacheAffinityKey(t *testing.T) {
 	}
 }
 
+func TestInterruptedToolExchangeProjection(t *testing.T) {
+	for _, boundary := range []string{"run_aborted", "request_header", "assistant"} {
+		t.Run(boundary, func(t *testing.T) {
+			s, err := Create(t.TempDir(), t.TempDir(), "openai", "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendMessage := func(m types.Message) Entry {
+				t.Helper()
+				e, err := s.AppendMessage(m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return e
+			}
+			calls := appendMessage(types.Message{Role: "assistant", Content: []types.Content{
+				{Type: "toolCall", ID: "lost", Name: "wait_agent", ToolType: "custom"},
+				{Type: "toolCall", ID: "done", Name: "Read"},
+			}})
+			appendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "steer"}}})
+			appendMessage(types.Message{Role: "toolResult", ToolCallID: "done", Content: []types.Content{{Type: "text", Text: "read result"}}})
+			switch boundary {
+			case "assistant":
+				appendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "continued"}}})
+			default:
+				if _, err := s.AppendDetailsEvent(boundary, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			leaf := s.LeafID()
+			before := len(s.Entries())
+			reopened, err := Open(s.Dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages := reopened.MessagesToLeaf()
+			if got := unresolvedToolCalls(messages); len(got) != 0 {
+				t.Fatalf("unresolved after %s: %+v", boundary, got)
+			}
+			counts := map[string]int{}
+			for _, m := range messages {
+				if m.Role != "toolResult" {
+					continue
+				}
+				counts[m.ToolCallID]++
+				if m.ToolCallID == "lost" && (!m.IsError || m.ToolName != "wait_agent" || m.ToolType != "custom") {
+					t.Fatalf("recovery lost call identity: %+v", m)
+				}
+			}
+			if counts["lost"] != 1 || counts["done"] != 1 {
+				t.Fatalf("result counts: %v", counts)
+			}
+			prefix, err := reopened.MessagesTo(calls.ID)
+			if err != nil || len(unresolvedToolCalls(prefix)) != 2 {
+				t.Fatalf("unfinished historical prefix was repaired: %+v, %v", prefix, err)
+			}
+			if len(reopened.Entries()) != before || reopened.LeafID() != leaf {
+				t.Fatal("projection rewrote stored history")
+			}
+		})
+	}
+}
+
+func TestInterruptedToolProjectionKeepsLaterRealResult(t *testing.T) {
+	entries := []Entry{
+		{Type: "message", Message: &types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ID: "call", Name: "Read"}}}},
+		{Type: "message", Message: &types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "steer"}}}},
+		{Type: "request_header"},
+		{Type: "message", Message: &types.Message{Role: "toolResult", ToolCallID: "call", Content: []types.Content{{Type: "text", Text: "real"}}}},
+	}
+	messages := projectToolExchanges(entries, nil)
+	if len(messages) != 3 || messages[2].Text() != "real" || messages[2].IsError {
+		t.Fatalf("duplicated or replaced real result: %+v", messages)
+	}
+	if prefix := projectToolExchanges(entries[:2], nil); len(prefix) != 2 || len(unresolvedToolCalls(prefix)) != 1 {
+		t.Fatalf("steering alone closed the call: %+v", prefix)
+	}
+}
+
+func TestRecoverInterruptedToolCallsPersistsOnlyMissingResults(t *testing.T) {
+	s, err := Create(t.TempDir(), t.TempDir(), "openai", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{
+		{Type: "toolCall", ID: "done", Name: "Read"},
+		{Type: "toolCall", ID: "lost", Name: "wait_agent"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMessage(types.Message{Role: "toolResult", ToolCallID: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	before := s.LeafID()
+	entries, err := s.RecoverInterruptedToolCalls()
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("recover = %+v, %v", entries, err)
+	}
+	if entries[0].ParentID != before || entries[0].Message.ToolCallID != "lost" || !entries[0].Message.IsError {
+		t.Fatalf("recovered result = %+v", entries[0])
+	}
+	reopened, err := Open(s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unresolvedToolCalls(reopened.MessagesToLeaf())) != 0 {
+		t.Fatal("recovery did not survive reopen")
+	}
+	if entries, err := reopened.RecoverInterruptedToolCalls(); err != nil || len(entries) != 0 {
+		t.Fatalf("repeat recovery = %+v, %v", entries, err)
+	}
+}
+
 func TestCreateChildDoesNotInheritCacheAffinityKey(t *testing.T) {
 	root := t.TempDir()
 	s, err := Create(root, t.TempDir(), "openai-codex", "gpt-6.1-sol")

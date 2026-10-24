@@ -61,13 +61,15 @@ func (s *Server) InterruptAgent(ctx context.Context, caller, target string) (age
 	if err != nil {
 		return agent.View{}, err
 	}
-	if path == "/root" || snap.SessionID == caller {
-		return agent.View{}, fmt.Errorf("cannot interrupt root or self")
+	_, callerPath, err := s.agentTasks.Identity(caller)
+	if err != nil {
+		return agent.View{}, err
+	}
+	if path == "/root" || snap.SessionID == caller || strings.HasPrefix(callerPath, path+"/") {
+		return agent.View{}, fmt.Errorf("cannot interrupt root, self or an ancestor")
 	}
 	previous := agent.ViewSnapshot(snap)
-	if snap.Status == agent.Running || snap.Status == agent.Pending || snap.PendingTasks > 0 {
-		_, err = s.agentTasks.Stop(snap.TaskID)
-	}
+	_, err = s.agentTasks.StopSubtree(snap.SessionID)
 	return previous, err
 }
 

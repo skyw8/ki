@@ -10,6 +10,177 @@ import (
 	"ki/internal/types"
 )
 
+func TestStopSubtreeCancelsDeepQueuedDescendantsBeforeWaiting(t *testing.T) {
+	for _, target := range []string{"root", "child"} {
+		t.Run(target, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				controller := NewController()
+				controller.SetMaxConcurrent(8)
+				defer controller.Close()
+				cancelled := map[string]chan struct{}{}
+				launches := map[string]Launch{}
+				for _, name := range []string{"child", "grandchild", "deep", "queued", "childish", "other"} {
+					cancelled[name] = make(chan struct{})
+				}
+				for _, item := range []struct{ name, path, root, parent string }{
+					{"child", "/root/child", "root", "root"},
+					{"grandchild", "/root/child/grandchild", "root", "child"},
+					{"deep", "/root/child/grandchild/deep", "root", "grandchild"},
+					{"queued", "/root/child/grandchild/deep/queued", "root", "deep"},
+					{"childish", "/root/childish", "root", "root"},
+					{"other", "/root/child/grandchild", "other", "other"},
+				} {
+					launch, err := controller.Start(t.Context(), Request{TaskName: item.name, TaskPath: item.path, RootSessionID: item.root, ParentSessionID: item.parent, SessionID: item.name, Prompt: "initial"}, "", func(ctx context.Context, _, prompt string) (Completion, error) {
+						if item.name == "queued" {
+							return Completion{Result: prompt}, nil
+						}
+						<-ctx.Done()
+						close(cancelled[item.name])
+						if item.name == "child" {
+							<-cancelled["deep"]
+						}
+						return Completion{}, ctx.Err()
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					launches[item.name] = launch
+				}
+				synctest.Wait()
+				controller.SetMaxConcurrent(1)
+				for _, name := range []string{"child", "grandchild", "deep", "queued"} {
+					if status, err := controller.QueueOrResume(t.Context(), launches[name].TaskID, "discard"); err != nil || status != "queued" {
+						t.Fatalf("queue %s: %s %v", name, status, err)
+					}
+				}
+				if _, err := controller.StopSubtree(target); err != nil {
+					t.Fatal(err)
+				}
+				for _, name := range []string{"child", "grandchild", "deep", "queued"} {
+					snapshot, ok := controller.Get(launches[name].TaskID)
+					if !ok || snapshot.Status != Killed || snapshot.PendingTasks != 0 || snapshot.Generation != 1 || snapshot.SessionID != name {
+						t.Fatalf("descendant %s: %+v", name, snapshot)
+					}
+				}
+				queued, err := controller.Wait(t.Context(), launches["queued"].TaskID)
+				if err != nil || queued.Status != Completed || queued.Result != "initial" || currentCompletionDelivered(controller, queued.TaskID) {
+					t.Fatalf("prior queued-only completion: %+v %v", queued, err)
+				}
+				for _, name := range []string{"childish", "other"} {
+					snapshot, _ := controller.Get(launches[name].TaskID)
+					if wantStopped := target == "root" && name == "childish"; (snapshot.Status == Killed) != wantStopped {
+						t.Fatalf("unrelated boundary %s: %+v", name, snapshot)
+					}
+				}
+				controller.SetMaxConcurrent(8)
+				if _, err := controller.QueueOrResume(t.Context(), launches["queued"].TaskID, "resume"); err != nil {
+					t.Fatal(err)
+				}
+				synctest.Wait()
+				resumed, _ := controller.Get(launches["queued"].TaskID)
+				if resumed.Generation != 2 || resumed.Result != "resume" {
+					t.Fatalf("retained identity: %+v", resumed)
+				}
+			})
+		})
+	}
+}
+
+func TestStopSubtreeFencesAdmissionUntilRunsAndReservationsDrain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		controller := NewController()
+		defer controller.Close()
+		tail := make(chan struct{})
+		defer close(tail)
+		launch, err := controller.Start(t.Context(), Request{RootSessionID: "root", TaskPath: "/root/child", SessionID: "child"}, "", func(ctx context.Context, _, _ string) (Completion, error) {
+			<-ctx.Done()
+			<-tail
+			return Completion{}, ctx.Err()
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		releaseReservation, err := controller.ReservePath("root", "/root/child/deep")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer releaseReservation()
+		stopped := make(chan error, 1)
+		go func() { _, err := controller.StopSubtree("child"); stopped <- err }()
+		synctest.Wait()
+		if _, err := controller.QueueOrResume(t.Context(), launch.TaskID, "racing followup"); err == nil {
+			t.Fatal("followup bypassed cancellation fence")
+		}
+		if _, err := controller.Start(t.Context(), Request{RootSessionID: "root", TaskPath: "/root/child/deep", SessionID: "deep"}, "", func(context.Context, string, string) (Completion, error) { return Completion{}, nil }); err == nil {
+			t.Fatal("reserved spawn bypassed cancellation fence")
+		}
+		select {
+		case err := <-stopped:
+			t.Fatalf("returned before cleanup: %v", err)
+		default:
+		}
+		releaseReservation()
+		select {
+		case err := <-stopped:
+			t.Fatalf("returned before callback tail: %v", err)
+		default:
+		}
+		tail <- struct{}{}
+		if err := <-stopped; err != nil {
+			t.Fatal(err)
+		}
+		if release, err := controller.ReservePath("root", "/root/child/deep"); err != nil {
+			t.Fatal(err)
+		} else {
+			release()
+		}
+	})
+}
+
+func TestStopSubtreeCancelsAllBeforeWaitingForAdmission(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		controller := NewController()
+		defer controller.Close()
+		cancelled := make(chan struct{}, 2)
+		var launches []Launch
+		for _, req := range []Request{
+			{RootSessionID: "root", TaskPath: "/root/child", SessionID: "child"},
+			{RootSessionID: "root", TaskPath: "/root/child/deep", SessionID: "deep"},
+		} {
+			launch, err := controller.Start(t.Context(), req, "", func(ctx context.Context, _, _ string) (Completion, error) {
+				<-ctx.Done()
+				cancelled <- struct{}{}
+				return Completion{}, ctx.Err()
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			launches = append(launches, launch)
+		}
+		child, _ := controller.task(launches[0].TaskID)
+		child.admission.Lock()
+		stopped := make(chan error, 1)
+		go func() { _, err := controller.StopSubtree("child"); stopped <- err }()
+		<-cancelled
+		<-cancelled
+		for _, launch := range launches {
+			snapshot, _ := controller.Get(launch.TaskID)
+			if snapshot.Status != Killed {
+				t.Errorf("admission contention delayed cancellation: %+v", snapshot)
+			}
+		}
+		select {
+		case err := <-stopped:
+			t.Errorf("returned before callback drained: %v", err)
+		default:
+		}
+		child.admission.Unlock()
+		if err := <-stopped; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestAgentCapacityIsPerRootAndQueuedFollowupWakesOnRelease(t *testing.T) {
 	c := NewController()
 	c.SetMaxConcurrent(1)

@@ -240,6 +240,15 @@ Codex 请求身份与 metadata 共用 `pkg/codexclient`：installation ID 存在
 子会话不会复用父会话的流式续传基线。`CreateChild` 不继承，因为委派子代理从空上下文开始、
 与父会话没有共享前缀。
 
+委派子代理继承历史时，在同资源与模型能力配置下保留与主会话完全一致的 system 和工具
+schema；异步用户提问的 main-only 限制在共享说明、child user 信封与 host 执行边界实施，
+不能通过移除 child schema 破坏整个继承前缀。`session inspect --cache` 包含复制的父历史，
+判断 child 自己的 miss 应按创建时间过滤 trace；首次 miss 与后续 continuation 分开评估。
+`TestAgentForkAllPreservesActualProviderRequestPrefix` 从 server 准备后的实际请求断言
+master → child → grandchild 的 cache affinity、模型配置、完整 system/schema、继承消息与
+Responses 编码前缀一致，并检查真实 read 工具后的 continuation 只追加消息。测试固定
+Ki 可控制的复用边界；服务端缓存过期、路由或模型变更不属于确定性命中保证。
+
 逐题旁聊同样只继承合法的 cache affinity，不继承父 run、连接续传或活跃 response 身份。
 缓存亲和不保证命中：只读工具集合及 system 的差异可能破坏父前缀，不能为了缓存继续声明
 写工具。旁聊自己的固定工具 profile 和追加式多轮历史有利于后续轮稳定命中；实际收益应看

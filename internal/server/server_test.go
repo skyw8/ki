@@ -1263,6 +1263,13 @@ func TestAgentChildEnvelopeUsesTaskPathsAndKeepsToolsAvailable(t *testing.T) {
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	rootID := createSession(t, hs, t.TempDir())
+	postPrompt(t, hs, rootID, "parent directive")
+	root, err := srv.open(rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	rootHeader := lastRequestHeader(t, root)
 	child, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
 		Description: "child", Prompt: "child directive", ParentSessionID: rootID,
 	})
@@ -1290,12 +1297,20 @@ func TestAgentChildEnvelopeUsesTaskPathsAndKeepsToolsAvailable(t *testing.T) {
 	if len(messages) == 0 {
 		t.Fatal("grandchild transcript is empty")
 	}
-	first := messages[0].Text()
+	first := ""
+	for _, message := range messages {
+		if message.Role == "user" && strings.HasSuffix(strings.TrimSpace(message.Text()), "grandchild directive") {
+			first = message.Text()
+		}
+	}
 	if !strings.Contains(first, grandchild.TaskPath) || !strings.Contains(first, child.TaskPath) {
 		t.Fatalf("grandchild envelope: %q", first)
 	}
 	if !strings.HasSuffix(strings.TrimSpace(first), "grandchild directive") {
 		t.Fatalf("envelope must precede the directive: %q", first)
+	}
+	if !strings.Contains(first, "request_user_input_async tool is reserved for the main agent") || !strings.Contains(first, "send questions to your parent with send_message") {
+		t.Fatalf("child question restriction missing from envelope: %q", first)
 	}
 
 	greatGrandchild, err := srv.SpawnAgent(context.Background(), agent.Request{TaskName: nextAgentTestName(),
@@ -1316,7 +1331,12 @@ func TestAgentChildEnvelopeUsesTaskPathsAndKeepsToolsAvailable(t *testing.T) {
 	if len(deepMessages) == 0 {
 		t.Fatal("great-grandchild transcript is empty")
 	}
-	deepFirst := deepMessages[0].Text()
+	deepFirst := ""
+	for _, message := range deepMessages {
+		if message.Role == "user" && strings.HasSuffix(strings.TrimSpace(message.Text()), "great grandchild directive") {
+			deepFirst = message.Text()
+		}
+	}
 	if !strings.Contains(deepFirst, greatGrandchild.TaskPath) {
 		t.Fatalf("great-grandchild envelope: %q", deepFirst)
 	}
@@ -1328,8 +1348,24 @@ func TestAgentChildEnvelopeUsesTaskPathsAndKeepsToolsAvailable(t *testing.T) {
 	}
 	descendantHeader := lastRequestHeader(t, deep)
 	parentHeader := lastRequestHeader(t, sess)
-	if descendantHeader.System != parentHeader.System {
-		t.Fatal("nested agent changed the system prompt; the provider prefix cache would break")
+	if descendantHeader.System != parentHeader.System || parentHeader.System != rootHeader.System {
+		t.Fatal("agent changed the system prompt; the provider prefix cache would break")
+	}
+	rootTools, err := json.Marshal(rootHeader.Tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, header := range []session.Entry{parentHeader, descendantHeader} {
+		tools, err := json.Marshal(header.Tools)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(rootTools, tools) {
+			t.Fatalf("agent changed tool schemas: root=%v child=%v", toolNames(rootHeader.Tools), toolNames(header.Tools))
+		}
+		if pickTool(header.Tools, "request_user_input_async") == nil {
+			t.Fatal("question schema must remain in the shared provider prefix")
+		}
 	}
 	if pickTool(descendantHeader.Tools, "spawn_agent") == nil {
 		t.Fatalf("spawn_agent must stay in nested agent tool schemas: %v", toolNames(descendantHeader.Tools))
@@ -1337,6 +1373,182 @@ func TestAgentChildEnvelopeUsesTaskPathsAndKeepsToolsAvailable(t *testing.T) {
 	if !strings.Contains(descendantHeader.System, "- spawn_agent:") {
 		t.Fatalf("spawn_agent must stay in the nested agent system prompt tool list: %q", descendantHeader.System)
 	}
+}
+
+type agentCacheRequestStreamer struct {
+	mu       sync.Mutex
+	requests map[string][]loop.Request
+	path     string
+}
+
+func (s *agentCacheRequestStreamer) Stream(_ context.Context, req loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return types.Message{}, err
+	}
+	var snapshot loop.Request
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return types.Message{}, err
+	}
+	s.mu.Lock()
+	s.requests[req.SessionID] = append(s.requests[req.SessionID], snapshot)
+	s.mu.Unlock()
+	if len(req.Messages) > 0 && req.Messages[len(req.Messages)-1].Role == "toolResult" {
+		return types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "read complete"}}, StopReason: "stop"}, nil
+	}
+	return types.Message{Role: "assistant", Content: []types.Content{{
+		Type: "toolCall", ID: fmt.Sprintf("read-%d", len(req.Messages)), Name: "read",
+		Arguments: map[string]any{"file_path": s.path},
+	}}, StopReason: "toolUse"}, nil
+}
+
+func TestAgentForkAllPreservesActualProviderRequestPrefix(t *testing.T) {
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, "fixture.txt")
+	if err := os.WriteFile(path, []byte("shared fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	streamer := &agentCacheRequestStreamer{requests: make(map[string][]loop.Request), path: path}
+	srv, hs := testServerWith(t, streamer)
+	rootID := createSession(t, hs, cwd)
+	postPrompt(t, hs, rootID, "shared completed turn")
+	postPrompt(t, hs, rootID, "current parent turn")
+	launch := func(parent, name string) agent.Launch {
+		t.Helper()
+		child, err := srv.SpawnAgent(t.Context(), agent.Request{
+			TaskName: name, ParentSessionID: parent, Prompt: "current " + name + " turn", ForkTurns: "all",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.Wait(t.Context(), child.TaskID); err != nil {
+			t.Fatal(err)
+		}
+		return child
+	}
+	child := launch(rootID, "child")
+	postPrompt(t, hs, child.SessionID, "next child turn")
+	grandchild := launch(child.SessionID, "grandchild")
+	streamer.mu.Lock()
+	defer streamer.mu.Unlock()
+	assertJSONEqual := func(label string, want, got any) {
+		t.Helper()
+		a, err := json.Marshal(want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(a, b) {
+			t.Fatalf("%s differs in actual provider requests", label)
+		}
+	}
+	var parent loop.Request
+	for _, id := range []string{rootID, child.SessionID, grandchild.SessionID} {
+		requests := streamer.requests[id]
+		if len(requests) < 2 {
+			t.Fatalf("session %s has %d requests; need initial and tool continuation", id, len(requests))
+		}
+		initial, continuation := requests[0], requests[1]
+		if id == rootID {
+			initial, continuation = requests[len(requests)-2], requests[len(requests)-1]
+			if len(requests) != 4 {
+				t.Fatalf("root requests = %d; expected two turns with tool continuations", len(requests))
+			}
+		} else {
+			inherited := len(initial.Messages) - 1
+			if inherited == 0 || inherited >= len(parent.Messages) {
+				t.Fatalf("session %s did not inherit the completed parent prefix", id)
+			}
+			assertJSONEqual("inherited messages", parent.Messages[:inherited], initial.Messages[:inherited])
+			parentInput := provider.ResponsesBody(parent)["input"].([]any)
+			childInput := provider.ResponsesBody(initial)["input"].([]any)
+			if len(childInput) < 2 || len(childInput) > len(parentInput) {
+				t.Fatalf("invalid inherited wire input lengths: parent=%d child=%d", len(parentInput), len(childInput))
+			}
+			assertJSONEqual("encoded Responses input prefix", parentInput[:len(childInput)-1], childInput[:len(childInput)-1])
+			assertJSONEqual("system", parent.System, initial.System)
+			assertJSONEqual("tool schemas", parent.Tools, initial.Tools)
+			assertJSONEqual("wire instructions", provider.ResponsesBody(parent)["instructions"], provider.ResponsesBody(initial)["instructions"])
+			assertJSONEqual("wire tool schemas", provider.ResponsesBody(parent)["tools"], provider.ResponsesBody(initial)["tools"])
+		}
+		if initial.CacheKey != rootID || continuation.CacheKey != rootID || initial.SessionID != id || continuation.SessionID != id {
+			t.Fatalf("cache affinity or session identity changed: initial=%s/%s continuation=%s/%s root=%s", initial.CacheKey, initial.SessionID, continuation.CacheKey, continuation.SessionID, rootID)
+		}
+		if id == rootID {
+			parent = initial
+		}
+		assertJSONEqual("provider binding", []string{parent.Provider, parent.Model, parent.API}, []string{initial.Provider, initial.Model, initial.API})
+		assertJSONEqual("continuation system", initial.System, continuation.System)
+		assertJSONEqual("continuation schemas", initial.Tools, continuation.Tools)
+		if len(continuation.Messages) != len(initial.Messages)+2 {
+			t.Fatalf("continuation did not append one tool call/result pair: %d -> %d", len(initial.Messages), len(continuation.Messages))
+		}
+		assertJSONEqual("continuation message prefix", initial.Messages, continuation.Messages[:len(initial.Messages)])
+		initialBody, continuationBody := provider.ResponsesBody(initial), provider.ResponsesBody(continuation)
+		initialInput := initialBody["input"].([]any)
+		continuationInput := continuationBody["input"].([]any)
+		assertJSONEqual("encoded continuation input prefix", initialInput, continuationInput[:len(initialInput)])
+		assertJSONEqual("continuation provider binding", []string{initial.Provider, initial.Model, initial.API}, []string{continuation.Provider, continuation.Model, continuation.API})
+		parent = requests[len(requests)-2]
+	}
+}
+
+type agentQuestionStreamer struct{}
+
+func (agentQuestionStreamer) Stream(_ context.Context, req loop.Request, _ func(loop.AssistantDelta) error) (types.Message, error) {
+	if len(req.Messages) > 0 && req.Messages[len(req.Messages)-1].Role == "toolResult" {
+		return types.Message{Role: "assistant", Content: []types.Content{{Type: "text", Text: "finished"}}, StopReason: "stop"}, nil
+	}
+	return types.Message{Role: "assistant", Content: []types.Content{{
+		Type: "toolCall", ID: "ask", Name: "request_user_input_async",
+		Arguments: map[string]any{"questions": []any{map[string]any{"title": "Proceed?"}}},
+	}}, StopReason: "toolUse"}, nil
+}
+
+func TestAgentQuestionRuntimeRejectsChildWhileMainCanAsk(t *testing.T) {
+	srv, hs := testServerWith(t, agentQuestionStreamer{})
+	rootID := createSession(t, hs, t.TempDir())
+	postPrompt(t, hs, rootID, "ask a question")
+	root, err := srv.open(rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if len(root.Questions()) != 1 {
+		t.Fatalf("main session questions = %+v", root.Questions())
+	}
+	child, err := srv.SpawnAgent(t.Context(), agent.Request{
+		TaskName: "child", ParentSessionID: rootID, Prompt: "try asking", ForkTurns: "none",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.Wait(t.Context(), child.TaskID); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := srv.open(child.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	if pickTool(lastRequestHeader(t, sess).Tools, "request_user_input_async") == nil {
+		t.Fatal("child question schema missing")
+	}
+	if len(sess.Questions()) != 0 {
+		t.Fatalf("child created questions: %+v", sess.Questions())
+	}
+	for _, message := range sess.MessagesToLeaf() {
+		if message.Role == "toolResult" && message.ToolName == "request_user_input_async" {
+			if !message.IsError || !strings.Contains(message.Text(), "only available in main sessions") {
+				t.Fatalf("child question result = %+v", message)
+			}
+			return
+		}
+	}
+	t.Fatal("child question call was not executed and rejected")
 }
 
 func lastRequestHeader(t *testing.T, sess *session.Session) session.Entry {
@@ -3286,6 +3498,113 @@ func TestBusyPromptQueuesUntilRelease(t *testing.T) {
 			t.Fatalf("queued follow-up did not run: queued=%+v entries=%s running=%v", queued, raw, srv.running(id))
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestPromptRecoversInterruptedToolExchange(t *testing.T) {
+	for _, mode := range []string{"implicit", "active_parent", "aborted_parent"} {
+		t.Run(mode, func(t *testing.T) {
+			recorder := &reqRecorder{}
+			srv, hs := testServerWith(t, recorder)
+			id := createSession(t, hs, t.TempDir())
+			sess, err := srv.open(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			call, err := sess.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ID: "orphan", Name: "wait_agent"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent := call.ID
+			if mode == "aborted_parent" {
+				entry, err := sess.AppendDetailsEvent("run_aborted", map[string]any{"reason": "user_request"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				parent = entry.ID
+				if _, err := sess.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "later branch"}}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var extra map[string]any
+			if mode != "implicit" {
+				extra = map[string]any{"parentId": parent}
+			}
+			status, out := promptJSON(t, hs, id, "resume", extra)
+			if status != http.StatusAccepted {
+				t.Fatalf("resume status %d: %+v", status, out)
+			}
+			waitAgentEnd(t, hs, id)
+			waitRunIdle(t, srv, id)
+			if len(recorder.reqs) != 1 {
+				t.Fatalf("requests = %d", len(recorder.reqs))
+			}
+			messages := recorder.reqs[0].Messages
+			if hasUnresolvedToolCalls(messages) {
+				t.Fatalf("provider received unresolved exchange: %+v", messages)
+			}
+			results := 0
+			for i, m := range messages {
+				if m.Role == "toolResult" && m.ToolCallID == "orphan" {
+					results++
+					if !m.IsError || i+1 >= len(messages) || messages[i+1].Text() != "resume" {
+						t.Fatalf("recovery must precede new prompt: %+v", messages)
+					}
+				}
+			}
+			if results != 1 {
+				t.Fatalf("orphan results = %d", results)
+			}
+			reopened, err := srv.open(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored := 0
+			for _, entry := range reopened.Entries() {
+				if entry.Message != nil && entry.Message.ToolCallID == "orphan" {
+					stored++
+				}
+			}
+			if mode != "aborted_parent" && stored != 1 {
+				t.Fatalf("stored recovery results = %d", stored)
+			}
+		})
+	}
+}
+
+func TestPromptRejectsParentInsideHistoricalToolExchange(t *testing.T) {
+	srv, hs := testServer(t)
+	id := createSession(t, hs, t.TempDir())
+	sess, err := srv.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, err := sess.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ID: "call", Name: "Read"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.AppendMessage(types.Message{Role: "toolResult", ToolCallID: "call"}); err != nil {
+		t.Fatal(err)
+	}
+	leaf := sess.LeafID()
+	status, _ := promptJSON(t, hs, id, "branch", map[string]any{"parentId": call.ID})
+	if status != http.StatusBadRequest {
+		t.Fatalf("unfinished historical parent status = %d", status)
+	}
+	reopened, err := srv.open(id)
+	if err != nil || reopened.LeafID() != leaf || len(reopened.Entries()) != len(sess.Entries()) {
+		t.Fatalf("rejected parent changed history: %v", err)
+	}
+	if err := reopened.SetLeaf(call.ID); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = promptJSON(t, hs, id, "branch from selected call", map[string]any{"parentId": call.ID})
+	if status != http.StatusBadRequest {
+		t.Fatalf("selected unfinished historical parent status = %d", status)
+	}
+	selected, err := srv.open(id)
+	if err != nil || selected.LeafID() != call.ID || len(selected.Entries()) != len(sess.Entries()) {
+		t.Fatalf("rejected selected parent changed history: %v", err)
 	}
 }
 

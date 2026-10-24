@@ -432,7 +432,7 @@ end
 R -> R : loop.Run 返回\ndefer: 排队 reload → close(st.done) + Broadcast\n登记完成缓存预算/期限
 E -> E : terminal agent_end 等待 done\n排空剩余 → 关 SSE
 
-C -> S : POST /v1/sessions/{id}/abort（可选）\n→ scope=turn: st.cancel() → loop 返回 → agent_end\n→ scope=process/tree: 明确终止 owned 进程/后代
+C -> S : POST /v1/sessions/{id}/abort（可选）\n→ scope=turn: 自身 cancel + 所有后代 agent/pending 级联清理\n→ scope=process/tree: 明确终止 owned 进程
 @enduml
 ```
 
@@ -443,6 +443,12 @@ C -> S : POST /v1/sessions/{id}/abort（可选）\n→ scope=turn: st.cancel() �
 终端进程由 `internal/process` 管理。server 注入各运行时并把 loop 事件投影为 agent 进度；
 shell 适配器显式传递进程调用身份。运行时不反向依赖 loop 或工具实现；sidecar 直接复用
 process 的进程组控制。详见 [tools.md](tools.md#模块边界)。
+
+agent turn 的 context 独立于创建它的工具调用；中断由 controller 的结构子树屏障显式传播。
+普通 session abort 先取消自身，再停止所有深度后代并清空其 pending tasks；interrupt_agent
+同样级联，保留路径与身份。屏障与新 run 注册共用 controller 锁，因此已预约但未注册的
+spawn 也不能绕过清理；所有目标先收到取消，之后才等待 callback 和 reservation 完成。
+仅停止 turn 保留独立 shell 进程，tree scope 才额外终止进程。
 
 **图 2：包关系**（server / runState / loop / session / compact / provider，以及 CLI / WebUI
 两个消费者）

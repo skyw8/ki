@@ -491,6 +491,11 @@ func (s *Server) Abort(sessionID string) error {
 	if st != nil {
 		s.cancelRun(sessionID, st, cancelReasonExtension, "extension", true)
 	}
+	if s.agentTasks != nil {
+		if _, err := s.agentTasks.StopDescendants(sessionID); err != nil {
+			return err
+		}
+	}
 	s.cancelUIPrompts(sessionID)
 	return nil
 }

@@ -7,7 +7,7 @@
 
 | 层 | 内容 |
 |---|---|
-| 1. 身份与职责 | 说明模型运行在 ki agent harness 中，可以读取文件、执行命令、修改代码和创建文件。subagent 身份、派它的 agent 和 canonical task path 放在 child 首条 user 信封中；通常复用 parent 的工具前缀，但不提供仅主会话可用的异步用户提问。工具集合不随 busy/idle 改变；执行容量在 agent.Controller 的 admission 边界检查，没有固定 depth 限制。 |
+| 1. 身份与职责 | 说明模型运行在 ki agent harness 中，可以读取文件、执行命令、修改代码和创建文件。subagent 身份、派它的 agent 和 canonical task path 放在 child 首条 user 信封中；复用同能力配置 parent 的完整 system 与工具 schema 前缀，包括异步用户提问声明；提问仅主会话可执行，child 首条 user 信封要求通过 send_message 向 parent 提问，host callback 再强制拒绝 child 调用。只读旁聊仍使用独立受限工具集合。工具集合不随 busy/idle 改变；执行容量在 agent.Controller 的 admission 边界检查，没有固定 depth 限制。 |
 | 2. Ki 配置位置 | 存在 `KI_HOME` 时列出 `ki.toml`、`skills/`、`models.json`、`credentials.json`、扩展目录、项目级 `<cwd>/.ki/`，以及 `ki config path`。 |
 | 3. 可用工具 | 逐项输出本轮工具的名称和简短说明；没有工具时输出 `(none)`。包括内置工具、已绑定的扩展工具，并补充项目可能提供其他自定义工具。 |
 | 4. 通用行为约束 | 要求回答简洁，并在操作文件时清晰展示路径。有 `request_user_input_async` 时追加异步提问使用规则：尽早提问、继续不依赖答案的工作；必要回答未到前不执行依赖工作；时间与预选项不代表回答或批准。 |

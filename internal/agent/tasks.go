@@ -743,17 +743,82 @@ func (s *Controller) Stop(id string) (Snapshot, error) {
 	if !ok {
 		return Snapshot{}, os.ErrNotExist
 	}
+	snapshot := s.snapshot(task)
+	if snapshot.SessionID != "" {
+		if _, err := s.StopSubtree(snapshot.SessionID); err != nil {
+			return snapshot, err
+		}
+		current := s.snapshot(task)
+		if isTerminal(snapshot.Status) && snapshot.PendingTasks == 0 {
+			return current, errTaskNotRunning
+		}
+		return current, nil
+	}
 	task.admission.Lock()
+	snapshot, runDone, err := s.stopTask(task)
+	task.admission.Unlock()
+	if err == nil {
+		s.publishTask(task)
+	}
+	if runDone != nil {
+		<-runDone
+	}
+	return snapshot, err
+}
+
+func (s *Controller) StopSubtree(sessionID string) ([]Snapshot, error) {
+	return s.stopSubtree(sessionID, true)
+}
+
+func (s *Controller) StopDescendants(sessionID string) ([]Snapshot, error) {
+	return s.stopSubtree(sessionID, false)
+}
+
+func (s *Controller) stopSubtree(sessionID string, includeSelf bool) ([]Snapshot, error) {
+	release, drained, err := s.FenceSubtreeAdmission(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	root, path, err := s.Identity(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	tasks := make([]*agentTask, 0, len(s.tasks))
+	for _, task := range s.tasks {
+		snapshot := s.snapshot(task)
+		if snapshot.RootSessionID == root && (includeSelf && snapshot.TaskPath == path || strings.HasPrefix(snapshot.TaskPath, path+"/")) {
+			tasks = append(tasks, task)
+		}
+	}
+	s.mu.RUnlock()
+	snapshots := make([]Snapshot, 0, len(tasks))
+	runs := make([]<-chan struct{}, 0, len(tasks))
+	for _, task := range tasks {
+		snapshot, runDone, _ := s.stopTask(task)
+		snapshots = append(snapshots, snapshot)
+		if runDone != nil {
+			runs = append(runs, runDone)
+		}
+	}
+	for _, task := range tasks {
+		s.publishTask(task)
+	}
+	for _, done := range runs {
+		<-done
+	}
+	<-drained
+	return snapshots, nil
+}
+
+func (s *Controller) stopTask(task *agentTask) (Snapshot, <-chan struct{}, error) {
 	task.mu.Lock()
 	if isTerminal(task.snap.Status) && len(task.pending) == 0 {
 		snapshot := task.snap
 		runDone := task.runDone
 		task.mu.Unlock()
-		task.admission.Unlock()
-		if runDone != nil {
-			<-runDone
-		}
-		return snapshot, errTaskNotRunning
+		return snapshot, runDone, errTaskNotRunning
 	}
 	interruptedGeneration := task.active
 	if task.cancel != nil {
@@ -777,12 +842,7 @@ func (s *Controller) Stop(id string) (Snapshot, error) {
 	runDone := task.runDone
 	snapshot := task.snap
 	task.mu.Unlock()
-	task.admission.Unlock()
-	s.publishTask(task)
-	if runDone != nil {
-		<-runDone
-	}
-	return snapshot, nil
+	return snapshot, runDone, nil
 }
 
 func (s *Controller) Close() {

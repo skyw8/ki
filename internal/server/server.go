@@ -2105,7 +2105,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if hasUnresolvedToolCalls(messages) {
+		if hasUnresolvedToolCalls(messages) && !sess.IsInterruptedToolTail(*body.ParentID) {
 			_ = sess.Close()
 			http.Error(w, "parent leaves unresolved tool calls", http.StatusBadRequest)
 			return
@@ -2429,6 +2429,10 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 			return
 		}
 	}
+	if _, err := sess.RecoverInterruptedToolCalls(); err != nil {
+		st.err = fmt.Errorf("recover interrupted tool calls: %w", err)
+		return
+	}
 	_, info, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
 	if !ok {
 		st.err = fmt.Errorf("model %q/%q is %w", sess.Config.Provider, sess.Config.Model, errModelUnavailable)
@@ -2502,13 +2506,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		Shells:               s.shells, Mutations: s.mutations,
 		PathDirs: snapshot.PathDirs,
 	}
-	if s.questionEligible(sess) {
-		builtinSet.RequestUserInputAsync = func(callCtx context.Context, callID string, questions []session.QuestionInput) error {
-			if err := callCtx.Err(); err != nil {
-				return err
-			}
-			return s.requestQuestions(sess, callID, questions)
+	builtinSet.RequestUserInputAsync = func(callCtx context.Context, callID string, questions []session.QuestionInput) error {
+		if err := callCtx.Err(); err != nil {
+			return err
 		}
+		return s.requestQuestions(sess, callID, questions)
 	}
 	tls := builtinSet.Build(profile)
 	if sideReadOps != nil {
@@ -3697,9 +3699,13 @@ func (s *Server) abort(w http.ResponseWriter, r *http.Request) {
 		s.stopRuntimeTree(id)
 	}
 	abortedAgent := false
-	if snapshot, ok := s.agentTasks.TaskForSession(id); ok && (snapshot.Status == agent.Running || snapshot.Status == agent.Pending) {
-		_, err := s.agentTasks.Stop(snapshot.TaskID)
-		abortedAgent = err == nil
+	if s.agentTasks != nil {
+		snapshots, err := s.agentTasks.StopSubtree(id)
+		if err == nil {
+			for _, snapshot := range snapshots {
+				abortedAgent = abortedAgent || snapshot.Status == agent.Killed
+			}
+		}
 	}
 	s.cancelUIPrompts(id)
 	writeJSON(w, 200, map[string]any{

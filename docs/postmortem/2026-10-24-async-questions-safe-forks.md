@@ -102,6 +102,27 @@ session/server 完整 race 检查通过，全量 `go test -tags embed -count=1 .
 首次接受不可改写；重开和跨窗口从持久回执恢复，不能依赖仍可能未提交的本地草稿。
 仅有答案正文的记录按完整选项边界恢复，不能确定的内容作为自由答案显示。
 
+浏览器回归还暴露了两处测试初始化竞态。侧栏助手原来只等 session 列表就开始展开，
+workspace 请求较晚返回时会把“尚未出现工作区”当成“已经全部展开”；现在同时等待独立的
+workspace 就绪状态。刷新答题回执的测试原来在页面启动后才改写 fixture 并发送事件，
+初始化请求可能先捕获默认 pending 状态，而 SSE 也可能尚未订阅。测试现在在刷新前保存
+回执，并由 fixture 初始化同步恢复，确保后续 GET 和事件读取同一状态，不依赖调度顺序。
+
+## 子代理首次请求缓存回退
+
+会话 `01a16bf9365d71b0881db298c9fb8939` 的三个后期子代理首次请求分别出现
+187857 / 0、91178 / 0、91170 / 15744 的 prompt / cache-read token；后续请求恢复稳定缓存。
+对比实际 `request_header`，主会话与 child 的 system 只差异步提问工具清单和 guidance，
+工具 schema 同样只差 `request_user_input_async`。即使继承 cache affinity，删除这个工具
+也改变 system 开头和 schema，导致整段复制历史失去共享前缀。之前的测试只比较 child 与
+更深 child，它们都删除同一工具，因此没有发现主会话到 child 的差异。
+
+普通子代理改为保留共享 schema 与 system，description 和 child user 信封明确仅主会话
+可提问，host callback 继续在执行时强制拒绝 child，不能写入问题事实。只读旁聊仍使用
+独立受限工具集合。回归比较主会话、child 和更深 child 的完整 system/schema，并通过
+实际模型工具调用验证主会话成功、child 返回 main-only 错误且没有创建问题。
+检查 child 命中率时还需排除复制的父历史，避免把父 miss 重复计为每个 child 的新 miss。
+
 ## 回归方向
 
 覆盖并行工具批次提问、主任务继续、延迟首次旁聊、压缩与重启恢复、跨 tab 重复提交、

@@ -37,6 +37,27 @@ Process output follows the same rule: final sanitized bytes and the final
 listener callback belong to the process owner. A failed spool still drains the
 external command's output and reports its I/O failure independently.
 
+## Interrupted tool exchanges and descendant turns
+
+The October 24 investigation found another incomplete cleanup boundary: cancelling
+a parent turn cancelled only its own context. Child turns have independent run
+contexts, and queued child work could start after the parent stopped. Interruption
+now fences subtree admission, marks every descendant as cancelled, and only then
+waits for cleanup. Logical identities remain available for an explicit follow-up.
+An interrupt target cannot contain the caller, since waiting for that subtree from
+inside its own tool execution would deadlock. Turn interruption preserves owned
+shell processes; explicit process stop retains its separate termination semantics.
+
+A streamed assistant response can already contain tool call IDs when cancellation
+or a terminal provider failure occurs. Persisting that response without matching
+error tool results left the branch unusable for subsequent requests and forks.
+Failed streamed responses now close every published tool call without executing
+partial arguments. A cancelled batch also rejects calls that have not started,
+while preserving results from calls that completed. Interrupted history receives
+error results during context recovery, and resuming an idle tail persists those
+results before the next prompt; historical branch points inside a tool exchange
+remain invalid.
+
 ## Regression coverage
 
 Tests exercise scheduled-but-not-started root runs, post-`done` release,
