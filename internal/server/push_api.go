@@ -94,6 +94,20 @@ func (s *Server) notifyPushCompletion(id string) {
 	s.push.Notify(push.Message{SessionID: id, Title: title, CWD: info.CWD})
 }
 
+func (s *Server) notifyPushQuestion(sess *session.Session, q session.Question) {
+	if s.push == nil || !s.questionEligible(sess) || sess.Header.EffectiveForkMode() == session.ForkModeTree {
+		return
+	}
+	title := strings.TrimSpace(session.TitleOf(sess))
+	if title == "" {
+		title = "ki"
+	}
+	s.push.Notify(push.Message{
+		Type: "question_requested", SessionID: sess.ID(), Title: title,
+		QuestionItemID: q.QuestionItemID, Body: q.Title,
+	})
+}
+
 func (s *Server) markPushAborted(id string) {
 	s.pushAbortMu.Lock()
 	s.pushAborted[id] = struct{}{}

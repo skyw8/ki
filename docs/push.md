@@ -1,13 +1,13 @@
 # Web Push
 
-会话完成通知的「页面被冻结时也能送达」通道。它是 WebUI 通知的扩展，不是第二套开关：打开
+会话完成与新问题通知的「页面被冻结时也能送达」通道。它是 WebUI 通知的扩展，不是第二套开关：打开
 「通知」开关后，页面在有用户手势的点击里申请 `Notification` 权限并注册 Web Push 订阅；
 关掉时同时 `unsubscribe()` 并通知 server 删除。
 
 ## 为什么需要
 
 `GET /v1/events` 是页面活着时才存在的 push 流。手机锁屏、浏览器切到后台、标签页关闭后，
-页面被冻结，run 跑完的 `agent_end` 无人接收。Web Push 把投递交给浏览器的推送服务，由
+页面被冻结，run 跑完的 `agent_end` 或新问题的 `question_requested` 无人接收。Web Push 把投递交给浏览器的推送服务，由
 service worker 在没有页面的情况下唤起并弹系统通知。
 
 ## 组成
@@ -50,17 +50,25 @@ endpoint 必须是 `https://`，或 `http://127.0.0.1` / `http://localhost`（�
    活的 push 流之外的兜底，不是权威信号。
 4. worker 对每个订阅加密并 POST；推送服务回 404/410 时删除该订阅。其它失败只记日志。
 
-负载是 JSON：`{ type: "run_complete", sessionId, title, cwd }`。
+完成负载是 JSON：`{ type: "run_complete", sessionId, title, cwd }`。
+
+新问题在持久接受后独立入队，不等待 run 结束。仅为本次新建的问题发送；同一工具调用重试、
+问题更新、恢复、回答和失败请求不发送，子代理与只读旁聊也不发送。每题一条负载：
+`{ type: "question_requested", sessionId, title, questionItemId, body }`，`title` 是会话标题，
+`body` 是问题标题；不包含 cwd、选项、答案或私有快照。标题最多 160 个 Unicode 字符，
+正文最多 512 个；JSON 转义后仍按加密记录的容量约束继续裁剪，避免长问题整条丢失。
+SW 按浏览器语言显示「待回答问题：…」或「Question needs your answer: …」。
 
 ## 抑制规则
 
-页面和 service worker 用同一条规则、同一个 `tag`（`ki-run-<sessionId>`）：
+页面和 service worker 用同一条规则、同一个 `tag`（完成使用 `ki-run-<sessionId>`，问题使用
+`ki-question-<sessionId>-<questionItemId>`，互不覆盖）：
 
 - 页面侧通知也优先走 service worker（`registration.showNotification`），没有注册时才退回
   `new Notification()`。Android Chrome 没有 `Notification` 构造函数，只有注册能弹通知，所以
   这条路径不是优化而是必需；两条路都不可用时设置页的测试按钮会提示失败。
 - 有**聚焦且可见**的 ki 窗口时，SW 不弹：那是活的页面，它自己经 push 流收到了这次完成，并
-  按「正在看的那个会话才静默」的规则处理（见 [webui.md](webui.md)）。SW 只能看到「有没有
+  按「正在看的那个会话才静默」的规则处理完成和新问题（见 [webui.md](webui.md)）。SW 只能看到「有没有
   聚焦窗口」，看不到窗口在看哪个会话，但活的页面本身对未来所有会话的完成都有感知，所以
   结果一致。
 - 没有聚焦窗口（锁屏、切到别的应用、关掉页面）时，推送是唯一信号，弹。

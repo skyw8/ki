@@ -97,13 +97,13 @@ func TestMCPSettingsScopeSourcesAndNoEffects(t *testing.T) {
 	if infos[1].Enabled || !infos[1].ConfiguredEnabled {
 		t.Fatalf("independent patches lost MCP setting: %+v", infos)
 	}
-	before := codeModeSettingsSaved(t, srv.cfg.Home, 3)
+	before := codeModeSettingsSaved(t, srv.cfg.Home, 4)
 	for _, body := range []string{
 		`{"mcpDisabled":null}`, `{"mcpDisabled":{}}`, `{"mcpDisabled":[null]}`,
 		`{"mcpDisabled":[7]}`, `{"mcpDisabled":[""]}`, `{"mcpDisabled":["  "]}`, `{"mcpDisabled":["same","same"]}`,
 	} {
 		mcpSettingsHTTP(t, hs, route, http.MethodPatch, body, http.StatusBadRequest)
-		if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 3)) {
+		if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 4)) {
 			t.Fatalf("invalid patch mutated settings: %s", body)
 		}
 	}
@@ -225,10 +225,10 @@ func TestMCPSettingsScopedPatchPreservesOtherWorkspace(t *testing.T) {
 	if got.Allowed("server-A") || got.Allowed("removed-server") || got.Allowed("file-disabled") || !got.Allowed("server-B") {
 		t.Fatalf("scope-local edit lost another workspace's settings: %+v", got)
 	}
-	before := codeModeSettingsSaved(t, srv.cfg.Home, 3)
+	before := codeModeSettingsSaved(t, srv.cfg.Home, 4)
 	for _, body := range []string{`{"mcpDisabled":["server-A"]}`, `{"mcpDisabled":["file-disabled"]}`} {
 		mcpSettingsHTTP(t, hs, routeB, http.MethodPatch, body, http.StatusBadRequest)
-		if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 3)) {
+		if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 4)) {
 			t.Fatal("invalid scope patch mutated state")
 		}
 	}
@@ -236,7 +236,7 @@ func TestMCPSettingsScopedPatchPreservesOtherWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	mcpSettingsHTTP(t, hs, routeB, http.MethodPatch, `{"disabled":["read"]}`, http.StatusInternalServerError)
-	if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 3)) {
+	if !bytes.Equal(before, codeModeSettingsSaved(t, srv.cfg.Home, 4)) {
 		t.Fatal("invalid configuration allowed unrelated settings mutation")
 	}
 }

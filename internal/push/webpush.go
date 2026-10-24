@@ -17,21 +17,27 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
 
 type Message struct {
-	SessionID string `json:"sessionId"`
-	Title     string `json:"title"`
-	CWD       string `json:"cwd,omitempty"`
+	Type           string `json:"type,omitempty"`
+	SessionID      string `json:"sessionId"`
+	Title          string `json:"title"`
+	CWD            string `json:"cwd,omitempty"`
+	QuestionItemID string `json:"questionItemId,omitempty"`
+	Body           string `json:"body,omitempty"`
 }
 
 type payload struct {
-	Type      string `json:"type"`
-	SessionID string `json:"sessionId"`
-	Title     string `json:"title"`
-	CWD       string `json:"cwd,omitempty"`
+	Type           string `json:"type"`
+	SessionID      string `json:"sessionId"`
+	Title          string `json:"title"`
+	CWD            string `json:"cwd,omitempty"`
+	QuestionItemID string `json:"questionItemId,omitempty"`
+	Body           string `json:"body,omitempty"`
 }
 
 const (
@@ -104,12 +110,58 @@ func (s *Service) Notify(m Message) {
 	}
 }
 
+func messagePayload(m Message) ([]byte, error) {
+	p := payload{Type: "run_complete", SessionID: m.SessionID, Title: m.Title, CWD: m.CWD}
+	if m.Type != "question_requested" {
+		return json.Marshal(p)
+	}
+	p.Type, p.CWD, p.QuestionItemID = m.Type, "", m.QuestionItemID
+	title, body := []rune(strings.TrimSpace(m.Title)), []rune(strings.TrimSpace(m.Body))
+	if len(title) > 160 {
+		title = title[:160]
+	}
+	if len(body) > 512 {
+		body = body[:512]
+	}
+	p.Title, p.Body = string(title), string(body)
+	data, err := json.Marshal(p)
+	if err != nil || len(data)+1 <= payloadLimit {
+		return data, err
+	}
+	for _, field := range []*string{&p.Body, &p.Title} {
+		runes := []rune(*field)
+		low, high := 0, len(runes)
+		if field == &p.Body && len(runes) > 0 {
+			low = 1
+		}
+		for low < high {
+			middle := (low + high + 1) / 2
+			*field = string(runes[:middle])
+			data, err = json.Marshal(p)
+			if err != nil {
+				return nil, err
+			}
+			if len(data)+1 <= payloadLimit {
+				low = middle
+			} else {
+				high = middle - 1
+			}
+		}
+		*field = string(runes[:low])
+		data, err = json.Marshal(p)
+		if err != nil || len(data)+1 <= payloadLimit {
+			return data, err
+		}
+	}
+	return nil, errors.New("question push identifiers exceed payload limit")
+}
+
 func (s *Service) deliver(ctx context.Context, m Message) {
 	subs := s.store.List()
 	if len(subs) == 0 {
 		return
 	}
-	body, err := json.Marshal(payload{Type: "run_complete", SessionID: m.SessionID, Title: m.Title, CWD: m.CWD})
+	body, err := messagePayload(m)
 	if err != nil {
 		slog.Warn("marshal push payload", "err", err)
 		return

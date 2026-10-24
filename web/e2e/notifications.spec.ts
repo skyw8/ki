@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
-import { expandWorkspaces } from './sidebar.ts'
+import { expandWorkspaces, openSessionRow } from './sidebar.ts'
+import { installQuestions } from './question-fixture.ts'
+import type { Question } from '../src/api/types.ts'
 import { readFileSync } from 'node:fs'
 import { permissionFrom, shouldNotify } from '../src/lib/notifications.ts'
 import { reconcileFinishedRuns } from '../src/lib/completion-catchup.ts'
@@ -50,20 +52,22 @@ test('reconcileFinishedRuns announces only runs missed while suspended', () => {
   reconcileFinishedRuns({ known: empty, sessions: [{ id: 'x' }], aborted: new Set(), announce: () => { throw new Error('must not announce') } })
 })
 
-async function installNotificationProbe(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    const w = window as unknown as { __kiHidden: boolean; __kiNotifications: Array<{ title: string; body?: string }> }
+type NotificationRecord = { title: string; body?: string; tag?: string; data?: Record<string, unknown> }
+
+async function installNotificationProbe(page: Page, permission: NotificationPermission = 'default'): Promise<void> {
+  await page.addInitScript(({ permission }) => {
+    const w = window as unknown as { __kiHidden: boolean; __kiNotifications: NotificationRecord[] }
     w.__kiHidden = false
     w.__kiNotifications = []
     class StubNotification {
-      static permission = 'default'
+      static permission = permission
       static async requestPermission(): Promise<string> {
         StubNotification.permission = 'granted'
         return 'granted'
       }
       onclick: (() => void) | null = null
-      constructor(title: string, options?: { body?: string }) {
-        w.__kiNotifications.push({ title, body: options?.body })
+      constructor(title: string, options?: NotificationOptions) {
+        w.__kiNotifications.push({ title, body: options?.body, tag: options?.tag, data: options?.data })
       }
       close(): void {}
     }
@@ -72,19 +76,19 @@ async function installNotificationProbe(page: Page): Promise<void> {
       Object.defineProperty(ServiceWorkerRegistration.prototype, 'showNotification', {
         configurable: true,
         writable: true,
-        value: async function (title: string, options?: { body?: string }) {
-          w.__kiNotifications.push({ title, body: options?.body })
+        value: async function (title: string, options?: NotificationOptions) {
+          w.__kiNotifications.push({ title, body: options?.body, tag: options?.tag, data: options?.data })
         },
       })
     }
     Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get: () => w.__kiHidden })
     Object.defineProperty(Document.prototype, 'visibilityState', { configurable: true, get: () => (w.__kiHidden ? 'hidden' : 'visible') })
     Object.defineProperty(Document.prototype, 'hasFocus', { configurable: true, value: () => !w.__kiHidden })
-  })
+  }, { permission })
 }
 
-function notifications(page: Page): Promise<Array<{ title: string; body?: string }>> {
-  return page.evaluate(() => (window as unknown as { __kiNotifications: Array<{ title: string; body?: string }> }).__kiNotifications)
+function notifications(page: Page): Promise<NotificationRecord[]> {
+  return page.evaluate(() => (window as unknown as { __kiNotifications: NotificationRecord[] }).__kiNotifications)
 }
 
 async function setBackground(page: Page, hidden: boolean): Promise<void> {
@@ -122,6 +126,89 @@ async function waitIdle(page: Page): Promise<void> {
     return list.some(s => s.running)
   })).toBe(false)
 }
+
+async function openQuestionNotifications(page: Page, lang = 'zh', enabled = true, permission: NotificationPermission = 'granted') {
+  await installQuestions(page, lang)
+  await installNotificationProbe(page, permission)
+  await page.addInitScript(({ enabled }) => {
+    localStorage.setItem('ki-notify', enabled ? 'on' : 'off')
+    const state = window.questionFixture
+    const session = { ...state.sessions[0], id: 'notification-other', title: '另一会话' }
+    state.sessions.push(session)
+    state.details[session.id] = { ...session, entries: [], running: false, runtime: { ready: true } }
+  }, { enabled })
+  await page.goto('/')
+  await openSessionRow(page, '另一会话')
+  const root = page.getByTestId('session-row').filter({ hasText: '发布策略与上线准备' })
+  await root.getByTestId('session-toggle').click()
+  await expect(page.getByTestId('question-side-link')).toHaveCount(1)
+  await expect.poll(() => page.evaluate(() => {
+    const raw = localStorage.getItem('ki-focused-session:question-fixture')
+    return raw ? JSON.parse(raw).session : null
+  })).toBe('notification-other')
+}
+
+async function emitQuestionNotifications(page: Page, patches: Partial<Question>[], marker: string) {
+  await page.evaluate(({ patches, marker }) => {
+    const state = window.questionFixture
+    const questions = patches.map(patch => ({ ...state.question, ...patch }))
+    state.emit('server', { type: 'question_requested', sessionId: 'question-main', questions })
+    state.question = { ...state.question, title: marker, revision: state.question.revision + 1 }
+    state.details['question-main'].questions = [state.question]
+    state.emit('server', { type: 'question_updated', sessionId: 'question-main', question: state.question })
+  }, { patches, marker })
+  await expect(page.getByTestId('question-side-link')).toContainText(marker)
+}
+
+for (const lang of ['zh', 'en']) test(`question requests notify once per item in another visible session (${lang})`, async ({ page }) => {
+  await openQuestionNotifications(page, lang)
+  const question = { questionItemId: 'notify-first', title: '确认发布范围', revision: 1 }
+  await emitQuestionNotifications(page, [question, question], 'first request consumed')
+  await expect.poll(() => notifications(page)).toHaveLength(1)
+  expect((await notifications(page))[0]).toEqual({
+    title: '发布策略与上线准备',
+    body: lang === 'zh' ? '待回答问题：确认发布范围' : 'Question needs your answer: 确认发布范围',
+    tag: 'ki-question-question-main-notify-first',
+    data: { sessionId: 'question-main', questionItemId: 'notify-first' },
+  })
+  await emitQuestionNotifications(page, [
+    { ...question, revision: 2, title: '重复请求' },
+    { questionItemId: 'notify-answered', title: '已回答', status: 'answered' },
+    { questionItemId: 'notify-dismissed', title: '已忽略', status: 'dismissed' },
+    { questionItemId: 'notify-queued', title: '等待投递', status: 'answer_queued' },
+    { questionItemId: 'notify-other-branch', title: '其它分支', sourceBranchValid: false },
+    { questionItemId: 'notify-second', title: '确认回滚方案', revision: 1 },
+  ], 'repeated request and state updates consumed')
+  await expect.poll(() => notifications(page)).toHaveLength(2)
+  expect((await notifications(page))[1]).toMatchObject({ tag: 'ki-question-question-main-notify-second' })
+})
+
+test('question requests seen in the focused session stay silent when replayed elsewhere', async ({ page }) => {
+  await openQuestionNotifications(page)
+  await openSessionRow(page, '发布策略与上线准备')
+  await expect(page.getByTestId('questions-rail')).toBeVisible()
+  await expect.poll(() => page.evaluate(() => {
+    const raw = localStorage.getItem('ki-focused-session:question-fixture')
+    return raw ? JSON.parse(raw).session : null
+  })).toBe('question-main')
+  const question = { questionItemId: 'focused-question', title: '当前会话问题', revision: 1 }
+  await emitQuestionNotifications(page, [question], 'focused question consumed')
+  expect(await notifications(page)).toHaveLength(0)
+  await openSessionRow(page, '另一会话')
+  await expect.poll(() => page.evaluate(() => {
+    const raw = localStorage.getItem('ki-focused-session:question-fixture')
+    return raw ? JSON.parse(raw).session : null
+  })).toBe('notification-other')
+  await emitQuestionNotifications(page, [question, { questionItemId: 'new-question', title: '新问题', revision: 1 }], 'focused replay consumed')
+  await expect.poll(() => notifications(page)).toHaveLength(1)
+  expect((await notifications(page))[0].tag).toBe('ki-question-question-main-new-question')
+})
+
+for (const { enabled, permission } of [{ enabled: false, permission: 'granted' }, { enabled: true, permission: 'denied' }] as const) test(`question requests stay silent when enabled=${enabled} and permission=${permission}`, async ({ page }) => {
+  await openQuestionNotifications(page, 'zh', enabled, permission)
+  await emitQuestionNotifications(page, [{ questionItemId: 'suppressed-question', title: '待回答', revision: 1 }], 'suppressed request consumed')
+  expect(await notifications(page)).toHaveLength(0)
+})
 
 test('completion notifies when the session is not the focused one', async ({ page }) => {
   await installNotificationProbe(page)

@@ -17,9 +17,23 @@ import (
 	"ki/internal/types"
 )
 
+func questionSideTestPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
+func questionSideTempDir(t *testing.T) string {
+	t.Helper()
+	return questionSideTestPath(t, t.TempDir())
+}
+
 func questionSideSeed(t *testing.T, s *Server, empty bool) (*session.Session, session.Question) {
 	t.Helper()
-	sess, err := session.Create(s.cfg.Sessions.Root, t.TempDir(), "frozen-provider", "frozen-model", "medium")
+	sess, err := session.Create(s.cfg.Sessions.Root, questionSideTempDir(t), "frozen-provider", "frozen-model", "medium")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +72,7 @@ func TestQuestionSideFrozenSnapshotAndMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	frozenCWD := source.Header.CWD
-	source.Header.CWD = t.TempDir()
+	source.Header.CWD = questionSideTempDir(t)
 	side, err := s.createQuestionSide(source, q)
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +170,7 @@ func TestQuestionSideCopiesSupplementalAttachment(t *testing.T) {
 	if err := os.RemoveAll(source.Dir); err != nil {
 		t.Fatal(err)
 	}
-	data, err := (questionSideReadOps{roots: questionSideRoots(side)}).ReadFile(t.Context(), copied)
+	data, err := (questionSideReadOps{roots: questionSideRoots(side)}).ReadFile(t.Context(), questionSideTestPath(t, copied))
 	if err != nil || string(data) != "original attachment" {
 		t.Fatalf("copied attachment unavailable without parent: %s %v", data, err)
 	}
@@ -317,8 +331,8 @@ func mustJSON(t *testing.T, v any) string {
 }
 
 func TestQuestionSideToolsReadonlyAndPathBounded(t *testing.T) {
-	root := t.TempDir()
-	secret := filepath.Join(t.TempDir(), "secret")
+	root := questionSideTempDir(t)
+	secret := filepath.Join(questionSideTempDir(t), "secret")
 	if err := os.WriteFile(secret, []byte("private"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +340,7 @@ func TestQuestionSideToolsReadonlyAndPathBounded(t *testing.T) {
 	if err := os.WriteFile(allowed, []byte("readable"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	sess := &session.Session{Dir: t.TempDir(), Header: session.Header{CWD: root}, Config: session.Config{Metadata: map[string]any{"purpose": questionSidePurpose, "readOnlyWorkspaceRoot": root}}}
+	sess := &session.Session{Dir: questionSideTempDir(t), Header: session.Header{CWD: root}, Config: session.Config{Metadata: map[string]any{"purpose": questionSidePurpose, "readOnlyWorkspaceRoot": root}}}
 	tools := restrictQuestionSideTools(sess, (builtin.Set{
 		CWD: root, ReadOps: questionSideReadOps{roots: []string{root}},
 	}).Build(builtin.Profile{}))
@@ -374,7 +388,7 @@ func TestQuestionSideRunOnlyAdvertisesReadonlyTools(t *testing.T) {
 		seen = req
 		return codeModeStop(), nil
 	}))
-	id := codeModeTestSession(t, s, t.TempDir(), "completions")
+	id := codeModeTestSession(t, s, questionSideTempDir(t), "completions")
 	sess, err := s.open(id)
 	if err != nil {
 		t.Fatal(err)

@@ -10,15 +10,18 @@ async function handlePush(event) {
   } catch {
     data = null
   }
-  if (!data || data.type !== 'run_complete' || !data.sessionId) return
+  if (!data || typeof data.sessionId !== 'string' || !data.sessionId) return
+  const question = data.type === 'question_requested'
+  if (data.type !== 'run_complete' && !question) return
+  if (question && (typeof data.questionItemId !== 'string' || !data.questionItemId || typeof data.body !== 'string' || !data.body.trim())) return
 
   const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
   if (windows.some(client => client.focused && client.visibilityState === 'visible')) return
 
   await self.registration.showNotification(data.title || 'ki', {
     body: notificationBody(data),
-    tag: 'ki-run-' + data.sessionId,
-    data: { sessionId: data.sessionId },
+    tag: question ? 'ki-question-' + data.sessionId + '-' + data.questionItemId : 'ki-run-' + data.sessionId,
+    data: question ? { sessionId: data.sessionId, questionItemId: data.questionItemId } : { sessionId: data.sessionId },
     icon: '/icon-192.png',
     badge: '/icon-192.png',
   })
@@ -26,7 +29,9 @@ async function handlePush(event) {
 
 function notificationBody(data) {
   const language = (self.navigator && self.navigator.language) || ''
-  const done = language.toLowerCase().startsWith('zh') ? '会话已完成' : 'Session finished'
+  const chinese = language.toLowerCase().startsWith('zh')
+  if (data.type === 'question_requested') return (chinese ? '待回答问题：' : 'Question needs your answer: ') + data.body
+  const done = chinese ? '会话已完成' : 'Session finished'
   return data.cwd ? data.cwd + ' · ' + done : done
 }
 

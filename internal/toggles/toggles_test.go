@@ -43,15 +43,55 @@ func TestMessageContextWindowRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := Load(home)
-	if got.Message.ContextWindow != 1_000_000 || got.Message.ContextWindowLimit() != 1_000_000 {
+	if got.Agents.ContextWindow != 1_000_000 || got.Agents.ContextWindowLimit() != 1_000_000 {
 		t.Fatalf("message %+v", got.Message)
 	}
 	raw, _, err := state.ReadFile(path(home), version, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"contextWindow": 1000000`) {
+	if !strings.Contains(string(raw), `"contextWindow": 1000000`) || !strings.Contains(string(raw), `"maxThreads": 4`) {
 		t.Fatalf("saved toggles: %s", raw)
+	}
+}
+
+func TestLegacyContextWindowMigration(t *testing.T) {
+	for _, oldVersion := range []int{0, 1, 2, 3} {
+		t.Run(fmt.Sprintf("version-%d", oldVersion), func(t *testing.T) {
+			home := t.TempDir()
+			versionField := ""
+			if oldVersion > 0 {
+				versionField = fmt.Sprintf(`"version":%d,`, oldVersion)
+			}
+			raw := fmt.Sprintf(`{%s"message":{"contextWindow":1000,"busy":"queue"},"tools":{"disabled":["exec_command"]}}`, versionField)
+			if err := state.WriteJSON(path(home), json.RawMessage(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := Load(home)
+			if got.Agents.ContextWindowLimit() != 1000 || got.Message.BusyDelivery() != BusyQueue || got.Tools.Allowed("exec_command") {
+				t.Fatalf("migration lost legacy settings: %+v", got)
+			}
+			if err := Save(home, got); err != nil {
+				t.Fatal(err)
+			}
+			saved, _, err := state.ReadFile(path(home), version, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields struct {
+				Agents  Agents                     `json:"agents"`
+				Message map[string]json.RawMessage `json:"message"`
+			}
+			if err := json.Unmarshal(saved, &fields); err != nil {
+				t.Fatal(err)
+			}
+			if fields.Agents.ContextWindow != 1000 || fields.Message["contextWindow"] != nil {
+				t.Fatalf("legacy context cap not moved to agents: %s", saved)
+			}
+			if got := Load(home); got.Agents.ContextWindowLimit() != 1000 {
+				t.Fatalf("round trip lost context cap: %+v", got)
+			}
+		})
 	}
 }
 

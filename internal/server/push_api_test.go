@@ -1,9 +1,14 @@
 package server
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ecdh"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,9 +16,13 @@ import (
 	"net/http/httptest"
 	"strings"
 
-	"ki/internal/provider"
 	"testing"
 	"time"
+
+	"ki/internal/provider"
+	"ki/internal/push"
+	"ki/internal/session"
+	"ki/internal/types"
 )
 
 type pushClient struct {
@@ -47,6 +56,63 @@ func (c pushClient) body(t *testing.T, endpoint string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func (c pushClient) decrypt(t *testing.T, encrypted []byte) map[string]string {
+	t.Helper()
+	if len(encrypted) < 86 || binary.BigEndian.Uint32(encrypted[16:20]) != 4096 || encrypted[20] != 65 {
+		t.Fatalf("invalid encrypted push header: %x", encrypted)
+	}
+	public, err := ecdh.P256().NewPublicKey(encrypted[21:86])
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := c.private.ECDH(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prk, err := hkdf.Extract(sha256.New, secret, c.auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := append([]byte("WebPush: info\x00"), c.private.PublicKey().Bytes()...)
+	info = append(info, public.Bytes()...)
+	ikm, err := hkdf.Expand(sha256.New, prk, string(info), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prk, err = hkdf.Extract(sha256.New, ikm, encrypted[:16])
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := hkdf.Expand(sha256.New, prk, "Content-Encoding: aes128gcm\x00", 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, err := hkdf.Expand(sha256.New, prk, "Content-Encoding: nonce\x00", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := gcm.Open(nil, nonce, encrypted[86:], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) == 0 || body[len(body)-1] != 2 {
+		t.Fatal("missing push record delimiter")
+	}
+	var p map[string]string
+	if err := json.Unmarshal(body[:len(body)-1], &p); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func registerPush(t *testing.T, hs *httptest.Server, body string) int {
@@ -141,6 +207,143 @@ func TestRunCompletionSendsWebPush(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("run completion did not send a web push")
+	}
+}
+
+func TestQuestionRequestedSendsWebPushOnlyForNewMainQuestions(t *testing.T) {
+	hits := make(chan []byte, 16)
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read encrypted push: %v", err)
+		}
+		hits <- body
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer endpoint.Close()
+	srv, hs := testServer(t)
+	client := newPushClient(t)
+	if got := registerPush(t, hs, client.body(t, endpoint.URL)); got != http.StatusNoContent {
+		t.Fatalf("register: %d", got)
+	}
+	id := createSession(t, hs, t.TempDir())
+	sess, err := srv.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	if _, err := sess.AppendMessage(types.Message{Role: "user", Content: []types.Content{{Type: "text", Text: "Choose release scope"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ID: "ask", Name: "request_user_input_async"}}}); err != nil {
+		t.Fatal(err)
+	}
+	inputs := []session.QuestionInput{{Title: "Which scope?", Options: []string{"private option"}}, {Title: "Deploy now?"}}
+	if err := srv.requestQuestions(sess, "missing-source", inputs); err == nil {
+		t.Fatal("missing source was accepted")
+	}
+	for range 2 {
+		if err := srv.requestQuestions(sess, "ask", inputs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := srv.requestQuestions(sess, "ask", []session.QuestionInput{{Title: "conflicting repeat"}}); err == nil {
+		t.Fatal("conflicting repeat was accepted")
+	}
+	questions := sess.Questions()
+	if len(questions) != 2 {
+		t.Fatalf("questions: %+v", questions)
+	}
+	for _, action := range []string{"dismiss", "restore"} {
+		q, _ := sess.Question(questions[0].QuestionItemID)
+		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(mustJSON(t, map[string]any{"questionItemId": q.QuestionItemID, "revision": q.Revision, "action": action})))
+		r.SetPathValue("id", id)
+		w := httptest.NewRecorder()
+		srv.questionAction(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", action, w.Code, w.Body.String())
+		}
+	}
+	q, _ := sess.Question(questions[0].QuestionItemID)
+	q.Status, q.Answer, q.SubmissionID, q.Revision = "answered", "private answer", "submission", q.Revision+1
+	if err := sess.UpdateQuestion(q); err != nil {
+		t.Fatal(err)
+	}
+	srv.publishQuestion(id, q)
+	fresh, err := session.Open(sess.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = fresh.Close() }()
+	if err := srv.requestQuestions(fresh, "ask", inputs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ID: "renamed-ask", Name: "request_user_input_async"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.SetTitle("Release review"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.requestQuestions(sess, "renamed-ask", []session.QuestionInput{{Title: "Approve release?"}}); err != nil {
+		t.Fatal(err)
+	}
+	questions = sess.Questions()
+	for _, mode := range []string{"tree", "question_side"} {
+		other, err := session.Create(srv.cfg.Sessions.Root, t.TempDir(), "test", "test", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = other.Close() })
+		if _, err := other.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ID: "ask", Name: "request_user_input_async"}}}); err != nil {
+			t.Fatal(err)
+		}
+		if mode == "tree" {
+			other.Header.ForkMode = session.ForkModeTree
+		} else {
+			other.Config.Metadata = map[string]any{"purpose": "question_side"}
+			if err := other.SaveConfig(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err = srv.requestQuestions(other, "ask", inputs)
+		if mode == "question_side" && err == nil {
+			t.Fatal("side conversation question was accepted")
+		}
+		if mode == "tree" && err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv.push.Notify(push.Message{SessionID: "queue-barrier", Title: "barrier"})
+	got := map[string]map[string]string{}
+	for {
+		select {
+		case encrypted := <-hits:
+			p := client.decrypt(t, encrypted)
+			if p["sessionId"] == "queue-barrier" {
+				if p["type"] != "run_complete" || len(got) != len(questions) {
+					t.Fatalf("unexpected notifications before queue barrier: %+v", got)
+				}
+				return
+			}
+			questionID := p["questionItemId"]
+			if len(p) != 5 || p["type"] != "question_requested" || p["sessionId"] != id || got[questionID] != nil {
+				t.Fatalf("unexpected or duplicate question push: %+v", p)
+			}
+			q, ok := sess.Question(questionID)
+			if !ok || p["body"] != q.Title {
+				t.Fatalf("question push does not match durable question: %+v", p)
+			}
+			wantTitle := "Choose release scope"
+			if q.CallID == "renamed-ask" {
+				wantTitle = "Release review"
+			}
+			if p["title"] != wantTitle {
+				t.Fatalf("question session title = %q, want %q", p["title"], wantTitle)
+			}
+			got[questionID] = p
+		case <-time.After(5 * time.Second):
+			t.Fatal("question push queue did not reach barrier")
+		}
 	}
 }
 

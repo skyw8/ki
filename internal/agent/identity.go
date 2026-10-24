@@ -16,6 +16,14 @@ func (c *Controller) SetMaxConcurrent(limit int) {
 	c.executionMu.Unlock()
 }
 
+// SetMaxThreads configures the Codex-compatible root-plus-child capacity.
+func (c *Controller) SetMaxThreads(total int) {
+	if total < 2 {
+		total = 4
+	}
+	c.SetMaxConcurrent(total - 1)
+}
+
 func (c *Controller) ReservePath(root, path string) (func(), error) {
 	key := root + "\x00" + path
 	c.mu.Lock()

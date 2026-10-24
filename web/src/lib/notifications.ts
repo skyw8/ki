@@ -61,6 +61,30 @@ export async function notifyCompletion(opts: {
   return showNotification({ title: opts.title, body: opts.body, tag: `ki-run-${opts.sessionId}` })
 }
 
+export async function notifyQuestionRequested(opts: {
+  enabled: boolean
+  sessionId: string
+  focusedSession: string | null
+  subagent: boolean
+  questionItemId: string
+  title: string
+  body: string
+}): Promise<boolean> {
+  if (!shouldNotify({
+    enabled: opts.enabled,
+    permission: currentPermission(),
+    sessionId: opts.sessionId,
+    focusedSession: opts.focusedSession,
+    subagent: opts.subagent,
+  })) return false
+  return showNotification({
+    title: opts.title,
+    body: opts.body,
+    tag: `ki-question-${opts.sessionId}-${opts.questionItemId}`,
+    data: { sessionId: opts.sessionId, questionItemId: opts.questionItemId },
+  })
+}
+
 export async function showNotification(req: {
   title: string
   body: string
@@ -90,13 +114,14 @@ async function showViaServiceWorker(req: { title: string; body: string; tag?: st
   }
 }
 
-function showViaConstructor(req: { title: string; body: string; tag?: string }, onClick?: () => void): boolean {
+function showViaConstructor(req: { title: string; body: string; tag?: string; data?: Record<string, unknown> }, onClick?: () => void): boolean {
   if (typeof Notification === 'undefined') return false
   try {
     const notification = new Notification(req.title, {
       body: req.body,
       icon: '/icon-192.png',
       ...(req.tag ? { tag: req.tag } : {}),
+      ...(req.data ? { data: req.data } : {}),
     })
     notification.onclick = () => {
       window.focus()

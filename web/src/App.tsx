@@ -15,7 +15,7 @@ import { Composer, type Draft } from './features/chat/Composer'
 import { AttachmentBrowser } from './features/attachments/AttachmentBrowser'
 import { OutputPreview } from './features/chat/tools/OutputPreview'
 import { DirectoryBrowser } from './features/sessions/DirectoryBrowser'
-import { ExtensionConfigEditor, MessageSettings, NotificationSettings, SessionConfig, SettingsToggles } from './features/settings/SessionConfig'
+import { AgentsSettings, ExtensionConfigEditor, MessageSettings, NotificationSettings, SessionConfig, SettingsToggles } from './features/settings/SessionConfig'
 import { PromptSettings } from './features/settings/PromptSettings'
 import { AboutSettings } from './features/settings/AboutSettings'
 import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
@@ -33,7 +33,7 @@ import { useDialogFocus } from './hooks/useDialogFocus'
 import { useKeyboardInset } from './hooks/useKeyboardInset'
 import { useTabFocus } from './hooks/useTabFocus'
 import { useServerEvents } from './hooks/useServerEvents'
-import { currentPermission, loadNotifyPref, notifyCompletion, requestPermission, saveNotifyPref, showNotification, type NotifyPermission } from './lib/notifications'
+import { currentPermission, loadNotifyPref, notifyCompletion, notifyQuestionRequested, requestPermission, saveNotifyPref, showNotification, type NotifyPermission } from './lib/notifications'
 import { dropPushSubscription, ensurePushSubscription } from './lib/push'
 import { focusedSession } from './lib/tab-focus'
 import { reconcileFinishedRuns } from './lib/completion-catchup'
@@ -44,8 +44,8 @@ import { ancestorsOf, buildSessionForest, orderedChildren, pinnedFirst, topLevel
 import type { LauncherAuth } from './lib/launcher-auth'
 
 type Tab = 'conversation' | 'context' | 'config'
-type SettingsPage = 'providers' | 'skills' | 'tools' | 'mcp' | 'extensions' | 'prompt' | 'message' | 'notifications' | 'appearance' | 'about'
-const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'mcp', 'extensions', 'prompt', 'message', 'notifications', 'appearance', 'about']
+type SettingsPage = 'providers' | 'skills' | 'tools' | 'mcp' | 'extensions' | 'prompt' | 'agents' | 'message' | 'notifications' | 'appearance' | 'about'
+const SETTINGS_PAGES: readonly SettingsPage[] = ['providers', 'skills', 'tools', 'mcp', 'extensions', 'prompt', 'agents', 'message', 'notifications', 'appearance', 'about']
 const SHOW = 5
 const COMPACT_LAYOUT_QUERY = '(max-width: 900px)'
 
@@ -381,6 +381,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const syncRef = useRef<SessionSyncController | null>(null)
   const abortedRuns = useRef(new Set<string>())
   const runningKnown = useRef(new Set<string>())
+  const notifiedQuestions = useRef(new Set<string>())
   const searchAc = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const chatControl = useRef<TranscriptScroll>(null)
@@ -946,6 +947,24 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     }
     const sessionId = ev.sessionId
     if (!sessionId) return
+    if (ev.type === 'question_requested') {
+      const session = sessionsRef.current.find(s => s.id === sessionId)
+      for (const question of ev.questions ?? []) {
+        const key = `${sessionId}:${question.questionItemId}`
+        if (notifiedQuestions.current.has(key)) continue
+        notifiedQuestions.current.add(key)
+        if (question.status !== 'pending' || !question.sourceBranchValid) continue
+        void notifyQuestionRequested({
+          enabled: notifyEnabled,
+          sessionId,
+          focusedSession: focusedSession(api.serverId),
+          subagent: session?.forkMode === 'tree' || session?.purpose === 'question_side',
+          questionItemId: question.questionItemId,
+          title: session?.title || t('session.untitled'),
+          body: t('notify.questionBody', { title: question.title }),
+        })
+      }
+    }
     if (ev.type === 'question_updated' && ev.question) {
       const q = ev.question
       questionListEpoch.current++
@@ -1005,7 +1024,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
         })
         return
     }
-  }, [api, onServerChange, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, recoverOpenTranscript, t, catchUpMissedCompletions, store, sync])
+  }, [api, onServerChange, handleRunComplete, listen, refreshExtensions, refreshList, refreshModels, refreshOpenRuntime, recoverOpenTranscript, t, catchUpMissedCompletions, store, sync, notifyEnabled])
   useServerEvents(api, onServerEvent, onServerChange)
 
   useEffect(() => {
@@ -2353,6 +2372,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
               ['mcp', t('settings.mcp')],
               ['extensions', t('settings.extensions')],
               ['prompt', t('settings.prompt')],
+              ['agents', t('settings.agents')],
               ['message', t('settings.message')],
               ['notifications', t('settings.notifications')],
               ['appearance', t('settings.appearanceLanguage')],
@@ -2395,6 +2415,8 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
                   <SettingsToggles kind="mcp" api={api} sessionId={currentId} workspaceId={selectedWs} />
                 ) : page === 'prompt' ? (
                   <PromptSettings api={api} workspaceId={selectedWs} />
+                ) : page === 'agents' ? (
+                  <AgentsSettings api={api} />
                 ) : page === 'message' ? (
                   <MessageSettings api={api} view={messageView} onView={changeMessageView} />
                 ) : page === 'notifications' ? (

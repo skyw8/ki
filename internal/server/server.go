@@ -443,7 +443,7 @@ func New(opt Options) (*Server, error) {
 	srv.providerExtensions.SetRuntimeManager(srv.ext)
 	srv.providerExtensions.SetErrorHandler(srv.onExtensionError)
 	srv.providerExtensions.SetProviderAuthHandler(srv.onProviderAuthEvent)
-	srv.agentTasks.SetMaxConcurrent(opt.Config.Agents.MaxConcurrent)
+	srv.agentTasks.SetMaxConcurrent(toggles.Load(opt.Config.Home).Agents.MaxChildTurns())
 	srv.agentTasks.SetListener(func(snapshot agent.Snapshot) {
 		event := loop.Event{Type: loop.AgentUpdated, Agent: agent.ViewSnapshot(snapshot)}
 		seen := map[string]bool{}
@@ -732,6 +732,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PATCH /v1/extensions/{name}/config", s.auth(s.patchExtensionConfig))
 	api.HandleFunc("GET /v1/message", s.auth(s.getMessage))
 	api.HandleFunc("PATCH /v1/message", s.auth(s.patchMessage))
+	api.HandleFunc("GET /v1/agents", s.auth(s.getAgents))
+	api.HandleFunc("PATCH /v1/agents", s.auth(s.patchAgents))
 	api.HandleFunc("GET /v1/workspaces", s.auth(s.listWorkspaces))
 	api.HandleFunc("POST /v1/workspaces", s.auth(s.createWorkspace))
 	api.HandleFunc("PATCH /v1/workspaces/{id}", s.auth(s.patchWorkspace))
@@ -3170,7 +3172,7 @@ func (s *Server) effectiveContextWindow(info provider.Model) int {
 	if maxContext := s.cfg.Compaction.MaxContextTokens; maxContext > 0 {
 		window = min(window, maxContext)
 	}
-	return min(window, toggles.Load(s.cfg.Home).Message.ContextWindowLimit())
+	return min(window, toggles.Load(s.cfg.Home).Agents.ContextWindowLimit())
 }
 
 func (s *Server) remoteCompactThreshold(model provider.Model) int {

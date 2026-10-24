@@ -419,9 +419,10 @@ turn；继承工具调用/结果配对与附件路径。child 默认使用 paren
 
 ### 容量
 
-没有固定 depth 限制。`agents.max_concurrent` 默认 4，按 root 限制活跃 child turn；root
-自己不计数，正在 `wait_agent` 的 child 仍占名额。完成/被中断的身份不占名额且持续可寻址，
-不存在已完成常驻池。
+没有固定 depth 限制。Settings → Agents 的 `maxThreads` 默认 4，表示 root + child 的总线程上限；
+root 自己占 1 个，因此默认最多 3 个活跃 child turn。限制按 root 会话生效，正在 `wait_agent`
+的 child 仍占名额；完成/被中断的身份不占活跃执行名额且持续可寻址。修改上限只影响后续
+启动的 child turn，不中断已经运行的 turn。
 
 ### 消息投递
 

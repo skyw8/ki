@@ -54,6 +54,10 @@ func (s *Server) requestQuestions(sess *session.Session, callID string, inputs [
 	if err != nil {
 		return err
 	}
+	existing := make(map[string]bool)
+	for _, q := range sess.Questions() {
+		existing[q.QuestionItemID] = true
+	}
 	questions, err := sess.RequestQuestions(callID, inputs, snapshot)
 	if err != nil {
 		return err
@@ -61,7 +65,18 @@ func (s *Server) requestQuestions(sess *session.Session, callID string, inputs [
 	for i := range questions {
 		questions[i] = questions[i].Public()
 	}
-	s.publishSideband(sess.ID(), loop.Event{Type: loop.QuestionRequested, Questions: questions}, false)
+	var created []session.Question
+	for _, q := range questions {
+		if !existing[q.QuestionItemID] {
+			created = append(created, q)
+		}
+	}
+	if len(created) > 0 {
+		s.publishSideband(sess.ID(), loop.Event{Type: loop.QuestionRequested, Questions: created}, false)
+		for _, q := range created {
+			s.notifyPushQuestion(sess, q)
+		}
+	}
 	for i := range questions {
 		s.publishQuestion(sess.ID(), questions[i])
 	}

@@ -690,40 +690,72 @@ export function SettingsToggles({
 export { SchemaConfigForm as ExtensionConfigEditor } from './schema/SchemaConfigForm'
 
 const MAX_CONTEXT_WINDOW = 100_000_000
+const MAX_AGENT_THREADS = 64
+
+export function AgentsSettings({ api }: { api: Client }) {
+  const { t } = useI18n()
+  const [maxThreads, setMaxThreads] = useState<number | null>(null)
+  const [maxChildTurns, setMaxChildTurns] = useState<number | null>(null)
+  const [contextWindow, setContextWindow] = useState<number | null>(null)
+  const [threadsDraft, setThreadsDraft] = useState('')
+  const [windowDraft, setWindowDraft] = useState('')
+  const [savingThreads, setSavingThreads] = useState(false)
+  const [savingWindow, setSavingWindow] = useState(false)
+  const load = useCallback(async () => {
+    const got = await api.agents()
+    setMaxThreads(got.maxThreads)
+    setMaxChildTurns(got.maxChildTurns)
+    setContextWindow(got.contextWindow)
+    setThreadsDraft(String(got.maxThreads))
+    setWindowDraft(String(got.contextWindow))
+  }, [api])
+  useEffect(() => { void load().catch(e => toast.from(e)) }, [load])
+  const threads = Number(threadsDraft)
+  const validThreads = Number.isInteger(threads) && threads >= 2 && threads <= MAX_AGENT_THREADS
+  const window = Number(windowDraft)
+  const validWindow = Number.isInteger(window) && window >= 1 && window <= MAX_CONTEXT_WINDOW
+  const saveThreads = async () => {
+    if (!validThreads || savingThreads || threads === maxThreads) return
+    setSavingThreads(true)
+    try {
+      const got = await api.patchAgents({ maxThreads: threads })
+      setMaxThreads(got.maxThreads); setMaxChildTurns(got.maxChildTurns); setThreadsDraft(String(got.maxThreads))
+      toast.info(t('settings.agentsSaved'))
+    } catch (e) { toast.from(e) } finally { setSavingThreads(false) }
+  }
+  const saveWindow = async () => {
+    if (!validWindow || savingWindow || window === contextWindow) return
+    setSavingWindow(true)
+    try {
+      const got = await api.patchAgents({ contextWindow: window })
+      setContextWindow(got.contextWindow); setWindowDraft(String(got.contextWindow))
+      toast.info(t('settings.contextWindowSaved'))
+    } catch (e) { toast.from(e) } finally { setSavingWindow(false) }
+  }
+  return <div className="preference-page" data-testid="agents-settings">
+    <header className="settings-page-title"><div><h3>{t('settings.agents')}</h3><p>{t('settings.agentsHint')}</p></div></header>
+    <section className="preference-section inline">
+      <div className="preference-copy"><h4>{t('settings.maxThreads')}</h4><p>{t('settings.maxThreadsHint', { max: MAX_AGENT_THREADS })}</p></div>
+      <div className="settings-inline-control"><label htmlFor="agents-max-threads">{t('settings.maxThreadsLabel')}</label><input id="agents-max-threads" data-testid="agents-max-threads" type="number" min={2} max={MAX_AGENT_THREADS} value={threadsDraft} aria-invalid={!validThreads} onChange={e => setThreadsDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void saveThreads() }} /><button type="button" className="cfg-btn" data-testid="agents-max-threads-save" disabled={!validThreads || savingThreads || threads === maxThreads} onClick={() => void saveThreads()}>{savingThreads ? t('settings.agentsSaving') : t('settings.agentsSave')}</button><p className="cfg-hint">{t('settings.maxThreadsRange', { max: MAX_AGENT_THREADS })}{maxChildTurns !== null ? ` · ${t('settings.maxChildTurns', { count: maxChildTurns })}` : ''}</p></div>
+    </section>
+    <section className="preference-section inline">
+      <div className="preference-copy"><h4>{t('settings.contextWindow')}</h4><p>{t('settings.contextWindowHint')}</p></div>
+      <div className="settings-inline-control"><label htmlFor="agents-context-window">{t('settings.contextWindowLabel')}</label><input id="agents-context-window" data-testid="agents-context-window" type="number" min={1} max={MAX_CONTEXT_WINDOW} step={1000} value={windowDraft} aria-invalid={!validWindow} onChange={e => setWindowDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void saveWindow() }} /><button type="button" className="cfg-btn" data-testid="agents-context-window-save" disabled={!validWindow || savingWindow || window === contextWindow} onClick={() => void saveWindow()}>{savingWindow ? t('settings.contextWindowSaving') : t('settings.contextWindowSave')}</button><p className="cfg-hint">{validWindow ? t('settings.contextWindowRange', { max: MAX_CONTEXT_WINDOW.toLocaleString() }) : t('settings.contextWindowInvalid', { max: MAX_CONTEXT_WINDOW.toLocaleString() })}</p></div>
+    </section>
+  </div>
+}
 
 export function MessageSettings({ api, view, onView }: { api: Client; view: MessageView; onView: (view: MessageView) => void }) {
   const { t } = useI18n()
   const [busy, setBusy] = useState<'steer' | 'queue'>('steer')
-  const [contextWindow, setContextWindow] = useState<number | null>(null)
-  const [draft, setDraft] = useState('')
-  const [savingWindow, setSavingWindow] = useState(false)
   useEffect(() => {
-    void api.message()
-      .then(got => { setBusy(got.busy); setContextWindow(got.contextWindow); setDraft(String(got.contextWindow)) })
-      .catch(e => toast.from(e))
+    void api.message().then(got => setBusy(got.busy)).catch(e => toast.from(e))
   }, [api])
   const save = async (next: 'steer' | 'queue') => {
     const prev = busy
     setBusy(next)
     try { await api.patchMessage({ busy: next }) }
     catch (e) { setBusy(prev); toast.from(e) }
-  }
-  const parsed = Number(draft)
-  const windowValid = Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_CONTEXT_WINDOW
-  const windowDirty = contextWindow !== null && parsed !== contextWindow
-  const saveWindow = async () => {
-    if (!windowValid || !windowDirty || savingWindow) return
-    setSavingWindow(true)
-    try {
-      const got = await api.patchMessage({ contextWindow: parsed })
-      setContextWindow(got.contextWindow)
-      setDraft(String(got.contextWindow))
-      toast.info(t('settings.contextWindowSaved'))
-    } catch (e) {
-      toast.from(e)
-    } finally {
-      setSavingWindow(false)
-    }
   }
   return (
     <div className="preference-page" data-testid="message-settings">
@@ -762,40 +794,6 @@ export function MessageSettings({ api, view, onView }: { api: Client; view: Mess
             <p className="cfg-hint">{t('settings.viewKeepHint', { max: MAX_COMPACT_KEEP })}</p>
           </div>
         ) : null}
-      </section>
-      <section className="preference-section">
-        <div className="preference-copy">
-          <h4>{t('settings.contextWindow')}</h4>
-          <p>{t('settings.contextWindowHint')}</p>
-        </div>
-        <div className="view-keep">
-          <label htmlFor="message-context-window">{t('settings.contextWindowLabel')}</label>
-          <input
-            id="message-context-window"
-            data-testid="message-context-window"
-            type="number"
-            min={1}
-            max={MAX_CONTEXT_WINDOW}
-            step={1000}
-            inputMode="numeric"
-            value={draft}
-            aria-invalid={!windowValid}
-            onChange={e => setDraft(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') void saveWindow() }}
-          />
-          <button
-            type="button"
-            className="cfg-btn"
-            data-testid="message-context-save"
-            disabled={!windowValid || !windowDirty || savingWindow}
-            onClick={() => void saveWindow()}
-          >
-            {savingWindow ? t('settings.contextWindowSaving') : t('settings.contextWindowSave')}
-          </button>
-          <p className="cfg-hint" data-testid="message-context-hint">
-            {windowValid ? t('settings.contextWindowRange', { max: MAX_CONTEXT_WINDOW.toLocaleString() }) : t('settings.contextWindowInvalid', { max: MAX_CONTEXT_WINDOW.toLocaleString() })}
-          </p>
-        </div>
       </section>
       <section className="preference-section">
         <div className="preference-copy">

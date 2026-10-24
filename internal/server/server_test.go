@@ -998,6 +998,7 @@ func TestConcurrentBackgroundAgentsKeepSessionsAndNotificationsDistinct(t *testi
 	parentID := createSession(t, hs, t.TempDir())
 
 	const count = 4
+	srv.agentTasks.SetMaxConcurrent(count)
 	launches := make(chan agent.Launch, count)
 	errs := make(chan error, count)
 	var wg sync.WaitGroup
@@ -3290,6 +3291,58 @@ func sessionGETURL(t *testing.T, hs *httptest.Server, path string) map[string]an
 	return out
 }
 
+func TestAgentsSettingsAndRuntimeLimit(t *testing.T) {
+	srv, hs := testServer(t)
+	get := func() map[string]any {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/agents", nil)
+		req.Header.Set("Authorization", "Bearer tok")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		out := map[string]any{}
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("agents GET %d %+v", res.StatusCode, out)
+		}
+		return out
+	}
+	got := get()
+	if got["maxThreads"] != float64(toggles.DefaultMaxThreads) || got["maxChildTurns"] != float64(toggles.DefaultMaxThreads-1) || got["contextWindow"] != float64(toggles.DefaultContextWindow) {
+		t.Fatalf("default agents %+v", got)
+	}
+	patch := func(body string) (int, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodPatch, hs.URL+"/v1/agents", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer tok")
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = res.Body.Close() }()
+		out := map[string]any{}
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		return res.StatusCode, out
+	}
+	if code, out := patch(`{"maxThreads":6,"contextWindow":1000}`); code != http.StatusOK || out["maxThreads"] != float64(6) || out["maxChildTurns"] != float64(5) || out["contextWindow"] != float64(1000) {
+		t.Fatalf("patched agents %d %+v", code, out)
+	}
+	if got := toggles.Load(srv.cfg.Home); got.Agents.MaxThreads != 6 || got.Agents.ContextWindow != 1000 {
+		t.Fatalf("persisted agents %+v", got.Agents)
+	}
+	for _, body := range []string{`{"maxThreads":1}`, `{"maxThreads":65}`, `{"contextWindow":0}`, `{}`, `{"unknown":1}`} {
+		if code, _ := patch(body); code != http.StatusBadRequest {
+			t.Fatalf("invalid agents %s = %d", body, code)
+		}
+	}
+	if got := srv.agentTasks; got == nil {
+		t.Fatal("missing agent controller")
+	}
+}
+
 func TestMessageBusyToggle(t *testing.T) {
 	_, hs := testServer(t)
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/message", nil)
@@ -3375,8 +3428,8 @@ func TestMessageContextWindowCap(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("busy-only patch %d", status)
 	}
-	if tg := toggles.Load(srv.cfg.Home); tg.Message.ContextWindow != 1000 || tg.Message.BusyDelivery() != toggles.BusyQueue {
-		t.Fatalf("persisted message %+v", tg.Message)
+	if tg := toggles.Load(srv.cfg.Home); tg.Agents.ContextWindow != 1000 || tg.Message.BusyDelivery() != toggles.BusyQueue {
+		t.Fatalf("persisted message %+v agents=%+v", tg.Message, tg.Agents)
 	}
 
 	for _, body := range []string{`{"contextWindow":0}`, `{"contextWindow":-5}`, `{"contextWindow":100000001}`, `{}`, `{"busy":"later"}`} {

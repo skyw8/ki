@@ -599,8 +599,59 @@ func (s *Server) getMessage(w http.ResponseWriter, _ *http.Request) {
 	tg := toggles.Load(s.cfg.Home)
 	writeJSON(w, 200, map[string]any{
 		"busy":          tg.Message.BusyDelivery(),
-		"contextWindow": tg.Message.ContextWindowLimit(),
+		"contextWindow": tg.Agents.ContextWindowLimit(),
 	})
+}
+
+func (s *Server) getAgents(w http.ResponseWriter, _ *http.Request) {
+	tg := toggles.Load(s.cfg.Home)
+	threads := tg.Agents.MaxThreads
+	if threads < 2 {
+		threads = toggles.DefaultMaxThreads
+	}
+	writeJSON(w, 200, map[string]any{"maxThreads": threads, "maxChildTurns": threads - 1, "contextWindow": tg.Agents.ContextWindowLimit()})
+}
+
+const maxAgentContextWindow = 100_000_000
+
+func (s *Server) patchAgents(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		MaxThreads    *int `json:"maxThreads"`
+		ContextWindow *int `json:"contextWindow"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if body.MaxThreads == nil && body.ContextWindow == nil {
+		http.Error(w, "maxThreads or contextWindow is required", http.StatusBadRequest)
+		return
+	}
+	if body.MaxThreads != nil && (*body.MaxThreads < 2 || *body.MaxThreads > toggles.MaxMaxThreads) {
+		http.Error(w, fmt.Sprintf("maxThreads must be between 2 and %d", toggles.MaxMaxThreads), http.StatusBadRequest)
+		return
+	}
+	if body.ContextWindow != nil && (*body.ContextWindow < 1 || *body.ContextWindow > maxAgentContextWindow) {
+		http.Error(w, fmt.Sprintf("contextWindow must be between 1 and %d", maxAgentContextWindow), http.StatusBadRequest)
+		return
+	}
+	if err := s.updateToggles(func(f *toggles.File) {
+		if body.MaxThreads != nil {
+			f.Agents.MaxThreads = *body.MaxThreads
+		}
+		if body.ContextWindow != nil {
+			f.Agents.ContextWindow = *body.ContextWindow
+			f.Message.ContextWindow = *body.ContextWindow
+		}
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if body.MaxThreads != nil && s.agentTasks != nil {
+		tg := toggles.Load(s.cfg.Home)
+		s.agentTasks.SetMaxConcurrent(tg.Agents.MaxChildTurns())
+	}
+	s.getAgents(w, r)
 }
 
 const maxMessageContextWindow = 100_000_000
@@ -631,6 +682,7 @@ func (s *Server) patchMessage(w http.ResponseWriter, r *http.Request) {
 			f.Message.Busy = *body.Busy
 		}
 		if body.ContextWindow != nil {
+			f.Agents.ContextWindow = *body.ContextWindow
 			f.Message.ContextWindow = *body.ContextWindow
 		}
 	}); err != nil {

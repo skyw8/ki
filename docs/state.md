@@ -12,7 +12,7 @@
 | `codex-client.json` | `pkg/codexclient` | 1 | 请求准备报错，绝不更换 identity 或覆盖更新版本 |
 | `mcp.json` / project `.ki/mcp.json` | `internal/config` | 1 | fail-fast：拒绝加载未知配置；不改写文件 |
 | `workspaces.json` | `internal/workspace` | 1 | fail-fast：`Open` 返回错误 |
-| `toggles.json` | `internal/toggles` | 3 | best-effort：`Load` 回退默认值 |
+| `toggles.json` | `internal/toggles` | 4 | best-effort：`Load` 回退默认值 |
 | `vapid.json` | `internal/push` | 1 | fail-fast：拒绝使用未知版本，避免更换密钥使现有订阅失效 |
 | `push-subscriptions.json` | `internal/push` | 1 | best-effort：`OpenStore` 返回空表（浏览器会重新订阅） |
 | `extensions/<name>/config.json` | `internal/extension` | 1 | 配置读取/更新报错，绝不覆盖 |
@@ -90,9 +90,11 @@ v2 将工具名称规范为 snake_case，v1 的 Bash/PowerShell/Agent/SendMessag
 v3 移除 `code_mode` 字段，v2 → v3 迁移删除旧模式覆盖并保留其它开关；Code Mode 固定为
 `mixed`。
 
-v3 之后新增字段不提升 schema 版本：
+v4 将上下文窗口从 `message.contextWindow` 移到 `agents.contextWindow`，并增加 Agents 设置：
 
-- `message.contextWindow`：Settings → Message 的上下文窗口硬上限，缺省 500,000；
+- `agents.maxThreads` / `agents.contextWindow`：Settings → Agents 的 root+child 总线程上限（缺省 4）与上下文窗口硬上限（缺省 500,000）；旧的 `message.contextWindow` 在 v3 → v4 加载时迁移。
+- `message.busy`：Settings → Message 的忙碌投递策略；上下文窗口不再属于 Message。
+- 无版本文件仍接受旧的 `message.contextWindow`；v1 工具名迁移保留非工具字段。加载后统一在下次保存时写入 `agents.contextWindow`，不丢失旧上限。
 - `mcp.disabled`：Settings → MCP 的全局服务器禁用名单，比较原始服务器名，区分大小写，不做
   工具名称规范化。
 

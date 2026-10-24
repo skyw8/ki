@@ -371,38 +371,51 @@ func TestQuestionReplyRaceAndBranchValidation(t *testing.T) {
 
 func TestQuestionRequestedSSEAndDurableReplay(t *testing.T) {
 	s, hs := testServer(t)
-	sess, qs := questionServerSeed(t, s, hs, 1)
-	if len(qs) != 1 {
-		t.Fatal("missing durable question")
+	id := createSession(t, hs, t.TempDir())
+	sess, err := s.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Close() }()
+	if _, err := sess.AppendMessage(types.Message{Role: "assistant", Content: []types.Content{{Type: "toolCall", ID: "ask", Name: "request_user_input_async"}}}); err != nil {
+		t.Fatal(err)
 	}
 	st, _, err := s.occupy(context.Background(), sess.ID())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.release(sess.ID(), st)
-	if err := s.requestQuestions(sess, "ask", []session.QuestionInput{{Title: qs[0].Title, Options: qs[0].Options}}); err != nil {
-		t.Fatal(err)
+	inputs := []session.QuestionInput{{Title: "Scope?", Options: []string{"local", "all"}}, {Title: "Proceed?"}}
+	for range 2 {
+		if err := s.requestQuestions(sess, "ask", inputs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	qs := sess.Questions()
+	if len(qs) != 2 {
+		t.Fatal("missing durable questions")
 	}
 	st.mu.Lock()
-	requested, updated := false, false
+	requested, updated := 0, 0
 	for _, ev := range st.evs {
-		if ev.Type == loop.QuestionRequested && len(ev.Questions) == 1 {
-			requested = true
+		if ev.Type == loop.QuestionRequested && len(ev.Questions) == 2 && ev.Questions[0].QuestionItemID == qs[0].QuestionItemID && ev.Questions[1].QuestionItemID == qs[1].QuestionItemID {
+			requested++
 		}
-		if ev.Type == loop.QuestionUpdated && ev.Question != nil && ev.Question.QuestionItemID == qs[0].QuestionItemID {
-			updated = true
+		if ev.Type == loop.QuestionUpdated && ev.Question != nil && (ev.Question.QuestionItemID == qs[0].QuestionItemID || ev.Question.QuestionItemID == qs[1].QuestionItemID) {
+			updated++
 		}
 	}
 	st.mu.Unlock()
-	if !requested || !updated {
-		t.Fatal("question fact not projected to SSE events")
+	if requested != 1 || updated != 4 {
+		t.Fatalf("question SSE events: requested=%d updated=%d", requested, updated)
 	}
 	fresh, err := session.Open(sess.Dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = fresh.Close() }()
 	got := fresh.Questions()
-	if len(got) != 1 || got[0].QuestionItemID != qs[0].QuestionItemID {
+	if len(got) != 2 || got[0].QuestionItemID != qs[0].QuestionItemID || got[1].QuestionItemID != qs[1].QuestionItemID {
 		t.Fatalf("restart lost question facts: %+v", got)
 	}
 }

@@ -22,7 +22,7 @@ func writeSideSearchFile(t *testing.T, root, relative, content string) {
 }
 
 func TestConfinedSideSearchModesAndContext(t *testing.T) {
-	root := t.TempDir()
+	root := questionSideTempDir(t)
 	writeSideSearchFile(t, root, "a.go", "before\nAlpha\nmiddle\nalpha\n")
 	writeSideSearchFile(t, root, "b.txt", "Alpha\n")
 	for _, test := range []struct {
@@ -54,7 +54,7 @@ func TestConfinedSideSearchModesAndContext(t *testing.T) {
 }
 
 func TestConfinedSideSearchMultilineAndValidation(t *testing.T) {
-	root := t.TempDir()
+	root := questionSideTempDir(t)
 	writeSideSearchFile(t, root, "a.txt", "first\nsecond\n")
 	args := map[string]any{"pattern": `first\s+second`, "output_mode": "content"}
 	result := executeQuestionSideSearch(context.Background(), catalog.Grep, args, root, []string{root})
@@ -81,7 +81,7 @@ func TestConfinedSideSearchMultilineAndValidation(t *testing.T) {
 }
 
 func TestConfinedSideGlobAndLocalIgnores(t *testing.T) {
-	root := t.TempDir()
+	root := questionSideTempDir(t)
 	writeSideSearchFile(t, root, ".gitignore", "*.log\nbuild/\n!kept.log\n")
 	writeSideSearchFile(t, root, "src/a.go", "found")
 	writeSideSearchFile(t, root, "root.go", "found")
@@ -109,7 +109,7 @@ func TestConfinedSideGlobAndLocalIgnores(t *testing.T) {
 }
 
 func TestConfinedSideSearchRejectsOutsideAndSymlinkTraversal(t *testing.T) {
-	root, outside := t.TempDir(), t.TempDir()
+	root, outside := questionSideTempDir(t), questionSideTempDir(t)
 	writeSideSearchFile(t, root, "allowed.txt", "public needle")
 	writeSideSearchFile(t, outside, "secret.txt", "private needle")
 	result := executeQuestionSideSearch(context.Background(), catalog.Grep, map[string]any{"pattern": "needle", "path": outside}, root, []string{root})
@@ -130,8 +130,8 @@ func TestConfinedSideSearchRejectsOutsideAndSymlinkTraversal(t *testing.T) {
 }
 
 func TestConfinedSideSearchPinsRootAcrossRenameAndRejectsAncestorSwap(t *testing.T) {
-	base := t.TempDir()
-	root, outside := filepath.Join(base, "workspace"), t.TempDir()
+	base := questionSideTempDir(t)
+	root, outside := filepath.Join(base, "workspace"), questionSideTempDir(t)
 	writeSideSearchFile(t, root, "data.txt", "public")
 	writeSideSearchFile(t, outside, "data.txt", "private")
 	pinned, _, allowed, err := openSideSearchPath(root, []string{root})
@@ -164,7 +164,7 @@ func TestConfinedSideSearchPinsRootAcrossRenameAndRejectsAncestorSwap(t *testing
 }
 
 func TestConfinedSideSearchBudgetsAndCancellation(t *testing.T) {
-	root := t.TempDir()
+	root := questionSideTempDir(t)
 	writeSideSearchFile(t, root, "large.txt", strings.Repeat("x", sideSearchMaxFileBytes+1))
 	result := executeQuestionSideSearch(context.Background(), catalog.Grep, map[string]any{"pattern": "x", "output_mode": "content"}, root, []string{root})
 	if result.IsError || !strings.Contains(result.Content[0].Text, "truncated") {
@@ -184,7 +184,7 @@ func TestConfinedSideSearchBudgetsAndCancellation(t *testing.T) {
 }
 
 func TestConfinedSideSearchRejectsDescendantSwapAfterEnumeration(t *testing.T) {
-	root, outside := t.TempDir(), t.TempDir()
+	root, outside := questionSideTempDir(t), questionSideTempDir(t)
 	writeSideSearchFile(t, root, filepath.Join("nested", "data.txt"), "public")
 	writeSideSearchFile(t, outside, "data.txt", "private")
 	pinned, _, allowed, err := openSideSearchPath(root, []string{root})

@@ -196,6 +196,14 @@ export class Client {
     return this.json('/v1/message', { method: 'PATCH', body: JSON.stringify(patch) })
   }
 
+  agents(): Promise<{ maxThreads: number; maxChildTurns: number; contextWindow: number }> {
+    return this.json('/v1/agents')
+  }
+
+  patchAgents(patch: { maxThreads?: number; contextWindow?: number }): Promise<{ maxThreads: number; maxChildTurns: number; contextWindow: number }> {
+    return this.json('/v1/agents', { method: 'PATCH', body: JSON.stringify(patch) })
+  }
+
   reload(sessionId?: string): Promise<{ ok: boolean; queued?: boolean }> {
 	return this.json('/v1/reload', { method: 'POST', body: sessionId ? JSON.stringify({ sessionId }) : undefined })
   }

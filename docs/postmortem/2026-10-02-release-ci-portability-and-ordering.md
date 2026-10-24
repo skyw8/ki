@@ -103,3 +103,42 @@ the fix (0.072s); focused cancellation and compaction RPC race checks passed
 30 repetitions (1.688s), and the complete Codex OAuth package passed (0.505s).
 The complete package race check also passed (2.068s). These are Linux results;
 native Windows/macOS CI remains the publication gate.
+
+## Follow-up from the 2026-10-24 preflight
+
+Native macOS/Windows main CI exposed raw temporary paths in side-conversation
+fixtures. Production freezes canonical workspace and attachment roots, but the
+new tests passed macOS `/var` aliases to strict root admission and compared
+Windows short-path fixtures against resolved metadata. Canonicalize fixture
+roots and the direct attachment read probe; leave production confinement and
+all escape, ancestor-swap and descendant-swap assertions unchanged.
+
+A symlinked `TMPDIR` reproduced all reported failures against the original
+fixtures on Linux (0.147s package / 4.33s wall). The canonical fixtures passed
+ten repetitions under that alias (1.664s / 3.02s); ordinary-path repetitions
+passed before and after (1.681s / 3.11s and 1.347s / 5.06s, including the changed
+test build). Native macOS/Windows CI remains the publication gate.
+
+The Agents settings preflight also found two release blockers. The new UI
+accepted 1–128 total threads while the API accepted 2–64; align both input
+validation and translated help with the API and assert invalid boundaries in
+the browser test. Moving `message.contextWindow` to Agents hid the old JSON
+field from unversioned loads and from the v1 tool-name migration's current-type
+round trip. Decode the legacy field without emitting it on save, and migrate
+only tool fields in the frozen v1 step. A regression first reproduced cap loss
+for unversioned/v1 files, then passed ten repetitions across unversioned/v1/v2/v3
+loads and saves without losing unrelated toggles.
+
+Two browser fixtures observed a mounted shell before its content was ready.
+The readonly question form test now waits for rail hydration before deciding
+whether the mobile toggle needs expansion; both widths passed five repetitions
+(10 cases, 42.0s). The diagram test now waits for image dimensions and verifies
+the computed fit before capturing it, rather than mistaking initial 100% for
+the final fit. Three diagram repetitions passed in 3.1–3.6s each, versus the
+original 21.8s failed case. No sleeps or weaker output assertions replace these
+readiness checks.
+
+Final local preflight passed Go formatting, diff checks, WebUI typecheck/build,
+`go test -tags embed -count=1 ./...` (including the complete Bun/Chromium suite),
+and `go vet ./...`. The embedded end-to-end package completed in 65.079s; this
+is a Linux preflight result, not a substitute for the native release CI gate.

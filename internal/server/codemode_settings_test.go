@@ -140,7 +140,7 @@ func codeModeSettingsSaved(t *testing.T, home string, version int) []byte {
 func TestCodeModeSettingsInvalidNoMutation(t *testing.T) {
 	srv, hs := testServerWith(t, &reqRecorder{})
 	codeModeSettingsRequest(t, hs, http.MethodPatch, `{"disabled":["read"]}`, http.StatusOK)
-	before := codeModeSettingsSaved(t, srv.cfg.Home, 3)
+	before := codeModeSettingsSaved(t, srv.cfg.Home, 4)
 	for _, body := range []string{
 		`{"codeMode":"off","disabled":[]}`, `{"codeMode":"mixed"}`, `{"codeMode":"only"}`, `{"codeMode":null}`,
 		`{"unknown":true}`, `{"disabled":[]`, `{"disabled":[]} {}`, `null`, ``,
@@ -148,7 +148,7 @@ func TestCodeModeSettingsInvalidNoMutation(t *testing.T) {
 	} {
 		t.Run(body, func(t *testing.T) {
 			codeModeSettingsRequest(t, hs, http.MethodPatch, body, http.StatusBadRequest)
-			if after := codeModeSettingsSaved(t, srv.cfg.Home, 3); !bytes.Equal(before, after) {
+			if after := codeModeSettingsSaved(t, srv.cfg.Home, 4); !bytes.Equal(before, after) {
 				t.Fatalf("invalid patch mutated toggles: before=%s after=%s", before, after)
 			}
 			codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodGet, "", http.StatusOK), "read")
@@ -173,12 +173,12 @@ func TestCodeModeSettingsPersistedOrdinaryToggles(t *testing.T) {
 	}
 	srv, hs := newServer()
 	codeModeSettingsAssertCatalog(t, codeModeSettingsRequest(t, hs, http.MethodPatch, `{"disabled":["exec"]}`, http.StatusOK), "exec")
-	raw := codeModeSettingsSaved(t, home, 3)
+	raw := codeModeSettingsSaved(t, home, 4)
 	var saved map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &saved); err != nil {
 		t.Fatal(err)
 	}
-	if string(saved["version"]) != "3" || saved["code_mode"] != nil {
+	if string(saved["version"]) != "4" || saved["code_mode"] != nil {
 		t.Fatalf("saved toggles retained removed mode: %s", raw)
 	}
 	hs.Close()

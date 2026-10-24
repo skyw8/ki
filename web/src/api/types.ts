@@ -143,6 +143,7 @@ export type AgentSnapshot = {
 }
 
 export type LoopEvent = {
+ questions?: Question[]
  question?: Question
  process?: ProcessSnapshot
  agent?: AgentSnapshot

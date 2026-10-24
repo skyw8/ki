@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type testClient struct {
@@ -314,6 +315,63 @@ func TestServiceDeliversAndPrunes(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("push was not delivered")
+	}
+}
+
+func TestServiceDeliversBoundedQuestionPayload(t *testing.T) {
+	client := newTestClient(t)
+	got := make(chan []byte, 1)
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read push: %v", err)
+		}
+		got <- body
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer endpoint.Close()
+	key, err := LoadOrCreateKey(filepath.Join(t.TempDir(), "vapid.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := OpenStore(filepath.Join(t.TempDir(), "push-subscriptions.json"))
+	if err := store.Put(client.subscription(t, endpoint.URL)); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(key, store)
+	for _, test := range []struct {
+		name, title, body string
+	}{
+		{"short", "Release review", "Which scope?"},
+		{"unicode", strings.Repeat("界", 2000), strings.Repeat("界", 10000)},
+		{"escaped", strings.Repeat("<", 2000), strings.Repeat("\x00", 10000)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service.deliver(t.Context(), Message{Type: "question_requested", SessionID: "s-1", Title: test.title, CWD: "/private/workspace", QuestionItemID: `["request_user_input_async","ask",0]`, Body: test.body})
+			var encrypted []byte
+			select {
+			case encrypted = <-got:
+			case <-time.After(5 * time.Second):
+				t.Fatal("question push was not delivered")
+			}
+			plaintext := client.decrypt(t, encrypted)
+			if len(plaintext)+1 > payloadLimit || !utf8.Valid(plaintext) {
+				t.Fatalf("invalid question payload: %d bytes", len(plaintext))
+			}
+			var p map[string]string
+			if err := json.Unmarshal(plaintext, &p); err != nil {
+				t.Fatal(err)
+			}
+			if len(p) != 5 || p["type"] != "question_requested" || p["sessionId"] != "s-1" || p["questionItemId"] != `["request_user_input_async","ask",0]` || p["cwd"] != "" {
+				t.Fatalf("question payload: %+v", p)
+			}
+			if p["body"] == "" || utf8.RuneCountInString(p["title"]) > 160 || utf8.RuneCountInString(p["body"]) > 512 || !strings.HasPrefix(test.title, p["title"]) || !strings.HasPrefix(test.body, p["body"]) {
+				t.Fatalf("question text was not bounded: %+v", p)
+			}
+			if test.name == "short" && (p["title"] != test.title || p["body"] != test.body) {
+				t.Fatalf("short question text changed: %+v", p)
+			}
+		})
 	}
 }
 

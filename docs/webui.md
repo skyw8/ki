@@ -368,7 +368,7 @@ reload，运行中的会话在本轮结束的 release 边界生效。空内容�
 
 #### 通知
 
-开关会话完成通知：开启时在用户手势里向浏览器申请 `Notification` 权限，权限被拒或非安全
+开关会话完成与新问题通知：开启时在用户手势里向浏览器申请 `Notification` 权限，权限被拒或非安全
 上下文（局域网 http）时禁用并提示；开启状态存本浏览器 `localStorage['ki-notify']`。
 
 完成感知不搭在选中会话的 run 流上（切会话就断了），也不为每个 running session 单开连接：
@@ -394,7 +394,15 @@ subagent session（`forkMode=tree`）一律不通知：它挂在 parent 下、�
 照常到达，看起来像「测试按钮坏了」。两条路都不可用时按钮会 toast 说明发送失败，而不是毫无
 反应。
 
-只覆盖本浏览器已知 `running` 的 session（本 tab 发起的 run、以及经 push 刷新后见过的 running
+**新问题**：全局 `question_requested` 的每个新题触发一次系统通知，标题为会话标题，正文为
+「待回答问题：`{title}`」（英文随界面语言切换）。沿用权限、通知开关、聚焦会话静默与子代理
+过滤规则，不要求先在本浏览器见过 running 状态，因此 CLI 发起的主会话提问也能提醒。
+同一 session + `questionItemId` 在当前页面生命周期内只处理一次；`question_updated`、回答、
+恢复、历史加载以及相同工具调用重试不会再次提醒。页面与 SW 统一使用
+`ki-question-<sessionId>-<questionItemId>` 标签，不覆盖同会话的完成通知或其它问题。
+点击沿用聚焦 ki 窗口的行为；通知数据携带 session 和问题 ID，不包含快照、选项或答案。
+
+完成通知只覆盖本浏览器已知 `running` 的 session（本 tab 发起的 run、以及经 push 刷新后见过的 running
 行；push 流对每个 `agent_end` 都会到达，客户端用这个已知集合过滤，避免给 CLI 起的 run 弹
 通知）。
 
@@ -404,7 +412,7 @@ subagent session（`forkMode=tree`）一律不通知：它挂在 parent 下、�
 （`lib/completion-catchup.ts`；删除的 session 和本 tab 主动 abort 的不补）。
 
 **Web Push**：页面被冻结/关闭时由 Web Push 兜底——开启通知开关即注册 service worker 与
-`PushManager` 订阅并发给 server，`agent_end` 同时投给推送服务，`sw.js` 在没有页面时弹系统
+`PushManager` 订阅并发给 server，`agent_end` 与新问题同时投给推送服务，`sw.js` 在没有页面时弹系统
 通知（详见 [push.md](push.md)）。两条路径共用同一个 `tag`，不会重复；有聚焦且可见的 ki
 窗口时 worker 让位给页面。设置页在开关下多一行状态：推送已生效（后台/锁屏可收）或该浏览器
 收不到后台推送及原因。
@@ -422,7 +430,7 @@ HTTP/1.1 下仍会与 run 流、静态资源共用同源 6 连接，高延迟链
 
 Tools/Skills/Extensions 开关和 Message 忙碌策略写 `{KI_HOME}/toggles.json`。
 
-Message 页的「上下文窗口上限」同样写 `toggles.json` 的 `message.contextWindow`（默认
+Agents 页的「上下文窗口上限」写 `toggles.json` 的 `agents.contextWindow`（默认
 500,000，范围 1–100,000,000，保存后下一次请求生效）：它是所有模型共用的硬上限，模型自身
 窗口更大时按它计算 context meter 与压缩阈值，更小时保持模型窗口；输入非法时保存按钮禁用
 并提示范围，保存成功以 toast 确认。
@@ -635,7 +643,7 @@ partial、工具运行标记和 stopping；running 快照保留现场并续传�
 |---|---|---|
 | `ready` | 订阅建立（含重连），带 `serverId` | 同实例重取列表 + workspaces + models/meta + extensions，并协调当前会话的正文 tail 与 runtime；新实例撤销旧页面运行态并重新检查认证 |
 | `invalidate` + `scope` | `sessions` / `workspaces` / `providers` / `extensions` 变了 | 重取对应 REST（`GET /v1/sessions` 带 ETag，未变为 304）；`sessions` 还会把「当前打开的会话」与列表对齐：变 running 就接上 run 流，已不存在就退出该会话。`extensions` 额外重读当前会话的 `fields=runtime` |
-| session sideband（带 `sessionId`） | 见下表 | 只处理 `sessionId` 等于当前会话的事件；`agent_end` / `run_aborted` 例外，用于后台完成的系统通知 |
+| session sideband（带 `sessionId`） | 见下表 | 只处理 `sessionId` 等于当前会话的事件；`agent_end` / `run_aborted` / `question_requested` 例外，用于后台完成与新问题的系统通知 |
 
 SSE（带 `sessionId`，不进 occupy 回放）：
 
