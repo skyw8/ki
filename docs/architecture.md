@@ -226,7 +226,7 @@ host 阈值判定 `compact.ShouldRun(tokens, contextWindow, cfg)`：
 - `cfg.MaxContextTokens`（`[compaction] max_context_tokens`）取 min 兜底——小于模型窗口时
   以它为准，小值让压缩提前触发（低成本测试不烧 token），0 = 只用模型窗口；
 - Settings → Message 的 `contextWindow`（`toggles.json` `message.contextWindow`，默认
-  5,000,000）是叠在模型窗口之上的硬上限，同样只取 min，不会抬高更小的模型窗口；
+  500,000）是叠在模型窗口之上的硬上限，同样只取 min，不会抬高更小的模型窗口；
 - context meter、host 阈值、server-side `compact_threshold` 都通过同一个
   `effectiveContextWindow` 计算。未知（0）模型窗口保持未知，由各调用点保留自己的默认值。
 
@@ -341,7 +341,7 @@ server token。
 | PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / `queued`（保留 id 列表）；run 或独立压缩占用 session 时，会改变上下文绑定的 `model` / `thinkingEffort` / `leafId` 返回 409 |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
 | POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId` / `delivery` / `queueId`；空闲 `202 started`；忙时 `steer` 插入本轮或 `queue` 排队，省略则用 `toggles.json` `message.busy`；`queueId`+`delivery=steer` 从 `queue.json` 取出插入本轮；`parentId` 且 busy 仍 **409** |
-| GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`）与上下文窗口硬上限（`contextWindow`，默认 5,000,000，1–100,000,000）；两者都可单独 PATCH |
+| GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`）与上下文窗口硬上限（`contextWindow`，默认 500,000，1–100,000,000）；两者都可单独 PATCH |
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件；完成回放受 16MiB / 2 分钟 / 256 run 限制，过期或无回放时现存 session 返回 410，客户端从 session GET 恢复 |
 | GET | `/v1/events` | 每个 WebUI tab 的全局 push SSE；仅发送失效、终态和 session sideband，不发送 run 增量 |
 | GET | `/v1/push/config` | 返回 Web Push 是否启用及 VAPID 公钥 |

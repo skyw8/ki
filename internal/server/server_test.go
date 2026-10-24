@@ -3131,8 +3131,11 @@ func TestMessageContextWindowCap(t *testing.T) {
 	if got := srv.effectiveContextWindow(huge); got != toggles.DefaultContextWindow {
 		t.Fatalf("default cap: effective window %d, want %d", got, toggles.DefaultContextWindow)
 	}
-	if got := srv.effectiveContextWindow(provider.Model{ID: "m1m", ContextWindow: 1_000_000}); got != 1_000_000 {
-		t.Fatalf("1M model window = %d, want 1000000", got)
+	if got := srv.effectiveContextWindow(provider.Model{ID: "m1m", ContextWindow: 1_000_000}); got != toggles.DefaultContextWindow {
+		t.Fatalf("1M model window = %d, want the %d default cap", got, toggles.DefaultContextWindow)
+	}
+	if got := srv.effectiveContextWindow(provider.Model{ID: "under", ContextWindow: 400_000}); got != 400_000 {
+		t.Fatalf("cap inflated a window below the default: %d", got)
 	}
 	status, out := patch(`{"contextWindow":1000}`)
 	if status != http.StatusOK || out["contextWindow"] != float64(1000) || out["busy"] != "steer" {

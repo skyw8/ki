@@ -374,7 +374,7 @@ HTTP/1.1 下仍会与 run 流、静态资源共用同源 6 连接，高延迟链
 Tools/Skills/Extensions 开关和 Message 忙碌策略写 `{KI_HOME}/toggles.json`。
 
 Message 页的「上下文窗口上限」同样写 `toggles.json` 的 `message.contextWindow`（默认
-5,000,000，范围 1–100,000,000，保存后下一次请求生效）：它是所有模型共用的硬上限，模型自身
+500,000，范围 1–100,000,000，保存后下一次请求生效）：它是所有模型共用的硬上限，模型自身
 窗口更大时按它计算 context meter 与压缩阈值，更小时保持模型窗口；输入非法时保存按钮禁用
 并提示范围，保存成功以 toast 确认。
 

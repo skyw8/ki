@@ -91,7 +91,7 @@ v3 移除 `code_mode` 字段，v2 → v3 迁移删除旧模式覆盖并保留其
 
 v3 之后新增字段不提升 schema 版本：
 
-- `message.contextWindow`：Settings → Message 的上下文窗口硬上限，缺省 5,000,000；
+- `message.contextWindow`：Settings → Message 的上下文窗口硬上限，缺省 500,000；
 - `mcp.disabled`：Settings → MCP 的全局服务器禁用名单，比较原始服务器名，区分大小写，不做
   工具名称规范化。
 
