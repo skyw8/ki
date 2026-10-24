@@ -7,7 +7,7 @@ import (
 )
 
 func Names() []string {
-	return slices.Concat(FileNames(), ShellNames(), AgentNames(), CodeNames(), []string{SearchTool})
+	return slices.Concat(FileNames(), ShellNames(), AgentNames(), CodeNames(), []string{SearchTool, RequestUserInputAsync})
 }
 func FileNames() []string  { return []string{Read, Write, Edit, Grep, Glob, ApplyPatch} }
 func ShellNames() []string { return []string{ExecCommand, WriteStdin} }
@@ -25,21 +25,22 @@ func IsReserved(name string) bool {
 }
 
 const (
-	Read           = "read"
-	Write          = "write"
-	Edit           = "edit"
-	Grep           = "grep"
-	Glob           = "glob"
-	ApplyPatch     = "apply_patch"
-	ExecCommand    = "exec_command"
-	WriteStdin     = "write_stdin"
-	SpawnAgent     = "spawn_agent"
-	SendMessage    = "send_message"
-	FollowupTask   = "followup_task"
-	WaitAgent      = "wait_agent"
-	InterruptAgent = "interrupt_agent"
-	ListAgents     = "list_agents"
-	CodeExec       = "exec"
-	CodeWait       = "wait"
-	SearchTool     = "search_tool"
+	Read                  = "read"
+	Write                 = "write"
+	Edit                  = "edit"
+	Grep                  = "grep"
+	Glob                  = "glob"
+	ApplyPatch            = "apply_patch"
+	ExecCommand           = "exec_command"
+	WriteStdin            = "write_stdin"
+	SpawnAgent            = "spawn_agent"
+	SendMessage           = "send_message"
+	FollowupTask          = "followup_task"
+	WaitAgent             = "wait_agent"
+	InterruptAgent        = "interrupt_agent"
+	ListAgents            = "list_agents"
+	CodeExec              = "exec"
+	CodeWait              = "wait"
+	SearchTool            = "search_tool"
+	RequestUserInputAsync = "request_user_input_async"
 )

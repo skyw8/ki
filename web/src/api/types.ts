@@ -32,6 +32,7 @@ export type Content = {
 }
 
 export type Message = {
+  questionReply?: { questionItemId: string; title: string; answer: string }
   role: string
   clientRequestId?: string
   completion?: { taskId: string; generation: number }
@@ -142,6 +143,7 @@ export type AgentSnapshot = {
 }
 
 export type LoopEvent = {
+ question?: Question
  process?: ProcessSnapshot
  agent?: AgentSnapshot
  requestedToolName?: string
@@ -206,7 +208,16 @@ export type PushEvent = LoopEvent & {
 	scope?: string
 }
 
+export type QuestionLink = Pick<Question, 'questionItemId' | 'title' | 'status' | 'revision' | 'sideSessionId'>
+
 export type SessionInfo = {
+  questionLinks?: QuestionLink[]
+  questionLinksLoading?: boolean
+  isAgent?: boolean
+  purpose?: 'question_side'
+  sourceSessionId?: string
+  sourceQuestionItemId?: string
+  sideBoundaryEntryId?: string
   id: string
   cwd: string
   dir?: string
@@ -401,6 +412,7 @@ export type QueuedItem = {
 }
 
 export type SessionDetail = Partial<SessionInfo> & {
+  questions?: Question[]
   id: string
   leafId?: string
   entries?: Entry[]
@@ -544,7 +556,7 @@ export type Meta = {
 }
 
 export type ChatNode = { turnId?: TurnId } & (
-  | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string; clientRequestId?: string; completion?: Message['completion']; external?: Record<string, string>; truncated?: boolean }
+  | { kind: 'user'; id: string; parentId?: string; text: string; content: Content[]; ts?: number; origin?: string; clientRequestId?: string; completion?: Message['completion']; external?: Record<string, string>; truncated?: boolean; questionReply?: Message['questionReply'] }
   | { kind: 'assistant'; id: string; renderKey?: string; display?: DisplayRevision; parentId?: string; text: string; thinking?: string; usage?: Usage | null; cacheMiss?: CacheMiss; ttftMs?: number; latencyMs?: number; streaming?: boolean; error?: string; cancelReason?: string; cancelSource?: string; images?: { data: string; mimeType: string }[]; stopReason?: string; ts?: number; truncated?: boolean }
   | { kind: 'tool'; id: string; name: string; parentCallId?: string; cellId?: string; requestedToolName?: string; args?: unknown; result?: string; details?: unknown; isError?: boolean; durationMs?: number; startedAt?: number; running?: boolean; truncated?: boolean }
   | { kind: 'compaction'; id: string; summary: string; ts?: number; tokensBefore?: number; running?: boolean; failed?: boolean; empty?: boolean; unknown?: boolean; truncated?: boolean; lifecycle?: boolean }
@@ -624,6 +636,8 @@ export type TrajRecord = {
 }
 
 export type ViewState = {
+  questionsSessionId?: string
+  questions?: Question[]
   turnId?: TurnId
   liveRevision: number
   toolStates?: Record<string, Extract<ChatNode, { kind: 'tool' }>>
@@ -660,4 +674,24 @@ export type ViewState = {
   runtimeReady?: boolean
 	promptState?: PromptSnapshot
 	currentRequestId?: string
+}
+
+export type Question = {
+  questionItemId: string
+  callId: string
+  index: number
+  title: string
+  options?: string[]
+  status: 'pending' | 'answer_queued' | 'answered' | 'dismissed'
+  revision: number
+  createdAt: string
+  updatedAt: string
+  sourceEntryId: string
+  snapshotEntryId: string
+  sourceBranchValid: boolean
+  sideSessionId?: string
+  answer?: string
+  submissionId?: string
+  answerEntryId?: string
+  answerBranchValid?: boolean
 }

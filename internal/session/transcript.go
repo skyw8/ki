@@ -141,19 +141,20 @@ type metadataContent struct {
 }
 
 type metadataMessage struct {
-	ClientRequestID string            `json:"clientRequestId"`
-	Role            string            `json:"role"`
-	Origin          string            `json:"origin"`
-	ToolCallID      string            `json:"toolCallId"`
-	ToolName        string            `json:"toolName"`
-	StopReason      string            `json:"stopReason"`
-	IsError         bool              `json:"isError"`
-	Timestamp       int64             `json:"timestamp"`
-	DurationMs      int64             `json:"durationMs"`
-	LatencyMs       int64             `json:"latencyMs"`
-	TTFTMs          int64             `json:"ttftMs"`
-	Usage           *types.Usage      `json:"usage"`
-	Content         []metadataContent `json:"content"`
+	QuestionReply   *types.QuestionReply `json:"questionReply"`
+	ClientRequestID string               `json:"clientRequestId"`
+	Role            string               `json:"role"`
+	Origin          string               `json:"origin"`
+	ToolCallID      string               `json:"toolCallId"`
+	ToolName        string               `json:"toolName"`
+	StopReason      string               `json:"stopReason"`
+	IsError         bool                 `json:"isError"`
+	Timestamp       int64                `json:"timestamp"`
+	DurationMs      int64                `json:"durationMs"`
+	LatencyMs       int64                `json:"latencyMs"`
+	TTFTMs          int64                `json:"ttftMs"`
+	Usage           *types.Usage         `json:"usage"`
+	Content         []metadataContent    `json:"content"`
 }
 
 func decodeMetadata(raw []byte) (Entry, IndexEntry, error) {
@@ -188,6 +189,7 @@ func decodeMetadataCached(raw []byte, estimates contextEstimateCache) (Entry, In
 	}
 	if w := wire.Message; w != nil {
 		m := &types.Message{ClientRequestID: w.ClientRequestID, Role: w.Role, Origin: w.Origin, ToolCallID: w.ToolCallID, ToolName: w.ToolName, StopReason: w.StopReason, IsError: w.IsError, Timestamp: w.Timestamp, DurationMs: w.DurationMs, LatencyMs: w.LatencyMs, TTFTMs: w.TTFTMs, Usage: w.Usage}
+		m.QuestionReply = w.QuestionReply
 		for _, c := range w.Content {
 			m.Content = append(m.Content, types.Content{Type: c.Type, ID: c.ID, Name: c.Name, Text: c.Text, Thinking: c.Thinking})
 		}
@@ -218,6 +220,13 @@ func decodeMetadataCached(raw []byte, estimates contextEstimateCache) (Entry, In
 	}
 	e = withContextEstimate(e)
 	switch e.Type {
+	case "question_requested", "question_updated":
+		e.Details = wire.Details
+		public, err := PublicQuestionEntry(e)
+		if err != nil {
+			return Entry{}, IndexEntry{}, err
+		}
+		e = public
 	case "tool_execution_start", "tool_execution_update", "tool_execution_end":
 		var audit struct {
 			ToolCallID        string `json:"toolCallId"`

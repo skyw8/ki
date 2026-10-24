@@ -9,6 +9,7 @@ import (
 	"ki/internal/tool/builtin/catalog"
 	codetools "ki/internal/tool/builtin/code"
 	filetools "ki/internal/tool/builtin/file"
+	questiontools "ki/internal/tool/builtin/question"
 	shelltools "ki/internal/tool/builtin/shell"
 	"ki/internal/tool/discovery"
 )
@@ -19,14 +20,15 @@ type Profile struct {
 }
 
 type Set struct {
-	CWD                  string
-	Processes            *process.Manager
-	Agent                agent.Runtime
-	AgentParentSessionID string
-	Shells               process.ShellRuntime
-	ReadOps              filetools.ReadOperations
-	Mutations            *filetools.MutationQueue
-	PathDirs             []string
+	CWD                   string
+	Processes             *process.Manager
+	Agent                 agent.Runtime
+	AgentParentSessionID  string
+	Shells                process.ShellRuntime
+	ReadOps               filetools.ReadOperations
+	Mutations             *filetools.MutationQueue
+	PathDirs              []string
+	RequestUserInputAsync questiontools.RequestFunc
 }
 
 func (s Set) Catalog(profile Profile) []toolapi.Tool {
@@ -47,6 +49,9 @@ func (s Set) Catalog(profile Profile) []toolapi.Tool {
 		}
 	}
 	out = append(out, (codetools.Set{}).Build()...)
+	if s.RequestUserInputAsync == nil {
+		out = append(out, questiontools.New(nil))
+	}
 	return append(out, discovery.New(nil).SearchTool())
 }
 
@@ -84,5 +89,9 @@ func toolAllowed(toggle session.Toggle, name string) bool {
 func (s Set) Build(profile Profile) []toolapi.Tool {
 	out := (filetools.Set{CWD: s.CWD, ReadOps: s.ReadOps, Mutations: s.Mutations}).Build(profile.RichRead, profile.ApplyPatch)
 	out = append(out, (shelltools.Set{CWD: s.CWD, Processes: s.Processes, Shells: s.Shells, PathDirs: s.PathDirs}).Build()...)
-	return append(out, agenttools.Build(s.Agent, s.AgentParentSessionID)...)
+	out = append(out, agenttools.Build(s.Agent, s.AgentParentSessionID)...)
+	if s.RequestUserInputAsync != nil {
+		out = append(out, questiontools.New(s.RequestUserInputAsync))
+	}
+	return out
 }

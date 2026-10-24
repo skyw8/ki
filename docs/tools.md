@@ -14,7 +14,7 @@ system prompt 组装阶段（见 [architecture.md](architecture.md)）。
 | 包 | 职责 |
 |---|---|
 | `internal/tool` | `Tool`、`Result`、`Spec`、可选执行接口、名称/别名、注册表和参数校验；不依赖 loop、内置实现或运行时 |
-| `internal/tool/builtin` | 根据模型能力组装工具，并应用内置开关；`file`、`shell`、`agent` 三个子包只负责对应工具的 schema、参数和结果适配。文件变更队列归 `file` 所有 |
+| `internal/tool/builtin` | 根据模型能力组装工具，并应用内置开关；`file`、`shell`、`agent`、`question` 子包只负责对应工具的 schema、参数和结果适配。文件变更队列归 `file` 所有 |
 | `internal/tool/builtin/catalog` | 内置名称的唯一声明来源；工具实现使用其标识符，extension 仅依赖这份轻量目录检查保留名 |
 | `internal/tool/output` | 完整输出文件、预览、配额和清理；loop 在 `AfterTool` 后应用统一策略，process 通过 `OutputSpool` 接口复用同一 store |
 | `internal/agent` | 身份、调度、消息接纳、持久化和代次进度；server 将 `loop.Event` 转成有界 `agent.ProgressEvent`，运行时不直接依赖 loop |
@@ -41,10 +41,41 @@ system prompt 组装阶段（见 [architecture.md](architecture.md)）。
 | `wait_agent` | 可选 `timeout_ms` | 观察调用方 mailbox / user steer；不消费完成结果、不停止 agent |
 | `interrupt_agent` | `target` | 中断目标当前 turn，返回之前状态；保留身份，不停止其 shell 进程 |
 | `list_agents` | 可选 `path_prefix` | root 范围内的身份/代次/状态；至多 128 项，另带 total/truncated |
+| `request_user_input_async` | `questions[]`：必填 `title`，可选非空字符串数组 `options` | 持久接受后立即返回 `{"accepted":true}`；答案之后作为新的 user message 到达 |
 | `exec` | raw JS 或 `{code}`，可选首行 pragma | 显式输出和 completed/failed/running 状态；running 返回 cell ID |
 | `wait` | `cell_id`、可选 `yield_time_ms` / `max_tokens` / `terminate` | 仅新增 cell 输出或终态 |
 
 ## 执行模型
+
+### 异步用户提问
+
+`request_user_input_async` 沿用 Codex 的 description 与 schema，不受模型名称或 Plan 模式限制。
+主会话绑定持久化 host callback 后才向模型发布；子代理和旁聊不提供。工具接受一批问题，
+全部验证后一次提交，不等待用户、不占用等待 channel，也不结束当前 turn。它是直接控制工具，
+不出现在 Code Mode 的 `tools` 命名空间。工具目录始终保留其名称及独立全局开关。
+
+标题、选项必须为非空白字符串；问题数组及显式传入的选项数组不能为空，拒绝额外字段。
+参数 JSON 总预算为 64 KiB。成功正文精确为 `{"accepted":true}`，内部 question ID 不由模型生成。
+预选第一项只是 UI 草稿，未提交不是回答，时间流逝也不是批准。依赖回答的任务应等待新的
+user 输入，而不是使用轮询、`sleep` 或重复调用工具来保持运行。
+
+问题、显式答案投递和逐题只读旁聊的完整契约见
+[异步提问与旁聊](async-user-input.md)。该工具不替代危险操作的执行权限或审核。
+
+### 旁聊只读文件能力
+
+旁聊只提供规范化的 `read`、`grep`、`glob`；没有 shell、写工具、Code Mode、MCP、
+执行扩展或子代理。warmup / reload、输入、消息与生命周期钩子、compact 均跳过执行扩展。
+冻结资源可用于提示背景，不赋予资源中描述的工具能力。
+
+文件根来自提问时规范化的工作区及旁聊自有附件目录。逐层 `os.Root` 打开与文件身份核验
+固定根，内容读取和搜索枚举都经过根句柄；验证后根或祖先换成符号链接不会让搜索进程越界。
+旁聊搜索不启动外部 rg，采用 Go RE2 与 glob；不支持的正则或文件类型显式报错，可用 glob
+过滤其他类型。ignore 只读取工作区内 `.gitignore` / `.ignore` / `.rgignore`，不读取宿主
+全局配置。搜索上限为 5 秒、10000 个目录项、单文件 2 MiB、累计内容 32 MiB、1000 条
+结果及 48 KiB 正文；触达预算明确返回截断提示，可缩小路径后继续。
+
+### 准备与执行
 
 工具执行两段化（对齐 pi prepare/execute）：
 

@@ -176,6 +176,18 @@ export class Client {
     })
   }
 
+  questionReply(id: string, questionReply: { questionItemId: string; revision: number; submissionId: string; answer: string }): Promise<{ accepted: boolean; question: import('./types').Question }> {
+    return this.json(`/v1/sessions/${id}/prompt`, { method: 'POST', body: JSON.stringify({ questionReply }) })
+  }
+
+  questionAction(id: string, questionItemId: string, revision: number, action: 'dismiss' | 'restore' | 'continue'): Promise<{ question: import('./types').Question }> {
+    return this.json(`/v1/sessions/${id}/question-action`, { method: 'POST', body: JSON.stringify({ questionItemId, revision, action }) })
+  }
+
+  questionSide(id: string, questionItemId: string): Promise<{ sessionId?: string; id?: string; question?: import('./types').Question }> {
+    return this.json(`/v1/sessions/${id}/fork`, { method: 'POST', body: JSON.stringify({ purpose: 'question_side', questionItemId }) })
+  }
+
   message(): Promise<{ busy: 'steer' | 'queue'; contextWindow: number }> {
     return this.json('/v1/message')
   }

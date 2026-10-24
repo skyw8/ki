@@ -14,19 +14,21 @@ import (
 )
 
 type Info struct {
-	ID              string         `json:"id"`
-	CWD             string         `json:"cwd"`
-	Dir             string         `json:"dir"`
-	Provider        string         `json:"provider"`
-	Model           string         `json:"model"`
-	Timestamp       string         `json:"timestamp"`
-	UpdatedAt       string         `json:"updatedAt,omitempty"`
-	ParentSessionID string         `json:"parentSessionId,omitempty"`
-	ForkMode        string         `json:"forkMode"`
-	Title           string         `json:"title"`
-	Pinned          bool           `json:"pinned,omitzero"`
-	PinnedAt        string         `json:"pinnedAt,omitempty"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
+	ID                   string         `json:"id"`
+	CWD                  string         `json:"cwd"`
+	Dir                  string         `json:"dir"`
+	Provider             string         `json:"provider"`
+	Model                string         `json:"model"`
+	Timestamp            string         `json:"timestamp"`
+	UpdatedAt            string         `json:"updatedAt,omitempty"`
+	ParentSessionID      string         `json:"parentSessionId,omitempty"`
+	ForkMode             string         `json:"forkMode"`
+	Title                string         `json:"title"`
+	Pinned               bool           `json:"pinned,omitzero"`
+	PinnedAt             string         `json:"pinnedAt,omitempty"`
+	Metadata             map[string]any `json:"metadata,omitempty"`
+	QuestionLinks        []QuestionLink `json:"questionLinks,omitempty"`
+	QuestionLinksLoading bool           `json:"questionLinksLoading,omitempty"`
 }
 
 func List(root string) ([]Info, error) {
@@ -93,7 +95,7 @@ func liteInfo(dir string) (Info, error) {
 		Title:           title,
 		Pinned:          cfg.Pinned,
 		PinnedAt:        cfg.PinnedAt,
-		Metadata:        cloneMetadata(cfg.Metadata),
+		Metadata:        PublicMetadata(cfg.Metadata),
 	}, nil
 }
 

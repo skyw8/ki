@@ -11,8 +11,16 @@ import (
 	"ki/internal/codemode"
 	toolapi "ki/internal/tool"
 	"ki/internal/tool/builtin/catalog"
+	questiontools "ki/internal/tool/builtin/question"
 	"ki/internal/types"
 )
+
+func TestQuestionIsNotANestedCodeTool(t *testing.T) {
+	definitions, description := definitions([]toolapi.Tool{questiontools.New(nil)})
+	if len(definitions) != 0 || strings.Contains(description, catalog.RequestUserInputAsync) {
+		t.Fatalf("question exposed to code mode: %+v %s", definitions, description)
+	}
+}
 
 func TestExecPragma(t *testing.T) {
 	for _, tc := range []struct {

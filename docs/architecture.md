@@ -95,8 +95,8 @@ Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和
 
 `spawn_agent` 创建 `forkMode=tree` 的具名 child，继承 provider/model/cwd，并以独立
 runState 异步执行 loop。`fork_turns` 默认 all，支持 none/N 个完整已完成 user turn；当前轮
-及 QueueOnly 消息不作为 fork 边界。身份信封包含 `/root/...` task path，system/tools 与
-parent 前缀一致；没有固定深度限制。
+及 QueueOnly 消息不作为 fork 边界。身份信封包含 `/root/...` task path，通常复用 parent
+的 system/tools 前缀，但不提供仅主会话可用的 `request_user_input_async`；没有固定深度限制。
 
 agent.Controller 按 root 限制活跃 child turn（默认 4），完成后释放容量并保留身份。
 send_message 先持久化 context queue 再唤醒 live Inbox，idle 时不启动模型；followup_task
@@ -109,10 +109,28 @@ exec_command/write_stdin 由 session 的 process.Manager 管理，工具等待�
 turn/process/tree 的中止 scope 分别控制运行轮次、指定进程和结构后代。进度经 sideband
 JSONL、现有 SSE 和 session GET 的 processes/agents 投影传递。详见 [tools.md](tools.md)。
 
+## 异步问题与旁聊
+
+`request_user_input_async` 的执行只负责整批验证和持久接受问题，成功后立即返回；
+问题生命周期由 jsonl 投影，不依赖工具调用仍然存活。session GET 和现有 SSE 提供问题状态，
+typed answer 经已有 prompt 路径交付。持久接收与实际 user entry 分开，避免取消或重启将
+未投递答案误标为已回答。
+
+旁聊复用独立 session/run，而不是 `spawn_agent`：没有 agent 身份、调度容量或自动完成
+回灌。来源与安全快照在提问被接受时固定；首次旁聊消息才创建 session，不能使用那时最新
+的父 leaf。安全快照要求 tool call/result 完整配对，当前并行批次不完整时退回批次之前，
+问题与必要的当前用户请求另作背景补充。模型继承安全历史，UI 只显示 side boundary 后内容。
+
+旁聊的只读 profile、路径边界与执行检查独立于提示词；缓存亲和可继承，父 run/续传身份
+不能继承。关闭窗口不停止旁聊，停止旁聊不停止主任务，用户明确提交的最终答案才进入父
+模型。持久旁聊在来源会话下归组展示，与执行型子代理使用不同图标。
+完整契约与布局见 [异步提问与旁聊](async-user-input.md)。
+
 ## Code Mode
 
 Code Mode 固定为 mixed：在普通工具经开关、extension Prepare 和 activeTools 过滤后，构造
-`exec/wait` 与固定的嵌套 dispatcher，普通工具同时保留直接入口。`ki serve` 按 session 懒
+`exec/wait` 与固定的嵌套 dispatcher，普通工具同时保留直接入口。异步用户提问仅保留直接
+入口，不进入 JS 工具命名空间；只读旁聊不开放 Code Mode。`ki serve` 按 session 懒
 启动同一二进制的私有 goja worker；JS 仅通过双向 stdio IPC 请求父进程执行工具，WebUI 不
 运行这些代码。外层结果走普通消息，嵌套审计走现有 loop/jsonl/SSE；事件漏斗串行化并发
 callback 与模型事件。详见 [code-mode-design.md](code-mode-design.md)。
@@ -226,7 +244,7 @@ host 阈值判定 `compact.ShouldRun(tokens, contextWindow, cfg)`：
 - `cfg.MaxContextTokens`（`[compaction] max_context_tokens`）取 min 兜底——小于模型窗口时
   以它为准，小值让压缩提前触发（低成本测试不烧 token），0 = 只用模型窗口；
 - Settings → Message 的 `contextWindow`（`toggles.json` `message.contextWindow`，默认
-  5,000,000）是叠在模型窗口之上的硬上限，同样只取 min，不会抬高更小的模型窗口；
+  500,000）是叠在模型窗口之上的硬上限，同样只取 min，不会抬高更小的模型窗口；
 - context meter、host 阈值、server-side `compact_threshold` 都通过同一个
   `effectiveContextWindow` 计算。未知（0）模型窗口保持未知，由各调用点保留自己的默认值。
 
@@ -341,7 +359,7 @@ server token。
 | PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / `queued`（保留 id 列表）；run 或独立压缩占用 session 时，会改变上下文绑定的 `model` / `thinkingEffort` / `leafId` 返回 409 |
 | DELETE | `/v1/sessions/{id}` | 删该会话目录 |
 | POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId` / `delivery` / `queueId`；空闲 `202 started`；忙时 `steer` 插入本轮或 `queue` 排队，省略则用 `toggles.json` `message.busy`；`queueId`+`delivery=steer` 从 `queue.json` 取出插入本轮；`parentId` 且 busy 仍 **409** |
-| GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`）与上下文窗口硬上限（`contextWindow`，默认 5,000,000，1–100,000,000）；两者都可单独 PATCH |
+| GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`）与上下文窗口硬上限（`contextWindow`，默认 500,000，1–100,000,000）；两者都可单独 PATCH |
 | GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件；完成回放受 16MiB / 2 分钟 / 256 run 限制，过期或无回放时现存 session 返回 410，客户端从 session GET 恢复 |
 | GET | `/v1/events` | 每个 WebUI tab 的全局 push SSE；仅发送失效、终态和 session sideband，不发送 run 增量 |
 | GET | `/v1/push/config` | 返回 Web Push 是否启用及 VAPID 公钥 |

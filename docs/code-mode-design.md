@@ -14,7 +14,9 @@ Ki 使用 **goja + 同一二进制的 session-scoped worker** 实现 JavaScript 
 
 MCP 声明仅在有可用 `search_tool` 时 Deferred：最初省略 exec 描述中的完整声明，搜索后按需
 补充；JS `tools`/`ALL_TOOLS` 自始拥有全部允许能力，不需要动态更新 VM。`search_tool` 不作为
-嵌套 JS 方法；关闭搜索则直接披露全部允许声明。官方 SDK、配置及回退规则见
+嵌套 JS 方法；`request_user_input_async` 同样仅作模型直接控制工具，不进入 `tools` /
+`ALL_TOOLS`，避免把用户交互托管给 JS worker。只读逐题旁聊不开放 `exec` / `wait`。
+关闭搜索则直接披露全部允许声明。官方 SDK、配置及回退规则见
 [mcp.md](mcp.md)。
 
 既有 `GET /v1/tools` 返回 `{items, mcp}`；`PATCH /v1/tools` 只接受可选的 `disabled` 和

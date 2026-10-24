@@ -241,6 +241,21 @@ func CreateWithOptions(root, cwd, provider, model string, opts CreateOptions) (*
 	return s, nil
 }
 
+func PublicMetadata(in map[string]any) map[string]any {
+	if in["purpose"] != "question_side" {
+		return cloneMetadata(in)
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		switch key {
+		case "questionSideResources", "readOnlyWorkspaceRoot", "readOnlyAttachmentsRoot", "readOnlyProfile", "sideInitialization":
+			continue
+		}
+		out[key] = value
+	}
+	return cloneMetadata(out)
+}
+
 func cloneMetadata(in map[string]any) map[string]any {
 	if in == nil {
 		return nil
@@ -882,6 +897,9 @@ func AppendSidebandEvent(dir, typ string, details any) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
+	if len(b)+1 > maxJSONLLineBytes {
+		return Entry{}, fmt.Errorf("events.jsonl record exceeds %d bytes", maxJSONLLineBytes)
+	}
 	//nolint:gosec // dir comes from the server's indexed session record.
 	f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -1007,6 +1025,9 @@ func (s *Session) SetPinned(on bool) error {
 }
 
 func Remove(dir string) error {
+	gate := fileGate(dir)
+	gate.Lock()
+	defer gate.Unlock()
 	var err error
 	for attempt := 0; attempt < 40; attempt++ {
 		if err = os.RemoveAll(dir); err == nil {
@@ -1203,16 +1224,20 @@ func Fork(root string, src *Session) (*Session, error) {
 }
 
 func ForkAt(root string, src *Session, target string, requestedMode ...string) (*Session, error) {
-	return forkAt(root, src, target, nil, requestedMode...)
+	return forkAt(root, src, target, nil, nil, requestedMode...)
 }
 
 func ForkHistoryAt(root string, src *Session, target string, requestedMode ...string) (*Session, error) {
-	return forkAt(root, src, target, func(e Entry) bool {
-		return e.Type == "message" || e.Type == "compaction"
-	}, requestedMode...)
+	return ForkHistoryAtWithMetadata(root, src, target, nil, requestedMode...)
 }
 
-func forkAt(root string, src *Session, target string, keep func(Entry) bool, requestedMode ...string) (*Session, error) {
+func ForkHistoryAtWithMetadata(root string, src *Session, target string, metadata map[string]any, requestedMode ...string) (*Session, error) {
+	return forkAt(root, src, target, func(e Entry) bool {
+		return e.Type == "message" || e.Type == "compaction"
+	}, metadata, requestedMode...)
+}
+
+func forkAt(root string, src *Session, target string, keep func(Entry) bool, metadata map[string]any, requestedMode ...string) (*Session, error) {
 	forkMode := ForkModeFlat
 	if len(requestedMode) > 0 {
 		var err error
@@ -1255,7 +1280,9 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, req
 	sourceDir := src.Dir
 	src.mu.Unlock()
 
-	dst, err := Create(root, cwd, cfg.Provider, cfg.Model, cfg.ThinkingEffort)
+	dst, err := CreateWithOptions(root, cwd, cfg.Provider, cfg.Model, CreateOptions{
+		ThinkingEffort: cfg.ThinkingEffort, Metadata: metadata,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1270,6 +1297,9 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, req
 		return nil, err
 	}
 	dst.Config = cfg
+	if metadata != nil {
+		dst.Config.Metadata = cloneMetadata(metadata)
+	}
 	dst.Config.ActiveLeafID = ""
 	dst.Config.CacheKey = cacheKey
 	dst.Header.ParentSession = parent
@@ -1306,13 +1336,19 @@ func forkAt(root string, src *Session, target string, keep func(Entry) bool, req
 }
 
 func CreateChild(root string, src *Session) (*Session, error) {
+	return CreateChildWithMetadata(root, src, nil)
+}
+
+func CreateChildWithMetadata(root string, src *Session, metadata map[string]any) (*Session, error) {
 	src.mu.Lock()
 	cwd := src.Header.CWD
 	parent := src.Header.ID
 	cfg := src.Config
 	src.mu.Unlock()
 
-	dst, err := Create(root, cwd, cfg.Provider, cfg.Model, cfg.ThinkingEffort)
+	dst, err := CreateWithOptions(root, cwd, cfg.Provider, cfg.Model, CreateOptions{
+		ThinkingEffort: cfg.ThinkingEffort, Metadata: metadata,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1323,6 +1359,9 @@ func CreateChild(root string, src *Session) (*Session, error) {
 		return nil, err
 	}
 	dst.Config = cfg
+	if metadata != nil {
+		dst.Config.Metadata = cloneMetadata(metadata)
+	}
 	dst.Config.ActiveLeafID = ""
 	dst.Config.CacheKey = ""
 	dst.Header.ParentSession = parent
@@ -1506,5 +1545,5 @@ func ForkRecentHistoryAt(root string, src *Session, target string, turns int) (*
 			keep[e.ID] = true
 		}
 	}
-	return forkAt(root, src, target, func(e Entry) bool { return keep[e.ID] }, ForkModeTree)
+	return forkAt(root, src, target, func(e Entry) bool { return keep[e.ID] }, nil, ForkModeTree)
 }

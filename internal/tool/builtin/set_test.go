@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -10,6 +11,32 @@ import (
 	toolapi "ki/internal/tool"
 	"ki/internal/tool/builtin/catalog"
 )
+
+func TestQuestionRequiresSessionHostButIsAlwaysCataloged(t *testing.T) {
+	set := Set{CWD: t.TempDir()}
+	if pick(set.Build(Profile{}), catalog.RequestUserInputAsync) != nil {
+		t.Fatal("unbound question tool exposed to model")
+	}
+	if pick(set.Catalog(Profile{}), catalog.RequestUserInputAsync) == nil {
+		t.Fatal("question tool missing from catalog")
+	}
+	set.RequestUserInputAsync = func(context.Context, string, []session.QuestionInput) error { return nil }
+	if pick(set.Build(Profile{}), catalog.RequestUserInputAsync) == nil {
+		t.Fatal("bound question tool missing")
+	}
+	if pick(FilterBuiltins(set.Build(Profile{}), session.Toggle{Disabled: []string{catalog.RequestUserInputAsync}}), catalog.RequestUserInputAsync) != nil {
+		t.Fatal("disabled question tool exposed")
+	}
+	count := 0
+	for _, implementation := range set.Catalog(Profile{}) {
+		if implementation.Name() == catalog.RequestUserInputAsync {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("question catalog entries = %d", count)
+	}
+}
 
 func pick(ts []toolapi.Tool, name string) toolapi.Tool {
 	for _, t := range ts {

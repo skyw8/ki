@@ -75,6 +75,9 @@ func (s *Server) kickWarmup(id, cwd string) {
 
 func (s *Server) warmupSession(ctx context.Context, id, cwd string, st *runtimePrep) {
 	defer s.finishRuntime(id, st)
+	if s.isQuestionSideSession(id) {
+		return
+	}
 	if cwd == "" {
 		sess, err := s.open(id)
 		if err != nil {

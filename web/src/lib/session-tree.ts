@@ -7,6 +7,16 @@ export type SessionForest = {
   order: Map<string, number>
 }
 
+export type SessionChildGroups = {
+  agents: SessionInfo[]
+  sideChats: SessionInfo[]
+  forks: SessionInfo[]
+}
+
+export function isQuestionSideSession(session: SessionInfo): boolean {
+  return session.purpose === 'question_side'
+}
+
 function sameWorkspace(a: SessionInfo, b: SessionInfo): boolean {
   return !a.workspaceId || !b.workspaceId || a.workspaceId === b.workspaceId
 }
@@ -77,9 +87,15 @@ export function buildSessionForest(sessions: SessionInfo[], workspaces: Workspac
   const unresolved = new Set<string>()
 
   for (const session of sessions) {
-    if (session.forkMode !== 'tree' || !session.parentSessionId) continue
-    const parent = byId.get(session.parentSessionId)
-    if (!parent || parent.id === session.id || !sameWorkspace(parent, session)) {
+    const isSide = isQuestionSideSession(session)
+    if (!isSide && session.forkMode !== 'tree') continue
+    const parentId = session.parentSessionId || (isSide ? session.sourceSessionId : undefined)
+    if (!parentId) {
+      if (isSide) unresolved.add(session.id)
+      continue
+    }
+    const parent = byId.get(parentId)
+    if (!parent || parent.id === session.id || isQuestionSideSession(parent) || !sameWorkspace(parent, session)) {
       unresolved.add(session.id)
       continue
     }
@@ -113,6 +129,18 @@ export function buildSessionForest(sessions: SessionInfo[], workspaces: Workspac
 
 export function orderedChildren(forest: SessionForest, parentId: string): SessionInfo[] {
   return forest.childrenOf.get(parentId) ?? []
+}
+
+export function groupedSessionChildren(forest: SessionForest, parentId: string): SessionChildGroups {
+  const agents: SessionInfo[] = []
+  const sideChats: SessionInfo[] = []
+  const forks: SessionInfo[] = []
+  for (const session of orderedChildren(forest, parentId)) {
+    if (isQuestionSideSession(session)) sideChats.push(session)
+    else if (session.isAgent) agents.push(session)
+    else forks.push(session)
+  }
+  return { agents, sideChats, forks }
 }
 
 export function topLevelRoot(forest: SessionForest, id: string): string {

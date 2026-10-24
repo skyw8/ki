@@ -179,7 +179,7 @@ test('settings navigation and controls are consistent', async ({ page }) => {
   await page.getByTestId('busy-queue').click()
   await expect(page.getByTestId('busy-queue')).toHaveAttribute('aria-checked', 'true')
   const contextWindow = page.getByTestId('message-context-window')
-  await expect(contextWindow).toHaveValue('5000000')
+  await expect(contextWindow).toHaveValue('500000')
   await expect(page.getByTestId('message-context-save')).toBeDisabled()
   await contextWindow.fill('4000000')
   await page.getByTestId('message-context-save').click()

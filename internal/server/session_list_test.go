@@ -7,9 +7,40 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"ki/internal/session"
 )
+
+func TestSessionWorkspaceIDsRefreshesMatches(t *testing.T) {
+	srv, _ := testServer(t)
+	cwd, unmatched := t.TempDir(), t.TempDir()
+	rec, _, err := srv.ws.Create(cwd, "registered")
+	if err != nil {
+		t.Fatal(err)
+	}
+	infos := []session.Info{{CWD: cwd}, {CWD: cwd}, {CWD: unmatched}, {CWD: unmatched}, {CWD: ""}}
+	ids := srv.sessionWorkspaceIDs(infos)
+	if len(ids) != 3 || ids[cwd] != rec.ID || ids[unmatched] != "" || ids[""] != "" {
+		t.Fatalf("workspace matches = %+v", ids)
+	}
+	missing := srv.infoMap(session.Info{CWD: unmatched}, sessionActivity{}, ids[unmatched])
+	if _, found := missing["workspaceId"]; found {
+		t.Fatalf("unmatched session has workspace: %+v", missing)
+	}
+	rec, _, err = srv.ws.Create(unmatched, "newly registered")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids = srv.sessionWorkspaceIDs(infos)
+	if ids[unmatched] != rec.ID {
+		t.Fatalf("subsequent request retained missing match: %+v", ids)
+	}
+	matched := srv.infoMap(session.Info{CWD: unmatched}, sessionActivity{}, ids[unmatched])
+	if matched["workspaceId"] != rec.ID {
+		t.Fatalf("matched session workspace: %+v", matched)
+	}
+}
 
 func TestSessionListETag(t *testing.T) {
 	_, hs := testServer(t)
@@ -31,6 +62,22 @@ func TestSessionListETag(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = res.Body.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(listed) > 0 && listed[0]["questionLinksLoading"] == true {
+		if time.Now().After(deadline) {
+			t.Fatal("list summary did not settle")
+		}
+		time.Sleep(time.Millisecond)
+		res, err = authedGet(t, hs, "/v1/sessions")
+		if err != nil {
+			t.Fatal(err)
+		}
+		etag = res.Header.Get("ETag")
+		if err := json.NewDecoder(res.Body).Decode(&listed); err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+	}
 
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/sessions", nil)
 	req.Header.Set("Authorization", "Bearer tok")

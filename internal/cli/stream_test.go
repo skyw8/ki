@@ -3,11 +3,31 @@ package cli
 import (
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"ki/internal/loop"
+	"ki/internal/session"
 	"ki/internal/types"
 )
+
+func TestStreamPrinterShowsAsyncQuestionsWithoutWaitingOrRepeatingUpdates(t *testing.T) {
+	var p streamPrinter
+	question := session.Question{QuestionItemID: "q1", Index: 0, Title: "发布范围？", Options: []string{"内部", "公开"}}
+	out := captureStdout(t, func() {
+		p.event(loop.Event{Type: loop.QuestionRequested, Questions: []session.Question{question, {QuestionItemID: "q2", Index: 1, Title: "何时发布？"}}})
+		p.event(loop.Event{Type: loop.QuestionUpdated, Question: &question})
+		p.event(loop.Event{Type: loop.MessageEnd, Message: assistant("Continuing independent work.")})
+	})
+	for _, text := range []string{"[question 1] 发布范围？", "1. 内部", "2. 公开", "[question 2] 何时发布？", "not paused", "No option is submitted automatically", "Continuing independent work."} {
+		if !strings.Contains(out, text) {
+			t.Fatalf("missing %q in %q", text, out)
+		}
+	}
+	if strings.Count(out, "发布范围？") != 1 {
+		t.Fatalf("question repeated on update: %q", out)
+	}
+}
 
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()

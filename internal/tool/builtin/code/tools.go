@@ -73,7 +73,7 @@ func definitionsWithDeferred(nested []toolapi.Tool, deferred map[string]bool) ([
 	omitted := false
 	for _, t := range sorted {
 		spec := toolapi.SpecFor(t)
-		if spec.Name == catalog.CodeExec || spec.Name == catalog.CodeWait || spec.Name == discovery.Name {
+		if spec.Name == catalog.CodeExec || spec.Name == catalog.CodeWait || spec.Name == discovery.Name || spec.Name == catalog.RequestUserInputAsync {
 			continue
 		}
 		description := strings.TrimSpace(spec.Description)

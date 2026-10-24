@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react'
 import {
   ArrowDownToLine,
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -18,6 +19,8 @@ import {
   ListMinus,
   Layers,
   Menu,
+  MessageCircleQuestionMark,
+  MessagesSquare,
   Moon,
   MoreHorizontal,
   PanelLeft,
@@ -59,6 +62,9 @@ export const IGear = sized(Settings, 16)
 export const ISend = sized(SendHorizontal, 16)
 export const IStop = (props: IconProps) => <Square size={16} fill="currentColor" {...props} />
 export const IFork = sized(GitFork, 16)
+export const IAgent = sized(Bot, 16)
+export const ISideChat = sized(MessagesSquare, 16)
+export const IQuestion = sized(MessageCircleQuestionMark, 16)
 export const ISearch = sized(Search, 16)
 export const IClose = sized(X, 16)
 export const IWrench = sized(Wrench, 14)

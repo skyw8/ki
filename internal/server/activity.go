@@ -56,7 +56,11 @@ func countActiveDescendants(infos []session.Info, active map[string]bool) map[st
 		if active[info.ID] {
 			own = 1
 		}
-		nodes[info.ID] = &node{parent: info.ParentSessionID, total: own, own: own}
+		parent := info.ParentSessionID
+		if metadataString(info.Metadata, "purpose") == questionSidePurpose {
+			parent = ""
+		}
+		nodes[info.ID] = &node{parent: parent, total: own, own: own}
 	}
 	for _, n := range nodes {
 		if parent := nodes[n.parent]; parent != nil {

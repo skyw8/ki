@@ -126,6 +126,21 @@ func TestSessionActivityListAndDetail(t *testing.T) {
 	assert := func(want map[string]wantActivity) string {
 		t.Helper()
 		rows, etag := activityList(t, hs, "")
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			pending := false
+			for _, row := range rows {
+				pending = pending || row["questionLinksLoading"] == true
+			}
+			if !pending {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("list summary did not settle")
+			}
+			time.Sleep(time.Millisecond)
+			rows, etag = activityList(t, hs, "")
+		}
 		if len(rows) != len(want) {
 			t.Fatalf("list has %d rows, want %d", len(rows), len(want))
 		}

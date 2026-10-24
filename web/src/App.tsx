@@ -9,6 +9,8 @@ import { useTranscriptRequests } from './features/chat/useTranscriptRequests'
 import type { TranscriptScroll } from './features/chat/useTranscriptScroll'
 import { PerfHud } from './features/chat/PerfHud'
 import { RequestNav } from './features/chat/RequestNav'
+import { QuestionDialog, QuestionsRail } from './features/questions/Questions'
+import { mergeQuestion } from './features/questions/model'
 import { Composer, type Draft } from './features/chat/Composer'
 import { AttachmentBrowser } from './features/attachments/AttachmentBrowser'
 import { OutputPreview } from './features/chat/tools/OutputPreview'
@@ -18,10 +20,10 @@ import { PromptSettings } from './features/settings/PromptSettings'
 import { AboutSettings } from './features/settings/AboutSettings'
 import { ModelPickerDialog } from './features/settings/ModelPickerDialog'
 import { ProviderSettings } from './features/settings/ProviderSettings'
-import { IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
+import { IAgent, ISideChat, IChev, IChevDown, IClose, IDots, IEdit, IFile, IFolder, IFork, IGear, IImage, IPanel, IPin, IPlus, ISearch, ITrash } from './components/icons'
 import { appendOptimisticUser, applyEvent, applyRuntimeCatalog, clampThinkingEffort, emptyView, keepComposer, loadHistory, reconcileComposerModel, sessionCreateBody, sessionStats, userRequests } from './lib/model'
 import { clampCompactKeep, loadMessageView, saveMessageView, type MessageView } from './lib/messageView'
-import type { CatalogExtension, ChatNode, Content, ExtensionUI, Meta, ModelInfo, PushEvent, SearchHit, SessionInfo, WorkspaceInfo } from './api/types'
+import type { CatalogExtension, ChatNode, Content, ExtensionUI, Meta, ModelInfo, PushEvent, Question, SearchHit, SessionInfo, WorkspaceInfo } from './api/types'
 import { ContextView } from './features/context/ContextView'
 import { useI18n } from './i18n/index'
 import { toast } from './components/toast'
@@ -34,7 +36,6 @@ import { currentPermission, loadNotifyPref, notifyCompletion, requestPermission,
 import { dropPushSubscription, ensurePushSubscription } from './lib/push'
 import { focusedSession } from './lib/tab-focus'
 import { reconcileFinishedRuns } from './lib/completion-catchup'
-import { isNetworkError } from './lib/errors'
 import { useTranscriptStore } from './hooks/useTranscriptStore'
 import { SessionSyncController } from './lib/session-sync'
 import { clientRequestId } from './lib/client-request'
@@ -107,6 +108,7 @@ type SessionRowsProps = {
   isExpanded: (id: string) => boolean
   onToggleExpand: (id: string) => void
   onOpen: (id: string) => void
+  onOpenQuestion: (sessionId: string, questionItemId: string) => void
   onMenu: (event: ReactMouseEvent<HTMLButtonElement>, id: string) => void
   menu: { kind: 'ws' | 'sess'; id: string } | null
   menuID: string
@@ -124,6 +126,7 @@ function SessionRows({
   isExpanded,
   onToggleExpand,
   onOpen,
+  onOpenQuestion,
   onMenu,
   menu,
   menuID,
@@ -131,13 +134,16 @@ function SessionRows({
   onRowDrop,
   onRowDragStart,
 }: SessionRowsProps) {
-  const { t } = useI18n()
+  const { t, lang } = useI18n()
+  const [shownGroups, setShownGroups] = useState<Record<string, boolean>>({})
   return (
     <>
       {rows.map((session, index) => {
         const children = childrenOf(session.id)
+        const questionLinks = session.questionLinks?.filter(q => !children.some(child => child.sourceQuestionItemId === q.questionItemId)) ?? []
+        const expandable = children.length > 0 || questionLinks.length > 0 || !!session.questionLinksLoading
         const open = isExpanded(session.id)
-        const canDrag = !!draggable && depth === 0
+        const canDrag = !!draggable && depth === 0 && session.purpose !== 'question_side'
         return (
           <Fragment key={session.id}>
             <div
@@ -150,7 +156,7 @@ function SessionRows({
               onDragOver={e => { if (canDrag) e.preventDefault() }}
               onDrop={e => { if (canDrag) onRowDrop?.(e, index, session) }}
             >
-              {children.length ? (
+              {expandable ? (
                 <button
                   type="button"
                   className="session-toggle"
@@ -172,14 +178,14 @@ function SessionRows({
               >
                 <span className={`dot${session.running ? ' on' : (session.activeDescendantCount ?? 0) > 0 ? ' delegated' : ''}`} aria-hidden />
                 {session.pinned && session.forkMode !== 'tree' ? <span className="pin-mark" aria-label={t('session.pinned')}><IPin /></span> : null}
-                {depth > 0 ? <span className="subagent-mark" aria-hidden title={t('session.subagent')}><IFork /></span> : null}
+                {session.purpose === 'question_side' ? <span className="session-type-mark" aria-label={lang.startsWith('zh') ? '旁聊' : 'Side conversation'}><ISideChat /></span> : session.isAgent ? <span className="session-type-mark" aria-label={t('session.subagent')}><IAgent /></span> : depth > 0 ? <span className="session-type-mark" aria-label={lang.startsWith('zh') ? '分叉会话' : 'Forked session'}><IFork /></span> : null}
                 <span className="meta">
                   <div className="title" data-testid="session-title">{session.title || untitled}</div>
                   <div className="sub" data-testid={(session.activeDescendantCount ?? 0) > 0 ? 'session-child-activity' : undefined}
                     title={(session.activeDescendantCount ?? 0) > 0 ? t(session.running ? 'session.runningChildren' : 'session.waitingChildren', { n: session.activeDescendantCount! }) : undefined}>
                     {(session.activeDescendantCount ?? 0) > 0
                       ? t(session.running ? 'session.runningChildren' : 'session.waitingChildren', { n: session.activeDescendantCount! })
-                      : session.model}
+                      : session.purpose === 'question_side' ? `${lang.startsWith('zh') ? '旁聊' : 'Side conversation'} · ${session.running ? (lang.startsWith('zh') ? '运行中' : 'Running') : session.model}` : session.model}
                   </div>
                 </span>
               </button>
@@ -193,9 +199,14 @@ function SessionRows({
                 onClick={e => onMenu(e, session.id)}
               ><IDots /></button>
             </div>
-            {children.length && open ? (
+            {children.length && open ? ([
+              { key: 'agents', title: lang.startsWith('zh') ? '子代理' : 'Subagents', rows: children.filter(s => s.isAgent && s.purpose !== 'question_side') },
+              { key: 'forks', title: lang.startsWith('zh') ? '分叉会话' : 'Forked sessions', rows: children.filter(s => !s.isAgent && s.purpose !== 'question_side') },
+              { key: 'side', title: lang.startsWith('zh') ? '旁聊' : 'Side conversations', rows: children.filter(s => s.purpose === 'question_side') },
+            ].filter(group => group.rows.length).map(group => <Fragment key={group.key}>
+              <div className="session-group-label" style={{ '--session-depth': depth + 1 } as CSSProperties}>{group.title} · {group.rows.length}{group.rows.some(s => s.running) ? ` · ${group.rows.filter(s => s.running).length} ${lang.startsWith('zh') ? '运行中' : 'running'}` : ''}</div>
               <SessionRows
-                rows={children}
+                rows={shownGroups[`${session.id}:${group.key}`] ? group.rows : group.rows.slice(0, SHOW)}
                 depth={depth + 1}
                 currentId={currentId}
                 untitled={untitled}
@@ -203,11 +214,24 @@ function SessionRows({
                 isExpanded={isExpanded}
                 onToggleExpand={onToggleExpand}
                 onOpen={onOpen}
+                onOpenQuestion={onOpenQuestion}
                 onMenu={onMenu}
                 menu={menu}
                 menuID={menuID}
               />
-            ) : null}
+              {group.rows.length > SHOW ? <button type="button" className="show-more" onClick={() => setShownGroups(v => ({ ...v, [`${session.id}:${group.key}`]: !v[`${session.id}:${group.key}`] }))}>{shownGroups[`${session.id}:${group.key}`] ? (lang.startsWith('zh') ? '收起' : 'Show less') : `${lang.startsWith('zh') ? '显示更多' : 'Show more'} (${group.rows.length - SHOW})`}</button> : null}
+            </Fragment>)) : null}
+            {open && session.questionLinksLoading ? <div className="session-group-label" style={{ '--session-depth': depth + 1 } as CSSProperties} role="status" data-testid="question-links-loading">{t('session.discussionsLoading')}</div> : null}
+            {open && questionLinks.length ? <>
+              <div className="session-group-label" style={{ '--session-depth': depth + 1 } as CSSProperties}>{lang.startsWith('zh') ? '问题旁聊' : 'Question discussions'} · {questionLinks.length}</div>
+              {questionLinks.map(q => <div key={`question:${q.questionItemId}`} className="session-row session-child" data-testid="question-side-link" style={{ '--session-depth': depth + 1 } as CSSProperties}>
+                <span className="session-toggle-spacer" aria-hidden />
+                <button type="button" className="session-main" onClick={() => onOpenQuestion(session.id, q.questionItemId)}>
+                  <span className="session-type-mark"><ISideChat /></span>
+                  <span className="meta"><div className="title">{q.title}</div><div className="sub">{lang.startsWith('zh') ? '打开旁聊' : 'Open discussion'}</div></span>
+                </button>
+              </div>)}
+            </> : null}
           </Fragment>
         )
       })}
@@ -343,6 +367,12 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const [atBottom, setAtBottom] = useState(true)
   const [jumpToId, setJumpToId] = useState<string | null>(null)
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
+  const [questionTarget, setQuestionTarget] = useState<{ sessionId: string; questionItemId: string } | null>(null)
+  const sessionQuestions = view.questionsSessionId === currentId ? view.questions ?? [] : []
+  const selectedQuestion = questionTarget?.sessionId === currentId ? sessionQuestions.find(q => q.questionItemId === questionTarget.questionItemId) : undefined
+  const updateQuestion = useCallback((question: Question) => {
+    if (store.sessionId === currentId) setView(v => ({ ...v, questionsSessionId: currentId ?? undefined, questions: mergeQuestion(v.questionsSessionId === currentId ? v.questions ?? [] : [], question) }))
+  }, [currentId, setView, store])
   const currentIdRef = useRef<string | null>(currentId)
   const viewRef = store
   const syncRef = useRef<SessionSyncController | null>(null)
@@ -588,7 +618,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       if (!handingOffToDialog) requestAnimationFrame(() => mobileNavToggleRef.current?.focus({ preventScroll: true }))
     }
     mobileSidebarWasOpen.current = mobileSidebarOpen
-  }, [compactLayout, dirOpen, mobileSidebarOpen, settingsOpen])
+  }, [compactLayout, currentId, dirOpen, mobileSidebarOpen, settingsOpen])
 
   const onSidebarKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (!compactLayout || !mobileSidebarOpen || event.key !== 'Tab') return
@@ -648,56 +678,70 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
 	}, [api])
 
   const [listLoaded, setListLoaded] = useState(false)
+  const [workspacesLoaded, setWorkspacesLoaded] = useState(false)
+  const [sessionsError, setSessionsError] = useState(false)
+  const [workspacesError, setWorkspacesError] = useState(false)
   const listEtag = useRef<string | null>(null)
   const wsKey = useRef<string | null>(null)
-  const refreshGate = useRef({ active: false, dirty: false, waiters: [] as Array<() => void> })
+  const questionListEpoch = useRef(0)
+  const sessionsRefreshGate = useRef({ active: false, dirty: false, waiters: [] as Array<() => void> })
+  const workspacesRefreshGate = useRef({ active: false, dirty: false, waiters: [] as Array<() => void> })
   const sessionsRef = useRef(sessions)
   useEffect(() => { sessionsRef.current = sessions }, [sessions])
 
-  const refreshList = useCallback((): Promise<void> => {
-    const gate = refreshGate.current
+  const refreshSessions = useCallback((): Promise<void> => {
+    const gate = sessionsRefreshGate.current
     gate.dirty = true
     return new Promise<void>(resolve => {
       gate.waiters.push(resolve)
       if (gate.active) return
       gate.active = true
+      setSessionsError(false)
       void (async () => {
         try {
           while (gate.dirty) {
             gate.dirty = false
+            const requestedQuestions = questionListEpoch.current
             const requestedId = currentIdRef.current
-            const requestedWs = selectedWsRef.current
-            const [ss, ws] = await Promise.all([api.list(listEtag.current ?? undefined), api.workspaces()])
-            if (!ss.notModified) {
-              listEtag.current = ss.etag
+            try {
+              const ss = await api.list(listEtag.current ?? undefined)
+              if (requestedQuestions !== questionListEpoch.current || gate.dirty) {
+                gate.dirty = true
+                continue
+              }
+              setSessionsError(false)
               setListLoaded(true)
-              sessionsRef.current = ss.sessions
-              setSessions(ss.sessions)
-              for (const session of ss.sessions) {
-                if (session.running) runningKnown.current.add(session.id)
+              if (!ss.notModified) {
+                listEtag.current = ss.etag
+                const previous = new Map(sessionsRef.current.map(session => [session.id, session]))
+                const nextSessions = ss.sessions.map(session => {
+                  const known = previous.get(session.id)?.questionLinks
+                  if (!session.questionLinksLoading || !known?.length) return session
+                  const links = new Map((session.questionLinks ?? []).map(link => [link.questionItemId, link]))
+                  for (const link of known) {
+                    if ((links.get(link.questionItemId)?.revision ?? 0) < link.revision) links.set(link.questionItemId, link)
+                  }
+                  return { ...session, questionLinks: [...links.values()] }
+                })
+                sessionsRef.current = nextSessions
+                setSessions(nextSessions)
+                for (const session of nextSessions) {
+                  if (session.running) runningKnown.current.add(session.id)
+                }
+                if (requestedId && currentIdRef.current === requestedId && !ss.sessions.some(s => s.id === requestedId)) {
+                  openAbort.current?.abort()
+                  currentIdRef.current = null
+                  syncRef.current?.select(null)
+                  store.reset(null, keepComposer(store.current))
+                  setCurrentId(null)
+                  setOpeningId(null)
+                  setEdit(null)
+                }
               }
-              if (requestedId && currentIdRef.current === requestedId && !ss.sessions.some(s => s.id === requestedId)) {
-                openAbort.current?.abort()
-                currentIdRef.current = null
-                syncRef.current?.select(null)
-                store.reset(null, keepComposer(store.current))
-                setCurrentId(null)
-                setOpeningId(null)
-                setEdit(null)
-              }
-            }
-            if (requestedWs && selectedWsRef.current === requestedWs && !ws.some(w => w.id === requestedWs)) {
-              selectedWsRef.current = null
-              setSelectedWs(null)
-            }
-            const nextWs = JSON.stringify(ws)
-            if (nextWs !== wsKey.current) {
-              wsKey.current = nextWs
-              setWorkspaces(ws)
+            } catch {
+              setSessionsError(true)
             }
           }
-        } catch (e) {
-          if (!isNetworkError(e)) toast.from(e)
         } finally {
           gate.active = false
           const waiters = gate.waiters
@@ -707,6 +751,54 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       })()
     })
   }, [api, store])
+
+  const refreshWorkspaces = useCallback((): Promise<void> => {
+    const gate = workspacesRefreshGate.current
+    gate.dirty = true
+    return new Promise<void>(resolve => {
+      gate.waiters.push(resolve)
+      if (gate.active) return
+      gate.active = true
+      setWorkspacesError(false)
+      void (async () => {
+        try {
+          while (gate.dirty) {
+            gate.dirty = false
+            const requestedWs = selectedWsRef.current
+            try {
+              const ws = await api.workspaces()
+              if (gate.dirty) continue
+              setWorkspacesError(false)
+              setWorkspacesLoaded(true)
+              if (requestedWs && selectedWsRef.current === requestedWs && !ws.some(w => w.id === requestedWs)) {
+                selectedWsRef.current = null
+                setSelectedWs(null)
+              }
+              const nextWs = JSON.stringify(ws)
+              if (nextWs !== wsKey.current) {
+                wsKey.current = nextWs
+                setWorkspaces(ws)
+              }
+            } catch {
+              setWorkspacesError(true)
+            }
+          }
+        } finally {
+          gate.active = false
+          const waiters = gate.waiters
+          gate.waiters = []
+          for (const w of waiters) w()
+        }
+      })()
+    })
+  }, [api])
+
+  const refreshList = useCallback(async (scope: 'sessions' | 'workspaces' | 'all' = 'all'): Promise<void> => {
+    await Promise.all([
+      ...(scope !== 'workspaces' ? [refreshSessions()] : []),
+      ...(scope !== 'sessions' ? [refreshWorkspaces()] : []),
+    ])
+  }, [refreshSessions, refreshWorkspaces])
 
 	useEffect(() => { void refreshList() }, [refreshList])
 
@@ -729,7 +821,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       title: session?.title || t('session.untitled'),
       body: session?.cwd ? t('notify.doneBodyDir', { cwd: session.cwd }) : t('notify.doneBody'),
     })
-    void refreshList()
+    void refreshList('sessions')
   }, [notifyEnabled, refreshList, t])
 
   const catchUpMissedCompletions = useCallback(() => {
@@ -785,7 +877,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       setSessions(ss => ss.map(s => s.id === id ? { ...s, running: true } : s))
     },
     onSnapshot: (id, detail) => syncActions.current.refreshIndex(id, detail.leafId),
-    onSettled: () => { void syncActions.current.refreshList() },
+    onSettled: () => { void syncActions.current.refreshList('sessions') },
     onError: error => toast.from(error),
   }), [api, store])
   syncRef.current = sync
@@ -828,20 +920,15 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     if (ev.type === 'invalidate') {
       switch (ev.scope) {
         case 'sessions':
-        case 'workspaces':
-          void refreshList().then(() => {
+          void refreshList('sessions').then(() => {
             const id = currentIdRef.current
             if (!id) return
             const info = sessionsRef.current.find(s => s.id === id)
-            if (!info) {
-              sync.select(null)
-              store.reset(null, keepComposer(store.current))
-              setCurrentId(null)
-              setView(v => keepComposer(v))
-              return
-            }
-            if (info.running && !sync.isListening(id)) void listen(id)
+            if (info?.running && !sync.isListening(id)) void listen(id)
           })
+          return
+        case 'workspaces':
+          void refreshList('workspaces')
           return
         case 'extensions':
           void refreshExtensions(true)
@@ -856,6 +943,16 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     }
     const sessionId = ev.sessionId
     if (!sessionId) return
+    if (ev.type === 'question_updated' && ev.question) {
+      const q = ev.question
+      questionListEpoch.current++
+      const nextSessions = sessionsRef.current.map(row => {
+        if (row.id !== sessionId || (row.questionLinks?.find(link => link.questionItemId === q.questionItemId)?.revision ?? 0) > q.revision) return row
+        return { ...row, questionLinks: [...(row.questionLinks ?? []).filter(link => link.questionItemId !== q.questionItemId), ...(q.sourceBranchValid || q.sideSessionId ? [{ questionItemId: q.questionItemId, title: q.title, status: q.status, revision: q.revision, sideSessionId: q.sideSessionId }] : [])] }
+      })
+      sessionsRef.current = nextSessions
+      setSessions(nextSessions)
+    }
     if (ev.type === 'run_aborted') {
       abortedRuns.current.add(sessionId)
       if (sessionId === currentIdRef.current) setView(v => applyEvent(v, ev))
@@ -869,6 +966,9 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     }
     if (sessionId !== currentIdRef.current) return
     switch (ev.type) {
+      case 'question_updated':
+        if (store.sessionId === sessionId) setView(v => ({ ...applyEvent(v.questionsSessionId === sessionId ? v : { ...v, questions: [] }, ev), questionsSessionId: sessionId }))
+        return
       case 'compaction_start':
       case 'compaction_end':
         setView(v => applyEvent(v, ev))
@@ -932,6 +1032,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   }, [catchUpMissedCompletions, refreshExtensions, refreshList, refreshModels, sync])
 
   const openSession = useCallback(async (id: string): Promise<boolean> => {
+    setQuestionTarget(null)
     setMobileSidebarOpen(false)
     history.cancel()
     cancelJump()
@@ -951,6 +1052,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       if (ac.signal.aborted || currentIdRef.current !== id) return false
       const next = loadHistory(detail)
       setView(next)
+      if (detail.questions) setSessions(rows => rows.map(row => row.id === id ? { ...row, questionLinks: detail.questions!.filter(q => q.sourceBranchValid || q.sideSessionId).map(q => ({ questionItemId: q.questionItemId, title: q.title, status: q.status, revision: q.revision, sideSessionId: q.sideSessionId })) } : row))
       sync.select(id)
       setSelectedWs(detail.workspaceId ?? null)
       if (detail.workspaceId) setExpanded(e => ({ ...e, [detail.workspaceId!]: true }))
@@ -1320,7 +1422,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
   const forest = useMemo(() => buildSessionForest(sessions, workspaces), [sessions, workspaces])
 
   const trees = useMemo(() => {
-    const rootsOf = (rows: SessionInfo[]) => rows.filter(session => !forest.parentOf.has(session.id))
+    const rootsOf = (rows: SessionInfo[]) => rows.filter(session => session.purpose !== 'question_side' && !forest.parentOf.has(session.id))
     const used = new Set<string>()
     const groups = workspaces.map(ws => {
       const order = ws.sessionIds?.length
@@ -1331,7 +1433,8 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       return { ws, rows: rootsOf(allRows) }
     })
     const ungrouped = rootsOf(pinnedFirst(sessions.filter(s => !used.has(s.id))))
-    return { groups, ungrouped }
+    const orphanSides = sessions.filter(s => s.purpose === 'question_side' && !forest.parentOf.has(s.id))
+    return { groups, ungrouped, orphanSides }
   }, [byId, forest, sessions, workspaces])
 
   const childrenOf = useCallback((id: string) => orderedChildren(forest, id), [forest])
@@ -1340,10 +1443,26 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
     setExpandedSessions(current => ({ ...current, [id]: !current[id] }))
   }, [])
 
+  const openQuestionFromSidebar = useCallback((sessionId: string, questionItemId: string) => {
+    setMobileSidebarOpen(false)
+    setExpandedSessions(v => ({ ...v, [sessionId]: true }))
+    setTab('conversation')
+    const target = { sessionId, questionItemId }
+    if (currentIdRef.current === sessionId && store.current.questions?.some(q => q.questionItemId === questionItemId)) setQuestionTarget(target)
+    else void openSession(sessionId).then(ok => { if (ok && currentIdRef.current === sessionId) setQuestionTarget(target) })
+  }, [openSession, store])
+
   const openSessionRow = useCallback((id: string) => {
+    const side = byId.get(id)
+    if (side?.purpose === 'question_side' && side.sourceSessionId && side.sourceQuestionItemId && byId.has(side.sourceSessionId)) {
+      openQuestionFromSidebar(side.sourceSessionId, side.sourceQuestionItemId)
+      return
+    }
     if (byId.get(id)?.forkMode === 'tree') setTab('conversation')
+    setMobileSidebarOpen(false)
+    if (currentIdRef.current === id) return
     void openSession(id)
-  }, [byId, openSession])
+  }, [byId, openSession, openQuestionFromSidebar])
 
   const localHits = useMemo(() => {
     const q = filter.trim().toLowerCase()
@@ -1660,7 +1779,13 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             <button type="button" className="icon-btn" data-testid="add-workspace" onClick={openDirectoryFromSidebar} aria-label={t('workspace.add')} title={t('workspace.add')}><IFolder /></button>
           </div>
         )}
-        <div className="session-list" data-testid="session-list" data-ready={listLoaded ? 'true' : undefined}>
+        <div className="session-list" data-testid="session-list" data-ready={listLoaded ? 'true' : undefined} data-workspaces-ready={workspacesLoaded ? 'true' : undefined}>
+          {sidebarWide && !filter.trim() ? <>
+            {workspacesError ? <button type="button" className="show-more" data-testid="workspaces-retry" onClick={() => void refreshList('workspaces')}>{t('workspace.retry')}</button>
+              : !workspacesLoaded ? <div className="cwd-label" role="status" data-testid="workspaces-loading">{t('workspace.loading')}</div> : null}
+            {sessionsError ? <button type="button" className="show-more" data-testid="sessions-retry" onClick={() => void refreshList('sessions')}>{t('session.retry')}</button>
+              : !listLoaded ? <div className="cwd-label" role="status" data-testid="sessions-loading">{t('session.loading')}</div> : null}
+          </> : null}
           {sidebarWide && filter.trim() ? (
             <>
               {mergedHits.map(h => (
@@ -1720,7 +1845,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
                   childrenOf={childrenOf}
                   isExpanded={isSessionExpanded}
                   onToggleExpand={toggleSession}
-                  onOpen={openSessionRow}
+                  onOpen={openSessionRow} onOpenQuestion={openQuestionFromSidebar}
                   onMenu={(e, id) => openMenu('sess', id, e.currentTarget)}
                   menu={menu}
                   menuID={menuID}
@@ -1752,13 +1877,17 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
                 childrenOf={childrenOf}
                 isExpanded={isSessionExpanded}
                 onToggleExpand={toggleSession}
-                onOpen={openSessionRow}
+                onOpen={openSessionRow} onOpenQuestion={openQuestionFromSidebar}
                 onMenu={(e, id) => openMenu('sess', id, e.currentTarget)}
                 menu={menu}
                 menuID={menuID}
               />
             </div>
           ) : null}
+          {sidebarWide && !filter.trim() && trees.orphanSides.length ? <div>
+            <div className="cwd-label">{lang.startsWith('zh') ? '旁聊 · 来源不可用' : 'Side conversations · source unavailable'}</div>
+            <SessionRows rows={trees.orphanSides} depth={0} currentId={currentId} untitled={untitled} childrenOf={childrenOf} isExpanded={isSessionExpanded} onToggleExpand={toggleSession} onOpen={openSessionRow} onOpenQuestion={openQuestionFromSidebar} onMenu={(e, id) => openMenu('sess', id, e.currentTarget)} menu={menu} menuID={menuID} />
+          </div> : null}
         </div>
         <div className="sidebar-foot">
           <button
@@ -1886,6 +2015,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
             ) : (
               <>
                 <div className="chat-stage">
+                {currentId ? <QuestionsRail key={`questions:${currentId}`} questions={sessionQuestions} onOpen={questionItemId => setQuestionTarget({ sessionId: currentId, questionItemId })} /> : null}
                 <div
                   className="scroll"
                   data-testid="chat-scroll"
@@ -1937,7 +2067,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
                 </div>
                 <PerfHud target={scrollRef as React.RefObject<HTMLElement | null>} />
                 <RequestNav
-                  key={currentId ?? 'none'}
+                  key={`requests:${currentId ?? 'none'}`}
                   items={requestItems}
                   activeId={seekingId ?? jumpToId ?? activeRequestId}
                   onJump={jumpToRequest}
@@ -1966,6 +2096,18 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
           </div>
         )}
       </main>
+
+      {selectedQuestion && currentId ? <QuestionDialog
+        key={`${currentId}:${selectedQuestion.questionItemId}`}
+        api={api}
+        sessionId={currentId}
+        question={selectedQuestion}
+        mainBusy={view.busy}
+        onClose={() => setQuestionTarget(null)}
+        onQuestion={updateQuestion}
+        onCreated={() => { setExpandedSessions(v => ({ ...v, [currentId]: true })); void refreshList() }}
+        onRefresh={() => { void recoverOpenTranscript(true); void refreshList() }}
+      /> : null}
 
       {menu ? (
         <div className="menu-mask" onClick={() => closeMenu()}>
@@ -2002,7 +2144,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
               </>
             ) : (
               <>
-                {byId.get(menu.id)?.forkMode !== 'tree' ? (
+                {byId.get(menu.id)?.forkMode !== 'tree' && byId.get(menu.id)?.purpose !== 'question_side' ? (
                   <button type="button" role="menuitem" onClick={() => {
                     const s = byId.get(menu.id)
                     void api.patch(menu.id, { pinned: !s?.pinned }).then(() => refreshList())
@@ -2079,6 +2221,7 @@ function WorkspaceApp({ api, onServerChange }: { api: Client; onServerChange: ()
       ) : null}
 
       {(() => {
+        if (selectedQuestion) return null
         const prompt = (view.extensionUi ?? []).find(u => u.prompt)?.prompt
         const extName = (view.extensionUi ?? []).find(u => u.prompt)?.extension
         if (!prompt || !extName || !currentId) return null

@@ -49,6 +49,7 @@ func TestListCacheInvalidatesOnChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := NewListCache()
+	t.Cleanup(c.Close)
 	s, err := Create(root, cwd, "openai", "model")
 	if err != nil {
 		t.Fatal(err)
@@ -85,6 +86,7 @@ func TestListCachePrunesRemovedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := NewListCache()
+	t.Cleanup(c.Close)
 	s, err := Create(root, cwd, "openai", "model")
 	if err != nil {
 		t.Fatal(err)

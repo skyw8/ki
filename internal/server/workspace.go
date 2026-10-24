@@ -63,7 +63,11 @@ func (s *Server) sessionMapData(id, dir string, header session.Header, cfg sessi
 		"pinned":                cfg.Pinned,
 		"pinnedAt":              cfg.PinnedAt,
 		"timestamp":             header.Timestamp,
-		"metadata":              cfg.Metadata,
+		"metadata":              publicQuestionSideMetadata(cfg.Metadata),
+	}
+	addQuestionSideMetadata(m, cfg.Metadata)
+	if s.agentTasks != nil {
+		_, m["isAgent"] = s.agentTasks.TaskForSession(id)
 	}
 	if rec, ok := s.ws.Match(header.CWD); ok {
 		m["workspaceId"] = rec.ID
@@ -72,7 +76,21 @@ func (s *Server) sessionMapData(id, dir string, header session.Header, cfg sessi
 	return m
 }
 
-func (s *Server) infoMap(info session.Info, activity sessionActivity) map[string]any {
+func (s *Server) sessionWorkspaceIDs(infos []session.Info) map[string]string {
+	ids := make(map[string]string)
+	for _, info := range infos {
+		if _, seen := ids[info.CWD]; seen {
+			continue
+		}
+		ids[info.CWD] = ""
+		if rec, ok := s.ws.Match(info.CWD); ok {
+			ids[info.CWD] = rec.ID
+		}
+	}
+	return ids
+}
+
+func (s *Server) infoMap(info session.Info, activity sessionActivity, workspaceID string) map[string]any {
 	m := map[string]any{
 		"id":                    info.ID,
 		"cwd":                   info.CWD,
@@ -88,10 +106,22 @@ func (s *Server) infoMap(info session.Info, activity sessionActivity) map[string
 		"activeDescendantCount": activity.descendants[info.ID],
 		"pinned":                info.Pinned,
 		"pinnedAt":              info.PinnedAt,
-		"metadata":              info.Metadata,
+		"metadata":              publicQuestionSideMetadata(info.Metadata),
 	}
-	if rec, ok := s.ws.Match(info.CWD); ok {
-		m["workspaceId"] = rec.ID
+	addQuestionSideMetadata(m, info.Metadata)
+	if metadataString(info.Metadata, "purpose") != questionSidePurpose {
+		links := info.QuestionLinks
+		if links == nil {
+			links = []session.QuestionLink{}
+		}
+		m["questionLinks"] = links
+		m["questionLinksLoading"] = info.QuestionLinksLoading
+	}
+	if s.agentTasks != nil {
+		_, m["isAgent"] = s.agentTasks.TaskForSession(info.ID)
+	}
+	if workspaceID != "" {
+		m["workspaceId"] = workspaceID
 	}
 	return m
 }
@@ -365,6 +395,13 @@ func (s *Server) collectSessionTree(infos []session.Info, target session.Info) [
 	byID[target.ID] = target
 	children := make(map[string][]session.Info)
 	for _, info := range infos {
+		if metadataString(info.Metadata, "purpose") == questionSidePurpose {
+			sourceID := metadataString(info.Metadata, "sourceSessionId")
+			if _, ok := byID[sourceID]; ok {
+				children[sourceID] = append(children[sourceID], info)
+			}
+			continue
+		}
 		if info.ParentSessionID == "" || info.ForkMode != session.ForkModeTree {
 			continue
 		}

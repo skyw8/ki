@@ -33,6 +33,7 @@ workspaces、扩展目录，并给后台完成的 session 发系统通知。
 | Patch 预览 | `patch_apply_updated` | `apply_patch` 参数仍在生成时的非执行语法预览；最终执行结果覆盖预览 |
 | 压缩 | `compaction_start`、`compaction_end` | preflight、overflow recovery、threshold、手动 `/compact`，以及 Responses server-side compaction |
 | 队列和控制 | `queue_changed`、`steer_accepted`、`run_aborted` | 队列变化、实时 Inbox 接收和中止 |
+| 异步问题 | `question_requested`、`question_updated` | 已持久化的问题批次及单题状态；不阻塞当前 run |
 | 扩展 UI/状态 | `extension_error`、`extension_notice`、`extension_ui_prompt` | 扩展失败、toast，或 WebUI 确认/选择弹层 |
 | Runtime | `runtime_ready` | session 打开时的扩展视图准备结束；成功或失败都会解锁 session |
 | 仅扩展生命周期 | `agent_settled` | `agent_end` 后 Host 收尾完成；发送给 lifecycle subscriber，不进入普通运行 SSE |
@@ -49,6 +50,18 @@ workspaces、扩展目录，并给后台完成的 session 发系统通知。
 `fromExtension`、cut/token/usage 元数据，overflow 带 `willRetry=true`。
 
 ### 队列与控制事件
+
+`question_requested` 的 `questions[]` 包含稳定的 `questionItemId`、原问题、顺序、revision、
+来源分支和提问时固定的安全快照 entry 引用；私有资源、补充用户正文和配置不通过事件返回。
+`question_updated` 的 `question` 是单题完整公开投影，
+客户端按 ID 和 revision 合并；事件发生前先写 jsonl。普通工具结果仍精确为
+`{"accepted":true}`，不是状态存储协议。
+
+问题事件不代表 assistant 结束或等待用户。`pending`、`answer_queued`、`answered` 和
+`dismissed` 与主 run 状态独立：`answered` 只表示带对应 `questionReply` /
+`clientRequestId` 的 user message 已持久化，不表示模型已读取或采纳。session GET 返回
+独立于 transcript 分页的 `questions`，刷新及 SSE 恢复不依赖工具行是否已经加载。
+旁聊有自己的 session/run/SSE，关闭窗口不取消；任何旁聊回复都不会自动成为主会话答案。
 
 `run_aborted` 的 `reason` / `cancelSource` 记录权威取消入口和诊断客户端。事件先实时发布，
 loop 写完终止输出后再以普通非 message leaf 持久化 `reason` / `source`，因此历史视图能在

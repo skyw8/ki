@@ -443,6 +443,7 @@ func (e Engine) runOnce(ctx context.Context, dir string, args []string, consume 
 	}
 	defer cleanup()
 
+	args = append([]string{"--no-config", "--no-follow"}, args...)
 	cmd := exec.CommandContext(runCtx, rgPath, args...) //nolint:gosec // rgPath is Ki's embedded/system search executable
 	cmd.Dir = dir
 	cmd.Env = processenv.WithProxyEnvironment(processenv.ChildEnvironment())

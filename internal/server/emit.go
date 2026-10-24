@@ -43,6 +43,11 @@ func (p *runEmitter) Emit(ev loop.Event) error {
 		return err
 	}
 	p.buffer(&ev)
+	if ev.Type == loop.MessageEnd && ev.Message != nil && ev.Message.QuestionReply != nil {
+		if q, ok := p.sess.Question(ev.Message.QuestionReply.QuestionItemID); ok {
+			p.s.publishQuestion(p.id, q)
+		}
+	}
 	if p.st.agentTaskID != "" {
 		if err := p.s.agentTasks.ReduceProgress(p.st.agentTaskID, p.st.agentGeneration, projectAgentProgress(ev)); err != nil {
 			return fmt.Errorf("persist agent progress: %w", err)
@@ -134,7 +139,7 @@ func persistCompactionEvent(sess *session.Session, ev *loop.Event) error {
 
 func (p *runEmitter) appendMessage(ev *loop.Event) error {
 	responsesItems := slices.Clone(ev.Message.ResponsesItems)
-	if p.s.ext != nil {
+	if p.s.ext != nil && ev.Message.QuestionReply == nil && !isQuestionSide(p.sess.Config) {
 		rewritten := p.s.ext.ApplyMessageEnd(p.ctx, p.id, *ev.Message)
 		rewritten.ResponsesItems = responsesItems
 		preserveMessageIdentity(*ev.Message, &rewritten)
@@ -168,7 +173,7 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 		}
 	}
 	key := ""
-	if ev.Message.ContextOnly {
+	if ev.Message.ContextOnly || ev.Message.QuestionReply != nil {
 		key = ev.Message.ClientRequestID
 	}
 	if ev.Message.Role == "user" && p.idempotencyKey != "" {
@@ -211,6 +216,7 @@ func (p *runEmitter) appendMessage(ev *loop.Event) error {
 }
 
 func preserveMessageIdentity(original types.Message, rewritten *types.Message) {
+	rewritten.QuestionReply = original.QuestionReply
 	rewritten.ClientRequestID = original.ClientRequestID
 	rewritten.Completion = original.Completion
 	rewritten.Origin = original.Origin
@@ -251,6 +257,9 @@ func (p *runEmitter) publishCompletion(ev loop.Event) {
 }
 
 func (p *runEmitter) notifyExtensions(ev loop.Event) {
+	if isQuestionSide(p.sess.Config) {
+		return
+	}
 	if !ev.Type.Lifecycle() {
 		return
 	}

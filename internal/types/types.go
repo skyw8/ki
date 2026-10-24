@@ -93,7 +93,14 @@ type CompletionIdentity struct {
 	Generation uint64 `json:"generation"`
 }
 
+type QuestionReply struct {
+	QuestionItemID string `json:"questionItemId"`
+	Title          string `json:"title"`
+	Answer         string `json:"answer"`
+}
+
 type Message struct {
+	QuestionReply   *QuestionReply      `json:"questionReply,omitempty"`
 	ContextOnly     bool                `json:"contextOnly,omitempty"`
 	ClientRequestID string              `json:"clientRequestId,omitempty"`
 	Completion      *CompletionIdentity `json:"completion,omitempty"`

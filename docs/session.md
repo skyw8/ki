@@ -69,6 +69,7 @@ found；POSIX 的 rename 不动已打开的描述符，所以这个竞态只在 
 | `context_usage` | `usedTokens`、有效 `contextWindow`、`estimated` |
 | `patch_apply_updated` | 模型生成 patch 时的结构化非执行预览 |
 | `compaction_start` / `compaction_end` | 压缩生命周期 |
+| `question_requested` / `question_updated` | 异步问题事实和修订，显式记录来源分支；不进入 provider context、不移动 active leaf |
 | `extension_error` 等 | sideband |
 
 entry id 为无连字符的 32 位 hex UUIDv7。`request_header` 的 `tools[]` 含 function/custom
@@ -80,6 +81,26 @@ toolResult message 可带结构化 `details`，以及工具完成时间 `timesta
 调用开始到完成的 `durationMs`。它随 jsonl 落盘并通过现有 session API/SSE 提供给 WebUI；
 历史 WebUI 可由这两个字段恢复工具开始时间。provider 回放只使用模型可见的 `content`，
 不会把 diff、patch、计时或任务诊断元数据送回模型。
+
+### 异步问题与旁聊
+
+`question_requested` 按批持久保存公开问题列表和一份私有 `snapshot`，冻结完整协议前缀、
+provider/model/thinking、规范化 CWD、prompt 资源及必要的补充用户内容。后续
+`question_updated` 只保存公开修订，投影继承原始快照；不会按题数或修订次数复制资源。
+sideband 写入在打开文件前校验编码行不超过 64 MiB，拒绝不会留下不可扫描的记录。
+
+问题状态为 `pending`、`dismissed`、`answer_queued`、`answered`。接受答案先记录
+`answer_queued`，随后经 Inbox 或新轮次投递；下次明确启动恢复排队答案，停止不会自行
+重启。匹配来源祖先、question 和 submission 身份的 typed user entry 才派生 `answered`。
+回执全局首次提交有效，切换分支不重投历史答案；`sourceBranchValid` 表示问题来源是否在
+当前分支，`answerBranchValid` 表示已投递答案是否在当前分支。
+
+只读旁聊用 `purpose=question_side`、`sourceSessionId`、`sourceQuestionItemId` 和
+`sideBoundaryEntryId` 关联来源；首次旁问时才创建，固定提问时 CWD 与资源；provider/model/thinking 跟随来源主会话，
+空闲旁聊在主会话切换后同步，忙碌旁聊在下一轮读取来源最新模型。初始化阶段
+保存来源身份以便崩溃重试找回已有子会话；补充消息的附件复制并改写到旁聊目录。
+GET/SSE 只显示 boundary 后历史，模型仍接收安全继承背景。公开 metadata 和列表移除
+资源与内部路径，历史索引仅缓存公开问题字段；私有快照只在需要时按偏移读取请求事实。
 
 ### 分支
 
@@ -129,8 +150,9 @@ slim/index/compact/trace、精确 entry API 和 CLI full view 只显示固定的
 `pinned` / `pinnedAt` / `metadata`。
 
 fork 还会写入 `cacheKey`：子会话继承 fork 源的缓存亲和身份（源自身的 `cacheKey`，否则源
-ID），使首轮能直接命中父会话已写入的前缀缓存；它只影响 provider 缓存路由，session/thread
-身份仍是子会话自己的 ID。`CreateChild` 不复制任何 transcript，因此也不继承该字段。
+ID），尽量复用父会话已写入的前缀缓存；它只影响 provider 缓存路由，不保证命中。
+只读旁聊的 system/tools 变化、附件路径重写或 provider 的缓存策略都可能导致 miss。
+session/thread 身份仍是子会话自己的 ID。`CreateChild` 不复制任何 transcript，因此也不继承该字段。
 
 内置 tools、Skills、extensions 启用在 `{KI_HOME}/toggles.json`，不在 session 里。
 
@@ -193,7 +215,19 @@ live 与 queued 副本在实际写入 parent 时查询同一个 agent.Controller
 
 server 用 `session.ListCache` 按 `events.jsonl` / `config.json` 的 size+mtime 复用行；文件
 仍是唯一事实来源，外部进程写入的变更下次调用即生效。`GET /v1/sessions` 的响应按渲染结果
-打 `ETag`，命中 `If-None-Match` 时返回 304。
+打 `ETag`，命中 `If-None-Match` 时返回 304。列表读取不调用 `ReadTranscript`，不进行 token
+估算，也不占用聊天 transcript 缓存。全局锁只管理行索引；读盘与单会话重建在独立锁下进行。
+
+公开 `questionLinks`（questionItemId/title/status/revision/sideSessionId）从 session 目录的
+`question-list.json` 派生缓存读取，缓存仅保存父子关系、问题导航事实、回答校验摘要和已读
+偏移，不保存消息正文、回答原文、冻结资源或补充用户输入。缓存带 `version: 1`，通过
+`internal/state` 原子写入；缺失或损坏时在后台重建，更高版本不覆盖。首次重建和追加追赶
+期间保留已知入口并返回 `questionLinksLoading: true`，完成后通过现有 sessions invalidation
+通知刷新。两个后台 worker 限制并发，停止服务时取消并等待任务结束。
+
+追加只扫描新字节；size/mtime 与末尾校验摘要保护读取位置，截断或同大小重写触发重建。
+切换分支按当前 leaf 在缓存关系中投影，无需重读历史。普通浅扫描 `List` 保持原行为；问题
+修订和加载状态也参与响应 ETag。会话删除与缓存提交共享文件 gate，禁止缓存重建已删除目录。
 
 ### 目录索引
 

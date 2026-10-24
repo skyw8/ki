@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"ki/internal/session"
 	"ki/internal/telemetry"
 	toolapi "ki/internal/tool"
 	"ki/internal/tool/output"
@@ -48,6 +49,8 @@ const (
 	ExtensionUIPrompt   EventType = "extension_ui_prompt"
 	AgentSettled        EventType = "agent_settled"
 	RuntimeReady        EventType = "runtime_ready"
+	QuestionRequested   EventType = "question_requested"
+	QuestionUpdated     EventType = "question_updated"
 )
 
 func (t EventType) Lifecycle() bool {
@@ -56,66 +59,69 @@ func (t EventType) Lifecycle() bool {
 		RequestHeader, MessageStart, MessageUpdate, MessageEnd,
 		ToolExecutionStart, ToolExecutionEnd, CompactionStart, CompactionEnd,
 		QueueChanged, SteerAccepted, RunAborted,
-		ExtensionNotice, ExtensionUIPrompt, AgentSettled, RuntimeReady:
+		ExtensionNotice, ExtensionUIPrompt, AgentSettled, RuntimeReady,
+		QuestionRequested, QuestionUpdated:
 		return true
 	}
 	return false
 }
 
 type Event struct {
-	Process               any               `json:"process,omitempty"`
-	Agent                 any               `json:"agent,omitempty"`
-	Type                  EventType         `json:"type"`
-	EntryID               string            `json:"entryId,omitempty"`
-	LifecycleEntryID      string            `json:"lifecycleEntryId,omitempty"`
-	ParentID              *string           `json:"parentId,omitempty"`
-	Timestamp             int64             `json:"timestamp,omitzero"`
-	DurationMs            int64             `json:"durationMs"`
-	Message               *types.Message    `json:"message,omitempty"`
-	MessagePatch          *MessagePatch     `json:"messagePatch,omitempty"`
-	MessageStream         int64             `json:"messageStream,omitempty"`
-	Messages              []types.Message   `json:"messages,omitempty"`
-	ToolResults           []types.Message   `json:"toolResults,omitempty"`
-	AssistantMessageEvent *AssistantDelta   `json:"assistantMessageEvent,omitempty"`
-	ToolCallID            string            `json:"toolCallId,omitempty"`
-	ToolName              string            `json:"toolName,omitempty"`
-	RequestedToolName     string            `json:"requestedToolName,omitempty"`
-	Args                  map[string]any    `json:"args,omitempty"`
-	PartialResult         any               `json:"partialResult,omitempty"`
-	Result                any               `json:"result,omitempty"`
-	IsError               bool              `json:"isError,omitzero"`
-	System                string            `json:"system,omitempty"`
-	Tools                 []toolapi.Spec    `json:"tools,omitempty"`
-	Reason                string            `json:"reason,omitempty"`
-	CancelSource          string            `json:"cancelSource,omitempty"`
-	OK                    bool              `json:"ok,omitzero"`
-	WillRetry             bool              `json:"willRetry,omitzero"`
-	Strategy              string            `json:"strategy,omitempty"`
-	Status                string            `json:"status,omitempty"`
-	FromExtension         bool              `json:"fromExtension,omitzero"`
-	FirstKeptEntryID      string            `json:"firstKeptEntryId,omitempty"`
-	TokensBefore          int               `json:"tokensBefore,omitzero"`
-	Usage                 *types.Usage      `json:"usage,omitempty"`
-	CacheMiss             *types.CacheMiss  `json:"cacheMiss,omitempty"`
-	Provider              string            `json:"provider,omitempty"`
-	Model                 string            `json:"model,omitempty"`
-	CatalogVersion        int               `json:"catalogVersion,omitzero"`
-	UsedTokens            int               `json:"usedTokens,omitzero"`
-	ContextWindow         int               `json:"contextWindow,omitzero"`
-	Estimated             bool              `json:"estimated,omitzero"`
-	Server                string            `json:"server,omitempty"`
-	MessageText           string            `json:"messageText,omitempty"`
-	ReloadRequired        bool              `json:"reloadRequired,omitzero"`
-	Options               []string          `json:"options,omitempty"`
-	RunID                 string            `json:"runId,omitempty"`
-	External              map[string]string `json:"external,omitempty"`
-	ParentCallID          string            `json:"parentCallId,omitempty"`
-	CellID                string            `json:"cellId,omitempty"`
-	Seq                   int64             `json:"seq,omitempty"`
-	PromptUnchanged       bool              `json:"promptUnchanged,omitempty"`
-	Blank                 bool              `json:"-"`
-	BufferedAt            time.Time         `json:"-"`
-	BufferedBytes         int               `json:"-"`
+	Question              *session.Question  `json:"question,omitempty"`
+	Questions             []session.Question `json:"questions,omitempty"`
+	Process               any                `json:"process,omitempty"`
+	Agent                 any                `json:"agent,omitempty"`
+	Type                  EventType          `json:"type"`
+	EntryID               string             `json:"entryId,omitempty"`
+	LifecycleEntryID      string             `json:"lifecycleEntryId,omitempty"`
+	ParentID              *string            `json:"parentId,omitempty"`
+	Timestamp             int64              `json:"timestamp,omitzero"`
+	DurationMs            int64              `json:"durationMs"`
+	Message               *types.Message     `json:"message,omitempty"`
+	MessagePatch          *MessagePatch      `json:"messagePatch,omitempty"`
+	MessageStream         int64              `json:"messageStream,omitempty"`
+	Messages              []types.Message    `json:"messages,omitempty"`
+	ToolResults           []types.Message    `json:"toolResults,omitempty"`
+	AssistantMessageEvent *AssistantDelta    `json:"assistantMessageEvent,omitempty"`
+	ToolCallID            string             `json:"toolCallId,omitempty"`
+	ToolName              string             `json:"toolName,omitempty"`
+	RequestedToolName     string             `json:"requestedToolName,omitempty"`
+	Args                  map[string]any     `json:"args,omitempty"`
+	PartialResult         any                `json:"partialResult,omitempty"`
+	Result                any                `json:"result,omitempty"`
+	IsError               bool               `json:"isError,omitzero"`
+	System                string             `json:"system,omitempty"`
+	Tools                 []toolapi.Spec     `json:"tools,omitempty"`
+	Reason                string             `json:"reason,omitempty"`
+	CancelSource          string             `json:"cancelSource,omitempty"`
+	OK                    bool               `json:"ok,omitzero"`
+	WillRetry             bool               `json:"willRetry,omitzero"`
+	Strategy              string             `json:"strategy,omitempty"`
+	Status                string             `json:"status,omitempty"`
+	FromExtension         bool               `json:"fromExtension,omitzero"`
+	FirstKeptEntryID      string             `json:"firstKeptEntryId,omitempty"`
+	TokensBefore          int                `json:"tokensBefore,omitzero"`
+	Usage                 *types.Usage       `json:"usage,omitempty"`
+	CacheMiss             *types.CacheMiss   `json:"cacheMiss,omitempty"`
+	Provider              string             `json:"provider,omitempty"`
+	Model                 string             `json:"model,omitempty"`
+	CatalogVersion        int                `json:"catalogVersion,omitzero"`
+	UsedTokens            int                `json:"usedTokens,omitzero"`
+	ContextWindow         int                `json:"contextWindow,omitzero"`
+	Estimated             bool               `json:"estimated,omitzero"`
+	Server                string             `json:"server,omitempty"`
+	MessageText           string             `json:"messageText,omitempty"`
+	ReloadRequired        bool               `json:"reloadRequired,omitzero"`
+	Options               []string           `json:"options,omitempty"`
+	RunID                 string             `json:"runId,omitempty"`
+	External              map[string]string  `json:"external,omitempty"`
+	ParentCallID          string             `json:"parentCallId,omitempty"`
+	CellID                string             `json:"cellId,omitempty"`
+	Seq                   int64              `json:"seq,omitempty"`
+	PromptUnchanged       bool               `json:"promptUnchanged,omitempty"`
+	Blank                 bool               `json:"-"`
+	BufferedAt            time.Time          `json:"-"`
+	BufferedBytes         int                `json:"-"`
 }
 
 type AssistantDelta struct {
@@ -557,6 +563,7 @@ func stripExternal(msgs []types.Message) []types.Message {
 		msg.External = nil
 		msg.ClientRequestID = ""
 		msg.Completion = nil
+		msg.QuestionReply = nil
 		msg.ContextOnly = false
 		out[i] = msg
 	}

@@ -8,6 +8,8 @@ import (
 	"ki/internal/session"
 	"ki/internal/skills"
 	toolapi "ki/internal/tool"
+	"ki/internal/tool/builtin/catalog"
+	questiontools "ki/internal/tool/builtin/question"
 )
 
 type Input struct {
@@ -58,12 +60,16 @@ func Build(in Input) string {
 	}
 	b.WriteString("Available tools:\n")
 	hasRead := false
+	hasQuestions := false
 	if len(in.Tools) == 0 {
 		b.WriteString("(none)\n")
 	} else {
 		for _, t := range in.Tools {
 			if toolapi.Equal("read", t.Name()) {
 				hasRead = true
+			}
+			if toolapi.Equal(catalog.RequestUserInputAsync, t.Name()) {
+				hasQuestions = true
 			}
 			snip := t.Snippet()
 			if snip == "" {
@@ -74,6 +80,10 @@ func Build(in Input) string {
 	}
 	b.WriteString("\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\n")
 	b.WriteString("Guidelines:\n- Be concise in your responses\n- Show file paths clearly when working with files\n")
+	if hasQuestions {
+		b.WriteString("\n")
+		b.WriteString(questiontools.Guidance)
+	}
 	for _, block := range appendBlocks(in.Resources) {
 		b.WriteString("\n\n")
 		b.WriteString(block)

@@ -283,6 +283,9 @@ func (s *Server) preserveRunInbox(id string, st *runState) {
 		return
 	}
 	for _, message := range pending {
+		if message.QuestionReply != nil {
+			continue
+		}
 		if message.ContextOnly {
 			if _, err := session.EnqueueContext(dir, session.ContextQueuedItem{Message: message, IdempotencyKey: message.ClientRequestID}); err != nil {
 				slog.Warn("preserve context mailbox", "session_id", id, "err", err)

@@ -1,4 +1,5 @@
 import { mergeAgentSnapshots, mergeProcessSnapshots } from './runtime'
+import { reconcileQuestions } from '../features/questions/model'
 import type { CacheMiss, CompactTurn, ChatNode, Content, Entry, IndexEntry, LoopEvent, Message, Meta, ModelInfo, PromptChange, PromptSnapshot, RequestView, SessionDetail, ToolSchema, TrajRecord, Usage, ViewState } from '../api/types'
 import { entryTurns, groupTurns, isHumanEntry, isHumanPrompt, isTransientUserId, reconcileUserNodes, userMessageIdentity } from './transcriptIdentity'
 import type { TurnId } from './transcriptIdentity'
@@ -114,6 +115,7 @@ export function emptyView(): ViewState {
 }
 
 export function messageText(m?: Message | null): string {
+  if (m?.questionReply) return m.questionReply.answer
   if (!m?.content) return ''
   return m.content
     .filter(c => c.type === 'text' || c.type === '')
@@ -171,6 +173,8 @@ function tsMs(m?: Message, fallback?: string | number): number | undefined {
 
 export function loadHistory(detail: SessionDetail): ViewState {
   const s = emptyView()
+  s.questionsSessionId = detail.id
+  s.questions = detail.questions ?? []
   s.model = detail.model ?? ''
   s.provider = detail.provider ?? ''
   s.cwd = detail.cwd ?? ''
@@ -214,6 +218,10 @@ function applyCursor(next: ViewState, detail: SessionDetail) {
 export function applyTail(s: ViewState, detail: SessionDetail, expectedLiveRevision = s.liveRevision): ViewState {
   const next = { ...s }
   const stale = expectedLiveRevision !== s.liveRevision
+  if (detail.questions) {
+    next.questionsSessionId = detail.id
+    next.questions = reconcileQuestions(s.questionsSessionId === detail.id ? s.questions ?? [] : [], detail.questions, stale)
+  }
   next.busy = stale ? s.busy : !!detail.running
   if (!stale) {
     next.title = detail.title ?? next.title
@@ -605,6 +613,8 @@ export function compactBoundary(s: ViewState, detail: SessionDetail, source: Pic
 export function applyRuntimeCatalog(s: ViewState, detail: SessionDetail): ViewState {
   return {
     ...s,
+    questionsSessionId: detail.questions ? detail.id : s.questionsSessionId,
+    questions: detail.questions ? reconcileQuestions(s.questionsSessionId === detail.id ? s.questions ?? [] : [], detail.questions, true) : s.questions,
     runtimeReady: detail.runtime?.ready !== false,
     processes: detail.processes ? mergeProcessSnapshots(s.processes ?? [], detail.processes) : s.processes,
     agents: detail.agents ? mergeAgentSnapshots(s.agents ?? [], detail.agents) : s.agents,
@@ -1002,7 +1012,7 @@ function applyMessage(s: ViewState, m: Message, id: string, stamp?: string | num
       } else s.turn += 1
       s.turnId = id
     }
-    if (withNode) s.nodes.push({ kind: 'user', id, turnId: s.turnId, parentId, text, content: m.content ?? [], ts: tsMs(m, stamp), origin: m.origin, clientRequestId: m.clientRequestId, completion: m.completion, external: m.external, truncated })
+    if (withNode) s.nodes.push({ kind: 'user', id, turnId: s.turnId, parentId, text, content: m.content ?? [], ts: tsMs(m, stamp), origin: m.origin, clientRequestId: m.clientRequestId, completion: m.completion, external: m.external, truncated, questionReply: m.questionReply })
     s.records.push({
       id,
       turnId: s.turnId,
@@ -1323,6 +1333,13 @@ export function applyEvent(s: ViewState, ev: LoopEvent): ViewState {
     return next
   }
   switch (ev.type) {
+    case 'question_updated':
+      if (ev.question) {
+        const prior = next.questions ?? []
+        const old = prior.find(q => q.questionItemId === ev.question!.questionItemId)
+        if (!old || old.revision <= ev.question.revision) next.questions = [...prior.filter(q => q.questionItemId !== ev.question!.questionItemId), ev.question]
+      }
+      break
 	case 'context_usage':
 		next.contextUsage = { usedTokens: ev.usedTokens ?? 0, contextWindow: ev.contextWindow ?? 0, estimated: !!ev.estimated }
 		break
@@ -1691,6 +1708,7 @@ function upsertUser(s: ViewState, message: Message, entryId?: string, parentId?:
   const turnId = previous.turnId === previous.id ? id : previous.turnId
   s.nodes[at] = {
     ...previous, id, turnId, parentId: parentId ?? previous.parentId,
+    questionReply: message.questionReply ?? previous.questionReply,
     content: message.content ?? previous.content, text: messageText(message),
     ts: message.timestamp ?? previous.ts, origin: message.origin ?? previous.origin,
     clientRequestId: message.clientRequestId ?? previous.clientRequestId, completion: message.completion ?? previous.completion, external: message.external ?? previous.external,

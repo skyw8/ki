@@ -10,7 +10,19 @@ import (
 	"ki/internal/skills"
 	toolapi "ki/internal/tool"
 	"ki/internal/tool/builtin"
+	questiontools "ki/internal/tool/builtin/question"
 )
+
+func TestBuildQuestionGuidanceOnlyWhenAvailable(t *testing.T) {
+	withQuestion := Build(Input{Tools: []toolapi.Tool{questiontools.New(nil)}})
+	if !strings.Contains(withQuestion, questiontools.Guidance) {
+		t.Fatal("async question guidance missing")
+	}
+	withoutQuestion := Build(Input{})
+	if strings.Contains(withoutQuestion, questiontools.Guidance) {
+		t.Fatal("async question guidance shown without capability")
+	}
+}
 
 func TestBuildLayers(t *testing.T) {
 	home := t.TempDir()

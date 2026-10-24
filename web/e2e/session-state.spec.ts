@@ -245,6 +245,7 @@ for (const action of ['queued-send', 'queued-steer'] as const) {
       test(`cannot mutate ${target}`, async ({ page }) => {
         const a = await createSession(page, 'source')
         const b = target === 'different-session' ? await createSession(page, 'destination') : a
+        const away = target === 'same-ID-reopened-branch' ? await createSession(page, 'navigation-away') : undefined
         const original = snapshot(a, 'Original branch', true)
         if (action === 'queued-steer') {
           original.queued = [{ id: 'queued-original', clientRequestId: 'queued-request-original',
@@ -255,7 +256,7 @@ for (const action of ['queued-send', 'queued-steer'] as const) {
           destination.entries = [user(`${a.id}-selected-branch`, 'Destination branch is idle')]
           destination.oldestId = destination.leafId = destination.entries[0].id
         }
-        await install(page, b.id === a.id ? [a] : [a, b], b.id === a.id ? [original] : [original, destination])
+        await install(page, away ? [a, away] : [a, b], away ? [original, snapshot(away, 'Navigation away')] : [original, destination])
         await page.goto('/')
         await open(page, a)
         await expect(page.getByTestId('composer-stop')).toBeVisible()
@@ -271,6 +272,7 @@ for (const action of ['queued-send', 'queued-steer'] as const) {
         await delayed.started()
         expect(await page.evaluate(() => window.sessionStateFixture.prompts[0].clientRequestId)).toBeTruthy()
         await page.evaluate(detail => { window.sessionStateFixture.details[detail.id] = detail }, destination)
+        if (away) await open(page, away)
         await open(page, b)
         await expect(page.getByTestId('user-bubble')).toHaveText('Destination branch is idle')
         const count = (await runStreams(page, b.id)).length
@@ -404,10 +406,11 @@ test.describe('reader authority', () => {
     expect(await page.evaluate(() => window.sessionStateFixture.prompts)).toEqual([])
   })
 
-  test('same-ID opening revokes the ACK for discarded partial state and replays it', async ({ page }) => {
+  test('same-session selection preserves the reader, and returning revokes discarded partial-state ACKs', async ({ page }) => {
     const session = await createSession(page, 'replayed-partial')
+    const away = await createSession(page, 'reader-navigation-away')
     const initial = snapshot(session, 'One durable human input', true)
-    await install(page, [session], [initial])
+    await install(page, [session, away], [initial, snapshot(away, 'Another session')])
     await page.goto('/')
     await open(page, session)
     await expect.poll(() => runStreams(page, session.id).then(streams => streams.length)).toBe(1)
@@ -421,6 +424,10 @@ test.describe('reader authority', () => {
     await page.evaluate(() => window.dispatchEvent(new Event('online')))
     await expect.poll(() => runStreams(page, session.id).then(streams => streams.length)).toBe(2)
     expect((await runStreams(page, session.id))[1].cursor).toBe('same-active-run:10')
+    await open(page, session)
+    expect((await runStreams(page, session.id)).length).toBe(2)
+    await expect(page.getByTestId('assistant-message')).toHaveText('Retained partial from a stalled provider')
+    await open(page, away)
     await open(page, session)
     await expect.poll(() => runStreams(page, session.id).then(streams => streams.length)).toBe(3)
     const streams = await runStreams(page, session.id)

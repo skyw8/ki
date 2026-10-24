@@ -19,6 +19,7 @@
 | `extensions/deep-web-search/cache.json` | Go sidecar | 1 | best-effort：空缓存，绝不覆盖 |
 | `extensions/telegram-bot/state.json` | Go sidecar | 1 | sidecar 初始化报错，绝不覆盖 |
 | `goal/<sessionId>.json` | Go sidecar | 1 | best-effort：不恢复 goal，绝不覆盖 |
+| session `question-list.json` | `internal/session` | 1 | best-effort：后台重建，绝不覆盖更高版本 |
 | session `agent.json` | `internal/agent` | 3 | 恢复该任务失败并记录 warning，绝不覆盖 |
 | session `queue.json` / `ext-queue.json` / `context-queue.json` | `internal/session` | 1 | 队列操作返回错误，绝不覆盖 |
 
@@ -91,7 +92,7 @@ v3 移除 `code_mode` 字段，v2 → v3 迁移删除旧模式覆盖并保留其
 
 v3 之后新增字段不提升 schema 版本：
 
-- `message.contextWindow`：Settings → Message 的上下文窗口硬上限，缺省 5,000,000；
+- `message.contextWindow`：Settings → Message 的上下文窗口硬上限，缺省 500,000；
 - `mcp.disabled`：Settings → MCP 的全局服务器禁用名单，比较原始服务器名，区分大小写，不做
   工具名称规范化。
 

@@ -97,6 +97,7 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var profile builtin.Profile
+	var sessionView *session.Session
 	if sessionID != "" {
 		sess, err := s.open(sessionID)
 		if err != nil {
@@ -104,6 +105,7 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer func() { _ = sess.Close() }()
+		sessionView = sess
 		cwd = sess.Header.CWD
 		_, info, ok := s.registry.FindModel(sess.Config.Provider, sess.Config.Model)
 		if !ok {
@@ -121,12 +123,27 @@ func (s *Server) getTools(w http.ResponseWriter, r *http.Request) {
 		AgentParentSessionID: sessionID, Shells: s.shells, Mutations: s.mutations,
 	}
 	active := toolSet.Build(profile)
+	if sessionView != nil {
+		active = restrictQuestionSideTools(sessionView, active)
+	}
 	available := make(map[string]bool, len(active))
 	for _, tool := range active {
 		available[tool.Name()] = true
 	}
+	available[catalog.RequestUserInputAsync] = sessionView == nil || s.questionEligible(sessionView)
 	builtins := toolSet.Catalog(profile)
 	tg := toggles.Load(s.cfg.Home)
+	if sessionView != nil && isQuestionSide(sessionView.Config) {
+		items := make([]map[string]any, 0, len(builtins))
+		for _, tool := range builtins {
+			items = append(items, map[string]any{
+				"name": tool.Name(), "description": tool.Description(), "source": "builtin",
+				"enabled": tg.Tools.Allowed(tool.Name()), "available": available[tool.Name()],
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "mcp": []any{}})
+		return
+	}
 	mcpSnapshot, err := s.resolveMCP(cwd)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -570,7 +587,7 @@ func (s *Server) release(id string, st *runState) {
 	st.wait.Broadcast()
 	st.mu.Unlock()
 	s.retainReplay(id, st)
-	if s.ext != nil {
+	if s.ext != nil && !s.isQuestionSideSession(id) {
 		s.ext.OnEvent(context.Background(), id, extension.RedactEvent(loop.Event{Type: loop.AgentSettled, RunID: runID, External: external}, id))
 	}
 	s.flushSettled(id)

@@ -10,14 +10,27 @@ import (
 )
 
 type ListCache struct {
-	mu   sync.Mutex
-	rows map[string]cachedInfo
+	mu       sync.Mutex
+	rows     map[string]*cachedInfo
+	workers  chan struct{}
+	onChange func()
+	closed   bool
+	stop     chan struct{}
+	wg       sync.WaitGroup
 }
 
 type cachedInfo struct {
-	info   Info
-	jsonl  fileStamp
-	config fileStamp
+	mu           sync.Mutex
+	info         Info
+	jsonl        fileStamp
+	config       fileStamp
+	loaded       bool
+	leaf         string
+	linksSummary *questionListSummary
+	linksLeaf    string
+	links        []QuestionLink
+	summary      *questionListSummary
+	building     bool
 }
 
 type fileStamp struct {
@@ -26,40 +39,23 @@ type fileStamp struct {
 }
 
 func NewListCache() *ListCache {
-	return &ListCache{rows: map[string]cachedInfo{}}
+	return &ListCache{rows: map[string]*cachedInfo{}, workers: make(chan struct{}, 2), stop: make(chan struct{})}
+}
+
+func (c *ListCache) SetChangeHandler(handler func()) {
+	c.mu.Lock()
+	c.onChange = handler
+	c.mu.Unlock()
 }
 
 func (c *ListCache) List(root string) ([]Info, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.rows == nil {
-		c.rows = map[string]cachedInfo{}
-	}
-	seen := make(map[string]struct{}, len(c.rows))
+	seen := map[string]bool{}
 	var out []Info
 	err := walkSessionDirs(root, func(dir string) bool {
-		seen[dir] = struct{}{}
-		jsonl, err := stampFile(filepath.Join(dir, "events.jsonl"))
-		if err != nil {
-			delete(c.rows, dir)
-			return true
+		seen[dir] = true
+		if info, err := c.Row(dir); err == nil {
+			out = append(out, info)
 		}
-		config, err := stampFile(filepath.Join(dir, "config.json"))
-		if err != nil {
-			delete(c.rows, dir)
-			return true
-		}
-		if row, ok := c.rows[dir]; ok && row.jsonl == jsonl && row.config == config {
-			out = append(out, row.info)
-			return true
-		}
-		info, err := liteInfo(dir)
-		if err != nil {
-			delete(c.rows, dir)
-			return true
-		}
-		c.rows[dir] = cachedInfo{info: info, jsonl: jsonl, config: config}
-		out = append(out, info)
 		return true
 	})
 	if err != nil {
@@ -68,41 +64,129 @@ func (c *ListCache) List(root string) ([]Info, error) {
 		}
 		return nil, err
 	}
+	c.mu.Lock()
 	for dir := range c.rows {
-		if _, ok := seen[dir]; !ok {
+		if filepath.Dir(filepath.Dir(dir)) == filepath.Clean(root) && !seen[dir] {
 			delete(c.rows, dir)
 		}
 	}
+	c.mu.Unlock()
 	slices.SortFunc(out, func(a, b Info) int { return cmp.Compare(b.Timestamp, a.Timestamp) })
 	return out, nil
 }
 
-func (c *ListCache) Row(dir string) (Info, error) {
+func (c *ListCache) row(dir string) *cachedInfo {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.rows == nil {
-		c.rows = map[string]cachedInfo{}
+		c.rows = map[string]*cachedInfo{}
 	}
+	if c.workers == nil {
+		c.workers = make(chan struct{}, 2)
+	}
+	if c.stop == nil {
+		c.stop = make(chan struct{})
+	}
+	row := c.rows[dir]
+	if row == nil {
+		row = &cachedInfo{}
+		c.rows[dir] = row
+	}
+	return row
+}
+
+func (c *ListCache) Row(dir string) (Info, error) {
+	dir = filepath.Clean(dir)
+	row := c.row(dir)
+	row.mu.Lock()
+	defer row.mu.Unlock()
 	jsonl, err := stampFile(filepath.Join(dir, "events.jsonl"))
 	if err != nil {
-		delete(c.rows, dir)
 		return Info{}, err
 	}
 	config, err := stampFile(filepath.Join(dir, "config.json"))
 	if err != nil {
-		delete(c.rows, dir)
 		return Info{}, err
 	}
-	if row, ok := c.rows[dir]; ok && row.jsonl == jsonl && row.config == config {
-		return row.info, nil
+	if !row.loaded || row.jsonl != jsonl || row.config != config {
+		info, err := liteInfo(dir)
+		if err != nil {
+			return Info{}, err
+		}
+		cfg, err := ReadConfig(dir)
+		if err != nil {
+			return Info{}, err
+		}
+		row.leaf = cfg.ActiveLeafID
+		row.info, row.jsonl, row.config, row.loaded = info, jsonl, config, true
 	}
-	info, err := liteInfo(dir)
-	if err != nil {
-		delete(c.rows, dir)
-		return Info{}, err
+	info := row.info
+	if info.Metadata["purpose"] == "question_side" {
+		return info, nil
 	}
-	c.rows[dir] = cachedInfo{info: info, jsonl: jsonl, config: config}
+	if row.summary == nil {
+		row.summary = readQuestionListSummary(dir)
+	}
+	if row.summary != nil {
+		if row.linksSummary != row.summary || row.linksLeaf != row.leaf {
+			row.links = row.summary.links(row.leaf)
+			row.linksSummary, row.linksLeaf = row.summary, row.leaf
+		}
+		info.QuestionLinks = row.links
+	}
+	info.QuestionLinksLoading = row.summary == nil || !row.summary.matches(jsonl)
+	if info.QuestionLinksLoading && !row.building {
+		row.building = true
+		c.mu.Lock()
+		if !c.closed {
+			c.wg.Add(1)
+			go c.buildQuestions(dir, row)
+		} else {
+			row.building = false
+		}
+		c.mu.Unlock()
+	}
 	return info, nil
+}
+
+func (c *ListCache) buildQuestions(dir string, row *cachedInfo) {
+	defer c.wg.Done()
+	select {
+	case c.workers <- struct{}{}:
+	case <-c.stop:
+		return
+	}
+	defer func() { <-c.workers }()
+	row.mu.Lock()
+	prior := row.summary
+	row.mu.Unlock()
+	next, err := buildQuestionListSummary(dir, prior, c.stop)
+	row.mu.Lock()
+	row.building = false
+	if err == nil {
+		row.summary = next
+	}
+	row.mu.Unlock()
+	if err == nil {
+		c.mu.Lock()
+		handler := c.onChange
+		c.mu.Unlock()
+		if handler != nil {
+			handler()
+		}
+	}
+}
+
+func (c *ListCache) Close() {
+	c.mu.Lock()
+	if !c.closed {
+		c.closed = true
+		if c.stop != nil {
+			close(c.stop)
+		}
+	}
+	c.mu.Unlock()
+	c.wg.Wait()
 }
 
 func stampFile(path string) (fileStamp, error) {

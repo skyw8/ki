@@ -17,7 +17,7 @@ const BusySteer = "steer"
 
 const BusyQueue = "queue"
 
-const DefaultContextWindow = 5_000_000
+const DefaultContextWindow = 500_000
 
 type Message struct {
 	Busy          string `json:"busy,omitempty"`

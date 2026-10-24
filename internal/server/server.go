@@ -143,27 +143,28 @@ const (
 )
 
 type runState struct {
-	agentTaskID     string
-	agentGeneration uint64
-	inputMetadata   types.Message
-	cancel          context.CancelFunc
-	runID           string
-	external        map[string]string
-	cancelReason    string
-	cancelSource    string
-	mu              sync.Mutex
-	evs             []*loop.Event
-	wait            *sync.Cond
-	done            chan struct{}
-	released        chan struct{}
-	err             error
-	inbox           *loop.Inbox
-	steerClosed     bool
-	seq             int64
-	promptKey       string
-	pending         []int
-	partial         int
-	readers         map[*runReader]struct{}
+	agentTaskID         string
+	agentGeneration     uint64
+	inputMetadata       types.Message
+	cancel              context.CancelFunc
+	runID               string
+	external            map[string]string
+	cancelReason        string
+	cancelSource        string
+	mu                  sync.Mutex
+	evs                 []*loop.Event
+	wait                *sync.Cond
+	done                chan struct{}
+	released            chan struct{}
+	err                 error
+	inbox               *loop.Inbox
+	questionSubmissions map[string]bool
+	steerClosed         bool
+	seq                 int64
+	promptKey           string
+	pending             []int
+	partial             int
+	readers             map[*runReader]struct{}
 }
 
 type runReader struct{ pos int }
@@ -453,6 +454,7 @@ func New(opt Options) (*Server, error) {
 			}
 		}
 	})
+	srv.slist.SetChangeHandler(func() { srv.publishInvalidation(scopeSessions) })
 	srv.restoreAgentTasks(infos)
 
 	if opt.Config.Push.Enabled {
@@ -631,7 +633,7 @@ func (s *Server) publishStandaloneCompactionEvent(ctx context.Context, sess *ses
 		return fmt.Errorf("append manual compaction event: %w", err)
 	}
 	s.publishPush(sess.ID(), ev)
-	if s.ext != nil {
+	if s.ext != nil && !isQuestionSide(sess.Config) {
 		s.ext.OnEvent(ctx, sess.ID(), extension.RedactEvent(ev, sess.ID()))
 	}
 	return nil
@@ -698,6 +700,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PATCH /v1/sessions/{id}", s.auth(s.patch))
 	api.HandleFunc("DELETE /v1/sessions/{id}", s.auth(s.deleteSession))
 	api.HandleFunc("POST /v1/sessions/{id}/prompt", s.auth(s.prompt))
+	api.HandleFunc("POST /v1/sessions/{id}/question-action", s.auth(s.questionAction))
 	api.HandleFunc("GET /v1/sessions/{id}/events", s.auth(s.events))
 	api.HandleFunc("POST /v1/sessions/{id}/abort", s.auth(s.abort))
 	api.HandleFunc("POST /v1/sessions/{id}/extension-ui", s.auth(s.extensionUIAnswer))
@@ -1037,6 +1040,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) shutdownOwned() {
 	defer close(s.shutdownDone)
+	if s.slist != nil {
+		s.slist.Close()
+	}
 	s.mu.Lock()
 	for id, st := range s.runs {
 		s.cancelRun(id, st, cancelReasonServerShutdown, "server", false)
@@ -1221,6 +1227,14 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		Metadata       map[string]any `json:"metadata"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	for key := range body.Metadata {
+		switch key {
+		case "purpose", "sourceSessionId", "sourceQuestionItemId", "questionItemId", "sideBoundaryEntryId",
+			"questionSideResources", "readOnlyWorkspaceRoot", "readOnlyAttachmentsRoot", "readOnlyProfile", "questionSideInitializing", "sideInitialization":
+			http.Error(w, "reserved session metadata: "+key, http.StatusBadRequest)
+			return
+		}
+	}
 	rec, err := s.resolveWorkspace(body.WorkspaceID, body.CWD, "")
 	if err != nil {
 		code := 400
@@ -1340,6 +1354,11 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if isQuestionSide(snap.configV) {
+		s.getQuestionSide(w, r, snap, limit, keep)
+		return
+	}
+
 	if traceView {
 		contextLines := 0
 		if raw := q.Get("context"); raw != "" {
@@ -1408,6 +1427,16 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "entry not found", http.StatusNotFound)
 			return
 		}
+		for i := range got {
+			if got[i].Type == "question_requested" || got[i].Type == "question_updated" {
+				public, decodeErr := session.PublicQuestionEntry(got[i])
+				if decodeErr != nil {
+					http.Error(w, decodeErr.Error(), http.StatusInternalServerError)
+					return
+				}
+				got[i] = public
+			}
+		}
 		got = session.WithCacheMisses(got, snap.entries, snap.leafID)
 		writeJSON(w, 200, map[string]any{"entry": got[0]})
 		return
@@ -1417,6 +1446,16 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
+		}
+		for i := range got {
+			if got[i].Type == "question_requested" || got[i].Type == "question_updated" {
+				public, decodeErr := session.PublicQuestionEntry(got[i])
+				if decodeErr != nil {
+					http.Error(w, decodeErr.Error(), http.StatusInternalServerError)
+					return
+				}
+				got[i] = public
+			}
 		}
 		got = session.WithCacheMisses(got, snap.entries, snap.leafID)
 		writeJSON(w, 200, map[string]any{"entries": got})
@@ -1507,6 +1546,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	runtime["questions"] = s.questionsProjection(id)
 	if projectionOnly {
 		if withSystem {
 			runtime["systemPrompt"] = snap.systemPrompt()
@@ -1735,6 +1775,10 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	modelSettingsRequested := body.Model != "" || body.ThinkingEffort != nil
+	if body.LeafID != nil && !questionSideTargetAllowed(sess, *body.LeafID) {
+		http.Error(w, "cannot select history before the side conversation boundary", http.StatusConflict)
+		return
+	}
 	selectionChanged := body.Model != "" || body.ThinkingEffort != nil || body.LeafID != nil
 	var modelRef provider.ModelRef
 	var modelEffort string
@@ -1816,6 +1860,10 @@ func (s *Server) patch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if modelSettingsRequested {
+		if err := s.syncQuestionSideModels(sess); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		s.publishContextUsage(sess)
 	}
 	s.publishInvalidation(scopeSessions)
@@ -1830,9 +1878,14 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	activity := s.sessionActivity(infos)
+	workspaceIDs := s.sessionWorkspaceIDs(infos)
 	out := make([]map[string]any, 0, len(infos))
 	for _, info := range infos {
-		out = append(out, s.infoMap(info, activity))
+		if metadataString(info.Metadata, "purpose") == questionSidePurpose &&
+			metadataString(info.Metadata, "sideBoundaryEntryId") == "" {
+			continue
+		}
+		out = append(out, s.infoMap(info, activity, workspaceIDs[info.CWD]))
 	}
 	body, err := json.Marshal(out)
 	if err != nil {
@@ -1882,16 +1935,25 @@ func (s *Server) mutateIdleSession(id string, mutate func() error) error {
 func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
-		Text            string          `json:"text"`
-		Content         []types.Content `json:"content"`
-		ParentID        *string         `json:"parentId"`
-		Model           string          `json:"model"`
-		Delivery        string          `json:"delivery"`
-		QueueID         string          `json:"queueId"`
-		ClientRequestID string          `json:"clientRequestId"`
+		Text            string                `json:"text"`
+		Content         []types.Content       `json:"content"`
+		ParentID        *string               `json:"parentId"`
+		Model           string                `json:"model"`
+		Delivery        string                `json:"delivery"`
+		QueueID         string                `json:"queueId"`
+		ClientRequestID string                `json:"clientRequestId"`
+		QuestionReply   *questionReplyRequest `json:"questionReply"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if body.QuestionReply != nil {
+		if body.Text != "" || len(body.Content) != 0 || body.ParentID != nil || body.QueueID != "" || body.Model != "" || body.Delivery != "" {
+			http.Error(w, "questionReply cannot be combined with text, content, parentId, queueId, model or delivery", http.StatusBadRequest)
+			return
+		}
+		s.submitQuestionReply(w, r, *body.QuestionReply)
 		return
 	}
 	if body.ClientRequestID == "" {
@@ -1935,7 +1997,16 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	sideSession := isQuestionSide(sess.Config)
+	if sideSession && parsed.Kind != command.KindPrompt {
+		http.Error(w, "commands are not available in a read-only side conversation", http.StatusBadRequest)
+		return
+	}
 	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
+	if isQuestionSide(sess.Config) && body.ParentID != nil && !questionSideTargetAllowed(sess, *body.ParentID) {
+		http.Error(w, "side conversation parent must be within side history", http.StatusBadRequest)
+		return
+	}
 	runtimeCmds := map[string]struct{}{}
 	parsed = command.ResolveCommand(parsed, snapshot, runtimeCmds)
 	if parsed.Kind == command.KindUnknown && s.ext != nil {
@@ -2096,7 +2167,7 @@ func (s *Server) prompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = sess.Close()
-	if s.ext != nil {
+	if s.ext != nil && !sideSession {
 		text := contentText(body.Content)
 		next, swallow := s.ext.ApplyInput(r.Context(), id, text)
 		if swallow {
@@ -2328,6 +2399,13 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 	}
 	cfg := s.cfg
+	if isQuestionSide(sess.Config) {
+		if err := s.syncQuestionSideModel(sess); err != nil {
+			st.err = err
+			return
+		}
+		reqModel = ""
+	}
 	if reqModel != "" {
 		ref, nextModel, resolveErr := s.registry.ResolveSpec(reqModel, sess.Config.Provider)
 		if resolveErr != nil {
@@ -2391,49 +2469,89 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	jobs := s.processesFor(id)
 	profile := toolProfile(info)
-	snapshot := s.resources.Load(sess.ID(), sess.Header.CWD)
-	s.reportManifestErrors(sess.ID(), snapshot.Extensions)
-	tls := builtin.Set{
+	sideConversation := isQuestionSide(sess.Config)
+	if sideConversation && metadataString(sess.Config.Metadata, "sideInitialization") != "ready" {
+		st.err = errors.New("side conversation initialization is incomplete")
+		return
+	}
+	var snapshot resources.Snapshot
+	if sideConversation {
+		var snapshotErr error
+		snapshot, snapshotErr = questionSideResources(sess)
+		if snapshotErr != nil {
+			st.err = snapshotErr
+			return
+		}
+	} else {
+		snapshot = s.resources.Load(sess.ID(), sess.Header.CWD)
+		s.reportManifestErrors(sess.ID(), snapshot.Extensions)
+	}
+	var sideReadOps *questionSideReadOps
+	if sideConversation {
+		var rootErr error
+		sideReadOps, rootErr = pinQuestionSideReadOps(questionSideRoots(sess))
+		if rootErr != nil {
+			st.err = rootErr
+			return
+		}
+		defer sideReadOps.Close()
+	}
+	builtinSet := builtin.Set{
 		CWD: sess.Header.CWD, Processes: jobs, Agent: s,
 		AgentParentSessionID: sess.ID(),
 		Shells:               s.shells, Mutations: s.mutations,
 		PathDirs: snapshot.PathDirs,
-	}.Build(profile)
+	}
+	if s.questionEligible(sess) {
+		builtinSet.RequestUserInputAsync = func(callCtx context.Context, callID string, questions []session.QuestionInput) error {
+			if err := callCtx.Err(); err != nil {
+				return err
+			}
+			return s.requestQuestions(sess, callID, questions)
+		}
+	}
+	tls := builtinSet.Build(profile)
+	if sideReadOps != nil {
+		tls = builtin.Set{CWD: sess.Header.CWD, ReadOps: *sideReadOps}.Build(profile)
+	}
 	tg := toggles.Load(cfg.Home)
 	tls = builtin.FilterBuiltins(tls, tg.Tools)
 	enabledExtensions := extension.Enabled(snapshot.Extensions, tg.Extensions)
-	s.ext.Configure(enabledExtensions)
-	extTools := s.ext.Prepare(ctx, sess.ID(), sess.Header.CWD, enabledExtensions)
-	tls = append(tls, extTools...)
 	var mcpTools []toolapi.Tool
 	var mcpErr error
-	mcpSnapshot, err := s.resolveMCP(sess.Header.CWD)
-	if err != nil {
-		st.err = fmt.Errorf("MCP configuration: %w", err)
-		return
-	}
-	mcpManager, releaseMCP, err := s.acquireMCP(mcpSnapshot, tg.MCP)
-	if err != nil {
-		st.err = err
-		return
-	}
-	defer releaseMCP()
-	if mcpManager != nil {
-		mcpTools, mcpErr = mcpManager.Tools(ctx)
-		if errors.Is(mcpErr, mcpruntime.ErrRequired) {
-			st.err = fmt.Errorf("prepare required MCP server: %w", mcpErr)
+	if !sideConversation {
+		s.ext.Configure(enabledExtensions)
+		extTools := s.ext.Prepare(ctx, sess.ID(), sess.Header.CWD, enabledExtensions)
+		tls = append(tls, extTools...)
+		mcpSnapshot, err := s.resolveMCP(sess.Header.CWD)
+		if err != nil {
+			st.err = fmt.Errorf("MCP configuration: %w", err)
 			return
 		}
-		if mcpErr != nil {
-			slog.Warn("MCP discovery incomplete", "session_id", id, "err", mcpErr)
+		mcpManager, releaseMCP, err := s.acquireMCP(mcpSnapshot, tg.MCP)
+		if err != nil {
+			st.err = err
+			return
 		}
-		tls = append(tls, mcpTools...)
+		defer releaseMCP()
+		if mcpManager != nil {
+			mcpTools, mcpErr = mcpManager.Tools(ctx)
+			if errors.Is(mcpErr, mcpruntime.ErrRequired) {
+				st.err = fmt.Errorf("prepare required MCP server: %w", mcpErr)
+				return
+			}
+			if mcpErr != nil {
+				slog.Warn("MCP discovery incomplete", "session_id", id, "err", mcpErr)
+			}
+			tls = append(tls, mcpTools...)
+		}
 	}
 	if ctx.Err() != nil {
 		st.err = ctx.Err()
 		return
 	}
 	tls = s.filterActiveTools(id, tls)
+	tls = restrictQuestionSideTools(sess, tls)
 	nestedTools := slices.Clone(tls)
 	mcpNames := make(map[string]bool, len(mcpTools))
 	for _, t := range mcpTools {
@@ -2486,6 +2604,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	callbacks := codemode.Callbacks{
 		Invoke: func(callCtx context.Context, invocation codemode.Invocation) (codemode.ToolResult, error) {
+			if isQuestionTool(invocation.Name) {
+				return codemode.ToolResult{}, errors.New("request_user_input_async must be called directly")
+			}
 			call := loop.NestedToolCall{ParentCallID: invocation.ParentCallID, CellID: invocation.CellID, Name: invocation.Name, Arguments: invocation.Arguments}
 			if invocation.Freeform {
 				call.Input = &invocation.Input
@@ -2502,6 +2623,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	codeSet := codetools.Set{GetSession: getCodeSession, Callbacks: callbacks, Nested: nestedTools, Deferred: deferredNames, Freeform: info.SupportsFreeformExec()}
 	codeTools := codeSet.Build()
+	if sideConversation {
+		codeTools = nil
+	}
 	codeTools = builtin.FilterBuiltins(codeTools, tg.Tools)
 	executionTools = append(executionTools, codeTools...)
 	executionTools = append(executionTools, searchTools...)
@@ -2524,10 +2648,16 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		promptSet := codeSet
 		promptSet.Deferred = remaining
 		visible = append(visible, builtin.FilterBuiltins(promptSet.Build(), tg.Tools)...)
+		if sideConversation {
+			visible = restrictQuestionSideTools(sess, visible)
+		}
 		return append(visible, searchTools...)
 	}
 	tls = modelTools(nil)
-	occ := s.ext.Occupy(id)
+	var occ *extension.Occupy
+	if !sideConversation {
+		occ = s.ext.Occupy(id)
+	}
 	if s.requireModelCredential {
 		if s.providerExtensions != nil && s.providerExtensions.HasProvider(liveModel.Provider) {
 			runStreamer = s.providerExtensions.NewStreamer(liveModel, liveCredential)
@@ -2538,6 +2668,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 	}
 	promptInput := prompt.Input{Resources: snapshot, Tools: tls, Toggle: tg.Skills}
 	sys := prompt.Build(promptInput)
+	if sideConversation {
+		sys += "\n\n" + questionSidePolicy
+	}
 
 	useServerCompaction := s.serverSideCompaction(info) && occ.HTTPDoer() == nil
 	replayBinding := replayBindingForSession(sess, info, bindingCredential)
@@ -2631,7 +2764,7 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		runCfg.ModelTools = modelTools
 	}
 	nestedCfg := runCfg
-	nestedCfg.Tools = nestedTools
+	nestedCfg.Tools = slices.DeleteFunc(slices.Clone(nestedTools), func(t toolapi.Tool) bool { return isQuestionTool(t.Name()) })
 	codeDispatcher, err = loop.NewToolDispatcher(nestedCfg, emit)
 	if err != nil {
 		st.err = fmt.Errorf("prepare code mode dispatcher: %w", err)
@@ -2653,10 +2786,11 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		}
 		return nil
 	}
-	user := types.Message{Role: "user", Content: content, Origin: origin, External: externalMeta, ClientRequestID: st.inputMetadata.ClientRequestID, Completion: st.inputMetadata.Completion}
+	user := types.Message{Role: "user", Content: content, Origin: origin, External: externalMeta, ClientRequestID: st.inputMetadata.ClientRequestID, Completion: st.inputMetadata.Completion, QuestionReply: st.inputMetadata.QuestionReply}
 	if user.ClientRequestID == "" {
 		user.ClientRequestID = st.runID + ":input"
 	}
+	s.restoreQuestionAnswers(sess, st)
 	err = runMessage(user)
 	for {
 		st.mu.Lock()
@@ -2672,6 +2806,9 @@ func (s *Server) runPrompt(ctx context.Context, st *runState, id string, content
 		st.mu.Unlock()
 		for _, steer := range steers {
 			if ctx.Err() != nil {
+				if steer.QuestionReply != nil {
+					continue
+				}
 				if _, aerr := s.commitUserMessage(steer, func() error {
 					_, _, err := sess.AppendMessageWithKey(steer, "")
 					return err
@@ -3153,7 +3290,7 @@ func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Sess
 	if failed != nil {
 		req = *failed
 	}
-	opaqueReplaySafe := s.ext == nil || s.ext.Occupy(sess.ID()).OpaqueReplaySafe()
+	opaqueReplaySafe := isQuestionSide(sess.Config) || s.ext == nil || s.ext.Occupy(sess.ID()).OpaqueReplaySafe()
 	reuseRequestContext := failed != nil &&
 		opaqueReplaySafe &&
 		failed.ProviderBinding.Equal(binding)
@@ -3190,7 +3327,7 @@ func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Sess
 	}
 	digest := providerFacingDigest(req.Messages)
 	contextChanged := false
-	if !req.ContextTransformed && s.ext != nil {
+	if !req.ContextTransformed && s.ext != nil && !isQuestionSide(sess.Config) {
 		hooks := s.ext.Hooks(sess.ID())
 		if hooks.BeforeRun != nil {
 			system, messages, err := hooks.BeforeRun(ctx, req.System, req.Messages)
@@ -3208,7 +3345,7 @@ func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Sess
 	}
 	req.Messages = messages
 	digest = providerFacingDigest(req.Messages)
-	if !req.ContextTransformed && s.ext != nil {
+	if !req.ContextTransformed && s.ext != nil && !isQuestionSide(sess.Config) {
 		hooks := s.ext.Hooks(sess.ID())
 		if hooks.TransformContext != nil {
 			transformed, transformErr := hooks.TransformContext(ctx, req.Messages)
@@ -3221,7 +3358,7 @@ func (s *Server) prepareRemoteCompaction(ctx context.Context, sess *session.Sess
 		}
 		req.ContextTransformed = true
 	}
-	if s.ext != nil {
+	if s.ext != nil && !isQuestionSide(sess.Config) {
 		transformed, transformErr := s.ext.Occupy(sess.ID()).TransformProviderRequest(ctx, req)
 		if transformErr != nil {
 			return nil, fmt.Errorf("transform remote compaction request: %w", transformErr)
@@ -3277,7 +3414,7 @@ func (s *Server) compactSession(ctx context.Context, sess *session.Session, inte
 		strategy = model.Compaction.Standalone
 	}
 	decision := extension.BeforeCompactDecision{}
-	if s.ext != nil {
+	if s.ext != nil && !isQuestionSide(sess.Config) {
 		decision = s.ext.BeforeCompact(ctx, sess.ID(), extension.BeforeCompactRequest{
 			Reason: string(intent.Reason), WillRetry: intent.WillRetry,
 			Instructions: intent.Instructions,
@@ -3648,8 +3785,10 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		EntryID  string `json:"entryId"`
-		ForkMode string `json:"forkMode"`
+		EntryID        string `json:"entryId"`
+		ForkMode       string `json:"forkMode"`
+		Purpose        string `json:"purpose"`
+		QuestionItemID string `json:"questionItemId"`
 	}
 	if r.Body != nil && r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -3657,7 +3796,11 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if body.EntryID == "" && s.running(r.PathValue("id")) {
+	if body.Purpose != "" && body.Purpose != questionSidePurpose {
+		http.Error(w, "invalid fork purpose", http.StatusBadRequest)
+		return
+	}
+	if body.Purpose == "" && body.EntryID == "" && s.running(r.PathValue("id")) {
 		http.Error(w, "session busy", http.StatusConflict)
 		return
 	}
@@ -3667,6 +3810,18 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = sess.Close() }()
+	if body.Purpose == questionSidePurpose {
+		if body.EntryID != "" || body.ForkMode != "" || body.QuestionItemID == "" {
+			http.Error(w, "question side requires only purpose and questionItemId", http.StatusBadRequest)
+			return
+		}
+		s.forkQuestionSide(w, r, sess, body.QuestionItemID)
+		return
+	}
+	if isQuestionSide(sess.Config) {
+		http.Error(w, "side conversations cannot create forks", http.StatusConflict)
+		return
+	}
 	forkMode, err := session.NormalizeForkMode(body.ForkMode)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

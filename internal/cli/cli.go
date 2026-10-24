@@ -980,12 +980,22 @@ func (p *streamPrinter) event(ev loop.Event) {
 		_, _ = fmt.Fprintf(os.Stdout, "\n[%s %s]\n", ev.ToolName, ev.ToolCallID)
 	case loop.ToolExecutionEnd:
 		_, _ = fmt.Fprintf(os.Stdout, "[%s done err=%v]\n", ev.ToolName, ev.IsError)
+	case loop.QuestionRequested:
+		for _, question := range ev.Questions {
+			_, _ = fmt.Fprintf(os.Stdout, "\n[question %d] %s\n", question.Index+1, question.Title)
+			for index, option := range question.Options {
+				_, _ = fmt.Fprintf(os.Stdout, "  %d. %s\n", index+1, option)
+			}
+		}
+		if len(ev.Questions) > 0 {
+			_, _ = fmt.Fprintln(os.Stdout, "[Answer in WebUI or send a follow-up; the task is not paused. No option is submitted automatically.]")
+		}
 	case loop.AgentStart, loop.AgentEnd, loop.TurnStart, loop.TurnEnd,
 		loop.RequestHeader,
 		loop.ToolExecutionUpdate, loop.PatchApplyUpdated, loop.CompactionStart, loop.CompactionEnd,
 		loop.ContextUsage, loop.QueueChanged, loop.SteerAccepted, loop.RunAborted,
 		loop.ExtensionError, loop.ExtensionNotice, loop.ExtensionUIPrompt,
-		loop.AgentSettled, loop.RuntimeReady:
+		loop.AgentSettled, loop.RuntimeReady, loop.QuestionUpdated:
 		return
 	}
 }

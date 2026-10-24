@@ -13,7 +13,7 @@ import { useTranscriptScroll, type TranscriptScroll } from './useTranscriptScrol
 import { useNow } from '../../hooks/useNow'
 import { Duration } from './Duration'
 import { TranscriptRow, useTranscriptRowMeasurement } from './TranscriptRow'
-import { IChev, IChevDown, IClock, ICompact, ICopy, IEdit, IFork, IRegen, IContext, IWrench } from '../../components/icons'
+import { IChev, IChevDown, IClock, ICompact, ICopy, IEdit, IFork, IRegen, IContext, IWrench, IQuestion } from '../../components/icons'
 import { IFile } from '../../components/icons'
 import { Composer, type Draft } from './Composer'
 import { AttachmentImage } from '../attachments/AttachmentImage'
@@ -154,6 +154,7 @@ function UserBubble({ api, node, onHydrate }: { api: Client; node: Extract<ChatN
   const imageLayout = images.length <= 4 ? `count-${images.length}` : 'count-many'
   return (
     <div className={`user-message${runtime ? ' runtime-notification' : ''}${node.origin ? ' origin-external' : ''}${node.origin?.startsWith('agent:') ? ' origin-agent' : ''}`} data-testid="user-bubble" role={runtime ? 'note' : undefined} aria-label={runtime ? t('chat.runtimeNotification') : undefined}>
+      {node.questionReply ? <div className="question-reply-label"><IQuestion /><strong>{node.questionReply.title}</strong></div> : null}
       {runtime ? <div className="runtime-notification-label">{t('chat.runtimeNotification')}</div> : null}
       {node.origin ? <div className="user-origin" data-testid="user-origin">{node.origin}</div> : null}
       {images.length ? <div className={`message-images ${imageLayout}`}>

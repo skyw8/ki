@@ -364,7 +364,7 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	}
 
 	gpt := prompt("openai/gpt-5.6-terra")
-	gptWant := []string{"read", "apply_patch", "grep", "glob", "exec_command", "write_stdin", "spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent", "list_agents", "exec", "wait"}
+	gptWant := []string{"read", "apply_patch", "grep", "glob", "exec_command", "write_stdin", "spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent", "list_agents", "request_user_input_async", "exec", "wait"}
 	if got := requestToolNames(gpt.Tools); !slices.Equal(got, gptWant) {
 		t.Fatalf("GPT tools = %v", got)
 	}
@@ -380,7 +380,7 @@ func TestPromptBuildsToolsFromResolvedModel(t *testing.T) {
 	}
 
 	textOnly := prompt("zai/glm-5.3")
-	textOnlyWant := []string{"read", "write", "edit", "grep", "glob", "exec_command", "write_stdin", "spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent", "list_agents", "exec", "wait"}
+	textOnlyWant := []string{"read", "write", "edit", "grep", "glob", "exec_command", "write_stdin", "spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent", "list_agents", "request_user_input_async", "exec", "wait"}
 	if got := requestToolNames(textOnly.Tools); !slices.Equal(got, textOnlyWant) {
 		t.Fatalf("text-only tools = %v", got)
 	}
@@ -3131,8 +3131,11 @@ func TestMessageContextWindowCap(t *testing.T) {
 	if got := srv.effectiveContextWindow(huge); got != toggles.DefaultContextWindow {
 		t.Fatalf("default cap: effective window %d, want %d", got, toggles.DefaultContextWindow)
 	}
-	if got := srv.effectiveContextWindow(provider.Model{ID: "m1m", ContextWindow: 1_000_000}); got != 1_000_000 {
-		t.Fatalf("1M model window = %d, want 1000000", got)
+	if got := srv.effectiveContextWindow(provider.Model{ID: "m1m", ContextWindow: 1_000_000}); got != toggles.DefaultContextWindow {
+		t.Fatalf("1M model window = %d, want the %d default cap", got, toggles.DefaultContextWindow)
+	}
+	if got := srv.effectiveContextWindow(provider.Model{ID: "under", ContextWindow: 400_000}); got != 400_000 {
+		t.Fatalf("cap inflated a window below the default: %d", got)
 	}
 	status, out := patch(`{"contextWindow":1000}`)
 	if status != http.StatusOK || out["contextWindow"] != float64(1000) || out["busy"] != "steer" {

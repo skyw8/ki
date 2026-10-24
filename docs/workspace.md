@@ -9,6 +9,10 @@ session header 的 cwd 与工作区 `path` 必须经同一套 `Abs` / `EvalSymli
 临时工作区识别（`IsTemp`）对 home 一侧做同样的规范化：macOS 的 `/var/folders`、Windows
 短名 `%TEMP%` 下，home 与已规范化记录 path 才可比。
 
+session 列表每次请求对相同 cwd 只匹配一次，命中与未命中都在该次请求内复用，避免
+同一工作区的多个会话重复访问文件系统解析路径。缓存不跨请求保留，工作区登记与符号
+链接变化会在后续请求重新匹配；规范化与平台大小写比较沿用 `Store.Match`。
+
 新建会话的目录优先级：
 
 1. 显式 `workspaceId`；

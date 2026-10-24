@@ -240,6 +240,12 @@ Codex 请求身份与 metadata 共用 `pkg/codexclient`：installation ID 存在
 子会话不会复用父会话的流式续传基线。`CreateChild` 不继承，因为委派子代理从空上下文开始、
 与父会话没有共享前缀。
 
+逐题旁聊同样只继承合法的 cache affinity，不继承父 run、连接续传或活跃 response 身份。
+缓存亲和不保证命中：只读工具集合及 system 的差异可能破坏父前缀，不能为了缓存继续声明
+写工具。旁聊自己的固定工具 profile 和追加式多轮历史有利于后续轮稳定命中；实际收益应看
+provider 的 cache read/write、uncached input、TTFT 与成本，而不是复制历史的长度。
+此身份规则仅适用于对应 adapter，不把 Codex headers 当成所有兼容 provider 的缓存协议。
+
 Responses WebSocket 复用按会话、凭据与请求属性隔离，增量 continuation 保留服务端 output；
 无法握手时回退 HTTP，已收到流式事件后不得盲目重发。HTTP Codex body 使用 zstd。这些实现
 对齐 Codex 客户端协议，但不保证 TLS/提示词/工具或可选 attestation 与官方客户端不可区分，
