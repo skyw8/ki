@@ -1,16 +1,25 @@
 # Code Mode
 
-Ki 使用 **goja + 同一二进制的 session-scoped worker** 实现 JavaScript 工具编排。JS 在 server 所在机器的子进程执行，不在浏览器执行，也不依赖 Node/Bun。
+Ki 使用 **goja + 同一二进制的 session-scoped worker** 实现 JavaScript 工具编排。JS 在 server
+所在机器的子进程执行，不在浏览器执行，也不依赖 Node/Bun。
 
 ## 配置
 
-固定使用 `mixed`，保留直接工具并添加 `exec/wait`；Settings 和 TOML 均不再提供模式选择。旧 `[code_mode]` TOML 表作为未知配置被拒绝，需删除；`toggles.json` 的旧覆盖通过 v3 迁移移除。
+固定使用 `mixed`，保留直接工具并添加 `exec`/`wait`；Settings 和 TOML 均不提供模式选择。旧
+`[code_mode]` TOML 表作为未知配置被拒绝，需删除；`toggles.json` 的旧覆盖通过 v3 迁移移除。
 
-嵌套工具来自本次 occupy 的内置开关、extension Prepare、MCP 允许目录与 activeTools 过滤后的快照。设置页始终列出 `exec/wait`，可分别关闭；正在运行的代码和模型请求保持占用时的工具集合。
+嵌套工具来自本次 occupy 的内置开关、extension Prepare、MCP 允许目录与 activeTools 过滤后
+的快照。设置页始终列出 `exec`/`wait`，可分别关闭；正在运行的代码和模型请求保持占用时的
+工具集合。
 
-MCP 声明仅在有可用 search_tool 时 Deferred：最初省略 exec 描述中的完整声明，搜索后按需补充；JS tools/ALL_TOOLS 自始拥有全部允许能力，不需要动态更新 VM。search_tool 不作为嵌套 JS 方法；关闭搜索则直接披露全部允许声明。官方 SDK、配置及回退规则见 [mcp.md](mcp.md)。
+MCP 声明仅在有可用 `search_tool` 时 Deferred：最初省略 exec 描述中的完整声明，搜索后按需
+补充；JS `tools`/`ALL_TOOLS` 自始拥有全部允许能力，不需要动态更新 VM。`search_tool` 不作为
+嵌套 JS 方法；关闭搜索则直接披露全部允许声明。官方 SDK、配置及回退规则见
+[mcp.md](mcp.md)。
 
-既有 `GET /v1/tools` 返回 `{items, mcp}`；`PATCH /v1/tools` 只接受可选的 `disabled` 和 `mcpDisabled`，省略字段保持已有值，未知字段被拒绝。写入使用状态文件的原子/版本检查，未知新版本不能被覆盖。
+既有 `GET /v1/tools` 返回 `{items, mcp}`；`PATCH /v1/tools` 只接受可选的 `disabled` 和
+`mcpDisabled`，省略字段保持已有值，未知字段被拒绝。写入使用状态文件的原子/版本检查，未知
+新版本不能被覆盖。
 
 ## 进程关系
 
@@ -54,11 +63,21 @@ end note
 @enduml
 ```
 
-发布 schemas 不占 worker 名额。第一次实际调用才创建逻辑 session，第一次 `exec` 才启动进程；后续 occupy 复用已提交的内存 store。worker 在 session 删除、runtime 关闭或 server shutdown 时回收。进程故障不会自动重启或重放有副作用的 JS。
+发布 schemas 不占 worker 名额。第一次实际调用才创建逻辑 session，第一次 `exec` 才启动进程；
+后续 occupy 复用已提交的内存 store。worker 在 session 删除、runtime 关闭或 server shutdown
+时回收。进程故障不会自动重启或重放有副作用的 JS。
 
 ## 执行契约
 
-只有 Responses 模型明确声明 `execToolType: "freeform"` 时，`exec` 才接收 raw JS；扩展 provider 的私有 API 可显式声明并自行兑现同一契约。未声明的 Responses 模型及 Completions / Anthropic 使用 `{code: "…"}`。不能由协议名或 custom `apply_patch` 能力推断任意 custom 工具支持；DeepSeek Responses 只允许名为 `apply_patch` 的 custom 工具，`exec` 必须使用 function 格式。两者均可使用首行 pragma：
+### 两种调用格式
+
+只有 Responses 模型明确声明 `execToolType: "freeform"` 时，`exec` 才接收 raw JS；扩展
+provider 的私有 API 可显式声明并自行兑现同一契约。未声明的 Responses 模型及 Completions /
+Anthropic 使用 `{code: "…"}`。
+
+不能由协议名或 custom `apply_patch` 能力推断任意 custom 工具支持；DeepSeek Responses 只
+允许名为 `apply_patch` 的 custom 工具，`exec` 必须使用 function 格式。两者均可使用首行
+pragma：
 
 ```javascript
 // @exec: {"yield_time_ms": 10000, "max_output_tokens": 10000}
@@ -66,54 +85,118 @@ const result = await tools.read({file_path: "/absolute/project/go.mod"});
 text(result.content.filter(item => item.type === "text").map(item => item.text).join("\n"));
 ```
 
-`exec` 以 async function body 执行，因此支持 await，不是完整 ES module。只接受 pragma 中的两个字段，必须为非负 JS-safe integer；显式零有效，空源码和没有后续源码的 pragma 拒绝。
+`exec` 以 async function body 执行，因此支持 `await`，不是完整 ES module。只接受 pragma 中
+的两个字段，必须为非负 JS-safe integer；显式零有效，空源码和没有后续源码的 pragma 拒绝。
 
-- `tools.xxx(object)` 用于 function 工具，`tools.xxx(string)` 用于 freeform 工具，返回 Promise。
-- 结果为 `{content, details, isError, terminate?}`。工具自身错误通过 `isError` 表示；RPC、审计或输出策略失败使 cell 失败，不允许 catch 后继续有副作用的调用。
-- `ALL_TOOLS` 为 `{name, description}` 元数据；exec 描述包含嵌套工具的输入 schema/字符串要求。不支持 Codex 的 deferred tool search 或 TS 声明渲染。
-- `text(value)` 显式输出，`image(dataURLOrImageBlock)` 转发内嵌图片；`generatedImage({image_url, output_hint?})` 同样不接受 HTTP URL 或文件路径。未显式输出的表达式值不返回模型。
-- `exit()` 成功结束当前代码；pending timers 不单独维持存活。正常完成取消并 join 未 await 的工具调用，不能留下无审计归属的后台操作。
-- `setTimeout/clearTimeout` 与工具 Promise 完成均由该 VM 的单一 goroutine 驱动；其它 goroutine 不并发访问 VM。
-- `store/load` 保存 JSON 值。cell 启动时读取快照，cell 内写入立即可读，完成（包括 JS 错误）才向共享 store 提交；yield 不提交，取消/终止丢弃写入。并发 cell 看到各自快照，后完成的写入覆盖同名键。
+### 全局对象
 
-`exec` 返回 `Script completed`、`Script failed`、`Script terminated` 或 `Script running with cell ID …`。running 时使用：
+| 名字 | 行为 |
+|---|---|
+| `tools.xxx(object)` | function 工具，返回 Promise |
+| `tools.xxx(string)` | freeform 工具，返回 Promise |
+| `ALL_TOOLS` | 允许工具的 `{name, description}` 元数据；exec 描述包含嵌套工具的输入 schema/字符串要求 |
+| `text(value)` | 显式输出 |
+| `image(dataURLOrImageBlock)` | 转发内嵌图片 |
+| `generatedImage({image_url, output_hint?})` | 同 image，不接受 HTTP URL 或文件路径 |
+| `exit()` | 成功结束当前代码；pending timers 不单独维持存活 |
+| `setTimeout` / `clearTimeout` | 由该 VM 的单一 goroutine 驱动 |
+| `store` / `load` | session 内存 JSON 快照/提交 |
+| `notify(value)` | 有归属的即时进度 |
+| `yield_control()` | 提前返回当前输出但不结束脚本 |
+
+未显式输出的表达式值不返回模型。正常完成取消并 join 未 await 的工具调用，不能留下无审计
+归属的后台操作；其它 goroutine 不并发访问 VM。
+
+工具结果为 `{content, details, isError, terminate?}`。工具自身错误通过 `isError` 表示；RPC、
+审计或输出策略失败使 cell 失败，不允许 catch 后继续有副作用的调用。
+
+`store`/`load` 保存 JSON 值。cell 启动时读取快照，cell 内写入立即可读，完成（包括 JS 错误）
+才向共享 store 提交；yield 不提交，取消/终止丢弃写入。并发 cell 看到各自快照，后完成的
+写入覆盖同名键。store 不写磁盘，不随 fork/server 重启恢复。
+
+### 返回与观察
+
+`exec` 返回 `Script completed`、`Script failed`、`Script terminated` 或
+`Script running with cell ID …`。running 时使用：
 
 ```json
 {"cell_id":"cell-1","yield_time_ms":10000,"max_tokens":10000,"terminate":false}
 ```
 
-`wait` 只返回新增输出；`terminate=true` 请求终止。`yield_control()` 提前返回当前输出但不结束脚本。默认观察时间 10 秒，最大 60 秒；观察期限与脚本生命周期不同。每次观察消费当前输出，超预算文本按 UTF-8 边界截断并报告截断，不把已完成脚本伪装成仍在运行。
+`wait` 只返回新增输出；`terminate=true` 请求终止。`yield_control()` 提前返回当前输出但不结束
+脚本。默认观察时间 10 秒，最大 60 秒；观察期限与脚本生命周期不同。每次观察消费当前输出，
+超预算文本按 UTF-8 边界截断并报告截断，不把已完成脚本伪装成仍在运行。
 
-## 工具策略和历史
+## 工具策略与历史
 
-嵌套调用与普通调用共用 dispatcher：解析名称 → 校验 → BeforeTool → 执行身份/progress → AfterTool → 遥测/审计。JS 获得 post-hook 的完整中间结果，受独立 RPC 预算约束，不能拿模型预览冒充完整结果；持久化/SSE 使用有界的独立副本，包含有界 args、details 和 progress。
+### 共用 dispatcher
 
-只有外层 provider-issued exec/wait 生成 transcript toolResult。嵌套 start/update/end 通过现有事件目录持久化，带父调用、cell 和父进程分配的调用身份；SSE 与历史重建同一张工具卡片。事件漏斗串行化 callback 与模型事件，不跨工具执行持有漏斗锁。
+嵌套调用与普通调用共用 dispatcher：解析名称 → 校验 → BeforeTool → 执行身份/progress →
+AfterTool → 遥测/审计。JS 获得 post-hook 的完整中间结果，受独立 RPC 预算约束，不能拿模型
+预览冒充完整结果；持久化/SSE 使用有界的独立副本，包含有界 args、details 和 progress。
 
-工具格式切换只改变请求编码，不重写会话历史。旧 custom exec 在当前 function 声明下包装为 `{code: <原始 JS>}` 并保持 call/output 配对；Completions / Anthropic 不接收 custom 声明，不能通过省略 schema 假装为 function。协议回放与失败规则见 [provider.md](provider.md)。
+### 审计
 
-occupy 结束取消并 join 所有 cell 与父进程 callback，先于 hooks、telemetry、session 和 release 关闭。已提交 store 留在 worker，但旧 occupy 的工具、身份和 callback 不跨轮复用。shell 的 session-owned 进程保持已有生命周期，取消 JS 等待不等于杀掉合法启动的 shell。
+只有外层 provider-issued `exec`/`wait` 生成 transcript toolResult。嵌套 start/update/end 通过
+现有事件目录持久化，带父调用、cell 和父进程分配的调用身份；SSE 与历史重建同一张工具卡片。
+事件漏斗串行化 callback 与模型事件，不跨工具执行持有漏斗锁。
 
-全部终止使用两阶段屏障：worker 先将所有 cell 标记为停止并取消其执行 context，确认后父进程才关闭 callback 能力、取消并 join callback，再等待 worker 完全终止。IPC 请求 handler 并发运行，单靠发送顺序不足以建立该屏障；否则 callback 的取消错误可能先被视为普通失败，错误提交待丢弃的 store 写入。停止确认失败时关闭 worker transport，仍无条件 join 父进程 callback。
+### 格式切换
 
-父进程 callback binding 不继承原始 `Execute` 调用的取消或 deadline；原始调用取消改为请求 worker 停止 cell。callback 的取消由 worker 停止后的 IPC 取消或终态 binding 回收负责，不能独立抢在 worker 停止之前发生。该生命周期同样覆盖已 yield 的 cell，不能只在 `TerminateAll` 内调整显式取消顺序。
+工具格式切换只改变请求编码，不重写会话历史。旧 custom exec 在当前 function 声明下包装为
+`{code: <原始 JS>}` 并保持 call/output 配对；Completions / Anthropic 不接收 custom 声明，
+不能通过省略 schema 假装为 function。协议回放与失败规则见 [provider.md](provider.md)。
 
-## 限制和相对 Codex 的差异
+### occupy 边界
 
-- 默认最多 32 个逻辑 worker session、每 session 64 个未关闭 cell / 8 个并发执行 cell。名额在关闭 session 时释放。
-- 源码 256KiB，IPC frame 16MiB，单次中间结果和每 cell 总输出分别 8MiB；store 4MiB / 1024 keys。
-- 每 cell 最多 512 次工具调用 / 32 个 pending calls / 128 个 timers，调用栈深度 1024，执行期限 5 分钟。普通完成不延长该期限。
-- 输出 tokens 使用 Ki 的四 UTF-8 字节估计，并受 runtime 字节上限及最终 outer spool 约束，不使用 Codex tokenizer。
-- goja 没有每 VM 硬堆配额。上述字节/调用预算不冒充整个 worker RSS 限制；终止时 native builtin 无法及时中断，由父进程 cleanup watchdog 终止 worker，仍 join 父进程持有的 callback。
-- `notify` 即时发送有归属的进度，文本在下次 exec/wait 观察返回，**不注入 Codex 的额外 custom_tool_call_output**，保持三个 provider 的配对消息契约。
-- 活跃 cell 不跨 occupy 存活；store 不写磁盘，不随 fork/server 重启恢复。Codex 的远程 gRPC host、audio 和内部 execute-to-pending API 不在本版中。
+occupy 结束取消并 join 所有 cell 与父进程 callback，先于 hooks、telemetry、session 和
+release 关闭。已提交 store 留在 worker，但旧 occupy 的工具、身份和 callback 不跨轮复用。
+shell 的 session-owned 进程保持已有生命周期，取消 JS 等待不等于杀掉合法启动的 shell。
+
+## 终止与取消
+
+全部终止使用两阶段屏障：worker 先将所有 cell 标记为停止并取消其执行 context，确认后父进程
+才关闭 callback 能力、取消并 join callback，再等待 worker 完全终止。IPC 请求 handler 并发
+运行，单靠发送顺序不足以建立该屏障；否则 callback 的取消错误可能先被视为普通失败，错误
+提交待丢弃的 store 写入。停止确认失败时关闭 worker transport，仍无条件 join 父进程
+callback。
+
+父进程 callback binding 不继承原始 `Execute` 调用的取消或 deadline；原始调用取消改为请求
+worker 停止 cell。callback 的取消由 worker 停止后的 IPC 取消或终态 binding 回收负责，不能
+独立抢在 worker 停止之前发生。该生命周期同样覆盖已 yield 的 cell，不能只在 `TerminateAll`
+内调整显式取消顺序。
+
+## 限制
+
+- 默认最多 32 个逻辑 worker session、每 session 64 个未关闭 cell / 8 个并发执行 cell。名额
+  在关闭 session 时释放。
+- 源码 256 KiB，IPC frame 16 MiB，单次中间结果和每 cell 总输出分别 8 MiB；store 4 MiB /
+  1024 keys。
+- 每 cell 最多 512 次工具调用 / 32 个 pending calls / 128 个 timers，调用栈深度 1024，执行
+  期限 5 分钟。普通完成不延长该期限。
+- 输出 tokens 使用 Ki 的四 UTF-8 字节估计，并受 runtime 字节上限及最终 outer spool 约束，
+  不使用 Codex tokenizer。
+- goja 没有每 VM 硬堆配额。上述字节/调用预算不冒充整个 worker RSS 限制；终止时 native
+  builtin 无法及时中断，由父进程 cleanup watchdog 终止 worker，仍 join 父进程持有的
+  callback。
+- `notify` 即时发送有归属的进度，文本在下次 `exec`/`wait` 观察返回，**不注入** Codex 的额外
+  `custom_tool_call_output`，保持三个 provider 的配对消息契约。
+- 活跃 cell 不跨 occupy 存活；store 不写磁盘，不随 fork/server 重启恢复。
+
+## 相对 Codex 的差异
+
+- 没有 Codex 的远程 gRPC host、audio 和内部 execute-to-pending API。
+- 不支持 Codex 的 deferred tool search 或 TS 声明渲染；`search_tool` 是普通 function tool，
+  披露结果进入常规 `request_header`。
+- 不导出任意 Go 对象或宿主服务；JS 只能通过 `tools` 请求父进程执行。
+- 没有完整 OS 沙箱或硬内存配额，隔离边界是「独立进程 + 显式能力注入」。
 
 ## 测试
 
-逻辑、跨协议和取消语义使用 Go/Bun 单元测试，IPC/服务端测试复用同一个 test binary 作 worker，不为每例重复构建，也不依赖固定 sleep。实测强制运行的 runtime 包约 0.13 秒，服务端 Code Mode 集成约 0.43 秒；WebUI 相关单元由 66 例 / 0.11 秒增至 74 例 / 0.15 秒。增加成本用于真实子进程、callback 取消/join 屏障和审计重建，不以省略断言换速度。
+逻辑、跨协议和取消语义使用 Go/Bun 单元测试，IPC/服务端测试复用同一个 test binary 作
+worker，不为每例重复构建，也不依赖固定 sleep。工具能力矩阵覆盖同一 Responses 协议下
+OpenAI / DeepSeek 的不同声明，以及 Completions / Anthropic 的编辑器回退。
 
-完整验证为 fresh WebUI typecheck/build 后的 `go test -tags embed -count=1 ./...`（含已安装的 Bun/Chromium 测试，约 53.5 秒），以及 runtime/loop/server/session race 检查、三个支持目标的无 CGO embed 构建和真实 `ki` worker 入口 smoke。此处耗时只是当前机器的观测，不是运行性能承诺。
-
-Settings 模式切换新增 7 个 Go 服务端用例（约 0.27 秒，race 约 2.7 秒）和 1 个独立浏览器用例（约 3 秒，含启动命令约 4.5 秒）。浏览器覆盖原生 select/触屏尺寸、保存失败与 reload，纯数据校验、并发部分更新和运行中快照留在便宜的 Go 测试中；既有工具开关测试保留。
-
-工具能力矩阵覆盖同一 Responses 协议下 OpenAI / DeepSeek 的不同声明，以及 Completions / Anthropic 的编辑器回退；新增 schema/Settings 断言使服务端聚焦测试约从 0.18 秒增至 0.34 秒，代价来自额外能力组合。协议包约从 0.007 秒增至 0.009 秒。真实二进制 worker smoke 复用 e2e 构建，执行约 20 毫秒；真实 DeepSeek 三协议 exec + 嵌套 read + 结果 continuation 约 4.51 秒，只在 `-tags live` 下运行。该 live 测试使用真正的 `ki serve`，不能让进程内 `cli.Main` 启动 worker：此时 `os.Executable()` 是测试二进制，其测试输出会污染 NDJSON。本次 fresh WebUI 后全量 embed 回归约 58.62 秒，相关协议/provider/server race 检查也通过。
+真实二进制 worker smoke 复用 e2e 构建；真实 DeepSeek 三协议 `exec` + 嵌套 `read` + 结果
+continuation 只在 `-tags live` 下运行。该 live 测试使用真正的 `ki serve`，不能让进程内
+`cli.Main` 启动 worker：此时 `os.Executable()` 是测试二进制，其测试输出会污染 NDJSON。

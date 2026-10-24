@@ -94,7 +94,7 @@ index 里的历史条目本来是「无正文的行」，客户端却用 `indexT
 | 同进程再次打开 | 每次 prompt 951ms | 22µs |
 | index（惰性） | 每次打开都算 | 首次约 1.1s，之后微秒级 |
 
-契约写在 `docs/session.md`、`docs/webui.md`、`docs/architecture.md`、`internal/session/doc.go`、`internal/server/doc.go`。
+契约写在 `docs/session.md`、`docs/webui.md`、`docs/architecture.md`。
 
 ## 教训
 

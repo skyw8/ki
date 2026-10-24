@@ -63,13 +63,14 @@ ki/
   - `provider.md` — provider registry and protocol shapes (Completions / Responses / Anthropic)
   - `extension.md` — extension.json packages, toggles, sidecar JSON-RPC, lifecycle
   - `tools.md` — tool contract (names/schemas follow Claude Code, results follow pi)
+  - `code-mode-design.md` — goja worker processes, JS execution contract, limits
   - `mcp.md` — official-SDK transports, MCP policy, Deferred discovery and Code Mode
   - `webui.md` — same-origin WebUI serving contract
   - `workspace.md` — workspace registry (`{KI_HOME}/workspaces.json`)
   - `state.md` — `{KI_HOME}` JSON state files: schema versions, migrations, downgrade rules
   - `push.md` — Web Push completion notifications (VAPID, subscriptions, service worker)
   - `postmortem/` — retrospective entries
-- Package invariants are documented in `docs/`. Keep this file free of `todo` paths and of per-file inventories under those directories.
+- Package invariants are documented in `docs/`. Keep this file free of per-file inventories under those directories.
 
 ## guide
 
@@ -127,9 +128,8 @@ Every Ki-owned JSON document under `{KI_HOME}` carries a top-level integer `vers
 - Port-forwarded WebUI is a first-class client, including Tailscale and other high-latency links: same-origin relative `/v1` and `/assets` only; never navigate the browser to a host filesystem path; never use a native OS file picker; keep every text response gzip-compressed (`text/event-stream` excepted) and content-hashed `assets/` immutable, so a reload neither re-downloads nor revalidates large payloads over the link.
 - WebUI must support mobile and touch layouts: use responsive drawers/full-screen dialogs, dynamic viewport and safe-area insets, at least 40px touch targets (44px for key navigation), and keep the responsive Playwright matrix in `web/e2e/responsive.spec.ts` passing; document detailed behavior in `docs/webui.md`.
 - Cross-platform (Linux, macOS, Windows): `filepath` for joins; host-absolute paths; no POSIX-only roots, separators, or hidden-file rules.
-- Do not name  `docs/todo`, or files under them in this file.
 - Package and cross-package explanation stays in `docs/`.
-- When changing code, update the related docs that already describe that contract (`docs/*.md`). Do not add new todo filenames here.
+- When changing code, update the related docs that already describe that contract (`docs/*.md`). Do not add planning documents or per-file inventories here.
 - Bugs and pitfalls get a retrospective entry under `docs/postmortem/` explaining why the code is written that way.
 - Supported release targets are exactly `linux/amd64`, `darwin/arm64`, and `windows/amd64`; do not expand platform support or treat other `GOOS/GOARCH` combinations as supported.
 - One binary: `ki serve` serves API and the embedded SPA on the same origin. `web/dist` is untracked build output: build it (`cd web && bun run build`) and compile with `-tags embed`. Without the tag, `web/stub.go` supplies an empty FS and `ki serve` reports the UI as not built; serve does not run vite or bun.

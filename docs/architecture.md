@@ -1,127 +1,256 @@
 # 一次 prompt 怎么走
 
-跨 `cli` → `server` → `loop` 的编排。
+跨 `cli` → `server` → `loop` 的编排。相邻契约见 [session.md](session.md)、
+[events.md](events.md)、[provider.md](provider.md)。
 
 ## 进程
 
-- `ki`：后台启动或复用 HTTP server，尝试打开同源 WebUI。已运行的 daemon
-  若是另一个构建（`server.json` 的 `build`/`exe` 与当前二进制不同），先停掉
-  再启动新构建——这就是「装完直接再跑 `ki`」的升级路径。
-- `ki serve [--addr]`：前台 HTTP，默认 `127.0.0.1:19800`，复用已有
-  `~/.ki/server.json` 的 token（不存在时首次生成），并写回当前 addr + token
-  以及 `pid` / `version` / `exe` / `startedAt`。SIGINT/SIGTERM 触发 `Shutdown`
-  （取消 run、关进程 manager、关扩展），正常退出后删除 `server.json`。
-- `ki serve -d [--replace]`：后台启动或复用 server，CLI 退出后 server 继续运行。
-  `--replace` 只在运行中的 daemon 是另一个构建时才替换；同一构建则退化为
-  「already running」，避免为无意义的重启打断进行中的 run。地址沿用
-  `server.json` 记录的地址，保证端口转发和书签继续可用。
-- `ki stop [--timeout]`：先 `POST /v1/shutdown` 走 owned cleanup；没有该路由
-  的旧 daemon 退回 SIGTERM → SIGKILL；然后按 token 校验删除 `server.json`。
-  幂等，没有运行中的 server 时也是成功。
-- `ki restart [--timeout]`：`stop` 后在同一地址用当前二进制重新 detach。
-- `ki status [--json]`：只读，报告 addr、pid（含 pid 来源）、version、exe、
-  启动时间和「当前 CLI 与 daemon 是否同一构建」。它只关心本 `KI_HOME` 的
-  `server.json`，不扫描机器上其它 ki 进程。
-- `ki run [flags] <text>`：client。`server.json` health 通则连；否则本进程听
-  `127.0.0.1:0`，退出带走。连到不同构建的 daemon 时只打一行 warning，不失败。
-- `ki session compact|fork --session <id>`：对已有 session 执行管理操作。
-- `ki reload`：对已运行的 daemon 发 `POST /v1/reload`（不在本进程起 server）。
-- `ki extension list`：列出全局发现的扩展。
-- `ki provider login|logout <provider>`：provider 扩展登录 / 清除凭据。
-- `ki config path` / `ki version`：查看配置位置和版本。
-- CLI 命令和 flags 由 Cobra 管理；TOML 由 Viper 解析，只管理 server、session、compaction 和 logging 等运行参数。模型与供应商由 provider registry 的 `models.json` / `credentials.json` 管理。`ki serve --addr` 通过 Cobra flag 绑定到 Viper 的 `server.addr`，优先级高于配置文件和环境变量。
+| 命令 | 行为 |
+|---|---|
+| `ki` | 后台启动或复用 HTTP server，尝试打开同源 WebUI。已运行的 daemon 若是另一个构建（`server.json` 的 `build`/`exe` 与当前二进制不同），先停掉再启动新构建——这就是「装完直接再跑 `ki`」的升级路径。 |
+| `ki serve [--addr]` | 前台 HTTP，默认 `127.0.0.1:19800`，复用已有 `~/.ki/server.json` 的 token（不存在时首次生成），并写回 addr + token 以及进程身份 `pid` / `build` / `exe` / `startedAt`。SIGINT/SIGTERM 触发 `Shutdown`（取消 run、关进程 manager、关扩展），正常退出后删除 `server.json`。 |
+| `ki serve -d [--replace]` | 后台启动或复用 server，CLI 退出后 server 继续运行。`--replace` 只在运行中的 daemon 是另一个构建时才替换；同一构建则退化为「already running」，避免为无意义的重启打断进行中的 run。地址沿用 `server.json` 记录的地址，保证端口转发和书签继续可用。 |
+| `ki stop [--timeout]` | 先 `POST /v1/shutdown` 走 owned cleanup；没有该路由的旧 daemon 退回 SIGTERM → SIGKILL；然后按 token 校验删除 `server.json`。幂等，没有运行中的 server 时也是成功。 |
+| `ki restart [--timeout]` | `stop` 后在同一地址用当前二进制重新 detach。 |
+| `ki status [--json]` | 只读，报告 addr、pid（含 pid 来源）、version、exe、启动时间和「当前 CLI 与 daemon 是否同一构建」。只关心本 `KI_HOME` 的 `server.json`，不扫描机器上其它 ki 进程。 |
+| `ki run [flags] <text>` | client。`server.json` health 通则连；否则本进程听 `127.0.0.1:0`，退出带走。连到不同构建的 daemon 时只打一行 warning，不失败。 |
+| `ki session compact\|fork --session <id>` | 对已有 session 执行管理操作。 |
+| `ki reload` | 对已运行的 daemon 发 `POST /v1/reload`（不在本进程起 server）。 |
+| `ki extension list` | 列出全局发现的扩展。 |
+| `ki provider login\|logout <provider>` | provider 扩展登录 / 清除凭据。 |
+| `ki config path` / `ki version` | 查看配置位置和版本。 |
 
-进程诊断日志由 `internal/logging` 初始化为 JSONL，同时写 stderr 和 `{KI_HOME}/ki.jsonl`；日志按大小轮转，默认保留 3 个备份，可由 `[log]` 的 `max_size_mb` / `max_backups` 调整。日志带 `pid` / `role`，禁止记录 API key、token、prompt 和文件内容。HTTP、prompt 后台任务和进程入口会记录 panic 值与 stack。每个 session 另有不进入消息树、API、SSE 或模型上下文的 `telemetry.jsonl`：每行是 OTLP/JSON `ExportLogsServiceRequest`，记录 model request 的 cache 前缀摘要与 usage、分类后的 tool outcome 和 run summary；只保存 hash、计数、状态和 trace/span ID，不保存 prompt、工具参数/结果、credential 或 opaque provider 内容。文件到 32 MiB 后保留一个 `.1` 备份，写入失败仅告警而不影响 run。
+CLI 命令和 flags 由 Cobra 管理；TOML 由 Viper 解析，只管理 server、session、compaction 和
+logging 等运行参数。模型与供应商由 provider registry 的 `models.json` /
+`credentials.json` 管理。`ki serve --addr` 通过 Cobra flag 绑定到 Viper 的 `server.addr`，
+优先级高于配置文件和环境变量。
 
-续聊必须 `--session <id>`。`--model` 随 prompt 发给 server，写回**该 session** 的 `config.json`，不改 toml。`KI_FAKE=1` 用假模型。
+续聊必须 `--session <id>`。`--model` 随 prompt 发给 server，写回**该 session** 的
+`config.json`，不改 toml。`KI_FAKE=1` 用假模型。
 
-系统提示词由 `internal/prompt` 从预加载的资源快照纯渲染，其中含 ki 自身配置布局（`KI_HOME`、ki.toml、skills/、models.json 等路径，对应 pi 系统提示词里指向自身 docs 的段落；ki 是单二进制、无内置文档，所以直接列出路径）、内置追加指令（`prompt.DefaultAppendSystemPrompt`，搜索工具偏好）、global / project 两个叠加的 `APPEND_SYSTEM.md`、启用扩展的 `prompt.append`、运行 OS/架构、cwd 和本地日期时区。追加栈由 `prompt.AppendSection` 复用同一套 `appendBlocks` 渲染，设置页（`GET/PUT/DELETE /v1/prompt/append`）的预览与实际 prompt 因此不会漂移。后面这些运行环境字段在 session 首次加载资源时计算一次，普通消息不会重复探测；reload 后随新快照更新。模型被问及"去哪改 server / 扩展 / skills 设置"时读这段，配合 `ki config path`。完整分层与缓存边界见 [system_prompt.md](system_prompt.md)。
+### 日志与遥测
 
-`internal/resources.Loader` 由 Server 持有，把运行环境、skills、AGENTS/CLAUDE 和 prompt 模板合并成 session 级不可变快照。设置页没有 session，只用不缓存的 `Scan(cwd)` 展示配置。每轮 prompt 在渲染前准备当前 session 的 extension view；扩展工具与内置工具一起进入 prompt、loop 和 `request_header`，单个扩展失败不阻断本轮。
+进程诊断日志由 `internal/logging` 初始化为 JSONL，同时写 stderr 和 `{KI_HOME}/ki.jsonl`；
+日志按大小轮转，默认保留 3 个备份，可由 `[log]` 的 `max_size_mb` / `max_backups` 调整。
+日志带 `pid` / `role`，禁止记录 API key、token、prompt 和文件内容。HTTP、prompt 后台任务
+和进程入口会记录 panic 值与 stack。
 
-Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和启用的 provider 扩展目录的合并结果。自定义 provider/model 和协议兼容字段通过设置 UI 或 provider API 管理；不从网络刷新目录。provider 扩展以进程级 sidecar 接管完整 streamer，普通 provider 仍由 ki 内置 HTTP adapter 处理；`--model provider/model` 只写回 session 配置。
+每个 session 另有不进入消息树、API、SSE 或模型上下文的 `telemetry.jsonl`：每行是
+OTLP/JSON `ExportLogsServiceRequest`，记录 model request 的 cache 前缀摘要与 usage、分类后
+的 tool outcome 和 run summary；只保存 hash、计数、状态和 trace/span ID，不保存 prompt、
+工具参数/结果、credential 或 opaque provider 内容。文件到 32 MiB 后保留一个 `.1` 备份，
+写入失败仅告警而不影响 run。
 
-每轮 `runPrompt` 解析模型后，把 `input`、API 和 `applyPatchToolType` 映射为 provider-neutral `builtin.Profile`，再一次性构造本轮内置工具。显式声明能力的 Responses 模型使用 native custom/freeform `apply_patch`，其它模型使用 `Write` + `Edit`，两组编辑器互斥；独立的 `execToolType` 决定 Code Mode 使用 raw JS 还是 JSON `{code}`，不能仅由 Responses 协议或 patch 能力推断。Completions / Anthropic 始终使用 JSON exec 与 Write/Edit；扩展私有 API 按其显式声明的工具契约组装。`input` 含 `image` 的模型使用富媒体 `Read`（带 `pages`）。同一份工具集进入 prompt、loop 和 `request_header`，模型切换后的下一轮立即重建。provider 扩展收到完整 `loop.Request`，在 sidecar 内完成请求构造、传输和响应解析，Host adapter 只把紧凑事件还原成 loop 增量。
+## 受理与资源快照
 
-`spawn_agent` 创建 `forkMode=tree` 的具名 child，继承 provider/model/cwd，并以独立 runState 异步执行 loop。`fork_turns` 默认 all，支持 none/N 个完整已完成 user turn；当前轮及 QueueOnly 消息不作为 fork 边界。身份信封包含 `/root/...` task path，system/tools 与 parent 前缀一致；没有固定深度限制。agent.Controller 按 root 限制活跃 child turn（默认 4），完成后释放容量并保留身份。send_message 先持久化 context queue 再唤醒 live Inbox，idle 时不启动模型；followup_task 接受显式工作，busy/容量满时持久排队并在名额释放时续跑。wait_agent 观察 mailbox/user steer，list/wait 不认领结果。每代次完成通知写入结构 parent，上下文交付在 transcript 持久化时按 taskId/generation 去重；idle parent 无自动新轮次。agent.json v3 恢复身份与 pending，shell handle 不恢复。exec_command/write_stdin 由 session 的 process.Manager 管理，工具等待取消不终止进程；turn/process/tree 的中止 scope 分别控制运行轮次、指定进程和结构后代。进度经 sideband JSONL、现有 SSE 和 session GET 的 processes/agents 投影传递。详见 [tools.md](tools.md)。
+`POST /v1/sessions/{id}/prompt` 只受理（202），后台 goroutine 跑 `loop.Run`；
+`GET /v1/sessions/{id}/events` 以 SSE 重放本次 run 的事件。事件先落盘（jsonl）再进缓冲，
+SSE 见到 `agent_end` 就关流。
 
-初始 agent publication 与首条 durable generation 接纳原子完成；spawn reservation 持有责任直到 commit 或 rollback。shutdown 是一次启动、多个观察者共享的 owned cleanup：先 fence 新占用、取消所有 root/child，并开始关闭已注册 manager 以及时停止 OS 进程；共享输出 store/files/extensions 则等 warmup、dispatch、所有代次 writer、release、完成回调与 manager final listener 屏障后才清理。关闭后的 setup 只能拿到已关闭 manager，不能新建 owner。`Shutdown(ctx)` 的期限只限制调用方等待；超时返回 context 错误，不以早删资源冒充清理完成。删除 session 也在 tree 遍历之前 fence agent admission 和 session occupy/dispatch，等待已接纳 spawn 收敛，避免遗漏 late child 或队列重启。extension activeTools 仍是各 session 的工具选择，child 独立 Prepare，不是 sandbox/权限继承机制。
+### 系统提示词
 
-主进程缓存分开管理正文、结构索引和已完成回放：正文加权 LRU 64MiB（单会话 8MiB），轻量元数据/偏移索引 16MiB，完成回放 16MiB / 2 分钟；各最多 256 项。相同 request_header 的 system/tools 在当前对象生命周期内共享，索引/分页/compact 按偏移读取所选正文。活动模型 Session 仍需要完整上下文，缓存预算不冒充进程 RSS 上限。资源 reload 只读 header 定位 cwd，不为失效资源再打开完整历史。详细约束见 [session.md](session.md) 与 [events.md](events.md)。
+系统提示词由 `internal/prompt` 从预加载的资源快照纯渲染，其中含 ki 自身配置布局
+（`KI_HOME`、ki.toml、skills/、models.json 等路径；ki 是单二进制、无内置文档，所以直接
+列出路径）、内置追加指令（`prompt.DefaultAppendSystemPrompt`，搜索工具偏好）、global /
+project 两个叠加的 `APPEND_SYSTEM.md`、启用扩展的 `prompt.append`、运行 OS/架构、cwd 和
+本地日期时区。追加栈由 `prompt.AppendSection` 复用同一套 `appendBlocks` 渲染，设置页
+（`GET/PUT/DELETE /v1/prompt/append`）的预览与实际 prompt 因此不会漂移。
+
+运行环境字段在 session 首次加载资源时计算一次，普通消息不会重复探测；reload 后随新快照
+更新。模型被问及「去哪改 server / 扩展 / skills 设置」时读这段，配合 `ki config path`。
+完整分层与缓存边界见 [system_prompt.md](system_prompt.md)。
+
+### 资源与扩展视图
+
+`internal/resources.Loader` 由 Server 持有，把运行环境、skills、AGENTS/CLAUDE 和 prompt
+模板合并成 session 级不可变快照。设置页没有 session，只用不缓存的 `Scan(cwd)` 展示配置。
+每轮 prompt 在渲染前准备当前 session 的 extension view；扩展工具与内置工具一起进入
+prompt、loop 和 `request_header`，单个扩展失败不阻断本轮。
+
+### 每轮工具集
+
+每轮 `runPrompt` 解析模型后，把 `input`、API 和 `applyPatchToolType` 映射为
+provider-neutral `builtin.Profile`，再一次性构造本轮内置工具：
+
+- 显式声明能力的 Responses 模型使用 native custom/freeform `apply_patch`，其它模型使用
+  `Write` + `Edit`，两组编辑器互斥；
+- 独立的 `execToolType` 决定 Code Mode 使用 raw JS 还是 JSON `{code}`，不能仅由 Responses
+  协议或 patch 能力推断；
+- Completions / Anthropic 始终使用 JSON exec 与 Write/Edit；
+- `input` 含 `image` 的模型使用富媒体 `Read`（带 `pages`）。
+
+同一份工具集进入 prompt、loop 和 `request_header`，模型切换后的下一轮立即重建。provider
+扩展收到完整 `loop.Request`，在 sidecar 内完成请求构造、传输和响应解析，Host adapter 只把
+紧凑事件还原成 loop 增量。
+
+### Provider 来源
+
+Provider 协议形状来自嵌入式离线 catalog、`{KI_HOME}/models.json` 和启用的 provider 扩展
+目录的合并结果。自定义 provider/model 和协议兼容字段通过设置 UI 或 provider API 管理；
+不从网络刷新目录。provider 扩展以进程级 sidecar 接管完整 streamer，普通 provider 仍由 ki
+内置 HTTP adapter 处理；`--model provider/model` 只写回 session 配置。详见
+[provider.md](provider.md)。
+
+## 子代理
+
+`spawn_agent` 创建 `forkMode=tree` 的具名 child，继承 provider/model/cwd，并以独立
+runState 异步执行 loop。`fork_turns` 默认 all，支持 none/N 个完整已完成 user turn；当前轮
+及 QueueOnly 消息不作为 fork 边界。身份信封包含 `/root/...` task path，system/tools 与
+parent 前缀一致；没有固定深度限制。
+
+agent.Controller 按 root 限制活跃 child turn（默认 4），完成后释放容量并保留身份。
+send_message 先持久化 context queue 再唤醒 live Inbox，idle 时不启动模型；followup_task
+接受显式工作，busy/容量满时持久排队并在名额释放时续跑。wait_agent 观察 mailbox/user
+steer，list/wait 不认领结果。每代次完成通知写入结构 parent，上下文交付在 transcript 持久
+化时按 taskId/generation 去重；idle parent 无自动新轮次。agent.json v3 恢复身份与 pending，
+shell handle 不恢复。
+
+exec_command/write_stdin 由 session 的 process.Manager 管理，工具等待取消不终止进程；
+turn/process/tree 的中止 scope 分别控制运行轮次、指定进程和结构后代。进度经 sideband
+JSONL、现有 SSE 和 session GET 的 processes/agents 投影传递。详见 [tools.md](tools.md)。
 
 ## Code Mode
 
-MCP 配置来自全局 `mcp.json` 与会话 cwd 的 `.ki/mcp.json`；项目同名服务器完整覆盖全局。服务器开关与其它全局开关共享 `toggles.json`。官方 Go SDK manager 按不可变配置快照缓存在 server 内，每个 occupy 持有引用，最多 32 个快照；只有空闲快照可被淘汰，配置或开关变化不能关闭正在使用的连接。Settings 与 Session Info 只展示无凭据配置及缓存目录，不发起连接。每次 occupy 将允许的 MCP 工具并入固定执行快照；search_tool 可用时，`loop.Config.ModelTools` 从 post-hook 模型历史投影已披露 schema，provider 声明与执行 registry 分开。没有 search_tool 就直接发布，不保留 Deferred。完整允许的 JS 能力始终在 worker tools/ALL_TOOLS。配置、SDK 生命周期与跨协议差异见 [mcp.md](mcp.md)。
+Code Mode 固定为 mixed：在普通工具经开关、extension Prepare 和 activeTools 过滤后，构造
+`exec/wait` 与固定的嵌套 dispatcher，普通工具同时保留直接入口。`ki serve` 按 session 懒
+启动同一二进制的私有 goja worker；JS 仅通过双向 stdio IPC 请求父进程执行工具，WebUI 不
+运行这些代码。外层结果走普通消息，嵌套审计走现有 loop/jsonl/SSE；事件漏斗串行化并发
+callback 与模型事件。详见 [code-mode-design.md](code-mode-design.md)。
 
-Code Mode 固定为 mixed：在普通工具经开关、extension Prepare 和 activeTools 过滤后，构造 `exec/wait` 与固定的嵌套 dispatcher，普通工具同时保留直接入口。`ki serve` 按 session 懒启动同一二进制的私有 goja worker；JS 仅通过双向 stdio IPC 请求父进程执行工具，WebUI 不运行这些代码。外层结果走普通消息，嵌套审计走现有 loop/jsonl/SSE；事件漏斗串行化并发 callback 与模型事件。详见 [code-mode-design.md](code-mode-design.md)。
+MCP 配置来自全局 `mcp.json` 与会话 cwd 的 `.ki/mcp.json`，服务器开关与其它全局开关共享
+`toggles.json`。官方 Go SDK manager 按不可变配置快照缓存在 server 内，每个 occupy 持有
+引用，最多 32 个快照。每次 occupy 将允许的 MCP 工具并入固定执行快照；`search_tool` 可用
+时，`loop.Config.ModelTools` 从 post-hook 模型历史投影已披露 schema，provider 声明与执行
+registry 分开。没有 `search_tool` 就直接发布，不保留 Deferred。详见 [mcp.md](mcp.md)。
 
-## HTTP
+## 生命周期与清理
 
-除 `GET /v1/health`、`GET /v1/auth/status` 和 `POST /v1/auth/login` 外，API 要么带 `Authorization: Bearer`，要么带 WebUI 登录后设置的 HttpOnly browser session cookie。浏览器写请求还要带 `X-Ki-CSRF`，CLI 继续使用 Bearer。非 `/v1` 路径是同域 WebUI，SPA HTML 不注入 server token。裸 `ki`（含双击启动）打印并打开带 `#token=…` fragment 的自动登录链接：fragment 不随 HTTP 请求或 Referer 发送；SPA 读取后立即用 `history.replaceState` 清除，再先查询 auth status 绑定 serverId，通过现有登录接口换发短期 cookie，已有有效 cookie 时无需重复登录。链接本身是凭据，不应分享；不得把 token 放进 URL query、路径或 HTML，也不写入浏览器存储。普通 URL 和自动登录失败仍保留手动输入 token 的登录页。登录会话仅保存在 server 内存中，server 重启后失效；切换后端不会重用已消费的 fragment token。
+初始 agent publication 与首条 durable generation 接纳原子完成；spawn reservation 持有责任
+直到 commit 或 rollback。
 
-| 方法 | 路径 | 作用 |
+shutdown 是一次启动、多个观察者共享的 owned cleanup：
+
+1. fence 新占用，取消所有 root/child，并开始关闭已注册 manager 以及时停止 OS 进程；
+2. 共享输出 store / files / extensions 等 warmup、dispatch、所有代次 writer、release、
+   完成回调与 manager final listener 屏障后才清理。
+
+关闭后的 setup 只能拿到已关闭 manager，不能新建 owner。`Shutdown(ctx)` 的期限只限制调用方
+等待；超时返回 context 错误，不以早删资源冒充清理完成。
+
+删除 session 也在 tree 遍历之前 fence agent admission 和 session occupy/dispatch，等待已
+接纳 spawn 收敛，避免遗漏 late child 或队列重启。extension activeTools 仍是各 session 的
+工具选择，child 独立 Prepare，不是 sandbox/权限继承机制。
+
+## 缓存
+
+主进程缓存分开管理正文、结构索引和已完成回放：
+
+| 类别 | 预算 | 说明 |
 |---|---|---|
-| GET | `/v1/health` | 存活探测，无需鉴权；返回 `ok` 与当前构建 `version`，供客户端在登录前判断对面是不是新启动的实例 |
-| GET | `/v1/auth/status` | 返回是否已登录、进程级随机 `serverId` 与 `csrfCookieName`，不返回 token |
-| POST | `/v1/auth/login` | 校验 body 中的 token，换发 HttpOnly browser session 和 CSRF cookie |
-| POST | `/v1/auth/logout` | 清除当前 browser session 和 CSRF cookie |
-| GET | `/v1/models` | registry 的可选模型扁平视图（含 `thinkingLevels` / `defaultThinking`） |
-| GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential、OAuth login/logout 和 model 管理；扩展 provider 目录只读 |
-| PUT | `/v1/default-model` | 显式记住上次选用的模型；WebUI 切模型时 server 也会写 |
-| GET | `/v1/meta` | 上次选用的模型（不可用则第一个可用项）、该模型 default thinking、用户 home，以及本进程身份 `version` / `releaseTag` / `pid` / `startedAt` / `exe` / `kiHome`（Settings → About 只读展示，浏览器读不到 `server.json`，是 WebUI 显示版本号的唯一来源） |
-| POST | `/v1/shutdown` | 请求 daemon 退出；先回 `202 {ok, pid}` 再触发 owned cleanup。`ki stop` / `ki restart` 使用；旧构建没有该路由时客户端退回信号 |
-| GET | `/v1/commands` | 按可选 `workspaceId` 扫描的内置、prompt template 和 skill 命令；用于尚未创建 session 的 WebUI composer |
-| GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned / parentSessionId / forkMode）。每行只读 `config.json`、jsonl header 和 title fallback 的首条 user message，不解析整份 transcript；行按 `events.jsonl` / `config.json` 的 size+mtime 缓存。响应带按渲染结果计算的 `ETag`，客户端用 `If-None-Match` 命中时返回 `304`，未变时侧栏不刷新状态 |
-| POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…`；可选 `model` / `thinkingEffort`，省略则用上次选用的模型和该模型 default thinking。WebUI 传入当前 composer 的模型配置 |
-| GET | `/v1/sessions/search` | 正文字面搜索普通/flat session；默认 20 条，可用 `limit=1..500` 调整；tree child 通过全量 session list 的 Tree 浏览器访问 |
-| GET | `/v1/sessions/{id}` | header、leaf、模型、slim `entries`（active leaf 最新一页，默认 100 条）、`hasMore` / `oldestId`、running、只读 `availableSkills` / `availableExtensions`（含已加载的 skills / tools / commands / promptAppend / providers） / `commands` / `queued` / `extQueued` / `extensionUi` / `runtime.ready`。整棵树的 `index`（无正文）只在 `fields=index` 时返回；比一次尾部读取还短的 session 随默认响应返回。查询：`fields=runtime` 省略 transcript；`entry` / `entries` 取全文；`before` + `limit` 取更早的 leaf 尾。不返回 `messages`。打开 session 时后台 Prepare 全局 extension 的 session view |
-| PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / `queued`（保留 id 列表）；run 或独立压缩占用 session 时，会改变上下文绑定的 `model` / `thinkingEffort` / `leafId` 返回 409，避免压缩准备后的 leaf 被并发推进 |
-| DELETE | `/v1/sessions/{id}` | 删该会话目录 |
-| POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId` / `delivery` / `queueId`；空闲 `202 started`；忙时 `steer` 插入本轮或 `queue` 排队，省略则用 `toggles.json` `message.busy`；`queueId`+`delivery=steer` 从 `queue.json` 取出插入本轮；`parentId` 且 busy 仍 **409** |
-| GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`）与上下文窗口硬上限（`contextWindow`，默认 5,000,000，1–100,000,000）；两者都可单独 PATCH |
-| GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件；完成回放受 16MiB / 2 分钟 / 256 run 限制，过期或无回放时现存 session 返回 410，客户端从 session GET 恢复 |
-| GET | `/v1/events` | 每个 WebUI tab 的全局 push SSE；仅发送失效、终态和 session sideband，不发送 run 增量 |
-| GET | `/v1/push/config` | 返回 Web Push 是否启用及 VAPID 公钥 |
-| POST | `/v1/push/subscriptions` | 注册或更新浏览器 PushSubscription（按 endpoint 幂等） |
-| DELETE | `/v1/push/subscriptions` | 按 `endpoint` 删除浏览器订阅 |
-| POST | `/v1/sessions/{id}/extension-ui` | 面板 action / submit / confirm / select 回传 sidecar |
-| POST | `/v1/sessions/{id}/abort` | cancel |
-| POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
-| POST | `/v1/reload` | 清空闲 session 的资源快照并重载 extension catalog；body 可带 `sessionId` 只重载该 session |
-| GET/PATCH | `/v1/tools` `/v1/skills` `/v1/extensions` | 全局启用开关（`toggles.json`）；tools 返回 `{items, mcp}` 并只接受可选 `disabled` / `mcpDisabled`，管理内置工具与 MCP 服务器开关 |
-| GET | `/v1/extensions/available` | 可安装包清单（内置 catalog × 磁盘现状 × 安装阶段），不联网 |
-| POST | `/v1/extensions/{name}/install` | 后台从 release 下载安装，202；阶段经 `scope=extensions` invalidation 推送 |
-| GET/PATCH | `/v1/extensions/{name}/config` | 扩展配置（脱敏读写） |
-| POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径；body 可传 `forkMode=flat|tree`，返回 `parentSessionId` / `forkMode`，删除时仅沿 tree 边级联。带 `entryId` 时运行中也可 fork（复制的是已落盘的完整前缀）；省略 `entryId`（fork 活动 leaf）且会话运行中仍 **409** |
-| POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |
-| GET | `/v1/workspaces` | 工作区登记（含 `sessionIds` / `temp`） |
-| POST | `/v1/workspaces` | 登记 path（可 mkdir） |
-| PATCH | `/v1/workspaces/{id}` | 改 title |
-| DELETE | `/v1/workspaces/{id}` | 删组内会话日志和登记，不删工作区磁盘目录 |
-| POST | `/v1/workspaces/{id}/move` | 工作区排序 |
-| POST | `/v1/workspaces/{id}/sessions/move` | 组内会话排序 |
-| GET | `/v1/fs` | 列目录；`files=1` 时也列普通文件供附件选择；`preview=1` 同源预览图片、文本/代码和 PDF |
-| POST | `/v1/fs` | 在已有目录下建子文件夹 |
+| 正文 | 加权 LRU 64 MiB（单会话 8 MiB） | 按文件 identity + size + mtime 校验 |
+| 元数据 / 偏移索引 | 16 MiB | 不保留历史正文、工具参数或 schema |
+| 完成回放 | 16 MiB / 2 分钟 | 活动 run 不参与淘汰 |
 
-`message_end` 上 await 写 jsonl。未启用 provider inline compaction 时，阈值检查发生在一个完整工具批次及其 tool results 落盘之后、下一次模型请求之前；`agent_end` 后不压缩。SSE reader 在 run 锁之外投影 typed message 并编码 patch，每次 write/flush 最多等待 30s；慢连接不占用事件漏斗。buffer 只在入队时计量 payload，debug 采样记录排队、编码与写入耗时。WebUI 按顺序解码、逐帧合并显示，终态立即 flush；可见身份与持久化 entryId 分开，使定稿不重挂载正文。SSE 在 run `done` 后先排空剩余事件，再结束（等待循环"先 `close(done)` 后 `Broadcast()`"的顺序协议有 TLA+ 模型验证，见 `spec/events-wait`）。
+各类最多 256 项。相同 `request_header` 的 system/tools 在当前对象生命周期内共享；索引 /
+分页 / compact 按偏移读取所选正文。活动模型 Session 仍需要完整上下文，缓存预算不冒充
+进程 RSS 上限。资源 reload 只读 header 定位 cwd，不为失效资源再打开完整历史。详细约束见
+[session.md](session.md) 与 [events.md](events.md)。
+
+## 压缩
 
 压缩有三个触发时机：
 
-1. **preflight**：prompt 受理后、`loop.Run` 前，上下文已超阈值（resume/超大 prompt）就压缩一次，失败不阻断。
-2. **overflow**：请求失败且错误匹配溢出正则表（`internal/loop/overflow.go`，对齐 pi `OVERFLOW_PATTERNS`，排除 rate-limit）→ `Hooks.OnContextOverflow(ctx, failedRequest)`（server 收到真实 system/messages/Responses prefix，压缩后返回完整 `ModelContext`）→ 同 Run 内同时替换 portable history 和 opaque prefix，再重试一次（`_overflowRecoveryAttempted` 语义）。溢出错误不做指数退避重试（重发同量级请求必败）。`stopReason == "length"` 的工具调用全部拒执（参数可能截断，让模型重发）。
-3. **threshold**：仍需继续请求模型的工具轮在 tool call/result 完整落盘后估算超阈值 → 原地压缩并用新 context 进入下一轮；临时失败会在后续工具轮重试，同一 run 连续失败 3 次后停止主动尝试并保留 overflow recovery，extension cancel/空计划不重试。估算优先用最后一条 assistant 的 usage（pi `calculateContextTokens`：`totalTokens`，回退 `input+output+cacheRead+cacheWrite`）再加 trailing 消息；remote checkpoint 因模型/credential/protocol 失配而展开成 portable history 时，旧 checkpoint-scoped usage 必须失效并改用完整序列化历史估算。run 没有下一模型轮或已经到 `agent_end` 时不做 threshold 压缩。
+1. **preflight**：prompt 受理后、`loop.Run` 前，上下文已超阈值（resume/超大 prompt）就压缩
+   一次，失败不阻断。
+2. **overflow**：请求失败且错误匹配溢出正则表（`internal/loop/overflow.go`，对齐 pi
+   `OVERFLOW_PATTERNS`，排除 rate-limit）→ `Hooks.OnContextOverflow(ctx, failedRequest)`
+   （server 收到真实 system/messages/Responses prefix，压缩后返回完整 `ModelContext`）→
+   同 Run 内同时替换 portable history 和 opaque prefix，再重试一次
+   （`_overflowRecoveryAttempted` 语义）。溢出错误不做指数退避重试（重发同量级请求必败）。
+   `stopReason == "length"` 的工具调用全部拒执（参数可能截断，让模型重发）。
+3. **threshold**：仍需继续请求模型的工具轮在 tool call/result 完整落盘后估算超阈值 → 原地
+   压缩并用新 context 进入下一轮；临时失败会在后续工具轮重试，同一 run 连续失败 3 次后
+   停止主动尝试并保留 overflow recovery，extension cancel/空计划不重试。
 
-`[compaction] mode` 为 `auto`（默认）、`local` 或 `remote`。模型目录用独立能力声明 standalone 与 inline，例如 OpenAI 为 `compaction:{standalone:"openai",inline:"openai"}`，Codex OAuth 为 `compaction:{standalone:"codex-v2"}`；不能由 `api:"responses"` 或模型名推断。`auto` 优先 standalone（OpenAI `POST /responses/compact` 或 Codex 普通 `/responses` + `compaction_trigger`），失败回退本地摘要；若 provider-facing messages 已被扩展改变，则失败而不回退到未变换的历史。`remote` 是 strict：能力缺失、custom local result/instructions、RPC 或持久化失败都会明确失败。opaque checkpoint 按 provider/API/base URL/model/实际请求 credential/compaction protocol 隔离。
+估算优先用最后一条 assistant 的 usage（pi `calculateContextTokens`：`totalTokens`，回退
+`input+output+cacheRead+cacheWrite`）再加 trailing 消息；remote checkpoint 因模型 /
+credential / protocol 失配而展开成 portable history 时，旧 checkpoint-scoped usage 必须
+失效并改用完整序列化历史估算。run 没有下一模型轮或已经到 `agent_end` 时不做 threshold
+压缩。
 
-显式压缩统一走 `Intent → Prepare → session_before_compact → Execute strategy → Validate → Commit`。`compact.PrepareWithIntent` 是纯规划；`compact.GenerateWithInputLimit` 调摘要模型，超过有效输入预算时按 UTF-8 字节上界分块，以最多 4 个并发 map 请求生成有长度约束的 partial checkpoint，再层次归并；`compact.Commit` 校验结果并用 `sourceLeafId` 原子拒绝过期 plan。hook 在 Prepare 后收到 portable preparation，可 cancel 或返回 `{result:{summary,usage?,details?}}`；Host 始终控制 cut、retained tail 和 tokensBefore。remote 的 request preparation、provider execution 与 expected-leaf commit 同样分阶段。`/compact [instructions]`、CLI `session compact [instructions]` 与 HTTP `{instructions}` 把要求加入本地摘要 prompt。
+### 策略选择
 
-`[compaction] server_side=true`（默认）只对 `compaction.inline:"openai"` 的 Responses 模型发送 `context_management`；standalone-only 模型不会启用，也不能用私有 `responsesItems` 注入 inline checkpoint。阈值为有效模型窗口减 `reserve_tokens`。这类模型关闭 host preflight/threshold，overflow 和手动 `/compact` 仍看 standalone 能力。completed terminal raw suffix 与 assistant 原子提交；failed/incomplete/cancelled output 不提升，opaque 内容不进入普通 message、SSE、WebUI、CLI 或 lifecycle payload。
+`[compaction] mode` 为 `auto`（默认）、`local` 或 `remote`。模型目录用独立能力声明
+standalone 与 inline，例如 OpenAI 为 `compaction:{standalone:"openai",inline:"openai"}`，
+Codex OAuth 为 `compaction:{standalone:"codex-v2"}`；不能由 `api:"responses"` 或模型名
+推断。
 
-每次成功压缩都会对该 session 触发 reload：压缩发生在 prompt 或手动 `/compact` 的 occupy 中，统一走 `requestReload`，排队到匹配的 `release`。上下文已重建，下一次 `prompt.Build` 必须使用重读磁盘后的快照。`POST /v1/reload` 和 `/reload` 是全局/session reload 入口；忙时排队到对应 run 的 `release`。设置页写入或删除 `APPEND_SYSTEM.md` 后同样走一次全局 reload，否则改了文件的下一次 prompt 仍会用缓存里的旧快照。run 之外的手动 `/compact` 完成后立即重算并追加 `context_usage`（char/4，加上最后一次 `request_header` 的 system/tools 估算）并经 push 下发；run 内 threshold 会在下一次 `request_header` 立即产生新 meter。空闲 session 切换模型也按新 binding 立即重算，不能继续展示旧 remote checkpoint 的 usage。
+- `auto` 优先 standalone（OpenAI `POST /responses/compact` 或 Codex 普通 `/responses` +
+  `compaction_trigger`），失败回退本地摘要；若 provider-facing messages 已被扩展改变，则
+  失败而不回退到未变换的历史。
+- `remote` 是 strict：能力缺失、custom local result/instructions、RPC 或持久化失败都会
+  明确失败。
+- opaque checkpoint 按 provider / API / base URL / model / 实际请求 credential /
+  compaction protocol 隔离。
 
-host 阈值判定 `compact.ShouldRun(tokens, contextWindow, cfg)`：`tokens > contextWindow - reserveTokens`，窗口缺省 128000。`cfg.MaxContextTokens`（ki.toml `[compaction] max_context_tokens`）取 min 兜底——小于模型窗口时以它为准，小值让压缩提前触发（低成本测试不烧 token），0 = 只用模型窗口；同一个有效窗口也用于 server-side `compact_threshold`。Settings → Message 的 `contextWindow`（`toggles.json` `message.contextWindow`，默认 5,000,000）是叠在模型窗口之上的硬上限，和 `max_context_tokens` 一样只取 min，不会抬高更小的模型窗口；context meter、host 阈值、server-side `compact_threshold` 都通过同一个 `effectiveContextWindow` 计算。未知（0）模型窗口保持未知，由各调用点保留自己的默认值。摘要请求的输入预算仍按模型原始窗口计算，避免很小的上限把摘要本身压到无法生成。
+### 执行阶段
 
-压缩 no-op 保护（对齐 pi `prepareCompaction` 返回 undefined）：切点预算（`keep_recent_tokens`，char/4 口径）装下整个对话时没有值得摘要的内容，`Prepare` 返回 `ErrNothingToCompact`——不调模型、不落盘；自动路径（A/D）静默跳过，手动 `/compact` 返回 409 "nothing to compact (session too small)"。
+显式压缩统一走 `Intent → Prepare → session_before_compact → Execute strategy → Validate →
+Commit`：
+
+- `compact.PrepareWithIntent` 是纯规划；
+- `compact.GenerateWithInputLimit` 调摘要模型，超过有效输入预算时按 UTF-8 字节上界分块，
+  以最多 4 个并发 map 请求生成有长度约束的 partial checkpoint，再层次归并；
+- `compact.Commit` 校验结果并用 `sourceLeafId` 原子拒绝过期 plan。
+
+hook 在 Prepare 后收到 portable preparation，可 cancel 或返回
+`{result:{summary,usage?,details?}}`；Host 始终控制 cut、retained tail 和 tokensBefore。
+remote 的 request preparation、provider execution 与 expected-leaf commit 同样分阶段。
+`/compact [instructions]`、CLI `session compact [instructions]` 与 HTTP `{instructions}` 把
+要求加入本地摘要 prompt。
+
+### Server-side compaction
+
+`[compaction] server_side=true`（默认）只对 `compaction.inline:"openai"` 的 Responses 模型
+发送 `context_management`；standalone-only 模型不会启用，也不能用私有 `responsesItems` 注入
+inline checkpoint。阈值为有效模型窗口减 `reserve_tokens`。这类模型关闭 host
+preflight/threshold，overflow 和手动 `/compact` 仍看 standalone 能力。completed terminal raw
+suffix 与 assistant 原子提交；failed/incomplete/cancelled output 不提升，opaque 内容不进入
+普通 message、SSE、WebUI、CLI 或 lifecycle payload。
+
+### 阈值
+
+host 阈值判定 `compact.ShouldRun(tokens, contextWindow, cfg)`：
+`tokens > contextWindow - reserveTokens`，窗口缺省 128000。
+
+- `cfg.MaxContextTokens`（`[compaction] max_context_tokens`）取 min 兜底——小于模型窗口时
+  以它为准，小值让压缩提前触发（低成本测试不烧 token），0 = 只用模型窗口；
+- Settings → Message 的 `contextWindow`（`toggles.json` `message.contextWindow`，默认
+  5,000,000）是叠在模型窗口之上的硬上限，同样只取 min，不会抬高更小的模型窗口；
+- context meter、host 阈值、server-side `compact_threshold` 都通过同一个
+  `effectiveContextWindow` 计算。未知（0）模型窗口保持未知，由各调用点保留自己的默认值。
+
+摘要请求的输入预算仍按模型原始窗口计算，避免很小的上限把摘要本身压到无法生成。
+
+压缩 no-op 保护（对齐 pi `prepareCompaction` 返回 undefined）：切点预算
+（`keep_recent_tokens`，char/4 口径）装下整个对话时没有值得摘要的内容，`Prepare` 返回
+`ErrNothingToCompact`——不调模型、不落盘；自动路径（A/D）静默跳过，手动 `/compact` 返回
+409 "nothing to compact (session too small)"。
+
+### 压缩后的 reload
+
+每次成功压缩都会对该 session 触发 reload：压缩发生在 prompt 或手动 `/compact` 的 occupy
+中，统一走 `requestReload`，排队到匹配的 `release`。上下文已重建，下一次 `prompt.Build`
+必须使用重读磁盘后的快照。
+
+`POST /v1/reload` 和 `/reload` 是全局/session reload 入口；忙时排队到对应 run 的
+`release`。设置页写入或删除 `APPEND_SYSTEM.md` 后同样走一次全局 reload，否则改了文件的
+下一次 prompt 仍会用缓存里的旧快照。
+
+run 之外的手动 `/compact` 完成后立即重算并追加 `context_usage`（char/4，加上最后一次
+`request_header` 的 system/tools 估算）并经 push 下发；run 内 threshold 会在下一次
+`request_header` 立即产生新 meter。空闲 session 切换模型也按新 binding 立即重算，不能继续
+展示旧 remote checkpoint 的 usage。
 
 ## 循环事件
 
@@ -140,9 +269,115 @@ compaction_start / compaction_end                   # 溢出恢复时（reason=o
 agent_end
 ```
 
-字段跟 pi；`patch_apply_updated` 是 apply_patch 输入仍在生成时的语法预览，不表示已经执行。写盘和 SSE 是 server 挂在 `emit` 上的订阅者，不进 loop 包。
+字段跟 pi；`patch_apply_updated` 是 apply_patch 输入仍在生成时的语法预览，不表示已经执行。
+写盘和 SSE 是 server 挂在 `emit` 上的订阅者，不进 loop 包。
 
-`queue_changed` / `run_aborted` 是不推进消息 leaf 的 sideband 事件，沿同一 jsonl/SSE 通道发布；`steer_accepted` 只进当前 run 的 SSE（Inbox 收下、尚未 drain）。run 在 drain 前被 abort 时，待处理 steer 会在 `release` 前作为未回复的 user turn 落到 jsonl，用户消息不会随本轮取消丢失。
+`queue_changed` / `run_aborted` 是不推进消息 leaf 的 sideband 事件，沿同一 jsonl/SSE 通道
+发布；`steer_accepted` 只进当前 run 的 SSE（Inbox 收下、尚未 drain）。run 在 drain 前被
+abort 时，待处理 steer 会在 `release` 前作为未回复的 user turn 落到 jsonl，用户消息不会随
+本轮取消丢失。完整事件目录见 [events.md](events.md)。
+
+### 事件漏斗
+
+事件流方向与 import 方向相反：loop 产生事件，依赖中立的 `tool` 契约、`tool/output` 输出
+策略、`types` 和诊断能力，落盘、压缩、SSE 都是 server 挂在 `emit` 回调上的订阅者；模型
+实现经 `loop.Streamer` 接口注入。
+
+每轮 run 只有一个事件漏斗（`internal/server/emit.go` 的 `runEmitter`），按固定顺序把事件
+喂给各订阅者：
+
+1. jsonl 落盘；
+2. runState 缓冲（SSE 重放）；
+3. WebUI push（仅终态帧）；
+4. 扩展 lifecycle 通知；
+5. context meter 与 `agent_end` 的阈值压缩。
+
+这个顺序是契约，所以漏斗始终是 loop 所在 goroutine 上的一条同步调用链，任何一级都不得
+另起 goroutine（`agent_settled` 越过 `message_end` 的教训见 `notifyExtensions`）。
+
+同一份事件还要携带 run 身份：`runId` 与 `external` 由 `buffer` 写回**调用方那个事件**
+（因此它取指针），而不是只写在缓冲副本上，因为其后的 WebUI 终态帧与扩展 lifecycle 通知
+读的是同一个事件，订阅者认不出归属就只能丢弃——渠道扩展收到空 `runId` 时不会回复（教训
+见 `docs/postmortem/2026-09-24-extension-events-lost-run-identity.md`）。
+
+runState 是 server 包内类型，由 `runs` map 持有。空闲新 prompt occupy 并替换已结束的
+runState；忙时 steer 写入 Inbox，queue 写入 `queue.json`，`queueId` 把已入队条目原子提升
+进 Inbox（原 occupy 已结束则放回头并 `queued` 或新 occupy），`parentId` 仍 409。
+
+## HTTP
+
+### 鉴权
+
+除 `GET /v1/health`、`GET /v1/auth/status` 和 `POST /v1/auth/login` 外，API 要么带
+`Authorization: Bearer`，要么带 WebUI 登录后设置的 HttpOnly browser session cookie。浏览器
+写请求还要带 `X-Ki-CSRF`，CLI 继续使用 Bearer。非 `/v1` 路径是同域 WebUI，SPA HTML 不注入
+server token。
+
+裸 `ki`（含双击启动）打印并打开带 `#token=…` fragment 的自动登录链接：fragment 不随 HTTP
+请求或 Referer 发送；SPA 读取后立即用 `history.replaceState` 清除，再先查询 auth status
+绑定 serverId，通过现有登录接口换发短期 cookie，已有有效 cookie 时无需重复登录。链接本身
+是凭据，不应分享；不得把 token 放进 URL query、路径或 HTML，也不写入浏览器存储。普通 URL
+和自动登录失败仍保留手动输入 token 的登录页。登录会话仅保存在 server 内存中，server 重启
+后失效；切换后端不会重用已消费的 fragment token。
+
+### 路由
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/v1/health` | 存活探测，无需鉴权；返回 `ok` 与当前构建 `version`，供客户端在登录前判断对面是不是新启动的实例 |
+| GET | `/v1/auth/status` | 返回是否已登录、进程级随机 `serverId` 与 `csrfCookieName`，不返回 token |
+| POST | `/v1/auth/login` | 校验 body 中的 token，换发 HttpOnly browser session 和 CSRF cookie |
+| POST | `/v1/auth/logout` | 清除当前 browser session 和 CSRF cookie |
+| GET | `/v1/models` | registry 的可选模型扁平视图（含 `thinkingLevels` / `defaultThinking`） |
+| GET/POST/PATCH/DELETE | `/v1/providers…` | provider、credential、OAuth login/logout 和 model 管理；扩展 provider 目录只读 |
+| PUT | `/v1/default-model` | 显式记住上次选用的模型；WebUI 切模型时 server 也会写 |
+| GET | `/v1/meta` | 上次选用的模型（不可用则第一个可用项）、该模型 default thinking、用户 home，以及本进程身份 `version` / `releaseTag` / `pid` / `startedAt` / `exe` / `kiHome`（Settings → About 只读展示，浏览器读不到 `server.json`，是 WebUI 显示版本号的唯一来源） |
+| POST | `/v1/shutdown` | 请求 daemon 退出；先回 `202 {ok, pid}` 再触发 owned cleanup。`ki stop` / `ki restart` 使用；旧构建没有该路由时客户端退回信号 |
+| GET | `/v1/commands` | 按可选 `workspaceId` 扫描的内置、prompt template 和 skill 命令；用于尚未创建 session 的 WebUI composer |
+| GET | `/v1/sessions` | 列出全部 session（含 title / running / workspaceId / pinned / parentSessionId / forkMode）。每行只读 `config.json`、jsonl header 和 title fallback 的首条 user message，不解析整份 transcript；行按 `events.jsonl` / `config.json` 的 size+mtime 缓存。响应带按渲染结果计算的 `ETag`，客户端用 `If-None-Match` 命中时返回 `304` |
+| POST | `/v1/sessions` | 新建：`workspaceId` → `cwd` → 临时 `{KI_HOME}/workspace/tmp+…`；可选 `model` / `thinkingEffort`，省略则用上次选用的模型和该模型 default thinking。WebUI 传入当前 composer 的模型配置 |
+| GET | `/v1/sessions/search` | 正文字面搜索普通/flat session；默认 20 条，可用 `limit=1..500` 调整；tree child 通过全量 session list 的 Tree 浏览器访问 |
+| GET | `/v1/sessions/{id}` | header、leaf、模型、slim `entries`（active leaf 最新一页，默认 100 条）、`hasMore` / `oldestId`、running、只读 `availableSkills` / `availableExtensions` / `commands` / `queued` / `extQueued` / `extensionUi` / `runtime.ready`。查询参数见 [session.md](session.md) |
+| PATCH | `/v1/sessions/{id}` | 写 `model` / `thinkingEffort` / `title` / `pinned` / `leafId` / `queued`（保留 id 列表）；run 或独立压缩占用 session 时，会改变上下文绑定的 `model` / `thinkingEffort` / `leafId` 返回 409 |
+| DELETE | `/v1/sessions/{id}` | 删该会话目录 |
+| POST | `/v1/sessions/{id}/prompt` | `content[]` + 可选 `parentId` / `delivery` / `queueId`；空闲 `202 started`；忙时 `steer` 插入本轮或 `queue` 排队，省略则用 `toggles.json` `message.busy`；`queueId`+`delivery=steer` 从 `queue.json` 取出插入本轮；`parentId` 且 busy 仍 **409** |
+| GET/PATCH | `/v1/message` | 全局忙碌发送默认（`steer` / `queue`）与上下文窗口硬上限（`contextWindow`，默认 5,000,000，1–100,000,000）；两者都可单独 PATCH |
+| GET | `/v1/sessions/{id}/events` | SSE，按游标重放本次 run 的事件；完成回放受 16MiB / 2 分钟 / 256 run 限制，过期或无回放时现存 session 返回 410，客户端从 session GET 恢复 |
+| GET | `/v1/events` | 每个 WebUI tab 的全局 push SSE；仅发送失效、终态和 session sideband，不发送 run 增量 |
+| GET | `/v1/push/config` | 返回 Web Push 是否启用及 VAPID 公钥 |
+| POST | `/v1/push/subscriptions` | 注册或更新浏览器 PushSubscription（按 endpoint 幂等） |
+| DELETE | `/v1/push/subscriptions` | 按 `endpoint` 删除浏览器订阅 |
+| POST | `/v1/sessions/{id}/extension-ui` | 面板 action / submit / confirm / select 回传 sidecar |
+| POST | `/v1/sessions/{id}/abort` | cancel |
+| POST | `/v1/sessions/{id}/compact` | 手动 compaction（占 `s.runs`） |
+| POST | `/v1/reload` | 清空闲 session 的资源快照并重载 extension catalog；body 可带 `sessionId` 只重载该 session |
+| GET/PATCH | `/v1/tools` `/v1/skills` `/v1/extensions` | 全局启用开关（`toggles.json`）；tools 返回 `{items, mcp}` 并只接受可选 `disabled` / `mcpDisabled` |
+| GET | `/v1/extensions/available` | 可安装包清单（内置 catalog × 磁盘现状 × 安装阶段），不联网 |
+| POST | `/v1/extensions/{name}/install` | 后台从 release 下载安装，202；阶段经 `scope=extensions` invalidation 推送 |
+| GET/PATCH | `/v1/extensions/{name}/config` | 扩展配置（脱敏读写） |
+| POST | `/v1/sessions/{id}/fork` | 以 `entryId` 新建 session 目录，只复制 root → target 路径；body 可传 `forkMode=flat\|tree`，返回 `parentSessionId` / `forkMode`，删除时仅沿 tree 边级联 |
+| POST | `/v1/sessions/{id}/attachments` | multipart `file`；内容寻址保存到该 session，返回结构化 content 引用 |
+| GET | `/v1/workspaces` | 工作区登记（含 `sessionIds` / `temp`） |
+| POST | `/v1/workspaces` | 登记 path（可 mkdir） |
+| PATCH | `/v1/workspaces/{id}` | 改 title |
+| DELETE | `/v1/workspaces/{id}` | 删组内会话日志和登记，不删工作区磁盘目录 |
+| POST | `/v1/workspaces/{id}/move` | 工作区排序 |
+| POST | `/v1/workspaces/{id}/sessions/move` | 组内会话排序 |
+| GET | `/v1/fs` | 列目录；`files=1` 时也列普通文件供附件选择；`preview=1` 同源预览图片、文本/代码和 PDF |
+| POST | `/v1/fs` | 在已有目录下建子文件夹 |
+
+### 落盘与 SSE 边界
+
+`message_end` 上 await 写 jsonl。未启用 provider inline compaction 时，阈值检查发生在一个
+完整工具批次及其 tool results 落盘之后、下一次模型请求之前；`agent_end` 后不压缩。
+
+SSE reader 在 run 锁之外投影 typed message 并编码 patch，每次 write/flush 最多等待 30s；
+慢连接不占用事件漏斗。buffer 只在入队时计量 payload，debug 采样记录排队、编码与写入耗时。
+WebUI 按顺序解码、逐帧合并显示，终态立即 flush；可见身份与持久化 entryId 分开，使定稿不
+重挂载正文。
+
+SSE 在 run `done` 后先排空剩余事件，再结束（等待循环「先 `close(done)` 后 `Broadcast()`」
+的顺序协议有 TLA+ 模型验证，见 `spec/events-wait`）。
 
 ## 时序
 
@@ -183,13 +418,16 @@ C -> S : POST /v1/sessions/{id}/abort（可选）\n→ scope=turn: st.cancel() �
 @enduml
 ```
 
-`POST /prompt` 只受理（202），后台 goroutine 跑 `loop.Run`；`GET /events` 以 SSE 重放本次 run 的事件。事件先落盘（jsonl）再进缓冲，SSE 见到 `agent_end` 就关流。（见图 1）
-
-工具子系统按契约、适配和运行时分开：`tool` 提供接口、schema、注册与命名，`tool/builtin` 组装 file/shell/agent 三组适配器；agent 身份与调度由 `internal/agent` 管理，终端进程由 `internal/process` 管理。server 注入各运行时并把 loop 事件投影为 agent 进度；shell 适配器显式传递进程调用身份。运行时不反向依赖 loop 或工具实现；sidecar 直接复用 process 的进程组控制。详见 [tools.md](tools.md#模块边界)。
-
 ## 包关系
 
-**图 2：包关系**（server / runState / loop / session / compact / provider，以及 CLI / WebUI 两个消费者）
+工具子系统按契约、适配和运行时分开：`tool` 提供接口、schema、注册与命名，
+`tool/builtin` 组装 file/shell/agent 三组适配器；agent 身份与调度由 `internal/agent` 管理，
+终端进程由 `internal/process` 管理。server 注入各运行时并把 loop 事件投影为 agent 进度；
+shell 适配器显式传递进程调用身份。运行时不反向依赖 loop 或工具实现；sidecar 直接复用
+process 的进程组控制。详见 [tools.md](tools.md#模块边界)。
+
+**图 2：包关系**（server / runState / loop / session / compact / provider，以及 CLI / WebUI
+两个消费者）
 
 ```plantuml
 @startuml
@@ -254,5 +492,3 @@ LIVE --> PROTOCOL : neutral Request / Message adapter
 RUNP --> COMPACT : preflight / overflow / threshold 压缩
 @enduml
 ```
-
-事件流方向与 import 方向相反：loop 产生事件，依赖中立的 `tool` 契约、`tool/output` 输出策略、`types` 和诊断能力，落盘、压缩、SSE 都是 server 挂在 `emit` 回调上的订阅者；模型实现经 `loop.Streamer` 接口注入。每轮 run 只有一个事件漏斗（`internal/server/emit.go` 的 `runEmitter`），它按固定顺序把事件喂给各订阅者：jsonl 落盘 → runState 缓冲（SSE 重放）→ WebUI push（仅终态帧）→ 扩展 lifecycle 通知，之后是 context meter 与 `agent_end` 的阈值压缩。这个顺序是契约，所以漏斗始终是 loop 所在 goroutine 上的一条同步调用链，任何一级都不得另起 goroutine（`agent_settled` 越过 `message_end` 的教训见 `notifyExtensions`）。同一份事件还要携带 run 身份：`runId` 与 `external` 由 `buffer` 写回**调用方那个事件**（因此它取指针），而不是只写在缓冲副本上，因为其后的 WebUI 终态帧与扩展 lifecycle 通知读的是同一个事件，订阅者认不出归属就只能丢弃——渠道扩展收到空 `runId` 时不会回复（教训见 `docs/postmortem/2026-09-24-extension-events-lost-run-identity.md`）。runState 是 server 包内类型，由 `runs` map 持有。空闲新 prompt occupy 并替换已结束的 runState；忙时 steer 写入 Inbox，queue 写入 `queue.json`，`queueId` 把已入队条目原子提升进 Inbox（原 occupy 已结束则放回头并 `queued` 或新 occupy），`parentId` 仍 409。（见图 2）

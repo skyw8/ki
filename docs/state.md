@@ -1,7 +1,7 @@
 # 状态文件版本与迁移
 
-`{KI_HOME}` 下由 Ki 自己拥有的 JSON 状态文件，读写统一走 `internal/state`。本文件是
-这些文件的 schema 版本与迁移契约。
+`{KI_HOME}` 下由 Ki 自己拥有的 JSON 状态文件，读写统一走 `internal/state`。本文件是这些文件
+的 schema 版本与迁移契约。
 
 ## 适用范围
 
@@ -22,31 +22,16 @@
 | session `agent.json` | `internal/agent` | 3 | 恢复该任务失败并记录 warning，绝不覆盖 |
 | session `queue.json` / `ext-queue.json` / `context-queue.json` | `internal/session` | 1 | 队列操作返回错误，绝不覆盖 |
 
-扩展配置的 `version` 仅描述持久化 envelope：Host 解码时删除该头，再按 manifest 的 `config.schema` 校验业务字段。HTTP 读取不返回该头，PATCH 不能修改它。Go sidecar 共享 `internal/state`；Rust sidecar只读同样的版本头并拒绝不支持的版本。
+「fail-fast」用于读不到就无法正常工作的文件：宁可启动报错，也不静默丢字段。「best-effort」
+用于可恢复的旁路状态：加载失败退化为空/默认，但写入侧仍拒绝覆盖更新的文件。
 
-`codex-client.json` 保存 `installation_id`，由 Codex OAuth 与搜索 sidecar 通过同一共享 helper 读写；跨进程锁避免两个进程首次启动时生成不同身份。它不保存凭据或会话正文。窗口/turn routing state 仍为有界、进程内数据。
+`codex-client.json` 保存 `installation_id`，由 Codex OAuth 与搜索 sidecar 通过同一共享 helper
+读写；跨进程锁避免两个进程首次启动时生成不同身份。它不保存凭据或会话正文。窗口/turn
+routing state 仍为有界、进程内数据。
 
-「fail-fast」用于读不到就无法正常工作的文件：宁可启动报错，也不静默丢字段。
-「best-effort」用于可恢复的旁路状态：加载失败退化为空/默认，但写入侧仍拒绝覆盖更新的文件。
-
-`agent.json` v2 将 task-only 通知标记替换为按 generation 的 delivery ledger，
-并把 pending 字符串改为带 `clientRequestId` 的输入对象。v1 迁移保留已消费 generation；
-旧的「已入队」标记不再代表已交付。v3 移除 foreground/background 与旧共享 task 语义，增加 task_name/task_path/root_session_id；v2 迁移为稳定 legacy_<sessionId> 名字，恢复时由结构父链补全路径。pending 与 ledger 保留。队列文档为对象 envelope（`version` + `items`；
-context queue 另带 `next`），不再写裸数组。
-
-**不适用**（不要给它们加 `version`）：
-
-- `catalog.json` 是 `//go:embed` 进二进制的，`CatalogVersion` 与文件头的核对是构建期自检，
-  不存在「新文件 + 旧二进制」。
-- `server.json` 是进程握手文件，每次 `serve` 重写，无常驻状态。它带
-  `addr` / `token` 加进程身份 `pid` / `build` / `exe` / `startedAt`：
-  `ki status`、`ki stop`、`ki restart` 和 `--replace` 靠它判断「回话的是
-  哪个进程、哪个构建」。字段名叫 `build` 而不是 `version`：`version` 在本目录
-  约定里是整数 schema 字段，而 `server.json` 明确不使用该约定，用字符串占用
-  这个名字会让遵守约定的读取方解码失败。旧文件缺少身份字段时一律按「未知」
-  处理，而不是按不匹配处理。写入走临时文件 + rename，避免并发读取看到半截
-  JSON；正常退出时按 token 校验后删除。
-- `ki.toml` 由 Viper 合并，不是 JSON 文档。
+扩展配置的 `version` 仅描述持久化 envelope：Host 解码时删除该头，再按 manifest 的
+`config.schema` 校验业务字段。HTTP 读取不返回该头，PATCH 不能修改它。Go sidecar 共享
+`internal/state`；Rust sidecar 只读同样的版本头并拒绝不支持的版本。
 
 ## 规则
 
@@ -54,15 +39,16 @@ context queue 另带 `next`），不再写裸数组。
    纯**新增**字段不升版本——新二进制读旧文件照常，旧二进制读新文件因为字段被忽略也照常。
    只有**破坏性变更**（改名、删除、语义变化）才 `+1`。
 2. **向前迁移，链式，只读时在内存里做**。加载时 `state.Migrate` 从文件版本逐步调用
-   `steps[from]` 直到当前版本；迁移函数一经发布就冻结，新增版本只追加新函数，永不修改旧的。
-   迁移结果不立刻落盘，用户文件在下次真正写入时才更新（避免启动即写、也避免把只读打开变成写）。
-3. **更高版本绝不降级**。文件版本 > 本二进制支持版本时返回 `state.ErrNewerVersion`，
-   调用方要么 fail-fast，要么回退——**绝不**把它解码成旧结构再写回，那会静默丢弃字段。
-   错误信息包含文件路径、发现版本、支持版本和「upgrade ki」。
-4. **写入原子且不覆盖更新的文件**。统一用 `state.WriteJSON`（同目录 temp + rename，
-   Windows 走 `MoveFileEx(REPLACE_EXISTING|WRITE_THROUGH)`）或 `state.WriteVersioned`。
-   后者在写前读一次文件版本：更高 → 拒绝；更低 → 先 `state.Backup` 出一份
-   `path.bak-<UTC 时间戳>` 再写。
+   `steps[from]` 直到当前版本；迁移函数一经发布就冻结，新增版本只追加新函数，永不修改旧
+   的。迁移结果不立刻落盘，用户文件在下次真正写入时才更新（避免启动即写、也避免把只读
+   打开变成写）。
+3. **更高版本绝不降级**。文件版本 > 本二进制支持版本时返回 `state.ErrNewerVersion`，调用方
+   要么 fail-fast，要么回退——**绝不**把它解码成旧结构再写回，那会静默丢弃字段。错误信息
+   包含文件路径、发现版本、支持版本和「upgrade ki」。
+4. **写入原子且不覆盖更新的文件**。统一用 `state.WriteJSON`（同目录 temp + rename，Windows
+   走 `MoveFileEx(REPLACE_EXISTING|WRITE_THROUGH)`）或 `state.WriteVersioned`。后者在写前读
+   一次文件版本：更高 → 拒绝；更低 → 先 `state.Backup` 出一份 `path.bak-<UTC 时间戳>` 再
+   写。
 
 ## 场景对照
 
@@ -74,22 +60,67 @@ context queue 另带 `next`），不再写裸数组。
 | 旧二进制读更高 schema | `ErrNewerVersion`；fail-fast 或回退，绝不覆盖 |
 | 旧二进制写更高 schema | `WriteVersioned` 拒绝覆盖 |
 
+## 已发布的迁移
+
+### models.json
+
+v1 的 `remoteCompaction` 展开为 v2 的 `compaction.standalone` + `compaction.inline`。迁移只
+作用于内存；用户文件在下次写入时才更新。provider overlay 的 `syncedModels` 是新增字段，
+不改变 schema version。
+
+### agent.json
+
+v2 将 task-only 通知标记替换为按 generation 的 delivery ledger，并把 pending 字符串改为带
+`clientRequestId` 的输入对象。v1 迁移保留已消费 generation；旧的「已入队」标记不再代表已
+交付。v3 移除 foreground/background 与旧共享 task 语义，增加
+`task_name`/`task_path`/`root_session_id`；v2 迁移为稳定 `legacy_<sessionId>` 名字，恢复时由
+结构父链补全路径。pending 与 ledger 保留。
+
+### 队列文档
+
+队列文档为对象 envelope（`version` + `items`；context queue 另带 `next`），不再写裸数组。
+
+### toggles.json
+
+v2 将工具名称规范为 snake_case，v1 的 Bash/PowerShell/Agent/SendMessage/TaskOutput/TaskStop
+开关展开为新能力的保守并集。禁用优先，迁移不会因新名字重新启用旧禁用能力；新 schema 不
+恢复这些旧工具执行入口。
+
+v3 移除 `code_mode` 字段，v2 → v3 迁移删除旧模式覆盖并保留其它开关；Code Mode 固定为
+`mixed`。
+
+v3 之后新增字段不提升 schema 版本：
+
+- `message.contextWindow`：Settings → Message 的上下文窗口硬上限，缺省 5,000,000；
+- `mcp.disabled`：Settings → MCP 的全局服务器禁用名单，比较原始服务器名，区分大小写，不做
+  工具名称规范化。
+
+只读加载不改写文件，下次保存经 `internal/state` 原子写入并拒绝覆盖更高版本。MCP 开关更新
+与其它设置共享原子 read-modify-write 边界，不覆盖其它开关。
+
 ## 新增一个迁移
 
 1. 把 owner 包里的 `version` 常量 `+1`（`modelsFileVersion` / `credentialsFileVersion` /
    `workspace.version` / `toggles.version` / `push.storeVersion`）。
-2. 写一个 `func(raw []byte) ([]byte, error)`，在 owner 包里加进 `map[int]state.Migration{旧版本: fn}`；
-   文档用通用 JSON 走字段重命名，让解码继续做唯一的字段校验。
+2. 写一个 `func(raw []byte) ([]byte, error)`，在 owner 包里加进
+   `map[int]state.Migration{旧版本: fn}`；文档用通用 JSON 走字段重命名，让解码继续做唯一的
+   字段校验。
 3. 加一个用例：旧文档加载后拿到新语义，且磁盘上的文件仍是旧版本（证明迁移是读路径）。
+
+## 不适用 version 的文件
+
+- `catalog.json` 是 `//go:embed` 进二进制的，`CatalogVersion` 与文件头的核对是构建期自检，
+  不存在「新文件 + 旧二进制」。
+- `server.json` 是进程握手文件，每次 `serve` 重写，无常驻状态。它带 `addr` / `token` 加进程
+  身份 `pid` / `build` / `exe` / `startedAt`：`ki status`、`ki stop`、`ki restart` 和
+  `--replace` 靠它判断「回话的是哪个进程、哪个构建」。字段名叫 `build` 而不是 `version`：
+  `version` 在本目录约定里是整数 schema 字段，用字符串占用这个名字会让遵守约定的读取方
+  解码失败。旧文件缺少身份字段时一律按「未知」处理，而不是按不匹配处理。写入走临时文件 +
+  rename，避免并发读取看到半截 JSON；正常退出时按 token 校验后删除。
+- `ki.toml` 由 Viper 合并，不是 JSON 文档。
 
 ## 为什么不用库
 
 Go 没有 config-migration 的事实标准；`golang-migrate` / `goose` / `atlas` 面向 SQL schema，
 套 JSON 配置是误用。这里每文件就是「读头版本 → 链式转 → 原子写」三段逻辑，共享在
 `internal/state` 里已经足够，不引第三方依赖。
-
-`toggles.json` v2 将工具名称规范为 snake_case，v1 的 Bash/PowerShell/Agent/SendMessage/TaskOutput/TaskStop 开关展开为新能力的保守并集。禁用优先，迁移不会因新名字重新启用旧禁用能力。新 schema 不恢复这些旧工具执行入口。
-
-`toggles.json` v3 移除 `code_mode` 字段，v2 → v3 迁移删除旧模式覆盖并保留其它开关；Code Mode 固定为 `mixed`。`message.contextWindow` 是 v3 之后新增的字段（Message 设置里的上下文窗口硬上限，缺省 5,000,000），属于新增而非破坏性变更，不提升 schema 版本。只读加载不改写文件，下次保存经 `internal/state` 原子写入并拒绝覆盖更高版本。
-
-可选新增字段 `mcp.disabled` 保存 Settings → MCP 的全局服务器禁用名单；比较原始服务器名，区分大小写，不做工具名称规范化。字段新增不升版本，MCP 开关更新与其它设置共享原子 read-modify-write 边界，不覆盖其它开关。

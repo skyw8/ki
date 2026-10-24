@@ -1,30 +1,35 @@
 # 扩展（Extensions）
 
-包是带 `extension.json` 的目录。声明式贡献并入 Snapshot；需要跑代码时只走 **NDJSON JSON-RPC 2.0 sidecar**（语言无关，不编进 ki）。实现包：`internal/extension`。所有扩展均独立编译为 executable，通过 NDJSON JSON-RPC 子进程启动；扩展实现和 executable payload 不链接/嵌入 Ki host，源码包的 installer 也是外部构建子进程。
+包是带 `extension.json` 的目录。声明式贡献并入 Snapshot；需要跑代码时只走 **NDJSON
+JSON-RPC 2.0 sidecar**（语言无关，不编进 ki）。实现包是 `internal/extension`。
 
-**不做**旧 `hook` / `intercept` / `intercept[]` 协议。代码能力对外只订事件（`lifecycle`）+ 可选 inbound Host 方法。
+所有扩展均独立编译为 executable，通过 NDJSON JSON-RPC 子进程启动；扩展实现和 executable
+payload 不链接/嵌入 Ki host，源码包的 installer 也是外部构建子进程。**不做**旧 `hook` /
+`intercept` / `intercept[]` 协议。代码能力对外只订事件（`lifecycle`）+ 可选 inbound Host
+方法。
 
 ## 发现与开关
 
-| 位置 | Scope |
-|---|---|
-| `{KI_HOME}/extensions/<name>/` | 全局 |
+扩展只从 `{KI_HOME}/extensions/<name>/` 全局发现。`name` 是主键，须匹配
+`^[a-z0-9][a-z0-9-]{0,62}$`，禁止 `ki.` 前缀。
 
-- `name` 是主键。`name` 须匹配 `^[a-z0-9][a-z0-9-]{0,62}$`，禁止 `ki.` 前缀。
 - 启用开关是进程级 `{KI_HOME}/toggles.json` 的 `extensions.disabled`（缺省空 = 全开）。
-- 禁用的包仍出现在列表（`enabled: false`），但不贡献、不拉起 sidecar。
-- runtime 启动失败每 2s 重试；初始化成功后若不足 30s 就退出，首次立即重试，连续快速退出按 1/2/4/8/16/30s 退避，稳定运行 30s 后重置。修改或禁用该包立即唤醒等待；无关 catalog 变更不取消已有退避。安装/初始化尚未完成时遇到 catalog 代际变更或关闭，旧进程不能发布为运行态，会被关闭。
-- session 快照可在全局 reload 前临时接纳新发现的包名；已被 catalog 移除/禁用的已知名字不能由旧快照重新启用。下一次全局 Configure 接管这些临时启动，并阻止旧代际初始化完成后再发布。
+  禁用的包仍出现在列表（`enabled: false`），但不贡献、不拉起 sidecar。
 - 目录列表和 prompt/lifecycle 链均按全局包名排序。
-- 仓库 `extensions/` 下的扩展都使用 Go。协议仍然语言无关，第三方扩展可使用任何语言。
-- 发现只扫描 `{KI_HOME}/extensions` 下的**非隐藏**目录。安装器把临时目录（`.stage-*` / `.replaced-*` / `.download-*`）放在同一目录以保证 rename 原子性，隐藏前缀让它们永不被当作包。
-- 从仓库根运行 `go run ./scripts/build-extensions.go`，在 `var/extensions/<name>/` 生成分发包；可用 `-only goal,telegram-bot` 选择包，Go 包也支持 `-goos windows -goarch amd64`。加 `-zip` 则输出 `<name>-<goos>-<goarch>.zip`（发布资产）。手工安装时把生成的目录复制到 `{KI_HOME}/extensions/<name>`；常规安装直接走 Settings → Extensions（见下文「从发布安装」）。随包 manifest 直接启动 `bin/<name>`（Windows 文件为 `.exe`），并声明 `runtime.install=["go","run","./install/main.go"]`、`runtime.installWhen="missing"`。二进制存在时完全跳过 install，运行时不需要源码或语言工具链。
-- 默认二进制分发包只含 manifest、声明式 locale/prompt 和编译后的可执行文件；install 元数据保留，但不附带源码或 install wrapper。删除二进制后须重新安装二进制包，或换用源码包，不能在缺失源码时自动编译。
-- `go run ./scripts/build-extensions.go -source -out var/extensions-source`（可配 `-only`）在独立输出目录生成可复制到仓库外的源码包：包根为独立 `ki/extensions/<name>` Go module，通过 `require ki v0.0.0` 和 `replace ki => ./_ki` 使用随包的最小共享源码；`_ki` 保留版本锁定的根 go.mod/go.sum，仅含 `pkg/extensionrpc`、`pkg/extensionbuild`、`internal/state` 的非测试源码。源码包附带 Go 源码、编译所需的 schema/prompt、锁文件与 install wrapper，不包含 config/state/cache、密钥、构建产物或依赖缓存。缺失 executable 时 installer 在包根以 CGO 关闭的 native `go build .` 编译，成功后原子替换 binary，包内锁防止并发首次启动重复编译。
-- Go sidecar 把运行必需的 schemas/catalog/prompt 文案嵌入二进制。
-- 源码包生成先规范化根 go.mod 的 LF/CRLF 行尾，再改写独立 module 名称；Windows checkout 不会保留 `module ki` 而丢失本地共享模块依赖。发现阶段先解析包根的真实路径，安装前的缺失 executable 路径校验使用同一规范化根，不把 macOS/Windows 临时目录别名误判成逃逸。
-- `internal/extension` 的测试校验随包 manifest、能力和 locale key 对齐，并实际启动不含源码且 PATH 不含语言工具链的 Go 分发包，并通过 Host 安装/启动复制到仓库外的全部 Go 源码包。这些 Host/契约测试属于默认核心 Go 套件；extension transport 检查通过手动启用 CI 的 `extensions` 输入后执行。
-- Telegram 附件下载直接流入目标旁的临时文件，成功关闭后 rename 发布；失败或取消不覆盖已有附件。50 MiB 下载上限保持不变，超过上限明确报错，不发布截断文件。
+- 发现只扫描**非隐藏**目录。安装器把临时目录（`.stage-*` / `.replaced-*` /
+  `.download-*`）放在同一目录以保证 rename 原子性，隐藏前缀让它们永不被当作包。
+- 仓库 `extensions/` 下的扩展都使用 Go；协议仍然语言无关，第三方扩展可使用任何语言。
+
+### 重启退避
+
+runtime 启动失败每 2s 重试；初始化成功后若不足 30s 就退出，首次立即重试，连续快速退出按
+1/2/4/8/16/30s 退避，稳定运行 30s 后重置。修改或禁用该包立即唤醒等待；无关 catalog 变更
+不取消已有退避。安装/初始化尚未完成时遇到 catalog 代际变更或关闭，旧进程不能发布为运行
+态，会被关闭。
+
+session 快照可在全局 reload 前临时接纳新发现的包名；已被 catalog 移除/禁用的已知名字不能
+由旧快照重新启用。下一次全局 Configure 接管这些临时启动，并阻止旧代际初始化完成后再
+发布。
 
 ## 包布局
 
@@ -69,23 +74,46 @@ my-ext/
 }
 ```
 
-- `capabilities`：门闸。未声明的能力：对应字段忽略；`initialize` 多报的 tools/commands 丢弃并 `extension_error`。
-- `failClosed`：缺省 `false`。仅 **sync** 生命周期入口：`tool_call` 失败 → 合成 block；`before_provider_request` 失败 → canned stop。
-- `runtime.kind`：`none`（缺省）| `rpc`。`rpc` 须声明 `tool` / `lifecycle` / `command` / `bus` / `provider` / `channel` / `settings` 之一。
-- `runtime.command`：无路径分隔符（`node` / `bun` / `npx`）走 **PATH**；带 `/` 的相对路径相对包根（`bin/extension`）；绝对路径原样用。
-- `runtime.install`：可选 argv，sidecar **启动前**在包根执行（装依赖或构建 executable）。stdout 并进 stderr，避免污染 NDJSON。失败则不拉起 sidecar。
-- install 使用独立进程组（Windows job）；取消安装时同时终止 installer/compiler 后代，避免只杀 `go run` 启动器而遗留后台构建和安装锁。等待退出后释放平台进程组资源。
-- `runtime.installWhen`：缺省/`always` 时每次启动都执行 install；`missing` 时仅当包内相对 `runtime.command` 文件不存在时执行（Windows 同时识别 `.exe`）。`missing` 必须用于 RPC，并配包内相对 command；不允许依赖 PATH/绝对路径来判断是否缺失。仅文件存在即可跳过 install；不是普通文件或无法 stat 时返回错误，不隐式覆盖。
-- `runtime.path`：可选的包内目录列表，声明后并入 shell 工具子进程的 `PATH`（详见下文「扩展 PATH 目录」）。需要 `path` 能力；缺声明但写了 `runtime.path` 会按 manifest 错误禁用整个包。目录必须相对包根且不得逃逸（绝对路径、`..`、空串都拒绝）；绝对路径按「任意平台」判定，`/`、`\` 开头或带盘符（`C:`）都拒绝，不随读取 manifest 的宿主变化（Windows 上 `filepath.IsAbs("/bin")` 为假）；**不校验目录是否存在**，因为 `node_modules/.bin` 之类由 `runtime.install` 在这些校验之后创建。
-- `i18n`：可选的扩展自有文案包。`resources` 将 locale 映射到包内的 UTF-8 JSON 文件；文件内容是扁平的 `key -> string` 字典，扩展可以自行使用点号组织 key。`defaultLocale` 缺省时优先使用 `en`，再使用字典中排序最前的 locale。路径必须留在包根内，单个资源最多 256 KiB。
-- i18n 资源是展示数据。资源文件缺失、格式错误、超限或包含非法 UTF-8 时，该 locale 会被忽略，不能阻止扩展运行；WebUI 会回退到其它 locale、`fallback` 或 key。
-- Host 只读取并转发经过校验的 catalog，不合并扩展 key，也不在 Go 或 WebUI 的 host 字典中维护扩展文案。
+### capabilities
 
-## 支持的能力
+门闸。未声明的能力对应字段忽略；`initialize` 多报的 tools/commands 丢弃并产生
+`extension_error`。`failClosed` 缺省 `false`，只作用于 **sync** 生命周期入口：`tool_call`
+失败 → 合成 block；`before_provider_request` 失败 → canned stop。
+
+### runtime
+
+| 字段 | 规则 |
+|---|---|
+| `kind` | `none`（缺省）或 `rpc`。`rpc` 须声明 `tool` / `lifecycle` / `command` / `bus` / `provider` / `channel` / `settings` 之一 |
+| `command` | 无路径分隔符（`node` / `bun` / `npx`）走 **PATH**；带 `/` 的相对路径相对包根（`bin/extension`）；绝对路径原样用 |
+| `install` | 可选 argv，sidecar **启动前**在包根执行（装依赖或构建 executable）。stdout 并进 stderr，避免污染 NDJSON；失败则不拉起 sidecar |
+| `installWhen` | 缺省/`always` 时每次启动都执行 install；`missing` 时仅当包内相对 `runtime.command` 文件不存在时执行（Windows 同时识别 `.exe`）。`missing` 必须用于 RPC，并配包内相对 command；不允许依赖 PATH/绝对路径来判断是否缺失。仅文件存在即可跳过 install；不是普通文件或无法 stat 时返回错误，不隐式覆盖 |
+| `path` | 可选的包内目录列表，声明后并入 shell 工具子进程的 `PATH`（详见[扩展 PATH 目录](#扩展-path-目录)）。需要 `path` 能力；缺声明但写了 `runtime.path` 会按 manifest 错误禁用整个包 |
+| `env` | 固定覆盖的 sidecar 环境变量 |
+
+install 使用独立进程组（Windows job）；取消安装时同时终止 installer/compiler 后代，避免只
+杀 `go run` 启动器而遗留后台构建和安装锁。等待退出后释放平台进程组资源。
+
+`runtime.path` 的目录必须相对包根且不得逃逸（绝对路径、`..`、空串都拒绝）；绝对路径按
+「任意平台」判定，`/`、`\` 开头或带盘符（`C:`）都拒绝，不随读取 manifest 的宿主变化
+（Windows 上 `filepath.IsAbs("/bin")` 为假）；**不校验目录是否存在**，因为
+`node_modules/.bin` 之类由 `runtime.install` 在这些校验之后创建。
+
+### i18n
+
+可选的扩展自有文案包。`resources` 将 locale 映射到包内的 UTF-8 JSON 文件；文件内容是扁平
+的 `key -> string` 字典，扩展可以自行使用点号组织 key。`defaultLocale` 缺省时优先使用
+`en`，再使用字典中排序最前的 locale。路径必须留在包根内，单个资源最多 256 KiB。
+
+i18n 资源是展示数据。资源文件缺失、格式错误、超限或包含非法 UTF-8 时，该 locale 会被
+忽略，不能阻止扩展运行；WebUI 会回退到其它 locale、`fallback` 或 key。Host 只读取并转发
+经过校验的 catalog，不合并扩展 key，也不在 Go 或 WebUI 的 host 字典中维护扩展文案。
+
+## 能力
 
 | 能力 | 类型 | 作用 |
 |---|---|---|
-| `prompt.append` | 声明式 | system 第 6 层 |
+| `prompt.append` | 声明式 | system prompt 追加层 |
 | `skill` | 声明式 | 额外 skill 根 |
 | `path` | 声明式 | 把包内目录加入 shell 工具的 `PATH`（`runtime.path`） |
 | `command` | 声明式 + 代码 | markdown slash；sidecar `command.invoke` |
@@ -96,9 +124,10 @@ my-ext/
 | `channel` | 进程级 sidecar | 接入外部消息渠道并调用 Host session 能力 |
 | `settings` | 进程级 sidecar | 声明全局配置 schema（含可选 `x-ki-ui`），由 Host 脱敏、校验、渲染并通知变更 |
 
-## 配置 UI（`x-ki-ui`）
+## 配置 UI（x-ki-ui）
 
-扩展配置页完全由 `config.schema` 渲染，WebUI 不再按扩展名分派专用表单。标准 JSON Schema 继续负责类型、必填、范围和 `secret`；可选的 `x-ki-ui` 只描述布局和控件，不改变配置值。
+扩展配置页完全由 `config.schema` 渲染，WebUI 不按扩展名分派专用表单。标准 JSON Schema 继续
+负责类型、必填、范围和 `secret`；可选的 `x-ki-ui` 只描述布局和控件，不改变配置值。
 
 ```json
 {
@@ -139,26 +168,57 @@ my-ext/
 }
 ```
 
-- 根级支持 `fields` / `sections`、`columns`、`cards`、`options`、`scroll`、`intro`、`saveTestid`。没有列出的可见字段会自动追加到最后一个 section，避免升级后丢字段。
-- 支持的 widget：`text`、`textarea`、`password`、`number`、`select`、`switch`、`checkbox`、`model`。未知 widget 或缺失 `x-ki-ui` 时使用安全默认值；没有 `properties` 时回退到原始 JSON 编辑器。
-- 字段级 `label` / `hint` / `placeholder` / `configuredPlaceholder` / `enumLabels` / `invalidMessage` / `requiredMessage` / `testid` 都是扩展 i18n key（`hint: false` 可显式隐藏 schema description）。
-- `secret: true` 的字段读取 `"<configured>"` 占位，未修改时保存回 `"<configured>"`，不会覆盖原值。
-- `displayScale` 只改变显示值（例如配置存毫秒、UI 显示秒）；保存时按原始 schema 单位写回。字段级 `minimum` / `maximum` / `step` 是按显示单位解释的覆盖值，`writeCredential` 是受控动作：先写 provider credential，再保存扩展配置。
-- `model` 字段复用宿主模型选择器，支持 `providerFilter`、`store`（`bare` / `spec`）、`legacyBareProvider`、`useDefaultModel`、`thinkingField` 和 `clearable`；thinking 字段本身应标记 `hidden`。
-- `cards` 的 `toggle` 支持嵌套路径；卡片强调色只接受 `violet` / `teal` / `blue` / `orange` / `amber` 语义 token，不接受扩展 CSS。
-- `x-ki-ui` 版本化、只允许声明式数据。Host 不执行扩展提供的 HTML、JavaScript 或 CSS；新增扩展配置不需要修改 `web/src`。
+### 布局
+
+根级支持 `fields` / `sections`、`columns`、`cards`、`options`、`scroll`、`intro`、
+`saveTestid`。没有列出的可见字段会自动追加到最后一个 section，避免升级后丢字段。
+
+`cards` 的 `toggle` 支持嵌套路径；卡片强调色只接受 `violet` / `teal` / `blue` / `orange` /
+`amber` 语义 token，不接受扩展 CSS。
+
+### 控件
+
+支持的 widget：`text`、`textarea`、`password`、`number`、`select`、`switch`、`checkbox`、
+`model`。未知 widget 或缺失 `x-ki-ui` 时使用安全默认值；没有 `properties` 时回退到原始
+JSON 编辑器。
+
+字段级 `label` / `hint` / `placeholder` / `configuredPlaceholder` / `enumLabels` /
+`invalidMessage` / `requiredMessage` / `testid` 都是扩展 i18n key（`hint: false` 可显式隐藏
+schema description）。
+
+`secret: true` 的字段读取 `"<configured>"` 占位，未修改时保存回 `"<configured>"`，不会覆盖
+原值。`displayScale` 只改变显示值（例如配置存毫秒、UI 显示秒）；保存时按原始 schema 单位
+写回。字段级 `minimum` / `maximum` / `step` 是按显示单位解释的覆盖值，`writeCredential` 是
+受控动作：先写 provider credential，再保存扩展配置。
+
+`model` 字段复用宿主模型选择器，支持 `providerFilter`、`store`（`bare` / `spec`）、
+`legacyBareProvider`、`useDefaultModel`、`thinkingField` 和 `clearable`；thinking 字段本身
+应标记 `hidden`。
+
+`x-ki-ui` 版本化、只允许声明式数据。Host 不执行扩展提供的 HTML、JavaScript 或 CSS；新增
+扩展配置不需要修改 `web/src`。
 
 ## 扩展 PATH 目录
 
-声明 `path` 能力并列出 `runtime.path` 后，这些目录会出现在 shell 工具 exec_command派生的子进程 `PATH` 里，使扩展自带的 CLI 对模型可见，而不要求用户全局安装。
+声明 `path` 能力并列出 `runtime.path` 后，这些目录会出现在 shell 工具 `exec_command`
+派生的子进程 `PATH` 里，使扩展自带的 CLI 对模型可见，而不要求用户全局安装。
 
-顺序：**ki 内嵌 rg/fd 目录 → 扩展目录（按扩展名排序）→ 用户原 `PATH`**。ki 的目录永远最前，扩展无法顶掉 `rg`/`fd`；扩展目录在用户 `PATH` 之前，保证 shell 里敲到的版本与 sidecar 使用的一致。重复声明的目录会去重。
+顺序：**ki 内嵌 rg/fd 目录 → 扩展目录（按扩展名排序）→ 用户原 `PATH`**。ki 的目录永远
+最前，扩展无法顶掉 `rg`/`fd`；扩展目录在用户 `PATH` 之前，保证 shell 里敲到的版本与
+sidecar 使用的一致。重复声明的目录会去重。
 
-- 只有**已启用**（`toggles.json` 未禁用）且 manifest 无错误的包贡献目录；目录来自 session 的资源快照，因此启用/禁用与 reload 语义和 skills / prompt 一致：下一轮 prompt 生效，运行中的 run 保持旧环境。
-- 目录若此刻不存在会被跳过（例如依赖尚未安装），下一次组装工具时重新解析，所以 `runtime.install` 建出的目录不需要额外 reload。
-- 生效范围只有 ki shell 工具派生的子进程：不影响用户终端、扩展 sidecar 自身的环境、`Grep`/`Glob` 的内嵌引擎。
-- `bash -lc` 会先 source `/etc/profile`，Debian 的 `/etc/profile` 会整体重置 `PATH`，所以 exec_command 的 Bash 解释器额外通过 `BASH_ENV` 的 shim 在 profile 之后按 `KI_EXTENSION_PATH_DIRS` 再前置一次；PowerShell 不需要 shim。
-- 扩展目录位于用户 `PATH` 之前，理论上可以 shadow 用户的同名命令。这是声明式、可见的（明细见 `runtime.path` 与 `docs/tools.md`），且目录必须留在包根内，不能指向 `/usr/bin` 之类的任意位置。
+- 只有**已启用**（`toggles.json` 未禁用）且 manifest 无错误的包贡献目录；目录来自 session
+  的资源快照，因此启用/禁用与 reload 语义和 skills / prompt 一致：下一轮 prompt 生效，
+  运行中的 run 保持旧环境。
+- 目录若此刻不存在会被跳过（例如依赖尚未安装），下一次组装工具时重新解析，所以
+  `runtime.install` 建出的目录不需要额外 reload。
+- 生效范围只有 ki shell 工具派生的子进程：不影响用户终端、扩展 sidecar 自身的环境、
+  `Grep`/`Glob` 的内嵌引擎。
+- `bash -lc` 会先 source `/etc/profile`，Debian 的 `/etc/profile` 会整体重置 `PATH`，所以
+  `exec_command` 的 Bash 解释器额外通过 `BASH_ENV` 的 shim 在 profile 之后按
+  `KI_EXTENSION_PATH_DIRS` 再前置一次；PowerShell 不需要 shim。
+- 扩展目录位于用户 `PATH` 之前，理论上可以 shadow 用户的同名命令。这是声明式、可见的，
+  且目录必须留在包根内，不能指向 `/usr/bin` 之类的任意位置。
 
 ## 订事件
 
@@ -179,13 +239,19 @@ my-ext/
 - 未知 `event` 或该点不允许的 `sync`：**该条拒载**。
 - 声明了 `lifecycle` 但没有任何有效订阅：**整包加载失败**。
 - **sync**：停靠点 `lifecycle.invoke`（`event` + payload + `ctx`），await，应用 result。
-- **async**：persist/SSE **之后** notification `lifecycle.event`；瘦 DTO；fail-open。同一 run 的通知保持 loop 产生顺序，尤其 `message_end` 必须先于该 run 的 `agent_settled`。
-- Host 按具体事件筛选订阅者；无人订阅时不分配 fan-out payload，同一事件的 JSON payload 只编码一次供全部订阅者复用。写入仍在原事件调用内按扩展顺序完成，不增加保留流式消息快照的异步队列。
-- 异步 `tool_execution_start/end` DTO 带 Unix 毫秒 `timestamp`；end 还带 `durationMs`，便于扩展记录工具执行耗时。
-- 同一 event：先 sync 链，再 async（async 见最终态）。
-- 链序：全局按名。
-- `before_agent_start`：**每个 occupy 一次**；steer 不重跑。每 turn 改 messages 用 `context`。
+- **async**：persist/SSE **之后** notification `lifecycle.event`；瘦 DTO；fail-open。同一 run
+  的通知保持 loop 产生顺序，尤其 `message_end` 必须先于该 run 的 `agent_settled`。
+- 同一 event：先 sync 链，再 async（async 见最终态）。链序全局按名。
+- `before_agent_start`：**每个 occupy 一次**；steer 不重跑。每 turn 改 messages 用
+  `context`。
 - sync 载荷带紧凑 `ctx`：`idle`、`model`、`aborted`。`before_agent_start` 可见 system 全文。
+
+Host 按具体事件筛选订阅者；无人订阅时不分配 fan-out payload，同一事件的 JSON payload 只编码
+一次供全部订阅者复用。写入仍在原事件调用内按扩展顺序完成，不增加保留流式消息快照的异步
+队列。
+
+异步 `tool_execution_start/end` DTO 带 Unix 毫秒 `timestamp`；end 还带 `durationMs`，便于
+扩展记录工具执行耗时。
 
 ### Event 目录
 
@@ -211,17 +277,39 @@ my-ext/
 | `queue_changed` `steer_accepted` `run_aborted` | 否 | 是 | — |
 | `context_usage` `extension_error` `extension_notice` | 否 | 否 | — |
 
-`agent_settled`：occupy 结束且 Host 内部收尾（含 auto-compact）完成，可接受新 occupy。**不含**扩展 FIFO 已空。
+`agent_settled`：occupy 结束且 Host 内部收尾（含 auto-compact）完成，可接受新 occupy。
+**不含**扩展 FIFO 已空。
 
 ### 工具批
 
-默认并行执行一批 tool call。`tool_call` sync 按助手源序逐个跑完再执行。任一次 `terminate`（block 或 result）且该批**每个**已完成结果都 terminate 时，主循环不再请求模型。
+默认并行执行一批 tool call。`tool_call` sync 按助手源序逐个跑完再执行。任一次 `terminate`
+（block 或 result）且该批**每个**已完成结果都 terminate 时，主循环不再请求模型。
 
 ## Sidecar 协议
 
-NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` + 平台必需的 PATH/locale、profile（含 Windows USERPROFILE/LOCALAPPDATA/APPDATA）及 temp 变量 + Ki 启动时继承的 `HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`ALL_PROXY`、`NO_PROXY`（含小写变体）+ `runtime.env`。`runtime.env` 对同名变量拥有最终覆盖权。install 命令继承 Ki 父进程的完整环境，再覆盖上述扩展作用域 KI_* 值和 runtime.env，因而保留源码包编译所需的工具链与缓存变量；运行时 sidecar 仍使用上述 allowlist，其子进程继承 sidecar 环境。全局 install/sidecar 清除父进程继承的 `KI_SESSION_ID`/`KI_CWD`，不固定到首个 session；session 相关 RPC 显式携带 `sessionId`。
+NDJSON JSON-RPC 2.0。
 
-超时：`initialize` 10s；sync 生命周期 2s；`tool.execute` 120s（超时后先发 `cancel`，再宽限 2s 收取 sidecar 在途的部分结果）；`command.invoke` 15s；provider stream start 10s。
+### 环境
+
+扩展进程继承：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` + 平台必需的 PATH/locale、
+profile（含 Windows USERPROFILE/LOCALAPPDATA/APPDATA）及 temp 变量 + Ki 启动时继承的
+`HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`ALL_PROXY`、`NO_PROXY`（含小写变体）+
+`runtime.env`。`runtime.env` 对同名变量拥有最终覆盖权。
+
+install 命令继承 Ki 父进程的完整环境，再覆盖上述扩展作用域 `KI_*` 值和 `runtime.env`，因而
+保留源码包编译所需的工具链与缓存变量；运行时 sidecar 仍使用上述 allowlist，其子进程继承
+sidecar 环境。全局 install/sidecar 清除父进程继承的 `KI_SESSION_ID`/`KI_CWD`，不固定到首个
+session；session 相关 RPC 显式携带 `sessionId`。
+
+### 超时
+
+| RPC | 超时 |
+|---|---|
+| `initialize` | 10s |
+| sync 生命周期 | 2s |
+| `tool.execute` | 120s（超时后先发 `cancel`，再宽限 2s 收取 sidecar 在途的部分结果） |
+| `command.invoke` | 15s |
+| provider stream start | 10s |
 
 ### Host → sidecar
 
@@ -237,25 +325,46 @@ NDJSON JSON-RPC 2.0。环境：`KI_EXTENSION`、`KI_HOME`、`KI_EXTENSION_ROOT` 
 | `session.open` / `session.close` | — | `{sessionId,cwd}` / `{sessionId}`；通知全局 sidecar 建立或释放该 session 的业务视图 |
 | `ui.action` / `ui.submit` | UI 投影 | 用户点了面板 |
 | `bus.event` | `bus` | 他方 emit / 广播 |
+| `config.updated` | `settings` | 配置变更通知，参数包含脱敏后的 `config`；sidecar 应重新读取自己的私有配置文件 |
 | `provider.stream.start` | `provider` | `{requestId,request}`；一次传入完整 model、credential 和 loop request，`request` 使用 lower camelCase 字段名，返回 `{accepted:true}` |
 | `provider.stream.cancel` | `provider` | `{requestId}`；取消一个 provider stream |
-| `provider.compact` | `provider` | 模型声明 `compaction.standalone` 后的 standalone remote compaction；接收完整 model、credential、已应用 `context` / `before_provider_request` 的 loop request，返回 `{items:[...],usage?}` 完整有序 canonical window；单条 RPC 上限 65 MiB。 |
+| `provider.compact` | `provider` | 模型声明 `compaction.standalone` 后的 standalone remote compaction；接收完整 model、credential、已应用 `context` / `before_provider_request` 的 loop request，返回 `{items:[...],usage?}` 完整有序 canonical window；单条 RPC 上限 65 MiB |
 
-`config.updated` 是 Host 发给全局 sidecar 的配置变更通知，参数包含脱敏后的
-`config`；sidecar 应重新读取自己的私有配置文件。
+Provider stream 的最终 message 和 `provider.compact` 的 `usage` 使用互斥的 `input`（未
+缓存）、`cacheRead`、`cacheWrite`、`output` token 桶，sidecar 负责协议归一。Host 按本次
+resolved model 的 `cost` 补齐缺失的 `usage.cost`，不重复归一，也不覆盖 sidecar 显式提供的
+费用；模型价格未知则不生成费用。该结果沿既有消息/压缩落盘和 SSE/session stats 展示，无需
+额外费用 REST 接口。
 
-Provider stream 的最终 message 和 `provider.compact` 的 `usage` 使用互斥的
-`input`（未缓存）、`cacheRead`、`cacheWrite`、`output` token 桶，sidecar 负责协议归一。
-Host 按本次 resolved model 的 `cost` 补齐缺失的 `usage.cost`，不重复归一，也不覆盖
-sidecar 显式提供的费用；模型价格未知则不生成费用。该结果沿既有消息/压缩落盘和
-SSE/session stats 展示，无需额外费用 REST 接口。
+### Provider stream 事件
 
-异步消息生命周期事件的瘦 payload 只包含路由和展示所需字段。`message_start`、
-`message_update`、`message_end` 会携带 `role`、`text`；最终消息还可能携带
-`stopReason`、`errorMessage` 和 `isError`。当 `stopReason=error` 时，扩展应丢弃
-已经收到的 partial 文本，并向用户展示错误信息，而不是把 partial 当成最终答案。
+事件类型首版为 `start`、`text_start`/`text_delta`/`text_end`、
+`thinking_start`/`thinking_delta`/`thinking_end`、
+`toolcall_start`/`toolcall_delta`/`toolcall_end`、`custom_tool_call_input_delta`、`done`、
+`error`。`done` 可携带完整最终 `message`。
 
-Provider auth RPC（同样只发给进程级 provider sidecar）：
+```json
+{"jsonrpc":"2.0","method":"provider.stream.event","params":{"requestId":"stream-1","type":"text_delta","contentIndex":0,"delta":"hello"}}
+```
+
+只有模型声明 `compaction.inline:"openai"` 且该 occupy 实际启用 server-side compaction 时，
+sidecar 才可在 completed `done` 的私有 `responsesItems` 返回完整 canonical suffix；
+standalone-only sidecar 的同字段会被丢弃。
+
+模型的可选 `fastServiceTier: "priority"` 声明由 provider sidecar 负责的 Fast 编码能力。host
+为所有受支持基础 thinking level 生成 `<level> fast`（包括受支持的 off），保留标准 map key；
+`provider.stream.start` / `provider.compact` 的 `request.thinkingEffort` 原样携带选择值，
+sidecar 必须拆分，不能把组合值当上游 effort。`request.turnId` 是跨同一用户 turn 的
+retry/tool continuation 的可选稳定传输身份。
+
+`provider.stream.event` 的 `error` 可带 `nonRetryable: true`，host 将其保留为 loop 的确定性
+错误标记。已经观察到上游响应的传输失败、非法流以及确定性请求错误使用该标记；只禁止
+sidecar 内部 fallback 不够，否则 loop 的通用 backoff 仍可能重复提交同一次推理。
+
+provider sidecar 的生命周期、凭据和流都是全局进程级资源；session 只通过 `requestId` 复用
+同一个 sidecar。Reload 时保留仍注册的 sidecar，移除或禁用的 provider 会关闭对应进程。
+
+### Provider auth RPC
 
 | method | 说明 |
 |---|---|
@@ -264,29 +373,22 @@ Provider auth RPC（同样只发给进程级 provider sidecar）：
 | `provider.auth.cancel` | `{requestId,provider}`；取消未完成的登录 |
 | `provider.auth.refresh` | `{provider,credential}`；sidecar 决定是否刷新，返回新的 opaque credential |
 
-sidecar 通过 `provider.auth.event` notification 报告 `auth_url`、`device_code`、`completed`、`error`。`completed` 的 credential 只在 sidecar 与 server auth broker 之间传递，server 对 WebUI/CLI 只返回状态、URL 和设备码。
+sidecar 通过 `provider.auth.event` notification 报告 `auth_url`、`device_code`、`completed`、
+`error`。`completed` 的 credential 只在 sidecar 与 server auth broker 之间传递，server 对
+WebUI/CLI 只返回状态、URL 和设备码。
 
-provider capability 使用进程级 sidecar，不随 session 各拉起一个进程。provider 只能从 `{KI_HOME}/extensions` 声明；`providers` 是扩展清单中的离线目录，provider sidecar 只负责对应 provider 的认证/网络/响应解析；宿主只保留模型目录、凭据状态、取消、背压和 loop 适配。一次 stream 的结果通过 sidecar → Host 的 `provider.stream.event` notification 回传：
-
-```json
-{"jsonrpc":"2.0","method":"provider.stream.event","params":{"requestId":"stream-1","type":"text_delta","contentIndex":0,"delta":"hello"}}
-```
-
-事件类型首版为 `start`、`text_start`/`text_delta`/`text_end`、`thinking_start`/`thinking_delta`/`thinking_end`、`toolcall_start`/`toolcall_delta`/`toolcall_end`、`custom_tool_call_input_delta`、`done`、`error`。`done` 可携带完整最终 `message`。只有模型声明 `compaction.inline:"openai"` 且该 occupy 实际启用 server-side compaction 时，sidecar 才可在 completed `done` 的私有 `responsesItems` 返回完整 canonical suffix；standalone-only sidecar 的同字段会被丢弃。
-
-模型的可选 `fastServiceTier: "priority"` 声明由 provider sidecar 负责的 Fast 编码能力。host 为所有受支持基础 thinking level 生成 `<level> fast`（包括受支持的 off），保留标准 map key；`provider.stream.start` / `provider.compact` 的 `request.thinkingEffort` 原样携带选择值，sidecar 必须拆分，不能把组合值当上游 effort。`request.turnId` 是跨同一用户 turn 的 retry/tool continuation 的可选稳定传输身份。
-
-`provider.stream.event` 的 `error` 可带 `nonRetryable: true`，host 将其保留为 loop 的确定性错误标记。已经观察到上游响应的传输失败、非法流以及确定性请求错误使用该标记；只禁止 sidecar 内部 fallback 不够，否则 loop 的通用 backoff 仍可能重复提交同一次推理。
-
-provider sidecar 的生命周期、凭据和流都是全局进程级资源；session 只通过 `requestId` 复用同一个 sidecar。Reload 时保留仍注册的 sidecar，移除或禁用的 provider 会关闭对应进程。
+provider capability 使用进程级 sidecar，不随 session 各拉起一个进程。provider 只能从
+`{KI_HOME}/extensions` 声明；`providers` 是扩展清单中的离线目录，provider sidecar 只负责
+对应 provider 的认证/网络/响应解析；宿主只保留模型目录、凭据状态、取消、背压和 loop 适配。
 
 ### sidecar → Host（inbound request）
 
-`readLoop`：有 `method`+`id` 且不是 pending response → Host 方法。**快速返回**；禁止在 sync 生命周期栈里等待整轮 run。
+`readLoop`：有 `method`+`id` 且不是 pending response → Host 方法。**快速返回**；禁止在 sync
+生命周期栈里等待整轮 run。
 
 | method | 门闸 | 说明 |
 |---|---|---|
-| `session.create` | — | 全局创建 session；可传 `workspaceId`、`cwd`、model 和 metadata；`workspaceTitle` 只在新建 workspace 时生效，用于给频道会话可读的显示名 |
+| `session.create` | — | 全局创建 session；可传 `workspaceId`、`cwd`、model 和 metadata；`workspaceTitle` 只在新建 workspace 时生效 |
 | `session.list` / `session.get` | — | 查询 session，可按 metadata 过滤；不绑定当前 session |
 | `session.new` | — | 当前 session 创建同配置的新 session，可选新 `cwd` |
 | `session.reload` | — | 重载当前 session 的资源和扩展视图 |
@@ -299,50 +401,85 @@ provider sidecar 的生命周期、凭据和流都是全局进程级资源；ses
 | `session.patch` | — | model / thinkingEffort |
 | `session.setActiveTools` | — | 会话级；未知名 warn，不静默清空 |
 | `tools.register` | `tool` | 下一 occupy 生效 |
-| `ui.setStatus` / `ui.setPanel` / `ui.clearPanel` | — | 当前 session 的内存投影 + SSE；不进 jsonl。面板是通用壳，不解析业务。可展示的文案字段接受原始字符串或扩展自有的 `UIText` |
-| `ui.setGlobalStatus` / `ui.setGlobalPanel` / `ui.clearGlobalPanel` | — | server 级内存投影；不进 jsonl；通过 `/v1/extensions` 返回，适合首页可见的全局状态；global panel 只读，配置走 config API |
+| `ui.setStatus` / `ui.setPanel` / `ui.clearPanel` | — | 当前 session 的内存投影 + SSE；不进 jsonl。面板是通用壳，不解析业务 |
+| `ui.setGlobalStatus` / `ui.setGlobalPanel` / `ui.clearGlobalPanel` | — | server 级内存投影；不进 jsonl；通过 `/v1/extensions` 返回；global panel 只读，配置走 config API |
 | `ui.confirm` / `ui.select` | — | WebUI 弹层；**120s** 超时 = 取消 |
 | `bus.emit` | `bus` | 深拷贝 fan-out；result 为合并后 data |
 | `bus.broadcast` | `bus` | fire-and-forget，不等待 |
 | `bus.subscribe` / `bus.unsubscribe` | `bus` | 运行中改订阅 |
 
-error tone 的完整文案会显示在统一扩展 Modal 标题下的独立红条，详情/配置切换不隐藏；runtime/manifest 错误也在此显示。进程 ready 只表示 sidecar 可调用，不能代表后台任务已恢复。长时间任务的状态应由扩展自己持有：失败状态保留到下一次任务替换它，成功状态 30 秒后清空，下一次任务会取消旧计时器。
+除 `session.create`、`session.list`、`session.get` 和 `ui.setGlobal*` /
+`ui.clearGlobalPanel` 外，上表 inbound 方法都必须带 `sessionId`，bus 订阅也按 session 维护。
+`session.open` 是 Host→sidecar 的 session 生命周期通知。`ui.setPanel` 和 `ui.setGlobalPanel`
+由 WebUI 按通用壳渲染，Host 不解析扩展语义。壳的面、投影、字段表和 `ui.action` /
+`ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
 
-除 `session.create`、`session.list`、`session.get` 和 `ui.setGlobal*` / `ui.clearGlobalPanel` 外，上表 inbound 方法都必须带 `sessionId`，bus 订阅也按 session 维护。`session.open` 是 Host→sidecar 的 session 生命周期通知。`ui.setPanel` 和 `ui.setGlobalPanel` 由 WebUI 按通用壳渲染，Host 不解析扩展语义。壳的面、投影、字段表和 `ui.action` / `ui.submit` 见 [webui.md 扩展 UI 壳](webui.md#扩展-ui-壳)。
+`origin` 一律 `extension:<name>`，并写进该次 occupy 的 user message（WebUI 气泡可区分）。
+扩展 FIFO 与用户 `queue.json` **分轨**；occupy release 后**先用户 queue，再扩展 FIFO**。
+`when=settled` 在 `agent_settled` 后只写入扩展 FIFO（不直接 occupy），再走同一套 dispatch。
+`nextTurn` 挂到下次**用户** occupy，注入 messages，不自触发 occupy。`session.setActiveTools`
+忽略未知名并发 `extension_notice` warn；全部未知名则保留上一套工具。`session.patch` 与
+HTTP PATCH 同一套 ResolveSpec / thinking 校验。
 
-`origin` 一律 `extension:<name>`，并写进该次 occupy 的 user message（WebUI 气泡可区分）。扩展 FIFO 与用户 `queue.json` **分轨**；occupy release 后 **先用户 queue，再扩展 FIFO**。`when=settled` 在 `agent_settled` 后只写入扩展 FIFO（不直接 occupy），再走同一套 dispatch。`nextTurn` 挂到下次**用户** occupy，注入 messages，不自触发 occupy。`session.setActiveTools` 忽略未知名并发 `extension_notice` warn；全部未知名则保留上一套工具。`session.patch` 与 HTTP PATCH 同一套 ResolveSpec / thinking 校验。
+### 消息与上下文语义
 
-`session_before_compact` 在 Host 完成 portable plan 后调用，payload 为 `{reason,willRetry,instructions?,preparation}`；preparation 含 strategy、source/kept entry id、待摘要消息、split-turn prefix、retained tail、tokensBefore 和 previousSummary，不含 Responses items、binding、credential 或 provider-facing transformed request。返回 `{cancel:true}` 可取消，或 `{result:{summary,usage?,details?}}` 可替换本地生成；Host 仍校验并控制 cut/tail/tokens。strict remote 不接受 custom local result/instructions。结束后的 `compaction_end` 提供 `status`、`strategy`、`fromExtension`、`firstKeptEntryId`、`tokensBefore`、`usage` 及 overflow 的 `willRetry`。
+`session.appendMessage` 只接受 `role=user`，追加的是 provider 可见的正常 `message` entry，
+但本身不 occupy、不调用模型。Host 会先把消息写入持久化 `context-queue.json`；session 空闲
+时立即提交，session 忙时在下一条 prompt 的边界前按序提交。请求可带持久化
+`idempotencyKey`，Telegram 等外部渠道重试时不会重复写入。prompt 入队时记录当时的 context
+序号，因此 prompt 之后到达的 context message 不会泄漏到当前 prompt，只会进入下一次
+prompt。
 
-`session.appendMessage` 只接受 `role=user`，追加的是 provider 可见的正常
-`message` entry，但本身不 occupy、不调用模型。Host 会先把消息写入持久化
-`context-queue.json`；session 空闲时立即提交，session 忙时在下一条 prompt 的
-边界前按序提交。请求可带持久化 `idempotencyKey`，Telegram 等外部渠道重试时不
-会重复写入。prompt 入队时记录当时的 context 序号，因此 prompt 之后到达的
-context message 不会泄漏到当前 prompt，只会进入下一次 prompt。
+`session.enqueue` 的 `idempotencyKey` 同样会写入扩展 FIFO；prompt 运行后会写入首条正常 user
+entry。重试时 Host 先检查已提交 entry 和持久化 FIFO，再决定返回 `duplicate` 或原 queue id。
 
-`session.enqueue` 的 `idempotencyKey` 同样会写入扩展 FIFO；prompt 运行后会写入
-首条正常 user entry。重试时 Host 先检查已提交 entry 和持久化 FIFO，再决定返回
-`duplicate` 或原 queue id。
+异步消息生命周期事件的瘦 payload 只包含路由和展示所需字段。`message_start`、
+`message_update`、`message_end` 会携带 `role`、`text`；最终消息还可能携带 `stopReason`、
+`errorMessage` 和 `isError`。当 `stopReason=error` 时，扩展应丢弃已经收到的 partial 文本，
+并向用户展示错误信息，而不是把 partial 当成最终答案。
+
+### session_before_compact
+
+在 Host 完成 portable plan 后调用，payload 为
+`{reason,willRetry,instructions?,preparation}`；preparation 含 strategy、source/kept entry
+id、待摘要消息、split-turn prefix、retained tail、tokensBefore 和 previousSummary，不含
+Responses items、binding、credential 或 provider-facing transformed request。返回
+`{cancel:true}` 可取消，或 `{result:{summary,usage?,details?}}` 可替换本地生成；Host 仍校验
+并控制 cut/tail/tokens。strict remote 不接受 custom local result/instructions。结束后的
+`compaction_end` 提供 `status`、`strategy`、`fromExtension`、`firstKeptEntryId`、
+`tokensBefore`、`usage` 及 overflow 的 `willRetry`。
 
 ## 扩展总线
 
-Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自行实现。mutex：emit `{sessionId,group,busy:false}`，持锁方置 `busy=true`。
+Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自行实现。mutex：emit
+`{sessionId,group,busy:false}`，持锁方置 `busy=true`。
 
 ## 失败策略
 
-默认 occupy fail-open：RPC/超时 → `extension_error`，本 occupy 该扩展进 skip 集，不写 `toggles.json`。`failClosed: true` 仅 `tool_call` / `before_provider_request`。
+默认 occupy fail-open：RPC/超时 → `extension_error`，本 occupy 该扩展进 skip 集，不写
+`toggles.json`。`failClosed: true` 仅 `tool_call` / `before_provider_request`。
 
-加载期失败会禁用包：manifest 校验失败、`sidecar_start`、以及 initialize 报了未声明的 tools/commands（`undeclared`）都会写入 `toggles.json` `extensions.disabled`。sidecar 在仍启用时会自动重试；session Prepare 一旦上报 `sidecar_start`，Host 将其关掉。
+加载期失败会禁用包：manifest 校验失败、`sidecar_start`、以及 initialize 报了未声明的
+tools/commands（`undeclared`）都会写入 `toggles.json` `extensions.disabled`。sidecar 在仍
+启用时会自动重试；session Prepare 一旦上报 `sidecar_start`，Host 将其关掉。
+
+error tone 的完整文案会显示在统一扩展 Modal 标题下的独立红条，详情/配置切换不隐藏；
+runtime/manifest 错误也在此显示。进程 ready 只表示 sidecar 可调用，不能代表后台任务已恢复。
+长时间任务的状态应由扩展自己持有：失败状态保留到下一次任务替换它，成功状态 30 秒后清空，
+下一次任务会取消旧计时器。
 
 ## 生命周期
 
 1. Scan 只读 Discover；sidecar 是进程级资源，每个扩展最多启动一个。
-2. **server 完成监听后**，所有启用且声明可执行 runtime 的扩展统一启动，不按能力类别或 session 懒加载；sidecar 在仍启用时失败会重试，catalog 暴露 runtime 状态。
-3. `GET /v1/sessions/{id}` 带 `runtime.ready`；未就绪也可先出 transcript。`runtime_ready` SSE（sideband，不进 jsonl）。失败也算 ready。
-4. `Prepare` 只建立当前 session 的扩展视图，复用已运行的 server sidecar，并发送 `session.open`。
+2. **server 完成监听后**，所有启用且声明可执行 runtime 的扩展统一启动，不按能力类别或
+   session 懒加载；sidecar 在仍启用时失败会重试，catalog 暴露 runtime 状态。
+3. `GET /v1/sessions/{id}` 带 `runtime.ready`；未就绪也可先出 transcript。`runtime_ready`
+   SSE（sideband，不进 jsonl）。失败也算 ready。
+4. `Prepare` 只建立当前 session 的扩展视图，复用已运行的 server sidecar，并发送
+   `session.open`。
 5. Steer 不重新 Prepare，不重跑 `before_agent_start`。
-6. Reload / Close：Reload 重新扫描 manifest、配置并重启有变化的 sidecar；server Close 才杀全局 sidecar 进程组。忙时 Reload 排到 occupy release 之后。
+6. Reload / Close：Reload 重新扫描 manifest、配置并重启有变化的 sidecar；server Close 才杀
+   全局 sidecar 进程组。忙时 Reload 排到 occupy release 之后。
 
 ## HTTP
 
@@ -357,24 +494,122 @@ Host 不解析 channel。协作协议（如 `workflow:mutex:v1`）由扩展自�
 
 `path` 只展示，不当 `href`。
 
-扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影、可选 i18n catalog，以及该包已加载的 skills / tools / slash 命令 / prompt append / providers；`pathDirs` 逐条给出声明的绝对路径与当前是否存在，让“目录没生效”和“PATH 覆盖了同名命令”两件事都能被发现。查询不会启动 sidecar。sidecar 尚未握手时 tools/runtime commands 可能为空，session Info 在 `runtime.ready` 后再拉一次。manifest 校验失败不会拉起 runtime，并写入 `extensions.disabled`。sidecar 启动失败在仍启用时自动重试；session Prepare 上报 `sidecar_start` 后同样禁用。配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示 `<configured>`。私有 `config.json` 通过 `internal/state` 原子读写，顶层 `version: 1` 是存储头，不进入 schema 或 HTTP 值；请求不能修改此头，更高版本拒读和拒写。全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航列出全部已启用扩展。Extensions 设置里每个已启用扩展都有 Configure，打开并定位到同一个页面（不要求必须有 config schema）；停用的扩展没有该按钮。不在 session Info 或设置页内嵌第二份编辑器。
+### catalog 展示
 
-## 从发布安装
+扩展 catalog 展示启用配置、manifest 错误、server 级 runtime 状态、global UI 投影、可选
+i18n catalog，以及该包已加载的 skills / tools / slash 命令 / prompt append / providers；
+`pathDirs` 逐条给出声明的绝对路径与当前是否存在，让「目录没生效」和「PATH 覆盖了同名命令」
+两件事都能被发现。
 
-仓库 `extensions/` 下的包不再需要手工复制：Settings → Extensions 里有「可安装」区，按需从 GitHub Release 下载。
+查询不会启动 sidecar。sidecar 尚未握手时 tools/runtime commands 可能为空，session Info 在
+`runtime.ready` 后再拉一次。manifest 校验失败不会拉起 runtime，并写入
+`extensions.disabled`。sidecar 启动失败在仍启用时自动重试；session Prepare 上报
+`sidecar_start` 后同样禁用。
 
-- **catalog**：`internal/extension/installcatalog.json`（`//go:embed`）只列包名、版本、描述、能力；**不含 URL**。资源名由运行平台推导：`<name>-<goos>-<goarch>.zip`，URL 为 `<source>/<release>/<asset>`，`checksums.txt` 同目录。因此发版不需要改 catalog，换 tag 即可。catalog 与仓库 manifest 的版本一致性由 `internal/extension` 的测试校验。
-- **配置**：`[extensions] source`（默认 `https://github.com/skyw8/ki/releases`）与 `release`（`source` 下的一段路径）。发布构建把 `-X ki/internal/buildinfo.ReleaseTag=<tag>` 写死为 `download/<tag>`；本地构建为空，使用 `latest/download`，因此不猜一个可能不存在的 tag。环境变量 `KI_EXTENSIONS_SOURCE` / `KI_EXTENSIONS_RELEASE` 覆盖；`source` 支持 `file://` 与绝对路径，便于离线镜像和测试。
-- **发布产物**：`scripts/build-extensions.go -zip -out <dir>` 为每个包生成 `<name>-<goos>-<goarch>.zip`（内含单一 `<name>/` 顶层目录，保留可执行位）。`release.yml` 的 `extension-assets` job 在三个支持平台各跑一次，`publish` 把 `ki-*` 与 `*.zip` 一起写进 `checksums.txt`。
-- **下载与校验**：先取 `checksums.txt`，按资产名查 sha256；下载后比对，不一致直接失败。解压拒绝符号链接、非普通文件、绝对路径与 `..` 逃逸，单文件 256 MiB、总计 1 GiB、条目数 8192 上限。解压后必须能通过 `Discover` 的 manifest 校验，且 `name` 与 catalog 一致。
-- **发布方式**：解压到 `{KI_HOME}/extensions/.stage-<name>-*`（隐藏目录，Discover 跳过），再把旧包挪到 `.replaced-<name>-*` 并 `rename` 新包；两步都在同一文件系统。失败会尝试把旧包放回。安装/更新会保留 `config.json` / `cache.json` / `state.json`，不保留其它旧文件。
-- **保护**：`{KI_HOME}/extensions` 本身是符号链接（常见于把仓库 `extensions/` 链进来开发）时拒绝安装；目标包是符号链接时同样拒绝，绝不删除 checkout。`GET /v1/extensions/available` 会返回 `linkedRoot` 和逐项 `linked`，`POST` 返回 **409**，UI 据此显示「开发链接」而不是一个必然失败的按钮。
-- **空列表**：五个包都已安装时设置页仍渲染「可安装」区，并写明「目录中的扩展都已安装」——整段消失会让人误以为构建里没有这个功能。
-- **状态**：安装是后台任务。`POST` 立即 202，`GET /v1/extensions/available` 的 `install.state` 依次为 `download` → `extract` → `done` / `failed`（带 `error`）；每次阶段变化推 `scope=extensions` invalidation。成功后调用一次全局 Reload，运行中的会话沿用旧快照，release 后生效。同一包重复点击是幂等的（返回当前阶段），不会并发解压。
+### 配置存储
+
+配置接口只返回 schema、脱敏值和 i18n catalog，敏感字段写入时保留、读取时显示
+`<configured>`。私有 `config.json` 通过 `internal/state` 原子读写，顶层 `version: 1` 是存储
+头，不进入 schema 或 HTTP 值；请求不能修改此头，更高版本拒读和拒写。
+
+全局 extension chip 和 goal 等 session status chip 共用同一个扩展 Modal；左侧导航列出全部
+已启用扩展。Extensions 设置里每个已启用扩展都有 Configure，打开并定位到同一个页面（不
+要求必须有 config schema）；停用的扩展没有该按钮。不在 session Info 或设置页内嵌第二份
+编辑器。
+
+## 构建与分发
+
+### 二进制包
+
+从仓库根运行：
+
+```bash
+go run ./scripts/build-extensions.go                 # var/extensions/<name>/
+go run ./scripts/build-extensions.go -only goal,telegram-bot
+go run ./scripts/build-extensions.go -goos windows -goarch amd64
+go run ./scripts/build-extensions.go -zip -out var/release-extensions
+```
+
+产物在 `var/extensions/<name>/`；`-zip` 输出 `<name>-<goos>-<goarch>.zip`（发布资产）。手工
+安装时把生成的目录复制到 `{KI_HOME}/extensions/<name>`；常规安装直接走 Settings →
+Extensions。随包 manifest 直接启动 `bin/<name>`（Windows 为 `.exe`），并声明
+`runtime.install=["go","run","./install/main.go"]`、`runtime.installWhen="missing"`。二进制
+存在时完全跳过 install，运行时不需要源码或语言工具链。
+
+默认二进制分发包只含 manifest、声明式 locale/prompt 和编译后的可执行文件；install 元数据
+保留，但不附带源码或 install wrapper。删除二进制后须重新安装二进制包，或换用源码包，不能
+在缺失源码时自动编译。
+
+Go sidecar 把运行必需的 schemas/catalog/prompt 文案嵌入二进制。
+
+### 源码包
+
+```bash
+go run ./scripts/build-extensions.go -source -out var/extensions-source
+```
+
+在独立输出目录生成可复制到仓库外的源码包（可配 `-only`）。包根为独立
+`ki/extensions/<name>` Go module，通过 `require ki v0.0.0` 和 `replace ki => ./_ki` 使用随包
+的最小共享源码；`_ki` 保留版本锁定的根 go.mod/go.sum，仅含 `pkg/extensionrpc`、
+`pkg/extensionbuild`、`internal/state` 的非测试源码。
+
+源码包附带 Go 源码、编译所需的 schema/prompt、锁文件与 install wrapper，不包含
+config/state/cache、密钥、构建产物或依赖缓存。缺失 executable 时 installer 在包根以 CGO
+关闭的 native `go build .` 编译，成功后原子替换 binary，包内锁防止并发首次启动重复编译。
+
+源码包生成先规范化根 go.mod 的 LF/CRLF 行尾，再改写独立 module 名称；Windows checkout 不会
+保留 `module ki` 而丢失本地共享模块依赖。发现阶段先解析包根的真实路径，安装前的缺失
+executable 路径校验使用同一规范化根，不把 macOS/Windows 临时目录别名误判成逃逸。
+
+### 从发布安装
+
+Settings → Extensions 有「可安装」区，按需从 GitHub Release 下载。
+
+- **catalog**：`internal/extension/installcatalog.json`（`//go:embed`）只列包名、版本、描述、
+  能力；**不含 URL**。资源名由运行平台推导：`<name>-<goos>-<goarch>.zip`，URL 为
+  `<source>/<release>/<asset>`，`checksums.txt` 同目录。因此发版不需要改 catalog，换 tag
+  即可。catalog 与仓库 manifest 的版本一致性由 `internal/extension` 的测试校验。
+- **配置**：`[extensions] source`（默认 `https://github.com/skyw8/ki/releases`）与
+  `release`（`source` 下的一段路径）。发布构建把 `-X
+  ki/internal/buildinfo.ReleaseTag=<tag>` 写死为 `download/<tag>`；本地构建为空，使用
+  `latest/download`，因此不猜一个可能不存在的 tag。环境变量 `KI_EXTENSIONS_SOURCE` /
+  `KI_EXTENSIONS_RELEASE` 覆盖；`source` 支持 `file://` 与绝对路径，便于离线镜像和测试。
+- **发布产物**：`scripts/build-extensions.go -zip -out <dir>` 为每个包生成
+  `<name>-<goos>-<goarch>.zip`（内含单一 `<name>/` 顶层目录，保留可执行位）。`release.yml`
+  的 `extension-assets` job 在三个支持平台各跑一次，`publish` 把 `ki-*` 与 `*.zip` 一起写进
+  `checksums.txt`。
+- **下载与校验**：先取 `checksums.txt`，按资产名查 sha256；下载后比对，不一致直接失败。
+  解压拒绝符号链接、非普通文件、绝对路径与 `..` 逃逸，单文件 256 MiB、总计 1 GiB、条目数
+  8192 上限。解压后必须能通过 `Discover` 的 manifest 校验，且 `name` 与 catalog 一致。
+- **发布方式**：解压到 `{KI_HOME}/extensions/.stage-<name>-*`（隐藏目录，Discover 跳过），
+  再把旧包挪到 `.replaced-<name>-*` 并 `rename` 新包；两步都在同一文件系统。失败会尝试把
+  旧包放回。安装/更新会保留 `config.json` / `cache.json` / `state.json`，不保留其它旧文件。
+- **保护**：`{KI_HOME}/extensions` 本身是符号链接（常见于把仓库 `extensions/` 链进来开发）
+  时拒绝安装；目标包是符号链接时同样拒绝，绝不删除 checkout。`GET
+  /v1/extensions/available` 会返回 `linkedRoot` 和逐项 `linked`，`POST` 返回 **409**，UI
+  据此显示「开发链接」而不是一个必然失败的按钮。
+- **状态**：安装是后台任务。`POST` 立即 202，`GET /v1/extensions/available` 的
+  `install.state` 依次为 `download` → `extract` → `done` / `failed`（带 `error`）；每次阶段
+  变化推 `scope=extensions` invalidation。成功后调用一次全局 Reload，运行中的会话沿用旧
+  快照，release 后生效。同一包重复点击是幂等的（返回当前阶段），不会并发解压。
 - **清理**：安装开始时删除超过一小时的 `.stage-*` / `.replaced-*` / `.download-*` 残留。
+
+空列表也要渲染：五个包都已安装时设置页仍显示「可安装」区并写明「目录中的扩展都已安装」
+——整段消失会让人误以为构建里没有这个功能。
+
+Telegram 附件下载直接流入目标旁的临时文件，成功关闭后 rename 发布；失败或取消不覆盖已有
+附件。50 MiB 下载上限保持不变，超过上限明确报错，不发布截断文件。
 
 ## 工具名称与别名
 
-registration 和动态 registerTools 保留 sidecar 原始 ToolSpec.Name，用于 tool.execute RPC。模型 schema、目录、hooks、事件和 activeTools 保存 snake_case；调用接受 snake_case、PascalCase 和原始注册名（包含 acronym 拼写）。每个工具只发布一个 schema。注册前统一验证名称与所有 alias，冲突或内置保留名导致整个注册批次拒绝，已有能力不被覆盖。静态能力按全局注册校验，动态能力按 session 与当前静态集合校验；不同 session 同名动态工具不互相冲突。消息上下文中的 ContextOnly/完成身份不向 sidecar 或 provider 暴露。
+registration 和动态 registerTools 保留 sidecar 原始 `ToolSpec.Name`，用于 `tool.execute`
+RPC。模型 schema、目录、hooks、事件和 activeTools 保存 snake_case；调用接受 snake_case、
+PascalCase 和原始注册名（包含 acronym 拼写）。每个工具只发布一个 schema。
 
-内置工具保留名由 `internal/tool/builtin/catalog` 统一声明，别名和 schema 校验来自 `internal/tool`；sidecar 的进程组创建、启动登记和树终止来自 `internal/process`。extension 无需依赖内置工具实现即可验证注册并管理 sidecar 进程。
+注册前统一验证名称与所有 alias，冲突或内置保留名导致整个注册批次拒绝，已有能力不被覆盖。
+静态能力按全局注册校验，动态能力按 session 与当前静态集合校验；不同 session 同名动态工具
+不互相冲突。消息上下文中的 ContextOnly/完成身份不向 sidecar 或 provider 暴露。
+
+内置工具保留名由 `internal/tool/builtin/catalog` 统一声明，别名和 schema 校验来自
+`internal/tool`；sidecar 的进程组创建、启动登记和树终止来自 `internal/process`。extension
+无需依赖内置工具实现即可验证注册并管理 sidecar 进程。

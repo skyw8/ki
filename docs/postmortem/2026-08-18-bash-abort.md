@@ -69,7 +69,7 @@ stdout 不是 `*os.File` 时，Go 建 pipe + copy。孙子进程握着写端，`
 | CLI | abort 用独立的 2s `context.Background()`，不再复用已取消的 signal ctx |
 | 后台 Bash | `run_in_background` 仍是 `WithoutCancel`，不跟这次 abort |
 
-契约写在 `docs/tools.md` 和 `internal/tools/doc.go`。
+契约写在 `docs/tools.md`。
 
 ## 教训
 
