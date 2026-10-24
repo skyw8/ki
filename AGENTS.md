@@ -1,12 +1,12 @@
-## description
+## Description
 A lean and extensible agent runtime designed for easy integration.
 
-## tech stack
+## Tech Stack
 - Go: backend
 - CLI: Cobra + Viper
-- WebUI: Vite 8 (Rolldown) + React (deps and scripts use bun; vite config unchanged)
+- WebUI: Vite 8 (Rolldown) + React (deps and scripts use bun)
 
-## directory structure
+## Directory Structure
 
 ```
 ki/
@@ -53,7 +53,7 @@ ki/
 └── go.mod
 ```
 
-## docs
+## Docs
 
 - Cross-package notes live in `docs/`, one file per topic:
   - `architecture.md` — prompt flow across cli → server → loop
@@ -72,7 +72,7 @@ ki/
   - `postmortem/` — retrospective entries
 - Package invariants are documented in `docs/`. Keep this file free of per-file inventories under those directories.
 
-## guide
+## Guide
 
 - Dev run: `scripts/run.sh` rebuilds `web/dist` (skipped when frontend inputs are unchanged; `--force-web` forces it) and `./ki`, then starts `ki serve` with the real configured provider by default inside a tmux session named `ki`: window `server` runs the daemon, window `cli` is a shell for operating it. Re-run to rebuild and respawn; real tests operate through the script or `tmux attach -t ki`. The script compiles with `-tags embed`; `--fake` is an explicit opt-in for canned-model plumbing checks only.
 - Fake model (tests only): `go test ./e2e` (`KI_FAKE=1`; CLI main path, `serve`, `serve -d`, two sessions in parallel, WebUI Playwright). Do not use `KI_FAKE=1` or `--fake` for normal development, manual verification, or service restarts.
@@ -80,7 +80,7 @@ WebUI: `cd web && bun run test` (Bun unit tests + parallel browser runner; each 
 - Live model: `go test -tags live -timeout 5m ./e2e -run Live` covers DeepSeek `deepseek-flash` across Completions, Responses, and Anthropic (reads `DEEPSEEK_API_KEY` or `~/.ki` credentials; images / PDF / WebUI Playwright). `go test -tags live ./internal/provider -run TestLiveDeepSeek` drives the three protocol adapters directly.
 WebUI live: `cd web && bun run test:e2e:live`.
 
-## `./ki` shortcuts
+## `./ki` Shortcuts
 
 Prefer these commands over locating or parsing session JSONL by hand:
 
@@ -100,7 +100,7 @@ Prefer these commands over locating or parsing session JSONL by hand:
 - Use `./ki run --session <id> "<prompt>"` to resume, `./ki session compact --session <id>` to compact, and `./ki session fork --session <id>` to fork.
 - Use `./ki config path`, `./ki extension list`, `./ki reload`, and `./ki version` for common runtime inspection.
 
-## fast feedback
+## Fast Feedback
 
 - **Iterate with focused checks; run the full regression when ready.** Check cross-layer or harness changes early. Reproduce failures narrowly from logs; reuse valid passing results. Docs-only edits need diff, link, and formatting checks.
 - Full regression: type-check and build fresh `web/dist`, then `go test -tags embed -count=1 ./...`. This includes Bun and Chromium tests when dependencies are installed; do not run them twice. In `web/`, use `typecheck:watch` and `test:unit:watch` while editing.
@@ -109,7 +109,7 @@ Prefer these commands over locating or parsing session JSONL by hand:
 - Time new/changed tests and compare the affected suite's wall time before/after under the same conditions. Fix avoidable slowdowns before finishing; record unavoidable costs and their reason. Never skip coverage, weaken assertions, or shorten required observation windows for speed.
 - Preserve caches; use `-count=1` for forced runs/timing. Run perf/live only when applicable or requested, with performance budgets free of competing heavy work. Commands and isolation details: `docs/webui.md`.
 
-## state files
+## State Files
 
 Every Ki-owned JSON document under `{KI_HOME}` carries a top-level integer `version` and is read and written only through `internal/state` (`state.ReadFile`, `state.WriteJSON`, `state.WriteVersioned`) — never a hand-rolled `os.ReadFile` + `os.WriteFile`. The contract is `docs/state.md`; do not add a third-party config-migration library.
 
@@ -118,11 +118,12 @@ Every Ki-owned JSON document under `{KI_HOME}` carries a top-level integer `vers
 - That error is fail-fast for `models.json`, `credentials.json`, and `workspaces.json`, and best-effort (fall back, never overwrite) for `toggles.json` and `push-subscriptions.json`; a newer document is never coerced down or overwritten.
 - `internal/provider/catalog.json` is embedded and version-checked at build time, not a runtime state file.
 
-## constraints
+## Constraints
 
 - Keep this list concise.
 - Write this file in English.
-- Write no source-code comments; explain intent in names, types, and `docs/`.
+- Do not add source-code comments on your own initiative; explain intent in names, types, and `docs/`, and comment only where a comment carries something those cannot.
+- Do not rebuild or restart the running `ki` service on your own initiative; that interrupts live sessions. To verify changes, start a separate `ki` instance (other port, isolated `KI_HOME`) and leave the running one untouched.
 - Do not consider backward compatibility. Prioritize refactoring legacy code and improving the existing implementation.
 - Create PlantUML diagrams when necessary. When creating diagrams, only include PlantUML code blocks in Markdown files.
 - Port-forwarded WebUI is a first-class client, including Tailscale and other high-latency links: same-origin relative `/v1` and `/assets` only; never navigate the browser to a host filesystem path; never use a native OS file picker; keep every text response gzip-compressed (`text/event-stream` excepted) and content-hashed `assets/` immutable, so a reload neither re-downloads nor revalidates large payloads over the link.
