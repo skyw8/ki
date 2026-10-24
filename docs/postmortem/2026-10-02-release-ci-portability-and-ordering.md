@@ -142,3 +142,20 @@ Final local preflight passed Go formatting, diff checks, WebUI typecheck/build,
 `go test -tags embed -count=1 ./...` (including the complete Bun/Chromium suite),
 and `go vet ./...`. The embedded end-to-end package completed in 65.079s; this
 is a Linux preflight result, not a substitute for the native release CI gate.
+
+## Follow-up from the v0.4.1 preflight
+
+Native Windows main CI failed `TestListCachePrunesRemovedSession` with
+`unlinkat ... events.jsonl: The process cannot access the file because it is
+being used by another process`. The question-list summary builder opened
+`events.jsonl`, scanned it, and only then took the shared file gate for the
+persist step, so `session.Remove` could delete the directory while that scan
+still held an open handle. POSIX unlinks it silently; Windows refuses.
+
+The builder now holds the gate's read lock from open through the summary
+write-back, so a delete either waits for the rebuild or makes the rebuild fail
+on its own stat. `TestQuestionListBuildWaitsForTheFileGate` withholds the gate
+and requires the builder to block: it failed 10/10 times against the old
+ordering (0.51s package time) and passed 20 repetitions after the fix (1.089s),
+with the focused list/question suite unchanged at 0.52s. This is a Linux
+result; native Windows CI remains the publication gate.

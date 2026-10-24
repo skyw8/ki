@@ -243,7 +243,9 @@ server 用 `session.ListCache` 按 `events.jsonl` / `config.json` 的 size+mtime
 
 追加只扫描新字节；size/mtime 与末尾校验摘要保护读取位置，截断或同大小重写触发重建。
 切换分支按当前 leaf 在缓存关系中投影，无需重读历史。普通浅扫描 `List` 保持原行为；问题
-修订和加载状态也参与响应 ETag。会话删除与缓存提交共享文件 gate，禁止缓存重建已删除目录。
+修订和加载状态也参与响应 ETag。会话删除与缓存提交共享文件 gate，禁止缓存重建已删除目录：
+重建从 open 到写回 `question-list.json` 全程持读锁，删除持写锁，否则 Windows 会在
+`os.RemoveAll` 时撞上重建仍打开的 `events.jsonl`（`ERROR_SHARING_VIOLATION`）。
 
 ### 目录索引
 

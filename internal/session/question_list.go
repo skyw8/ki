@@ -70,6 +70,9 @@ func (s *questionListSummary) links(leaf string) []QuestionLink {
 }
 
 func buildQuestionListSummary(dir string, prior *questionListSummary, stop <-chan struct{}) (*questionListSummary, error) {
+	gate := fileGate(dir)
+	gate.RLock()
+	defer gate.RUnlock()
 	f, err := os.Open(entriesPath(dir))
 	if err != nil {
 		return nil, err
@@ -118,9 +121,6 @@ func buildQuestionListSummary(dir string, prior *questionListSummary, stop <-cha
 	if err != nil {
 		return nil, err
 	}
-	gate := fileGate(dir)
-	gate.RLock()
-	defer gate.RUnlock()
 	if _, err := os.Stat(entriesPath(dir)); err != nil {
 		return nil, err
 	}

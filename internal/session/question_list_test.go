@@ -262,6 +262,34 @@ func TestQuestionListPartialAppendAndChangedAnchor(t *testing.T) {
 	}
 }
 
+func TestQuestionListBuildWaitsForTheFileGate(t *testing.T) {
+	sess, _ := questionListSession(t)
+	gate := fileGate(sess.Dir)
+	gate.Lock()
+	stop := make(chan struct{})
+	close(stop)
+	done := make(chan error, 1)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		_, err := buildQuestionListSummary(sess.Dir, nil, stop)
+		done <- err
+	}()
+	<-started
+	select {
+	case err := <-done:
+		gate.Unlock()
+		t.Fatalf("summary build read events.jsonl while a writer held the gate: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	gate.Unlock()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("summary build did not resume after the gate was released")
+	}
+}
+
 func TestQuestionListCacheCorruptNewerAndTruncation(t *testing.T) {
 	for _, mode := range []string{"corrupt", "newer", "truncated"} {
 		t.Run(mode, func(t *testing.T) {
