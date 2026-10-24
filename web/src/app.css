@@ -760,6 +760,33 @@
 .md hr { border: 0; border-top: 1px solid var(--dsw-alias-border-l2); margin: 12px 0; }
 .md del { color: var(--dsw-alias-label-tertiary); }
 .md img { max-width: 100%; height: auto; border-radius: 8px; }
+.md a { color: var(--dsw-alias-brand); text-decoration: none; }
+.md a:hover { text-decoration: underline; }
+.md-local-link {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--dsw-alias-brand);
+  font: inherit;
+  text-align: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.md-local-link:hover { text-decoration: underline; }
+.md-local-link:focus-visible { outline: 2px solid var(--dsw-alias-brand); outline-offset: 2px; border-radius: 2px; }
+.md-local-image-missing {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px dashed var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  color: var(--dsw-alias-label-caption);
+  font-size: 12px;
+}
+.md-local-image-loading { display: inline-block; min-width: 24px; min-height: 24px; }
 
 .asst-meta {
   font-size: 12px;
