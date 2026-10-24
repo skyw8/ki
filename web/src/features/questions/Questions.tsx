@@ -7,7 +7,7 @@ import { useDialogFocus } from '../../hooks/useDialogFocus'
 import { useI18n } from '../../i18n'
 import { clientRequestId } from '../../lib/client-request'
 import { Markdown } from '../markdown/Markdown'
-import { answerFromDraft, orderedQuestions, questionDraftKey, readQuestionDraft, type QuestionDraft } from './model'
+import { answerFromDraft, confirmedAnswerForm, orderedQuestions, questionDraftKey, readQuestionDraft, type QuestionDraft } from './model'
 import { questionCopy } from './copy'
 import { useSideConversation } from './useSideConversation'
 import './questions.css'
@@ -66,6 +66,8 @@ export function QuestionDialog({ api, sessionId, question, mainBusy, onClose, on
   const follow = useRef(true)
   const editable = question.status === 'pending' && question.sourceBranchValid
   const answer = answerFromDraft(draft)
+  const confirmed = question.status === 'answered' || question.status === 'answer_queued'
+  const form = confirmed ? confirmedAnswerForm(question, draft) : draft
   useEffect(() => {
     try { sessionStorage.setItem(key, JSON.stringify(draft)) } catch {}
   }, [key, draft])
@@ -88,7 +90,7 @@ export function QuestionDialog({ api, sessionId, question, mainBusy, onClose, on
     setDraft(submittedDraft)
     try { sessionStorage.setItem(key, JSON.stringify(submittedDraft)) } catch {}
     try {
-      const receipt = await api.questionReply(sessionId, { questionItemId: question.questionItemId, revision: question.revision, submissionId, answer })
+      const receipt = await api.questionReply(sessionId, { questionItemId: question.questionItemId, revision: question.revision, submissionId, answer, answerForm: { selected: draft.selected, text: draft.text } })
       onQuestion(receipt.question)
       onRefresh()
     } catch (e) {
@@ -135,17 +137,18 @@ export function QuestionDialog({ api, sessionId, question, mainBusy, onClose, on
             <h3>{c.answer}</h3>
             {!question.sourceBranchValid ? <p className="question-warning" role="status">{c.branch}</p> : null}
             {question.status === 'answered' && question.answerBranchValid === false ? <p className="question-warning" role="status">{c.answerOtherBranch}</p> : null}
-            {question.status === 'answered' || question.status === 'answer_queued' ? <div className="question-receipt" data-testid="question-receipt"><strong>{c.receipt}</strong><p>{question.answer}</p>{question.status === 'answer_queued' ? <small>{c.queued}</small> : null}</div> : <>
+            <div data-testid={confirmed ? "question-receipt" : undefined}>
+              {confirmed ? <p className="question-confirmed" role="status">{question.status === 'answer_queued' ? c.queued : c.receipt}</p> : null}
               {question.options?.length ? <fieldset className="question-options" disabled={!editable || sending}>
                 <legend className="sr-only">{c.answer}</legend>
-                {question.options.map((option, i) => <label className={draft.selected === option ? 'selected' : ''} key={`${i}-${option}`}>
-                  <input type="radio" name={optionName} value={option} checked={draft.selected === option} onChange={() => patch({ selected: option })} />
-                  <span><strong>{option}</strong>{i === 0 ? <small>{c.default}</small> : null}</span>
+                {question.options.map((option, i) => <label className={form.selected === option ? 'selected' : ''} key={`${i}-${option}`}>
+                  <input type="radio" name={optionName} value={option} checked={form.selected === option} onChange={() => patch({ selected: option })} />
+                  <span><strong>{option}</strong>{i === 0 && !confirmed ? <small>{c.default}</small> : null}</span>
                 </label>)}
-                <label className={!draft.selected ? 'selected' : ''}><input type="radio" name={optionName} value="" checked={!draft.selected} onChange={() => patch({ selected: '' })} /><span>{c.other}</span></label>
+                <label className={!form.selected ? 'selected' : ''}><input type="radio" name={optionName} value="" checked={!form.selected} onChange={() => patch({ selected: '' })} /><span>{c.other}</span></label>
               </fieldset> : null}
-              <textarea className="question-answer-input" aria-label={c.answerHint} placeholder={c.answerHint} value={draft.text} disabled={!editable || sending} onChange={e => patch({ text: e.target.value })} />
-            </>}
+              <textarea className="question-answer-input" aria-label={c.answerHint} placeholder={c.answerHint} value={form.text} readOnly={confirmed} disabled={!confirmed && (!editable || sending)} onChange={e => patch({ text: e.target.value })} />
+            </div>
             {error ? <p role="alert" className="question-error">{error}</p> : null}
             {onLocate ? <button type="button" className="question-locate" onClick={() => { onLocate(question.sourceEntryId); onClose() }}>{c.locate}</button> : null}
           </div>

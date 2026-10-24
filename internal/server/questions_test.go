@@ -109,6 +109,61 @@ func TestQuestionListLinksBeforeSideCreationAndAfterUpdate(t *testing.T) {
 	}
 }
 
+func TestQuestionReplyAnswerFormReceipt(t *testing.T) {
+	s, hs := testServer(t)
+	sess, qs := questionServerSeed(t, s, hs, 1)
+	defer func() { _ = sess.Close() }()
+	q := qs[0]
+	request := questionReplyRequest{QuestionItemID: q.QuestionItemID, Revision: q.Revision, SubmissionID: "form-answer", Answer: "all\n\nOnly after checks pass."}
+	path := "/v1/sessions/" + sess.ID() + "/prompt"
+	for _, form := range []session.QuestionAnswerForm{{Selected: "unknown", Text: "Only after checks pass."}, {Selected: "local", Text: "Only after checks pass."}} {
+		request.AnswerForm = &form
+		code, _ := postJSON(t, hs, http.MethodPost, path, map[string]any{"questionReply": request})
+		if code != http.StatusBadRequest {
+			t.Fatalf("invalid form status = %d", code)
+		}
+	}
+	original := session.QuestionAnswerForm{Selected: "all", Text: "  Only after checks pass.  "}
+	request.AnswerForm = &original
+	code, out := postJSON(t, hs, http.MethodPost, path, map[string]any{"questionReply": request})
+	if code != http.StatusAccepted {
+		t.Fatalf("submit %d %+v", code, out)
+	}
+	waitQuestionRun(t, s, sess.ID())
+	for _, form := range []*session.QuestionAnswerForm{&original, nil} {
+		request.AnswerForm = form
+		code, _ = postJSON(t, hs, http.MethodPost, path, map[string]any{"questionReply": request})
+		if code != http.StatusOK {
+			t.Fatalf("retry status = %d", code)
+		}
+	}
+	request.AnswerForm = &session.QuestionAnswerForm{Text: request.Answer}
+	code, _ = postJSON(t, hs, http.MethodPost, path, map[string]any{"questionReply": request})
+	if code != http.StatusConflict {
+		t.Fatalf("conflicting form retry status = %d", code)
+	}
+	fresh, err := s.open(sess.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = fresh.Close() }()
+	stored, ok := fresh.Question(q.QuestionItemID)
+	if !ok || stored.AnswerForm == nil || *stored.AnswerForm != original {
+		t.Fatalf("stored form = %+v", stored.AnswerForm)
+	}
+	for _, query := range []string{"?view=compact&keep=0", "?fields=runtime"} {
+		code, projection := postJSON(t, hs, http.MethodGet, "/v1/sessions/"+sess.ID()+query, nil)
+		questions, _ := projection["questions"].([]any)
+		if code != http.StatusOK || len(questions) != 1 {
+			t.Fatalf("GET %d %+v", code, projection)
+		}
+		form, _ := questions[0].(map[string]any)["answerForm"].(map[string]any)
+		if form["selected"] != original.Selected || form["text"] != original.Text {
+			t.Fatalf("GET form = %+v", form)
+		}
+	}
+}
+
 func TestQuestionReplyIdleStartsExactlyOnceAndGETProjection(t *testing.T) {
 	s, hs := testServer(t)
 	sess, qs := questionServerSeed(t, s, hs, 1)

@@ -122,8 +122,8 @@ export async function installQuestions(page: Page, lang = 'zh') {
           state.prompts.push({ id, body })
           if (body.questionReply) {
             if (state.conflict) { update({ revision: state.question.revision + 1, status: 'answered', answer: '另一窗口的答案', answerBranchValid: true }); return json({ error: 'revision conflict' }, 409) }
-            const reply = body.questionReply as { answer: string; submissionId: string }
-            update({ status: 'answered', answer: reply.answer, revision: state.question.revision + 1, submissionId: reply.submissionId, answerBranchValid: true })
+            const reply = body.questionReply as { answer: string; submissionId: string; answerForm?: Question['answerForm'] }
+            update({ status: 'answered', answer: reply.answer, answerForm: reply.answerForm, revision: state.question.revision + 1, submissionId: reply.submissionId, answerBranchValid: true })
             return json({ accepted: true, question: state.question })
           }
           const detail = state.details[id]

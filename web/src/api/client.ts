@@ -176,7 +176,7 @@ export class Client {
     })
   }
 
-  questionReply(id: string, questionReply: { questionItemId: string; revision: number; submissionId: string; answer: string }): Promise<{ accepted: boolean; question: import('./types').Question }> {
+  questionReply(id: string, questionReply: { questionItemId: string; revision: number; submissionId: string; answer: string; answerForm?: { selected: string; text: string } }): Promise<{ accepted: boolean; question: import('./types').Question }> {
     return this.json(`/v1/sessions/${id}/prompt`, { method: 'POST', body: JSON.stringify({ questionReply }) })
   }
 

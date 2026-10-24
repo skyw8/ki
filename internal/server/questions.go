@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,10 +25,11 @@ func (s *Server) questionGate(id string) *sync.Mutex {
 }
 
 type questionReplyRequest struct {
-	QuestionItemID string `json:"questionItemId"`
-	Revision       int64  `json:"revision"`
-	SubmissionID   string `json:"submissionId"`
-	Answer         string `json:"answer"`
+	QuestionItemID string                      `json:"questionItemId"`
+	Revision       int64                       `json:"revision"`
+	SubmissionID   string                      `json:"submissionId"`
+	Answer         string                      `json:"answer"`
+	AnswerForm     *session.QuestionAnswerForm `json:"answerForm,omitempty"`
 }
 
 func (s *Server) questionEligible(sess *session.Session) bool {
@@ -152,8 +154,26 @@ func (s *Server) submitQuestionReply(w http.ResponseWriter, r *http.Request, bod
 		http.Error(w, "question not found", http.StatusNotFound)
 		return
 	}
+	if body.AnswerForm != nil {
+		form := body.AnswerForm
+		if form.Selected != "" && !slices.Contains(q.Options, form.Selected) {
+			http.Error(w, "answerForm selected must be an original question option", http.StatusBadRequest)
+			return
+		}
+		parts := []string{}
+		for _, value := range []string{form.Selected, form.Text} {
+			if value = strings.TrimSpace(value); value != "" {
+				parts = append(parts, value)
+			}
+		}
+		if strings.Join(parts, "\n\n") != body.Answer {
+			http.Error(w, "answerForm must match answer", http.StatusBadRequest)
+			return
+		}
+	}
 	if q.SubmissionID != "" {
-		if q.SubmissionID != body.SubmissionID || q.Answer != body.Answer {
+		if q.SubmissionID != body.SubmissionID || q.Answer != body.Answer ||
+			(q.AnswerForm != nil && body.AnswerForm != nil && *q.AnswerForm != *body.AnswerForm) {
 			http.Error(w, "question already has another answer", http.StatusConflict)
 			return
 		}
@@ -178,7 +198,7 @@ func (s *Server) submitQuestionReply(w http.ResponseWriter, r *http.Request, bod
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	q.Answer, q.SubmissionID, q.Status, q.Revision = body.Answer, body.SubmissionID, "answer_queued", q.Revision+1
+	q.Answer, q.AnswerForm, q.SubmissionID, q.Status, q.Revision = body.Answer, body.AnswerForm, body.SubmissionID, "answer_queued", q.Revision+1
 	if err := sess.UpdateQuestion(q); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

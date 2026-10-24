@@ -95,6 +95,11 @@ sideband 写入在打开文件前校验编码行不超过 64 MiB，拒绝不会�
 回执全局首次提交有效，切换分支不重投历史答案；`sourceBranchValid` 表示问题来源是否在
 当前分支，`answerBranchValid` 表示已投递答案是否在当前分支。
 
+提交可带 `answerForm: {selected, text}` 保存原选项与补充文本；selected 必须为空或原选项，
+两字段 trim 后以空行拼接必须等于 answer。首次接受时与答案一同落盘，GET/SSE 返回公开
+回执，重开、刷新或另一客户端不依赖浏览器草稿恢复。已有答案的重复提交不修改表单；同时
+携带表单的重试须匹配已存表单，省略表单的同答案重试仍幂等。列表导航摘要不保存表单正文。
+
 只读旁聊用 `purpose=question_side`、`sourceSessionId`、`sourceQuestionItemId` 和
 `sideBoundaryEntryId` 关联来源；首次旁问时才创建，固定提问时 CWD 与资源；provider/model/thinking 跟随来源主会话，
 空闲旁聊在主会话切换后同步，忙碌旁聊在下一轮读取来源最新模型。初始化阶段

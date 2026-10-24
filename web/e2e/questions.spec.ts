@@ -123,7 +123,7 @@ for (const width of [1440, 390]) test(`async question answer and independent sid
   await page.getByTestId('question-card').click()
   await expect(dialog.getByRole('textbox', { name: '补充细节，或写下自己的答案…' })).toHaveValue('必须具备明确的回滚指标。')
   await dialog.getByTestId('question-submit').click()
-  await expect(dialog.getByTestId('question-receipt')).toContainText('必须具备明确的回滚指标。')
+  await expect(dialog.getByTestId('question-receipt').getByRole('textbox')).toHaveValue('必须具备明确的回滚指标。')
   const prompts = await page.evaluate(() => window.questionFixture.prompts.filter(p => p.id === 'question-main'))
   expect(prompts).toHaveLength(1)
   expect(prompts[0].body).toHaveProperty('questionReply')
@@ -315,6 +315,50 @@ test('pending question summaries preserve newer event links until a settled proj
   await expect(parent.getByTestId('session-toggle')).toHaveCount(0)
 })
 
+for (const width of [1440, 390]) test(`confirmed answers keep the original readonly form after reopening and reload at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 })
+  await installQuestions(page)
+  await open(page)
+  const dialog = page.getByTestId('question-dialog')
+  const selected = '直接向全部用户发布'
+  const text = '  保留分批回滚预案\n同时观察错误率  '
+  await dialog.getByRole('radio', { name: selected, exact: true }).check()
+  await dialog.locator('.question-answer-input').fill(text)
+  await dialog.getByTestId('question-submit').click()
+  const assertForm = async () => {
+    await expect(dialog.getByTestId('question-receipt')).toBeVisible()
+    await expect(dialog.getByRole('radio')).toHaveCount(3)
+    await expect(dialog.getByRole('radio', { name: selected, exact: true })).toBeChecked()
+    for (const radio of await dialog.getByRole('radio').all()) await expect(radio).toBeDisabled()
+    await expect(dialog.locator('.question-answer-input')).toHaveValue(text)
+    await expect(dialog.locator('.question-answer-input')).toHaveAttribute('readonly', '')
+    await expect(dialog.getByTestId('question-submit')).toHaveCount(0)
+    await expect(dialog.getByText('预选，尚未发送', { exact: true })).toHaveCount(0)
+  }
+  await assertForm()
+  const receipt = await page.evaluate(() => window.questionFixture.question)
+  expect(receipt.answerForm).toEqual({ selected, text })
+  await dialog.getByRole('button', { name: '关闭问题窗口', exact: true }).click()
+  const rail = page.getByTestId('questions-rail')
+  if (await rail.locator('.questions-mobile-toggle').isVisible()) await rail.locator('.questions-mobile-toggle').click()
+  await rail.getByRole('button', { name: /历史问题/ }).click()
+  await rail.getByTestId('question-card').click()
+  await assertForm()
+  await page.reload()
+  await page.evaluate(receipt => {
+    sessionStorage.clear()
+    const state = window.questionFixture
+    state.question = receipt
+    state.details['question-main'].questions = [receipt]
+    state.emit('server', { type: 'question_updated', sessionId: 'question-main', question: receipt })
+  }, receipt)
+  await openSessionRow(page, '发布策略与上线准备')
+  if (await rail.locator('.questions-mobile-toggle').isVisible()) await rail.locator('.questions-mobile-toggle').click()
+  await rail.getByRole('button', { name: /历史问题/ }).click()
+  await rail.getByTestId('question-card').click()
+  await assertForm()
+})
+
 test('conflicting answer is first-wins and does not erase the local draft', async ({ page }) => {
   await installQuestions(page)
   await open(page)
@@ -323,7 +367,8 @@ test('conflicting answer is first-wins and does not erase the local draft', asyn
   await dialog.getByRole('textbox', { name: '补充细节，或写下自己的答案…' }).fill('保留这份草稿')
   await dialog.getByTestId('question-submit').click()
   await expect(dialog.getByRole('alert')).toContainText('其它窗口更新')
-  await expect(dialog.getByTestId('question-receipt')).toContainText('另一窗口的答案')
+  await expect(dialog.getByTestId('question-receipt').getByRole('textbox')).toHaveValue('另一窗口的答案')
+  await expect(dialog.getByTestId('question-receipt').getByRole('radio', { name: '自行填写答案', exact: true })).toBeChecked()
   expect(await page.evaluate(() => Object.keys(sessionStorage).some(k => k.startsWith('ki:question-draft:') && sessionStorage.getItem(k)?.includes('保留这份草稿')))).toBe(true)
 })
 
@@ -346,7 +391,7 @@ test('queued answers offer explicit continue without resubmitting, and branch re
     state.question = { ...state.question, revision: 3, status: 'answered', answerBranchValid: false }
     state.emit('server', { type: 'question_updated', sessionId: 'question-main', question: state.question })
   })
-  await expect(dialog.getByRole('status')).toContainText('当前分支未包含该答案')
+  await expect(dialog.getByRole('status').filter({ hasText: '当前分支未包含该答案' })).toBeVisible()
   await expect(dialog.getByTestId('question-submit')).toHaveCount(0)
   await expect(dialog.getByRole('button', { name: '继续主对话', exact: true })).toHaveCount(0)
 })

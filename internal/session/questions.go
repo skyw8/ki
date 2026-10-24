@@ -17,30 +17,36 @@ type QuestionInput struct {
 	Options []string `json:"options,omitempty"`
 }
 
+type QuestionAnswerForm struct {
+	Selected string `json:"selected"`
+	Text     string `json:"text"`
+}
+
 type Question struct {
-	QuestionItemID         string          `json:"questionItemId"`
-	CallID                 string          `json:"callId"`
-	Index                  int             `json:"index"`
-	Title                  string          `json:"title"`
-	Options                []string        `json:"options,omitempty"`
-	Status                 string          `json:"status"`
-	Revision               int64           `json:"revision"`
-	CreatedAt              string          `json:"createdAt"`
-	UpdatedAt              string          `json:"updatedAt"`
-	SourceEntryID          string          `json:"sourceEntryId"`
-	SnapshotEntryID        string          `json:"snapshotEntryId"`
-	SourceBranchValid      bool            `json:"sourceBranchValid"`
-	SideSessionID          string          `json:"sideSessionId,omitempty"`
-	Answer                 string          `json:"answer,omitempty"`
-	SubmissionID           string          `json:"submissionId,omitempty"`
-	AnswerEntryID          string          `json:"answerEntryId,omitempty"`
-	SnapshotProvider       string          `json:"snapshotProvider,omitempty"`
-	SnapshotModel          string          `json:"snapshotModel,omitempty"`
-	SnapshotThinkingEffort string          `json:"snapshotThinkingEffort,omitempty"`
-	SupplementalUser       *types.Message  `json:"supplementalUser,omitempty"`
-	SnapshotResources      json.RawMessage `json:"snapshotResources,omitempty"`
-	SnapshotCWD            string          `json:"snapshotCwd,omitempty"`
-	AnswerBranchValid      bool            `json:"answerBranchValid"`
+	QuestionItemID         string              `json:"questionItemId"`
+	CallID                 string              `json:"callId"`
+	Index                  int                 `json:"index"`
+	Title                  string              `json:"title"`
+	Options                []string            `json:"options,omitempty"`
+	Status                 string              `json:"status"`
+	Revision               int64               `json:"revision"`
+	CreatedAt              string              `json:"createdAt"`
+	UpdatedAt              string              `json:"updatedAt"`
+	SourceEntryID          string              `json:"sourceEntryId"`
+	SnapshotEntryID        string              `json:"snapshotEntryId"`
+	SourceBranchValid      bool                `json:"sourceBranchValid"`
+	SideSessionID          string              `json:"sideSessionId,omitempty"`
+	Answer                 string              `json:"answer,omitempty"`
+	AnswerForm             *QuestionAnswerForm `json:"answerForm,omitempty"`
+	SubmissionID           string              `json:"submissionId,omitempty"`
+	AnswerEntryID          string              `json:"answerEntryId,omitempty"`
+	SnapshotProvider       string              `json:"snapshotProvider,omitempty"`
+	SnapshotModel          string              `json:"snapshotModel,omitempty"`
+	SnapshotThinkingEffort string              `json:"snapshotThinkingEffort,omitempty"`
+	SupplementalUser       *types.Message      `json:"supplementalUser,omitempty"`
+	SnapshotResources      json.RawMessage     `json:"snapshotResources,omitempty"`
+	SnapshotCWD            string              `json:"snapshotCwd,omitempty"`
+	AnswerBranchValid      bool                `json:"answerBranchValid"`
 }
 
 var ErrQuestionConflict = errors.New("question revision conflict")

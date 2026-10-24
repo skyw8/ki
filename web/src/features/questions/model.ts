@@ -25,6 +25,15 @@ export function answerFromDraft(draft: Pick<QuestionDraft, 'selected' | 'text'>)
   return [draft.selected.trim(), draft.text.trim()].filter(Boolean).join('\n\n')
 }
 
+export function confirmedAnswerForm(question: Question, draft?: Pick<QuestionDraft, 'selected' | 'text'>): { selected: string; text: string } {
+  if (question.answerForm) return question.answerForm
+  const answer = question.answer ?? ''
+  if (draft && answerFromDraft(draft) === answer) return draft
+  const option = question.options?.filter(option => answer === option.trim() || answer.startsWith(`${option.trim()}\n\n`))
+    .sort((a, b) => b.trim().length - a.trim().length)[0]
+  return option ? { selected: option, text: answer.slice(option.trim().length).replace(/^\n\n/, '') } : { selected: '', text: answer }
+}
+
 export function orderedQuestions(questions: Question[], archived = false): Question[] {
   return questions.filter(q => q.sourceBranchValid && (archived ? q.status === 'answered' || q.status === 'dismissed' : q.status === 'pending' || q.status === 'answer_queued'))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.index - b.index)

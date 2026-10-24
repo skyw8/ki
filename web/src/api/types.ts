@@ -690,6 +690,7 @@ export type Question = {
   snapshotEntryId: string
   sourceBranchValid: boolean
   sideSessionId?: string
+  answerForm?: { selected: string; text: string }
   answer?: string
   submissionId?: string
   answerEntryId?: string

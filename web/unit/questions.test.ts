@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { Question } from '../src/api/types'
-import { answerFromDraft, mergeQuestion, orderedQuestions, questionDraftKey, readQuestionDraft, reconcileQuestions } from '../src/features/questions/model'
+import { answerFromDraft, confirmedAnswerForm, mergeQuestion, orderedQuestions, questionDraftKey, readQuestionDraft, reconcileQuestions } from '../src/features/questions/model'
 import { applyEvent, applyRuntimeCatalog, applyTail, emptyView, loadHistory } from '../src/lib/model'
 
 const question = (change: Partial<Question> = {}): Question => ({
@@ -20,6 +20,12 @@ describe('async question model', () => {
     expect(readQuestionDraft({ getItem: () => '{"selected":"removed","text":7,"sideText":"ask"}' }, 'key', question())).toEqual({ selected: 'Staged', text: '', sideText: 'ask', submissionId: undefined, submittedAnswer: undefined })
     expect(answerFromDraft({ selected: 'Staged', text: '  10% first  ' })).toBe('Staged\n\n10% first')
     expect(answerFromDraft({ selected: '', text: 'my answer' })).toBe('my answer')
+  })
+  test('confirmed forms use the durable receipt rather than another tab draft', () => {
+    expect(confirmedAnswerForm(question({ answer: 'Staged', answerForm: { selected: '', text: 'Staged' } }), { selected: 'Full', text: 'local' })).toEqual({ selected: '', text: 'Staged' })
+    expect(confirmedAnswerForm(question({ answer: 'Full\n\nWatch metrics' }))).toEqual({ selected: 'Full', text: 'Watch metrics' })
+    expect(confirmedAnswerForm(question({ answer: 'Custom response' }))).toEqual({ selected: '', text: 'Custom response' })
+    expect(confirmedAnswerForm(question({ answer: 'Staged' }), { selected: '', text: 'Staged' })).toEqual({ selected: '', text: 'Staged' })
   })
   test('rail separates archived records and does not submit to another branch', () => {
     const items = [question(), question({ questionItemId: 'answered', status: 'answered' }), question({ questionItemId: 'old-branch', sourceBranchValid: false })]

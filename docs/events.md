@@ -53,7 +53,8 @@ workspaces、扩展目录，并给后台完成的 session 发系统通知。
 
 `question_requested` 的 `questions[]` 包含稳定的 `questionItemId`、原问题、顺序、revision、
 来源分支和提问时固定的安全快照 entry 引用；私有资源、补充用户正文和配置不通过事件返回。
-`question_updated` 的 `question` 是单题完整公开投影，
+`question_updated` 的 `question` 是单题完整公开投影，包含提交时可选的
+`answerForm: {selected, text}`，用于只读恢复原回答表单；该字段与 session GET 的回执一致，
 客户端按 ID 和 revision 合并；事件发生前先写 jsonl。普通工具结果仍精确为
 `{"accepted":true}`，不是状态存储协议。
 
